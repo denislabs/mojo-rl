@@ -123,7 +123,7 @@ def test_mixed_param_and_scratch() raises:
         "w (Param) should NOT be touched by Scratch walker"
     )
     assert_true(
-        len(x.b.value) == 0,
+        len(x.b.val.cpu) == 0,
         "b (Param) should NOT be touched by Scratch walker"
     )
     print("  ok")

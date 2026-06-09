@@ -369,19 +369,12 @@ trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
 
 
 trait TerminationAwareEnv(BoxContinuousActionEnv):
-    """BoxContinuousActionEnv that exposes terminated-vs-truncated.
+    """Deprecated alias kept for legacy `deep_agents` callers. `was_terminated`
+    now lives on the base `Env` trait (single home, inherited by every env), so
+    this trait adds nothing beyond `BoxContinuousActionEnv` — it remains only
+    so existing `[E: TerminationAwareEnv]` bounds keep resolving."""
 
-    `step_continuous_vec` collapses both into a single `done` flag; this
-    trait adds `was_terminated()` so off-policy training can keep the TD
-    bootstrap on time-limit truncation while dropping it on natural
-    termination — required for correct learning on Hopper/Walker/Ant where
-    truncation at 1000 steps is a common outcome of a successful policy.
-    """
-
-    def was_terminated(self) -> Bool:
-        """True iff the previous `step_continuous_vec` ended via natural
-        termination (not time-limit truncation)."""
-        ...
+    pass
 
 
 # ============================================================================

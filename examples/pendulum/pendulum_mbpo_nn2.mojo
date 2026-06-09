@@ -76,11 +76,11 @@ def main() raises:
     print("=" * 70)
 
     var trainer = MBPOTrainer[
-        ActorNet, CriticNet, DynNet,
+        "cpu", ActorNet, CriticNet, DynNet,
         OBS_DIM, ACT_DIM, BATCH, REPLAY_CAP, SYNTH_CAP,
         N_ENSEMBLE, NUM_ELITES, REAL_RATIO_PCT,
         LOGVAR_MIN_F, LOGVAR_MAX_F,
-    ].make["cpu"](
+    ].make(
         actor_lr=Scalar[DT](3e-4), critic_lr=Scalar[DT](3e-4),
         alpha_lr=Scalar[DT](3e-4), model_lr=Scalar[DT](1e-3),
         gamma=Scalar[DT](0.99), tau=Scalar[DT](0.005),
@@ -102,7 +102,7 @@ def main() raises:
     var env = BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM](template)
 
     comptime _Trainer = MBPOTrainer[
-        ActorNet, CriticNet, DynNet,
+        "cpu", ActorNet, CriticNet, DynNet,
         OBS_DIM, ACT_DIM, BATCH, REPLAY_CAP, SYNTH_CAP,
         N_ENSEMBLE, NUM_ELITES, REAL_RATIO_PCT,
         LOGVAR_MIN_F, LOGVAR_MAX_F,
@@ -131,8 +131,8 @@ def main() raises:
     var final_mean = trainer.mean_return()
     print("Final mean ep return (last 10): ", final_mean)
     print("Episodes completed:             ", trainer.ep_count())
-    print("Real buffer size:               ", trainer.sample_blk.real_buf.size)
-    print("Synthetic buffer size:          ", trainer.sample_blk.synth_buf.size)
+    print("Real buffer size:               ", trainer.sample_blk.real_count["cpu"]())
+    print("Synthetic buffer size:          ", trainer.sample_blk.synth_count["cpu"]())
     print("=" * 70)
     if final_mean > -200.0:
         print("EXCELLENT — solved swing-up (>-200).")

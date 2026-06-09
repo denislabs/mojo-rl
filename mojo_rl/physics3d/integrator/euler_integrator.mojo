@@ -37,6 +37,8 @@ from ..kinematics.forward_kinematics import (
     compute_body_velocities,
     forward_kinematics_gpu,
     compute_body_velocities_gpu,
+    forward_kinematics_gpu_mt,
+    compute_body_velocities_gpu_mt,
 )
 from ..kinematics.quat_math import quat_normalize, quat_integrate, quat_rotate
 from ..kinematics.quat_math import gpu_quat_rotate
@@ -45,13 +47,16 @@ from ..dynamics.mass_matrix import (
     compute_mass_matrix_full,
     compute_mass_matrix_full_gpu,
     compute_mass_matrix_full_gpu_mt,
+    compute_mass_matrix_treewalk_gpu_mt,
     ldl_factor,
     ldl_factor_gpu,
+    ldl_factor_gpu_mt,
     ldl_solve,
     ldl_solve_gpu,
     ldl_solve_workspace_gpu,
     compute_M_inv_from_ldl,
     compute_M_inv_from_ldl_gpu,
+    compute_M_inv_from_ldl_gpu_mt,
     solve_linear_diagonal,
     build_sparse_pattern,
     compute_mass_matrix_sparse,
@@ -71,12 +76,14 @@ from ..dynamics.bias_forces import (
     compute_bias_forces,
     compute_bias_forces_rne,
     compute_bias_forces_rne_gpu,
+    compute_bias_forces_rne_gpu_mt,
 )
 from ..dynamics.jacobian import (
     compute_subtree_com,
     compute_cdof,
     compute_subtree_com_gpu,
     compute_cdof_gpu,
+    compute_cdof_gpu_mt,
     compute_composite_inertia,
     compute_composite_inertia_gpu,
 )
@@ -150,6 +157,27 @@ from ..gpu.constants import (
     metadata_offset,
     META_IDX_NUM_CONTACTS,
 )
+
+
+# Cooperative (multi-thread per env) forward-dynamics flags for step_kernel_mt.
+# These reuse the exact same `_mt` helpers validated for RK4 (see rk4_integrator.mojo
+# RK4_PARALLEL_*). When True (and STEP_THREADS>1), the per-env serial tree walks
+# that EulerIntegrator.step_kernel_mt ran on tid 0 are distributed across the
+# STEP_THREADS threads instead: FK/velocities/cdof level- or flat-parallel, the
+# tree-walk CRBA (skipping the now-dead composite-inertia pass), cooperative LDL +
+# M^-1 columns, and cooperative RNE bias forces. Within float32 tolerance of the
+# serial walks (FK byte-exact; the rest ~1e-9, CRBA ~1e-8) — see the NVIDIA HalfCheetah
+# per-phase numbers in tests/physics3d/profile_euler_phases_half_cheetah.mojo.
+# Each can be flipped False independently to fall back to the serial path.
+comptime EULER_PARALLEL_FK: Bool = True
+comptime EULER_PARALLEL_VEL: Bool = True
+comptime EULER_PARALLEL_CDOF: Bool = True
+comptime EULER_PARALLEL_RNE: Bool = True
+comptime EULER_PARALLEL_CRBA: Bool = True
+# M^-1 from LDL distributed across the idle threads; sub-gate EULER_PARALLEL_LDL
+# also factorizes M cooperatively. Both require the solver to need M^-1.
+comptime EULER_PARALLEL_MINV: Bool = True
+comptime EULER_PARALLEL_LDL: Bool = True
 
 
 struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
@@ -1388,105 +1416,121 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
         comptime m_inv_idx = ws_m_inv_offset[NV, NBODY]()
 
         # =====================================================================
-        # SERIAL PHASE 1: FK, body velocities, contact zero, cdof, CRB
+        # PHASE 1: FK → velocities → subtree_com → cdof → CRB
+        #
+        # Cooperative variants (mirroring rk4_stage_kernel) distribute FK /
+        # velocities / cdof across STEP_THREADS when the matching EULER_PARALLEL_*
+        # flag is set, reusing the same `_mt` helpers validated for RK4. The serial
+        # walk (tid 0) is the oracle. contact-count-zero + subtree_com stay on tid 0
+        # (cheap); a barrier publishes subtree_com before the cooperative cdof reads
+        # it. The tree-walk CRBA (handled at the mass-matrix step) makes the dense
+        # composite-inertia pass dead, so it is skipped under EULER_PARALLEL_CRBA.
         # =====================================================================
+        # 1. Forward kinematics
+        comptime USE_PAR_FK = (
+            EULER_PARALLEL_FK and (STEP_THREADS > 1) and (not SPARSE)
+        )
+        comptime if USE_PAR_FK:
+            forward_kinematics_gpu_mt[
+                DTYPE, NQ, NV, NBODY, NJOINT, STATE_SIZE, MODEL_SIZE, BATCH
+            ](env, tid, STEP_THREADS, valid_env, state, model)
+        else:
+            if tid == 0 and valid_env:
+                forward_kinematics_gpu[
+                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                    STATE_SIZE, MODEL_SIZE, BATCH,
+                ](env, state, model)
+
+        # 2. Body velocities
+        comptime USE_PAR_VEL = (
+            EULER_PARALLEL_VEL and (STEP_THREADS > 1) and (not SPARSE)
+        )
+        comptime if USE_PAR_VEL:
+            compute_body_velocities_gpu_mt[
+                DTYPE, NQ, NV, NBODY, NJOINT, STATE_SIZE, MODEL_SIZE, BATCH
+            ](env, tid, STEP_THREADS, valid_env, state, model)
+        else:
+            if tid == 0 and valid_env:
+                compute_body_velocities_gpu[
+                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                    STATE_SIZE, MODEL_SIZE, BATCH,
+                ](env, state, model)
+
+        # 3. Zero contact count + 3a. subtree_com (tid 0; cooperative FK above ends
+        # with a barrier so its writes are visible, serial FK is tid-0-only).
         if tid == 0 and valid_env:
-            # 1. Forward kinematics
-            forward_kinematics_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-            ](env, state, model)
-
-            # 2. Compute body velocities
-            compute_body_velocities_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-            ](env, state, model)
-
-            # 3. Zero contact count
             comptime meta_off_c = metadata_offset[NQ, NV, NBODY, MAX_CONTACTS]()
             state[env, meta_off_c + META_IDX_NUM_CONTACTS] = Scalar[DTYPE](0)
-
-            # 3a. Compute subtree_com
             compute_subtree_com_gpu[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
                 STATE_SIZE, MODEL_SIZE, BATCH,
             ](env, state, model)
 
-            # 4. Compute cdof
-            compute_cdof_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](env, state, model, workspace)
+        # 4. cdof
+        comptime USE_PAR_CDOF = (
+            EULER_PARALLEL_CDOF and (STEP_THREADS > 1) and (not SPARSE)
+        )
+        comptime if USE_PAR_CDOF:
+            # Publish tid 0's subtree_com to all threads before the cooperative cdof.
+            barrier()
+            compute_cdof_gpu_mt[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+            ](env, tid, STEP_THREADS, valid_env, state, model, workspace)
+        else:
+            if tid == 0 and valid_env:
+                compute_cdof_gpu[
+                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                    STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+                ](env, state, model, workspace)
 
-            # 5. Compute composite rigid body inertia
-            compute_composite_inertia_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](env, state, model, workspace)
+        # 5. Composite rigid body inertia — skipped when the tree-walk CRBA runs
+        # (it builds its own composite; the dense mass matrix is not called).
+        comptime USE_TREEWALK_MM = (
+            (not SPARSE) and EULER_PARALLEL_CRBA and (STEP_THREADS > 1)
+        )
+        comptime if not USE_TREEWALK_MM:
+            if tid == 0 and valid_env:
+                compute_composite_inertia_gpu[
+                    DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
+                    STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE,
+                ](env, state, model, workspace)
 
         barrier()
 
         # =====================================================================
-        # PARALLEL PHASE: Mass matrix computation
+        # MASS MATRIX: tree-walk CRBA (cooperative) | dense (cooperative) | sparse
         # =====================================================================
-        if valid_env:
-            comptime if SPARSE:
-                # Sparse mass matrix — only tid==0 (not parallelized)
-                if tid == 0:
-                    compute_mass_matrix_sparse_gpu[
-                        DTYPE,
-                        NQ,
-                        NV,
-                        NBODY,
-                        NJOINT,
-                        MAX_CONTACTS,
-                        NM,
-                        STATE_SIZE,
-                        MODEL_SIZE,
-                        BATCH,
-                        WS_SIZE,
-                    ](
-                        env,
-                        state,
-                        model,
-                        workspace,
-                        sp_row_nnz,
-                        sp_row_adr,
-                        sp_col_ind,
-                    )
-            else:
-                compute_mass_matrix_full_gpu_mt[
+        comptime if SPARSE:
+            # Sparse mass matrix — tid 0 only (not parallelized).
+            if tid == 0 and valid_env:
+                compute_mass_matrix_sparse_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    NM,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](
+                    env,
+                    state,
+                    model,
+                    workspace,
+                    sp_row_nnz,
+                    sp_row_adr,
+                    sp_col_ind,
+                )
+        else:
+            comptime if USE_TREEWALK_MM:
+                # Tree-walk CRBA: O(NV·depth) per-DOF-row ancestor walk. Called
+                # UNCONDITIONALLY (internal barriers); per-row writes guarded by
+                # valid_env inside it.
+                compute_mass_matrix_treewalk_gpu_mt[
                     DTYPE,
                     NQ,
                     NV,
@@ -1497,15 +1541,34 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     MODEL_SIZE,
                     BATCH,
                     WS_SIZE,
-                ](env, tid, STEP_THREADS, state, model, workspace)
+                ](env, tid, STEP_THREADS, valid_env, state, model, workspace)
+            else:
+                if valid_env:
+                    compute_mass_matrix_full_gpu_mt[
+                        DTYPE,
+                        NQ,
+                        NV,
+                        NBODY,
+                        NJOINT,
+                        MAX_CONTACTS,
+                        STATE_SIZE,
+                        MODEL_SIZE,
+                        BATCH,
+                        WS_SIZE,
+                    ](env, tid, STEP_THREADS, state, model, workspace)
 
         barrier()
 
         # =====================================================================
-        # SERIAL PHASE 2: Armature, LDL factor, M_inv, bias forces
+        # PHASE 2: armature → LDL → M^-1 → RNE bias forces
+        #
+        # Armature is a tid-0 diagonal edit. When EULER_PARALLEL_MINV (solver needs
+        # M^-1, dense, STEP_THREADS>1) the LDL factorization, M^-1 columns, and RNE
+        # bias forces are distributed across STEP_THREADS (mirroring rk4_stage_kernel)
+        # with block-wide barriers between; otherwise all run serially on tid 0.
         # =====================================================================
+        # 6b. Add armature to mass-matrix diagonal (tid 0).
         if tid == 0 and valid_env:
-            # 6b. Add armature to mass matrix diagonal
             for j in range(NJOINT):
                 var joint_off = model_joint_offset[NBODY](j)
                 var jnt_type = Int(model[0, joint_off + JOINT_IDX_TYPE])
@@ -1524,35 +1587,81 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     var idx = M_idx + dof_adr * NV + dof_adr
                     workspace[env, idx] += diag_add
 
-            # 7. LDL factorize M, conditionally compute M_inv
-            comptime if SPARSE:
-                ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
-                    env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+        comptime USE_PAR_MINV = (
+            EULER_PARALLEL_MINV
+            and (STEP_THREADS > 1)
+            and (not SPARSE)
+            and Self.SOLVER.NEEDS_M_INV
+        )
+        comptime if USE_PAR_MINV:
+            # 7. Cooperative LDL + M^-1. Barrier first so tid 0's armature edits to
+            # M are visible before the cooperative read.
+            barrier()
+            comptime if EULER_PARALLEL_LDL:
+                ldl_factor_gpu_mt[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                    env, tid, STEP_THREADS, valid_env, workspace
                 )
-                comptime if Self.SOLVER.NEEDS_M_INV:
-                    compute_M_inv_from_sparse_ldl_gpu[
-                        DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
-                    ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
             else:
-                ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-                comptime if Self.SOLVER.NEEDS_M_INV:
-                    compute_M_inv_from_ldl_gpu[
-                        DTYPE, NV, NBODY, BATCH, WS_SIZE
-                    ](env, workspace)
+                if tid == 0 and valid_env:
+                    ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                        env, workspace
+                    )
+                barrier()
+            if valid_env:
+                compute_M_inv_from_ldl_gpu_mt[
+                    DTYPE, NV, NBODY, BATCH, WS_SIZE
+                ](env, tid, STEP_THREADS, workspace)
+            barrier()
+            # 8. Cooperative RNE bias forces (called unconditionally for its
+            # internal barriers; writes guarded by valid_env).
+            comptime if EULER_PARALLEL_RNE:
+                compute_bias_forces_rne_gpu_mt[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, tid, STEP_THREADS, valid_env, state, model, workspace)
+        else:
+            # Serial LDL + M^-1 on tid 0 (existing behavior / sparse path).
+            if tid == 0 and valid_env:
+                comptime if SPARSE:
+                    ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                        env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+                    )
+                    comptime if Self.SOLVER.NEEDS_M_INV:
+                        compute_M_inv_from_sparse_ldl_gpu[
+                            DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
+                        ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+                else:
+                    ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                        env, workspace
+                    )
+                    comptime if Self.SOLVER.NEEDS_M_INV:
+                        compute_M_inv_from_ldl_gpu[
+                            DTYPE, NV, NBODY, BATCH, WS_SIZE
+                        ](env, workspace)
 
-            # 8. Compute bias forces
-            compute_bias_forces_rne_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](env, state, model, workspace)
+        # 8. RNE bias forces — serial on tid 0 when not done cooperatively above.
+        comptime if not (EULER_PARALLEL_RNE and USE_PAR_MINV):
+            if tid == 0 and valid_env:
+                compute_bias_forces_rne_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, state, model, workspace)
 
         barrier()
 

@@ -16,6 +16,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -31,16 +32,44 @@ def _scale_kernel[
         output[idx] = rebind[Scalar[DT]](input[idx]) * multiplier
 
 
+def _scale_dev_kernel[
+    N: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    mptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    # Device-resident multiplier variant — reads the scale factor from
+    # `mptr[0]` instead of a baked scalar arg, so the value can be updated
+    # by another GPU kernel (SAC's on-device α) without breaking CUDA-graph
+    # capture. Every thread reads the same `mptr[0]`.
+    var idx = Int(global_idx.x)
+    if idx < N:
+        output[idx] = rebind[Scalar[DT]](input[idx]) * mptr[0]
+
+
 struct Scale[DIM: Int](Module):
     comptime ARITY: Int = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
     comptime OUT_DIM = Self.DIM
 
+    @staticmethod
+    def display_label() -> String:
+        return String("Scale")
+
     var multiplier: Scalar[DT]
+    # Slice 4 — optional device-resident multiplier source. When non-null
+    # (set via `set_multiplier_ptr`), the GPU forward/vjp read the scale
+    # factor from `multiplier_ptr[0]` instead of baking `multiplier` into the
+    # kernel args — required for CUDA-graph capture when another GPU kernel
+    # (SAC's on-device α) updates the value each step. Null → baked-scalar
+    # path (bit-identical to pre-Slice-4). CPU always uses `multiplier`.
+    var multiplier_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
     var ts: TargetStorage
 
     def __init__(out self):
         self.multiplier = Scalar[DT](1.0)
+        self.multiplier_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -68,22 +97,19 @@ struct Scale[DIM: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["Scale", target](self.ts.target_tag)
-        var input_v = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var input_v = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p = input_v.ptr
+            var out_p = output_v.ptr
             var m_v = SIMD[DT, CPU_SIMD_W](self.multiplier)
             comptime N = BATCH * Self.DIM
             var k = 0
@@ -94,8 +120,8 @@ struct Scale[DIM: Int](Module):
                 out_p[k] = in_p[k] * self.multiplier
                 k += 1
         else:
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input_v.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p = input_v.ptr
+            var out_p = output_v.ptr
             comptime N = BATCH * Self.DIM
             var in_lt = LayoutTensor[
                 DT, Layout.row_major(N), MutAnyOrigin,
@@ -104,11 +130,18 @@ struct Scale[DIM: Int](Module):
                 DT, Layout.row_major(N), MutAnyOrigin,
             ](out_p)
             comptime n_blocks = (N + TPB - 1) // TPB
-            comptime kernel = _scale_kernel[N]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, self.multiplier,
-                grid_dim=n_blocks, block_dim=TPB,
-            )
+            if self.multiplier_ptr:
+                comptime dev_kernel = _scale_dev_kernel[N]
+                self.ts.ctx.value().enqueue_function[dev_kernel](
+                    in_lt, out_lt, self.multiplier_ptr.value(),
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+            else:
+                comptime kernel = _scale_kernel[N]
+                self.ts.ctx.value().enqueue_function[kernel](
+                    in_lt, out_lt, self.multiplier,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
 
     def vjp[
         target: StaticString,
@@ -121,21 +154,18 @@ struct Scale[DIM: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Scale", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var m_v = SIMD[DT, CPU_SIMD_W](self.multiplier)
             comptime N = BATCH * Self.DIM
             var k = 0
@@ -146,8 +176,8 @@ struct Scale[DIM: Int](Module):
                 gi_p[k] = go_p[k] * self.multiplier
                 k += 1
         else:
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             comptime N = BATCH * Self.DIM
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(N), MutAnyOrigin,
@@ -156,11 +186,18 @@ struct Scale[DIM: Int](Module):
                 DT, Layout.row_major(N), MutAnyOrigin,
             ](gi_p)
             comptime n_blocks = (N + TPB - 1) // TPB
-            comptime kernel = _scale_kernel[N]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, gi_lt, self.multiplier,
-                grid_dim=n_blocks, block_dim=TPB,
-            )
+            if self.multiplier_ptr:
+                comptime dev_kernel = _scale_dev_kernel[N]
+                self.ts.ctx.value().enqueue_function[dev_kernel](
+                    go_lt, gi_lt, self.multiplier_ptr.value(),
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
+            else:
+                comptime kernel = _scale_kernel[N]
+                self.ts.ctx.value().enqueue_function[kernel](
+                    go_lt, gi_lt, self.multiplier,
+                    grid_dim=n_blocks, block_dim=TPB,
+                )
 
     # Override of Module.set_attr — supports ATTR="multiplier". Other
     # ATTR strings are no-ops (Mojo nightly can't error on unknown
@@ -168,3 +205,22 @@ struct Scale[DIM: Int](Module):
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         comptime if ATTR == "multiplier":
             self.multiplier = value
+
+    # Override of Module.set_attr_ptr — supports ATTR="multiplier". Points
+    # the GPU forward/vjp at a device buffer holding the live scale factor
+    # (SAC's on-device α). Equivalent to `set_multiplier_ptr`, reachable
+    # through the GraphNode → ComputeGraph trait surface so a graph can
+    # wire one of its Scale nodes to a device buffer by name.
+    def set_attr_ptr[ATTR: StaticString](
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ):
+        comptime if ATTR == "multiplier":
+            self.multiplier_ptr = p
+
+    # Slice 4 — point the multiplier at a device buffer holding the live
+    # scale factor (e.g. SAC's on-device α). Pass a null pointer to revert
+    # to the baked-scalar `multiplier` path. GPU-only effect; CPU ignores it.
+    def set_multiplier_ptr(
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    ):
+        self.multiplier_ptr = p

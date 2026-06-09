@@ -1,0 +1,100 @@
+"""LeWM (nn2) — eval the PAPER-WIDTH PushT world model (GPU, H6).
+
+Loads the `lewm2_pusht_train_gpu_paper.mojo` checkpoint and runs the
+shuffled action-awareness eval (expert vs BATCH-shuffled actions). Config
+MUST match the paper-width trainer. See that file for the predictor
+attention-expansion fidelity note.
+
+Run (after the paper-width train run):
+  pixi run -e nvidia mojo run -I . examples/lewm/lewm2_pusht_eval_gpu_paper.mojo
+"""
+
+from std.gpu.host import DeviceContext, DeviceBuffer
+from layout import TileTensor, row_major
+
+from mojo_rl.nn2.constants import DT
+from mojo_rl.experimental.lewm2.trainer import LeWMTrainer
+from mojo_rl.experimental.lewm2.pong_data import WindowSource
+from mojo_rl.experimental.lewm2.eval import lewm2_shuffled_eval
+from mojo_rl.envs.pusht import PushTOfflineSampler
+
+
+# ── must match lewm2_pusht_train_gpu_paper.mojo ────────────────────────
+comptime IN_CH = 3
+comptime IMG = 224
+comptime PATCH = 14
+comptime HIDDEN = 192
+comptime ENC_HEADS = 3
+comptime ENC_LAYERS = 12
+comptime EMB = 192
+comptime ENC_PROJ_H = 2048
+comptime ENC_FF_MULT = 2
+comptime T = 6
+comptime ACT = 10
+comptime SMOOTHED = 32
+comptime AE_MLP = 2
+comptime H = 3
+comptime N_PREDS = 1
+comptime PRED_HEADS = 16
+comptime PRED_DIM_HEAD = 64     # expanded attention, must match training
+comptime PRED_FF = 2048
+comptime DEPTH = 6
+comptime PRED_PROJ_H = 2048
+comptime SIG_PROJ = 2048
+comptime SIG_KNOTS = 17
+comptime B = 16
+comptime FRAMESKIP = 5
+
+comptime IMG_DIM = IN_CH * IMG * IMG
+comptime PIX = T * IMG_DIM
+comptime ACTIN = T * ACT
+comptime CKPT_PATH: String = "/tmp/lewm2_pusht_paper_world_model.txt"
+
+comptime Trainer = LeWMTrainer[
+    IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
+    ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS, PRED_FF,
+    DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu", PRED_DIM_HEAD,
+]
+comptime Source = WindowSource[
+    IMG_DIM, ACT, T, B, "gpu", PushTOfflineSampler, IN_CH, IMG
+]
+
+
+def main() raises:
+    print("=" * 70)
+    print("LeWM nn2 — PushT PAPER-WIDTH eval (GPU, H6 action-awareness)")
+    print("=" * 70)
+    var ctx = DeviceContext()
+
+    var sampler = PushTOfflineSampler(frameskip=FRAMESKIP, num_steps=T)
+    var src = Source.make(sampler^, ctx=ctx)
+    var tr = Trainer.make(lam=Scalar[DT](0.09), lr=Scalar[DT](1e-3), ctx=ctx)
+    print("loading checkpoint", CKPT_PATH, "...")
+    tr.load_params(CKPT_PATH)
+
+    src.next_batch()
+    var pix_t = TileTensor(src.pix_ptr(), row_major[B, PIX]())
+    var act_host = ctx.enqueue_create_host_buffer[DT](B * ACTIN)
+    var act_dev = DeviceBuffer[DT](ctx, src.act_ptr(), B * ACTIN, owning=False)
+    ctx.enqueue_copy(act_host, act_dev)
+    ctx.synchronize()
+
+    print("shuffled action-awareness eval ...")
+    var r = lewm2_shuffled_eval[
+        IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
+        ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
+        PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu",
+        PRED_DIM_HEAD,
+    ](
+        tr, pix_t,
+        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](act_host.unsafe_ptr()),
+        ctx=ctx,
+    )
+    print()
+    print("   action-aware (expert < shuffled_min):",
+          "YES" if r[0] < r[2] else "no")
+
+    _ = src^; _ = tr^
+    print("=" * 70)
+    print("DONE")
+    print("=" * 70)

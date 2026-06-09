@@ -98,7 +98,7 @@ struct MPPICPU[
     NUM_PI_TRAJS: Int,
     NUM_ITERATIONS: Int,
     NUM_ELITES: Int,
-](Movable, ImplicitlyDestructible):
+](ImplicitlyDestructible, Movable):
     """CPU MPPI planner — reference implementation + test path.
 
     All hyperparameters that affect storage layout
@@ -168,7 +168,9 @@ struct MPPICPU[
         """
         self.t0 = True
 
-    def plan[CB: RolloutCallbackCPU](
+    def plan[
+        CB: RolloutCallbackCPU
+    ](
         mut self,
         mut callback: CB,
         z0: List[Float64],
@@ -208,9 +210,7 @@ struct MPPICPU[
                     ]
             # Last step has no information from the previous plan.
             for a in range(Self.ACTION_DIM):
-                self.mean[
-                    (Self.HORIZON - 1) * Self.ACTION_DIM + a
-                ] = 0.0
+                self.mean[(Self.HORIZON - 1) * Self.ACTION_DIM + a] = 0.0
         else:
             for i in range(mean_size):
                 self.mean[i] = 0.0
@@ -221,25 +221,16 @@ struct MPPICPU[
         for _iter in range(Self.NUM_ITERATIONS):
             # 2a. NUM_PI_TRAJS policy-seeded trajectories
             for s in range(Self.NUM_PI_TRAJS):
-                var z_curr = List[Float64](
-                    length=Self.LATENT_DIM, fill=0.0
-                )
+                var z_curr = List[Float64](length=Self.LATENT_DIM, fill=0.0)
                 for i in range(Self.LATENT_DIM):
                     z_curr[i] = z0[i]
-                var pi_mean = List[Float64](
-                    length=Self.ACTION_DIM, fill=0.0
-                )
-                var a_step = List[Float64](
-                    length=Self.ACTION_DIM, fill=0.0
-                )
-                var z_next = List[Float64](
-                    length=Self.LATENT_DIM, fill=0.0
-                )
+                var pi_mean = List[Float64](length=Self.ACTION_DIM, fill=0.0)
+                var a_step = List[Float64](length=Self.ACTION_DIM, fill=0.0)
+                var z_next = List[Float64](length=Self.LATENT_DIM, fill=0.0)
                 for t in range(Self.HORIZON):
                     callback.policy_action_cpu(z_curr, pi_mean)
                     var sample_base = (
-                        s * Self.HORIZON * Self.ACTION_DIM
-                        + t * Self.ACTION_DIM
+                        s * Self.HORIZON * Self.ACTION_DIM + t * Self.ACTION_DIM
                     )
                     for a in range(Self.ACTION_DIM):
                         var noise = _gaussian_sample() * 0.1
@@ -289,18 +280,13 @@ struct MPPICPU[
             var act = self.actions[base + a]
             if not deterministic:
                 act += _gaussian_sample() * self.std[a]
-            act = _clamp(
-                act * action_scale, -action_scale, action_scale
-            )
+            act = _clamp(act * action_scale, -action_scale, action_scale)
             result[a] = act
         return result^
 
-    def _score_all_samples[CB: RolloutCallbackCPU](
-        mut self,
-        mut callback: CB,
-        z0: List[Float64],
-        gamma: Float64,
-    ) raises:
+    def _score_all_samples[
+        CB: RolloutCallbackCPU
+    ](mut self, mut callback: CB, z0: List[Float64], gamma: Float64,) raises:
         """Roll out all ``TOTAL_SAMPLES`` candidates and write their
         discounted returns into ``self.returns``.
         """
@@ -314,8 +300,7 @@ struct MPPICPU[
             var discount: Float64 = 1.0
             for t in range(Self.HORIZON):
                 var base = (
-                    s * Self.HORIZON * Self.ACTION_DIM
-                    + t * Self.ACTION_DIM
+                    s * Self.HORIZON * Self.ACTION_DIM + t * Self.ACTION_DIM
                 )
                 for a in range(Self.ACTION_DIM):
                     a_step[a] = self.actions[base + a]
@@ -419,7 +404,7 @@ struct MPPIGPUBatched[
     NUM_ELITES: Int,
     NUM_ITERATIONS: Int,
     N_ENVS: Int,
-](Movable, ImplicitlyDestructible):
+](ImplicitlyDestructible, Movable):
     """GPU-batched MPPI planner — plans for all ``N_ENVS`` envs in one
     kernel grid per horizon step.
 
@@ -525,9 +510,13 @@ struct MPPIGPUBatched[
         self.z_buf = ctx.enqueue_create_buffer[dtype](bt_latent)
         self.z_next_buf = ctx.enqueue_create_buffer[dtype](bt_latent)
         self.act_step_buf = ctx.enqueue_create_buffer[dtype](bt_act)
-        self.all_actions_buf = ctx.enqueue_create_buffer[dtype](all_actions_size)
+        self.all_actions_buf = ctx.enqueue_create_buffer[dtype](
+            all_actions_size
+        )
         self.pol_action_buf = ctx.enqueue_create_buffer[dtype](bt_act)
-        self.reward_step_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH_TOTAL)
+        self.reward_step_buf = ctx.enqueue_create_buffer[dtype](
+            Self.BATCH_TOTAL
+        )
         self.terminal_v_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH_TOTAL)
         self.returns_buf = ctx.enqueue_create_buffer[dtype](Self.BATCH_TOTAL)
         self.mean_buf = ctx.enqueue_create_buffer[dtype](Self.MEAN_STD_TOTAL)
@@ -546,9 +535,7 @@ struct MPPIGPUBatched[
         self.env_prev_means = List[List[Float64]](capacity=Self.N_ENVS)
         self.env_t0_flags = List[Bool](capacity=Self.N_ENVS)
         for _ in range(Self.N_ENVS):
-            self.env_prev_means.append(
-                List[Float64](length=ms, fill=0.0)
-            )
+            self.env_prev_means.append(List[Float64](length=ms, fill=0.0))
             self.env_t0_flags.append(True)
 
     def start_episode(mut self, env_idx: Int):
@@ -558,7 +545,9 @@ struct MPPIGPUBatched[
             return
         self.env_t0_flags[env_idx] = True
 
-    def plan_gpu[CB: RolloutCallbackGPU](
+    def plan_gpu[
+        CB: RolloutCallbackGPU
+    ](
         mut self,
         ctx: DeviceContext,
         mut callback: CB,
@@ -596,9 +585,9 @@ struct MPPIGPUBatched[
                 # Shift previous mean by one step.
                 for t in range(Self.HORIZON - 1):
                     for a in range(Self.ACTION_DIM):
-                        self.mean_host[
-                            base + t * Self.ACTION_DIM + a
-                        ] = Scalar[dtype](
+                        self.mean_host[base + t * Self.ACTION_DIM + a] = Scalar[
+                            dtype
+                        ](
                             self.env_prev_means[env_idx][
                                 (t + 1) * Self.ACTION_DIM + a
                             ]
@@ -624,9 +613,7 @@ struct MPPIGPUBatched[
         ](self.act_step_buf.unsafe_ptr())
         var all_actions_tensor = LayoutTensor[
             dtype,
-            Layout.row_major(
-                Self.BATCH_TOTAL * Self.HORIZON * Self.ACTION_DIM
-            ),
+            Layout.row_major(Self.BATCH_TOTAL * Self.HORIZON * Self.ACTION_DIM),
             MutAnyOrigin,
         ](self.all_actions_buf.unsafe_ptr())
         var pol_action_tensor = LayoutTensor[
@@ -831,12 +818,8 @@ def _run_mppi_iteration[
         HORIZON,
         ACTION_DIM,  # POL_OUT = ACTION_DIM (only mean is passed)
     ]
-    comptime accum_reward = mppi_accum_reward_scalar_kernel[
-        dtype, BATCH_TOTAL
-    ]
-    comptime copy_z = mppi_copy_z_kernel[
-        dtype, BATCH_TOTAL, LATENT_DIM
-    ]
+    comptime accum_reward = mppi_accum_reward_scalar_kernel[dtype, BATCH_TOTAL]
+    comptime copy_z = mppi_copy_z_kernel[dtype, BATCH_TOTAL, LATENT_DIM]
 
     # ── Rebound views for the callback's trait methods ─────────
     # The compiler can't prove LATENT_DIM == CB.LATENT_DIM /
@@ -860,9 +843,7 @@ def _run_mppi_iteration[
         var step_seed = rng_seed + UInt32(t * BATCH_TOTAL * ACTION_DIM + 1)
 
         # 2a. Policy action (callback)
-        callback.policy_action_gpu[BATCH_TOTAL](
-            ctx, z_cb, pol_action_cb
-        )
+        callback.policy_action_gpu[BATCH_TOTAL](ctx, z_cb, pol_action_cb)
 
         # 2b. Sample actions (planner)
         ctx.enqueue_function[sample_actions](
@@ -916,9 +897,7 @@ def _run_mppi_iteration[
     )
 
     # 4. Add terminal value
-    comptime add_terminal = mppi_add_terminal_value_kernel[
-        dtype, BATCH_TOTAL
-    ]
+    comptime add_terminal = mppi_add_terminal_value_kernel[dtype, BATCH_TOTAL]
     ctx.enqueue_function[add_terminal](
         terminal_v_tensor,
         returns_tensor,

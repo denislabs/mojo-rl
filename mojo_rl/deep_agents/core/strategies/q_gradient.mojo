@@ -291,10 +291,11 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
             dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
         ](params.unsafe_ptr())
 
-        # Zero-length model state slice (LossGraph is stateless)
+        # Zero-length model state slice (LossGraph is stateless).
+        # Pointer is never read; reuse params buffer as placeholder.
         var model_state = LayoutTensor[
             dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](params.unsafe_ptr()))
 
         LossGraph.forward[BATCH](
             loss_in_t, loss_out_t, params_t, model_state, cache_t
@@ -451,10 +452,11 @@ struct AutodiffQGradient[LossOp: Model = MSELoss](QGradient):
             dtype, Layout.row_major(LossGraph.PARAM_SIZE), MutAnyOrigin
         ](params_ptr)
 
-        # Zero-length model state slice (LossGraph is stateless)
+        # Zero-length model state slice (LossGraph is stateless).
+        # Pointer is never read; reuse params_ptr as placeholder.
         var model_state = LayoutTensor[
             dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](params_ptr))
 
         LossGraph.forward_gpu[BATCH](
             ctx, loss_out_t, loss_in_t, params_t, model_state, cache_t, ws_buf

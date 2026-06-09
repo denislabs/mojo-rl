@@ -18,7 +18,7 @@ Param was made).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT, TPB
@@ -148,6 +148,128 @@ def _polyak_launch_gpu(
         op.param_ptr, tp.param_ptr, one_minus_tau, tau, n,
         grid_dim=n_blocks, block_dim=TPB,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Grouped (multi-tensor) polyak — NVIDIA only.
+#
+# `polyak_update` launches one `_polyak_kernel` per leaf (~3/critic →
+# ~6/update for twin target critics). Like the grouped Adam path, collapse
+# them into ONE launch: a 1-D grid over all elements where each thread maps its
+# flat index to (param, local) via the dense per-param offset table and
+# reconstructs the online/target pointers from device-resident address arrays.
+#
+# NVIDIA-only (host-captured device-address deref is invalid on Apple Metal —
+# see adam.mojo / tests/nn2/test_grouped_adam_prototype.mojo). Cached on
+# `OnlineTargetPair`; CPU + Apple keep the per-leaf `polyak_update`.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _grouped_polyak_kernel(
+    online_addrs: UnsafePointer[UInt64, MutAnyOrigin],
+    target_addrs: UnsafePointer[UInt64, MutAnyOrigin],
+    offs: UnsafePointer[Int32, MutAnyOrigin],
+    n_params: Int,
+    total: Int,
+    one_minus_tau: Scalar[DT],
+    tau: Scalar[DT],
+):
+    var flat = Int(global_idx.x)
+    if flat < total:
+        var p = 0
+        while p + 1 < n_params and Int(offs[p + 1]) <= flat:
+            p += 1
+        var local = flat - Int(offs[p])
+        var online = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=Int(online_addrs[p])
+        )
+        var target_net = UnsafePointer[Scalar[DT], MutAnyOrigin](
+            unsafe_from_address=Int(target_addrs[p])
+        )
+        target_net[local] = (
+            one_minus_tau * target_net[local] + tau * online[local]
+        )
+
+
+@fieldwise_init
+struct GroupedPolyakCache(Movable & ImplicitlyDestructible):
+    """Device-resident descriptor arrays for the grouped polyak launch, built
+    ONCE from an (online, target) model pair (params are stable per-Param
+    DeviceBuffers). `apply` launches one `_grouped_polyak_kernel`. NVIDIA only."""
+
+    var online_addrs: DeviceBuffer[DType.uint64]
+    var target_addrs: DeviceBuffer[DType.uint64]
+    var offs: DeviceBuffer[DType.int32]
+    var n_params: Int
+    var total: Int
+
+    @staticmethod
+    def build[target: StaticString, M: Module](
+        mut online: M, mut target_net: M, ctx: DeviceContext
+    ) raises -> Self:
+        var ops = named_params[target, M](online)
+        var tps = named_params[target, M](target_net)
+        if len(ops) != len(tps):
+            raise Error("GroupedPolyakCache: param count mismatch")
+        var oa = List[UInt64]()
+        var ta = List[UInt64]()
+        var offs_h = List[Int32]()
+        var running = 0
+        for i in range(len(ops)):
+            if ops[i].n_elems != tps[i].n_elems or ops[i].name != tps[i].name:
+                raise Error(
+                    "GroupedPolyakCache: param mismatch at index " + String(i)
+                )
+            oa.append(UInt64(Int(ops[i].param_ptr)))
+            ta.append(UInt64(Int(tps[i].param_ptr)))
+            offs_h.append(Int32(running))
+            running += ops[i].n_elems
+        var n = len(ops)
+        var cap = n if n > 0 else 1
+        var oad = ctx.enqueue_create_buffer[DType.uint64](cap)
+        var tad = ctx.enqueue_create_buffer[DType.uint64](cap)
+        var ofd = ctx.enqueue_create_buffer[DType.int32](cap)
+        var oah = ctx.enqueue_create_host_buffer[DType.uint64](cap)
+        var tah = ctx.enqueue_create_host_buffer[DType.uint64](cap)
+        var ofh = ctx.enqueue_create_host_buffer[DType.int32](cap)
+        ctx.synchronize()
+        for i in range(n):
+            oah.unsafe_ptr()[i] = oa[i]
+            tah.unsafe_ptr()[i] = ta[i]
+            ofh.unsafe_ptr()[i] = offs_h[i]
+        ctx.enqueue_copy(oad, oah)
+        ctx.enqueue_copy(tad, tah)
+        ctx.enqueue_copy(ofd, ofh)
+        return Self(
+            online_addrs=oad^,
+            target_addrs=tad^,
+            offs=ofd^,
+            n_params=n,
+            total=running,
+        )
+
+    def apply(
+        self, one_minus_tau: Scalar[DT], tau: Scalar[DT], ctx: DeviceContext
+    ) raises:
+        if self.n_params > 0:
+            var n_blocks = (self.total + TPB - 1) // TPB
+            ctx.enqueue_function[_grouped_polyak_kernel](
+                rebind[UnsafePointer[UInt64, MutAnyOrigin]](
+                    self.online_addrs.unsafe_ptr()
+                ),
+                rebind[UnsafePointer[UInt64, MutAnyOrigin]](
+                    self.target_addrs.unsafe_ptr()
+                ),
+                rebind[UnsafePointer[Int32, MutAnyOrigin]](
+                    self.offs.unsafe_ptr()
+                ),
+                self.n_params,
+                self.total,
+                one_minus_tau,
+                tau,
+                grid_dim=n_blocks,
+                block_dim=TPB,
+            )
 
 
 def hard_copy_params[

@@ -14,6 +14,7 @@ Both have CPU and GPU variants.
 """
 
 from std.math import sqrt
+from std.gpu import barrier
 from layout import LayoutTensor, Layout
 from ..gpu.constants import ws_cdof_offset
 from ..types import Model, Data, _max_one
@@ -1145,6 +1146,360 @@ def compute_subtree_com_gpu[
             state[env, stcom_off + b*3 + 2] = rebind[Scalar[DTYPE]](state[env, xi_off + b*3 + 2])
 
 
+# =============================================================================
+# CDOF — single body (shared by serial + flat-parallel). Each body is
+# independent: writes its own DOFs' cdof from FK state (parent xquat/xpos) +
+# subtree_com + qpos. No inter-body dependency → no level ordering needed.
+# =============================================================================
+
+
+@no_inline
+def cdof_body_gpu[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    body: Int,
+    num_joints: Int,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    """Compute one body's cdof (spatial motion axes for its DOFs).
+
+    Extracted verbatim from the per-body loop of compute_cdof_gpu so the serial
+    walk and the flat-parallel variant share identical arithmetic.
+    """
+    comptime cdof_idx = ws_cdof_offset()
+    var qpos_off = qpos_offset[NQ, NV]()
+    var xpos_off = xpos_offset[NQ, NV, NBODY]()
+    var xquat_off = xquat_offset[NQ, NV, NBODY]()
+    var stcom_off = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+    var body_off = model_body_offset(body)
+    var parent = Int(
+        rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
+    )
+
+    # Get parent's world orientation (worldbody=0 has identity)
+    var acc_qx = rebind[Scalar[DTYPE]](
+        state[env, xquat_off + parent * 4 + 0]
+    )
+    var acc_qy = rebind[Scalar[DTYPE]](
+        state[env, xquat_off + parent * 4 + 1]
+    )
+    var acc_qz = rebind[Scalar[DTYPE]](
+        state[env, xquat_off + parent * 4 + 2]
+    )
+    var acc_qw = rebind[Scalar[DTYPE]](
+        state[env, xquat_off + parent * 4 + 3]
+    )
+
+    # Apply body_quat: acc = parent_quat * body_quat
+    var bq_x = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_X])
+    var bq_y = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_Y])
+    var bq_z = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_Z])
+    var bq_w = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_W])
+    var pre_q = gpu_quat_mul(
+        acc_qx,
+        acc_qy,
+        acc_qz,
+        acc_qw,
+        bq_x,
+        bq_y,
+        bq_z,
+        bq_w,
+    )
+    acc_qx = pre_q[0]
+    acc_qy = pre_q[1]
+    acc_qz = pre_q[2]
+    acc_qw = pre_q[3]
+
+    # Reference point: subtree_com[rootid[body]] (MuJoCo convention)
+    var rootid = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_ROOTID]))
+    var ref_x = rebind[Scalar[DTYPE]](state[env, stcom_off + rootid * 3 + 0])
+    var ref_y = rebind[Scalar[DTYPE]](state[env, stcom_off + rootid * 3 + 1])
+    var ref_z = rebind[Scalar[DTYPE]](state[env, stcom_off + rootid * 3 + 2])
+
+    # Compute xpos_initial: xpos[parent] + R(xquat[parent]) * body_pos
+    # Use parent's FINAL orientation (data.xquat[parent]) to rotate body_pos.
+    # Do NOT use data.xpos[body] (xpos_final after off-center correction).
+    var body_pos_x = rebind[Scalar[DTYPE]](
+        model[0, body_off + BODY_IDX_POS_X]
+    )
+    var body_pos_y = rebind[Scalar[DTYPE]](
+        model[0, body_off + BODY_IDX_POS_Y]
+    )
+    var body_pos_z = rebind[Scalar[DTYPE]](
+        model[0, body_off + BODY_IDX_POS_Z]
+    )
+    var par_qx = rebind[Scalar[DTYPE]](
+        state[env, xquat_off + parent * 4 + 0]
+    )
+    var par_qy = rebind[Scalar[DTYPE]](
+        state[env, xquat_off + parent * 4 + 1]
+    )
+    var par_qz = rebind[Scalar[DTYPE]](
+        state[env, xquat_off + parent * 4 + 2]
+    )
+    var par_qw = rebind[Scalar[DTYPE]](
+        state[env, xquat_off + parent * 4 + 3]
+    )
+    var bpos_w = gpu_quat_rotate(
+        par_qx, par_qy, par_qz, par_qw, body_pos_x, body_pos_y, body_pos_z
+    )
+    # Running position — tracks xpos as joints are applied
+    var cx = (
+        rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
+        + bpos_w[0]
+    )
+    var cy = (
+        rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
+        + bpos_w[1]
+    )
+    var cz = (
+        rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
+        + bpos_w[2]
+    )
+
+    # Process all joints for this body in order
+    for j in range(num_joints):
+        var joint_off = model_joint_offset[NBODY](j)
+        var joint_body = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
+        )
+        if joint_body != body:
+            continue
+
+        var jnt_type = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
+        )
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
+        )
+
+        if jnt_type == JNT_HINGE:
+            var axis_lx = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_X]
+            )
+            var axis_ly = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_Y]
+            )
+            var axis_lz = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_Z]
+            )
+            var jpos_lx = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_POS_X]
+            )
+            var jpos_ly = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_POS_Y]
+            )
+            var jpos_lz = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_POS_Z]
+            )
+
+            # Rotate axis using accumulated (pre-this-joint) orientation
+            var a_w = gpu_quat_rotate(
+                acc_qx,
+                acc_qy,
+                acc_qz,
+                acc_qw,
+                axis_lx,
+                axis_ly,
+                axis_lz,
+            )
+            var ax = a_w[0]
+            var ay = a_w[1]
+            var az = a_w[2]
+
+            # Joint anchor = running_xpos + rotate(jnt_pos, acc_quat)
+            var jp = gpu_quat_rotate(
+                acc_qx,
+                acc_qy,
+                acc_qz,
+                acc_qw,
+                jpos_lx,
+                jpos_ly,
+                jpos_lz,
+            )
+            var anc_x = cx + jp[0]
+            var anc_y = cy + jp[1]
+            var anc_z = cz + jp[2]
+
+            # offset = subtree_com[rootid] - joint_anchor (MuJoCo convention)
+            var ox = ref_x - anc_x
+            var oy = ref_y - anc_y
+            var oz = ref_z - anc_z
+
+            workspace[env, cdof_idx + dof_adr * 6 + 0] = ax
+            workspace[env, cdof_idx + dof_adr * 6 + 1] = ay
+            workspace[env, cdof_idx + dof_adr * 6 + 2] = az
+            workspace[env, cdof_idx + dof_adr * 6 + 3] = ay * oz - az * oy
+            workspace[env, cdof_idx + dof_adr * 6 + 4] = az * ox - ax * oz
+            workspace[env, cdof_idx + dof_adr * 6 + 5] = ax * oy - ay * ox
+
+            # Update accumulated orientation with hinge rotation
+            var qpos_adr_val = Int(
+                rebind[Scalar[DTYPE]](
+                    model[0, joint_off + JOINT_IDX_QPOS_ADR]
+                )
+            )
+            var qpos0_val = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_QPOS0]
+            )
+            var angle = (
+                rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr_val])
+                - qpos0_val
+            )
+            var hinge_q = gpu_axis_angle_to_quat(ax, ay, az, angle)
+            var new_q = gpu_quat_mul(
+                hinge_q[0],
+                hinge_q[1],
+                hinge_q[2],
+                hinge_q[3],
+                acc_qx,
+                acc_qy,
+                acc_qz,
+                acc_qw,
+            )
+            acc_qx = new_q[0]
+            acc_qy = new_q[1]
+            acc_qz = new_q[2]
+            acc_qw = new_q[3]
+
+            # Off-center correction: update running xpos
+            var vec = gpu_quat_rotate(
+                acc_qx, acc_qy, acc_qz, acc_qw, jpos_lx, jpos_ly, jpos_lz
+            )
+            cx = anc_x - vec[0]
+            cy = anc_y - vec[1]
+            cz = anc_z - vec[2]
+
+        elif jnt_type == JNT_SLIDE:
+            var axis_lx = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_X]
+            )
+            var axis_ly = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_Y]
+            )
+            var axis_lz = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_AXIS_Z]
+            )
+
+            # Rotate axis using accumulated orientation
+            var a_w = gpu_quat_rotate(
+                acc_qx,
+                acc_qy,
+                acc_qz,
+                acc_qw,
+                axis_lx,
+                axis_ly,
+                axis_lz,
+            )
+
+            workspace[env, cdof_idx + dof_adr * 6 + 3] = a_w[0]
+            workspace[env, cdof_idx + dof_adr * 6 + 4] = a_w[1]
+            workspace[env, cdof_idx + dof_adr * 6 + 5] = a_w[2]
+
+            # Slide: update running xpos by displacement
+            var qpos_adr_val2 = Int(
+                rebind[Scalar[DTYPE]](
+                    model[0, joint_off + JOINT_IDX_QPOS_ADR]
+                )
+            )
+            var qpos0_val2 = rebind[Scalar[DTYPE]](
+                model[0, joint_off + JOINT_IDX_QPOS0]
+            )
+            var disp = (
+                rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr_val2])
+                - qpos0_val2
+            )
+            cx += disp * a_w[0]
+            cy += disp * a_w[1]
+            cz += disp * a_w[2]
+
+        elif jnt_type == JNT_FREE:
+            # Translation DOFs: pure linear
+            workspace[env, cdof_idx + (dof_adr + 0) * 6 + 3] = Scalar[DTYPE](1)
+            workspace[env, cdof_idx + (dof_adr + 1) * 6 + 4] = Scalar[DTYPE](1)
+            workspace[env, cdof_idx + (dof_adr + 2) * 6 + 5] = Scalar[DTYPE](1)
+
+            # Rotation DOFs: body xmat columns + subtree_com offset
+            # (MuJoCo mj_comPos: axes = columns of xmat[body])
+            var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 0])
+            var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 1])
+            var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 2])
+            var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 3])
+            # xmat columns from quaternion
+            var ax0_x = Scalar[DTYPE](1) - Scalar[DTYPE](2)*(bqy*bqy + bqz*bqz)
+            var ax0_y = Scalar[DTYPE](2)*(bqx*bqy + bqw*bqz)
+            var ax0_z = Scalar[DTYPE](2)*(bqx*bqz - bqw*bqy)
+            var ax1_x = Scalar[DTYPE](2)*(bqx*bqy - bqw*bqz)
+            var ax1_y = Scalar[DTYPE](1) - Scalar[DTYPE](2)*(bqx*bqx + bqz*bqz)
+            var ax1_z = Scalar[DTYPE](2)*(bqy*bqz + bqw*bqx)
+            var ax2_x = Scalar[DTYPE](2)*(bqx*bqz + bqw*bqy)
+            var ax2_y = Scalar[DTYPE](2)*(bqy*bqz - bqw*bqx)
+            var ax2_z = Scalar[DTYPE](1) - Scalar[DTYPE](2)*(bqx*bqx + bqy*bqy)
+            # Offset: subtree_com[rootid] - xpos[body]
+            var f_xpos_x = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 0])
+            var f_xpos_y = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 1])
+            var f_xpos_z = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 2])
+            var f_off_x = ref_x - f_xpos_x
+            var f_off_y = ref_y - f_xpos_y
+            var f_off_z = ref_z - f_xpos_z
+            # DOF 3: body x-axis
+            workspace[env, cdof_idx + (dof_adr+3)*6 + 0] = ax0_x
+            workspace[env, cdof_idx + (dof_adr+3)*6 + 1] = ax0_y
+            workspace[env, cdof_idx + (dof_adr+3)*6 + 2] = ax0_z
+            workspace[env, cdof_idx + (dof_adr+3)*6 + 3] = ax0_y*f_off_z - ax0_z*f_off_y
+            workspace[env, cdof_idx + (dof_adr+3)*6 + 4] = ax0_z*f_off_x - ax0_x*f_off_z
+            workspace[env, cdof_idx + (dof_adr+3)*6 + 5] = ax0_x*f_off_y - ax0_y*f_off_x
+            # DOF 4: body y-axis
+            workspace[env, cdof_idx + (dof_adr+4)*6 + 0] = ax1_x
+            workspace[env, cdof_idx + (dof_adr+4)*6 + 1] = ax1_y
+            workspace[env, cdof_idx + (dof_adr+4)*6 + 2] = ax1_z
+            workspace[env, cdof_idx + (dof_adr+4)*6 + 3] = ax1_y*f_off_z - ax1_z*f_off_y
+            workspace[env, cdof_idx + (dof_adr+4)*6 + 4] = ax1_z*f_off_x - ax1_x*f_off_z
+            workspace[env, cdof_idx + (dof_adr+4)*6 + 5] = ax1_x*f_off_y - ax1_y*f_off_x
+            # DOF 5: body z-axis
+            workspace[env, cdof_idx + (dof_adr+5)*6 + 0] = ax2_x
+            workspace[env, cdof_idx + (dof_adr+5)*6 + 1] = ax2_y
+            workspace[env, cdof_idx + (dof_adr+5)*6 + 2] = ax2_z
+            workspace[env, cdof_idx + (dof_adr+5)*6 + 3] = ax2_y*f_off_z - ax2_z*f_off_y
+            workspace[env, cdof_idx + (dof_adr+5)*6 + 4] = ax2_z*f_off_x - ax2_x*f_off_z
+            workspace[env, cdof_idx + (dof_adr+5)*6 + 5] = ax2_x*f_off_y - ax2_y*f_off_x
+
+            # FREE joint sets orientation from qpos
+            var qpos_adr_val = Int(
+                rebind[Scalar[DTYPE]](
+                    model[0, joint_off + JOINT_IDX_QPOS_ADR]
+                )
+            )
+            acc_qx = rebind[Scalar[DTYPE]](
+                state[env, qpos_off + qpos_adr_val + 3]
+            )
+            acc_qy = rebind[Scalar[DTYPE]](
+                state[env, qpos_off + qpos_adr_val + 4]
+            )
+            acc_qz = rebind[Scalar[DTYPE]](
+                state[env, qpos_off + qpos_adr_val + 5]
+            )
+            acc_qw = rebind[Scalar[DTYPE]](
+                state[env, qpos_off + qpos_adr_val + 6]
+            )
+
+
 @always_inline
 def compute_cdof_gpu[
     DTYPE: DType,
@@ -1193,317 +1548,75 @@ def compute_cdof_gpu[
     # Process per-body, tracking accumulated orientation
     # Skip worldbody at 0 (no joints)
     for body in range(1, NBODY):
-        var body_off = model_body_offset(body)
-        var parent = Int(
-            rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_PARENT])
-        )
+        cdof_body_gpu[
+            DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, STATE_SIZE, MODEL_SIZE, BATCH, WS_SIZE
+        ](env, body, num_joints, state, model, workspace)
 
-        # Get parent's world orientation (worldbody=0 has identity)
-        var acc_qx = rebind[Scalar[DTYPE]](
-            state[env, xquat_off + parent * 4 + 0]
-        )
-        var acc_qy = rebind[Scalar[DTYPE]](
-            state[env, xquat_off + parent * 4 + 1]
-        )
-        var acc_qz = rebind[Scalar[DTYPE]](
-            state[env, xquat_off + parent * 4 + 2]
-        )
-        var acc_qw = rebind[Scalar[DTYPE]](
-            state[env, xquat_off + parent * 4 + 3]
-        )
 
-        # Apply body_quat: acc = parent_quat * body_quat
-        var bq_x = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_X])
-        var bq_y = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_Y])
-        var bq_z = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_Z])
-        var bq_w = rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_QUAT_W])
-        var pre_q = gpu_quat_mul(
-            acc_qx,
-            acc_qy,
-            acc_qz,
-            acc_qw,
-            bq_x,
-            bq_y,
-            bq_z,
-            bq_w,
-        )
-        acc_qx = pre_q[0]
-        acc_qy = pre_q[1]
-        acc_qz = pre_q[2]
-        acc_qw = pre_q[3]
+# =============================================================================
+# CDOF — flat-parallel (cooperative across STEP_THREADS; bodies independent)
+# =============================================================================
 
-        # Reference point: subtree_com[rootid[body]] (MuJoCo convention)
-        var rootid = Int(rebind[Scalar[DTYPE]](model[0, body_off + BODY_IDX_ROOTID]))
-        var ref_x = rebind[Scalar[DTYPE]](state[env, stcom_off + rootid * 3 + 0])
-        var ref_y = rebind[Scalar[DTYPE]](state[env, stcom_off + rootid * 3 + 1])
-        var ref_z = rebind[Scalar[DTYPE]](state[env, stcom_off + rootid * 3 + 2])
 
-        # Compute xpos_initial: xpos[parent] + R(xquat[parent]) * body_pos
-        # Use parent's FINAL orientation (data.xquat[parent]) to rotate body_pos.
-        # Do NOT use data.xpos[body] (xpos_final after off-center correction).
-        var body_pos_x = rebind[Scalar[DTYPE]](
-            model[0, body_off + BODY_IDX_POS_X]
-        )
-        var body_pos_y = rebind[Scalar[DTYPE]](
-            model[0, body_off + BODY_IDX_POS_Y]
-        )
-        var body_pos_z = rebind[Scalar[DTYPE]](
-            model[0, body_off + BODY_IDX_POS_Z]
-        )
-        var par_qx = rebind[Scalar[DTYPE]](
-            state[env, xquat_off + parent * 4 + 0]
-        )
-        var par_qy = rebind[Scalar[DTYPE]](
-            state[env, xquat_off + parent * 4 + 1]
-        )
-        var par_qz = rebind[Scalar[DTYPE]](
-            state[env, xquat_off + parent * 4 + 2]
-        )
-        var par_qw = rebind[Scalar[DTYPE]](
-            state[env, xquat_off + parent * 4 + 3]
-        )
-        var bpos_w = gpu_quat_rotate(
-            par_qx, par_qy, par_qz, par_qw, body_pos_x, body_pos_y, body_pos_z
-        )
-        # Running position — tracks xpos as joints are applied
-        var cx = (
-            rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 0])
-            + bpos_w[0]
-        )
-        var cy = (
-            rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 1])
-            + bpos_w[1]
-        )
-        var cz = (
-            rebind[Scalar[DTYPE]](state[env, xpos_off + parent * 3 + 2])
-            + bpos_w[2]
-        )
+@always_inline
+def compute_cdof_gpu_mt[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    STATE_SIZE: Int,
+    MODEL_SIZE: Int,
+    BATCH: Int,
+    WS_SIZE: Int,
+](
+    env: Int,
+    tid: Int,
+    n_threads: Int,
+    valid_env: Bool,
+    state: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
+    ],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin],
+    workspace: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, WS_SIZE), MutAnyOrigin
+    ],
+):
+    """Flat-parallel cdof: bodies are independent (each writes its own DOFs
+    from FK state), so threads just stripe over bodies — no level ordering.
+    Within float32 tolerance of compute_cdof_gpu. Barriers (after zero-init and
+    after the body sweep) are block-wide + unconditional → no deadlock; per-body
+    work guarded by valid_env.
+    """
+    comptime cdof_idx = ws_cdof_offset()
+    var model_meta_off = model_metadata_offset[NBODY, NJOINT]()
+    var num_joints = Int(
+        model[0, model_meta_off + MODEL_META_IDX_NJOINT]
+    )
 
-        # Process all joints for this body in order
-        for j in range(num_joints):
-            var joint_off = model_joint_offset[NBODY](j)
-            var joint_body = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_BODY_ID])
-            )
-            if joint_body != body:
-                continue
+    # Zero cdof (NV*6), distributed across threads.
+    if valid_env:
+        for i in range(tid, NV * 6, n_threads):
+            workspace[env, cdof_idx + i] = 0
+    barrier()
 
-            var jnt_type = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_TYPE])
-            )
-            var dof_adr = Int(
-                rebind[Scalar[DTYPE]](model[0, joint_off + JOINT_IDX_DOF_ADR])
-            )
-
-            if jnt_type == JNT_HINGE:
-                var axis_lx = rebind[Scalar[DTYPE]](
-                    model[0, joint_off + JOINT_IDX_AXIS_X]
-                )
-                var axis_ly = rebind[Scalar[DTYPE]](
-                    model[0, joint_off + JOINT_IDX_AXIS_Y]
-                )
-                var axis_lz = rebind[Scalar[DTYPE]](
-                    model[0, joint_off + JOINT_IDX_AXIS_Z]
-                )
-                var jpos_lx = rebind[Scalar[DTYPE]](
-                    model[0, joint_off + JOINT_IDX_POS_X]
-                )
-                var jpos_ly = rebind[Scalar[DTYPE]](
-                    model[0, joint_off + JOINT_IDX_POS_Y]
-                )
-                var jpos_lz = rebind[Scalar[DTYPE]](
-                    model[0, joint_off + JOINT_IDX_POS_Z]
-                )
-
-                # Rotate axis using accumulated (pre-this-joint) orientation
-                var a_w = gpu_quat_rotate(
-                    acc_qx,
-                    acc_qy,
-                    acc_qz,
-                    acc_qw,
-                    axis_lx,
-                    axis_ly,
-                    axis_lz,
-                )
-                var ax = a_w[0]
-                var ay = a_w[1]
-                var az = a_w[2]
-
-                # Joint anchor = running_xpos + rotate(jnt_pos, acc_quat)
-                var jp = gpu_quat_rotate(
-                    acc_qx,
-                    acc_qy,
-                    acc_qz,
-                    acc_qw,
-                    jpos_lx,
-                    jpos_ly,
-                    jpos_lz,
-                )
-                var anc_x = cx + jp[0]
-                var anc_y = cy + jp[1]
-                var anc_z = cz + jp[2]
-
-                # offset = subtree_com[rootid] - joint_anchor (MuJoCo convention)
-                var ox = ref_x - anc_x
-                var oy = ref_y - anc_y
-                var oz = ref_z - anc_z
-
-                workspace[env, cdof_idx + dof_adr * 6 + 0] = ax
-                workspace[env, cdof_idx + dof_adr * 6 + 1] = ay
-                workspace[env, cdof_idx + dof_adr * 6 + 2] = az
-                workspace[env, cdof_idx + dof_adr * 6 + 3] = ay * oz - az * oy
-                workspace[env, cdof_idx + dof_adr * 6 + 4] = az * ox - ax * oz
-                workspace[env, cdof_idx + dof_adr * 6 + 5] = ax * oy - ay * ox
-
-                # Update accumulated orientation with hinge rotation
-                var qpos_adr_val = Int(
-                    rebind[Scalar[DTYPE]](
-                        model[0, joint_off + JOINT_IDX_QPOS_ADR]
-                    )
-                )
-                var qpos0_val = rebind[Scalar[DTYPE]](
-                    model[0, joint_off + JOINT_IDX_QPOS0]
-                )
-                var angle = (
-                    rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr_val])
-                    - qpos0_val
-                )
-                var hinge_q = gpu_axis_angle_to_quat(ax, ay, az, angle)
-                var new_q = gpu_quat_mul(
-                    hinge_q[0],
-                    hinge_q[1],
-                    hinge_q[2],
-                    hinge_q[3],
-                    acc_qx,
-                    acc_qy,
-                    acc_qz,
-                    acc_qw,
-                )
-                acc_qx = new_q[0]
-                acc_qy = new_q[1]
-                acc_qz = new_q[2]
-                acc_qw = new_q[3]
-
-                # Off-center correction: update running xpos
-                var vec = gpu_quat_rotate(
-                    acc_qx, acc_qy, acc_qz, acc_qw, jpos_lx, jpos_ly, jpos_lz
-                )
-                cx = anc_x - vec[0]
-                cy = anc_y - vec[1]
-                cz = anc_z - vec[2]
-
-            elif jnt_type == JNT_SLIDE:
-                var axis_lx = rebind[Scalar[DTYPE]](
-                    model[0, joint_off + JOINT_IDX_AXIS_X]
-                )
-                var axis_ly = rebind[Scalar[DTYPE]](
-                    model[0, joint_off + JOINT_IDX_AXIS_Y]
-                )
-                var axis_lz = rebind[Scalar[DTYPE]](
-                    model[0, joint_off + JOINT_IDX_AXIS_Z]
-                )
-
-                # Rotate axis using accumulated orientation
-                var a_w = gpu_quat_rotate(
-                    acc_qx,
-                    acc_qy,
-                    acc_qz,
-                    acc_qw,
-                    axis_lx,
-                    axis_ly,
-                    axis_lz,
-                )
-
-                workspace[env, cdof_idx + dof_adr * 6 + 3] = a_w[0]
-                workspace[env, cdof_idx + dof_adr * 6 + 4] = a_w[1]
-                workspace[env, cdof_idx + dof_adr * 6 + 5] = a_w[2]
-
-                # Slide: update running xpos by displacement
-                var qpos_adr_val2 = Int(
-                    rebind[Scalar[DTYPE]](
-                        model[0, joint_off + JOINT_IDX_QPOS_ADR]
-                    )
-                )
-                var qpos0_val2 = rebind[Scalar[DTYPE]](
-                    model[0, joint_off + JOINT_IDX_QPOS0]
-                )
-                var disp = (
-                    rebind[Scalar[DTYPE]](state[env, qpos_off + qpos_adr_val2])
-                    - qpos0_val2
-                )
-                cx += disp * a_w[0]
-                cy += disp * a_w[1]
-                cz += disp * a_w[2]
-
-            elif jnt_type == JNT_FREE:
-                # Translation DOFs: pure linear
-                workspace[env, cdof_idx + (dof_adr + 0) * 6 + 3] = Scalar[DTYPE](1)
-                workspace[env, cdof_idx + (dof_adr + 1) * 6 + 4] = Scalar[DTYPE](1)
-                workspace[env, cdof_idx + (dof_adr + 2) * 6 + 5] = Scalar[DTYPE](1)
-
-                # Rotation DOFs: body xmat columns + subtree_com offset
-                # (MuJoCo mj_comPos: axes = columns of xmat[body])
-                var bqx = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 0])
-                var bqy = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 1])
-                var bqz = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 2])
-                var bqw = rebind[Scalar[DTYPE]](state[env, xquat_off + body * 4 + 3])
-                # xmat columns from quaternion
-                var ax0_x = Scalar[DTYPE](1) - Scalar[DTYPE](2)*(bqy*bqy + bqz*bqz)
-                var ax0_y = Scalar[DTYPE](2)*(bqx*bqy + bqw*bqz)
-                var ax0_z = Scalar[DTYPE](2)*(bqx*bqz - bqw*bqy)
-                var ax1_x = Scalar[DTYPE](2)*(bqx*bqy - bqw*bqz)
-                var ax1_y = Scalar[DTYPE](1) - Scalar[DTYPE](2)*(bqx*bqx + bqz*bqz)
-                var ax1_z = Scalar[DTYPE](2)*(bqy*bqz + bqw*bqx)
-                var ax2_x = Scalar[DTYPE](2)*(bqx*bqz + bqw*bqy)
-                var ax2_y = Scalar[DTYPE](2)*(bqy*bqz - bqw*bqx)
-                var ax2_z = Scalar[DTYPE](1) - Scalar[DTYPE](2)*(bqx*bqx + bqy*bqy)
-                # Offset: subtree_com[rootid] - xpos[body]
-                var f_xpos_x = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 0])
-                var f_xpos_y = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 1])
-                var f_xpos_z = rebind[Scalar[DTYPE]](state[env, xpos_off + body * 3 + 2])
-                var f_off_x = ref_x - f_xpos_x
-                var f_off_y = ref_y - f_xpos_y
-                var f_off_z = ref_z - f_xpos_z
-                # DOF 3: body x-axis
-                workspace[env, cdof_idx + (dof_adr+3)*6 + 0] = ax0_x
-                workspace[env, cdof_idx + (dof_adr+3)*6 + 1] = ax0_y
-                workspace[env, cdof_idx + (dof_adr+3)*6 + 2] = ax0_z
-                workspace[env, cdof_idx + (dof_adr+3)*6 + 3] = ax0_y*f_off_z - ax0_z*f_off_y
-                workspace[env, cdof_idx + (dof_adr+3)*6 + 4] = ax0_z*f_off_x - ax0_x*f_off_z
-                workspace[env, cdof_idx + (dof_adr+3)*6 + 5] = ax0_x*f_off_y - ax0_y*f_off_x
-                # DOF 4: body y-axis
-                workspace[env, cdof_idx + (dof_adr+4)*6 + 0] = ax1_x
-                workspace[env, cdof_idx + (dof_adr+4)*6 + 1] = ax1_y
-                workspace[env, cdof_idx + (dof_adr+4)*6 + 2] = ax1_z
-                workspace[env, cdof_idx + (dof_adr+4)*6 + 3] = ax1_y*f_off_z - ax1_z*f_off_y
-                workspace[env, cdof_idx + (dof_adr+4)*6 + 4] = ax1_z*f_off_x - ax1_x*f_off_z
-                workspace[env, cdof_idx + (dof_adr+4)*6 + 5] = ax1_x*f_off_y - ax1_y*f_off_x
-                # DOF 5: body z-axis
-                workspace[env, cdof_idx + (dof_adr+5)*6 + 0] = ax2_x
-                workspace[env, cdof_idx + (dof_adr+5)*6 + 1] = ax2_y
-                workspace[env, cdof_idx + (dof_adr+5)*6 + 2] = ax2_z
-                workspace[env, cdof_idx + (dof_adr+5)*6 + 3] = ax2_y*f_off_z - ax2_z*f_off_y
-                workspace[env, cdof_idx + (dof_adr+5)*6 + 4] = ax2_z*f_off_x - ax2_x*f_off_z
-                workspace[env, cdof_idx + (dof_adr+5)*6 + 5] = ax2_x*f_off_y - ax2_y*f_off_x
-
-                # FREE joint sets orientation from qpos
-                var qpos_adr_val = Int(
-                    rebind[Scalar[DTYPE]](
-                        model[0, joint_off + JOINT_IDX_QPOS_ADR]
-                    )
-                )
-                acc_qx = rebind[Scalar[DTYPE]](
-                    state[env, qpos_off + qpos_adr_val + 3]
-                )
-                acc_qy = rebind[Scalar[DTYPE]](
-                    state[env, qpos_off + qpos_adr_val + 4]
-                )
-                acc_qz = rebind[Scalar[DTYPE]](
-                    state[env, qpos_off + qpos_adr_val + 5]
-                )
-                acc_qw = rebind[Scalar[DTYPE]](
-                    state[env, qpos_off + qpos_adr_val + 6]
-                )
+    # Per-body, independent → stripe across threads, no per-body barrier.
+    if valid_env:
+        for body in range(1 + tid, NBODY, n_threads):
+            cdof_body_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, body, num_joints, state, model, workspace)
+    barrier()
 
 
 @always_inline

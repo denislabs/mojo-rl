@@ -43,6 +43,7 @@ struct TwinCriticStep[
     def step[
         target: StaticString,
         POLICY: AMPPolicy = NoAMP,
+        ACCUMULATE: Bool = False,
     ](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
@@ -56,18 +57,18 @@ struct TwinCriticStep[
         )
         # PER hook: when state.has_per is set, forward IS weights into the
         # update and capture per-sample signed TD residuals. When unset,
-        # both pointers stay null and the inner block falls back to the
+        # both pointers stay None and the inner block falls back to the
         # uniform path (bit-identical to pre-PER).
-        var weights_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        var td_res_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
+        var weights_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None
+        var td_res_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None
         if state.has_per:
             weights_p = state.mb_w.target_ptr[target]()
             td_res_p  = state.td_residuals.target_ptr[target]()
-        var loss = self.inner.step[target, POLICY](
+        var loss = self.inner.step[target, POLICY, ACCUMULATE](
             critic1, critic1_opt, critic2, critic2_opt,
             state.mb_s.target_ptr[target](),
             state.mb_a.target_ptr[target](),
@@ -75,4 +76,7 @@ struct TwinCriticStep[
             weights_p=weights_p,
             td_residuals_p=td_res_p,
         )
+        # With ACCUMULATE (GPU) the per-batch loss is reduced on-device into
+        # the critics' accumulators; `loss` is a 0 sentinel here and the
+        # real metric is read at flush. Otherwise `loss` is the live scalar.
         state.critic_loss = loss

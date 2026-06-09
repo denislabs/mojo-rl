@@ -1054,10 +1054,11 @@ struct GenericOnPolicyAgent[
                             MutAnyOrigin,
                         ](loss_params_arr.unsafe_ptr())
 
-                        # Zero-length model state slice (LossGraph is stateless)
+                        # Zero-length model state slice (LossGraph is stateless).
+                        # Pointer is never read; reuse params buffer as placeholder.
                         var loss_state_t = LayoutTensor[
                             dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
-                        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+                        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](loss_params_arr.unsafe_ptr()))
 
                         LossGraph.forward[1](
                             loss_in_t,
@@ -2090,10 +2091,11 @@ struct GenericOnPolicyAgent[
                         MutAnyOrigin,
                     ](loss_params_ptr)
 
-                    # Zero-length model state slice (LossGraph is stateless)
+                    # Zero-length model state slice (LossGraph is stateless).
+                    # Pointer is never read; reuse params buffer as placeholder.
                     var loss_state_t = LayoutTensor[
                         dtype, Layout.row_major(LossGraph.STATE_SIZE), MutAnyOrigin
-                    ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+                    ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](loss_params_ptr))
 
                     LossGraph.forward_gpu[MINIBATCH](
                         ctx,

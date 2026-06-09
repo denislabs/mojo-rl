@@ -1920,10 +1920,11 @@ struct REDQOFEAgent[
         ](gpu_state.phi_sa_target.unsafe_ptr())
 
         # --- 3. Forward all N target critics on phi_sa_target — stacked output ---
-        # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
+        # Zero-length model state for critics (GPUCriticGroup has no model_state_view).
+        # Pointer is never read; reuse phi_sa_target buffer as placeholder.
         var s_critic = LayoutTensor[
             dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](gpu_state.phi_sa_target.unsafe_ptr()))
         for n in range(Self.N_ENS):
             var p_t = gpu_state.critics.target_params_view(n)
             var slice_t = LayoutTensor[
@@ -2255,10 +2256,11 @@ struct REDQOFEAgent[
             dtype, BS, Self.PHI_SA
         ]
 
-        # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
+        # Zero-length model state for critics (GPUCriticGroup has no model_state_view).
+        # Pointer is never read; reuse a valid existing param tensor pointer.
         var s_critic2 = LayoutTensor[
             dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](gpu_state.d_ci_sum.unsafe_ptr()))
         for n in range(Self.N_ENS):
             var p_o = gpu_state.critics.online_params_view(n)
             var g_o = gpu_state.critics.online_grads_view(n)

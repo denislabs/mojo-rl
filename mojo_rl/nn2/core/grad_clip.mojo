@@ -46,6 +46,7 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor
 
 from ..constants import DT, TPB
+from .module import mptr
 from .module import Module
 from .param_visitor import ParamVisitor
 
@@ -71,7 +72,7 @@ struct _GradSumSqVisitorCPU(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var g_ptr = mptr(grad.ptr)
         for i in range(n_elems):
             var g = g_ptr[i]
             self.sum_sq += g * g
@@ -93,7 +94,7 @@ struct _GradScaleVisitorCPU(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var g_ptr = mptr(grad.ptr)
         for i in range(n_elems):
             g_ptr[i] = g_ptr[i] * self.scale
 
@@ -219,7 +220,7 @@ struct _GradSumSqVisitorGPU(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var g_ptr = mptr(grad.ptr)
         self.ctx.enqueue_function[_sum_sq_partial_kernel](
             g_ptr, self.partials, self.slot, n_elems,
             grid_dim=1, block_dim=GC_TPB,
@@ -244,7 +245,7 @@ struct _GradScaleVisitorGPU(ParamVisitor):
         n_elems: Int,
         apply_decay: Bool,
     ) raises:
-        var g_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var g_ptr = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_grad_scale_kernel](
             g_ptr, self.scale_buf, n_elems,

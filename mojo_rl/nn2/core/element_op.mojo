@@ -53,3 +53,9 @@ trait ElementOp(Movable & ImplicitlyDestructible):
     @staticmethod
     def backward_simd[W: Int](c: SIMD[DT, W], go: SIMD[DT, W]) -> SIMD[DT, W]:
         ...
+
+    @staticmethod
+    def display_label() -> String:
+        """Display name surfaced by `Elementwise.display_label` for graph
+        exporters. Default generic; activation ops override (e.g. "GELU")."""
+        return String("act")

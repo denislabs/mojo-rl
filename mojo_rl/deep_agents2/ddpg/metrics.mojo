@@ -1,7 +1,14 @@
 """DDPGMetrics — per-train-step bundle for the DDPG trainer.
 
+Learning diagnostics mirror the SAC bundle (CPU-only diag walk):
+  * `mean_q`      — mean Q(s, a) over the minibatch (critic forward,
+                    reads `critic_blk.inner._mb_q`)
+  * `mean_target` — mean TD target y over the minibatch (`state.mb_y`)
+  * `mean_reward` — mean reward of the minibatch (`state.mb_r`)
+
 `train_steps` is the cumulative count of trainer updates (NOT reset on
-flush); `n_updates` is per-chunk."""
+flush); `n_updates` is per-chunk. On the (unreachable today) GPU train
+path the three diagnostics read 0.0 — same convention as DQN/C51/PPO."""
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.metric import LogScalar
@@ -11,5 +18,8 @@ from mojo_rl.nn2.core.metric import LogScalar
 struct DDPGMetrics(Copyable, Movable, ImplicitlyDestructible):
     var actor_loss:  LogScalar[DT]
     var critic_loss: LogScalar[DT]
+    var mean_q:      LogScalar[DT]
+    var mean_target: LogScalar[DT]
+    var mean_reward: LogScalar[DT]
     var train_steps: LogScalar[DT]
     var n_updates:   LogScalar[DT]

@@ -58,6 +58,7 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     & GPUTwoPlayerDiscreteEnv
     & RenderableEnv
     & Saveable
+    & Defaultable
 ):
     """TicTacToe environment — CPU+GPU dual path.
 

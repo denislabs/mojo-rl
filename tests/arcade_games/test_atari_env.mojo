@@ -11,9 +11,9 @@ def test_ram_mode() raises:
     print("Test: AtariEnv RAM mode...")
 
     var rom = load_rom(
-        "/Users/denislaboureyras/opt/anaconda3/lib/python3.9/site-packages/ale_py/roms/pong.bin"
+        "roms/pong.bin"
     )
-    var env = AtariEnv[PongDef, 0](rom.data, rom.size)
+    var env = AtariEnv[PongDef, 0](rom.data.value(), rom.size)
 
     # Check obs dimension
     assert_equal(env.obs_dim(), RAM_SIZE, "obs_dim should be 128")
@@ -59,9 +59,9 @@ def test_pixel_mode() raises:
     print("Test: AtariEnv pixel mode...")
 
     var rom = load_rom(
-        "/Users/denislaboureyras/opt/anaconda3/lib/python3.9/site-packages/ale_py/roms/pong.bin"
+        "roms/pong.bin"
     )
-    var env = AtariEnv[PongDef, 1](rom.data, rom.size)
+    var env = AtariEnv[PongDef, 1](rom.data.value(), rom.size)
 
     comptime EXPECTED_DIM: Int = 4 * OBS_WIDTH * OBS_HEIGHT  # 28224
 
@@ -112,9 +112,9 @@ def test_trait_conformance() raises:
     print("Test: BoxDiscreteActionEnv conformance...")
 
     var rom = load_rom(
-        "/Users/denislaboureyras/opt/anaconda3/lib/python3.9/site-packages/ale_py/roms/pong.bin"
+        "roms/pong.bin"
     )
-    var env = AtariEnv[PongDef, 0](rom.data, rom.size)
+    var env = AtariEnv[PongDef, 0](rom.data.value(), rom.size)
 
     # These are the BoxDiscreteActionEnv methods
     _ = env.reset_obs_list()  # ContinuousStateEnv

@@ -17,7 +17,18 @@ Read flow:
     buf.free()
 """
 
-from std.memory import alloc
+from std.memory import alloc, UnsafePointer
+
+
+@always_inline
+def _null_ptr[T: AnyType, O: Origin]() -> UnsafePointer[T, O]:
+    """NULL UnsafePointer for HDF5 FFI "optional output" args.
+
+    Mojo nightly's comptime `unsafe_from_address=0` literal is rejected;
+    the runtime-Int overload still accepts 0 to produce a real NULL.
+    """
+    var addr: Int = 0
+    return UnsafePointer[T, O](unsafe_from_address=addr)
 
 
 struct H5File(Movable):
@@ -96,10 +107,11 @@ struct H5Dataset(Movable):
         var dims_buf = alloc[hsize_t](ndims)
         for i in range(ndims):
             dims_buf[i] = 0
+        # HDF5 maxdims arg can be NULL ("don't return maxdims").
         _ = h5s_get_simple_extent_dims(
             space_id,
             dims_buf,
-            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
+            _null_ptr[hsize_t, MutAnyOrigin](),
         )
         _ = h5s_close(space_id)
 
@@ -213,14 +225,21 @@ struct H5Dataset(Movable):
             count_arr.free()
             raise Error("H5Dget_space failed")
 
+        var stride_unit = alloc[hsize_t](ndims)
+        var block_unit = alloc[hsize_t](ndims)
+        for i in range(ndims):
+            stride_unit[i] = hsize_t(1)  # contiguous
+            block_unit[i] = hsize_t(1)   # unit blocks
         var sel_ret = h5s_select_hyperslab(
             file_space,
             H5S_SELECT_SET,
             start_arr,
-            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
+            stride_unit,
             count_arr,
-            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
+            block_unit,
         )
+        stride_unit.free()
+        block_unit.free()
         if sel_ret < 0:
             _ = h5s_close(file_space)
             start_arr.free()
@@ -230,7 +249,7 @@ struct H5Dataset(Movable):
         var mem_space = h5s_create_simple(
             c_int(ndims),
             count_arr,
-            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
+            count_arr,  # maxdims = dims (semantic: same as dims)
         )
         if mem_space < 0:
             _ = h5s_close(file_space)
@@ -336,7 +355,7 @@ struct H5Dataset(Movable):
         var mem_space = h5s_create_simple(
             c_int(ndims),
             mem_dims,
-            UnsafePointer[hsize_t, MutAnyOrigin](unsafe_from_address=0),
+            mem_dims,  # maxdims = dims (semantic: same as dims)
         )
         if mem_space < 0:
             _ = h5s_close(file_space)

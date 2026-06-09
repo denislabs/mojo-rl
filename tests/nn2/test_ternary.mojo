@@ -6,6 +6,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.primitives.concat import Concat
 from mojo_rl.nn2.primitives.add import Add
 from mojo_rl.nn2.initializer import Kaiming
@@ -39,7 +40,9 @@ def test_concat_forward_backward() raises:
     var i1_t = TileTensor(i1_p, row_major[BATCH, D0]())
     var i2_t = TileTensor(i2_p, row_major[BATCH, D0]())
     var o_t  = TileTensor(o_p,  row_major[BATCH, OUT]())
-    c.forward["cpu", BATCH](i0_t, i1_t, i2_t, output=o_t)
+    c.forward["cpu", BATCH](
+            TensorPack[3].of(i0_t, i1_t, i2_t), output=o_t,
+        )
 
     for b in range(BATCH):
         for d in range(D0):
@@ -61,7 +64,7 @@ def test_concat_forward_backward() raises:
     var gi0_t = TileTensor(gi0_p, row_major[BATCH, D0]())
     var gi1_t = TileTensor(gi1_p, row_major[BATCH, D0]())
     var gi2_t = TileTensor(gi2_p, row_major[BATCH, D0]())
-    c.vjp["cpu", BATCH](go_t, gi0_t, gi1_t, gi2_t)
+    c.vjp["cpu", BATCH](go_t, TensorPack[3].of(gi0_t, gi1_t, gi2_t))
 
     for b in range(BATCH):
         for d in range(D0):
@@ -98,7 +101,9 @@ def test_fused_add_forward_backward() raises:
     var i1_t = TileTensor(i1_p, row_major[BATCH, DIM]())
     var i2_t = TileTensor(i2_p, row_major[BATCH, DIM]())
     var o_t  = TileTensor(o_p,  row_major[BATCH, DIM]())
-    a.forward["cpu", BATCH](i0_t, i1_t, i2_t, output=o_t)
+    a.forward["cpu", BATCH](
+            TensorPack[3].of(i0_t, i1_t, i2_t), output=o_t,
+        )
     for k in range(BATCH * DIM):
         var expected = i0_p[k] + i1_p[k] + i2_p[k]
         assert_true(fabs(o_p[k] - expected) < 1e-6, "fused add mismatch")
@@ -113,7 +118,7 @@ def test_fused_add_forward_backward() raises:
     var gi0_t = TileTensor(gi0_p, row_major[BATCH, DIM]())
     var gi1_t = TileTensor(gi1_p, row_major[BATCH, DIM]())
     var gi2_t = TileTensor(gi2_p, row_major[BATCH, DIM]())
-    a.vjp["cpu", BATCH](go_t, gi0_t, gi1_t, gi2_t)
+    a.vjp["cpu", BATCH](go_t, TensorPack[3].of(gi0_t, gi1_t, gi2_t))
 
     for k in range(BATCH * DIM):
         assert_true(fabs(gi0_p[k] - go_p[k]) < 1e-6)

@@ -17,6 +17,10 @@ struct BinarySubOp(BinaryElementOp):
     comptime owns_cache = False
 
     @staticmethod
+    def display_label() -> String:
+        return String("Sub")
+
+    @staticmethod
     def forward_scalar(x: Scalar[DT], y: Scalar[DT]) -> Scalar[DT]:
         return x - y
 

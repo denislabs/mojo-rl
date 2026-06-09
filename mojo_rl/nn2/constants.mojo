@@ -26,3 +26,11 @@ comptime DT = DType.float32
 comptime CPU_SIMD_W = simd_width_of[DT]()
 comptime TPB = 128
 comptime TPB_REDUCE = 64
+
+# A/B toggle for the grouped multi-tensor GPU optimizer (Adam step + zero_grad
+# + polyak). When True (default), NVIDIA collapses the per-tensor/per-leaf
+# launches into one grouped launch per optimizer/critic-pair; when False, the
+# per-tensor path is used even on NVIDIA. No effect on CPU/Apple (always
+# per-tensor — Metal can't deref host-captured device addresses in-kernel).
+# Flip to False + rebuild to A/B the grouped path on NVIDIA.
+comptime USE_GROUPED_GPU_OPTIMIZER = True

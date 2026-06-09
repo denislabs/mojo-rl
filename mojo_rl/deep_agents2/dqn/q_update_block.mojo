@@ -29,6 +29,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.nn2.core.scratch import Scratch
@@ -160,12 +161,10 @@ struct DQNQUpdateBlock[
         mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        weights_p: UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
-        td_residuals_p: UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
+        weights_p: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+        td_residuals_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None,
     ) raises -> Scalar[DT]:
         """Run zero_grad → Q.forward → gather → MSE forward+vjp → (PER hooks)
         → scatter → Q.vjp → opt.step. Returns scalar loss.
@@ -204,7 +203,7 @@ struct DQNQUpdateBlock[
         )
         var q_gath_t = TileTensor(q_gath_p, row_major[Self.BATCH, 1]())
         self.gather_cols.forward[target, Self.BATCH, POLICY](
-            q_all_carrier, mb_a_carrier, output=q_gath_t,
+            TensorPack[2].of(q_all_carrier, mb_a_carrier), output=q_gath_t,
         )
 
         # 4. MSE(q_gath, y).
@@ -219,19 +218,20 @@ struct DQNQUpdateBlock[
 
         # 5a. PER residual capture (raw signed TD `Q − y = mb_grad_q · BATCH`),
         # taken BEFORE the IS-weight scaling below so priorities reflect
-        # error magnitude not weighted gradient. Null pointer → no capture.
-        if Int(td_residuals_p) != 0:
+        # error magnitude not weighted gradient. None → no capture.
+        if td_residuals_p:
+            var td_p = td_residuals_p.value()
             comptime if target == "cpu":
                 var scale = Scalar[DT](Self.BATCH)
                 for i in range(Self.BATCH):
-                    td_residuals_p[i] = grad_q_p[i] * scale
+                    td_p[i] = grad_q_p[i] * scale
             else:
                 var grad_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin,
                 ](grad_q_p)
                 var out_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-                ](td_residuals_p)
+                ](td_p)
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
                 comptime capture_kernel = _capture_td_residuals_kernel[
                     Self.BATCH,
@@ -242,18 +242,19 @@ struct DQNQUpdateBlock[
                     grid_dim=n_blocks, block_dim=TPB,
                 )
 
-        # 5b. PER IS-weight scaling. Null pointer → no scaling.
-        if Int(weights_p) != 0:
+        # 5b. PER IS-weight scaling. None → no scaling.
+        if weights_p:
+            var w_p = weights_p.value()
             comptime if target == "cpu":
                 for i in range(Self.BATCH):
-                    grad_q_p[i] = grad_q_p[i] * weights_p[i]
+                    grad_q_p[i] = grad_q_p[i] * w_p[i]
             else:
                 var grad_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin,
                 ](grad_q_p)
                 var w_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-                ](weights_p)
+                ](w_p)
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
                 comptime scale_kernel = _scale_grad_by_weights_kernel[
                     Self.BATCH,

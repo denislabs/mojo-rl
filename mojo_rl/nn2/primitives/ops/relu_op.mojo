@@ -21,6 +21,10 @@ struct ReLUOp(ElementOp):
     comptime owns_cache = False
 
     @staticmethod
+    def display_label() -> String:
+        return String("ReLU")
+
+    @staticmethod
     def forward_scalar(x: Scalar[DT]) -> Scalar[DT]:
         var zero: Scalar[DT] = 0.0
         return x if x > zero else zero

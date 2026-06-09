@@ -38,14 +38,13 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT, CPU_SIMD_W, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache, TensorPack
 from ..core.binary_element_op import BinaryElementOp
 from ..core.module import Module, typed_view, typed_view_mut
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
-    ensure_gpu_buffer,
 )
 
 
@@ -132,18 +131,20 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
     comptime IN0_DIM = Self.DIM
     comptime OUT_DIM = Self.DIM
 
+    @staticmethod
+    def display_label() -> String:
+        return Self.OP.display_label()
+
     var ts: TargetStorage
 
-    # Cache cluster (used only when Self.OP.owns_cache = True).
-    var cache: List[Scalar[DT]]
-    var cache_dev: Optional[DeviceBuffer[DT]]
-    var cache_dev_n: Int
+    # Cache (used only when Self.OP.owns_cache = True). S5 dynamic Cache
+    # role — one Tensor lazy-grown at forward; was List + Optional
+    # DeviceBuffer + capacity-Int.
+    var cache: Cache["be_cache"]
 
     def __init__(out self):
         self.ts = TargetStorage.make_uninit()
-        self.cache = List[Scalar[DT]]()
-        self.cache_dev = None
-        self.cache_dev_n = 0
+        self.cache = Cache["be_cache"]()
 
     @staticmethod
     def make[
@@ -161,13 +162,9 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
         comptime if target == "cpu":
             e.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("BinaryElementwise.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["BinaryElementwise.make[target='gpu']"](ctx)
             e.ts = TargetStorage.make_gpu(ctx_v)
-            comptime if Self.OP.owns_cache:
-                e.cache_dev = ctx_v.enqueue_create_buffer[DT](1)
-                e.cache_dev_n = 0
+            # cache is lazy (S5 Cache) — grown at forward via ensure_gpu.
         return e^
 
     # ------------------------------------------------------------------
@@ -181,10 +178,7 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -194,13 +188,14 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
 
         comptime if target == "cpu":
             comptime N = BATCH * Self.DIM
-            var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[0].ptr)
-            var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[1].ptr)
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            # is centralized in `of()`, not re-spelled per input here.
+            var i0_p = inputs.ptr[0]()
+            var i1_p = inputs.ptr[1]()
+            var o_p = output.ptr
 
             comptime if Self.OP.owns_cache:
-                ensure_cpu_buffer(self.cache, N)
-                var c_p = self.cache.unsafe_ptr()
+                self.cache.ensure_cpu(N)
+                var c_p = self.cache.cpu_ptr()
                 var k = 0
                 while k + CPU_SIMD_W <= N:
                     var xv = i0_p.load[width=CPU_SIMD_W](k)
@@ -227,20 +222,17 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
         else:
             comptime N = BATCH * Self.DIM
             comptime layout = Layout.row_major(N)
-            var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[0].ptr)
-            var i1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[1].ptr)
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
-            var i0_lt = LayoutTensor[DT, layout, MutAnyOrigin](i0_p)
-            var i1_lt = LayoutTensor[DT, layout, MutAnyOrigin](i1_p)
+            # the per-input `rebind` + manual `LayoutTensor` rebuild.
+            var i0_lt = inputs.lt[0, layout]()
+            var i1_lt = inputs.lt[1, layout]()
+            var o_p = output.ptr
             var o_lt = LayoutTensor[DT, layout, MutAnyOrigin](o_p)
             comptime n_blocks = (N + TPB - 1) // TPB
 
             comptime if Self.OP.owns_cache:
-                ensure_gpu_buffer(
-                    self.cache_dev, self.cache_dev_n, N, self.ts.ctx.value(),
-                )
+                self.cache.ensure_gpu(self.ts.ctx.value(), N)
                 var c_lt = LayoutTensor[DT, layout, MutAnyOrigin](
-                    self.cache_dev.value()
+                    self.cache.dev.value()
                 )
                 comptime kernel = _be_forward_kernel_cached[N, Self.OP]
                 self.ts.ctx.value().enqueue_function[kernel](
@@ -270,10 +262,7 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
@@ -282,12 +271,12 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
 
         comptime if target == "cpu":
             comptime N = BATCH * Self.DIM
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr)
-            var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr)
+            var go_p = grad_output.ptr
+            var gi0_p = grad_inputs.ptr[0]()
+            var gi1_p = grad_inputs.ptr[1]()
 
             comptime if Self.OP.owns_cache:
-                var c_p = self.cache.unsafe_ptr()
+                var c_p = self.cache.cpu_ptr()
                 var k = 0
                 while k + CPU_SIMD_W <= N:
                     var c = c_p.load[width=CPU_SIMD_W](k)
@@ -317,17 +306,15 @@ struct BinaryElementwise[DIM: Int, OP: BinaryElementOp](Module):
         else:
             comptime N = BATCH * Self.DIM
             comptime layout = Layout.row_major(N)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-            var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr)
-            var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[1].ptr)
+            var go_p = grad_output.ptr
             var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_p)
-            var gi0_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi0_p)
-            var gi1_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi1_p)
+            var gi0_lt = grad_inputs.lt[0, layout]()
+            var gi1_lt = grad_inputs.lt[1, layout]()
             comptime n_blocks = (N + TPB - 1) // TPB
 
             comptime if Self.OP.owns_cache:
                 var c_lt = LayoutTensor[DT, layout, MutAnyOrigin](
-                    self.cache_dev.value()
+                    self.cache.dev.value()
                 )
                 comptime kernel = _be_backward_kernel_cached[N, Self.OP]
                 self.ts.ctx.value().enqueue_function[kernel](

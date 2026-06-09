@@ -86,6 +86,22 @@ def test_c51_gpu() raises:
         assert_true(not isinf(mr), "C51 GPU mean_return Inf")
         assert_true(trainer.ep_count() > 0, "C51 GPU no episodes")
 
+        # Distributional device-diag fix: mean_q (expected Q from softmax) and
+        # dist_entropy (categorical entropy) read a hard 0.0 on GPU before the
+        # `_c51_diag_kernel` was wired. Entropy of a non-degenerate categorical
+        # is > 0; mean_q over CartPole returns is non-zero.
+        var dm = trainer.flush_metrics()
+        var dq = dm.mean_q.to_f64()
+        var dent = dm.dist_entropy.to_f64()
+        var drew = dm.mean_reward.to_f64()
+        print("  mean_q=", dq, " dist_entropy=", dent, " mean_reward=", drew)
+        assert_true(not isnan(dq) and not isinf(dq), "C51 GPU mean_q non-finite")
+        assert_true(
+            not isnan(dent) and not isinf(dent), "C51 GPU dist_entropy non-finite"
+        )
+        assert_true(dq != 0.0, "C51 GPU mean_q is 0 (diag kernel unwired?)")
+        assert_true(dent > 0.0, "C51 GPU dist_entropy should be > 0")
+
         var log = trainer.flush_train_log()
         print("  mean_loss=", log[0], " n_updates=", log[2])
         assert_true(not isnan(log[0]), "C51 GPU mean_loss NaN")

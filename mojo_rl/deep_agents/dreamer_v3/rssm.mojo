@@ -1054,10 +1054,11 @@ struct RSSM[
             MutAnyOrigin,
         ](combined.unsafe_ptr())
 
-        # Zero-length model state slice (HeadsGraph is stateless)
+        # Zero-length model state slice (HeadsGraph is stateless).
+        # Pointer is never read; reuse combined buffer as placeholder.
         var heads_state_t = LayoutTensor[
             dtype, Layout.row_major(Self.HeadsGraph.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](combined.unsafe_ptr()))
 
         Self.HeadsGraph.forward[BATCH](feat, output, params_t, heads_state_t, cache)
 
@@ -1118,11 +1119,12 @@ struct RSSM[
             MutAnyOrigin,
         ](combined_grads.unsafe_ptr())
 
-        # Backward: computes grad_feat + param grads for all heads
-        # Zero-length model state slice (HeadsGraph is stateless)
+        # Backward: computes grad_feat + param grads for all heads.
+        # Zero-length model state slice (HeadsGraph is stateless).
+        # Pointer is never read; reuse combined buffer as placeholder.
         var heads_state_t = LayoutTensor[
             dtype, Layout.row_major(Self.HeadsGraph.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](combined.unsafe_ptr()))
 
         Self.HeadsGraph.backward[BATCH](
             grad_output, grad_feat, params_t, heads_state_t, cache, grads_t
@@ -1174,10 +1176,11 @@ struct RSSM[
         Output layout: [obs_hat(OBS_DIM), rew_logits(NUM_BINS), cont_logit(1)]
         The cache must be preserved for the subsequent backward call.
         """
-        # Zero-length model state slice (HeadsGraph is stateless)
+        # Zero-length model state slice (HeadsGraph is stateless).
+        # Pointer is never read; reuse params tensor pointer as placeholder.
         var heads_state = LayoutTensor[
             dtype, Layout.row_major(Self.HeadsGraph.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](params.ptr))
 
         Self.HeadsGraph.forward_gpu[BATCH](
             ctx,
@@ -1221,10 +1224,11 @@ struct RSSM[
 
         Use HeadsCP.scatter_add_gpu to distribute grads to individual networks.
         """
-        # Zero-length model state slice (HeadsGraph is stateless)
+        # Zero-length model state slice (HeadsGraph is stateless).
+        # Pointer is never read; reuse params tensor pointer as placeholder.
         var heads_state = LayoutTensor[
             dtype, Layout.row_major(Self.HeadsGraph.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](params.ptr))
 
         Self.HeadsGraph.backward_gpu[BATCH](
             ctx,

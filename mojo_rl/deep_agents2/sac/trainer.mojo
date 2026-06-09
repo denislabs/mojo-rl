@@ -50,13 +50,17 @@ from mojo_rl.nn2.core import Module
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP, Bf16Compute
 from mojo_rl.nn2.core.checkpoint import (
     save_state_v2_body, load_state_v2_body,
+    save_state_v2_body_gpu, load_state_v2_body_gpu,
 )
 from mojo_rl.nn2.core.log_bundle import log_bundle
 from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.metric import LogScalar
 from ..core.checkpoint_helpers import (
     save_optimizer_v2_body, load_optimizer_v2_body,
+    save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
     save_scalar_adam_v2_body, load_scalar_adam_v2_body,
+    save_scalar_adam_v2_body_gpu, load_scalar_adam_v2_body_gpu,
+    save_counter_v2_body, load_counter_v2_body,
     split_lines_v2, read_file_v2, expect_v2_header,
 )
 from ..core.online_target_pair import OnlineTargetPair
@@ -66,12 +70,13 @@ from mojo_rl.nn2.initializer import Xavier
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.optimizer.scalar_adam import ScalarAdam
 from ..training.episode_tracker import EpisodeTracker
+from ..training.device_mean_accum import DeviceMeanAccum
 from .metrics import SACMetrics
 from mojo_rl.nn2.training.timer import Timer
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.blocks import SampleBlock, TwinCriticStep, PolyakStep
-from .blocks.target_y_step import TargetYStep
+from .target_y_block import TargetYBlock
 from .blocks.actor_step import SACActorStep
 from .blocks.alpha_update_step import AlphaUpdateStep
 
@@ -137,6 +142,40 @@ def _action_clamp_kernel[
     action_out[env, j] = a
 
 
+def _greedy_action_kernel[
+    N_ENVS: Int, ACT: Int
+](
+    ao: LayoutTensor[
+        DT,
+        Layout.row_major(N_ENVS, 2 * ACT),
+        MutAnyOrigin,
+    ],
+    action_out: LayoutTensor[
+        DT,
+        Layout.row_major(N_ENVS, ACT),
+        MutAnyOrigin,
+    ],
+    action_scale: Scalar[DT],
+):
+    """Greedy (deterministic) action: take the actor MEAN (the first ACT
+    lanes of the `[mu | log_std]` output), squash with tanh, scale, clamp.
+    No sampling — the eval counterpart of `_action_clamp_kernel` (which
+    clamps an already-sampled action). Used by `select_greedy_action_batched`.
+    """
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = N_ENVS * ACT
+    if i >= total:
+        return
+    var env = i // ACT
+    var j = i % ACT
+    var a = ftanh(ao[env, j]) * action_scale
+    if a > action_scale:
+        a = action_scale
+    elif a < -action_scale:
+        a = -action_scale
+    action_out[env, j] = a
+
+
 struct SACTrainer[
     train_target: StaticString,
     SAMPLE: SampleBlock,
@@ -181,12 +220,12 @@ struct SACTrainer[
     var alpha_opt: ScalarAdam
 
     var sample_blk: Self.SAMPLE
-    var target_y_blk: TargetYStep[
-        Self.OBS_DIM,
-        Self.ACT_DIM,
-        Self.BATCH,
+    var target_y_blk: TargetYBlock[
         Self.ACTOR,
         Self.CRITIC,
+        Self.BATCH,
+        Self.OBS_DIM,
+        Self.ACT_DIM,
     ]
     var twin_critic_blk: TwinCriticStep[
         Self.OBS_DIM,
@@ -230,12 +269,23 @@ struct SACTrainer[
     var _q_accum: Scalar[DT]
     var _target_accum: Scalar[DT]
     var _reward_accum: Scalar[DT]
+    var _next_q_accum: Scalar[DT]
     var _done_accum: Scalar[DT]
     var _abs_action_accum: Scalar[DT]
     var _update_count: Int
     # Never reset by `flush_*` — emitted as `train_steps` so the
     # downstream monitor can plot cumulative updates over time.
     var _total_train_steps: Int
+
+    # GPU-only device-resident mean accumulators for the per-batch diags
+    # (the CPU path uses the `_*_accum` host scalars above). Default-
+    # constructed on CPU (no device buffer); made on GPU in `make`.
+    var _q_mean_dev: DeviceMeanAccum
+    var _reward_mean_dev: DeviceMeanAccum
+    var _target_mean_dev: DeviceMeanAccum
+    var _next_q_mean_dev: DeviceMeanAccum
+    var _done_mean_dev: DeviceMeanAccum
+    var _abs_action_mean_dev: DeviceMeanAccum
 
     var timer: Timer
 
@@ -257,12 +307,12 @@ struct SACTrainer[
             eps=1e-8,
         )
         self.sample_blk = Self.SAMPLE()
-        self.target_y_blk = TargetYStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
+        self.target_y_blk = TargetYBlock[
             Self.ACTOR,
             Self.CRITIC,
+            Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
         ]()
         self.twin_critic_blk = TwinCriticStep[
             Self.OBS_DIM,
@@ -315,10 +365,17 @@ struct SACTrainer[
         self._q_accum = Scalar[DT](0.0)
         self._target_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
+        self._next_q_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
         self._abs_action_accum = Scalar[DT](0.0)
         self._update_count = 0
         self._total_train_steps = 0
+        self._q_mean_dev = DeviceMeanAccum()
+        self._reward_mean_dev = DeviceMeanAccum()
+        self._target_mean_dev = DeviceMeanAccum()
+        self._next_q_mean_dev = DeviceMeanAccum()
+        self._done_mean_dev = DeviceMeanAccum()
+        self._abs_action_mean_dev = DeviceMeanAccum()
         self.timer = Timer.new()
 
     @staticmethod
@@ -377,12 +434,12 @@ struct SACTrainer[
             t.pair2.online,
             ctx=ctx,
         )
-        t.target_y_blk = TargetYStep[
-            Self.OBS_DIM,
-            Self.ACT_DIM,
-            Self.BATCH,
+        t.target_y_blk = TargetYBlock[
             Self.ACTOR,
             Self.CRITIC,
+            Self.BATCH,
+            Self.OBS_DIM,
+            Self.ACT_DIM,
         ].make[Self.train_target](
             action_scale=action_scale,
             gamma=gamma,
@@ -415,7 +472,33 @@ struct SACTrainer[
         t.critic1_opt.max_grad_norm = max_grad_norm
         t.critic2_opt.lr = critic_lr
         t.critic2_opt.max_grad_norm = max_grad_norm
-        t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
+        # Slice 4b — on GPU the entropy temperature lives in a device buffer
+        # (state_dev) updated by a 1-thread kernel; on CPU it stays a host
+        # scalar (bit-identity path). `flog(init_alpha)` seeds log_α.
+        comptime if Self.train_target == "gpu":
+            t.alpha_opt = ScalarAdam.new_device(
+                ctx.value(), flog(init_alpha), alpha_lr,
+            )
+            # Device-resident mean accumulators for the GPU diag path.
+            t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._target_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._next_q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._done_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._abs_action_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+        else:
+            t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
+
+        # Slice 4d — one-time wiring of the device α buffer into both
+        # Scale nodes that consume α (target-y soft-V and actor-loss
+        # α·log_prob). After this, neither block bakes α as a per-step
+        # host scalar; both read it on-device, and the device ScalarAdam
+        # refreshes it each step. The pointer is into alpha_opt's device
+        # allocation (stable across the struct move on `return t^`).
+        comptime if Self.train_target == "gpu":
+            var alpha_p = t.alpha_opt.alpha_dev_ptr()
+            t.target_y_blk.set_alpha_ptr(alpha_p)
+            t.actor_blk.set_alpha_ptr(alpha_p)
 
         t.alpha_blk = AlphaUpdateStep[
             Self.OBS_DIM,
@@ -482,8 +565,12 @@ struct SACTrainer[
         target). All other blocks parametric on `[Self.train_target, POLICY]`."""
         self.state.step_idx = step_idx
         self.state.did_step = True
-        self.state.alpha = fexp(self.alpha_opt.value)
-        comptime if Self.train_target == "gpu":
+        # CPU bakes the host α scalar into the target-y / actor Scale nodes
+        # per step. On GPU α lives on-device (wired once at make) and is
+        # refreshed by the device ScalarAdam; `state.alpha` is unused there.
+        comptime if Self.train_target == "cpu":
+            self.state.alpha = fexp(self.alpha_opt.value)
+        else:
             self.state.ctx = self.ctx
 
         var t_sample = perf_counter_ns()
@@ -492,55 +579,14 @@ struct SACTrainer[
             return False
         self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
-        var t_ty = perf_counter_ns()
-        self.target_y_blk.step[Self.train_target, POLICY](
-            self.state,
-            self.actor,
-            self.pair1.target_net,
-            self.pair2.target_net,
-        )
-        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
+        # Post-sample kernel sequence (target_y → critic → actor → alpha →
+        # polyak → PER tail). Shared verbatim with the CUDA-graph capture
+        # path (`train_device_kernels`) so captured == non-captured kernels.
+        self._train_post_sample_kernels[POLICY]()
 
-        var t_crit = perf_counter_ns()
-        self.twin_critic_blk.step[Self.train_target, POLICY](
-            self.state,
-            self.pair1.online,
-            self.critic1_opt,
-            self.pair2.online,
-            self.critic2_opt,
-        )
-        self.timer.accumulate(Self._T_CRITIC, t_crit)
-
-        var t_act = perf_counter_ns()
-        self.actor_blk.step[Self.train_target, POLICY](
-            self.state,
-            self.actor,
-            self.actor_opt,
-            self.pair1.online,
-            self.pair2.online,
-        )
-        self.timer.accumulate(Self._T_ACTOR, t_act)
-
-        var t_alp = perf_counter_ns()
-        self.alpha_blk.step(self.state, self.alpha_opt)
-        self.timer.accumulate(Self._T_ALPHA, t_alp)
-
-        var t_pol = perf_counter_ns()
-        self.polyak_blk.step[Self.train_target](
-            self.state,
-            self.pair1,
-            self.pair2,
-        )
-        self.timer.accumulate(Self._T_POLYAK, t_pol)
-
-        # PER tail (no-op for uniform blocks).
-        self.sample_blk.update_priorities(self.state)
-
-        self._actor_L_accum += self.state.actor_loss
-        self._critic_L_accum += self.state.critic_loss
-        self._alpha_accum += fexp(self.alpha_opt.value)
-        self._update_count += 1
-        self._total_train_steps += 1
+        # Host bookkeeping (counters + metric accumulators). Shared with the
+        # capture path, where the driver calls it once per replayed update.
+        self.note_train_update()
 
         # Per-batch diagnostic means — matches the GPU-SAC legacy bundle
         # at offpolicy_agent.mojo:1958-1976. CPU-only: GPU train_target
@@ -562,15 +608,24 @@ struct SACTrainer[
             var d_p = self.state.mb_d.target_ptr["cpu"]()
             var a_p = self.state.mb_a.target_ptr["cpu"]()
             var q_p = self.twin_critic_blk.inner.c1._mb_q.target_ptr["cpu"]()
+            # `mean_next_q` reads the `min_q` intermediate of the target-y
+            # ComputeGraph — min(Q1_t, Q2_t)(s', a') over the batch, the
+            # value the TD bootstrap is built from (matches the legacy
+            # GPU-SAC bundle: min of the two target-critic next-Q's). The
+            # node output is stable after `target_y_blk.step`'s forward,
+            # which ran earlier this train_step.
+            var nq_p = self.target_y_blk.graph.node_out_ptr["min_q"]()
             var sum_y: Scalar[DT] = 0.0
             var sum_r: Scalar[DT] = 0.0
             var sum_d: Scalar[DT] = 0.0
             var sum_q: Scalar[DT] = 0.0
+            var sum_nq: Scalar[DT] = 0.0
             for i in range(Self.BATCH):
                 sum_y += y_p[i]
                 sum_r += r_p[i]
                 sum_d += d_p[i]
                 sum_q += q_p[i]
+                sum_nq += nq_p[i]
             var sum_a: Scalar[DT] = 0.0
             for i in range(Self.BATCH * Self.ACT_DIM):
                 var av = a_p[i]
@@ -578,12 +633,148 @@ struct SACTrainer[
             self._q_accum += sum_q * inv_b
             self._target_accum += sum_y * inv_b
             self._reward_accum += sum_r * inv_b
+            self._next_q_accum += sum_nq * inv_b
             self._done_accum += sum_d * inv_b
             self._abs_action_accum += sum_a * (
                 Scalar[DT](1.0) / Scalar[DT](Self.BATCH * Self.ACT_DIM)
             )
         self.timer.accumulate(Self._T_DIAG, t_diag)
         return True
+
+    # ─── Shared post-sample kernel sequence ───────────────────────────
+    #
+    # target_y → twin-critic (ACCUMULATE on GPU) → actor → alpha → polyak →
+    # PER tail. Called by BOTH `_train_step_impl` (non-captured) and
+    # `train_device_kernels` (the CUDA-graph capture closure body), so the
+    # two paths enqueue an identical kernel sequence — bit-identity by
+    # construction. The `perf_counter_ns` timers are host-only: harmless
+    # during a capture run (not a kernel, so not recorded) and simply
+    # don't fire on replay.
+    def _train_post_sample_kernels[
+        POLICY: AMPPolicy = NoAMP,
+    ](mut self) raises:
+        var t_ty = perf_counter_ns()
+        self.target_y_blk.step[Self.train_target, POLICY](
+            self.state,
+            self.actor,
+            self.pair1.target_net,
+            self.pair2.target_net,
+        )
+        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
+
+        var t_crit = perf_counter_ns()
+        # Slice 3 — on GPU, accumulate critic loss on-device (no per-step
+        # D2H); the metric is read at flush. CPU keeps the live-scalar path.
+        self.twin_critic_blk.step[
+            Self.train_target, POLICY, ACCUMULATE = Self.train_target == "gpu"
+        ](
+            self.state,
+            self.pair1.online,
+            self.critic1_opt,
+            self.pair2.online,
+            self.critic2_opt,
+        )
+        self.timer.accumulate(Self._T_CRITIC, t_crit)
+
+        # GPU per-batch diag (Q1 / reward / target / min_q / done / |action|)
+        # is NOT folded in here. Those six device reductions used to run every
+        # update — pure launch overhead on the eager path, and six extra nodes
+        # baked into the CUDA-graph capture. They are now taken as a single
+        # snapshot of the last update's device buffers inside `flush_metrics`
+        # (`_accumulate_diag_snapshot_gpu`), at the `diag_every` cadence only.
+        # The CPU path still sums the host scratches per step in
+        # `_train_step_impl` (cheap, no launch overhead). Critic/actor loss
+        # accumulators are untouched — they fold into the existing loss kernels
+        # (ACCUMULATE=True), so they cost no extra launch.
+
+        var t_act = perf_counter_ns()
+        self.actor_blk.step[Self.train_target, POLICY](
+            self.state,
+            self.actor,
+            self.actor_opt,
+            self.pair1.online,
+            self.pair2.online,
+        )
+        self.timer.accumulate(Self._T_ACTOR, t_act)
+
+        var t_alp = perf_counter_ns()
+        # CPU: host-scalar grad from state.log_prob_mean. GPU: the device
+        # ScalarAdam reads the actor-loss `lp_mean` device buffer directly
+        # (no D2H) and refreshes the device α the Scale nodes read.
+        comptime if Self.train_target == "cpu":
+            self.alpha_blk.step["cpu"](self.state, self.alpha_opt)
+        else:
+            self.alpha_blk.step["gpu"](
+                self.state,
+                self.alpha_opt,
+                self.actor_blk.lp_mean_dev_ptr(),
+                self.ctx,
+            )
+        self.timer.accumulate(Self._T_ALPHA, t_alp)
+
+        var t_pol = perf_counter_ns()
+        self.polyak_blk.step[Self.train_target](
+            self.state,
+            self.pair1,
+            self.pair2,
+        )
+        self.timer.accumulate(Self._T_POLYAK, t_pol)
+
+        # PER tail (no-op for uniform blocks).
+        self.sample_blk.update_priorities(self.state)
+
+    # ─── Host bookkeeping (counters + metric accumulators) ────────────
+    #
+    # One logical update's worth of host accounting. Called by
+    # `_train_step_impl` and — on the capture path — by the driver once per
+    # replayed update, so `_total_train_steps` / `n_updates` stay correct
+    # whether the device work ran directly or via graph replay. On GPU the
+    # loss/α accumulators are unused (flush reads device accumulators); the
+    # `+= state.actor_loss` etc. are harmless `+= 0` sentinels there.
+    def note_train_update(mut self):
+        self._actor_L_accum += self.state.actor_loss
+        self._critic_L_accum += self.state.critic_loss
+        comptime if Self.train_target == "cpu":
+            self._alpha_accum += fexp(self.alpha_opt.value)
+        self._update_count += 1
+        self._total_train_steps += 1
+
+    # ─── CUDA-graph capture surface (Slice 7) ─────────────────────────
+    #
+    # `train_device_kernels` is the pure device-kernel train step — sampling
+    # (device RNG → fresh minibatch each replay) + the shared post-sample
+    # sequence, with NO host gate, NO counters. It is the body of the
+    # capture closure passed to `maybe_capture_replay`. GPU-only; the caller
+    # gates on `learning_starts_count()` (buffer ready) and advances host
+    # counters via `note_train_update()`.
+    def _train_device_kernels_impl[
+        POLICY: AMPPolicy = NoAMP,
+    ](mut self) raises:
+        # The caller (driver) only invokes this once past warmup, when the
+        # replay buffer is ready. Pin `state.step_idx = learning_starts` so
+        # the sample block's `step_idx < learning_starts` warmup gate passes
+        # (this method has no step_idx of its own); the buffer-size gate is
+        # satisfied because the driver requires learning_starts >= BATCH for
+        # the capture path, and by then count == cumulative_step >= BATCH.
+        self.state.step_idx = self.learning_starts
+        self.state.did_step = True
+        self.state.ctx = self.ctx
+        self.sample_blk.step(self.state)
+        self._train_post_sample_kernels[POLICY]()
+
+    def train_device_kernels(mut self) raises:
+        comptime assert Self.train_target == "gpu", (
+            "train_device_kernels is GPU-only (CUDA-graph capture path)"
+        )
+        if self._use_bf16:
+            self._train_device_kernels_impl[Bf16Compute]()
+        else:
+            self._train_device_kernels_impl[NoAMP]()
+
+    def learning_starts_count(self) -> Int:
+        """Cumulative env-step threshold after which the replay buffer is
+        warm enough to train — the driver gates the capture path on this."""
+        return self.learning_starts
 
     def _record_impl(
         mut self,
@@ -611,40 +802,19 @@ struct SACTrainer[
     # `_record_impl` minus the tracker.add_reward call — without this,
     # batched mode would conflate rewards across all N envs into the
     # single-env tracker's `current_return`.
-    def record_batch_cpu[
-        N_ENVS: Int,
-    ](
+    def _replay_add(
         mut self,
-        prev_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        ref action: List[Scalar[DT]],
+        reward: Scalar[DT],
+        ref next_obs: List[Scalar[DT]],
+        done: Scalar[DT],
     ) raises:
-        comptime assert (
-            Self.train_target == "cpu"
-        ), "record_batch_cpu: trainer's train_target must be 'cpu'"
-        comptime OBS = Self.OBS_DIM
-        comptime ACT = Self.ACT_DIM
-        # Per-lane Lists for sample_blk.add (which takes List args).
-        # Re-using the same Lists across lanes avoids re-allocation.
-        var obs_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
-        var act_lane = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
-        var nxt_lane = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
-        for env_idx in range(N_ENVS):
-            for d in range(OBS):
-                obs_lane[d] = prev_obs_ptr[env_idx * OBS + d]
-                nxt_lane[d] = next_obs_ptr[env_idx * OBS + d]
-            for j in range(ACT):
-                act_lane[j] = action_ptr[env_idx * ACT + j]
-            self.sample_blk.add(
-                obs_lane,
-                act_lane,
-                reward_ptr[env_idx],
-                nxt_lane,
-                done_ptr[env_idx],
-                ctx=self.ctx,
-            )
+        # `record_batch_cpu`'s staging loop is the OffPolicyAgent trait
+        # default (S6 follow-on); this hook is the one trainer-specific line.
+        self.sample_blk.add(
+            obs, action, reward, next_obs, done, ctx=self.ctx,
+        )
 
     # ─── Direct-callable (host-list) surface ─────────────────────────
     #
@@ -744,6 +914,66 @@ struct SACTrainer[
             elif a < -self.action_scale:
                 a = -self.action_scale
             action_out[j] = a
+
+    # ─── select_greedy_action_batched — fast batched greedy override ──
+    #
+    # Overrides the OffPolicyAgent per-env default with ONE batched actor
+    # forward + a greedy extraction (mean → tanh → scale → clamp), mirroring
+    # `select_action_batched`'s policy branch minus the rsample. Pointer
+    # contract is target-side (host for CPU, device for GPU), same as
+    # `select_action_batched`. `ao_scratch_ptr` is N_ENVS*2*ACT actor-output
+    # scratch. Drives `run_offpolicy_eval_batched`'s GPU-parallel eval.
+    def select_greedy_action_batched[
+        N_ENVS: Int,
+    ](
+        mut self,
+        ctx: Optional[DeviceContext],
+        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        _ = ctx  # GPU path uses self.ctx (same context); kept for trait parity
+        comptime ACT = Self.ACT_DIM
+        comptime OBS = Self.OBS_DIM
+
+        var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
+        var ao_t = TileTensor(ao_scratch_ptr, row_major[N_ENVS, 2 * ACT]())
+        self.actor.forward[Self.train_target, N_ENVS](obs_t, output=ao_t)
+
+        comptime if Self.train_target == "cpu":
+            for env in range(N_ENVS):
+                var src = ao_scratch_ptr + env * (2 * ACT)
+                var dst = action_ptr + env * ACT
+                for j in range(ACT):
+                    var a = ftanh(src[j]) * self.action_scale
+                    if a > self.action_scale:
+                        a = self.action_scale
+                    elif a < -self.action_scale:
+                        a = -self.action_scale
+                    dst[j] = a
+        else:
+            var ao_lt = LayoutTensor[
+                DT,
+                Layout.row_major(N_ENVS, 2 * ACT),
+                MutAnyOrigin,
+            ](ao_scratch_ptr)
+            var action_lt = LayoutTensor[
+                DT,
+                Layout.row_major(N_ENVS, ACT),
+                MutAnyOrigin,
+            ](action_ptr)
+            comptime total = N_ENVS * ACT
+            comptime n_blocks = (total + TPB - 1) // TPB
+            comptime greedy_kernel = _greedy_action_kernel[N_ENVS, ACT]
+            var c = self.ctx.value()
+            c.enqueue_function[greedy_kernel](
+                ao_lt,
+                action_lt,
+                self.action_scale,
+                grid_dim=n_blocks,
+                block_dim=TPB,
+            )
 
     # ─── select_action_batched — single batched entry point ──────────
     #
@@ -932,11 +1162,14 @@ struct SACTrainer[
         )
         self.sample_blk.store_via_block_gpu[N_ENVS, NS](ctx, nstep_buf)
 
-    def add_complete_return(mut self, ret: Scalar[DT]):
-        """Driver hook — push a complete-episode return into the
-        rolling-window tracker (used by the N_ENVS GPU driver which
-        owns per-env reward accumulators host-side)."""
-        self.tracker.add_complete_return(ret)
+    # `add_complete_return` / `end_episode` / `mean_return` / `ep_count`
+    # are trait DEFAULTS (OffPolicyAgent, S6) expressed against the single
+    # `_tracker_ptr` accessor below.
+
+    def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
+        return rebind[UnsafePointer[EpisodeTracker, MutAnyOrigin]](
+            UnsafePointer(to=self.tracker)
+        )
 
     # ─── Shared surface (both traits) ─────────────────────────────────
 
@@ -949,15 +1182,6 @@ struct SACTrainer[
         done: Scalar[DT],
     ) raises:
         self._record_impl(obs, action, reward, next_obs, done)
-
-    def end_episode(mut self):
-        self.tracker.end_episode()
-
-    def mean_return(self) -> Scalar[DT]:
-        return self.tracker.mean_return()
-
-    def ep_count(self) -> Int:
-        return self.tracker.ep_count
 
     # ─── Logging surface (parity with legacy SACTrainer) ──────────────
 
@@ -986,6 +1210,40 @@ struct SACTrainer[
         schedulers."""
         return self._total_train_steps
 
+    # ─── Per-batch diag snapshot (GPU) ────────────────────────────────
+    #
+    # Fold the LAST completed update's device minibatch into the six per-batch
+    # diag accumulators (Q1 / reward / target / min_q / done / |action|).
+    # Relocated out of `_train_post_sample_kernels` so these six reductions
+    # neither launch every eager update nor get captured into the CUDA graph —
+    # they run once per `diag_every` flush instead. Reading the post-update
+    # device buffers yields a single-batch snapshot (the legacy GPU-SAC bundle
+    # was likewise a single-batch readback). The accumulators are reset
+    # alongside the others at the end of `flush_metrics`, so each flush reports
+    # exactly this snapshot.
+    def _accumulate_diag_snapshot_gpu(mut self) raises:
+        comptime assert Self.train_target == "gpu", (
+            "_accumulate_diag_snapshot_gpu is GPU-only"
+        )
+        var t_diag_gpu = perf_counter_ns()
+        var q_ptr = self.twin_critic_blk.inner.c1._mb_q.target_ptr["gpu"]()
+        var r_ptr = self.state.mb_r.target_ptr["gpu"]()
+        var y_ptr = self.state.mb_y.target_ptr["gpu"]()
+        var d_ptr = self.state.mb_d.target_ptr["gpu"]()
+        var a_ptr = self.state.mb_a.target_ptr["gpu"]()
+        # `min_q` is the target-y ComputeGraph's min(Q1_t, Q2_t)(s', a') node;
+        # its device out_ptr is fresh from the last update's target_y forward.
+        var nq_ptr = self.target_y_blk.graph.node_out_ptr["min_q"]()
+        self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
+        self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
+        self._target_mean_dev.accumulate_gpu[Self.BATCH](y_ptr)
+        self._next_q_mean_dev.accumulate_gpu[Self.BATCH](nq_ptr)
+        self._done_mean_dev.accumulate_gpu[Self.BATCH](d_ptr)
+        self._abs_action_mean_dev.accumulate_gpu_abs[
+            Self.BATCH * Self.ACT_DIM
+        ](a_ptr)
+        self.timer.accumulate(Self._T_DIAG, t_diag_gpu)
+
     def flush_metrics[
         L: Logger = NoOpLogger
     ](
@@ -999,15 +1257,67 @@ struct SACTrainer[
         `_total_train_steps` counter is NOT reset."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        # Slice 3 — on GPU the critic loss is accumulated on-device by the
+        # twin-critic block (no per-step D2H). Read both critics' (sum,count)
+        # accumulators here — flush cadence only — and sum them to recover the
+        # `loss1+loss2` convention. `read_accum` already divides by its own
+        # per-step count (== _update_count), so it returns the chunk mean
+        # directly. CPU keeps the host-scalar accumulator path.
+        var critic_mean: Scalar[DT]
+        # Slice 4 — on GPU the actor loss is accumulated on-device by the
+        # actor-loss block (no per-step D2H) and α lives in the device
+        # ScalarAdam buffer; read both here at flush cadence. The α metric
+        # is the instantaneous device value (α is slowly varying, so this
+        # tracks the window mean to logging precision). CPU keeps the
+        # host-scalar accumulator paths.
+        var actor_mean: Scalar[DT]
+        var alpha_val: Scalar[DT]
+        # All per-batch diags are device-resident on GPU (Q1 / reward / target
+        # / min_q / done / |action| reductions folded in by
+        # `_train_post_sample_kernels`); host scalars on CPU.
+        var q_mean: Scalar[DT]
+        var reward_mean: Scalar[DT]
+        var target_mean: Scalar[DT]
+        var next_q_mean: Scalar[DT]
+        var done_mean: Scalar[DT]
+        var abs_action_mean: Scalar[DT]
+        comptime if Self.train_target == "gpu":
+            # Take the per-batch diag snapshot now (relocated out of the hot
+            # loop). Gated on having trained ≥1 update so pre-warmup flushes
+            # read empty accumulators (→ 0), matching the prior behavior.
+            if self._total_train_steps > 0:
+                self._accumulate_diag_snapshot_gpu()
+            var cl1 = self.twin_critic_blk.inner.c1.mse_loss.read_accum["gpu"]()
+            var cl2 = self.twin_critic_blk.inner.c2.mse_loss.read_accum["gpu"]()
+            critic_mean = cl1 + cl2
+            actor_mean = self.actor_blk.read_loss_accum()
+            alpha_val = self.alpha_opt.read_alpha()
+            q_mean = self._q_mean_dev.read["gpu"]()
+            reward_mean = self._reward_mean_dev.read["gpu"]()
+            target_mean = self._target_mean_dev.read["gpu"]()
+            next_q_mean = self._next_q_mean_dev.read["gpu"]()
+            done_mean = self._done_mean_dev.read["gpu"]()
+            abs_action_mean = self._abs_action_mean_dev.read["gpu"]()
+        else:
+            critic_mean = self._critic_L_accum * inv
+            actor_mean = self._actor_L_accum * inv
+            alpha_val = self._alpha_accum * inv
+            q_mean = self._q_accum * inv
+            reward_mean = self._reward_accum * inv
+            target_mean = self._target_accum * inv
+            next_q_mean = self._next_q_accum * inv
+            done_mean = self._done_accum * inv
+            abs_action_mean = self._abs_action_accum * inv
         var bundle = SACMetrics(
-            actor_loss=LogScalar[DT](self._actor_L_accum * inv),
-            critic_loss=LogScalar[DT](self._critic_L_accum * inv),
-            alpha=LogScalar[DT](self._alpha_accum * inv),
-            mean_q=LogScalar[DT](self._q_accum * inv),
-            mean_target=LogScalar[DT](self._target_accum * inv),
-            mean_reward=LogScalar[DT](self._reward_accum * inv),
-            mean_done=LogScalar[DT](self._done_accum * inv),
-            mean_abs_action=LogScalar[DT](self._abs_action_accum * inv),
+            actor_loss=LogScalar[DT](actor_mean),
+            critic_loss=LogScalar[DT](critic_mean),
+            alpha=LogScalar[DT](alpha_val),
+            mean_q=LogScalar[DT](q_mean),
+            mean_target=LogScalar[DT](target_mean),
+            mean_reward=LogScalar[DT](reward_mean),
+            mean_next_q=LogScalar[DT](next_q_mean),
+            mean_done=LogScalar[DT](done_mean),
+            mean_abs_action=LogScalar[DT](abs_action_mean),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
@@ -1017,9 +1327,23 @@ struct SACTrainer[
         self._q_accum = Scalar[DT](0.0)
         self._target_accum = Scalar[DT](0.0)
         self._reward_accum = Scalar[DT](0.0)
+        self._next_q_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
         self._abs_action_accum = Scalar[DT](0.0)
         self._update_count = 0
+        # Slices 3+4 — reset the on-device critic + actor accumulators in
+        # lock-step with the host counters so the next chunk's mean uses a
+        # fresh window. (α has no accumulator — read instantaneously above.)
+        comptime if Self.train_target == "gpu":
+            self.twin_critic_blk.inner.c1.mse_loss.reset_accum["gpu"]()
+            self.twin_critic_blk.inner.c2.mse_loss.reset_accum["gpu"]()
+            self.actor_blk.reset_loss_accum()
+            self._q_mean_dev.reset["gpu"]()
+            self._reward_mean_dev.reset["gpu"]()
+            self._target_mean_dev.reset["gpu"]()
+            self._next_q_mean_dev.reset["gpu"]()
+            self._done_mean_dev.reset["gpu"]()
+            self._abs_action_mean_dev.reset["gpu"]()
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
         return bundle^
@@ -1042,18 +1366,25 @@ struct SACTrainer[
         Sections: `actor.*`, `critic1.*`, `critic2.*`, `actor_opt.*`,
         `critic1_opt.*`, `critic2_opt.*`, `alpha_opt.*`. Overwrites
         `path`. CPU-only."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "SACTrainer.save_state: GPU save/load not yet supported."
-            )
         var body = String("")
-        save_state_v2_body(self.actor, body, "actor")
-        save_state_v2_body(self.pair1.online, body, "critic1")
-        save_state_v2_body(self.pair2.online, body, "critic2")
-        save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
-        save_optimizer_v2_body(self.critic1_opt, body, "critic1_opt")
-        save_optimizer_v2_body(self.critic2_opt, body, "critic2_opt")
-        save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
+        comptime if Self.train_target == "cpu":
+            save_state_v2_body(self.actor, body, "actor")
+            save_state_v2_body(self.pair1.online, body, "critic1")
+            save_state_v2_body(self.pair2.online, body, "critic2")
+            save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
+            save_optimizer_v2_body(self.critic1_opt, body, "critic1_opt")
+            save_optimizer_v2_body(self.critic2_opt, body, "critic2_opt")
+            save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
+        else:
+            var c = self.ctx.value()
+            save_state_v2_body_gpu(self.actor, body, "actor", c)
+            save_state_v2_body_gpu(self.pair1.online, body, "critic1", c)
+            save_state_v2_body_gpu(self.pair2.online, body, "critic2", c)
+            save_optimizer_v2_body_gpu(self.actor_opt, body, "actor_opt")
+            save_optimizer_v2_body_gpu(self.critic1_opt, body, "critic1_opt")
+            save_optimizer_v2_body_gpu(self.critic2_opt, body, "critic2_opt")
+            save_scalar_adam_v2_body_gpu(self.alpha_opt, body, "alpha_opt")
+        save_counter_v2_body(self._total_train_steps, body, "_total_train_steps")
         var content = String("nn2-ckpt v2\n") + body
         with open(path, "w") as f:
             f.write(content)
@@ -1061,21 +1392,34 @@ struct SACTrainer[
     def load_state(mut self, path: String) raises:
         """Inverse of `save_state`. Target critics are hard-copied from
         their online twins after the online params are restored."""
-        comptime if Self.train_target != "cpu":
-            raise Error(
-                "SACTrainer.load_state: GPU save/load not yet supported."
-            )
         var content = read_file_v2(path)
         var lines = split_lines_v2(content)
         expect_v2_header(lines)
         var idx: Int = 1
-        load_state_v2_body(self.actor, lines, idx, "actor")
-        load_state_v2_body(self.pair1.online, lines, idx, "critic1")
-        load_state_v2_body(self.pair2.online, lines, idx, "critic2")
-        load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
-        load_optimizer_v2_body(self.critic1_opt, lines, idx, "critic1_opt")
-        load_optimizer_v2_body(self.critic2_opt, lines, idx, "critic2_opt")
-        load_scalar_adam_v2_body(self.alpha_opt, lines, idx, "alpha_opt")
+        comptime if Self.train_target == "cpu":
+            load_state_v2_body(self.actor, lines, idx, "actor")
+            load_state_v2_body(self.pair1.online, lines, idx, "critic1")
+            load_state_v2_body(self.pair2.online, lines, idx, "critic2")
+            load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
+            load_optimizer_v2_body(self.critic1_opt, lines, idx, "critic1_opt")
+            load_optimizer_v2_body(self.critic2_opt, lines, idx, "critic2_opt")
+            load_scalar_adam_v2_body(self.alpha_opt, lines, idx, "alpha_opt")
+        else:
+            var c = self.ctx.value()
+            load_state_v2_body_gpu(self.actor, lines, idx, "actor", c)
+            load_state_v2_body_gpu(self.pair1.online, lines, idx, "critic1", c)
+            load_state_v2_body_gpu(self.pair2.online, lines, idx, "critic2", c)
+            load_optimizer_v2_body_gpu(self.actor_opt, lines, idx, "actor_opt")
+            load_optimizer_v2_body_gpu(
+                self.critic1_opt, lines, idx, "critic1_opt"
+            )
+            load_optimizer_v2_body_gpu(
+                self.critic2_opt, lines, idx, "critic2_opt"
+            )
+            load_scalar_adam_v2_body_gpu(self.alpha_opt, lines, idx, "alpha_opt")
+        load_counter_v2_body(
+            self._total_train_steps, lines, idx, "_total_train_steps"
+        )
         hard_copy_params[Self.train_target, M=Self.CRITIC](
             self.pair1.online, self.pair1.target_net, self.ctx,
         )

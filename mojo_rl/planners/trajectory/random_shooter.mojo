@@ -30,7 +30,8 @@ from .score_callback import ScorePlanCallback, BatchedScorePlanCallback
 
 
 struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
-    Movable, ImplicitlyDestructible,
+    ImplicitlyDestructible,
+    Movable,
 ):
     """Uniform-categorical random shooter.
 
@@ -90,18 +91,16 @@ struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
             self.sample_actions,
             row_major(
                 (
-                    Idx(self.num_samples),
-                    Idx[Self.BATCH](),
-                    Idx(self.horizon),
-                    Idx[Self.ACT_DIM](),
+                    self.num_samples,
+                    Idx[Self.BATCH],
+                    self.horizon,
+                    Idx[Self.ACT_DIM],
                 )
             ),
         )
         var plan = TileTensor(
             self.sample_plan,
-            row_major(
-                (Idx[Self.BATCH](), Idx(self.horizon), Idx[Self.ACT_DIM]())
-            ),
+            row_major((Idx[Self.BATCH], self.horizon, Idx[Self.ACT_DIM])),
         )
         for b in range(Self.BATCH):
             for t in range(self.horizon):
@@ -109,15 +108,15 @@ struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
                 if r_act >= Self.ACT_DIM:
                     r_act = Self.ACT_DIM - 1
                 for a in range(Self.ACT_DIM):
-                    var v = (
-                        Scalar[dtype](1.0)
-                        if a == r_act
-                        else Scalar[dtype](0.0)
+                    var v = Scalar[dtype](1.0) if a == r_act else Scalar[dtype](
+                        0.0
                     )
                     all_samples[sample_idx, b, t, a] = v
                     plan[b, t, a] = v
 
-    def optimize[CB: ScorePlanCallback](
+    def optimize[
+        CB: ScorePlanCallback
+    ](
         mut self,
         mut callback: CB,
         best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -140,9 +139,9 @@ struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
                 self.sample_plan,
                 row_major(
                     (
-                        Idx[Self.BATCH](),
-                        Idx(self.horizon),
-                        Idx[Self.ACT_DIM](),
+                        Idx[Self.BATCH],
+                        self.horizon,
+                        Idx[Self.ACT_DIM],
                     )
                 ),
             )
@@ -160,29 +159,27 @@ struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
                 self.sample_actions,
                 row_major(
                     (
-                        Idx(self.num_samples),
-                        Idx[Self.BATCH](),
-                        Idx(self.horizon),
-                        Idx[Self.ACT_DIM](),
+                        self.num_samples,
+                        Idx[Self.BATCH],
+                        self.horizon,
+                        Idx[Self.ACT_DIM],
                     )
                 ),
             )
             var dst = TileTensor(
                 best_plan_out,
-                row_major(
-                    (Idx[Self.BATCH](), Idx(self.horizon), Idx[Self.ACT_DIM]())
-                ),
+                row_major((Idx[Self.BATCH], self.horizon, Idx[Self.ACT_DIM])),
             )
             for b in range(Self.BATCH):
                 for t in range(self.horizon):
                     for a in range(Self.ACT_DIM):
-                        dst[b, t, a] = all_samples[
-                            best_overall_sample, b, t, a
-                        ]
+                        dst[b, t, a] = all_samples[best_overall_sample, b, t, a]
 
         return best_overall
 
-    def optimize_batched[CB: BatchedScorePlanCallback](
+    def optimize_batched[
+        CB: BatchedScorePlanCallback
+    ](
         mut self,
         mut callback: CB,
         best_plan_out: UnsafePointer[Scalar[dtype], MutAnyOrigin],
@@ -204,10 +201,10 @@ struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
             self.sample_actions,
             row_major(
                 (
-                    Idx(self.num_samples),
-                    Idx[Self.BATCH](),
-                    Idx(self.horizon),
-                    Idx[Self.ACT_DIM](),
+                    self.num_samples,
+                    Idx[Self.BATCH],
+                    self.horizon,
+                    Idx[Self.ACT_DIM],
                 )
             ),
         )
@@ -227,15 +224,11 @@ struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
         if best_overall_sample >= 0:
             var dst = TileTensor(
                 best_plan_out,
-                row_major(
-                    (Idx[Self.BATCH](), Idx(self.horizon), Idx[Self.ACT_DIM]())
-                ),
+                row_major((Idx[Self.BATCH], self.horizon, Idx[Self.ACT_DIM])),
             )
             for b in range(Self.BATCH):
                 for t in range(self.horizon):
                     for a in range(Self.ACT_DIM):
-                        dst[b, t, a] = all_samples[
-                            best_overall_sample, b, t, a
-                        ]
+                        dst[b, t, a] = all_samples[best_overall_sample, b, t, a]
 
         return best_overall

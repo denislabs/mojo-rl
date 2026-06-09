@@ -868,6 +868,69 @@ struct BreakoutEnv[DTYPE: DType](
         )
 
     @staticmethod
+    def extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        states_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Seed `obs` from `state` with the SAME normalization the step
+        kernel applies. Overrides the trait default (raw state-prefix copy),
+        which mismatches the normalized step obs and corrupts the batched-env
+        replay (prev_obs raw vs next_obs normalized → uniform collapse). Keep
+        in lock-step with the obs block in `step_kernel_gpu`."""
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+
+        @parameter
+        @always_inline
+        def extract_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            obs: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+            ],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx < BATCH_SIZE:
+                obs[idx, 0] = states[idx, S_BALL_X] / Scalar[gpu_dtype](
+                    SCREEN_W
+                )
+                obs[idx, 1] = states[idx, S_BALL_Y] / Scalar[gpu_dtype](
+                    SCREEN_H
+                )
+                obs[idx, 2] = states[idx, S_BALL_VX] / Scalar[gpu_dtype](
+                    MAX_BALL_VX
+                )
+                obs[idx, 3] = states[idx, S_BALL_VY] / Scalar[gpu_dtype](
+                    MAX_BALL_VY
+                )
+                obs[idx, 4] = states[idx, S_PADDLE_X] / Scalar[gpu_dtype](
+                    SCREEN_W
+                )
+                obs[idx, 5] = states[idx, S_BRICKS_REM] / Scalar[gpu_dtype](
+                    TOTAL_BRICKS
+                )
+                obs[idx, 6] = states[idx, S_LIVES] / Scalar[gpu_dtype](
+                    INITIAL_LIVES
+                )
+
+        ctx.enqueue_function[extract_wrapper](
+            states, obs, grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
+        )
+
+    @staticmethod
     def reset_kernel_gpu[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,

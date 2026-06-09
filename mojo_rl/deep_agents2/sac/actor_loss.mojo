@@ -41,10 +41,12 @@ Public surface: `make[target]`, `forward_backward[target, OPT]`, plus a
 public `rsample` field (the trainer's `select_action` reuses it).
 """
 
-from std.gpu.host import DeviceContext, HostBuffer
+from std.gpu import thread_idx
+from std.gpu.primitives import block
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import TileTensor, row_major
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB_REDUCE
 from mojo_rl.nn2.core import Module, Optimizer, Initializer
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.scratch import Scratch
@@ -65,6 +67,48 @@ from mojo_rl.nn2.primitives.binary_sub import BinarySub
 from mojo_rl.nn2.primitives.concat import Concat
 from ..loss.loss_block import LossBlock
 from ..loss.seed_grad_inv_batch import seed_grad_inv_batch
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Slice 4c — device reductions (CUDA-graph capturable; no per-step D2H).
+# Both are single-block `block.sum` reduces over the [BATCH] graph output.
+# Launch grid=1, block=TPB_REDUCE. Mirror MSELoss's `_mse_reduce_add_kernel`.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _reduce_mean_write_kernel[BATCH: Int](
+    src: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """`dst[0] = mean(src[0..BATCH])` (overwrite). Used for `lp_mean` —
+    consumed in-place by the device ScalarAdam this same step."""
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < BATCH:
+        my_sum += src[k]
+        k += TPB_REDUCE
+    var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
+    if t == 0:
+        dst[0] = total[0] / Scalar[DT](BATCH)
+
+
+def _reduce_mean_acc_kernel[BATCH: Int](
+    src: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """`acc[0] += mean(src); acc[1] += 1` (accumulate). Used for the actor
+    loss metric — the host reads `acc` once per flush, never per step."""
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < BATCH:
+        my_sum += src[k]
+        k += TPB_REDUCE
+    var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
+    if t == 0:
+        acc[0] = acc[0] + total[0] / Scalar[DT](BATCH)
+        acc[1] = acc[1] + Scalar[DT](1.0)
 
 
 @fieldwise_init
@@ -115,9 +159,13 @@ struct SACActorLoss[
     var _loss_out: Scratch["loss_out", Self.BATCH]
     var _grad_seed: Scratch["grad_seed", Self.BATCH]
 
-    # Host staging for GPU mean reduction (one [BATCH] buffer per side).
-    var _loss_host: Optional[HostBuffer[DT]]
-    var _lp_host: Optional[HostBuffer[DT]]
+    # Slice 4c — device reduction outputs (GPU only, no per-step D2H).
+    # `_lp_mean_dev` [1] holds mean(log_prob); the device ScalarAdam reads
+    # it as the entropy grad this same step. `_loss_acc_dev` [2] is the
+    # (Σmean, count) actor-loss metric accumulator the trainer drains at
+    # flush cadence (same shape as MSELoss's `loss_acc_dev`).
+    var _lp_mean_dev: Optional[DeviceBuffer[DT]]
+    var _loss_acc_dev: Optional[DeviceBuffer[DT]]
 
     var ts: TargetStorage
 
@@ -126,8 +174,8 @@ struct SACActorLoss[
         self.rsample = RSample[Self.ACT_DIM]()
         self._loss_out = Scratch["loss_out", Self.BATCH]()
         self._grad_seed = Scratch["grad_seed", Self.BATCH]()
-        self._loss_host = None
-        self._lp_host = None
+        self._lp_mean_dev = None
+        self._loss_acc_dev = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -162,9 +210,46 @@ struct SACActorLoss[
         init_scratch_auto[Self, target](blk, ctx)
         comptime if target == "gpu":
             var ctx_v = ctx.value()
-            blk._loss_host = ctx_v.enqueue_create_host_buffer[DT](Self.BATCH)
-            blk._lp_host = ctx_v.enqueue_create_host_buffer[DT](Self.BATCH)
+            blk._lp_mean_dev = ctx_v.enqueue_create_buffer[DT](1)
+            var acc = ctx_v.enqueue_create_buffer[DT](2)
+            acc.enqueue_fill(0.0)
+            blk._loss_acc_dev = acc^
         return blk^
+
+    # ── Slice 4c accessors ───────────────────────────────────────────
+    def lp_mean_dev_ptr(
+        mut self,
+    ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Pointer to the device `lp_mean` [1] buffer — the device
+        ScalarAdam reads it as the per-step entropy grad. GPU only."""
+        return self._lp_mean_dev.value().unsafe_ptr()
+
+    def set_alpha_ptr(
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ):
+        """One-time GPU wiring: point the `alpha_lp` Scale node at the
+        device α buffer (SAC's on-device temperature). After this the
+        actor-loss forward/backward read α on-device, so `forward_backward`
+        skips the per-step `set_node_attr` host bake. Caller invokes once
+        at trainer make."""
+        self.graph.set_node_attr_ptr["alpha_lp", "multiplier"](p)
+
+    def reset_loss_accum(mut self) raises:
+        """Zero the device (Σmean, count) loss accumulator — flush cadence."""
+        self._loss_acc_dev.value().enqueue_fill(0.0)
+
+    def read_loss_accum(mut self) raises -> Scalar[DT]:
+        """D2H the device loss accumulator once (flush cadence) and return
+        its window mean (Σmean / count). 0 if no steps. GPU only."""
+        var ctx = self.ts.ctx.value()
+        var h = ctx.enqueue_create_host_buffer[DT](2)
+        ctx.enqueue_copy(h, self._loss_acc_dev.value())
+        ctx.synchronize()
+        var s = h.unsafe_ptr()[0]
+        var n = h.unsafe_ptr()[1]
+        if n == Scalar[DT](0.0):
+            return Scalar[DT](0.0)
+        return s / n
 
     def forward_backward[
         target: StaticString,
@@ -192,38 +277,52 @@ struct SACActorLoss[
         self.graph.set_external["q1", Self.CRITIC](critic1)
         self.graph.set_external["q2", Self.CRITIC](critic2)
 
-        # ── Set graph input + α attribute.
+        # ── Set graph input + α attribute. CPU bakes the host α scalar per
+        # call; GPU reads α on-device via the `alpha_lp` multiplier_ptr
+        # wired once at make (`set_alpha_ptr`) — no per-step host work, so
+        # the actor-loss forward/backward are CUDA-graph capturable.
         var mb_s_t = TileTensor(mb_s_ptr, row_major[BB, OBS]())
         self.graph.set_input["s", BB](mb_s_t)
-        self.graph.set_node_attr["alpha_lp", "multiplier"](alpha)
+        comptime if target == "cpu":
+            self.graph.set_node_attr["alpha_lp", "multiplier"](alpha)
 
         # ── Forward.
         var loss_p = self._loss_out.target_ptr[target]()
         var loss_t = TileTensor(loss_p, row_major[BB, 1]())
         self.graph.forward[target, BB, POLICY](loss_t)
 
-        # ── Mean reduction. CPU reads the graph buffers directly; GPU
-        # stages loss_per_b + log_prob to host first (cheaper than
-        # launching a reduction kernel at SAC batch sizes ≤ 1024).
         var lp_p = self.graph.node_out_ptr["log_prob"]()
-        var loss_read_p = loss_p
-        var lp_read_p = lp_p
-        comptime if target == "gpu":
-            var ctx = self.ts.ctx.value()
-            ctx.enqueue_copy(self._loss_host.value(), loss_p)
-            ctx.enqueue_copy(self._lp_host.value(), lp_p)
-            ctx.synchronize()
-            loss_read_p = self._loss_host.value().unsafe_ptr()
-            lp_read_p = self._lp_host.value().unsafe_ptr()
+        var loss_mean: Scalar[DT] = 0.0
+        var lp_mean: Scalar[DT] = 0.0
 
-        var loss_sum: Scalar[DT] = 0.0
-        var lp_sum: Scalar[DT] = 0.0
-        for b in range(BB):
-            loss_sum += loss_read_p[b]
-            lp_sum += lp_read_p[b]
-        var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](BB)
-        var loss_mean = loss_sum * inv_b
-        var lp_mean = lp_sum * inv_b
+        # ── Mean reduction.
+        comptime if target == "cpu":
+            # CPU reads the graph buffers directly + host sum (unchanged —
+            # the SAC CPU bit-identity path).
+            var loss_sum: Scalar[DT] = 0.0
+            var lp_sum: Scalar[DT] = 0.0
+            for b in range(BB):
+                loss_sum += loss_p[b]
+                lp_sum += lp_p[b]
+            var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](BB)
+            loss_mean = loss_sum * inv_b
+            lp_mean = lp_sum * inv_b
+        else:
+            # GPU: device-reduce both, NO D2H. lp_mean → `_lp_mean_dev`
+            # (read by the device ScalarAdam this step); loss → device
+            # accumulator (read at flush). Returned host scalars stay 0
+            # sentinels — the trainer drains the device buffers instead.
+            var ctx = self.ts.ctx.value()
+            comptime red_lp = _reduce_mean_write_kernel[BB]
+            ctx.enqueue_function[red_lp](
+                lp_p, self._lp_mean_dev.value().unsafe_ptr(),
+                grid_dim=1, block_dim=TPB_REDUCE,
+            )
+            comptime red_loss = _reduce_mean_acc_kernel[BB]
+            ctx.enqueue_function[red_loss](
+                loss_p, self._loss_acc_dev.value().unsafe_ptr(),
+                grid_dim=1, block_dim=TPB_REDUCE,
+            )
 
         # ── Seed grad_out = 1/BATCH, then backward + step.
         var grad_p = self._grad_seed.target_ptr[target]()

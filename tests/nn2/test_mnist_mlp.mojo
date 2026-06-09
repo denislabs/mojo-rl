@@ -3,7 +3,7 @@
 Architecture: Linear(784→256) → ReLU → Linear(256→128) → ReLU → Linear(128→10).
 Loss:         CrossEntropyLoss[10] on one-hot targets.
 Optimizer:    Adam (lr=0.001, default betas/eps).
-Data:         MNIST via `mojo_rl.nn.datasets.MNIST` (pre-normalized to [0, 1]).
+Data:         MNIST via `mojo_rl.nn2.datasets.MNIST` (pre-normalized to [0, 1]).
 Init:         Kaiming uniform on weights, zero bias.
 """
 
@@ -12,7 +12,7 @@ from std.random import seed
 from std.testing import assert_true
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.datasets import MNIST  # reuse the existing loader
+from mojo_rl.nn2.datasets import MNIST  # reuse the existing loader
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU

@@ -62,8 +62,8 @@ def _stuff_grads_host_to_device(
         var v = Scalar[DT](0.2 * Float64(k + 1) - 0.3)
         b_h.unsafe_ptr()[k] = v
         sum_sq += v * v
-    ctx.enqueue_copy(net.weight.grad_dev.value(), w_h)
-    ctx.enqueue_copy(net.bias.grad_dev.value(),   b_h)
+    ctx.enqueue_copy(net.weight.grd.dev.value(), w_h)
+    ctx.enqueue_copy(net.bias.grd.dev.value(),   b_h)
     ctx.synchronize()
     return fsqrt(sum_sq)
 
@@ -75,8 +75,8 @@ def _download_global_norm(
     comptime B = OUT_DIM
     var w_h = ctx.enqueue_create_host_buffer[DT](W)
     var b_h = ctx.enqueue_create_host_buffer[DT](B)
-    ctx.enqueue_copy(w_h, net.weight.grad_dev.value())
-    ctx.enqueue_copy(b_h, net.bias.grad_dev.value())
+    ctx.enqueue_copy(w_h, net.weight.grd.dev.value())
+    ctx.enqueue_copy(b_h, net.bias.grd.dev.value())
     ctx.synchronize()
     var s: Scalar[DT] = 0.0
     for k in range(W):

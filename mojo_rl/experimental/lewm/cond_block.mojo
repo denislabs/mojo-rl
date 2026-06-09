@@ -39,6 +39,18 @@ from layout import Layout, LayoutTensor
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.math import ceildiv
+from std.memory import UnsafePointer
+
+
+@always_inline
+def _null_ptr[T: AnyType, O: Origin]() -> UnsafePointer[T, O]:
+    """NULL UnsafePointer for zero-param / zero-workspace placeholders.
+
+    Mojo nightly's comptime `unsafe_from_address=0` literal is rejected;
+    the runtime-Int overload still accepts 0.
+    """
+    var addr: Int = 0
+    return UnsafePointer[T, O](unsafe_from_address=addr)
 
 from ...nn.constants import dtype
 from ...nn.model import Linear, Sequential
@@ -159,8 +171,10 @@ def cond_block_forward[
         dtype, Layout.row_major(BATCH * T, 3 * D), MutAnyOrigin
     ],
 ) raises:
+    # Empty (zero-size) LayoutTensor slot; the pointer is never read.
+    # Reuse `silu_buf_t`'s base ptr as a valid non-null placeholder.
     var empty_p = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](silu_buf_t.ptr)
     )
 
     SwishOp[D].eval[BATCH * T](c_t, silu_buf_t, empty_p, silu_cache_t)
@@ -296,11 +310,13 @@ def cond_block_backward[
         dtype, Layout.row_major(BATCH * T, D), MutAnyOrigin
     ],
 ) raises:
+    # Zero-size LayoutTensor slots; pointers are never read.
+    # Reuse sgg_t's base ptr as a valid non-null placeholder.
     var empty_p = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](sgg_t.ptr)
     )
     var empty_gp = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](sgg_t.ptr)
     )
 
     GateOp[D].vjp[BATCH * T](
@@ -576,12 +592,11 @@ def cond_block_forward_gpu[
     comptime BT: Int = BATCH * T
     comptime TPB_X = 16
     comptime TPB_Y = 16
+    # Zero-length placeholders for ops with no params / no workspace.
     var empty_p = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        _null_ptr[Scalar[dtype], MutAnyOrigin]()
     )
-    var op_ws = UnsafePointer[Scalar[dtype], MutAnyOrigin](
-        unsafe_from_address=0
-    )
+    var op_ws = _null_ptr[Scalar[dtype], MutAnyOrigin]()
 
     # ---- Shared head: c → Swish → AdaLNMod → raw_mod (BT, 6D) ----
     SwishOp[D].eval_gpu[BT, dtype](
@@ -864,15 +879,14 @@ def cond_block_backward_gpu[
     comptime BT: Int = BATCH * T
     comptime TPB_X = 16
     comptime TPB_Y = 16
+    # Zero-length placeholders for ops with no params / no workspace.
     var empty_p = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        _null_ptr[Scalar[dtype], MutAnyOrigin]()
     )
     var empty_gp = LayoutTensor[dtype, Layout.row_major(0), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+        _null_ptr[Scalar[dtype], MutAnyOrigin]()
     )
-    var op_ws = UnsafePointer[Scalar[dtype], MutAnyOrigin](
-        unsafe_from_address=0
-    )
+    var op_ws = _null_ptr[Scalar[dtype], MutAnyOrigin]()
 
     # ============================== MLP branch backward =====================
     # Gate2.vjp: grad_x_next → sgg = [grad_x_mid_resid | grad_gate_mlp | grad_mlp_out]

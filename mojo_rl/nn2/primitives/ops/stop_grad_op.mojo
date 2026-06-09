@@ -22,6 +22,10 @@ struct StopGradOp(ElementOp):
     comptime owns_cache = False
 
     @staticmethod
+    def display_label() -> String:
+        return String("StopGrad")
+
+    @staticmethod
     def forward_scalar(x: Scalar[DT]) -> Scalar[DT]:
         return x
 

@@ -24,6 +24,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -116,18 +117,15 @@ struct GatherActionSlice[NA: Int, K: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["GatherActionSlice", target](self.ts.target_tag)
-        var values = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
-        var idx = typed_view[BATCH, Self.IN_DIMS[1]](inputs[1])
+        var values = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
+        var idx = inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -137,9 +135,9 @@ struct GatherActionSlice[NA: Int, K: Int](Module):
                 for k in range(Self.K):
                     output_v[b, k] = values[b, base + k]
         else:
-            var v_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](values.ptr)
-            var i_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](idx.ptr)
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var v_p = values.ptr
+            var i_p = idx.ptr
+            var o_p = output_v.ptr
             var v_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.NA * Self.K), MutAnyOrigin,
             ](v_p)
@@ -169,10 +167,7 @@ struct GatherActionSlice[NA: Int, K: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         """Forward-only op: both grad_values and grad_idx zero-fill.
         The calling block re-runs the scatter using the original indices."""
@@ -180,8 +175,8 @@ struct GatherActionSlice[NA: Int, K: Int](Module):
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["GatherActionSlice", target](self.ts.target_tag)
-        var grad_values_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
-        var grad_idx_v = typed_view_mut[BATCH, Self.IN_DIMS[1]](grad_inputs[1])
+        var grad_values_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
+        var grad_idx_v = grad_inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
 
         comptime if target == "cpu":
             for b in range(BATCH):
@@ -189,8 +184,8 @@ struct GatherActionSlice[NA: Int, K: Int](Module):
                     grad_values_v[b, c] = Scalar[DT](0.0)
                 grad_idx_v[b, 0] = Scalar[DT](0.0)
         else:
-            var gv_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_values_v.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_idx_v.ptr)
+            var gv_p = grad_values_v.ptr
+            var gi_p = grad_idx_v.ptr
             var gv_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.NA * Self.K), MutAnyOrigin,
             ](gv_p)

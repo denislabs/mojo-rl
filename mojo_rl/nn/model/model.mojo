@@ -5,10 +5,10 @@ from std.gpu.host import DeviceContext, DeviceBuffer, DeviceStream
 from std.memory import UnsafePointer
 
 # Opaque pointer for optional per-layer profiling timer.
-# Null (address=0) = no profiling. Non-null = points to a PerfTimer[True].
+# None = no profiling. Some(ptr) = points to a PerfTimer[True].
 # Sequential uses this to inject sync+timing around each layer.
-comptime PerfTimerPtr = UnsafePointer[NoneType, MutAnyOrigin]
-comptime NULL_PERF = PerfTimerPtr(unsafe_from_address=0)
+comptime PerfTimerPtr = Optional[UnsafePointer[NoneType, MutAnyOrigin]]
+comptime NULL_PERF: PerfTimerPtr = None
 
 
 trait Model(Movable & ImplicitlyCopyable):

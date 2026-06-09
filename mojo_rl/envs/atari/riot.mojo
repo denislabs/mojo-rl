@@ -108,15 +108,27 @@ def set_action(mut state: AtariState, action: UInt8):
     if action == ACTION_RESET:
         state.sys_flags = state.sys_flags | FLAG_CON_RESET
 
-    # Update paddle position for paddle-based games (Pong, Breakout, etc.)
-    # UP moves paddle up (decrease position), DOWN moves it down (increase)
+    # Update paddle position for paddle-based games (Pong, Breakout, etc.).
+    # The paddle is read as INPT0/INPT1 (driven by paddle_pos), so movement
+    # actions must adjust paddle_pos. Two directions map to "up" and "down":
+    #   - UP/RIGHT   move the paddle up   (decrease position)
+    #   - DOWN/LEFT  move the paddle down (increase position)
+    # RIGHT/LEFT are included because the minimal action sets for paddle games
+    # (e.g. PongDef.map_action) emit RIGHT/LEFT, not UP/DOWN — without this an
+    # agent's movement actions would never move the paddle.
     comptime PADDLE_DELTA: Int = 3
-    if (state.sys_flags & FLAG_CON_UP) != 0:
+    var move_up = (state.sys_flags & FLAG_CON_UP) != 0 or (
+        state.sys_flags & FLAG_CON_RIGHT
+    ) != 0
+    var move_down = (state.sys_flags & FLAG_CON_DOWN) != 0 or (
+        state.sys_flags & FLAG_CON_LEFT
+    ) != 0
+    if move_up:
         if Int(state.paddle_pos) >= PADDLE_DELTA:
             state.paddle_pos = UInt8(Int(state.paddle_pos) - PADDLE_DELTA)
         else:
             state.paddle_pos = 0
-    if (state.sys_flags & FLAG_CON_DOWN) != 0:
+    if move_down:
         if Int(state.paddle_pos) + PADDLE_DELTA <= 255:
             state.paddle_pos = UInt8(Int(state.paddle_pos) + PADDLE_DELTA)
         else:

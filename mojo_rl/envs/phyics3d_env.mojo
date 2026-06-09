@@ -161,6 +161,11 @@ struct Phyics3dEnv[
     var current_step: Int
     var frame_skip: Int
 
+    # Last-step natural termination flag (true terminal, NOT time-limit
+    # truncation). Read by off-policy drivers via `was_terminated()` to keep
+    # the TD bootstrap on truncation but drop it on real termination.
+    var _last_terminated: Bool
+
     # Per-env persistent state (used by config's pre_step hook)
     var prev_x: Scalar[Self.DTYPE]
 
@@ -183,6 +188,7 @@ struct Phyics3dEnv[
         self.current_step = 0
         self.frame_skip = frame_skip
         self.prev_x = Scalar[Self.DTYPE](0.0)
+        self._last_terminated = False
 
         # Initialize model and data
         self.model = Model[
@@ -250,6 +256,7 @@ struct Phyics3dEnv[
         # Reset step counter and prev_x
         self.current_step = 0
         self.prev_x = Scalar[Self.dtype](0)
+        self._last_terminated = False
         Self.CONFIG.pre_step_cpu(self.data, self.prev_x)
 
     def _get_obs(self) -> ObsState[Self.MODEL_DEF.OBS_DIM]:
@@ -381,7 +388,19 @@ struct Phyics3dEnv[
         var truncated = self.current_step >= self.max_steps
         var done = terminated or truncated
 
+        # Record the natural-termination flag (NOT the combined done) so
+        # off-policy drivers can read it via `was_terminated()` and keep the
+        # TD bootstrap on truncation while dropping it on real termination.
+        self._last_terminated = terminated
+
         return (self._get_obs(), Scalar[Self.dtype](reward), done)
+
+    def was_terminated(self) -> Bool:
+        """True iff the previous `step` ended via natural termination
+        (unhealthy state), NOT time-limit truncation. Always False when
+        `TERMINATE_ON_UNHEALTHY=False` (the `step` body forces `terminated`
+        to False in that case)."""
+        return self._last_terminated
 
     def get_state(self) -> Self.StateType:
         return self._get_obs()

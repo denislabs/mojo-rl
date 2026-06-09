@@ -27,6 +27,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -109,6 +110,10 @@ struct Concat[*DIMS: Int](Module):
     comptime OUT_DIM: Int = _total_dim[*Self.DIMS]()
 
     @staticmethod
+    def display_label() -> String:
+        return String("Concat")
+
+    @staticmethod
     def _build_in_dims() -> InlineArray[Int, Self.DIMS.size]:
         var d = InlineArray[Int, Self.DIMS.size](fill=0)
         comptime for k in range(Self.DIMS.size):
@@ -148,10 +153,7 @@ struct Concat[*DIMS: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -164,24 +166,20 @@ struct Concat[*DIMS: Int](Module):
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
-                var in_i = typed_view[BATCH, D](inputs[i])
+                var in_i = inputs.tile[i, BATCH, D]()
                 for b in range(BATCH):
                     for d in range(D):
                         output_v[b, OFF + d] = in_i[b, d]
         else:
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                output_v.ptr
-            )
+            var o_p = output_v.ptr
             var o_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
             ](o_p)
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
-                var in_i = typed_view[BATCH, D](inputs[i])
-                var i_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    in_i.ptr
-                )
+                var in_i = inputs.tile[i, BATCH, D]()
+                var i_p = in_i.ptr
                 var i_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH, D), MutAnyOrigin,
                 ](i_p)
@@ -205,10 +203,7 @@ struct Concat[*DIMS: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
@@ -220,24 +215,20 @@ struct Concat[*DIMS: Int](Module):
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
-                var gi = typed_view_mut[BATCH, D](grad_inputs[i])
+                var gi = grad_inputs.tile[i, BATCH, D]()
                 for b in range(BATCH):
                     for d in range(D):
                         gi[b, d] = grad_output_v[b, OFF + d]
         else:
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output_v.ptr
-            )
+            var go_p = grad_output_v.ptr
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
             ](go_p)
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
-                var gi_v = typed_view_mut[BATCH, D](grad_inputs[i])
-                var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    gi_v.ptr
-                )
+                var gi_v = grad_inputs.tile[i, BATCH, D]()
+                var gi_p = gi_v.ptr
                 var gi_lt = LayoutTensor[
                     DT, Layout.row_major(BATCH, D), MutAnyOrigin,
                 ](gi_p)

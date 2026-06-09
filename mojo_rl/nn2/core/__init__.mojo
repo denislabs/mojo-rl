@@ -7,7 +7,8 @@ the constants close to their docstring and avoids a stale-re-export
 trap if their shape changes."""
 
 from .param_visitor import ParamVisitor
-from .module import Module, typed_view, typed_view_mut
+from .graph_visitor import GraphVisitor, DisplayStep
+from .module import Module, typed_view, typed_view_mut, mptr
 from .graph_node import GraphNode
 from .optimizer import Optimizer
 from .loss import Loss
@@ -20,7 +21,10 @@ from .walkers import for_each_param_auto, zero_grad_auto
 from .grad_clip import clip_grads_auto, clip_grads_auto_gpu, GradClipState
 from .element_op import ElementOp
 from .reduce_op import ReduceOp
-from .scratch import Scratch, IsScratch
+from .tensor import Tensor, IsScratch
+from .tensor_pack import TensorPack
+from .state import State, IsState, for_each_state_auto
+from .scratch import Scratch, Cache
 from .scratch_walkers import init_scratch_auto
 from .checkpoint import save_params, load_params, save_state_v2, load_state_v2
 from .saveable import Saveable

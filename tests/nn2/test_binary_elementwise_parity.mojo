@@ -11,6 +11,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.primitives.binary_sub import BinarySub
 from mojo_rl.nn2.primitives.binary_elem_min import BinaryElemMin
 from mojo_rl.nn2.primitives.binary_elementwise import BinaryElementwise
@@ -64,10 +65,14 @@ def test_binary_sub_parity() raises:
     var gy_old_t = TileTensor(gy_old, row_major[BATCH, DIM]())
     var gy_new_t = TileTensor(gy_new, row_major[BATCH, DIM]())
 
-    old_op.forward["cpu", BATCH](x_t, y_t, output=z_old_t)
-    new_op.forward["cpu", BATCH](x_t, y_t, output=z_new_t)
-    old_op.vjp["cpu", BATCH](go_t, gx_old_t, gy_old_t)
-    new_op.vjp["cpu", BATCH](go_t, gx_new_t, gy_new_t)
+    old_op.forward["cpu", BATCH](
+            TensorPack[2].of(x_t, y_t), output=z_old_t,
+        )
+    new_op.forward["cpu", BATCH](
+            TensorPack[2].of(x_t, y_t), output=z_new_t,
+        )
+    old_op.vjp["cpu", BATCH](go_t, TensorPack[2].of(gx_old_t, gy_old_t))
+    new_op.vjp["cpu", BATCH](go_t, TensorPack[2].of(gx_new_t, gy_new_t))
 
     var df = _max_diff(z_old, z_new, N)
     var dgx = _max_diff(gx_old, gx_new, N)
@@ -115,10 +120,14 @@ def test_binary_elem_min_parity() raises:
     var gy_old_t = TileTensor(gy_old, row_major[BATCH, DIM]())
     var gy_new_t = TileTensor(gy_new, row_major[BATCH, DIM]())
 
-    old_op.forward["cpu", BATCH](x_t, y_t, output=z_old_t)
-    new_op.forward["cpu", BATCH](x_t, y_t, output=z_new_t)
-    old_op.vjp["cpu", BATCH](go_t, gx_old_t, gy_old_t)
-    new_op.vjp["cpu", BATCH](go_t, gx_new_t, gy_new_t)
+    old_op.forward["cpu", BATCH](
+            TensorPack[2].of(x_t, y_t), output=z_old_t,
+        )
+    new_op.forward["cpu", BATCH](
+            TensorPack[2].of(x_t, y_t), output=z_new_t,
+        )
+    old_op.vjp["cpu", BATCH](go_t, TensorPack[2].of(gx_old_t, gy_old_t))
+    new_op.vjp["cpu", BATCH](go_t, TensorPack[2].of(gx_new_t, gy_new_t))
 
     var df = _max_diff(z_old, z_new, N)
     var dgx = _max_diff(gx_old, gx_new, N)

@@ -6,6 +6,7 @@ from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.deep_agents2.td3.trainer import TD3Trainer
+from mojo_rl.deep_agents2.training.blocks import UniformSampleCpuStep
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
@@ -26,8 +27,8 @@ def test_td3_trainer_smoke() raises:
     ]
     seed(67)
     var trainer = TD3Trainer[
-        ActorNet, CriticNet, OBS, ACT, BATCH, 4096,
-    ].make["cpu"](
+        "cpu", UniformSampleCpuStep[OBS, ACT, BATCH, 4096], ActorNet, CriticNet,
+    ].make(
         actor_lr=3e-4, critic_lr=3e-4,
         gamma=0.99, tau=0.005, action_scale=2.0,
         exploration_noise=0.1,

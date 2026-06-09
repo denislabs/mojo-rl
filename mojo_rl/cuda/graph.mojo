@@ -47,6 +47,11 @@ struct CUDAGraph(Movable):
     var _mojo_stream: _CUptr
     var _replay_stream: _CUptr
     var _lib: OwnedDLHandle
+    # Cached `intercept_graph_launch` pointer — resolved once in `__init__`
+    # instead of re-`dlsym`'d on every replay (replays happen tens of
+    # thousands of times per run). NVIDIA-only; uninit + never called on
+    # non-NVIDIA (the replay methods comptime-return there).
+    var _launch_fn: def (_CUptr, _CUptr) thin -> c_int
 
     def __init__(out self, ctx: DeviceContext) raises:
         """Initialize CUDA graph capture.
@@ -57,14 +62,23 @@ struct CUDAGraph(Movable):
         """
         self._state = 0
         self._num_nodes = 0
-        self._graph = _CUptr(unsafe_from_address=0)
-        self._exec = _CUptr(unsafe_from_address=0)
-        self._mojo_stream = _CUptr(unsafe_from_address=0)
-        self._replay_stream = _CUptr(unsafe_from_address=0)
+        # Raw _CUptr fields: NVIDIA path overwrites via interceptor calls
+        # below; non-NVIDIA paths never read these (compile-time guarded).
+        self._graph = _uninit[_CUptr]()
+        self._exec = _uninit[_CUptr]()
+        self._mojo_stream = _uninit[_CUptr]()
+        self._replay_stream = _uninit[_CUptr]()
+
+        self._launch_fn = _uninit[def (_CUptr, _CUptr) thin -> c_int]()
 
         comptime if has_nvidia_gpu_accelerator():
             ctx.synchronize()
             self._lib = OwnedDLHandle("./mojo_rl/cuda/libcuda_intercept.so")
+
+            # Resolve the hot graph-launch symbol once (used by every replay).
+            self._launch_fn = self._lib.get_function[
+                def (_CUptr, _CUptr) thin -> c_int
+            ]("intercept_graph_launch")
 
             # Get Mojo's internal stream
             var get_stream = self._lib.get_function[def() thin -> _CUptr](
@@ -83,7 +97,7 @@ struct CUDAGraph(Movable):
                     def(UnsafePointer[_CUptr, MutAnyOrigin]) thin -> c_int
                 ]("intercept_stream_create")
                 var stream_buf = alloc[_CUptr](1)
-                stream_buf[] = _CUptr(unsafe_from_address=0)
+                stream_buf[] = _uninit[_CUptr]()
                 _ = stream_create(stream_buf)
                 self._replay_stream = stream_buf[]
                 stream_buf.free()
@@ -111,8 +125,8 @@ struct CUDAGraph(Movable):
             _ = self._lib.get_function[def(_CUptr) thin -> c_int](
                 "intercept_graph_destroy"
             )(self._graph)
-            self._exec = _CUptr(unsafe_from_address=0)
-            self._graph = _CUptr(unsafe_from_address=0)
+            self._exec = _uninit[_CUptr]()
+            self._graph = _uninit[_CUptr]()
 
         var r = self._lib.get_function[def(_CUptr) thin -> c_int](
             "intercept_stream_begin_capture"
@@ -131,7 +145,7 @@ struct CUDAGraph(Movable):
 
         # End capture
         var graph_buf = alloc[_CUptr](1)
-        graph_buf[] = _CUptr(unsafe_from_address=0)
+        graph_buf[] = _uninit[_CUptr]()
         var r_end = self._lib.get_function[
             def(_CUptr, UnsafePointer[_CUptr, MutAnyOrigin]) thin -> c_int
         ]("intercept_stream_end_capture")(self._mojo_stream, graph_buf)
@@ -162,7 +176,7 @@ struct CUDAGraph(Movable):
 
         # Instantiate
         var exec_buf = alloc[_CUptr](1)
-        exec_buf[] = _CUptr(unsafe_from_address=0)
+        exec_buf[] = _uninit[_CUptr]()
         var r_inst = self._lib.get_function[
             def(UnsafePointer[_CUptr, MutAnyOrigin], _CUptr) thin -> c_int
         ]("intercept_graph_instantiate")(exec_buf, self._graph)
@@ -185,9 +199,7 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._lib.get_function[def(_CUptr, _CUptr) thin -> c_int](
-            "intercept_graph_launch"
-        )(self._exec, self._replay_stream)
+        _ = self._launch_fn(self._exec, self._replay_stream)
 
         _ = self._lib.get_function[def(_CUptr) thin -> c_int](
             "intercept_stream_synchronize"
@@ -202,9 +214,7 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._lib.get_function[def(_CUptr, _CUptr) thin -> c_int](
-            "intercept_graph_launch"
-        )(self._exec, self._replay_stream)
+        _ = self._launch_fn(self._exec, self._replay_stream)
 
     def replay_on_mojo_stream(self) raises:
         """Replay on Mojo's main stream (implicit ordering with other kernels).
@@ -224,9 +234,7 @@ struct CUDAGraph(Movable):
         if self._state != 2:
             raise Error("[CUDAGraph] No graph captured.")
 
-        _ = self._lib.get_function[def(_CUptr, _CUptr) thin -> c_int](
-            "intercept_graph_launch"
-        )(self._exec, self._mojo_stream)
+        _ = self._launch_fn(self._exec, self._mojo_stream)
 
     def sync(self) raises:
         """Synchronize the replay stream. No-op on non-NVIDIA."""
@@ -246,3 +254,59 @@ struct CUDAGraph(Movable):
     def num_nodes(self) -> Int:
         """Number of kernel nodes in the captured graph."""
         return self._num_nodes
+
+
+# ──────────────────────────────────────────────────────────────────────
+# maybe_capture_replay — capture-lifecycle harness behind a closure.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def maybe_capture_replay[
+    STEP: def () capturing raises -> None,
+](mut graph: Optional[CUDAGraph], ctx: DeviceContext) raises:
+    """Capture `STEP` into `graph` on first call; replay it thereafter.
+
+    One generic helper owns the whole capture lifecycle (warmup → begin →
+    capture → end → replay) behind a comptime *capturing closure*, so a
+    training loop never inlines a `comptime if USE_CUDA_GRAPH` maze and the
+    caller's trainer never learns about `CUDAGraph`.
+
+    `STEP` is a comptime capturing closure that mutably captures the caller's
+    state (e.g. the trainer + ctx) and enqueues the *pure device-kernel* step
+    — NO host work. It must enqueue the SAME kernel sequence every call so the
+    captured graph stays valid on replay (sampling included, so each replay
+    draws a fresh minibatch via the device RNG counter).
+
+    `graph` is the caller-owned capture slot (None until first capture). On
+    NVIDIA: the first call runs `STEP` once to settle the stream, then
+    captures a second run; later calls replay on the Mojo stream (implicit
+    ordering with kernels enqueued before/after). On non-NVIDIA: `CUDAGraph`
+    is a compile-time no-op, so this just runs `STEP()` every call —
+    bit-identical to the non-captured path (the Apple-Silicon verification
+    path; real capture/replay needs an NVIDIA run).
+
+    Host bookkeeping (step counters, metric flush cadence) is intentionally
+    NOT here — keep it in the caller's loop, advanced once per logical update,
+    so it stays correct whether the step ran directly or via replay."""
+    comptime if has_nvidia_gpu_accelerator():
+        if not graph:
+            STEP()
+            ctx.synchronize()
+            var g = CUDAGraph(ctx)
+            g.begin_capture()
+            STEP()
+            g.end_capture()
+            # Diagnostic: confirm the harness actually captured kernels (a
+            # tiny/zero node count means capture silently failed — e.g. the
+            # closure enqueued on a different stream than the one being
+            # captured). Printed once per graph (first call only).
+            print(
+                "[CUDA Graph] maybe_capture_replay captured",
+                g.num_nodes(),
+                "nodes",
+            )
+            graph = g^
+        else:
+            graph.value().replay_on_mojo_stream()
+    else:
+        STEP()

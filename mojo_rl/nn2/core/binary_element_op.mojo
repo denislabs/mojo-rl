@@ -46,6 +46,12 @@ trait BinaryElementOp(Movable & ImplicitlyDestructible):
     `grad_output`."""
 
     @staticmethod
+    def display_label() -> String:
+        """Short display name for graph exporters. Default 'Binary'; ops
+        override with their symbol (e.g. 'Min', 'Sub')."""
+        return String("Binary")
+
+    @staticmethod
     def forward_scalar(x: Scalar[DT], y: Scalar[DT]) -> Scalar[DT]:
         ...
 

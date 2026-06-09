@@ -1238,7 +1238,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
 
         # Create texture from sprite pixels (recreated each frame for simplicity)
         var has_texture = False
-        var texture = UnsafePointer[Texture, MutAnyOrigin](unsafe_from_address=0)
+        var texture: Optional[
+            UnsafePointer[Texture, MutAnyOrigin]
+        ] = None
         if self._has_sprites:
             try:
                 var surface = create_surface_from(
@@ -1251,11 +1253,11 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                     c_int(SPRITE_SHEET_WIDTH * SPRITE_BPP),
                 )
                 texture = create_texture_from_surface(
-                    renderer.sdl_renderer, surface
+                    renderer.sdl_renderer.value(), surface
                 )
-                set_texture_blend_mode(texture, BlendMode.BLENDMODE_BLEND)
+                set_texture_blend_mode(texture.value(), BlendMode.BLENDMODE_BLEND)
                 try:
-                    set_texture_scale_mode(texture, ScaleMode.SCALEMODE_NEAREST)
+                    set_texture_scale_mode(texture.value(), ScaleMode.SCALEMODE_NEAREST)
                 except:
                     pass
                 destroy_surface(surface)
@@ -1301,8 +1303,8 @@ struct ChessEnv[DTYPE: DType = DType.float64](
                         )
                         try:
                             render_texture(
-                                renderer.sdl_renderer,
-                                texture,
+                                renderer.sdl_renderer.value(),
+                                texture.value(),
                                 rebind[UnsafePointer[FRect, ImmutAnyOrigin]](
                                     src_rect
                                 ),
@@ -1324,7 +1326,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         # Clean up texture
         if has_texture:
             try:
-                destroy_texture(texture)
+                destroy_texture(texture.value())
             except:
                 pass
 

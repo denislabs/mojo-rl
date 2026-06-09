@@ -12,6 +12,7 @@ from .types import Color, SDL_Color, SDL_Point, SDL_Rect, SDLHandle
 from .transform import Vec2, Transform2D, Camera, RotatingCamera
 
 from .sdl import (
+    _null_ptr,
     init,
     quit as sdl_quit,
     InitFlags,
@@ -55,9 +56,10 @@ struct Renderer2D(Movable):
     Uses SDL3 for hardware-accelerated 2D rendering.
     """
 
-    # SDL3 handles
-    var window: Ptr[Window, MutAnyOrigin]
-    var sdl_renderer: Ptr[SDLRenderer, MutAnyOrigin]
+    # SDL3 handles (Optional because they are populated lazily in
+    # init_display() — Mojo nightly's UnsafePointer is non-nullable).
+    var window: Optional[Ptr[Window, MutAnyOrigin]]
+    var sdl_renderer: Optional[Ptr[SDLRenderer, MutAnyOrigin]]
 
     # Display settings
     var screen_width: Int
@@ -100,8 +102,8 @@ struct Renderer2D(Movable):
             fps: Target frames per second.
             title: Window title.
         """
-        self.window = Ptr[Window, MutAnyOrigin](unsafe_from_address=0)
-        self.sdl_renderer = Ptr[SDLRenderer, MutAnyOrigin](unsafe_from_address=0)
+        self.window = None
+        self.sdl_renderer = None
 
         self.screen_width = width
         self.screen_height = height
@@ -191,7 +193,7 @@ struct Renderer2D(Movable):
 
             # Create renderer
             var name = String("")
-            self.sdl_renderer = create_renderer(self.window, name)
+            self.sdl_renderer = create_renderer(self.window.value(), name)
 
             self.initialized = True
             self.last_frame_time = get_ticks()
@@ -244,13 +246,13 @@ struct Renderer2D(Movable):
         """Clear screen with background color."""
         try:
             set_render_draw_color(
-                self.sdl_renderer,
+                self.sdl_renderer.value(),
                 self.background_color.r,
                 self.background_color.g,
                 self.background_color.b,
                 self.background_color.a,
             )
-            render_clear(self.sdl_renderer)
+            render_clear(self.sdl_renderer.value())
         except:
             pass
 
@@ -258,9 +260,9 @@ struct Renderer2D(Movable):
         """Clear screen with specified color."""
         try:
             set_render_draw_color(
-                self.sdl_renderer, color.r, color.g, color.b, color.a
+                self.sdl_renderer.value(), color.r, color.g, color.b, color.a
             )
-            render_clear(self.sdl_renderer)
+            render_clear(self.sdl_renderer.value())
         except:
             pass
 
@@ -268,7 +270,7 @@ struct Renderer2D(Movable):
         """Set draw color on the renderer."""
         try:
             set_render_draw_color(
-                self.sdl_renderer, color.r, color.g, color.b, color.a
+                self.sdl_renderer.value(), color.r, color.g, color.b, color.a
             )
         except:
             pass
@@ -277,7 +279,7 @@ struct Renderer2D(Movable):
         """Draw a line using raw pixel coordinates (color must be set)."""
         try:
             render_line(
-                self.sdl_renderer,
+                self.sdl_renderer.value(),
                 c_float(x1),
                 c_float(y1),
                 c_float(x2),
@@ -289,7 +291,7 @@ struct Renderer2D(Movable):
     def _draw_point_raw(mut self, x: Int, y: Int):
         """Draw a single point (color must be set)."""
         try:
-            render_point(self.sdl_renderer, c_float(x), c_float(y))
+            render_point(self.sdl_renderer.value(), c_float(x), c_float(y))
         except:
             pass
 
@@ -298,7 +300,7 @@ struct Renderer2D(Movable):
         try:
             var rect = FRect(c_float(x), c_float(y), c_float(w), c_float(h))
             render_fill_rect(
-                self.sdl_renderer,
+                self.sdl_renderer.value(),
                 rebind[Ptr[FRect, ImmutAnyOrigin]](Ptr(to=rect)),
             )
         except:
@@ -309,7 +311,7 @@ struct Renderer2D(Movable):
         try:
             var rect = FRect(c_float(x), c_float(y), c_float(w), c_float(h))
             sdl_render_rect(
-                self.sdl_renderer,
+                self.sdl_renderer.value(),
                 rebind[Ptr[FRect, ImmutAnyOrigin]](Ptr(to=rect)),
             )
         except:
@@ -605,7 +607,7 @@ struct Renderer2D(Movable):
         self._set_color(color)
         try:
             var t = text
-            render_debug_text(self.sdl_renderer, c_float(x), c_float(y), t)
+            render_debug_text(self.sdl_renderer.value(), c_float(x), c_float(y), t)
         except:
             pass
 
@@ -659,7 +661,8 @@ struct Renderer2D(Movable):
             filename: Output path, e.g. ``screenshot_0.jpg`` or ``screenshot_0.png``.
         """
         var surf = render_read_pixels(
-            self.sdl_renderer, Ptr[Rect, ImmutAnyOrigin](unsafe_from_address=0)
+            self.sdl_renderer.value(),
+            _null_ptr[Rect, ImmutAnyOrigin](),
         )
         var pixels = surf[].pixels
         self.recorder.save_frame_bgra(
@@ -685,9 +688,10 @@ struct Renderer2D(Movable):
             # Capture frame for recording BEFORE render_present (SDL3 requirement)
             if self.recorder.is_recording:
                 try:
-                    # NULL rect = read entire viewport into a new Surface
+                    # NULL rect = read entire viewport into a new Surface.
                     var surf = render_read_pixels(
-                        self.sdl_renderer, Ptr[Rect, ImmutAnyOrigin](unsafe_from_address=0)
+                        self.sdl_renderer.value(),
+                        _null_ptr[Rect, ImmutAnyOrigin](),
                     )
                     var pixels = surf[].pixels
                     self.recorder.add_frame_bgra(
@@ -697,7 +701,7 @@ struct Renderer2D(Movable):
                 except e:
                     print("Recording: 2D frame capture failed: " + String(e))
 
-            render_present(self.sdl_renderer)
+            render_present(self.sdl_renderer.value())
 
             # Frame rate limiting
             var current_time = get_ticks()
@@ -740,8 +744,8 @@ struct Renderer2D(Movable):
             except:
                 pass
             try:
-                destroy_renderer(self.sdl_renderer)
-                destroy_window(self.window)
+                destroy_renderer(self.sdl_renderer.value())
+                destroy_window(self.window.value())
                 sdl_quit()
             except:
                 pass

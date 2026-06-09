@@ -27,6 +27,10 @@ struct SwishOp(ElementOp):
     comptime owns_cache = False
 
     @staticmethod
+    def display_label() -> String:
+        return String("SiLU")
+
+    @staticmethod
     def forward_scalar(x: Scalar[DT]) -> Scalar[DT]:
         var sig = Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-x))
         return x * sig

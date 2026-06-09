@@ -19,7 +19,14 @@ from std.math import ceildiv
 from std.memory import alloc
 from std.random import seed as _set_seed, random_float64
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from layout import Layout, LayoutTensor, TileTensor, TensorLayout, Idx, row_major
+from layout import (
+    Layout,
+    LayoutTensor,
+    TileTensor,
+    TensorLayout,
+    Idx,
+    row_major,
+)
 
 from ...nn.constants import dtype
 
@@ -46,7 +53,7 @@ comptime TPB_Y = 4
 comptime TPB_Z = 16
 
 
-struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
+struct CEMPlanner[CONFIG: LeWMConfig](ImplicitlyDestructible, Movable):
     """Autoregressive MPC + CEM planner over a trained LeWM world model.
 
     Templated on the same `CONFIG: LeWMConfig` as `LeWMGPUState` /
@@ -152,7 +159,9 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
     def __del__(deinit self):
         self.action_plan_host_buf.free()
 
-    def _sample_and_upload_pixels[BUF: OfflineBuffer](
+    def _sample_and_upload_pixels[
+        BUF: OfflineBuffer
+    ](
         mut self,
         mut state: Self.GPUState,
         mut buf: BUF,
@@ -167,7 +176,8 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         upload, since MPC overwrites `actions_buf` per shot.
         """
         buf.sample_batch_uint8(
-            Self.CONFIG.BATCH, Self.CONFIG.T,
+            Self.CONFIG.BATCH,
+            Self.CONFIG.T,
             state.pixels_u8_host.unsafe_ptr(),
             state.actions_host.unsafe_ptr(),
         )
@@ -176,17 +186,25 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         comptime BT = Self.GPUState.BT
         comptime IMG_DIM = Self.GPUState.IMG_DIM
         var src_u8_t = LayoutTensor[
-            DType.uint8, Layout.row_major(BT, IMG_DIM), MutAnyOrigin,
+            DType.uint8,
+            Layout.row_major(BT, IMG_DIM),
+            MutAnyOrigin,
         ](state.pixels_u8_buf)
         var dst_fp32_t = LayoutTensor[
-            dtype, Layout.row_major(BT, IMG_DIM), MutAnyOrigin,
+            dtype,
+            Layout.row_major(BT, IMG_DIM),
+            MutAnyOrigin,
         ](state.pixels_buf)
         ctx.enqueue_function[
             pixels_uint8_to_fp32_kernel[
-                BT, Self.CONFIG.IN_CH, Self.CONFIG.IMG, BUF.INPUT_LAYOUT_HWC,
+                BT,
+                Self.CONFIG.IN_CH,
+                Self.CONFIG.IMG,
+                BUF.INPUT_LAYOUT_HWC,
             ],
         ](
-            src_u8_t, dst_fp32_t,
+            src_u8_t,
+            dst_fp32_t,
             grid_dim=(
                 ceildiv(BT, TPB_X),
                 ceildiv(Self.CONFIG.IN_CH, TPB_Y),
@@ -195,7 +213,9 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             block_dim=(TPB_X, TPB_Y, TPB_Z),
         )
 
-    def eval[BUF: OfflineBuffer](
+    def eval[
+        BUF: OfflineBuffer
+    ](
         mut self,
         mut state: Self.GPUState,
         mut buf: BUF,
@@ -230,7 +250,11 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             dtype, Layout.row_major(BT, IMG_DIM), MutAnyOrigin
         ](state.pixels_buf)
         var actions_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.CONFIG.ACT), MutAnyOrigin
+            dtype,
+            Layout.row_major(
+                Self.CONFIG.BATCH, Self.CONFIG.T * Self.CONFIG.ACT
+            ),
+            MutAnyOrigin,
         ](state.actions_buf)
         var emb_t = LayoutTensor[
             dtype, Layout.row_major(BT, Self.EMB), MutAnyOrigin
@@ -239,34 +263,50 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             dtype, Layout.row_major(BT, ENC.CACHE_SIZE), MutAnyOrigin
         ](state.enc_cache_buf)
         var act_emb_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.EMB), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.T * Self.EMB),
+            MutAnyOrigin,
         ](state.act_emb_buf)
         var ae_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, AE.CACHE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.CONFIG.BATCH, AE.CACHE_SIZE),
+            MutAnyOrigin,
         ](state.ae_cache_buf)
         var x_prev_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.x_prev_buf)
         var x_prev_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB),
+            MutAnyOrigin,
         ](state.x_prev_buf)
         var x_prev_pe_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB),
+            MutAnyOrigin,
         ](state.x_prev_pe_buf)
         var pos_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, POS.CACHE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.CONFIG.BATCH, POS.CACHE_SIZE),
+            MutAnyOrigin,
         ](state.pos_cache_buf)
         var c_in_t = LayoutTensor[
             dtype, Layout.row_major(BTH, Self.EMB), MutAnyOrigin
         ](state.c_in_buf)
         var pred_raw_bh_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB),
+            MutAnyOrigin,
         ](state.pred_raw_buf)
         var pred_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.CONFIG.BATCH, Self.CONFIG.H * Self.EMB),
+            MutAnyOrigin,
         ](state.pred_out_buf)
         var proj_cache_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, PROJ.CACHE_SIZE), MutAnyOrigin
+            dtype,
+            Layout.row_major(Self.CONFIG.BATCH, PROJ.CACHE_SIZE),
+            MutAnyOrigin,
         ](state.proj_cache_buf)
 
         var silu_buf_t = LayoutTensor[
@@ -293,7 +333,8 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         print()
         print(
             "==== Phase 4b eval: autoregressive MPC (horizon=",
-            self.mpc_horizon, ") ===="
+            self.mpc_horizon,
+            ") ====",
         )
         _set_seed(eval_seed)
 
@@ -319,10 +360,12 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         #     shooter, CEM) — owns the LeWM rollout scratch and
         #     wraps `_run_mpc_shot` behind `ScorePlanCallback`.
         var shooter = CategoricalRandomShooter[
-            Self.CONFIG.BATCH, Self.CONFIG.ACT,
+            Self.CONFIG.BATCH,
+            Self.CONFIG.ACT,
         ](horizon=needed_actions, num_samples=eval_samples)
         var optimizer = CategoricalCEMOptimizer[
-            Self.CONFIG.BATCH, Self.CONFIG.ACT,
+            Self.CONFIG.BATCH,
+            Self.CONFIG.ACT,
         ](
             horizon=needed_actions,
             cem_iters=self.cem_iters,
@@ -335,14 +378,16 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         # iterations (K=cem_samples). Taking the max avoids ever
         # reallocating mid-eval.
         var callback_k_max = (
-            self.cem_samples
-            if cem_active and self.cem_samples > eval_samples
-            else eval_samples
+            self.cem_samples if cem_active
+            and self.cem_samples > eval_samples else eval_samples
         )
         if callback_k_max < 1:
             callback_k_max = 1
         var callback = LeWMRolloutScoreCallback[Self.CONFIG](
-            state, ctx, self.mpc_horizon, needed_actions,
+            state,
+            ctx,
+            self.mpc_horizon,
+            needed_actions,
             k_max=callback_k_max,
         )
 
@@ -350,9 +395,13 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             self._sample_and_upload_pixels(state, buf, ctx)
 
             ENC.forward_gpu[BT, dtype](
-                ctx, emb_t, pixels_t,
-                state.enc_state.params_view(), state.enc_state.model_state_view(),
-                enc_cache_t, state.enc_ws_buf,
+                ctx,
+                emb_t,
+                pixels_t,
+                state.enc_state.params_view(),
+                state.enc_state.model_state_view(),
+                enc_cache_t,
+                state.enc_ws_buf,
             )
             ctx.enqueue_copy(state.emb_host, state.emb_buf)
             ctx.synchronize()
@@ -361,24 +410,22 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             # upload both to device.
             for b in range(Self.CONFIG.BATCH):
                 for d in range(Self.EMB):
-                    self.emb_start_stage_host[b * Self.EMB + d] = (
-                        state.emb_host[b * Self.CONFIG.T * Self.EMB + d]
-                    )
-                    self.emb_goal_stage_host[b * Self.EMB + d] = (
-                        state.emb_host[b * Self.CONFIG.T * Self.EMB + (Self.CONFIG.T - 1) * Self.EMB + d]
-                    )
+                    self.emb_start_stage_host[
+                        b * Self.EMB + d
+                    ] = state.emb_host[b * Self.CONFIG.T * Self.EMB + d]
+                    self.emb_goal_stage_host[b * Self.EMB + d] = state.emb_host[
+                        b * Self.CONFIG.T * Self.EMB
+                        + (Self.CONFIG.T - 1) * Self.EMB
+                        + d
+                    ]
             ctx.enqueue_copy(self.emb_start_dev_buf, self.emb_start_stage_host)
             ctx.enqueue_copy(self.emb_goal_dev_buf, self.emb_goal_stage_host)
 
             # Bridge the encoded start/goal embeddings into the callback's
             # buffers — they're consumed by every leg (expert, shooter,
             # CEM) below. Two tiny device-to-device copies per eval iter.
-            ctx.enqueue_copy(
-                callback.emb_start_dev_buf, self.emb_start_dev_buf
-            )
-            ctx.enqueue_copy(
-                callback.emb_goal_dev_buf, self.emb_goal_dev_buf
-            )
+            ctx.enqueue_copy(callback.emb_start_dev_buf, self.emb_start_dev_buf)
+            ctx.enqueue_copy(callback.emb_goal_dev_buf, self.emb_goal_dev_buf)
 
             # ---- Leg 1: Expert plan ----
             #
@@ -393,18 +440,20 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                     for k in range(Self.CONFIG.ACT):
                         self.action_plan_host_buf[
                             b * needed_actions * Self.CONFIG.ACT
-                            + ti * Self.CONFIG.ACT + k
+                            + ti * Self.CONFIG.ACT
+                            + k
                         ] = state.actions_host[
                             b * Self.CONFIG.T * Self.CONFIG.ACT
-                            + ti * Self.CONFIG.ACT + k
+                            + ti * Self.CONFIG.ACT
+                            + k
                         ]
             var expert_view = TileTensor(
                 self.action_plan_host_buf,
                 row_major(
                     (
-                        Idx[Self.CONFIG.BATCH](),
-                        Idx(needed_actions),
-                        Idx[Self.CONFIG.ACT](),
+                        Idx[Self.CONFIG.BATCH],
+                        needed_actions,
+                        Idx[Self.CONFIG.ACT],
                     )
                 ),
             )
@@ -431,8 +480,8 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                 if sc > expert_loss_mpc:
                     better_count_mpc += 1
             random_mean_mpc /= Float64(eval_samples)
-            var better_frac_mpc = (
-                Float64(better_count_mpc) / Float64(eval_samples)
+            var better_frac_mpc = Float64(better_count_mpc) / Float64(
+                eval_samples
             )
             sum_expert_mpc += expert_loss_mpc
             sum_random_mean_mpc += random_mean_mpc
@@ -440,12 +489,18 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             sum_better_frac_mpc += better_frac_mpc
 
             print(
-                "  mpc eval", eval_iter,
-                " expert=", expert_loss_mpc,
-                " rand_mean=", random_mean_mpc,
-                " rand_min=", random_min_mpc,
-                " ratio=", expert_loss_mpc / (random_mean_mpc + 1e-12),
-                " frac_random_worse=", better_frac_mpc,
+                "  mpc eval",
+                eval_iter,
+                " expert=",
+                expert_loss_mpc,
+                " rand_mean=",
+                random_mean_mpc,
+                " rand_min=",
+                random_min_mpc,
+                " ratio=",
+                expert_loss_mpc / (random_mean_mpc + 1e-12),
+                " frac_random_worse=",
+                better_frac_mpc,
             )
 
             # ---- Leg 3: CEM refinement (optional). ----
@@ -469,23 +524,33 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                 if cem_score < random_min_mpc:
                     cem_better_random_min += 1
                 print(
-                    "  cem eval", eval_iter, " best=", cem_score,
-                    " vs expert=", expert_loss_mpc,
-                    " vs rand_min=", random_min_mpc,
-                    " cem/expert=", cem_score / (expert_loss_mpc + 1e-12),
-                    " cem/rand_min=", cem_score / (random_min_mpc + 1e-12),
+                    "  cem eval",
+                    eval_iter,
+                    " best=",
+                    cem_score,
+                    " vs expert=",
+                    expert_loss_mpc,
+                    " vs rand_min=",
+                    random_min_mpc,
+                    " cem/expert=",
+                    cem_score / (expert_loss_mpc + 1e-12),
+                    " cem/rand_min=",
+                    cem_score / (random_min_mpc + 1e-12),
                 )
 
         var avg_expert_mpc = sum_expert_mpc / Float64(eval_steps)
-        var avg_rand_mean_mpc = (
-            sum_random_mean_mpc / Float64(eval_steps)
-        )
+        var avg_rand_mean_mpc = sum_random_mean_mpc / Float64(eval_steps)
         var avg_rand_min_mpc = sum_random_min_mpc / Float64(eval_steps)
         var avg_better_mpc = sum_better_frac_mpc / Float64(eval_steps)
         print()
-        print("Phase 4b MPC eval summary (",
-            eval_steps, "iters x ", eval_samples, "shots, horizon=",
-            self.mpc_horizon, "):"
+        print(
+            "Phase 4b MPC eval summary (",
+            eval_steps,
+            "iters x ",
+            eval_samples,
+            "shots, horizon=",
+            self.mpc_horizon,
+            "):",
         )
         print("  expert MSE         =", avg_expert_mpc)
         print("  random MSE (mean)  =", avg_rand_mean_mpc)
@@ -501,22 +566,30 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             " (want < 1.0 — paper exit criterion 0.5)",
         )
         print(
-            "  frac_random_worse  =", avg_better_mpc,
+            "  frac_random_worse  =",
+            avg_better_mpc,
             " (want > 0.5)",
         )
 
         if cem_active:
             var avg_cem = sum_cem / Float64(eval_steps)
-            var cem_vs_expert_frac = (
-                Float64(cem_better_expert) / Float64(eval_steps)
+            var cem_vs_expert_frac = Float64(cem_better_expert) / Float64(
+                eval_steps
             )
-            var cem_vs_rmin_frac = (
-                Float64(cem_better_random_min) / Float64(eval_steps)
+            var cem_vs_rmin_frac = Float64(cem_better_random_min) / Float64(
+                eval_steps
             )
             print()
-            print("Phase 4c CEM eval summary (",
-                eval_steps, "iters x ", self.cem_iters, "CEM iters x ",
-                self.cem_samples, "samples, top", self.cem_topk, "):"
+            print(
+                "Phase 4c CEM eval summary (",
+                eval_steps,
+                "iters x ",
+                self.cem_iters,
+                "CEM iters x ",
+                self.cem_samples,
+                "samples, top",
+                self.cem_topk,
+                "):",
             )
             print("  cem MSE (best)     =", avg_cem)
             print(
@@ -530,15 +603,19 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                 " (want < 1.0 — CEM beats best random)",
             )
             print(
-                "  cem_better_expert  =", cem_vs_expert_frac,
+                "  cem_better_expert  =",
+                cem_vs_expert_frac,
                 " (want > 0.5)",
             )
             print(
-                "  cem_better_rmin    =", cem_vs_rmin_frac,
+                "  cem_better_rmin    =",
+                cem_vs_rmin_frac,
                 " (want > 0.5 — CEM finds better-than-random plans)",
             )
 
-    def _rh_advance_one_step[L: TensorLayout](
+    def _rh_advance_one_step[
+        L: TensorLayout
+    ](
         mut self,
         ctx: DeviceContext,
         mut callback: LeWMRolloutScoreCallback[Self.CONFIG],
@@ -563,20 +640,26 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         var emb_seq_t = LayoutTensor[
             dtype,
             Layout.row_major(
-                Self.CONFIG.BATCH, (Self.CONFIG.T + 1) * Self.EMB,
+                Self.CONFIG.BATCH,
+                (Self.CONFIG.T + 1) * Self.EMB,
             ),
             MutAnyOrigin,
         ](callback.emb_seq_dev_buf.unsafe_ptr())
         var current_emb_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.EMB),
+            dtype,
+            Layout.row_major(Self.CONFIG.BATCH, Self.EMB),
             MutAnyOrigin,
         ](self.current_emb_dev_buf.unsafe_ptr())
         ctx.enqueue_function[
             extract_emb_from_seq_kernel[
-                Self.CONFIG.BATCH, Self.EMB, Self.CONFIG.T + 1,
+                Self.CONFIG.BATCH,
+                Self.EMB,
+                Self.CONFIG.T + 1,
             ],
         ](
-            emb_seq_t, current_emb_t, Self.CONFIG.H,
+            emb_seq_t,
+            current_emb_t,
+            Self.CONFIG.H,
             grid_dim=(
                 ceildiv(Self.CONFIG.BATCH, 16),
                 ceildiv(Self.EMB, 16),
@@ -599,27 +682,32 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         sequence and just computes the per-batch MSE at position 0.
         """
         var current_emb_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.EMB),
+            dtype,
+            Layout.row_major(Self.CONFIG.BATCH, Self.EMB),
             MutAnyOrigin,
         ](self.current_emb_dev_buf.unsafe_ptr())
         var emb_goal_t = LayoutTensor[
-            dtype, Layout.row_major(Self.CONFIG.BATCH, Self.EMB),
+            dtype,
+            Layout.row_major(Self.CONFIG.BATCH, Self.EMB),
             MutAnyOrigin,
         ](callback.emb_goal_dev_buf.unsafe_ptr())
         var score_t = LayoutTensor[
-            dtype, Layout.row_major(1), MutAnyOrigin,
+            dtype,
+            Layout.row_major(1),
+            MutAnyOrigin,
         ](self.final_score_dev_buf.unsafe_ptr())
-        ctx.enqueue_function[
-            mpc_score_kernel[Self.CONFIG.BATCH, Self.EMB, 1],
-        ](
-            current_emb_t, emb_goal_t, score_t, 0,
-            grid_dim=1, block_dim=32,
+        ctx.enqueue_function[mpc_score_kernel[Self.CONFIG.BATCH, Self.EMB, 1],](
+            current_emb_t,
+            emb_goal_t,
+            score_t,
+            0,
+            grid_dim=1,
+            block_dim=32,
         )
         ctx.enqueue_copy(self.final_score_host_buf, self.final_score_dev_buf)
         ctx.synchronize()
-        return (
-            Float64(self.final_score_host_buf[0])
-            / Float64(Self.CONFIG.BATCH * Self.EMB)
+        return Float64(self.final_score_host_buf[0]) / Float64(
+            Self.CONFIG.BATCH * Self.EMB
         )
 
     def _build_expert_rh_plan(
@@ -647,21 +735,21 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                 for k in range(Self.CONFIG.ACT):
                     var dst_idx = (
                         b * needed_actions * Self.CONFIG.ACT
-                        + ti * Self.CONFIG.ACT + k
+                        + ti * Self.CONFIG.ACT
+                        + k
                     )
                     if src_t < Self.CONFIG.T:
-                        self.action_plan_host_buf[dst_idx] = (
-                            state.actions_host[
-                                b * Self.CONFIG.T * Self.CONFIG.ACT
-                                + src_t * Self.CONFIG.ACT + k
-                            ]
-                        )
+                        self.action_plan_host_buf[dst_idx] = state.actions_host[
+                            b * Self.CONFIG.T * Self.CONFIG.ACT
+                            + src_t * Self.CONFIG.ACT
+                            + k
+                        ]
                     else:
-                        self.action_plan_host_buf[dst_idx] = (
-                            Scalar[dtype](0.0)
-                        )
+                        self.action_plan_host_buf[dst_idx] = Scalar[dtype](0.0)
 
-    def eval_receding_horizon[BUF: OfflineBuffer](
+    def eval_receding_horizon[
+        BUF: OfflineBuffer
+    ](
         mut self,
         mut state: Self.GPUState,
         mut buf: BUF,
@@ -728,7 +816,10 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         print()
         print(
             "==== Phase 4d eval: receding-horizon MPC (rh_steps=",
-            rh_steps, ", mpc_horizon=", self.mpc_horizon, ") ===="
+            rh_steps,
+            ", mpc_horizon=",
+            self.mpc_horizon,
+            ") ====",
         )
         _set_seed(eval_seed)
 
@@ -740,10 +831,12 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         # path. ``shooter`` always constructed; ``optimizer.optimize_batched``
         # only called when ``cem_active``.
         var shooter = CategoricalRandomShooter[
-            Self.CONFIG.BATCH, Self.CONFIG.ACT,
+            Self.CONFIG.BATCH,
+            Self.CONFIG.ACT,
         ](horizon=needed_actions, num_samples=eval_samples)
         var optimizer = CategoricalCEMOptimizer[
-            Self.CONFIG.BATCH, Self.CONFIG.ACT,
+            Self.CONFIG.BATCH,
+            Self.CONFIG.ACT,
         ](
             horizon=needed_actions,
             cem_iters=self.cem_iters,
@@ -752,14 +845,16 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             cem_smoothing=self.cem_smoothing,
         )
         var callback_k_max = (
-            self.cem_samples
-            if cem_active and self.cem_samples > eval_samples
-            else eval_samples
+            self.cem_samples if cem_active
+            and self.cem_samples > eval_samples else eval_samples
         )
         if callback_k_max < 1:
             callback_k_max = 1
         var callback = LeWMRolloutScoreCallback[Self.CONFIG](
-            state, ctx, self.mpc_horizon, needed_actions,
+            state,
+            ctx,
+            self.mpc_horizon,
+            needed_actions,
             k_max=callback_k_max,
         )
 
@@ -767,35 +862,33 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             self._sample_and_upload_pixels(state, buf, ctx)
 
             ENC.forward_gpu[BT, dtype](
-                ctx, emb_t, pixels_t,
+                ctx,
+                emb_t,
+                pixels_t,
                 state.enc_state.params_view(),
                 state.enc_state.model_state_view(),
-                enc_cache_t, state.enc_ws_buf,
+                enc_cache_t,
+                state.enc_ws_buf,
             )
             ctx.enqueue_copy(state.emb_host, state.emb_buf)
             ctx.synchronize()
 
             for b in range(Self.CONFIG.BATCH):
                 for d in range(Self.EMB):
-                    self.emb_start_stage_host[b * Self.EMB + d] = (
-                        state.emb_host[b * Self.CONFIG.T * Self.EMB + d]
-                    )
-                    self.emb_goal_stage_host[b * Self.EMB + d] = (
-                        state.emb_host[
-                            b * Self.CONFIG.T * Self.EMB
-                            + (Self.CONFIG.T - 1) * Self.EMB + d
-                        ]
-                    )
+                    self.emb_start_stage_host[
+                        b * Self.EMB + d
+                    ] = state.emb_host[b * Self.CONFIG.T * Self.EMB + d]
+                    self.emb_goal_stage_host[b * Self.EMB + d] = state.emb_host[
+                        b * Self.CONFIG.T * Self.EMB
+                        + (Self.CONFIG.T - 1) * Self.EMB
+                        + d
+                    ]
             ctx.enqueue_copy(self.emb_start_dev_buf, self.emb_start_stage_host)
             ctx.enqueue_copy(self.emb_goal_dev_buf, self.emb_goal_stage_host)
-            ctx.enqueue_copy(
-                callback.emb_goal_dev_buf, self.emb_goal_dev_buf
-            )
+            ctx.enqueue_copy(callback.emb_goal_dev_buf, self.emb_goal_dev_buf)
 
             # ---- Pass 1: Expert receding-horizon ----
-            ctx.enqueue_copy(
-                self.current_emb_dev_buf, self.emb_start_dev_buf
-            )
+            ctx.enqueue_copy(self.current_emb_dev_buf, self.emb_start_dev_buf)
             for rh_step in range(rh_steps):
                 ctx.enqueue_copy(
                     callback.emb_start_dev_buf, self.current_emb_dev_buf
@@ -805,9 +898,9 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                     self.action_plan_host_buf,
                     row_major(
                         (
-                            Idx[Self.CONFIG.BATCH](),
-                            Idx(needed_actions),
-                            Idx[Self.CONFIG.ACT](),
+                            Idx[Self.CONFIG.BATCH],
+                            needed_actions,
+                            Idx[Self.CONFIG.ACT],
                         )
                     ),
                 )
@@ -815,9 +908,7 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
             var rh_expert_score = self._rh_final_score(ctx, callback)
 
             # ---- Pass 2: Random receding-horizon ----
-            ctx.enqueue_copy(
-                self.current_emb_dev_buf, self.emb_start_dev_buf
-            )
+            ctx.enqueue_copy(self.current_emb_dev_buf, self.emb_start_dev_buf)
             for rh_step in range(rh_steps):
                 _ = rh_step
                 ctx.enqueue_copy(
@@ -833,15 +924,13 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                     self.action_plan_host_buf,
                     row_major(
                         (
-                            Idx[Self.CONFIG.BATCH](),
-                            Idx(needed_actions),
-                            Idx[Self.CONFIG.ACT](),
+                            Idx[Self.CONFIG.BATCH],
+                            needed_actions,
+                            Idx[Self.CONFIG.ACT],
                         )
                     ),
                 )
-                _ = self._rh_advance_one_step(
-                    ctx, callback, random_best_view
-                )
+                _ = self._rh_advance_one_step(ctx, callback, random_best_view)
             var rh_random_score = self._rh_final_score(ctx, callback)
 
             # ---- Pass 3: CEM receding-horizon (optional). ----
@@ -865,15 +954,13 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                         self.action_plan_host_buf,
                         row_major(
                             (
-                                Idx[Self.CONFIG.BATCH](),
-                                Idx(needed_actions),
-                                Idx[Self.CONFIG.ACT](),
+                                Idx[Self.CONFIG.BATCH],
+                                needed_actions,
+                                Idx[Self.CONFIG.ACT],
                             )
                         ),
                     )
-                    _ = self._rh_advance_one_step(
-                        ctx, callback, cem_best_view
-                    )
+                    _ = self._rh_advance_one_step(ctx, callback, cem_best_view)
                 rh_cem_score = self._rh_final_score(ctx, callback)
 
             sum_rh_expert += rh_expert_score
@@ -883,10 +970,14 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
 
             if cem_active:
                 print(
-                    "  rh eval", eval_iter,
-                    " expert_rh=", rh_expert_score,
-                    " random_rh=", rh_random_score,
-                    " cem_rh=", rh_cem_score,
+                    "  rh eval",
+                    eval_iter,
+                    " expert_rh=",
+                    rh_expert_score,
+                    " random_rh=",
+                    rh_random_score,
+                    " cem_rh=",
+                    rh_cem_score,
                     " cem_rh/expert_rh=",
                     rh_cem_score / (rh_expert_score + 1e-12),
                     " cem_rh/random_rh=",
@@ -894,9 +985,12 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
                 )
             else:
                 print(
-                    "  rh eval", eval_iter,
-                    " expert_rh=", rh_expert_score,
-                    " random_rh=", rh_random_score,
+                    "  rh eval",
+                    eval_iter,
+                    " expert_rh=",
+                    rh_expert_score,
+                    " random_rh=",
+                    rh_random_score,
                     " expert_rh/random_rh=",
                     rh_expert_score / (rh_random_score + 1e-12),
                 )
@@ -906,8 +1000,14 @@ struct CEMPlanner[CONFIG: LeWMConfig](Movable, ImplicitlyDestructible):
         print()
         print(
             "Phase 4d receding-horizon eval summary (",
-            eval_steps, "iters x ", rh_steps, "RH steps x ",
-            eval_samples, "samples, mpc_horizon=", self.mpc_horizon, "):"
+            eval_steps,
+            "iters x ",
+            rh_steps,
+            "RH steps x ",
+            eval_samples,
+            "samples, mpc_horizon=",
+            self.mpc_horizon,
+            "):",
         )
         print("  expert_rh MSE      =", avg_rh_expert)
         print("  random_rh MSE      =", avg_rh_random)

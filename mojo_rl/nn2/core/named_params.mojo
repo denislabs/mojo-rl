@@ -23,6 +23,7 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from ..constants import DT
+from .module import mptr
 from .param_visitor import ParamVisitor
 from .module import Module
 
@@ -63,8 +64,8 @@ struct _NamedParamCollector(ParamVisitor):
     ) raises:
         # Widen the pointers so they can be stored in our origin-erased
         # NamedParam record.
-        var param_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        var grad_ptr  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
+        var param_ptr = mptr(param.ptr)
+        var grad_ptr  = mptr(grad.ptr)
         self.items_ptr[].append(
             NamedParam(
                 name=name,

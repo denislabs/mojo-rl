@@ -72,11 +72,16 @@ struct AtariEnvironment(Movable):
             set_action(self.state, ACTION_NOOP)
             run_frame(self.state, self.rom, self.rom_size)
 
-        # Press RESET to start the game
-        set_action(self.state, ACTION_RESET)
-        run_frame(self.state, self.rom, self.rom_size)
+        # Hold the console RESET switch to actually start the game. A single
+        # frame is too short for some games (e.g. Space Invaders), which then
+        # stay in attract/demo mode — showing a colored background and a
+        # garbage demo score. Holding RESET for several frames matches a real
+        # button press and reliably starts gameplay.
+        for _ in range(10):
+            set_action(self.state, ACTION_RESET)
+            run_frame(self.state, self.rom, self.rom_size)
 
-        # A few more NOOP frames
+        # A few more NOOP frames to let the game settle into play.
         for _ in range(10):
             set_action(self.state, ACTION_NOOP)
             run_frame(self.state, self.rom, self.rom_size)

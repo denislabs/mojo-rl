@@ -55,20 +55,25 @@ def main() raises:
     #   SIMS=50     : same MCTS budget as the MLP-validated baseline so
     #                 only the network changes vs the known-good run.
     #   NODES=128, BS=64, CAP=80000 : as MLP baseline.
-    comptime Config = AlphaZeroTicTacToeCNNConfig[
-        FILTERS=64,
-        LR=0.001,
+    # comptime Config = AlphaZeroTicTacToeCNNConfig[
+    #     FILTERS=64,
+    #     LR=0.001,
+    #     BS=64,
+    #     CAP=80000,
+    #     SIMS=50,
+    #     NODES=128,
+    #     C_PUCT=1.0,
+    # ]
+    # MLP baseline (known-converging) — uncomment to revert:
+    comptime Config = AlphaZeroTicTacToeConfig[
+        HIDDEN=128,
+        LR=0.005,
         BS=64,
         CAP=80000,
         SIMS=50,
         NODES=128,
         C_PUCT=1.0,
     ]
-    # MLP baseline (known-converging) — uncomment to revert:
-    # comptime Config = AlphaZeroTicTacToeConfig[
-    #     HIDDEN=128, LR=0.005, BS=64, CAP=80000, SIMS=50, NODES=128,
-    #     C_PUCT=1.0,
-    # ]
 
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "TicTacToe")

@@ -36,6 +36,9 @@ from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.module import mptr
+from ..training.replay_buffer import ReplayBuffer
+from ..training.trainer_block import TrainerState
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -76,29 +79,101 @@ def _store_one_kernel[OBS: Int, ACT: Int, CAP: Int](
         buf_d[s] = stage_d[0]
 
 
+def _increment_rng_offset_kernel[BATCH: Int](
+    offset: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Bump the device RNG offset by `2 * BATCH` (the same stride the host
+    used). Launch grid=(1,), block=(1,). Enqueued AFTER the sample kernel
+    so the sample reads offset N and the next call reads N + 2·BATCH —
+    bit-identical to the old host `_rng_offset += 2·BATCH`, but now the
+    counter lives on-device so it advances on every CUDA-graph replay
+    without host intervention."""
+    if Int(thread_idx.x) == 0:
+        offset[0] = offset[0] + UInt64(BATCH * 2)
+
+
+def _bump_size_kernel[CAP: Int](
+    size_buf: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
+    n: Int32,
+):
+    """Saturating bump of the device-resident transition count by `n`
+    (clamped to CAP). Launch grid=(1,), block=(1,). Enqueued on the eager
+    `add` / `add_batch` path so the device counter mirrors the host
+    `self.size`. The uniform sample kernel reads THIS (live, device) count
+    instead of a host scalar — which is what makes sampling correct under
+    CUDA-graph capture: a baked host `size` would freeze the sample range to
+    the buffer's capture-time fill (≈ warmup), starving training of all newer
+    experience. Bit-identical to the host `size` on the non-captured path."""
+    if Int(thread_idx.x) == 0:
+        var s = Int(size_buf[0]) + Int(n)
+        if s > CAP:
+            s = CAP
+        size_buf[0] = Scalar[DType.int32](s)
+
+
+def _sample_indices_range_kernel[BATCH: Int](
+    indices: LayoutTensor[
+        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+    ],
+    lo: Int32,
+    hi: Int32,
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Philox uniform → integer index in `[lo, hi)`. Host-passed range (the
+    MBPO dyn train/holdout split is NOT CUDA-graph captured, so host scalars
+    are fine here). Advances the same `offset_buf` counter as
+    `_sample_indices_kernel`."""
+    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if i >= BATCH:
+        return
+    var offset_base = rebind[UInt64](offset_buf[0])
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var lo_i = Int(lo)
+    var hi_i = Int(hi)
+    var span = hi_i - lo_i
+    if span < 1:
+        span = 1
+    var idx = lo_i + Int(u * Float32(span))
+    if idx >= hi_i:
+        idx = hi_i - 1
+    if idx < lo_i:
+        idx = lo_i
+    indices[i] = Scalar[DType.int32](idx)
+
+
 def _sample_indices_kernel[BATCH: Int](
     indices: LayoutTensor[
         DType.int32, Layout.row_major(BATCH), MutAnyOrigin
     ],
-    size: Int32,
+    size_buf: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
     seed: UInt64,
-    offset_base: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
 ):
     """Per-thread Philox uniform → integer index in `[0, size)`.
 
     Seeding follows the deep_agents `sample_indices_kernel` pattern —
     one Philox stream per lane, seed mixed with thread index to avoid
-    cross-lane collisions. `offset_base` is bumped on the CPU between
-    calls so back-to-back samples draw fresh streams.
+    cross-lane collisions. The Philox `offset_base` is read from the
+    device buffer `offset_buf[0]` (Slice 5 — CUDA-graph capturable) and
+    advanced by `_increment_rng_offset_kernel` after this kernel.
+
+    `size` (current buffer fill) is read from the device buffer `size_buf[0]`
+    — NOT a host scalar — so the sample range tracks the LIVE count on every
+    CUDA-graph replay. A baked host `size` would freeze sampling to the
+    capture-time fill (≈ warmup), the catastrophic-divergence bug.
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH:
         return
+    var size = Int(size_buf[0])
+    var offset_base = rebind[UInt64](offset_buf[0])
     var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
     var u = Float32(philox.step_uniform()[0])
     var idx = Int(u * Float32(size))
-    if idx >= Int(size):
-        idx = Int(size) - 1
+    if idx >= size:
+        idx = size - 1
     if idx < 0:
         idx = 0
     indices[i] = Scalar[DType.int32](idx)
@@ -112,7 +187,7 @@ def _sample_indices_ere_kernel[BATCH: Int, CAP: Int](
     write_pos: Int32,
     c_k: Int32,
     seed: UInt64,
-    offset_base: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
 ):
     """ERE-biased Philox uniform: index lands uniformly within the
     most recent `min(c_k, size)` slots of the circular buffer.
@@ -124,14 +199,21 @@ def _sample_indices_ere_kernel[BATCH: Int, CAP: Int](
     when ERE is effectively off.
 
     Mirrors `deep_agents`' `sample_indices_ere_kernel` but takes
-    `c_k`, `size`, and `write_pos` as kernel args (scalar Int32)
-    instead of via DeviceBuffers — the host computes `c_k` once per
-    call (no GPU graph capture concern in nn2 today; see
-    `feedback_gpu_scalar_args`).
+    `c_k`, `size`, and `write_pos` as host scalar Int32 kernel args
+    (the host computes `c_k`/anneals per call).
+
+    WARNING — NOT CUDA-graph-safe: `size`, `write_pos`, and `c_k` all
+    change every call, so under capture they would be baked at capture time
+    and the sample distribution would freeze (the same class of bug that the
+    uniform path's device-resident `size_buf` fixes). Do NOT combine ERE
+    (`enable_ere`) with `USE_TRAIN_CUDA_GRAPH`. Making ERE capturable would
+    require device-resident `size`/`write_pos`/`c_k` (and an on-device
+    anneal). The uniform path IS capture-safe.
     """
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH:
         return
+    var offset_base = rebind[UInt64](offset_buf[0])
     var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
     var u = Float32(philox.step_uniform()[0])
     var c = Int(c_k)
@@ -229,9 +311,7 @@ def _store_batch_kernel[
 
 
 @fieldwise_init
-struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
-    Movable & ImplicitlyDestructible
-):
+struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     """Device-resident circular replay buffer.
 
     Stored layout:
@@ -244,9 +324,18 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
     CPU bookkeeping: `pos` (next write slot), `size` (saturates at CAP
     after first wrap), `rng_seed`, `_rng_offset`.
 
+    Conforms to `ReplayBuffer`: `make` / `add(Lists, ctx)` /
+    `sample_into` / `count` are the trait surface; the legacy
+    `new` / `add(ctx, ptrs)` / `sample` methods are retained for callers
+    that pre-date the trait.
+
     `OBS` and `ACT` are dimensions (not buffer sizes); for Pendulum,
     `GPUReplay[3, 1, 50000]`.
     """
+
+    comptime OBS = Self.OBS_
+    comptime ACT = Self.ACT_
+    comptime CAP = Self.CAP_
 
     # Device-resident circular storage.
     var obs: DeviceBuffer[DT]
@@ -275,7 +364,20 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
     var size: Int
     var pos: Int
     var rng_seed: UInt64
-    var _rng_offset: UInt64
+    # Slice 5 — device-resident Philox offset (was a host `UInt64` bumped
+    # on the CPU). A 1-elem uint64 buffer the sample kernel reads and the
+    # `_increment_rng_offset_kernel` advances on-device → CUDA-graph
+    # capturable. The offset sequence (k·2·BATCH) is unchanged, so the
+    # sampled-index stream is bit-identical to the old host-counter path.
+    var _rng_offset_dev: DeviceBuffer[DType.uint64]
+
+    # Device-resident mirror of `size` (1-elem int32), bumped by
+    # `_bump_size_kernel` on every `add` / `add_batch`. The uniform sample
+    # kernel reads THIS rather than the host `size` scalar so the sample range
+    # tracks the live fill under CUDA-graph capture (a host scalar would be
+    # baked at capture time → sampling frozen to the warmup-era fill). The host
+    # `size` is retained for the eager `count()` / `is_ready` gates.
+    var _size_dev: DeviceBuffer[DType.int32]
 
     # Cached BATCH ceiling for `indices` buffer sizing.
     var batch_capacity: Int
@@ -318,6 +420,12 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
 
         var idx_buf = ctx.enqueue_create_buffer[DType.int32](batch_capacity)
 
+        var rng_off = ctx.enqueue_create_buffer[DType.uint64](1)
+        rng_off.enqueue_fill(UInt64(0))
+
+        var size_dev = ctx.enqueue_create_buffer[DType.int32](1)
+        size_dev.enqueue_fill(Int32(0))
+
         var hr = alloc[Scalar[DT]](1)
         var hd = alloc[Scalar[DT]](1)
         hr[0] = Scalar[DT](0.0)
@@ -331,7 +439,8 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
             _h_rew=hr, _h_dne=hd,
             size=0, pos=0,
             rng_seed=UInt64(0xC0FFEE_DECADE_0042),
-            _rng_offset=UInt64(0),
+            _rng_offset_dev=rng_off^,
+            _size_dev=size_dev^,
             batch_capacity=batch_capacity,
             ere_enabled=False,
             ere_eta=Scalar[DT](0.996),
@@ -340,6 +449,70 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
             _ere_eta_pow_k=Scalar[DT](1.0),
             _ere_c_min=1,
         )
+
+    # ─── ReplayBuffer trait surface ──────────────────────────────────
+
+    @staticmethod
+    def make(
+        ctx: Optional[DeviceContext] = None,
+        batch_capacity: Int = 4096,
+    ) raises -> Self:
+        """Trait factory. `ctx` is required (GPU storage); raises if
+        None. `batch_capacity` sizes the sample-side index scratch."""
+        if not ctx:
+            raise Error("GPUReplay.make: ctx required for device storage")
+        return Self.new(ctx.value(), batch_capacity=batch_capacity)
+
+    def add(
+        mut self,
+        ref s: List[Scalar[DT]],
+        ref a: List[Scalar[DT]],
+        r: Scalar[DT],
+        ref sp: List[Scalar[DT]],
+        d: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """Trait-surface add: stage the host Lists to device and reuse
+        the pointer-based `add`. `ctx` required (raises if None)."""
+        if not ctx:
+            raise Error("GPUReplay.add: ctx required for device storage")
+        var s_p = mptr(s.unsafe_ptr())
+        var a_p = mptr(a.unsafe_ptr())
+        var sp_p = mptr(sp.unsafe_ptr())
+        self.add(ctx.value(), s_p, a_p, r, sp_p, d)
+
+    def sample_into[BATCH: Int](
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
+    ) raises:
+        """Trait-surface sampling: launch the gather into the device
+        mirrors of `state.mb_*` using `state.ctx`."""
+        self.sample[BATCH](
+            state.ctx.value(),
+            state.mb_s.dev.value(),
+            state.mb_a.dev.value(),
+            state.mb_r.dev.value(),
+            state.mb_sp.dev.value(),
+            state.mb_d.dev.value(),
+        )
+
+    def count(self) -> Int:
+        return self.size
+
+    def configure_ere(
+        mut self,
+        enable: Bool = False,
+        eta: Scalar[DT] = Scalar[DT](0.996),
+        c_min: Int = 1,
+        k_max: Int = 1000,
+    ) raises:
+        """Trait override: flip ERE state. Delegates to `enable_ere` /
+        `disable_ere` so the generic sample block can configure recency
+        bias without knowing the concrete backend."""
+        if enable:
+            self.enable_ere(eta=eta, c_min=c_min, k_max=k_max)
+        else:
+            self.disable_ere()
 
     def enable_ere(
         mut self,
@@ -458,6 +631,15 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
         if self.size < Self.CAP:
             self.size += 1
 
+        # Mirror the host `size` bump onto the device counter the (possibly
+        # CUDA-graph-captured) sample kernel reads.
+        var size_lt = LayoutTensor[
+            DType.int32, Layout.row_major(1), MutAnyOrigin
+        ](self._size_dev.unsafe_ptr())
+        ctx.enqueue_function[_bump_size_kernel[Self.CAP]](
+            size_lt, Int32(1), grid_dim=1, block_dim=1,
+        )
+
     def add_batch[N_ENVS: Int](
         mut self,
         ctx: DeviceContext,
@@ -525,6 +707,15 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
         if self.size > Self.CAP:
             self.size = Self.CAP
 
+        # Mirror the host `size` bump onto the device counter the (possibly
+        # CUDA-graph-captured) sample kernel reads.
+        var size_lt = LayoutTensor[
+            DType.int32, Layout.row_major(1), MutAnyOrigin
+        ](self._size_dev.unsafe_ptr())
+        ctx.enqueue_function[_bump_size_kernel[Self.CAP]](
+            size_lt, Int32(N_ENVS), grid_dim=1, block_dim=1,
+        )
+
     def sample[BATCH: Int](
         mut self,
         ctx: DeviceContext,
@@ -553,6 +744,9 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
         var idx_lt = LayoutTensor[
             DType.int32, Layout.row_major(BATCH), MutAnyOrigin
         ](self.indices.unsafe_ptr())
+        var off_lt = LayoutTensor[
+            DType.uint64, Layout.row_major(1), MutAnyOrigin
+        ](self._rng_offset_dev.unsafe_ptr())
         comptime n_blocks = (BATCH + TPB - 1) // TPB
         if self.ere_enabled:
             # Host-side compute c_k = clamp(floor(size · η^k), c_min, size).
@@ -573,7 +767,7 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
                 Int32(self.size),
                 Int32(self.pos),
                 Int32(c),
-                self.rng_seed, self._rng_offset,
+                self.rng_seed, off_lt,
                 grid_dim=n_blocks, block_dim=TPB,
             )
             # Advance k, η^k; wrap at k_max.
@@ -583,14 +777,21 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
                 self._ere_k = 0
                 self._ere_eta_pow_k = Scalar[DT](1.0)
         else:
+            var size_lt = LayoutTensor[
+                DType.int32, Layout.row_major(1), MutAnyOrigin
+            ](self._size_dev.unsafe_ptr())
             comptime indices_kernel = _sample_indices_kernel[BATCH]
             ctx.enqueue_function[indices_kernel](
-                idx_lt, Int32(self.size),
-                self.rng_seed, self._rng_offset,
+                idx_lt, size_lt,
+                self.rng_seed, off_lt,
                 grid_dim=n_blocks, block_dim=TPB,
             )
-        # Bump RNG offset so back-to-back calls draw disjoint streams.
-        self._rng_offset += UInt64(BATCH * 2)
+        # Bump RNG offset on-device (after the sample kernel reads it) so
+        # back-to-back calls draw disjoint streams — CUDA-graph capturable.
+        comptime inc_kernel = _increment_rng_offset_kernel[BATCH]
+        ctx.enqueue_function[inc_kernel](
+            off_lt, grid_dim=1, block_dim=1,
+        )
 
         var mb_s_lt = LayoutTensor[
             DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
@@ -623,6 +824,82 @@ struct GPUReplay[OBS: Int, ACT: Int, CAP: Int](
             DT, Layout.row_major(Self.CAP), MutAnyOrigin
         ](self.dne.unsafe_ptr())
 
+        comptime gather_kernel = _gather_batch_kernel[
+            BATCH, Self.OBS, Self.ACT, Self.CAP
+        ]
+        ctx.enqueue_function[gather_kernel](
+            mb_s_lt, mb_a_lt, mb_r_lt, mb_sp_lt, mb_d_lt,
+            buf_s_lt, buf_a_lt, buf_r_lt, buf_sp_lt, buf_d_lt,
+            idx_lt,
+            grid_dim=n_blocks, block_dim=TPB,
+        )
+
+    def sample_range[BATCH: Int](
+        mut self,
+        ctx: DeviceContext,
+        lo: Int,
+        hi: Int,
+        mb_s: DeviceBuffer[DT],
+        mb_a: DeviceBuffer[DT],
+        mb_r: DeviceBuffer[DT],
+        mb_sp: DeviceBuffer[DT],
+        mb_d: DeviceBuffer[DT],
+    ) raises:
+        """Like `sample`, but draws indices uniformly from `[lo, hi)`
+        instead of the whole live buffer — used by MBPO dynamics training to
+        enforce a fixed train/holdout split. Not CUDA-graph captured, so the
+        host `lo`/`hi` range is fine. Ignores ERE."""
+        comptime assert BATCH > 0, "BATCH must be > 0"
+        if BATCH > self.batch_capacity:
+            raise Error(
+                "GPUReplay.sample_range[BATCH=" + String(BATCH)
+                + "] exceeds batch_capacity=" + String(self.batch_capacity)
+            )
+        var idx_lt = LayoutTensor[
+            DType.int32, Layout.row_major(BATCH), MutAnyOrigin
+        ](self.indices.unsafe_ptr())
+        var off_lt = LayoutTensor[
+            DType.uint64, Layout.row_major(1), MutAnyOrigin
+        ](self._rng_offset_dev.unsafe_ptr())
+        comptime n_blocks = (BATCH + TPB - 1) // TPB
+        comptime range_kernel = _sample_indices_range_kernel[BATCH]
+        ctx.enqueue_function[range_kernel](
+            idx_lt, Int32(lo), Int32(hi), self.rng_seed, off_lt,
+            grid_dim=n_blocks, block_dim=TPB,
+        )
+        comptime inc_kernel = _increment_rng_offset_kernel[BATCH]
+        ctx.enqueue_function[inc_kernel](off_lt, grid_dim=1, block_dim=1)
+
+        var mb_s_lt = LayoutTensor[
+            DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
+        ](mb_s.unsafe_ptr())
+        var mb_a_lt = LayoutTensor[
+            DT, Layout.row_major(BATCH, Self.ACT), MutAnyOrigin
+        ](mb_a.unsafe_ptr())
+        var mb_r_lt = LayoutTensor[
+            DT, Layout.row_major(BATCH), MutAnyOrigin
+        ](mb_r.unsafe_ptr())
+        var mb_sp_lt = LayoutTensor[
+            DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
+        ](mb_sp.unsafe_ptr())
+        var mb_d_lt = LayoutTensor[
+            DT, Layout.row_major(BATCH), MutAnyOrigin
+        ](mb_d.unsafe_ptr())
+        var buf_s_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+        ](self.obs.unsafe_ptr())
+        var buf_a_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
+        ](self.act.unsafe_ptr())
+        var buf_r_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP), MutAnyOrigin
+        ](self.rew.unsafe_ptr())
+        var buf_sp_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+        ](self.nxt.unsafe_ptr())
+        var buf_d_lt = LayoutTensor[
+            DT, Layout.row_major(Self.CAP), MutAnyOrigin
+        ](self.dne.unsafe_ptr())
         comptime gather_kernel = _gather_batch_kernel[
             BATCH, Self.OBS, Self.ACT, Self.CAP
         ]

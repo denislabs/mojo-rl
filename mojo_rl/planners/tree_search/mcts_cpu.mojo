@@ -224,6 +224,7 @@ struct GenericCPUMCTS[
     PLAYER: PlayerMode,
     BATCH_SIMS: Int = 1,
     VIRTUAL_LOSS: Int = 3,
+    NORMALIZE_Q: Bool = True,
 ](ImplicitlyDestructible, Movable):
     """CPU MCTS parameterized by the model contract + strategy traits.
 
@@ -558,7 +559,10 @@ struct GenericCPUMCTS[
 
             var q: Float64
             if node.visit_count[a] > 0:
-                q = self.min_max.normalize(node.mean_value(a))
+                comptime if Self.NORMALIZE_Q:
+                    q = self.min_max.normalize(node.mean_value(a))
+                else:
+                    q = node.mean_value(a)
             else:
                 q = Float64(0.0)
 

@@ -57,8 +57,19 @@ struct DQNAgent[
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = 0.0,
         max_grad_norm: Scalar[DT] = 0.0,
+        per_alpha: Scalar[DT] = 0.6,
+        per_beta: Scalar[DT] = 0.4,
+        per_epsilon: Scalar[DT] = 1e-6,
+        nstep: Int = 1,
     ) raises:
-        """Construct a DQNAgent. Forwards every kwarg to `DQNTrainer.make`."""
+        """Construct a DQNAgent. Forwards every kwarg to `DQNTrainer.make`.
+
+        `per_*` configure prioritized replay and `nstep` the N-step
+        return horizon; both are no-ops when the `SAMPLE` block is
+        uniform / single-step (the trainer's `configure_per` /
+        `configure_gamma` default to no-op for those backends). They are
+        wired through here so the `DQNPER` / N-step configs in
+        `config.mojo` can reach them."""
         self.trainer = DQNTrainer[
             Self.train_target, Self.SAMPLE, Self.Q_NET, Self.DOUBLE,
         ].make(
@@ -74,6 +85,10 @@ struct DQNAgent[
             window_size=window_size,
             initial_episode_fill=initial_episode_fill,
             max_grad_norm=max_grad_norm,
+            per_alpha=per_alpha,
+            per_beta=per_beta,
+            per_epsilon=per_epsilon,
+            nstep=nstep,
         )
 
     # ─── Training entry point ──────────────────────────────────────────

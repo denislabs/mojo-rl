@@ -31,20 +31,25 @@ from ..kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
     forward_kinematics_gpu,
+    forward_kinematics_gpu_mt,
     compute_body_velocities_gpu,
+    compute_body_velocities_gpu_mt,
 )
 from ..kinematics.quat_math import quat_normalize, quat_integrate
 from ..dynamics.mass_matrix import (
     compute_mass_matrix_full,
     compute_mass_matrix_full_gpu,
     compute_mass_matrix_full_gpu_mt,
+    compute_mass_matrix_treewalk_gpu_mt,
     ldl_factor,
     ldl_factor_gpu,
+    ldl_factor_gpu_mt,
     ldl_solve,
     ldl_solve_gpu,
     ldl_solve_workspace_gpu,
     compute_M_inv_from_ldl,
     compute_M_inv_from_ldl_gpu,
+    compute_M_inv_from_ldl_gpu_mt,
     build_sparse_pattern,
     compute_mass_matrix_sparse,
     ldl_factor_sparse,
@@ -62,12 +67,14 @@ from ..dynamics.mass_matrix import (
 from ..dynamics.bias_forces import (
     compute_bias_forces_rne,
     compute_bias_forces_rne_gpu,
+    compute_bias_forces_rne_gpu_mt,
 )
 from ..dynamics.jacobian import (
     compute_subtree_com,
     compute_cdof,
     compute_subtree_com_gpu,
     compute_cdof_gpu,
+    compute_cdof_gpu_mt,
     compute_composite_inertia,
     compute_composite_inertia_gpu,
 )
@@ -715,6 +722,83 @@ def _integrate_pos[
             qpos_out[qpos_adr] = qpos_base[qpos_adr] + vel[dof_adr] * dt
 
 
+# 5a: when True, RK4Integrator.step_gpu launches the Newton solver
+# one-environment-per-block (grid=(BATCH,1), block=(1, THREADS)) instead of
+# packing many envs per block. Bit-identical to the packed launch (same kernel,
+# same per-env math) but isolates per-env Newton iteration-count divergence
+# across independently-scheduled blocks. Module-level (not a step_gpu param) to
+# preserve the Integrator trait signature; mirrors USE_NEWTON_SIMD. See
+# docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_BLOCKED_SOLVER: Bool = True
+
+
+# When True (and STEP_THREADS>1, dense, solver needs M_inv), the dense M^-1
+# computation in rk4_stage_kernel is distributed across the STEP_THREADS threads
+# that would otherwise sit idle after the mass matrix (each thread solves its
+# share of the NV independent M^-1 columns). Bit-identical to the serial path.
+# See docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_MINV: Bool = True
+
+
+# Sub-gate of RK4_PARALLEL_MINV: when True, the LDL factorization of the mass
+# matrix is also cooperative (each column's off-diagonal entries distributed
+# across the idle threads, block-wide barrier per column) instead of running on
+# tid 0. Bit-identical. Set False to keep LDL serial while M^-1 stays parallel.
+comptime RK4_PARALLEL_LDL: Bool = True
+
+
+# When True (and STEP_THREADS>1), forward kinematics in rk4_stage_kernel is
+# computed level-parallel instead of redundantly on every thread: bodies are
+# processed by kinematic-tree depth, and bodies at the same depth (independent —
+# none is another's parent) are striped across the STEP_THREADS threads. Tree
+# levels are derived in-kernel from body_parent (no model/parser change).
+# Bit-identical to the serial tree walk (same fk_body_gpu per body). Lever 1
+# (branch/level-parallel forward dynamics). NVIDIA Humanoid measured 2.6×
+# (64µs→25µs standalone, profile_rk4_phases_humanoid.mojo 2026-06-03) → ON by
+# default. See docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_FK: Bool = True
+
+
+# When True (and STEP_THREADS>1), body velocities are computed level-parallel
+# (same recipe as FK: vel_body_gpu per body, distributed by tree depth). The
+# serial root→leaf walk is the oracle. Within float32 tolerance vs serial
+# (~1e-9 — well under the 1e-6 parallel-path bar; FK happened to be byte-exact,
+# velocities is within-tol). Default ON (velocities is the same structure as FK,
+# expect a similar win). See docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_VEL: Bool = True
+
+
+# When True (and STEP_THREADS>1), cdof (spatial motion axes) is computed
+# flat-parallel: bodies are independent (each writes its own DOFs' cdof from FK
+# state + subtree_com), so threads just stripe over bodies — no level ordering,
+# 2 barriers (after zero-init, after the body sweep). Within float32 tolerance
+# of the serial walk. Default ON. See docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_CDOF: Bool = True
+
+
+# When True (and the parallel M-inv tail runs, i.e. STEP_THREADS>1 + dense), RNE
+# bias forces are computed cooperatively: cinert flat + forward cvel/cacc
+# level-parallel (rne_fwd_body) + cfrc flat + backward tid0 (cheap ~NBODY adds) +
+# qfrc flat. Borrows mujoco_warp's 4-pass decomposition but skips its per-level
+# atomic backward (our one-block-per-env model makes tid0-serial backward free).
+# Within float32 tolerance of the serial walk. Default ON. Requires RK4_PARALLEL_MINV
+# (RNE-mt runs before the tid0 drop-out in that tail). See docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_RNE: Bool = True
+
+
+# When True (and STEP_THREADS>1, dense), the mass matrix uses the tree-walk CRBA
+# (compute_mass_matrix_treewalk_gpu_mt): per-DOF-row ancestor walk with a composite
+# spatial inertia about stcom[rootid], O(NV·depth) vs the dense O(NV²·NBODY). Within
+# float32 tolerance of the dense `_mt` oracle — a slightly looser agreement than the
+# other phases' ~1e-9 (the composite-about-P additive accumulation reorders the sum and
+# the parallel-axis shift introduces cancellation), but per-eval M agrees to ~1e-8.
+# VALIDATED on both joint topologies: HalfCheetah (slide/hinge) full-step CPU-vs-GPU 6/6
+# (test_rk4_cpu_vs_gpu @ STEP_THREADS=NV), and Ant (6-DOF FREE joint, used by Humanoid)
+# dense-vs-tree-walk ~1e-8 (test_mass_matrix_treewalk_ant). Default ON.
+# See docs/PHYSICS3D_BLOCKED_SOLVER.md.
+comptime RK4_PARALLEL_CRBA: Bool = True
+
+
 struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
     """4th-order Runge-Kutta integrator with configurable constraint solver.
 
@@ -1325,33 +1409,69 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         # ---- Forward dynamics pipeline (same as EulerIntegrator.step_kernel) ----
 
+        # 1. Forward kinematics. When RK4_PARALLEL_FK (and STEP_THREADS>1) the
+        # cooperative level-parallel variant is called UNCONDITIONALLY so every
+        # thread (incl. invalid-env / other packed envs) reaches its internal
+        # barriers; per-body writes are guarded by valid_env inside it. Otherwise
+        # the serial walk runs redundantly per valid-env thread (as before).
+        comptime USE_PAR_FK = RK4_PARALLEL_FK and (STEP_THREADS > 1)
+        comptime if USE_PAR_FK:
+            forward_kinematics_gpu_mt[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+            ](env, tid, STEP_THREADS, valid_env, state, model)
+        else:
+            if valid_env:
+                forward_kinematics_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                ](env, state, model)
+
+        # 2. Body velocities. When RK4_PARALLEL_VEL (and STEP_THREADS>1) the
+        # cooperative level-parallel variant is called UNCONDITIONALLY (for its
+        # barriers); per-body writes guarded by valid_env. Otherwise the serial
+        # walk runs redundantly per valid-env thread. FK above already published
+        # xpos/xquat (mt FK ends with a barrier; serial FK is per-thread redundant).
+        comptime USE_PAR_VEL = RK4_PARALLEL_VEL and (STEP_THREADS > 1)
+        comptime if USE_PAR_VEL:
+            compute_body_velocities_gpu_mt[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+            ](env, tid, STEP_THREADS, valid_env, state, model)
+        else:
+            if valid_env:
+                compute_body_velocities_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                ](env, state, model)
+
         if valid_env:
-            # 1. Forward kinematics
-            forward_kinematics_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-            ](env, state, model)
-
-            # 2. Body velocities
-            compute_body_velocities_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-            ](env, state, model)
-
             # 3. Detect contacts
             detect_contacts_auto_gpu[
                 DTYPE,
@@ -1368,12 +1488,24 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
             # 3a. Compute subtree_com
             compute_subtree_com_gpu[
-                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS,
-                STATE_SIZE, MODEL_SIZE, BATCH,
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
             ](env, state, model)
 
-            # 4. Compute cdof
-            compute_cdof_gpu[
+        # 4. Compute cdof. Flat-parallel (mt) called UNCONDITIONALLY for its
+        # barriers when RK4_PARALLEL_CDOF; serial in valid_env otherwise. Reads
+        # FK state + subtree_com, both written redundantly per-thread just above
+        # (each thread has its own copy) → no extra barrier needed before this.
+        comptime USE_PAR_CDOF = RK4_PARALLEL_CDOF and (STEP_THREADS > 1)
+        comptime if USE_PAR_CDOF:
+            compute_cdof_gpu_mt[
                 DTYPE,
                 NQ,
                 NV,
@@ -1384,21 +1516,45 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 MODEL_SIZE,
                 BATCH,
                 WS_SIZE,
-            ](env, state, model, workspace)
+            ](env, tid, STEP_THREADS, valid_env, state, model, workspace)
+        else:
+            if valid_env:
+                compute_cdof_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, state, model, workspace)
 
+        # The tree-walk CRBA builds its own composite inertia and never reads
+        # `crb`; its only other consumer (the dense mass matrix) is not called
+        # in that path, and RNE later overwrites the crb slot with cvel. So the
+        # composite-inertia pass is DEAD when the tree-walk runs — skip it
+        # (~−41µs). Single source of truth for "tree-walk is the MM path":
+        comptime USE_TREEWALK_MM = (
+            (not SPARSE) and RK4_PARALLEL_CRBA and (STEP_THREADS > 1)
+        )
+        comptime if not USE_TREEWALK_MM:
             # 5. Composite rigid body inertia
-            compute_composite_inertia_gpu[
-                DTYPE,
-                NQ,
-                NV,
-                NBODY,
-                NJOINT,
-                MAX_CONTACTS,
-                STATE_SIZE,
-                MODEL_SIZE,
-                BATCH,
-                WS_SIZE,
-            ](env, state, model, workspace)
+            if valid_env:
+                compute_composite_inertia_gpu[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, state, model, workspace)
 
         # 6. Full mass matrix (multi-threaded when STEP_THREADS > 1)
         comptime if STEP_THREADS > 1:
@@ -1427,22 +1583,10 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                     sp_col_ind,
                 )
         else:
-            comptime if STEP_THREADS > 1:
-                if valid_env:
-                    compute_mass_matrix_full_gpu_mt[
-                        DTYPE,
-                        NQ,
-                        NV,
-                        NBODY,
-                        NJOINT,
-                        MAX_CONTACTS,
-                        STATE_SIZE,
-                        MODEL_SIZE,
-                        BATCH,
-                        WS_SIZE,
-                    ](env, tid, STEP_THREADS, state, model, workspace)
-            else:
-                compute_mass_matrix_full_gpu[
+            comptime if USE_TREEWALK_MM:
+                # Tree-walk CRBA: called UNCONDITIONALLY (internal barriers);
+                # work guarded by valid_env. O(NV·depth) vs dense O(NV²·NBODY).
+                compute_mass_matrix_treewalk_gpu_mt[
                     DTYPE,
                     NQ,
                     NV,
@@ -1453,64 +1597,148 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                     MODEL_SIZE,
                     BATCH,
                     WS_SIZE,
-                ](env, state, model, workspace)
+                ](env, tid, STEP_THREADS, valid_env, state, model, workspace)
+            else:
+                comptime if STEP_THREADS > 1:
+                    if valid_env:
+                        compute_mass_matrix_full_gpu_mt[
+                            DTYPE,
+                            NQ,
+                            NV,
+                            NBODY,
+                            NJOINT,
+                            MAX_CONTACTS,
+                            STATE_SIZE,
+                            MODEL_SIZE,
+                            BATCH,
+                            WS_SIZE,
+                        ](env, tid, STEP_THREADS, state, model, workspace)
+                else:
+                    compute_mass_matrix_full_gpu[
+                        DTYPE,
+                        NQ,
+                        NV,
+                        NBODY,
+                        NJOINT,
+                        MAX_CONTACTS,
+                        STATE_SIZE,
+                        MODEL_SIZE,
+                        BATCH,
+                        WS_SIZE,
+                    ](env, state, model, workspace)
         comptime if STEP_THREADS > 1:
             barrier()
 
-        # After mass matrix, only tid==0 continues (LDL, RNE, solve are serial)
-        comptime if STEP_THREADS > 1:
-            if tid != 0:
-                return
-        if not valid_env:
-            return
+        # After the mass matrix the remaining work (armature, LDL, M_inv, RNE,
+        # accel) is serial per env. M_inv, however, is NV independent column
+        # solves — when supported we distribute those across the STEP_THREADS
+        # threads that would otherwise idle after `if tid != 0: return`.
+        comptime USE_PAR_MINV = (
+            RK4_PARALLEL_MINV
+            and (STEP_THREADS > 1)
+            and (not SPARSE)
+            and Self.SOLVER.NEEDS_M_INV
+        )
 
-        # 6b. Armature only (no implicit damping for RK4)
-        for j in range(NJOINT):
-            var joint_off = model_joint_offset[NBODY](j)
-            var jnt_type = Int(model[0, joint_off + JOINT_IDX_TYPE])
-            var dof_adr = Int(model[0, joint_off + JOINT_IDX_DOF_ADR])
-            var arm = model[0, joint_off + JOINT_IDX_ARMATURE]
-            if jnt_type == JNT_FREE:
-                for d in range(6):
-                    var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+        # 6b. Armature only (no implicit damping for RK4) — tid 0 modifies the
+        # mass-matrix diagonal before LDL.
+        if valid_env and tid == 0:
+            for j in range(NJOINT):
+                var joint_off = model_joint_offset[NBODY](j)
+                var jnt_type = Int(model[0, joint_off + JOINT_IDX_TYPE])
+                var dof_adr = Int(model[0, joint_off + JOINT_IDX_DOF_ADR])
+                var arm = model[0, joint_off + JOINT_IDX_ARMATURE]
+                if jnt_type == JNT_FREE:
+                    for d in range(6):
+                        var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                        workspace[env, idx] += arm
+                elif jnt_type == JNT_BALL:
+                    for d in range(3):
+                        var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
+                        workspace[env, idx] += arm
+                else:
+                    var idx = M_idx + dof_adr * NV + dof_adr
                     workspace[env, idx] += arm
-            elif jnt_type == JNT_BALL:
-                for d in range(3):
-                    var idx = M_idx + (dof_adr + d) * NV + (dof_adr + d)
-                    workspace[env, idx] += arm
-            else:
-                var idx = M_idx + dof_adr * NV + dof_adr
-                workspace[env, idx] += arm
 
-        # 7. LDL factorize M, compute M_inv
-        comptime if SPARSE:
-            ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
-                env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
-            )
-            comptime if Self.SOLVER.NEEDS_M_INV:
-                compute_M_inv_from_sparse_ldl_gpu[
-                    DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
-                ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
-        else:
-            ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
-            comptime if Self.SOLVER.NEEDS_M_INV:
-                compute_M_inv_from_ldl_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
-                    env, workspace
+        comptime if USE_PAR_MINV:
+            # Make tid 0's armature writes to M visible before the cooperative
+            # LDL/M_inv read it.
+            barrier()
+            # LDL: cooperative (per-column distributed, internal barriers) or
+            # serial on tid 0, then all threads solve their share of M^-1 cols.
+            comptime if RK4_PARALLEL_LDL:
+                ldl_factor_gpu_mt[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                    env, tid, STEP_THREADS, valid_env, workspace
                 )
+            else:
+                if valid_env and tid == 0:
+                    ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](
+                        env, workspace
+                    )
+                barrier()
+            if valid_env:
+                compute_M_inv_from_ldl_gpu_mt[
+                    DTYPE, NV, NBODY, BATCH, WS_SIZE
+                ](env, tid, STEP_THREADS, workspace)
+            barrier()
+            # RNE bias forces — cooperative across all threads BEFORE the tid 0
+            # drop-out (it has internal barriers). When off, the serial RNE runs
+            # on tid 0 below (gated by USE_PAR_MINV+RK4_PARALLEL_RNE).
+            comptime if RK4_PARALLEL_RNE:
+                compute_bias_forces_rne_gpu_mt[
+                    DTYPE,
+                    NQ,
+                    NV,
+                    NBODY,
+                    NJOINT,
+                    MAX_CONTACTS,
+                    STATE_SIZE,
+                    MODEL_SIZE,
+                    BATCH,
+                    WS_SIZE,
+                ](env, tid, STEP_THREADS, valid_env, state, model, workspace)
+            # Only tid 0 runs the remaining serial work (f_net + accel).
+            if tid != 0 or not valid_env:
+                return
+        else:
+            # Serial tail on tid 0 (existing behavior).
+            comptime if STEP_THREADS > 1:
+                if tid != 0:
+                    return
+            if not valid_env:
+                return
 
-        # 8. Bias forces
-        compute_bias_forces_rne_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            STATE_SIZE,
-            MODEL_SIZE,
-            BATCH,
-            WS_SIZE,
-        ](env, state, model, workspace)
+            # 7. LDL factorize M, compute M_inv
+            comptime if SPARSE:
+                ldl_factor_sparse_gpu[DTYPE, NV, NBODY, NM, BATCH, WS_SIZE](
+                    env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind
+                )
+                comptime if Self.SOLVER.NEEDS_M_INV:
+                    compute_M_inv_from_sparse_ldl_gpu[
+                        DTYPE, NV, NBODY, NM, BATCH, WS_SIZE
+                    ](env, workspace, sp_row_nnz, sp_row_adr, sp_col_ind)
+            else:
+                ldl_factor_gpu[DTYPE, NV, NBODY, BATCH, WS_SIZE](env, workspace)
+                comptime if Self.SOLVER.NEEDS_M_INV:
+                    compute_M_inv_from_ldl_gpu[
+                        DTYPE, NV, NBODY, BATCH, WS_SIZE
+                    ](env, workspace)
+
+        # 8. Bias forces (serial, tid 0) — skipped when the cooperative RNE-mt
+        # already ran in the parallel tail (RK4_PARALLEL_RNE + USE_PAR_MINV).
+        comptime if not (RK4_PARALLEL_RNE and USE_PAR_MINV):
+            compute_bias_forces_rne_gpu[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                STATE_SIZE,
+                MODEL_SIZE,
+                BATCH,
+                WS_SIZE,
+            ](env, state, model, workspace)
 
         # 9. f_net = qfrc - bias
         for i in range(NV):
@@ -1794,7 +2022,9 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
                 # Apply wrench at xipos via Jacobian transpose (kinematic tree walk)
                 # Transport wrench to subtree_com[rootid] (cdof reference point)
-                comptime stcom_off_fl = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+                comptime stcom_off_fl = subtree_com_offset[
+                    NQ, NV, NBODY, MAX_CONTACTS
+                ]()
                 var px_b = rebind[Scalar[DTYPE]](
                     state[env, xipos_off_fl + b * 3 + 0]
                 )
@@ -1804,12 +2034,20 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 var pz_b = rebind[Scalar[DTYPE]](
                     state[env, xipos_off_fl + b * 3 + 2]
                 )
-                var rootid_b = Int(rebind[Scalar[DTYPE]](
-                    model[0, body_off_b + BODY_IDX_ROOTID]
-                ))
-                var dx_b = px_b - rebind[Scalar[DTYPE]](state[env, stcom_off_fl + rootid_b * 3 + 0])
-                var dy_b = py_b - rebind[Scalar[DTYPE]](state[env, stcom_off_fl + rootid_b * 3 + 1])
-                var dz_b = pz_b - rebind[Scalar[DTYPE]](state[env, stcom_off_fl + rootid_b * 3 + 2])
+                var rootid_b = Int(
+                    rebind[Scalar[DTYPE]](
+                        model[0, body_off_b + BODY_IDX_ROOTID]
+                    )
+                )
+                var dx_b = px_b - rebind[Scalar[DTYPE]](
+                    state[env, stcom_off_fl + rootid_b * 3 + 0]
+                )
+                var dy_b = py_b - rebind[Scalar[DTYPE]](
+                    state[env, stcom_off_fl + rootid_b * 3 + 1]
+                )
+                var dz_b = pz_b - rebind[Scalar[DTYPE]](
+                    state[env, stcom_off_fl + rootid_b * 3 + 2]
+                )
                 var tau_ox = tx_w + dy_b * fz_w - dz_b * fy_w
                 var tau_oy = ty_w + dz_b * fx_w - dx_b * fz_w
                 var tau_oz = tz_w + dx_b * fy_w - dy_b * fx_w
@@ -2052,11 +2290,23 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
 
         Launches 9 kernels: 4 × (stage + solver) + 1 combine.
         Workspace must include RK4 extra space beyond the standard layout.
+
+        Solver launch is gated by the module-level RK4_BLOCKED_SOLVER flag
+        (5a): when True the Newton solver runs one-environment-per-block instead
+        of packing many envs per block. Bit-identical to the packed launch (same
+        kernel, same per-env math) but isolates per-env Newton iteration-count
+        divergence across independently-scheduled blocks. See
+        docs/PHYSICS3D_BLOCKED_SOLVER.md.
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
         comptime MODEL_SIZE = model_size_with_invweight[
-            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY,
-            NTENDON=MAX_TENDON, NSITE=NSITE,
+            NBODY,
+            NJOINT,
+            NV,
+            NGEOM,
+            NEQUALITY=MAX_EQUALITY,
+            NTENDON=MAX_TENDON,
+            NSITE=NSITE,
         ]()
         comptime SOLVER_WS = Self.SOLVER.solver_workspace_size[
             NV, MAX_CONTACTS
@@ -2078,6 +2328,19 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         comptime SOLVER_ENV_BLOCKS = (
             BATCH + SOLVER_ENV_TPB - 1
         ) // SOLVER_ENV_TPB
+
+        # 5a: RK4_BLOCKED_SOLVER launches solve_gpu one-env-per-block. With
+        # block_dim.x == 1, env = block_idx.x and contact_tid = thread_idx.y,
+        # so the per-env math is byte-for-byte identical to the packed launch.
+        # 5b: for PYRAMIDAL cones the dedicated solve_gpu_blocked kernel runs
+        # cooperatively across the block's threads (one env per block, 1D
+        # block_dim=(THREADS,)). Non-PYRAMIDAL cones keep the 5a serial launch.
+        comptime USE_BLOCKED_PYR = RK4_BLOCKED_SOLVER and (
+            CONE_TYPE == ConeType.PYRAMIDAL
+        )
+        comptime SOLVER_GRID_X = BATCH if RK4_BLOCKED_SOLVER else SOLVER_ENV_BLOCKS
+        comptime SOLVER_GRID_Y = 1 if RK4_BLOCKED_SOLVER else SOLVER_THREADS_BLOCKS
+        comptime SOLVER_BLOCK_X = 1 if RK4_BLOCKED_SOLVER else SOLVER_ENV_TPB
 
         var state = LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
@@ -2149,13 +2412,40 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             MAX_TENDON,
             NSITE,
         ]
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
-        )
+        comptime solver_blocked_wrapper = Self.SOLVER.solve_gpu_blocked[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
+        ]
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         # --- Stage 1: forward dynamics at (q0+dt/2*C[0], v0+dt/2*A[0]) ---
         comptime stage1_kernel = Self.rk4_stage_kernel[
@@ -2192,13 +2482,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         # --- Stage 2: forward dynamics at (q0+dt/2*C[1], v0+dt/2*A[1]) ---
         comptime stage2_kernel = Self.rk4_stage_kernel[
@@ -2235,13 +2534,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         # --- Stage 3: forward dynamics at (q0+dt*C[2], v0+dt*A[2]) ---
         comptime stage3_kernel = Self.rk4_stage_kernel[
@@ -2278,13 +2586,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         # --- Combine: weighted average + integrate ---
         comptime combine_kernel = Self.rk4_combine_kernel[
@@ -2371,8 +2688,13 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         """
         comptime STATE_SIZE = state_size[NQ, NV, NBODY, MAX_CONTACTS, NSITE]()
         comptime MODEL_SIZE = model_size_with_invweight[
-            NBODY, NJOINT, NV, NGEOM, NEQUALITY=MAX_EQUALITY,
-            NTENDON=MAX_TENDON, NSITE=NSITE,
+            NBODY,
+            NJOINT,
+            NV,
+            NGEOM,
+            NEQUALITY=MAX_EQUALITY,
+            NTENDON=MAX_TENDON,
+            NSITE=NSITE,
         ]()
         comptime SOLVER_WS = Self.SOLVER.solver_workspace_size[
             NV, MAX_CONTACTS
@@ -2395,6 +2717,15 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             BATCH + SOLVER_ENV_TPB - 1
         ) // SOLVER_ENV_TPB
 
+        # 5a: RK4_BLOCKED_SOLVER launches solve_gpu one-env-per-block (see step_gpu).
+        # 5b: PYRAMIDAL cones route to the cooperative solve_gpu_blocked kernel.
+        comptime USE_BLOCKED_PYR = RK4_BLOCKED_SOLVER and (
+            CONE_TYPE == ConeType.PYRAMIDAL
+        )
+        comptime SOLVER_GRID_X = BATCH if RK4_BLOCKED_SOLVER else SOLVER_ENV_BLOCKS
+        comptime SOLVER_GRID_Y = 1 if RK4_BLOCKED_SOLVER else SOLVER_THREADS_BLOCKS
+        comptime SOLVER_BLOCK_X = 1 if RK4_BLOCKED_SOLVER else SOLVER_ENV_TPB
+
         var state = LayoutTensor[
             DTYPE, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ](state_buf)
@@ -2406,6 +2737,24 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
         ](workspace_buf)
 
         comptime solver_wrapper = Self.SOLVER.solve_gpu[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            STATE_SIZE,
+            MODEL_SIZE,
+            V_SIZE,
+            BATCH,
+            WS_SIZE,
+            NGEOM,
+            MAX_EQUALITY,
+            CONE_TYPE,
+            MAX_TENDON,
+            NSITE,
+        ]
+        comptime solver_blocked_wrapper = Self.SOLVER.solve_gpu_blocked[
             DTYPE,
             NQ,
             NV,
@@ -2451,13 +2800,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         timer.sync_and_accumulate(base + 0, ctx)
 
@@ -2488,13 +2846,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         timer.sync_and_accumulate(base + 1, ctx)
 
@@ -2525,13 +2892,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         timer.sync_and_accumulate(base + 2, ctx)
 
@@ -2562,13 +2938,22 @@ struct RK4Integrator[SOLVER: ConstraintSolver](Integrator):
             grid_dim=(ENV_BLOCKS,),
             block_dim=(TPB,),
         )
-        ctx.enqueue_function[solver_wrapper](
-            state,
-            model,
-            workspace,
-            grid_dim=(SOLVER_ENV_BLOCKS, SOLVER_THREADS_BLOCKS),
-            block_dim=(SOLVER_ENV_TPB, THREADS),
-        )
+        comptime if USE_BLOCKED_PYR:
+            ctx.enqueue_function[solver_blocked_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(BATCH, 1),
+                block_dim=(THREADS,),
+            )
+        else:
+            ctx.enqueue_function[solver_wrapper](
+                state,
+                model,
+                workspace,
+                grid_dim=(SOLVER_GRID_X, SOLVER_GRID_Y),
+                block_dim=(SOLVER_BLOCK_X, THREADS),
+            )
 
         timer.sync_and_accumulate(base + 3, ctx)
 

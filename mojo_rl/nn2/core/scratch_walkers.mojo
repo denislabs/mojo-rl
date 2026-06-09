@@ -23,7 +23,7 @@ When Mojo lifts that limitation, the walker body can move into a
 from std.gpu.host import DeviceContext
 from std.reflection import reflect
 
-from .scratch import IsScratch
+from .tensor import IsScratch
 
 
 def init_scratch_auto[

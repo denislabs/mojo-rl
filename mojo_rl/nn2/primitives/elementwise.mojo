@@ -35,14 +35,14 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT, CPU_SIMD_W, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
+from ..core import Initializer, AMPPolicy, NoAMP, Cache
 from ..core.element_op import ElementOp
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import (
+    require_ctx,
     TargetStorage,
     assert_tag_for,
-    ensure_cpu_buffer,
-    ensure_gpu_buffer,
 )
 
 
@@ -104,24 +104,23 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
     comptime OUT_DIM = Self.DIM
 
+    @staticmethod
+    def display_label() -> String:
+        return Self.OP.display_label()
+
     var ts: TargetStorage
 
-    # owns_cache=True path: own cache buffer (CPU + GPU dual storage).
-    var cache: List[Scalar[DT]]
-    var cache_dev: Optional[DeviceBuffer[DT]]
-    var cache_dev_n: Int
+    # owns_cache=True path: own cache (S5 dynamic Cache role, lazy-grown).
+    var cache: Cache["elem_cache"]
 
-    # owns_cache=False path: alias the orchestrator's input slab.
-    var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    # owns_cache=False path: alias the orchestrator's input slab (borrow,
+    # not owned storage — stays a raw pointer, excluded from the Tensor core).
+    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     def __init__(out self):
         self.ts = TargetStorage.make_uninit()
-        self.cache = List[Scalar[DT]]()
-        self.cache_dev = None
-        self.cache_dev_n = 0
-        self._cached_input_ptr = UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ](unsafe_from_address=0)
+        self.cache = Cache["elem_cache"]()
+        self._cached_input_ptr = None
 
     @staticmethod
     def make[
@@ -139,17 +138,9 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
         comptime if target == "cpu":
             e.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("Elementwise.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["Elementwise.make[target='gpu']"](ctx)
             e.ts = TargetStorage.make_gpu(ctx_v)
-            # If owns_cache, pre-allocate a placeholder dev buffer (grown
-            # lazily on first forward). For input-alias ops, the field is
-            # never used but we still allocate a 1-element buffer to avoid
-            # `None` checks on the GPU path.
-            comptime if Self.OP.owns_cache:
-                e.cache_dev = ctx_v.enqueue_create_buffer[DT](1)
-                e.cache_dev_n = 0
+            # cache is lazy (S5 Cache) — grown at forward via ensure_gpu.
         return e^
 
     # ------------------------------------------------------------------
@@ -163,10 +154,7 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -174,18 +162,18 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
     ) raises:
         # POLICY accepted for trait conformance; Elementwise stays in DT.
         assert_tag_for["Elementwise", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
             comptime N = BATCH * Self.DIM
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p = input.ptr
+            var out_p = output_v.ptr
 
             comptime if Self.OP.owns_cache:
                 # Own cache: write y to both output and cache.
-                ensure_cpu_buffer(self.cache, N)
-                var cache_p = self.cache.unsafe_ptr()
+                self.cache.ensure_cpu(N)
+                var cache_p = self.cache.cpu_ptr()
                 var k = 0
                 while k + CPU_SIMD_W <= N:
                     var v = in_p.load[width=CPU_SIMD_W](k)
@@ -212,18 +200,15 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
                     k += 1
         else:
             comptime layout = Layout.row_major(BATCH, Self.DIM)
-            var in_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_ptr = input.ptr
+            var out_ptr = output_v.ptr
             var input_lt = LayoutTensor[DT, layout, MutAnyOrigin](in_ptr)
             var output_lt = LayoutTensor[DT, layout, MutAnyOrigin](out_ptr)
 
             comptime if Self.OP.owns_cache:
-                ensure_gpu_buffer(
-                    self.cache_dev, self.cache_dev_n,
-                    BATCH * Self.DIM, self.ts.ctx.value(),
-                )
+                self.cache.ensure_gpu(self.ts.ctx.value(), BATCH * Self.DIM)
                 var cache_lt = LayoutTensor[DT, layout, MutAnyOrigin](
-                    self.cache_dev.value()
+                    self.cache.dev.value()
                 )
                 comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
                 comptime kernel = _elementwise_forward_kernel[
@@ -267,26 +252,23 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Elementwise", target](self.ts.target_tag)
         var go_view = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi_view = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var gi_view = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go_view.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi_view.ptr)
+            var go_p = go_view.ptr
+            var gi_p = gi_view.ptr
             var c_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
             comptime if Self.OP.owns_cache:
-                c_p = self.cache.unsafe_ptr()
+                c_p = self.cache.cpu_ptr()
             else:
-                c_p = self._cached_input_ptr
+                c_p = self._cached_input_ptr.value()
             comptime N = BATCH * Self.DIM
             var k = 0
             while k + CPU_SIMD_W <= N:
@@ -299,18 +281,18 @@ struct Elementwise[DIM: Int, OP: ElementOp](Module):
                 k += 1
         else:
             comptime layout = Layout.row_major(BATCH, Self.DIM)
-            var go_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go_view.ptr)
-            var gi_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi_view.ptr)
+            var go_ptr = go_view.ptr
+            var gi_ptr = gi_view.ptr
             var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_ptr)
             var gi_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi_ptr)
             var cache_lt: LayoutTensor[DT, layout, MutAnyOrigin]
             comptime if Self.OP.owns_cache:
                 cache_lt = LayoutTensor[DT, layout, MutAnyOrigin](
-                    self.cache_dev.value()
+                    self.cache.dev.value()
                 )
             else:
                 cache_lt = LayoutTensor[DT, layout, MutAnyOrigin](
-                    self._cached_input_ptr
+                    self._cached_input_ptr.value()
                 )
             comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
             comptime kernel = _elementwise_backward_kernel[

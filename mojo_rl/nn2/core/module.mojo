@@ -50,6 +50,44 @@ from ..constants import DT
 from .initializer import Initializer
 from .amp import AMPPolicy, NoAMP
 from .param_visitor import ParamVisitor
+from .graph_visitor import DisplayStep
+from .walkers import for_each_param_auto, zero_grad_auto
+from .state import for_each_state_auto
+from .tensor_pack import TensorPack
+
+
+# ──────────────────────────────────────────────────────────────────────
+# mptr — THE origin-erasure chokepoint (S2′, 2026-06-08).
+#
+# The codebase erases pointer origins to `MutAnyOrigin` constantly (the
+# variadic-TileTensor limitation is irreducible — see audit §B0). Before
+# this helper that meant ~800 inline copies of the verbose
+#   rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](view.ptr)
+# drowning the actual math. `mptr` collapses each to `mptr(view.ptr)` (or
+# `mptr(view)` straight from a TileTensor). Dtype-generic, so it also
+# absorbs the bf16 AMP rebinds. The unsafe step now lives in ONE place.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@always_inline
+def mptr[
+    dt: DType, o: Origin
+](p: UnsafePointer[Scalar[dt], o]) -> UnsafePointer[Scalar[dt], MutAnyOrigin]:
+    """Erase a `Scalar[dt]` pointer's origin to `MutAnyOrigin`. Replaces
+    the inline `rebind[UnsafePointer[Scalar[dt], MutAnyOrigin]](p)` dance."""
+    return rebind[UnsafePointer[Scalar[dt], MutAnyOrigin]](p)
+
+
+@always_inline
+def mptr(
+    t: TileTensor[
+        dtype=DT, address_space=AddressSpace.GENERIC,
+        element_size=1, origin=MutAnyOrigin, ...,
+    ],
+) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    """Erased base pointer of a TileTensor view — `mptr(view)` instead of
+    `rebind[...](view.ptr)`."""
+    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](t.ptr)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -180,13 +218,7 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT,
-            address_space=AddressSpace.GENERIC,
-            element_size=1,
-            origin=MutAnyOrigin,
-            ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True,
             dtype=DT,
@@ -221,14 +253,7 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
             origin=MutAnyOrigin,
             ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True,
-            dtype=DT,
-            address_space=AddressSpace.GENERIC,
-            element_size=1,
-            origin=MutAnyOrigin,
-            ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         """N-ary vector-Jacobian product.
 
@@ -245,6 +270,77 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         ...
 
     # ──────────────────────────────────────────────────────────────────
+    # Two-phase vjp (S7, 2026-06-07) — structurally enforces the
+    # backward-aliasing order (A2/A3) at the ORCHESTRATOR instead of
+    # trusting each leaf's internal `grad_b → grad_w → grad_input`
+    # ordering. Orchestrators (`Sequential`/`ComputeGraph`) call
+    # `vjp_param_grads` (reads the cached input + grad_output) BEFORE
+    # `vjp_grad_input` (writes grad_inputs — the same slab the cache may
+    # alias). A leaf that splits these two phases physically cannot
+    # interleave them wrong: the order is fixed by the caller.
+    #
+    # Both carry defaults, so the split is INCREMENTAL — only leaves that
+    # cache a forward input by pointer (Linear, Conv2D, NoisyLinear, …)
+    # need to override. Every other leaf inherits:
+    #   • `vjp_param_grads` → no-op (param-less leaves have nothing to do;
+    #     non-split param leaves still do all their work in the combined
+    #     `vjp`, reached via the `vjp_grad_input` default below).
+    #   • `vjp_grad_input` → delegates to the combined `vjp` (which the
+    #     leaf already orders correctly internally). Bit-identical to the
+    #     single-call path because `vjp_param_grads` was the no-op.
+    # ──────────────────────────────────────────────────────────────────
+
+    def vjp_param_grads[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
+        ],
+    ) raises:
+        """Phase 1 of the two-phase vjp: accumulate PARAM grads only.
+        Reads `grad_output` (+ any cached forward input), writes the
+        leaf's own `Param` grads, touches NO grad_inputs slab. Skipped
+        entirely under `mode == "input_only"`. Default no-op — only
+        cached-input leaves override; everything else does its param work
+        inside the combined `vjp` (reached via `vjp_grad_input`)."""
+        pass
+
+    def vjp_grad_input[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+        mode: StaticString = "all",
+    ](
+        mut self,
+        grad_output: TileTensor[
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
+        ],
+        grad_inputs: TensorPack[Self.ARITY],
+    ) raises:
+        """Phase 2 of the two-phase vjp: write grad_inputs (the
+        predecessor slab). Default: delegate to the combined `vjp`. For a
+        NON-split leaf this runs its full backward (params + inputs) here
+        — correct, because the orchestrator's `vjp_param_grads` call was
+        the no-op default. A split leaf (Linear) overrides to do ONLY the
+        grad_input computation, relying on `vjp_param_grads` having
+        already run."""
+        self.vjp[target, BATCH, POLICY=POLICY, mode=mode](
+            grad_output, grad_inputs
+        )
+
+    # ──────────────────────────────────────────────────────────────────
     # Provided defaults — parameterless leaves auto-inherit no-ops.
     # ──────────────────────────────────────────────────────────────────
 
@@ -252,16 +348,70 @@ trait Module(Defaultable & Movable & ImplicitlyDestructible):
         target: StaticString,
         V: ParamVisitor,
     ](mut self, prefix: String, mut visitor: V) raises:
-        """Default: no params. Parameterised leaves override to call
-        `for_each_param_auto[Self, V, target]` from `walkers.mojo`."""
-        pass
+        """Default: reflection-walk every `IsParam` field of the concrete
+        leaf and dispatch the visitor (S1, 2026-06-07). Param-less leaves
+        reflect to a no-op (no IsParam fields). Param-bearing leaves no
+        longer need to override — forgetting the override can no longer
+        silently skip params in checkpoint/optimizer walks. Combinators +
+        wrapper leaves (children are Module-typed, not IsParam) still
+        override to recurse into children."""
+        for_each_param_auto[Self, V, target](self, prefix, visitor)
 
     def zero_grad[target: StaticString](mut self) raises:
-        """Default: no params. Override on param-bearing leaves."""
-        pass
+        """Default: reflection-walk every `IsParam` field of the concrete
+        leaf and zero its grad (S1, 2026-06-07). Param-less leaves reflect
+        to a no-op. Param-bearing leaves no longer need to override —
+        forgetting it can no longer silently accumulate grads under
+        `Sequential`. Combinators + wrapper leaves still override to
+        recurse into children."""
+        zero_grad_auto[Self, target](self)
+
+    def for_each_state[
+        target: StaticString,
+        V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V) raises:
+        """Default: reflection-walk every `IsState` field of the concrete
+        leaf and dispatch the visitor (S5 Stage 3, 2026-06-07). The
+        checkpoint path runs this right after `for_each_param`, so State
+        fields (e.g. BatchNorm running stats) are persisted; the optimizer
+        path (`for_each_param`) never reaches them. State-less leaves
+        reflect to a no-op. Combinators override to recurse into children."""
+        for_each_state_auto[Self, V, target](self, prefix, visitor)
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         """Per-call runtime attribute mutation. Default no-op. Modules
         with mutable runtime state (e.g. Scale.multiplier, Clamp.min_val)
         override and comptime-branch on `ATTR`."""
         pass
+
+    def set_attr_ptr[ATTR: StaticString](
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ):
+        """Bind a device-resident attribute source (CUDA-graph capture).
+        Default no-op. Modules whose runtime attribute can live in a
+        device buffer mutated by another kernel (e.g. `Scale.multiplier`
+        ← SAC's on-device α) override and comptime-branch on `ATTR`.
+        Distinct from `set_attr` (host scalar baked into the kernel arg):
+        a pointer set here is read on-device each forward so the value
+        can change between captured replays without re-baking."""
+        pass
+
+    # ──────────────────────────────────────────────────────────────────
+    # Display surface — read by `ComputeGraph.describe` exporters. Both
+    # carry defaults, so existing conformers need no change; leaves
+    # override `display_label` with their type name, and containers
+    # (Sequential) override `display_steps` to expand into their children.
+    # ──────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def display_label() -> String:
+        """Short display name for graph exporters. Default generic;
+        leaves override with their type name (e.g. "Linear")."""
+        return String("module")
+
+    @staticmethod
+    def display_steps() -> List[DisplayStep]:
+        """Inner display steps for container modules — one per child,
+        each `(child_label, child_out_dim)`. Default empty = atomic leaf;
+        `Sequential` overrides to expand its chain."""
+        return List[DisplayStep]()

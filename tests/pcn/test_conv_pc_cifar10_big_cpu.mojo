@@ -1,0 +1,217 @@
+"""Conv-PCN CIFAR-10 — BIGGER BUDGET (CPU Accelerate). Background run.
+
+Scales the (best) UNNORMALIZED conv-PCN — normalization was shown not to help.
+Levers: full 50k training set, more epochs, higher T_INFER (better latent
+settling), random horizontal flip. Baseline was 0.465 (20k / 6 ep / T12).
+
+  ConvPCBlock[3,  32, 3, 2, 1, 32, 32, PCIdentity]  # → 32×16×16
+  ConvPCBlock[32, 64, 3, 2, 1, 16, 16, PCReLU]      # → 64×8×8
+  ConvPCBlock[64, 64, 3, 2, 1, 8,  8,  PCReLU]      # → 64×4×4
+  PCBlock[1024, 256, PCReLU]
+  PCBlock[256, 10, PCIdentity]
+
+Run (long — background it):
+    pixi run mojo run -I . tests/pcn/test_conv_pc_cifar10_big_cpu.mojo
+"""
+
+from std.memory import alloc, memset
+from std.time import perf_counter_ns
+from std.math import sqrt
+from layout import Layout, LayoutTensor
+
+from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn2.datasets.cifar10 import CIFAR10
+from mojo_rl.experimental.pcn import (
+    PCBlock,
+    PCSequential,
+    PCIdentity,
+    PCReLU,
+    PCTrainer,
+)
+from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
+
+comptime BATCH = 125
+comptime EPOCHS = 15
+comptime T_INFER = 20  # more steps to compensate for the smaller latent step
+comptime LR_X: Float32 = 0.025  # lower: widen the PC inference loop's stable regime (epoch-8 collapse was inference divergence)
+comptime ADAM_LR: Float64 = 0.0002  # halved: unnorm conv-PCN destabilizes past ~1k steps at 4e-4
+comptime CLIP_FACTOR: Float64 = 5.0  # clip grads exceeding 5× the running-avg L2 norm
+comptime WD: Float64 = 0.0002  # decoupled weight decay: bound weight growth so the
+#                                PC latent-inference loop stays in its stable regime
+#                                (the epoch-8 collapse was inference divergence as ‖W‖ grew)
+comptime N_TRAIN_SAMPLES = 50000
+comptime N_TEST_SAMPLES = 2000
+comptime N_TRAIN_BATCHES = N_TRAIN_SAMPLES // BATCH
+comptime N_TEST_BATCHES = N_TEST_SAMPLES // BATCH
+comptime IN = 3 * 32 * 32
+comptime PASS_ACC = 0.50
+
+
+# Horizontal flip of one CIFAR image in-place buffer (channel-major C×32×32).
+@always_inline
+def _flip_into(
+    src: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+):
+    for c in range(3):
+        for h in range(32):
+            var row = c * 1024 + h * 32
+            for w in range(32):
+                dst[row + w] = src[row + (31 - w)]
+
+
+comptime NET = PCSequential[
+    ConvPCBlock[3, 32, 3, 2, 1, 32, 32, PCIdentity],
+    ConvPCBlock[32, 64, 3, 2, 1, 16, 16, PCReLU],
+    ConvPCBlock[64, 64, 3, 2, 1, 8, 8, PCReLU],
+    PCBlock[1024, 256, PCReLU],
+    PCBlock[256, 10, PCIdentity],
+]
+comptime TRAINER = PCTrainer[
+    ConvPCBlock[3, 32, 3, 2, 1, 32, 32, PCIdentity],
+    ConvPCBlock[32, 64, 3, 2, 1, 16, 16, PCReLU],
+    ConvPCBlock[64, 64, 3, 2, 1, 8, 8, PCReLU],
+    PCBlock[1024, 256, PCReLU],
+    PCBlock[256, 10, PCIdentity],
+    dtype=dtype,
+]
+comptime OPT = Adam[LR=ADAM_LR]
+
+
+def main() raises:
+    print("Conv-PCN CIFAR-10 BIG (CPU): 50k / ", EPOCHS, "ep / T", T_INFER,
+          " / flip aug\n")
+    var ds = CIFAR10()
+    print("  PARAM_SIZE=", NET.PARAM_SIZE, " LATENT_DIM=", NET.LATENT_DIM)
+
+    var params_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
+    var grads_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE)
+    memset(params_buf, 0, NET.PARAM_SIZE)
+    memset(grads_buf, 0, NET.PARAM_SIZE)
+    var params = LayoutTensor[dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin](params_buf)
+    var grads = LayoutTensor[dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin](grads_buf)
+    NET.initialize_params[Xavier[7], dtype](params)
+
+    var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
+    var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)
+    memset(opt_state_buf, 0, NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
+    memset(opt_global_buf, 0, OPT.GLOBAL_STATE_SIZE)
+    var opt_state = LayoutTensor[dtype, Layout.row_major(NET.PARAM_SIZE, OPT.STATE_PER_PARAM), MutAnyOrigin](opt_state_buf)
+    var opt_global = LayoutTensor[dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin](opt_global_buf)
+
+    var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    var mu_eps_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_OUT_DIM)
+    var a_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
+    var z_below_buf_raw = alloc[Scalar[dtype]](BATCH * NET.SCRATCH_IN_DIM)
+    var dx_buf_raw = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)
+    var eval_out_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM)
+    var x_buf = alloc[Scalar[dtype]](BATCH * IN)
+    var y_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM)
+    memset(lat_buf, 0, BATCH * NET.LATENT_DIM)
+    memset(mu_eps_buf_raw, 0, BATCH * NET.SCRATCH_OUT_DIM)
+    memset(a_below_buf_raw, 0, BATCH * NET.SCRATCH_IN_DIM)
+    memset(z_below_buf_raw, 0, BATCH * NET.SCRATCH_IN_DIM)
+    memset(dx_buf_raw, 0, BATCH * NET.LATENT_DIM)
+
+    var latents = LayoutTensor[dtype, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin](lat_buf)
+    var mu_eps_buf = LayoutTensor[dtype, Layout.row_major(BATCH, NET.SCRATCH_OUT_DIM), MutAnyOrigin](mu_eps_buf_raw)
+    var a_below_buf = LayoutTensor[dtype, Layout.row_major(BATCH, NET.SCRATCH_IN_DIM), MutAnyOrigin](a_below_buf_raw)
+    var z_below_buf = LayoutTensor[dtype, Layout.row_major(BATCH, NET.SCRATCH_IN_DIM), MutAnyOrigin](z_below_buf_raw)
+    var dx_buf = LayoutTensor[dtype, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin](dx_buf_raw)
+    var eval_out = LayoutTensor[dtype, Layout.row_major(BATCH, NET.OUT_DIM), MutAnyOrigin](eval_out_buf)
+    var x_batch = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](x_buf)
+    var y_batch = LayoutTensor[dtype, Layout.row_major(BATCH, NET.OUT_DIM), MutAnyOrigin](y_buf)
+
+    var step_num: Int = 0
+    var best_acc: Float64 = 0.0
+    var ema_norm: Float64 = 0.0
+    var t0 = perf_counter_ns()
+    print("\n  epoch | sup_loss  | test_acc | best | clips | gnorm | wall_t (s)")
+    print("  ------+-----------+----------+------+-------+-------+-----------")
+    for epoch in range(EPOCHS):
+        var ep_loss: Float64 = 0.0
+        var n_clips: Int = 0
+        var last_gn: Float64 = 0.0
+        for batch_idx in range(N_TRAIN_BATCHES):
+            for i in range(BATCH):
+                var sidx = batch_idx * BATCH + i
+                # random horizontal flip (epoch+sample dependent)
+                var do_flip = ((sidx * 2654435761 + epoch * 40503) >> 13) & 1
+                if do_flip == 1:
+                    _flip_into(
+                        ds.train_images.unsafe_ptr() + sidx * IN,
+                        x_buf + i * IN,
+                    )
+                else:
+                    for j in range(IN):
+                        x_buf[i * IN + j] = ds.train_images[sidx * IN + j]
+                for c in range(NET.OUT_DIM):
+                    y_buf[i * NET.OUT_DIM + c] = 0
+                y_buf[i * NET.OUT_DIM + Int(ds.train_labels[sidx])] = 1
+
+            var r = TRAINER.compute_grads_only[BATCH](
+                params, grads, latents, mu_eps_buf, a_below_buf,
+                z_below_buf, dx_buf, x_batch, y_batch,
+                T_infer=T_INFER, lr_x=Scalar[dtype](LR_X),
+            )
+            ep_loss += r.output_loss_final
+
+            # adaptive gradient clip: cap any step exceeding CLIP_FACTOR× the
+            # running-avg grad L2 norm (kills the post-overfit Adam spike).
+            var gn: Float64 = 0.0
+            for i in range(NET.PARAM_SIZE):
+                var gv = Float64(grads_buf[i])
+                gn += gv * gv
+            gn = sqrt(gn)
+            last_gn = gn
+            if ema_norm > 0.0 and gn > CLIP_FACTOR * ema_norm:
+                var sc = Scalar[dtype]((CLIP_FACTOR * ema_norm) / gn)
+                for i in range(NET.PARAM_SIZE):
+                    grads_buf[i] = grads_buf[i] * sc
+                n_clips += 1
+                gn = CLIP_FACTOR * ema_norm
+            if ema_norm == 0.0:
+                ema_norm = gn
+            else:
+                ema_norm = 0.99 * ema_norm + 0.01 * gn
+
+            step_num += 1
+            OPT.step[NET.PARAM_SIZE, dtype](params, grads, opt_state, opt_global, step_num)
+
+            # decoupled weight decay: θ ← (1 − WD)·θ  (bounds ‖W‖ growth)
+            var keep = Scalar[dtype](1.0 - WD)
+            for i in range(NET.PARAM_SIZE):
+                params_buf[i] = params_buf[i] * keep
+
+        var correct: Int = 0
+        for tb in range(N_TEST_BATCHES):
+            for i in range(BATCH):
+                var sidx = tb * BATCH + i
+                for j in range(IN):
+                    x_buf[i * IN + j] = ds.test_images[sidx * IN + j]
+            NET.forward_eval[BATCH, dtype](x_batch, params, eval_out)
+            for i in range(BATCH):
+                var best_c: Int = 0
+                var best_v = Float64(eval_out_buf[i * NET.OUT_DIM])
+                for c in range(1, NET.OUT_DIM):
+                    var v = Float64(eval_out_buf[i * NET.OUT_DIM + c])
+                    if v > best_v:
+                        best_v = v; best_c = c
+                if best_c == Int(ds.test_labels[tb * BATCH + i]):
+                    correct += 1
+        var acc = Float64(correct) / Float64(N_TEST_BATCHES * BATCH)
+        if acc > best_acc:
+            best_acc = acc
+        var el = Float64(perf_counter_ns() - t0) / 1e9
+        print("    ", epoch, "  ", ep_loss / Float64(N_TRAIN_BATCHES), "  ",
+              acc, "  ", best_acc, "  ", n_clips, "  ",
+              String(last_gn)[byte=:6], "  ", el)
+
+    print("\n  best test accuracy =", best_acc)
+    print("  (baseline 0.465 @ 20k/6ep/T12)")
+    if best_acc >= PASS_ACC:
+        print("✅ PASS — bigger budget lifts conv-PCN CIFAR (best", best_acc, ")")
+    else:
+        print("⚠️  best", best_acc, "< target", PASS_ACC, "(still informative)")

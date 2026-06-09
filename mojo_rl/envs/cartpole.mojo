@@ -164,6 +164,9 @@ struct CartPoleEnv[DTYPE: DType](
     # Episode tracking
     var steps: Int
     var done: Bool
+    # Natural-termination flag (pole-fall / out-of-bounds), NOT time-limit
+    # truncation. Read by off-policy drivers via `was_terminated()`.
+    var _last_terminated: Bool
     var total_reward: Scalar[Self.dtype]
 
     # Discretization settings (for DiscreteEnv)
@@ -184,6 +187,7 @@ struct CartPoleEnv[DTYPE: DType](
         # Episode
         self.steps = 0
         self.done = False
+        self._last_terminated = False
         self.total_reward = 0.0
 
         # Discretization settings
@@ -279,6 +283,7 @@ struct CartPoleEnv[DTYPE: DType](
         var truncated = self.steps >= MAX_STEPS
 
         self.done = terminated or truncated
+        self._last_terminated = terminated
 
         # Reward: +1 for every step the pole stays upright
         var reward: Scalar[Self.dtype] = Scalar[Self.dtype](
@@ -391,6 +396,13 @@ struct CartPoleEnv[DTYPE: DType](
         var result = self.step_raw(action)
         return (self.get_obs_list(), result[1], result[2])
 
+    def was_terminated(self) -> Bool:
+        """True iff the previous step ended via natural termination (pole
+        fell / cart out of bounds), NOT the time-limit truncation at
+        MAX_STEPS. Used by off-policy drivers to keep the TD bootstrap on
+        truncation but drop it on termination."""
+        return self._last_terminated
+
     # ========================================================================
     # SIMD-optimized observation API (for performance)
     # ========================================================================
@@ -477,6 +489,7 @@ struct CartPoleEnv[DTYPE: DType](
         )
         var truncated = self.steps >= MAX_STEPS
         self.done = terminated or truncated
+        self._last_terminated = terminated
 
         var reward: Scalar[Self.dtype] = Scalar[Self.dtype](
             1.0

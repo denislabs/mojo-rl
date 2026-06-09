@@ -9,7 +9,10 @@ ran).
 Owns the inner DDPGActorLoss (TD3 uses DPG on critic1 for the actor).
 """
 
+from std.gpu.host import DeviceContext
+
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn2.core.module import Module
 from ...core.online_target_pair import OnlineTargetPair
 from mojo_rl.nn2.optimizer.adam import Adam
@@ -41,18 +44,28 @@ struct TD3DelayedActorPolyakStep[
     @staticmethod
     def make[target: StaticString](
         policy_delay: Int, tau: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu", (
-            "TD3DelayedActorPolyakStep.make[target='gpu'] not yet supported"
+        """Unified CPU/GPU factory. `ctx` is required for `target='gpu'`
+        (forwarded to the inner `DDPGActorLoss`)."""
+        comptime assert target == "cpu" or target == "gpu", (
+            "TD3DelayedActorPolyakStep: target must be 'cpu' or 'gpu'"
         )
         var b = Self()
-        b.inner = Self.ActorInner.make[target]()
+        b.inner = Self.ActorInner.make[target](ctx)
         b.policy_delay = policy_delay
         b.tau = tau
         b._counter = 0
         return b^
 
-    def step[target: StaticString](
+    # ── GPU loss-accumulator passthroughs (flush cadence; GPU only) ──
+    def reset_loss_accum(mut self) raises:
+        self.inner.reset_loss_accum()
+
+    def read_loss_accum(mut self) raises -> Scalar[DT]:
+        return self.inner.read_loss_accum()
+
+    def step[target: StaticString, POLICY: AMPPolicy = NoAMP](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut actor_opt: Adam,
@@ -69,9 +82,9 @@ struct TD3DelayedActorPolyakStep[
         self._counter = 0
 
         # Actor update against critic1 (DDPG-style DPG on pair1.online).
-        var loss = self.inner.forward_backward[target, OPT=Adam](
+        var loss = self.inner.forward_backward[target, OPT=Adam, POLICY=POLICY](
             actor_pair.online, actor_opt, pair1.online,
-            state.mb_s.cpu_ptr(),
+            state.mb_s.target_ptr[target](),
         )
         state.actor_loss = loss
 

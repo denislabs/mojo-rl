@@ -44,7 +44,7 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.core.scratch import Scratch
 from mojo_rl.nn2.core.scratch_walkers import init_scratch_auto
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
@@ -147,6 +147,7 @@ struct CriticUpdateBlock[
     def step[
         target: StaticString,
         POLICY: AMPPolicy = NoAMP,
+        ACCUMULATE: Bool = False,
     ](
         mut self,
         mut critic: Self.CRITIC,
@@ -157,23 +158,21 @@ struct CriticUpdateBlock[
         y_t: TileTensor[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        weights_p: UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
-        td_residuals_p: UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
+        weights_p: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+        td_residuals_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None,
     ) raises -> Scalar[DT]:
-        """Phase C.3c — `weights_p` (optional, default null sentinel)
-        is a `[BATCH]` per-sample IS weight vector. When non-null, the
+        """Phase C.3c — `weights_p` (optional, default None)
+        is a `[BATCH]` per-sample IS weight vector. When provided, the
         gradient `mb_grad_q` produced by `mse.vjp` is scaled in-place
         by `weights_p[i]` before flowing into `critic.vjp`. CPU path
         does a sequential loop; GPU path launches
-        `_scale_grad_by_weights_kernel`. Null pointer → unweighted
+        `_scale_grad_by_weights_kernel`. None → unweighted
         MSE → bit-identical to pre-C.3c.
 
-        `td_residuals_p` (optional, default null sentinel) is a
-        `[BATCH]` output vector. When non-null, the unscaled signed TD
+        `td_residuals_p` (optional, default None) is a
+        `[BATCH]` output vector. When provided, the unscaled signed TD
         residual `(Q − y)` is captured between `mse.vjp` and the IS-
         weight scaling and written here. Used by PER to refresh sum-
         tree priorities. Captured BEFORE IS scaling so priorities
@@ -187,34 +186,48 @@ struct CriticUpdateBlock[
 
         # Launder caller-supplied tiles to MutAnyOrigin — Module's variadic
         # forward/vjp surface requires it.
-        var sa_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](sa_t.ptr)
+        var sa_p = mptr(sa_t.ptr)
         var sa_t_rb = TileTensor(sa_p, row_major[Self.BATCH, Self.SA_DIM]())
 
         var mb_q_t = TileTensor(mb_q_p, row_major[Self.BATCH, 1]())
         opt.zero_grad[target, M=Self.CRITIC](critic)
         critic.forward[target, Self.BATCH, POLICY](sa_t_rb, output=mb_q_t)
-        var loss = self.mse_loss.forward[target, Self.BATCH, POLICY](
-            mb_q_t, y_t,
-        )
+        # Slice 3 — on GPU with ACCUMULATE, the loss reduction stays on
+        # device (no per-step D2H, CUDA-graph capturable); the host reads
+        # the accumulator at `diag_every` flush via `mse_loss.read_accum`.
+        # `forward_accumulate` caches logits exactly like `forward`, so the
+        # vjp below is unaffected. Returned scalar is a 0 sentinel in that
+        # mode. Default path (CPU, or ACCUMULATE=False) is unchanged.
+        var loss: Scalar[DT]
+        comptime if target == "gpu" and ACCUMULATE:
+            self.mse_loss.forward_accumulate[target, Self.BATCH, POLICY](
+                mb_q_t, y_t,
+            )
+            loss = Scalar[DT](0.0)
+        else:
+            loss = self.mse_loss.forward[target, Self.BATCH, POLICY](
+                mb_q_t, y_t,
+            )
 
         var mb_grad_q_t = TileTensor(mb_grad_q_p, row_major[Self.BATCH, 1]())
         self.mse_loss.vjp[target, Self.BATCH, POLICY](y_t, mb_grad_q_t)
 
         # PER residual capture (raw signed TD `Q − y = mb_grad_q · BATCH`),
         # taken BEFORE the IS-weight scaling below so priorities reflect
-        # error magnitude not weighted gradient. Null pointer → no capture.
-        if Int(td_residuals_p) != 0:
+        # error magnitude not weighted gradient. None → no capture.
+        if td_residuals_p:
+            var td_p = td_residuals_p.value()
             comptime if target == "cpu":
                 var scale = Scalar[DT](Self.BATCH)
                 for i in range(Self.BATCH):
-                    td_residuals_p[i] = mb_grad_q_p[i] * scale
+                    td_p[i] = mb_grad_q_p[i] * scale
             else:
                 var grad_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin,
                 ](mb_grad_q_p)
                 var out_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-                ](td_residuals_p)
+                ](td_p)
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
                 comptime capture_kernel = _capture_td_residuals_kernel[
                     Self.BATCH
@@ -225,18 +238,19 @@ struct CriticUpdateBlock[
                     grid_dim=n_blocks, block_dim=TPB,
                 )
 
-        # Phase C.3c — IS-weight scaling, gated on non-null sentinel.
-        if Int(weights_p) != 0:
+        # Phase C.3c — IS-weight scaling, gated on Optional sentinel.
+        if weights_p:
+            var w_p = weights_p.value()
             comptime if target == "cpu":
                 for i in range(Self.BATCH):
-                    mb_grad_q_p[i] = mb_grad_q_p[i] * weights_p[i]
+                    mb_grad_q_p[i] = mb_grad_q_p[i] * w_p[i]
             else:
                 var grad_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin,
                 ](mb_grad_q_p)
                 var w_lt = LayoutTensor[
                     DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-                ](weights_p)
+                ](w_p)
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
                 comptime scale_kernel = _scale_grad_by_weights_kernel[
                     Self.BATCH
@@ -302,6 +316,7 @@ struct TwinCriticUpdateBlock[
     def step[
         target: StaticString,
         POLICY: AMPPolicy = NoAMP,
+        ACCUMULATE: Bool = False,
     ](
         mut self,
         mut critic1: Self.CRITIC,
@@ -313,18 +328,16 @@ struct TwinCriticUpdateBlock[
         mb_y_t: TileTensor[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        weights_p: UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
-        td_residuals_p: UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ] = UnsafePointer[Scalar[DT], MutAnyOrigin](unsafe_from_address=0),
+        weights_p: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+        td_residuals_p: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None,
     ) raises -> Scalar[DT]:
-        """Phase C.3c — `weights_p` (optional, default null) flows
+        """Phase C.3c — `weights_p` (optional, default None) flows
         through both sub-block updates so both critics receive the
-        same per-sample PER weighting. Bit-identical when null.
+        same per-sample PER weighting. Bit-identical when None.
 
-        `td_residuals_p` (optional, default null) captures the signed
+        `td_residuals_p` (optional, default None) captures the signed
         TD residual from critic1 only — canonical choice for PER
         priority refresh; critic2 sees the same target so |Q1−y| is
         a representative single-critic proxy (Schaul et al. §3.1).
@@ -342,12 +355,12 @@ struct TwinCriticUpdateBlock[
             )
         var sa_t = TileTensor(sa_p, row_major[Self.BATCH, Self.SA_DIM]())
 
-        var loss1 = self.c1.step[target, POLICY](
+        var loss1 = self.c1.step[target, POLICY, ACCUMULATE](
             critic1, critic1_opt, sa_t, mb_y_t,
             weights_p=weights_p,
             td_residuals_p=td_residuals_p,
         )
-        var loss2 = self.c2.step[target, POLICY](
+        var loss2 = self.c2.step[target, POLICY, ACCUMULATE](
             critic2, critic2_opt, sa_t, mb_y_t,
             weights_p=weights_p,
         )

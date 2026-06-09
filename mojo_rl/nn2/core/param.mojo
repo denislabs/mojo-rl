@@ -36,6 +36,7 @@ from layout import TileTensor, row_major
 from ..constants import DT
 from .param_visitor import ParamVisitor
 from .saveable import Saveable
+from .tensor import Tensor
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -76,36 +77,34 @@ trait IsParam(Movable & ImplicitlyDestructible):
 
 
 struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam, Saveable):
-    var value: List[Scalar[DT]]
-    var grad: List[Scalar[DT]]
-    var value_dev: Optional[DeviceBuffer[DT]]
-    var grad_dev: Optional[DeviceBuffer[DT]]
+    """Two `Tensor`s — value + grad — sharing the unified storage core (S5).
+    External surface (`val`/`grd` fields + the accessor methods below)
+    matches what leaves use: `p.val.dev` (device buffer), `p.val.cpu`
+    (host List), `value_unsafe_ptr_cpu()` / `grad_unsafe_ptr_cpu()`."""
+    var val: Tensor[Self.NAME, Self.SIZE]
+    var grd: Tensor[Self.NAME, Self.SIZE]
 
     def __init__(out self):
-        self.value = List[Scalar[DT]]()
-        self.grad = List[Scalar[DT]]()
-        self.value_dev = None
-        self.grad_dev = None
+        self.val = Tensor[Self.NAME, Self.SIZE]()
+        self.grd = Tensor[Self.NAME, Self.SIZE]()
 
     # ----- Factories -------------------------------------------------------
 
     @staticmethod
     def make_cpu() raises -> Self:
-        """CPU param — allocate fp32 storage, zero-fill grad."""
+        """CPU param — allocate fp32 storage, zero-fill value + grad."""
         var p = Self()
-        p.value = List[Scalar[DT]](length=Self.SIZE, fill=0.0)
-        p.grad  = List[Scalar[DT]](length=Self.SIZE, fill=0.0)
+        p.val = Tensor[Self.NAME, Self.SIZE].make_cpu()
+        p.grd = Tensor[Self.NAME, Self.SIZE].make_cpu()
         return p^
 
     @staticmethod
     def make_gpu(ctx: DeviceContext) raises -> Self:
         """GPU param — allocate device buffers, zero-fill grad."""
         var p = Self()
-        var v_dev = ctx.enqueue_create_buffer[DT](Self.SIZE)
-        var g_dev = ctx.enqueue_create_buffer[DT](Self.SIZE)
-        g_dev.enqueue_fill(0.0)
-        p.value_dev = v_dev^
-        p.grad_dev  = g_dev^
+        p.val = Tensor[Self.NAME, Self.SIZE].make_gpu(ctx)
+        p.grd = Tensor[Self.NAME, Self.SIZE].make_gpu(ctx)
+        p.grd.dev.value().enqueue_fill(0.0)
         return p^
 
     # ----- Pointer accessors (used by the owning leaf's INIT + kernels) ---
@@ -113,16 +112,12 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam, Saveable
     def value_unsafe_ptr_cpu(
         ref self,
     ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.value.unsafe_ptr()
-        )
+        return self.val.cpu_ptr()
 
     def grad_unsafe_ptr_cpu(
         ref self,
     ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.grad.unsafe_ptr()
-        )
+        return self.grd.cpu_ptr()
 
     # NOTE: Shaped TileTensor accessors (e.g. `weight_tile[IN, OUT]()`)
     # are intentionally not provided. Mojo nightly rejects typed-return
@@ -146,17 +141,17 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam, Saveable
         Param's storage. Mirrors the existing per-leaf
         `visitor.visit(name, w_tile, gw_tile, n, decay)` shape."""
         comptime if target == "cpu":
-            var v_tt = TileTensor(self.value, row_major[Self.SIZE]())
-            var g_tt = TileTensor(self.grad,  row_major[Self.SIZE]())
+            var v_tt = TileTensor(self.val.cpu, row_major[Self.SIZE]())
+            var g_tt = TileTensor(self.grd.cpu, row_major[Self.SIZE]())
             visitor.visit(
                 full_name, v_tt, g_tt, Self.SIZE, Self.APPLY_DECAY,
             )
         else:
             var v_tt = TileTensor(
-                self.value_dev.value(), row_major[Self.SIZE](),
+                self.val.dev.value(), row_major[Self.SIZE](),
             )
             var g_tt = TileTensor(
-                self.grad_dev.value(),  row_major[Self.SIZE](),
+                self.grd.dev.value(),  row_major[Self.SIZE](),
             )
             visitor.visit(
                 full_name, v_tt, g_tt, Self.SIZE, Self.APPLY_DECAY,
@@ -166,9 +161,9 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam, Saveable
         """Zero the gradient buffer on the active target."""
         comptime if target == "cpu":
             for k in range(Self.SIZE):
-                self.grad[k] = Scalar[DT](0.0)
+                self.grd.cpu[k] = Scalar[DT](0.0)
         else:
-            self.grad_dev.value().enqueue_fill(0.0)
+            self.grd.dev.value().enqueue_fill(0.0)
 
     # ----- Saveable interface (CPU only) ---------------------------------
     # Format: a section header line then SIZE value lines.
@@ -187,7 +182,7 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam, Saveable
     def save(self, mut out: String, prefix: String) raises:
         out += prefix + "#size=" + String(Self.SIZE) + "\n"
         for k in range(Self.SIZE):
-            out += String(self.value[k]) + "\n"
+            out += String(self.val.cpu[k]) + "\n"
 
     def load(
         mut self, lines: List[String], mut idx: Int, prefix: String,
@@ -212,5 +207,5 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam, Saveable
                     "Param.load: short read at element " + String(k)
                     + " of " + String(Self.SIZE) + " for `" + prefix + "`"
                 )
-            self.value[k] = Scalar[DT](atof(lines[idx]))
+            self.val.cpu[k] = Scalar[DT](atof(lines[idx]))
             idx += 1

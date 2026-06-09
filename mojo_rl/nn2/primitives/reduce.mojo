@@ -18,6 +18,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from ..constants import DT, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.reduce_op import ReduceOp
 from ..core.target_storage import TargetStorage, assert_tag_for
 from .ops.sum_op import SumOp
@@ -105,17 +106,14 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["Reduce", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -128,8 +126,8 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
         else:
             comptime layout_in = Layout.row_major(BATCH, Self.DIM)
             comptime layout_out = Layout.row_major(BATCH, 1)
-            var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p = input.ptr
+            var out_p = output_v.ptr
             var in_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](in_p)
             var out_lt = LayoutTensor[DT, layout_out, MutAnyOrigin](out_p)
             comptime n_blocks = (BATCH + TPB - 1) // TPB
@@ -149,17 +147,14 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Reduce", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
             var scale = Self.OP.scale_factor[Self.DIM]()
@@ -170,8 +165,8 @@ struct Reduce[DIM: Int, OP: ReduceOp](Module):
         else:
             comptime layout_go = Layout.row_major(BATCH, 1)
             comptime layout_gi = Layout.row_major(BATCH, Self.DIM)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p = grad_output_v.ptr
+            var gi_p = grad_input_v.ptr
             var go_lt = LayoutTensor[DT, layout_go, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, layout_gi, MutAnyOrigin](gi_p)
             comptime total = BATCH * Self.DIM

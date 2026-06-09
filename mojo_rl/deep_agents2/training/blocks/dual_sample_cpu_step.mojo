@@ -27,22 +27,13 @@ struct DualSampleCpuStep[
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
 
-    var real_buf:  CPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP]
-    var synth_buf: CPUReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP]
+    var real_buf:  Optional[CPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP]]
+    var synth_buf: Optional[CPUReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP]]
     var learning_starts: Int
 
     def __init__(out self):
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self.real_buf = CPUReplay[Self.OBS, Self.ACT, Self.REAL_CAP](
-            obs=null_p, act=null_p, rew=null_p, nxt=null_p, dne=null_p,
-            size=0, pos=0,
-        )
-        self.synth_buf = CPUReplay[Self.OBS, Self.ACT, Self.SYNTH_CAP](
-            obs=null_p, act=null_p, rew=null_p, nxt=null_p, dne=null_p,
-            size=0, pos=0,
-        )
+        self.real_buf = None
+        self.synth_buf = None
         self.learning_starts = 0
 
     def setup(mut self, learning_starts: Int) raises:
@@ -60,7 +51,7 @@ struct DualSampleCpuStep[
         ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
     ):
-        self.real_buf.add(obs, action, reward, next_obs, done)
+        self.real_buf.value().add(obs, action, reward, next_obs, done)
 
     def synth_add(
         mut self,
@@ -70,7 +61,20 @@ struct DualSampleCpuStep[
         ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
     ):
-        self.synth_buf.add(obs, action, reward, next_obs, done)
+        self.synth_buf.value().add(obs, action, reward, next_obs, done)
+
+    # Uniform readiness accessors (mirror DualSampleGpuStep) so the
+    # trainer can gate on `real_count()`/`synth_count()` regardless of
+    # the backend.
+    def real_count(self) -> Int:
+        if not self.real_buf:
+            return 0
+        return self.real_buf.value().size
+
+    def synth_count(self) -> Int:
+        if not self.synth_buf:
+            return 0
+        return self.synth_buf.value().size
 
     def step(
         mut self,
@@ -82,10 +86,10 @@ struct DualSampleCpuStep[
         if state.step_idx < self.learning_starts:
             state.did_step = False
             return
-        if self.real_buf.size < Self.REAL_BS:
+        if self.real_buf.value().size < Self.REAL_BS:
             state.did_step = False
             return
-        if self.synth_buf.size < Self.SYNTH_BS:
+        if self.synth_buf.value().size < Self.SYNTH_BS:
             state.did_step = False
             return
 
@@ -96,12 +100,12 @@ struct DualSampleCpuStep[
         var mb_d_p = state.mb_d.cpu_ptr()
 
         # Real partition: rows [0, REAL_BS).
-        self.real_buf.sample(
+        self.real_buf.value().sample(
             Self.REAL_BS,
             mb_s_p, mb_a_p, mb_r_p, mb_sp_p, mb_d_p,
         )
         # Synth partition: rows [REAL_BS, BATCH).
-        self.synth_buf.sample(
+        self.synth_buf.value().sample(
             Self.SYNTH_BS,
             mb_s_p + Self.REAL_BS * Self.OBS,
             mb_a_p + Self.REAL_BS * Self.ACT,

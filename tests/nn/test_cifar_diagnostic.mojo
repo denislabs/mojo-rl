@@ -30,7 +30,7 @@ from mojo_rl.nn.loss.cross_entropy import CrossEntropyLoss
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.training.trainer import Trainer
 from mojo_rl.nn.initializer.initializers import Kaiming
-from mojo_rl.nn.datasets.cifar10 import CIFAR10
+from mojo_rl.nn2.datasets.cifar10 import CIFAR10
 
 
 comptime BATCH = 128

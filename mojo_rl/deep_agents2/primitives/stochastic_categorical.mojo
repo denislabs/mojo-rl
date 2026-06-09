@@ -45,7 +45,8 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut, mptr
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for, ensure_cpu_buffer
 
 
@@ -112,10 +113,7 @@ struct StochasticCategorical[N: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -128,8 +126,8 @@ struct StochasticCategorical[N: Int](Module):
 
         self._ensure_cache_cpu(BATCH)
 
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](inputs[0].ptr)
-        var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+        var in_p = inputs.ptr[0]()
+        var out_p = mptr(output.ptr)
         var sm_p = self._sm.unsafe_ptr()
         var idx_p = self._sample_idx.unsafe_ptr()
         comptime OUT = Self.N + 1
@@ -182,10 +180,7 @@ struct StochasticCategorical[N: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
@@ -193,8 +188,8 @@ struct StochasticCategorical[N: Int](Module):
         assert_tag_for["StochasticCategorical", target](self.ts.target_tag)
         comptime assert target == "cpu", "GPU path not implemented yet"
 
-        var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output.ptr)
-        var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_inputs[0].ptr)
+        var go_p = mptr(grad_output.ptr)
+        var gi_p = grad_inputs.ptr[0]()
         var sm_p = self._sm.unsafe_ptr()
         var idx_p = self._sample_idx.unsafe_ptr()
         comptime OUT = Self.N + 1

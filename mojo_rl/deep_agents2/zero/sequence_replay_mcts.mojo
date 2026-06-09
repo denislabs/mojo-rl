@@ -1,0 +1,347 @@
+"""MuZero trajectory replay — episodes of MCTS-labelled steps → unroll batches.
+
+Stores complete self-play episodes (each step carries obs, action, reward, the
+MCTS visit-policy, the MCTS root value, the player-to-move, and a terminal flag)
+in flat ring buffers indexed by a monotonic step counter, with a side list of
+``(start, length)`` episode records. Only fully-resident episodes are kept (the
+prune rule drops any whose start fell out of the last ``CAP`` steps), so window
+reads never cross into a different episode's data.
+
+``sample_training_batch`` produces **exactly** the time-major slabs the unroll
+(`muzero/blocks.mojo::mz_unroll_train_step_cpu`) consumes — picking a random
+(episode, start) per batch row, reading the K+N horizon with **absorbing
+padding** past the episode's terminal (obs repeats, action 0, reward 0, done 1,
+uniform policy, value 0), and computing the n-step value targets in place via
+`nstep_targets.compute_nstep_value_targets` (the two-player sign flip lives
+there). So this module is the seam between data collection and the BPTT step:
+the driver only does ``store_episode`` → ``sample_training_batch`` → unroll.
+
+``update_targets`` is the reanalyze hook: overwrite a stored step's MCTS
+policy/value with a fresh search from a lagging network (the driver/agent drives
+timing). Pure data refresh — no recompute here.
+"""
+
+from std.memory import alloc
+
+from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.module import mptr
+from .nstep_targets import compute_nstep_value_targets
+
+
+def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    return mptr(alloc[Scalar[DT]](n))
+
+
+struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
+    Movable, ImplicitlyDestructible
+):
+    """Ring of MCTS-labelled steps + episode index. ``CAP`` = max resident
+    steps. Host-side (the CartPole lighthouse trains on CPU; the GPU search
+    feeds it via host copies)."""
+
+    var obs: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP, OBS]
+    var act: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP] action index
+    var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP]
+    var done: UnsafePointer[Scalar[DT], MutAnyOrigin]  # [CAP] terminal flag
+    var pol: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP, ACT] visit policy
+    var val: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP] root value
+    var tp: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [CAP] to_play
+    var legal: UnsafePointer[Scalar[DT], MutAnyOrigin] # [CAP, ACT] legal mask (reanalyze)
+
+    var ep_start: List[Int]   # absolute start step of each resident episode
+    var ep_len: List[Int]
+    var total: Int            # monotonic steps written
+    var rng: UInt64
+
+    def __init__(out self, seed: UInt64 = 0):
+        self.obs = _a(Self.CAP * Self.OBS)
+        self.act = _a(Self.CAP)
+        self.rew = _a(Self.CAP)
+        self.done = _a(Self.CAP)
+        self.pol = _a(Self.CAP * Self.ACT)
+        self.val = _a(Self.CAP)
+        self.tp = _a(Self.CAP)
+        self.legal = _a(Self.CAP * Self.ACT)
+        self.ep_start = List[Int]()
+        self.ep_len = List[Int]()
+        self.total = 0
+        self.rng = seed ^ UInt64(0x9E3779B97F4A7C15)
+
+    def __del__(deinit self):
+        self.obs.free(); self.act.free(); self.rew.free(); self.done.free()
+        self.pol.free(); self.val.free(); self.tp.free(); self.legal.free()
+
+    def _xorshift(mut self) -> UInt64:
+        var x = self.rng
+        x = x ^ (x << 13); x = x ^ (x >> 7); x = x ^ (x << 17)
+        self.rng = x
+        return x
+
+    def num_episodes(self) -> Int:
+        return len(self.ep_start)
+
+    def num_steps(self) -> Int:
+        return self.total if self.total < Self.CAP else Self.CAP
+
+    def store_episode(
+        mut self,
+        ep_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L, OBS]
+        ep_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L]
+        ep_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L]
+        ep_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L, ACT]
+        ep_val: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L]
+        ep_tp: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [L]
+        ep_legal: UnsafePointer[Scalar[DT], MutAnyOrigin], # [L, ACT] legal mask
+        length: Int,
+    ):
+        """Append a finished episode of ``length`` steps. The terminal flag is
+        set on the last step. Evicts episodes that fall out of the last ``CAP``
+        steps so every resident episode stays fully readable."""
+        var start = self.total
+        for i in range(length):
+            var slot = (self.total) % Self.CAP
+            for j in range(Self.OBS):
+                self.obs[slot * Self.OBS + j] = ep_obs[i * Self.OBS + j]
+            for a in range(Self.ACT):
+                self.pol[slot * Self.ACT + a] = ep_pol[i * Self.ACT + a]
+            for a in range(Self.ACT):
+                self.legal[slot * Self.ACT + a] = ep_legal[i * Self.ACT + a]
+            self.act[slot] = ep_act[i]
+            self.rew[slot] = ep_rew[i]
+            self.val[slot] = ep_val[i]
+            self.tp[slot] = ep_tp[i]
+            self.done[slot] = (
+                Scalar[DT](1.0) if i == length - 1 else Scalar[DT](0.0)
+            )
+            self.total += 1
+        self.ep_start.append(start)
+        self.ep_len.append(length)
+        # prune episodes no longer fully resident (start older than CAP window).
+        var floor = self.total - Self.CAP
+        while len(self.ep_start) > 0 and self.ep_start[0] < floor:
+            _ = self.ep_start.pop(0)
+            _ = self.ep_len.pop(0)
+
+    def _read_step[
+        FIELD_DIM: Int,
+    ](
+        self,
+        field: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ep_idx: Int,
+        offset: Int,
+        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        out_base: Int,
+    ):
+        """Read ``FIELD_DIM`` cells of one ring field at episode-relative
+        ``offset`` into ``out[out_base..]``. Past the episode end the read is
+        absorbing: zeros (caller overlays obs-repeat / uniform-policy where
+        those differ from zero)."""
+        if offset >= self.ep_len[ep_idx]:
+            for j in range(FIELD_DIM):
+                out[out_base + j] = Scalar[DT](0.0)
+            return
+        var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
+        for j in range(FIELD_DIM):
+            out[out_base + j] = field[slot * FIELD_DIM + j]
+
+    def sample_training_batch[
+        B: Int, K: Int, N: Int,
+    ](
+        mut self,
+        gamma: Scalar[DT],
+        mut obs0: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B, OBS]
+        mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K, B]
+        mut policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT]
+        mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
+        mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
+    ):
+        """Fill the time-major unroll batch for ``B`` windows. Each row picks a
+        random (episode, start); the K+N horizon is read with absorbing padding
+        and the value targets are n-step bootstrapped (sign-flipped for
+        two-player). Caller guarantees ``num_episodes() > 0``."""
+        comptime HV = K + N + 1   # value/to_play horizon (positions)
+        comptime HR = K + N       # reward/done horizon (transitions)
+        var w_rew = _a(HR)
+        var w_done = _a(HR)
+        var w_val = _a(HV)
+        var w_tp = _a(HV)
+        var w_vt = _a(K + 1)
+
+        for b in range(B):
+            var e = Int(self._xorshift() % UInt64(len(self.ep_start)))
+            var L = self.ep_len[e]
+            var s = Int(self._xorshift() % UInt64(L))
+
+            # obs0 = obs at start (always in-episode).
+            self._read_step[Self.OBS](self.obs, e, s, obs0, b * Self.OBS)
+
+            # reward / done horizon (HR), with absorbing past terminal.
+            for h in range(HR):
+                self._read_step[1](self.rew, e, s + h, w_rew, h)
+                if s + h >= L:
+                    w_done[h] = Scalar[DT](1.0)   # absorbing = terminal
+                else:
+                    self._read_step[1](self.done, e, s + h, w_done, h)
+            # value / to_play horizon (HV).
+            for h in range(HV):
+                if s + h >= L:
+                    w_val[h] = Scalar[DT](0.0)     # terminal value 0
+                    w_tp[h] = Scalar[DT](0.0)
+                else:
+                    self._read_step[1](self.val, e, s + h, w_val, h)
+                    self._read_step[1](self.tp, e, s + h, w_tp, h)
+
+            compute_nstep_value_targets[K, N](
+                w_rew, w_done, w_val, w_tp, gamma, w_vt
+            )
+
+            # write time-major slabs.
+            for k in range(K + 1):
+                value_tgt[k * B + b] = w_vt[k]
+                # policy target at position s+k (absorbing → uniform).
+                var pbase = k * B * Self.ACT + b * Self.ACT
+                if s + k >= L:
+                    var u = Scalar[DT](1.0) / Scalar[DT](Self.ACT)
+                    for a in range(Self.ACT):
+                        policy_tgt[pbase + a] = u
+                else:
+                    var slot = (self.ep_start[e] + s + k) % Self.CAP
+                    for a in range(Self.ACT):
+                        policy_tgt[pbase + a] = self.pol[slot * Self.ACT + a]
+            for k in range(K):
+                # action at s+k (absorbing → 0); reward target = horizon reward.
+                if s + k >= L:
+                    actions[k * B + b] = Scalar[DT](0.0)
+                else:
+                    var slot = (self.ep_start[e] + s + k) % Self.CAP
+                    actions[k * B + b] = self.act[slot]
+                reward_tgt[k * B + b] = w_rew[k]
+
+        w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
+
+    def sample_training_batch_seq[
+        B: Int, K: Int, N: Int,
+    ](
+        mut self,
+        gamma: Scalar[DT],
+        mut obs_seq: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K+1, B, OBS]
+        mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K, B]
+        mut policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT]
+        mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
+        mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
+    ):
+        """EZv2 variant of ``sample_training_batch``: identical targets, but the
+        observation output is the **full time-major sequence** ``obs_seq[K+1, B,
+        OBS]`` (``obs_seq[0]`` is the root obs) so the SimSiam consistency loss
+        can encode the real future observations. Past an episode's terminal the
+        obs read is **obs-repeat absorbing** (offset clamped to ``L−1``), matching
+        the legacy consistency handling. Caller guarantees ``num_episodes() > 0``.
+        """
+        comptime HV = K + N + 1
+        comptime HR = K + N
+        var w_rew = _a(HR)
+        var w_done = _a(HR)
+        var w_val = _a(HV)
+        var w_tp = _a(HV)
+        var w_vt = _a(K + 1)
+
+        for b in range(B):
+            var e = Int(self._xorshift() % UInt64(len(self.ep_start)))
+            var L = self.ep_len[e]
+            var s = Int(self._xorshift() % UInt64(L))
+
+            # obs sequence: obs at s+k for k=0..K (obs-repeat absorbing).
+            for k in range(K + 1):
+                var off = s + k
+                if off >= L:
+                    off = L - 1
+                var slot = (self.ep_start[e] + off) % Self.CAP
+                var ob = k * B * Self.OBS + b * Self.OBS
+                for j in range(Self.OBS):
+                    obs_seq[ob + j] = self.obs[slot * Self.OBS + j]
+
+            for h in range(HR):
+                self._read_step[1](self.rew, e, s + h, w_rew, h)
+                if s + h >= L:
+                    w_done[h] = Scalar[DT](1.0)
+                else:
+                    self._read_step[1](self.done, e, s + h, w_done, h)
+            for h in range(HV):
+                if s + h >= L:
+                    w_val[h] = Scalar[DT](0.0)
+                    w_tp[h] = Scalar[DT](0.0)
+                else:
+                    self._read_step[1](self.val, e, s + h, w_val, h)
+                    self._read_step[1](self.tp, e, s + h, w_tp, h)
+
+            compute_nstep_value_targets[K, N](
+                w_rew, w_done, w_val, w_tp, gamma, w_vt
+            )
+
+            for k in range(K + 1):
+                value_tgt[k * B + b] = w_vt[k]
+                var pbase = k * B * Self.ACT + b * Self.ACT
+                if s + k >= L:
+                    var u = Scalar[DT](1.0) / Scalar[DT](Self.ACT)
+                    for a in range(Self.ACT):
+                        policy_tgt[pbase + a] = u
+                else:
+                    var slot = (self.ep_start[e] + s + k) % Self.CAP
+                    for a in range(Self.ACT):
+                        policy_tgt[pbase + a] = self.pol[slot * Self.ACT + a]
+            for k in range(K):
+                if s + k >= L:
+                    actions[k * B + b] = Scalar[DT](0.0)
+                else:
+                    var slot = (self.ep_start[e] + s + k) % Self.CAP
+                    actions[k * B + b] = self.act[slot]
+                reward_tgt[k * B + b] = w_rew[k]
+
+        w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
+
+    def update_targets(
+        mut self,
+        ep_idx: Int,
+        offset: Int,
+        new_policy: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [ACT]
+        new_value: Scalar[DT],
+    ):
+        """Reanalyze hook: overwrite a stored step's MCTS policy + root value
+        with fresh search outputs from a lagging network. Timing is the
+        driver's; this is pure in-place data refresh."""
+        if ep_idx < 0 or ep_idx >= len(self.ep_start):
+            return
+        if offset < 0 or offset >= self.ep_len[ep_idx]:
+            return
+        var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
+        for a in range(Self.ACT):
+            self.pol[slot * Self.ACT + a] = new_policy[a]
+        self.val[slot] = new_value
+
+    def sample_position(mut self) -> Tuple[Int, Int]:
+        """Pick a uniform random resident (episode, in-episode offset) for
+        reanalyze. Caller guarantees ``num_episodes() > 0``."""
+        var e = Int(self._xorshift() % UInt64(len(self.ep_start)))
+        var o = Int(self._xorshift() % UInt64(self.ep_len[e]))
+        return (e, o)
+
+    def read_obs(
+        self,
+        ep_idx: Int,
+        offset: Int,
+        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [OBS]
+    ):
+        """Copy the stored observation at ``(ep_idx, offset)`` into ``out``.
+        MuZero reanalyze replans from the observation alone (no env state)."""
+        var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
+        for j in range(Self.OBS):
+            out[j] = self.obs[slot * Self.OBS + j]
+
+    def read_legal(self, ep_idx: Int, offset: Int) -> List[Bool]:
+        """The stored root legal-action mask at ``(ep_idx, offset)`` — needed so
+        reanalyze masks the same illegal actions the original search did."""
+        var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
+        var m = List[Bool](capacity=Self.ACT)
+        for a in range(Self.ACT):
+            m.append(self.legal[slot * Self.ACT + a] > Scalar[DT](0.5))
+        return m^

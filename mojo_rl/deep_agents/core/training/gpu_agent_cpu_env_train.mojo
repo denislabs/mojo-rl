@@ -82,9 +82,7 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
     environment_name: String = "Environment",
     algorithm_name: String = "GPUAgentCPUEnv",
     reward_scale: Float64 = 1.0,
-    eval_env: UnsafePointer[E, MutAnyOrigin] = UnsafePointer[E, MutAnyOrigin](
-        unsafe_from_address=0
-    ),
+    eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     eval_max_steps: Int = 1000,
@@ -199,7 +197,7 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
     var next_checkpoint = checkpoint_every if checkpoint_every > 0 else (
         num_steps + 1
     )
-    var has_eval_env = Int(eval_env) != 0
+    var has_eval_env = eval_env.__bool__()
     var next_eval = eval_every if (eval_every > 0 and has_eval_env) else (
         num_steps + 1
     )
@@ -363,7 +361,7 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
             var eval_sum: Float64 = 0.0
             var eval_len_sum: Int = 0
             for _ in range(eval_episodes):
-                var obs_raw = eval_env[].reset_obs_list()
+                var obs_raw = eval_env.value()[].reset_obs_list()
                 var obs_f64 = List[Float64](capacity=OBS_DIM)
                 for j in range(OBS_DIM):
                     obs_f64.append(Float64(obs_raw[j]))
@@ -375,7 +373,7 @@ def run_offpolicy_continuous_train_cpu_env_gpu_agent[
                     var action_dt = List[Scalar[E.dtype]](capacity=ACTION_DIM)
                     for j in range(ACTION_DIM):
                         action_dt.append(Scalar[E.dtype](action[j]))
-                    var result = eval_env[].step_continuous_vec(action_dt)
+                    var result = eval_env.value()[].step_continuous_vec(action_dt)
                     ep_reward += Float64(result[1])
                     ep_len += 1
                     done = result[2]

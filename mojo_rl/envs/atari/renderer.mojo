@@ -24,6 +24,7 @@ from std.ffi import c_float, c_int
 from std.memory import alloc
 
 from mojo_rl.render.sdl import (
+    _null_ptr,
     init,
     quit as sdl_quit,
     InitFlags,
@@ -217,9 +218,14 @@ struct AtariRenderer(Movable):
             var name = String("")
             self.sdl_renderer = create_renderer(self.window.value(), name)
 
-            # Create streaming texture at native Atari resolution
+            # Create streaming texture at native Atari resolution.
+            # The frame buffer is written as memory bytes [B, G, R, A] (see
+            # frame_render._write_pixel_bgra), which is SDL's memory-order
+            # BGRA32 alias (== ARGB8888 on little-endian). Using the packed
+            # BGRA8888 enum here misreads the channels (green → purple, alpha
+            # shifted), so use the endianness-safe *32 alias.
             self.texture = create_texture(self.sdl_renderer.value(),
-                PixelFormat.PIXELFORMAT_BGRA8888,
+                PixelFormat.PIXELFORMAT_BGRA32,
                 TextureAccess.TEXTUREACCESS_STREAMING,
                 c_int(FRAME_WIDTH),
                 c_int(FRAME_HEIGHT),
@@ -394,9 +400,9 @@ struct AtariRenderer(Movable):
             set_render_draw_color(self.sdl_renderer.value(), 0, 0, 0, 255)
             render_clear(self.sdl_renderer.value())
 
-            # Upload pixels to texture
+            # Upload pixels to texture (NULL rect = entire texture).
             update_texture(self.texture.value(),
-                Ptr[Rect, ImmutAnyOrigin](unsafe_from_address=0),  # NULL = entire texture
+                _null_ptr[Rect, ImmutAnyOrigin](),
                 rebind[Ptr[NoneType, ImmutAnyOrigin]](
                     Ptr[UInt8, ImmutAnyOrigin](self.pixel_buf)
                 ),
@@ -410,9 +416,10 @@ struct AtariRenderer(Movable):
                 c_float(self.screen_width),
                 c_float(self.screen_height - HUD_HEIGHT),
             )
+            # NULL src rect = use entire source texture.
             render_texture(self.sdl_renderer.value(),
                 self.texture.value(),
-                Ptr[FRect, ImmutAnyOrigin](unsafe_from_address=0),  # NULL = full source
+                _null_ptr[FRect, ImmutAnyOrigin](),
                 rebind[Ptr[FRect, ImmutAnyOrigin]](Ptr(to=dst)),
             )
         except:
@@ -470,9 +477,12 @@ struct AtariRenderer(Movable):
     def flip(mut self):
         """Present the frame and cap framerate. Also captures for recording."""
         try:
-            # Capture frame for recording before present
+            # Capture frame for recording before present.
             if self.recorder.is_recording:
-                var surf = render_read_pixels(self.sdl_renderer.value(), Ptr[Rect, ImmutAnyOrigin](unsafe_from_address=0)
+                # NULL rect = entire viewport.
+                var surf = render_read_pixels(
+                    self.sdl_renderer.value(),
+                    _null_ptr[Rect, ImmutAnyOrigin](),
                 )
                 var pixels = surf[].pixels
                 self.recorder.add_frame_bgra(

@@ -38,14 +38,21 @@ from std.random import random_float64
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
+from ..training.replay_buffer import ReplayBuffer
+from ..training.trainer_block import TrainerState
 from .cpu_replay import CPUReplay
 
 
 @fieldwise_init
-struct CPUPrioritizedReplay[OBS: Int, ACT: Int, CAP: Int](
-    Movable & ImplicitlyDestructible
-):
+struct CPUPrioritizedReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     """Host PER buffer: CPU data + host sum-tree.
+
+    Conforms to `ReplayBuffer`: `make` / `add` / `sample_into` / `count`
+    / `configure_per` / `set_beta` / `update_priorities` form the trait
+    surface; the legacy `new` / pointer-based `sample` /
+    `update_priorities` methods are retained for callers that pre-date
+    the trait. `sample_into` additionally fills `state.mb_w` and flips
+    `state.has_per`.
 
     Storage:
       * `base` — wrapped `CPUReplay[OBS, ACT, CAP]` holding the actual
@@ -65,6 +72,10 @@ struct CPUPrioritizedReplay[OBS: Int, ACT: Int, CAP: Int](
     PER hyperparams: `alpha`, `beta`, `epsilon`, `max_priority`
     (raw |TD| ceiling — new slots get `max_priority^α`).
     """
+
+    comptime OBS = Self.OBS_
+    comptime ACT = Self.ACT_
+    comptime CAP = Self.CAP_
 
     var base: CPUReplay[Self.OBS, Self.ACT, Self.CAP]
 
@@ -156,6 +167,7 @@ struct CPUPrioritizedReplay[OBS: Int, ACT: Int, CAP: Int](
         r: Scalar[DT],
         ref sp: List[Scalar[DT]],
         d: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
     ):
         """Single-transition add. New slot priority = `max_priority^α`
         so newly-inserted experiences are sampled at the top of the
@@ -278,3 +290,54 @@ struct CPUPrioritizedReplay[OBS: Int, ACT: Int, CAP: Int](
             var leaf = self._host_indices[i]
             self._tree_update_leaf(leaf, p)
         self.max_priority = new_max
+
+    # ─── ReplayBuffer trait surface ──────────────────────────────────
+
+    @staticmethod
+    def make(
+        ctx: Optional[DeviceContext] = None,
+        batch_capacity: Int = 4096,
+    ) raises -> Self:
+        """Trait factory. PER exponents take `new`'s defaults; the block
+        sets the real ones via `configure_per` before any `add`. CPU
+        backend — `ctx` ignored."""
+        return Self.new(batch_capacity=batch_capacity)
+
+    def configure_per(
+        mut self,
+        alpha: Scalar[DT] = Scalar[DT](0.6),
+        beta: Scalar[DT] = Scalar[DT](0.4),
+        epsilon: Scalar[DT] = Scalar[DT](1e-6),
+    ):
+        self.alpha = alpha
+        self.beta = beta
+        self.epsilon = epsilon
+
+    def sample_into[BATCH: Int](
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
+    ) raises:
+        """Stratified PER sample into `state.mb_*`, copy normalised IS
+        weights into `state.mb_w` (host), flip `state.has_per`."""
+        self.sample[BATCH](
+            state.mb_s.cpu_ptr(),
+            state.mb_a.cpu_ptr(),
+            state.mb_r.cpu_ptr(),
+            state.mb_sp.cpu_ptr(),
+            state.mb_d.cpu_ptr(),
+        )
+        var w_dst = state.mb_w.cpu_ptr()
+        for i in range(BATCH):
+            w_dst[i] = self._host_weights[i]
+        state.has_per = True
+
+    def update_priorities[BATCH: Int](
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
+    ) raises:
+        """Trait-surface priority refresh: reads `state.td_residuals`
+        (host) and updates the sum-tree."""
+        self.update_priorities[BATCH](state.td_residuals.cpu_ptr())
+
+    def count(self) -> Int:
+        return self.base.size

@@ -53,6 +53,9 @@ from std.random import random_float64
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT, TPB
+from mojo_rl.nn2.core.module import mptr
+from ..training.replay_buffer import ReplayBuffer
+from ..training.trainer_block import TrainerState
 from .gpu_replay import GPUReplay, _gather_batch_kernel
 
 
@@ -62,10 +65,16 @@ from .gpu_replay import GPUReplay, _gather_batch_kernel
 
 
 @fieldwise_init
-struct GPUPrioritizedReplay[OBS: Int, ACT: Int, CAP: Int](
-    Movable & ImplicitlyDestructible
-):
+struct GPUPrioritizedReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     """Hybrid PER buffer: GPU data + host sum-tree.
+
+    Conforms to `ReplayBuffer`: `make` / `add(Lists, ctx)` /
+    `sample_into` / `count` / `configure_per` / `set_beta` /
+    `update_priorities` form the trait surface; the legacy `new` /
+    pointer-based `add` / device-buffer `sample` / `update_priorities`
+    methods are retained for callers that pre-date the trait.
+    `sample_into` additionally H2D-copies IS weights into `state.mb_w`
+    and flips `state.has_per`.
 
     Storage:
       * `base` — wrapped `GPUReplay[OBS, ACT, CAP]` holding the actual
@@ -84,6 +93,10 @@ struct GPUPrioritizedReplay[OBS: Int, ACT: Int, CAP: Int](
       * `max_priority` — current maximum priority; new slots get this
         so they're sampled at the top of the distribution initially.
     """
+
+    comptime OBS = Self.OBS_
+    comptime ACT = Self.ACT_
+    comptime CAP = Self.CAP_
 
     var base: GPUReplay[Self.OBS, Self.ACT, Self.CAP]
 
@@ -414,3 +427,80 @@ struct GPUPrioritizedReplay[OBS: Int, ACT: Int, CAP: Int](
             var leaf = Int(self._host_indices[i])
             self._tree_update_leaf(leaf, p)
         self.max_priority = new_max
+
+    # ─── ReplayBuffer trait surface ──────────────────────────────────
+
+    @staticmethod
+    def make(
+        ctx: Optional[DeviceContext] = None,
+        batch_capacity: Int = 4096,
+    ) raises -> Self:
+        """Trait factory. `ctx` required (device storage). PER exponents
+        take `new`'s defaults; the block sets the real ones via
+        `configure_per` before any `add`."""
+        if not ctx:
+            raise Error(
+                "GPUPrioritizedReplay.make: ctx required for device storage"
+            )
+        return Self.new(ctx.value(), batch_capacity=batch_capacity)
+
+    def configure_per(
+        mut self,
+        alpha: Scalar[DT] = Scalar[DT](0.6),
+        beta: Scalar[DT] = Scalar[DT](0.4),
+        epsilon: Scalar[DT] = Scalar[DT](1e-6),
+    ):
+        self.alpha = alpha
+        self.beta = beta
+        self.epsilon = epsilon
+
+    def add(
+        mut self,
+        ref s: List[Scalar[DT]],
+        ref a: List[Scalar[DT]],
+        r: Scalar[DT],
+        ref sp: List[Scalar[DT]],
+        d: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """Trait-surface add: stage the host Lists and reuse the
+        pointer-based `add`. `ctx` required (raises if None)."""
+        if not ctx:
+            raise Error("GPUPrioritizedReplay.add: ctx required")
+        var s_p = mptr(s.unsafe_ptr())
+        var a_p = mptr(a.unsafe_ptr())
+        var sp_p = mptr(sp.unsafe_ptr())
+        self.add(ctx.value(), s_p, a_p, r, sp_p, d)
+
+    def sample_into[BATCH: Int](
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
+    ) raises:
+        """Device PER sample into `state.mb_*`, H2D IS weights into
+        `state.mb_w`, flip `state.has_per`."""
+        var ctx = state.ctx.value()
+        self.sample[BATCH](
+            ctx,
+            state.mb_s.dev.value(),
+            state.mb_a.dev.value(),
+            state.mb_r.dev.value(),
+            state.mb_sp.dev.value(),
+            state.mb_d.dev.value(),
+        )
+        ctx.enqueue_copy(
+            state.mb_w.dev.value(), self._host_weights.unsafe_ptr()
+        )
+        state.has_per = True
+
+    def update_priorities[BATCH: Int](
+        mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
+    ) raises:
+        """Trait-surface priority refresh: reads `state.td_residuals`
+        (device) and updates the sum-tree."""
+        self.update_priorities[BATCH](
+            state.ctx.value(), state.td_residuals.dev.value()
+        )
+
+    def count(self) -> Int:
+        return self.base.size

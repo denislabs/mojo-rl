@@ -6,6 +6,7 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.primitives.gather_action_slice import GatherActionSlice
 from mojo_rl.nn2.initializer import Zero
 
@@ -38,7 +39,9 @@ def test_forward_cpu() raises:
     var v_t = TileTensor(vp, row_major[BATCH, NA * K]())
     var i_t = TileTensor(ip, row_major[BATCH, NA * K]())  # hetero-variadic carrier
     var o_t = TileTensor(op, row_major[BATCH, K]())
-    g.forward["cpu", BATCH](v_t, i_t, output=o_t)
+    g.forward["cpu", BATCH](
+            TensorPack[2].of(v_t, i_t), output=o_t,
+        )
 
     # Row 0 action 1 → values [4, 5, 6, 7]
     assert_true(out[0] == Scalar[DT](4), "row 0 k=0")
@@ -79,7 +82,9 @@ def test_cpu_gpu_parity() raises:
         var v_cpu_t = TileTensor(vp_cpu, row_major[BATCH, NA * K]())
         var i_cpu_t = TileTensor(ip_cpu, row_major[BATCH, NA * K]())
         var o_cpu_t = TileTensor(op_cpu, row_major[BATCH, K]())
-        g_cpu.forward["cpu", BATCH](v_cpu_t, i_cpu_t, output=o_cpu_t)
+        g_cpu.forward["cpu", BATCH](
+            TensorPack[2].of(v_cpu_t, i_cpu_t), output=o_cpu_t,
+        )
 
         # GPU.
         var g_gpu = GatherActionSlice[NA, K].make[target="gpu", INIT=Zero](ctx=ctx)
@@ -94,7 +99,9 @@ def test_cpu_gpu_parity() raises:
         var v_gpu_t = TileTensor(vp_dev, row_major[BATCH, NA * K]())
         var i_gpu_t = TileTensor(ip_dev, row_major[BATCH, NA * K]())
         var o_gpu_t = TileTensor(op_dev, row_major[BATCH, K]())
-        g_gpu.forward["gpu", BATCH](v_gpu_t, i_gpu_t, output=o_gpu_t)
+        g_gpu.forward["gpu", BATCH](
+            TensorPack[2].of(v_gpu_t, i_gpu_t), output=o_gpu_t,
+        )
         ctx.enqueue_copy(out_gpu_host, o_dev)
         ctx.synchronize()
 

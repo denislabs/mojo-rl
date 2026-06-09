@@ -73,7 +73,8 @@ struct OnPolicyState[
     var mb_gi:  Scratch["mb_gi",  Self.MINIBATCH * Self.OBS, True]
 
     # Int32 shuffle/gather index array (Scratch is DT-only, so raw ptr).
-    var indices: UnsafePointer[Int32, MutAnyOrigin]
+    # None until `make` allocates via `alloc[Int32](ROLLOUT_LEN * N_ENVS)`.
+    var indices: Optional[UnsafePointer[Int32, MutAnyOrigin]]
 
     # Rollout cursor.
     var rollout_idx: Int
@@ -107,9 +108,7 @@ struct OnPolicyState[
         self.mb_v   = Scratch["mb_v",   Self.MINIBATCH * 1, True]()
         self.mb_gv  = Scratch["mb_gv",  Self.MINIBATCH * 1, True]()
         self.mb_gi  = Scratch["mb_gi",  Self.MINIBATCH * Self.OBS, True]()
-        self.indices = UnsafePointer[Int32, MutAnyOrigin](
-            unsafe_from_address=0,
-        )
+        self.indices = None
         self.rollout_idx = 0
         self.ctx = None
 

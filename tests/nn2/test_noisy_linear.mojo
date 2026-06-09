@@ -151,10 +151,10 @@ def test_forward_backward_gpu() raises:
     ctx.enqueue_copy(gi_host, gi_dev)
     ctx.enqueue_copy(ni_host, nl._noise_in.dev.value())
     ctx.enqueue_copy(no_host, nl._noise_out.dev.value())
-    ctx.enqueue_copy(g_mu_w_host, nl.mu_w.grad_dev.value())
-    ctx.enqueue_copy(g_sg_w_host, nl.sigma_w.grad_dev.value())
-    ctx.enqueue_copy(g_mu_b_host, nl.mu_b.grad_dev.value())
-    ctx.enqueue_copy(g_sg_b_host, nl.sigma_b.grad_dev.value())
+    ctx.enqueue_copy(g_mu_w_host, nl.mu_w.grd.dev.value())
+    ctx.enqueue_copy(g_sg_w_host, nl.sigma_w.grd.dev.value())
+    ctx.enqueue_copy(g_mu_b_host, nl.mu_b.grd.dev.value())
+    ctx.enqueue_copy(g_sg_b_host, nl.sigma_b.grd.dev.value())
     ctx.synchronize()
 
     for k in range(BATCH * OUT):

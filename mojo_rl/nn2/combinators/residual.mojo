@@ -19,8 +19,9 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.module import Module, typed_view, typed_view_mut, mptr
+from ..core.tensor_pack import TensorPack
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 def _elementwise_add_kernel[
@@ -76,9 +77,7 @@ struct Residual[Inner: Module](Module):
         comptime if target == "cpu":
             r.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("Residual.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["Residual.make[target='gpu']"](ctx)
             r.mid_dev = ctx_v.enqueue_create_buffer[DT](1)
             r.ts = TargetStorage.make_gpu(ctx_v)
         return r^
@@ -105,25 +104,22 @@ struct Residual[Inner: Module](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["Residual", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.IN_DIMS[0])
             var mid = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.forward[target, BATCH, POLICY=POLICY](input, output=mid)
-            var ip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var ip = mptr(input.ptr)
+            var op = mptr(output_v.ptr)
             var mp = self.mid_cpu
             comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
@@ -138,8 +134,8 @@ struct Residual[Inner: Module](Module):
                 k += 1
         else:
             self._ensure_mid_gpu(BATCH * Self.IN_DIMS[0])
-            var in_p_w  = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var in_p_w  = mptr(input.ptr)
+            var out_p_w = mptr(output_v.ptr)
             var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
             var mid = TileTensor(mp, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.forward[target, BATCH, POLICY=POLICY](input, output=mid)
@@ -167,17 +163,14 @@ struct Residual[Inner: Module](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["Residual", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.IN_DIMS[0])
@@ -185,8 +178,8 @@ struct Residual[Inner: Module](Module):
             self.inner.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output_v, tmp)
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gip = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var gop = mptr(grad_output_v.ptr)
+            var gip = mptr(grad_input_v.ptr)
             var tp = self.mid_cpu
             comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
@@ -201,8 +194,8 @@ struct Residual[Inner: Module](Module):
                 k += 1
         else:
             self._ensure_mid_gpu(BATCH * Self.IN_DIMS[0])
-            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p_w = mptr(grad_output_v.ptr)
+            var gi_p_w = mptr(grad_input_v.ptr)
             var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
             var tmp = TileTensor(mp, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.vjp[
@@ -229,6 +222,17 @@ struct Residual[Inner: Module](Module):
         var sep = "." if prefix.byte_length() > 0 else ""
         self.inner.for_each_param[target, V](prefix + sep + "inner", visitor)
 
+    def for_each_state[
+        target: StaticString,
+        V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V) raises:
+        assert_tag_for["Residual", target](self.ts.target_tag)
+        var sep = "." if prefix.byte_length() > 0 else ""
+        self.inner.for_each_state[target, V](prefix + sep + "inner", visitor)
+
     def zero_grad[target: StaticString](mut self) raises:
         assert_tag_for["Residual", target](self.ts.target_tag)
         self.inner.zero_grad[target]()
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        self.inner.set_attr[ATTR](value)

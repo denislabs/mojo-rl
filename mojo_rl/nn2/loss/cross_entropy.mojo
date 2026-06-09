@@ -11,8 +11,9 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB, TPB_REDUCE
+from ..core.module import mptr
 from ..core import Loss, AMPPolicy, NoAMP
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -102,9 +103,7 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
         var loss = Self()
         loss.ts = TargetStorage.make[target](ctx=ctx)
         comptime if target == "gpu":
-            if not ctx:
-                raise Error("CrossEntropyLoss.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["CrossEntropyLoss.make[target='gpu']"](ctx)
             loss.softmax_dev = ctx_v.enqueue_create_buffer[DT](1)
             loss.partial_loss_dev = ctx_v.enqueue_create_buffer[DT](1)
             loss.partial_loss_host = ctx_v.enqueue_create_host_buffer[DT](1)
@@ -168,8 +167,8 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
             var ctx = self.ts.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.N_CLASSES)
             comptime row_layout = Layout.row_major(BATCH)
-            var lp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](logits.ptr)
-            var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
+            var lp_w = mptr(logits.ptr)
+            var tp_w = mptr(targets.ptr)
             var logits_lt  = LayoutTensor[DT, mat_layout, MutAnyOrigin](lp_w)
             var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
             var softmax_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](self.softmax_dev.value())
@@ -216,8 +215,8 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
         else:
             var ctx = self.ts.ctx.value()
             comptime mat_layout = Layout.row_major(BATCH, Self.N_CLASSES)
-            var tp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](targets.ptr)
-            var gp_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_logits.ptr)
+            var tp_w = mptr(targets.ptr)
+            var gp_w = mptr(grad_logits.ptr)
             var softmax_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](self.softmax_dev.value())
             var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
             var grad_lt    = LayoutTensor[DT, mat_layout, MutAnyOrigin](gp_w)

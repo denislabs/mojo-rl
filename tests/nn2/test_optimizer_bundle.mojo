@@ -88,11 +88,11 @@ def test_bundle_step_at_matches_direct_step() raises:
     # Initialize ref mirrors to same weights as net_a / net_b. Copy via raw
     # pointer access into Param storage.
     for k in range(IN * OUT):
-        net_a_ref.weight.value[k] = net_a.weight.value[k]
-        net_b_ref.weight.value[k] = net_b.weight.value[k]
+        net_a_ref.weight.val.cpu[k] = net_a.weight.val.cpu[k]
+        net_b_ref.weight.val.cpu[k] = net_b.weight.val.cpu[k]
     for k in range(OUT):
-        net_a_ref.bias.value[k] = net_a.bias.value[k]
-        net_b_ref.bias.value[k] = net_b.bias.value[k]
+        net_a_ref.bias.val.cpu[k] = net_a.bias.val.cpu[k]
+        net_b_ref.bias.val.cpu[k] = net_b.bias.val.cpu[k]
 
     var bundle = OptimizerBundle[Adam, Adam].make_default["cpu"]()
     bundle.items[0] = Adam.make[target="cpu", M=type_of(net_a)](net_a)
@@ -165,8 +165,8 @@ def test_bundle_step_at_matches_direct_step() raises:
     var max_w_a: Scalar[DT] = 0.0
     var max_w_b: Scalar[DT] = 0.0
     for k in range(IN * OUT):
-        var da = fabs(net_a.weight.value[k] - net_a_ref.weight.value[k])
-        var db = fabs(net_b.weight.value[k] - net_b_ref.weight.value[k])
+        var da = fabs(net_a.weight.val.cpu[k] - net_a_ref.weight.val.cpu[k])
+        var db = fabs(net_b.weight.val.cpu[k] - net_b_ref.weight.val.cpu[k])
         if da > max_w_a:
             max_w_a = da
         if db > max_w_b:
@@ -174,8 +174,8 @@ def test_bundle_step_at_matches_direct_step() raises:
     var max_b_a: Scalar[DT] = 0.0
     var max_b_b: Scalar[DT] = 0.0
     for k in range(OUT):
-        var da = fabs(net_a.bias.value[k] - net_a_ref.bias.value[k])
-        var db = fabs(net_b.bias.value[k] - net_b_ref.bias.value[k])
+        var da = fabs(net_a.bias.val.cpu[k] - net_a_ref.bias.val.cpu[k])
+        var db = fabs(net_b.bias.val.cpu[k] - net_b_ref.bias.val.cpu[k])
         if da > max_b_a:
             max_b_a = da
         if db > max_b_b:

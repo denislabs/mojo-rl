@@ -112,6 +112,25 @@ def test_one_rollout_cycle() raises:
     )
     assert_true(not isnan(mr), "GPU mean_return NaN")
     assert_true(not isinf(mr), "GPU mean_return Inf")
+
+    # Distributional diag fix: entropy / approx_kl / clip_fraction /
+    # explained_variance were a hard 0.0 on GPU before the device kernels
+    # were wired. Entropy of a Gaussian policy is strictly non-zero, so a
+    # non-zero finite entropy proves `_accumulate_diag_gpu` ran end-to-end.
+    var m = t.flush_metrics()
+    var ent = m.entropy.to_f64()
+    var kl = m.approx_kl.to_f64()
+    var clip = m.clip_fraction.to_f64()
+    var ev = m.explained_variance.to_f64()
+    print(
+        "  entropy =", ent, " approx_kl =", kl,
+        " clip_fraction =", clip, " explained_variance =", ev,
+    )
+    assert_true(not isnan(ent) and not isinf(ent), "GPU entropy non-finite")
+    assert_true(not isnan(kl) and not isinf(kl), "GPU approx_kl non-finite")
+    assert_true(not isnan(clip) and not isinf(clip), "GPU clip non-finite")
+    assert_true(not isnan(ev) and not isinf(ev), "GPU explained_var non-finite")
+    assert_true(ent != 0.0, "GPU entropy is 0 (diag kernel unwired?)")
     print("  ok")
 
 

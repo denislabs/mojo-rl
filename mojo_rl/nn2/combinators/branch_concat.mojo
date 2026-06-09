@@ -24,7 +24,8 @@ from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -146,17 +147,14 @@ struct BranchConcat[*BRANCHES: Module](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["BranchConcat", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         comptime if target == "cpu":
@@ -177,17 +175,14 @@ struct BranchConcat[*BRANCHES: Module](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["BranchConcat", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
             _branch_concat_backward_cpu[target, BATCH, POLICY=POLICY, mode=mode](
@@ -206,6 +201,17 @@ struct BranchConcat[*BRANCHES: Module](Module):
         var sep = "." if prefix.byte_length() > 0 else ""
         comptime for i in range(Self.N):
             self.branches[i].for_each_param[target, V](
+                prefix + sep + String(i), visitor,
+            )
+
+    def for_each_state[
+        target: StaticString,
+        V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V) raises:
+        assert_tag_for["BranchConcat", target](self.ts.target_tag)
+        var sep = "." if prefix.byte_length() > 0 else ""
+        comptime for i in range(Self.N):
+            self.branches[i].for_each_state[target, V](
                 prefix + sep + String(i), visitor,
             )
 
@@ -283,7 +289,7 @@ def _branch_concat_backward_cpu[
         c._ensure_slab_cpu[i](BATCH * BRANCHES[i].OUT_DIM)
     c._ensure_gi_temp_cpu(BATCH * IN_DIM)
 
-    var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input.ptr)
+    var gi_p = mptr(grad_input.ptr)
     var zero_v = SIMD[DT, CPU_SIMD_W](0)
     comptime N_TOTAL = BATCH * IN_DIM
     var k0 = 0

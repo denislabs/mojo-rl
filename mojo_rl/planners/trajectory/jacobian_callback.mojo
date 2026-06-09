@@ -128,7 +128,9 @@ trait RolloutJacobianCallbackGPU(ImplicitlyDestructible):
     comptime LATENT_DIM: Int
     comptime ACTION_DIM: Int
 
-    def step_gpu[B: Int](
+    def step_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         z: LayoutTensor[
@@ -147,7 +149,9 @@ trait RolloutJacobianCallbackGPU(ImplicitlyDestructible):
         """
         ...
 
-    def linearize_gpu[B: Int](
+    def linearize_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         z: LayoutTensor[
@@ -193,7 +197,9 @@ trait RolloutJacobianCallbackGPU(ImplicitlyDestructible):
         """
         ...
 
-    def terminal_gpu[B: Int](
+    def terminal_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         z: LayoutTensor[

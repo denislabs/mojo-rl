@@ -294,10 +294,10 @@ struct DPGLoss(ActorLoss):
         # Zero-length model state slices (stateless models)
         var actor_state = LayoutTensor[
             dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws))
         var critic_state = LayoutTensor[
             dtype, Layout.row_major(CriticModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws))
 
         Network[ActorModel, ActorOpt].forward_with_cache[BATCH](
             obs, act_t, actor_params, actor_state, actor_cache_t
@@ -451,10 +451,10 @@ struct DPGLoss(ActorLoss):
         # Zero-length model state slices (stateless models)
         var actor_state = LayoutTensor[
             dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws_ptr))
         var critic_state = LayoutTensor[
             dtype, Layout.row_major(CriticModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws_ptr))
 
         Network[ActorModel, ActorOpt].forward_gpu_with_cache[BATCH](
             ctx, obs, actor_act_t, actor_params, actor_state, actor_cache_t, actor_ws
@@ -720,10 +720,10 @@ struct MaxEntLoss[
         # Zero-length model state slices (stateless models)
         var actor_state = LayoutTensor[
             dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws))
         var critic_state = LayoutTensor[
             dtype, Layout.row_major(CriticModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws))
 
         Network[ActorModel, ActorOpt].forward_with_cache[BATCH](
             obs, raw_out_t, actor_params, actor_state, actor_cache_t
@@ -1020,10 +1020,10 @@ struct MaxEntLoss[
         # Zero-length model state slices (stateless models)
         var actor_state = LayoutTensor[
             dtype, Layout.row_major(ActorModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws_ptr))
         var critic_state = LayoutTensor[
             dtype, Layout.row_major(CriticModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws_ptr))
 
         Network[ActorModel, ActorOpt].forward_gpu_with_cache[BATCH](
             ctx, obs, actor_out_t, actor_params, actor_state, actor_cache_t, actor_ws
@@ -1497,7 +1497,7 @@ struct AutodiffMaxEntLoss[
         # Zero-length model state slice (SACGraph is stateless)
         var sac_state = LayoutTensor[
             dtype, Layout.row_major(SACGraph.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws))
 
         SACGraph.forward[BATCH](obs, output_t, params_t, sac_state, cache_t)
 
@@ -1767,7 +1767,7 @@ struct AutodiffMaxEntLoss[
         # Zero-length model state slice (SACGraph is stateless)
         var sac_state = LayoutTensor[
             dtype, Layout.row_major(SACGraph.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws_ptr))
 
         SACGraph.forward_gpu[BATCH](
             ctx,
@@ -2060,7 +2060,7 @@ struct AutodiffDPGLoss(ActorLoss):
         # Zero-length model state slice (DDPGGraph is stateless)
         var ddpg_state = LayoutTensor[
             dtype, Layout.row_major(DDPGGraph.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws))
 
         DDPGGraph.forward[BATCH](obs, output_t, params_t, ddpg_state, cache_t)
 
@@ -2255,7 +2255,7 @@ struct AutodiffDPGLoss(ActorLoss):
         # Zero-length model state slice (DDPGGraph is stateless)
         var ddpg_state = LayoutTensor[
             dtype, Layout.row_major(DDPGGraph.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws_ptr))
 
         DDPGGraph.forward_gpu[BATCH](
             ctx,
@@ -2513,7 +2513,7 @@ struct AutodiffTD3Loss(ActorLoss):
         # Zero-length model state slice (TD3Graph is stateless)
         var td3_state = LayoutTensor[
             dtype, Layout.row_major(TD3Graph.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws))
 
         TD3Graph.forward[BATCH](obs, output_t, params_t, td3_state, cache_t)
 
@@ -2722,7 +2722,7 @@ struct AutodiffTD3Loss(ActorLoss):
         # Zero-length model state slice (TD3Graph is stateless)
         var td3_state = LayoutTensor[
             dtype, Layout.row_major(TD3Graph.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](ws_ptr))
 
         TD3Graph.forward_gpu[BATCH](
             ctx,

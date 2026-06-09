@@ -4,16 +4,19 @@ Mirrors `SACAgent` (see sac/agent.mojo) but specialised for TD3:
 
   * Twin critics, deterministic actor, target policy smoothing,
     delayed actor update.
-  * CPU-only — TD3Trainer.make is comptime-asserted on `target="cpu"`.
+  * CPU + GPU — `train_target` is the first comptime param (Phase 4.2).
 
 Usage:
 
-    var agent = TD3Agent[ACTOR, CRITIC, OBS, ACT, BATCH, CAPACITY](
+    var agent = TD3Agent["cpu", SAMPLE, ACTOR, CRITIC](
         actor_lr=3e-4, critic_lr=3e-4,
         exploration_noise=0.1, target_policy_noise=0.2,
         target_noise_clip=0.5, policy_delay=2,
     )
     var ep_returns = agent.train(env, total_timesteps=30_000)
+
+For GPU: `TD3Agent["gpu", GPU_SAMPLE, ACTOR, CRITIC](ctx=ctx, ...)`.
+Dimensions (OBS / ACT / BATCH) are derived from `SAMPLE`.
 """
 
 from std.gpu.host import DeviceContext
@@ -23,6 +26,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 
+from ..training.blocks import SampleBlock
 from ..training.batched_env import BatchedEnv
 from ..training.driver_offpolicy import (
     run_offpolicy_train,
@@ -35,22 +39,28 @@ from .trainer import TD3Trainer
 
 
 struct TD3Agent[
+    train_target: StaticString,
+    SAMPLE: SampleBlock,
     ACTOR: Module,
     CRITIC: Module,
-    OBS_DIM: Int,
-    ACT_DIM: Int,
-    BATCH: Int,
-    REPLAY_CAPACITY: Int,
 ](Movable & ImplicitlyDestructible):
-    """Thin facade over `TD3Trainer` (CPU-only) + off-policy drivers."""
+    """Thin facade over `TD3Trainer` + off-policy drivers. Dimensions
+    (OBS / ACT / BATCH) derive from `SAMPLE`."""
+
+    comptime OBS_DIM: Int = Self.SAMPLE.OBS
+    comptime ACT_DIM: Int = Self.SAMPLE.ACT
+    comptime BATCH: Int = Self.SAMPLE.BATCH
 
     var trainer: TD3Trainer[
-        Self.ACTOR, Self.CRITIC,
-        Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
+        Self.train_target,
+        Self.SAMPLE,
+        Self.ACTOR,
+        Self.CRITIC,
     ]
 
     def __init__(
         out self,
+        ctx: Optional[DeviceContext] = None,
         actor_lr: Scalar[DT] = 3e-4,
         critic_lr: Scalar[DT] = 3e-4,
         gamma: Scalar[DT] = 0.99,
@@ -64,12 +74,18 @@ struct TD3Agent[
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = -1250.0,
         max_grad_norm: Scalar[DT] = 0.0,
+        use_bf16: Bool = False,
     ) raises:
-        """Construct a TD3Agent. Forwards every kwarg to `TD3Trainer.make`."""
+        """Construct a TD3Agent. Forwards every kwarg to `TD3Trainer.make`.
+        `ctx` is required for `train_target='gpu'`; `use_bf16` (GPU) enables
+        mixed-precision training."""
         self.trainer = TD3Trainer[
-            Self.ACTOR, Self.CRITIC,
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
-        ].make["cpu"](
+            Self.train_target,
+            Self.SAMPLE,
+            Self.ACTOR,
+            Self.CRITIC,
+        ].make(
+            ctx=ctx,
             actor_lr=actor_lr,
             critic_lr=critic_lr,
             gamma=gamma,
@@ -83,6 +99,7 @@ struct TD3Agent[
             window_size=window_size,
             initial_episode_fill=initial_episode_fill,
             max_grad_norm=max_grad_norm,
+            use_bf16=use_bf16,
         )
 
     # ─── Training entry points ─────────────────────────────────────────
@@ -92,6 +109,8 @@ struct TD3Agent[
         N_ENVS: Int = 1,
         NS: Int = 1,
         L: Logger = NoOpLogger,
+        USE_TRAIN_CUDA_GRAPH: Bool = False,
+        USE_ENV_CUDA_GRAPH: Bool = False,
     ](
         mut self,
         mut env: E,
@@ -103,19 +122,32 @@ struct TD3Agent[
         verbose: Bool = True,
         nstep_gamma: Scalar[DT] = 0.99,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
+        episode_sync_every: Int = 1,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
     ) raises -> List[Scalar[DT]]:
-        """Off-policy training via `run_offpolicy_train_batched` (CPU)."""
+        """Off-policy training via `run_offpolicy_train_batched`. Covers
+        same-target (cpu+cpu, gpu+gpu) at any `N_ENVS >= 1`. See
+        `SACAgent.train` for `diag_every` / `episode_sync_every` /
+        `checkpoint_*` and the CUDA-graph capture flags (GPU + uniform
+        replay only; off by default, no-op on non-NVIDIA)."""
+        var ctx = self.trainer.ctx
         return run_offpolicy_train_batched[
             TD3Trainer[
-                Self.ACTOR, Self.CRITIC,
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
+                Self.train_target,
+                Self.SAMPLE,
+                Self.ACTOR,
+                Self.CRITIC,
             ],
             E,
             N_ENVS,
             NS,
             L,
+            USE_TRAIN_CUDA_GRAPH,
+            USE_ENV_CUDA_GRAPH,
         ](
-            None,
+            ctx,
             self.trainer,
             env,
             total_timesteps,
@@ -125,6 +157,10 @@ struct TD3Agent[
             verbose=verbose,
             nstep_gamma=nstep_gamma,
             logger=logger,
+            diag_every=diag_every,
+            episode_sync_every=episode_sync_every,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
         )
 
     def train_single[
@@ -146,10 +182,13 @@ struct TD3Agent[
         See `SACAgent.train_single` for `diag_every` / `checkpoint_*`
         semantics — the driver hooks into `trainer.flush_metrics_through_logger`
         and `trainer.save_state` inline at the user's cadence."""
+        var ctx = self.trainer.ctx
         return run_offpolicy_train[
             TD3Trainer[
-                Self.ACTOR, Self.CRITIC,
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
+                Self.train_target,
+                Self.SAMPLE,
+                Self.ACTOR,
+                Self.CRITIC,
             ],
             E,
             L,
@@ -157,6 +196,7 @@ struct TD3Agent[
             self.trainer,
             env,
             total_timesteps,
+            ctx=ctx,
             print_every=print_every,
             verbose=verbose,
             logger=logger,
@@ -180,8 +220,10 @@ struct TD3Agent[
         """Greedy eval — deterministic actor, no exploration noise."""
         return run_offpolicy_eval[
             TD3Trainer[
-                Self.ACTOR, Self.CRITIC,
-                Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.REPLAY_CAPACITY,
+                Self.train_target,
+                Self.SAMPLE,
+                Self.ACTOR,
+                Self.CRITIC,
             ],
             E,
         ](

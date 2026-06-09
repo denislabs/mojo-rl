@@ -14,7 +14,7 @@ from std.random import seed
 from std.testing import assert_true
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.datasets import MNIST
+from mojo_rl.nn2.datasets import MNIST
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU

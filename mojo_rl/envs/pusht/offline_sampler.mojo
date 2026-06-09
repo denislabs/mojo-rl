@@ -28,7 +28,7 @@ from std.memory import memcpy
 from std.random import random_float64
 
 from mojo_rl.core.offline_buffer import OfflineBuffer
-from mojo_rl.nn.datasets.lewm_pusht import LewmPushTExpert, LewmPushTWindow
+from mojo_rl.nn2.datasets.lewm_pusht import LewmPushTExpert, LewmPushTWindow
 
 
 struct PushTOfflineSampler(Movable, OfflineBuffer):

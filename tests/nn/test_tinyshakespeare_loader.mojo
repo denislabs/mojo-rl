@@ -18,7 +18,7 @@ from std.random import seed
 from std.math import abs as math_abs
 
 from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.datasets import (
+from mojo_rl.nn2.datasets import (
     CharTokenizer,
     load_text,
     train_val_split,

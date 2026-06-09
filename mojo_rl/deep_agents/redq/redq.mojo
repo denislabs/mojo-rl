@@ -1178,10 +1178,11 @@ struct REDQAgent[
         )
 
         # --- 3. Forward all N target critics on next_ci — stacked output ---
-        # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
+        # Zero-length model state for critics (GPUCriticGroup has no model_state_view).
+        # Pointer is never read; reuse a valid existing param tensor pointer.
         var s_critic = LayoutTensor[
             dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](s_actor.ptr))
         for n in range(Self.N_ENS):
             var p_t = gpu_state.critics.target_params_view(n)
             # Per-critic slice of the stacked buffer.
@@ -1312,10 +1313,11 @@ struct REDQAgent[
         var p_actor = gpu_state.actor.online.params_view()
         var s_actor = gpu_state.actor.online.model_state_view()
         var a_grads = gpu_state.actor.online.grads_view()
-        # Zero-length model state for critics (GPUCriticGroup has no model_state_view)
+        # Zero-length model state for critics (GPUCriticGroup has no model_state_view).
+        # Pointer is never read; reuse a valid existing param tensor pointer.
         var s_critic = LayoutTensor[
             dtype, Layout.row_major(Self.Config.CriticModel.STATE_SIZE), MutAnyOrigin
-        ](UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0))
+        ](rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](s_actor.ptr))
 
         # --- 1. Increment RNG counter before rsample ---
         ctx.enqueue_function[incr_k](

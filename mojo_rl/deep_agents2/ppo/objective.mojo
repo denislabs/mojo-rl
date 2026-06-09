@@ -63,7 +63,8 @@ from layout import Layout, LayoutTensor, TileTensor
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut, mptr
+from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -237,23 +238,20 @@ struct PPOObjective[ACT_: Int](Module):
     var entropy_coef: Scalar[DT]
 
     # Input-pointer cache populated by forward, consumed by vjp.
-    var _cache_ao_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _cache_act_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _cache_olp_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _cache_adv_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cache_ao_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _cache_act_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _cache_olp_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _cache_adv_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     var ts: TargetStorage
 
     def __init__(out self):
         self.clip_eps = Scalar[DT](0.2)
         self.entropy_coef = Scalar[DT](0.0)
-        var null_p = UnsafePointer[Scalar[DT], MutAnyOrigin](
-            unsafe_from_address=0
-        )
-        self._cache_ao_ptr = null_p
-        self._cache_act_ptr = null_p
-        self._cache_olp_ptr = null_p
-        self._cache_adv_ptr = null_p
+        self._cache_ao_ptr = None
+        self._cache_act_ptr = None
+        self._cache_olp_ptr = None
+        self._cache_adv_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -287,10 +285,7 @@ struct PPOObjective[ACT_: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -299,25 +294,17 @@ struct PPOObjective[ACT_: Int](Module):
         assert_tag_for["PPOObjective", target](self.ts.target_tag)
         comptime ACT = Self.ACT_
 
-        var ao = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
-        var act = typed_view[BATCH, Self.IN_DIMS[1]](inputs[1])
-        var olp = typed_view[BATCH, Self.IN_DIMS[2]](inputs[2])
-        var adv = typed_view[BATCH, Self.IN_DIMS[3]](inputs[3])
+        var ao = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
+        var act = inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
+        var olp = inputs.tile[2, BATCH, Self.IN_DIMS[2]]()
+        var adv = inputs.tile[3, BATCH, Self.IN_DIMS[3]]()
         var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
         # Cache input pointers for vjp.
-        self._cache_ao_ptr = rebind[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
-        ](ao.ptr)
-        self._cache_act_ptr = rebind[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
-        ](act.ptr)
-        self._cache_olp_ptr = rebind[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
-        ](olp.ptr)
-        self._cache_adv_ptr = rebind[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
-        ](adv.ptr)
+        self._cache_ao_ptr = mptr(ao.ptr)
+        self._cache_act_ptr = mptr(act.ptr)
+        self._cache_olp_ptr = mptr(olp.ptr)
+        self._cache_adv_ptr = mptr(adv.ptr)
 
         comptime if target == "cpu":
             for b in range(BATCH):
@@ -361,11 +348,11 @@ struct PPOObjective[ACT_: Int](Module):
         else:
             # GPU: reconstruct LayoutTensors over the typed-view raw
             # pointers and dispatch one thread per batch row.
-            var ao_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](ao.ptr)
-            var act_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](act.ptr)
-            var olp_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](olp.ptr)
-            var adv_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](adv.ptr)
-            var out_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.ptr)
+            var ao_p = mptr(ao.ptr)
+            var act_p = mptr(act.ptr)
+            var olp_p = mptr(olp.ptr)
+            var adv_p = mptr(adv.ptr)
+            var out_p = mptr(out.ptr)
             var ao_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
             ](ao_p)
@@ -401,10 +388,7 @@ struct PPOObjective[ACT_: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
@@ -413,10 +397,10 @@ struct PPOObjective[ACT_: Int](Module):
         comptime ACT = Self.ACT_
 
         var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi0 = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])    # grad_actor_output
-        var gi1 = typed_view_mut[BATCH, Self.IN_DIMS[1]](grad_inputs[1])   # grad_action
-        var gi2 = typed_view_mut[BATCH, Self.IN_DIMS[2]](grad_inputs[2])   # grad_old_log_prob
-        var gi3 = typed_view_mut[BATCH, Self.IN_DIMS[3]](grad_inputs[3])   # grad_advantage
+        var gi0 = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()    # grad_actor_output
+        var gi1 = grad_inputs.tile[1, BATCH, Self.IN_DIMS[1]]()   # grad_action
+        var gi2 = grad_inputs.tile[2, BATCH, Self.IN_DIMS[2]]()   # grad_old_log_prob
+        var gi3 = grad_inputs.tile[3, BATCH, Self.IN_DIMS[3]]()   # grad_advantage
 
         comptime if target == "cpu":
             # Non-differentiable rollout inputs — zero their grad slots
@@ -426,10 +410,10 @@ struct PPOObjective[ACT_: Int](Module):
                     gi1[b, j] = Scalar[DT](0.0)
                 gi2[b, 0] = Scalar[DT](0.0)
                 gi3[b, 0] = Scalar[DT](0.0)
-            var ao_p = self._cache_ao_ptr
-            var act_p = self._cache_act_ptr
-            var olp_p = self._cache_olp_ptr
-            var adv_p = self._cache_adv_ptr
+            var ao_p = self._cache_ao_ptr.value()
+            var act_p = self._cache_act_ptr.value()
+            var olp_p = self._cache_olp_ptr.value()
+            var adv_p = self._cache_adv_ptr.value()
             for b in range(BATCH):
                 var new_log_prob: Scalar[DT] = 0.0
                 for j in range(ACT):
@@ -503,21 +487,21 @@ struct PPOObjective[ACT_: Int](Module):
             # by forward (graph buffers stay live across forward+vjp).
             var ao_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
-            ](self._cache_ao_ptr)
+            ](self._cache_ao_ptr.value())
             var act_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, ACT), MutAnyOrigin,
-            ](self._cache_act_ptr)
+            ](self._cache_act_ptr.value())
             var olp_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](self._cache_olp_ptr)
+            ](self._cache_olp_ptr.value())
             var adv_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](self._cache_adv_ptr)
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go.ptr)
-            var gi0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi0.ptr)
-            var gi1_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi1.ptr)
-            var gi2_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi2.ptr)
-            var gi3_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gi3.ptr)
+            ](self._cache_adv_ptr.value())
+            var go_p = mptr(go.ptr)
+            var gi0_p = mptr(gi0.ptr)
+            var gi1_p = mptr(gi1.ptr)
+            var gi2_p = mptr(gi2.ptr)
+            var gi3_p = mptr(gi3.ptr)
             var go_lt = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
             ](go_p)

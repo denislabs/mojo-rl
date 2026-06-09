@@ -60,7 +60,7 @@ def main() raises:
     print("=" * 60)
 
     var agent = MBPOAgent[
-        ActorNet, CriticNet, DynNet,
+        "cpu", ActorNet, CriticNet, DynNet,
         OBS_DIM, ACT_DIM, BATCH, REPLAY_CAP, SYNTH_CAP,
         N_ENSEMBLE, NUM_ELITES, REAL_RATIO_PCT,
         LOGVAR_MIN_F, LOGVAR_MAX_F,

@@ -21,7 +21,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import dtype
 from mojo_rl.nn.initializer import Xavier
 from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.datasets.mnist import MNIST
+from mojo_rl.nn2.datasets.mnist import MNIST
 from mojo_rl.experimental.pcn import (
     PCBlock,
     PCSequential,

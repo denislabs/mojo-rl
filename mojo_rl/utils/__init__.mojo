@@ -1,1 +1,1 @@
-from .progress import print_progress_bar, clear_progress_bar
+from .progress import print_progress_bar, clear_progress_bar, IntervalProgress

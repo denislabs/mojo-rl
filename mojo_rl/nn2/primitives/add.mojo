@@ -23,6 +23,7 @@ from layout import Layout, LayoutTensor, TileTensor
 from ..constants import DT, CPU_SIMD_W, TPB
 from ..core import Initializer, AMPPolicy, NoAMP
 from ..core.module import Module, typed_view, typed_view_mut
+from ..core.tensor_pack import TensorPack
 from ..core.target_storage import TargetStorage, assert_tag_for
 
 
@@ -93,10 +94,7 @@ struct Add[DIM_: Int, N_: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
@@ -106,10 +104,8 @@ struct Add[DIM_: Int, N_: Int](Module):
         comptime TOTAL = BATCH * Self.DIM_
 
         comptime if target == "cpu":
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
-            var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                inputs[0].ptr
-            )
+            var o_p = output.ptr
+            var i0_p = inputs.ptr[0]()
             # Init: output = inputs[0]
             var k = 0
             while k + CPU_SIMD_W <= TOTAL:
@@ -120,9 +116,7 @@ struct Add[DIM_: Int, N_: Int](Module):
                 k += 1
             # Accumulate inputs[1..N)
             comptime for i in range(1, Self.N_):
-                var ii_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    inputs[i].ptr
-                )
+                var ii_p = inputs.ptr[i]()
                 var kk = 0
                 while kk + CPU_SIMD_W <= TOTAL:
                     o_p.store(
@@ -137,13 +131,11 @@ struct Add[DIM_: Int, N_: Int](Module):
         else:
             comptime layout = Layout.row_major(TOTAL)
             comptime n_blocks = (TOTAL + TPB - 1) // TPB
-            var o_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output.ptr)
+            var o_p = output.ptr
             var o_lt = LayoutTensor[DT, layout, MutAnyOrigin](o_p)
 
             # Init from inputs[0].
-            var i0_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                inputs[0].ptr
-            )
+            var i0_p = inputs.ptr[0]()
             var i0_lt = LayoutTensor[DT, layout, MutAnyOrigin](i0_p)
             comptime init_kernel = _add_init_kernel[TOTAL]
             self.ts.ctx.value().enqueue_function[init_kernel](
@@ -152,9 +144,7 @@ struct Add[DIM_: Int, N_: Int](Module):
 
             # Accumulate inputs[1..N).
             comptime for i in range(1, Self.N_):
-                var ii_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    inputs[i].ptr
-                )
+                var ii_p = inputs.ptr[i]()
                 var ii_lt = LayoutTensor[DT, layout, MutAnyOrigin](ii_p)
                 comptime accum_kernel = _add_accum_kernel[TOTAL]
                 self.ts.ctx.value().enqueue_function[accum_kernel](
@@ -172,10 +162,7 @@ struct Add[DIM_: Int, N_: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
@@ -184,13 +171,9 @@ struct Add[DIM_: Int, N_: Int](Module):
         comptime TOTAL = BATCH * Self.DIM_
 
         comptime if target == "cpu":
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output.ptr
-            )
+            var go_p = grad_output.ptr
             comptime for i in range(Self.N_):
-                var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    grad_inputs[i].ptr
-                )
+                var gi_p = grad_inputs.ptr[i]()
                 var k = 0
                 while k + CPU_SIMD_W <= TOTAL:
                     gi_p.store(k, go_p.load[width=CPU_SIMD_W](k))
@@ -201,14 +184,10 @@ struct Add[DIM_: Int, N_: Int](Module):
         else:
             comptime layout = Layout.row_major(TOTAL)
             comptime n_blocks = (TOTAL + TPB - 1) // TPB
-            var go_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                grad_output.ptr
-            )
+            var go_p = grad_output.ptr
             var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_p)
             comptime for i in range(Self.N_):
-                var gi_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                    grad_inputs[i].ptr
-                )
+                var gi_p = grad_inputs.ptr[i]()
                 var gi_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi_p)
                 comptime copy_kernel = _add_init_kernel[TOTAL]
                 self.ts.ctx.value().enqueue_function[copy_kernel](

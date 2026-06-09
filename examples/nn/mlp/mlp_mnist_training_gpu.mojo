@@ -25,7 +25,7 @@ from mojo_rl.nn.loss.cross_entropy import CrossEntropyLoss
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.training import Trainer
 from mojo_rl.nn.initializer.initializers import Kaiming
-from mojo_rl.nn.datasets import MNIST
+from mojo_rl.nn2.datasets import MNIST
 
 
 comptime BATCH = 128

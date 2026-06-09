@@ -90,10 +90,16 @@ comptime PONG_MAX_STEPS: Int = 5000
 # ============================================================================
 
 
-struct PongEnv[DTYPE: DType](
-    BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv
+struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
+    BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv & Movable
 ):
     """Native Pong environment — CPU+GPU dual path.
+
+    `HIT_REWARD` is the dense shaping reward granted when the agent's
+    paddle returns the ball (default 0.1). Set it to 0.0 for clean sparse
+    rewards (±1 on points only) — useful when the dense shaping distorts
+    the value scale / C51 support. Back-compatible: existing
+    `PongEnv[dtype]` instantiations keep the 0.1 default.
 
     CPU: Instance methods for evaluation + SDL3 rendering.
     GPU: Static inline methods for batched RL training.
@@ -304,8 +310,8 @@ struct PongEnv[DTYPE: DType](
         elif scored_cpu:
             reward = Scalar[Self.dtype](-1.0)
         elif agent_hit:
-            # Reward for returning the ball
-            reward = Scalar[Self.dtype](0.1)
+            # Dense shaping reward for returning the ball (0.0 disables it).
+            reward = Scalar[Self.dtype](Self.HIT_REWARD)
 
         return (reward, self.done)
 
@@ -833,7 +839,8 @@ struct PongEnv[DTYPE: DType](
         elif scored_cpu:
             rewards[i] = -1.0
         elif agent_hit:
-            rewards[i] = 0.1  # Reward for returning the ball
+            # Dense shaping reward for returning the ball (0.0 disables it).
+            rewards[i] = Scalar[gpu_dtype](Self.HIT_REWARD)
         else:
             rewards[i] = 0.0
 
@@ -1054,6 +1061,74 @@ struct PongEnv[DTYPE: DType](
             seed,
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
+        )
+
+    @staticmethod
+    def extract_obs_kernel_gpu[
+        BATCH_SIZE: Int,
+        STATE_SIZE: Int,
+        OBS_DIM: Int,
+    ](
+        ctx: DeviceContext,
+        states_buf: DeviceBuffer[gpu_dtype],
+        mut obs_buf: DeviceBuffer[gpu_dtype],
+    ) raises:
+        """Seed `obs` from `state` with the SAME normalization the step
+        kernel applies (state / SCREEN_W,H ; vel / MAX_BALL_VY).
+
+        Overrides the trait default, which copies the RAW state prefix
+        (`obs[e] = state[e][0:OBS_DIM]`). Pong's obs is normalized, so the
+        raw default disagrees with `step_kernel_gpu`'s normalized obs — and
+        because the batched-env driver re-seeds obs via this kernel after
+        every `selective_reset`, `prev_obs` (snapshotted next iteration) was
+        RAW while the stored `next_obs` was NORMALIZED. That ~160× scale
+        mismatch on (s, s') silently corrupted every transition and made the
+        GPU-batched agent train to a uniform distribution. Keep this in lock-
+        step with the obs block in `step_kernel_gpu`."""
+        var states = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+        ](states_buf.unsafe_ptr())
+        var obs = LayoutTensor[
+            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+        ](obs_buf.unsafe_ptr())
+
+        comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
+
+        @parameter
+        @always_inline
+        def extract_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            obs: LayoutTensor[
+                gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
+            ],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx < BATCH_SIZE:
+                obs[idx, 0] = states[idx, S_BALL_X] / Scalar[gpu_dtype](
+                    SCREEN_W
+                )
+                obs[idx, 1] = states[idx, S_BALL_Y] / Scalar[gpu_dtype](
+                    SCREEN_H
+                )
+                obs[idx, 2] = states[idx, S_BALL_VX] / Scalar[gpu_dtype](
+                    MAX_BALL_VY
+                )
+                obs[idx, 3] = states[idx, S_BALL_VY] / Scalar[gpu_dtype](
+                    MAX_BALL_VY
+                )
+                obs[idx, 4] = states[idx, S_PADDLE_Y] / Scalar[gpu_dtype](
+                    SCREEN_H
+                )
+                obs[idx, 5] = states[idx, S_CPU_PADDLE_Y] / Scalar[gpu_dtype](
+                    SCREEN_H
+                )
+
+        ctx.enqueue_function[extract_wrapper](
+            states, obs, grid_dim=(BLOCKS,), block_dim=(Self.TPB,),
         )
 
     @staticmethod

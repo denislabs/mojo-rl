@@ -249,8 +249,8 @@ struct TDMPC2RolloutCallback[
             Layout.row_major(Self.PolModel.STATE_SIZE),
             MutAnyOrigin,
         ](
-            UnsafePointer[Scalar[dtype], MutAnyOrigin](
-                unsafe_from_address=0
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                z.ptr
             )
         )
         var pi_out_view = LayoutTensor[
@@ -329,8 +329,8 @@ struct TDMPC2RolloutCallback[
             Layout.row_major(Self.RewModel.STATE_SIZE),
             MutAnyOrigin,
         ](
-            UnsafePointer[Scalar[dtype], MutAnyOrigin](
-                unsafe_from_address=0
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                z.ptr
             )
         )
         var rew_in = LayoutTensor[
@@ -359,8 +359,8 @@ struct TDMPC2RolloutCallback[
             Layout.row_major(Self.DynModel.STATE_SIZE),
             MutAnyOrigin,
         ](
-            UnsafePointer[Scalar[dtype], MutAnyOrigin](
-                unsafe_from_address=0
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                z.ptr
             )
         )
         var dyn_in = LayoutTensor[
@@ -441,8 +441,8 @@ struct TDMPC2RolloutCallback[
             Layout.row_major(Self.PolModel.STATE_SIZE),
             MutAnyOrigin,
         ](
-            UnsafePointer[Scalar[dtype], MutAnyOrigin](
-                unsafe_from_address=0
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                z.ptr
             )
         )
         var pi_out = LayoutTensor[
@@ -495,8 +495,8 @@ struct TDMPC2RolloutCallback[
             Layout.row_major(Self.QModel.STATE_SIZE),
             MutAnyOrigin,
         ](
-            UnsafePointer[Scalar[dtype], MutAnyOrigin](
-                unsafe_from_address=0
+            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
+                z.ptr
             )
         )
         var q_in = LayoutTensor[

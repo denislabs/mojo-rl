@@ -22,12 +22,46 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
+from mojo_rl.utils.progress import IntervalProgress
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from .batched_env import BatchedEnv
 from .driver_scratch import DriverScratch
 
 
-trait OnPolicyAgent(Movable, ImplicitlyDestructible):
+trait OnPolicyCheckpointable(ImplicitlyDestructible, Movable):
+    """Shared cadence-hook surface for BOTH on-policy traits.
+
+    `save_state` / `flush_metrics_through_logger` must be declared in ONE
+    place: PPOTrainer conforms to both `OnPolicyAgent` AND
+    `OnPolicyAgentBatched`, and if each trait declared these methods
+    independently, resolving the concrete override against two unrelated
+    declarations recurses ("attempt to resolve a recursive reference to
+    `PPOTrainer.save_state`"). Hoisting them into a common ancestor that
+    both traits inherit gives a single declaration → the diamond resolves
+    cleanly. Off-policy trainers avoid this naturally (single-trait chain
+    `OffPolicyAgentGpu(OffPolicyAgent)`)."""
+
+    def flush_metrics_through_logger[
+        L: Logger
+    ](
+        mut self,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+        step: Int,
+    ) raises:
+        pass
+
+    def save_state(mut self, path: String) raises:
+        pass
+
+    def total_train_steps(self) -> Int:
+        """Cumulative gradient-update count for the inter-log progress bar's
+        `Train:` field. Declared on the shared ancestor so BOTH on-policy
+        traits (single-env + batched) inherit it. Default 0 for trainers
+        that don't track it; real trainers may override."""
+        return 0
+
+
+trait OnPolicyAgent(OnPolicyCheckpointable):
     """Surface every nn2 on-policy trainer (PPO / future A2C) exposes
     for the on-policy training driver.
 
@@ -77,6 +111,13 @@ trait OnPolicyAgent(Movable, ImplicitlyDestructible):
     def end_episode(mut self):
         ...
 
+    def mark_terminal(mut self) raises:
+        """Mark the just-recorded (N=1) transition as a TRUE terminal so GAE
+        zeroes its V bootstrap. The driver calls this only when the env
+        reports `was_terminated()` — time-limit truncation is left
+        unmarked (bootstrap kept)."""
+        ...
+
     def train_step(mut self, step_idx: Int) raises -> Bool:
         ...
 
@@ -86,22 +127,12 @@ trait OnPolicyAgent(Movable, ImplicitlyDestructible):
     def ep_count(self) -> Int:
         ...
 
-    # ─── Optional cadence hooks (default no-op) ──────────────────────
-    #
-    # Mirror the off-policy surface so the on-policy driver can call
-    # into the trainer at `diag_every` / `checkpoint_every` cadences.
-    # Each has a `pass` default; PPOTrainer overrides both with real
-    # bodies.
+    # `total_train_steps` (progress-bar `Train:` field) is inherited from
+    # `OnPolicyCheckpointable` so the batched trait shares one declaration.
 
-    def flush_metrics_through_logger[L: Logger](
-        mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
-        step: Int,
-    ) raises:
-        pass
-
-    def save_state(mut self, path: String) raises:
-        pass
+    # Cadence hooks (`flush_metrics_through_logger` / `save_state`) are
+    # inherited from `OnPolicyCheckpointable` — declared once so the
+    # PPOTrainer override doesn't recurse across two trait declarations.
 
 
 def run_onpolicy_train[
@@ -122,6 +153,7 @@ def run_onpolicy_train[
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     base_step: Int = 0,
+    progress_label: String = "on-policy",
 ) raises -> List[Scalar[DT]]:
     """Step-based on-policy single-env training driver.
 
@@ -138,6 +170,11 @@ def run_onpolicy_train[
         act_dim: Action dimensionality.
         print_every: Verbose status-line cadence (env-steps). 0 disables.
         verbose: Print a per-cadence status line.
+        logger: Optional logger instance.
+        diag_every: Diagnostic logging cadence (env-steps). 0 disables.
+        checkpoint_every: Checkpoint writing cadence (env-steps). 0 disables.
+        checkpoint_path: Path to write checkpoints to.
+        base_step: Base step counter for the training loop.
 
     Returns:
         List of `trainer.mean_return()` snapshots taken at each completed
@@ -157,6 +194,10 @@ def run_onpolicy_train[
 
     var t_start = perf_counter_ns()
     var step: Int = 0
+    # In-place progress bar between log lines (pure CPU, no GPU sync).
+    var prog = IntervalProgress(
+        print_every, label=progress_label, enabled=verbose
+    )
     while step < total_timesteps:
         for d in range(obs_dim):
             obs[d] = Scalar[DT](obs_list[d])
@@ -172,9 +213,19 @@ def run_onpolicy_train[
         for d in range(obs_dim):
             next_obs[d] = Scalar[DT](nxt[d])
         trainer.record_transition(
-            obs, action, Scalar[DT](reward), next_obs,
+            obs,
+            action,
+            Scalar[DT](reward),
+            next_obs,
             Scalar[DT](1.0) if done else Scalar[DT](0.0),
         )
+        # Mark the just-recorded transition as a TRUE terminal (V(s')=0 in
+        # GAE) ONLY on natural termination; time-limit truncation keeps the
+        # value bootstrap (CleanRL / Gymnasium terminated-vs-truncated). No-op
+        # for non-terminating envs (`was_terminated()` default False) → GAE
+        # `term_buf` stays all-zero → bit-identical on Pendulum/HalfCheetah.
+        if env.was_terminated():
+            trainer.mark_terminal()
         if done:
             trainer.end_episode()
             obs_list = env.reset_obs_list()
@@ -189,22 +240,27 @@ def run_onpolicy_train[
 
         var abs_step = base_step + step
 
+        prog.tick(abs_step, trainer.total_train_steps())
+
         if verbose and print_every > 0 and abs_step % print_every == 0:
+            prog.clear()
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
-                "[step ", abs_step, "] mean_ret(10)=", trainer.mean_return(),
-                " ep=", trainer.ep_count(),
-                " elapsed=", elapsed, "s",
+                "[step ",
+                abs_step,
+                "] mean_ret(10)=",
+                trainer.mean_return(),
+                " ep=",
+                trainer.ep_count(),
+                " elapsed=",
+                elapsed,
+                "s",
             )
 
         # Logger emit at the same cadence. Comptime-elided when
         # L=NoOpLogger (default).
         comptime if L.ENABLED:
-            if (
-                print_every > 0
-                and abs_step % print_every == 0
-                and Bool(logger)
-            ):
+            if print_every > 0 and abs_step % print_every == 0 and Bool(logger):
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
@@ -223,11 +279,7 @@ def run_onpolicy_train[
         # logger at its own cadence. Default trait impl is no-op for
         # trainers that haven't wired this up yet.
         comptime if L.ENABLED:
-            if (
-                diag_every > 0
-                and abs_step % diag_every == 0
-                and Bool(logger)
-            ):
+            if diag_every > 0 and abs_step % diag_every == 0 and Bool(logger):
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
 
         # `checkpoint_every` — overwrite `checkpoint_path` with the
@@ -252,7 +304,7 @@ def run_onpolicy_train[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait OnPolicyAgentBatched(Movable, ImplicitlyDestructible):
+trait OnPolicyAgentBatched(OnPolicyCheckpointable):
     """N_ENVS-wide pointer-based trait for on-policy trainers consumed
     by `run_onpolicy_train_batched`.
 
@@ -304,6 +356,13 @@ trait OnPolicyAgentBatched(Movable, ImplicitlyDestructible):
         pushes completed episodes into the EpisodeTracker on done."""
         ...
 
+    def mark_terminal_env(mut self, env_idx: Int) raises:
+        """Mark the just-recorded transition for `env_idx` as a TRUE terminal
+        so GAE zeroes its V bootstrap. The driver calls this only for envs
+        whose `terminated_ptr()` is set — time-limit truncation is left
+        unmarked (bootstrap kept)."""
+        ...
+
     def train_step(mut self, step_idx: Int) raises -> Bool:
         ...
 
@@ -313,17 +372,8 @@ trait OnPolicyAgentBatched(Movable, ImplicitlyDestructible):
     def ep_count(self) -> Int:
         ...
 
-    # ─── Optional cadence hooks (default no-op) ──────────────────────
-
-    def flush_metrics_through_logger[L: Logger](
-        mut self,
-        logger: Optional[UnsafePointer[L, MutAnyOrigin]],
-        step: Int,
-    ) raises:
-        pass
-
-    def save_state(mut self, path: String) raises:
-        pass
+    # Cadence hooks (`flush_metrics_through_logger` / `save_state`)
+    # inherited from `OnPolicyCheckpointable` (shared with OnPolicyAgent).
 
 
 def run_onpolicy_train_batched[
@@ -344,6 +394,7 @@ def run_onpolicy_train_batched[
     checkpoint_every: Int = 0,
     checkpoint_path: String = "",
     base_step: Int = 0,
+    progress_label: String = "on-policy",
 ) raises -> List[Scalar[DT]]:
     """Tier-3 on-policy driver covering same-target combinations.
 
@@ -410,18 +461,16 @@ def run_onpolicy_train_batched[
     var prev_obs_h = DriverScratch["prev_obs", N_ENVS, OBS].make["cpu"](
         ctx=None
     )
-    var action_h   = DriverScratch["action",   N_ENVS, ACT].make["cpu"](
-        ctx=None
-    )
+    var action_h = DriverScratch["action", N_ENVS, ACT].make["cpu"](ctx=None)
     var next_obs_h = DriverScratch["next_obs", N_ENVS, OBS].make["cpu"](
         ctx=None
     )
-    var reward_h   = DriverScratch["reward",   N_ENVS, 1].make["cpu"](
-        ctx=None
-    )
-    var done_h     = DriverScratch["done",     N_ENVS, 1].make["cpu"](
-        ctx=None
-    )
+    var reward_h = DriverScratch["reward", N_ENVS, 1].make["cpu"](ctx=None)
+    var done_h = DriverScratch["done", N_ENVS, 1].make["cpu"](ctx=None)
+    # Natural-termination flag (NOT combined done) — used to mark true
+    # terminals in the rollout so GAE drops the V bootstrap on termination
+    # while keeping it on time-limit truncation.
+    var term_h = DriverScratch["term", N_ENVS, 1].make["cpu"](ctx=None)
 
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
 
@@ -430,6 +479,10 @@ def run_onpolicy_train_batched[
     var step_idx: Int = 0
     var iter_idx: Int = 0
     var next_print: Int = print_every
+    # In-place progress bar between log lines (pure CPU, no GPU sync).
+    var prog = IntervalProgress(
+        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
+    )
     # Independent counter for logger cadence — only read inside the
     # `comptime if L.ENABLED` block. Bit-identity preserved when
     # L=NoOpLogger (default).
@@ -446,7 +499,10 @@ def run_onpolicy_train_batched[
         else:
             var c = ctx.value()
             var env_obs_view = DeviceBuffer[DT](
-                c, env.obs_ptr(), N_ENVS * OBS, owning=False,
+                c,
+                env.obs_ptr(),
+                N_ENVS * OBS,
+                owning=False,
             )
             var po_host = c.enqueue_create_host_buffer[DT](N_ENVS * OBS)
             c.enqueue_copy(po_host, env_obs_view)
@@ -468,7 +524,10 @@ def run_onpolicy_train_batched[
         comptime if env_target == "gpu":
             var c = ctx.value()
             var env_act_view = DeviceBuffer[DT](
-                c, env.action_ptr(), N_ENVS * ACT, owning=False,
+                c,
+                env.action_ptr(),
+                N_ENVS * ACT,
+                owning=False,
             )
             c.enqueue_copy(env_act_view, action_h.host_ptr())
         else:
@@ -485,47 +544,74 @@ def run_onpolicy_train_batched[
         )
 
         # ── 5. Snapshot env outputs → host scratches.
-        var no_p  = next_obs_h.host_ptr()
+        var no_p = next_obs_h.host_ptr()
         var rew_p = reward_h.host_ptr()
-        var dn_p  = done_h.host_ptr()
+        var dn_p = done_h.host_ptr()
+        var tm_p = term_h.host_ptr()
         comptime if env_target == "cpu":
             var ob_p = env.obs_ptr()
             var er_p = env.reward_ptr()
             var ed_p = env.done_ptr()
+            var et_p = env.terminated_ptr()
             for k in range(N_ENVS * OBS):
                 no_p[k] = ob_p[k]
             for e in range(N_ENVS):
                 rew_p[e] = er_p[e]
-                dn_p[e]  = ed_p[e]
+                dn_p[e] = ed_p[e]
+                tm_p[e] = et_p[e]
         else:
             var c = ctx.value()
             var env_obs_view = DeviceBuffer[DT](
-                c, env.obs_ptr(), N_ENVS * OBS, owning=False,
+                c,
+                env.obs_ptr(),
+                N_ENVS * OBS,
+                owning=False,
             )
             var env_rew_view = DeviceBuffer[DT](
-                c, env.reward_ptr(), N_ENVS, owning=False,
+                c,
+                env.reward_ptr(),
+                N_ENVS,
+                owning=False,
             )
             var env_done_view = DeviceBuffer[DT](
-                c, env.done_ptr(), N_ENVS, owning=False,
+                c,
+                env.done_ptr(),
+                N_ENVS,
+                owning=False,
             )
-            var no_host  = c.enqueue_create_host_buffer[DT](N_ENVS * OBS)
+            var env_term_view = DeviceBuffer[DT](
+                c,
+                env.terminated_ptr(),
+                N_ENVS,
+                owning=False,
+            )
+            var no_host = c.enqueue_create_host_buffer[DT](N_ENVS * OBS)
             var rew_host = c.enqueue_create_host_buffer[DT](N_ENVS)
-            var dn_host  = c.enqueue_create_host_buffer[DT](N_ENVS)
-            c.enqueue_copy(no_host,  env_obs_view)
+            var dn_host = c.enqueue_create_host_buffer[DT](N_ENVS)
+            var tm_host = c.enqueue_create_host_buffer[DT](N_ENVS)
+            c.enqueue_copy(no_host, env_obs_view)
             c.enqueue_copy(rew_host, env_rew_view)
-            c.enqueue_copy(dn_host,  env_done_view)
+            c.enqueue_copy(dn_host, env_done_view)
+            c.enqueue_copy(tm_host, env_term_view)
             c.synchronize()
             var nh = no_host.unsafe_ptr()
             var rh = rew_host.unsafe_ptr()
             var dh = dn_host.unsafe_ptr()
+            var th = tm_host.unsafe_ptr()
             for k in range(N_ENVS * OBS):
                 no_p[k] = nh[k]
             for e in range(N_ENVS):
                 rew_p[e] = rh[e]
-                dn_p[e]  = dh[e]
+                dn_p[e] = dh[e]
+                tm_p[e] = th[e]
 
-        # ── 6. Trainer push.
+        # ── 6. Trainer push, then mark TRUE terminals (V=0 bootstrap in GAE)
+        # — truncation keeps the bootstrap. No-op for non-terminating envs
+        # (`term ≡ 0`) → bit-identical.
         trainer.record_batch_cpu(po_p, rew_p, no_p, dn_p)
+        for e in range(N_ENVS):
+            if tm_p[e] > Scalar[DT](0.5):
+                trainer.mark_terminal_env(e)
 
         # ── 7. Selective env reset (env handles per-env done internally).
         env.selective_reset_batch[N_ENVS](
@@ -547,24 +633,28 @@ def run_onpolicy_train_batched[
 
         var abs_step = base_step + step_idx
 
+        prog.tick(step_idx, trainer.total_train_steps())
+
         if verbose and print_every > 0 and step_idx >= next_print:
+            prog.clear()
             var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
             print(
-                "[step ", abs_step, "] mean_ret(10)=",
+                "[step ",
+                abs_step,
+                "] mean_ret(10)=",
                 trainer.mean_return(),
-                " ep=", trainer.ep_count(),
-                " elapsed=", elapsed, "s",
+                " ep=",
+                trainer.ep_count(),
+                " elapsed=",
+                elapsed,
+                "s",
             )
             next_print += print_every
 
         # Logger emit at the same cadence (independent of verbose).
         # Comptime-elided when L=NoOpLogger (default).
         comptime if L.ENABLED:
-            if (
-                print_every > 0
-                and step_idx >= next_log
-                and Bool(logger)
-            ):
+            if print_every > 0 and step_idx >= next_log and Bool(logger):
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
@@ -582,11 +672,7 @@ def run_onpolicy_train_batched[
         # logger at its own cadence. Default trait impl is no-op for
         # trainers that haven't wired this up yet.
         comptime if L.ENABLED:
-            if (
-                diag_every > 0
-                and abs_step % diag_every == 0
-                and Bool(logger)
-            ):
+            if diag_every > 0 and abs_step % diag_every == 0 and Bool(logger):
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
 
         # `checkpoint_every` — overwrite `checkpoint_path` with the

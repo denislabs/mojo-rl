@@ -228,6 +228,9 @@ struct AcrobotEnv[DTYPE: DType](
     var steps: Int
     var max_steps: Int
     var done: Bool
+    # Natural-termination flag (free end above target height), NOT time-limit
+    # truncation. Read by off-policy/on-policy drivers via `was_terminated()`.
+    var _last_terminated: Bool
     var total_reward: Scalar[Self.dtype]
 
     # Discretization settings (for DiscreteEnv)
@@ -275,6 +278,7 @@ struct AcrobotEnv[DTYPE: DType](
         self.steps = 0
         self.max_steps = 500
         self.done = False
+        self._last_terminated = False
         self.total_reward = Scalar[Self.dtype](0.0)
 
         # Discretization settings
@@ -310,6 +314,7 @@ struct AcrobotEnv[DTYPE: DType](
         self.steps = take.steps
         self.max_steps = take.max_steps
         self.done = take.done
+        self._last_terminated = take._last_terminated
         self.total_reward = take.total_reward
         self.num_bins = take.num_bins
         self.use_book_dynamics = take.use_book_dynamics
@@ -333,6 +338,7 @@ struct AcrobotEnv[DTYPE: DType](
 
         self.steps = 0
         self.done = False
+        self._last_terminated = False
         self.total_reward = Scalar[Self.dtype](0.0)
 
         return AcrobotState(index=self._discretize_obs())
@@ -379,6 +385,7 @@ struct AcrobotEnv[DTYPE: DType](
         var truncated = self.steps >= self.max_steps
 
         self.done = terminated or truncated
+        self._last_terminated = terminated
 
         # Reward: -1 for each step, 0 at terminal
         var reward = Scalar[Self.dtype](0.0) if terminated else Scalar[
@@ -678,6 +685,11 @@ struct AcrobotEnv[DTYPE: DType](
         var result = self.step_raw(action)
         return (self.get_obs_list(), result[1], result[2])
 
+    def was_terminated(self) -> Bool:
+        """True iff the previous step reached the goal height (natural
+        termination), NOT the time-limit truncation at max_steps."""
+        return self._last_terminated
+
     # ========================================================================
     # SIMD-optimized observation API (for performance)
     # ========================================================================
@@ -739,6 +751,7 @@ struct AcrobotEnv[DTYPE: DType](
         var terminated = self._terminal()
         var truncated = self.steps >= self.max_steps
         self.done = terminated or truncated
+        self._last_terminated = terminated
 
         var reward = Scalar[Self.dtype](0.0) if terminated else Scalar[
             Self.dtype

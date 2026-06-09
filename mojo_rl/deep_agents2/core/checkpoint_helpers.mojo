@@ -18,6 +18,8 @@ these.
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.save_scalar import _expect_kv_line
 from mojo_rl.nn2.core.saveable import Saveable
+from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.nn2.optimizer.adamw import AdamW
 from mojo_rl.nn2.optimizer.scalar_adam import ScalarAdam
 
 
@@ -53,7 +55,8 @@ def expect_v2_header(lines: List[String]) raises:
         var got = String("<empty>") if len(lines) == 0 else lines[0]
         raise Error(
             "checkpoint_helpers: expected `nn2-ckpt v2` header, got `"
-            + got + "`"
+            + got
+            + "`"
         )
 
 
@@ -62,28 +65,109 @@ def expect_v2_header(lines: List[String]) raises:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def save_optimizer_v2_body[O: Saveable](
-    mut opt: O, mut out: String, prefix: String,
-) raises:
+def save_optimizer_v2_body[
+    O: Saveable
+](mut opt: O, mut out: String, prefix: String,) raises:
     """Append the Saveable optimizer's serialized section to `out` under
     `prefix`. No v2 header is written — the caller assembles the envelope
     once it has appended every section."""
     opt.save(out, prefix)
 
 
-def load_optimizer_v2_body[O: Saveable](
-    mut opt: O,
-    lines: List[String],
-    mut idx: Int,
-    prefix: String,
-) raises:
+def load_optimizer_v2_body[
+    O: Saveable
+](mut opt: O, lines: List[String], mut idx: Int, prefix: String,) raises:
     """Consume the Saveable optimizer's section from `lines[idx:]` under
     `prefix`. Advances `idx` past the consumed section."""
     opt.load(lines, idx, prefix)
 
 
+# ──────────────────────────────────────────────────────────────────────
+# GPU Adam save/load (Phase 2 — GPU checkpointing).
+#
+# Byte-identical to the CPU optimizer section: GPU save D2Hs the device
+# buffers into the Adam's host fields (`sync_to_host`), then runs the
+# SAME CPU serializer; GPU load runs the SAME CPU parser, then H2Ds the
+# restored host fields (`upload_from_host`). A GPU checkpoint therefore
+# loads on a CPU trainer unchanged — train-on-GPU → eval-on-CPU.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def save_optimizer_v2_body_gpu(
+    mut opt: Adam,
+    mut out: String,
+    prefix: String,
+) raises:
+    """GPU `Adam` section. Downloads device state into the Adam's own host
+    fields, then emits the identical CPU section. (`ctx` is read from the
+    optimizer's own `TargetStorage`.)."""
+    opt.sync_to_host()
+    opt.save(out, prefix)
+
+
+def load_optimizer_v2_body_gpu(
+    mut opt: Adam,
+    lines: List[String],
+    mut idx: Int,
+    prefix: String,
+) raises:
+    """Inverse of `save_optimizer_v2_body_gpu`: CPU parse into host
+    fields, then upload to the device buffers.
+
+    A GPU-built `Adam` has EMPTY `m_flat`/`v_flat` host lists (the live
+    moments live in `m_dev`/`v_dev`). `Adam.load` writes
+    `total_size` values straight into those lists' buffers, so they MUST
+    be pre-sized or the writes corrupt the heap. Size them here before
+    parsing, then upload to device."""
+    if len(opt.m_flat) != opt.total_size:
+        opt.m_flat = List[Scalar[DT]](
+            length=opt.total_size, fill=Scalar[DT](0.0)
+        )
+        opt.v_flat = List[Scalar[DT]](
+            length=opt.total_size, fill=Scalar[DT](0.0)
+        )
+    opt.load(lines, idx, prefix)
+    opt.upload_from_host()
+
+
+def save_optimizer_v2_body_gpu(
+    mut opt: AdamW,
+    mut out: String,
+    prefix: String,
+) raises:
+    """GPU `AdamW` section (overload). Downloads device state into the
+    optimizer's host fields, then emits the identical CPU section. Used by
+    the MBPO dynamics ensemble, which optimises with decoupled weight
+    decay."""
+    opt.sync_to_host()
+    opt.save(out, prefix)
+
+
+def load_optimizer_v2_body_gpu(
+    mut opt: AdamW,
+    lines: List[String],
+    mut idx: Int,
+    prefix: String,
+) raises:
+    """Inverse of the `AdamW` `save_optimizer_v2_body_gpu` overload: CPU
+    parse into host fields, then upload to the device buffers. A GPU-built
+    `AdamW` has empty `m_flat`/`v_flat`; size them before parsing so
+    `AdamW.load` writes into valid storage."""
+    if len(opt.m_flat) != opt.total_size:
+        opt.m_flat = List[Scalar[DT]](
+            length=opt.total_size, fill=Scalar[DT](0.0)
+        )
+        opt.v_flat = List[Scalar[DT]](
+            length=opt.total_size, fill=Scalar[DT](0.0)
+        )
+    opt.load(lines, idx, prefix)
+    opt.upload_from_host()
+
+
 def save_scalar_adam_v2_body(
-    opt: ScalarAdam, mut out: String, prefix: String,
+    opt: ScalarAdam,
+    mut out: String,
+    prefix: String,
 ):
     """Append a ScalarAdam's serialized section to `out` under `prefix`."""
     out += prefix + ".value=" + String(opt.value) + "\n"
@@ -94,6 +178,31 @@ def save_scalar_adam_v2_body(
     out += prefix + ".beta1=" + String(opt.beta1) + "\n"
     out += prefix + ".beta2=" + String(opt.beta2) + "\n"
     out += prefix + ".eps=" + String(opt.eps) + "\n"
+
+
+def save_scalar_adam_v2_body_gpu(
+    mut opt: ScalarAdam,
+    mut out: String,
+    prefix: String,
+) raises:
+    """GPU `ScalarAdam` section. Syncs device state into the host fields,
+    then runs the SAME CPU serializer (byte-identical, interchangeable
+    format). See `ScalarAdam.sync_to_host` for the accepted bias-
+    correction gap on the GPU path."""
+    opt.sync_to_host()
+    save_scalar_adam_v2_body(opt, out, prefix)
+
+
+def load_scalar_adam_v2_body_gpu(
+    mut opt: ScalarAdam,
+    lines: List[String],
+    mut idx: Int,
+    prefix: String,
+) raises:
+    """Inverse of `save_scalar_adam_v2_body_gpu`: CPU parse into host
+    fields, then upload to `state_dev`."""
+    load_scalar_adam_v2_body(opt, lines, idx, prefix)
+    opt.upload_from_host()
 
 
 def load_scalar_adam_v2_body(
@@ -118,6 +227,48 @@ def load_scalar_adam_v2_body(
     opt.beta2 = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".beta2")))
     idx += 1
     opt.eps = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".eps")))
+    idx += 1
+    # Reconstruct the incremental bias-correction products β₁ᵗ / β₂ᵗ from
+    # the restored `t` by replaying the same running product the step loop
+    # builds (1·β·β·… , t times). Bit-identical to having stepped t times,
+    # so CPU save/resume stays byte-stable. (Serializing them directly
+    # would be equivalent but bloat the v2 envelope; t is the source of
+    # truth.)
+    opt.beta1_pow_t = Scalar[DT](1.0)
+    opt.beta2_pow_t = Scalar[DT](1.0)
+    for _ in range(opt.t):
+        opt.beta1_pow_t *= opt.beta1
+        opt.beta2_pow_t *= opt.beta2
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Scalar Int counter section — one `<prefix>=<value>` line.
+#
+# Used for cumulative trainer counters (e.g. `_total_train_steps`) that
+# must survive save/resume. PER β-anneal schedules key on this counter,
+# so dropping it restarts β annealing on every resume.
+#
+# `load` is TOLERANT of absence: a checkpoint written before the counter
+# section existed simply leaves `value` unchanged (idx not advanced).
+# The counter section is therefore always appended LAST in each envelope
+# so older checkpoints still parse cleanly.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def save_counter_v2_body(value: Int, mut out: String, prefix: String):
+    """Append a single `<prefix>=<value>` counter line to `out`."""
+    out += prefix + "=" + String(value) + "\n"
+
+
+def load_counter_v2_body(
+    mut value: Int, lines: List[String], mut idx: Int, prefix: String,
+) raises:
+    """Consume a `<prefix>=<value>` counter line from `lines[idx:]`,
+    advancing `idx`. If the stream is exhausted (older checkpoint with no
+    counter section) `value` is left unchanged and `idx` is not advanced."""
+    if idx >= len(lines):
+        return
+    value = atol(_expect_kv_line(lines, idx, prefix))
     idx += 1
 
 

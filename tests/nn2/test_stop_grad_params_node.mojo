@@ -64,7 +64,7 @@ def test_control_linear_grads_flow() raises:
     # Inspect the Linear leaf at node index 1 (InputSlot is 0).
     var max_w_grad: Scalar[DT] = 0.0
     for i in range(3):  # IN_DIM * OUT_DIM = 3 * 1 = 3
-        var v = g.nodes[1].op.weight.grad[i]
+        var v = g.nodes[1].op.weight.grd.cpu[i]
         var av = v if v >= Scalar[DT](0) else -v
         if av > max_w_grad:
             max_w_grad = av
@@ -105,13 +105,13 @@ def test_stop_grad_params_freezes_inner() raises:
     # Path: graph.nodes[1].op = StopGradParams; .op.inner = Linear.
     var max_w_grad: Scalar[DT] = 0.0
     for i in range(3):
-        var v = g.nodes[1].op.inner.weight.grad[i]
+        var v = g.nodes[1].op.inner.weight.grd.cpu[i]
         var av = v if v >= Scalar[DT](0) else -v
         if av > max_w_grad:
             max_w_grad = av
     var max_b_grad: Scalar[DT] = 0.0
     for i in range(1):
-        var v = g.nodes[1].op.inner.bias.grad[i]
+        var v = g.nodes[1].op.inner.bias.grd.cpu[i]
         var av = v if v >= Scalar[DT](0) else -v
         if av > max_b_grad:
             max_b_grad = av

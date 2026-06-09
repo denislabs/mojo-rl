@@ -39,7 +39,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
-from mojo_rl.core.env_traits import BoxContinuousActionEnv
+from mojo_rl.core.env_traits import BoxContinuousActionEnv, RenderableEnv
 
 from ..training.blocks import SampleBlock
 from ..training.batched_env import BatchedEnv
@@ -47,6 +47,7 @@ from ..training.driver_offpolicy import (
     run_offpolicy_train,
     run_offpolicy_train_batched,
     run_offpolicy_eval,
+    run_offpolicy_eval_render,
 )
 
 from .metrics import SACMetrics
@@ -139,6 +140,10 @@ struct SACAgent[
         N_ENVS: Int = 1,
         NS: Int = 1,
         L: Logger = NoOpLogger,
+        USE_TRAIN_CUDA_GRAPH: Bool = False,
+        USE_ENV_CUDA_GRAPH: Bool = False,
+        EE: BatchedEnv = E,
+        EVAL_ENVS: Int = N_ENVS,
     ](
         mut self,
         mut env: E,
@@ -150,6 +155,14 @@ struct SACAgent[
         verbose: Bool = True,
         nstep_gamma: Scalar[DT] = 0.99,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
+        episode_sync_every: Int = 1,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
+        eval_env: Optional[UnsafePointer[EE, MutAnyOrigin]] = None,
+        eval_every: Int = 0,
+        eval_episodes: Int = 16,
+        eval_max_steps: Int = 1_000,
     ) raises -> List[Scalar[DT]]:
         """Off-policy training via `run_offpolicy_train_batched`.
 
@@ -160,7 +173,41 @@ struct SACAgent[
         Pass `logger=Optional[UnsafePointer[L, MutAnyOrigin]](
         UnsafePointer(to=my_logger))` to stream `env/mean_ret` and
         `env/ep_count` at `print_every` cadence. Default `L=NoOpLogger`
-        comptime-elides the emit path entirely (bit-identical no-op)."""
+        comptime-elides the emit path entirely (bit-identical no-op).
+
+        Set `diag_every > 0` to also drain the full SAC metric bundle
+        (`actor_loss` / `critic_loss` / `alpha` / `mean_q` / `mean_reward`
+        / `train_steps` / …) through the logger every `diag_every`
+        env-steps — the GPU multi-env counterpart of `train_single`'s
+        diag cadence. Default 0 keeps only the `avg_reward` / `episodes`
+        stream.
+
+        Set `USE_TRAIN_CUDA_GRAPH=True` (GPU + uniform replay only; no-op on
+        non-NVIDIA) to capture the per-update device kernel sequence into a
+        CUDA graph and replay it — removing per-kernel launch overhead from
+        the train step. Pair it with `episode_sync_every > 1` to also batch
+        the per-iteration reward/done readback, so the host stops serializing
+        the GPU pipeline every iteration (otherwise that sync negates the
+        capture win). Returns stay exact at every print/diag boundary.
+
+        Set `checkpoint_every > 0` + `checkpoint_path` to auto-save the
+        trainer's one-file `nn2-ckpt v2` envelope (actor + twin critics +
+        optimizers + alpha optimizer) every `checkpoint_every` env-steps and
+        one final time at the end — the batched GPU counterpart of
+        `train_single`'s checkpoint cadence. The save runs in host code
+        between iterations (D2H of live params on the GPU target) so it is
+        CUDA-graph-capture safe. The replay buffer / episode tracker are NOT
+        persisted, so resume starts with a fresh replay.
+
+        Set `eval_every > 0` AND pass an ISOLATED `eval_env` (a second
+        `BatchedGpuEnv[..., EVAL_ENVS, ...]` — NOT the training env) to run a
+        periodic GPU-parallel DETERMINISTIC (greedy, no exploration noise)
+        eval every `eval_every` env-steps and log the true policy quality as
+        `eval/mean_return`. This is the deployable-policy signal; the always-on
+        `avg_reward` is a stochastic rollout that under-reports SAC by the
+        entropy term. `EVAL_ENVS` (comptime, default N_ENVS) must equal the
+        eval env's struct batch size; `eval_episodes <= EVAL_ENVS` completes in
+        one `eval_max_steps` window. Eval touches no replay/optimizer state."""
         var ctx = self.trainer.ctx
         return run_offpolicy_train_batched[
             SACTrainer[
@@ -173,6 +220,10 @@ struct SACAgent[
             N_ENVS,
             NS,
             L,
+            USE_TRAIN_CUDA_GRAPH,
+            USE_ENV_CUDA_GRAPH,
+            EE,
+            EVAL_ENVS,
         ](
             ctx,
             self.trainer,
@@ -184,6 +235,14 @@ struct SACAgent[
             verbose=verbose,
             nstep_gamma=nstep_gamma,
             logger=logger,
+            diag_every=diag_every,
+            episode_sync_every=episode_sync_every,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
+            eval_env=eval_env,
+            eval_every=eval_every,
+            eval_episodes=eval_episodes,
+            eval_max_steps=eval_max_steps,
         )
 
     def train_single[
@@ -271,6 +330,40 @@ struct SACAgent[
             env,
             num_episodes,
             max_steps_per_episode=max_steps_per_episode,
+            verbose=verbose,
+        )
+
+    def eval_render[
+        E: BoxContinuousActionEnv & RenderableEnv,
+    ](
+        mut self,
+        mut env: E,
+        num_episodes: Int = 10,
+        *,
+        max_steps_per_episode: Int = 1_000,
+        frame_delay_ms: Int = 16,
+        verbose: Bool = True,
+    ) raises -> Scalar[DT]:
+        """Greedy eval with live env-owned rendering via
+        `run_offpolicy_eval_render`. Same non-mutating greedy loop as
+        `eval` plus the `RenderableEnv` init/per-frame-render/quit/close
+        handling — replaces the hand-rolled render loop in the eval
+        example scripts. Falls back to headless if no renderer is
+        available. Returns the mean episode return."""
+        return run_offpolicy_eval_render[
+            SACTrainer[
+                Self.train_target,
+                Self.SAMPLE,
+                Self.ACTOR,
+                Self.CRITIC,
+            ],
+            E,
+        ](
+            self.trainer,
+            env,
+            num_episodes,
+            max_steps_per_episode=max_steps_per_episode,
+            frame_delay_ms=frame_delay_ms,
             verbose=verbose,
         )
 

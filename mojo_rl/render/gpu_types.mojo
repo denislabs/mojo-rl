@@ -272,18 +272,18 @@ struct MeshData(Movable):
 
 
 struct MeshHandle(Copyable, Movable):
-    """GPU-side mesh reference."""
+    """GPU-side mesh reference.
+
+    Mojo nightly removed nullable UnsafePointer, so there is no longer a
+    no-arg constructor that produces a sentinel "empty" handle. Callers
+    that need a deferred-init field should wrap this in
+    ``Optional[MeshHandle]`` and assign once a real mesh is uploaded.
+    """
 
     var vertex_buffer: Ptr[GPUBuffer, MutAnyOrigin]
     var index_buffer: Ptr[GPUBuffer, MutAnyOrigin]
     var num_indices: UInt32
     var num_vertices: UInt32
-
-    def __init__(out self):
-        self.vertex_buffer = Ptr[GPUBuffer, MutAnyOrigin](unsafe_from_address=0)
-        self.index_buffer = Ptr[GPUBuffer, MutAnyOrigin](unsafe_from_address=0)
-        self.num_indices = 0
-        self.num_vertices = 0
 
     def __init__(
         out self,

@@ -38,8 +38,9 @@ from mojo_rl.nn2.core import (
     for_each_param_auto,
     zero_grad_auto,
 )
-from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut
-from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn2.core.module import Module, typed_view, typed_view_mut, mptr
+from mojo_rl.nn2.core.tensor_pack import TensorPack
+from mojo_rl.nn2.core.target_storage import require_ctx, TargetStorage, assert_tag_for
 from mojo_rl.nn2.core.target_tag import TARGET_GPU
 
 
@@ -153,7 +154,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
     var bias:    Param["bias",    False, Self.B_SIZE]
     var log_std: Param["log_std", False, Self.LS_SIZE]
 
-    var _cached_input_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     var ts: TargetStorage
 
@@ -161,9 +162,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
         self.weight  = Param["weight",  True,  Self.W_SIZE]()
         self.bias    = Param["bias",    False, Self.B_SIZE]()
         self.log_std = Param["log_std", False, Self.LS_SIZE]()
-        self._cached_input_ptr = UnsafePointer[
-            Scalar[DT], MutAnyOrigin,
-        ](unsafe_from_address=0)
+        self._cached_input_ptr = None
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -190,21 +189,19 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                 ls_ptr[k] = Self.DEFAULT_LOG_STD_INIT
             h.ts = TargetStorage.make_cpu()
         else:
-            if not ctx:
-                raise Error("GaussianHead.make[target='gpu']: ctx required")
-            var ctx_v = ctx.value()
+            var ctx_v = require_ctx["GaussianHead.make[target='gpu']"](ctx)
             h.weight  = Param["weight",  True,  Self.W_SIZE].make_gpu(ctx_v)
             h.bias    = Param["bias",    False, Self.B_SIZE].make_gpu(ctx_v)
             h.log_std = Param["log_std", False, Self.LS_SIZE].make_gpu(ctx_v)
-            h.log_std.value_dev.value().enqueue_fill(Self.DEFAULT_LOG_STD_INIT)
+            h.log_std.val.dev.value().enqueue_fill(Self.DEFAULT_LOG_STD_INIT)
             # Init weights/bias on host then upload.
             var w_host = ctx_v.enqueue_create_host_buffer[DT](Self.W_SIZE)
             var b_host = ctx_v.enqueue_create_host_buffer[DT](Self.B_SIZE)
             ctx_v.synchronize()
             INIT.init_weight(w_host.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.ACT)
             INIT.init_bias(b_host.unsafe_ptr(), Self.B_SIZE)
-            ctx_v.enqueue_copy(h.weight.value_dev.value(), w_host)
-            ctx_v.enqueue_copy(h.bias.value_dev.value(),   b_host)
+            ctx_v.enqueue_copy(h.weight.val.dev.value(), w_host)
+            ctx_v.enqueue_copy(h.bias.val.dev.value(),   b_host)
             ctx_v.synchronize()
             h.ts = TargetStorage.make_gpu(ctx_v)
         return h^
@@ -212,7 +209,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
     def set_log_std_init(mut self, value: Scalar[DT]) raises:
         """Override the default log_std initialization. Call after make."""
         if self.ts.target_tag == TARGET_GPU:
-            self.log_std.value_dev.value().enqueue_fill(value)
+            self.log_std.val.dev.value().enqueue_fill(value)
         else:
             var ls_ptr = self.log_std.value_unsafe_ptr_cpu()
             for k in range(Self.LS_SIZE):
@@ -226,26 +223,23 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        var *inputs: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
             mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises:
         assert_tag_for["GaussianHead", target](self.ts.target_tag)
-        var input = typed_view[BATCH, Self.IN_DIMS[0]](inputs[0])
+        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
         var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
 
-        var in_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](input.ptr)
+        var in_p = mptr(input.ptr)
         self._cached_input_ptr = in_p
 
         comptime if target == "cpu":
-            var w = TileTensor(self.weight.value, row_major[Self.IN, Self.ACT]())
-            var b = TileTensor(self.bias.value,   row_major[Self.ACT]())
-            var ls = TileTensor(self.log_std.value, row_major[Self.ACT]())
+            var w = TileTensor(self.weight.val.cpu, row_major[Self.IN, Self.ACT]())
+            var b = TileTensor(self.bias.val.cpu,   row_major[Self.ACT]())
+            var ls = TileTensor(self.log_std.val.cpu, row_major[Self.ACT]())
             for bi in range(BATCH):
                 # mu = input @ W + b
                 for j in range(Self.ACT):
@@ -263,7 +257,7 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                     output_v[bi, Self.ACT + j] = v
         else:
             var ctx = self.ts.ctx.value()
-            var out_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](output_v.ptr)
+            var out_p_w = mptr(output_v.ptr)
 
             comptime in_layout = Layout.row_major(BATCH, Self.IN)
             comptime out_layout = Layout.row_major(BATCH, 2 * Self.ACT)
@@ -271,13 +265,13 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
             comptime b_layout = Layout.row_major(Self.ACT)
             var input_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](in_p)
             var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
-                self.weight.value_dev.value()
+                self.weight.val.dev.value()
             )
             var b_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
-                self.bias.value_dev.value()
+                self.bias.val.dev.value()
             )
             var ls_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
-                self.log_std.value_dev.value()
+                self.log_std.val.dev.value()
             )
             var output_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](out_p_w)
 
@@ -303,25 +297,22 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
             dtype=DT, address_space=AddressSpace.GENERIC,
             element_size=1, origin=MutAnyOrigin, ...,
         ],
-        mut *grad_inputs: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        grad_inputs: TensorPack[Self.ARITY],
     ) raises:
         comptime assert (
             mode == "all" or mode == "input_only"
         ), "mode must be 'all' or 'input_only'"
         assert_tag_for["GaussianHead", target](self.ts.target_tag)
         var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = typed_view_mut[BATCH, Self.IN_DIMS[0]](grad_inputs[0])
+        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
-            var w = TileTensor(self.weight.value, row_major[Self.IN, Self.ACT]())
+            var w = TileTensor(self.weight.val.cpu, row_major[Self.IN, Self.ACT]())
 
             # ── (1) grad_b, grad_log_std (mode=all) ────────────────────
             comptime if mode == "all":
-                var gb = TileTensor(self.bias.grad,    row_major[Self.ACT]())
-                var gls = TileTensor(self.log_std.grad, row_major[Self.ACT]())
+                var gb = TileTensor(self.bias.grd.cpu,    row_major[Self.ACT]())
+                var gls = TileTensor(self.log_std.grd.cpu, row_major[Self.ACT]())
                 for j in range(Self.ACT):
                     var acc_b: Scalar[DT] = 0.0
                     var acc_l: Scalar[DT] = 0.0
@@ -333,8 +324,8 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
 
             # ── (2) grad_w (mode=all). Reads cache via _cached_input_ptr ─
             comptime if mode == "all":
-                var gw = TileTensor(self.weight.grad, row_major[Self.IN, Self.ACT]())
-                var c_ptr = self._cached_input_ptr
+                var gw = TileTensor(self.weight.grd.cpu, row_major[Self.IN, Self.ACT]())
+                var c_ptr = self._cached_input_ptr.value()
                 for i in range(Self.IN):
                     for j in range(Self.ACT):
                         var acc: Scalar[DT] = 0.0
@@ -351,8 +342,8 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
                     grad_input_v[bi, i] = acc
         else:
             var ctx = self.ts.ctx.value()
-            var go_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_output_v.ptr)
-            var gi_p_w = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad_input_v.ptr)
+            var go_p_w = mptr(grad_output_v.ptr)
+            var gi_p_w = mptr(grad_input_v.ptr)
 
             comptime go_layout = Layout.row_major(BATCH, 2 * Self.ACT)
             comptime gi_layout = Layout.row_major(BATCH, Self.IN)
@@ -363,16 +354,16 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
             var go_lt = LayoutTensor[DT, go_layout, MutAnyOrigin](go_p_w)
             var gi_lt = LayoutTensor[DT, gi_layout, MutAnyOrigin](gi_p_w)
             var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
-                self.weight.value_dev.value()
+                self.weight.val.dev.value()
             )
 
             # (1) grad_b, grad_log_std
             comptime if mode == "all":
                 var gb_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
-                    self.bias.grad_dev.value()
+                    self.bias.grd.dev.value()
                 )
                 var gls_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
-                    self.log_std.grad_dev.value()
+                    self.log_std.grd.dev.value()
                 )
                 comptime n_blocks_gb = (Self.ACT + TPB - 1) // TPB
                 comptime gb_kernel = _gauss_head_grad_b_kernel[BATCH, Self.ACT]
@@ -389,10 +380,10 @@ struct GaussianHead[IN: Int, ACT: Int](Module):
             # (2) grad_w
             comptime if mode == "all":
                 var cache_lt = LayoutTensor[DT, cache_layout, MutAnyOrigin](
-                    self._cached_input_ptr
+                    self._cached_input_ptr.value()
                 )
                 var gw_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
-                    self.weight.grad_dev.value()
+                    self.weight.grd.dev.value()
                 )
                 comptime n_blocks_gw = (Self.W_SIZE + TPB - 1) // TPB
                 comptime gw_kernel = _gauss_head_grad_w_kernel[

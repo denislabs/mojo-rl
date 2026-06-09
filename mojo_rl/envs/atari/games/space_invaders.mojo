@@ -49,13 +49,14 @@ struct SpaceInvadersDef(GameDef):
     @staticmethod
     @always_inline
     def get_lives(ram: InlineArray[UInt8, RAM_SIZE]) -> Int:
-        return Int(ram[0xC9])
+        # RAM is 128 bytes mirrored across 0x80-0xFF; mask to a valid index.
+        return Int(ram[0xC9 & 0x7F])
 
     @staticmethod
     @always_inline
     def is_terminal(ram: InlineArray[UInt8, RAM_SIZE]) -> Bool:
-        var some_byte = Int(ram[0x98])
-        return (some_byte & 0x80) != 0 or Int(ram[0xC9]) == 0
+        var some_byte = Int(ram[0x98 & 0x7F])
+        return (some_byte & 0x80) != 0 or Int(ram[0xC9 & 0x7F]) == 0
 
     @staticmethod
     @always_inline
