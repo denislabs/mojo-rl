@@ -203,21 +203,37 @@ def run_alphazero_selfplay_arena_cpu[
         #    value targets. `traj_len-1` is the current ply (0-based).
         var temp_moves = 4
         var chosen = -1
+
+        @parameter
+        def _is_legal(a: Int) -> Bool:
+            return a < len(legal) and Bool(legal[a])
+
         if traj_len - 1 < temp_moves:
             rng = _xs(rng)
             var u = Float64(rng % UInt64(1_000_000)) / 1_000_000.0
             var cum: Float64 = 0.0
             for a in range(ACT):
+                if not _is_legal(a):
+                    continue
                 cum += policy[a]
                 if u <= cum and policy[a] > 0.0:
                     chosen = a
                     break
+        # Greedy / sampling-fallback: argmax over LEGAL actions only. The MCTS
+        # uniform fallback (total visits 0) assigns equal prob to every action
+        # incl. illegal ones, so an unmasked argmax would deterministically pick
+        # an occupied cell → env.step no-ops → the game never terminates.
         if chosen < 0:
             var bestv = Float64(-1.0)
             for a in range(ACT):
-                if policy[a] > bestv:
+                if _is_legal(a) and policy[a] > bestv:
                     bestv = policy[a]
                     chosen = a
+            if chosen < 0:
+                for a in range(ACT):
+                    if _is_legal(a):
+                        chosen = a
+                        break
             if chosen < 0:
                 chosen = 0
         var step_res = env.step(env.action_from_index(chosen))
