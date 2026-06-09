@@ -40,6 +40,8 @@ from ...nn2.core.scratch_walkers import init_scratch_auto
 from ...nn2.core.target_storage import TargetStorage, assert_tag_for
 from ...nn2.initializer import Kaiming
 from ...nn2.optimizer.adam import Adam
+from ...nn2.core.module import Module
+from .encoder import LeWMEncoder
 from .loss_graph import LeWMLossGraph
 
 from mojo_rl.deep_agents2.loss.seed_grad_inv_batch import seed_grad_inv_batch
@@ -183,17 +185,25 @@ struct LeWMTrainer[
     PRED_PROJ_H: Int, SIG_PROJ: Int, SIG_KNOTS: Int,
     BATCH: Int, train_target: StaticString = "cpu",
     PRED_DIM_HEAD: Int = 0,
+    ENC: Module = LeWMEncoder[
+        IN_CH, IMG, PATCH, (IMG // PATCH) * (IMG // PATCH),
+        HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H, ENC_FF_MULT,
+    ],
 ](Movable & ImplicitlyDestructible):
     # PRED_DIM_HEAD 0 ⇒ standard EMB/PRED_HEADS attention; >0 ⇒ the paper's
     # expanded predictor attention (e.g. 16 heads × 64 = 1024 inner > EMB).
     # Added last (after train_target) so existing positional call sites are
     # unchanged. Bit-identical at the default 0.
+    # ENC = encoder type (last param, dims-derived default = mean-pooled
+    # LeWMEncoder). Pass LeWMEncoderCLS[...same dims...] for the CLS variant;
+    # existing callers omit it and stay bit-identical.
     comptime LG = LeWMLossGraph[
         Self.IN_CH, Self.IMG, Self.PATCH, Self.HIDDEN, Self.ENC_HEADS,
         Self.ENC_LAYERS, Self.EMB, Self.ENC_PROJ_H, Self.ENC_FF_MULT,
         Self.T, Self.ACT, Self.SMOOTHED, Self.AE_MLP,
         Self.H, Self.N_PREDS, Self.PRED_HEADS, Self.PRED_FF, Self.DEPTH,
         Self.PRED_PROJ_H, Self.SIG_PROJ, Self.SIG_KNOTS, Self.PRED_DIM_HEAD,
+        Self.ENC,
     ]
     comptime PIX = Self.T * Self.IN_CH * Self.IMG * Self.IMG
     comptime ACTIN = Self.T * Self.ACT

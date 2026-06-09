@@ -13,6 +13,7 @@ encoder bridges effective BATCH = B·T → B via `Tokenwise[T, LeWMEncoder]`.
 The collapse probes read the `emb` node output via `node_out_ptr["emb"]`.
 """
 
+from ...nn2.core.module import Module
 from ...nn2.combinators import ComputeGraph, InputSlot, Node, Tokenwise
 from ...nn2.primitives.slice import Slice
 from ...nn2.primitives.stop_grad import StopGrad
@@ -47,21 +48,20 @@ comptime LeWMLossGraph[
     SIG_PROJ: Int,
     SIG_KNOTS: Int,
     PRED_DIM_HEAD: Int = 0,
+    # Encoder type — defaults to the mean-pooled `LeWMEncoder`. Pass
+    # `LeWMEncoderCLS[...same dims...]` to train the CLS-token variant
+    # (image→(B,EMB) interface is identical, so the graph is unchanged
+    # elsewhere). A trailing type param with a dims-derived default keeps
+    # every existing caller (which omits it) bit-identical.
+    ENC: Module = LeWMEncoder[
+        IN_CH, IMG, PATCH, (IMG // PATCH) * (IMG // PATCH),
+        HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H, ENC_FF_MULT,
+    ],
 ] = ComputeGraph[
     1,
     InputSlot["pixels", T * IN_CH * IMG * IMG],
     InputSlot["actions", T * ACT],
-    Node[
-        "emb",
-        Tokenwise[
-            T,
-            LeWMEncoder[
-                IN_CH, IMG, PATCH, (IMG // PATCH) * (IMG // PATCH),
-                HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H, ENC_FF_MULT,
-            ],
-        ],
-        "pixels",
-    ],
+    Node["emb", Tokenwise[T, ENC], "pixels"],
     Node["act_emb", ActionEmbedder[T, ACT, SMOOTHED, EMB, AE_MLP], "actions"],
     Node["ctx_x", Slice[T * EMB, 0, H * EMB], "emb"],
     Node["ctx_a", Slice[T * EMB, 0, H * EMB], "act_emb"],

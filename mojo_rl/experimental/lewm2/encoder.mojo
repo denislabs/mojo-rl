@@ -30,6 +30,8 @@ from ...nn2.primitives.bias_add import BiasAdd
 from ...nn2.primitives.conditional_transformer_block import (
     ConditionalTransformerBlock,
 )
+from ...nn2.primitives.learned_tokens import LearnedTokens
+from ...nn2.primitives.slice import Slice
 
 
 # Projector MLP: (B, HIDDEN) → (B, EMB). BatchNorm1D matches the reference.
@@ -64,6 +66,42 @@ comptime LeWMEncoder[
     ],
     Tokenwise[N_PATCHES, LayerNorm[HIDDEN]],
     TokenMean[N_PATCHES, HIDDEN],
+    LeWMProjector[HIDDEN, PROJ_H, EMB],
+]
+
+
+# CLS-token encoder variant: prepend a learnable [CLS] token, run the
+# transformer over N_PATCHES+1 tokens, then read the CLS token (slice [0:HID])
+# instead of mean-pooling. Same external interface as `LeWMEncoder` (image →
+# (B, EMB)), so it drops into the loss graph identically. Motivation: the
+# closed-loop probe showed the mean-pooled latent under-encodes the small
+# agent/pusher (washed out across N_PATCHES); a CLS token can attend
+# selectively to control-relevant patches (the prediction objective rewards
+# encoding the pusher, since actions move it). No new primitives — reuses
+# `LearnedTokens[…, PREPEND=True]` (prepend CLS) + `Slice` (extract token 0).
+comptime LeWMEncoderCLS[
+    IN_CH: Int,
+    IMG: Int,
+    PATCH: Int,
+    N_PATCHES: Int,
+    HIDDEN: Int,
+    ENC_HEADS: Int,
+    ENC_LAYERS: Int,
+    EMB: Int,
+    PROJ_H: Int,
+    FF_MULT: Int = 4,
+] = Sequential[
+    PatchEmbed[IN_CH, IMG, IMG, PATCH, HIDDEN, N_PATCHES],
+    LearnedTokens[N_PATCHES, 1, HIDDEN, True],          # prepend [CLS]
+    BiasAdd[(N_PATCHES + 1) * HIDDEN],                   # pos embed incl CLS
+    Repeat[
+        ENC_LAYERS,
+        TransformerBlock[
+            HIDDEN, ENC_HEADS, N_PATCHES + 1, FF_MULT * HIDDEN, False
+        ],
+    ],
+    Tokenwise[N_PATCHES + 1, LayerNorm[HIDDEN]],
+    Slice[(N_PATCHES + 1) * HIDDEN, 0, HIDDEN],          # take [CLS] (token 0)
     LeWMProjector[HIDDEN, PROJ_H, EMB],
 ]
 
