@@ -227,6 +227,9 @@ def run_alphazero_selfplay_arena[
     OPP2: GPUEvaluator = RandomOpponent,   # secondary eval opponent (do_eval2)
     L: Logger = NoOpLogger,                # metrics sink (NoOp = silent)
     EVAL_GAMES: Int = 64,                  # games per color in each periodic eval
+    TEMP_MOVES: Int = 4,                   # plies sampled ∝ visits per game
+    #                                        before switching to greedy (opening
+    #                                        diversity); scale to game length
 ](
     ctx: DeviceContext,
     mut net: NET,                 # the BEST net — holds final weights on return
@@ -259,11 +262,6 @@ def run_alphazero_selfplay_arena[
     comptime W = NET.OUT_DIM          # ACT + 1
     comptime STATE = ENV.STATE_SIZE
     comptime NSYM = AUG.NUM_SYMMETRIES
-    # AlphaZero temperature schedule: sample ∝ visits for the first TEMP_MOVES
-    # plies of each game (opening diversity), then play greedy. Matches the
-    # legacy driver (TEMP_THRESH=4) and the CPU path; argmax-every-move left
-    # GPU self-play with no opening diversity.
-    comptime TEMP_MOVES = 4
     comptime MCTS = GenericGPUMCTS[
         N_ENVS, ACT, OBS, 1, MAX_NODES, NUM_SIMS, 1,
         AlphaGoPUCT[1.0], DirichletNoise[0.25, 0.25], SelfPlay,

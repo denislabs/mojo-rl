@@ -83,6 +83,7 @@ def run_alphazero_selfplay_arena_cpu[
     OPP2: CPUEvaluator = RandomOpponent,
     L: Logger = NoOpLogger,
     EVAL_GAMES: Int = 64,
+    TEMP_MOVES: Int = 4,   # plies sampled ∝ visits before greedy (scale to game)
 ](
     mut net: NET,                 # the BEST net — holds final weights on return
     iterations: Int,
@@ -201,7 +202,7 @@ def run_alphazero_selfplay_arena_cpu[
         #    high-quality. The legacy driver does exactly this (TEMP_THRESH=4);
         #    sampling EVERY ply leaves late-game play near-random, poisoning the
         #    value targets. `traj_len-1` is the current ply (0-based).
-        var temp_moves = 4
+        var temp_moves = TEMP_MOVES
         var chosen = -1
 
         @parameter

@@ -94,6 +94,10 @@ def main() raises:
         RESULT_IDX=43,
         MAX_PLIES=42,
         EVAL_GAMES=64,
+        # Connect Four games run up to 42 plies, so sample more opening plies
+        # than TicTacToe's 4 (∝ visits) before switching to greedy — keeps
+        # self-play opening/early-midgame diversity in the longer game.
+        TEMP_MOVES=8,
     ](
         iterations=40_000,
         learning_starts=200,

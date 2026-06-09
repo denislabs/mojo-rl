@@ -134,6 +134,7 @@ struct AlphaZeroAgent[
         RESULT_IDX: Int = 10,
         MAX_PLIES: Int = 9,
         EVAL_GAMES: Int = 64,
+        TEMP_MOVES: Int = 4,
     ](
         mut self,
         iterations: Int,
@@ -183,6 +184,7 @@ struct AlphaZeroAgent[
                 OPP2,
                 L,
                 EVAL_GAMES,
+                TEMP_MOVES,
             ](
                 self.ctx.value(),
                 self.net,
@@ -217,6 +219,7 @@ struct AlphaZeroAgent[
                 OPP2,
                 L,
                 EVAL_GAMES,
+                TEMP_MOVES,
             ](
                 self.net,
                 iterations,
