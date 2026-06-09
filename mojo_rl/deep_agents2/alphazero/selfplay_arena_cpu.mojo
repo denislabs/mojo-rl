@@ -84,6 +84,7 @@ def run_alphazero_selfplay_arena_cpu[
     L: Logger = NoOpLogger,
     EVAL_GAMES: Int = 64,
     TEMP_MOVES: Int = 4,   # plies sampled ∝ visits before greedy (scale to game)
+    BATCH_SIMS: Int = 1,   # MCTS leaves/round (virtual-loss batching); must divide NUM_SIMS
 ](
     mut net: NET,                 # the BEST net — holds final weights on return
     iterations: Int,
@@ -110,6 +111,7 @@ def run_alphazero_selfplay_arena_cpu[
     comptime MCTS = GenericCPUMCTS[
         ACT, LATENT, NUM_SIMS, MAX_NODES,
         AlphaGoPUCT[1.0], DirichletNoise[0.25, 0.25], SelfPlay,
+        BATCH_SIMS=BATCH_SIMS,
         NORMALIZE_Q=False,  # raw Q∈[-1,1] like legacy (MinMax over-explores)
     ]
     comptime Graph = ComputeGraph[

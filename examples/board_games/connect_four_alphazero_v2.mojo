@@ -117,6 +117,10 @@ def main() raises:
         # Legacy/AlphaZero.jl sampled ∝ visits for the first 20 plies (then
         # temp=0.3, not full greedy). 8 was a guess; 20 matches the reference.
         TEMP_MOVES=20,
+        # MCTS leaves expanded per round (virtual-loss batching). 500/5 = 100
+        # net forwards per move instead of 500 — ~5× faster MCTS, matching the
+        # legacy's 600/6 round count. Must divide NUM_SIMS and stay ≤ ACT (=7).
+        BATCH_SIMS=5,
     ](
         iterations=40_000,
         learning_starts=200,

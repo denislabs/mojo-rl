@@ -230,6 +230,12 @@ def run_alphazero_selfplay_arena[
     TEMP_MOVES: Int = 4,                   # plies sampled ∝ visits per game
     #                                        before switching to greedy (opening
     #                                        diversity); scale to game length
+    BATCH_SIMS: Int = 1,                   # MCTS leaves expanded per round
+    #                                        (virtual-loss batching). >1 cuts net
+    #                                        forwards by this factor: NUM_SIMS /
+    #                                        BATCH_SIMS rounds. Must divide
+    #                                        NUM_SIMS and be ≤ ACT to avoid
+    #                                        forced within-round collisions.
 ](
     ctx: DeviceContext,
     mut net: NET,                 # the BEST net — holds final weights on return
@@ -263,7 +269,7 @@ def run_alphazero_selfplay_arena[
     comptime STATE = ENV.STATE_SIZE
     comptime NSYM = AUG.NUM_SYMMETRIES
     comptime MCTS = GenericGPUMCTS[
-        N_ENVS, ACT, OBS, 1, MAX_NODES, NUM_SIMS, 1,
+        N_ENVS, ACT, OBS, 1, MAX_NODES, NUM_SIMS, BATCH_SIMS,
         AlphaGoPUCT[1.0], DirichletNoise[0.25, 0.25], SelfPlay,
         STATE_SIZE=STATE,
     ]
