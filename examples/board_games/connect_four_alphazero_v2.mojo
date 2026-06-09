@@ -75,11 +75,31 @@ def main() raises:
     comptime Aug = HFlipColumnAugmenter[ROWS=6, COLS=7, PLANES=3]
 
     var ctx = DeviceContext()
+    # NUM_SIMS=500 / MAX_NODES=1024 match the legacy AlphaZero.jl-tuned config
+    # (legacy used 600 sims / 1024 nodes); 100 sims gave far weaker MCTS targets.
+    # NOTE: the v2 MCTS runs BATCH_SIMS=1, so 500 sequential sims is ~5-6× slower
+    # per move than the legacy's BATCH_SIMS=6 — see the tuning notes below.
     var agent = AlphaZeroAgent[
-        "gpu", Env, Net, N_ENVS=64, NUM_SIMS=100, MAX_NODES=256,
+        "gpu", Env, Net, N_ENVS=64, NUM_SIMS=500, MAX_NODES=1024,
         BATCH=128, CAP=1_000_000, MAX_TRAJ=42,
     ](ctx, lr=0.002)
 
+    # ── Remaining deltas vs the legacy AlphaZero.jl-tuned config ──────────────
+    # These are hardcoded in deep_agents2/alphazero/selfplay_arena.mojo and not
+    # yet exposed as knobs; apply if convergence stalls or training is unstable:
+    #   * Optimizer: v2 uses plain Adam (no weight decay, NO grad clip). Legacy
+    #     used AdamW(WD=1e-4) + max_grad_norm=1.0 — the comment in the legacy
+    #     example says clipping was REQUIRED: the 5-block ResNet at lr=2e-3 spiked
+    #     grad norms >100 → policy_ce 1.5→3.0 → arena regression. Watch grad/CE
+    #     diagnostics; if they spike, add clipping (opt.max_grad_norm) first.
+    #   * batch_sims: v2 runs 1 (sequential). Legacy ran 6 → ~6× MCTS speedup at
+    #     500-600 sims, plus within-round virtual-loss diversity.
+    #   * Dirichlet alpha: v2 = 0.25; legacy = 1.0 (more uniform root noise for C4).
+    #   * temp_min after the schedule: v2 = 0.0 (greedy); legacy = 0.3 (soft).
+    #   * invalid_action_penalty: v2 = 0; legacy = 1.0 (penalizes illegal-move
+    #     policy mass). c_puct 1.0 here ≈ legacy's 2.0 (legacy used raw Q, v2
+    #     MinMax-normalizes Q on the GPU path), so do NOT copy 2.0.
+    #
     # Full AlphaZero: best/learner Arena gating + horizontal-flip augmentation,
     # evaluated periodically vs 5-ply minimax (primary) and random (secondary).
     # Metrics flush to the logger; progress prints to stdout. `RESULT_IDX=43` is
@@ -94,10 +114,9 @@ def main() raises:
         RESULT_IDX=43,
         MAX_PLIES=42,
         EVAL_GAMES=64,
-        # Connect Four games run up to 42 plies, so sample more opening plies
-        # than TicTacToe's 4 (∝ visits) before switching to greedy — keeps
-        # self-play opening/early-midgame diversity in the longer game.
-        TEMP_MOVES=8,
+        # Legacy/AlphaZero.jl sampled ∝ visits for the first 20 plies (then
+        # temp=0.3, not full greedy). 8 was a guess; 20 matches the reference.
+        TEMP_MOVES=20,
     ](
         iterations=40_000,
         learning_starts=200,
