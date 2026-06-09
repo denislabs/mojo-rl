@@ -70,6 +70,13 @@ def main() raises:
     # CPU path: no DeviceContext (ctx=None), host-resident net. `N_ENVS` is a
     # required facade param but unused on CPU (single-env self-play), so it is
     # set to 1.
+    # CAP is deliberately small: single-env self-play generates few games, so a
+    # GPU-sized buffer (80k) never fills and would keep training on the earliest
+    # random-play games forever. A small ring evicts stale data and keeps the
+    # recent (stronger) games — the legacy `history_window` idea. Even so, CPU
+    # accuracy is bounded by raw game throughput (one game per ~9 moves); to
+    # actually draw minimax as *both* colors it needs far more iterations than
+    # the GPU example (which fans out over N_ENVS), or just use the GPU path.
     var agent = AlphaZeroAgent[
         "cpu",
         Env,
@@ -78,7 +85,7 @@ def main() raises:
         NUM_SIMS=50,
         MAX_NODES=128,
         BATCH=64,
-        CAP=80000,
+        CAP=16000,
         MAX_TRAJ=16,
     ](None, lr=0.005)
 
@@ -110,7 +117,7 @@ def main() raises:
         MAX_PLIES=9,
         EVAL_GAMES=32,
     ](
-        iterations=5_000,
+        iterations=10_000,
         learning_starts=20,
         train_per_iter=4,
         seed=42,
