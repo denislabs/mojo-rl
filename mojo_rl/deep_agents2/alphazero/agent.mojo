@@ -41,6 +41,7 @@ from ..zero.evaluators import GPUEvaluator, CPUEvaluator, RandomOpponent
 from ..zero.symmetries import BoardAugmenter, IdentityAugmenter
 from .selfplay import run_alphazero_selfplay
 from .selfplay_gumbel import run_alphazero_gumbel_selfplay
+from .selfplay_arena_gumbel import run_alphazero_selfplay_arena_gumbel
 from .selfplay_cpu import run_alphazero_selfplay_cpu
 from .selfplay_arena import run_alphazero_selfplay_arena, ArenaRunResult
 from .selfplay_arena_cpu import run_alphazero_selfplay_arena_cpu
@@ -162,6 +163,85 @@ struct AlphaZeroAgent[
                 self.lr,
                 seed,
             )
+
+    def train_arena_gumbel[
+        AUG: BoardAugmenter = IdentityAugmenter,
+        OPP1: GPUEvaluator & CPUEvaluator = RandomOpponent,
+        OPP2: GPUEvaluator & CPUEvaluator = RandomOpponent,
+        L: Logger = NoOpLogger,
+        ARENA_GAMES: Int = 32,
+        RESULT_IDX: Int = 10,
+        MAX_PLIES: Int = 9,
+        EVAL_GAMES: Int = 64,
+        TEMP_MOVES: Int = 4,
+        MAX_K: Int = 4,
+    ](
+        mut self,
+        iterations: Int,
+        learning_starts: Int = 20,
+        train_per_iter: Int = 2,
+        seed: UInt64 = 0,
+        arena_every: Int = 100,
+        arena_open_plies: Int = 2,
+        promote_threshold: Float64 = 0.55,
+        report_every: Int = 0,
+        diag_every: Int = 0,
+        do_eval: Bool = True,
+        do_eval2: Bool = False,
+        verbose: Bool = True,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        max_grad_norm: Float64 = 0.0,
+        weight_decay: Float64 = 0.0,
+    ) raises -> ArenaRunResult:
+        """`train_arena` with GUMBEL self-play (GPU-only): Gumbel-Top-k roots
+        + Sequential Halving + improved-policy targets, ``MAX_K`` root
+        candidates. Arena gating and the periodic MCTS evals keep the exact
+        PUCT machinery of `train_arena` — the same yardstick measures both
+        drivers, so runs compare directly. Sequential halving earns its
+        policy-improvement guarantee at LOW sim budgets: run with NUM_SIMS
+        ~32-64, not the PUCT path's 500."""
+        comptime assert Self.TARGET == "gpu", (
+            "train_arena_gumbel is GPU-only (Gumbel planner is device-side)"
+        )
+        return run_alphazero_selfplay_arena_gumbel[
+            Self.ENV,
+            Self.NET,
+            AUG,
+            Self.N_ENVS,
+            Self.NUM_SIMS,
+            Self.MAX_NODES,
+            Self.BATCH,
+            Self.CAP,
+            Self.MAX_TRAJ,
+            ARENA_GAMES,
+            RESULT_IDX,
+            MAX_PLIES,
+            OPP1,
+            OPP2,
+            L,
+            EVAL_GAMES,
+            TEMP_MOVES,
+            MAX_K,
+        ](
+            self.ctx.value(),
+            self.net,
+            iterations,
+            learning_starts,
+            train_per_iter,
+            self.lr,
+            seed,
+            arena_every,
+            arena_open_plies,
+            promote_threshold,
+            report_every,
+            diag_every,
+            do_eval,
+            do_eval2,
+            verbose,
+            logger,
+            max_grad_norm,
+            weight_decay,
+        )
 
     def train_arena[
         AUG: BoardAugmenter = IdentityAugmenter,

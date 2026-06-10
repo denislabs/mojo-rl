@@ -1,60 +1,181 @@
-"""Gumbel AlphaZero on Connect Four (GPU) — the low-sim-budget lighthouse.
+"""GUMBEL AlphaZero on Connect Four — full GPU, directly comparable to v2.
 
-The Gumbel sibling of `connect_four_alphazero_v2.mojo`. Sequential halving
-gets its policy-improvement guarantee at LOW sim counts, so this runs 64 sims
-per move instead of the PUCT example's 500 — ~8× less search per move, serial
-sims (no batched-leaf bias by construction). Policy targets are the improved
-policy. No arena gating: plain self-play in report chunks, with a greedy
-policy-head eval vs random between chunks (the TTT gate showed Gumbel-AZ
-beating the PUCT baseline 8-vs-24 losses at equal sims).
+Identical telemetry/arena/eval harness to `connect_four_alphazero_v2.mojo`
+(same minimax+random MCTS evals, arena gating, augmentation, logger, optimizer
+stability settings) with ONLY the self-play planner swapped to Gumbel AlphaZero
+via `train_arena_gumbel`: Gumbel-Top-k roots + Sequential Halving + improved-
+policy targets at 64 sims/move instead of PUCT's 500 (~8x less search — the
+low-sim-budget regime is where Gumbel's policy-improvement guarantee lives;
+the TTT gate beat the PUCT baseline 8-vs-24 losses at equal sims).
+
+Second-generation port of `connect_four_alphazero.mojo`. Uses the config-free
+nn2 net torsos (`AZConnectFourResNet` — conv stem → 5 identity-skip ResBlocks →
+FC policy/value heads, 128 filters, the closest match to the original AlphaZero
+backbone) + the `AlphaZeroAgent` facade, and exercises the production telemetry:
+two pluggable `GPUEvaluator` opponents (5-ply minimax + random), a per-report
+progress print, and a `RemoteLogger` metrics sink. The periodic eval plays the
+agent at full **MCTS** strength (temp=0), so the numbers reflect the deployed
+agent, not the bare policy head.
+
+Two logging cadences: the expensive MCTS eval + win-rates run every
+`report_every` moves (coarse, ~minutes apart), while the cheap per-batch
+training diagnostics — policy CE, policy/target entropy, target max-prob, the
+policy KL gap, value MSE/mean, value-target stats — flush every `diag_every`
+moves for dense training curves (legacy `train_selfplay_gpu` parity).
+
+Connect Four is heavier than TicTacToe (126D obs = 3 planes × 6×7, 7 actions,
+games up to 42 plies, a 5-block ResNet) — this needs an NVIDIA GPU to train at a
+useful pace. The ResNet torso carries BatchNorm, which the self-play / eval
+harness toggles (`set_attr["training"]`) automatically.
+
+Note `iterations` / `report_every` are in self-play *moves* (one loop pass
+advances all N_ENVS games by one move), not legacy-style collect+train rounds.
 
 Usage:
     pixi run -e nvidia mojo run -I . examples/board_games/connect_four_alphazero_gumbel.mojo
+
+With no `RL_MONITOR_URL` in the environment the RemoteLogger is a silent no-op;
+the per-report lines still print to stdout.
 """
 
+from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.initializer import Kaiming
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents2.alphazero.nets import AZConnectFourResNet
-from mojo_rl.deep_agents2.alphazero.selfplay_gumbel import (
-    run_alphazero_gumbel_selfplay,
+from mojo_rl.deep_agents2.alphazero.agent import AlphaZeroAgent
+from mojo_rl.deep_agents2.zero.symmetries import HFlipColumnAugmenter
+from mojo_rl.deep_agents2.zero.evaluators import (
+    RandomOpponent,
+    GPUMinimaxConnectFour,
 )
-from mojo_rl.deep_agents2.alphazero.eval import eval_policy_vs_random
 from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
 
 def main() raises:
     print("=== Gumbel AlphaZero on Connect Four (deep_agents2 / nn2) ===")
+    print()
+
+    # ── Logger setup ────────────────────────────────────────────
+    var env_vars = load_dotenv()
+    var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
+    var url = env_vars.get("RL_MONITOR_URL", "")
+
+    var logger = RemoteLogger(
+        server_url=url,
+        run_name="Gumbel AlphaZero Connect Four (nn2)",
+        buffer_size=22,
+        api_key=api_key,
+    )
+    logger.set_config("agent", "GumbelAlphaZero")
+    logger.set_config("env", "ConnectFour")
+    logger.set_config("network", "AZConnectFourResNet[F=128,NB=5,FC=128]")
+    logger.set_config("framework", "deep_agents2/nn2")
+    # logger.set_config("charts", json.dumps([
+    #     {
+    #         "title": "Eval vs MinMax",
+    #         "metrics": ["eval2_win", "eval2_draw", "eval2_loss"],
+    #         "type": "stacked-bar",      # or "stacked-area" / "line"
+    #         "normalize": True,          # 100%-stacked → win-rate view
+    #         "colors": ["#22c55e", "#eab308", "#ef4444"],  # optional
+    #     },
+    # ]))
+
+    comptime OBS = 126
+    comptime ACT = 7
+    # ResNet torso: conv stem → 5 ResBlocks → FC heads (128 filters), the
+    # closest match to the legacy `AlphaZeroConnectFourFusedResNetConfig`.
     comptime Net = AZConnectFourResNet[F=128, NB=5, FC=128]
     comptime Env = ConnectFourEnv[DType.float64]
-    comptime RESULT_IDX = 43
-    comptime MAX_PLIES = 42
-    comptime N_EVAL = 128
-    comptime CHUNK = 2_000
-    comptime CHUNKS = 20          # 40k moves total
+    # Connect Four's only board symmetry is the left↔right column flip; the
+    # board is not square, so the D4 group does NOT apply (no rotations).
+    comptime Aug = HFlipColumnAugmenter[ROWS=6, COLS=7, PLANES=3]
 
     var ctx = DeviceContext()
-    var net = Net.make["gpu", INIT=Kaiming](ctx=ctx)
+    # NUM_SIMS=500 / MAX_NODES=1024 match the legacy AlphaZero.jl-tuned config
+    # (legacy used 600 sims / 1024 nodes); 100 sims gave far weaker MCTS targets.
+    # NOTE: nn2 GPU Conv2D now uses im2col + tensor-core GEMM (was a naive
+    # direct-conv kernel that made conv nets 5-10× slower) — the ResNet torso
+    # is no longer the per-eval bottleneck. BATCH_SIMS still batches the MCTS
+    # rounds (see the tuning notes below).
+    var agent = AlphaZeroAgent[
+        "gpu",
+        Env,
+        Net,
+        N_ENVS=64,
+        # Sequential halving gets its policy-improvement guarantee at LOW sim
+        # budgets — 64 sims/move vs the PUCT example's 500 (~8x less search).
+        NUM_SIMS=64,
+        MAX_NODES=256,
+        BATCH=128,
+        CAP=1_000_000,
+        MAX_TRAJ=42,
+    ](ctx, lr=0.002)
 
-    var before = eval_policy_vs_random[
-        Env, Net, N_EVAL, RESULT_IDX, MAX_PLIES
-    ](ctx, net, agent_player=0, seed=3)
-    print("BEFORE  win=", before.wins, " draw=", before.draws,
-          " loss=", before.losses, " (/", N_EVAL, ")")
+    # ── Remaining deltas vs the legacy AlphaZero.jl-tuned config ──────────────
+    # Optimizer stability is now wired: v2 uses AdamW with `max_grad_norm=1.0`
+    # + `weight_decay=1e-4` (set on the train_arena call below), matching the
+    # legacy config. The first 10k-move run without clipping reproduced the
+    # documented failure exactly — policy CE bottomed ~1.18 at move ~2000 then
+    # climbed back toward uniform (entropy ↑, vs-Random winrate 69%→62%), and
+    # the arena rejected every challenger after the first promotion. Clipping is
+    # the #1 fix; WD regularizes the 5-block ResNet. If CE still climbs, drop
+    # lr 2e-3 → 1e-3 next.
+    #
+    # Remaining (still hardcoded in selfplay_arena.mojo, apply if it stalls):
+    #   * batch_sims: v2 runs 1 (sequential). Legacy ran 6 → ~6× MCTS speedup at
+    #     500-600 sims, plus within-round virtual-loss diversity.
+    #   * Dirichlet alpha: v2 = 0.25; legacy = 1.0 (more uniform root noise for C4).
+    #   * temp_min after the schedule: v2 = 0.0 (greedy); legacy = 0.3 (soft).
+    #   * invalid_action_penalty: v2 = 0; legacy = 1.0 (penalizes illegal-move
+    #     policy mass). c_puct 1.0 here ≈ legacy's 2.0 (legacy used raw Q, v2
+    #     MinMax-normalizes Q on the GPU path), so do NOT copy 2.0.
+    #
+    # Full AlphaZero: best/learner Arena gating + horizontal-flip augmentation,
+    # evaluated periodically vs 5-ply minimax (primary) and random (secondary).
+    # Metrics flush to the logger; progress prints to stdout. `RESULT_IDX=43` is
+    # the `S_GAME_RESULT` slot in the Connect Four state; `MAX_PLIES=42` is a
+    # full board.
+    var res = agent.train_arena_gumbel[
+        AUG=Aug,
+        OPP1=GPUMinimaxConnectFour[5],
+        OPP2=RandomOpponent,
+        L=RemoteLogger,
+        ARENA_GAMES=128,
+        RESULT_IDX=43,
+        MAX_PLIES=42,
+        EVAL_GAMES=64,
+        # Legacy/AlphaZero.jl sampled ∝ visits for the first 20 plies (then
+        # temp=0.3, not full greedy). 8 was a guess; 20 matches the reference.
+        TEMP_MOVES=20,
+        # Gumbel root candidates (power of two, <= ACT=7).
+        MAX_K=4,
+    ](
+        iterations=40_000,
+        learning_starts=200,
+        train_per_iter=4,
+        seed=42,
+        arena_every=2_000,
+        arena_open_plies=4,
+        promote_threshold=0.55,
+        report_every=1_000,
+        diag_every=50,
+        do_eval=True,
+        do_eval2=True,
+        verbose=True,
+        logger=UnsafePointer(to=logger),
+        # Stability (legacy AlphaZero.jl): clip grad norm to 1.0 + decoupled
+        # weight decay 1e-4. Without these the policy head diverged (CE climbed
+        # back past uniform after ~2000 moves) on this 5-block ResNet at lr=2e-3.
+        max_grad_norm=1.0,
+        weight_decay=1e-4,
+    )
 
-    for c in range(CHUNKS):
-        var loss = run_alphazero_gumbel_selfplay[
-            Env, Net,
-            N_ENVS=64, NUM_SIMS=64, MAX_NODES=256, MAX_K=4,
-            BATCH=128, CAP=1_000_000, MAX_TRAJ=42,
-        ](ctx, net, iterations=CHUNK,
-          learning_starts=200 if c == 0 else 0,
-          train_per_iter=4, lr=0.002, seed=UInt64(42 + c))
-        var ev = eval_policy_vs_random[
-            Env, Net, N_EVAL, RESULT_IDX, MAX_PLIES
-        ](ctx, net, agent_player=0, seed=3)
-        print("chunk", c + 1, "/", CHUNKS, "moves", (c + 1) * CHUNK,
-              "| loss", loss, "| vs random W", ev.wins,
-              "D", ev.draws, "L", ev.losses, "(/", N_EVAL, ")")
+    logger.close()
+    agent.save("connect_four_alphazero_gumbel.ckpt")
 
+    print()
+    print("last_loss:", res.last_loss, "| promotions:", res.promotions)
+    print("saved → connect_four_alphazero_gumbel.ckpt")
     print("=== Done ===")
