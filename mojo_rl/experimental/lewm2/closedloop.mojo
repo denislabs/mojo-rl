@@ -205,17 +205,23 @@ def run_lewm2_closedloop[
 
         _ = cem.optimize(scorer, plan, verbose=False)
 
-        # execute first planned block: frameskip sub-actions = deltas
+        # Execute the first FUTURE planned block. The scorer's context is
+        # the start latent replicated H times, so plan blocks 0..H-2 pair
+        # with the frozen context ("imagined past") — the first action
+        # whose effect materializes in a NEW imagined latent is block H-1
+        # (in training, action[H-1] is the block that takes frame H-1 to
+        # frame H). Executing block 0 (pre-fix) executed an imagined PAST
+        # action.
         for k in range(FRAMESKIP):
             for b in range(BATCH):
                 if envs[b].is_done():
                     continue
                 var ap = envs[b].agent_pos()
                 var dx = Float64(
-                    plan[(b * NEEDED + 0) * ACT + k * ACT_DIM + 0]
+                    plan[(b * NEEDED + (H - 1)) * ACT + k * ACT_DIM + 0]
                 )
                 var dy = Float64(
-                    plan[(b * NEEDED + 0) * ACT + k * ACT_DIM + 1]
+                    plan[(b * NEEDED + (H - 1)) * ACT + k * ACT_DIM + 1]
                 )
                 var tx = Scalar[DT](Float64(ap[0]) + dx * scale_x)
                 var ty = Scalar[DT](Float64(ap[1]) + dy * scale_y)

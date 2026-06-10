@@ -404,6 +404,38 @@ struct PushTEnv[DTYPE: DType](
         self._reset_internal()
         return self.get_state()
 
+    def set_state(
+        mut self,
+        agent_x: Scalar[dtype],
+        agent_y: Scalar[dtype],
+        block_x: Scalar[dtype],
+        block_y: Scalar[dtype],
+        block_angle: Scalar[dtype],
+    ) -> PushTState[Self.dtype]:
+        """Teleport to an exact (agent, block) configuration with zero
+        velocities — the LeWM paper-protocol eval starts episodes from
+        DATASET states (swm `_set_state` callable). Same body as
+        `_reset_internal` minus the RNG draw: seed bodies, clear contact
+        count / step / done / reward / coverage metadata, refresh obs."""
+        self._seed_bodies(agent_x, agent_y, block_x, block_y, block_angle)
+        var s = self._state_view()
+        s[0, PushTLayout.CONTACT_COUNT_OFFSET] = Scalar[dtype](0.0)
+        s[0, PushTLayout.METADATA_OFFSET + PushTLayout.META_STEP] = Scalar[
+            dtype
+        ](0.0)
+        s[0, PushTLayout.METADATA_OFFSET + PushTLayout.META_DONE] = Scalar[
+            dtype
+        ](0.0)
+        s[0, PushTLayout.METADATA_OFFSET + PushTLayout.META_TOTAL_REWARD] = (
+            Scalar[dtype](0.0)
+        )
+        s[0, PushTLayout.METADATA_OFFSET + PushTLayout.META_COVERAGE] = Scalar[
+            dtype
+        ](0.0)
+        self.done = False
+        self._write_obs_to_state()
+        return self.get_state()
+
     def step(
         mut self,
         action: PushTAction[Self.dtype],
