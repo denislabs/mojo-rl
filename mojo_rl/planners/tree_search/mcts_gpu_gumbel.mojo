@@ -330,46 +330,60 @@ def gz_init_root_kernel[
         else:
             node_logits[na_off + a] = Scalar[dtype](-1e9)
 
-    # ── 2. Decode root value (categorical → scalar via inverse h⁻¹) ──────
-    var v_max_logit = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
-    for i in range(1, BINS):
-        var v = rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
-        if v > v_max_logit:
-            v_max_logit = v
-    var v_sum = Scalar[dtype](0.0)
-    for i in range(BINS):
-        v_sum += exp(
-            rebind[Scalar[dtype]](pred_output[pred_off + ACT + i]) - v_max_logit
-        )
-    var step_v = (v_max - v_min) / Scalar[dtype](BINS - 1)
-    var v_expected = Scalar[dtype](0.0)
-    for i in range(BINS):
-        var prob = (
-            exp(
+    # ── 2. Decode root value ─────────────────────────────────────────────
+    # BINS == 1 → scalar value head (AlphaZero): tanh-squash the raw output.
+    # BINS > 1 → categorical (MuZero/EZv2): expectation over bins, then h⁻¹.
+    comptime if BINS == 1:
+        # Scalar value head (AlphaZero): tanh-squash the raw output.
+        var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+        if raw_v > Scalar[dtype](10.0):
+            raw_v = Scalar[dtype](10.0)
+        elif raw_v < Scalar[dtype](-10.0):
+            raw_v = Scalar[dtype](-10.0)
+        var e_p = exp(raw_v)
+        var e_n = exp(-raw_v)
+        node_value[ns_off] = (e_p - e_n) / (e_p + e_n)
+    else:
+        var v_max_logit = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+        for i in range(1, BINS):
+            var v = rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
+            if v > v_max_logit:
+                v_max_logit = v
+        var v_sum = Scalar[dtype](0.0)
+        for i in range(BINS):
+            v_sum += exp(
                 rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
                 - v_max_logit
             )
-            / v_sum
+        var step_v = (v_max - v_min) / Scalar[dtype](BINS - 1)
+        var v_expected = Scalar[dtype](0.0)
+        for i in range(BINS):
+            var prob = (
+                exp(
+                    rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
+                    - v_max_logit
+                )
+                / v_sum
+            )
+            v_expected += prob * (v_min + Scalar[dtype](i) * step_v)
+        # Inverse scalar transform h⁻¹ (matches `inverse_scalar_transform`)
+        var sgn = (
+            Scalar[dtype](1.0)
+            if v_expected >= Scalar[dtype](0.0)
+            else Scalar[dtype](-1.0)
         )
-        v_expected += prob * (v_min + Scalar[dtype](i) * step_v)
-    # Inverse scalar transform h⁻¹ (matches MuZero's `inverse_scalar_transform`)
-    var sgn = (
-        Scalar[dtype](1.0)
-        if v_expected >= Scalar[dtype](0.0)
-        else Scalar[dtype](-1.0)
-    )
-    var abs_y = (
-        v_expected
-        if v_expected >= Scalar[dtype](0.0)
-        else -v_expected
-    )
-    var eps_h = Scalar[dtype](0.001)
-    var inner = sqrt(
-        Scalar[dtype](1.0)
-        + Scalar[dtype](4.0) * eps_h * (abs_y + Scalar[dtype](1.0) + eps_h)
-    )
-    var f = (inner - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps_h)
-    node_value[ns_off] = sgn * (f * f - Scalar[dtype](1.0))
+        var abs_y = (
+            v_expected
+            if v_expected >= Scalar[dtype](0.0)
+            else -v_expected
+        )
+        var eps_h = Scalar[dtype](0.001)
+        var inner = sqrt(
+            Scalar[dtype](1.0)
+            + Scalar[dtype](4.0) * eps_h * (abs_y + Scalar[dtype](1.0) + eps_h)
+        )
+        var f = (inner - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps_h)
+        node_value[ns_off] = sgn * (f * f - Scalar[dtype](1.0))
 
     # ── 3. Gumbel-Top-k sampling ─────────────────────────────────────────
     # Per-action g_a = -log(-log(U)). Score = logits + g_a. Top-K by repeated
@@ -1809,3 +1823,180 @@ def _largest_power_of_two_le(n: Int) -> Int:
     while x * 2 <= n:
         x *= 2
     return x
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Gumbel AlphaZero kernels — true-env-rules expansion (game states, legal
+# masks, scalar tanh value). The selection / halving / backup / extract
+# kernels above are shared: Gumbel AlphaZero keeps Gumbel-Top-k roots,
+# Sequential Halving and the visit-balance in-tree rule (Danihelka et al.);
+# only the MODEL changes (env.step instead of the dynamics net).
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def gz_az_copy_root_state_kernel[
+    N_ENVS: Int, MAX_NODES: Int, STATE_SIZE: Int, dtype: DType,
+](
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
+    ],
+    root_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Copy each env's root game state into its tree's node-0 slot."""
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N_ENVS * STATE_SIZE:
+        return
+    var e = idx // STATE_SIZE
+    var i = idx % STATE_SIZE
+    game_states[e * MAX_NODES * STATE_SIZE + i] = root_states[idx]
+
+
+def gz_az_stage_state_kernel[
+    N_ENVS: Int, MAX_NODES: Int, STATE_SIZE: Int, dtype: DType,
+](
+    expansion_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+    ],
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
+    ],
+    pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """Stage the selected leaf-parent's game state for env.step expansion."""
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N_ENVS * STATE_SIZE:
+        return
+    var e = idx // STATE_SIZE
+    var i = idx % STATE_SIZE
+    var parent = Int(rebind[Scalar[dtype]](pending_parent[e]))
+    expansion_states[idx] = game_states[
+        e * MAX_NODES * STATE_SIZE + parent * STATE_SIZE + i
+    ]
+
+
+def gz_az_expand_kernel[
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    STATE_SIZE: Int,
+    PRED_OUT: Int,
+    dtype: DType,
+](
+    visit_count: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    node_logits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    reward: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    child_idx: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
+    node_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
+    node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
+    ],
+    expansion_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+    ],
+    exp_legal: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
+    ],
+    pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    pending_action: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    step_rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    step_dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    pred_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin
+    ],
+    leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """AlphaZero expand: store the post-step game state as the child node,
+    write the child's legal-masked policy logits, and produce the leaf value
+    for the (negated) backup.
+
+    Leaf value (two-player convention, matches the donor AZ kernel):
+      * terminal (done): ``-step_reward`` — the move ending the game was the
+        opponent's from the child's perspective (+1 win → child sees −1;
+        draw 0 → 0).
+      * non-terminal: ``tanh(raw_value)`` from the scalar value head
+        (``PRED_OUT == ACT + 1``).
+
+    One thread per env (one expansion per sim — Gumbel runs serial sims, so
+    there is no frozen-tree duplicate problem by construction)."""
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var parent = Int(rebind[Scalar[dtype]](pending_parent[e]))
+    var action = Int(rebind[Scalar[dtype]](pending_action[e]))
+    var child = Int(rebind[Scalar[dtype]](node_count[e]))
+    if child >= MAX_NODES:
+        leaf_values[e] = Scalar[dtype](0.0)
+        return
+
+    var tree_off = e * MAX_NODES * ACT
+    var ns_off = e * MAX_NODES
+    var pred_off = e * PRED_OUT
+    var lm_off = e * ACT
+
+    # ── Store child game state ───────────────────────────────────────────
+    var child_gs_off = e * MAX_NODES * STATE_SIZE + child * STATE_SIZE
+    for i in range(STATE_SIZE):
+        game_states[child_gs_off + i] = expansion_states[e * STATE_SIZE + i]
+
+    # ── Parent edge reward (terminal-only in board games; backup ignores
+    #    it on the NEGATE path but it documents the transition) ────────────
+    reward[tree_off + parent * ACT + action] = rebind[Scalar[dtype]](
+        step_rewards[e]
+    )
+
+    # ── Child policy logits, legal-masked (illegal → −1e9 so the
+    #    visit-balance selection and improved policy never pick them) ──────
+    var child_na_base = tree_off + child * ACT
+    for a in range(ACT):
+        var legal = rebind[Scalar[dtype]](exp_legal[lm_off + a])
+        if legal > Scalar[dtype](0.5):
+            node_logits[child_na_base + a] = pred_output[pred_off + a]
+        else:
+            node_logits[child_na_base + a] = Scalar[dtype](-1e9)
+        visit_count[child_na_base + a] = Scalar[dtype](0.0)
+        total_value[child_na_base + a] = Scalar[dtype](0.0)
+        reward[child_na_base + a] = Scalar[dtype](0.0)
+        child_idx[child_na_base + a] = Scalar[dtype](-1.0)
+    total_visits[ns_off + child] = Scalar[dtype](0.0)
+
+    # ── Leaf value: terminal → −step_reward; else tanh(raw value) ────────
+    var step_rew = rebind[Scalar[dtype]](step_rewards[e])
+    var was_done = rebind[Scalar[dtype]](step_dones[e]) > Scalar[dtype](0.5)
+    var v: Scalar[dtype]
+    if was_done:
+        v = -step_rew
+    else:
+        var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+        if raw_v > Scalar[dtype](10.0):
+            raw_v = Scalar[dtype](10.0)
+        elif raw_v < Scalar[dtype](-10.0):
+            raw_v = Scalar[dtype](-10.0)
+        var e_p = exp(raw_v)
+        var e_n = exp(-raw_v)
+        v = (e_p - e_n) / (e_p + e_n)
+    node_value[ns_off + child] = v
+    leaf_values[e] = v
+
+    # ── Link parent → child + bump node count ───────────────────────────
+    child_idx[tree_off + parent * ACT + action] = Scalar[dtype](child)
+    node_count[e] = Scalar[dtype](child + 1)

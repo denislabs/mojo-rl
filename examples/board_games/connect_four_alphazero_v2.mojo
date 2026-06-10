@@ -139,10 +139,12 @@ def main() raises:
         # Legacy/AlphaZero.jl sampled ∝ visits for the first 20 plies (then
         # temp=0.3, not full greedy). 8 was a guess; 20 matches the reference.
         TEMP_MOVES=20,
-        # MCTS leaves expanded per round (virtual-loss batching). 500/5 = 100
-        # net forwards per move instead of 500 — ~5× faster MCTS, matching the
-        # legacy's 600/6 round count. Must divide NUM_SIMS and stay ≤ ACT (=7).
-        BATCH_SIMS=5,
+        # SERIAL MCTS. BATCH_SIMS=5 rode the known-biased frozen-tree batched
+        # path (duplicate edge re-expansion + node leak; visit-policy targets
+        # distorted up to 2× per action — test_az_search_gpu_batched_bias) and
+        # was never convergence-validated; every green AZ run used 1. Batched
+        # GPU search is the Gumbel orchestrator's job (sequential halving).
+        BATCH_SIMS=1,
     ](
         iterations=40_000,
         learning_starts=200,

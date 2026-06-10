@@ -40,6 +40,7 @@ from mojo_rl.core.logger import Logger, NoOpLogger
 from ..zero.evaluators import GPUEvaluator, CPUEvaluator, RandomOpponent
 from ..zero.symmetries import BoardAugmenter, IdentityAugmenter
 from .selfplay import run_alphazero_selfplay
+from .selfplay_gumbel import run_alphazero_gumbel_selfplay
 from .selfplay_cpu import run_alphazero_selfplay_cpu
 from .selfplay_arena import run_alphazero_selfplay_arena, ArenaRunResult
 from .selfplay_arena_cpu import run_alphazero_selfplay_arena_cpu
@@ -76,6 +77,43 @@ struct AlphaZeroAgent[
         self.ctx = ctx
         self.net = Self.NET.make[Self.TARGET, INIT=Kaiming](ctx=ctx)
         self.lr = lr
+
+    def train_gumbel[
+        MAX_K: Int = 4,
+    ](
+        mut self,
+        iterations: Int,
+        learning_starts: Int = 20,
+        train_per_iter: Int = 2,
+        seed: UInt64 = 0,
+    ) raises -> Float64:
+        """Gumbel AlphaZero self-play (GPU): Gumbel-Top-k roots + Sequential
+        Halving + improved-policy targets — beats the PUCT driver at equal
+        sims on the TTT gate (losses vs random 8 vs 24 / 200). ``MAX_K`` is
+        the root candidate count (power of two, <= ACT). GPU-only: the Gumbel
+        planner is device-side (decision D1)."""
+        comptime assert Self.TARGET == "gpu", (
+            "train_gumbel is GPU-only (Gumbel planner is device-side)"
+        )
+        return run_alphazero_gumbel_selfplay[
+            Self.ENV,
+            Self.NET,
+            Self.N_ENVS,
+            Self.NUM_SIMS,
+            Self.MAX_NODES,
+            MAX_K,
+            Self.BATCH,
+            Self.CAP,
+            Self.MAX_TRAJ,
+        ](
+            self.ctx.value(),
+            self.net,
+            iterations,
+            learning_starts,
+            train_per_iter,
+            self.lr,
+            seed,
+        )
 
     def train(
         mut self,

@@ -88,6 +88,19 @@ struct GenericGPUMCTS[
     PLAYER: PlayerMode,
     STATE_SIZE: Int = 0,
     VIRTUAL_LOSS: Int = 3,
+    # ⚠ BATCH_SIMS > 1 is KNOWN-BIASED and gated off by default. The batched
+    # rounds select every leaf against a FROZEN tree (the CPU search expands
+    # during selection, so later sims in a round descend through earlier sims'
+    # children); duplicate (parent, action) selections re-expand the same edge,
+    # leak the orphaned node, and double-count its value. Measured: MuZero
+    # CartPole root values systematically +1.2-1.7 vs CPU + argmax flips
+    # (tests/deep_agents2/test_mz_search_gpu_cpu_parity.mojo); AZ Connect Four
+    # visit-policy targets distorted up to 2× per action
+    # (test_az_search_gpu_batched_bias.mojo). BATCH_SIMS=1 is bit-near-exact
+    # vs the converged CPU search. For batched GPU search use the Gumbel
+    # orchestrators (sequential halving — no virtual loss, immune by
+    # construction). Set UNSAFE_BATCHED=True only for diagnostics.
+    UNSAFE_BATCHED: Bool = False,
 ](Movable, ImplicitlyDestructible):
     """GPU MCTS orchestrator for the MuZero batched single-player path.
 
@@ -245,6 +258,11 @@ struct GenericGPUMCTS[
         batched leaf selection. Root exploration noise is gated on the
         ``NOISE`` trait — ``NoNoise`` ⇒ no noise added.
         """
+        comptime assert Self.BATCH_SIMS == 1 or Self.UNSAFE_BATCHED, (
+            "BATCH_SIMS > 1 is known-biased on this orchestrator (frozen-tree"
+            " duplicate re-expansion; see the UNSAFE_BATCHED param doc). Use"
+            " BATCH_SIMS=1 or the Gumbel orchestrators."
+        )
 
         # ── 1. Root encode → hidden_states[node 0 for each env] ──────
         # Use the trait's ``LATENT_DIM`` for the view so the
@@ -583,6 +601,11 @@ struct GenericGPUMCTS[
         follow-up path (``search_gpu_alphazero``) because it replaces
         the dynamics network call.
         """
+        comptime assert Self.BATCH_SIMS == 1 or Self.UNSAFE_BATCHED, (
+            "BATCH_SIMS > 1 is known-biased on this orchestrator (frozen-tree"
+            " duplicate re-expansion; see the UNSAFE_BATCHED param doc). Use"
+            " BATCH_SIMS=1 or the Gumbel orchestrators."
+        )
 
         # ── 1. Root encode → hidden[node 0] ──────────────────────────
         var hidden_root = LayoutTensor[
@@ -1017,6 +1040,11 @@ struct GenericGPUMCTS[
                 derived from ``rng_seed + round_index`` if the env
                 needs stochasticity).
         """
+        comptime assert Self.BATCH_SIMS == 1 or Self.UNSAFE_BATCHED, (
+            "BATCH_SIMS > 1 is known-biased on this orchestrator (frozen-tree"
+            " duplicate re-expansion; see the UNSAFE_BATCHED param doc). Use"
+            " BATCH_SIMS=1 or the Gumbel orchestrators."
+        )
 
         if Self.STATE_SIZE <= 0:
             raise Error(

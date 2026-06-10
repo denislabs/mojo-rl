@@ -124,6 +124,7 @@ def main() raises:
     var gpu_b = GenericGPUMCTS[
         1, ACT, LATENT, BINS, MAX_NODES, NUM_SIMS, 8,
         MuZeroPUCT[19652.0, 1.25], NoNoise, SinglePlayer, 0, 3,
+        UNSAFE_BATCHED=True,    # diagnostic: measuring the known bias
     ](ctx, gamma=gamma, v_min=Float64(v_min), v_max=Float64(v_max))
 
     var d_obs = ctx.enqueue_create_buffer[DT](OBS)
