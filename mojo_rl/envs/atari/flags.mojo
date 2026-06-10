@@ -45,6 +45,7 @@ comptime ROM_3E: UInt8 = 8
 comptime ROM_3F: UInt8 = 9
 comptime ROM_UA: UInt8 = 10
 comptime ROM_F6SC: UInt8 = 11  # 16K + super chip RAM
+comptime ROM_AUTO: UInt8 = 0xFF  # Resolve mapper from ROM size at init
 
 # ============================================================================
 # 6502 CPU Status Flags

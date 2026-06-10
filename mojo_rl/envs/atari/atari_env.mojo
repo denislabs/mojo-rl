@@ -202,11 +202,19 @@ struct AtariEnv[
         comptime if Self.OBS_MODE == 1:
             # Pixel mode: we drive frame skip manually
             self.env = AtariEnvironment(
-                rom, rom_size, frame_skip=1, max_frames=max_frames
+                rom,
+                rom_size,
+                frame_skip=1,
+                max_frames=max_frames,
+                mapper=game.mapper(),
             )
         else:
             self.env = AtariEnvironment(
-                rom, rom_size, frame_skip=frame_skip, max_frames=max_frames
+                rom,
+                rom_size,
+                frame_skip=frame_skip,
+                max_frames=max_frames,
+                mapper=game.mapper(),
             )
 
         self.episode_reward = 0.0
@@ -292,7 +300,7 @@ struct AtariEnv[
 
     def reset(mut self) -> AtariEnvState:
         """Reset the environment."""
-        self.env.reset()
+        self.env.reset_game(self.game)
         self.episode_reward = 0.0
         self.done = False
         self._steps = 0
@@ -464,7 +472,7 @@ struct AtariEnv[
         # Extract RL signals from RAM (registry; includes per-game reward
         # quirks like Space Invaders' score-wrap correction, which the old
         # plain score-delta here missed)
-        var sig = game_signals(self.game, self.env.state.ram, prev_score)
+        var sig = game_signals(self.game, self.env.state, prev_score)
         var reward = sig.reward
         self.env.state.score = Int32(sig.score)
         self.env.state.reward = Int32(reward)

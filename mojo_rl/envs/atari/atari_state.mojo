@@ -6,7 +6,7 @@ Designed to be GPU-friendly (no pointers, fixed size, ~350 bytes).
 Ported from CuLE (BSD-3): cule/atari/state.hpp, frame_state.hpp
 """
 
-from .flags import RAM_SIZE, TIA_WRITE_LOG_CAP
+from .flags import RAM_SIZE, TIA_WRITE_LOG_CAP, ROM_AUTO
 from .tia_cycle import CycleTIA
 
 
@@ -102,6 +102,10 @@ struct AtariState(Copyable, Movable):
     var terminal: Bool  # Episode terminated
     var started: Bool  # Game has started (for lives-based termination)
     var frame_number: UInt32  # Total frames elapsed
+    # Per-game persistent scratch for game_signals (ALE settings keep private
+    # state across steps: ChopperCommand's started latch, DarkChambers' last
+    # level). Reset to 0 with the rest of the state on env.reset().
+    var game_aux: Int32
 
     # ========================================================================
     # RAM (128 bytes)
@@ -112,6 +116,14 @@ struct AtariState(Copyable, Movable):
     # ROM bank state (for bank-switched cartridges)
     # ========================================================================
     var current_bank: UInt8  # Currently active ROM bank
+    var mapper: UInt8  # ROM_* mapper type (resolved by init_bank)
+    # E0 (Parker Bros): the 4K window is four 1K segments; segments 0-2 are
+    # switchable among the eight 1K slices of the 8K image, segment 3 is
+    # fixed to slice 7 (it holds the hotspots + vectors).
+    var e0_slices: InlineArray[UInt8, 4]
+    # Superchip (F8SC/F6SC) 128-byte RAM: write port $1000-$107F, read port
+    # $1080-$10FF.
+    var sc_ram: InlineArray[UInt8, 128]
 
     # ========================================================================
     # Mid-scanline PF snapshot (captured at cycle ~36 for left/right PF split)
@@ -218,12 +230,16 @@ struct AtariState(Copyable, Movable):
         self.terminal = False
         self.started = False
         self.frame_number = 0
+        self.game_aux = 0
 
         # RAM
         self.ram = InlineArray[UInt8, RAM_SIZE](fill=0)
 
         # Bank
         self.current_bank = 0
+        self.mapper = ROM_AUTO
+        self.e0_slices = [4, 5, 6, 7]
+        self.sc_ram = InlineArray[UInt8, 128](fill=0)
 
         # PF midpoint snapshot
         self.pf0_mid = 0

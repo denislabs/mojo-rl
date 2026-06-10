@@ -45,7 +45,13 @@ from ..flags import (
     ACTION_UPLEFTFIRE,
     ACTION_DOWNRIGHTFIRE,
     ACTION_DOWNLEFTFIRE,
+    ROM_AUTO,
+    ROM_E0,
+    ROM_FE,
+    ROM_F8SC,
+    ROM_F6SC,
 )
+from ..atari_state import AtariState
 from .helpers import (
     get_decimal_score,
     get_decimal_score_2,
@@ -86,8 +92,29 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
     comptime ENDURO = AtariGame(10)
     comptime AMIDAR = AtariGame(11)
     comptime ATLANTIS = AtariGame(12)
+    # Wave 1 (alphabetical from here on)
+    comptime ALIEN = AtariGame(13)
+    comptime ASSAULT = AtariGame(14)
+    comptime ASTERIX = AtariGame(15)
+    comptime BANK_HEIST = AtariGame(16)
+    comptime BATTLE_ZONE = AtariGame(17)
+    comptime BEAM_RIDER = AtariGame(18)
+    comptime BERZERK = AtariGame(19)
+    comptime BOWLING = AtariGame(20)
+    comptime CENTIPEDE = AtariGame(21)
+    comptime CHOPPER_COMMAND = AtariGame(22)
+    comptime CRAZY_CLIMBER = AtariGame(23)
+    comptime DARK_CHAMBERS = AtariGame(24)
+    comptime DEMON_ATTACK = AtariGame(25)
+    comptime ELEVATOR_ACTION = AtariGame(26)
+    comptime FISHING_DERBY = AtariGame(27)
+    comptime JAMESBOND = AtariGame(28)
+    comptime KLAX = AtariGame(29)
+    comptime MONTEZUMA_REVENGE = AtariGame(30)
+    comptime ROBOTANK = AtariGame(31)
+    comptime TUTANKHAM = AtariGame(32)
 
-    comptime NUM_GAMES: Int = 13
+    comptime NUM_GAMES: Int = 33
 
     @always_inline
     def __init__(out self, id: UInt8):
@@ -142,11 +169,73 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
             return "amidar"
         elif self == AtariGame.ATLANTIS:
             return "atlantis"
+        elif self == AtariGame.ALIEN:
+            return "alien"
+        elif self == AtariGame.ASSAULT:
+            return "assault"
+        elif self == AtariGame.ASTERIX:
+            return "asterix"
+        elif self == AtariGame.BANK_HEIST:
+            return "bank_heist"
+        elif self == AtariGame.BATTLE_ZONE:
+            return "battle_zone"
+        elif self == AtariGame.BEAM_RIDER:
+            return "beam_rider"
+        elif self == AtariGame.BERZERK:
+            return "berzerk"
+        elif self == AtariGame.BOWLING:
+            return "bowling"
+        elif self == AtariGame.CENTIPEDE:
+            return "centipede"
+        elif self == AtariGame.CHOPPER_COMMAND:
+            return "chopper_command"
+        elif self == AtariGame.CRAZY_CLIMBER:
+            return "crazy_climber"
+        elif self == AtariGame.DARK_CHAMBERS:
+            return "darkchambers"  # ale-py ROM name has no underscore
+        elif self == AtariGame.DEMON_ATTACK:
+            return "demon_attack"
+        elif self == AtariGame.ELEVATOR_ACTION:
+            return "elevator_action"
+        elif self == AtariGame.FISHING_DERBY:
+            return "fishing_derby"
+        elif self == AtariGame.JAMESBOND:
+            return "jamesbond"
+        elif self == AtariGame.KLAX:
+            return "klax"
+        elif self == AtariGame.MONTEZUMA_REVENGE:
+            return "montezuma_revenge"
+        elif self == AtariGame.ROBOTANK:
+            return "robotank"
+        elif self == AtariGame.TUTANKHAM:
+            return "tutankham"
         return "unknown"
 
     def rom_file(self) -> String:
         """ROM path relative to the repo root (ale-py ROM naming)."""
         return "roms/" + self.name() + ".bin"
+
+    def mapper(self) -> UInt8:
+        """Cartridge mapper override (ROM_* id), or ROM_AUTO for size-based.
+
+        Size detection cannot distinguish F8 / E0 / FE / F8SC at 8K (or
+        F6 / F6SC at 16K). Values baked from running ALE's
+        Cartridge::autodetectType content signatures over the ROM set; only
+        games whose mapper differs from the size default appear here.
+        """
+        if (
+            self == AtariGame.JAMESBOND
+            or self == AtariGame.MONTEZUMA_REVENGE
+            or self == AtariGame.TUTANKHAM
+        ):
+            return ROM_E0
+        elif self == AtariGame.ROBOTANK:
+            return ROM_FE
+        elif self == AtariGame.ELEVATOR_ACTION:
+            return ROM_F8SC
+        elif self == AtariGame.DARK_CHAMBERS or self == AtariGame.KLAX:
+            return ROM_F6SC
+        return ROM_AUTO
 
     def action_mask(self) -> UInt32:
         """18-bit mask of the game's minimal action set (ALE isMinimal)."""
@@ -238,8 +327,92 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
                 | _bit(ACTION_RIGHTFIRE)
                 | _bit(ACTION_LEFTFIRE)
             )
-        # Seaquest, Frostbite, Boxing: full action set.
+        elif self == AtariGame.ASSAULT:
+            return (
+                _bit(ACTION_NOOP)
+                | _bit(ACTION_FIRE)
+                | _bit(ACTION_UP)
+                | _bit(ACTION_RIGHT)
+                | _bit(ACTION_LEFT)
+                | _bit(ACTION_RIGHTFIRE)
+                | _bit(ACTION_LEFTFIRE)
+            )
+        elif (
+            self == AtariGame.ASTERIX or self == AtariGame.CRAZY_CLIMBER
+        ):
+            # 4 directions + 4 diagonals, no fire.
+            return (
+                _bit(ACTION_NOOP)
+                | _bit(ACTION_UP)
+                | _bit(ACTION_RIGHT)
+                | _bit(ACTION_LEFT)
+                | _bit(ACTION_DOWN)
+                | _bit(ACTION_UPRIGHT)
+                | _bit(ACTION_UPLEFT)
+                | _bit(ACTION_DOWNRIGHT)
+                | _bit(ACTION_DOWNLEFT)
+            )
+        elif self == AtariGame.BEAM_RIDER:
+            return (
+                _bit(ACTION_NOOP)
+                | _bit(ACTION_FIRE)
+                | _bit(ACTION_UP)
+                | _bit(ACTION_RIGHT)
+                | _bit(ACTION_LEFT)
+                | _bit(ACTION_UPRIGHT)
+                | _bit(ACTION_UPLEFT)
+                | _bit(ACTION_RIGHTFIRE)
+                | _bit(ACTION_LEFTFIRE)
+            )
+        elif self == AtariGame.BOWLING:
+            return (
+                _bit(ACTION_NOOP)
+                | _bit(ACTION_FIRE)
+                | _bit(ACTION_UP)
+                | _bit(ACTION_DOWN)
+                | _bit(ACTION_UPFIRE)
+                | _bit(ACTION_DOWNFIRE)
+            )
+        elif self == AtariGame.DEMON_ATTACK:
+            return (
+                _bit(ACTION_NOOP)
+                | _bit(ACTION_FIRE)
+                | _bit(ACTION_RIGHT)
+                | _bit(ACTION_LEFT)
+                | _bit(ACTION_RIGHTFIRE)
+                | _bit(ACTION_LEFTFIRE)
+            )
+        elif self == AtariGame.TUTANKHAM:
+            return (
+                _bit(ACTION_NOOP)
+                | _bit(ACTION_UP)
+                | _bit(ACTION_RIGHT)
+                | _bit(ACTION_LEFT)
+                | _bit(ACTION_DOWN)
+                | _bit(ACTION_UPFIRE)
+                | _bit(ACTION_RIGHTFIRE)
+                | _bit(ACTION_LEFTFIRE)
+            )
+        # Full action set: Seaquest, Frostbite, Boxing, Alien, BankHeist,
+        # BattleZone, Berzerk, Centipede, ChopperCommand, DarkChambers,
+        # ElevatorAction, FishingDerby, Jamesbond, Klax, MontezumaRevenge,
+        # Robotank.
         return ALL_ACTIONS_MASK
+
+    def starting_actions(self) -> Tuple[UInt8, Int]:
+        """(action, frames) to inject right after reset, before the agent
+        acts — port of ALE's per-game getStartingActions(). Some games need
+        an input to leave the title screen (FIRE), and DarkChambers ignores
+        all input during its ~8 s boot animation."""
+        if self == AtariGame.ASTERIX or self == AtariGame.ENDURO:
+            return (ACTION_FIRE, 1)
+        elif self == AtariGame.BEAM_RIDER:
+            return (ACTION_RIGHT, 1)
+        elif self == AtariGame.DARK_CHAMBERS:
+            return (ACTION_NOOP, 486)
+        elif self == AtariGame.ELEVATOR_ACTION:
+            return (ACTION_FIRE, 16)
+        return (ACTION_NOOP, 0)
 
     def num_actions(self) -> Int:
         """Size of the minimal action set."""
@@ -275,7 +448,7 @@ struct GameSignals(Copyable, ImplicitlyCopyable, Movable):
 
 def game_signals(
     game: AtariGame,
-    ram: InlineArray[UInt8, RAM_SIZE],
+    mut state: AtariState,
     prev_score: Int,
 ) -> GameSignals:
     """Extract (score, reward, lives, terminal) — port of ALE's per-game step().
@@ -283,53 +456,60 @@ def game_signals(
     `prev_score` is the score after the previous step (0 at episode start);
     reward = score delta with each game's quirks (wrap correction, terminal
     garbage suppression, clamping) applied exactly as in ALE.
+
+    Takes the full AtariState because some games need more than the 128-byte
+    RIOT RAM: Klax reads its score from Superchip RAM (state.sc_ram), and
+    games with cross-step latches in ALE (ChopperCommand's started flag,
+    DarkChambers' last level) persist them in state.game_aux (mut). BeamRider
+    reads state.lives (the previous step's lives, set by the caller after
+    each call) to filter the blinking lives counter.
     """
     if game == AtariGame.PONG:
         # ALE Pong.cpp: raw bytes, not BCD.
-        var cpu = _rb(ram, 13)
-        var player = _rb(ram, 14)
+        var cpu = _rb(state.ram, 13)
+        var player = _rb(state.ram, 14)
         var score = player - cpu
         return GameSignals(
             score, score - prev_score, 0, cpu == 21 or player == 21
         )
 
     elif game == AtariGame.BREAKOUT:
-        var x = _rb(ram, 77)
-        var y = _rb(ram, 76)
+        var x = _rb(state.ram, 77)
+        var y = _rb(state.ram, 76)
         var score = (x & 0x0F) + 10 * ((x & 0xF0) >> 4) + 100 * (y & 0x0F)
-        var lives = _rb(ram, 57)
+        var lives = _rb(state.ram, 57)
         return GameSignals(score, score - prev_score, lives, lives == 0)
 
     elif game == AtariGame.SPACE_INVADERS:
-        var score = get_decimal_score_2(ram, 0xE8, 0xE6)
+        var score = get_decimal_score_2(state.ram, 0xE8, 0xE6)
         var reward = score - prev_score
         if reward < 0:
             # Score wrapped (10000 is the maximum).
             reward = (10000 - prev_score) + score
-        var lives = _rb(ram, 0xC9)
-        var terminal = (_rb(ram, 0x98) & 0x80) != 0 or lives == 0
+        var lives = _rb(state.ram, 0xC9)
+        var terminal = (_rb(state.ram, 0x98) & 0x80) != 0 or lives == 0
         return GameSignals(score, reward, lives, terminal)
 
     elif game == AtariGame.MS_PACMAN:
-        var score = get_decimal_score_3(ram, 0xF8, 0xF9, 0xFA)
-        var lives_byte = _rb(ram, 0xFB) & 0xF
-        var terminal = lives_byte == 0 and _rb(ram, 0xA7) == 0x53
+        var score = get_decimal_score_3(state.ram, 0xF8, 0xF9, 0xFA)
+        var lives_byte = _rb(state.ram, 0xFB) & 0xF
+        var terminal = lives_byte == 0 and _rb(state.ram, 0xA7) == 0x53
         return GameSignals(
             score, score - prev_score, (lives_byte & 0x7) + 1, terminal
         )
 
     elif game == AtariGame.SEAQUEST:
-        var score = get_decimal_score_3(ram, 0xBA, 0xB9, 0xB8)
+        var score = get_decimal_score_3(state.ram, 0xBA, 0xB9, 0xB8)
         return GameSignals(
             score,
             score - prev_score,
-            _rb(ram, 0xBB) + 1,
-            _rb(ram, 0xA3) != 0,
+            _rb(state.ram, 0xBB) + 1,
+            _rb(state.ram, 0xA3) != 0,
         )
 
     elif game == AtariGame.QBERT:
         # Lives byte counts down 2,1,0,0xFF,0xFE (signed); 0xFE = death.
-        var b = _rb(ram, 0x88)
+        var b = _rb(state.ram, 0x88)
         var sb = b - 256 if b >= 128 else b
         var lives = sb + 2
         if lives < 0:
@@ -338,57 +518,57 @@ def game_signals(
         if terminal:
             # ALE: suppress the garbage score on the reset frame.
             return GameSignals(prev_score, 0, lives, True)
-        var score = get_decimal_score_3(ram, 0xDB, 0xDA, 0xD9)
+        var score = get_decimal_score_3(state.ram, 0xDB, 0xDA, 0xD9)
         return GameSignals(score, score - prev_score, lives, False)
 
     elif game == AtariGame.ASTEROIDS:
-        var score = get_decimal_score_2(ram, 0xBE, 0xBD) * 10
+        var score = get_decimal_score_2(state.ram, 0xBE, 0xBD) * 10
         var reward = score - prev_score
         if reward < 0:
             reward += 100000  # score wrap
-        var lives = _rb(ram, 0xBC) >> 4
+        var lives = _rb(state.ram, 0xBC) >> 4
         return GameSignals(score, reward, lives, lives == 0)
 
     elif game == AtariGame.FROSTBITE:
-        var score = get_decimal_score_3(ram, 0xCA, 0xC9, 0xC8)
-        var lives_byte = _rb(ram, 0xCC) & 0xF
-        var terminal = lives_byte == 0 and (_rb(ram, 0xF1) & 0x80) != 0
+        var score = get_decimal_score_3(state.ram, 0xCA, 0xC9, 0xC8)
+        var lives_byte = _rb(state.ram, 0xCC) & 0xF
+        var terminal = lives_byte == 0 and (_rb(state.ram, 0xF1) & 0x80) != 0
         return GameSignals(
             score, score - prev_score, lives_byte + 1, terminal
         )
 
     elif game == AtariGame.FREEWAY:
-        var score = get_decimal_score(ram, 103)
+        var score = get_decimal_score(state.ram, 103)
         var reward = score - prev_score
         if reward < 0:
             reward = 0
         if reward > 1:
             reward = 1
-        return GameSignals(score, reward, 0, _rb(ram, 22) == 1)
+        return GameSignals(score, reward, 0, _rb(state.ram, 22) == 1)
 
     elif game == AtariGame.BOXING:
-        var my_score = get_decimal_score(ram, 0x92)
-        var oppt_score = get_decimal_score(ram, 0x93)
+        var my_score = get_decimal_score(state.ram, 0x92)
+        var oppt_score = get_decimal_score(state.ram, 0x93)
         # 0xC0 = KO sentinel.
-        if _rb(ram, 0x92) == 0xC0:
+        if _rb(state.ram, 0x92) == 0xC0:
             my_score = 100
-        if _rb(ram, 0x93) == 0xC0:
+        if _rb(state.ram, 0x93) == 0xC0:
             oppt_score = 100
         var score = my_score - oppt_score
         var terminal: Bool
         if my_score == 100 or oppt_score == 100:
             terminal = True
         else:
-            var minutes = _rb(ram, 0x90) >> 4
-            var seconds = (_rb(ram, 0x91) & 0xF) + (_rb(ram, 0x91) >> 4) * 10
+            var minutes = _rb(state.ram, 0x90) >> 4
+            var seconds = (_rb(state.ram, 0x91) & 0xF) + (_rb(state.ram, 0x91) >> 4) * 10
             terminal = minutes == 0 and seconds == 0
         return GameSignals(score, score - prev_score, 0, terminal)
 
     elif game == AtariGame.ENDURO:
         var score = 0
-        var level = _rb(ram, 0xAD)
+        var level = _rb(state.ram, 0xAD)
         if level != 0:
-            var cars_passed = get_decimal_score_2(ram, 0xAB, 0xAC)
+            var cars_passed = get_decimal_score_2(state.ram, 0xAB, 0xAC)
             if level == 1:
                 cars_passed = 200 - cars_passed
             else:
@@ -398,23 +578,251 @@ def game_signals(
                 score = 200 + (level - 2) * 300
             score += cars_passed
         return GameSignals(
-            score, score - prev_score, 0, _rb(ram, 0xAF) == 0xFF
+            score, score - prev_score, 0, _rb(state.ram, 0xAF) == 0xFF
         )
 
     elif game == AtariGame.AMIDAR:
-        var score = get_decimal_score_3(ram, 0xD9, 0xDA, 0xDB)
-        var lives_byte = _rb(ram, 0xD6)
+        var score = get_decimal_score_3(state.ram, 0xD9, 0xDA, 0xDB)
+        var lives_byte = _rb(state.ram, 0xD6)
         return GameSignals(
             score, score - prev_score, lives_byte & 0xF, lives_byte == 0x80
         )
 
     elif game == AtariGame.ATLANTIS:
-        var score = get_decimal_score_3(ram, 0xA2, 0xA3, 0xA1) * 100
-        var lives = _rb(ram, 0xF1)
+        var score = get_decimal_score_3(state.ram, 0xA2, 0xA3, 0xA1) * 100
+        var lives = _rb(state.ram, 0xF1)
         if lives == 0xFF:
             # ALE: garbage gets written to 0xA1 on the terminal frame —
             # freeze the score and zero the reward.
             return GameSignals(prev_score, 0, lives, True)
         return GameSignals(score, score - prev_score, lives, False)
+
+    elif game == AtariGame.ALIEN:
+        # Digits stored one per byte: 0x80 means blank (0), else byte >> 3.
+        var score = 0
+        var mult = 1
+        for addr in [0x8B, 0x89, 0x87, 0x85, 0x83]:
+            var b = _rb(state.ram, addr)
+            score += (0 if b == 0x80 else b >> 3) * mult
+            mult *= 10
+        score *= 10
+        var lives = _rb(state.ram, 0xC0) & 0xF
+        return GameSignals(score, score - prev_score, lives, lives == 0)
+
+    elif game == AtariGame.ASSAULT:
+        var score = get_decimal_score_3(state.ram, 0x82, 0x81, 0x80)
+        var lives = _rb(state.ram, 0xE5)
+        return GameSignals(score, score - prev_score, lives, lives == 0)
+
+    elif game == AtariGame.ASTERIX:
+        var score = get_decimal_score_3(state.ram, 0xE0, 0xDF, 0xDE)
+        var lives = _rb(state.ram, 0xD3) & 0xF
+        # Cannot wait for lives==0: the player can restart on the very last
+        # frame (lives==1, death_counter==1) by holding fire.
+        var death_counter = _rb(state.ram, 0xC7)
+        var terminal = death_counter == 0x01 and lives == 1
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.BANK_HEIST:
+        var score = get_decimal_score_3(state.ram, 0xDA, 0xD9, 0xD8)
+        var death_timer = _rb(state.ram, 0xCE)
+        var lives = _rb(state.ram, 0xD5)
+        var terminal = death_timer == 0x01 and lives == 0
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.BATTLE_ZONE:
+        # Score digits use 10 as a blank sentinel.
+        var first_val = _rb(state.ram, 0x9D)
+        var first_right = first_val & 15
+        var first_left = (first_val - first_right) >> 4
+        if first_left == 10:
+            first_left = 0
+        var second_val = _rb(state.ram, 0x9E)
+        var second_right = second_val & 15
+        var second_left = (second_val - second_right) >> 4
+        if second_right == 10:
+            second_right = 0
+        if second_left == 10:
+            second_left = 0
+        var score = (
+            first_left + 10 * second_right + 100 * second_left
+        ) * 1000
+        var lives = _rb(state.ram, 0xBA) & 0xF
+        return GameSignals(score, score - prev_score, lives, lives == 0)
+
+    elif game == AtariGame.BEAM_RIDER:
+        var score = get_decimal_score_3(state.ram, 9, 10, 11)
+        # The lives counter blinks during the death animation; only commit
+        # a one-life decrease once the animation flag (0x8C) is set.
+        var prev_lives = Int(state.lives)
+        var new_lives = _rb(state.ram, 0x85) + 1
+        var lives = new_lives
+        if new_lives == prev_lives - 1 and _rb(state.ram, 0x8C) != 0x01:
+            lives = prev_lives
+        var terminal = _rb(state.ram, 5) == 255
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.BERZERK:
+        var score = get_decimal_score_3(state.ram, 95, 94, 93)
+        var lives_byte = _rb(state.ram, 0xDA)
+        if lives_byte == 0xFF:
+            return GameSignals(score, score - prev_score, 0, True)
+        return GameSignals(score, score - prev_score, lives_byte + 1, False)
+
+    elif game == AtariGame.BOWLING:
+        var score = get_decimal_score_2(state.ram, 0xA1, 0xA6)
+        return GameSignals(
+            score, score - prev_score, 0, _rb(state.ram, 0xA4) > 0x10
+        )
+
+    elif game == AtariGame.CENTIPEDE:
+        var score = get_decimal_score_3(state.ram, 118, 117, 116)
+        var reward = score - prev_score
+        # ALE HACK: the score sometimes resets before termination.
+        if reward < 0:
+            reward = 0
+        var lives = ((_rb(state.ram, 0xED) >> 4) & 0x7) + 1
+        var terminal = (_rb(state.ram, 0xA6) & 0x40) != 0
+        return GameSignals(score, reward, lives, terminal)
+
+    elif game == AtariGame.CHOPPER_COMMAND:
+        var score = get_decimal_score_2(state.ram, 0xEE, 0xEC) * 100
+        var lives = _rb(state.ram, 0xE4) & 0xF
+        # 0xC2 bit 0 is 1 once gameplay has started (chopper faces right);
+        # latch it so mode-select screens (always facing left) don't read
+        # as terminal. ALE keeps m_is_started for the same reason.
+        state.game_aux |= Int32(_rb(state.ram, 0xC2) & 0x1)
+        var terminal = state.game_aux != 0 and lives == 0
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.CRAZY_CLIMBER:
+        # Digits stored one per byte (not BCD).
+        var score = (
+            _rb(state.ram, 0x82)
+            + 10 * _rb(state.ram, 0x83)
+            + 100 * _rb(state.ram, 0x84)
+            + 1000 * _rb(state.ram, 0x85)
+        ) * 100
+        var reward = score - prev_score
+        if reward < 0:
+            reward = 0
+        var lives = _rb(state.ram, 0xAA)
+        return GameSignals(score, reward, lives, lives == 0)
+
+    elif game == AtariGame.DARK_CHAMBERS:
+        # game_aux holds the last seen level: levels only go up; a drop
+        # means the game restarted (terminal). Score wrap is also terminal.
+        var new_level = _rb(state.ram, 0xD5)
+        if new_level < Int(state.game_aux):
+            return GameSignals(prev_score, 0, 0, True)
+        state.game_aux = Int32(new_level)
+        var score = get_decimal_score_2(state.ram, 0xCC, 0xCF) * 10
+        if score < prev_score:
+            # Exceeded the maximum score.
+            return GameSignals(prev_score, 0, 0, True)
+        # Low 5 bits are health; the top 3 are item flags.
+        var health = _rb(state.ram, 0xCA) & 0x1F
+        return GameSignals(score, score - prev_score, health, health == 0)
+
+    elif game == AtariGame.DEMON_ATTACK:
+        var score = get_decimal_score_3(state.ram, 0x85, 0x83, 0x81)
+        # ALE MGB: the score RAM is not initialized to 0 on boot.
+        if (
+            _rb(state.ram, 0x81) == 0xAB
+            and _rb(state.ram, 0x83) == 0xCD
+            and _rb(state.ram, 0x85) == 0xEA
+        ):
+            score = 0
+        var lives_displayed = _rb(state.ram, 0xF2)
+        var display_flag = _rb(state.ram, 0xF1)
+        var terminal = lives_displayed == 0 and display_flag == 0xBD
+        return GameSignals(
+            score, score - prev_score, lives_displayed + 1, terminal
+        )
+
+    elif game == AtariGame.ELEVATOR_ACTION:
+        var score = get_decimal_score_3(state.ram, 0x89, 0x88, 0x87)
+        var lives = _rb(state.ram, 0x83)
+        # 0x81 == 0 only on the start screen, where lives reads 0 too.
+        var terminal = lives == 0 and _rb(state.ram, 0x81) != 0x00
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.FISHING_DERBY:
+        var my_score = get_decimal_score(state.ram, 0xBD)
+        var oppt_score = get_decimal_score(state.ram, 0xBE)
+        var score = my_score - oppt_score
+        # Either side reaching 99 (0x99 BCD) ends the game.
+        var terminal = (
+            _rb(state.ram, 0xBD) == 0x99 or _rb(state.ram, 0xBE) == 0x99
+        )
+        return GameSignals(score, score - prev_score, 0, terminal)
+
+    elif game == AtariGame.JAMESBOND:
+        var score = get_decimal_score_3(state.ram, 0xDC, 0xDD, 0xDE)
+        var lives_byte = _rb(state.ram, 0x86) & 0xF
+        # 0x8C reads 0x68 on death; the system loops back to the start
+        # state after a while (where fire starts a new game).
+        var terminal = lives_byte == 0 and _rb(state.ram, 0x8C) == 0x68
+        return GameSignals(
+            score, score - prev_score, lives_byte + 1, terminal
+        )
+
+    elif game == AtariGame.KLAX:
+        # Score and level live in Superchip RAM (read port $F080-$F0FF →
+        # sc_ram[addr - 0x80]); ALE reads them via the full memory map.
+        var b_lo = Int(state.sc_ram[0x34])  # $F0B4
+        var b_mid = Int(state.sc_ram[0x35])  # $F0B5
+        var b_hi = Int(state.sc_ram[0x36])  # $F0B6
+        var score = (
+            10 * ((b_lo >> 4) & 0xF)
+            + (b_lo & 0xF)
+            + 1000 * ((b_mid >> 4) & 0xF)
+            + 100 * (b_mid & 0xF)
+            + 100000 * ((b_hi >> 4) & 0xF)
+            + 10000 * (b_hi & 0xF)
+        )
+        var misses = Int(state.sc_ram[0x6E])  # $F0EE
+        var max_misses = Int(state.sc_ram[0x69])  # $F0E9
+        var level = Int(state.sc_ram[0x1D])  # $F09D
+        var game_active = _rb(state.ram, 0xA8) == 4
+        # The 25 bottom blocks live at 0xB3..0xCB; types 0/2/6/10/14 are
+        # empty or level-end bonus fillers, not real blocks.
+        var num_blocks = 0
+        for i in range(25):
+            var t = _rb(state.ram, 0xB3 + i)
+            if t != 0 and t != 2 and t != 6 and t != 10 and t != 14:
+                num_blocks += 1
+        var terminal = (
+            (max_misses > 0 and misses == max_misses)
+            or (game_active and num_blocks == 25)
+            or level == 0x99
+        )
+        return GameSignals(score, score - prev_score, 0, terminal)
+
+    elif game == AtariGame.MONTEZUMA_REVENGE:
+        var score = get_decimal_score_3(state.ram, 0x95, 0x94, 0x93)
+        var new_lives = _rb(state.ram, 0xBA)
+        var terminal = new_lives == 0 and _rb(state.ram, 0xFE) == 0x60
+        return GameSignals(
+            score, score - prev_score, (new_lives & 0x7) + 1, terminal
+        )
+
+    elif game == AtariGame.ROBOTANK:
+        # Raw counters, not BCD: a squadron is 12 tanks.
+        var score = _rb(state.ram, 0xB6) * 12 + _rb(state.ram, 0xB5)
+        var lives = _rb(state.ram, 0xA8)
+        var terminal = lives == 0 and _rb(state.ram, 0xB4) == 0xFF
+        return GameSignals(
+            score, score - prev_score, (lives & 0xF) + 1, terminal
+        )
+
+    elif game == AtariGame.TUTANKHAM:
+        var score = get_decimal_score_2(state.ram, 0x9C, 0x9A)
+        var lives_byte = _rb(state.ram, 0x9E)
+        # 0x81 is 0x84 when the game is freshly loaded but not yet reset.
+        var terminal = lives_byte == 0 and _rb(state.ram, 0x81) != 0x84
+        return GameSignals(
+            score, score - prev_score, lives_byte & 0x3, terminal
+        )
 
     return GameSignals(0, 0, 0, False)

@@ -41,7 +41,11 @@ def main() raises:
 
     # Create environment (frame_skip=1 for interactive play)
     var env = AtariEnvironment(
-        rom_data.data.value(), rom_data.size, frame_skip=1, max_frames=0
+        rom_data.data.value(),
+        rom_data.size,
+        frame_skip=1,
+        max_frames=0,
+        mapper=game.mapper(),
     )
     env.reset()
     print("Environment reset. Starting interactive play...")
@@ -73,9 +77,7 @@ def main() raises:
             step_count += 1
 
             # Extract game state from RAM via the registry
-            var sig = game_signals(
-                game, env.state.ram, Int(env.state.score)
-            )
+            var sig = game_signals(game, env.state, Int(env.state.score))
             env.state.score = Int32(sig.score)
             env.state.lives = UInt8(sig.lives)
             env.state.terminal = sig.terminal

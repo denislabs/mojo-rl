@@ -123,16 +123,21 @@ from .cartridge import rom_read, rom_write
 
 @always_inline
 def mem_read(
-    state: AtariState,
+    mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     addr: UInt16,
 ) -> UInt8:
-    """Read a byte from the Atari 2600 memory map."""
+    """Read a byte from the Atari 2600 memory map.
+
+    state is mut because cartridge hotspot READS switch banks (F8/F6/E0),
+    exactly like real hardware and Stella/ALE.
+    """
     var a = Int(addr) & 0x1FFF  # 13-bit address space
 
     if a & 0x1000:  # Cartridge ROM
-        return rom_read(state, rom, rom_size, UInt16(a))
+        # Pass the FULL 16-bit address: the FE mapper banks on A13.
+        return rom_read(state, rom, rom_size, addr)
     elif a & 0x0080:  # RIOT area
         if a & 0x0200:  # RIOT registers (0x0280-0x0297)
             return riot_read(state, UInt8(a & 0xFF))
@@ -154,7 +159,7 @@ def mem_write(
     var a = Int(addr) & 0x1FFF
 
     if a & 0x1000:  # Cartridge ROM (may trigger bank switch)
-        rom_write(state, rom, rom_size, UInt16(a), value)
+        rom_write(state, rom, rom_size, addr, value)
     elif a & 0x0080:  # RIOT area
         if a & 0x0200:  # RIOT registers
             riot_write(state, UInt8(a & 0xFF), value)
@@ -259,7 +264,7 @@ def update_nz(mut state: AtariState, value: UInt8):
 
 @always_inline
 def resolve_operand_addr(
-    state: AtariState,
+    mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     mode: UInt8,
@@ -342,11 +347,15 @@ def execute_one(
     var cycles = entry.cycles
     var size = entry.size
 
-    # A 6502 store writes on its LAST cycle, so a TIA write lands (cycles-1)
-    # CPU cycles = 3*(cycles-1) color clocks after the instruction START. We
-    # store this as an OFFSET (not absolute) so the per-clock tick loop can
-    # match it against a per-instruction local clock index without any
-    # frame-absolute counter (which would overflow UInt16 at the 2x cap).
+    # A 6502 store writes on its LAST cycle. We log the offset of that cycle's
+    # START ((cycles-1)*3 color clocks after the instruction start) so the
+    # per-clock tick loop can match it against a per-instruction local clock
+    # index; the loop then adds STORE_CYCLE_CLOCKS when pushing into the
+    # DelayQueue, because the bus write takes effect at the END of the write
+    # cycle (Stella M6502::poke does incrementCycles(1) BEFORE System::poke).
+    # Berzerk strobes RESP0 right at the hblank edge — 3 clocks early shifts
+    # the player 3px left into the electrified wall (constant P0PF = instant
+    # death, random play scored 0 vs ALE's ~160/episode).
     # entry.cycles already includes the fixed extra cycle store modes pay.
     state.tia_log_count = 0
     state.pending_tia_write_clock = (Int(cycles) - 1) * 3
@@ -1364,12 +1373,21 @@ def run_frame_cycle_accurate[
             var in_hblank = hctr < hbe
 
             # Replay this instruction's TIA writes at their exact offset clock.
+            # STORE_CYCLE_CLOCKS: the write takes effect at the END of its CPU
+            # cycle (Stella increments the system clock before the poke), i.e.
+            # 3 color clocks after the logged cycle-start offset. Adding it to
+            # the queue delay (instead of the log clock) lets the apply land
+            # past this instruction's last clock — the queue persists across
+            # instructions and WSYNC padding.
+            comptime STORE_CYCLE_CLOCKS = 3
             if not wsync_pad:
                 for li in range(state.tia_log_count):
                     if state.tia_log_clock[li] == j:
                         var r = state.tia_log_reg[li]
                         state.ctia.dq.push(
-                            r, state.tia_log_value[li], _cycle_reg_delay(r)
+                            r,
+                            state.tia_log_value[li],
+                            _cycle_reg_delay(r) + STORE_CYCLE_CLOCKS,
                         )
 
             # Apply writes whose delay elapsed this clock. The queue is empty
