@@ -17,6 +17,8 @@ from std.gpu import global_idx, thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
+from std.math import sqrt as fsqrt, log, cos, sin
+from std.random import random_float64
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT, TPB
@@ -30,6 +32,28 @@ from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 comptime LT_RTPB = 64  # reduction block size for the param-grad batch sum
+comptime _LT_TWO_PI: Float64 = 6.283185307179586
+
+
+def _lt_fill_normal(
+    buf: UnsafePointer[Scalar[DT], MutAnyOrigin], n_elems: Int, std: Float64
+):
+    """N(0, std) Box-Muller fill — the ViT convention for learned CLS/query
+    tokens (std≈0.02), independent of fan-in. fan_in=1 Kaiming would give
+    std≈1.4, a constant that swamps the per-image attention signal and
+    collapses the readout (see LeWMEncoderCLS)."""
+    var i = 0
+    while i < n_elems:
+        var u1 = random_float64()
+        var u2 = random_float64()
+        if u1 < 1e-12:
+            u1 = 1e-12
+        var r = fsqrt(-2.0 * log(u1))
+        buf[i] = Scalar[DT](std * r * cos(_LT_TWO_PI * u2))
+        i += 1
+        if i < n_elems:
+            buf[i] = Scalar[DT](std * r * sin(_LT_TWO_PI * u2))
+            i += 1
 
 
 def _lt_forward_kernel[
@@ -87,7 +111,9 @@ def _lt_grad_param_kernel[
         grad_param.ptr[col] = rebind[Scalar[DT]](grad_param.ptr[col]) + total[0]
 
 
-struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
+struct LearnedTokens[
+    N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool, INIT_STD: Float64 = 0.0
+](Module):
     comptime ARITY: Int = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.N_IN * Self.D)
     comptime OUT_DIM = (Self.N_IN + Self.N_NEW) * Self.D
@@ -113,16 +139,27 @@ struct LearnedTokens[N_IN: Int, N_NEW: Int, D: Int, PREPEND: Bool](Module):
         var m = Self()
         comptime if target == "cpu":
             m.tokens = Param["tokens", False, Self.NEW_N].make_cpu()
-            INIT.init_weight(
-                m.tokens.value_unsafe_ptr_cpu(), Self.NEW_N, Self.N_NEW, Self.D
-            )
+            comptime if Self.INIT_STD > 0.0:
+                _lt_fill_normal(
+                    m.tokens.value_unsafe_ptr_cpu(), Self.NEW_N, Self.INIT_STD
+                )
+            else:
+                INIT.init_weight(
+                    m.tokens.value_unsafe_ptr_cpu(), Self.NEW_N, Self.N_NEW,
+                    Self.D,
+                )
             m.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = require_ctx["LearnedTokens.make[gpu]"](ctx)
             m.tokens = Param["tokens", False, Self.NEW_N].make_gpu(ctx_v)
             var host = ctx_v.enqueue_create_host_buffer[DT](Self.NEW_N)
             ctx_v.synchronize()
-            INIT.init_weight(host.unsafe_ptr(), Self.NEW_N, Self.N_NEW, Self.D)
+            comptime if Self.INIT_STD > 0.0:
+                _lt_fill_normal(host.unsafe_ptr(), Self.NEW_N, Self.INIT_STD)
+            else:
+                INIT.init_weight(
+                    host.unsafe_ptr(), Self.NEW_N, Self.N_NEW, Self.D
+                )
             ctx_v.enqueue_copy(m.tokens.val.dev.value(), host)
             ctx_v.synchronize()
             m.ts = TargetStorage.make_gpu(ctx_v)

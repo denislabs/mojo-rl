@@ -79,6 +79,11 @@ comptime LeWMEncoder[
 # selectively to control-relevant patches (the prediction objective rewards
 # encoding the pusher, since actions move it). No new primitives — reuses
 # `LearnedTokens[…, PREPEND=True]` (prepend CLS) + `Slice` (extract token 0).
+# The CLS token is initialized small (std 0.02, ViT convention) via
+# LearnedTokens' INIT_STD: fan_in=1 Kaiming would give std≈1.4, a constant
+# that swamps the per-image attention signal and collapses the readout (all
+# images → near-identical CLS → batch-variance collapse → BatchNorm/SIGReg
+# blow up). Mean-pooling is immune; the CLS readout is not.
 comptime LeWMEncoderCLS[
     IN_CH: Int,
     IMG: Int,
@@ -92,7 +97,7 @@ comptime LeWMEncoderCLS[
     FF_MULT: Int = 4,
 ] = Sequential[
     PatchEmbed[IN_CH, IMG, IMG, PATCH, HIDDEN, N_PATCHES],
-    LearnedTokens[N_PATCHES, 1, HIDDEN, True],          # prepend [CLS]
+    LearnedTokens[N_PATCHES, 1, HIDDEN, True, 0.02],     # prepend [CLS] (ViT init)
     BiasAdd[(N_PATCHES + 1) * HIDDEN],                   # pos embed incl CLS
     Repeat[
         ENC_LAYERS,
