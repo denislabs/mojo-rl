@@ -118,9 +118,40 @@ def main() raises:
     assert_true(maxd < Scalar[DT](1e-4),
                 "predictor-from-latents must reproduce the loss graph pred")
 
+    # ── EVAL-MODE consistency (BN running stats; planning path) ────────
+    # Training-mode parity above holds even WITHOUT state sync (both BNs
+    # see the same batch ⇒ same batch stats). Eval mode is the real test:
+    # the predictor's BN must use the trainer's EMA running stats (warmed
+    # well off their 0/1 defaults by the 50 train steps; momentum 0.1 →
+    # time constant 10 batches), carried by export_named_params /
+    # sync_from_named via the graph for_each_state walk. If state were
+    # NOT synced, pr2's BN would normalize with 0/1 defaults and the
+    # parity below would fail. This is the closed-loop planner's config.
+    tr.set_bn_training(False)
+    var pr2 = Predictor.make()
+    pr2.sync_from_named(tr.export_named_params())
+    pr2.set_bn_training(False)
+
+    tr.forward_into(pix_t, act_t, pred_loss, tgt_scratch)
+    tr.read_node_into["emb"](emb_host, B * TE)
+    for b in range(B):
+        for i in range(HE):
+            latent_ctx[b * HE + i] = emb_host[b * TE + i]
+    pr2.forward(lc_t, act_t, pred_pr_t)
+
+    var maxd_e: Scalar[DT] = 0.0
+    for i in range(B * HE):
+        var d = (pred_pr[i] - pred_loss[i]).__abs__()
+        if d > maxd_e:
+            maxd_e = d
+    print("   max|predictor.pred - lossgraph.pred| (EVAL mode) =", maxd_e)
+    assert_true(maxd_e < Scalar[DT](1e-5),
+                "eval-mode predictor must reproduce the loss graph pred"
+                " (BN running stats synced via for_each_state)")
+
     pix.free(); act.free(); pred_loss.free(); tgt_scratch.free()
     emb_host.free(); latent_ctx.free(); pred_pr.free()
-    _ = tr^; _ = pr^; _ = buf^
+    _ = tr^; _ = pr^; _ = pr2^; _ = buf^
     print("=" * 70)
     print("ALL PASSED")
     print("=" * 70)

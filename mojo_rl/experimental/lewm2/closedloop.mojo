@@ -9,16 +9,17 @@ on `BATCH` parallel mojo `PushTEnv`s, receding-horizon. Each control cycle:
   3. ContinuousCEM optimizes an action plan minimizing predicted-latent-to-
      goal MSE via the shared LeWM2MPCScorer (latent rollout).
   4. DENORMALIZE + execute the first planned action block on each env:
-     actions are per-step DELTAS (calibration: env_target = agent_pos +
-     action · SCALE, no offset), so each of the `frameskip` sub-actions is
-     one env.step target.
+     actions are per-step DELTAS — `env_target = agent_pos + action · SCALE`
+     with SCALE = 100 exactly (ground truth from the stable_worldmodel
+     PushT-v1 source: `relative=True`, `action_scale=100`; the earlier
+     centroid-regression calibration of ~142/148 was ~1.45× too large) —
+     so each of the `frameskip` sub-actions is one env.step target.
   5. record coverage; repeat.
 
 Returns (success_rate, mean_coverage) over the envs. Optionally writes a
 horizontal strip PPM of env-0's trajectory (one frame per cycle).
 
-GPU-oriented (the WM is a 224² gpu model); `ctx` is required. SCALE defaults
-come from the action-calibration probe (~142 x / ~148 y).
+GPU-oriented (the WM is a 224² gpu model); `ctx` is required.
 """
 
 from std.memory import alloc
@@ -64,8 +65,8 @@ def run_lewm2_closedloop[
         PRED_DIM_HEAD, ENC,
     ],
     n_cycles: Int,
-    scale_x: Float64 = 142.0,
-    scale_y: Float64 = 148.0,
+    scale_x: Float64 = 100.0,
+    scale_y: Float64 = 100.0,
     cem_iters: Int = 10,
     cem_samples: Int = 200,
     cem_topk: Int = 20,
@@ -98,9 +99,16 @@ def run_lewm2_closedloop[
     ]
     var ctx_v = ctx.value()
 
-    # predictor (name-synced) + rollout scorer
+    # predictor (name-synced, incl. BN running stats) + rollout scorer.
+    # Planning runs in EVAL mode (running stats), matching the reference's
+    # `model.eval()`: training-mode BN encodes start/goal under different
+    # batch statistics and couples CEM candidate scores. The caller must
+    # warm the wm's running stats (a few hundred training-mode forwards
+    # over dataset windows) BEFORE calling — checkpoints don't carry them.
     var pred_net = Predictor.make(ctx=ctx)
     pred_net.sync_from_named(wm.export_named_params())
+    pred_net.set_bn_training(False)
+    wm.set_bn_training(False)
     var scorer = Scorer(pred_net^, ctx=ctx)
 
     # encoding IO

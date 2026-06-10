@@ -199,6 +199,21 @@ trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
     ) raises:
         ...
 
+    def for_each_state_via[
+        target: StaticString,
+        V: ParamVisitor,
+    ](
+        mut self,
+        prefix: String,
+        mut visitor: V,
+    ) raises:
+        """Walk the inner op's `State` fields (e.g. BatchNorm running
+        stats). Default no-op: InputSlot has no op, and ExternalNode's
+        module state is walked by its owner (same contract as
+        `for_each_param_via`). Node overrides to forward to
+        `self.op.for_each_state`."""
+        pass
+
     def set_op_attr_via[ATTR: StaticString](
         mut self, value: Scalar[DT],
     ):

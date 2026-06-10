@@ -1,34 +1,28 @@
-"""LeWM (nn2) — CLOSED-LOOP MPC control on PushT (the actual solve, GPU).
+"""LeWM (nn2) — CLOSED-LOOP MPC control on PushT (mean-pool WM, GPU).
 
-Plans in the frozen paper-width world model's latent space and executes on
-16 parallel mojo PushTEnv simulators, receding-horizon: render→encode the
-current frame → start latent, fixed goal-image latent (block at the goal
-pose), ContinuousCEM optimizes an action plan minimizing predicted-latent-
-to-goal MSE, the first block is denormalized (per-step deltas, calibrated
-scale) and executed on each sim, repeat. Reports coverage success rate and
-writes env-0's trajectory strip to /tmp.
+Mean-pool baseline of the Gate C retry — same three eval-path fixes as the
+CLS variant (docs/LEWM_REFERENCE_AUDIT.md):
 
-All three transfer gates passed before this:
-  - rendering: sim frames reconstruct (sim_recon_mse 0.0048 ~ HF 0.0018)
-  - dynamics : mojo PushTEnv PD (k_p100/k_v20) == gym-pusht
-  - action   : DELTA, env_target = agent + action·~145 (calibration R² .62/.65)
-
-Residual risk (honest): the latent under-encodes the agent/pusher position
-(the decoder dropped it), so latent planning may steer the block coarsely.
-The trajectory strip shows whether the block actually tracks toward goal;
-tune SCALE / CEM width / horizon from what it shows.
+  1. ACTION SCALE 100 (ground truth: swm PushT `relative=True,
+     action_scale=100`; the centroid calibration 142/148 was ~1.45× large).
+  2. BATCHNORM EVAL MODE at planning, after warming running stats with
+     BN_WARMUP_STEPS training-mode forwards over dataset windows.
+  3. PAPER CEM BUDGET 300×30 top-30.
 
 Loads `/tmp/lewm2_pusht_paper_world_model.txt`. Heavy one-shot (per cycle:
-1 encode forward + CEM_ITERS·CEM_SAMPLES latent rollouts).
+2 encode forwards + CEM_ITERS·CEM_SAMPLES latent rollouts).
 Run (NVIDIA):
   pixi run -e nvidia mojo run -I . examples/lewm/lewm2_pusht_closedloop_gpu.mojo
 """
 
 from std.gpu.host import DeviceContext
+from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.experimental.lewm2.trainer import LeWMTrainer
 from mojo_rl.experimental.lewm2.closedloop import run_lewm2_closedloop
+from mojo_rl.experimental.lewm2.pong_data import WindowSource
+from mojo_rl.envs.pusht import PushTOfflineSampler
 
 
 # ── must match lewm2_pusht_train_gpu_paper.mojo ────────────────────────
@@ -55,29 +49,38 @@ comptime PRED_PROJ_H = 2048
 comptime SIG_PROJ = 2048
 comptime SIG_KNOTS = 17
 comptime B = 16
+comptime FRAMESKIP = 5
+
+comptime IMG_DIM = IN_CH * IMG * IMG
+comptime PIX = T * IMG_DIM
+comptime ACTIN = T * ACT
 
 comptime MPC_HORIZON = 4          # NEEDED = H+horizon-1 = 6 = T (in-window max)
 comptime CKPT_PATH: String = "/tmp/lewm2_pusht_paper_world_model.txt"
 
-# control / planning budget (moderate — paper CEM is 300×30, heavier)
+# control / planning budget — PAPER values (App D)
 comptime N_CYCLES = 25
-comptime CEM_ITERS = 8
-comptime CEM_SAMPLES = 120
-comptime CEM_TOPK = 12
-comptime INIT_STD = 0.2           # ≈ stored-action RMS
-comptime SCALE_X = 142.0          # calibration: env_target = agent + a·action
-comptime SCALE_Y = 148.0
+comptime CEM_ITERS = 30
+comptime CEM_SAMPLES = 300
+comptime CEM_TOPK = 30
+comptime INIT_STD = 0.2           # ≈ stored-action RMS (≡ paper's Σ₀=I z-scored)
+comptime SCALE_X = 100.0          # GROUND TRUTH: swm PushT relative=True, action_scale=100
+comptime SCALE_Y = 100.0
+comptime BN_WARMUP_STEPS = 200    # EMA momentum 0.1 → time constant 10 batches
 
 comptime Trainer = LeWMTrainer[
     IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
     ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS, PRED_FF,
     DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu", PRED_DIM_HEAD,
 ]
+comptime Source = WindowSource[
+    IMG_DIM, ACT, T, B, "gpu", PushTOfflineSampler, IN_CH, IMG
+]
 
 
 def main() raises:
     print("=" * 70)
-    print("LeWM nn2 — PushT CLOSED-LOOP MPC control (GPU)")
+    print("LeWM nn2 — PushT CLOSED-LOOP MPC (mean-pool WM, GPU) — retry")
     print("=" * 70)
     var ctx = DeviceContext()
 
@@ -85,8 +88,20 @@ def main() raises:
     print("loading frozen WM", CKPT_PATH, "...")
     wm.load_params(CKPT_PATH)
 
+    print("warming BatchNorm running stats (", BN_WARMUP_STEPS,
+          "training-mode forwards over dataset windows) ...")
+    var sampler = PushTOfflineSampler(frameskip=FRAMESKIP, num_steps=T)
+    var src = Source.make(sampler^, ctx=ctx)
+    for _ in range(BN_WARMUP_STEPS):
+        src.next_batch()
+        var pix_t = TileTensor(src.pix_ptr(), row_major[B, PIX]())
+        var act_t = TileTensor(src.act_ptr(), row_major[B, ACTIN]())
+        _ = wm.eval_loss(pix_t, act_t)
+    _ = src^
+
     print("controlling", B, "PushT envs,", N_CYCLES, "cycles, horizon",
-          MPC_HORIZON, "(CEM", CEM_SAMPLES, "×", CEM_ITERS, ") ...")
+          MPC_HORIZON, "(CEM", CEM_SAMPLES, "×", CEM_ITERS, ", eval-mode BN,",
+          "scale", SCALE_X, ") ...")
     var r = run_lewm2_closedloop[
         IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
         ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,

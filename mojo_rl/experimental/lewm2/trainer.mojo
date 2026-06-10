@@ -412,14 +412,31 @@ struct LeWMTrainer[
             ctx.synchronize()
 
     def export_named_params(mut self) raises -> Dict[String, List[Scalar[DT]]]:
-        """Snapshot all graph params as a name→values dict (CPU/GPU). Feeds
-        `LeWMPredictor.sync_from_named` so the MPC predictor shares the
-        trained encoder-free weights (matched by name)."""
+        """Snapshot all graph params AND state (BatchNorm running stats) as
+        a name→values dict (CPU/GPU). Feeds `LeWMPredictor.sync_from_named`
+        so the MPC predictor shares the trained encoder-free weights
+        (matched by name) — including running stats, so eval-mode BN at
+        planning normalizes identically to the trainer's graph."""
         var d = Dict[String, List[Scalar[DT]]]()
         var v = _NamedExportVisitor(UnsafePointer(to=d), ctx=self.ts.ctx)
         self.graph.for_each_param[Self.train_target, _NamedExportVisitor]("", v)
+        self.graph.for_each_state[Self.train_target, _NamedExportVisitor]("", v)
         _ = v^
         return d^
+
+    def set_bn_training(mut self, training: Bool) raises:
+        """Flip the graph's BatchNorm layers between training (batch stats +
+        EMA update) and eval (running stats) mode. The reference plans under
+        `model.eval()`; planning with training-mode BN distorts the latent
+        goal-matching cost (start/goal encoded in separate batches see
+        different batch statistics). BN lives in the encoder projector
+        (inside node "emb") and PredProj (node "pred"); `set_attr` recurses
+        through Tokenwise/Sequential. NOTE: checkpoints don't persist
+        running stats — warm them with a few hundred training-mode forwards
+        over dataset windows before flipping to eval."""
+        var v = Scalar[DT](1.0) if training else Scalar[DT](0.0)
+        self.graph.set_node_attr["emb", "training"](v)
+        self.graph.set_node_attr["pred", "training"](v)
 
     def reset_loss_accum(mut self) raises:
         """Zero the device `(Σmean, count)` loss accumulator (GPU, flush)."""

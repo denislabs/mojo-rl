@@ -460,6 +460,12 @@ struct Node[
     ](mut self, prefix: String, mut visitor: V,) raises:
         self.op.for_each_param[target, V](prefix, visitor)
 
+    def for_each_state_via[
+        target: StaticString,
+        V: ParamVisitor,
+    ](mut self, prefix: String, mut visitor: V,) raises:
+        self.op.for_each_state[target, V](prefix, visitor)
+
     def set_op_attr_via[ATTR: StaticString](
         mut self, value: Scalar[DT],
     ):

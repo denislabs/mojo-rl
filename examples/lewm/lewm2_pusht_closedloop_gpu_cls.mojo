@@ -1,31 +1,37 @@
 """LeWM (nn2) — CLOSED-LOOP MPC control on PushT with the CLS-TOKEN WM (GPU).
 
-Gate C of the CLS retrain: the actual solve. Identical to
-`lewm2_pusht_closedloop_gpu.mojo` except the world model uses the CLS-token
-encoder (`EncCLS` passed as `run_lewm2_closedloop`'s trailing ENC param) and
-the CLS checkpoint. The encode step runs through `wm`, so the CLS encoder is
-used automatically for both the start latent and the goal latent.
+Gate C RETRY (no-retrain) — applies the three eval-path fixes from the
+reference audit (docs/LEWM_REFERENCE_AUDIT.md):
 
-Context: the mean-pooled WM failed closed-loop (0/16, block barely moved) —
-the decoder probe showed the mean-pooled latent dropped the agent/pusher. The
-CLS WM now trains healthily (loss 0.09, var_min 0.18, gram_off 0.32); its
-decoder probe is ambiguous (no crisp separated agent dot, marginally more blue
-density than mean-pool). The decoder is a shallow proxy, so this closed-loop
-run is the true test of whether CLS encodes enough pusher state to control.
+  1. ACTION SCALE 100 (was 142/148): ground truth from the
+     stable_worldmodel PushT-v1 source — `relative=True, action_scale=100`
+     ⇒ env_target = agent + action·100. The centroid calibration was ~1.45×
+     too large, over-executing every planned delta.
+  2. BATCHNORM EVAL MODE at planning (was training mode): the reference
+     plans under `model.eval()`. Checkpoints don't persist running stats,
+     so this example first WARMS them with BN_WARMUP_STEPS training-mode
+     forwards over dataset windows (BN momentum 0.1 → ~200 steps ≫ the
+     10-batch time constant); `run_lewm2_closedloop` then exports+syncs
+     the stats into the rollout predictor and flips both graphs to eval.
+  3. PAPER CEM BUDGET 300×30 top-30 (was 120×8 top-12) — App D.
 
-Read the trajectory strip (/tmp/lewm2_pusht_closedloop_cls.ppm): does the
-block now track toward the goal-T pose?
+The encode step runs through `wm` (CLS encoder via the trailing ENC param);
+loads the CLS checkpoint. Read the trajectory strip
+(/tmp/lewm2_pusht_closedloop_cls.ppm): does the block now track to goal?
 
 Run (NVIDIA, after lewm2_pusht_train_gpu_paper_cls.mojo):
   pixi run -e nvidia mojo run -I . examples/lewm/lewm2_pusht_closedloop_gpu_cls.mojo
 """
 
 from std.gpu.host import DeviceContext
+from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.experimental.lewm2.trainer import LeWMTrainer
 from mojo_rl.experimental.lewm2.encoder import LeWMEncoderCLS
 from mojo_rl.experimental.lewm2.closedloop import run_lewm2_closedloop
+from mojo_rl.experimental.lewm2.pong_data import WindowSource
+from mojo_rl.envs.pusht import PushTOfflineSampler
 
 
 # ── must match lewm2_pusht_train_gpu_paper_cls.mojo ────────────────────
@@ -53,18 +59,25 @@ comptime PRED_PROJ_H = 2048
 comptime SIG_PROJ = 2048
 comptime SIG_KNOTS = 17
 comptime B = 16
+comptime FRAMESKIP = 5
+
+comptime IMG_DIM = IN_CH * IMG * IMG
+comptime PIX = T * IMG_DIM
+comptime ACTIN = T * ACT
 
 comptime MPC_HORIZON = 4          # NEEDED = H+horizon-1 = 6 = T (in-window max)
 comptime CKPT_PATH: String = "/tmp/lewm2_pusht_paper_cls_world_model.txt"
 
-# control / planning budget (matches the mean-pool closed-loop)
+# control / planning budget — PAPER values (App D: 300 samples, 30 iters
+# on PushT, top-30, Σ₀=I in z-scored space ≈ std 0.2 raw)
 comptime N_CYCLES = 25
-comptime CEM_ITERS = 8
-comptime CEM_SAMPLES = 120
-comptime CEM_TOPK = 12
-comptime INIT_STD = 0.2           # ≈ stored-action RMS
-comptime SCALE_X = 142.0          # calibration: env_target = agent + a·action
-comptime SCALE_Y = 148.0
+comptime CEM_ITERS = 30
+comptime CEM_SAMPLES = 300
+comptime CEM_TOPK = 30
+comptime INIT_STD = 0.2           # ≈ stored-action RMS (≡ paper's Σ₀=I z-scored)
+comptime SCALE_X = 100.0          # GROUND TRUTH: swm PushT relative=True, action_scale=100
+comptime SCALE_Y = 100.0
+comptime BN_WARMUP_STEPS = 200    # EMA momentum 0.1 → time constant 10 batches
 
 comptime EncCLS = LeWMEncoderCLS[
     IN_CH, IMG, PATCH, N_PATCHES, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB,
@@ -75,11 +88,14 @@ comptime Trainer = LeWMTrainer[
     ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS, PRED_FF,
     DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu", PRED_DIM_HEAD, EncCLS,
 ]
+comptime Source = WindowSource[
+    IMG_DIM, ACT, T, B, "gpu", PushTOfflineSampler, IN_CH, IMG
+]
 
 
 def main() raises:
     print("=" * 70)
-    print("LeWM nn2 — PushT CLOSED-LOOP MPC control, CLS-token WM (GPU)")
+    print("LeWM nn2 — PushT CLOSED-LOOP MPC, CLS WM (GPU) — Gate C retry")
     print("=" * 70)
     var ctx = DeviceContext()
 
@@ -87,8 +103,23 @@ def main() raises:
     print("loading frozen CLS WM", CKPT_PATH, "...")
     wm.load_params(CKPT_PATH)
 
+    # BN running-stats warm-up: checkpoints don't persist them; eval-mode
+    # BN with default 0/1 stats would mis-normalize. Training-mode forwards
+    # over dataset windows EMA-update running mean/var (outputs discarded).
+    print("warming BatchNorm running stats (", BN_WARMUP_STEPS,
+          "training-mode forwards over dataset windows) ...")
+    var sampler = PushTOfflineSampler(frameskip=FRAMESKIP, num_steps=T)
+    var src = Source.make(sampler^, ctx=ctx)
+    for _ in range(BN_WARMUP_STEPS):
+        src.next_batch()
+        var pix_t = TileTensor(src.pix_ptr(), row_major[B, PIX]())
+        var act_t = TileTensor(src.act_ptr(), row_major[B, ACTIN]())
+        _ = wm.eval_loss(pix_t, act_t)
+    _ = src^
+
     print("controlling", B, "PushT envs,", N_CYCLES, "cycles, horizon",
-          MPC_HORIZON, "(CEM", CEM_SAMPLES, "×", CEM_ITERS, ") ...")
+          MPC_HORIZON, "(CEM", CEM_SAMPLES, "×", CEM_ITERS, ", eval-mode BN,",
+          "scale", SCALE_X, ") ...")
     var r = run_lewm2_closedloop[
         IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
         ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,

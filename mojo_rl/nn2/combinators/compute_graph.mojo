@@ -511,11 +511,18 @@ struct ComputeGraph[
         target: StaticString,
         V: ParamVisitor,
     ](mut self, prefix: String, mut visitor: V,) raises:
-        """No-op (S5 Stage 3): ComputeGraph drives loss DAGs whose nodes
-        carry no `State` (no BatchNorm). If a State-bearing leaf is ever
-        placed in a graph, add `for_each_state_via` to `GraphNode`
-        mirroring `for_each_param_via`."""
-        pass
+        """Walk every node's `State` fields with `node_name.` prefixes
+        (mirrors `for_each_param`). Was a no-op until 2026-06-10 — LeWM
+        puts BatchNorm1D inside graph nodes (encoder projector, PredProj),
+        whose running stats are State and must be exportable for
+        eval-mode inference (planning) and name-keyed predictor sync."""
+        assert_tag_for["ComputeGraph", target](self.ts.target_tag)
+        var sep = "." if prefix.byte_length() > 0 else ""
+        comptime for i in range(Self.N):
+            self.nodes[i].for_each_state_via[target, V](
+                prefix + sep + String(Self.NODES[i].NAME),
+                visitor,
+            )
 
     # ──────────────────────────────────────────────────────────────────
     # describe — topology walk into a pluggable GraphVisitor sink.

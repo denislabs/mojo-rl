@@ -131,10 +131,21 @@ struct LeWMPredictor[
     def sync_from_named(
         mut self, var d: Dict[String, List[Scalar[DT]]],
     ) raises:
-        """Overwrite the predictor's params with the trainer's snapshot,
-        matched by `for_each_param` name."""
+        """Overwrite the predictor's params AND state (BatchNorm running
+        stats) with the trainer's snapshot, matched by `for_each_param` /
+        `for_each_state` name. State sync makes eval-mode BN at planning
+        normalize identically to the trainer's warmed running stats."""
         var v = _NamedImportVisitor(d^, ctx=self.ts.ctx)
         self.graph.for_each_param[Self.target, _NamedImportVisitor]("", v)
+        self.graph.for_each_state[Self.target, _NamedImportVisitor]("", v)
+
+    def set_bn_training(mut self, training: Bool) raises:
+        """Flip PredProj's BatchNorm (node "pred") between training and
+        eval mode. Planning runs eval (running stats, synced from the
+        trainer) — training-mode BN would normalize over the CEM candidate
+        batch, coupling candidate scores."""
+        var v = Scalar[DT](1.0) if training else Scalar[DT](0.0)
+        self.graph.set_node_attr["pred", "training"](v)
 
     def forward(
         mut self,
