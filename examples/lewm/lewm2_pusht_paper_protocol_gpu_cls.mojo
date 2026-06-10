@@ -114,11 +114,16 @@ def main() raises:
         _ = wm.eval_loss(pix_t, act_t)
     _ = src^
 
-    # dataset windows → (start, goal) state pairs
+    # dataset windows → (start, goal) state pairs. The swm state column is
+    # 7-dim: [agent_x, agent_y, block_x, block_y, block_angle % 2π,
+    # agent_vx, agent_vy] (env _get_obs); we use the first 5 — eval_state
+    # ignores velocity too. (set_state zeroes velocities; dataset starts
+    # carry a small agent velocity — minor, PD damps it within a step.)
     var dataset = LewmPushTExpert(frameskip=FRAMESKIP, num_steps=T)
-    if dataset.state_dim != 5:
-        raise Error("expected 5-dim PushT state column, got "
+    if dataset.state_dim != 7:
+        raise Error("expected 7-dim swm PushT state column, got "
                     + String(dataset.state_dim))
+    var sdim = dataset.state_dim
     var window = dataset.make_window()
     rng_seed(7)
 
@@ -154,10 +159,10 @@ def main() raises:
             dataset.sample_window(idx, window)
             for j in range(5):
                 starts[b * 5 + j] = Scalar[DT](
-                    Float64(window.state[0 * 5 + j])
+                    Float64(window.state[0 * sdim + j])
                 )
                 goals[b * 5 + j] = Scalar[DT](
-                    Float64(window.state[GOAL_FRAME * 5 + j])
+                    Float64(window.state[GOAL_FRAME * sdim + j])
                 )
         print("─" * 70)
         print("round", round + 1, "/", ROUNDS)
