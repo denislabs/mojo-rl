@@ -170,6 +170,10 @@ def main() raises:
         # back past uniform after ~2000 moves) on this 5-block ResNet at lr=2e-3.
         max_grad_norm=1.0,
         weight_decay=1e-4,
+        # Self-play opening diversity: 2 uniform-random legal plies → 49
+        # distinct openings. Counters the post-promotion one-hot policy
+        # head making deterministic self-play replay one game.
+        selfplay_open_plies=2,
     )
 
     logger.close()

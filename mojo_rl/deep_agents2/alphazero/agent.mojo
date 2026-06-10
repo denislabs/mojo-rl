@@ -192,6 +192,7 @@ struct AlphaZeroAgent[
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         max_grad_norm: Float64 = 0.0,
         weight_decay: Float64 = 0.0,
+        selfplay_open_plies: Int = 2,
     ) raises -> ArenaRunResult:
         """`train_arena` with GUMBEL self-play (GPU-only): Gumbel-Top-k roots
         + Sequential Halving + improved-policy targets, ``MAX_K`` root
@@ -241,6 +242,7 @@ struct AlphaZeroAgent[
             logger,
             max_grad_norm,
             weight_decay,
+            selfplay_open_plies,
         )
 
     def train_arena[

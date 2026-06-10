@@ -136,8 +136,13 @@ def append_az_train_diagnostics[ACT: Int, BATCH: Int](
         for a in range(ACT):
             var prob = exp(Float64(pred[base + a]) - maxl) / sume
             var t = Float64(tgt[base + a])
-            if t > 1e-8 and prob > 1e-8:
-                ce -= t * log(prob)
+            if t > 1e-8:
+                # Clamp, don't skip: skipping under-reports CE exactly when
+                # the head is sharp (target mass on near-zero predictions),
+                # which made CE read ~0 < target entropy — impossible for a
+                # true cross-entropy.
+                var p_cl = prob if prob > 1e-12 else 1e-12
+                ce -= t * log(p_cl)
             if prob > 1e-8:
                 ent -= prob * log(prob)
         ce_sum += ce
@@ -261,6 +266,15 @@ def run_alphazero_selfplay_arena_gumbel[
     #                               value and the #1 stability fix.
     weight_decay: Float64 = 0.0,  # decoupled (AdamW) weight decay (0 = off ≡
     #                               plain Adam; 1e-4 matches the legacy config).
+    selfplay_open_plies: Int = 2, # uniform-random LEGAL action for the first
+    #                               N plies of every self-play game (the search
+    #                               policy is still recorded as the target).
+    #                               Keeps replay diverse when the head goes
+    #                               near-one-hot post-promotion — Gumbel logit
+    #                               noise (std ~1.3) can't perturb saturated
+    #                               logits, and sampling a one-hot improved
+    #                               policy is deterministic. C4: 2 plies = 49
+    #                               openings vs 1.
 ) raises -> ArenaRunResult:
     # NOTE on units: one loop pass advances every one of `N_ENVS` games by a
     # single self-play *move* (not a full game). `iterations` is therefore the
@@ -330,6 +344,7 @@ def run_alphazero_selfplay_arena_gumbel[
     var pred_h = ctx.enqueue_create_host_buffer[DT](BATCH * W)  # diag: net out
     var ep_steps_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)  # per-env ply
     var act_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)  # sampled actions
+    var legal_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * ACT)
     ctx.synchronize()
 
     # ── Host trajectory storage (per-env in-progress game) ──
@@ -395,6 +410,7 @@ def run_alphazero_selfplay_arena_gumbel[
         # 2. Pull root obs + visit-count policy, record into trajectory.
         ctx.enqueue_copy(obs_h, obs_dev)
         ctx.enqueue_copy(pol_h, mcts.policies_view())
+        ctx.enqueue_copy(legal_h, legal_dev)
         ctx.synchronize()
         for e in range(N_ENVS):
             # Current ply of env e's game = ep_steps for the temperature kernel.
@@ -417,7 +433,25 @@ def run_alphazero_selfplay_arena_gumbel[
         for e in range(N_ENVS):
             var ply = Int(Float64(ep_steps_h.unsafe_ptr()[e]))
             var a_sel = -1
-            if ply < TEMP_MOVES:
+            if ply < selfplay_open_plies:
+                # Opening diversity: uniform over LEGAL actions.
+                var n_legal = 0
+                for a in range(ACT):
+                    if Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5:
+                        n_legal += 1
+                if n_legal > 0:
+                    az_rng = az_rng ^ (az_rng << 13)
+                    az_rng = az_rng ^ (az_rng >> 7)
+                    az_rng = az_rng ^ (az_rng << 17)
+                    var pick = Int(az_rng % UInt64(n_legal))
+                    var seen = 0
+                    for a in range(ACT):
+                        if Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5:
+                            if seen == pick:
+                                a_sel = a
+                                break
+                            seen += 1
+            elif ply < TEMP_MOVES:
                 az_rng = az_rng ^ (az_rng << 13)
                 az_rng = az_rng ^ (az_rng >> 7)
                 az_rng = az_rng ^ (az_rng << 17)

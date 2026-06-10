@@ -133,8 +133,13 @@ def append_az_train_diagnostics[ACT: Int, BATCH: Int](
         for a in range(ACT):
             var prob = exp(Float64(pred[base + a]) - maxl) / sume
             var t = Float64(tgt[base + a])
-            if t > 1e-8 and prob > 1e-8:
-                ce -= t * log(prob)
+            if t > 1e-8:
+                # Clamp, don't skip: skipping under-reports CE exactly when
+                # the head is sharp (target mass on near-zero predictions),
+                # which made CE read ~0 < target entropy — impossible for a
+                # true cross-entropy.
+                var p_cl = prob if prob > 1e-12 else 1e-12
+                ce -= t * log(p_cl)
             if prob > 1e-8:
                 ent -= prob * log(prob)
         ce_sum += ce
