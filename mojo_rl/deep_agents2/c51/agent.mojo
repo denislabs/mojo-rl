@@ -124,13 +124,21 @@ struct C51Agent[
         diag_every: Int = 0,
         checkpoint_path: String = "",
         checkpoint_every: Int = 0,
+        base_step: Int = 0,
+        eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
+        eval_every: Int = 0,
+        eval_episodes: Int = 10,
+        eval_max_steps: Int = 20_000,
+        progress_label: String = "c51",
     ) raises -> List[Scalar[DT]]:
         """Single-env discrete off-policy training via
         `run_offpolicy_discrete_train`. Covers `(env=cpu, train=cpu)` and
         `(env=cpu, train=gpu)` — env is always CPU-side for discrete.
 
         See `DQNAgent.train` for `diag_every` / `checkpoint_*`
-        semantics; the discrete driver wires them the same way."""
+        semantics; the discrete driver wires them the same way.
+        `eval_env` enables periodic noise-off greedy eval on a separate
+        env instance. All kwargs forward to the driver unchanged."""
         var ctx = self.trainer.ctx
         return run_offpolicy_discrete_train[
             C51Trainer[
@@ -154,6 +162,12 @@ struct C51Agent[
             diag_every=diag_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+            base_step=base_step,
+            eval_env=eval_env,
+            eval_every=eval_every,
+            eval_episodes=eval_episodes,
+            eval_max_steps=eval_max_steps,
+            progress_label=progress_label,
         )
 
     def train_gpu_batched[
