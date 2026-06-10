@@ -39,6 +39,10 @@ comptime RESX_HBLANK: Int = 159
 comptime RESX_LATE_HBLANK: Int = 158
 comptime RESX_FRAME: Int = 157
 
+# lit_horizon() return value for "this object can never be lit with its
+# current config" (disabled / blank pattern / RESMP-locked).
+comptime LIT_NEVER: Int = 1 << 30
+
 
 @always_inline
 def tia_write_clock(start_clock: Int, cycles: Int) -> Int:
@@ -268,12 +272,61 @@ struct BallCounter(Copyable, Movable):
         elif in_hblank:
             _ = self.tick()
 
+    def advance_n(mut self, n: Int):
+        """Advance exactly n visible ticks (== n tick() calls), discarding lit.
+
+        O(1) outside render windows (skips straight to the next decode);
+        per-tick inside them — exact by construction, it calls tick() itself.
+        Valid only while the config (width/vdel/enables) is static, i.e. the
+        bulk fast path's no-pending-writes precondition."""
+        var rem = n
+        while rem > 0:
+            if self.is_rendering:
+                _ = self.tick()
+                rem -= 1
+                continue
+            var d = (BALL_DECODE - self.counter + H_PIXEL) % H_PIXEL
+            if d >= rem:
+                self.counter = (self.counter + rem) % H_PIXEL
+                return
+            self.counter = (self.counter + d) % H_PIXEL
+            rem -= d
+            _ = self.tick()  # the decode tick
+            rem -= 1
+
+    @always_inline
+    def lit_horizon(self) -> Int:
+        """Number of upcoming visible ticks guaranteed to produce lit=False
+        (assuming no register writes land in the window). Conservative."""
+        var en = self.enabl_old if self.vdel else self.enabl_new
+        if not en:
+            return LIT_NEVER
+        if self.is_rendering:
+            return 0
+        return (BALL_DECODE - self.counter + H_PIXEL) % H_PIXEL
+
 
 # ---------------------------------------------------------------------------
 # Shared decode table (Stella DrawCounterDecodes): copies decode at counter 156
 # (main) plus NUSIZ-dependent offsets for the extra copies. Same table for
 # players and missiles (DrawCounterDecodes.cxx).
 # ---------------------------------------------------------------------------
+
+
+@always_inline
+def decode_offset(nusiz_copies: Int, counter: Int) -> Int:
+    """Visible ticks from `counter` until the next decode tick — i.e. the
+    smallest i >= 0 such that decode_copy(nusiz_copies, counter + i) != 0
+    (mod the 160-clock counter cycle). The bulk fast path uses this to skip
+    straight to the next render window in O(1)."""
+    var best = (156 - counter + H_PIXEL) % H_PIXEL
+    if nusiz_copies == 1 or nusiz_copies == 3:
+        best = min(best, (12 - counter + H_PIXEL) % H_PIXEL)
+    if nusiz_copies == 2 or nusiz_copies == 3 or nusiz_copies == 6:
+        best = min(best, (28 - counter + H_PIXEL) % H_PIXEL)
+    if nusiz_copies == 4 or nusiz_copies == 6:
+        best = min(best, (60 - counter + H_PIXEL) % H_PIXEL)
+    return best
 
 
 @always_inline
@@ -452,6 +505,33 @@ struct PlayerCounter(Copyable, Movable):
             self.counter = 0
         return lit
 
+    def advance_n(mut self, n: Int):
+        """Advance exactly n visible ticks, discarding lit (see BallCounter)."""
+        var rem = n
+        while rem > 0:
+            if self.is_rendering:
+                _ = self.tick()
+                rem -= 1
+                continue
+            var d = decode_offset(self.nusiz_copies, self.counter)
+            if d >= rem:
+                self.counter = (self.counter + rem) % H_PIXEL
+                return
+            self.counter = (self.counter + d) % H_PIXEL
+            rem -= d
+            _ = self.tick()  # the decode tick
+            rem -= 1
+
+    @always_inline
+    def lit_horizon(self) -> Int:
+        """Upcoming visible ticks guaranteed lit-free (see BallCounter)."""
+        var g = self.grp_old if self.vdel else self.grp_new
+        if g == 0:
+            return LIT_NEVER
+        if self.is_rendering:
+            return 0
+        return decode_offset(self.nusiz_copies, self.counter)
+
 
 # ---------------------------------------------------------------------------
 # MissileCounter: faithful port of Stella Missile counter/decode.
@@ -546,6 +626,38 @@ struct MissileCounter(Copyable, Movable):
         if self.counter >= H_PIXEL:
             self.counter = 0
         return lit
+
+    def advance_n(mut self, n: Int):
+        """Advance exactly n visible ticks, discarding lit (see BallCounter)."""
+        var rem = n
+        while rem > 0:
+            if self.is_rendering:
+                _ = self.tick()
+                rem -= 1
+                continue
+            if self.resmp:
+                # Decode suppressed and not rendering: pure counter advance.
+                self.counter = (self.counter + rem) % H_PIXEL
+                return
+            var d = decode_offset(self.nusiz_copies, self.counter)
+            if d >= rem:
+                self.counter = (self.counter + rem) % H_PIXEL
+                return
+            self.counter = (self.counter + d) % H_PIXEL
+            rem -= d
+            _ = self.tick()  # the decode tick
+            rem -= 1
+
+    @always_inline
+    def lit_horizon(self) -> Int:
+        """Upcoming visible ticks guaranteed lit-free (see BallCounter)."""
+        if not self.enabled:
+            return LIT_NEVER
+        if self.is_rendering:
+            return 0
+        if self.resmp:
+            return LIT_NEVER
+        return decode_offset(self.nusiz_copies, self.counter)
 
 
 # ---------------------------------------------------------------------------
@@ -672,6 +784,25 @@ struct CycleTIA(Copyable, Movable):
         if self.bl.tick():
             bits |= UInt8(1 << LIT_BL)
         return bits
+
+    @always_inline
+    def lit_safe_horizon(self) -> Int:
+        """Visible ticks from now during which NO object can be lit (so no
+        collision pair can latch), assuming no pending writes/movement."""
+        var safe = self.p0.lit_horizon()
+        safe = min(safe, self.p1.lit_horizon())
+        safe = min(safe, self.m0.lit_horizon())
+        safe = min(safe, self.m1.lit_horizon())
+        return min(safe, self.bl.lit_horizon())
+
+    @always_inline
+    def advance_objects(mut self, n: Int):
+        """Advance all five objects exactly n visible ticks (bulk fast path)."""
+        self.p0.advance_n(n)
+        self.p1.advance_n(n)
+        self.m0.advance_n(n)
+        self.m1.advance_n(n)
+        self.bl.advance_n(n)
 
     @always_inline
     def next_line(mut self):

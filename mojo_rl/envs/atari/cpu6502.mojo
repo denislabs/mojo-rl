@@ -1337,6 +1337,9 @@ def run_frame_cycle_accurate[
     var clocks = 0
     var due_reg = List[UInt8]()
     var due_val = List[UInt8]()
+    # Bulk fast-path throttle: after a blocked attempt (an object's render
+    # window is ahead), run this many per-clock iterations before retrying.
+    var skip_bulk = 0
 
     while not done and clocks < MAX_CLOCKS:
         # --- one CPU instruction ---
@@ -1362,7 +1365,105 @@ def run_frame_cycle_accurate[
             # (SI vertical shaking; Breakout paddle-position-dependent glitches).
             riot_update_timer(state, UInt32(nclk // 3))
 
-        for j in range(nclk):
+        var j = 0
+        while j < nclk:
+            # ---- Bulk fast path: advance through event-free clocks without
+            # the per-clock loop. Preconditions: DelayQueue empty, no HMOVE
+            # movement in progress, and no logged TIA write pushes before
+            # `limit` — so TIA flags and all object configs are static across
+            # the span. Then:
+            #   - HBLANK clocks do nothing at all (movement is off): skip O(1)
+            #   - visible clocks only advance the object counters; as long as
+            #     no object can be lit (lit_safe_horizon), or VBLANK blanks
+            #     collision latching anyway, no collision can latch —
+            #     advance the counters exactly via advance_n.
+            #   - video: every covered in-range pixel is exactly what
+            #     _cycle_pixel(lit=0) produces (PF/BK priority, or COLUBK
+            #     under VBLANK) — fill via the same function, no object ticks.
+            # Line wraps replicate the per-clock bookkeeping below verbatim.
+            if (
+                skip_bulk == 0
+                and state.ctia.dq.count == 0
+                and not state.ctia.movement_in_progress
+            ):
+                var limit = nclk
+                if not wsync_pad:
+                    for li in range(state.tia_log_count):
+                        var c = state.tia_log_clock[li]
+                        if c >= j and c < limit:
+                            limit = c
+                var vbl_on = (state.tia_flags & VBL) != 0
+                var span = limit - j
+                var consumed = 0
+                while consumed < span and not done:
+                    var bh = state.ctia.hctr
+                    var bhbe = (
+                        76 if state.ctia.extended_hblank else HBLANK_CLOCKS
+                    )
+                    var k: Int
+                    if bh < bhbe:
+                        # HBLANK: no ticks, no collisions.
+                        k = min(bhbe - bh, span - consumed)
+                    else:
+                        k = min(CPL - bh, span - consumed)
+                        if not vbl_on:
+                            var safe = state.ctia.lit_safe_horizon()
+                            if safe <= 0:
+                                break  # render window ahead -> per-clock
+                            k = min(k, safe)
+                        state.ctia.advance_objects(k)
+                    comptime if RENDER:
+                        var brow = (
+                            visible_line if visible_line < FH2 else -1
+                        )
+                        var pend = min(
+                            bh + k - HBLANK_CLOCKS, FRAME_WIDTH
+                        )
+                        for pix in range(max(bh - HBLANK_CLOCKS, 0), pend):
+                            _cycle_pixel(
+                                state, brow, pix, 0, frame_buf, palette
+                            )
+                    consumed += k
+                    var bnh = bh + k
+                    if bnh >= CPL:
+                        bnh = 0
+                        state.ctia.extended_hblank = False
+                        if state.wsync and not wsync_pad:
+                            state.wsync = False
+                        if (
+                            state.paddle_charge < 255
+                            and (state.tia_flags & TIA_PADDLE_GROUND) == 0
+                        ):
+                            state.paddle_charge += 1
+                        var bv_now = (state.tia_flags & VSY) != 0
+                        var bv_rising = bv_now and not prev_vsync
+                        prev_vsync = bv_now
+                        if bv_rising:
+                            if rendered_any:
+                                done = True
+                            else:
+                                visible_line = 0
+                                total_lines = 0
+                                ystart = -1
+                        total_lines += 1
+                        if (
+                            state.tia_flags & VBL
+                        ) == 0 and visible_line < FH2:
+                            if ystart < 0:
+                                ystart = total_lines - 1
+                            visible_line += 1
+                            rendered_any = True
+                    state.ctia.hctr = bnh
+                j += consumed
+                clocks += consumed
+                if done:
+                    break
+                if consumed > 0:
+                    continue
+                skip_bulk = 4
+            elif skip_bulk > 0:
+                skip_bulk -= 1
+
             var hctr = state.ctia.hctr
             var pixel = hctr - HBLANK_CLOCKS
             # Extended HBLANK after HMOVE: the 8 clocks past the normal 68 stay
@@ -1464,6 +1565,7 @@ def run_frame_cycle_accurate[
             state.ctia.hctr = nh
             if done:
                 break
+            j += 1
 
     state.scanline = UInt16(visible_line)
     state.dbg_frame_lines = UInt16(total_lines)
