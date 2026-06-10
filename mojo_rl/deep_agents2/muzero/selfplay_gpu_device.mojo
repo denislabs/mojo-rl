@@ -1,0 +1,642 @@
+"""MuZero single-player self-play drivers (GPU) — fully on-device search + train.
+
+Unlike `selfplay_gpu.mojo` (the CPU-search / GPU-train HYBRID with its per-step
+checkpoint-string mirror sync), these drivers keep the three nets resident on
+the device for BOTH halves: the MCTS search runs on the GPU orchestrators over
+the on-device ``h/g/f`` via the MuZero GPU adapters (`MZRepGPU` / `MZDynGPU` /
+`MZPredGPU`), and the K-step BPTT unroll trains the same nets in place
+(`mz_unroll_train_step_gpu`). No CPU mirror, no sync — the only host↔device
+traffic in the collection loop is the per-step root obs up and the visit
+policy / root value down (the EZv2 GPU driver's proven shape).
+
+Two planner flavors:
+
+  * ``run_muzero_selfplay_gpu_device`` — **vanilla MuZero**: `GenericGPUMCTS`
+    with `MuZeroPUCT[19652, 1.25]` + root `DirichletNoise[0.25, 0.25]`, exactly
+    the algorithm of the converged CPU lighthouse. Greedy eval uses a SECOND
+    planner instance with `NoNoise` (noise is a comptime trait, not a runtime
+    flag — the AlphaZero eval pattern).
+  * ``run_muzero_gumbel_selfplay_gpu`` — **Gumbel MuZero**: `GumbelGPUMCTS`
+    (Gumbel-Top-k root sampling + sequential halving). The stored policy target
+    is the *improved policy*; greedy eval is its argmax (Gumbel noise is part
+    of the algorithm, no separate eval planner needed).
+
+Both carry the full CartPole-500 fix stack: ∝ visits^(1/T) action sampling with
+the legacy temperature schedule, truncation-aware episode storage (time-limit
+cut ≠ terminal), and per-iteration reanalyze (fresh search on a stored position
+→ overwrite its policy/value targets). ``v_min``/``v_max`` are the h-space
+support shared by the planner decode and the two-hot training targets.
+
+NOTE: `GenericGPUMCTS` requires ``NUM_SIMS % BATCH_SIMS == 0`` (the CPU search
+handles a remainder round; the GPU one does not) — asserted at compile time.
+"""
+
+from std.math import exp, log
+from std.memory import alloc
+from layout import Layout, LayoutTensor
+from std.gpu.host import DeviceContext, DeviceBuffer
+
+from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.module import Module, mptr
+from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.core.env_traits import BoxDiscreteActionEnv
+from mojo_rl.planners.tree_search import (
+    GenericGPUMCTS,
+    GumbelGPUMCTS,
+    MuZeroPUCT,
+    DirichletNoise,
+    NoNoise,
+    SinglePlayer,
+)
+
+from .blocks import mz_unroll_train_step_gpu, MZScratch
+from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
+from ..zero.sequence_replay_mcts import MCTSSequenceReplay
+from ..zero.temperature import visit_temperature
+
+
+def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    return mptr(alloc[Scalar[DT]](n))
+
+
+def run_muzero_selfplay_gpu_device[
+    ENV: BoxDiscreteActionEnv,
+    REP: Module,
+    DYN: Module,
+    PRED: Module,
+    OBS: Int,
+    ACT: Int,
+    LATENT: Int,
+    BINS: Int,
+    NUM_SIMS: Int,
+    MAX_NODES: Int,
+    CAP: Int,
+    B: Int,
+    K: Int,
+    N: Int,
+    BATCH_SIMS: Int = 8,
+    VIRTUAL_LOSS: Int = 3,
+](
+    ctx: DeviceContext,
+    mut env: ENV,
+    mut rep: REP,
+    mut dyn: DYN,
+    mut pred: PRED,
+    mut orep: Adam,
+    mut odyn: Adam,
+    mut opred: Adam,
+    iterations: Int,
+    learning_starts: Int = 256,
+    train_per_iter: Int = 1,
+    gamma: Scalar[DT] = Scalar[DT](0.997),
+    v_min: Scalar[DT] = Scalar[DT](-10.0),
+    v_max: Scalar[DT] = Scalar[DT](10.0),
+    seed: UInt64 = 0,
+    max_ep_steps: Int = 500,
+    value_coef: Scalar[DT] = Scalar[DT](0.25),
+    temperature_decay_steps: Int = 0,
+    reanalyze_every: Int = 0,
+    eval_every: Int = 0,
+    eval_episodes: Int = 5,
+    verbose: Bool = False,
+) raises -> Float64:
+    comptime assert NUM_SIMS % BATCH_SIMS == 0, (
+        "GenericGPUMCTS needs NUM_SIMS to be a multiple of BATCH_SIMS"
+    )
+    comptime N_ENVS = 1
+
+    # ── on-device planners + net adapters ──
+    # Collection planner: root Dirichlet noise on (exploration). Eval planner:
+    # NoNoise — noise is a comptime trait on GenericGPUMCTS, not a runtime arg.
+    var planner = GenericGPUMCTS[
+        N_ENVS, ACT, LATENT, BINS, MAX_NODES, NUM_SIMS, BATCH_SIMS,
+        MuZeroPUCT[19652.0, 1.25], DirichletNoise[0.25, 0.25], SinglePlayer,
+        0, VIRTUAL_LOSS,
+    ](ctx, gamma=Float64(gamma), v_min=Float64(v_min), v_max=Float64(v_max))
+    var eval_planner = GenericGPUMCTS[
+        N_ENVS, ACT, LATENT, BINS, MAX_NODES, NUM_SIMS, BATCH_SIMS,
+        MuZeroPUCT[19652.0, 1.25], NoNoise, SinglePlayer,
+        0, VIRTUAL_LOSS,
+    ](ctx, gamma=Float64(gamma), v_min=Float64(v_min), v_max=Float64(v_max))
+    var rep_a = MZRepGPU[OBS, LATENT, REP].make(rep)
+    var dyn_a = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn)
+    var pred_a = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred)
+
+    var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
+
+    # ── device obs buffer (single env) + host mirrors ──
+    var d_obs = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
+    var h_obs = _a(N_ENVS * OBS)
+    var h_pol = _a(N_ENVS * ACT)
+    var h_val = _a(N_ENVS)
+
+    # ── training batch slabs (time-major), allocated once ──
+    var t_obs0 = _a(B * OBS)
+    var t_act = _a(K * B)
+    var t_pol = _a((K + 1) * B * ACT)
+    var t_val = _a((K + 1) * B)
+    var t_rew = _a(K * B)
+
+    # persistent GPU unroll scratch (no per-step enqueue_create_buffer)
+    var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
+
+    # episode accumulation buffers
+    var e_obs = List[Scalar[DT]]()
+    var e_act = List[Scalar[DT]]()
+    var e_rew = List[Scalar[DT]]()
+    var e_pol = List[Scalar[DT]]()
+    var e_val = List[Scalar[DT]]()
+    var e_tp = List[Scalar[DT]]()
+    var e_legal = List[Scalar[DT]]()
+    var ep_len = 0
+
+    var rng = seed ^ UInt64(0x123456789)
+    var mcts_seed = UInt32(seed & UInt64(0xFFFF))
+    var last_loss = 0.0
+    var ep_returns = List[Float64]()
+
+    var cur = env.reset_obs_list()
+    var cur_f = List[Float64]()
+    for j in range(OBS):
+        cur_f.append(Float64(cur[j]))
+    var ep_return = 0.0
+
+    for it in range(iterations):
+        # ── GPU search over the current obs ──
+        for j in range(OBS):
+            h_obs[j] = Scalar[DT](cur_f[j])
+        ctx.enqueue_copy(d_obs, h_obs)
+        var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
+            MutAnyOrigin](mptr(d_obs.unsafe_ptr()))
+        planner.search_gpu[
+            MZRepGPU[OBS, LATENT, REP],
+            MZDynGPU[LATENT, ACT, BINS, DYN],
+            MZPredGPU[LATENT, ACT, BINS, PRED],
+        ](ctx, rep_a, dyn_a, pred_a, obs_t, rng_seed=mcts_seed)
+        mcts_seed += UInt32(1)
+
+        ctx.enqueue_copy(h_pol, planner.policies_out)
+        ctx.enqueue_copy(h_val, planner.root_value_out)
+        ctx.synchronize()
+
+        var root_v = Float64(h_val[0])
+
+        # ── sample action ∝ visits^(1/T) ──
+        # The *stored* policy target stays the untempered visit distribution.
+        var temp = visit_temperature(it, temperature_decay_steps)
+        var w = InlineArray[Float64, ACT](fill=0.0)
+        var wsum = 0.0
+        for a in range(ACT):
+            var p = Float64(h_pol[a])
+            if temp != 1.0 and p > 0.0:
+                p = exp(log(p) / temp)
+            w[a] = p
+            wsum += p
+        rng = rng ^ (rng << 13); rng = rng ^ (rng >> 7); rng = rng ^ (rng << 17)
+        var r = Float64(rng % UInt64(1_000_000)) / 1_000_000.0 * wsum
+        var cum = 0.0
+        var action = ACT - 1
+        for a in range(ACT):
+            cum += w[a]
+            if r <= cum:
+                action = a
+                break
+
+        # ── record step (o_t, a_t, π_t, v_t, to_play=0) ──
+        for j in range(OBS):
+            e_obs.append(Scalar[DT](cur_f[j]))
+        e_act.append(Scalar[DT](action))
+        for a in range(ACT):
+            e_pol.append(h_pol[a])
+            e_legal.append(Scalar[DT](1.0))
+        e_val.append(Scalar[DT](root_v))
+        e_tp.append(Scalar[DT](0.0))
+
+        # ── env step → r_{t+1}, done ──
+        var stepped = env.step_obs(action)
+        var reward = Float64(stepped[1])
+        var done = stepped[2]
+        e_rew.append(Scalar[DT](reward))
+        ep_return += reward
+        ep_len += 1
+
+        cur_f = List[Float64]()
+        for j in range(OBS):
+            cur_f.append(Float64(stepped[0][j]))
+
+        if done or ep_len >= max_ep_steps:
+            # Time-limit cut is NOT a terminal — bootstrap past it.
+            rb.store_episode(
+                mptr(e_obs.unsafe_ptr()),
+                mptr(e_act.unsafe_ptr()),
+                mptr(e_rew.unsafe_ptr()),
+                mptr(e_pol.unsafe_ptr()),
+                mptr(e_val.unsafe_ptr()),
+                mptr(e_tp.unsafe_ptr()),
+                mptr(e_legal.unsafe_ptr()),
+                ep_len,
+                truncated=not env.was_terminated(),
+            )
+            ep_returns.append(ep_return)
+            e_obs.clear(); e_act.clear(); e_rew.clear()
+            e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
+            ep_len = 0
+            ep_return = 0.0
+            cur = env.reset_obs_list()
+            cur_f = List[Float64]()
+            for j in range(OBS):
+                cur_f.append(Float64(cur[j]))
+
+        # ── train (GPU unroll on the SAME resident nets — no mirror sync) ──
+        if it >= learning_starts and rb.num_episodes() > 0:
+            for _ in range(train_per_iter):
+                rb.sample_training_batch[B, K, N](
+                    gamma, t_obs0, t_act, t_pol, t_val, t_rew
+                )
+                last_loss = Float64(
+                    mz_unroll_train_step_gpu[
+                        REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS
+                    ](
+                        ctx, rep, dyn, pred, orep, odyn, opred,
+                        scratch,
+                        t_obs0, t_act, t_pol, t_val, t_rew,
+                        v_min, v_max, value_coef,
+                    )
+                )
+
+        # ── reanalyze: refresh one stored position with a fresh search ──
+        # Re-search the stored obs with the current on-device nets (noisy
+        # collection planner, consistent with the stored originals) and
+        # overwrite the stored policy + root value.
+        if (
+            reanalyze_every > 0
+            and it >= learning_starts
+            and (it + 1) % reanalyze_every == 0
+            and rb.num_episodes() > 0
+        ):
+            var rpos = rb.sample_position()
+            rb.read_obs(rpos[0], rpos[1], h_obs)
+            ctx.enqueue_copy(d_obs, h_obs)
+            var robs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
+                MutAnyOrigin](mptr(d_obs.unsafe_ptr()))
+            planner.search_gpu[
+                MZRepGPU[OBS, LATENT, REP],
+                MZDynGPU[LATENT, ACT, BINS, DYN],
+                MZPredGPU[LATENT, ACT, BINS, PRED],
+            ](ctx, rep_a, dyn_a, pred_a, robs_t, rng_seed=mcts_seed)
+            mcts_seed += UInt32(1)
+            ctx.enqueue_copy(h_pol, planner.policies_out)
+            ctx.enqueue_copy(h_val, planner.root_value_out)
+            ctx.synchronize()
+            rb.update_targets(rpos[0], rpos[1], h_pol, h_val[0])
+
+        # ── periodic GREEDY eval (NoNoise planner, argmax visits) ──
+        if eval_every > 0 and (it + 1) % eval_every == 0:
+            var eval_sum = 0.0
+            for _ in range(eval_episodes):
+                var eo = env.reset_obs_list()
+                var eo_f = List[Float64]()
+                for j in range(OBS):
+                    eo_f.append(Float64(eo[j]))
+                var eret = 0.0
+                for _step in range(max_ep_steps):
+                    for j in range(OBS):
+                        h_obs[j] = Scalar[DT](eo_f[j])
+                    ctx.enqueue_copy(d_obs, h_obs)
+                    var eobs_t = LayoutTensor[DT,
+                        Layout.row_major(N_ENVS, OBS), MutAnyOrigin](
+                            mptr(d_obs.unsafe_ptr()))
+                    eval_planner.search_gpu[
+                        MZRepGPU[OBS, LATENT, REP],
+                        MZDynGPU[LATENT, ACT, BINS, DYN],
+                        MZPredGPU[LATENT, ACT, BINS, PRED],
+                    ](ctx, rep_a, dyn_a, pred_a, eobs_t, rng_seed=mcts_seed)
+                    mcts_seed += UInt32(1)
+                    ctx.enqueue_copy(h_pol, eval_planner.policies_out)
+                    ctx.synchronize()
+                    var best = 0
+                    for a in range(1, ACT):
+                        if Float64(h_pol[a]) > Float64(h_pol[best]):
+                            best = a
+                    var es = env.step_obs(best)
+                    eret += Float64(es[1])
+                    eo_f = List[Float64]()
+                    for j in range(OBS):
+                        eo_f.append(Float64(es[0][j]))
+                    if es[2]:
+                        break
+                eval_sum += eret
+            var eval_avg = eval_sum / Float64(eval_episodes)
+            print("  [eval] step", it + 1, "greedy_return", eval_avg)
+            # restart a clean training episode (eval clobbered ``env``)
+            e_obs.clear(); e_act.clear(); e_rew.clear()
+            e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
+            ep_len = 0
+            ep_return = 0.0
+            cur = env.reset_obs_list()
+            cur_f = List[Float64]()
+            for j in range(OBS):
+                cur_f.append(Float64(cur[j]))
+
+        if verbose and (it + 1) % 500 == 0:
+            var avg = 0.0
+            var cnt = 0
+            var lo = len(ep_returns) - 10
+            if lo < 0:
+                lo = 0
+            for e in range(lo, len(ep_returns)):
+                avg += ep_returns[e]
+                cnt += 1
+            if cnt > 0:
+                avg /= Float64(cnt)
+            print(
+                "step", it + 1, "loss", last_loss,
+                "eps", rb.num_episodes(), "avg_return(10)", avg,
+            )
+
+    t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
+    h_obs.free(); h_pol.free(); h_val.free()
+    return last_loss
+
+
+def run_muzero_gumbel_selfplay_gpu[
+    ENV: BoxDiscreteActionEnv,
+    REP: Module,
+    DYN: Module,
+    PRED: Module,
+    OBS: Int,
+    ACT: Int,
+    LATENT: Int,
+    BINS: Int,
+    NUM_SIMS: Int,
+    MAX_NODES: Int,
+    MAX_K: Int,
+    CAP: Int,
+    B: Int,
+    K: Int,
+    N: Int,
+](
+    ctx: DeviceContext,
+    mut env: ENV,
+    mut rep: REP,
+    mut dyn: DYN,
+    mut pred: PRED,
+    mut orep: Adam,
+    mut odyn: Adam,
+    mut opred: Adam,
+    iterations: Int,
+    learning_starts: Int = 256,
+    train_per_iter: Int = 1,
+    gamma: Scalar[DT] = Scalar[DT](0.997),
+    v_min: Scalar[DT] = Scalar[DT](-10.0),
+    v_max: Scalar[DT] = Scalar[DT](10.0),
+    seed: UInt64 = 0,
+    max_ep_steps: Int = 500,
+    value_coef: Scalar[DT] = Scalar[DT](0.25),
+    temperature_decay_steps: Int = 0,
+    reanalyze_every: Int = 0,
+    eval_every: Int = 0,
+    eval_episodes: Int = 5,
+    verbose: Bool = False,
+) raises -> Float64:
+    """Gumbel MuZero: same loop as `run_muzero_selfplay_gpu_device` but the
+    search is `GumbelGPUMCTS` (Gumbel-Top-k + sequential halving). The stored
+    policy target is the **improved policy**; greedy eval is its argmax with
+    the same planner (Gumbel root sampling is the algorithm's exploration —
+    there is no separate Dirichlet noise to switch off)."""
+    comptime N_ENVS = 1
+
+    var planner = GumbelGPUMCTS[
+        N_ENVS, ACT, LATENT, BINS, MAX_NODES, MAX_K, NUM_SIMS, SinglePlayer
+    ](ctx, gamma=Float64(gamma), v_min=Float64(v_min), v_max=Float64(v_max))
+    var rep_a = MZRepGPU[OBS, LATENT, REP].make(rep)
+    var dyn_a = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn)
+    var pred_a = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred)
+
+    var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
+
+    var d_obs = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
+    var h_obs = _a(N_ENVS * OBS)
+    var h_pol = _a(N_ENVS * ACT)
+    var h_val = _a(N_ENVS)
+
+    var t_obs0 = _a(B * OBS)
+    var t_act = _a(K * B)
+    var t_pol = _a((K + 1) * B * ACT)
+    var t_val = _a((K + 1) * B)
+    var t_rew = _a(K * B)
+
+    var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
+
+    var e_obs = List[Scalar[DT]]()
+    var e_act = List[Scalar[DT]]()
+    var e_rew = List[Scalar[DT]]()
+    var e_pol = List[Scalar[DT]]()
+    var e_val = List[Scalar[DT]]()
+    var e_tp = List[Scalar[DT]]()
+    var e_legal = List[Scalar[DT]]()
+    var ep_len = 0
+
+    var rng = seed ^ UInt64(0x123456789)
+    var mcts_seed = UInt32(seed & UInt64(0xFFFF))
+    var last_loss = 0.0
+    var ep_returns = List[Float64]()
+
+    var cur = env.reset_obs_list()
+    var cur_f = List[Float64]()
+    for j in range(OBS):
+        cur_f.append(Float64(cur[j]))
+    var ep_return = 0.0
+
+    for it in range(iterations):
+        # ── GPU Gumbel search over the current obs ──
+        for j in range(OBS):
+            h_obs[j] = Scalar[DT](cur_f[j])
+        ctx.enqueue_copy(d_obs, h_obs)
+        var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
+            MutAnyOrigin](mptr(d_obs.unsafe_ptr()))
+        planner.search_gpu[
+            MZRepGPU[OBS, LATENT, REP],
+            MZDynGPU[LATENT, ACT, BINS, DYN],
+            MZPredGPU[LATENT, ACT, BINS, PRED],
+        ](ctx, rep_a, dyn_a, pred_a, obs_t,
+          apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
+        mcts_seed += UInt32(1)
+
+        ctx.enqueue_copy(h_pol, planner.policies_view())
+        ctx.enqueue_copy(h_val, planner.root_value_view())
+        ctx.synchronize()
+
+        var root_v = Float64(h_val[0])
+
+        # ── sample from the improved policy, tempered π^(1/T) ──
+        var temp = visit_temperature(it, temperature_decay_steps)
+        var w = InlineArray[Float64, ACT](fill=0.0)
+        var wsum = 0.0
+        for a in range(ACT):
+            var p = Float64(h_pol[a])
+            if temp != 1.0 and p > 0.0:
+                p = exp(log(p) / temp)
+            w[a] = p
+            wsum += p
+        rng = rng ^ (rng << 13); rng = rng ^ (rng >> 7); rng = rng ^ (rng << 17)
+        var r = Float64(rng % UInt64(1_000_000)) / 1_000_000.0 * wsum
+        var cum = 0.0
+        var action = ACT - 1
+        for a in range(ACT):
+            cum += w[a]
+            if r <= cum:
+                action = a
+                break
+
+        for j in range(OBS):
+            e_obs.append(Scalar[DT](cur_f[j]))
+        e_act.append(Scalar[DT](action))
+        for a in range(ACT):
+            e_pol.append(h_pol[a])
+            e_legal.append(Scalar[DT](1.0))
+        e_val.append(Scalar[DT](root_v))
+        e_tp.append(Scalar[DT](0.0))
+
+        var stepped = env.step_obs(action)
+        var reward = Float64(stepped[1])
+        var done = stepped[2]
+        e_rew.append(Scalar[DT](reward))
+        ep_return += reward
+        ep_len += 1
+
+        cur_f = List[Float64]()
+        for j in range(OBS):
+            cur_f.append(Float64(stepped[0][j]))
+
+        if done or ep_len >= max_ep_steps:
+            # Time-limit cut is NOT a terminal — bootstrap past it.
+            rb.store_episode(
+                mptr(e_obs.unsafe_ptr()),
+                mptr(e_act.unsafe_ptr()),
+                mptr(e_rew.unsafe_ptr()),
+                mptr(e_pol.unsafe_ptr()),
+                mptr(e_val.unsafe_ptr()),
+                mptr(e_tp.unsafe_ptr()),
+                mptr(e_legal.unsafe_ptr()),
+                ep_len,
+                truncated=not env.was_terminated(),
+            )
+            ep_returns.append(ep_return)
+            e_obs.clear(); e_act.clear(); e_rew.clear()
+            e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
+            ep_len = 0
+            ep_return = 0.0
+            cur = env.reset_obs_list()
+            cur_f = List[Float64]()
+            for j in range(OBS):
+                cur_f.append(Float64(cur[j]))
+
+        # ── train (GPU unroll, resident nets) ──
+        if it >= learning_starts and rb.num_episodes() > 0:
+            for _ in range(train_per_iter):
+                rb.sample_training_batch[B, K, N](
+                    gamma, t_obs0, t_act, t_pol, t_val, t_rew
+                )
+                last_loss = Float64(
+                    mz_unroll_train_step_gpu[
+                        REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS
+                    ](
+                        ctx, rep, dyn, pred, orep, odyn, opred,
+                        scratch,
+                        t_obs0, t_act, t_pol, t_val, t_rew,
+                        v_min, v_max, value_coef,
+                    )
+                )
+
+        # ── reanalyze: refresh one stored position with a fresh search ──
+        if (
+            reanalyze_every > 0
+            and it >= learning_starts
+            and (it + 1) % reanalyze_every == 0
+            and rb.num_episodes() > 0
+        ):
+            var rpos = rb.sample_position()
+            rb.read_obs(rpos[0], rpos[1], h_obs)
+            ctx.enqueue_copy(d_obs, h_obs)
+            var robs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
+                MutAnyOrigin](mptr(d_obs.unsafe_ptr()))
+            planner.search_gpu[
+                MZRepGPU[OBS, LATENT, REP],
+                MZDynGPU[LATENT, ACT, BINS, DYN],
+                MZPredGPU[LATENT, ACT, BINS, PRED],
+            ](ctx, rep_a, dyn_a, pred_a, robs_t,
+              apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
+            mcts_seed += UInt32(1)
+            ctx.enqueue_copy(h_pol, planner.policies_view())
+            ctx.enqueue_copy(h_val, planner.root_value_view())
+            ctx.synchronize()
+            rb.update_targets(rpos[0], rpos[1], h_pol, h_val[0])
+
+        # ── greedy eval (argmax of the Gumbel improved policy) ──
+        if eval_every > 0 and (it + 1) % eval_every == 0:
+            var eval_sum = 0.0
+            for _ in range(eval_episodes):
+                var eo = env.reset_obs_list()
+                var eo_f = List[Float64]()
+                for j in range(OBS):
+                    eo_f.append(Float64(eo[j]))
+                var eret = 0.0
+                for _step in range(max_ep_steps):
+                    for j in range(OBS):
+                        h_obs[j] = Scalar[DT](eo_f[j])
+                    ctx.enqueue_copy(d_obs, h_obs)
+                    var eobs_t = LayoutTensor[DT,
+                        Layout.row_major(N_ENVS, OBS), MutAnyOrigin](
+                            mptr(d_obs.unsafe_ptr()))
+                    planner.search_gpu[
+                        MZRepGPU[OBS, LATENT, REP],
+                        MZDynGPU[LATENT, ACT, BINS, DYN],
+                        MZPredGPU[LATENT, ACT, BINS, PRED],
+                    ](ctx, rep_a, dyn_a, pred_a, eobs_t,
+                      apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
+                    mcts_seed += UInt32(1)
+                    ctx.enqueue_copy(h_pol, planner.policies_view())
+                    ctx.synchronize()
+                    var best = 0
+                    for a in range(1, ACT):
+                        if Float64(h_pol[a]) > Float64(h_pol[best]):
+                            best = a
+                    var es = env.step_obs(best)
+                    eret += Float64(es[1])
+                    eo_f = List[Float64]()
+                    for j in range(OBS):
+                        eo_f.append(Float64(es[0][j]))
+                    if es[2]:
+                        break
+                eval_sum += eret
+            var eval_avg = eval_sum / Float64(eval_episodes)
+            print("  [eval] step", it + 1, "greedy_return", eval_avg)
+            e_obs.clear(); e_act.clear(); e_rew.clear()
+            e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
+            ep_len = 0
+            ep_return = 0.0
+            cur = env.reset_obs_list()
+            cur_f = List[Float64]()
+            for j in range(OBS):
+                cur_f.append(Float64(cur[j]))
+
+        if verbose and (it + 1) % 500 == 0:
+            var avg = 0.0
+            var cnt = 0
+            var lo = len(ep_returns) - 10
+            if lo < 0:
+                lo = 0
+            for e in range(lo, len(ep_returns)):
+                avg += ep_returns[e]
+                cnt += 1
+            if cnt > 0:
+                avg /= Float64(cnt)
+            print(
+                "step", it + 1, "loss", last_loss,
+                "eps", rb.num_episodes(), "avg_return(10)", avg,
+            )
+
+    t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
+    h_obs.free(); h_pol.free(); h_val.free()
+    return last_loss

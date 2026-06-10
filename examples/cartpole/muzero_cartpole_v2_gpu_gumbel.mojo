@@ -1,16 +1,17 @@
-"""MuZero CartPole convergence run (v2, GPU) — fully on-device search + train.
+"""Gumbel MuZero CartPole convergence run (v2, GPU) — fully on-device.
 
-The GPU twin of `muzero_cartpole_v2_cpu`, driven through
-`run_muzero_selfplay_gpu_device`: the MCTS search runs on the GPU
-(`GenericGPUMCTS` over the resident h/g/f nets via the MuZero GPU adapters)
-and the K-step BPTT unroll trains the same nets in place — no CPU mirror, no
-per-step checkpoint sync (that was the old `run_muzero_selfplay_gpu` hybrid,
-still available for reference). NUM_SIMS=24 instead of the CPU run's 25: the
-GPU planner requires a multiple of BATCH_SIMS=8. Same convergence target as
-the CPU run (random ~22, "solving" ~195+, sustained greedy 500 by ~52k).
+The Gumbel-planner sibling of `muzero_cartpole_v2_gpu`: same nets, same train
+step, same fix stack (±20 h-space support, value_coef 1.0, temperature
+schedule, reanalyze, truncation-aware replay), but the search is
+`GumbelGPUMCTS` — Gumbel-Top-k root action sampling + sequential halving
+(`MAX_K=2` root candidates for CartPole's 2 actions). The stored policy target
+is the planner's **improved policy** rather than raw visit counts; greedy eval
+is its argmax. Gumbel MCTS gives policy improvement guarantees at low
+simulation counts, so it is the interesting variant for sim-budget-constrained
+runs — compare against the vanilla example at the same NUM_SIMS.
 
 Run (GPU env required):
-    pixi run -e apple mojo run -I . examples/cartpole/muzero_cartpole_v2_gpu.mojo
+    pixi run -e apple mojo run -I . examples/cartpole/muzero_cartpole_v2_gpu_gumbel.mojo
 """
 
 from std.gpu.host import DeviceContext
@@ -20,7 +21,7 @@ from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.deep_agents2.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents2.muzero.selfplay_gpu_device import (
-    run_muzero_selfplay_gpu_device,
+    run_muzero_gumbel_selfplay_gpu,
 )
 from mojo_rl.envs.cartpole import CartPoleEnv
 
@@ -28,13 +29,14 @@ from mojo_rl.envs.cartpole import CartPoleEnv
 def main() raises:
     comptime OBS = 4
     comptime ACT = 2
-    comptime LATENT = 128   # legacy MuZeroMLPConfig CartPole parity
+    comptime LATENT = 128
     comptime BINS = 51
     comptime H = 128
-    comptime NUM_SIMS = 24   # GPU planner: must be a multiple of BATCH_SIMS=8
+    comptime NUM_SIMS = 24
     comptime MAX_NODES = 128
+    comptime MAX_K = 2       # Gumbel root candidates (= ACT for CartPole)
     comptime CAP = 50000
-    comptime B = 128        # legacy batch_size parity
+    comptime B = 128
     comptime K = 5
     comptime N = 10
 
@@ -57,16 +59,13 @@ def main() raises:
     odyn.max_grad_norm = Scalar[DT](10.0)
     opred.max_grad_norm = Scalar[DT](10.0)
 
-    print("MuZero CartPole convergence (v2, GPU — fully on-device search+train)")
+    print("Gumbel MuZero CartPole convergence (v2, GPU — fully on-device)")
     print("  LATENT", LATENT, "H", H, "BINS", BINS, "sims", NUM_SIMS,
-          "K", K, "N", N, "B", B, "lr 3e-4 clip 10")
+          "MAX_K", MAX_K, "K", K, "N", N, "B", B, "lr 3e-4 clip 10")
 
-    # The proven CPU-lighthouse recipe (see muzero_cartpole_v2_cpu.mojo for the
-    # rationale on each knob): ±20 h-space support (±10 saturates at raw ~117 <
-    # CartPole V≈259), value_coef 1.0, temp 1.0→0.5→0.25, reanalyze every iter.
-    var loss = run_muzero_selfplay_gpu_device[
+    var loss = run_muzero_gumbel_selfplay_gpu[
         CartPoleEnv[DType.float64], Rep, Dyn, Pred,
-        OBS, ACT, LATENT, BINS, NUM_SIMS, MAX_NODES, CAP, B, K, N,
+        OBS, ACT, LATENT, BINS, NUM_SIMS, MAX_NODES, MAX_K, CAP, B, K, N,
     ](
         ctx, env, rep, dyn, pred, orep, odyn, opred,
         iterations=60000,
