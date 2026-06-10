@@ -27,12 +27,14 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ...nn2.constants import DT
+from ...nn2.core.module import Module
 from mojo_rl.planners.trajectory import ContinuousCEMOptimizer
 from mojo_rl.envs.pusht import PushTEnv, PushTAction
 from mojo_rl.envs.pusht.constants import PConstants
 from mojo_rl.envs.pusht.render import render_pusht_rgb_at, IMG_C
 from mojo_rl.render.image_writer import save_image_row
 from .trainer import LeWMTrainer
+from .encoder import LeWMEncoder
 from .predict_graph import LeWMPredictor
 from .mpc import LeWM2MPCScorer
 from .pusht_sim_bridge import sim_frame_chw_norm
@@ -46,12 +48,20 @@ def run_lewm2_closedloop[
     PRED_PROJ_H: Int, SIG_PROJ: Int, SIG_KNOTS: Int,
     BATCH: Int, MPC_HORIZON: Int, target: StaticString,
     PRED_DIM_HEAD: Int = 0, ACT_DIM: Int = 2, VIZ: Int = 96,
+    # Encoder type — trailing, dims-derived default = mean-pooled LeWMEncoder.
+    # Pass LeWMEncoderCLS[...same dims...] for the CLS variant; the encode step
+    # runs through `wm` (eval_loss + read_node_into["emb"]), so the CLS encoder
+    # is used automatically. Existing callers omit it and stay unchanged.
+    ENC: Module = LeWMEncoder[
+        IN_CH, IMG, PATCH, (IMG // PATCH) * (IMG // PATCH),
+        HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H, ENC_FF_MULT,
+    ],
 ](
     mut wm: LeWMTrainer[
         IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
         ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
         PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, BATCH, target,
-        PRED_DIM_HEAD,
+        PRED_DIM_HEAD, ENC,
     ],
     n_cycles: Int,
     scale_x: Float64 = 142.0,

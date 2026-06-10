@@ -16,6 +16,7 @@ from std.testing import assert_true
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.experimental.lewm2.trainer import LeWMTrainer
+from mojo_rl.experimental.lewm2.encoder import LeWMEncoderCLS
 from mojo_rl.experimental.lewm2.closedloop import run_lewm2_closedloop
 
 
@@ -50,6 +51,19 @@ comptime Trainer = LeWMTrainer[
     DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu",
 ]
 
+# CLS-encoder variant — compile-checks the EncCLS path through both
+# LeWMTrainer and run_lewm2_closedloop (Gate C uses exactly this wiring).
+comptime N_PATCHES = (IMG // PATCH) * (IMG // PATCH)
+comptime EncCLS = LeWMEncoderCLS[
+    IN_CH, IMG, PATCH, N_PATCHES, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB,
+    ENC_PROJ_H, ENC_FF_MULT,
+]
+comptime TrainerCLS = LeWMTrainer[
+    IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
+    ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS, PRED_FF,
+    DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu", 0, EncCLS,
+]
+
 
 def main() raises:
     print("=" * 70)
@@ -78,7 +92,29 @@ def main() raises:
     assert_true(r[0] >= 0.0 and r[0] <= 1.0, "success_rate in [0,1]")
     assert_true(r[1] >= 0.0 and r[1] <= 1.0, "mean_cov in [0,1]")
 
+    print("running closed loop with CLS encoder (wiring only) ...")
+    var wm_cls = TrainerCLS.make(
+        lam=Scalar[DT](0.09), lr=Scalar[DT](1e-3), ctx=ctx
+    )
+    var rc = run_lewm2_closedloop[
+        IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
+        ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
+        PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, MPC_HORIZON,
+        "gpu", 0, 2, 16, EncCLS,   # trailing ENC = CLS encoder
+    ](
+        wm_cls,
+        n_cycles=4,
+        scale_x=142.0, scale_y=148.0,
+        cem_iters=3, cem_samples=16, cem_topk=4, init_std=0.2,
+        ctx=ctx,
+        verbose=False,
+    )
+    print("   CLS success_rate=", rc[0], " mean_cov=", rc[1])
+    assert_true(not (isnan(rc[1]) or isinf(rc[1])), "CLS mean_cov finite")
+    assert_true(rc[1] >= 0.0 and rc[1] <= 1.0, "CLS mean_cov in [0,1]")
+
     _ = wm^
+    _ = wm_cls^
     print("=" * 70)
     print("ALL PASSED")
     print("=" * 70)
