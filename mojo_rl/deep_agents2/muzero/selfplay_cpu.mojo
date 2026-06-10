@@ -33,6 +33,7 @@ from mojo_rl.planners.tree_search import (
 from .blocks import mz_unroll_train_step_cpu
 from ..zero.mcts_adapters_mz_cpu import MZRepCPU, MZDynCPU, MZPredCPU
 from ..zero.sequence_replay_mcts import MCTSSequenceReplay
+from ..zero.temperature import visit_temperature
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -138,16 +139,8 @@ def run_muzero_selfplay_cpu[
         var root_v = mcts.root_value()
 
         # ── sample action ∝ visits^(1/T) ──
-        # Legacy piecewise schedule over ``temperature_decay_steps``:
-        # T = 1.0 → 0.5 (at 50% progress) → 0.25 (at 75%). 0 = fixed T=1.
         # The *stored* policy target stays the untempered visit distribution.
-        var temp = 1.0
-        if temperature_decay_steps > 0:
-            var progress = Float64(it) / Float64(temperature_decay_steps)
-            if progress >= 0.75:
-                temp = 0.25
-            elif progress >= 0.5:
-                temp = 0.5
+        var temp = visit_temperature(it, temperature_decay_steps)
         var w = InlineArray[Float64, ACT](fill=0.0)
         var wsum = 0.0
         for a in range(ACT):

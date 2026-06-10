@@ -63,7 +63,10 @@ def main() raises:
         OBS, ACT, LATENT, BINS, NUM_SIMS, MAX_NODES, CAP, B, K, N,
     ](
         env, rep, dyn, pred, orep, odyn, opred,
-        iterations=30000,
+        # Round-4 (30k) was still climbing monotonically at cutoff (training
+        # return 170→242 over the last 8k); legacy's sustained-500 point was
+        # ~32k env steps into a 50k run. Give it the same room.
+        iterations=60000,
         learning_starts=500,
         train_per_iter=1,
         gamma=Scalar[DT](0.997),
@@ -75,11 +78,12 @@ def main() raises:
         v_min=Scalar[DT](-20.0),
         v_max=Scalar[DT](20.0),
         value_coef=Scalar[DT](1.0),
-        temperature_decay_steps=30000,
-        # Refresh one stored (policy, root value) per 2 iters with a fresh
+        temperature_decay_steps=60000,
+        # Refresh one stored (policy, root value) per iter with a fresh
         # search — n-step targets bootstrap from stored values, which go
-        # stale as the net improves (legacy ran use_reanalyze=True).
-        reanalyze_every=2,
+        # stale as the net improves (legacy ran use_reanalyze=True). At
+        # every=2 most of the buffer stayed stale; every=1 ≈ 2× search cost.
+        reanalyze_every=1,
         eval_every=2000,
         eval_episodes=5,
         seed=42,

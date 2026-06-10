@@ -27,6 +27,7 @@ TTT agent never loses (all draws vs minimax; wins + draws, no losses vs random).
 Returns the last training loss.
 """
 
+from std.math import exp, log
 from std.memory import alloc
 
 from mojo_rl.nn2.constants import DT
@@ -44,6 +45,7 @@ from .blocks import mz_unroll_train_step_cpu
 from ..zero.mcts_adapters_mz_cpu import MZRepCPU, MZDynCPU, MZPredCPU
 from ..zero.sequence_replay_mcts import MCTSSequenceReplay
 from ..zero.evaluators import CPUEvaluator, RandomOpponent
+from ..zero.temperature import visit_temperature
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -94,6 +96,7 @@ def run_muzero_selfplay_2p_cpu[
     seed: UInt64 = 0,
     max_ep_steps: Int = 9,
     value_coef: Scalar[DT] = Scalar[DT](0.25),
+    temperature_decay_steps: Int = 0,
     eval_every: Int = 0,
     eval_games: Int = 50,
     reanalyze_every: Int = 0,
@@ -157,21 +160,32 @@ def run_muzero_selfplay_2p_cpu[
         ](rep_a, dyn_a, pred_a, cur_f, add_noise=True, legal_mask=legal)
         var root_v = mcts.root_value()
 
-        # ── sample a legal action ∝ visit policy ──
+        # ── sample a legal action ∝ visits^(1/T) ──
+        # Illegal actions have zero visits → stay zero under tempering. The
+        # *stored* policy target stays the untempered visit distribution.
+        var temp = visit_temperature(it, temperature_decay_steps)
+        var w = InlineArray[Float64, ACT](fill=0.0)
+        var wsum = 0.0
+        for a in range(ACT):
+            var p = policy[a]
+            if temp != 1.0 and p > 0.0:
+                p = exp(log(p) / temp)
+            w[a] = p
+            wsum += p
         rng = _xs(rng)
-        var r = Float64(rng % UInt64(1_000_000)) / 1_000_000.0
+        var r = Float64(rng % UInt64(1_000_000)) / 1_000_000.0 * wsum
         var cum = 0.0
         var action = -1
         for a in range(ACT):
-            cum += policy[a]
-            if r <= cum and policy[a] > 0.0:
+            cum += w[a]
+            if r <= cum and w[a] > 0.0:
                 action = a
                 break
         if action < 0:                          # numeric fallback: argmax legal
             var bv = -1.0
             for a in range(ACT):
-                if policy[a] > bv:
-                    bv = policy[a]
+                if w[a] > bv:
+                    bv = w[a]
                     action = a
             if action < 0:
                 action = 0
@@ -194,6 +208,8 @@ def run_muzero_selfplay_2p_cpu[
         ep_len += 1
 
         if done or ep_len >= max_ep_steps:
+            # Board games end with `done`; only the max_ep_steps loop cap is a
+            # (theoretical) truncation — flag it so targets bootstrap past it.
             rb.store_episode(
                 mptr(e_obs.unsafe_ptr()),
                 mptr(e_act.unsafe_ptr()),
@@ -203,6 +219,7 @@ def run_muzero_selfplay_2p_cpu[
                 mptr(e_tp.unsafe_ptr()),
                 mptr(e_legal.unsafe_ptr()),
                 ep_len,
+                truncated=not done,
             )
             e_obs.clear(); e_act.clear(); e_rew.clear()
             e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()

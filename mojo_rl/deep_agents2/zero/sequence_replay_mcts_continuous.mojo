@@ -43,6 +43,7 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
 
     var ep_start: List[Int]   # absolute start step of each resident episode
     var ep_len: List[Int]
+    var ep_trunc: List[Bool]  # time-limit truncated (last step NOT terminal)
     var total: Int            # monotonic steps written
     var rng: UInt64
 
@@ -54,6 +55,7 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
         self.val = _a(Self.CAP)
         self.ep_start = List[Int]()
         self.ep_len = List[Int]()
+        self.ep_trunc = List[Bool]()
         self.total = 0
         self.rng = seed ^ UInt64(0x9E3779B97F4A7C15)
 
@@ -80,10 +82,16 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
         ep_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L]
         ep_val: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L]
         length: Int,
+        truncated: Bool = False,
     ):
         """Append a finished episode of ``length`` steps. The terminal flag is
-        set on the last step. Evicts episodes that fall out of the last ``CAP``
-        steps so every resident episode stays fully readable."""
+        set on the last step — unless ``truncated`` (time-limit cut, not a real
+        terminal): then no step is flagged and the n-step targets bootstrap from
+        the last stored root value instead of going to zero. This matters
+        enormously for never-terminating envs (Pendulum): EVERY episode is a
+        time-limit cut, and terminal-0 there is an *optimistic* corruption
+        (0 > any real all-negative-reward value). Evicts episodes that fall out
+        of the last ``CAP`` steps so every resident episode stays readable."""
         var start = self.total
         for i in range(length):
             var slot = (self.total) % Self.CAP
@@ -94,15 +102,19 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
             self.rew[slot] = ep_rew[i]
             self.val[slot] = ep_val[i]
             self.done[slot] = (
-                Scalar[DT](1.0) if i == length - 1 else Scalar[DT](0.0)
+                Scalar[DT](1.0) if (
+                    i == length - 1 and not truncated
+                ) else Scalar[DT](0.0)
             )
             self.total += 1
         self.ep_start.append(start)
         self.ep_len.append(length)
+        self.ep_trunc.append(truncated)
         var floor = self.total - Self.CAP
         while len(self.ep_start) > 0 and self.ep_start[0] < floor:
             _ = self.ep_start.pop(0)
             _ = self.ep_len.pop(0)
+            _ = self.ep_trunc.pop(0)
 
     def _read1(
         self,
@@ -119,6 +131,21 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
             return
         var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
         out[out_base] = field[slot]
+
+    def _sample_step_uniform(mut self) -> Tuple[Int, Int]:
+        """Pick a resident (episode, offset) with every resident **step**
+        equally likely. Episode-uniform sampling over-weights steps from short
+        episodes — early random-policy failures keep a majority of the sample
+        mass long after the policy improves."""
+        var tot = 0
+        for e in range(len(self.ep_len)):
+            tot += self.ep_len[e]
+        var u = Int(self._xorshift() % UInt64(tot))
+        var e = 0
+        while u >= self.ep_len[e]:
+            u -= self.ep_len[e]
+            e += 1
+        return (e, u)
 
     def sample_training_batch_seq[
         B: Int, K: Int, N: Int,
@@ -147,9 +174,15 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
         var w_vt = _a(K + 1)
 
         for b in range(B):
-            var e = Int(self._xorshift() % UInt64(len(self.ep_start)))
+            var pos = self._sample_step_uniform()
+            var e = pos[0]
+            var s = pos[1]
             var L = self.ep_len[e]
-            var s = Int(self._xorshift() % UInt64(L))
+            # truncation boundary: last window index with a stored root value
+            # (uncapped for naturally-terminated episodes — dones handle those).
+            var lv = K + N + 1
+            if self.ep_trunc[e]:
+                lv = L - 1 - s
 
             # obs sequence: obs at s+k for k=0..K (obs-repeat absorbing).
             for k in range(K + 1):
@@ -176,7 +209,7 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
                     w_tp[h] = Scalar[DT](0.0)   # single-player
 
             compute_nstep_value_targets[K, N](
-                w_rew, w_done, w_val, w_tp, gamma, w_vt
+                w_rew, w_done, w_val, w_tp, gamma, w_vt, last_valid=lv
             )
 
             # policy-clone targets (chosen action at s+k, absorbing-zero).

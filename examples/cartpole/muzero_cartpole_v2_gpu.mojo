@@ -24,13 +24,13 @@ from mojo_rl.envs.cartpole import CartPoleEnv
 def main() raises:
     comptime OBS = 4
     comptime ACT = 2
-    comptime LATENT = 64
+    comptime LATENT = 128   # legacy MuZeroMLPConfig CartPole parity
     comptime BINS = 51
     comptime H = 128
     comptime NUM_SIMS = 25
     comptime MAX_NODES = 128
     comptime CAP = 50000
-    comptime B = 64
+    comptime B = 128        # legacy batch_size parity
     comptime K = 5
     comptime N = 10
 
@@ -49,23 +49,31 @@ def main() raises:
     orep.lr = Scalar[DT](3e-4)
     odyn.lr = Scalar[DT](3e-4)
     opred.lr = Scalar[DT](3e-4)
+    orep.max_grad_norm = Scalar[DT](10.0)
+    odyn.max_grad_norm = Scalar[DT](10.0)
+    opred.max_grad_norm = Scalar[DT](10.0)
 
     print("MuZero CartPole convergence (v2, GPU — CPU-search / GPU-train hybrid)")
     print("  LATENT", LATENT, "H", H, "BINS", BINS, "sims", NUM_SIMS,
-          "K", K, "N", N, "B", B, "lr 3e-4")
+          "K", K, "N", N, "B", B, "lr 3e-4 clip 10")
 
+    # The proven CPU-lighthouse recipe (see muzero_cartpole_v2_cpu.mojo for the
+    # rationale on each knob): ±20 h-space support (±10 saturates at raw ~117 <
+    # CartPole V≈259), value_coef 1.0, temp 1.0→0.5→0.25, reanalyze every iter.
     var loss = run_muzero_selfplay_gpu[
         CartPoleEnv[DType.float64], Rep, Dyn, Pred,
         OBS, ACT, LATENT, BINS, NUM_SIMS, MAX_NODES, CAP, B, K, N,
     ](
         ctx, env, rep, dyn, pred, orep, odyn, opred,
-        iterations=30000,
+        iterations=60000,
         learning_starts=500,
         train_per_iter=1,
         gamma=Scalar[DT](0.997),
-        v_min=Scalar[DT](-10.0),
-        v_max=Scalar[DT](10.0),
-        value_coef=Scalar[DT](0.25),
+        v_min=Scalar[DT](-20.0),
+        v_max=Scalar[DT](20.0),
+        value_coef=Scalar[DT](1.0),
+        temperature_decay_steps=60000,
+        reanalyze_every=1,
         eval_every=2000,
         eval_episodes=5,
         seed=42,

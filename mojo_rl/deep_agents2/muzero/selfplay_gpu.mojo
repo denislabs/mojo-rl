@@ -21,6 +21,7 @@ once per iteration. `learning_starts` warmup needs no sync — the mirror is syn
 once before the loop so it matches the device nets from step 0.
 """
 
+from std.math import exp, log
 from std.memory import alloc
 
 from mojo_rl.nn2.constants import DT
@@ -44,6 +45,7 @@ from std.gpu.host import DeviceContext
 from .blocks import mz_unroll_train_step_gpu, MZScratch
 from ..zero.mcts_adapters_mz_cpu import MZRepCPU, MZDynCPU, MZPredCPU
 from ..zero.sequence_replay_mcts import MCTSSequenceReplay
+from ..zero.temperature import visit_temperature
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -99,6 +101,8 @@ def run_muzero_selfplay_gpu[
     seed: UInt64 = 0,
     max_ep_steps: Int = 500,
     value_coef: Scalar[DT] = Scalar[DT](0.25),
+    temperature_decay_steps: Int = 0,
+    reanalyze_every: Int = 0,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     verbose: Bool = False,
@@ -138,6 +142,10 @@ def run_muzero_selfplay_gpu[
     # (per-step `enqueue_create_buffer` in the hot loop explodes disk on NVIDIA)
     var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
 
+    # reanalyze scratch
+    var r_obs = _a(OBS)
+    var r_pol = _a(ACT)
+
     # episode accumulation buffers
     var e_obs = List[Scalar[DT]]()
     var e_act = List[Scalar[DT]]()
@@ -165,13 +173,23 @@ def run_muzero_selfplay_gpu[
         )
         var root_v = mcts.root_value()
 
-        # ── sample action ∝ visit policy ──
+        # ── sample action ∝ visits^(1/T) ──
+        # The *stored* policy target stays the untempered visit distribution.
+        var temp = visit_temperature(it, temperature_decay_steps)
+        var w = InlineArray[Float64, ACT](fill=0.0)
+        var wsum = 0.0
+        for a in range(ACT):
+            var p = policy[a]
+            if temp != 1.0 and p > 0.0:
+                p = exp(log(p) / temp)
+            w[a] = p
+            wsum += p
         rng = rng ^ (rng << 13); rng = rng ^ (rng >> 7); rng = rng ^ (rng << 17)
-        var r = Float64(rng % UInt64(1_000_000)) / 1_000_000.0
+        var r = Float64(rng % UInt64(1_000_000)) / 1_000_000.0 * wsum
         var cum = 0.0
         var action = ACT - 1
         for a in range(ACT):
-            cum += policy[a]
+            cum += w[a]
             if r <= cum:
                 action = a
                 break
@@ -199,6 +217,8 @@ def run_muzero_selfplay_gpu[
             cur_f.append(Float64(stepped[0][j]))
 
         if done or ep_len >= max_ep_steps:
+            # Time-limit cut (env truncation or our max_ep_steps cap) is NOT a
+            # terminal: the replay must bootstrap past it, not target value 0.
             rb.store_episode(
                 mptr(e_obs.unsafe_ptr()),
                 mptr(e_act.unsafe_ptr()),
@@ -208,6 +228,7 @@ def run_muzero_selfplay_gpu[
                 mptr(e_tp.unsafe_ptr()),
                 mptr(e_legal.unsafe_ptr()),
                 ep_len,
+                truncated=not env.was_terminated(),
             )
             ep_returns.append(ep_return)
             e_obs.clear(); e_act.clear(); e_rew.clear()
@@ -239,6 +260,31 @@ def run_muzero_selfplay_gpu[
             mz_sync_gpu_to_cpu(rep, rep_c, ctx)
             mz_sync_gpu_to_cpu(dyn, dyn_c, ctx)
             mz_sync_gpu_to_cpu(pred, pred_c, ctx)
+
+        # ── reanalyze: refresh one stored position with a fresh search ──
+        # The n-step targets bootstrap from STORED root values; without
+        # refresh, never-evicted early episodes keep teaching weak-net values
+        # and stale visit policies forever. Runs on the CPU mirror (just
+        # synced above), like the per-step search.
+        if (
+            reanalyze_every > 0
+            and it >= learning_starts
+            and (it + 1) % reanalyze_every == 0
+            and rb.num_episodes() > 0
+        ):
+            var rpos = rb.sample_position()
+            rb.read_obs(rpos[0], rpos[1], r_obs)
+            var ro = List[Float64]()
+            for j in range(OBS):
+                ro.append(Float64(r_obs[j]))
+            var rpolicy = mcts.search[
+                type_of(rep_a), type_of(dyn_a), type_of(pred_a)
+            ](rep_a, dyn_a, pred_a, ro, add_noise=True)
+            for a in range(ACT):
+                r_pol[a] = Scalar[DT](rpolicy[a])
+            rb.update_targets(
+                rpos[0], rpos[1], r_pol, Scalar[DT](mcts.root_value())
+            )
 
         # ── periodic GREEDY eval (noise off, argmax visits) ──
         if eval_every > 0 and (it + 1) % eval_every == 0:
@@ -294,6 +340,7 @@ def run_muzero_selfplay_gpu[
             )
 
     t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
+    r_obs.free(); r_pol.free()
     # keep the CPU mirrors alive past the loop — the MCTS adapters hold
     # `UnsafePointer(to=rep_c)`, which the lifetime analyzer can't see.
     _ = rep_c^

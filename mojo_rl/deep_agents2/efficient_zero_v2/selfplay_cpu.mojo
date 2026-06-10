@@ -14,6 +14,7 @@ BatchNorm but are consistency-only (never used at MCTS inference), so no BN
 train/eval toggle is needed here. Returns the last training loss.
 """
 
+from std.math import exp, log
 from std.memory import alloc
 
 from mojo_rl.nn2.constants import DT
@@ -30,6 +31,7 @@ from mojo_rl.planners.tree_search import (
 from .blocks import ezv2_unroll_train_step_cpu
 from ..zero.mcts_adapters_mz_cpu import MZRepCPU, MZDynCPU, MZPredCPU
 from ..zero.sequence_replay_mcts import MCTSSequenceReplay
+from ..zero.temperature import visit_temperature
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -77,6 +79,8 @@ def run_ezv2_selfplay_cpu[
     max_ep_steps: Int = 500,
     value_coef: Scalar[DT] = Scalar[DT](0.25),
     consistency_coef: Scalar[DT] = Scalar[DT](2.0),
+    temperature_decay_steps: Int = 0,
+    reanalyze_every: Int = 0,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     verbose: Bool = False,
@@ -103,6 +107,10 @@ def run_ezv2_selfplay_cpu[
     var t_val = _a((K + 1) * B)
     var t_rew = _a(K * B)
 
+    # reanalyze scratch
+    var r_obs = _a(OBS)
+    var r_pol = _a(ACT)
+
     var e_obs = List[Scalar[DT]]()
     var e_act = List[Scalar[DT]]()
     var e_rew = List[Scalar[DT]]()
@@ -128,12 +136,22 @@ def run_ezv2_selfplay_cpu[
         )
         var root_v = mcts.root_value()
 
+        # sample ∝ visits^(1/T); stored policy target stays untempered.
+        var temp = visit_temperature(it, temperature_decay_steps)
+        var w = InlineArray[Float64, ACT](fill=0.0)
+        var wsum = 0.0
+        for a in range(ACT):
+            var p = policy[a]
+            if temp != 1.0 and p > 0.0:
+                p = exp(log(p) / temp)
+            w[a] = p
+            wsum += p
         rng = rng ^ (rng << 13); rng = rng ^ (rng >> 7); rng = rng ^ (rng << 17)
-        var r = Float64(rng % UInt64(1_000_000)) / 1_000_000.0
+        var r = Float64(rng % UInt64(1_000_000)) / 1_000_000.0 * wsum
         var cum = 0.0
         var action = ACT - 1
         for a in range(ACT):
-            cum += policy[a]
+            cum += w[a]
             if r <= cum:
                 action = a
                 break
@@ -159,6 +177,7 @@ def run_ezv2_selfplay_cpu[
             cur_f.append(Float64(stepped[0][j]))
 
         if done or ep_len >= max_ep_steps:
+            # Time-limit cut is NOT a terminal — bootstrap past it.
             rb.store_episode(
                 mptr(e_obs.unsafe_ptr()),
                 mptr(e_act.unsafe_ptr()),
@@ -168,6 +187,7 @@ def run_ezv2_selfplay_cpu[
                 mptr(e_tp.unsafe_ptr()),
                 mptr(e_legal.unsafe_ptr()),
                 ep_len,
+                truncated=not env.was_terminated(),
             )
             ep_returns.append(ep_return)
             e_obs.clear(); e_act.clear(); e_rew.clear()
@@ -195,6 +215,27 @@ def run_ezv2_selfplay_cpu[
                         v_min, v_max, value_coef, consistency_coef,
                     )
                 )
+
+        # ── reanalyze: refresh one stored position with a fresh search ──
+        if (
+            reanalyze_every > 0
+            and it >= learning_starts
+            and (it + 1) % reanalyze_every == 0
+            and rb.num_episodes() > 0
+        ):
+            var rpos = rb.sample_position()
+            rb.read_obs(rpos[0], rpos[1], r_obs)
+            var ro = List[Float64]()
+            for j in range(OBS):
+                ro.append(Float64(r_obs[j]))
+            var rpolicy = mcts.search[
+                type_of(rep_a), type_of(dyn_a), type_of(pred_a)
+            ](rep_a, dyn_a, pred_a, ro, add_noise=True)
+            for a in range(ACT):
+                r_pol[a] = Scalar[DT](rpolicy[a])
+            rb.update_targets(
+                rpos[0], rpos[1], r_pol, Scalar[DT](mcts.root_value())
+            )
 
         if eval_every > 0 and (it + 1) % eval_every == 0:
             var eval_sum = 0.0
@@ -248,4 +289,5 @@ def run_ezv2_selfplay_cpu[
             )
 
     t_obs_seq.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
+    r_obs.free(); r_pol.free()
     return last_loss

@@ -226,12 +226,17 @@ def run_ezv2_sampled_selfplay_gpu[
             cur_f.append(Float64(stepped[0][j]))
 
         if done or ep_len >= max_ep_steps:
+            # Time-limit cut is NOT a terminal — bootstrap past it. Pendulum
+            # never terminates naturally, so EVERY episode is truncated; the
+            # old terminal-0 label was an *optimistic* corruption near each
+            # episode end (0 > any real all-negative-reward value).
             rb.store_episode(
                 mptr(e_obs.unsafe_ptr()),
                 mptr(e_act.unsafe_ptr()),
                 mptr(e_rew.unsafe_ptr()),
                 mptr(e_val.unsafe_ptr()),
                 ep_len,
+                truncated=not env.was_terminated(),
             )
             ep_returns.append(ep_return)
             e_obs.clear(); e_act.clear(); e_rew.clear(); e_val.clear()

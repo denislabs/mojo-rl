@@ -109,13 +109,21 @@ struct MuZeroAgent[
         train_per_iter: Int = 1,
         seed: UInt64 = 0,
         max_ep_steps: Int = 500,
+        temperature_decay_steps: Int = 0,
+        reanalyze_every: Int = 0,
         eval_every: Int = 0,
         eval_episodes: Int = 5,
         verbose: Bool = False,
     ) raises -> Float64:
         """Single-player self-play training over the learned model. Returns the
         last training loss. Optimizers are recreated here (session-local); the
-        nets keep their weights across `train` calls."""
+        nets keep their weights across `train` calls.
+
+        ``temperature_decay_steps`` schedules the visit-sampling temperature
+        (1.0 → 0.5 → 0.25; 0 = always 1.0). ``reanalyze_every`` refreshes one
+        stored (policy, root value) per that many iterations with a fresh
+        search — both were required for CartPole to reach sustained greedy 500
+        (see the convergence example)."""
         comptime if Self.TARGET == "cpu":
             var orep = Adam.make["cpu", M = Self.REP](self.rep)
             var odyn = Adam.make["cpu", M = Self.DYN](self.dyn)
@@ -139,6 +147,8 @@ struct MuZeroAgent[
                 seed=seed,
                 max_ep_steps=max_ep_steps,
                 value_coef=self.value_coef,
+                temperature_decay_steps=temperature_decay_steps,
+                reanalyze_every=reanalyze_every,
                 eval_every=eval_every,
                 eval_episodes=eval_episodes,
                 verbose=verbose,
@@ -167,6 +177,8 @@ struct MuZeroAgent[
                 seed=seed,
                 max_ep_steps=max_ep_steps,
                 value_coef=self.value_coef,
+                temperature_decay_steps=temperature_decay_steps,
+                reanalyze_every=reanalyze_every,
                 eval_every=eval_every,
                 eval_episodes=eval_episodes,
                 verbose=verbose,

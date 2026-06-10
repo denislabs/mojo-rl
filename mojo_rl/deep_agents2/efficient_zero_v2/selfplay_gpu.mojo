@@ -18,6 +18,7 @@ projector/predictor carry BatchNorm but are consistency-only (never at MCTS
 inference), so no BN train/eval toggle is needed here. Returns the last loss.
 """
 
+from std.math import exp, log
 from std.memory import alloc
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -32,6 +33,7 @@ from .blocks import ezv2_unroll_train_step_gpu
 from .unroll_scratch import EZV2UnrollScratch
 from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
 from ..zero.sequence_replay_mcts import MCTSSequenceReplay
+from ..zero.temperature import visit_temperature
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -79,6 +81,8 @@ def run_ezv2_gumbel_selfplay_gpu[
     max_ep_steps: Int = 500,
     value_coef: Scalar[DT] = Scalar[DT](0.25),
     consistency_coef: Scalar[DT] = Scalar[DT](2.0),
+    temperature_decay_steps: Int = 0,
+    reanalyze_every: Int = 0,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     verbose: Bool = False,
@@ -156,13 +160,23 @@ def run_ezv2_gumbel_selfplay_gpu[
 
         var root_v = Float64(h_val[0])
 
-        # ── sample an action from the improved policy ──
+        # ── sample from the improved policy, tempered π^(1/T) ──
+        # The *stored* policy target stays the untempered improved policy.
+        var temp = visit_temperature(it, temperature_decay_steps)
+        var w = InlineArray[Float64, ACT](fill=0.0)
+        var wsum = 0.0
+        for a in range(ACT):
+            var p = Float64(h_pol[a])
+            if temp != 1.0 and p > 0.0:
+                p = exp(log(p) / temp)
+            w[a] = p
+            wsum += p
         rng = rng ^ (rng << 13); rng = rng ^ (rng >> 7); rng = rng ^ (rng << 17)
-        var r = Float64(rng % UInt64(1_000_000)) / 1_000_000.0
+        var r = Float64(rng % UInt64(1_000_000)) / 1_000_000.0 * wsum
         var cum = 0.0
         var action = ACT - 1
         for a in range(ACT):
-            cum += Float64(h_pol[a])
+            cum += w[a]
             if r <= cum:
                 action = a
                 break
@@ -188,6 +202,7 @@ def run_ezv2_gumbel_selfplay_gpu[
             cur_f.append(Float64(stepped[0][j]))
 
         if done or ep_len >= max_ep_steps:
+            # Time-limit cut is NOT a terminal — bootstrap past it.
             rb.store_episode(
                 mptr(e_obs.unsafe_ptr()),
                 mptr(e_act.unsafe_ptr()),
@@ -197,6 +212,7 @@ def run_ezv2_gumbel_selfplay_gpu[
                 mptr(e_tp.unsafe_ptr()),
                 mptr(e_legal.unsafe_ptr()),
                 ep_len,
+                truncated=not env.was_terminated(),
             )
             ep_returns.append(ep_return)
             e_obs.clear(); e_act.clear(); e_rew.clear()
@@ -225,6 +241,33 @@ def run_ezv2_gumbel_selfplay_gpu[
                         v_min, v_max, value_coef, consistency_coef,
                     )
                 )
+
+        # ── reanalyze: refresh one stored position with a fresh search ──
+        # Re-search the stored obs with the current on-device nets and
+        # overwrite the stored improved policy + root value (n-step targets
+        # bootstrap from those). Reuses the single-env obs/pol/val buffers.
+        if (
+            reanalyze_every > 0
+            and it >= learning_starts
+            and (it + 1) % reanalyze_every == 0
+            and rb.num_episodes() > 0
+        ):
+            var rpos = rb.sample_position()
+            rb.read_obs(rpos[0], rpos[1], h_obs)
+            ctx.enqueue_copy(d_obs, h_obs)
+            var robs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
+                MutAnyOrigin](mptr(d_obs.unsafe_ptr()))
+            planner.search_gpu[
+                MZRepGPU[OBS, LATENT, REP],
+                MZDynGPU[LATENT, ACT, BINS, DYN],
+                MZPredGPU[LATENT, ACT, BINS, PRED],
+            ](ctx, rep_a, dyn_a, pred_a, robs_t,
+              apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
+            mcts_seed += UInt32(1)
+            ctx.enqueue_copy(h_pol, planner.policies_view())
+            ctx.enqueue_copy(h_val, planner.root_value_view())
+            ctx.synchronize()
+            rb.update_targets(rpos[0], rpos[1], h_pol, h_val[0])
 
         # ── greedy eval (argmax of the Gumbel improved policy) ──
         if eval_every > 0 and (it + 1) % eval_every == 0:
