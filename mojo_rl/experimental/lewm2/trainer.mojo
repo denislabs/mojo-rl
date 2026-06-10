@@ -240,6 +240,7 @@ struct LeWMTrainer[
         lam: Scalar[DT] = 0.09,
         lr: Scalar[DT] = 1e-3,
         max_grad_norm: Scalar[DT] = 0.0,
+        weight_decay: Scalar[DT] = 0.0,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
         var t = Self()
@@ -255,6 +256,10 @@ struct LeWMTrainer[
         # clipping at e.g. 1.0 caps the step so an outlier batch can't
         # explode the residual stream. Applied in Adam.step_graph.
         t.opt.max_grad_norm = max_grad_norm
+        # Decoupled (AdamW-style) weight decay — the reference trains with
+        # AdamW wd=1e-3. 0.0 = disabled (bit-identical). Decay-exempt
+        # params (BatchNorm γ/β etc.) are skipped via apply_decay.
+        t.opt.weight_decay = weight_decay
         t.ts = TargetStorage.make[Self.train_target](ctx=ctx)
         init_scratch_auto[Self, Self.train_target](t, ctx)
         # The backward seed for a mean-over-batch loss is the constant

@@ -5,9 +5,15 @@ across graphs as in SAC — so one Adam iterates `graph.for_each_param`). The
 encoder bridges effective BATCH = B·T → B via `Tokenwise[T, LeWMEncoder]`.
 
   pixels  ─Tokenwise[T,Encoder]→ emb ─┬─Slice[0:H]→ ctx_x ─BiasAdd→ x_pe ─┐
-                                      ├─Slice[Np:Np+H]→ StopGrad→ tgt     ├ARPredictor→PredProj→pred
+                                      ├─Slice[Np:Np+H]→ tgt               ├ARPredictor→PredProj→pred
   actions ─ActionEmbedder→ act_emb ───┴─Slice[0:H]→ ctx_a ────────────────┘
   loss = MSEPerSample(pred, tgt) + λ·SIGReg(emb)         (per-sample (B,1))
+
+NO stop-gradient on the target — the reference flows gradients through
+`tgt_emb = emb[:, n_preds:]` (the paper's headline: end-to-end, no SG/EMA;
+gradient through the target pulls the encoder toward predictable
+representations, with SIGReg as the sole anti-collapse term). Our original
+port detached `tgt` — a deviation removed 2026-06-10 (reference audit).
 
 λ is the `sig_s` Scale multiplier — `set_node_attr["sig_s","multiplier"](λ)`.
 The collapse probes read the `emb` node output via `node_out_ptr["emb"]`.
@@ -16,7 +22,6 @@ The collapse probes read the `emb` node output via `node_out_ptr["emb"]`.
 from ...nn2.core.module import Module
 from ...nn2.combinators import ComputeGraph, InputSlot, Node, Tokenwise
 from ...nn2.primitives.slice import Slice
-from ...nn2.primitives.stop_grad import StopGrad
 from ...nn2.primitives.bias_add import BiasAdd
 from ...nn2.primitives.scale import Scale
 from ...nn2.primitives.add import Add
@@ -65,8 +70,7 @@ comptime LeWMLossGraph[
     Node["act_emb", ActionEmbedder[T, ACT, SMOOTHED, EMB, AE_MLP], "actions"],
     Node["ctx_x", Slice[T * EMB, 0, H * EMB], "emb"],
     Node["ctx_a", Slice[T * EMB, 0, H * EMB], "act_emb"],
-    Node["tgt_raw", Slice[T * EMB, N_PREDS * EMB, (N_PREDS + H) * EMB], "emb"],
-    Node["tgt", StopGrad[H * EMB], "tgt_raw"],
+    Node["tgt", Slice[T * EMB, N_PREDS * EMB, (N_PREDS + H) * EMB], "emb"],
     Node["x_pe", BiasAdd[H * EMB], "ctx_x"],
     Node[
         "pred_raw",

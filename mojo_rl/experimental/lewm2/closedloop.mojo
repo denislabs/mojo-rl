@@ -67,6 +67,14 @@ def run_lewm2_closedloop[
     n_cycles: Int,
     scale_x: Float64 = 100.0,
     scale_y: Float64 = 100.0,
+    # Action z-score stats (the recipe WM trains on z-scored actions; the
+    # planner samples in that space and execution de-normalizes:
+    # raw = z·std + mean, then env_target = agent + raw·scale). Defaults
+    # 0/1 = identity for raw-action WMs.
+    act_mean_x: Float64 = 0.0,
+    act_mean_y: Float64 = 0.0,
+    act_std_x: Float64 = 1.0,
+    act_std_y: Float64 = 1.0,
     cem_iters: Int = 10,
     cem_samples: Int = 200,
     cem_topk: Int = 20,
@@ -219,10 +227,10 @@ def run_lewm2_closedloop[
                 var ap = envs[b].agent_pos()
                 var dx = Float64(
                     plan[(b * NEEDED + (H - 1)) * ACT + k * ACT_DIM + 0]
-                )
+                ) * act_std_x + act_mean_x
                 var dy = Float64(
                     plan[(b * NEEDED + (H - 1)) * ACT + k * ACT_DIM + 1]
-                )
+                ) * act_std_y + act_mean_y
                 var tx = Scalar[DT](Float64(ap[0]) + dx * scale_x)
                 var ty = Scalar[DT](Float64(ap[1]) + dy * scale_y)
                 _ = envs[b].step(PushTAction[DT](tx, ty))

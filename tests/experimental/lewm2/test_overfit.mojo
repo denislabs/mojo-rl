@@ -19,7 +19,6 @@ from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.combinators import ComputeGraph, InputSlot, Node, Tokenwise
 from mojo_rl.nn2.primitives.slice import Slice
-from mojo_rl.nn2.primitives.stop_grad import StopGrad
 from mojo_rl.nn2.primitives.bias_add import BiasAdd
 from mojo_rl.nn2.primitives.scale import Scale
 from mojo_rl.nn2.primitives.add import Add
@@ -72,8 +71,7 @@ comptime LossGraph = ComputeGraph[
     Node["act_emb", ActionEmbedder[T, ACT, SMOOTHED, EMB, AE_MLP], "actions"],
     Node["ctx_x", Slice[TE, 0, HE], "emb"],
     Node["ctx_a", Slice[TE, 0, HE], "act_emb"],
-    Node["tgt_raw", Slice[TE, N_PREDS * EMB, (N_PREDS + H) * EMB], "emb"],
-    Node["tgt", StopGrad[HE], "tgt_raw"],
+    Node["tgt", Slice[TE, N_PREDS * EMB, (N_PREDS + H) * EMB], "emb"],
     Node["x_pe", BiasAdd[HE], "ctx_x"],
     Node["pred_raw", ARPredictor[EMB, PRED_HEADS, H, PRED_FF, DEPTH],
          "x_pe", "ctx_a"],

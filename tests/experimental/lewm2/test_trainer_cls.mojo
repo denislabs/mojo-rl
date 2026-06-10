@@ -76,6 +76,7 @@ def main() raises:
     var tr = Trainer.make(
         lam=Scalar[DT](0.09), lr=Scalar[DT](1e-3),
         max_grad_norm=Scalar[DT](1.0),
+        weight_decay=Scalar[DT](1e-3),
     )
 
     var pix = _a(B * PIX); var act = _a(B * ACTIN)

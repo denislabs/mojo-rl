@@ -69,6 +69,17 @@ def _adam_step_prep_kernel(
         bc_ptr[3] = Scalar[DT](1.0) - b2_new
 
 
+def _adam_decay_kernel(
+    param: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    factor: Scalar[DT],
+    n_elems: Int,
+):
+    """Decoupled weight decay pre-pass: p -= factor·p (factor = lr·wd)."""
+    var i = Int(global_idx.x)
+    if i < n_elems:
+        param[i] = param[i] - factor * param[i]
+
+
 def _adam_update_kernel(
     param: UnsafePointer[Scalar[DT], MutAnyOrigin],
     grad: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -259,6 +270,7 @@ struct _AdamCPUStepVisitor(ParamVisitor):
     var eps: Scalar[DT]
     var bias_correction1: Scalar[DT]
     var bias_correction2: Scalar[DT]
+    var weight_decay: Scalar[DT]
 
     def visit(
         mut self,
@@ -275,6 +287,14 @@ struct _AdamCPUStepVisitor(ParamVisitor):
         var off = self.offsets_ptr[][self.idx]
         var p_ptr = mptr(param.ptr)
         var g_ptr = mptr(grad.ptr)
+        # Decoupled weight decay (AdamW): p -= lr·wd·p as a separate
+        # pre-pass (the Adam update below doesn't read p, so this equals
+        # the fused p -= lr·(update + wd·p)). Branching keeps wd == 0
+        # bit-identical to the original loop.
+        if self.weight_decay > Scalar[DT](0.0) and apply_decay:
+            var f = self.lr * self.weight_decay
+            for j in range(n_elems):
+                p_ptr[j] = p_ptr[j] - f * p_ptr[j]
         var m_ptr = self.m_flat_ptr[].unsafe_ptr() + off
         var v_ptr = self.v_flat_ptr[].unsafe_ptr() + off
         var b1_v = SIMD[DT, CPU_SIMD_W](self.beta1)
@@ -375,6 +395,7 @@ struct _AdamGPUStepVisitor(ParamVisitor):
     var beta1: Scalar[DT]
     var beta2: Scalar[DT]
     var eps: Scalar[DT]
+    var weight_decay: Scalar[DT]
 
     def visit(
         mut self,
@@ -394,6 +415,13 @@ struct _AdamGPUStepVisitor(ParamVisitor):
         var param_w_ptr = mptr(param.ptr)
         var grad_w_ptr  = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
+        # Decoupled weight decay pre-pass (see CPU visitor). Extra kernel
+        # only when wd > 0 — wd == 0 enqueues nothing (bit-identical).
+        if self.weight_decay > Scalar[DT](0.0) and apply_decay:
+            self.ctx.enqueue_function[_adam_decay_kernel](
+                param_w_ptr, self.lr * self.weight_decay, n_elems,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
         self.ctx.enqueue_function[_adam_update_kernel](
             param_w_ptr, grad_w_ptr, m_off, v_off, self.bc_base, n_elems,
             self.lr, self.beta1, self.beta2, self.eps,
@@ -497,6 +525,14 @@ struct Adam(Optimizer, Saveable):
     # `max_grad_norm > 0`. Three on-device passes, zero D2H.
     # See `mojo_rl/nn2/core/grad_clip.mojo`.
     var max_grad_norm: Scalar[DT]
+    # Decoupled (AdamW-style) weight decay: p -= lr·wd·p applied as a
+    # pre-pass before the Adam update, only on params with apply_decay=True
+    # (BatchNorm γ/β, biases etc. are decay-exempt). Default 0.0 = structural
+    # no-op (bit-identical for every existing user — same pattern as
+    # max_grad_norm). Runs on the per-tensor visitor paths (CPU + GPU,
+    # Module and graph); the grouped NVIDIA Module path falls back to the
+    # per-tensor visitor when weight_decay > 0.
+    var weight_decay: Scalar[DT]
 
     # Lazy-allocated GPU clip state (None on CPU or before first clipped
     # GPU step). `n_params` is exactly `len(self.offsets)` — known after
@@ -532,6 +568,7 @@ struct Adam(Optimizer, Saveable):
         self.beta1_pow_t = Scalar[DT](1.0)
         self.beta2_pow_t = Scalar[DT](1.0)
         self.max_grad_norm = Scalar[DT](0.0)
+        self.weight_decay = Scalar[DT](0.0)
         self._clip_state = None
         self._mt_param_addrs = None
         self._mt_grad_addrs = None
@@ -723,6 +760,7 @@ struct Adam(Optimizer, Saveable):
                 idx=0,
                 lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
                 bias_correction1=bc1, bias_correction2=bc2,
+                weight_decay=self.weight_decay,
             )
             model.for_each_param[target, _AdamCPUStepVisitor](String(""), visitor)
         else:
@@ -744,7 +782,24 @@ struct Adam(Optimizer, Saveable):
                 # device-resident descriptor arrays (built in make[gpu]) and the
                 # device bias-correction (bc_ptr) — fully CUDA-graph capturable.
                 # (`_mt_n_params == 0` → no params, no-op.)
-                if self._mt_n_params > 0:
+                # Weight decay needs per-param apply_decay flags, which the
+                # grouped descriptors don't carry — fall back to the
+                # per-tensor visitor when wd > 0 (wd == 0 path unchanged).
+                if self.weight_decay > Scalar[DT](0.0):
+                    var wd_visitor = _AdamGPUStepVisitor(
+                        ctx=ctx,
+                        m_base=self.m_dev.value().unsafe_ptr(),
+                        v_base=self.v_dev.value().unsafe_ptr(),
+                        bc_base=bc_ptr,
+                        offsets_ptr=UnsafePointer(to=self.offsets),
+                        idx=0,
+                        lr=self.lr, beta1=self.beta1, beta2=self.beta2,
+                        eps=self.eps, weight_decay=self.weight_decay,
+                    )
+                    model.for_each_param[target, _AdamGPUStepVisitor](
+                        String(""), wd_visitor
+                    )
+                elif self._mt_n_params > 0:
                     var n_blocks = (self.total_size + TPB - 1) // TPB
                     ctx.enqueue_function[_grouped_adam_update_kernel](
                         rebind[UnsafePointer[UInt64, MutAnyOrigin]](
@@ -774,7 +829,7 @@ struct Adam(Optimizer, Saveable):
                     offsets_ptr=UnsafePointer(to=self.offsets),
                     idx=0,
                     lr=self.lr, beta1=self.beta1, beta2=self.beta2,
-                    eps=self.eps,
+                    eps=self.eps, weight_decay=self.weight_decay,
                 )
                 model.for_each_param[target, _AdamGPUStepVisitor](
                     String(""), visitor
@@ -896,6 +951,7 @@ struct Adam(Optimizer, Saveable):
                 idx=0,
                 lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
                 bias_correction1=bc1, bias_correction2=bc2,
+                weight_decay=self.weight_decay,
             )
             g.for_each_param[target, _AdamCPUStepVisitor](String(""), visitor)
         else:
@@ -918,6 +974,7 @@ struct Adam(Optimizer, Saveable):
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,
                 lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
+                weight_decay=self.weight_decay,
             )
             g.for_each_param[target, _AdamGPUStepVisitor](String(""), visitor)
 

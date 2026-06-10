@@ -103,6 +103,12 @@ def run_lewm2_paper_protocol[
     eval_budget: Int = 50,
     scale_x: Float64 = 100.0,
     scale_y: Float64 = 100.0,
+    # Action z-score stats (recipe WM trains on z-scored actions; execution
+    # de-normalizes raw = z·std + mean before ·scale). 0/1 = identity.
+    act_mean_x: Float64 = 0.0,
+    act_mean_y: Float64 = 0.0,
+    act_std_x: Float64 = 1.0,
+    act_std_y: Float64 = 1.0,
     cem_iters: Int = 30,
     cem_samples: Int = 300,
     cem_topk: Int = 30,
@@ -248,10 +254,10 @@ def run_lewm2_paper_protocol[
                     var ap = envs[b].agent_pos()
                     var dx = Float64(
                         plan[(b * NEEDED + blk) * ACT + k * ACT_DIM + 0]
-                    )
+                    ) * act_std_x + act_mean_x
                     var dy = Float64(
                         plan[(b * NEEDED + blk) * ACT + k * ACT_DIM + 1]
-                    )
+                    ) * act_std_y + act_mean_y
                     var tx = Scalar[DT](Float64(ap[0]) + dx * scale_x)
                     var ty = Scalar[DT](Float64(ap[1]) + dy * scale_y)
                     _ = envs[b].step(PushTAction[DT](tx, ty))
