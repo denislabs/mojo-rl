@@ -74,8 +74,18 @@ def run_muzero_selfplay_gpu_device[
     B: Int,
     K: Int,
     N: Int,
-    BATCH_SIMS: Int = 8,
-    VIRTUAL_LOSS: Int = 3,
+    # SERIAL search by default. The GPU batched-leaf path (BATCH_SIMS>1 +
+    # virtual loss) selects every leaf of a round against a FROZEN tree —
+    # unlike the CPU search, which expands during selection so later sims in
+    # a round descend through earlier sims' children. The GPU variant
+    # re-expands duplicate edges and double-counts their shallow values:
+    # measured ~+1.3 systematic root-value bias and occasional argmax flips
+    # vs CPU on identical nets (test_mz_search_gpu_cpu_parity), which broke
+    # the 60k CartPole run (greedy stuck ~120 while noisy training hit 250).
+    # At BATCH_SIMS=1/VLOSS=0 the GPU search is bit-near-identical to the
+    # converged CPU search (same test). Raise only with that tradeoff known.
+    BATCH_SIMS: Int = 1,
+    VIRTUAL_LOSS: Int = 0,
 ](
     ctx: DeviceContext,
     mut env: ENV,

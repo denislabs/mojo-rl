@@ -3,10 +3,13 @@
 Mirrors `AlphaZeroAgent`, but MuZero carries a *learned model* — three nets
 (h/g/f = representation / dynamics / prediction) with three optimizers — instead
 of AlphaZero's single net + true game rules. Parameterized on `TARGET`
-("cpu" / "gpu") like the SAC dual-path. The GPU path is a **CPU-search /
-GPU-train hybrid**: the K-step BPTT unroll runs on the device while the MCTS
-search runs on a CPU mirror of the nets (downloaded from the device after each
-train step) — see `selfplay_gpu.mojo`. `save` / `load` are device-aware.
+("cpu" / "gpu") like the SAC dual-path. The GPU path is **fully on-device
+Gumbel MuZero** (`selfplay_gpu_device.mojo`): `GumbelGPUMCTS` searches over the
+resident device nets and the K-step BPTT unroll trains them in place — the
+validated GPU configuration (CartPole greedy 500 by 4k). ``MAX_K`` is the
+Gumbel root-candidate count (default = ``ACT``). The older CPU-search /
+GPU-train hybrid (`selfplay_gpu.mojo`) remains available as a standalone
+driver. `save` / `load` are device-aware.
 
   * `__init__(ctx, lr, gamma, v_min, v_max, value_coef)` — build fresh Kaiming
     rep/dyn/pred nets on `TARGET`. `v_min`/`v_max` are the **h-space** value/reward
@@ -25,9 +28,11 @@ are categorical over `[v_min, v_max]` — keep those in sync with the config.
 """
 
 from std.gpu.host import DeviceContext
+from std.memory import alloc
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.module import Module
+from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.core.checkpoint import (
@@ -44,6 +49,7 @@ from mojo_rl.deep_agents2.core.checkpoint_helpers import (
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.planners.tree_search import (
     GenericCPUMCTS,
+    GumbelGPUMCTS,
     MuZeroPUCT,
     DirichletNoise,
     SinglePlayer,
@@ -51,7 +57,9 @@ from mojo_rl.planners.tree_search import (
 
 from .selfplay_cpu import run_muzero_selfplay_cpu
 from .selfplay_gpu import run_muzero_selfplay_gpu, mz_sync_gpu_to_cpu
+from .selfplay_gpu_device import run_muzero_gumbel_selfplay_gpu
 from ..zero.mcts_adapters_mz_cpu import MZRepCPU, MZDynCPU, MZPredCPU
+from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
 
 
 @fieldwise_init
@@ -71,6 +79,7 @@ struct MuZeroAgent[
     B: Int,
     K: Int,
     N: Int,
+    MAX_K: Int = ACT,
 ](ImplicitlyDestructible, Movable):
     var ctx: Optional[DeviceContext]
     var rep: Self.REP
@@ -161,10 +170,13 @@ struct MuZeroAgent[
             orep.lr = self.lr
             odyn.lr = self.lr
             opred.lr = self.lr
-            return run_muzero_selfplay_gpu[
+            # Fully on-device Gumbel MuZero — the validated GPU path (greedy
+            # 500 by 4k on the CartPole lighthouse, vs the hybrid's mirror-sync
+            # overhead and the vanilla device search's NoNoise eval anomaly).
+            return run_muzero_gumbel_selfplay_gpu[
                 Self.ENV, Self.REP, Self.DYN, Self.PRED,
                 Self.OBS, Self.ACT, Self.LATENT, Self.BINS,
-                Self.NUM_SIMS, Self.MAX_NODES, Self.CAP,
+                Self.NUM_SIMS, Self.MAX_NODES, Self.MAX_K, Self.CAP,
                 Self.B, Self.K, Self.N,
             ](
                 c, env, self.rep, self.dyn, self.pred, orep, odyn, opred,
@@ -237,34 +249,30 @@ struct MuZeroAgent[
                 total += eret
             return total / Float64(episodes)
         else:
-            # CPU-search / GPU-train hybrid: the MCTS search runs on a CPU
-            # mirror of the device nets. Download the trained device params into
-            # the mirror, then run the same greedy rollout as the CPU branch.
+            # Fully on-device: Gumbel search over the resident GPU nets, greedy
+            # action = argmax of the improved policy (matches the GPU train
+            # path — Gumbel root sampling IS the exploration; argmax is greedy).
             var c = self.ctx.value()
-            var rep_c = Self.REP.make["cpu", INIT=Kaiming]()
-            var dyn_c = Self.DYN.make["cpu", INIT=Kaiming]()
-            var pred_c = Self.PRED.make["cpu", INIT=Kaiming]()
-            mz_sync_gpu_to_cpu(self.rep, rep_c, c)
-            mz_sync_gpu_to_cpu(self.dyn, dyn_c, c)
-            mz_sync_gpu_to_cpu(self.pred, pred_c, c)
-            var mcts = GenericCPUMCTS[
-                Self.ACT, Self.LATENT, Self.NUM_SIMS, Self.MAX_NODES,
-                MuZeroPUCT[19652.0, 1.25],
-                DirichletNoise[0.25, 0.25], SinglePlayer, 8, 3,
-            ](gamma=Float64(self.gamma))
-            var rep_a = MZRepCPU[Self.OBS, Self.LATENT, Self.REP](
-                net=UnsafePointer(to=rep_c)
-            )
-            var dyn_a = MZDynCPU[Self.LATENT, Self.ACT, Self.BINS, Self.DYN](
-                net=UnsafePointer(to=dyn_c),
-                v_min=self.v_min, v_max=self.v_max,
-            )
-            var pred_a = MZPredCPU[
-                Self.LATENT, Self.ACT, Self.BINS, Self.PRED
+            var planner = GumbelGPUMCTS[
+                1, Self.ACT, Self.LATENT, Self.BINS, Self.MAX_NODES,
+                Self.MAX_K, Self.NUM_SIMS, SinglePlayer,
             ](
-                net=UnsafePointer(to=pred_c),
-                v_min=self.v_min, v_max=self.v_max,
+                c, gamma=Float64(self.gamma),
+                v_min=Float64(self.v_min), v_max=Float64(self.v_max),
             )
+            var rep_a = MZRepGPU[Self.OBS, Self.LATENT, Self.REP].make(
+                self.rep
+            )
+            var dyn_a = MZDynGPU[
+                Self.LATENT, Self.ACT, Self.BINS, Self.DYN
+            ].make(self.dyn)
+            var pred_a = MZPredGPU[
+                Self.LATENT, Self.ACT, Self.BINS, Self.PRED
+            ].make(self.pred)
+            var d_obs = c.enqueue_create_buffer[DT](Self.OBS)
+            var h_obs = mptr(alloc[Scalar[DT]](Self.OBS))
+            var h_pol = mptr(alloc[Scalar[DT]](Self.ACT))
+            var mseed = UInt32(0)
             var total = 0.0
             for _ in range(episodes):
                 var eo = env.reset_obs_list()
@@ -273,12 +281,22 @@ struct MuZeroAgent[
                     eo_f.append(Float64(eo[j]))
                 var eret = 0.0
                 for _step in range(max_ep_steps):
-                    var ep = mcts.search[
+                    for j in range(Self.OBS):
+                        h_obs[j] = Scalar[DT](eo_f[j])
+                    c.enqueue_copy(d_obs, h_obs)
+                    var obs_t = LayoutTensor[
+                        DT, Layout.row_major(1, Self.OBS), MutAnyOrigin
+                    ](mptr(d_obs.unsafe_ptr()))
+                    planner.search_gpu[
                         type_of(rep_a), type_of(dyn_a), type_of(pred_a)
-                    ](rep_a, dyn_a, pred_a, eo_f, add_noise=False)
+                    ](c, rep_a, dyn_a, pred_a, obs_t,
+                      apply_legal=False, k_actual=Self.MAX_K, rng_seed=mseed)
+                    mseed += UInt32(1)
+                    c.enqueue_copy(h_pol, planner.policies_view())
+                    c.synchronize()
                     var best = 0
                     for a in range(1, Self.ACT):
-                        if ep[a] > ep[best]:
+                        if Float64(h_pol[a]) > Float64(h_pol[best]):
                             best = a
                     var es = env.step_obs(best)
                     eret += Float64(es[1])
@@ -288,15 +306,9 @@ struct MuZeroAgent[
                     if es[2]:
                         break
                 total += eret
-            var result = total / Float64(episodes)
-            # keep the CPU mirrors alive until *after* the rollout — the MCTS
-            # adapters hold `UnsafePointer(to=rep_c)`, an indirection the
-            # lifetime analyzer can't see, so without these extenders it may free
-            # the mirrors right after the sync and dangle the search pointers.
-            _ = rep_c^
-            _ = dyn_c^
-            _ = pred_c^
-            return result
+            h_obs.free()
+            h_pol.free()
+            return total / Float64(episodes)
 
     def save(mut self, path: String) raises:
         """Weights-only snapshot of the three learned-model nets (rep / dyn

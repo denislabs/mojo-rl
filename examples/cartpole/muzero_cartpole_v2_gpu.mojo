@@ -5,9 +5,10 @@ The GPU twin of `muzero_cartpole_v2_cpu`, driven through
 (`GenericGPUMCTS` over the resident h/g/f nets via the MuZero GPU adapters)
 and the K-step BPTT unroll trains the same nets in place — no CPU mirror, no
 per-step checkpoint sync (that was the old `run_muzero_selfplay_gpu` hybrid,
-still available for reference). NUM_SIMS=24 instead of the CPU run's 25: the
-GPU planner requires a multiple of BATCH_SIMS=8. Same convergence target as
-the CPU run (random ~22, "solving" ~195+, sustained greedy 500 by ~52k).
+still available for reference). Search is SERIAL (BATCH_SIMS=1): the batched
+GPU leaf path is value-biased vs the CPU search (driver docstring has the
+story); serial is bit-near-identical to the converged CPU recipe. Same
+convergence target (random ~22, "solving" ~195+, sustained greedy 500 ~52k).
 
 Run (GPU env required):
     pixi run -e apple mojo run -I . examples/cartpole/muzero_cartpole_v2_gpu.mojo
@@ -31,7 +32,10 @@ def main() raises:
     comptime LATENT = 128   # legacy MuZeroMLPConfig CartPole parity
     comptime BINS = 51
     comptime H = 128
-    comptime NUM_SIMS = 24   # GPU planner: must be a multiple of BATCH_SIMS=8
+    # 25 sims, SERIAL search (driver default BATCH_SIMS=1/VLOSS=0): the GPU
+    # batched-leaf path is value-biased vs the converged CPU search — see
+    # the driver docstring + test_mz_search_gpu_cpu_parity.
+    comptime NUM_SIMS = 25
     comptime MAX_NODES = 128
     comptime CAP = 50000
     comptime B = 128        # legacy batch_size parity
