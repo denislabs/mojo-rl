@@ -32,6 +32,8 @@ from ..core.grad_clip import (
     clip_grads_auto,
     clip_grads_auto_gpu,
     clip_grads_grouped_gpu,
+    clip_grads_graph_cpu,
+    clip_grads_graph_gpu,
     GradClipState,
 )
 from ..core.module import Module, mptr
@@ -789,9 +791,12 @@ struct Adam(Optimizer, Saveable):
     # visitors — the grouped multi-tensor descriptor build is a Module-only
     # optimization (mirrors DreamerOpt's graph overloads).
     #
-    # NOTE: global grad-norm clip (`max_grad_norm`) is NOT applied in
-    # `step_graph` — `clip_grads_auto` is Module-typed. TD-MPC2 grad
-    # clipping is handled at the trainer level (port-plan P5 parity).
+    # NOTE: global grad-norm clip (`max_grad_norm`) IS applied in
+    # `step_graph` when `max_grad_norm > 0`, via the graph-typed
+    # `clip_grads_graph_*` entry points (per-Param GPU path — graph-made
+    # Adam builds no grouped descriptors). Default `max_grad_norm == 0` is
+    # a no-op, so TD-MPC2 (which clips at the trainer level, P5 parity) and
+    # every other graph trainer that leaves it 0 are bit-identical.
     # ──────────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -857,6 +862,27 @@ struct Adam(Optimizer, Saveable):
         target: StaticString, OUT: Int, *NODES: GraphNode
     ](mut self, mut g: ComputeGraph[OUT, *NODES]) raises:
         assert_tag_for["Adam", target](self.ts.target_tag)
+
+        # Global grad-norm clip — no-op when `max_grad_norm == 0` (default),
+        # so non-clipping graph trainers stay bit-identical. Runs after all
+        # backward passes wrote grads, before the update. Per-Param GPU path
+        # (graph Adam has no grouped descriptors); `len(self.offsets)` is the
+        # Param count after the init walker ran in `make_graph`.
+        comptime if target == "cpu":
+            _ = clip_grads_graph_cpu(g, self.max_grad_norm)
+        else:
+            if self.max_grad_norm > Scalar[DT](0.0):
+                if not self._clip_state:
+                    self._clip_state = GradClipState.make(
+                        self.ts.ctx.value(), len(self.offsets),
+                    )
+                clip_grads_graph_gpu(
+                    g,
+                    self.ts.ctx.value(),
+                    self._clip_state.value(),
+                    self.max_grad_norm,
+                )
+
         comptime if target == "cpu":
             self.step_count += 1
             self.beta1_pow_t = self.beta1_pow_t * self.beta1

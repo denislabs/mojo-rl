@@ -70,7 +70,13 @@ def main() raises:
 
     var buf = Buffer(n_traj=8, traj_len=12, seed=777)
     buf.fill_synthetic()
-    var tr = Trainer.make(lam=Scalar[DT](0.09), lr=Scalar[DT](1e-3))
+    # max_grad_norm=1.0 exercises the graph grad-clip path (Adam.step_graph
+    # → clip_grads_graph_cpu) — the fix for the CLS readout's mid-training
+    # gradient explosion. Training must still decrease with it on.
+    var tr = Trainer.make(
+        lam=Scalar[DT](0.09), lr=Scalar[DT](1e-3),
+        max_grad_norm=Scalar[DT](1.0),
+    )
 
     var pix = _a(B * PIX); var act = _a(B * ACTIN)
     var pix_t = TileTensor(pix, row_major[B, PIX]())

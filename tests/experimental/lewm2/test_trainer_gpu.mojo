@@ -73,8 +73,13 @@ def main() raises:
     print("=" * 70)
     var ctx = DeviceContext()
 
+    # max_grad_norm=1.0 exercises the GPU graph grad-clip path (Adam.step_graph
+    # → clip_grads_graph_gpu, all 3 device passes run every step). The fix for
+    # the CLS readout's mid-training gradient explosion; training must still
+    # decrease with it on.
     var tr = Trainer.make(
-        lam=Scalar[DT](0.09), lr=Scalar[DT](1e-3), ctx=ctx
+        lam=Scalar[DT](0.09), lr=Scalar[DT](1e-3),
+        max_grad_norm=Scalar[DT](1.0), ctx=ctx,
     )
 
     # device IO + host staging for synthetic windows

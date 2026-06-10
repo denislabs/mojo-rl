@@ -66,6 +66,11 @@ comptime STEPS: Int = 32000
 comptime LOG_EVERY: Int = 200
 comptime LAM: Scalar[DT] = 0.09
 comptime LR: Scalar[DT] = 1e-3
+# Global grad-norm clip (standard ViT/transformer training). The mean-pooled
+# WM trained stably without it, but the single-token CLS readout concentrates
+# the encoder gradient and blew up at ~step 1800 (loss→thousands, emb var→100s);
+# clipping caps the per-step update so an outlier batch can't explode it.
+comptime MAX_GRAD_NORM: Scalar[DT] = 1.0
 comptime CKPT_PATH: String = "/tmp/lewm2_pusht_paper_cls_world_model.txt"
 
 comptime EncCLS = LeWMEncoderCLS[
@@ -94,7 +99,9 @@ def main() raises:
     print("opening PushT expert dataset ...")
     var sampler = PushTOfflineSampler(frameskip=FRAMESKIP, num_steps=T)
     var src = Source.make(sampler^, ctx=ctx)
-    var tr = Trainer.make(lam=LAM, lr=LR, ctx=ctx)
+    var tr = Trainer.make(
+        lam=LAM, lr=LR, max_grad_norm=MAX_GRAD_NORM, ctx=ctx
+    )
 
     print("training", STEPS, "steps (CLS encoder) ...")
     tr.reset_loss_accum()

@@ -239,6 +239,7 @@ struct LeWMTrainer[
     def make(
         lam: Scalar[DT] = 0.09,
         lr: Scalar[DT] = 1e-3,
+        max_grad_norm: Scalar[DT] = 0.0,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
         var t = Self()
@@ -248,6 +249,12 @@ struct LeWMTrainer[
         t.graph.set_node_attr["sig_s", "multiplier"](lam)
         t.opt = Adam.make_graph[Self.train_target](t.graph, ctx=ctx)
         t.opt.lr = lr
+        # Global grad-norm clip (0.0 = disabled, bit-identical to before).
+        # The CLS readout concentrates all the encoder gradient through one
+        # token and can blow up mid-training (~step 1800 on the paper run);
+        # clipping at e.g. 1.0 caps the step so an outlier batch can't
+        # explode the residual stream. Applied in Adam.step_graph.
+        t.opt.max_grad_norm = max_grad_norm
         t.ts = TargetStorage.make[Self.train_target](ctx=ctx)
         init_scratch_auto[Self, Self.train_target](t, ctx)
         # The backward seed for a mean-over-batch loss is the constant

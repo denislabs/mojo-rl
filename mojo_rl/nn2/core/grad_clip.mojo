@@ -49,6 +49,8 @@ from ..constants import DT, TPB
 from .module import mptr
 from .module import Module
 from .param_visitor import ParamVisitor
+from .graph_node import GraphNode
+from ..combinators.compute_graph import ComputeGraph
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -467,6 +469,75 @@ def clip_grads_auto_gpu[
         scale_buf=state.scale_buf.value().unsafe_ptr(),
     )
     model.for_each_param[target="gpu", V=_GradScaleVisitorGPU](
+        String(""), scale_visitor
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# ComputeGraph entry points — a `ComputeGraph` exposes the same
+# `for_each_param[target, V]` walk as a `Module` but does NOT conform to
+# `Module`, so the `M: Module`-bounded entry points above can't take it.
+# These mirror `clip_grads_auto` (CPU) / `clip_grads_auto_gpu` (GPU
+# per-Param) exactly, walking the graph's params instead. Used by
+# `Adam.step_graph` when `max_grad_norm > 0` (graph-owned-params trainers
+# such as LeWM, whose single-token CLS readout concentrates gradients and
+# needs clipping the mean-pooled variant got away without). The GPU path
+# is per-Param only (graph-made Adam builds no grouped descriptors).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def clip_grads_graph_cpu[
+    OUT: Int, *NODES: GraphNode
+](mut g: ComputeGraph[OUT, *NODES], max_norm: Scalar[DT]) raises -> Scalar[DT]:
+    """CPU graph clip. Returns pre-clip global L2 norm (0 when disabled)."""
+    if max_norm <= Scalar[DT](0.0):
+        return Scalar[DT](0.0)
+    var sum_visitor = _GradSumSqVisitorCPU(sum_sq=Scalar[DT](0.0))
+    g.for_each_param[target="cpu", V=_GradSumSqVisitorCPU](
+        String(""), sum_visitor
+    )
+    var norm = sqrt(sum_visitor.sum_sq)
+    if norm > max_norm:
+        var scale_visitor = _GradScaleVisitorCPU(scale=max_norm / norm)
+        g.for_each_param[target="cpu", V=_GradScaleVisitorCPU](
+            String(""), scale_visitor
+        )
+    return norm
+
+
+def clip_grads_graph_gpu[
+    OUT: Int, *NODES: GraphNode
+](
+    mut g: ComputeGraph[OUT, *NODES],
+    ctx: DeviceContext,
+    mut state: GradClipState,
+    max_norm: Scalar[DT],
+) raises:
+    """GPU graph clip — per-Param, three on-device passes, zero D2H.
+    Mirrors `clip_grads_auto_gpu` but walks `g.for_each_param`. `state`
+    must be `make`-d with `n_params == count(graph params)`."""
+    if max_norm <= Scalar[DT](0.0):
+        return
+    var sum_visitor = _GradSumSqVisitorGPU(
+        ctx=ctx, partials=state.partials.value().unsafe_ptr(), slot=0,
+    )
+    g.for_each_param[target="gpu", V=_GradSumSqVisitorGPU](
+        String(""), sum_visitor
+    )
+    ctx.enqueue_function[_compute_scale_kernel](
+        state.partials.value().unsafe_ptr(),
+        state.n_params,
+        state.scale_buf.value().unsafe_ptr(),
+        state.norm_buf.value().unsafe_ptr(),
+        max_norm,
+        Scalar[DT](1e-12),
+        grid_dim=1,
+        block_dim=1,
+    )
+    var scale_visitor = _GradScaleVisitorGPU(
+        ctx=ctx, scale_buf=state.scale_buf.value().unsafe_ptr(),
+    )
+    g.for_each_param[target="gpu", V=_GradScaleVisitorGPU](
         String(""), scale_visitor
     )
 
