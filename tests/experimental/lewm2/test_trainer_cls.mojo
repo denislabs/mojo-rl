@@ -77,6 +77,7 @@ def main() raises:
         lam=Scalar[DT](0.09), lr=Scalar[DT](1e-3),
         max_grad_norm=Scalar[DT](1.0),
         weight_decay=Scalar[DT](1e-3),
+        sigreg_resample=True,   # fresh projections/step + fwd/bwd seed match
     )
 
     var pix = _a(B * PIX); var act = _a(B * ACTIN)

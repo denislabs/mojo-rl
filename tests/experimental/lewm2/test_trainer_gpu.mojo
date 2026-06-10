@@ -80,7 +80,8 @@ def main() raises:
     var tr = Trainer.make(
         lam=Scalar[DT](0.09), lr=Scalar[DT](1e-3),
         max_grad_norm=Scalar[DT](1.0),
-        weight_decay=Scalar[DT](1e-3), ctx=ctx,
+        weight_decay=Scalar[DT](1e-3),
+        sigreg_resample=True, ctx=ctx,
     )
 
     # device IO + host staging for synthetic windows
@@ -132,6 +133,10 @@ def main() raises:
 
     # checkpoint round-trip on the SAME instance (SIGReg's projection is
     # pointer-seeded, stable within an instance — see CPU test note).
+    # Resampling must be OFF here: with it on, every eval_loss forward
+    # draws a fresh A → the SIGReg term (and thus the loss) differs run
+    # to run even with identical params, breaking the exactness check.
+    tr.graph.set_node_attr["sig", "resample"](Scalar[DT](0.0))
     print("checkpoint round-trip ...")
     var lA = tr.eval_loss(pix_t, act_t)
     tr.save_params(String("/tmp/lewm2_ckpt_gpu.txt"))

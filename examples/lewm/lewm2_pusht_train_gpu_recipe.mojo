@@ -12,6 +12,17 @@ The recipe retrain (reference audit items 1-3, docs/LEWM_REFERENCE_AUDIT.md):
      planning must sample in z-space (Σ₀=I — the paper's CEM init) and
      de-normalize before execution: raw = z·std + mean, env = agent+raw·100.
 
+Plus audit item 5 (architecture parity):
+  4. SIGReg projections RESAMPLED every step (sigreg_resample=True — the
+     reference draws fresh torch.randn projections per forward; a fixed A
+     lets training game the sketch).
+  5. ENC_FF_MULT=4 — ViT-Tiny's standard mlp_ratio (intermediate 768; our
+     previous runs used 2 = half-width FFN).
+  (Deferred from item 5: predictor final LayerNorm — its effect is largely
+  absorbed by PredProj's immediate BatchNorm, and an optional graph node
+  needs conditional-type-alias support Mojo lacks; predictor dropout 0.1 —
+  regularization that matters at 10-epoch scale, invasive to thread.)
+
 Writes a NEW checkpoint (z-action semantics — incompatible with the raw
 CLS/mean-pool checkpoints). Saves periodically so partial runs are usable.
 Eval after: lewm2_pusht_paper_protocol_gpu_recipe.mojo.
@@ -41,7 +52,7 @@ comptime ENC_HEADS = 3
 comptime ENC_LAYERS = 12
 comptime EMB = 192
 comptime ENC_PROJ_H = 2048
-comptime ENC_FF_MULT = 2
+comptime ENC_FF_MULT = 4    # ViT-Tiny mlp_ratio 4 (reference; was 2)
 comptime T = 6
 comptime ACT = 10
 comptime SMOOTHED = 32
@@ -102,6 +113,7 @@ def main() raises:
     print("no-stop-grad target | AdamW wd=", WEIGHT_DECAY,
           " peak lr=", PEAK_LR, " warmup", WARMUP_STEPS,
           "+cosine | clip", MAX_GRAD_NORM, "| z-scored actions")
+    print("SIGReg resampled/step | ENC_FF_MULT=4 (ViT mlp_ratio)")
     print()
 
     var ctx = DeviceContext()
@@ -112,7 +124,8 @@ def main() raises:
     var src = Source.make(sampler^, ctx=ctx)
     var tr = Trainer.make(
         lam=LAM, lr=Scalar[DT](_lr_at(0)),
-        max_grad_norm=MAX_GRAD_NORM, weight_decay=WEIGHT_DECAY, ctx=ctx,
+        max_grad_norm=MAX_GRAD_NORM, weight_decay=WEIGHT_DECAY,
+        sigreg_resample=True, ctx=ctx,
     )
 
     print("training", STEPS, "steps ...")

@@ -241,6 +241,7 @@ struct LeWMTrainer[
         lr: Scalar[DT] = 1e-3,
         max_grad_norm: Scalar[DT] = 0.0,
         weight_decay: Scalar[DT] = 0.0,
+        sigreg_resample: Bool = False,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
         var t = Self()
@@ -248,6 +249,12 @@ struct LeWMTrainer[
             ctx=ctx
         )
         t.graph.set_node_attr["sig_s", "multiplier"](lam)
+        # Per-step SIGReg projection resampling (reference draws fresh
+        # projections EVERY forward; a fixed A lets training game the
+        # sketch by hiding non-Gaussianity in the null directions).
+        # Default off = bit-identical to before.
+        if sigreg_resample:
+            t.graph.set_node_attr["sig", "resample"](Scalar[DT](1.0))
         t.opt = Adam.make_graph[Self.train_target](t.graph, ctx=ctx)
         t.opt.lr = lr
         # Global grad-norm clip (0.0 = disabled, bit-identical to before).

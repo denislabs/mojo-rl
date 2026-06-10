@@ -21,8 +21,13 @@ Leaf-owned state (stable across forward→vjp within a step):
   * workspace             — A / cm / sm / partials / scalar / dLdz, allocated
     ONCE per batch-size and reused (no per-step enqueue_create_buffer — the
     NVIDIA disk-blowup / stream-capture footgun).
-PRNG: A is regenerated each call from `Int(cache_z.ptr)` as seed (the cache
-pointer is stable across fwd/bwd), so forward and backward see the same A.
+PRNG: A is regenerated each call. Base seed = `Int(cache_z.ptr)` (stable
+across fwd/bwd, so backward sees forward's A). With `resample` enabled
+(set_attr["resample"], reference parity) each FORWARD additionally mixes a
+step counter into the seed — fresh projections every training step, like
+the reference's per-forward `torch.randn`; the matching vjp reuses the
+stored forward seed. Default off (fixed A): required by fd-gradcheck and
+keeps existing runs bit-identical.
 
 Numeric: GPU accumulates in DT (fp32); CPU uses Float64 reductions. Expect
 ~1e-3 relative agreement, not bit-exact.
@@ -60,12 +65,49 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
     var cache_z: Cache["cache_z"]
     # workspace (GPU) — A/cm/sm/partials/scalar/dLdz, allocated once per batch.
     var ws: Cache["sig_ws"]
+    # Per-forward projection RESAMPLING (reference parity): the LeWM
+    # reference draws a fresh random A every forward (`torch.randn` in
+    # SIGReg.forward); a FIXED A lets training game the sketch by hiding
+    # non-Gaussianity in the null directions. When `resample` is on
+    # (set_attr["resample"](1.0)), each forward mixes a step counter into
+    # the base seed; vjp reuses the forward's seed (backward must see the
+    # same A — the reference gets this for free from autograd). Default
+    # OFF: the fd-gradcheck needs a deterministic f across forward calls,
+    # and every existing run stays bit-identical.
+    var resample: Bool
+    var _step_ctr: UInt64
+    var _cur_seed: UInt64
+    var _seed_valid: Bool
     var ts: TargetStorage
 
     def __init__(out self):
         self.cache_z = Cache["cache_z"]()
         self.ws = Cache["sig_ws"]()
+        self.resample = False
+        self._step_ctr = 0
+        self._cur_seed = 0
+        self._seed_valid = False
         self.ts = TargetStorage.make_uninit()
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        comptime if ATTR == "resample":
+            self.resample = value > Scalar[DT](0.5)
+
+    def _forward_seed(mut self, base: UInt64) -> UInt64:
+        """Seed for THIS forward; stored so the matching vjp reuses it."""
+        if self.resample:
+            self._step_ctr += 1
+            # splitmix-style mix so consecutive steps decorrelate fully.
+            self._cur_seed = base ^ (
+                self._step_ctr * UInt64(0x9E3779B97F4A7C15)
+            )
+        else:
+            self._cur_seed = base
+        self._seed_valid = True
+        return self._cur_seed
+
+    def _backward_seed(self, base: UInt64) -> UInt64:
+        return self._cur_seed if self._seed_valid else base
 
     # ── comptime knot grid / weights ──────────────────────────────────
     @always_inline
@@ -207,7 +249,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
         comptime if target == "cpu":
             self.cache_z.ensure_cpu(BATCH * T * P)
             var cache = TileTensor(self.cache_z.cpu, row_major[BATCH, T * P]())
-            var seed = UInt64(Int(self.cache_z.cpu_ptr()))
+            var seed = self._forward_seed(UInt64(Int(self.cache_z.cpu_ptr())))
             var a = InlineArray[Scalar[DT], D * P](uninitialized=True)
             Self._generate_a_cpu(seed, a.unsafe_ptr())
 
@@ -276,7 +318,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             var out_t = LayoutTensor[
                 DT, Layout.row_major(BATCH, 1), MutAnyOrigin
             ](output_v.ptr)
-            var seed = UInt64(Int(cache_p))
+            var seed = self._forward_seed(UInt64(Int(cache_p)))
 
             ctx.enqueue_function[_sr_gen_a_unnorm[D, P]](
                 a_t, seed, grid_dim=((D * P + TPB - 1) // TPB,), block_dim=(TPB,)
@@ -327,7 +369,9 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
 
         comptime if target == "cpu":
             var cache = TileTensor(self.cache_z.cpu, row_major[BATCH, T * P]())
-            var seed = UInt64(Int(self.cache_z.cpu_ptr()))
+            var seed = self._backward_seed(
+                UInt64(Int(self.cache_z.cpu_ptr()))
+            )
             var a = InlineArray[Scalar[DT], D * P](uninitialized=True)
             Self._generate_a_cpu(seed, a.unsafe_ptr())
 
@@ -405,7 +449,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             var gi_t = LayoutTensor[
                 DT, Layout.row_major(BATCH, T * D), MutAnyOrigin
             ](gi.ptr)
-            var seed = UInt64(Int(cache_p))
+            var seed = self._backward_seed(UInt64(Int(cache_p)))
 
             ctx.enqueue_function[_sr_gen_a_unnorm[D, P]](
                 a_t, seed, grid_dim=((D * P + TPB - 1) // TPB,), block_dim=(TPB,)
