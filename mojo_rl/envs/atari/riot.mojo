@@ -20,6 +20,7 @@ from .flags import (
     FLAG_CON_COLOR,
     FLAG_CON_LEFT_DIFF,
     FLAG_CON_RIGHT_DIFF,
+    FLAG_SWAP_PORTS,
     ACTION_NOOP,
     ACTION_FIRE,
     ACTION_UP,
@@ -148,14 +149,18 @@ def riot_read_swcha(state: AtariState) -> UInt8:
     """
     var value: UInt8 = 0xFF  # All pins high (unpressed)
 
+    # Swapped-port carts (Stella Console.SwapPorts, e.g. Wizard of Wor)
+    # read player 1 from the RIGHT port = SWCHA low nibble.
+    var shift: UInt8 = 0 if (state.sys_flags & FLAG_SWAP_PORTS) != 0 else 4
+
     if (state.sys_flags & FLAG_CON_UP) != 0:
-        value = value & ~UInt8(0x10)  # Bit 4 low
+        value = value & ~(UInt8(0x01) << shift)
     if (state.sys_flags & FLAG_CON_DOWN) != 0:
-        value = value & ~UInt8(0x20)  # Bit 5 low
+        value = value & ~(UInt8(0x02) << shift)
     if (state.sys_flags & FLAG_CON_LEFT) != 0:
-        value = value & ~UInt8(0x40)  # Bit 6 low
+        value = value & ~(UInt8(0x04) << shift)
     if (state.sys_flags & FLAG_CON_RIGHT) != 0:
-        value = value & ~UInt8(0x80)  # Bit 7 low
+        value = value & ~(UInt8(0x08) << shift)
 
     return value
 

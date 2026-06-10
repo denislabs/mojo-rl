@@ -207,6 +207,7 @@ struct AtariEnv[
                 frame_skip=1,
                 max_frames=max_frames,
                 mapper=game.mapper(),
+                swap_ports=game.swap_ports(),
             )
         else:
             self.env = AtariEnvironment(
@@ -215,6 +216,7 @@ struct AtariEnv[
                 frame_skip=frame_skip,
                 max_frames=max_frames,
                 mapper=game.mapper(),
+                swap_ports=game.swap_ports(),
             )
 
         self.episode_reward = 0.0

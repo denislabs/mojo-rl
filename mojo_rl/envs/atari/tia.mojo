@@ -48,6 +48,7 @@ from .flags import (
     CX_P0P1,
     CX_M0M1,
     FLAG_CON_FIRE,
+    FLAG_SWAP_PORTS,
 )
 
 
@@ -132,12 +133,18 @@ def tia_read(state: AtariState, addr: UInt8) -> UInt8:
         return 0x80
     elif reg == 0x0B:  # INPT3 - Paddle 3
         return 0x80
-    elif reg == 0x0C:  # INPT4 - Player 0 fire button
+    elif reg == 0x0C:  # INPT4 - left-port fire button
+        if (state.sys_flags & FLAG_SWAP_PORTS) != 0:
+            return 0x80  # Player 1 is on the right port
         if (state.sys_flags & FLAG_CON_FIRE) != 0:
             return 0x00  # Button pressed (bit 7 = 0)
         return 0x80  # Not pressed (bit 7 = 1)
-    elif reg == 0x0D:  # INPT5 - Player 1 fire button
-        return 0x80  # Not pressed (no player 2)
+    elif reg == 0x0D:  # INPT5 - right-port fire button
+        if (state.sys_flags & FLAG_SWAP_PORTS) != 0 and (
+            state.sys_flags & FLAG_CON_FIRE
+        ) != 0:
+            return 0x00
+        return 0x80
     else:
         return 0x00
 

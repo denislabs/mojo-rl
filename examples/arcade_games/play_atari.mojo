@@ -46,6 +46,7 @@ def main() raises:
         frame_skip=1,
         max_frames=0,
         mapper=game.mapper(),
+        swap_ports=game.swap_ports(),
     )
     env.reset()
     print("Environment reset. Starting interactive play...")

@@ -50,6 +50,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
 
     var ep_start: List[Int]   # absolute start step of each resident episode
     var ep_len: List[Int]
+    var ep_trunc: List[Bool]  # time-limit truncated (last step NOT terminal)
     var total: Int            # monotonic steps written
     var rng: UInt64
 
@@ -64,6 +65,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         self.legal = _a(Self.CAP * Self.ACT)
         self.ep_start = List[Int]()
         self.ep_len = List[Int]()
+        self.ep_trunc = List[Bool]()
         self.total = 0
         self.rng = seed ^ UInt64(0x9E3779B97F4A7C15)
 
@@ -93,10 +95,14 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         ep_tp: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [L]
         ep_legal: UnsafePointer[Scalar[DT], MutAnyOrigin], # [L, ACT] legal mask
         length: Int,
+        truncated: Bool = False,
     ):
         """Append a finished episode of ``length`` steps. The terminal flag is
-        set on the last step. Evicts episodes that fall out of the last ``CAP``
-        steps so every resident episode stays fully readable."""
+        set on the last step — unless ``truncated`` (time-limit cut, not a real
+        terminal): then no step is flagged and the n-step targets bootstrap
+        from the last stored root value instead of going to zero. Evicts
+        episodes that fall out of the last ``CAP`` steps so every resident
+        episode stays fully readable."""
         var start = self.total
         for i in range(length):
             var slot = (self.total) % Self.CAP
@@ -111,16 +117,20 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
             self.val[slot] = ep_val[i]
             self.tp[slot] = ep_tp[i]
             self.done[slot] = (
-                Scalar[DT](1.0) if i == length - 1 else Scalar[DT](0.0)
+                Scalar[DT](1.0) if (
+                    i == length - 1 and not truncated
+                ) else Scalar[DT](0.0)
             )
             self.total += 1
         self.ep_start.append(start)
         self.ep_len.append(length)
+        self.ep_trunc.append(truncated)
         # prune episodes no longer fully resident (start older than CAP window).
         var floor = self.total - Self.CAP
         while len(self.ep_start) > 0 and self.ep_start[0] < floor:
             _ = self.ep_start.pop(0)
             _ = self.ep_len.pop(0)
+            _ = self.ep_trunc.pop(0)
 
     def _read_step[
         FIELD_DIM: Int,
@@ -144,6 +154,21 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         for j in range(FIELD_DIM):
             out[out_base + j] = field[slot * FIELD_DIM + j]
 
+    def _sample_step_uniform(mut self) -> Tuple[Int, Int]:
+        """Pick a resident (episode, offset) with every resident **step**
+        equally likely. Episode-uniform sampling (episode first, then offset)
+        over-weights steps from short episodes — early random-policy failures
+        keep a majority of the sample mass long after the policy improves."""
+        var tot = 0
+        for e in range(len(self.ep_len)):
+            tot += self.ep_len[e]
+        var u = Int(self._xorshift() % UInt64(tot))
+        var e = 0
+        while u >= self.ep_len[e]:
+            u -= self.ep_len[e]
+            e += 1
+        return (e, u)
+
     def sample_training_batch[
         B: Int, K: Int, N: Int,
     ](
@@ -156,9 +181,10 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
     ):
         """Fill the time-major unroll batch for ``B`` windows. Each row picks a
-        random (episode, start); the K+N horizon is read with absorbing padding
-        and the value targets are n-step bootstrapped (sign-flipped for
-        two-player). Caller guarantees ``num_episodes() > 0``."""
+        step-uniform (episode, start); the K+N horizon is read with absorbing
+        padding and the value targets are n-step bootstrapped (sign-flipped for
+        two-player; truncated episodes bootstrap from their last root value).
+        Caller guarantees ``num_episodes() > 0``."""
         comptime HV = K + N + 1   # value/to_play horizon (positions)
         comptime HR = K + N       # reward/done horizon (transitions)
         var w_rew = _a(HR)
@@ -168,9 +194,15 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         var w_vt = _a(K + 1)
 
         for b in range(B):
-            var e = Int(self._xorshift() % UInt64(len(self.ep_start)))
+            var pos = self._sample_step_uniform()
+            var e = pos[0]
+            var s = pos[1]
             var L = self.ep_len[e]
-            var s = Int(self._xorshift() % UInt64(L))
+            # truncation boundary: last window index with a stored root value
+            # (uncapped for naturally-terminated episodes — dones handle those).
+            var lv = K + N + 1
+            if self.ep_trunc[e]:
+                lv = L - 1 - s
 
             # obs0 = obs at start (always in-episode).
             self._read_step[Self.OBS](self.obs, e, s, obs0, b * Self.OBS)
@@ -192,7 +224,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
                     self._read_step[1](self.tp, e, s + h, w_tp, h)
 
             compute_nstep_value_targets[K, N](
-                w_rew, w_done, w_val, w_tp, gamma, w_vt
+                w_rew, w_done, w_val, w_tp, gamma, w_vt, last_valid=lv
             )
 
             # write time-major slabs.
@@ -246,9 +278,13 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         var w_vt = _a(K + 1)
 
         for b in range(B):
-            var e = Int(self._xorshift() % UInt64(len(self.ep_start)))
+            var pos = self._sample_step_uniform()
+            var e = pos[0]
+            var s = pos[1]
             var L = self.ep_len[e]
-            var s = Int(self._xorshift() % UInt64(L))
+            var lv = K + N + 1
+            if self.ep_trunc[e]:
+                lv = L - 1 - s
 
             # obs sequence: obs at s+k for k=0..K (obs-repeat absorbing).
             for k in range(K + 1):
@@ -275,7 +311,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
                     self._read_step[1](self.tp, e, s + h, w_tp, h)
 
             compute_nstep_value_targets[K, N](
-                w_rew, w_done, w_val, w_tp, gamma, w_vt
+                w_rew, w_done, w_val, w_tp, gamma, w_vt, last_valid=lv
             )
 
             for k in range(K + 1):

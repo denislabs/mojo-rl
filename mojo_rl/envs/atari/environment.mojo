@@ -20,6 +20,8 @@ from .flags import (
     ACTION_NOOP,
     ACTION_FIRE,
     ACTION_RESET,
+    FLAG_CON_SELECT,
+    FLAG_SWAP_PORTS,
     ROM_AUTO,
     TOTAL_SCANLINES,
     FRAME_HEIGHT,
@@ -41,6 +43,7 @@ struct AtariEnvironment(Movable):
     var frame_skip: Int
     var max_frames: Int  # Max frames per episode (0 = unlimited)
     var mapper: UInt8  # ROM_* mapper (ROM_AUTO = resolve from size)
+    var swap_ports: Bool  # Player 1 on the RIGHT joystick port (WoW)
 
     def __init__(
         out self,
@@ -49,6 +52,7 @@ struct AtariEnvironment(Movable):
         frame_skip: Int = 4,
         max_frames: Int = 108000,  # Standard ALE default (~30 min at 60fps)
         mapper: UInt8 = ROM_AUTO,
+        swap_ports: Bool = False,
     ):
         self.state = AtariState()
         self.rom = rom
@@ -56,6 +60,7 @@ struct AtariEnvironment(Movable):
         self.frame_skip = frame_skip
         self.max_frames = max_frames
         self.mapper = mapper
+        self.swap_ports = swap_ports
 
     def __init__(out self, *, deinit take: Self):
         self.state = take.state^
@@ -64,10 +69,13 @@ struct AtariEnvironment(Movable):
         self.frame_skip = take.frame_skip
         self.max_frames = take.max_frames
         self.mapper = take.mapper
+        self.swap_ports = take.swap_ports
 
     def reset(mut self):
         """Reset the environment to initial state."""
         self.state = AtariState()
+        if self.swap_ports:
+            self.state.sys_flags = self.state.sys_flags | FLAG_SWAP_PORTS
         init_bank(self.state, self.rom_size, self.mapper)
         cpu_reset(self.state, self.rom, self.rom_size)
 
@@ -103,10 +111,45 @@ struct AtariEnvironment(Movable):
         enough (Asterix/Enduro FIRE, BeamRider RIGHT, DarkChambers' 486-frame
         boot animation, ElevatorAction 16×FIRE)."""
         self.reset()
+        # Console-SELECT game-mode selection (ALE setMode default path):
+        # press SELECT 2 frames on / 2 off until the mode byte matches,
+        # then soft-reset (hold RESET) to apply.
+        var su = game.select_until()
+        if su[0] >= 0:
+            var guard = 0
+            while (
+                Int(self.state.ram[su[0] & 0x7F]) != su[1] and guard < 100
+            ):
+                self.state.sys_flags = self.state.sys_flags | FLAG_CON_SELECT
+                for _ in range(2):
+                    set_action(self.state, ACTION_NOOP)
+                    run_frame(self.state, self.rom, self.rom_size)
+                self.state.sys_flags = (
+                    self.state.sys_flags & ~FLAG_CON_SELECT
+                )
+                for _ in range(2):
+                    set_action(self.state, ACTION_NOOP)
+                    run_frame(self.state, self.rom, self.rom_size)
+                guard += 1
+            for _ in range(4):
+                set_action(self.state, ACTION_RESET)
+                run_frame(self.state, self.rom, self.rom_size)
+            for _ in range(4):
+                set_action(self.state, ACTION_NOOP)
+                run_frame(self.state, self.rom, self.rom_size)
         var sa = game.starting_actions()
         for _ in range(sa[1]):
             set_action(self.state, sa[0])
             run_frame(self.state, self.rom, self.rom_size)
+        # Sync the RL signals to the post-reset RAM, like ALE (settings step
+        # during reset, rewards not exposed). Without this, games whose score
+        # doesn't start at 0 leak a bogus first-step reward (Pitfall starts
+        # at 2000; Skiing's timer baseline).
+        var sig = game_signals(game, self.state, 0)
+        self.state.score = Int32(sig.score)
+        self.state.lives = UInt8(sig.lives)
+        self.state.reward = 0
+        self.state.terminal = False
 
     def step(mut self, action: UInt8) -> Int:
         """Execute one step (frame_skip frames with the same action).
