@@ -14,7 +14,7 @@ ratio 1.0).
 
 The 4×84×84 pixel pipeline — render → max-pool (sprite-flicker) →
 grayscale → box-filter resize 160×210→84×84 → 4-frame ring stack — is
-already built into `AtariEnv[PongDef, 1]`; no wrapper needed. Frame skip
+already built into `AtariEnv[1]`; no wrapper needed. Frame skip
 is fixed at 4 internally for pixel mode.
 
 Rainbow components: C51 + Double + PER + Dueling + Noisy + N-step.
@@ -62,7 +62,7 @@ from mojo_rl.deep_agents2.data.any_per_replay import AnyPerReplay
 from mojo_rl.deep_agents2.training import run_offpolicy_discrete_train
 
 from mojo_rl.envs.atari import AtariEnv, load_rom
-from mojo_rl.envs.atari.games.pong import PongDef
+from mojo_rl.envs.atari.games.registry import AtariGame
 from mojo_rl.envs.atari.flags import OBS_WIDTH, OBS_HEIGHT
 
 
@@ -73,7 +73,7 @@ from mojo_rl.envs.atari.flags import OBS_WIDTH, OBS_HEIGHT
 # Atari Pong pixel: 4×84×84 = 28224 observation, 6 ALE actions.
 comptime FRAMES = 4
 comptime OBS_DIM = FRAMES * OBS_WIDTH * OBS_HEIGHT  # 4 * 84 * 84 = 28224
-comptime NUM_ACTIONS = PongDef.NUM_ACTIONS  # 6 (NOOP/FIRE/RIGHT/LEFT/R+F/L+F)
+comptime NUM_ACTIONS = 6  # Pong minimal set (NOOP/FIRE/RIGHT/LEFT/R+F/L+F)
 
 comptime NUM_ATOMS = 51
 comptime HIDDEN = 512
@@ -127,7 +127,7 @@ comptime SAMPLE = NStepSampleStep[
 comptime RainbowTrainer = C51Trainer[
     "gpu", SAMPLE, RainbowCNNNet, NUM_ATOMS, NUM_ACTIONS, True
 ]
-comptime AtariPongPixel = AtariEnv[PongDef, 1, DT]
+comptime AtariPongPixel = AtariEnv[1, DT]
 
 
 # =============================================================================
@@ -166,9 +166,9 @@ def main() raises:
             v_max=V_MAX,
         )
 
-        var env = AtariPongPixel(rom_data.data.value(), rom_data.size)
+        var env = AtariPongPixel(AtariGame.PONG, rom_data.data.value(), rom_data.size)
         # Separate env instance for deterministic (noise-off) greedy eval.
-        var eval_env = AtariPongPixel(rom_data.data.value(), rom_data.size)
+        var eval_env = AtariPongPixel(AtariGame.PONG, rom_data.data.value(), rom_data.size)
 
         print("Environment: Atari 2600 Pong (CPU emulation, single env, Pixel)")
         print("Agent: Rainbow DQN CNN (deep_agents2 C51, GPU train)")

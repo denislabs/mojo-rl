@@ -108,12 +108,14 @@ struct DelayQueue(Copyable, Movable):
     var remaining: InlineArray[Int, DQ_CAP]
     var reg: InlineArray[UInt8, DQ_CAP]
     var value: InlineArray[UInt8, DQ_CAP]
+    var count: Int  # live entries — lets cycle_collect early-out (hot path)
 
     def __init__(out self):
         self.valid = InlineArray[Bool, DQ_CAP](fill=False)
         self.remaining = InlineArray[Int, DQ_CAP](fill=0)
         self.reg = InlineArray[UInt8, DQ_CAP](fill=0)
         self.value = InlineArray[UInt8, DQ_CAP](fill=0)
+        self.count = 0
 
     def push(mut self, reg: UInt8, value: UInt8, delay: Int):
         """Schedule `reg=value` to take effect `delay` color clocks from now."""
@@ -123,18 +125,28 @@ struct DelayQueue(Copyable, Movable):
                 self.remaining[i] = delay
                 self.reg[i] = reg
                 self.value[i] = value
+                self.count += 1
                 return
         # Overflow: drop oldest-equivalent (should never happen in practice).
 
+    @always_inline
     def cycle_collect(
         mut self, mut due_reg: List[UInt8], mut due_val: List[UInt8]
     ):
-        """Advance one color clock; append writes that fire this clock."""
+        """Advance one color clock; append writes that fire this clock.
+
+        Called once per color clock (~60k/frame); the queue is empty on the
+        vast majority of clocks, so the count==0 early-out is the difference
+        between O(1) and 2×DQ_CAP scans per clock.
+        """
+        if self.count == 0:
+            return
         for i in range(DQ_CAP):
             if self.valid[i] and self.remaining[i] == 0:
                 due_reg.append(self.reg[i])
                 due_val.append(self.value[i])
                 self.valid[i] = False
+                self.count -= 1
         for i in range(DQ_CAP):
             if self.valid[i]:
                 self.remaining[i] -= 1

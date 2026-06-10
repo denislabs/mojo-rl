@@ -948,26 +948,24 @@ def run_frame(
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
 ):
-    """Execute one full frame (~262 scanlines × 76 CPU cycles).
+    """Execute one full frame headlessly (no video output).
 
-    This is the main emulation entry point. After this call:
+    This is the main RL emulation entry point. It runs the SAME cycle-accurate
+    CPU/TIA lockstep as run_frame_video — per-color-clock object ticks and TIA
+    collision latches — just without writing pixels. Collisions are gameplay
+    for most carts (SI laser kills, Breakout brick breaks, Pong paddle bounces
+    all read CX* registers), so the headless path must compute them; the old
+    scanline-batched run_frame never did, which silently broke those games in
+    RAM-observation training. After this call:
     - state.ram has been updated by the game logic
-    - state.collision has been updated by TIA scanline processing
+    - state.collision has been latched per color clock
     - Game-specific reward/lives/terminal should be extracted from RAM
     """
-    var overflow = Int(state.cpu_cycles)  # Carry from previous frame
-    for _ in range(TOTAL_SCANLINES):
-        # Only charge paddle capacitor when not grounded (VBLANK bit 7 clear)
-        if (
-            state.paddle_charge < 255
-            and (state.tia_flags & TIA_PADDLE_GROUND) == 0
-        ):
-            state.paddle_charge += 1
-        var total = _run_scanline(state, rom, rom_size, overflow)
-        overflow = total - CPU_CLOCKS_PER_LINE
-
-    state.cpu_cycles = UInt32(overflow)  # Persist for next frame
-    state.frame_number += 1
+    # Dummy buffer: never written (RENDER=False skips all pixel writes).
+    var dummy = InlineArray[UInt8, 4](fill=0)
+    run_frame_cycle_accurate[RENDER=False](
+        state, rom, rom_size, dummy.unsafe_ptr()
+    )
 
 
 # Import here to avoid circular dependency
@@ -1257,7 +1255,9 @@ def _cycle_pixel(
 
 
 
-def run_frame_cycle_accurate(
+def run_frame_cycle_accurate[
+    RENDER: Bool = True
+](
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
@@ -1269,6 +1269,11 @@ def run_frame_cycle_accurate(
     cycle; each instruction's logged TIA writes are replayed at their exact clock
     through the DelayQueue, driving the object counters in state.ctia. Per clock
     we tick the objects, latch collisions, and render the pixel.
+
+    RENDER=False skips all pixel writes (frame_buf is never dereferenced — pass
+    a null pointer) while keeping the identical CPU/TIA/collision behavior:
+    the headless mode for RL training, where games still need the TIA collision
+    latches (SI laser kills, Breakout brick breaks) but no video.
     """
     from .palette import NTSC_PALETTE
 
@@ -1367,21 +1372,38 @@ def run_frame_cycle_accurate(
                             r, state.tia_log_value[li], _cycle_reg_delay(r)
                         )
 
-            # Apply writes whose delay elapsed this clock.
-            due_reg.clear()
-            due_val.clear()
-            state.ctia.dq.cycle_collect(due_reg, due_val)
-            for k in range(len(due_reg)):
-                _cycle_apply_reg(state, due_reg[k], due_val[k], hctr, in_hblank)
+            # Apply writes whose delay elapsed this clock. The queue is empty
+            # on the vast majority of clocks — skip the List churn entirely.
+            if state.ctia.dq.count != 0:
+                due_reg.clear()
+                due_val.clear()
+                state.ctia.dq.cycle_collect(due_reg, due_val)
+                for k in range(len(due_reg)):
+                    _cycle_apply_reg(
+                        state, due_reg[k], due_val[k], hctr, in_hblank
+                    )
 
             # Tick objects + render/collide per color clock from the SAME state
             # (Stella-style): render and collision both use the cycle counters +
             # shadow PF, so they are always consistent (what breaks is what the
             # ball visibly touches; the laser kills what it visibly overlaps).
             var lit = state.ctia.tick(in_hblank)
-            var render_row = visible_line if visible_line < FH2 else -1
+            var render_row = -1
+            comptime if RENDER:
+                render_row = visible_line if visible_line < FH2 else -1
             if pixel >= 0 and pixel < FRAME_WIDTH:
-                _cycle_pixel(state, render_row, pixel, lit, frame_buf, palette)
+                comptime if RENDER:
+                    _cycle_pixel(
+                        state, render_row, pixel, lit, frame_buf, palette
+                    )
+                else:
+                    # Headless: every collision pair involves at least one
+                    # object (PF alone collides with nothing), so a clock
+                    # with no object lit can latch nothing — skip it.
+                    if lit != 0:
+                        _cycle_pixel(
+                            state, render_row, pixel, lit, frame_buf, palette
+                        )
 
             # Advance the line clock.
             var nh = hctr + 1

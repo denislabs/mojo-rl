@@ -24,6 +24,7 @@ from .flags import (
     FRAME_HEIGHT,
     FRAME_WIDTH,
 )
+from .games.registry import AtariGame, game_signals
 
 
 struct AtariEnvironment(Movable):
@@ -137,6 +138,35 @@ struct AtariEnvironment(Movable):
             self.state.terminal = True
 
         return reward
+
+    def step_game(mut self, game: AtariGame, action_idx: Int) -> Int:
+        """Runtime-game variant of step_with_game: one env binary, any game.
+
+        Maps the agent's action index through the game's minimal action set
+        (registry, ALE ordering), runs frame_skip frames, then extracts
+        score/reward/lives/terminal from RAM via game_signals.
+        """
+        var ale_action = game.action(action_idx)
+        var prev_score = Int(self.state.score)
+
+        for _ in range(self.frame_skip):
+            set_action(self.state, ale_action)
+            run_frame(self.state, self.rom, self.rom_size)
+
+        var sig = game_signals(game, self.state.ram, prev_score)
+        self.state.score = Int32(sig.score)
+        self.state.reward = Int32(sig.reward)
+        self.state.lives = UInt8(sig.lives)
+        self.state.terminal = sig.terminal
+
+        # Check max frames truncation
+        if (
+            self.max_frames > 0
+            and Int(self.state.frame_number) >= self.max_frames
+        ):
+            self.state.terminal = True
+
+        return sig.reward
 
     def get_ram(self) -> InlineArray[UInt8, RAM_SIZE]:
         """Get a copy of the 128-byte RAM (for RAM observations)."""

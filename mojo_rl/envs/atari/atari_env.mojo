@@ -3,22 +3,31 @@
 Wraps AtariEnvironment with the standard RL trait interface, providing
 RAM or pixel observations for use with DQN and other discrete-action agents.
 
-Usage:
-    from mojo_rl.envs.atari import AtariEnv, load_rom
-    from mojo_rl.envs.atari.games import PongDef
+The game is a RUNTIME parameter (`AtariGame` registry value): one compiled
+binary plays every registered game. Observations are game-agnostic — RAM
+(128 floats) or pixels (4×84×84 frame stack) — so the same env type works
+for all of them.
 
-    var rom = load_rom("pong.bin")
-    var env = AtariEnv[PongDef](rom.data, rom.size)  # RAM mode (128D obs)
+Usage:
+    from mojo_rl.envs.atari import AtariEnv, AtariGame
+
+    # RAM mode (128D obs); loads roms/pong.bin
+    var env = AtariEnv(AtariGame.PONG)
     var obs = env.reset_obs_list()
     var result = env.step_obs(0)
 
     # Pixel mode (4×84×84 = 28224D obs)
-    var env_px = AtariEnv[PongDef, 1](rom.data, rom.size)
+    var env_px = AtariEnv[1](AtariGame.MS_PACMAN)
+
+    # Or with an explicitly loaded ROM:
+    var rom = load_rom("roms/pong.bin")
+    var env2 = AtariEnv(AtariGame.PONG, rom.data.value(), rom.size)
 """
 
 from std.memory import alloc, memset
 from mojo_rl.core import State, Action, BoxDiscreteActionEnv
-from .environment import AtariEnvironment, GameDef
+from .environment import AtariEnvironment, load_rom
+from .games.registry import AtariGame, game_signals
 from .cpu6502 import run_frame, run_frame_video
 from .riot import set_action
 from .flags import (
@@ -117,14 +126,16 @@ def _resize_160x210_to_84x84(
 
 
 struct AtariEnv[
-    GAME: GameDef,
     OBS_MODE: Int = 0,
     DTYPE: DType = DType.float32,
 ](BoxDiscreteActionEnv):
     """Atari environment conforming to BoxDiscreteActionEnv.
 
+    The game is a runtime field (AtariGame registry) — score/lives/terminal
+    extraction and the minimal action set dispatch on it per step, which is
+    negligible next to the per-frame emulation cost.
+
     Parameters:
-        GAME: Game-specific RAM extraction (PongDef, BreakoutDef, etc.).
         OBS_MODE: 0 = RAM (128 floats), 1 = pixels (4×84×84 = 28224 floats).
         DTYPE: Observation dtype (default float32).
     """
@@ -133,6 +144,7 @@ struct AtariEnv[
     comptime StateType = AtariEnvState
     comptime ActionType = AtariAction
 
+    var game: AtariGame
     var env: AtariEnvironment
     var episode_reward: Float64
     var done: Bool
@@ -147,22 +159,46 @@ struct AtariEnv[
 
     def __init__(
         out self,
+        game: AtariGame,
+        frame_skip: Int = 4,
+        max_frames: Int = 108000,
+    ) raises:
+        """Create an AtariEnv for a registry game, loading its ROM from
+        `roms/<name>.bin` (relative to the working directory).
+
+        The loaded ROM buffer lives as long as the process (not freed on
+        close), matching the explicit-ROM constructor's ownership model.
+        """
+        var rom_data = load_rom(game.rom_file())
+        self = Self(
+            game,
+            rom_data.data.value(),
+            rom_data.size,
+            frame_skip=frame_skip,
+            max_frames=max_frames,
+        )
+
+    def __init__(
+        out self,
+        game: AtariGame,
         rom: UnsafePointer[UInt8, MutAnyOrigin],
         rom_size: Int,
         frame_skip: Int = 4,
         max_frames: Int = 108000,
     ):
-        """Create an AtariEnv.
+        """Create an AtariEnv from an explicitly loaded ROM.
 
         For pixel mode (OBS_MODE=1), frame_skip is managed internally
         (env.frame_skip is set to 1, skip loop is in step_obs).
 
         Args:
+            game: Registry game (drives action set + RAM signal extraction).
             rom: ROM data pointer.
             rom_size: ROM size in bytes.
             frame_skip: Number of frames to repeat each action (default 4).
             max_frames: Max frames per episode (default 108000).
         """
+        self.game = game
         comptime if Self.OBS_MODE == 1:
             # Pixel mode: we drive frame skip manually
             self.env = AtariEnvironment(
@@ -193,6 +229,7 @@ struct AtariEnv[
             self.frame_idx = 0
 
     def __init__(out self, *, deinit take: Self):
+        self.game = take.game
         self.env = take.env^
         self.episode_reward = take.episode_reward
         self.done = take.done
@@ -358,7 +395,7 @@ struct AtariEnv[
         return AtariAction(action_idx=action_idx)
 
     def num_actions(self) -> Int:
-        return Self.GAME.NUM_ACTIONS
+        return self.game.num_actions()
 
     # ========================================================================
     # BoxDiscreteActionEnv trait — step_obs
@@ -383,8 +420,8 @@ struct AtariEnv[
     def _step_obs_ram(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.DTYPE]], Scalar[Self.DTYPE], Bool]:
-        """RAM mode step: use step_with_game, read 128 RAM bytes."""
-        var reward = self.env.step_with_game[Self.GAME](action)
+        """RAM mode step: use step_game, read 128 RAM bytes."""
+        var reward = self.env.step_game(self.game, action)
         self.done = self.env.is_terminal()
         self.episode_reward += Float64(reward)
         var obs = self.get_obs_list()
@@ -401,7 +438,7 @@ struct AtariEnv[
           - Frame 3: set_action + run_frame_video → raw_frame_b
         Then max-pool a/b → grayscale → resize → push to stack.
         """
-        var ale_action = Self.GAME.map_action(action)
+        var ale_action = self.game.action(action)
         var prev_score = Int(self.env.state.score)
 
         # We use a fixed frame_skip of 4 for pixel mode
@@ -424,13 +461,15 @@ struct AtariEnv[
             self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_b.value()
         )
 
-        # Extract RL signals from RAM (same as step_with_game)
-        var new_score = Self.GAME.get_score(self.env.state.ram)
-        var reward = new_score - prev_score
-        self.env.state.score = Int32(new_score)
+        # Extract RL signals from RAM (registry; includes per-game reward
+        # quirks like Space Invaders' score-wrap correction, which the old
+        # plain score-delta here missed)
+        var sig = game_signals(self.game, self.env.state.ram, prev_score)
+        var reward = sig.reward
+        self.env.state.score = Int32(sig.score)
         self.env.state.reward = Int32(reward)
-        self.env.state.lives = UInt8(Self.GAME.get_lives(self.env.state.ram))
-        self.env.state.terminal = Self.GAME.is_terminal(self.env.state.ram)
+        self.env.state.lives = UInt8(sig.lives)
+        self.env.state.terminal = sig.terminal
 
         # Check max frames truncation
         if (
