@@ -13,19 +13,26 @@ Three pieces:
      `DOUBLE`), plus tuned scalar defaults (`DEF_*`). Scalars are comptime
      only so they can seed `__init__` kwarg defaults — still overridable.
 
-  2. `C51Config` / `DoubleC51Config` / `RainbowConfig` — conformers,
-     parametrized by `target`. Because the replay block is target-generic
+  2. `C51Config` / `DoubleC51Config` / `RainbowConfig` /
+     `RainbowCNNConfig` (pixel: Nature-CNN net + uint8 obs ring) —
+     conformers, parametrized by `target`. Because the replay block is
+     target-generic
      (`ReplaySampleStep[AnyReplay[target,…]]` / `NStepSampleStep[N, AnyPerReplay[target,…]]`),
      ONE config struct covers cpu and gpu — no per-target duplication.
 
   3. `agent_from_config` + capitalized presets `C51` / `DoubleC51` /
-     `Rainbow`. Each preset is a SINGLE function taking `target` as a
-     parameter (return type stays non-conditional because the sample
-     block is one target-parametrized type). Capitalized names read like
-     constructors at the call site:
+     `Rainbow` / `RainbowCNN`. Each preset is a SINGLE function taking
+     `target` as a parameter (return type stays non-conditional because
+     the sample block is one target-parametrized type). Capitalized
+     names read like constructors at the call site:
 
          var agent = Rainbow["gpu", OBS, ACT, BATCH, CAP](ctx=ctx)
          var agent = C51["cpu", OBS, ACT, BATCH, CAP](lr=2.5e-4)
+
+Batched-GPU drivers operate on the bare trainer rather than the
+`C51Agent` facade; for those, `C51TrainerOf[CONFIG]` names the trainer
+type and `trainer_from_config[CONFIG](...)` builds it with the config's
+tuned defaults.
 """
 
 from std.gpu.host import DeviceContext
@@ -36,6 +43,9 @@ from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.linear_relu import LinearReLU
 from mojo_rl.nn2.primitives.noisy_linear import NoisyLinear
 from mojo_rl.nn2.primitives.dueling_head_c51 import DuelingHeadC51
+from mojo_rl.nn2.primitives.conv2d import Conv2D
+from mojo_rl.nn2.primitives.relu import ReLU
+from mojo_rl.nn2.primitives.flatten import Flatten
 from mojo_rl.nn2.combinators.sequential import Sequential
 
 from ..training.blocks import (
@@ -47,6 +57,7 @@ from ..data.any_replay import AnyReplay
 from ..data.any_per_replay import AnyPerReplay
 
 from .agent import C51Agent
+from .trainer import C51Trainer
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -70,6 +81,25 @@ comptime RainbowNet[OBS: Int, ACT: Int, NA: Int, HIDDEN: Int] = Sequential[
 """Distributional dueling net with NoisyLinear exploration: the wide
 projection emits (1 + ACT) · NA, split inside DuelingHeadC51 into a
 value stream V[NA] and an advantage stream A[ACT, NA]."""
+
+comptime RainbowCNNNet[
+    FRAMES: Int, ACT: Int, NA: Int, HIDDEN: Int = 512
+] = Sequential[
+    Conv2D[FRAMES, 32, 8, 4, 0, 84, 84], ReLU[32 * 20 * 20],
+    Conv2D[32, 64, 4, 2, 0, 20, 20], ReLU[64 * 9 * 9],
+    Conv2D[64, 64, 3, 1, 0, 9, 9], ReLU[64 * 7 * 7],
+    Flatten[64 * 7 * 7],
+    LinearReLU[64 * 7 * 7, HIDDEN],
+    NoisyLinear[HIDDEN, (1 + ACT) * NA],
+    DuelingHeadC51[ACT, NA],
+]
+"""Rainbow CNN for `FRAMES`×84×84 stacked-frame pixel obs: the canonical
+Nature-DQN convolutional backbone (84→20→9→7, 64·7·7 = 3136 — same
+geometry as `dqn/config.mojo`'s `NatureDQNNet`) feeding `RainbowNet`'s
+noisy dueling distributional heads. nn2 `Conv2D`/`Flatten` expose flat
+`IN_DIMS`/`OUT_DIM`, so the image rides through the discrete off-policy
+trainer/driver as a flat `FRAMES·84·84` vector — zero plumbing changes.
+Used by `RainbowCNNConfig`."""
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -220,6 +250,65 @@ struct RainbowConfig[
     comptime DEF_VMAX = Scalar[DT](10.0)
 
 
+@fieldwise_init
+struct RainbowCNNConfig[
+    target: StaticString,
+    ACT: Int, BATCH: Int, CAP: Int,
+    FRAMES: Int = 4, NA: Int = 51, HIDDEN: Int = 512, NSTEP: Int = 3,
+    OBS_STORE_DT: DType = DType.uint8,
+](C51ConfigT):
+    """Rainbow with the Nature-CNN backbone for `FRAMES`×84×84 pixel obs
+    (`OBS = FRAMES·84·84`). Same six-of-six composition as
+    `RainbowConfig`, with two pixel-specific choices.
+
+      - `Q_NET = RainbowCNNNet` (Nature convs → noisy dueling
+        distributional heads, HIDDEN=512).
+      - `OBS_STORE_DT` defaults to `uint8`: the replay's obs/next_obs
+        rings quantize `round(x·255)` on store and dequantize `k/255` on
+        gather — bit-lossless for the arcade pixel pipeline (it emits
+        exact `k/255` grayscale) and 4× the capacity of a float ring,
+        which is the binding constraint for a GPU-resident pixel buffer.
+        GPU-backend-only: pass `OBS_STORE_DT=DT` for `target="cpu"` (the
+        CPU replay comptime-asserts the default dtype).
+
+    Tuned pixel defaults: `lr=6.25e-5` (Rainbow Atari), warmup 20k.
+    `DEF_VMIN/VMAX = ±10` is the generic Rainbow support; for sparse ±1
+    reward games bracket the DISCOUNTED return instead (Pong: ±2 — the
+    lever that made the clean-obs run converge)."""
+
+    comptime OBS = Self.FRAMES * 84 * 84
+    comptime TARGET = Self.target
+    comptime SAMPLE = NStepSampleStep[
+        Self.NSTEP,
+        AnyPerReplay[
+            Self.target, Self.OBS, 1, Self.CAP, Self.OBS_STORE_DT
+        ],
+        Self.BATCH,
+    ]
+    comptime Q_NET = RainbowCNNNet[
+        Self.FRAMES, Self.ACT, Self.NA, Self.HIDDEN
+    ]
+    comptime N_ATOMS = Self.NA
+    comptime NUM_ACTIONS = Self.ACT
+    comptime DOUBLE = True
+
+    comptime DEF_LR = Scalar[DT](6.25e-5)
+    comptime DEF_GAMMA = Scalar[DT](0.99)
+    comptime DEF_TAU = Scalar[DT](0.005)
+    comptime DEF_EPS = Scalar[DT](0.0)          # Noisy nets → no ε-greedy
+    comptime DEF_EPS_DECAY = Scalar[DT](1.0)
+    comptime DEF_EPS_MIN = Scalar[DT](0.0)
+    comptime DEF_LEARNING_STARTS = 20_000
+    comptime DEF_TARGET_UPDATE_FREQ = 500
+    comptime DEF_MAX_GRAD_NORM = Scalar[DT](10.0)
+    comptime DEF_PER_ALPHA = Scalar[DT](0.5)
+    comptime DEF_PER_BETA = Scalar[DT](0.4)
+    comptime DEF_PER_EPSILON = Scalar[DT](1e-6)
+    comptime DEF_NSTEP = Self.NSTEP
+    comptime DEF_VMIN = Scalar[DT](-10.0)
+    comptime DEF_VMAX = Scalar[DT](10.0)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Generic factory — any C51ConfigT → primitive agent, defaults applied.
 # ──────────────────────────────────────────────────────────────────────
@@ -266,6 +355,74 @@ def agent_from_config[
         CONFIG.NUM_ACTIONS,
         CONFIG.DOUBLE,
     ](
+        ctx=ctx,
+        lr=lr,
+        gamma=gamma,
+        tau=tau,
+        epsilon=epsilon,
+        epsilon_decay=epsilon_decay,
+        epsilon_min=epsilon_min,
+        learning_starts=learning_starts,
+        target_update_freq=target_update_freq,
+        window_size=window_size,
+        initial_episode_fill=initial_episode_fill,
+        max_grad_norm=max_grad_norm,
+        per_alpha=per_alpha,
+        per_beta=per_beta,
+        per_epsilon=per_epsilon,
+        nstep=nstep,
+        v_min=v_min,
+        v_max=v_max,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Trainer-level factory — for the batched-GPU drivers, which operate on
+# the bare C51Trainer rather than the C51Agent facade.
+# ──────────────────────────────────────────────────────────────────────
+
+
+comptime C51TrainerOf[CONFIG: C51ConfigT] = C51Trainer[
+    CONFIG.TARGET,
+    CONFIG.SAMPLE,
+    CONFIG.Q_NET,
+    CONFIG.N_ATOMS,
+    CONFIG.NUM_ACTIONS,
+    CONFIG.DOUBLE,
+]
+"""The `C51Trainer` instantiation a config describes — names the trainer
+type for driver calls (`run_offpolicy_discrete_train_gpu_batched[
+C51TrainerOf[CONFIG], …]`) without re-spelling the six members."""
+
+
+def trainer_from_config[
+    CONFIG: C51ConfigT,
+](
+    ctx: Optional[DeviceContext] = None,
+    lr: Scalar[DT] = CONFIG.DEF_LR,
+    gamma: Scalar[DT] = CONFIG.DEF_GAMMA,
+    tau: Scalar[DT] = CONFIG.DEF_TAU,
+    epsilon: Scalar[DT] = CONFIG.DEF_EPS,
+    epsilon_decay: Scalar[DT] = CONFIG.DEF_EPS_DECAY,
+    epsilon_min: Scalar[DT] = CONFIG.DEF_EPS_MIN,
+    learning_starts: Int = CONFIG.DEF_LEARNING_STARTS,
+    target_update_freq: Int = CONFIG.DEF_TARGET_UPDATE_FREQ,
+    window_size: Int = 10,
+    initial_episode_fill: Scalar[DT] = 0.0,
+    max_grad_norm: Scalar[DT] = CONFIG.DEF_MAX_GRAD_NORM,
+    per_alpha: Scalar[DT] = CONFIG.DEF_PER_ALPHA,
+    per_beta: Scalar[DT] = CONFIG.DEF_PER_BETA,
+    per_epsilon: Scalar[DT] = CONFIG.DEF_PER_EPSILON,
+    nstep: Int = CONFIG.DEF_NSTEP,
+    v_min: Scalar[DT] = CONFIG.DEF_VMIN,
+    v_max: Scalar[DT] = CONFIG.DEF_VMAX,
+) raises -> C51TrainerOf[CONFIG]:
+    """Build the bare `C51Trainer` from any `C51ConfigT`, defaults from
+    the config. The `agent_from_config` analogue for callers that hand
+    the trainer to a batched driver (e.g.
+    `run_offpolicy_discrete_train_gpu_batched`) instead of using the
+    `C51Agent` facade's single-env `train`."""
+    return C51TrainerOf[CONFIG].make(
         ctx=ctx,
         lr=lr,
         gamma=gamma,
@@ -398,3 +555,51 @@ def Rainbow[
         per_alpha=per_alpha, per_beta=per_beta, per_epsilon=per_epsilon,
         v_min=v_min, v_max=v_max,
     )
+
+
+def RainbowCNN[
+    target: StaticString,
+    ACT: Int, BATCH: Int, CAP: Int,
+    FRAMES: Int = 4, NA: Int = 51, HIDDEN: Int = 512, NSTEP: Int = 3,
+    OBS_STORE_DT: DType = DType.uint8,
+](
+    ctx: Optional[DeviceContext] = None,
+    lr: Scalar[DT] = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_LR,
+    gamma: Scalar[DT] = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_GAMMA,
+    tau: Scalar[DT] = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_TAU,
+    epsilon: Scalar[DT] = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_EPS,
+    learning_starts: Int = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_LEARNING_STARTS,
+    target_update_freq: Int = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_TARGET_UPDATE_FREQ,
+    window_size: Int = 10,
+    max_grad_norm: Scalar[DT] = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_MAX_GRAD_NORM,
+    per_alpha: Scalar[DT] = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_PER_ALPHA,
+    per_beta: Scalar[DT] = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_PER_BETA,
+    per_epsilon: Scalar[DT] = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_PER_EPSILON,
+    v_min: Scalar[DT] = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_VMIN,
+    v_max: Scalar[DT] = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_VMAX,
+) raises -> C51Agent[
+    target,
+    NStepSampleStep[
+        NSTEP,
+        AnyPerReplay[target, FRAMES * 84 * 84, 1, CAP, OBS_STORE_DT],
+        BATCH,
+    ],
+    RainbowCNNNet[FRAMES, ACT, NA, HIDDEN],
+    NA, ACT, True,
+]:
+    """Pixel Rainbow — six-of-six over the Nature-CNN backbone for
+    `FRAMES`×84×84 stacked-frame obs, uint8 obs ring by default (see
+    `RainbowCNNConfig`). `nstep` is fixed to `NSTEP` so the replay
+    accumulator and the target-Y γ^n bootstrap stay aligned."""
+    return agent_from_config[
+        RainbowCNNConfig[
+            target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT
+        ]
+    ](
+        ctx=ctx, lr=lr, gamma=gamma, tau=tau, epsilon=epsilon,
+        learning_starts=learning_starts, target_update_freq=target_update_freq,
+        window_size=window_size, max_grad_norm=max_grad_norm,
+        per_alpha=per_alpha, per_beta=per_beta, per_epsilon=per_epsilon,
+        v_min=v_min, v_max=v_max,
+    )
+

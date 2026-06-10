@@ -28,8 +28,10 @@ from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 
 from ..training.blocks import SampleBlock
+from ..training.batched_env import BatchedEnv
 from ..training.driver_offpolicy_discrete import (
     run_offpolicy_discrete_train,
+    run_offpolicy_discrete_train_gpu_batched,
     run_offpolicy_discrete_eval,
 )
 
@@ -152,6 +154,82 @@ struct C51Agent[
             diag_every=diag_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+        )
+
+    def train_gpu_batched[
+        E: BatchedEnv,
+        N_ENVS: Int,
+        NS: Int = 1,
+        L: Logger = NoOpLogger,
+    ](
+        mut self,
+        mut env: E,
+        total_env_steps: Int,
+        *,
+        rng_seed: UInt64 = UInt64(42),
+        updates_per_step: Int = 1,
+        print_every: Int = 5_000,
+        verbose: Bool = True,
+        nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        base_step: Int = 0,
+        diag_every: Int = 0,
+        checkpoint_every: Int = 0,
+        checkpoint_path: String = "",
+        eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
+        eval_every: Int = 0,
+        eval_episodes: Int = 16,
+        eval_max_iters: Int = 20_000,
+        progress_label: String = "c51",
+        episode_sync_every: Int = 1,
+    ) raises -> List[Scalar[DT]]:
+        """GPU-batched training via `run_offpolicy_discrete_train_gpu_batched`:
+        steps `N_ENVS` device-resident envs (`BatchedGpuDiscreteEnv`) in
+        parallel while the Q-net trains on the same device. Requires a
+        `"gpu"`-target agent (raises if no DeviceContext). `NS` must match
+        the SAMPLE block's N-step (`nstep_gamma` its discount); `eval_env`
+        enables periodic noise-off greedy eval on a separate env instance.
+        All kwargs forward to the driver unchanged."""
+        var ctx = self.trainer.ctx
+        if not ctx:
+            raise Error(
+                "C51Agent.train_gpu_batched: gpu-target agent required"
+                " (no DeviceContext)"
+            )
+        return run_offpolicy_discrete_train_gpu_batched[
+            C51Trainer[
+                Self.train_target,
+                Self.SAMPLE,
+                Self.Q_NET,
+                Self.N_ATOMS,
+                Self.NUM_ACTIONS,
+                Self.DOUBLE,
+            ],
+            E,
+            N_ENVS,
+            NS,
+            L,
+        ](
+            ctx.value(),
+            self.trainer,
+            env,
+            total_env_steps,
+            rng_seed=rng_seed,
+            updates_per_step=updates_per_step,
+            print_every=print_every,
+            verbose=verbose,
+            nstep_gamma=nstep_gamma,
+            logger=logger,
+            base_step=base_step,
+            diag_every=diag_every,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
+            eval_env=eval_env,
+            eval_every=eval_every,
+            eval_episodes=eval_episodes,
+            eval_max_iters=eval_max_iters,
+            progress_label=progress_label,
+            episode_sync_every=episode_sync_every,
         )
 
     # ─── Evaluation ─────────────────────────────────────────────────────
