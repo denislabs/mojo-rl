@@ -49,6 +49,7 @@ from .flags import (
     CX_M0M1,
     FLAG_CON_FIRE,
     FLAG_SWAP_PORTS,
+    FLAG_PADDLES,
 )
 
 
@@ -59,94 +60,90 @@ from .flags import (
 
 @always_inline
 def tia_read(state: AtariState, addr: UInt8) -> UInt8:
-    """Read a TIA register. Only collision and input registers are readable."""
+    """Read a TIA register. Only collision and input registers are readable,
+    and they only drive bits 7/6 — the low 6 bits leak the previous data-bus
+    byte (Stella TIA::peek `noise = dataBusState & 0x3F`). For a zero-page
+    read the last bus byte is the operand, so e.g. Haunted House's
+    `SBC $0f` on unmapped TIA $0F reads back 15 — its divide-by-15 divisor.
+    """
     var reg = addr & 0x0F
+    var noise = state.data_bus & 0x3F
+    var val: UInt8 = 0
 
     # Collision registers (0x00-0x07)
     if reg == 0x00:  # CXM0P
-        var val: UInt8 = 0
         if (state.collision & CX_M0P1) != 0:
             val = val | 0x80
         if (state.collision & CX_M0P0) != 0:
             val = val | 0x40
-        return val
     elif reg == 0x01:  # CXM1P
-        var val: UInt8 = 0
         if (state.collision & CX_M1P0) != 0:
             val = val | 0x80
         if (state.collision & CX_M1P1) != 0:
             val = val | 0x40
-        return val
     elif reg == 0x02:  # CXP0FB
-        var val: UInt8 = 0
         if (state.collision & CX_P0PF) != 0:
             val = val | 0x80
         if (state.collision & CX_P0BL) != 0:
             val = val | 0x40
-        return val
     elif reg == 0x03:  # CXP1FB
-        var val: UInt8 = 0
         if (state.collision & CX_P1PF) != 0:
             val = val | 0x80
         if (state.collision & CX_P1BL) != 0:
             val = val | 0x40
-        return val
     elif reg == 0x04:  # CXM0FB
-        var val: UInt8 = 0
         if (state.collision & CX_M0PF) != 0:
             val = val | 0x80
         if (state.collision & CX_M0BL) != 0:
             val = val | 0x40
-        return val
     elif reg == 0x05:  # CXM1FB
-        var val: UInt8 = 0
         if (state.collision & CX_M1PF) != 0:
             val = val | 0x80
         if (state.collision & CX_M1BL) != 0:
             val = val | 0x40
-        return val
     elif reg == 0x06:  # CXBLPF
-        var val: UInt8 = 0
         if (state.collision & CX_BLPF) != 0:
             val = val | 0x80
-        return val
     elif reg == 0x07:  # CXPPMM
-        var val: UInt8 = 0
         if (state.collision & CX_P0P1) != 0:
             val = val | 0x80
         if (state.collision & CX_M0M1) != 0:
             val = val | 0x40
-        return val
 
     # Input ports (0x08-0x0D)
     elif reg == 0x08:  # INPT0 - Paddle 0 (Player 0 paddle)
         # Paddle: bit 7 = 1 when capacitor charge >= paddle position
         if state.paddle_charge >= state.paddle_pos:
-            return 0x80
-        return 0x00
+            val = 0x80
     elif reg == 0x09:  # INPT1 - Paddle 1 (right paddle in Pong)
         # Same paddle input — Pong reads INPT1 for the human player
         if state.paddle_charge >= state.paddle_pos:
-            return 0x80
-        return 0x00
+            val = 0x80
     elif reg == 0x0A:  # INPT2 - Paddle 2
-        return 0x80
+        val = 0x80
     elif reg == 0x0B:  # INPT3 - Paddle 3
-        return 0x80
+        val = 0x80
     elif reg == 0x0C:  # INPT4 - left-port fire button
-        if (state.sys_flags & FLAG_SWAP_PORTS) != 0:
-            return 0x80  # Player 1 is on the right port
-        if (state.sys_flags & FLAG_CON_FIRE) != 0:
-            return 0x00  # Button pressed (bit 7 = 0)
-        return 0x80  # Not pressed (bit 7 = 1)
+        if (state.sys_flags & FLAG_PADDLES) != 0:
+            val = 0x80  # Paddle cart: fire is a SWCHA button, INPT4 floats
+        elif (state.sys_flags & FLAG_SWAP_PORTS) != 0:
+            val = 0x80  # Player 1 is on the right port
+        elif (state.sys_flags & FLAG_CON_FIRE) != 0:
+            val = 0x00  # Button pressed (bit 7 = 0)
+        else:
+            val = 0x80  # Not pressed (bit 7 = 1)
     elif reg == 0x0D:  # INPT5 - right-port fire button
-        if (state.sys_flags & FLAG_SWAP_PORTS) != 0 and (
+        if (state.sys_flags & FLAG_PADDLES) != 0:
+            val = 0x80
+        elif (state.sys_flags & FLAG_SWAP_PORTS) != 0 and (
             state.sys_flags & FLAG_CON_FIRE
         ) != 0:
-            return 0x00
-        return 0x80
-    else:
-        return 0x00
+            val = 0x00
+        else:
+            val = 0x80
+    # 0x0E/0x0F: unmapped — pure bus noise
+
+    return val | noise
 
 
 # ============================================================================

@@ -143,6 +143,13 @@ struct AtariState(Copyable, Movable):
     var paddle_pos: UInt8  # Paddle position (0=top, 255=bottom)
     var paddle_charge: UInt8  # Capacitor charge counter (reset by VBLANK bit 7)
 
+    # Last byte transferred on the data bus (Stella System myDataBusState):
+    # every read/write updates it. TIA reads only drive bits 7/6; the low 6
+    # bits leak the previous bus byte ("noise") — for a zero-page read like
+    # `SBC $0f` that's the operand byte itself. Haunted House's divide-by-15
+    # at $F44F reads unmapped TIA $0F and gets 15 ONLY via this leakage.
+    var data_bus: UInt8
+
     # ========================================================================
     # Cycle-accurate TIA: per-instruction TIA write log
     # ========================================================================
@@ -250,6 +257,7 @@ struct AtariState(Copyable, Movable):
         # Paddle
         self.paddle_pos = 128  # Center position
         self.paddle_charge = 0
+        self.data_bus = 0
 
         # Cycle-accurate TIA write log
         self.pending_tia_write_clock = 0

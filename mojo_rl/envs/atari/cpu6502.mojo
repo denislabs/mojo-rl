@@ -131,20 +131,25 @@ def mem_read(
     """Read a byte from the Atari 2600 memory map.
 
     state is mut because cartridge hotspot READS switch banks (F8/F6/E0),
-    exactly like real hardware and Stella/ALE.
+    exactly like real hardware and Stella/ALE, and because every access
+    drives the data bus (Stella System: myDataBusState = result after each
+    peek) — TIA reads leak the previous bus byte in their low 6 bits.
     """
     var a = Int(addr) & 0x1FFF  # 13-bit address space
 
+    var v: UInt8
     if a & 0x1000:  # Cartridge ROM
         # Pass the FULL 16-bit address: the FE mapper banks on A13.
-        return rom_read(state, rom, rom_size, addr)
+        v = rom_read(state, rom, rom_size, addr)
     elif a & 0x0080:  # RIOT area
         if a & 0x0200:  # RIOT registers (0x0280-0x0297)
-            return riot_read(state, UInt8(a & 0xFF))
+            v = riot_read(state, UInt8(a & 0xFF))
         else:  # RAM (0x0080-0x00FF)
-            return read_ram(state.ram, Int(a & 0x7F))
+            v = read_ram(state.ram, Int(a & 0x7F))
     else:  # TIA
-        return tia_read(state, UInt8(a & 0x0F))
+        v = tia_read(state, UInt8(a & 0x0F))
+    state.data_bus = v
+    return v
 
 
 @always_inline
@@ -157,6 +162,7 @@ def mem_write(
 ):
     """Write a byte to the Atari 2600 memory map."""
     var a = Int(addr) & 0x1FFF
+    state.data_bus = value  # writes drive the bus (Stella System::poke)
 
     if a & 0x1000:  # Cartridge ROM (may trigger bank switch)
         rom_write(state, rom, rom_size, addr, value)

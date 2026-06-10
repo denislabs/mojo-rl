@@ -83,6 +83,12 @@ comptime FLAG_ALE_TERMINAL: UInt32 = 1 << 11
 # Player 1 uses the RIGHT joystick port (Stella Console.SwapPorts; e.g.
 # Wizard of Wor): joystick → SWCHA low nibble, fire → INPT5.
 comptime FLAG_SWAP_PORTS: UInt32 = 1 << 12
+# Paddle cart (ALE Controller_Left == PADDLES: backgammon, blackjack,
+# breakout, casino, kaboom, pong). FIRE grounds the paddle-0 button
+# (pin Four = SWCHA D7, ALE PaddleZeroFire), joystick directions never
+# reach SWCHA, INPT4/5 float high, and only LEFT/RIGHT move the paddle
+# (ALE applyActionPaddles ignores UP/DOWN).
+comptime FLAG_PADDLES: UInt32 = 1 << 13
 
 # Bank switching state (bits 16-19 for current bank)
 comptime BANK_SHIFT: Int = 16

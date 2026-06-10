@@ -22,6 +22,7 @@ from .flags import (
     ACTION_RESET,
     FLAG_CON_SELECT,
     FLAG_SWAP_PORTS,
+    FLAG_PADDLES,
     ROM_AUTO,
     TOTAL_SCANLINES,
     FRAME_HEIGHT,
@@ -44,6 +45,7 @@ struct AtariEnvironment(Movable):
     var max_frames: Int  # Max frames per episode (0 = unlimited)
     var mapper: UInt8  # ROM_* mapper (ROM_AUTO = resolve from size)
     var swap_ports: Bool  # Player 1 on the RIGHT joystick port (WoW)
+    var paddles: Bool  # Paddle cart (ALE PADDLES controller mapping)
 
     def __init__(
         out self,
@@ -53,6 +55,7 @@ struct AtariEnvironment(Movable):
         max_frames: Int = 108000,  # Standard ALE default (~30 min at 60fps)
         mapper: UInt8 = ROM_AUTO,
         swap_ports: Bool = False,
+        paddles: Bool = False,
     ):
         self.state = AtariState()
         self.rom = rom
@@ -61,6 +64,7 @@ struct AtariEnvironment(Movable):
         self.max_frames = max_frames
         self.mapper = mapper
         self.swap_ports = swap_ports
+        self.paddles = paddles
 
     def __init__(out self, *, deinit take: Self):
         self.state = take.state^
@@ -70,12 +74,15 @@ struct AtariEnvironment(Movable):
         self.max_frames = take.max_frames
         self.mapper = take.mapper
         self.swap_ports = take.swap_ports
+        self.paddles = take.paddles
 
     def reset(mut self):
         """Reset the environment to initial state."""
         self.state = AtariState()
         if self.swap_ports:
             self.state.sys_flags = self.state.sys_flags | FLAG_SWAP_PORTS
+        if self.paddles:
+            self.state.sys_flags = self.state.sys_flags | FLAG_PADDLES
         init_bank(self.state, self.rom_size, self.mapper)
         cpu_reset(self.state, self.rom, self.rom_size)
 
@@ -143,6 +150,9 @@ struct AtariEnvironment(Movable):
             run_frame(self.state, self.rom, self.rom_size)
         for _ in range(sa[3]):
             set_action(self.state, sa[2])
+            run_frame(self.state, self.rom, self.rom_size)
+        for _ in range(sa[5]):
+            set_action(self.state, sa[4])
             run_frame(self.state, self.rom, self.rom_size)
         # FIRE-mash start (Mario Bros): press FIRE until the byte latches.
         var fu = game.fire_until()

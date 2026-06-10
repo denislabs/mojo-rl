@@ -797,12 +797,14 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
         # Robotank.
         return ALL_ACTIONS_MASK
 
-    def starting_actions(self) -> Tuple[UInt8, Int, UInt8, Int]:
-        """(action1, frames1, action2, frames2) to inject right after reset,
-        before the agent acts — port of ALE's per-game getStartingActions().
-        Some games need an input to leave the title screen (FIRE), DarkChambers
-        ignores all input during its ~8 s boot animation, and SirLancelot
-        needs console RESET followed by LEFT."""
+    def starting_actions(self) -> Tuple[UInt8, Int, UInt8, Int, UInt8, Int]:
+        """(action1, frames1, action2, frames2, action3, frames3) to inject
+        right after reset, before the agent acts — port of ALE's per-game
+        getStartingActions(). Some games need an input to leave the title
+        screen (FIRE), DarkChambers ignores all input during its ~8 s boot
+        animation, SirLancelot needs console RESET followed by LEFT, Casino
+        waits 60 frames for the shuffle then FIREs to enter player A, and
+        WordZapper waits out its ~8 s boot animation before FIRE."""
         if (
             self == AtariGame.ASTERIX
             or self == AtariGame.ENDURO
@@ -816,31 +818,35 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
             or self == AtariGame.MR_DO
             or self == AtariGame.TURMOIL
         ):
-            return (ACTION_FIRE, 1, ACTION_NOOP, 0)
+            return (ACTION_FIRE, 1, ACTION_NOOP, 0, ACTION_NOOP, 0)
         elif self == AtariGame.BEAM_RIDER:
-            return (ACTION_RIGHT, 1, ACTION_NOOP, 0)
+            return (ACTION_RIGHT, 1, ACTION_NOOP, 0, ACTION_NOOP, 0)
+        elif self == AtariGame.CASINO:
+            return (ACTION_NOOP, 60, ACTION_FIRE, 2, ACTION_NOOP, 0)
         elif self == AtariGame.DARK_CHAMBERS:
-            return (ACTION_NOOP, 486, ACTION_NOOP, 0)
+            return (ACTION_NOOP, 486, ACTION_NOOP, 0, ACTION_NOOP, 0)
+        elif self == AtariGame.WORD_ZAPPER:
+            return (ACTION_NOOP, 486, ACTION_FIRE, 1, ACTION_NOOP, 2)
         elif (
             self == AtariGame.ELEVATOR_ACTION or self == AtariGame.GRAVITAR
         ):
-            return (ACTION_FIRE, 16, ACTION_NOOP, 0)
+            return (ACTION_FIRE, 16, ACTION_NOOP, 0, ACTION_NOOP, 0)
         elif self == AtariGame.DOUBLE_DUNK:
-            return (ACTION_UPFIRE, 1, ACTION_NOOP, 0)
+            return (ACTION_UPFIRE, 1, ACTION_NOOP, 0, ACTION_NOOP, 0)
         elif self == AtariGame.PITFALL or self == AtariGame.PRIVATE_EYE:
-            return (ACTION_UP, 1, ACTION_NOOP, 0)
+            return (ACTION_UP, 1, ACTION_NOOP, 0, ACTION_NOOP, 0)
         elif self == AtariGame.SKIING:
-            return (ACTION_DOWN, 16, ACTION_NOOP, 0)
+            return (ACTION_DOWN, 16, ACTION_NOOP, 0, ACTION_NOOP, 0)
         elif self == AtariGame.ENTOMBED:
-            return (ACTION_FIRE, 1, ACTION_NOOP, 5)
+            return (ACTION_FIRE, 1, ACTION_NOOP, 5, ACTION_NOOP, 0)
         elif (
             self == AtariGame.KEYSTONE_KAPERS
             or self == AtariGame.LASER_GATES
         ):
-            return (ACTION_RESET, 1, ACTION_NOOP, 0)
+            return (ACTION_RESET, 1, ACTION_NOOP, 0, ACTION_NOOP, 0)
         elif self == AtariGame.SIR_LANCELOT:
-            return (ACTION_RESET, 1, ACTION_LEFT, 1)
-        return (ACTION_NOOP, 0, ACTION_NOOP, 0)
+            return (ACTION_RESET, 1, ACTION_LEFT, 1, ACTION_NOOP, 0)
+        return (ACTION_NOOP, 0, ACTION_NOOP, 0, ACTION_NOOP, 0)
 
     def fire_until(self) -> Int:
         """ALE RAM address that must become nonzero before the agent acts,
@@ -857,6 +863,22 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
         """Player 1 uses the RIGHT joystick port (Stella Console.SwapPorts
         property — Wizard of Wor is the only such game in the ALE set)."""
         return self == AtariGame.WIZARD_OF_WOR
+
+    def uses_paddles(self) -> Bool:
+        """Paddle cart (Stella DefProps Controller_Left == PADDLES, verified
+        by ROM md5 over our full set). In paddle mode FIRE grounds the
+        paddle-0 button (pin Four = SWCHA D7, ALE PaddleZeroFire), joystick
+        directions never reach SWCHA, INPT4/5 float high, and only
+        LEFT/RIGHT move the paddle (ALE applyActionPaddles ignores
+        UP/DOWN)."""
+        return (
+            self == AtariGame.BACKGAMMON
+            or self == AtariGame.BLACKJACK
+            or self == AtariGame.BREAKOUT
+            or self == AtariGame.CASINO
+            or self == AtariGame.KABOOM
+            or self == AtariGame.PONG
+        )
 
     def select_until(self) -> Tuple[Int, Int, Int]:
         """(ALE RAM address, desired value, press frames) for console-SELECT
