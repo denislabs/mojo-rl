@@ -121,7 +121,7 @@ struct AtariEnvironment(Movable):
                 Int(self.state.ram[su[0] & 0x7F]) != su[1] and guard < 100
             ):
                 self.state.sys_flags = self.state.sys_flags | FLAG_CON_SELECT
-                for _ in range(2):
+                for _ in range(su[2]):
                     set_action(self.state, ACTION_NOOP)
                     run_frame(self.state, self.rom, self.rom_size)
                 self.state.sys_flags = (
@@ -141,6 +141,21 @@ struct AtariEnvironment(Movable):
         for _ in range(sa[1]):
             set_action(self.state, sa[0])
             run_frame(self.state, self.rom, self.rom_size)
+        for _ in range(sa[3]):
+            set_action(self.state, sa[2])
+            run_frame(self.state, self.rom, self.rom_size)
+        # FIRE-mash start (Mario Bros): press FIRE until the byte latches.
+        var fu = game.fire_until()
+        if fu >= 0:
+            var tries = 0
+            while Int(self.state.ram[fu & 0x7F]) == 0 and tries < 30:
+                for _ in range(2):
+                    set_action(self.state, ACTION_FIRE)
+                    run_frame(self.state, self.rom, self.rom_size)
+                for _ in range(28):
+                    set_action(self.state, ACTION_NOOP)
+                    run_frame(self.state, self.rom, self.rom_size)
+                tries += 1
         # Sync the RL signals to the post-reset RAM, like ALE (settings step
         # during reset, rewards not exposed). Without this, games whose score
         # doesn't start at 0 leak a bogus first-step reward (Pitfall starts

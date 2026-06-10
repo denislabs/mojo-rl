@@ -104,8 +104,9 @@ struct AtariState(Copyable, Movable):
     var frame_number: UInt32  # Total frames elapsed
     # Per-game persistent scratch for game_signals (ALE settings keep private
     # state across steps: ChopperCommand's started latch, DarkChambers' last
-    # level). Reset to 0 with the rest of the state on env.reset().
-    var game_aux: Int32
+    # level, MiniatureGolf's five packed counters). Reset to 0 with the rest
+    # of the state on env.reset().
+    var game_aux: Int64
 
     # ========================================================================
     # RAM (128 bytes)

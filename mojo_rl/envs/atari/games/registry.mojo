@@ -45,6 +45,7 @@ from ..flags import (
     ACTION_UPLEFTFIRE,
     ACTION_DOWNRIGHTFIRE,
     ACTION_DOWNLEFTFIRE,
+    ACTION_RESET,
     ROM_AUTO,
     ROM_E0,
     ROM_FE,
@@ -68,6 +69,14 @@ def _bit(a: UInt8) -> UInt32:
 def _rb(ram: InlineArray[UInt8, RAM_SIZE], addr: Int) -> Int:
     """Read a RAM byte by ALE address (mirrors masked to the 128-byte RAM)."""
     return Int(ram[addr & 0x7F])
+
+
+@always_inline
+def _sb(ram: InlineArray[UInt8, RAM_SIZE], addr: Int) -> Int:
+    """Read a RAM byte as a SIGNED value (-128..127), like a C++
+    signed-char cast (Backgammon piece counts, WordZapper rounds)."""
+    var v = Int(ram[addr & 0x7F])
+    return v - 256 if v >= 128 else v
 
 
 # Mask of all 18 standard actions.
@@ -142,8 +151,51 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
     comptime WIZARD_OF_WOR = AtariGame(58)
     comptime YARS_REVENGE = AtariGame(59)
     comptime ZAXXON = AtariGame(60)
+    # Wave 3: every remaining ALE-supported game in the ROM set
+    comptime ADVENTURE = AtariGame(61)
+    comptime AIR_RAID = AtariGame(62)
+    comptime ATLANTIS2 = AtariGame(63)
+    comptime BACKGAMMON = AtariGame(64)
+    comptime BASIC_MATH = AtariGame(65)
+    comptime BLACKJACK = AtariGame(66)
+    comptime CARNIVAL = AtariGame(67)
+    comptime CASINO = AtariGame(68)
+    comptime CROSSBOW = AtariGame(69)
+    comptime DONKEY_KONG = AtariGame(70)
+    comptime EARTHWORLD = AtariGame(71)
+    comptime ENTOMBED = AtariGame(72)
+    comptime ET = AtariGame(73)
+    comptime FLAG_CAPTURE = AtariGame(74)
+    comptime FROGGER = AtariGame(75)
+    comptime GALAXIAN = AtariGame(76)
+    comptime HANGMAN = AtariGame(77)
+    comptime HAUNTED_HOUSE = AtariGame(78)
+    comptime HUMAN_CANNONBALL = AtariGame(79)
+    comptime JOURNEY_ESCAPE = AtariGame(80)
+    comptime KABOOM = AtariGame(81)
+    comptime KEYSTONE_KAPERS = AtariGame(82)
+    comptime KING_KONG = AtariGame(83)
+    comptime KOOLAID = AtariGame(84)
+    comptime LASER_GATES = AtariGame(85)
+    comptime LOST_LUGGAGE = AtariGame(86)
+    comptime MARIO_BROS = AtariGame(87)
+    comptime MINIATURE_GOLF = AtariGame(88)
+    comptime MR_DO = AtariGame(89)
+    comptime OTHELLO = AtariGame(90)
+    comptime PACMAN = AtariGame(91)
+    comptime SIR_LANCELOT = AtariGame(92)
+    comptime SPACE_WAR = AtariGame(93)
+    comptime SUPERMAN = AtariGame(94)
+    comptime TETRIS = AtariGame(95)
+    comptime TIC_TAC_TOE_3D = AtariGame(96)
+    comptime TRONDEAD = AtariGame(97)
+    comptime TURMOIL = AtariGame(98)
+    comptime VIDEO_CHECKERS = AtariGame(99)
+    comptime VIDEO_CHESS = AtariGame(100)
+    comptime VIDEO_CUBE = AtariGame(101)
+    comptime WORD_ZAPPER = AtariGame(102)
 
-    comptime NUM_GAMES: Int = 61
+    comptime NUM_GAMES: Int = 103
 
     @always_inline
     def __init__(out self, id: UInt8):
@@ -294,6 +346,90 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
             return "yars_revenge"
         elif self == AtariGame.ZAXXON:
             return "zaxxon"
+        elif self == AtariGame.ADVENTURE:
+            return "adventure"
+        elif self == AtariGame.AIR_RAID:
+            return "air_raid"
+        elif self == AtariGame.ATLANTIS2:
+            return "atlantis2"
+        elif self == AtariGame.BACKGAMMON:
+            return "backgammon"
+        elif self == AtariGame.BASIC_MATH:
+            return "basic_math"
+        elif self == AtariGame.BLACKJACK:
+            return "blackjack"
+        elif self == AtariGame.CARNIVAL:
+            return "carnival"
+        elif self == AtariGame.CASINO:
+            return "casino"
+        elif self == AtariGame.CROSSBOW:
+            return "crossbow"
+        elif self == AtariGame.DONKEY_KONG:
+            return "donkey_kong"
+        elif self == AtariGame.EARTHWORLD:
+            return "earthworld"
+        elif self == AtariGame.ENTOMBED:
+            return "entombed"
+        elif self == AtariGame.ET:
+            return "et"
+        elif self == AtariGame.FLAG_CAPTURE:
+            return "flag_capture"
+        elif self == AtariGame.FROGGER:
+            return "frogger"
+        elif self == AtariGame.GALAXIAN:
+            return "galaxian"
+        elif self == AtariGame.HANGMAN:
+            return "hangman"
+        elif self == AtariGame.HAUNTED_HOUSE:
+            return "haunted_house"
+        elif self == AtariGame.HUMAN_CANNONBALL:
+            return "human_cannonball"
+        elif self == AtariGame.JOURNEY_ESCAPE:
+            return "journey_escape"
+        elif self == AtariGame.KABOOM:
+            return "kaboom"
+        elif self == AtariGame.KEYSTONE_KAPERS:
+            return "keystone_kapers"
+        elif self == AtariGame.KING_KONG:
+            return "king_kong"
+        elif self == AtariGame.KOOLAID:
+            return "koolaid"
+        elif self == AtariGame.LASER_GATES:
+            return "laser_gates"
+        elif self == AtariGame.LOST_LUGGAGE:
+            return "lost_luggage"
+        elif self == AtariGame.MARIO_BROS:
+            return "mario_bros"
+        elif self == AtariGame.MINIATURE_GOLF:
+            return "miniature_golf"
+        elif self == AtariGame.MR_DO:
+            return "mr_do"
+        elif self == AtariGame.OTHELLO:
+            return "othello"
+        elif self == AtariGame.PACMAN:
+            return "pacman"
+        elif self == AtariGame.SIR_LANCELOT:
+            return "sir_lancelot"
+        elif self == AtariGame.SPACE_WAR:
+            return "space_war"
+        elif self == AtariGame.SUPERMAN:
+            return "superman"
+        elif self == AtariGame.TETRIS:
+            return "tetris"
+        elif self == AtariGame.TIC_TAC_TOE_3D:
+            return "tic_tac_toe_3d"
+        elif self == AtariGame.TRONDEAD:
+            return "trondead"
+        elif self == AtariGame.TURMOIL:
+            return "turmoil"
+        elif self == AtariGame.VIDEO_CHECKERS:
+            return "video_checkers"
+        elif self == AtariGame.VIDEO_CHESS:
+            return "video_chess"
+        elif self == AtariGame.VIDEO_CUBE:
+            return "video_cube"
+        elif self == AtariGame.WORD_ZAPPER:
+            return "word_zapper"
         return "unknown"
 
     def rom_file(self) -> String:
@@ -333,7 +469,7 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
                 | _bit(ACTION_RIGHTFIRE)
                 | _bit(ACTION_LEFTFIRE)
             )
-        elif self == AtariGame.BREAKOUT:
+        elif self == AtariGame.BREAKOUT or self == AtariGame.KABOOM:
             return (
                 _bit(ACTION_NOOP)
                 | _bit(ACTION_FIRE)
@@ -352,7 +488,11 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
                 | _bit(ACTION_DOWNRIGHT)
                 | _bit(ACTION_DOWNLEFT)
             )
-        elif self == AtariGame.QBERT:
+        elif (
+            self == AtariGame.QBERT
+            or self == AtariGame.BASIC_MATH
+            or self == AtariGame.KING_KONG
+        ):
             return (
                 _bit(ACTION_NOOP)
                 | _bit(ACTION_FIRE)
@@ -405,7 +545,7 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
                 | _bit(ACTION_LEFTFIRE)
                 | _bit(ACTION_DOWNFIRE)
             )
-        elif self == AtariGame.ATLANTIS:
+        elif self == AtariGame.ATLANTIS or self == AtariGame.ATLANTIS2:
             return (
                 _bit(ACTION_NOOP)
                 | _bit(ACTION_FIRE)
@@ -423,7 +563,10 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
                 | _bit(ACTION_LEFTFIRE)
             )
         elif (
-            self == AtariGame.ASTERIX or self == AtariGame.CRAZY_CLIMBER
+            self == AtariGame.ASTERIX
+            or self == AtariGame.CRAZY_CLIMBER
+            or self == AtariGame.KOOLAID
+            or self == AtariGame.LOST_LUGGAGE
         ):
             # 4 directions + 4 diagonals, no fire.
             return (
@@ -465,6 +608,10 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
         elif (
             self == AtariGame.DEMON_ATTACK
             or self == AtariGame.NAME_THIS_GAME
+            or self == AtariGame.AIR_RAID
+            or self == AtariGame.CARNIVAL
+            or self == AtariGame.GALAXIAN
+            or self == AtariGame.SIR_LANCELOT
         ):
             return (
                 _bit(ACTION_NOOP)
@@ -524,7 +671,9 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
                 | _bit(ACTION_DOWN)
             )
         elif (
-            self == AtariGame.TIME_PILOT or self == AtariGame.WIZARD_OF_WOR
+            self == AtariGame.TIME_PILOT
+            or self == AtariGame.WIZARD_OF_WOR
+            or self == AtariGame.MR_DO
         ):
             return (
                 _bit(ACTION_NOOP)
@@ -550,6 +699,87 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
                 | _bit(ACTION_RIGHTFIRE)
                 | _bit(ACTION_LEFTFIRE)
             )
+        elif self == AtariGame.BACKGAMMON:
+            # No NOOP: the paddle cursor only acts on input.
+            return _bit(ACTION_FIRE) | _bit(ACTION_RIGHT) | _bit(ACTION_LEFT)
+        elif self == AtariGame.BLACKJACK or self == AtariGame.CASINO:
+            return (
+                _bit(ACTION_NOOP)
+                | _bit(ACTION_FIRE)
+                | _bit(ACTION_UP)
+                | _bit(ACTION_DOWN)
+            )
+        elif self == AtariGame.FROGGER or self == AtariGame.PACMAN:
+            return (
+                _bit(ACTION_NOOP)
+                | _bit(ACTION_UP)
+                | _bit(ACTION_RIGHT)
+                | _bit(ACTION_LEFT)
+                | _bit(ACTION_DOWN)
+            )
+        elif self == AtariGame.JOURNEY_ESCAPE:
+            # Full set minus FIRE and UPFIRE.
+            return ALL_ACTIONS_MASK & ~(
+                _bit(ACTION_FIRE) | _bit(ACTION_UPFIRE)
+            )
+        elif self == AtariGame.KEYSTONE_KAPERS:
+            # Full set minus the four diagonal fires.
+            return ALL_ACTIONS_MASK & ~(
+                _bit(ACTION_UPRIGHTFIRE)
+                | _bit(ACTION_UPLEFTFIRE)
+                | _bit(ACTION_DOWNRIGHTFIRE)
+                | _bit(ACTION_DOWNLEFTFIRE)
+            )
+        elif (
+            self == AtariGame.OTHELLO
+            or self == AtariGame.TIC_TAC_TOE_3D
+            or self == AtariGame.VIDEO_CHESS
+        ):
+            # Cursor games: fire + 4 directions + 4 diagonals.
+            return (
+                _bit(ACTION_NOOP)
+                | _bit(ACTION_FIRE)
+                | _bit(ACTION_UP)
+                | _bit(ACTION_RIGHT)
+                | _bit(ACTION_LEFT)
+                | _bit(ACTION_DOWN)
+                | _bit(ACTION_UPRIGHT)
+                | _bit(ACTION_UPLEFT)
+                | _bit(ACTION_DOWNRIGHT)
+                | _bit(ACTION_DOWNLEFT)
+            )
+        elif self == AtariGame.TETRIS:
+            return (
+                _bit(ACTION_NOOP)
+                | _bit(ACTION_FIRE)
+                | _bit(ACTION_RIGHT)
+                | _bit(ACTION_LEFT)
+                | _bit(ACTION_DOWN)
+            )
+        elif self == AtariGame.TURMOIL:
+            return (
+                _bit(ACTION_NOOP)
+                | _bit(ACTION_FIRE)
+                | _bit(ACTION_UP)
+                | _bit(ACTION_RIGHT)
+                | _bit(ACTION_LEFT)
+                | _bit(ACTION_DOWN)
+                | _bit(ACTION_UPRIGHT)
+                | _bit(ACTION_UPLEFT)
+                | _bit(ACTION_DOWNRIGHT)
+                | _bit(ACTION_DOWNLEFT)
+                | _bit(ACTION_RIGHTFIRE)
+                | _bit(ACTION_LEFTFIRE)
+            )
+        elif self == AtariGame.VIDEO_CHECKERS:
+            # No NOOP: cursor moves diagonally only.
+            return (
+                _bit(ACTION_FIRE)
+                | _bit(ACTION_UPRIGHT)
+                | _bit(ACTION_UPLEFT)
+                | _bit(ACTION_DOWNRIGHT)
+                | _bit(ACTION_DOWNLEFT)
+            )
         elif self == AtariGame.TUTANKHAM:
             return (
                 _bit(ACTION_NOOP)
@@ -567,49 +797,124 @@ struct AtariGame(Copyable, ImplicitlyCopyable, Movable, TrivialRegisterPassable)
         # Robotank.
         return ALL_ACTIONS_MASK
 
-    def starting_actions(self) -> Tuple[UInt8, Int]:
-        """(action, frames) to inject right after reset, before the agent
-        acts — port of ALE's per-game getStartingActions(). Some games need
-        an input to leave the title screen (FIRE), and DarkChambers ignores
-        all input during its ~8 s boot animation."""
+    def starting_actions(self) -> Tuple[UInt8, Int, UInt8, Int]:
+        """(action1, frames1, action2, frames2) to inject right after reset,
+        before the agent acts — port of ALE's per-game getStartingActions().
+        Some games need an input to leave the title screen (FIRE), DarkChambers
+        ignores all input during its ~8 s boot animation, and SirLancelot
+        needs console RESET followed by LEFT."""
         if (
             self == AtariGame.ASTERIX
             or self == AtariGame.ENDURO
             or self == AtariGame.GOPHER
             or self == AtariGame.UP_N_DOWN
             or self == AtariGame.YARS_REVENGE
+            or self == AtariGame.AIR_RAID
+            or self == AtariGame.JOURNEY_ESCAPE
+            or self == AtariGame.KABOOM
+            or self == AtariGame.LOST_LUGGAGE
+            or self == AtariGame.MR_DO
+            or self == AtariGame.TURMOIL
         ):
-            return (ACTION_FIRE, 1)
+            return (ACTION_FIRE, 1, ACTION_NOOP, 0)
         elif self == AtariGame.BEAM_RIDER:
-            return (ACTION_RIGHT, 1)
+            return (ACTION_RIGHT, 1, ACTION_NOOP, 0)
         elif self == AtariGame.DARK_CHAMBERS:
-            return (ACTION_NOOP, 486)
+            return (ACTION_NOOP, 486, ACTION_NOOP, 0)
         elif (
             self == AtariGame.ELEVATOR_ACTION or self == AtariGame.GRAVITAR
         ):
-            return (ACTION_FIRE, 16)
+            return (ACTION_FIRE, 16, ACTION_NOOP, 0)
         elif self == AtariGame.DOUBLE_DUNK:
-            return (ACTION_UPFIRE, 1)
+            return (ACTION_UPFIRE, 1, ACTION_NOOP, 0)
         elif self == AtariGame.PITFALL or self == AtariGame.PRIVATE_EYE:
-            return (ACTION_UP, 1)
+            return (ACTION_UP, 1, ACTION_NOOP, 0)
         elif self == AtariGame.SKIING:
-            return (ACTION_DOWN, 16)
-        return (ACTION_NOOP, 0)
+            return (ACTION_DOWN, 16, ACTION_NOOP, 0)
+        elif self == AtariGame.ENTOMBED:
+            return (ACTION_FIRE, 1, ACTION_NOOP, 5)
+        elif (
+            self == AtariGame.KEYSTONE_KAPERS
+            or self == AtariGame.LASER_GATES
+        ):
+            return (ACTION_RESET, 1, ACTION_NOOP, 0)
+        elif self == AtariGame.SIR_LANCELOT:
+            return (ACTION_RESET, 1, ACTION_LEFT, 1)
+        return (ACTION_NOOP, 0, ACTION_NOOP, 0)
+
+    def fire_until(self) -> Int:
+        """ALE RAM address that must become nonzero before the agent acts,
+        achieved by mashing FIRE (2 frames on / 28 off), or -1 for none.
+        Mario Bros sits on its title screen (lives byte $87 == 0, so every
+        step would read terminal) and its FIRE polling window is timing-
+        sensitive — a single press misses it; mashing until the lives byte
+        latches is robust."""
+        if self == AtariGame.MARIO_BROS:
+            return 0x87
+        return -1
 
     def swap_ports(self) -> Bool:
         """Player 1 uses the RIGHT joystick port (Stella Console.SwapPorts
         property — Wizard of Wor is the only such game in the ALE set)."""
         return self == AtariGame.WIZARD_OF_WOR
 
-    def select_until(self) -> Tuple[Int, Int]:
-        """(ALE RAM address, desired value) for console-SELECT game-mode
-        selection at reset, or (-1, 0) for none. Port of the DEFAULT-mode
-        path of ALE setMode: Surround boots in 2-player mode (RAM $F9 == 0);
-        ALE presses SELECT until $F9 == 1 (single player vs computer), then
-        soft-resets."""
+    def select_until(self) -> Tuple[Int, Int, Int]:
+        """(ALE RAM address, desired value, press frames) for console-SELECT
+        game-mode selection at reset, or (-1, 0, 0) for none. Port of ALE's
+        DEFAULT-mode setMode path (default = FIRST of getAvailableModes):
+        e.g. Surround boots in 2-player mode (RAM $F9 == 0) and ALE presses
+        SELECT until $F9 == 1 (single player vs computer), then soft-resets.
+        Games that already boot in the default mode skip the loop entirely.
+        The press duration matters: ET only registers ~25-frame presses."""
         if self == AtariGame.SURROUND:
-            return (0xF9, 1)
-        return (-1, 0)
+            return (0xF9, 1, 2)
+        elif self == AtariGame.AIR_RAID:
+            return (0xAA, 1, 10)  # modes 1-8, panel opens on first press
+        elif self == AtariGame.BACKGAMMON:
+            return (0xDC, 3, 1)
+        elif self == AtariGame.BASIC_MATH:
+            return (0xC5, 5, 2)  # modes {5,6,7,8}
+        elif self == AtariGame.CASINO:
+            return (0xD4, 0, 2)
+        elif self == AtariGame.CROSSBOW:
+            return (0x8D, 1, 2)  # byte = mode + 1
+        elif self == AtariGame.ET:
+            return (0xEA, 1, 25)  # byte = mode + 1; long press needed
+        elif self == AtariGame.FLAG_CAPTURE:
+            return (0xD6, 8, 2)  # modes {8,9,10} (solo)
+        elif self == AtariGame.FROGGER:
+            return (0xDD, 1, 2)  # byte = 1 + 2*mode (odd = 1 player)
+        elif self == AtariGame.GALAXIAN:
+            return (0xB3, 1, 2)  # modes 1-9
+        elif self == AtariGame.HANGMAN:
+            return (0xEE, 0, 2)
+        elif self == AtariGame.HAUNTED_HOUSE:
+            return (0xCC, 0, 2)
+        # NOTE: no entry for HUMAN_CANNONBALL or PACMAN — their ALE mode
+        # bytes ($B6 / $CC) double as in-game score bytes, which read 0
+        # after console RESET; a select loop here would scramble the mode.
+        # Both carts boot in the default mode already.
+        elif self == AtariGame.KING_KONG:
+            return (0xEC, 0, 2)  # byte = 2*mode (even = 1 player)
+        elif self == AtariGame.LOST_LUGGAGE:
+            return (0x94, 1, 2)  # byte = 1 + 3*mode
+        elif self == AtariGame.MARIO_BROS or self == AtariGame.MR_DO:
+            return (0x80, 0, 5)
+        elif self == AtariGame.OTHELLO:
+            return (0xDE, 1, 2)  # byte = mode + 1
+        elif self == AtariGame.SPACE_WAR:
+            return (0xA7, 6, 2)  # modes {6..17}
+        elif self == AtariGame.TIC_TAC_TOE_3D:
+            return (0x88, 0, 2)
+        elif self == AtariGame.TURMOIL:
+            return (0xEA, 0, 2)
+        elif self == AtariGame.VIDEO_CHECKERS:
+            return (0xF6, 1, 1)  # modes 1-9 (+11-19 reverse)
+        elif self == AtariGame.VIDEO_CHESS:
+            return (0xEA, 0, 1)
+        elif self == AtariGame.WORD_ZAPPER:
+            return (0xDB, 0, 2)
+        return (-1, 0, 0)
 
     def num_actions(self) -> Int:
         """Size of the minimal action set."""
@@ -888,7 +1193,7 @@ def game_signals(
         # 0xC2 bit 0 is 1 once gameplay has started (chopper faces right);
         # latch it so mode-select screens (always facing left) don't read
         # as terminal. ALE keeps m_is_started for the same reason.
-        state.game_aux |= Int32(_rb(state.ram, 0xC2) & 0x1)
+        state.game_aux |= Int64(_rb(state.ram, 0xC2) & 0x1)
         var terminal = state.game_aux != 0 and lives == 0
         return GameSignals(score, score - prev_score, lives, terminal)
 
@@ -912,7 +1217,7 @@ def game_signals(
         var new_level = _rb(state.ram, 0xD5)
         if new_level < Int(state.game_aux):
             return GameSignals(prev_score, 0, 0, True)
-        state.game_aux = Int32(new_level)
+        state.game_aux = Int64(new_level)
         var score = get_decimal_score_2(state.ram, 0xCC, 0xCF) * 10
         if score < prev_score:
             # Exceeded the maximum score.
@@ -1171,7 +1476,7 @@ def game_signals(
         # game_aux carries the previous step's lives byte (ALE m_lives_byte).
         var lives_byte = _rb(state.ram, 0xC0)
         var terminal = lives_byte == 0x58 and Int(state.game_aux) == 0x59
-        state.game_aux = Int32(lives_byte)
+        state.game_aux = Int64(lives_byte)
         var lives: Int
         if lives_byte == 0x58:
             lives = 4  # beginning of episode
@@ -1265,7 +1570,7 @@ def game_signals(
             reward = delta_points - prev_dp
         elif prev_ds != delta_score:
             reward = delta_score - prev_ds
-        state.game_aux = Int32(
+        state.game_aux = Int64(
             ((delta_points & 0xFF) << 8) | (delta_score & 0xFF)
         )
         var terminal = (
@@ -1284,7 +1589,7 @@ def game_signals(
         # Only trust the lives byte while actually flying (screen 2);
         # game_aux carries the last good value across other screens.
         if (_rb(state.ram, 0x80) & 0xF) == 2:
-            state.game_aux = Int32((_rb(state.ram, 0x8B) & 0x7) + 1)
+            state.game_aux = Int64((_rb(state.ram, 0x8B) & 0x7) + 1)
         return GameSignals(
             score, score - prev_score, Int(state.game_aux), terminal
         )
@@ -1328,7 +1633,7 @@ def game_signals(
         # Lives drop when entering the play field; only commit the value
         # while waiting (0xD7 bit 0 clear). game_aux carries it across.
         if (_rb(state.ram, 0xD7) & 0x1) == 0:
-            state.game_aux = Int32(new_lives)
+            state.game_aux = Int64(new_lives)
         return GameSignals(
             score, score - prev_score, Int(state.game_aux), terminal
         )
@@ -1343,5 +1648,472 @@ def game_signals(
         # Lives read 0 before console RESET is pushed; our reset holds it.
         var lives = _rb(state.ram, 0xEA) & 0x7
         return GameSignals(score, score - prev_score, lives, lives == 0)
+
+    elif game == AtariGame.ADVENTURE:
+        # +1 for bringing the chalice to the yellow castle; terminal on win
+        # or on being eaten by a dragon.
+        var won = _rb(state.ram, 0xB9) == 0x12
+        var eaten = _rb(state.ram, 0xE0) == 2
+        var reward = 1 if won else 0
+        return GameSignals(prev_score + reward, reward, 0, won or eaten)
+
+    elif game == AtariGame.AIR_RAID:
+        var score = get_decimal_score_3(state.ram, 0xAA, 0xA9, 0xA8)
+        return GameSignals(
+            score, score - prev_score, 0, _rb(state.ram, 0xA7) == 0xFF
+        )
+
+    elif game == AtariGame.ATLANTIS2:
+        var lives = _rb(state.ram, 0xF1)
+        if lives == 0xFF:
+            # Ignore the garbage terminal score.
+            return GameSignals(prev_score, 0, lives, True)
+        var score = get_decimal_score_3(state.ram, 0xA1, 0xA2, 0xA3)
+        return GameSignals(score, score - prev_score, lives, False)
+
+    elif game == AtariGame.BACKGAMMON:
+        # Player pieces are negative counts, computer pieces positive. The
+        # computer scratches this RAM during its turn — only act on a board
+        # where both sides total 15 pieces.
+        var player_out = -_sb(state.ram, 0x80)
+        var computer_out = _sb(state.ram, 0x8E)
+        var player_in = 0
+        var computer_in = 0
+        for addr in range(0x81, 0x8E):
+            var p = _sb(state.ram, addr)
+            if p > 0:
+                computer_in += p
+            elif p < 0:
+                player_in += -p
+        for addr in range(0x8F, 0x9C):
+            var p = _sb(state.ram, addr)
+            if p > 0:
+                computer_in += p
+            elif p < 0:
+                player_in += -p
+        var valid = (
+            computer_in + computer_out == 15
+            and player_in + player_out == 15
+        )
+        if valid and player_out == 15:
+            return GameSignals(prev_score + 1, 1, 0, True)
+        elif valid and computer_out == 15:
+            return GameSignals(prev_score - 1, -1, 0, True)
+        return GameSignals(prev_score, 0, 0, False)
+
+    elif game == AtariGame.BASIC_MATH:
+        var score = get_decimal_score(state.ram, 0x84)
+        # 10 rounds; 0x86 != 0 only on the final score screen (waiting for
+        # round 10's point before terminating).
+        var terminal = get_decimal_score(state.ram, 0x86) != 0
+        return GameSignals(score, score - prev_score, 0, terminal)
+
+    elif game == AtariGame.BLACKJACK:
+        # Chip count; '0bbb' display means bust.
+        var bust = (
+            _rb(state.ram, 0x86) == 0x0B and _rb(state.ram, 0x89) == 0xBB
+        )
+        var score = 0 if bust else get_decimal_score_2(
+            state.ram, 0x89, 0x86
+        )
+        var terminal = bust or score >= 1000
+        return GameSignals(score, score - prev_score, 0, terminal)
+
+    elif game == AtariGame.CARNIVAL:
+        var score = get_decimal_score_2(state.ram, 0xAE, 0xAD) * 10
+        return GameSignals(
+            score, score - prev_score, 0, _rb(state.ram, 0x83) < 1
+        )
+
+    elif game == AtariGame.CASINO:
+        var score = get_decimal_score_2(state.ram, 0x95, 0x8C)
+        var mode = _rb(state.ram, 0xD4)
+        if mode == 3:
+            # Poker Solitaire: ends once all 25 cards placed and awarded.
+            var finished = _rb(state.ram, 0x9E) == 0xAA
+            return GameSignals(
+                score, score - prev_score, 0, score > 0 and finished
+            )
+        # Blackjack / Stud Poker: bust or break-the-bank (input disabled).
+        var input_disabled = (_rb(state.ram, 0xD3) & 0x80) != 0
+        var reward = 0 if input_disabled else score - prev_score
+        var bet = get_decimal_score(state.ram, 0x9E)
+        var terminal = score == 0 or (bet > 0 and input_disabled)
+        return GameSignals(score, reward, 0, terminal)
+
+    elif game == AtariGame.CROSSBOW:
+        var score = get_decimal_score_3(state.ram, 0x8D, 0x8C, 0x8B)
+        # 0xE7: 0x80 front end, 0x81 level select, 0x00 in-game, 0x82 over.
+        return GameSignals(
+            score, score - prev_score, 0, _rb(state.ram, 0xE7) == 0x82
+        )
+
+    elif game == AtariGame.DONKEY_KONG:
+        var score = get_decimal_score_2(state.ram, 0x88, 0x87) * 100
+        var lives = _rb(state.ram, 0xA3)
+        var terminal = (
+            lives == 0
+            and _rb(state.ram, 0x8F) == 0x03
+            and _rb(state.ram, 0x8B) == 0x1F
+        )
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.EARTHWORLD:
+        # Clue number as score; finding the 10th clue wins.
+        var score = get_decimal_score(state.ram, 0xA7)
+        return GameSignals(score, score - prev_score, 0, score == 10)
+
+    elif game == AtariGame.ENTOMBED:
+        # Score is plain hex, not BCD.
+        var score = _rb(state.ram, 0xE3)
+        var lives = _rb(state.ram, 0xC7) & 0x03
+        return GameSignals(score, score - prev_score, lives, lives == 0)
+
+    elif game == AtariGame.ET:
+        var score = get_decimal_score_3(state.ram, 0xE1, 0xE0, 0xDF)
+        # The lives counter wraps to 0xFF when none remain.
+        var lives = (_rb(state.ram, 0xE5) + 1) & 0xFF
+        var terminal = lives == 0 and _rb(state.ram, 0x80) == 8
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.FLAG_CAPTURE:
+        var score = get_decimal_score(state.ram, 0xEA)
+        # 75-second timer at 0xEB.
+        var terminal = get_decimal_score(state.ram, 0xEB) == 0
+        return GameSignals(score, score - prev_score, 0, terminal)
+
+    elif game == AtariGame.FROGGER:
+        var score = get_decimal_score_2(state.ram, 0xCE, 0xCC)
+        var lives_byte = _rb(state.ram, 0xD0)
+        return GameSignals(
+            score, score - prev_score, lives_byte, lives_byte == 0xFF
+        )
+
+    elif game == AtariGame.GALAXIAN:
+        var score = get_decimal_score_3(state.ram, 0xAE, 0xAD, 0xAC)
+        var reward = score - prev_score
+        if reward < 0:
+            # ALE treats any drop as a 1,000,000 wrap; in our trajectories
+            # the score RAM also clears transiently on game-over/restart,
+            # which would leak a bogus ~+1M reward — only wrap when the
+            # previous score was actually near the maximum.
+            if prev_score > 990000:
+                reward = (1000000 - prev_score) + score
+            else:
+                reward = 0
+        var terminal = (_rb(state.ram, 0xBF) & 0x80) != 0
+        var lives = 0 if terminal else _rb(state.ram, 0xB9) + 1
+        return GameSignals(score, reward, lives, terminal)
+
+    elif game == AtariGame.HANGMAN:
+        # +1 per word guessed, -1 per word failed; the timer wrapping
+        # 0xFF -> 0x00 ends the game. game_aux packs (playerScore,
+        # computerScore, prev timer, prev-prev timer).
+        var aux = Int(state.game_aux)
+        var prev_player = aux & 0x7F
+        var prev_computer = (aux >> 7) & 0x7F
+        var timer_prev = (aux >> 14) & 0xFF
+        var player = get_decimal_score(state.ram, 0xEB)
+        var computer = get_decimal_score(state.ram, 0xEC)
+        var reward = (player - prev_player) - (computer - prev_computer)
+        var timer_now = _rb(state.ram, 0xF1)
+        var timed_out = timer_now == 0 and timer_prev == 255
+        state.game_aux = Int64(
+            (timer_now << 14) | (computer << 7) | player
+        )
+        return GameSignals(
+            prev_score + reward, reward, 0, reward != 0 or timed_out
+        )
+
+    elif game == AtariGame.HAUNTED_HOUSE:
+        # -1 per match used (match counter wraps 99->0 but any change means
+        # one was used); +100 for escaping with the urn. game_aux = last
+        # match count.
+        var matches = get_decimal_score(state.ram, 0x82)
+        var reward = 0
+        if matches != Int(state.game_aux):
+            reward -= 1
+            state.game_aux = Int64(matches)
+        var lives = _rb(state.ram, 0x96)
+        var escaped = _rb(state.ram, 0x99) == 0x44
+        if escaped:
+            reward += 100
+        return GameSignals(
+            prev_score + reward, reward, lives, lives == 0 or escaped
+        )
+
+    elif game == AtariGame.HUMAN_CANNONBALL:
+        var score = get_decimal_score(state.ram, 0xB6)
+        var misses = get_decimal_score(state.ram, 0xB7)
+        return GameSignals(
+            score, score - prev_score, 0, score == 7 or misses == 7
+        )
+
+    elif game == AtariGame.JOURNEY_ESCAPE:
+        var score = get_decimal_score_3(state.ram, 0x92, 0x91, 0x90)
+        var reward = score - prev_score
+        if reward == 50000:
+            reward = 0  # ALE HACK: ignore the starting cash
+        var terminal = (
+            _rb(state.ram, 0x95) == 0 and _rb(state.ram, 0x96) == 0
+        )
+        return GameSignals(score, reward, 0, terminal)
+
+    elif game == AtariGame.KABOOM:
+        var score = get_decimal_score_3(state.ram, 0xA5, 0xA4, 0xA3)
+        var lives = _rb(state.ram, 0xA1)
+        var terminal = lives == 0x0 or score == 999999
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.KEYSTONE_KAPERS:
+        var score = get_decimal_score_2(state.ram, 0x9C, 0x9B)
+        var lives = _rb(state.ram, 0x96)
+        var terminal = lives == 0 and _rb(state.ram, 0x88) == 0x00
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.KING_KONG:
+        var score = get_decimal_score_2(state.ram, 0x83, 0x82)
+        var lives = _rb(state.ram, 0xEE)
+        return GameSignals(score, score - prev_score, lives, lives == 0)
+
+    elif game == AtariGame.KOOLAID:
+        var score = get_decimal_score_2(state.ram, 0x81, 0x80) * 100
+        return GameSignals(
+            score, score - prev_score, 0, _rb(state.ram, 0xD1) == 0x80
+        )
+
+    elif game == AtariGame.LASER_GATES:
+        var score = get_decimal_score_3(state.ram, 0x82, 0x81, 0x80)
+        return GameSignals(
+            score, score - prev_score, 0, _rb(state.ram, 0x83) == 0x00
+        )
+
+    elif game == AtariGame.LOST_LUGGAGE:
+        var score = get_decimal_score_3(state.ram, 0x96, 0x95, 0x94)
+        var lives = _rb(state.ram, 0xCA)
+        var terminal = (
+            lives == 0
+            and _rb(state.ram, 0xC8) == 0x0A
+            and _rb(state.ram, 0xA5) == 0x00
+            and _rb(state.ram, 0xA9) == 0x00
+        )
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.MARIO_BROS:
+        var score = get_decimal_score_2(state.ram, 0x8A, 0x89) * 100
+        var lives = _rb(state.ram, 0x87)
+        return GameSignals(score, score - prev_score, lives, lives == 0)
+
+    elif game == AtariGame.MINIATURE_GOLF:
+        # Reward = (par - hits) per completed level; the left status shows
+        # cumulative hits (wraps at 99) during play and the level number in
+        # the lobby, where the right status shows the level par. game_aux
+        # packs (levelNumber, levelPar, leftStatus, hits, hitsAtStartOfLevel).
+        var aux = Int(state.game_aux)
+        var level_number = aux & 0xF
+        var level_par = (aux >> 4) & 0x7F
+        var left_status_prev = (aux >> 11) & 0x7F
+        var hits = (aux >> 18) & 0xFFFF
+        var hits_at_start = (aux >> 34) & 0xFFFF
+        var left_status = get_decimal_score(state.ram, 0x87)
+        var right_status = get_decimal_score(state.ram, 0x88)
+        var new_level = get_decimal_score(state.ram, 0xAF)
+        var reward = 0
+        var terminal = False
+        if new_level != level_number:
+            # Level just completed.
+            var total_hits = left_status_prev + hits
+            var level_hits = total_hits - hits_at_start
+            if level_hits > 0:
+                reward = level_par - level_hits
+            if new_level == 0:
+                terminal = True
+            level_number = new_level
+            hits = 0
+            hits_at_start = left_status_prev
+        if right_status != 0:
+            # Lobby mode: right status displays the level par.
+            level_par = right_status
+        else:
+            if left_status < left_status_prev:
+                hits += left_status_prev  # left status wrapped at 99
+            left_status_prev = left_status
+        state.game_aux = Int64(
+            (hits_at_start << 34)
+            | (hits << 18)
+            | (left_status_prev << 11)
+            | (level_par << 4)
+            | level_number
+        )
+        return GameSignals(prev_score + reward, reward, 0, terminal)
+
+    elif game == AtariGame.MR_DO:
+        var score = get_decimal_score_2(state.ram, 0x82, 0x83) * 10
+        var lives = _rb(state.ram, 0xDB)
+        return GameSignals(
+            score, score - prev_score, lives, _rb(state.ram, 0xDA) == 0x40
+        )
+
+    elif game == AtariGame.OTHELLO:
+        var score = get_decimal_score(state.ram, 0xCE) - get_decimal_score(
+            state.ram, 0xD0
+        )
+        # Turn byte 0xC0 is 0 (only persistently) once the game is over;
+        # game_aux counts consecutive no-input steps.
+        if _rb(state.ram, 0xC0) == 0:
+            state.game_aux += 1
+        else:
+            state.game_aux = 0
+        return GameSignals(
+            score, score - prev_score, 0, Int(state.game_aux) > 50
+        )
+
+    elif game == AtariGame.PACMAN:
+        var score = get_decimal_score_3(state.ram, 0xCC, 0xCE, 0xD0)
+        var lives = _rb(state.ram, 0x98) + 1
+        var terminal = lives == 1 and _rb(state.ram, 0xE4) == 0x3F
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.SIR_LANCELOT:
+        var score = get_decimal_score_3(state.ram, 0xA0, 0x9F, 0x9E)
+        var lives = _rb(state.ram, 0xA9)
+        var terminal = lives == 0 and _rb(state.ram, 0xA7) == 0xA0
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.SPACE_WAR:
+        var score = get_decimal_score(state.ram, 0xA7)
+        # First to 10 points, or the 10-minute timer (0x80) wrapping to 0.
+        var terminal = score == 10 or _rb(state.ram, 0x80) == 0
+        return GameSignals(score, score - prev_score, 0, terminal)
+
+    elif game == AtariGame.SUPERMAN:
+        # Reward on completion only, proportional to speed: max time minus
+        # elapsed in-game time. Ends when entering the Daily Bugle as Clark
+        # Kent.
+        var seconds = get_decimal_score(state.ram, 0xE2)
+        var minutes = get_decimal_score(state.ram, 0xE3)
+        var room = _rb(state.ram, 0x80) + (_rb(state.ram, 0x81) << 8)
+        var is_clark = (_rb(state.ram, 0x9F) & 0x40) != 0
+        var terminal = is_clark and room == 0xF2AC
+        var reward = 0
+        if terminal:
+            reward = (99 * 60 + 59) - (minutes * 60 + seconds)
+        return GameSignals(prev_score + reward, reward, 0, terminal)
+
+    elif game == AtariGame.TETRIS:
+        var score = get_decimal_score_2(state.ram, 0x71, 0x72)
+        var reward = score - prev_score
+        if reward < 0:
+            reward = 0
+        state.game_aux = 1  # started latch (ALE m_started)
+        var terminal = (
+            state.game_aux != 0 and (_rb(state.ram, 0x73) & 0x80) != 0
+        )
+        return GameSignals(score, reward, 0, terminal)
+
+    elif game == AtariGame.TIC_TAC_TOE_3D:
+        # Win/loss: return address 0xF310 on the stack-top bytes; winner in
+        # 0xE1 (0x08 = X = us). Draw: the game pauses with a full grid.
+        if (
+            _rb(state.ram, 0xFF) == 0xF3 and _rb(state.ram, 0xFE) == 0x10
+        ):
+            var reward = 1 if _rb(state.ram, 0xE1) == 0x08 else -1
+            return GameSignals(prev_score + reward, reward, 0, True)
+        var full = True
+        for i in range(0x9A, 0xDA):
+            if _rb(state.ram, i) == 0:
+                full = False
+                break
+        return GameSignals(prev_score, 0, 0, full)
+
+    elif game == AtariGame.TRONDEAD:
+        var score = get_decimal_score_3(state.ram, 0xBF, 0xBE, 0xBD)
+        var hits = _rb(state.ram, 0xC8)
+        return GameSignals(
+            score, score - prev_score, 5 - hits, hits == 5
+        )
+
+    elif game == AtariGame.TURMOIL:
+        var score = (
+            get_decimal_score_2(state.ram, 0x89, 0x8A) + _rb(state.ram, 0xD3)
+        ) * 10
+        var lives = _rb(state.ram, 0xB9)
+        var terminal = lives == 0 and _rb(state.ram, 0xC5) == 0x01
+        return GameSignals(score, score - prev_score, lives, terminal)
+
+    elif game == AtariGame.VIDEO_CHECKERS:
+        # Count both sides' pieces across the four board quadrants; a side
+        # reaching zero ends the game (default mode = normal checkers, we
+        # play black: black gone = -1, white gone = +1).
+        var num_black = 0
+        var num_white = 0
+        var quad_starts = [0x80, 0x89, 0x92, 0x9B]
+        for q in range(4):
+            for off in range(8):
+                var v = _rb(state.ram, quad_starts[q] + off)
+                if v == 0x10 or v == 0x20:
+                    num_black += 1
+                elif v == 0x90 or v == 0xA0:
+                    num_white += 1
+        if num_black == 0:
+            return GameSignals(prev_score - 1, -1, 0, True)
+        elif num_white == 0:
+            return GameSignals(prev_score + 1, 1, 0, True)
+        return GameSignals(prev_score, 0, 0, False)
+
+    elif game == AtariGame.VIDEO_CHESS:
+        # Only score during white's turn (0xE1 == 0x82): the Atari AI
+        # simulates moves while searching, scrambling RAM.
+        if _rb(state.ram, 0xE1) == 0x82:
+            var checkmate = _rb(state.ram, 0xEE)
+            if checkmate == 0x00:  # checkmate black
+                return GameSignals(prev_score + 1, 1, 0, True)
+            elif checkmate == 0x01:  # checkmate white
+                return GameSignals(prev_score - 1, -1, 0, True)
+        return GameSignals(prev_score, 0, 0, False)
+
+    elif game == AtariGame.VIDEO_CUBE:
+        # Reward = newly completed faces (6 faces x 9 blocks from 0xA0);
+        # -1 and terminal when the game timer wraps 0xFF -> 0x00. game_aux
+        # packs (prev timer, prev-prev timer, face count).
+        var complete = 0
+        for face in range(6):
+            var base = 0xA0 + face * 9
+            var first = _rb(state.ram, base)
+            var all_match = True
+            for off in range(1, 9):
+                if _rb(state.ram, base + off) != first:
+                    all_match = False
+                    break
+            if all_match:
+                complete += 1
+        var aux = Int(state.game_aux)
+        var timer_prev = aux & 0xFF
+        var prev_faces = (aux >> 16) & 0xF
+        var timer_now = _rb(state.ram, 0xDB)
+        var timed_out = timer_now == 0 and timer_prev == 255
+        state.game_aux = Int64((complete << 16) | timer_now)
+        var reward = -1 if timed_out else complete - prev_faces
+        return GameSignals(
+            prev_score + reward, reward, 0, timed_out or complete == 6
+        )
+
+    elif game == AtariGame.WORD_ZAPPER:
+        # Game state only valid while the wall clock runs. Score = rounds
+        # completed (byte counts down 2..0, wrapping to 0xFF after round 3 —
+        # read as signed). game_aux latches "round timer was seen running"
+        # so the title screen (timer 0, wall clock ticking) doesn't read as
+        # an immediate terminal every step.
+        var wall_clock = get_decimal_score(state.ram, 0xCF)
+        if wall_clock > 0:
+            var score = 2 - _sb(state.ram, 0xDC)
+            var time_remaining = get_decimal_score(state.ram, 0xDE)
+            if time_remaining > 0:
+                state.game_aux = 1
+            var terminal = score == 3 or (
+                time_remaining == 0 and state.game_aux != 0
+            )
+            return GameSignals(score, score - prev_score, 0, terminal)
+        return GameSignals(prev_score, 0, 0, False)
 
     return GameSignals(0, 0, 0, False)
