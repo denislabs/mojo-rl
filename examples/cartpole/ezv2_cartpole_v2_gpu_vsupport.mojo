@@ -1,15 +1,22 @@
-"""EfficientZeroV2 discrete CartPole convergence run (v2, GPU Gumbel) — lighthouse.
+"""EfficientZeroV2 discrete CartPole — value-support ABLATION (v2, GPU Gumbel).
 
-The GPU twin of `ezv2_cartpole_v2_cpu`: identical learned-model hyperparameters,
-but **search runs on the `GumbelGPUMCTS` planner** (Gumbel-Top-k + sequential
-halving over the on-device h/g/f nets) and the update is `ezv2_unroll_train_step_gpu`
-(MuZero BPTT + SimSiam consistency) on the resident GPU nets. Watch the greedy
-``[eval]`` return — random CartPole ~22, "solving" ~195+. The training
-``avg_return(10)`` understates the policy (∝-improved-policy sampling); judge by
-the greedy eval.
+Isolates the single high-confidence fix from `ezv2_cartpole_v2_gpu`: this file is
+the **original** EZv2 config (value_coef 0.25, no reanalyze, no temperature
+schedule, no gradient clipping) with the **only** change being the categorical
+value/reward support widened from ±10 to **±20** (h-space).
+
+The original ±10 support hard-clamps any return whose transformed value exceeds
+10 — i.e. raw value above ~117 (`h(x)=sign(x)(√(|x|+1)−1)+0.001x`), which a
+CartPole policy surviving past ~150 steps already exceeds. The value head then
+saturates and MCTS can no longer rank long-horizon states, capping the policy.
+±20 covers raw ~420, well past CartPole's max discounted return (~259 → h≈15.4).
+
+Run this against the original-plateau baseline to attribute the EZv2 gap to the
+value support alone; run `ezv2_cartpole_v2_gpu` (the full bundle: +value_coef 0.5,
++clip 5, +reanalyze, +temperature) to see the combined effect.
 
 Run (GPU env required):
-    pixi run -e apple mojo run -I . examples/cartpole/ezv2_cartpole_v2_gpu.mojo
+    pixi run -e apple mojo run -I . examples/cartpole/ezv2_cartpole_v2_gpu_vsupport.mojo
 """
 
 from std.gpu.host import DeviceContext
@@ -66,18 +73,11 @@ def main() raises:
     opred.lr = Scalar[DT](3e-4)
     oproj.lr = Scalar[DT](3e-4)
     opredh.lr = Scalar[DT](3e-4)
-    # Gradient clipping (reference uses 5; MuZero example uses 10). Without it
-    # the dominant SimSiam consistency loss (coef 2.0) makes the update noisy.
-    orep.max_grad_norm = Scalar[DT](5.0)
-    odyn.max_grad_norm = Scalar[DT](5.0)
-    opred.max_grad_norm = Scalar[DT](5.0)
-    oproj.max_grad_norm = Scalar[DT](5.0)
-    opredh.max_grad_norm = Scalar[DT](5.0)
 
-    print("EZv2 CartPole convergence (v2, GPU Gumbel — MuZero BPTT + SimSiam)")
+    print("EZv2 CartPole value-support ablation (v2, GPU Gumbel — v±20 only)")
     print("  LATENT", LATENT, "H", H, "PROJ", PROJ, "BINS", BINS,
           "sims", NUM_SIMS, "K_gumbel", MAX_K, "K", K, "N", N, "B", B,
-          "v±20 vcoef 0.5 clip 5 reanalyze temp")
+          "v±20 vcoef 0.25 (no clip/reanalyze/temp)")
 
     var loss = run_ezv2_gumbel_selfplay_gpu[
         CartPoleEnv[DType.float32], Rep, Dyn, Pred, Proj, Predh,
@@ -91,10 +91,8 @@ def main() raises:
         gamma=Scalar[DT](0.997),
         v_min=Scalar[DT](-20.0),
         v_max=Scalar[DT](20.0),
-        value_coef=Scalar[DT](0.5),
+        value_coef=Scalar[DT](0.25),
         consistency_coef=Scalar[DT](2.0),
-        temperature_decay_steps=30000,
-        reanalyze_every=1,
         eval_every=2000,
         eval_episodes=5,
         seed=42,
