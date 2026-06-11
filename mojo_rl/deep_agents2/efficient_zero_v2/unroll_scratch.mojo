@@ -206,7 +206,8 @@ struct EZV2UnrollContScratch[
         s.d_gobs = ctx.enqueue_create_buffer[DT](b * obs)
         s.d_twv = ctx.enqueue_create_buffer[DT](b * bins)
         s.d_twr = ctx.enqueue_create_buffer[DT](b * bins)
-        s.d_loss = ctx.enqueue_create_buffer[DT](b)
+        # 4 contiguous [B] blocks: policy | value | reward | consistency.
+        s.d_loss = ctx.enqueue_create_buffer[DT](4 * b)
         s.d_tstore = ctx.enqueue_create_buffer[DT](k * b * proj)
         s.d_ztmp = ctx.enqueue_create_buffer[DT](b * lat)
         s.d_projo = ctx.enqueue_create_buffer[DT](b * proj)
@@ -214,6 +215,6 @@ struct EZV2UnrollContScratch[
         s.d_gpk = ctx.enqueue_create_buffer[DT](b * proj)
         s.d_gproj = ctx.enqueue_create_buffer[DT](b * proj)
         s.d_gzcons = ctx.enqueue_create_buffer[DT](b * lat)
-        s.h_loss = ctx.enqueue_create_host_buffer[DT](b)
+        s.h_loss = ctx.enqueue_create_host_buffer[DT](4 * b)
         ctx.synchronize()
         return s^

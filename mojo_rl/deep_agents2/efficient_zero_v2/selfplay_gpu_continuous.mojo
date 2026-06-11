@@ -22,7 +22,7 @@ round-trip trivial. Returns the last loss.
 """
 
 from std.memory import alloc
-from layout import Layout, LayoutTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn2.constants import DT
@@ -31,12 +31,14 @@ from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import SampledGumbelGPUMCTS, SinglePlayer
 
 from .blocks_continuous import ezv2_unroll_train_step_continuous_gpu
 from .unroll_scratch import EZV2UnrollContScratch
 from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZContPredGPU
 from ..zero.sequence_replay_mcts_continuous import MCTSContSequenceReplay
+from ..zero.mz_diagnostics import append_value_diagnostics
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -62,6 +64,7 @@ def run_ezv2_sampled_selfplay_gpu[
     B: Int,
     K: Int,
     N: Int,
+    L: Logger = NoOpLogger,
 ](
     ctx: DeviceContext,
     mut env: ENV,
@@ -100,6 +103,9 @@ def run_ezv2_sampled_selfplay_gpu[
     reanalyze_batch: Int = 4,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
+    diag_every: Int = 0,
+    report_every: Int = 0,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     comptime N_ENVS = 1
@@ -163,6 +169,15 @@ def run_ezv2_sampled_selfplay_gpu[
     var t_rew = _a(K * B)
 
     # ── persistent GPU train-step scratch (allocated once, reused per step) ──
+    comptime CPRED_OUT = 2 * ACT_DIM + BINS
+
+    # logger scratch: per-component loss split + root-prediction probe (D2H).
+    var l_parts = _a(4)
+    var d_diag_obs = ctx.enqueue_create_buffer[DT](B * OBS)
+    var d_diag_z = ctx.enqueue_create_buffer[DT](B * LATENT)
+    var d_diag_pred = ctx.enqueue_create_buffer[DT](B * CPRED_OUT)
+    var h_diag_pred = _a(B * CPRED_OUT)
+
     var train_scratch = EZV2UnrollContScratch[
         B, K, OBS, ACT_DIM, LATENT, BINS, PROJM.OUT_DIM
     ].make(ctx)
@@ -264,6 +279,7 @@ def run_ezv2_sampled_selfplay_gpu[
                         v_min, v_max, value_coef, consistency_coef,
                         policy_coef, max_action, min_std, soft_clamp,
                         init_std, ent_scale,
+                        loss_parts=l_parts,
                     )
                 )
                 train_steps += 1
@@ -304,6 +320,43 @@ def run_ezv2_sampled_selfplay_gpu[
                             pos[0], pos[1], h_ra_act, h_ra_val[0]
                         )
 
+        # ── per-batch diagnostics → logger (root pred re-forwarded on device) ──
+        if (
+            logger
+            and diag_every > 0
+            and it >= learning_starts
+            and rb.num_episodes() > 0
+            and (it + 1) % diag_every == 0
+        ):
+            ctx.enqueue_copy(d_diag_obs, t_obs_seq)
+            var z_t = TileTensor(
+                mptr(d_diag_z.unsafe_ptr()), row_major[B, LATENT]()
+            )
+            rep.forward["gpu", B](
+                TileTensor(
+                    mptr(d_diag_obs.unsafe_ptr()), row_major[B, OBS]()
+                ),
+                output=z_t,
+            )
+            var pred_t = TileTensor(
+                mptr(d_diag_pred.unsafe_ptr()), row_major[B, CPRED_OUT]()
+            )
+            pred.forward["gpu", B](z_t, output=pred_t)
+            ctx.enqueue_copy(h_diag_pred, d_diag_pred)
+            ctx.synchronize()
+            var dn = List[String]()
+            var dv = List[Float64]()
+            dn.append(String("loss")); dv.append(last_loss)
+            dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
+            dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
+            dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
+            dn.append(String("loss_consistency"))
+            dv.append(Float64(l_parts[3]))
+            append_value_diagnostics[CPRED_OUT, 2 * ACT_DIM, BINS, B](
+                h_diag_pred, t_val, v_min, v_max, dn, dv
+            )
+            logger.value()[].log_scalars(dn, dv, it + 1)
+
         # ── greedy eval (deterministic argmax-visit candidate) ──
         if eval_every > 0 and (it + 1) % eval_every == 0:
             var eval_sum = 0.0
@@ -342,6 +395,10 @@ def run_ezv2_sampled_selfplay_gpu[
                 eval_sum += eret
             var eval_avg = eval_sum / Float64(eval_episodes)
             print("  [eval] step", it + 1, "greedy_return", eval_avg)
+            if logger:
+                logger.value()[].log_scalar(
+                    String("eval_return"), eval_avg, it + 1
+                )
             e_obs.clear(); e_act.clear(); e_rew.clear(); e_val.clear()
             ep_len = 0
             ep_return = 0.0
@@ -366,9 +423,34 @@ def run_ezv2_sampled_selfplay_gpu[
                 "eps", rb.num_episodes(), "avg_return(10)", avg,
             )
 
+        # ── report_every: episode-return / replay status to the logger ──
+        if (
+            logger
+            and report_every > 0
+            and it >= learning_starts
+            and (it + 1) % report_every == 0
+        ):
+            var ravg = 0.0
+            var rcnt = 0
+            var rlo = len(ep_returns) - 10
+            if rlo < 0:
+                rlo = 0
+            for e in range(rlo, len(ep_returns)):
+                ravg += ep_returns[e]
+                rcnt += 1
+            if rcnt > 0:
+                ravg /= Float64(rcnt)
+            var rn = List[String]()
+            var rv = List[Float64]()
+            rn.append(String("avg_return")); rv.append(ravg)
+            rn.append(String("episodes")); rv.append(Float64(rb.num_episodes()))
+            rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
+            logger.value()[].log_scalars(rn, rv, it + 1)
+
     t_obs_seq.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     h_obs.free(); h_act.free(); h_val.free()
     h_ra_obs.free(); h_ra_act.free(); h_ra_val.free()
+    l_parts.free(); h_diag_pred.free()
     # keep the target nets (held only via UnsafePointer in the adapters) alive
     # through the whole rollout — the analyzer can't see the indirection.
     _ = rep_t^

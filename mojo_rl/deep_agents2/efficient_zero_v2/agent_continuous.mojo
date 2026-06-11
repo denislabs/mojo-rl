@@ -44,6 +44,7 @@ from mojo_rl.deep_agents2.core.checkpoint_helpers import (
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from mojo_rl.planners.tree_search import SampledGumbelGPUMCTS, SinglePlayer
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from .selfplay_gpu_continuous import run_ezv2_sampled_selfplay_gpu
 from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZContPredGPU
 
@@ -132,7 +133,9 @@ struct EZv2ContinuousAgent[
         self.c_visit = c_visit
         self.c_scale = c_scale
 
-    def train(
+    def train[
+        L: Logger = NoOpLogger,
+    ](
         mut self,
         mut env: Self.ENV,
         iterations: Int,
@@ -146,6 +149,9 @@ struct EZv2ContinuousAgent[
         reanalyze_batch: Int = 4,
         eval_every: Int = 0,
         eval_episodes: Int = 5,
+        diag_every: Int = 0,
+        report_every: Int = 0,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         verbose: Bool = False,
     ) raises -> Float64:
         """GPU sampled-Gumbel self-play training (MuZero BPTT + SimSiam
@@ -166,6 +172,7 @@ struct EZv2ContinuousAgent[
             Self.OBS, Self.ACT_DIM, Self.LATENT, Self.BINS,
             Self.NUM_SIMS, Self.MAX_NODES, Self.K_ROOT, Self.K_NON_ROOT,
             Self.CAP, Self.B, Self.K, Self.N,
+            L=L,
         ](
             self.ctx, env,
             self.rep, self.dyn, self.pred, self.proj, self.predh,
@@ -195,6 +202,9 @@ struct EZv2ContinuousAgent[
             reanalyze_batch=reanalyze_batch,
             eval_every=eval_every,
             eval_episodes=eval_episodes,
+            diag_every=diag_every,
+            report_every=report_every,
+            logger=logger,
             verbose=verbose,
         )
 

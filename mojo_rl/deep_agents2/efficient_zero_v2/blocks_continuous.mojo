@@ -90,6 +90,7 @@ def ezv2_unroll_train_step_continuous_cpu[
     soft_clamp: Scalar[DT] = Scalar[DT](5.0),
     init_std: Scalar[DT] = Scalar[DT](1.0),
     ent_scale: Scalar[DT] = Scalar[DT](5e-3),
+    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """One CPU continuous EZv2 unroll step. Returns the mean total loss. Mutates
     all five nets via their optimizers. ``obs_seq`` is ``[K+1, B, OBS]``."""
@@ -166,6 +167,11 @@ def ezv2_unroll_train_step_continuous_cpu[
     opredh.zero_grad["cpu", PREDH](predh)
 
     var loss = Scalar[DT](0.0)
+    # per-component loss accumulators (for the optional loss_parts breakdown)
+    var l_pol = Scalar[DT](0.0)
+    var l_val = Scalar[DT](0.0)
+    var l_rew = Scalar[DT](0.0)
+    var l_cons = Scalar[DT](0.0)
     for rk in range(K + 1):
         var k = K - rk
         var zk = zst + k * B * LATENT
@@ -186,18 +192,22 @@ def ezv2_unroll_train_step_continuous_cpu[
                 ptgt[b * ACT_DIM + d] = policy_act_tgt[
                     (k * B + b) * ACT_DIM + d
                 ]
-        loss += policy_coef * continuous_policy_loss_and_grad[B, ACT_DIM](
+        var l_pol_k = policy_coef * continuous_policy_loss_and_grad[B, ACT_DIM](
             musig, ptgt, pscale, gmusig,
             max_action, min_std, soft_clamp, init_std, ent_scale,
         )
+        loss += l_pol_k
+        l_pol += l_pol_k
         for b in range(B):
             for i in range(MU2):
                 gpout[b * PRED_OUT + i] = gmusig[b * MU2 + i]
         # value: categorical soft-CE over [2*ACT_DIM, 2*ACT_DIM+BINS).
         mz_two_hot_target_batch[B, BINS](value_tgt + k * B, v_min, v_max, twv)
-        loss += value_coef * soft_ce_slice_loss_and_grad[
+        var l_val_k = value_coef * soft_ce_slice_loss_and_grad[
             B, PRED_OUT, MU2, BINS
         ](pout, twv, gscale * value_coef, gpout)
+        loss += l_val_k
+        l_val += l_val_k
         var gpout_t = TileTensor(gpout, row_major[B, PRED_OUT]())
         var gpin_t = TileTensor(gpin, row_major[B, LATENT]())
         pred.vjp["cpu", B](gpout_t, gpin_t)
@@ -208,9 +218,11 @@ def ezv2_unroll_train_step_continuous_cpu[
             proj.forward["cpu", B](zk_t, output=projo_t)
             var pk_t = TileTensor(pk, row_major[B, PROJ]())
             predh.forward["cpu", B](projo_t, output=pk_t)
-            loss += consistency_loss_and_grad[B, PROJ](
+            var l_cons_k = consistency_loss_and_grad[B, PROJ](
                 pk, tstore + (k - 1) * B * PROJ, cscale, gpk
             )
+            loss += l_cons_k
+            l_cons += l_cons_k
             var gpk_t = TileTensor(gpk, row_major[B, PROJ]())
             var gproj_t = TileTensor(gproj, row_major[B, PROJ]())
             predh.vjp["cpu", B](gpk_t, gproj_t)
@@ -238,9 +250,11 @@ def ezv2_unroll_train_step_continuous_cpu[
             mz_two_hot_target_batch[B, BINS](
                 reward_tgt + k * B, v_min, v_max, twr
             )
-            loss += soft_ce_slice_loss_and_grad[B, DYN_OUT, LATENT, BINS](
+            var l_rew_k = soft_ce_slice_loss_and_grad[B, DYN_OUT, LATENT, BINS](
                 dout, twr, gscale, gdout
             )
+            loss += l_rew_k
+            l_rew += l_rew_k
             var gdout_t = TileTensor(gdout, row_major[B, DYN_OUT]())
             var gdin_t = TileTensor(gdin, row_major[B, DYN_IN]())
             dyn.vjp["cpu", B](gdout_t, gdin_t)
@@ -273,6 +287,13 @@ def ezv2_unroll_train_step_continuous_cpu[
     musig.free(); gmusig.free(); ptgt.free()
     tstore.free(); ztmp.free(); projo.free(); pk.free(); gpk.free()
     gproj.free(); gzcons.free()
+    if loss_parts:
+        var lp = loss_parts.value()
+        var inv = Scalar[DT](1.0) / Scalar[DT](B)
+        lp[0] = l_pol * inv   # policy
+        lp[1] = l_val * inv   # value
+        lp[2] = l_rew * inv   # reward
+        lp[3] = l_cons * inv  # consistency
     return loss / Scalar[DT](B)
 
 
@@ -345,6 +366,7 @@ def ezv2_unroll_train_step_continuous_gpu[
     soft_clamp: Scalar[DT] = Scalar[DT](5.0),
     init_std: Scalar[DT] = Scalar[DT](1.0),
     ent_scale: Scalar[DT] = Scalar[DT](5e-3),
+    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """GPU continuous EZv2 K-step unroll — device mirror of
     ``ezv2_unroll_train_step_continuous_cpu`` (MuZero BPTT + SimSiam consistency
@@ -401,8 +423,8 @@ def ezv2_unroll_train_step_continuous_gpu[
     var gzcons = scratch.d_gzcons.value()
     var h_loss = scratch.h_loss.value()
 
-    # zero the loss accumulator (into the reused buffer each step)
-    for i in range(B):
+    # zero the 4 loss-component accumulators (policy|value|reward|consistency)
+    for i in range(4 * B):
         h_loss.unsafe_ptr()[i] = Scalar[DT](0.0)
     ctx.enqueue_copy(loss_d, h_loss)
 
@@ -517,7 +539,7 @@ def ezv2_unroll_train_step_continuous_gpu[
             _lt[B * PRED_OUT](p_pout),
             _lt[B * BINS](p_twv),
             _lt[B * PRED_OUT](p_gpout),
-            _lt[B](p_loss),
+            _lt[B](p_loss + B),                       # value block
             gscale * value_coef, value_coef,
             grid_dim=nbB, block_dim=TPB,
         )
@@ -535,7 +557,7 @@ def ezv2_unroll_train_step_continuous_gpu[
                 _lt[B * PROJ](p_pk),
                 _lt[B * PROJ](p_tstore + (k - 1) * B * PROJ),
                 _lt[B * PROJ](p_gpk),
-                _lt[B](p_loss),
+                _lt[B](p_loss + 3 * B),               # consistency block
                 cscale, Scalar[DT](1.0),
                 grid_dim=nbB, block_dim=TPB,
             )
@@ -575,7 +597,7 @@ def ezv2_unroll_train_step_continuous_gpu[
                 _lt[B * DYN_OUT](p_dout),
                 _lt[B * BINS](p_twr),
                 _lt[B * DYN_OUT](p_gdout),
-                _lt[B](p_loss),
+                _lt[B](p_loss + 2 * B),               # reward block
                 gscale, Scalar[DT](1.0),
                 grid_dim=nbB, block_dim=TPB,
             )
@@ -610,12 +632,25 @@ def ezv2_unroll_train_step_continuous_gpu[
     oproj.step["gpu", PROJM](proj)
     opredh.step["gpu", PREDH](predh)
 
-    # ── reduce loss (D2H once into the reused host mirror) ──
+    # ── reduce loss (D2H once) — 4 [B] blocks: policy|value|reward|consistency ──
     ctx.synchronize()
     ctx.enqueue_copy(h_loss, loss_d)
     ctx.synchronize()
-    var loss = Scalar[DT](0.0)
+    var hp = h_loss.unsafe_ptr()
+    var l_pol = Scalar[DT](0.0)
+    var l_val = Scalar[DT](0.0)
+    var l_rew = Scalar[DT](0.0)
+    var l_cons = Scalar[DT](0.0)
     for b in range(B):
-        loss += h_loss.unsafe_ptr()[b]
-
-    return loss / Scalar[DT](B)
+        l_pol += hp[b]
+        l_val += hp[B + b]
+        l_rew += hp[2 * B + b]
+        l_cons += hp[3 * B + b]
+    var inv = Scalar[DT](1.0) / Scalar[DT](B)
+    if loss_parts:
+        var lp = loss_parts.value()
+        lp[0] = l_pol * inv
+        lp[1] = l_val * inv
+        lp[2] = l_rew * inv
+        lp[3] = l_cons * inv
+    return (l_pol + l_val + l_rew + l_cons) * inv

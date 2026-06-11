@@ -134,3 +134,49 @@ def append_mz_train_diagnostics[
     values.append(vmean_sum / n)
     names.append(String("value_target_mean"))
     values.append(vt_sum / n)
+
+
+def append_value_diagnostics[
+    ROW: Int, VOFF: Int, BINS: Int, B: Int,
+](
+    pred: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B, ROW]
+    value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B] raw scalar
+    v_min: Scalar[DT],
+    v_max: Scalar[DT],
+    mut names: List[String],
+    mut values: List[Float64],
+):
+    """Value-head-only diagnostics for heads whose policy is **not** categorical
+    (continuous EZv2: squashed-Gaussian policy). Decodes the categorical value
+    logits at ``pred[b, VOFF : VOFF+BINS]`` (softmax·bins → h⁻¹) and appends
+    ``value_mse`` / ``value_mean`` / ``value_target_mean``. The policy signal for
+    these heads is the ``loss_policy`` component emitted by the loss split."""
+    var n = Float64(B)
+    var step = (
+        Float64(v_max - v_min) / Float64(BINS - 1) if BINS > 1 else 0.0
+    )
+    var vmse_sum = 0.0
+    var vmean_sum = 0.0
+    var vt_sum = 0.0
+    for b in range(B):
+        var base = b * ROW + VOFF
+        var vmaxl = Float64(pred[base])
+        for i in range(1, BINS):
+            var v = Float64(pred[base + i])
+            if v > vmaxl:
+                vmaxl = v
+        var vsum = 0.0
+        for i in range(BINS):
+            vsum += exp(Float64(pred[base + i]) - vmaxl)
+        var hval = 0.0
+        for i in range(BINS):
+            var p = exp(Float64(pred[base + i]) - vmaxl) / vsum
+            hval += p * (Float64(v_min) + step * Float64(i))
+        var pv = Float64(mz_inverse_scalar_transform(Scalar[DT](hval)))
+        var z = Float64(value_tgt[b])
+        vmse_sum += (pv - z) * (pv - z)
+        vmean_sum += pv
+        vt_sum += z
+    names.append(String("value_mse")); values.append(vmse_sum / n)
+    names.append(String("value_mean")); values.append(vmean_sum / n)
+    names.append(String("value_target_mean")); values.append(vt_sum / n)
