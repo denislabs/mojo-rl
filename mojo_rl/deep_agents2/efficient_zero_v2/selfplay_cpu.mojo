@@ -22,6 +22,8 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
+from mojo_rl.core.logger import Logger, NoOpLogger
+from ..zero.mz_diagnostics import append_mz_train_diagnostics
 from mojo_rl.planners.tree_search import (
     GenericCPUMCTS,
     MuZeroPUCT,
@@ -118,6 +120,7 @@ def run_ezv2_selfplay_cpu[
     N: Int,
     BATCH_SIMS: Int = 8,
     VIRTUAL_LOSS: Int = 3,
+    L: Logger = NoOpLogger,
 ](
     mut env: ENV,
     mut rep: REP,
@@ -145,6 +148,8 @@ def run_ezv2_selfplay_cpu[
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     diag_every: Int = 0,
+    report_every: Int = 0,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     var mcts = GenericCPUMCTS[
@@ -176,6 +181,9 @@ def run_ezv2_selfplay_cpu[
     # collapse-diagnostic scratch (latent + projection probe on obs0)
     var d_z = _a(B * LATENT)
     var d_p = _a(B * PROJM.OUT_DIM)
+    # logger scratch: per-component loss breakdown + root prediction probe
+    var l_parts = _a(4)            # [policy, value, reward, consistency] means
+    var d_pred = _a(B * (ACT + BINS))
 
     var e_obs = List[Scalar[DT]]()
     var e_act = List[Scalar[DT]]()
@@ -279,10 +287,11 @@ def run_ezv2_selfplay_cpu[
                         orep, odyn, opred, oproj, opredh,
                         t_obs_seq, t_act, t_pol, t_val, t_rew,
                         v_min, v_max, value_coef, consistency_coef,
+                        loss_parts=l_parts,
                     )
                 )
 
-        # ── collapse diagnostic: latent + projection spread on the batch ──
+        # ── per-batch diagnostics: collapse probe + logger metric emission ──
         if (
             diag_every > 0
             and it >= learning_starts
@@ -292,10 +301,30 @@ def run_ezv2_selfplay_cpu[
             var cd = _collapse_diag[REP, PROJM, B, OBS, LATENT](
                 rep, proj, t_obs_seq, d_z, d_p
             )
-            print(
-                "  [collapse] step", it + 1,
-                "latent_std", cd[0], "proj_norm_std", cd[1],
-            )
+            if verbose:
+                print(
+                    "  [collapse] step", it + 1,
+                    "latent_std", cd[0], "proj_norm_std", cd[1],
+                )
+            if logger:
+                # root prediction (reuse d_z = h(obs0) from the probe).
+                var z_t = TileTensor(d_z, row_major[B, LATENT]())
+                var pred_t = TileTensor(d_pred, row_major[B, ACT + BINS]())
+                pred.forward["cpu", B](z_t, output=pred_t)
+                var dn = List[String]()
+                var dv = List[Float64]()
+                dn.append(String("loss")); dv.append(last_loss)
+                dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
+                dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
+                dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
+                dn.append(String("loss_consistency"))
+                dv.append(Float64(l_parts[3]))
+                dn.append(String("latent_std")); dv.append(cd[0])
+                dn.append(String("proj_norm_std")); dv.append(cd[1])
+                append_mz_train_diagnostics[ACT, BINS, B](
+                    d_pred, t_pol, t_val, v_min, v_max, dn, dv
+                )
+                logger.value()[].log_scalars(dn, dv, it + 1)
 
         # ── reanalyze: refresh one stored position with a fresh search ──
         if (
@@ -344,6 +373,10 @@ def run_ezv2_selfplay_cpu[
                 eval_sum += eret
             var eval_avg = eval_sum / Float64(eval_episodes)
             print("  [eval] step", it + 1, "greedy_return", eval_avg)
+            if logger:
+                logger.value()[].log_scalar(
+                    String("eval_return"), eval_avg, it + 1
+                )
             e_obs.clear(); e_act.clear(); e_rew.clear()
             e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
             ep_len = 0
@@ -369,7 +402,32 @@ def run_ezv2_selfplay_cpu[
                 "eps", rb.num_episodes(), "avg_return(10)", avg,
             )
 
+        # ── report_every: episode-return / replay status to the logger ──
+        if (
+            logger
+            and report_every > 0
+            and it >= learning_starts
+            and (it + 1) % report_every == 0
+        ):
+            var ravg = 0.0
+            var rcnt = 0
+            var rlo = len(ep_returns) - 10
+            if rlo < 0:
+                rlo = 0
+            for e in range(rlo, len(ep_returns)):
+                ravg += ep_returns[e]
+                rcnt += 1
+            if rcnt > 0:
+                ravg /= Float64(rcnt)
+            var rn = List[String]()
+            var rv = List[Float64]()
+            rn.append(String("avg_return")); rv.append(ravg)
+            rn.append(String("episodes")); rv.append(Float64(rb.num_episodes()))
+            rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
+            logger.value()[].log_scalars(rn, rv, it + 1)
+
     t_obs_seq.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     r_obs.free(); r_pol.free()
     d_z.free(); d_p.free()
+    l_parts.free(); d_pred.free()
     return last_loss

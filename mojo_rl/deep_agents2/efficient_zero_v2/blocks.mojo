@@ -90,6 +90,7 @@ def ezv2_unroll_train_step_cpu[
     v_max: Scalar[DT],
     value_coef: Scalar[DT] = Scalar[DT](1.0),
     consistency_coef: Scalar[DT] = Scalar[DT](2.0),
+    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """One CPU EZv2 unroll training step (MuZero BPTT + SimSiam consistency).
 
@@ -168,6 +169,11 @@ def ezv2_unroll_train_step_cpu[
     opredh.zero_grad["cpu", PREDH](predh)
 
     var loss = Scalar[DT](0.0)
+    # per-component loss accumulators (for the optional loss_parts breakdown)
+    var l_pol = Scalar[DT](0.0)
+    var l_val = Scalar[DT](0.0)
+    var l_rew = Scalar[DT](0.0)
+    var l_cons = Scalar[DT](0.0)
     for rk in range(K + 1):
         var k = K - rk
         var zk = zst + k * B * LATENT
@@ -176,13 +182,17 @@ def ezv2_unroll_train_step_cpu[
         # (a) prediction head: re-forward for cache, seed grads, vjp → grad z_k
         var pout_t = TileTensor(pout, row_major[B, PRED_OUT]())
         pred.forward["cpu", B](zk_t, output=pout_t)
-        loss += soft_ce_slice_loss_and_grad[B, PRED_OUT, 0, ACT](
+        var l_pol_k = soft_ce_slice_loss_and_grad[B, PRED_OUT, 0, ACT](
             pout, policy_tgt + k * B * ACT, gscale, gpout
         )
+        loss += l_pol_k
+        l_pol += l_pol_k
         mz_two_hot_target_batch[B, BINS](value_tgt + k * B, v_min, v_max, twv)
-        loss += value_coef * soft_ce_slice_loss_and_grad[
+        var l_val_k = value_coef * soft_ce_slice_loss_and_grad[
             B, PRED_OUT, ACT, BINS
         ](pout, twv, gscale * value_coef, gpout)
+        loss += l_val_k
+        l_val += l_val_k
         var gpout_t = TileTensor(gpout, row_major[B, PRED_OUT]())
         var gpin_t = TileTensor(gpin, row_major[B, LATENT]())
         pred.vjp["cpu", B](gpout_t, gpin_t)
@@ -193,9 +203,11 @@ def ezv2_unroll_train_step_cpu[
             proj.forward["cpu", B](zk_t, output=projo_t)   # refresh proj cache
             var pk_t = TileTensor(pk, row_major[B, PROJ]())
             predh.forward["cpu", B](projo_t, output=pk_t)  # refresh predh cache
-            loss += consistency_loss_and_grad[B, PROJ](
+            var l_cons_k = consistency_loss_and_grad[B, PROJ](
                 pk, tstore + (k - 1) * B * PROJ, cscale, gpk
             )
+            loss += l_cons_k
+            l_cons += l_cons_k
             var gpk_t = TileTensor(gpk, row_major[B, PROJ]())
             var gproj_t = TileTensor(gproj, row_major[B, PROJ]())
             predh.vjp["cpu", B](gpk_t, gproj_t)            # → grad proj output
@@ -224,9 +236,11 @@ def ezv2_unroll_train_step_cpu[
             mz_two_hot_target_batch[B, BINS](
                 reward_tgt + k * B, v_min, v_max, twr
             )
-            loss += soft_ce_slice_loss_and_grad[B, DYN_OUT, LATENT, BINS](
+            var l_rew_k = soft_ce_slice_loss_and_grad[B, DYN_OUT, LATENT, BINS](
                 dout, twr, gscale, gdout
             )
+            loss += l_rew_k
+            l_rew += l_rew_k
             var gdout_t = TileTensor(gdout, row_major[B, DYN_OUT]())
             var gdin_t = TileTensor(gdin, row_major[B, DYN_IN]())
             dyn.vjp["cpu", B](gdout_t, gdin_t)
@@ -259,6 +273,13 @@ def ezv2_unroll_train_step_cpu[
     twv.free(); twr.free()
     tstore.free(); ztmp.free(); projo.free(); pk.free(); gpk.free()
     gproj.free(); gzcons.free()
+    if loss_parts:
+        var lp = loss_parts.value()
+        var inv = Scalar[DT](1.0) / Scalar[DT](B)
+        lp[0] = l_pol * inv   # policy
+        lp[1] = l_val * inv   # value
+        lp[2] = l_rew * inv   # reward
+        lp[3] = l_cons * inv  # consistency
     return loss / Scalar[DT](B)
 
 
