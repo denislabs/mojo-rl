@@ -631,9 +631,26 @@ def gz_select_kernel[
             if nva > max_visit:
                 max_visit = nva
         var sigma_scale = (c_visit + max_visit) * c_scale
-        var mn = rebind[Scalar[dtype]](min_q[e])
-        var mx = rebind[Scalar[dtype]](max_q[e])
-        var q_range = mx - mn
+        # Per-NODE completed-Q min/max (mctx qtransform_completed_by_mix_value
+        # semantics): rescale over THIS node's children so the best child maps
+        # to qn=1 and the worst to qn=0 regardless of the absolute Q spread.
+        # The previous tree-GLOBAL min_q/max_q normalization compressed σ to
+        # near-noise in games whose subtrees reach terminal ±1 values (range
+        # pinned ~2 while sibling ΔQ ~ 0.1) — the σ(completed_Q) improvement
+        # operator stopped working at ANY sim budget (C4: 64→256 sims left the
+        # target entropy bit-for-bit flat).
+        var node_mn = Scalar[dtype](1e18)
+        var node_mx = Scalar[dtype](-1e18)
+        for a in range(ACT):
+            var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
+            var cq = v_mix
+            if nva > Scalar[dtype](0.5):
+                cq = rebind[Scalar[dtype]](total_value[na_base + a]) / nva
+            if cq < node_mn:
+                node_mn = cq
+            if cq > node_mx:
+                node_mx = cq
+        var q_range = node_mx - node_mn
 
         # Compute z[a] = node_logits[a] + σ(completed_Q[a]).
         # Stable softmax → π_improved.
@@ -648,9 +665,9 @@ def gz_select_kernel[
                 qa = v_mix
             var qn: Scalar[dtype]
             if q_range > Scalar[dtype](1e-8):
-                qn = (qa - mn) / q_range
+                qn = (qa - node_mn) / q_range
             else:
-                qn = qa
+                qn = Scalar[dtype](0.0)  # all completed Q equal → σ inert
             z[a] = rebind[Scalar[dtype]](node_logits[na_base + a]) + (
                 sigma_scale * qn
             )
@@ -1079,9 +1096,20 @@ def gz_halve_active_kernel[
         if nva > max_visit:
             max_visit = nva
     var sigma_scale = (c_visit + max_visit) * c_scale
-    var mn = rebind[Scalar[dtype]](min_q[e])
-    var mx = rebind[Scalar[dtype]](max_q[e])
-    var q_range = mx - mn
+    # Per-NODE completed-Q min/max — see gz_select_kernel for why the old
+    # tree-GLOBAL min_q/max_q normalization neutered σ(completed_Q).
+    var node_mn = Scalar[dtype](1e18)
+    var node_mx = Scalar[dtype](-1e18)
+    for a in range(ACT):
+        var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
+        var cq = v_mix
+        if nva > Scalar[dtype](0.5):
+            cq = rebind[Scalar[dtype]](total_value[na_base + a]) / nva
+        if cq < node_mn:
+            node_mn = cq
+        if cq > node_mx:
+            node_mx = cq
+    var q_range = node_mx - node_mn
 
     var old_n = Int(old_size)
     if old_n > MAX_K:
@@ -1113,9 +1141,9 @@ def gz_halve_active_kernel[
             qa = v_mix
         var qn: Scalar[dtype]
         if q_range > Scalar[dtype](1e-8):
-            qn = (qa - mn) / q_range
+            qn = (qa - node_mn) / q_range
         else:
-            qn = qa
+            qn = Scalar[dtype](0.0)  # all completed Q equal → σ inert
         var sigma_q = sigma_scale * qn
         var l = rebind[Scalar[dtype]](node_logits[na_base + act])
         var g = rebind[Scalar[dtype]](root_gumbels[k_off + cand])
@@ -1224,9 +1252,22 @@ def gz_extract_policy_kernel[
         if nva > max_visit:
             max_visit = nva
     var sigma_scale = (c_visit + max_visit) * c_scale
-    var mn = rebind[Scalar[dtype]](min_q[e])
-    var mx = rebind[Scalar[dtype]](max_q[e])
-    var q_range = mx - mn
+    # Per-NODE completed-Q min/max — see gz_select_kernel for why the old
+    # tree-GLOBAL min_q/max_q normalization neutered σ(completed_Q). This is
+    # the kernel that writes the TRAINING TARGET, so the compression directly
+    # capped how much the search could improve on the net's own policy.
+    var node_mn = Scalar[dtype](1e18)
+    var node_mx = Scalar[dtype](-1e18)
+    for a in range(ACT):
+        var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
+        var cq = v_mix
+        if nva > Scalar[dtype](0.5):
+            cq = rebind[Scalar[dtype]](total_value[na_base + a]) / nva
+        if cq < node_mn:
+            node_mn = cq
+        if cq > node_mx:
+            node_mx = cq
+    var q_range = node_mx - node_mn
 
     var z = InlineArray[Scalar[dtype], ACT](uninitialized=True)
     var max_z = Scalar[dtype](-1e18)
@@ -1246,9 +1287,9 @@ def gz_extract_policy_kernel[
             qa = v_mix
         var qn: Scalar[dtype]
         if q_range > Scalar[dtype](1e-8):
-            qn = (qa - mn) / q_range
+            qn = (qa - node_mn) / q_range
         else:
-            qn = qa
+            qn = Scalar[dtype](0.0)  # all completed Q equal → σ inert
         var l = rebind[Scalar[dtype]](node_logits[na_base + a])
         z[a] = l + sigma_scale * qn
         if z[a] > max_z:
