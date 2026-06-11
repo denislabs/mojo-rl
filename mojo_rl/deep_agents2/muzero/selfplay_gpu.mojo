@@ -42,7 +42,9 @@ from mojo_rl.planners.tree_search import (
 )
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from .blocks import mz_unroll_train_step_gpu, MZScratch
+from .selfplay_gpu_device import _mz_emit_train_diag
 from ..zero.mcts_adapters_mz_cpu import MZRepCPU, MZDynCPU, MZPredCPU
 from ..zero.sequence_replay_mcts import MCTSSequenceReplay
 from ..zero.temperature import visit_temperature
@@ -83,6 +85,7 @@ def run_muzero_selfplay_gpu[
     N: Int,
     BATCH_SIMS: Int = 8,
     VIRTUAL_LOSS: Int = 3,
+    L: Logger = NoOpLogger,
 ](
     ctx: DeviceContext,
     mut env: ENV,
@@ -105,6 +108,9 @@ def run_muzero_selfplay_gpu[
     reanalyze_every: Int = 0,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
+    diag_every: Int = 0,
+    report_every: Int = 0,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     var mcts = GenericCPUMCTS[
@@ -141,6 +147,13 @@ def run_muzero_selfplay_gpu[
     # persistent GPU unroll scratch — allocated once, reused every train step
     # (per-step `enqueue_create_buffer` in the hot loop explodes disk on NVIDIA)
     var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
+
+    # logger scratch: per-component loss split + root-prediction probe (D2H).
+    var l_parts = _a(3)
+    var d_diag_obs = ctx.enqueue_create_buffer[DT](B * OBS)
+    var d_diag_z = ctx.enqueue_create_buffer[DT](B * LATENT)
+    var d_diag_pred = ctx.enqueue_create_buffer[DT](B * (ACT + BINS))
+    var h_diag_pred = _a(B * (ACT + BINS))
 
     # reanalyze scratch
     var r_obs = _a(OBS)
@@ -254,12 +267,27 @@ def run_muzero_selfplay_gpu[
                         scratch,
                         t_obs0, t_act, t_pol, t_val, t_rew,
                         v_min, v_max, value_coef,
+                        loss_parts=l_parts,
                     )
                 )
             # refresh CPU mirror so the next search plans with fresh weights
             mz_sync_gpu_to_cpu(rep, rep_c, ctx)
             mz_sync_gpu_to_cpu(dyn, dyn_c, ctx)
             mz_sync_gpu_to_cpu(pred, pred_c, ctx)
+
+        # ── per-batch diagnostics → logger (root pred re-forwarded on GPU) ──
+        if (
+            logger
+            and diag_every > 0
+            and it >= learning_starts
+            and rb.num_episodes() > 0
+            and (it + 1) % diag_every == 0
+        ):
+            _mz_emit_train_diag[REP, PRED, B, OBS, ACT, BINS, L](
+                ctx, rep, pred, d_diag_obs, d_diag_z, d_diag_pred,
+                h_diag_pred, t_obs0, t_pol, t_val, l_parts,
+                v_min, v_max, last_loss, it + 1, logger.value(),
+            )
 
         # ── reanalyze: refresh one stored position with a fresh search ──
         # The n-step targets bootstrap from STORED root values; without
@@ -313,6 +341,10 @@ def run_muzero_selfplay_gpu[
                 eval_sum += eret
             var eval_avg = eval_sum / Float64(eval_episodes)
             print("  [eval] step", it + 1, "greedy_return", eval_avg)
+            if logger:
+                logger.value()[].log_scalar(
+                    String("eval_return"), eval_avg, it + 1
+                )
             # restart a clean training episode (eval clobbered ``env``)
             e_obs.clear(); e_act.clear(); e_rew.clear()
             e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
@@ -339,8 +371,33 @@ def run_muzero_selfplay_gpu[
                 "eps", rb.num_episodes(), "avg_return(10)", avg,
             )
 
+        # ── report_every: episode-return / replay status to the logger ──
+        if (
+            logger
+            and report_every > 0
+            and it >= learning_starts
+            and (it + 1) % report_every == 0
+        ):
+            var ravg = 0.0
+            var rcnt = 0
+            var rlo = len(ep_returns) - 10
+            if rlo < 0:
+                rlo = 0
+            for e in range(rlo, len(ep_returns)):
+                ravg += ep_returns[e]
+                rcnt += 1
+            if rcnt > 0:
+                ravg /= Float64(rcnt)
+            var rn = List[String]()
+            var rv = List[Float64]()
+            rn.append(String("avg_return")); rv.append(ravg)
+            rn.append(String("episodes")); rv.append(Float64(rb.num_episodes()))
+            rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
+            logger.value()[].log_scalars(rn, rv, it + 1)
+
     t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     r_obs.free(); r_pol.free()
+    l_parts.free(); h_diag_pred.free()
     # keep the CPU mirrors alive past the loop — the MCTS adapters hold
     # `UnsafePointer(to=rep_c)`, which the lifetime analyzer can't see.
     _ = rep_c^
