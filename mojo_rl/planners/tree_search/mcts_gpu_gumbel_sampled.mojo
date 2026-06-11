@@ -710,9 +710,29 @@ def gs_select_kernel[
             if nva > max_visit:
                 max_visit = nva
         var sigma_scale = (c_visit + max_visit) * c_scale
-        var mn = rebind[Scalar[dtype]](min_q[e])
-        var mx = rebind[Scalar[dtype]](max_q[e])
-        var q_range = mx - mn
+        # Per-NODE completed-Q min/max (mctx qtransform semantics) — the old
+        # tree-GLOBAL min_q/max_q normalization compressed σ to near-noise
+        # whenever the tree's Q range dwarfed sibling ΔQ (see
+        # mcts_gpu_gumbel.mojo gz_select_kernel for the full story).
+        var node_mn = Scalar[dtype](1e18)
+        var node_mx = Scalar[dtype](-1e18)
+        for i in range(ak_child):
+            var nva = rebind[Scalar[dtype]](
+                visit_count[nk_base_child + i]
+            )
+            var cq = v_mix
+            if nva > Scalar[dtype](0.5):
+                cq = (
+                    rebind[Scalar[dtype]](
+                        total_value[nk_base_child + i]
+                    )
+                    / nva
+                )
+            if cq < node_mn:
+                node_mn = cq
+            if cq > node_mx:
+                node_mx = cq
+        var q_range = node_mx - node_mn
 
         var z = InlineArray[Scalar[dtype], K_PAD](uninitialized=True)
         var max_z = Scalar[dtype](-1e18)
@@ -734,9 +754,9 @@ def gs_select_kernel[
                 qa = v_mix
             var qn: Scalar[dtype]
             if q_range > Scalar[dtype](1e-8):
-                qn = (qa - mn) / q_range
+                qn = (qa - node_mn) / q_range
             else:
-                qn = qa
+                qn = Scalar[dtype](0.0)  # all completed Q equal → σ inert
             z[i] = (
                 rebind[Scalar[dtype]](log_prior[nk_base_child + i])
                 + sigma_scale * qn
@@ -1277,9 +1297,21 @@ def gs_halve_active_kernel[
         if nva > max_visit:
             max_visit = nva
     var sigma_scale = (c_visit + max_visit) * c_scale
-    var mn = rebind[Scalar[dtype]](min_q[e])
-    var mx = rebind[Scalar[dtype]](max_q[e])
-    var q_range = mx - mn
+    # Per-NODE (root) completed-Q min/max over the K_ROOT candidates — see
+    # the interior-select site above / mcts_gpu_gumbel.mojo for why the old
+    # tree-GLOBAL min_q/max_q normalization neutered σ(completed_Q).
+    var node_mn = Scalar[dtype](1e18)
+    var node_mx = Scalar[dtype](-1e18)
+    for i in range(K_ROOT):
+        var nva = rebind[Scalar[dtype]](visit_count[nk_base + i])
+        var cq = v_mix
+        if nva > Scalar[dtype](0.5):
+            cq = rebind[Scalar[dtype]](total_value[nk_base + i]) / nva
+        if cq < node_mn:
+            node_mn = cq
+        if cq > node_mx:
+            node_mx = cq
+    var q_range = node_mx - node_mn
 
     var old_n = Int(old_size)
     if old_n > K_ROOT:
@@ -1307,9 +1339,9 @@ def gs_halve_active_kernel[
             qa = v_mix
         var qn: Scalar[dtype]
         if q_range > Scalar[dtype](1e-8):
-            qn = (qa - mn) / q_range
+            qn = (qa - node_mn) / q_range
         else:
-            qn = qa
+            qn = Scalar[dtype](0.0)  # all completed Q equal → σ inert
         var sigma_q = sigma_scale * qn
         var lp = rebind[Scalar[dtype]](log_prior[nk_base + cand])
         var g = rebind[Scalar[dtype]](root_gumbels[k_off + cand])
