@@ -94,3 +94,21 @@ def named_params[
     )
     model.for_each_param[target, _NamedParamCollector](String(""), collector)
     return items^
+
+
+def named_states[
+    target: StaticString,
+    M: Module,
+](mut model: M) raises -> List[NamedParam]:
+    """Walk the model's `IsState` buffers (e.g. BatchNorm running stats)
+    and return a flat list of leaves — the `for_each_state` twin of
+    `named_params`. State has no grad buffer; `visit_with` passes the
+    value tile as both `param` and `grad`, so `grad_ptr == param_ptr`
+    in the returned records (callers must only use `param_ptr`).
+    Stateless models return an empty list."""
+    var items = List[NamedParam]()
+    var collector = _NamedParamCollector(
+        items_ptr=UnsafePointer(to=items),
+    )
+    model.for_each_state[target, _NamedParamCollector](String(""), collector)
+    return items^

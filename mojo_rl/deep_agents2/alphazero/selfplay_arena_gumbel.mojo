@@ -396,6 +396,12 @@ def run_alphazero_selfplay_arena_gumbel[
     #                              had to override an illegal/degenerate pick
     var period_nonfinite_pol = 0 # (env×move) count with a non-finite search
     #                              policy row (eval-mode net emitting NaN/inf)
+    var period_skipped_tgt = 0   # finished-game plies DROPPED from replay
+    #                              because the recorded search policy had a
+    #                              non-finite entry — one NaN target row is
+    #                              enough to permanently NaN a policy-head
+    #                              weight column via the soft-CE gradient
+    #                              (gp[c] = up·(softmax[c] − tgt[c]))
 
     # Effective reporting cadence: explicit `report_every`, else piggy-back on
     # the arena cadence (0 ⇒ no periodic eval/print/log at all).
@@ -544,6 +550,24 @@ def run_alphazero_selfplay_arena_gumbel[
                         z = 1.0 if ((L - 1 - k) % 2 == 0) else -1.0
                     var ob = (e * MAX_TRAJ + k) * OBS
                     var pb = (e * MAX_TRAJ + k) * ACT
+                    # Record guard: DROP plies whose search policy carries a
+                    # non-finite entry. Recording them poisons training — a
+                    # single NaN target column makes that column's soft-CE
+                    # gradient NaN, the clip can't catch a NaN norm cheaply
+                    # (belt: it now zeroes instead), and Adam's moments would
+                    # otherwise NaN that policy-head weight row PERMANENTLY
+                    # (the post-promotion collapse). Skip, never substitute:
+                    # replacing with uniform feeds fake easy targets (the
+                    # reverted sanitizer regression).
+                    var pol_ok = True
+                    for a in range(ACT):
+                        var pv = Float64(traj_pol[pb + a])
+                        if pv - pv != 0.0:
+                            pol_ok = False
+                            break
+                    if not pol_ok:
+                        period_skipped_tgt += 1
+                        continue
                     for s in range(NSYM):
                         AUG.augment_obs[OBS](traj_obs + ob, s, aug_obs)
                         AUG.augment_policy[ACT](traj_pol + pb, s, aug_pol)
@@ -736,6 +760,8 @@ def run_alphazero_selfplay_arena_gumbel[
             values.append(Float64(period_guard_hits))
             names.append(String("selfplay_nonfinite_pol"))
             values.append(Float64(period_nonfinite_pol))
+            names.append(String("selfplay_skipped_tgt"))
+            values.append(Float64(period_skipped_tgt))
             names.append(String("selfplay_state_nan"))
             values.append(Float64(state_nan))
 
@@ -747,12 +773,14 @@ def run_alphazero_selfplay_arena_gumbel[
             line += " | promo " + String(promotions)
             line += " | sp[guard " + String(period_guard_hits)
             line += " nanpol " + String(period_nonfinite_pol)
+            line += " skiptgt " + String(period_skipped_tgt)
             line += " stnan " + String(state_nan) + "]"
 
             # Reset the per-period self-play counters.
             games_prev = total_games
             period_guard_hits = 0
             period_nonfinite_pol = 0
+            period_skipped_tgt = 0
 
             if do_eval:
                 var e1 = _eval_both_colors[

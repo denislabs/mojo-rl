@@ -451,6 +451,21 @@ def run_alphazero_selfplay_arena[
                         z = 1.0 if ((L - 1 - k) % 2 == 0) else -1.0
                     var ob = (e * MAX_TRAJ + k) * OBS
                     var pb = (e * MAX_TRAJ + k) * ACT
+                    # Record guard: DROP plies with a non-finite search
+                    # policy — a single NaN target column permanently NaNs
+                    # that policy-head weight row via the soft-CE gradient.
+                    # See selfplay_arena_gumbel.mojo (which also counts the
+                    # drops in its sp[] diagnostics). Should never fire now
+                    # that promotion copies BN running stats with the
+                    # weights (hard_copy_params + hard_copy_states).
+                    var pol_ok = True
+                    for a in range(ACT):
+                        var pv = Float64(traj_pol[pb + a])
+                        if pv - pv != 0.0:
+                            pol_ok = False
+                            break
+                    if not pol_ok:
+                        continue
                     for s in range(NSYM):
                         AUG.augment_obs[OBS](traj_obs + ob, s, aug_obs)
                         AUG.augment_policy[ACT](traj_pol + pb, s, aug_pol)

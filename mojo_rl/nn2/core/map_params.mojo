@@ -23,7 +23,7 @@ from layout import Layout, LayoutTensor, TileTensor
 
 from ..constants import DT, TPB
 from .module import Module
-from .named_params import NamedParam, named_params
+from .named_params import NamedParam, named_params, named_states
 from .target_tag import TARGET_GPU, target_tag_for
 
 
@@ -280,6 +280,73 @@ def hard_copy_params[
     mut target_net: M,
     ctx: Optional[DeviceContext] = None,
 ) raises:
-    """Copy `online` → `target_net` verbatim (tau=1.0). Used to initialize
-    target nets to the online net's state immediately after `make`."""
+    """Copy `online` → `target_net` verbatim (tau=1.0): every `Param` AND
+    every `IsState` buffer (BatchNorm running stats). Used to initialize
+    target nets and to promote arena winners.
+
+    The State copy is essential for BatchNorm nets: a hard copy that moves
+    weights/γ/β but not running_mean/var produces a net whose EVAL-mode
+    forward runs trained weights under stale (init: mean 0 / var 1)
+    normalization constants — activations explode and the policy head
+    emits non-finite outputs (the AlphaZero post-promotion collapse).
+    Stateless nets (MLPs) have an empty state walk — bit-identical no-op."""
     polyak_update[target, M](online, target_net, Scalar[DT](1.0), ctx)
+    hard_copy_states[target, M](online, target_net, ctx)
+
+
+def hard_copy_states[
+    target: StaticString,
+    M: Module,
+](
+    mut online: M,
+    mut target_net: M,
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Copy every `IsState` buffer `online` → `target_net` (the
+    `for_each_state` twin of the `polyak_update(tau=1)` param copy).
+    Validates structure parity like `polyak_update`. No-op for
+    stateless models."""
+    var online_ss = named_states[target, M](online)
+    var target_ss = named_states[target, M](target_net)
+
+    if len(online_ss) != len(target_ss):
+        raise Error(
+            "hard_copy_states: state count mismatch (online="
+            + String(len(online_ss))
+            + ", target="
+            + String(len(target_ss))
+            + ")"
+        )
+
+    for i in range(len(online_ss)):
+        ref os = online_ss[i]
+        ref ts = target_ss[i]
+        if os.n_elems != ts.n_elems or os.name != ts.name:
+            raise Error(
+                "hard_copy_states: state mismatch at index "
+                + String(i)
+                + " (online '"
+                + os.name
+                + "' n="
+                + String(os.n_elems)
+                + ", target '"
+                + ts.name
+                + "' n="
+                + String(ts.n_elems)
+                + ")"
+            )
+        comptime if target == "cpu":
+            var os_ptr = os.param_ptr
+            var ts_ptr = ts.param_ptr
+            for k in range(os.n_elems):
+                ts_ptr[k] = os_ptr[k]
+        else:
+            comptime assert target == "gpu", (
+                "hard_copy_states: target must be 'cpu' or 'gpu'"
+            )
+            if not ctx:
+                raise Error("hard_copy_states[target='gpu']: ctx is required")
+            # Reuse the polyak kernel with tau=1 → target = online.
+            _polyak_launch_gpu(
+                os, ts, Scalar[DT](0.0), Scalar[DT](1.0), ctx.value()
+            )

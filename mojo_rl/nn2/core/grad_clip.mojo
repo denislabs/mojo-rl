@@ -97,8 +97,14 @@ struct _GradScaleVisitorCPU(ParamVisitor):
         apply_decay: Bool,
     ) raises:
         var g_ptr = mptr(grad.ptr)
-        for i in range(n_elems):
-            g_ptr[i] = g_ptr[i] * self.scale
+        # `scale == 0` is the non-finite-norm sentinel: hard-write 0 (a
+        # multiply would leave NaN·0 = NaN in place).
+        if self.scale == Scalar[DT](0.0):
+            for i in range(n_elems):
+                g_ptr[i] = 0.0
+        else:
+            for i in range(n_elems):
+                g_ptr[i] = g_ptr[i] * self.scale
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -147,6 +153,13 @@ def _compute_scale_kernel(
     `scale = min(1, max_norm / max(norm, eps))`. Apply unconditionally
     in the next pass — `scale = 1` when `norm ≤ max_norm` is a no-op,
     same semantics as the host-branch CPU formulation.
+
+    Non-finite norm (any NaN/±inf grad) → `scale = 0`: zero every grad so
+    the optimizer step is a no-op. Without this, `NaN > eps` is False, the
+    eps branch makes `ratio` huge-finite, and `scale` lands on 1.0 — NaN
+    grads pass through UNCLIPPED, Adam's moments go NaN, and the poisoned
+    params never recover (the AlphaZero policy-head column-NaN collapse).
+    `x - x == 0` is True iff `x` is finite.
     """
     var t = Int(thread_idx.x)
     if t == 0:
@@ -155,9 +168,14 @@ def _compute_scale_kernel(
             s += partials[i]
         var norm = sqrt(s)
         norm_buf[0] = norm
-        var denom = norm if norm > eps else eps
-        var ratio = max_norm / denom
-        scale_buf[0] = ratio if ratio < Scalar[DT](1.0) else Scalar[DT](1.0)
+        if norm - norm != Scalar[DT](0.0):
+            scale_buf[0] = 0.0
+        else:
+            var denom = norm if norm > eps else eps
+            var ratio = max_norm / denom
+            scale_buf[0] = (
+                ratio if ratio < Scalar[DT](1.0) else Scalar[DT](1.0)
+            )
 
 
 def _grad_scale_kernel(
@@ -165,10 +183,13 @@ def _grad_scale_kernel(
     scale_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
     n_elems: Int,
 ):
-    """`grad[i] *= scale_buf[0]`. One thread per element."""
+    """`grad[i] *= scale_buf[0]`. One thread per element. `scale == 0`
+    (non-finite-norm sentinel) hard-writes 0 — a multiply would leave
+    NaN·0 = NaN in place."""
     var i = Int(global_idx.x)
     if i < n_elems:
-        grad[i] = grad[i] * scale_buf[0]
+        var s = scale_buf[0]
+        grad[i] = grad[i] * s if s != Scalar[DT](0.0) else Scalar[DT](0.0)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -239,7 +260,8 @@ def _grouped_compute_scale_kernel(
 ):
     """Single-block reduction of the per-block partials → global ‖grad‖²,
     then `scale = min(1, max_norm / max(norm, eps))`. Writes scale + raw
-    norm. Same scale formula as `_compute_scale_kernel`."""
+    norm. Same scale formula (and non-finite → `scale = 0` guard) as
+    `_compute_scale_kernel`."""
     var t = Int(thread_idx.x)
     var my_sum: Scalar[DT] = 0.0
     var k = t
@@ -250,9 +272,14 @@ def _grouped_compute_scale_kernel(
     if t == 0:
         var norm = sqrt(s[0])
         norm_buf[0] = norm
-        var denom = norm if norm > eps else eps
-        var ratio = max_norm / denom
-        scale_buf[0] = ratio if ratio < Scalar[DT](1.0) else Scalar[DT](1.0)
+        if norm - norm != Scalar[DT](0.0):
+            scale_buf[0] = 0.0
+        else:
+            var denom = norm if norm > eps else eps
+            var ratio = max_norm / denom
+            scale_buf[0] = (
+                ratio if ratio < Scalar[DT](1.0) else Scalar[DT](1.0)
+            )
 
 
 def _grouped_scale_apply_kernel(
@@ -262,7 +289,9 @@ def _grouped_scale_apply_kernel(
     total: Int,
     scale_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
 ):
-    """Flat 1-D grid over ALL params' elements: `grad[local] *= scale`."""
+    """Flat 1-D grid over ALL params' elements: `grad[local] *= scale`.
+    `scale == 0` (non-finite-norm sentinel) hard-writes 0 — a multiply
+    would leave NaN·0 = NaN in place."""
     var flat = Int(global_idx.x)
     if flat < total:
         var p = _find_param_gc(moment_offs, n_params, flat)
@@ -270,7 +299,10 @@ def _grouped_scale_apply_kernel(
         var grad = UnsafePointer[Scalar[DT], MutAnyOrigin](
             unsafe_from_address=Int(grad_addrs[p])
         )
-        grad[local] = grad[local] * scale_buf[0]
+        var s = scale_buf[0]
+        grad[local] = (
+            grad[local] * s if s != Scalar[DT](0.0) else Scalar[DT](0.0)
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -405,7 +437,16 @@ def clip_grads_auto[
             String(""), sum_visitor
         )
         var norm = sqrt(sum_visitor.sum_sq)
-        if norm > max_norm:
+        if norm - norm != Scalar[DT](0.0):
+            # Non-finite norm (NaN/inf grads): zero every grad so the
+            # optimizer step is a no-op — `NaN > max_norm` is False, so
+            # without this branch NaN grads pass through unclipped and
+            # poison Adam's moments permanently.
+            var zero_visitor = _GradScaleVisitorCPU(scale=Scalar[DT](0.0))
+            model.for_each_param[target, _GradScaleVisitorCPU](
+                String(""), zero_visitor
+            )
+        elif norm > max_norm:
             var scale_visitor = _GradScaleVisitorCPU(scale=max_norm / norm)
             model.for_each_param[target, _GradScaleVisitorCPU](
                 String(""), scale_visitor
@@ -497,7 +538,14 @@ def clip_grads_graph_cpu[
         String(""), sum_visitor
     )
     var norm = sqrt(sum_visitor.sum_sq)
-    if norm > max_norm:
+    if norm - norm != Scalar[DT](0.0):
+        # Non-finite norm: zero every grad (no-op optimizer step) — see
+        # `clip_grads_auto`.
+        var zero_visitor = _GradScaleVisitorCPU(scale=Scalar[DT](0.0))
+        g.for_each_param[target="cpu", V=_GradScaleVisitorCPU](
+            String(""), zero_visitor
+        )
+    elif norm > max_norm:
         var scale_visitor = _GradScaleVisitorCPU(scale=max_norm / norm)
         g.for_each_param[target="cpu", V=_GradScaleVisitorCPU](
             String(""), scale_visitor
