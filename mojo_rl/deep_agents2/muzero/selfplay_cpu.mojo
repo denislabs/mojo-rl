@@ -19,10 +19,14 @@ bootstrap target. Returns the last training loss.
 from std.math import exp, log
 from std.memory import alloc
 
+from layout import TileTensor, row_major
+
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
+from mojo_rl.core.logger import Logger, NoOpLogger
+from ..zero.mz_diagnostics import append_mz_train_diagnostics
 from mojo_rl.planners.tree_search import (
     GenericCPUMCTS,
     MuZeroPUCT,
@@ -57,6 +61,7 @@ def run_muzero_selfplay_cpu[
     N: Int,
     BATCH_SIMS: Int = 8,
     VIRTUAL_LOSS: Int = 3,
+    L: Logger = NoOpLogger,
 ](
     mut env: ENV,
     mut rep: REP,
@@ -78,6 +83,9 @@ def run_muzero_selfplay_cpu[
     reanalyze_every: Int = 0,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
+    diag_every: Int = 0,
+    report_every: Int = 0,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     # PUCT defaults (c_base=19652, c_init=1.25) — matches legacy
@@ -110,6 +118,11 @@ def run_muzero_selfplay_cpu[
     # reanalyze scratch
     var r_obs = _a(OBS)
     var r_pol = _a(ACT)
+
+    # logger scratch: per-component loss split + root prediction probe
+    var l_parts = _a(3)            # [policy, value, reward] means
+    var d_z = _a(B * LATENT)
+    var d_pred = _a(B * (ACT + BINS))
 
     # episode accumulation buffers
     var e_obs = List[Scalar[DT]]()
@@ -218,8 +231,34 @@ def run_muzero_selfplay_cpu[
                         rep, dyn, pred, orep, odyn, opred,
                         t_obs0, t_act, t_pol, t_val, t_rew,
                         v_min, v_max, value_coef,
+                        loss_parts=l_parts,
                     )
                 )
+
+        # ── per-batch diagnostics → logger (root pred re-forwarded on host) ──
+        if (
+            logger
+            and diag_every > 0
+            and it >= learning_starts
+            and rb.num_episodes() > 0
+            and (it + 1) % diag_every == 0
+        ):
+            var z_t = TileTensor(d_z, row_major[B, LATENT]())
+            rep.forward["cpu", B](
+                TileTensor(t_obs0, row_major[B, OBS]()), output=z_t
+            )
+            var pred_t = TileTensor(d_pred, row_major[B, ACT + BINS]())
+            pred.forward["cpu", B](z_t, output=pred_t)
+            var dn = List[String]()
+            var dv = List[Float64]()
+            dn.append(String("loss")); dv.append(last_loss)
+            dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
+            dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
+            dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
+            append_mz_train_diagnostics[ACT, BINS, B](
+                d_pred, t_pol, t_val, v_min, v_max, dn, dv
+            )
+            logger.value()[].log_scalars(dn, dv, it + 1)
 
         # ── reanalyze: refresh one stored position with a fresh search ──
         # The n-step targets bootstrap from STORED root values; without
@@ -276,6 +315,10 @@ def run_muzero_selfplay_cpu[
                 eval_sum += eret
             var eval_avg = eval_sum / Float64(eval_episodes)
             print("  [eval] step", it + 1, "greedy_return", eval_avg)
+            if logger:
+                logger.value()[].log_scalar(
+                    String("eval_return"), eval_avg, it + 1
+                )
             # restart a clean training episode (eval clobbered ``env``)
             e_obs.clear(); e_act.clear(); e_rew.clear()
             e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
@@ -302,6 +345,31 @@ def run_muzero_selfplay_cpu[
                 "eps", rb.num_episodes(), "avg_return(10)", avg,
             )
 
+        # ── report_every: episode-return / replay status to the logger ──
+        if (
+            logger
+            and report_every > 0
+            and it >= learning_starts
+            and (it + 1) % report_every == 0
+        ):
+            var ravg = 0.0
+            var rcnt = 0
+            var rlo = len(ep_returns) - 10
+            if rlo < 0:
+                rlo = 0
+            for e in range(rlo, len(ep_returns)):
+                ravg += ep_returns[e]
+                rcnt += 1
+            if rcnt > 0:
+                ravg /= Float64(rcnt)
+            var rn = List[String]()
+            var rv = List[Float64]()
+            rn.append(String("avg_return")); rv.append(ravg)
+            rn.append(String("episodes")); rv.append(Float64(rb.num_episodes()))
+            rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
+            logger.value()[].log_scalars(rn, rv, it + 1)
+
     t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     r_obs.free(); r_pol.free()
+    l_parts.free(); d_z.free(); d_pred.free()
     return last_loss
