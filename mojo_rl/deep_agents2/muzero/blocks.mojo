@@ -134,9 +134,10 @@ struct MZScratch[
         s.gobs = ctx.enqueue_create_buffer[DT](BB * Self.OBS)
         s.twv = ctx.enqueue_create_buffer[DT](BB * Self.BINS)
         s.twr = ctx.enqueue_create_buffer[DT](BB * Self.BINS)
-        s.loss_d = ctx.enqueue_create_buffer[DT](BB)
-        s.h_zloss = ctx.enqueue_create_host_buffer[DT](BB)
-        s.h_loss = ctx.enqueue_create_host_buffer[DT](BB)
+        # 3 contiguous [B] blocks: policy | value | reward.
+        s.loss_d = ctx.enqueue_create_buffer[DT](3 * BB)
+        s.h_zloss = ctx.enqueue_create_host_buffer[DT](3 * BB)
+        s.h_loss = ctx.enqueue_create_host_buffer[DT](3 * BB)
         ctx.synchronize()
         return s^
 
@@ -166,6 +167,7 @@ def mz_unroll_train_step_cpu[
     v_min: Scalar[DT],
     v_max: Scalar[DT],
     value_coef: Scalar[DT] = Scalar[DT](1.0),
+    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """One CPU MuZero unroll training step. Returns the mean total loss
     (policy + value + reward, summed over the K+1 / K positions then averaged
@@ -222,6 +224,10 @@ def mz_unroll_train_step_cpu[
     opred.zero_grad["cpu", PRED](pred)
 
     var loss = Scalar[DT](0.0)
+    # per-component loss accumulators (for the optional loss_parts breakdown)
+    var l_pol = Scalar[DT](0.0)
+    var l_val = Scalar[DT](0.0)
+    var l_rew = Scalar[DT](0.0)
     for rk in range(K + 1):
         var k = K - rk
         var zk = zst + k * B * LATENT
@@ -231,14 +237,18 @@ def mz_unroll_train_step_cpu[
         var pout_t = TileTensor(pout, row_major[B, PRED_OUT]())
         pred.forward["cpu", B](zk_t, output=pout_t)
         # policy slice [0, ACT)
-        loss += soft_ce_slice_loss_and_grad[B, PRED_OUT, 0, ACT](
+        var l_pol_k = soft_ce_slice_loss_and_grad[B, PRED_OUT, 0, ACT](
             pout, policy_tgt + k * B * ACT, gscale, gpout
         )
+        loss += l_pol_k
+        l_pol += l_pol_k
         # value slice [ACT, ACT+BINS)
         mz_two_hot_target_batch[B, BINS](value_tgt + k * B, v_min, v_max, twv)
-        loss += value_coef * soft_ce_slice_loss_and_grad[
+        var l_val_k = value_coef * soft_ce_slice_loss_and_grad[
             B, PRED_OUT, ACT, BINS
         ](pout, twv, gscale * value_coef, gpout)
+        loss += l_val_k
+        l_val += l_val_k
         var gpout_t = TileTensor(gpout, row_major[B, PRED_OUT]())
         var gpin_t = TileTensor(gpin, row_major[B, LATENT]())
         pred.vjp["cpu", B](gpout_t, gpin_t)
@@ -264,9 +274,11 @@ def mz_unroll_train_step_cpu[
             mz_two_hot_target_batch[B, BINS](
                 reward_tgt + k * B, v_min, v_max, twr
             )
-            loss += soft_ce_slice_loss_and_grad[B, DYN_OUT, LATENT, BINS](
+            var l_rew_k = soft_ce_slice_loss_and_grad[B, DYN_OUT, LATENT, BINS](
                 dout, twr, gscale, gdout
             )
+            loss += l_rew_k
+            l_rew += l_rew_k
             var gdout_t = TileTensor(gdout, row_major[B, DYN_OUT]())
             var gdin_t = TileTensor(gdin, row_major[B, DYN_IN]())
             dyn.vjp["cpu", B](gdout_t, gdin_t)
@@ -294,6 +306,12 @@ def mz_unroll_train_step_cpu[
     zst.free(); din.free(); dout.free(); pout.free(); gpout.free()
     gdout.free(); gz.free(); gpin.free(); gdin.free(); gobs.free()
     twv.free(); twr.free()
+    if loss_parts:
+        var lp = loss_parts.value()
+        var inv = Scalar[DT](1.0) / Scalar[DT](B)
+        lp[0] = l_pol * inv   # policy
+        lp[1] = l_val * inv   # value
+        lp[2] = l_rew * inv   # reward
     return loss / Scalar[DT](B)
 
 
@@ -496,6 +514,7 @@ def mz_unroll_train_step_gpu[
     v_min: Scalar[DT],
     v_max: Scalar[DT],
     value_coef: Scalar[DT] = Scalar[DT](1.0),
+    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """GPU MuZero K-step unroll training step — device mirror of
     `mz_unroll_train_step_cpu`.
@@ -545,9 +564,9 @@ def mz_unroll_train_step_gpu[
     var twr = scratch.twr.value()
     var loss_d = scratch.loss_d.value()
 
-    # zero the loss accumulator (re-zero the cached buffer each step)
+    # zero the 3 loss-component accumulators (policy | value | reward)
     var zloss = scratch.h_zloss.value()
-    for i in range(B):
+    for i in range(3 * B):
         zloss.unsafe_ptr()[i] = Scalar[DT](0.0)
     ctx.enqueue_copy(loss_d, zloss)
 
@@ -639,7 +658,7 @@ def mz_unroll_train_step_gpu[
             _lt[B * PRED_OUT](p_pout),
             _lt[B * BINS](p_twv),
             _lt[B * PRED_OUT](p_gpout),
-            _lt[B](p_loss),
+            _lt[B](p_loss + B),                       # value block
             gscale * value_coef, value_coef,
             grid_dim=nbB, block_dim=TPB,
         )
@@ -673,7 +692,7 @@ def mz_unroll_train_step_gpu[
                 _lt[B * DYN_OUT](p_dout),
                 _lt[B * BINS](p_twr),
                 _lt[B * DYN_OUT](p_gdout),
-                _lt[B](p_loss),
+                _lt[B](p_loss + 2 * B),               # reward block
                 gscale, Scalar[DT](1.0),
                 grid_dim=nbB, block_dim=TPB,
             )
@@ -703,13 +722,23 @@ def mz_unroll_train_step_gpu[
     odyn.step["gpu", DYN](dyn)
     orep.step["gpu", REP](rep)
 
-    # ── reduce loss (D2H once) ──
+    # ── reduce loss (D2H once) — 3 [B] blocks: policy | value | reward ──
     ctx.synchronize()
     var hloss = scratch.h_loss.value()
     ctx.enqueue_copy(hloss, loss_d)
     ctx.synchronize()
-    var loss = Scalar[DT](0.0)
+    var hp = hloss.unsafe_ptr()
+    var l_pol = Scalar[DT](0.0)
+    var l_val = Scalar[DT](0.0)
+    var l_rew = Scalar[DT](0.0)
     for b in range(B):
-        loss += hloss.unsafe_ptr()[b]
-
-    return loss / Scalar[DT](B)
+        l_pol += hp[b]
+        l_val += hp[B + b]
+        l_rew += hp[2 * B + b]
+    var inv = Scalar[DT](1.0) / Scalar[DT](B)
+    if loss_parts:
+        var lp = loss_parts.value()
+        lp[0] = l_pol * inv
+        lp[1] = l_val * inv
+        lp[2] = l_rew * inv
+    return (l_pol + l_val + l_rew) * inv

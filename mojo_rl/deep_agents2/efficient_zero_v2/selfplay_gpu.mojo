@@ -20,13 +20,14 @@ inference), so no BN train/eval toggle is needed here. Returns the last loss.
 
 from std.math import exp, log
 from std.memory import alloc
-from layout import Layout, LayoutTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import GumbelGPUMCTS, SinglePlayer
 
 from .blocks import ezv2_unroll_train_step_gpu
@@ -34,6 +35,7 @@ from .unroll_scratch import EZV2UnrollScratch
 from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
 from ..zero.sequence_replay_mcts import MCTSSequenceReplay
 from ..zero.temperature import visit_temperature
+from ..zero.mz_diagnostics import append_mz_train_diagnostics
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -58,6 +60,7 @@ def run_ezv2_gumbel_selfplay_gpu[
     B: Int,
     K: Int,
     N: Int,
+    L: Logger = NoOpLogger,
 ](
     ctx: DeviceContext,
     mut env: ENV,
@@ -85,9 +88,13 @@ def run_ezv2_gumbel_selfplay_gpu[
     reanalyze_every: Int = 0,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
+    diag_every: Int = 0,
+    report_every: Int = 0,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     comptime N_ENVS = 1
+    comptime PRED_OUT = ACT + BINS
 
     # ── GPU Gumbel planner + on-device net adapters ──
     var planner = GumbelGPUMCTS[
@@ -118,6 +125,13 @@ def run_ezv2_gumbel_selfplay_gpu[
     var train_scratch = EZV2UnrollScratch[
         B, K, OBS, ACT, LATENT, BINS, PROJM.OUT_DIM
     ].make(ctx)
+
+    # logger scratch: per-component loss split + root-prediction probe (D2H).
+    var l_parts = _a(4)
+    var d_diag_obs = ctx.enqueue_create_buffer[DT](B * OBS)
+    var d_diag_z = ctx.enqueue_create_buffer[DT](B * LATENT)
+    var d_diag_pred = ctx.enqueue_create_buffer[DT](B * PRED_OUT)
+    var h_diag_pred = _a(B * PRED_OUT)
 
     var e_obs = List[Scalar[DT]]()
     var e_act = List[Scalar[DT]]()
@@ -239,8 +253,47 @@ def run_ezv2_gumbel_selfplay_gpu[
                         orep, odyn, opred, oproj, opredh,
                         t_obs_seq, t_act, t_pol, t_val, t_rew,
                         v_min, v_max, value_coef, consistency_coef,
+                        loss_parts=l_parts,
                     )
                 )
+
+        # ── per-batch diagnostics → logger (root pred re-forwarded on device) ──
+        if (
+            logger
+            and diag_every > 0
+            and it >= learning_starts
+            and rb.num_episodes() > 0
+            and (it + 1) % diag_every == 0
+        ):
+            # root obs0 = first B*OBS of the last sampled batch (host slab).
+            ctx.enqueue_copy(d_diag_obs, t_obs_seq)
+            var z_t = TileTensor(
+                mptr(d_diag_z.unsafe_ptr()), row_major[B, LATENT]()
+            )
+            rep.forward["gpu", B](
+                TileTensor(
+                    mptr(d_diag_obs.unsafe_ptr()), row_major[B, OBS]()
+                ),
+                output=z_t,
+            )
+            var pred_t = TileTensor(
+                mptr(d_diag_pred.unsafe_ptr()), row_major[B, PRED_OUT]()
+            )
+            pred.forward["gpu", B](z_t, output=pred_t)
+            ctx.enqueue_copy(h_diag_pred, d_diag_pred)
+            ctx.synchronize()
+            var dn = List[String]()
+            var dv = List[Float64]()
+            dn.append(String("loss")); dv.append(last_loss)
+            dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
+            dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
+            dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
+            dn.append(String("loss_consistency"))
+            dv.append(Float64(l_parts[3]))
+            append_mz_train_diagnostics[ACT, BINS, B](
+                h_diag_pred, t_pol, t_val, v_min, v_max, dn, dv
+            )
+            logger.value()[].log_scalars(dn, dv, it + 1)
 
         # ── reanalyze: refresh one stored position with a fresh search ──
         # Re-search the stored obs with the current on-device nets and
@@ -308,6 +361,10 @@ def run_ezv2_gumbel_selfplay_gpu[
                 eval_sum += eret
             var eval_avg = eval_sum / Float64(eval_episodes)
             print("  [eval] step", it + 1, "greedy_return", eval_avg)
+            if logger:
+                logger.value()[].log_scalar(
+                    String("eval_return"), eval_avg, it + 1
+                )
             e_obs.clear(); e_act.clear(); e_rew.clear()
             e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
             ep_len = 0
@@ -333,6 +390,31 @@ def run_ezv2_gumbel_selfplay_gpu[
                 "eps", rb.num_episodes(), "avg_return(10)", avg,
             )
 
+        # ── report_every: episode-return / replay status to the logger ──
+        if (
+            logger
+            and report_every > 0
+            and it >= learning_starts
+            and (it + 1) % report_every == 0
+        ):
+            var ravg = 0.0
+            var rcnt = 0
+            var rlo = len(ep_returns) - 10
+            if rlo < 0:
+                rlo = 0
+            for e in range(rlo, len(ep_returns)):
+                ravg += ep_returns[e]
+                rcnt += 1
+            if rcnt > 0:
+                ravg /= Float64(rcnt)
+            var rn = List[String]()
+            var rv = List[Float64]()
+            rn.append(String("avg_return")); rv.append(ravg)
+            rn.append(String("episodes")); rv.append(Float64(rb.num_episodes()))
+            rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
+            logger.value()[].log_scalars(rn, rv, it + 1)
+
     t_obs_seq.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     h_obs.free(); h_pol.free(); h_val.free()
+    l_parts.free(); h_diag_pred.free()
     return last_loss

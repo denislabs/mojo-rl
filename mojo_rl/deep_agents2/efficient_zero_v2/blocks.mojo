@@ -332,6 +332,7 @@ def ezv2_unroll_train_step_gpu[
     v_max: Scalar[DT],
     value_coef: Scalar[DT] = Scalar[DT](1.0),
     consistency_coef: Scalar[DT] = Scalar[DT](2.0),
+    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """GPU EZv2 K-step unroll training step — device mirror of
     ``ezv2_unroll_train_step_cpu`` (MuZero BPTT + SimSiam consistency).
@@ -390,8 +391,8 @@ def ezv2_unroll_train_step_gpu[
     var gzcons = scratch.d_gzcons.value()
     var h_loss = scratch.h_loss.value()
 
-    # zero the loss accumulator (into the reused buffer each step)
-    for i in range(B):
+    # zero the 4 loss-component accumulators (policy|value|reward|consistency)
+    for i in range(4 * B):
         h_loss.unsafe_ptr()[i] = Scalar[DT](0.0)
     ctx.enqueue_copy(loss_d, h_loss)
 
@@ -504,7 +505,7 @@ def ezv2_unroll_train_step_gpu[
             _lt[B * PRED_OUT](p_pout),
             _lt[B * BINS](p_twv),
             _lt[B * PRED_OUT](p_gpout),
-            _lt[B](p_loss),
+            _lt[B](p_loss + B),                       # value block
             gscale * value_coef, value_coef,
             grid_dim=nbB, block_dim=TPB,
         )
@@ -522,7 +523,7 @@ def ezv2_unroll_train_step_gpu[
                 _lt[B * PROJ](p_pk),
                 _lt[B * PROJ](p_tstore + (k - 1) * B * PROJ),
                 _lt[B * PROJ](p_gpk),
-                _lt[B](p_loss),
+                _lt[B](p_loss + 3 * B),               # consistency block
                 cscale, Scalar[DT](1.0),
                 grid_dim=nbB, block_dim=TPB,
             )
@@ -562,7 +563,7 @@ def ezv2_unroll_train_step_gpu[
                 _lt[B * DYN_OUT](p_dout),
                 _lt[B * BINS](p_twr),
                 _lt[B * DYN_OUT](p_gdout),
-                _lt[B](p_loss),
+                _lt[B](p_loss + 2 * B),               # reward block
                 gscale, Scalar[DT](1.0),
                 grid_dim=nbB, block_dim=TPB,
             )
@@ -598,11 +599,25 @@ def ezv2_unroll_train_step_gpu[
     opredh.step["gpu", PREDH](predh)
 
     # ── reduce loss (D2H once into the reused host mirror) ──
+    # 4 contiguous [B] blocks: policy | value | reward | consistency.
     ctx.synchronize()
     ctx.enqueue_copy(h_loss, loss_d)
     ctx.synchronize()
-    var loss = Scalar[DT](0.0)
+    var hp = h_loss.unsafe_ptr()
+    var l_pol = Scalar[DT](0.0)
+    var l_val = Scalar[DT](0.0)
+    var l_rew = Scalar[DT](0.0)
+    var l_cons = Scalar[DT](0.0)
     for b in range(B):
-        loss += h_loss.unsafe_ptr()[b]
-
-    return loss / Scalar[DT](B)
+        l_pol += hp[b]
+        l_val += hp[B + b]
+        l_rew += hp[2 * B + b]
+        l_cons += hp[3 * B + b]
+    var inv = Scalar[DT](1.0) / Scalar[DT](B)
+    if loss_parts:
+        var lp = loss_parts.value()
+        lp[0] = l_pol * inv
+        lp[1] = l_val * inv
+        lp[2] = l_rew * inv
+        lp[3] = l_cons * inv
+    return (l_pol + l_val + l_rew + l_cons) * inv
