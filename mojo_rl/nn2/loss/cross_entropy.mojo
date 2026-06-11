@@ -188,6 +188,49 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
                 total += host_ptr[b]
             return total / Scalar[DT](BATCH)
 
+    def forward_capture[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        logits: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        targets: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+    ) raises:
+        # CUDA-graph-capturable forward: enqueue ONLY `_ce_forward_kernel`
+        # (which fills `softmax_dev`, the cache `vjp` reads) and skip the
+        # partial-loss D2H copy + `ctx.synchronize()` that `forward` does to
+        # return the scalar. No host work → capturable. The scalar loss is
+        # not produced here (see Loss.forward_capture). POLICY ignored as in
+        # `forward` (softmax/log/exp stay fp32). CPU: fall back to `forward`.
+        comptime assert logits.flat_rank == 2, "logits must be rank-2"
+        comptime assert targets.flat_rank == 2, "targets must be rank-2"
+        assert_tag_for["CrossEntropyLoss", target](self.ts.target_tag)
+        comptime if target == "cpu":
+            _ = self.forward[target, BATCH, POLICY](logits, targets)
+        else:
+            self._ensure_buffers_gpu(BATCH)
+            var ctx = self.ts.ctx.value()
+            comptime mat_layout = Layout.row_major(BATCH, Self.N_CLASSES)
+            comptime row_layout = Layout.row_major(BATCH)
+            var lp_w = mptr(logits.ptr)
+            var tp_w = mptr(targets.ptr)
+            var logits_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](lp_w)
+            var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
+            var softmax_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](self.softmax_dev.value())
+            var partial_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](self.partial_loss_dev.value())
+            comptime TPB = TPB_REDUCE
+            comptime n_blocks = (BATCH + TPB - 1) // TPB
+            comptime kernel = _ce_forward_kernel[BATCH, Self.N_CLASSES]
+            ctx.enqueue_function[kernel](
+                logits_lt, targets_lt, softmax_lt, partial_lt,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
+
     def vjp[
         target: StaticString,
         BATCH: Int,

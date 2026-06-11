@@ -251,7 +251,9 @@ struct Trainer[
     # Pipeline core — called by every train_step variant.
     # ------------------------------------------------------------------
 
-    def _train_step_views(
+    def _train_step_views[
+        CAPTURE: Bool = False,
+    ](
         mut self,
         input: TileTensor[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
@@ -260,6 +262,12 @@ struct Trainer[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
     ) raises -> Scalar[DT]:
+        # CAPTURE (GPU only): take the loss's no-sync `forward_capture` path
+        # instead of `forward`, so the whole step is one pure-device kernel
+        # sequence with no host↔device sync — capturable by a CUDA graph. The
+        # scalar loss is not produced (returns 0.0); `train_step_device` /
+        # the benchmark example drive this. CAPTURE=False is the normal path,
+        # bit-identical to before.
         comptime assert input.flat_rank == 2, "input must be rank-2"
         comptime assert targets.flat_rank == 2, "targets must be rank-2"
         comptime if Self.target == "cpu":
@@ -323,9 +331,15 @@ struct Trainer[
             self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 input_my, output=output
             )
-            var L = self.loss_fn.forward[
-                Self.target, Self.BATCH, POLICY=Self.POLICY
-            ](output, targets)
+            var L: Scalar[DT] = 0.0
+            comptime if CAPTURE:
+                self.loss_fn.forward_capture[
+                    Self.target, Self.BATCH, POLICY=Self.POLICY
+                ](output, targets)
+            else:
+                L = self.loss_fn.forward[
+                    Self.target, Self.BATCH, POLICY=Self.POLICY
+                ](output, targets)
             self.loss_fn.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 targets, grad_out
             )
@@ -334,6 +348,61 @@ struct Trainer[
             )
             self.optim.step[Self.target](self.net)
             return L
+
+    # ------------------------------------------------------------------
+    # CUDA-graph benchmark surface (GPU only).
+    #
+    # `load_fixed_batch` fills the trainer's own `input_dev` / `target_dev`
+    # buffers once; `train_step_device` then runs a full forward / loss /
+    # backward / optimizer step reading those FIXED buffers with NO host
+    # work — the exact pure-device kernel sequence `maybe_capture_replay`
+    # captures once and replays. The per-batch offset never changes (the
+    # buffers are fixed), so the captured graph stays valid across replays.
+    # On Apple / non-NVIDIA the capture is a no-op and the step just runs
+    # eagerly (bit-identical), so this path is portable.
+    # ------------------------------------------------------------------
+
+    def load_fixed_batch(
+        mut self,
+        input: List[Scalar[DT]],
+        targets: List[Scalar[DT]],
+    ) raises:
+        """Upload one fixed mini-batch into the trainer's device buffers
+        (`input_dev` / `target_dev`). Call once before a `train_step_device`
+        loop. `input` is flat `[BATCH, IN_DIM]`, `targets` flat one-hot
+        `[BATCH, OUT_DIM]`."""
+        comptime assert (
+            Self.target == "gpu"
+        ), "Trainer.load_fixed_batch requires target='gpu'"
+        var ctx = self.ctx.value()
+        var in_host_buf: HostBuffer[DT] = self.input_host.value()
+        var tg_host_buf: HostBuffer[DT] = self.target_host.value()
+        for k in range(Self.BATCH * Self.IN_DIM):
+            in_host_buf[k] = input[k]
+        for k in range(Self.BATCH * Self.OUT_DIM):
+            tg_host_buf[k] = targets[k]
+        ctx.enqueue_copy(self.input_dev.value(), in_host_buf)
+        ctx.enqueue_copy(self.target_dev.value(), tg_host_buf)
+        ctx.synchronize()
+
+    def train_step_device(mut self) raises:
+        """GPU-only pure-device train step over the FIXED `input_dev` /
+        `target_dev` buffers (filled by `load_fixed_batch`). No host sync,
+        no loss readback — a single capturable kernel sequence suitable for
+        `maybe_capture_replay`. Enqueues on the Mojo stream; the caller
+        syncs once around the loop to time it."""
+        comptime assert (
+            Self.target == "gpu"
+        ), "Trainer.train_step_device requires target='gpu'"
+        var in_ptr: UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ] = self.input_dev.value().unsafe_ptr()
+        var tg_ptr: UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ] = self.target_dev.value().unsafe_ptr()
+        var input = TileTensor(in_ptr, row_major[Self.BATCH, Self.IN_DIM]())
+        var targets = TileTensor(tg_ptr, row_major[Self.BATCH, Self.OUT_DIM]())
+        _ = self._train_step_views[CAPTURE=True](input, targets)
 
     # ------------------------------------------------------------------
     # Per-step API.
