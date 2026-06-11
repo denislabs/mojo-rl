@@ -14,8 +14,9 @@ BatchNorm but are consistency-only (never used at MCTS inference), so no BN
 train/eval toggle is needed here. Returns the last training loss.
 """
 
-from std.math import exp, log
+from std.math import exp, log, sqrt
 from std.memory import alloc
+from layout import TileTensor, row_major
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module, mptr
@@ -36,6 +37,66 @@ from ..zero.temperature import visit_temperature
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return mptr(alloc[Scalar[DT]](n))
+
+
+def _mean_perdim_std[ROWS: Int, DIM: Int](
+    x: UnsafePointer[Scalar[DT], MutAnyOrigin],
+) -> Float64:
+    """Mean over the ``DIM`` features of the per-feature std across the ``ROWS``
+    rows. Collapse signal: → 0 means every row maps to ~the same vector (the
+    representation can no longer distinguish observations)."""
+    var acc = 0.0
+    for d in range(DIM):
+        var m = 0.0
+        for b in range(ROWS):
+            m += Float64(x[b * DIM + d])
+        m /= Float64(ROWS)
+        var v = 0.0
+        for b in range(ROWS):
+            var diff = Float64(x[b * DIM + d]) - m
+            v += diff * diff
+        v /= Float64(ROWS)
+        acc += sqrt(v)
+    return acc / Float64(DIM)
+
+
+def _collapse_diag[
+    REP: Module, PROJM: Module, B: Int, OBS: Int, LATENT: Int,
+](
+    mut rep: REP,
+    mut proj: PROJM,
+    obs0: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B, OBS]
+    z_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B, LATENT] scratch
+    p_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B, PROJ] scratch
+) raises -> Tuple[Float64, Float64]:
+    """Probe representation collapse on a batch of real observations. Returns
+    ``(latent_std, proj_norm_std)``:
+      * ``latent_std`` — mean per-dim std of ``z = h(obs0)`` across the batch.
+        Healthy > 0; → 0 is full latent collapse.
+      * ``proj_norm_std`` — same metric on the **L2-normalized** projector output
+        ``g_proj(z)`` (the standard SimSiam collapse metric). For PROJ features
+        uniformly spread on the sphere this sits near ``1/√PROJ``; → 0 means the
+        projections collapsed to a single direction.
+    Re-forwards rep/proj (clobbers their caches — safe: the next train step
+    re-forwards before any vjp)."""
+    comptime PROJ = PROJM.OUT_DIM
+    var obs0_t = TileTensor(obs0, row_major[B, OBS]())
+    var z_t = TileTensor(z_buf, row_major[B, LATENT]())
+    rep.forward["cpu", B](obs0_t, output=z_t)
+    var latent_std = _mean_perdim_std[B, LATENT](z_buf)
+
+    var p_t = TileTensor(p_buf, row_major[B, PROJ]())
+    proj.forward["cpu", B](z_t, output=p_t)
+    # L2-normalize each row before measuring spread (SimSiam convention).
+    for b in range(B):
+        var nrm = 0.0
+        for d in range(PROJ):
+            nrm += Float64(p_buf[b * PROJ + d]) * Float64(p_buf[b * PROJ + d])
+        nrm = sqrt(nrm) + 1e-12
+        for d in range(PROJ):
+            p_buf[b * PROJ + d] = Scalar[DT](Float64(p_buf[b * PROJ + d]) / nrm)
+    var proj_norm_std = _mean_perdim_std[B, PROJ](p_buf)
+    return (latent_std, proj_norm_std)
 
 
 def run_ezv2_selfplay_cpu[
@@ -83,6 +144,7 @@ def run_ezv2_selfplay_cpu[
     reanalyze_every: Int = 0,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
+    diag_every: Int = 0,
     verbose: Bool = False,
 ) raises -> Float64:
     var mcts = GenericCPUMCTS[
@@ -110,6 +172,10 @@ def run_ezv2_selfplay_cpu[
     # reanalyze scratch
     var r_obs = _a(OBS)
     var r_pol = _a(ACT)
+
+    # collapse-diagnostic scratch (latent + projection probe on obs0)
+    var d_z = _a(B * LATENT)
+    var d_p = _a(B * PROJM.OUT_DIM)
 
     var e_obs = List[Scalar[DT]]()
     var e_act = List[Scalar[DT]]()
@@ -216,6 +282,21 @@ def run_ezv2_selfplay_cpu[
                     )
                 )
 
+        # ── collapse diagnostic: latent + projection spread on the batch ──
+        if (
+            diag_every > 0
+            and it >= learning_starts
+            and rb.num_episodes() > 0
+            and (it + 1) % diag_every == 0
+        ):
+            var cd = _collapse_diag[REP, PROJM, B, OBS, LATENT](
+                rep, proj, t_obs_seq, d_z, d_p
+            )
+            print(
+                "  [collapse] step", it + 1,
+                "latent_std", cd[0], "proj_norm_std", cd[1],
+            )
+
         # ── reanalyze: refresh one stored position with a fresh search ──
         if (
             reanalyze_every > 0
@@ -290,4 +371,5 @@ def run_ezv2_selfplay_cpu[
 
     t_obs_seq.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     r_obs.free(); r_pol.free()
+    d_z.free(); d_p.free()
     return last_loss
