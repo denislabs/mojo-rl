@@ -126,14 +126,10 @@ def _bn1d_forward_train_kernel[
     var inv_std: Scalar[DT] = 1.0 / sqrt(var_ + eps)
     if t == 0:
         cache_inv_std[f] = inv_std
-        # Only fold FINITE batch stats into the running averages — a non-finite
-        # batch mean/var would pin running_mean/var at ±inf, after which
-        # EVAL-mode BN yields (x-inf)·(1/√inf)=NaN, corrupting inference.
-        if (mean - mean == 0.0) and (var_ - var_ == 0.0):
-            var rm = rebind[Scalar[DT]](running_mean[f])
-            var rv = rebind[Scalar[DT]](running_var[f])
-            running_mean[f] = one_m * rm + mom * mean
-            running_var[f]  = one_m * rv + mom * var_
+        var rm = rebind[Scalar[DT]](running_mean[f])
+        var rv = rebind[Scalar[DT]](running_var[f])
+        running_mean[f] = one_m * rm + mom * mean
+        running_var[f]  = one_m * rv + mom * var_
 
     var g = rebind[Scalar[DT]](gamma[f])
     var bt = rebind[Scalar[DT]](beta[f])

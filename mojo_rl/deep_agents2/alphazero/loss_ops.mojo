@@ -37,24 +37,6 @@ from mojo_rl.nn2.core.tensor_pack import TensorPack
 from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 
 
-# Symmetric clamp applied to every raw net output (policy logits + value)
-# before it enters the loss. A deep float32 ResNet torso in TRAIN mode
-# (batch-stat BatchNorm) can amplify finite-but-large features past the
-# float32 max → ±inf logits, which make the soft-CE forward `tgt·(logit−lse)`
-# evaluate `0·(−inf) = NaN` even though the backward (`softmax−tgt`) stays
-# finite (so the net trains healthy and EVAL — running-stat BN — is fine).
-# Clamping makes the forward finite AND gives a real anti-saturation gradient
-# that pulls runaway logits back. Bit-identical when |logit| ≤ 30 (the normal
-# regime — softmax differences of 60 already span 1 vs 1e-26), so well-behaved
-# nets (e.g. the TicTacToe MLP) are unaffected.
-comptime LOGIT_CLAMP = Scalar[DT](30.0)
-
-
-@always_inline
-def _clamp_logit(x: Scalar[DT]) -> Scalar[DT]:
-    return max(min(x, LOGIT_CLAMP), -LOGIT_CLAMP)
-
-
 @always_inline
 def _dlt[N: Int](
     p: UnsafePointer[Scalar[DT], MutAnyOrigin]
@@ -71,21 +53,21 @@ def _az_loss_fwd_kernel[B: Int, ACT: Int](
     var b = Int(global_idx.x)
     if b < B:
         var base = b * (ACT + 1)
-        var zmax = _clamp_logit(rebind[Scalar[DT]](pred[base]))
+        var zmax = rebind[Scalar[DT]](pred[base])
         for c in range(1, ACT):
-            var v = _clamp_logit(rebind[Scalar[DT]](pred[base + c]))
+            var v = rebind[Scalar[DT]](pred[base + c])
             if v > zmax:
                 zmax = v
         var ssum: Scalar[DT] = 0.0
         for c in range(ACT):
-            ssum += exp(_clamp_logit(rebind[Scalar[DT]](pred[base + c])) - zmax)
+            ssum += exp(rebind[Scalar[DT]](pred[base + c]) - zmax)
         var lse = zmax + log(ssum)
         var ce: Scalar[DT] = 0.0
         for c in range(ACT):
             ce += rebind[Scalar[DT]](tgt[base + c]) * (
-                _clamp_logit(rebind[Scalar[DT]](pred[base + c])) - lse
+                rebind[Scalar[DT]](pred[base + c]) - lse
             )
-        var tv = tanh(_clamp_logit(rebind[Scalar[DT]](pred[base + ACT])))
+        var tv = tanh(rebind[Scalar[DT]](pred[base + ACT]))
         var d = tv - rebind[Scalar[DT]](tgt[base + ACT])
         o[b] = -ce + d * d
 
@@ -101,23 +83,20 @@ def _az_loss_bwd_kernel[B: Int, ACT: Int](
     if b < B:
         var base = b * (ACT + 1)
         var up = rebind[Scalar[DT]](go[b])
-        var zmax = _clamp_logit(rebind[Scalar[DT]](pred[base]))
+        var zmax = rebind[Scalar[DT]](pred[base])
         for c in range(1, ACT):
-            var v = _clamp_logit(rebind[Scalar[DT]](pred[base + c]))
+            var v = rebind[Scalar[DT]](pred[base + c])
             if v > zmax:
                 zmax = v
         var ssum: Scalar[DT] = 0.0
         for c in range(ACT):
-            ssum += exp(_clamp_logit(rebind[Scalar[DT]](pred[base + c])) - zmax)
+            ssum += exp(rebind[Scalar[DT]](pred[base + c]) - zmax)
         var inv = Scalar[DT](1.0) / ssum
         for c in range(ACT):
-            # Straight-through clamp: softmax uses the clamped logit, but the
-            # gradient flows to the raw logit, so a saturated (±30) logit gets a
-            # real `softmax − tgt` pull-back instead of a dead zero gradient.
-            var sm = exp(_clamp_logit(rebind[Scalar[DT]](pred[base + c])) - zmax) * inv
+            var sm = exp(rebind[Scalar[DT]](pred[base + c]) - zmax) * inv
             gp[base + c] = up * (sm - rebind[Scalar[DT]](tgt[base + c]))
             gt[base + c] = 0.0
-        var tv = tanh(_clamp_logit(rebind[Scalar[DT]](pred[base + ACT])))
+        var tv = tanh(rebind[Scalar[DT]](pred[base + ACT]))
         var d = tv - rebind[Scalar[DT]](tgt[base + ACT])
         gp[base + ACT] = up * Scalar[DT](2.0) * d * (Scalar[DT](1.0) - tv * tv)
         gt[base + ACT] = 0.0
@@ -177,19 +156,18 @@ struct AZLossOp[ACT: Int](Module):
         comptime if target == "cpu":
             for b in range(BATCH):
                 var base = b * W
-                var zmax = _clamp_logit(pred[base])
+                var zmax = pred[base]
                 for c in range(1, Self.ACT):
-                    var v = _clamp_logit(pred[base + c])
-                    if v > zmax:
-                        zmax = v
+                    if pred[base + c] > zmax:
+                        zmax = pred[base + c]
                 var ssum: Scalar[DT] = 0.0
                 for c in range(Self.ACT):
-                    ssum += exp(_clamp_logit(pred[base + c]) - zmax)
+                    ssum += exp(pred[base + c] - zmax)
                 var lse = zmax + log(ssum)
                 var ce: Scalar[DT] = 0.0
                 for c in range(Self.ACT):
-                    ce += tgt[base + c] * (_clamp_logit(pred[base + c]) - lse)
-                var tv = tanh(_clamp_logit(pred[base + Self.ACT]))
+                    ce += tgt[base + c] * (pred[base + c] - lse)
+                var tv = tanh(pred[base + Self.ACT])
                 var d = tv - tgt[base + Self.ACT]
                 o[b] = -ce + d * d
         else:
@@ -222,21 +200,19 @@ struct AZLossOp[ACT: Int](Module):
             for b in range(BATCH):
                 var base = b * W
                 var up = go[b]
-                var zmax = _clamp_logit(pred[base])
+                var zmax = pred[base]
                 for c in range(1, Self.ACT):
-                    var v = _clamp_logit(pred[base + c])
-                    if v > zmax:
-                        zmax = v
+                    if pred[base + c] > zmax:
+                        zmax = pred[base + c]
                 var ssum: Scalar[DT] = 0.0
                 for c in range(Self.ACT):
-                    ssum += exp(_clamp_logit(pred[base + c]) - zmax)
+                    ssum += exp(pred[base + c] - zmax)
                 var inv = Scalar[DT](1.0) / ssum
                 for c in range(Self.ACT):
-                    # Straight-through clamp (see GPU backward note).
-                    var sm = exp(_clamp_logit(pred[base + c]) - zmax) * inv
+                    var sm = exp(pred[base + c] - zmax) * inv
                     g_pred[base + c] = up * (sm - tgt[base + c])
                     g_tgt[base + c] = 0.0
-                var tv = tanh(_clamp_logit(pred[base + Self.ACT]))
+                var tv = tanh(pred[base + Self.ACT])
                 var d = tv - tgt[base + Self.ACT]
                 g_pred[base + Self.ACT] = (
                     up * Scalar[DT](2.0) * d * (Scalar[DT](1.0) - tv * tv)
