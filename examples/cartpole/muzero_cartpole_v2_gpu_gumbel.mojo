@@ -14,11 +14,14 @@ Run (GPU env required):
     pixi run -e apple mojo run -I . examples/cartpole/muzero_cartpole_v2_gpu_gumbel.mojo
 """
 
+from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents2.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents2.muzero.selfplay_gpu_device import (
     run_muzero_gumbel_selfplay_gpu,
@@ -59,6 +62,18 @@ def main() raises:
     odyn.max_grad_norm = Scalar[DT](10.0)
     opred.max_grad_norm = Scalar[DT](10.0)
 
+    # ── metrics logger (silent no-op without RL_MONITOR_URL in env/.env) ──
+    var env_vars = load_dotenv()
+    var logger = RemoteLogger(
+        server_url=env_vars.get("RL_MONITOR_URL", ""),
+        run_name="Gumbel MuZero CartPole (GPU)",
+        buffer_size=64,
+        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+    )
+    logger.set_config("agent", "GumbelMuZero")
+    logger.set_config("env", "CartPole")
+    logger.set_config("framework", "deep_agents2/nn2")
+
     print("Gumbel MuZero CartPole convergence (v2, GPU — fully on-device)")
     print("  LATENT", LATENT, "H", H, "BINS", BINS, "sims", NUM_SIMS,
           "MAX_K", MAX_K, "K", K, "N", N, "B", B, "lr 3e-4 clip 10")
@@ -66,6 +81,7 @@ def main() raises:
     var loss = run_muzero_gumbel_selfplay_gpu[
         CartPoleEnv[DType.float64], Rep, Dyn, Pred,
         OBS, ACT, LATENT, BINS, NUM_SIMS, MAX_NODES, MAX_K, CAP, B, K, N,
+        L=RemoteLogger,
     ](
         ctx, env, rep, dyn, pred, orep, odyn, opred,
         iterations=60000,
@@ -79,8 +95,12 @@ def main() raises:
         reanalyze_every=1,
         eval_every=2000,
         eval_episodes=5,
+        diag_every=200,
+        report_every=500,
+        logger=UnsafePointer(to=logger),
         seed=42,
         verbose=True,
     )
+    logger.close()
 
     print("final loss:", loss)
