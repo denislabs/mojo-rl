@@ -481,6 +481,32 @@ def run_alphazero_selfplay_arena_gumbel[
                     if pv > bv:
                         bv = pv
                         a_sel = a
+            # Final legality guard. The improved policy can place its argmax on
+            # an ILLEGAL column when the eval-mode net emits −inf logits for
+            # every LEGAL move at this position: illegal moves carry a −1e9
+            # sentinel in gz_extract, and −1e9 > −inf, so the illegal column
+            # wins the softmax. Playing an illegal column is a NO-OP in the C4
+            # step kernel (reward −1, done 0, state + current-player unchanged),
+            # so the next iteration re-searches the identical position, picks the
+            # same illegal column, and the game HANGS — self-play freezes and
+            # training starves of new data (the post-promotion plateau). Force a
+            # legal action: keep a_sel if legal, else the highest-policy LEGAL
+            # column (first legal if the policy is degenerate). The recorded
+            # target is left untouched — only the action PLAYED is corrected.
+            if (
+                a_sel < 0
+                or Float64(legal_h.unsafe_ptr()[e * ACT + a_sel]) <= 0.5
+            ):
+                var bestl = -1
+                var bvl = -1.0e30
+                for a in range(ACT):
+                    if Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5:
+                        var pv = Float64(pol_h.unsafe_ptr()[e * ACT + a])
+                        if bestl < 0 or pv > bvl:
+                            bvl = pv
+                            bestl = a
+                if bestl >= 0:
+                    a_sel = bestl
             act_h.unsafe_ptr()[e] = Scalar[DT](a_sel)
         ctx.enqueue_copy(act_dev, act_h)
 
