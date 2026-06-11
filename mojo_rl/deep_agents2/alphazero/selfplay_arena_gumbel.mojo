@@ -423,6 +423,38 @@ def run_alphazero_selfplay_arena_gumbel[
         ctx.enqueue_copy(pol_h, mcts.policies_view())
         ctx.enqueue_copy(legal_h, legal_dev)
         ctx.synchronize()
+
+        # 2a. Sanitize the search policy BEFORE it is recorded as a target or
+        #     sampled for action selection. If eval-mode BN running stats are
+        #     ever polluted (a float32 train-mode blow-up), MCTS can emit a
+        #     non-finite improved policy; a single non-finite entry then
+        #     NaN-poisons the training loss. Replace any non-finite / negative /
+        #     all-zero row with uniform over legal actions (the search was
+        #     meaningless for that env anyway) so replay only ever holds clean,
+        #     normalized targets.
+        for e in range(N_ENVS):
+            var row_ok = True
+            var psum: Float64 = 0.0
+            for a in range(ACT):
+                var pv = Float64(pol_h.unsafe_ptr()[e * ACT + a])
+                if pv - pv != 0.0 or pv < 0.0:    # NaN/inf or negative
+                    row_ok = False
+                    break
+                psum += pv
+            if not row_ok or psum <= 1e-8:
+                var n_legal = 0
+                for a in range(ACT):
+                    if Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5:
+                        n_legal += 1
+                var denom = n_legal if n_legal > 0 else ACT
+                var u = Scalar[DT](1.0 / Float64(denom))
+                for a in range(ACT):
+                    var is_legal = (
+                        n_legal == 0
+                        or Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5
+                    )
+                    pol_h.unsafe_ptr()[e * ACT + a] = u if is_legal else Scalar[DT](0.0)
+
         for e in range(N_ENVS):
             # Current ply of env e's game = ep_steps for the temperature kernel.
             ep_steps_h.unsafe_ptr()[e] = Scalar[DT](traj_len[e])
