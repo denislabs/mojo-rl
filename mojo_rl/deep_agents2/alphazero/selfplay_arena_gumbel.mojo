@@ -118,36 +118,29 @@ def append_az_train_diagnostics[ACT: Int, BATCH: Int](
     var tmax_sum: Float64 = 0.0
     var vt_sum: Float64 = 0.0
     var vt_pos = 0
-    var n_fin = 0
+    # Mirror the loss op's logit clamp (±30): a float32 ResNet torso can emit
+    # ±inf logits in train mode, which the loss clamps before softmax. Clamping
+    # here too keeps the diagnostic curves finite AND faithful to what training
+    # actually optimizes (rather than skipping the row or logging zeros).
+    var n_fin = BATCH
     for b in range(BATCH):
         var base = b * W
 
-        # Skip rows whose net output is non-finite so a single bad row does not
-        # NaN-poison the whole batch mean (the logger would then drop it, leaving
-        # a dashboard gap). `x - x == 0` is True iff x is finite.
-        var row_finite = True
-        for j in range(W):
-            var pj = Float64(pred[base + j])
-            if pj - pj != 0.0:
-                row_finite = False
-                break
-        if not row_finite:
-            continue
-        n_fin += 1
-
-        # Policy: softmax(logits) → CE vs target π, plus pred-policy entropy.
-        var maxl = Float64(pred[base])
+        # Policy: softmax(clamped logits) → CE vs target π, plus pred entropy.
+        var maxl = max(min(Float64(pred[base]), 30.0), -30.0)
         for a in range(1, ACT):
-            var v = Float64(pred[base + a])
+            var v = max(min(Float64(pred[base + a]), 30.0), -30.0)
             if v > maxl:
                 maxl = v
         var sume: Float64 = 0.0
         for a in range(ACT):
-            sume += exp(Float64(pred[base + a]) - maxl)
+            var la = max(min(Float64(pred[base + a]), 30.0), -30.0)
+            sume += exp(la - maxl)
         var ce: Float64 = 0.0
         var ent: Float64 = 0.0
         for a in range(ACT):
-            var prob = exp(Float64(pred[base + a]) - maxl) / sume
+            var la = max(min(Float64(pred[base + a]), 30.0), -30.0)
+            var prob = exp(la - maxl) / sume
             var t = Float64(tgt[base + a])
             if t > 1e-8:
                 # Clamp, don't skip: skipping under-reports CE exactly when
@@ -162,7 +155,7 @@ def append_az_train_diagnostics[ACT: Int, BATCH: Int](
         ent_sum += ent
 
         # Value: tanh-squashed head vs z target.
-        var tv = tanh(Float64(pred[base + ACT]))
+        var tv = tanh(max(min(Float64(pred[base + ACT]), 30.0), -30.0))
         var z = Float64(tgt[base + ACT])
         vmse_sum += (tv - z) * (tv - z)
         vmean_sum += tv
