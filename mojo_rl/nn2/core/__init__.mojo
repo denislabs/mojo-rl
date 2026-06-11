@@ -36,4 +36,5 @@ from .amp_matmul import (
     cast_fp32_to_bf16,
     cast_bf16_to_fp32,
     LinearAMPState,
+    Conv2DAMPState,
 )

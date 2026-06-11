@@ -86,6 +86,9 @@ from ..core import (
     ParamVisitor,
     for_each_param_auto,
     zero_grad_auto,
+    cast_fp32_to_bf16,
+    cast_bf16_to_fp32,
+    Conv2DAMPState,
 )
 from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
@@ -397,6 +400,9 @@ struct Conv2D[
     var goT_dev: Optional[DeviceBuffer[DT]]
     var goT_n: Int
     var dW_tmp_dev: Optional[DeviceBuffer[DT]]
+    # bf16 scratch for the two GPU GEMMs (forward col@Wᵀ + backward goᵀ@col)
+    # when POLICY.compute_dtype == bf16. Empty/None on the fp32 path.
+    var amp: Conv2DAMPState[Self.OC, Self.COL_SIZE]
     var ts: TargetStorage
 
     def __init__(out self):
@@ -410,6 +416,7 @@ struct Conv2D[
         self.goT_dev = None
         self.goT_n = 0
         self.dW_tmp_dev = None
+        self.amp = Conv2DAMPState[Self.OC, Self.COL_SIZE].make()
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -578,19 +585,55 @@ struct Conv2D[
             )
 
             # ── (2) out_packed = col @ Wᵀ  ([BS, COL] @ [OC, COL]ᵀ) ────
-            var w_tt = TileTensor(
-                self.weight.val.dev.value(),
-                row_major[Self.OC, Self.COL_SIZE](),
-            )
-            var col_tt = TileTensor(
-                self.col_dev.value(), row_major[BS, Self.COL_SIZE](),
-            )
-            var outp_tt = TileTensor(
-                self.outp_dev.value(), row_major[BS, Self.OC](),
-            )
-            max_matmul[transpose_b=True, target="gpu"](
-                outp_tt, col_tt, w_tt, ctx,
-            )
+            comptime if POLICY.compute_dtype == DT:
+                var w_tt = TileTensor(
+                    self.weight.val.dev.value(),
+                    row_major[Self.OC, Self.COL_SIZE](),
+                )
+                var col_tt = TileTensor(
+                    self.col_dev.value(), row_major[BS, Self.COL_SIZE](),
+                )
+                var outp_tt = TileTensor(
+                    self.outp_dev.value(), row_major[BS, Self.OC](),
+                )
+                max_matmul[transpose_b=True, target="gpu"](
+                    outp_tt, col_tt, w_tt, ctx,
+                )
+            else:
+                # AMP: cast W + col → bf16, bf16 GEMM, upcast out → fp32.
+                comptime assert POLICY.compute_dtype == DType.bfloat16, (
+                    "Conv2D GPU supports only fp32 and bf16 compute_dtype"
+                )
+                self.amp.ensure_gpu(BS, ctx)
+                cast_fp32_to_bf16[target="gpu", N = Self.W_SIZE](
+                    mptr(self.weight.val.dev.value().unsafe_ptr()),
+                    mptr(self.amp.w_bf16_dev.value().unsafe_ptr()),
+                    ctx,
+                )
+                cast_fp32_to_bf16[target="gpu", N = BS * Self.COL_SIZE](
+                    mptr(self.col_dev.value().unsafe_ptr()),
+                    mptr(self.amp.col_bf16_dev.value().unsafe_ptr()),
+                    ctx,
+                )
+                var w_bf16_tt = TileTensor(
+                    self.amp.w_bf16_dev.value(),
+                    row_major[Self.OC, Self.COL_SIZE](),
+                )
+                var col_bf16_tt = TileTensor(
+                    self.amp.col_bf16_dev.value(),
+                    row_major[BS, Self.COL_SIZE](),
+                )
+                var outp_bf16_tt = TileTensor(
+                    self.amp.outp_bf16_dev.value(), row_major[BS, Self.OC](),
+                )
+                max_matmul[transpose_b=True, target="gpu"](
+                    outp_bf16_tt, col_bf16_tt, w_bf16_tt, ctx,
+                )
+                cast_bf16_to_fp32[target="gpu", N = BS * Self.OC](
+                    mptr(self.amp.outp_bf16_dev.value().unsafe_ptr()),
+                    mptr(self.outp_dev.value().unsafe_ptr()),
+                    ctx,
+                )
 
             # ── (3) scatter out_packed → output[B, OC·SO] + bias ───────
             var outp_lt = LayoutTensor[DT, outp_layout, MutAnyOrigin](
@@ -817,17 +860,54 @@ struct Conv2D[
                 )
 
                 # ── (3) dW_tmp = goᵀ @ col  → accumulate into grad_w ───
-                var goT_tt = TileTensor(
-                    self.goT_dev.value(), row_major[Self.OC, BS](),
-                )
-                var col_tt = TileTensor(
-                    self.col_dev.value(), row_major[BS, Self.COL_SIZE](),
-                )
-                var dW_tmp_tt = TileTensor(
-                    self.dW_tmp_dev.value(),
-                    row_major[Self.OC, Self.COL_SIZE](),
-                )
-                max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, ctx)
+                comptime if POLICY.compute_dtype == DT:
+                    var goT_tt = TileTensor(
+                        self.goT_dev.value(), row_major[Self.OC, BS](),
+                    )
+                    var col_tt = TileTensor(
+                        self.col_dev.value(), row_major[BS, Self.COL_SIZE](),
+                    )
+                    var dW_tmp_tt = TileTensor(
+                        self.dW_tmp_dev.value(),
+                        row_major[Self.OC, Self.COL_SIZE](),
+                    )
+                    max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, ctx)
+                else:
+                    # AMP: cast goᵀ + col → bf16, bf16 GEMM, upcast → fp32.
+                    comptime assert POLICY.compute_dtype == DType.bfloat16, (
+                        "Conv2D GPU supports only fp32 and bf16 compute_dtype"
+                    )
+                    self.amp.ensure_gpu(BS, ctx)
+                    cast_fp32_to_bf16[target="gpu", N = Self.OC * BS](
+                        mptr(self.goT_dev.value().unsafe_ptr()),
+                        mptr(self.amp.goT_bf16_dev.value().unsafe_ptr()),
+                        ctx,
+                    )
+                    cast_fp32_to_bf16[target="gpu", N = BS * Self.COL_SIZE](
+                        mptr(self.col_dev.value().unsafe_ptr()),
+                        mptr(self.amp.col_bf16_dev.value().unsafe_ptr()),
+                        ctx,
+                    )
+                    var goT_bf16_tt = TileTensor(
+                        self.amp.goT_bf16_dev.value(),
+                        row_major[Self.OC, BS](),
+                    )
+                    var col_bf16_tt = TileTensor(
+                        self.amp.col_bf16_dev.value(),
+                        row_major[BS, Self.COL_SIZE](),
+                    )
+                    var dW_bf16_tt = TileTensor(
+                        self.amp.dW_bf16_dev.value(),
+                        row_major[Self.OC, Self.COL_SIZE](),
+                    )
+                    max_matmul[target="gpu"](
+                        dW_bf16_tt, goT_bf16_tt, col_bf16_tt, ctx
+                    )
+                    cast_bf16_to_fp32[target="gpu", N = Self.W_SIZE](
+                        mptr(self.amp.dW_bf16_dev.value().unsafe_ptr()),
+                        mptr(self.dW_tmp_dev.value().unsafe_ptr()),
+                        ctx,
+                    )
 
                 var dw_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
                     self.weight.grd.dev.value()

@@ -13,11 +13,11 @@ device buffers once — isolates train-step cost from data movement):
      kernels cost more than the tiny GEMM saves) and should overtake fp32 as H
      grows and the GEMMs get tensor-core-bound. This sweep finds the crossover.
 
-  2. **LeNet conv** — Conv(1→16,5,s2)→Conv(16→32,5,s2)→Flatten→Linear. NOTE:
-     nn2 `Conv2D` has NO bf16 path yet (it ignores POLICY and always runs the
-     fp32 `max_matmul`), so AMP here only touches the final `Linear`. Expect
-     fp32 ≈ bf16 — the result flags "add a bf16 Conv2D path" as the next lever,
-     not a win.
+  2. **LeNet conv** — Conv(1→16,5,s2)→Conv(16→32,5,s2)→Flatten→Linear. nn2
+     `Conv2D` now has a GPU bf16 path (its forward `col@Wᵀ` and backward
+     `goᵀ@col` GEMMs run in bf16; the dx gather + CPU path stay fp32), so AMP
+     accelerates the whole conv stack — bf16 should win once the conv GEMMs are
+     tensor-core-bound (more channels / larger spatial / batch).
 
 Larger BATCH also enlarges the GEMM M dim (more AMP benefit); BATCH=512 here.
 
@@ -204,7 +204,7 @@ def main() raises:
     bench_pair[MLP_M](ctx, batch_x, batch_y, "mlp 784-1024-512-10 ")
     bench_pair[MLP_L](ctx, batch_x, batch_y, "mlp 784-4096-1024-10")
 
-    print("\n== LeNet conv (Conv2D is fp32-only — AMP touches final Linear only) ==")
+    print("\n== LeNet conv (Conv2D has a GPU bf16 path; dx gather stays fp32) ==")
     bench_pair[CONV](ctx, batch_x, batch_y, "conv lenet          ")
 
     print("\nDONE")
@@ -213,12 +213,11 @@ def main() raises:
 # ──────────────────────────────────────────────────────────────────────────
 # Notes.
 #
-# AMP (Bf16Compute): only `Linear` has a bf16 compute path today — it casts
-# fp32 weights+inputs → bf16, runs the bf16 GEMM, casts the output back to
+# AMP (Bf16Compute): `Linear` and `Conv2D` both have a GPU bf16 compute path —
+# cast fp32 weights/inputs → bf16, run the bf16 GEMM, cast the output back to
 # fp32 (fwd + bwd). Those casts are fixed per-call overhead, so bf16 only wins
-# once the GEMM is large enough (big hidden width and/or batch). `Conv2D`
-# ignores POLICY and always runs fp32, so a conv-heavy net shows little AMP
-# benefit until a bf16 Conv2D path is added.
+# once the GEMM is large enough (big hidden width / channels / spatial / batch).
+# Conv2D's dx step is a gather kernel (not a GEMM) and its CPU path stay fp32.
 #
 # CUDA-graph capture (USE_CUDA_GRAPH): the Trainer step is capturable (Adam
 # keeps its step counter/bias-correction on-device, `forward_capture` drops the

@@ -200,3 +200,63 @@ struct LinearAMPState[IN: Int, OUT: Int](Movable & ImplicitlyDestructible):
                 batch_needed * Self.OUT,
             )
             self.batch_cap = batch_needed
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Conv2DAMPState[OC, COL] — bf16 scratch cluster for the Conv2D GPU GEMMs.
+# Conv2D reduces to im2col + two GEMMs: forward `out_packed[BS,OC] =
+# col[BS,COL] @ Wᵀ[OC,COL]` and backward `dW[OC,COL] = goᵀ[OC,BS] @
+# col[BS,COL]`. The dx step is a gather kernel (not a GEMM) so it stays
+# fp32, exactly like AMP's cast-around-matmul rule. GPU-only — Conv2D's
+# CPU path stays fp32 regardless of POLICY (the benchmark / AMP value is
+# the GPU tensor-core GEMM). `BS = BATCH·SPATIAL_OUT`; lazily grown.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@fieldwise_init
+struct Conv2DAMPState[OC: Int, COL: Int](Movable & ImplicitlyDestructible):
+    """Bf16 scratch for the two Conv2D GPU GEMMs.
+
+    Fixed (OC*COL): `w_bf16` (weight downcast, fwd) + `dW_bf16` (dW GEMM
+    output, bwd). BS-sized (grown lazily): `col_bf16` (im2col downcast,
+    fwd + bwd), `outp_bf16` (fwd GEMM output), `goT_bf16` (transposed
+    grad_output downcast, bwd). Weight is re-cast every call (no stale
+    cache — see LinearAMPState's `w_dirty` note)."""
+
+    var w_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
+    var dW_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
+    var col_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
+    var outp_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
+    var goT_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
+    var bs_cap: Int
+
+    @staticmethod
+    def make() -> Self:
+        return Self(
+            w_bf16_dev=None,
+            dW_bf16_dev=None,
+            col_bf16_dev=None,
+            outp_bf16_dev=None,
+            goT_bf16_dev=None,
+            bs_cap=0,
+        )
+
+    def ensure_gpu(mut self, bs_needed: Int, ctx: DeviceContext) raises:
+        if not self.w_bf16_dev:
+            self.w_bf16_dev = ctx.enqueue_create_buffer[DType.bfloat16](
+                Self.OC * Self.COL,
+            )
+            self.dW_bf16_dev = ctx.enqueue_create_buffer[DType.bfloat16](
+                Self.OC * Self.COL,
+            )
+        if self.bs_cap < bs_needed:
+            self.col_bf16_dev = ctx.enqueue_create_buffer[DType.bfloat16](
+                bs_needed * Self.COL,
+            )
+            self.outp_bf16_dev = ctx.enqueue_create_buffer[DType.bfloat16](
+                bs_needed * Self.OC,
+            )
+            self.goT_bf16_dev = ctx.enqueue_create_buffer[DType.bfloat16](
+                Self.OC * bs_needed,
+            )
+            self.bs_cap = bs_needed
