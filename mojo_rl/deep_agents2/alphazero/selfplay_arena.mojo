@@ -196,17 +196,21 @@ def _eval_both_colors[
     NUM_SIMS: Int,
     MAX_NODES: Int,
     MAX_PLIES: Int,
-](ctx: DeviceContext, mut net: NET, seed: UInt64) raises -> EvalResult:
+](
+    ctx: DeviceContext, mut net: NET, seed: UInt64, open_plies: Int = 0
+) raises -> EvalResult:
     """Aggregate the net's **MCTS** record vs `OPP` over `N_GAMES` games as
     *each* color (P0 then P1), so first-move advantage cancels — the legacy eval
     convention. The agent plays at full search strength (`eval_mcts_vs_opponent`)
-    so the numbers reflect the deployed agent, not the bare policy head."""
+    so the numbers reflect the deployed agent, not the bare policy head.
+    `open_plies > 0` diversifies openings so a deterministic opponent yields a
+    real winrate instead of one canonical line ×N (see eval_mcts_vs_opponent)."""
     var p0 = eval_mcts_vs_opponent[
         ENV, NET, OPP, N_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES
-    ](ctx, net, agent_player=0, seed=seed)
+    ](ctx, net, agent_player=0, seed=seed, open_plies=open_plies)
     var p1 = eval_mcts_vs_opponent[
         ENV, NET, OPP, N_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES
-    ](ctx, net, agent_player=1, seed=seed + 33333)
+    ](ctx, net, agent_player=1, seed=seed + 33333, open_plies=open_plies)
     return EvalResult(
         wins=p0.wins + p1.wins,
         draws=p0.draws + p1.draws,
@@ -267,6 +271,10 @@ def run_alphazero_selfplay_arena[
     #                               value and the #1 stability fix.
     weight_decay: Float64 = 0.0,  # decoupled (AdamW) weight decay (0 = off ≡
     #                               plain Adam; 1e-4 matches the legacy config).
+    eval_open_plies: Int = 0,     # uniform-random legal plies opening each
+    #                               periodic-eval game (both sides). 0 = the
+    #                               canonical single-line "perfect-play gate";
+    #                               ≥2 = diversified openings → real winrate.
 ) raises -> ArenaRunResult:
     # NOTE on units: one loop pass advances every one of `N_ENVS` games by a
     # single self-play *move* (not a full game). `iterations` is therefore the
@@ -581,7 +589,10 @@ def run_alphazero_selfplay_arena[
             if do_eval:
                 var e1 = _eval_both_colors[
                     ENV, NET, OPP1, EVAL_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES
-                ](ctx, learner, seed=seed + UInt64(it) * 13 + 5)
+                ](
+                    ctx, learner, seed=seed + UInt64(it) * 13 + 5,
+                    open_plies=eval_open_plies,
+                )
                 var tot1 = e1.wins + e1.draws + e1.losses
                 var wr1 = (
                     Float64(e1.wins) / Float64(tot1) if tot1 > 0 else 0.0
@@ -603,7 +614,10 @@ def run_alphazero_selfplay_arena[
             if do_eval2:
                 var e2 = _eval_both_colors[
                     ENV, NET, OPP2, EVAL_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES
-                ](ctx, learner, seed=seed + UInt64(it) * 17 + 9)
+                ](
+                    ctx, learner, seed=seed + UInt64(it) * 17 + 9,
+                    open_plies=eval_open_plies,
+                )
                 var tot2 = e2.wins + e2.draws + e2.losses
                 var wr2 = (
                     Float64(e2.wins) / Float64(tot2) if tot2 > 0 else 0.0

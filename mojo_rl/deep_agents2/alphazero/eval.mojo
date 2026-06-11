@@ -355,6 +355,7 @@ def eval_mcts_vs_opponent[
     mut net: NET,
     agent_player: Int = 0,
     seed: UInt64 = 1,
+    open_plies: Int = 0,
 ) raises -> EvalResult:
     """Full-strength eval: the agent plays via **MCTS** (temp=0, no Dirichlet
     noise), the opponent via its `GPUEvaluator`. This mirrors the legacy
@@ -365,10 +366,16 @@ def eval_mcts_vs_opponent[
 
     Games run in lockstep; as each finishes its result is locked (by reward +
     whose turn it was, color-agnostic) and the env is reset so the batch can run
-    on for the slower games. `agent_player` (0/1) picks the agent's color. A
-    deterministic opponent (minimax) makes every game in the batch the same
-    canonical line — that is intentional: it asks "does optimal-from-start draw
-    perfect play?", the canonical AlphaZero signal."""
+    on for the slower games. `agent_player` (0/1) picks the agent's color.
+
+    `open_plies = 0` (default): every game plays the canonical line — with a
+    deterministic opponent (minimax) all `N_GAMES` collapse to ONE distinct
+    game per color ("does optimal-from-start draw perfect play?"), so the
+    result is quantized to 0 / N_GAMES and the winrate CURVE swings wildly
+    between razor-edge lines. `open_plies > 0`: BOTH sides open with that many
+    uniform-random LEGAL plies (per game), diversifying the batch into distinct
+    positions so the aggregate is a real winrate (the arena's `open_plies`
+    convention). Use 0 as a perfect-play gate, ≥2 for tracking curves."""
     comptime OBS = NET.IN_DIMS[0]
     comptime ACT = NET.OUT_DIM - 1
     comptime STATE = ENV.STATE_SIZE
@@ -410,7 +417,15 @@ def eval_mcts_vs_opponent[
 
     while not all_done and move < MAX_EVAL_MOVES:
         var agent_turn = (move % 2) == agent_player
-        if agent_turn:
+        if move < open_plies:
+            # Opening diversity: BOTH sides play uniform-random legal moves
+            # for the first `open_plies` plies, splitting the lockstep batch
+            # into distinct games (see docstring).
+            RandomOpponent.select_action_gpu[N_GAMES, ACT, STATE](
+                ctx, actions_dev, legal_dev, states,
+                seed + UInt64(move) * 131 + 17,
+            )
+        elif agent_turn:
             var pred = AZPredGPU[OBS, ACT, NET].make(net)
             var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
             var root_obs = LayoutTensor[

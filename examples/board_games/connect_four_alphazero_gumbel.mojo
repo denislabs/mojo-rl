@@ -191,6 +191,12 @@ def main() raises:
         # distinct openings. Counters the post-promotion one-hot policy
         # head making deterministic self-play replay one game.
         selfplay_open_plies=2,
+        # Eval opening diversity: without it, temp-0 MCTS vs deterministic
+        # minimax collapses all EVAL_GAMES to ONE distinct game per color —
+        # results quantize to multiples of 64 (W0/W64/W128) and the winrate
+        # curve swings wildly between razor-edge canonical lines. 4 random
+        # plies (arena convention, ~2401 lines) makes it a real winrate.
+        eval_open_plies=4,
     )
 
     logger.close()
