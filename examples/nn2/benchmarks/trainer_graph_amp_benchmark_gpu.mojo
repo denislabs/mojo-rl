@@ -59,6 +59,14 @@ comptime LR: Scalar[DT] = 0.001
 comptime WARMUP = 20
 comptime N_STEPS = 200
 
+# CUDA-graph capture of the full train step is gated OFF by default: Modular's
+# `linalg.matmul` GPU path allocates a split-K reduction workspace DeviceBuffer
+# per call (freed at return), which is illegal during CUDA stream capture and
+# aborts (`AsyncRT_DeviceBuffer_release`). The eager fp32-vs-bf16 (AMP) columns
+# below are unaffected and run on any GPU. Flip this to True only on a build
+# whose matmul path is allocation-free (see notes at end of file).
+comptime USE_CUDA_GRAPH = False
+
 comptime Net = Sequential[
     Linear[IN_DIM, H1],
     ReLU[H1],
@@ -89,7 +97,7 @@ def run_policy[
     trainer.optim.lr = LR
     trainer.load_fixed_batch(batch_x, batch_y)
 
-    # ---- eager ----
+    # ---- eager (always runs; the AMP fp32-vs-bf16 comparison) ----
     for _ in range(WARMUP):
         trainer.train_step_device()
     ctx.synchronize()
@@ -98,40 +106,42 @@ def run_policy[
         trainer.train_step_device()
     ctx.synchronize()
     var eager_s = Float64(perf_counter_ns() - t0) / 1e9
-
-    # ---- graph ----
-    # `_step` is the captured body — one pure-device train step. The first
-    # `maybe_capture_replay` call captures it; the rest replay.
-    var graph: Optional[CUDAGraph] = None
-
-    def _step() capturing raises -> None:
-        trainer.train_step_device()
-
-    for _ in range(WARMUP):
-        maybe_capture_replay[_step](graph, ctx)
-    ctx.synchronize()
-    var t1 = perf_counter_ns()
-    for _ in range(N_STEPS):
-        maybe_capture_replay[_step](graph, ctx)
-    ctx.synchronize()
-    var graph_s = Float64(perf_counter_ns() - t1) / 1e9
-
-    var eager_sps = Float64(N_STEPS) / eager_s
-    var graph_sps = Float64(N_STEPS) / graph_s
     print(
         label
         + "  | eager "
         + String(eager_s)
         + "s ("
-        + String(eager_sps)
-        + " steps/s)  | graph "
-        + String(graph_s)
-        + "s ("
-        + String(graph_sps)
-        + " steps/s)  | graph speedup "
-        + String(eager_s / graph_s)
-        + "x"
+        + String(Float64(N_STEPS) / eager_s)
+        + " steps/s)"
     )
+
+    # ---- graph (opt-in; needs an allocation-free matmul — see top of file) ----
+    comptime if USE_CUDA_GRAPH:
+        # `_step` is the captured body — one pure-device train step. The first
+        # `maybe_capture_replay` call captures it; the rest replay.
+        var graph: Optional[CUDAGraph] = None
+
+        def _step() capturing raises -> None:
+            trainer.train_step_device()
+
+        for _ in range(WARMUP):
+            maybe_capture_replay[_step](graph, ctx)
+        ctx.synchronize()
+        var t1 = perf_counter_ns()
+        for _ in range(N_STEPS):
+            maybe_capture_replay[_step](graph, ctx)
+        ctx.synchronize()
+        var graph_s = Float64(perf_counter_ns() - t1) / 1e9
+        print(
+            label
+            + "  | graph "
+            + String(graph_s)
+            + "s ("
+            + String(Float64(N_STEPS) / graph_s)
+            + " steps/s)  | graph speedup "
+            + String(eager_s / graph_s)
+            + "x"
+        )
 
 
 def main() raises:
@@ -159,8 +169,33 @@ def main() raises:
         + " N_STEPS="
         + String(N_STEPS)
     )
-    print("(Apple/non-NVIDIA: graph columns run eagerly — no-op capture)\n")
+    comptime if USE_CUDA_GRAPH:
+        print("(graph capture ON — needs an allocation-free capture-path matmul)\n")
+    else:
+        print(
+            "(graph capture OFF — eager AMP fp32-vs-bf16 only; see notes at"
+            " end of file to enable)\n"
+        )
 
     run_policy[NoAMP](ctx, batch_x, batch_y, "fp32")
     run_policy[Bf16Compute](ctx, batch_x, batch_y, "bf16")
     print("\nDONE")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# CUDA-graph capture status (USE_CUDA_GRAPH).
+#
+# The Trainer step itself IS capturable: the optimizer keeps its step counter
+# and bias-correction on-device, `forward_capture` drops the loss's host
+# readback, and the step reads fixed device buffers. The remaining blocker is
+# the GEMM: `linalg.matmul` (Modular) picks a split-K reduction path for some
+# shapes and allocates a workspace `DeviceBuffer` per call, freeing it at
+# return — a `cudaFree` inside the captured stream, which aborts. Eager runs
+# tolerate it; capture does not.
+#
+# To enable graph capture, the matmul on the capture path must not allocate.
+# Two routes: (a) force `linalg.matmul` to `num_k_partitions=1` (no split-K
+# workspace) for these shapes, or (b) route `Linear` through an
+# allocation-free in-repo GEMM (`mojo_rl/nn/gpu/matmul.mojo::gpu_matmul`).
+# Once that's in place, set USE_CUDA_GRAPH=True and re-run on NVIDIA.
+# ──────────────────────────────────────────────────────────────────────────
