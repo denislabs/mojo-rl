@@ -444,6 +444,18 @@ struct GumbelGPUMCTS[
     var c_visit: Float64
     var c_scale: Float64
     var gumbel_scale: Float64
+    var qnorm_per_node: Bool
+    """σ(completed_Q) normalization mode. True (default) = per-NODE
+    completed-Q min/max rescale (mctx qtransform_completed_by_mix_value):
+    the node's best child maps to qn=1, worst to qn=0 — full-strength
+    ranking, REQUIRED for two-player ±1-value games whose tree-global range
+    dwarfs sibling ΔQ (C4 fix). False = tree-GLOBAL min/max (classic MuZero
+    normalization): preserves gap MAGNITUDE relative to the tree's value
+    spread — required for tiny action spaces (ACT=2: per-node quantizes qn
+    to exactly {0,1}, destroying magnitude → targets become confident
+    one-hots toward Q-estimate noise; MZ CartPole regressed from 500 to
+    thrashing ~130-300 with target_max_prob 0.997 from step 600).
+    Single-player small-ACT drivers (MZ / EZv2 discrete) pass False."""
 
     def __init__(
         out self,
@@ -454,6 +466,7 @@ struct GumbelGPUMCTS[
         c_visit: Float64 = 50.0,
         c_scale: Float64 = 0.1,
         gumbel_scale: Float64 = 1.0,
+        qnorm_per_node: Bool = True,
     ) raises:
         if Self.MAX_K > Self.ACT:
             raise Error("GumbelGPUMCTS: MAX_K must be <= ACT")
@@ -494,6 +507,7 @@ struct GumbelGPUMCTS[
         self.c_visit = c_visit
         self.c_scale = c_scale
         self.gumbel_scale = gumbel_scale
+        self.qnorm_per_node = qnorm_per_node
 
     def __init__(out self, *, deinit take: Self):
         self.state = take.state^
@@ -511,6 +525,7 @@ struct GumbelGPUMCTS[
         self.c_visit = take.c_visit
         self.c_scale = take.c_scale
         self.gumbel_scale = take.gumbel_scale
+        self.qnorm_per_node = take.qnorm_per_node
 
     # ══════════════════════════════════════════════════════════════════════
     # Views
@@ -748,6 +763,7 @@ struct GumbelGPUMCTS[
                     Scalar[DType.int32](keep),
                     Scalar[dtype](self.c_visit),
                     Scalar[dtype](self.c_scale),
+                    Scalar[DType.uint8](1 if self.qnorm_per_node else 0),
                     grid_dim=(Self.ENV_BLOCKS,),
                     block_dim=(TPB,),
                 )
@@ -793,6 +809,7 @@ struct GumbelGPUMCTS[
             Scalar[DType.uint8](1 if apply_legal else 0),
             Scalar[dtype](self.c_visit),
             Scalar[dtype](self.c_scale),
+            Scalar[DType.uint8](1 if self.qnorm_per_node else 0),
             grid_dim=(Self.ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1073,6 +1090,7 @@ struct GumbelGPUMCTS[
             Scalar[DType.uint8](1 if apply_legal else 0),
             Scalar[dtype](self.c_visit),
             Scalar[dtype](self.c_scale),
+            Scalar[DType.uint8](1 if self.qnorm_per_node else 0),
             grid_dim=(Self.ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1381,6 +1399,7 @@ struct GumbelGPUMCTS[
                     Scalar[DType.int32](keep),
                     Scalar[dtype](self.c_visit),
                     Scalar[dtype](self.c_scale),
+                    Scalar[DType.uint8](1 if self.qnorm_per_node else 0),
                     grid_dim=(Self.ENV_BLOCKS,),
                     block_dim=(TPB,),
                 )
@@ -1426,6 +1445,7 @@ struct GumbelGPUMCTS[
             Scalar[DType.uint8](1),
             Scalar[dtype](self.c_visit),
             Scalar[dtype](self.c_scale),
+            Scalar[DType.uint8](1 if self.qnorm_per_node else 0),
             grid_dim=(Self.ENV_BLOCKS,),
             block_dim=(TPB,),
         )
@@ -1561,6 +1581,7 @@ struct GumbelGPUMCTS[
             Scalar[DType.uint8](1),
             Scalar[dtype](self.c_visit),
             Scalar[dtype](self.c_scale),
+            Scalar[DType.uint8](1 if self.qnorm_per_node else 0),
             grid_dim=(Self.ENV_BLOCKS,),
             block_dim=(TPB,),
         )

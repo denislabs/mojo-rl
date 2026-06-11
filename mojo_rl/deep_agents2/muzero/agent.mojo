@@ -273,6 +273,9 @@ struct MuZeroAgent[
             ](
                 c, gamma=Float64(self.gamma),
                 v_min=Float64(self.v_min), v_max=Float64(self.v_max),
+                # Tree-GLOBAL sigma(Q) norm — small-ACT single-player (see
+                # GumbelGPUMCTS.qnorm_per_node; per-node degenerate at ACT=2).
+                qnorm_per_node=False,
             )
             var rep_a = MZRepGPU[Self.OBS, Self.LATENT, Self.REP].make(
                 self.rep

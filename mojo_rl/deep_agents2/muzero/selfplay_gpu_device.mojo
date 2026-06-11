@@ -526,7 +526,13 @@ def run_muzero_gumbel_selfplay_gpu[
 
     var planner = GumbelGPUMCTS[
         N_ENVS, ACT, LATENT, BINS, MAX_NODES, MAX_K, NUM_SIMS, SinglePlayer
-    ](ctx, gamma=Float64(gamma), v_min=Float64(v_min), v_max=Float64(v_max))
+    ](
+        ctx, gamma=Float64(gamma), v_min=Float64(v_min), v_max=Float64(v_max),
+        # Tree-GLOBAL sigma(Q) normalization: per-node rescale is degenerate
+        # at small ACT (CartPole ACT=2 -> qn in {0,1} exactly -> confident-
+        # noise one-hot targets, no convergence). See qnorm_per_node doc.
+        qnorm_per_node=False,
+    )
     var rep_a = MZRepGPU[OBS, LATENT, REP].make(rep)
     var dyn_a = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn)
     var pred_a = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred)

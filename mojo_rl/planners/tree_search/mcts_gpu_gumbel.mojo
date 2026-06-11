@@ -527,6 +527,7 @@ def gz_select_kernel[
     apply_legal: Scalar[DType.uint8],
     c_visit: Scalar[dtype],
     c_scale: Scalar[dtype],
+    qnorm_per_node: Scalar[DType.uint8],
 ) where dtype.is_floating_point():
     """One simulation's selection phase, per env.
 
@@ -631,26 +632,41 @@ def gz_select_kernel[
             if nva > max_visit:
                 max_visit = nva
         var sigma_scale = (c_visit + max_visit) * c_scale
-        # Per-NODE completed-Q min/max (mctx qtransform_completed_by_mix_value
-        # semantics): rescale over THIS node's children so the best child maps
-        # to qn=1 and the worst to qn=0 regardless of the absolute Q spread.
-        # The previous tree-GLOBAL min_q/max_q normalization compressed σ to
-        # near-noise in games whose subtrees reach terminal ±1 values (range
-        # pinned ~2 while sibling ΔQ ~ 0.1) — the σ(completed_Q) improvement
-        # operator stopped working at ANY sim budget (C4: 64→256 sims left the
-        # target entropy bit-for-bit flat).
-        var node_mn = Scalar[dtype](1e18)
-        var node_mx = Scalar[dtype](-1e18)
-        for a in range(ACT):
-            var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
-            var cq = v_mix
-            if nva > Scalar[dtype](0.5):
-                cq = rebind[Scalar[dtype]](total_value[na_base + a]) / nva
-            if cq < node_mn:
-                node_mn = cq
-            if cq > node_mx:
-                node_mx = cq
-        var q_range = node_mx - node_mn
+        # σ(completed_Q) normalization — two modes (see `qnorm_per_node` in
+        # the orchestrator for the full story):
+        #  * per-node (mctx qtransform_completed_by_mix_value semantics):
+        #    rescale over THIS node's children so the best child maps to qn=1
+        #    and the worst to qn=0 regardless of absolute Q spread. Required
+        #    when the tree-global range dwarfs sibling ΔQ (two-player ±1
+        #    terminals pinned C4's range at ~2 vs ΔQ ~0.1 → σ ≈ noise at ANY
+        #    sim budget). DEGENERATE at tiny action counts: with 2 children
+        #    qn is exactly {0,1} — gap magnitude is destroyed, σ becomes a
+        #    confident one-hot toward sign-of-noise (MZ CartPole regression:
+        #    target_max_prob 0.997 from step 600, never converged).
+        #  * tree-global (classic MuZero normalization): preserves gap
+        #    magnitude relative to the tree's value spread — validated on
+        #    single-player small-ACT tasks (MZ/EZv2 CartPole → 500).
+        var qlo: Scalar[dtype]
+        var q_range: Scalar[dtype]
+        if qnorm_per_node > Scalar[DType.uint8](0):
+            var node_mn = Scalar[dtype](1e18)
+            var node_mx = Scalar[dtype](-1e18)
+            for a in range(ACT):
+                var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
+                var cq = v_mix
+                if nva > Scalar[dtype](0.5):
+                    cq = (
+                        rebind[Scalar[dtype]](total_value[na_base + a]) / nva
+                    )
+                if cq < node_mn:
+                    node_mn = cq
+                if cq > node_mx:
+                    node_mx = cq
+            qlo = node_mn
+            q_range = node_mx - node_mn
+        else:
+            qlo = rebind[Scalar[dtype]](min_q[e])
+            q_range = rebind[Scalar[dtype]](max_q[e]) - qlo
 
         # Compute z[a] = node_logits[a] + σ(completed_Q[a]).
         # Stable softmax → π_improved.
@@ -665,9 +681,15 @@ def gz_select_kernel[
                 qa = v_mix
             var qn: Scalar[dtype]
             if q_range > Scalar[dtype](1e-8):
-                qn = (qa - node_mn) / q_range
+                qn = (qa - qlo) / q_range
             else:
-                qn = Scalar[dtype](0.0)  # all completed Q equal → σ inert
+                # per-node: all completed Q equal → σ inert. tree-global:
+                # legacy raw-q passthrough (bit-compatible with the validated
+                # single-player runs).
+                qn = (
+                    Scalar[dtype](0.0)
+                    if qnorm_per_node > Scalar[DType.uint8](0) else qa
+                )
             z[a] = rebind[Scalar[dtype]](node_logits[na_base + a]) + (
                 sigma_scale * qn
             )
@@ -1043,6 +1065,7 @@ def gz_halve_active_kernel[
     keep: Scalar[DType.int32],
     c_visit: Scalar[dtype],
     c_scale: Scalar[dtype],
+    qnorm_per_node: Scalar[DType.uint8],
 ) where dtype.is_floating_point():
     """Sequential-Halving phase boundary: keep the top-`keep` active root
     candidates by score `g(a) + logits(a) + σ(completed_Q(a))`."""
@@ -1096,20 +1119,26 @@ def gz_halve_active_kernel[
         if nva > max_visit:
             max_visit = nva
     var sigma_scale = (c_visit + max_visit) * c_scale
-    # Per-NODE completed-Q min/max — see gz_select_kernel for why the old
-    # tree-GLOBAL min_q/max_q normalization neutered σ(completed_Q).
-    var node_mn = Scalar[dtype](1e18)
-    var node_mx = Scalar[dtype](-1e18)
-    for a in range(ACT):
-        var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
-        var cq = v_mix
-        if nva > Scalar[dtype](0.5):
-            cq = rebind[Scalar[dtype]](total_value[na_base + a]) / nva
-        if cq < node_mn:
-            node_mn = cq
-        if cq > node_mx:
-            node_mx = cq
-    var q_range = node_mx - node_mn
+    # σ normalization mode — see gz_select_kernel.
+    var qlo: Scalar[dtype]
+    var q_range: Scalar[dtype]
+    if qnorm_per_node > Scalar[DType.uint8](0):
+        var node_mn = Scalar[dtype](1e18)
+        var node_mx = Scalar[dtype](-1e18)
+        for a in range(ACT):
+            var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
+            var cq = v_mix
+            if nva > Scalar[dtype](0.5):
+                cq = rebind[Scalar[dtype]](total_value[na_base + a]) / nva
+            if cq < node_mn:
+                node_mn = cq
+            if cq > node_mx:
+                node_mx = cq
+        qlo = node_mn
+        q_range = node_mx - node_mn
+    else:
+        qlo = rebind[Scalar[dtype]](min_q[e])
+        q_range = rebind[Scalar[dtype]](max_q[e]) - qlo
 
     var old_n = Int(old_size)
     if old_n > MAX_K:
@@ -1141,9 +1170,12 @@ def gz_halve_active_kernel[
             qa = v_mix
         var qn: Scalar[dtype]
         if q_range > Scalar[dtype](1e-8):
-            qn = (qa - node_mn) / q_range
+            qn = (qa - qlo) / q_range
         else:
-            qn = Scalar[dtype](0.0)  # all completed Q equal → σ inert
+            qn = (
+                Scalar[dtype](0.0)
+                if qnorm_per_node > Scalar[DType.uint8](0) else qa
+            )
         var sigma_q = sigma_scale * qn
         var l = rebind[Scalar[dtype]](node_logits[na_base + act])
         var g = rebind[Scalar[dtype]](root_gumbels[k_off + cand])
@@ -1200,6 +1232,7 @@ def gz_extract_policy_kernel[
     apply_legal: Scalar[DType.uint8],
     c_visit: Scalar[dtype],
     c_scale: Scalar[dtype],
+    qnorm_per_node: Scalar[DType.uint8],
 ) where dtype.is_floating_point():
     """Compute the improved policy at the root and write to policies_out."""
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -1252,22 +1285,29 @@ def gz_extract_policy_kernel[
         if nva > max_visit:
             max_visit = nva
     var sigma_scale = (c_visit + max_visit) * c_scale
-    # Per-NODE completed-Q min/max — see gz_select_kernel for why the old
-    # tree-GLOBAL min_q/max_q normalization neutered σ(completed_Q). This is
-    # the kernel that writes the TRAINING TARGET, so the compression directly
-    # capped how much the search could improve on the net's own policy.
-    var node_mn = Scalar[dtype](1e18)
-    var node_mx = Scalar[dtype](-1e18)
-    for a in range(ACT):
-        var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
-        var cq = v_mix
-        if nva > Scalar[dtype](0.5):
-            cq = rebind[Scalar[dtype]](total_value[na_base + a]) / nva
-        if cq < node_mn:
-            node_mn = cq
-        if cq > node_mx:
-            node_mx = cq
-    var q_range = node_mx - node_mn
+    # σ normalization mode — see gz_select_kernel. This is the kernel that
+    # writes the TRAINING TARGET, so the mode directly shapes what the net
+    # learns: per-node = full-strength ranking (C4-validated), tree-global =
+    # gap-magnitude-preserving (MZ/EZ CartPole-validated; ACT=2 safe).
+    var qlo: Scalar[dtype]
+    var q_range: Scalar[dtype]
+    if qnorm_per_node > Scalar[DType.uint8](0):
+        var node_mn = Scalar[dtype](1e18)
+        var node_mx = Scalar[dtype](-1e18)
+        for a in range(ACT):
+            var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
+            var cq = v_mix
+            if nva > Scalar[dtype](0.5):
+                cq = rebind[Scalar[dtype]](total_value[na_base + a]) / nva
+            if cq < node_mn:
+                node_mn = cq
+            if cq > node_mx:
+                node_mx = cq
+        qlo = node_mn
+        q_range = node_mx - node_mn
+    else:
+        qlo = rebind[Scalar[dtype]](min_q[e])
+        q_range = rebind[Scalar[dtype]](max_q[e]) - qlo
 
     var z = InlineArray[Scalar[dtype], ACT](uninitialized=True)
     var max_z = Scalar[dtype](-1e18)
@@ -1287,9 +1327,12 @@ def gz_extract_policy_kernel[
             qa = v_mix
         var qn: Scalar[dtype]
         if q_range > Scalar[dtype](1e-8):
-            qn = (qa - node_mn) / q_range
+            qn = (qa - qlo) / q_range
         else:
-            qn = Scalar[dtype](0.0)  # all completed Q equal → σ inert
+            qn = (
+                Scalar[dtype](0.0)
+                if qnorm_per_node > Scalar[DType.uint8](0) else qa
+            )
         var l = rebind[Scalar[dtype]](node_logits[na_base + a])
         z[a] = l + sigma_scale * qn
         if z[a] > max_z:
@@ -1339,6 +1382,7 @@ def run_gumbel_search_gpu[
     c_scale: Float64 = 0.1,
     gamma: Float64 = 0.997,
     rng_seed: UInt32 = UInt32(0),
+    qnorm_per_node: Bool = True,
 ) raises:
     """Run Gumbel search across all envs in `state`. Writes the improved
     policy distribution to `state.policies_out`.
@@ -1515,6 +1559,7 @@ def run_gumbel_search_gpu[
                     c_visit,
                     c_scale,
                     gamma,
+                    qnorm_per_node,
                 )
                 sims_used += 1
 
@@ -1550,6 +1595,7 @@ def run_gumbel_search_gpu[
                 Scalar[DType.int32](keep),
                 Scalar[dtype](c_visit),
                 Scalar[dtype](c_scale),
+                Scalar[DType.uint8](1 if qnorm_per_node else 0),
                 grid_dim=(ENV_BLOCKS,),
                 block_dim=(TPB,),
             )
@@ -1581,6 +1627,7 @@ def run_gumbel_search_gpu[
             c_visit,
             c_scale,
             gamma,
+            qnorm_per_node,
         )
         sims_used += 1
 
@@ -1613,6 +1660,7 @@ def run_gumbel_search_gpu[
         Scalar[DType.uint8](1 if apply_legal else 0),
         Scalar[dtype](c_visit),
         Scalar[dtype](c_scale),
+        Scalar[DType.uint8](1 if qnorm_per_node else 0),
         grid_dim=(ENV_BLOCKS,),
         block_dim=(TPB,),
     )
@@ -1642,6 +1690,7 @@ def _run_one_sim_gpu[
     c_visit: Float64,
     c_scale: Float64,
     gamma: Float64,
+    qnorm_per_node: Bool = True,
 ) raises:
     """One simulation across all envs: select → dyn → pred → expand →
     backup. The root candidate slot is shared across envs (that's safe
@@ -1740,6 +1789,7 @@ def _run_one_sim_gpu[
         Scalar[DType.uint8](1 if apply_legal else 0),
         Scalar[dtype](c_visit),
         Scalar[dtype](c_scale),
+        Scalar[DType.uint8](1 if qnorm_per_node else 0),
         grid_dim=(ENV_BLOCKS,),
         block_dim=(TPB,),
     )
