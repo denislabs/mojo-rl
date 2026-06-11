@@ -4,9 +4,10 @@ Identical telemetry/arena/eval harness to `connect_four_alphazero_v2.mojo`
 (same minimax+random MCTS evals, arena gating, augmentation, logger, optimizer
 stability settings) with ONLY the self-play planner swapped to Gumbel AlphaZero
 via `train_arena_gumbel`: Gumbel-Top-k roots + Sequential Halving + improved-
-policy targets at 64 sims/move instead of PUCT's 500 (~8x less search — the
-low-sim-budget regime is where Gumbel's policy-improvement guarantee lives;
-the TTT gate beat the PUCT baseline 8-vs-24 losses at equal sims).
+policy targets at 256 sims/move (vs PUCT's 500). The original 64-sim
+"low-budget" setting — where Gumbel's policy-improvement guarantee lives and
+where the TTT gate beat the PUCT baseline 8-vs-24 losses at equal sims —
+proved below Connect Four's tactical floor (see the NUM_SIMS note below).
 
 Second-generation port of `connect_four_alphazero.mojo`. Uses the config-free
 nn2 net torsos (`AZConnectFourResNet` — conv stem → 5 identity-skip ResBlocks →
@@ -101,8 +102,6 @@ def main() raises:
     comptime Aug = HFlipColumnAugmenter[ROWS=6, COLS=7, PLANES=3]
 
     var ctx = DeviceContext()
-    # NUM_SIMS=500 / MAX_NODES=1024 match the legacy AlphaZero.jl-tuned config
-    # (legacy used 600 sims / 1024 nodes); 100 sims gave far weaker MCTS targets.
     # NOTE: nn2 GPU Conv2D now uses im2col + tensor-core GEMM (was a naive
     # direct-conv kernel that made conv nets 5-10× slower) — the ResNet torso
     # is no longer the per-eval bottleneck. BATCH_SIMS still batches the MCTS
@@ -112,10 +111,20 @@ def main() raises:
         Env,
         Net,
         N_ENVS=64,
-        # Sequential halving gets its policy-improvement guarantee at LOW sim
-        # budgets — 64 sims/move vs the PUCT example's 500 (~8x less search).
-        NUM_SIMS=64,
-        MAX_NODES=256,
+        # 64 sims (the "Gumbel low-budget" setting) proved BELOW Connect
+        # Four's tactical floor: a 10k-move run with fully healthy numerics
+        # (nanpol/skiptgt/guard all 0, KL gap 0.14 flat) showed the improved-
+        # policy targets getting SOFTER over time (target entropy 0.94→0.99)
+        # and arenas accepting at a bare ~58% — the net distilled the search
+        # perfectly, but 64 sims / 4 root candidates ≈ 16-32 Q-samples per
+        # candidate gave σ(completed_Q) ≈ noise, so target ≈ own policy and
+        # external strength stayed flat (vs Random ~54-74% no trend, 0% vs
+        # 5-ply minimax — refuting 5-ply tactics needs lookahead a 64-sim
+        # 7-wide tree can't provide; legacy AlphaZero.jl C4 used 600 sims).
+        # 256 sims = 4× the Q budget per candidate. Watch target entropy FALL
+        # and target max-prob climb past ~0.7 in the first ~4k moves.
+        NUM_SIMS=256,
+        MAX_NODES=512,
         BATCH=128,
         CAP=1_000_000,
         MAX_TRAJ=42,
