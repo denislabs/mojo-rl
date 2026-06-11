@@ -39,6 +39,7 @@ from mojo_rl.planners.tree_search import (
     SinglePlayer,
 )
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from .selfplay_cpu import run_ezv2_selfplay_cpu
 from ..zero.mcts_adapters_mz_cpu import MZRepCPU, MZDynCPU, MZPredCPU
 
@@ -95,7 +96,9 @@ struct EZv2DiscreteAgent[
         self.value_coef = value_coef
         self.consistency_coef = consistency_coef
 
-    def train(
+    def train[
+        L: Logger = NoOpLogger,
+    ](
         mut self,
         mut env: Self.ENV,
         iterations: Int,
@@ -105,6 +108,9 @@ struct EZv2DiscreteAgent[
         max_ep_steps: Int = 500,
         eval_every: Int = 0,
         eval_episodes: Int = 5,
+        diag_every: Int = 0,
+        report_every: Int = 0,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         verbose: Bool = False,
     ) raises -> Float64:
         """Single-player self-play training (MuZero BPTT + SimSiam consistency).
@@ -124,6 +130,7 @@ struct EZv2DiscreteAgent[
             Self.OBS, Self.ACT, Self.LATENT, Self.BINS,
             Self.NUM_SIMS, Self.MAX_NODES, Self.CAP,
             Self.B, Self.K, Self.N,
+            L=L,
         ](
             env, self.rep, self.dyn, self.pred, self.proj, self.predh,
             orep, odyn, opred, oproj, opredh,
@@ -139,6 +146,9 @@ struct EZv2DiscreteAgent[
             consistency_coef=self.consistency_coef,
             eval_every=eval_every,
             eval_episodes=eval_episodes,
+            diag_every=diag_every,
+            report_every=report_every,
+            logger=logger,
             verbose=verbose,
         )
 

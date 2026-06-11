@@ -55,6 +55,7 @@ from mojo_rl.planners.tree_search import (
     SinglePlayer,
 )
 
+from mojo_rl.core.logger import Logger, NoOpLogger
 from .selfplay_cpu import run_muzero_selfplay_cpu
 from .selfplay_gpu import run_muzero_selfplay_gpu, mz_sync_gpu_to_cpu
 from .selfplay_gpu_device import run_muzero_gumbel_selfplay_gpu
@@ -110,7 +111,9 @@ struct MuZeroAgent[
         self.v_max = v_max
         self.value_coef = value_coef
 
-    def train(
+    def train[
+        L: Logger = NoOpLogger,
+    ](
         mut self,
         mut env: Self.ENV,
         iterations: Int,
@@ -122,6 +125,9 @@ struct MuZeroAgent[
         reanalyze_every: Int = 0,
         eval_every: Int = 0,
         eval_episodes: Int = 5,
+        diag_every: Int = 0,
+        report_every: Int = 0,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         verbose: Bool = False,
     ) raises -> Float64:
         """Single-player self-play training over the learned model. Returns the
@@ -145,6 +151,7 @@ struct MuZeroAgent[
                 Self.OBS, Self.ACT, Self.LATENT, Self.BINS,
                 Self.NUM_SIMS, Self.MAX_NODES, Self.CAP,
                 Self.B, Self.K, Self.N,
+                L=L,
             ](
                 env, self.rep, self.dyn, self.pred, orep, odyn, opred,
                 iterations=iterations,
@@ -160,6 +167,9 @@ struct MuZeroAgent[
                 reanalyze_every=reanalyze_every,
                 eval_every=eval_every,
                 eval_episodes=eval_episodes,
+                diag_every=diag_every,
+                report_every=report_every,
+                logger=logger,
                 verbose=verbose,
             )
         else:
@@ -178,6 +188,7 @@ struct MuZeroAgent[
                 Self.OBS, Self.ACT, Self.LATENT, Self.BINS,
                 Self.NUM_SIMS, Self.MAX_NODES, Self.MAX_K, Self.CAP,
                 Self.B, Self.K, Self.N,
+                L=L,
             ](
                 c, env, self.rep, self.dyn, self.pred, orep, odyn, opred,
                 iterations=iterations,
@@ -193,6 +204,9 @@ struct MuZeroAgent[
                 reanalyze_every=reanalyze_every,
                 eval_every=eval_every,
                 eval_episodes=eval_episodes,
+                diag_every=diag_every,
+                report_every=report_every,
+                logger=logger,
                 verbose=verbose,
             )
 
