@@ -1,22 +1,21 @@
-"""EfficientZeroV2 discrete CartPole — value-support ABLATION (v2, GPU Gumbel).
+"""EfficientZeroV2 discrete CartPole — consistency-OFF ablation (v2, GPU Gumbel).
 
-Isolates the single high-confidence fix from `ezv2_cartpole_v2_gpu`: this file is
-the **original** EZv2 config (value_coef 0.25, no reanalyze, no temperature
-schedule, no gradient clipping) with the **only** change being the categorical
-value/reward support widened from ±10 to **±20** (h-space).
+Identical to `ezv2_cartpole_v2_gpu` (the full bundle: v±20, value_coef 0.5,
+grad clip 5, reanalyze, temperature) in EVERY hyperparameter EXCEPT the SimSiam
+temporal-consistency weight, which is set to **0**. With ``consistency_coef=0``
+the projector/predictor receive no gradient and the update reduces to plain
+**MuZero BPTT** over the shared h/g/f model — the same model and Gumbel planner
+MuZero uses.
 
-The original ±10 support hard-clamps any return whose transformed value exceeds
-10 — i.e. raw value above ~117 (`h(x)=sign(x)(√(|x|+1)−1)+0.001x`), which a
-CartPole policy surviving past ~150 steps already exceeds. The value head then
-saturates and MCTS can no longer rank long-horizon states, capping the policy.
-±20 covers raw ~420, well past CartPole's max discounted return (~259 → h≈15.4).
-
-Run this against the original-plateau baseline to attribute the EZv2 gap to the
-value support alone; run `ezv2_cartpole_v2_gpu` (the full bundle: +value_coef 0.5,
-+clip 5, +reanalyze, +temperature) to see the combined effect.
+Purpose: isolate the SimSiam consistency loss as the cause of the residual
+EZv2-vs-MuZero gap. The full bundle (consistency_coef=2.0) plateaus ~230 greedy
+on this config while MuZero (consistency-free) solves to a stable 500.
+  * If this run solves like MuZero → the consistency loss is the culprit.
+  * If this run still plateaus → the gap is capacity/budget (see
+    `ezv2_cartpole_v2_gpu_matched`, which bumps LATENT/B/iters to MuZero's).
 
 Run (GPU env required):
-    pixi run -e apple mojo run -I . examples/cartpole/ezv2_cartpole_v2_gpu_vsupport.mojo
+    pixi run -e apple mojo run -I . examples/cartpole/ezv2_cartpole_v2_gpu_noconsist.mojo
 """
 
 from std.gpu.host import DeviceContext
@@ -73,11 +72,16 @@ def main() raises:
     opred.lr = Scalar[DT](3e-4)
     oproj.lr = Scalar[DT](3e-4)
     opredh.lr = Scalar[DT](3e-4)
+    orep.max_grad_norm = Scalar[DT](5.0)
+    odyn.max_grad_norm = Scalar[DT](5.0)
+    opred.max_grad_norm = Scalar[DT](5.0)
+    oproj.max_grad_norm = Scalar[DT](5.0)
+    opredh.max_grad_norm = Scalar[DT](5.0)
 
-    print("EZv2 CartPole value-support ablation (v2, GPU Gumbel — v±20 only)")
+    print("EZv2 CartPole consistency-OFF ablation (v2, GPU Gumbel — pure MuZero BPTT)")
     print("  LATENT", LATENT, "H", H, "PROJ", PROJ, "BINS", BINS,
           "sims", NUM_SIMS, "K_gumbel", MAX_K, "K", K, "N", N, "B", B,
-          "v±20 vcoef 0.25 (no clip/reanalyze/temp)")
+          "v±20 vcoef 0.5 clip 5 reanalyze temp CONS=0")
 
     var loss = run_ezv2_gumbel_selfplay_gpu[
         CartPoleEnv[DType.float32], Rep, Dyn, Pred, Proj, Predh,
@@ -91,8 +95,10 @@ def main() raises:
         gamma=Scalar[DT](0.997),
         v_min=Scalar[DT](-20.0),
         v_max=Scalar[DT](20.0),
-        value_coef=Scalar[DT](0.25),
-        consistency_coef=Scalar[DT](2.0),
+        value_coef=Scalar[DT](0.5),
+        consistency_coef=Scalar[DT](0.0),
+        temperature_decay_steps=30000,
+        reanalyze_every=1,
         eval_every=2000,
         eval_episodes=5,
         seed=42,
