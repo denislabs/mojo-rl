@@ -33,13 +33,15 @@ handles a remainder round; the GPU one does not) — asserted at compile time.
 
 from std.math import exp, log
 from std.memory import alloc
-from layout import Layout, LayoutTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
+from mojo_rl.core.logger import Logger, NoOpLogger
+from ..zero.mz_diagnostics import append_mz_train_diagnostics
 from mojo_rl.planners.tree_search import (
     GenericGPUMCTS,
     GumbelGPUMCTS,
@@ -57,6 +59,53 @@ from ..zero.temperature import visit_temperature
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return mptr(alloc[Scalar[DT]](n))
+
+
+def _mz_emit_train_diag[
+    REP: Module, PRED: Module,
+    B: Int, OBS: Int, ACT: Int, BINS: Int, L: Logger,
+](
+    ctx: DeviceContext,
+    mut rep: REP,
+    mut pred: PRED,
+    d_obs: DeviceBuffer[DT],
+    d_z: DeviceBuffer[DT],
+    d_pred: DeviceBuffer[DT],
+    h_pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    t_obs0: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    t_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    t_val: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    l_parts: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    v_min: Scalar[DT],
+    v_max: Scalar[DT],
+    last_loss: Float64,
+    step: Int,
+    logger: UnsafePointer[L, MutAnyOrigin],
+) raises:
+    """Re-forward the root prediction on device, D2H, and emit the MuZero
+    per-batch metric set (loss + policy/value/reward split + head-fit diagnostics)
+    to ``logger``. Shared by both GPU device drivers."""
+    comptime LAT = REP.OUT_DIM
+    comptime PRED_OUT = ACT + BINS
+    ctx.enqueue_copy(d_obs, t_obs0)
+    var z_t = TileTensor(mptr(d_z.unsafe_ptr()), row_major[B, LAT]())
+    rep.forward["gpu", B](
+        TileTensor(mptr(d_obs.unsafe_ptr()), row_major[B, OBS]()), output=z_t
+    )
+    var pred_t = TileTensor(mptr(d_pred.unsafe_ptr()), row_major[B, PRED_OUT]())
+    pred.forward["gpu", B](z_t, output=pred_t)
+    ctx.enqueue_copy(h_pred, d_pred)
+    ctx.synchronize()
+    var dn = List[String]()
+    var dv = List[Float64]()
+    dn.append(String("loss")); dv.append(last_loss)
+    dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
+    dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
+    dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
+    append_mz_train_diagnostics[ACT, BINS, B](
+        h_pred, t_pol, t_val, v_min, v_max, dn, dv
+    )
+    logger[].log_scalars(dn, dv, step)
 
 
 def run_muzero_selfplay_gpu_device[
@@ -86,6 +135,7 @@ def run_muzero_selfplay_gpu_device[
     # converged CPU search (same test). Raise only with that tradeoff known.
     BATCH_SIMS: Int = 1,
     VIRTUAL_LOSS: Int = 0,
+    L: Logger = NoOpLogger,
 ](
     ctx: DeviceContext,
     mut env: ENV,
@@ -108,6 +158,9 @@ def run_muzero_selfplay_gpu_device[
     reanalyze_every: Int = 0,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
+    diag_every: Int = 0,
+    report_every: Int = 0,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     comptime assert NUM_SIMS % BATCH_SIMS == 0, (
@@ -149,6 +202,13 @@ def run_muzero_selfplay_gpu_device[
 
     # persistent GPU unroll scratch (no per-step enqueue_create_buffer)
     var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
+
+    # logger scratch: per-component loss split + root-prediction probe (D2H).
+    var l_parts = _a(3)
+    var d_diag_obs = ctx.enqueue_create_buffer[DT](B * OBS)
+    var d_diag_z = ctx.enqueue_create_buffer[DT](B * LATENT)
+    var d_diag_pred = ctx.enqueue_create_buffer[DT](B * (ACT + BINS))
+    var h_diag_pred = _a(B * (ACT + BINS))
 
     # episode accumulation buffers
     var e_obs = List[Scalar[DT]]()
@@ -271,8 +331,23 @@ def run_muzero_selfplay_gpu_device[
                         scratch,
                         t_obs0, t_act, t_pol, t_val, t_rew,
                         v_min, v_max, value_coef,
+                        loss_parts=l_parts,
                     )
                 )
+
+        # ── per-batch diagnostics → logger (root pred re-forwarded) ──
+        if (
+            logger
+            and diag_every > 0
+            and it >= learning_starts
+            and rb.num_episodes() > 0
+            and (it + 1) % diag_every == 0
+        ):
+            _mz_emit_train_diag[REP, PRED, B, OBS, ACT, BINS, L](
+                ctx, rep, pred, d_diag_obs, d_diag_z, d_diag_pred,
+                h_diag_pred, t_obs0, t_pol, t_val, l_parts,
+                v_min, v_max, last_loss, it + 1, logger.value(),
+            )
 
         # ── reanalyze: refresh one stored position with a fresh search ──
         # Re-search the stored obs with the current on-device nets (noisy
@@ -338,6 +413,10 @@ def run_muzero_selfplay_gpu_device[
                 eval_sum += eret
             var eval_avg = eval_sum / Float64(eval_episodes)
             print("  [eval] step", it + 1, "greedy_return", eval_avg)
+            if logger:
+                logger.value()[].log_scalar(
+                    String("eval_return"), eval_avg, it + 1
+                )
             # restart a clean training episode (eval clobbered ``env``)
             e_obs.clear(); e_act.clear(); e_rew.clear()
             e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
@@ -364,8 +443,33 @@ def run_muzero_selfplay_gpu_device[
                 "eps", rb.num_episodes(), "avg_return(10)", avg,
             )
 
+        # ── report_every: episode-return / replay status to the logger ──
+        if (
+            logger
+            and report_every > 0
+            and it >= learning_starts
+            and (it + 1) % report_every == 0
+        ):
+            var ravg = 0.0
+            var rcnt = 0
+            var rlo = len(ep_returns) - 10
+            if rlo < 0:
+                rlo = 0
+            for e in range(rlo, len(ep_returns)):
+                ravg += ep_returns[e]
+                rcnt += 1
+            if rcnt > 0:
+                ravg /= Float64(rcnt)
+            var rn = List[String]()
+            var rv = List[Float64]()
+            rn.append(String("avg_return")); rv.append(ravg)
+            rn.append(String("episodes")); rv.append(Float64(rb.num_episodes()))
+            rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
+            logger.value()[].log_scalars(rn, rv, it + 1)
+
     t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     h_obs.free(); h_pol.free(); h_val.free()
+    l_parts.free(); h_diag_pred.free()
     return last_loss
 
 
@@ -385,6 +489,7 @@ def run_muzero_gumbel_selfplay_gpu[
     B: Int,
     K: Int,
     N: Int,
+    L: Logger = NoOpLogger,
 ](
     ctx: DeviceContext,
     mut env: ENV,
@@ -407,6 +512,9 @@ def run_muzero_gumbel_selfplay_gpu[
     reanalyze_every: Int = 0,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
+    diag_every: Int = 0,
+    report_every: Int = 0,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
 ) raises -> Float64:
     """Gumbel MuZero: same loop as `run_muzero_selfplay_gpu_device` but the
@@ -437,6 +545,13 @@ def run_muzero_gumbel_selfplay_gpu[
     var t_rew = _a(K * B)
 
     var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
+
+    # logger scratch: per-component loss split + root-prediction probe (D2H).
+    var l_parts = _a(3)
+    var d_diag_obs = ctx.enqueue_create_buffer[DT](B * OBS)
+    var d_diag_z = ctx.enqueue_create_buffer[DT](B * LATENT)
+    var d_diag_pred = ctx.enqueue_create_buffer[DT](B * (ACT + BINS))
+    var h_diag_pred = _a(B * (ACT + BINS))
 
     var e_obs = List[Scalar[DT]]()
     var e_act = List[Scalar[DT]]()
@@ -556,8 +671,23 @@ def run_muzero_gumbel_selfplay_gpu[
                         scratch,
                         t_obs0, t_act, t_pol, t_val, t_rew,
                         v_min, v_max, value_coef,
+                        loss_parts=l_parts,
                     )
                 )
+
+        # ── per-batch diagnostics → logger (root pred re-forwarded) ──
+        if (
+            logger
+            and diag_every > 0
+            and it >= learning_starts
+            and rb.num_episodes() > 0
+            and (it + 1) % diag_every == 0
+        ):
+            _mz_emit_train_diag[REP, PRED, B, OBS, ACT, BINS, L](
+                ctx, rep, pred, d_diag_obs, d_diag_z, d_diag_pred,
+                h_diag_pred, t_obs0, t_pol, t_val, l_parts,
+                v_min, v_max, last_loss, it + 1, logger.value(),
+            )
 
         # ── reanalyze: refresh one stored position with a fresh search ──
         if (
@@ -622,6 +752,10 @@ def run_muzero_gumbel_selfplay_gpu[
                 eval_sum += eret
             var eval_avg = eval_sum / Float64(eval_episodes)
             print("  [eval] step", it + 1, "greedy_return", eval_avg)
+            if logger:
+                logger.value()[].log_scalar(
+                    String("eval_return"), eval_avg, it + 1
+                )
             e_obs.clear(); e_act.clear(); e_rew.clear()
             e_pol.clear(); e_val.clear(); e_tp.clear(); e_legal.clear()
             ep_len = 0
@@ -647,6 +781,31 @@ def run_muzero_gumbel_selfplay_gpu[
                 "eps", rb.num_episodes(), "avg_return(10)", avg,
             )
 
+        # ── report_every: episode-return / replay status to the logger ──
+        if (
+            logger
+            and report_every > 0
+            and it >= learning_starts
+            and (it + 1) % report_every == 0
+        ):
+            var ravg = 0.0
+            var rcnt = 0
+            var rlo = len(ep_returns) - 10
+            if rlo < 0:
+                rlo = 0
+            for e in range(rlo, len(ep_returns)):
+                ravg += ep_returns[e]
+                rcnt += 1
+            if rcnt > 0:
+                ravg /= Float64(rcnt)
+            var rn = List[String]()
+            var rv = List[Float64]()
+            rn.append(String("avg_return")); rv.append(ravg)
+            rn.append(String("episodes")); rv.append(Float64(rb.num_episodes()))
+            rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
+            logger.value()[].log_scalars(rn, rv, it + 1)
+
     t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     h_obs.free(); h_pol.free(); h_val.free()
+    l_parts.free(); h_diag_pred.free()
     return last_loss
