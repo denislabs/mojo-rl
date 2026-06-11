@@ -1270,6 +1270,7 @@ def _cycle_pixel(
 
 
 
+@no_inline
 def run_frame_cycle_accurate[
     RENDER: Bool = True
 ](
@@ -1279,6 +1280,18 @@ def run_frame_cycle_accurate[
     frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
 ):
     """Cycle-accurate frame: CPU and TIA in lockstep, per-color-clock collision.
+
+    `@no_inline` (compile-memory critical): this is by far the largest
+    function in the program — ~220K lines of LLVM IR per instantiation,
+    because the `@always_inline` 405-line `execute_one` opcode dispatch is
+    inlined across every instruction of every scanline. `_step_obs_pixel`
+    calls it twice per env step; without this boundary `-O3` fuses both
+    copies into one ~440K-line function, and optimizing a function that size
+    alongside the CNN GPU training graph peaks the compiler at ~43 GB (OOMs a
+    16 GB host). Kept out-of-line it stays one ~220K function — exactly how
+    the standalone Atari player compiles it — so the combined build fits.
+    Called once per emulated frame: a single non-inlined call is
+    runtime-negligible against the thousands of CPU instructions it runs.
 
     One VSYNC-aligned frame. The TIA advances exactly 3 color clocks per CPU
     cycle; each instruction's logged TIA writes are replayed at their exact clock
