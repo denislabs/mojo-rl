@@ -4,10 +4,11 @@ Identical telemetry/arena/eval harness to `connect_four_alphazero_v2.mojo`
 (same minimax+random MCTS evals, arena gating, augmentation, logger, optimizer
 stability settings) with ONLY the self-play planner swapped to Gumbel AlphaZero
 via `train_arena_gumbel`: Gumbel-Top-k roots + Sequential Halving + improved-
-policy targets at 256 sims/move (vs PUCT's 500). The original 64-sim
-"low-budget" setting — where Gumbel's policy-improvement guarantee lives and
-where the TTT gate beat the PUCT baseline 8-vs-24 losses at equal sims —
-proved below Connect Four's tactical floor (see the NUM_SIMS note below).
+policy targets at 64 sims/move (vs PUCT's 500, ~8× less search) — the
+low-budget regime where Gumbel's policy-improvement guarantee lives (the TTT
+gate beat the PUCT baseline 8-vs-24 losses at equal sims). A 256-sim run
+validated the operator post-σ-fix; see the NUM_SIMS note below for the
+budget history and the early-indicator criteria for this 64-sim run.
 
 Second-generation port of `connect_four_alphazero.mojo`. Uses the config-free
 nn2 net torsos (`AZConnectFourResNet` — conv stem → 5 identity-skip ResBlocks →
@@ -111,20 +112,21 @@ def main() raises:
         Env,
         Net,
         N_ENVS=64,
-        # 64 sims (the "Gumbel low-budget" setting) proved BELOW Connect
-        # Four's tactical floor: a 10k-move run with fully healthy numerics
-        # (nanpol/skiptgt/guard all 0, KL gap 0.14 flat) showed the improved-
-        # policy targets getting SOFTER over time (target entropy 0.94→0.99)
-        # and arenas accepting at a bare ~58% — the net distilled the search
-        # perfectly, but 64 sims / 4 root candidates ≈ 16-32 Q-samples per
-        # candidate gave σ(completed_Q) ≈ noise, so target ≈ own policy and
-        # external strength stayed flat (vs Random ~54-74% no trend, 0% vs
-        # 5-ply minimax — refuting 5-ply tactics needs lookahead a 64-sim
-        # 7-wide tree can't provide; legacy AlphaZero.jl C4 used 600 sims).
-        # 256 sims = 4× the Q budget per candidate. Watch target entropy FALL
-        # and target max-prob climb past ~0.7 in the first ~4k moves.
-        NUM_SIMS=256,
-        MAX_NODES=512,
+        # Sim-budget history. 64 sims first looked "below C4's tactical
+        # floor" (flat targets, 0% vs minimax) — but the real culprit was the
+        # σ(completed_Q) tree-global normalization bug (fixed in the Gumbel
+        # planner: per-node completed-Q rescale, mctx semantics), which made
+        # 64 and 256 sims IDENTICALLY inert. Post-fix, 256 sims validated the
+        # operator: target entropy 0.94→0.23, arena #1 at 81%, Minimax-D5
+        # beaten 128-0 both colors by move 8k. Now back to 64 sims — the
+        # low-budget regime where Gumbel's policy-improvement guarantee
+        # actually lives (~4× faster per move; 16+ visits/candidate, σ ≈ 8
+        # nats, still logit-dominant). Watch target entropy in the first ~2k
+        # moves: diving below ~0.5 like the 256 run ⇒ the operator works at
+        # this budget; sitting high ⇒ too thin, try 128. (256-sim partial
+        # baseline: 12k moves, promo 4, W128 vs minimax from move 6k.)
+        NUM_SIMS=64,
+        MAX_NODES=256,
         BATCH=128,
         CAP=1_000_000,
         MAX_TRAJ=42,
