@@ -355,6 +355,7 @@ def run_alphazero_selfplay_arena_gumbel[
     var ep_steps_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)  # per-env ply
     var act_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)  # sampled actions
     var legal_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * ACT)
+    var states_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * STATE)  # diag
     ctx.synchronize()
 
     # ── Host trajectory storage (per-env in-progress game) ──
@@ -389,6 +390,12 @@ def run_alphazero_selfplay_arena_gumbel[
     var nan_localized = False    # one-time NaN-source report guard
     var promotions = 0
     var total_games = 0          # cumulative finished self-play games
+    # ── Self-play health diagnostics (reset each report) ──
+    var games_prev = 0           # total_games at the previous report
+    var period_guard_hits = 0    # self-play actions where the legality guard
+    #                              had to override an illegal/degenerate pick
+    var period_nonfinite_pol = 0 # (env×move) count with a non-finite search
+    #                              policy row (eval-mode net emitting NaN/inf)
 
     # Effective reporting cadence: explicit `report_every`, else piggy-back on
     # the arena cadence (0 ⇒ no periodic eval/print/log at all).
@@ -443,6 +450,12 @@ def run_alphazero_selfplay_arena_gumbel[
         #     improved policy is legal-masked by the planner.
         for e in range(N_ENVS):
             var ply = Int(Float64(ep_steps_h.unsafe_ptr()[e]))
+            # DIAG: flag a non-finite search-policy row (eval-mode net NaN/inf).
+            for a in range(ACT):
+                var pv = Float64(pol_h.unsafe_ptr()[e * ACT + a])
+                if pv - pv != 0.0:
+                    period_nonfinite_pol += 1
+                    break
             var a_sel = -1
             if ply < selfplay_open_plies:
                 # Opening diversity: uniform over LEGAL actions.
@@ -497,6 +510,7 @@ def run_alphazero_selfplay_arena_gumbel[
                 a_sel < 0
                 or Float64(legal_h.unsafe_ptr()[e * ACT + a_sel]) <= 0.5
             ):
+                period_guard_hits += 1   # DIAG: policy wanted an illegal move
                 var bestl = -1
                 var bvl = -1.0e30
                 for a in range(ACT):
@@ -697,11 +711,48 @@ def run_alphazero_selfplay_arena_gumbel[
             names.append(String("promotions"))
             values.append(Float64(promotions))
 
+            # ── Self-play health diagnostics ──
+            # games_delta: finished self-play games since the last report. If
+            #   this hits 0 while the loop keeps running, self-play has STALLED
+            #   (no new data → plateau) — the decisive signal.
+            # guard_hits: how many played actions the legality guard had to
+            #   correct (policy wanted an illegal move). High → the −inf-logit
+            #   illegal-argmax pathology is firing.
+            # nonfinite_pol: (env×move) with a non-finite search policy
+            #   (eval-mode net emitting NaN/inf).
+            # state_nan: NaN cells in the persistent self-play state buffer
+            #   (corruption that would break done-detection / stepping).
+            var games_delta = total_games - games_prev
+            ctx.enqueue_copy(states_h, states)
+            ctx.synchronize()
+            var state_nan = 0
+            for s in range(N_ENVS * STATE):
+                var sv = Float64(states_h.unsafe_ptr()[s])
+                if sv - sv != 0.0:
+                    state_nan += 1
+            names.append(String("games_delta"))
+            values.append(Float64(games_delta))
+            names.append(String("selfplay_guard_hits"))
+            values.append(Float64(period_guard_hits))
+            names.append(String("selfplay_nonfinite_pol"))
+            values.append(Float64(period_nonfinite_pol))
+            names.append(String("selfplay_state_nan"))
+            values.append(Float64(state_nan))
+
             var line = String("  move ") + String(it + 1)
             line += " | games " + String(total_games)
+            line += " (+" + String(games_delta) + ")"
             line += " | loss " + String(last_loss)
             line += " | replay " + String(len(replay))
             line += " | promo " + String(promotions)
+            line += " | sp[guard " + String(period_guard_hits)
+            line += " nanpol " + String(period_nonfinite_pol)
+            line += " stnan " + String(state_nan) + "]"
+
+            # Reset the per-period self-play counters.
+            games_prev = total_games
+            period_guard_hits = 0
+            period_nonfinite_pol = 0
 
             if do_eval:
                 var e1 = _eval_both_colors[
