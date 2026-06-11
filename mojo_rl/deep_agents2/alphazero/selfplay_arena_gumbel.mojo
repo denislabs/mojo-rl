@@ -110,7 +110,6 @@ def append_az_train_diagnostics[ACT: Int, BATCH: Int](
     NaN/inf entries are dropped by the logger's own guard, so no clamping here.
     """
     comptime W = ACT + 1
-    var n = Float64(BATCH)
     var ce_sum: Float64 = 0.0
     var ent_sum: Float64 = 0.0
     var vmse_sum: Float64 = 0.0
@@ -119,8 +118,22 @@ def append_az_train_diagnostics[ACT: Int, BATCH: Int](
     var tmax_sum: Float64 = 0.0
     var vt_sum: Float64 = 0.0
     var vt_pos = 0
+    var n_fin = 0
     for b in range(BATCH):
         var base = b * W
+
+        # Skip rows whose net output is non-finite so a single bad row does not
+        # NaN-poison the whole batch mean (the logger would then drop it, leaving
+        # a dashboard gap). `x - x == 0` is True iff x is finite.
+        var row_finite = True
+        for j in range(W):
+            var pj = Float64(pred[base + j])
+            if pj - pj != 0.0:
+                row_finite = False
+                break
+        if not row_finite:
+            continue
+        n_fin += 1
 
         # Policy: softmax(logits) → CE vs target π, plus pred-policy entropy.
         var maxl = Float64(pred[base])
@@ -169,6 +182,10 @@ def append_az_train_diagnostics[ACT: Int, BATCH: Int](
         if z > 0.5:
             vt_pos += 1
 
+    # All means are over finite rows only (n_fin); if the whole batch was
+    # non-finite, fall back to 1 to avoid a divide-by-zero (the sums are 0 →
+    # zeros logged, not NaNs).
+    var n = Float64(n_fin) if n_fin > 0 else 1.0
     var policy_ce = ce_sum / n
     var target_entropy = tent_sum / n
     names.append(String("policy_ce"))
@@ -376,6 +393,7 @@ def run_alphazero_selfplay_arena_gumbel[
 
     var az_rng = seed ^ UInt64(0x9E3779B97F4A7C15)
     var last_loss: Float64 = 0.0
+    var nan_localized = False    # one-time NaN-source report guard
     var promotions = 0
     var total_games = 0          # cumulative finished self-play games
 
@@ -528,10 +546,71 @@ def run_alphazero_selfplay_arena_gumbel[
                 opt.step["gpu", M=NET](learner)
             ctx.enqueue_copy(loss_h, tb_loss)
             ctx.synchronize()
+            # Average over FINITE rows only: a single non-finite row otherwise
+            # poisons the whole reported mean (and the diagnostic curves the
+            # logger then drops), reading as a dashboard "collapse" even when
+            # training is healthy. `x - x == 0` is True iff x is finite (False
+            # for NaN and ±inf).
             var ml: Float64 = 0.0
+            var n_fin = 0
+            var n_bad = 0
             for b in range(BATCH):
-                ml += Float64(loss_h.unsafe_ptr()[b])
-            last_loss = ml / Float64(BATCH)
+                var lv = Float64(loss_h.unsafe_ptr()[b])
+                if lv - lv == 0.0:
+                    ml += lv
+                    n_fin += 1
+                else:
+                    n_bad += 1
+            if n_fin > 0:
+                last_loss = ml / Float64(n_fin)   # else keep prior finite value
+
+            # One-time NaN localizer. A non-finite train loss is structurally
+            # impossible from finite inputs (targets are softmax-normalized, obs
+            # is one-hot, the loss uses a numerically-stable log-sum-exp), so the
+            # first occurrence pulls `pred` once and reports which buffer holds
+            # the offender — obs / target / policy-logit / value — plus the
+            # finite-logit magnitude range. Pins the source instead of guessing.
+            if n_bad > 0 and not nan_localized:
+                nan_localized = True
+                var pred_src = graph.node_out_ptr["pred"]()
+                var pdev = DeviceBuffer[DT](
+                    ctx, pred_src, BATCH * W, owning=False
+                )
+                ctx.enqueue_copy(pred_h, pdev)
+                ctx.synchronize()
+                var obs_bad = 0
+                var tgt_bad = 0
+                var logit_bad = 0
+                var val_bad = 0
+                var lmin: Float64 = 1e30
+                var lmax: Float64 = -1e30
+                for b in range(BATCH):
+                    for j in range(OBS):
+                        var ov = Float64(tb_obs_h.unsafe_ptr()[b * OBS + j])
+                        if ov - ov != 0.0:
+                            obs_bad += 1
+                    for j in range(W):
+                        var tvv = Float64(tb_tgt_h.unsafe_ptr()[b * W + j])
+                        if tvv - tvv != 0.0:
+                            tgt_bad += 1
+                    for a in range(ACT):
+                        var pl = Float64(pred_h.unsafe_ptr()[b * W + a])
+                        if pl - pl != 0.0:
+                            logit_bad += 1
+                        else:
+                            if pl < lmin:
+                                lmin = pl
+                            if pl > lmax:
+                                lmax = pl
+                    var pv = Float64(pred_h.unsafe_ptr()[b * W + ACT])
+                    if pv - pv != 0.0:
+                        val_bad += 1
+                print(
+                    "  [nan-localizer] move", it + 1, "| bad_loss_rows", n_bad,
+                    "of", BATCH, "| obs_bad", obs_bad, "| tgt_bad", tgt_bad,
+                    "| logit_bad", logit_bad, "| val_bad", val_bad,
+                    "| finite_logit_range [", lmin, ",", lmax, "]",
+                )
 
             # 6b. Dense per-batch training diagnostics (legacy parity), on the
             #     train axis and decoupled from the expensive periodic eval. The
