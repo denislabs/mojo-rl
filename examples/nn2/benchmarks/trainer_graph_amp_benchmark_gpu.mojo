@@ -1,33 +1,30 @@
-"""Trainer benchmark: CUDA-graph capture × AMP (fp32 vs bf16) on a GPU step.
+"""Trainer benchmark: AMP (fp32 vs bf16) across model sizes, + CUDA-graph hook.
 
-Measures the per-step throughput of the nn2 `Trainer` on an MLP MNIST step
-under four configurations:
+Measures per-step train throughput of the nn2 `Trainer` and how the AMP
+policy (`NoAMP` = all fp32 vs `Bf16Compute` = bf16 matmul compute, fp32
+master weights / accumulators — `mojo_rl/nn2/core/amp.mojo`) pays off as the
+matmuls grow.
 
-    fp32  eager   |  fp32  graph
-    bf16  eager   |  bf16  graph
+Two sweeps, all on one fixed MNIST mini-batch (loaded into the trainer's
+device buffers once — isolates train-step cost from data movement):
 
-  - **eager**: each step enqueues its kernels on the Mojo stream directly.
-  - **graph**: the first step is captured into a CUDA graph via
-    `maybe_capture_replay`; every later step is a single graph replay
-    (no per-kernel launch overhead).
-  - **fp32 / bf16**: the `Trainer`'s `POLICY` comptime param — `NoAMP`
-    (all fp32) vs `Bf16Compute` (bf16 matmul compute, fp32 master weights /
-    accumulators). See `mojo_rl/nn2/core/amp.mojo`.
+  1. **MLP width sweep** — 784→H→H/2→10 for H in {256, 1024, 4096}. bf16 is a
+     net LOSS on the smallest net (the per-layer fp32→bf16 / bf16→fp32 cast
+     kernels cost more than the tiny GEMM saves) and should overtake fp32 as H
+     grows and the GEMMs get tensor-core-bound. This sweep finds the crossover.
 
-The benchmark trains repeatedly on ONE fixed mini-batch (loaded into the
-trainer's device buffers once). That isolates the train-step cost — exactly
-what CUDA-graph capture targets (kernel-launch overhead) — from data
-movement / shuffling.
+  2. **LeNet conv** — Conv(1→16,5,s2)→Conv(16→32,5,s2)→Flatten→Linear. NOTE:
+     nn2 `Conv2D` has NO bf16 path yet (it ignores POLICY and always runs the
+     fp32 `max_matmul`), so AMP here only touches the final `Linear`. Expect
+     fp32 ≈ bf16 — the result flags "add a bf16 Conv2D path" as the next lever,
+     not a win.
 
-Platform note: real CUDA-graph capture/replay requires NVIDIA. On Apple /
-non-NVIDIA, `maybe_capture_replay` is a compile-time no-op and the "graph"
-columns run eagerly (so eager ≈ graph there) — the example still compiles
-and runs as a correctness smoke for the capturable code path.
+Larger BATCH also enlarges the GEMM M dim (more AMP benefit); BATCH=512 here.
 
 Run (NVIDIA CUDA):
     pixi run -e nvidia mojo run -I . \
         examples/nn2/benchmarks/trainer_graph_amp_benchmark_gpu.mojo
-Run (Apple Metal — eager-only smoke):
+Run (Apple Metal — note: Metal has no bf16 tensor cores, so bf16 looks slow):
     pixi run -e apple mojo run -I . \
         examples/nn2/benchmarks/trainer_graph_amp_benchmark_gpu.mojo
 """
@@ -38,9 +35,11 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.datasets import MNIST
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core import AMPPolicy, NoAMP, Bf16Compute
+from mojo_rl.nn2.core import Module, AMPPolicy, NoAMP, Bf16Compute
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
+from mojo_rl.nn2.primitives.conv2d import Conv2D
+from mojo_rl.nn2.primitives.flatten import Flatten
 from mojo_rl.nn2.combinators import Sequential
 from mojo_rl.nn2.loss import CrossEntropyLoss
 from mojo_rl.nn2.optimizer import Adam
@@ -50,10 +49,8 @@ from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 
 
 comptime IN_DIM = 784
-comptime H1 = 256
-comptime H2 = 128
 comptime N_CLASSES = 10
-comptime BATCH = 256
+comptime BATCH = 512
 comptime LR: Scalar[DT] = 0.001
 
 comptime WARMUP = 20
@@ -62,32 +59,47 @@ comptime N_STEPS = 200
 # CUDA-graph capture of the full train step is gated OFF by default: Modular's
 # `linalg.matmul` GPU path allocates a split-K reduction workspace DeviceBuffer
 # per call (freed at return), which is illegal during CUDA stream capture and
-# aborts (`AsyncRT_DeviceBuffer_release`). The eager fp32-vs-bf16 (AMP) columns
-# below are unaffected and run on any GPU. Flip this to True only on a build
-# whose matmul path is allocation-free (see notes at end of file).
+# aborts (`AsyncRT_DeviceBuffer_release`). The eager AMP columns are unaffected
+# and run on any GPU. See the notes at the end of the file to enable.
 comptime USE_CUDA_GRAPH = False
 
-comptime Net = Sequential[
-    Linear[IN_DIM, H1],
-    ReLU[H1],
-    Linear[H1, H2],
-    ReLU[H2],
-    Linear[H2, N_CLASSES],
+# ── Networks (all flat IN_DIM=784 → N_CLASSES=10; Conv2D reshapes internally) ──
+comptime MLP_S = Sequential[
+    Linear[IN_DIM, 256], ReLU[256],
+    Linear[256, 128], ReLU[128],
+    Linear[128, N_CLASSES],
+]
+comptime MLP_M = Sequential[
+    Linear[IN_DIM, 1024], ReLU[1024],
+    Linear[1024, 512], ReLU[512],
+    Linear[512, N_CLASSES],
+]
+comptime MLP_L = Sequential[
+    Linear[IN_DIM, 4096], ReLU[4096],
+    Linear[4096, 1024], ReLU[1024],
+    Linear[1024, N_CLASSES],
+]
+comptime CONV = Sequential[
+    Conv2D[1, 16, 5, 2, 0, 28, 28], ReLU[16 * 12 * 12],
+    Conv2D[16, 32, 5, 2, 0, 12, 12], ReLU[32 * 4 * 4],
+    Flatten[32 * 4 * 4],
+    Linear[32 * 4 * 4, N_CLASSES],
 ]
 
 
-def run_policy[
-    POLICY: AMPPolicy
+def bench_net[
+    NET: Module, POLICY: AMPPolicy
 ](
     ctx: DeviceContext,
     batch_x: List[Scalar[DT]],
     batch_y: List[Scalar[DT]],
-    label: String,
-) raises:
-    """Build a trainer with the given AMP policy, load the fixed batch, then
-    time `N_STEPS` train steps eagerly and via CUDA-graph replay."""
+) raises -> Float64:
+    """Build a trainer (given net + AMP policy), load the fixed batch, time
+    N_STEPS eager device steps, and return elapsed seconds. When
+    USE_CUDA_GRAPH is on, also captures+replays the step and prints a graph
+    line (see top-of-file note on why it's off by default)."""
     var trainer = Trainer[
-        Net,
+        NET,
         Adam,
         CrossEntropyLoss[N_CLASSES],
         BATCH,
@@ -97,7 +109,6 @@ def run_policy[
     trainer.optim.lr = LR
     trainer.load_fixed_batch(batch_x, batch_y)
 
-    # ---- eager (always runs; the AMP fp32-vs-bf16 comparison) ----
     for _ in range(WARMUP):
         trainer.train_step_device()
     ctx.synchronize()
@@ -106,19 +117,8 @@ def run_policy[
         trainer.train_step_device()
     ctx.synchronize()
     var eager_s = Float64(perf_counter_ns() - t0) / 1e9
-    print(
-        label
-        + "  | eager "
-        + String(eager_s)
-        + "s ("
-        + String(Float64(N_STEPS) / eager_s)
-        + " steps/s)"
-    )
 
-    # ---- graph (opt-in; needs an allocation-free matmul — see top of file) ----
     comptime if USE_CUDA_GRAPH:
-        # `_step` is the captured body — one pure-device train step. The first
-        # `maybe_capture_replay` call captures it; the rest replay.
         var graph: Optional[CUDAGraph] = None
 
         def _step() capturing raises -> None:
@@ -133,15 +133,41 @@ def run_policy[
         ctx.synchronize()
         var graph_s = Float64(perf_counter_ns() - t1) / 1e9
         print(
-            label
-            + "  | graph "
+            "    graph "
             + String(graph_s)
             + "s ("
             + String(Float64(N_STEPS) / graph_s)
-            + " steps/s)  | graph speedup "
+            + " steps/s)  graph-speedup "
             + String(eager_s / graph_s)
             + "x"
         )
+    return eager_s
+
+
+def bench_pair[
+    NET: Module
+](
+    ctx: DeviceContext,
+    batch_x: List[Scalar[DT]],
+    batch_y: List[Scalar[DT]],
+    tag: String,
+) raises:
+    """Time fp32 (NoAMP) vs bf16 (Bf16Compute) for one net and print a row
+    with the bf16 speedup (>1 means bf16 is faster)."""
+    var fp32_s = bench_net[NET, NoAMP](ctx, batch_x, batch_y)
+    var bf16_s = bench_net[NET, Bf16Compute](ctx, batch_x, batch_y)
+    var fp32_sps = Float64(N_STEPS) / fp32_s
+    var bf16_sps = Float64(N_STEPS) / bf16_s
+    print(
+        tag
+        + "  | fp32 "
+        + String(fp32_sps)
+        + " steps/s  | bf16 "
+        + String(bf16_sps)
+        + " steps/s  | bf16 speedup "
+        + String(fp32_s / bf16_s)
+        + "x"
+    )
 
 
 def main() raises:
@@ -150,8 +176,8 @@ def main() raises:
     var ds = MNIST()
     var ctx = DeviceContext()
 
-    # Extract the first BATCH examples as flat host Lists: x = [BATCH, IN_DIM],
-    # y = one-hot [BATCH, N_CLASSES].
+    # One fixed BATCH of MNIST as flat host Lists, reused by every net
+    # (all share IN_DIM=784, N_CLASSES=10).
     var batch_x = List[Scalar[DT]](length=BATCH * IN_DIM, fill=Scalar[DT](0.0))
     var batch_y = List[Scalar[DT]](
         length=BATCH * N_CLASSES, fill=Scalar[DT](0.0)
@@ -164,38 +190,42 @@ def main() raises:
     print(
         "config: BATCH="
         + String(BATCH)
-        + " net=784-256-128-10  WARMUP="
+        + "  WARMUP="
         + String(WARMUP)
-        + " N_STEPS="
+        + "  N_STEPS="
         + String(N_STEPS)
+        + "  cuda_graph="
+        + String(USE_CUDA_GRAPH)
     )
-    comptime if USE_CUDA_GRAPH:
-        print("(graph capture ON — needs an allocation-free capture-path matmul)\n")
-    else:
-        print(
-            "(graph capture OFF — eager AMP fp32-vs-bf16 only; see notes at"
-            " end of file to enable)\n"
-        )
+    print("(bf16 speedup > 1 = bf16 faster; Apple Metal has no bf16 tensor cores)\n")
 
-    run_policy[NoAMP](ctx, batch_x, batch_y, "fp32")
-    run_policy[Bf16Compute](ctx, batch_x, batch_y, "bf16")
+    print("== MLP width sweep (where AMP crosses over) ==")
+    bench_pair[MLP_S](ctx, batch_x, batch_y, "mlp 784-256-128-10  ")
+    bench_pair[MLP_M](ctx, batch_x, batch_y, "mlp 784-1024-512-10 ")
+    bench_pair[MLP_L](ctx, batch_x, batch_y, "mlp 784-4096-1024-10")
+
+    print("\n== LeNet conv (Conv2D is fp32-only — AMP touches final Linear only) ==")
+    bench_pair[CONV](ctx, batch_x, batch_y, "conv lenet          ")
+
     print("\nDONE")
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# CUDA-graph capture status (USE_CUDA_GRAPH).
+# Notes.
 #
-# The Trainer step itself IS capturable: the optimizer keeps its step counter
-# and bias-correction on-device, `forward_capture` drops the loss's host
-# readback, and the step reads fixed device buffers. The remaining blocker is
-# the GEMM: `linalg.matmul` (Modular) picks a split-K reduction path for some
-# shapes and allocates a workspace `DeviceBuffer` per call, freeing it at
-# return — a `cudaFree` inside the captured stream, which aborts. Eager runs
-# tolerate it; capture does not.
+# AMP (Bf16Compute): only `Linear` has a bf16 compute path today — it casts
+# fp32 weights+inputs → bf16, runs the bf16 GEMM, casts the output back to
+# fp32 (fwd + bwd). Those casts are fixed per-call overhead, so bf16 only wins
+# once the GEMM is large enough (big hidden width and/or batch). `Conv2D`
+# ignores POLICY and always runs fp32, so a conv-heavy net shows little AMP
+# benefit until a bf16 Conv2D path is added.
 #
-# To enable graph capture, the matmul on the capture path must not allocate.
-# Two routes: (a) force `linalg.matmul` to `num_k_partitions=1` (no split-K
-# workspace) for these shapes, or (b) route `Linear` through an
-# allocation-free in-repo GEMM (`mojo_rl/nn/gpu/matmul.mojo::gpu_matmul`).
-# Once that's in place, set USE_CUDA_GRAPH=True and re-run on NVIDIA.
+# CUDA-graph capture (USE_CUDA_GRAPH): the Trainer step is capturable (Adam
+# keeps its step counter/bias-correction on-device, `forward_capture` drops the
+# loss host readback, fixed device buffers). The blocker is the GEMM:
+# `linalg.matmul` picks a split-K path for some shapes and allocs+frees a
+# workspace DeviceBuffer per call — a cudaFree inside the captured stream,
+# which aborts. To enable: make the capture-path matmul allocation-free
+# (force num_k_partitions=1, or route Linear/Conv2D through the alloc-free
+# in-repo `mojo_rl/nn/gpu/matmul.mojo::gpu_matmul`), then set USE_CUDA_GRAPH=True.
 # ──────────────────────────────────────────────────────────────────────────
