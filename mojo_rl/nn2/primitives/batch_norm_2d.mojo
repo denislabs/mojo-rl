@@ -115,10 +115,18 @@ def _bn2d_forward_train_kernel[
     var inv_std: Scalar[DT] = 1.0 / sqrt(var_ + eps)
     if t == 0:
         cache_inv_std[c] = inv_std
-        var rm = rebind[Scalar[DT]](running_mean[c])
-        var rv = rebind[Scalar[DT]](running_var[c])
-        running_mean[c] = one_m * rm + mom * mean
-        running_var[c]  = one_m * rv + mom * var_
+        # Only fold FINITE batch stats into the running averages. A float32
+        # train-mode activation blow-up makes batch mean/var non-finite; folding
+        # that in pins running_mean/var at ±inf forever, after which EVAL-mode BN
+        # computes (x - inf)·(1/√inf) = inf·0 = NaN — which silently corrupts
+        # inference (MCTS self-play → NaN improved policies → garbage training
+        # data). Skipping the non-finite update keeps the running stats at their
+        # last finite value, so eval stays finite. `x - x == 0` ⇔ x finite.
+        if (mean - mean == 0.0) and (var_ - var_ == 0.0):
+            var rm = rebind[Scalar[DT]](running_mean[c])
+            var rv = rebind[Scalar[DT]](running_var[c])
+            running_mean[c] = one_m * rm + mom * mean
+            running_var[c]  = one_m * rv + mom * var_
 
     var g = rebind[Scalar[DT]](gamma[c])
     var bt = rebind[Scalar[DT]](beta[c])

@@ -86,13 +86,15 @@ def main() raises:
     comptime ACT = 7
     # ResNet torso: conv stem → 5 ResBlocks → FC heads (128 filters), the
     # closest match to the legacy `AlphaZeroConnectFourFusedResNetConfig`.
-    # BN epsilon raised 1e-5 → 1e-3: low-diversity post-promotion self-play
+    # BN epsilon raised 1e-5 → 1e-2: low-diversity post-promotion self-play
     # batches give tiny per-channel batch variance, so the default eps lets
     # train-mode inv_std (=1/√(var+eps)) reach ~316 and amplify activations
-    # until the float32 policy logits overflow to −inf (saturating 5/7 columns
-    # to probability 0 → the policy can't explore → learning stalls right after
-    # promotion 1). eps=1e-3 caps inv_std at ~31, keeping the head finite.
-    comptime Net = AZConnectFourResNet[F=128, NB=5, FC=128, EPS=1e-3]
+    # until the float32 policy logits overflow to −inf. eps=1e-3 only halved the
+    # bad logits (640→512); eps=1e-2 caps inv_std at ~10. Paired with the BN
+    # running-stats finite-guard (batch_norm_2d/1d), which stops the train-mode
+    # blow-up from polluting the eval-mode running stats (the leak that turned
+    # every self-play policy NaN → garbage data → plateau).
+    comptime Net = AZConnectFourResNet[F=128, NB=5, FC=128, EPS=1e-2]
     comptime Env = ConnectFourEnv[DType.float64]
     # Connect Four's only board symmetry is the left↔right column flip; the
     # board is not square, so the D4 group does NOT apply (no rotations).
