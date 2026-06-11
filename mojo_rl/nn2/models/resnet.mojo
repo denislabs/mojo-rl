@@ -22,7 +22,9 @@ Provided blocks:
 """
 
 from ..primitives.conv2d import Conv2D
-from ..primitives.batch_norm_2d import BatchNorm2D
+from ..primitives.batch_norm_2d import (
+    BatchNorm2D, BN2D_DEFAULT_EPS, BN2D_DEFAULT_MOM,
+)
 from ..primitives.relu import ReLU
 from ..combinators.sequential import Sequential
 from ..combinators.residual import Residual
@@ -34,14 +36,15 @@ from ..combinators.projected_residual import ProjectedResidual
 # Pass P = (K-1)//2 so OH == H, OW == W (required by the inner Residual).
 comptime ResBlockConv2DBN[
     C: Int, K: Int, P: Int, H: Int, W: Int,
+    EPS: Float64 = BN2D_DEFAULT_EPS,
 ] = Sequential[
     Residual[
         Sequential[
             Conv2D[C, C, K, 1, P, H, W],
-            BatchNorm2D[C, H, W],
+            BatchNorm2D[C, H, W, BN2D_DEFAULT_MOM, EPS],
             ReLU[C * H * W],
             Conv2D[C, C, K, 1, P, H, W],
-            BatchNorm2D[C, H, W],
+            BatchNorm2D[C, H, W, BN2D_DEFAULT_MOM, EPS],
         ]
     ],
     ReLU[C * H * W],

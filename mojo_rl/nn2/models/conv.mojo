@@ -14,7 +14,9 @@ Provided blocks:
 """
 
 from ..primitives.conv2d import Conv2D
-from ..primitives.batch_norm_2d import BatchNorm2D
+from ..primitives.batch_norm_2d import (
+    BatchNorm2D, BN2D_DEFAULT_EPS, BN2D_DEFAULT_MOM,
+)
 from ..primitives.relu import ReLU
 from ..combinators.sequential import Sequential
 
@@ -29,8 +31,12 @@ comptime Conv2DReLU[
 
 comptime Conv2DBatchNormReLU[
     IC: Int, OC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    EPS: Float64 = BN2D_DEFAULT_EPS,
 ] = Sequential[
     Conv2D[IC, OC, K, S, P, H, W],
-    BatchNorm2D[OC, (H + 2 * P - K) // S + 1, (W + 2 * P - K) // S + 1],
+    BatchNorm2D[
+        OC, (H + 2 * P - K) // S + 1, (W + 2 * P - K) // S + 1,
+        BN2D_DEFAULT_MOM, EPS,
+    ],
     ReLU[OC * ((H + 2 * P - K) // S + 1) * ((W + 2 * P - K) // S + 1)],
 ]

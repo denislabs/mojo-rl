@@ -41,6 +41,7 @@ from mojo_rl.nn2.primitives.linear_relu import LinearReLU
 from mojo_rl.nn2.primitives.flatten import Flatten
 from mojo_rl.nn2.models.conv import Conv2DBatchNormReLU
 from mojo_rl.nn2.models.resnet import ResBlockConv2DBN
+from mojo_rl.nn2.primitives.batch_norm_2d import BN2D_DEFAULT_EPS
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -87,10 +88,13 @@ comptime AZCNNNet[
 comptime AZResNetNet[
     OBS: Int, ACT: Int, PLANES: Int, R: Int, C: Int,
     F: Int, NUM_BLOCKS: Int, FC: Int,
+    EPS: Float64 = BN2D_DEFAULT_EPS,   # BatchNorm epsilon (caps train-mode
+    #   inv_std amplification; raise to e.g. 1e-3 if a float32 torso overflows
+    #   the policy logits on low-diversity self-play batches).
 ] = Sequential[
-    Conv2DBatchNormReLU[PLANES, F, 3, 1, 1, R, C],   # stem: planes→F
-    Repeat[NUM_BLOCKS, ResBlockConv2DBN[F, 3, 1, R, C], shared=False],
-    Conv2DBatchNormReLU[F, F, 3, 1, 0, R, C],         # reduce R×C → (R-2)×(C-2)
+    Conv2DBatchNormReLU[PLANES, F, 3, 1, 1, R, C, EPS],   # stem: planes→F
+    Repeat[NUM_BLOCKS, ResBlockConv2DBN[F, 3, 1, R, C, EPS], shared=False],
+    Conv2DBatchNormReLU[F, F, 3, 1, 0, R, C, EPS],    # reduce R×C → (R-2)×(C-2)
     Flatten[F * (R - 2) * (C - 2)],
     LinearReLU[F * (R - 2) * (C - 2), FC],
     Parallel[Linear[FC, ACT], Linear[FC, 1]],
@@ -112,6 +116,7 @@ comptime AZTicTacToeResNet[F: Int = 32, NB: Int = 3, FC: Int = 64] = AZResNetNet
 comptime AZConnectFourCNN[F: Int = 64, FC: Int = 128] = AZCNNNet[
     126, 7, 3, 6, 7, F, FC
 ]
-comptime AZConnectFourResNet[F: Int = 64, NB: Int = 5, FC: Int = 128] = AZResNetNet[
-    126, 7, 3, 6, 7, F, NB, FC
-]
+comptime AZConnectFourResNet[
+    F: Int = 64, NB: Int = 5, FC: Int = 128,
+    EPS: Float64 = BN2D_DEFAULT_EPS,
+] = AZResNetNet[126, 7, 3, 6, 7, F, NB, FC, EPS]
