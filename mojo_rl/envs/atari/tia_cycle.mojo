@@ -275,17 +275,36 @@ struct BallCounter(Copyable, Movable):
     def advance_n(mut self, n: Int):
         """Advance exactly n visible ticks (== n tick() calls), discarding lit.
 
-        O(1) outside render windows (skips straight to the next decode);
-        per-tick inside them — exact by construction, it calls tick() itself.
+        O(1) per segment everywhere: outside render windows it skips straight
+        to the next decode; INSIDE them it crosses the window in closed form
+        (rc increments once per tick until it reaches `width`), bounded by the
+        next decode tick — bit-exact vs per-tick by the property test.
         Valid only while the config (width/vdel/enables) is static, i.e. the
         bulk fast path's no-pending-writes precondition."""
         var rem = n
         while rem > 0:
-            if self.is_rendering:
-                _ = self.tick()
-                rem -= 1
-                continue
             var d = (BALL_DECODE - self.counter + H_PIXEL) % H_PIXEL
+            if self.is_rendering:
+                if d == 0:
+                    # Decode tick restarts the window — process exactly.
+                    _ = self.tick()
+                    rem -= 1
+                    continue
+                var k = min(rem, d)
+                # max(1, ·): width may have SHRUNK below rc since the window
+                # started (CTRLPF write between bulk spans) — the reference
+                # tick still increments rc once before ending the window.
+                var t_end = max(1, self.width - self.render_counter)
+                if t_end <= k:
+                    # Window ends inside the segment; the remaining ticks
+                    # (no decode within k) only advance the counter.
+                    self.render_counter += t_end
+                    self.is_rendering = False
+                else:
+                    self.render_counter += k
+                self.counter = (self.counter + k) % H_PIXEL
+                rem -= k
+                continue
             if d >= rem:
                 self.counter = (self.counter + rem) % H_PIXEL
                 return
@@ -506,14 +525,59 @@ struct PlayerCounter(Copyable, Movable):
         return lit
 
     def advance_n(mut self, n: Int):
-        """Advance exactly n visible ticks, discarding lit (see BallCounter)."""
+        """Advance exactly n visible ticks, discarding lit (see BallCounter).
+
+        Render windows are crossed in closed form: per tick() the window
+        advances `render_counter` and bumps `sample_counter` when
+        rc > 0 (divider 1) / rc > 1 and (rc-1) % divider == 0 (divider
+        2/4), ending when sample_counter exceeds 7. Both the window-end
+        tick index and the increment count over k ticks have exact
+        arithmetic forms; segments are bounded by the next decode tick
+        (which restarts the window and is processed via tick())."""
         var rem = n
         while rem > 0:
-            if self.is_rendering:
-                _ = self.tick()
-                rem -= 1
-                continue
             var d = decode_offset(self.nusiz_copies, self.counter)
+            if self.is_rendering:
+                if d == 0:
+                    _ = self.tick()  # decode tick restarts the window
+                    rem -= 1
+                    continue
+                var k = min(rem, d)
+                var rc0 = self.render_counter
+                var need = 8 - self.sample_counter
+                if self.divider == 1:
+                    # Gate: rc0 + t > 0 → the first max(0, -rc0) ticks are
+                    # silent, then one increment per tick.
+                    var t_end = max(0, -rc0) + need
+                    if t_end <= k:
+                        self.render_counter = rc0 + t_end
+                        self.sample_counter = 8
+                        self.is_rendering = False
+                    else:
+                        self.render_counter = rc0 + k
+                        self.sample_counter += k - min(k, max(0, -rc0))
+                else:
+                    # Gate: m = rc0 + t - 1 must be a positive multiple of
+                    # `divider`. First valid m is the smallest multiple of
+                    # divider >= max(rc0, 1); the need-th is first + (need-1)·divider.
+                    var first_m = (
+                        (max(rc0, 1) + self.divider - 1) // self.divider
+                    ) * self.divider
+                    var t_end = first_m + (need - 1) * self.divider - rc0 + 1
+                    if t_end <= k:
+                        self.render_counter = rc0 + t_end
+                        self.sample_counter = 8
+                        self.is_rendering = False
+                    else:
+                        self.render_counter = rc0 + k
+                        var last_m = rc0 + k - 1
+                        if last_m >= first_m:
+                            self.sample_counter += (
+                                last_m - first_m
+                            ) // self.divider + 1
+                self.counter = (self.counter + k) % H_PIXEL
+                rem -= k
+                continue
             if d >= rem:
                 self.counter = (self.counter + rem) % H_PIXEL
                 return
@@ -628,12 +692,34 @@ struct MissileCounter(Copyable, Movable):
         return lit
 
     def advance_n(mut self, n: Int):
-        """Advance exactly n visible ticks, discarding lit (see BallCounter)."""
+        """Advance exactly n visible ticks, discarding lit (see BallCounter).
+
+        Render windows are crossed in closed form like the ball (rc counts
+        to `width`); RESMP suppresses the decode, so a resmp'd missile
+        advances unbounded by decode ticks."""
         var rem = n
         while rem > 0:
             if self.is_rendering:
-                _ = self.tick()
-                rem -= 1
+                var d: Int
+                if self.resmp:
+                    d = rem  # decode suppressed — no restart possible
+                else:
+                    d = decode_offset(self.nusiz_copies, self.counter)
+                    if d == 0:
+                        _ = self.tick()  # decode tick restarts the window
+                        rem -= 1
+                        continue
+                var k = min(rem, d)
+                # max(1, ·): width may have shrunk below rc mid-window (NUSIZ
+                # write between bulk spans) — see BallCounter.
+                var t_end = max(1, self.width - self.render_counter)
+                if t_end <= k:
+                    self.render_counter += t_end
+                    self.is_rendering = False
+                else:
+                    self.render_counter += k
+                self.counter = (self.counter + k) % H_PIXEL
+                rem -= k
                 continue
             if self.resmp:
                 # Decode suppressed and not rendering: pure counter advance.

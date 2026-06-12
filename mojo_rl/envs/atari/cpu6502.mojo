@@ -882,6 +882,34 @@ def cpu_reset(
     var hi = UInt16(mem_read(state, rom, rom_size, UInt16(0xFFFD)))
     state.pc = (hi << 8) | lo
 
+    # Scan unbanked carts ONCE for INTIM wait-loop sites (see
+    # _intim_wait_skip_cycles): `AD lo hi D0 FB` where the absolute address
+    # decodes to the RIOT INTIM register (mirrors included, same decode as
+    # mem_read/riot_read). The static scan is what makes the runner's
+    # per-instruction fast-forward probe two PC compares instead of five
+    # mem_reads. ≤4K carts have no bankswitch, so ROM offsets ≡ PC & mask.
+    state.ff_site0 = 0xFFFF
+    state.ff_site1 = 0xFFFF
+    if rom_size <= 4096:
+        for i in range(rom_size - 4):
+            if (
+                rom[i] != 0xAD
+                or rom[i + 3] != 0xD0
+                or rom[i + 4] != 0xFB
+            ):
+                continue
+            var a = ((Int(rom[i + 2]) << 8) | Int(rom[i + 1])) & 0x1FFF
+            if (
+                (a & 0x1000) == 0
+                and (a & 0x0080) != 0
+                and (a & 0x0200) != 0
+                and (a & 0x07) == 4
+            ):
+                if state.ff_site0 == 0xFFFF:
+                    state.ff_site0 = UInt16(i)
+                elif state.ff_site1 == 0xFFFF:
+                    state.ff_site1 = UInt16(i)
+
 
 # ============================================================================
 # Run One Frame
@@ -1286,6 +1314,68 @@ def _cycle_pixel(
 
 
 @no_inline
+@always_inline
+def _intim_wait_skip_cycles(state: AtariState, rom_size: Int) -> Int:
+    """INTIM wait-loop fast-forward: if PC sits on a pre-scanned
+    `LDA <INTIM abs> / BNE -5` timer-poll site (`AD lo hi D0 FB` — the
+    standard vblank/overscan wait; Pong has two), return the CPU cycles
+    of the taken iterations to skip as one pseudo-instruction; 0 means
+    execute normally.
+
+    Sites are found by a one-time ROM scan in `cpu_reset` (unbanked ≤4K
+    carts only — static instruction stream, no hotspots), so this probe
+    is two PC compares per instruction, not memory reads.
+
+    Exactness argument: a taken iteration only (a) reads INTIM
+    (side-effect free), (b) overwrites A and N/Z (both rewritten by the
+    next iteration — we always leave ≥1 taken iteration to run for
+    real), and (c) consumes cycles. So skipping K iterations ≡ advancing
+    the RIOT timer + TIA by K·L cycles, which the caller does through
+    the same per-instruction span machinery as any real instruction
+    (bulk where safe, per-clock otherwise — collisions/HMOVE stay
+    exact). K is sized so every skipped read returns nonzero (the
+    reference would also take the branch), from the closed-form
+    decrement schedule.
+
+    Guards: VSYNC inactive and DelayQueue empty (no frame-end edge can
+    occur inside the span, which would end the frame with pre-paid timer
+    cycles); timer not yet expired. Capped — long waits simply
+    re-trigger at the next loop top.
+    """
+    if (state.pc & 0x1000) == 0:
+        return 0  # PC not in cart space
+    var off = UInt16(Int(state.pc) & (rom_size - 1))
+    if off != state.ff_site0 and off != state.ff_site1:
+        return 0
+    if state.timer_value == 0:
+        return 0
+    if (state.tia_flags & VSY) != 0 or state.ctia.dq.count != 0:
+        return 0
+
+    # Taken-iteration length: LDA abs (4) + BNE taken (3, +1 if the branch
+    # target crosses a page vs the instruction after the BNE).
+    var loop_cyc = 7
+    if ((state.pc + 5) >> 8) != (state.pc >> 8):
+        loop_cyc = 8
+
+    # Cycles until INTIM reaches 0 (per riot_update_timer's schedule: the
+    # next decrement lands after interval - timer_clocks cycles, then one
+    # per interval). Reads sample the timer at loop-top (the runner applies
+    # riot_update_timer per whole instruction), so iteration j (1-based,
+    # loop-top offset (j-1)·L) is taken iff (j-1)·L < t_zero.
+    var t_first = Int(state.timer_interval) - Int(state.timer_clocks)
+    var t_zero = t_first + (Int(state.timer_value) - 1) * Int(
+        state.timer_interval
+    )
+    var taken = (t_zero - 1) // loop_cyc + 1
+    var skip = taken - 1  # leave one taken iteration to execute for real
+    if skip < 4:
+        return 0  # not worth a pseudo-instruction
+    if skip * loop_cyc > 2048:
+        skip = 2048 // loop_cyc  # cap; the loop re-triggers if still waiting
+    return skip * loop_cyc
+
+
 def run_frame_cycle_accurate[
     RENDER: Bool = True
 ](
@@ -1389,7 +1479,16 @@ def run_frame_cycle_accurate[
             cyc = 0
             wsync_pad = True
         else:
-            cyc = Int(execute_one(state, rom, rom_size))
+            # INTIM wait-loop fast-forward: skip whole taken poll iterations
+            # as one pseudo-instruction (no TIA writes, PC unchanged); the
+            # span machinery below advances the TIA exactly as for any
+            # instruction of `cyc` cycles. See _intim_wait_skip_cycles.
+            var ff = _intim_wait_skip_cycles(state, rom_size)
+            if ff > 0:
+                cyc = ff
+                state.tia_log_count = 0
+            else:
+                cyc = Int(execute_one(state, rom, rom_size))
             riot_update_timer(state, UInt32(cyc))
 
         var nclk = (CPL - (start_hctr % CPL)) if wsync_pad else cyc * 3

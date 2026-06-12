@@ -150,6 +150,14 @@ struct AtariState(Copyable, Movable):
     # at $F44F reads unmapped TIA $0F and gets 15 ONLY via this leakage.
     var data_bus: UInt8
 
+    # INTIM wait-loop fast-forward sites: physical ROM offsets of confirmed
+    # `LDA <INTIM abs> / BNE -5` poll loops, scanned ONCE in cpu_reset
+    # (unbanked ≤4K carts only — static instruction stream). 0xFFFF = empty.
+    # Lets the frame runner's fast-forward probe be two PC compares instead
+    # of five mem_reads per instruction. See _intim_wait_skip_cycles.
+    var ff_site0: UInt16
+    var ff_site1: UInt16
+
     # ========================================================================
     # Cycle-accurate TIA: per-instruction TIA write log
     # ========================================================================
@@ -258,6 +266,8 @@ struct AtariState(Copyable, Movable):
         self.paddle_pos = 128  # Center position
         self.paddle_charge = 0
         self.data_bus = 0
+        self.ff_site0 = 0xFFFF
+        self.ff_site1 = 0xFFFF
 
         # Cycle-accurate TIA write log
         self.pending_tia_write_clock = 0
