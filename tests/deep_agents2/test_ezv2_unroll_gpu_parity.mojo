@@ -215,6 +215,75 @@ def main() raises:
     assert_true(dj < ATOL, "proj param parity failed")
     assert_true(dh < ATOL, "predh param parity failed")
 
+    # ── step 2: mixed episode-boundary mask — masked parity + loss split ──
+    var cmask = _a(K * B)
+    for i in range(K * B):
+        cmask[i] = Scalar[DT](1.0) if (i % 3) != 0 else Scalar[DT](0.0)
+    var c_parts = _a(4)
+    var g_parts = _a(4)
+    var lc2 = ezv2_unroll_train_step_cpu[
+        Rep, Dyn, Pred, Proj, Predh, B, K, OBS, ACT, LATENT, BINS
+    ](
+        crep, cdyn, cpred, cproj, cpredh,
+        corep, codyn, copred, coproj, copredh,
+        obs_seq, actions, policy_tgt, value_tgt, reward_tgt,
+        VMIN, VMAX, VCOEF, CCOEF,
+        cons_mask=cmask, loss_parts=c_parts,
+    )
+    var lg2 = ezv2_unroll_train_step_gpu[
+        Rep, Dyn, Pred, Proj, Predh, B, K, OBS, ACT, LATENT, BINS
+    ](
+        ctx, gscratch, grep, gdyn, gpred, gproj, gpredh,
+        gorep, godyn, gopred, goproj, gopredh,
+        obs_seq, actions, policy_tgt, value_tgt, reward_tgt,
+        VMIN, VMAX, VCOEF, CCOEF,
+        cons_mask=cmask, loss_parts=g_parts,
+    )
+    print("  masked loss  cpu =", lc2, "  gpu =", lg2,
+          "  |diff| =", _abs(lc2 - lg2))
+    print("  masked consistency  cpu =", c_parts[3], "  gpu =", g_parts[3])
+    assert_true(_abs(lc2 - lg2) < ATOL, "masked unroll loss parity failed")
+    assert_true(
+        _abs(c_parts[3] - g_parts[3]) < ATOL,
+        "masked consistency component parity failed",
+    )
+    dj = _param_maxdiff(cproj, gproj, ctx)
+    dh = _param_maxdiff(cpredh, gpredh, ctx)
+    print("  masked post-step max|param diff|  proj =", dj, " predh =", dh)
+    assert_true(dj < ATOL, "masked proj param parity failed")
+    assert_true(dh < ATOL, "masked predh param parity failed")
+
+    # ── step 3: all-zero mask — consistency component must vanish exactly ──
+    for i in range(K * B):
+        cmask[i] = Scalar[DT](0.0)
+    _ = ezv2_unroll_train_step_cpu[
+        Rep, Dyn, Pred, Proj, Predh, B, K, OBS, ACT, LATENT, BINS
+    ](
+        crep, cdyn, cpred, cproj, cpredh,
+        corep, codyn, copred, coproj, copredh,
+        obs_seq, actions, policy_tgt, value_tgt, reward_tgt,
+        VMIN, VMAX, VCOEF, CCOEF,
+        cons_mask=cmask, loss_parts=c_parts,
+    )
+    _ = ezv2_unroll_train_step_gpu[
+        Rep, Dyn, Pred, Proj, Predh, B, K, OBS, ACT, LATENT, BINS
+    ](
+        ctx, gscratch, grep, gdyn, gpred, gproj, gpredh,
+        gorep, godyn, gopred, goproj, gopredh,
+        obs_seq, actions, policy_tgt, value_tgt, reward_tgt,
+        VMIN, VMAX, VCOEF, CCOEF,
+        cons_mask=cmask, loss_parts=g_parts,
+    )
+    print("  zero-mask consistency  cpu =", c_parts[3], "  gpu =", g_parts[3])
+    assert_true(
+        c_parts[3] == Scalar[DT](0.0), "zero-mask CPU consistency not zero"
+    )
+    assert_true(
+        g_parts[3] == Scalar[DT](0.0), "zero-mask GPU consistency not zero"
+    )
+
     obs_seq.free(); actions.free(); policy_tgt.free()
     value_tgt.free(); reward_tgt.free()
-    print("  ok — EZv2 GPU unroll matches CPU within", ATOL)
+    cmask.free(); c_parts.free(); g_parts.free()
+    print("  ok — EZv2 GPU unroll matches CPU within", ATOL,
+          "(unmasked + boundary-masked)")

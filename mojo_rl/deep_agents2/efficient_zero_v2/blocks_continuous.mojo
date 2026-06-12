@@ -90,10 +90,14 @@ def ezv2_unroll_train_step_continuous_cpu[
     soft_clamp: Scalar[DT] = Scalar[DT](5.0),
     init_std: Scalar[DT] = Scalar[DT](1.0),
     ent_scale: Scalar[DT] = Scalar[DT](5e-3),
+    cons_mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
     loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """One CPU continuous EZv2 unroll step. Returns the mean total loss. Mutates
-    all five nets via their optimizers. ``obs_seq`` is ``[K+1, B, OBS]``."""
+    all five nets via their optimizers. ``obs_seq`` is ``[K+1, B, OBS]``.
+    ``cons_mask`` is the optional ``[K, B]`` episode-boundary mask zeroing
+    consistency terms whose target obs is absorbing padding (``None`` ≡ all
+    ones) — see ``blocks.mojo::ezv2_unroll_train_step_cpu``."""
     comptime MU2 = 2 * ACT_DIM
     comptime PRED_OUT = MU2 + BINS
     comptime DYN_IN = LATENT + ACT_DIM
@@ -218,8 +222,11 @@ def ezv2_unroll_train_step_continuous_cpu[
             proj.forward["cpu", B](zk_t, output=projo_t)
             var pk_t = TileTensor(pk, row_major[B, PROJ]())
             predh.forward["cpu", B](projo_t, output=pk_t)
+            var mk = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](None)
+            if cons_mask:
+                mk = cons_mask.value() + (k - 1) * B
             var l_cons_k = consistency_loss_and_grad[B, PROJ](
-                pk, tstore + (k - 1) * B * PROJ, cscale, gpk
+                pk, tstore + (k - 1) * B * PROJ, cscale, gpk, mask=mk
             )
             loss += l_cons_k
             l_cons += l_cons_k
@@ -366,11 +373,13 @@ def ezv2_unroll_train_step_continuous_gpu[
     soft_clamp: Scalar[DT] = Scalar[DT](5.0),
     init_std: Scalar[DT] = Scalar[DT](1.0),
     ent_scale: Scalar[DT] = Scalar[DT](5e-3),
+    cons_mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
     loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """GPU continuous EZv2 K-step unroll — device mirror of
     ``ezv2_unroll_train_step_continuous_cpu`` (MuZero BPTT + SimSiam consistency
-    + squashed-Gaussian policy NLL). Same host time-major batch slabs as the CPU
+    + squashed-Gaussian policy NLL; ``cons_mask`` = the optional host ``[K, B]``
+    episode-boundary mask). Same host time-major batch slabs as the CPU
     path: ``obs_seq[K+1,B,OBS]``, ``actions[K,B,ACT_DIM]`` (action **vectors**),
     ``policy_act_tgt[K+1,B,ACT_DIM]`` (search-selected target actions),
     ``value_tgt[K+1,B]``, ``reward_tgt[K,B]``. Device + host scratch is supplied
@@ -400,6 +409,12 @@ def ezv2_unroll_train_step_continuous_gpu[
     ctx.enqueue_copy(d_pol, policy_act_tgt)
     ctx.enqueue_copy(d_val, value_tgt)
     ctx.enqueue_copy(d_rew, reward_tgt)
+    # consistency boundary mask (all-ones fallback when the caller passes none).
+    var d_cmask = scratch.d_cmask.value()
+    if cons_mask:
+        ctx.enqueue_copy(d_cmask, cons_mask.value())
+    else:
+        ctx.enqueue_copy(d_cmask, scratch.h_cmask_ones.value())
 
     var zst = scratch.d_zst.value()
     var din = scratch.d_din.value()
@@ -453,6 +468,7 @@ def ezv2_unroll_train_step_continuous_gpu[
     var p_gpk = _dp(gpk)
     var p_gproj = _dp(gproj)
     var p_gzcons = _dp(gzcons)
+    var p_cmask = _dp(d_cmask)
 
     comptime nbDIN = (B * DYN_IN + TPB - 1) // TPB
     comptime nbLAT = (B * LATENT + TPB - 1) // TPB
@@ -558,6 +574,7 @@ def ezv2_unroll_train_step_continuous_gpu[
                 _lt[B * PROJ](p_tstore + (k - 1) * B * PROJ),
                 _lt[B * PROJ](p_gpk),
                 _lt[B](p_loss + 3 * B),               # consistency block
+                _lt[B](p_cmask + (k - 1) * B),        # boundary mask row k
                 cscale, Scalar[DT](1.0),
                 grid_dim=nbB, block_dim=TPB,
             )

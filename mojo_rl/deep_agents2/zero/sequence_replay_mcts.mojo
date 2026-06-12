@@ -261,13 +261,20 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         mut policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT]
         mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
         mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
+        cons_mask: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None,                                                # [K, B]
     ):
         """EZv2 variant of ``sample_training_batch``: identical targets, but the
         observation output is the **full time-major sequence** ``obs_seq[K+1, B,
         OBS]`` (``obs_seq[0]`` is the root obs) so the SimSiam consistency loss
         can encode the real future observations. Past an episode's terminal the
         obs read is **obs-repeat absorbing** (offset clamped to ``L−1``), matching
-        the legacy consistency handling. Caller guarantees ``num_episodes() > 0``.
+        the legacy consistency handling. ``cons_mask`` (if given) receives the
+        ``[K, B]`` episode-boundary mask for the consistency loss — row ``(k-1,
+        b)`` is 1 when ``obs_seq[k]`` is a real stored observation and 0 when it
+        is the absorbing obs-repeat (the EZv2 reference zeroes those terms via
+        ``mask_batch``). Caller guarantees ``num_episodes() > 0``.
         """
         comptime HV = K + N + 1
         comptime HR = K + N
@@ -295,6 +302,13 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
                 var ob = k * B * Self.OBS + b * Self.OBS
                 for j in range(Self.OBS):
                     obs_seq[ob + j] = self.obs[slot * Self.OBS + j]
+            # consistency boundary mask: step k = 1..K is real iff s+k < L.
+            if cons_mask:
+                var cm = cons_mask.value()
+                for k in range(K):
+                    cm[k * B + b] = (
+                        Scalar[DT](1.0) if s + k + 1 < L else Scalar[DT](0.0)
+                    )
 
             for h in range(HR):
                 self._read_step[1](self.rew, e, s + h, w_rew, h)

@@ -167,6 +167,7 @@ def run_ezv2_sampled_selfplay_gpu[
     var t_pol = _a((K + 1) * B * ACT_DIM)
     var t_val = _a((K + 1) * B)
     var t_rew = _a(K * B)
+    var t_cmask = _a(K * B)   # consistency episode-boundary mask
 
     # ── persistent GPU train-step scratch (allocated once, reused per step) ──
     comptime CPRED_OUT = 2 * ACT_DIM + BINS
@@ -266,7 +267,8 @@ def run_ezv2_sampled_selfplay_gpu[
         if it >= learning_starts and rb.num_episodes() > 0:
             for _ in range(train_per_iter):
                 rb.sample_training_batch_seq[B, K, N](
-                    gamma, t_obs_seq, t_act, t_pol, t_val, t_rew
+                    gamma, t_obs_seq, t_act, t_pol, t_val, t_rew,
+                    cons_mask=t_cmask,
                 )
                 last_loss = Float64(
                     ezv2_unroll_train_step_continuous_gpu[
@@ -279,6 +281,7 @@ def run_ezv2_sampled_selfplay_gpu[
                         v_min, v_max, value_coef, consistency_coef,
                         policy_coef, max_action, min_std, soft_clamp,
                         init_std, ent_scale,
+                        cons_mask=t_cmask,
                         loss_parts=l_parts,
                     )
                 )
@@ -448,6 +451,7 @@ def run_ezv2_sampled_selfplay_gpu[
             logger.value()[].log_scalars(rn, rv, it + 1)
 
     t_obs_seq.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
+    t_cmask.free()
     h_obs.free(); h_act.free(); h_val.free()
     h_ra_obs.free(); h_ra_act.free(); h_ra_val.free()
     l_parts.free(); h_diag_pred.free()

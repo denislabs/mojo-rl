@@ -157,6 +157,9 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
         mut policy_act_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT_DIM]
         mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
         mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
+        cons_mask: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None,                                                # [K, B]
     ):
         """Fill the continuous EZv2 time-major unroll batch for ``B`` windows.
         Each row picks a random (episode, start); the K+N horizon is read with
@@ -164,6 +167,9 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
         output is the **full sequence** ``obs_seq[K+1, B, OBS]`` (obs-repeat
         absorbing) for the SimSiam targets; ``actions`` / ``policy_act_tgt`` both
         read the stored chosen action vector (absorbing-zero past terminal).
+        ``cons_mask`` (if given) receives the ``[K, B]`` episode-boundary mask
+        for the consistency loss — row ``(k-1, b)`` is 1 when ``obs_seq[k]`` is
+        a real stored observation, 0 when it is absorbing obs-repeat padding.
         Caller guarantees ``num_episodes() > 0``."""
         comptime HV = K + N + 1
         comptime HR = K + N
@@ -193,6 +199,13 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
                 var ob = k * B * Self.OBS + b * Self.OBS
                 for j in range(Self.OBS):
                     obs_seq[ob + j] = self.obs[slot * Self.OBS + j]
+            # consistency boundary mask: step k = 1..K is real iff s+k < L.
+            if cons_mask:
+                var cm = cons_mask.value()
+                for k in range(K):
+                    cm[k * B + b] = (
+                        Scalar[DT](1.0) if s + k + 1 < L else Scalar[DT](0.0)
+                    )
 
             for h in range(HR):
                 self._read1(self.rew, e, s + h, w_rew, h)

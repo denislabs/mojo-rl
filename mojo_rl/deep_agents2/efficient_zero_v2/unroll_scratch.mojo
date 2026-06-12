@@ -55,6 +55,9 @@ struct EZV2UnrollScratch[
     var d_gpk: Optional[DeviceBuffer[DT]]
     var d_gproj: Optional[DeviceBuffer[DT]]
     var d_gzcons: Optional[DeviceBuffer[DT]]
+    # consistency episode-boundary mask [K, B] + all-ones host fallback
+    var d_cmask: Optional[DeviceBuffer[DT]]
+    var h_cmask_ones: Optional[HostBuffer[DT]]
     # host loss mirror (zero-fill + D2H reduce)
     var h_loss: Optional[HostBuffer[DT]]
 
@@ -69,6 +72,7 @@ struct EZV2UnrollScratch[
         self.d_tstore = None; self.d_ztmp = None; self.d_projo = None
         self.d_pk = None; self.d_gpk = None; self.d_gproj = None
         self.d_gzcons = None
+        self.d_cmask = None; self.h_cmask_ones = None
         self.h_loss = None
 
     @staticmethod
@@ -110,8 +114,14 @@ struct EZV2UnrollScratch[
         s.d_gpk = ctx.enqueue_create_buffer[DT](b * proj)
         s.d_gproj = ctx.enqueue_create_buffer[DT](b * proj)
         s.d_gzcons = ctx.enqueue_create_buffer[DT](b * lat)
+        # consistency boundary mask [K, B]; the host mirror stays all-ones for
+        # callers that pass no mask (≡ the unmasked pre-mask behaviour).
+        s.d_cmask = ctx.enqueue_create_buffer[DT](k * b)
+        s.h_cmask_ones = ctx.enqueue_create_host_buffer[DT](k * b)
         s.h_loss = ctx.enqueue_create_host_buffer[DT](4 * b)
         ctx.synchronize()
+        for i in range(k * b):
+            s.h_cmask_ones.value().unsafe_ptr()[i] = Scalar[DT](1.0)
         return s^
 
 
@@ -160,6 +170,9 @@ struct EZV2UnrollContScratch[
     var d_gpk: Optional[DeviceBuffer[DT]]
     var d_gproj: Optional[DeviceBuffer[DT]]
     var d_gzcons: Optional[DeviceBuffer[DT]]
+    # consistency episode-boundary mask [K, B] + all-ones host fallback
+    var d_cmask: Optional[DeviceBuffer[DT]]
+    var h_cmask_ones: Optional[HostBuffer[DT]]
     # host loss mirror (zero-fill + D2H reduce)
     var h_loss: Optional[HostBuffer[DT]]
 
@@ -174,6 +187,7 @@ struct EZV2UnrollContScratch[
         self.d_tstore = None; self.d_ztmp = None; self.d_projo = None
         self.d_pk = None; self.d_gpk = None; self.d_gproj = None
         self.d_gzcons = None
+        self.d_cmask = None; self.h_cmask_ones = None
         self.h_loss = None
 
     @staticmethod
@@ -215,6 +229,12 @@ struct EZV2UnrollContScratch[
         s.d_gpk = ctx.enqueue_create_buffer[DT](b * proj)
         s.d_gproj = ctx.enqueue_create_buffer[DT](b * proj)
         s.d_gzcons = ctx.enqueue_create_buffer[DT](b * lat)
+        # consistency boundary mask [K, B]; the host mirror stays all-ones for
+        # callers that pass no mask (≡ the unmasked pre-mask behaviour).
+        s.d_cmask = ctx.enqueue_create_buffer[DT](k * b)
+        s.h_cmask_ones = ctx.enqueue_create_host_buffer[DT](k * b)
         s.h_loss = ctx.enqueue_create_host_buffer[DT](4 * b)
         ctx.synchronize()
+        for i in range(k * b):
+            s.h_cmask_ones.value().unsafe_ptr()[i] = Scalar[DT](1.0)
         return s^
