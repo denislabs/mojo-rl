@@ -26,20 +26,37 @@ from std.memory import alloc
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import mptr
 from .nstep_targets import compute_nstep_value_targets
+# Same quantize/dequantize helpers the GPU replays use: `SDT == DT` is a pure
+# rebind; `uint8` stores `round(x·255)` and reads back `k/255` — bit-lossless
+# for the `k/255` pixel pipeline (see data/gpu_replay.mojo).
+from ..data.gpu_replay import _obs_quant, _obs_dequant
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return mptr(alloc[Scalar[DT]](n))
 
 
-struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
+def _asdt[SDT: DType](n: Int) -> UnsafePointer[Scalar[SDT], MutAnyOrigin]:
+    return mptr(alloc[Scalar[SDT]](n))
+
+
+struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT](
     Movable, ImplicitlyDestructible
 ):
     """Ring of MCTS-labelled steps + episode index. ``CAP`` = max resident
     steps. Host-side (the CartPole lighthouse trains on CPU; the GPU search
-    feeds it via host copies)."""
+    feeds it via host copies).
 
-    var obs: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP, OBS]
+    ``OBS_STORE_DT`` (default ``DT`` — no behaviour change for vector-obs
+    callers) selects the obs ring's storage dtype. ``DType.uint8`` is the
+    pixel-obs capacity option: the ring stores ``round(x·255)`` and dequantizes
+    ``k/255`` on read — bit-lossless for the arcade pixel pipeline (exact
+    ``k/255`` grayscale) and 4× the resident steps of a float ring. Only the
+    obs ring changes dtype; all other fields stay ``DT``."""
+
+    comptime SDT = Self.OBS_STORE_DT
+
+    var obs: UnsafePointer[Scalar[Self.SDT], MutAnyOrigin]   # [CAP, OBS] in SDT
     var act: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP] action index
     var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP]
     var done: UnsafePointer[Scalar[DT], MutAnyOrigin]  # [CAP] terminal flag
@@ -55,7 +72,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
     var rng: UInt64
 
     def __init__(out self, seed: UInt64 = 0):
-        self.obs = _a(Self.CAP * Self.OBS)
+        self.obs = _asdt[Self.SDT](Self.CAP * Self.OBS)
         self.act = _a(Self.CAP)
         self.rew = _a(Self.CAP)
         self.done = _a(Self.CAP)
@@ -107,7 +124,9 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         for i in range(length):
             var slot = (self.total) % Self.CAP
             for j in range(Self.OBS):
-                self.obs[slot * Self.OBS + j] = ep_obs[i * Self.OBS + j]
+                self.obs[slot * Self.OBS + j] = _obs_quant[Self.SDT](
+                    ep_obs[i * Self.OBS + j]
+                )
             for a in range(Self.ACT):
                 self.pol[slot * Self.ACT + a] = ep_pol[i * Self.ACT + a]
             for a in range(Self.ACT):
@@ -153,6 +172,28 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
         for j in range(FIELD_DIM):
             out[out_base + j] = field[slot * FIELD_DIM + j]
+
+    def _read_obs_step(
+        self,
+        ep_idx: Int,
+        offset: Int,
+        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        out_base: Int,
+    ):
+        """Dequantized obs read (``Self.OBS`` cells) at episode-relative
+        ``offset`` into ``out[out_base..]``. The obs ring is ``Self.SDT``-typed,
+        so it cannot go through the generic ``_read_step[DT]``. Absorbing past
+        terminal is zeros — matching ``_read_step`` (obs0 is always in-episode,
+        so the absorbing branch is a no-op there; kept for symmetry)."""
+        if offset >= self.ep_len[ep_idx]:
+            for j in range(Self.OBS):
+                out[out_base + j] = Scalar[DT](0.0)
+            return
+        var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
+        for j in range(Self.OBS):
+            out[out_base + j] = _obs_dequant[Self.SDT](
+                self.obs[slot * Self.OBS + j]
+            )
 
     def _sample_step_uniform(mut self) -> Tuple[Int, Int]:
         """Pick a resident (episode, offset) with every resident **step**
@@ -204,8 +245,8 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
             if self.ep_trunc[e]:
                 lv = L - 1 - s
 
-            # obs0 = obs at start (always in-episode).
-            self._read_step[Self.OBS](self.obs, e, s, obs0, b * Self.OBS)
+            # obs0 = obs at start (always in-episode); dequant from the ring.
+            self._read_obs_step(e, s, obs0, b * Self.OBS)
 
             # reward / done horizon (HR), with absorbing past terminal.
             for h in range(HR):
@@ -301,7 +342,9 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
                 var slot = (self.ep_start[e] + off) % Self.CAP
                 var ob = k * B * Self.OBS + b * Self.OBS
                 for j in range(Self.OBS):
-                    obs_seq[ob + j] = self.obs[slot * Self.OBS + j]
+                    obs_seq[ob + j] = _obs_dequant[Self.SDT](
+                        self.obs[slot * Self.OBS + j]
+                    )
             # consistency boundary mask: step k = 1..K is real iff s+k < L.
             if cons_mask:
                 var cm = cons_mask.value()
@@ -385,7 +428,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int](
         MuZero reanalyze replans from the observation alone (no env state)."""
         var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
         for j in range(Self.OBS):
-            out[j] = self.obs[slot * Self.OBS + j]
+            out[j] = _obs_dequant[Self.SDT](self.obs[slot * Self.OBS + j])
 
     def read_legal(self, ep_idx: Int, offset: Int) -> List[Bool]:
         """The stored root legal-action mask at ``(ep_idx, offset)`` — needed so

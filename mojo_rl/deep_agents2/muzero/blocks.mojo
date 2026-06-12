@@ -497,6 +497,7 @@ def mz_unroll_train_step_gpu[
     ACT: Int,
     LATENT: Int,
     BINS: Int,
+    obs_on_device: Bool = False,
 ](
     ctx: DeviceContext,
     mut rep: REP,
@@ -543,7 +544,11 @@ def mz_unroll_train_step_gpu[
     var d_rew = scratch.d_rew.value()
 
     # ── H2D the host batch slabs (fully overwrites the cached buffers) ──
-    ctx.enqueue_copy(d_obs0, obs0)
+    # ``obs_on_device``: the caller already filled ``scratch.d_obs0`` on-device
+    # (e.g. `GPUMCTSSequenceReplay.sample_training_batch_dev` gathered the obs
+    # window straight into it), so skip the obs H2D and ignore ``obs0``.
+    comptime if not obs_on_device:
+        ctx.enqueue_copy(d_obs0, obs0)
     ctx.enqueue_copy(d_act, actions)
     ctx.enqueue_copy(d_pol, policy_tgt)
     ctx.enqueue_copy(d_val, value_tgt)

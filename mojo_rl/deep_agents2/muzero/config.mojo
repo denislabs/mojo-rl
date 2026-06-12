@@ -20,7 +20,7 @@ at the `MuZeroAgent` instantiation site:
 planner support — keep ``v_min``/``v_max`` in sync on the agent.
 """
 
-from .nets import MZRepNet, MZDynNet, MZPredNet
+from .nets import MZRepNet, MZRepNetCNN, MZDynNet, MZPredNet
 
 
 struct MuZeroMLPConfig[
@@ -37,5 +37,36 @@ struct MuZeroMLPConfig[
     aliases below."""
 
     comptime Rep = MZRepNet[Self.OBS, Self.LATENT, Self.HIDDEN]
+    comptime Dyn = MZDynNet[Self.LATENT, Self.ACT, Self.BINS, Self.HIDDEN]
+    comptime Pred = MZPredNet[Self.LATENT, Self.ACT, Self.BINS, Self.HIDDEN]
+
+
+struct MuZeroCNNConfig[
+    FRAMES: Int,
+    ACT: Int,
+    LATENT: Int = 128,
+    HIDDEN: Int = 512,
+    BINS: Int = 51,
+]:
+    """MuZero model bundle for ``FRAMES``×84×84 stacked-frame **pixel** obs.
+
+    The representation ``Rep`` is the Nature-CNN `MZRepNetCNN` (84→20→9→7
+    convolutional backbone → latent); ``Dyn`` / ``Pred`` are the same
+    latent-space `MZDynNet` / `MZPredNet` as the MLP config — the learned model
+    is identical once the observation has been encoded, so only ``Rep`` differs.
+
+    Spatial dims are fixed at 84×84, so ``OBS = FRAMES·84·84`` is derived (the
+    self-play driver reads ``Cfg.OBS`` like the MLP config). ``HIDDEN`` defaults
+    to 512 (the Nature-CNN projection width); ``LATENT`` / ``BINS`` keep the
+    MuZero defaults so reward (``Dyn``) and value (``Pred``) heads agree with
+    `zero/twohot_targets.mojo` and the planner support — keep ``v_min``/``v_max``
+    in sync on the agent.
+
+        comptime Cfg = MuZeroCNNConfig[FRAMES=4, ACT=3, LATENT=128, BINS=51]
+        # Cfg.OBS == 4*84*84 == 28224
+    """
+
+    comptime OBS = Self.FRAMES * 84 * 84
+    comptime Rep = MZRepNetCNN[Self.FRAMES, Self.LATENT, Self.HIDDEN]
     comptime Dyn = MZDynNet[Self.LATENT, Self.ACT, Self.BINS, Self.HIDDEN]
     comptime Pred = MZPredNet[Self.LATENT, Self.ACT, Self.BINS, Self.HIDDEN]

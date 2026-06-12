@@ -37,6 +37,9 @@ from mojo_rl.nn2.combinators.parallel import Parallel
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.linear_mish import LinearMish
 from mojo_rl.nn2.primitives.min_max_norm import MinMaxNorm
+from mojo_rl.nn2.primitives.conv2d import Conv2D
+from mojo_rl.nn2.primitives.relu import ReLU
+from mojo_rl.nn2.primitives.flatten import Flatten
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -47,6 +50,29 @@ from mojo_rl.nn2.primitives.min_max_norm import MinMaxNorm
 comptime MZRepNet[OBS: Int, LATENT: Int, H: Int] = Sequential[
     LinearMish[OBS, H],
     LinearMish[H, H],
+    Linear[H, LATENT],
+    MinMaxNorm[LATENT],
+]
+
+
+# h (pixel) — representation: FRAMES×84×84 stacked-frame obs → z
+#
+# The Nature-DQN convolutional backbone (84→20→9→7, 64·7·7 = 3136 — the same
+# geometry as `c51/config.mojo`'s `RainbowCNNNet`) feeding the MuZero rep tail:
+# one Mish projection, a `Linear` to `LATENT`, then the `MinMaxNorm` that every
+# MZRepNet ends in (latent scaled to [0,1], idempotent under the orchestrator's
+# scale kernel; the norm stays *inside* the autodiff graph so training gets the
+# scaling gradient — see the MLP `MZRepNet` note above). nn2 `Conv2D`/`Flatten`
+# expose flat `IN_DIMS`/`OUT_DIM`, so the image rides through the search adapters
+# (`MZRepGPU`) and the unroll as a flat `FRAMES·84·84` vector — `OBS = FRAMES·84·84`,
+# `OUT_DIM = LATENT`, contract-identical to the MLP rep. Spatial dims are fixed at
+# 84×84 (the Nature-CNN arithmetic); change the kernel/stride tower to use others.
+comptime MZRepNetCNN[FRAMES: Int, LATENT: Int, H: Int] = Sequential[
+    Conv2D[FRAMES, 32, 8, 4, 0, 84, 84], ReLU[32 * 20 * 20],
+    Conv2D[32, 64, 4, 2, 0, 20, 20], ReLU[64 * 9 * 9],
+    Conv2D[64, 64, 3, 1, 0, 9, 9], ReLU[64 * 7 * 7],
+    Flatten[64 * 7 * 7],
+    LinearMish[64 * 7 * 7, H],
     Linear[H, LATENT],
     MinMaxNorm[LATENT],
 ]
