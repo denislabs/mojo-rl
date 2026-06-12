@@ -6,6 +6,7 @@ from .nets import MZRepNet, MZRepNetCNN, MZDynNet, MZPredNet
 from .blocks import mz_unroll_train_step_cpu, mz_unroll_train_step_gpu
 from .config import MuZeroMLPConfig, MuZeroCNNConfig
 from .agent import MuZeroAgent
+from .batched_agent import MuZeroBatchedAgent
 from .selfplay_cpu import run_muzero_selfplay_cpu
 from .selfplay_gpu import run_muzero_selfplay_gpu, mz_sync_gpu_to_cpu
 from .selfplay_gpu_device import (

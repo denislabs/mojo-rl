@@ -34,7 +34,7 @@ Run (GPU env required):
 
 from std.math import exp, log
 from std.memory import alloc
-from layout import Layout, LayoutTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn2.constants import DT
@@ -46,6 +46,7 @@ from mojo_rl.planners.tree_search import GumbelGPUMCTS, SinglePlayer
 from ..training.batched_env import BatchedEnv
 from .blocks import mz_unroll_train_step_gpu, MZScratch
 from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
+from ..zero.mz_diagnostics import append_mz_train_diagnostics
 from ..zero.sequence_replay_mcts import MCTSSequenceReplay
 from ..zero.gpu_sequence_replay_mcts import GPUMCTSSequenceReplay
 from ..zero.temperature import visit_temperature
@@ -53,6 +54,65 @@ from ..zero.temperature import visit_temperature
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return mptr(alloc[Scalar[DT]](n))
+
+
+def _avg_last_n(returns: List[Float64], n: Int) -> Float64:
+    """Mean of the last ``n`` recorded episode returns (0 if none)."""
+    var lo = len(returns) - n
+    if lo < 0:
+        lo = 0
+    var s = 0.0
+    var c = 0
+    for i in range(lo, len(returns)):
+        s += returns[i]
+        c += 1
+    return s / Float64(c) if c > 0 else 0.0
+
+
+def _mz_emit_batch_diag[
+    REP: Module, PRED: Module,
+    B: Int, OBS: Int, ACT: Int, LATENT: Int, BINS: Int, L: Logger,
+](
+    ctx: DeviceContext,
+    mut rep: REP,
+    mut pred: PRED,
+    d_obs0: DeviceBuffer[DT],   # the last train batch's obs, already on device
+    d_z: DeviceBuffer[DT],
+    d_pred: DeviceBuffer[DT],
+    h_pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    t_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    t_val: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    l_parts: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    v_min: Scalar[DT],
+    v_max: Scalar[DT],
+    last_loss: Float64,
+    step: Int,
+    logger: UnsafePointer[L, MutAnyOrigin],
+) raises:
+    """Re-forward the root prediction on the last train batch (using the obs
+    slab already resident in ``d_obs0`` = ``scratch.d_obs0``) and emit the full
+    single-env metric set: loss + policy/value/reward split + the head-fit
+    diagnostics (`append_mz_train_diagnostics`). ``t_pol``/``t_val`` start at the
+    root (position 0) block, which is what the diagnostics read."""
+    comptime PRED_OUT = ACT + BINS
+    var z_t = TileTensor(mptr(d_z.unsafe_ptr()), row_major[B, LATENT]())
+    rep.forward["gpu", B](
+        TileTensor(mptr(d_obs0.unsafe_ptr()), row_major[B, OBS]()), output=z_t
+    )
+    var pred_t = TileTensor(mptr(d_pred.unsafe_ptr()), row_major[B, PRED_OUT]())
+    pred.forward["gpu", B](z_t, output=pred_t)
+    ctx.enqueue_copy(h_pred, d_pred)
+    ctx.synchronize()
+    var dn = List[String]()
+    var dv = List[Float64]()
+    dn.append(String("loss")); dv.append(last_loss)
+    dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
+    dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
+    dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
+    append_mz_train_diagnostics[ACT, BINS, B](
+        h_pred, t_pol, t_val, v_min, v_max, dn, dv
+    )
+    logger[].log_scalars(dn, dv, step)
 
 
 def _sample_action(
@@ -530,12 +590,25 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     var l_parts = _a(3)
     var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
 
+    # diagnostics scratch (root re-forward on the last train batch's obs).
+    var d_diag_z = ctx.enqueue_create_buffer[DT](B * LATENT)
+    var d_diag_pred = ctx.enqueue_create_buffer[DT](B * (ACT + BINS))
+    var h_diag_pred = _a(B * (ACT + BINS))
+
     var d_reana = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
 
     var rng = seed ^ UInt64(0x123456789)
     var mcts_seed = UInt32(seed & UInt64(0xFFFF))
     var last_loss = 0.0
-    var ep_done_count = 0
+    # episode-return tracking (per env running return + closed-episode log) so
+    # the batched driver reports avg_return like the single-env driver. The
+    # close condition mirrors `record_outcome`'s (done OR len >= max_ep_steps).
+    var ep_returns = List[Float64]()
+    var per_ret = List[Float64]()
+    var ep_steps = List[Int]()
+    for _ in range(N_ENVS):
+        per_ret.append(0.0)
+        ep_steps.append(0)
 
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=seed)
 
@@ -588,10 +661,14 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
         ctx.enqueue_copy(h_term, term_view)
         ctx.synchronize()
 
-        # ── 4. write outcomes; close finished episodes ──
+        # ── 4. accumulate returns; write outcomes; close finished episodes ──
         for e in range(N_ENVS):
-            if h_done[e] > Scalar[DT](0.5):
-                ep_done_count += 1
+            per_ret[e] += Float64(h_rew[e])
+            ep_steps[e] += 1
+            if h_done[e] > Scalar[DT](0.5) or ep_steps[e] >= max_ep_steps:
+                ep_returns.append(per_ret[e])
+                per_ret[e] = 0.0
+                ep_steps[e] = 0
         rb.record_outcome(h_rew, h_done, h_term, max_ep_steps)
         env.selective_reset_batch[N_ENVS](
             ctx=ctx, rng_seed=seed + UInt64(it + 1)
@@ -625,13 +702,11 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             and trained
             and (it + 1) % diag_every == 0
         ):
-            var dn = List[String]()
-            var dv = List[Float64]()
-            dn.append(String("loss")); dv.append(last_loss)
-            dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
-            dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
-            dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
-            logger.value()[].log_scalars(dn, dv, it + 1)
+            _mz_emit_batch_diag[REP, PRED, B, OBS, ACT, LATENT, BINS, L](
+                ctx, rep, pred, scratch.d_obs0.value(), d_diag_z, d_diag_pred,
+                h_diag_pred, t_pol, t_val, l_parts,
+                v_min, v_max, last_loss, it + 1, logger.value(),
+            )
 
         # ── batched reanalyze (device read_obs → search → overwrite targets) ──
         if (
@@ -690,7 +765,8 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             print(
                 "iter", it + 1, "env_steps", (it + 1) * N_ENVS,
                 "loss", last_loss, "eps", rb.num_episodes(),
-                "done", ep_done_count, "replay_steps", rb.num_steps(),
+                "completed", len(ep_returns),
+                "avg_return(10)", _avg_last_n(ep_returns, 10),
             )
 
         if (
@@ -701,14 +777,16 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
         ):
             var rn = List[String]()
             var rv = List[Float64]()
+            rn.append(String("avg_return"))
+            rv.append(_avg_last_n(ep_returns, 10))
             rn.append(String("episodes")); rv.append(Float64(rb.num_episodes()))
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
-            rn.append(String("episodes_done")); rv.append(Float64(ep_done_count))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
     t_act.free(); t_pol.free(); t_val.free(); t_rew.free(); t_obs0_dummy.free()
     h_pol.free(); h_val.free(); h_act.free()
     h_rew.free(); h_done.free(); h_term.free(); h_reana.free(); l_parts.free()
+    h_diag_pred.free()
     return last_loss
 
 

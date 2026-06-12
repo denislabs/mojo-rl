@@ -20,10 +20,9 @@ is stored as ``DT`` (``OBS_STORE_DT = DT`` — a lossless rebind, NOT the uint8
 pixel quantization). The device ring needs ``CAP % N_ENVS == 0`` and
 ``CAP ≥ N_ENVS · max_ep_steps`` so no in-flight episode self-overwrites.
 
-This bypasses the `MuZeroAgent` facade (whose ``train`` wires the single-env
-host-replay driver) and builds the three nets + Adam optimizers directly, then
-calls the batched device-replay driver — the optimizer setup (lr 3e-4, clip 10)
-reproduces the facade's convergence config.
+Driven through the `MuZeroBatchedAgent` facade (the batched sibling of
+`MuZeroAgent`): its ``train`` wires this batched device-replay driver, recreating
+session-local Adam optimizers with the convergence config (lr 3e-4, clip 10).
 
 Run (GPU env required):
     pixi run -e apple mojo run -I . examples/cartpole/muzero_cartpole_v2_gpu_gumbel.mojo
@@ -33,14 +32,9 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.muzero import (
-    MuZeroMLPConfig,
-    run_muzero_gumbel_selfplay_gpu_batched_devreplay,
-)
+from mojo_rl.deep_agents2.muzero import MuZeroMLPConfig, MuZeroBatchedAgent
 from mojo_rl.deep_agents2.training import BatchedGpuDiscreteEnv
 from mojo_rl.envs.cartpole import CartPoleEnv
 
@@ -64,21 +58,24 @@ def main() raises:
     comptime N = 10
 
     comptime BatchedEnvT = BatchedGpuDiscreteEnv[CartPoleEnv[DT], N_ENVS, OBS, 1]
+    comptime Agent = MuZeroBatchedAgent[
+        BatchedEnvT, Cfg.Rep, Cfg.Dyn, Cfg.Pred,
+        N_ENVS, OBS, ACT, LATENT, BINS,
+        NUM_SIMS, MAX_NODES, MAX_K, CAP, B, K, N,
+        OBS_STORE_DT = DT,          # CartPole obs are state values, NOT pixels
+    ]
 
     var ctx = DeviceContext()
 
-    var rep = Cfg.Rep.make["gpu", INIT=Kaiming](ctx=ctx)
-    var dyn = Cfg.Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
-    var pred = Cfg.Pred.make["gpu", INIT=Kaiming](ctx=ctx)
-    var orep = Adam.make["gpu", M = Cfg.Rep](rep, ctx)
-    var odyn = Adam.make["gpu", M = Cfg.Dyn](dyn, ctx)
-    var opred = Adam.make["gpu", M = Cfg.Pred](pred, ctx)
-    orep.lr = Scalar[DT](3e-4); odyn.lr = Scalar[DT](3e-4)
-    opred.lr = Scalar[DT](3e-4)
-    # clip 10 — the CartPole v2 convergence stack needs it.
-    orep.max_grad_norm = Scalar[DT](10.0)
-    odyn.max_grad_norm = Scalar[DT](10.0)
-    opred.max_grad_norm = Scalar[DT](10.0)
+    var agent = Agent(
+        ctx=ctx,
+        lr=Scalar[DT](3e-4),
+        gamma=Scalar[DT](0.997),
+        v_min=Scalar[DT](-20.0),
+        v_max=Scalar[DT](20.0),
+        value_coef=Scalar[DT](1.0),
+        max_grad_norm=Scalar[DT](10.0),   # CartPole v2 convergence stack
+    )
 
     var env = BatchedEnvT(ctx)
     var eval_env = BatchedEnvT(ctx)
@@ -102,21 +99,11 @@ def main() raises:
           "sims", NUM_SIMS, "MAX_K", MAX_K, "K", K, "N", N, "B", B,
           "N_ENVS", N_ENVS, "lr 3e-4 clip 10")
 
-    var loss = run_muzero_gumbel_selfplay_gpu_batched_devreplay[
-        BatchedEnvT, Cfg.Rep, Cfg.Dyn, Cfg.Pred,
-        N_ENVS, OBS, ACT, LATENT, BINS,
-        NUM_SIMS, MAX_NODES, MAX_K, CAP, B, K, N,
-        OBS_STORE_DT = DT,          # CartPole obs are state values, NOT pixels
-        L = RemoteLogger,
-    ](
-        ctx, env, rep, dyn, pred, orep, odyn, opred,
+    var loss = agent.train[L=RemoteLogger](
+        env,
         iterations=15000,           # ·N_ENVS = 120k env steps
         learning_starts=500,        # stored steps before training
         max_ep_steps=MAX_EP,
-        gamma=Scalar[DT](0.997),
-        v_min=Scalar[DT](-20.0),
-        v_max=Scalar[DT](20.0),
-        value_coef=Scalar[DT](1.0),
         temperature_decay_steps=15000,
         reanalyze_every=1,
         eval_every=1000,
