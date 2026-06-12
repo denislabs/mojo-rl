@@ -209,6 +209,19 @@ def run_muzero_gumbel_selfplay_gpu_batched[
         ctx, gamma=Float64(gamma), v_min=Float64(v_min), v_max=Float64(v_max),
         qnorm_per_node=False,
     )
+    # Dedicated eval planner — eval must be read-only w.r.t. training. Sharing
+    # the training planner's device buffers AND the `mcts_seed` RNG stream (eval
+    # advanced it by ~horizon per call) perturbed training: at N_ENVS=1 it tipped
+    # the (fragile single-env) run into a greedy collapse that eval-off avoided
+    # entirely (see docs/MUZERO_PIXEL_PONG_PLAN.md). The net adapters ARE shared
+    # — eval must evaluate the current trained nets (forward is read-only on
+    # params; the activation cache is rewritten by each train step's own forward).
+    var eval_planner = GumbelGPUMCTS[
+        N_ENVS, ACT, LATENT, BINS, MAX_NODES, MAX_K, NUM_SIMS, SinglePlayer
+    ](
+        ctx, gamma=Float64(gamma), v_min=Float64(v_min), v_max=Float64(v_max),
+        qnorm_per_node=False,
+    )
     var rep_a = MZRepGPU[OBS, LATENT, REP].make(rep)
     var dyn_a = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn)
     var pred_a = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred)
@@ -262,6 +275,8 @@ def run_muzero_gumbel_selfplay_gpu_batched[
 
     var rng = seed ^ UInt64(0x123456789)
     var mcts_seed = UInt32(seed & UInt64(0xFFFF))
+    # Separate RNG stream for eval so it never perturbs the training search seeds.
+    var eval_seed = UInt32((seed ^ UInt64(0xE7A1B2C3)) & UInt64(0xFFFF))
     var last_loss = 0.0
     var ep_returns = List[Float64]()
 
@@ -438,10 +453,10 @@ def run_muzero_gumbel_selfplay_gpu_batched[
                 BENV, REP, DYN, PRED, N_ENVS, OBS, ACT, LATENT, BINS,
                 MAX_NODES, MAX_K, NUM_SIMS,
             ](
-                ctx, eval_env.value(), planner, rep_a, dyn_a, pred_a,
-                horizon, mcts_seed,
+                ctx, eval_env.value(), eval_planner, rep_a, dyn_a, pred_a,
+                horizon, eval_seed,
             )
-            mcts_seed += UInt32(horizon + 1)
+            eval_seed += UInt32(horizon + 1)
             print("  [eval] step", it + 1, "greedy_return", avg)
             if logger:
                 logger.value()[].log_scalar(
@@ -564,6 +579,19 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
         ctx, gamma=Float64(gamma), v_min=Float64(v_min), v_max=Float64(v_max),
         qnorm_per_node=False,
     )
+    # Dedicated eval planner — eval must be read-only w.r.t. training. Sharing
+    # the training planner's device buffers AND the `mcts_seed` RNG stream (eval
+    # advanced it by ~horizon per call) perturbed training: at N_ENVS=1 it tipped
+    # the (fragile single-env) run into a greedy collapse that eval-off avoided
+    # entirely (see docs/MUZERO_PIXEL_PONG_PLAN.md). The net adapters ARE shared
+    # — eval must evaluate the current trained nets (forward is read-only on
+    # params; the activation cache is rewritten by each train step's own forward).
+    var eval_planner = GumbelGPUMCTS[
+        N_ENVS, ACT, LATENT, BINS, MAX_NODES, MAX_K, NUM_SIMS, SinglePlayer
+    ](
+        ctx, gamma=Float64(gamma), v_min=Float64(v_min), v_max=Float64(v_max),
+        qnorm_per_node=False,
+    )
     var rep_a = MZRepGPU[OBS, LATENT, REP].make(rep)
     var dyn_a = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn)
     var pred_a = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred)
@@ -599,6 +627,8 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
 
     var rng = seed ^ UInt64(0x123456789)
     var mcts_seed = UInt32(seed & UInt64(0xFFFF))
+    # Separate RNG stream for eval so it never perturbs the training search seeds.
+    var eval_seed = UInt32((seed ^ UInt64(0xE7A1B2C3)) & UInt64(0xFFFF))
     var last_loss = 0.0
     # episode-return tracking (per env running return + closed-episode log) so
     # the batched driver reports avg_return like the single-env driver. The
@@ -753,10 +783,10 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                 BENV, REP, DYN, PRED, N_ENVS, OBS, ACT, LATENT, BINS,
                 MAX_NODES, MAX_K, NUM_SIMS,
             ](
-                ctx, eval_env.value(), planner, rep_a, dyn_a, pred_a,
-                horizon, mcts_seed,
+                ctx, eval_env.value(), eval_planner, rep_a, dyn_a, pred_a,
+                horizon, eval_seed,
             )
-            mcts_seed += UInt32(horizon + 1)
+            eval_seed += UInt32(horizon + 1)
             print("  [eval] step", it + 1, "greedy_return", avg)
             if logger:
                 logger.value()[].log_scalar(String("eval_return"), avg, it + 1)
