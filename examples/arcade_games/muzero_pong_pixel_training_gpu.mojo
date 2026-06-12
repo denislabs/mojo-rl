@@ -9,12 +9,13 @@ Pieces (Phases 0–2 of `docs/MUZERO_PIXEL_PONG_PLAN.md`):
   * `MuZeroCNNConfig` — Nature-CNN representation (`MZRepNetCNN`, 84→20→9→7) →
     latent; the latent-space dynamics/prediction nets are the same as the MLP
     config (only the obs encoder differs).
-  * `run_muzero_gumbel_selfplay_gpu_batched_devreplay` — N parallel GPU envs + a
-    single batched Gumbel search over `[N_ENVS, OBS]` (the rep CNN runs at
-    batch=N_ENVS at the root) + a device-resident `GPUMCTSSequenceReplay`: obs
-    are stored device→device from `env.obs_ptr()` and the training obs slab is
-    gathered device→device into the train step, so no full `[N_ENVS, OBS]` pixel
-    observation crosses the bus on the collection path.
+  * `MuZeroBatchedAgent` — facade over the batched device-replay self-play
+    driver: N parallel GPU envs + a single batched Gumbel search over
+    `[N_ENVS, OBS]` (the rep CNN runs at batch=N_ENVS at the root) + a
+    device-resident `GPUMCTSSequenceReplay`. Obs are stored device→device from
+    `env.obs_ptr()` and the training obs slab is gathered device→device into the
+    train step, so no full `[N_ENVS, OBS]` pixel observation crosses the bus on
+    the collection path.
   * `OBS_STORE_DT = DType.uint8` — the obs ring quantizes `round(x·255)` and
     dequantizes `k/255`, bit-lossless for the arcade pixel pipeline and 4× the
     resident steps of a float ring.
@@ -35,14 +36,9 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.muzero.config import MuZeroCNNConfig
-from mojo_rl.deep_agents2.muzero.selfplay_gpu_batched import (
-    run_muzero_gumbel_selfplay_gpu_batched_devreplay,
-)
+from mojo_rl.deep_agents2.muzero import MuZeroCNNConfig, MuZeroBatchedAgent
 from mojo_rl.deep_agents2.training import BatchedGpuDiscreteEnv
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 
@@ -99,6 +95,12 @@ comptime OBS = Cfg.OBS   # 4*84*84 = 28224
 comptime PongPixelBatched = BatchedGpuDiscreteEnv[
     PongPixelEnv[DT], N_ENVS, OBS, 1
 ]
+comptime Agent = MuZeroBatchedAgent[
+    PongPixelBatched, Cfg.Rep, Cfg.Dyn, Cfg.Pred,
+    N_ENVS, OBS, ACT, LATENT, BINS,
+    NUM_SIMS, MAX_NODES, MAX_K, CAP, B, K, N,
+    OBS_STORE_DT = OBS_STORE_DT,
+]
 
 
 def main() raises:
@@ -108,15 +110,14 @@ def main() raises:
 
     var ctx = DeviceContext()
 
-    var rep = Cfg.Rep.make["gpu", INIT=Kaiming](ctx=ctx)
-    var dyn = Cfg.Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
-    var pred = Cfg.Pred.make["gpu", INIT=Kaiming](ctx=ctx)
-    var orep = Adam.make["gpu", M = Cfg.Rep](rep, ctx)
-    var odyn = Adam.make["gpu", M = Cfg.Dyn](dyn, ctx)
-    var opred = Adam.make["gpu", M = Cfg.Pred](pred, ctx)
-    orep.lr = LR
-    odyn.lr = LR
-    opred.lr = LR
+    var agent = Agent(
+        ctx=ctx,
+        lr=LR,
+        gamma=GAMMA,
+        v_min=V_MIN,
+        v_max=V_MAX,
+        value_coef=Scalar[DT](1.0),
+    )
 
     var env = PongPixelBatched(ctx)
     var eval_env = PongPixelBatched(ctx)
@@ -151,21 +152,11 @@ def main() raises:
     logger.set_config("obs_store_dtype", "uint8")
 
     var start = perf_counter_ns()
-    var loss = run_muzero_gumbel_selfplay_gpu_batched_devreplay[
-        PongPixelBatched, Cfg.Rep, Cfg.Dyn, Cfg.Pred,
-        N_ENVS, OBS, ACT, LATENT, BINS,
-        NUM_SIMS, MAX_NODES, MAX_K, CAP, B, K, N,
-        OBS_STORE_DT = OBS_STORE_DT,
-        L = RemoteLogger,
-    ](
-        ctx, env, rep, dyn, pred, orep, odyn, opred,
+    var loss = agent.train[L=RemoteLogger](
+        env,
         iterations=NUM_ITERS,
         learning_starts=LEARNING_STARTS,
         max_ep_steps=MAX_EP_STEPS,
-        gamma=GAMMA,
-        v_min=V_MIN,
-        v_max=V_MAX,
-        value_coef=Scalar[DT](1.0),
         temperature_decay_steps=NUM_ITERS,
         reanalyze_every=1,
         eval_every=2000,
