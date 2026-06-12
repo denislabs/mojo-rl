@@ -187,7 +187,8 @@ def run_muzero_gumbel_selfplay_gpu_batched[
     temperature_decay_steps: Int = 0,
     reanalyze_every: Int = 0,
     eval_every: Int = 0,
-    eval_horizon: Int = 0,
+    eval_episodes: Int = 5,
+    eval_horizon: Int = 0,   # 0 ⇒ generous step cap; else hard per-eval cap
     eval_env: Optional[UnsafePointer[BENV, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     report_every: Int = 0,
@@ -448,15 +449,20 @@ def run_muzero_gumbel_selfplay_gpu_batched[
 
         # ── batched greedy eval (fixed horizon on a separate eval env) ──
         if eval_every > 0 and eval_env and (it + 1) % eval_every == 0:
-            var horizon = eval_horizon if eval_horizon > 0 else max_ep_steps
+            # `eval_horizon` (if set) is the per-eval step CAP; else a generous
+            # default that early-exits once `eval_episodes` games complete.
+            var cap = (
+                eval_horizon if eval_horizon > 0
+                else max_ep_steps * (eval_episodes + 1)
+            )
             var avg = _eval_greedy_batched[
                 BENV, REP, DYN, PRED, N_ENVS, OBS, ACT, LATENT, BINS,
                 MAX_NODES, MAX_K, NUM_SIMS,
             ](
                 ctx, eval_env.value(), eval_planner, rep_a, dyn_a, pred_a,
-                horizon, eval_seed,
+                eval_episodes, cap, eval_seed,
             )
-            eval_seed += UInt32(horizon + 1)
+            eval_seed += UInt32(cap + 1)
             print("  [eval] step", it + 1, "greedy_return", avg)
             if logger:
                 logger.value()[].log_scalar(
@@ -553,7 +559,8 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     temperature_decay_steps: Int = 0,
     reanalyze_every: Int = 0,
     eval_every: Int = 0,
-    eval_horizon: Int = 0,
+    eval_episodes: Int = 5,
+    eval_horizon: Int = 0,   # 0 ⇒ generous step cap; else hard per-eval cap
     eval_env: Optional[UnsafePointer[BENV, MutAnyOrigin]] = None,
     diag_every: Int = 0,
     report_every: Int = 0,
@@ -778,15 +785,20 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                 )
 
         if eval_every > 0 and eval_env and (it + 1) % eval_every == 0:
-            var horizon = eval_horizon if eval_horizon > 0 else max_ep_steps
+            # `eval_horizon` (if set) is the per-eval step CAP; else a generous
+            # default that early-exits once `eval_episodes` games complete.
+            var cap = (
+                eval_horizon if eval_horizon > 0
+                else max_ep_steps * (eval_episodes + 1)
+            )
             var avg = _eval_greedy_batched[
                 BENV, REP, DYN, PRED, N_ENVS, OBS, ACT, LATENT, BINS,
                 MAX_NODES, MAX_K, NUM_SIMS,
             ](
                 ctx, eval_env.value(), eval_planner, rep_a, dyn_a, pred_a,
-                horizon, eval_seed,
+                eval_episodes, cap, eval_seed,
             )
-            eval_seed += UInt32(horizon + 1)
+            eval_seed += UInt32(cap + 1)
             print("  [eval] step", it + 1, "greedy_return", avg)
             if logger:
                 logger.value()[].log_scalar(String("eval_return"), avg, it + 1)
@@ -842,14 +854,19 @@ def _eval_greedy_batched[
     mut rep_a: MZRepGPU[OBS, LATENT, REP],
     mut dyn_a: MZDynGPU[LATENT, ACT, BINS, DYN],
     mut pred_a: MZPredGPU[LATENT, ACT, BINS, PRED],
-    horizon: Int,
+    target_episodes: Int,
+    max_steps: Int,
     rng_seed: UInt32,
 ) raises -> Float64:
-    """Fixed-horizon batched greedy rollout: reset the eval env, take the argmax
-    of the Gumbel improved policy for ``horizon`` steps over all ``N_ENVS`` lanes,
-    and return the mean over episodes that COMPLETED inside the horizon (falling
-    back to the mean running per-env return when none completed). Uses its own
-    env instance so it never clobbers the training env's live obs."""
+    """Greedy batched eval: reset the eval env and take the argmax of the Gumbel
+    improved policy over all ``N_ENVS`` lanes until ``target_episodes`` episodes
+    have **completed** (across lanes), then return their mean return. ``max_steps``
+    caps the rollout so a long-rallying policy can't hang it; if the cap is hit
+    before the target, the mean of whatever completed is returned (falling back to
+    the mean running per-env return only if *nothing* completed). Lanes that finish
+    early are `selective_reset` and keep contributing more episodes, so a few lanes
+    quickly yield many games. Runs on its own env instance + planner, so it never
+    touches the training env, replay, or RNG."""
     var h_pol = _a(N_ENVS * ACT)
     var h_act = _a(N_ENVS)
     var h_rew = _a(N_ENVS)
@@ -862,7 +879,9 @@ def _eval_greedy_batched[
     var seed_i = rng_seed
 
     eval_env[].reset_batch[N_ENVS](ctx=ctx, rng_seed=UInt64(rng_seed))
-    for _step in range(horizon):
+    var step_i = 0
+    while done_cnt < target_episodes and step_i < max_steps:
+        step_i += 1
         var obs_t = LayoutTensor[
             DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
         ](eval_env[].obs_ptr())
@@ -907,7 +926,7 @@ def _eval_greedy_batched[
             ctx=ctx, rng_seed=UInt64(seed_i)
         )
 
-    # Mean over episodes that completed inside the horizon; if none did, fall
+    # Mean over completed episodes; if the cap was hit with none completed, fall
     # back to the mean running per-env return.
     var running = 0.0
     for e in range(N_ENVS):

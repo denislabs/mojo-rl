@@ -160,7 +160,7 @@ def main() raises:
         temperature_decay_steps=NUM_ITERS,
         reanalyze_every=1,
         eval_every=2000,
-        eval_horizon=MAX_EP_STEPS,
+        eval_episodes=10,           # mean of 10 complete greedy games
         eval_env=UnsafePointer(to=eval_env),
         diag_every=200,
         report_every=500,
