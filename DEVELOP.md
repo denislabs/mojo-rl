@@ -16,23 +16,42 @@ pixi run setup-roms
 
 This creates a symlink from `roms/` to the ale_py ROM directory in your Python environment, making all ~100 Atari games available to the emulator.
 
+#### Multi-Environment Note
+
+If you use multiple pixi environments (default, nvidia, apple), run the setup **in each environment**:
+
+```bash
+pixi run setup-roms              # default environment
+pixi run -e nvidia setup-roms    # nvidia (CUDA) environment
+pixi run -e apple setup-roms     # apple (Metal) environment
+```
+
+Each environment has its own isolated ale_py, so the symlink needs to point to the correct one.
+
 ### What Happens
 
-- Finds the `ale_py` package in your active environment
+- Finds the `ale_py` package in your **active** environment
 - Creates a symlink: `roms/ → $CONDA_PREFIX/lib/pythonX.Y/site-packages/ale_py/roms`
-- Verifies the symlink by listing available ROM files
+- Ensures ROMs are downloaded (auto-downloads if missing)
+- Verifies by listing available ROM files
 
 ### Troubleshooting
 
+**Error: `Failed to open file 'roms/pong.bin': No such file or directory`**
+- The symlink may point to the wrong pixi environment
+- Run setup in the environment you're using:
+  ```bash
+  pixi run -e nvidia setup-roms   # if running with -e nvidia
+  ```
+
 **Error: `ale_py not found`**
-- `ale_py` is included via `gymnasium`. If missing, install explicitly:
+- Install explicitly:
   ```bash
   pixi run pip install ale-py
   ```
 
-**Error: `roms directory not found`**
-- This can happen if `ale_py` is installed but ROMs weren't downloaded
-- Download them manually:
+**Error: Only 1 ROM found (tetris.bin)**
+- ROMs haven't been downloaded yet. The script will auto-download them, or manually:
   ```bash
   pixi run python -c "import ale_py; ale_py.utils.download_ale_py_roms()"
   ```
