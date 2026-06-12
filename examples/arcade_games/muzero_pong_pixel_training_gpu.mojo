@@ -56,7 +56,7 @@ comptime BINS = 51          # categorical reward/value support bins
 # Parallel envs — the primary throughput knob. Each env owns a pixel
 # render/frame-stack workspace AND a root tree, so MuZero scales this lower than
 # Rainbow's 64. Raise on large-VRAM cards.
-comptime N_ENVS = 32
+comptime N_ENVS = 1
 
 # Gumbel search budget.
 comptime NUM_SIMS = 50
