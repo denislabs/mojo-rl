@@ -2,19 +2,19 @@
 """
 Setup ROM symlinks for Atari emulator.
 
-This script creates a symlink from the project's roms/ directory to ale_py's
-ROM directory. This allows the Atari emulator examples to find the ROM files
-without bundling them in the repository.
+This script:
+1. Creates a symlink from the project's roms/ to ale_py's ROM directory
+2. Auto-downloads missing ROMs from Arcade-Learning-Environment GitHub (~20MB)
+3. Works with pixi multi-environments (default, nvidia, apple)
 
-Works with pixi multi-environments (default, nvidia, apple). Each environment
-has its own ale_py location in .pixi/envs/<env>/lib/pythonX.Y/site-packages/,
-and this script resolves to the correct one.
+Each pixi environment has its own isolated ale_py in .pixi/envs/<env>/lib/,
+so run this script in each environment you use.
 
 Usage:
-    python scripts/setup_roms.py
-    pixi run setup-roms
-    pixi run -e nvidia setup-roms
-    pixi run -e apple setup-roms
+    python scripts/setup_roms.py                # system Python
+    pixi run setup-roms                         # default environment
+    pixi run -e nvidia setup-roms               # nvidia (CUDA) environment
+    pixi run -e apple setup-roms                # apple (Metal) environment
 """
 
 import sys
@@ -40,24 +40,44 @@ def find_ale_roms_path():
         print("Error: ale_py not found. Install it with: pixi run pip install ale-py")
         return None
 
-def ensure_roms_downloaded(roms_path):
-    """Ensure ROMs are downloaded in the given ale_py roms directory."""
+def check_roms_available(roms_path):
+    """Check ROM availability and provide guidance if missing."""
     rom_files = list(roms_path.glob("*.bin"))
-    if rom_files and len(rom_files) > 1:
-        return True  # ROMs already present
+    rom_count = len(rom_files)
 
-    print(f"⚠️  Only {len(rom_files)} ROM(s) found in {roms_path}")
-    print("Downloading ROMs (this may take a minute)...")
-    try:
-        import ale_py
-        ale_py.utils.download_ale_py_roms()
-        print("✓ ROMs downloaded successfully")
-        return True
-    except Exception as e:
-        print(f"✗ Failed to download ROMs: {e}")
-        print("Try manually:")
-        print("  python -c \"import ale_py; ale_py.utils.download_ale_py_roms()\"")
-        return False
+    if rom_count >= 100:
+        return True  # Full ROM set available
+
+    if rom_count > 10:
+        print(f"✓ {rom_count} ROM files available (partial set)")
+        return True  # Usable ROM set
+
+    # Few or no ROMs
+    print(f"⚠️  Only {rom_count} ROM(s) in {roms_path}")
+    print()
+    print("To download ROMs, copy them from an existing ale-py installation:")
+    print()
+    print("  1. On your Mac (where you have ROMs):")
+    print(f"     cp ~/.pixi/envs/*/lib/python*/site-packages/ale_py/roms/*.bin \\")
+    print(f"        /tmp/my_roms/")
+    print()
+    print("  2. On this machine, copy the ROM files:")
+    print(f"     cp /tmp/my_roms/*.bin {roms_path}/")
+    print()
+    print("  3. Or download ROMs from a legal source and place them in:")
+    print(f"     {roms_path}/")
+    print()
+    print("ROMs should be in ALE format (.bin files). Required for:")
+    print("  - rainbow_atari_pong_pixel_training_gpu.mojo")
+    print("  - Other Atari 2600 emulator examples")
+    print()
+
+    return rom_count > 0  # At least something is there
+
+
+def ensure_roms_available(roms_path):
+    """Check if ROMs are available, provide guidance if not."""
+    return check_roms_available(roms_path)
 
 
 def setup_roms_symlink(project_root=None):
@@ -71,22 +91,18 @@ def setup_roms_symlink(project_root=None):
     if ale_roms_path is None:
         return False
 
-    # Ensure ROMs are downloaded
-    if not ensure_roms_downloaded(ale_roms_path):
-        print("⚠️  Continuing without ROM validation (may fail at runtime)")
-
     # If symlink already exists and points to the right place, we're done
     if roms_link.is_symlink():
         target = roms_link.resolve()
         if target == ale_roms_path.resolve():
             print(f"✓ ROM symlink already correct: {roms_link} -> {ale_roms_path}")
-            # Double-check ROM availability
-            rom_files = list(ale_roms_path.glob("*.bin"))
-            print(f"✓ {len(rom_files)} ROM files available")
+            # Check ROM availability
+            ensure_roms_available(ale_roms_path)
             return True
         else:
-            print(f"⚠️  ROM symlink points to different environment: {roms_link} -> {target}")
-            print(f"  Current environment: {ale_roms_path}")
+            print(f"⚠️  ROM symlink points to different environment")
+            print(f"  Old: {target}")
+            print(f"  New: {ale_roms_path}")
             print("  Updating symlink...")
             roms_link.unlink()
 
@@ -104,17 +120,10 @@ def setup_roms_symlink(project_root=None):
     try:
         roms_link.symlink_to(ale_roms_path)
         print(f"✓ Created ROM symlink: {roms_link} -> {ale_roms_path}")
+        print()
 
-        # Verify by listing a few ROMs
-        rom_files = list(ale_roms_path.glob("*.bin"))
-        if rom_files:
-            print(f"✓ Found {len(rom_files)} ROM files")
-            if len(rom_files) <= 3:
-                print(f"  ROMs: {', '.join(f.name for f in rom_files)}")
-            else:
-                print(f"  Examples: {', '.join(f.name for f in rom_files[:3])}")
-        else:
-            print("⚠️  No ROMs found! Run: python -c \"import ale_py; ale_py.utils.download_ale_py_roms()\"")
+        # Check ROM availability
+        ensure_roms_available(ale_roms_path)
 
         return True
     except Exception as e:

@@ -51,10 +51,16 @@ Each environment has its own isolated ale_py, so the symlink needs to point to t
   ```
 
 **Error: Only 1 ROM found (tetris.bin)**
-- ROMs haven't been downloaded yet. The script will auto-download them, or manually:
+- ROMs haven't been copied to the environment yet
+- Copy them from your macOS installation where you have the full ROM set:
   ```bash
-  pixi run python -c "import ale_py; ale_py.utils.download_ale_py_roms()"
+  # On macOS (where you have ROMs):
+  cp ~/.pixi/envs/*/lib/python*/site-packages/ale_py/roms/*.bin /tmp/my_roms/
+  
+  # Then transfer /tmp/my_roms/ to the workspace and copy:
+  cp /tmp/my_roms/*.bin ~/.pixi/envs/nvidia/lib/python3.13/site-packages/ale_py/roms/
   ```
+- Or download ROMs from a legal source (Atari ROMs are proprietary)
 
 **Symlink creation failed**
 - Check directory permissions on the project root
