@@ -98,7 +98,7 @@ struct MuZeroBatchedAgent[
         mut env: Self.BENV,
         iterations: Int,
         learning_starts: Int = 256,
-        train_per_iter: Int = 1,
+        train_per_iter: Int = Self.N_ENVS,   # default UTD 1:1
         seed: UInt64 = 0,
         max_ep_steps: Int = 27000,
         temperature_decay_steps: Int = 0,
@@ -112,8 +112,12 @@ struct MuZeroBatchedAgent[
         verbose: Bool = False,
     ) raises -> Float64:
         """Batched device-replay self-play. ``learning_starts`` is in stored
-        steps; each iteration advances ``N_ENVS`` env steps. Returns the last
-        training loss; the nets keep their weights across ``train`` calls."""
+        steps; each iteration advances ``N_ENVS`` env steps and runs
+        ``train_per_iter`` gradient steps. ``train_per_iter`` defaults to
+        ``N_ENVS`` → **UTD 1:1** (one gradient step per env step, matching the
+        single-env driver's sample efficiency); set it to 1 for UTD 1:N_ENVS
+        (fastest wall-clock, ~N_ENVS× more env steps to converge). Returns the
+        last training loss; the nets keep their weights across ``train`` calls."""
         var orep = Adam.make["gpu", M = Self.REP](self.rep, self.ctx)
         var odyn = Adam.make["gpu", M = Self.DYN](self.dyn, self.ctx)
         var opred = Adam.make["gpu", M = Self.PRED](self.pred, self.ctx)

@@ -177,7 +177,7 @@ def run_muzero_gumbel_selfplay_gpu_batched[
     mut opred: Adam,
     iterations: Int,
     learning_starts: Int = 256,
-    train_per_iter: Int = 1,
+    train_per_iter: Int = N_ENVS,   # default UTD 1:1 (grad steps == env steps)
     gamma: Scalar[DT] = Scalar[DT](0.997),
     v_min: Scalar[DT] = Scalar[DT](-10.0),
     v_max: Scalar[DT] = Scalar[DT](10.0),
@@ -528,7 +528,7 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     mut opred: Adam,
     iterations: Int,
     learning_starts: Int = 256,
-    train_per_iter: Int = 1,
+    train_per_iter: Int = N_ENVS,   # default UTD 1:1 (grad steps == env steps)
     gamma: Scalar[DT] = Scalar[DT](0.997),
     v_min: Scalar[DT] = Scalar[DT](-10.0),
     v_max: Scalar[DT] = Scalar[DT](10.0),
