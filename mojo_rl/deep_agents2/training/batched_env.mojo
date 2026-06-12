@@ -40,6 +40,7 @@ reconstructs non-owning views via
 `DeviceBuffer[DT](ctx, env.obs_ptr(), N*OBS, owning=False)`.
 """
 
+from std.algorithm import parallelize
 from std.gpu import thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
@@ -48,6 +49,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import mptr
 from mojo_rl.core.env_traits import (
     BoxContinuousActionEnv,
+    BoxDiscreteActionEnv,
     GPUContinuousEnv,
     GPUDiscreteEnv,
 )
@@ -271,6 +273,217 @@ struct BatchedCpuEnv[
                     self._obs[env_idx * Self.OBS_DIM + d] = Scalar[DT](
                         obs_list[d]
                     )
+
+    def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return mptr(self._obs.unsafe_ptr())
+
+    def action_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return mptr(self._action.unsafe_ptr())
+
+    def reward_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return mptr(self._reward.unsafe_ptr())
+
+    def done_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return mptr(self._done.unsafe_ptr())
+
+    def terminated_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        return mptr(self._terminated.unsafe_ptr())
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BatchedCpuDiscreteEnv[E, N_ENVS, OBS] — multi-core CPU discrete envs.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _splitmix64(x: UInt64) -> UInt64:
+    """SplitMix64 finalizer — cheap stateless per-(seed, env, episode)
+    hash for the no-op start draw. Wrapping UInt64 arithmetic."""
+    var z = x + UInt64(0x9E3779B97F4A7C15)
+    z = (z ^ (z >> 30)) * UInt64(0xBF58476D1CE4E5B9)
+    z = (z ^ (z >> 27)) * UInt64(0x94D049BB133111EB)
+    return z ^ (z >> 31)
+
+
+struct BatchedCpuDiscreteEnv[
+    E: BoxDiscreteActionEnv & Movable,
+    N_ENVS: Int,
+    OBS_DIM_: Int,
+](BatchedEnv):
+    """Discrete-action sibling of `BatchedCpuEnv` that steps its N envs
+    in PARALLEL across CPU cores (`std.algorithm.parallelize`) — the
+    Stage-1 lever from `docs/ATARI_AUDIT.md` §2. Each env instance is
+    fully independent, so per-env work items never share mutable state
+    and the parallel step is bit-identical to a serial loop (validated
+    by `tests/deep_agents2/test_batched_cpu_discrete_env.mojo` on the
+    deterministic Atari emulator).
+
+    Differences from the continuous `BatchedCpuEnv`:
+
+      - `E` is bound on `BoxDiscreteActionEnv` (`step_obs(Int)`), action
+        slab holds one index per env as `Scalar[DT]` (`ACT_DIM = 1`).
+      - Envs are MOVED in via a caller-built `List[E]` instead of copied
+        from a template: emulator-style envs (AtariEnv) own heap buffers
+        and are move-only; per-instance construction also lets the
+        caller share one read-only ROM across instances.
+      - Optional ALE-style random no-op starts (`noop_max`): on every
+        (selective) reset each env plays `k ~ U[0, noop_max]` no-op
+        actions, `k` drawn from a per-(seed, env, episode) hash. Without
+        this, N deterministic emulators driven by a near-deterministic
+        policy step in lockstep and the batch collapses to ~1 effective
+        env. `noop_action` must be the env's NOOP index (0 for the ALE
+        minimal action sets).
+
+    Thread-safety contract: `E.step_obs` / `E.reset_obs_list` must not
+    touch shared mutable state (e.g. the GLOBAL std.random stream) —
+    AtariEnv is fully self-contained; envs that draw reset noise from
+    the global RNG keep working but lose run-to-run determinism.
+
+    Construction:
+        var envs = List[AtariEnv[1]]()
+        for _ in range(8):
+            envs.append(AtariEnv[1](game, rom, rom_size))
+        var batched = BatchedCpuDiscreteEnv[AtariEnv[1], 8, 28224](
+            envs^, noop_max=30
+        )
+    """
+
+    comptime ENV_TARGET: StaticString = "cpu"
+    comptime OBS_DIM: Int = Self.OBS_DIM_
+    comptime ACT_DIM: Int = 1
+
+    var envs: List[Self.E]
+    var noop_max: Int
+    var noop_action: Int
+
+    # Internally-owned host buffers — driver reads/writes via accessors.
+    var _obs: List[Scalar[DT]]
+    var _action: List[Scalar[DT]]
+    var _reward: List[Scalar[DT]]
+    var _done: List[Scalar[DT]]
+    var _terminated: List[Scalar[DT]]
+    # Per-env episode counter feeding the no-op start hash (so consecutive
+    # episodes of the same env draw different no-op counts).
+    var _reset_count: List[Int]
+
+    def __init__(
+        out self,
+        var envs: List[Self.E],
+        *,
+        noop_max: Int = 0,
+        noop_action: Int = 0,
+    ) raises:
+        if len(envs) != Self.N_ENVS:
+            raise Error(
+                "BatchedCpuDiscreteEnv: expected ",
+                Self.N_ENVS,
+                " envs, got ",
+                len(envs),
+            )
+        self.envs = envs^
+        self.noop_max = noop_max
+        self.noop_action = noop_action
+        self._obs = List[Scalar[DT]](
+            length=Self.N_ENVS * Self.OBS_DIM, fill=Scalar[DT](0.0),
+        )
+        self._action = List[Scalar[DT]](
+            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+        )
+        self._reward = List[Scalar[DT]](
+            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+        )
+        self._done = List[Scalar[DT]](
+            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+        )
+        self._terminated = List[Scalar[DT]](
+            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+        )
+        self._reset_count = List[Int](length=Self.N_ENVS, fill=0)
+
+    def _reset_lanes(mut self, rng_seed: UInt64, only_done: Bool):
+        """Reset env lanes in parallel (all lanes, or only `done` ones),
+        apply the optional no-op start, and refresh the obs slab."""
+        var envs_ptr = self.envs.unsafe_ptr()
+        var obs_ptr = self._obs.unsafe_ptr()
+        var done_ptr = self._done.unsafe_ptr()
+        var rc_ptr = self._reset_count.unsafe_ptr()
+        var noop_max = self.noop_max
+        var noop_action = self.noop_action
+
+        @parameter
+        def reset_one(env_idx: Int):
+            if only_done and done_ptr[env_idx] <= Scalar[DT](0.5):
+                return
+            var obs_list = envs_ptr[env_idx].reset_obs_list()
+            if noop_max > 0:
+                rc_ptr[env_idx] += 1
+                var k = Int(
+                    _splitmix64(
+                        rng_seed
+                        ^ (UInt64(env_idx) * UInt64(0x9E3779B97F4A7C15))
+                        ^ (UInt64(rc_ptr[env_idx]) * UInt64(0xBF58476D1CE4E5B9))
+                    )
+                    % UInt64(noop_max + 1)
+                )
+                for _ in range(k):
+                    var res = envs_ptr[env_idx].step_obs(noop_action)
+                    if res[2]:
+                        # Done during the no-op run (degenerate env) —
+                        # re-reset and start the episode without no-ops.
+                        obs_list = envs_ptr[env_idx].reset_obs_list()
+                        break
+                    obs_list = res[0].copy()
+            for d in range(Self.OBS_DIM):
+                obs_ptr[env_idx * Self.OBS_DIM + d] = Scalar[DT](obs_list[d])
+
+        parallelize[reset_one](Self.N_ENVS)
+
+    def reset_batch[BATCH: Int](
+        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
+    ) raises:
+        comptime assert BATCH == Self.N_ENVS, (
+            "BatchedCpuDiscreteEnv: reset_batch BATCH must match struct param"
+        )
+        _ = ctx
+        self._reset_lanes(rng_seed, only_done=False)
+
+    def step_batch[BATCH: Int](
+        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
+    ) raises:
+        comptime assert BATCH == Self.N_ENVS, (
+            "BatchedCpuDiscreteEnv: step_batch BATCH must match struct param"
+        )
+        _ = ctx
+        _ = rng_seed
+        var envs_ptr = self.envs.unsafe_ptr()
+        var obs_ptr = self._obs.unsafe_ptr()
+        var action_ptr = self._action.unsafe_ptr()
+        var reward_ptr = self._reward.unsafe_ptr()
+        var done_ptr = self._done.unsafe_ptr()
+        var term_ptr = self._terminated.unsafe_ptr()
+
+        @parameter
+        def step_one(env_idx: Int):
+            var res = envs_ptr[env_idx].step_obs(Int(action_ptr[env_idx]))
+            for d in range(Self.OBS_DIM):
+                obs_ptr[env_idx * Self.OBS_DIM + d] = Scalar[DT](res[0][d])
+            reward_ptr[env_idx] = Scalar[DT](res[1])
+            done_ptr[env_idx] = Scalar[DT](1.0) if res[2] else Scalar[DT](0.0)
+            term_ptr[env_idx] = (
+                Scalar[DT](1.0) if envs_ptr[env_idx].was_terminated()
+                else Scalar[DT](0.0)
+            )
+
+        parallelize[step_one](Self.N_ENVS)
+
+    def selective_reset_batch[BATCH: Int](
+        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
+    ) raises:
+        comptime assert BATCH == Self.N_ENVS, (
+            "BatchedCpuDiscreteEnv: selective_reset_batch BATCH must match"
+            " struct param"
+        )
+        _ = ctx
+        self._reset_lanes(rng_seed, only_done=True)
 
     def obs_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         return mptr(self._obs.unsafe_ptr())

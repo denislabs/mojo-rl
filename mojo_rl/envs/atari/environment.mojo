@@ -46,6 +46,11 @@ struct AtariEnvironment(Movable):
     var mapper: UInt8  # ROM_* mapper (ROM_AUTO = resolve from size)
     var swap_ports: Bool  # Player 1 on the RIGHT joystick port (WoW)
     var paddles: Bool  # Paddle cart (ALE PADDLES controller mapping)
+    # True iff the last step's terminal came from the GAME (game over /
+    # lives exhausted), BEFORE the max_frames overlay. Distinguishes natural
+    # termination (drop the TD bootstrap) from time-limit truncation (keep
+    # it); surfaced through `AtariEnv.was_terminated`.
+    var natural_terminal: Bool
 
     def __init__(
         out self,
@@ -65,6 +70,7 @@ struct AtariEnvironment(Movable):
         self.mapper = mapper
         self.swap_ports = swap_ports
         self.paddles = paddles
+        self.natural_terminal = False
 
     def __init__(out self, *, deinit take: Self):
         self.state = take.state^
@@ -75,10 +81,12 @@ struct AtariEnvironment(Movable):
         self.mapper = take.mapper
         self.swap_ports = take.swap_ports
         self.paddles = take.paddles
+        self.natural_terminal = take.natural_terminal
 
     def reset(mut self):
         """Reset the environment to initial state."""
         self.state = AtariState()
+        self.natural_terminal = False
         if self.swap_ports:
             self.state.sys_flags = self.state.sys_flags | FLAG_SWAP_PORTS
         if self.paddles:
@@ -175,6 +183,7 @@ struct AtariEnvironment(Movable):
         self.state.lives = UInt8(sig.lives)
         self.state.reward = 0
         self.state.terminal = False
+        self.natural_terminal = False
 
     def step(mut self, action: UInt8) -> Int:
         """Execute one step (frame_skip frames with the same action).
@@ -213,6 +222,7 @@ struct AtariEnvironment(Movable):
         self.state.reward = Int32(reward)
         self.state.lives = UInt8(GAME.get_lives(self.state.ram))
         self.state.terminal = GAME.is_terminal(self.state.ram)
+        self.natural_terminal = self.state.terminal
 
         # Check max frames truncation
         if (
@@ -242,6 +252,7 @@ struct AtariEnvironment(Movable):
         self.state.reward = Int32(sig.reward)
         self.state.lives = UInt8(sig.lives)
         self.state.terminal = sig.terminal
+        self.natural_terminal = sig.terminal
 
         # Check max frames truncation
         if (

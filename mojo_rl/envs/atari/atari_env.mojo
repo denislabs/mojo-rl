@@ -128,7 +128,7 @@ def _resize_160x210_to_84x84(
 struct AtariEnv[
     OBS_MODE: Int = 0,
     DTYPE: DType = DType.float32,
-](BoxDiscreteActionEnv):
+](BoxDiscreteActionEnv, Movable):
     """Atari environment conforming to BoxDiscreteActionEnv.
 
     The game is a runtime field (AtariGame registry) — score/lives/terminal
@@ -342,6 +342,13 @@ struct AtariEnv[
     def get_state(self) -> AtariEnvState:
         return AtariEnvState(index=self._steps)
 
+    def was_terminated(self) -> Bool:
+        """True iff the last step ended via GAME termination (game over),
+        not max_frames truncation — the TD bootstrap is dropped only on
+        the former. Overrides the base-Env `False` default, which silently
+        classified every Atari game-over as a truncation."""
+        return self.env.natural_terminal
+
     def close(mut self):
         """Free pixel-mode buffers."""
         comptime if Self.OBS_MODE == 1:
@@ -482,6 +489,7 @@ struct AtariEnv[
         self.env.state.reward = Int32(reward)
         self.env.state.lives = UInt8(sig.lives)
         self.env.state.terminal = sig.terminal
+        self.env.natural_terminal = sig.terminal
 
         # Check max frames truncation
         if (

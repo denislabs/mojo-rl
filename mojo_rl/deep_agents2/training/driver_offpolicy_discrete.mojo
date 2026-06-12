@@ -910,6 +910,367 @@ def run_offpolicy_discrete_train_gpu_batched[
 
 
 # ──────────────────────────────────────────────────────────────────────
+# run_offpolicy_discrete_train_cpu_env_gpu_agent — batched CPU envs,
+#   GPU trainer (the Atari-emulator row: cpu env / gpu train / N_ENVS).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def run_offpolicy_discrete_train_cpu_env_gpu_agent[
+    A: OffPolicyDiscreteAgentGpu,
+    E: BatchedEnv,
+    N_ENVS: Int,
+    NS: Int = 1,
+    L: Logger = NoOpLogger,
+](
+    ctx: DeviceContext,
+    mut trainer: A,
+    mut env: E,
+    total_env_steps: Int,
+    *,
+    rng_seed: UInt64 = UInt64(42),
+    updates_per_step: Int = 1,
+    print_every: Int = 5_000,
+    verbose: Bool = True,
+    nstep_gamma: Scalar[DT] = Scalar[DT](0.99),
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    base_step: Int = 0,
+    diag_every: Int = 0,
+    checkpoint_every: Int = 0,
+    checkpoint_path: String = "",
+    eval_env: Optional[UnsafePointer[E, MutAnyOrigin]] = None,
+    eval_every: Int = 0,
+    eval_episodes: Int = 16,
+    eval_max_iters: Int = 20_000,
+    progress_label: String = "dqn",
+) raises -> List[Scalar[DT]]:
+    """CPU-env / GPU-agent hybrid discrete off-policy driver.
+
+    The discrete sibling of `run_offpolicy_train_cpu_env_gpu_agent`:
+    steps `N_ENVS` host-side envs per iteration (e.g. Atari emulators in
+    a `BatchedCpuDiscreteEnv`, which parallelizes the step across CPU
+    cores) while the Q-network selects actions and trains on the GPU.
+    This is the Stage-1 throughput path from `docs/ATARI_AUDIT.md` — the
+    emulator cannot run on GPU, so multi-core batched stepping is the
+    scaling lever, and the single-env `run_offpolicy_discrete_train`
+    left all but one core idle.
+
+    Per-iteration loop (advances `step_idx` by `N_ENVS`):
+      1. H2D current obs (env.obs_ptr → obs_dev) + D→D snapshot into
+         prev_obs_dev (the `s_t` of the transition).
+      2. `trainer.select_action_batched[N_ENVS]` on device (warmup /
+         exploration gated inside the trainer on `base_step + step_idx`).
+      3. D2H action indices → env.action_ptr, `synchronize()` so the
+         host slab is valid before the CPU envs step.
+      4. `env.step_batch[N_ENVS]` on the host (multi-core).
+      5. H2D next-obs / reward / terminated, then
+         `record_batch_gpu` (NS==1) or `record_batch_gpu_nstep` (NS>1).
+         Replay stores `terminated` so the TD bootstrap survives
+         time-limit truncation and drops on natural termination.
+      6. `synchronize()` so device reads of the staged buffers complete
+         before the host mutates env slabs in selective_reset.
+      7. Host per-env return accumulation; `add_complete_return` on done.
+      8. `env.selective_reset_batch[N_ENVS]` on the host.
+      9. `updates_per_step` × `trainer.train_step` (GPU). Replay ratio
+         = updates_per_step / N_ENVS.
+
+    `NS` must match the trainer's target-Y γ^N bootstrap (Rainbow N-step);
+    `nstep_gamma` is the device n-step accumulator's discount. `eval_env`
+    enables periodic noise-off greedy eval on a SEPARATE batched env via
+    `run_offpolicy_discrete_eval_cpu_env_gpu_agent`.
+    """
+    comptime env_target: StaticString = E.ENV_TARGET
+    comptime train_target: StaticString = A.AGENT_TRAIN_TARGET
+    comptime OBS = A.AGENT_OBS_DIM
+
+    comptime assert env_target == "cpu", (
+        "run_offpolicy_discrete_train_cpu_env_gpu_agent: env must be a CPU"
+        " BatchedEnv (for a GPU env use"
+        " run_offpolicy_discrete_train_gpu_batched)"
+    )
+    comptime assert train_target == "gpu", (
+        "run_offpolicy_discrete_train_cpu_env_gpu_agent: trainer must be GPU"
+        " (for a CPU trainer use run_offpolicy_discrete_train)"
+    )
+    comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+    comptime assert NS > 0, "NS must be > 0"
+    comptime assert (
+        E.OBS_DIM == OBS
+    ), "BatchedEnv OBS_DIM must match trainer AGENT_OBS_DIM"
+
+    # Device n-step accumulator (NS > 1 only) — same ownership pattern as
+    # the GPU-batched discrete driver.
+    var nstep_buf: Optional[
+        GPUNStepBuffer[NS, OBS, A.AGENT_ACT_DIM, N_ENVS]
+    ] = None
+    if NS > 1:
+        nstep_buf = Optional(
+            GPUNStepBuffer[NS, OBS, A.AGENT_ACT_DIM, N_ENVS].new(
+                ctx, gamma=nstep_gamma
+            )
+        )
+
+    # Device staging: obs_dev holds s_t then s_{t+1}; prev_obs_dev keeps
+    # the pre-step s_t for the stored transition; reward/term are H2D
+    # mirrors of the env's host slabs; action_dev is one index per env.
+    var obs_dev = DriverScratch["hd_obs", N_ENVS, OBS].make["gpu"](ctx=ctx)
+    var prev_obs_dev = DriverScratch["hd_prev_obs", N_ENVS, OBS].make["gpu"](
+        ctx=ctx
+    )
+    var action_dev = DriverScratch["hd_action", N_ENVS, 1].make["gpu"](ctx=ctx)
+    var reward_dev = DriverScratch["hd_reward", N_ENVS, 1].make["gpu"](ctx=ctx)
+    var term_dev = DriverScratch["hd_term", N_ENVS, 1].make["gpu"](ctx=ctx)
+
+    var per_env_returns = List[Scalar[DT]](
+        length=N_ENVS, fill=Scalar[DT](0.0),
+    )
+
+    # CPU env: ctx ignored. Wrap in Optional(None) for the trait sig.
+    env.reset_batch[N_ENVS](ctx=None, rng_seed=rng_seed)
+
+    var ep_returns = List[Scalar[DT]]()
+    var t_start = perf_counter_ns()
+    var step_idx: Int = 0
+    var iter_idx: Int = 0
+    var next_print: Int = print_every
+    var next_log: Int = print_every
+    var next_diag: Int = diag_every if diag_every > 0 else total_env_steps + 1
+    var ckpt_on: Bool = (
+        checkpoint_every > 0 and checkpoint_path.byte_length() > 0
+    )
+    var next_ckpt: Int = checkpoint_every if ckpt_on else total_env_steps + 1
+    var eval_on: Bool = eval_every > 0 and Bool(eval_env)
+    var next_eval: Int = eval_every if eval_on else total_env_steps + 1
+    # In-place progress bar between log lines (pure CPU, no GPU sync).
+    var prog = IntervalProgress(
+        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
+    )
+
+    while step_idx < total_env_steps:
+        # ── 1. H2D current obs (s_t) + D→D snapshot into prev_obs.
+        ctx.enqueue_copy(obs_dev.dev.value(), env.obs_ptr())
+        ctx.enqueue_copy(prev_obs_dev.dev.value(), obs_dev.dev.value())
+
+        # ── 2. Action selection on device (exploration inside trainer).
+        trainer.select_action_batched[N_ENVS](
+            obs_dev.dev_ptr(),
+            action_dev.dev_ptr(),
+            base_step + step_idx,
+        )
+
+        # ── 3. D2H action indices → env host slab; sync before CPU steps.
+        ctx.enqueue_copy(env.action_ptr(), action_dev.dev.value())
+        ctx.synchronize()
+
+        # ── 4. Step CPU envs (multi-core; writes host obs/reward/done/term).
+        env.step_batch[N_ENVS](
+            ctx=None, rng_seed=rng_seed + UInt64(iter_idx + 1),
+        )
+
+        # ── 5. H2D next-obs / reward / terminated, then GPU replay push.
+        ctx.enqueue_copy(obs_dev.dev.value(), env.obs_ptr())
+        ctx.enqueue_copy(reward_dev.dev.value(), env.reward_ptr())
+        ctx.enqueue_copy(term_dev.dev.value(), env.terminated_ptr())
+        comptime if NS > 1:
+            trainer.record_batch_gpu_nstep[N_ENVS, NS](
+                ctx,
+                nstep_buf.value(),
+                prev_obs_dev.dev.value(),
+                action_dev.dev.value(),
+                reward_dev.dev.value(),
+                obs_dev.dev.value(),
+                term_dev.dev.value(),
+            )
+        else:
+            trainer.record_batch_gpu[N_ENVS](
+                ctx,
+                prev_obs_dev.dev.value(),
+                action_dev.dev.value(),
+                reward_dev.dev.value(),
+                obs_dev.dev.value(),
+                term_dev.dev.value(),
+            )
+
+        # ── 6. Sync so device reads of the env host slabs finish before
+        # selective_reset (host) mutates env.obs in place.
+        ctx.synchronize()
+
+        # ── 7. Per-env episode tracking (host reward + done).
+        var rewards_h = env.reward_ptr()
+        var dones_h = env.done_ptr()
+        for e in range(N_ENVS):
+            per_env_returns[e] = per_env_returns[e] + rewards_h[e]
+            if dones_h[e] > Scalar[DT](0.5):
+                trainer.add_complete_return(per_env_returns[e])
+                per_env_returns[e] = Scalar[DT](0.0)
+                ep_returns.append(trainer.mean_return())
+
+        # ── 8. Selective env reset (host, multi-core).
+        env.selective_reset_batch[N_ENVS](
+            ctx=None, rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
+        )
+
+        step_idx += N_ENVS
+        iter_idx += 1
+
+        # ── 9. Trainer updates (GPU).
+        for _ in range(updates_per_step):
+            _ = trainer.train_step(base_step + step_idx)
+
+        var abs_step = base_step + step_idx
+
+        prog.tick(step_idx, trainer.total_train_steps())
+
+        if verbose and print_every > 0 and step_idx >= next_print:
+            prog.clear()
+            var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
+            print(
+                "[step ",
+                abs_step,
+                "] mean_ret(10)=",
+                trainer.mean_return(),
+                " ep=",
+                trainer.ep_count(),
+                " elapsed=",
+                elapsed,
+                "s",
+            )
+            next_print += print_every
+
+        comptime if L.ENABLED:
+            if print_every > 0 and step_idx >= next_log and Bool(logger):
+                logger.value()[].log_scalar(
+                    "avg_reward", Float64(trainer.mean_return()), abs_step
+                )
+                logger.value()[].log_scalar(
+                    "episodes", Float64(trainer.ep_count()), abs_step
+                )
+                logger.value()[].flush()
+                next_log += print_every
+
+        comptime if L.ENABLED:
+            if diag_every > 0 and step_idx >= next_diag and Bool(logger):
+                trainer.flush_metrics_through_logger[L](logger, abs_step)
+                next_diag += diag_every
+
+        if ckpt_on and step_idx >= next_ckpt:
+            trainer.save_state(checkpoint_path)
+            next_ckpt += checkpoint_every
+
+        # Deterministic greedy eval on the isolated `eval_env` (noise off).
+        if eval_on and step_idx >= next_eval:
+            var eval_ret = run_offpolicy_discrete_eval_cpu_env_gpu_agent[
+                A, E, N_ENVS
+            ](
+                ctx,
+                trainer,
+                eval_env.value()[],
+                eval_episodes,
+                max_iters=eval_max_iters,
+                rng_seed=rng_seed + UInt64(step_idx + 1),
+            )
+            comptime if L.ENABLED:
+                if Bool(logger):
+                    logger.value()[].log_scalar(
+                        "eval/mean_return", Float64(eval_ret), abs_step
+                    )
+                    logger.value()[].flush()
+            if verbose:
+                prog.clear()
+                print(
+                    "[step ",
+                    abs_step,
+                    "] eval/mean_return = ",
+                    eval_ret,
+                )
+            next_eval += eval_every
+
+    if ckpt_on:
+        trainer.save_state(checkpoint_path)
+
+    return ep_returns^
+
+
+# ──────────────────────────────────────────────────────────────────────
+# run_offpolicy_discrete_eval_cpu_env_gpu_agent — noise-off greedy
+#   rollout over batched CPU envs with a GPU trainer.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def run_offpolicy_discrete_eval_cpu_env_gpu_agent[
+    A: OffPolicyDiscreteAgentGpu,
+    E: BatchedEnv,
+    N_ENVS: Int,
+](
+    ctx: DeviceContext,
+    mut trainer: A,
+    mut eval_env: E,
+    num_episodes: Int,
+    *,
+    max_iters: Int = 20_000,
+    rng_seed: UInt64 = UInt64(123),
+) raises -> Scalar[DT]:
+    """Deterministic greedy eval over batched CPU envs with a GPU agent.
+
+    The hybrid sibling of `run_offpolicy_discrete_eval_batched`: obs is
+    staged H2D each iteration, `select_greedy_action_batched` runs on
+    device, action indices come back D2H, the envs step on the host.
+    Does NOT touch the trainer's replay/optimizer/episode tracker — use
+    a SEPARATE env instance from training.
+
+    Returns the mean completed-episode return (0 if none completed).
+    """
+    comptime OBS = A.AGENT_OBS_DIM
+    comptime assert E.ENV_TARGET == "cpu", (
+        "run_offpolicy_discrete_eval_cpu_env_gpu_agent: env must be CPU"
+    )
+    comptime assert (
+        E.OBS_DIM == OBS
+    ), "eval_env OBS_DIM must match trainer AGENT_OBS_DIM"
+
+    var obs_dev = DriverScratch["hde_obs", N_ENVS, OBS].make["gpu"](ctx=ctx)
+    var action_dev = DriverScratch["hde_action", N_ENVS, 1].make["gpu"](
+        ctx=ctx
+    )
+
+    trainer.set_noise_scale(Scalar[DT](0.0))  # deterministic mean weights
+
+    eval_env.reset_batch[N_ENVS](ctx=None, rng_seed=rng_seed)
+
+    var per_env = List[Scalar[DT]](length=N_ENVS, fill=Scalar[DT](0.0))
+    var returns_sum = Scalar[DT](0.0)
+    var n_done: Int = 0
+    var it: Int = 0
+    while n_done < num_episodes and it < max_iters:
+        ctx.enqueue_copy(obs_dev.dev.value(), eval_env.obs_ptr())
+        trainer.select_greedy_action_batched[N_ENVS](
+            obs_dev.dev_ptr(), action_dev.dev_ptr()
+        )
+        ctx.enqueue_copy(eval_env.action_ptr(), action_dev.dev.value())
+        ctx.synchronize()
+        eval_env.step_batch[N_ENVS](
+            ctx=None, rng_seed=rng_seed + UInt64(it + 1)
+        )
+        var rew_h = eval_env.reward_ptr()
+        var done_h = eval_env.done_ptr()
+        for e in range(N_ENVS):
+            per_env[e] = per_env[e] + rew_h[e]
+            if done_h[e] > Scalar[DT](0.5):
+                returns_sum = returns_sum + per_env[e]
+                per_env[e] = Scalar[DT](0.0)
+                n_done += 1
+        eval_env.selective_reset_batch[N_ENVS](
+            ctx=None, rng_seed=rng_seed + UInt64(it + 1) * UInt64(7)
+        )
+        it += 1
+
+    trainer.set_noise_scale(Scalar[DT](1.0))  # restore noisy exploration
+
+    if n_done == 0:
+        return Scalar[DT](0.0)
+    return returns_sum / Scalar[DT](n_done)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # run_offpolicy_discrete_eval_batched — noise-off greedy GPU rollout.
 # ──────────────────────────────────────────────────────────────────────
 
