@@ -320,6 +320,26 @@ trait BoxDiscreteActionEnv(ContinuousStateEnv, DiscreteActionEnv):
         """
         ...
 
+    def step_obs_into(
+        mut self,
+        action: Int,
+        obs_out: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin],
+    ) -> Tuple[Scalar[Self.dtype], Bool]:
+        """Take discrete action, writing the observation directly into
+        `obs_out` (caller-owned, `obs_dim()` scalars). Returns
+        (reward, done).
+
+        Allocation-free alternative to `step_obs` for hot batched
+        stepping loops (`BatchedCpuDiscreteEnv`): the default delegates
+        to `step_obs` and copies, so every env conforms; envs with a
+        large observation (AtariEnv pixel mode: 28,224 floats rebuilt
+        per step) override it to skip the per-step List allocation and
+        write the obs buffer once."""
+        var res = self.step_obs(action)
+        for d in range(len(res[0])):
+            obs_out[d] = res[0][d]
+        return (res[1], res[2])
+
 
 trait BoxContinuousActionEnv(ContinuousActionEnv, ContinuousStateEnv):
     """Environment with continuous observations and continuous actions.

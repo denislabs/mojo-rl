@@ -94,7 +94,18 @@ def _resize_160x210_to_84x84(
 
     Each output pixel averages the source pixels in its corresponding
     rectangle. Scale factors: x = 160/84 ≈ 1.905, y = 210/84 = 2.5.
-    """
+
+    SIMD-restructured but BIT-EXACT vs the original scalar double loop:
+    per output row, the 2-3 source rows are first summed column-wise into
+    a u16 row buffer (vectorized — this is where the 33,600 reads live),
+    then the cheap horizontal pass sums 1-2 columns per output pixel and
+    performs the SAME single `total // count` integer division (max total
+    3·2·255 = 1530 fits u16). NOT a separable two-pass resize — that would
+    divide twice and round differently."""
+    comptime W = 16
+    comptime assert FRAME_WIDTH % W == 0, "row width must be SIMD-divisible"
+
+    var vsum = InlineArray[UInt16, FRAME_WIDTH](fill=0)
     for oy in range(OBS_HEIGHT):
         # Source y range for this output row
         var sy0 = (oy * FRAME_HEIGHT) // OBS_HEIGHT
@@ -102,6 +113,16 @@ def _resize_160x210_to_84x84(
         if sy1 <= sy0:
             sy1 = sy0 + 1
 
+        # Column-wise sums of rows [sy0, sy1) — vectorized.
+        for x in range(0, FRAME_WIDTH, W):
+            var acc = SIMD[DType.uint16, W](0)
+            for sy in range(sy0, sy1):
+                acc += src.load[width=W](sy * FRAME_WIDTH + x).cast[
+                    DType.uint16
+                ]()
+            vsum.unsafe_ptr().store(x, acc)
+
+        var cy = sy1 - sy0
         for ox in range(OBS_WIDTH):
             # Source x range for this output column
             var sx0 = (ox * FRAME_WIDTH) // OBS_WIDTH
@@ -109,15 +130,11 @@ def _resize_160x210_to_84x84(
             if sx1 <= sx0:
                 sx1 = sx0 + 1
 
-            # Average source pixels in the rectangle
             var total: Int = 0
-            var count: Int = 0
-            for sy in range(sy0, sy1):
-                for sx in range(sx0, sx1):
-                    total += Int(src[sy * FRAME_WIDTH + sx])
-                    count += 1
+            for sx in range(sx0, sx1):
+                total += Int(vsum[sx])
 
-            dst[oy * OBS_WIDTH + ox] = UInt8(total // count)
+            dst[oy * OBS_WIDTH + ox] = UInt8(total // ((sx1 - sx0) * cy))
 
 
 # ============================================================================
@@ -261,24 +278,26 @@ struct AtariEnv[
 
         Handles Atari sprite flickering by taking the max of 2 consecutive frames.
         Result stored in gray_buf (160×210 grayscale).
+
+        SIMD, bit-exact vs the scalar reference: each BGRA pixel is loaded
+        as one little-endian u32 lane (B | G<<8 | R<<16 | A<<24), channels
+        extracted by shift+mask, per-channel max of the two frames, then
+        the integer luma `(77R + 150G + 29B) >> 8` (max 65,280 — fits u32)
+        in 16 lanes at a time. 33,600 px % 16 == 0 → no scalar tail.
         """
-        for i in range(GRAY_FRAME_SIZE):
-            var offset = i * 4
-            # Max of two frames per channel
-            var b = max(
-                Int(self.raw_frame_a.value()[offset + 0]),
-                Int(self.raw_frame_b.value()[offset + 0]),
-            )
-            var g = max(
-                Int(self.raw_frame_a.value()[offset + 1]),
-                Int(self.raw_frame_b.value()[offset + 1]),
-            )
-            var r = max(
-                Int(self.raw_frame_a.value()[offset + 2]),
-                Int(self.raw_frame_b.value()[offset + 2]),
-            )
+        comptime W = 16
+        comptime assert GRAY_FRAME_SIZE % W == 0, "frame must be SIMD-divisible"
+        var a32 = self.raw_frame_a.value().bitcast[UInt32]()
+        var b32 = self.raw_frame_b.value().bitcast[UInt32]()
+        var gray = self.gray_buf.value()
+        for i in range(0, GRAY_FRAME_SIZE, W):
+            var va = a32.load[width=W](i)
+            var vb = b32.load[width=W](i)
+            var b = max(va & 0xFF, vb & 0xFF)
+            var g = max((va >> 8) & 0xFF, (vb >> 8) & 0xFF)
+            var r = max((va >> 16) & 0xFF, (vb >> 16) & 0xFF)
             # Luminance: Y = (77*R + 150*G + 29*B) >> 8
-            self.gray_buf.value()[i] = UInt8((77 * r + 150 * g + 29 * b) >> 8)
+            gray.store(i, ((77 * r + 150 * g + 29 * b) >> 8).cast[DType.uint8]())
 
     def _push_frame_to_stack(mut self):
         """Resize gray_buf (160×210) to 84×84 and push into frame_stack ring buffer.
@@ -369,6 +388,39 @@ struct AtariEnv[
     # ContinuousStateEnv trait
     # ========================================================================
 
+    def _write_stack_obs_into(
+        self, obs_out: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
+    ):
+        """Write the 4-frame stack (chronological order, oldest first) as
+        normalized floats into `obs_out` (FRAME_STACK_SIZE scalars).
+        SIMD uint8→float `/255` — bit-exact vs the per-element scalar
+        conversion (each uint8 value maps to the identical float)."""
+        comptime W = 16
+        comptime assert OBS_FRAME_SIZE % W == 0, "obs frame must be SIMD-divisible"
+        var fs = self.frame_stack.value()
+        var out_off = 0
+        for i in range(4):
+            var slot = (self.frame_idx + i) % 4  # oldest first
+            var src = fs + slot * OBS_FRAME_SIZE
+            for j in range(0, OBS_FRAME_SIZE, W):
+                obs_out.store(
+                    out_off + j,
+                    src.load[width=W](j).cast[Self.dtype]() / 255.0,
+                )
+            out_off += OBS_FRAME_SIZE
+
+    def _write_ram_obs_into(
+        self, obs_out: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
+    ):
+        """Write the 128 RAM bytes as normalized floats into `obs_out`."""
+        comptime W = 16
+        comptime assert RAM_SIZE % W == 0, "RAM size must be SIMD-divisible"
+        var ram = self.env.get_ram()
+        for i in range(0, RAM_SIZE, W):
+            obs_out.store(
+                i, ram.unsafe_ptr().load[width=W](i).cast[Self.dtype]() / 255.0
+            )
+
     def get_obs_list(self) -> List[Scalar[Self.DTYPE]]:
         """Return current observation as a list of floats.
 
@@ -376,22 +428,16 @@ struct AtariEnv[
         Pixel mode: 28224 floats in [0, 1] (4 stacked 84×84 grayscale frames).
         """
         comptime if Self.OBS_MODE == 1:
-            # Read 4 stacked frames in chronological order from ring buffer
-            var obs = List[Scalar[Self.DTYPE]](capacity=FRAME_STACK_SIZE)
-            for i in range(4):
-                var slot = (self.frame_idx + i) % 4  # oldest first
-                var offset = slot * OBS_FRAME_SIZE
-                for j in range(OBS_FRAME_SIZE):
-                    obs.append(
-                        Scalar[Self.DTYPE](self.frame_stack.value()[offset + j]) / 255.0
-                    )
+            var obs = List[Scalar[Self.DTYPE]](
+                length=FRAME_STACK_SIZE, fill=Scalar[Self.DTYPE](0.0)
+            )
+            self._write_stack_obs_into(obs.unsafe_ptr())
             return obs^
         else:
-            # RAM mode: 128 bytes normalized to [0, 1]
-            var ram = self.env.get_ram()
-            var obs = List[Scalar[Self.DTYPE]](capacity=RAM_SIZE)
-            for i in range(RAM_SIZE):
-                obs.append(Scalar[Self.DTYPE](ram[i]) / 255.0)
+            var obs = List[Scalar[Self.DTYPE]](
+                length=RAM_SIZE, fill=Scalar[Self.DTYPE](0.0)
+            )
+            self._write_ram_obs_into(obs.unsafe_ptr())
             return obs^
 
     def reset_obs_list(mut self) -> List[Scalar[Self.DTYPE]]:
@@ -446,16 +492,44 @@ struct AtariEnv[
         var obs = self.get_obs_list()
         return (obs^, Scalar[Self.DTYPE](reward), self.done)
 
+    def step_obs_into(
+        mut self,
+        action: Int,
+        obs_out: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin],
+    ) -> Tuple[Scalar[Self.DTYPE], Bool]:
+        """Allocation-free step (trait override): advance the emulator and
+        write the observation directly into `obs_out`, skipping the
+        per-step List the `step_obs` path materializes (28,224 floats in
+        pixel mode). Hot path for `BatchedCpuDiscreteEnv`."""
+        self._steps += 1
+        comptime if Self.OBS_MODE == 1:
+            var reward = self._advance_pixel(action)
+            self._write_stack_obs_into(obs_out)
+            return (reward, self.done)
+        else:
+            var reward = self.env.step_game(self.game, action)
+            self.done = self.env.is_terminal()
+            self.episode_reward += Float64(reward)
+            self._write_ram_obs_into(obs_out)
+            return (Scalar[Self.DTYPE](reward), self.done)
+
     def _step_obs_pixel(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.DTYPE]], Scalar[Self.DTYPE], Bool]:
+        """Pixel mode step: list-returning wrapper over `_advance_pixel`."""
+        var reward = self._advance_pixel(action)
+        var obs = self.get_obs_list()
+        return (obs^, reward, self.done)
+
+    def _advance_pixel(mut self, action: Int) -> Scalar[Self.DTYPE]:
         """Pixel mode step: manual frame-skip with per-scanline rendering.
 
         Frame skip = 4 (default):
           - Frames 0,1: set_action + run_frame (no render, fast)
           - Frame 2: set_action + run_frame_video → raw_frame_a
           - Frame 3: set_action + run_frame_video → raw_frame_b
-        Then max-pool a/b → grayscale → resize → push to stack.
+        Then max-pool a/b → grayscale → resize → push to stack. Returns
+        the step reward; `self.done` carries the terminal flag.
         """
         var ale_action = self.game.action(action)
         var prev_score = Int(self.env.state.score)
@@ -505,5 +579,4 @@ struct AtariEnv[
         self._bgra_to_gray_maxpool()
         self._push_frame_to_stack()
 
-        var obs = self.get_obs_list()
-        return (obs^, Scalar[Self.DTYPE](reward), self.done)
+        return Scalar[Self.DTYPE](reward)

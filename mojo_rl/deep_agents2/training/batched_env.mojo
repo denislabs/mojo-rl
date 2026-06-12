@@ -463,11 +463,33 @@ struct BatchedCpuDiscreteEnv[
 
         @parameter
         def step_one(env_idx: Int):
-            var res = envs_ptr[env_idx].step_obs(Int(action_ptr[env_idx]))
-            for d in range(Self.OBS_DIM):
-                obs_ptr[env_idx * Self.OBS_DIM + d] = Scalar[DT](res[0][d])
-            reward_ptr[env_idx] = Scalar[DT](res[1])
-            done_ptr[env_idx] = Scalar[DT](1.0) if res[2] else Scalar[DT](0.0)
+            comptime if Self.E.dtype == DT:
+                # Allocation-free path: the env writes its obs lane in
+                # place (AtariEnv overrides `step_obs_into` to skip the
+                # 28K-element List the `step_obs` path materializes).
+                var res = envs_ptr[env_idx].step_obs_into(
+                    Int(action_ptr[env_idx]),
+                    rebind[
+                        UnsafePointer[Scalar[Self.E.dtype], MutAnyOrigin]
+                    ](obs_ptr + env_idx * Self.OBS_DIM),
+                )
+                reward_ptr[env_idx] = rebind[Scalar[DT]](res[0])
+                done_ptr[env_idx] = (
+                    Scalar[DT](1.0) if res[1] else Scalar[DT](0.0)
+                )
+            else:
+                # Dtype-converting fallback (E.dtype != DT).
+                var res = envs_ptr[env_idx].step_obs(
+                    Int(action_ptr[env_idx])
+                )
+                for d in range(Self.OBS_DIM):
+                    obs_ptr[env_idx * Self.OBS_DIM + d] = Scalar[DT](
+                        res[0][d]
+                    )
+                reward_ptr[env_idx] = Scalar[DT](res[1])
+                done_ptr[env_idx] = (
+                    Scalar[DT](1.0) if res[2] else Scalar[DT](0.0)
+                )
             term_ptr[env_idx] = (
                 Scalar[DT](1.0) if envs_ptr[env_idx].was_terminated()
                 else Scalar[DT](0.0)
