@@ -101,7 +101,7 @@ def main() raises:
     ](
         ctx, env, rep, dyn, pred, proj, predh,
         orep, odyn, opred, oproj, opredh,
-        iterations=30000,
+        iterations=60000,
         learning_starts=500,
         train_per_iter=1,
         gamma=Scalar[DT](0.997),
@@ -109,7 +109,7 @@ def main() raises:
         v_max=Scalar[DT](20.0),
         value_coef=Scalar[DT](0.5),
         consistency_coef=Scalar[DT](2.0),
-        temperature_decay_steps=30000,
+        temperature_decay_steps=60000,
         reanalyze_every=1,
         eval_every=2000,
         eval_episodes=5,
