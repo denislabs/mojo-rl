@@ -46,7 +46,7 @@ def main() raises:
     comptime LATENT = Cfg.LATENT
     comptime BINS = Cfg.BINS
 
-    comptime N_ENVS = 8             # parallel GPU CartPole envs (batched search)
+    comptime N_ENVS = 1             # parallel GPU CartPole envs (batched search)
     comptime NUM_SIMS = 24
     comptime MAX_NODES = 128
     comptime MAX_K = 2              # Gumbel root candidates (= ACT for CartPole)
