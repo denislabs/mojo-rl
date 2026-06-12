@@ -1313,7 +1313,13 @@ def _cycle_pixel(
 
 
 
-@no_inline
+# Measurement builds only: flip to True to make run_frame_cycle_accurate
+# accumulate bulk/per-clock clock counts + the selective-ticking ceiling
+# into state.dbg_prof_* (read them with a probe; they accumulate across
+# frames). False compiles the counters out of the hot loop.
+comptime ATARI_PROFILE = False
+
+
 @always_inline
 def _intim_wait_skip_cycles(state: AtariState, rom_size: Int) -> Int:
     """INTIM wait-loop fast-forward: if PC sits on a pre-scanned
@@ -1376,6 +1382,7 @@ def _intim_wait_skip_cycles(state: AtariState, rom_size: Int) -> Int:
     return skip * loop_cyc
 
 
+@no_inline
 def run_frame_cycle_accurate[
     RENDER: Bool = True
 ](
@@ -1460,6 +1467,25 @@ def run_frame_cycle_accurate[
     var ystart = -1
     var done = False
     comptime MAX_CLOCKS: Int = TOTAL_SCANLINES * CPL * 2
+    # Flip to True (module comptime below) for a measurement build; the
+    # counters quantify bulk vs per-clock clock consumption and the
+    # selective-ticking ceiling (active objects per per-clock tick).
+    var prof_bulk = 0
+    var prof_pc = 0
+    var prof_pc_target = 0
+    var prof_active = 0
+    # Sub-span granularity: how many `while consumed < span` iterations
+    # (each pays a horizon-min + advance_objects) the bulk clocks split into.
+    var prof_bulk_spans = 0
+    var prof_bulk_visible_spans = 0
+    # Cached lit-free budget: visible ticks (counted from the CycleTIA's
+    # flushed-state-plus-pending position) during which no object can be lit,
+    # so bulk sub-spans can defer the 5-object advance + horizon min. Always
+    # decremented per accumulated tick (vblank included — those ticks move
+    # the counters too); recomputed on FLUSHED state when exhausted, and
+    # invalidated whenever the per-clock path runs (writes/strobes/movement
+    # can change any object's window).
+    var safe_budget = 0
     var clocks = 0
     var due_reg = List[UInt8]()
     var due_val = List[UInt8]()
@@ -1531,6 +1557,8 @@ def run_frame_cycle_accurate[
                 var span = limit - j
                 var consumed = 0
                 while consumed < span and not done:
+                    comptime if ATARI_PROFILE:
+                        prof_bulk_spans += 1
                     var bh = state.ctia.hctr
                     var bhbe = (
                         76 if state.ctia.extended_hblank else HBLANK_CLOCKS
@@ -1540,13 +1568,24 @@ def run_frame_cycle_accurate[
                         # HBLANK: no ticks, no collisions.
                         k = min(bhbe - bh, span - consumed)
                     else:
+                        comptime if ATARI_PROFILE:
+                            prof_bulk_visible_spans += 1
                         k = min(CPL - bh, span - consumed)
                         if not vbl_on:
-                            var safe = state.ctia.lit_safe_horizon()
-                            if safe <= 0:
-                                break  # render window ahead -> per-clock
-                            k = min(k, safe)
-                        state.ctia.advance_objects(k)
+                            if safe_budget < k:
+                                # Horizon is defined on flushed counter
+                                # state — flush, then recompute the budget.
+                                state.ctia.flush_pending()
+                                safe_budget = state.ctia.lit_safe_horizon()
+                                if safe_budget <= 0:
+                                    break  # render window -> per-clock
+                                if safe_budget < k:
+                                    k = safe_budget
+                        # Defer the 5-object advance: accumulate the ticks;
+                        # flush happens before anything can observe object
+                        # state (per-clock entry / dq applies / frame end).
+                        state.ctia.pending_ticks += k
+                        safe_budget -= k
                     comptime if RENDER:
                         var brow = (
                             visible_line if visible_line < FH2 else -1
@@ -1591,6 +1630,8 @@ def run_frame_cycle_accurate[
                     state.ctia.hctr = bnh
                 j += consumed
                 clocks += consumed
+                comptime if ATARI_PROFILE:
+                    prof_bulk += consumed
                 if done:
                     break
                 if consumed > 0:
@@ -1598,6 +1639,36 @@ def run_frame_cycle_accurate[
                 skip_bulk = 4
             elif skip_bulk > 0:
                 skip_bulk -= 1
+
+            comptime if ATARI_PROFILE:
+                prof_pc += 1
+                var hbe_p = 76 if state.ctia.extended_hblank else HBLANK_CLOCKS
+                if (
+                    state.ctia.dq.count == 0
+                    and not state.ctia.movement_in_progress
+                    and state.ctia.hctr >= hbe_p
+                ):
+                    # Visible clock forced per-clock by a lit window — the
+                    # selective-ticking target. Count objects that would
+                    # still need a real per-clock tick.
+                    prof_pc_target += 1
+                    if state.ctia.p0.lit_horizon() == 0:
+                        prof_active += 1
+                    if state.ctia.p1.lit_horizon() == 0:
+                        prof_active += 1
+                    if state.ctia.m0.lit_horizon() == 0:
+                        prof_active += 1
+                    if state.ctia.m1.lit_horizon() == 0:
+                        prof_active += 1
+                    if state.ctia.bl.lit_horizon() == 0:
+                        prof_active += 1
+
+            # Per-clock path: everything below reads or mutates live object
+            # state (dq applies/strobes, movement ticks, ctia.tick), so the
+            # deferred bulk ticks must land first, and the cached budget is
+            # no longer valid after whatever happens here.
+            state.ctia.flush_pending()
+            safe_budget = 0
 
             var hctr = state.ctia.hctr
             var pixel = hctr - HBLANK_CLOCKS
@@ -1702,10 +1773,23 @@ def run_frame_cycle_accurate[
                 break
             j += 1
 
+    # Deferred bulk ticks must be applied before the frame ends: the next
+    # frame's prologue re-seeds object state, and anything inspecting the
+    # CycleTIA between frames must see flushed counters.
+    state.ctia.flush_pending()
+
     state.scanline = UInt16(visible_line)
     state.dbg_frame_lines = UInt16(total_lines)
     state.dbg_ystart = UInt16(ystart) if ystart >= 0 else 0
     state.frame_number += 1
+    # Unconditional flush keeps the locals "used" when ATARI_PROFILE=False
+    # (they are constant 0 then — this is 4 dead stores per frame).
+    state.dbg_prof_bulk_clocks += prof_bulk
+    state.dbg_prof_perclock += prof_pc
+    state.dbg_prof_perclock_target += prof_pc_target
+    state.dbg_prof_active_ticks += prof_active
+    state.dbg_prof_bulk_spans += prof_bulk_spans
+    state.dbg_prof_bulk_visible_spans += prof_bulk_visible_spans
 
 
 def run_frame_video(

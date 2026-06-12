@@ -183,6 +183,16 @@ struct AtariState(Copyable, Movable):
     var dbg_frame_lines: UInt16
     var dbg_ystart: UInt16
 
+    # ATARI_PROFILE instrumentation accumulators (written only when
+    # cpu6502.ATARI_PROFILE is flipped to True for a measurement build;
+    # zero-cost otherwise). Accumulate across frames; the probe resets them.
+    var dbg_prof_bulk_clocks: Int
+    var dbg_prof_perclock: Int
+    var dbg_prof_perclock_target: Int  # visible, dq-empty, no-movement
+    var dbg_prof_active_ticks: Int  # Σ objects with lit_horizon()==0
+    var dbg_prof_bulk_spans: Int  # bulk sub-span loop iterations
+    var dbg_prof_bulk_visible_spans: Int  # ... that paid advance_objects
+
     def __init__(out self):
         """Initialize to power-on defaults."""
         # CPU
@@ -278,6 +288,12 @@ struct AtariState(Copyable, Movable):
         self.ctia = CycleTIA()
         self.dbg_frame_lines = 0
         self.dbg_ystart = 0
+        self.dbg_prof_bulk_clocks = 0
+        self.dbg_prof_perclock = 0
+        self.dbg_prof_perclock_target = 0
+        self.dbg_prof_active_ticks = 0
+        self.dbg_prof_bulk_spans = 0
+        self.dbg_prof_bulk_visible_spans = 0
 
     def reset(mut self):
         """Reset to power-on state (preserves nothing)."""

@@ -798,6 +798,13 @@ struct CycleTIA(Copyable, Movable):
     var colup1: UInt8
     var colupf: UInt8
     var colubk: UInt8
+    # Deferred bulk advance: visible ticks accumulated by the runner's bulk
+    # fast path but not yet applied to the five object counters. Flushed
+    # (one advance_objects call) before anything reads or strobes object
+    # state — per-clock entry, delayed-write applies, frame end. Cuts the
+    # per-sub-span 5×advance_n + 5×lit_horizon bookkeeping (~8-clock spans,
+    # instruction-bounded) down to two adds per sub-span.
+    var pending_ticks: Int
 
     def __init__(out self):
         self.p0 = PlayerCounter()
@@ -818,6 +825,7 @@ struct CycleTIA(Copyable, Movable):
         self.colup1 = 0
         self.colupf = 0
         self.colubk = 0
+        self.pending_ticks = 0
 
     @always_inline
     def start_hmove(mut self):
@@ -889,6 +897,15 @@ struct CycleTIA(Copyable, Movable):
         self.m0.advance_n(n)
         self.m1.advance_n(n)
         self.bl.advance_n(n)
+
+    @always_inline
+    def flush_pending(mut self):
+        """Apply deferred visible ticks (see `pending_ticks`) to the five
+        object counters. Free when nothing is pending."""
+        if self.pending_ticks > 0:
+            var n = self.pending_ticks
+            self.pending_ticks = 0
+            self.advance_objects(n)
 
     @always_inline
     def next_line(mut self):
