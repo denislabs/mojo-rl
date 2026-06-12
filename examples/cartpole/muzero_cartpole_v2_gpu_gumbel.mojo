@@ -1,20 +1,29 @@
-"""Gumbel MuZero CartPole convergence run (v2, GPU) — fully on-device.
+"""Gumbel MuZero CartPole convergence run (v2, GPU) — batched + device replay.
 
-The Gumbel-planner sibling of `muzero_cartpole_v2_gpu`: same nets, same train
-step, same fix stack (±20 h-space support, value_coef 1.0, temperature
-schedule, reanalyze, truncation-aware replay), but the search is
-`GumbelGPUMCTS` — Gumbel-Top-k root action sampling + sequential halving
-(`MAX_K=2` root candidates for CartPole's 2 actions). The stored policy target
-is the planner's **improved policy** rather than raw visit counts; greedy eval
-is its argmax. Gumbel MCTS gives policy improvement guarantees at low
-simulation counts, so it is the interesting variant for sim-budget-constrained
-runs — compare against the vanilla example at the same NUM_SIMS.
+The batched, device-obs-replay variant of the CartPole-500 Gumbel lighthouse.
+Same nets and fix stack (±20 h-space support, value_coef 1.0, temperature
+schedule, reanalyze, truncation-aware replay, clip 10) and the same
+`GumbelGPUMCTS` search (Gumbel-Top-k + sequential halving, ``MAX_K=2`` for
+CartPole's 2 actions), but driven through
+``run_muzero_gumbel_selfplay_gpu_batched_devreplay``:
 
-Driven through the `MuZeroAgent` facade: on the ``"gpu"`` target its `train`
-wires exactly this fully on-device Gumbel driver (`run_muzero_gumbel_selfplay_gpu`),
-so the run is identical to the hand-rolled driver call while reusing the
-agent's optimizer setup, eval, and checkpoint surface. ``max_grad_norm=10.0``
-reproduces the "clip 10" the convergence stack needs.
+  * ``N_ENVS`` CartPole envs step in parallel on the GPU
+    (`BatchedGpuDiscreteEnv`) and are searched in ONE batched Gumbel launch
+    (the rep net runs at batch=``N_ENVS`` at the root).
+  * the trajectory replay (`GPUMCTSSequenceReplay`) keeps its obs ring on the
+    **device** — obs are stored device→device from ``env.obs_ptr()`` and the
+    training obs slab is gathered device→device into the train step, so no
+    observation crosses the bus on the collection path.
+
+CartPole obs are physical state values (not ``[0,1]`` pixels), so the obs ring
+is stored as ``DT`` (``OBS_STORE_DT = DT`` — a lossless rebind, NOT the uint8
+pixel quantization). The device ring needs ``CAP % N_ENVS == 0`` and
+``CAP ≥ N_ENVS · max_ep_steps`` so no in-flight episode self-overwrites.
+
+This bypasses the `MuZeroAgent` facade (whose ``train`` wires the single-env
+host-replay driver) and builds the three nets + Adam optimizers directly, then
+calls the batched device-replay driver — the optimizer setup (lr 3e-4, clip 10)
+reproduces the facade's convergence config.
 
 Run (GPU env required):
     pixi run -e apple mojo run -I . examples/cartpole/muzero_cartpole_v2_gpu_gumbel.mojo
@@ -24,65 +33,97 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.initializer import Kaiming
+from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.muzero import MuZeroMLPConfig, MuZeroAgent
+from mojo_rl.deep_agents2.muzero import (
+    MuZeroMLPConfig,
+    run_muzero_gumbel_selfplay_gpu_batched_devreplay,
+)
+from mojo_rl.deep_agents2.training import BatchedGpuDiscreteEnv
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
 def main() raises:
-    comptime Env = CartPoleEnv[DType.float64]
     comptime Cfg = MuZeroMLPConfig[OBS=4, ACT=2, LATENT=128, HIDDEN=128, BINS=51]
+    comptime OBS = Cfg.OBS          # 4
+    comptime ACT = Cfg.ACT          # 2
+    comptime LATENT = Cfg.LATENT
+    comptime BINS = Cfg.BINS
+
+    comptime N_ENVS = 8             # parallel GPU CartPole envs (batched search)
     comptime NUM_SIMS = 24
-    comptime MAX_K = 2       # Gumbel root candidates (= ACT for CartPole)
-    comptime Agent = MuZeroAgent[
-        "gpu", Env,
-        Cfg.Rep, Cfg.Dyn, Cfg.Pred,
-        Cfg.OBS, Cfg.ACT, Cfg.LATENT, Cfg.BINS,
-        NUM_SIMS=NUM_SIMS, MAX_NODES=128, CAP=50000, B=128, K=5, N=10,
-        MAX_K=MAX_K,
-    ]
+    comptime MAX_NODES = 128
+    comptime MAX_K = 2              # Gumbel root candidates (= ACT for CartPole)
+    comptime MAX_EP = 500
+    # Device obs ring: CAP % N_ENVS == 0 AND CAP >= N_ENVS·MAX_EP (= 4000).
+    comptime CAP = 50_000
+    comptime B = 128
+    comptime K = 5
+    comptime N = 10
+
+    comptime BatchedEnvT = BatchedGpuDiscreteEnv[CartPoleEnv[DT], N_ENVS, OBS, 1]
 
     var ctx = DeviceContext()
-    var env = Env()
-    var agent = Agent(
-        ctx=ctx,
-        lr=Scalar[DT](3e-4),
-        gamma=Scalar[DT](0.997),
-        v_min=Scalar[DT](-20.0),
-        v_max=Scalar[DT](20.0),
-        value_coef=Scalar[DT](1.0),
-        max_grad_norm=Scalar[DT](10.0),
-    )
+
+    var rep = Cfg.Rep.make["gpu", INIT=Kaiming](ctx=ctx)
+    var dyn = Cfg.Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
+    var pred = Cfg.Pred.make["gpu", INIT=Kaiming](ctx=ctx)
+    var orep = Adam.make["gpu", M = Cfg.Rep](rep, ctx)
+    var odyn = Adam.make["gpu", M = Cfg.Dyn](dyn, ctx)
+    var opred = Adam.make["gpu", M = Cfg.Pred](pred, ctx)
+    orep.lr = Scalar[DT](3e-4); odyn.lr = Scalar[DT](3e-4)
+    opred.lr = Scalar[DT](3e-4)
+    # clip 10 — the CartPole v2 convergence stack needs it.
+    orep.max_grad_norm = Scalar[DT](10.0)
+    odyn.max_grad_norm = Scalar[DT](10.0)
+    opred.max_grad_norm = Scalar[DT](10.0)
+
+    var env = BatchedEnvT(ctx)
+    var eval_env = BatchedEnvT(ctx)
 
     # ── metrics logger (silent no-op without RL_MONITOR_URL in env/.env) ──
     var env_vars = load_dotenv()
     var logger = RemoteLogger(
         server_url=env_vars.get("RL_MONITOR_URL", ""),
-        run_name="Gumbel MuZero CartPole (GPU)",
+        run_name="Gumbel MuZero CartPole (GPU, device replay)",
         buffer_size=64,
         api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
     )
     logger.set_config("agent", "GumbelMuZero")
     logger.set_config("env", "CartPole")
     logger.set_config("framework", "deep_agents2/nn2")
+    logger.set_config("replay", "device (GPUMCTSSequenceReplay)")
+    logger.set_config("n_envs", String(N_ENVS))
 
-    print("Gumbel MuZero CartPole convergence (v2, GPU — fully on-device)")
+    print("Gumbel MuZero CartPole convergence (v2, GPU — batched device replay)")
     print("  LATENT", Cfg.LATENT, "H", Cfg.HIDDEN, "BINS", Cfg.BINS,
-          "sims", NUM_SIMS, "MAX_K", MAX_K, "K", 5, "N", 10, "B", 128,
-          "lr 3e-4 clip 10")
+          "sims", NUM_SIMS, "MAX_K", MAX_K, "K", K, "N", N, "B", B,
+          "N_ENVS", N_ENVS, "lr 3e-4 clip 10")
 
-    var loss = agent.train[L=RemoteLogger](
-        env,
-        iterations=60000,
-        learning_starts=500,
-        train_per_iter=1,
-        temperature_decay_steps=60000,
+    var loss = run_muzero_gumbel_selfplay_gpu_batched_devreplay[
+        BatchedEnvT, Cfg.Rep, Cfg.Dyn, Cfg.Pred,
+        N_ENVS, OBS, ACT, LATENT, BINS,
+        NUM_SIMS, MAX_NODES, MAX_K, CAP, B, K, N,
+        OBS_STORE_DT = DT,          # CartPole obs are state values, NOT pixels
+        L = RemoteLogger,
+    ](
+        ctx, env, rep, dyn, pred, orep, odyn, opred,
+        iterations=15000,           # ·N_ENVS = 120k env steps
+        learning_starts=500,        # stored steps before training
+        max_ep_steps=MAX_EP,
+        gamma=Scalar[DT](0.997),
+        v_min=Scalar[DT](-20.0),
+        v_max=Scalar[DT](20.0),
+        value_coef=Scalar[DT](1.0),
+        temperature_decay_steps=15000,
         reanalyze_every=1,
-        eval_every=2000,
-        eval_episodes=5,
-        diag_every=200,
-        report_every=500,
+        eval_every=1000,
+        eval_horizon=MAX_EP,
+        eval_env=UnsafePointer(to=eval_env),
+        diag_every=100,
+        report_every=200,
         logger=UnsafePointer(to=logger),
         seed=42,
         verbose=True,
