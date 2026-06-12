@@ -2,19 +2,28 @@
 """
 Setup ROM symlinks for Atari emulator.
 
-This script:
-1. Creates a symlink from the project's roms/ to ale_py's ROM directory
-2. Auto-downloads missing ROMs from Arcade-Learning-Environment GitHub (~20MB)
-3. Works with pixi multi-environments (default, nvidia, apple)
+This script creates a symlink from the project's roms/ to ale_py's ROM
+directory. ROMs must be downloaded separately using AutoROM.
 
-Each pixi environment has its own isolated ale_py in .pixi/envs/<env>/lib/,
-so run this script in each environment you use.
+Before running this:
+    pixi run download-roms         # Download ROMs via AutoROM (one-time per environment)
 
-Usage:
+Then use this script to verify and create symlinks:
     python scripts/setup_roms.py                # system Python
     pixi run setup-roms                         # default environment
     pixi run -e nvidia setup-roms               # nvidia (CUDA) environment
     pixi run -e apple setup-roms                # apple (Metal) environment
+
+Multi-environment workflow:
+    # Download ROMs in each environment
+    pixi run download-roms
+    pixi run -e nvidia download-roms
+    pixi run -e apple download-roms
+
+    # Create symlinks
+    pixi run setup-roms
+    pixi run -e nvidia setup-roms
+    pixi run -e apple setup-roms
 """
 
 import sys
@@ -52,24 +61,21 @@ def check_roms_available(roms_path):
         print(f"✓ {rom_count} ROM files available (partial set)")
         return True  # Usable ROM set
 
-    # Few or no ROMs
-    print(f"⚠️  Only {rom_count} ROM(s) in {roms_path}")
+    # Few or no ROMs — suggest using AutoROM
+    print(f"⚠️  Only {rom_count} ROM(s) found in {roms_path}")
     print()
-    print("To download ROMs, copy them from an existing ale-py installation:")
+    print("To download Atari ROMs, use AutoROM (included via pixi):")
     print()
-    print("  1. On your Mac (where you have ROMs):")
-    print(f"     cp ~/.pixi/envs/*/lib/python*/site-packages/ale_py/roms/*.bin \\")
-    print(f"        /tmp/my_roms/")
+    print("  pixi run python -m AutoROM --accept-license")
     print()
-    print("  2. On this machine, copy the ROM files:")
-    print(f"     cp /tmp/my_roms/*.bin {roms_path}/")
+    print("This will:")
+    print("  1. Download Atari 2600 ROMs (~20 MB)")
+    print("  2. Install them in the active pixi environment")
+    print("  3. Make them available to ale-py/gymnasium")
     print()
-    print("  3. Or download ROMs from a legal source and place them in:")
-    print(f"     {roms_path}/")
-    print()
-    print("ROMs should be in ALE format (.bin files). Required for:")
-    print("  - rainbow_atari_pong_pixel_training_gpu.mojo")
-    print("  - Other Atari 2600 emulator examples")
+    print("For multi-environment setups, run this in each environment:")
+    print("  pixi run -e nvidia python -m AutoROM --accept-license")
+    print("  pixi run -e apple python -m AutoROM --accept-license")
     print()
 
     return rom_count > 0  # At least something is there

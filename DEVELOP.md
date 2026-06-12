@@ -4,67 +4,57 @@ This guide covers additional setup steps needed after `pixi install` for develop
 
 ## Atari ROM Setup
 
-The Atari emulator requires ROM files from the Arcade Learning Environment (ALE). These are **not** bundled in the repository but are available through the `ale_py` Python package.
+The Atari emulator requires ROM files from the Arcade Learning Environment (ALE). These are **not** bundled in the repository. Use `AutoROM` (via `gymnasium[accept-rom-license]`) to download them.
 
-### Automatic Setup
+### Setup
 
-After `pixi install`, run:
+After `pixi install`, download ROMs using AutoROM:
 
 ```bash
-pixi run setup-roms
+pixi run python -m AutoROM --accept-license
 ```
 
-This creates a symlink from `roms/` to the ale_py ROM directory in your Python environment, making all ~100 Atari games available to the emulator.
+This will:
+1. Download Atari 2600 ROMs (~20 MB)
+2. Install them in the active pixi environment
+3. Create symlink: `roms/` → ale_py ROM directory
+4. Run `pixi run setup-roms` to verify
 
-#### Multi-Environment Note
+### Multi-Environment Setup
 
-If you use multiple pixi environments (default, nvidia, apple), run the setup **in each environment**:
+If you use multiple pixi environments, download ROMs in **each one**:
 
+```bash
+pixi run python -m AutoROM --accept-license          # default
+pixi run -e nvidia python -m AutoROM --accept-license  # nvidia (CUDA)
+pixi run -e apple python -m AutoROM --accept-license   # apple (Metal)
+pixi run setup-roms                  # verify symlinks
+```
+
+Then verify with:
 ```bash
 pixi run setup-roms              # default environment
-pixi run -e nvidia setup-roms    # nvidia (CUDA) environment
-pixi run -e apple setup-roms     # apple (Metal) environment
+pixi run -e nvidia setup-roms    # nvidia environment
+pixi run -e apple setup-roms     # apple environment
 ```
-
-Each environment has its own isolated ale_py, so the symlink needs to point to the correct one.
-
-### What Happens
-
-- Finds the `ale_py` package in your **active** environment
-- Creates a symlink: `roms/ → $CONDA_PREFIX/lib/pythonX.Y/site-packages/ale_py/roms`
-- Ensures ROMs are downloaded (auto-downloads if missing)
-- Verifies by listing available ROM files
 
 ### Troubleshooting
 
-**Error: `Failed to open file 'roms/pong.bin': No such file or directory`**
-- The symlink may point to the wrong pixi environment
-- Run setup in the environment you're using:
-  ```bash
-  pixi run -e nvidia setup-roms   # if running with -e nvidia
-  ```
+**Error: `Failed to open file 'roms/pong.bin'`**
+- ROMs haven't been downloaded yet
+- Run: `pixi run -e <env> python -m AutoROM --accept-license`
+- Then: `pixi run -e <env> setup-roms`
 
-**Error: `ale_py not found`**
-- Install explicitly:
-  ```bash
-  pixi run pip install ale-py
-  ```
-
-**Error: Only 1 ROM found (tetris.bin)**
-- ROMs haven't been copied to the environment yet
-- Copy them from your macOS installation where you have the full ROM set:
-  ```bash
-  # On macOS (where you have ROMs):
-  cp ~/.pixi/envs/*/lib/python*/site-packages/ale_py/roms/*.bin /tmp/my_roms/
-  
-  # Then transfer /tmp/my_roms/ to the workspace and copy:
-  cp /tmp/my_roms/*.bin ~/.pixi/envs/nvidia/lib/python3.13/site-packages/ale_py/roms/
-  ```
-- Or download ROMs from a legal source (Atari ROMs are proprietary)
+**Error: AutoROM command not found**
+- Install it: `pixi run pip install auto-rom`
 
 **Symlink creation failed**
 - Check directory permissions on the project root
 - If a `roms/` directory exists (not a symlink), the script will back it up to `roms.backup/`
+
+**Atari ROM License**
+- By accepting the license during `AutoROM`, you agree to the terms of the Atari ROM license
+- ROMs are for personal use and educational purposes
 
 ## Running Examples
 

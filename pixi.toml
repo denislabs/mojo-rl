@@ -40,7 +40,10 @@ system-requirements = { macos = "15.0" }
 mojo = ">=1.0.0b2.dev2026060906,<2"
 max = ">=26.4.0.dev2026060906,<27"
 gymnasium = ">=1.3.0,<2"
-ale-py = ">=0.11.0,<1"           # Arcade Learning Environment (Atari emulator + ROMs)
+# Atari ROM support: gymnasium[accept-rom-license] auto-downloads via AutoROM
+# By installing, you agree to the Atari ROM license terms
+auto-rom = ">=0.6.1,<1"          # Downloads and manages Atari 2600 ROMs
+ale-py = ">=0.11.0,<1"           # Arcade Learning Environment (requires ROMs)
 pygame = ">=2.6.1,<3"
 python = ">=3.13.13,<3.14"
 swig = ">=4.4.1,<5"
@@ -89,7 +92,8 @@ default = { features = ["nvidia"] }
 
 [tasks]
 install-pre-commit = "pre-commit install"
-setup-roms = { cmd = "python3 scripts/setup_roms.py", description = "Setup ROM symlinks for Atari emulator (uses ale_py roms)" }
+download-roms = { cmd = "python -m AutoROM --accept-license", description = "Download Atari 2600 ROMs via AutoROM (requires accepting license)" }
+setup-roms = { cmd = "python3 scripts/setup_roms.py", description = "Setup ROM symlinks for Atari emulator (must run download-roms first)" }
 build = { cmd = "mojo precompile mojo_rl -o mojo_rl.mojoc" }
 run = { cmd = "mojo run -I ." }
 test = { cmd = "mojo run -I ." }
