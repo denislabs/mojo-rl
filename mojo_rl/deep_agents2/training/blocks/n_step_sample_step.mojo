@@ -80,16 +80,11 @@ struct NStepSampleStep[N: Int, R: ReplayBuffer, BATCH_: Int](
         var t = self.nstep.add(obs, action, reward, next_obs, done_b)
         if not t.valid:
             return
-        var s0 = List[Scalar[DT]](length=Self.OBS, fill=Scalar[DT](0.0))
-        var a0 = List[Scalar[DT]](length=Self.ACT, fill=Scalar[DT](0.0))
-        var sn = List[Scalar[DT]](length=Self.OBS, fill=Scalar[DT](0.0))
-        for d in range(Self.OBS):
-            s0[d] = t.obs[d]
-            sn[d] = t.next_obs[d]
-        for j in range(Self.ACT):
-            a0[j] = t.action[j]
+        # NStepTransition now carries heap Lists — pass them through
+        # without re-copying (and without materializing OBS-sized stack
+        # aggregates, which -O3 scalarization can't handle at pixel dims).
         var done_f = Scalar[DT](1.0) if t.done else Scalar[DT](0.0)
-        self.inner.add(s0, a0, t.reward, sn, done_f, ctx=ctx)
+        self.inner.add(t.obs, t.action, t.reward, t.next_obs, done_f, ctx=ctx)
 
     def step(
         mut self,

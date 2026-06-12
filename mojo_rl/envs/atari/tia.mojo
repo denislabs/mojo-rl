@@ -58,7 +58,14 @@ from .flags import (
 # ============================================================================
 
 
-@always_inline
+# @no_inline (compile-size hygiene): inlined, the TIA/RIOT device layer
+# multiplies through mem_read/mem_write's 77 call sites in execute_one,
+# ballooning it toward ~210K lines of LLVM IR (together with live
+# debug_assert bounds checks — see `-D ASSERT=none`). TIA/RIOT accesses are
+# rare relative to instructions — the call is noise (no measured fps cost,
+# trajectory checksum identical). RAM/ROM fast paths stay inline in
+# mem_read/mem_write.
+@no_inline
 def tia_read(state: AtariState, addr: UInt8) -> UInt8:
     """Read a TIA register. Only collision and input registers are readable,
     and they only drive bits 7/6 — the low 6 bits leak the previous data-bus
@@ -169,7 +176,8 @@ def _resp_pos(clock: Int) -> UInt8:
     return UInt8(((hpos - HBLANK_CLOCKS) + 5) % FRAME_WIDTH)
 
 
-@always_inline
+# @no_inline: see tia_read — compile-memory boundary.
+@no_inline
 def tia_write(mut state: AtariState, addr: UInt8, value: UInt8):
     """Write a TIA register."""
     var reg = addr & 0x3F

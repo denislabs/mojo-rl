@@ -338,13 +338,28 @@ def resolve_operand_addr(
 # ============================================================================
 
 
-@always_inline
+@no_inline
 def execute_one(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
 ) -> UInt8:
-    """Execute one instruction. Returns the number of CPU cycles consumed."""
+    """Execute one instruction. Returns the number of CPU cycles consumed.
+
+    `@no_inline` (compile-size hygiene): fully inlined (this function plus
+    its `@always_inline` mem_read/mem_write/resolve_operand_addr internals)
+    the opcode dispatch was the dominant share of `run_frame_cycle_accurate`'s
+    ~220K lines of LLVM IR — and that frame runner is instantiated twice
+    (RENDER=True/False) in pixel-training binaries. Outlined, the dispatch is
+    ONE shared copy and the frame runners shrink ~an order of magnitude.
+    (Historical note: the Rainbow Atari pixel example's -O3 compile blowup
+    that motivated this was ultimately root-caused to `NStepTransition`'s
+    by-value InlineArray obs — see deep_agents2/data/n_step_replay.mojo —
+    not the emulator; this boundary is kept as cheap IR hygiene.)
+    Runtime cost is one real call per emulated instruction, noise against
+    the 9–21 TIA color-clock ticks each instruction drives (measured: no
+    fps regression on the Pong benchmark, trajectory checksum identical).
+    """
     var opcode_byte = mem_read(state, rom, rom_size, state.pc)
     var table = materialize[OPCODE_TABLE]()
     var entry = table[Int(opcode_byte)]
@@ -1281,17 +1296,19 @@ def run_frame_cycle_accurate[
 ):
     """Cycle-accurate frame: CPU and TIA in lockstep, per-color-clock collision.
 
-    `@no_inline` (compile-memory critical): this is by far the largest
-    function in the program — ~220K lines of LLVM IR per instantiation,
-    because the `@always_inline` 405-line `execute_one` opcode dispatch is
-    inlined across every instruction of every scanline. `_step_obs_pixel`
-    calls it twice per env step; without this boundary `-O3` fuses both
-    copies into one ~440K-line function, and optimizing a function that size
-    alongside the CNN GPU training graph peaks the compiler at ~43 GB (OOMs a
-    16 GB host). Kept out-of-line it stays one ~220K function — exactly how
-    the standalone Atari player compiles it — so the combined build fits.
-    Called once per emulated frame: a single non-inlined call is
-    runtime-negligible against the thousands of CPU instructions it runs.
+    `@no_inline` (compile-size hygiene): the largest function in the
+    program. Historically ~220K lines of LLVM IR per instantiation when the
+    405-line `execute_one` opcode dispatch was `@always_inline`d across every
+    instruction of every scanline; `_step_obs_pixel` instantiates this runner
+    twice (RENDER=True/False), and without this boundary `-O3` fused both
+    copies into one ~440K-line function. `execute_one` is now `@no_inline`
+    too (one shared dispatch copy), shrinking each instantiation ~10×; both
+    boundaries stay. (The Rainbow-Atari -O3 compile OOM once blamed on this
+    was root-caused to NStepTransition's by-value InlineArray obs in
+    deep_agents2 — the emulator was a red herring; most of its residual IR
+    bulk was live debug_assert bounds checks, see `-D ASSERT=none`.)
+    Called once per emulated frame: a non-inlined call is
+    runtime-negligible against the thousands of instructions it runs.
 
     One VSYNC-aligned frame. The TIA advances exactly 3 color clocks per CPU
     cycle; each instruction's logged TIA writes are replayed at their exact clock

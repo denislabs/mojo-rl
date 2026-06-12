@@ -62,23 +62,32 @@ struct NStepTransition[OBS: Int, ACT: Int](
     not yet full and not done). `valid=True` means the caller should
     push this transition into the base replay via the standard
     `add(obs, action, reward, next_obs, done)` API.
+
+    Storage is heap `List`s, NOT `InlineArray` (compile-memory critical):
+    with pixel obs (OBS=28224) a by-value InlineArray makes this a ~225 KB
+    stack aggregate returned through every `NStepBuffer.add` — the -O2/-O3
+    scalarization passes explode superlinearly in OBS on those copies
+    (>30 GB compiler footprint on the Rainbow Atari pixel example; -O0 was
+    the only build that fit). Lists keep the payload on the heap and the
+    struct register-sized. `valid=False` transitions carry EMPTY lists —
+    callers must check `valid` before indexing.
     """
 
     var valid: Bool
-    var obs: InlineArray[Scalar[DT], Self.OBS]
-    var action: InlineArray[Scalar[DT], Self.ACT]
+    var obs: List[Scalar[DT]]
+    var action: List[Scalar[DT]]
     var reward: Scalar[DT]
-    var next_obs: InlineArray[Scalar[DT], Self.OBS]
+    var next_obs: List[Scalar[DT]]
     var done: Bool
 
     @staticmethod
     def empty() -> Self:
         return Self(
             valid=False,
-            obs=InlineArray[Scalar[DT], Self.OBS](fill=Scalar[DT](0.0)),
-            action=InlineArray[Scalar[DT], Self.ACT](fill=Scalar[DT](0.0)),
+            obs=List[Scalar[DT]](),
+            action=List[Scalar[DT]](),
             reward=Scalar[DT](0.0),
-            next_obs=InlineArray[Scalar[DT], Self.OBS](fill=Scalar[DT](0.0)),
+            next_obs=List[Scalar[DT]](),
             done=False,
         )
 
@@ -170,18 +179,18 @@ struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
 
         if done or c == Self.N:
             var r_n = self._compute_return(c)
-            var s0 = InlineArray[Scalar[DT], Self.OBS](
-                fill=Scalar[DT](0.0)
+            var s0 = List[Scalar[DT]](
+                length=Self.OBS, fill=Scalar[DT](0.0)
             )
-            var a0 = InlineArray[Scalar[DT], Self.ACT](
-                fill=Scalar[DT](0.0)
+            var a0 = List[Scalar[DT]](
+                length=Self.ACT, fill=Scalar[DT](0.0)
             )
             for d in range(Self.OBS):
                 s0[d] = self.obs[d]
             for j in range(Self.ACT):
                 a0[j] = self.actions[j]
-            var sn = InlineArray[Scalar[DT], Self.OBS](
-                fill=Scalar[DT](0.0)
+            var sn = List[Scalar[DT]](
+                length=Self.OBS, fill=Scalar[DT](0.0)
             )
             for d in range(Self.OBS):
                 sn[d] = next_obs_p[d]
@@ -194,8 +203,8 @@ struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
 
             return NStepTransition[Self.OBS, Self.ACT](
                 valid=True,
-                obs=s0, action=a0, reward=r_n,
-                next_obs=sn, done=done,
+                obs=s0^, action=a0^, reward=r_n,
+                next_obs=sn^, done=done,
             )
         return NStepTransition[Self.OBS, Self.ACT].empty()
 

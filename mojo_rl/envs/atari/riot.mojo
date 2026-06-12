@@ -207,7 +207,8 @@ def riot_read_swchb(state: AtariState) -> UInt8:
     return value
 
 
-@always_inline
+# @no_inline: see tia_read — compile-memory boundary.
+@no_inline
 def riot_read(state: AtariState, addr: UInt8) -> UInt8:
     """Read a RIOT register or RAM.
 
@@ -231,7 +232,8 @@ def riot_read(state: AtariState, addr: UInt8) -> UInt8:
         return 0
 
 
-@always_inline
+# @no_inline: see tia_read — compile-memory boundary.
+@no_inline
 def riot_write(mut state: AtariState, addr: UInt8, value: UInt8):
     """Write a RIOT register. Handles timer setup."""
     var reg = addr & 0x1F
