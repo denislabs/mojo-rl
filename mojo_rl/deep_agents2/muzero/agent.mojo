@@ -91,6 +91,7 @@ struct MuZeroAgent[
     var v_min: Scalar[DT]
     var v_max: Scalar[DT]
     var value_coef: Scalar[DT]
+    var max_grad_norm: Scalar[DT]
 
     def __init__(
         out self,
@@ -100,6 +101,7 @@ struct MuZeroAgent[
         v_min: Scalar[DT] = Scalar[DT](-10.0),
         v_max: Scalar[DT] = Scalar[DT](10.0),
         value_coef: Scalar[DT] = Scalar[DT](0.25),
+        max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises:
         self.ctx = ctx
         self.rep = Self.REP.make[Self.TARGET, INIT=Kaiming](ctx=ctx)
@@ -110,6 +112,10 @@ struct MuZeroAgent[
         self.v_min = v_min
         self.v_max = v_max
         self.value_coef = value_coef
+        # Global grad-norm clip applied to all three session-local optimizers in
+        # `train` (0.0 = off, Adam's default). The CartPole v2 convergence runs
+        # need 10.0 — keep it on the agent so the facade reproduces them.
+        self.max_grad_norm = max_grad_norm
 
     def train[
         L: Logger = NoOpLogger,
@@ -146,6 +152,9 @@ struct MuZeroAgent[
             orep.lr = self.lr
             odyn.lr = self.lr
             opred.lr = self.lr
+            orep.max_grad_norm = self.max_grad_norm
+            odyn.max_grad_norm = self.max_grad_norm
+            opred.max_grad_norm = self.max_grad_norm
             return run_muzero_selfplay_cpu[
                 Self.ENV, Self.REP, Self.DYN, Self.PRED,
                 Self.OBS, Self.ACT, Self.LATENT, Self.BINS,
@@ -180,6 +189,9 @@ struct MuZeroAgent[
             orep.lr = self.lr
             odyn.lr = self.lr
             opred.lr = self.lr
+            orep.max_grad_norm = self.max_grad_norm
+            odyn.max_grad_norm = self.max_grad_norm
+            opred.max_grad_norm = self.max_grad_norm
             # Fully on-device Gumbel MuZero — the validated GPU path (greedy
             # 500 by 4k on the CartPole lighthouse, vs the hybrid's mirror-sync
             # overhead and the vanilla device search's NoNoise eval anomaly).
