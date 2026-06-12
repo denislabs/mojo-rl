@@ -106,7 +106,7 @@ def main() raises:
         max_ep_steps=MAX_EP,
         temperature_decay_steps=15000,
         reanalyze_every=1,
-        eval_every=1000,
+        eval_every=0,
         eval_horizon=MAX_EP,
         eval_env=UnsafePointer(to=eval_env),
         diag_every=100,
