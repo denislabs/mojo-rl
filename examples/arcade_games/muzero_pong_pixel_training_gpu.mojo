@@ -71,9 +71,13 @@ comptime CAP = 64_000
 comptime OBS_STORE_DT = DType.uint8
 
 # Unroll / training.
-comptime B = 64             # unroll batch (windows)
+comptime B = 256            # unroll batch (windows) — bigger batch, fewer steps
 comptime K = 5              # BPTT unroll length
 comptime N = 5              # n-step value bootstrap horizon
+# Gradient steps per iteration. train_per_iter=4 with N_ENVS=32 → replay ratio
+# 4/32 = 0.125 (≈ Rainbow's 0.25, vs the UTD-1:1 default of N_ENVS). Combined
+# with the larger B above: ~3× fewer + better-utilized CNN passes per iteration.
+comptime TRAIN_PER_ITER = 4
 comptime LR = Scalar[DT](1e-4)
 
 # Value support in MuZero h-space — bracket the DISCOUNTED return (γ=0.997 over
@@ -116,7 +120,7 @@ def main() raises:
         gamma=GAMMA,
         v_min=V_MIN,
         v_max=V_MAX,
-        value_coef=Scalar[DT](1.0),
+        value_coef=Scalar[DT](0.25),   # paper recommendation (vs 1.0)
     )
 
     var env = PongPixelBatched(ctx)
@@ -131,7 +135,9 @@ def main() raises:
           "MAX_NODES", MAX_NODES)
     print("  Value support [", V_MIN, ",", V_MAX, "] (h-space)  γ", GAMMA)
     print("  Replay CAP", CAP, "(device, uint8 obs ring)")
-    print("  Unroll B", B, "K", K, "N", N, " lr", LR)
+    print("  Unroll B", B, "K", K, "N", N, " lr", LR,
+          " train/iter", TRAIN_PER_ITER, "(replay ratio",
+          Float64(TRAIN_PER_ITER) / Float64(N_ENVS), ")")
     print("  Total env steps ≈", NUM_ITERS * N_ENVS)
     print()
 
@@ -150,12 +156,16 @@ def main() raises:
     logger.set_config("n_envs", String(N_ENVS))
     logger.set_config("num_sims", String(NUM_SIMS))
     logger.set_config("obs_store_dtype", "uint8")
+    logger.set_config("batch_size", String(B))
+    logger.set_config("train_per_iter", String(TRAIN_PER_ITER))
+    logger.set_config("value_coef", "0.25")
 
     var start = perf_counter_ns()
     var loss = agent.train[L=RemoteLogger](
         env,
         iterations=NUM_ITERS,
         learning_starts=LEARNING_STARTS,
+        train_per_iter=TRAIN_PER_ITER,
         max_ep_steps=MAX_EP_STEPS,
         temperature_decay_steps=NUM_ITERS,
         reanalyze_every=1,
