@@ -361,8 +361,11 @@ def execute_one(
     fps regression on the Pong benchmark, trajectory checksum identical).
     """
     var opcode_byte = mem_read(state, rom, rom_size, state.pc)
-    var table = materialize[OPCODE_TABLE]()
-    var entry = table[Int(opcode_byte)]
+    # Index the comptime table directly: the compiler lowers OPCODE_TABLE to a
+    # single read-only constant rather than re-`materialize`-ing a 1 KB stack
+    # copy on every instruction. On the GPU port this constant lands in
+    # constant memory, materialized once and shared across the warp.
+    var entry = OPCODE_TABLE[Int(opcode_byte)]
     var inst = entry.instruction
     var mode = entry.addr_mode
     var cycles = entry.cycles
@@ -1060,6 +1063,7 @@ from .tia_cycle import (
     DELAY_HMBL,
     DELAY_REFP,
     DELAY_HMCLR,
+    DQ_CAP,
 )
 from .flags import (
     HBLANK_CLOCKS,
@@ -1487,8 +1491,10 @@ def run_frame_cycle_accurate[
     # can change any object's window).
     var safe_budget = 0
     var clocks = 0
-    var due_reg = List[UInt8]()
-    var due_val = List[UInt8]()
+    # Fixed drain buffers for matured DelayQueue writes — no per-frame heap
+    # (kernel-safe). At most DQ_CAP writes can fire in a single color clock.
+    var due_reg = InlineArray[UInt8, DQ_CAP](fill=0)
+    var due_val = InlineArray[UInt8, DQ_CAP](fill=0)
     # Bulk fast-path throttle: after a blocked attempt (an object's render
     # window is ahead), run this many per-clock iterations before retrying.
     var skip_bulk = 0
@@ -1700,10 +1706,8 @@ def run_frame_cycle_accurate[
             # Apply writes whose delay elapsed this clock. The queue is empty
             # on the vast majority of clocks — skip the List churn entirely.
             if state.ctia.dq.count != 0:
-                due_reg.clear()
-                due_val.clear()
-                state.ctia.dq.cycle_collect(due_reg, due_val)
-                for k in range(len(due_reg)):
+                var ndue = state.ctia.dq.cycle_collect(due_reg, due_val)
+                for k in range(ndue):
                     _cycle_apply_reg(
                         state, due_reg[k], due_val[k], hctr, in_hblank
                     )
