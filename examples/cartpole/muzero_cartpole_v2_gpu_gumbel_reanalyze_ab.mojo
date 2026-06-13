@@ -38,7 +38,7 @@ from mojo_rl.envs.cartpole import CartPoleEnv
 
 
 # ── A/B knob: 0 → live-net reanalyze, > 0 → target-net synced every N grad steps.
-comptime TARGET_SYNC_INTERVAL = 0
+comptime TARGET_SYNC_INTERVAL = 200
 
 
 def main() raises:
