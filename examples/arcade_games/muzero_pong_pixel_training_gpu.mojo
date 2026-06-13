@@ -138,6 +138,8 @@ def main() raises:
     print("  Unroll B", B, "K", K, "N", N, " lr", LR,
           " train/iter", TRAIN_PER_ITER, "(replay ratio",
           Float64(TRAIN_PER_ITER) / Float64(N_ENVS), ")")
+    print("  Reanalyze every 1, batch", B, "(",
+          B // N_ENVS, "search chunks/iter, fresh-net targets)")
     print("  Total env steps ≈", NUM_ITERS * N_ENVS)
     print()
 
@@ -158,6 +160,7 @@ def main() raises:
     logger.set_config("obs_store_dtype", "uint8")
     logger.set_config("batch_size", String(B))
     logger.set_config("train_per_iter", String(TRAIN_PER_ITER))
+    logger.set_config("reanalyze_batch", String(B))
     logger.set_config("value_coef", "0.25")
 
     var start = perf_counter_ns()
@@ -169,6 +172,7 @@ def main() raises:
         max_ep_steps=MAX_EP_STEPS,
         temperature_decay_steps=NUM_ITERS,
         reanalyze_every=1,
+        reanalyze_batch=B,          # ≈ training batch: most targets stay fresh
         eval_every=2000,
         eval_episodes=10,           # mean of 10 complete greedy games
         eval_env=UnsafePointer(to=eval_env),

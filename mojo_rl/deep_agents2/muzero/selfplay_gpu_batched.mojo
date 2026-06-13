@@ -186,6 +186,7 @@ def run_muzero_gumbel_selfplay_gpu_batched[
     value_coef: Scalar[DT] = Scalar[DT](0.25),
     temperature_decay_steps: Int = 0,
     reanalyze_every: Int = 0,
+    reanalyze_batch: Int = N_ENVS,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     eval_horizon: Int = 0,   # 0 ⇒ generous step cap; else hard per-eval cap
@@ -198,7 +199,14 @@ def run_muzero_gumbel_selfplay_gpu_batched[
     """Batched Gumbel MuZero self-play. ``learning_starts`` is in **stored
     steps** (training begins once the host replay holds that many completed-
     episode steps). Each driver iteration advances ``N_ENVS`` env steps, so the
-    total environment interaction is ``iterations · N_ENVS``."""
+    total environment interaction is ``iterations · N_ENVS``.
+
+    ``reanalyze_batch`` sets how many stored positions are re-targeted with the
+    CURRENT net per reanalyze trigger (processed in ``reanalyze_batch // N_ENVS``
+    chunks of ``N_ENVS``); fresh root policy + value are written back in place so
+    the n-step targets pick them up on the next sample. Default ``N_ENVS`` (one
+    chunk, historical low coverage); set ≈ ``B`` for the EfficientZero-style
+    high-coverage regime (parity with the devreplay driver)."""
     comptime assert BENV.OBS_DIM == OBS, (
         "batched MuZero: BENV.OBS_DIM must equal OBS"
     )
@@ -408,44 +416,54 @@ def run_muzero_gumbel_selfplay_gpu_batched[
             dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
             logger.value()[].log_scalars(dn, dv, it + 1)
 
-        # ── batched reanalyze: refresh N_ENVS stored positions in one search ──
+        # ── high-coverage batched reanalyze: re-target `reanalyze_batch` stored
+        #    positions with the CURRENT net per trigger, in chunks of N_ENVS (the
+        #    planner's root width). Each chunk stages N_ENVS obs host→device, runs
+        #    one batched Gumbel search, and writes the fresh root policy + value
+        #    back in place — the n-step targets pick them up on the next sample.
+        #    Lifting `reanalyze_batch` from N_ENVS toward B is the
+        #    EfficientZero-style coverage lever (parity with the devreplay path). ──
         if (
             reanalyze_every > 0
             and trained
             and (it + 1) % reanalyze_every == 0
         ):
-            var rpos_e = List[Int]()
-            var rpos_o = List[Int]()
-            for e in range(N_ENVS):
-                var rpos = rb.sample_position()
-                rpos_e.append(rpos[0])
-                rpos_o.append(rpos[1])
-                var tmp = _a(OBS)
-                rb.read_obs(rpos[0], rpos[1], tmp)
-                for j in range(OBS):
-                    h_reana[e * OBS + j] = tmp[j]
-                tmp.free()
-            ctx.enqueue_copy(d_reana, h_reana)
-            var reana_t = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
-            ](mptr(d_reana.unsafe_ptr()))
-            planner.search_gpu[
-                MZRepGPU[OBS, LATENT, REP],
-                MZDynGPU[LATENT, ACT, BINS, DYN],
-                MZPredGPU[LATENT, ACT, BINS, PRED],
-            ](
-                ctx, rep_a, dyn_a, pred_a, reana_t,
-                apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed,
-            )
-            mcts_seed += UInt32(1)
-            ctx.enqueue_copy(h_pol, planner.policies_view())
-            ctx.enqueue_copy(h_val, planner.root_value_view())
-            ctx.synchronize()
-            for e in range(N_ENVS):
-                rb.update_targets(
-                    rpos_e[e], rpos_o[e],
-                    h_pol + (e * ACT), h_val[e],
+            var n_chunks = reanalyze_batch // N_ENVS
+            if n_chunks < 1:
+                n_chunks = 1
+            for _c in range(n_chunks):
+                var rpos_e = List[Int]()
+                var rpos_o = List[Int]()
+                for e in range(N_ENVS):
+                    var rpos = rb.sample_position()
+                    rpos_e.append(rpos[0])
+                    rpos_o.append(rpos[1])
+                    var tmp = _a(OBS)
+                    rb.read_obs(rpos[0], rpos[1], tmp)
+                    for j in range(OBS):
+                        h_reana[e * OBS + j] = tmp[j]
+                    tmp.free()
+                ctx.enqueue_copy(d_reana, h_reana)
+                var reana_t = LayoutTensor[
+                    DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
+                ](mptr(d_reana.unsafe_ptr()))
+                planner.search_gpu[
+                    MZRepGPU[OBS, LATENT, REP],
+                    MZDynGPU[LATENT, ACT, BINS, DYN],
+                    MZPredGPU[LATENT, ACT, BINS, PRED],
+                ](
+                    ctx, rep_a, dyn_a, pred_a, reana_t,
+                    apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed,
                 )
+                mcts_seed += UInt32(1)
+                ctx.enqueue_copy(h_pol, planner.policies_view())
+                ctx.enqueue_copy(h_val, planner.root_value_view())
+                ctx.synchronize()
+                for e in range(N_ENVS):
+                    rb.update_targets(
+                        rpos_e[e], rpos_o[e],
+                        h_pol + (e * ACT), h_val[e],
+                    )
 
         # ── batched greedy eval (fixed horizon on a separate eval env) ──
         if eval_every > 0 and eval_env and (it + 1) % eval_every == 0:
@@ -558,6 +576,7 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     value_coef: Scalar[DT] = Scalar[DT](0.25),
     temperature_decay_steps: Int = 0,
     reanalyze_every: Int = 0,
+    reanalyze_batch: Int = N_ENVS,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     eval_horizon: Int = 0,   # 0 ⇒ generous step cap; else hard per-eval cap
@@ -575,7 +594,16 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     (`mz_unroll_train_step_gpu[obs_on_device=True]`). Only the tiny
     reward/done/policy/value scalars cross the bus per step. Requires
     ``CAP >= N_ENVS · max_ep_steps`` (else an in-flight episode self-overwrites;
-    see `GPUMCTSSequenceReplay`)."""
+    see `GPUMCTSSequenceReplay`).
+
+    ``reanalyze_batch`` sets how many stored positions are re-targeted with the
+    CURRENT net per reanalyze trigger (processed in ``reanalyze_batch // N_ENVS``
+    chunks of ``N_ENVS`` — the planner's root width). The fresh root policy +
+    value are written back in place, so the n-step targets pick them up on the
+    next sample. Default ``N_ENVS`` (one chunk) keeps the historical low-coverage
+    behaviour; set it ≈ ``B`` so a meaningful fraction of each training batch
+    carries fresh targets (the EfficientZero-style reanalyze regime that drives
+    sample efficiency on hard envs)."""
     comptime assert BENV.OBS_DIM == OBS, (
         "batched MuZero: BENV.OBS_DIM must equal OBS"
     )
@@ -614,7 +642,6 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     var h_rew = _a(N_ENVS)
     var h_done = _a(N_ENVS)
     var h_term = _a(N_ENVS)
-    var h_reana = _a(N_ENVS * OBS)
 
     # training metadata slabs (obs0 is gathered on-device into scratch.d_obs0).
     var t_act = _a(K * B)
@@ -630,6 +657,7 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     var d_diag_pred = ctx.enqueue_create_buffer[DT](B * (ACT + BINS))
     var h_diag_pred = _a(B * (ACT + BINS))
 
+    # one chunk's worth of reanalyze obs (gathered device→device per chunk).
     var d_reana = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
 
     var rng = seed ^ UInt64(0x123456789)
@@ -745,44 +773,46 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                 v_min, v_max, last_loss, it + 1, logger.value(),
             )
 
-        # ── batched reanalyze (device read_obs → search → overwrite targets) ──
+        # ── high-coverage batched reanalyze: re-target `reanalyze_batch` stored
+        #    positions with the CURRENT net per trigger, in chunks of N_ENVS (the
+        #    planner's root width). Each chunk gathers its obs device→device (one
+        #    kernel, no per-position sync), runs one batched Gumbel search, and
+        #    writes the fresh root policy + value back in place — the n-step
+        #    targets pick them up on the next `sample_training_batch_dev`. Lifting
+        #    `reanalyze_batch` from N_ENVS toward B is the EfficientZero-style
+        #    coverage lever (a large fraction of each training batch fresh). ──
         if (
             reanalyze_every > 0
             and trained
             and (it + 1) % reanalyze_every == 0
         ):
-            var rpos_e = List[Int]()
-            var rpos_o = List[Int]()
-            for e in range(N_ENVS):
-                var rpos = rb.sample_position()
-                rpos_e.append(rpos[0])
-                rpos_o.append(rpos[1])
-                var tmp = _a(OBS)
-                rb.read_obs(rpos[0], rpos[1], tmp)
-                for j in range(OBS):
-                    h_reana[e * OBS + j] = tmp[j]
-                tmp.free()
-            ctx.enqueue_copy(d_reana, h_reana)
-            var reana_t = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
-            ](mptr(d_reana.unsafe_ptr()))
-            planner.search_gpu[
-                MZRepGPU[OBS, LATENT, REP],
-                MZDynGPU[LATENT, ACT, BINS, DYN],
-                MZPredGPU[LATENT, ACT, BINS, PRED],
-            ](
-                ctx, rep_a, dyn_a, pred_a, reana_t,
-                apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed,
-            )
-            mcts_seed += UInt32(1)
-            ctx.enqueue_copy(h_pol, planner.policies_view())
-            ctx.enqueue_copy(h_val, planner.root_value_view())
-            ctx.synchronize()
-            for e in range(N_ENVS):
-                rb.update_targets(
-                    rpos_e[e], rpos_o[e],
-                    h_pol + (e * ACT), h_val[e],
+            var n_chunks = reanalyze_batch // N_ENVS
+            if n_chunks < 1:
+                n_chunks = 1
+            for _c in range(n_chunks):
+                var rpos = rb.sample_reanalyze_chunk[N_ENVS](d_reana)
+                var rpos_e = rpos[0].copy()
+                var rpos_o = rpos[1].copy()
+                var reana_t = LayoutTensor[
+                    DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
+                ](mptr(d_reana.unsafe_ptr()))
+                planner.search_gpu[
+                    MZRepGPU[OBS, LATENT, REP],
+                    MZDynGPU[LATENT, ACT, BINS, DYN],
+                    MZPredGPU[LATENT, ACT, BINS, PRED],
+                ](
+                    ctx, rep_a, dyn_a, pred_a, reana_t,
+                    apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed,
                 )
+                mcts_seed += UInt32(1)
+                ctx.enqueue_copy(h_pol, planner.policies_view())
+                ctx.enqueue_copy(h_val, planner.root_value_view())
+                ctx.synchronize()
+                for e in range(N_ENVS):
+                    rb.update_targets(
+                        rpos_e[e], rpos_o[e],
+                        h_pol + (e * ACT), h_val[e],
+                    )
 
         if eval_every > 0 and eval_env and (it + 1) % eval_every == 0:
             # `eval_horizon` (if set) is the per-eval step CAP; else a generous
@@ -827,7 +857,7 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
 
     t_act.free(); t_pol.free(); t_val.free(); t_rew.free(); t_obs0_dummy.free()
     h_pol.free(); h_val.free(); h_act.free()
-    h_rew.free(); h_done.free(); h_term.free(); h_reana.free(); l_parts.free()
+    h_rew.free(); h_done.free(); h_term.free(); l_parts.free()
     h_diag_pred.free()
     return last_loss
 

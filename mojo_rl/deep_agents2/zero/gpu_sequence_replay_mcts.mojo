@@ -137,6 +137,12 @@ struct GPUMCTSSequenceReplay[
     var d_slots: Optional[DeviceBuffer[DType.int32]]
     var h_slots: UnsafePointer[Int32, MutAnyOrigin]
     var slots_n: Int
+    # separate cached staging for reanalyze chunk gathers (sized to the chunk =
+    # N_ENVS, kept apart from the training-batch slots so the two don't thrash
+    # each other's lazily-sized buffers when B != chunk).
+    var d_rslots: Optional[DeviceBuffer[DType.int32]]
+    var h_rslots: UnsafePointer[Int32, MutAnyOrigin]
+    var rslots_n: Int
 
     def __init__(out self, ctx: DeviceContext, seed: UInt64 = 0) raises:
         comptime assert Self.CAP % Self.N_ENVS == 0, (
@@ -165,11 +171,15 @@ struct GPUMCTSSequenceReplay[
         self.d_slots = None
         self.h_slots = mptr(alloc[Int32](1))
         self.slots_n = 0
+        self.d_rslots = None
+        self.h_rslots = mptr(alloc[Int32](1))
+        self.rslots_n = 0
 
     def __del__(deinit self):
         self.act.free(); self.rew.free(); self.done.free(); self.val.free()
         self.tp.free(); self.pol.free(); self.legal.free()
         self.h_slots.free()
+        self.h_rslots.free()
 
     def _xorshift(mut self) -> UInt64:
         var x = self.rng
@@ -384,6 +394,51 @@ struct GPUMCTSSequenceReplay[
         w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
 
     # ── reanalyze hooks (host metadata + single-obs device→host gather) ──
+
+    def _ensure_rslots(mut self, n: Int) raises:
+        if self.rslots_n != n:
+            self.h_rslots.free()
+            self.h_rslots = mptr(alloc[Int32](n))
+            self.d_rslots = self.ctx.enqueue_create_buffer[DType.int32](n)
+            self.rslots_n = n
+
+    def sample_reanalyze_chunk[
+        R: Int,
+    ](
+        mut self,
+        mut out_obs: DeviceBuffer[DT],   # [R, OBS] (out, device)
+    ) raises -> Tuple[List[Int], List[Int]]:
+        """Sample ``R`` resident positions and gather their root obs
+        device→device into ``out_obs`` in ONE kernel launch (no per-position
+        sync — unlike `read_obs`), returning the ``(ep_idx, offset)`` lists so the
+        caller can write fresh MCTS targets back with `update_targets`. This is
+        the high-coverage reanalyze primitive: the driver calls it per chunk of
+        ``R = N_ENVS`` (the planner's root width) and loops to cover
+        ``reanalyze_batch`` positions per iteration. Caller guarantees
+        ``num_episodes() > 0``."""
+        self._ensure_rslots(R)
+        var eps = List[Int]()
+        var offs = List[Int]()
+        for r in range(R):
+            var p = self.sample_position()
+            eps.append(p[0])
+            offs.append(p[1])
+            self.h_rslots[r] = Int32(self._slot(self.ep_start[p[0]], p[1]))
+        self.ctx.enqueue_copy(self.d_rslots.value(), self.h_rslots)
+        var slots_t = LayoutTensor[
+            DType.int32, Layout.row_major(R), MutAnyOrigin
+        ](mptr(self.d_rslots.value().unsafe_ptr()))
+        var buf_t = LayoutTensor[
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+        ](mptr(self.obs_dev.unsafe_ptr()))
+        var out_t = LayoutTensor[
+            DT, Layout.row_major(R, Self.OBS), MutAnyOrigin
+        ](mptr(out_obs.unsafe_ptr()))
+        comptime nb = (R * Self.OBS + TPB - 1) // TPB
+        self.ctx.enqueue_function[
+            _mz_obs_gather_kernel[R, Self.OBS, Self.CAP, Self.SDT]
+        ](slots_t, buf_t, out_t, grid_dim=nb, block_dim=TPB)
+        return (eps^, offs^)
 
     def sample_position(mut self) -> Tuple[Int, Int]:
         var e = Int(self._xorshift() % UInt64(len(self.ep_start)))

@@ -77,6 +77,7 @@ def main() raises:
         max_ep_steps=30,
         temperature_decay_steps=300,
         reanalyze_every=50,
+        reanalyze_batch=B,   # > N_ENVS → exercises the multi-chunk reanalyze loop
         eval_every=150,
         eval_horizon=30,
         eval_env=UnsafePointer(to=eval_env),

@@ -80,6 +80,7 @@ def main() raises:
         gamma=Scalar[DT](0.99),
         temperature_decay_steps=30,
         reanalyze_every=10,
+        reanalyze_batch=B,   # > N_ENVS → exercises the multi-chunk reanalyze loop
         seed=7,
         verbose=True,
     )

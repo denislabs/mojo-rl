@@ -103,6 +103,7 @@ struct MuZeroBatchedAgent[
         max_ep_steps: Int = 27000,
         temperature_decay_steps: Int = 0,
         reanalyze_every: Int = 0,
+        reanalyze_batch: Int = Self.N_ENVS,
         eval_every: Int = 0,
         eval_episodes: Int = 5,
         eval_horizon: Int = 0,
@@ -117,7 +118,11 @@ struct MuZeroBatchedAgent[
         ``train_per_iter`` gradient steps. ``train_per_iter`` defaults to
         ``N_ENVS`` → **UTD 1:1** (one gradient step per env step, matching the
         single-env driver's sample efficiency); set it to 1 for UTD 1:N_ENVS
-        (fastest wall-clock, ~N_ENVS× more env steps to converge). Returns the
+        (fastest wall-clock, ~N_ENVS× more env steps to converge).
+        ``reanalyze_batch`` (when ``reanalyze_every > 0``) is how many stored
+        positions get fresh-net targets per trigger — default ``N_ENVS`` (low
+        coverage); set ≈ ``B`` so each training batch is mostly fresh targets
+        (the EfficientZero coverage lever for sample efficiency). Returns the
         last training loss; the nets keep their weights across ``train`` calls."""
         var orep = Adam.make["gpu", M = Self.REP](self.rep, self.ctx)
         var odyn = Adam.make["gpu", M = Self.DYN](self.dyn, self.ctx)
@@ -146,6 +151,7 @@ struct MuZeroBatchedAgent[
             value_coef=self.value_coef,
             temperature_decay_steps=temperature_decay_steps,
             reanalyze_every=reanalyze_every,
+            reanalyze_batch=reanalyze_batch,
             eval_every=eval_every,
             eval_episodes=eval_episodes,
             eval_horizon=eval_horizon,
