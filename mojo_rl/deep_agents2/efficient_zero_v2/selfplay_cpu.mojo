@@ -145,6 +145,7 @@ def run_ezv2_selfplay_cpu[
     consistency_coef: Scalar[DT] = Scalar[DT](2.0),
     temperature_decay_steps: Int = 0,
     reanalyze_every: Int = 0,
+    reanalyze_batch: Int = 1,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     diag_every: Int = 0,
@@ -329,26 +330,30 @@ def run_ezv2_selfplay_cpu[
                 )
                 logger.value()[].log_scalars(dn, dv, it + 1)
 
-        # ── reanalyze: refresh one stored position with a fresh search ──
+        # ── reanalyze: refresh `reanalyze_batch` stored positions per trigger ──
+        # Lifting `reanalyze_batch` above 1 raises coverage so a larger fraction
+        # of the buffer carries fresh-net targets (the EfficientZero coverage
+        # lever; mirrors the GPU driver).
         if (
             reanalyze_every > 0
             and it >= learning_starts
             and (it + 1) % reanalyze_every == 0
             and rb.num_episodes() > 0
         ):
-            var rpos = rb.sample_position()
-            rb.read_obs(rpos[0], rpos[1], r_obs)
-            var ro = List[Float64]()
-            for j in range(OBS):
-                ro.append(Float64(r_obs[j]))
-            var rpolicy = mcts.search[
-                type_of(rep_a), type_of(dyn_a), type_of(pred_a)
-            ](rep_a, dyn_a, pred_a, ro, add_noise=True)
-            for a in range(ACT):
-                r_pol[a] = Scalar[DT](rpolicy[a])
-            rb.update_targets(
-                rpos[0], rpos[1], r_pol, Scalar[DT](mcts.root_value())
-            )
+            for _ra in range(reanalyze_batch):
+                var rpos = rb.sample_position()
+                rb.read_obs(rpos[0], rpos[1], r_obs)
+                var ro = List[Float64]()
+                for j in range(OBS):
+                    ro.append(Float64(r_obs[j]))
+                var rpolicy = mcts.search[
+                    type_of(rep_a), type_of(dyn_a), type_of(pred_a)
+                ](rep_a, dyn_a, pred_a, ro, add_noise=True)
+                for a in range(ACT):
+                    r_pol[a] = Scalar[DT](rpolicy[a])
+                rb.update_targets(
+                    rpos[0], rpos[1], r_pol, Scalar[DT](mcts.root_value())
+                )
 
         if eval_every > 0 and (it + 1) % eval_every == 0:
             var eval_sum = 0.0

@@ -86,6 +86,7 @@ def run_ezv2_gumbel_selfplay_gpu[
     consistency_coef: Scalar[DT] = Scalar[DT](2.0),
     temperature_decay_steps: Int = 0,
     reanalyze_every: Int = 0,
+    reanalyze_batch: Int = 1,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     diag_every: Int = 0,
@@ -302,32 +303,37 @@ def run_ezv2_gumbel_selfplay_gpu[
             )
             logger.value()[].log_scalars(dn, dv, it + 1)
 
-        # ── reanalyze: refresh one stored position with a fresh search ──
-        # Re-search the stored obs with the current on-device nets and
-        # overwrite the stored improved policy + root value (n-step targets
-        # bootstrap from those). Reuses the single-env obs/pol/val buffers.
+        # ── reanalyze: refresh `reanalyze_batch` stored positions per trigger ──
+        # Re-search each stored obs with the current on-device nets and overwrite
+        # its improved policy + root value (n-step targets bootstrap from those).
+        # Lifting `reanalyze_batch` above 1 raises coverage so a larger fraction
+        # of the buffer carries fresh-net targets (the EfficientZero coverage
+        # lever; mirrors the continuous driver's reanalyze loop). N_ENVS == 1, so
+        # each position is its own single-root search. Reuses the single-env
+        # obs/pol/val buffers.
         if (
             reanalyze_every > 0
             and it >= learning_starts
             and (it + 1) % reanalyze_every == 0
             and rb.num_episodes() > 0
         ):
-            var rpos = rb.sample_position()
-            rb.read_obs(rpos[0], rpos[1], h_obs)
-            ctx.enqueue_copy(d_obs, h_obs)
-            var robs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
-                MutAnyOrigin](mptr(d_obs.unsafe_ptr()))
-            planner.search_gpu[
-                MZRepGPU[OBS, LATENT, REP],
-                MZDynGPU[LATENT, ACT, BINS, DYN],
-                MZPredGPU[LATENT, ACT, BINS, PRED],
-            ](ctx, rep_a, dyn_a, pred_a, robs_t,
-              apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
-            mcts_seed += UInt32(1)
-            ctx.enqueue_copy(h_pol, planner.policies_view())
-            ctx.enqueue_copy(h_val, planner.root_value_view())
-            ctx.synchronize()
-            rb.update_targets(rpos[0], rpos[1], h_pol, h_val[0])
+            for _ra in range(reanalyze_batch):
+                var rpos = rb.sample_position()
+                rb.read_obs(rpos[0], rpos[1], h_obs)
+                ctx.enqueue_copy(d_obs, h_obs)
+                var robs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
+                    MutAnyOrigin](mptr(d_obs.unsafe_ptr()))
+                planner.search_gpu[
+                    MZRepGPU[OBS, LATENT, REP],
+                    MZDynGPU[LATENT, ACT, BINS, DYN],
+                    MZPredGPU[LATENT, ACT, BINS, PRED],
+                ](ctx, rep_a, dyn_a, pred_a, robs_t,
+                  apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
+                mcts_seed += UInt32(1)
+                ctx.enqueue_copy(h_pol, planner.policies_view())
+                ctx.enqueue_copy(h_val, planner.root_value_view())
+                ctx.synchronize()
+                rb.update_targets(rpos[0], rpos[1], h_pol, h_val[0])
 
         # ── greedy eval (argmax of the Gumbel improved policy) ──
         if eval_every > 0 and (it + 1) % eval_every == 0:

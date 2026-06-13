@@ -83,6 +83,8 @@ def main() raises:
         v_max=Scalar[DT](10.0),
         value_coef=Scalar[DT](0.25),
         consistency_coef=Scalar[DT](2.0),
+        reanalyze_every=50,
+        reanalyze_batch=4,   # > 1 → exercises the multi-position reanalyze loop
         seed=42,
         verbose=True,
     )

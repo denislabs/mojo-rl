@@ -75,6 +75,8 @@ def main() raises:
         iterations=900,
         learning_starts=200,
         train_per_iter=1,
+        reanalyze_every=100,
+        reanalyze_batch=4,   # > 1 → exercises the multi-position reanalyze loop
         seed=7,
         verbose=True,
     )
