@@ -39,6 +39,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module, mptr
+from mojo_rl.nn2.core.map_params import hard_copy_params
+from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import GumbelGPUMCTS, SinglePlayer
@@ -187,6 +189,7 @@ def run_muzero_gumbel_selfplay_gpu_batched[
     temperature_decay_steps: Int = 0,
     reanalyze_every: Int = 0,
     reanalyze_batch: Int = N_ENVS,
+    target_sync_interval: Int = 0,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     eval_horizon: Int = 0,   # 0 ⇒ generous step cap; else hard per-eval cap
@@ -234,6 +237,27 @@ def run_muzero_gumbel_selfplay_gpu_batched[
     var rep_a = MZRepGPU[OBS, LATENT, REP].make(rep)
     var dyn_a = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn)
     var pred_a = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred)
+
+    # ── lagging target nets for reanalyze (gated by `target_sync_interval`) ──
+    # Reanalyze ALWAYS searches through these adapters. When
+    # `target_sync_interval > 0` they are hard-copied from the live nets every
+    # that-many grad steps → a delayed target that decouples target generation
+    # from the optimizer step (the standard target-net stabilizer; matches
+    # EZv2 / official MuZero's delayed reanalyze model — important now that the
+    # coverage lever refreshes ~B targets per trigger). When 0 they are synced
+    # to the live weights right before each reanalyze trigger, so reanalyze is
+    # bit-identical to the live-net path (params-only copy, like EZv2; the
+    # Nature-CNN rep carries no BatchNorm running stats).
+    var rep_t = REP.make["gpu", INIT=Kaiming](ctx)
+    var dyn_t = DYN.make["gpu", INIT=Kaiming](ctx)
+    var pred_t = PRED.make["gpu", INIT=Kaiming](ctx)
+    hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
+    hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
+    hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
+    var rep_ta = MZRepGPU[OBS, LATENT, REP].make(rep_t)
+    var dyn_ta = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn_t)
+    var pred_ta = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred_t)
+    var train_steps = 0
 
     var rb = MCTSSequenceReplay[OBS, ACT, CAP, OBS_STORE_DT](
         seed=seed ^ UInt64(0xABCDEF)
@@ -398,6 +422,14 @@ def run_muzero_gumbel_selfplay_gpu_batched[
                         loss_parts=l_parts,
                     )
                 )
+                train_steps += 1
+                if (
+                    target_sync_interval > 0
+                    and train_steps % target_sync_interval == 0
+                ):
+                    hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
+                    hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
+                    hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
 
         var trained = rb.num_steps() >= learning_starts and rb.num_episodes() > 0
 
@@ -428,6 +460,12 @@ def run_muzero_gumbel_selfplay_gpu_batched[
             and trained
             and (it + 1) % reanalyze_every == 0
         ):
+            # target_sync_interval == 0 ⇒ live-net reanalyze: refresh the target
+            # to the current weights now (search through rep_ta then == rep_a).
+            if target_sync_interval == 0:
+                hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
+                hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
+                hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
             var n_chunks = reanalyze_batch // N_ENVS
             if n_chunks < 1:
                 n_chunks = 1
@@ -452,7 +490,7 @@ def run_muzero_gumbel_selfplay_gpu_batched[
                     MZDynGPU[LATENT, ACT, BINS, DYN],
                     MZPredGPU[LATENT, ACT, BINS, PRED],
                 ](
-                    ctx, rep_a, dyn_a, pred_a, reana_t,
+                    ctx, rep_ta, dyn_ta, pred_ta, reana_t,
                     apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed,
                 )
                 mcts_seed += UInt32(1)
@@ -534,6 +572,10 @@ def run_muzero_gumbel_selfplay_gpu_batched[
     t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     h_obs.free(); h_pol.free(); h_val.free(); h_act.free()
     h_rew.free(); h_done.free(); h_term.free(); h_reana.free(); l_parts.free()
+    # keep the target nets (held only via UnsafePointer in the adapters) alive.
+    _ = rep_t^
+    _ = dyn_t^
+    _ = pred_t^
     return last_loss
 
 
@@ -577,6 +619,7 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     temperature_decay_steps: Int = 0,
     reanalyze_every: Int = 0,
     reanalyze_batch: Int = N_ENVS,
+    target_sync_interval: Int = 0,
     eval_every: Int = 0,
     eval_episodes: Int = 5,
     eval_horizon: Int = 0,   # 0 ⇒ generous step cap; else hard per-eval cap
@@ -630,6 +673,22 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     var rep_a = MZRepGPU[OBS, LATENT, REP].make(rep)
     var dyn_a = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn)
     var pred_a = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred)
+
+    # ── lagging target nets for reanalyze (gated by `target_sync_interval`; see
+    #    the host-replay driver for the rationale). Reanalyze always searches
+    #    through these; synced every `target_sync_interval` grad steps when > 0,
+    #    else refreshed to live just before each trigger (bit-identical to the
+    #    live-net path). Params-only copy (Nature-CNN rep has no BatchNorm). ──
+    var rep_t = REP.make["gpu", INIT=Kaiming](ctx)
+    var dyn_t = DYN.make["gpu", INIT=Kaiming](ctx)
+    var pred_t = PRED.make["gpu", INIT=Kaiming](ctx)
+    hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
+    hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
+    hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
+    var rep_ta = MZRepGPU[OBS, LATENT, REP].make(rep_t)
+    var dyn_ta = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn_t)
+    var pred_ta = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred_t)
+    var train_steps = 0
 
     var rb = GPUMCTSSequenceReplay[OBS, ACT, CAP, N_ENVS, OBS_STORE_DT](
         ctx, seed=seed ^ UInt64(0xABCDEF)
@@ -760,6 +819,14 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                         loss_parts=l_parts,
                     )
                 )
+                train_steps += 1
+                if (
+                    target_sync_interval > 0
+                    and train_steps % target_sync_interval == 0
+                ):
+                    hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
+                    hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
+                    hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
 
         if (
             logger
@@ -786,6 +853,12 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             and trained
             and (it + 1) % reanalyze_every == 0
         ):
+            # target_sync_interval == 0 ⇒ live-net reanalyze: refresh the target
+            # to the current weights now (search through rep_ta then == rep_a).
+            if target_sync_interval == 0:
+                hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
+                hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
+                hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
             var n_chunks = reanalyze_batch // N_ENVS
             if n_chunks < 1:
                 n_chunks = 1
@@ -801,7 +874,7 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                     MZDynGPU[LATENT, ACT, BINS, DYN],
                     MZPredGPU[LATENT, ACT, BINS, PRED],
                 ](
-                    ctx, rep_a, dyn_a, pred_a, reana_t,
+                    ctx, rep_ta, dyn_ta, pred_ta, reana_t,
                     apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed,
                 )
                 mcts_seed += UInt32(1)
@@ -859,6 +932,10 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     h_pol.free(); h_val.free(); h_act.free()
     h_rew.free(); h_done.free(); h_term.free(); l_parts.free()
     h_diag_pred.free()
+    # keep the target nets (held only via UnsafePointer in the adapters) alive.
+    _ = rep_t^
+    _ = dyn_t^
+    _ = pred_t^
     return last_loss
 
 

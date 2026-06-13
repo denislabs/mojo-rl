@@ -104,6 +104,7 @@ struct MuZeroBatchedAgent[
         temperature_decay_steps: Int = 0,
         reanalyze_every: Int = 0,
         reanalyze_batch: Int = Self.N_ENVS,
+        target_sync_interval: Int = 0,
         eval_every: Int = 0,
         eval_episodes: Int = 5,
         eval_horizon: Int = 0,
@@ -122,8 +123,14 @@ struct MuZeroBatchedAgent[
         ``reanalyze_batch`` (when ``reanalyze_every > 0``) is how many stored
         positions get fresh-net targets per trigger — default ``N_ENVS`` (low
         coverage); set ≈ ``B`` so each training batch is mostly fresh targets
-        (the EfficientZero coverage lever for sample efficiency). Returns the
-        last training loss; the nets keep their weights across ``train`` calls."""
+        (the EfficientZero coverage lever for sample efficiency).
+        ``target_sync_interval`` gates target-net reanalyze: 0 (default) searches
+        with the live nets (bit-identical to before); set > 0 to reanalyze
+        through lagging copies refreshed every that-many grad steps — the
+        standard target-net stabiliser, worth pairing with high
+        ``reanalyze_batch`` (matches EZv2 / official MuZero's delayed reanalyze
+        model). Returns the last training loss; the nets keep their weights
+        across ``train`` calls."""
         var orep = Adam.make["gpu", M = Self.REP](self.rep, self.ctx)
         var odyn = Adam.make["gpu", M = Self.DYN](self.dyn, self.ctx)
         var opred = Adam.make["gpu", M = Self.PRED](self.pred, self.ctx)
@@ -152,6 +159,7 @@ struct MuZeroBatchedAgent[
             temperature_decay_steps=temperature_decay_steps,
             reanalyze_every=reanalyze_every,
             reanalyze_batch=reanalyze_batch,
+            target_sync_interval=target_sync_interval,
             eval_every=eval_every,
             eval_episodes=eval_episodes,
             eval_horizon=eval_horizon,

@@ -81,6 +81,7 @@ def main() raises:
         temperature_decay_steps=30,
         reanalyze_every=10,
         reanalyze_batch=B,   # > N_ENVS → exercises the multi-chunk reanalyze loop
+        target_sync_interval=5,   # > 0 → exercises the lagging target-net path
         seed=7,
         verbose=True,
     )
