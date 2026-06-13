@@ -1410,7 +1410,8 @@ def _intim_wait_skip_cycles(state: AtariState, rom_size: Int) -> Int:
 
 @no_inline
 def run_frame_cycle_accurate[
-    RENDER: Bool = True
+    RENDER: Bool = True,
+    UNIFORM: Bool = False,
 ](
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
@@ -1419,6 +1420,14 @@ def run_frame_cycle_accurate[
     op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
 ):
     """Cycle-accurate frame: CPU and TIA in lockstep, per-color-clock collision.
+
+    `UNIFORM` (comptime, default False): when True, the branchy bulk
+    span-skipping fast path is dead-code-eliminated and every color clock takes
+    the per-clock reference path. Bit-identical to the default (the bulk path is
+    defined to mirror per-clock exactly), so the CPU trajectory checksum is
+    unchanged — it exists to test, on the GPU, whether *uniform* work across a
+    warp beats the divergent bulk path (audit risk #2). CPU/default builds
+    should leave it False.
 
     `@no_inline` (compile-size hygiene): the largest function in the
     program. Historically ~220K lines of LLVM IR per instantiation when the
@@ -1572,7 +1581,8 @@ def run_frame_cycle_accurate[
             #     under VBLANK) — fill via the same function, no object ticks.
             # Line wraps replicate the per-clock bookkeeping below verbatim.
             if (
-                skip_bulk == 0
+                not UNIFORM
+                and skip_bulk == 0
                 and state.ctia.dq.count == 0
                 and not state.ctia.movement_in_progress
             ):
