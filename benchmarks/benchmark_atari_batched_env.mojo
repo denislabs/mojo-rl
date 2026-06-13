@@ -69,3 +69,7 @@ def main() raises:
     print("N_ENVS=4 :", s4, " (", s4 / s1, "x)")
     var s8 = bench[8](rom.data.value(), rom.size)
     print("N_ENVS=8 :", s8, " (", s8 / s1, "x)")
+    var s16 = bench[16](rom.data.value(), rom.size)
+    print("N_ENVS=16 :", s16, " (", s16 / s1, "x)")
+    var s32 = bench[32](rom.data.value(), rom.size)
+    print("N_ENVS=32 :", s32, " (", s32 / s1, "x)")
