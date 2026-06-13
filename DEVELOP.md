@@ -4,57 +4,50 @@ This guide covers additional setup steps needed after `pixi install` for develop
 
 ## Atari ROM Setup
 
-The Atari emulator requires ROM files from the Arcade Learning Environment (ALE). These are **not** bundled in the repository. Use `AutoROM` (via `gymnasium[accept-rom-license]`) to download them.
+The Atari emulator requires ROM files from the Arcade Learning Environment (ALE). `ale-py` ships **without** ROMs, so they must be downloaded once.
 
 ### Setup
 
-After `pixi install`, download ROMs using AutoROM:
+After `pixi install`, run:
 
 ```bash
-pixi run python -m AutoROM --accept-license
+pixi run setup-roms
 ```
 
-This will:
-1. Download Atari 2600 ROMs (~20 MB)
-2. Install them in the active pixi environment
-3. Create symlink: `roms/` → ale_py ROM directory
-4. Run `pixi run setup-roms` to verify
+This single command:
+1. Downloads the canonical Farama ROM bundle (~0.5 MB, 108 ROMs) and verifies its SHA-256 checksum
+2. Unpacks the `.bin` files into the active environment's `ale_py/roms` directory
+3. Symlinks the project's `roms/` to it
+
+It's idempotent — re-running just confirms the symlink. (The downloader is the
+same source AutoROM and the Farama ALE repo use; pure-Python, no AutoROM package
+needed.)
 
 ### Multi-Environment Setup
 
-If you use multiple pixi environments, download ROMs in **each one**:
+Each pixi environment (default, nvidia, apple) has its own isolated `ale_py`, so run setup in **each one** you use:
 
-```bash
-pixi run python -m AutoROM --accept-license          # default
-pixi run -e nvidia python -m AutoROM --accept-license  # nvidia (CUDA)
-pixi run -e apple python -m AutoROM --accept-license   # apple (Metal)
-pixi run setup-roms                  # verify symlinks
-```
-
-Then verify with:
 ```bash
 pixi run setup-roms              # default environment
-pixi run -e nvidia setup-roms    # nvidia environment
-pixi run -e apple setup-roms     # apple environment
+pixi run -e nvidia setup-roms    # nvidia (CUDA) environment
+pixi run -e apple setup-roms     # apple (Metal) environment
 ```
 
 ### Troubleshooting
 
 **Error: `Failed to open file 'roms/pong.bin'`**
-- ROMs haven't been downloaded yet
-- Run: `pixi run -e <env> python -m AutoROM --accept-license`
-- Then: `pixi run -e <env> setup-roms`
+- The symlink may point to a different pixi environment than the one you're running
+- Run `pixi run -e <env> setup-roms` for the environment you train with
 
-**Error: AutoROM command not found**
-- Install it: `pixi run pip install auto-rom`
+**Error: Checksum verification failed**
+- The download was corrupted or the upstream bundle moved — retry once; if it persists, check network/proxy
 
 **Symlink creation failed**
 - Check directory permissions on the project root
-- If a `roms/` directory exists (not a symlink), the script will back it up to `roms.backup/`
+- If a `roms/` directory exists (not a symlink), the script backs it up to `roms.backup/`
 
 **Atari ROM License**
-- By accepting the license during `AutoROM`, you agree to the terms of the Atari ROM license
-- ROMs are for personal use and educational purposes
+- By downloading, you agree to the Atari ROM license terms (ROMs distributed for research/educational use via the Farama Foundation)
 
 ## Running Examples
 
