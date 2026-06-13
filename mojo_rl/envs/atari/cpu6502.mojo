@@ -338,11 +338,30 @@ def resolve_operand_addr(
 # ============================================================================
 
 
+@always_inline
+def _fetch_opcode_entry(
+    opcode_byte: UInt8, op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin]
+) -> OpcodeEntry:
+    """Opcode-table lookup via a caller-provided table pointer.
+
+    The 256-entry table is passed in rather than read from the module-level
+    comptime `OPCODE_TABLE`: a host global is NOT present in a GPU device module
+    (Metal fails pipeline creation with `Undefined symbols: global_constant`;
+    CUDA would need it in device/constant memory), and `materialize` inside the
+    kernel still references that host global. So CPU entry points materialize
+    the table once per frame and pass its pointer; the GPU driver uploads the
+    table to a device buffer and passes the device pointer. Same table contents
+    either way → the CPU trajectory checksum is unchanged.
+    """
+    return op_table[Int(opcode_byte)]
+
+
 @no_inline
 def execute_one(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
+    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
 ) -> UInt8:
     """Execute one instruction. Returns the number of CPU cycles consumed.
 
@@ -361,11 +380,7 @@ def execute_one(
     fps regression on the Pong benchmark, trajectory checksum identical).
     """
     var opcode_byte = mem_read(state, rom, rom_size, state.pc)
-    # Index the comptime table directly: the compiler lowers OPCODE_TABLE to a
-    # single read-only constant rather than re-`materialize`-ing a 1 KB stack
-    # copy on every instruction. On the GPU port this constant lands in
-    # constant memory, materialized once and shared across the warp.
-    var entry = OPCODE_TABLE[Int(opcode_byte)]
+    var entry = _fetch_opcode_entry(opcode_byte, op_table)
     var inst = entry.instruction
     var mode = entry.addr_mode
     var cycles = entry.cycles
@@ -952,6 +967,9 @@ def _run_scanline(
     """
     var line_cycles: Int = overflow
     var saved_mid = False
+    # Stale diagnostic path (reachable only from diag_atari_si): materialize the
+    # opcode table once and pass its pointer, mirroring the headless runner.
+    var _optab = materialize[OPCODE_TABLE]()
 
     # If WSYNC carried over from previous scanline (instruction that set WSYNC
     # overflowed past the scanline boundary), consume remaining cycles now.
@@ -977,7 +995,7 @@ def _run_scanline(
             state.pf2_mid = state.pf2
             saved_mid = True
 
-        var cycles = Int(execute_one(state, rom, rom_size))
+        var cycles = Int(execute_one(state, rom, rom_size, _optab.unsafe_ptr()))
         riot_update_timer(state, UInt32(cycles))
         line_cycles += cycles
 
@@ -1024,8 +1042,12 @@ def run_frame(
     """
     # Dummy buffer: never written (RENDER=False skips all pixel writes).
     var dummy = InlineArray[UInt8, 4](fill=0)
+    # Materialize the opcode table once per frame and pass its pointer down (the
+    # frame runner can no longer read the comptime global directly — see
+    # _fetch_opcode_entry). Once per ~20k instructions, so negligible on CPU.
+    var optab = materialize[OPCODE_TABLE]()
     run_frame_cycle_accurate[RENDER=False](
-        state, rom, rom_size, dummy.unsafe_ptr()
+        state, rom, rom_size, dummy.unsafe_ptr(), optab.unsafe_ptr()
     )
 
 
@@ -1394,6 +1416,7 @@ def run_frame_cycle_accurate[
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
+    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
 ):
     """Cycle-accurate frame: CPU and TIA in lockstep, per-color-clock collision.
 
@@ -1520,7 +1543,7 @@ def run_frame_cycle_accurate[
                 cyc = ff
                 state.tia_log_count = 0
             else:
-                cyc = Int(execute_one(state, rom, rom_size))
+                cyc = Int(execute_one(state, rom, rom_size, op_table))
             riot_update_timer(state, UInt32(cyc))
 
         var nclk = (CPL - (start_hctr % CPL)) if wsync_pad else cyc * 3
@@ -1806,4 +1829,7 @@ def run_frame_video(
 
     Thin alias for the cycle-accurate, Stella-style per-color-clock TIA path —
     the single rendering path (the legacy end-of-line renderer was removed)."""
-    run_frame_cycle_accurate(state, rom, rom_size, frame_buf)
+    var optab = materialize[OPCODE_TABLE]()
+    run_frame_cycle_accurate(
+        state, rom, rom_size, frame_buf, optab.unsafe_ptr()
+    )
