@@ -74,10 +74,12 @@ comptime OBS_STORE_DT = DType.uint8
 comptime B = 256            # unroll batch (windows) — bigger batch, fewer steps
 comptime K = 5              # BPTT unroll length
 comptime N = 5              # n-step value bootstrap horizon
-# Gradient steps per iteration. train_per_iter=4 with N_ENVS=32 → replay ratio
-# 4/32 = 0.125 (≈ Rainbow's 0.25, vs the UTD-1:1 default of N_ENVS). Combined
-# with the larger B above: ~3× fewer + better-utilized CNN passes per iteration.
-comptime TRAIN_PER_ITER = 4
+# Gradient steps per iteration. UTD 1:1 (= N_ENVS) — one grad step per env step.
+# An earlier experiment at train_per_iter=4 (UTD 0.125) was faster but
+# UNDERTRAINED on Pong, so we keep the UTD-1:1 default; sample efficiency now
+# comes from the reanalyze coverage + target-net stabiliser below, not from
+# trimming gradient steps.
+comptime TRAIN_PER_ITER = N_ENVS
 comptime LR = Scalar[DT](1e-4)
 
 # Value support in MuZero h-space — bracket the DISCOUNTED return (γ=0.997 over
@@ -139,7 +141,7 @@ def main() raises:
           " train/iter", TRAIN_PER_ITER, "(replay ratio",
           Float64(TRAIN_PER_ITER) / Float64(N_ENVS), ")")
     print("  Reanalyze every 1, batch", B, "(",
-          B // N_ENVS, "search chunks/iter, fresh-net targets)")
+          B // N_ENVS, "search chunks/iter, target-net sync 200)")
     print("  Total env steps ≈", NUM_ITERS * N_ENVS)
     print()
 
@@ -161,6 +163,7 @@ def main() raises:
     logger.set_config("batch_size", String(B))
     logger.set_config("train_per_iter", String(TRAIN_PER_ITER))
     logger.set_config("reanalyze_batch", String(B))
+    logger.set_config("target_sync_interval", "200")
     logger.set_config("value_coef", "0.25")
 
     var start = perf_counter_ns()
@@ -173,6 +176,7 @@ def main() raises:
         temperature_decay_steps=NUM_ITERS,
         reanalyze_every=1,
         reanalyze_batch=B,          # ≈ training batch: most targets stay fresh
+        target_sync_interval=200,   # target-net reanalyze (A/B-validated stabiliser)
         eval_every=2000,
         eval_episodes=10,           # mean of 10 complete greedy games
         eval_env=UnsafePointer(to=eval_env),
