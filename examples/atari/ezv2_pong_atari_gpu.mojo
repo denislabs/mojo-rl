@@ -25,9 +25,13 @@ driver (`run_ezv2_gumbel_selfplay_gpu_batched`):
 MEMORY NOTE (host RAM): the replay stores the STACKED [12,96,96] obs per step in
 `uint8` (lossless k/255). CAP=100000 ⇒ ~11 GB host (4× the EZ reference, which
 stores single frames and stacks on read — a documented memory deviation, not a
-learning one). Lower CAP / B if you OOM. The **reanalyze_batch=256** (ratio 1.0)
-is the runtime-dominant knob: it runs 256/N_ENVS batched searches per iteration —
-drop it to 32–64 for a faster first pass at the cost of target freshness.
+learning one). Lower CAP / B if you OOM. **reanalyze_batch** is the
+runtime-dominant knob: it runs `reanalyze_batch/N_ENVS` width-N_ENVS Gumbel
+searches per iteration, each with its own sync — at B=256/N_ENVS=4 that is 64
+narrow 4-root searches + 64 syncs/iter (the bottleneck). Set to 32 here (8
+chunks/iter, ~8× faster, ratio ≈ 0.125). True ratio-1.0 at speed needs the
+wide-reanalyze-planner fix (one wide search instead of 64 narrow ones); raise
+this back toward B once that lands.
 
 Watch the greedy ``[eval]`` return: random Pong ≈ −21, "solved" ≈ +21. The
 published EZv2 Atari-100k Pong score is well above random within the 100k budget.
@@ -166,7 +170,11 @@ def main() raises:
         consistency_coef=Scalar[DT](5.0),  # consistency_coeff (NOT 2.0)
         temperature_decay_steps=25000,
         reanalyze_every=1,
-        reanalyze_batch=B,              # ratio 1.0 (runtime-dominant; lower to 32–64 to speed up)
+        reanalyze_batch=32,             # ratio ~0.125 (was B=256 → 64 narrow 4-root
+                                        #   searches + 64 syncs/iter = the bottleneck;
+                                        #   32 → 8 chunks/iter, ~8× faster reanalyze).
+                                        #   Raise toward B once the wide-reanalyze
+                                        #   planner lands; ratio-1.0 needs that fix.
         eval_every=2500,                # eval_interval 10k env steps / N_ENVS
         eval_episodes=10,               # eval_n_episode
         eval_horizon=10000,
