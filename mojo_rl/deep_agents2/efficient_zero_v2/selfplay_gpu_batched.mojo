@@ -239,6 +239,16 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     var ts_store = 0.0    # store finished episodes (quantize + ring H2D)
     var ts_train = 0.0    # prioritized sample (gather) + EZv2 train step
     var ts_reana = 0.0    # reanalyze wide searches
+    # finer splits to localize the host hotspot
+    var ts_t_sample = 0.0   # PER sample_training_batch_seq_per_gpu (host)
+    var ts_t_step = 0.0     # ezv2_unroll_train_step_gpu
+    var ts_re_host = 0.0    # reanalyze host (sample_position + gather + update_targets)
+    var ts_re_search = 0.0  # reanalyze search + D2H + sync
+    # per-phase host-enqueue breakdown of the train step (accumulated in blocks):
+    # [0]setup/H2D [1]fwd-scan [2]target-prepass [3]reverse-scan [4]rep-vjp+opt [5]finalize/sync
+    var phase_ns = alloc[Float64](6)
+    for i in range(6):
+        phase_ns[i] = 0.0
 
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=seed)
 
@@ -350,12 +360,15 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
             for _ in range(train_per_iter):
                 # CPU draws prioritized slots + targets, then gathers the obs
                 # slab on-device straight into scratch.d_obs (no host build/H2D).
+                var _tsamp = perf_counter_ns()
                 rb.sample_training_batch_seq_per_gpu[B, K, N](
                     ctx, gamma, train_scratch.d_obs.value(),
                     d_obs_slots, mptr(h_obs_slots),
                     t_act, t_pol, t_val, t_rew, t_isw, t_slots,
                     cons_mask=t_cmask,
                 )
+                ts_t_sample += Float64(perf_counter_ns() - _tsamp)
+                var _tstep = perf_counter_ns()
                 last_loss = Float64(
                     ezv2_unroll_train_step_gpu[
                         REP, DYN, PRED, PROJM, PREDH,
@@ -368,8 +381,10 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                         cons_mask=t_cmask, loss_parts=l_parts,
                         is_weights=t_isw, out_prio=t_prio,
                         obs_on_device=True,
+                        phase_ns=mptr(phase_ns),
                     )
                 )
+                ts_t_step += Float64(perf_counter_ns() - _tstep)
                 rb.update_priorities(t_slots, t_prio, B)
                 train_steps += 1
         ts_train += Float64(perf_counter_ns() - _t_train0)
@@ -395,6 +410,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
             if n_chunks < 1:
                 n_chunks = 1
             for _c in range(n_chunks):
+                var _trh = perf_counter_ns()
                 var rpos_e = List[Int]()
                 var rpos_o = List[Int]()
                 for _ in range(REANA_W):
@@ -406,6 +422,8 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                     ctx, d_reana, d_reana_slots, mptr(h_reana_slots),
                     rpos_e, rpos_o,
                 )
+                ts_re_host += Float64(perf_counter_ns() - _trh)
+                var _trs = perf_counter_ns()
                 var reana_t = LayoutTensor[DT, Layout.row_major(REANA_W, OBS),
                     MutAnyOrigin](mptr(d_reana.unsafe_ptr()))
                 reana_planner.search_gpu[
@@ -418,10 +436,13 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                 ctx.enqueue_copy(h_pol_w, reana_planner.policies_view())
                 ctx.enqueue_copy(h_val_w, reana_planner.root_value_view())
                 ctx.synchronize()
+                ts_re_search += Float64(perf_counter_ns() - _trs)
+                var _trh2 = perf_counter_ns()
                 for e in range(REANA_W):
                     rb.update_targets(
                         rpos_e[e], rpos_o[e], h_pol_w + (e * ACT), h_val_w[e]
                     )
+                ts_re_host += Float64(perf_counter_ns() - _trh2)
         ts_reana += Float64(perf_counter_ns() - _t_reana0)
 
         # ── batched greedy eval (CPU env) ──
@@ -462,6 +483,15 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                   ts_collect / 1e9, "env", ts_env / 1e9, "store",
                   ts_store / 1e9, "train", ts_train / 1e9, "reana",
                   ts_reana / 1e9)
+            # finer splits: train = sample(host) + step ; reana = host + search
+            print("    train: sample", ts_t_sample / 1e9, "step",
+                  ts_t_step / 1e9, "| reana: host", ts_re_host / 1e9,
+                  "search", ts_re_search / 1e9)
+            # train-step host-enqueue phases (s)
+            print("    step phases: setup", phase_ns[0] / 1e9, "fwd",
+                  phase_ns[1] / 1e9, "tgt", phase_ns[2] / 1e9, "rev",
+                  phase_ns[3] / 1e9, "repvjp+opt", phase_ns[4] / 1e9,
+                  "finalize/sync", phase_ns[5] / 1e9)
 
         if logger and report_every > 0 and trained and (it + 1) % report_every == 0:
             var ravg = 0.0
@@ -488,6 +518,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     h_pol_w.free(); h_val_w.free()
     for e in range(N_ENVS):
         eo_buf[e].free()
+    phase_ns.free()
     return last_loss
 
 

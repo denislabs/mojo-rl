@@ -34,6 +34,7 @@ CPU path first (overfit-tested); a GPU branch + CPU↔GPU parity follow.
 
 from std.memory import alloc
 from std.math import exp, log
+from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -398,6 +399,7 @@ def ezv2_unroll_train_step_gpu[
     is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
     out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
     obs_on_device: Bool = False,
+    phase_ns: Optional[UnsafePointer[Float64, MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """GPU EZv2 K-step unroll training step — device mirror of
     ``ezv2_unroll_train_step_cpu`` (MuZero BPTT + SimSiam consistency,
@@ -420,6 +422,7 @@ def ezv2_unroll_train_step_gpu[
     comptime DYN_OUT = LATENT + BINS
     comptime PROJ = PROJM.OUT_DIM
 
+    var _tp = perf_counter_ns()   # phase timer cursor (host-enqueue profiling)
     var gscale = Scalar[DT](1.0) / Scalar[DT]((K + 1) * B)
     var cscale = consistency_coef / Scalar[DT](K * B)
 
@@ -531,6 +534,10 @@ def ezv2_unroll_train_step_gpu[
     comptime kScaleCons = _ez_scale_rows_k[B, PROJ, 0, PROJ]
     comptime kPrioCE = _ez_priority_ce_k[B, PRED_OUT, ACT, BINS]
 
+    if phase_ns:   # [0] setup + H2D + zero-loss
+        phase_ns.value()[0] += Float64(perf_counter_ns() - _tp)
+        _tp = perf_counter_ns()
+
     # ── forward scan: z0 = h(obs0); z_{k+1} = g(z_k, a_k).latent ──
     var z0_t = TileTensor(p_zst, row_major[B, LATENT]())
     rep.forward["gpu", B](
@@ -555,6 +562,10 @@ def ezv2_unroll_train_step_gpu[
             grid_dim=nbLAT, block_dim=TPB,
         )
 
+    if phase_ns:   # [1] forward scan (K dyn forwards)
+        phase_ns.value()[1] += Float64(perf_counter_ns() - _tp)
+        _tp = perf_counter_ns()
+
     # ── target pre-pass: t_k = g_proj(h(obs_k)), detached, k = 1..K ──
     # (clobbers rep's cache → rep is re-forwarded before the final rep.vjp)
     for k in range(1, K + 1):
@@ -567,6 +578,10 @@ def ezv2_unroll_train_step_gpu[
             p_tstore + (k - 1) * B * PROJ, row_major[B, PROJ]()
         )
         proj.forward["gpu", B](ztmp_t, output=tslot)
+
+    if phase_ns:   # [2] target pre-pass (K rep forwards + proj)
+        phase_ns.value()[2] += Float64(perf_counter_ns() - _tp)
+        _tp = perf_counter_ns()
 
     # ── reverse scan ──
     orep.zero_grad["gpu", REP](rep)
@@ -705,6 +720,10 @@ def ezv2_unroll_train_step_gpu[
             grid_dim=nbLAT, block_dim=TPB,
         )
 
+    if phase_ns:   # [3] reverse scan (pred/dyn/cons forward+vjp ×K+1)
+        phase_ns.value()[3] += Float64(perf_counter_ns() - _tp)
+        _tp = perf_counter_ns()
+
     # ── rep: re-forward obs0 (cache clobbered by target pre-pass), then vjp ──
     var z0b_t = TileTensor(p_zst, row_major[B, LATENT]())
     rep.forward["gpu", B](
@@ -719,6 +738,10 @@ def ezv2_unroll_train_step_gpu[
     orep.step["gpu", REP](rep)
     oproj.step["gpu", PROJM](proj)
     opredh.step["gpu", PREDH](predh)
+
+    if phase_ns:   # [4] rep re-forward+vjp + 5 optimizer steps (host enqueue)
+        phase_ns.value()[4] += Float64(perf_counter_ns() - _tp)
+        _tp = perf_counter_ns()
 
     # ── PER: D2H the per-sample value-error priorities into the caller slab ──
     if out_prio:
@@ -752,4 +775,6 @@ def ezv2_unroll_train_step_gpu[
         lp[1] = l_val * inv
         lp[2] = l_rew * inv
         lp[3] = l_cons * inv
+    if phase_ns:   # [5] finalize: PER D2H + 2-3 syncs (GPU drain) + loss reduce
+        phase_ns.value()[5] += Float64(perf_counter_ns() - _tp)
     return (l_pol + l_val + l_rew + l_cons) * inv
