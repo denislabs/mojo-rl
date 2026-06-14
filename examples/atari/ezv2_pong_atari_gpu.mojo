@@ -165,7 +165,7 @@ def main() raises:
     ](
         ctx, env, rep, dyn, pred, proj, predh,
         orep, odyn, opred, oproj, opredh,
-        iterations=1000,               # × N_ENVS = 100k env transitions
+        iterations=1001,               # × N_ENVS = 100k env transitions
         learning_starts=2000,           # start_transitions (stored steps)
         train_per_iter=N_ENVS,          # UTD 1:1
         lr=Scalar[DT](0.2),
