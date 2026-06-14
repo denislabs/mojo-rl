@@ -26,6 +26,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.nn2.core.optimizer import Optimizer
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import GumbelGPUMCTS, SinglePlayer
@@ -60,6 +61,7 @@ def run_ezv2_gumbel_selfplay_gpu[
     B: Int,
     K: Int,
     N: Int,
+    O: Optimizer = Adam,
     L: Logger = NoOpLogger,
 ](
     ctx: DeviceContext,
@@ -69,14 +71,16 @@ def run_ezv2_gumbel_selfplay_gpu[
     mut pred: PRED,
     mut proj: PROJM,
     mut predh: PREDH,
-    mut orep: Adam,
-    mut odyn: Adam,
-    mut opred: Adam,
-    mut oproj: Adam,
-    mut opredh: Adam,
+    mut orep: O,
+    mut odyn: O,
+    mut opred: O,
+    mut oproj: O,
+    mut opredh: O,
     iterations: Int,
     learning_starts: Int = 256,
     train_per_iter: Int = 1,
+    lr: Scalar[DT] = Scalar[DT](0.0),
+    lr_warmup_iters: Int = 0,
     gamma: Scalar[DT] = Scalar[DT](0.997),
     v_min: Scalar[DT] = Scalar[DT](-10.0),
     v_max: Scalar[DT] = Scalar[DT](10.0),
@@ -246,6 +250,18 @@ def run_ezv2_gumbel_selfplay_gpu[
 
         # ── GPU train step ──
         if it >= learning_starts and rb.num_episodes() > 0:
+            # EZ LR schedule: linear warmup over `lr_warmup_iters` train iters
+            # then CONSTANT `lr` (atari.yaml lr_warm_up → const, NOT cosine).
+            # lr<=0 leaves the optimizers' own LR untouched (back-compat).
+            if lr > Scalar[DT](0.0):
+                var tstep = it - learning_starts
+                var cur_lr = lr
+                if lr_warmup_iters > 0 and tstep < lr_warmup_iters:
+                    cur_lr = lr * Scalar[DT](
+                        Float64(tstep + 1) / Float64(lr_warmup_iters)
+                    )
+                orep.set_lr(cur_lr); odyn.set_lr(cur_lr); opred.set_lr(cur_lr)
+                oproj.set_lr(cur_lr); opredh.set_lr(cur_lr)
             for _ in range(train_per_iter):
                 rb.sample_training_batch_seq[B, K, N](
                     gamma, t_obs_seq, t_act, t_pol, t_val, t_rew,

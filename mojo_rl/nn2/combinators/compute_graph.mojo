@@ -425,6 +425,19 @@ struct ComputeGraph[
                 self.nodes[i].set_op_attr_ptr_via[ATTR](p)
 
     # ──────────────────────────────────────────────────────────────────
+    # Graph-wide attribute broadcast. Calls `set_op_attr_via[ATTR]` on
+    # EVERY node (InputSlot's is a no-op; Node forwards to its op's
+    # `set_attr[ATTR]`, which combinators propagate to their children).
+    # This is how a graph hosting `BatchNorm` layers flips train/eval:
+    # `g.set_attr["training"](1.0)`. Distinct from `set_node_attr[NAME]`,
+    # which targets a single named node.
+    # ──────────────────────────────────────────────────────────────────
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        comptime for i in range(Self.N):
+            self.nodes[i].set_op_attr_via[ATTR](value)
+
+    # ──────────────────────────────────────────────────────────────────
     # Forward — topological walk, comptime name resolution.
     # ──────────────────────────────────────────────────────────────────
 

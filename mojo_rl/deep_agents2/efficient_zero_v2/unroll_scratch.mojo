@@ -60,6 +60,10 @@ struct EZV2UnrollScratch[
     var h_cmask_ones: Optional[HostBuffer[DT]]
     # host loss mirror (zero-fill + D2H reduce)
     var h_loss: Optional[HostBuffer[DT]]
+    # PER: per-sample IS weights [B] (H2D) + per-sample priority [B] (D2H)
+    var d_isw: Optional[DeviceBuffer[DT]]
+    var d_prio: Optional[DeviceBuffer[DT]]
+    var h_prio: Optional[HostBuffer[DT]]
 
     def __init__(out self):
         self.d_obs = None; self.d_act = None; self.d_pol = None
@@ -74,6 +78,7 @@ struct EZV2UnrollScratch[
         self.d_gzcons = None
         self.d_cmask = None; self.h_cmask_ones = None
         self.h_loss = None
+        self.d_isw = None; self.d_prio = None; self.h_prio = None
 
     @staticmethod
     def make(ctx: DeviceContext) raises -> Self:
@@ -119,6 +124,9 @@ struct EZV2UnrollScratch[
         s.d_cmask = ctx.enqueue_create_buffer[DT](k * b)
         s.h_cmask_ones = ctx.enqueue_create_host_buffer[DT](k * b)
         s.h_loss = ctx.enqueue_create_host_buffer[DT](4 * b)
+        s.d_isw = ctx.enqueue_create_buffer[DT](b)
+        s.d_prio = ctx.enqueue_create_buffer[DT](b)
+        s.h_prio = ctx.enqueue_create_host_buffer[DT](b)
         ctx.synchronize()
         for i in range(k * b):
             s.h_cmask_ones.value().unsafe_ptr()[i] = Scalar[DT](1.0)

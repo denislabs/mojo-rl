@@ -46,6 +46,16 @@ comptime GRAY_FRAME_SIZE: Int = FRAME_WIDTH * FRAME_HEIGHT  # 160*210
 comptime OBS_FRAME_SIZE: Int = OBS_WIDTH * OBS_HEIGHT  # 84*84
 comptime FRAME_STACK_SIZE: Int = 4 * OBS_FRAME_SIZE  # 4*84*84 = 28224
 
+# RGB-96 pixel buffer sizes (OBS_MODE==2 — the EfficientZero-V2 Atari preprocessing:
+# RGB, area-resized to 96×96, 4 frames stacked → [12,96,96]). Additive; the
+# grayscale-84 path (OBS_MODE==1) is untouched.
+comptime RGB_OBS_W: Int = 96
+comptime RGB_OBS_H: Int = 96
+comptime RGB_OBS_PLANE: Int = RGB_OBS_W * RGB_OBS_H  # 9216 (one 96×96 channel)
+comptime RGB_FRAME_SIZE: Int = 3 * RGB_OBS_PLANE  # 27648 (one [3,96,96] frame)
+comptime RGB_STACK_SIZE: Int = 4 * RGB_FRAME_SIZE  # 110592 ([12,96,96] stack)
+comptime RGB_SRC_PLANE: Int = FRAME_WIDTH * FRAME_HEIGHT  # 33600 (one src channel)
+
 
 # ============================================================================
 # State and Action types
@@ -137,6 +147,64 @@ def _resize_160x210_to_84x84(
             dst[oy * OBS_WIDTH + ox] = UInt8(total // ((sx1 - sx0) * cy))
 
 
+def _bgra_maxpool_to_rgb_planar(
+    a: UnsafePointer[UInt8, MutAnyOrigin],
+    b: UnsafePointer[UInt8, MutAnyOrigin],
+    dst: UnsafePointer[UInt8, MutAnyOrigin],
+):
+    """Max-pool two BGRA frames (flicker handling, like the gray path) and
+    write the result as three PLANAR channels R,G,B into `dst`
+    (3 × 160×210). Channel order R,G,B matches gym/cv2's RGB observation
+    that EfficientZero-V2's `WarpFrame` consumes.
+
+    SIMD over little-endian u32 BGRA lanes (B|G<<8|R<<16|A<<24), identical
+    channel extraction to `_bgra_to_gray_maxpool` but kept per-channel."""
+    comptime W = 16
+    comptime assert RGB_SRC_PLANE % W == 0, "src plane must be SIMD-divisible"
+    var a32 = a.bitcast[UInt32]()
+    var b32 = b.bitcast[UInt32]()
+    var rp = dst
+    var gp = dst + RGB_SRC_PLANE
+    var bp = dst + 2 * RGB_SRC_PLANE
+    for i in range(0, RGB_SRC_PLANE, W):
+        var va = a32.load[width=W](i)
+        var vb = b32.load[width=W](i)
+        bp.store(i, max(va & 0xFF, vb & 0xFF).cast[DType.uint8]())
+        gp.store(i, max((va >> 8) & 0xFF, (vb >> 8) & 0xFF).cast[DType.uint8]())
+        rp.store(i, max((va >> 16) & 0xFF, (vb >> 16) & 0xFF).cast[DType.uint8]())
+
+
+def _resize_plane_160x210_to_96x96(
+    src: UnsafePointer[UInt8, MutAnyOrigin],
+    dst: UnsafePointer[UInt8, MutAnyOrigin],
+):
+    """Area (box-filter) resize one 160×210 plane to 96×96, the SAME
+    integer-boundary box filter the 84×84 gray path uses (each output pixel
+    averages its source rectangle). Scale: x = 160/96 ≈ 1.667, y = 210/96 ≈
+    2.1875. (Documented deviation: cv2's INTER_AREA uses fractional-coverage
+    area weighting; this integer-boundary approximation is the same one
+    already blessed for the gray-84 path — see docs/EZV2_ATARI_PARITY.md §A.)
+    """
+    for oy in range(RGB_OBS_H):
+        var sy0 = (oy * FRAME_HEIGHT) // RGB_OBS_H
+        var sy1 = ((oy + 1) * FRAME_HEIGHT) // RGB_OBS_H
+        if sy1 <= sy0:
+            sy1 = sy0 + 1
+        for ox in range(RGB_OBS_W):
+            var sx0 = (ox * FRAME_WIDTH) // RGB_OBS_W
+            var sx1 = ((ox + 1) * FRAME_WIDTH) // RGB_OBS_W
+            if sx1 <= sx0:
+                sx1 = sx0 + 1
+            var total: Int = 0
+            for sy in range(sy0, sy1):
+                var row = sy * FRAME_WIDTH
+                for sx in range(sx0, sx1):
+                    total += Int(src[row + sx])
+            dst[oy * RGB_OBS_W + ox] = UInt8(
+                total // ((sx1 - sx0) * (sy1 - sy0))
+            )
+
+
 # ============================================================================
 # AtariEnv
 # ============================================================================
@@ -153,8 +221,19 @@ struct AtariEnv[
     negligible next to the per-frame emulation cost.
 
     Parameters:
-        OBS_MODE: 0 = RAM (128 floats), 1 = pixels (4×84×84 = 28224 floats).
+        OBS_MODE: 0 = RAM (128 floats), 1 = pixels grayscale (4×84×84 = 28224
+            floats), 2 = pixels RGB-96 (4×[3,96,96] = 110592 floats — the
+            EfficientZero-V2 Atari preprocessing).
         DTYPE: Observation dtype (default float32).
+
+    EfficientZero-V2 parity flags (all default off → existing behavior):
+        clip_reward: emit sign(reward) ∈ {−1,0,1} (episode_reward stays RAW
+            for correct score logging; training reward is clipped).
+        episodic_life: treat loss of a life as a (non-bootstrapping) terminal
+            without a true game reset (DeepMind EpisodicLifeEnv); a real reset
+            happens only on game over. Inert for games with no lives (Pong).
+        full_action_set: expose the full 18-action ALE set (policy head width
+            18) instead of the game's minimal set, as EZv2 uses.
     """
 
     comptime dtype = Self.DTYPE
@@ -167,18 +246,31 @@ struct AtariEnv[
     var done: Bool
     var _steps: Int
 
-    # Pixel-mode buffers (allocated only when OBS_MODE==1)
-    var frame_stack: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 4 * 84 * 84
+    # EfficientZero-V2 parity flags (default off; see struct doc).
+    var clip_reward: Bool
+    var episodic_life: Bool
+    var full_action_set: Bool
+    # Episodic-life bookkeeping (only used when episodic_life=True).
+    var _prev_lives: Int
+    var _was_real_done: Bool  # true game-over on the last step (drives reset)
+    var _life_lost: Bool  # last step lost a life (bootstrap-terminal, no reset)
+
+    # Pixel-mode buffers (allocated only when OBS_MODE>=1)
+    var frame_stack: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # stack ring
     var frame_idx: Int  # ring buffer index
     var raw_frame_a: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 160*210*4 BGRA
     var raw_frame_b: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 160*210*4 BGRA
     var gray_buf: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 160*210 grayscale
+    var rgb_buf: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 3*160*210 planar RGB
 
     def __init__(
         out self,
         game: AtariGame,
         frame_skip: Int = 4,
         max_frames: Int = 108000,
+        clip_reward: Bool = False,
+        episodic_life: Bool = False,
+        full_action_set: Bool = False,
     ) raises:
         """Create an AtariEnv for a registry game, loading its ROM from
         `roms/<name>.bin` (relative to the working directory).
@@ -193,6 +285,9 @@ struct AtariEnv[
             rom_data.size,
             frame_skip=frame_skip,
             max_frames=max_frames,
+            clip_reward=clip_reward,
+            episodic_life=episodic_life,
+            full_action_set=full_action_set,
         )
 
     def __init__(
@@ -202,10 +297,13 @@ struct AtariEnv[
         rom_size: Int,
         frame_skip: Int = 4,
         max_frames: Int = 108000,
+        clip_reward: Bool = False,
+        episodic_life: Bool = False,
+        full_action_set: Bool = False,
     ):
         """Create an AtariEnv from an explicitly loaded ROM.
 
-        For pixel mode (OBS_MODE=1), frame_skip is managed internally
+        For pixel modes (OBS_MODE>=1), frame_skip is managed internally
         (env.frame_skip is set to 1, skip loop is in step_obs).
 
         Args:
@@ -214,10 +312,13 @@ struct AtariEnv[
             rom_size: ROM size in bytes.
             frame_skip: Number of frames to repeat each action (default 4).
             max_frames: Max frames per episode (default 108000).
+            clip_reward: emit sign(reward); see struct doc.
+            episodic_life: life loss = terminal; see struct doc.
+            full_action_set: expose full 18-action ALE set; see struct doc.
         """
         self.game = game
-        comptime if Self.OBS_MODE == 1:
-            # Pixel mode: we drive frame skip manually
+        comptime if Self.OBS_MODE >= 1:
+            # Pixel modes: we drive frame skip manually
             self.env = AtariEnvironment(
                 rom,
                 rom_size,
@@ -241,6 +342,12 @@ struct AtariEnv[
         self.episode_reward = 0.0
         self.done = False
         self._steps = 0
+        self.clip_reward = clip_reward
+        self.episodic_life = episodic_life
+        self.full_action_set = full_action_set
+        self._prev_lives = 0
+        self._was_real_done = True
+        self._life_lost = False
 
         # Pixel mode buffers
         comptime if Self.OBS_MODE == 1:
@@ -248,13 +355,23 @@ struct AtariEnv[
             self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
             self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
             self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
+            self.rgb_buf = None
             self.frame_idx = 0
             memset(self.frame_stack.value(), 0, FRAME_STACK_SIZE)
+        elif Self.OBS_MODE == 2:
+            self.frame_stack = alloc[UInt8](RGB_STACK_SIZE)
+            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
+            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
+            self.gray_buf = None
+            self.rgb_buf = alloc[UInt8](3 * RGB_SRC_PLANE)
+            self.frame_idx = 0
+            memset(self.frame_stack.value(), 0, RGB_STACK_SIZE)
         else:
             self.frame_stack = None
             self.raw_frame_a = None
             self.raw_frame_b = None
             self.gray_buf = None
+            self.rgb_buf = None
             self.frame_idx = 0
 
     def __init__(out self, *, deinit take: Self):
@@ -263,11 +380,18 @@ struct AtariEnv[
         self.episode_reward = take.episode_reward
         self.done = take.done
         self._steps = take._steps
+        self.clip_reward = take.clip_reward
+        self.episodic_life = take.episodic_life
+        self.full_action_set = take.full_action_set
+        self._prev_lives = take._prev_lives
+        self._was_real_done = take._was_real_done
+        self._life_lost = take._life_lost
         self.frame_stack = take.frame_stack
         self.frame_idx = take.frame_idx
         self.raw_frame_a = take.raw_frame_a
         self.raw_frame_b = take.raw_frame_b
         self.gray_buf = take.gray_buf
+        self.rgb_buf = take.rgb_buf
 
     # ========================================================================
     # Pixel-mode helpers
@@ -317,16 +441,72 @@ struct AtariEnv[
             self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_a.value()
         )
 
+    # ── RGB-96 pixel helpers (OBS_MODE==2) ──────────────────────────────
+
+    def _push_rgb_frame_to_stack(mut self):
+        """Max-pool a/b → planar RGB (rgb_buf) → area-resize each of the 3
+        channels into the frame_stack ring slot [3,96,96], advance the ring.
+        """
+        _bgra_maxpool_to_rgb_planar(
+            self.raw_frame_a.value(), self.raw_frame_b.value(),
+            self.rgb_buf.value(),
+        )
+        var slot = self.frame_stack.value() + self.frame_idx * RGB_FRAME_SIZE
+        var src = self.rgb_buf.value()
+        for c in range(3):
+            _resize_plane_160x210_to_96x96(
+                src + c * RGB_SRC_PLANE, slot + c * RGB_OBS_PLANE,
+            )
+        self.frame_idx = (self.frame_idx + 1) % 4
+
+    def _write_rgb_stack_obs_into(
+        self, obs_out: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
+    ):
+        """Write the 4-frame RGB stack (chronological, oldest first) as
+        normalized floats [12,96,96] into `obs_out`. Channel order within a
+        frame is R,G,B; the 12 channels are frame-major (f0RGB, f1RGB, …).
+        SIMD uint8→float /255, bit-exact vs the scalar conversion."""
+        comptime W = 16
+        comptime assert RGB_OBS_PLANE % W == 0, "RGB plane must be SIMD-divisible"
+        var fs = self.frame_stack.value()
+        var out_off = 0
+        for i in range(4):
+            var slot = (self.frame_idx + i) % 4  # oldest first
+            var src = fs + slot * RGB_FRAME_SIZE
+            for j in range(0, RGB_FRAME_SIZE, W):
+                obs_out.store(
+                    out_off + j, src.load[width=W](j).cast[Self.dtype]() / 255.0,
+                )
+            out_off += RGB_FRAME_SIZE
+
     # ========================================================================
     # Env trait (base)
     # ========================================================================
 
     def reset(mut self) -> AtariEnvState:
-        """Reset the environment."""
+        """Reset the environment.
+
+        With `episodic_life` and no true game-over on the previous step
+        (DeepMind EpisodicLifeEnv semantics), this does NOT reset the game:
+        it advances one no-op action-step past the lost-life state so all
+        states stay reachable, keeping episode bookkeeping intact. A true
+        game reset happens only on real game over (or when episodic_life is
+        off — the default)."""
+        if self.episodic_life and not self._was_real_done:
+            # Advance past the lost-life state; the real episode continues.
+            _ = self.step_obs(0)  # action 0 == ALE NOOP (minimal + full sets)
+            self._prev_lives = Int(self.env.state.lives)
+            self.done = False
+            self._life_lost = False
+            return AtariEnvState(index=self._steps)
+
         self.env.reset_game(self.game)
         self.episode_reward = 0.0
         self.done = False
         self._steps = 0
+        self._was_real_done = True
+        self._life_lost = False
+        self._prev_lives = 0
 
         comptime if Self.OBS_MODE == 1:
             # Render initial frame into all 4 stack slots
@@ -344,6 +524,19 @@ struct AtariEnv[
             self.frame_idx = 0
             for _ in range(4):
                 self._push_frame_to_stack()
+        elif Self.OBS_MODE == 2:
+            # Render initial frame into all 4 RGB stack slots
+            run_frame_video(
+                self.env.state,
+                self.env.rom,
+                self.env.rom_size,
+                self.raw_frame_a.value(),
+            )
+            for i in range(FRAME_BGRA_SIZE):
+                self.raw_frame_b.value()[i] = self.raw_frame_a.value()[i]
+            self.frame_idx = 0
+            for _ in range(4):
+                self._push_rgb_frame_to_stack()
 
         return AtariEnvState(index=0)
 
@@ -362,15 +555,18 @@ struct AtariEnv[
         return AtariEnvState(index=self._steps)
 
     def was_terminated(self) -> Bool:
-        """True iff the last step ended via GAME termination (game over),
-        not max_frames truncation — the TD bootstrap is dropped only on
-        the former. Overrides the base-Env `False` default, which silently
-        classified every Atari game-over as a truncation."""
+        """True iff the last step ended in a (bootstrap-)terminal — game over,
+        or (with episodic_life) loss of a life — but NOT max_frames
+        truncation, on which the TD bootstrap is kept. Overrides the base-Env
+        `False` default, which silently classified every Atari game-over as a
+        truncation."""
+        if self.episodic_life:
+            return self.env.natural_terminal or self._life_lost
         return self.env.natural_terminal
 
     def close(mut self):
         """Free pixel-mode buffers."""
-        comptime if Self.OBS_MODE == 1:
+        comptime if Self.OBS_MODE >= 1:
             if Bool(self.frame_stack):
                 self.frame_stack.value().free()
                 self.frame_stack = None
@@ -383,6 +579,9 @@ struct AtariEnv[
             if Bool(self.gray_buf):
                 self.gray_buf.value().free()
                 self.gray_buf = None
+            if Bool(self.rgb_buf):
+                self.rgb_buf.value().free()
+                self.rgb_buf = None
 
     # ========================================================================
     # ContinuousStateEnv trait
@@ -425,13 +624,20 @@ struct AtariEnv[
         """Return current observation as a list of floats.
 
         RAM mode: 128 floats in [0, 1].
-        Pixel mode: 28224 floats in [0, 1] (4 stacked 84×84 grayscale frames).
+        Pixel mode 1: 28224 floats (4 stacked 84×84 grayscale frames).
+        Pixel mode 2: 110592 floats ([12,96,96] RGB stack — EZv2 Atari).
         """
         comptime if Self.OBS_MODE == 1:
             var obs = List[Scalar[Self.DTYPE]](
                 length=FRAME_STACK_SIZE, fill=Scalar[Self.DTYPE](0.0)
             )
             self._write_stack_obs_into(obs.unsafe_ptr())
+            return obs^
+        elif Self.OBS_MODE == 2:
+            var obs = List[Scalar[Self.DTYPE]](
+                length=RGB_STACK_SIZE, fill=Scalar[Self.DTYPE](0.0)
+            )
+            self._write_rgb_stack_obs_into(obs.unsafe_ptr())
             return obs^
         else:
             var obs = List[Scalar[Self.DTYPE]](
@@ -449,6 +655,8 @@ struct AtariEnv[
         """Return observation dimension."""
         comptime if Self.OBS_MODE == 1:
             return FRAME_STACK_SIZE  # 4 * 84 * 84 = 28224
+        elif Self.OBS_MODE == 2:
+            return RGB_STACK_SIZE  # 4 * 3 * 96 * 96 = 110592
         else:
             return RAM_SIZE  # 128
 
@@ -460,7 +668,43 @@ struct AtariEnv[
         return AtariAction(action_idx=action_idx)
 
     def num_actions(self) -> Int:
+        # full_action_set exposes the full 18-action ALE set (EZv2); the
+        # minimal set is the default. (full_action_set is honored by the
+        # pixel paths; the RAM path keeps its minimal-set mapping.)
+        if self.full_action_set:
+            return 18
         return self.game.num_actions()
+
+    def _ale_action(self, action_idx: Int) -> UInt8:
+        """Map an agent action index to an ALE action id. With
+        full_action_set the index IS the ALE id (0..17); otherwise it
+        routes through the game's minimal action set (ascending id order)."""
+        if self.full_action_set:
+            return UInt8(action_idx)
+        return self.game.action(action_idx)
+
+    def _clip(self, raw_reward: Int) -> Scalar[Self.DTYPE]:
+        """sign(reward) ∈ {−1,0,1} when clip_reward, else the raw reward."""
+        if self.clip_reward:
+            if raw_reward > 0:
+                return Scalar[Self.DTYPE](1.0)
+            elif raw_reward < 0:
+                return Scalar[Self.DTYPE](-1.0)
+            return Scalar[Self.DTYPE](0.0)
+        return Scalar[Self.DTYPE](raw_reward)
+
+    def _apply_episodic(mut self):
+        """After self.done is set from is_terminal(): record the true
+        game-over (drives reset) and, with episodic_life, upgrade loss of a
+        life to a (bootstrap-)terminal without a real reset."""
+        self._was_real_done = self.env.natural_terminal
+        self._life_lost = False
+        if self.episodic_life:
+            var lives = Int(self.env.state.lives)
+            if lives < self._prev_lives and lives > 0:
+                self.done = True
+                self._life_lost = True
+            self._prev_lives = lives
 
     # ========================================================================
     # BoxDiscreteActionEnv trait — step_obs
@@ -479,6 +723,8 @@ struct AtariEnv[
 
         comptime if Self.OBS_MODE == 1:
             return self._step_obs_pixel(action)
+        elif Self.OBS_MODE == 2:
+            return self._step_obs_rgb(action)
         else:
             return self._step_obs_ram(action)
 
@@ -505,6 +751,10 @@ struct AtariEnv[
         comptime if Self.OBS_MODE == 1:
             var reward = self._advance_pixel(action)
             self._write_stack_obs_into(obs_out)
+            return (reward, self.done)
+        elif Self.OBS_MODE == 2:
+            var reward = self._advance_pixel_rgb(action)
+            self._write_rgb_stack_obs_into(obs_out)
             return (reward, self.done)
         else:
             var reward = self.env.step_game(self.game, action)
@@ -580,3 +830,61 @@ struct AtariEnv[
         self._push_frame_to_stack()
 
         return Scalar[Self.DTYPE](reward)
+
+    # ── RGB-96 step (OBS_MODE==2 — EfficientZero-V2 Atari) ──────────────
+
+    def _step_obs_rgb(
+        mut self, action: Int
+    ) -> Tuple[List[Scalar[Self.DTYPE]], Scalar[Self.DTYPE], Bool]:
+        """RGB-96 pixel step: list-returning wrapper over `_advance_pixel_rgb`."""
+        var reward = self._advance_pixel_rgb(action)
+        var obs = self.get_obs_list()
+        return (obs^, reward, self.done)
+
+    def _advance_pixel_rgb(mut self, action: Int) -> Scalar[Self.DTYPE]:
+        """RGB-96 pixel step (EfficientZero-V2 preprocessing): manual
+        frame-skip with per-scanline rendering of the last 2 frames, then
+        max-pool a/b → planar RGB → area-resize each channel to 96×96 →
+        push to the [12,96,96] stack. Honors `full_action_set`, `clip_reward`
+        and `episodic_life`. Mirrors `_advance_pixel` (the gray-84 path) but
+        keeps RGB; episode_reward stays RAW for score logging."""
+        var ale_action = self._ale_action(action)
+        var prev_score = Int(self.env.state.score)
+
+        comptime PIXEL_FRAME_SKIP: Int = 4
+
+        for _ in range(PIXEL_FRAME_SKIP - 2):
+            set_action(self.env.state, ale_action)
+            run_frame(self.env.state, self.env.rom, self.env.rom_size)
+
+        set_action(self.env.state, ale_action)
+        run_frame_video(
+            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_a.value()
+        )
+        set_action(self.env.state, ale_action)
+        run_frame_video(
+            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_b.value()
+        )
+
+        var sig = game_signals(self.game, self.env.state, prev_score)
+        var reward = sig.reward
+        self.env.state.score = Int32(sig.score)
+        self.env.state.reward = Int32(reward)
+        self.env.state.lives = UInt8(sig.lives)
+        self.env.state.terminal = sig.terminal
+        self.env.natural_terminal = sig.terminal
+
+        if (
+            self.env.max_frames > 0
+            and Int(self.env.state.frame_number) >= self.env.max_frames
+        ):
+            self.env.state.terminal = True
+
+        self.done = self.env.is_terminal()
+        self.episode_reward += Float64(reward)  # raw reward for score logging
+        self._apply_episodic()  # may upgrade done on life loss
+
+        # Max-pool → planar RGB → resize → push to [12,96,96] stack
+        self._push_rgb_frame_to_stack()
+
+        return self._clip(reward)

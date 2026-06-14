@@ -33,6 +33,7 @@ CPU path first (overfit-tested); a GPU branch + CPU↔GPU parity follow.
 """
 
 from std.memory import alloc
+from std.math import exp, log
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
@@ -40,6 +41,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.nn2.core.optimizer import Optimizer
 
 from .loss_ops import consistency_loss_and_grad, consistency_loss_grad_k
 from .unroll_scratch import EZV2UnrollScratch
@@ -62,6 +64,51 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return mptr(alloc[Scalar[DT]](n))
 
 
+# ── PER kernels (6c-2) ──────────────────────────────────────────────────
+def _ez_scale_rows_k[B_: Int, ROW_: Int, OFF_: Int, LEN_: Int](
+    grad: LayoutTensor[DT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
+    w: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+):
+    """Scale the ``[OFF_, OFF_+LEN_)`` column slice of grad row ``b`` by the
+    per-sample importance-sampling weight ``w[b]`` (PER gradient weighting).
+    One thread per row."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        var wb = rebind[Scalar[DT]](w[b])
+        var base = b * ROW_ + OFF_
+        for c in range(LEN_):
+            grad[base + c] = rebind[Scalar[DT]](grad[base + c]) * wb
+
+
+def _ez_priority_ce_k[B_: Int, ROW_: Int, OFF_: Int, NBINS_: Int](
+    logits: LayoutTensor[DT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
+    target: LayoutTensor[DT, Layout.row_major(B_ * NBINS_), MutAnyOrigin],
+    out_prio: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+):
+    """Per-sample soft-CE of the value-head slice vs the value two-hot target —
+    the PER priority signal (root value-prediction error). Writes (does NOT
+    accumulate) into ``out_prio[b]``. One thread per row; mirrors the loss half
+    of `_mz_softce_slice_k`."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        var base = b * ROW_ + OFF_
+        var m = rebind[Scalar[DT]](logits[base])
+        for i in range(1, NBINS_):
+            var v = rebind[Scalar[DT]](logits[base + i])
+            if v > m:
+                m = v
+        var s = Scalar[DT](0.0)
+        for i in range(NBINS_):
+            s += exp(rebind[Scalar[DT]](logits[base + i]) - m)
+        var log_s = log(s)
+        var tb = b * NBINS_
+        var row_loss = Scalar[DT](0.0)
+        for i in range(NBINS_):
+            var q = rebind[Scalar[DT]](target[tb + i])
+            row_loss += -q * ((rebind[Scalar[DT]](logits[base + i]) - m) - log_s)
+        out_prio[b] = row_loss
+
+
 def ezv2_unroll_train_step_cpu[
     REP: Module,
     DYN: Module,
@@ -74,17 +121,18 @@ def ezv2_unroll_train_step_cpu[
     ACT: Int,
     LATENT: Int,
     BINS: Int,
+    O: Optimizer = Adam,
 ](
     mut rep: REP,
     mut dyn: DYN,
     mut pred: PRED,
     mut proj: PROJM,
     mut predh: PREDH,
-    mut orep: Adam,
-    mut odyn: Adam,
-    mut opred: Adam,
-    mut oproj: Adam,
-    mut opredh: Adam,
+    mut orep: O,
+    mut odyn: O,
+    mut opred: O,
+    mut oproj: O,
+    mut opredh: O,
     obs_seq: UnsafePointer[Scalar[DT], MutAnyOrigin],
     actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
     policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -322,6 +370,7 @@ def ezv2_unroll_train_step_gpu[
     ACT: Int,
     LATENT: Int,
     BINS: Int,
+    O: Optimizer = Adam,
 ](
     ctx: DeviceContext,
     mut scratch: EZV2UnrollScratch[B, K, OBS, ACT, LATENT, BINS, PROJM.OUT_DIM],
@@ -330,11 +379,11 @@ def ezv2_unroll_train_step_gpu[
     mut pred: PRED,
     mut proj: PROJM,
     mut predh: PREDH,
-    mut orep: Adam,
-    mut odyn: Adam,
-    mut opred: Adam,
-    mut oproj: Adam,
-    mut opredh: Adam,
+    mut orep: O,
+    mut odyn: O,
+    mut opred: O,
+    mut oproj: O,
+    mut opredh: O,
     obs_seq: UnsafePointer[Scalar[DT], MutAnyOrigin],
     actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
     policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -346,6 +395,8 @@ def ezv2_unroll_train_step_gpu[
     consistency_coef: Scalar[DT] = Scalar[DT](2.0),
     cons_mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
     loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """GPU EZv2 K-step unroll training step — device mirror of
     ``ezv2_unroll_train_step_cpu`` (MuZero BPTT + SimSiam consistency,
@@ -411,6 +462,14 @@ def ezv2_unroll_train_step_gpu[
     var gproj = scratch.d_gproj.value()
     var gzcons = scratch.d_gzcons.value()
     var h_loss = scratch.h_loss.value()
+    # PER: H2D the IS weights once (if given); the priority output is D2H'd
+    # after the reverse scan. `has_isw` gates all PER work → bit-identical to
+    # the unweighted path when `is_weights` is None.
+    var has_isw = Bool(is_weights)
+    var d_isw = scratch.d_isw.value()
+    var d_prio = scratch.d_prio.value()
+    if has_isw:
+        ctx.enqueue_copy(d_isw, is_weights.value())
 
     # zero the 4 loss-component accumulators (policy|value|reward|consistency)
     for i in range(4 * B):
@@ -443,6 +502,8 @@ def ezv2_unroll_train_step_gpu[
     var p_gproj = _dp(gproj)
     var p_gzcons = _dp(gzcons)
     var p_cmask = _dp(d_cmask)
+    var p_isw = _dp(d_isw)
+    var p_prio = _dp(d_prio)
 
     comptime nbDIN = (B * DYN_IN + TPB - 1) // TPB
     comptime nbLAT = (B * LATENT + TPB - 1) // TPB
@@ -458,6 +519,12 @@ def ezv2_unroll_train_step_gpu[
     comptime kBcopy = _mz_bcopy_k[B * LATENT]
     comptime kCons = consistency_loss_grad_k[B, PROJ]
     comptime kAccum = _ez_accum_latent_k[B * LATENT]
+    # PER row-scaling: pred head (whole row), reward slice only (latent slice is
+    # the already-weighted carry), consistency (whole row); + value-error prio.
+    comptime kScalePred = _ez_scale_rows_k[B, PRED_OUT, 0, PRED_OUT]
+    comptime kScaleRew = _ez_scale_rows_k[B, DYN_OUT, LATENT, BINS]
+    comptime kScaleCons = _ez_scale_rows_k[B, PROJ, 0, PROJ]
+    comptime kPrioCE = _ez_priority_ce_k[B, PRED_OUT, ACT, BINS]
 
     # ── forward scan: z0 = h(obs0); z_{k+1} = g(z_k, a_k).latent ──
     var z0_t = TileTensor(p_zst, row_major[B, LATENT]())
@@ -531,6 +598,19 @@ def ezv2_unroll_train_step_gpu[
             gscale * value_coef, value_coef,
             grid_dim=nbB, block_dim=TPB,
         )
+        # PER: value-error priority at the root (k=0), read from value logits +
+        # value two-hot (both intact — read logits, not grads).
+        if out_prio and k == 0:
+            ctx.enqueue_function[kPrioCE](
+                _lt[B * PRED_OUT](p_pout), _lt[B * BINS](p_twv),
+                _lt[B](p_prio), grid_dim=nbB, block_dim=TPB,
+            )
+        # PER: weight the whole prediction-head grad row by w_b before vjp.
+        if has_isw:
+            ctx.enqueue_function[kScalePred](
+                _lt[B * PRED_OUT](p_gpout), _lt[B](p_isw),
+                grid_dim=nbB, block_dim=TPB,
+            )
         var gpout_t = TileTensor(p_gpout, row_major[B, PRED_OUT]())
         var gpin_t = TileTensor(p_gpin, row_major[B, LATENT]())
         pred.vjp["gpu", B](gpout_t, gpin_t)
@@ -550,6 +630,12 @@ def ezv2_unroll_train_step_gpu[
                 cscale, Scalar[DT](1.0),
                 grid_dim=nbB, block_dim=TPB,
             )
+            # PER: weight the whole consistency grad row by w_b before vjp.
+            if has_isw:
+                ctx.enqueue_function[kScaleCons](
+                    _lt[B * PROJ](p_gpk), _lt[B](p_isw),
+                    grid_dim=nbB, block_dim=TPB,
+                )
             var gpk_t = TileTensor(p_gpk, row_major[B, PROJ]())
             var gproj_t = TileTensor(p_gproj, row_major[B, PROJ]())
             predh.vjp["gpu", B](gpk_t, gproj_t)            # → grad proj output
@@ -590,6 +676,14 @@ def ezv2_unroll_train_step_gpu[
                 gscale, Scalar[DT](1.0),
                 grid_dim=nbB, block_dim=TPB,
             )
+            # PER: weight ONLY the reward slice of the dyn grad by w_b. The
+            # latent slice carries the already-weighted gradient from z_{k+1}
+            # (kCarry), so scaling it again would double-weight it.
+            if has_isw:
+                ctx.enqueue_function[kScaleRew](
+                    _lt[B * DYN_OUT](p_gdout), _lt[B](p_isw),
+                    grid_dim=nbB, block_dim=TPB,
+                )
             var gdout_t = TileTensor(p_gdout, row_major[B, DYN_OUT]())
             var gdin_t = TileTensor(p_gdin, row_major[B, DYN_IN]())
             dyn.vjp["gpu", B](gdout_t, gdin_t)
@@ -620,6 +714,16 @@ def ezv2_unroll_train_step_gpu[
     orep.step["gpu", REP](rep)
     oproj.step["gpu", PROJM](proj)
     opredh.step["gpu", PREDH](predh)
+
+    # ── PER: D2H the per-sample value-error priorities into the caller slab ──
+    if out_prio:
+        var h_prio = scratch.h_prio.value()
+        ctx.enqueue_copy(h_prio, d_prio)
+        ctx.synchronize()
+        var op = out_prio.value()
+        var hpp = h_prio.unsafe_ptr()
+        for b in range(B):
+            op[b] = hpp[b]
 
     # ── reduce loss (D2H once into the reused host mirror) ──
     # 4 contiguous [B] blocks: policy | value | reward | consistency.
