@@ -397,6 +397,7 @@ def ezv2_unroll_train_step_gpu[
     loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
     is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
     out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    obs_on_device: Bool = False,
 ) raises -> Scalar[DT]:
     """GPU EZv2 K-step unroll training step — device mirror of
     ``ezv2_unroll_train_step_cpu`` (MuZero BPTT + SimSiam consistency,
@@ -429,7 +430,11 @@ def ezv2_unroll_train_step_gpu[
     var d_val = scratch.d_val.value()
     var d_rew = scratch.d_rew.value()
     # ── H2D the host batch slabs (once) ──
-    ctx.enqueue_copy(d_obs, obs_seq)
+    # When obs_on_device, the caller (device-ring replay) has already gathered
+    # the [K+1,B,OBS] obs slab straight into scratch.d_obs — skip the ~680 MB
+    # host→device copy (the pixel-obs bottleneck). obs_seq is then unused.
+    if not obs_on_device:
+        ctx.enqueue_copy(d_obs, obs_seq)
     ctx.enqueue_copy(d_act, actions)
     ctx.enqueue_copy(d_pol, policy_tgt)
     ctx.enqueue_copy(d_val, value_tgt)

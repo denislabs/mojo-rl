@@ -149,8 +149,13 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     var dyn_a = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn)
     var pred_a = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred)
 
+    # Device-resident obs ring (uint8 pixels): the training obs slab is gathered
+    # on-device straight into scratch.d_obs, so neither the host dequant-build nor
+    # the ~680 MB/step slab H2D happen (the pixel-obs bottleneck). PER + targets
+    # stay on host.
     var rb = PrioritizedMCTSSequenceReplay[OBS, ACT, CAP, OBS_STORE_DT](
-        seed=seed ^ UInt64(0xABCDEF), alpha=Scalar[DT](1.0), beta=Scalar[DT](1.0),
+        ctx, seed=seed ^ UInt64(0xABCDEF),
+        alpha=Scalar[DT](1.0), beta=Scalar[DT](1.0),
     )
 
     # search-input device obs (H2D'd from the CPU env each step) + host mirrors
@@ -158,8 +163,10 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     var h_pol = _a(N_ENVS * ACT)
     var h_val = _a(N_ENVS)
 
-    # training batch slabs (time-major); obs is the full [K+1, B, OBS] sequence
-    var t_obs_seq = _a((K + 1) * B * OBS)
+    # training batch slabs (time-major). obs is NOT staged on host any more — the
+    # device gather fills scratch.d_obs directly; only the small label slabs are
+    # host (H2D'd by the train step). The per-(k,b) ring-slot index array drives
+    # the gather.
     var t_act = _a(K * B)
     var t_pol = _a((K + 1) * B * ACT)
     var t_val = _a((K + 1) * B)
@@ -169,16 +176,20 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     var t_prio = _a(B)            # PER value-error priorities (writeback)
     var t_slots = _ai(B)         # PER sampled ring slots
     var l_parts = _a(4)
+    var t_obs_dummy = _a(1)      # unused obs_seq arg (obs_on_device=True)
+    # gather slot index arrays: training [(K+1)*B] + reanalyze [REANA_W]
+    var h_obs_slots = alloc[Int32]((K + 1) * B)
+    var d_obs_slots = ctx.enqueue_create_buffer[DType.int32]((K + 1) * B)
+    var h_reana_slots = alloc[Int32](REANA_W)
+    var d_reana_slots = ctx.enqueue_create_buffer[DType.int32](REANA_W)
 
     var train_scratch = EZV2UnrollScratch[
         B, K, OBS, ACT, LATENT, BINS, PROJM.OUT_DIM
     ].make(ctx)
 
-    # reanalyze scratch — REANA_W wide. obs staged host→device once per chunk
-    # (read_obs writes directly into the staging slab, no per-position alloc),
-    # improved policy/value D2H'd into dedicated host mirrors.
+    # reanalyze scratch — REANA_W wide. obs gathered on-device into d_reana (no
+    # host read_obs / H2D); improved policy/value D2H'd into host mirrors.
     var d_reana = ctx.enqueue_create_buffer[DT](REANA_W * OBS)
-    var h_reana = _a(REANA_W * OBS)
     var h_pol_w = _a(REANA_W * ACT)
     var h_val_w = _a(REANA_W)
 
@@ -294,9 +305,13 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                 orep.set_lr(cur_lr); odyn.set_lr(cur_lr); opred.set_lr(cur_lr)
                 oproj.set_lr(cur_lr); opredh.set_lr(cur_lr)
             for _ in range(train_per_iter):
-                rb.sample_training_batch_seq_per[B, K, N](
-                    gamma, t_obs_seq, t_act, t_pol, t_val, t_rew,
-                    t_isw, t_slots, cons_mask=t_cmask,
+                # CPU draws prioritized slots + targets, then gathers the obs
+                # slab on-device straight into scratch.d_obs (no host build/H2D).
+                rb.sample_training_batch_seq_per_gpu[B, K, N](
+                    ctx, gamma, train_scratch.d_obs.value(),
+                    d_obs_slots, mptr(h_obs_slots),
+                    t_act, t_pol, t_val, t_rew, t_isw, t_slots,
+                    cons_mask=t_cmask,
                 )
                 last_loss = Float64(
                     ezv2_unroll_train_step_gpu[
@@ -305,10 +320,11 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                     ](
                         ctx, train_scratch, rep, dyn, pred, proj, predh,
                         orep, odyn, opred, oproj, opredh,
-                        t_obs_seq, t_act, t_pol, t_val, t_rew,
+                        t_obs_dummy, t_act, t_pol, t_val, t_rew,
                         v_min, v_max, value_coef, consistency_coef,
                         cons_mask=t_cmask, loss_parts=l_parts,
                         is_weights=t_isw, out_prio=t_prio,
+                        obs_on_device=True,
                     )
                 )
                 rb.update_priorities(t_slots, t_prio, B)
@@ -336,13 +352,15 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
             for _c in range(n_chunks):
                 var rpos_e = List[Int]()
                 var rpos_o = List[Int]()
-                for e in range(REANA_W):
+                for _ in range(REANA_W):
                     var rpos = rb.sample_position()
                     rpos_e.append(rpos[0])
                     rpos_o.append(rpos[1])
-                    var dst = h_reana + (e * OBS)   # stage obs in place
-                    rb.read_obs(rpos[0], rpos[1], dst)
-                ctx.enqueue_copy(d_reana, h_reana)
+                # gather the REANA_W positions' obs on-device into d_reana
+                rb.gather_obs_for_positions[REANA_W](
+                    ctx, d_reana, d_reana_slots, mptr(h_reana_slots),
+                    rpos_e, rpos_o,
+                )
                 var reana_t = LayoutTensor[DT, Layout.row_major(REANA_W, OBS),
                     MutAnyOrigin](mptr(d_reana.unsafe_ptr()))
                 reana_planner.search_gpu[
@@ -411,9 +429,10 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    t_obs_seq.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
+    t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     t_cmask.free(); t_isw.free(); t_prio.free(); t_slots.free(); l_parts.free()
-    h_pol.free(); h_val.free(); h_reana.free()
+    t_obs_dummy.free(); h_obs_slots.free(); h_reana_slots.free()
+    h_pol.free(); h_val.free()
     h_pol_w.free(); h_val_w.free()
     return last_loss
 

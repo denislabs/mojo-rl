@@ -5,13 +5,29 @@ The prioritized sibling of `MCTSSequenceReplay` (same flat episode rings + the
 proportional **prioritized experience replay** keyed per stored step:
 
   * a `SumTree` over the ``CAP`` ring slots holds each step's priority;
-  * `sample_training_batch_seq_per` draws each of ``B`` window-starts ∝ priorityᵅ
-    (stratified over ``B`` equal mass bins, the standard PER batch draw) and
-    emits per-sample importance-sampling weights ``w_i = (N·P_i)^(−β)`` (β=1,
-    α=1 ⇒ atari.yaml `priority_prob_alpha/beta`), normalized by the batch max;
+  * `sample_training_batch_seq_per_gpu` draws each of ``B`` window-starts ∝
+    priorityᵅ (stratified over ``B`` equal mass bins, the standard PER batch
+    draw) and emits per-sample importance-sampling weights ``w_i = (N·P_i)^(−β)``
+    (β=1, α=1 ⇒ atari.yaml `priority_prob_alpha/beta`), normalized by the batch
+    max;
   * `update_priorities` writes back fresh priorities (|TD error|, the value-
     prediction error) after the train step; new steps enter at the running max
     priority so they are sampled at least once.
+
+**Device obs ring (pixel-obs perf).** The observation ring lives on the
+**device** (a `DeviceBuffer[SDT]`, `[CAP, OBS]`, uint8 for pixels), NOT on host.
+All PER/target bookkeeping (sum-tree, episode index, act/rew/pol/val/done/tp/
+legal, n-step targets) stays on the **host** — it is cheap. Sampling computes,
+per (k, b), the physical ring slot on the host (no obs copy), then a single
+element-parallel **gather kernel** assembles the `[K+1, B, OBS]` training slab
+directly in device memory (dequantizing uint8→DT) — so the train step never
+H2D-copies the obs slab. This kills the old anti-pattern (a serial host
+dequant-build of `(K+1)·B·OBS` elements + a ~680 MB/step H2D) that dominated
+runtime once training started — the same image-obs replay bottleneck fixed in
+`GPUSequenceReplay`/`gpu_replay` (see those files + the Rainbow pixel profile).
+`store_episode` quantizes the episode's host obs and H2D's it into the ring via
+≤2 contiguous sub-buffer copies (chunked, wrap-aware); reanalyze obs are gathered
+on-device the same way (`gather_obs_for_positions`).
 
 Ring/prune correctness: by the time an episode is pruned (its start has fallen
 out of the last ``CAP`` steps) every one of its slots has ALREADY been
@@ -25,12 +41,20 @@ replay — only the *which-window* draw and the IS weights differ.
 """
 
 from std.memory import alloc
+from std.gpu import block_dim, block_idx, thread_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
+from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.module import mptr
 from mojo_rl.core.sum_tree import SumTree
 from .nstep_targets import compute_nstep_value_targets
 from ..data.gpu_replay import _obs_quant, _obs_dequant
+
+
+# Host→device store staging chunk (steps). Bounds the transient host uint8
+# buffer to CHUNK·OBS; store is per-episode (rare) so a sync per chunk is fine.
+comptime STORE_CHUNK = 1024
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -41,17 +65,40 @@ def _asdt[SDT: DType](n: Int) -> UnsafePointer[Scalar[SDT], MutAnyOrigin]:
     return mptr(alloc[Scalar[SDT]](n))
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Element-parallel obs gather: one thread per (row × OBS element). Row m's
+# physical ring slot is `slots[m]` (precomputed on host); dequantizes
+# uint8→DT. Used for both the training slab (M = (K+1)·B rows) and reanalyze
+# (M = REANA_W rows). Mirrors `_seq_sample_kernel` in gpu_sequence_replay.mojo
+# but with host-precomputed slots (PER + within-episode window clamping live
+# on the host), so it is a pure indexed gather.
+# ──────────────────────────────────────────────────────────────────────
+def _ez_obs_gather_kernel[M: Int, OBS: Int, CAP: Int, SDT: DType](
+    ring: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    slots: LayoutTensor[DType.int32, Layout.row_major(M), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(M, OBS), MutAnyOrigin],
+):
+    var t = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if t >= M * OBS:
+        return
+    var m = t // OBS
+    var i = t % OBS
+    var slot = Int(slots[m])
+    dst[m, i] = _obs_dequant[SDT](rebind[Scalar[SDT]](ring[slot, i]))
+
+
 struct PrioritizedMCTSSequenceReplay[
     OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
 ](Movable, ImplicitlyDestructible):
     """Prioritized ring of MCTS-labelled steps + episode index + a per-slot
     `SumTree`. ``CAP`` = max resident steps. ``OBS_STORE_DT`` mirrors
     `MCTSSequenceReplay` (DT or uint8 pixel storage). ``alpha``/``beta`` are
-    the PER exponents (EZ Atari: 1.0 / 1.0)."""
+    the PER exponents (EZ Atari: 1.0 / 1.0). The obs ring is **device-resident**
+    (see module docstring); everything else is host."""
 
     comptime SDT = Self.OBS_STORE_DT
 
-    var obs: UnsafePointer[Scalar[Self.SDT], MutAnyOrigin]   # [CAP, OBS]
+    var obs: DeviceBuffer[Self.SDT]                    # [CAP, OBS] on device
     var act: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var done: UnsafePointer[Scalar[DT], MutAnyOrigin]
@@ -59,6 +106,9 @@ struct PrioritizedMCTSSequenceReplay[
     var val: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var tp: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var legal: UnsafePointer[Scalar[DT], MutAnyOrigin]  # [CAP, ACT]
+
+    # Host staging for the device-ring obs store (quantize → sub-buffer H2D).
+    var _stage_u8: UnsafePointer[Scalar[Self.SDT], MutAnyOrigin]  # [CHUNK, OBS]
 
     var ep_start: List[Int]
     var ep_len: List[Int]
@@ -72,13 +122,19 @@ struct PrioritizedMCTSSequenceReplay[
     var beta: Scalar[DT]
     var eps: Scalar[DT]            # priority floor so nothing is unreachable
 
+    var ctx: DeviceContext         # for device-ring store / gather
+
     def __init__(
         out self,
+        ctx: DeviceContext,
         seed: UInt64 = 0,
         alpha: Scalar[DT] = Scalar[DT](1.0),
         beta: Scalar[DT] = Scalar[DT](1.0),
-    ):
-        self.obs = _asdt[Self.SDT](Self.CAP * Self.OBS)
+    ) raises:
+        self.ctx = ctx
+        self.obs = ctx.enqueue_create_buffer[Self.SDT](Self.CAP * Self.OBS)
+        self.obs.enqueue_fill(Scalar[Self.SDT](0))
+        self._stage_u8 = _asdt[Self.SDT](STORE_CHUNK * Self.OBS)
         self.act = _a(Self.CAP)
         self.rew = _a(Self.CAP)
         self.done = _a(Self.CAP)
@@ -98,8 +154,9 @@ struct PrioritizedMCTSSequenceReplay[
         self.eps = Scalar[DT](1e-6)
 
     def __del__(deinit self):
-        self.obs.free(); self.act.free(); self.rew.free(); self.done.free()
+        self.act.free(); self.rew.free(); self.done.free()
         self.pol.free(); self.val.free(); self.tp.free(); self.legal.free()
+        self._stage_u8.free()
 
     def _xorshift(mut self) -> UInt64:
         var x = self.rng
@@ -113,6 +170,13 @@ struct PrioritizedMCTSSequenceReplay[
     def num_steps(self) -> Int:
         return self.total if self.total < Self.CAP else Self.CAP
 
+    def _ring_lt(self) -> LayoutTensor[
+        Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+    ]:
+        return LayoutTensor[
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+        ](self.obs.unsafe_ptr())
+
     def store_episode(
         mut self,
         ep_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -124,17 +188,16 @@ struct PrioritizedMCTSSequenceReplay[
         ep_legal: UnsafePointer[Scalar[DT], MutAnyOrigin],
         length: Int,
         truncated: Bool = False,
-    ):
+    ) raises:
         """Append a finished episode; each new step enters the sum-tree at the
-        running max priority (standard PER — guarantees it is seen). See
-        `MCTSSequenceReplay.store_episode` for the absorbing/truncation rules."""
+        running max priority (standard PER — guarantees it is seen). The host
+        label fields are written directly; the obs are quantized into the host
+        staging buffer and H2D'd into the **device** ring in ≤2 contiguous
+        sub-buffer copies per chunk (wrap-aware). See `MCTSSequenceReplay.
+        store_episode` for the absorbing/truncation rules."""
         var start = self.total
         for i in range(length):
             var slot = (self.total) % Self.CAP
-            for j in range(Self.OBS):
-                self.obs[slot * Self.OBS + j] = _obs_quant[Self.SDT](
-                    ep_obs[i * Self.OBS + j]
-                )
             for a in range(Self.ACT):
                 self.pol[slot * Self.ACT + a] = ep_pol[i * Self.ACT + a]
             for a in range(Self.ACT):
@@ -151,6 +214,34 @@ struct PrioritizedMCTSSequenceReplay[
             # new step → max priority (overwrites any stale priority on this slot)
             self.tree.update(slot, self.max_prio)
             self.total += 1
+
+        # ── obs → device ring: quantize chunk → H2D (wrap-split sub-buffers) ──
+        var done_steps = 0
+        while done_steps < length:
+            var m = STORE_CHUNK if (length - done_steps) > STORE_CHUNK else (
+                length - done_steps
+            )
+            for r in range(m):
+                var src = (done_steps + r) * Self.OBS
+                for j in range(Self.OBS):
+                    self._stage_u8[r * Self.OBS + j] = _obs_quant[Self.SDT](
+                        ep_obs[src + j]
+                    )
+            var abs0 = start + done_steps
+            var slot0 = abs0 % Self.CAP
+            var first = m if (Self.CAP - slot0) > m else (Self.CAP - slot0)
+            var sub1 = self.obs.create_sub_buffer[Self.SDT](
+                slot0 * Self.OBS, first * Self.OBS
+            )
+            self.ctx.enqueue_copy(sub1, self._stage_u8)
+            if m > first:
+                var sub2 = self.obs.create_sub_buffer[Self.SDT](
+                    0, (m - first) * Self.OBS
+                )
+                self.ctx.enqueue_copy(sub2, self._stage_u8 + first * Self.OBS)
+            self.ctx.synchronize()   # staging reused next chunk
+            done_steps += m
+
         self.ep_start.append(start)
         self.ep_len.append(length)
         self.ep_trunc.append(truncated)
@@ -194,12 +285,15 @@ struct PrioritizedMCTSSequenceReplay[
             return (-1, -1)
         return (e, off)
 
-    def sample_training_batch_seq_per[
+    def sample_training_batch_seq_per_gpu[
         B: Int, K: Int, N: Int,
     ](
         mut self,
+        ctx: DeviceContext,
         gamma: Scalar[DT],
-        mut obs_seq: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K+1, B, OBS]
+        out_obs_dev: DeviceBuffer[DT],                          # [(K+1)*B, OBS]
+        d_slots: DeviceBuffer[DType.int32],                     # [(K+1)*B]
+        h_slots: UnsafePointer[Int32, MutAnyOrigin],            # [(K+1)*B]
         mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K, B]
         mut policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT]
         mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
@@ -209,15 +303,20 @@ struct PrioritizedMCTSSequenceReplay[
         cons_mask: Optional[
             UnsafePointer[Scalar[DT], MutAnyOrigin]
         ] = None,                                                # [K, B]
-    ):
-        """Prioritized variant of `sample_training_batch_seq`: each window start
-        is drawn ∝ priorityᵅ (stratified over B equal-mass bins), with
-        per-sample IS weights ``(N·P_i)^(−β)`` normalized by the batch max.
-        ``sample_slots[b]`` records the chosen ring slot so the caller can
-        `update_priorities` after the step. Caller guarantees num_episodes()>0
-        and num_steps()>0."""
+    ) raises:
+        """Prioritized window sample with **device-side obs gather**: each window
+        start is drawn ∝ priorityᵅ (stratified over B equal-mass bins) with
+        per-sample IS weights ``(N·P_i)^(−β)`` normalized by the batch max; the
+        host computes the per-(k,b) physical ring slot into ``h_slots`` and the
+        gather kernel writes the dequantized ``[K+1, B, OBS]`` obs slab directly
+        into ``out_obs_dev`` (no host obs copy, no slab H2D). ``sample_slots[b]``
+        records the chosen root ring slot for `update_priorities`. Caller
+        guarantees num_episodes()>0 and num_steps()>0; ``out_obs_dev`` /
+        ``d_slots`` sized ``(K+1)*B*OBS`` / ``(K+1)*B``."""
         comptime HV = K + N + 1
         comptime HR = K + N
+        comptime NK = K + 1
+        comptime M = NK * B
         var w_rew = _a(HR)
         var w_done = _a(HR)
         var w_val = _a(HV)
@@ -266,16 +365,13 @@ struct PrioritizedMCTSSequenceReplay[
             if self.ep_trunc[e]:
                 lv = L - 1 - s
 
+            # record per-(k,b) physical ring slot for the device gather
             for k in range(K + 1):
                 var off = s + k
                 if off >= L:
                     off = L - 1
                 var oslot = (self.ep_start[e] + off) % Self.CAP
-                var ob = k * B * Self.OBS + b * Self.OBS
-                for j in range(Self.OBS):
-                    obs_seq[ob + j] = _obs_dequant[Self.SDT](
-                        self.obs[oslot * Self.OBS + j]
-                    )
+                h_slots[k * B + b] = Int32(oslot)
             if cons_mask:
                 var cm = cons_mask.value()
                 for k in range(K):
@@ -325,6 +421,61 @@ struct PrioritizedMCTSSequenceReplay[
 
         w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
 
+        # ── device gather: H2D the M slot indices, assemble the obs slab ──
+        ctx.enqueue_copy(d_slots, h_slots)
+        var ring_lt = self._ring_lt()
+        var slots_lt = LayoutTensor[
+            DType.int32, Layout.row_major(M), MutAnyOrigin
+        ](d_slots.unsafe_ptr())
+        var out_lt = LayoutTensor[
+            DT, Layout.row_major(M, Self.OBS), MutAnyOrigin
+        ](out_obs_dev.unsafe_ptr())
+        comptime n_blocks = (M * Self.OBS + TPB - 1) // TPB
+        comptime kernel = _ez_obs_gather_kernel[M, Self.OBS, Self.CAP, Self.SDT]
+        ctx.enqueue_function[kernel](
+            ring_lt, slots_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+        )
+
+    def gather_obs_for_positions[
+        M: Int,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        out_obs_dev: DeviceBuffer[DT],                # [M, OBS]
+        d_slots: DeviceBuffer[DType.int32],           # [M]
+        h_slots: UnsafePointer[Int32, MutAnyOrigin],  # [M]
+        ep_idx: List[Int],
+        offset: List[Int],
+    ) raises:
+        """Gather the obs of ``M`` (episode, offset) positions into
+        ``out_obs_dev`` on device (reanalyze path; replaces the old per-position
+        host `read_obs` + H2D). Positions past their episode length clamp to the
+        last step (mirrors the sample windowing)."""
+        for m in range(M):
+            var e = ep_idx[m]
+            var o = offset[m]
+            if e < 0 or e >= len(self.ep_start):
+                h_slots[m] = Int32(0)
+                continue
+            if o >= self.ep_len[e]:
+                o = self.ep_len[e] - 1
+            if o < 0:
+                o = 0
+            h_slots[m] = Int32((self.ep_start[e] + o) % Self.CAP)
+        ctx.enqueue_copy(d_slots, h_slots)
+        var ring_lt = self._ring_lt()
+        var slots_lt = LayoutTensor[
+            DType.int32, Layout.row_major(M), MutAnyOrigin
+        ](d_slots.unsafe_ptr())
+        var out_lt = LayoutTensor[
+            DT, Layout.row_major(M, Self.OBS), MutAnyOrigin
+        ](out_obs_dev.unsafe_ptr())
+        comptime n_blocks = (M * Self.OBS + TPB - 1) // TPB
+        comptime kernel = _ez_obs_gather_kernel[M, Self.OBS, Self.CAP, Self.SDT]
+        ctx.enqueue_function[kernel](
+            ring_lt, slots_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+        )
+
     def update_priorities(
         mut self,
         slots: UnsafePointer[Int, MutAnyOrigin],      # [n] ring slots
@@ -364,13 +515,3 @@ struct PrioritizedMCTSSequenceReplay[
         var e = Int(self._xorshift() % UInt64(len(self.ep_start)))
         var o = Int(self._xorshift() % UInt64(self.ep_len[e]))
         return (e, o)
-
-    def read_obs(
-        self,
-        ep_idx: Int,
-        offset: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    ):
-        var slot = (self.ep_start[ep_idx] + offset) % Self.CAP
-        for j in range(Self.OBS):
-            out[j] = _obs_dequant[Self.SDT](self.obs[slot * Self.OBS + j])
