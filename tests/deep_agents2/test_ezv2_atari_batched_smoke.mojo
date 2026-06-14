@@ -103,6 +103,7 @@ def main() raises:
     var loss = run_ezv2_gumbel_selfplay_gpu_batched[
         BatchedPong, Cfg.Rep, Cfg.Dyn, Cfg.Pred, Cfg.Proj, Cfg.Predh,
         N_ENVS, OBS, ACT, LATENT, BINS, NUM_SIMS, MAX_NODES, MAX_K, CAP, B, K, N,
+        REANA_W=4,                  # > N_ENVS=2: exercise the wide-reanalyze path
     ](
         ctx, env, rep, dyn, pred, proj, predh,
         orep, odyn, opred, oproj, opredh,

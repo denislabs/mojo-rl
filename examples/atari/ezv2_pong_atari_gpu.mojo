@@ -25,13 +25,12 @@ driver (`run_ezv2_gumbel_selfplay_gpu_batched`):
 MEMORY NOTE (host RAM): the replay stores the STACKED [12,96,96] obs per step in
 `uint8` (lossless k/255). CAP=100000 ⇒ ~11 GB host (4× the EZ reference, which
 stores single frames and stacks on read — a documented memory deviation, not a
-learning one). Lower CAP / B if you OOM. **reanalyze_batch** is the
-runtime-dominant knob: it runs `reanalyze_batch/N_ENVS` width-N_ENVS Gumbel
-searches per iteration, each with its own sync — at B=256/N_ENVS=4 that is 64
-narrow 4-root searches + 64 syncs/iter (the bottleneck). Set to 32 here (8
-chunks/iter, ~8× faster, ratio ≈ 0.125). True ratio-1.0 at speed needs the
-wide-reanalyze-planner fix (one wide search instead of 64 narrow ones); raise
-this back toward B once that lands.
+learning one). Lower CAP / B if you OOM. Reanalyze runs on a separate **wide**
+planner of `REANA_W` roots/search, so the ratio-1.0 re-target of `reanalyze_batch`
+positions costs `ceil(reanalyze_batch/REANA_W)` wide searches/iter (here 256/64 =
+4), not `reanalyze_batch/N_ENVS` = 64 narrow 4-root searches + 64 syncs (the old
+bottleneck). `REANA_W` trades device memory (≈ REANA_W·MAX_NODES·LATENT·4B tree)
+for fewer searches; lower it (or `reanalyze_batch`) if VRAM-bound.
 
 Watch the greedy ``[eval]`` return: random Pong ≈ −21, "solved" ≈ +21. The
 published EZv2 Atari-100k Pong score is well above random within the 100k budget.
@@ -77,6 +76,13 @@ comptime B = 256                     # train.batch_size
 comptime K = 5                       # rl.unroll_steps
 comptime N = 5                       # rl.td_steps
 comptime OBS_STORE = DType.uint8     # lossless k/255 pixel storage (4× capacity)
+comptime REANA_W = 64                # reanalyze search width (roots/search): one
+                                     # 64-root search replaces 16 narrow 4-root
+                                     # ones — ratio-1.0 re-target is B/REANA_W=4
+                                     # wide searches/iter, not B/N_ENVS=64 narrow.
+                                     # Tree hidden ≈ REANA_W·MAX_NODES·LATENT·4B
+                                     # ≈ 75 MB device; raise toward B for fewer
+                                     # searches if you have the VRAM.
 
 comptime AtariPong = AtariEnv[2, DT]
 comptime BatchedPong = BatchedCpuDiscreteEnv[AtariPong, N_ENVS, OBS]
@@ -153,6 +159,7 @@ def main() raises:
     var loss = run_ezv2_gumbel_selfplay_gpu_batched[
         BatchedPong, Cfg.Rep, Cfg.Dyn, Cfg.Pred, Cfg.Proj, Cfg.Predh,
         N_ENVS, OBS, ACT, LATENT, BINS, NUM_SIMS, MAX_NODES, MAX_K, CAP, B, K, N,
+        REANA_W=REANA_W,
         OBS_STORE_DT=OBS_STORE,
         L=RemoteLogger,
     ](
@@ -170,12 +177,13 @@ def main() raises:
         consistency_coef=Scalar[DT](5.0),  # consistency_coeff (NOT 2.0)
         temperature_decay_steps=25000,
         reanalyze_every=1,
-        reanalyze_batch=32,             # ratio ~0.125 (was B=256 → 64 narrow 4-root
-                                        #   searches + 64 syncs/iter = the bottleneck;
-                                        #   32 → 8 chunks/iter, ~8× faster reanalyze).
-                                        #   Raise toward B once the wide-reanalyze
-                                        #   planner lands; ratio-1.0 needs that fix.
-        eval_every=2500,                # eval_interval 10k env steps / N_ENVS
+        reanalyze_batch=B,              # ratio 1.0; with the wide planner this is
+                                        #   ceil(B/REANA_W)=4 wide 64-root searches/
+                                        #   iter (was 64 narrow 4-root ones + 64
+                                        #   syncs — the bottleneck). Lower REANA_W
+                                        #   or reanalyze_batch only if VRAM-bound.
+        eval_every=5000,                # every 5k iters (20k env steps) — halved
+                                        #   from 2500 to cut the eval-stall frequency
         eval_episodes=10,               # eval_n_episode
         eval_horizon=10000,
         eval_env=UnsafePointer(to=eval_env),

@@ -18,6 +18,11 @@ Stage 6c-3 — the Atari-parity driver. The batched sibling of `selfplay_gpu.moj
   * **Reanalyze** through the LIVE nets (like the single-env EZv2 driver — no
     lagging target nets, sidestepping the BatchNorm-running-stat hard-copy bug);
     `reanalyze_batch ≈ B` + `reanalyze_every = 1` gives the EZ ratio-1.0 regime.
+    Runs on a SEPARATE wider planner (`REANA_W` roots/search) so a ratio-1.0
+    re-target is `ceil(reanalyze_batch/REANA_W)` wide searches, not
+    `reanalyze_batch/N_ENVS` narrow N_ENVS-root ones — the bottleneck fix (far
+    fewer launches/syncs, real GPU occupancy). `REANA_W` defaults to `N_ENVS`
+    (back-compat); set it to e.g. 64 for the Atari run.
   * **UTD 1:1** (`train_per_iter = N_ENVS` default) + batched greedy eval.
 
 DEVIATION (documented, revisit if Pong diverges): the n-step value target
@@ -77,6 +82,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     B: Int,
     K: Int,
     N: Int,
+    REANA_W: Int = N_ENVS,
     OBS_STORE_DT: DType = DT,
     O: Optimizer = Adam,
     L: Logger = NoOpLogger,
@@ -125,6 +131,20 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
         ctx, gamma=Float64(gamma), v_min=Float64(v_min), v_max=Float64(v_max),
         qnorm_per_node=False,
     )
+    # Reanalyze runs a SEPARATE, WIDER planner (REANA_W roots/search) so the
+    # ratio-1.0 re-target covers `reanalyze_batch` positions in
+    # ceil(reanalyze_batch/REANA_W) wide searches instead of reanalyze_batch/N_ENVS
+    # narrow N_ENVS-root ones — far fewer kernel launches + syncs and much better
+    # GPU occupancy. Reuses the SAME nets/adapters (forward["gpu", B] is width-
+    # generic; the nets' activation buffers lazy-grow to REANA_W on first use).
+    # REANA_W == N_ENVS (default) is the same monomorphization as `planner` (no
+    # extra compile), just a second runtime instance.
+    var reana_planner = GumbelGPUMCTS[
+        REANA_W, ACT, LATENT, BINS, MAX_NODES, MAX_K, NUM_SIMS, SinglePlayer
+    ](
+        ctx, gamma=Float64(gamma), v_min=Float64(v_min), v_max=Float64(v_max),
+        qnorm_per_node=False,
+    )
     var rep_a = MZRepGPU[OBS, LATENT, REP].make(rep)
     var dyn_a = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn)
     var pred_a = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred)
@@ -154,9 +174,13 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
         B, K, OBS, ACT, LATENT, BINS, PROJM.OUT_DIM
     ].make(ctx)
 
-    # reanalyze obs scratch (device) + host staging
-    var d_reana = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
-    var h_reana = _a(N_ENVS * OBS)
+    # reanalyze scratch — REANA_W wide. obs staged host→device once per chunk
+    # (read_obs writes directly into the staging slab, no per-position alloc),
+    # improved policy/value D2H'd into dedicated host mirrors.
+    var d_reana = ctx.enqueue_create_buffer[DT](REANA_W * OBS)
+    var h_reana = _a(REANA_W * OBS)
+    var h_pol_w = _a(REANA_W * ACT)
+    var h_val_w = _a(REANA_W)
 
     # per-env episode accumulators
     var e_obs = List[List[Scalar[DT]]]()
@@ -301,39 +325,39 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
             dn.append(String("loss_consistency")); dv.append(Float64(l_parts[3]))
             logger.value()[].log_scalars(dn, dv, it + 1)
 
-        # ── reanalyze through the LIVE nets (ratio≈1.0 when reanalyze_batch≈B) ──
+        # ── reanalyze through the LIVE nets — WIDE searches (ratio≈1.0 when
+        #    reanalyze_batch≈B). Each chunk re-targets REANA_W positions in ONE
+        #    search + ONE sync, so the whole reanalyze_batch needs only
+        #    ceil(reanalyze_batch/REANA_W) wide searches. ──
         if reanalyze_every > 0 and trained and (it + 1) % reanalyze_every == 0:
-            var n_chunks = reanalyze_batch // N_ENVS
+            var n_chunks = (reanalyze_batch + REANA_W - 1) // REANA_W
             if n_chunks < 1:
                 n_chunks = 1
             for _c in range(n_chunks):
                 var rpos_e = List[Int]()
                 var rpos_o = List[Int]()
-                for e in range(N_ENVS):
+                for e in range(REANA_W):
                     var rpos = rb.sample_position()
                     rpos_e.append(rpos[0])
                     rpos_o.append(rpos[1])
-                    var tmp = _a(OBS)
-                    rb.read_obs(rpos[0], rpos[1], tmp)
-                    for j in range(OBS):
-                        h_reana[e * OBS + j] = tmp[j]
-                    tmp.free()
+                    var dst = h_reana + (e * OBS)   # stage obs in place
+                    rb.read_obs(rpos[0], rpos[1], dst)
                 ctx.enqueue_copy(d_reana, h_reana)
-                var reana_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
+                var reana_t = LayoutTensor[DT, Layout.row_major(REANA_W, OBS),
                     MutAnyOrigin](mptr(d_reana.unsafe_ptr()))
-                planner.search_gpu[
+                reana_planner.search_gpu[
                     MZRepGPU[OBS, LATENT, REP],
                     MZDynGPU[LATENT, ACT, BINS, DYN],
                     MZPredGPU[LATENT, ACT, BINS, PRED],
                 ](ctx, rep_a, dyn_a, pred_a, reana_t,
                   apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
                 mcts_seed += UInt32(1)
-                ctx.enqueue_copy(h_pol, planner.policies_view())
-                ctx.enqueue_copy(h_val, planner.root_value_view())
+                ctx.enqueue_copy(h_pol_w, reana_planner.policies_view())
+                ctx.enqueue_copy(h_val_w, reana_planner.root_value_view())
                 ctx.synchronize()
-                for e in range(N_ENVS):
+                for e in range(REANA_W):
                     rb.update_targets(
-                        rpos_e[e], rpos_o[e], h_pol + (e * ACT), h_val[e]
+                        rpos_e[e], rpos_o[e], h_pol_w + (e * ACT), h_val_w[e]
                     )
 
         # ── batched greedy eval (CPU env) ──
@@ -390,6 +414,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     t_obs_seq.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     t_cmask.free(); t_isw.free(); t_prio.free(); t_slots.free(); l_parts.free()
     h_pol.free(); h_val.free(); h_reana.free()
+    h_pol_w.free(); h_val_w.free()
     return last_loss
 
 
