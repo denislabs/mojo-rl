@@ -35,7 +35,8 @@ Run (GPU env required): see `tests/deep_agents2/test_ezv2_atari_batched_smoke.mo
 """
 
 from std.math import exp, log
-from std.memory import alloc
+from std.memory import alloc, memcpy
+from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu.host import DeviceContext, DeviceBuffer
 
@@ -221,10 +222,21 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     var train_steps = 0
     var ep_returns = List[Float64]()
 
+    # ── coarse per-section wall timers (ns) — most blocks end on a sync so the
+    #    accumulated time includes the real GPU wait, not just enqueue. Printed
+    #    each `report_every` (or every 100 if verbose) to localize the wall. ──
+    var ts_search = 0.0   # self-play Gumbel search + D2H + sync
+    var ts_collect = 0.0  # host obs/label accumulation
+    var ts_env = 0.0      # CPU Atari step + selective reset (emulation)
+    var ts_store = 0.0    # store finished episodes (quantize + ring H2D)
+    var ts_train = 0.0    # prioritized sample (gather) + EZv2 train step
+    var ts_reana = 0.0    # reanalyze wide searches
+
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=seed)
 
     for it in range(iterations):
         # ── 1. H2D the CPU env's live obs, batched Gumbel search ──
+        var _t0 = perf_counter_ns()
         ctx.enqueue_copy(d_obs, env.obs_ptr())
         var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
             MutAnyOrigin](mptr(d_obs.unsafe_ptr()))
@@ -240,15 +252,23 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
         ctx.enqueue_copy(h_pol, planner.policies_view())
         ctx.enqueue_copy(h_val, planner.root_value_view())
         ctx.synchronize()
+        ts_search += Float64(perf_counter_ns() - _t0)
 
         # ── 3. per env: sample, record the labelled step, stage the action ──
+        _t0 = perf_counter_ns()
         var temp = visit_temperature(it, temperature_decay_steps)
         var obs_host = env.obs_ptr()
         var act_host = env.action_ptr()
         for e in range(N_ENVS):
             var action = _sample_action(h_pol, e * ACT, ACT, temp, rng)
-            for j in range(OBS):
-                e_obs[e].append(obs_host[e * OBS + j])
+            # bulk-copy the OBS-wide observation (one memcpy, not 110592 appends)
+            var ol = len(e_obs[e])
+            e_obs[e].resize(ol + OBS, Scalar[DT](0))
+            memcpy(
+                dest=e_obs[e].unsafe_ptr() + ol,
+                src=obs_host + e * OBS,
+                count=OBS,
+            )
             e_act[e].append(Scalar[DT](action))
             for a in range(ACT):
                 e_pol[e].append(h_pol[e * ACT + a])
@@ -256,14 +276,18 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
             e_val[e].append(h_val[e])
             e_tp[e].append(Scalar[DT](0.0))
             act_host[e] = Scalar[DT](action)
+        ts_collect += Float64(perf_counter_ns() - _t0)
 
         # ── 4. step the CPU envs (host action → host reward/done/term) ──
+        _t0 = perf_counter_ns()
         env.step_batch[N_ENVS](ctx=ctx, rng_seed=seed + UInt64(it + 1))
+        ts_env += Float64(perf_counter_ns() - _t0)
         var rew_host = env.reward_ptr()
         var done_host = env.done_ptr()
         var term_host = env.terminated_ptr()
 
         # ── 5. accumulate, store + reset finished episodes ──
+        var _t_store0 = perf_counter_ns()
         for e in range(N_ENVS):
             e_rew[e].append(rew_host[e])
             ep_return[e] += Float64(rew_host[e])
@@ -288,12 +312,16 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                 e_legal[e].clear()
                 ep_len[e] = 0
                 ep_return[e] = 0.0
+        ts_store += Float64(perf_counter_ns() - _t_store0)
 
+        var _t_rst0 = perf_counter_ns()
         env.selective_reset_batch[N_ENVS](ctx=ctx, rng_seed=seed + UInt64(it + 1))
+        ts_env += Float64(perf_counter_ns() - _t_rst0)
 
         var trained = rb.num_steps() >= learning_starts and rb.num_episodes() > 0
 
         # ── 6. train (prioritized sample → weighted EZv2 unroll → writeback) ──
+        var _t_train0 = perf_counter_ns()
         if trained:
             if lr > Scalar[DT](0.0):
                 var tstep = train_steps
@@ -329,6 +357,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                 )
                 rb.update_priorities(t_slots, t_prio, B)
                 train_steps += 1
+        ts_train += Float64(perf_counter_ns() - _t_train0)
 
         # ── per-batch loss diagnostics → logger ──
         if logger and diag_every > 0 and trained and (it + 1) % diag_every == 0:
@@ -345,6 +374,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
         #    reanalyze_batch≈B). Each chunk re-targets REANA_W positions in ONE
         #    search + ONE sync, so the whole reanalyze_batch needs only
         #    ceil(reanalyze_batch/REANA_W) wide searches. ──
+        var _t_reana0 = perf_counter_ns()
         if reanalyze_every > 0 and trained and (it + 1) % reanalyze_every == 0:
             var n_chunks = (reanalyze_batch + REANA_W - 1) // REANA_W
             if n_chunks < 1:
@@ -377,6 +407,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                     rb.update_targets(
                         rpos_e[e], rpos_o[e], h_pol_w + (e * ACT), h_val_w[e]
                     )
+        ts_reana += Float64(perf_counter_ns() - _t_reana0)
 
         # ── batched greedy eval (CPU env) ──
         if eval_every > 0 and eval_env and (it + 1) % eval_every == 0:
@@ -410,6 +441,12 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
             print("iter", it + 1, "env_steps", (it + 1) * N_ENVS,
                   "loss", last_loss, "eps", rb.num_episodes(),
                   "avg_return(10)", avg)
+            # cumulative wall breakdown (s) — localizes the bottleneck across
+            # search / collect(host obs) / env(emulation) / store / train / reana.
+            print("  [time s] search", ts_search / 1e9, "collect",
+                  ts_collect / 1e9, "env", ts_env / 1e9, "store",
+                  ts_store / 1e9, "train", ts_train / 1e9, "reana",
+                  ts_reana / 1e9)
 
         if logger and report_every > 0 and trained and (it + 1) % report_every == 0:
             var ravg = 0.0
