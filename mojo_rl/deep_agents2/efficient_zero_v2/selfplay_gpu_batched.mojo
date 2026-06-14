@@ -194,8 +194,15 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     var h_pol_w = _a(REANA_W * ACT)
     var h_val_w = _a(REANA_W)
 
-    # per-env episode accumulators
-    var e_obs = List[List[Scalar[DT]]]()
+    # per-env episode accumulators. obs uses a manually grown raw buffer (NOT a
+    # List): List.resize/append on a 110592-wide obs reallocs+copies the whole
+    # accumulated buffer every step → O(episode_len²) (the bottleneck). The raw
+    # buffer doubles its capacity (amortized O(1)) and is REUSED across episodes
+    # (cursor reset to 0, capacity retained → no reallocs after warmup). The
+    # small label fields (act/rew/pol/val/tp/legal) stay Lists — a few appends/
+    # step is negligible.
+    var eo_buf = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+    var eo_cap = List[Int]()                  # capacity in ELEMENTS
     var e_act = List[List[Scalar[DT]]]()
     var e_rew = List[List[Scalar[DT]]]()
     var e_pol = List[List[Scalar[DT]]]()
@@ -205,7 +212,8 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     var ep_len = List[Int]()
     var ep_return = List[Float64]()
     for _ in range(N_ENVS):
-        e_obs.append(List[Scalar[DT]]())
+        eo_buf.append(_a(512 * OBS))          # ~512 steps to start; doubles
+        eo_cap.append(512 * OBS)
         e_act.append(List[Scalar[DT]]())
         e_rew.append(List[Scalar[DT]]())
         e_pol.append(List[Scalar[DT]]())
@@ -261,14 +269,20 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
         var act_host = env.action_ptr()
         for e in range(N_ENVS):
             var action = _sample_action(h_pol, e * ACT, ACT, temp, rng)
-            # bulk-copy the OBS-wide observation (one memcpy, not 110592 appends)
-            var ol = len(e_obs[e])
-            e_obs[e].resize(ol + OBS, Scalar[DT](0))
-            memcpy(
-                dest=e_obs[e].unsafe_ptr() + ol,
-                src=obs_host + e * OBS,
-                count=OBS,
-            )
+            # write the OBS-wide observation into the per-env raw buffer at the
+            # step cursor (ep_len[e]); grow capacity by doubling if needed
+            # (amortized O(1), no per-step full-buffer realloc). bulk memcpy.
+            var off = ep_len[e] * OBS
+            if off + OBS > eo_cap[e]:
+                var newcap = eo_cap[e] * 2
+                if newcap < off + OBS:
+                    newcap = off + OBS
+                var nb = _a(newcap)
+                memcpy(dest=nb, src=eo_buf[e], count=off)
+                eo_buf[e].free()
+                eo_buf[e] = nb
+                eo_cap[e] = newcap
+            memcpy(dest=eo_buf[e] + off, src=obs_host + e * OBS, count=OBS)
             e_act[e].append(Scalar[DT](action))
             for a in range(ACT):
                 e_pol[e].append(h_pol[e * ACT + a])
@@ -296,7 +310,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
             var terminated = term_host[e] > Scalar[DT](0.5)
             if done or ep_len[e] >= max_ep_steps:
                 rb.store_episode(
-                    mptr(e_obs[e].unsafe_ptr()),
+                    eo_buf[e],
                     mptr(e_act[e].unsafe_ptr()),
                     mptr(e_rew[e].unsafe_ptr()),
                     mptr(e_pol[e].unsafe_ptr()),
@@ -307,7 +321,8 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                     truncated=not terminated,
                 )
                 ep_returns.append(ep_return[e])
-                e_obs[e].clear(); e_act[e].clear(); e_rew[e].clear()
+                # reset cursors: obs buffer reused (capacity retained), labels cleared
+                e_act[e].clear(); e_rew[e].clear()
                 e_pol[e].clear(); e_val[e].clear(); e_tp[e].clear()
                 e_legal[e].clear()
                 ep_len[e] = 0
@@ -471,6 +486,8 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     t_obs_dummy.free(); h_obs_slots.free(); h_reana_slots.free()
     h_pol.free(); h_val.free()
     h_pol_w.free(); h_val_w.free()
+    for e in range(N_ENVS):
+        eo_buf[e].free()
     return last_loss
 
 
