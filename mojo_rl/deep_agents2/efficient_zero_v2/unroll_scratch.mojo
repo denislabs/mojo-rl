@@ -113,7 +113,7 @@ struct EZV2UnrollScratch[
         # 4 contiguous [B] blocks: policy | value | reward | consistency.
         s.d_loss = ctx.enqueue_create_buffer[DT](4 * b)
         s.d_tstore = ctx.enqueue_create_buffer[DT](k * b * proj)
-        s.d_ztmp = ctx.enqueue_create_buffer[DT](k * b * lat)  # K*B: batched target pre-pass
+        s.d_ztmp = ctx.enqueue_create_buffer[DT](b * lat)
         s.d_projo = ctx.enqueue_create_buffer[DT](b * proj)
         s.d_pk = ctx.enqueue_create_buffer[DT](b * proj)
         s.d_gpk = ctx.enqueue_create_buffer[DT](b * proj)
@@ -231,7 +231,7 @@ struct EZV2UnrollContScratch[
         # 4 contiguous [B] blocks: policy | value | reward | consistency.
         s.d_loss = ctx.enqueue_create_buffer[DT](4 * b)
         s.d_tstore = ctx.enqueue_create_buffer[DT](k * b * proj)
-        s.d_ztmp = ctx.enqueue_create_buffer[DT](k * b * lat)  # K*B: batched target pre-pass
+        s.d_ztmp = ctx.enqueue_create_buffer[DT](b * lat)
         s.d_projo = ctx.enqueue_create_buffer[DT](b * proj)
         s.d_pk = ctx.enqueue_create_buffer[DT](b * proj)
         s.d_gpk = ctx.enqueue_create_buffer[DT](b * proj)
