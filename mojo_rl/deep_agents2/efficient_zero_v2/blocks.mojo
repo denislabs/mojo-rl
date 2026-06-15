@@ -572,17 +572,22 @@ def ezv2_unroll_train_step_gpu[
         _tp = perf_counter_ns()
 
     # ── target pre-pass: t_k = g_proj(h(obs_k)), detached, k = 1..K ──
+    # BATCHED: obs_1..obs_K are a contiguous [K*B, OBS] device slab, so one
+    # rep.forward[K*B] + one proj.forward[K*B] replace the K separate [B]
+    # forwards (was ~40% of the train step — K rep ResNet launches at batch
+    # B). Output layout matches the per-k version: t_store row (k-1)*B + b.
+    # DEVIATION from the reference (base.py: K separate train-mode B forwards):
+    # BatchNorm now normalises over K*B and does one running-stat EMA update
+    # instead of K. Targets are detached (no vjp), so no gradient impact; the
+    # only difference is the BN statistics of the detached consistency target.
     # (clobbers rep's cache → rep is re-forwarded before the final rep.vjp)
-    for k in range(1, K + 1):
-        var ztmp_t = TileTensor(p_ztmp, row_major[B, LATENT]())
-        rep.forward["gpu", B](
-            TileTensor(p_obs + k * B * OBS, row_major[B, OBS]()),
-            output=ztmp_t,
-        )
-        var tslot = TileTensor(
-            p_tstore + (k - 1) * B * PROJ, row_major[B, PROJ]()
-        )
-        proj.forward["gpu", B](ztmp_t, output=tslot)
+    var ztmp_t = TileTensor(p_ztmp, row_major[K * B, LATENT]())
+    rep.forward["gpu", K * B](
+        TileTensor(p_obs + B * OBS, row_major[K * B, OBS]()),
+        output=ztmp_t,
+    )
+    var tstore_t = TileTensor(p_tstore, row_major[K * B, PROJ]())
+    proj.forward["gpu", K * B](ztmp_t, output=tstore_t)
 
     if phase_ns:   # [2] target pre-pass (K rep forwards + proj)
         phase_ns.value()[2] += Float64(perf_counter_ns() - _tp)
