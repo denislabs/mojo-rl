@@ -517,6 +517,31 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
+    # ── full-run cumulative timing summary (always prints, so the totals
+    #    aren't read off a mid-run snapshot) — wall split + per-iter avg. ──
+    if verbose:
+        var total = (
+            ts_search + ts_collect + ts_env + ts_store + ts_train + ts_reana
+        )
+        var n = Float64(iterations) if iterations > 0 else 1.0
+        print("=" * 60)
+        print("FULL-RUN timing over", iterations, "iters (cumulative s):")
+        print("  search", ts_search / 1e9, "collect", ts_collect / 1e9,
+              "env", ts_env / 1e9, "store", ts_store / 1e9,
+              "train", ts_train / 1e9, "reana", ts_reana / 1e9)
+        print("  train = sample", ts_t_sample / 1e9, "+ step", ts_t_step / 1e9,
+              "| reana = host", ts_re_host / 1e9, "+ search", ts_re_search / 1e9)
+        print("  step phases (s): setup", phase_ns[0] / 1e9, "fwd",
+              phase_ns[1] / 1e9, "tgt", phase_ns[2] / 1e9, "rev",
+              phase_ns[3] / 1e9, "repvjp+opt", phase_ns[4] / 1e9,
+              "finalize/sync", phase_ns[5] / 1e9)
+        print("  rev calls (s): pred.fwd", phase_ns[6] / 1e9, "pred.vjp",
+              phase_ns[7] / 1e9, "cons", phase_ns[8] / 1e9, "dyn.fwd",
+              phase_ns[9] / 1e9, "dyn.vjp", phase_ns[10] / 1e9)
+        print("  TOTAL timed", total / 1e9, "s  (", (total / 1e9) / n,
+              "s/iter )")
+        print("=" * 60)
+
     t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     t_cmask.free(); t_isw.free(); t_prio.free(); t_slots.free(); l_parts.free()
     t_obs_dummy.free(); h_obs_slots.free(); h_reana_slots.free()
