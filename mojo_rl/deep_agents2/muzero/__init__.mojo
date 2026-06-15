@@ -3,6 +3,11 @@
 # flips. Builds on the shared `deep_agents2/zero/` infrastructure.
 
 from .nets import MZRepNet, MZRepNetCNN, MZRepNetC4Conv, MZDynNet, MZPredNet
+from .nets_spatial import (
+    MZRepNetC4Spatial,
+    MZDynNetC4Spatial,
+    MZPredNetC4Spatial,
+)
 from .blocks import mz_unroll_train_step_cpu, mz_unroll_train_step_gpu
 from .config import MuZeroMLPConfig, MuZeroCNNConfig
 from .agent import MuZeroAgent
