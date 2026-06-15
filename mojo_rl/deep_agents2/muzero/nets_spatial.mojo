@@ -17,11 +17,12 @@ Contracts (so the planner adapters + the 2p arena driver are unchanged):
   * `MZPredNetC4Spatial[C, ACT, BINS, H, W]` — IN = LATENT, OUT = ACT+BINS
 
 `LATENT = C·H·W` (e.g. C=32 on 6×7 → 1344). The dynamics is a `ComputeGraph`:
-the flat `[z | onehot(a)]` input is split, the action is embedded into reduced
-planes (`Linear[ACT,1] → broadcast → [1,H,W] → Conv1×1 → LayerNorm → ReLU`),
-channel-concatenated with the state, a 3×3 conv + residual-to-state gives the
-next latent (MinMaxNorm'd to match the rep's scaling), and a conv reward head
-reads it. The wrapper bridges the graph's `set_input`/`forward(output)` to the
+the flat `[z | onehot(a)]` input is split, the action is encoded as a
+**column-marked** `[1,H,W]` plane (the played column lit across all rows — the
+standard board action plane; requires ACT == COLS) then `Conv1×1 → LayerNorm →
+ReLU` to reduced planes, channel-concatenated with the state, a 3×3 conv +
+residual-to-state gives the next latent (MinMaxNorm'd to match the rep's
+scaling), and a conv reward head reads it. The wrapper bridges the graph's `set_input`/`forward(output)` to the
 single-tile `Module` `forward`/`vjp` the `MZDynGPU` adapter + the unroll call.
 """
 
@@ -78,20 +79,28 @@ comptime MZRepNetC4Spatial[C: Int, H: Int, W: Int] = Sequential[
 ]
 
 
-# ── action → embedding planes: onehot(ACT) → learnable scalar → [1,H,W] ──
-comptime C4ActionPlane[ACT: Int, H: Int, W: Int] = Sequential[
-    Linear[ACT, 1],
-    BroadcastTokens[H * W, 1],
-]
+# ── action → COLUMN-MARKED plane: onehot(ACT=COLS) → [1,H,W] where the played
+#    column is 1 across all rows. Requires ACT == W (= COLS), which holds for
+#    Connect Four (7 columns = 7 actions). `BroadcastTokens[H, ACT]` computes
+#    out[r*ACT + c] = onehot[c] = out[r*W + c] — i.e. the played column lit down
+#    every row, in the latent's exact row-major [H,W] layout.
+#
+#    This is the standard AlphaZero/MuZero board action encoding: it tells the
+#    conv dynamics *which column* the move is in SPATIALLY, so it can apply the
+#    move at the right location. (The earlier `Linear[ACT,1] → BroadcastTokens`
+#    collapsed the action to one scalar broadcast UNIFORMLY — no column info, so
+#    a 3×3 conv had to route a global scalar to a specific column.) The conv1×1
+#    that follows learns the embedding from this marking.
+comptime C4ActionPlane[ACT: Int, H: Int, W: Int] = BroadcastTokens[H, ACT]
 
 
 # ──────────────────────────────────────────────────────────────────────
 # g — convolutional dynamics DAG (ComputeGraph).
 #   input  [z(C·H·W) | onehot(ACT)]   output [z'(C·H·W) | reward_logits(BINS)]
-# z → state[C,H,W]; action → [REDC,H,W] embed; channel-concat → Conv3×3(→C) +=
-# residual-to-z → ReLU → 1×ResBlock = z' (MinMaxNorm'd). Reward branch off z':
-# Conv1×1(C→REDC)→ReLU→MLP[32]→BINS. All BatchNorm-free (LayerNorm on the action
-# embed, MinMaxNorm on the next latent).
+# z → state[C,H,W]; action → column-marked [1,H,W] → Conv1×1 → [REDC,H,W] embed;
+# channel-concat → Conv3×3(→C) += residual-to-z → ReLU → 1×ResBlock = z'
+# (MinMaxNorm'd). Reward branch off z': Conv1×1(C→REDC)→ReLU→MLP[32]→BINS. All
+# BatchNorm-free (LayerNorm on the action embed, MinMaxNorm on the next latent).
 # ──────────────────────────────────────────────────────────────────────
 comptime MZDynC4SpatialGraph[
     C: Int, ACT: Int, BINS: Int, H: Int, W: Int, REDC: Int,
@@ -167,6 +176,10 @@ struct MZDynNetC4Spatial[
     def __init__(out self):
         comptime assert Self.Graph.OUT_DIM == Self.OUT_DIM, (
             "MZDynNetC4Spatial: graph OUT_DIM must equal LATENT+BINS"
+        )
+        comptime assert Self.ACT == Self.W, (
+            "MZDynNetC4Spatial: the column-marked action plane requires"
+            " ACT == W (actions == board columns), e.g. Connect Four 7==7"
         )
         self.graph = Self.Graph()
         self.ts = TargetStorage.make_uninit()
