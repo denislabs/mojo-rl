@@ -140,8 +140,8 @@ struct SACAgent[
         N_ENVS: Int = 1,
         NS: Int = 1,
         L: Logger = NoOpLogger,
-        USE_TRAIN_CUDA_GRAPH: Bool = False,
-        USE_ENV_CUDA_GRAPH: Bool = False,
+        USE_TRAIN_CUDA_GRAPH: Bool = True,
+        USE_ENV_CUDA_GRAPH: Bool = True,
         EE: BatchedEnv = E,
         EVAL_ENVS: Int = N_ENVS,
     ](
