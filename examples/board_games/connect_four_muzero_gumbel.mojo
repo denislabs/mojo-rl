@@ -79,9 +79,16 @@ def main() raises:
     comptime LATENT = 256
     comptime BINS = 51       # categorical value/reward support over [-1, 1]
     comptime H = 256         # MLP hidden width for h/g/f
-    comptime NUM_SIMS = 64   # Gumbel sims/move (matches the AlphaZero example)
+    # 128 sims/move (was 64): with the value head pinned by the flat-latent
+    # dynamics (value_mse flat across the 256-wide run), more search lets MCTS
+    # lean on the strong policy prior instead of the weak value — deeper
+    # Sequential-Halving budget over the same 4 root candidates. ~linear cost.
+    comptime NUM_SIMS = 128
     comptime MAX_NODES = 256
-    comptime MAX_K = 4       # Gumbel root candidates (power of two, <= ACT)
+    # MAX_K is already maxed for C4: the planner clips k to the largest power of
+    # two ≤ k (and requires k ≤ ACT=7), so 4 is the ceiling — 8 would exceed the
+    # 7 actions and 6 silently clips back to 4. More search must come from sims.
+    comptime MAX_K = 4       # Gumbel root candidates (power of two, ≤ ACT=7)
     comptime CAP = 1_000_000
     comptime B = 128         # unroll batch
     comptime K = 5           # BPTT unroll length
