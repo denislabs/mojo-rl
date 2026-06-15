@@ -46,6 +46,7 @@ from mojo_rl.deep_agents2.zero.evaluators import (
     RandomOpponent,
     GPUMinimaxConnectFour,
 )
+from mojo_rl.nn2.core.checkpoint import save_state_v2_body_gpu
 from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
 
@@ -71,9 +72,13 @@ def main() raises:
 
     comptime OBS = 126
     comptime ACT = 7
-    comptime LATENT = 128
+    # 256-wide latent + hidden: the no-cap run's value head plateaued
+    # (value_mse flat ~0.38 across 40k while policy CE fell) — the flat-latent
+    # MLP dynamics/value path is the ceiling, so grow its capacity. Slower GEMMs
+    # + a fresh restart (new architecture, no checkpoint reuse).
+    comptime LATENT = 256
     comptime BINS = 51       # categorical value/reward support over [-1, 1]
-    comptime H = 128         # MLP hidden width for h/g/f
+    comptime H = 256         # MLP hidden width for h/g/f
     comptime NUM_SIMS = 64   # Gumbel sims/move (matches the AlphaZero example)
     comptime MAX_NODES = 256
     comptime MAX_K = 4       # Gumbel root candidates (power of two, <= ACT)
@@ -156,6 +161,17 @@ def main() raises:
 
     logger.close()
 
+    # Persist the BEST net trio (rep/dyn/pred hold the final promoted weights —
+    # the deployable artifact, distinct from the drifting learner). One-file
+    # nn2-ckpt v2 envelope, same format MuZeroAgent.save uses.
+    var body = String("")
+    save_state_v2_body_gpu(rep, body, String("rep"), ctx)
+    save_state_v2_body_gpu(dyn, body, String("dyn"), ctx)
+    save_state_v2_body_gpu(pred, body, String("pred"), ctx)
+    with open("connect_four_muzero_gumbel.ckpt", "w") as f:
+        f.write(String("nn2-ckpt v2\n") + body)
+
     print()
     print("last_loss:", res.last_loss, "| promotions:", res.promotions)
+    print("saved best net → connect_four_muzero_gumbel.ckpt")
     print("=== Done ===")

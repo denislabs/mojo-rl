@@ -598,6 +598,10 @@ def run_muzero_selfplay_arena_gumbel_2p[
     diag_every: Int = 0,
     do_eval: Bool = True,
     do_eval2: Bool = False,
+    eval_best: Bool = True,          # eval the BEST (deployable) net; False =
+    #                                  the learner (training-dynamics view, which
+    #                                  drifts away from a frozen best once
+    #                                  promotions stall).
     verbose: Bool = True,
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     selfplay_open_plies: Int = 2,
@@ -1092,7 +1096,8 @@ def run_muzero_selfplay_arena_gumbel_2p[
                     "(promotions", promotions, ")",
                 )
 
-        # ── 8. Periodic report: MCTS-eval the LEARNER vs the opponents ──
+        # ── 8. Periodic report: MCTS-eval the deployable BEST net (or the
+        #      learner if eval_best=False) vs the opponents ──
         if (
             rep_cadence > 0
             and (it + 1) % rep_cadence == 0
@@ -1117,12 +1122,24 @@ def run_muzero_selfplay_arena_gumbel_2p[
             line += " | promo " + String(promotions)
 
             if do_eval:
-                var e1 = mz_eval_both_colors[
-                    ENV, REP, DYN, PRED, OPP1, EVAL_GAMES, OBS, ACT, LATENT,
-                    BINS, NUM_SIMS, MAX_NODES, MAX_K, MAX_PLIES,
-                ](
-                    ctx, l_rep, l_dyn, l_pred, Float64(gamma),
-                    seed=seed + UInt64(it) * 13 + 5, open_plies=eval_open_plies,
+                var e1 = (
+                    mz_eval_both_colors[
+                        ENV, REP, DYN, PRED, OPP1, EVAL_GAMES, OBS, ACT, LATENT,
+                        BINS, NUM_SIMS, MAX_NODES, MAX_K, MAX_PLIES,
+                    ](
+                        ctx, rep, dyn, pred, Float64(gamma),
+                        seed=seed + UInt64(it) * 13 + 5,
+                        open_plies=eval_open_plies,
+                    )
+                    if eval_best
+                    else mz_eval_both_colors[
+                        ENV, REP, DYN, PRED, OPP1, EVAL_GAMES, OBS, ACT, LATENT,
+                        BINS, NUM_SIMS, MAX_NODES, MAX_K, MAX_PLIES,
+                    ](
+                        ctx, l_rep, l_dyn, l_pred, Float64(gamma),
+                        seed=seed + UInt64(it) * 13 + 5,
+                        open_plies=eval_open_plies,
+                    )
                 )
                 var tot1 = e1.wins + e1.draws + e1.losses
                 var wr1 = Float64(e1.wins) / Float64(tot1) if tot1 > 0 else 0.0
@@ -1137,12 +1154,24 @@ def run_muzero_selfplay_arena_gumbel_2p[
                 )
 
             if do_eval2:
-                var e2 = mz_eval_both_colors[
-                    ENV, REP, DYN, PRED, OPP2, EVAL_GAMES, OBS, ACT, LATENT,
-                    BINS, NUM_SIMS, MAX_NODES, MAX_K, MAX_PLIES,
-                ](
-                    ctx, l_rep, l_dyn, l_pred, Float64(gamma),
-                    seed=seed + UInt64(it) * 17 + 9, open_plies=eval_open_plies,
+                var e2 = (
+                    mz_eval_both_colors[
+                        ENV, REP, DYN, PRED, OPP2, EVAL_GAMES, OBS, ACT, LATENT,
+                        BINS, NUM_SIMS, MAX_NODES, MAX_K, MAX_PLIES,
+                    ](
+                        ctx, rep, dyn, pred, Float64(gamma),
+                        seed=seed + UInt64(it) * 17 + 9,
+                        open_plies=eval_open_plies,
+                    )
+                    if eval_best
+                    else mz_eval_both_colors[
+                        ENV, REP, DYN, PRED, OPP2, EVAL_GAMES, OBS, ACT, LATENT,
+                        BINS, NUM_SIMS, MAX_NODES, MAX_K, MAX_PLIES,
+                    ](
+                        ctx, l_rep, l_dyn, l_pred, Float64(gamma),
+                        seed=seed + UInt64(it) * 17 + 9,
+                        open_plies=eval_open_plies,
+                    )
                 )
                 var tot2 = e2.wins + e2.draws + e2.losses
                 var wr2 = Float64(e2.wins) / Float64(tot2) if tot2 > 0 else 0.0
