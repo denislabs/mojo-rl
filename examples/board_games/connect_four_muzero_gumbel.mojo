@@ -35,7 +35,9 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.muzero.nets import MZRepNet, MZDynNet, MZPredNet
+from mojo_rl.deep_agents2.muzero.nets import (
+    MZRepNet, MZRepNetC4Conv, MZDynNet, MZPredNet
+)
 from mojo_rl.deep_agents2.muzero.selfplay_arena_gumbel_2p import (
     run_muzero_selfplay_arena_gumbel_2p,
 )
@@ -82,7 +84,11 @@ def main() raises:
     comptime MAX_PLIES = 42  # full ConnectFour board
 
     comptime Env = ConnectFourEnv[DType.float64]
-    comptime Rep = MZRepNet[OBS, LATENT, H]
+    # Representation torso: a BN-free conv ResNet over the 3×6×7 board (the
+    # spatial inductive-bias upgrade from the flat-MLP `MZRepNet[OBS, LATENT, H]`,
+    # which remains a drop-in A/B swap — the dynamics/prediction nets and the
+    # whole driver are agnostic to the rep torso). F = conv filters.
+    comptime Rep = MZRepNetC4Conv[LATENT, H, F=64]
     comptime Dyn = MZDynNet[LATENT, ACT, BINS, H]
     comptime Pred = MZPredNet[LATENT, ACT, BINS, H]
     # ConnectFour's only board symmetry is the left↔right column flip.

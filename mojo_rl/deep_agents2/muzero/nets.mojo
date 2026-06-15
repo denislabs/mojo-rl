@@ -34,6 +34,7 @@ Reward & value share the same ``BINS`` and the same ``[v_min,v_max]`` support as
 
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.combinators.parallel import Parallel
+from mojo_rl.nn2.combinators.residual import Residual
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.linear_mish import LinearMish
 from mojo_rl.nn2.primitives.min_max_norm import MinMaxNorm
@@ -73,6 +74,46 @@ comptime MZRepNetCNN[FRAMES: Int, LATENT: Int, H: Int] = Sequential[
     Conv2D[64, 64, 3, 1, 0, 9, 9], ReLU[64 * 7 * 7],
     Flatten[64 * 7 * 7],
     LinearMish[64 * 7 * 7, H],
+    Linear[H, LATENT],
+    MinMaxNorm[LATENT],
+]
+
+
+# h (Connect Four board) — representation: 3×6×7 board planes → z
+#
+# A BatchNorm-FREE conv ResNet torso for the 6×7 board: a 3→F conv stem then two
+# identity-skip residual conv blocks (3×3, pad 1 → spatial dims preserved at
+# 6×7), flattened and projected to LATENT with the same MinMaxNorm tail every
+# MZRepNet ends in. Connect Four is intensely spatial (translation-equivariant
+# 4-in-a-row), so the weight-shared conv stack is a large inductive-bias /
+# sample-efficiency win over the flat MLP `MZRepNet` — this is the AlphaZero
+# board-game lesson applied to MuZero's representation function (the only h/g/f
+# net that still sees a spatial grid; the latent is flat, so g/f stay MLPs).
+#
+# Deliberately NO BatchNorm (ReLU only, like `MZRepNetCNN`): the arena promotes
+# the best net with a params-only `hard_copy_params`, which does NOT carry BN
+# running stats — copying only params on promotion is exactly the C4-gumbel
+# collapse (best runs trained weights on init stats → NaN). Keeping the torso
+# BN-free preserves the safe params-only promotion. nn2 `Conv2D`/`Flatten` expose
+# flat IN_DIMS/OUT_DIM, so IN_DIM = 3·6·7 = 126 (= OBS) and OUT_DIM = LATENT —
+# contract-identical to the MLP rep, so the search adapter (`MZRepGPU`) and the
+# whole arena driver are agnostic to which torso is used.
+comptime MZRepNetC4Conv[LATENT: Int, H: Int, F: Int = 64] = Sequential[
+    Conv2D[3, F, 3, 1, 1, 6, 7], ReLU[F * 6 * 7],
+    Residual[
+        Sequential[
+            Conv2D[F, F, 3, 1, 1, 6, 7], ReLU[F * 6 * 7],
+            Conv2D[F, F, 3, 1, 1, 6, 7],
+        ]
+    ], ReLU[F * 6 * 7],
+    Residual[
+        Sequential[
+            Conv2D[F, F, 3, 1, 1, 6, 7], ReLU[F * 6 * 7],
+            Conv2D[F, F, 3, 1, 1, 6, 7],
+        ]
+    ], ReLU[F * 6 * 7],
+    Flatten[F * 6 * 7],
+    LinearMish[F * 6 * 7, H],
     Linear[H, LATENT],
     MinMaxNorm[LATENT],
 ]

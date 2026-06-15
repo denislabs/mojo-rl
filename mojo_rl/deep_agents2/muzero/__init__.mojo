@@ -2,7 +2,7 @@
 # BPTT + MCTS planning (learned dynamics) + n-step targets w/ two-player sign
 # flips. Builds on the shared `deep_agents2/zero/` infrastructure.
 
-from .nets import MZRepNet, MZRepNetCNN, MZDynNet, MZPredNet
+from .nets import MZRepNet, MZRepNetCNN, MZRepNetC4Conv, MZDynNet, MZPredNet
 from .blocks import mz_unroll_train_step_cpu, mz_unroll_train_step_gpu
 from .config import MuZeroMLPConfig, MuZeroCNNConfig
 from .agent import MuZeroAgent

@@ -13,7 +13,9 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.deep_agents2.muzero.nets import MZRepNet, MZDynNet, MZPredNet
+from mojo_rl.deep_agents2.muzero.nets import (
+    MZRepNetC4Conv, MZDynNet, MZPredNet
+)
 from mojo_rl.deep_agents2.muzero.selfplay_arena_gumbel_2p import (
     run_muzero_selfplay_arena_gumbel_2p,
 )
@@ -30,7 +32,7 @@ def main() raises:
     comptime H = 32
 
     comptime Env = ConnectFourEnv[DType.float64]
-    comptime Rep = MZRepNet[OBS, LATENT, H]
+    comptime Rep = MZRepNetC4Conv[LATENT, H, F=8]
     comptime Dyn = MZDynNet[LATENT, ACT, BINS, H]
     comptime Pred = MZPredNet[LATENT, ACT, BINS, H]
     comptime Aug = HFlipColumnAugmenter[ROWS=6, COLS=7, PLANES=3]
