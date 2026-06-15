@@ -52,6 +52,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.primitives.linear import Linear
 from mojo_rl.nn2.primitives.relu import ReLU
+from mojo_rl.nn2.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents2.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents2.sac import SACAgent
 from mojo_rl.deep_agents2.training.blocks import UniformSampleGpuStep
@@ -86,16 +87,12 @@ comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
 comptime ActorNet = StochasticActor[
     OBS_DIM,
     ACT_DIM,
-    Linear[OBS_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -159,7 +156,7 @@ def main() raises:
             learning_starts=WARMUP_STEPS,
             window_size=100,
             initial_episode_fill=0.0,
-            use_bf16=True,
+            # use_bf16=True,
         )
         var env = BatchedEnvT(ctx)
 
