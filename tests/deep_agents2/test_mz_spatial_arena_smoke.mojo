@@ -83,7 +83,7 @@ def main() raises:
         N_ENVS=4,
         OBS=OBS, ACT=ACT, LATENT=LATENT, BINS=BINS,
         NUM_SIMS=4, MAX_NODES=16, MAX_K=2,
-        CAP=4000, B=16, K=3, N=4, MAX_PLIES=42,
+        CAP=4000, B=16, K=3, N=42, MAX_PLIES=42,
         OPP1=RandomOpponent,
         OPP2=RandomOpponent,
         ARENA_GAMES=4,

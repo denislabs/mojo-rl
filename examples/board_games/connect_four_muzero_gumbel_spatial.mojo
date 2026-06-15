@@ -79,7 +79,12 @@ def main() raises:
     comptime CAP = 1_000_000
     comptime B = 128
     comptime K = 5
-    comptime N = 10
+    # N (td_steps) = full game → Monte-Carlo value targets. C4's reward is
+    # sparse-terminal, so a short n-step (was 10) bootstraps early-game value
+    # through the NOISY learned value — the likely source of the value_mse floor.
+    # N=42 makes the value target the actual game outcome (±1), low-variance, the
+    # muzero-general C4 recipe (td_steps=42). The unroll length K stays 5.
+    comptime N = 42
     comptime MAX_PLIES = 42
 
     comptime Env = ConnectFourEnv[DType.float64]
@@ -118,7 +123,10 @@ def main() raises:
         train_per_iter=4,
         lr=Scalar[DT](2e-3),
         gamma=Scalar[DT](1.0),
-        value_coef=Scalar[DT](0.5),
+        # value_coef 0.25 (MuZero paper / muzero-general): a DOWN-weighted value
+        # loss avoids value overfitting. The earlier bump to 0.5 was ~neutral;
+        # with N=42 Monte-Carlo targets the value signal is cleaner anyway.
+        value_coef=Scalar[DT](0.25),
         max_grad_norm=Scalar[DT](1.0),
         seed=42,
         arena_every=2_000,
@@ -130,12 +138,13 @@ def main() raises:
         do_eval2=True,
         verbose=True,
         logger=UnsafePointer(to=logger),
-        # Stronger anti-sharpening: the column-marked dynamics produces more
-        # confident search → sharper improved-policy targets → faster diversity
-        # collapse. temp_min 0.35→0.5 + open_plies 4→6 widen the self-play
-        # distribution to offset it (paired with the init_zero uniform prior).
+        # Anti-sharpening / sustained exploration: never go greedy in self-play
+        # (temp_min=1.0 → sample ∝ visits the whole game, the muzero-general
+        # temp=1-always recipe) + 6 random opening plies, paired with the
+        # init_zero uniform prior. Counters the column-marked dynamics' sharper
+        # search that was collapsing self-play diversity.
         selfplay_open_plies=6,
-        temp_min=0.5,
+        temp_min=1.0,
         eval_open_plies=4,
         reanalyze_every=4,
         reanalyze_batch=128,
