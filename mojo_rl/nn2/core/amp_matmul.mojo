@@ -159,6 +159,20 @@ struct LinearAMPState[IN: Int, OUT: Int](Movable & ImplicitlyDestructible):
     var w_bf16_dev:  Optional[DeviceBuffer[DType.bfloat16]]
     var in_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
     var ou_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
+    # GPU-only grad_w bf16 path (Fix 1): `cacheT_bf16` holds cacheᵀ[IN,BATCH]
+    # downcast (batch-sized, fused with the transpose); `dW_bf16` holds the
+    # bf16 dW GEMM output [IN,OUT] before the fused fp32 accumulate (fixed).
+    var cacheT_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
+    var dW_bf16_dev: Optional[DeviceBuffer[DType.bfloat16]]
+    # Once-per-step weight-cast reuse (Fix 2): the forward casts the fp32
+    # weight → `w_bf16_dev` every step and flips this True; the backward
+    # `grad_input` GEMM then reuses that cast instead of re-casting. Safe
+    # because forward always precedes its own backward and the optimizer
+    # runs after — so `w_bf16_dev` is fresh whenever a backward reads it.
+    # NOT the reverted cross-step `w_dirty` cache (which went stale because
+    # the optimizer never invalidated it): here the *forward* re-casts every
+    # step, so freshness is guaranteed by the party that owns the invariant.
+    var w_step_valid: Bool
     var batch_cap: Int
 
     @staticmethod
@@ -171,6 +185,9 @@ struct LinearAMPState[IN: Int, OUT: Int](Movable & ImplicitlyDestructible):
             w_bf16_dev=None,
             in_bf16_dev=None,
             ou_bf16_dev=None,
+            cacheT_bf16_dev=None,
+            dW_bf16_dev=None,
+            w_step_valid=False,
             batch_cap=0,
         )
 
@@ -192,12 +209,21 @@ struct LinearAMPState[IN: Int, OUT: Int](Movable & ImplicitlyDestructible):
             self.w_bf16_dev = ctx.enqueue_create_buffer[DType.bfloat16](
                 Self.IN * Self.OUT,
             )
+            # Fixed [IN,OUT] bf16 dW scratch for the grad_w bf16 GEMM (Fix 1).
+            self.dW_bf16_dev = ctx.enqueue_create_buffer[DType.bfloat16](
+                Self.IN * Self.OUT,
+            )
         if self.batch_cap < batch_needed:
             self.in_bf16_dev = ctx.enqueue_create_buffer[DType.bfloat16](
                 batch_needed * Self.IN,
             )
             self.ou_bf16_dev = ctx.enqueue_create_buffer[DType.bfloat16](
                 batch_needed * Self.OUT,
+            )
+            # cacheᵀ[IN,BATCH] bf16 scratch — same element count as in_bf16
+            # but kept separate so grad_w and grad_input never alias (Fix 1).
+            self.cacheT_bf16_dev = ctx.enqueue_create_buffer[DType.bfloat16](
+                batch_needed * Self.IN,
             )
             self.batch_cap = batch_needed
 

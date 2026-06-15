@@ -144,6 +144,38 @@ def _accum_kernel[
         dst[idx] = rebind[Scalar[DT]](dst[idx]) + rebind[Scalar[DT]](src[idx])
 
 
+def _transpose_to_bf16_kernel[
+    ROWS: Int, COLS: Int
+](
+    src: LayoutTensor[DT, Layout.row_major(ROWS, COLS), MutAnyOrigin],
+    dst: LayoutTensor[DType.bfloat16, Layout.row_major(COLS, ROWS), MutAnyOrigin],
+):
+    """dst[c,r] = bf16(src[r,c]). Fuses the cacheᵀ transpose with the fp32→bf16
+    downcast for the grad_w bf16 GEMM (Fix 1) — same launch as the fp32
+    `_transpose_kernel`, so the bf16 cacheᵀ costs no extra kernel."""
+    var idx = Int(global_idx.x)
+    if idx < ROWS * COLS:
+        var r = idx // COLS
+        var c = idx % COLS
+        dst[c, r] = rebind[Scalar[DT]](src[r, c]).cast[DType.bfloat16]()
+
+
+def _accum_bf16_kernel[
+    N: Int
+](
+    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    src: LayoutTensor[DType.bfloat16, Layout.row_major(N), MutAnyOrigin],
+):
+    """dst[i] += fp32(src[i]). Fuses the bf16→fp32 upcast into the grad_w
+    accumulate so the bf16 dW GEMM output lands in the fp32 weight grad with
+    no separate cast kernel (Fix 1). Master weights/grads stay fp32."""
+    var idx = Int(global_idx.x)
+    if idx < N:
+        dst[idx] = rebind[Scalar[DT]](dst[idx]) + rebind[
+            Scalar[DType.bfloat16]
+        ](src[idx]).cast[DT]()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Linear.
 # ──────────────────────────────────────────────────────────────────────
@@ -346,6 +378,9 @@ struct Linear[IN: Int, OUT: Int](Module):
                     w_bf16_p,
                     ctx,
                 )
+                # Fix 2: the weight is now cast for this step. The backward
+                # grad_input GEMM reuses `w_bf16_dev` instead of re-casting.
+                self.amp.w_step_valid = True
 
                 var in_bf16_p = mptr(self.amp.in_bf16_dev.value().unsafe_ptr())
                 cast_fp32_to_bf16[target="gpu", N=BATCH * Self.IN](
@@ -563,55 +598,119 @@ struct Linear[IN: Int, OUT: Int](Module):
                 #        (tensor cores) + accumulate, replaces the naive serial
                 #        kernel. Reads cache; must precede the grad_input matmul
                 #        (which may alias the cache slab).
-                ensure_gpu_buffer(
-                    self.cacheT_dev,
-                    self.cacheT_n,
-                    BATCH * Self.IN,
-                    ctx,
-                )
-                var cache_lt = LayoutTensor[
-                    DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin
-                ](self._cached_input_ptr.value())
-                var cacheT_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.IN, BATCH), MutAnyOrigin
-                ](self.cacheT_dev.value())
-                comptime n_blocks_t = (BATCH * Self.IN + TPB - 1) // TPB
-                comptime t_kernel = _transpose_kernel[BATCH, Self.IN]
-                ctx.enqueue_function[t_kernel](
-                    cache_lt,
-                    cacheT_lt,
-                    grid_dim=n_blocks_t,
-                    block_dim=TPB,
-                )
-                var cacheT_tt = TileTensor(
-                    self.cacheT_dev.value(),
-                    row_major[Self.IN, BATCH](),
-                )
-                var dW_tmp_tt = TileTensor(
-                    self.dW_tmp_dev.value(),
-                    row_major[Self.IN, Self.OUT](),
-                )
-                max_matmul[target="gpu"](
-                    dW_tmp_tt,
-                    cacheT_tt,
-                    grad_output_v,
-                    ctx,
-                )
                 comptime gw_layout = Layout.row_major(Self.W_SIZE)
                 var gw_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
                     self.weight.grd.dev.value()
                 )
-                var dW_tmp_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
-                    self.dW_tmp_dev.value()
-                )
+                comptime n_blocks_t = (BATCH * Self.IN + TPB - 1) // TPB
                 comptime n_blocks_acc = (Self.W_SIZE + TPB - 1) // TPB
-                comptime acc_kernel = _accum_kernel[Self.W_SIZE]
-                ctx.enqueue_function[acc_kernel](
-                    gw_lt,
-                    dW_tmp_lt,
-                    grid_dim=n_blocks_acc,
-                    block_dim=TPB,
-                )
+                var cache_lt = LayoutTensor[
+                    DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin
+                ](self._cached_input_ptr.value())
+
+                comptime if POLICY.compute_dtype == DT:
+                    ensure_gpu_buffer(
+                        self.cacheT_dev,
+                        self.cacheT_n,
+                        BATCH * Self.IN,
+                        ctx,
+                    )
+                    var cacheT_lt = LayoutTensor[
+                        DT, Layout.row_major(Self.IN, BATCH), MutAnyOrigin
+                    ](self.cacheT_dev.value())
+                    comptime t_kernel = _transpose_kernel[BATCH, Self.IN]
+                    ctx.enqueue_function[t_kernel](
+                        cache_lt,
+                        cacheT_lt,
+                        grid_dim=n_blocks_t,
+                        block_dim=TPB,
+                    )
+                    var cacheT_tt = TileTensor(
+                        self.cacheT_dev.value(),
+                        row_major[Self.IN, BATCH](),
+                    )
+                    var dW_tmp_tt = TileTensor(
+                        self.dW_tmp_dev.value(),
+                        row_major[Self.IN, Self.OUT](),
+                    )
+                    max_matmul[target="gpu"](
+                        dW_tmp_tt,
+                        cacheT_tt,
+                        grad_output_v,
+                        ctx,
+                    )
+                    var dW_tmp_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
+                        self.dW_tmp_dev.value()
+                    )
+                    comptime acc_kernel = _accum_kernel[Self.W_SIZE]
+                    ctx.enqueue_function[acc_kernel](
+                        gw_lt,
+                        dW_tmp_lt,
+                        grid_dim=n_blocks_acc,
+                        block_dim=TPB,
+                    )
+                else:
+                    # ── Fix 1: bf16 grad_w GEMM. cacheᵀ downcast is fused into
+                    #    the transpose (zero extra kernel); grad_output downcast
+                    #    reuses the `ou_bf16` scratch; the bf16 dW lands in the
+                    #    fp32 weight grad via the fused `_accum_bf16_kernel`.
+                    comptime assert (
+                        POLICY.compute_dtype == DType.bfloat16
+                    ), "Linear supports only fp32 and bf16 compute_dtype"
+                    self.amp.ensure_gpu(BATCH, ctx)
+
+                    var cacheT_bf16_lt = LayoutTensor[
+                        DType.bfloat16,
+                        Layout.row_major(Self.IN, BATCH),
+                        MutAnyOrigin,
+                    ](self.amp.cacheT_bf16_dev.value())
+                    comptime tb_kernel = _transpose_to_bf16_kernel[
+                        BATCH, Self.IN
+                    ]
+                    ctx.enqueue_function[tb_kernel](
+                        cache_lt,
+                        cacheT_bf16_lt,
+                        grid_dim=n_blocks_t,
+                        block_dim=TPB,
+                    )
+
+                    var go_bf16_p = mptr(
+                        self.amp.ou_bf16_dev.value().unsafe_ptr()
+                    )
+                    cast_fp32_to_bf16[target="gpu", N=BATCH * Self.OUT](
+                        go_p,
+                        go_bf16_p,
+                        ctx,
+                    )
+
+                    var cacheT_bf16_tt = TileTensor(
+                        self.amp.cacheT_bf16_dev.value(),
+                        row_major[Self.IN, BATCH](),
+                    )
+                    var go_bf16_tt = TileTensor(
+                        self.amp.ou_bf16_dev.value(),
+                        row_major[BATCH, Self.OUT](),
+                    )
+                    var dW_bf16_tt = TileTensor(
+                        self.amp.dW_bf16_dev.value(),
+                        row_major[Self.IN, Self.OUT](),
+                    )
+                    max_matmul[target="gpu"](
+                        dW_bf16_tt,
+                        cacheT_bf16_tt,
+                        go_bf16_tt,
+                        ctx,
+                    )
+                    var dW_bf16_lt = LayoutTensor[
+                        DType.bfloat16, gw_layout, MutAnyOrigin
+                    ](self.amp.dW_bf16_dev.value())
+                    comptime acc_bf16_kernel = _accum_bf16_kernel[Self.W_SIZE]
+                    ctx.enqueue_function[acc_bf16_kernel](
+                        gw_lt,
+                        dW_bf16_lt,
+                        grid_dim=n_blocks_acc,
+                        block_dim=TPB,
+                    )
 
     def vjp_grad_input[
         target: StaticString,
@@ -718,12 +817,16 @@ struct Linear[IN: Int, OUT: Int](Module):
                 ), "Linear supports only fp32 and bf16 compute_dtype"
                 self.amp.ensure_gpu(BATCH, ctx)
 
-                var w_bf16_p = mptr(self.amp.w_bf16_dev.value().unsafe_ptr())
-                cast_fp32_to_bf16[target="gpu", N=Self.W_SIZE](
-                    mptr(self.weight.val.dev.value().unsafe_ptr()),
-                    w_bf16_p,
-                    ctx,
-                )
+                # Fix 2: reuse the weight bf16 cast the forward already did
+                # this step instead of re-casting. Falls back to casting if no
+                # forward ran (e.g. a direct backward in a test), which leaves
+                # `w_step_valid` False from `make()`.
+                if not self.amp.w_step_valid:
+                    cast_fp32_to_bf16[target="gpu", N=Self.W_SIZE](
+                        mptr(self.weight.val.dev.value().unsafe_ptr()),
+                        mptr(self.amp.w_bf16_dev.value().unsafe_ptr()),
+                        ctx,
+                    )
 
                 var go_bf16_p = mptr(self.amp.ou_bf16_dev.value().unsafe_ptr())
                 cast_fp32_to_bf16[target="gpu", N=BATCH * Self.OUT](
