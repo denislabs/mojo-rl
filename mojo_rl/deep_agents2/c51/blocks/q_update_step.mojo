@@ -42,6 +42,7 @@ struct C51QUpdateStep[
     def step[
         target: StaticString,
         POLICY: AMPPolicy = NoAMP,
+        ACCUMULATE: Bool = False,
     ](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
@@ -50,7 +51,11 @@ struct C51QUpdateStep[
         mb_m_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
         """PER hook: when `state.has_per`, forward IS weights into the
-        update and capture per-sample CE residuals."""
+        update and capture per-sample CE residuals.
+
+        `ACCUMULATE` (GPU only) forwards to the inner block's device loss
+        accumulator (CUDA-graph capture); `state.critic_loss` then holds a 0
+        sentinel — read the running loss via `inner.ce_loss.read_accum`."""
         var weights_p: Optional[
             UnsafePointer[Scalar[DT], MutAnyOrigin]
         ] = None
@@ -60,7 +65,7 @@ struct C51QUpdateStep[
         if state.has_per:
             weights_p = state.mb_w.target_ptr[target]()
             td_res_p = state.td_residuals.target_ptr[target]()
-        var loss = self.inner.step[target, POLICY](
+        var loss = self.inner.step[target, POLICY, ACCUMULATE](
             q_online,
             q_opt,
             state.mb_s.target_ptr[target](),

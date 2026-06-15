@@ -35,6 +35,7 @@ from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn2.constants import DT
 from mojo_rl.utils.progress import IntervalProgress
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 from .driver_scratch import DriverScratch
 from .batched_env import BatchedEnv
 from ..data.n_step_replay import GPUNStepBuffer
@@ -248,6 +249,31 @@ trait OffPolicyDiscreteAgentGpu(OffPolicyDiscreteAgent):
         no epsilon, no warmup gate. Writes N_ENVS action indices (as
         Scalar[DT]) into `action_ptr`. Used by the batched greedy eval."""
         ...
+
+    # ─── CUDA-graph capture surface ───────────────────────────────────
+    #
+    # Default bodies so agents that don't support train-step capture still
+    # conform. Only invoked on the `USE_TRAIN_CUDA_GRAPH=True` driver path; the
+    # defaults are never reached for capture-capable agents (DQN / C51 /
+    # Rainbow), which override all three.
+
+    def train_device_kernels(mut self) raises:
+        """Pure device-kernel train step (no host work) — the body captured
+        into the CUDA graph. Default raises: capture unsupported."""
+        raise Error(
+            "train_device_kernels: CUDA-graph capture not supported by"
+            " this agent (USE_TRAIN_CUDA_GRAPH must stay False)"
+        )
+
+    def note_train_update(mut self):
+        """Advance one logical update's host bookkeeping (counters / metric
+        accumulators). Default no-op."""
+        pass
+
+    def learning_starts_count(self) -> Int:
+        """Cumulative env-step threshold after which training begins — the
+        driver gates the capture path on this. Default 0."""
+        return 0
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -588,6 +614,7 @@ def run_offpolicy_discrete_train_gpu_batched[
     N_ENVS: Int,
     NS: Int = 1,
     L: Logger = NoOpLogger,
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](
     ctx: DeviceContext,
     mut trainer: A,
@@ -732,6 +759,11 @@ def run_offpolicy_discrete_train_gpu_batched[
     var eval_on: Bool = eval_every > 0 and Bool(eval_env)
     var next_eval: Int = eval_every if eval_on else total_env_steps + 1
 
+    # Lazily-captured train-step graph (USE_TRAIN_CUDA_GRAPH). Declared at
+    # function scope so the binding survives across loop iterations; a no-op on
+    # non-NVIDIA where `CUDAGraph` itself no-ops.
+    var train_graph: Optional[CUDAGraph] = None
+
     while step_idx < total_env_steps:
         # ── 1. Snapshot prev_obs (D→D) from the env's obs buffer.
         var env_obs_view = DeviceBuffer[DT](
@@ -834,8 +866,34 @@ def run_offpolicy_discrete_train_gpu_batched[
         iter_idx += 1
 
         # ── 7. Trainer updates.
-        for _ in range(updates_per_step):
-            _ = trainer.train_step(base_step + step_idx)
+        comptime if USE_TRAIN_CUDA_GRAPH:
+            # Capture path: once the buffer is warm, the per-update device
+            # kernel sequence (`train_device_kernels`) is captured into
+            # `train_graph` on first call and replayed thereafter — host
+            # bookkeeping advances via `note_train_update` so counters stay
+            # correct across replays. During warmup we skip training, matching
+            # `train_step`'s gating to False. On non-NVIDIA the closure simply
+            # runs each call (no-op capture) → identical to the non-captured
+            # path. Replay must be uniform or device-PER (DEVICE_TREE_, the
+            # default); ERE / host-PER are NOT capture-safe. For PER the IS-β
+            # is baked at capture time (anneal freezes — `set_beta` no longer
+            # takes effect on the captured graph), which is benign.
+            if base_step + step_idx >= trainer.learning_starts_count():
+                # Capture ALL `updates_per_step` device-kernel sequences into a
+                # SINGLE graph, replayed once per iteration — each captured
+                # `train_device_kernels` advances the device RNG counters, so
+                # the replayed sequence draws a fresh minibatch per sub-update.
+                def _captured_updates() capturing raises -> None:
+                    for _ in range(updates_per_step):
+                        trainer.train_device_kernels()
+
+                maybe_capture_replay[_captured_updates](train_graph, ctx)
+                # Host bookkeeping advances once per logical update.
+                for _ in range(updates_per_step):
+                    trainer.note_train_update()
+        else:
+            for _ in range(updates_per_step):
+                _ = trainer.train_step(base_step + step_idx)
 
         var abs_step = base_step + step_idx
 

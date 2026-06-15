@@ -42,6 +42,7 @@ struct DQNQUpdateStep[
     def step[
         target: StaticString,
         POLICY: AMPPolicy = NoAMP,
+        ACCUMULATE: Bool = False,
     ](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
@@ -52,7 +53,11 @@ struct DQNQUpdateStep[
         update + capture per-sample signed TD residuals so the sample
         block can refresh sum-tree priorities. When unset, both
         pointers stay None and the inner block falls back to the
-        uniform path (bit-identical to pre-PER)."""
+        uniform path (bit-identical to pre-PER).
+
+        `ACCUMULATE` (GPU only) forwards to the inner block's device loss
+        accumulator (CUDA-graph capture); `state.critic_loss` then holds a 0
+        sentinel — read the running loss via `inner.mse_loss.read_accum`."""
         var weights_p: Optional[
             UnsafePointer[Scalar[DT], MutAnyOrigin]
         ] = None
@@ -62,7 +67,7 @@ struct DQNQUpdateStep[
         if state.has_per:
             weights_p = state.mb_w.target_ptr[target]()
             td_res_p = state.td_residuals.target_ptr[target]()
-        var loss = self.inner.step[target, POLICY](
+        var loss = self.inner.step[target, POLICY, ACCUMULATE](
             q_online,
             q_opt,
             state.mb_s.target_ptr[target](),

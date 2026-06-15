@@ -206,6 +206,7 @@ struct C51QUpdateBlock[
     def step[
         target: StaticString,
         POLICY: AMPPolicy = NoAMP,
+        ACCUMULATE: Bool = False,
     ](
         mut self,
         mut q_online: Self.Q_NET,
@@ -219,7 +220,12 @@ struct C51QUpdateBlock[
         ] = None,
     ) raises -> Scalar[DT]:
         """Zero_grad → Q.forward → gather slice → CE forward+vjp →
-        (PER hooks) → scatter → Q.vjp → opt.step. Returns scalar loss."""
+        (PER hooks) → scatter → Q.vjp → opt.step. Returns scalar loss.
+
+        `ACCUMULATE` (GPU only): the cross-entropy reduction stays on device
+        (`ce_loss.forward_accumulate`, no per-step D2H) so this step is
+        CUDA-graph-capturable; the host reads the running loss at flush via
+        `ce_loss.read_accum`. Returns a 0 sentinel in that mode."""
         assert_tag_for["C51QUpdateBlock", target](self.ts.target_tag)
         comptime ROW = Self.NA * Self.N_ATOMS
 
@@ -256,12 +262,21 @@ struct C51QUpdateBlock[
             output=la_slice_t,
         )
 
-        # 4. CE(logits_a, m) → scalar loss.
+        # 4. CE(logits_a, m) → scalar loss. On GPU+ACCUMULATE the reduction
+        # stays on device (no D2H → capturable); host reads it at flush.
         var m_t = TileTensor(mb_m_ptr, row_major[Self.BATCH, Self.N_ATOMS]())
-        var loss = self.ce_loss.forward[target, Self.BATCH, POLICY](
-            la_slice_t,
-            m_t,
-        )
+        var loss: Scalar[DT]
+        comptime if target == "gpu" and ACCUMULATE:
+            self.ce_loss.forward_accumulate[target, Self.BATCH, POLICY](
+                la_slice_t,
+                m_t,
+            )
+            loss = Scalar[DT](0.0)
+        else:
+            loss = self.ce_loss.forward[target, Self.BATCH, POLICY](
+                la_slice_t,
+                m_t,
+            )
 
         # 5. CE.vjp → grad_logits_a = (softmax(logits_a) − m) / BATCH.
         var grad_la_t = TileTensor(

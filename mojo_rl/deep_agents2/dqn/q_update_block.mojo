@@ -154,6 +154,7 @@ struct DQNQUpdateBlock[
     def step[
         target: StaticString,
         POLICY: AMPPolicy = NoAMP,
+        ACCUMULATE: Bool = False,
     ](
         mut self,
         mut q_online: Self.Q_NET,
@@ -168,6 +169,13 @@ struct DQNQUpdateBlock[
     ) raises -> Scalar[DT]:
         """Run zero_grad → Q.forward → gather → MSE forward+vjp → (PER hooks)
         → scatter → Q.vjp → opt.step. Returns scalar loss.
+
+        `ACCUMULATE` (GPU only): when True, the MSE reduction stays on device
+        (`mse_loss.forward_accumulate`, no per-step D2H) so this step is
+        CUDA-graph-capturable; the host reads the running loss at `diag_every`
+        flush via `mse_loss.read_accum`. Returns a 0 sentinel in that mode.
+        Default (CPU, or ACCUMULATE=False) computes the live scalar via
+        `mse_loss.forward` (one D2H) — unchanged.
 
         PER hooks (gated on non-null sentinels; null = uniform, bit-
         identical to pre-PER):
@@ -206,11 +214,19 @@ struct DQNQUpdateBlock[
             TensorPack[2].of(q_all_carrier, mb_a_carrier), output=q_gath_t,
         )
 
-        # 4. MSE(q_gath, y).
+        # 4. MSE(q_gath, y). On GPU+ACCUMULATE the loss reduction stays on
+        # device (no D2H → capturable); host reads it at flush via read_accum.
         var y_t = TileTensor(mb_y_ptr, row_major[Self.BATCH, 1]())
-        var loss = self.mse_loss.forward[target, Self.BATCH, POLICY](
-            q_gath_t, y_t,
-        )
+        var loss: Scalar[DT]
+        comptime if target == "gpu" and ACCUMULATE:
+            self.mse_loss.forward_accumulate[target, Self.BATCH, POLICY](
+                q_gath_t, y_t,
+            )
+            loss = Scalar[DT](0.0)
+        else:
+            loss = self.mse_loss.forward[target, Self.BATCH, POLICY](
+                q_gath_t, y_t,
+            )
 
         # 5. MSE.vjp → grad_q.
         var grad_q_t = TileTensor(grad_q_p, row_major[Self.BATCH, 1]())

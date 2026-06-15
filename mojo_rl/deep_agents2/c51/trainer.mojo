@@ -380,39 +380,15 @@ struct C51Trainer[
             return False
         self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
-        var t_ty = perf_counter_ns()
-        var m_ptr = self._mb_m.target_ptr[Self.train_target]()
-        self.target_y_blk.step[Self.train_target, POLICY](
-            self.pair.target_net,
-            self.pair.online,
-            self.state.mb_sp.target_ptr[Self.train_target](),
-            self.state.mb_r.target_ptr[Self.train_target](),
-            self.state.mb_d.target_ptr[Self.train_target](),
-            m_ptr,
-        )
-        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
+        # Shared device-kernel sequence (target_y → q_update → polyak → PER
+        # tail → GPU diag) — the body the CUDA-graph capture path replays.
+        self._train_post_sample_kernels[POLICY]()
 
-        var t_crit = perf_counter_ns()
-        self.q_update_blk.step[Self.train_target, POLICY](
-            self.state, self.pair.online, self.q_opt, m_ptr,
-        )
-        self.timer.accumulate(Self._T_CRITIC, t_crit)
-
-        var t_poly = perf_counter_ns()
-        self.polyak_blk.step[Self.train_target](self.state, self.pair)
-        self.timer.accumulate(Self._T_POLYAK, t_poly)
-
-        self.sample_blk.update_priorities(self.state)
-
-        self._loss_accum += self.state.critic_loss
-
-        # Per-batch distributional diagnostics (CPU-only — GPU train_target
-        # would need D2H of the logits/target/reward scratches; deferred,
-        # mirroring SAC/DQN). For the taken action: softmax its N_ATOMS
-        # logit row, take expected Q (Σ p_k z_k) and entropy (−Σ p_k log p_k).
-        # `_mb_m` holds the projected target distribution (already a
-        # normalized categorical), so its expected value Σ m_k z_k is the
-        # target-Q analogue.
+        # Per-batch distributional diagnostics — CPU-only host walk (the GPU
+        # counterpart is folded into `_train_post_sample_kernels`). For the
+        # taken action: softmax its N_ATOMS logit row, take expected Q
+        # (Σ p_k z_k) and entropy (−Σ p_k log p_k). `_mb_m` holds the projected
+        # target distribution, so its expected value Σ m_k z_k is the target-Q.
         var t_diag = perf_counter_ns()
         comptime if Self.train_target == "cpu":
             comptime NK = Self.N_ATOMS
@@ -455,13 +431,61 @@ struct C51Trainer[
             self._dist_entropy_accum += sum_ent * inv_b
             self._reward_accum += sum_r * inv_b
             self._done_accum += sum_d * inv_b
-        else:
-            # `_c51_diag_kernel` derives per-sample expected-Q / entropy /
-            # target-Q on device; the three [BATCH] buffers are then folded
-            # into device-resident running means. reward/done are plain means.
+        self.timer.accumulate(Self._T_DIAG, t_diag)
+
+        self.note_train_update()
+        return True
+
+    # ─── Shared post-sample kernel sequence ───────────────────────────
+    #
+    # target_y → q_update (ACCUMULATE on GPU) → polyak → PER tail → GPU diag.
+    # Called by BOTH `_train_step_impl` (non-captured) and
+    # `train_device_kernels` (the CUDA-graph capture closure body), so the two
+    # paths enqueue an identical kernel sequence — bit-identity by
+    # construction. The `perf_counter_ns` timers are host-only: harmless during
+    # capture (not kernels, so not recorded) and don't fire on replay.
+    def _train_post_sample_kernels[
+        POLICY: AMPPolicy = NoAMP,
+    ](mut self) raises:
+        from std.time import perf_counter_ns
+
+        var t_ty = perf_counter_ns()
+        var m_ptr = self._mb_m.target_ptr[Self.train_target]()
+        self.target_y_blk.step[Self.train_target, POLICY](
+            self.pair.target_net,
+            self.pair.online,
+            self.state.mb_sp.target_ptr[Self.train_target](),
+            self.state.mb_r.target_ptr[Self.train_target](),
+            self.state.mb_d.target_ptr[Self.train_target](),
+            m_ptr,
+        )
+        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
+
+        # On GPU, accumulate the CE loss on-device (no per-step D2H,
+        # CUDA-graph capturable); the host reads it at flush via read_accum.
+        var t_crit = perf_counter_ns()
+        self.q_update_blk.step[
+            Self.train_target, POLICY, ACCUMULATE = Self.train_target == "gpu"
+        ](
+            self.state, self.pair.online, self.q_opt, m_ptr,
+        )
+        self.timer.accumulate(Self._T_CRITIC, t_crit)
+
+        var t_poly = perf_counter_ns()
+        self.polyak_blk.step[Self.train_target](self.state, self.pair)
+        self.timer.accumulate(Self._T_POLYAK, t_poly)
+
+        # PER tail (no-op for uniform blocks).
+        self.sample_blk.update_priorities(self.state)
+
+        # GPU per-batch distributional diag — device kernels + device-resident
+        # running means (no D2H → capture-safe). The CPU host-walk counterpart
+        # lives in `_train_step_impl`.
+        comptime if Self.train_target == "gpu":
+            var t_diag = perf_counter_ns()
             var ctx_v = self.ctx.value()
             var lg_ptr = self.q_update_blk.inner._logits_a.target_ptr["gpu"]()
-            var m_ptr = self._mb_m.target_ptr["gpu"]()
+            var m_ptr_g = self._mb_m.target_ptr["gpu"]()
             var z_ptr = self.target_y_blk._z.target_ptr["gpu"]()
             var eq_ptr = self._diag_eq_dev.value().unsafe_ptr()
             var ent_ptr = self._diag_ent_dev.value().unsafe_ptr()
@@ -469,7 +493,7 @@ struct C51Trainer[
             comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
             comptime diag_k = _c51_diag_kernel[Self.BATCH, Self.N_ATOMS]
             ctx_v.enqueue_function[diag_k](
-                lg_ptr, m_ptr, z_ptr, eq_ptr, ent_ptr, tq_ptr,
+                lg_ptr, m_ptr_g, z_ptr, eq_ptr, ent_ptr, tq_ptr,
                 grid_dim=n_blocks, block_dim=TPB,
             )
             self._q_mean_dev.accumulate_gpu[Self.BATCH](eq_ptr)
@@ -481,11 +505,49 @@ struct C51Trainer[
             self._done_mean_dev.accumulate_gpu[Self.BATCH](
                 self.state.mb_d.target_ptr["gpu"]()
             )
-        self.timer.accumulate(Self._T_DIAG, t_diag)
+            self.timer.accumulate(Self._T_DIAG, t_diag)
 
+    # ─── Host bookkeeping (counters + metric accumulator) ─────────────
+    #
+    # One logical update's host accounting. Called by `_train_step_impl` and —
+    # on the capture path — by the driver once per replayed update, so the
+    # counters stay correct whether the device work ran directly or via graph
+    # replay. On GPU `state.critic_loss` is a 0 sentinel (loss read from the
+    # device accumulator at flush), so the `+=` is a harmless `+= 0`.
+    def note_train_update(mut self):
+        self._loss_accum += self.state.critic_loss
         self._update_count += 1
         self._total_train_steps += 1
-        return True
+
+    # ─── CUDA-graph capture surface ───────────────────────────────────
+    #
+    # `train_device_kernels` is the pure device-kernel train step — sampling
+    # (device RNG → fresh minibatch each replay) + the shared post-sample
+    # sequence, with NO host gate, NO counters. It is the body of the capture
+    # closure passed to `maybe_capture_replay`. GPU-only; the caller gates on
+    # `learning_starts_count()` and advances host counters via
+    # `note_train_update()`.
+    def _train_device_kernels_impl[
+        POLICY: AMPPolicy = NoAMP,
+    ](mut self) raises:
+        # Pin `state.step_idx = learning_starts` so the sample block's warmup
+        # gate passes (this method has no step_idx of its own). The driver only
+        # calls it once the buffer holds ≥ BATCH transitions.
+        self.state.step_idx = self.learning_starts
+        self.state.did_step = True
+        self.sample_blk.step(self.state)
+        self._train_post_sample_kernels[POLICY]()
+
+    def train_device_kernels(mut self) raises:
+        comptime assert Self.train_target == "gpu", (
+            "train_device_kernels is GPU-only (CUDA-graph capture path)"
+        )
+        self._train_device_kernels_impl[NoAMP]()
+
+    def learning_starts_count(self) -> Int:
+        """Cumulative env-step threshold after which the replay buffer is
+        warm enough to train — the driver gates the capture path on this."""
+        return self.learning_starts
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
         return self._train_step_impl[NoAMP](step_idx)
@@ -885,20 +947,25 @@ struct C51Trainer[
         var dist_entropy_mean: Scalar[DT]
         var reward_mean: Scalar[DT]
         var done_mean: Scalar[DT]
+        # Loss: device-accumulated on GPU (no per-step D2H; read once here),
+        # host-summed on CPU.
+        var loss_mean: Scalar[DT]
         comptime if Self.train_target == "gpu":
+            loss_mean = self.q_update_blk.inner.ce_loss.read_accum["gpu"]()
             q_mean = self._q_mean_dev.read["gpu"]()
             target_mean = self._target_mean_dev.read["gpu"]()
             dist_entropy_mean = self._dist_entropy_mean_dev.read["gpu"]()
             reward_mean = self._reward_mean_dev.read["gpu"]()
             done_mean = self._done_mean_dev.read["gpu"]()
         else:
+            loss_mean = self._loss_accum * inv
             q_mean = self._q_accum * inv
             target_mean = self._target_accum * inv
             dist_entropy_mean = self._dist_entropy_accum * inv
             reward_mean = self._reward_accum * inv
             done_mean = self._done_accum * inv
         var bundle = C51Metrics(
-            loss=LogScalar[DT](self._loss_accum * inv),
+            loss=LogScalar[DT](loss_mean),
             epsilon=LogScalar[DT](self.epsilon),
             mean_q=LogScalar[DT](q_mean),
             mean_target=LogScalar[DT](target_mean),
@@ -915,6 +982,7 @@ struct C51Trainer[
         self._reward_accum = Scalar[DT](0.0)
         self._done_accum = Scalar[DT](0.0)
         comptime if Self.train_target == "gpu":
+            self.q_update_blk.inner.ce_loss.reset_accum["gpu"]()
             self._q_mean_dev.reset["gpu"]()
             self._target_mean_dev.reset["gpu"]()
             self._dist_entropy_mean_dev.reset["gpu"]()

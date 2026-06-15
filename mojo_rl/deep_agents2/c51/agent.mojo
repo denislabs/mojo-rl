@@ -176,6 +176,7 @@ struct C51Agent[
         N_ENVS: Int,
         NS: Int = 1,
         L: Logger = NoOpLogger,
+        USE_TRAIN_CUDA_GRAPH: Bool = True,
     ](
         mut self,
         mut env: E,
@@ -204,7 +205,17 @@ struct C51Agent[
         `"gpu"`-target agent (raises if no DeviceContext). `NS` must match
         the SAMPLE block's N-step (`nstep_gamma` its discount); `eval_env`
         enables periodic noise-off greedy eval on a separate env instance.
-        All kwargs forward to the driver unchanged."""
+        All kwargs forward to the driver unchanged.
+
+        `USE_TRAIN_CUDA_GRAPH` (default True; no-op on non-NVIDIA) captures the
+        per-update device kernel sequence into a CUDA graph and replays it,
+        removing per-kernel launch overhead from the train step. Pair it with
+        `episode_sync_every > 1` to batch the reward/done readback so the host
+        doesn't serialize the GPU pipeline every iteration. Capture is
+        bit-identical to the non-captured path at every flush boundary. For
+        Rainbow (PER), the IS-β anneal freezes at capture time — `set_beta`
+        no longer takes effect on the captured graph (benign; β stays at its
+        post-warmup value)."""
         var ctx = self.trainer.ctx
         if not ctx:
             raise Error(
@@ -224,6 +235,7 @@ struct C51Agent[
             N_ENVS,
             NS,
             L,
+            USE_TRAIN_CUDA_GRAPH,
         ](
             ctx.value(),
             self.trainer,

@@ -5,7 +5,8 @@
 """
 
 from std.math import exp, log
-from std.gpu import global_idx
+from std.gpu import global_idx, thread_idx
+from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -65,6 +66,26 @@ def _ce_backward_kernel[
         grad_logits[b, c] = (sm - tg) * inv_batch
 
 
+# Slice 7 — device-resident loss accumulator for CUDA-graph capture.
+# `_ce_reduce_add_kernel` single-block-reduces `partial_loss[0..BATCH]` and
+# thread 0 folds `total/BATCH` into `acc[0]` and `+1` into `acc[1]` — NO D2H,
+# so `forward_accumulate` is capturable (mirrors `_mse_reduce_add_kernel`).
+def _ce_reduce_add_kernel[BATCH: Int](
+    partial_loss: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < BATCH:
+        my_sum += partial_loss[k]
+        k += TPB_REDUCE
+    var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
+    if t == 0:
+        acc[0] = acc[0] + total[0] / Scalar[DT](BATCH)
+        acc[1] = acc[1] + Scalar[DT](1.0)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # CrossEntropyLoss — method-level target.
 # ──────────────────────────────────────────────────────────────────────────
@@ -81,6 +102,14 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
     var partial_loss_host: Optional[HostBuffer[DT]]
     var partial_loss_n: Int
 
+    # Slice 7 — device-resident (sum_of_means, count) accumulator. Hot on the
+    # CUDA-graph capture path: `forward_accumulate` folds the mean loss in with
+    # no D2H; `read_accum` D2Hs once at flush; `reset_accum` zeroes it. CPU
+    # mirror: `_acc_sum` / `_acc_n` host scalars.
+    var loss_acc_dev: Optional[DeviceBuffer[DT]]
+    var _acc_sum: Scalar[DT]
+    var _acc_n: Int
+
     var ts: TargetStorage
 
     def __init__(out self):
@@ -90,6 +119,9 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
         self.partial_loss_dev = None
         self.partial_loss_host = None
         self.partial_loss_n = 0
+        self.loss_acc_dev = None
+        self._acc_sum = Scalar[DT](0.0)
+        self._acc_n = 0
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
@@ -107,6 +139,9 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
             loss.softmax_dev = ctx_v.enqueue_create_buffer[DT](1)
             loss.partial_loss_dev = ctx_v.enqueue_create_buffer[DT](1)
             loss.partial_loss_host = ctx_v.enqueue_create_host_buffer[DT](1)
+            var acc_real = ctx_v.enqueue_create_buffer[DT](2)
+            acc_real.enqueue_fill(0.0)
+            loss.loss_acc_dev = acc_real^
         return loss^
 
     def _ensure_cache_cpu(mut self, batch: Int):
@@ -268,3 +303,86 @@ struct CrossEntropyLoss[N_CLASSES: Int](Loss):
             ctx.enqueue_function[kernel](
                 softmax_lt, targets_lt, grad_lt, grid_dim=n_blocks, block_dim=TPB,
             )
+
+    # ──────────────────────────────────────────────────────────────────
+    # Slice 7 — CUDA-graph-capturable forward that folds the mean loss into
+    # the device accumulator instead of returning a host scalar. Same
+    # `_ce_forward_kernel` as `forward`/`forward_capture` (fills `softmax_dev`
+    # the vjp reads), plus a device reduce-add into `loss_acc_dev` — NO D2H.
+    # Caller reads it via `read_accum` at flush cadence.
+    # ──────────────────────────────────────────────────────────────────
+    def forward_accumulate[
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        logits: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        targets: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+    ) raises:
+        comptime assert logits.flat_rank == 2, "logits must be rank-2"
+        comptime assert targets.flat_rank == 2, "targets must be rank-2"
+        assert_tag_for["CrossEntropyLoss", target](self.ts.target_tag)
+
+        comptime if target == "cpu":
+            # CPU is not a capture target — reuse `forward`, accumulate scalar.
+            var L = self.forward[target, BATCH, POLICY](logits, targets)
+            self._acc_sum += L
+            self._acc_n += 1
+        else:
+            self._ensure_buffers_gpu(BATCH)
+            var ctx = self.ts.ctx.value()
+            comptime mat_layout = Layout.row_major(BATCH, Self.N_CLASSES)
+            comptime row_layout = Layout.row_major(BATCH)
+            var lp_w = mptr(logits.ptr)
+            var tp_w = mptr(targets.ptr)
+            var logits_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](lp_w)
+            var targets_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](tp_w)
+            var softmax_lt = LayoutTensor[DT, mat_layout, MutAnyOrigin](self.softmax_dev.value())
+            var partial_lt = LayoutTensor[DT, row_layout, MutAnyOrigin](self.partial_loss_dev.value())
+            comptime TPB = TPB_REDUCE
+            comptime n_blocks = (BATCH + TPB - 1) // TPB
+            comptime kernel = _ce_forward_kernel[BATCH, Self.N_CLASSES]
+            ctx.enqueue_function[kernel](
+                logits_lt, targets_lt, softmax_lt, partial_lt,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
+            # Device reduce + accumulate — no D2H.
+            comptime red_k = _ce_reduce_add_kernel[BATCH]
+            ctx.enqueue_function[red_k](
+                self.partial_loss_dev.value().unsafe_ptr(),
+                self.loss_acc_dev.value().unsafe_ptr(),
+                grid_dim=1, block_dim=TPB,
+            )
+
+    def reset_accum[target: StaticString](mut self) raises:
+        """Zero the (sum, count) accumulator. Call once per `diag_every`
+        window after `read_accum`. Outside the capture region."""
+        comptime if target == "cpu":
+            self._acc_sum = Scalar[DT](0.0)
+            self._acc_n = 0
+        else:
+            self.loss_acc_dev.value().enqueue_fill(0.0)
+
+    def read_accum[target: StaticString](mut self) raises -> Scalar[DT]:
+        """Return the mean accumulated loss (sum / count) over the window.
+        GPU path D2Hs the [2]-buffer once here — flush cadence only, NOT in
+        the per-step hot loop. Returns 0 if count == 0."""
+        comptime if target == "cpu":
+            if self._acc_n == 0:
+                return Scalar[DT](0.0)
+            return self._acc_sum / Scalar[DT](self._acc_n)
+        else:
+            var ctx = self.ts.ctx.value()
+            var h = ctx.enqueue_create_host_buffer[DT](2)
+            ctx.enqueue_copy(h, self.loss_acc_dev.value())
+            ctx.synchronize()
+            var s = h.unsafe_ptr()[0]
+            var n = h.unsafe_ptr()[1]
+            if n == Scalar[DT](0.0):
+                return Scalar[DT](0.0)
+            return s / n
