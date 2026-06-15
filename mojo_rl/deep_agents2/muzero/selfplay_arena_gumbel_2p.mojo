@@ -55,6 +55,7 @@ from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import GumbelGPUMCTS, SelfPlay
 
 from .blocks import mz_unroll_train_step_gpu, MZScratch
+from .selfplay_gpu_device import _mz_emit_train_diag
 from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
 from ..zero.sequence_replay_mcts import MCTSSequenceReplay
 from ..zero.symmetries import BoardAugmenter, IdentityAugmenter
@@ -643,6 +644,14 @@ def run_muzero_selfplay_arena_gumbel_2p[
     var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
     var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
 
+    # ── diag scratch: re-forward the root prediction on the last train batch,
+    #    D2H, and emit the full MuZero head-fit metric set (target entropy /
+    #    max-prob / value head) — same set as the other MuZero drivers. ──
+    var d_diag_obs = ctx.enqueue_create_buffer[DT](B * OBS)
+    var d_diag_z = ctx.enqueue_create_buffer[DT](B * LATENT)
+    var d_diag_pred = ctx.enqueue_create_buffer[DT](B * (ACT + BINS))
+    var h_diag_pred = _a(B * (ACT + BINS))
+
     # ── Device buffers ──
     var states = ctx.enqueue_create_buffer[DT](N_ENVS * STATE)
     var obs_dev = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
@@ -916,20 +925,22 @@ def run_muzero_selfplay_arena_gumbel_2p[
                     )
                 )
 
-        # ── 6b. Per-batch loss split → logger ──
+        # ── 6b. Per-batch diagnostics → logger. Re-forwards the LEARNER root
+        #      prediction on the last train batch (`t_obs0`) and emits loss +
+        #      loss_policy/value/reward split + the head-fit metrics
+        #      (policy_ce/entropy, target_entropy/max_prob, value_mse/mean,
+        #      value_target_mean) — the same set the other MuZero drivers log. ──
         if (
             Bool(logger)
             and diag_every > 0
             and trained
             and (it + 1) % diag_every == 0
         ):
-            var dn = List[String]()
-            var dv = List[Float64]()
-            dn.append(String("loss")); dv.append(last_loss)
-            dn.append(String("loss_policy")); dv.append(Float64(l_parts[0]))
-            dn.append(String("loss_value")); dv.append(Float64(l_parts[1]))
-            dn.append(String("loss_reward")); dv.append(Float64(l_parts[2]))
-            logger.value()[].log_scalars(dn, dv, it + 1)
+            _mz_emit_train_diag[REP, PRED, B, OBS, ACT, BINS, L](
+                ctx, l_rep, l_pred, d_diag_obs, d_diag_z, d_diag_pred,
+                h_diag_pred, t_obs0, t_pol, t_val, l_parts,
+                VMIN, VMAX, last_loss, it + 1, logger.value(),
+            )
 
         # ── 7. Arena gating: learner challenges best ──
         if (
@@ -1047,7 +1058,7 @@ def run_muzero_selfplay_arena_gumbel_2p[
         promotions += 1
 
     t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
-    l_parts.free()
+    l_parts.free(); h_diag_pred.free()
     obs_h.free(); pol_h.free(); val_h.free(); legal_h.free()
     done_h.free(); rew_h.free(); act_h.free()
     aug_obs.free(); aug_pol.free(); aug_legal.free(); aug_act.free()
