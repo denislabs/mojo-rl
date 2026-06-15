@@ -159,6 +159,7 @@ def main() raises:
             learning_starts=WARMUP_STEPS,
             window_size=100,
             initial_episode_fill=0.0,
+            use_bf16=True,
         )
         var env = BatchedEnvT(ctx)
 
