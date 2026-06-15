@@ -547,6 +547,16 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                   "pred.vjp GPU", phase_ns[14] / 1e9,
                   "| dyn.vjp host", phase_ns[10] / 1e9,
                   "dyn.vjp GPU", phase_ns[12] / 1e9)
+            # pre-vjp drains = GPU work of the forward/cons/tiny-kernel ops
+            # enqueued before each vjp; leftover = pure host enqueue of the
+            # ~90 tiny element-wise kernels/step (rev minus everything timed).
+            var rev_timed = (phase_ns[6] + phase_ns[7] + phase_ns[8]
+                             + phase_ns[9] + phase_ns[10] + phase_ns[11]
+                             + phase_ns[12] + phase_ns[13] + phase_ns[14])
+            print("  DIAG drains: pred pre", phase_ns[11] / 1e9,
+                  "dyn pre", phase_ns[13] / 1e9,
+                  "| rev untimed (host enqueue of tiny kernels)",
+                  (phase_ns[3] - rev_timed) / 1e9)
         print("  TOTAL timed", total / 1e9, "s  (", (total / 1e9) / n,
               "s/iter )")
         print("=" * 60)

@@ -637,8 +637,11 @@ def ezv2_unroll_train_step_gpu[
             )
         var gpout_t = TileTensor(p_gpout, row_major[B, PRED_OUT]())
         var gpin_t = TileTensor(p_gpin, row_major[B, LATENT]())
-        if diag_sync:   # drain → [7] measures pure host enqueue
-            ctx.synchronize()
+        if diag_sync:   # drain → [7] measures pure host enqueue; [11] = the
+            var _rp = perf_counter_ns()   # GPU work enqueued *before* pred.vjp
+            ctx.synchronize()             # (pred.fwd + kPolCE/kTwoHot/kValCE…)
+            if phase_ns:
+                phase_ns.value()[11] += Float64(perf_counter_ns() - _rp)
         _rt = perf_counter_ns()
         pred.vjp["gpu", B](gpout_t, gpin_t)
         if phase_ns:   # [7] pred.vjp (pure host enqueue when diag_sync)
@@ -725,8 +728,11 @@ def ezv2_unroll_train_step_gpu[
                 )
             var gdout_t = TileTensor(p_gdout, row_major[B, DYN_OUT]())
             var gdin_t = TileTensor(p_gdin, row_major[B, DYN_IN]())
-            if diag_sync:   # drain → [10] measures pure host enqueue
-                ctx.synchronize()
+            if diag_sync:   # drain → [10] measures pure host enqueue; [13] =
+                var _rp = perf_counter_ns()   # GPU work enqueued before dyn.vjp
+                ctx.synchronize()             # (cons branch + dyn.fwd + kCarry…)
+                if phase_ns:
+                    phase_ns.value()[13] += Float64(perf_counter_ns() - _rp)
             _rt = perf_counter_ns()
             dyn.vjp["gpu", B](gdout_t, gdin_t)
             if phase_ns:   # [10] dyn.vjp (pure host enqueue when diag_sync)
