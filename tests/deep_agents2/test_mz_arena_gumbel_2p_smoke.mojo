@@ -69,6 +69,10 @@ def main() raises:
         verbose=True,
         selfplay_open_plies=2,
         eval_open_plies=2,
+        # exercise the reanalyze path (live-learner: target_sync_interval=0)
+        reanalyze_every=2,
+        reanalyze_batch=4,
+        target_sync_interval=0,
     )
 
     var ll = res.last_loss

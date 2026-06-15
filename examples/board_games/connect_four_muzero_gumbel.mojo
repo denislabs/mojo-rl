@@ -136,6 +136,15 @@ def main() raises:
         logger=UnsafePointer(to=logger),
         selfplay_open_plies=2,
         eval_open_plies=4,
+        # Reanalyze: every 4 moves, re-target B stored positions with a lagging
+        # target net (synced from the learner every 200 grad steps) — the
+        # EfficientZero-style high-coverage refresh that keeps the n-step value
+        # targets fresh as the learner improves (the sample-efficiency lever for
+        # the plateau). reanalyze_batch ≈ B so a meaningful fraction of each
+        # train batch carries fresh targets.
+        reanalyze_every=4,
+        reanalyze_batch=128,
+        target_sync_interval=200,
     )
 
     logger.close()

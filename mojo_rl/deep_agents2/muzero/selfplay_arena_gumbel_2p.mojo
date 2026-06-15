@@ -604,6 +604,14 @@ def run_muzero_selfplay_arena_gumbel_2p[
     eval_open_plies: Int = 4,
     temperature_decay_steps: Int = 0,
     qnorm_per_node: Bool = True,
+    reanalyze_every: Int = 0,        # moves between reanalyze triggers (0 = off)
+    reanalyze_batch: Int = N_ENVS,   # stored positions re-targeted per trigger,
+    #                                  processed in `reanalyze_batch // N_ENVS`
+    #                                  chunks of N_ENVS (the planner's root width);
+    #                                  set ≈ B for EfficientZero-style coverage.
+    target_sync_interval: Int = 0,   # grad steps between learner→target syncs;
+    #                                  0 = refresh target to live just before each
+    #                                  trigger (live-learner reanalyze).
 ) raises -> MZArenaRunResult:
     """Two-player Gumbel MuZero self-play with Arena gating. `rep`/`dyn`/`pred`
     are the BEST nets and hold the final (best) weights on return. One loop pass
@@ -630,6 +638,27 @@ def run_muzero_selfplay_arena_gumbel_2p[
     odyn.max_grad_norm = max_grad_norm
     opred.max_grad_norm = max_grad_norm
 
+    # ── Lagging TARGET net trio for reanalyze. Synced from the LEARNER every
+    #    `target_sync_interval` grad steps (a delayed target that decouples
+    #    target generation from the optimizer step — the standard stabilizer;
+    #    matches the single/batched MuZero drivers), or refreshed to live just
+    #    before each trigger when 0 (live-learner reanalyze). Reanalyze ALWAYS
+    #    searches through these adapters. Params-only copy (the h/g/f carry no
+    #    BatchNorm running stats). Only allocated/used when reanalyze is on. ──
+    var rep_t = REP.make["gpu", INIT=Kaiming](ctx=ctx)
+    var dyn_t = DYN.make["gpu", INIT=Kaiming](ctx=ctx)
+    var pred_t = PRED.make["gpu", INIT=Kaiming](ctx=ctx)
+    hard_copy_params["gpu", M=REP](l_rep, rep_t, ctx)
+    hard_copy_params["gpu", M=DYN](l_dyn, dyn_t, ctx)
+    hard_copy_params["gpu", M=PRED](l_pred, pred_t, ctx)
+    rep_t.set_attr["training"](Scalar[DT](0.0))
+    dyn_t.set_attr["training"](Scalar[DT](0.0))
+    pred_t.set_attr["training"](Scalar[DT](0.0))
+    var rep_ta = MZRepGPU[OBS, LATENT, REP].make(rep_t)
+    var dyn_ta = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn_t)
+    var pred_ta = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred_t)
+    var train_steps = 0
+
     # ── Self-play planner: best nets generate the data (Gumbel exploration on) ──
     var planner = GumbelGPUMCTS[
         N_ENVS, ACT, LATENT, BINS, MAX_NODES, MAX_K, NUM_SIMS, SelfPlay
@@ -651,6 +680,13 @@ def run_muzero_selfplay_arena_gumbel_2p[
     var d_diag_z = ctx.enqueue_create_buffer[DT](B * LATENT)
     var d_diag_pred = ctx.enqueue_create_buffer[DT](B * (ACT + BINS))
     var h_diag_pred = _a(B * (ACT + BINS))
+
+    # ── reanalyze scratch: stored obs + legal mask gathered host→device (its
+    #    own buffers, NOT the live self-play obs/legal). ──
+    var d_reana = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
+    var d_reana_legal = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
+    var h_reana = _a(N_ENVS * OBS)
+    var h_reana_legal = _a(N_ENVS * ACT)
 
     # ── Device buffers ──
     var states = ctx.enqueue_create_buffer[DT](N_ENVS * STATE)
@@ -924,6 +960,14 @@ def run_muzero_selfplay_arena_gumbel_2p[
                         loss_parts=l_parts,
                     )
                 )
+                train_steps += 1
+                if (
+                    target_sync_interval > 0
+                    and train_steps % target_sync_interval == 0
+                ):
+                    hard_copy_params["gpu", M=REP](l_rep, rep_t, ctx)
+                    hard_copy_params["gpu", M=DYN](l_dyn, dyn_t, ctx)
+                    hard_copy_params["gpu", M=PRED](l_pred, pred_t, ctx)
 
         # ── 6b. Per-batch diagnostics → logger. Re-forwards the LEARNER root
         #      prediction on the last train batch (`t_obs0`) and emits loss +
@@ -941,6 +985,65 @@ def run_muzero_selfplay_arena_gumbel_2p[
                 h_diag_pred, t_obs0, t_pol, t_val, l_parts,
                 VMIN, VMAX, last_loss, it + 1, logger.value(),
             )
+
+        # ── 6c. Reanalyze: refresh stale (policy, value) targets on stored
+        #      positions with the lagging target net. Each chunk gathers N_ENVS
+        #      sampled positions' obs + their stored legal mask host→device, runs
+        #      one batched Gumbel search (apply_legal=True — masks the same
+        #      illegal moves the original search did), and writes the fresh root
+        #      policy + value back in place; the n-step targets pick them up on
+        #      the next sample. Lifting `reanalyze_batch` toward B is the
+        #      EfficientZero-style coverage lever. ──
+        if (
+            reanalyze_every > 0
+            and trained
+            and (it + 1) % reanalyze_every == 0
+        ):
+            # target_sync_interval == 0 ⇒ live-net reanalyze: refresh the target
+            # to the current learner weights now (search through rep_ta == l_rep).
+            if target_sync_interval == 0:
+                hard_copy_params["gpu", M=REP](l_rep, rep_t, ctx)
+                hard_copy_params["gpu", M=DYN](l_dyn, dyn_t, ctx)
+                hard_copy_params["gpu", M=PRED](l_pred, pred_t, ctx)
+            var n_chunks = reanalyze_batch // N_ENVS
+            if n_chunks < 1:
+                n_chunks = 1
+            for _c in range(n_chunks):
+                var rpos_e = List[Int]()
+                var rpos_o = List[Int]()
+                for e in range(N_ENVS):
+                    var rpos = rb.sample_position()
+                    rpos_e.append(rpos[0])
+                    rpos_o.append(rpos[1])
+                    var dst = h_reana + e * OBS
+                    rb.read_obs(rpos[0], rpos[1], dst)
+                    var lm = rb.read_legal(rpos[0], rpos[1])
+                    for a in range(ACT):
+                        h_reana_legal[e * ACT + a] = (
+                            Scalar[DT](1.0) if lm[a] else Scalar[DT](0.0)
+                        )
+                ctx.enqueue_copy(d_reana, h_reana)
+                ctx.enqueue_copy(d_reana_legal, h_reana_legal)
+                ctx.enqueue_copy(planner.legal_mask_view(), d_reana_legal)
+                var reana_t = LayoutTensor[
+                    DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
+                ](mptr(d_reana.unsafe_ptr()))
+                planner.search_gpu[
+                    MZRepGPU[OBS, LATENT, REP],
+                    MZDynGPU[LATENT, ACT, BINS, DYN],
+                    MZPredGPU[LATENT, ACT, BINS, PRED],
+                ](
+                    ctx, rep_ta, dyn_ta, pred_ta, reana_t,
+                    apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
+                )
+                mcts_seed += UInt32(1)
+                ctx.enqueue_copy(pol_h, planner.policies_view())
+                ctx.enqueue_copy(val_h, planner.root_value_view())
+                ctx.synchronize()
+                for e in range(N_ENVS):
+                    rb.update_targets(
+                        rpos_e[e], rpos_o[e], pol_h + (e * ACT), val_h[e]
+                    )
 
         # ── 7. Arena gating: learner challenges best ──
         if (
@@ -1063,8 +1166,12 @@ def run_muzero_selfplay_arena_gumbel_2p[
     done_h.free(); rew_h.free(); act_h.free()
     aug_obs.free(); aug_pol.free(); aug_legal.free(); aug_act.free()
     onehot.free(); onehot_out.free()
-    # keep the learner nets alive past the adapters' borrowed pointers.
+    h_reana.free(); h_reana_legal.free()
+    # keep the learner + target nets alive past the adapters' borrowed pointers.
     _ = l_rep^
     _ = l_dyn^
     _ = l_pred^
+    _ = rep_t^
+    _ = dyn_t^
+    _ = pred_t^
     return MZArenaRunResult(last_loss=last_loss, promotions=promotions)
