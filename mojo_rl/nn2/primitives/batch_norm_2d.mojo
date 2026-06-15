@@ -52,6 +52,11 @@ from ..core.target_storage import (
 comptime BN2D_DEFAULT_EPS: Float64 = 1e-5
 comptime BN2D_DEFAULT_MOM: Float64 = 0.1
 comptime BN2D_TPB: Int = 128
+# Reduction blocks per channel (batch-shards). The training stats/grad
+# reductions split each channel's BATCH·SPATIAL reduction across up to this
+# many blocks (one per contiguous batch-row shard) → grid = C·G blocks instead
+# of C, fixing the one-block-per-channel occupancy collapse on large C/spatial.
+comptime BN2D_RBLOCKS: Int = 64
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -62,82 +67,132 @@ comptime BN2D_TPB: Int = 128
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _bn2d_forward_train_kernel[
-    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int,
+# ── Multi-block training forward: partial → finalize → normalize. ──
+# Splits each channel's BATCH·SPATIAL reduction across G batch-shards
+# (G = min(BATCH, BN2D_RBLOCKS)) so the grid is C·G blocks, not C. Stats use
+# the Σx / Σx² one-pass form (var = E[x²] − E[x]², clamped ≥ 0) — one read of
+# the input for stats, one for normalize (was 3 reads in the old single-block
+# kernel). Not bit-identical to the CPU two-pass reference (reduction order +
+# E[x²]−E[x]² differ), but matches within ~1e-3 (see test_batch_norm_2d_multiblock).
+def _bn2d_partial_stats_kernel[
+    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int, G: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    partial_sum:   LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    partial_sumsq: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+):
+    """Pass 1: block (c, g) reduces channel c's batch rows [g·bpb, (g+1)·bpb)
+    over all SPATIAL → Σx, Σx² into partial_{sum,sumsq}[c·G+g]. grid=(C·G,)."""
+    var blk = Int(block_idx.x)
+    var c = blk // G
+    var g = blk % G
+    if c >= C:
+        return
+    var t = Int(thread_idx.x)
+    var bpb = (BATCH + G - 1) // G
+    var b0 = g * bpb
+    var b1 = b0 + bpb
+    if b1 > BATCH:
+        b1 = BATCH
+    var c_off = c * SPATIAL
+    var my_sum: Scalar[DT] = 0.0
+    var my_sumsq: Scalar[DT] = 0.0
+    for b in range(b0, b1):
+        var s = t
+        while s < SPATIAL:
+            var x = rebind[Scalar[DT]](input[b, c_off + s])
+            my_sum += x
+            my_sumsq += x * x
+            s += BN2D_TPB
+    var bsum = block.sum[block_size=BN2D_TPB, broadcast=False](val=my_sum)
+    var bsq = block.sum[block_size=BN2D_TPB, broadcast=False](val=my_sumsq)
+    if t == 0:
+        partial_sum[c * G + g] = bsum[0]
+        partial_sumsq[c * G + g] = bsq[0]
+
+
+def _bn2d_finalize_stats_kernel[
+    BATCH: Int, C: Int, SPATIAL: Int, G: Int,
     EPSILON: Float64, MOMENTUM: Float64,
+](
+    partial_sum:   LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    partial_sumsq: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    running_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_var:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_mean:    LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    """Pass 2: one block per channel sums its G partials → mean, var
+    (E[x²]−E[x]², clamped ≥0), inv_std; folds the finite-guarded running-stat
+    EMA. grid=(C,), block=(1,)."""
+    var c = Int(block_idx.x)
+    if c >= C:
+        return
+    if Int(thread_idx.x) != 0:
+        return
+    var s: Scalar[DT] = 0.0
+    var sq: Scalar[DT] = 0.0
+    for g in range(G):
+        s += rebind[Scalar[DT]](partial_sum[c * G + g])
+        sq += rebind[Scalar[DT]](partial_sumsq[c * G + g])
+    var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(BATCH * SPATIAL))
+    var mean = s * inv_n
+    var var_ = sq * inv_n - mean * mean
+    if var_ < Scalar[DT](0.0):
+        var_ = Scalar[DT](0.0)
+    var inv_std: Scalar[DT] = 1.0 / sqrt(var_ + Scalar[DT](EPSILON))
+    cache_mean[c] = mean
+    cache_inv_std[c] = inv_std
+    # finite-guarded EMA (see the old single-block kernel's note): a float32
+    # blow-up makes batch stats non-finite → folding them pins running_* at ±inf
+    # → eval BN = inf·0 = NaN forever. Skip non-finite updates (`x-x==0` ⇔ finite).
+    if (mean - mean == Scalar[DT](0.0)) and (var_ - var_ == Scalar[DT](0.0)):
+        var mom = Scalar[DT](MOMENTUM)
+        var one_m = Scalar[DT](1.0) - mom
+        running_mean[c] = (
+            one_m * rebind[Scalar[DT]](running_mean[c]) + mom * mean
+        )
+        running_var[c] = (
+            one_m * rebind[Scalar[DT]](running_var[c]) + mom * var_
+        )
+
+
+def _bn2d_normalize_kernel[
+    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int, G: Int,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     beta:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
-    running_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
-    running_var:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
-    cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    cache_mean:    LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
 ):
-    var c = Int(block_idx.x)
-    var t = Int(thread_idx.x)
+    """Pass 3: block (c, g) over batch rows [g·bpb,…) writes x̂ = (x−μ)·inv_std
+    into cache + output = γ·x̂ + β. grid=(C·G,)."""
+    var blk = Int(block_idx.x)
+    var c = blk // G
+    var g = blk % G
     if c >= C:
         return
-
-    var n_eff = BATCH * SPATIAL
-    var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(n_eff))
-    var eps = Scalar[DT](EPSILON)
-    var mom = Scalar[DT](MOMENTUM)
-    var one_m = Scalar[DT](1.0) - mom
+    var t = Int(thread_idx.x)
+    var bpb = (BATCH + G - 1) // G
+    var b0 = g * bpb
+    var b1 = b0 + bpb
+    if b1 > BATCH:
+        b1 = BATCH
     var c_off = c * SPATIAL
-
-    # Three reduction passes (mean, var, xhat/scatter) all step (b, s)
-    # through the per-channel slab as nested loops — avoids a `% SPATIAL`
-    # / `// SPATIAL` per element. Each thread handles
-    # SPATIAL // BN2D_TPB samples per batch (+1 for the tail).
-    var my_sum: Scalar[DT] = 0.0
-    for b in range(BATCH):
-        var s = t
-        while s < SPATIAL:
-            my_sum += rebind[Scalar[DT]](input[b, c_off + s])
-            s += BN2D_TPB
-    var mean = (
-        block.sum[block_size=BN2D_TPB, broadcast=True](val=my_sum) * inv_n
-    )
-
-    var my_var: Scalar[DT] = 0.0
-    for b in range(BATCH):
-        var s = t
-        while s < SPATIAL:
-            var d = rebind[Scalar[DT]](input[b, c_off + s]) - mean
-            my_var += d * d
-            s += BN2D_TPB
-    var var_ = (
-        block.sum[block_size=BN2D_TPB, broadcast=True](val=my_var) * inv_n
-    )
-
-    var inv_std: Scalar[DT] = 1.0 / sqrt(var_ + eps)
-    if t == 0:
-        cache_inv_std[c] = inv_std
-        # Only fold FINITE batch stats into the running averages. A float32
-        # train-mode activation blow-up makes batch mean/var non-finite; folding
-        # that in pins running_mean/var at ±inf forever, after which EVAL-mode BN
-        # computes (x - inf)·(1/√inf) = inf·0 = NaN — which silently corrupts
-        # inference (MCTS self-play → NaN improved policies → garbage training
-        # data). Skipping the non-finite update keeps the running stats at their
-        # last finite value, so eval stays finite. `x - x == 0` ⇔ x finite.
-        if (mean - mean == 0.0) and (var_ - var_ == 0.0):
-            var rm = rebind[Scalar[DT]](running_mean[c])
-            var rv = rebind[Scalar[DT]](running_var[c])
-            running_mean[c] = one_m * rm + mom * mean
-            running_var[c]  = one_m * rv + mom * var_
-
-    var g = rebind[Scalar[DT]](gamma[c])
+    var mean = rebind[Scalar[DT]](cache_mean[c])
+    var inv_std = rebind[Scalar[DT]](cache_inv_std[c])
+    var gm = rebind[Scalar[DT]](gamma[c])
     var bt = rebind[Scalar[DT]](beta[c])
-    for b in range(BATCH):
+    for b in range(b0, b1):
         var s = t
         while s < SPATIAL:
             var off = c_off + s
-            var x = rebind[Scalar[DT]](input[b, off])
-            var xh = (x - mean) * inv_std
+            var xh = (rebind[Scalar[DT]](input[b, off]) - mean) * inv_std
             cache_xhat[b, off] = xh
-            output[b, off] = g * xh + bt
+            output[b, off] = gm * xh + bt
             s += BN2D_TPB
 
 
@@ -171,75 +226,133 @@ def _bn2d_forward_eval_kernel[
             s += BN2D_TPB
 
 
-def _bn2d_backward_kernel[
-    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int,
+# ── Multi-block backward: partial → finalize → scatter (mirrors forward). ──
+def _bn2d_bwd_partial_kernel[
+    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int, G: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    p_dxhat:     LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    p_dxhat_xhat: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    p_dgamma:    LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    p_dbeta:     LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+):
+    """Pass 1: block (c, g) reduces its batch-shard → Σdx̂, Σdx̂·x̂, Σdγ, Σdβ
+    into the four partial[c·G+g] buffers. grid=(C·G,)."""
+    var blk = Int(block_idx.x)
+    var c = blk // G
+    var g = blk % G
+    if c >= C:
+        return
+    var t = Int(thread_idx.x)
+    var bpb = (BATCH + G - 1) // G
+    var b0 = g * bpb
+    var b1 = b0 + bpb
+    if b1 > BATCH:
+        b1 = BATCH
+    var gm = rebind[Scalar[DT]](gamma[c])
+    var c_off = c * SPATIAL
+    var s_dxhat: Scalar[DT] = 0.0
+    var s_dxx: Scalar[DT] = 0.0
+    var s_dg: Scalar[DT] = 0.0
+    var s_db: Scalar[DT] = 0.0
+    for b in range(b0, b1):
+        var s = t
+        while s < SPATIAL:
+            var off = c_off + s
+            var dy = rebind[Scalar[DT]](grad_output[b, off])
+            var xh = rebind[Scalar[DT]](cache_xhat[b, off])
+            var dxhat = dy * gm
+            s_dxhat += dxhat
+            s_dxx += dxhat * xh
+            s_dg += dy * xh
+            s_db += dy
+            s += BN2D_TPB
+    var a = block.sum[block_size=BN2D_TPB, broadcast=False](val=s_dxhat)
+    var bb = block.sum[block_size=BN2D_TPB, broadcast=False](val=s_dxx)
+    var cc = block.sum[block_size=BN2D_TPB, broadcast=False](val=s_dg)
+    var dd = block.sum[block_size=BN2D_TPB, broadcast=False](val=s_db)
+    if t == 0:
+        p_dxhat[c * G + g] = a[0]
+        p_dxhat_xhat[c * G + g] = bb[0]
+        p_dgamma[c * G + g] = cc[0]
+        p_dbeta[c * G + g] = dd[0]
+
+
+def _bn2d_bwd_finalize_kernel[
+    BATCH: Int, C: Int, SPATIAL: Int, G: Int, mode: StaticString,
+](
+    p_dxhat:     LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    p_dxhat_xhat: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    p_dgamma:    LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    p_dbeta:     LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    m1_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    m2_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_beta:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    """Pass 2: one block per channel sums its G partials → m1 = Σdx̂/N,
+    m2 = Σdx̂·x̂/N; accumulates grad_gamma/beta when mode=="all". grid=(C,)."""
+    var c = Int(block_idx.x)
+    if c >= C:
+        return
+    if Int(thread_idx.x) != 0:
+        return
+    var sa: Scalar[DT] = 0.0
+    var sb: Scalar[DT] = 0.0
+    var sg: Scalar[DT] = 0.0
+    var sd: Scalar[DT] = 0.0
+    for g in range(G):
+        sa += rebind[Scalar[DT]](p_dxhat[c * G + g])
+        sb += rebind[Scalar[DT]](p_dxhat_xhat[c * G + g])
+        sg += rebind[Scalar[DT]](p_dgamma[c * G + g])
+        sd += rebind[Scalar[DT]](p_dbeta[c * G + g])
+    var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(BATCH * SPATIAL))
+    m1_out[c] = sa * inv_n
+    m2_out[c] = sb * inv_n
+    comptime if mode == "all":
+        grad_gamma[c] = rebind[Scalar[DT]](grad_gamma[c]) + sg
+        grad_beta[c] = rebind[Scalar[DT]](grad_beta[c]) + sd
+
+
+def _bn2d_bwd_scatter_kernel[
+    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int, G: Int,
 ](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    m1: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    m2: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     grad_input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
-    grad_gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
-    grad_beta:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
 ):
-    var c = Int(block_idx.x)
-    var t = Int(thread_idx.x)
+    """Pass 3: block (c, g) writes grad_input = inv_std·(dx̂ − m1 − x̂·m2)
+    over its batch-shard. grid=(C·G,)."""
+    var blk = Int(block_idx.x)
+    var c = blk // G
+    var g = blk % G
     if c >= C:
         return
-    var n_eff = BATCH * SPATIAL
-    var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(n_eff))
-    var g = rebind[Scalar[DT]](gamma[c])
+    var t = Int(thread_idx.x)
+    var bpb = (BATCH + G - 1) // G
+    var b0 = g * bpb
+    var b1 = b0 + bpb
+    if b1 > BATCH:
+        b1 = BATCH
+    var gm = rebind[Scalar[DT]](gamma[c])
     var inv_std = rebind[Scalar[DT]](cache_inv_std[c])
+    var mm1 = rebind[Scalar[DT]](m1[c])
+    var mm2 = rebind[Scalar[DT]](m2[c])
     var c_off = c * SPATIAL
-
-    # Same nested-(b, s) traversal as the forward — avoids per-element
-    # `% SPATIAL` / `// SPATIAL` divisions.
-    var my_sum_dxhat: Scalar[DT] = 0.0
-    var my_sum_dxhat_xhat: Scalar[DT] = 0.0
-    var my_dgamma: Scalar[DT] = 0.0
-    var my_dbeta:  Scalar[DT] = 0.0
-    for b in range(BATCH):
+    for b in range(b0, b1):
         var s = t
         while s < SPATIAL:
             var off = c_off + s
             var dy = rebind[Scalar[DT]](grad_output[b, off])
             var xh = rebind[Scalar[DT]](cache_xhat[b, off])
-            var dxhat = dy * g
-            my_sum_dxhat += dxhat
-            my_sum_dxhat_xhat += dxhat * xh
-            my_dgamma += dy * xh
-            my_dbeta  += dy
-            s += BN2D_TPB
-    var sum_dxhat = block.sum[block_size=BN2D_TPB, broadcast=True](
-        val=my_sum_dxhat
-    )
-    var sum_dxhat_xhat = block.sum[block_size=BN2D_TPB, broadcast=True](
-        val=my_sum_dxhat_xhat
-    )
-    var d_gamma_tot = block.sum[block_size=BN2D_TPB, broadcast=False](
-        val=my_dgamma
-    )
-    var d_beta_tot = block.sum[block_size=BN2D_TPB, broadcast=False](
-        val=my_dbeta
-    )
-    if t == 0:
-        grad_gamma[c] = (
-            rebind[Scalar[DT]](grad_gamma[c]) + d_gamma_tot[0]
-        )
-        grad_beta[c] = (
-            rebind[Scalar[DT]](grad_beta[c]) + d_beta_tot[0]
-        )
-
-    var m1 = sum_dxhat * inv_n
-    var m2 = sum_dxhat_xhat * inv_n
-    for b in range(BATCH):
-        var s = t
-        while s < SPATIAL:
-            var off = c_off + s
-            var dy = rebind[Scalar[DT]](grad_output[b, off])
-            var xh = rebind[Scalar[DT]](cache_xhat[b, off])
-            var dxhat = dy * g
-            grad_input[b, off] = inv_std * (dxhat - m1 - xh * m2)
+            var dxhat = dy * gm
+            grad_input[b, off] = inv_std * (dxhat - mm1 - xh * mm2)
             s += BN2D_TPB
 
 
@@ -264,6 +377,16 @@ struct BatchNorm2D[
     var cache_inv_std: List[Scalar[DT]]  # [C]
     var cache_xhat_dev: Optional[DeviceBuffer[DT]]
     var cache_inv_std_dev: Optional[DeviceBuffer[DT]]
+    var cache_mean_dev: Optional[DeviceBuffer[DT]]   # [C] — multi-block forward
+    # Multi-block reduction scratch (all [C·BN2D_RBLOCKS] or [C]; G≤RBLOCKS used).
+    # Forward partials reuse psum/psumsq; backward adds dgamma/dbeta partials +
+    # m1/m2 channel buffers.
+    var bn_psum_dev:   Optional[DeviceBuffer[DT]]    # [C·RBLOCKS] Σx / Σdx̂
+    var bn_psumsq_dev: Optional[DeviceBuffer[DT]]    # [C·RBLOCKS] Σx² / Σdx̂·x̂
+    var bn_pdg_dev:    Optional[DeviceBuffer[DT]]    # [C·RBLOCKS] Σdγ
+    var bn_pdb_dev:    Optional[DeviceBuffer[DT]]    # [C·RBLOCKS] Σdβ
+    var bn_m1_dev:     Optional[DeviceBuffer[DT]]    # [C] backward m1
+    var bn_m2_dev:     Optional[DeviceBuffer[DT]]    # [C] backward m2
     var cache_n_batch: Int
     var cache_is_training: Bool
     var training: Bool
@@ -278,6 +401,13 @@ struct BatchNorm2D[
         self.cache_inv_std = List[Scalar[DT]]()
         self.cache_xhat_dev = None
         self.cache_inv_std_dev = None
+        self.cache_mean_dev = None
+        self.bn_psum_dev = None
+        self.bn_psumsq_dev = None
+        self.bn_pdg_dev = None
+        self.bn_pdb_dev = None
+        self.bn_m1_dev = None
+        self.bn_m2_dev = None
         self.cache_n_batch = 0
         self.cache_is_training = False
         self.training = True
@@ -328,6 +458,14 @@ struct BatchNorm2D[
             bn.running_var.t.dev.value().enqueue_fill(1.0)
             bn.cache_xhat_dev    = ctx_v.enqueue_create_buffer[DT](1)
             bn.cache_inv_std_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
+            bn.cache_mean_dev    = ctx_v.enqueue_create_buffer[DT](Self.C)
+            comptime PR = Self.C * BN2D_RBLOCKS
+            bn.bn_psum_dev   = ctx_v.enqueue_create_buffer[DT](PR)
+            bn.bn_psumsq_dev = ctx_v.enqueue_create_buffer[DT](PR)
+            bn.bn_pdg_dev    = ctx_v.enqueue_create_buffer[DT](PR)
+            bn.bn_pdb_dev    = ctx_v.enqueue_create_buffer[DT](PR)
+            bn.bn_m1_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
+            bn.bn_m2_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
             bn.cache_n_batch = 0
             bn.ts = TargetStorage.make_gpu(ctx_v)
         return bn^
@@ -455,14 +593,42 @@ struct BatchNorm2D[
                 var is_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
                     self.cache_inv_std_dev.value()
                 )
-                comptime fkernel = _bn2d_forward_train_kernel[
-                    BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM,
+                var mean_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
+                    self.cache_mean_dev.value()
+                )
+                # G batch-shards per channel (≤ BATCH and ≤ BN2D_RBLOCKS).
+                comptime G = BATCH if BATCH < BN2D_RBLOCKS else BN2D_RBLOCKS
+                comptime layout_pr = Layout.row_major(Self.C * G)
+                var psum_lt = LayoutTensor[DT, layout_pr, MutAnyOrigin](
+                    self.bn_psum_dev.value()
+                )
+                var psumsq_lt = LayoutTensor[DT, layout_pr, MutAnyOrigin](
+                    self.bn_psumsq_dev.value()
+                )
+                # Pass 1: C·G blocks → partial Σx, Σx².
+                comptime pk = _bn2d_partial_stats_kernel[
+                    BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM, G,
+                ]
+                ctx.enqueue_function[pk](
+                    in_lt, psum_lt, psumsq_lt,
+                    grid_dim=Self.C * G, block_dim=BN2D_TPB,
+                )
+                # Pass 2: C blocks → mean/var/inv_std + running-stat EMA.
+                comptime ck = _bn2d_finalize_stats_kernel[
+                    BATCH, Self.C, Self.SPATIAL, G,
                     Self.EPSILON, Self.MOMENTUM,
                 ]
-                ctx.enqueue_function[fkernel](
-                    in_lt, out_lt, g_lt, b_lt, rm_lt, rv_lt,
-                    xh_lt, is_lt,
-                    grid_dim=Self.C, block_dim=BN2D_TPB,
+                ctx.enqueue_function[ck](
+                    psum_lt, psumsq_lt, rm_lt, rv_lt, mean_lt, is_lt,
+                    grid_dim=Self.C, block_dim=1,
+                )
+                # Pass 3: C·G blocks → normalize + cache x̂.
+                comptime nk = _bn2d_normalize_kernel[
+                    BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM, G,
+                ]
+                ctx.enqueue_function[nk](
+                    in_lt, out_lt, g_lt, b_lt, mean_lt, is_lt, xh_lt,
+                    grid_dim=Self.C * G, block_dim=BN2D_TPB,
                 )
                 self.cache_is_training = True
             else:
@@ -567,12 +733,50 @@ struct BatchNorm2D[
             var db_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
                 self.beta.grd.dev.value()
             )
-            comptime kernel = _bn2d_backward_kernel[
-                BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM,
+            var ctx = self.ts.ctx.value()
+            comptime G = BATCH if BATCH < BN2D_RBLOCKS else BN2D_RBLOCKS
+            comptime layout_pr = Layout.row_major(Self.C * G)
+            var pa_lt = LayoutTensor[DT, layout_pr, MutAnyOrigin](
+                self.bn_psum_dev.value()        # reuse: Σdx̂
+            )
+            var pb_lt = LayoutTensor[DT, layout_pr, MutAnyOrigin](
+                self.bn_psumsq_dev.value()      # reuse: Σdx̂·x̂
+            )
+            var pdg_lt = LayoutTensor[DT, layout_pr, MutAnyOrigin](
+                self.bn_pdg_dev.value()
+            )
+            var pdb_lt = LayoutTensor[DT, layout_pr, MutAnyOrigin](
+                self.bn_pdb_dev.value()
+            )
+            var m1_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
+                self.bn_m1_dev.value()
+            )
+            var m2_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
+                self.bn_m2_dev.value()
+            )
+            # Pass 1: C·G blocks → partial Σdx̂, Σdx̂·x̂, Σdγ, Σdβ.
+            comptime bpk = _bn2d_bwd_partial_kernel[
+                BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM, G,
             ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, g_lt, xh_lt, is_lt, gi_lt, dg_lt, db_lt,
-                grid_dim=Self.C, block_dim=BN2D_TPB,
+            ctx.enqueue_function[bpk](
+                go_lt, g_lt, xh_lt, pa_lt, pb_lt, pdg_lt, pdb_lt,
+                grid_dim=Self.C * G, block_dim=BN2D_TPB,
+            )
+            # Pass 2: C blocks → m1, m2 + accumulate grad_gamma/beta (mode).
+            comptime bfk = _bn2d_bwd_finalize_kernel[
+                BATCH, Self.C, Self.SPATIAL, G, mode,
+            ]
+            ctx.enqueue_function[bfk](
+                pa_lt, pb_lt, pdg_lt, pdb_lt, m1_lt, m2_lt, dg_lt, db_lt,
+                grid_dim=Self.C, block_dim=1,
+            )
+            # Pass 3: C·G blocks → grad_input scatter.
+            comptime bsk = _bn2d_bwd_scatter_kernel[
+                BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM, G,
+            ]
+            ctx.enqueue_function[bsk](
+                go_lt, g_lt, xh_lt, is_lt, m1_lt, m2_lt, gi_lt,
+                grid_dim=Self.C * G, block_dim=BN2D_TPB,
             )
 
     # Inline helper so we don't read `beta.value` through `value_unsafe_ptr_cpu`
