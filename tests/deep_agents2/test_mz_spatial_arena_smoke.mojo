@@ -11,10 +11,14 @@ arena's `hard_copy_params` over the graph. Asserts a finite loss.
 
 from std.gpu.host import DeviceContext
 
+from layout import TileTensor, row_major
+
 from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.module import mptr
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.deep_agents2.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
+    mzc4_init_zero_pred, mzc4_init_zero_dyn,
 )
 from mojo_rl.deep_agents2.muzero.selfplay_arena_gumbel_2p import (
     run_muzero_selfplay_arena_gumbel_2p,
@@ -43,6 +47,36 @@ def main() raises:
     var rep = Rep.make["gpu", INIT=Kaiming](ctx=ctx)
     var dyn = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
     var pred = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
+    mzc4_init_zero_pred["gpu", CH, ACT, BINS, HH, WW](pred, ctx)
+    mzc4_init_zero_dyn["gpu", CH, ACT, BINS, HH, WW](dyn, ctx)
+
+    # Verify zero-init actually matched the head param names (a wrong name is a
+    # SILENT no-op): forward pred on a zero latent — with the output Linear
+    # zeroed the value logits must be exactly 0 (else the names didn't match).
+    var d_z = ctx.enqueue_create_buffer[DT](LATENT)
+    var d_out = ctx.enqueue_create_buffer[DT](ACT + BINS)
+    var h_z = ctx.enqueue_create_host_buffer[DT](LATENT)
+    var h_out = ctx.enqueue_create_host_buffer[DT](ACT + BINS)
+    for i in range(LATENT):
+        h_z.unsafe_ptr()[i] = Scalar[DT](0.0)
+    ctx.enqueue_copy(d_z, h_z)
+    ctx.synchronize()
+    var z_t = TileTensor(mptr(d_z.unsafe_ptr()), row_major[1, LATENT]())
+    var out_t = TileTensor(mptr(d_out.unsafe_ptr()), row_major[1, ACT + BINS]())
+    pred.forward["gpu", 1](z_t, output=out_t)
+    ctx.enqueue_copy(h_out, d_out)
+    ctx.synchronize()
+    var vmax = 0.0
+    for i in range(ACT, ACT + BINS):
+        var v = abs(Float64(h_out.unsafe_ptr()[i]))
+        if v > vmax:
+            vmax = v
+    print("zero-init check: value-logit max-abs =", vmax, "(expect 0.0)")
+    if vmax > 1e-6:
+        raise Error(
+            "zero-init did NOT apply (value head not zeroed — param name"
+            " mismatch); got max-abs " + String(vmax)
+        )
 
     var res = run_muzero_selfplay_arena_gumbel_2p[
         Env, Rep, Dyn, Pred, Aug,

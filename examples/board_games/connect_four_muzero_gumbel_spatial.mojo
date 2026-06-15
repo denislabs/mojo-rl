@@ -32,6 +32,7 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents2.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
+    mzc4_init_zero_pred, mzc4_init_zero_dyn,
 )
 from mojo_rl.deep_agents2.muzero.selfplay_arena_gumbel_2p import (
     run_muzero_selfplay_arena_gumbel_2p,
@@ -91,6 +92,11 @@ def main() raises:
     var rep = Rep.make["gpu", INIT=Kaiming](ctx=ctx)
     var dyn = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
     var pred = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
+    # init_zero (EZv2): zero the policy/value/reward head output Linears so the
+    # model starts with a uniform policy prior + neutral value/reward — stable
+    # MCTS targets early and more early exploration (composes with temp_min).
+    mzc4_init_zero_pred["gpu", CH, ACT, BINS, HH, WW](pred, ctx)
+    mzc4_init_zero_dyn["gpu", CH, ACT, BINS, HH, WW](dyn, ctx)
 
     var res = run_muzero_selfplay_arena_gumbel_2p[
         Env, Rep, Dyn, Pred, Aug,
@@ -124,8 +130,12 @@ def main() raises:
         do_eval2=True,
         verbose=True,
         logger=UnsafePointer(to=logger),
-        selfplay_open_plies=4,
-        temp_min=0.35,
+        # Stronger anti-sharpening: the column-marked dynamics produces more
+        # confident search → sharper improved-policy targets → faster diversity
+        # collapse. temp_min 0.35→0.5 + open_plies 4→6 widen the self-play
+        # distribution to offset it (paired with the init_zero uniform prior).
+        selfplay_open_plies=6,
+        temp_min=0.5,
         eval_open_plies=4,
         reanalyze_every=4,
         reanalyze_batch=128,

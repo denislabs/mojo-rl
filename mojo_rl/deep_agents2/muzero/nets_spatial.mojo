@@ -50,6 +50,9 @@ from mojo_rl.nn2.primitives.slice import Slice
 from mojo_rl.nn2.primitives.concat import Concat
 from mojo_rl.nn2.primitives.add import Add
 from mojo_rl.nn2.primitives.broadcast_tokens import BroadcastTokens
+from mojo_rl.deep_agents2.dreamerv3.zero_init import (
+    scale_output_module, scale_output_graph,
+)
 
 
 # ── BN-free identity-skip residual conv block (3×3, pad 1 → H×W preserved) ──
@@ -296,3 +299,58 @@ comptime MZPredNetC4Spatial[
         ],
     ],
 ]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# init_zero (EZv2 `init_zero=True`) — scale each head's OUTPUT Linear at init.
+#
+# Zeros the last Linear of the policy + value heads (prediction) and the reward
+# head (dynamics), so the model starts with a uniform policy prior and neutral
+# value/reward predictions (stable MCTS targets before the heads have learned,
+# and more early self-play exploration from the uniform prior). `scale=0.0` is
+# exact zero-init; a small scale keeps some Kaiming asymmetry.
+#
+# Param names follow the combinator naming (Sequential→`.{i}`, Parallel→`.a`/
+# `.b`, ComputeGraph node→`.{node}`, Linear leaf→`.weight`/`.bias`). These torsos
+# are BN-FREE, so each head's output Linear is one index earlier than EZv2's
+# BN heads:
+#   • MZPredNetC4Spatial = Sequential[ResBlock(0), ReLU(1), Parallel(2)[a, b]];
+#     each head is Sequential[Conv(0), ReLU(1), Linear(2), ReLU(3), Linear(4)],
+#     so the output Linears are `2.a.4.*` (policy) / `2.b.4.*` (value).
+#   • MZDynC4SpatialGraph reward branch is node `rew` (a 5-child Sequential); its
+#     output Linear is child 4 → `rew.4.*`.
+# Only the OUTPUT layer is scaled — scaling the whole head chokes the hidden
+# layers' gradient (see zero_init.mojo).
+# ──────────────────────────────────────────────────────────────────────
+def mzc4_init_zero_pred[
+    target: StaticString,
+    C: Int, ACT: Int, BINS: Int, H: Int, W: Int,
+    REDC: Int = 16, FC: Int = 64,
+](
+    mut pred: MZPredNetC4Spatial[C, ACT, BINS, H, W, REDC, FC],
+    ctx: Optional[DeviceContext] = None,
+    scale: Scalar[DT] = Scalar[DT](0.0),
+) raises:
+    """Zero (or `scale`) the policy + value head output Linears → uniform policy
+    + neutral value at init."""
+    scale_output_module[target, MZPredNetC4Spatial[C, ACT, BINS, H, W, REDC, FC]](
+        pred, "2.a.4.weight", "2.a.4.bias", scale, ctx
+    )
+    scale_output_module[target, MZPredNetC4Spatial[C, ACT, BINS, H, W, REDC, FC]](
+        pred, "2.b.4.weight", "2.b.4.bias", scale, ctx
+    )
+
+
+def mzc4_init_zero_dyn[
+    target: StaticString,
+    C: Int, ACT: Int, BINS: Int, H: Int, W: Int, REDC: Int = 16,
+](
+    mut dyn: MZDynNetC4Spatial[C, ACT, BINS, H, W, REDC],
+    ctx: Optional[DeviceContext] = None,
+    scale: Scalar[DT] = Scalar[DT](0.0),
+) raises:
+    """Zero (or `scale`) the reward head output Linear → neutral reward at init.
+    """
+    scale_output_graph[target](
+        dyn.graph, "rew.4.weight", "rew.4.bias", scale, ctx
+    )
