@@ -18,3 +18,10 @@ from .selfplay_gpu_batched import (
     run_muzero_gumbel_selfplay_gpu_batched_devreplay,
 )
 from .selfplay_2p_cpu import run_muzero_selfplay_2p_cpu
+from .selfplay_arena_gumbel_2p import (
+    run_muzero_selfplay_arena_gumbel_2p,
+    mz_candidate_winrate,
+    mz_eval_both_colors,
+    MZArenaResult,
+    MZArenaRunResult,
+)
