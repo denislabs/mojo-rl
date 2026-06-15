@@ -123,6 +123,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     report_every: Int = 0,
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
+    diag_sync: Bool = False,
 ) raises -> Float64:
     comptime assert ENV.OBS_DIM == OBS, "batched EZv2: ENV.OBS_DIM must equal OBS"
 
@@ -248,8 +249,10 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     # [0]setup/H2D [1]fwd-scan [2]target-prepass [3]reverse-scan [4]rep-vjp+opt
     # [5]finalize/sync ; reverse-scan sub-splits: [6]pred.fwd [7]pred.vjp
     # [8]consistency-branch [9]dyn.fwd [10]dyn.vjp
-    var phase_ns = alloc[Float64](11)
-    for i in range(11):
+    # extra diag slots: [12] dyn.vjp GPU-drain, [14] pred.vjp GPU-drain
+    # (filled only when diag_sync=True; [7]/[10] then = pure host enqueue)
+    var phase_ns = alloc[Float64](16)
+    for i in range(16):
         phase_ns[i] = 0.0
 
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=seed)
@@ -384,6 +387,7 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                         is_weights=t_isw, out_prio=t_prio,
                         obs_on_device=True,
                         phase_ns=mptr(phase_ns),
+                        diag_sync=diag_sync,
                     )
                 )
                 ts_t_step += Float64(perf_counter_ns() - _tstep)
@@ -538,6 +542,11 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
         print("  rev calls (s): pred.fwd", phase_ns[6] / 1e9, "pred.vjp",
               phase_ns[7] / 1e9, "cons", phase_ns[8] / 1e9, "dyn.fwd",
               phase_ns[9] / 1e9, "dyn.vjp", phase_ns[10] / 1e9)
+        if diag_sync:
+            print("  DIAG (diag_sync): pred.vjp host", phase_ns[7] / 1e9,
+                  "pred.vjp GPU", phase_ns[14] / 1e9,
+                  "| dyn.vjp host", phase_ns[10] / 1e9,
+                  "dyn.vjp GPU", phase_ns[12] / 1e9)
         print("  TOTAL timed", total / 1e9, "s  (", (total / 1e9) / n,
               "s/iter )")
         print("=" * 60)

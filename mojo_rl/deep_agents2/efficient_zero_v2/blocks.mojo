@@ -400,6 +400,7 @@ def ezv2_unroll_train_step_gpu[
     out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
     obs_on_device: Bool = False,
     phase_ns: Optional[UnsafePointer[Float64, MutAnyOrigin]] = None,
+    diag_sync: Bool = False,
 ) raises -> Scalar[DT]:
     """GPU EZv2 K-step unroll training step — device mirror of
     ``ezv2_unroll_train_step_cpu`` (MuZero BPTT + SimSiam consistency,
@@ -636,10 +637,16 @@ def ezv2_unroll_train_step_gpu[
             )
         var gpout_t = TileTensor(p_gpout, row_major[B, PRED_OUT]())
         var gpin_t = TileTensor(p_gpin, row_major[B, LATENT]())
+        if diag_sync:   # drain → [7] measures pure host enqueue
+            ctx.synchronize()
         _rt = perf_counter_ns()
         pred.vjp["gpu", B](gpout_t, gpin_t)
-        if phase_ns:   # [7] pred.vjp
+        if phase_ns:   # [7] pred.vjp (pure host enqueue when diag_sync)
             phase_ns.value()[7] += Float64(perf_counter_ns() - _rt)
+        if diag_sync and phase_ns:   # [14] pred.vjp GPU drain
+            var _rd = perf_counter_ns()
+            ctx.synchronize()
+            phase_ns.value()[14] += Float64(perf_counter_ns() - _rd)
 
         # (b) consistency online branch (k >= 1): p_k = h_pred(g_proj(z_k))
         if k >= 1:
@@ -718,10 +725,16 @@ def ezv2_unroll_train_step_gpu[
                 )
             var gdout_t = TileTensor(p_gdout, row_major[B, DYN_OUT]())
             var gdin_t = TileTensor(p_gdin, row_major[B, DYN_IN]())
+            if diag_sync:   # drain → [10] measures pure host enqueue
+                ctx.synchronize()
             _rt = perf_counter_ns()
             dyn.vjp["gpu", B](gdout_t, gdin_t)
-            if phase_ns:   # [10] dyn.vjp
+            if phase_ns:   # [10] dyn.vjp (pure host enqueue when diag_sync)
                 phase_ns.value()[10] += Float64(perf_counter_ns() - _rt)
+            if diag_sync and phase_ns:   # [12] dyn.vjp GPU drain
+                var _rd = perf_counter_ns()
+                ctx.synchronize()
+                phase_ns.value()[12] += Float64(perf_counter_ns() - _rd)
             ctx.enqueue_function[kHalf](
                 _lt[B * LATENT](p_gpin),
                 _lt[B * DYN_IN](p_gdin),

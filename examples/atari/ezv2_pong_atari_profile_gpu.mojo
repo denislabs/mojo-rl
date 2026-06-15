@@ -136,8 +136,8 @@ def main() raises:
     ](
         ctx, env, rep, dyn, pred, proj, predh,
         orep, odyn, opred, oproj, opredh,
-        iterations=200,                 # ~160 training iters captured
-        learning_starts=160,            # 4 envs × 40 steps → train @ ~iter 40
+        iterations=60,                  # DIAG: short training-dominated window
+        learning_starts=40,             # 4 envs × 10 steps → train @ ~iter 10
         train_per_iter=N_ENVS,          # UTD 1:1 (real)
         lr=Scalar[DT](0.2),
         lr_warmup_iters=50,
@@ -146,12 +146,13 @@ def main() raises:
         v_max=Scalar[DT](300.0),
         value_coef=Scalar[DT](0.5),
         consistency_coef=Scalar[DT](5.0),
-        max_ep_steps=40,                # truncate episodes → fast buffer fill
+        max_ep_steps=10,                # truncate episodes → fast buffer fill
         reanalyze_every=1,
         reanalyze_batch=B,              # ratio 1.0 (real) → 4 wide searches/iter
         eval_every=0,                   # eval off (no stall in the window)
         seed=42,
         verbose=True,                   # per-section [time s] every 100 iters
+        diag_sync=True,                 # DIAG: split vjp host-enqueue vs GPU
     )
     _ = env^
     print("final loss:", loss)
