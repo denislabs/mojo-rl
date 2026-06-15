@@ -68,6 +68,7 @@ def main() raises:
         do_eval2=False,
         verbose=True,
         selfplay_open_plies=2,
+        temp_min=0.35,
         eval_open_plies=2,
         # exercise the reanalyze path (live-learner: target_sync_interval=0)
         reanalyze_every=2,

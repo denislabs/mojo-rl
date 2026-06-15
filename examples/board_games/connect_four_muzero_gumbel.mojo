@@ -122,7 +122,9 @@ def main() raises:
         train_per_iter=4,
         lr=Scalar[DT](2e-3),
         gamma=Scalar[DT](1.0),
-        value_coef=Scalar[DT](0.25),
+        # Value head was the weak/unstable head in the no-reanalyze run
+        # (value_mse crept up while policy CE fell) — give it more gradient.
+        value_coef=Scalar[DT](0.5),
         max_grad_norm=Scalar[DT](1.0),
         seed=42,
         arena_every=2_000,
@@ -134,7 +136,12 @@ def main() raises:
         do_eval2=True,
         verbose=True,
         logger=UnsafePointer(to=logger),
-        selfplay_open_plies=2,
+        # Diversity levers against the self-play collapse seen without these:
+        # more random opening plies + a temperature floor so play stays
+        # stochastic past the opening (AlphaZero.jl uses temp≈0.3 throughout)
+        # instead of going fully greedy and narrowing the replay distribution.
+        selfplay_open_plies=4,
+        temp_min=0.35,
         eval_open_plies=4,
         # Reanalyze: every 4 moves, re-target B stored positions with a lagging
         # target net (synced from the learner every 200 grad steps) — the

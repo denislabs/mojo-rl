@@ -603,6 +603,9 @@ def run_muzero_selfplay_arena_gumbel_2p[
     selfplay_open_plies: Int = 2,
     eval_open_plies: Int = 4,
     temperature_decay_steps: Int = 0,
+    temp_min: Float64 = 0.0,         # post-TEMP_MOVES sampling temperature; 0 =
+    #                                  greedy (legacy), ~0.3 keeps self-play
+    #                                  stochastic to preserve replay diversity.
     qnorm_per_node: Bool = True,
     reanalyze_every: Int = 0,        # moves between reanalyze triggers (0 = off)
     reanalyze_batch: Int = N_ENVS,   # stored positions re-targeted per trigger,
@@ -821,23 +824,37 @@ def run_muzero_selfplay_arena_gumbel_2p[
                                 a_sel = a
                                 break
                             seen += 1
-            elif ply < TEMP_MOVES:
-                var wsum = 0.0
-                var w = List[Float64](capacity=ACT)
-                for a in range(ACT):
-                    var p = Float64(pol_h[e * ACT + a])
-                    if temp != 1.0 and p > 0.0:
-                        p = exp(log(p) / temp)
-                    w.append(p)
-                    wsum += p
-                rng = _xs(rng)
-                var r = Float64(rng % UInt64(1_000_000)) / 1_000_000.0 * wsum
-                var cum = 0.0
-                for a in range(ACT):
-                    cum += w[a]
-                    if r <= cum and w[a] > 0.0:
-                        a_sel = a
-                        break
+            else:
+                # Effective temperature: the scheduled `temp` for the first
+                # TEMP_MOVES plies, then `temp_min` thereafter. temp_min > 0
+                # keeps play stochastic (∝ visits^(1/temp_min)) instead of fully
+                # greedy — the AlphaZero.jl convention (temp≈0.3 throughout).
+                # Fully-greedy late play collapses self-play diversity: the
+                # over-sharpened Gumbel targets make every game near-determi-
+                # nistic, the replay narrows, and the net overfits a shrinking
+                # set of lines and regresses vs unseen opponents. temp_min = 0.0
+                # (default) recovers the old greedy-after-opening behaviour.
+                var eff_temp = temp if ply < TEMP_MOVES else temp_min
+                if eff_temp > 0.0:
+                    var wsum = 0.0
+                    var w = List[Float64](capacity=ACT)
+                    for a in range(ACT):
+                        var p = Float64(pol_h[e * ACT + a])
+                        if eff_temp != 1.0 and p > 0.0:
+                            p = exp(log(p) / eff_temp)
+                        w.append(p)
+                        wsum += p
+                    rng = _xs(rng)
+                    var r = (
+                        Float64(rng % UInt64(1_000_000)) / 1_000_000.0 * wsum
+                    )
+                    var cum = 0.0
+                    for a in range(ACT):
+                        cum += w[a]
+                        if r <= cum and w[a] > 0.0:
+                            a_sel = a
+                            break
+                # eff_temp <= 0 → greedy: fall through to the argmax below.
             if a_sel < 0:
                 var bv = -1.0
                 for a in range(ACT):
