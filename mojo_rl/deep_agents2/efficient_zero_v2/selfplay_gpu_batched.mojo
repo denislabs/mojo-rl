@@ -249,10 +249,11 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     # [0]setup/H2D [1]fwd-scan [2]target-prepass [3]reverse-scan [4]rep-vjp+opt
     # [5]finalize/sync ; reverse-scan sub-splits: [6]pred.fwd [7]pred.vjp
     # [8]consistency-branch [9]dyn.fwd [10]dyn.vjp
-    # extra diag slots: [12] dyn.vjp GPU-drain, [14] pred.vjp GPU-drain
-    # (filled only when diag_sync=True; [7]/[10] then = pure host enqueue)
-    var phase_ns = alloc[Float64](16)
-    for i in range(16):
+    # extra diag slots (diag_sync=True only): [11]/[13] pred/dyn pre-vjp drain,
+    # [12]/[14] dyn/pred vjp GPU-drain, [15] fwd-scan GPU-drain, [16] target-
+    # pre-pass GPU-drain; [7]/[10] then = pure host enqueue.
+    var phase_ns = alloc[Float64](18)
+    for i in range(18):
         phase_ns[i] = 0.0
 
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=seed)
@@ -557,6 +558,9 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                   "dyn pre", phase_ns[13] / 1e9,
                   "| rev untimed (host enqueue of tiny kernels)",
                   (phase_ns[3] - rev_timed) / 1e9)
+            print("  DIAG fwd/tgt GPU: fwd-scan (rep×1+dyn×K)",
+                  phase_ns[15] / 1e9,
+                  "target-prepass (rep×K+proj×K)", phase_ns[16] / 1e9)
         print("  TOTAL timed", total / 1e9, "s  (", (total / 1e9) / n,
               "s/iter )")
         print("=" * 60)

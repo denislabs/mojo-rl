@@ -565,6 +565,10 @@ def ezv2_unroll_train_step_gpu[
 
     if phase_ns:   # [1] forward scan (K dyn forwards)
         phase_ns.value()[1] += Float64(perf_counter_ns() - _tp)
+        if diag_sync:   # [15] forward-scan GPU drain (rep×1 + dyn×K)
+            var _rp = perf_counter_ns()
+            ctx.synchronize()
+            phase_ns.value()[15] += Float64(perf_counter_ns() - _rp)
         _tp = perf_counter_ns()
 
     # ── target pre-pass: t_k = g_proj(h(obs_k)), detached, k = 1..K ──
@@ -582,6 +586,10 @@ def ezv2_unroll_train_step_gpu[
 
     if phase_ns:   # [2] target pre-pass (K rep forwards + proj)
         phase_ns.value()[2] += Float64(perf_counter_ns() - _tp)
+        if diag_sync:   # [16] target-pre-pass GPU drain (rep×K + proj×K)
+            var _rp = perf_counter_ns()
+            ctx.synchronize()
+            phase_ns.value()[16] += Float64(perf_counter_ns() - _rp)
         _tp = perf_counter_ns()
 
     # ── reverse scan ──
