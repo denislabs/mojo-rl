@@ -597,7 +597,10 @@ def ezv2_unroll_train_step_gpu[
 
         # (a) prediction head: re-forward (cache), seed grads, vjp → grad z_k
         var pout_t = TileTensor(p_pout, row_major[B, PRED_OUT]())
+        var _rt = perf_counter_ns()
         pred.forward["gpu", B](zk_t, output=pout_t)
+        if phase_ns:   # [6] pred.forward
+            phase_ns.value()[6] += Float64(perf_counter_ns() - _rt)
         ctx.enqueue_function[kPolCE](
             _lt[B * PRED_OUT](p_pout),
             _lt[B * ACT](p_pol + k * B * ACT),
@@ -633,10 +636,14 @@ def ezv2_unroll_train_step_gpu[
             )
         var gpout_t = TileTensor(p_gpout, row_major[B, PRED_OUT]())
         var gpin_t = TileTensor(p_gpin, row_major[B, LATENT]())
+        _rt = perf_counter_ns()
         pred.vjp["gpu", B](gpout_t, gpin_t)
+        if phase_ns:   # [7] pred.vjp
+            phase_ns.value()[7] += Float64(perf_counter_ns() - _rt)
 
         # (b) consistency online branch (k >= 1): p_k = h_pred(g_proj(z_k))
         if k >= 1:
+            _rt = perf_counter_ns()
             var projo_t = TileTensor(p_projo, row_major[B, PROJ]())
             proj.forward["gpu", B](zk_t, output=projo_t)   # refresh proj cache
             var pk_t = TileTensor(p_pk, row_major[B, PROJ]())
@@ -666,6 +673,8 @@ def ezv2_unroll_train_step_gpu[
                 _lt[B * LATENT](p_gzcons),
                 grid_dim=nbLAT, block_dim=TPB,
             )
+            if phase_ns:   # [8] consistency branch (proj/predh fwd+vjp)
+                phase_ns.value()[8] += Float64(perf_counter_ns() - _rt)
 
         # (c) dynamics: carry grad from z_{k+1} + reward head, ½ on hidden input
         if k < K:
@@ -676,9 +685,12 @@ def ezv2_unroll_train_step_gpu[
                 grid_dim=nbDIN, block_dim=TPB,
             )
             var dout_t = TileTensor(p_dout, row_major[B, DYN_OUT]())
+            _rt = perf_counter_ns()
             dyn.forward["gpu", B](
                 TileTensor(p_din, row_major[B, DYN_IN]()), output=dout_t
             )
+            if phase_ns:   # [9] dyn.forward
+                phase_ns.value()[9] += Float64(perf_counter_ns() - _rt)
             ctx.enqueue_function[kCarry](
                 _lt[B * DYN_OUT](p_gdout),
                 _lt[B * LATENT](p_gz),
@@ -706,7 +718,10 @@ def ezv2_unroll_train_step_gpu[
                 )
             var gdout_t = TileTensor(p_gdout, row_major[B, DYN_OUT]())
             var gdin_t = TileTensor(p_gdin, row_major[B, DYN_IN]())
+            _rt = perf_counter_ns()
             dyn.vjp["gpu", B](gdout_t, gdin_t)
+            if phase_ns:   # [10] dyn.vjp
+                phase_ns.value()[10] += Float64(perf_counter_ns() - _rt)
             ctx.enqueue_function[kHalf](
                 _lt[B * LATENT](p_gpin),
                 _lt[B * DYN_IN](p_gdin),
@@ -743,21 +758,21 @@ def ezv2_unroll_train_step_gpu[
         phase_ns.value()[4] += Float64(perf_counter_ns() - _tp)
         _tp = perf_counter_ns()
 
-    # ── PER: D2H the per-sample value-error priorities into the caller slab ──
+    # ── D2H PER priorities + loss with a SINGLE sync ──
+    # Both copies are enqueued after all train kernels; one synchronize drains
+    # the stream, then both host mirrors are read. (Was 3 syncs/step — one per
+    # D2H plus a redundant pre-copy sync — each a full pipeline drain.)
     if out_prio:
-        var h_prio = scratch.h_prio.value()
-        ctx.enqueue_copy(h_prio, d_prio)
-        ctx.synchronize()
+        ctx.enqueue_copy(scratch.h_prio.value(), d_prio)
+    ctx.enqueue_copy(h_loss, loss_d)
+    ctx.synchronize()
+    if out_prio:
         var op = out_prio.value()
-        var hpp = h_prio.unsafe_ptr()
+        var hpp = scratch.h_prio.value().unsafe_ptr()
         for b in range(B):
             op[b] = hpp[b]
 
-    # ── reduce loss (D2H once into the reused host mirror) ──
-    # 4 contiguous [B] blocks: policy | value | reward | consistency.
-    ctx.synchronize()
-    ctx.enqueue_copy(h_loss, loss_d)
-    ctx.synchronize()
+    # ── reduce loss: 4 contiguous [B] blocks policy|value|reward|consistency ──
     var hp = h_loss.unsafe_ptr()
     var l_pol = Scalar[DT](0.0)
     var l_val = Scalar[DT](0.0)

@@ -245,9 +245,11 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     var ts_re_host = 0.0    # reanalyze host (sample_position + gather + update_targets)
     var ts_re_search = 0.0  # reanalyze search + D2H + sync
     # per-phase host-enqueue breakdown of the train step (accumulated in blocks):
-    # [0]setup/H2D [1]fwd-scan [2]target-prepass [3]reverse-scan [4]rep-vjp+opt [5]finalize/sync
-    var phase_ns = alloc[Float64](6)
-    for i in range(6):
+    # [0]setup/H2D [1]fwd-scan [2]target-prepass [3]reverse-scan [4]rep-vjp+opt
+    # [5]finalize/sync ; reverse-scan sub-splits: [6]pred.fwd [7]pred.vjp
+    # [8]consistency-branch [9]dyn.fwd [10]dyn.vjp
+    var phase_ns = alloc[Float64](11)
+    for i in range(11):
         phase_ns[i] = 0.0
 
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=seed)
@@ -492,6 +494,10 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                   phase_ns[1] / 1e9, "tgt", phase_ns[2] / 1e9, "rev",
                   phase_ns[3] / 1e9, "repvjp+opt", phase_ns[4] / 1e9,
                   "finalize/sync", phase_ns[5] / 1e9)
+            # reverse-scan per-model-call splits (s) — which nn2 call eats `rev`
+            print("    rev calls: pred.fwd", phase_ns[6] / 1e9, "pred.vjp",
+                  phase_ns[7] / 1e9, "cons", phase_ns[8] / 1e9, "dyn.fwd",
+                  phase_ns[9] / 1e9, "dyn.vjp", phase_ns[10] / 1e9)
 
         if logger and report_every > 0 and trained and (it + 1) % report_every == 0:
             var ravg = 0.0
