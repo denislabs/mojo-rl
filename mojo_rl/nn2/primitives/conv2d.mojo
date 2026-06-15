@@ -338,6 +338,82 @@ def _conv2d_backward_dx_kernel[
     grad_input[b, in_pos] = acc
 
 
+# ── GEMM-based dx (replaces the K·K·OC direct gather). Three steps mirror
+#    the CPU path + the forward: repack grad_output → go_packed[BS, OC], GEMM
+#    d_col = go_packed @ weight[OC, COL] (tensor-core, contracts OC), then a
+#    cheap K·K col2im-gather. The old direct gather did K·K·OC scattered reads
+#    per input element with no tensor cores — the conv backward analog of the
+#    naive-BatchNorm bug. ──
+def _conv2d_go_pack_kernel[
+    BATCH: Int, OC: Int, SPATIAL_OUT: Int, OUT_FLAT: Int, BS: Int,
+](
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
+    ],
+    go_packed: LayoutTensor[DT, Layout.row_major(BS, OC), MutAnyOrigin],
+):
+    """Repack grad_output `[BATCH, OC·SO]` → `go_packed[BS, OC]` (row =
+    `b·SO + s`) so `d_col = go_packed @ weight` runs as an untransposed
+    `max_matmul`. One thread per go_packed element (coalesced write)."""
+    var idx = Int(global_idx.x)
+    var total = BS * OC
+    if idx >= total:
+        return
+    var row = idx // OC
+    var oc = idx % OC
+    var b = row // SPATIAL_OUT
+    var s = row % SPATIAL_OUT
+    go_packed[row, oc] = rebind[Scalar[DT]](
+        grad_output[b, oc * SPATIAL_OUT + s]
+    )
+
+
+def _conv2d_dx_col2im_kernel[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int,
+    H: Int, W: Int, OH: Int, OW: Int,
+    IN_FLAT: Int, COL_SIZE: Int, SPATIAL_OUT: Int, BS: Int,
+](
+    d_col: LayoutTensor[DT, Layout.row_major(BS, COL_SIZE), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+):
+    """col2im gather: `grad_input[b,ic,ih,iw] = Σ_{kh,kw} d_col[b·SO+s,
+    (ic·K+kh)·K+kw]` over the valid (oh,ow) that this input element feeds.
+    OC is already contracted in `d_col` (the GEMM), so this is K·K reads per
+    element (vs K·K·OC in the old direct gather). One thread per input
+    element; unique destination → no atomics."""
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = BATCH * IN_FLAT
+    if idx >= total:
+        return
+    var b = idx // IN_FLAT
+    var in_pos = idx % IN_FLAT
+    var hw = H * W
+    var ic = in_pos // hw
+    var rem = in_pos % hw
+    var ih = rem // W
+    var iw = rem % W
+
+    var acc: Scalar[DT] = 0.0
+    for kh in range(K):
+        var oh_num = ih + P - kh
+        if oh_num < 0 or oh_num % S != 0:
+            continue
+        var oh = oh_num // S
+        if oh >= OH:
+            continue
+        for kw in range(K):
+            var ow_num = iw + P - kw
+            if ow_num < 0 or ow_num % S != 0:
+                continue
+            var ow = ow_num // S
+            if ow >= OW:
+                continue
+            var row = b * SPATIAL_OUT + oh * OW + ow
+            var col_idx = (ic * K + kh) * K + kw
+            acc += rebind[Scalar[DT]](d_col[row, col_idx])
+    grad_input[b, in_pos] = acc
+
+
 def _conv2d_backward_db_kernel[
     BATCH: Int, OC: Int, OH: Int, OW: Int, OUT_FLAT: Int,
 ](
@@ -1066,23 +1142,56 @@ struct Conv2D[
             comptime w_layout = Layout.row_major(Self.W_SIZE)
             var go_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](go_p)
             var gi_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](gi_p)
-            var w_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
-                self.weight.val.dev.value()
-            )
             var ctx = self.ts.ctx.value()
+            comptime BS = BATCH * Self.SPATIAL_OUT
 
-            # d_input — 1 thread per (b, ic, ih, iw). The orchestrator
-            # ran vjp_param_grads (dw/db) first, so this may safely
-            # overwrite an aliased input/grad_input slab.
+            # dx via GEMM + col2im (mirrors the CPU path + forward), instead of
+            # the K·K·OC direct gather. Reuse col_dev as d_col[BS, COL] and
+            # outp_dev as go_packed[BS, OC] (both free in backward); ensure here
+            # since vjp_grad_input runs in input_only mode too (no phase-1 sizing).
+            ensure_gpu_buffer(self.outp_dev, self.outp_n, BS * Self.OC, ctx)
+            ensure_gpu_buffer(self.col_dev, self.col_n, BS * Self.COL_SIZE, ctx)
+
+            # ── (1) go_packed[BS, OC] = repack(grad_output) ───────────────
+            var gopack_lt = LayoutTensor[
+                DT, Layout.row_major(BS, Self.OC), MutAnyOrigin,
+            ](self.outp_dev.value())
+            comptime n_blocks_gp = (BS * Self.OC + TPB - 1) // TPB
+            comptime gopack_kernel = _conv2d_go_pack_kernel[
+                BATCH, Self.OC, Self.SPATIAL_OUT, Self.OUT_DIM_FLAT, BS,
+            ]
+            ctx.enqueue_function[gopack_kernel](
+                go_lt, gopack_lt, grid_dim=n_blocks_gp, block_dim=TPB,
+            )
+
+            # ── (2) d_col[BS, COL] = go_packed[BS, OC] @ weight[OC, COL] ──
+            var gopack_tt = TileTensor(
+                self.outp_dev.value(), row_major[BS, Self.OC](),
+            )
+            var w_tt = TileTensor(
+                self.weight.val.dev.value(),
+                row_major[Self.OC, Self.COL_SIZE](),
+            )
+            var dcol_tt = TileTensor(
+                self.col_dev.value(), row_major[BS, Self.COL_SIZE](),
+            )
+            max_matmul[transpose_b=False, target="gpu"](
+                dcol_tt, gopack_tt, w_tt, ctx
+            )
+
+            # ── (3) col2im gather → grad_input ───────────────────────────
+            var dcol_lt = LayoutTensor[
+                DT, Layout.row_major(BS, Self.COL_SIZE), MutAnyOrigin,
+            ](self.col_dev.value())
             comptime total_in = BATCH * Self.IN_DIM_FLAT
             comptime n_blocks_in = (total_in + TPB - 1) // TPB
-            comptime dx_kernel = _conv2d_backward_dx_kernel[
-                BATCH, Self.IC, Self.OC, Self.K, Self.S, Self.P,
+            comptime col2im_kernel = _conv2d_dx_col2im_kernel[
+                BATCH, Self.IC, Self.K, Self.S, Self.P,
                 Self.H, Self.W, Self.OH, Self.OW,
-                Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
+                Self.IN_DIM_FLAT, Self.COL_SIZE, Self.SPATIAL_OUT, BS,
             ]
-            ctx.enqueue_function[dx_kernel](
-                go_lt, w_lt, gi_lt,
+            ctx.enqueue_function[col2im_kernel](
+                dcol_lt, gi_lt,
                 grid_dim=n_blocks_in, block_dim=TPB,
             )
 
