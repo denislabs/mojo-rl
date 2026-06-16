@@ -72,9 +72,13 @@ def main() raises:
     comptime WW = 7
     comptime LATENT = CH * HH * WW
     comptime BINS = 51        # categorical value/reward support over [-1, 1]
-    comptime NUM_SIMS = 64    # spatial latent + conv dynamics are heavier; start
-    #                           at 64, raise once the wall-clock is known.
-    comptime MAX_NODES = 256
+    # 128 sims/move (was 64): C4 wants deep search (muzero-general uses 200, the
+    # alexZajac C4 repo 500) and the exploration fixes (temp=1 + init_zero +
+    # open_plies) mean more sims no longer collapses self-play diversity. ~2×
+    # wall-clock/move; raise toward 200 next if the throughput allows.
+    comptime NUM_SIMS = 128
+    comptime MAX_NODES = 256  # ≥ NUM_SIMS (≤1 node expanded per sim) + root
+    #                           candidates; bump if NUM_SIMS approaches 256.
     comptime MAX_K = 4        # already maxed for C4 (power of two ≤ ACT=7)
     comptime CAP = 1_000_000
     comptime B = 128
