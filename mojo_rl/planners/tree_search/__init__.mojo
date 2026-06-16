@@ -5,12 +5,27 @@
 # EZv2-specific (sampled, gumbel) land in subsequent slices.
 
 from .strategies import (
-    SearchMode, LearnedDynamics, TrueGameRules,
-    HiddenScaling, MinMaxScale, NoScale,
-    ExplorationNoise, DirichletNoise, EpsilonNoise, NoNoise,
-    PUCTFormula, MuZeroPUCT, AlphaGoPUCT, UCB1Formula,
-    BackupMode, NStepBootstrap, MonteCarloReturn, LambdaReturn,
-    PlayerMode, SinglePlayer, SelfPlay,
+    SearchMode,
+    LearnedDynamics,
+    TrueGameRules,
+    HiddenScaling,
+    MinMaxScale,
+    NoScale,
+    ExplorationNoise,
+    DirichletNoise,
+    EpsilonNoise,
+    NoNoise,
+    PUCTFormula,
+    MuZeroPUCT,
+    AlphaGoPUCT,
+    UCB1Formula,
+    BackupMode,
+    NStepBootstrap,
+    MonteCarloReturn,
+    LambdaReturn,
+    PlayerMode,
+    SinglePlayer,
+    SelfPlay,
 )
 from .model_traits import Representation, Dynamics, Prediction
 from .model_traits_gpu import (
@@ -46,7 +61,6 @@ from .mcts_gpu_gumbel_sampled import (
     gs_backup_kernel,
     gs_halve_active_kernel,
     gs_extract_kernel,
-    run_sampled_gumbel_search_gpu,
 )
 from .mcts_gpu_gumbel_sampled_orchestrator import SampledGumbelGPUMCTS
 from .mcts_gpu import (

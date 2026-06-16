@@ -87,7 +87,7 @@ struct ConvTransposePCBlock[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn2 init: conv-transpose W via INIT.fill(fan_in/out); zero bias."""
+        """Nn2 init: conv-transpose W via INIT.fill(fan_in/out); zero bias."""
         var W_view = LayoutTensor[
             dtype, Layout.row_major(Self.W_SIZE), MutAnyOrigin
         ](params.ptr)

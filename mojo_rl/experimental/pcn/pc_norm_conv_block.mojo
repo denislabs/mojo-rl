@@ -82,7 +82,7 @@ struct NormConvPCBlock[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn2 init: delegate to the inner conv block's nn2 init."""
+        """Nn2 init: delegate to the inner conv block's nn2 init."""
         Self.INNER.pc_init_params[INIT, dtype](params)
 
     # ── parameter-free per-input-channel RMSNorm:  out = u / rms_c  ───────────

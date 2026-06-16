@@ -110,7 +110,7 @@ struct PCModule[*BLOCKS: PCBlockTrait](Module):
         var host_view = LayoutTensor[
             DT, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
         ](host.unsafe_ptr())
-        Self.NET.init_params_pc[INIT, DT](host_view)
+        Self.NET.pc_init_params[INIT, DT](host_view)
         ctx.enqueue_copy(net.weights.val.dev.value(), host.unsafe_ptr())
         ctx.synchronize()
         _ = host^

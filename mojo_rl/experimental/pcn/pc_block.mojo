@@ -83,7 +83,7 @@ struct PCBlock[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn2 init: W via INIT.fill(fan_in=in_dim, fan_out=out_dim); zero b."""
+        """Nn2 init: W via INIT.fill(fan_in=in_dim, fan_out=out_dim); zero b."""
         var W_view = LayoutTensor[
             dtype,
             Layout.row_major(Self.in_dim * Self.out_dim),
@@ -329,14 +329,16 @@ struct PCBlock[
 
             from std.memory import alloc
 
-            var cT_buf: UnsafePointer[
-                Scalar[dtype], MutAnyOrigin
-            ] = alloc[Scalar[dtype]](BATCH * Self.in_dim)
+            var cT_buf: UnsafePointer[Scalar[dtype], MutAnyOrigin] = alloc[
+                Scalar[dtype]
+            ](BATCH * Self.in_dim)
             for bi in range(BATCH):
                 for i in range(Self.in_dim):
                     cT_buf[i * BATCH + bi] = ab_ptr[bi * Self.in_dim + i]
             var cT_tt = TileTensor(cT_buf, row_major[Self.in_dim, BATCH]())
-            var gw_tt = TileTensor(gw_ptr, row_major[Self.in_dim, Self.out_dim]())
+            var gw_tt = TileTensor(
+                gw_ptr, row_major[Self.in_dim, Self.out_dim]()
+            )
             try:
                 max_matmul[target="cpu"](gw_tt, cT_tt, e_tt, None)
             except:

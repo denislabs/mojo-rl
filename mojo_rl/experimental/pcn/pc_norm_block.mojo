@@ -57,7 +57,7 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn2 init: γ = 1 (INIT unused — RMSNorm scale, not a weight)."""
+        """Nn2 init: γ = 1 (INIT unused — RMSNorm scale, not a weight)."""
         for i in range(Self.dim):
             params.ptr[i] = Scalar[dtype](1)
 
@@ -241,7 +241,9 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
         params: LayoutTensor[dtype, Layout.row_major(Self.dim), MutAnyOrigin],
-        mu: LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin],
+        mu: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
+        ],
         a_below: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
@@ -266,7 +268,9 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
         x_above: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
-        mu: LayoutTensor[dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin],
+        mu: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
+        ],
         eps: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.dim), MutAnyOrigin
         ],
@@ -319,7 +323,11 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
         var inv_r = 1.0 / sqrt(ss / Float64(Self.dim) + _RMS_EPS)
         var s: Float64 = 0.0
         for i in range(Self.dim):
-            s += Float64(z_in.ptr[off + i]) * Float64(x_below.ptr[off + i]) * inv_r
+            s += (
+                Float64(z_in.ptr[off + i])
+                * Float64(x_below.ptr[off + i])
+                * inv_r
+            )
         var s_over_d = s / Float64(Self.dim)
         for i in range(Self.dim):
             var n_i = Float64(x_below.ptr[off + i]) * inv_r
@@ -489,7 +497,11 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
         comptime kg = Self._weight_grad_kernel[BATCH, dtype]
         var gblocks = (Self.dim + TPB - 1) // TPB
         ctx.enqueue_function[kg](
-            eps_above, a_below, inv_r, grads,
-            grid_dim=(gblocks,), block_dim=(TPB,),
+            eps_above,
+            a_below,
+            inv_r,
+            grads,
+            grid_dim=(gblocks,),
+            block_dim=(TPB,),
         )
         _ = inv_r_buf

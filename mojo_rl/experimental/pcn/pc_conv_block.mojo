@@ -90,7 +90,8 @@ struct ConvPCBlock[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn2 init: conv W via INIT.fill(conv fan_in/out); zero per-channel b."""
+        """Nn2 init: conv W via INIT.fill(conv fan_in/out); zero per-channel b.
+        """
         comptime W_SIZE = Self.out_channels * Self.col_size
         var W_view = LayoutTensor[
             dtype, Layout.row_major(W_SIZE), MutAnyOrigin
@@ -375,8 +376,12 @@ struct ConvPCBlock[
                         for c in range(Self.in_channels):
                             for kh in range(Self.kernel_size):
                                 for kw in range(Self.kernel_size):
-                                    var ih = oh * Self.stride - Self.padding + kh
-                                    var iw = ow * Self.stride - Self.padding + kw
+                                    var ih = (
+                                        oh * Self.stride - Self.padding + kh
+                                    )
+                                    var iw = (
+                                        ow * Self.stride - Self.padding + kw
+                                    )
                                     if (
                                         ih >= 0
                                         and ih < Self.in_h
@@ -396,7 +401,8 @@ struct ConvPCBlock[
                                             + iw
                                         )
                                         zp[b * Self.IN_DIM + in_idx] += dcp[
-                                            b * Self.CACHE + s * Self.col_size
+                                            b * Self.CACHE
+                                            + s * Self.col_size
                                             + c_k
                                         ]
             dcol.free()
@@ -578,7 +584,8 @@ struct ConvPCBlock[
                                                 + iw
                                             )
                                             gp[oc * Self.col_size + c_k] += (
-                                                -g * ap[b * Self.IN_DIM + in_idx]
+                                                -g
+                                                * ap[b * Self.IN_DIM + in_idx]
                                             )
                     gp[W_SIZE + oc] += -db_acc
 
@@ -618,7 +625,12 @@ struct ConvPCBlock[
                 for kw in range(Self.kernel_size):
                     var ih = oh * Self.stride - Self.padding + kh
                     var iw = ow * Self.stride - Self.padding + kw
-                    if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
+                    if (
+                        ih >= 0
+                        and ih < Self.in_h
+                        and iw >= 0
+                        and iw < Self.in_w
+                    ):
                         var c_k = (
                             c * Self.kernel_size * Self.kernel_size
                             + kh * Self.kernel_size
@@ -736,7 +748,12 @@ struct ConvPCBlock[
                 for ow in range(Self.out_w):
                     var ih = oh * Self.stride - Self.padding + kh
                     var iw = ow * Self.stride - Self.padding + kw
-                    if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
+                    if (
+                        ih >= 0
+                        and ih < Self.in_h
+                        and iw >= 0
+                        and iw < Self.in_w
+                    ):
                         var s = oh * Self.out_w + ow
                         var in_idx = (
                             c * Self.in_h * Self.in_w + ih * Self.in_w + iw

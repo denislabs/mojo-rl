@@ -116,7 +116,8 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
 
     @staticmethod
     def _out_offset[idx: Int]() -> Int:
-        """Offset (per sample) of block idx's μ_idx / ε_idx slot in the out buffer."""
+        """Offset (per sample) of block idx's μ_idx / ε_idx slot in the out buffer.
+        """
         var total = 0
         comptime for j in range(idx):
             total += Self.block_types[j].OUT_DIM
@@ -142,7 +143,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn2 re-architecture init: per-block `pc_init_params` (vendored
+        """Nn2 re-architecture init: per-block `pc_init_params` (vendored
         `PCInitializer`, legacy-`nn`-free). Mirror of `initialize_params`."""
         for i in range(Self.PARAM_SIZE):
             params.ptr[i] = Scalar[dtype](0)
@@ -225,9 +226,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                     # Single-block net: write μ directly to external output
                     var li_mu_out = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.block_types[i].OUT_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.block_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](output.ptr)
                     Self.block_types[i].predict[BATCH, dtype](
@@ -236,9 +235,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                 else:
                     var li_mu = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.block_types[i].OUT_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.block_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](mu_ptr + BATCH * Self._out_offset[i]())
                     Self.block_types[i].predict[BATCH, dtype](
@@ -405,9 +402,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                 comptime if Self.N == 1:
                     var li_mu_out = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.block_types[i].OUT_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.block_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](output.ptr)
                     Self.block_types[i].predict_gpu[BATCH, dtype](
@@ -416,9 +411,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                 else:
                     var li_mu = LayoutTensor[
                         dtype,
-                        Layout.row_major(
-                            BATCH, Self.block_types[i].OUT_DIM
-                        ),
+                        Layout.row_major(BATCH, Self.block_types[i].OUT_DIM),
                         MutAnyOrigin,
                     ](mu_buf.ptr + BATCH * Self._out_offset[i]())
                     Self.block_types[i].predict_gpu[BATCH, dtype](

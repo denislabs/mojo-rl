@@ -121,7 +121,7 @@ struct AtariEnvironment(Movable):
         self.state.started = True
 
     def reset_game(mut self, game: AtariGame):
-        """reset() plus the game's starting actions (ALE getStartingActions):
+        """Reset() plus the game's starting actions (ALE getStartingActions):
         leaves the title screen for games where console RESET alone is not
         enough (Asterix/Enduro FIRE, BeamRider RIGHT, DarkChambers' 486-frame
         boot animation, ElevatorAction 16×FIRE)."""
@@ -132,16 +132,12 @@ struct AtariEnvironment(Movable):
         var su = game.select_until()
         if su[0] >= 0:
             var guard = 0
-            while (
-                Int(self.state.ram[su[0] & 0x7F]) != su[1] and guard < 100
-            ):
+            while Int(self.state.ram[su[0] & 0x7F]) != su[1] and guard < 100:
                 self.state.sys_flags = self.state.sys_flags | FLAG_CON_SELECT
                 for _ in range(su[2]):
                     set_action(self.state, ACTION_NOOP)
                     run_frame(self.state, self.rom, self.rom_size)
-                self.state.sys_flags = (
-                    self.state.sys_flags & ~FLAG_CON_SELECT
-                )
+                self.state.sys_flags = self.state.sys_flags & ~FLAG_CON_SELECT
                 for _ in range(2):
                     set_action(self.state, ACTION_NOOP)
                     run_frame(self.state, self.rom, self.rom_size)

@@ -171,7 +171,9 @@ def _bgra_maxpool_to_rgb_planar(
         var vb = b32.load[width=W](i)
         bp.store(i, max(va & 0xFF, vb & 0xFF).cast[DType.uint8]())
         gp.store(i, max((va >> 8) & 0xFF, (vb >> 8) & 0xFF).cast[DType.uint8]())
-        rp.store(i, max((va >> 16) & 0xFF, (vb >> 16) & 0xFF).cast[DType.uint8]())
+        rp.store(
+            i, max((va >> 16) & 0xFF, (vb >> 16) & 0xFF).cast[DType.uint8]()
+        )
 
 
 def _resize_plane_160x210_to_96x96(
@@ -258,10 +260,18 @@ struct AtariEnv[
     # Pixel-mode buffers (allocated only when OBS_MODE>=1)
     var frame_stack: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # stack ring
     var frame_idx: Int  # ring buffer index
-    var raw_frame_a: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 160*210*4 BGRA
-    var raw_frame_b: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 160*210*4 BGRA
-    var gray_buf: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 160*210 grayscale
-    var rgb_buf: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # 3*160*210 planar RGB
+    var raw_frame_a: Optional[
+        UnsafePointer[UInt8, MutAnyOrigin]
+    ]  # 160*210*4 BGRA
+    var raw_frame_b: Optional[
+        UnsafePointer[UInt8, MutAnyOrigin]
+    ]  # 160*210*4 BGRA
+    var gray_buf: Optional[
+        UnsafePointer[UInt8, MutAnyOrigin]
+    ]  # 160*210 grayscale
+    var rgb_buf: Optional[
+        UnsafePointer[UInt8, MutAnyOrigin]
+    ]  # 3*160*210 planar RGB
 
     def __init__(
         out self,
@@ -312,9 +322,9 @@ struct AtariEnv[
             rom_size: ROM size in bytes.
             frame_skip: Number of frames to repeat each action (default 4).
             max_frames: Max frames per episode (default 108000).
-            clip_reward: emit sign(reward); see struct doc.
-            episodic_life: life loss = terminal; see struct doc.
-            full_action_set: expose full 18-action ALE set; see struct doc.
+            clip_reward: Emit sign(reward); see struct doc.
+            episodic_life: Life loss = terminal; see struct doc.
+            full_action_set: Expose full 18-action ALE set; see struct doc.
         """
         self.game = game
         comptime if Self.OBS_MODE >= 1:
@@ -421,13 +431,16 @@ struct AtariEnv[
             var g = max((va >> 8) & 0xFF, (vb >> 8) & 0xFF)
             var r = max((va >> 16) & 0xFF, (vb >> 16) & 0xFF)
             # Luminance: Y = (77*R + 150*G + 29*B) >> 8
-            gray.store(i, ((77 * r + 150 * g + 29 * b) >> 8).cast[DType.uint8]())
+            gray.store(
+                i, ((77 * r + 150 * g + 29 * b) >> 8).cast[DType.uint8]()
+            )
 
     def _push_frame_to_stack(mut self):
         """Resize gray_buf (160×210) to 84×84 and push into frame_stack ring buffer.
         """
         var slot_offset = self.frame_idx * OBS_FRAME_SIZE
-        _resize_160x210_to_84x84(self.gray_buf.value(),
+        _resize_160x210_to_84x84(
+            self.gray_buf.value(),
             self.frame_stack.value() + slot_offset,
         )
         self.frame_idx = (self.frame_idx + 1) % 4
@@ -438,7 +451,10 @@ struct AtariEnv[
         Runs one NOOP frame with video output to capture the display.
         """
         run_frame_video(
-            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_a.value()
+            self.env.state,
+            self.env.rom,
+            self.env.rom_size,
+            self.raw_frame_a.value(),
         )
 
     # ── RGB-96 pixel helpers (OBS_MODE==2) ──────────────────────────────
@@ -448,14 +464,16 @@ struct AtariEnv[
         channels into the frame_stack ring slot [3,96,96], advance the ring.
         """
         _bgra_maxpool_to_rgb_planar(
-            self.raw_frame_a.value(), self.raw_frame_b.value(),
+            self.raw_frame_a.value(),
+            self.raw_frame_b.value(),
             self.rgb_buf.value(),
         )
         var slot = self.frame_stack.value() + self.frame_idx * RGB_FRAME_SIZE
         var src = self.rgb_buf.value()
         for c in range(3):
             _resize_plane_160x210_to_96x96(
-                src + c * RGB_SRC_PLANE, slot + c * RGB_OBS_PLANE,
+                src + c * RGB_SRC_PLANE,
+                slot + c * RGB_OBS_PLANE,
             )
         self.frame_idx = (self.frame_idx + 1) % 4
 
@@ -467,7 +485,9 @@ struct AtariEnv[
         frame is R,G,B; the 12 channels are frame-major (f0RGB, f1RGB, …).
         SIMD uint8→float /255, bit-exact vs the scalar conversion."""
         comptime W = 16
-        comptime assert RGB_OBS_PLANE % W == 0, "RGB plane must be SIMD-divisible"
+        comptime assert (
+            RGB_OBS_PLANE % W == 0
+        ), "RGB plane must be SIMD-divisible"
         var fs = self.frame_stack.value()
         var out_off = 0
         for i in range(4):
@@ -475,7 +495,8 @@ struct AtariEnv[
             var src = fs + slot * RGB_FRAME_SIZE
             for j in range(0, RGB_FRAME_SIZE, W):
                 obs_out.store(
-                    out_off + j, src.load[width=W](j).cast[Self.dtype]() / 255.0,
+                    out_off + j,
+                    src.load[width=W](j).cast[Self.dtype]() / 255.0,
                 )
             out_off += RGB_FRAME_SIZE
 
@@ -595,7 +616,9 @@ struct AtariEnv[
         SIMD uint8→float `/255` — bit-exact vs the per-element scalar
         conversion (each uint8 value maps to the identical float)."""
         comptime W = 16
-        comptime assert OBS_FRAME_SIZE % W == 0, "obs frame must be SIMD-divisible"
+        comptime assert (
+            OBS_FRAME_SIZE % W == 0
+        ), "obs frame must be SIMD-divisible"
         var fs = self.frame_stack.value()
         var out_off = 0
         for i in range(4):
@@ -795,13 +818,19 @@ struct AtariEnv[
         # Frame skip-2: render into raw_frame_a
         set_action(self.env.state, ale_action)
         run_frame_video(
-            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_a.value()
+            self.env.state,
+            self.env.rom,
+            self.env.rom_size,
+            self.raw_frame_a.value(),
         )
 
         # Frame skip-1: render into raw_frame_b
         set_action(self.env.state, ale_action)
         run_frame_video(
-            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_b.value()
+            self.env.state,
+            self.env.rom,
+            self.env.rom_size,
+            self.raw_frame_b.value(),
         )
 
         # Extract RL signals from RAM (registry; includes per-game reward
@@ -836,7 +865,8 @@ struct AtariEnv[
     def _step_obs_rgb(
         mut self, action: Int
     ) -> Tuple[List[Scalar[Self.DTYPE]], Scalar[Self.DTYPE], Bool]:
-        """RGB-96 pixel step: list-returning wrapper over `_advance_pixel_rgb`."""
+        """RGB-96 pixel step: list-returning wrapper over `_advance_pixel_rgb`.
+        """
         var reward = self._advance_pixel_rgb(action)
         var obs = self.get_obs_list()
         return (obs^, reward, self.done)
@@ -859,11 +889,17 @@ struct AtariEnv[
 
         set_action(self.env.state, ale_action)
         run_frame_video(
-            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_a.value()
+            self.env.state,
+            self.env.rom,
+            self.env.rom_size,
+            self.raw_frame_a.value(),
         )
         set_action(self.env.state, ale_action)
         run_frame_video(
-            self.env.state, self.env.rom, self.env.rom_size, self.raw_frame_b.value()
+            self.env.state,
+            self.env.rom,
+            self.env.rom_size,
+            self.raw_frame_b.value(),
         )
 
         var sig = game_signals(self.game, self.env.state, prev_score)

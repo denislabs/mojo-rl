@@ -44,7 +44,7 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
     var n_frames: Int
     """Total dense frames across all episodes (cosmetic; matches Pong API)."""
     var normalize_actions: Bool
-    """z-score actions per raw dim with dataset mean/std (the reference's
+    """Z-score actions per raw dim with dataset mean/std (the reference's
     `get_column_normalizer`). Off by default — existing raw-action
     checkpoints stay valid."""
     var act_mean: List[Float64]
@@ -68,7 +68,7 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
                 the trainer's `T` comptime param.
             path: Optional override of the cached `.h5` path. Empty string
                 triggers HF auto-download to `~/.cache/mojo_rl/lewm_pusht/`.
-            normalize_actions: z-score actions per raw dim with the dataset
+            normalize_actions: Z-score actions per raw dim with the dataset
                 mean/std at sample time (reference training pipeline).
                 Read the stats back via `action_mean(d)` / `action_std(d)`
                 — planning must de-normalize: raw = z·std + mean.
@@ -105,8 +105,14 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
                     self.act_std[d] = sqrt(var_) if var_ > 1e-12 else 1.0
             print(
                 "  [pusht_offline_sampler] action z-score: mean=(",
-                self.act_mean[0], ",", self.act_mean[1],
-                ") std=(", self.act_std[0], ",", self.act_std[1], ")",
+                self.act_mean[0],
+                ",",
+                self.act_mean[1],
+                ") std=(",
+                self.act_std[0],
+                ",",
+                self.act_std[1],
+                ")",
             )
         print(
             "  [pusht_offline_sampler] dataset:",
