@@ -39,7 +39,7 @@ Algorithms specify requirements:
 
 from .env import Env
 from layout import LayoutTensor, Layout
-from mojo_rl.nn import dtype
+from mojo_rl.nn2.constants import DT as dtype
 from std.gpu import DeviceContext, DeviceBuffer, block_dim, block_idx, thread_idx
 from std.memory import UnsafePointer
 

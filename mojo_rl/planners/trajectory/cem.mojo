@@ -49,7 +49,7 @@ from std.random import random_float64
 
 from layout import TileTensor, Idx, row_major
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT as dtype
 
 from .score_callback import ScorePlanCallback, BatchedScorePlanCallback
 

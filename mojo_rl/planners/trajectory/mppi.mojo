@@ -26,7 +26,8 @@ from std.random import random_float64
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype, TPB
+from mojo_rl.nn2.constants import DT as dtype
+comptime TPB = 256  # preserved from legacy nn.constants (nn2.TPB == 128)
 
 from .rollout_callback import RolloutCallbackCPU, RolloutCallbackGPU
 from .mppi_kernels import (

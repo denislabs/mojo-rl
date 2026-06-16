@@ -44,7 +44,8 @@ from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype, TPB
+from mojo_rl.nn2.constants import DT as dtype
+comptime TPB = 256  # preserved from legacy nn.constants (nn2.TPB == 128)
 
 from .model_traits_gpu import (
     RepresentationGPU,

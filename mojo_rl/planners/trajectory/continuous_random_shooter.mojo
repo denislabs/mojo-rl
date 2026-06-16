@@ -11,7 +11,7 @@ LeWM continuous MPC eval (``cem < random_min``).
 
 from layout import TileTensor, Idx, row_major
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT as dtype
 
 from .score_callback import ScorePlanCallback
 from .continuous_cem import _gauss

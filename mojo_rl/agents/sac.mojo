@@ -55,7 +55,7 @@ from mojo_rl.core import (
     BoxContinuousActionEnv,
     RenderableEnv,
 )
-from mojo_rl.nn.gpu.random import gaussian_noise
+from mojo_rl.nn2.random import gaussian_noise
 
 
 struct SACAgent(Copyable, Movable):

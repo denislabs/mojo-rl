@@ -40,7 +40,7 @@ orchestrator having to peek at trait-internal model dimensions.
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT as dtype
 
 from .model_traits_gpu import (
     RepresentationGPU,
