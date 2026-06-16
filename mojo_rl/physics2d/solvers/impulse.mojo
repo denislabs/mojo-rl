@@ -947,7 +947,7 @@ struct ImpulseSolver(ConstraintSolver):
             MutAnyOrigin,
         ],
         contact_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
+            dtype, Layout.row_major(BATCH), ImmutAnyOrigin
         ],
         friction: Scalar[dtype],
         restitution: Scalar[dtype],
@@ -980,7 +980,7 @@ struct ImpulseSolver(ConstraintSolver):
         contacts: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
+            ImmutAnyOrigin,
         ],
         contact_count: Int,
         baumgarte: Scalar[dtype],
@@ -1058,10 +1058,10 @@ struct ImpulseSolver(ConstraintSolver):
         contacts: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
+            ImmutAnyOrigin,
         ],
         contact_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
+            dtype, Layout.row_major(BATCH), ImmutAnyOrigin
         ],
         baumgarte: Scalar[dtype],
         slop: Scalar[dtype],
@@ -1093,18 +1093,14 @@ struct ImpulseSolver(ConstraintSolver):
     ) raises:
         """Launch strided velocity constraint solver kernel."""
         var state = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, STATE_SIZE),
-            MutAnyOrigin,
-        ](state_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, STATE_SIZE)
+        ](state_buf)
         var contacts = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE)
+        ](contacts_buf)
         var contact_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](contact_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](contact_counts_buf)
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -1122,7 +1118,7 @@ struct ImpulseSolver(ConstraintSolver):
                 MutAnyOrigin,
             ],
             contact_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
+                dtype, Layout.row_major(BATCH), ImmutAnyOrigin
             ],
             friction: Scalar[dtype],
             restitution: Scalar[dtype],
@@ -1158,18 +1154,14 @@ struct ImpulseSolver(ConstraintSolver):
     ) raises:
         """Launch strided position constraint solver kernel."""
         var state = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, STATE_SIZE),
-            MutAnyOrigin,
-        ](state_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, STATE_SIZE)
+        ](state_buf)
         var contacts = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE)
+        ](contacts_buf)
         var contact_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](contact_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](contact_counts_buf)
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -1184,10 +1176,10 @@ struct ImpulseSolver(ConstraintSolver):
             contacts: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             contact_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
+                dtype, Layout.row_major(BATCH), ImmutAnyOrigin
             ],
             baumgarte: Scalar[dtype],
             slop: Scalar[dtype],

@@ -745,7 +745,7 @@ struct RevoluteJointSolver:
             MutAnyOrigin,
         ],
         joint_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
+            dtype, Layout.row_major(BATCH), ImmutAnyOrigin
         ],
         dt: Scalar[dtype],
     ):
@@ -938,7 +938,7 @@ struct RevoluteJointSolver:
             MutAnyOrigin,
         ],
         joint_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
+            dtype, Layout.row_major(BATCH), ImmutAnyOrigin
         ],
         baumgarte: Scalar[dtype],
         slop: Scalar[dtype],
@@ -974,11 +974,11 @@ struct RevoluteJointSolver:
     ) raises:
         """Solve velocity constraints on GPU with 2D strided layout."""
         var state = LayoutTensor[
-            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, STATE_SIZE)
+        ](state_buf)  # mut=True (written)
         var joint_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](joint_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](joint_counts_buf)  # mut=False (read-only) -> ImmutAnyOrigin kernel param
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -989,7 +989,7 @@ struct RevoluteJointSolver:
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
             joint_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
+                dtype, Layout.row_major(BATCH), ImmutAnyOrigin
             ],
             dt: Scalar[dtype],
         ):
@@ -1027,11 +1027,11 @@ struct RevoluteJointSolver:
     ) raises:
         """Solve position constraints on GPU with 2D strided layout."""
         var state = LayoutTensor[
-            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, STATE_SIZE)
+        ](state_buf)  # mut=True (written)
         var joint_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](joint_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](joint_counts_buf)  # mut=False (read-only) -> ImmutAnyOrigin kernel param
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -1042,7 +1042,7 @@ struct RevoluteJointSolver:
                 dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
             ],
             joint_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
+                dtype, Layout.row_major(BATCH), ImmutAnyOrigin
             ],
             baumgarte: Scalar[dtype],
             slop: Scalar[dtype],

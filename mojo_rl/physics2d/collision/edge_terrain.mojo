@@ -1094,9 +1094,9 @@ struct EdgeTerrainCollision(CollisionSystem):
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), ImmutAnyOrigin
         ],
-        edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), ImmutAnyOrigin],
         contacts: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
@@ -1135,30 +1135,30 @@ struct EdgeTerrainCollision(CollisionSystem):
         EDGES_OFFSET: Int,
     ](
         ctx: DeviceContext,
-        state_buf: DeviceBuffer[dtype],
+        mut state_buf: DeviceBuffer[dtype],
         shapes_buf: DeviceBuffer[dtype],
         edge_counts_buf: DeviceBuffer[dtype],
         mut contacts_buf: DeviceBuffer[dtype],
         mut contact_counts_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch strided collision detection kernel on GPU."""
+        # state/shapes/edge_counts read-only (mut=False views -> ImmutAnyOrigin
+        # kernel params); contacts/contact_counts written (mut=True).
         var state = LayoutTensor[
-            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, STATE_SIZE)
+        ](state_buf)
         var shapes = LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ](shapes_buf.unsafe_ptr())
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE)
+        ](shapes_buf)
         var edge_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](edge_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](edge_counts_buf)
         var contacts = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE)
+        ](contacts_buf)
         var contact_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](contact_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](contact_counts_buf)
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -1171,10 +1171,10 @@ struct EdgeTerrainCollision(CollisionSystem):
             shapes: LayoutTensor[
                 dtype,
                 Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             edge_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
+                dtype, Layout.row_major(BATCH), ImmutAnyOrigin
             ],
             contacts: LayoutTensor[
                 dtype,

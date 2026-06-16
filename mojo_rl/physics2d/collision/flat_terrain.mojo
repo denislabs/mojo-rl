@@ -221,7 +221,7 @@ struct FlatTerrainCollision(CollisionSystem):
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), ImmutAnyOrigin
         ],
         contacts: LayoutTensor[
             dtype,
@@ -345,7 +345,7 @@ struct FlatTerrainCollision(CollisionSystem):
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), ImmutAnyOrigin
         ],
         contacts: LayoutTensor[
             dtype,
@@ -584,29 +584,27 @@ struct FlatTerrainCollision(CollisionSystem):
         BODIES_OFFSET: Int,
     ](
         ctx: DeviceContext,
-        state_buf: DeviceBuffer[dtype],
+        mut state_buf: DeviceBuffer[dtype],
         shapes_buf: DeviceBuffer[dtype],
         mut contacts_buf: DeviceBuffer[dtype],
         mut contact_counts_buf: DeviceBuffer[dtype],
         ground_y: Scalar[dtype],
     ) raises:
         """Launch strided flat terrain collision detection kernel."""
+        # state/shapes read-only here (mut=False views -> ImmutAnyOrigin kernel
+        # params); contacts/contact_counts written (mut=True).
         var state = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, STATE_SIZE),
-            MutAnyOrigin,
-        ](state_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, STATE_SIZE)
+        ](state_buf)
         var shapes = LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ](shapes_buf.unsafe_ptr())
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE)
+        ](shapes_buf)
         var contacts = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE)
+        ](contacts_buf)
         var contact_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](contact_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](contact_counts_buf)
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -621,7 +619,7 @@ struct FlatTerrainCollision(CollisionSystem):
             shapes: LayoutTensor[
                 dtype,
                 Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             contacts: LayoutTensor[
                 dtype,
