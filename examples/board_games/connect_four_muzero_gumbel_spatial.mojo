@@ -72,13 +72,13 @@ def main() raises:
     comptime WW = 7
     comptime LATENT = CH * HH * WW
     comptime BINS = 51        # categorical value/reward support over [-1, 1]
-    # 128 sims/move (was 64): C4 wants deep search (muzero-general uses 200, the
-    # alexZajac C4 repo 500) and the exploration fixes (temp=1 + init_zero +
-    # open_plies) mean more sims no longer collapses self-play diversity. ~2×
-    # wall-clock/move; raise toward 200 next if the throughput allows.
-    comptime NUM_SIMS = 128
-    comptime MAX_NODES = 256  # ≥ NUM_SIMS (≤1 node expanded per sim) + root
-    #                           candidates; bump if NUM_SIMS approaches 256.
+    # 64 sims/move. 128 was WORSE early (eval1 0.43 vs 0.75 at matched steps, 0
+    # promotions): deep search over a still-imperfect learned model amplifies its
+    # value/dynamics errors. The references' 200-500 sims assume a converged
+    # model + PUCT/Dirichlet; early Gumbel does better at 64. Revisit via a
+    # sims SCHEDULE (low early → high once the model is strong) if needed.
+    comptime NUM_SIMS = 64
+    comptime MAX_NODES = 256  # ≫ NUM_SIMS (≤1 node/sim); ample headroom.
     comptime MAX_K = 4        # already maxed for C4 (power of two ≤ ACT=7)
     comptime CAP = 1_000_000
     comptime B = 128
