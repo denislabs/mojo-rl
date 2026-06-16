@@ -28,9 +28,11 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 
+from ..training.batched_env import BatchedEnv
 from ..training.driver_onpolicy_discrete import (
     run_onpolicy_discrete_train,
     run_onpolicy_discrete_eval,
+    run_onpolicy_discrete_train_batched,
 )
 
 from ..ppo.metrics import PPOMetrics
@@ -118,6 +120,43 @@ struct PPODiscreteAgent[
             diag_every=diag_every,
             checkpoint_every=checkpoint_every,
             checkpoint_path=checkpoint_path,
+        )
+
+    def train_batched[
+        E: BatchedEnv,
+        L: Logger = NoOpLogger,
+    ](
+        mut self,
+        ctx: Optional[DeviceContext],
+        mut env: E,
+        total_env_steps: Int,
+        *,
+        rng_seed: UInt64 = UInt64(42),
+        print_every: Int = 5_000,
+        verbose: Bool = True,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
+        base_step: Int = 0,
+    ) raises -> List[Scalar[DT]]:
+        """N_ENVS-wide discrete on-policy training via
+        `run_onpolicy_discrete_train_batched`. Covers same-target
+        `(env=cpu, train=cpu)` and `(env=gpu, train=gpu)` at the
+        compile-time `N_ENVS`. For single-env / cross-target use `train`."""
+        return run_onpolicy_discrete_train_batched[Self.TrainerT, E, L](
+            ctx,
+            self.trainer,
+            env,
+            total_env_steps,
+            rng_seed=rng_seed,
+            print_every=print_every,
+            verbose=verbose,
+            logger=logger,
+            diag_every=diag_every,
+            checkpoint_every=checkpoint_every,
+            checkpoint_path=checkpoint_path,
+            base_step=base_step,
         )
 
     # ─── Evaluation ─────────────────────────────────────────────────────

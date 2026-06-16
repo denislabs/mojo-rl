@@ -57,7 +57,10 @@ from ..core.checkpoint_helpers import (
 )
 from ..training.episode_tracker import EpisodeTracker
 from ..training.onpolicy_state import OnPolicyState
-from ..training.driver_onpolicy_discrete import OnPolicyDiscreteAgent
+from ..training.driver_onpolicy_discrete import (
+    OnPolicyDiscreteAgent,
+    OnPolicyDiscreteAgentBatched,
+)
 from ..ppo.blocks.record_step import PPORecordStep
 from ..ppo.blocks.gae_step import PPOGAEStep
 from ..ppo.blocks.minibatch_gather_step import PPOMinibatchGatherStep
@@ -128,14 +131,18 @@ struct PPODiscreteTrainer[
     MINIBATCH: Int,
     N_EPOCHS: Int,
     N_ENVS: Int = 1,
-](OnPolicyDiscreteAgent):
-    """CleanRL-style categorical PPO trainer. Single-env (host-list)
-    surface; `N_ENVS` sizes the per-step scratches (defaults to 1)."""
+](OnPolicyDiscreteAgentBatched):
+    """CleanRL-style categorical PPO trainer. Exposes both the single-env
+    (host-list) surface and the N_ENVS-wide batched pointer surface;
+    `N_ENVS` sizes the per-step scratches (defaults to 1). The GAE +
+    K-epoch update (`train_step`) is already N_ENVS-generic — the batched
+    methods just feed it N_ENVS-wide pointers."""
 
-    # OnPolicyDiscreteAgent trait-visible comptime aliases.
+    # OnPolicyDiscreteAgent(Batched) trait-visible comptime aliases.
     comptime AGENT_TRAIN_TARGET = Self.train_target
     comptime AGENT_OBS_DIM      = Self.OBS_DIM
     comptime AGENT_NUM_ACTIONS  = Self.N_ACTIONS
+    comptime AGENT_N_ENVS       = Self.N_ENVS
 
     comptime N_MINIBATCHES = (Self.ROLLOUT_LEN * Self.N_ENVS) // Self.MINIBATCH
 
@@ -460,6 +467,52 @@ struct PPODiscreteTrainer[
 
     def end_episode(mut self):
         self.tracker.end_episode()
+
+    # ──────────────────────────────────────────────────────────────────
+    # OnPolicyDiscreteAgentBatched surface (N_ENVS-wide pointers)
+    # ──────────────────────────────────────────────────────────────────
+
+    def select_action_batched(
+        mut self,
+        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        step_idx: Int,
+    ) raises:
+        """N_ENVS-wide action selection. Reads N_ENVS*OBS from obs_ptr,
+        writes N_ENVS discrete indices (as floats) into action_ptr, caches
+        per-env (index, log_prob, value) for the next record. Same act step
+        as the N=1 wrapper, just fed the wide pointers directly."""
+        _ = step_idx
+        self.act_step.step[
+            Self.train_target, Self.ROLLOUT_LEN, Self.MINIBATCH, Self.N_ENVS,
+        ](self.state, self.actor, self.critic, obs_ptr, action_ptr)
+
+    def record_batch_cpu(
+        mut self,
+        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        reward_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        next_obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        done_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """N_ENVS-wide transition record. Maintains a per-env running
+        return (_ep_returns[e]); on done[e] pushes the completed return
+        into the EpisodeTracker (add_reward + end_episode), mirroring the
+        continuous trainer's record_batch_cpu."""
+        self.record_step.step[
+            Self.train_target, Self.MINIBATCH, Self.N_ENVS,
+        ](self.state, obs_ptr, reward_ptr, next_obs_ptr, done_ptr)
+        var ep_ret_p = self._ep_returns.value()
+        for e in range(Self.N_ENVS):
+            ep_ret_p[e] += reward_ptr[e]
+            if done_ptr[e] > Scalar[DT](0.5):
+                self.tracker.add_reward(ep_ret_p[e])
+                self.tracker.end_episode()
+                ep_ret_p[e] = Scalar[DT](0.0)
+
+    def mark_terminal_env(mut self, env_idx: Int) raises:
+        self.record_step.mark_terminal[
+            Self.train_target, Self.MINIBATCH, Self.N_ENVS,
+        ](self.state, env_idx)
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
         _ = step_idx
