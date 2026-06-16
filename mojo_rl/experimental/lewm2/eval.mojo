@@ -25,8 +25,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor, TensorLayout, row_major
 
-from mojo_rl.nn.constants import dtype           # == nn2 DT (float32)
 from mojo_rl.nn2.constants import DT
+comptime dtype = DT                              # float32 (legacy nn.constants.dtype)
 from mojo_rl.planners.trajectory import (
     CategoricalRandomShooter,
     CategoricalCEMOptimizer,

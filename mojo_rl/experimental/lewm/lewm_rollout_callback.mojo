@@ -38,7 +38,7 @@ in ``score_plan`` only constructs ``LayoutTensor`` values (no
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor, TileTensor, TensorLayout
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT as dtype  # float32 (legacy nn.constants.dtype)
 from mojo_rl.planners.trajectory.score_callback import (
     ScorePlanCallback, BatchedScorePlanCallback,
 )
