@@ -111,7 +111,7 @@ struct H5Dataset(Movable):
         _ = h5s_get_simple_extent_dims(
             space_id,
             dims_buf,
-            _null_ptr[hsize_t, MutAnyOrigin](),
+            _null_ptr[hsize_t, MutUntrackedOrigin](),
         )
         _ = h5s_close(space_id)
 

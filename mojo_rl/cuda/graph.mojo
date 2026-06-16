@@ -94,7 +94,7 @@ struct CUDAGraph(Movable):
             else:
                 # Create replay stream
                 var stream_create = self._lib.get_function[
-                    def(UnsafePointer[_CUptr, MutAnyOrigin]) thin -> c_int
+                    def(UnsafePointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
                 ]("intercept_stream_create")
                 var stream_buf = alloc[_CUptr](1)
                 stream_buf[] = _uninit[_CUptr]()
@@ -147,7 +147,7 @@ struct CUDAGraph(Movable):
         var graph_buf = alloc[_CUptr](1)
         graph_buf[] = _uninit[_CUptr]()
         var r_end = self._lib.get_function[
-            def(_CUptr, UnsafePointer[_CUptr, MutAnyOrigin]) thin -> c_int
+            def(_CUptr, UnsafePointer[_CUptr, MutUntrackedOrigin]) thin -> c_int
         ]("intercept_stream_end_capture")(self._mojo_stream, graph_buf)
         self._graph = graph_buf[]
         graph_buf.free()
@@ -162,7 +162,7 @@ struct CUDAGraph(Movable):
         var num_buf = alloc[UInt64](1)
         num_buf[] = UInt64(0)
         _ = self._lib.get_function[
-            def(_CUptr, UnsafePointer[UInt64, MutAnyOrigin]) thin -> c_int
+            def(_CUptr, UnsafePointer[UInt64, MutUntrackedOrigin]) thin -> c_int
         ]("intercept_graph_get_nodes")(self._graph, num_buf)
         self._num_nodes = Int(num_buf[])
         num_buf.free()
@@ -178,7 +178,7 @@ struct CUDAGraph(Movable):
         var exec_buf = alloc[_CUptr](1)
         exec_buf[] = _uninit[_CUptr]()
         var r_inst = self._lib.get_function[
-            def(UnsafePointer[_CUptr, MutAnyOrigin], _CUptr) thin -> c_int
+            def(UnsafePointer[_CUptr, MutUntrackedOrigin], _CUptr) thin -> c_int
         ]("intercept_graph_instantiate")(exec_buf, self._graph)
         self._exec = exec_buf[]
         exec_buf.free()
