@@ -6,7 +6,7 @@
 Compares the custom per-(b,h) GPU kernels against the CPU path for
 forward + grad_input, non-causal and causal, multi-head. Attention has no
 params. Tolerance 1e-4 (fp32; GPU accumulates in Float32 vs CPU Float64,
-so a touch looser than the linear-op tests). Docs: NN2_TRANSFORMER_PORT.md.
+so a touch looser than the linear-op tests). Docs: NN_TRANSFORMER_PORT.md.
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer

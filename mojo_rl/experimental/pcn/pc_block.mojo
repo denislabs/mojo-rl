@@ -83,7 +83,7 @@ struct PCBlock[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """Nn2 init: W via INIT.fill(fan_in=in_dim, fan_out=out_dim); zero b."""
+        """nn init: W via INIT.fill(fan_in=in_dim, fan_out=out_dim); zero b."""
         var W_view = LayoutTensor[
             dtype,
             Layout.row_major(Self.in_dim * Self.out_dim),

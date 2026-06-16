@@ -57,7 +57,7 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """Nn2 init: γ = 1 (INIT unused — RMSNorm scale, not a weight)."""
+        """nn init: γ = 1 (INIT unused — RMSNorm scale, not a weight)."""
         for i in range(Self.dim):
             params.ptr[i] = Scalar[dtype](1)
 

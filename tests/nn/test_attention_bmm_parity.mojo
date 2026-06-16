@@ -12,7 +12,7 @@ causal, multi-head.
 Tolerance 2e-3: the bmm path reorders the matmul accumulation vs the custom
 path's scalar dot products. On Apple Metal both are fp32. On NVIDIA the
 batched GEMM may use TF32 → expect a larger (but still small) gap; bump TOL
-if so. Docs: docs/NN2_TRANSFORMER_PORT.md.
+if so. Docs: docs/NN_TRANSFORMER_PORT.md.
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer

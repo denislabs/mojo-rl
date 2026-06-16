@@ -10,7 +10,7 @@ the `.ptr` once at the kernel boundary.
 `n_elems` is passed explicitly. Production version may recover this
 from `param.runtime_layout` (or similar TileTensor instance API) once
 the nightly API surface stabilizes — see open question #1 caveat in
-docs/NN2_DESIGN.md. For Phase 1 the explicit `n_elems` keeps the visitor
+docs/NN_DESIGN.md. For Phase 1 the explicit `n_elems` keeps the visitor
 loop trivial.
 
 **Phase 4 (`apply_decay`).** Layers carry the canonical "should weight

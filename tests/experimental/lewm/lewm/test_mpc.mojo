@@ -1,4 +1,4 @@
-"""LeWM2 autoregressive MPC eval test (CPU, toy).
+"""LeWM autoregressive MPC eval test (CPU, toy).
 
 Trains a toy world model, then runs the latent-rollout MPC eval
 (horizon=2 → NEEDED=4 actions) reusing the shared planners. Validates the
@@ -62,7 +62,7 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 def main() raises:
     print("=" * 70)
-    print("LeWM2 autoregressive MPC eval (CPU, toy)")
+    print("LeWM autoregressive MPC eval (CPU, toy)")
     print("=" * 70)
 
     var buf = Buffer(n_traj=8, traj_len=12, seed=555)

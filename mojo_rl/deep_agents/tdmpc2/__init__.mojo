@@ -1,7 +1,7 @@
 """TD-MPC2 (deep_agents port) — implicit world model + MPPI planning.
 
 Built on nn ComputeGraph autodiff (correct BPTT through the latent rollout)
-+ the deep_agents blocks pattern. See docs/TDMPC2_DEEP_AGENTS2_PORT.md.
++ the deep_agents blocks pattern. See docs/TDMPC2_DEEP_AGENTS_PORT.md.
 
 Phases shipped:
   P1 — world-model graph + BPTT + two-hot losses (wm_graph, wm_step).

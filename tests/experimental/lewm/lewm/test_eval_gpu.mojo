@@ -1,4 +1,4 @@
-"""LeWM2 teacher-forced eval — GPU path smoke (Apple, toy scale).
+"""LeWM teacher-forced eval — GPU path smoke (Apple, toy scale).
 
 Same as test_eval but target="gpu": validates the eval's device path
 (scorer GPU pixel upload + action H2D, forward_into D2H readout, CEM /
@@ -63,7 +63,7 @@ def _det(i: Int) -> Scalar[DT]:
 
 def main() raises:
     print("=" * 70)
-    print("LeWM2 teacher-forced eval — GPU smoke (toy)")
+    print("LeWM teacher-forced eval — GPU smoke (toy)")
     print("=" * 70)
     var ctx = DeviceContext()
     var tr = Trainer.make(lam=Scalar[DT](0.09), lr=Scalar[DT](1e-3), ctx=ctx)

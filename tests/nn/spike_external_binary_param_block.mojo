@@ -1,4 +1,4 @@
-"""SPIKE — de-risks LeWM nn port path A (docs/LEWM_NN2_PORT_PLAN.md §5.1).
+"""SPIKE — de-risks LeWM nn port path A (docs/LEWM_NN_PORT_PLAN.md §5.1).
 
 Path A makes the LeWM AR-predictor `ConditionalTransformerBlock` an
 ARITY=2 `Module` (inputs `x`, `c`) bound into the JEPA loss graph as an

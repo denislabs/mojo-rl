@@ -1,6 +1,6 @@
 """Wave A transformer primitives — CPU forward + finite-diff gradcheck.
 
-Covers Transpose2D, TokenMean, BiasAdd, Embedding (docs/NN2_TRANSFORMER_PORT.md
+Covers Transpose2D, TokenMean, BiasAdd, Embedding (docs/NN_TRANSFORMER_PORT.md
 Phase 1 Wave A). All four are linear ops, so finite differences match the
 analytic vjp to rounding. We check:
   * forward against a hand-computed reference, and
@@ -349,7 +349,7 @@ def test_embedding() raises:
 
 def main() raises:
     print("=" * 70)
-    print("Wave A transformer primitives (CPU) — docs/NN2_TRANSFORMER_PORT.md")
+    print("Wave A transformer primitives (CPU) — docs/NN_TRANSFORMER_PORT.md")
     print("=" * 70)
     test_transpose2d()
     test_token_mean()

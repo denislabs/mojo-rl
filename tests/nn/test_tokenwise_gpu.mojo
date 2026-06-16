@@ -5,7 +5,7 @@
 
 Builds Tokenwise[SEQ, Linear[IN,OUT]] on CPU and GPU with identical inner
 params, then compares forward + grad_input + grad_weight + grad_bias.
-Tolerance 1e-5 (fp32). Docs: docs/NN2_TRANSFORMER_PORT.md Phase 1 Wave B.
+Tolerance 1e-5 (fp32). Docs: docs/NN_TRANSFORMER_PORT.md Phase 1 Wave B.
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer

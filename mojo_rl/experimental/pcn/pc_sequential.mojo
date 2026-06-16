@@ -143,7 +143,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """Nn2 re-architecture init: per-block `pc_init_params` (vendored
+        """nn re-architecture init: per-block `pc_init_params` (vendored
         `PCInitializer`, legacy-`nn`-free). Mirror of `initialize_params`."""
         for i in range(Self.PARAM_SIZE):
             params.ptr[i] = Scalar[dtype](0)

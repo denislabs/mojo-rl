@@ -1,9 +1,9 @@
-"""LeWM2 continuous-action MPC eval test (CPU, toy).
+"""LeWM continuous-action MPC eval test (CPU, toy).
 
 Mirrors `test_mpc.mojo` but exercises `lewm_mpc_eval_continuous` (Gaussian
 ContinuousCEM + ContinuousRandomShooter) over the same toy world model —
 validating that the continuous planner path wires through the shared
-action-agnostic `LeWM2MPCScorer`. Asserts finiteness + definitional
+action-agnostic `LeWMMPCScorer`. Asserts finiteness + definitional
 ordering (the action-awareness gate is the GPU PushT run).
 
 Run:  pixi run mojo run -I . tests/experimental/lewm/test_mpc_continuous.mojo
@@ -62,7 +62,7 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 def main() raises:
     print("=" * 70)
-    print("LeWM2 continuous-action MPC eval (CPU, toy)")
+    print("LeWM continuous-action MPC eval (CPU, toy)")
     print("=" * 70)
 
     var buf = Buffer(n_traj=8, traj_len=12, seed=555)

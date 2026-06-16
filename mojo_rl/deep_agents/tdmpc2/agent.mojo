@@ -8,7 +8,7 @@ threaded for GPU.
 
 Acting is MPC-off: `a = π(encode(obs))` (reference `cfg.mpc=False`). MPPI
 planning is deferred to the GPU batched planner (P4+). See
-docs/TDMPC2_DEEP_AGENTS2_PORT.md.
+docs/TDMPC2_DEEP_AGENTS_PORT.md.
 
 train_step: sample length-T window (host) → transpose to t-major → TD
 targets (stop-grad) → WM BPTT → policy update on encoded latents → Polyak.

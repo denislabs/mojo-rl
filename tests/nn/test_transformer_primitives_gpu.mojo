@@ -6,7 +6,7 @@ and compares against the CPU path (params set identically on both). Run:
     pixi run -e apple mojo run -I . tests/nn/test_transformer_primitives_gpu.mojo
     pixi run -e nvidia mojo run -I . tests/nn/test_transformer_primitives_gpu.mojo
 
-Tolerance 1e-5 (fp32). Docs: docs/NN2_TRANSFORMER_PORT.md Phase 1 Wave A.
+Tolerance 1e-5 (fp32). Docs: docs/NN_TRANSFORMER_PORT.md Phase 1 Wave A.
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer

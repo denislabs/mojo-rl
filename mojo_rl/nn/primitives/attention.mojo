@@ -26,7 +26,7 @@ GPU path: `USE_MAX_KERNELS=True` (default) → batched-GEMM attention (Wave C
 6d, tensor cores); `False` → serial per-(b,h) custom kernels (6c). The two
 are bit-identical (see tests/nn/test_attention_bmm_parity.mojo); the flag
 only changes speed. CPU path (forward + 3-pass vjp, 6a/6b) ignores the flag.
-Docs: docs/NN2_TRANSFORMER_PORT.md.
+Docs: docs/NN_TRANSFORMER_PORT.md.
 """
 
 from std.math import exp, sqrt

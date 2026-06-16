@@ -90,7 +90,7 @@ struct ConvPCBlock[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """Nn2 init: conv W via INIT.fill(conv fan_in/out); zero per-channel b.
+        """nn init: conv W via INIT.fill(conv fan_in/out); zero per-channel b.
         """
         comptime W_SIZE = Self.out_channels * Self.col_size
         var W_view = LayoutTensor[

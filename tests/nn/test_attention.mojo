@@ -4,7 +4,7 @@ Attention is nonlinear (softmax), so we finite-difference the input grads
 against the analytic vjp for both non-causal and causal modes, multi-head.
 Also a direct single-head softmax forward reference for one position.
 
-Docs: docs/NN2_TRANSFORMER_PORT.md Phase 1 Wave C.
+Docs: docs/NN_TRANSFORMER_PORT.md Phase 1 Wave C.
 """
 
 from std.memory import alloc

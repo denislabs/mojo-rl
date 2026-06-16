@@ -4,7 +4,7 @@ The deeply-nested generic specialization (Sequential→Repeat→
 TransformerBlock→Residual→Sequential→Tokenwise→…) is exactly where
 compile or wiring issues surface. This test builds tiny GPT and ViT
 stacks, runs forward + vjp on CPU, and asserts finite outputs and that
-gradients flow (nonzero grad_input). Docs: NN2_TRANSFORMER_PORT.md.
+gradients flow (nonzero grad_input). Docs: NN_TRANSFORMER_PORT.md.
 """
 
 from std.memory import alloc

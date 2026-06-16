@@ -8,7 +8,7 @@ is linearly separable in patch space, so a correct ViT should drive train
 accuracy to ~100% in a few dozen full-batch steps.
 
 Run: pixi run mojo run -I . tests/nn/test_vit_learns.mojo
-Docs: docs/NN2_TRANSFORMER_PORT.md Phase 1 Wave D.
+Docs: docs/NN_TRANSFORMER_PORT.md Phase 1 Wave D.
 """
 
 from std.memory import alloc

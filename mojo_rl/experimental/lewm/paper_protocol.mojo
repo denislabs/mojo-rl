@@ -1,4 +1,4 @@
-"""LeWM2 PAPER-PROTOCOL planning eval on the real PushT simulator.
+"""LeWM PAPER-PROTOCOL planning eval on the real PushT simulator.
 
 The LeWM paper's actual control benchmark (App F.1 + swm eval pipeline) —
 NOT the full-task "push to the canonical goal from random init" solve:
@@ -51,7 +51,7 @@ from mojo_rl.render.image_writer import save_image_row
 from .trainer import LeWMTrainer
 from .encoder import LeWMEncoder
 from .predict_graph import LeWMPredictor
-from .mpc import LeWM2MPCScorer
+from .mpc import LeWMMPCScorer
 from .pusht_sim_bridge import sim_frame_chw_norm
 
 
@@ -131,7 +131,7 @@ def run_lewm_paper_protocol[
     comptime NEEDED = H + MPC_HORIZON - 1
     comptime FRAMESKIP = ACT // ACT_DIM
     comptime VIZN = IN_CH * VIZ * VIZ
-    comptime Scorer = LeWM2MPCScorer[
+    comptime Scorer = LeWMMPCScorer[
         EMB, T, ACT, SMOOTHED, AE_MLP, H, PRED_HEADS, PRED_FF, DEPTH,
         PRED_PROJ_H, BATCH, MPC_HORIZON, target, PRED_DIM_HEAD,
     ]

@@ -6,7 +6,7 @@ primitives, ConditionalTransformerBlock, RepeatConditional) live in
 `mojo_rl/nn/` proper; this package wires them into the JEPA encoder,
 action embedder, AR predictor, loss graph, and offline trainer.
 
-See docs/LEWM_NN2_PORT_PLAN.md.
+See docs/LEWM_NN_PORT_PLAN.md.
 """
 
 from .encoder import LeWMEncoder, ActionEmbedder, PredProj, ARPredictor

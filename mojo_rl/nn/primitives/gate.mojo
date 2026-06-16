@@ -14,7 +14,7 @@ Gradients:
 
 Cache (leaf-owned): gate and branch. PARAM-free. With AdaLN zero-init the
 gate starts at 0 → block is identity at init (the LeWM correctness
-invariant). See docs/LEWM_NN2_PORT_PLAN.md §2.2.
+invariant). See docs/LEWM_NN_PORT_PLAN.md §2.2.
 """
 
 from std.gpu import global_idx

@@ -1,7 +1,7 @@
 """TD-MPC2 (deep_agents) — Hopper training (GPU, MPC-off) — item B lighthouse.
 
 Hopper is the lighthouse for the episodic **termination head** (item B,
-`docs/TDMPC2_DEEP_AGENTS2_PORT.md` §14.2): unlike HalfCheetah it terminates
+`docs/TDMPC2_DEEP_AGENTS_PORT.md` §14.2): unlike HalfCheetah it terminates
 early when the hopper falls (`TERMINATE_ON_UNHEALTHY=True`), so:
 
   * `done = env.was_terminated()` — TRUE termination only, NOT the time-limit

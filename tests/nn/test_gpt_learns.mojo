@@ -10,7 +10,7 @@ token) is (phase+t+1)%VOCAB. A correct causal GPT learns "predict
 current+1" and drives per-token loss → 0 / next-token accuracy → 100%.
 
 Run: pixi run mojo run -I . tests/nn/test_gpt_learns.mojo
-Docs: docs/NN2_TRANSFORMER_PORT.md Phase 1 Wave D.
+Docs: docs/NN_TRANSFORMER_PORT.md Phase 1 Wave D.
 """
 
 from std.memory import alloc

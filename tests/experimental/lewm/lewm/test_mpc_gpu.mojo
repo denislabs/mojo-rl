@@ -1,4 +1,4 @@
-"""LeWM2 autoregressive MPC eval — GPU path smoke (Apple, toy).
+"""LeWM autoregressive MPC eval — GPU path smoke (Apple, toy).
 
 Validates the device MPC rollout (predict-graph forward + the slide /
 store / score kernels + the name-keyed param sync to a GPU predictor) at
@@ -64,7 +64,7 @@ def _det(i: Int) -> Scalar[DT]:
 
 def main() raises:
     print("=" * 70)
-    print("LeWM2 MPC eval — GPU smoke (toy)")
+    print("LeWM MPC eval — GPU smoke (toy)")
     print("=" * 70)
     var ctx = DeviceContext()
     var tr = Trainer.make(lam=Scalar[DT](0.09), lr=Scalar[DT](1e-3), ctx=ctx)

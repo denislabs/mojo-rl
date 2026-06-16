@@ -13,7 +13,7 @@ model, 8 epochs).
 
 Deferred vs gen-1 (convergence refinements, not architecture): nanoGPT-style
 `Normal(0,0.02)` init + 1/√(2L) c_proj scaled-init are not applied (nn uses
-Kaiming); see docs/NN2_TRANSFORMER_PORT.md.
+Kaiming); see docs/NN_TRANSFORMER_PORT.md.
 
 Run:
     pixi run -e apple  mojo run -I . examples/nn/vit/vit_cifar_training_gpu.mojo

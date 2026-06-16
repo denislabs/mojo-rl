@@ -15,7 +15,7 @@ Gradients:
 
 Cache (leaf-owned): x and scale (needed by the x- and scale-grads).
 PARAM-free. Used inside LeWM's ConditionalTransformerBlock; see
-docs/LEWM_NN2_PORT_PLAN.md §2.2.
+docs/LEWM_NN_PORT_PLAN.md §2.2.
 """
 
 from std.gpu import global_idx

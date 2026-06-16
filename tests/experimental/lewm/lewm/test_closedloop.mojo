@@ -1,4 +1,4 @@
-"""LeWM2 closed-loop MPC harness — wiring test (toy, Apple GPU).
+"""LeWM closed-loop MPC harness — wiring test (toy, Apple GPU).
 
 Runs the FULL closed-loop control loop at toy scale on the real PushTEnv
 (rendered at 16²) with a tiny UNTRAINED world model: predictor sync →
@@ -67,7 +67,7 @@ comptime TrainerCLS = LeWMTrainer[
 
 def main() raises:
     print("=" * 70)
-    print("LeWM2 closed-loop MPC harness — wiring test (toy, GPU)")
+    print("LeWM closed-loop MPC harness — wiring test (toy, GPU)")
     print("=" * 70)
     var ctx = DeviceContext()
     var wm = Trainer.make(lam=Scalar[DT](0.09), lr=Scalar[DT](1e-3), ctx=ctx)

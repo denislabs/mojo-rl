@@ -1,4 +1,4 @@
-"""LeWM2 autoregressive MPC — latent-rollout planning eval (Phase F 2/2).
+"""LeWM autoregressive MPC — latent-rollout planning eval (Phase F 2/2).
 
 The full §10.9 planning eval: roll the predictor forward in LATENT space
 under candidate actions and score the rolled-out latent against an encoded
@@ -14,7 +14,7 @@ rollout via the ported window-slide kernels — no pixels in the loop.
       emb_seq[:, k+H] = pred[:, H-1]                      (append)
   score = MSE(emb_seq[:, H+horizon-1], emb_goal)
 
-`LeWM2MPCScorer` implements `ScorePlanCallback`, so the shared CEM /
+`LeWMMPCScorer` implements `ScorePlanCallback`, so the shared CEM /
 random-shooter optimize action plans of length NEEDED = H+horizon-1.
 `lewm_mpc_eval` encodes a window's start/goal and reports expert vs
 random vs CEM. Gate (§10.9): cem < random_min, expert < random_min on a
@@ -58,7 +58,7 @@ def _tp[
         )
 
 
-struct LeWM2MPCScorer[
+struct LeWMMPCScorer[
     EMB: Int, T: Int, ACT: Int, SMOOTHED: Int, AE_MLP: Int,
     H: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int, PRED_PROJ_H: Int,
     BATCH: Int, MPC_HORIZON: Int, target: StaticString, PRED_DIM_HEAD: Int = 0,
@@ -241,7 +241,7 @@ def lewm_mpc_eval[
     comptime TE = T * EMB
     comptime BE = BATCH * EMB
     comptime NEEDED = H + MPC_HORIZON - 1
-    comptime Scorer = LeWM2MPCScorer[
+    comptime Scorer = LeWMMPCScorer[
         EMB, T, ACT, SMOOTHED, AE_MLP, H, PRED_HEADS, PRED_FF, DEPTH,
         PRED_PROJ_H, BATCH, MPC_HORIZON, target,
     ]

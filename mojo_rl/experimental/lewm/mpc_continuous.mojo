@@ -1,7 +1,7 @@
-"""LeWM2 continuous-action MPC eval (PushT — paper's main benchmark).
+"""LeWM continuous-action MPC eval (PushT — paper's main benchmark).
 
 The continuous-action analogue of `lewm_mpc_eval`: same autoregressive
-latent rollout (`LeWM2MPCScorer`, action-representation agnostic), but the
+latent rollout (`LeWMMPCScorer`, action-representation agnostic), but the
 plan is optimized with the **Gaussian** `ContinuousCEMOptimizer` (paper:
 300 samples, 30 iters, top-30 elites, init variance 1, horizon 5) and the
 baseline is a Gaussian `ContinuousRandomShooter`.
@@ -25,7 +25,7 @@ from mojo_rl.planners.trajectory import (
 )
 from .trainer import LeWMTrainer
 from .predict_graph import LeWMPredictor
-from .mpc import LeWM2MPCScorer
+from .mpc import LeWMMPCScorer
 
 
 def _meanf(v: List[Float64]) -> Float64:
@@ -73,7 +73,7 @@ def lewm_mpc_eval_continuous[
     comptime TE = T * EMB
     comptime BE = BATCH * EMB
     comptime NEEDED = H + MPC_HORIZON - 1
-    comptime Scorer = LeWM2MPCScorer[
+    comptime Scorer = LeWMMPCScorer[
         EMB, T, ACT, SMOOTHED, AE_MLP, H, PRED_HEADS, PRED_FF, DEPTH,
         PRED_PROJ_H, BATCH, MPC_HORIZON, target, PRED_DIM_HEAD,
     ]

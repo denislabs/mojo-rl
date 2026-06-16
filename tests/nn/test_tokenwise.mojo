@@ -5,7 +5,7 @@ Linear and comparing forward + grad_input + grad_param against a manual
 per-token Linear oracle. Linear[IN,OUT] weight is laid out (IN, OUT):
     out[o] = sum_i x[i]*W[i,o] + bias[o].
 
-Docs: docs/NN2_TRANSFORMER_PORT.md Phase 1 Wave B.
+Docs: docs/NN_TRANSFORMER_PORT.md Phase 1 Wave B.
 """
 
 from std.memory import alloc

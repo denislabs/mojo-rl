@@ -1,7 +1,7 @@
 """SequenceCrossEntropyLoss — CPU forward ref_loss + FD gradcheck.
 
 Treats (BATCH, SEQ*VOCAB) as (BATCH*SEQ, VOCAB) per-token softmax-CE,
-averaged over all positions. Docs: NN2_TRANSFORMER_PORT.md Wave D.
+averaged over all positions. Docs: NN_TRANSFORMER_PORT.md Wave D.
 """
 
 from std.memory import alloc

@@ -1,4 +1,4 @@
-"""LeWM2 MPC latent-rollout data-movement kernels (ported from legacy).
+"""LeWM MPC latent-rollout data-movement kernels (ported from legacy).
 
 The autoregressive MPC shot rolls the predictor forward in LATENT space:
 the encoder runs once (start + goal latents), then for each horizon step we

@@ -1,4 +1,4 @@
-"""LeWM2 teacher-forced eval test (CPU, toy).
+"""LeWM teacher-forced eval test (CPU, toy).
 
 Trains a toy world model on the synthetic offline buffer, then runs the
 action-awareness eval (expert vs random vs CEM, reusing the shared
@@ -65,7 +65,7 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 def main() raises:
     print("=" * 70)
-    print("LeWM2 teacher-forced eval (CPU, toy)")
+    print("LeWM teacher-forced eval (CPU, toy)")
     print("=" * 70)
 
     var buf = Buffer(n_traj=8, traj_len=12, seed=321)

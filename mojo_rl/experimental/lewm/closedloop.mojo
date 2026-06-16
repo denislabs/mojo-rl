@@ -1,4 +1,4 @@
-"""LeWM2 closed-loop MPC control on the real PushT simulator.
+"""LeWM closed-loop MPC control on the real PushT simulator.
 
 The actual "solve PushT": plan in the world model's latent space and execute
 on `BATCH` parallel mojo `PushTEnv`s, receding-horizon. Each control cycle:
@@ -7,7 +7,7 @@ on `BATCH` parallel mojo `PushTEnv`s, receding-horizon. Each control cycle:
      start latent (one per env).
   2. (once) encode a goal image — block at the goal pose → goal latent.
   3. ContinuousCEM optimizes an action plan minimizing predicted-latent-to-
-     goal MSE via the shared LeWM2MPCScorer (latent rollout).
+     goal MSE via the shared LeWMMPCScorer (latent rollout).
   4. DENORMALIZE + execute the first planned action block on each env:
      actions are per-step DELTAS — `env_target = agent_pos + action · SCALE`
      with SCALE = 100 exactly (ground truth from the stable_worldmodel
@@ -37,7 +37,7 @@ from mojo_rl.render.image_writer import save_image_row
 from .trainer import LeWMTrainer
 from .encoder import LeWMEncoder
 from .predict_graph import LeWMPredictor
-from .mpc import LeWM2MPCScorer
+from .mpc import LeWMMPCScorer
 from .pusht_sim_bridge import sim_frame_chw_norm
 
 
@@ -97,7 +97,7 @@ def run_lewm_closedloop[
     comptime NEEDED = H + MPC_HORIZON - 1
     comptime FRAMESKIP = ACT // ACT_DIM
     comptime VIZN = IN_CH * VIZ * VIZ
-    comptime Scorer = LeWM2MPCScorer[
+    comptime Scorer = LeWMMPCScorer[
         EMB, T, ACT, SMOOTHED, AE_MLP, H, PRED_HEADS, PRED_FF, DEPTH,
         PRED_PROJ_H, BATCH, MPC_HORIZON, target, PRED_DIM_HEAD,
     ]

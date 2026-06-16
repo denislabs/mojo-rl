@@ -1,4 +1,4 @@
-"""LeWM2 paper-protocol eval harness — wiring test (toy, Apple GPU).
+"""LeWM paper-protocol eval harness — wiring test (toy, Apple GPU).
 
 Runs the FULL paper-protocol loop at toy scale with a tiny UNTRAINED world
 model: PushTEnv.set_state round-trip → start/goal state pairs fabricated by
@@ -69,7 +69,7 @@ comptime TrainerCLS = LeWMTrainer[
 
 def main() raises:
     print("=" * 70)
-    print("LeWM2 paper-protocol harness — wiring test (toy, GPU)")
+    print("LeWM paper-protocol harness — wiring test (toy, GPU)")
     print("=" * 70)
 
     # ── PushTEnv.set_state round-trip ───────────────────────────────────

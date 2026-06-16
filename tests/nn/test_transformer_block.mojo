@@ -4,7 +4,7 @@ Finite-differences grad_input through the full composed graph
 (Tokenwise+LayerNorm → MHA(QKV proj → attention → out proj) → Residual,
 then Tokenwise+LayerNorm → FFN(Linear→GELU→Linear) → Residual), for both
 non-causal and causal. If FD matches the analytic vjp, the whole
-composition's backward is wired correctly. Docs: NN2_TRANSFORMER_PORT.md.
+composition's backward is wired correctly. Docs: NN_TRANSFORMER_PORT.md.
 """
 
 from std.memory import alloc

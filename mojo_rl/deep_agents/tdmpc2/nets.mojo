@@ -16,7 +16,7 @@ Trunks (state obs; `num_enc_layers=2`):
 `SN` is the SimNorm group **size** (reference `simnorm_dim`, default 8); the
 SimNorm primitive takes the group **count** = `DIM // SN`.
 
-Q-trunk dropout (item D, `docs/TDMPC2_DEEP_AGENTS2_PORT.md` §14.4): `TDMPC2QNet`
+Q-trunk dropout (item D, `docs/TDMPC2_DEEP_AGENTS_PORT.md` §14.4): `TDMPC2QNet`
 takes a `QP: Float64 = 0.0` and *always* threads a `Dropout` through its first
 `NormedLinear` (reference `layers.mlp` applies `dropout*(i==0)` — first hidden
 only, between Linear and LayerNorm). `QP=0.0` makes the Dropout numerically

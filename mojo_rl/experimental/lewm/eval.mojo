@@ -48,7 +48,7 @@ def _mse_latent(
     return s / Float64(n)
 
 
-struct LeWM2TFScorer[
+struct LeWMTFScorer[
     IN_CH: Int, IMG: Int, PATCH: Int, HIDDEN: Int, ENC_HEADS: Int,
     ENC_LAYERS: Int, EMB: Int, ENC_PROJ_H: Int, ENC_FF_MULT: Int,
     T: Int, ACT: Int, SMOOTHED: Int, AE_MLP: Int,
@@ -298,7 +298,7 @@ def lewm_action_awareness_eval[
     cem <= random_min (planner finds good actions). Lower is better."""
     comptime PIX = T * IN_CH * IMG * IMG
     comptime ACTIN = T * ACT
-    comptime Scorer = LeWM2TFScorer[
+    comptime Scorer = LeWMTFScorer[
         IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
         ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
         PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, BATCH, target,

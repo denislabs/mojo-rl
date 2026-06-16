@@ -5,7 +5,7 @@ but the Trainer carries `POLICY=Bf16Compute` so Linear runs its matmuls
 in bf16. Weights, gradients, and Adam moments stay fp32; cast-around the
 linalg.matmul call.
 
-Exit criterion (from docs/NN2_DESIGN.md Phase 3): test top-1 ≥ 96.7%
+Exit criterion (from docs/NN_DESIGN.md Phase 3): test top-1 ≥ 96.7%
 (within 0.3% of the fp32 baseline 97.19%).
 """
 

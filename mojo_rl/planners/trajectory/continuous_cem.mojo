@@ -12,7 +12,7 @@ This is the planner the LeWM paper uses for PushT: 300 candidates, 30 CEM
 iterations, top-30 elites, initial sampling variance 1 (``init_std=1``),
 horizon 5. Like the categorical CEM, the optimizer owns host scratch only;
 all GPU work (action upload, latent rollout, score reduction) lives in the
-``ScorePlanCallback`` — so `LeWM2MPCScorer` is reused verbatim (it copies
+``ScorePlanCallback`` — so `LeWMMPCScorer` is reused verbatim (it copies
 raw float actions, action-representation agnostic).
 
 Batch semantics match `CategoricalCEMOptimizer`: the distribution is
