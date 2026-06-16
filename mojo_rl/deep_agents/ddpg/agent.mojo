@@ -141,8 +141,12 @@ struct DDPGAgent[
             N_ENVS,
             NS,
             L,
-            USE_TRAIN_CUDA_GRAPH,
-            USE_ENV_CUDA_GRAPH,
+            # CUDA-graph capture is a GPU-only path (the driver asserts
+            # gpu); gate the flags by target so the True defaults mean
+            # "capture when on GPU, no-op on CPU" instead of failing to
+            # compile on a cpu agent.
+            USE_TRAIN_CUDA_GRAPH and Self.train_target == "gpu",
+            USE_ENV_CUDA_GRAPH and Self.train_target == "gpu",
         ](
             ctx,
             self.trainer,

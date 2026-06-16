@@ -8,6 +8,7 @@ from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.relu import ReLU
 from mojo_rl.nn.primitives.tanh import Tanh
 from mojo_rl.deep_agents.ddpg import DDPGAgent
+from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
 from mojo_rl.deep_agents.training.batched_env import BatchedCpuEnv
 
 from mojo_rl.envs.pendulum import PendulumEnv
@@ -39,7 +40,10 @@ def main() raises:
     print("=" * 60)
 
     var agent = DDPGAgent[
-        ActorNet, CriticNet, OBS_DIM, ACT_DIM, BATCH, CAPACITY,
+        "cpu",
+        UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, CAPACITY],
+        ActorNet,
+        CriticNet,
     ](
         actor_lr=1e-4,
         critic_lr=1e-3,
