@@ -659,7 +659,7 @@ trait PCBlockTrait(Movable & ImplicitlyCopyable):
         `nn.initializer` trait. Default raises — every `PCBlockTrait`
         conformer used under `PCModule` overrides this."""
         raise Error(
-            "pc_init_params: this PCBlockTrait conformer has no nn2 init"
+            "pc_init_params: this PCBlockTrait conformer has no nn init"
             " override — add one to use it under PCModule."
         )
 

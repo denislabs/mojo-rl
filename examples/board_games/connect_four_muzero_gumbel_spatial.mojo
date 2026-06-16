@@ -27,29 +27,29 @@ Usage:
 from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Kaiming
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.initializer import Kaiming
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.muzero.nets_spatial import (
+from mojo_rl.deep_agents.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
     mzc4_init_zero_pred, mzc4_init_zero_dyn,
 )
-from mojo_rl.deep_agents2.muzero.selfplay_arena_gumbel_2p import (
+from mojo_rl.deep_agents.muzero.selfplay_arena_gumbel_2p import (
     run_muzero_selfplay_arena_gumbel_2p,
 )
-from mojo_rl.nn2.training.lr_scheduler import LinearWarmupSchedule
-from mojo_rl.deep_agents2.zero.symmetries import HFlipColumnAugmenter
-from mojo_rl.deep_agents2.zero.evaluators import (
+from mojo_rl.nn.training.lr_scheduler import LinearWarmupSchedule
+from mojo_rl.deep_agents.zero.symmetries import HFlipColumnAugmenter
+from mojo_rl.deep_agents.zero.evaluators import (
     RandomOpponent,
     GPUMinimaxConnectFour,
 )
-from mojo_rl.nn2.core.checkpoint import save_state_v2_body_gpu
+from mojo_rl.nn.core.checkpoint import save_state_v2_body_gpu
 from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
 
 def main() raises:
-    print("=== Gumbel MuZero on Connect Four — SPATIAL latent (deep_agents2) ===")
+    print("=== Gumbel MuZero on Connect Four — SPATIAL latent (deep_agents) ===")
     print()
 
     var env_vars = load_dotenv()
@@ -58,14 +58,14 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="Gumbel MuZero Connect Four spatial (nn2)",
+        run_name="Gumbel MuZero Connect Four spatial (nn)",
         buffer_size=22,
         api_key=api_key,
     )
     logger.set_config("agent", "GumbelMuZero")
     logger.set_config("env", "ConnectFour")
     logger.set_config("network", "MZ spatial conv h/g/f [C=64, 3 blocks, 6x7]")
-    logger.set_config("framework", "deep_agents2/nn2")
+    logger.set_config("framework", "deep_agents/nn")
 
     comptime OBS = 126
     comptime ACT = 7
@@ -192,7 +192,7 @@ def main() raises:
     save_state_v2_body_gpu(dyn, body, String("dyn"), ctx)
     save_state_v2_body_gpu(pred, body, String("pred"), ctx)
     with open("connect_four_muzero_gumbel_spatial.ckpt", "w") as f:
-        f.write(String("nn2-ckpt v2\n") + body)
+        f.write(String("nn-ckpt v2\n") + body)
 
     print()
     print("last_loss:", res.last_loss, "| promotions:", res.promotions)

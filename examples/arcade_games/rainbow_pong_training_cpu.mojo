@@ -1,4 +1,4 @@
-"""Rainbow DQN CPU Training on Pong — clean obs (deep_agents2).
+"""Rainbow DQN CPU Training on Pong — clean obs (deep_agents).
 
 Single-env CPU variant of `rainbow_pong_training_gpu.mojo` for FAST local
 iteration on Apple. On a tiny 6→128→128→head MLP, single-env CPU stepping +
@@ -24,13 +24,13 @@ from std.memory import UnsafePointer
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 
-from mojo_rl.deep_agents2.c51.trainer import C51Trainer
-from mojo_rl.deep_agents2.c51.config import RainbowNet
-from mojo_rl.deep_agents2.training.blocks import NStepSampleStep
-from mojo_rl.deep_agents2.data.any_per_replay import AnyPerReplay
-from mojo_rl.deep_agents2.training import run_offpolicy_discrete_train
+from mojo_rl.deep_agents.c51.trainer import C51Trainer
+from mojo_rl.deep_agents.c51.config import RainbowNet
+from mojo_rl.deep_agents.training.blocks import NStepSampleStep
+from mojo_rl.deep_agents.data.any_per_replay import AnyPerReplay
+from mojo_rl.deep_agents.training import run_offpolicy_discrete_train
 from mojo_rl.envs.arcade_games.pong import PongEnv
 
 
@@ -82,7 +82,7 @@ comptime PongCPU = PongEnv[DT, HIT_REWARD]
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("Rainbow DQN CPU Training on Pong (deep_agents2, single-env)")
+    print("Rainbow DQN CPU Training on Pong (deep_agents, single-env)")
     print("=" * 70)
     print()
 
@@ -106,7 +106,7 @@ def main() raises:
     var eval_env = PongCPU()  # separate env for the noise-off greedy eval
 
     print("Environment: Pong (CPU, single env)")
-    print("Agent: Rainbow DQN (deep_agents2 C51, CPU)")
+    print("Agent: Rainbow DQN (deep_agents C51, CPU)")
     print("  Components: C51 + Double + PER + Dueling + Noisy +", N_STEP, "-step")
     print("  Observation dim:", OBS_DIM)
     print("  Actions:", NUM_ACTIONS, "(NOOP, UP, DOWN)")
@@ -130,11 +130,11 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="Rainbow Pong CPU (deep_agents2)",
+        run_name="Rainbow Pong CPU (deep_agents)",
         buffer_size=64,
         api_key=api_key,
     )
-    logger.set_config("agent", "Rainbow DQN (deep_agents2, CPU)")
+    logger.set_config("agent", "Rainbow DQN (deep_agents, CPU)")
     logger.set_config("env", "Pong")
     logger.set_config("hidden_dim", String(HIDDEN_DIM))
     logger.set_config("lr", String(LR))

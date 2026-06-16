@@ -1,4 +1,4 @@
-"""Rainbow DQN CNN GPU Training on Pong — Pixel Observations (deep_agents2).
+"""Rainbow DQN CNN GPU Training on Pong — Pixel Observations (deep_agents).
 
 Trains a Rainbow agent on the native Pong environment using pixel
 observations (4×84×84 stacked grayscale frames), stepping `N_ENVS`
@@ -8,14 +8,14 @@ CNN Q-network trains on the same device.
 Rainbow components: C51 + Double + PER + Dueling + Noisy + N-step.
 
 The whole agent comes from the `RainbowCNN` preset in
-`mojo_rl/deep_agents2/c51/config.mojo` — Nature-CNN backbone + noisy
+`mojo_rl/deep_agents/c51/config.mojo` — Nature-CNN backbone + noisy
 dueling distributional heads + N-step-over-PER replay with the uint8 obs
 ring, tuned pixel defaults baked in (lr 6.25e-5, warmup 20k, ε=0).
 Training runs through `agent.train_gpu_batched`, the facade over the
 GPU-batched discrete driver. Only the Pong-specific value support
 (V_MIN/V_MAX ±2) is overridden below.
 
-Memory note: deep_agents2's prioritized replay is GPU-resident, so unlike
+Memory note: deep_agents's prioritized replay is GPU-resident, so unlike
 the legacy host-memory buffer the capacity here is bounded by device memory.
 Obs/next_obs are stored as `uint8` (`OBS_STORE_DT = DType.uint8`): the store
 kernel quantizes `round(x·255)` and the gather dequantizes `k/255` — lossless
@@ -36,10 +36,10 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 
-from mojo_rl.deep_agents2.c51.config import RainbowCNN
-from mojo_rl.deep_agents2.training import BatchedGpuDiscreteEnv
+from mojo_rl.deep_agents.c51.config import RainbowCNN
+from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 
 
@@ -109,7 +109,7 @@ comptime PongPixelBatched = BatchedGpuDiscreteEnv[
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("Rainbow DQN CNN GPU Training on Pong — Pixel (deep_agents2)")
+    print("Rainbow DQN CNN GPU Training on Pong — Pixel (deep_agents)")
     print("=" * 70)
     print()
 
@@ -135,7 +135,7 @@ def main() raises:
         var eval_env = PongPixelBatched(ctx)
 
         print("Environment: Pong (GPU-batched Pixel,", N_ENVS, "envs)")
-        print("Agent: Rainbow DQN CNN (deep_agents2 C51, GPU)")
+        print("Agent: Rainbow DQN CNN (deep_agents C51, GPU)")
         print(
             "  Components: C51 + Double + PER + Dueling + Noisy +",
             N_STEP,
@@ -171,11 +171,11 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="Rainbow Pong Pixel GPU (deep_agents2)",
+            run_name="Rainbow Pong Pixel GPU (deep_agents)",
             buffer_size=64,
             api_key=api_key,
         )
-        logger.set_config("agent", "Rainbow DQN CNN (deep_agents2)")
+        logger.set_config("agent", "Rainbow DQN CNN (deep_agents)")
         logger.set_config("env", "Pong (Pixel)")
         logger.set_config("obs", "4x84x84")
         logger.set_config("lr", String(LR))

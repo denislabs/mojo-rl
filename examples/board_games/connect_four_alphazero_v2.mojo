@@ -1,7 +1,7 @@
-"""AlphaZero on Connect Four (deep_agents2 / nn2) — full GPU with remote logging.
+"""AlphaZero on Connect Four (deep_agents / nn) — full GPU with remote logging.
 
 Second-generation port of `connect_four_alphazero.mojo`. Uses the config-free
-nn2 net torsos (`AZConnectFourResNet` — conv stem → 5 identity-skip ResBlocks →
+nn net torsos (`AZConnectFourResNet` — conv stem → 5 identity-skip ResBlocks →
 FC policy/value heads, 128 filters, the closest match to the original AlphaZero
 backbone) + the `AlphaZeroAgent` facade, and exercises the production telemetry:
 two pluggable `GPUEvaluator` opponents (5-ply minimax + random), a per-report
@@ -35,10 +35,10 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.alphazero.nets import AZConnectFourResNet
-from mojo_rl.deep_agents2.alphazero.agent import AlphaZeroAgent
-from mojo_rl.deep_agents2.zero.symmetries import HFlipColumnAugmenter
-from mojo_rl.deep_agents2.zero.evaluators import (
+from mojo_rl.deep_agents.alphazero.nets import AZConnectFourResNet
+from mojo_rl.deep_agents.alphazero.agent import AlphaZeroAgent
+from mojo_rl.deep_agents.zero.symmetries import HFlipColumnAugmenter
+from mojo_rl.deep_agents.zero.evaluators import (
     RandomOpponent,
     GPUMinimaxConnectFour,
 )
@@ -46,7 +46,7 @@ from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
 
 def main() raises:
-    print("=== AlphaZero on Connect Four (deep_agents2 / nn2) ===")
+    print("=== AlphaZero on Connect Four (deep_agents / nn) ===")
     print()
 
     # ── Logger setup ────────────────────────────────────────────
@@ -56,14 +56,14 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="AlphaZero Connect Four (nn2)",
+        run_name="AlphaZero Connect Four (nn)",
         buffer_size=22,
         api_key=api_key,
     )
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "ConnectFour")
     logger.set_config("network", "AZConnectFourResNet[F=128,NB=5,FC=128]")
-    logger.set_config("framework", "deep_agents2/nn2")
+    logger.set_config("framework", "deep_agents/nn")
     # logger.set_config("charts", json.dumps([
     #     {
     #         "title": "Eval vs MinMax",
@@ -87,7 +87,7 @@ def main() raises:
     var ctx = DeviceContext()
     # NUM_SIMS=500 / MAX_NODES=1024 match the legacy AlphaZero.jl-tuned config
     # (legacy used 600 sims / 1024 nodes); 100 sims gave far weaker MCTS targets.
-    # NOTE: nn2 GPU Conv2D now uses im2col + tensor-core GEMM (was a naive
+    # NOTE: nn GPU Conv2D now uses im2col + tensor-core GEMM (was a naive
     # direct-conv kernel that made conv nets 5-10× slower) — the ResNet torso
     # is no longer the per-eval bottleneck. BATCH_SIMS still batches the MCTS
     # rounds (see the tuning notes below).

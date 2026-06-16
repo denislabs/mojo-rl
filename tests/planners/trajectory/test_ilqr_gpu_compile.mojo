@@ -14,7 +14,7 @@ from std.sys import has_accelerator
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 from mojo_rl.planners.trajectory import (
     ILQRGPUBatched,
     RolloutJacobianCallbackGPU,

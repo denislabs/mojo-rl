@@ -15,15 +15,15 @@ Run (GPU env required):
 from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.efficient_zero_v2.nets import (
+from mojo_rl.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, MZPredNet, EZProjectorNet, EZPredictorNet,
 )
-from mojo_rl.deep_agents2.efficient_zero_v2.selfplay_gpu import (
+from mojo_rl.deep_agents.efficient_zero_v2.selfplay_gpu import (
     run_ezv2_gumbel_selfplay_gpu,
 )
 from mojo_rl.envs.cartpole import CartPoleEnv
@@ -87,7 +87,7 @@ def main() raises:
     )
     logger.set_config("agent", "EZv2")
     logger.set_config("env", "CartPole")
-    logger.set_config("framework", "deep_agents2/nn2")
+    logger.set_config("framework", "deep_agents/nn")
 
     print("EZv2 CartPole convergence (v2, GPU Gumbel — MuZero BPTT + SimSiam)")
     print("  LATENT", LATENT, "H", H, "PROJ", PROJ, "BINS", BINS,

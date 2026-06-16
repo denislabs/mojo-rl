@@ -1,4 +1,4 @@
-"""Rainbow DQN GPU Training on Pong (deep_agents2, GPU-batched envs).
+"""Rainbow DQN GPU Training on Pong (deep_agents, GPU-batched envs).
 
 Trains a Rainbow agent (C51 + Double + PER + Dueling + Noisy + N-step) on
 the native Pong environment, stepping `N_ENVS` environments in parallel on
@@ -8,7 +8,7 @@ device — the discrete sibling of the SAC/TD3 GPU-batched path.
 Pong has 3 discrete actions (NOOP, UP, DOWN) and 6D clean observations
 (ball_xy, ball_vxy, paddle_y, cpu_paddle_y — all normalized).
 
-This is the *new* deep_agents2 Rainbow (`mojo_rl.deep_agents2.c51`), NOT the
+This is the *new* deep_agents Rainbow (`mojo_rl.deep_agents.c51`), NOT the
 legacy `deep_agents` agent. The whole agent comes from the `Rainbow` preset
 (dueling/noisy distributional net over an N-step-over-PER sample block) and
 trains through `agent.train_gpu_batched`, the facade over the GPU-batched
@@ -28,10 +28,10 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 
-from mojo_rl.deep_agents2.c51.config import Rainbow
-from mojo_rl.deep_agents2.training import BatchedGpuDiscreteEnv
+from mojo_rl.deep_agents.c51.config import Rainbow
+from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
 from mojo_rl.envs.arcade_games.pong import PongEnv
 
 
@@ -106,7 +106,7 @@ comptime PongBatched = BatchedGpuDiscreteEnv[
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("Rainbow DQN GPU Training on Pong (deep_agents2, GPU-batched)")
+    print("Rainbow DQN GPU Training on Pong (deep_agents, GPU-batched)")
     print("=" * 70)
     print()
 
@@ -132,7 +132,7 @@ def main() raises:
         var eval_env = PongBatched(ctx)
 
         print("Environment: Pong (GPU-batched,", N_ENVS, "envs)")
-        print("Agent: Rainbow DQN (deep_agents2 C51, GPU)")
+        print("Agent: Rainbow DQN (deep_agents C51, GPU)")
         print(
             "  Components: C51 + Double + PER + Dueling + Noisy +",
             N_STEP,
@@ -167,11 +167,11 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="Rainbow Pong GPU (deep_agents2)",
+            run_name="Rainbow Pong GPU (deep_agents)",
             buffer_size=64,
             api_key=api_key,
         )
-        logger.set_config("agent", "Rainbow DQN (deep_agents2)")
+        logger.set_config("agent", "Rainbow DQN (deep_agents)")
         logger.set_config("env", "Pong")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("lr", String(LR))

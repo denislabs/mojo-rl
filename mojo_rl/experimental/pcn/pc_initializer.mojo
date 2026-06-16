@@ -1,6 +1,6 @@
 """PCN-local weight initializers (buffer-fill API).
 
-Vendored during the nn2 re-architecture (Phase A) so PCN no longer depends
+Vendored during the nn re-architecture (Phase A) so PCN no longer depends
 on `mojo_rl.nn.initializer`. The buffer-fill signature
 (`fill[SIZE, FAN_IN, FAN_OUT, dtype](ptr_view)`) is deliberately kept
 identical to the legacy `nn.initializer.Initializer.init[...]` so the

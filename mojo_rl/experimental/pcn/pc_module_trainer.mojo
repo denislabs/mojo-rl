@@ -1,10 +1,10 @@
-"""Drive nn2 Adam over a PCModule — `pc_module_train_one_batch` (Phase A spike).
+"""Drive nn Adam over a PCModule — `pc_module_train_one_batch` (Phase A spike).
 
-One Bogacz-canonical PC training step on the nn2 storage layer:
+One Bogacz-canonical PC training step on the nn storage layer:
   1. PCN's own settling loop fills the weight gradient (`net.weights.grd`)
      via the existing `PCTrainer.compute_grads_only` static path — the
      local error-minimization math is reused verbatim.
-  2. nn2 `Adam.step` consumes that gradient and updates the weights
+  2. nn `Adam.step` consumes that gradient and updates the weights
      (`net.weights.val`). No negation: `weight_grad` already stores the
      standard +∂E/∂W (see `pc_module.mojo` header).
 
@@ -16,8 +16,8 @@ that now lives in `net.weights` (a `Param`).
 
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.optimizer import Optimizer
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.optimizer import Optimizer
 
 from .predictive_model import PCBlockTrait
 from .pc_sequential import PCSequential
@@ -94,7 +94,7 @@ def pc_module_train_one_batch[
         lr_x,
     )
 
-    # 2. nn2 optimizer (Adam/AdamW/…) consumes net.weights.grd, updates
+    # 2. nn optimizer (Adam/AdamW/…) consumes net.weights.grd, updates
     #    net.weights.val.
     opt.step["cpu", PCModule[*BLOCKS]](net)
 

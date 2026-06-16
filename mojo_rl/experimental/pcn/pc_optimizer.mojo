@@ -3,17 +3,17 @@
 # =============================================================================
 #
 # These are vendored verbatim from the legacy `mojo_rl.nn.optimizer` package
-# (adam.mojo + adamw.mojo) during the nn2 re-architecture, so that
+# (adam.mojo + adamw.mojo) during the nn re-architecture, so that
 # `mojo_rl.experimental.pcn` carries no dependency on legacy `nn` (which can
 # then be deleted). The ONLY changes from the originals are:
-#   - `dtype` now sourced from `mojo_rl.nn2.constants` (`DT`) and `TPB` from
+#   - `dtype` now sourced from `mojo_rl.nn.constants` (`DT`) and `TPB` from
 #     the PCN-local `pc_constants` module.
 #   - structs renamed `Adam` -> `PCAdam`, `AdamW` -> `PCAdamW` and no longer
 #     conform to the legacy `Optimizer` trait (PCN tests call `.step[...]`
 #     directly).
 # All algorithm/logic (CPU SIMD step, GPU kernels, launchers) is unchanged.
 
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 from .pc_constants import TPB
 from layout import LayoutTensor, Layout
 from std.math import sqrt, exp, log

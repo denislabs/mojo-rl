@@ -24,10 +24,10 @@ from std.time import perf_counter_ns
 from std.math import sqrt
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
-from mojo_rl.nn2.datasets.cifar10 import CIFAR10
+from mojo_rl.nn.datasets.cifar10 import CIFAR10
 from mojo_rl.experimental.pcn import (
     PCBlock,
     PCSequential,

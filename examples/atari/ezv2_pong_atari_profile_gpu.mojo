@@ -41,17 +41,17 @@ Then interpret:
 from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.optimizer.sgd import SGD
-from mojo_rl.deep_agents2.efficient_zero_v2.config_atari import EZV2AtariConfig
-from mojo_rl.deep_agents2.efficient_zero_v2.nets_atari import (
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.optimizer.sgd import SGD
+from mojo_rl.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
+from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import (
     ez_atari_init_zero_pred, ez_atari_init_zero_dyn,
 )
-from mojo_rl.deep_agents2.efficient_zero_v2.selfplay_gpu_batched import (
+from mojo_rl.deep_agents.efficient_zero_v2.selfplay_gpu_batched import (
     run_ezv2_gumbel_selfplay_gpu_batched,
 )
-from mojo_rl.deep_agents2.training.batched_env import BatchedCpuDiscreteEnv
+from mojo_rl.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
 from mojo_rl.envs.atari import AtariEnv, load_rom
 from mojo_rl.envs.atari.games.registry import AtariGame
 

@@ -1,6 +1,6 @@
-"""PPO GPU Training on Craftax-Full / symbolic obs (deep_agents2, GPU-batched).
+"""PPO GPU Training on Craftax-Full / symbolic obs (deep_agents, GPU-batched).
 
-nn2 port of the legacy DeepPPOAgent example. Uses the da2 GPU-batched
+nn port of the legacy DeepPPOAgent example. Uses the da2 GPU-batched
 discrete on-policy path: PPODiscreteAgent.train_batched over a
 BatchedGpuDiscreteEnv wrapping CraftaxFullEnv (256 parallel envs on
 device). Feedforward MLP over the 8268-D symbolic observation — same
@@ -18,12 +18,12 @@ Run with:
 from std.random import seed
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.combinators.sequential import Sequential
-from mojo_rl.nn2.primitives.linear import Linear
-from mojo_rl.nn2.primitives.tanh import Tanh
-from mojo_rl.deep_agents2.ppo_discrete import PPODiscreteAgent
-from mojo_rl.deep_agents2.training.batched_env import BatchedGpuDiscreteEnv
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.deep_agents.ppo_discrete import PPODiscreteAgent
+from mojo_rl.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
 
 from mojo_rl.envs.craftax_full import CraftaxFullEnv
 

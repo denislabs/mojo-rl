@@ -1,4 +1,4 @@
-"""DreamerV3 (nn2) — open-loop world-model accuracy diagnostic (Pendulum, CPU).
+"""DreamerV3 (nn) — open-loop world-model accuracy diagnostic (Pendulum, CPU).
 
 Confirms whether the remaining non-convergence is a world-model FIDELITY
 (capacity / latent-resolution) issue rather than a code bug. After training,
@@ -32,8 +32,8 @@ Run:
 from std.memory import alloc
 from std.random import random_float64, seed
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.deep_agents2.dreamerv3.agent import DreamerV3Agent
+from mojo_rl.nn.constants import DT
+from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
 from mojo_rl.envs.pendulum import PendulumV2
 
 # ── config (fast CPU; mirrors the working CPU example except CLASSES toggle) ──

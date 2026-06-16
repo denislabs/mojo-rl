@@ -17,7 +17,7 @@ from layout import Layout, LayoutTensor
 from layout.tile_tensor import lt_to_tt
 from linalg.matmul import matmul as max_matmul
 
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 
 
 @always_inline

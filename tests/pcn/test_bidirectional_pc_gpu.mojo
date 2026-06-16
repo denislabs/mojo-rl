@@ -22,11 +22,11 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 from mojo_rl.experimental.pcn.pc_constants import TPB
 from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
-from mojo_rl.nn2.datasets.mnist import MNIST
+from mojo_rl.nn.datasets.mnist import MNIST
 from mojo_rl.experimental.pcn import (
     PCBlock,
     PCSequential,

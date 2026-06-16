@@ -13,9 +13,9 @@ Run (no GPU):
 
 from std.memory import UnsafePointer
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 from mojo_rl.core.logger import CsvLogger
-from mojo_rl.deep_agents2.muzero import MuZeroMLPConfig, MuZeroAgent
+from mojo_rl.deep_agents.muzero import MuZeroMLPConfig, MuZeroAgent
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 

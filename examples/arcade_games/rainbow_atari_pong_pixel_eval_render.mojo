@@ -1,4 +1,4 @@
-"""Rainbow DQN CNN Atari Pong — Live Render Eval (pixel obs, deep_agents2).
+"""Rainbow DQN CNN Atari Pong — Live Render Eval (pixel obs, deep_agents).
 
 Loads a checkpoint saved by `rainbow_atari_pong_pixel_training_gpu.mojo` and
 plays the real Atari 2600 Pong ROM (6502/TIA/RIOT emulation) in an SDL3 window
@@ -33,9 +33,9 @@ Run with (GPU env):
 from std.memory import memcpy
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 
-from mojo_rl.deep_agents2.c51.config import RainbowCNNConfig, trainer_from_config
+from mojo_rl.deep_agents.c51.config import RainbowCNNConfig, trainer_from_config
 
 from mojo_rl.envs.atari import AtariEnv
 from mojo_rl.envs.atari.games.registry import AtariGame
@@ -73,7 +73,7 @@ comptime MAX_STEPS = 20_000
 comptime EVAL_CAP = 256
 comptime BATCH_SIZE = 32
 
-# Pixel obs env (OBS_MODE=1) using the nn2 dtype, so step_obs emits List[DT].
+# Pixel obs env (OBS_MODE=1) using the nn dtype, so step_obs emits List[DT].
 comptime AtariPongPixel = AtariEnv[1, DT]
 
 # Same preset the training script used → identical q-net, clean checkpoint load.

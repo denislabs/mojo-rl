@@ -40,14 +40,14 @@ from std.memory import alloc
 from std.testing import assert_true
 from layout import TileTensor, row_major
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Xavier
-from mojo_rl.nn2.optimizer import Adam
-from mojo_rl.deep_agents2.dreamer4.agent import Dreamer4Agent
-from mojo_rl.deep_agents2.dreamerv3.twohot import (
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
+from mojo_rl.deep_agents.dreamerv3.twohot import (
     symexp_twohot_bins, twohot_loss, twohot_loss_backward, twohot_pred,
 )
-from mojo_rl.deep_agents2.dreamerv3.dists_discrete import cat_argmax
+from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_argmax
 
 
 def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:

@@ -23,7 +23,7 @@ is fixed at 4 internally for pixel mode.
 Rainbow components: C51 + Double + PER + Dueling + Noisy + N-step.
 
 The whole agent comes from the `RainbowCNN` preset in
-`mojo_rl/deep_agents2/c51/config.mojo` — Nature-CNN backbone + noisy
+`mojo_rl/deep_agents/c51/config.mojo` — Nature-CNN backbone + noisy
 dueling distributional heads + N-step-over-PER replay with the uint8 obs
 ring (lossless here too: AtariEnv emits exact `k/255` pixel obs), tuned
 pixel defaults baked in (lr 6.25e-5, warmup 20k, ε=0). Only the
@@ -47,10 +47,10 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 
-from mojo_rl.deep_agents2.c51.config import RainbowCNN
-from mojo_rl.deep_agents2.training.batched_env import BatchedCpuDiscreteEnv
+from mojo_rl.deep_agents.c51.config import RainbowCNN
+from mojo_rl.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
 
 from mojo_rl.envs.atari import AtariEnv, load_rom
 from mojo_rl.envs.atari.games.registry import AtariGame
@@ -176,7 +176,7 @@ def main() raises:
             N_ENVS,
             "parallel envs, Pixel)",
         )
-        print("Agent: Rainbow DQN CNN (deep_agents2 C51, GPU train)")
+        print("Agent: Rainbow DQN CNN (deep_agents C51, GPU train)")
         print(
             "  Components: C51 + Double + PER + Dueling + Noisy +",
             N_STEP,
@@ -222,11 +222,11 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="Rainbow Atari Pong Pixel GPU (deep_agents2)",
+            run_name="Rainbow Atari Pong Pixel GPU (deep_agents)",
             buffer_size=64,
             api_key=api_key,
         )
-        logger.set_config("agent", "Rainbow DQN CNN (deep_agents2)")
+        logger.set_config("agent", "Rainbow DQN CNN (deep_agents)")
         logger.set_config("env", "Atari Pong (Pixel)")
         logger.set_config("obs", "4x84x84")
         logger.set_config("lr", String(LR))

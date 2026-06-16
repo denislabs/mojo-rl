@@ -373,7 +373,7 @@ def execute_one(
     ONE shared copy and the frame runners shrink ~an order of magnitude.
     (Historical note: the Rainbow Atari pixel example's -O3 compile blowup
     that motivated this was ultimately root-caused to `NStepTransition`'s
-    by-value InlineArray obs — see deep_agents2/data/n_step_replay.mojo —
+    by-value InlineArray obs — see deep_agents/data/n_step_replay.mojo —
     not the emulator; this boundary is kept as cheap IR hygiene.)
     Runtime cost is one real call per emulated instruction, noise against
     the 9–21 TIA color-clock ticks each instruction drives (measured: no
@@ -1438,7 +1438,7 @@ def run_frame_cycle_accurate[
     too (one shared dispatch copy), shrinking each instantiation ~10×; both
     boundaries stay. (The Rainbow-Atari -O3 compile OOM once blamed on this
     was root-caused to NStepTransition's by-value InlineArray obs in
-    deep_agents2 — the emulator was a red herring; most of its residual IR
+    deep_agents — the emulator was a red herring; most of its residual IR
     bulk was live debug_assert bounds checks, see `-D ASSERT=none`.)
     Called once per emulated frame: a non-inlined call is
     runtime-negligible against the thousands of instructions it runs.

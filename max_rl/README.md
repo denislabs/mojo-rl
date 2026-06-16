@@ -16,7 +16,7 @@ It answers three questions for "should mojo-rl incorporate MAX?":
 |---|---|
 | `mlp_inference.py` | `MLPInference` — configurable MLP (dims/batch/device all variables) built+compiled once on MAX, plus timing primitives. Inference only; weights are random. |
 | `benchmark_interop.mojo` | Mojo driver that imports the package via Python interop and times the MAX decomposition across a batch/shape sweep. |
-| `benchmark_nn2_baseline.mojo` | Pure-nn2 native GPU forward on the SAME shapes — the apples-to-apples "why incorporate MAX?" baseline. |
+| `benchmark_nn_baseline.mojo` | Pure-nn native GPU forward on the SAME shapes — the apples-to-apples "why incorporate MAX?" baseline. |
 | `probe_c_api.sh` | Path-B feasibility probe: is the MAX C API linkable + is there a MEF-export path? Prints GO/NO-GO. Run under `-e nvidia`. |
 | `graph_mlp_example.py`, `graph_relu_example.py` | Original MAX reference snippets (kept for reference). |
 
@@ -40,10 +40,10 @@ pixi run -e nvidia bash -c 'mojo build -I . max_rl/benchmark_interop.mojo -o /tm
 (Running the bare `/tmp/bench` outside `pixi run` fails with "No module named 'max'", because
 activation env vars aren't set in your shell.)
 
-nn2 baseline (pure nn2, no Python — plain `mojo run` is fine):
+nn baseline (pure nn, no Python — plain `mojo run` is fine):
 ```bash
-pixi run -e apple  mojo run -I . max_rl/benchmark_nn2_baseline.mojo
-pixi run -e nvidia mojo run -I . max_rl/benchmark_nn2_baseline.mojo
+pixi run -e apple  mojo run -I . max_rl/benchmark_nn_baseline.mojo
+pixi run -e nvidia mojo run -I . max_rl/benchmark_nn_baseline.mojo
 ```
 
 You can also drive the Python package directly:
@@ -83,9 +83,9 @@ MAX wins even here, path (B) wins by more.*
 One-time per graph shape, excluded from per-call numbers, but relevant for research
 iteration that sweeps many shapes. NVIDIA compile times are the ones that matter for you.
 
-### nn2 vs MAX head-to-head (Apple/Metal, µs per call)
+### nn vs MAX head-to-head (Apple/Metal, µs per call)
 
-| Shape | nn2 forward (compute) | MAX device compute | MAX end-to-end from Mojo |
+| Shape | nn forward (compute) | MAX device compute | MAX end-to-end from Mojo |
 |---|---|---|---|
 | actor-b1    (17→256→256→6, b=1)     | 658  | **284**   | 507   |
 | actor-b64   (b=64)                  | 618  | **309**   | 978   |
@@ -93,30 +93,30 @@ iteration that sweeps many shapes. NVIDIA compile times are the ones that matter
 | wide-b1     (256→512→512→64, b=1)   | 699  | **287**   | 868   |
 | wide-b1024  (b=1024)                | **8913** | 12455 | 15050 |
 
-### nn2 vs MAX head-to-head (NVIDIA / CUDA, µs per call) — the decisive run
+### nn vs MAX head-to-head (NVIDIA / CUDA, µs per call) — the decisive run
 
-| Shape | nn2 forward (delivered) | MAX raw compute | MAX delivered (e2e) | nn2 vs MAX-delivered |
+| Shape | nn forward (delivered) | MAX raw compute | MAX delivered (e2e) | nn vs MAX-delivered |
 |---|---|---|---|---|
-| actor-b1    | **26.6** | 45.3 | 73.8  | nn2 2.8× |
-| actor-b64   | **36.9** | 71.1 | 99.3  | nn2 2.7× |
-| actor-b1024 | **38.9** | 55.5 | 104.5 | nn2 2.7× |
-| wide-b1     | **18.7** | 30.8 | 75.2  | nn2 4.0× |
-| wide-b1024  | **68.0** | 51.2 | 202.5 | nn2 3.0× |
+| actor-b1    | **26.6** | 45.3 | 73.8  | nn 2.8× |
+| actor-b64   | **36.9** | 71.1 | 99.3  | nn 2.7× |
+| actor-b1024 | **38.9** | 55.5 | 104.5 | nn 2.7× |
+| wide-b1     | **18.7** | 30.8 | 75.2  | nn 4.0× |
+| wide-b1024  | **68.0** | 51.2 | 202.5 | nn 3.0× |
 
 Reading (CUDA — **this is the verdict**):
-- **nn2 wins delivered latency everywhere, ~2.7–4×.** H2D+D2H+Python glue (30–150 µs) dwarfs
+- **nn wins delivered latency everywhere, ~2.7–4×.** H2D+D2H+Python glue (30–150 µs) dwarfs
   compute at RL-MLP scale.
-- **nn2 wins even raw compute in 4/5 shapes.** MAX's compiler only leads at the widest matmul
+- **nn wins even raw compute in 4/5 shapes.** MAX's compiler only leads at the widest matmul
   (wide-b1024) — the large/transformer regime it's built for, not small RL MLPs.
 - **Interop bridge is free (0.18 µs/call)** on CUDA too — the cost is transfer + Python glue.
-- nn2 here is **unoptimized** (plain `Linear+ReLU`, no fused `LinearReLU`, no CUDA-graph
-  capture) — a *ceiling*; the real nn2 is faster still.
+- nn here is **unoptimized** (plain `Linear+ReLU`, no fused `LinearReLU`, no CUDA-graph
+  capture) — a *ceiling*; the real nn is faster still.
 - **MAX compile cost on CUDA is ~46–52 s per shape** (vs ~15 s Metal) — a real RL shape-sweep tax.
 - **This bounds path B too:** path B's best case ≈ MAX raw compute (45–71 µs for actor) still
-  loses to nn2 delivered (27–39 µs) except at wide-b1024 (where nn2 is unoptimized). A perfect
+  loses to nn delivered (27–39 µs) except at wide-b1024 (where nn is unoptimized). A perfect
   no-Python path B can't flip the RL-scale verdict.
 
-**Bottom line for "why don't I incorporate MAX?": at RL-MLP inference scale on NVIDIA, nn2 is
+**Bottom line for "why don't I incorporate MAX?": at RL-MLP inference scale on NVIDIA, nn is
 ~3× faster delivered and competitive-to-better on raw compute, with no interop tax and no
 per-shape compile wall. MAX pays off at large/transformer-scale graphs, not here.**
 
@@ -125,14 +125,14 @@ per-shape compile wall. MAX pays off at large/transformer-scale graphs, not here
 Reading (Metal only):
 - **MAX raw compute wins at small batch** (~2× faster, 284 vs 658 µs at b=1) but **loses
   end-to-end** once you add H2D+D2H+Python glue — the *delivered* MAX latency to a Mojo
-  caller (507–978 µs) is at or above nn2's (618–699 µs).
-- **nn2 wins outright at large batch**, on raw compute *and* end-to-end (its native kernels
+  caller (507–978 µs) is at or above nn's (618–699 µs).
+- **nn wins outright at large batch**, on raw compute *and* end-to-end (its native kernels
   beat MAX's here on Metal, and it pays zero transfer/Python tax).
-- nn2's number is the **full delivered latency** to a Mojo caller (data already in Mojo GPU
+- nn's number is the **full delivered latency** to a Mojo caller (data already in Mojo GPU
   buffers); MAX must overcome its transfer+glue tax to be worth it. On Metal it generally
   isn't; whether MAX's compute edge widens enough on CUDA to flip the end-to-end verdict is
   exactly what the NVIDIA run answers.
-- Caveat: nn2 small-batch numbers include nn2's per-call overhead (Sequential mid-buffer
+- Caveat: nn small-batch numbers include nn's per-call overhead (Sequential mid-buffer
   handling); both columns are Metal and not the target platform. Treat the *shape of the
   story* (compute vs delivered, small vs large batch) as the takeaway, not absolute µs.
 
@@ -175,12 +175,12 @@ serialize the graph's MLIR (`Graph.module`) from Python and let the C API compil
 startup — Python stays out of the *execution* loop, which is the point.
 
 ## Not yet done (next steps)
-- **NVIDIA run** (the decisive measurement — your part): the interop decomposition + nn2
+- **NVIDIA run** (the decisive measurement — your part): the interop decomposition + nn
   baseline on CUDA, re-verify the `mojo run`/`M::Context` clash, and run `probe_c_api.sh`.
 - If probe = GO: implement the Mojo C-API FFI binding above and measure the no-Python path.
 - bf16 / fp16, CUDA-graph capture/replay (`M_captureModelSync` / `M_replayModelSync`).
 
 ## Done
 - ✅ `MLPInference` MAX package (configurable dims/batch/device) + interop decomposition.
-- ✅ nn2 native baseline on identical shapes (`benchmark_nn2_baseline.mojo`).
+- ✅ nn native baseline on identical shapes (`benchmark_nn_baseline.mojo`).
 - ✅ Path B feasibility probe (`probe_c_api.sh`) + finding (blocked on Apple; GO/NO-GO for NVIDIA).

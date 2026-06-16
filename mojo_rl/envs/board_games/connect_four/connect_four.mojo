@@ -32,7 +32,7 @@ from mojo_rl.core import (
     RenderableEnv,
     Saveable,
 )
-from mojo_rl.nn2.constants import DT as nn_dtype
+from mojo_rl.nn.constants import DT as nn_dtype
 from mojo_rl.render import Renderer2D, SDL_Color
 from ..core.board_env import BoardGameState, BoardGameAction, board_dtype
 

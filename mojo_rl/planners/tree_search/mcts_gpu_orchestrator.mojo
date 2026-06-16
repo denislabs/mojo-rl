@@ -40,7 +40,7 @@ orchestrator having to peek at trait-internal model dimensions.
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 
 from .model_traits_gpu import (
     RepresentationGPU,
@@ -94,7 +94,7 @@ struct GenericGPUMCTS[
     # children); duplicate (parent, action) selections re-expand the same edge,
     # leak the orphaned node, and double-count its value. Measured: MuZero
     # CartPole root values systematically +1.2-1.7 vs CPU + argmax flips
-    # (tests/deep_agents2/test_mz_search_gpu_cpu_parity.mojo); AZ Connect Four
+    # (tests/deep_agents/test_mz_search_gpu_cpu_parity.mojo); AZ Connect Four
     # visit-policy targets distorted up to 2× per action
     # (test_az_search_gpu_batched_bias.mojo). BATCH_SIMS=1 is bit-near-exact
     # vs the converged CPU search. For batched GPU search use the Gumbel

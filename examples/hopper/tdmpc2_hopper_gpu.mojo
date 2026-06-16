@@ -1,4 +1,4 @@
-"""TD-MPC2 (deep_agents2) — Hopper training (GPU, MPC-off) — item B lighthouse.
+"""TD-MPC2 (deep_agents) — Hopper training (GPU, MPC-off) — item B lighthouse.
 
 Hopper is the lighthouse for the episodic **termination head** (item B,
 `docs/TDMPC2_DEEP_AGENTS2_PORT.md` §14.2): unlike HalfCheetah it terminates
@@ -25,11 +25,11 @@ from std.random import random_float64, seed
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.tdmpc2.agent import TDMPC2Agent
-from mojo_rl.deep_agents2.tdmpc2.config import TDMPC2
+from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent
+from mojo_rl.deep_agents.tdmpc2.config import TDMPC2
 from mojo_rl.envs.hopper import Hopper, HopperConfig
 
 comptime TARGET = "gpu"
@@ -89,7 +89,7 @@ def _greedy_eval(mut ag: Ag, mut env: Env) raises -> Scalar[DT]:
 
 def main() raises:
     print("=" * 70)
-    print("TD-MPC2 (deep_agents2) — Hopper", TARGET, "(MPC-off, episodic head)")
+    print("TD-MPC2 (deep_agents) — Hopper", TARGET, "(MPC-off, episodic head)")
     print("  OBS=", OBS, " ACT=", ACT, " latent=", LATENT, " B=", B, " H=", H)
     print("  bce_coef=", BCE_COEF, " (termination head ON)")
     print("=" * 70)

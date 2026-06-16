@@ -18,7 +18,7 @@ from std.ffi import OwnedDLHandle, c_int
 from std.memory import alloc
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 
 
 comptime CUptr = UnsafePointer[NoneType, MutAnyOrigin]

@@ -29,11 +29,11 @@ expensive pixel-Pong run.
 from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.muzero import MuZeroMLPConfig, MuZeroBatchedAgent
-from mojo_rl.deep_agents2.training import BatchedGpuDiscreteEnv
+from mojo_rl.deep_agents.muzero import MuZeroMLPConfig, MuZeroBatchedAgent
+from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 
@@ -99,7 +99,7 @@ def main() raises:
     )
     logger.set_config("agent", "GumbelMuZero")
     logger.set_config("env", "CartPole")
-    logger.set_config("framework", "deep_agents2/nn2")
+    logger.set_config("framework", "deep_agents/nn")
     logger.set_config("replay", "device (GPUMCTSSequenceReplay)")
     logger.set_config("n_envs", String(N_ENVS))
     logger.set_config("reanalyze_batch", String(B))

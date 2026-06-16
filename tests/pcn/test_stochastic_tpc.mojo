@@ -26,10 +26,10 @@ from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
-from mojo_rl.nn2.datasets.mnist import MNIST
+from mojo_rl.nn.datasets.mnist import MNIST
 from mojo_rl.experimental.pcn import (
     PCBlock,
     PCSequential,

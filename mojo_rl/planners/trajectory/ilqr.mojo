@@ -43,7 +43,7 @@ increase it on failure. Line search is plain backtracking on
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 
 from .jacobian_callback import (
     RolloutJacobianCallbackCPU,

@@ -1,4 +1,4 @@
-"""Rainbow DQN Pong — Live Render Eval (clean obs, deep_agents2).
+"""Rainbow DQN Pong — Live Render Eval (clean obs, deep_agents).
 
 Loads a checkpoint saved by `rainbow_pong_training_gpu.mojo` and plays Pong
 in an SDL3 window using deterministic greedy actions (NoisyLinear noise off),
@@ -19,12 +19,12 @@ quit (ESC / window close) or after EVAL_EPISODES games.
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 
-from mojo_rl.deep_agents2.c51.trainer import C51Trainer
-from mojo_rl.deep_agents2.c51.config import RainbowNet
-from mojo_rl.deep_agents2.training.blocks import NStepSampleStep
-from mojo_rl.deep_agents2.data.any_per_replay import AnyPerReplay
+from mojo_rl.deep_agents.c51.trainer import C51Trainer
+from mojo_rl.deep_agents.c51.config import RainbowNet
+from mojo_rl.deep_agents.training.blocks import NStepSampleStep
+from mojo_rl.deep_agents.data.any_per_replay import AnyPerReplay
 from mojo_rl.envs.arcade_games.pong import PongEnv
 
 

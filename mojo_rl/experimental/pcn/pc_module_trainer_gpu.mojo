@@ -3,10 +3,10 @@
 `pc_module_train_one_batch_gpu` is the GPU mirror of
 `pc_module_train_one_batch`: the settling loop runs on-device via
 `PCTrainer.compute_grads_only_gpu`, fills `net.weights.grd` (device), then an
-nn2 `Optimizer.step['gpu']` updates `net.weights.val`.
+nn `Optimizer.step['gpu']` updates `net.weights.val`.
 
 All matmuls in the GPU settling go through `linalg.matmul` (`max_matmul`),
-matching nn2's convention — PCN's custom 2×2 register-tiled MMA fallback is
+matching nn's convention — PCN's custom 2×2 register-tiled MMA fallback is
 dead on the default path (`PCBlock.USE_MAX_KERNELS=True`). See
 `pc_block.mojo`'s `predict_gpu` / `pull_back_gpu` / `weight_grad_gpu`.
 
@@ -20,8 +20,8 @@ holder as persistent storage.
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.optimizer import Optimizer
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.optimizer import Optimizer
 
 from .predictive_model import PCBlockTrait
 from .pc_sequential import PCSequential
@@ -120,7 +120,7 @@ def pc_module_train_one_batch_gpu[
         lr_x,
     )
 
-    # 2. nn2 optimizer consumes net.weights.grd, updates net.weights.val.
+    # 2. nn optimizer consumes net.weights.grd, updates net.weights.val.
     opt.step["gpu", PCModule[*BLOCKS]](net)
 
 

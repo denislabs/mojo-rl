@@ -22,13 +22,13 @@ Run (no GPU):
     pixi run mojo run -I . examples/cartpole/ezv2_cartpole_collapse_diag_cpu.mojo
 """
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.optimizer.adam import Adam
-from mojo_rl.deep_agents2.efficient_zero_v2.nets import (
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, MZPredNet, EZProjectorNet, EZPredictorNet,
 )
-from mojo_rl.deep_agents2.efficient_zero_v2.selfplay_cpu import (
+from mojo_rl.deep_agents.efficient_zero_v2.selfplay_cpu import (
     run_ezv2_selfplay_cpu,
 )
 from mojo_rl.envs.cartpole import CartPoleEnv

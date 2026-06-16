@@ -1,7 +1,7 @@
 """LR schedulers for the Trainer.
 
 Vendored verbatim from the legacy `mojo_rl.nn.training.scheduler` module during
-the nn2 re-architecture so that `mojo_rl.experimental.pcn` carries no dependency
+the nn re-architecture so that `mojo_rl.experimental.pcn` carries no dependency
 on legacy `nn`. The original only imports from `std.*`, so the schedule logic
 and struct names are unchanged; the `Scheduler` trait is defined locally here
 to keep the file self-contained.

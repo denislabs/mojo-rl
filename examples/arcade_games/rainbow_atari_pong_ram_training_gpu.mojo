@@ -29,10 +29,10 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 
-from mojo_rl.deep_agents2.c51.config import Rainbow
-from mojo_rl.deep_agents2.training.atari_gpu_env import AtariGpuBatchedEnv
+from mojo_rl.deep_agents.c51.config import Rainbow
+from mojo_rl.deep_agents.training.atari_gpu_env import AtariGpuBatchedEnv
 from mojo_rl.envs.atari.environment import load_rom
 from mojo_rl.envs.atari.games import PongDef
 
@@ -116,7 +116,7 @@ def main() raises:
             buffer_size=64,
             api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
         )
-        logger.set_config("agent", "Rainbow DQN (deep_agents2)")
+        logger.set_config("agent", "Rainbow DQN (deep_agents)")
         logger.set_config("env", "Atari Pong RAM (GPU emulator)")
         logger.set_config("obs_dim", String(OBS_DIM))
         logger.set_config("num_actions", String(NUM_ACTIONS))

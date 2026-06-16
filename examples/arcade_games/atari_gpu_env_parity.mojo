@@ -16,8 +16,8 @@ from std.sys.info import size_of
 from std.math import abs
 from std.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.deep_agents2.training.atari_gpu_env import AtariGpuBatchedEnv
+from mojo_rl.nn.constants import DT
+from mojo_rl.deep_agents.training.atari_gpu_env import AtariGpuBatchedEnv
 from mojo_rl.envs.atari.environment import AtariEnvironment, load_rom
 from mojo_rl.envs.atari.atari_state import AtariState
 from mojo_rl.envs.atari.cpu6502 import run_frame_cycle_accurate

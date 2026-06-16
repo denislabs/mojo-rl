@@ -54,7 +54,7 @@ inside the trait methods — the planner is allowed to enqueue all
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 
 
 trait RolloutCallbackCPU(ImplicitlyDestructible):

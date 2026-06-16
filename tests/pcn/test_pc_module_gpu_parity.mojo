@@ -21,8 +21,8 @@ from std.math import abs
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.optimizer import Adam
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.optimizer import Adam
 
 from mojo_rl.experimental.pcn.pc_block import PCBlock
 from mojo_rl.experimental.pcn.predictive_model import PCIdentity

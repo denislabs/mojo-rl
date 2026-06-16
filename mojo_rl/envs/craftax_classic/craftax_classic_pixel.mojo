@@ -30,7 +30,7 @@ from mojo_rl.core import (
     GPUDiscreteEnv,
     RenderableEnv,
 )
-from mojo_rl.nn2.constants import DT as gpu_dtype
+from mojo_rl.nn.constants import DT as gpu_dtype
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer

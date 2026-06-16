@@ -12,12 +12,12 @@ Run (GPU env required):
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.logger import CsvLogger
-from mojo_rl.deep_agents2.muzero.nets import MZRepNet, MZDynNet, MZPredNet
-from mojo_rl.deep_agents2.muzero.selfplay_gpu import run_muzero_selfplay_gpu
+from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
+from mojo_rl.deep_agents.muzero.selfplay_gpu import run_muzero_selfplay_gpu
 from mojo_rl.envs.cartpole import CartPoleEnv
 
 

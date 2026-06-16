@@ -1,9 +1,9 @@
-"""PCModule — PCN composite on nn2's storage layer (Phase A spike).
+"""PCModule — PCN composite on nn's storage layer (Phase A spike).
 
-Re-architecture of the PCN composite onto nn2's Tensor core. The weight
+Re-architecture of the PCN composite onto nn's Tensor core. The weight
 slab — previously a caller-owned raw `params` buffer juggled by
 `PCTrainer` — now lives in a single owned `Param`, which makes the network
-walkable by nn2's `Adam`/`AdamW` (optimizer) and, later, the v2 checkpoint
+walkable by nn's `Adam`/`AdamW` (optimizer) and, later, the v2 checkpoint
 envelope. **PCN keeps its own settling loop** (the local error-minimization
 that IS the method); only where the weights live changes.
 
@@ -30,12 +30,12 @@ from layout import Layout, LayoutTensor, TileTensor
 from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn2.core.module import Module
-from mojo_rl.nn2.core.param import Param
-from mojo_rl.nn2.core.tensor_pack import TensorPack
-from mojo_rl.nn2.core.target_storage import TargetStorage
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core import Initializer, AMPPolicy, NoAMP
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.param import Param
+from mojo_rl.nn.core.tensor_pack import TensorPack
+from mojo_rl.nn.core.target_storage import TargetStorage
 
 from .predictive_model import PCBlockTrait
 from .pc_sequential import PCSequential
@@ -78,7 +78,7 @@ struct PCModule[*BLOCKS: PCBlockTrait](Module):
         """Allocate CPU weight storage and run per-block PCN init via the
         composite's `init_params_pc` (each block type's own layout: linear /
         conv W via INIT, norm γ=1, etc.). Legacy-`nn`-free. The
-        nn2-`Initializer`-based `make` below is unusable for PCN (different
+        nn-`Initializer`-based `make` below is unusable for PCN (different
         init contract), so this is the constructor real code calls."""
         var net = Self()
         net.weights = Param["pc_params", False, Self.NET.PARAM_SIZE].make_cpu()
@@ -96,7 +96,7 @@ struct PCModule[*BLOCKS: PCBlockTrait](Module):
     ](ctx: DeviceContext) raises -> Self:
         """GPU counterpart of `make_pcn`: allocate device weight storage,
         run the (host) per-block init, and upload. Weights live in
-        `weights.val.dev`; nn2 `Adam.make['gpu']` and `compute_grads_only_gpu`
+        `weights.val.dev`; nn `Adam.make['gpu']` and `compute_grads_only_gpu`
         read them on-device."""
         var net = Self()
         net.weights = Param["pc_params", False, Self.NET.PARAM_SIZE].make_gpu(
@@ -126,7 +126,7 @@ struct PCModule[*BLOCKS: PCBlockTrait](Module):
     ) raises -> Self:
         raise Error(
             "PCModule.make: PCN initializes per-block (fan_in/fan_out), not"
-            " via the nn2 Initializer contract. Use make_pcn[PCInitializer]()."
+            " via the nn Initializer contract. Use make_pcn[PCInitializer]()."
         )
 
     # ── forward / vjp — PCN does not backprop; these only satisfy Module ─

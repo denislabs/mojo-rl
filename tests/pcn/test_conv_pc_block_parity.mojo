@@ -14,7 +14,7 @@ oracle (modulo the PC sign convention and the activation-first ordering):
 The oracle is a self-contained naive nested-loop conv (eval + grad_input +
 grad_W + grad_b) — a different implementation from ConvPCBlock's im2col + BLAS
 path, so the agreement is a genuine cross-check. (It replaced the legacy
-`nn.autodiff.primitives.conv2d.Conv2D` oracle during the nn2 re-architecture;
+`nn.autodiff.primitives.conv2d.Conv2D` oracle during the nn re-architecture;
 PCN is now free of legacy `nn`.)
 
 Layout conventions (match ConvPCBlock):

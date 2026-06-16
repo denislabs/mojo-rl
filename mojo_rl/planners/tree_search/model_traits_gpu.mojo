@@ -32,7 +32,7 @@ traits (``PUCTFormula`` / ``ExplorationNoise`` / ``PlayerMode``).
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 
 
 trait RepresentationGPU(ImplicitlyDestructible):

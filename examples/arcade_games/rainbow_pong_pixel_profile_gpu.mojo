@@ -22,20 +22,20 @@ from std.time import perf_counter_ns
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 
-from mojo_rl.nn2.combinators.sequential import Sequential
-from mojo_rl.nn2.primitives.conv2d import Conv2D
-from mojo_rl.nn2.primitives.relu import ReLU
-from mojo_rl.nn2.primitives.flatten import Flatten
-from mojo_rl.nn2.primitives.linear_relu import LinearReLU
-from mojo_rl.nn2.primitives.noisy_linear import NoisyLinear
-from mojo_rl.nn2.primitives.dueling_head_c51 import DuelingHeadC51
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.conv2d import Conv2D
+from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.flatten import Flatten
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
+from mojo_rl.nn.primitives.dueling_head_c51 import DuelingHeadC51
 
-from mojo_rl.deep_agents2.c51.trainer import C51Trainer
-from mojo_rl.deep_agents2.training.blocks import NStepSampleStep
-from mojo_rl.deep_agents2.data.any_per_replay import AnyPerReplay
-from mojo_rl.deep_agents2.training import (
+from mojo_rl.deep_agents.c51.trainer import C51Trainer
+from mojo_rl.deep_agents.training.blocks import NStepSampleStep
+from mojo_rl.deep_agents.data.any_per_replay import AnyPerReplay
+from mojo_rl.deep_agents.training import (
     BatchedGpuDiscreteEnv,
     run_offpolicy_discrete_train_gpu_batched,
 )
@@ -101,7 +101,7 @@ comptime PongPixelBatched = BatchedGpuDiscreteEnv[
 
 def main() raises:
     seed(42)
-    print("=== Rainbow Pong Pixel nsys profile (deep_agents2 / nn2) ===")
+    print("=== Rainbow Pong Pixel nsys profile (deep_agents / nn) ===")
     print("  Steps:", NUM_STEPS, "| Warmup:", WARMUP)
     print("  N_ENVS:", N_ENVS, "| BATCH:", BATCH_SIZE, "| Grad/iter:", GRAD_STEPS)
     print("  Obs: 4x84x84 =", OBS_DIM, "| N-step:", N_STEP)

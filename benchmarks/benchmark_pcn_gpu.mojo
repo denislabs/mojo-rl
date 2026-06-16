@@ -19,7 +19,7 @@ from std.gpu.host import DeviceContext
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn import (
     PCBlock,

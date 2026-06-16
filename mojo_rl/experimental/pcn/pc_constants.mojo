@@ -1,10 +1,10 @@
-"""PCN-local kernel launch constant (vendored during the nn2
+"""PCN-local kernel launch constant (vendored during the nn
 re-architecture, Phase B).
 
 PCN's hand-written elementwise + RMSNorm-reduction GPU kernels assume a
-256-thread block. nn2 deliberately uses `TPB = 128`, so PCN keeps its own
+256-thread block. nn deliberately uses `TPB = 128`, so PCN keeps its own
 value locally rather than silently changing launch geometry by adopting
-nn2's. Value is byte-for-byte the legacy `nn.constants` PCN previously
+nn's. Value is byte-for-byte the legacy `nn.constants` PCN previously
 imported.
 
 (The `MMA_BLOCK_*` tiling constants were removed in Phase D: PCN's GPU

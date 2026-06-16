@@ -53,9 +53,9 @@ struct PCBlock[
     For the readout, pass `ACT=PCIdentity` and target plays role of x_above.
 
     GPU matmuls (predict / pull_back / weight_grad) go through
-    `linalg.matmul` (`max_matmul`) on BOTH Apple + NVIDIA — nn2 convention,
+    `linalg.matmul` (`max_matmul`) on BOTH Apple + NVIDIA — nn convention,
     no custom MMA. (The old 2×2 register-tiled fallback was removed in the
-    nn2 re-architecture once `max_matmul` was proven parity-equal on Apple.)
+    nn re-architecture once `max_matmul` was proven parity-equal on Apple.)
     """
 
     comptime IN_DIM: Int = Self.in_dim
@@ -502,7 +502,7 @@ struct PCBlock[
         ](params.ptr + Self.in_dim * Self.out_dim)
 
         # max_matmul writes mu = a_below @ W (no bias), then a separate
-        # bias-add kernel folds in b. Apple + NVIDIA (nn2 convention).
+        # bias-add kernel folds in b. Apple + NVIDIA (nn convention).
         max_matmul[target="gpu"](
             lt_to_tt(mu),
             lt_to_tt(a_below),

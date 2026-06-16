@@ -1,4 +1,4 @@
-"""AlphaZero on TicTacToe (deep_agents2 / nn2) — CPU path, no GPU.
+"""AlphaZero on TicTacToe (deep_agents / nn) — CPU path, no GPU.
 
 CPU twin of `tictactoe_alphazero_v2.mojo`. Same `AlphaZeroAgent` facade and
 full-AlphaZero recipe (best/learner Arena gating + D4 symmetry augmentation +
@@ -28,11 +28,11 @@ from std.memory import UnsafePointer
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn2.core.checkpoint import save_state_v2
-from mojo_rl.deep_agents2.alphazero.nets import AZMLPNet
-from mojo_rl.deep_agents2.alphazero.agent import AlphaZeroAgent
-from mojo_rl.deep_agents2.zero.symmetries import D4SquareAugmenter
-from mojo_rl.deep_agents2.zero.evaluators import (
+from mojo_rl.nn.core.checkpoint import save_state_v2
+from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
+from mojo_rl.deep_agents.alphazero.agent import AlphaZeroAgent
+from mojo_rl.deep_agents.zero.symmetries import D4SquareAugmenter
+from mojo_rl.deep_agents.zero.evaluators import (
     RandomOpponent,
     GPUMinimaxTicTacToe,
 )
@@ -40,7 +40,7 @@ from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
 
 
 def main() raises:
-    print("=== AlphaZero on TicTacToe (deep_agents2 / nn2) — CPU ===")
+    print("=== AlphaZero on TicTacToe (deep_agents / nn) — CPU ===")
     print()
 
     # ── Logger setup ────────────────────────────────────────────
@@ -50,14 +50,14 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="AlphaZero TicTacToe (nn2, CPU)",
+        run_name="AlphaZero TicTacToe (nn, CPU)",
         buffer_size=22,
         api_key=api_key,
     )
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "TicTacToe")
     logger.set_config("network", "AZMLPNet[27,9,128]")
-    logger.set_config("framework", "deep_agents2/nn2")
+    logger.set_config("framework", "deep_agents/nn")
     logger.set_config("target", "cpu")
 
     comptime OBS = 27

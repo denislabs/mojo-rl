@@ -1,6 +1,6 @@
 """Direct Apple Accelerate cblas_sgemm wrapper (PCN-local).
 
-Vendored verbatim from `nn.autodiff.apple_cblas` during the nn2
+Vendored verbatim from `nn.autodiff.apple_cblas` during the nn
 re-architecture (Phase B) so PCN's conv blocks drop their last
 `mojo_rl.nn` dependency in the im2col GEMM path. Self-contained: depends
 only on Modular's `linalg` Accelerate bindings, not on legacy nn.

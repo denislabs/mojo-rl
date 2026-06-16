@@ -1,4 +1,4 @@
-"""MuZero batched GPU training on Pong — Pixel Observations (deep_agents2).
+"""MuZero batched GPU training on Pong — Pixel Observations (deep_agents).
 
 The MuZero counterpart of `rainbow_pong_pixel_training_gpu.mojo`: learns the
 model (h/g/f) from raw pixels (4×84×84 stacked grayscale frames) and plans with
@@ -35,11 +35,11 @@ from std.memory import UnsafePointer
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.muzero import MuZeroCNNConfig, MuZeroBatchedAgent
-from mojo_rl.deep_agents2.training import BatchedGpuDiscreteEnv
+from mojo_rl.deep_agents.muzero import MuZeroCNNConfig, MuZeroBatchedAgent
+from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 
 
@@ -111,7 +111,7 @@ comptime Agent = MuZeroBatchedAgent[
 
 def main() raises:
     print("=" * 70)
-    print("MuZero batched GPU training on Pong — Pixel (deep_agents2)")
+    print("MuZero batched GPU training on Pong — Pixel (deep_agents)")
     print("=" * 70)
 
     var ctx = DeviceContext()
@@ -149,14 +149,14 @@ def main() raises:
     var env_vars = load_dotenv()
     var logger = RemoteLogger(
         server_url=env_vars.get("RL_MONITOR_URL", ""),
-        run_name="MuZero Pong Pixel GPU (deep_agents2)",
+        run_name="MuZero Pong Pixel GPU (deep_agents)",
         buffer_size=64,
         api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
     )
     logger.set_config("agent", "GumbelMuZero CNN")
     logger.set_config("env", "Pong (Pixel)")
     logger.set_config("obs", "4x84x84")
-    logger.set_config("framework", "deep_agents2/nn2")
+    logger.set_config("framework", "deep_agents/nn")
     logger.set_config("n_envs", String(N_ENVS))
     logger.set_config("num_sims", String(NUM_SIMS))
     logger.set_config("obs_store_dtype", "uint8")

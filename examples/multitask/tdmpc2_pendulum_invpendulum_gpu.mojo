@@ -1,4 +1,4 @@
-"""Multi-task TD-MPC2 (deep_agents2) — Pendulum + InvertedPendulum (GPU).
+"""Multi-task TD-MPC2 (deep_agents) — Pendulum + InvertedPendulum (GPU).
 
 GPU variant of the item-C lighthouse (§14.3): the agent's world-model/policy
 blocks run on device; the two envs are stepped on host (like the Hopper /
@@ -14,9 +14,9 @@ from std.memory import alloc
 from std.random import random_float64, seed
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.deep_agents2.tdmpc2.config_mt import TDMPC2MultiTask
-from mojo_rl.deep_agents2.tdmpc2.agent_mt import TDMPC2MultiTaskAgent
+from mojo_rl.nn.constants import DT
+from mojo_rl.deep_agents.tdmpc2.config_mt import TDMPC2MultiTask
+from mojo_rl.deep_agents.tdmpc2.agent_mt import TDMPC2MultiTaskAgent
 from mojo_rl.envs.multitask_pendulum import MultiTaskEnv
 
 comptime TARGET = "gpu"

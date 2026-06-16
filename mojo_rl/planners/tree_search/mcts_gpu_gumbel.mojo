@@ -31,8 +31,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from std.math import sqrt, log, exp
 from layout import Layout, LayoutTensor
-from mojo_rl.nn2.constants import DT as dtype
-comptime TPB = 256  # preserved from legacy nn.constants (nn2.TPB == 128)
+from mojo_rl.nn.constants import DT as dtype
+comptime TPB = 256  # preserved from legacy nn.constants (nn.TPB == 128)
 
 
 comptime MAX_DEPTH: Int = 32

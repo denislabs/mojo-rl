@@ -42,7 +42,7 @@ Implementors trust the contract and index the tensor as
 
 from layout import TileTensor, TensorLayout
 
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 
 
 trait ScorePlanCallback(ImplicitlyDestructible):

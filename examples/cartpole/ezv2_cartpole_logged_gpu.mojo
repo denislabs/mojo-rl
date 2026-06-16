@@ -12,14 +12,14 @@ Run (GPU env required):
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.logger import CsvLogger
-from mojo_rl.deep_agents2.efficient_zero_v2.nets import (
+from mojo_rl.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, MZPredNet, EZProjectorNet, EZPredictorNet,
 )
-from mojo_rl.deep_agents2.efficient_zero_v2.selfplay_gpu import (
+from mojo_rl.deep_agents.efficient_zero_v2.selfplay_gpu import (
     run_ezv2_gumbel_selfplay_gpu,
 )
 from mojo_rl.envs.cartpole import CartPoleEnv

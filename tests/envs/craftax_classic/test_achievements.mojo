@@ -106,7 +106,7 @@ from mojo_rl.envs.craftax_classic.state import (
     S_IS_SLEEPING,
     STATE_SIZE,
 )
-from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.nn.constants import DT as dtype
 
 
 # ----------------------------------------------------------------------------

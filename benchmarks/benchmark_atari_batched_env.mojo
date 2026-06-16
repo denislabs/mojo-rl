@@ -15,8 +15,8 @@ Requires `roms/pong.bin` (run from the repo root).
 
 from std.time import perf_counter_ns
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.deep_agents2.training.batched_env import BatchedCpuDiscreteEnv
+from mojo_rl.nn.constants import DT
+from mojo_rl.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
 from mojo_rl.envs.atari import AtariEnv, load_rom
 from mojo_rl.envs.atari.games.registry import AtariGame
 

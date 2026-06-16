@@ -7,7 +7,7 @@ NON-linear block type correctly through `PCModule` + `Adam.step['gpu']`.
 
 NOTE: the linear block's GPU matmuls use `max_matmul` (Phase D gate flip);
 the conv block's GPU ops still use PCN's direct-conv custom kernels (NOT
-`max_matmul`). Porting conv GPU to im2col+`max_matmul` (to match nn2's conv)
+`max_matmul`). Porting conv GPU to im2col+`max_matmul` (to match nn's conv)
 is the remaining Phase D optimization — this test validates correctness of
 the existing path.
 
@@ -21,8 +21,8 @@ from std.math import abs
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.optimizer import Adam
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.optimizer import Adam
 
 from mojo_rl.experimental.pcn.pc_block import PCBlock
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock

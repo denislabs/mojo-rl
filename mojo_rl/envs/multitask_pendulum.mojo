@@ -15,7 +15,7 @@ the multi-task agent expects:
 Obs padding lives HERE so the replay/agent always see `[MAX_OBS]` frames.
 """
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 from mojo_rl.envs.pendulum import PendulumV2
 from mojo_rl.envs.inverted_pendulum import InvertedPendulum
 

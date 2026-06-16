@@ -30,17 +30,17 @@ from std.memory import alloc
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.core.module import mptr
-from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.core.checkpoint import load_state_v2_body_gpu
-from mojo_rl.deep_agents2.core.checkpoint_helpers import (
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.module import mptr
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.checkpoint import load_state_v2_body_gpu
+from mojo_rl.deep_agents.core.checkpoint_helpers import (
     read_file_v2, split_lines_v2, expect_v2_header,
 )
-from mojo_rl.deep_agents2.muzero.nets_spatial import (
+from mojo_rl.deep_agents.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
 )
-from mojo_rl.deep_agents2.zero.mcts_adapters_mz import (
+from mojo_rl.deep_agents.zero.mcts_adapters_mz import (
     MZRepGPU, MZDynGPU, MZPredGPU,
 )
 from mojo_rl.planners.tree_search import GumbelGPUMCTS, SelfPlay
