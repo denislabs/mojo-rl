@@ -113,6 +113,9 @@ struct MuZeroBatchedAgent[
         report_every: Int = 0,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         verbose: Bool = False,
+        use_per: Bool = False,
+        per_alpha: Scalar[DT] = Scalar[DT](1.0),
+        per_beta: Scalar[DT] = Scalar[DT](1.0),
     ) raises -> Float64:
         """Batched device-replay self-play. ``learning_starts`` is in stored
         steps; each iteration advances ``N_ENVS`` env steps and runs
@@ -168,4 +171,7 @@ struct MuZeroBatchedAgent[
             report_every=report_every,
             logger=logger,
             verbose=verbose,
+            use_per=use_per,
+            per_alpha=per_alpha,
+            per_beta=per_beta,
         )

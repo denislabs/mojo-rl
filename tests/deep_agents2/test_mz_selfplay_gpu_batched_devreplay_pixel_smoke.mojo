@@ -27,34 +27,30 @@ from mojo_rl.deep_agents2.training import BatchedGpuDiscreteEnv
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 
 
-def main() raises:
-    comptime FRAMES = 4
-    comptime ACT = 3
-    comptime N_ENVS = 2
-    comptime LATENT = 64
-    comptime HIDDEN = 128
-    comptime BINS = 51
-    comptime NUM_SIMS = 4
-    comptime MAX_NODES = 16
-    comptime MAX_K = 3
-    comptime MAX_EP = 10
-    comptime CAP = 600         # ≥ N_ENVS·MAX_EP and a multiple of N_ENVS
-    comptime B = 8
-    comptime K = 3
-    comptime N = 3
+comptime FRAMES = 4
+comptime ACT = 3
+comptime N_ENVS = 2
+comptime LATENT = 64
+comptime HIDDEN = 128
+comptime BINS = 51
+comptime NUM_SIMS = 4
+comptime MAX_NODES = 16
+comptime MAX_K = 3
+comptime MAX_EP = 10
+comptime CAP = 600         # ≥ N_ENVS·MAX_EP and a multiple of N_ENVS
+comptime B = 8
+comptime K = 3
+comptime N = 3
 
-    comptime Cfg = MuZeroCNNConfig[FRAMES, ACT, LATENT, HIDDEN, BINS]
-    comptime OBS = Cfg.OBS   # 4*84*84 = 28224
-    comptime Rep = Cfg.Rep
-    comptime Dyn = Cfg.Dyn
-    comptime Pred = Cfg.Pred
-    comptime BatchedEnvT = BatchedGpuDiscreteEnv[
-        PongPixelEnv[DT], N_ENVS, OBS, 1
-    ]
+comptime Cfg = MuZeroCNNConfig[FRAMES, ACT, LATENT, HIDDEN, BINS]
+comptime OBS = Cfg.OBS   # 4*84*84 = 28224
+comptime Rep = Cfg.Rep
+comptime Dyn = Cfg.Dyn
+comptime Pred = Cfg.Pred
+comptime BatchedEnvT = BatchedGpuDiscreteEnv[PongPixelEnv[DT], N_ENVS, OBS, 1]
 
-    var ctx = DeviceContext()
-    var env = BatchedEnvT(ctx)
 
+def _run[use_per: Bool](ctx: DeviceContext, mut env: BatchedEnvT) raises -> Float64:
     var rep = Rep.make["gpu", INIT=Kaiming](ctx=ctx)
     var dyn = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
     var pred = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
@@ -84,9 +80,25 @@ def main() raises:
         target_sync_interval=5,   # > 0 → exercises the lagging target-net path
         seed=7,
         verbose=True,
+        use_per=use_per,
     )
+    _ = rep^; _ = dyn^; _ = pred^
+    return loss
 
-    assert_true(loss == loss, "devreplay pixel MuZero loss NaN")
-    assert_true(loss > 0.0 and loss < 1e6, "devreplay pixel loss not finite")
-    print("devreplay pixel batched loss:", loss)
+
+def main() raises:
+    var ctx = DeviceContext()
+    var env = BatchedEnvT(ctx)
+
+    print("=== UNIFORM (use_per=False) ===")
+    var loss_uni = _run[False](ctx, env)
+    assert_true(loss_uni == loss_uni, "uniform devreplay loss NaN")
+    assert_true(loss_uni > 0.0 and loss_uni < 1e6, "uniform loss not finite")
+
+    print("=== PER (use_per=True) ===")
+    var loss_per = _run[True](ctx, env)
+    assert_true(loss_per == loss_per, "PER devreplay loss NaN")
+    assert_true(loss_per > 0.0 and loss_per < 1e6, "PER loss not finite")
+
+    print("devreplay pixel loss | uniform:", loss_uni, "| PER:", loss_per)
     print("MuZero batched GPU self-play DEVICE-REPLAY pixel smoke: OK")

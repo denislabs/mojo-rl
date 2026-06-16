@@ -41,8 +41,13 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn2.constants import DT, TPB
 from mojo_rl.nn2.core.module import mptr
+from mojo_rl.core.sum_tree import SumTree
 from ..data.gpu_replay import _obs_quant, _obs_dequant
 from .nstep_targets import compute_nstep_value_targets
+
+
+def _ai(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
+    return alloc[Int](n)
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -144,7 +149,32 @@ struct GPUMCTSSequenceReplay[
     var h_rslots: UnsafePointer[Int32, MutAnyOrigin]
     var rslots_n: Int
 
-    def __init__(out self, ctx: DeviceContext, seed: UInt64 = 0) raises:
+    # ── PER (only maintained when `per` is True; uniform path untouched) ──
+    # A per-slot `SumTree` of priorities + a per-slot reverse map
+    # (slot → episode astart / offset / length / truncated) backfilled when an
+    # episode CLOSES, so the prioritized sampler needs no episode search. New
+    # steps clear their slot to 0 on overwrite; a step enters the tree at
+    # `max_prio` only once its episode closes (so only closed steps are drawn,
+    # matching the uniform sampler's resident-closed-steps semantics).
+    var per: Bool
+    var tree: SumTree[DT]
+    var max_prio: Scalar[DT]
+    var alpha: Scalar[DT]
+    var beta: Scalar[DT]
+    var eps: Scalar[DT]
+    var slot_astart: UnsafePointer[Int, MutAnyOrigin]   # [CAP]
+    var slot_off: UnsafePointer[Int, MutAnyOrigin]      # [CAP]
+    var slot_len: UnsafePointer[Int, MutAnyOrigin]      # [CAP] episode length
+    var slot_trunc: UnsafePointer[Int, MutAnyOrigin]    # [CAP] 0/1 truncated
+
+    def __init__(
+        out self,
+        ctx: DeviceContext,
+        seed: UInt64 = 0,
+        per: Bool = False,
+        alpha: Scalar[DT] = Scalar[DT](1.0),
+        beta: Scalar[DT] = Scalar[DT](1.0),
+    ) raises:
         comptime assert Self.CAP % Self.N_ENVS == 0, (
             "GPUMCTSSequenceReplay: CAP must be a multiple of N_ENVS"
         )
@@ -174,12 +204,24 @@ struct GPUMCTSSequenceReplay[
         self.d_rslots = None
         self.h_rslots = mptr(alloc[Int32](1))
         self.rslots_n = 0
+        self.per = per
+        self.tree = SumTree[DT](Self.CAP)
+        self.max_prio = Scalar[DT](1.0)
+        self.alpha = alpha
+        self.beta = beta
+        self.eps = Scalar[DT](1e-6)
+        self.slot_astart = _ai(Self.CAP)
+        self.slot_off = _ai(Self.CAP)
+        self.slot_len = _ai(Self.CAP)
+        self.slot_trunc = _ai(Self.CAP)
 
     def __del__(deinit self):
         self.act.free(); self.rew.free(); self.done.free(); self.val.free()
         self.tp.free(); self.pol.free(); self.legal.free()
         self.h_slots.free()
         self.h_rslots.free()
+        self.slot_astart.free(); self.slot_off.free()
+        self.slot_len.free(); self.slot_trunc.free()
 
     def _xorshift(mut self) -> UInt64:
         var x = self.rng
@@ -245,6 +287,14 @@ struct GPUMCTSSequenceReplay[
                 self.open_start[e] = pos
                 self.open_len[e] = 0
             self.open_len[e] += 1
+            # PER: this slot is being (re)written by an OPEN step — clear any
+            # stale priority of the previous (now overwritten) occupant so it is
+            # unsampleable until this episode closes (→ enters at max_prio), and
+            # mark its reverse-map stale (slot_len=0) so a rare 0-priority sample
+            # hit on it falls back to a uniform draw instead of reading old meta.
+            if self.per:
+                self.tree.update(slot, Scalar[DT](0.0))
+                self.slot_len[slot] = 0
         self.gtotal += Self.N_ENVS
 
     def record_outcome(
@@ -269,9 +319,23 @@ struct GPUMCTSSequenceReplay[
                 self.done[last_slot] = (
                     Scalar[DT](1.0) if terminated else Scalar[DT](0.0)
                 )
-                self.ep_start.append(self.open_start[e])
-                self.ep_len.append(self.open_len[e])
-                self.ep_trunc.append(not terminated)
+                var astart = self.open_start[e]
+                var L = self.open_len[e]
+                var trunc = not terminated
+                self.ep_start.append(astart)
+                self.ep_len.append(L)
+                self.ep_trunc.append(trunc)
+                # PER: episode closed → backfill every slot's reverse map and
+                # admit it to the tree at max priority (now sampleable).
+                if self.per:
+                    var tr = 1 if trunc else 0
+                    for off in range(L):
+                        var sl = (astart + off * Self.STRIDE) % Self.CAP
+                        self.slot_astart[sl] = astart
+                        self.slot_off[sl] = off
+                        self.slot_len[sl] = L
+                        self.slot_trunc[sl] = tr
+                        self.tree.update(sl, self.max_prio)
                 self.open_start[e] = -1
                 self.open_len[e] = 0
         self._prune()
@@ -392,6 +456,158 @@ struct GPUMCTSSequenceReplay[
         ](slots_t, buf_t, out_t, grid_dim=nb, block_dim=TPB)
 
         w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
+
+    def sample_training_batch_per_dev[
+        B: Int, K: Int, N: Int,
+    ](
+        mut self,
+        gamma: Scalar[DT],
+        mut d_obs0: DeviceBuffer[DT],                            # [B, OBS] (out)
+        mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K, B]
+        mut policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT]
+        mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
+        mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
+        mut is_weights: UnsafePointer[Scalar[DT], MutAnyOrigin], # [B] IS weights
+        mut sample_slots: UnsafePointer[Int, MutAnyOrigin],      # [B] ring slots
+    ) raises:
+        """Prioritized device-obs twin of `sample_training_batch_dev`: window
+        starts are drawn ∝ priorityᵅ (stratified over B equal-mass bins) with
+        per-sample IS weights ``(N·P_i)^(−β)`` normalized by the batch max; the
+        n-step targets + device obs gather are computed exactly as the uniform
+        sampler. The root ring slot per sample is the `SumTree` leaf, and its
+        episode ``(astart, off, L, trunc)`` come from the slot reverse-map
+        backfilled at episode close (no episode search). ``sample_slots[b]``
+        records the slot for `update_priorities`. Requires the buffer was built
+        with ``per=True`` and ``num_episodes() > 0``."""
+        comptime HV = K + N + 1
+        comptime HR = K + N
+        var w_rew = _a(HR)
+        var w_done = _a(HR)
+        var w_val = _a(HV)
+        var w_tp = _a(HV)
+        var w_vt = _a(K + 1)
+        self._ensure_slots(B)
+
+        var ns = self.num_steps()
+        var total_p = self.tree.total_sum()
+        if total_p <= Scalar[DT](0.0):
+            total_p = Scalar[DT](1.0)
+        var seg = total_p / Scalar[DT](B)
+
+        # First pass: stratified prioritized slot draw + raw IS weights.
+        var max_w = Scalar[DT](0.0)
+        for b in range(B):
+            var u = Float64(self._xorshift() % UInt64(1_000_000)) / 1_000_000.0
+            var target = (Scalar[DT](b) + Scalar[DT](u)) * seg
+            var slot = self.tree.sample(target)
+            sample_slots[b] = slot
+            var p = self.tree.get(slot)
+            if p <= Scalar[DT](0.0):
+                p = self.eps
+            var prob = p / total_p
+            var w = (Scalar[DT](ns) * prob) ** (-self.beta)
+            is_weights[b] = w
+            if w > max_w:
+                max_w = w
+        if max_w <= Scalar[DT](0.0):
+            max_w = Scalar[DT](1.0)
+
+        for b in range(B):
+            is_weights[b] = is_weights[b] / max_w
+            var slot = sample_slots[b]
+            var astart = self.slot_astart[slot]
+            var s = self.slot_off[slot]
+            var L = self.slot_len[slot]
+            var trunc = self.slot_trunc[slot] != 0
+            if L <= 0:
+                # Degenerate (slot holds no closed step) — uniform fallback.
+                var pos = self._sample_step_uniform()
+                var e = pos[0]
+                s = pos[1]
+                astart = self.ep_start[e]
+                L = self.ep_len[e]
+                trunc = self.ep_trunc[e]
+                sample_slots[b] = self._slot(astart, s)
+            var lv = K + N + 1
+            if trunc:
+                lv = L - 1 - s
+
+            # obs0 ring slot (gathered on device below).
+            self.h_slots[b] = Int32(self._slot(astart, s))
+
+            for h in range(HR):
+                if s + h >= L:
+                    w_rew[h] = Scalar[DT](0.0)
+                    w_done[h] = Scalar[DT](1.0)
+                else:
+                    var sl = self._slot(astart, s + h)
+                    w_rew[h] = self.rew[sl]
+                    w_done[h] = self.done[sl]
+            for h in range(HV):
+                if s + h >= L:
+                    w_val[h] = Scalar[DT](0.0)
+                    w_tp[h] = Scalar[DT](0.0)
+                else:
+                    var sl = self._slot(astart, s + h)
+                    w_val[h] = self.val[sl]
+                    w_tp[h] = self.tp[sl]
+
+            compute_nstep_value_targets[K, N](
+                w_rew, w_done, w_val, w_tp, gamma, w_vt, last_valid=lv
+            )
+
+            for k in range(K + 1):
+                value_tgt[k * B + b] = w_vt[k]
+                var pbase = k * B * Self.ACT + b * Self.ACT
+                if s + k >= L:
+                    var uni = Scalar[DT](1.0) / Scalar[DT](Self.ACT)
+                    for a in range(Self.ACT):
+                        policy_tgt[pbase + a] = uni
+                else:
+                    var sl = self._slot(astart, s + k)
+                    for a in range(Self.ACT):
+                        policy_tgt[pbase + a] = self.pol[sl * Self.ACT + a]
+            for k in range(K):
+                if s + k >= L:
+                    actions[k * B + b] = Scalar[DT](0.0)
+                else:
+                    actions[k * B + b] = self.act[self._slot(astart, s + k)]
+                reward_tgt[k * B + b] = w_rew[k]
+
+        # ── gather obs0 device→device into the caller's buffer ──
+        self.ctx.enqueue_copy(self.d_slots.value(), self.h_slots)
+        var slots_t = LayoutTensor[
+            DType.int32, Layout.row_major(B), MutAnyOrigin
+        ](mptr(self.d_slots.value().unsafe_ptr()))
+        var buf_t = LayoutTensor[
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+        ](mptr(self.obs_dev.unsafe_ptr()))
+        var out_t = LayoutTensor[
+            DT, Layout.row_major(B, Self.OBS), MutAnyOrigin
+        ](mptr(d_obs0.unsafe_ptr()))
+        comptime nb = (B * Self.OBS + TPB - 1) // TPB
+        self.ctx.enqueue_function[
+            _mz_obs_gather_kernel[B, Self.OBS, Self.CAP, Self.SDT]
+        ](slots_t, buf_t, out_t, grid_dim=nb, block_dim=TPB)
+
+        w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
+
+    def update_priorities(
+        mut self,
+        slots: UnsafePointer[Int, MutAnyOrigin],              # [n] ring slots
+        priorities: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [n] |value error|
+        n: Int,
+    ):
+        """Write back fresh priorities ``(|value error| + eps)ᵅ`` for the sampled
+        slots and lift the running max (so newly closed steps enter at it)."""
+        for i in range(n):
+            var p = priorities[i]
+            if p < Scalar[DT](0.0):
+                p = -p
+            p = (p + self.eps) ** self.alpha
+            self.tree.update(slots[i], p)
+            if p > self.max_prio:
+                self.max_prio = p
 
     # ── reanalyze hooks (host metadata + single-obs device→host gather) ──
 

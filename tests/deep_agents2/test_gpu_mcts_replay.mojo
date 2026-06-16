@@ -30,6 +30,10 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return mptr(alloc[Scalar[DT]](n))
 
 
+def _ai(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
+    return alloc[Int](n)
+
+
 def main() raises:
     comptime OBS = 4
     comptime ACT = 2
@@ -158,5 +162,62 @@ def main() raises:
             fin = False
     assert_true(fin, "value targets non-finite")
     print("sample_training_batch_dev: coherent obs0 + finite targets OK")
+
+    # ── PER path (per=True): prioritized sampler + IS weights + writeback ──
+    var rbp = GPUMCTSSequenceReplay[OBS, ACT, CAP, N_ENVS, DType.uint8](
+        ctx, seed=7, per=True, alpha=Scalar[DT](1.0), beta=Scalar[DT](1.0)
+    )
+    # record a handful of steps, closing both envs every few iters so the
+    # sum-tree fills with closed steps.
+    for it in range(6):
+        for e in range(N_ENVS):
+            var abs_pos = it * N_ENVS + e
+            var v = Scalar[DT](Float64(abs_pos % 256) / 255.0)
+            for j in range(OBS):
+                h_src[e * OBS + j] = v
+            h_act[e] = Scalar[DT](e % ACT); h_val[e] = Scalar[DT](0.3)
+            for a in range(ACT):
+                h_pol[e * ACT + a] = Scalar[DT](1.0) / Scalar[DT](ACT)
+            h_rew[e] = Scalar[DT](0.1)
+            var close = it % 3 == 2
+            h_done[e] = Scalar[DT](1.0) if close else Scalar[DT](0.0)
+            h_term[e] = Scalar[DT](1.0) if close else Scalar[DT](0.0)
+        ctx.enqueue_copy(d_src, h_src)
+        rbp.record_obs_meta(d_src, h_act, h_pol, h_val)
+        ctx.synchronize()
+        rbp.record_outcome(h_rew, h_done, h_term, max_ep_steps=10_000)
+    assert_true(rbp.num_episodes() > 0, "PER: no episodes closed")
+
+    var d_obs0p = ctx.enqueue_create_buffer[DT](B * OBS)
+    var p_act = _a(K * B)
+    var p_pol = _a((K + 1) * B * ACT)
+    var p_val = _a((K + 1) * B)
+    var p_rew = _a(K * B)
+    var p_isw = _a(B)
+    var p_slots = _ai(B)
+    rbp.sample_training_batch_per_dev[B, K, NS](
+        Scalar[DT](0.99), d_obs0p, p_act, p_pol, p_val, p_rew, p_isw, p_slots
+    )
+    var hp_obs0 = _a(B * OBS)
+    ctx.enqueue_copy(hp_obs0, d_obs0p)
+    ctx.synchronize()
+    # IS weights normalized to (0, 1]; targets finite; obs coherent in range.
+    var okp = True
+    for b in range(B):
+        var w = Float64(p_isw[b])
+        if w <= 0.0 or w > 1.0 + 1e-6:
+            okp = False
+        var v0 = Float64(hp_obs0[b * OBS])
+        if v0 < -1e-6 or v0 > 1.0 + 1e-6:
+            okp = False
+    assert_true(okp, "PER: IS weights / obs out of range")
+    var finp = True
+    for i in range((K + 1) * B):
+        if not (Float64(p_val[i]) == Float64(p_val[i])):
+            finp = False
+    assert_true(finp, "PER: value targets non-finite")
+    # priority writeback (use the value targets as a stand-in error signal).
+    rbp.update_priorities(p_slots, p_val, B)
+    print("sample_training_batch_per_dev: IS weights + finite targets OK")
 
     print("GPUMCTSSequenceReplay correctness: OK")

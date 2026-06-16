@@ -58,6 +58,10 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return mptr(alloc[Scalar[DT]](n))
 
 
+def _aint(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
+    return alloc[Int](n)
+
+
 def _avg_last_n(returns: List[Float64], n: Int) -> Float64:
     """Mean of the last ``n`` recorded episode returns (0 if none)."""
     var lo = len(returns) - n
@@ -628,6 +632,17 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     report_every: Int = 0,
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
     verbose: Bool = False,
+    use_per: Bool = False,           # Prioritized Experience Replay toggle. The
+    #                                  device-obs `GPUMCTSSequenceReplay` keeps
+    #                                  its strided ring + device-native obs store
+    #                                  either way; PER adds a per-slot sum-tree.
+    #                                  True: sample ∝ root value-errorᵅ, IS-weight
+    #                                  grads, write back priorities. False (the
+    #                                  default, preserving the converged Pong
+    #                                  path): the existing uniform device sampler,
+    #                                  bit-identical.
+    per_alpha: Scalar[DT] = Scalar[DT](1.0),
+    per_beta: Scalar[DT] = Scalar[DT](1.0),
 ) raises -> Float64:
     """Device-obs twin of `run_muzero_gumbel_selfplay_gpu_batched`: identical
     loop, but the obs ring lives on the GPU (`GPUMCTSSequenceReplay`) so the
@@ -691,7 +706,8 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     var train_steps = 0
 
     var rb = GPUMCTSSequenceReplay[OBS, ACT, CAP, N_ENVS, OBS_STORE_DT](
-        ctx, seed=seed ^ UInt64(0xABCDEF)
+        ctx, seed=seed ^ UInt64(0xABCDEF),
+        per=use_per, alpha=per_alpha, beta=per_beta,
     )
 
     # host mirrors (no full-obs D2H — only N_ENVS-wide scalar/policy traffic).
@@ -709,6 +725,11 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     var t_rew = _a(K * B)
     var t_obs0_dummy = _a(1)   # ignored (obs_on_device=True)
     var l_parts = _a(3)
+    # PER scratch (only used when use_per): per-sample IS weights / new value-error
+    # priorities / sampled root ring slots.
+    var t_isw = _a(B)
+    var t_prio = _a(B)
+    var t_slots = _aint(B)
     var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
 
     # diagnostics scratch (root re-forward on the last train batch's obs).
@@ -804,9 +825,29 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
         if trained:
             var d_obs0_buf = scratch.d_obs0.value()
             for _ in range(train_per_iter):
-                rb.sample_training_batch_dev[B, K, N](
-                    gamma, d_obs0_buf, t_act, t_pol, t_val, t_rew
-                )
+                var isw_opt = Optional[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](None)
+                var prio_opt = Optional[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](None)
+                if use_per:
+                    # Prioritized device sample (∝ value-errorᵅ) + IS weights.
+                    rb.sample_training_batch_per_dev[B, K, N](
+                        gamma, d_obs0_buf, t_act, t_pol, t_val, t_rew,
+                        t_isw, t_slots,
+                    )
+                    isw_opt = Optional[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](t_isw)
+                    prio_opt = Optional[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](t_prio)
+                else:
+                    # Uniform device sample — the converged Pong path, untouched.
+                    rb.sample_training_batch_dev[B, K, N](
+                        gamma, d_obs0_buf, t_act, t_pol, t_val, t_rew
+                    )
                 last_loss = Float64(
                     mz_unroll_train_step_gpu[
                         REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS,
@@ -817,8 +858,12 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                         t_obs0_dummy, t_act, t_pol, t_val, t_rew,
                         v_min, v_max, value_coef,
                         loss_parts=l_parts,
+                        is_weights=isw_opt,
+                        out_prio=prio_opt,
                     )
                 )
+                if use_per:
+                    rb.update_priorities(t_slots, t_prio, B)
                 train_steps += 1
                 if (
                     target_sync_interval > 0
@@ -929,6 +974,7 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             logger.value()[].log_scalars(rn, rv, it + 1)
 
     t_act.free(); t_pol.free(); t_val.free(); t_rew.free(); t_obs0_dummy.free()
+    t_isw.free(); t_prio.free(); t_slots.free()
     h_pol.free(); h_val.free(); h_act.free()
     h_rew.free(); h_done.free(); h_term.free(); l_parts.free()
     h_diag_pred.free()

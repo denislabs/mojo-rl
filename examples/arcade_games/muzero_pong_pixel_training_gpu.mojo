@@ -185,6 +185,12 @@ def main() raises:
         logger=UnsafePointer(to=logger),
         seed=42,
         verbose=True,
+        # Prioritized Experience Replay (device sum-tree over the strided obs
+        # ring): sample stored positions ∝ root value-error, IS-weight the
+        # grads, write back priorities. False reproduces the converged uniform
+        # baseline (the working Pong path); flip True to focus training on the
+        # high-error frames. alpha/beta default to EZ Atari's 1.0/1.0.
+        use_per=False,
     )
     var elapsed_s = Float64(perf_counter_ns() - start) / 1e9
     logger.close()

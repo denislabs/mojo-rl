@@ -100,6 +100,10 @@ struct MZScratch[
     var loss_d: Optional[DeviceBuffer[DT]]
     var h_zloss: Optional[HostBuffer[DT]]
     var h_loss: Optional[HostBuffer[DT]]
+    # PER scratch: per-sample IS weights (H2D) + value-error priorities (D2H).
+    var d_isw: Optional[DeviceBuffer[DT]]
+    var d_prio: Optional[DeviceBuffer[DT]]
+    var h_prio: Optional[HostBuffer[DT]]
 
     def __init__(out self):
         self.d_obs0 = None; self.d_act = None; self.d_pol = None
@@ -109,6 +113,7 @@ struct MZScratch[
         self.gpin = None; self.gdin = None; self.gobs = None
         self.twv = None; self.twr = None; self.loss_d = None
         self.h_zloss = None; self.h_loss = None
+        self.d_isw = None; self.d_prio = None; self.h_prio = None
 
     @staticmethod
     def make(ctx: DeviceContext) raises -> Self:
@@ -138,6 +143,9 @@ struct MZScratch[
         s.loss_d = ctx.enqueue_create_buffer[DT](3 * BB)
         s.h_zloss = ctx.enqueue_create_host_buffer[DT](3 * BB)
         s.h_loss = ctx.enqueue_create_host_buffer[DT](3 * BB)
+        s.d_isw = ctx.enqueue_create_buffer[DT](BB)
+        s.d_prio = ctx.enqueue_create_buffer[DT](BB)
+        s.h_prio = ctx.enqueue_create_host_buffer[DT](BB)
         ctx.synchronize()
         return s^
 
@@ -400,6 +408,51 @@ def _mz_softce_slice_k[
         loss_buf[b] = rebind[Scalar[DT]](loss_buf[b]) + loss_coef * row_loss
 
 
+# ── PER kernels (mirror efficient_zero_v2/blocks.mojo) ──────────────────────
+def _mz_scale_rows_k[B_: Int, ROW_: Int, OFF_: Int, LEN_: Int](
+    grad: LayoutTensor[DT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
+    w: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+):
+    """Scale the ``[OFF_, OFF_+LEN_)`` column slice of grad row ``b`` by the
+    per-sample importance-sampling weight ``w[b]`` (PER gradient weighting).
+    One thread per row."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        var wb = rebind[Scalar[DT]](w[b])
+        var base = b * ROW_ + OFF_
+        for c in range(LEN_):
+            grad[base + c] = rebind[Scalar[DT]](grad[base + c]) * wb
+
+
+def _mz_priority_ce_k[B_: Int, ROW_: Int, OFF_: Int, NBINS_: Int](
+    logits: LayoutTensor[DT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
+    target: LayoutTensor[DT, Layout.row_major(B_ * NBINS_), MutAnyOrigin],
+    out_prio: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+):
+    """Per-sample soft-CE of the value-head slice vs the value two-hot target —
+    the PER priority signal (root value-prediction error). Writes (does NOT
+    accumulate) into ``out_prio[b]``. One thread per row; mirrors the loss half
+    of `_mz_softce_slice_k`."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        var base = b * ROW_ + OFF_
+        var m = rebind[Scalar[DT]](logits[base])
+        for i in range(1, NBINS_):
+            var v = rebind[Scalar[DT]](logits[base + i])
+            if v > m:
+                m = v
+        var s = Scalar[DT](0.0)
+        for i in range(NBINS_):
+            s += exp(rebind[Scalar[DT]](logits[base + i]) - m)
+        var log_s = log(s)
+        var tb = b * NBINS_
+        var row_loss = Scalar[DT](0.0)
+        for i in range(NBINS_):
+            var q = rebind[Scalar[DT]](target[tb + i])
+            row_loss += -q * ((rebind[Scalar[DT]](logits[base + i]) - m) - log_s)
+        out_prio[b] = row_loss
+
+
 def _mz_twohot_k[
     B_: Int, NBINS_: Int,
 ](
@@ -516,9 +569,18 @@ def mz_unroll_train_step_gpu[
     v_max: Scalar[DT],
     value_coef: Scalar[DT] = Scalar[DT](1.0),
     loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """GPU MuZero K-step unroll training step — device mirror of
     `mz_unroll_train_step_cpu`.
+
+    PER (optional): when ``is_weights`` is given the per-sample importance
+    weights scale the whole prediction-head grad row + the reward slice of the
+    dyn grad before each vjp (the latent carry is already weighted, so it is
+    NOT re-scaled). When ``out_prio`` is given the root (k=0) value-head soft-CE
+    is written per row as the new priority signal. Both are no-ops when ``None``
+    → bit-identical to the uniform path.
 
     Takes the same **host** time-major batch slabs (raw value/reward scalars;
     `h` + two-hot applied on device), H2D-copies them once, runs the forward
@@ -569,6 +631,13 @@ def mz_unroll_train_step_gpu[
     var twr = scratch.twr.value()
     var loss_d = scratch.loss_d.value()
 
+    # ── PER (optional): copy IS weights to device; priorities written at k=0 ──
+    var has_isw = Bool(is_weights)
+    var d_isw = scratch.d_isw.value()
+    var d_prio = scratch.d_prio.value()
+    if has_isw:
+        ctx.enqueue_copy(d_isw, is_weights.value())
+
     # zero the 3 loss-component accumulators (policy | value | reward)
     var zloss = scratch.h_zloss.value()
     for i in range(3 * B):
@@ -594,6 +663,8 @@ def mz_unroll_train_step_gpu[
     var p_twv = _dp(twv)
     var p_twr = _dp(twr)
     var p_loss = _dp(loss_d)
+    var p_isw = _dp(d_isw)
+    var p_prio = _dp(d_prio)
 
     comptime nbDIN = (B * DYN_IN + TPB - 1) // TPB
     comptime nbLAT = (B * LATENT + TPB - 1) // TPB
@@ -607,6 +678,11 @@ def mz_unroll_train_step_gpu[
     comptime kCarry = _mz_set_carry_latent_k[B, LATENT, DYN_OUT]
     comptime kHalf = _mz_accum_half_k[B, LATENT, DYN_IN]
     comptime kBcopy = _mz_bcopy_k[B * LATENT]
+    # PER: scale the whole pred-head grad row; scale ONLY the reward slice of
+    # the dyn grad; root value-error priority (mirror efficient_zero_v2).
+    comptime kScalePred = _mz_scale_rows_k[B, PRED_OUT, 0, PRED_OUT]
+    comptime kScaleRew = _mz_scale_rows_k[B, DYN_OUT, LATENT, BINS]
+    comptime kPrioCE = _mz_priority_ce_k[B, PRED_OUT, ACT, BINS]
 
     # ── forward scan: z0 = h(obs0); z_{k+1} = g(z_k, a_k).latent ──
     var z0_t = TileTensor(p_zst, row_major[B, LATENT]())
@@ -667,6 +743,19 @@ def mz_unroll_train_step_gpu[
             gscale * value_coef, value_coef,
             grid_dim=nbB, block_dim=TPB,
         )
+        # PER: value-error priority at the root (k=0), read from value logits +
+        # value two-hot (both still intact — reads logits, not grads).
+        if out_prio and k == 0:
+            ctx.enqueue_function[kPrioCE](
+                _lt[B * PRED_OUT](p_pout), _lt[B * BINS](p_twv),
+                _lt[B](p_prio), grid_dim=nbB, block_dim=TPB,
+            )
+        # PER: weight the whole prediction-head grad row by w_b before vjp.
+        if has_isw:
+            ctx.enqueue_function[kScalePred](
+                _lt[B * PRED_OUT](p_gpout), _lt[B](p_isw),
+                grid_dim=nbB, block_dim=TPB,
+            )
         var gpout_t = TileTensor(p_gpout, row_major[B, PRED_OUT]())
         var gpin_t = TileTensor(p_gpin, row_major[B, LATENT]())
         pred.vjp["gpu", B](gpout_t, gpin_t)
@@ -701,6 +790,14 @@ def mz_unroll_train_step_gpu[
                 gscale, Scalar[DT](1.0),
                 grid_dim=nbB, block_dim=TPB,
             )
+            # PER: weight ONLY the reward slice of the dyn grad by w_b. The
+            # latent slice carries the already-weighted gradient from z_{k+1}
+            # (kCarry), so scaling it again would double-weight it.
+            if has_isw:
+                ctx.enqueue_function[kScaleRew](
+                    _lt[B * DYN_OUT](p_gdout), _lt[B](p_isw),
+                    grid_dim=nbB, block_dim=TPB,
+                )
             var gdout_t = TileTensor(p_gdout, row_major[B, DYN_OUT]())
             var gdin_t = TileTensor(p_gdin, row_major[B, DYN_IN]())
             dyn.vjp["gpu", B](gdout_t, gdin_t)
@@ -727,11 +824,19 @@ def mz_unroll_train_step_gpu[
     odyn.step["gpu", DYN](dyn)
     orep.step["gpu", REP](rep)
 
-    # ── reduce loss (D2H once) — 3 [B] blocks: policy | value | reward ──
+    # ── D2H PER priorities + loss with a single sync — 3 [B] blocks:
+    #    policy | value | reward (loss); + [B] value-error priorities ──
     ctx.synchronize()
     var hloss = scratch.h_loss.value()
+    if out_prio:
+        ctx.enqueue_copy(scratch.h_prio.value(), d_prio)
     ctx.enqueue_copy(hloss, loss_d)
     ctx.synchronize()
+    if out_prio:
+        var op = out_prio.value()
+        var hpp = scratch.h_prio.value().unsafe_ptr()
+        for b in range(B):
+            op[b] = hpp[b]
     var hp = hloss.unsafe_ptr()
     var l_pol = Scalar[DT](0.0)
     var l_val = Scalar[DT](0.0)

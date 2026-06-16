@@ -515,3 +515,18 @@ struct PrioritizedMCTSSequenceReplay[
         var e = Int(self._xorshift() % UInt64(len(self.ep_start)))
         var o = Int(self._xorshift() % UInt64(self.ep_len[e]))
         return (e, o)
+
+    def read_legal(self, ep_idx: Int, offset: Int) -> List[Bool]:
+        """Legal mask at a stored (episode, offset) — host-resident, so a plain
+        read (mirrors `MCTSSequenceReplay.read_legal`). Used by the two-player
+        reanalyze path to mask the root search to legal columns."""
+        var out = List[Bool]()
+        var o = offset
+        if o >= self.ep_len[ep_idx]:
+            o = self.ep_len[ep_idx] - 1
+        if o < 0:
+            o = 0
+        var slot = (self.ep_start[ep_idx] + o) % Self.CAP
+        for a in range(Self.ACT):
+            out.append(self.legal[slot * Self.ACT + a] > Scalar[DT](0.5))
+        return out^

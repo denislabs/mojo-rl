@@ -157,6 +157,14 @@ def main() raises:
         # recoverable mid-run (play it with play_connect_four_muzero_gumbel).
         checkpoint_every=2_000,
         checkpoint_path=String("connect_four_muzero_gumbel_spatial.ckpt"),
+        # Prioritized Experience Replay (device sum-tree): sample stored
+        # positions ∝ root value-error, IS-weight the grads, write back fresh
+        # priorities. Set False for plain uniform device sampling. PER focuses
+        # training on the sharp tactical positions the sparse-terminal C4 reward
+        # under-samples — the lever for the 64-sim plateau.
+        use_per=True,
+        per_alpha=Scalar[DT](1.0),
+        per_beta=Scalar[DT](1.0),
     )
 
     logger.close()

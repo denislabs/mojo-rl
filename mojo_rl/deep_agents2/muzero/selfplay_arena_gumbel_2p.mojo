@@ -14,7 +14,8 @@ algorithmic core to MuZero:
     value each ply. The improved policy is the stored target.
 
   * **Targets.** Per-step the driver records `(obs, action, π, root_value,
-    to_play, legal)` into `MCTSSequenceReplay`; the n-step value targets carry
+    to_play, legal)` into a device-obs `PrioritizedMCTSSequenceReplay` (the obs
+    ring lives on the GPU; PER is toggled by `use_per`). The n-step value targets carry
     the two-player sign flips (`zero/nstep_targets.mojo`). `to_play` is the ply
     parity (ConnectFour's canonical obs is always the mover's frame, P0 first).
 
@@ -58,7 +59,9 @@ from mojo_rl.planners.tree_search import GumbelGPUMCTS, SelfPlay
 from .blocks import mz_unroll_train_step_gpu, MZScratch
 from .selfplay_gpu_device import _mz_emit_train_diag
 from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
-from ..zero.sequence_replay_mcts import MCTSSequenceReplay
+from ..zero.prioritized_sequence_replay_mcts import (
+    PrioritizedMCTSSequenceReplay,
+)
 from ..zero.symmetries import BoardAugmenter, IdentityAugmenter
 from ..zero.evaluators import GPUEvaluator, RandomOpponent
 from ..zero.temperature import visit_temperature
@@ -66,6 +69,14 @@ from ..zero.temperature import visit_temperature
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return mptr(alloc[Scalar[DT]](n))
+
+
+def _ai32(n: Int) -> UnsafePointer[Int32, MutAnyOrigin]:
+    return alloc[Int32](n)
+
+
+def _aint(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
+    return alloc[Int](n)
 
 
 @always_inline
@@ -640,6 +651,17 @@ def run_muzero_selfplay_arena_gumbel_2p[
     #                                  trigger (live-learner reanalyze).
     checkpoint_every: Int = 0,       # moves between checkpoint saves (0 = off)
     checkpoint_path: String = String(""),  # rolling save of the BEST trio
+    use_per: Bool = True,            # Prioritized Experience Replay toggle. The
+    #                                  replay is ALWAYS the device-obs
+    #                                  `PrioritizedMCTSSequenceReplay`; this flag
+    #                                  only gates the PER behaviour. True: sample
+    #                                  ∝ priorityᵅ, weight grads by IS weights,
+    #                                  write back root value-error priorities.
+    #                                  False: priorities stay constant (uniform
+    #                                  sampling) + no IS weighting → bit-identical
+    #                                  to uniform replay, still on-device.
+    per_alpha: Scalar[DT] = Scalar[DT](1.0),  # priority exponent (EZ Atari: 1.0)
+    per_beta: Scalar[DT] = Scalar[DT](1.0),   # IS-weight exponent (EZ Atari: 1.0)
 ) raises -> MZArenaRunResult:
     """Two-player Gumbel MuZero self-play with Arena gating. `rep`/`dyn`/`pred`
     are the BEST nets and hold the final (best) weights on return. One loop pass
@@ -698,7 +720,12 @@ def run_muzero_selfplay_arena_gumbel_2p[
     var dyn_a = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn)
     var pred_a = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred)
 
-    var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
+    # Device-obs prioritized replay (serves BOTH modes — see `use_per`). The obs
+    # ring lives on the GPU; training samples gather obs device→device (no host
+    # obs round-trip), the value-error priorities steer sampling when PER is on.
+    var rb = PrioritizedMCTSSequenceReplay[OBS, ACT, CAP](
+        ctx, seed=seed ^ UInt64(0xABCDEF), alpha=per_alpha, beta=per_beta
+    )
     var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
 
     # ── diag scratch: re-forward the root prediction on the last train batch,
@@ -709,11 +736,14 @@ def run_muzero_selfplay_arena_gumbel_2p[
     var d_diag_pred = ctx.enqueue_create_buffer[DT](B * (ACT + BINS))
     var h_diag_pred = _a(B * (ACT + BINS))
 
-    # ── reanalyze scratch: stored obs + legal mask gathered host→device (its
-    #    own buffers, NOT the live self-play obs/legal). ──
+    # ── reanalyze scratch: stored obs gathered device→device via the replay's
+    #    `gather_obs_for_positions` (no host obs round-trip); the legal mask is
+    #    still read host-side (it gates the root search). Own buffers, NOT the
+    #    live self-play obs/legal. ──
     var d_reana = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
     var d_reana_legal = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
-    var h_reana = _a(N_ENVS * OBS)
+    var d_reana_slots = ctx.enqueue_create_buffer[DType.int32](N_ENVS)
+    var h_reana_slots = _ai32(N_ENVS)
     var h_reana_legal = _a(N_ENVS * ACT)
 
     # ── Device buffers ──
@@ -737,12 +767,25 @@ def run_muzero_selfplay_arena_gumbel_2p[
     var act_h = _a(N_ENVS)
 
     # ── Training slabs (host, time-major) ──
-    var t_obs0 = _a(B * OBS)
+    var t_obs0 = _a(B * OBS)         # unused on-device (obs gathered into scratch)
     var t_act = _a(K * B)
     var t_pol = _a((K + 1) * B * ACT)
     var t_val = _a((K + 1) * B)
     var t_rew = _a(K * B)
     var l_parts = _a(3)
+
+    # ── PER / on-device sampling scratch ──
+    # The prioritized sampler gathers the FULL [(K+1)*B, OBS] obs window into
+    # `d_obs_seq` (MuZero only consumes the root k=0 block → copied into
+    # `scratch.d_obs0`). `t_isw`/`t_prio` are the per-sample IS weights / new
+    # value-error priorities; `t_slots` the sampled root ring slots (for the
+    # priority write-back).
+    var d_obs_seq = ctx.enqueue_create_buffer[DT]((K + 1) * B * OBS)
+    var d_seq_slots = ctx.enqueue_create_buffer[DType.int32]((K + 1) * B)
+    var h_seq_slots = _ai32((K + 1) * B)
+    var t_isw = _a(B)
+    var t_prio = _a(B)
+    var t_slots = _aint(B)
 
     # ── Augmentation scratch (one game's worth, reused) ──
     var aug_obs = _a(MAX_PLIES * OBS)
@@ -988,20 +1031,49 @@ def run_muzero_selfplay_arena_gumbel_2p[
             l_dyn.set_attr["training"](Scalar[DT](1.0))
             l_pred.set_attr["training"](Scalar[DT](1.0))
             for _t in range(train_per_iter):
-                rb.sample_training_batch[B, K, N](
-                    gamma, t_obs0, t_act, t_pol, t_val, t_rew
+                # Prioritized device sample: gathers the obs window into
+                # `d_obs_seq` and the n-step targets into the host slabs.
+                rb.sample_training_batch_seq_per_gpu[B, K, N](
+                    ctx, gamma, d_obs_seq, d_seq_slots, h_seq_slots,
+                    t_act, t_pol, t_val, t_rew, t_isw, t_slots,
                 )
+                # MuZero consumes only the root (k=0) obs block → copy it into
+                # the train scratch (`obs_on_device=True` reads `scratch.d_obs0`).
+                ctx.enqueue_copy(
+                    scratch.d_obs0.value(),
+                    d_obs_seq.create_sub_buffer[DT](0, B * OBS),
+                )
+                # PER gates: pass IS weights + collect value-error priorities only
+                # when on. Off → unweighted, no priorities written (→ uniform).
+                var isw_opt = Optional[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](None)
+                var prio_opt = Optional[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](None)
+                if use_per:
+                    isw_opt = Optional[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](t_isw)
+                    prio_opt = Optional[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](t_prio)
                 last_loss = Float64(
                     mz_unroll_train_step_gpu[
-                        REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS
+                        REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS,
+                        obs_on_device=True,
                     ](
                         ctx, l_rep, l_dyn, l_pred, orep, odyn, opred,
                         scratch,
                         t_obs0, t_act, t_pol, t_val, t_rew,
                         VMIN, VMAX, value_coef,
                         loss_parts=l_parts,
+                        is_weights=isw_opt,
+                        out_prio=prio_opt,
                     )
                 )
+                if use_per:
+                    rb.update_priorities(t_slots, t_prio, B)
                 train_steps += 1
                 if (
                     target_sync_interval > 0
@@ -1022,6 +1094,10 @@ def run_muzero_selfplay_arena_gumbel_2p[
             and trained
             and (it + 1) % diag_every == 0
         ):
+            # The obs now lives on-device (`scratch.d_obs0`, last train batch);
+            # D2H the root block into `t_obs0` so the diag re-forward sees it.
+            ctx.enqueue_copy(t_obs0, scratch.d_obs0.value())
+            ctx.synchronize()
             _mz_emit_train_diag[REP, PRED, B, OBS, ACT, BINS, L](
                 ctx, l_rep, l_pred, d_diag_obs, d_diag_z, d_diag_pred,
                 h_diag_pred, t_obs0, t_pol, t_val, l_parts,
@@ -1057,14 +1133,15 @@ def run_muzero_selfplay_arena_gumbel_2p[
                     var rpos = rb.sample_position()
                     rpos_e.append(rpos[0])
                     rpos_o.append(rpos[1])
-                    var dst = h_reana + e * OBS
-                    rb.read_obs(rpos[0], rpos[1], dst)
                     var lm = rb.read_legal(rpos[0], rpos[1])
                     for a in range(ACT):
                         h_reana_legal[e * ACT + a] = (
                             Scalar[DT](1.0) if lm[a] else Scalar[DT](0.0)
                         )
-                ctx.enqueue_copy(d_reana, h_reana)
+                # obs gathered device→device straight into `d_reana`.
+                rb.gather_obs_for_positions[N_ENVS](
+                    ctx, d_reana, d_reana_slots, h_reana_slots, rpos_e, rpos_o
+                )
                 ctx.enqueue_copy(d_reana_legal, h_reana_legal)
                 ctx.enqueue_copy(planner.legal_mask_view(), d_reana_legal)
                 var reana_t = LayoutTensor[
@@ -1244,11 +1321,12 @@ def run_muzero_selfplay_arena_gumbel_2p[
 
     t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     l_parts.free(); h_diag_pred.free()
+    t_isw.free(); t_prio.free(); t_slots.free(); h_seq_slots.free()
     obs_h.free(); pol_h.free(); val_h.free(); legal_h.free()
     done_h.free(); rew_h.free(); act_h.free()
     aug_obs.free(); aug_pol.free(); aug_legal.free(); aug_act.free()
     onehot.free(); onehot_out.free()
-    h_reana.free(); h_reana_legal.free()
+    h_reana_slots.free(); h_reana_legal.free()
     # keep the learner + target nets alive past the adapters' borrowed pointers.
     _ = l_rep^
     _ = l_dyn^
