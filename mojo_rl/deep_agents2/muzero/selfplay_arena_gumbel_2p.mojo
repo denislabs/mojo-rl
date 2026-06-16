@@ -471,12 +471,10 @@ def _mz_eval_one_color[
     comptime MAX_MOVES = MAX_PLIES + ACT
     while not all_done and move < MAX_MOVES:
         var agent_turn = (move % 2) == agent_player
-        if move < open_plies:
-            rng = _xs(rng)
-            RandomOpponent.select_action_gpu[N_GAMES, ACT, STATE](
-                ctx, act_dev, legal_dev, states, rng
-            )
-        elif agent_turn:
+        if agent_turn:
+            # The agent ALWAYS plays its best (greedy argmax over search), even
+            # in the opening — we never force a random move on it, so it is never
+            # handed a lost line. Eval measures pure agent skill.
             _mz_search_argmax[
                 REP, DYN, PRED, N_GAMES, OBS, ACT, LATENT, BINS,
                 MAX_NODES, MAX_K, NUM_SIMS,
@@ -485,6 +483,17 @@ def _mz_eval_one_color[
                 h_pol, legal_h, act_h, rng_seed=UInt32(move + 1),
             )
             ctx.enqueue_copy(act_dev, act_h)
+        elif move < open_plies:
+            # Opening variation comes ONLY from the opponent: random for its
+            # turns inside the first `open_plies` plies. This diversifies the
+            # N_GAMES lockstep batch — essential vs a DETERMINISTIC opponent
+            # (Minimax), where otherwise all games would be the same line — while
+            # the agent's deterministic replies fan the games out. (vs Random the
+            # opponent is already random, so this is a no-op in spirit.)
+            rng = _xs(rng)
+            RandomOpponent.select_action_gpu[N_GAMES, ACT, STATE](
+                ctx, act_dev, legal_dev, states, rng
+            )
         else:
             rng = _xs(rng)
             OPP.select_action_gpu[N_GAMES, ACT, STATE](
