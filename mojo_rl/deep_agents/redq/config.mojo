@@ -90,7 +90,7 @@ comptime REDQCritic[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait REDQConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait REDQConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a REDQ-family algorithm. Conformers
     are zero-field comptime tags — never instantiated at runtime; only
     their comptime members are read."""

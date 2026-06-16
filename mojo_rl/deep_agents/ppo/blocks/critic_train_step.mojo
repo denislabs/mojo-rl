@@ -24,7 +24,7 @@ struct PPOCriticTrainStep[
     OBS_: Int,
     MINIBATCH_: Int,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime MINIBATCH = Self.MINIBATCH_
     comptime Inner = MSELoss[1]

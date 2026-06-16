@@ -30,7 +30,7 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 
 struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
-    Movable, ImplicitlyDestructible
+    Movable, ImplicitlyDeletable
 ):
     """Ring of continuous MCTS-labelled steps + episode index. ``CAP`` = max
     resident steps. Host-side (the GPU search feeds it via host copies)."""

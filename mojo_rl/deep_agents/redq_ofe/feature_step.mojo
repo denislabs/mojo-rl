@@ -48,7 +48,7 @@ struct OFEFeatureStep[
     OBS_: Int,
     ACT_: Int,
     BATCH_: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     """Pre-pass populating φ(s) and φ(s') scratches.
 
     Comptime params:

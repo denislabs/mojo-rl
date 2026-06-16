@@ -68,7 +68,7 @@ comptime TD3CriticNet[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait TD3ConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait TD3ConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a TD3-family algorithm. Conformers are
     zero-field comptime tags — never instantiated at runtime; only their
     comptime members are read."""

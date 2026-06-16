@@ -192,7 +192,7 @@ def _grouped_polyak_kernel(
 
 
 @fieldwise_init
-struct GroupedPolyakCache(Movable & ImplicitlyDestructible):
+struct GroupedPolyakCache(Movable & ImplicitlyDeletable):
     """Device-resident descriptor arrays for the grouped polyak launch, built
     ONCE from an (online, target) model pair (params are stable per-Param
     DeviceBuffers). `apply` launches one `_grouped_polyak_kernel`. NVIDIA only."""

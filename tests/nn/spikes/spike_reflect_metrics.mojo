@@ -30,7 +30,7 @@ from std.testing import assert_equal, assert_true
 # ---------------------------------------------------------------------
 # Logger-shaped trait — local, doesn't depend on the production Logger
 # ---------------------------------------------------------------------
-trait MiniLogger(Copyable, Movable, ImplicitlyDestructible):
+trait MiniLogger(Copyable, Movable, ImplicitlyDeletable):
     def log_scalar(mut self, name: String, value: Float64, step: Int) raises:
         ...
 
@@ -60,7 +60,7 @@ struct ListLogger(MiniLogger):
 # Metric — marker trait whose method does the Float64 cast.
 # Walker gates on conforms_to(ft, Metric) and calls .to_f64().
 # ---------------------------------------------------------------------
-trait Metric(Copyable, Movable, ImplicitlyDestructible):
+trait Metric(Copyable, Movable, ImplicitlyDeletable):
     def to_f64(self) -> Float64:
         ...
 
@@ -85,7 +85,7 @@ struct LogScalar[DT: DType](Metric):
 comptime DT_F32 = DType.float32
 
 @fieldwise_init
-struct SACMetrics(Copyable, Movable, ImplicitlyDestructible):
+struct SACMetrics(Copyable, Movable, ImplicitlyDeletable):
     var critic_loss: LogScalar[DT_F32]
     var actor_loss: LogScalar[DT_F32]
     var alpha: LogScalar[DT_F32]
@@ -162,7 +162,7 @@ def test_metrics_bundle_walk() raises:
 # Second check: empty bundle is fine.
 # ---------------------------------------------------------------------
 @fieldwise_init
-struct EmptyMetrics(Copyable, Movable, ImplicitlyDestructible):
+struct EmptyMetrics(Copyable, Movable, ImplicitlyDeletable):
     pass
 
 
@@ -179,7 +179,7 @@ def test_empty_bundle() raises:
 # Verifies one parametric LogScalar covers multiple dtypes.
 # ---------------------------------------------------------------------
 @fieldwise_init
-struct MixedMetrics(Copyable, Movable, ImplicitlyDestructible):
+struct MixedMetrics(Copyable, Movable, ImplicitlyDeletable):
     var loss_f32: LogScalar[DType.float32]
     var lr_f64:   LogScalar[DType.float64]
 
@@ -204,7 +204,7 @@ def test_mixed_bundle() raises:
 # Fourth check: non-Metric fields are silently skipped.
 # ---------------------------------------------------------------------
 @fieldwise_init
-struct MetricsWithExtras(Copyable, Movable, ImplicitlyDestructible):
+struct MetricsWithExtras(Copyable, Movable, ImplicitlyDeletable):
     var critic_loss: LogScalar[DT_F32]
     var raw_step_counter: Int         # Not Metric — must be skipped
     var actor_loss: LogScalar[DT_F32]

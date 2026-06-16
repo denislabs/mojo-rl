@@ -112,7 +112,7 @@ def _reduce_mean_acc_kernel[BATCH: Int](
 
 
 @fieldwise_init
-struct SACActorLossOut(Movable & ImplicitlyDestructible):
+struct SACActorLossOut(Movable & ImplicitlyDeletable):
     """Result of one `forward_backward` call.
 
     `loss` is the mean-batch scalar value (for logging).

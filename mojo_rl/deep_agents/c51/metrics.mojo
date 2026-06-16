@@ -14,7 +14,7 @@ from mojo_rl.nn.core.metric import LogScalar
 
 
 @fieldwise_init
-struct C51Metrics(Copyable, Movable, ImplicitlyDestructible):
+struct C51Metrics(Copyable, Movable, ImplicitlyDeletable):
     var loss:         LogScalar[DT]
     var epsilon:      LogScalar[DT]
     var mean_q:       LogScalar[DT]

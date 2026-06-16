@@ -17,7 +17,7 @@ from ...training.trainer_block import TrainerState
 
 struct DQNQUpdateStep[
     OBS_: Int, ACT_: Int, BATCH_: Int, NA_: Int, Q_NET: Module,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_  # = 1 for DQN
     comptime BATCH = Self.BATCH_

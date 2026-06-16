@@ -54,7 +54,7 @@ struct EnsembleCriticStepOFE[
     BATCH_: Int,
     PHI_S_DIM_: Int,
     ACT_: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime BATCH = Self.BATCH_
     comptime PHI_S_DIM = Self.PHI_S_DIM_
     comptime ACT = Self.ACT_

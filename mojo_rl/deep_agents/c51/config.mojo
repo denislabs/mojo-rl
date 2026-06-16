@@ -107,7 +107,7 @@ Used by `RainbowCNNConfig`."""
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait C51ConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait C51ConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a C51-family algorithm. Bundles the
     deployment target, the replay block, the Q-net, the distributional
     flags, and tuned scalar defaults. Conformers are zero-field comptime

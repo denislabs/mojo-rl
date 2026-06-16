@@ -28,7 +28,7 @@ from mojo_rl.nn.constants import DT
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait ElementOp(Movable & ImplicitlyDestructible):
+trait ElementOp(Movable & ImplicitlyDeletable):
     """Per-element forward + backward op for `Elementwise[DIM, OP]`."""
 
     @staticmethod

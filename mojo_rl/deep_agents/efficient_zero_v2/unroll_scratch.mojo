@@ -21,7 +21,7 @@ struct EZV2UnrollScratch[
     LATENT: Int,
     BINS: Int,
     PROJ: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Discrete EZv2 unroll scratch — one field per per-step GPU buffer."""
     comptime PRED_OUT = Self.ACT + Self.BINS
     comptime DYN_IN = Self.LATENT + Self.ACT
@@ -141,7 +141,7 @@ struct EZV2UnrollContScratch[
     LATENT: Int,
     BINS: Int,
     PROJ: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Continuous EZv2 unroll scratch. The continuous GPU policy loss is a fused
     kernel, so no ``musig``/``ptgt`` scratch is needed (unlike the CPU path).
     Buffer set otherwise mirrors the discrete scratch."""

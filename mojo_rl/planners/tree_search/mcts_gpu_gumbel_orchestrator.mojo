@@ -365,7 +365,7 @@ struct GumbelGPUMCTS[
     # nodes carry true game-state payloads and expansion is `env.step_gpu`
     # instead of the dynamics net. 0 (default) allocates no AZ buffers.
     STATE_SIZE: Int = 0,
-](Movable, ImplicitlyDestructible):
+](Movable, ImplicitlyDeletable):
     """GPU Gumbel-MCTS orchestrator (shared across EZv2 + MuZero).
 
     Comptime params:

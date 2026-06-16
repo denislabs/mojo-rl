@@ -17,7 +17,7 @@ from ..constants import DT
 from .amp import AMPPolicy, NoAMP
 
 
-trait Loss(Defaultable & Movable & ImplicitlyDestructible):
+trait Loss(Defaultable & Movable & ImplicitlyDeletable):
     comptime OUT_DIM: Int
 
     @staticmethod

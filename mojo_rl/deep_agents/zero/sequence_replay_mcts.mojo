@@ -41,7 +41,7 @@ def _asdt[SDT: DType](n: Int) -> UnsafePointer[Scalar[SDT], MutAnyOrigin]:
 
 
 struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT](
-    Movable, ImplicitlyDestructible
+    Movable, ImplicitlyDeletable
 ):
     """Ring of MCTS-labelled steps + episode index. ``CAP`` = max resident
     steps. Host-side (the CartPole lighthouse trains on CPU; the GPU search

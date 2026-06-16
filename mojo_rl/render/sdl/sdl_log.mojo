@@ -95,7 +95,7 @@ struct LogCategory(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime LOG_CATEGORY_APPLICATION = Self(0)
     comptime LOG_CATEGORY_ERROR = Self(1)
@@ -151,7 +151,7 @@ struct LogPriority(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime LOG_PRIORITY_INVALID = Self(0)
     comptime LOG_PRIORITY_TRACE = Self(1)

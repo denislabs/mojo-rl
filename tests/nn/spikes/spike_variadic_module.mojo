@@ -16,7 +16,7 @@ from mojo_rl.nn.core.module import typed_view, typed_view_mut
 from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
 
 
-trait VariadicModule(Defaultable & Movable & ImplicitlyDestructible):
+trait VariadicModule(Defaultable & Movable & ImplicitlyDeletable):
     comptime ARITY: Int
     comptime IN_DIMS: InlineArray[Int, Self.ARITY]
     comptime OUT_DIM: Int

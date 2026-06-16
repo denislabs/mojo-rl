@@ -99,7 +99,7 @@ struct MPPICPU[
     NUM_PI_TRAJS: Int,
     NUM_ITERATIONS: Int,
     NUM_ELITES: Int,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     """CPU MPPI planner — reference implementation + test path.
 
     All hyperparameters that affect storage layout
@@ -405,7 +405,7 @@ struct MPPIGPUBatched[
     NUM_ELITES: Int,
     NUM_ITERATIONS: Int,
     N_ENVS: Int,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     """GPU-batched MPPI planner — plans for all ``N_ENVS`` envs in one
     kernel grid per horizon step.
 

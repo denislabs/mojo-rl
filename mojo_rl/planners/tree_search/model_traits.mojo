@@ -40,7 +40,7 @@ in ``trajectory/rollout_callback.mojo``.
 """
 
 
-trait Representation(ImplicitlyDestructible):
+trait Representation(ImplicitlyDeletable):
     """Encode an observation into the root hidden state.
 
     Called once per ``search()`` at the root. The adapter is responsible
@@ -69,7 +69,7 @@ trait Representation(ImplicitlyDestructible):
         ...
 
 
-trait Dynamics(ImplicitlyDestructible):
+trait Dynamics(ImplicitlyDeletable):
     """Apply one MCTS expansion step: (hidden, action) → (hidden', reward).
 
     Called once per leaf expansion. The adapter is responsible for action
@@ -100,7 +100,7 @@ trait Dynamics(ImplicitlyDestructible):
         ...
 
 
-trait Prediction(ImplicitlyDestructible):
+trait Prediction(ImplicitlyDeletable):
     """Compute policy prior + scalar value at a hidden state.
 
     Called once per leaf expansion (after dynamics) and once at the root

@@ -26,7 +26,7 @@ from ..constants import DT
 from .module import Module
 
 
-trait Optimizer(Defaultable & Movable & ImplicitlyDestructible):
+trait Optimizer(Defaultable & Movable & ImplicitlyDeletable):
     @staticmethod
     def make[target: StaticString, M: Module](
         mut model: M,

@@ -39,7 +39,7 @@ comptime ACT_DIM: Int = 3
 
 
 @fieldwise_init
-struct GoalReachScoreCallback(Movable, ImplicitlyDestructible, ScorePlanCallback):
+struct GoalReachScoreCallback(Movable, ImplicitlyDeletable, ScorePlanCallback):
     """Score a (1, 3, 3) one-hot plan as MSE-to-goal under z' = z + e_a.
 
     Each timestep picks one axis (one-hot action e_a); the trajectory

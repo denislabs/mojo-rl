@@ -66,7 +66,7 @@ struct MZScratch[
     ACT: Int,
     LATENT: Int,
     BINS: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Persistent device + host scratch for `mz_unroll_train_step_gpu`.
 
     Allocated **once** via `make` and reused every training step — per-step

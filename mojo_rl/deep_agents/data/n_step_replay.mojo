@@ -54,7 +54,7 @@ from ..training.replay_buffer import ReplayBuffer
 
 @fieldwise_init
 struct NStepTransition[OBS: Int, ACT: Int](
-    Movable & ImplicitlyDestructible
+    Movable & ImplicitlyDeletable
 ):
     """Compressed n-step transition returned by `NStepBuffer.add`.
 
@@ -94,7 +94,7 @@ struct NStepTransition[OBS: Int, ACT: Int](
 
 @fieldwise_init
 struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
-    Movable & ImplicitlyDestructible
+    Movable & ImplicitlyDeletable
 ):
     """CPU streaming n-step buffer for a single env.
 
@@ -378,7 +378,7 @@ def _nstep_copy_kernel[
 
 @fieldwise_init
 struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
-    Movable & ImplicitlyDestructible
+    Movable & ImplicitlyDeletable
 ):
     """GPU per-env streaming n-step buffer for `N_ENVS` parallel envs.
 

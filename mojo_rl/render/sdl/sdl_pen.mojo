@@ -133,7 +133,7 @@ struct PenAxis(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime PEN_AXIS_PRESSURE = Self(0)
     """Pen pressure.  Unidirectional: 0 to 1.0."""

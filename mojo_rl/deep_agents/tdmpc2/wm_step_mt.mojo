@@ -74,7 +74,7 @@ struct WMStepMT[
     NUM_TASKS: Int,
     TASK_EMB: Int,
     QP: Float64 = 0.0,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime AOBS = Self.MAX_OBS + Self.TASK_EMB
     comptime EncT = TDMPC2EncoderMT[
         Self.MAX_OBS, Self.ENC, Self.LATENT, Self.SN, Self.TASK_EMB

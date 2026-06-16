@@ -13,7 +13,7 @@ from mojo_rl.nn.constants import DT
 
 
 @fieldwise_init
-struct EpisodeTracker(Movable & ImplicitlyDestructible):
+struct EpisodeTracker(Movable & ImplicitlyDeletable):
     var window: List[Scalar[DT]]
     var window_size: Int
     var idx: Int

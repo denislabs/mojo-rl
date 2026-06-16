@@ -70,7 +70,7 @@ comptime PPOCriticNet[OBS: Int, HIDDEN: Int] = Sequential[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait PPOConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait PPOConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a PPO-family algorithm. Conformers are
     zero-field comptime tags — never instantiated at runtime; only their
     comptime members are read."""

@@ -16,7 +16,7 @@ from ...training.trainer_block import TrainerState
 
 struct C51QUpdateStep[
     OBS_: Int, ACT_: Int, BATCH_: Int, NA_: Int, N_ATOMS_: Int, Q_NET: Module,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

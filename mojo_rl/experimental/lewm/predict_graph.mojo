@@ -102,7 +102,7 @@ struct LeWMPredictor[
     EMB: Int, T: Int, ACT: Int, SMOOTHED: Int, AE_MLP: Int,
     H: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int, PRED_PROJ_H: Int,
     BATCH: Int, target: StaticString = "cpu", PRED_DIM_HEAD: Int = 0,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     # PRED_DIM_HEAD added last (after target) so existing positional call
     # sites (Pong, default 0 ⇒ EMB/PRED_HEADS) are unchanged; >0 selects the
     # paper's expanded predictor attention to match a paper-width WM.

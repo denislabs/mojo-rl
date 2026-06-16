@@ -119,7 +119,7 @@ struct JoystickType(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime JOYSTICK_TYPE_UNKNOWN = Self(0)
     comptime JOYSTICK_TYPE_GAMEPAD = Self(1)
@@ -159,7 +159,7 @@ struct JoystickConnectionState(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime JOYSTICK_CONNECTION_INVALID = Self(-1)
     comptime JOYSTICK_CONNECTION_UNKNOWN = Self(0)

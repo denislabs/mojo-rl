@@ -167,7 +167,7 @@ struct C51TargetYBlock[
     NA: Int,
     N_ATOMS: Int,
     DOUBLE: Bool = False,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     """Owns:
       - `_logits_t [B · NA · N_ATOMS]`: Q_target(sp) output.
       - `_logits_on [B · NA · N_ATOMS]`: Q_online(sp) output (Double only).

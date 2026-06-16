@@ -91,7 +91,7 @@ def _mean_abs_diff_reduce_add_kernel[N: Int](
         acc[1] = acc[1] + Scalar[DT](1.0)
 
 
-struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDestructible):
+struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDeletable):
     """Running mean of a `[N]` buffer over a flush window.
 
     GPU: a `[2]` device buffer `[sum_of_batch_means, count]`. CPU mirror:

@@ -101,7 +101,7 @@ struct EnsembleTargetYBlock[
     ACT_: Int,
     N_MIN_: Int,
     MODE_: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime N = Self.N_
     comptime BATCH = Self.BATCH_
     comptime OBS = Self.OBS_

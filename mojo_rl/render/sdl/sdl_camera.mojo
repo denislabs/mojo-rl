@@ -149,7 +149,7 @@ struct CameraPosition(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime CAMERA_POSITION_UNKNOWN = Self(0x0)
     comptime CAMERA_POSITION_FRONT_FACING = Self(0x1)

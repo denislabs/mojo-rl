@@ -96,7 +96,7 @@ struct TDMPC2MultiTaskAgent[
     NUM_TASKS: Int,
     TASK_EMB: Int,
     QP: Float64 = 0.0,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime EncT = TDMPC2EncoderMT[
         Self.MAX_OBS, Self.ENC, Self.LATENT, Self.SN, Self.TASK_EMB
     ]

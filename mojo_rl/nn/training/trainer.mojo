@@ -52,7 +52,7 @@ from .shuffle_kernels import (
 
 
 @fieldwise_init
-struct TrainResult(Movable & ImplicitlyDestructible):
+struct TrainResult(Movable & ImplicitlyDeletable):
     var epoch_train_loss: List[Float64]
     var epoch_test_top1: List[Float64]
     var epoch_train_s: List[Float64]
@@ -76,7 +76,7 @@ struct Trainer[
     BATCH: Int,
     target: StaticString = "cpu",
     POLICY: AMPPolicy = NoAMP,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime IN_DIM = Self.NET.IN_DIMS[0]
     comptime OUT_DIM = Self.NET.OUT_DIM
 

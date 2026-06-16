@@ -109,7 +109,7 @@ struct DQNQUpdateBlock[
     BATCH: Int,
     OBS: Int,
     NA: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     var mse_loss: MSELoss[1]
     var gather_cols: GatherCols[Self.NA]
 

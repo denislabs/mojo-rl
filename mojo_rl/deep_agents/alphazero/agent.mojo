@@ -57,7 +57,7 @@ from .eval import (
 @fieldwise_init
 struct AlphaZeroAgent[
     TARGET: StaticString,
-    ENV: GPUTwoPlayerDiscreteEnv & TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: GPUTwoPlayerDiscreteEnv & TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NET: Module,
     N_ENVS: Int,
     NUM_SIMS: Int,
@@ -65,7 +65,7 @@ struct AlphaZeroAgent[
     BATCH: Int,
     CAP: Int,
     MAX_TRAJ: Int,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     var ctx: Optional[DeviceContext]
     var net: Self.NET
     var lr: Scalar[DT]

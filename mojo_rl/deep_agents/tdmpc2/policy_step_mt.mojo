@@ -45,7 +45,7 @@ struct PolicyStepMT[
     NUM_TASKS: Int,
     TASK_EMB: Int,
     QP: Float64 = 0.0,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime PolicyT = TDMPC2PolicyMT[
         Self.LATENT, Self.MAX_ACT, Self.MLP, Self.TASK_EMB
     ]

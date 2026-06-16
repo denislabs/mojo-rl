@@ -34,7 +34,7 @@ from ..constants import DT
 
 
 @fieldwise_init
-struct Timer(Movable & ImplicitlyDestructible):
+struct Timer(Movable & ImplicitlyDeletable):
     """Section-indexed wall-time accumulator. Labels are declared via
     `add_section`; index order matches declaration order."""
 

@@ -137,7 +137,7 @@ def _eal_build_grad_alp_kernel[
 
 
 @fieldwise_init
-struct EnsembleActorLossResult(Movable & ImplicitlyDestructible):
+struct EnsembleActorLossResult(Movable & ImplicitlyDeletable):
     """Forward/backward result: scalar loss + log_prob_mean (the
     Σ_b log π(a|s) / B used by the AlphaUpdateStep)."""
 
@@ -152,7 +152,7 @@ struct EnsembleActorLoss[
     BATCH_: Int,
     OBS_: Int,
     ACT_: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime N = Self.N_
     comptime BATCH = Self.BATCH_
     comptime OBS = Self.OBS_

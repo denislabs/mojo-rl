@@ -29,7 +29,7 @@ from .module import Module
 
 
 @fieldwise_init
-struct NamedParam(Movable & ImplicitlyDestructible):
+struct NamedParam(Movable & ImplicitlyDeletable):
     """One leaf parameter, dotted name + raw pointers + size + decay flag."""
 
     var name: String

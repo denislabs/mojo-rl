@@ -88,7 +88,7 @@ struct DQNTargetYBlock[
     OBS: Int,
     NA: Int,
     DOUBLE: Bool = False,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     """Owns:
     - `ReduceMax[NA]` (standard branch reducer)
     - `GatherCols[NA]` (Double branch gather; constructed but never

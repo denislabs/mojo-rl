@@ -47,7 +47,7 @@ from .module import mptr
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait IsScratch(Movable & ImplicitlyDestructible):
+trait IsScratch(Movable & ImplicitlyDeletable):
     """Marker — a field-type the scratch-walker should initialise."""
 
     def scratch_name(self) -> StaticString:

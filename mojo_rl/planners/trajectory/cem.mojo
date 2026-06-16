@@ -55,7 +55,7 @@ from .score_callback import ScorePlanCallback, BatchedScorePlanCallback
 
 
 struct CategoricalCEMOptimizer[BATCH: Int, ACT_DIM: Int](
-    ImplicitlyDestructible,
+    ImplicitlyDeletable,
     Movable,
 ):
     """Per-step categorical CEM optimizer.

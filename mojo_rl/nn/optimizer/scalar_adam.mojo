@@ -78,7 +78,7 @@ def _scalar_adam_step_kernel(
     state[_SA_ALPHA] = fexp(la)
 
 
-struct ScalarAdam(Movable & ImplicitlyDestructible):
+struct ScalarAdam(Movable & ImplicitlyDeletable):
     var value: Scalar[DT]
     var m: Scalar[DT]
     var v: Scalar[DT]

@@ -162,7 +162,7 @@ def _rowscale_inplace_k[B_: Int, W_: Int](
 struct DreamerState[
     OBS: Int, ACT: Int, DETER: Int, SC: Int, TOKEN: Int,
     B: Int, T: Int, T_IMAG: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     var ctx: Optional[DeviceContext]
     # sampled batch (filled by the trainer from replay) — HOST, batch-major,
     # both targets (GPU uploads from here).
@@ -260,7 +260,7 @@ struct DreamerState[
 struct WMStep[
     OBS: Int, ACT: Int, DETER: Int, H: Int, STOCH: Int, CLASSES: Int,
     BLOCKS: Int, TOKEN: Int, DEC_U: Int, HU: Int, BINS: Int, B: Int, T: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime CARRY = 2 + Self.DETER + Self.SC
     comptime EncT = DreamerEncoder[Self.OBS, Self.TOKEN, SwishOp]
@@ -877,7 +877,7 @@ struct WMStep[
 struct ParamSyncStep[
     DETER: Int, H: Int, STOCH: Int, CLASSES: Int, BLOCKS: Int, ACT: Int,
     TOKEN: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime CoreT = WMCoreGraph[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT,
         Self.TOKEN, SwishOp,
@@ -913,7 +913,7 @@ struct ACStep[
     OBS: Int, ACT: Int, DETER: Int, H: Int, STOCH: Int, CLASSES: Int,
     BLOCKS: Int, TOKEN: Int, HU: Int, VU: Int, PU: Int, BINS: Int,
     B: Int, T: Int, T_IMAG: Int, DISCRETE: Bool = False,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
     comptime ImagT = WMImagineGraph[

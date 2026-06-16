@@ -47,7 +47,7 @@ def _xs(s: UInt64) -> UInt64:
 
 
 def _eval_both_colors_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NET: Module,
     OPP: CPUEvaluator,
     N_GAMES: Int,
@@ -69,7 +69,7 @@ def _eval_both_colors_cpu[
 
 
 def run_alphazero_selfplay_arena_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NET: Module,
     AUG: BoardAugmenter,
     NUM_SIMS: Int,

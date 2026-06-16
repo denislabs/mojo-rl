@@ -107,7 +107,7 @@ def _mz_obs_gather_kernel[
 struct GPUMCTSSequenceReplay[
     OBS: Int, ACT: Int, CAP: Int, N_ENVS: Int,
     OBS_STORE_DT: DType = DType.uint8,
-](Movable, ImplicitlyDestructible):
+](Movable, ImplicitlyDeletable):
     """Device-obs MuZero replay (see module docstring). ``OBS_STORE_DT`` is the
     obs ring dtype (default ``uint8``: ``round(x·255)`` store / ``k/255`` read,
     bit-lossless for the arcade pixel pipeline; set ``DT`` for vector obs)."""

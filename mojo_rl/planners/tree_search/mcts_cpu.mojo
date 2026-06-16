@@ -225,7 +225,7 @@ struct GenericCPUMCTS[
     BATCH_SIMS: Int = 1,
     VIRTUAL_LOSS: Int = 3,
     NORMALIZE_Q: Bool = True,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     """CPU MCTS parameterized by the model contract + strategy traits.
 
     Comptime params:

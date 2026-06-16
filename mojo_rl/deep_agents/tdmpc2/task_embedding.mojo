@@ -91,7 +91,7 @@ def _zero_k[N: Int](ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]):
 
 
 struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
-    Movable & ImplicitlyDestructible
+    Movable & ImplicitlyDeletable
 ):
     comptime N = Self.NUM_TASKS * Self.TASK_EMB
 

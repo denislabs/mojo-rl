@@ -17,7 +17,7 @@ from ..trainer_block import TrainerState
 
 struct TwinCriticStep[
     OBS_: Int, ACT_: Int, BATCH_: Int, CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_

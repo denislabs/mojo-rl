@@ -43,7 +43,7 @@ from ..core.online_target_pair import OnlineTargetPair
 
 
 struct CriticEnsemble[CRITIC: Module, N: Int](
-    Movable & ImplicitlyDestructible,
+    Movable & ImplicitlyDeletable,
 ):
     var pairs: List[OnlineTargetPair[Self.CRITIC]]
     var opts: List[Adam]

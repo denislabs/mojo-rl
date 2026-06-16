@@ -33,7 +33,7 @@ from .agent import A2CAgent, A2CDiscreteAgent
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait A2CConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait A2CConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a continuous A2C algorithm."""
 
     comptime TARGET: StaticString
@@ -86,7 +86,7 @@ struct A2CConfig[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait A2CDiscreteConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait A2CDiscreteConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a discrete A2C algorithm."""
 
     comptime TARGET: StaticString

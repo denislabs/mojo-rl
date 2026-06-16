@@ -501,7 +501,7 @@ struct GPUPrimitiveType(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_PRIMITIVETYPE_TRIANGLELIST = Self(0)
     """A series of separate triangles."""
@@ -538,7 +538,7 @@ struct GPULoadOp(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_LOADOP_LOAD = Self(0)
     """The previous contents of the texture will be preserved."""
@@ -571,7 +571,7 @@ struct GPUStoreOp(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_STOREOP_STORE = Self(0)
     """The contents generated during the render pass will be written to memory."""
@@ -605,7 +605,7 @@ struct GPUIndexElementSize(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_INDEXELEMENTSIZE_16BIT = Self(0)
     """The index elements are 16-bit."""
@@ -712,7 +712,7 @@ struct GPUTextureFormat(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_TEXTUREFORMAT_INVALID = Self(0)
 
@@ -910,7 +910,7 @@ struct GPUTextureType(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_TEXTURETYPE_2D = Self(0)
     """The texture is a 2-dimensional image."""
@@ -949,7 +949,7 @@ struct GPUSampleCount(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_SAMPLECOUNT_1 = Self(0)
     """No multisampling."""
@@ -985,7 +985,7 @@ struct GPUCubeMapFace(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_CUBEMAPFACE_POSITIVEX = Self(0)
     comptime GPU_CUBEMAPFACE_NEGATIVEX = Self(1)
@@ -1064,7 +1064,7 @@ struct GPUTransferBufferUsage(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_TRANSFERBUFFERUSAGE_UPLOAD = Self(0)
     comptime GPU_TRANSFERBUFFERUSAGE_DOWNLOAD = Self(1)
@@ -1092,7 +1092,7 @@ struct GPUShaderStage(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_SHADERSTAGE_VERTEX = Self(0)
     comptime GPU_SHADERSTAGE_FRAGMENT = Self(1)
@@ -1157,7 +1157,7 @@ struct GPUVertexElementFormat(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_VERTEXELEMENTFORMAT_INVALID = Self(0)
 
@@ -1238,7 +1238,7 @@ struct GPUVertexInputRate(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_VERTEXINPUTRATE_VERTEX = Self(0)
     """Attribute addressing is a function of the vertex index."""
@@ -1268,7 +1268,7 @@ struct GPUFillMode(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_FILLMODE_FILL = Self(0)
     """Polygons will be rendered via rasterization."""
@@ -1298,7 +1298,7 @@ struct GPUCullMode(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_CULLMODE_NONE = Self(0)
     """No triangles are culled."""
@@ -1331,7 +1331,7 @@ struct GPUFrontFace(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_FRONTFACE_COUNTER_CLOCKWISE = Self(0)
     """A triangle with counter-clockwise vertex winding will be considered front-facing."""
@@ -1361,7 +1361,7 @@ struct GPUCompareOp(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_COMPAREOP_INVALID = Self(0)
     comptime GPU_COMPAREOP_NEVER = Self(1)
@@ -1405,7 +1405,7 @@ struct GPUStencilOp(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_STENCILOP_INVALID = Self(0)
     comptime GPU_STENCILOP_KEEP = Self(1)
@@ -1452,7 +1452,7 @@ struct GPUBlendOp(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_BLENDOP_INVALID = Self(0)
     comptime GPU_BLENDOP_ADD = Self(1)
@@ -1493,7 +1493,7 @@ struct GPUBlendFactor(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_BLENDFACTOR_INVALID = Self(0)
     comptime GPU_BLENDFACTOR_ZERO = Self(1)
@@ -1576,7 +1576,7 @@ struct GPUFilter(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_FILTER_NEAREST = Self(0)
     """Point filtering."""
@@ -1606,7 +1606,7 @@ struct GPUSamplerMipmapMode(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_SAMPLERMIPMAPMODE_NEAREST = Self(0)
     """Point filtering."""
@@ -1637,7 +1637,7 @@ struct GPUSamplerAddressMode(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_SAMPLERADDRESSMODE_REPEAT = Self(0)
     """Specifies that the coordinates will wrap around."""
@@ -1685,7 +1685,7 @@ struct GPUPresentMode(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_PRESENTMODE_VSYNC = Self(0)
     comptime GPU_PRESENTMODE_IMMEDIATE = Self(1)
@@ -1731,7 +1731,7 @@ struct GPUSwapchainComposition(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime GPU_SWAPCHAINCOMPOSITION_SDR = Self(0)
     comptime GPU_SWAPCHAINCOMPOSITION_SDR_LINEAR = Self(1)

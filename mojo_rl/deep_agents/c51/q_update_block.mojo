@@ -143,7 +143,7 @@ struct C51QUpdateBlock[
     OBS: Int,
     NA: Int,
     N_ATOMS: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     var ce_loss: CrossEntropyLoss[Self.N_ATOMS]
     var gather_slice: GatherActionSlice[Self.NA, Self.N_ATOMS]
 

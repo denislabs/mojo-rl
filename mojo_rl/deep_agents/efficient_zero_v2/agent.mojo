@@ -46,7 +46,7 @@ from ..zero.mcts_adapters_mz_cpu import MZRepCPU, MZDynCPU, MZPredCPU
 
 @fieldwise_init
 struct EZv2DiscreteAgent[
-    ENV: BoxDiscreteActionEnv & ImplicitlyDestructible,
+    ENV: BoxDiscreteActionEnv & ImplicitlyDeletable,
     REP: Module,
     DYN: Module,
     PRED: Module,
@@ -62,7 +62,7 @@ struct EZv2DiscreteAgent[
     B: Int,
     K: Int,
     N: Int,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     var rep: Self.REP
     var dyn: Self.DYN
     var pred: Self.PRED

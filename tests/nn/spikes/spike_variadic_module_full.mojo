@@ -29,7 +29,7 @@ from mojo_rl.nn.core.module import typed_view, typed_view_mut
 # ──────────────────────────────────────────────────────────────────
 
 
-struct HeteroLeaf[*DIMS: Int](Movable & ImplicitlyDestructible):
+struct HeteroLeaf[*DIMS: Int](Movable & ImplicitlyDeletable):
     """3-input op: takes inputs of dims DIMS[0..3] and produces a
     [BATCH, 1] output = sum of all inputs[k][b, 0] across k."""
     comptime ARITY = Self.DIMS.size
@@ -105,7 +105,7 @@ def test_q3_hetero_leaf() raises:
 # ──────────────────────────────────────────────────────────────────
 
 
-struct Arity8Probe[*DIMS: Int](Movable & ImplicitlyDestructible):
+struct Arity8Probe[*DIMS: Int](Movable & ImplicitlyDeletable):
     comptime ARITY = Self.DIMS.size
     comptime IN_DIMS: InlineArray[Int, Self.ARITY] = Self._build()
 
@@ -138,7 +138,7 @@ def test_q4_arity_8() raises:
 # ──────────────────────────────────────────────────────────────────
 
 
-struct ListOfListProbe(Movable & ImplicitlyDestructible):
+struct ListOfListProbe(Movable & ImplicitlyDeletable):
     """Replaces 4 per-input grad-buf fields with one List[List[...]].
     Tests: ctor → lazy-grow each inner List → read .unsafe_ptr() for each."""
     var _grad_ins_buf: List[List[Scalar[DT]]]

@@ -101,7 +101,7 @@ struct GenericGPUMCTS[
     # orchestrators (sequential halving — no virtual loss, immune by
     # construction). Set UNSAFE_BATCHED=True only for diagnostics.
     UNSAFE_BATCHED: Bool = False,
-](Movable, ImplicitlyDestructible):
+](Movable, ImplicitlyDeletable):
     """GPU MCTS orchestrator for the MuZero batched single-player path.
 
     Comptime params:

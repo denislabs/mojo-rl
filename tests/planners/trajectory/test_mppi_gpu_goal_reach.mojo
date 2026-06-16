@@ -143,7 +143,7 @@ struct GoalReachGPUCallback[
     ACTION_DIM_PARAM: Int,
     N_ENVS: Int,
     TOTAL_SAMPLES: Int,
-](Movable, ImplicitlyDestructible, RolloutCallbackGPU):
+](Movable, ImplicitlyDeletable, RolloutCallbackGPU):
     """``RolloutCallbackGPU`` against IdentityDynamics + GoalReachReward.
 
     Holds a device buffer of per-env goals (shape

@@ -205,7 +205,7 @@ struct ILQRCPU[
     LATENT_DIM: Int,
     ACTION_DIM: Int,
     HORIZON: Int,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     """CPU iLQR planner.
 
     Plans an open-loop ``HORIZON``-step control sequence for a single
@@ -751,7 +751,7 @@ struct ILQRGPUBatched[
     ACTION_DIM: Int,
     HORIZON: Int,
     N_ENVS: Int,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     """Batched GPU iLQR — ``N_ENVS`` independent problems planned in
     parallel.
 

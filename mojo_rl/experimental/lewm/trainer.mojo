@@ -189,7 +189,7 @@ struct LeWMTrainer[
         IN_CH, IMG, PATCH, (IMG // PATCH) * (IMG // PATCH),
         HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H, ENC_FF_MULT,
     ],
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     # PRED_DIM_HEAD 0 ⇒ standard EMB/PRED_HEADS attention; >0 ⇒ the paper's
     # expanded predictor attention (e.g. 16 heads × 64 = 1024 inner > EMB).
     # Added last (after train_target) so existing positional call sites are

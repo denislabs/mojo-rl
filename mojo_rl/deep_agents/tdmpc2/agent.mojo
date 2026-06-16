@@ -102,7 +102,7 @@ struct TDMPC2Agent[
     # Q-trunk dropout prob (item D, §14.4). 0.0 = always-on no-op (bit-identical
     # default); >0 enables the experimental Q-net dropout (see nets.mojo caveats).
     QP: Float64 = 0.0,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime EncT = TDMPC2Encoder[Self.OBS, Self.ENC, Self.LATENT, Self.SN]
     comptime DynT = TDMPC2Dynamics[Self.LATENT, Self.ACT, Self.MLP, Self.SN]
     comptime RewT = TDMPC2Reward[Self.LATENT, Self.ACT, Self.MLP, Self.BINS]

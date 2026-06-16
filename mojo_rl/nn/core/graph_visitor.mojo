@@ -40,7 +40,7 @@ struct DisplayStep(Copyable, Movable):
     var out_dim: Int
 
 
-trait GraphVisitor(ImplicitlyDestructible):
+trait GraphVisitor(ImplicitlyDeletable):
     def begin(mut self, graph_name: String, n_nodes: Int) raises:
         """Called once before any node. Default no-op."""
         pass

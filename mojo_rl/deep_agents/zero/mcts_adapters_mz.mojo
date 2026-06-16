@@ -41,7 +41,7 @@ from mojo_rl.planners.tree_search import (
 
 @fieldwise_init
 struct MZRepGPU[OBS: Int, LATENT: Int, NET: Module](
-    Movable, ImplicitlyDestructible, RepresentationGPU
+    Movable, ImplicitlyDeletable, RepresentationGPU
 ):
     """H adapter: ``obs (B, OBS) → hidden (B, LATENT)``. ``NET`` is `MZRepNet`
     (``IN_DIMS[0] == OBS``, ``OUT_DIM == LATENT``). The latent is min-max scaled
@@ -76,7 +76,7 @@ struct MZRepGPU[OBS: Int, LATENT: Int, NET: Module](
 
 @fieldwise_init
 struct MZDynGPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
-    Movable, ImplicitlyDestructible, DynamicsGPU
+    Movable, ImplicitlyDeletable, DynamicsGPU
 ):
     """G adapter: ``[hidden ⊕ onehot(a)] (B, LATENT+ACT) → [hidden' | reward_logits]
     (B, LATENT+BINS)``. ``NET`` is `MZDynNet`. The reward bins are raw categorical
@@ -110,7 +110,7 @@ struct MZDynGPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
 
 @fieldwise_init
 struct MZPredGPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
-    Movable, ImplicitlyDestructible, PredictionGPU
+    Movable, ImplicitlyDeletable, PredictionGPU
 ):
     """F adapter: ``hidden (B, LATENT) → [policy_logits | value_logits]
     (B, ACT+BINS)``. ``NET`` is `MZPredNet`. Value is categorical (``BINS`` bins),
@@ -143,7 +143,7 @@ struct MZPredGPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
 
 @fieldwise_init
 struct MZContPredGPU[LATENT: Int, ACT_DIM: Int, BINS: Int, NET: Module](
-    Movable, ImplicitlyDestructible, PredictionGPU
+    Movable, ImplicitlyDeletable, PredictionGPU
 ):
     """Continuous-EZv2 f adapter: ``hidden (B, LATENT) → [μ_raw | σ_raw | value]
     (B, 2·ACT_DIM + BINS)``. ``NET`` is `EZContPredNet`. The leading

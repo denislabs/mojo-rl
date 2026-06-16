@@ -41,7 +41,7 @@ struct WindowSource[
     BUF: OfflineBuffer = PongOfflineBuffer,
     C: Int = 0,
     FRAME: Int = 0,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     # `C`/`FRAME` are the per-frame channel count + side length, required ONLY
     # when `BUF.INPUT_LAYOUT_HWC` (e.g. PushT 3×224×224): then conversion is
     # `u8_hwc_to_chw_norm` (permute HWC→CHW + ÷255). CHW buffers (Pong) leave

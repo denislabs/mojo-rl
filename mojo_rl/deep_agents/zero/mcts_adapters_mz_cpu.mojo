@@ -50,7 +50,7 @@ def _mz_decode_one[BINS: Int](
 
 @fieldwise_init
 struct MZRepCPU[OBS: Int, LATENT: Int, NET: Module](
-    Movable, ImplicitlyDestructible, Representation
+    Movable, ImplicitlyDeletable, Representation
 ):
     """H: ``obs → z`` (latent min-max scaled by the net's tail)."""
 
@@ -79,7 +79,7 @@ struct MZRepCPU[OBS: Int, LATENT: Int, NET: Module](
 
 @fieldwise_init
 struct MZDynCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
-    Movable, ImplicitlyDestructible, Dynamics
+    Movable, ImplicitlyDeletable, Dynamics
 ):
     """G: ``[z ⊕ onehot(a)] → (z', reward)``; reward decoded from BINS bins."""
 
@@ -120,7 +120,7 @@ struct MZDynCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
 
 @fieldwise_init
 struct MZPredCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
-    Movable, ImplicitlyDestructible, Prediction
+    Movable, ImplicitlyDeletable, Prediction
 ):
     """F: ``z → (softmax policy, value)``; value decoded from BINS bins.
     Single-player — all actions legal, softmax over the full policy slice."""

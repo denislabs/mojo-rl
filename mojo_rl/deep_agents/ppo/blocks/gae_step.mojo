@@ -21,7 +21,7 @@ struct PPOGAEStep[
     OBS_: Int,
     ROLLOUT_LEN_: Int,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ROLLOUT_LEN = Self.ROLLOUT_LEN_
 

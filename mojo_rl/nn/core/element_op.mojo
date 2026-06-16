@@ -28,7 +28,7 @@ and dispatches correctly across multiple W specialisations.
 from ..constants import DT
 
 
-trait ElementOp(Movable & ImplicitlyDestructible):
+trait ElementOp(Movable & ImplicitlyDeletable):
     """Per-element math (scalar + SIMD specialisations) for the
     `Elementwise[DIM, OP]` template."""
 

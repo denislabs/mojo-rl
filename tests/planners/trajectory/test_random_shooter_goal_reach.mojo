@@ -34,7 +34,7 @@ comptime ACT_DIM: Int = 3
 
 
 @fieldwise_init
-struct GoalReachScoreCallback(Movable, ImplicitlyDestructible, ScorePlanCallback):
+struct GoalReachScoreCallback(Movable, ImplicitlyDeletable, ScorePlanCallback):
     """Same callback as the CEM test — score plans against a fixed goal
     under z' = z + e_picked dynamics. Duplicated here rather than
     shared so each test file is self-contained.

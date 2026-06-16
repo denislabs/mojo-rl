@@ -17,7 +17,7 @@ from std.math import floor
 from mojo_rl.nn.constants import DT
 
 
-struct RunningScale(Movable & ImplicitlyDestructible):
+struct RunningScale(Movable & ImplicitlyDeletable):
     var value: Scalar[DT]
     var tau: Scalar[DT]
 

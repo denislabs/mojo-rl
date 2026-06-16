@@ -51,7 +51,7 @@ from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZContPredGPU
 
 @fieldwise_init
 struct EZv2ContinuousAgent[
-    ENV: BoxContinuousActionEnv & ImplicitlyDestructible,
+    ENV: BoxContinuousActionEnv & ImplicitlyDeletable,
     REP: Module,
     DYN: Module,
     PRED: Module,
@@ -69,7 +69,7 @@ struct EZv2ContinuousAgent[
     B: Int,
     K: Int,
     N: Int,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     var rep: Self.REP
     var dyn: Self.DYN
     var pred: Self.PRED

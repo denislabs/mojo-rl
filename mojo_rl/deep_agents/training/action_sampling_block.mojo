@@ -73,7 +73,7 @@ struct ActionSamplingBlock[
     OBS_DIM: Int,
     ACT_DIM: Int,
     SAMPLER_OUT_DIM: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime ACTOR_OUT_DIM = Self.ACTOR.OUT_DIM
 
     # Staging scratches (CPU mirror always allocated; dev allocated on

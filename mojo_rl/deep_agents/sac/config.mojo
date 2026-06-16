@@ -75,7 +75,7 @@ one of these."""
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait SACConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait SACConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a SAC-family algorithm. Conformers are
     zero-field comptime tags — never instantiated at runtime; only their
     comptime members are read."""

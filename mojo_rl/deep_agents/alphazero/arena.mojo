@@ -382,7 +382,7 @@ def candidate_winrate_mcts[
 
 
 def arena_match_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NETA: Module,
     NETB: Module,
     N_GAMES: Int,
@@ -478,7 +478,7 @@ def arena_match_cpu[
 
 
 def candidate_winrate_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     CAND: Module,
     BEST: Module,
     N_PER_COLOR: Int,

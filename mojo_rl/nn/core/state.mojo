@@ -39,7 +39,7 @@ from .param_visitor import ParamVisitor
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait IsState(Movable & ImplicitlyDestructible):
+trait IsState(Movable & ImplicitlyDeletable):
     """Marker — a non-trainable but persisted field (e.g. BatchNorm
     running stats). Visited by `for_each_state` (checkpoint), never by
     `for_each_param` (optimizer)."""

@@ -174,7 +174,7 @@ def eval_policy_vs_random[
 
 
 def eval_policy_vs_random_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NET: Module,
     N_GAMES: Int,
     MAX_PLIES: Int,
@@ -260,7 +260,7 @@ def eval_policy_vs_random_cpu[
 
 
 def eval_mcts_vs_opponent_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NET: Module,
     OPP: CPUEvaluator,
     N_GAMES: Int,

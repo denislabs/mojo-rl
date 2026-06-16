@@ -51,7 +51,7 @@ struct MBPOAgent[
     REAL_RATIO_PCT: Int = 5,
     LOGVAR_MIN: Float64 = -10.0,
     LOGVAR_MAX: Float64 = -2.0,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Thin facade over `MBPOTrainer` + off-policy drivers."""
 
     comptime TrainerT = MBPOTrainer[

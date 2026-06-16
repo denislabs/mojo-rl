@@ -160,7 +160,7 @@ def typed_view_mut[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait Module(Defaultable & Movable & ImplicitlyDestructible):
+trait Module(Defaultable & Movable & ImplicitlyDeletable):
     """Unified N-ary module trait. Leaves declare their own `comptime
     ARITY` (1, 2, 3, ...). Forward/vjp use origin-erased variadic
     TileTensor packs.

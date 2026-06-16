@@ -24,7 +24,7 @@ Cast-around-matmul model on Apple Metal (probed 2026-05-19,
 """
 
 
-trait AMPPolicy(ImplicitlyDestructible):
+trait AMPPolicy(ImplicitlyDeletable):
     """Mixed-precision policy: where each tensor lives and what kernels run in.
     """
 

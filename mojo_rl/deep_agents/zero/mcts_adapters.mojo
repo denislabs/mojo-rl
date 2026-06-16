@@ -32,7 +32,7 @@ from mojo_rl.planners.tree_search import PredictionGPU, EnvStepGPU
 
 @fieldwise_init
 struct AZPredGPU[OBS: Int, ACT: Int, NET: Module](
-    Movable, ImplicitlyDestructible, PredictionGPU
+    Movable, ImplicitlyDeletable, PredictionGPU
 ):
     """AlphaZero prediction adapter: ``obs → policy_logits ⊕ raw_value``.
 
@@ -82,7 +82,7 @@ struct AZEnvGPU[
     STATE: Int,
     OBSD: Int,
     A: Int,
-](Movable, ImplicitlyDestructible, EnvStepGPU):
+](Movable, ImplicitlyDeletable, EnvStepGPU):
     """AlphaZero env-step adapter — true game rules as MCTS leaf expansion.
 
     Stateless wrapper over the env's static ``step_kernel_gpu``. The planner

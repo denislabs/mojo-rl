@@ -15,7 +15,7 @@ from mojo_rl.nn.core.metric import LogScalar
 
 
 @fieldwise_init
-struct DDPGMetrics(Copyable, Movable, ImplicitlyDestructible):
+struct DDPGMetrics(Copyable, Movable, ImplicitlyDeletable):
     var actor_loss:  LogScalar[DT]
     var critic_loss: LogScalar[DT]
     var mean_q:      LogScalar[DT]

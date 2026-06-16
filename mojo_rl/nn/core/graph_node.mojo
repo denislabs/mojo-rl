@@ -75,7 +75,7 @@ def names_to_inline_array[
     return d
 
 
-trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
+trait GraphNode(Defaultable & Movable & ImplicitlyDeletable):
     comptime NAME: StaticString
     comptime OUT_DIM: Int
     comptime KIND: Int  # 0 = input slot, 1 = unary, 2 = binary, 3 = ternary, 4 = quaternary

@@ -215,7 +215,7 @@ def _enqueue_copy[N: Int](
 struct ComputeGraph[
     OUT_DIM_: Int,
     *NODES: GraphNode,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime OUT_DIM = Self.OUT_DIM_
     comptime N = Self.NODES.size
 

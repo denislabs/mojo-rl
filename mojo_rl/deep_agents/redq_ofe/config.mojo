@@ -79,7 +79,7 @@ comptime REDQOFECritic[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait REDQOFEConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait REDQOFEConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a REDQ-OFE-family algorithm.
     Zero-field conformer convention (never instantiated; only the
     comptime members are read)."""

@@ -29,7 +29,7 @@ comptime N_ENVS: Int = 2
 
 @fieldwise_init
 struct DummyGPUCB(
-    Copyable, Movable, ImplicitlyDestructible, RolloutJacobianCallbackGPU
+    Copyable, Movable, ImplicitlyDeletable, RolloutJacobianCallbackGPU
 ):
     """Trivial gradient-free wrapper to satisfy
     ``RolloutJacobianCallbackGPU`` for a compile-time smoke test.

@@ -580,7 +580,7 @@ struct PhysicsStateOwned[
     JOINT_COUNT_OFFSET: Int,
     EDGES_OFFSET: Int,
     EDGE_COUNT_OFFSET: Int,
-]:
+](Copyable, Movable):
     """Memory-owning physics state for single-env CPU operation.
 
     This struct owns the state buffer and provides PhysicsState-like accessors.

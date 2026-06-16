@@ -59,7 +59,7 @@ struct REDQAgent[
     UTD: Int,
     POLICY_DELAY: Int,
     Q_MODE: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Thin facade over `REDQTrainer` + off-policy drivers.
 
     Comptime params mirror `REDQTrainer` one-for-one. Dimensions

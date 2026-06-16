@@ -259,7 +259,7 @@ struct DynamicsEnsembleBlock[
     BATCH: Int,
     LOGVAR_MIN: Float64 = -10.0,
     LOGVAR_MAX: Float64 = -2.0,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """N-member probabilistic dynamics ensemble.
 
     `DynNet.OUT_DIM` MUST equal `OUT_DIM == 2 * PRED_DIM` where

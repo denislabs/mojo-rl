@@ -57,7 +57,7 @@ comptime PPODiscreteCriticNet[OBS: Int, HIDDEN: Int] = Sequential[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait PPODiscreteConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait PPODiscreteConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a discrete-PPO algorithm. Conformers are
     zero-field comptime tags."""
 

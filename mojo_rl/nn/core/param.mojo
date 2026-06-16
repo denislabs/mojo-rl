@@ -46,7 +46,7 @@ from .tensor import Tensor
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait IsParam(Movable & ImplicitlyDestructible):
+trait IsParam(Movable & ImplicitlyDeletable):
     """Marker — a field-type that the param-walker should visit."""
 
     def param_name(self) -> StaticString:

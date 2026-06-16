@@ -50,7 +50,7 @@ def _gauss() -> Float64:
 
 
 struct ContinuousCEMOptimizer[BATCH: Int, ACT_DIM: Int](
-    ImplicitlyDestructible,
+    ImplicitlyDeletable,
     Movable,
 ):
     """Per-step diagonal-Gaussian CEM optimizer (continuous actions)."""

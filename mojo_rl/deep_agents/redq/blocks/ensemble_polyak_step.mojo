@@ -25,7 +25,7 @@ struct EnsemblePolyakStep[
     OBS_: Int,
     ACT_: Int,
     BATCH_: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime N = Self.N_
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_

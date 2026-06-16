@@ -141,7 +141,7 @@ def cast_bf16_to_fp32[target: StaticString, N: Int](
 
 
 @fieldwise_init
-struct LinearAMPState[IN: Int, OUT: Int](Movable & ImplicitlyDestructible):
+struct LinearAMPState[IN: Int, OUT: Int](Movable & ImplicitlyDeletable):
     """Bf16 scratch cluster for the cast-around-matmul path.
 
     Holds:
@@ -240,7 +240,7 @@ struct LinearAMPState[IN: Int, OUT: Int](Movable & ImplicitlyDestructible):
 
 
 @fieldwise_init
-struct Conv2DAMPState[OC: Int, COL: Int](Movable & ImplicitlyDestructible):
+struct Conv2DAMPState[OC: Int, COL: Int](Movable & ImplicitlyDeletable):
     """Bf16 scratch for the two Conv2D GPU GEMMs.
 
     Fixed (OC*COL): `w_bf16` (weight downcast, fwd) + `dW_bf16` (dW GEMM

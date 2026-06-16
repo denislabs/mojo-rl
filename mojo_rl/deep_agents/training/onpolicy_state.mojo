@@ -35,7 +35,7 @@ struct OnPolicyState[
     ROLLOUT_LEN: Int,
     MINIBATCH: Int,
     N_ENVS: Int = 1,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     # ── Rollout buffers (ROLLOUT_LEN × N_ENVS, T-major) ─────────────
     var obs_buf:  Scratch["ros_obs",  Self.ROLLOUT_LEN * Self.N_ENVS * Self.OBS, True]
     var act_buf:  Scratch["ros_act",  Self.ROLLOUT_LEN * Self.N_ENVS * Self.ACT, True]

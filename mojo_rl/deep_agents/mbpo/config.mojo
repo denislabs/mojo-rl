@@ -77,7 +77,7 @@ for [reward, Δobs]. One member of the `DynamicsEnsembleBlock`."""
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait MBPOConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait MBPOConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of an MBPO-family algorithm. Conformers are
     zero-field comptime tags."""
 

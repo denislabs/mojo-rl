@@ -62,7 +62,7 @@ def _xs(s: UInt64) -> UInt64:
 
 
 def run_muzero_selfplay_2p_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & ImplicitlyDeletable,
     REP: Module,
     DYN: Module,
     PRED: Module,

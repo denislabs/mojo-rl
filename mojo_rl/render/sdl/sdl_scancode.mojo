@@ -63,7 +63,7 @@ struct Scancode(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime SCANCODE_UNKNOWN = Self(0)
 

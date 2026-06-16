@@ -24,7 +24,7 @@ def _xorshift64(s: UInt64) -> UInt64:
 
 
 struct MCTSExampleReplay[OBS: Int, TGT: Int, CAP: Int](
-    Movable, ImplicitlyDestructible, Sized
+    Movable, ImplicitlyDeletable, Sized
 ):
     var obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var tgt: UnsafePointer[Scalar[DT], MutAnyOrigin]

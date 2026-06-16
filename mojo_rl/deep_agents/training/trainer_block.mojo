@@ -26,7 +26,7 @@ struct TrainerState[
     OBS: Int,
     ACT: Int,
     BATCH: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     var mb_s:  Scratch["mb_s",  Self.BATCH * Self.OBS, True]
     var mb_a:  Scratch["mb_a",  Self.BATCH * Self.ACT, True]
     var mb_r:  Scratch["mb_r",  Self.BATCH, True]

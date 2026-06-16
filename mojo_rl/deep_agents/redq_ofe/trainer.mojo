@@ -126,7 +126,7 @@ def _log_alpha(alpha: Scalar[DT]) -> Scalar[DT]:
 
 
 @fieldwise_init
-struct REDQOFEStepResult(Movable & ImplicitlyDestructible):
+struct REDQOFEStepResult(Movable & ImplicitlyDeletable):
     var critic_loss: Scalar[DT]
     var actor_loss: Scalar[DT]
     var log_prob_mean: Scalar[DT]

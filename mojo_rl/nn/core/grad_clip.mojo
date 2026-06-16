@@ -311,7 +311,7 @@ def _grouped_scale_apply_kernel(
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct GradClipState(Movable & ImplicitlyDestructible):
+struct GradClipState(Movable & ImplicitlyDeletable):
     var partials: Optional[DeviceBuffer[DT]]  # [N_PARAMS] (per-Param path)
     var scale_buf: Optional[DeviceBuffer[DT]]  # [1]
     var norm_buf: Optional[DeviceBuffer[DT]]  # [1] — for D2H on log cadence

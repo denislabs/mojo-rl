@@ -28,7 +28,7 @@ from ..constants import DT
 
 
 @fieldwise_init
-struct LinearWarmupSchedule(Copyable & Movable & ImplicitlyDestructible):
+struct LinearWarmupSchedule(Copyable & Movable & ImplicitlyDeletable):
     """Linear ramp `0 → target_lr` over `warmup_steps`, then constant.
 
     Bit-matches `optax.join_schedules([linear_schedule(0, lr, warmup),

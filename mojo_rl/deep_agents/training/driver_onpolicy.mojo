@@ -28,7 +28,7 @@ from .batched_env import BatchedEnv
 from .driver_scratch import DriverScratch
 
 
-trait OnPolicyCheckpointable(ImplicitlyDestructible, Movable):
+trait OnPolicyCheckpointable(ImplicitlyDeletable, Movable):
     """Shared cadence-hook surface for BOTH on-policy traits.
 
     `save_state` / `flush_metrics_through_logger` must be declared in ONE

@@ -207,7 +207,7 @@ struct MockNaryBinarySub[DIM: Int]:
 # method. Probe whether Mojo accepts this signature in a TRAIT body.
 
 
-trait NaryModuleProto(Defaultable & Movable & ImplicitlyDestructible):
+trait NaryModuleProto(Defaultable & Movable & ImplicitlyDeletable):
     comptime ARITY: Int
     comptime OUT_DIM: Int
 

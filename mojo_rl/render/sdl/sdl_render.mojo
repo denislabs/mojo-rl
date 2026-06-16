@@ -86,7 +86,7 @@ struct TextureAccess(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime TEXTUREACCESS_STATIC = Self(0)
     """Changes rarely, not lockable."""
@@ -118,7 +118,7 @@ struct RendererLogicalPresentation(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime LOGICAL_PRESENTATION_DISABLED = Self(0)
     """There is no logical size in effect."""

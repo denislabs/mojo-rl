@@ -131,7 +131,7 @@ PPO did on the on-policy side. Used by `DQNCNNConfig`."""
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait DQNConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait DQNConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a DQN-family algorithm. Bundles the
     deployment target, the replay block, the Q-net, the Double flag, and
     tuned scalar defaults. Conformers are zero-field comptime tags — never

@@ -21,7 +21,7 @@ struct PPOActorTrainStep[
     ACT_: Int,
     MINIBATCH_: Int,
     ACTOR: Module,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime MINIBATCH = Self.MINIBATCH_

@@ -58,7 +58,7 @@ struct MuZeroBatchedAgent[
     K: Int,
     N: Int,
     OBS_STORE_DT: DType = DType.uint8,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     var ctx: DeviceContext
     var rep: Self.REP
     var dyn: Self.DYN

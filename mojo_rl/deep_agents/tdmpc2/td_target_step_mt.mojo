@@ -75,7 +75,7 @@ struct TDTargetStepMT[
     NUM_TASKS: Int,
     TASK_EMB: Int,
     QP: Float64 = 0.0,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime AOBS = Self.MAX_OBS + Self.TASK_EMB
     comptime PIN = Self.LATENT + Self.TASK_EMB          # policy input width
     comptime ZA = Self.LATENT + Self.MAX_ACT + Self.TASK_EMB

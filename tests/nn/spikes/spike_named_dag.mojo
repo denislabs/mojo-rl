@@ -44,7 +44,7 @@ from mojo_rl.nn.constants import DT
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait MiniModule(Defaultable & Movable & ImplicitlyDestructible):
+trait MiniModule(Defaultable & Movable & ImplicitlyDeletable):
     comptime IN_DIM: Int
     comptime OUT_DIM: Int
 
@@ -98,7 +98,7 @@ struct BiasAdd[IN: Int, BIAS: Float64](MiniModule):
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait GraphNode(Defaultable & Movable & ImplicitlyDestructible):
+trait GraphNode(Defaultable & Movable & ImplicitlyDeletable):
     comptime NAME: StaticString
     comptime IN0_NAME: StaticString
     comptime OP_IN_DIM: Int
@@ -143,7 +143,7 @@ struct GNode[
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct MiniGraph[*NODES: GraphNode](Movable & ImplicitlyDestructible):
+struct MiniGraph[*NODES: GraphNode](Movable & ImplicitlyDeletable):
     comptime N = Self.NODES.size
 
     var nodes: Tuple[*Self.NODES]

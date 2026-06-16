@@ -30,7 +30,7 @@ from .score_callback import ScorePlanCallback, BatchedScorePlanCallback
 
 
 struct CategoricalRandomShooter[BATCH: Int, ACT_DIM: Int](
-    ImplicitlyDestructible,
+    ImplicitlyDeletable,
     Movable,
 ):
     """Uniform-categorical random shooter.

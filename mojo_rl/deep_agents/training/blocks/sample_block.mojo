@@ -38,7 +38,7 @@ from ...data.n_step_replay import GPUNStepBuffer
 from ..trainer_block import TrainerState
 
 
-trait SampleBlock(Defaultable, Movable, ImplicitlyDestructible):
+trait SampleBlock(Defaultable, Movable, ImplicitlyDeletable):
     comptime OBS: Int
     comptime ACT: Int
     comptime BATCH: Int

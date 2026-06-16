@@ -60,7 +60,7 @@ from .episode_tracker import EpisodeTracker
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait OffPolicyAgent(Movable, ImplicitlyDestructible):
+trait OffPolicyAgent(Movable, ImplicitlyDeletable):
     """Single-trait surface for the off-policy drivers.
     Exposes `AGENT_TRAIN_TARGET` (so the driver can comptime-gate
     H2D/D2H around the env step) and routes all action selection

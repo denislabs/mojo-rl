@@ -30,7 +30,7 @@ from mojo_rl.nn.core.param import Param
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct _ThreeScratch(Movable & ImplicitlyDestructible):
+struct _ThreeScratch(Movable & ImplicitlyDeletable):
     """Test struct with 3 differently-sized Scratch fields."""
     var alpha: Scratch["alpha", 4]
     var beta:  Scratch["beta",  8]
@@ -42,7 +42,7 @@ struct _ThreeScratch(Movable & ImplicitlyDestructible):
         self.gamma = Scratch["gamma", 16]()
 
 
-struct _ParamAndScratch(Movable & ImplicitlyDestructible):
+struct _ParamAndScratch(Movable & ImplicitlyDeletable):
     """Test struct mixing Param + Scratch — walker must skip the Param."""
     var w: Param["w", True, 10]
     var s: Scratch["s", 6]
@@ -129,7 +129,7 @@ def test_mixed_param_and_scratch() raises:
     print("  ok")
 
 
-struct _StagingScratch(Movable & ImplicitlyDestructible):
+struct _StagingScratch(Movable & ImplicitlyDeletable):
     """Phase 2.5: a mix of plain and STAGING=True scratches. GPU init
     must populate BOTH cpu and dev for the staging one."""
     var plain: Scratch["plain", 4]

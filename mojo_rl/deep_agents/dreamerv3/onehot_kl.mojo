@@ -157,7 +157,7 @@ def _kl_bwd_kernel[NG: Int, C: Int, STOCH: Int](
             g_post[base + j] = wr * (one_m_u * rebind[Scalar[DT]](smpo[base + j]) * (lr_diff - W))
 
 
-struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDestructible):
+struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDeletable):
     comptime GROUP = Self.STOCH * Self.CLASSES
 
     var unimix: Scalar[DT]

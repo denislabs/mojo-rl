@@ -75,7 +75,7 @@ comptime DDPGCriticNet[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait DDPGConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait DDPGConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a DDPG-family algorithm. Conformers are
     zero-field comptime tags — never instantiated at runtime; only their
     comptime members are read."""

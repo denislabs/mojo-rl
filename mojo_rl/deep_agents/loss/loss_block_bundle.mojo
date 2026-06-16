@@ -31,7 +31,7 @@ from .loss_block import LossBlock
 
 
 struct LossBlockBundle[*BLOCKS: LossBlock](
-    Defaultable & Movable & ImplicitlyDestructible
+    Defaultable & Movable & ImplicitlyDeletable
 ):
     comptime N = Self.BLOCKS.size
 

@@ -27,7 +27,7 @@ from layout import TileTensor
 from ..constants import DT
 
 
-trait ParamVisitor(ImplicitlyDestructible):
+trait ParamVisitor(ImplicitlyDeletable):
     def visit(
         mut self,
         name: String,

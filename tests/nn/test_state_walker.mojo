@@ -30,7 +30,7 @@ from mojo_rl.nn.core.state_walker import dump_state, load_state
 
 
 @fieldwise_init
-struct Flat(Copyable, Movable, ImplicitlyDestructible):
+struct Flat(Copyable, Movable, ImplicitlyDeletable):
     var gamma: SaveScalar[DT]
     var tau: SaveScalar[DT]
     var step: SaveI
@@ -53,7 +53,7 @@ struct AdamLike(Saveable, Copyable):
 
 
 @fieldwise_init
-struct TrainerLike(Copyable, Movable, ImplicitlyDestructible):
+struct TrainerLike(Copyable, Movable, ImplicitlyDeletable):
     var gamma: SaveScalar[DT]
     var tau: SaveScalar[DT]
     var global_step: SaveI

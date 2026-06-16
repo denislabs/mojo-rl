@@ -53,7 +53,7 @@ from mojo_rl.nn.initializer import Xavier
 # ──────────────────────────────────────────────────────────────────
 
 
-struct VarNameProbe[*names: StaticString](Movable & ImplicitlyDestructible):
+struct VarNameProbe[*names: StaticString](Movable & ImplicitlyDeletable):
     comptime ARITY = Self.names.size
 
     def __init__(out self):
@@ -187,7 +187,7 @@ struct NodeV[
     node_name: StaticString,
     Op: Module,
     *in_names: StaticString,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime NAME = Self.node_name
     comptime ARITY = Self.in_names.size
 

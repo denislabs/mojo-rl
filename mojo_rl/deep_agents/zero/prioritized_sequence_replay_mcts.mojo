@@ -89,7 +89,7 @@ def _ez_obs_gather_kernel[M: Int, OBS: Int, CAP: Int, SDT: DType](
 
 struct PrioritizedMCTSSequenceReplay[
     OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
-](Movable, ImplicitlyDestructible):
+](Movable, ImplicitlyDeletable):
     """Prioritized ring of MCTS-labelled steps + episode index + a per-slot
     `SumTree`. ``CAP`` = max resident steps. ``OBS_STORE_DT`` mirrors
     `MCTSSequenceReplay` (DT or uint8 pixel storage). ``alpha``/``beta`` are

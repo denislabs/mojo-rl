@@ -28,7 +28,7 @@ from mojo_rl.nn.core.map_params import (
 )
 
 
-struct OnlineTargetPair[M: Module](Movable & ImplicitlyDestructible):
+struct OnlineTargetPair[M: Module](Movable & ImplicitlyDeletable):
     var online: Self.M
     var target_net: Self.M
     # Grouped polyak descriptor cache — built once in `make[target='gpu']` on

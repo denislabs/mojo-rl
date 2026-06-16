@@ -36,7 +36,7 @@ from mojo_rl.planners.tree_search import Representation, Dynamics, Prediction
 struct AZRepCPU[
     E: TwoPlayerDiscreteEnv & Saveable,
     OBS: Int,
-](Movable, ImplicitlyDestructible, Representation):
+](Movable, ImplicitlyDeletable, Representation):
     """Identity representation: snapshot the live env's serialized state as the
     latent the planner threads through dynamics + prediction. The `obs` argument
     is ignored — the env's own state is the source of truth (the caller positions
@@ -62,7 +62,7 @@ struct AZRepCPU[
 struct AZDynCPU[
     E: TwoPlayerDiscreteEnv & Saveable,
     ACT: Int,
-](Movable, ImplicitlyDestructible, Dynamics):
+](Movable, ImplicitlyDeletable, Dynamics):
     """True game rules as `Dynamics`: load latent → `env.step` → save latent.
     Returns per-edge reward 0.0 (SelfPlay: only terminal value matters)."""
 
@@ -95,7 +95,7 @@ struct AZPredCPU[
     OBS: Int,
     ACT: Int,
     NET: Module,
-](Movable, ImplicitlyDestructible, Prediction):
+](Movable, ImplicitlyDeletable, Prediction):
     """Prediction adapter: load latent, run the policy/value net (or short-circuit
     terminals). On a terminal (`env.game_result() != 0`) the net is skipped and
     the leaf value is the zero-sum outcome from the leaf-mover's perspective

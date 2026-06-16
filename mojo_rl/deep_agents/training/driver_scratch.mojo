@@ -33,7 +33,7 @@ from mojo_rl.nn.core.module import mptr
 
 
 struct DriverScratch[NAME: StaticString, N_ENVS: Int, DIM: Int](
-    Movable & ImplicitlyDestructible
+    Movable & ImplicitlyDeletable
 ):
     comptime SIZE: Int = Self.N_ENVS * Self.DIM
 

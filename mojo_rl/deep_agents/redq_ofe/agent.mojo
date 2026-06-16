@@ -60,7 +60,7 @@ struct REDQOFEAgent[
     UTD: Int,
     POLICY_DELAY: Int,
     Q_MODE: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Thin facade over `REDQOFETrainer`.
 
     Dimensions (OBS / ACT / BATCH) are derived from `SAMPLE`. The 5

@@ -59,7 +59,7 @@ struct SACAgent[
     SAMPLE: SampleBlock,
     ACTOR: Module,
     CRITIC: Module,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Thin facade over `SACTrainer` + off-policy drivers.
 
     Comptime parameters mirror `SACTrainer` one-for-one. Dimensions

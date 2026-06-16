@@ -15,7 +15,7 @@ from .pixel_convert import u8_hwc_to_chw_norm
 
 
 struct OfflineWindowBuffer[IMG_DIM: Int, ACT: Int, T: Int](
-    Movable & ImplicitlyDestructible
+    Movable & ImplicitlyDeletable
 ):
     var n_traj: Int
     var traj_len: Int

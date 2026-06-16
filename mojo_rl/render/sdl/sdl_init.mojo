@@ -124,7 +124,7 @@ struct AppResult(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime APP_CONTINUE = Self(0)
     """Value that requests that the app continue from the main callbacks."""

@@ -17,7 +17,7 @@ from mojo_rl.nn.constants import DT
 # ──────────────────────────────────────────────────────────────────
 
 
-struct HeteroDimsProbe[ACT_: Int](Movable & ImplicitlyDestructible):
+struct HeteroDimsProbe[ACT_: Int](Movable & ImplicitlyDeletable):
     comptime ARITY = 4
     comptime IN_DIMS: InlineArray[Int, 4] = Self._build()
 
@@ -50,7 +50,7 @@ def test_q1_heterogeneous() raises:
 # ──────────────────────────────────────────────────────────────────
 
 
-struct ComptimeIndexProbe[*DIMS: Int](Movable & ImplicitlyDestructible):
+struct ComptimeIndexProbe[*DIMS: Int](Movable & ImplicitlyDeletable):
     comptime ARITY = Self.DIMS.size
 
     def __init__(out self):
@@ -66,7 +66,7 @@ struct ComptimeIndexProbe[*DIMS: Int](Movable & ImplicitlyDestructible):
             print("  variadic[", k, "] dim =", dim_k)
 
 
-struct InlineArrayIndexProbe(Movable & ImplicitlyDestructible):
+struct InlineArrayIndexProbe(Movable & ImplicitlyDeletable):
     """Does IN_DIMS[k] for comptime k produce a comptime value?"""
     comptime IN_DIMS: InlineArray[Int, 3] = Self._build()
 

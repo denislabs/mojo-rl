@@ -121,7 +121,7 @@ struct _LoadVisitor(ParamVisitor):
 struct LeWMDecoderTrainer[
     EMB: Int, HID: Int, N_Q: Int, PATCH_PX: Int, FF: Int, N_LAYERS: Int,
     BATCH: Int, train_target: StaticString = "cpu",
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime DG = LeWMDecoderLossGraph[
         Self.EMB, Self.HID, Self.N_Q, Self.PATCH_PX, Self.FF, Self.N_LAYERS
     ]

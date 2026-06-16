@@ -109,7 +109,7 @@ struct SampledGumbelGPUMCTS[
     # ordering keeps working. Tail position so legacy positional callers
     # stay unchanged.
     N_POLICY_AT_ROOT: Int = K_ROOT,
-](Movable, ImplicitlyDestructible):
+](Movable, ImplicitlyDeletable):
     """GPU sampled-Gumbel MCTS orchestrator (EZv2 continuous planner).
 
     Comptime params:

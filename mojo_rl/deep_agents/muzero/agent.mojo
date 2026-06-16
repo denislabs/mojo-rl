@@ -66,7 +66,7 @@ from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
 @fieldwise_init
 struct MuZeroAgent[
     TARGET: StaticString,
-    ENV: BoxDiscreteActionEnv & ImplicitlyDestructible,
+    ENV: BoxDiscreteActionEnv & ImplicitlyDeletable,
     REP: Module,
     DYN: Module,
     PRED: Module,
@@ -81,7 +81,7 @@ struct MuZeroAgent[
     K: Int,
     N: Int,
     MAX_K: Int = ACT,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     var ctx: Optional[DeviceContext]
     var rep: Self.REP
     var dyn: Self.DYN

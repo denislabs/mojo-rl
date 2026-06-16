@@ -30,7 +30,7 @@ from mojo_rl.planners.trajectory import RolloutJacobianCallbackCPU
 
 @fieldwise_init
 struct LinearQuadratic1DILQRCallback(
-    Copyable, Movable, ImplicitlyDestructible, RolloutJacobianCallbackCPU
+    Copyable, Movable, ImplicitlyDeletable, RolloutJacobianCallbackCPU
 ):
     """1-D LQ ``RolloutJacobianCallbackCPU`` adapter.
 
@@ -112,7 +112,7 @@ struct LinearQuadratic1DILQRCallback(
 
 @fieldwise_init
 struct Pendulum2DILQRCallback(
-    Copyable, Movable, ImplicitlyDestructible, RolloutJacobianCallbackCPU
+    Copyable, Movable, ImplicitlyDeletable, RolloutJacobianCallbackCPU
 ):
     """2-D pendulum stabilizer with semi-implicit Euler dynamics.
 

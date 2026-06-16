@@ -41,7 +41,7 @@ struct PPODiscreteActStep[
     N_ENVS_: Int,
     ACTOR: Module,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime N_ACTIONS = Self.N_ACTIONS_
     comptime N_ENVS = Self.N_ENVS_

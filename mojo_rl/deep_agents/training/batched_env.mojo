@@ -74,7 +74,7 @@ def _increment_env_rng_kernel(
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait BatchedEnv(Movable & ImplicitlyDestructible):
+trait BatchedEnv(Movable & ImplicitlyDeletable):
     """Uniform N_ENVS-batched env surface. Env owns its
     obs/action/reward/done buffers internally; driver reads/writes via
     pointer accessors. Method comptime is `BATCH` (not `N_ENVS`) so
@@ -305,7 +305,7 @@ def _splitmix64(x: UInt64) -> UInt64:
 
 
 struct BatchedCpuDiscreteEnv[
-    E: BoxDiscreteActionEnv & Movable,
+    E: BoxDiscreteActionEnv & Movable & ImplicitlyDeletable,
     N_ENVS: Int,
     OBS_DIM_: Int,
 ](BatchedEnv):

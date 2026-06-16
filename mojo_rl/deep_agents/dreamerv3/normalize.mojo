@@ -51,7 +51,7 @@ def _insertion_sort(buf: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int):
         buf[j + 1] = key
 
 
-struct PercentileNormalize(Movable & ImplicitlyDestructible):
+struct PercentileNormalize(Movable & ImplicitlyDeletable):
     # impl: "none" | "perc" | "meanstd"
     var impl: String
     var rate: Scalar[DT]

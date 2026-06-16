@@ -70,7 +70,7 @@ from ..core.target_storage import TargetStorage, assert_tag_for
 
 
 struct OptimizerBundle[*OPTS: Optimizer](
-    Defaultable & Movable & ImplicitlyDestructible
+    Defaultable & Movable & ImplicitlyDeletable
 ):
     comptime N = Self.OPTS.size
 

@@ -44,7 +44,7 @@ def _xs(s: UInt64) -> UInt64:
 
 
 def run_alphazero_selfplay_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NET: Module,
     NUM_SIMS: Int,
     MAX_NODES: Int,
