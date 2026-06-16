@@ -899,16 +899,26 @@ def run_muzero_selfplay_arena_gumbel_2p[
                                 break
                             seen += 1
             else:
-                # Effective temperature: the scheduled `temp` for the first
-                # TEMP_MOVES plies, then `temp_min` thereafter. temp_min > 0
-                # keeps play stochastic (∝ visits^(1/temp_min)) instead of fully
-                # greedy — the AlphaZero.jl convention (temp≈0.3 throughout).
-                # Fully-greedy late play collapses self-play diversity: the
-                # over-sharpened Gumbel targets make every game near-determi-
-                # nistic, the replay narrows, and the net overfits a shrinking
-                # set of lines and regresses vs unseen opponents. temp_min = 0.0
-                # (default) recovers the old greedy-after-opening behaviour.
-                var eff_temp = temp if ply < TEMP_MOVES else temp_min
+                # Effective temperature. Two regimes:
+                #  • `temperature_decay_steps > 0` (muzero-general recipe): the
+                #    WHOLE game (past the random openings) uses the scheduled
+                #    `temp` (1.0 → 0.5 at 50% training → 0.25 at 75%). Early
+                #    training stays diverse (T=1.0); the back half sharpens —
+                #    incl. the endgame — so the full-MC value target finally
+                #    reflects position quality instead of a coin-flip outcome
+                #    (the lever for the value_mse / loss_value plateau).
+                #  • schedule off (default `temperature_decay_steps = 0`): the
+                #    legacy split — scheduled `temp` for the first TEMP_MOVES
+                #    plies, then `temp_min` thereafter (temp_min > 0 keeps play
+                #    stochastic ∝ visits^(1/temp_min), the AlphaZero.jl
+                #    convention; temp_min = 0.0 recovers greedy-after-opening).
+                #    Fully-greedy late play collapses self-play diversity. This
+                #    branch is bit-identical to the pre-anneal behaviour.
+                var eff_temp = (
+                    temp
+                    if temperature_decay_steps > 0
+                    else (temp if ply < TEMP_MOVES else temp_min)
+                )
                 if eff_temp > 0.0:
                     var wsum = 0.0
                     var w = List[Float64](capacity=ACT)

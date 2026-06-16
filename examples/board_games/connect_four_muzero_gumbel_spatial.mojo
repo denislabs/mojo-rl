@@ -157,6 +157,15 @@ def main() raises:
         # init_zero uniform prior. Counters the column-marked dynamics' sharper
         # search that was collapsing self-play diversity.
         selfplay_open_plies=6,
+        # Self-play temperature anneal (muzero-general whole-game recipe). With
+        # decay_steps set, the post-opening temperature follows 1.0 → 0.5 (at 50%
+        # of `iterations`) → 0.25 (at 75%): diverse early, sharpening — incl. the
+        # endgame — in the back half so the full-MC (N=42) value target reflects
+        # position quality instead of a temp=1.0 coin-flip outcome. This is the
+        # lever for the value_mse / loss_value plateau (the target was the noise,
+        # not the value head). `temp_min` is now only consulted when the schedule
+        # is OFF (decay_steps=0); kept at 1.0 for that legacy path.
+        temperature_decay_steps=40_000,
         temp_min=1.0,
         eval_open_plies=4,
         reanalyze_every=4,
