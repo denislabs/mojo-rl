@@ -16,7 +16,7 @@ from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT as dtype
 
 
 # =============================================================================

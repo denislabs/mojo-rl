@@ -20,7 +20,7 @@ from std.sys import is_nvidia_gpu, has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT as dtype
 
 
 # =============================================================================

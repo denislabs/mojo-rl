@@ -27,7 +27,7 @@ from std.sys import simd_width_of
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT as dtype
 
 
 comptime SIMD_WIDTH = simd_width_of[dtype]()
