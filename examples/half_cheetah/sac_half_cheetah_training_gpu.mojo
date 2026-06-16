@@ -121,7 +121,7 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC HalfCheetah NN2 (GPU)",
+            run_name="SAC HalfCheetah NN (GPU)",
             buffer_size=64,
             api_key=api_key,
         )

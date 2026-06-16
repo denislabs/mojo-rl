@@ -103,7 +103,7 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="SAC Humanoid NN2 (CPU)",
+        run_name="SAC Humanoid NN (CPU)",
         buffer_size=200,
         api_key=api_key,
     )

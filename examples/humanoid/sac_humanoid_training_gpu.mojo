@@ -156,7 +156,7 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC Humanoid NN2 (GPU, LayerNorm critic, H256, 3M)",
+            run_name="SAC Humanoid NN (GPU, LayerNorm critic, H256, 3M)",
             buffer_size=64,
             api_key=api_key,
         )

@@ -8,8 +8,8 @@ An educational reinforcement learning framework written in Mojo, featuring trait
 
 - **Trait-based architecture**: Generic interfaces for environments, agents, states, actions, models, optimizers, and physics
 - **40+ RL algorithms**: TD methods, multi-step, eligibility traces, model-based planning, function approximation, policy gradients, PPO, continuous control (DDPG, TD3, SAC, REDQ), deep RL (DQN family including Noisy DQN, C51, Rainbow; A2C, PPO), and model-based RL (MBPO, TD-MPC2, DreamerV3, MuZero)
-- **Deep learning framework** (`mojo_rl/nn/`): Trait-based neural networks with autodiff, 20+ layer types, 5 optimizers (SGD, Adam, AdamW, RMSprop, Muon), automatic compile-time fusion, CPU/GPU support
-- **Autodiff system** (`mojo_rl/nn/autodiff/`): Composition-based automatic differentiation with 27+ DiffOp primitives, AutoDiffChain, fused kernels, 7 combinators (Residual, Parallel, Repeat, SkipConcat, DualPath, SplitApply, FanOut), ComputeGraph named-node DAG builder
+- **Deep learning framework** (`mojo_rl/nn/`): Module/Param neural networks with autodiff (each `Param` owns `val`+`grad` tensors), 20+ primitive layer types, SGD/Adam/AdamW optimizers, automatic compile-time fusion (MatMul+Bias+Act, Conv2D+Act), checkpoint v2, CPU/GPU support
+- **Composable models** (`mojo_rl/nn/`): Sequential/Residual/Parallel/Repeat combinators, pre-built architectures (ResNet, GPT, ViT, LSTM), and a ComputeGraph named-node DAG builder for complex loss graphs
 - **3D physics engine** (`mojo_rl/physics3d/`): MuJoCo-inspired generalized coordinates engine with CRBA, RNE, constraint solvers (PGS, Newton, CG), collision detection, MJCF XML parsing, CPU/GPU support
 - **2D physics engine** (`mojo_rl/physics2d/`): GPU-accelerated batched physics for LunarLander, BipedalWalker, CarRacing with impulse solving and tire friction
 - **25 native environments**: Tabular, classic control, 2D physics, MuJoCo-style 3D, and GPU-accelerated arcade games
@@ -86,30 +86,28 @@ mojo-rl/
 ├── mojo_rl/                     # Main Mojo package
 │   ├── core/                    #   Core RL abstractions (traits, replay buffers, tile coding)
 │   ├── agents/                  #   Tabular & linear RL algorithms (20+ agents)
-│   ├── deep_agents/             #   Deep RL agents (config-driven generic architecture)
-│   │   ├── core/                #     Shared infrastructure
-│   │   │   ├── agents/          #       Generic agents (DQN, C51, Rainbow, off/on-policy)
-│   │   │   ├── configs/         #       Algorithm configs (DQN/TD3/SAC/PPO/A2C variants)
-│   │   │   ├── strategies/      #       Composable building blocks (exploration, target, loss)
-│   │   │   ├── training/        #       CPU/GPU training loops
-│   │   │   └── replay/          #       Replay buffers (heap, PER, GPU, N-step, sequence)
-│   │   ├── dreamer_v3/          #     DreamerV3 (RSSM world model, imagination)
+│   ├── deep_agents/             #   Deep RL agents (per-algorithm facade packages)
+│   │   ├── dqn/ c51/            #     Value-based (DQN, target net; C51/Rainbow distributional)
+│   │   ├── ddpg/ td3/ sac/      #     Off-policy continuous (twin critics, max-entropy)
+│   │   ├── redq/ mbpo/          #     Ensemble / model-based continuous
+│   │   ├── ppo/ ppo_discrete/ a2c/ #  On-policy (clipped surrogate, GAE)
 │   │   ├── tdmpc2/              #     TD-MPC2 (world model + MPPI planning)
-│   │   └── muzero/              #     MuZero (learned model + MCTS planning)
-│   ├── nn/                      #   Deep learning framework
-│   │   ├── model/               #     20+ layers: Linear, Conv2D, NoisyLinear, LayerNorm, etc.
-│   │   ├── optimizer/           #     SGD, Adam, AdamW, RMSprop, Muon
+│   │   ├── dreamerv3/ dreamer4/ #     Latent world models (RSSM / transformer)
+│   │   ├── alphazero/ muzero/ efficient_zero_v2/ zero/ #  Zero-series (MCTS planning)
+│   │   ├── core/               #     Module/Trainer/agent traits + shared infra
+│   │   ├── training/           #     Off/on-policy CPU/GPU drivers + BatchedEnv wrappers
+│   │   └── primitives/ loss/ data/ #  GaussianHead/rsample, losses, replay buffers
+│   ├── nn/                      #   Deep learning framework (Module + Param)
+│   │   ├── core/                #     Module trait + Param (val+grad tensors), checkpoint v2
+│   │   ├── primitives/          #     20+ leaves: Linear, Conv2D, NoisyLinear, LSTMCell, attention
+│   │   ├── combinators/         #     Sequential, Residual, Parallel, Repeat, ...
+│   │   ├── models/              #     Pre-built architectures (ResNet, GPT, ViT, ...)
+│   │   ├── optimizer/           #     SGD, Adam, AdamW (+ grouped multi-tensor apply)
 │   │   ├── loss/                #     MSE, Huber, CrossEntropy, SoftCrossEntropy, TwoHot
-│   │   ├── initializer/         #     Xavier, Kaiming, LeCun, etc.
-│   │   ├── training/            #     Trainer, NetworkState, GPUNetworkState, NetworkPair
-│   │   ├── checkpoint/          #     Model serialization (text + binary)
-│   │   ├── autodiff/            #     Automatic differentiation framework
-│   │   │   ├── primitives/      #       27+ DiffOps (MatMul, Conv2D, Attention, RSample, etc.)
-│   │   │   ├── fused/           #       Fused kernels (MatMul+Bias+Act, Conv2D+Act)
-│   │   │   ├── combinators/     #       Residual, Parallel, Repeat, SkipConcat, DualPath, etc.
-│   │   │   └── compute_graph.mojo #    Named-node DAG builder (ComputeGraph)
-│   │   ├── composites.mojo      #     Pre-built architectures (ResBlock, ResNet, LeNet, NatureDQN)
-│   │   └── gpu/                 #     GPU kernels (matmul, elementwise, random)
+│   │   ├── initializer/         #     Xavier, Kaiming, LeCun, Normal, ...
+│   │   ├── training/            #     Supervised Trainer (AMP / CUDA-graph capable)
+│   │   ├── datasets/            #     MNIST, CIFAR10, TinyShakespeare, lewm_pusht loaders
+│   │   └── random/              #     Host RNG (box_muller, gaussian_noise)
 │   ├── physics3d/               #   3D MuJoCo-inspired physics engine
 │   │   ├── model/               #     Compile-time model specs (BodySpec, JointSpec, GeomSpec)
 │   │   ├── dynamics/            #     Mass matrix (CRBA), bias forces (RNE), Jacobians
@@ -150,8 +148,8 @@ mojo-rl/
 │       └── gymnasium/           #     Python Gymnasium wrappers
 ├── tests/                       # Test suite (166+ files)
 │   ├── physics3d/               #   Physics engine validation tests (73 files)
-│   ├── nn/                      #   Neural network + autodiff tests (20 files)
-│   ├── deep_agents/             #   Deep RL agent tests (39 files)
+│   ├── nn/                      #   Neural network + autodiff tests
+│   ├── deep_agents/             #   Deep RL agent tests
 │   └── arcade_games/            #   Arcade/Atari environment tests (6 files)
 ├── examples/                    # Demo scripts organized by environment
 │   ├── cartpole/                #   CartPole demos and benchmarks
@@ -261,64 +259,82 @@ def main():
 
 ```mojo
 from std.gpu.host import DeviceContext
-from mojo_rl.deep_agents.core.agents import DeepSACAgent
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
+from mojo_rl.deep_agents.sac import SACAgent
+from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
+from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM      # 17
+comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM   #  6
+comptime HIDDEN = 256
+comptime N_ENVS = 32
+
+# Networks are nn Modules passed as compile-time params to the agent facade.
+comptime ActorNet = StochasticActor[
+    OBS_DIM, ACT_DIM,
+    LinearReLU[OBS_DIM, HIDDEN], LinearReLU[HIDDEN, HIDDEN],
+]
+comptime CriticNet = Sequential[
+    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN], LinearReLU[HIDDEN, HIDDEN], Linear[HIDDEN, 1],
+]
+comptime EnvT = BatchedGpuEnv[HalfCheetah[DT], N_ENVS, OBS_DIM, ACT_DIM]
+
 def main() raises:
-    comptime OBS_DIM = HalfCheetahConfig.OBS_DIM    # 17
-    comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
-
     with DeviceContext() as ctx:
-        var agent = DeepSACAgent[
-            obs_dim=OBS_DIM, action_dim=ACTION_DIM, hidden_dim=256,
-            buffer_capacity=1_000_000, batch_size=256,
-            actor_lr=0.0003, critic_lr=0.001,
-        ](gamma=0.99, tau=0.005, action_scale=1.0, alpha=0.2, auto_alpha=True)
+        var agent = SACAgent[
+            "gpu",
+            UniformSampleGpuStep[OBS_DIM, ACT_DIM, 256, 1_000_000],  # OBS, ACT, BATCH, CAPACITY
+            ActorNet,
+            CriticNet,
+        ](ctx=ctx, actor_lr=3e-4, critic_lr=3e-4, gamma=0.99, tau=0.005)
 
-        var metrics = agent.train_gpu[HalfCheetah[DType.float32]](
-            ctx, num_steps=600_000, warmup_steps=10_000, verbose=True,
+        # One batched GPU off-policy driver call (CUDA-graph capture on by default).
+        _ = agent.train[EnvT, N_ENVS=N_ENVS](
+            EnvT(ctx), 600_000, updates_per_step=N_ENVS, verbose=True,
         )
-        print("Avg reward:", metrics.mean_reward_last_n(100))
 ```
 
-See [`examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`](examples/half_cheetah/sac_half_cheetah_training_gpu.mojo) for the full training script, and [`examples/half_cheetah/sac_half_cheetah_eval_cpu.mojo`](examples/half_cheetah/sac_half_cheetah_eval_cpu.mojo) for CPU evaluation with rendering.
+See [`examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`](examples/half_cheetah/sac_half_cheetah_training_gpu.mojo) for the full GPU training script (with logging), and [`examples/half_cheetah/sac_half_cheetah_training.mojo`](examples/half_cheetah/sac_half_cheetah_training.mojo) for the single-process CPU version.
 
 ### Neural Network GPU Training
 
 ```mojo
 from std.gpu.host import DeviceContext
-from layout import Layout, LayoutTensor
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.model.linear import Linear
-from mojo_rl.nn.model.relu import ReLU
-from mojo_rl.nn.model.sequential import Sequential
-from mojo_rl.nn.loss.mse import MSELoss
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.training.trainer import Trainer
-from mojo_rl.nn.initializer.initializers import Kaiming
+from mojo_rl.nn.datasets import MNIST
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.combinators import Sequential
+from mojo_rl.nn.loss import CrossEntropyLoss
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.training import Trainer
+from mojo_rl.nn.initializer import Kaiming
+
+# Model at compile time: 784 -> 128 (ReLU) -> 128 (ReLU) -> 10
+comptime Net = Sequential[
+    Linear[784, 128], ReLU[128],
+    Linear[128, 128], ReLU[128],
+    Linear[128, 10],
+]
 
 def main() raises:
-    # Define model at compile time: 4 -> 64 (ReLU) -> 64 (ReLU) -> 1
-    comptime MLP = Sequential[
-        Linear[4, 64], ReLU[64], Linear[64, 64], ReLU[64], Linear[64, 1],
-    ]
-    comptime BATCH = 128
-    comptime TRAINER = Trainer[MLP, Adam[], MSELoss]
-
-    # Prepare data as LayoutTensors
-    var input_t = LayoutTensor[dtype, Layout.row_major(BATCH, 4), MutAnyOrigin](...)
-    var target_t = LayoutTensor[dtype, Layout.row_major(BATCH, 1), MutAnyOrigin](...)
-
-    # Train on GPU
-    var ctx = DeviceContext()
-    var state = TRAINER.init_state_gpu[Kaiming[]](ctx)
-    var result = TRAINER.train_gpu[BATCH](
-        state, ctx, input_t, target_t, epochs=500, print_every=100,
-    )
-    print("Final loss:", result.final_loss)
+    var ds = MNIST()
+    with DeviceContext() as ctx:
+        # The Trainer owns the Module's Params (each a val+grad tensor),
+        # the optimizer state, and the loss — make() runs the initializer.
+        var trainer = Trainer[Net, Adam, CrossEntropyLoss].make[INIT=Kaiming](ctx)
+        # ... upload MNIST into device tensors, then run the whole-dataset loop:
+        var result = trainer.train_gpu[MNIST.N_TRAIN, MNIST.N_TEST](
+            ctx, train_x, train_y, test_x, test_y, epochs=20, print_every=1,
+        )
+        print("Final loss:", result.final_loss)
 ```
 
-See [`examples/nn_gpu_training.mojo`](examples/nn_gpu_training.mojo) for the full working example.
+See [`examples/nn/mlp/mlp_mnist_training_gpu.mojo`](examples/nn/mlp/mlp_mnist_training_gpu.mojo) for the full working example.
 
 ## Extending the Framework
 

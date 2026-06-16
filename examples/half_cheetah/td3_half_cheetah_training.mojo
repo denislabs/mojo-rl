@@ -109,7 +109,7 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="TD3 HalfCheetah NN2 (CPU)",
+        run_name="TD3 HalfCheetah NN (CPU)",
         buffer_size=200,
         api_key=api_key,
     )

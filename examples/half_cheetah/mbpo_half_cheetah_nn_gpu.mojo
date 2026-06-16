@@ -102,9 +102,9 @@ comptime FIXED_ALPHA: Scalar[DT] = 0.12  # legacy's stable equilibrium
 comptime INIT_ALPHA: Scalar[DT] = FIXED_ALPHA if FIX_ALPHA else 0.2
 comptime ALPHA_LR: Scalar[DT] = 0.0 if FIX_ALPHA else 3e-4
 comptime RUN_NAME = (
-    "MBPO HalfCheetah NN2 (GPU) — early-stop+elite, fixed alpha=0.12"
+    "MBPO HalfCheetah NN (GPU) — early-stop+elite, fixed alpha=0.12"
     if FIX_ALPHA
-    else "MBPO HalfCheetah NN2 (GPU) — AdamW wd=5e-5 + learnable logvar bounds"
+    else "MBPO HalfCheetah NN (GPU) — AdamW wd=5e-5 + learnable logvar bounds"
 )
 
 

@@ -118,7 +118,7 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC Hopper NN2 (GPU)",
+            run_name="SAC Hopper NN (GPU)",
             buffer_size=64,
             api_key=api_key,
         )
