@@ -45,10 +45,7 @@ from std.random.philox import Random as PhiloxRandom
 from std.math import sqrt, log, exp
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.model.model import Model
-from mojo_rl.nn.optimizer.optimizer import Optimizer
-from mojo_rl.nn.training import Network, GPUNetworkState
+from mojo_rl.nn2.constants import DT as dtype
 
 comptime TPB: Int = 256
 comptime MAX_DEPTH: Int = 32  # Maximum tree depth for search paths

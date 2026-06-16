@@ -32,9 +32,6 @@ from .mcts_gpu_gumbel import (
     gz_halve_active_kernel,
     gz_extract_policy_kernel,
 )
-# Legacy EZv2/MuZero driver split into a sunset-scoped module (imports legacy
-# `nn` networks); re-exported here so existing consumers are unaffected.
-from .mcts_gpu_gumbel_legacy_driver import run_gumbel_search_gpu
 from .mcts_gpu_gumbel_orchestrator import (
     GumbelGPUMCTS,
     gz_extract_root_value_kernel,
