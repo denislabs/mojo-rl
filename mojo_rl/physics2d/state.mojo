@@ -679,9 +679,12 @@ struct PhysicsStateOwned[
         dtype, Layout.row_major(1, Self.STATE_SIZE), MutAnyOrigin
     ]:
         """Get tensor view of state (1 x STATE_SIZE for single env)."""
+        # Build directly from the List (-> Span, origin inferred concrete),
+        # then widened to the MutAnyOrigin return type -- no UnsafeAnyOrigin
+        # hatch and no unsafe_ptr.
         return LayoutTensor[
-            dtype, Layout.row_major(1, Self.STATE_SIZE), MutAnyOrigin
-        ](self.state.unsafe_ptr())
+            dtype, Layout.row_major(1, Self.STATE_SIZE)
+        ](self.state)
 
     @always_inline
     def get_bodies_tensor(
@@ -692,12 +695,12 @@ struct PhysicsStateOwned[
         MutAnyOrigin,
     ]:
         """Get tensor view of body state (for compatibility with old code)."""
-        # Bodies are at BODIES_OFFSET in the state buffer
+        # Bodies are at BODIES_OFFSET in the state buffer. A Span slice gives a
+        # non-copying sub-view with a concrete origin -- no unsafe_ptr/hatch.
         return LayoutTensor[
             dtype,
             Layout.row_major(1, Self.NUM_BODIES, BODY_STATE_SIZE),
-            MutAnyOrigin,
-        ](self.state.unsafe_ptr() + Self.BODIES_OFFSET)
+        ](Span(self.state)[Self.BODIES_OFFSET :])
 
     @always_inline
     def get_shapes_tensor(
@@ -709,8 +712,7 @@ struct PhysicsStateOwned[
         return LayoutTensor[
             dtype,
             Layout.row_major(Self.NUM_SHAPES, SHAPE_MAX_SIZE),
-            MutAnyOrigin,
-        ](self.shapes.unsafe_ptr())
+        ](self.shapes)
 
     @always_inline
     def get_forces_tensor(
@@ -720,8 +722,8 @@ struct PhysicsStateOwned[
     ]:
         """Get tensor view of forces."""
         return LayoutTensor[
-            dtype, Layout.row_major(1, Self.NUM_BODIES, 3), MutAnyOrigin
-        ](self.state.unsafe_ptr() + Self.FORCES_OFFSET)
+            dtype, Layout.row_major(1, Self.NUM_BODIES, 3)
+        ](Span(self.state)[Self.FORCES_OFFSET :])
 
     @always_inline
     def get_contacts_tensor(
@@ -735,17 +737,14 @@ struct PhysicsStateOwned[
         return LayoutTensor[
             dtype,
             Layout.row_major(1, Self.MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ](self.contacts.unsafe_ptr())
+        ](self.contacts)
 
     @always_inline
     def get_contact_counts_tensor(
         mut self,
     ) -> LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin]:
         """Get tensor view of contact counts (single element for single env)."""
-        return LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
-            self.contact_counts.unsafe_ptr()
-        )
+        return LayoutTensor[dtype, Layout.row_major(1)](self.contact_counts)
 
     @always_inline
     def get_joints_tensor(
@@ -759,16 +758,15 @@ struct PhysicsStateOwned[
         return LayoutTensor[
             dtype,
             Layout.row_major(1, Self.MAX_JOINTS, JOINT_DATA_SIZE),
-            MutAnyOrigin,
-        ](self.state.unsafe_ptr() + Self.JOINTS_OFFSET)
+        ](Span(self.state)[Self.JOINTS_OFFSET :])
 
     @always_inline
     def get_joint_counts_tensor(
         mut self,
     ) -> LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin]:
         """Get tensor view of joint counts."""
-        return LayoutTensor[dtype, Layout.row_major(1), MutAnyOrigin](
-            self.state.unsafe_ptr() + Self.JOINT_COUNT_OFFSET
+        return LayoutTensor[dtype, Layout.row_major(1)](
+            Span(self.state)[Self.JOINT_COUNT_OFFSET :]
         )
 
     # =========================================================================
