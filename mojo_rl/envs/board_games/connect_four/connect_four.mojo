@@ -361,15 +361,19 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
             return
         self._render(self._renderer.value()[])
 
-    def _render(self, mut renderer: Renderer2D):
-        """Render ConnectFour board state."""
+    def render_board(self, mut renderer: Renderer2D):
+        """Draw the board background, pieces, and grid lines into ``renderer``.
+
+        The reusable board visual — **no** frame begin/flip and **no** status
+        bar, so an interactive play script can call ``begin_frame`` itself,
+        overlay a column selector + its own status text, then ``flip``. The
+        env's own ``_render`` (the `RenderableEnv` path) wraps this with a frame
+        + the generic turn/result status bar. Geometry: 7×6 grid of 80px cells,
+        board top at y=50 (50px status bar below)."""
         var board_color = SDL_Color(r=0x00, g=0x00, b=0xAA, a=0xFF)
         var empty_color = SDL_Color(r=0x33, g=0x33, b=0x33, a=0xFF)
         var red_color = SDL_Color(r=0xFF, g=0x22, b=0x22, a=0xFF)
         var yellow_color = SDL_Color(r=0xFF, g=0xDD, b=0x00, a=0xFF)
-        var bg_color = SDL_Color(r=0x11, g=0x11, b=0x44, a=0xFF)
-        var win_text_color = SDL_Color(r=0xFF, g=0xDD, b=0x00, a=0xFF)
-        var status_bg = SDL_Color(r=0x11, g=0x11, b=0x22, a=0xFF)
 
         var cell_size = 80
         var board_cols = 7
@@ -377,9 +381,6 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         var board_width = board_cols * cell_size  # 560
         var board_height = board_rows * cell_size  # 480
         var circle_radius = 32
-
-        if not renderer.begin_frame_with_color(bg_color):
-            return
 
         # Draw board background
         renderer.draw_rect(0, 50, board_width, board_height, board_color)
@@ -428,6 +429,22 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
                 board_color,
                 1,
             )
+
+    def _render(self, mut renderer: Renderer2D):
+        """Render ConnectFour board state (full self-contained frame)."""
+        var red_color = SDL_Color(r=0xFF, g=0x22, b=0x22, a=0xFF)
+        var yellow_color = SDL_Color(r=0xFF, g=0xDD, b=0x00, a=0xFF)
+        var bg_color = SDL_Color(r=0x11, g=0x11, b=0x44, a=0xFF)
+        var win_text_color = SDL_Color(r=0xFF, g=0xDD, b=0x00, a=0xFF)
+        var status_bg = SDL_Color(r=0x11, g=0x11, b=0x22, a=0xFF)
+
+        var board_height = 6 * 80  # 480
+        var board_width = 7 * 80  # 560
+
+        if not renderer.begin_frame_with_color(bg_color):
+            return
+
+        self.render_board(renderer)
 
         # Status bar at bottom (y=530-50..530)
         renderer.draw_rect(0, 50 + board_height, board_width, 50, status_bg)

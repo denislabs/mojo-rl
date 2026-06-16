@@ -1,23 +1,31 @@
-"""Play Connect Four against a trained Gumbel MuZero checkpoint (terminal).
+"""Play Connect Four against a trained Gumbel MuZero checkpoint (SDL UI).
 
 Loads the spatial h/g/f trio saved by `connect_four_muzero_gumbel_spatial.mojo`
-(`checkpoint_every` rolling save, or the end-of-run save) and lets you play a
-game in the terminal. The agent picks its move with a full Gumbel-MCTS search
-over the learned model (deterministic, `gumbel_scale=0.0`) — the deployed-agent
-strength, not the bare policy head.
+(`checkpoint_every` rolling save, or the end-of-run save) and lets you play with
+the mouse/keyboard in an SDL window. The agent picks its move with a full
+Gumbel-MCTS search over the learned model (deterministic, `gumbel_scale=0.0`) —
+the deployed-agent strength, not the bare policy head.
 
-The network dims here MUST match the trained checkpoint (C / BINS / 6×7). If you
+The board is drawn by the env's own `render_board` (the `RenderableEnv`-style
+board visual lives in `ConnectFourEnv`, shared with the other play scripts); this
+script only overlays the interactive chrome (column selector + status text) and
+runs the MuZero search.
+
+You are Red (first), MuZero is Yellow. Controls:
+  Mouse hover/click: select + drop in a column
+  Left/Right arrows: move the column selector; Space/Return: drop
+  R: reset after the game ends; close the window to quit.
+
+The network dims here MUST match the trained checkpoint (CH / BINS / 6×7). If you
 retrain with different `CH`/`BINS`, update them here too or the load will fail on
 a shape mismatch.
 
 Usage (after a training run has written the checkpoint):
     pixi run -e nvidia mojo run -I . examples/board_games/play_connect_four_muzero_gumbel.mojo
     pixi run -e apple  mojo run -I . examples/board_games/play_connect_four_muzero_gumbel.mojo
-
-You enter a column 0–6 on your turn; the agent replies. X = player 0 (moves
-first), O = player 1.
 """
 
+from std.memory import alloc
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
@@ -36,24 +44,10 @@ from mojo_rl.deep_agents2.zero.mcts_adapters_mz import (
 )
 from mojo_rl.planners.tree_search import GumbelGPUMCTS, SelfPlay
 from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
-
-
-def show_board(env: ConnectFourEnv[DType.float64]):
-    """Text board: row 5 (top) down to row 0, X=P0, O=P1, .=empty."""
-    print()
-    print("   0 1 2 3 4 5 6")
-    for row in range(5, -1, -1):
-        var line = String(" ") + String(row) + " "
-        for col in range(7):
-            var v = Int(Float64(env.state[col * 6 + row]))
-            if v == 1:
-                line += "X "
-            elif v == 2:
-                line += "O "
-            else:
-                line += ". "
-        print(line)
-    print()
+from mojo_rl.render import Renderer2D, SDL_Color
+from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
+from mojo_rl.render.sdl.sdl_scancode import Scancode
+from mojo_rl.render.sdl.sdl_mouse import get_mouse_state
 
 
 def main() raises:
@@ -93,6 +87,9 @@ def main() raises:
     dyn.set_attr["training"](Scalar[DT](0.0))
     pred.set_attr["training"](Scalar[DT](0.0))
     print("loaded checkpoint:", ckpt)
+    print("=== Connect Four vs Gumbel MuZero ===")
+    print("You are Red (first). MuZero is Yellow.")
+    print("Click a column or use arrows + space; R to reset; close to quit.")
 
     # ── Gumbel planner over the learned model (deterministic play) ──
     var planner = GumbelGPUMCTS[
@@ -108,47 +105,91 @@ def main() raises:
     var h_legal = ctx.enqueue_create_host_buffer[DT](ACT)
     ctx.synchronize()
 
-    # ── choose side ──
-    print("=== Connect Four vs Gumbel MuZero ===")
-    print("You are X if you go first (0), O if MuZero goes first (1).")
-    var human_player = -1
-    while human_player < 0:
-        var s = input("Play first? (0 = you first, 1 = MuZero first) > ")
-        try:
-            var c = Int(s)
-            if c == 0 or c == 1:
-                human_player = c
-            else:
-                print("  enter 0 or 1")
-        except:
-            print("  enter 0 or 1")
-
     var env = ConnectFourEnv[DType.float64]()
     _ = env.reset()
     var mseed = UInt32(12345)
 
-    while env.game_result() == 0:
-        show_board(env)
-        var legal = env.legal_action_mask()
-        if env.current_player() == human_player:
-            var col = -1
-            while col < 0:
-                var s = input("Your move, column 0-6 > ")
-                var c = -999
-                try:
-                    c = Int(s)
-                except:
-                    print("  not a number — enter 0-6")
-                if c >= 0 and c < ACT:
-                    if legal[c]:
-                        col = c
-                    else:
-                        print("  column", c, "is full")
-                elif c != -999:
-                    print("  out of range — enter 0-6")
-            _ = env.step(env.action_from_index(col))
-        else:
-            # MuZero move: Gumbel search over the learned model, argmax-legal.
+    # ── SDL window + interactive chrome (board itself drawn by the env) ──
+    var renderer = Renderer2D(
+        width=560, height=530, fps=30, title="Connect Four vs Gumbel MuZero"
+    )
+    var bg_color = SDL_Color(r=0x11, g=0x11, b=0x44, a=0xFF)
+    var red_color = SDL_Color(r=0xFF, g=0x22, b=0x22, a=0xFF)
+    var text_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
+    var win_text_color = SDL_Color(r=0xFF, g=0xDD, b=0x00, a=0xFF)
+    var selector_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
+    var status_bg = SDL_Color(r=0x11, g=0x11, b=0x22, a=0xFF)
+    var ai_text = SDL_Color(r=0x88, g=0xFF, b=0x88, a=0xFF)
+
+    comptime HUMAN = 0          # Red, moves first
+    var cell_size = 80
+    var board_cols = 7
+    var board_height = 6 * cell_size
+
+    var selected_col = 3
+    var prev_left = False
+    var prev_right = False
+    var prev_space = False
+    var prev_return = False
+    var prev_r = False
+    var prev_mouse_left = False
+
+    var mouse_x_ptr = alloc[Float32](1)
+    var mouse_y_ptr = alloc[Float32](1)
+    mouse_x_ptr[] = Float32(0)
+    mouse_y_ptr[] = Float32(0)
+    var numkeys_ptr = alloc[Int32](1)
+    numkeys_ptr[] = 0
+
+    while renderer.begin_frame_with_color(bg_color):
+        var keys = get_keyboard_state(numkeys_ptr)
+        var cur_left = Bool(keys[Int(Scancode.SCANCODE_LEFT)])
+        var cur_right = Bool(keys[Int(Scancode.SCANCODE_RIGHT)])
+        var cur_space = Bool(keys[Int(Scancode.SCANCODE_SPACE)])
+        var cur_return = Bool(keys[Int(Scancode.SCANCODE_RETURN)])
+        var cur_r = Bool(keys[Int(Scancode.SCANCODE_R)])
+
+        var mouse_buttons = get_mouse_state(
+            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_x_ptr),
+            rebind[UnsafePointer[Float32, MutAnyOrigin]](mouse_y_ptr),
+        )
+        var cur_mouse_left = (Int(mouse_buttons.value) & 1) != 0
+        var mouse_x = Int(mouse_x_ptr[])
+        var mouse_col = mouse_x // cell_size
+        var mouse_on_board = mouse_col >= 0 and mouse_col < board_cols
+        if mouse_on_board:
+            selected_col = mouse_col
+
+        var game_over = env.done
+
+        # Reset after a finished game.
+        if cur_r and not prev_r and game_over:
+            _ = env.reset()
+            selected_col = 3
+
+        # ── Human turn (Red / player 0) ──
+        if not game_over and env.current_player() == HUMAN:
+            if cur_left and not prev_left and selected_col > 0:
+                selected_col -= 1
+            if cur_right and not prev_right and selected_col < board_cols - 1:
+                selected_col += 1
+
+            var action = -1
+            if (cur_space and not prev_space) or (
+                cur_return and not prev_return
+            ):
+                action = selected_col
+            if cur_mouse_left and not prev_mouse_left and mouse_on_board:
+                action = mouse_col
+
+            if action >= 0:
+                var legal = env.legal_action_mask()
+                if action < legal.byte_length() and legal[action]:
+                    _ = env._step_impl(action)
+
+        # ── MuZero turn (Yellow / player 1): Gumbel search, argmax-legal ──
+        if not game_over and env.current_player() != HUMAN:
+            var legal = env.legal_action_mask()
             var obs = env.get_obs_list()
             for j in range(OBS):
                 h_obs.unsafe_ptr()[j] = Scalar[DT](Float64(obs[j]))
@@ -181,14 +222,60 @@ def main() raises:
             if best < 0:
                 best = 0
             print("MuZero plays column", best)
-            _ = env.step(env.action_from_index(best))
+            _ = env._step_impl(best)
 
-    show_board(env)
-    var gr = env.game_result()
-    var human_win = human_player + 1
-    if gr == 3:
-        print("Draw.")
-    elif gr == human_win:
-        print("You win! 🎉")
-    else:
-        print("MuZero wins.")
+        # ── Render: env draws the board, we overlay selector + status ──
+        var selector_cx = selected_col * cell_size + cell_size // 2
+        if not env.done and env.current_player() == HUMAN:
+            renderer.draw_circle(selector_cx, 22, 18, red_color, filled=True)
+            renderer.draw_line(
+                selector_cx, 42, selector_cx - 8, 35, selector_color, 2
+            )
+            renderer.draw_line(
+                selector_cx, 42, selector_cx + 8, 35, selector_color, 2
+            )
+
+        env.render_board(renderer)
+
+        # Status bar.
+        renderer.draw_rect(0, 50 + board_height, board_cols * cell_size, 50, status_bg)
+        var gr = env.game_result()
+        if gr == 0:
+            if env.current_player() == HUMAN:
+                renderer.draw_text(
+                    "Your turn (Red)", 200, 50 + board_height + 20, text_color
+                )
+            else:
+                renderer.draw_text(
+                    "MuZero thinking...", 195, 50 + board_height + 20, ai_text
+                )
+        elif gr == HUMAN + 1:
+            renderer.draw_text(
+                "You win!  (R to reset)",
+                175, 50 + board_height + 20, win_text_color,
+            )
+        elif gr == 3:
+            renderer.draw_text(
+                "Draw!  (R to reset)",
+                195, 50 + board_height + 20, win_text_color,
+            )
+        else:
+            renderer.draw_text(
+                "MuZero wins!  (R to reset)",
+                160, 50 + board_height + 20, win_text_color,
+            )
+
+        renderer.flip()
+
+        prev_left = cur_left
+        prev_right = cur_right
+        prev_space = cur_space
+        prev_return = cur_return
+        prev_r = cur_r
+        prev_mouse_left = cur_mouse_left
+
+    mouse_x_ptr.free()
+    mouse_y_ptr.free()
+    numkeys_ptr.free()
+    renderer.close()
+    print("=== Done ===")

@@ -57,10 +57,9 @@ def main() raises:
         width=560, height=530, fps=30, title="Connect Four vs AlphaZero"
     )
 
-    var board_color = SDL_Color(r=0x00, g=0x00, b=0xAA, a=0xFF)
-    var empty_color = SDL_Color(r=0x33, g=0x33, b=0x33, a=0xFF)
+    # The board itself is drawn by `env.render_board`; these are the
+    # play-script chrome (selector + status text).
     var red_color = SDL_Color(r=0xFF, g=0x22, b=0x22, a=0xFF)
-    var yellow_color = SDL_Color(r=0xFF, g=0xDD, b=0x00, a=0xFF)
     var bg_color = SDL_Color(r=0x11, g=0x11, b=0x44, a=0xFF)
     var text_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
     var win_text_color = SDL_Color(r=0xFF, g=0xDD, b=0x00, a=0xFF)
@@ -73,7 +72,6 @@ def main() raises:
     var board_rows = 6
     var board_width = board_cols * cell_size
     var board_height = board_rows * cell_size
-    var circle_radius = 32
 
     var selected_col = 3
     var prev_left = False
@@ -177,29 +175,8 @@ def main() raises:
                 selector_cx, 42, selector_cx + 8, 35, selector_color, 2
             )
 
-        # Board
-        renderer.draw_rect(0, 50, board_width, board_height, board_color)
-
-        for col in range(board_cols):
-            for row in range(board_rows):
-                var visual_row = board_rows - 1 - row
-                var cx = col * cell_size + cell_size // 2
-                var cy = 50 + visual_row * cell_size + cell_size // 2
-                var cell_idx = col * board_rows + row
-                var cell_val = Int(env.state[cell_idx])
-
-                if cell_val == 1:
-                    renderer.draw_circle(
-                        cx, cy, circle_radius, red_color, filled=True
-                    )
-                elif cell_val == 2:
-                    renderer.draw_circle(
-                        cx, cy, circle_radius, yellow_color, filled=True
-                    )
-                else:
-                    renderer.draw_circle(
-                        cx, cy, circle_radius, empty_color, filled=True
-                    )
+        # Board (background + pieces + grid) drawn by the env.
+        env.render_board(renderer)
 
         # Status bar
         renderer.draw_rect(0, 50 + board_height, board_width, 50, status_bg)

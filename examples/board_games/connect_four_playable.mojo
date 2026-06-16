@@ -32,13 +32,11 @@ def main() raises:
         width=560, height=530, fps=30, title="ConnectFour"
     )
 
-    # Colors
-    var board_color = SDL_Color(r=0x00, g=0x00, b=0xAA, a=0xFF)
-    var empty_color = SDL_Color(r=0x33, g=0x33, b=0x33, a=0xFF)
+    # Colors (the board itself is drawn by `env.render_board`; these are the
+    # play-script chrome: selector + status text).
     var red_color = SDL_Color(r=0xFF, g=0x22, b=0x22, a=0xFF)
     var yellow_color = SDL_Color(r=0xFF, g=0xDD, b=0x00, a=0xFF)
     var bg_color = SDL_Color(r=0x11, g=0x11, b=0x44, a=0xFF)
-    var text_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
     var win_text_color = SDL_Color(r=0xFF, g=0xDD, b=0x00, a=0xFF)
     var selector_color = SDL_Color(r=0xFF, g=0xFF, b=0xFF, a=0xFF)
     var status_bg = SDL_Color(r=0x11, g=0x11, b=0x22, a=0xFF)
@@ -49,8 +47,6 @@ def main() raises:
     var board_rows = 6
     var board_width = board_cols * cell_size  # 560
     var board_height = board_rows * cell_size  # 480
-    var circle_radius = 32
-    var selector_y = 0  # top area used for selector indicator
 
     # Column selector
     var selected_col = 3
@@ -139,53 +135,8 @@ def main() raises:
                 selector_cx, 42, selector_cx + 8, 35, selector_color, 2
             )
 
-        # Draw board background
-        renderer.draw_rect(0, 50, board_width, board_height, board_color)
-
-        # Draw cells
-        for col in range(board_cols):
-            for row in range(board_rows):
-                # Visual: row 0 in env = bottom, so flip vertically
-                var visual_row = board_rows - 1 - row
-                var cx = col * cell_size + cell_size // 2
-                var cy = 50 + visual_row * cell_size + cell_size // 2
-
-                # Get cell value from env state (column-major: col*6+row)
-                var cell_idx = col * board_rows + row
-                var cell_val = Int(env.state[cell_idx])
-
-                if cell_val == 1:
-                    renderer.draw_circle(
-                        cx, cy, circle_radius, red_color, filled=True
-                    )
-                elif cell_val == 2:
-                    renderer.draw_circle(
-                        cx, cy, circle_radius, yellow_color, filled=True
-                    )
-                else:
-                    renderer.draw_circle(
-                        cx, cy, circle_radius, empty_color, filled=True
-                    )
-
-        # Draw grid lines over circles for visual separation
-        for i in range(1, board_cols):
-            renderer.draw_line(
-                i * cell_size,
-                50,
-                i * cell_size,
-                50 + board_height,
-                board_color,
-                1,
-            )
-        for i in range(1, board_rows):
-            renderer.draw_line(
-                0,
-                50 + i * cell_size,
-                board_width,
-                50 + i * cell_size,
-                board_color,
-                1,
-            )
+        # Draw the board (background + pieces + grid) via the env.
+        env.render_board(renderer)
 
         # Status bar at bottom (y=530-50..530)
         renderer.draw_rect(0, 50 + board_height, board_width, 50, status_bg)
