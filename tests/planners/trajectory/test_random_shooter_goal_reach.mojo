@@ -20,7 +20,7 @@ from std.testing import assert_true
 
 from layout import TileTensor, TensorLayout
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT as dtype
 from mojo_rl.planners.trajectory import (
     CategoricalRandomShooter,
     ScorePlanCallback,

@@ -24,7 +24,7 @@ from mojo_rl.envs.craftax_classic import (
 )
 from mojo_rl.envs.craftax_classic.state import STATE_SIZE
 from mojo_rl.envs.craftax_classic.constants import ACTION_NOOP, ACTION_RIGHT
-from mojo_rl.nn import dtype
+from mojo_rl.nn2.constants import DT as dtype
 
 
 @always_inline

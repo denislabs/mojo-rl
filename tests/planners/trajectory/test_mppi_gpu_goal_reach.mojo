@@ -32,7 +32,7 @@ from std.random import seed as _set_seed
 from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype, TPB
+from mojo_rl.nn2.constants import DT as dtype, TPB
 from mojo_rl.planners.trajectory import MPPIGPUBatched, RolloutCallbackGPU
 
 

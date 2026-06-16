@@ -35,7 +35,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.envs.pendulum import PendulumV2
 from mojo_rl.envs.pendulum.constants import PConstants, PendulumLayout
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT as dtype
 
 
 # =============================================================================

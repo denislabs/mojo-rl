@@ -11,7 +11,7 @@ Run:  pixi run mojo run -I . tests/planners/test_continuous_cem.mojo
 from layout import TileTensor, TensorLayout, Idx, row_major
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn2.constants import DT as dtype
 from mojo_rl.planners.trajectory.score_callback import ScorePlanCallback
 from mojo_rl.planners.trajectory import (
     ContinuousCEMOptimizer,
