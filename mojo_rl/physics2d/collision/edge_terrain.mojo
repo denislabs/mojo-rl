@@ -450,7 +450,7 @@ struct EdgeTerrainCollision(CollisionSystem):
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), ImmutAnyOrigin
         ],
         contacts: LayoutTensor[
             dtype,
@@ -653,7 +653,7 @@ struct EdgeTerrainCollision(CollisionSystem):
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), ImmutAnyOrigin
         ],
         n_edges: Int,
         contacts: LayoutTensor[
@@ -876,7 +876,7 @@ struct EdgeTerrainCollision(CollisionSystem):
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), ImmutAnyOrigin
         ],
         n_edges: Int,
         contacts: LayoutTensor[
