@@ -101,11 +101,16 @@ def apply_obs_norm_kernel[
     obs: LayoutTensor[
         gpu_dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
     ],
-    mean: LayoutTensor[gpu_dtype, Layout.row_major(OBS_DIM), MutAnyOrigin],
-    var_: LayoutTensor[gpu_dtype, Layout.row_major(OBS_DIM), MutAnyOrigin],
+    mean: LayoutTensor[gpu_dtype, Layout.row_major(OBS_DIM), ImmutAnyOrigin],
+    var_: LayoutTensor[gpu_dtype, Layout.row_major(OBS_DIM), ImmutAnyOrigin],
     eps: Scalar[gpu_dtype],
 ):
-    """One thread per (env, dim); writes obs ← (o − μ) / √(σ² + ε) in place."""
+    """One thread per (env, dim); writes obs ← (o − μ) / √(σ² + ε) in place.
+
+    `mean`/`var_` are read-only here (declared `ImmutAnyOrigin`) so the
+    apply path can build their views from a non-`mut` `self` without the
+    deprecated UnsafePointer->MutAnyOrigin laundering.
+    """
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= BATCH * OBS_DIM:
         return
@@ -204,21 +209,23 @@ struct ObsNormStats[OBS_DIM: Int](Movable):
 
     def _update[
         BATCH: Int
-    ](mut self, ctx: DeviceContext, obs_buf: DeviceBuffer[gpu_dtype]) raises:
+    ](mut self, ctx: DeviceContext, mut obs_buf: DeviceBuffer[gpu_dtype]) raises:
+        # Direct-from-buffer construction: origin inferred from each binding,
+        # no `.unsafe_ptr()` and no MutAnyOrigin escape hatch. `obs_buf` is
+        # `mut` and `self` is `mut`, so all four views are mut=True, matching
+        # the writing kernel's MutAnyOrigin params.
         var obs = LayoutTensor[
-            gpu_dtype,
-            Layout.row_major(BATCH, Self.OBS_DIM),
-            MutAnyOrigin,
-        ](obs_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH, Self.OBS_DIM)
+        ](obs_buf)
         var mean_t = LayoutTensor[
-            gpu_dtype, Layout.row_major(Self.OBS_DIM), MutAnyOrigin
-        ](self.mean_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(Self.OBS_DIM)
+        ](self.mean_buf)
         var var_t = LayoutTensor[
-            gpu_dtype, Layout.row_major(Self.OBS_DIM), MutAnyOrigin
-        ](self.var_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(Self.OBS_DIM)
+        ](self.var_buf)
         var count_t = LayoutTensor[
-            gpu_dtype, Layout.row_major(1), MutAnyOrigin
-        ](self.count_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(1)
+        ](self.count_buf)
 
         comptime kernel = update_obs_norm_kernel[BATCH, Self.OBS_DIM]
         comptime BLOCKS = (Self.OBS_DIM + _TPB_UPDATE - 1) // _TPB_UPDATE
@@ -233,18 +240,20 @@ struct ObsNormStats[OBS_DIM: Int](Movable):
 
     def _apply[
         BATCH: Int
-    ](self, ctx: DeviceContext, obs_buf: DeviceBuffer[gpu_dtype]) raises:
+    ](self, ctx: DeviceContext, mut obs_buf: DeviceBuffer[gpu_dtype]) raises:
+        # `obs_buf` is `mut` (apply writes in place) -> obs view is mut=True.
+        # `self` is non-`mut`, so mean/var views are mut=False; the apply
+        # kernel reads them (ImmutAnyOrigin params), so this matches without
+        # the deprecated immutable->mutable laundering.
         var obs = LayoutTensor[
-            gpu_dtype,
-            Layout.row_major(BATCH, Self.OBS_DIM),
-            MutAnyOrigin,
-        ](obs_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH, Self.OBS_DIM)
+        ](obs_buf)
         var mean_t = LayoutTensor[
-            gpu_dtype, Layout.row_major(Self.OBS_DIM), MutAnyOrigin
-        ](self.mean_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(Self.OBS_DIM)
+        ](self.mean_buf)
         var var_t = LayoutTensor[
-            gpu_dtype, Layout.row_major(Self.OBS_DIM), MutAnyOrigin
-        ](self.var_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(Self.OBS_DIM)
+        ](self.var_buf)
 
         comptime kernel = apply_obs_norm_kernel[BATCH, Self.OBS_DIM]
         comptime TOTAL = BATCH * Self.OBS_DIM
