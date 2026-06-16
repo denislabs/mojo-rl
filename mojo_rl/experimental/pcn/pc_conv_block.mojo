@@ -34,9 +34,9 @@ from std.gpu.host import DeviceContext
 from std.memory import alloc
 from std.sys import CompilationTarget
 
-from mojo_rl.nn.constants import TPB
-from mojo_rl.nn.initializer import Initializer
-from mojo_rl.nn.autodiff.apple_cblas import apple_sgemm_accum
+from .pc_constants import TPB
+from .pc_initializer import PCInitializer
+from .pc_apple_cblas import apple_sgemm_accum
 
 from .predictive_model import PCActivation, PCReLU, PCBlockTrait
 
@@ -83,18 +83,20 @@ struct ConvPCBlock[
     # =========================================================================
 
     @staticmethod
-    def initialize_params[
-        INIT: Initializer, dtype: DType = DType.float32
+    def pc_init_params[
+        INIT: PCInitializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-    ):
+    ) raises:
+        """nn init: conv W via INIT.fill(conv fan_in/out); zero per-channel b.
+        """
         comptime W_SIZE = Self.out_channels * Self.col_size
         var W_view = LayoutTensor[
             dtype, Layout.row_major(W_SIZE), MutAnyOrigin
         ](params.ptr)
-        INIT.init[
+        INIT.fill[
             W_SIZE,
             Self.in_channels * Self.kernel_size * Self.kernel_size,
             Self.out_channels * Self.kernel_size * Self.kernel_size,
@@ -374,8 +376,12 @@ struct ConvPCBlock[
                         for c in range(Self.in_channels):
                             for kh in range(Self.kernel_size):
                                 for kw in range(Self.kernel_size):
-                                    var ih = oh * Self.stride - Self.padding + kh
-                                    var iw = ow * Self.stride - Self.padding + kw
+                                    var ih = (
+                                        oh * Self.stride - Self.padding + kh
+                                    )
+                                    var iw = (
+                                        ow * Self.stride - Self.padding + kw
+                                    )
                                     if (
                                         ih >= 0
                                         and ih < Self.in_h
@@ -395,7 +401,8 @@ struct ConvPCBlock[
                                             + iw
                                         )
                                         zp[b * Self.IN_DIM + in_idx] += dcp[
-                                            b * Self.CACHE + s * Self.col_size
+                                            b * Self.CACHE
+                                            + s * Self.col_size
                                             + c_k
                                         ]
             dcol.free()
@@ -577,7 +584,8 @@ struct ConvPCBlock[
                                                 + iw
                                             )
                                             gp[oc * Self.col_size + c_k] += (
-                                                -g * ap[b * Self.IN_DIM + in_idx]
+                                                -g
+                                                * ap[b * Self.IN_DIM + in_idx]
                                             )
                     gp[W_SIZE + oc] += -db_acc
 
@@ -617,7 +625,12 @@ struct ConvPCBlock[
                 for kw in range(Self.kernel_size):
                     var ih = oh * Self.stride - Self.padding + kh
                     var iw = ow * Self.stride - Self.padding + kw
-                    if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
+                    if (
+                        ih >= 0
+                        and ih < Self.in_h
+                        and iw >= 0
+                        and iw < Self.in_w
+                    ):
                         var c_k = (
                             c * Self.kernel_size * Self.kernel_size
                             + kh * Self.kernel_size
@@ -735,7 +748,12 @@ struct ConvPCBlock[
                 for ow in range(Self.out_w):
                     var ih = oh * Self.stride - Self.padding + kh
                     var iw = ow * Self.stride - Self.padding + kw
-                    if ih >= 0 and ih < Self.in_h and iw >= 0 and iw < Self.in_w:
+                    if (
+                        ih >= 0
+                        and ih < Self.in_h
+                        and iw >= 0
+                        and iw < Self.in_w
+                    ):
                         var s = oh * Self.out_w + ow
                         var in_idx = (
                             c * Self.in_h * Self.in_w + ih * Self.in_w + iw

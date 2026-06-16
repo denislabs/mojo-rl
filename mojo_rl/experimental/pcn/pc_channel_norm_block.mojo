@@ -26,8 +26,8 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.math import sqrt
 
-from mojo_rl.nn.constants import TPB
-from mojo_rl.nn.initializer import Initializer
+from .pc_constants import TPB
+from .pc_initializer import PCInitializer
 
 from .predictive_model import PCBlockTrait
 
@@ -50,13 +50,14 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         pass
 
     @staticmethod
-    def initialize_params[
-        INIT: Initializer, dtype: DType = DType.float32
+    def pc_init_params[
+        INIT: PCInitializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-    ):
+    ) raises:
+        """nn init: per-channel γ = 1 (INIT unused — normalization scale)."""
         for c in range(Self.channels):
             params.ptr[c] = Scalar[dtype](1)
 
@@ -247,7 +248,9 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         params: LayoutTensor[
             dtype, Layout.row_major(Self.channels), MutAnyOrigin
         ],
-        mu: LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin],
+        mu: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin
+        ],
         a_below: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin
         ],
@@ -277,7 +280,9 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         x_above: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin
         ],
-        mu: LayoutTensor[dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin],
+        mu: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin
+        ],
         eps: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin
         ],
@@ -334,7 +339,11 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         var inv_r = 1.0 / sqrt(ss / Float64(Self.spatial) + _RMS_EPS)
         var dot: Float64 = 0.0
         for s in range(Self.spatial):
-            dot += Float64(z_in.ptr[off + s]) * Float64(x_below.ptr[off + s]) * inv_r
+            dot += (
+                Float64(z_in.ptr[off + s])
+                * Float64(x_below.ptr[off + s])
+                * inv_r
+            )
         var dot_over = dot / Float64(Self.spatial)
         for s in range(Self.spatial):
             var n_s = Float64(x_below.ptr[off + s]) * inv_r
@@ -520,7 +529,11 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         comptime kg = Self._weight_grad_kernel[BATCH, dtype]
         var gblocks = (Self.channels + TPB - 1) // TPB
         ctx.enqueue_function[kg](
-            eps_above, a_below, inv_r, grads,
-            grid_dim=(gblocks,), block_dim=(TPB,),
+            eps_above,
+            a_below,
+            inv_r,
+            grads,
+            grid_dim=(gblocks,),
+            block_dim=(TPB,),
         )
         _ = inv_r_buf

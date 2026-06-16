@@ -1,28 +1,8 @@
-# AlphaZero: Self-Play RL with True Game Rules and MCTS
-#
-# Simple supervised training on (obs, mcts_policy, game_outcome) tuples.
-# One prediction network: f(obs) → (policy, value).
-# MCTS uses true game rules for expansion (env.step).
-#
-# Reference: Silver et al., 2017
+# AlphaZero on nn + planners.tree_search MCTS (Phase A of the zero-series port).
 
-from .configs import (
-    AlphaZeroConfig,
-    AlphaZeroTicTacToeConfig,
-    AlphaZeroTicTacToeCNNConfig,
-    AlphaZeroTicTacToeResNetConfig,
-    AlphaZeroConnectFourConfig,
-    AlphaZeroConnectFourCNNConfig,
-    AlphaZeroConnectFourResNetConfig,
-    AlphaZeroConnectFourFusedResNetConfig,
-    AlphaZeroChessConfig,
-    AlphaZeroCartPoleConfig,
-)
-from .strategies import (
-    BoardAugmenter,
-    IdentityAugmenter,
-    D4SquareAugmenter,
-    HFlipColumnAugmenter,
-)
-from .state import AlphaZeroCPUState, AlphaZeroGPUState
-from .alphazero import GenericAlphaZeroAgent
+from .nets import AZMLPNet
+from .agent import AlphaZeroAgent
+from .selfplay import run_alphazero_selfplay
+from .selfplay_gumbel import run_alphazero_gumbel_selfplay
+from .selfplay_arena import run_alphazero_selfplay_arena, ArenaRunResult
+from .selfplay_arena_gumbel import run_alphazero_selfplay_arena_gumbel

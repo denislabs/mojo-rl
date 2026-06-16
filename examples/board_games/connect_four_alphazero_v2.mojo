@@ -1,7 +1,7 @@
-"""AlphaZero on Connect Four (deep_agents2 / nn2) — full GPU with remote logging.
+"""AlphaZero on Connect Four (deep_agents / nn) — full GPU with remote logging.
 
 Second-generation port of `connect_four_alphazero.mojo`. Uses the config-free
-nn2 net torsos (`AZConnectFourResNet` — conv stem → 5 identity-skip ResBlocks →
+nn net torsos (`AZConnectFourResNet` — conv stem → 5 identity-skip ResBlocks →
 FC policy/value heads, 128 filters, the closest match to the original AlphaZero
 backbone) + the `AlphaZeroAgent` facade, and exercises the production telemetry:
 two pluggable `GPUEvaluator` opponents (5-ply minimax + random), a per-report
@@ -35,17 +35,18 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.alphazero.nets import AZConnectFourResNet
-from mojo_rl.deep_agents2.alphazero.agent import AlphaZeroAgent
-from mojo_rl.deep_agents2.zero.symmetries import HFlipColumnAugmenter
-from mojo_rl.deep_agents2.zero.evaluators import (
-    RandomOpponent, GPUMinimaxConnectFour,
+from mojo_rl.deep_agents.alphazero.nets import AZConnectFourResNet
+from mojo_rl.deep_agents.alphazero.agent import AlphaZeroAgent
+from mojo_rl.deep_agents.zero.symmetries import HFlipColumnAugmenter
+from mojo_rl.deep_agents.zero.evaluators import (
+    RandomOpponent,
+    GPUMinimaxConnectFour,
 )
 from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
 
 def main() raises:
-    print("=== AlphaZero on Connect Four (deep_agents2 / nn2) ===")
+    print("=== AlphaZero on Connect Four (deep_agents / nn) ===")
     print()
 
     # ── Logger setup ────────────────────────────────────────────
@@ -55,14 +56,23 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="AlphaZero Connect Four (nn2)",
+        run_name="AlphaZero Connect Four (nn)",
         buffer_size=22,
         api_key=api_key,
     )
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "ConnectFour")
     logger.set_config("network", "AZConnectFourResNet[F=128,NB=5,FC=128]")
-    logger.set_config("framework", "deep_agents2/nn2")
+    logger.set_config("framework", "deep_agents/nn")
+    # logger.set_config("charts", json.dumps([
+    #     {
+    #         "title": "Eval vs MinMax",
+    #         "metrics": ["eval2_win", "eval2_draw", "eval2_loss"],
+    #         "type": "stacked-bar",      # or "stacked-area" / "line"
+    #         "normalize": True,          # 100%-stacked → win-rate view
+    #         "colors": ["#22c55e", "#eab308", "#ef4444"],  # optional
+    #     },
+    # ]))
 
     comptime OBS = 126
     comptime ACT = 7
@@ -75,11 +85,43 @@ def main() raises:
     comptime Aug = HFlipColumnAugmenter[ROWS=6, COLS=7, PLANES=3]
 
     var ctx = DeviceContext()
+    # NUM_SIMS=500 / MAX_NODES=1024 match the legacy AlphaZero.jl-tuned config
+    # (legacy used 600 sims / 1024 nodes); 100 sims gave far weaker MCTS targets.
+    # NOTE: nn GPU Conv2D now uses im2col + tensor-core GEMM (was a naive
+    # direct-conv kernel that made conv nets 5-10× slower) — the ResNet torso
+    # is no longer the per-eval bottleneck. BATCH_SIMS still batches the MCTS
+    # rounds (see the tuning notes below).
     var agent = AlphaZeroAgent[
-        "gpu", Env, Net, N_ENVS=64, NUM_SIMS=100, MAX_NODES=256,
-        BATCH=128, CAP=1_000_000, MAX_TRAJ=42,
+        "gpu",
+        Env,
+        Net,
+        N_ENVS=64,
+        NUM_SIMS=500,
+        MAX_NODES=1024,
+        BATCH=128,
+        CAP=1_000_000,
+        MAX_TRAJ=42,
     ](ctx, lr=0.002)
 
+    # ── Remaining deltas vs the legacy AlphaZero.jl-tuned config ──────────────
+    # Optimizer stability is now wired: v2 uses AdamW with `max_grad_norm=1.0`
+    # + `weight_decay=1e-4` (set on the train_arena call below), matching the
+    # legacy config. The first 10k-move run without clipping reproduced the
+    # documented failure exactly — policy CE bottomed ~1.18 at move ~2000 then
+    # climbed back toward uniform (entropy ↑, vs-Random winrate 69%→62%), and
+    # the arena rejected every challenger after the first promotion. Clipping is
+    # the #1 fix; WD regularizes the 5-block ResNet. If CE still climbs, drop
+    # lr 2e-3 → 1e-3 next.
+    #
+    # Remaining (still hardcoded in selfplay_arena.mojo, apply if it stalls):
+    #   * batch_sims: v2 runs 1 (sequential). Legacy ran 6 → ~6× MCTS speedup at
+    #     500-600 sims, plus within-round virtual-loss diversity.
+    #   * Dirichlet alpha: v2 = 0.25; legacy = 1.0 (more uniform root noise for C4).
+    #   * temp_min after the schedule: v2 = 0.0 (greedy); legacy = 0.3 (soft).
+    #   * invalid_action_penalty: v2 = 0; legacy = 1.0 (penalizes illegal-move
+    #     policy mass). c_puct 1.0 here ≈ legacy's 2.0 (legacy used raw Q, v2
+    #     MinMax-normalizes Q on the GPU path), so do NOT copy 2.0.
+    #
     # Full AlphaZero: best/learner Arena gating + horizontal-flip augmentation,
     # evaluated periodically vs 5-ply minimax (primary) and random (secondary).
     # Metrics flush to the logger; progress prints to stdout. `RESULT_IDX=43` is
@@ -94,6 +136,15 @@ def main() raises:
         RESULT_IDX=43,
         MAX_PLIES=42,
         EVAL_GAMES=64,
+        # Legacy/AlphaZero.jl sampled ∝ visits for the first 20 plies (then
+        # temp=0.3, not full greedy). 8 was a guess; 20 matches the reference.
+        TEMP_MOVES=20,
+        # SERIAL MCTS. BATCH_SIMS=5 rode the known-biased frozen-tree batched
+        # path (duplicate edge re-expansion + node leak; visit-policy targets
+        # distorted up to 2× per action — test_az_search_gpu_batched_bias) and
+        # was never convergence-validated; every green AZ run used 1. Batched
+        # GPU search is the Gumbel orchestrator's job (sequential halving).
+        BATCH_SIMS=1,
     ](
         iterations=40_000,
         learning_starts=200,
@@ -108,6 +159,11 @@ def main() raises:
         do_eval2=True,
         verbose=True,
         logger=UnsafePointer(to=logger),
+        # Stability (legacy AlphaZero.jl): clip grad norm to 1.0 + decoupled
+        # weight decay 1e-4. Without these the policy head diverged (CE climbed
+        # back past uniform after ~2000 moves) on this 5-block ResNet at lr=2e-3.
+        max_grad_norm=1.0,
+        weight_decay=1e-4,
     )
 
     logger.close()

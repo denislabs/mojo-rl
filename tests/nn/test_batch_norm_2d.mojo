@@ -1,358 +1,259 @@
-"""Gradient check for BatchNorm2D: finite-difference vs analytical backward.
+"""BatchNorm2D[C, H, W] smoke + parity tests (Phase 5, PORTING_PLAN.md).
 
-Tests both standalone BatchNorm2D and Conv2D+BN+ReLU pipeline.
+Mirrors `test_batch_norm_1d.mojo` for the spatial case. Stats are
+reduced over BATCH and H·W per channel, so `N_eff = BATCH·H·W`.
 """
 
-from std.math import exp, log, sqrt
-from std.memory import alloc, memset, UnsafePointer
-from layout import Layout, LayoutTensor
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.training import NetworkState
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.model import (
-    BatchNorm2D,
-    Conv2DLayer,
-    ReLU,
-    Linear,
-    Sequential,
-    Parallel,
-    FlattenLayer,
-)
-from mojo_rl.nn.optimizer import Adam
+from std.math import sqrt
+from std.memory import alloc
+from std.testing import assert_true
+from layout import TileTensor, row_major
+
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.primitives.batch_norm_2d import BatchNorm2D
+from mojo_rl.nn.initializer import Zero
 
 
-def test_bn_gradient_check() raises:
-    """Finite-difference gradient check for BatchNorm2D."""
-    print("=" * 60)
-    print("TEST: BatchNorm2D gradient check (C=4, H=2, W=2)")
-    print("=" * 60)
+def test_train_normalizes_per_channel() raises:
+    print("test_train_normalizes_per_channel ...")
+    comptime BATCH = 8
+    comptime C = 3
+    comptime HH = 2
+    comptime WW = 2
+    comptime FLAT = C * HH * WW
+    comptime N = BATCH * FLAT
+    comptime N_PER_CH = BATCH * HH * WW
+    var bn = BatchNorm2D[C, HH, WW].make[target="cpu", INIT=Zero]()
+    bn.training = True
 
-    comptime C = 4
-    comptime H = 2
-    comptime W = 2
-    comptime BN = BatchNorm2D[C, H, W]
-    comptime BATCH = 3
-    comptime DIM = C * H * W  # 16
-    comptime PS = BN.PARAM_SIZE  # 4*C = 16
-    comptime CS = BN.CACHE_SIZE
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    # Per-channel distinct means + per-position spread.
+    for b in range(BATCH):
+        for c in range(C):
+            for s in range(HH * WW):
+                var base = Float64(c) * 2.0  # channel-level mean offset
+                var jitter = 0.1 * Float64(b * (HH * WW) + s)
+                x[b * FLAT + c * (HH * WW) + s] = Scalar[DT](base + jitter)
 
-    # Random input
-    var input_data = alloc[Scalar[dtype]](BATCH * DIM)
-    for i in range(BATCH * DIM):
-        input_data[i] = Scalar[dtype](Float64(i % 7) * 0.3 - 0.9)
+    var x_t = TileTensor(x, row_major[BATCH, FLAT]())
+    var y_t = TileTensor(y, row_major[BATCH, FLAT]())
+    bn.forward["cpu", BATCH](x_t, output=y_t)
 
-    # Init params: gamma=1, beta=0, rmean=0, rvar=1
-    var params = alloc[Scalar[dtype]](PS)
+    var max_mean: Scalar[DT] = 0.0
+    var max_var:  Scalar[DT] = 0.0
     for c in range(C):
-        params[c] = Scalar[dtype](1.0)          # gamma
-        params[C + c] = Scalar[dtype](0.0)       # beta
-        params[2*C + c] = Scalar[dtype](0.0)     # running_mean
-        params[3*C + c] = Scalar[dtype](1.0)     # running_var
+        var mean: Scalar[DT] = 0.0
+        for b in range(BATCH):
+            for s in range(HH * WW):
+                mean += y[b * FLAT + c * (HH * WW) + s]
+        mean = mean / Scalar[DT](Float64(N_PER_CH))
+        var var_: Scalar[DT] = 0.0
+        for b in range(BATCH):
+            for s in range(HH * WW):
+                var d = y[b * FLAT + c * (HH * WW) + s] - mean
+                var_ += d * d
+        var_ = var_ / Scalar[DT](Float64(N_PER_CH))
+        var am = mean if mean >= Scalar[DT](0) else -mean
+        if am > max_mean:
+            max_mean = am
+        var dv = var_ - Scalar[DT](1.0)
+        var adv = dv if dv >= Scalar[DT](0) else -dv
+        if adv > max_var:
+            max_var = adv
+    print("  max |mean| =", max_mean, "  max |var-1| =", max_var)
+    assert_true(
+        max_mean < Scalar[DT](1e-5)
+        and max_var < Scalar[DT](1e-4),
+        "BN2D train output should be zero-mean unit-var per channel",
+    )
+    print("  ok")
 
-    # Forward
-    var output_data = alloc[Scalar[dtype]](BATCH * DIM)
-    var cache_data = alloc[Scalar[dtype]](BATCH * CS)
-    memset(output_data, 0, BATCH * DIM)
-    memset(cache_data, 0, BATCH * CS)
 
-    var inp = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](input_data)
-    var out = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](output_data)
-    var p = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
-    var c = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_data)
-    var s = LayoutTensor[dtype, Layout.row_major(BN.STATE_SIZE), MutAnyOrigin](
-        UnsafePointer[Scalar[dtype], MutAnyOrigin](unsafe_from_address=0)
+def test_running_stats_converge() raises:
+    print("test_running_stats_converge ...")
+    comptime BATCH = 4
+    comptime C = 2
+    comptime HH = 2
+    comptime WW = 2
+    comptime FLAT = C * HH * WW
+    comptime N = BATCH * FLAT
+    var bn = BatchNorm2D[C, HH, WW].make[target="cpu", INIT=Zero]()
+    bn.training = True
+
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    for b in range(BATCH):
+        for c in range(C):
+            for s in range(HH * WW):
+                var base = Scalar[DT](2.0) if c == 0 else Scalar[DT](-1.0)
+                var jit = Scalar[DT](0.1 * Float64(b * (HH * WW) + s))
+                x[b * FLAT + c * (HH * WW) + s] = base + jit
+
+    var x_t = TileTensor(x, row_major[BATCH, FLAT]())
+    var y_t = TileTensor(y, row_major[BATCH, FLAT]())
+    for _ in range(200):
+        bn.forward["cpu", BATCH](x_t, output=y_t)
+
+    for c in range(C):
+        var n_eff = Scalar[DT](Float64(BATCH * HH * WW))
+        var true_mean: Scalar[DT] = 0.0
+        for b in range(BATCH):
+            for s in range(HH * WW):
+                true_mean += x[b * FLAT + c * (HH * WW) + s]
+        true_mean = true_mean / n_eff
+        var true_var: Scalar[DT] = 0.0
+        for b in range(BATCH):
+            for s in range(HH * WW):
+                var d = x[b * FLAT + c * (HH * WW) + s] - true_mean
+                true_var += d * d
+        true_var = true_var / n_eff
+        var dm = bn.running_mean.val.cpu[c] - true_mean
+        var adm = dm if dm >= Scalar[DT](0) else -dm
+        var dv = bn.running_var.val.cpu[c] - true_var
+        var adv = dv if dv >= Scalar[DT](0) else -dv
+        print(
+            "  ch ", c,
+            ": μ run=", bn.running_mean.val.cpu[c], " true=", true_mean,
+            "  σ² run=", bn.running_var.val.cpu[c], " true=", true_var,
+        )
+        assert_true(
+            adm < Scalar[DT](1e-3),
+            "BN2D running mean should converge",
+        )
+        assert_true(
+            adv < Scalar[DT](1e-3),
+            "BN2D running var should converge",
+        )
+    print("  ok")
+
+
+def test_backward_fd() raises:
+    print("test_backward_fd ...")
+    comptime BATCH = 2
+    comptime C = 2
+    comptime HH = 2
+    comptime WW = 2
+    comptime FLAT = C * HH * WW
+    comptime N = BATCH * FLAT
+    var eps = Scalar[DT](1e-2)
+    var tol = Scalar[DT](2e-2)
+
+    var bn = BatchNorm2D[C, HH, WW].make[target="cpu", INIT=Zero]()
+    bn.training = True
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var x_p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y_pos: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y_neg: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    for i in range(N):
+        x[i] = Scalar[DT](-0.5 + 0.13 * Float64(i))
+        go[i] = Scalar[DT](0.3 + 0.07 * Float64(i))
+
+    var x_t = TileTensor(x, row_major[BATCH, FLAT]())
+    var xp_t = TileTensor(x_p, row_major[BATCH, FLAT]())
+    var y_t = TileTensor(y, row_major[BATCH, FLAT]())
+    var ypos_t = TileTensor(y_pos, row_major[BATCH, FLAT]())
+    var yneg_t = TileTensor(y_neg, row_major[BATCH, FLAT]())
+    var go_t = TileTensor(go, row_major[BATCH, FLAT]())
+    var gi_t = TileTensor(gi, row_major[BATCH, FLAT]())
+
+    bn.forward["cpu", BATCH](x_t, output=y_t)
+    bn.zero_grad["cpu"]()
+    bn.vjp["cpu", BATCH](go_t, gi_t)
+
+    var max_gi: Scalar[DT] = 0.0
+    for i in range(N):
+        var bn_p = BatchNorm2D[C, HH, WW].make[
+            target="cpu", INIT=Zero,
+        ]()
+        var bn_n = BatchNorm2D[C, HH, WW].make[
+            target="cpu", INIT=Zero,
+        ]()
+        bn_p.training = True
+        bn_n.training = True
+        for j in range(N):
+            x_p[j] = x[j]
+        x_p[i] = x[i] + eps
+        bn_p.forward["cpu", BATCH](xp_t, output=ypos_t)
+        x_p[i] = x[i] - eps
+        bn_n.forward["cpu", BATCH](xp_t, output=yneg_t)
+        var fd: Scalar[DT] = 0.0
+        for k in range(N):
+            fd += go[k] * (y_pos[k] - y_neg[k])
+        fd = fd / (Scalar[DT](2.0) * eps)
+        var d = gi[i] - fd
+        var ad = d if d >= Scalar[DT](0) else -d
+        if ad > max_gi:
+            max_gi = ad
+    print("  max |gi - fd| =", max_gi, " (tol=", tol, ")")
+    assert_true(
+        max_gi < tol,
+        "BN2D grad_input FD gradcheck failed",
     )
 
-    BN.forward[BATCH](inp, out, p, s, c)
+    # dgamma / dbeta per channel.
+    var max_dg: Scalar[DT] = 0.0
+    var max_db: Scalar[DT] = 0.0
+    for c in range(C):
+        var bn_p = BatchNorm2D[C, HH, WW].make[
+            target="cpu", INIT=Zero,
+        ]()
+        var bn_n = BatchNorm2D[C, HH, WW].make[
+            target="cpu", INIT=Zero,
+        ]()
+        bn_p.training = True
+        bn_n.training = True
+        bn_p.gamma.val.cpu[c] = Scalar[DT](1.0) + eps
+        bn_n.gamma.val.cpu[c] = Scalar[DT](1.0) - eps
+        bn_p.forward["cpu", BATCH](x_t, output=ypos_t)
+        bn_n.forward["cpu", BATCH](x_t, output=yneg_t)
+        var fd_dg: Scalar[DT] = 0.0
+        for k in range(N):
+            fd_dg += go[k] * (y_pos[k] - y_neg[k])
+        fd_dg = fd_dg / (Scalar[DT](2.0) * eps)
+        var d = bn.gamma.grd.cpu[c] - fd_dg
+        var ad = d if d >= Scalar[DT](0) else -d
+        if ad > max_dg:
+            max_dg = ad
 
-    print("Output sample 0 (first 8):", end="")
-    for i in range(8):
-        print("", Float64(Int(Float64(output_data[i]) * 1000)) / 1000.0, end="")
-    print()
-
-    # Backward with unit gradient
-    var grad_out = alloc[Scalar[dtype]](BATCH * DIM)
-    for i in range(BATCH * DIM):
-        grad_out[i] = Scalar[dtype](1.0)  # dL/dy = 1 everywhere
-
-    var grad_in = alloc[Scalar[dtype]](BATCH * DIM)
-    var grad_params = alloc[Scalar[dtype]](PS)
-    memset(grad_in, 0, BATCH * DIM)
-    memset(grad_params, 0, PS)
-
-    var go = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](grad_out)
-    var gi = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](grad_in)
-    var gp = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grad_params)
-
-    BN.backward[BATCH](go, gi, p, s, c, gp)
-
-    # Finite-difference check for grad_input
-    var eps_fd = Float64(1e-3)
-    var max_diff_input: Float64 = 0.0
-    for idx in range(BATCH * DIM):
-        var orig = Float64(input_data[idx])
-
-        # f(x + eps)
-        input_data[idx] = Scalar[dtype](orig + eps_fd)
-        var out_plus = alloc[Scalar[dtype]](BATCH * DIM)
-        memset(out_plus, 0, BATCH * DIM)
-        # Need fresh cache for each forward
-        var cache_plus = alloc[Scalar[dtype]](BATCH * CS)
-        memset(cache_plus, 0, BATCH * CS)
-        var inp_p = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](input_data)
-        var out_p = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_plus)
-        var c_p = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_plus)
-        # Reset running stats for clean forward
-        params[2*C] = 0; params[2*C+1] = 0; params[2*C+2] = 0; params[2*C+3] = 0
-        params[3*C] = 1; params[3*C+1] = 1; params[3*C+2] = 1; params[3*C+3] = 1
-        BN.forward[BATCH](inp_p, out_p, p, s, c_p)
-        var loss_plus: Float64 = 0.0
-        for j in range(BATCH * DIM):
-            loss_plus += Float64(out_plus[j])  # L = sum(output), so dL/dy = 1
-
-        # f(x - eps)
-        input_data[idx] = Scalar[dtype](orig - eps_fd)
-        var out_minus = alloc[Scalar[dtype]](BATCH * DIM)
-        memset(out_minus, 0, BATCH * DIM)
-        var cache_minus = alloc[Scalar[dtype]](BATCH * CS)
-        memset(cache_minus, 0, BATCH * CS)
-        var inp_m = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](input_data)
-        var out_m = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_minus)
-        var c_m = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_minus)
-        params[2*C] = 0; params[2*C+1] = 0; params[2*C+2] = 0; params[2*C+3] = 0
-        params[3*C] = 1; params[3*C+1] = 1; params[3*C+2] = 1; params[3*C+3] = 1
-        BN.forward[BATCH](inp_m, out_m, p, s, c_m)
-        var loss_minus: Float64 = 0.0
-        for j in range(BATCH * DIM):
-            loss_minus += Float64(out_minus[j])
-
-        input_data[idx] = Scalar[dtype](orig)
-
-        var fd_grad = (loss_plus - loss_minus) / (2.0 * eps_fd)
-        var analytical_grad = Float64(grad_in[idx])
-        var diff = fd_grad - analytical_grad
-        if diff < 0:
-            diff = -diff
-        if diff > max_diff_input:
-            max_diff_input = diff
-
-        out_plus.free()
-        out_minus.free()
-        cache_plus.free()
-        cache_minus.free()
-
-    print("Max |fd_grad - analytical_grad| for input:", max_diff_input)
-    if max_diff_input < 0.01:
-        print("PASS: Input gradient check")
-    else:
-        print("FAIL: Input gradient check (threshold 0.01)")
-
-    # Finite-difference check for gamma and beta params
-    var max_diff_params: Float64 = 0.0
-    for pidx in range(2 * C):  # Only gamma and beta (not running stats)
-        var orig = Float64(params[pidx])
-
-        params[pidx] = Scalar[dtype](orig + eps_fd)
-        # Reset running stats
-        for rc in range(C):
-            params[2*C + rc] = 0; params[3*C + rc] = 1
-        var out_pp = alloc[Scalar[dtype]](BATCH * DIM)
-        var cache_pp = alloc[Scalar[dtype]](BATCH * CS)
-        memset(out_pp, 0, BATCH * DIM)
-        memset(cache_pp, 0, BATCH * CS)
-        var out_pp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_pp)
-        var c_pp = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_pp)
-        BN.forward[BATCH](inp, out_pp_t, p, s, c_pp)
-        var lp: Float64 = 0.0
-        for j in range(BATCH * DIM):
-            lp += Float64(out_pp[j])
-
-        params[pidx] = Scalar[dtype](orig - eps_fd)
-        for rc in range(C):
-            params[2*C + rc] = 0; params[3*C + rc] = 1
-        var out_pm = alloc[Scalar[dtype]](BATCH * DIM)
-        var cache_pm = alloc[Scalar[dtype]](BATCH * CS)
-        memset(out_pm, 0, BATCH * DIM)
-        memset(cache_pm, 0, BATCH * CS)
-        var out_pm_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_pm)
-        var c_pm = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_pm)
-        BN.forward[BATCH](inp, out_pm_t, p, s, c_pm)
-        var lm: Float64 = 0.0
-        for j in range(BATCH * DIM):
-            lm += Float64(out_pm[j])
-
-        params[pidx] = Scalar[dtype](orig)
-
-        var fd = (lp - lm) / (2.0 * eps_fd)
-        var anal = Float64(grad_params[pidx])
-        var d = fd - anal
-        if d < 0:
-            d = -d
-        if d > max_diff_params:
-            max_diff_params = d
-
-        out_pp.free()
-        out_pm.free()
-        cache_pp.free()
-        cache_pm.free()
-
-    print("Max |fd_grad - analytical_grad| for params:", max_diff_params)
-    if max_diff_params < 0.01:
-        print("PASS: Param gradient check")
-    else:
-        print("FAIL: Param gradient check (threshold 0.01)")
-
-    input_data.free()
-    params.free()
-    output_data.free()
-    cache_data.free()
-    grad_out.free()
-    grad_in.free()
-    grad_params.free()
-
-
-def test_cnn_bn_learns() raises:
-    """Test: can a small Conv+BN+ReLU network learn on CPU?"""
-    print()
-    print("=" * 60)
-    print("TEST: Small Conv+BN+ReLU network learning (C4 board)")
-    print("=" * 60)
-
-    # Small network: Conv+BN+ReLU → Flatten → Linear → Parallel
-    comptime SmallNet = Sequential[
-        Conv2DLayer[3, 16, 3, 1, 1, 6, 7],
-        BatchNorm2D[16, 6, 7],
-        ReLU[16 * 6 * 7],
-        FlattenLayer[16 * 6 * 7],
-        Linear[16 * 6 * 7, 8],  # 7 policy + 1 value
-    ]
-    comptime Opt = Adam[LR=0.001]
-    comptime BATCH = 8
-    comptime OBS = 126
-    comptime OUT = 8  # 7 + 1
-
-    print("PARAM_SIZE:", SmallNet.PARAM_SIZE)
-
-    var state = NetworkState[SmallNet, Opt]()
-    state.initialize[Kaiming[]]()
-
-    # Create fake data
-    var obs = alloc[Scalar[dtype]](BATCH * OBS)
-    memset(obs, 0, BATCH * OBS)
-    # Fill plane 2 (empty)
-    for b in range(BATCH):
-        for i in range(42):
-            obs[b * OBS + 84 + i] = Scalar[dtype](1.0)
-    # Add some pieces for variety
-    obs[1 * OBS + 3] = Scalar[dtype](1.0)  # piece at col 3
-    obs[1 * OBS + 84 + 3] = Scalar[dtype](0.0)
-    obs[2 * OBS + 0] = Scalar[dtype](1.0)
-    obs[2 * OBS + 84 + 0] = Scalar[dtype](0.0)
-
-    # Target: action 3 for all samples, value +1
-    var target_pol = alloc[Scalar[dtype]](BATCH * 7)
-    var target_val = alloc[Scalar[dtype]](BATCH)
-    memset(target_pol, 0, BATCH * 7)
-    for b in range(BATCH):
-        target_pol[b * 7 + 3] = Scalar[dtype](1.0)
-        target_val[b] = Scalar[dtype](1.0)
-
-    var pred = alloc[Scalar[dtype]](BATCH * OUT)
-    var cache = alloc[Scalar[dtype]](BATCH * SmallNet.CACHE_SIZE)
-    var grad_out = alloc[Scalar[dtype]](BATCH * OUT)
-    var grad_in = alloc[Scalar[dtype]](BATCH * OBS)
-
-    var obs_t = LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin](obs)
-    var pred_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin](pred)
-    var cache_t = LayoutTensor[dtype, Layout.row_major(BATCH, SmallNet.CACHE_SIZE), MutAnyOrigin](cache)
-
-    # Training loop
-    var init_loss: Float64 = 0.0
-    for step in range(100):
-        memset(pred, 0, BATCH * OUT)
-        memset(cache, 0, BATCH * SmallNet.CACHE_SIZE)
-
-        SmallNet.forward[BATCH](obs_t, pred_t, state.params_view(), state.model_state_view(), cache_t)
-
-        # Compute CE loss + gradient for policy
-        var batch_loss: Float64 = 0.0
-        var inv_batch = Scalar[dtype](1.0 / Float64(BATCH))
-        for b in range(BATCH):
-            var max_l: Float64 = -1e18
-            for a in range(7):
-                var l = Float64(pred[b * OUT + a])
-                if l > max_l:
-                    max_l = l
-            var sum_e: Float64 = 0.0
-            for a in range(7):
-                sum_e += exp(Float64(pred[b * OUT + a]) - max_l)
-            for a in range(7):
-                var prob = exp(Float64(pred[b * OUT + a]) - max_l) / sum_e
-                var target = Float64(target_pol[b * 7 + a])
-                if target > 0.01 and prob > 1e-8:
-                    batch_loss -= target * log(prob)
-                grad_out[b * OUT + a] = Scalar[dtype]((prob - Float64(target_pol[b * 7 + a])) * Float64(inv_batch))
-            # Value MSE gradient
-            var raw_v = Float64(pred[b * OUT + 7])
-            var ev_p = exp(raw_v)
-            var ev_n = exp(-raw_v)
-            var tanh_v = (ev_p - ev_n) / (ev_p + ev_n)
-            var dtanh = 1.0 - tanh_v * tanh_v
-            grad_out[b * OUT + 7] = Scalar[dtype](2.0 * (tanh_v - Float64(target_val[b])) * dtanh * Float64(inv_batch))
-        batch_loss /= Float64(BATCH)
-
-        if step == 0:
-            init_loss = batch_loss
-
-        # Backward
-        state.zero_grads()
-        var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin](grad_out)
-        memset(grad_in, 0, BATCH * OBS)
-        var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, OBS), MutAnyOrigin](grad_in)
-        var grads_v = state.grads_view()
-        SmallNet.backward[BATCH](go_t, gi_t, state.params_view(), state.model_state_view(), cache_t, grads_v)
-
-        state.optimizer_step()
-
-        if step % 25 == 0 or step == 99:
-            print("  Step", step, "| loss:", Float64(Int(batch_loss * 1000)) / 1000.0)
-
-    # Final forward
-    memset(pred, 0, BATCH * OUT)
-    SmallNet.forward[BATCH](obs_t, pred_t, state.params_view(), state.model_state_view())
-    var final_loss: Float64 = 0.0
-    for b in range(BATCH):
-        var max_l: Float64 = -1e18
-        for a in range(7):
-            var l = Float64(pred[b * OUT + a])
-            if l > max_l:
-                max_l = l
-        var sum_e: Float64 = 0.0
-        for a in range(7):
-            sum_e += exp(Float64(pred[b * OUT + a]) - max_l)
-        for a in range(7):
-            var prob = exp(Float64(pred[b * OUT + a]) - max_l) / sum_e
-            var target = Float64(target_pol[b * 7 + a])
-            if target > 0.01 and prob > 1e-8:
-                final_loss -= target * log(prob)
-    final_loss /= Float64(BATCH)
-
-    print("Initial loss:", Float64(Int(init_loss * 1000)) / 1000.0,
-          "| Final loss:", Float64(Int(final_loss * 1000)) / 1000.0)
-    if final_loss < init_loss * 0.5:
-        print("PASS: Conv+BN+ReLU network learned")
-    else:
-        print("FAIL: Conv+BN+ReLU network did not learn")
-
-    obs.free()
-    target_pol.free()
-    target_val.free()
-    pred.free()
-    cache.free()
-    grad_out.free()
-    grad_in.free()
+        var bn_p2 = BatchNorm2D[C, HH, WW].make[
+            target="cpu", INIT=Zero,
+        ]()
+        var bn_n2 = BatchNorm2D[C, HH, WW].make[
+            target="cpu", INIT=Zero,
+        ]()
+        bn_p2.training = True
+        bn_n2.training = True
+        bn_p2.beta.val.cpu[c] = eps
+        bn_n2.beta.val.cpu[c] = -eps
+        bn_p2.forward["cpu", BATCH](x_t, output=ypos_t)
+        bn_n2.forward["cpu", BATCH](x_t, output=yneg_t)
+        var fd_db: Scalar[DT] = 0.0
+        for k in range(N):
+            fd_db += go[k] * (y_pos[k] - y_neg[k])
+        fd_db = fd_db / (Scalar[DT](2.0) * eps)
+        var d2 = bn.beta.grd.cpu[c] - fd_db
+        var ad2 = d2 if d2 >= Scalar[DT](0) else -d2
+        if ad2 > max_db:
+            max_db = ad2
+    print("  max |dgamma - fd| =", max_dg, "  max |dbeta - fd| =", max_db)
+    assert_true(
+        max_dg < tol and max_db < tol,
+        "BN2D dgamma/dbeta FD gradcheck failed",
+    )
+    print("  ok")
 
 
 def main() raises:
-    test_bn_gradient_check()
-    test_cnn_bn_learns()
+    print("=" * 70)
+    print("BatchNorm2D[C, H, W] smoke (Phase 5, PORTING_PLAN.md)")
+    print("=" * 70)
+    test_train_normalizes_per_channel()
+    test_running_stats_converge()
+    test_backward_fd()
+    print("=" * 70)
+    print("ALL PASSED")
+    print("=" * 70)

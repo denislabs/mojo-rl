@@ -380,7 +380,7 @@ struct AtariRenderer(Movable):
     def get_pixel_buffer(self) -> UnsafePointer[UInt8, MutAnyOrigin]:
         """Get the pixel buffer pointer for external rendering.
 
-        Use with run_frame_with_video() which fills the buffer
+        Use with run_frame_video() which fills the buffer
         scanline-by-scanline during CPU execution.
         """
         return self.pixel_buf
@@ -389,7 +389,7 @@ struct AtariRenderer(Movable):
         """Upload the pixel buffer to screen (call after buffer is filled).
 
         The buffer should already contain a complete 160×210 BGRA frame,
-        either from run_frame_with_video() or render_frame_bgra().
+        either from run_frame_video() or render_frame_bgra().
         """
         if not self.initialized:
             if not self.init_display():

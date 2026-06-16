@@ -1,18 +1,27 @@
 """ConvPCBlock parity spike (P0) — see docs/PCN_CONV_DESIGN.md.
 
 Validates the convolutional PC math mapping by checking ConvPCBlock's three
-core ops against the nn Conv2D autodiff primitive as an INDEPENDENT oracle
-(two implementations agreeing). Per Salvatori et al. 2021, PC inference on a
-conv graph reproduces backprop gradients exactly, so Conv2D.vjp is an exact
+core ops against an INDEPENDENT naive direct-convolution oracle (two
+implementations agreeing). Per Salvatori et al. 2021, PC inference on a conv
+graph reproduces backprop gradients exactly, so the conv backward IS an exact
 oracle (modulo the PC sign convention and the activation-first ordering):
 
-  predict   μ          == Conv2D.eval(a_below)           (a_below = ACT(x_below))
-  pull_back z_below    == Conv2D.vjp grad_input          (w.r.t a_below)
-  weight_grad W-part   == −(Conv2D.vjp grad_W)           (PC bakes the −sign)
-  weight_grad b-part   == −(Conv2D.vjp grad_b)
+  predict   μ          == conv_eval(a_below)              (a_below = ACT(x_below))
+  pull_back z_below    == conv_vjp grad_input             (w.r.t a_below)
+  weight_grad W-part   == −(conv_vjp grad_W)              (PC bakes the −sign)
+  weight_grad b-part   == −(conv_vjp grad_b)
 
-Conv2D is instantiated with USE_MAX_KERNELS=False so both eval and vjp take the
-fully-naive deterministic CPU path — a clean oracle independent of BLAS.
+The oracle is a self-contained naive nested-loop conv (eval + grad_input +
+grad_W + grad_b) — a different implementation from ConvPCBlock's im2col + BLAS
+path, so the agreement is a genuine cross-check. (It replaced the legacy
+`nn.autodiff.primitives.conv2d.Conv2D` oracle during the nn re-architecture;
+PCN is now free of legacy `nn`.)
+
+Layout conventions (match ConvPCBlock):
+  a/x:    [B, IC*H*W],  index b*IN + ic*H*W + ih*W + iw
+  μ/eps:  [B, OC*oh*ow], index b*OUT + oc*oh*ow + ohh*ow + oww
+  W:      params[oc*col + ic*K*K + kh*K + kw],  col = IC*K*K
+  bias:   params[OC*col + oc]
 
 Run:
     pixi run mojo run -I . tests/pcn/test_conv_pc_block_parity.mojo
@@ -22,8 +31,7 @@ from std.memory import alloc
 from std.math import sin
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.autodiff.primitives.conv2d import Conv2D
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
 from mojo_rl.experimental.pcn import PCReLU
 
@@ -45,6 +53,83 @@ def _max_abs_diff(
     return m
 
 
+# ── Naive direct-conv oracle (independent of ConvPCBlock's im2col+BLAS) ──────
+
+
+def _conv_eval[
+    IC: Int, OC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, BATCH: Int
+](
+    a: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    params: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    mu: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+):
+    comptime OH = (H + 2 * P - K) // S + 1
+    comptime OW = (W + 2 * P - K) // S + 1
+    comptime COL = IC * K * K
+    comptime IN = IC * H * W
+    comptime OUT = OC * OH * OW
+    comptime WSZ = OC * COL
+    for b in range(BATCH):
+        for oc in range(OC):
+            for oh in range(OH):
+                for ow in range(OW):
+                    var acc = Float64(params[WSZ + oc])  # bias
+                    for ic in range(IC):
+                        for kh in range(K):
+                            for kw in range(K):
+                                var ih = oh * S - P + kh
+                                var iw = ow * S - P + kw
+                                if 0 <= ih < H and 0 <= iw < W:
+                                    var wv = params[
+                                        oc * COL + ic * K * K + kh * K + kw
+                                    ]
+                                    var av = a[
+                                        b * IN + ic * H * W + ih * W + iw
+                                    ]
+                                    acc += Float64(wv) * Float64(av)
+                    mu[b * OUT + oc * OH * OW + oh * OW + ow] = Scalar[dtype](
+                        acc
+                    )
+
+
+def _conv_vjp[
+    IC: Int, OC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, BATCH: Int
+](
+    eps: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    a: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    params: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    gi: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    gp: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+):
+    """Standard conv backward → grad_input (gi), grad_W + grad_b (gp slab)."""
+    comptime OH = (H + 2 * P - K) // S + 1
+    comptime OW = (W + 2 * P - K) // S + 1
+    comptime COL = IC * K * K
+    comptime IN = IC * H * W
+    comptime OUT = OC * OH * OW
+    comptime WSZ = OC * COL
+    for i in range(BATCH * IN):
+        gi[i] = Scalar[dtype](0)
+    for i in range(WSZ + OC):
+        gp[i] = Scalar[dtype](0)
+    for b in range(BATCH):
+        for oc in range(OC):
+            for oh in range(OH):
+                for ow in range(OW):
+                    var g = eps[b * OUT + oc * OH * OW + oh * OW + ow]
+                    gp[WSZ + oc] = gp[WSZ + oc] + g  # grad_b
+                    for ic in range(IC):
+                        for kh in range(K):
+                            for kw in range(K):
+                                var ih = oh * S - P + kh
+                                var iw = ow * S - P + kw
+                                if 0 <= ih < H and 0 <= iw < W:
+                                    var wi = oc * COL + ic * K * K + kh * K + kw
+                                    var ai = b * IN + ic * H * W + ih * W + iw
+                                    gp[wi] = gp[wi] + g * a[ai]  # grad_W
+                                    gi[ai] = gi[ai] + g * params[wi]  # grad_in
+
+
 def run_parity[
     IC: Int,
     OC: Int,
@@ -54,18 +139,13 @@ def run_parity[
     H: Int,
     W: Int,
     BATCH: Int,
-](label: String) -> Bool:
+](label: String) raises -> Bool:
     comptime CB = ConvPCBlock[IC, OC, K, S, P, H, W, PCReLU]
-    comptime C = Conv2D[IC, OC, K, S, P, H, W, False]
 
     comptime IN = CB.IN_DIM
     comptime OUT = CB.OUT_DIM
     comptime PSZ = CB.PARAM_SIZE
     comptime W_SIZE = OC * CB.col_size
-
-    comptime assert IN == C.IN_DIM, "IN_DIM mismatch"
-    comptime assert OUT == C.OUT_DIM, "OUT_DIM mismatch"
-    comptime assert PSZ == C.PARAM_SIZE, "PARAM_SIZE mismatch"
 
     # ── Buffers ──────────────────────────────────────────────────────────────
     var x_buf = alloc[Scalar[dtype]](BATCH * IN)
@@ -77,7 +157,6 @@ def run_parity[
     var grads_buf = alloc[Scalar[dtype]](PSZ)
 
     var mu_oracle_buf = alloc[Scalar[dtype]](BATCH * OUT)
-    var cache_buf = alloc[Scalar[dtype]](BATCH * C.CACHE_SIZE)
     var gi_buf = alloc[Scalar[dtype]](BATCH * IN)
     var gp_buf = alloc[Scalar[dtype]](PSZ)
 
@@ -96,40 +175,30 @@ def run_parity[
     var grads = LayoutTensor[dtype, Layout.row_major(PSZ), MutAnyOrigin](
         grads_buf
     )
-    var mu_oracle = LayoutTensor[
-        dtype, Layout.row_major(BATCH, OUT), MutAnyOrigin
-    ](mu_oracle_buf)
-    var cache = LayoutTensor[
-        dtype, Layout.row_major(BATCH, C.CACHE_SIZE), MutAnyOrigin
-    ](cache_buf)
-    var gi = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](
-        gi_buf
-    )
-    var gp = LayoutTensor[dtype, Layout.row_major(PSZ), MutAnyOrigin](gp_buf)
 
     # ── Deterministic inputs (varied sign so ReLU is exercised) ───────────────
     for i in range(BATCH * IN):
         x_buf[i] = Scalar[dtype](sin(Float32(i) * 0.7 + 0.3) * 1.5)
     for i in range(BATCH * OUT):
         eps_buf[i] = Scalar[dtype](sin(Float32(i) * 1.1 + 1.7))
-    CB.initialize_params[Xavier[42], dtype](params)
+    CB.pc_init_params[PCXavier, dtype](params)
 
     # ── ConvPCBlock ops ───────────────────────────────────────────────────────
     CB.predict[BATCH, dtype](x, params, mu, a)
     CB.pull_back[BATCH, dtype](eps, params, z)
     CB.weight_grad[BATCH, dtype](eps, a, grads)
 
-    # ── Oracle: Conv2D.eval(a_below) and Conv2D.vjp(grad_output=eps) ──────────
-    C.eval[BATCH, dtype](a, mu_oracle, params, cache)
-    for i in range(PSZ):
-        gp_buf[i] = Scalar[dtype](0)
-    C.vjp[BATCH, dtype](eps, gi, params, cache, gp)
+    # ── Oracle: naive conv eval(a) + naive conv vjp(grad_output=eps) ──────────
+    _conv_eval[IC, OC, K, S, P, H, W, BATCH](a_buf, params_buf, mu_oracle_buf)
+    _conv_vjp[IC, OC, K, S, P, H, W, BATCH](
+        eps_buf, a_buf, params_buf, gi_buf, gp_buf
+    )
 
     # ── Compare ───────────────────────────────────────────────────────────────
     var d_predict = _max_abs_diff(mu_buf, mu_oracle_buf, BATCH * OUT)
     var d_pullback = _max_abs_diff(z_buf, gi_buf, BATCH * IN)
 
-    # weight_grad parity: ConvPCBlock grad == −(Conv2D grad). Negate oracle.
+    # weight_grad parity: ConvPCBlock grad == −(oracle grad). Negate oracle.
     var neg_gp = alloc[Scalar[dtype]](PSZ)
     for i in range(PSZ):
         neg_gp[i] = -gp_buf[i]
@@ -161,20 +230,19 @@ def run_parity[
     z_buf.free()
     grads_buf.free()
     mu_oracle_buf.free()
-    cache_buf.free()
     gi_buf.free()
     gp_buf.free()
     return ok
 
 
 def main() raises:
-    print("ConvPCBlock ↔ Conv2D parity spike\n")
+    print("ConvPCBlock ↔ naive-conv oracle parity spike\n")
     var all_ok = True
 
     # Config A: same-size (stride 1, pad 1) — boundary padding exercised.
     all_ok = run_parity[2, 3, 3, 1, 1, 4, 4, 2]("A  stride=1 pad=1 4x4") and all_ok
 
-    # Config B: downsampling (stride 2, pad 1) — strided transposed conv.
+    # Config B: downsampling (stride 2, pad 1) — strided.
     all_ok = run_parity[2, 3, 3, 2, 1, 5, 5, 2]("B  stride=2 pad=1 5x5") and all_ok
 
     # Config C: no pad, 1 channel→multi, batch 3.
@@ -182,7 +250,7 @@ def main() raises:
 
     print("")
     if all_ok:
-        print("✅ PASS — ConvPCBlock matches Conv2D oracle within", TOL)
+        print("✅ PASS — ConvPCBlock matches naive-conv oracle within", TOL)
     else:
         print("❌ FAIL — parity mismatch")
         raise Error("ConvPCBlock parity failed")

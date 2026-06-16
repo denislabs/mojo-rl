@@ -1,85 +1,113 @@
-"""Two-Hot Encoding for Distributional RL (TDMPC2).
+"""Two-hot encoding for distributional value heads (DreamerV3 / TD-MPC2).
 
-TDMPC2 uses distributional RL: rewards and values are represented as
-distributions over num_bins evenly-spaced bins in [v_min, v_max].
+Two-hot encoding converts a scalar `x` into a soft one-hot vector over
+`NUM_BINS` evenly-spaced bin values:
 
-Two-hot encoding converts a scalar x into a soft one-hot vector:
-  - Find adjacent bins: bins[k] <= x < bins[k+1]
-  - target[k]   = (bins[k+1] - x) / (bins[k+1] - bins[k])  (upper weight)
-  - target[k+1] = (x - bins[k])   / (bins[k+1] - bins[k])  (lower weight)
-  - target[i]   = 0  for all other i
+  k = floor((x - v_min) / step),   step = (v_max - v_min) / (NUM_BINS - 1)
+  target[k]     = (bins[k+1] - x) / step
+  target[k + 1] = (x - bins[k])   / step
+  target[i]     = 0  otherwise
 
-The scalar value is decoded from logits as:
-  value = sum_i(softmax(logits)_i * bins[i])
+The scalar value is decoded from logits as
+  v = sum_i softmax(logits)_i * bins[i]
+and (in DreamerV3's symlog form) `symexp(v)` recovers the real scale.
 
-Typical values: num_bins=101, v_min=-10.0, v_max=10.0
+This module ports the nn v1 helpers (`mojo_rl/nn/loss/two_hot.mojo`) to
+nn conventions:
+  * scalar helpers stay InlineArray-based (compile-time-sized inline use)
+  * batched helpers are also exposed in `UnsafePointer` form for use with
+    replay buffers / nn network outputs.
 """
 
-from std.math import exp, log, abs
-from ..constants import dtype
+from std.math import exp, log
+from std.math import abs as math_abs
+
+from ..constants import DT
+
+# Scalar symlog / symexp now live in the canonical math helper (audit L4)
+# and are re-exported here so legacy `from ...loss.two_hot import symlog`
+# call-sites keep working.
+from ..primitives.ops.symlog_math import symlog, symexp
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Bin construction (compile-time-sized InlineArray).
+# ──────────────────────────────────────────────────────────────────────
 
 
 def compute_bins[
-    NUM_BINS: Int
-](v_min: Float32, v_max: Float32) -> InlineArray[Float32, NUM_BINS]:
-    """Compute evenly spaced bin values for distributional RL.
-
-    Args:
-        v_min: Minimum bin value.
-        v_max: Maximum bin value.
-
-    Returns:
-        Array of NUM_BINS evenly spaced values from v_min to v_max.
-    """
-    var bins = InlineArray[Float32, NUM_BINS](fill=0)
+    NUM_BINS: Int,
+](v_min: Scalar[DT], v_max: Scalar[DT]) -> InlineArray[Scalar[DT], NUM_BINS]:
+    """Evenly-spaced bins in [v_min, v_max]."""
+    var bins = InlineArray[Scalar[DT], NUM_BINS](fill=0)
     if NUM_BINS == 1:
-        bins[0] = (v_min + v_max) * 0.5
+        bins[0] = (v_min + v_max) * Scalar[DT](0.5)
         return bins^
-    var step = (v_max - v_min) / Float32(NUM_BINS - 1)
+    var step = (v_max - v_min) / Scalar[DT](NUM_BINS - 1)
     for i in range(NUM_BINS):
-        bins[i] = v_min + step * Float32(i)
+        bins[i] = v_min + step * Scalar[DT](i)
     return bins^
 
 
-def compute_symlog_bins[NUM_BINS: Int]() -> InlineArray[Float32, NUM_BINS]:
-    """Compute symlog-spaced bin values for DreamerV3 distributional RL.
-
-    Bins are evenly spaced in symlog space: linspace(-20, 20, NUM_BINS).
-    Values are encoded/decoded in symlog space. Apply symexp to the decoded
-    value to recover the original scale.
-
-    Returns:
-        Array of NUM_BINS evenly spaced values from -20 to 20.
-    """
-    var bins = InlineArray[Float32, NUM_BINS](fill=0)
+def compute_symlog_bins[
+    NUM_BINS: Int,
+]() -> InlineArray[Scalar[DT], NUM_BINS]:
+    """DreamerV3 default: bins evenly spaced in symlog space, range [-20, 20]."""
+    var bins = InlineArray[Scalar[DT], NUM_BINS](fill=0)
     if NUM_BINS == 1:
-        bins[0] = Float32(0.0)
+        bins[0] = Scalar[DT](0.0)
         return bins^
-    var step = Float32(40.0) / Float32(NUM_BINS - 1)  # range [-20, 20]
+    var step = Scalar[DT](40.0) / Scalar[DT](NUM_BINS - 1)
     for i in range(NUM_BINS):
-        bins[i] = Float32(-20.0) + step * Float32(i)
+        bins[i] = Scalar[DT](-20.0) + step * Scalar[DT](i)
     return bins^
+
+
+def fill_bins_ptr[
+    NUM_BINS: Int,
+](
+    v_min: Scalar[DT],
+    v_max: Scalar[DT],
+    mut bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """Pointer-form of `compute_bins` for use with device-side buffers /
+    replay scratch."""
+    if NUM_BINS == 1:
+        bins[0] = (v_min + v_max) * Scalar[DT](0.5)
+        return
+    var step = (v_max - v_min) / Scalar[DT](NUM_BINS - 1)
+    for i in range(NUM_BINS):
+        bins[i] = v_min + step * Scalar[DT](i)
+
+
+def fill_symlog_bins_ptr[
+    NUM_BINS: Int,
+](mut bins: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+    """Pointer-form of `compute_symlog_bins`."""
+    if NUM_BINS == 1:
+        bins[0] = Scalar[DT](0.0)
+        return
+    var step = Scalar[DT](40.0) / Scalar[DT](NUM_BINS - 1)
+    for i in range(NUM_BINS):
+        bins[i] = Scalar[DT](-20.0) + step * Scalar[DT](i)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Two-hot encoding (single-sample + batched).
+# ──────────────────────────────────────────────────────────────────────
 
 
 def two_hot_encode[
-    NUM_BINS: Int
+    NUM_BINS: Int,
 ](
-    x: Float32,
-    bins: InlineArray[Float32, NUM_BINS],
-    mut target: InlineArray[Float32, NUM_BINS],
+    x: Scalar[DT],
+    bins: InlineArray[Scalar[DT], NUM_BINS],
+    mut target: InlineArray[Scalar[DT], NUM_BINS],
 ):
-    """Encode scalar x as a two-hot distribution over bins.
-
-    Args:
-        x: Scalar value to encode.
-        bins: Array of NUM_BINS bin values (evenly spaced).
-        target: Output two-hot vector of size NUM_BINS (written).
-    """
-    # Zero out target
+    """Encode scalar `x` into a two-hot distribution over `bins`."""
     for i in range(NUM_BINS):
-        target[i] = Float32(0.0)
+        target[i] = Scalar[DT](0.0)
 
-    # Clamp x to bin range
     var v_min = bins[0]
     var v_max = bins[NUM_BINS - 1]
     var x_clamped = x
@@ -88,67 +116,61 @@ def two_hot_encode[
     if x_clamped > v_max:
         x_clamped = v_max
 
-    # Handle degenerate case
     if NUM_BINS == 1:
-        target[0] = Float32(1.0)
+        target[0] = Scalar[DT](1.0)
         return
 
-    # Find lower bin index k such that bins[k] <= x_clamped < bins[k+1]
-    var step = (v_max - v_min) / Float32(NUM_BINS - 1)
+    var step = (v_max - v_min) / Scalar[DT](NUM_BINS - 1)
     var k_float = (x_clamped - v_min) / step
     var k = Int(k_float)
     if k >= NUM_BINS - 1:
-        k = NUM_BINS - 2  # clamp to last valid pair
+        k = NUM_BINS - 2
 
     var bin_low = bins[k]
     var bin_high = bins[k + 1]
     var width = bin_high - bin_low
 
-    if width < 1e-8:
-        # Degenerate: put all weight on lower bin
-        target[k] = Float32(1.0)
+    if math_abs(width) < Scalar[DT](1e-8):
+        target[k] = Scalar[DT](1.0)
         return
 
-    # Two-hot weights
     var upper_weight = (bin_high - x_clamped) / width
-    var lower_weight = Float32(1.0) - upper_weight
-
+    var lower_weight = Scalar[DT](1.0) - upper_weight
     target[k] = upper_weight
     target[k + 1] = lower_weight
 
 
-def two_hot_encode_batch[
-    BATCH: Int, NUM_BINS: Int
+def two_hot_encode_batch_ptr[
+    BATCH: Int, NUM_BINS: Int,
 ](
-    values: InlineArray[Float32, BATCH],
-    bins: InlineArray[Float32, NUM_BINS],
-    mut targets: InlineArray[Float32, BATCH * NUM_BINS],
+    values: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut targets: UnsafePointer[Scalar[DT], MutAnyOrigin],
 ):
-    """Batch version of two_hot_encode.
-
-    Args:
-        values: Batch of scalar values to encode [BATCH].
-        bins: Bin values [NUM_BINS].
-        targets: Output two-hot vectors [BATCH * NUM_BINS] (written).
+    """Batch two-hot encode. Inputs:
+        values  shape [BATCH]
+        bins    shape [NUM_BINS]    (must be sorted ascending, evenly spaced)
+        targets shape [BATCH * NUM_BINS] — written.
     """
+    var v_min = bins[0]
+    var v_max = bins[NUM_BINS - 1]
+
     for b in range(BATCH):
-        var v_min = bins[0]
-        var v_max = bins[NUM_BINS - 1]
+        var base = b * NUM_BINS
         var x = values[b]
         if x < v_min:
             x = v_min
         if x > v_max:
             x = v_max
 
-        var base = b * NUM_BINS
         for i in range(NUM_BINS):
-            targets[base + i] = Float32(0.0)
+            targets[base + i] = Scalar[DT](0.0)
 
         if NUM_BINS == 1:
-            targets[base] = Float32(1.0)
+            targets[base] = Scalar[DT](1.0)
             continue
 
-        var step = (v_max - v_min) / Float32(NUM_BINS - 1)
+        var step = (v_max - v_min) / Scalar[DT](NUM_BINS - 1)
         var k_float = (x - v_min) / step
         var k = Int(k_float)
         if k >= NUM_BINS - 1:
@@ -158,67 +180,85 @@ def two_hot_encode_batch[
         var bin_high = bins[k + 1]
         var width = bin_high - bin_low
 
-        if width < Float32(1e-8):
-            targets[base + k] = Float32(1.0)
+        if math_abs(width) < Scalar[DT](1e-8):
+            targets[base + k] = Scalar[DT](1.0)
             continue
 
-        var upper_weight = (bin_high - x) / width
-        targets[base + k] = upper_weight
-        targets[base + k + 1] = Float32(1.0) - upper_weight
+        var upper = (bin_high - x) / width
+        targets[base + k] = upper
+        targets[base + k + 1] = Scalar[DT](1.0) - upper
 
 
-def symlog(x: Float32) -> Float32:
-    """Symmetric logarithm: sign(x) * ln(1 + |x|).
+def two_hot_encode_symlog_batch_ptr[
+    BATCH: Int, NUM_BINS: Int,
+](
+    values: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut targets: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """DreamerV3-style: apply `symlog` to each value before encoding
+    against symlog-spaced bins."""
+    var v_min = bins[0]
+    var v_max = bins[NUM_BINS - 1]
 
-    Compresses large values into a bounded range while preserving sign.
-    Used by TD-MPC2 to encode targets into distributional bin space.
-    """
-    if x >= 0:
-        return log(Float32(1.0) + x)
-    else:
-        return -log(Float32(1.0) - x)
+    for b in range(BATCH):
+        var base = b * NUM_BINS
+        var x = symlog(values[b])
+        if x < v_min:
+            x = v_min
+        if x > v_max:
+            x = v_max
+
+        for i in range(NUM_BINS):
+            targets[base + i] = Scalar[DT](0.0)
+
+        if NUM_BINS == 1:
+            targets[base] = Scalar[DT](1.0)
+            continue
+
+        var step = (v_max - v_min) / Scalar[DT](NUM_BINS - 1)
+        var k_float = (x - v_min) / step
+        var k = Int(k_float)
+        if k >= NUM_BINS - 1:
+            k = NUM_BINS - 2
+
+        var bin_low = bins[k]
+        var bin_high = bins[k + 1]
+        var width = bin_high - bin_low
+
+        if math_abs(width) < Scalar[DT](1e-8):
+            targets[base + k] = Scalar[DT](1.0)
+            continue
+
+        var upper = (bin_high - x) / width
+        targets[base + k] = upper
+        targets[base + k + 1] = Scalar[DT](1.0) - upper
 
 
-def symexp(x: Float32) -> Float32:
-    """Inverse of symlog: sign(x) * (exp(|x|) - 1).
-
-    Converts from symlog space back to actual value space.
-    Used by TD-MPC2 to decode Q-values from distributional representation.
-    """
-    if x >= 0:
-        return exp(x) - Float32(1.0)
-    else:
-        return -(exp(-x) - Float32(1.0))
+# ──────────────────────────────────────────────────────────────────────
+# Decoding: logits → expected value.
+# ──────────────────────────────────────────────────────────────────────
 
 
 def decode_value[
-    NUM_BINS: Int
+    NUM_BINS: Int,
 ](
-    logits: InlineArray[Float32, NUM_BINS],
-    bins: InlineArray[Float32, NUM_BINS],
-) -> Float32:
-    """Decode distributional value with symexp: symexp(sum_i(softmax(logits)_i * bins_i)).
-
-    Bins represent values in symlog space. Returns actual (non-symlog) value.
-
-    Args:
-        logits: Raw logits over bins [NUM_BINS].
-        bins: Bin values [NUM_BINS] (in symlog space).
-
-    Returns:
-        Expected value in actual (non-symlog) space.
-    """
-    # Numerically stable softmax
+    logits: InlineArray[Scalar[DT], NUM_BINS],
+    bins: InlineArray[Scalar[DT], NUM_BINS],
+) -> Scalar[DT]:
+    """Decode distributional value with symexp: returns
+    `symexp(sum_i softmax(logits)_i * bins_i)` — bins live in symlog
+    space, so the symexp recovers actual-value scale."""
     var max_val = logits[0]
     for i in range(1, NUM_BINS):
         if logits[i] > max_val:
             max_val = logits[i]
 
-    var sum_exp = Float32(0.0)
+    var sum_exp = Scalar[DT](0.0)
     for i in range(NUM_BINS):
         sum_exp += exp(logits[i] - max_val)
 
-    var value_symlog = Float32(0.0)
+    var value_symlog = Scalar[DT](0.0)
     for i in range(NUM_BINS):
         var prob = exp(logits[i] - max_val) / sum_exp
         value_symlog += prob * bins[i]
@@ -226,36 +266,60 @@ def decode_value[
     return symexp(value_symlog)
 
 
-def decode_value_batch[
-    BATCH: Int, NUM_BINS: Int
+def decode_value_batch_ptr[
+    BATCH: Int, NUM_BINS: Int,
 ](
-    logits: InlineArray[Float32, BATCH * NUM_BINS],
-    bins: InlineArray[Float32, NUM_BINS],
-    mut values: InlineArray[Float32, BATCH],
+    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut values: UnsafePointer[Scalar[DT], MutAnyOrigin],
 ):
-    """Batch decode distributional values with symexp.
-
-    Bins represent values in symlog space. Returns actual (non-symlog) values.
-
-    Args:
-        logits: Batch of logits [BATCH * NUM_BINS].
-        bins: Bin values [NUM_BINS] (in symlog space).
-        values: Output expected values [BATCH] in actual space (written).
-    """
+    """Batch decode distributional values with symexp. `logits` shape
+    [BATCH * NUM_BINS]; `bins` shape [NUM_BINS] (symlog space);
+    `values` shape [BATCH] (actual-value space, written)."""
     for b in range(BATCH):
         var base = b * NUM_BINS
-        # Find max for stability
         var max_val = logits[base]
         for i in range(1, NUM_BINS):
-            if logits[base + i] > max_val:
-                max_val = logits[base + i]
-        # Compute expected value in symlog space
-        var sum_exp = Float32(0.0)
+            var lv = logits[base + i]
+            if lv > max_val:
+                max_val = lv
+
+        var sum_exp = Scalar[DT](0.0)
         for i in range(NUM_BINS):
             sum_exp += exp(logits[base + i] - max_val)
-        var val_symlog = Float32(0.0)
+
+        var val_symlog = Scalar[DT](0.0)
         for i in range(NUM_BINS):
             var prob = exp(logits[base + i] - max_val) / sum_exp
             val_symlog += prob * bins[i]
-        # Apply symexp to convert to actual space
+
         values[b] = symexp(val_symlog)
+
+
+def decode_value_batch_linear_ptr[
+    BATCH: Int, NUM_BINS: Int,
+](
+    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut values: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """Like `decode_value_batch_ptr` but bins are in actual-value space
+    (no symexp). For TD-MPC2 / pre-DreamerV3 distributional heads."""
+    for b in range(BATCH):
+        var base = b * NUM_BINS
+        var max_val = logits[base]
+        for i in range(1, NUM_BINS):
+            var lv = logits[base + i]
+            if lv > max_val:
+                max_val = lv
+
+        var sum_exp = Scalar[DT](0.0)
+        for i in range(NUM_BINS):
+            sum_exp += exp(logits[base + i] - max_val)
+
+        var val = Scalar[DT](0.0)
+        for i in range(NUM_BINS):
+            var prob = exp(logits[base + i] - max_val) / sum_exp
+            val += prob * bins[i]
+
+        values[b] = val

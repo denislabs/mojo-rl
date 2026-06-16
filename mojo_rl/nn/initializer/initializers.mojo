@@ -1,279 +1,125 @@
-"""Weight initialization traits and implementations for neural networks.
+"""Concrete weight initializers.
 
-Uses the MAX/Philox counter-based pattern: each element gets its own
-RNG instance via PhiloxRandom(seed, offset=base+i), producing fully
-independent streams. The base offset is derived from (FAN_IN, FAN_OUT)
-so different layers in a model get different random sequences.
+- `Kaiming`: He-uniform U[-sqrt(6/fan_in), sqrt(6/fan_in)]. Default for ReLU.
+- `Xavier`:  Glorot-uniform U[-sqrt(6/(fan_in+fan_out)), …]. Default for Tanh/Sigmoid.
+- `Zero`:    All zeros — for testing or as a placeholder bias.
 
-Usage:
-    # In Trainer - initializer is a type parameter
-    var trainer = Trainer[MODEL, OPTIMIZER, LOSS, Xavier](
-        model, optimizer, loss, Xavier()
-    )
+All three set bias to 0 by default. The CrossEntropyLoss head conventionally
+also wants zero bias.
 
-    # Or with Kaiming for ReLU networks
-    var trainer = Trainer[MODEL, OPTIMIZER, LOSS, Kaiming](
-        model, optimizer, loss, Kaiming()
-    )
+These are HOST-SIDE fills. `Linear.make[INIT](ctx)` on GPU creates a
+HostBuffer, runs the initializer over it, and uploads to device.
 """
-from layout import LayoutTensor, Layout
-from ..constants import dtype as default_dtype
-from std.math import sqrt, log, cos, sin, pi
-from std.random.philox import Random as PhiloxRandom
+
+from std.math import sqrt as fsqrt, log, cos, sin
+from std.random import random_float64
+
+from ..constants import DT
+from ..core import Initializer
 
 
-def _layer_offset[FAN_IN: Int, FAN_OUT: Int]() -> UInt64:
-    """Derive a unique base offset from layer dimensions.
-
-    Uses large primes so layers with different (FAN_IN, FAN_OUT)
-    get non-overlapping RNG streams without any signature changes.
-    """
-    return UInt64(FAN_IN) * 1000003 + UInt64(FAN_OUT) * 999983
+comptime _TWO_PI: Float64 = 6.283185307179586
 
 
-trait Initializer(Copyable & Movable & ImplicitlyCopyable):
-    """Base trait for weight initializers.
-
-    Initializers are used to set initial values for model parameters.
-    Different initialization strategies are optimal for different
-    activation functions and network architectures.
-    """
+struct Kaiming(Initializer):
+    @staticmethod
+    def init_weight(
+        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        n_elems: Int,
+        fan_in: Int,
+        fan_out: Int,
+    ):
+        var bound = fsqrt(6.0 / Float64(fan_in))
+        for i in range(n_elems):
+            var r = random_float64()       # [0, 1)
+            buf[i] = Scalar[DT]((r * 2.0 - 1.0) * bound)
 
     @staticmethod
-    def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
-    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        """Initialize parameters.
-
-        Parameters:
-            SIZE: Total number of parameters to initialize.
-            FAN_IN: Number of input features (used by some initializers).
-            FAN_OUT: Number of output features (used by some initializers).
-            dtype: Data type of the parameters.
-
-        Args:
-            params: LayoutTensor to initialize.
-        """
-        ...
+    def init_bias(
+        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        n_elems: Int,
+    ):
+        for i in range(n_elems):
+            buf[i] = 0.0
 
 
-struct Xavier[SEED: UInt64 = 0](Initializer):
-    """Xavier/Glorot initialization.
-
-    Weights are drawn from U(-limit, limit) where limit = sqrt(6/(fan_in+fan_out)).
-
-    This is optimal for linear activations and works well for tanh/sigmoid.
-    """
-
-    def __init__(out self):
-        pass
-
-    def __init__(out self, *, copy: Self):
-        pass
-
-    def __init__(out self, *, deinit take: Self):
-        pass
+struct Xavier(Initializer):
+    @staticmethod
+    def init_weight(
+        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        n_elems: Int,
+        fan_in: Int,
+        fan_out: Int,
+    ):
+        var bound = fsqrt(6.0 / Float64(fan_in + fan_out))
+        for i in range(n_elems):
+            var r = random_float64()
+            buf[i] = Scalar[DT]((r * 2.0 - 1.0) * bound)
 
     @staticmethod
-    def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
-    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        comptime assert (
-            dtype.is_floating_point()
-        ), "dtype must be floating point"
-        var limit = sqrt(Scalar[dtype](6.0) / Scalar[dtype](FAN_IN + FAN_OUT))
-        var base = _layer_offset[FAN_IN, FAN_OUT]()
-        for i in range(SIZE):
-            var rng = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(i))
-            var val = rng.step_uniform()
-            params[i] = (
-                Scalar[dtype](val[0]) * Scalar[dtype](2.0) - Scalar[dtype](1.0)
-            ) * limit
+    def init_bias(
+        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        n_elems: Int,
+    ):
+        for i in range(n_elems):
+            buf[i] = 0.0
 
 
-struct Kaiming[SEED: UInt64 = 0](Initializer):
-    """Kaiming/He initialization.
-
-    Weights are drawn from U(-limit, limit) where limit = sqrt(6/fan_in).
-
-    This is optimal for ReLU activations, accounting for the fact that
-    ReLU zeros out half the distribution.
-    """
-
-    def __init__(out self):
-        pass
-
-    def __init__(out self, *, copy: Self):
-        pass
-
-    def __init__(out self, *, deinit take: Self):
-        pass
+struct Zero(Initializer):
+    """All zeros — primarily for unit tests."""
 
     @staticmethod
-    def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
-    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        comptime assert (
-            dtype.is_floating_point()
-        ), "dtype must be floating point"
-        var limit = sqrt(Scalar[dtype](6.0) / Scalar[dtype](FAN_IN))
-        var base = _layer_offset[FAN_IN, FAN_OUT]()
-        for i in range(SIZE):
-            var rng = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(i))
-            var val = rng.step_uniform()
-            params[i] = (
-                Scalar[dtype](val[0]) * Scalar[dtype](2.0) - Scalar[dtype](1.0)
-            ) * limit
-
-
-struct LeCun[SEED: UInt64 = 0](Initializer):
-    """LeCun initialization.
-
-    Weights are drawn from U(-limit, limit) where limit = sqrt(3/fan_in).
-
-    This is the original initialization proposed by LeCun for
-    networks with tanh activations.
-    """
-
-    def __init__(out self):
-        pass
-
-    def __init__(out self, *, copy: Self):
-        pass
-
-    def __init__(out self, *, deinit take: Self):
-        pass
+    def init_weight(
+        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        n_elems: Int,
+        fan_in: Int,
+        fan_out: Int,
+    ):
+        for i in range(n_elems):
+            buf[i] = 0.0
 
     @staticmethod
-    def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
-    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        comptime assert (
-            dtype.is_floating_point()
-        ), "dtype must be floating point"
-        var limit = sqrt(Scalar[dtype](3.0) / Scalar[dtype](FAN_IN))
-        var base = _layer_offset[FAN_IN, FAN_OUT]()
-        for i in range(SIZE):
-            var rng = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(i))
-            var val = rng.step_uniform()
-            params[i] = (
-                Scalar[dtype](val[0]) * Scalar[dtype](2.0) - Scalar[dtype](1.0)
-            ) * limit
+    def init_bias(
+        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        n_elems: Int,
+    ):
+        for i in range(n_elems):
+            buf[i] = 0.0
 
 
-struct Zeros(Initializer):
-    """Initialize all parameters to zero."""
+struct Normal[MEAN: Float64, STD: Float64](Initializer):
+    """N(MEAN, STD) weights via Box-Muller on uniform pairs. Bias = 0.
 
-    def __init__(out self):
-        pass
-
-    def __init__(out self, *, copy: Self):
-        pass
-
-    def __init__(out self, *, deinit take: Self):
-        pass
+    The nanoGPT / GPT-2 transformer init is `Normal[0.0, 0.02]` on every
+    Linear / Embedding weight (FAN_IN/FAN_OUT accepted for trait conformance
+    but ignored — Normal is fan-independent)."""
 
     @staticmethod
-    def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
-    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        for i in range(SIZE):
-            params[i] = 0
-
-
-struct Ones(Initializer):
-    """Initialize all parameters to one."""
-
-    def __init__(out self):
-        pass
-
-    def __init__(out self, *, copy: Self):
-        pass
-
-    def __init__(out self, *, deinit take: Self):
-        pass
-
-    @staticmethod
-    def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
-    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        for i in range(SIZE):
-            params[i] = 1
-
-
-struct Constant[VALUE: Scalar[default_dtype]](Initializer):
-    """Initialize all parameters to a constant value."""
-
-    @staticmethod
-    def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
-    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        for i in range(SIZE):
-            params[i] = Scalar[dtype](Self.VALUE)
-
-
-struct Uniform[LOW: Float64, HIGH: Float64, SEED: UInt64 = 0](Initializer):
-    """Initialize parameters from uniform distribution U(low, high)."""
-
-    @staticmethod
-    def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
-    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        comptime assert (
-            dtype.is_floating_point()
-        ), "dtype must be floating point"
-        var range_val = Scalar[dtype](Self.HIGH - Self.LOW)
-        var base = _layer_offset[FAN_IN, FAN_OUT]()
-        for i in range(SIZE):
-            var rng = PhiloxRandom(seed=Self.SEED, offset=base + UInt64(i))
-            var val = rng.step_uniform()
-            params[i] = Scalar[dtype](val[0]) * range_val + Scalar[dtype](
-                Self.LOW
-            )
-
-
-struct Normal[MEAN: Float64, STD: Float64, SEED: UInt64 = 0](Initializer):
-    """Initialize parameters from normal distribution N(mean, std).
-
-    Uses Box-Muller transform on Philox uniform pairs.
-    """
-
-    @staticmethod
-    def init[
-        SIZE: Int, FAN_IN: Int, FAN_OUT: Int, dtype: DType = DType.float32
-    ](mut params: LayoutTensor[dtype, Layout.row_major(SIZE), MutAnyOrigin]):
-        comptime assert (
-            dtype.is_floating_point()
-        ), "dtype must be floating point"
-        var base = _layer_offset[FAN_IN, FAN_OUT]()
-        # Box-Muller: each pair of uniforms → 2 normals
+    def init_weight(
+        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        n_elems: Int,
+        fan_in: Int,
+        fan_out: Int,
+    ):
         var i = 0
-        var pair_idx: UInt64 = 0
-        while i < SIZE:
-            # Two independent uniform streams for each Box-Muller pair
-            var rng1 = PhiloxRandom(seed=Self.SEED, offset=base + pair_idx * 2)
-            var rng2 = PhiloxRandom(
-                seed=Self.SEED, offset=base + pair_idx * 2 + 1
-            )
-            var u1 = rng1.step_uniform()[0]
-            var u2 = rng2.step_uniform()[0]
-            pair_idx += 1
-
-            # Avoid log(0)
-            if u1 < 1e-10:
-                u1 = 1e-10
-
-            var r = sqrt(-2.0 * log(u1))
-            var z0 = r * cos(2.0 * pi * u2)
-            params[i] = Scalar[dtype](z0) * Scalar[dtype](Self.STD) + Scalar[
-                dtype
-            ](Self.MEAN)
+        while i < n_elems:
+            var u1 = random_float64()
+            var u2 = random_float64()
+            if u1 < 1e-12:
+                u1 = 1e-12
+            var r = fsqrt(-2.0 * log(u1))
+            buf[i] = Scalar[DT](Self.MEAN + Self.STD * r * cos(_TWO_PI * u2))
             i += 1
-
-            # Use the second value if we have space
-            if i < SIZE:
-                var z1 = r * sin(2.0 * pi * u2)
-                params[i] = Scalar[dtype](z1) * Scalar[dtype](
-                    Self.STD
-                ) + Scalar[dtype](Self.MEAN)
+            if i < n_elems:
+                buf[i] = Scalar[DT](
+                    Self.MEAN + Self.STD * r * sin(_TWO_PI * u2)
+                )
                 i += 1
+
+    @staticmethod
+    def init_bias(
+        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        n_elems: Int,
+    ):
+        for i in range(n_elems):
+            buf[i] = 0.0

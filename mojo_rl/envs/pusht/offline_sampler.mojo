@@ -24,11 +24,12 @@ Typical usage::
     sampler.sample_batch_uint8(BATCH=16, T=4, pixels_u8_out, actions_fp32_out)
 """
 
+from std.math import isnan, sqrt
 from std.memory import memcpy
 from std.random import random_float64
 
 from mojo_rl.core.offline_buffer import OfflineBuffer
-from mojo_rl.nn2.datasets.lewm_pusht import LewmPushTExpert, LewmPushTWindow
+from mojo_rl.nn.datasets.lewm_pusht import LewmPushTExpert, LewmPushTWindow
 
 
 struct PushTOfflineSampler(Movable, OfflineBuffer):
@@ -42,6 +43,14 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
     var window: LewmPushTWindow
     var n_frames: Int
     """Total dense frames across all episodes (cosmetic; matches Pong API)."""
+    var normalize_actions: Bool
+    """Z-score actions per raw dim with dataset mean/std (the reference's
+    `get_column_normalizer`). Off by default — existing raw-action
+    checkpoints stay valid."""
+    var act_mean: List[Float64]
+    """Per-raw-dim action mean (len action_dim; 0s when not normalizing)."""
+    var act_std: List[Float64]
+    """Per-raw-dim action std (len action_dim; 1s when not normalizing)."""
 
     def __init__(
         out self,
@@ -49,6 +58,7 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
         frameskip: Int = 5,
         num_steps: Int = 6,
         var path: String = String(""),
+        normalize_actions: Bool = False,
     ) raises:
         """Open the HDF5 dataset and pre-allocate one window buffer.
 
@@ -58,12 +68,52 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
                 the trainer's `T` comptime param.
             path: Optional override of the cached `.h5` path. Empty string
                 triggers HF auto-download to `~/.cache/mojo_rl/lewm_pusht/`.
+            normalize_actions: Z-score actions per raw dim with the dataset
+                mean/std at sample time (reference training pipeline).
+                Read the stats back via `action_mean(d)` / `action_std(d)`
+                — planning must de-normalize: raw = z·std + mean.
         """
         self.dataset = LewmPushTExpert(
             frameskip=frameskip, num_steps=num_steps, path=path^
         )
         self.window = self.dataset.make_window()
         self.n_frames = self.dataset.n_total_frames
+        self.normalize_actions = normalize_actions
+        var adim = self.dataset.action_dim
+        self.act_mean = List[Float64](length=adim, fill=0.0)
+        self.act_std = List[Float64](length=adim, fill=1.0)
+        if normalize_actions:
+            # Per-dim mean/std over the full action column, skipping NaN
+            # rows (episode-boundary padding) — matches the reference's
+            # StandardScaler / get_column_normalizer fit.
+            var s1 = List[Float64](length=adim, fill=0.0)
+            var s2 = List[Float64](length=adim, fill=0.0)
+            var cnt = List[Float64](length=adim, fill=0.0)
+            for i in range(self.dataset.n_total_frames):
+                for d in range(adim):
+                    var v = Float64(self.dataset.action_flat[i * adim + d])
+                    if isnan(v):
+                        continue
+                    s1[d] += v
+                    s2[d] += v * v
+                    cnt[d] += 1.0
+            for d in range(adim):
+                if cnt[d] > 1.0:
+                    var mu = s1[d] / cnt[d]
+                    var var_ = s2[d] / cnt[d] - mu * mu
+                    self.act_mean[d] = mu
+                    self.act_std[d] = sqrt(var_) if var_ > 1e-12 else 1.0
+            print(
+                "  [pusht_offline_sampler] action z-score: mean=(",
+                self.act_mean[0],
+                ",",
+                self.act_mean[1],
+                ") std=(",
+                self.act_std[0],
+                ",",
+                self.act_std[1],
+                ")",
+            )
         print(
             "  [pusht_offline_sampler] dataset:",
             len(self.dataset),
@@ -87,6 +137,15 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
         self.dataset = take.dataset^
         self.window = take.window^
         self.n_frames = take.n_frames
+        self.normalize_actions = take.normalize_actions
+        self.act_mean = take.act_mean^
+        self.act_std = take.act_std^
+
+    def action_mean(self, d: Int) -> Float64:
+        return self.act_mean[d]
+
+    def action_std(self, d: Int) -> Float64:
+        return self.act_std[d]
 
     def sample_batch_uint8(
         mut self,
@@ -147,3 +206,18 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
                 actions_out + b * act_per_sample,
                 self.window.pixels_dense,
             )
+            if self.normalize_actions:
+                # z-score per RAW action dim (stored layout interleaves
+                # frameskip sub-steps: [x0,y0,x1,y1,...] → dim = j % 2).
+                # NaN (boundary padding) → 0 (reference nan_to_num).
+                var adim = self.dataset.action_dim
+                var base = actions_out + b * act_per_sample
+                for j in range(act_per_sample):
+                    var d = j % adim
+                    var v = Float64(base[j])
+                    if isnan(v):
+                        base[j] = Scalar[DType.float32](0.0)
+                    else:
+                        base[j] = Scalar[DType.float32](
+                            (v - self.act_mean[d]) / self.act_std[d]
+                        )

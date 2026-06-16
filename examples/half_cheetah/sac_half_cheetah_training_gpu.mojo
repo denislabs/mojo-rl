@@ -1,222 +1,211 @@
-"""SAC Agent GPU Training on HalfCheetah.
+"""SAC training on HalfCheetah (GPU, multi-env) via the new `SACAgent` facade.
 
-This trains the SAC (Soft Actor-Critic) agent on the HalfCheetah environment
-using GPU-accelerated off-policy training with:
-- Parallel environments on GPU
-- Generalized Coordinates (GC) physics engine (MuJoCo-style)
-- 6D continuous action space (joint torques)
-- 17D observation (qpos + qvel excluding rootx and head)
+GPU successor of `sac_half_cheetah_training.mojo` (the CPU nn example) and
+direct counterpart of the legacy `sac_half_cheetah_training_gpu.mojo` (which
+uses `deep_agents.core.agents.DeepSACAgent.train_gpu`). Uses the new
+`deep_agents/` surface end-to-end:
 
-SAC key features:
-- Maximum entropy RL (reward + alpha * entropy)
-- Stochastic Gaussian policy (reparameterization trick)
-- Twin Q-networks (min of Q1, Q2 reduces overestimation)
-- Automatic entropy temperature (alpha) tuning
-- No target actor (only critic targets)
+  * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
+    off-policy driver (`run_offpolicy_train_batched`). All optimizers, the
+    replay buffer, and the SAC train-step pipeline run on-device.
+  * `BatchedGpuEnv[HalfCheetah[DT], N_ENVS, OBS, ACT]` — wraps the
+    HalfCheetah physics3d env (which conforms to `GPUContinuousEnv`) into a
+    `BatchedEnv`. Steps/resets/obs-extraction all dispatch HalfCheetah's
+    native GPU physics kernels — the exact same kernels the legacy
+    `train_gpu[HalfCheetah[...]]` path drives, just behind the deep_agents
+    wrapper.
+  * `RemoteLogger` — streams `avg_reward` + `episodes` at the driver's
+    `print_every` cadence, AND (via `diag_every`) the full SAC metric bundle
+    — `actor_loss`, `critic_loss`, `alpha`, `mean_q`, `mean_reward`,
+    `train_steps`, … — so the dashboard shows the same panels as the
+    single-env path. Config (server URL + API key) read from a `.env` via
+    `mojo_rl.core.dotenv`.
 
-Run with:
-    pixi run -e apple mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo   # NVIDIA GPU
+`updates_per_step=N_ENVS` keeps the effective UTD = 1 per collected
+transition: each driver iteration steps all `N_ENVS` envs once and runs
+`N_ENVS` gradient updates.
+
+NOTE on checkpointing: the facade's `save`/`load` are CPU-only (they write a
+`nn-ckpt v2` envelope from host-resident params), and the batched `train`
+entry point has no inline checkpoint/diag cadence (those live on
+`train_single`). This GPU example therefore trains + summarizes only; for
+mid-run checkpointing use the CPU example or the single-env cross-target path.
+
+HalfCheetah (Phyics3dEnv, MuJoCo-style):
+  * 17D observation (qpos + qvel excluding rootx and head)
+  * 6D continuous action (joint torques)
+  * Reward ≈ forward velocity - 0.1·||action||²
+  * No early termination (`TERMINATE_ON_UNHEALTHY=False`).
+
+Run:
+    pixi run -e apple  mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo  # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo  # NVIDIA GPU
 """
 
+from std.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
-from std.memory import UnsafePointer
-
-from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.core.agents import DeepSACAgent
-from mojo_rl.envs.half_cheetah import (
-    HalfCheetah,
-    HalfCheetahConfig,
-)
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
+from mojo_rl.deep_agents.sac import SACAgent
+from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
+from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
+from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 
 # =============================================================================
-# Constants
+# Architecture (matches the CPU nn / legacy DeepSACAgent half_cheetah runs)
 # =============================================================================
 
-# HalfCheetah: 17D observation, 6D continuous action
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
-comptime ACTION_DIM = HalfCheetahConfig.ACTION_DIM  # 6
+comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM  #  6
+comptime HIDDEN = 256
 
-# Network architecture
-comptime HIDDEN_DIM = 256
+# Off-policy GPU training parameters (mirror the legacy GPU script).
+comptime BATCH = 256
+comptime REPLAY_CAPACITY = 1_000_000
+comptime N_ENVS = 32
 
-# Off-policy GPU training parameters
-comptime BUFFER_CAPACITY = 1_000_000
-comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 32
-
-# Training duration (off-policy uses steps, not episodes)
+# Training duration (off-policy uses env steps, not episodes). Drop NUM_STEPS
+# to ~50_000 for a smoke run.
 comptime NUM_STEPS = 600_000
 comptime WARMUP_STEPS = 10_000
+comptime PRINT_EVERY = 50_000  # driver-cadence verbose + env/mean_ret emit
+comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
-comptime dtype = DType.float32
 
+comptime EnvT = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]
+comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
 
-# =============================================================================
-# Main
-# =============================================================================
+comptime ActorNet = StochasticActor[
+    OBS_DIM,
+    ACT_DIM,
+    LinearReLU[OBS_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
+]
+comptime CriticNet = Sequential[
+    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
+    Linear[HIDDEN, 1],
+]
 
 
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("SAC Agent GPU Training on HalfCheetah")
+    print("SAC (deep_agents) — HalfCheetah GPU (multi-env) + logger")
     print("=" * 70)
-    print()
-
-    # =========================================================================
-    # Create GPU context and agent
-    # =========================================================================
+    print("  OBS_DIM            =", OBS_DIM)
+    print("  ACT_DIM            =", ACT_DIM)
+    print("  HIDDEN             =", HIDDEN)
+    print("  BATCH              =", BATCH)
+    print("  REPLAY_CAPACITY    =", REPLAY_CAPACITY)
+    print("  N_ENVS             =", N_ENVS)
+    print("  NUM_STEPS          =", NUM_STEPS)
+    print("  WARMUP_STEPS       =", WARMUP_STEPS)
+    print("  PRINT_EVERY        =", PRINT_EVERY)
+    print("=" * 70)
 
     with DeviceContext() as ctx:
-        var agent = DeepSACAgent[
-            obs_dim=OBS_DIM,
-            action_dim=ACTION_DIM,
-            hidden_dim=HIDDEN_DIM,
-            buffer_capacity=BUFFER_CAPACITY,
-            batch_size=BATCH_SIZE,
-            actor_lr=0.0003,
-            critic_lr=0.0003,  # CleanRL default: q_lr=1e-3 (higher than actor)
-            L=RemoteLogger,
-            max_n_envs=MAX_N_ENVS,
-        ](
-            gamma=0.99,
-            tau=0.005,
-            action_scale=1.0,
-            alpha=0.2,
-            auto_alpha=True,
-            alpha_lr=0.0003,  # CleanRL uses q_lr for alpha too
-            target_entropy=-1.0,
-            checkpoint_every=100_000,
-            checkpoint_path="sac_half_cheetah.ckpt",
-        )
-
-        # agent.load_checkpoint("sac_half_cheetah.ckpt")
-
-        print("Environment: HalfCheetah Continuous (GPU)")
-        print("Agent: SAC (Soft Actor-Critic)")
-        print("  Observation dim: " + String(OBS_DIM))
-        print("  Action dim: " + String(ACTION_DIM))
-        print("  Hidden dim: " + String(HIDDEN_DIM))
-        print("  Buffer capacity: " + String(BUFFER_CAPACITY))
-        print("  Batch size: " + String(BATCH_SIZE))
-        print("  Max parallel envs: " + String(MAX_N_ENVS))
-        print("  Key hyperparameters:")
-        print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 1e-3 (CleanRL default)")
-        print("    - Alpha LR: 1e-3 (CleanRL default)")
-        print("    - Tau (soft update): 0.005")
-        print("    - Initial alpha: 0.2 (auto-tuned)")
-        print("    - Target entropy: -" + String(ACTION_DIM))
-        print("    - Warmup steps: " + String(WARMUP_STEPS))
-        print()
-
-        # =====================================================================
-        # Setup logger
-        # =====================================================================
-
+        # ─── Logger (remote) ─────────────────────────────────────────────
         var env_vars = load_dotenv()
         var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
         var url = env_vars.get("RL_MONITOR_URL", "")
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC HalfCheetah GPU (generic)",
+            run_name="SAC HalfCheetah NN (GPU)",
             buffer_size=64,
             api_key=api_key,
         )
-        logger.set_config("agent", "SAC Generic")
+        logger.set_config("algorithm", "SAC")
         logger.set_config("env", "HalfCheetah")
-        logger.set_config("hidden_dim", String(HIDDEN_DIM))
-        logger.set_config("actor_lr", "3e-4")
-        logger.set_config("critic_lr", "1e-3")
-        logger.set_config("alpha_lr", "1e-3")
-        logger.set_config("batch_size", String(BATCH_SIZE))
-        logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
+        logger.set_config("target", "gpu")
+        logger.set_config("hidden", String(HIDDEN))
+        logger.set_config("batch", String(BATCH))
+        logger.set_config("n_envs", String(N_ENVS))
+        logger.set_config("buffer_capacity", String(REPLAY_CAPACITY))
 
-        # =====================================================================
-        # Train using the train_gpu() method
-        # =====================================================================
+        var logger_ptr = UnsafePointer(to=logger)
 
+        # ─── Agent + batched GPU env ─────────────────────────────────────
+        # GPU training: the DeviceContext MUST be threaded through the agent
+        # (the trainer keeps it for H2D/D2H staging + all on-device kernels).
+        var agent = SACAgent[
+            "gpu",
+            UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+            ActorNet,
+            CriticNet,
+        ](
+            ctx=ctx,
+            actor_lr=3e-4,
+            critic_lr=3e-4,
+            alpha_lr=3e-4,
+            gamma=0.99,
+            tau=0.005,
+            action_scale=1.0,
+            init_alpha=0.2,
+            target_entropy=-Scalar[DT](ACT_DIM),  # SAC default heuristic
+            learning_starts=WARMUP_STEPS,
+            window_size=100,
+            initial_episode_fill=0.0,
+            # use_bf16=True,
+        )
+        var env = BatchedEnvT(ctx)
+
+        # ─── Single train() call — batched GPU off-policy driver ─────────
+        # Every PRINT_EVERY env-steps the driver emits `env/mean_ret` +
+        # `env/ep_count` through the logger and prints a progress line.
+        # `updates_per_step=N_ENVS` ⇒ effective UTD = 1 per transition.
         print("Starting GPU training...")
         print("-" * 70)
+        var t_start = perf_counter_ns()
+        _ = agent.train[
+            BatchedEnvT,
+            N_ENVS=N_ENVS,
+            USE_TRAIN_CUDA_GRAPH=True,
+            L=RemoteLogger,
+        ](
+            env,
+            NUM_STEPS,
+            rng_seed=UInt64(42),
+            updates_per_step=N_ENVS,
+            print_every=PRINT_EVERY,
+            verbose=True,
+            logger=logger_ptr,
+            diag_every=DIAG_EVERY,
+        )
+        var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
+        logger.close()
+        _ = logger  # lifetime extender for logger_ptr
 
-        var start_time = perf_counter_ns()
+        # ─── Summary ─────────────────────────────────────────────────────
+        print("-" * 70)
+        print("=" * 70)
+        print("Training complete")
+        print("  total env_steps           =", NUM_STEPS)
+        print("  elapsed                   =", elapsed_s, "s")
+        print("  mean ep return (last 100) =", agent.mean_return())
+        print("  episodes completed        =", agent.ep_count())
+        print("  remote points sent        =", logger.total_logged())
+        print("=" * 70)
 
-        try:
-            var metrics = agent.train_gpu[
-                HalfCheetah[dtype, TERMINATE_ON_UNHEALTHY=False],
-            ](
-                ctx,
-                num_steps=NUM_STEPS,
-                warmup_steps=WARMUP_STEPS,
-                verbose=True,
-                print_every=50_000,
-                logger=UnsafePointer(to=logger),
-                diag_every=1_000,
-            )
-
-            var end_time = perf_counter_ns()
-            var elapsed_s = Float64(end_time - start_time) / 1e9
-
-            logger.close()
-
-            print("-" * 70)
-            print()
-            print(">>> train_gpu returned successfully! <<<")
-
-            # =================================================================
-            # Summary
-            # =================================================================
-
-            print("=" * 70)
-            print("GPU Training Complete")
-            print("=" * 70)
-            print()
-            print("Total steps: " + String(NUM_STEPS))
-            print("Training time: " + String(elapsed_s)[byte=:6] + " seconds")
-            print()
-
-            # Print metrics summary
-            print(
-                "Final average reward (last 100 episodes): "
-                + String(metrics.mean_reward_last_n(100))[byte=:8]
-            )
-            print(
-                "Best episode reward: " + String(metrics.max_reward())[byte=:8]
-            )
-            print()
-
-            # Check for successful training
-            var final_avg = metrics.mean_reward_last_n(100)
-            if final_avg > 1000.0:
-                print("EXCELLENT: Agent is running fast! (avg reward > 1000)")
-            elif final_avg > 500.0:
-                print("SUCCESS: Agent learned to run! (avg reward > 500)")
-            elif final_avg > 100.0:
-                print(
-                    "GOOD PROGRESS: Agent is learning locomotion"
-                    " (avg reward > 100)"
-                )
-            elif final_avg > 0.0:
-                print(
-                    "LEARNING: Agent improving but needs more training"
-                    " (avg reward > 0)"
-                )
-            else:
-                print("EARLY STAGE: Agent still exploring (avg reward < 0)")
-
-            print()
-            print("=" * 70)
-
-        except e:
-            print("!!! EXCEPTION CAUGHT !!!")
-            print("Error:", e)
-            print("!!! END EXCEPTION !!!")
-
-    print(">>> main() completed normally <<<")
+        var final_avg = Float64(agent.mean_return())
+        if final_avg > 4000.0:
+            print("EXCELLENT — running fast (mean > 4000).")
+        elif final_avg > 1000.0:
+            print("STRONG — learned locomotion (mean > 1000).")
+        elif final_avg > 100.0:
+            print("PROGRESS — early locomotion (mean > 100).")
+        elif final_avg > 0.0:
+            print("LEARNING — positive return (mean > 0).")
+        else:
+            print("EARLY — still exploring (mean < 0).")
+        print("=" * 70)

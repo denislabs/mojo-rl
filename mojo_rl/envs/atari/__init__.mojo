@@ -21,6 +21,7 @@ from .frame_render import (
     render_frame_grayscale,
 )
 from .atari_env import AtariEnv, AtariEnvState, AtariAction
+from .games.registry import AtariGame, GameSignals, game_signals
 from .flags import (
     ACTION_NOOP,
     ACTION_FIRE,

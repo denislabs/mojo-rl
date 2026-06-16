@@ -4,7 +4,7 @@
 
 Like `examples/lewm/lewm_pong_collect_buffer.mojo`, but records the per-step
 REWARD alongside frames / actions / dones (format LWMR, see
-`mojo_rl/deep_agents2/dreamer4/pong_reward_buffer.mojo`). The Dreamer 4 agent's
+`mojo_rl/deep_agents/dreamer4/pong_reward_buffer.mojo`). The Dreamer 4 agent's
 reward head (eq. 9) + imagination RL (eq. 10/11) need this signal; the LeWM
 LWMP buffer has none.
 
@@ -22,7 +22,7 @@ from std.time import perf_counter_ns
 
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 from mojo_rl.envs.arcade_games.pong.pong import S_BALL_Y, S_PADDLE_Y
-from mojo_rl.deep_agents2.dreamer4.pong_reward_buffer import (
+from mojo_rl.deep_agents.dreamer4.pong_reward_buffer import (
     Dreamer4PongRewardBuffer,
 )
 from mojo_rl.envs.arcade_games.pong.offline_buffer import PONG_FRAME_BYTES

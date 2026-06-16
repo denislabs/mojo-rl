@@ -20,9 +20,9 @@ Run: `pixi run -e nvidia mojo run -I . examples/half_cheetah/tdmpc2_half_cheetah
 from std.memory import alloc
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.deep_agents2.tdmpc2.agent import TDMPC2Agent
-from mojo_rl.deep_agents2.tdmpc2.config import TDMPC2
+from mojo_rl.nn.constants import DT
+from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent
+from mojo_rl.deep_agents.tdmpc2.config import TDMPC2
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 comptime CKPT = "tdmpc2_half_cheetah_mpcoff.ckpt"

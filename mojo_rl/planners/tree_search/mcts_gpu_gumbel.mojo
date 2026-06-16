@@ -31,10 +31,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from std.math import sqrt, log, exp
 from layout import Layout, LayoutTensor
-from mojo_rl.nn.constants import dtype, TPB
-from mojo_rl.nn.model.model import Model
-from mojo_rl.nn.optimizer.optimizer import Optimizer
-from mojo_rl.nn.training import Network, GPUNetworkState
+from mojo_rl.nn.constants import DT as dtype
+comptime TPB = 256  # preserved from legacy nn.constants (nn.TPB == 128)
 
 
 comptime MAX_DEPTH: Int = 32
@@ -330,46 +328,60 @@ def gz_init_root_kernel[
         else:
             node_logits[na_off + a] = Scalar[dtype](-1e9)
 
-    # ── 2. Decode root value (categorical → scalar via inverse h⁻¹) ──────
-    var v_max_logit = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
-    for i in range(1, BINS):
-        var v = rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
-        if v > v_max_logit:
-            v_max_logit = v
-    var v_sum = Scalar[dtype](0.0)
-    for i in range(BINS):
-        v_sum += exp(
-            rebind[Scalar[dtype]](pred_output[pred_off + ACT + i]) - v_max_logit
-        )
-    var step_v = (v_max - v_min) / Scalar[dtype](BINS - 1)
-    var v_expected = Scalar[dtype](0.0)
-    for i in range(BINS):
-        var prob = (
-            exp(
+    # ── 2. Decode root value ─────────────────────────────────────────────
+    # BINS == 1 → scalar value head (AlphaZero): tanh-squash the raw output.
+    # BINS > 1 → categorical (MuZero/EZv2): expectation over bins, then h⁻¹.
+    comptime if BINS == 1:
+        # Scalar value head (AlphaZero): tanh-squash the raw output.
+        var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+        if raw_v > Scalar[dtype](10.0):
+            raw_v = Scalar[dtype](10.0)
+        elif raw_v < Scalar[dtype](-10.0):
+            raw_v = Scalar[dtype](-10.0)
+        var e_p = exp(raw_v)
+        var e_n = exp(-raw_v)
+        node_value[ns_off] = (e_p - e_n) / (e_p + e_n)
+    else:
+        var v_max_logit = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+        for i in range(1, BINS):
+            var v = rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
+            if v > v_max_logit:
+                v_max_logit = v
+        var v_sum = Scalar[dtype](0.0)
+        for i in range(BINS):
+            v_sum += exp(
                 rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
                 - v_max_logit
             )
-            / v_sum
+        var step_v = (v_max - v_min) / Scalar[dtype](BINS - 1)
+        var v_expected = Scalar[dtype](0.0)
+        for i in range(BINS):
+            var prob = (
+                exp(
+                    rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
+                    - v_max_logit
+                )
+                / v_sum
+            )
+            v_expected += prob * (v_min + Scalar[dtype](i) * step_v)
+        # Inverse scalar transform h⁻¹ (matches `inverse_scalar_transform`)
+        var sgn = (
+            Scalar[dtype](1.0)
+            if v_expected >= Scalar[dtype](0.0)
+            else Scalar[dtype](-1.0)
         )
-        v_expected += prob * (v_min + Scalar[dtype](i) * step_v)
-    # Inverse scalar transform h⁻¹ (matches MuZero's `inverse_scalar_transform`)
-    var sgn = (
-        Scalar[dtype](1.0)
-        if v_expected >= Scalar[dtype](0.0)
-        else Scalar[dtype](-1.0)
-    )
-    var abs_y = (
-        v_expected
-        if v_expected >= Scalar[dtype](0.0)
-        else -v_expected
-    )
-    var eps_h = Scalar[dtype](0.001)
-    var inner = sqrt(
-        Scalar[dtype](1.0)
-        + Scalar[dtype](4.0) * eps_h * (abs_y + Scalar[dtype](1.0) + eps_h)
-    )
-    var f = (inner - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps_h)
-    node_value[ns_off] = sgn * (f * f - Scalar[dtype](1.0))
+        var abs_y = (
+            v_expected
+            if v_expected >= Scalar[dtype](0.0)
+            else -v_expected
+        )
+        var eps_h = Scalar[dtype](0.001)
+        var inner = sqrt(
+            Scalar[dtype](1.0)
+            + Scalar[dtype](4.0) * eps_h * (abs_y + Scalar[dtype](1.0) + eps_h)
+        )
+        var f = (inner - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps_h)
+        node_value[ns_off] = sgn * (f * f - Scalar[dtype](1.0))
 
     # ── 3. Gumbel-Top-k sampling ─────────────────────────────────────────
     # Per-action g_a = -log(-log(U)). Score = logits + g_a. Top-K by repeated
@@ -513,6 +525,7 @@ def gz_select_kernel[
     apply_legal: Scalar[DType.uint8],
     c_visit: Scalar[dtype],
     c_scale: Scalar[dtype],
+    qnorm_per_node: Scalar[DType.uint8],
 ) where dtype.is_floating_point():
     """One simulation's selection phase, per env.
 
@@ -617,9 +630,41 @@ def gz_select_kernel[
             if nva > max_visit:
                 max_visit = nva
         var sigma_scale = (c_visit + max_visit) * c_scale
-        var mn = rebind[Scalar[dtype]](min_q[e])
-        var mx = rebind[Scalar[dtype]](max_q[e])
-        var q_range = mx - mn
+        # σ(completed_Q) normalization — two modes (see `qnorm_per_node` in
+        # the orchestrator for the full story):
+        #  * per-node (mctx qtransform_completed_by_mix_value semantics):
+        #    rescale over THIS node's children so the best child maps to qn=1
+        #    and the worst to qn=0 regardless of absolute Q spread. Required
+        #    when the tree-global range dwarfs sibling ΔQ (two-player ±1
+        #    terminals pinned C4's range at ~2 vs ΔQ ~0.1 → σ ≈ noise at ANY
+        #    sim budget). DEGENERATE at tiny action counts: with 2 children
+        #    qn is exactly {0,1} — gap magnitude is destroyed, σ becomes a
+        #    confident one-hot toward sign-of-noise (MZ CartPole regression:
+        #    target_max_prob 0.997 from step 600, never converged).
+        #  * tree-global (classic MuZero normalization): preserves gap
+        #    magnitude relative to the tree's value spread — validated on
+        #    single-player small-ACT tasks (MZ/EZv2 CartPole → 500).
+        var qlo: Scalar[dtype]
+        var q_range: Scalar[dtype]
+        if qnorm_per_node > Scalar[DType.uint8](0):
+            var node_mn = Scalar[dtype](1e18)
+            var node_mx = Scalar[dtype](-1e18)
+            for a in range(ACT):
+                var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
+                var cq = v_mix
+                if nva > Scalar[dtype](0.5):
+                    cq = (
+                        rebind[Scalar[dtype]](total_value[na_base + a]) / nva
+                    )
+                if cq < node_mn:
+                    node_mn = cq
+                if cq > node_mx:
+                    node_mx = cq
+            qlo = node_mn
+            q_range = node_mx - node_mn
+        else:
+            qlo = rebind[Scalar[dtype]](min_q[e])
+            q_range = rebind[Scalar[dtype]](max_q[e]) - qlo
 
         # Compute z[a] = node_logits[a] + σ(completed_Q[a]).
         # Stable softmax → π_improved.
@@ -634,9 +679,15 @@ def gz_select_kernel[
                 qa = v_mix
             var qn: Scalar[dtype]
             if q_range > Scalar[dtype](1e-8):
-                qn = (qa - mn) / q_range
+                qn = (qa - qlo) / q_range
             else:
-                qn = qa
+                # per-node: all completed Q equal → σ inert. tree-global:
+                # legacy raw-q passthrough (bit-compatible with the validated
+                # single-player runs).
+                qn = (
+                    Scalar[dtype](0.0)
+                    if qnorm_per_node > Scalar[DType.uint8](0) else qa
+                )
             z[a] = rebind[Scalar[dtype]](node_logits[na_base + a]) + (
                 sigma_scale * qn
             )
@@ -1012,6 +1063,7 @@ def gz_halve_active_kernel[
     keep: Scalar[DType.int32],
     c_visit: Scalar[dtype],
     c_scale: Scalar[dtype],
+    qnorm_per_node: Scalar[DType.uint8],
 ) where dtype.is_floating_point():
     """Sequential-Halving phase boundary: keep the top-`keep` active root
     candidates by score `g(a) + logits(a) + σ(completed_Q(a))`."""
@@ -1065,9 +1117,26 @@ def gz_halve_active_kernel[
         if nva > max_visit:
             max_visit = nva
     var sigma_scale = (c_visit + max_visit) * c_scale
-    var mn = rebind[Scalar[dtype]](min_q[e])
-    var mx = rebind[Scalar[dtype]](max_q[e])
-    var q_range = mx - mn
+    # σ normalization mode — see gz_select_kernel.
+    var qlo: Scalar[dtype]
+    var q_range: Scalar[dtype]
+    if qnorm_per_node > Scalar[DType.uint8](0):
+        var node_mn = Scalar[dtype](1e18)
+        var node_mx = Scalar[dtype](-1e18)
+        for a in range(ACT):
+            var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
+            var cq = v_mix
+            if nva > Scalar[dtype](0.5):
+                cq = rebind[Scalar[dtype]](total_value[na_base + a]) / nva
+            if cq < node_mn:
+                node_mn = cq
+            if cq > node_mx:
+                node_mx = cq
+        qlo = node_mn
+        q_range = node_mx - node_mn
+    else:
+        qlo = rebind[Scalar[dtype]](min_q[e])
+        q_range = rebind[Scalar[dtype]](max_q[e]) - qlo
 
     var old_n = Int(old_size)
     if old_n > MAX_K:
@@ -1099,9 +1168,12 @@ def gz_halve_active_kernel[
             qa = v_mix
         var qn: Scalar[dtype]
         if q_range > Scalar[dtype](1e-8):
-            qn = (qa - mn) / q_range
+            qn = (qa - qlo) / q_range
         else:
-            qn = qa
+            qn = (
+                Scalar[dtype](0.0)
+                if qnorm_per_node > Scalar[DType.uint8](0) else qa
+            )
         var sigma_q = sigma_scale * qn
         var l = rebind[Scalar[dtype]](node_logits[na_base + act])
         var g = rebind[Scalar[dtype]](root_gumbels[k_off + cand])
@@ -1158,6 +1230,7 @@ def gz_extract_policy_kernel[
     apply_legal: Scalar[DType.uint8],
     c_visit: Scalar[dtype],
     c_scale: Scalar[dtype],
+    qnorm_per_node: Scalar[DType.uint8],
 ) where dtype.is_floating_point():
     """Compute the improved policy at the root and write to policies_out."""
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -1210,9 +1283,29 @@ def gz_extract_policy_kernel[
         if nva > max_visit:
             max_visit = nva
     var sigma_scale = (c_visit + max_visit) * c_scale
-    var mn = rebind[Scalar[dtype]](min_q[e])
-    var mx = rebind[Scalar[dtype]](max_q[e])
-    var q_range = mx - mn
+    # σ normalization mode — see gz_select_kernel. This is the kernel that
+    # writes the TRAINING TARGET, so the mode directly shapes what the net
+    # learns: per-node = full-strength ranking (C4-validated), tree-global =
+    # gap-magnitude-preserving (MZ/EZ CartPole-validated; ACT=2 safe).
+    var qlo: Scalar[dtype]
+    var q_range: Scalar[dtype]
+    if qnorm_per_node > Scalar[DType.uint8](0):
+        var node_mn = Scalar[dtype](1e18)
+        var node_mx = Scalar[dtype](-1e18)
+        for a in range(ACT):
+            var nva = rebind[Scalar[dtype]](visit_count[na_base + a])
+            var cq = v_mix
+            if nva > Scalar[dtype](0.5):
+                cq = rebind[Scalar[dtype]](total_value[na_base + a]) / nva
+            if cq < node_mn:
+                node_mn = cq
+            if cq > node_mx:
+                node_mx = cq
+        qlo = node_mn
+        q_range = node_mx - node_mn
+    else:
+        qlo = rebind[Scalar[dtype]](min_q[e])
+        q_range = rebind[Scalar[dtype]](max_q[e]) - qlo
 
     var z = InlineArray[Scalar[dtype], ACT](uninitialized=True)
     var max_z = Scalar[dtype](-1e18)
@@ -1232,9 +1325,12 @@ def gz_extract_policy_kernel[
             qa = v_mix
         var qn: Scalar[dtype]
         if q_range > Scalar[dtype](1e-8):
-            qn = (qa - mn) / q_range
+            qn = (qa - qlo) / q_range
         else:
-            qn = qa
+            qn = (
+                Scalar[dtype](0.0)
+                if qnorm_per_node > Scalar[DType.uint8](0) else qa
+            )
         var l = rebind[Scalar[dtype]](node_logits[na_base + a])
         z[a] = l + sigma_scale * qn
         if z[a] > max_z:
@@ -1250,562 +1346,177 @@ def gz_extract_policy_kernel[
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# Driver
+# Gumbel AlphaZero kernels — true-env-rules expansion (game states, legal
+# masks, scalar tanh value). The selection / halving / backup / extract
+# kernels above are shared: Gumbel AlphaZero keeps Gumbel-Top-k roots,
+# Sequential Halving and the visit-balance in-tree rule (Danihelka et al.);
+# only the MODEL changes (env.step instead of the dynamics net).
 # ═════════════════════════════════════════════════════════════════════════
 
 
-def run_gumbel_search_gpu[
+def gz_az_copy_root_state_kernel[
+    N_ENVS: Int, MAX_NODES: Int, STATE_SIZE: Int, dtype: DType,
+](
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
+    ],
+    root_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+    ],
+) where dtype.is_floating_point():
+    """Copy each env's root game state into its tree's node-0 slot."""
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N_ENVS * STATE_SIZE:
+        return
+    var e = idx // STATE_SIZE
+    var i = idx % STATE_SIZE
+    game_states[e * MAX_NODES * STATE_SIZE + i] = root_states[idx]
+
+
+def gz_az_stage_state_kernel[
+    N_ENVS: Int, MAX_NODES: Int, STATE_SIZE: Int, dtype: DType,
+](
+    expansion_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+    ],
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
+    ],
+    pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """Stage the selected leaf-parent's game state for env.step expansion."""
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N_ENVS * STATE_SIZE:
+        return
+    var e = idx // STATE_SIZE
+    var i = idx % STATE_SIZE
+    var parent = Int(rebind[Scalar[dtype]](pending_parent[e]))
+    expansion_states[idx] = game_states[
+        e * MAX_NODES * STATE_SIZE + parent * STATE_SIZE + i
+    ]
+
+
+def gz_az_expand_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
     ACT: Int,
-    LATENT: Int,
-    BINS: Int,
-    MAX_K: Int,
-    NUM_SIMULATIONS: Int,
-    RepModel: Model,
-    DynModel: Model,
-    PredModel: Model,
-    RepOpt: Optimizer,
-    DynOpt: Optimizer,
-    PredOpt: Optimizer,
+    STATE_SIZE: Int,
+    PRED_OUT: Int,
+    dtype: DType,
 ](
-    ctx: DeviceContext,
-    mut state: EZV2GPUMCTSState[N_ENVS, MAX_NODES, ACT, LATENT, BINS, MAX_K],
-    obs_buf: DeviceBuffer[dtype],
-    rep_state: GPUNetworkState[RepModel, RepOpt],
-    dyn_state: GPUNetworkState[DynModel, DynOpt],
-    pred_state: GPUNetworkState[PredModel, PredOpt],
-    workspace_buf: DeviceBuffer[dtype],
-    v_min: Float64,
-    v_max: Float64,
-    apply_legal: Bool = False,
-    k_actual: Int = MAX_K,
-    c_visit: Float64 = 50.0,
-    c_scale: Float64 = 0.1,
-    gamma: Float64 = 0.997,
-    rng_seed: UInt32 = UInt32(0),
-) raises:
-    """Run Gumbel search across all envs in `state`. Writes the improved
-    policy distribution to `state.policies_out`.
-
-    Caller is responsible for:
-      • populating `obs_buf` with `[N_ENVS × OBS]` (contiguous batch);
-      • optionally populating `state.legal_mask` if `apply_legal=True`;
-      • calling `state.zero_tree(ctx)` is done internally;
-      • allocating `workspace_buf` sized for the max of the three networks'
-        per-sample workspace * `N_ENVS`.
-    """
-    comptime PRED_OUT = ACT + BINS
-    comptime DYN_IN = LATENT + ACT
-    comptime DYN_OUT = LATENT + BINS
-    comptime ENV_BLOCKS = (N_ENVS + TPB - 1) // TPB
-
-    # ── 0. Reset tree ────────────────────────────────────────────────────
-    state.zero_tree(ctx)
-
-    # ── 1. Rep forward (obs → root_hidden, contiguous [N_ENVS × LATENT]) ─
-    var obs_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, RepModel.IN_DIM), MutAnyOrigin
-    ](obs_buf.unsafe_ptr())
-    var root_hidden_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, RepModel.OUT_DIM), MutAnyOrigin
-    ](state.root_hidden.unsafe_ptr())
-    Network[RepModel, RepOpt].forward_gpu[N_ENVS](
-        ctx,
-        obs_t,
-        root_hidden_t,
-        rep_state.params_view(),
-        rep_state.model_state_view(),
-        workspace_buf,
-    )
-
-    # ── 2. Pred forward (root_hidden → pred_output, contiguous) ──────────
-    var pred_in_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, PredModel.IN_DIM), MutAnyOrigin
-    ](state.root_hidden.unsafe_ptr())
-    var pred_out_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, PredModel.OUT_DIM), MutAnyOrigin
-    ](state.pred_output.unsafe_ptr())
-    Network[PredModel, PredOpt].forward_gpu[N_ENVS](
-        ctx,
-        pred_in_t,
-        pred_out_t,
-        pred_state.params_view(),
-        pred_state.model_state_view(),
-        workspace_buf,
-    )
-
-    # ── 3. Scatter root_hidden into hidden_states[e][0] ──────────────────
-    var rh_flat = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * LATENT), MutAnyOrigin
-    ](state.root_hidden.unsafe_ptr())
-    var hs_flat = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin
-    ](state.hidden_states.unsafe_ptr())
-    comptime run_scatter = gz_scatter_root_hidden_kernel[
-        N_ENVS, MAX_NODES, LATENT, dtype
-    ]
-    ctx.enqueue_function[run_scatter](
-        rh_flat,
-        hs_flat,
-        grid_dim=(ENV_BLOCKS,),
-        block_dim=(TPB,),
-    )
-
-    # ── 4. Init root: logits + Gumbel-Top-k + value + per-env scalars ────
-    var nl_t = LayoutTensor[
+    visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
-    ](state.node_logits.unsafe_ptr())
-    var nv_t = LayoutTensor[
+    ],
+    total_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    node_logits: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    reward: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    child_idx: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
+    ],
+    total_visits: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
-    ](state.node_value.unsafe_ptr())
-    var nc_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ](state.node_count.unsafe_ptr())
-    var miq_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ](state.min_q.unsafe_ptr())
-    var mxq_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ](state.max_q.unsafe_ptr())
-    var lm_t = LayoutTensor[
+    ],
+    node_value: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
+    ],
+    node_count: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    game_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * MAX_NODES * STATE_SIZE), MutAnyOrigin
+    ],
+    expansion_states: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+    ],
+    exp_legal: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
-    ](state.legal_mask.unsafe_ptr())
-    var rc_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_K), MutAnyOrigin
-    ](state.root_candidates.unsafe_ptr())
-    var rg_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_K), MutAnyOrigin
-    ](state.root_gumbels.unsafe_ptr())
-    var ra_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_K), MutAnyOrigin
-    ](state.root_active.unsafe_ptr())
-    var po_full_t = LayoutTensor[
+    ],
+    pending_parent: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    pending_action: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    step_rewards: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    step_dones: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    pred_output: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin
-    ](state.pred_output.unsafe_ptr())
+    ],
+    leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+) where dtype.is_floating_point():
+    """AlphaZero expand: store the post-step game state as the child node,
+    write the child's legal-masked policy logits, and produce the leaf value
+    for the (negated) backup.
 
-    var k_clipped = k_actual
-    if k_clipped > MAX_K:
-        k_clipped = MAX_K
-    if k_clipped > ACT:
-        k_clipped = ACT
-    # Round down to power of two for clean log2(K) phases.
-    k_clipped = _largest_power_of_two_le(k_clipped)
-    if k_clipped < 1:
-        k_clipped = 1
+    Leaf value (two-player convention, matches the donor AZ kernel):
+      * terminal (done): ``-step_reward`` — the move ending the game was the
+        opponent's from the child's perspective (+1 win → child sees −1;
+        draw 0 → 0).
+      * non-terminal: ``tanh(raw_value)`` from the scalar value head
+        (``PRED_OUT == ACT + 1``).
 
-    comptime run_init = gz_init_root_kernel[
-        N_ENVS, MAX_NODES, ACT, BINS, MAX_K, PRED_OUT, dtype
-    ]
-    ctx.enqueue_function[run_init](
-        nl_t,
-        nv_t,
-        nc_t,
-        miq_t,
-        mxq_t,
-        lm_t,
-        rc_t,
-        rg_t,
-        ra_t,
-        po_full_t,
-        Scalar[dtype](v_min),
-        Scalar[dtype](v_max),
-        Scalar[DType.int32](k_clipped),
-        Scalar[DType.uint8](1 if apply_legal else 0),
-        rng_seed,
-        grid_dim=(ENV_BLOCKS,),
-        block_dim=(TPB,),
+    One thread per env (one expansion per sim — Gumbel runs serial sims, so
+    there is no frozen-tree duplicate problem by construction)."""
+    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if e >= N_ENVS:
+        return
+
+    var parent = Int(rebind[Scalar[dtype]](pending_parent[e]))
+    var action = Int(rebind[Scalar[dtype]](pending_action[e]))
+    var child = Int(rebind[Scalar[dtype]](node_count[e]))
+    if child >= MAX_NODES:
+        leaf_values[e] = Scalar[dtype](0.0)
+        return
+
+    var tree_off = e * MAX_NODES * ACT
+    var ns_off = e * MAX_NODES
+    var pred_off = e * PRED_OUT
+    var lm_off = e * ACT
+
+    # ── Store child game state ───────────────────────────────────────────
+    var child_gs_off = e * MAX_NODES * STATE_SIZE + child * STATE_SIZE
+    for i in range(STATE_SIZE):
+        game_states[child_gs_off + i] = expansion_states[e * STATE_SIZE + i]
+
+    # ── Parent edge reward (terminal-only in board games; backup ignores
+    #    it on the NEGATE path but it documents the transition) ────────────
+    reward[tree_off + parent * ACT + action] = rebind[Scalar[dtype]](
+        step_rewards[e]
     )
 
-    # ── 5. Sequential Halving simulation loop ────────────────────────────
-    var num_phases = _ilog2(k_clipped)
-    if num_phases < 1:
-        num_phases = 1
-    var per_phase_budget = NUM_SIMULATIONS // num_phases
-    if per_phase_budget < 1:
-        per_phase_budget = 1
+    # ── Child policy logits, legal-masked (illegal → −1e9 so the
+    #    visit-balance selection and improved policy never pick them) ──────
+    var child_na_base = tree_off + child * ACT
+    for a in range(ACT):
+        var legal = rebind[Scalar[dtype]](exp_legal[lm_off + a])
+        if legal > Scalar[dtype](0.5):
+            node_logits[child_na_base + a] = pred_output[pred_off + a]
+        else:
+            node_logits[child_na_base + a] = Scalar[dtype](-1e9)
+        visit_count[child_na_base + a] = Scalar[dtype](0.0)
+        total_value[child_na_base + a] = Scalar[dtype](0.0)
+        reward[child_na_base + a] = Scalar[dtype](0.0)
+        child_idx[child_na_base + a] = Scalar[dtype](-1.0)
+    total_visits[ns_off + child] = Scalar[dtype](0.0)
 
-    var sims_used = 0
-    var active_size = k_clipped
-    for phase in range(num_phases):
-        var per_action = per_phase_budget // active_size
-        if per_action < 1:
-            per_action = 1
+    # ── Leaf value: terminal → −step_reward; else tanh(raw value) ────────
+    var step_rew = rebind[Scalar[dtype]](step_rewards[e])
+    var was_done = rebind[Scalar[dtype]](step_dones[e]) > Scalar[dtype](0.5)
+    var v: Scalar[dtype]
+    if was_done:
+        v = -step_rew
+    else:
+        var raw_v = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
+        if raw_v > Scalar[dtype](10.0):
+            raw_v = Scalar[dtype](10.0)
+        elif raw_v < Scalar[dtype](-10.0):
+            raw_v = Scalar[dtype](-10.0)
+        var e_p = exp(raw_v)
+        var e_n = exp(-raw_v)
+        v = (e_p - e_n) / (e_p + e_n)
+    node_value[ns_off + child] = v
+    leaf_values[e] = v
 
-        for _rep in range(per_action):
-            for slot in range(active_size):
-                if sims_used >= NUM_SIMULATIONS:
-                    break
-                _run_one_sim_gpu[
-                    N_ENVS,
-                    MAX_NODES,
-                    ACT,
-                    LATENT,
-                    BINS,
-                    MAX_K,
-                    DynModel,
-                    PredModel,
-                    DynOpt,
-                    PredOpt,
-                ](
-                    ctx,
-                    state,
-                    dyn_state,
-                    pred_state,
-                    workspace_buf,
-                    slot,
-                    apply_legal,
-                    v_min,
-                    v_max,
-                    c_visit,
-                    c_scale,
-                    gamma,
-                )
-                sims_used += 1
-
-        # Halve the active set, except in the last phase.
-        if phase + 1 < num_phases and active_size > 1:
-            var keep = active_size // 2
-            if keep < 1:
-                keep = 1
-            comptime run_halve = gz_halve_active_kernel[
-                N_ENVS, MAX_NODES, ACT, MAX_K, dtype
-            ]
-            var vc_t = LayoutTensor[
-                dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
-            ](state.visit_count.unsafe_ptr())
-            var tv_t = LayoutTensor[
-                dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
-            ](state.total_value.unsafe_ptr())
-            var tvis_t = LayoutTensor[
-                dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
-            ](state.total_visits.unsafe_ptr())
-            ctx.enqueue_function[run_halve](
-                vc_t,
-                tv_t,
-                nl_t,
-                tvis_t,
-                nv_t,
-                miq_t,
-                mxq_t,
-                rc_t,
-                rg_t,
-                ra_t,
-                Scalar[DType.int32](active_size),
-                Scalar[DType.int32](keep),
-                Scalar[dtype](c_visit),
-                Scalar[dtype](c_scale),
-                grid_dim=(ENV_BLOCKS,),
-                block_dim=(TPB,),
-            )
-            active_size = keep
-
-    # Spend any leftover simulations on slot 0 of the (now size-1) active set.
-    while sims_used < NUM_SIMULATIONS:
-        _run_one_sim_gpu[
-            N_ENVS,
-            MAX_NODES,
-            ACT,
-            LATENT,
-            BINS,
-            MAX_K,
-            DynModel,
-            PredModel,
-            DynOpt,
-            PredOpt,
-        ](
-            ctx,
-            state,
-            dyn_state,
-            pred_state,
-            workspace_buf,
-            0,
-            apply_legal,
-            v_min,
-            v_max,
-            c_visit,
-            c_scale,
-            gamma,
-        )
-        sims_used += 1
-
-    # ── 6. Extract improved policy ───────────────────────────────────────
-    var po_extract_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
-    ](state.policies_out.unsafe_ptr())
-    var vc_t2 = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
-    ](state.visit_count.unsafe_ptr())
-    var tv_t2 = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
-    ](state.total_value.unsafe_ptr())
-    var tvis_t2 = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
-    ](state.total_visits.unsafe_ptr())
-    comptime run_extract = gz_extract_policy_kernel[
-        N_ENVS, MAX_NODES, ACT, dtype
-    ]
-    ctx.enqueue_function[run_extract](
-        vc_t2,
-        tv_t2,
-        nl_t,
-        tvis_t2,
-        nv_t,
-        miq_t,
-        mxq_t,
-        lm_t,
-        po_extract_t,
-        Scalar[DType.uint8](1 if apply_legal else 0),
-        Scalar[dtype](c_visit),
-        Scalar[dtype](c_scale),
-        grid_dim=(ENV_BLOCKS,),
-        block_dim=(TPB,),
-    )
-
-
-def _run_one_sim_gpu[
-    N_ENVS: Int,
-    MAX_NODES: Int,
-    ACT: Int,
-    LATENT: Int,
-    BINS: Int,
-    MAX_K: Int,
-    DynModel: Model,
-    PredModel: Model,
-    DynOpt: Optimizer,
-    PredOpt: Optimizer,
-](
-    ctx: DeviceContext,
-    mut state: EZV2GPUMCTSState[N_ENVS, MAX_NODES, ACT, LATENT, BINS, MAX_K],
-    dyn_state: GPUNetworkState[DynModel, DynOpt],
-    pred_state: GPUNetworkState[PredModel, PredOpt],
-    workspace_buf: DeviceBuffer[dtype],
-    slot: Int,
-    apply_legal: Bool,
-    v_min: Float64,
-    v_max: Float64,
-    c_visit: Float64,
-    c_scale: Float64,
-    gamma: Float64,
-) raises:
-    """One simulation across all envs: select → dyn → pred → expand →
-    backup. The root candidate slot is shared across envs (that's safe
-    because Sequential Halving keeps the active sets the same size for all
-    envs in any given phase)."""
-    comptime PRED_OUT = ACT + BINS
-    comptime DYN_IN = LATENT + ACT
-    comptime DYN_OUT = LATENT + BINS
-    comptime ENV_BLOCKS = (N_ENVS + TPB - 1) // TPB
-
-    var vc_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
-    ](state.visit_count.unsafe_ptr())
-    var tv_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
-    ](state.total_value.unsafe_ptr())
-    var nl_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
-    ](state.node_logits.unsafe_ptr())
-    var rw_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
-    ](state.reward.unsafe_ptr())
-    var ci_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
-    ](state.child_idx.unsafe_ptr())
-    var tvis_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
-    ](state.total_visits.unsafe_ptr())
-    var nv_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
-    ](state.node_value.unsafe_ptr())
-    var nc_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ](state.node_count.unsafe_ptr())
-    var miq_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ](state.min_q.unsafe_ptr())
-    var mxq_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ](state.max_q.unsafe_ptr())
-    var lm_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
-    ](state.legal_mask.unsafe_ptr())
-    var rc_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_K), MutAnyOrigin
-    ](state.root_candidates.unsafe_ptr())
-    var ra_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_K), MutAnyOrigin
-    ](state.root_active.unsafe_ptr())
-    var hs_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_NODES * LATENT), MutAnyOrigin
-    ](state.hidden_states.unsafe_ptr())
-    var di_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * DYN_IN), MutAnyOrigin
-    ](state.dyn_input.unsafe_ptr())
-    var pp_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ](state.pending_parent.unsafe_ptr())
-    var pa_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ](state.pending_action.unsafe_ptr())
-    var sp_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin
-    ](state.search_paths.unsafe_ptr())
-    var ap_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * MAX_DEPTH), MutAnyOrigin
-    ](state.action_paths.unsafe_ptr())
-    var pl_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ](state.path_lengths.unsafe_ptr())
-
-    # Selection.
-    comptime run_select = gz_select_kernel[
-        N_ENVS, MAX_NODES, ACT, MAX_K, LATENT, DYN_IN, dtype
-    ]
-    ctx.enqueue_function[run_select](
-        vc_t,
-        tv_t,
-        nl_t,
-        ci_t,
-        tvis_t,
-        nv_t,
-        miq_t,
-        mxq_t,
-        lm_t,
-        rc_t,
-        ra_t,
-        hs_t,
-        di_t,
-        pp_t,
-        pa_t,
-        sp_t,
-        ap_t,
-        pl_t,
-        Scalar[DType.int32](slot),
-        Scalar[DType.uint8](1 if apply_legal else 0),
-        Scalar[dtype](c_visit),
-        Scalar[dtype](c_scale),
-        grid_dim=(ENV_BLOCKS,),
-        block_dim=(TPB,),
-    )
-
-    # Dynamics forward.
-    var dyn_in_b = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, DynModel.IN_DIM), MutAnyOrigin
-    ](state.dyn_input.unsafe_ptr())
-    var dyn_out_b = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, DynModel.OUT_DIM), MutAnyOrigin
-    ](state.dyn_output.unsafe_ptr())
-    Network[DynModel, DynOpt].forward_gpu[N_ENVS](
-        ctx,
-        dyn_in_b,
-        dyn_out_b,
-        dyn_state.params_view(),
-        dyn_state.model_state_view(),
-        workspace_buf,
-    )
-
-    # Copy dyn_output's hidden prefix into pred_input, then prediction forward.
-    comptime run_copy = gz_copy_pred_input_kernel[
-        N_ENVS, LATENT, DYN_OUT, dtype
-    ]
-    var pred_in_flat = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * LATENT), MutAnyOrigin
-    ](state.pred_input.unsafe_ptr())
-    var dyn_out_flat = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * DYN_OUT), MutAnyOrigin
-    ](state.dyn_output.unsafe_ptr())
-    ctx.enqueue_function[run_copy](
-        pred_in_flat,
-        dyn_out_flat,
-        grid_dim=(ENV_BLOCKS,),
-        block_dim=(TPB,),
-    )
-
-    var pred_in_b = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, PredModel.IN_DIM), MutAnyOrigin
-    ](state.pred_input.unsafe_ptr())
-    var pred_out_b = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS, PredModel.OUT_DIM), MutAnyOrigin
-    ](state.pred_output.unsafe_ptr())
-    Network[PredModel, PredOpt].forward_gpu[N_ENVS](
-        ctx,
-        pred_in_b,
-        pred_out_b,
-        pred_state.params_view(),
-        pred_state.model_state_view(),
-        workspace_buf,
-    )
-
-    # Expand.
-    var lv_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ](state.leaf_values.unsafe_ptr())
-    var po_full_t = LayoutTensor[
-        dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin
-    ](state.pred_output.unsafe_ptr())
-    comptime run_expand = gz_expand_kernel[
-        N_ENVS, MAX_NODES, ACT, LATENT, BINS, PRED_OUT, DYN_OUT, dtype
-    ]
-    ctx.enqueue_function[run_expand](
-        vc_t,
-        tv_t,
-        nl_t,
-        rw_t,
-        ci_t,
-        tvis_t,
-        nv_t,
-        nc_t,
-        hs_t,
-        pp_t,
-        pa_t,
-        dyn_out_flat,
-        po_full_t,
-        lv_t,
-        Scalar[dtype](v_min),
-        Scalar[dtype](v_max),
-        grid_dim=(ENV_BLOCKS,),
-        block_dim=(TPB,),
-    )
-
-    # Backup.
-    comptime run_backup = gz_backup_kernel[
-        N_ENVS, MAX_NODES, ACT, dtype
-    ]
-    ctx.enqueue_function[run_backup](
-        vc_t,
-        tv_t,
-        rw_t,
-        tvis_t,
-        nv_t,
-        miq_t,
-        mxq_t,
-        sp_t,
-        ap_t,
-        pl_t,
-        lv_t,
-        Scalar[dtype](gamma),
-        grid_dim=(ENV_BLOCKS,),
-        block_dim=(TPB,),
-    )
-
-
-# ═════════════════════════════════════════════════════════════════════════
-# Host helpers (mirror efficient_zero_v2/mcts.mojo)
-# ═════════════════════════════════════════════════════════════════════════
-
-
-def _ilog2(n: Int) -> Int:
-    var x = n
-    var r = 0
-    while x > 1:
-        x = x // 2
-        r += 1
-    return r
-
-
-def _largest_power_of_two_le(n: Int) -> Int:
-    var x = 1
-    while x * 2 <= n:
-        x *= 2
-    return x
+    # ── Link parent → child + bump node count ───────────────────────────
+    child_idx[tree_off + parent * ACT + action] = Scalar[dtype](child)
+    node_count[e] = Scalar[dtype](child + 1)

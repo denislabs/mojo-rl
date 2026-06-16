@@ -20,6 +20,8 @@ from .flags import (
     FLAG_CON_COLOR,
     FLAG_CON_LEFT_DIFF,
     FLAG_CON_RIGHT_DIFF,
+    FLAG_SWAP_PORTS,
+    FLAG_PADDLES,
     ACTION_NOOP,
     ACTION_FIRE,
     ACTION_UP,
@@ -110,19 +112,27 @@ def set_action(mut state: AtariState, action: UInt8):
 
     # Update paddle position for paddle-based games (Pong, Breakout, etc.).
     # The paddle is read as INPT0/INPT1 (driven by paddle_pos), so movement
-    # actions must adjust paddle_pos. Two directions map to "up" and "down":
+    # actions must adjust paddle_pos.
+    #
+    # Paddle carts (FLAG_PADDLES, ALE applyActionPaddles): only RIGHT
+    # (decrease position) and LEFT (increase) move the paddle; UP/DOWN do
+    # nothing at all in ALE's paddle mode.
+    #
+    # Legacy path (flag clear, GameDef envs): two directions map to "up"
+    # and "down":
     #   - UP/RIGHT   move the paddle up   (decrease position)
     #   - DOWN/LEFT  move the paddle down (increase position)
     # RIGHT/LEFT are included because the minimal action sets for paddle games
     # (e.g. PongDef.map_action) emit RIGHT/LEFT, not UP/DOWN — without this an
     # agent's movement actions would never move the paddle.
     comptime PADDLE_DELTA: Int = 3
-    var move_up = (state.sys_flags & FLAG_CON_UP) != 0 or (
-        state.sys_flags & FLAG_CON_RIGHT
-    ) != 0
-    var move_down = (state.sys_flags & FLAG_CON_DOWN) != 0 or (
-        state.sys_flags & FLAG_CON_LEFT
-    ) != 0
+    var paddles_mode = (state.sys_flags & FLAG_PADDLES) != 0
+    var move_up = (state.sys_flags & FLAG_CON_RIGHT) != 0 or (
+        not paddles_mode and (state.sys_flags & FLAG_CON_UP) != 0
+    )
+    var move_down = (state.sys_flags & FLAG_CON_LEFT) != 0 or (
+        not paddles_mode and (state.sys_flags & FLAG_CON_DOWN) != 0
+    )
     if move_up:
         if Int(state.paddle_pos) >= PADDLE_DELTA:
             state.paddle_pos = UInt8(Int(state.paddle_pos) - PADDLE_DELTA)
@@ -148,14 +158,27 @@ def riot_read_swcha(state: AtariState) -> UInt8:
     """
     var value: UInt8 = 0xFF  # All pins high (unpressed)
 
+    # Swapped-port carts (Stella Console.SwapPorts, e.g. Wizard of Wor)
+    # read player 1 from the RIGHT port = SWCHA low nibble.
+    var shift: UInt8 = 0 if (state.sys_flags & FLAG_SWAP_PORTS) != 0 else 4
+
+    if (state.sys_flags & FLAG_PADDLES) != 0:
+        # Paddle cart: the joystick direction pins are the paddle BUTTONS
+        # (Stella Paddles — pin Four = paddle 0 fire, pin Three = paddle 1
+        # fire). FIRE grounds pin Four (= SWCHA D7 on the left port, ALE
+        # PaddleZeroFire); directions never reach SWCHA.
+        if (state.sys_flags & FLAG_CON_FIRE) != 0:
+            value = value & ~(UInt8(0x08) << shift)
+        return value
+
     if (state.sys_flags & FLAG_CON_UP) != 0:
-        value = value & ~UInt8(0x10)  # Bit 4 low
+        value = value & ~(UInt8(0x01) << shift)
     if (state.sys_flags & FLAG_CON_DOWN) != 0:
-        value = value & ~UInt8(0x20)  # Bit 5 low
+        value = value & ~(UInt8(0x02) << shift)
     if (state.sys_flags & FLAG_CON_LEFT) != 0:
-        value = value & ~UInt8(0x40)  # Bit 6 low
+        value = value & ~(UInt8(0x04) << shift)
     if (state.sys_flags & FLAG_CON_RIGHT) != 0:
-        value = value & ~UInt8(0x80)  # Bit 7 low
+        value = value & ~(UInt8(0x08) << shift)
 
     return value
 
@@ -184,7 +207,8 @@ def riot_read_swchb(state: AtariState) -> UInt8:
     return value
 
 
-@always_inline
+# @no_inline: see tia_read — compile-memory boundary.
+@no_inline
 def riot_read(state: AtariState, addr: UInt8) -> UInt8:
     """Read a RIOT register or RAM.
 
@@ -208,7 +232,8 @@ def riot_read(state: AtariState, addr: UInt8) -> UInt8:
         return 0
 
 
-@always_inline
+# @no_inline: see tia_read — compile-memory boundary.
+@no_inline
 def riot_write(mut state: AtariState, addr: UInt8, value: UInt8):
     """Write a RIOT register. Handles timer setup."""
     var reg = addr & 0x1F
@@ -235,17 +260,23 @@ def riot_write(mut state: AtariState, addr: UInt8, value: UInt8):
 def riot_update_timer(mut state: AtariState, cycles: UInt32):
     """Advance the RIOT timer by the given number of CPU cycles.
 
-    Each CPU cycle = 3 TIA clocks. Timer counts down at (3 * cycles / interval).
-    After underflow, timer counts at 1x (every clock).
+    The 6532 runs at the CPU clock: TIM1T/TIM8T/TIM64T/T1024T intervals are
+    1/8/64/1024 CPU cycles (ALE M6532: `delta >> myIntervalShift` with delta in
+    CPU cycles). Counting color clocks against these intervals (the old
+    `cycles * 3`) ran the timer 3x too fast: the VBLANK wait expired before the
+    kernel's variable game-logic finished, INTIM free-ran past 0, and the
+    wait-for-INTIM loop sampled a wrapping counter — frame length then tracked
+    logic time (SI: 245-286 lines instead of a constant 262 = vertical shake).
+    After underflow, the timer counts at 1x (every CPU cycle), wrapping 0xFF.
     """
-    state.timer_clocks += cycles * 3
+    state.timer_clocks += cycles
 
     while state.timer_clocks >= state.timer_interval:
         state.timer_clocks -= state.timer_interval
         if state.timer_value > 0:
             state.timer_value -= 1
         else:
-            # After underflow, count at 1x rate
+            # After underflow, count at 1x rate (per CPU cycle)
             state.timer_interval = 1
             # Timer wraps to 0xFF
             state.timer_value = 0xFF

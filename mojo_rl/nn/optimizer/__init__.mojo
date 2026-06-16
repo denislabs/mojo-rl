@@ -1,6 +1,9 @@
-from .optimizer import Optimizer
-from .sgd import SGD
+"""Optimizers — parameter update rules."""
+
 from .adam import Adam
-from .rmsprop import RMSprop
 from .adamw import AdamW
-from .muon import Muon
+from .sgd import SGD
+from .scalar_adam import ScalarAdam
+from .optimizer_bundle import OptimizerBundle
+from .dreamer_opt import DreamerOpt
+from .schedules import LinearWarmupSchedule

@@ -1,4 +1,4 @@
-"""Multi-task TD-MPC2 (deep_agents2) — Pendulum + InvertedPendulum (CPU).
+"""Multi-task TD-MPC2 (deep_agents) — Pendulum + InvertedPendulum (CPU).
 
 Item C lighthouse (§14.3): ONE task-conditioned TD-MPC2 agent trained over two
 envs with different obs dims (Pendulum obs3/act1, InvertedPendulum obs4/act1),
@@ -15,9 +15,9 @@ Run: `pixi run mojo run -I . examples/multitask/tdmpc2_pendulum_invpendulum_cpu.
 from std.memory import alloc
 from std.random import random_float64, seed
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.deep_agents2.tdmpc2.config_mt import TDMPC2MultiTask
-from mojo_rl.deep_agents2.tdmpc2.agent_mt import TDMPC2MultiTaskAgent
+from mojo_rl.nn.constants import DT
+from mojo_rl.deep_agents.tdmpc2.config_mt import TDMPC2MultiTask
+from mojo_rl.deep_agents.tdmpc2.agent_mt import TDMPC2MultiTaskAgent
 from mojo_rl.envs.multitask_pendulum import MultiTaskEnv
 
 comptime TARGET = "cpu"

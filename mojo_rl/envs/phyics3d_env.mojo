@@ -23,7 +23,7 @@ from mojo_rl.core import (
     ContAction,
 )
 from mojo_rl.render import Renderer2D
-from mojo_rl.nn import dtype as gpu_dtype
+from mojo_rl.nn.constants import DT as gpu_dtype
 
 # GPU imports
 from std.gpu.host import DeviceContext, DeviceBuffer

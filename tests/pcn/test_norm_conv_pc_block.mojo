@@ -15,7 +15,7 @@ from std.memory import alloc
 from std.math import sin
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn.pc_norm_conv_block import NormConvPCBlock
 from mojo_rl.experimental.pcn import PCReLU
 
@@ -64,7 +64,7 @@ def main() raises:
     var z = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](z_buf)
     var zeff = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](zeff_buf)
     var grads = LayoutTensor[dtype, Layout.row_major(PSZ), MutAnyOrigin](grads_buf)
-    CB.initialize_params[Xavier[3], dtype](params)
+    CB.pc_init_params[PCXavier, dtype](params)
 
     _predict(x, params, mu, a)
     CB.eps_compute[BATCH, dtype](y, mu, eps)

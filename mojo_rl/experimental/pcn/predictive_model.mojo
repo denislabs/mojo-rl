@@ -33,8 +33,8 @@ from std.gpu.host import DeviceContext
 from std.math import exp, tanh
 from std.sys import simd_width_of
 
-from mojo_rl.nn.constants import TPB
-from mojo_rl.nn.initializer import Initializer
+from .pc_constants import TPB
+from .pc_initializer import PCInitializer
 
 comptime _SW = simd_width_of[DType.float32]()
 
@@ -646,14 +646,22 @@ trait PCBlockTrait(Movable & ImplicitlyCopyable):
     comptime PARAM_SIZE: Int
 
     @staticmethod
-    def initialize_params[
-        INIT: Initializer, dtype: DType = DType.float32
+    def pc_init_params[
+        INIT: PCInitializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-    ):
-        ...
+    ) raises:
+        """nn re-architecture init: same contract as `initialize_params`
+        but driven by the vendored `PCInitializer` (legacy-`nn`-free), so
+        `PCModule.make_pcn` initializes any block type without the legacy
+        `nn.initializer` trait. Default raises — every `PCBlockTrait`
+        conformer used under `PCModule` overrides this."""
+        raise Error(
+            "pc_init_params: this PCBlockTrait conformer has no nn init"
+            " override — add one to use it under PCModule."
+        )
 
     @staticmethod
     def predict[

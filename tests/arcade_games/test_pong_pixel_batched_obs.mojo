@@ -18,8 +18,8 @@ Run:
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.testing import assert_true
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.deep_agents2.training import BatchedGpuDiscreteEnv
+from mojo_rl.nn.constants import DT
+from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 
 comptime N_ENVS = 4

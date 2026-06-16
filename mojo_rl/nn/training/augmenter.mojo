@@ -1,38 +1,29 @@
-"""Data augmentation hook for the Trainer.
+"""Per-epoch GPU input augmentation for the nn Trainer.
 
-Per-epoch GPU input transform: the Trainer maintains a device-side
-`aug_buf` (same shape as `train_input`), seeds it once with a raw→aug
-copy before the loop, then calls `AUGMENTER.augment(...)` at the start
-of each epoch. The training loop reads `aug_buf` for that epoch's
-batches.
+`Augmenter` is a compile-time hook: `Trainer.train_gpu` takes an
+`AUGMENTER` parameter (default `IdentityAugmenter`) and, when it isn't a
+no-op, allocates an augmentation buffer and calls `AUGMENTER.augment(...)`
+once per epoch to (re)fill it from the raw training set before the
+mini-batch loop. A non-no-op augmenter must FULLY write its `aug` output
+from `raw` each call (the trainer does not pre-copy).
 
-`IdentityAugmenter` (the default) overrides `augment` to a no-op: the
-one-time copy at init leaves `aug_buf == raw`, and subsequent epochs
-read it unchanged. Zero per-epoch GPU work for the no-aug case.
-
-To plug in real augmentation, define a struct that implements the trait
-and dispatches a kernel:
-
-    struct CIFAR10CropFlipAugmenter(Augmenter):
-        @staticmethod
-        def augment[N: Int, IN_DIM: Int, dtype: DType](
-            ctx: DeviceContext,
-            aug:   LayoutTensor[dtype, Layout.row_major(N, IN_DIM), MutAnyOrigin],
-            raw:   LayoutTensor[dtype, Layout.row_major(N, IN_DIM), MutAnyOrigin],
-            epoch: Int,
-            seed:  UInt64,
-        ) raises:
-            ctx.enqueue_function[crop_flip_kernel[N, IN_DIM, dtype], ...](
-                aug, raw, Scalar[DType.uint64](seed + UInt64(epoch)),
-                grid_dim=(N,), block_dim=(TPB,),
-            )
+`IS_NOOP` lets the trainer skip the extra buffer + per-epoch call when no
+augmentation is requested. Ported from `mojo_rl.nn` (framework-agnostic
+GPU code).
 """
-from layout import Layout, LayoutTensor
+
+from std.gpu import thread_idx, block_idx
 from std.gpu.host import DeviceContext
+from std.random.philox import Random as PhiloxRandom
+from layout import Layout, LayoutTensor
+
+from ..constants import TPB
 
 
 trait Augmenter(Movable & ImplicitlyCopyable):
     """Per-epoch GPU input augmentation hook."""
+
+    comptime IS_NOOP: Bool
 
     @staticmethod
     def augment[N: Int, IN_DIM: Int, dtype: DType](
@@ -44,25 +35,16 @@ trait Augmenter(Movable & ImplicitlyCopyable):
     ) raises:
         """Write augmented samples into `aug` from `raw` for this epoch.
 
-        The Trainer guarantees `aug` is initialized with a one-time copy
-        of `raw` before the first call, so callers may overwrite or leave
-        slots untouched at will.
-
-        Args:
-            ctx: GPU device context.
-            aug: Output buffer [N, IN_DIM] (written).
-            raw: Source buffer [N, IN_DIM] (read).
-            epoch: 0-indexed epoch about to run.
-            seed: Base seed; combine with `epoch` for per-epoch variation.
+        Must fully populate `aug` from `raw` (the trainer does not
+        pre-copy). Combine `seed` with `epoch` for per-epoch variation.
         """
         ...
 
 
 struct IdentityAugmenter(Augmenter):
-    """No-op augmenter — the Trainer's one-time raw→aug copy is sufficient.
+    """No-op augmenter (default). Never invoked by the trainer."""
 
-    Picked as the default for `train_gpu_minibatch_full`.
-    """
+    comptime IS_NOOP: Bool = True
 
     def __init__(out self):
         pass
@@ -82,3 +64,88 @@ struct IdentityAugmenter(Augmenter):
         seed: UInt64,
     ) raises:
         pass
+
+
+def _cifar_augment_kernel[
+    N: Int, dtype: DType,
+](
+    aug: LayoutTensor[dtype, Layout.row_major(N, 3 * 32 * 32), MutAnyOrigin],
+    raw: LayoutTensor[dtype, Layout.row_major(N, 3 * 32 * 32), MutAnyOrigin],
+    epoch_seed: Scalar[DType.uint64],
+):
+    """One block per sample; threads parallelize the 3072 output pixels.
+    All threads in a block derive the same dx/dy/flip from
+    PhiloxRandom(epoch_seed, b); out-of-bounds pixels get 0."""
+    var b = Int(block_idx.x)
+    if b >= N:
+        return
+    var tid = Int(thread_idx.x)
+
+    comptime C = 3
+    comptime H = 32
+    comptime W = 32
+    comptime CHAN = H * W
+    comptime IMG_SIZE = C * CHAN
+
+    var rng = PhiloxRandom(seed=UInt64(epoch_seed), offset=UInt64(b))
+    var r = rng.step_uniform()
+    var dx = Int(Scalar[DType.float32](r[0]) * 9.0) - 4  # [-4, 4]
+    var dy = Int(Scalar[DType.float32](r[1]) * 9.0) - 4  # [-4, 4]
+    var flip = Scalar[DType.float32](r[2]) > 0.5
+
+    var idx = tid
+    while idx < IMG_SIZE:
+        var c = idx // CHAN
+        var yx = idx % CHAN
+        var oy = yx // W
+        var ox = yx % W
+        var src_y = oy + dy
+        var vx = ox + dx
+        var val = Scalar[dtype](0.0)
+        if src_y >= 0 and src_y < H and vx >= 0 and vx < W:
+            var src_x = (W - 1 - vx) if flip else vx
+            val = rebind[Scalar[dtype]](raw[b, c * CHAN + src_y * W + src_x])
+        aug[b, idx] = val
+        idx += TPB
+
+
+struct CIFAR10CropFlipAugmenter(Augmenter):
+    """CIFAR-10 random pad-4 crop + horizontal flip, per sample, per epoch
+    (the standard CIFAR-10 ResNet recipe). Hardcoded to 3×32×32 = 3072."""
+
+    comptime IS_NOOP: Bool = False
+
+    def __init__(out self):
+        pass
+
+    def __init__(out self, *, copy: Self):
+        pass
+
+    def __init__(out self, *, deinit take: Self):
+        pass
+
+    @staticmethod
+    def augment[N: Int, IN_DIM: Int, dtype: DType](
+        ctx: DeviceContext,
+        aug: LayoutTensor[dtype, Layout.row_major(N, IN_DIM), MutAnyOrigin],
+        raw: LayoutTensor[dtype, Layout.row_major(N, IN_DIM), MutAnyOrigin],
+        epoch: Int,
+        seed: UInt64,
+    ) raises:
+        comptime assert (
+            IN_DIM == 3 * 32 * 32
+        ), "CIFAR10CropFlipAugmenter requires IN_DIM == 3*32*32"
+        var aug_fixed = LayoutTensor[
+            dtype, Layout.row_major(N, 3 * 32 * 32), MutAnyOrigin
+        ](aug.ptr)
+        var raw_fixed = LayoutTensor[
+            dtype, Layout.row_major(N, 3 * 32 * 32), MutAnyOrigin
+        ](raw.ptr)
+        comptime aug_k = _cifar_augment_kernel[N, dtype]
+        ctx.enqueue_function[aug_k](
+            aug_fixed,
+            raw_fixed,
+            Scalar[DType.uint64](seed + UInt64(epoch)),
+            grid_dim=(N,),
+            block_dim=(TPB,),
+        )

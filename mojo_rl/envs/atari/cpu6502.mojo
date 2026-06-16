@@ -22,6 +22,7 @@ from .flags import (
     FLAG_V,
     FLAG_N,
     RAM_SIZE,
+    TIA_WRITE_LOG_CAP,
 )
 from .opcodes import (
     OPCODE_TABLE,
@@ -122,23 +123,33 @@ from .cartridge import rom_read, rom_write
 
 @always_inline
 def mem_read(
-    state: AtariState,
+    mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     addr: UInt16,
 ) -> UInt8:
-    """Read a byte from the Atari 2600 memory map."""
+    """Read a byte from the Atari 2600 memory map.
+
+    state is mut because cartridge hotspot READS switch banks (F8/F6/E0),
+    exactly like real hardware and Stella/ALE, and because every access
+    drives the data bus (Stella System: myDataBusState = result after each
+    peek) — TIA reads leak the previous bus byte in their low 6 bits.
+    """
     var a = Int(addr) & 0x1FFF  # 13-bit address space
 
+    var v: UInt8
     if a & 0x1000:  # Cartridge ROM
-        return rom_read(state, rom, rom_size, UInt16(a))
+        # Pass the FULL 16-bit address: the FE mapper banks on A13.
+        v = rom_read(state, rom, rom_size, addr)
     elif a & 0x0080:  # RIOT area
         if a & 0x0200:  # RIOT registers (0x0280-0x0297)
-            return riot_read(state, UInt8(a & 0xFF))
+            v = riot_read(state, UInt8(a & 0xFF))
         else:  # RAM (0x0080-0x00FF)
-            return read_ram(state.ram, Int(a & 0x7F))
+            v = read_ram(state.ram, Int(a & 0x7F))
     else:  # TIA
-        return tia_read(state, UInt8(a & 0x0F))
+        v = tia_read(state, UInt8(a & 0x0F))
+    state.data_bus = v
+    return v
 
 
 @always_inline
@@ -151,16 +162,28 @@ def mem_write(
 ):
     """Write a byte to the Atari 2600 memory map."""
     var a = Int(addr) & 0x1FFF
+    state.data_bus = value  # writes drive the bus (Stella System::poke)
 
     if a & 0x1000:  # Cartridge ROM (may trigger bank switch)
-        rom_write(state, rom, rom_size, UInt16(a), value)
+        rom_write(state, rom, rom_size, addr, value)
     elif a & 0x0080:  # RIOT area
         if a & 0x0200:  # RIOT registers
             riot_write(state, UInt8(a & 0xFF), value)
         else:  # RAM
             write_ram(state.ram, Int(a & 0x7F), value)
     else:  # TIA
-        tia_write(state, UInt8(a & 0x3F), value)
+        var reg = UInt8(a & 0x3F)
+
+        # Record the write at its exact color clock for the cycle-accurate
+        # per-clock tick loop. pending_tia_write_clock was set by execute_one.
+        if state.tia_log_count < TIA_WRITE_LOG_CAP:
+            var i = state.tia_log_count
+            state.tia_log_clock[i] = state.pending_tia_write_clock
+            state.tia_log_reg[i] = reg
+            state.tia_log_value[i] = value
+            state.tia_log_count = i + 1
+
+        tia_write(state, reg, value)
 
 
 # ============================================================================
@@ -247,7 +270,7 @@ def update_nz(mut state: AtariState, value: UInt8):
 
 @always_inline
 def resolve_operand_addr(
-    state: AtariState,
+    mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
     mode: UInt8,
@@ -316,19 +339,65 @@ def resolve_operand_addr(
 
 
 @always_inline
+def _fetch_opcode_entry(
+    opcode_byte: UInt8, op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin]
+) -> OpcodeEntry:
+    """Opcode-table lookup via a caller-provided table pointer.
+
+    The 256-entry table is passed in rather than read from the module-level
+    comptime `OPCODE_TABLE`: a host global is NOT present in a GPU device module
+    (Metal fails pipeline creation with `Undefined symbols: global_constant`;
+    CUDA would need it in device/constant memory), and `materialize` inside the
+    kernel still references that host global. So CPU entry points materialize
+    the table once per frame and pass its pointer; the GPU driver uploads the
+    table to a device buffer and passes the device pointer. Same table contents
+    either way → the CPU trajectory checksum is unchanged.
+    """
+    return op_table[Int(opcode_byte)]
+
+
+@no_inline
 def execute_one(
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
+    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
 ) -> UInt8:
-    """Execute one instruction. Returns the number of CPU cycles consumed."""
+    """Execute one instruction. Returns the number of CPU cycles consumed.
+
+    `@no_inline` (compile-size hygiene): fully inlined (this function plus
+    its `@always_inline` mem_read/mem_write/resolve_operand_addr internals)
+    the opcode dispatch was the dominant share of `run_frame_cycle_accurate`'s
+    ~220K lines of LLVM IR — and that frame runner is instantiated twice
+    (RENDER=True/False) in pixel-training binaries. Outlined, the dispatch is
+    ONE shared copy and the frame runners shrink ~an order of magnitude.
+    (Historical note: the Rainbow Atari pixel example's -O3 compile blowup
+    that motivated this was ultimately root-caused to `NStepTransition`'s
+    by-value InlineArray obs — see deep_agents/data/n_step_replay.mojo —
+    not the emulator; this boundary is kept as cheap IR hygiene.)
+    Runtime cost is one real call per emulated instruction, noise against
+    the 9–21 TIA color-clock ticks each instruction drives (measured: no
+    fps regression on the Pong benchmark, trajectory checksum identical).
+    """
     var opcode_byte = mem_read(state, rom, rom_size, state.pc)
-    var table = materialize[OPCODE_TABLE]()
-    var entry = table[Int(opcode_byte)]
+    var entry = _fetch_opcode_entry(opcode_byte, op_table)
     var inst = entry.instruction
     var mode = entry.addr_mode
     var cycles = entry.cycles
     var size = entry.size
+
+    # A 6502 store writes on its LAST cycle. We log the offset of that cycle's
+    # START ((cycles-1)*3 color clocks after the instruction start) so the
+    # per-clock tick loop can match it against a per-instruction local clock
+    # index; the loop then adds STORE_CYCLE_CLOCKS when pushing into the
+    # DelayQueue, because the bus write takes effect at the END of the write
+    # cycle (Stella M6502::poke does incrementCycles(1) BEFORE System::poke).
+    # Berzerk strobes RESP0 right at the hblank edge — 3 clocks early shifts
+    # the player 3px left into the electrified wall (constant P0PF = instant
+    # death, random play scored 0 vs ALE's ~160/episode).
+    # entry.cycles already includes the fixed extra cycle store modes pay.
+    state.tia_log_count = 0
+    state.pending_tia_write_clock = (Int(cycles) - 1) * 3
 
     var operand_pc = state.pc + 1  # Points to first operand byte
     var addr = resolve_operand_addr(state, rom, rom_size, mode, operand_pc)
@@ -831,6 +900,34 @@ def cpu_reset(
     var hi = UInt16(mem_read(state, rom, rom_size, UInt16(0xFFFD)))
     state.pc = (hi << 8) | lo
 
+    # Scan unbanked carts ONCE for INTIM wait-loop sites (see
+    # _intim_wait_skip_cycles): `AD lo hi D0 FB` where the absolute address
+    # decodes to the RIOT INTIM register (mirrors included, same decode as
+    # mem_read/riot_read). The static scan is what makes the runner's
+    # per-instruction fast-forward probe two PC compares instead of five
+    # mem_reads. ≤4K carts have no bankswitch, so ROM offsets ≡ PC & mask.
+    state.ff_site0 = 0xFFFF
+    state.ff_site1 = 0xFFFF
+    if rom_size <= 4096:
+        for i in range(rom_size - 4):
+            if (
+                rom[i] != 0xAD
+                or rom[i + 3] != 0xD0
+                or rom[i + 4] != 0xFB
+            ):
+                continue
+            var a = ((Int(rom[i + 2]) << 8) | Int(rom[i + 1])) & 0x1FFF
+            if (
+                (a & 0x1000) == 0
+                and (a & 0x0080) != 0
+                and (a & 0x0200) != 0
+                and (a & 0x07) == 4
+            ):
+                if state.ff_site0 == 0xFFFF:
+                    state.ff_site0 = UInt16(i)
+                elif state.ff_site1 == 0xFFFF:
+                    state.ff_site1 = UInt16(i)
+
 
 # ============================================================================
 # Run One Frame
@@ -870,6 +967,9 @@ def _run_scanline(
     """
     var line_cycles: Int = overflow
     var saved_mid = False
+    # Stale diagnostic path (reachable only from diag_atari_si): materialize the
+    # opcode table once and pass its pointer, mirroring the headless runner.
+    var _optab = materialize[OPCODE_TABLE]()
 
     # If WSYNC carried over from previous scanline (instruction that set WSYNC
     # overflowed past the scanline boundary), consume remaining cycles now.
@@ -895,7 +995,7 @@ def _run_scanline(
             state.pf2_mid = state.pf2
             saved_mid = True
 
-        var cycles = Int(execute_one(state, rom, rom_size))
+        var cycles = Int(execute_one(state, rom, rom_size, _optab.unsafe_ptr()))
         riot_update_timer(state, UInt32(cycles))
         line_cycles += cycles
 
@@ -927,198 +1027,28 @@ def run_frame(
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
 ):
-    """Execute one full frame (~262 scanlines × 76 CPU cycles).
+    """Execute one full frame headlessly (no video output).
 
-    This is the main emulation entry point. After this call:
+    This is the main RL emulation entry point. It runs the SAME cycle-accurate
+    CPU/TIA lockstep as run_frame_video — per-color-clock object ticks and TIA
+    collision latches — just without writing pixels. Collisions are gameplay
+    for most carts (SI laser kills, Breakout brick breaks, Pong paddle bounces
+    all read CX* registers), so the headless path must compute them; the old
+    scanline-batched run_frame never did, which silently broke those games in
+    RAM-observation training. After this call:
     - state.ram has been updated by the game logic
-    - state.collision has been updated by TIA scanline processing
+    - state.collision has been latched per color clock
     - Game-specific reward/lives/terminal should be extracted from RAM
     """
-    var overflow = Int(state.cpu_cycles)  # Carry from previous frame
-    for _ in range(TOTAL_SCANLINES):
-        # Only charge paddle capacitor when not grounded (VBLANK bit 7 clear)
-        if (
-            state.paddle_charge < 255
-            and (state.tia_flags & TIA_PADDLE_GROUND) == 0
-        ):
-            state.paddle_charge += 1
-        var total = _run_scanline(state, rom, rom_size, overflow)
-        overflow = total - CPU_CLOCKS_PER_LINE
-
-    state.cpu_cycles = UInt32(overflow)  # Persist for next frame
-    state.frame_number += 1
-
-
-def _run_scanline_render(
-    mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
-    rom_size: Int,
-    overflow: Int,
-    frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
-    render_row: Int,
-    palette: InlineArray[UInt32, 256],
-    pf_mask: UnsafePointer[UInt8, MutAnyOrigin],
-) -> Int:
-    """Run one scanline, rendering pixels beam-accurately as the CPU executes.
-
-    Pass 1 (interleaved with CPU): draw the playfield/background beam-accurately
-    with live PF, so mid-line PF rewrites (Breakout bricks, Pong score) land at
-    the correct pixel; record the rendered PF into `pf_mask`.
-
-    Pass 2 (after the line): draw players/missiles/ball from the settled
-    end-of-line state, and compute ALL collisions against that end-of-line
-    sprite state plus the rendered `pf_mask` — so collisions match exactly what
-    was displayed. `render_row` is the frame_buf row (or < 0 / >= FRAME_HEIGHT
-    to skip output). Returns total CPU cycles consumed.
-    """
-    from .frame_render import render_pf_collide_pixel, overlay_sprites_pixel
-    from .flags import FRAME_WIDTH, HBLANK_CLOCKS
-
-    # A TIA write happens a few CPU cycles into the instruction (the store
-    # cycle), not at instruction start where state.clock is sampled. Delay the
-    # beam catch-up by this many TIA clocks so a write lands at the correct
-    # pixel (e.g. a playfield rewrite at the pixel-80 repeat boundary).
-    comptime BEAM_WRITE_DELAY: Int = 8
-
-    var line_cycles: Int = overflow
-    var next_pixel: Int = 0
-
-    # WSYNC carried over from the previous scanline.
-    if state.wsync:
-        state.wsync = False
-        if line_cycles < CPU_CLOCKS_PER_LINE:
-            riot_update_timer(state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles))
-            line_cycles = CPU_CLOCKS_PER_LINE
-
-    while line_cycles < CPU_CLOCKS_PER_LINE:
-        # Beam clock at instruction start (drives RESP/PF/etc. write timing).
-        state.clock = UInt16(line_cycles * 3)
-
-        # Pass 1: catch the playfield up to the current beam position using
-        # live PF, so mid-line PF rewrites land at the correct pixel.
-        var target = Int(state.clock) - HBLANK_CLOCKS + BEAM_WRITE_DELAY
-        if target > FRAME_WIDTH:
-            target = FRAME_WIDTH
-        while next_pixel < target:
-            render_pf_collide_pixel(
-                state, render_row, next_pixel, frame_buf, palette, pf_mask
-            )
-            next_pixel += 1
-
-        var cycles = Int(execute_one(state, rom, rom_size))
-        riot_update_timer(state, UInt32(cycles))
-        line_cycles += cycles
-
-        # WSYNC: halt CPU until end of scanline.
-        if state.wsync:
-            state.wsync = False
-            if line_cycles < CPU_CLOCKS_PER_LINE:
-                riot_update_timer(
-                    state, UInt32(CPU_CLOCKS_PER_LINE - line_cycles)
-                )
-                line_cycles = CPU_CLOCKS_PER_LINE
-            elif line_cycles > CPU_CLOCKS_PER_LINE:
-                state.wsync = True
-
-    # Flush any remaining playfield pixels (and their collisions) using the
-    # final state for the right edge the CPU never explicitly stepped to.
-    while next_pixel < FRAME_WIDTH:
-        render_pf_collide_pixel(
-            state, render_row, next_pixel, frame_buf, palette, pf_mask
-        )
-        next_pixel += 1
-
-    # Pass 2: overlay sprites + ball from the settled end-of-line state. All
-    # collisions were already latched per beam pixel in pass 1 (live state).
-    for x in range(FRAME_WIDTH):
-        overlay_sprites_pixel(
-            state, render_row, x, frame_buf, palette, pf_mask
-        )
-
-    return line_cycles
-
-
-def run_frame_with_video(
-    mut state: AtariState,
-    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
-    rom_size: Int,
-    frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
-):
-    """Execute one frame with scanline-by-scanline pixel rendering.
-
-    The Atari 2600 is a "racing the beam" system: the CPU updates TIA
-    registers mid-frame. Each scanline may have different graphics.
-
-    For mid-scanline PF writes (e.g. score digits in Pong), _run_scanline
-    captures a PF snapshot at the beam midpoint (~cycle 49). The renderer
-    uses this snapshot for left-half pixels and the final PF for right-half.
-
-    Cycle overflow from each scanline's last instruction is carried forward
-    to the next scanline (matching ALE's myClocksToEndOfScanLine approach).
-    This prevents VSYNC drift that causes vertical display shaking.
-
-    Args:
-        state: Emulator state (modified in place).
-        rom: ROM data pointer.
-        rom_size: ROM size in bytes.
-        frame_buf: Output BGRA buffer (160×210×4 = 134400 bytes).
-    """
-    from .flags import TIA_VBLANK, TIA_VSYNC, FRAME_HEIGHT as FH, FRAME_WIDTH
-    from .palette import NTSC_PALETTE
-    from std.memory import alloc
-
-    # Render exactly one VSYNC-aligned frame per call. A fixed 262-scanline
-    # loop drifts against the ROM's actual frame length, splitting one game
-    # frame across two calls (the displayed buffer becomes a mix of two
-    # frames → tearing/flicker). Instead, run scanlines until the VSYNC that
-    # begins the *next* frame, so each call emits one complete, aligned frame.
-    # Each scanline is rendered beam-accurately as the CPU executes it.
-    var palette = materialize[NTSC_PALETTE]()
-    # Per-scanline rendered-playfield mask (filled in pass 1, read by pass 2 for
-    # collisions so they match the displayed frame). Reused across scanlines.
-    var pf_mask = alloc[UInt8](FRAME_WIDTH)
-    var visible_line = 0
-    var overflow = Int(state.cpu_cycles)  # Carry from previous frame
-    var rendered_any = False
-    var prev_vsync = (state.tia_flags & TIA_VSYNC) != 0
-    # Safety cap so a ROM that never asserts VSYNC can't spin forever.
-    comptime MAX_LINES: Int = TOTAL_SCANLINES * 2
-
-    for _ in range(MAX_LINES):
-        # Only charge paddle capacitor when not grounded (VBLANK bit 7 clear)
-        if (
-            state.paddle_charge < 255
-            and (state.tia_flags & TIA_PADDLE_GROUND) == 0
-        ):
-            state.paddle_charge += 1
-
-        # Candidate frame_buf row for this scanline (-1 once past the visible
-        # area, so the renderer still updates collision without writing pixels).
-        var render_row = visible_line if visible_line < FH else -1
-        var total = _run_scanline_render(
-            state, rom, rom_size, overflow, frame_buf, render_row, palette, pf_mask
-        )
-        overflow = total - CPU_CLOCKS_PER_LINE
-
-        # Detect the VSYNC rising edge (start of a frame).
-        var vsync_now = (state.tia_flags & TIA_VSYNC) != 0
-        var vsync_rising = vsync_now and not prev_vsync
-        prev_vsync = vsync_now
-        if vsync_rising:
-            if rendered_any:
-                break  # reached the start of the next frame — done
-            visible_line = 0  # anchor our frame at this VSYNC
-
-        # Decide visibility from end-of-line VBLANK — stable across frames
-        # (a clock-68 check flips on the transition line, jittering the image).
-        if (state.tia_flags & TIA_VBLANK) == 0 and visible_line < FH:
-            visible_line += 1
-            rendered_any = True
-
-    state.scanline = UInt16(visible_line)
-    state.cpu_cycles = UInt32(overflow)  # Persist overflow for next frame
-    state.frame_number += 1
-    pf_mask.free()
+    # Dummy buffer: never written (RENDER=False skips all pixel writes).
+    var dummy = InlineArray[UInt8, 4](fill=0)
+    # Materialize the opcode table once per frame and pass its pointer down (the
+    # frame runner can no longer read the comptime global directly — see
+    # _fetch_opcode_entry). Once per ~20k instructions, so negligible on CPU.
+    var optab = materialize[OPCODE_TABLE]()
+    run_frame_cycle_accurate[RENDER=False](
+        state, rom, rom_size, dummy.unsafe_ptr(), optab.unsafe_ptr()
+    )
 
 
 # Import here to avoid circular dependency
@@ -1128,3 +1058,788 @@ from .flags import (
     FRAME_WIDTH,
     TIA_PADDLE_GROUND,
 )
+
+
+# ============================================================================
+# Cycle-accurate TIA frame runner — the single rendering path.
+# Drives the per-color-clock object counters in state.ctia from the exact write
+# clocks logged during execute_one, and latches per-clock collisions — Stella's
+# model. Playfield/colors are read live from AtariState (applied immediately by
+# tia_write); only sprite positions/enables/motion flow through the counters.
+# ============================================================================
+
+from .tia_cycle import (
+    resx_counter,
+    playfield_bit,
+    LIT_P0,
+    LIT_P1,
+    LIT_M0,
+    LIT_M1,
+    LIT_BL,
+    DELAY_PF,
+    DELAY_GRP,
+    DELAY_ENAM,
+    DELAY_ENABL,
+    DELAY_HMP,
+    DELAY_HMM,
+    DELAY_HMBL,
+    DELAY_REFP,
+    DELAY_HMCLR,
+    DQ_CAP,
+)
+from .flags import (
+    HBLANK_CLOCKS,
+    CLOCKS_PER_LINE as CPL,
+    FRAME_HEIGHT as FH2,
+    TIA_VBLANK as VBL,
+    TIA_VSYNC as VSY,
+    TIA_VDELP0,
+    TIA_VDELP1,
+    TIA_VDELBL,
+    TIA_PF_PRIORITY,
+    TIA_PF_SCORE,
+    CX_M0P1,
+    CX_M0P0,
+    CX_M1P0,
+    CX_M1P1,
+    CX_P0PF,
+    CX_P0BL,
+    CX_P1PF,
+    CX_P1BL,
+    CX_M0PF,
+    CX_M0BL,
+    CX_M1PF,
+    CX_M1BL,
+    CX_BLPF,
+    CX_P0P1,
+    CX_M0M1,
+)
+from .frame_render import _write_pixel_bgra
+
+
+@always_inline
+def _cycle_reg_delay(reg: UInt8) -> Int:
+    """Color-clock latency for a TIA register write (TIA.cxx Delay enum).
+
+    Strobes (RESPx/RESMx/RESBL), NUSIZ, CTRLPF apply immediately (delay 0)."""
+    if reg == 0x0D or reg == 0x0E or reg == 0x0F:  # PF0/PF1/PF2
+        return DELAY_PF
+    if reg == 0x1B or reg == 0x1C:  # GRP0/GRP1
+        return DELAY_GRP
+    if reg == 0x1D or reg == 0x1E:  # ENAM0/ENAM1
+        return DELAY_ENAM
+    if reg == 0x1F:  # ENABL
+        return DELAY_ENABL
+    if reg == 0x20 or reg == 0x21:  # HMP0/HMP1
+        return DELAY_HMP
+    if reg == 0x22 or reg == 0x23:  # HMM0/HMM1
+        return DELAY_HMM
+    if reg == 0x24:  # HMBL
+        return DELAY_HMBL
+    if reg == 0x0B or reg == 0x0C:  # REFP0/REFP1
+        return DELAY_REFP
+    if reg == 0x2A:  # HMOVE
+        return 6
+    if reg == 0x2B:  # HMCLR
+        return DELAY_HMCLR
+    return 0
+
+
+@always_inline
+def _cycle_apply_reg(
+    mut state: AtariState, reg: UInt8, value: UInt8, hctr: Int, in_hblank: Bool
+):
+    """Route a (delayed) TIA register write to the cycle-accurate counters.
+
+    Position strobes use resx_counter() at the apply clock; graphics/enable use
+    the VDEL-resolved values that tia_write already latched into AtariState."""
+    if reg == 0x04:  # NUSIZ0
+        state.ctia.p0.set_nusiz(value)
+        state.ctia.m0.set_nusiz(value)
+    elif reg == 0x05:  # NUSIZ1
+        state.ctia.p1.set_nusiz(value)
+        state.ctia.m1.set_nusiz(value)
+    elif reg == 0x06:  # COLUP0
+        state.ctia.colup0 = value
+    elif reg == 0x07:  # COLUP1
+        state.ctia.colup1 = value
+    elif reg == 0x08:  # COLUPF
+        state.ctia.colupf = value
+    elif reg == 0x09:  # COLUBK
+        state.ctia.colubk = value
+    elif reg == 0x0A:  # CTRLPF (reflect/score/priority + ball width)
+        state.ctia.ctrlpf = value
+        state.ctia.bl.set_width_from_ctrlpf(value)
+    elif reg == 0x0D:  # PF0
+        state.ctia.pf0 = value
+    elif reg == 0x0E:  # PF1
+        state.ctia.pf1 = value
+    elif reg == 0x0F:  # PF2
+        state.ctia.pf2 = value
+    elif reg == 0x0B:  # REFP0
+        state.ctia.p0.set_reflect((value & 0x08) != 0)
+    elif reg == 0x0C:  # REFP1
+        state.ctia.p1.set_reflect((value & 0x08) != 0)
+    elif reg == 0x10:  # RESP0
+        state.ctia.p0.resp(resx_counter(hctr, in_hblank))
+    elif reg == 0x11:  # RESP1
+        state.ctia.p1.resp(resx_counter(hctr, in_hblank))
+    elif reg == 0x12:  # RESM0
+        state.ctia.m0.resm(resx_counter(hctr, in_hblank))
+    elif reg == 0x13:  # RESM1
+        state.ctia.m1.resm(resx_counter(hctr, in_hblank))
+    elif reg == 0x14:  # RESBL
+        state.ctia.bl.resbl(resx_counter(hctr, in_hblank))
+    elif reg == 0x1B:  # GRP0 (sets P0 new pattern; shuffles P1 old=new)
+        state.ctia.p0.set_grp_new(value)
+        state.ctia.p1.shuffle()
+    elif reg == 0x1C:  # GRP1 (sets P1 new; shuffles P0 old=new + ball, Stella)
+        state.ctia.p1.set_grp_new(value)
+        state.ctia.p0.shuffle()
+        state.ctia.bl.shuffle()
+    elif reg == 0x1D:  # ENAM0
+        state.ctia.m0.set_enam(value)
+    elif reg == 0x1E:  # ENAM1
+        state.ctia.m1.set_enam(value)
+    elif reg == 0x1F:  # ENABL
+        state.ctia.bl.set_enabl_new((value & 0x02) != 0)
+    elif reg == 0x20:  # HMP0
+        state.ctia.p0.set_hmp(value)
+    elif reg == 0x21:  # HMP1
+        state.ctia.p1.set_hmp(value)
+    elif reg == 0x22:  # HMM0
+        state.ctia.m0.set_hmm(value)
+    elif reg == 0x23:  # HMM1
+        state.ctia.m1.set_hmm(value)
+    elif reg == 0x24:  # HMBL
+        state.ctia.bl.set_hmbl(value)
+    elif reg == 0x25:  # VDELP0
+        state.ctia.p0.set_vdel((value & 0x01) != 0)
+    elif reg == 0x26:  # VDELP1
+        state.ctia.p1.set_vdel((value & 0x01) != 0)
+    elif reg == 0x27:  # VDELBL
+        state.ctia.bl.set_vdel((value & 0x01) != 0)
+    elif reg == 0x28:  # RESMP0
+        state.ctia.m0.set_resmp(value)
+    elif reg == 0x29:  # RESMP1
+        state.ctia.m1.set_resmp(value)
+    elif reg == 0x2A:  # HMOVE
+        state.ctia.start_hmove()
+    elif reg == 0x2B:  # HMCLR
+        state.ctia.p0.set_hmp(0x00)
+        state.ctia.p1.set_hmp(0x00)
+        state.ctia.m0.set_hmm(0x00)
+        state.ctia.m1.set_hmm(0x00)
+        state.ctia.bl.set_hmbl(0x00)
+
+
+@always_inline
+def _cycle_pixel(
+    mut state: AtariState,
+    render_row: Int,
+    pixel: Int,
+    lit: UInt8,
+    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    palette: InlineArray[UInt32, 256],
+):
+    """Latch per-clock collisions and render one pixel from the counter lit-mask
+    plus the live playfield."""
+    if (state.tia_flags & VBL) != 0:
+        if render_row >= 0:
+            _write_pixel_bgra(
+                buf,
+                (render_row * FRAME_WIDTH + pixel) * 4,
+                state.ctia.colubk,
+                palette,
+            )
+        return
+
+    var p0 = (lit & UInt8(1 << LIT_P0)) != 0
+    var p1 = (lit & UInt8(1 << LIT_P1)) != 0
+    var m0 = (lit & UInt8(1 << LIT_M0)) != 0
+    var m1 = (lit & UInt8(1 << LIT_M1)) != 0
+    var bl = (lit & UInt8(1 << LIT_BL)) != 0
+    # Playfield: render from the beam-accurate SHADOW (state.ctia.pf*), which is
+    # driven through the DelayQueue at each write's exact color clock
+    # (instr_start + (cycles-1)*3 + DELAY_PF ≈ the eol path's +8 write delay).
+    # Reading the immediate live state.pf* instead applies PF writes too early
+    # (at instruction start), shifting Breakout's walls. One source (the shadow)
+    # for both render+collide keeps them consistent (no phantom brick).
+    var reflect = (state.ctia.ctrlpf & 0x01) != 0
+    var pf = playfield_bit(
+        state.ctia.pf0, state.ctia.pf1, state.ctia.pf2, reflect, pixel
+    )
+    if m0 and p1:
+        state.collision = state.collision | CX_M0P1
+    if m0 and p0:
+        state.collision = state.collision | CX_M0P0
+    if m1 and p0:
+        state.collision = state.collision | CX_M1P0
+    if m1 and p1:
+        state.collision = state.collision | CX_M1P1
+    if p0 and pf:
+        state.collision = state.collision | CX_P0PF
+    if p0 and bl:
+        state.collision = state.collision | CX_P0BL
+    if p1 and pf:
+        state.collision = state.collision | CX_P1PF
+    if p1 and bl:
+        state.collision = state.collision | CX_P1BL
+    if m0 and pf:
+        state.collision = state.collision | CX_M0PF
+    if m0 and bl:
+        state.collision = state.collision | CX_M0BL
+    if m1 and pf:
+        state.collision = state.collision | CX_M1PF
+    if m1 and bl:
+        state.collision = state.collision | CX_M1BL
+    if bl and pf:
+        state.collision = state.collision | CX_BLPF
+    if p0 and p1:
+        state.collision = state.collision | CX_P0P1
+    if m0 and m1:
+        state.collision = state.collision | CX_M0M1
+
+    if render_row < 0:
+        return
+
+    # --- Render with TIA priority (beam-accurate shadow regs) ---
+    var color_idx: UInt8
+    var pf_pri = (state.ctia.ctrlpf & 0x04) != 0  # CTRLPF bit2 = priority
+    var pf_score = (state.ctia.ctrlpf & 0x02) != 0  # CTRLPF bit1 = score
+    if pf_pri:
+        if pf or bl:
+            if pf_score and pf:
+                color_idx = state.ctia.colup0 if pixel < 80 else state.ctia.colup1
+            else:
+                color_idx = state.ctia.colupf
+        elif p0 or m0:
+            color_idx = state.ctia.colup0
+        elif p1 or m1:
+            color_idx = state.ctia.colup1
+        else:
+            color_idx = state.ctia.colubk
+    else:
+        if p0 or m0:
+            color_idx = state.ctia.colup0
+        elif p1 or m1:
+            color_idx = state.ctia.colup1
+        elif pf or bl:
+            if pf_score and pf:
+                color_idx = state.ctia.colup0 if pixel < 80 else state.ctia.colup1
+            else:
+                color_idx = state.ctia.colupf
+        else:
+            color_idx = state.ctia.colubk
+
+    _write_pixel_bgra(
+        buf, (render_row * FRAME_WIDTH + pixel) * 4, color_idx, palette
+    )
+
+
+
+
+# Measurement builds only: flip to True to make run_frame_cycle_accurate
+# accumulate bulk/per-clock clock counts + the selective-ticking ceiling
+# into state.dbg_prof_* (read them with a probe; they accumulate across
+# frames). False compiles the counters out of the hot loop.
+comptime ATARI_PROFILE = False
+
+
+@always_inline
+def _intim_wait_skip_cycles(state: AtariState, rom_size: Int) -> Int:
+    """INTIM wait-loop fast-forward: if PC sits on a pre-scanned
+    `LDA <INTIM abs> / BNE -5` timer-poll site (`AD lo hi D0 FB` — the
+    standard vblank/overscan wait; Pong has two), return the CPU cycles
+    of the taken iterations to skip as one pseudo-instruction; 0 means
+    execute normally.
+
+    Sites are found by a one-time ROM scan in `cpu_reset` (unbanked ≤4K
+    carts only — static instruction stream, no hotspots), so this probe
+    is two PC compares per instruction, not memory reads.
+
+    Exactness argument: a taken iteration only (a) reads INTIM
+    (side-effect free), (b) overwrites A and N/Z (both rewritten by the
+    next iteration — we always leave ≥1 taken iteration to run for
+    real), and (c) consumes cycles. So skipping K iterations ≡ advancing
+    the RIOT timer + TIA by K·L cycles, which the caller does through
+    the same per-instruction span machinery as any real instruction
+    (bulk where safe, per-clock otherwise — collisions/HMOVE stay
+    exact). K is sized so every skipped read returns nonzero (the
+    reference would also take the branch), from the closed-form
+    decrement schedule.
+
+    Guards: VSYNC inactive and DelayQueue empty (no frame-end edge can
+    occur inside the span, which would end the frame with pre-paid timer
+    cycles); timer not yet expired. Capped — long waits simply
+    re-trigger at the next loop top.
+    """
+    if (state.pc & 0x1000) == 0:
+        return 0  # PC not in cart space
+    var off = UInt16(Int(state.pc) & (rom_size - 1))
+    if off != state.ff_site0 and off != state.ff_site1:
+        return 0
+    if state.timer_value == 0:
+        return 0
+    if (state.tia_flags & VSY) != 0 or state.ctia.dq.count != 0:
+        return 0
+
+    # Taken-iteration length: LDA abs (4) + BNE taken (3, +1 if the branch
+    # target crosses a page vs the instruction after the BNE).
+    var loop_cyc = 7
+    if ((state.pc + 5) >> 8) != (state.pc >> 8):
+        loop_cyc = 8
+
+    # Cycles until INTIM reaches 0 (per riot_update_timer's schedule: the
+    # next decrement lands after interval - timer_clocks cycles, then one
+    # per interval). Reads sample the timer at loop-top (the runner applies
+    # riot_update_timer per whole instruction), so iteration j (1-based,
+    # loop-top offset (j-1)·L) is taken iff (j-1)·L < t_zero.
+    var t_first = Int(state.timer_interval) - Int(state.timer_clocks)
+    var t_zero = t_first + (Int(state.timer_value) - 1) * Int(
+        state.timer_interval
+    )
+    var taken = (t_zero - 1) // loop_cyc + 1
+    var skip = taken - 1  # leave one taken iteration to execute for real
+    if skip < 4:
+        return 0  # not worth a pseudo-instruction
+    if skip * loop_cyc > 2048:
+        skip = 2048 // loop_cyc  # cap; the loop re-triggers if still waiting
+    return skip * loop_cyc
+
+
+@no_inline
+def run_frame_cycle_accurate[
+    RENDER: Bool = True,
+    UNIFORM: Bool = False,
+](
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+    frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
+    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
+):
+    """Cycle-accurate frame: CPU and TIA in lockstep, per-color-clock collision.
+
+    `UNIFORM` (comptime, default False): when True, the branchy bulk
+    span-skipping fast path is dead-code-eliminated and every color clock takes
+    the per-clock reference path. Bit-identical to the default (the bulk path is
+    defined to mirror per-clock exactly), so the CPU trajectory checksum is
+    unchanged — it exists to test, on the GPU, whether *uniform* work across a
+    warp beats the divergent bulk path (audit risk #2). CPU/default builds
+    should leave it False.
+
+    `@no_inline` (compile-size hygiene): the largest function in the
+    program. Historically ~220K lines of LLVM IR per instantiation when the
+    405-line `execute_one` opcode dispatch was `@always_inline`d across every
+    instruction of every scanline; `_step_obs_pixel` instantiates this runner
+    twice (RENDER=True/False), and without this boundary `-O3` fused both
+    copies into one ~440K-line function. `execute_one` is now `@no_inline`
+    too (one shared dispatch copy), shrinking each instantiation ~10×; both
+    boundaries stay. (The Rainbow-Atari -O3 compile OOM once blamed on this
+    was root-caused to NStepTransition's by-value InlineArray obs in
+    deep_agents — the emulator was a red herring; most of its residual IR
+    bulk was live debug_assert bounds checks, see `-D ASSERT=none`.)
+    Called once per emulated frame: a non-inlined call is
+    runtime-negligible against the thousands of instructions it runs.
+
+    One VSYNC-aligned frame. The TIA advances exactly 3 color clocks per CPU
+    cycle; each instruction's logged TIA writes are replayed at their exact clock
+    through the DelayQueue, driving the object counters in state.ctia. Per clock
+    we tick the objects, latch collisions, and render the pixel.
+
+    RENDER=False skips all pixel writes (frame_buf is never dereferenced — pass
+    a null pointer) while keeping the identical CPU/TIA/collision behavior:
+    the headless mode for RL training, where games still need the TIA collision
+    latches (SI laser kills, Breakout brick breaks) but no video.
+    """
+    from .palette import NTSC_PALETTE
+
+    var palette = materialize[NTSC_PALETTE]()
+    # Seed the beam-accurate PF/color shadow from the live regs (kept current by
+    # tia_write) so registers written before this frame / not rewritten this
+    # frame still render correctly; mid-line writes then update it at exact clock.
+    state.ctia.pf0 = state.pf0
+    state.ctia.pf1 = state.pf1
+    state.ctia.pf2 = state.pf2
+    state.ctia.ctrlpf = state.ctrlpf
+    state.ctia.colup0 = state.colup0
+    state.ctia.colup1 = state.colup1
+    state.ctia.colupf = state.colupf
+    state.ctia.colubk = state.colubk
+    # Seed missile position/enable/size from the eol state. Breakout draws its
+    # side WALLS (and SI its laser BEAM) with missiles positioned ONCE during
+    # setup — which runs through the eol path (env.reset), invisible to the cycle
+    # counters. Without this seed the missile counters free-run at the wrong
+    # phase and the walls/beam render shifted into the playfield / off-screen.
+    # counter = (160 - pos) % 160 places the decode so the missile renders at
+    # `pos` (decode@156 + render offset, mod the 160-clock counter cycle).
+    state.ctia.m0.set_nusiz(state.nusiz0)
+    state.ctia.m0.set_enam(state.enam0)
+    state.ctia.m0.counter = (FRAME_WIDTH - Int(state.pos_m0)) % FRAME_WIDTH
+    state.ctia.m1.set_nusiz(state.nusiz1)
+    state.ctia.m1.set_enam(state.enam1)
+    state.ctia.m1.counter = (FRAME_WIDTH - Int(state.pos_m1)) % FRAME_WIDTH
+    # Seed player VDEL + GRP double-buffer from eol state (VDELPx / GRP may be
+    # set during the eol reset frames, invisible to the cycle path otherwise).
+    state.ctia.p0.set_vdel((state.tia_flags & TIA_VDELP0) != 0)
+    state.ctia.p0.grp_new = state.grp0
+    state.ctia.p0.grp_old = state.grp0_old
+    state.ctia.p1.set_vdel((state.tia_flags & TIA_VDELP1) != 0)
+    state.ctia.p1.grp_new = state.grp1
+    state.ctia.p1.grp_old = state.grp1_old
+    # Seed ball enable double-buffer (VDELBL) + width + position from eol state.
+    state.ctia.bl.set_width_from_ctrlpf(state.ctrlpf)
+    state.ctia.bl.enabl_new = (state.enabl & 0x02) != 0
+    state.ctia.bl.enabl_old = (state.enabl_old & 0x02) != 0
+    state.ctia.bl.set_vdel((state.tia_flags & TIA_VDELBL) != 0)
+    state.ctia.bl.counter = (FRAME_WIDTH - Int(state.pos_bl)) % FRAME_WIDTH
+    var visible_line = 0
+    var rendered_any = False
+    var prev_vsync = (state.tia_flags & VSY) != 0
+    # Frame-geometry diagnostics: total lines this frame + the line at which
+    # VBLANK was first released (counted from frame start ≈ VSYNC).
+    var total_lines = 0
+    var ystart = -1
+    var done = False
+    comptime MAX_CLOCKS: Int = TOTAL_SCANLINES * CPL * 2
+    # Flip to True (module comptime below) for a measurement build; the
+    # counters quantify bulk vs per-clock clock consumption and the
+    # selective-ticking ceiling (active objects per per-clock tick).
+    var prof_bulk = 0
+    var prof_pc = 0
+    var prof_pc_target = 0
+    var prof_active = 0
+    # Sub-span granularity: how many `while consumed < span` iterations
+    # (each pays a horizon-min + advance_objects) the bulk clocks split into.
+    var prof_bulk_spans = 0
+    var prof_bulk_visible_spans = 0
+    # Cached lit-free budget: visible ticks (counted from the CycleTIA's
+    # flushed-state-plus-pending position) during which no object can be lit,
+    # so bulk sub-spans can defer the 5-object advance + horizon min. Always
+    # decremented per accumulated tick (vblank included — those ticks move
+    # the counters too); recomputed on FLUSHED state when exhausted, and
+    # invalidated whenever the per-clock path runs (writes/strobes/movement
+    # can change any object's window).
+    var safe_budget = 0
+    var clocks = 0
+    # Fixed drain buffers for matured DelayQueue writes — no per-frame heap
+    # (kernel-safe). At most DQ_CAP writes can fire in a single color clock.
+    var due_reg = InlineArray[UInt8, DQ_CAP](fill=0)
+    var due_val = InlineArray[UInt8, DQ_CAP](fill=0)
+    # Bulk fast-path throttle: after a blocked attempt (an object's render
+    # window is ahead), run this many per-clock iterations before retrying.
+    var skip_bulk = 0
+
+    while not done and clocks < MAX_CLOCKS:
+        # --- one CPU instruction ---
+        var start_hctr = state.ctia.hctr
+        state.clock = UInt16(start_hctr)
+        var cyc: Int
+        var wsync_pad = False
+        if state.wsync:
+            state.wsync = False
+            # CPU idle to end of line: pad TIA clocks to the next line boundary.
+            cyc = 0
+            wsync_pad = True
+        else:
+            # INTIM wait-loop fast-forward: skip whole taken poll iterations
+            # as one pseudo-instruction (no TIA writes, PC unchanged); the
+            # span machinery below advances the TIA exactly as for any
+            # instruction of `cyc` cycles. See _intim_wait_skip_cycles.
+            var ff = _intim_wait_skip_cycles(state, rom_size)
+            if ff > 0:
+                cyc = ff
+                state.tia_log_count = 0
+            else:
+                cyc = Int(execute_one(state, rom, rom_size, op_table))
+            riot_update_timer(state, UInt32(cyc))
+
+        var nclk = (CPL - (start_hctr % CPL)) if wsync_pad else cyc * 3
+        if wsync_pad:
+            # The CPU is halted by WSYNC but TIME still passes: advance the RIOT
+            # interval timer by the padded CPU cycles (nclk/3), exactly like
+            # run_frame. Omitting this lets the RIOT timer lag every
+            # line → the game's frame/scanline count and input timing drift
+            # (SI vertical shaking; Breakout paddle-position-dependent glitches).
+            riot_update_timer(state, UInt32(nclk // 3))
+
+        var j = 0
+        while j < nclk:
+            # ---- Bulk fast path: advance through event-free clocks without
+            # the per-clock loop. Preconditions: DelayQueue empty, no HMOVE
+            # movement in progress, and no logged TIA write pushes before
+            # `limit` — so TIA flags and all object configs are static across
+            # the span. Then:
+            #   - HBLANK clocks do nothing at all (movement is off): skip O(1)
+            #   - visible clocks only advance the object counters; as long as
+            #     no object can be lit (lit_safe_horizon), or VBLANK blanks
+            #     collision latching anyway, no collision can latch —
+            #     advance the counters exactly via advance_n.
+            #   - video: every covered in-range pixel is exactly what
+            #     _cycle_pixel(lit=0) produces (PF/BK priority, or COLUBK
+            #     under VBLANK) — fill via the same function, no object ticks.
+            # Line wraps replicate the per-clock bookkeeping below verbatim.
+            if (
+                not UNIFORM
+                and skip_bulk == 0
+                and state.ctia.dq.count == 0
+                and not state.ctia.movement_in_progress
+            ):
+                var limit = nclk
+                if not wsync_pad:
+                    for li in range(state.tia_log_count):
+                        var c = state.tia_log_clock[li]
+                        if c >= j and c < limit:
+                            limit = c
+                var vbl_on = (state.tia_flags & VBL) != 0
+                var span = limit - j
+                var consumed = 0
+                while consumed < span and not done:
+                    comptime if ATARI_PROFILE:
+                        prof_bulk_spans += 1
+                    var bh = state.ctia.hctr
+                    var bhbe = (
+                        76 if state.ctia.extended_hblank else HBLANK_CLOCKS
+                    )
+                    var k: Int
+                    if bh < bhbe:
+                        # HBLANK: no ticks, no collisions.
+                        k = min(bhbe - bh, span - consumed)
+                    else:
+                        comptime if ATARI_PROFILE:
+                            prof_bulk_visible_spans += 1
+                        k = min(CPL - bh, span - consumed)
+                        if not vbl_on:
+                            if safe_budget < k:
+                                # Horizon is defined on flushed counter
+                                # state — flush, then recompute the budget.
+                                state.ctia.flush_pending()
+                                safe_budget = state.ctia.lit_safe_horizon()
+                                if safe_budget <= 0:
+                                    break  # render window -> per-clock
+                                if safe_budget < k:
+                                    k = safe_budget
+                        # Defer the 5-object advance: accumulate the ticks;
+                        # flush happens before anything can observe object
+                        # state (per-clock entry / dq applies / frame end).
+                        state.ctia.pending_ticks += k
+                        safe_budget -= k
+                    comptime if RENDER:
+                        var brow = (
+                            visible_line if visible_line < FH2 else -1
+                        )
+                        var pend = min(
+                            bh + k - HBLANK_CLOCKS, FRAME_WIDTH
+                        )
+                        for pix in range(max(bh - HBLANK_CLOCKS, 0), pend):
+                            _cycle_pixel(
+                                state, brow, pix, 0, frame_buf, palette
+                            )
+                    consumed += k
+                    var bnh = bh + k
+                    if bnh >= CPL:
+                        bnh = 0
+                        state.ctia.extended_hblank = False
+                        if state.wsync and not wsync_pad:
+                            state.wsync = False
+                        if (
+                            state.paddle_charge < 255
+                            and (state.tia_flags & TIA_PADDLE_GROUND) == 0
+                        ):
+                            state.paddle_charge += 1
+                        var bv_now = (state.tia_flags & VSY) != 0
+                        var bv_rising = bv_now and not prev_vsync
+                        prev_vsync = bv_now
+                        if bv_rising:
+                            if rendered_any:
+                                done = True
+                            else:
+                                visible_line = 0
+                                total_lines = 0
+                                ystart = -1
+                        total_lines += 1
+                        if (
+                            state.tia_flags & VBL
+                        ) == 0 and visible_line < FH2:
+                            if ystart < 0:
+                                ystart = total_lines - 1
+                            visible_line += 1
+                            rendered_any = True
+                    state.ctia.hctr = bnh
+                j += consumed
+                clocks += consumed
+                comptime if ATARI_PROFILE:
+                    prof_bulk += consumed
+                if done:
+                    break
+                if consumed > 0:
+                    continue
+                skip_bulk = 4
+            elif skip_bulk > 0:
+                skip_bulk -= 1
+
+            comptime if ATARI_PROFILE:
+                prof_pc += 1
+                var hbe_p = 76 if state.ctia.extended_hblank else HBLANK_CLOCKS
+                if (
+                    state.ctia.dq.count == 0
+                    and not state.ctia.movement_in_progress
+                    and state.ctia.hctr >= hbe_p
+                ):
+                    # Visible clock forced per-clock by a lit window — the
+                    # selective-ticking target. Count objects that would
+                    # still need a real per-clock tick.
+                    prof_pc_target += 1
+                    if state.ctia.p0.lit_horizon() == 0:
+                        prof_active += 1
+                    if state.ctia.p1.lit_horizon() == 0:
+                        prof_active += 1
+                    if state.ctia.m0.lit_horizon() == 0:
+                        prof_active += 1
+                    if state.ctia.m1.lit_horizon() == 0:
+                        prof_active += 1
+                    if state.ctia.bl.lit_horizon() == 0:
+                        prof_active += 1
+
+            # Per-clock path: everything below reads or mutates live object
+            # state (dq applies/strobes, movement ticks, ctia.tick), so the
+            # deferred bulk ticks must land first, and the cached budget is
+            # no longer valid after whatever happens here.
+            state.ctia.flush_pending()
+            safe_budget = 0
+
+            var hctr = state.ctia.hctr
+            var pixel = hctr - HBLANK_CLOCKS
+            # Extended HBLANK after HMOVE: the 8 clocks past the normal 68 stay
+            # "blank" so objects skip 8 frame ticks, canceling the comb's 8
+            # baseline ticks (net HMOVE motion = hmm_clocks - 8). resx strobes in
+            # this window also use the hblank counter (Stella myHstate==blank).
+            var hbe = 76 if state.ctia.extended_hblank else HBLANK_CLOCKS
+            var in_hblank = hctr < hbe
+
+            # Replay this instruction's TIA writes at their exact offset clock.
+            # STORE_CYCLE_CLOCKS: the write takes effect at the END of its CPU
+            # cycle (Stella increments the system clock before the poke), i.e.
+            # 3 color clocks after the logged cycle-start offset. Adding it to
+            # the queue delay (instead of the log clock) lets the apply land
+            # past this instruction's last clock — the queue persists across
+            # instructions and WSYNC padding.
+            comptime STORE_CYCLE_CLOCKS = 3
+            if not wsync_pad:
+                for li in range(state.tia_log_count):
+                    if state.tia_log_clock[li] == j:
+                        var r = state.tia_log_reg[li]
+                        state.ctia.dq.push(
+                            r,
+                            state.tia_log_value[li],
+                            _cycle_reg_delay(r) + STORE_CYCLE_CLOCKS,
+                        )
+
+            # Apply writes whose delay elapsed this clock. The queue is empty
+            # on the vast majority of clocks — skip the List churn entirely.
+            if state.ctia.dq.count != 0:
+                var ndue = state.ctia.dq.cycle_collect(due_reg, due_val)
+                for k in range(ndue):
+                    _cycle_apply_reg(
+                        state, due_reg[k], due_val[k], hctr, in_hblank
+                    )
+
+            # Tick objects + render/collide per color clock from the SAME state
+            # (Stella-style): render and collision both use the cycle counters +
+            # shadow PF, so they are always consistent (what breaks is what the
+            # ball visibly touches; the laser kills what it visibly overlaps).
+            var lit = state.ctia.tick(in_hblank)
+            var render_row = -1
+            comptime if RENDER:
+                render_row = visible_line if visible_line < FH2 else -1
+            if pixel >= 0 and pixel < FRAME_WIDTH:
+                comptime if RENDER:
+                    _cycle_pixel(
+                        state, render_row, pixel, lit, frame_buf, palette
+                    )
+                else:
+                    # Headless: every collision pair involves at least one
+                    # object (PF alone collides with nothing), so a clock
+                    # with no object lit can latch nothing — skip it.
+                    if lit != 0:
+                        _cycle_pixel(
+                            state, render_row, pixel, lit, frame_buf, palette
+                        )
+
+            # Advance the line clock.
+            var nh = hctr + 1
+            clocks += 1
+            if nh >= CPL:
+                nh = 0
+                # Extended HBLANK is a per-line flag (Stella clears at hctr 0).
+                state.ctia.extended_hblank = False
+                # WSYNC satisfied by this very crossing: if the instruction that
+                # just ran asserted WSYNC AND its own clocks already carried the
+                # beam across the line boundary, the halt-to-next-line is already
+                # complete. Without this, the next iteration's wsync_pad would add
+                # a SECOND full scanline (eol lands exactly on the 76-cycle line
+                # end and pads zero) — the source of Breakout's ~5 extra brick
+                # scanlines (vertical stretch) and the Space Invaders shake.
+                if state.wsync and not wsync_pad:
+                    state.wsync = False
+                # End of scanline bookkeeping (mirrors run_frame).
+                if (
+                    state.paddle_charge < 255
+                    and (state.tia_flags & TIA_PADDLE_GROUND) == 0
+                ):
+                    state.paddle_charge += 1
+                var vsync_now = (state.tia_flags & VSY) != 0
+                var vsync_rising = vsync_now and not prev_vsync
+                prev_vsync = vsync_now
+                if vsync_rising:
+                    if rendered_any:
+                        done = True
+                    else:
+                        visible_line = 0
+                        total_lines = 0
+                        ystart = -1
+                total_lines += 1
+                if (state.tia_flags & VBL) == 0 and visible_line < FH2:
+                    if ystart < 0:
+                        ystart = total_lines - 1
+                    visible_line += 1
+                    rendered_any = True
+            state.ctia.hctr = nh
+            if done:
+                break
+            j += 1
+
+    # Deferred bulk ticks must be applied before the frame ends: the next
+    # frame's prologue re-seeds object state, and anything inspecting the
+    # CycleTIA between frames must see flushed counters.
+    state.ctia.flush_pending()
+
+    state.scanline = UInt16(visible_line)
+    state.dbg_frame_lines = UInt16(total_lines)
+    state.dbg_ystart = UInt16(ystart) if ystart >= 0 else 0
+    state.frame_number += 1
+    # Unconditional flush keeps the locals "used" when ATARI_PROFILE=False
+    # (they are constant 0 then — this is 4 dead stores per frame).
+    state.dbg_prof_bulk_clocks += prof_bulk
+    state.dbg_prof_perclock += prof_pc
+    state.dbg_prof_perclock_target += prof_pc_target
+    state.dbg_prof_active_ticks += prof_active
+    state.dbg_prof_bulk_spans += prof_bulk_spans
+    state.dbg_prof_bulk_visible_spans += prof_bulk_visible_spans
+
+
+def run_frame_video(
+    mut state: AtariState,
+    rom: UnsafePointer[UInt8, ImmutAnyOrigin],
+    rom_size: Int,
+    frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
+):
+    """Render one VSYNC-aligned frame into frame_buf (BGRA).
+
+    Thin alias for the cycle-accurate, Stella-style per-color-clock TIA path —
+    the single rendering path (the legacy end-of-line renderer was removed)."""
+    var optab = materialize[OPCODE_TABLE]()
+    run_frame_cycle_accurate(
+        state, rom, rom_size, frame_buf, optab.unsafe_ptr()
+    )

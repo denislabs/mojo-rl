@@ -49,7 +49,7 @@ from mojo_rl.envs.craftax_classic.state import (
     S_LIGHT_LEVEL,
     S_IS_SLEEPING,
 )
-from mojo_rl.nn import dtype
+from mojo_rl.nn.constants import DT as dtype
 
 
 @always_inline

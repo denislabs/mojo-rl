@@ -1,6 +1,6 @@
 """EfficientZeroV2 continuous Pendulum convergence run (v2, GPU sampled-Gumbel).
 
-The continuous lighthouse for the deep_agents2 EZv2 port — the continuous twin of
+The continuous lighthouse for the deep_agents EZv2 port — the continuous twin of
 `examples/cartpole/ezv2_cartpole_v2_gpu.mojo`. Search runs on the
 `SampledGumbelGPUMCTS` planner (Gumbel-Top-k + sequential halving over *sampled*
 continuous action vectors via the squashed-Gaussian head `MZContPredGPU`), and
@@ -13,16 +13,19 @@ Run (GPU env required):
     pixi run -e apple mojo run -I . examples/pendulum/ezv2_pendulum_v2_gpu.mojo
 """
 
+from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.optimizer.adam import Adam
-from mojo_rl.deep_agents2.efficient_zero_v2.nets import (
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
+from mojo_rl.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, EZProjectorNet, EZPredictorNet,
 )
-from mojo_rl.deep_agents2.efficient_zero_v2.nets_continuous import EZContPredNet
-from mojo_rl.deep_agents2.efficient_zero_v2.selfplay_gpu_continuous import (
+from mojo_rl.deep_agents.efficient_zero_v2.nets_continuous import EZContPredNet
+from mojo_rl.deep_agents.efficient_zero_v2.selfplay_gpu_continuous import (
     run_ezv2_sampled_selfplay_gpu,
 )
 from mojo_rl.envs.pendulum import PendulumEnv
@@ -75,6 +78,18 @@ def main() raises:
     oproj.lr = Scalar[DT](3e-4)
     opredh.lr = Scalar[DT](3e-4)
 
+    # ── metrics logger (silent no-op without RL_MONITOR_URL in env/.env) ──
+    var env_vars = load_dotenv()
+    var logger = RemoteLogger(
+        server_url=env_vars.get("RL_MONITOR_URL", ""),
+        run_name="EZv2 Pendulum (GPU sampled-Gumbel)",
+        buffer_size=64,
+        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+    )
+    logger.set_config("agent", "EZv2")
+    logger.set_config("env", "Pendulum")
+    logger.set_config("framework", "deep_agents/nn")
+
     print("EZv2 Pendulum convergence (v2, GPU sampled-Gumbel — MuZero BPTT + SimSiam)")
     print("  LATENT", LATENT, "H", H, "PROJ", PROJ, "BINS", BINS,
           "sims", NUM_SIMS, "K_root", K_ROOT, "K", K, "N", N, "B", B)
@@ -83,6 +98,7 @@ def main() raises:
         PendulumEnv[DType.float32], Rep, Dyn, Pred, Proj, Predh,
         OBS, ACT_DIM, LATENT, BINS, NUM_SIMS, MAX_NODES, K_ROOT, K_NON_ROOT,
         CAP, B, K, N,
+        L=RemoteLogger,
     ](
         ctx, env, rep, dyn, pred, proj, predh,
         orep, odyn, opred, oproj, opredh,
@@ -108,8 +124,12 @@ def main() raises:
         reanalyze_batch=2,
         eval_every=2000,
         eval_episodes=5,
+        diag_every=200,
+        report_every=500,
+        logger=UnsafePointer(to=logger),
         seed=42,
         verbose=True,
     )
+    logger.close()
 
     print("final loss:", loss)

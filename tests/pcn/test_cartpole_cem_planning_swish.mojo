@@ -23,10 +23,10 @@ from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.training.scheduler import CosineWarmupSchedule
+from mojo_rl.nn.constants import DT as dtype
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
+from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
+from mojo_rl.experimental.pcn.pc_scheduler import CosineWarmupSchedule
 from mojo_rl.experimental.pcn import (
     PCBlock,
     PCEncoder,
@@ -103,8 +103,8 @@ comptime TRAINER = PCTrainer[
     PCBlock[HIDDEN, OBS_DIM, PCIdentity],
     dtype=dtype,
 ]
-comptime OPT_PC = Adam[LR=ADAM_LR_PC]
-comptime OPT_ENC = Adam[LR=ADAM_LR_ENC]
+comptime OPT_PC = PCAdam[LR=ADAM_LR_PC]
+comptime OPT_ENC = PCAdam[LR=ADAM_LR_ENC]
 comptime SCHED = CosineWarmupSchedule[
     WARMUP_EPOCHS=WARMUP_EPOCHS, MIN_SCALE=LR_MIN_SCALE
 ]
@@ -277,7 +277,7 @@ def main() raises:
     var pc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_PC.GLOBAL_STATE_SIZE), MutAnyOrigin
     ](pc_opt_global_buf)
-    NET.initialize_params[Xavier[], dtype](pc_params)
+    NET.pc_init_params[PCXavier, dtype](pc_params)
 
     var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
     var enc_grads_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)

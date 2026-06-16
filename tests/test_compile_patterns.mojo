@@ -19,7 +19,7 @@ from std.gpu import thread_idx, block_idx, block_dim, barrier
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import LayoutTensor, Layout
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.constants import DT as dtype
 
 comptime TILE = 16
 

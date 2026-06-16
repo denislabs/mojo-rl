@@ -26,7 +26,7 @@ from std.random import seed, random_float64
 from std.sys import simd_width_of
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.constants import DT as dtype
 
 
 comptime SIMD_WIDTH = simd_width_of[dtype]()

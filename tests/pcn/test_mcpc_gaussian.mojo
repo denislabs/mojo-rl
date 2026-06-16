@@ -31,9 +31,9 @@ from std.memory import alloc, memset
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.constants import DT as dtype
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
+from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
 from mojo_rl.experimental.pcn import (
     PCBlock,
     PCSequential,
@@ -66,7 +66,7 @@ comptime TRAINER = PCTrainer[
     PCBlock[1, 1, PCIdentity],
     dtype=dtype,
 ]
-comptime OPT = Adam[LR=ADAM_LR]
+comptime OPT = PCAdam[LR=ADAM_LR]
 
 
 def main() raises:
@@ -103,7 +103,7 @@ def main() raises:
     var opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin
     ](opt_global_buf)
-    NET.initialize_params[Xavier[], dtype](params)
+    NET.pc_init_params[PCXavier, dtype](params)
 
     # ── scratch buffers ──────────────────────────────────────────────────────
     var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)

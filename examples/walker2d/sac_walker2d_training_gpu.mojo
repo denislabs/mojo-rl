@@ -1,208 +1,213 @@
-"""SAC Agent GPU Training on Walker2d.
+"""SAC training on Walker2d (GPU, multi-env) via the new `SACAgent` facade.
 
-This trains the SAC (Soft Actor-Critic) agent on the Walker2d environment
-using GPU-accelerated off-policy training with:
-- Parallel environments on GPU
-- Generalized Coordinates (GC) physics engine (MuJoCo-style)
-- 6D continuous action space (joint torques)
-- 17D observation (qpos + qvel excluding rootx)
+GPU successor of `sac_walker2d_training.mojo` and counterpart of the legacy
+`sac_walker2d_training_gpu.mojo`. Mirrors
+`examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`:
 
-Run with:
-    pixi run -e apple mojo run -I . examples/walker2d/sac_walker2d_training_gpu.mojo    # Apple Silicon
-    pixi run -e nvidia mojo run -I . examples/walker2d/sac_walker2d_training_gpu.mojo   # NVIDIA GPU
+  * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
+    off-policy driver. All optimizers, the replay buffer, and the SAC
+    train-step pipeline run on-device.
+  * `BatchedGpuEnv[Walker2d[DT], N_ENVS, OBS, ACT]` — wraps the physics3d env
+    (`GPUContinuousEnv`) into a `BatchedEnv`.
+  * `RemoteLogger` — streams `avg_reward` + `episodes` at `print_every`, AND
+    (via `diag_every`) the full SAC metric bundle (`actor_loss`,
+    `critic_loss`, `alpha`, `mean_q`, `mean_reward`, `train_steps`, …).
+
+`updates_per_step=N_ENVS` keeps the effective UTD = 1 per collected transition.
+
+NOTE on checkpointing: the batched `train` entry point now supports an inline
+checkpoint cadence (`checkpoint_every` + `checkpoint_path`) — it auto-saves the
+trainer's one-file `nn-ckpt v2` envelope (actor + twin critics + optimizers +
+alpha optimizer) every `CHECKPOINT_EVERY` env-steps and one final time at the
+end. The save runs between iterations (a D2H of the live GPU params) so it is
+safe to combine with the CUDA-graph capture below. The replay buffer / episode
+tracker are NOT persisted, so a resumed run starts with a fresh replay. Load a
+saved checkpoint back into a fresh agent with `agent.load(CHECKPOINT_PATH)`.
+
+Walker2d (Phyics3dEnv, MuJoCo-style):
+  * 17D observation (qpos[1:9] + qvel[0:9])
+  * 6D continuous action (thigh/leg/foot torques × 2 legs)
+  * Reward ≈ forward velocity + healthy bonus − control cost; episode ends
+    when the torso leaves a healthy height/angle range
+    (`TERMINATE_ON_UNHEALTHY=True`).
+
+Run:
+    pixi run -e apple  mojo run -I . examples/walker2d/sac_walker2d_training_gpu.mojo  # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/walker2d/sac_walker2d_training_gpu.mojo  # NVIDIA GPU
 """
 
+from std.gpu.host import DeviceContext
 from std.random import seed
 from std.time import perf_counter_ns
-from std.memory import UnsafePointer
-
-from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.core.agents import DeepSACAgent
+from mojo_rl.nn.constants import DT
+from mojo_rl.deep_agents.sac import SAC
+from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
 from mojo_rl.envs.walker2d import Walker2d
 
 
 # =============================================================================
-# Constants
+# Architecture
 # =============================================================================
 
-# Walker2d: 17D observation, 6D continuous action
-comptime OBS_DIM = 17  # qpos[1:9] + qvel[0:9]
-comptime ACTION_DIM = 6  # thigh, leg, foot x 2 legs
+comptime EnvT = Walker2d[DT, TERMINATE_ON_UNHEALTHY=True]
+comptime OBS_DIM = EnvT.OBS_DIM  # 17
+comptime ACT_DIM = EnvT.ACTION_DIM  # 6
+comptime HIDDEN = 256
 
-# Network architecture
-comptime HIDDEN_DIM = 256
+# Off-policy GPU training parameters (mirror the legacy GPU script).
+comptime BATCH = 256
+comptime REPLAY_CAPACITY = 1_000_000
+# Walker2d physics (NV=9, articulated chain) allocates a sizeable per-env RK4
+# workspace (mass matrix ∝ NV² + contacts), replicated across all N_ENVS. The
+# legacy `sac_walker2d_training_gpu.mojo` used 4; bump up if you have headroom.
+comptime N_ENVS = 4
 
-# Off-policy GPU training parameters
-comptime BUFFER_CAPACITY = 1_000_000
-comptime BATCH_SIZE = 256
-comptime MAX_N_ENVS = 4
-
-# Training duration
+# Training duration. Drop NUM_STEPS to ~50_000 for a smoke run.
 comptime NUM_STEPS = 1_000_000
 comptime WARMUP_STEPS = 10_000
+comptime PRINT_EVERY = 50_000
+comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
+comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
+comptime CHECKPOINT_PATH = "sac_walker2d_nn.ckpt"
 
-comptime dtype = DType.float32
 
+comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
 
-# =============================================================================
-# Main
-# =============================================================================
+# Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac),
+# which bundles the canonical fused-`LinearReLU` `SACActorNet` /
+# `SACCriticNet` (matmul+bias+ReLU in one kernel — halves the per-hidden-
+# layer launch count on the eager GPU path) plus SAC's tuned defaults.
 
 
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("SAC Agent GPU Training on Walker2d")
+    print("SAC (deep_agents) — Walker2d GPU (multi-env) + logger")
     print("=" * 70)
-    print()
-
-    # =========================================================================
-    # Create GPU context and agent
-    # =========================================================================
+    print("  OBS_DIM            =", OBS_DIM)
+    print("  ACT_DIM            =", ACT_DIM)
+    print("  HIDDEN             =", HIDDEN)
+    print("  BATCH              =", BATCH)
+    print("  REPLAY_CAPACITY    =", REPLAY_CAPACITY)
+    print("  N_ENVS             =", N_ENVS)
+    print("  NUM_STEPS          =", NUM_STEPS)
+    print("  WARMUP_STEPS       =", WARMUP_STEPS)
+    print("  PRINT_EVERY        =", PRINT_EVERY)
+    print("  CHECKPOINT_EVERY   =", CHECKPOINT_EVERY)
+    print("  CHECKPOINT_PATH    =", CHECKPOINT_PATH)
+    print("=" * 70)
 
     with DeviceContext() as ctx:
-        var agent = DeepSACAgent[
-            obs_dim=OBS_DIM,
-            action_dim=ACTION_DIM,
-            hidden_dim=HIDDEN_DIM,
-            buffer_capacity=BUFFER_CAPACITY,
-            batch_size=BATCH_SIZE,
-            actor_lr=0.0003,
-            critic_lr=0.001,
-            L=RemoteLogger,
-            max_n_envs=MAX_N_ENVS,
-        ](
-            gamma=0.99,
-            tau=0.005,
-            action_scale=1.0,
-            alpha=0.2,
-            auto_alpha=True,
-            alpha_lr=0.001,
-            target_entropy=-6.0,
-            checkpoint_every=100_000,
-            checkpoint_path="sac_walker2d.ckpt",
-        )
-
-        print("Environment: Walker2d Continuous (GPU)")
-        print("Agent: SAC (Soft Actor-Critic)")
-        print("  Observation dim: " + String(OBS_DIM))
-        print("  Action dim: " + String(ACTION_DIM))
-        print("  Hidden dim: " + String(HIDDEN_DIM))
-        print("  Buffer capacity: " + String(BUFFER_CAPACITY))
-        print("  Batch size: " + String(BATCH_SIZE))
-        print("  Max parallel envs: " + String(MAX_N_ENVS))
-        print("  Key hyperparameters:")
-        print("    - Actor LR: 3e-4")
-        print("    - Critic LR: 1e-3")
-        print("    - Alpha LR: 1e-3")
-        print("    - Tau (soft update): 0.005")
-        print("    - Initial alpha: 0.2 (auto-tuned)")
-        print("    - Target entropy: -" + String(ACTION_DIM))
-        print("    - Warmup steps: " + String(WARMUP_STEPS))
-        print()
-
-        # =====================================================================
-        # Setup logger
-        # =====================================================================
-
+        # ─── Logger (remote) ─────────────────────────────────────────────
         var env_vars = load_dotenv()
         var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
         var url = env_vars.get("RL_MONITOR_URL", "")
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC Walker2d GPU",
+            run_name="SAC Walker2d NN (GPU)",
             buffer_size=64,
             api_key=api_key,
         )
-        logger.set_config("agent", "SAC")
+        logger.set_config("algorithm", "SAC")
         logger.set_config("env", "Walker2d")
-        logger.set_config("hidden_dim", String(HIDDEN_DIM))
-        logger.set_config("actor_lr", "3e-4")
-        logger.set_config("critic_lr", "1e-3")
-        logger.set_config("alpha_lr", "1e-3")
-        logger.set_config("batch_size", String(BATCH_SIZE))
-        logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
+        logger.set_config("target", "gpu")
+        logger.set_config("hidden", String(HIDDEN))
+        logger.set_config("batch", String(BATCH))
+        logger.set_config("n_envs", String(N_ENVS))
+        logger.set_config("buffer_capacity", String(REPLAY_CAPACITY))
 
-        # =====================================================================
-        # Train using the train_gpu() method
-        # =====================================================================
+        var logger_ptr = UnsafePointer(to=logger)
 
+        # ─── Agent + batched GPU env ─────────────────────────────────────
+        # `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` reads like a
+        # constructor: it builds the SACAgent with the fused default nets
+        # and SAC's tuned scalar defaults (lr=3e-4, gamma=0.99, tau=0.005,
+        # init_alpha=0.2, target_entropy=-ACT, …). We override only the
+        # example-specific knobs below; everything else comes from the preset.
+        var agent = SAC[
+            "gpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN
+        ](
+            ctx=ctx,
+            learning_starts=WARMUP_STEPS,
+            window_size=100,
+            initial_episode_fill=0.0,
+        )
+        var env = BatchedEnvT(ctx)
+
+        # ─── Single train() call — batched GPU off-policy driver ─────────
         print("Starting GPU training...")
         print("-" * 70)
+        var t_start = perf_counter_ns()
+        _ = agent.train[
+            BatchedEnvT,
+            N_ENVS=N_ENVS,
+            L=RemoteLogger,
+            # CUDA-graph capture of the train step. The earlier capture
+            # divergence was a replay-buffer bug — the uniform sample kernel
+            # took the buffer fill count as a HOST scalar, which capture baked
+            # at capture time, freezing sampling to the warmup-era transitions.
+            # Fixed in gpu_replay.mojo (device-resident `size`); the sample
+            # range now tracks the live count on every replay. Uniform replay
+            # only — do NOT combine with ERE (still host-scalar / not capture
+            # safe). NVIDIA only; no-op on Apple/Metal.
+            USE_TRAIN_CUDA_GRAPH=True,
+            # Capture the deterministic physics step too — collapses the env's
+            # per-step eager kernel launches (newton/integrators/collision) into
+            # one graph replay/iteration. The decisive lever at N_ENVS=4 / 250k
+            # iters, where per-iteration launch+dispatch (not GPU compute)
+            # dominates wall-clock. Safe: physics3d's GPU step is RNG-free
+            # (RNG only in reset, which stays eager). NVIDIA only.
+            USE_ENV_CUDA_GRAPH=True,
+        ](
+            env,
+            NUM_STEPS,
+            rng_seed=UInt64(42),
+            updates_per_step=N_ENVS,
+            print_every=PRINT_EVERY,
+            verbose=True,
+            logger=logger_ptr,
+            diag_every=DIAG_EVERY,
+            # Defer the per-iteration episode-tracking D2H+synchronize: batch
+            # the reward/done readback over this many iterations so the host
+            # only stalls the GPU pipeline ~1/32 as often (returns are drained
+            # exactly at every print/diag boundary, so logged values are fresh).
+            episode_sync_every=32,
+            # Auto-save the SAC weights+optimizers every CHECKPOINT_EVERY
+            # env-steps (and once more at the end). Safe alongside the
+            # CUDA-graph capture above — the save is host-side D2H between
+            # iterations. Resume/eval later via `agent.load(CHECKPOINT_PATH)`.
+            checkpoint_every=CHECKPOINT_EVERY,
+            checkpoint_path=CHECKPOINT_PATH,
+        )
+        var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
+        logger.close()
+        _ = logger  # lifetime extender for logger_ptr
 
-        var start_time = perf_counter_ns()
+        # ─── Summary ─────────────────────────────────────────────────────
+        print("-" * 70)
+        print("=" * 70)
+        print("Training complete")
+        print("  total env_steps           =", NUM_STEPS)
+        print("  elapsed                   =", elapsed_s, "s")
+        print("  mean ep return (last 100) =", agent.mean_return())
+        print("  episodes completed        =", agent.ep_count())
+        print("  remote points sent        =", logger.total_logged())
+        print("  checkpoint saved to       =", CHECKPOINT_PATH)
+        print("=" * 70)
 
-        try:
-            var metrics = agent.train_gpu[
-                Walker2d[dtype, TERMINATE_ON_UNHEALTHY=True],
-            ](
-                ctx,
-                num_steps=NUM_STEPS,
-                warmup_steps=WARMUP_STEPS,
-                verbose=True,
-                print_every=50_000,
-                logger=UnsafePointer(to=logger),
-                diag_every=1_000,
-            )
-
-            var end_time = perf_counter_ns()
-            var elapsed_s = Float64(end_time - start_time) / 1e9
-
-            logger.close()
-
-            print("-" * 70)
-            print()
-            print(">>> train_gpu returned successfully! <<<")
-
-            # =================================================================
-            # Summary
-            # =================================================================
-
-            print("=" * 70)
-            print("GPU Training Complete")
-            print("=" * 70)
-            print()
-            print("Total steps: " + String(NUM_STEPS))
-            print("Training time: " + String(elapsed_s)[byte=:6] + " seconds")
-            print()
-
-            print(
-                "Final average reward (last 100 episodes): "
-                + String(metrics.mean_reward_last_n(100))[byte=:8]
-            )
-            print(
-                "Best episode reward: " + String(metrics.max_reward())[byte=:8]
-            )
-            print()
-
-            var final_avg = metrics.mean_reward_last_n(100)
-            if final_avg > 4000.0:
-                print("EXCELLENT: Walker is running fast! (avg reward > 4000)")
-            elif final_avg > 2000.0:
-                print("SUCCESS: Walker learned to walk! (avg reward > 2000)")
-            elif final_avg > 500.0:
-                print(
-                    "GOOD PROGRESS: Walker is learning locomotion"
-                    " (avg reward > 500)"
-                )
-            elif final_avg > 0.0:
-                print(
-                    "LEARNING: Agent improving but needs more training"
-                    " (avg reward > 0)"
-                )
-            else:
-                print("EARLY STAGE: Agent still exploring (avg reward < 0)")
-
-            print()
-            print("=" * 70)
-
-        except e:
-            print("!!! EXCEPTION CAUGHT !!!")
-            print("Error:", e)
-            print("!!! END EXCEPTION !!!")
-
-    print(">>> main() completed normally <<<")
+        var final_avg = Float64(agent.mean_return())
+        if final_avg > 4000.0:
+            print("EXCELLENT — walking fast (mean > 4000).")
+        elif final_avg > 2000.0:
+            print("STRONG — sustained walking (mean > 2000).")
+        elif final_avg > 1000.0:
+            print("PROGRESS — staying upright + moving (mean > 1000).")
+        elif final_avg > 0.0:
+            print("LEARNING — positive return (mean > 0).")
+        else:
+            print("EARLY — still exploring (mean < 0).")
+        print("=" * 70)

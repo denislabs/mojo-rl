@@ -1,222 +1,343 @@
-"""REDQ (Randomized Ensembled Double Q-learning) configuration.
+"""REDQ named presets — config descriptors + factories (Design F).
 
-REDQ = SAC with:
-  (1) N Q-networks instead of 2 (default N = 10)
-  (2) TD target uses min over a random subset of M (default M = 2) of the N
-  (3) UTD (update-to-data) ratio: default 20 gradient updates per env step
-  (4) Policy (and alpha) updated only every POLICY_DELAY critic updates
+Additive sugar over the primitive
+`REDQTrainer[train_target, SAMPLE, ACTOR, CRITIC,
+              N, N_MIN, UTD, POLICY_DELAY, Q_MODE]`. The primitive stays
+the source of truth for arbitrary combinations; this module names the
+canonical algorithms and bundles their tuned defaults.
 
-The policy loss uses the mean over all N online critics (not the subset).
-All other SAC machinery (tanh-Gaussian actor, reparameterization, entropy
-temperature autotuning) is unchanged.
+Same shape as `c51/config.mojo`:
 
-Reference: Chen et al., "Randomized Ensembled Double Q-Learning: Learning
-Fast Without a Model" (ICLR 2021).
+  1. `REDQConfigT` — a trait bundling the FULL compile-time identity of an
+     algorithm: the deployment `TARGET`, the replay `SAMPLE` block, the
+     actor + critic nets, the ensemble knobs (`N`, `N_MIN`, `UTD`,
+     `POLICY_DELAY`, `Q_MODE`), plus tuned scalar defaults (`DEF_*`).
+
+  2. `REDQConfig` (paper-faithful) / `SmallREDQConfig` (SAC-shape) —
+     zero-field conformer structs parametrized by `target`. One config
+     covers both CPU and GPU because the replay block is target-generic
+     (`ReplaySampleStep[AnyReplay[target, …]]`).
+
+  3. `agent_from_config` + capitalized presets `REDQ` / `SmallREDQ`.
+     Each preset is a SINGLE function taking `target` as a parameter:
+
+         var agent = REDQ["cpu", OBS, ACT, BATCH, CAP](ctx=None)
+         var agent = SmallREDQ["gpu", OBS, ACT, BATCH, CAP](ctx=ctx)
+
+Defaults table:
+
+                          REDQConfig (paper-faithful)   SmallREDQConfig (SAC-shape)
+  N                       10                            2
+  N_MIN                   2                             2
+  UTD                     20                            1
+  POLICY_DELAY            20                            1
+  Q_MODE                  MIN                           MIN
+  actor/critic LR         3e-4 / 3e-4                   3e-4 / 1e-3
+  gamma                   0.99                          0.99
+  tau                     0.005                         0.005
+  init_alpha              0.2                           0.2
+  target_entropy          −ACT                          −ACT
+  learning_starts         5_000                         1_000
+
+The `SmallREDQConfig` regime is what you want for quick experiments on
+classic-control envs (Pendulum, HalfCheetah toy runs) — it's REDQ's
+shape with the cheapest possible compute (no UTD inner loop, no policy
+delay, N=2 critics). At those settings REDQ's TD target reduces to
+SAC's `min(Q1, Q2)` but the actor loss still averages over the online
+critics (the algorithmic difference).
 """
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.model import (
-    Model,
-    Linear,
-    LinearReLU,
-    LinearTanh,
-    Sequential,
-    Parallel,
-    LayerNorm,
-    ReLU,
-)
-from mojo_rl.nn.optimizer import Optimizer, Adam
+from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.core.configs.offpolicy_config import OffPolicyConfig
-from mojo_rl.deep_agents.core.strategies.exploration import Explore, StochasticSample
-from mojo_rl.deep_agents.core.strategies.update_schedule import Schedule, DelayedActorOnly
-from mojo_rl.deep_agents.core.strategies.target_value import TargetValue, EntropicTwinQTarget
-from mojo_rl.deep_agents.core.strategies.target_action import TargetAction, ReparamTarget
-from mojo_rl.deep_agents.core.strategies.actor_loss import ActorLoss, AutodiffMaxEntLoss
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.combinators.sequential import Sequential
+
+from ..primitives.stochastic_actor import StochasticActor
+from ..training.blocks import SampleBlock, ReplaySampleStep
+from ..data.any_replay import AnyReplay
+
+from .agent import REDQAgent
+from .kernels import REDQ_TARGET_MIN, REDQ_TARGET_AVE
 
 
-# =============================================================================
-# Q-target combination modes
-# =============================================================================
-# Runtime-integer mode selectors passed to the REDQ ensemble-target kernel.
-#   MIN (0): min over a random subset of M of N  (default REDQ)
-#   AVE (1): mean over all N critics             (Ensemble Average)
-#   REM (2): random ensemble mixture (convex)    (REM)
+# ──────────────────────────────────────────────────────────────────────
+# Net presets — target-agnostic, parametrized comptime aliases.
+# ──────────────────────────────────────────────────────────────────────
 
 
-comptime REDQ_TARGET_MIN: Int = 0
-comptime REDQ_TARGET_AVE: Int = 1
-comptime REDQ_TARGET_REM: Int = 2
+comptime REDQActor[OBS: Int, ACT: Int, HIDDEN: Int] = StochasticActor[
+    OBS, ACT,
+    LinearReLU[OBS, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
+]
+"""2-layer fused-MLP trunk + (μ, log σ) heads — same shape as SAC's actor."""
 
 
-# =============================================================================
-# REDQConfig trait — extends OffPolicyConfig with ensemble + UTD + policy delay
-# =============================================================================
+comptime REDQCritic[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
+    LinearReLU[OBS + ACT, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
+    Linear[HIDDEN, 1],
+]
+"""2-layer MLP critic. Each of the N online + target nets in
+`CriticEnsemble[CRITIC, N]` is one of these."""
 
 
-trait REDQConfig(OffPolicyConfig):
-    """Compile-time configuration for REDQ agents.
-
-    Extends OffPolicyConfig with the four REDQ-specific knobs. The
-    inherited `NUM_CRITICS` is set to `NUM_ENSEMBLE` so existing
-    N-generic infrastructure (CriticGroup, OffPolicyTrainWS) works
-    unchanged.
-    """
-
-    # Ensemble configuration
-    comptime NUM_ENSEMBLE: Int       # Total number of Q-networks (e.g. 10)
-    comptime NUM_MIN: Int            # Subset size for target min (e.g. 2)
-
-    # High-UTD training
-    comptime UTD_RATIO: Int          # Gradient updates per env step (e.g. 20)
-    comptime POLICY_DELAY: Int       # Policy updates every K critic updates
-
-    # Q-target combination mode: REDQ_TARGET_MIN / _AVE / _REM
-    comptime Q_TARGET_MODE: Int
+# ──────────────────────────────────────────────────────────────────────
+# Config trait — full compile-time identity + tuned scalar defaults.
+# ──────────────────────────────────────────────────────────────────────
 
 
-# =============================================================================
-# DefaultREDQConfig — concrete config with paper-faithful defaults
-# =============================================================================
+trait REDQConfigT(Copyable, Movable, ImplicitlyDestructible):
+    """Compile-time descriptor of a REDQ-family algorithm. Conformers
+    are zero-field comptime tags — never instantiated at runtime; only
+    their comptime members are read."""
+
+    comptime TARGET: StaticString
+    comptime SAMPLE: SampleBlock
+    comptime ACTOR: Module
+    comptime CRITIC: Module
+    comptime N: Int
+    comptime N_MIN: Int
+    comptime UTD: Int
+    comptime POLICY_DELAY: Int
+    comptime Q_MODE: Int
+
+    # Tuned scalar defaults (read into __init__ kwarg defaults).
+    comptime DEF_ACTOR_LR: Scalar[DT]
+    comptime DEF_CRITIC_LR: Scalar[DT]
+    comptime DEF_ALPHA_LR: Scalar[DT]
+    comptime DEF_GAMMA: Scalar[DT]
+    comptime DEF_TAU: Scalar[DT]
+    comptime DEF_ACTION_SCALE: Scalar[DT]
+    comptime DEF_INIT_ALPHA: Scalar[DT]
+    comptime DEF_TARGET_ENTROPY: Scalar[DT]
+    comptime DEF_LEARNING_STARTS: Int
+    comptime DEF_MAX_GRAD_NORM: Scalar[DT]
 
 
-struct DefaultREDQConfig[
-    OBS: Int,
-    ACT: Int,
+# ──────────────────────────────────────────────────────────────────────
+# Conformers — one struct per algorithm, parametrized by `target`.
+# ──────────────────────────────────────────────────────────────────────
+
+
+@fieldwise_init
+struct REDQConfig[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
     HIDDEN: Int = 256,
-    CAP: Int = 1_000_000,
-    BS: Int = 256,
-    N_ENS: Int = 10,
-    N_MIN: Int = 2,
-    UTD: Int = 20,
-    POL_DELAY: Int = 20,
-    Q_MODE: Int = REDQ_TARGET_MIN,
-    actor_lr: Float64 = 0.0003,
-    critic_lr: Float64 = 0.0003,
-    action_scale: Float64 = 1.0,
-](REDQConfig):
-    """Paper-faithful REDQ config: 10 critics, subset-min target (M=2),
-    UTD ratio 20, policy update delay 20. Critic is a standard 2-hidden
-    MLP (Linear + ReLU). For a LayerNorm-stabilized critic, use
-    `DefaultREDQLNConfig` instead.
-    """
+](REDQConfigT):
+    """Paper-faithful REDQ (Chen et al. 2021): N=10 critics, M=2-subset
+    MIN target, UTD=20 critic updates per env step, policy_delay=20
+    (actor + α every 20 inner critic updates)."""
 
-    comptime NAME: String = "REDQ"
-    comptime obs_dim: Int = Self.OBS
-    comptime action_dim: Int = Self.ACT
-    comptime batch_size: Int = Self.BS
-    comptime buffer_capacity: Int = Self.CAP
-
-    # SAC actor: Parallel output [mean(ACT), log_std(ACT)]
-    comptime ActorModel = Sequential[
-        LinearReLU[Self.OBS, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Parallel[
-            Linear[Self.HIDDEN, Self.ACT],       # mean head
-            LinearTanh[Self.HIDDEN, Self.ACT],    # log_std head (tanh-clamped)
-        ],
+    comptime TARGET = Self.target
+    comptime SAMPLE = ReplaySampleStep[
+        AnyReplay[Self.target, Self.OBS, Self.ACT, Self.CAP], Self.BATCH,
     ]
+    comptime ACTOR = REDQActor[Self.OBS, Self.ACT, Self.HIDDEN]
+    comptime CRITIC = REDQCritic[Self.OBS, Self.ACT, Self.HIDDEN]
+    comptime N = 10
+    comptime N_MIN = 2
+    comptime UTD = 20
+    comptime POLICY_DELAY = 20
+    comptime Q_MODE = REDQ_TARGET_MIN
 
-    # Paper-faithful critic: Linear + ReLU × 2 + Linear head.
-    comptime CriticModel = Sequential[
-        LinearReLU[Self.OBS + Self.ACT, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, 1],
+    comptime DEF_ACTOR_LR = Scalar[DT](3e-4)
+    comptime DEF_CRITIC_LR = Scalar[DT](3e-4)
+    comptime DEF_ALPHA_LR = Scalar[DT](3e-4)
+    comptime DEF_GAMMA = Scalar[DT](0.99)
+    comptime DEF_TAU = Scalar[DT](0.005)
+    comptime DEF_ACTION_SCALE = Scalar[DT](1.0)
+    comptime DEF_INIT_ALPHA = Scalar[DT](0.2)
+    comptime DEF_TARGET_ENTROPY = Scalar[DT](-Float64(Self.ACT))
+    comptime DEF_LEARNING_STARTS = 5_000
+    comptime DEF_MAX_GRAD_NORM = Scalar[DT](0.0)
+
+
+@fieldwise_init
+struct SmallREDQConfig[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
+    HIDDEN: Int = 64,
+](REDQConfigT):
+    """SAC-shape REDQ — N=2/M=2/UTD=1/POLICY_DELAY=1, the cheapest
+    REDQ regime. At N=2 the TD target equals SAC's `min(Q1, Q2)`; the
+    actor loss still averages the online critics (the algorithmic
+    difference). Good fit for classic-control smokes."""
+
+    comptime TARGET = Self.target
+    comptime SAMPLE = ReplaySampleStep[
+        AnyReplay[Self.target, Self.OBS, Self.ACT, Self.CAP], Self.BATCH,
     ]
+    comptime ACTOR = REDQActor[Self.OBS, Self.ACT, Self.HIDDEN]
+    comptime CRITIC = REDQCritic[Self.OBS, Self.ACT, Self.HIDDEN]
+    comptime N = 2
+    comptime N_MIN = 2
+    comptime UTD = 1
+    comptime POLICY_DELAY = 1
+    comptime Q_MODE = REDQ_TARGET_MIN
 
-    comptime ActorOpt = Adam[Self.actor_lr]
-    comptime CriticOpt = Adam[Self.critic_lr]
-
-    # NUM_CRITICS (from OffPolicyConfig) is aliased to NUM_ENSEMBLE so that
-    # N-generic infrastructure (CriticGroup, OffPolicyTrainWS) sizes correctly.
-    comptime NUM_CRITICS: Int = Self.N_ENS
-    comptime HAS_TARGET_ACTOR: Bool = False
-
-    # Strategy fields from OffPolicyConfig — REDQ's custom training loop
-    # does NOT dispatch through these, but they must be set for trait
-    # conformance. We point them at SAC's strategies so any reuse of
-    # OffPolicyAgent sub-routines (e.g. exploration) still works.
-    comptime Explore = StochasticSample
-    comptime Schedule = DelayedActorOnly
-    comptime TargetAction = ReparamTarget
-    comptime TargetValue = EntropicTwinQTarget
-    comptime ActorLoss = AutodiffMaxEntLoss[action_scale=Self.action_scale]
-
-    # REDQ-specific fields
-    comptime NUM_ENSEMBLE: Int = Self.N_ENS
-    comptime NUM_MIN: Int = Self.N_MIN
-    comptime UTD_RATIO: Int = Self.UTD
-    comptime POLICY_DELAY: Int = Self.POL_DELAY
-    comptime Q_TARGET_MODE: Int = Self.Q_MODE
+    comptime DEF_ACTOR_LR = Scalar[DT](3e-4)
+    comptime DEF_CRITIC_LR = Scalar[DT](1e-3)
+    comptime DEF_ALPHA_LR = Scalar[DT](3e-4)
+    comptime DEF_GAMMA = Scalar[DT](0.99)
+    comptime DEF_TAU = Scalar[DT](0.005)
+    comptime DEF_ACTION_SCALE = Scalar[DT](1.0)
+    comptime DEF_INIT_ALPHA = Scalar[DT](0.2)
+    comptime DEF_TARGET_ENTROPY = Scalar[DT](-Float64(Self.ACT))
+    comptime DEF_LEARNING_STARTS = 1_000
+    comptime DEF_MAX_GRAD_NORM = Scalar[DT](0.0)
 
 
-# =============================================================================
-# DefaultREDQLNConfig — opt-in LayerNorm critic for extra high-UTD stability
-# =============================================================================
+# ──────────────────────────────────────────────────────────────────────
+# Generic factory — any REDQConfigT → primitive agent, defaults applied.
+# ──────────────────────────────────────────────────────────────────────
 
 
-struct DefaultREDQLNConfig[
-    OBS: Int,
-    ACT: Int,
+def agent_from_config[
+    CONFIG: REDQConfigT,
+](
+    ctx: Optional[DeviceContext] = None,
+    actor_lr: Scalar[DT] = CONFIG.DEF_ACTOR_LR,
+    critic_lr: Scalar[DT] = CONFIG.DEF_CRITIC_LR,
+    alpha_lr: Scalar[DT] = CONFIG.DEF_ALPHA_LR,
+    gamma: Scalar[DT] = CONFIG.DEF_GAMMA,
+    tau: Scalar[DT] = CONFIG.DEF_TAU,
+    action_scale: Scalar[DT] = CONFIG.DEF_ACTION_SCALE,
+    init_alpha: Scalar[DT] = CONFIG.DEF_INIT_ALPHA,
+    target_entropy: Scalar[DT] = CONFIG.DEF_TARGET_ENTROPY,
+    learning_starts: Int = CONFIG.DEF_LEARNING_STARTS,
+    window_size: Int = 10,
+    initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+    max_grad_norm: Scalar[DT] = CONFIG.DEF_MAX_GRAD_NORM,
+) raises -> REDQAgent[
+    CONFIG.TARGET,
+    CONFIG.SAMPLE,
+    CONFIG.ACTOR,
+    CONFIG.CRITIC,
+    CONFIG.N,
+    CONFIG.N_MIN,
+    CONFIG.UTD,
+    CONFIG.POLICY_DELAY,
+    CONFIG.Q_MODE,
+]:
+    """Build the primitive `REDQAgent` from any `REDQConfigT`. Every
+    scalar defaults to the config's tuned value but stays overridable."""
+    return REDQAgent[
+        CONFIG.TARGET,
+        CONFIG.SAMPLE,
+        CONFIG.ACTOR,
+        CONFIG.CRITIC,
+        CONFIG.N,
+        CONFIG.N_MIN,
+        CONFIG.UTD,
+        CONFIG.POLICY_DELAY,
+        CONFIG.Q_MODE,
+    ](
+        ctx=ctx,
+        actor_lr=actor_lr,
+        critic_lr=critic_lr,
+        alpha_lr=alpha_lr,
+        gamma=gamma,
+        tau=tau,
+        action_scale=action_scale,
+        init_alpha=init_alpha,
+        target_entropy=target_entropy,
+        learning_starts=learning_starts,
+        window_size=window_size,
+        initial_episode_fill=initial_episode_fill,
+        max_grad_norm=max_grad_norm,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Capitalized presets — read like constructors at the call site.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def REDQ[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
     HIDDEN: Int = 256,
-    CAP: Int = 1_000_000,
-    BS: Int = 256,
-    N_ENS: Int = 10,
-    N_MIN: Int = 2,
-    UTD: Int = 20,
-    POL_DELAY: Int = 20,
-    Q_MODE: Int = REDQ_TARGET_MIN,
-    actor_lr: Float64 = 0.0003,
-    critic_lr: Float64 = 0.0003,
-    action_scale: Float64 = 1.0,
-](REDQConfig):
-    """REDQ with pre-activation LayerNorm on the critic (non-paper-faithful).
+](
+    ctx: Optional[DeviceContext] = None,
+    actor_lr: Scalar[DT] = REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_ACTOR_LR,
+    critic_lr: Scalar[DT] = REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_CRITIC_LR,
+    alpha_lr: Scalar[DT] = REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_ALPHA_LR,
+    gamma: Scalar[DT] = REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_GAMMA,
+    tau: Scalar[DT] = REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_TAU,
+    action_scale: Scalar[DT] = REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_ACTION_SCALE,
+    init_alpha: Scalar[DT] = REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_INIT_ALPHA,
+    target_entropy: Scalar[DT] = REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_TARGET_ENTROPY,
+    learning_starts: Int = REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_LEARNING_STARTS,
+    window_size: Int = 10,
+    initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+    max_grad_norm: Scalar[DT] = REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_MAX_GRAD_NORM,
+) raises -> REDQAgent[
+    target,
+    ReplaySampleStep[AnyReplay[target, OBS, ACT, CAP], BATCH],
+    REDQActor[OBS, ACT, HIDDEN],
+    REDQCritic[OBS, ACT, HIDDEN],
+    10, 2, 20, 20, REDQ_TARGET_MIN,
+]:
+    """Paper-faithful REDQ — N=10 critics, M=2 subset MIN, UTD=20,
+    policy_delay=20."""
+    return agent_from_config[
+        REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN]
+    ](
+        ctx=ctx,
+        actor_lr=actor_lr, critic_lr=critic_lr, alpha_lr=alpha_lr,
+        gamma=gamma, tau=tau,
+        action_scale=action_scale,
+        init_alpha=init_alpha, target_entropy=target_entropy,
+        learning_starts=learning_starts,
+        window_size=window_size,
+        initial_episode_fill=initial_episode_fill,
+        max_grad_norm=max_grad_norm,
+    )
 
-    Pattern: Linear → LayerNorm → ReLU × 2 + Linear head. Borrowed from
-    MBPO/SR-SAC to bound Q-activation magnitudes under high UTD. REDQ's
-    big ensemble already damps overestimation so LayerNorm is a belt-and-
-    braces option, not a requirement.
-    """
 
-    comptime NAME: String = "REDQ-LN"
-    comptime obs_dim: Int = Self.OBS
-    comptime action_dim: Int = Self.ACT
-    comptime batch_size: Int = Self.BS
-    comptime buffer_capacity: Int = Self.CAP
-
-    comptime ActorModel = Sequential[
-        LinearReLU[Self.OBS, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Parallel[
-            Linear[Self.HIDDEN, Self.ACT],
-            LinearTanh[Self.HIDDEN, Self.ACT],
-        ],
-    ]
-
-    comptime CriticModel = Sequential[
-        Linear[Self.OBS + Self.ACT, Self.HIDDEN],
-        LayerNorm[Self.HIDDEN],
-        ReLU[Self.HIDDEN],
-        Linear[Self.HIDDEN, Self.HIDDEN],
-        LayerNorm[Self.HIDDEN],
-        ReLU[Self.HIDDEN],
-        Linear[Self.HIDDEN, 1],
-    ]
-
-    comptime ActorOpt = Adam[Self.actor_lr]
-    comptime CriticOpt = Adam[Self.critic_lr]
-
-    comptime NUM_CRITICS: Int = Self.N_ENS
-    comptime HAS_TARGET_ACTOR: Bool = False
-
-    comptime Explore = StochasticSample
-    comptime Schedule = DelayedActorOnly
-    comptime TargetAction = ReparamTarget
-    comptime TargetValue = EntropicTwinQTarget
-    comptime ActorLoss = AutodiffMaxEntLoss[action_scale=Self.action_scale]
-
-    comptime NUM_ENSEMBLE: Int = Self.N_ENS
-    comptime NUM_MIN: Int = Self.N_MIN
-    comptime UTD_RATIO: Int = Self.UTD
-    comptime POLICY_DELAY: Int = Self.POL_DELAY
-    comptime Q_TARGET_MODE: Int = Self.Q_MODE
+def SmallREDQ[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
+    HIDDEN: Int = 64,
+](
+    ctx: Optional[DeviceContext] = None,
+    actor_lr: Scalar[DT] = SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_ACTOR_LR,
+    critic_lr: Scalar[DT] = SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_CRITIC_LR,
+    alpha_lr: Scalar[DT] = SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_ALPHA_LR,
+    gamma: Scalar[DT] = SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_GAMMA,
+    tau: Scalar[DT] = SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_TAU,
+    action_scale: Scalar[DT] = SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_ACTION_SCALE,
+    init_alpha: Scalar[DT] = SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_INIT_ALPHA,
+    target_entropy: Scalar[DT] = SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_TARGET_ENTROPY,
+    learning_starts: Int = SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_LEARNING_STARTS,
+    window_size: Int = 10,
+    initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+    max_grad_norm: Scalar[DT] = SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_MAX_GRAD_NORM,
+) raises -> REDQAgent[
+    target,
+    ReplaySampleStep[AnyReplay[target, OBS, ACT, CAP], BATCH],
+    REDQActor[OBS, ACT, HIDDEN],
+    REDQCritic[OBS, ACT, HIDDEN],
+    2, 2, 1, 1, REDQ_TARGET_MIN,
+]:
+    """SAC-shape REDQ — N=2/M=2/UTD=1/POLICY_DELAY=1. Cheapest REDQ
+    regime; algorithmic difference vs SAC is the averaged-not-min'd
+    actor loss."""
+    return agent_from_config[
+        SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN]
+    ](
+        ctx=ctx,
+        actor_lr=actor_lr, critic_lr=critic_lr, alpha_lr=alpha_lr,
+        gamma=gamma, tau=tau,
+        action_scale=action_scale,
+        init_alpha=init_alpha, target_entropy=target_entropy,
+        learning_starts=learning_starts,
+        window_size=window_size,
+        initial_episode_fill=initial_episode_fill,
+        max_grad_norm=max_grad_norm,
+    )

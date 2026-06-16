@@ -18,7 +18,7 @@ from mojo_rl.envs.craftax_full import (
     CraftaxFullEnv,
     CraftaxFullAction,
 )
-from mojo_rl.nn import dtype
+from mojo_rl.nn.constants import DT as dtype
 from mojo_rl.envs.craftax_full.constants import (
     MAP_W,
     NUM_ACHIEVEMENTS,

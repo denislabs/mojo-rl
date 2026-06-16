@@ -1,11 +1,12 @@
-"""LeWM (LeWorldModel) — experimental JEPA-based world model.
+"""LeWM (LeWorldModel JEPA) — nn port (experimental).
 
-See `docs/LEWM_PORT_PLAN.md` for the design + phased delivery plan.
+Agent assembly for the LeWM world model on the nn framework. The
+general-purpose building blocks (Modulate/Gate/LayerNormNoAffine/SIGReg
+primitives, ConditionalTransformerBlock, RepeatConditional) live in
+`mojo_rl/nn/` proper; this package wires them into the JEPA encoder,
+action embedder, AR predictor, loss graph, and offline trainer.
 
-APIs in this subdirectory may break without notice. Phase 1 (autodiff
-primitives) is stable and lives in `mojo_rl/nn/autodiff/primitives/`.
+See docs/LEWM_NN_PORT_PLAN.md.
 """
 
-from .action_embedder import ActionEmbedder
-from .encoder import LeWMEncoder
-from .adaln_models import Modulate, Gate, LayerNormNoAffine
+from .encoder import LeWMEncoder, ActionEmbedder, PredProj, ARPredictor

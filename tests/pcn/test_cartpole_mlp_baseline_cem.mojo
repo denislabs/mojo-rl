@@ -14,9 +14,9 @@ from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.training.scheduler import CosineWarmupSchedule
+from mojo_rl.nn.constants import DT as dtype
+from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
+from mojo_rl.experimental.pcn.pc_scheduler import CosineWarmupSchedule
 from mojo_rl.experimental.pcn import PCEncoder, clip_grad_norm
 
 
@@ -77,7 +77,7 @@ comptime MAX_EPISODE_STEPS = 200
 comptime PASS_STEPS = 195
 comptime N_EVAL_EPISODES = 5
 
-comptime OPT = Adam[LR=ADAM_LR]
+comptime OPT = PCAdam[LR=ADAM_LR]
 comptime SCHED = CosineWarmupSchedule[
     WARMUP_EPOCHS=WARMUP_EPOCHS, MIN_SCALE=LR_MIN_SCALE
 ]

@@ -1,6 +1,6 @@
-"""TD-MPC2 (deep_agents2) — HalfCheetah training (GPU, MPC-off).
+"""TD-MPC2 (deep_agents) — HalfCheetah training (GPU, MPC-off).
 
-The real-target harness for the deep_agents2 TD-MPC2 port. Built for the
+The real-target harness for the deep_agents TD-MPC2 port. Built for the
 NVIDIA run (`pixi run -e nvidia`): on CUDA the GPU path is fast (low
 per-launch overhead + grouped multi-tensor Adam + big-matmul-dominated),
 whereas on Apple/Metal TD-MPC2 is kernel-launch-bound and CPU is faster
@@ -27,11 +27,11 @@ from std.math import isfinite
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.tdmpc2.agent import TDMPC2Agent
-from mojo_rl.deep_agents2.tdmpc2.config import TDMPC2
+from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent
+from mojo_rl.deep_agents.tdmpc2.config import TDMPC2
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 # ── target: "gpu" for the NVIDIA run; "cpu" works too (slower at this scale).
@@ -109,7 +109,7 @@ def _greedy_eval(mut ag: Ag, mut env: Env) raises -> Scalar[DT]:
 def main() raises:
     print("=" * 70)
     var mode = "MPC" if USE_MPC else "MPC-off"
-    print("TD-MPC2 (deep_agents2) — HalfCheetah", TARGET, "(", mode, ")")
+    print("TD-MPC2 (deep_agents) — HalfCheetah", TARGET, "(", mode, ")")
     print("  OBS=", OBS, " ACT=", ACT, " latent=", LATENT, " B=", B, " H=", H)
     print("  lr=", LR, " total=", TOTAL, " learn_start=", LEARN_START)
     print("=" * 70)

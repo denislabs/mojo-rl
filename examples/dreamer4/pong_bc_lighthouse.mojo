@@ -35,21 +35,21 @@ no-observation prior is reported so the gap is explicit. Pure CPU.
 from std.memory import alloc
 from std.math import sqrt, log, cos
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Xavier
-from mojo_rl.nn2.optimizer import Adam
-from mojo_rl.experimental.lewm2.pong_data import WindowSource
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.optimizer import Adam
+from mojo_rl.experimental.lewm.pong_data import WindowSource
 from mojo_rl.envs.arcade_games.pong.offline_buffer import PongOfflineBuffer
 from layout import TileTensor, row_major
 
-from mojo_rl.deep_agents2.dreamer4.tokenizer import Dreamer4Tokenizer
-from mojo_rl.deep_agents2.dreamer4.agent import Dreamer4Agent
-from mojo_rl.deep_agents2.dreamer4.recon_loss import (
+from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
+from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
+from mojo_rl.deep_agents.dreamer4.recon_loss import (
     masked_recon_loss, full_recon_psnr,
 )
-from mojo_rl.deep_agents2.dreamer4.patchify import downscale_box, temporal_patchify
-from mojo_rl.deep_agents2.dreamerv3.dists_discrete import cat_argmax
-from mojo_rl.deep_agents2.dreamerv3.twohot import symexp_twohot_bins
+from mojo_rl.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
+from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_argmax
+from mojo_rl.deep_agents.dreamerv3.twohot import symexp_twohot_bins
 
 
 def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:

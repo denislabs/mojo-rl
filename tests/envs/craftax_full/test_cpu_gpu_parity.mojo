@@ -45,7 +45,7 @@ from mojo_rl.envs.craftax_full.state import (
     s_monsters_killed,
     s_inv,
 )
-from mojo_rl.nn import dtype
+from mojo_rl.nn.constants import DT as dtype
 
 
 comptime BATCH: Int = 1

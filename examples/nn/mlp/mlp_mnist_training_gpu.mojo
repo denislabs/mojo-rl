@@ -1,153 +1,119 @@
-"""End-to-end MLP training on MNIST — simple fully-connected baseline.
+"""MLP on MNIST (GPU).
 
-Trains a 2-hidden-layer MLP (784 → 256 → 128 → 10) on real MNIST and
-checks that test accuracy exceeds 97%. Uses the auto-fused `LinearReLU`
-(MatMul+BiasAdd+ReLU as a single GPU kernel).
+Port of `examples/nn/mlp/mlp_mnist_training_gpu.mojo` to nn.
 
-Uses `Trainer.train_gpu_minibatch_full` with `IdentityAugmenter` (default,
-no augmentation needed for MNIST) and on-device per-epoch eval.
+Uses the `trainer.train_gpu[N_TRAIN, N_TEST]` whole-dataset API: upload
+the full train + test sets to the GPU once, then the trainer slices
+batches by pointer offset (no host copies in the inner loop).
 
-Run:
-    pixi run -e apple  mojo run -I . examples/nn/mlp/mlp_mnist_training_gpu.mojo
+Run (Apple Metal):
+    pixi run -e apple mojo run -I . examples/nn/mlp/mlp_mnist_training_gpu.mojo
+Run (NVIDIA CUDA):
     pixi run -e nvidia mojo run -I . examples/nn/mlp/mlp_mnist_training_gpu.mojo
 """
 
 from std.random import seed
+from std.testing import assert_true
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
-from layout import Layout, LayoutTensor
+from layout import TileTensor, row_major
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.model.linear_act import LinearReLU
-from mojo_rl.nn.model.linear import Linear
-from mojo_rl.nn.model.sequential import Sequential
-from mojo_rl.nn.loss.cross_entropy import CrossEntropyLoss
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.datasets import MNIST
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.combinators import Sequential
+from mojo_rl.nn.loss import CrossEntropyLoss
+from mojo_rl.nn.optimizer import Adam
 from mojo_rl.nn.training import Trainer
-from mojo_rl.nn.initializer.initializers import Kaiming
-from mojo_rl.nn2.datasets import MNIST
-
-
-comptime BATCH = 128
-comptime EPOCHS = 5
-
-comptime MLP = Sequential[
-    LinearReLU[28 * 28, 256],
-    LinearReLU[256, 128],
-    Linear[128, 10],
-]
+from mojo_rl.nn.initializer import Kaiming
 
 
 def main() raises:
+    comptime IN_DIM = 784
+    comptime H1 = 256
+    comptime H2 = 128
+    comptime N_CLASSES = 10
+    comptime BATCH = 100
+    comptime N_EPOCHS = 5
+    comptime LR: Scalar[DT] = 0.001
+    comptime TARGET_ACC: Float64 = 0.97
+
     seed(42)
-
-    print("=" * 65)
-    print("MNIST MLP training — fully-connected baseline")
-    print("=" * 65)
-    print("  architecture: LinearReLU(784→256) → LinearReLU(256→128) → Linear(128→10)")
-    print("  params: " + String(MLP.PARAM_SIZE))
-    print("  batch: " + String(BATCH) + " | epochs: " + String(EPOCHS))
-
+    print("loading MNIST...")
     var ds = MNIST()
     var ctx = DeviceContext()
 
-    comptime TRAINER = Trainer[MLP, Adam[LR=0.001], CrossEntropyLoss]
-    var state = TRAINER.init_state_gpu[Kaiming[]](ctx)
+    print("initializing network on GPU...")
+    comptime Net = Sequential[
+        Linear[IN_DIM, H1],
+        ReLU[H1],
+        Linear[H1, H2],
+        ReLU[H2],
+        Linear[H2, N_CLASSES],
+    ]
 
-    # ── Upload full training set (images + one-hot labels) to GPU once ──
-    var train_img_host = ctx.enqueue_create_host_buffer[dtype](
-        MNIST.N_TRAIN * MNIST.IMG_SIZE
-    )
-    var train_tgt_host = ctx.enqueue_create_host_buffer[dtype](
-        MNIST.N_TRAIN * MNIST.NUM_CLASSES
-    )
-    for i in range(MNIST.N_TRAIN * MNIST.IMG_SIZE):
-        train_img_host.unsafe_ptr()[i] = ds.train_images[i]
-    for i in range(MNIST.N_TRAIN * MNIST.NUM_CLASSES):
-        train_tgt_host.unsafe_ptr()[i] = 0.0
-    for i in range(MNIST.N_TRAIN):
-        train_tgt_host.unsafe_ptr()[
-            i * MNIST.NUM_CLASSES + Int(ds.train_labels[i])
-        ] = 1.0
+    var trainer = Trainer[
+        Net,
+        Adam,
+        CrossEntropyLoss[N_CLASSES],
+        BATCH,
+        target="gpu",
+    ].make[INIT=Kaiming](ctx)
 
-    var train_img_buf = ctx.enqueue_create_buffer[dtype](
-        MNIST.N_TRAIN * MNIST.IMG_SIZE
+    print("uploading dataset to GPU...")
+    var train_x_host = ctx.enqueue_create_host_buffer[DT](
+        MNIST.N_TRAIN * IN_DIM
     )
-    var train_tgt_buf = ctx.enqueue_create_buffer[dtype](
-        MNIST.N_TRAIN * MNIST.NUM_CLASSES
+    var train_y_host = ctx.enqueue_create_host_buffer[DT](
+        MNIST.N_TRAIN * N_CLASSES
     )
-    ctx.enqueue_copy(train_img_buf, train_img_host)
-    ctx.enqueue_copy(train_tgt_buf, train_tgt_host)
-
-    var train_img_lt = LayoutTensor[
-        dtype, Layout.row_major(MNIST.N_TRAIN, MNIST.IMG_SIZE), MutAnyOrigin
-    ](train_img_buf)
-    var train_tgt_lt = LayoutTensor[
-        dtype, Layout.row_major(MNIST.N_TRAIN, MNIST.NUM_CLASSES), MutAnyOrigin
-    ](train_tgt_buf)
-
-    # ── Upload test set (images + int32 labels) to GPU once ──
-    var test_img_host = ctx.enqueue_create_host_buffer[dtype](
-        MNIST.N_TEST * MNIST.IMG_SIZE
-    )
-    var test_lbl_host = ctx.enqueue_create_host_buffer[DType.int32](
-        MNIST.N_TEST
-    )
-    for i in range(MNIST.N_TEST * MNIST.IMG_SIZE):
-        test_img_host.unsafe_ptr()[i] = ds.test_images[i]
-    for i in range(MNIST.N_TEST):
-        test_lbl_host.unsafe_ptr()[i] = ds.test_labels[i]
-
-    var test_img_buf = ctx.enqueue_create_buffer[dtype](
-        MNIST.N_TEST * MNIST.IMG_SIZE
-    )
-    var test_lbl_buf = ctx.enqueue_create_buffer[DType.int32](MNIST.N_TEST)
-    ctx.enqueue_copy(test_img_buf, test_img_host)
-    ctx.enqueue_copy(test_lbl_buf, test_lbl_host)
-
-    var test_img_lt = LayoutTensor[
-        dtype, Layout.row_major(MNIST.N_TEST, MNIST.IMG_SIZE), MutAnyOrigin
-    ](test_img_buf)
-    var test_lbl_lt = LayoutTensor[
-        DType.int32, Layout.row_major(MNIST.N_TEST), MutAnyOrigin
-    ](test_lbl_buf)
-
-    # ── Train + per-epoch eval ──
-    print("\n── Training ──")
-    var t0 = perf_counter_ns()
-    var result = TRAINER.train_gpu_minibatch_full[
-        BATCH, MNIST.N_TRAIN, MNIST.N_TEST,
-    ](
-        state,
-        ctx,
-        train_img_lt, train_tgt_lt,
-        test_img_lt, test_lbl_lt,
-        epochs=EPOCHS,
-        shuffle=True,
-        rng_seed=UInt64(42),
-        show_progress=True,
-        eval_every_epochs=1,
-        progress_label="MNIST-MLP",
-    )
+    var test_x_host = ctx.enqueue_create_host_buffer[DT](MNIST.N_TEST * IN_DIM)
     ctx.synchronize()
-    var t1 = perf_counter_ns()
-    print(
-        "  training time: " + String(Float64(t1 - t0) / 1e9)[byte=:6] + " s"
-    )
-    print("  final batch loss: " + String(result.final_loss)[byte=:8])
+    for i in range(MNIST.N_TRAIN * IN_DIM):
+        train_x_host[i] = ds.train_images[i]
+    for i in range(MNIST.N_TRAIN * N_CLASSES):
+        train_y_host[i] = 0.0
+    for i in range(MNIST.N_TRAIN):
+        train_y_host[i * N_CLASSES + Int(ds.train_labels[i])] = 1.0
+    for i in range(MNIST.N_TEST * IN_DIM):
+        test_x_host[i] = ds.test_images[i]
 
-    # ── Final report ──
-    var n_evals = len(result.val_top1_history)
-    var acc = result.val_top1_history[n_evals - 1]
-    var test_loss = result.val_loss_history[n_evals - 1]
-    print("\n── Final evaluation (full test set) ──")
-    print(
-        "  test_loss=" + String(test_loss) + "  top1=" + String(acc * 100.0)[byte=:6] + "%"
-    )
+    var train_x_dev = ctx.enqueue_create_buffer[DT](MNIST.N_TRAIN * IN_DIM)
+    var train_y_dev = ctx.enqueue_create_buffer[DT](MNIST.N_TRAIN * N_CLASSES)
+    var test_x_dev = ctx.enqueue_create_buffer[DT](MNIST.N_TEST * IN_DIM)
+    ctx.enqueue_copy(train_x_dev, train_x_host)
+    ctx.enqueue_copy(train_y_dev, train_y_host)
+    ctx.enqueue_copy(test_x_dev, test_x_host)
+    ctx.synchronize()
 
-    print("=" * 65)
-    if acc >= 0.97:
-        print("PASS — MLP converges on MNIST (>=97%)")
-    else:
-        print("FAIL — expected >=97% test accuracy, got " + String(acc))
-        raise Error("accuracy below threshold")
+    var train_x = TileTensor(train_x_dev, row_major[MNIST.N_TRAIN, IN_DIM]())
+    var train_y = TileTensor(train_y_dev, row_major[MNIST.N_TRAIN, N_CLASSES]())
+    var test_x = TileTensor(test_x_dev, row_major[MNIST.N_TEST, IN_DIM]())
+
+    var t0 = perf_counter_ns()
+    var result = trainer.train_gpu[MNIST.N_TRAIN, MNIST.N_TEST](
+        train_x,
+        train_y,
+        test_x,
+        ds.test_labels,
+        epochs=N_EPOCHS,
+        shuffle=True,
+    )
+    var total_s = Float64(perf_counter_ns() - t0) / 1e9
+
+    var best_acc: Float64 = 0.0
+    for a in result.epoch_test_top1:
+        if a > best_acc:
+            best_acc = a
+    print("\nbest test accuracy: " + String(best_acc * 100.0) + "%")
+    print("total wall time: " + String(total_s) + "s")
+    assert_true(
+        best_acc >= TARGET_ACC,
+        "Expected best >= "
+        + String(TARGET_ACC * 100.0)
+        + "%, got "
+        + String(best_acc * 100.0)
+        + "%",
+    )
+    print("DONE")

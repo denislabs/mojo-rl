@@ -1,561 +1,355 @@
-"""Gradient check and CPU/GPU parity for BatchNorm1D.
+"""BatchNorm1D[DIM] smoke + parity tests (Phase 4, PORTING_PLAN.md).
 
-Tests:
-  1. CPU finite-difference gradient check (input + params).
-  2. CPU vs GPU forward parity (training mode + inference mode).
-  3. CPU vs GPU backward parity.
-  4. Running-stats EMA: successive training forwards drive running stats
-     toward the true batch stats, and inference-mode forward uses them.
-
-Usage:
-    pixi run -e apple mojo run -I . tests/nn/test_batch_norm_1d.mojo
-    pixi run -e nvidia mojo run -I . tests/nn/test_batch_norm_1d.mojo
+Validates:
+  1. **Train forward** produces per-feature zero-mean unit-var x̂, and
+     `y = γ·x̂ + β` ≡ x̂ when γ=1, β=0.
+  2. **Running stats** EMA-update under repeated train forwards with the
+     same batch — converges to the batch's true (μ, σ²).
+  3. **Eval forward** uses the running stats (not the batch stats) and
+     does NOT bump them.
+  4. **Backward** FD-gradchecks dgamma, dbeta, and grad_input.
+  5. **Programming error**: calling vjp after an eval-only forward
+     raises (cache_is_training=False).
 """
 
 from std.math import sqrt
-from std.memory import alloc, memset, UnsafePointer
-from std.gpu.host import DeviceContext
-from layout import Layout, LayoutTensor
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.model import BatchNorm1D
+from std.memory import alloc
+from std.testing import assert_true
+from layout import TileTensor, row_major
 
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.primitives.batch_norm_1d import BatchNorm1D
+from mojo_rl.nn.initializer import Zero
 
-def test_cpu_gradcheck() raises:
-    """Finite-difference vs analytical backward (CPU)."""
-    print("=" * 60)
-    print("TEST: BatchNorm1D CPU gradient check (dim=6, batch=4)")
-    print("=" * 60)
 
-    comptime DIM = 6
-    comptime BATCH = 4
-    comptime BN = BatchNorm1D[DIM]
-    comptime PS = BN.PARAM_SIZE  # 2*DIM = 12 (post-Phase-3)
-    comptime CS = BN.CACHE_SIZE  # 3*DIM = 18
-    comptime SS = BN.STATE_SIZE  # 2*DIM = 12 (running_mean | running_var)
+def _fill_linear(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int, a: Float64, b: Float64) raises:
+    for i in range(n):
+        p[i] = Scalar[DT](a + b * Float64(i))
 
-    var input_data = alloc[Scalar[dtype]](BATCH * DIM)
-    for i in range(BATCH * DIM):
-        input_data[i] = Scalar[dtype](Float64(i % 7) * 0.3 - 0.9)
 
-    var params = alloc[Scalar[dtype]](PS)
-    for f in range(DIM):
-        params[f] = Scalar[dtype](1.0 + Float64(f) * 0.1)  # gamma varies
-        params[DIM + f] = Scalar[dtype](Float64(f) * 0.05)  # beta varies
-
-    # Forward (training)
-    var output_data = alloc[Scalar[dtype]](BATCH * DIM)
-    var cache_data = alloc[Scalar[dtype]](BATCH * CS)
-    memset(output_data, 0, BATCH * DIM)
-    memset(cache_data, 0, BATCH * CS)
-
-    var state_data = alloc[Scalar[dtype]](max(1, SS))
-    memset(state_data, 0, max(1, SS))
-
-    var inp = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](input_data)
-    var out = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](output_data)
-    var p = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
-    var c = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_data)
-    var s = LayoutTensor[dtype, Layout.row_major(SS), MutAnyOrigin](state_data)
-    BN.initialize_state[dtype](s)
-
-    BN.forward[BATCH](inp, out, p, s, c)
-
-    # Backward with dL/dy = 1 (L = sum(output))
-    var grad_out = alloc[Scalar[dtype]](BATCH * DIM)
-    for i in range(BATCH * DIM):
-        grad_out[i] = Scalar[dtype](1.0)
-
-    var grad_in = alloc[Scalar[dtype]](BATCH * DIM)
-    var grad_params = alloc[Scalar[dtype]](PS)
-    memset(grad_in, 0, BATCH * DIM)
-    memset(grad_params, 0, PS)
-
-    var go = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](grad_out)
-    var gi = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](grad_in)
-    var gp = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](grad_params)
-
-    BN.backward[BATCH](go, gi, p, s, c, gp)
-
-    # FD check for grad_input. Running stats are reset before each forward
-    # so the EMA doesn't accumulate across FD probes.
-    var eps_fd = Float64(1e-3)
-    var max_diff_input: Float64 = 0.0
-    for idx in range(BATCH * DIM):
-        var orig = Float64(input_data[idx])
-
-        input_data[idx] = Scalar[dtype](orig + eps_fd)
-        BN.initialize_state[dtype](s)
-        var out_plus = alloc[Scalar[dtype]](BATCH * DIM)
-        var cache_plus = alloc[Scalar[dtype]](BATCH * CS)
-        memset(out_plus, 0, BATCH * DIM)
-        memset(cache_plus, 0, BATCH * CS)
-        var op_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_plus)
-        var cp_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_plus)
-        BN.forward[BATCH](inp, op_t, p, s, cp_t)
-        var loss_plus: Float64 = 0.0
-        for j in range(BATCH * DIM):
-            loss_plus += Float64(out_plus[j])
-
-        input_data[idx] = Scalar[dtype](orig - eps_fd)
-        BN.initialize_state[dtype](s)
-        var out_minus = alloc[Scalar[dtype]](BATCH * DIM)
-        var cache_minus = alloc[Scalar[dtype]](BATCH * CS)
-        memset(out_minus, 0, BATCH * DIM)
-        memset(cache_minus, 0, BATCH * CS)
-        var om_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_minus)
-        var cm_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_minus)
-        BN.forward[BATCH](inp, om_t, p, s, cm_t)
-        var loss_minus: Float64 = 0.0
-        for j in range(BATCH * DIM):
-            loss_minus += Float64(out_minus[j])
-
-        input_data[idx] = Scalar[dtype](orig)
-
-        var fd = (loss_plus - loss_minus) / (2.0 * eps_fd)
-        var anal = Float64(grad_in[idx])
-        var d = fd - anal
-        if d < 0:
-            d = -d
-        if d > max_diff_input:
-            max_diff_input = d
-
-        out_plus.free()
-        out_minus.free()
-        cache_plus.free()
-        cache_minus.free()
-
-    print("Max |fd - analytical| for input:", max_diff_input)
-    if max_diff_input < 0.01:
-        print("PASS: Input gradient check")
-    else:
-        print("FAIL: Input gradient check (threshold 0.01)")
-
-    # FD check for gamma + beta (skip running stats)
-    var max_diff_params: Float64 = 0.0
-    for pidx in range(2 * DIM):
-        var orig = Float64(params[pidx])
-
-        params[pidx] = Scalar[dtype](orig + eps_fd)
-        BN.initialize_state[dtype](s)
-        var out_pp = alloc[Scalar[dtype]](BATCH * DIM)
-        var cache_pp = alloc[Scalar[dtype]](BATCH * CS)
-        memset(out_pp, 0, BATCH * DIM)
-        memset(cache_pp, 0, BATCH * CS)
-        var opp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_pp)
-        var cpp_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_pp)
-        BN.forward[BATCH](inp, opp_t, p, s, cpp_t)
-        var lp: Float64 = 0.0
-        for j in range(BATCH * DIM):
-            lp += Float64(out_pp[j])
-
-        params[pidx] = Scalar[dtype](orig - eps_fd)
-        BN.initialize_state[dtype](s)
-        var out_pm = alloc[Scalar[dtype]](BATCH * DIM)
-        var cache_pm = alloc[Scalar[dtype]](BATCH * CS)
-        memset(out_pm, 0, BATCH * DIM)
-        memset(cache_pm, 0, BATCH * CS)
-        var opm_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out_pm)
-        var cpm_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache_pm)
-        BN.forward[BATCH](inp, opm_t, p, s, cpm_t)
-        var lm: Float64 = 0.0
-        for j in range(BATCH * DIM):
-            lm += Float64(out_pm[j])
-
-        params[pidx] = Scalar[dtype](orig)
-
-        var fd = (lp - lm) / (2.0 * eps_fd)
-        var anal = Float64(grad_params[pidx])
-        var d = fd - anal
-        if d < 0:
-            d = -d
-        if d > max_diff_params:
-            max_diff_params = d
-
-        out_pp.free()
-        out_pm.free()
-        cache_pp.free()
-        cache_pm.free()
-
-    print("Max |fd - analytical| for params:", max_diff_params)
-    if max_diff_params < 0.01:
-        print("PASS: Param gradient check")
-    else:
-        print("FAIL: Param gradient check (threshold 0.01)")
-
-    input_data.free()
-    params.free()
-    output_data.free()
-    cache_data.free()
-    state_data.free()
-    grad_out.free()
-    grad_in.free()
-    grad_params.free()
-
-
-def test_cpu_vs_gpu() raises:
-    """Forward + backward parity: CPU vs GPU."""
-    print()
-    print("=" * 60)
-    print("TEST: BatchNorm1D CPU vs GPU (dim=32, batch=16)")
-    print("=" * 60)
-
-    var ctx = DeviceContext()
-
-    comptime DIM = 32
-    comptime BATCH = 16
-    comptime BN = BatchNorm1D[DIM]
-    comptime PS = BN.PARAM_SIZE
-    comptime CS = BN.CACHE_SIZE
-    comptime SS = BN.STATE_SIZE
-
-    var input_data = alloc[Scalar[dtype]](BATCH * DIM)
-    for i in range(BATCH * DIM):
-        input_data[i] = Scalar[dtype](Float64(i % 13) * 0.2 - 1.2)
-
-    var params_init = alloc[Scalar[dtype]](PS)
-    for f in range(DIM):
-        params_init[f] = Scalar[dtype](1.0 + Float64(f) * 0.05)
-        params_init[DIM + f] = Scalar[dtype](Float64(f) * 0.03)
-
-    # Non-trivial initial running stats (state buffer)
-    var state_init = alloc[Scalar[dtype]](max(1, SS))
-    for f in range(DIM):
-        state_init[BN.RMEAN_OFF + f] = Scalar[dtype](0.1 * Float64(f % 4))
-        state_init[BN.RVAR_OFF + f] = Scalar[dtype](1.0 + 0.1 * Float64(f % 3))
-
-    # --- CPU forward (training) ---
-    var cpu_out = alloc[Scalar[dtype]](BATCH * DIM)
-    var cpu_cache = alloc[Scalar[dtype]](BATCH * CS)
-    var cpu_params = alloc[Scalar[dtype]](PS)
-    var cpu_state = alloc[Scalar[dtype]](max(1, SS))
-    for i in range(PS):
-        cpu_params[i] = params_init[i]
-    for i in range(SS):
-        cpu_state[i] = state_init[i]
-    memset(cpu_out, 0, BATCH * DIM)
-    memset(cpu_cache, 0, BATCH * CS)
-
-    var inp_cpu = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](input_data)
-    var out_cpu = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](cpu_out)
-    var pcpu_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](cpu_params)
-    var ccpu_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cpu_cache)
-    var scpu_t = LayoutTensor[dtype, Layout.row_major(SS), MutAnyOrigin](cpu_state)
-
-    BN.forward[BATCH](inp_cpu, out_cpu, pcpu_t, scpu_t, ccpu_t)
-
-    # --- GPU forward (training) ---
-    var gpu_input = ctx.enqueue_create_buffer[dtype](BATCH * DIM)
-    var gpu_output = ctx.enqueue_create_buffer[dtype](BATCH * DIM)
-    var gpu_params = ctx.enqueue_create_buffer[dtype](PS)
-    var gpu_state = ctx.enqueue_create_buffer[dtype](max(1, SS))
-    var gpu_cache = ctx.enqueue_create_buffer[dtype](BATCH * CS)
-    var gpu_workspace = ctx.enqueue_create_buffer[dtype](1)
-
-    ctx.enqueue_copy(gpu_input, input_data)
-    ctx.enqueue_copy(gpu_params, params_init)
-    ctx.enqueue_copy(gpu_state, state_init)
-    ctx.enqueue_memset(gpu_output, Scalar[dtype](0.0))
-    ctx.enqueue_memset(gpu_cache, Scalar[dtype](0.0))
-
-    var ginp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](gpu_input.unsafe_ptr())
-    var gout_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](gpu_output.unsafe_ptr())
-    var gpar_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](gpu_params.unsafe_ptr())
-    var gcac_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](gpu_cache.unsafe_ptr())
-    var gsta_t = LayoutTensor[dtype, Layout.row_major(SS), MutAnyOrigin](gpu_state.unsafe_ptr())
-
-    BN.forward_gpu[BATCH](ctx, gout_t, ginp_t, gpar_t, gsta_t, gcac_t, gpu_workspace)
-    ctx.synchronize()
-
-    var gpu_out_h = alloc[Scalar[dtype]](BATCH * DIM)
-    var gpu_params_h = alloc[Scalar[dtype]](PS)
-    var gpu_state_h = alloc[Scalar[dtype]](max(1, SS))
-    ctx.enqueue_copy(gpu_out_h, gpu_output)
-    ctx.enqueue_copy(gpu_params_h, gpu_params)
-    ctx.enqueue_copy(gpu_state_h, gpu_state)
-    ctx.synchronize()
-
-    var max_fwd_diff: Float64 = 0.0
-    for i in range(BATCH * DIM):
-        var d = Float64(cpu_out[i]) - Float64(gpu_out_h[i])
-        if d < 0:
-            d = -d
-        if d > max_fwd_diff:
-            max_fwd_diff = d
-    print("Max |cpu - gpu| forward:", max_fwd_diff)
-    if max_fwd_diff < 1e-4:
-        print("PASS: Forward parity")
-    else:
-        print("FAIL: Forward parity (threshold 1e-4)")
-
-    var max_rstat_diff: Float64 = 0.0
-    for i in range(SS):
-        var d = Float64(cpu_state[i]) - Float64(gpu_state_h[i])
-        if d < 0:
-            d = -d
-        if d > max_rstat_diff:
-            max_rstat_diff = d
-    print("Max |cpu - gpu| running stats:", max_rstat_diff)
-    if max_rstat_diff < 1e-4:
-        print("PASS: Running stats parity")
-    else:
-        print("FAIL: Running stats parity (threshold 1e-4)")
-
-    # --- Backward ---
-    var grad_out_data = alloc[Scalar[dtype]](BATCH * DIM)
-    for i in range(BATCH * DIM):
-        grad_out_data[i] = Scalar[dtype](0.5 + Float64(i % 5) * 0.2)
-
-    # CPU backward
-    var cpu_gin = alloc[Scalar[dtype]](BATCH * DIM)
-    var cpu_gp = alloc[Scalar[dtype]](PS)
-    memset(cpu_gin, 0, BATCH * DIM)
-    memset(cpu_gp, 0, PS)
-    var go_cpu = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](grad_out_data)
-    var gi_cpu = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](cpu_gin)
-    var gp_cpu = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](cpu_gp)
-    BN.backward[BATCH](go_cpu, gi_cpu, pcpu_t, scpu_t, ccpu_t, gp_cpu)
-
-    # GPU backward (reuse gpu_cache + gpu_params from training forward)
-    var gpu_grad_out = ctx.enqueue_create_buffer[dtype](BATCH * DIM)
-    var gpu_grad_in = ctx.enqueue_create_buffer[dtype](BATCH * DIM)
-    var gpu_grad_params = ctx.enqueue_create_buffer[dtype](PS)
-    ctx.enqueue_copy(gpu_grad_out, grad_out_data)
-    ctx.enqueue_memset(gpu_grad_in, Scalar[dtype](0.0))
-    ctx.enqueue_memset(gpu_grad_params, Scalar[dtype](0.0))
-
-    var ggo_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](gpu_grad_out.unsafe_ptr())
-    var ggi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](gpu_grad_in.unsafe_ptr())
-    var ggp_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](gpu_grad_params.unsafe_ptr())
-
-    BN.backward_gpu[BATCH](ctx, ggi_t, ggo_t, gpar_t, gsta_t, gcac_t, ggp_t, gpu_workspace)
-    ctx.synchronize()
-
-    var gpu_gin_h = alloc[Scalar[dtype]](BATCH * DIM)
-    var gpu_gp_h = alloc[Scalar[dtype]](PS)
-    ctx.enqueue_copy(gpu_gin_h, gpu_grad_in)
-    ctx.enqueue_copy(gpu_gp_h, gpu_grad_params)
-    ctx.synchronize()
-
-    var max_gin_diff: Float64 = 0.0
-    for i in range(BATCH * DIM):
-        var d = Float64(cpu_gin[i]) - Float64(gpu_gin_h[i])
-        if d < 0:
-            d = -d
-        if d > max_gin_diff:
-            max_gin_diff = d
-    print("Max |cpu - gpu| grad_input:", max_gin_diff)
-    if max_gin_diff < 1e-3:
-        print("PASS: Backward grad_input parity")
-    else:
-        print("FAIL: Backward grad_input parity (threshold 1e-3)")
-
-    var max_gp_diff: Float64 = 0.0
-    for i in range(2 * DIM):  # only gamma + beta
-        var d = Float64(cpu_gp[i]) - Float64(gpu_gp_h[i])
-        if d < 0:
-            d = -d
-        if d > max_gp_diff:
-            max_gp_diff = d
-    print("Max |cpu - gpu| grad_params (gamma+beta):", max_gp_diff)
-    if max_gp_diff < 1e-3:
-        print("PASS: Backward grad_params parity")
-    else:
-        print("FAIL: Backward grad_params parity (threshold 1e-3)")
-
-    input_data.free()
-    params_init.free()
-    state_init.free()
-    cpu_out.free()
-    cpu_cache.free()
-    cpu_params.free()
-    cpu_state.free()
-    gpu_out_h.free()
-    gpu_params_h.free()
-    gpu_state_h.free()
-    grad_out_data.free()
-    cpu_gin.free()
-    cpu_gp.free()
-    gpu_gin_h.free()
-    gpu_gp_h.free()
-
-
-def test_inference_mode_cpu_vs_gpu() raises:
-    """Inference forward (no cache, uses running stats): CPU vs GPU."""
-    print()
-    print("=" * 60)
-    print("TEST: BatchNorm1D inference mode CPU vs GPU (dim=16, batch=8)")
-    print("=" * 60)
-
-    var ctx = DeviceContext()
-
-    comptime DIM = 16
-    comptime BATCH = 8
-    comptime BN = BatchNorm1D[DIM]
-    comptime PS = BN.PARAM_SIZE
-    comptime SS = BN.STATE_SIZE
-
-    # gamma, beta in params
-    var params = alloc[Scalar[dtype]](PS)
-    for f in range(DIM):
-        params[f] = Scalar[dtype](1.0 + Float64(f) * 0.02)  # gamma
-        params[DIM + f] = Scalar[dtype](Float64(f) * 0.01)   # beta
-
-    # Non-trivial running stats live in state buffer (simulate post-training)
-    var state_data = alloc[Scalar[dtype]](max(1, SS))
-    for f in range(DIM):
-        state_data[BN.RMEAN_OFF + f] = Scalar[dtype](0.1 + Float64(f) * 0.03)  # rmean
-        state_data[BN.RVAR_OFF + f] = Scalar[dtype](0.5 + Float64(f) * 0.02)   # rvar
-
-    var input_data = alloc[Scalar[dtype]](BATCH * DIM)
-    for i in range(BATCH * DIM):
-        input_data[i] = Scalar[dtype](Float64(i % 11) * 0.15)
-
-    # CPU inference forward
-    var cpu_out = alloc[Scalar[dtype]](BATCH * DIM)
-    memset(cpu_out, 0, BATCH * DIM)
-    var inp_cpu = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](input_data)
-    var oc_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](cpu_out)
-    var pc_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
-    var sc_t = LayoutTensor[dtype, Layout.row_major(SS), MutAnyOrigin](state_data)
-    BN.forward[BATCH](inp_cpu, oc_t, pc_t, sc_t)  # inference overload (no cache)
-
-    # GPU inference forward
-    var gpu_in = ctx.enqueue_create_buffer[dtype](BATCH * DIM)
-    var gpu_out = ctx.enqueue_create_buffer[dtype](BATCH * DIM)
-    var gpu_params = ctx.enqueue_create_buffer[dtype](PS)
-    var gpu_state = ctx.enqueue_create_buffer[dtype](max(1, SS))
-    var gpu_ws = ctx.enqueue_create_buffer[dtype](1)
-    ctx.enqueue_copy(gpu_in, input_data)
-    ctx.enqueue_copy(gpu_params, params)
-    ctx.enqueue_copy(gpu_state, state_data)
-    ctx.enqueue_memset(gpu_out, Scalar[dtype](0.0))
-
-    var gi_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](gpu_in.unsafe_ptr())
-    var go_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](gpu_out.unsafe_ptr())
-    var gp_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](gpu_params.unsafe_ptr())
-    var gs_t = LayoutTensor[dtype, Layout.row_major(SS), MutAnyOrigin](gpu_state.unsafe_ptr())
-
-    BN.forward_gpu_no_cache[BATCH](ctx, go_t, gi_t, gp_t, gs_t, gpu_ws)
-    ctx.synchronize()
-
-    var gpu_out_h = alloc[Scalar[dtype]](BATCH * DIM)
-    ctx.enqueue_copy(gpu_out_h, gpu_out)
-    ctx.synchronize()
-
-    var max_diff: Float64 = 0.0
-    for i in range(BATCH * DIM):
-        var d = Float64(cpu_out[i]) - Float64(gpu_out_h[i])
-        if d < 0:
-            d = -d
-        if d > max_diff:
-            max_diff = d
-    print("Max |cpu - gpu| inference forward:", max_diff)
-    if max_diff < 1e-4:
-        print("PASS: Inference forward parity")
-    else:
-        print("FAIL: Inference forward parity (threshold 1e-4)")
-
-    params.free()
-    state_data.free()
-    input_data.free()
-    cpu_out.free()
-    gpu_out_h.free()
-
-
-def test_running_stats_ema() raises:
-    """After many training forwards with constant input, running stats should
-    converge toward true batch stats (mean, var)."""
-    print()
-    print("=" * 60)
-    print("TEST: BatchNorm1D running-stats EMA convergence")
-    print("=" * 60)
-
+def test_train_normalizes_per_feature() raises:
+    print("test_train_normalizes_per_feature ...")
+    comptime BATCH = 32
     comptime DIM = 4
-    comptime BATCH = 8
-    comptime BN = BatchNorm1D[DIM]
-    comptime PS = BN.PARAM_SIZE
-    comptime CS = BN.CACHE_SIZE
-    comptime SS = BN.STATE_SIZE
-    comptime N_STEPS = 200
+    comptime N = BATCH * DIM
+    var bn = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
+    bn.training = True
 
-    var input_data = alloc[Scalar[dtype]](BATCH * DIM)
-    # Feature-wise target stats: feature f has mean=f, variance=(f+1)
-    # Construct: x[b,f] = f + sqrt(f+1) * z_b where z_b is zero-mean unit var.
-    # Use a simple deterministic pattern that approximates this per feature.
-    var means_true = alloc[Scalar[dtype]](DIM)
-    var vars_true = alloc[Scalar[dtype]](DIM)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    # Per-feature distinct mean + spread.
+    for b in range(BATCH):
+        for f in range(DIM):
+            x[b * DIM + f] = Scalar[DT](
+                Float64(f) + 0.1 * Float64(b - BATCH // 2)
+            )
+
+    var x_t = TileTensor(x, row_major[BATCH, DIM]())
+    var y_t = TileTensor(y, row_major[BATCH, DIM]())
+    bn.forward["cpu", BATCH](x_t, output=y_t)
+
+    var max_mean_err: Scalar[DT] = 0.0
+    var max_var_err: Scalar[DT] = 0.0
     for f in range(DIM):
-        var sum_: Float64 = 0.0
-        var sum_sq: Float64 = 0.0
+        var mean: Scalar[DT] = 0.0
         for b in range(BATCH):
-            var z = Float64((b * 7 + f * 3) % 11) / 10.0 - 0.5  # in [-0.5, 0.5]
-            var x = Float64(f) + (Float64(f) + 1.0) * z
-            input_data[b * DIM + f] = Scalar[dtype](x)
-            sum_ += x
-            sum_sq += x * x
-        var mean_f = sum_ / Float64(BATCH)
-        var var_f = sum_sq / Float64(BATCH) - mean_f * mean_f
-        means_true[f] = Scalar[dtype](mean_f)
-        vars_true[f] = Scalar[dtype](var_f)
+            mean += y[b * DIM + f]
+        mean = mean / Scalar[DT](Float64(BATCH))
+        var var_: Scalar[DT] = 0.0
+        for b in range(BATCH):
+            var d = y[b * DIM + f] - mean
+            var_ += d * d
+        var_ = var_ / Scalar[DT](Float64(BATCH))
+        var am = mean if mean >= Scalar[DT](0) else -mean
+        if am > max_mean_err:
+            max_mean_err = am
+        var dv = var_ - Scalar[DT](1.0)
+        var adv = dv if dv >= Scalar[DT](0) else -dv
+        # γ=1, β=0 → expect zero-mean unit-var per feature.
+        if adv > max_var_err:
+            max_var_err = adv
+    print("  max |mean| =", max_mean_err, "  max |var-1| =", max_var_err)
+    assert_true(
+        max_mean_err < Scalar[DT](1e-5),
+        "BN train output should be zero-mean per feature",
+    )
+    assert_true(
+        max_var_err < Scalar[DT](1e-4),
+        "BN train output should be unit-variance per feature",
+    )
+    print("  ok")
 
-    var params = alloc[Scalar[dtype]](PS)
-    # Manual init: gamma=1, beta=0
+
+def test_running_stats_converge() raises:
+    """After many train forwards with the same batch the EMA settles to
+    the batch's true (μ, σ²)."""
+    print("test_running_stats_converge ...")
+    comptime BATCH = 16
+    comptime DIM = 3
+    comptime N = BATCH * DIM
+    var bn = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
+    bn.training = True
+
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    for b in range(BATCH):
+        for f in range(DIM):
+            # Feature 0: μ=2, feature 1: μ=-1, feature 2: μ=0; spread σ²≈1.
+            var base = Float64(0)
+            if f == 0:
+                base = 2.0
+            elif f == 1:
+                base = -1.0
+            x[b * DIM + f] = Scalar[DT](base + 0.1 * Float64(b - BATCH // 2))
+    var x_t = TileTensor(x, row_major[BATCH, DIM]())
+    var y_t = TileTensor(y, row_major[BATCH, DIM]())
+
+    for _ in range(200):
+        bn.forward["cpu", BATCH](x_t, output=y_t)
+
+    # Compute true (μ, σ²) per feature.
     for f in range(DIM):
-        params[f] = Scalar[dtype](1.0)
-        params[DIM + f] = Scalar[dtype](0.0)
+        var true_mean: Scalar[DT] = 0.0
+        for b in range(BATCH):
+            true_mean += x[b * DIM + f]
+        true_mean = true_mean / Scalar[DT](Float64(BATCH))
+        var true_var: Scalar[DT] = 0.0
+        for b in range(BATCH):
+            var d = x[b * DIM + f] - true_mean
+            true_var += d * d
+        true_var = true_var / Scalar[DT](Float64(BATCH))
+        var rm = bn.running_mean.val.cpu[f]
+        var rv = bn.running_var.val.cpu[f]
+        var dm = rm - true_mean
+        var adm = dm if dm >= Scalar[DT](0) else -dm
+        var dv = rv - true_var
+        var adv = dv if dv >= Scalar[DT](0) else -dv
+        print(
+            "  feature ", f,
+            ": μ run=", rm, " true=", true_mean,
+            "  σ² run=", rv, " true=", true_var,
+        )
+        # After 200 EMA updates with momentum=0.1, (1-0.1)^200 ≈ 7e-10
+        # weight remains on the initial estimate; settles tight to truth.
+        assert_true(
+            adm < Scalar[DT](1e-3),
+            "Running mean should converge to batch mean",
+        )
+        assert_true(
+            adv < Scalar[DT](1e-3),
+            "Running var should converge to batch var",
+        )
+    print("  ok")
 
-    # State: running_mean=0, running_var=1 via initialize_state
-    var state_data = alloc[Scalar[dtype]](max(1, SS))
-    memset(state_data, 0, max(1, SS))
 
-    var out = alloc[Scalar[dtype]](BATCH * DIM)
-    var cache = alloc[Scalar[dtype]](BATCH * CS)
-    var inp_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](input_data)
-    var out_t = LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin](out)
-    var p_t = LayoutTensor[dtype, Layout.row_major(PS), MutAnyOrigin](params)
-    var c_t = LayoutTensor[dtype, Layout.row_major(BATCH, CS), MutAnyOrigin](cache)
-    var s_t = LayoutTensor[dtype, Layout.row_major(SS), MutAnyOrigin](state_data)
-    BN.initialize_state[dtype](s_t)
+def test_eval_uses_running_stats() raises:
+    print("test_eval_uses_running_stats ...")
+    comptime BATCH = 8
+    comptime DIM = 2
+    comptime N = BATCH * DIM
+    var bn = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
+    # Set running stats explicitly so the math is deterministic.
+    bn.running_mean.val.cpu[0] = Scalar[DT](1.0)
+    bn.running_mean.val.cpu[1] = Scalar[DT](-2.0)
+    bn.running_var.val.cpu[0]  = Scalar[DT](4.0)
+    bn.running_var.val.cpu[1]  = Scalar[DT](0.25)
+    bn.training = False
 
-    for _ in range(N_STEPS):
-        memset(out, 0, BATCH * DIM)
-        memset(cache, 0, BATCH * CS)
-        BN.forward[BATCH](inp_t, out_t, p_t, s_t, c_t)
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    for b in range(BATCH):
+        x[b * DIM + 0] = Scalar[DT](3.0)   # (3-1)/√(4+ε) ≈ 1.0
+        x[b * DIM + 1] = Scalar[DT](-1.5)  # (-1.5+2)/√(0.25+ε) ≈ 1.0
 
-    var max_rmean_err: Float64 = 0.0
-    var max_rvar_err: Float64 = 0.0
+    var x_t = TileTensor(x, row_major[BATCH, DIM]())
+    var y_t = TileTensor(y, row_major[BATCH, DIM]())
+    bn.forward["cpu", BATCH](x_t, output=y_t)
+
+    var max_err: Scalar[DT] = 0.0
+    var inv0 = Scalar[DT](1.0) / sqrt(Scalar[DT](4.0 + 1e-5))
+    var inv1 = Scalar[DT](1.0) / sqrt(Scalar[DT](0.25 + 1e-5))
+    for b in range(BATCH):
+        var e0 = (Scalar[DT](3.0) - Scalar[DT](1.0)) * inv0
+        var e1 = (Scalar[DT](-1.5) - Scalar[DT](-2.0)) * inv1
+        var d0 = y[b * DIM + 0] - e0
+        var d1 = y[b * DIM + 1] - e1
+        var ad0 = d0 if d0 >= Scalar[DT](0) else -d0
+        var ad1 = d1 if d1 >= Scalar[DT](0) else -d1
+        if ad0 > max_err:
+            max_err = ad0
+        if ad1 > max_err:
+            max_err = ad1
+    print("  max |y - expected| =", max_err)
+    assert_true(
+        max_err < Scalar[DT](1e-6),
+        "Eval BN should use running stats exactly",
+    )
+    # Running stats should not have moved (eval mode).
+    assert_true(
+        bn.running_mean.val.cpu[0] == Scalar[DT](1.0),
+        "Eval mode must not update running_mean",
+    )
+    print("  ok")
+
+
+def test_backward_fd() raises:
+    """FD gradcheck over a moderate-sized batch."""
+    print("test_backward_fd ...")
+    comptime BATCH = 8
+    comptime DIM = 4
+    comptime N = BATCH * DIM
+    var eps = Scalar[DT](1e-2)
+    var tol = Scalar[DT](2e-2)
+    var bn = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
+    bn.training = True
+
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var x_p: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y_pos: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y_neg: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    _fill_linear(x, N, -1.0, 0.07)
+    _fill_linear(go, N, 0.4, 0.05)
+
+    var x_t = TileTensor(x, row_major[BATCH, DIM]())
+    var xp_t = TileTensor(x_p, row_major[BATCH, DIM]())
+    var y_t = TileTensor(y, row_major[BATCH, DIM]())
+    var ypos_t = TileTensor(y_pos, row_major[BATCH, DIM]())
+    var yneg_t = TileTensor(y_neg, row_major[BATCH, DIM]())
+    var go_t = TileTensor(go, row_major[BATCH, DIM]())
+    var gi_t = TileTensor(gi, row_major[BATCH, DIM]())
+
+    bn.forward["cpu", BATCH](x_t, output=y_t)
+    bn.zero_grad["cpu"]()
+    bn.vjp["cpu", BATCH](go_t, gi_t)
+
+    # FD per lane on a fresh BN per perturbation (otherwise EMA contaminates).
+    var max_gi: Scalar[DT] = 0.0
+    for i in range(N):
+        var bn_pos = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
+        var bn_neg = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
+        bn_pos.training = True
+        bn_neg.training = True
+        for j in range(N):
+            x_p[j] = x[j]
+        x_p[i] = x[i] + eps
+        bn_pos.forward["cpu", BATCH](xp_t, output=ypos_t)
+        x_p[i] = x[i] - eps
+        bn_neg.forward["cpu", BATCH](xp_t, output=yneg_t)
+        var fd: Scalar[DT] = 0.0
+        for k in range(N):
+            fd += go[k] * (y_pos[k] - y_neg[k])
+        fd = fd / (Scalar[DT](2.0) * eps)
+        var d = gi[i] - fd
+        var ad = d if d >= Scalar[DT](0) else -d
+        if ad > max_gi:
+            max_gi = ad
+    print("  max |gi - fd| =", max_gi, " (tol=", tol, ")")
+    assert_true(
+        max_gi < tol,
+        "BN grad_input FD gradcheck failed",
+    )
+
+    # FD-check dgamma + dbeta via Σ go·y, perturbing γ/β.
+    var bn2 = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
+    bn2.training = True
+    bn2.forward["cpu", BATCH](x_t, output=y_t)
+    bn2.zero_grad["cpu"]()
+    bn2.vjp["cpu", BATCH](go_t, gi_t)
+
+    var max_dg: Scalar[DT] = 0.0
+    var max_db: Scalar[DT] = 0.0
     for f in range(DIM):
-        var rm = Float64(state_data[BN.RMEAN_OFF + f])
-        var rv = Float64(state_data[BN.RVAR_OFF + f])
-        var dm = rm - Float64(means_true[f])
-        var dv = rv - Float64(vars_true[f])
-        if dm < 0:
-            dm = -dm
-        if dv < 0:
-            dv = -dv
-        if dm > max_rmean_err:
-            max_rmean_err = dm
-        if dv > max_rvar_err:
-            max_rvar_err = dv
+        # dgamma[f]
+        var bn_p = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
+        var bn_n = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
+        bn_p.training = True
+        bn_n.training = True
+        bn_p.gamma.val.cpu[f] = Scalar[DT](1.0) + eps
+        bn_n.gamma.val.cpu[f] = Scalar[DT](1.0) - eps
+        bn_p.forward["cpu", BATCH](x_t, output=ypos_t)
+        bn_n.forward["cpu", BATCH](x_t, output=yneg_t)
+        var fd_dg: Scalar[DT] = 0.0
+        for k in range(N):
+            fd_dg += go[k] * (y_pos[k] - y_neg[k])
+        fd_dg = fd_dg / (Scalar[DT](2.0) * eps)
+        var d = bn2.gamma.grd.cpu[f] - fd_dg
+        var ad = d if d >= Scalar[DT](0) else -d
+        if ad > max_dg:
+            max_dg = ad
 
-    print("Max |running_mean - true_mean|:", max_rmean_err)
-    print("Max |running_var  - true_var |:", max_rvar_err)
-    if max_rmean_err < 0.01 and max_rvar_err < 0.01:
-        print("PASS: EMA convergence")
-    else:
-        print("FAIL: EMA convergence (threshold 0.01)")
+        # dbeta[f]
+        var bn_p2 = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
+        var bn_n2 = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
+        bn_p2.training = True
+        bn_n2.training = True
+        bn_p2.beta.val.cpu[f] = eps
+        bn_n2.beta.val.cpu[f] = -eps
+        bn_p2.forward["cpu", BATCH](x_t, output=ypos_t)
+        bn_n2.forward["cpu", BATCH](x_t, output=yneg_t)
+        var fd_db: Scalar[DT] = 0.0
+        for k in range(N):
+            fd_db += go[k] * (y_pos[k] - y_neg[k])
+        fd_db = fd_db / (Scalar[DT](2.0) * eps)
+        var d2 = bn2.beta.grd.cpu[f] - fd_db
+        var ad2 = d2 if d2 >= Scalar[DT](0) else -d2
+        if ad2 > max_db:
+            max_db = ad2
+    print("  max |dgamma - fd| =", max_dg, "  max |dbeta - fd| =", max_db)
+    assert_true(
+        max_dg < tol,
+        "BN dgamma FD gradcheck failed",
+    )
+    assert_true(
+        max_db < tol,
+        "BN dbeta FD gradcheck failed",
+    )
+    print("  ok")
 
-    input_data.free()
-    means_true.free()
-    vars_true.free()
-    params.free()
-    state_data.free()
-    out.free()
-    cache.free()
+
+def test_vjp_without_training_cache_raises() raises:
+    print("test_vjp_without_training_cache_raises ...")
+    comptime BATCH = 4
+    comptime DIM = 2
+    comptime N = BATCH * DIM
+    var bn = BatchNorm1D[DIM].make[target="cpu", INIT=Zero]()
+    bn.training = False
+
+    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    var gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](N)
+    for i in range(N):
+        x[i] = Scalar[DT](0.5)
+        go[i] = Scalar[DT](1.0)
+    var x_t = TileTensor(x, row_major[BATCH, DIM]())
+    var y_t = TileTensor(y, row_major[BATCH, DIM]())
+    var go_t = TileTensor(go, row_major[BATCH, DIM]())
+    var gi_t = TileTensor(gi, row_major[BATCH, DIM]())
+    bn.forward["cpu", BATCH](x_t, output=y_t)
+    var raised = False
+    try:
+        bn.vjp["cpu", BATCH](go_t, gi_t)
+    except _:
+        raised = True
+    assert_true(
+        raised,
+        "vjp without a training-mode cache must raise",
+    )
+    print("  ok")
 
 
 def main() raises:
-    test_cpu_gradcheck()
-    test_cpu_vs_gpu()
-    test_inference_mode_cpu_vs_gpu()
-    test_running_stats_ema()
+    print("=" * 70)
+    print("BatchNorm1D[DIM] smoke (Phase 4, PORTING_PLAN.md)")
+    print("=" * 70)
+    test_train_normalizes_per_feature()
+    test_running_stats_converge()
+    test_eval_uses_running_stats()
+    test_backward_fd()
+    test_vjp_without_training_cache_raises()
+    print("=" * 70)
+    print("ALL PASSED")
+    print("=" * 70)

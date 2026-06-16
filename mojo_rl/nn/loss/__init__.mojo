@@ -1,15 +1,7 @@
-from .loss import LossFunction
-from .mse import MSELoss
-from .huber import HuberLoss
+"""Loss functions (general-purpose, not RL-specific)."""
+
 from .cross_entropy import CrossEntropyLoss
+from .sequence_cross_entropy import SequenceCrossEntropyLoss
+from .gaussian_nll_loss import GaussianNLLLoss
+from .mse import MSELoss
 from .soft_cross_entropy import SoftCrossEntropyLoss
-from .two_hot import (
-    compute_bins,
-    compute_symlog_bins,
-    two_hot_encode,
-    two_hot_encode_batch,
-    decode_value,
-    decode_value_batch,
-    symlog,
-    symexp,
-)

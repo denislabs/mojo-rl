@@ -1,4 +1,4 @@
-"""Rainbow DQN CNN Pong — Live Render Eval (pixel obs, deep_agents2).
+"""Rainbow DQN CNN Pong — Live Render Eval (pixel obs, deep_agents).
 
 Loads a checkpoint saved by `rainbow_pong_pixel_training_gpu.mojo` and plays
 Pong in an SDL3 window using deterministic greedy actions (NoisyLinear noise
@@ -20,19 +20,19 @@ Reads checkpoints/rainbow_pong_pixel.ckpt. The window closes on quit
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 
-from mojo_rl.nn2.combinators.sequential import Sequential
-from mojo_rl.nn2.primitives.conv2d import Conv2D
-from mojo_rl.nn2.primitives.relu import ReLU
-from mojo_rl.nn2.primitives.flatten import Flatten
-from mojo_rl.nn2.primitives.linear_relu import LinearReLU
-from mojo_rl.nn2.primitives.noisy_linear import NoisyLinear
-from mojo_rl.nn2.primitives.dueling_head_c51 import DuelingHeadC51
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.conv2d import Conv2D
+from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.flatten import Flatten
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
+from mojo_rl.nn.primitives.dueling_head_c51 import DuelingHeadC51
 
-from mojo_rl.deep_agents2.c51.trainer import C51Trainer
-from mojo_rl.deep_agents2.training.blocks import NStepSampleStep
-from mojo_rl.deep_agents2.data.any_per_replay import AnyPerReplay
+from mojo_rl.deep_agents.c51.trainer import C51Trainer
+from mojo_rl.deep_agents.training.blocks import NStepSampleStep
+from mojo_rl.deep_agents.data.any_per_replay import AnyPerReplay
 from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 
 

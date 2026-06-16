@@ -20,8 +20,8 @@ from std.random.philox import Random as PhiloxRandom
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.constants import DT as dtype
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn import (
     PCBlock,
     PCSequential,
@@ -68,7 +68,7 @@ def main() raises:
     var params = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
     ](params_buf)
-    NET.initialize_params[Xavier[], dtype](params)
+    NET.pc_init_params[PCXavier, dtype](params)
 
     # ── Allocate input + target (deterministic Philox) ────────────────────────
     var x_in_buf = alloc[Scalar[dtype]](BATCH * NET.IN_DIM)

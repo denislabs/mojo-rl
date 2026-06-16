@@ -1,4 +1,4 @@
-"""Sanity check for mojo_rl.nn2.datasets.mnist loader.
+"""Sanity check for mojo_rl.nn.datasets.mnist loader.
 
 Confirms:
   - Files download/cache
@@ -10,7 +10,7 @@ Run:
     pixi run mojo run -I . tests/nn/test_mnist_loader.mojo
 """
 
-from mojo_rl.nn2.datasets.mnist import MNIST
+from mojo_rl.nn.datasets.mnist import MNIST
 
 
 def main() raises:

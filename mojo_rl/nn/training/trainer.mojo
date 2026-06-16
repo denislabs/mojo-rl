@@ -1,1424 +1,1070 @@
-"""Trainer: all-static training loops for neural networks.
+"""Trainer[NET, OPT, LOSS, BATCH, target] — owns IO buffers and runs the
+standard supervised forward / backward / step loop.
 
-All methods are @staticmethod — no stored state.  The caller owns and passes
-NetworkState (CPU) or GPUNetworkState (GPU) directly, so GPU-only pipelines
-never allocate a CPU state.
+`target` is a comptime struct param: a trainer's identity is tied to
+one device for its lifetime. Internally, Trainer threads `Self.target`
+to each method call on net / optim / loss.
 
-Usage:
-    from mojo_rl.nn import seq, Linear, ReLU, Adam, MSELoss, Kaiming
-    from mojo_rl.nn.training import Trainer, NetworkState, GPUNetworkState
+Two API surfaces:
 
-    alias M = typeof(seq(Linear[4, 64](), ReLU[64](), Linear[64, 2]()))
+  - **Per-step** (`train_step` / `predict`): caller supplies per-batch
+    host pointers each iteration. Useful for small/interactive
+    workloads, RL-style training, etc. Trainer handles upload internally.
 
-    # CPU training — init_state creates and initializes NetworkState in one call
-    var state = Trainer[M, Adam, MSELoss].init_state[Kaiming]()
-    var result = Trainer[M, Adam, MSELoss].train[BATCH](
-        mut state, input_t, target_t, epochs=100, print_every=10
-    )
+  - **Whole-dataset** (`train_gpu`, GPU only): caller uploads the entire
+    training + test sets to device once, Trainer slices by pointer offset
+    per batch internally. No host copies in the inner loop.
 
-    # GPU-only training — init_state_gpu creates GPUNetworkState directly,
-    # no persistent CPU NetworkState needed
-    var gpu = Trainer[M, Adam, MSELoss].init_state_gpu[Kaiming](ctx)
-    var result = Trainer[M, Adam, MSELoss].train_gpu[BATCH](
-        mut gpu, ctx, input_t, target_t, epochs=100, print_every=10
-    )
+Construction:
 
-    # Evaluate — accepts params LayoutTensor, works for both CPU and GPU state
-    var loss = Trainer[M, Adam, MSELoss].evaluate[BATCH](
-        state.params_view(), input_t, target_t   # or gpu.params_view() if on CPU
-    )
+  - `Trainer[NET, OPT, LOSS, BATCH, target].make[INIT](ctx?)` is the
+    one-call factory. Builds net + optim + loss internally via
+    `NET.make[target, INIT]`, `LOSS.make[target]`, `OPT.make[target]`.
+    No `type_of`, no `^` at the user level.
+
+  - `Trainer[...].make_from(net, optim, loss_fn, ctx?)` accepts
+    pre-built components — for cases where the user wants custom weight
+    init or special construction.
 """
 
-from ..model import Model
-from ..optimizer import Optimizer
-from ..loss import LossFunction
-from ..initializer import Initializer, Xavier
-from ..constants import dtype as default_dtype, TPB
-from .network_state import NetworkState
-from .gpu_network_state import GPUNetworkState
-from .scheduler import Scheduler, ConstantSchedule
+from std.memory import alloc
+from std.time import perf_counter_ns
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.memory import AddressSpace
+from layout import Layout, LayoutTensor, TileTensor, row_major
+
+from ..constants import DT, TPB
+from ..core.module import mptr
+from ..core import Module, Optimizer, Loss, Initializer, AMPPolicy, NoAMP
 from .augmenter import Augmenter, IdentityAugmenter
-from .eval_kernels import argmax_match_kernel, ce_loss_from_labels_kernel
-
-from layout import Layout, LayoutTensor
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu import block_dim, block_idx, thread_idx
-from std.random.philox import Random as PhiloxRandom
-from std.sys import has_nvidia_gpu_accelerator
-
-from mojo_rl.utils.progress import print_progress_bar, clear_progress_bar
+from .lr_scheduler import Scheduler, ConstantSchedule
+from .shuffle_kernels import (
+    init_identity_indices_kernel,
+    fisher_yates_shuffle_kernel,
+    increment_seed_kernel,
+    gather_rows_kernel,
+)
 
 
-struct TrainResult(ImplicitlyCopyable, Movable):
-    """Result of a training run."""
-
-    var final_loss: Float64
-    var epochs_trained: Int
-
-    def __init__(out self, final_loss: Float64, epochs_trained: Int):
-        self.final_loss = final_loss
-        self.epochs_trained = epochs_trained
+# ──────────────────────────────────────────────────────────────────────────
+# TrainResult — per-epoch metrics
+# ──────────────────────────────────────────────────────────────────────────
 
 
-struct EvalResult(ImplicitlyCopyable, Movable):
-    """Result of an `evaluate_gpu` pass.
+@fieldwise_init
+struct TrainResult(Movable & ImplicitlyDestructible):
+    var epoch_train_loss: List[Float64]
+    var epoch_test_top1: List[Float64]
+    var epoch_train_s: List[Float64]
+    var epoch_eval_s: List[Float64]
 
-    Both metrics are averaged over `N_VAL_BATCHES = N_VAL // BATCH` batches
-    (the trailing partial batch is dropped).
-    """
-
-    var loss: Float64
-    var top1: Float64
-
-    def __init__(out self, loss: Float64, top1: Float64):
-        self.loss = loss
-        self.top1 = top1
-
-
-struct TrainResultFull(Movable):
-    """Result of a `train_gpu_minibatch_full` run.
-
-    Holds the same scalars as `TrainResult` plus per-epoch validation
-    history (loss, top-1 accuracy) and the LR-scale schedule that was
-    actually applied. History lists have one entry per evaluation pass
-    — typically `ceil(epochs / eval_every_epochs)`. The `lr_scale_history`
-    has exactly `epochs` entries.
-    """
-
-    var final_loss: Float64
-    var epochs_trained: Int
-    var val_loss_history: List[Float64]
-    var val_top1_history: List[Float64]
-    var lr_scale_history: List[Float64]
-
-    def __init__(
-        out self,
-        final_loss: Float64,
-        epochs_trained: Int,
-        var val_loss_history: List[Float64],
-        var val_top1_history: List[Float64],
-        var lr_scale_history: List[Float64],
-    ):
-        self.final_loss = final_loss
-        self.epochs_trained = epochs_trained
-        self.val_loss_history = val_loss_history^
-        self.val_top1_history = val_top1_history^
-        self.lr_scale_history = lr_scale_history^
-
-    def __init__(out self, deinit existing: Self):
-        self.final_loss = existing.final_loss
-        self.epochs_trained = existing.epochs_trained
-        self.val_loss_history = existing.val_loss_history^
-        self.val_top1_history = existing.val_top1_history^
-        self.lr_scale_history = existing.lr_scale_history^
+    @staticmethod
+    def empty() -> Self:
+        return Self(
+            epoch_train_loss=List[Float64](),
+            epoch_test_top1=List[Float64](),
+            epoch_train_s=List[Float64](),
+            epoch_eval_s=List[Float64](),
+        )
 
 
-# =============================================================================
-# Trainer-internal helper: device-to-device 2D copy (for one-time raw→aug
-# initialization in train_gpu_minibatch_full)
-# =============================================================================
-
-
-@always_inline
-def _copy_2d_kernel[
-    N: Int,
-    DIM: Int,
-    dtype: DType,
-](
-    dst: LayoutTensor[dtype, Layout.row_major(N, DIM), MutAnyOrigin],
-    src: LayoutTensor[dtype, Layout.row_major(N, DIM), MutAnyOrigin],
-):
-    """Element-wise device-to-device copy. Parallel over N*DIM threads."""
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= N * DIM:
-        return
-    var row = i // DIM
-    var col = i % DIM
-    dst[row, col] = src[row, col]
-
-
-# =============================================================================
-# GPU helper kernels for mini-batch shuffling
-# =============================================================================
-# All state (indices permutation + RNG seed) lives in LayoutTensor over device
-# memory so the full train-shuffle-gather-step sequence is CUDA-graph capturable.
-
-
-@always_inline
-def _init_identity_indices_kernel[
-    N: Int,
-](indices: LayoutTensor[DType.int32, Layout.row_major(N), MutAnyOrigin]):
-    """Fill indices[i] = i. Parallel over N threads."""
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i < N:
-        indices[i] = Int32(i)
-
-
-@always_inline
-def _fisher_yates_shuffle_kernel[
-    N: Int,
-](
-    indices: LayoutTensor[DType.int32, Layout.row_major(N), MutAnyOrigin],
-    seed_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
-):
-    """Serial Fisher-Yates shuffle on a single GPU thread.
-
-    60k serial iterations on one thread is fast enough at ~once-per-epoch
-    cadence (a few ms). Parallel shuffles (sort-by-random-key) are faster
-    but require a device sort, which this codebase does not have.
-    """
-    if Int(thread_idx.x) != 0 or Int(block_idx.x) != 0:
-        return
-    var s = seed_buf.ptr[0]
-    var philox = PhiloxRandom(seed=s, offset=0)
-    for i in range(N - 1, 0, -1):
-        var r = philox.step_uniform()
-        # Metal does not support Float64 — use Float32 throughout
-        var j = Int(Float32(r[0]) * Float32(i + 1))
-        if j > i:
-            j = i
-        var tmp = indices[i]
-        indices[i] = indices[j]
-        indices[j] = tmp
-
-
-@always_inline
-def _increment_seed_kernel(
-    seed_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
-):
-    """Bump the device-side RNG seed so each epoch has a different permutation.
-    """
-    if Int(thread_idx.x) == 0 and Int(block_idx.x) == 0:
-        seed_buf.ptr[0] = seed_buf.ptr[0] + UInt64(1)
-
-
-@always_inline
-def _gather_rows_kernel[
-    N_TOTAL: Int,
-    BATCH: Int,
-    DIM: Int,
-    dtype: DType,
-](
-    batch_out: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-    full: LayoutTensor[dtype, Layout.row_major(N_TOTAL, DIM), MutAnyOrigin],
-    indices: LayoutTensor[DType.int32, Layout.row_major(N_TOTAL), MutAnyOrigin],
-    offset: Int,
-):
-    """batch_out[b, d] = full[indices[offset + b], d]. Parallel over BATCH*DIM.
-    """
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if i >= BATCH * DIM:
-        return
-    var b = i // DIM
-    var d = i % DIM
-    var src = Int(indices[offset + b])
-    batch_out[b, d] = full[src, d]
-
-
+@fieldwise_init
 struct Trainer[
-    MODEL: Model,
-    OPTIMIZER: Optimizer,
-    LOSS_FUNCTION: LossFunction,
-    dtype: DType = default_dtype,
-]:
-    """All-static training loop namespace.
+    NET: Module,
+    OPT: Optimizer,
+    LOSS: Loss,
+    BATCH: Int,
+    target: StaticString = "cpu",
+    POLICY: AMPPolicy = NoAMP,
+](Movable & ImplicitlyDestructible):
+    comptime IN_DIM = Self.NET.IN_DIMS[0]
+    comptime OUT_DIM = Self.NET.OUT_DIM
 
-    No stored state — the caller manages NetworkState (CPU) or GPUNetworkState
-    (GPU) and passes it to each method.  This means GPU-only training never
-    allocates a CPU NetworkState.
+    var net: Self.NET
+    var optim: Self.OPT
+    var loss_fn: Self.LOSS
 
-    Parameters:
-        MODEL: Stateless model architecture (implements Model trait).
-        OPTIMIZER: Stateless optimizer (implements Optimizer trait).
-        LOSS_FUNCTION: Stateless loss function (implements LossFunction trait).
-        dtype: Data type for all tensors and buffers (default: DType.float32).
-    """
+    # CPU side (used when target=="cpu" — length-1 stubs otherwise).
+    var input_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var target_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var output_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var grad_out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var grad_in_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
 
-    # =========================================================================
-    # State Initialization Helpers
-    # =========================================================================
+    # GPU side (Some when target=="gpu", None when "cpu").
+    var input_dev: Optional[DeviceBuffer[DT]]
+    var target_dev: Optional[DeviceBuffer[DT]]
+    var output_dev: Optional[DeviceBuffer[DT]]
+    var grad_out_dev: Optional[DeviceBuffer[DT]]
+    var grad_in_dev: Optional[DeviceBuffer[DT]]
+    var input_host: Optional[HostBuffer[DT]]
+    var target_host: Optional[HostBuffer[DT]]
+    var output_host: Optional[HostBuffer[DT]]
+    var ctx: Optional[DeviceContext]
 
-    @staticmethod
-    def init_state[
-        INITIALIZER: Initializer = Xavier[]
-    ]() -> NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]:
-        """Create and initialize a CPU NetworkState.
-
-        Parameters:
-            INITIALIZER: Weight initialization strategy (default: Xavier).
-
-        Returns:
-            Initialized NetworkState ready for CPU training or upload to GPU.
-        """
-        var state = NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]()
-        state.initialize[INITIALIZER]()
-        return state^
-
-    @staticmethod
-    def init_state_gpu[
-        INITIALIZER: Initializer = Xavier[]
-    ](ctx: DeviceContext) raises -> GPUNetworkState[
-        Self.MODEL, Self.OPTIMIZER, Self.dtype
-    ]:
-        """Create a GPUNetworkState with initialized weights, no persistent CPU state.
-
-        Allocates a transient CPU NetworkState, initializes weights, uploads to
-        GPU, then discards the CPU copy.  The caller never needs to manage a
-        CPU NetworkState for GPU-only training.
-
-        Parameters:
-            INITIALIZER: Weight initialization strategy (default: Xavier).
-
-        Args:
-            ctx: GPU device context.
-
-        Returns:
-            GPUNetworkState with initialized weights on device.
-        """
-        var cpu = NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype]()
-        cpu.initialize[INITIALIZER]()
-        var gpu = GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype](ctx)
-        gpu.upload_from(cpu, ctx)
-        return gpu^
-
-    # =========================================================================
-    # CPU Training
-    # =========================================================================
+    # ------------------------------------------------------------------
+    # Factories — `make[INIT]` builds net/optim/loss internally. The
+    # `make_from(...)` overload accepts pre-built components.
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def train[
-        BATCH: Int
+    def make[
+        INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
+        """Unified one-call factory (matches the nn `make[...](ctx:
+        Optional[DeviceContext]=None)` convention). Builds net + optim +
+        loss internally. `ctx=None` on CPU; required on GPU."""
+        comptime if Self.target == "cpu":
+            var net = Self.NET.make[Self.target, INIT]()
+            var loss = Self.LOSS.make[Self.target]()
+            var optim = Self.OPT.make[Self.target](net)
+            return Self.make_from(net^, optim^, loss^)
+        else:
+            if not ctx:
+                raise Error("Trainer.make[INIT](): target='gpu' requires a ctx")
+            var ctx_v = ctx.value()
+            var net = Self.NET.make[Self.target, INIT](ctx_v)
+            var loss = Self.LOSS.make[Self.target](ctx_v)
+            var optim = Self.OPT.make[Self.target](net, ctx_v)
+            return Self.make_from(net^, optim^, loss^, ctx_v)
+
+    @staticmethod
+    def make_from(
+        var net: Self.NET,
+        var optim: Self.OPT,
+        var loss_fn: Self.LOSS,
+    ) raises -> Self:
+        """CPU factory from pre-built components."""
+        comptime assert (
+            Self.target == "cpu"
+        ), "Trainer.make_from(net, optim, loss_fn) is CPU-only"
+        comptime assert (
+            Self.LOSS.OUT_DIM == Self.NET.OUT_DIM
+        ), "Trainer: loss N_CLASSES must equal net OUT_DIM"
+        var in_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
+            Self.BATCH * Self.IN_DIM
+        )
+        var tg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
+            Self.BATCH * Self.OUT_DIM
+        )
+        var out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+            Scalar[DT]
+        ](Self.BATCH * Self.OUT_DIM)
+        var go_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
+            Self.BATCH * Self.OUT_DIM
+        )
+        var gi_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
+            Self.BATCH * Self.IN_DIM
+        )
+        return Self(
+            net=net^,
+            optim=optim^,
+            loss_fn=loss_fn^,
+            input_buf=in_buf,
+            target_buf=tg_buf,
+            output_buf=out_buf,
+            grad_out_buf=go_buf,
+            grad_in_buf=gi_buf,
+            input_dev=None,
+            target_dev=None,
+            output_dev=None,
+            grad_out_dev=None,
+            grad_in_dev=None,
+            input_host=None,
+            target_host=None,
+            output_host=None,
+            ctx=None,
+        )
+
+    @staticmethod
+    def make_from(
+        var net: Self.NET,
+        var optim: Self.OPT,
+        var loss_fn: Self.LOSS,
+        ctx: DeviceContext,
+    ) raises -> Self:
+        """GPU factory from pre-built components."""
+        comptime assert (
+            Self.target == "gpu"
+        ), "Trainer.make_from(net, optim, loss_fn, ctx) requires target='gpu'"
+        comptime assert (
+            Self.LOSS.OUT_DIM == Self.NET.OUT_DIM
+        ), "Trainer: loss N_CLASSES must equal net OUT_DIM"
+        var in_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.IN_DIM)
+        var tg_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
+        var out_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
+        var go_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
+        var gi_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.IN_DIM)
+        var in_host = ctx.enqueue_create_host_buffer[DT](
+            Self.BATCH * Self.IN_DIM
+        )
+        var tg_host = ctx.enqueue_create_host_buffer[DT](
+            Self.BATCH * Self.OUT_DIM
+        )
+        var out_host = ctx.enqueue_create_host_buffer[DT](
+            Self.BATCH * Self.OUT_DIM
+        )
+        ctx.synchronize()
+        var stub_in: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+            Scalar[DT]
+        ](1)
+        var stub_tg: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+            Scalar[DT]
+        ](1)
+        var stub_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+            Scalar[DT]
+        ](1)
+        var stub_go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+            Scalar[DT]
+        ](1)
+        var stub_gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+            Scalar[DT]
+        ](1)
+        return Self(
+            net=net^,
+            optim=optim^,
+            loss_fn=loss_fn^,
+            input_buf=stub_in,
+            target_buf=stub_tg,
+            output_buf=stub_out,
+            grad_out_buf=stub_go,
+            grad_in_buf=stub_gi,
+            input_dev=in_dev^,
+            target_dev=tg_dev^,
+            output_dev=out_dev^,
+            grad_out_dev=go_dev^,
+            grad_in_dev=gi_dev^,
+            input_host=in_host^,
+            target_host=tg_host^,
+            output_host=out_host^,
+            ctx=ctx,
+        )
+
+    def __del__(deinit self):
+        self.input_buf.free()
+        self.target_buf.free()
+        self.output_buf.free()
+        self.grad_out_buf.free()
+        self.grad_in_buf.free()
+
+    # ------------------------------------------------------------------
+    # Pipeline core — called by every train_step variant.
+    # ------------------------------------------------------------------
+
+    def _train_step_views[
+        CAPTURE: Bool = False,
     ](
-        mut state: NetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype],
-        input: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        mut self,
+        input: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        target: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
+        targets: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        epochs: Int = 100,
-        print_every: Int = 0,
-        checkpoint_every: Int = 0,
-        checkpoint_path: String = "",
-    ) -> TrainResult:
-        """Train on CPU for the given number of epochs.
+    ) raises -> Scalar[DT]:
+        # CAPTURE (GPU only): take the loss's no-sync `forward_capture` path
+        # instead of `forward`, so the whole step is one pure-device kernel
+        # sequence with no host↔device sync — capturable by a CUDA graph. The
+        # scalar loss is not produced (returns 0.0); `train_step_device` /
+        # the benchmark example drive this. CAPTURE=False is the normal path,
+        # bit-identical to before.
+        comptime assert input.flat_rank == 2, "input must be rank-2"
+        comptime assert targets.flat_rank == 2, "targets must be rank-2"
+        comptime if Self.target == "cpu":
+            # MutAnyOrigin laundering: trait variadics on the unified
+            # Module require origin=MutAnyOrigin. `*_buf` fields are
+            # already `UnsafePointer[Scalar[DT], MutAnyOrigin]` (see
+            # struct decl); only `input` needs rebinding.
+            var input_p = mptr(input.ptr)
+            var input_my = TileTensor(
+                input_p, row_major[Self.BATCH, Self.IN_DIM]()
+            )
+            var output = TileTensor(
+                self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            var grad_out = TileTensor(
+                self.grad_out_buf, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            var grad_in = TileTensor(
+                self.grad_in_buf, row_major[Self.BATCH, Self.IN_DIM]()
+            )
+            self.optim.zero_grad[Self.target](self.net)
+            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                input_my, output=output
+            )
+            var L = self.loss_fn.forward[
+                Self.target, Self.BATCH, POLICY=Self.POLICY
+            ](output, targets)
+            self.loss_fn.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                targets, grad_out
+            )
+            self.net.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                grad_out, grad_in
+            )
+            self.optim.step[Self.target](self.net)
+            return L
+        else:
+            # MutAnyOrigin laundering — see train_step's else-branch comment.
+            var out_ptr: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.output_dev.value().unsafe_ptr()
+            var go_ptr: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.grad_out_dev.value().unsafe_ptr()
+            var gi_ptr: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.grad_in_dev.value().unsafe_ptr()
+            var in_ptr_my = mptr(input.ptr)
+            var input_my = TileTensor(
+                in_ptr_my, row_major[Self.BATCH, Self.IN_DIM]()
+            )
+            var output = TileTensor(
+                out_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            var grad_out = TileTensor(
+                go_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            var grad_in = TileTensor(
+                gi_ptr, row_major[Self.BATCH, Self.IN_DIM]()
+            )
+            self.optim.zero_grad[Self.target](self.net)
+            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                input_my, output=output
+            )
+            var L: Scalar[DT] = 0.0
+            comptime if CAPTURE:
+                self.loss_fn.forward_capture[
+                    Self.target, Self.BATCH, POLICY=Self.POLICY
+                ](output, targets)
+            else:
+                L = self.loss_fn.forward[
+                    Self.target, Self.BATCH, POLICY=Self.POLICY
+                ](output, targets)
+            self.loss_fn.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                targets, grad_out
+            )
+            self.net.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                grad_out, grad_in
+            )
+            self.optim.step[Self.target](self.net)
+            return L
 
-        Intermediate buffers are heap-allocated internally to avoid stack
-        overflow.  The caller's NetworkState is updated in-place.
+    # ------------------------------------------------------------------
+    # CUDA-graph benchmark surface (GPU only).
+    #
+    # `load_fixed_batch` fills the trainer's own `input_dev` / `target_dev`
+    # buffers once; `train_step_device` then runs a full forward / loss /
+    # backward / optimizer step reading those FIXED buffers with NO host
+    # work — the exact pure-device kernel sequence `maybe_capture_replay`
+    # captures once and replays. The per-batch offset never changes (the
+    # buffers are fixed), so the captured graph stays valid across replays.
+    # On Apple / non-NVIDIA the capture is a no-op and the step just runs
+    # eagerly (bit-identical), so this path is portable.
+    # ------------------------------------------------------------------
 
-        Args:
-            state: Network state (params, grads, optimizer state) — updated.
-            input: Input tensor [BATCH, IN_DIM] — caller manages memory.
-            target: Target tensor [BATCH, OUT_DIM] — caller manages memory.
-            epochs: Number of training epochs.
-            print_every: Print loss every N epochs (0 = never).
-            checkpoint_every: Save checkpoint every N epochs (0 = never).
-            checkpoint_path: Base path for checkpoint files.
+    def load_fixed_batch(
+        mut self,
+        input: List[Scalar[DT]],
+        targets: List[Scalar[DT]],
+    ) raises:
+        """Upload one fixed mini-batch into the trainer's device buffers
+        (`input_dev` / `target_dev`). Call once before a `train_step_device`
+        loop. `input` is flat `[BATCH, IN_DIM]`, `targets` flat one-hot
+        `[BATCH, OUT_DIM]`."""
+        comptime assert (
+            Self.target == "gpu"
+        ), "Trainer.load_fixed_batch requires target='gpu'"
+        var ctx = self.ctx.value()
+        var in_host_buf: HostBuffer[DT] = self.input_host.value()
+        var tg_host_buf: HostBuffer[DT] = self.target_host.value()
+        for k in range(Self.BATCH * Self.IN_DIM):
+            in_host_buf[k] = input[k]
+        for k in range(Self.BATCH * Self.OUT_DIM):
+            tg_host_buf[k] = targets[k]
+        ctx.enqueue_copy(self.input_dev.value(), in_host_buf)
+        ctx.enqueue_copy(self.target_dev.value(), tg_host_buf)
+        ctx.synchronize()
 
-        Returns:
-            TrainResult with final_loss and epochs_trained.
+    def train_step_device(mut self) raises:
+        """GPU-only pure-device train step over the FIXED `input_dev` /
+        `target_dev` buffers (filled by `load_fixed_batch`). No host sync,
+        no loss readback — a single capturable kernel sequence suitable for
+        `maybe_capture_replay`. Enqueues on the Mojo stream; the caller
+        syncs once around the loop to time it."""
+        comptime assert (
+            Self.target == "gpu"
+        ), "Trainer.train_step_device requires target='gpu'"
+        var in_ptr: UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ] = self.input_dev.value().unsafe_ptr()
+        var tg_ptr: UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ] = self.target_dev.value().unsafe_ptr()
+        var input = TileTensor(in_ptr, row_major[Self.BATCH, Self.IN_DIM]())
+        var targets = TileTensor(tg_ptr, row_major[Self.BATCH, Self.OUT_DIM]())
+        _ = self._train_step_views[CAPTURE=True](input, targets)
+
+    # ------------------------------------------------------------------
+    # Per-step API.
+    # ------------------------------------------------------------------
+
+    def train_step(
+        mut self,
+        input: List[Scalar[DT]],
+        targets: List[Scalar[DT]],
+    ) raises -> Scalar[DT]:
+        comptime if Self.target == "cpu":
+            for k in range(Self.BATCH * Self.IN_DIM):
+                self.input_buf[k] = input[k]
+            for k in range(Self.BATCH * Self.OUT_DIM):
+                self.target_buf[k] = targets[k]
+            var input = TileTensor(
+                self.input_buf, row_major[Self.BATCH, Self.IN_DIM]()
+            )
+            var targets = TileTensor(
+                self.target_buf, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            return self._train_step_views(input, targets)
+        else:
+            var ctx = self.ctx.value()
+            var in_host_buf: HostBuffer[DT] = self.input_host.value()
+            var tg_host_buf: HostBuffer[DT] = self.target_host.value()
+            for k in range(Self.BATCH * Self.IN_DIM):
+                in_host_buf[k] = input[k]
+            for k in range(Self.BATCH * Self.OUT_DIM):
+                tg_host_buf[k] = targets[k]
+            ctx.enqueue_copy(self.input_dev.value(), in_host_buf)
+            ctx.enqueue_copy(self.target_dev.value(), tg_host_buf)
+            # Launder pointers through MutAnyOrigin so Mojo's aliasing
+            # analyzer doesn't see `self.input_dev` and `self.target_dev`
+            # (different fields, different buffers) as overlapping `self.*`.
+            var in_ptr: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.input_dev.value().unsafe_ptr()
+            var tg_ptr: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.target_dev.value().unsafe_ptr()
+            var input = TileTensor(in_ptr, row_major[Self.BATCH, Self.IN_DIM]())
+            var targets = TileTensor(
+                tg_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            return self._train_step_views(input, targets)
+
+    def predict(
+        mut self,
+        input: List[Scalar[DT]],
+        mut result: List[Scalar[DT]],
+    ) raises:
+        comptime if Self.target == "cpu":
+            for k in range(Self.BATCH * Self.IN_DIM):
+                self.input_buf[k] = input[k]
+            var input = TileTensor(
+                self.input_buf, row_major[Self.BATCH, Self.IN_DIM]()
+            )
+            var output = TileTensor(
+                self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                input, output=output
+            )
+            # Flat read from the slab: indexing the 2-D `output` view with a
+            # single int selects row `k` (column 0), not the flat element.
+            for k in range(Self.BATCH * Self.OUT_DIM):
+                result[k] = self.output_buf[k]
+        else:
+            var ctx = self.ctx.value()
+            var in_host_buf: HostBuffer[DT] = self.input_host.value()
+            var out_host_buf: HostBuffer[DT] = self.output_host.value()
+            for k in range(Self.BATCH * Self.IN_DIM):
+                in_host_buf[k] = input[k]
+            ctx.enqueue_copy(self.input_dev.value(), in_host_buf)
+            var in_ptr: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.input_dev.value().unsafe_ptr()
+            var out_ptr: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.output_dev.value().unsafe_ptr()
+            var input = TileTensor(in_ptr, row_major[Self.BATCH, Self.IN_DIM]())
+            var output = TileTensor(
+                out_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                input, output=output
+            )
+            ctx.enqueue_copy(out_host_buf, self.output_dev.value())
+            ctx.synchronize()
+            for k in range(Self.BATCH * Self.OUT_DIM):
+                result[k] = out_host_buf[k]
+
+    # ------------------------------------------------------------------
+    # Whole-dataset CPU training (mirrors `train_gpu`).
+    #
+    # Caller supplies the full train + test sets as flat row-major `List`s
+    # once; the trainer slices each mini-batch by pointer offset and runs
+    # the same forward/backward/step pipeline as the per-step API. Keeps the
+    # CPU example as terse as the GPU one (no hand-rolled epoch loop).
+    # ------------------------------------------------------------------
+
+    def train_cpu[
+        N_TRAIN: Int,
+        N_TEST: Int,
+    ](
+        mut self,
+        train_x: List[Scalar[DT]],
+        train_y: List[Scalar[DT]],
+        test_x: List[Scalar[DT]],
+        test_y_labels: List[Int32],
+        epochs: Int = 1,
+        print_progress: Bool = True,
+    ) raises -> TrainResult:
+        """Whole-dataset CPU training with per-epoch top-1 eval.
+
+        `train_x` is flat row-major `[N_TRAIN, IN_DIM]`, `train_y` is flat
+        one-hot `[N_TRAIN, OUT_DIM]`, `test_x` is `[N_TEST, IN_DIM]`. Batches
+        are taken in order (no shuffle); the loss/step path is identical to
+        `train_step`. Returns per-epoch `TrainResult` metrics.
         """
-        comptime OUT_SIZE = BATCH * Self.MODEL.OUT_DIM
-        comptime IN_SIZE = BATCH * Self.MODEL.IN_DIM
-        comptime CACHE_SIZE_ = BATCH * Self.MODEL.CACHE_SIZE
+        comptime assert (
+            Self.target == "cpu"
+        ), "Trainer.train_cpu requires target='cpu'"
+        comptime assert (
+            N_TRAIN % Self.BATCH == 0
+        ), "Trainer.train_cpu: N_TRAIN must be divisible by BATCH"
+        comptime assert (
+            N_TEST % Self.BATCH == 0
+        ), "Trainer.train_cpu: N_TEST must be divisible by BATCH"
+        comptime N_BATCHES_TRAIN = N_TRAIN // Self.BATCH
 
-        # Heap-allocated intermediate buffers
-        var output_data = List[Scalar[Self.dtype]](capacity=OUT_SIZE)
-        var grad_out_data = List[Scalar[Self.dtype]](capacity=OUT_SIZE)
-        var grad_in_data = List[Scalar[Self.dtype]](capacity=IN_SIZE)
-        var cache_data = List[Scalar[Self.dtype]](capacity=CACHE_SIZE_)
-        for _ in range(OUT_SIZE):
-            output_data.append(Scalar[Self.dtype](0))
-            grad_out_data.append(Scalar[Self.dtype](0))
-        for _ in range(IN_SIZE):
-            grad_in_data.append(Scalar[Self.dtype](0))
-        for _ in range(CACHE_SIZE_):
-            cache_data.append(Scalar[Self.dtype](0))
-
-        # 2D LayoutTensor views (zero-copy, created once from List.unsafe_ptr())
-        var output_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ](output_data.unsafe_ptr())
-        var grad_out_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ](grad_out_data.unsafe_ptr())
-        var grad_in_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ](grad_in_data.unsafe_ptr())
-        var cache_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE),
-            MutAnyOrigin,
-        ](cache_data.unsafe_ptr())
-
-        # State views — lvalue vars required (params/state are mut in step())
-        var params = state.params_view()
-        var grads = state.grads_view()
-        var opt_state = state.opt_state_view()
-        var model_state = state.model_state_view()
-        var opt_global = state.opt_global_state_view()
-
-        var final_loss: Float64 = 0.0
+        var result = TrainResult.empty()
+        var x_base = mptr(train_x.unsafe_ptr())
+        var y_base = mptr(train_y.unsafe_ptr())
 
         for epoch in range(epochs):
-            Self.MODEL.forward[BATCH](input, output_t, params, model_state, cache_t)
+            var t0 = perf_counter_ns()
+            var epoch_loss: Scalar[DT] = 0.0
+            for b in range(N_BATCHES_TRAIN):
+                var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
+                var y_ptr = y_base + b * Self.BATCH * Self.OUT_DIM
+                var input = TileTensor(
+                    x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
+                )
+                var targets = TileTensor(
+                    y_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
+                )
+                epoch_loss += self._train_step_views(input, targets)
+            var t1 = perf_counter_ns()
+            var train_s = Float64(t1 - t0) / 1e9
 
-            # Loss: CPU LossFunction takes 2D [BATCH, OUT_DIM] — no reshape needed
-            var loss = Self.LOSS_FUNCTION.forward[BATCH, Self.MODEL.OUT_DIM](
-                output_t, target
-            )
-            Self.LOSS_FUNCTION.backward[BATCH, Self.MODEL.OUT_DIM](
-                output_t, target, grad_out_t
-            )
+            var top1 = self.eval_top1_cpu[N_TEST](test_x, test_y_labels)
+            var t2 = perf_counter_ns()
+            var eval_s = Float64(t2 - t1) / 1e9
 
-            state.zero_grads()
-            Self.MODEL.backward[BATCH](
-                grad_out_t, grad_in_t, params, model_state, cache_t, grads
-            )
+            var avg = Float64(epoch_loss / Scalar[DT](N_BATCHES_TRAIN))
+            result.epoch_train_loss.append(avg)
+            result.epoch_test_top1.append(top1)
+            result.epoch_train_s.append(train_s)
+            result.epoch_eval_s.append(eval_s)
+            if print_progress:
+                print(
+                    "epoch "
+                    + String(epoch)
+                    + " | train_loss="
+                    + String(avg)
+                    + " | test_top1="
+                    + String(top1 * 100.0)
+                    + "%"
+                    + " | train="
+                    + String(train_s)
+                    + "s"
+                    + " | eval="
+                    + String(eval_s)
+                    + "s"
+                )
+        return result^
 
-            state.step_num += 1
-            Self.OPTIMIZER.step[Self.MODEL.PARAM_SIZE](
-                params, grads, opt_state, opt_global, state.step_num
-            )
-
-            final_loss = loss
-
-            if print_every > 0 and epoch % print_every == 0:
-                print("Epoch " + String(epoch) + " - Loss: " + String(loss))
-
-            if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
-                if (epoch + 1) % checkpoint_every == 0:
-                    try:
-                        state.save_checkpoint(checkpoint_path)
-                        print("Checkpoint saved at epoch " + String(epoch + 1))
-                    except:
-                        print(
-                            "Warning: failed to save checkpoint at epoch "
-                            + String(epoch + 1)
-                        )
-
-        return TrainResult(final_loss, epochs)
-
-    # =========================================================================
-    # CPU Evaluation (no gradient computation)
-    # =========================================================================
-
-    @staticmethod
-    def evaluate[
-        BATCH: Int
+    def eval_top1_cpu[
+        N_TEST: Int,
     ](
-        params: LayoutTensor[
-            Self.dtype, Layout.row_major(Self.MODEL.PARAM_SIZE), MutAnyOrigin
-        ],
-        mut model_state: LayoutTensor[
-            Self.dtype, Layout.row_major(Self.MODEL.STATE_SIZE), MutAnyOrigin
-        ],
-        input: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ],
-        target: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ],
-    ) -> Float64:
-        """CPU forward pass + loss, no gradient computation.
+        mut self,
+        test_x: List[Scalar[DT]],
+        test_y_labels: List[Int32],
+    ) raises -> Float64:
+        comptime assert (
+            Self.target == "cpu"
+        ), "Trainer.eval_top1_cpu requires target='cpu'"
+        comptime assert (
+            N_TEST % Self.BATCH == 0
+        ), "Trainer.eval_top1_cpu: N_TEST must be divisible by BATCH"
+        comptime N_BATCHES = N_TEST // Self.BATCH
 
-        Accepts params + model_state LayoutTensors so it works with either
-        CPU NetworkState views or — after downloading via
-        gpu.download_to(state, ctx) — the same CPU views.
+        var x_base = mptr(test_x.unsafe_ptr())
+        var n_correct: Int = 0
+        for b in range(N_BATCHES):
+            var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
+            var input = TileTensor(
+                x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
+            )
+            var output = TileTensor(
+                self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
+            )
+            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                input, output=output
+            )
+            # Flat read from the slab (see `predict`): single-int indexing of
+            # the 2-D view selects a row, not the flat element.
+            for k in range(Self.BATCH):
+                var best_c: Int = 0
+                var best_v: Scalar[DT] = self.output_buf[k * Self.OUT_DIM + 0]
+                for c in range(1, Self.OUT_DIM):
+                    var v = self.output_buf[k * Self.OUT_DIM + c]
+                    if v > best_v:
+                        best_v = v
+                        best_c = c
+                if best_c == Int(test_y_labels[b * Self.BATCH + k]):
+                    n_correct += 1
+        return Float64(n_correct) / Float64(N_TEST)
 
-        Args:
-            params: Model parameters [PARAM_SIZE] (e.g. state.params_view()).
-            model_state: Persistent non-trainable state [STATE_SIZE]
-                (e.g. state.model_state_view()). Zero-length for stateless models.
-            input: Input tensor [BATCH, IN_DIM].
-            target: Target tensor [BATCH, OUT_DIM].
+    # ------------------------------------------------------------------
+    # Whole-dataset GPU training.
+    # ------------------------------------------------------------------
 
-        Returns:
-            Scalar loss value.
-        """
-        comptime OUT_SIZE = BATCH * Self.MODEL.OUT_DIM
-
-        var output_data = List[Scalar[Self.dtype]](capacity=OUT_SIZE)
-        for _ in range(OUT_SIZE):
-            output_data.append(Scalar[Self.dtype](0))
-
-        var output_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ](output_data.unsafe_ptr())
-
-        # params is already an lvalue from the caller — pass directly
-        Self.MODEL.forward[BATCH](input, output_t, params, model_state)
-
-        return Self.LOSS_FUNCTION.forward[BATCH, Self.MODEL.OUT_DIM](
-            output_t, target
-        )
-
-    # =========================================================================
-    # GPU Training
-    # =========================================================================
-
-    @staticmethod
     def train_gpu[
-        BATCH: Int,
-        USE_CUDA_GRAPH: Bool = False,
+        N_TRAIN: Int,
     ](
-        mut state: GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype],
-        ctx: DeviceContext,
-        input: LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
+        mut self,
+        train_x: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        target: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ],
-        epochs: Int = 100,
-        print_every: Int = 0,
-    ) raises -> TrainResult:
-        """Train on GPU for the given number of epochs.
-
-        The caller owns GPUNetworkState and is responsible for uploading params
-        before calling and downloading results afterwards (e.g. via
-        gpu.download_to(state, ctx)).  Input/target are CPU-side LayoutTensors
-        uploaded to device once before the loop.
-
-        Parameters:
-            BATCH: Number of samples per batch.
-            USE_CUDA_GRAPH: When True, captures one epoch's kernel sequence
-                into a CUDA graph and replays it for all subsequent epochs.
-                Eliminates per-kernel launch overhead. Requires LD_PRELOAD
-                with libcuda_intercept.so (set by pixi nvidia env).
-                No-op on non-NVIDIA platforms.
-
-        Args:
-            state: GPU network state (params, grads, optimizer state) — updated.
-            ctx: GPU device context.
-            input: CPU input tensor [BATCH, IN_DIM] — caller manages memory.
-            target: CPU target tensor [BATCH, OUT_DIM] — caller manages memory.
-            epochs: Number of training epochs.
-            print_every: Print loss every N epochs (0 = never).
-
-        Returns:
-            TrainResult with final_loss and epochs_trained.
-        """
-        comptime IN_SIZE = BATCH * Self.MODEL.IN_DIM
-        comptime OUT_SIZE = BATCH * Self.MODEL.OUT_DIM
-        comptime CACHE_SIZE_ = BATCH * Self.MODEL.CACHE_SIZE
-        comptime WS_SIZE = BATCH * Self.MODEL.WORKSPACE_SIZE_PER_SAMPLE
-
-        # Upload input and target via pinned host buffers (once before loop).
-        # LayoutTensor has no unsafe_ptr() — copy via 2D element indexing.
-        var input_host = ctx.enqueue_create_host_buffer[Self.dtype](IN_SIZE)
-        var target_host = ctx.enqueue_create_host_buffer[Self.dtype](OUT_SIZE)
-        for row in range(BATCH):
-            for col in range(Self.MODEL.IN_DIM):
-                input_host[row * Self.MODEL.IN_DIM + col] = rebind[
-                    Scalar[Self.dtype]
-                ](input[row, col])
-        for row in range(BATCH):
-            for col in range(Self.MODEL.OUT_DIM):
-                target_host[row * Self.MODEL.OUT_DIM + col] = rebind[
-                    Scalar[Self.dtype]
-                ](target[row, col])
-        var input_buf = ctx.enqueue_create_buffer[Self.dtype](IN_SIZE)
-        var target_buf = ctx.enqueue_create_buffer[Self.dtype](OUT_SIZE)
-        ctx.enqueue_copy(input_buf, input_host)
-        ctx.enqueue_copy(target_buf, target_host)
-
-        # Per-epoch device buffers (allocated once, reused each epoch)
-        var output_buf = ctx.enqueue_create_buffer[Self.dtype](OUT_SIZE)
-        var cache_buf = ctx.enqueue_create_buffer[Self.dtype](CACHE_SIZE_)
-        var grad_out_buf = ctx.enqueue_create_buffer[Self.dtype](OUT_SIZE)
-        var grad_in_buf = ctx.enqueue_create_buffer[Self.dtype](IN_SIZE)
-        var loss_buf = ctx.enqueue_create_buffer[Self.dtype](1)
-        var ws_buf = ctx.enqueue_create_buffer[Self.dtype](
-            WS_SIZE if WS_SIZE > 0 else 1
-        )
-
-        # LayoutTensor views over device buffers (created once)
-        var input_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ](input_buf.unsafe_ptr())
-        var target_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ](target_buf.unsafe_ptr())
-        var output_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ](output_buf.unsafe_ptr())
-        var cache_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE),
-            MutAnyOrigin,
-        ](cache_buf.unsafe_ptr())
-        var grad_out_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ](grad_out_buf.unsafe_ptr())
-        var grad_in_t = LayoutTensor[
-            Self.dtype, Layout.row_major(BATCH, Self.MODEL.IN_DIM), MutAnyOrigin
-        ](grad_in_buf.unsafe_ptr())
-        var loss_t = LayoutTensor[
-            Self.dtype, Layout.row_major(1), MutAnyOrigin
-        ](loss_buf.unsafe_ptr())
-        var loss_host = ctx.enqueue_create_host_buffer[Self.dtype](1)
-
-        var final_loss: Float64 = 0.0
-
-        # --- Helper: run one training epoch (pure GPU, no host ops) ---
-        @parameter
-        @always_inline
-        def _run_one_epoch() raises:
-            state.zero_grads(ctx)
-            var params = state.params_view()
-            var grads = state.grads_view()
-            var model_state = state.model_state_view()
-            Self.MODEL.forward_gpu[BATCH](
-                ctx, output_t, input_t, params, model_state, cache_t, ws_buf
-            )
-            Self.LOSS_FUNCTION.backward_gpu[BATCH, Self.MODEL.OUT_DIM](
-                ctx, grad_out_t, output_t, target_t
-            )
-            Self.MODEL.backward_gpu[BATCH](
-                ctx, grad_in_t, grad_out_t, params, model_state, cache_t, grads, ws_buf
-            )
-            state.optimizer_step(ctx)
-
-        comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
-            from mojo_rl.cuda import CUDAGraph
-
-            # Warmup: run one epoch to ensure stream is discoverable
-            _run_one_epoch()
-            ctx.synchronize()
-
-            # Capture one epoch into a CUDA graph
-            var graph = CUDAGraph(ctx)
-            graph.begin_capture()
-            _run_one_epoch()
-            graph.end_capture()
-
-            # Replay for remaining epochs (first epoch already ran)
-            for _ in range(epochs - 1):
-                graph.replay()
-
-        else:
-            for epoch in range(epochs):
-                _run_one_epoch()
-
-                if print_every > 0 and epoch % print_every == 0:
-                    Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
-                        ctx, loss_t, output_t, target_t
-                    )
-                    ctx.enqueue_copy(loss_host, loss_buf)
-                    ctx.synchronize()
-                    final_loss = Float64(loss_host[0])
-                    print(
-                        "Epoch "
-                        + String(epoch)
-                        + " - Loss: "
-                        + String(final_loss)
-                    )
-
-        # Compute final loss (always runs outside capture)
-        Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
-            ctx, loss_t, output_t, target_t
-        )
-        ctx.enqueue_copy(loss_host, loss_buf)
-        ctx.synchronize()
-        final_loss = Float64(loss_host[0])
-
-        return TrainResult(final_loss, epochs)
-
-    # =========================================================================
-    # GPU Mini-batch Training
-    # =========================================================================
-
-    @staticmethod
-    def train_gpu_minibatch[
-        BATCH: Int,
-        N_TOTAL: Int,
-        USE_CUDA_GRAPH: Bool = True,
-    ](
-        mut state: GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype],
-        ctx: DeviceContext,
-        input: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(N_TOTAL, Self.MODEL.IN_DIM),
-            MutAnyOrigin,
-        ],
-        target: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(N_TOTAL, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
+        train_y: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
         epochs: Int = 1,
-        print_every_batches: Int = 0,
+        print_progress: Bool = True,
         shuffle: Bool = False,
         rng_seed: UInt64 = 42,
     ) raises -> TrainResult:
-        """Train on GPU with mini-batch SGD over a full dataset.
+        comptime assert (
+            Self.target == "gpu"
+        ), "Trainer.train_gpu requires target='gpu'"
+        comptime assert (
+            N_TRAIN % Self.BATCH == 0
+        ), "Trainer.train_gpu: N_TRAIN must be divisible by BATCH"
+        comptime N_BATCHES = N_TRAIN // Self.BATCH
+        comptime BLOCKS_INIT = (N_TRAIN + TPB - 1) // TPB
+        comptime BLOCKS_GATHER_X = (Self.BATCH * Self.IN_DIM + TPB - 1) // TPB
+        comptime BLOCKS_GATHER_Y = (Self.BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
-        Unlike train_gpu (which repeats one fixed batch for N epochs), this
-        iterates the caller-provided dataset in BATCH-sized slices. Input and
-        target must already live on the device — caller uploads once before
-        the loop. Last partial batch (N_TOTAL % BATCH samples) is dropped.
+        var result = TrainResult.empty()
+        var ctx = self.ctx.value()
+        var x_base = mptr(train_x.ptr)
+        var y_base = mptr(train_y.ptr)
 
-        When shuffle=True a device-resident permutation of [0, N_TOTAL) is
-        Fisher-Yates-shuffled per epoch using PhiloxRandom, and each batch is
-        gathered from input/target through that permutation. Both the
-        permutation and the RNG seed live in LayoutTensors so the whole
-        per-epoch kernel chain is CUDA-graph capturable.
-
-        Parameters:
-            BATCH: Samples per gradient step.
-            N_TOTAL: Total samples in the dataset (comptime).
-            USE_CUDA_GRAPH: When True on NVIDIA, captures one epoch's kernel
-                sequence into a CUDA graph and replays for subsequent epochs.
-                Requires LD_PRELOAD with libcuda_intercept.so (pixi nvidia
-                env). No-op on non-NVIDIA. Implies print_every_batches=0
-                (enqueue_copy + sync can't happen during capture).
-
-        Args:
-            state: GPU network state — updated in place.
-            ctx: GPU device context.
-            input: Device tensor [N_TOTAL, IN_DIM].
-            target: Device tensor [N_TOTAL, OUT_DIM].
-            epochs: Number of passes through the dataset.
-            print_every_batches: Print batch loss every N batches (0 = never).
-                Ignored when USE_CUDA_GRAPH=True.
-            shuffle: If True, re-shuffle sample order each epoch on device.
-            rng_seed: Initial seed for the shuffle PRNG. Ignored if shuffle
-                is False. Incremented by 1 each epoch via a device-side kernel.
-
-        Returns:
-            TrainResult with final-batch loss and total epochs completed.
-        """
-        comptime NUM_BATCHES = N_TOTAL // BATCH
-        comptime CACHE_SIZE_ = BATCH * Self.MODEL.CACHE_SIZE
-        comptime WS_SIZE = BATCH * Self.MODEL.WORKSPACE_SIZE_PER_SAMPLE
-
-        # Per-batch device buffers (allocated once, reused across all batches)
-        var output_buf = ctx.enqueue_create_buffer[Self.dtype](
-            BATCH * Self.MODEL.OUT_DIM
-        )
-        var cache_buf = ctx.enqueue_create_buffer[Self.dtype](CACHE_SIZE_)
-        var grad_out_buf = ctx.enqueue_create_buffer[Self.dtype](
-            BATCH * Self.MODEL.OUT_DIM
-        )
-        var grad_in_buf = ctx.enqueue_create_buffer[Self.dtype](
-            BATCH * Self.MODEL.IN_DIM
-        )
-        var loss_buf = ctx.enqueue_create_buffer[Self.dtype](1)
-        var ws_buf = ctx.enqueue_create_buffer[Self.dtype](
-            WS_SIZE if WS_SIZE > 0 else 1
-        )
-        var loss_host = ctx.enqueue_create_host_buffer[Self.dtype](1)
-
-        var output_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ](output_buf.unsafe_ptr())
-        var cache_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.CACHE_SIZE),
-            MutAnyOrigin,
-        ](cache_buf.unsafe_ptr())
-        var grad_out_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ](grad_out_buf.unsafe_ptr())
-        var grad_in_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.IN_DIM),
-            MutAnyOrigin,
-        ](grad_in_buf.unsafe_ptr())
-        var loss_t = LayoutTensor[
-            Self.dtype, Layout.row_major(1), MutAnyOrigin
-        ](loss_buf.unsafe_ptr())
-
-        var final_loss: Float64 = 0.0
-        var total_batches_trained: Int = 0
-
-        # ── Shuffle-only device buffers (allocated only when shuffle=True) ──
-        var indices_buf = ctx.enqueue_create_buffer[DType.int32](
-            N_TOTAL if shuffle else 1
-        )
-        var seed_buf = ctx.enqueue_create_buffer[DType.uint64](1)
-        var batch_input_buf = ctx.enqueue_create_buffer[Self.dtype](
-            (BATCH * Self.MODEL.IN_DIM) if shuffle else 1
-        )
-        var batch_target_buf = ctx.enqueue_create_buffer[Self.dtype](
-            (BATCH * Self.MODEL.OUT_DIM) if shuffle else 1
-        )
-
-        var indices_t = LayoutTensor[
-            DType.int32, Layout.row_major(N_TOTAL), MutAnyOrigin
-        ](indices_buf.unsafe_ptr())
-        var seed_t = LayoutTensor[
-            DType.uint64, Layout.row_major(1), MutAnyOrigin
-        ](seed_buf.unsafe_ptr())
-        var shuf_input_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.IN_DIM),
-            MutAnyOrigin,
-        ](batch_input_buf.unsafe_ptr())
-        var shuf_target_t = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ](batch_target_buf.unsafe_ptr())
-
+        # Shuffle scratch (device-only; allocated once, reused across epochs).
+        var indices_dev: Optional[DeviceBuffer[DType.int32]] = None
+        var seed_dev: Optional[DeviceBuffer[DType.uint64]] = None
+        var shuf_x_dev: Optional[DeviceBuffer[DT]] = None
+        var shuf_y_dev: Optional[DeviceBuffer[DT]] = None
         if shuffle:
-            # Seed the device RNG buffer from the host (one-time, pre-loop)
+            var idx = ctx.enqueue_create_buffer[DType.int32](N_TRAIN)
+            var seed = ctx.enqueue_create_buffer[DType.uint64](1)
+            var sx = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.IN_DIM)
+            var sy = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
             var seed_host = ctx.enqueue_create_host_buffer[DType.uint64](1)
             seed_host.unsafe_ptr()[0] = rng_seed
-            ctx.enqueue_copy(seed_buf, seed_host)
-
-            # Fill indices with [0, 1, ..., N_TOTAL)
-            comptime init_blocks = (N_TOTAL + TPB - 1) // TPB
-            ctx.enqueue_function[_init_identity_indices_kernel[N_TOTAL]](indices_t, grid_dim=(init_blocks,), block_dim=(TPB,))
-
-        comptime gather_in_blocks = (BATCH * Self.MODEL.IN_DIM + TPB - 1) // TPB
-        comptime gather_tg_blocks = (
-            BATCH * Self.MODEL.OUT_DIM + TPB - 1
-        ) // TPB
-
-        # --- Helper: run one training epoch (pure GPU, no host syncs) ---
-        # Captures everything it reads/writes so it can be a graph body.
-        @parameter
-        @always_inline
-        def _run_one_epoch() raises:
-            if shuffle:
-                ctx.enqueue_function[_fisher_yates_shuffle_kernel[N_TOTAL]](indices_t, seed_t, grid_dim=(1,), block_dim=(1,))
-                ctx.enqueue_function[_increment_seed_kernel](seed_t, grid_dim=(1,), block_dim=(1,))
-
-            for batch_idx in range(NUM_BATCHES):
-                var batch_input: LayoutTensor[
-                    Self.dtype,
-                    Layout.row_major(BATCH, Self.MODEL.IN_DIM),
-                    MutAnyOrigin,
-                ]
-                var batch_target: LayoutTensor[
-                    Self.dtype,
-                    Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-                    MutAnyOrigin,
-                ]
-
-                if shuffle:
-                    ctx.enqueue_function[_gather_rows_kernel[
-                            N_TOTAL, BATCH, Self.MODEL.IN_DIM, Self.dtype
-                        ]](
-                        shuf_input_t,
-                        input,
-                        indices_t,
-                        batch_idx * BATCH,
-                        grid_dim=(gather_in_blocks,),
-                        block_dim=(TPB,),
-                    )
-                    ctx.enqueue_function[_gather_rows_kernel[
-                            N_TOTAL, BATCH, Self.MODEL.OUT_DIM, Self.dtype
-                        ]](
-                        shuf_target_t,
-                        target,
-                        indices_t,
-                        batch_idx * BATCH,
-                        grid_dim=(gather_tg_blocks,),
-                        block_dim=(TPB,),
-                    )
-                    batch_input = shuf_input_t
-                    batch_target = shuf_target_t
-                else:
-                    batch_input = LayoutTensor[
-                        Self.dtype,
-                        Layout.row_major(BATCH, Self.MODEL.IN_DIM),
-                        MutAnyOrigin,
-                    ](input.ptr + batch_idx * BATCH * Self.MODEL.IN_DIM)
-                    batch_target = LayoutTensor[
-                        Self.dtype,
-                        Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-                        MutAnyOrigin,
-                    ](target.ptr + batch_idx * BATCH * Self.MODEL.OUT_DIM)
-
-                state.zero_grads(ctx)
-                var params = state.params_view()
-                var grads = state.grads_view()
-                var model_state = state.model_state_view()
-                Self.MODEL.forward_gpu[BATCH](
-                    ctx, output_t, batch_input, params, model_state, cache_t, ws_buf
-                )
-                Self.LOSS_FUNCTION.backward_gpu[BATCH, Self.MODEL.OUT_DIM](
-                    ctx, grad_out_t, output_t, batch_target
-                )
-                Self.MODEL.backward_gpu[BATCH](
-                    ctx,
-                    grad_in_t,
-                    grad_out_t,
-                    params,
-                    model_state,
-                    cache_t,
-                    grads,
-                    ws_buf,
-                )
-                state.optimizer_step(ctx)
-
-        # --- Main loop: either graph capture + replay, or plain re-run ---
-        comptime if USE_CUDA_GRAPH and has_nvidia_gpu_accelerator():
-            from mojo_rl.cuda import CUDAGraph
-
-            # Warmup: run one epoch to ensure stream is discoverable
-            _run_one_epoch()
+            ctx.enqueue_copy(seed, seed_host)
             ctx.synchronize()
+            var idx_t = LayoutTensor[
+                DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+            ](idx.unsafe_ptr())
+            ctx.enqueue_function[init_identity_indices_kernel[N_TRAIN]](
+                idx_t,
+                grid_dim=(BLOCKS_INIT,),
+                block_dim=(TPB,),
+            )
+            indices_dev = idx^
+            seed_dev = seed^
+            shuf_x_dev = sx^
+            shuf_y_dev = sy^
 
-            # Capture one epoch into a CUDA graph
-            var graph = CUDAGraph(ctx)
-            graph.begin_capture()
-            _run_one_epoch()
-            graph.end_capture()
-
-            # Replay for remaining epochs (first epoch already ran)
-            for _ in range(epochs - 1):
-                graph.replay()
-
-        else:
-            for epoch in range(epochs):
-                _run_one_epoch()
-
-                # Post-epoch diagnostic (optional, never inside a graph)
-                if print_every_batches > 0:
-                    # Compute loss on the last batch from this epoch.
-                    # shuf_* hold the last gathered batch in shuffle mode;
-                    # otherwise reconstruct the last contiguous slice.
-                    var last_in: LayoutTensor[
-                        Self.dtype,
-                        Layout.row_major(BATCH, Self.MODEL.IN_DIM),
+        for epoch in range(epochs):
+            var t0 = perf_counter_ns()
+            var epoch_loss: Scalar[DT] = 0.0
+            if shuffle:
+                var idx_t = LayoutTensor[
+                    DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+                ](indices_dev.value().unsafe_ptr())
+                var seed_t = LayoutTensor[
+                    DType.uint64, Layout.row_major(1), MutAnyOrigin
+                ](seed_dev.value().unsafe_ptr())
+                ctx.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
+                    idx_t, seed_t, grid_dim=(1,), block_dim=(1,)
+                )
+                ctx.enqueue_function[increment_seed_kernel](
+                    seed_t, grid_dim=(1,), block_dim=(1,)
+                )
+            for b in range(N_BATCHES):
+                if shuffle:
+                    var full_x_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(N_TRAIN, Self.IN_DIM),
                         MutAnyOrigin,
-                    ]
-                    var last_tg: LayoutTensor[
-                        Self.dtype,
-                        Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
+                    ](x_base)
+                    var full_y_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(N_TRAIN, Self.OUT_DIM),
                         MutAnyOrigin,
-                    ]
-                    if shuffle:
-                        last_in = shuf_input_t
-                        last_tg = shuf_target_t
-                    else:
-                        comptime last_off_in = (
-                            (NUM_BATCHES - 1) * BATCH * Self.MODEL.IN_DIM
-                        )
-                        comptime last_off_tg = (
-                            (NUM_BATCHES - 1) * BATCH * Self.MODEL.OUT_DIM
-                        )
-                        last_in = LayoutTensor[
-                            Self.dtype,
-                            Layout.row_major(BATCH, Self.MODEL.IN_DIM),
-                            MutAnyOrigin,
-                        ](input.ptr + last_off_in)
-                        last_tg = LayoutTensor[
-                            Self.dtype,
-                            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-                            MutAnyOrigin,
-                        ](target.ptr + last_off_tg)
-                    var params_peek = state.params_view()
-                    var model_state_peek = state.model_state_view()
-                    Self.MODEL.forward_gpu[BATCH](
-                        ctx, output_t, last_in, params_peek, model_state_peek, cache_t, ws_buf
+                    ](y_base)
+                    var idx_t = LayoutTensor[
+                        DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+                    ](indices_dev.value().unsafe_ptr())
+                    var sx_p = shuf_x_dev.value().unsafe_ptr()
+                    var sy_p = shuf_y_dev.value().unsafe_ptr()
+                    var shuf_x_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(Self.BATCH, Self.IN_DIM),
+                        MutAnyOrigin,
+                    ](sx_p)
+                    var shuf_y_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(Self.BATCH, Self.OUT_DIM),
+                        MutAnyOrigin,
+                    ](sy_p)
+                    var offset = b * Self.BATCH
+                    ctx.enqueue_function[
+                        gather_rows_kernel[N_TRAIN, Self.BATCH, Self.IN_DIM, DT]
+                    ](
+                        shuf_x_t,
+                        full_x_t,
+                        idx_t,
+                        offset,
+                        grid_dim=(BLOCKS_GATHER_X,),
+                        block_dim=(TPB,),
                     )
-                    Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
-                        ctx, loss_t, output_t, last_tg
+                    ctx.enqueue_function[
+                        gather_rows_kernel[
+                            N_TRAIN, Self.BATCH, Self.OUT_DIM, DT
+                        ]
+                    ](
+                        shuf_y_t,
+                        full_y_t,
+                        idx_t,
+                        offset,
+                        grid_dim=(BLOCKS_GATHER_Y,),
+                        block_dim=(TPB,),
                     )
-                    ctx.enqueue_copy(loss_host, loss_buf)
-                    ctx.synchronize()
-                    print(
-                        "  epoch "
-                        + String(epoch + 1)
-                        + "/"
-                        + String(epochs)
-                        + "  last-batch loss="
-                        + String(Float64(loss_host[0]))
+                    var input = TileTensor(
+                        sx_p, row_major[Self.BATCH, Self.IN_DIM]()
                     )
+                    var targets = TileTensor(
+                        sy_p, row_major[Self.BATCH, Self.OUT_DIM]()
+                    )
+                    epoch_loss += self._train_step_views(input, targets)
+                else:
+                    var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
+                    var y_ptr = y_base + b * Self.BATCH * Self.OUT_DIM
+                    var input = TileTensor(
+                        x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
+                    )
+                    var targets = TileTensor(
+                        y_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
+                    )
+                    epoch_loss += self._train_step_views(input, targets)
+            ctx.synchronize()
+            var t1 = perf_counter_ns()
+            var train_s = Float64(t1 - t0) / 1e9
+            var avg = Float64(epoch_loss / Scalar[DT](N_BATCHES))
+            result.epoch_train_loss.append(avg)
+            result.epoch_train_s.append(train_s)
+            result.epoch_eval_s.append(0.0)
+            if print_progress:
+                print(
+                    "epoch "
+                    + String(epoch)
+                    + " | train_loss="
+                    + String(avg)
+                    + " | train="
+                    + String(train_s)
+                    + "s"
+                )
+        return result^
 
-        # Final loss on the last batch actually trained on.
-        # Shuffle mode: shuf_input_t/shuf_target_t still hold the last
-        # gathered batch. Contiguous mode: reconstruct the last-batch slice.
-        var last_input: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.IN_DIM),
-            MutAnyOrigin,
-        ]
-        var last_target: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ]
-        if shuffle:
-            last_input = shuf_input_t
-            last_target = shuf_target_t
-        else:
-            var last_batch_idx = NUM_BATCHES - 1
-            last_input = LayoutTensor[
-                Self.dtype,
-                Layout.row_major(BATCH, Self.MODEL.IN_DIM),
-                MutAnyOrigin,
-            ](input.ptr + last_batch_idx * BATCH * Self.MODEL.IN_DIM)
-            last_target = LayoutTensor[
-                Self.dtype,
-                Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-                MutAnyOrigin,
-            ](target.ptr + last_batch_idx * BATCH * Self.MODEL.OUT_DIM)
-        var params_final = state.params_view()
-        var model_state_final = state.model_state_view()
-        Self.MODEL.forward_gpu[BATCH](
-            ctx, output_t, last_input, params_final, model_state_final, cache_t, ws_buf
-        )
-        Self.LOSS_FUNCTION.forward_gpu[BATCH, Self.MODEL.OUT_DIM](
-            ctx, loss_t, output_t, last_target
-        )
-        ctx.enqueue_copy(loss_host, loss_buf)
-        ctx.synchronize()
-        final_loss = Float64(loss_host[0])
-
-        return TrainResult(final_loss, epochs)
-
-    # =========================================================================
-    # GPU Mini-batch Training with LR scheduling, augmentation, and validation
-    # =========================================================================
-
-    @staticmethod
-    def train_gpu_minibatch_full[
-        BATCH: Int,
+    def train_gpu[
         N_TRAIN: Int,
-        N_VAL: Int,
-        SCHEDULER: Scheduler = ConstantSchedule,
+        N_TEST: Int,
         AUGMENTER: Augmenter = IdentityAugmenter,
+        SCHEDULER: Scheduler = ConstantSchedule,
     ](
-        mut state: GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype],
-        ctx: DeviceContext,
-        train_input: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(N_TRAIN, Self.MODEL.IN_DIM),
-            MutAnyOrigin,
+        mut self,
+        train_x: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        train_target: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(N_TRAIN, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
+        train_y: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        val_input: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(N_VAL, Self.MODEL.IN_DIM),
-            MutAnyOrigin,
+        test_x: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        val_labels: LayoutTensor[
-            DType.int32, Layout.row_major(N_VAL), MutAnyOrigin
-        ],
+        test_y_labels: List[Int32],
         epochs: Int = 1,
-        shuffle: Bool = True,
+        print_progress: Bool = True,
+        shuffle: Bool = False,
         rng_seed: UInt64 = 42,
         aug_seed: UInt64 = 1000,
-        show_progress: Bool = True,
-        eval_every_epochs: Int = 1,
-        progress_label: String = "Training",
-    ) raises -> TrainResultFull:
-        """Train on GPU with LR scheduling, augmentation, and per-epoch eval.
+    ) raises -> TrainResult:
+        """Whole-dataset GPU training with per-epoch eval.
 
-        Wraps `train_gpu_minibatch` with three host-side concerns:
-          - LR scaling: `SCHEDULER.lr_scale_at(epoch, epochs)` is applied
-            via `state.set_lr_scale` before each epoch's training step.
-          - Data augmentation: `AUGMENTER.augment` is invoked once per
-            epoch, writing into a Trainer-owned `aug_buf` (initialized
-            with a one-time device-side copy of `train_input`).
-            `IdentityAugmenter` is a no-op so the no-aug case has zero
-            per-epoch GPU cost beyond training itself.
-          - Validation: every `eval_every_epochs` epochs (and on the final
-            epoch), runs `forward_gpu_no_cache` over `val_input`,
-            computes top-1 accuracy and CE loss directly from int32
-            labels via two slot-write kernels, syncs once, reduces on host.
-
-        Internally calls `train_gpu_minibatch[..., USE_CUDA_GRAPH=False]`
-        per epoch since the LR scalar changes between epochs. CUDA graph
-        capture spanning multiple epochs would require moving `lr_scale`
-        into a device buffer — left for a follow-up.
-
-        Parameters:
-            BATCH: Samples per gradient step.
-            N_TRAIN: Training set size (compile-time).
-            N_VAL: Validation set size (compile-time).
-            SCHEDULER: LR schedule (default: ConstantSchedule, scale=1.0).
-            AUGMENTER: Per-epoch augmentation (default: IdentityAugmenter).
-
-        Args:
-            state: GPU network state — updated in place.
-            ctx: GPU device context.
-            train_input: Device tensor [N_TRAIN, IN_DIM] (raw, untouched).
-            train_target: Device tensor [N_TRAIN, OUT_DIM] (one-hot or soft).
-            val_input: Device tensor [N_VAL, IN_DIM].
-            val_labels: Device int32 tensor [N_VAL] of class indices.
-            epochs: Number of full passes.
-            shuffle: Re-shuffle training order each epoch.
-            rng_seed: Base seed for the per-epoch shuffle PRNG.
-            aug_seed: Base seed forwarded to AUGMENTER.augment per epoch.
-            show_progress: Render an in-place CLI progress bar + per-eval lines.
-            eval_every_epochs: Run validation every N epochs (final epoch
-                always evaluated).
-            progress_label: Progress-bar prefix label.
-
-        Returns:
-            TrainResultFull with final-batch loss, epochs trained, and
-            per-eval / per-epoch history lists.
+        BatchNorm is toggled to train mode before each epoch and eval mode
+        before the per-epoch test pass via `net.set_attr["training"]`
+        (no-op for nets without BN). When `AUGMENTER` is not the identity,
+        an augmentation buffer is allocated once and `AUGMENTER.augment`
+        re-fills it from `train_x` each epoch before the mini-batch loop;
+        training then reads the augmented buffer. When `SCHEDULER` is not
+        constant, the optimizer LR is set to `base_lr * SCHEDULER.lr_scale_at
+        (epoch, epochs)` each epoch (base_lr = the LR set on `optim` before
+        the call); the constant default leaves the LR untouched.
         """
-        comptime IN_SIZE = N_TRAIN * Self.MODEL.IN_DIM
-        comptime N_VAL_BATCHES = N_VAL // BATCH
-        comptime EVAL_OUT_SIZE = BATCH * Self.MODEL.OUT_DIM
-        comptime EVAL_WS_SIZE = BATCH * Self.MODEL.WORKSPACE_SIZE_PER_SAMPLE
-        comptime BATCHES_PER_EPOCH = N_TRAIN // BATCH
+        comptime assert (
+            Self.target == "gpu"
+        ), "Trainer.train_gpu requires target='gpu'"
+        comptime assert (
+            N_TRAIN % Self.BATCH == 0
+        ), "Trainer.train_gpu: N_TRAIN must be divisible by BATCH"
+        comptime assert (
+            N_TEST % Self.BATCH == 0
+        ), "Trainer.train_gpu: N_TEST must be divisible by BATCH"
+        comptime N_BATCHES_TRAIN = N_TRAIN // Self.BATCH
+        comptime BLOCKS_INIT = (N_TRAIN + TPB - 1) // TPB
+        comptime BLOCKS_GATHER_X = (Self.BATCH * Self.IN_DIM + TPB - 1) // TPB
+        comptime BLOCKS_GATHER_Y = (Self.BATCH * Self.OUT_DIM + TPB - 1) // TPB
 
-        # ── Augmentation buffer + one-time raw → aug device copy ──────────
-        var aug_buf = ctx.enqueue_create_buffer[Self.dtype](IN_SIZE)
-        var aug_lt = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(N_TRAIN, Self.MODEL.IN_DIM),
-            MutAnyOrigin,
-        ](aug_buf.unsafe_ptr())
+        var result = TrainResult.empty()
+        var ctx = self.ctx.value()
+        var raw_x = mptr(train_x.ptr)
+        var y_base = mptr(train_y.ptr)
 
-        comptime copy_blocks = (IN_SIZE + TPB - 1) // TPB
-        ctx.enqueue_function[_copy_2d_kernel[N_TRAIN, Self.MODEL.IN_DIM, Self.dtype]](
-            aug_lt,
-            train_input,
-            grid_dim=(copy_blocks,),
-            block_dim=(TPB,),
-        )
+        # Augmentation buffer (allocated once, refilled per epoch). Identity
+        # → skip it and train on `train_x` directly. A real augmenter fully
+        # rewrites this buffer from `train_x` each epoch (no pre-copy).
+        comptime USE_AUG = not AUGMENTER.IS_NOOP
+        var aug_dev: Optional[DeviceBuffer[DT]] = None
+        var x_base = raw_x
+        comptime if USE_AUG:
+            aug_dev = ctx.enqueue_create_buffer[DT](N_TRAIN * Self.IN_DIM)
+            x_base = aug_dev.value().unsafe_ptr()
 
-        # ── Validation scratch buffers (allocated once, reused each eval) ──
-        var eval_output_buf = ctx.enqueue_create_buffer[Self.dtype](
-            EVAL_OUT_SIZE
-        )
-        var eval_ws_buf = ctx.enqueue_create_buffer[Self.dtype](
-            EVAL_WS_SIZE if EVAL_WS_SIZE > 0 else 1
-        )
-        var per_batch_loss_buf = ctx.enqueue_create_buffer[Self.dtype](
-            N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1
-        )
-        var per_batch_correct_buf = ctx.enqueue_create_buffer[Self.dtype](
-            N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1
-        )
-        var per_batch_loss_host = ctx.enqueue_create_host_buffer[Self.dtype](
-            N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1
-        )
-        var per_batch_correct_host = ctx.enqueue_create_host_buffer[
-            Self.dtype
-        ](N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1)
+        # LR schedule: capture the caller-set base LR; per epoch the LR is
+        # set to base_lr * SCHEDULER.lr_scale_at(epoch, epochs). Skipped
+        # entirely for the constant schedule (LR left exactly as set).
+        comptime USE_SCHED = not SCHEDULER.IS_CONSTANT
+        var base_lr: Scalar[DT] = 0.0
+        comptime if USE_SCHED:
+            base_lr = self.optim.get_lr()
 
-        var eval_output_lt = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ](eval_output_buf.unsafe_ptr())
-        var per_batch_loss_lt = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1),
-            MutAnyOrigin,
-        ](per_batch_loss_buf.unsafe_ptr())
-        var per_batch_correct_lt = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1),
-            MutAnyOrigin,
-        ](per_batch_correct_buf.unsafe_ptr())
+        # Shuffle scratch (device-only; allocated once, reused across epochs).
+        var indices_dev: Optional[DeviceBuffer[DType.int32]] = None
+        var seed_dev: Optional[DeviceBuffer[DType.uint64]] = None
+        var shuf_x_dev: Optional[DeviceBuffer[DT]] = None
+        var shuf_y_dev: Optional[DeviceBuffer[DT]] = None
+        if shuffle:
+            var idx = ctx.enqueue_create_buffer[DType.int32](N_TRAIN)
+            var seed = ctx.enqueue_create_buffer[DType.uint64](1)
+            var sx = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.IN_DIM)
+            var sy = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
+            var seed_host = ctx.enqueue_create_host_buffer[DType.uint64](1)
+            seed_host.unsafe_ptr()[0] = rng_seed
+            ctx.enqueue_copy(seed, seed_host)
+            ctx.synchronize()
+            var idx_t = LayoutTensor[
+                DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+            ](idx.unsafe_ptr())
+            ctx.enqueue_function[init_identity_indices_kernel[N_TRAIN]](
+                idx_t,
+                grid_dim=(BLOCKS_INIT,),
+                block_dim=(TPB,),
+            )
+            indices_dev = idx^
+            seed_dev = seed^
+            shuf_x_dev = sx^
+            shuf_y_dev = sy^
 
-        # ── Histories ─────────────────────────────────────────────────────
-        var val_loss_history = List[Float64]()
-        var val_top1_history = List[Float64]()
-        var lr_scale_history = List[Float64]()
-
-        var final_loss: Float64 = 0.0
-
-        # ── Per-epoch loop ────────────────────────────────────────────────
         for epoch in range(epochs):
-            # 1. LR schedule. Writes the new scale to a device slot via a
-            # 1-thread kernel — outside any CUDA-graph capture, so subsequent
-            # captured optimizer-step kernels read the updated value at replay.
-            var lr_s = SCHEDULER.lr_scale_at(epoch, epochs)
-            state.set_lr_scale(lr_s, ctx)
-            lr_scale_history.append(lr_s)
-
-            # 2. Augmentation (no-op for IdentityAugmenter)
-            AUGMENTER.augment[N_TRAIN, Self.MODEL.IN_DIM, Self.dtype](
-                ctx, aug_lt, train_input, epoch, aug_seed
-            )
-
-            # 3. One epoch of training on the (possibly) augmented input
-            var result = Self.train_gpu_minibatch[
-                BATCH, N_TRAIN, USE_CUDA_GRAPH=False
-            ](
-                state,
-                ctx,
-                aug_lt,
-                train_target,
-                epochs=1,
-                print_every_batches=0,
-                shuffle=shuffle,
-                rng_seed=rng_seed + UInt64(epoch),
-            )
-            final_loss = result.final_loss
-
-            # 4. Validation pass
-            var is_eval_epoch = (
-                eval_every_epochs > 0
-                and (
-                    (epoch + 1) % eval_every_epochs == 0
-                    or epoch == epochs - 1
+            var t0 = perf_counter_ns()
+            var epoch_loss: Scalar[DT] = 0.0
+            if shuffle:
+                var idx_t = LayoutTensor[
+                    DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+                ](indices_dev.value().unsafe_ptr())
+                var seed_t = LayoutTensor[
+                    DType.uint64, Layout.row_major(1), MutAnyOrigin
+                ](seed_dev.value().unsafe_ptr())
+                ctx.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
+                    idx_t, seed_t, grid_dim=(1,), block_dim=(1,)
                 )
-            )
-            if is_eval_epoch and N_VAL_BATCHES > 0:
-                var p_view = state.params_view()
-                var s_view = state.model_state_view()
-                for batch_idx in range(N_VAL_BATCHES):
-                    var batch_input = LayoutTensor[
-                        Self.dtype,
-                        Layout.row_major(BATCH, Self.MODEL.IN_DIM),
+                ctx.enqueue_function[increment_seed_kernel](
+                    seed_t, grid_dim=(1,), block_dim=(1,)
+                )
+            # LR schedule for this epoch.
+            comptime if USE_SCHED:
+                self.optim.set_lr(
+                    base_lr * Scalar[DT](SCHEDULER.lr_scale_at(epoch, epochs))
+                )
+            # BN → train mode; (re)build the augmented training set.
+            self.net.set_attr["training"](Scalar[DT](1.0))
+            comptime if USE_AUG:
+                var raw_lt = LayoutTensor[
+                    DT, Layout.row_major(N_TRAIN, Self.IN_DIM), MutAnyOrigin
+                ](raw_x)
+                var aug_lt = LayoutTensor[
+                    DT, Layout.row_major(N_TRAIN, Self.IN_DIM), MutAnyOrigin
+                ](aug_dev.value().unsafe_ptr())
+                AUGMENTER.augment[N_TRAIN, Self.IN_DIM, DT](
+                    ctx, aug_lt, raw_lt, epoch, aug_seed
+                )
+            for b in range(N_BATCHES_TRAIN):
+                if shuffle:
+                    var full_x_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(N_TRAIN, Self.IN_DIM),
                         MutAnyOrigin,
+                    ](x_base)
+                    var full_y_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(N_TRAIN, Self.OUT_DIM),
+                        MutAnyOrigin,
+                    ](y_base)
+                    var idx_t = LayoutTensor[
+                        DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+                    ](indices_dev.value().unsafe_ptr())
+                    var sx_p = shuf_x_dev.value().unsafe_ptr()
+                    var sy_p = shuf_y_dev.value().unsafe_ptr()
+                    var shuf_x_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(Self.BATCH, Self.IN_DIM),
+                        MutAnyOrigin,
+                    ](sx_p)
+                    var shuf_y_t = LayoutTensor[
+                        DT,
+                        Layout.row_major(Self.BATCH, Self.OUT_DIM),
+                        MutAnyOrigin,
+                    ](sy_p)
+                    var offset = b * Self.BATCH
+                    ctx.enqueue_function[
+                        gather_rows_kernel[N_TRAIN, Self.BATCH, Self.IN_DIM, DT]
                     ](
-                        val_input.ptr + batch_idx * BATCH * Self.MODEL.IN_DIM
-                    )
-                    var batch_labels = LayoutTensor[
-                        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
-                    ](val_labels.ptr + batch_idx * BATCH)
-
-                    Self.MODEL.forward_gpu_no_cache[BATCH](
-                        ctx,
-                        eval_output_lt,
-                        batch_input,
-                        p_view,
-                        s_view,
-                        eval_ws_buf,
-                    )
-                    ctx.enqueue_function[argmax_match_kernel[
-                            BATCH,
-                            Self.MODEL.OUT_DIM,
-                            N_VAL_BATCHES,
-                            Self.dtype,
-                        ]](
-                        per_batch_correct_lt,
-                        eval_output_lt,
-                        batch_labels,
-                        batch_idx,
-                        grid_dim=(1,),
+                        shuf_x_t,
+                        full_x_t,
+                        idx_t,
+                        offset,
+                        grid_dim=(BLOCKS_GATHER_X,),
                         block_dim=(TPB,),
                     )
-                    ctx.enqueue_function[ce_loss_from_labels_kernel[
-                            BATCH,
-                            Self.MODEL.OUT_DIM,
-                            N_VAL_BATCHES,
-                            Self.dtype,
-                        ]](
-                        per_batch_loss_lt,
-                        eval_output_lt,
-                        batch_labels,
-                        batch_idx,
-                        grid_dim=(1,),
+                    ctx.enqueue_function[
+                        gather_rows_kernel[
+                            N_TRAIN, Self.BATCH, Self.OUT_DIM, DT
+                        ]
+                    ](
+                        shuf_y_t,
+                        full_y_t,
+                        idx_t,
+                        offset,
+                        grid_dim=(BLOCKS_GATHER_Y,),
                         block_dim=(TPB,),
                     )
-
-                ctx.enqueue_copy(per_batch_loss_host, per_batch_loss_buf)
-                ctx.enqueue_copy(
-                    per_batch_correct_host, per_batch_correct_buf
-                )
-                ctx.synchronize()
-
-                var loss_sum: Float64 = 0
-                var correct_sum: Float64 = 0
-                for i in range(N_VAL_BATCHES):
-                    loss_sum += Float64(per_batch_loss_host[i])
-                    correct_sum += Float64(per_batch_correct_host[i])
-                var avg_loss = loss_sum / Float64(N_VAL_BATCHES)
-                var top1 = correct_sum / Float64(N_VAL_BATCHES * BATCH)
-                val_loss_history.append(avg_loss)
-                val_top1_history.append(top1)
-
-                if show_progress:
-                    clear_progress_bar()
-                    print(
-                        "  epoch "
-                        + String(epoch + 1)
-                        + "/"
-                        + String(epochs)
-                        + "  train_loss="
-                        + String(Float32(final_loss))
-                        + "  val_loss="
-                        + String(avg_loss)
-                        + "  top1="
-                        + String(top1)
-                        + "  lr_scale="
-                        + String(lr_s)
+                    var input = TileTensor(
+                        sx_p, row_major[Self.BATCH, Self.IN_DIM]()
                     )
+                    var targets = TileTensor(
+                        sy_p, row_major[Self.BATCH, Self.OUT_DIM]()
+                    )
+                    epoch_loss += self._train_step_views(input, targets)
+                else:
+                    var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
+                    var y_ptr = y_base + b * Self.BATCH * Self.OUT_DIM
+                    var input = TileTensor(
+                        x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
+                    )
+                    var targets = TileTensor(
+                        y_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
+                    )
+                    epoch_loss += self._train_step_views(input, targets)
+            ctx.synchronize()
+            var t1 = perf_counter_ns()
+            var train_s = Float64(t1 - t0) / 1e9
 
-            # 5. Progress bar (after eval so the eval line is above it)
-            if show_progress:
-                print_progress_bar(
-                    epoch + 1,
-                    epochs,
-                    (epoch + 1) * BATCHES_PER_EPOCH,
-                    progress_label,
+            self.net.set_attr["training"](Scalar[DT](0.0))  # BN → eval mode
+            var top1 = self.eval_top1_gpu[N_TEST](test_x, test_y_labels)
+            var t2 = perf_counter_ns()
+            var eval_s = Float64(t2 - t1) / 1e9
+
+            var avg = Float64(epoch_loss / Scalar[DT](N_BATCHES_TRAIN))
+            result.epoch_train_loss.append(avg)
+            result.epoch_test_top1.append(top1)
+            result.epoch_train_s.append(train_s)
+            result.epoch_eval_s.append(eval_s)
+            if print_progress:
+                print(
+                    "epoch "
+                    + String(epoch)
+                    + " | train_loss="
+                    + String(avg)
+                    + " | test_top1="
+                    + String(top1 * 100.0)
+                    + "%"
+                    + " | train="
+                    + String(train_s)
+                    + "s"
+                    + " | eval="
+                    + String(eval_s)
+                    + "s"
                 )
+        return result^
 
-        if show_progress:
-            clear_progress_bar()
-
-        return TrainResultFull(
-            final_loss,
-            epochs,
-            val_loss_history^,
-            val_top1_history^,
-            lr_scale_history^,
-        )
-
-    # =========================================================================
-    # GPU Standalone Evaluation
-    # =========================================================================
-
-    @staticmethod
-    def evaluate_gpu[
-        BATCH: Int,
-        N_VAL: Int,
+    def eval_top1_gpu[
+        N_TEST: Int,
     ](
-        mut state: GPUNetworkState[Self.MODEL, Self.OPTIMIZER, Self.dtype],
-        ctx: DeviceContext,
-        val_input: LayoutTensor[
-            Self.dtype,
-            Layout.row_major(N_VAL, Self.MODEL.IN_DIM),
-            MutAnyOrigin,
+        mut self,
+        test_x: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        val_labels: LayoutTensor[
-            DType.int32, Layout.row_major(N_VAL), MutAnyOrigin
-        ],
-    ) raises -> EvalResult:
-        """Run a forward-only pass over the validation set on GPU.
+        test_y_labels: List[Int32],
+    ) raises -> Float64:
+        comptime assert (
+            Self.target == "gpu"
+        ), "Trainer.eval_top1_gpu requires target='gpu'"
+        comptime assert (
+            N_TEST % Self.BATCH == 0
+        ), "Trainer.eval_top1_gpu: N_TEST must be divisible by BATCH"
+        comptime N_BATCHES = N_TEST // Self.BATCH
 
-        Iterates `N_VAL // BATCH` batches, computing per-batch top-1 and
-        CE loss via the same kernels used inside `train_gpu_minibatch_full`,
-        then host-reduces both arrays after a single `synchronize()`.
-
-        Useful for one-off eval calls (initial baseline, post-training
-        full-test eval, debugging snapshots) where the buffer-reuse savings
-        of the integrated trainer-loop eval don't matter.
-
-        Parameters:
-            BATCH: Samples per forward pass.
-            N_VAL: Validation set size (compile-time). Trailing partial batch
-                (`N_VAL % BATCH`) is skipped.
-
-        Args:
-            state: GPU network state (read; `params_view` requires `mut self`
-                on the trait, but no field is mutated).
-            ctx: GPU device context.
-            val_input: Device tensor [N_VAL, IN_DIM].
-            val_labels: Device int32 tensor [N_VAL] of class indices.
-
-        Returns:
-            EvalResult with averaged CE loss and top-1 accuracy across the
-            BATCH-aligned prefix.
-        """
-        comptime N_VAL_BATCHES = N_VAL // BATCH
-        comptime EVAL_OUT_SIZE = BATCH * Self.MODEL.OUT_DIM
-        comptime EVAL_WS_SIZE = BATCH * Self.MODEL.WORKSPACE_SIZE_PER_SAMPLE
-
-        var output_buf = ctx.enqueue_create_buffer[Self.dtype](EVAL_OUT_SIZE)
-        var ws_buf = ctx.enqueue_create_buffer[Self.dtype](
-            EVAL_WS_SIZE if EVAL_WS_SIZE > 0 else 1
-        )
-        var per_batch_loss_buf = ctx.enqueue_create_buffer[Self.dtype](
-            N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1
-        )
-        var per_batch_correct_buf = ctx.enqueue_create_buffer[Self.dtype](
-            N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1
-        )
-        var per_batch_loss_host = ctx.enqueue_create_host_buffer[Self.dtype](
-            N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1
-        )
-        var per_batch_correct_host = ctx.enqueue_create_host_buffer[
-            Self.dtype
-        ](N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1)
-
-        var output_lt = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(BATCH, Self.MODEL.OUT_DIM),
-            MutAnyOrigin,
-        ](output_buf.unsafe_ptr())
-        var per_batch_loss_lt = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1),
-            MutAnyOrigin,
-        ](per_batch_loss_buf.unsafe_ptr())
-        var per_batch_correct_lt = LayoutTensor[
-            Self.dtype,
-            Layout.row_major(N_VAL_BATCHES if N_VAL_BATCHES > 0 else 1),
-            MutAnyOrigin,
-        ](per_batch_correct_buf.unsafe_ptr())
-
-        if N_VAL_BATCHES == 0:
-            return EvalResult(0.0, 0.0)
-
-        var p_view = state.params_view()
-        var s_view = state.model_state_view()
-        for batch_idx in range(N_VAL_BATCHES):
-            var batch_input = LayoutTensor[
-                Self.dtype,
-                Layout.row_major(BATCH, Self.MODEL.IN_DIM),
-                MutAnyOrigin,
-            ](val_input.ptr + batch_idx * BATCH * Self.MODEL.IN_DIM)
-            var batch_labels = LayoutTensor[
-                DType.int32, Layout.row_major(BATCH), MutAnyOrigin
-            ](val_labels.ptr + batch_idx * BATCH)
-
-            Self.MODEL.forward_gpu_no_cache[BATCH](
-                ctx, output_lt, batch_input, p_view, s_view, ws_buf
+        var ctx = self.ctx.value()
+        var out_host: HostBuffer[DT] = self.output_host.value()
+        var x_base = test_x.ptr
+        var n_correct: Int = 0
+        for b in range(N_BATCHES):
+            var x_ptr_my = mptr(x_base + b * Self.BATCH * Self.IN_DIM)
+            var out_ptr_my = mptr(self.output_dev.value().unsafe_ptr())
+            var input = TileTensor(
+                x_ptr_my, row_major[Self.BATCH, Self.IN_DIM]()
             )
-            ctx.enqueue_function[argmax_match_kernel[
-                    BATCH, Self.MODEL.OUT_DIM, N_VAL_BATCHES, Self.dtype
-                ]](
-                per_batch_correct_lt,
-                output_lt,
-                batch_labels,
-                batch_idx,
-                grid_dim=(1,),
-                block_dim=(TPB,),
+            var output = TileTensor(
+                out_ptr_my,
+                row_major[Self.BATCH, Self.OUT_DIM](),
             )
-            ctx.enqueue_function[ce_loss_from_labels_kernel[
-                    BATCH, Self.MODEL.OUT_DIM, N_VAL_BATCHES, Self.dtype
-                ]](
-                per_batch_loss_lt,
-                output_lt,
-                batch_labels,
-                batch_idx,
-                grid_dim=(1,),
-                block_dim=(TPB,),
+            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                input, output=output
             )
-
-        ctx.enqueue_copy(per_batch_loss_host, per_batch_loss_buf)
-        ctx.enqueue_copy(per_batch_correct_host, per_batch_correct_buf)
-        ctx.synchronize()
-
-        var loss_sum: Float64 = 0
-        var correct_sum: Float64 = 0
-        for i in range(N_VAL_BATCHES):
-            loss_sum += Float64(per_batch_loss_host[i])
-            correct_sum += Float64(per_batch_correct_host[i])
-        return EvalResult(
-            loss_sum / Float64(N_VAL_BATCHES),
-            correct_sum / Float64(N_VAL_BATCHES * BATCH),
-        )
+            ctx.enqueue_copy(out_host, self.output_dev.value())
+            ctx.synchronize()
+            for k in range(Self.BATCH):
+                var best_c: Int = 0
+                var best_v: Scalar[DT] = out_host.unsafe_ptr()[
+                    k * Self.OUT_DIM + 0
+                ]
+                for c in range(1, Self.OUT_DIM):
+                    var v = out_host.unsafe_ptr()[k * Self.OUT_DIM + c]
+                    if v > best_v:
+                        best_v = v
+                        best_c = c
+                if best_c == Int(test_y_labels[b * Self.BATCH + k]):
+                    n_correct += 1
+        return Float64(n_correct) / Float64(N_TEST)

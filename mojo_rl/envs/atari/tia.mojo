@@ -48,13 +48,8 @@ from .flags import (
     CX_P0P1,
     CX_M0M1,
     FLAG_CON_FIRE,
-)
-from .tables import (
-    player_mask,
-    missile_mask,
-    ball_mask,
-    playfield_mask,
-    collision_mask,
+    FLAG_SWAP_PORTS,
+    FLAG_PADDLES,
 )
 
 
@@ -63,90 +58,99 @@ from .tables import (
 # ============================================================================
 
 
-@always_inline
+# @no_inline (compile-size hygiene): inlined, the TIA/RIOT device layer
+# multiplies through mem_read/mem_write's 77 call sites in execute_one,
+# ballooning it toward ~210K lines of LLVM IR (together with live
+# debug_assert bounds checks — see `-D ASSERT=none`). TIA/RIOT accesses are
+# rare relative to instructions — the call is noise (no measured fps cost,
+# trajectory checksum identical). RAM/ROM fast paths stay inline in
+# mem_read/mem_write.
+@no_inline
 def tia_read(state: AtariState, addr: UInt8) -> UInt8:
-    """Read a TIA register. Only collision and input registers are readable."""
+    """Read a TIA register. Only collision and input registers are readable,
+    and they only drive bits 7/6 — the low 6 bits leak the previous data-bus
+    byte (Stella TIA::peek `noise = dataBusState & 0x3F`). For a zero-page
+    read the last bus byte is the operand, so e.g. Haunted House's
+    `SBC $0f` on unmapped TIA $0F reads back 15 — its divide-by-15 divisor.
+    """
     var reg = addr & 0x0F
+    var noise = state.data_bus & 0x3F
+    var val: UInt8 = 0
 
     # Collision registers (0x00-0x07)
     if reg == 0x00:  # CXM0P
-        var val: UInt8 = 0
         if (state.collision & CX_M0P1) != 0:
             val = val | 0x80
         if (state.collision & CX_M0P0) != 0:
             val = val | 0x40
-        return val
     elif reg == 0x01:  # CXM1P
-        var val: UInt8 = 0
         if (state.collision & CX_M1P0) != 0:
             val = val | 0x80
         if (state.collision & CX_M1P1) != 0:
             val = val | 0x40
-        return val
     elif reg == 0x02:  # CXP0FB
-        var val: UInt8 = 0
         if (state.collision & CX_P0PF) != 0:
             val = val | 0x80
         if (state.collision & CX_P0BL) != 0:
             val = val | 0x40
-        return val
     elif reg == 0x03:  # CXP1FB
-        var val: UInt8 = 0
         if (state.collision & CX_P1PF) != 0:
             val = val | 0x80
         if (state.collision & CX_P1BL) != 0:
             val = val | 0x40
-        return val
     elif reg == 0x04:  # CXM0FB
-        var val: UInt8 = 0
         if (state.collision & CX_M0PF) != 0:
             val = val | 0x80
         if (state.collision & CX_M0BL) != 0:
             val = val | 0x40
-        return val
     elif reg == 0x05:  # CXM1FB
-        var val: UInt8 = 0
         if (state.collision & CX_M1PF) != 0:
             val = val | 0x80
         if (state.collision & CX_M1BL) != 0:
             val = val | 0x40
-        return val
     elif reg == 0x06:  # CXBLPF
-        var val: UInt8 = 0
         if (state.collision & CX_BLPF) != 0:
             val = val | 0x80
-        return val
     elif reg == 0x07:  # CXPPMM
-        var val: UInt8 = 0
         if (state.collision & CX_P0P1) != 0:
             val = val | 0x80
         if (state.collision & CX_M0M1) != 0:
             val = val | 0x40
-        return val
 
     # Input ports (0x08-0x0D)
     elif reg == 0x08:  # INPT0 - Paddle 0 (Player 0 paddle)
         # Paddle: bit 7 = 1 when capacitor charge >= paddle position
         if state.paddle_charge >= state.paddle_pos:
-            return 0x80
-        return 0x00
+            val = 0x80
     elif reg == 0x09:  # INPT1 - Paddle 1 (right paddle in Pong)
         # Same paddle input — Pong reads INPT1 for the human player
         if state.paddle_charge >= state.paddle_pos:
-            return 0x80
-        return 0x00
+            val = 0x80
     elif reg == 0x0A:  # INPT2 - Paddle 2
-        return 0x80
+        val = 0x80
     elif reg == 0x0B:  # INPT3 - Paddle 3
-        return 0x80
-    elif reg == 0x0C:  # INPT4 - Player 0 fire button
-        if (state.sys_flags & FLAG_CON_FIRE) != 0:
-            return 0x00  # Button pressed (bit 7 = 0)
-        return 0x80  # Not pressed (bit 7 = 1)
-    elif reg == 0x0D:  # INPT5 - Player 1 fire button
-        return 0x80  # Not pressed (no player 2)
-    else:
-        return 0x00
+        val = 0x80
+    elif reg == 0x0C:  # INPT4 - left-port fire button
+        if (state.sys_flags & FLAG_PADDLES) != 0:
+            val = 0x80  # Paddle cart: fire is a SWCHA button, INPT4 floats
+        elif (state.sys_flags & FLAG_SWAP_PORTS) != 0:
+            val = 0x80  # Player 1 is on the right port
+        elif (state.sys_flags & FLAG_CON_FIRE) != 0:
+            val = 0x00  # Button pressed (bit 7 = 0)
+        else:
+            val = 0x80  # Not pressed (bit 7 = 1)
+    elif reg == 0x0D:  # INPT5 - right-port fire button
+        if (state.sys_flags & FLAG_PADDLES) != 0:
+            val = 0x80
+        elif (state.sys_flags & FLAG_SWAP_PORTS) != 0 and (
+            state.sys_flags & FLAG_CON_FIRE
+        ) != 0:
+            val = 0x00
+        else:
+            val = 0x80
+    # 0x0E/0x0F: unmapped — pure bus noise
+
+    return val | noise
 
 
 # ============================================================================
@@ -172,7 +176,8 @@ def _resp_pos(clock: Int) -> UInt8:
     return UInt8(((hpos - HBLANK_CLOCKS) + 5) % FRAME_WIDTH)
 
 
-@always_inline
+# @no_inline: see tia_read — compile-memory boundary.
+@no_inline
 def tia_write(mut state: AtariState, addr: UInt8, value: UInt8):
     """Write a TIA register."""
     var reg = addr & 0x3F
@@ -384,67 +389,3 @@ def _apply_hmove(mut state: AtariState):
     state.pos_m1 = _clamp_pos(Int(state.pos_m1) - _hm_to_signed(state.hm_m1))
     state.pos_bl = _clamp_pos(Int(state.pos_bl) - _hm_to_signed(state.hm_bl))
     state.tia_flags = state.tia_flags | TIA_HMOVE
-
-
-# ============================================================================
-# TIA Collision Detection (per-scanline)
-# ============================================================================
-
-
-@always_inline
-@always_inline
-def tia_update_collision(mut state: AtariState, clock_pos: Int):
-    """Update collision registers for one pixel position.
-
-    This is called during frame emulation for each visible pixel.
-    It checks which objects are present at this position and sets
-    the corresponding collision bits.
-    """
-    var pf = playfield_mask(state, clock_pos)
-    var p0 = player_mask(state, 0, clock_pos)
-    var p1 = player_mask(state, 1, clock_pos)
-    var m0 = missile_mask(state, 0, clock_pos)
-    var m1 = missile_mask(state, 1, clock_pos)
-    var bl = ball_mask(state, clock_pos)
-
-    # Update collision bits
-    if m0 and p1:
-        state.collision = state.collision | CX_M0P1
-    if m0 and p0:
-        state.collision = state.collision | CX_M0P0
-    if m1 and p0:
-        state.collision = state.collision | CX_M1P0
-    if m1 and p1:
-        state.collision = state.collision | CX_M1P1
-    if p0 and pf:
-        state.collision = state.collision | CX_P0PF
-    if p0 and bl:
-        state.collision = state.collision | CX_P0BL
-    if p1 and pf:
-        state.collision = state.collision | CX_P1PF
-    if p1 and bl:
-        state.collision = state.collision | CX_P1BL
-    if m0 and pf:
-        state.collision = state.collision | CX_M0PF
-    if m0 and bl:
-        state.collision = state.collision | CX_M0BL
-    if m1 and pf:
-        state.collision = state.collision | CX_M1PF
-    if m1 and bl:
-        state.collision = state.collision | CX_M1BL
-    if bl and pf:
-        state.collision = state.collision | CX_BLPF
-    if p0 and p1:
-        state.collision = state.collision | CX_P0P1
-    if m0 and m1:
-        state.collision = state.collision | CX_M0M1
-
-
-@always_inline
-def tia_update_frame_scanline(mut state: AtariState):
-    """Process collision detection for one scanline.
-
-    During visible scanlines, check all 160 pixel positions for collisions.
-    """
-    for pixel in range(FRAME_WIDTH):
-        tia_update_collision(state, pixel)

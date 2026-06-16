@@ -94,9 +94,30 @@ def _render_pong_frame(
     p_score: Int,
     c_score: Int,
 ):
-    """Render Pong game state to 160×210 grayscale buffer."""
-    clear_frame(buf)
+    """Render Pong game state to 160×210 grayscale buffer (clear + draw).
 
+    Used by the CPU single-env path. The GPU batched path splits these
+    two steps so it can parallelise the (dominant) framebuffer clear
+    across pixels — see `_draw_pong_frame` and `step_kernel_gpu`."""
+    clear_frame(buf)
+    _draw_pong_frame(buf, bx, by, pad_y, cpu_y, p_score, c_score)
+
+
+@always_inline
+def _draw_pong_frame(
+    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    bx: Int,
+    by: Int,
+    pad_y: Int,
+    cpu_y: Int,
+    p_score: Int,
+    c_score: Int,
+):
+    """Draw Pong primitives onto an ALREADY-CLEARED 160×210 buffer.
+
+    Split out of `_render_pong_frame` so the GPU batched path can run the
+    framebuffer clear as a separate element-parallel kernel (1 thread per
+    pixel) while keeping the cheap primitive drawing per-env."""
     # Center dashed line
     draw_dashed_vline(buf, SCREEN_W // 2, 0, SCREEN_H, 4, 4, COLOR_GRAY)
 
@@ -444,12 +465,14 @@ struct PongPixelEnv[
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed = Scalar[DType.uint64](rng_seed)
 
-        # ── Kernel 1: Physics + Render (1 thread per env) ──
-        # With FRAME_SKIP > 1, physics runs N times per action, rewards accumulate,
-        # and only the final frame is rendered.
+        # ── Kernel 1a: Physics (1 thread per env) ──
+        # With FRAME_SKIP > 1, physics runs N times per action and rewards
+        # accumulate. Rendering is split into the clear (1b) + draw (1c)
+        # kernels below so the dominant framebuffer clear runs element-parallel
+        # instead of serially inside one thread per env.
         @parameter
         @always_inline
-        def physics_render_wrapper(
+        def physics_wrapper(
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
@@ -467,7 +490,6 @@ struct PongPixelEnv[
             terminated_out: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
-            ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
             rng_seed: Scalar[DType.uint64],
         ):
             # First physics step (action applied normally)
@@ -500,10 +522,67 @@ struct PongPixelEnv[
 
             terminated_out[idx] = dones[idx]
 
+        ctx.enqueue_function[physics_wrapper](
+            states,
+            actions,
+            rewards,
+            dones,
+            terminated_out,
+            seed,
+            grid_dim=(BLOCKS,),
+            block_dim=(Self.TPB,),
+        )
+
+        # ── Kernel 1b: Clear framebuffers (1 thread per (env × pixel)) ──
+        # The dominant render cost was `clear_frame` (160×210 = 33600 byte
+        # writes) run serially in one thread per env; here it is fully
+        # element-parallel + coalesced. Writes 0 to every byte, matching
+        # `clear_frame`.
+        comptime FB_SIZE = SCREEN_W * SCREEN_H
+        comptime CLEAR_TOTAL = BATCH_SIZE * FB_SIZE
+        comptime CLEAR_TPB = 256
+        comptime CLEAR_BLOCKS = (CLEAR_TOTAL + CLEAR_TPB - 1) // CLEAR_TPB
+
+        @parameter
+        @always_inline
+        def clear_wrapper(
+            ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+        ):
+            var tid = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if tid >= CLEAR_TOTAL:
+                return
+            var env_idx = tid // FB_SIZE
+            var pixel = tid % FB_SIZE
+            var env_ws = ws_ptr + env_idx * PIXEL_WS_PER_ENV
+            var frame_buf = env_ws.bitcast[UInt8]()
+            frame_buf[pixel] = UInt8(0)
+
+        ctx.enqueue_function[clear_wrapper](
+            workspace_ptr.value(),
+            grid_dim=(CLEAR_BLOCKS,),
+            block_dim=(CLEAR_TPB,),
+        )
+
+        # ── Kernel 1c: Draw primitives (1 thread per env) ──
+        # Paddles + ball + dashed line + scores onto the just-cleared buffer.
+        # Tiny vs the clear (a few hundred pixels), so per-env is fine. Must
+        # follow both physics (reads new positions) and clear (writes buffer).
+        @parameter
+        @always_inline
+        def draw_wrapper(
+            states: LayoutTensor[
+                gpu_dtype,
+                Layout.row_major(BATCH_SIZE, STATE_SIZE),
+                MutAnyOrigin,
+            ],
+            ws_ptr: UnsafePointer[Scalar[gpu_dtype], MutAnyOrigin],
+        ):
+            var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if idx >= BATCH_SIZE:
+                return
             var env_ws = ws_ptr + idx * PIXEL_WS_PER_ENV
             var frame_buf = env_ws.bitcast[UInt8]()
-
-            _render_pong_frame(
+            _draw_pong_frame(
                 frame_buf,
                 Int(states[idx, S_BALL_X]),
                 Int(states[idx, S_BALL_Y]),
@@ -513,14 +592,9 @@ struct PongPixelEnv[
                 Int(states[idx, S_CPU_SCORE]),
             )
 
-        ctx.enqueue_function[physics_render_wrapper](
+        ctx.enqueue_function[draw_wrapper](
             states,
-            actions,
-            rewards,
-            dones,
-            terminated_out,
             workspace_ptr.value(),
-            seed,
             grid_dim=(BLOCKS,),
             block_dim=(Self.TPB,),
         )

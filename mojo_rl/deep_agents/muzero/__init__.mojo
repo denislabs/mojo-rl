@@ -1,46 +1,32 @@
-# MuZero: Model-Based RL with Learned Model and MCTS Planning
-# Learns representation, dynamics, and prediction networks. Uses Monte Carlo
-# Tree Search (MCTS) with the learned model for action selection. Trains via
-# K-step unrolled forward/backward through all three networks.
-#
-# Reference: Schrittwieser et al., 2020 — Mastering Atari, Go, Chess and
-# Shogi by Planning with a Learned Model (Nature)
+# MuZero on nn + deep_agents (Phase B). Learned model h/g/f + K-step unroll
+# BPTT + MCTS planning (learned dynamics) + n-step targets w/ two-player sign
+# flips. Builds on the shared `deep_agents/zero/` infrastructure.
 
-from .configs import (
-    MuZeroConfig,
-    MuZeroMLPConfig,
-    MuZeroCNNConfig,
-    MuZeroResNetConfig,
-    MuZeroLargeConfig,
-    EfficientZeroConfig,
-    MuZeroTicTacToeConfig,
-    MuZeroTicTacToeCNNConfig,
-    MuZeroConnectFourConfig,
+from .nets import MZRepNet, MZRepNetCNN, MZRepNetC4Conv, MZDynNet, MZPredNet
+from .nets_spatial import (
+    MZRepNetC4Spatial,
+    MZDynNetC4Spatial,
+    MZPredNetC4Spatial,
 )
-# Strategy + value-encoding traits live in planners. Re-exported here so
-# existing `from mojo_rl.deep_agents.muzero import SelfPlay, ...` style
-# imports still work for downstream consumers.
-from mojo_rl.planners.tree_search.strategies import (
-    SearchMode, LearnedDynamics, TrueGameRules,
-    HiddenScaling, MinMaxScale, NoScale,
-    ExplorationNoise, DirichletNoise, EpsilonNoise, NoNoise,
-    PUCTFormula, MuZeroPUCT, AlphaGoPUCT, UCB1Formula,
-    BackupMode, NStepBootstrap, MonteCarloReturn, LambdaReturn,
-    PlayerMode, SinglePlayer, SelfPlay,
+from .blocks import mz_unroll_train_step_cpu, mz_unroll_train_step_gpu
+from .config import MuZeroMLPConfig, MuZeroCNNConfig
+from .agent import MuZeroAgent
+from .batched_agent import MuZeroBatchedAgent
+from .selfplay_cpu import run_muzero_selfplay_cpu
+from .selfplay_gpu import run_muzero_selfplay_gpu, mz_sync_gpu_to_cpu
+from .selfplay_gpu_device import (
+    run_muzero_selfplay_gpu_device,
+    run_muzero_gumbel_selfplay_gpu,
 )
-from mojo_rl.planners.common.value_encoding import (
-    ValueEncoding, CategoricalEncoding, ScalarEncoding, SymlogEncoding,
+from .selfplay_gpu_batched import (
+    run_muzero_gumbel_selfplay_gpu_batched,
+    run_muzero_gumbel_selfplay_gpu_batched_devreplay,
 )
-from .state import MuZeroCPUState, MuZeroGPUState
-from .muzero import GenericMuZeroAgent
-# Legacy CPU MCTS (.mcts) removed 2026-05-21: all CPU MCTS now routes
-# through ``planners.tree_search.GenericCPUMCTS`` via the agent's
-# ``_mcts_search_visits_cpu`` helper. GPU MCTS state still re-exported
-# via the planner module directly (the legacy ``.gpu_mcts`` shim was
-# also retired in the same pass).
-from mojo_rl.planners.tree_search.mcts_gpu import GPUMCTSState
-from .utils import scalar_transform, inverse_scalar_transform, MinMaxStats
-from .evaluators import (
-    Evaluator, GPUEvaluator,
-    RandomOpponent, MinimaxTicTacToe, GPUMinimaxTicTacToe, GPUMinimaxConnectFour,
+from .selfplay_2p_cpu import run_muzero_selfplay_2p_cpu
+from .selfplay_arena_gumbel_2p import (
+    run_muzero_selfplay_arena_gumbel_2p,
+    mz_candidate_winrate,
+    mz_eval_both_colors,
+    MZArenaResult,
+    MZArenaRunResult,
 )

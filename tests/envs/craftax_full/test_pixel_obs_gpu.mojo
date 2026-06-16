@@ -21,7 +21,7 @@ from mojo_rl.envs.craftax_full import (
     STATE_SIZE,
 )
 from mojo_rl.envs.craftax_full.craftax_full_pixel import ATLAS_FLOATS
-from mojo_rl.nn import dtype
+from mojo_rl.nn.constants import DT as dtype
 
 
 comptime BATCH: Int = 1

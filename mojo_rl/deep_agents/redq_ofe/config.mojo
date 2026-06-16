@@ -1,245 +1,675 @@
-"""REDQ-OFE configuration.
+"""REDQ-OFE named presets — Design F config descriptors + factories.
 
-REDQ-OFE = REDQ + OFENet (Ota et al., "Can Increasing Input Dimensionality
-Improve Deep RL?", ICML 2020). A DenseNet-style feature extractor is
-trained alongside the RL agent via auxiliary next-state prediction loss.
-Actor and critics consume OFE features (phi_s, phi_sa) as stop-gradient
-inputs — OFE params are updated ONLY by the aux loss, matching the
-paper's `teflon/policy/SAC.py:train_for_batch` which computes gradients
-against critic.trainable_variables only.
+Same shape as `redq/config.mojo` with the OFE-specific extensions:
 
-Architecture (DenseNet variant with LayerNorm):
-  - num_layers blocks in state branch, num_layers in action branch
-  - per_unit = total_units / num_layers new features per block
-  - block = Linear(per_unit) -> LayerNorm -> Swish -> concat(input, .)
-    (LayerNorm replaces the paper's BN — see composites_ofenet.mojo
-     docstring for the rationale.)
+  1. `REDQOFEConfigT` — trait bundling REDQ comptime knobs PLUS the
+     three OFE networks (`SB`, `AB`, `PRED`) and a tuned `DEF_OFE_LR`.
+  2. `REDQOFE6Config` (6-layer branches, per_unit=40) and
+     `REDQOFE8Config` (8-layer branches, per_unit=30) — zero-field
+     comptime tags. Both bake N=2/M=2/UTD=1/POLICY_DELAY=1 as the
+     default REDQ knobs, matching `SmallREDQConfig`'s SAC-shape
+     regime — the cheapest knobs that demonstrate the OFE
+     contribution (the aux feature pre-pass). Tune `N`/`UTD` upward
+     via the primitive `REDQOFEAgent[…]` for paper-faithful runs.
+  3. `agent_from_config_ofe` + capitalized `REDQOFE6` / `REDQOFE8`
+     presets:
 
-Configs from `references/OFENet-main/gins/`:
-  - HalfCheetah, Hopper, Walker2d: total_units=240, num_layers=6 -> per_unit=40
-  - Ant, Humanoid:                 total_units=240, num_layers=8 -> per_unit=30
+         var agent = REDQOFE6["cpu", OBS=11, ACT=3, BATCH=256, CAP=…](ctx=None)
+
+Width math (matching `ofe_nets.mojo`):
+  - 6 blocks, per_unit=40 → PHI_S_DIM = OBS + 240,
+    PHI_SA_DIM = OBS + ACT + 480
+  - 8 blocks, per_unit=30 → PHI_S_DIM = OBS + 240,
+    PHI_SA_DIM = OBS + ACT + 480
+
+(Both presets produce φ-width = 240 added features; the 6 vs 8 split
+is the branch *depth* trade-off — 8 deeper layers, narrower per-block
+growth.)
 """
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.model import (
-    Model,
-    Linear,
-    LinearReLU,
-    LinearTanh,
-    Sequential,
-    Parallel,
-    LayerNorm,
-    ReLU,
+from std.gpu.host import DeviceContext
+
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.combinators.sequential import Sequential
+
+from ..primitives.stochastic_actor import StochasticActor
+from ..training.blocks import SampleBlock, ReplaySampleStep
+from ..data.any_replay import AnyReplay
+
+from .agent import REDQOFEAgent
+from .ofe_nets import (
+    OFEStateBranch6, OFEStateBranch8,
+    OFEActionBranch6, OFEActionBranch8,
+    OFEPredictorHead,
+    state_branch_out_dim, action_branch_out_dim,
 )
-from mojo_rl.nn.optimizer import Optimizer, Adam
-from mojo_rl.nn.composites_ofenet import StateBranch6, StateBranch8, ActionBranch6, ActionBranch8
-
-from mojo_rl.deep_agents.core.configs.offpolicy_config import OffPolicyConfig
-from mojo_rl.deep_agents.core.strategies.exploration import Explore, StochasticSample
-from mojo_rl.deep_agents.core.strategies.update_schedule import Schedule, DelayedActorOnly
-from mojo_rl.deep_agents.core.strategies.target_value import TargetValue, EntropicTwinQTarget
-from mojo_rl.deep_agents.core.strategies.target_action import TargetAction, ReparamTarget
-from mojo_rl.deep_agents.core.strategies.actor_loss import ActorLoss, AutodiffMaxEntLoss
-
-from mojo_rl.deep_agents.redq.config import (
-    REDQ_TARGET_MIN,
-    REDQ_TARGET_AVE,
-    REDQ_TARGET_REM,
-)
+from ..redq.kernels import REDQ_TARGET_MIN, REDQ_TARGET_AVE
 
 
-# =============================================================================
-# REDQOFEConfig trait — extends REDQ's config with OFE-specific knobs
-# =============================================================================
+# ──────────────────────────────────────────────────────────────────────
+# Net presets — actor/critic shaped against the φ-dim.
+# ──────────────────────────────────────────────────────────────────────
 
 
-trait REDQOFEConfig(OffPolicyConfig):
-    """Compile-time configuration for REDQ-OFE agents.
+comptime REDQOFEActor[
+    PHI_S_DIM: Int, ACT: Int, HIDDEN: Int,
+] = StochasticActor[
+    PHI_S_DIM, ACT,
+    LinearReLU[PHI_S_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
+]
+"""2-layer fused-MLP trunk + (μ, log σ) heads, consuming φ(s)."""
 
-    Extends OffPolicyConfig (for REDQ-shaped actor/critic machinery) with
-    OFENet knobs. The inherited `ActorModel` must accept phi_s (feature
-    dim, not raw state dim); `CriticModel` must accept phi_sa.
-    """
 
-    # REDQ-specific knobs (mirrored from REDQConfig since we don't inherit)
-    comptime NUM_ENSEMBLE: Int
-    comptime NUM_MIN: Int
-    comptime UTD_RATIO: Int
+comptime REDQOFECritic[
+    PHI_SA_DIM: Int, HIDDEN: Int,
+] = Sequential[
+    LinearReLU[PHI_SA_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
+    Linear[HIDDEN, 1],
+]
+"""2-layer fused-MLP critic, consuming φ(s, a)."""
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Config trait — REDQ knobs + OFE networks + tuned defaults.
+# ──────────────────────────────────────────────────────────────────────
+
+
+trait REDQOFEConfigT(Copyable, Movable, ImplicitlyDestructible):
+    """Compile-time descriptor of a REDQ-OFE-family algorithm.
+    Zero-field conformer convention (never instantiated; only the
+    comptime members are read)."""
+
+    comptime TARGET: StaticString
+    comptime SAMPLE: SampleBlock
+    comptime ACTOR: Module
+    comptime CRITIC: Module
+    comptime SB: Module
+    comptime AB: Module
+    comptime PRED: Module
+    comptime N: Int
+    comptime N_MIN: Int
+    comptime UTD: Int
     comptime POLICY_DELAY: Int
-    comptime Q_TARGET_MODE: Int
+    comptime Q_MODE: Int
 
-    # OFE-specific knobs
-    comptime OFE_NUM_LAYERS: Int      # 6 or 8 (paper default)
-    comptime OFE_PER_UNIT: Int        # total_units / num_layers
-    comptime OFE_LR: Float64          # Aux Adam LR (paper: 3e-4)
-    # Derived: phi_s_dim = OBS + OFE_NUM_LAYERS * OFE_PER_UNIT
-    comptime PHI_S_DIM: Int
-    # Derived: phi_sa_dim = PHI_S_DIM + ACT + OFE_NUM_LAYERS * OFE_PER_UNIT
-    comptime PHI_SA_DIM: Int
-
-    # OFE sub-networks (Model aliases from nn.composites_ofenet, bound to
-    # this config's state_dim / action_dim / per_unit). Agents pick
-    # 6-layer or 8-layer variants via the config.
-    comptime OFEStateBranchModel: Model     # IN=obs_dim, OUT=phi_s_dim
-    comptime OFEActionBranchModel: Model    # IN=phi_s_dim + action_dim, OUT=phi_sa_dim
-    comptime OFEPredictorModel: Model       # IN=phi_sa_dim, OUT=obs_dim
+    comptime DEF_ACTOR_LR: Scalar[DT]
+    comptime DEF_CRITIC_LR: Scalar[DT]
+    comptime DEF_OFE_LR: Scalar[DT]
+    comptime DEF_ALPHA_LR: Scalar[DT]
+    comptime DEF_GAMMA: Scalar[DT]
+    comptime DEF_TAU: Scalar[DT]
+    comptime DEF_ACTION_SCALE: Scalar[DT]
+    comptime DEF_INIT_ALPHA: Scalar[DT]
+    comptime DEF_TARGET_ENTROPY: Scalar[DT]
+    comptime DEF_LEARNING_STARTS: Int
 
 
-# =============================================================================
-# DefaultREDQOFEConfig6 — 6-layer variant (HalfCheetah / Hopper / Walker2d)
-# =============================================================================
+# ──────────────────────────────────────────────────────────────────────
+# 6-block conformer.
+# ──────────────────────────────────────────────────────────────────────
 
 
-struct DefaultREDQOFEConfig6[
-    OBS: Int,
-    ACT: Int,
+@fieldwise_init
+struct REDQOFE6Config[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
     HIDDEN: Int = 256,
-    CAP: Int = 1_000_000,
-    BS: Int = 256,
-    N_ENS: Int = 10,
-    N_MIN: Int = 2,
-    UTD: Int = 20,
-    POL_DELAY: Int = 20,
-    Q_MODE: Int = REDQ_TARGET_MIN,
-    actor_lr: Float64 = 0.0003,
-    critic_lr: Float64 = 0.0003,
-    ofe_lr: Float64 = 0.0003,
-    OFE_TOTAL_UNITS: Int = 240,
-    action_scale: Float64 = 1.0,
-](REDQOFEConfig):
-    """6-layer OFE variant. Matches `references/OFENet-main/gins/HalfCheetah.gin`
-    (total_units=240, num_layers=6 -> per_unit=40).
-    """
+    PER_UNIT: Int = 40,
+](REDQOFEConfigT):
+    """REDQ-OFE with 6 DenseBlocks per branch, per_unit=40.
+    Reference HalfCheetah/Hopper/Walker2d shape (`OFENet-main/gins/`).
+    Defaults to SAC-shape REDQ knobs (N=2/M=2/UTD=1/POLICY_DELAY=1)
+    — the cheapest knobs that exercise the OFE contribution. For
+    paper-faithful REDQ knobs (N=10/M=2/UTD=20/POLICY_DELAY=20) use
+    `REDQOFETrainer[…]` directly."""
 
-    comptime NAME: String = "REDQ-OFE-6"
-    comptime obs_dim: Int = Self.OBS
-    comptime action_dim: Int = Self.ACT
-    comptime batch_size: Int = Self.BS
-    comptime buffer_capacity: Int = Self.CAP
-
-    # OFE dims
-    comptime OFE_NUM_LAYERS: Int = 6
-    comptime OFE_PER_UNIT: Int = Self.OFE_TOTAL_UNITS // 6   # 40
-    comptime PHI_S_DIM: Int = Self.OBS + 6 * Self.OFE_PER_UNIT
-    comptime PHI_SA_DIM: Int = Self.PHI_S_DIM + Self.ACT + 6 * Self.OFE_PER_UNIT
-
-    # OFE sub-networks
-    comptime OFEStateBranchModel = StateBranch6[Self.OBS, Self.OFE_PER_UNIT]
-    comptime OFEActionBranchModel = ActionBranch6[
-        Self.PHI_S_DIM, Self.ACT, Self.OFE_PER_UNIT
+    comptime TARGET = Self.target
+    comptime SAMPLE = ReplaySampleStep[
+        AnyReplay[Self.target, Self.OBS, Self.ACT, Self.CAP], Self.BATCH,
     ]
-    comptime OFEPredictorModel = Linear[Self.PHI_SA_DIM, Self.OBS]
-
-    # Actor takes phi_s (feature-space input)
-    comptime ActorModel = Sequential[
-        LinearReLU[Self.PHI_S_DIM, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Parallel[
-            Linear[Self.HIDDEN, Self.ACT],
-            LinearTanh[Self.HIDDEN, Self.ACT],
-        ],
+    comptime PHI_S_DIM = state_branch_out_dim(Self.OBS, 6, Self.PER_UNIT)
+    comptime PHI_SA_DIM = action_branch_out_dim(
+        Self.OBS, Self.ACT, 6, Self.PER_UNIT,
+    )
+    comptime ACTOR = REDQOFEActor[
+        Self.PHI_S_DIM, Self.ACT, Self.HIDDEN,
     ]
-
-    # Critic takes phi_sa (feature-space input)
-    comptime CriticModel = Sequential[
-        LinearReLU[Self.PHI_SA_DIM, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, 1],
+    comptime CRITIC = REDQOFECritic[Self.PHI_SA_DIM, Self.HIDDEN]
+    comptime SB = OFEStateBranch6[Self.OBS, Self.PER_UNIT]
+    comptime AB = OFEActionBranch6[
+        Self.PHI_S_DIM + Self.ACT, Self.PER_UNIT,
     ]
+    comptime PRED = OFEPredictorHead[Self.PHI_SA_DIM, Self.OBS]
+    comptime N = 2
+    comptime N_MIN = 2
+    comptime UTD = 1
+    comptime POLICY_DELAY = 1
+    comptime Q_MODE = REDQ_TARGET_MIN
 
-    comptime ActorOpt = Adam[Self.actor_lr]
-    comptime CriticOpt = Adam[Self.critic_lr]
-
-    comptime NUM_CRITICS: Int = Self.N_ENS
-    comptime HAS_TARGET_ACTOR: Bool = False
-
-    comptime Explore = StochasticSample
-    comptime Schedule = DelayedActorOnly
-    comptime TargetAction = ReparamTarget
-    comptime TargetValue = EntropicTwinQTarget
-    comptime ActorLoss = AutodiffMaxEntLoss[action_scale=Self.action_scale]
-
-    comptime NUM_ENSEMBLE: Int = Self.N_ENS
-    comptime NUM_MIN: Int = Self.N_MIN
-    comptime UTD_RATIO: Int = Self.UTD
-    comptime POLICY_DELAY: Int = Self.POL_DELAY
-    comptime Q_TARGET_MODE: Int = Self.Q_MODE
-    comptime OFE_LR: Float64 = Self.ofe_lr
+    comptime DEF_ACTOR_LR = Scalar[DT](3e-4)
+    comptime DEF_CRITIC_LR = Scalar[DT](1e-3)
+    comptime DEF_OFE_LR = Scalar[DT](3e-4)
+    comptime DEF_ALPHA_LR = Scalar[DT](3e-4)
+    comptime DEF_GAMMA = Scalar[DT](0.99)
+    comptime DEF_TAU = Scalar[DT](0.005)
+    comptime DEF_ACTION_SCALE = Scalar[DT](1.0)
+    comptime DEF_INIT_ALPHA = Scalar[DT](0.2)
+    comptime DEF_TARGET_ENTROPY = Scalar[DT](-Float64(Self.ACT))
+    comptime DEF_LEARNING_STARTS = 1_000
 
 
-# =============================================================================
-# DefaultREDQOFEConfig8 — 8-layer variant (Ant / Humanoid)
-# =============================================================================
+# ──────────────────────────────────────────────────────────────────────
+# 8-block conformer.
+# ──────────────────────────────────────────────────────────────────────
 
 
-struct DefaultREDQOFEConfig8[
-    OBS: Int,
-    ACT: Int,
+@fieldwise_init
+struct REDQOFE8Config[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
     HIDDEN: Int = 256,
-    CAP: Int = 1_000_000,
-    BS: Int = 256,
-    N_ENS: Int = 10,
-    N_MIN: Int = 2,
-    UTD: Int = 20,
-    POL_DELAY: Int = 20,
-    Q_MODE: Int = REDQ_TARGET_MIN,
-    actor_lr: Float64 = 0.0003,
-    critic_lr: Float64 = 0.0003,
-    ofe_lr: Float64 = 0.0003,
-    OFE_TOTAL_UNITS: Int = 240,
-    action_scale: Float64 = 1.0,
-](REDQOFEConfig):
-    """8-layer OFE variant. Matches `references/OFENet-main/gins/{Ant,Humanoid}.gin`
-    (total_units=240, num_layers=8 -> per_unit=30).
-    """
+    PER_UNIT: Int = 30,
+](REDQOFEConfigT):
+    """REDQ-OFE with 8 DenseBlocks per branch, per_unit=30.
+    Reference Ant/Humanoid shape (`OFENet-main/gins/`)."""
 
-    comptime NAME: String = "REDQ-OFE-8"
-    comptime obs_dim: Int = Self.OBS
-    comptime action_dim: Int = Self.ACT
-    comptime batch_size: Int = Self.BS
-    comptime buffer_capacity: Int = Self.CAP
-
-    comptime OFE_NUM_LAYERS: Int = 8
-    comptime OFE_PER_UNIT: Int = Self.OFE_TOTAL_UNITS // 8   # 30
-    comptime PHI_S_DIM: Int = Self.OBS + 8 * Self.OFE_PER_UNIT
-    comptime PHI_SA_DIM: Int = Self.PHI_S_DIM + Self.ACT + 8 * Self.OFE_PER_UNIT
-
-    comptime OFEStateBranchModel = StateBranch8[Self.OBS, Self.OFE_PER_UNIT]
-    comptime OFEActionBranchModel = ActionBranch8[
-        Self.PHI_S_DIM, Self.ACT, Self.OFE_PER_UNIT
+    comptime TARGET = Self.target
+    comptime SAMPLE = ReplaySampleStep[
+        AnyReplay[Self.target, Self.OBS, Self.ACT, Self.CAP], Self.BATCH,
     ]
-    comptime OFEPredictorModel = Linear[Self.PHI_SA_DIM, Self.OBS]
-
-    comptime ActorModel = Sequential[
-        LinearReLU[Self.PHI_S_DIM, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Parallel[
-            Linear[Self.HIDDEN, Self.ACT],
-            LinearTanh[Self.HIDDEN, Self.ACT],
-        ],
+    comptime PHI_S_DIM = state_branch_out_dim(Self.OBS, 8, Self.PER_UNIT)
+    comptime PHI_SA_DIM = action_branch_out_dim(
+        Self.OBS, Self.ACT, 8, Self.PER_UNIT,
+    )
+    comptime ACTOR = REDQOFEActor[
+        Self.PHI_S_DIM, Self.ACT, Self.HIDDEN,
     ]
-
-    comptime CriticModel = Sequential[
-        LinearReLU[Self.PHI_SA_DIM, Self.HIDDEN],
-        LinearReLU[Self.HIDDEN, Self.HIDDEN],
-        Linear[Self.HIDDEN, 1],
+    comptime CRITIC = REDQOFECritic[Self.PHI_SA_DIM, Self.HIDDEN]
+    comptime SB = OFEStateBranch8[Self.OBS, Self.PER_UNIT]
+    comptime AB = OFEActionBranch8[
+        Self.PHI_S_DIM + Self.ACT, Self.PER_UNIT,
     ]
+    comptime PRED = OFEPredictorHead[Self.PHI_SA_DIM, Self.OBS]
+    comptime N = 2
+    comptime N_MIN = 2
+    comptime UTD = 1
+    comptime POLICY_DELAY = 1
+    comptime Q_MODE = REDQ_TARGET_MIN
 
-    comptime ActorOpt = Adam[Self.actor_lr]
-    comptime CriticOpt = Adam[Self.critic_lr]
+    comptime DEF_ACTOR_LR = Scalar[DT](3e-4)
+    comptime DEF_CRITIC_LR = Scalar[DT](1e-3)
+    comptime DEF_OFE_LR = Scalar[DT](3e-4)
+    comptime DEF_ALPHA_LR = Scalar[DT](3e-4)
+    comptime DEF_GAMMA = Scalar[DT](0.99)
+    comptime DEF_TAU = Scalar[DT](0.005)
+    comptime DEF_ACTION_SCALE = Scalar[DT](1.0)
+    comptime DEF_INIT_ALPHA = Scalar[DT](0.2)
+    comptime DEF_TARGET_ENTROPY = Scalar[DT](-Float64(Self.ACT))
+    comptime DEF_LEARNING_STARTS = 1_000
 
-    comptime NUM_CRITICS: Int = Self.N_ENS
-    comptime HAS_TARGET_ACTOR: Bool = False
 
-    comptime Explore = StochasticSample
-    comptime Schedule = DelayedActorOnly
-    comptime TargetAction = ReparamTarget
-    comptime TargetValue = EntropicTwinQTarget
-    comptime ActorLoss = AutodiffMaxEntLoss[action_scale=Self.action_scale]
+# ──────────────────────────────────────────────────────────────────────
+# Paper-faithful conformers — N=10 critics, M=2 subset, UTD=20,
+# POLICY_DELAY=20. Use these for Ant / Humanoid scale where the
+# OFE feature extractor + REDQ ensemble pays off.
+#
+# Same OFE architecture as `REDQOFE6Config` / `REDQOFE8Config`; only
+# the REDQ critic-loop knobs change. The cost: ~20× per-env-step
+# compute relative to UTD=1, but with the same per-step
+# (state_branch + action_branch + predictor) cost — the OFE
+# feature pre-pass is hoisted out of the inner UTD loop.
+# ──────────────────────────────────────────────────────────────────────
 
-    comptime NUM_ENSEMBLE: Int = Self.N_ENS
-    comptime NUM_MIN: Int = Self.N_MIN
-    comptime UTD_RATIO: Int = Self.UTD
-    comptime POLICY_DELAY: Int = Self.POL_DELAY
-    comptime Q_TARGET_MODE: Int = Self.Q_MODE
-    comptime OFE_LR: Float64 = Self.ofe_lr
+
+@fieldwise_init
+struct LargeREDQOFE6Config[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
+    HIDDEN: Int = 256,
+    PER_UNIT: Int = 40,
+](REDQOFEConfigT):
+    """Paper-faithful REDQ knobs (N=10, M=2, UTD=20, POLICY_DELAY=20)
+    + 6-block OFE branches. HalfCheetah/Hopper/Walker2d scale."""
+
+    comptime TARGET = Self.target
+    comptime SAMPLE = ReplaySampleStep[
+        AnyReplay[Self.target, Self.OBS, Self.ACT, Self.CAP], Self.BATCH,
+    ]
+    comptime PHI_S_DIM = state_branch_out_dim(Self.OBS, 6, Self.PER_UNIT)
+    comptime PHI_SA_DIM = action_branch_out_dim(
+        Self.OBS, Self.ACT, 6, Self.PER_UNIT,
+    )
+    comptime ACTOR = REDQOFEActor[
+        Self.PHI_S_DIM, Self.ACT, Self.HIDDEN,
+    ]
+    comptime CRITIC = REDQOFECritic[Self.PHI_SA_DIM, Self.HIDDEN]
+    comptime SB = OFEStateBranch6[Self.OBS, Self.PER_UNIT]
+    comptime AB = OFEActionBranch6[
+        Self.PHI_S_DIM + Self.ACT, Self.PER_UNIT,
+    ]
+    comptime PRED = OFEPredictorHead[Self.PHI_SA_DIM, Self.OBS]
+    comptime N = 10
+    comptime N_MIN = 2
+    comptime UTD = 20
+    comptime POLICY_DELAY = 20
+    comptime Q_MODE = REDQ_TARGET_MIN
+
+    comptime DEF_ACTOR_LR = Scalar[DT](3e-4)
+    comptime DEF_CRITIC_LR = Scalar[DT](3e-4)
+    comptime DEF_OFE_LR = Scalar[DT](3e-4)
+    comptime DEF_ALPHA_LR = Scalar[DT](3e-4)
+    comptime DEF_GAMMA = Scalar[DT](0.99)
+    comptime DEF_TAU = Scalar[DT](0.005)
+    comptime DEF_ACTION_SCALE = Scalar[DT](1.0)
+    comptime DEF_INIT_ALPHA = Scalar[DT](0.2)
+    comptime DEF_TARGET_ENTROPY = Scalar[DT](-Float64(Self.ACT))
+    comptime DEF_LEARNING_STARTS = 5_000
+
+
+@fieldwise_init
+struct LargeREDQOFE8Config[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
+    HIDDEN: Int = 256,
+    PER_UNIT: Int = 30,
+](REDQOFEConfigT):
+    """Paper-faithful REDQ knobs + 8-block OFE branches.
+    Ant/Humanoid scale."""
+
+    comptime TARGET = Self.target
+    comptime SAMPLE = ReplaySampleStep[
+        AnyReplay[Self.target, Self.OBS, Self.ACT, Self.CAP], Self.BATCH,
+    ]
+    comptime PHI_S_DIM = state_branch_out_dim(Self.OBS, 8, Self.PER_UNIT)
+    comptime PHI_SA_DIM = action_branch_out_dim(
+        Self.OBS, Self.ACT, 8, Self.PER_UNIT,
+    )
+    comptime ACTOR = REDQOFEActor[
+        Self.PHI_S_DIM, Self.ACT, Self.HIDDEN,
+    ]
+    comptime CRITIC = REDQOFECritic[Self.PHI_SA_DIM, Self.HIDDEN]
+    comptime SB = OFEStateBranch8[Self.OBS, Self.PER_UNIT]
+    comptime AB = OFEActionBranch8[
+        Self.PHI_S_DIM + Self.ACT, Self.PER_UNIT,
+    ]
+    comptime PRED = OFEPredictorHead[Self.PHI_SA_DIM, Self.OBS]
+    comptime N = 10
+    comptime N_MIN = 2
+    comptime UTD = 20
+    comptime POLICY_DELAY = 20
+    comptime Q_MODE = REDQ_TARGET_MIN
+
+    comptime DEF_ACTOR_LR = Scalar[DT](3e-4)
+    comptime DEF_CRITIC_LR = Scalar[DT](3e-4)
+    comptime DEF_OFE_LR = Scalar[DT](3e-4)
+    comptime DEF_ALPHA_LR = Scalar[DT](3e-4)
+    comptime DEF_GAMMA = Scalar[DT](0.99)
+    comptime DEF_TAU = Scalar[DT](0.005)
+    comptime DEF_ACTION_SCALE = Scalar[DT](1.0)
+    comptime DEF_INIT_ALPHA = Scalar[DT](0.2)
+    comptime DEF_TARGET_ENTROPY = Scalar[DT](-Float64(Self.ACT))
+    comptime DEF_LEARNING_STARTS = 5_000
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Generic factory.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def agent_from_config_ofe[
+    CONFIG: REDQOFEConfigT,
+](
+    ctx: Optional[DeviceContext] = None,
+    actor_lr: Scalar[DT] = CONFIG.DEF_ACTOR_LR,
+    critic_lr: Scalar[DT] = CONFIG.DEF_CRITIC_LR,
+    ofe_lr: Scalar[DT] = CONFIG.DEF_OFE_LR,
+    alpha_lr: Scalar[DT] = CONFIG.DEF_ALPHA_LR,
+    gamma: Scalar[DT] = CONFIG.DEF_GAMMA,
+    tau: Scalar[DT] = CONFIG.DEF_TAU,
+    action_scale: Scalar[DT] = CONFIG.DEF_ACTION_SCALE,
+    init_alpha: Scalar[DT] = CONFIG.DEF_INIT_ALPHA,
+    target_entropy: Scalar[DT] = CONFIG.DEF_TARGET_ENTROPY,
+    learning_starts: Int = CONFIG.DEF_LEARNING_STARTS,
+    window_size: Int = 10,
+    initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+) raises -> REDQOFEAgent[
+    CONFIG.TARGET,
+    CONFIG.SAMPLE,
+    CONFIG.ACTOR,
+    CONFIG.CRITIC,
+    CONFIG.SB,
+    CONFIG.AB,
+    CONFIG.PRED,
+    CONFIG.N,
+    CONFIG.N_MIN,
+    CONFIG.UTD,
+    CONFIG.POLICY_DELAY,
+    CONFIG.Q_MODE,
+]:
+    """Build the primitive `REDQOFEAgent` from any `REDQOFEConfigT`."""
+    return REDQOFEAgent[
+        CONFIG.TARGET,
+        CONFIG.SAMPLE,
+        CONFIG.ACTOR,
+        CONFIG.CRITIC,
+        CONFIG.SB,
+        CONFIG.AB,
+        CONFIG.PRED,
+        CONFIG.N,
+        CONFIG.N_MIN,
+        CONFIG.UTD,
+        CONFIG.POLICY_DELAY,
+        CONFIG.Q_MODE,
+    ](
+        ctx=ctx,
+        actor_lr=actor_lr,
+        critic_lr=critic_lr,
+        ofe_lr=ofe_lr,
+        alpha_lr=alpha_lr,
+        gamma=gamma,
+        tau=tau,
+        action_scale=action_scale,
+        init_alpha=init_alpha,
+        target_entropy=target_entropy,
+        learning_starts=learning_starts,
+        window_size=window_size,
+        initial_episode_fill=initial_episode_fill,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Capitalized presets — `REDQOFE6` / `REDQOFE8` read like constructors.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def REDQOFE6[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
+    HIDDEN: Int = 256,
+    PER_UNIT: Int = 40,
+](
+    ctx: Optional[DeviceContext] = None,
+    actor_lr: Scalar[DT] = REDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_ACTOR_LR,
+    critic_lr: Scalar[DT] = REDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_CRITIC_LR,
+    ofe_lr: Scalar[DT] = REDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_OFE_LR,
+    alpha_lr: Scalar[DT] = REDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_ALPHA_LR,
+    gamma: Scalar[DT] = REDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_GAMMA,
+    tau: Scalar[DT] = REDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_TAU,
+    action_scale: Scalar[DT] = REDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_ACTION_SCALE,
+    init_alpha: Scalar[DT] = REDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_INIT_ALPHA,
+    target_entropy: Scalar[DT] = REDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_TARGET_ENTROPY,
+    learning_starts: Int = REDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_LEARNING_STARTS,
+    window_size: Int = 10,
+    initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+) raises -> REDQOFEAgent[
+    target,
+    ReplaySampleStep[AnyReplay[target, OBS, ACT, CAP], BATCH],
+    REDQOFEActor[
+        state_branch_out_dim(OBS, 6, PER_UNIT), ACT, HIDDEN,
+    ],
+    REDQOFECritic[
+        action_branch_out_dim(OBS, ACT, 6, PER_UNIT), HIDDEN,
+    ],
+    OFEStateBranch6[OBS, PER_UNIT],
+    OFEActionBranch6[state_branch_out_dim(OBS, 6, PER_UNIT) + ACT, PER_UNIT],
+    OFEPredictorHead[
+        action_branch_out_dim(OBS, ACT, 6, PER_UNIT), OBS,
+    ],
+    2, 2, 1, 1, REDQ_TARGET_MIN,
+]:
+    """6-block REDQ-OFE preset. HalfCheetah/Hopper/Walker2d reference
+    architecture per `OFENet-main/gins/`."""
+    return agent_from_config_ofe[
+        REDQOFE6Config[target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT]
+    ](
+        ctx=ctx,
+        actor_lr=actor_lr, critic_lr=critic_lr,
+        ofe_lr=ofe_lr, alpha_lr=alpha_lr,
+        gamma=gamma, tau=tau,
+        action_scale=action_scale,
+        init_alpha=init_alpha, target_entropy=target_entropy,
+        learning_starts=learning_starts,
+        window_size=window_size,
+        initial_episode_fill=initial_episode_fill,
+    )
+
+
+def LargeREDQOFE6[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
+    HIDDEN: Int = 256,
+    PER_UNIT: Int = 40,
+](
+    ctx: Optional[DeviceContext] = None,
+    actor_lr: Scalar[DT] = LargeREDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_ACTOR_LR,
+    critic_lr: Scalar[DT] = LargeREDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_CRITIC_LR,
+    ofe_lr: Scalar[DT] = LargeREDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_OFE_LR,
+    alpha_lr: Scalar[DT] = LargeREDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_ALPHA_LR,
+    gamma: Scalar[DT] = LargeREDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_GAMMA,
+    tau: Scalar[DT] = LargeREDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_TAU,
+    action_scale: Scalar[DT] = LargeREDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_ACTION_SCALE,
+    init_alpha: Scalar[DT] = LargeREDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_INIT_ALPHA,
+    target_entropy: Scalar[DT] = LargeREDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_TARGET_ENTROPY,
+    learning_starts: Int = LargeREDQOFE6Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_LEARNING_STARTS,
+    window_size: Int = 10,
+    initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+) raises -> REDQOFEAgent[
+    target,
+    ReplaySampleStep[AnyReplay[target, OBS, ACT, CAP], BATCH],
+    REDQOFEActor[
+        state_branch_out_dim(OBS, 6, PER_UNIT), ACT, HIDDEN,
+    ],
+    REDQOFECritic[
+        action_branch_out_dim(OBS, ACT, 6, PER_UNIT), HIDDEN,
+    ],
+    OFEStateBranch6[OBS, PER_UNIT],
+    OFEActionBranch6[state_branch_out_dim(OBS, 6, PER_UNIT) + ACT, PER_UNIT],
+    OFEPredictorHead[
+        action_branch_out_dim(OBS, ACT, 6, PER_UNIT), OBS,
+    ],
+    10, 2, 20, 20, REDQ_TARGET_MIN,
+]:
+    """Paper-faithful REDQ knobs (N=10/M=2/UTD=20/POLICY_DELAY=20)
+    + 6-block OFE branches. HalfCheetah/Hopper/Walker2d scale."""
+    return agent_from_config_ofe[
+        LargeREDQOFE6Config[target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT]
+    ](
+        ctx=ctx,
+        actor_lr=actor_lr, critic_lr=critic_lr,
+        ofe_lr=ofe_lr, alpha_lr=alpha_lr,
+        gamma=gamma, tau=tau,
+        action_scale=action_scale,
+        init_alpha=init_alpha, target_entropy=target_entropy,
+        learning_starts=learning_starts,
+        window_size=window_size,
+        initial_episode_fill=initial_episode_fill,
+    )
+
+
+def LargeREDQOFE8[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
+    HIDDEN: Int = 256,
+    PER_UNIT: Int = 30,
+](
+    ctx: Optional[DeviceContext] = None,
+    actor_lr: Scalar[DT] = LargeREDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_ACTOR_LR,
+    critic_lr: Scalar[DT] = LargeREDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_CRITIC_LR,
+    ofe_lr: Scalar[DT] = LargeREDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_OFE_LR,
+    alpha_lr: Scalar[DT] = LargeREDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_ALPHA_LR,
+    gamma: Scalar[DT] = LargeREDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_GAMMA,
+    tau: Scalar[DT] = LargeREDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_TAU,
+    action_scale: Scalar[DT] = LargeREDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_ACTION_SCALE,
+    init_alpha: Scalar[DT] = LargeREDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_INIT_ALPHA,
+    target_entropy: Scalar[DT] = LargeREDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_TARGET_ENTROPY,
+    learning_starts: Int = LargeREDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_LEARNING_STARTS,
+    window_size: Int = 10,
+    initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+) raises -> REDQOFEAgent[
+    target,
+    ReplaySampleStep[AnyReplay[target, OBS, ACT, CAP], BATCH],
+    REDQOFEActor[
+        state_branch_out_dim(OBS, 8, PER_UNIT), ACT, HIDDEN,
+    ],
+    REDQOFECritic[
+        action_branch_out_dim(OBS, ACT, 8, PER_UNIT), HIDDEN,
+    ],
+    OFEStateBranch8[OBS, PER_UNIT],
+    OFEActionBranch8[state_branch_out_dim(OBS, 8, PER_UNIT) + ACT, PER_UNIT],
+    OFEPredictorHead[
+        action_branch_out_dim(OBS, ACT, 8, PER_UNIT), OBS,
+    ],
+    10, 2, 20, 20, REDQ_TARGET_MIN,
+]:
+    """Paper-faithful REDQ knobs + 8-block OFE branches.
+    Ant/Humanoid scale."""
+    return agent_from_config_ofe[
+        LargeREDQOFE8Config[target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT]
+    ](
+        ctx=ctx,
+        actor_lr=actor_lr, critic_lr=critic_lr,
+        ofe_lr=ofe_lr, alpha_lr=alpha_lr,
+        gamma=gamma, tau=tau,
+        action_scale=action_scale,
+        init_alpha=init_alpha, target_entropy=target_entropy,
+        learning_starts=learning_starts,
+        window_size=window_size,
+        initial_episode_fill=initial_episode_fill,
+    )
+
+
+def REDQOFE8[
+    target: StaticString,
+    OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
+    HIDDEN: Int = 256,
+    PER_UNIT: Int = 30,
+](
+    ctx: Optional[DeviceContext] = None,
+    actor_lr: Scalar[DT] = REDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_ACTOR_LR,
+    critic_lr: Scalar[DT] = REDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_CRITIC_LR,
+    ofe_lr: Scalar[DT] = REDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_OFE_LR,
+    alpha_lr: Scalar[DT] = REDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_ALPHA_LR,
+    gamma: Scalar[DT] = REDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_GAMMA,
+    tau: Scalar[DT] = REDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_TAU,
+    action_scale: Scalar[DT] = REDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_ACTION_SCALE,
+    init_alpha: Scalar[DT] = REDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_INIT_ALPHA,
+    target_entropy: Scalar[DT] = REDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_TARGET_ENTROPY,
+    learning_starts: Int = REDQOFE8Config[
+        target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT,
+    ].DEF_LEARNING_STARTS,
+    window_size: Int = 10,
+    initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+) raises -> REDQOFEAgent[
+    target,
+    ReplaySampleStep[AnyReplay[target, OBS, ACT, CAP], BATCH],
+    REDQOFEActor[
+        state_branch_out_dim(OBS, 8, PER_UNIT), ACT, HIDDEN,
+    ],
+    REDQOFECritic[
+        action_branch_out_dim(OBS, ACT, 8, PER_UNIT), HIDDEN,
+    ],
+    OFEStateBranch8[OBS, PER_UNIT],
+    OFEActionBranch8[state_branch_out_dim(OBS, 8, PER_UNIT) + ACT, PER_UNIT],
+    OFEPredictorHead[
+        action_branch_out_dim(OBS, ACT, 8, PER_UNIT), OBS,
+    ],
+    2, 2, 1, 1, REDQ_TARGET_MIN,
+]:
+    """8-block REDQ-OFE preset. Ant/Humanoid reference architecture
+    per `OFENet-main/gins/`."""
+    return agent_from_config_ofe[
+        REDQOFE8Config[target, OBS, ACT, BATCH, CAP, HIDDEN, PER_UNIT]
+    ](
+        ctx=ctx,
+        actor_lr=actor_lr, critic_lr=critic_lr,
+        ofe_lr=ofe_lr, alpha_lr=alpha_lr,
+        gamma=gamma, tau=tau,
+        action_scale=action_scale,
+        init_alpha=init_alpha, target_entropy=target_entropy,
+        learning_starts=learning_starts,
+        window_size=window_size,
+        initial_episode_fill=initial_episode_fill,
+    )

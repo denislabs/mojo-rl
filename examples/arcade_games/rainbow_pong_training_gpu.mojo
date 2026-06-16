@@ -1,4 +1,4 @@
-"""Rainbow DQN GPU Training on Pong (deep_agents2, GPU-batched envs).
+"""Rainbow DQN GPU Training on Pong (deep_agents, GPU-batched envs).
 
 Trains a Rainbow agent (C51 + Double + PER + Dueling + Noisy + N-step) on
 the native Pong environment, stepping `N_ENVS` environments in parallel on
@@ -8,11 +8,12 @@ device — the discrete sibling of the SAC/TD3 GPU-batched path.
 Pong has 3 discrete actions (NOOP, UP, DOWN) and 6D clean observations
 (ball_xy, ball_vxy, paddle_y, cpu_paddle_y — all normalized).
 
-This is the *new* deep_agents2 Rainbow (`mojo_rl.deep_agents2.c51`), NOT the
-legacy `deep_agents` agent. The trainer is built directly from its compile-
-time pieces so every hyperparameter is visible and tunable in one place —
-the legacy Pong never converged, so expect to sweep lr / replay-ratio /
-v_min,v_max / n-step here.
+This is the *new* deep_agents Rainbow (`mojo_rl.deep_agents.c51`), NOT the
+legacy `deep_agents` agent. The whole agent comes from the `Rainbow` preset
+(dueling/noisy distributional net over an N-step-over-PER sample block) and
+trains through `agent.train_gpu_batched`, the facade over the GPU-batched
+discrete driver. Pong-tuned overrides below: lr 6.25e-5, warmup 20k, and
+the V_MIN/V_MAX ±2 support — the lever that made this run converge.
 
 Run with:
     pixi run -e apple  mojo run -I . examples/arcade_games/rainbow_pong_training_gpu.mojo   # Apple Silicon (compile/smoke)
@@ -27,16 +28,10 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 
-from mojo_rl.deep_agents2.c51.trainer import C51Trainer
-from mojo_rl.deep_agents2.c51.config import RainbowNet
-from mojo_rl.deep_agents2.training.blocks import NStepSampleStep
-from mojo_rl.deep_agents2.data.any_per_replay import AnyPerReplay
-from mojo_rl.deep_agents2.training import (
-    BatchedGpuDiscreteEnv,
-    run_offpolicy_discrete_train_gpu_batched,
-)
+from mojo_rl.deep_agents.c51.config import Rainbow
+from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
 from mojo_rl.envs.arcade_games.pong import PongEnv
 
 
@@ -98,15 +93,6 @@ comptime LR = Scalar[DT](6.25e-5)
 comptime CKPT_EVERY = 250_000
 comptime CKPT_PATH = "checkpoints/rainbow_pong.ckpt"
 
-# Compile-time agent identity. Rainbow == C51 with DOUBLE=True over a
-# (PER + N-step) sample block and a dueling/noisy distributional net.
-comptime SAMPLE = NStepSampleStep[
-    N_STEP, AnyPerReplay["gpu", OBS_DIM, 1, BUFFER_CAPACITY], BATCH_SIZE
-]
-comptime QNET = RainbowNet[OBS_DIM, NUM_ACTIONS, NUM_ATOMS, HIDDEN_DIM]
-comptime RainbowTrainer = C51Trainer[
-    "gpu", SAMPLE, QNET, NUM_ATOMS, NUM_ACTIONS, True
-]
 comptime PongBatched = BatchedGpuDiscreteEnv[
     PongEnv[DT, HIT_REWARD], N_ENVS, OBS_DIM, 1
 ]
@@ -120,24 +106,22 @@ comptime PongBatched = BatchedGpuDiscreteEnv[
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("Rainbow DQN GPU Training on Pong (deep_agents2, GPU-batched)")
+    print("Rainbow DQN GPU Training on Pong (deep_agents, GPU-batched)")
     print("=" * 70)
     print()
 
     with DeviceContext() as ctx:
-        var trainer = RainbowTrainer.make(
+        # Whole agent from the preset — Rainbow == C51 with DOUBLE=True over
+        # a (PER + N-step) sample block and a dueling/noisy distributional
+        # net. Config-tuned scalars (ε=0 noisy, PER α=0.5/β=0.4,
+        # nstep=N_STEP) apply; lr / warmup / value support are Pong-tuned.
+        var agent = Rainbow[
+            "gpu", OBS_DIM, NUM_ACTIONS, BATCH_SIZE, BUFFER_CAPACITY,
+            NUM_ATOMS, HIDDEN_DIM, N_STEP,
+        ](
             ctx=ctx,
             lr=LR,
-            gamma=Scalar[DT](0.99),
-            tau=Scalar[DT](0.005),
-            epsilon=Scalar[DT](0.0),  # Noisy nets supply exploration
             learning_starts=WARMUP,
-            target_update_freq=500,
-            max_grad_norm=Scalar[DT](10.0),
-            per_alpha=Scalar[DT](0.5),
-            per_beta=Scalar[DT](0.4),
-            per_epsilon=Scalar[DT](1e-6),
-            nstep=N_STEP,
             v_min=V_MIN,
             v_max=V_MAX,
         )
@@ -148,7 +132,7 @@ def main() raises:
         var eval_env = PongBatched(ctx)
 
         print("Environment: Pong (GPU-batched,", N_ENVS, "envs)")
-        print("Agent: Rainbow DQN (deep_agents2 C51, GPU)")
+        print("Agent: Rainbow DQN (deep_agents C51, GPU)")
         print(
             "  Components: C51 + Double + PER + Dueling + Noisy +",
             N_STEP,
@@ -183,11 +167,11 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="Rainbow Pong GPU (deep_agents2)",
+            run_name="Rainbow Pong GPU (deep_agents)",
             buffer_size=64,
             api_key=api_key,
         )
-        logger.set_config("agent", "Rainbow DQN (deep_agents2)")
+        logger.set_config("agent", "Rainbow DQN (deep_agents)")
         logger.set_config("env", "Pong")
         logger.set_config("hidden_dim", String(HIDDEN_DIM))
         logger.set_config("lr", String(LR))
@@ -209,11 +193,9 @@ def main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var _ep_returns = run_offpolicy_discrete_train_gpu_batched[
-                RainbowTrainer, PongBatched, N_ENVS, N_STEP, RemoteLogger
+            var _ep_returns = agent.train_gpu_batched[
+                PongBatched, N_ENVS, N_STEP, RemoteLogger
             ](
-                ctx,
-                trainer,
                 env,
                 NUM_STEPS,
                 rng_seed=UInt64(42),
@@ -244,8 +226,8 @@ def main() raises:
                 "Transitions/second:",
                 String(Float64(NUM_STEPS) / elapsed_s)[byte=:9],
             )
-            print("Final mean return (last 10):", trainer.mean_return())
-            print("Episodes completed:", trainer.ep_count())
+            print("Final mean return (last 10):", agent.mean_return())
+            print("Episodes completed:", agent.ep_count())
             print("=" * 70)
 
         except e:

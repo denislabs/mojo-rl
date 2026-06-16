@@ -231,6 +231,43 @@ def render_pixel_obs_single(
 
 
 # =============================================================================
+# CPU: render a single env at an ARBITRARY square resolution (OUT × OUT).
+# Same world→pixel math + z-order as `render_pixel_obs_single`, but the
+# output side length is a comptime parameter — used to feed the LeWM world
+# model (trained at 224²) from the 96²-native sim for the sim-domain probe.
+# =============================================================================
+
+
+@always_inline
+def render_pusht_rgb_at[
+    OUT: Int
+](
+    block_cx: Scalar[dtype],
+    block_cy: Scalar[dtype],
+    block_angle: Scalar[dtype],
+    agent_cx: Scalar[dtype],
+    agent_cy: Scalar[dtype],
+    pixels: LayoutTensor[dtype, Layout.row_major(OUT, OUT, IMG_C), MutAnyOrigin],
+):
+    """CPU rasterizer for a single env at OUT × OUT × 3 (HWC, [0, 255])."""
+    var scale = Scalar[dtype](512.0 / Float64(OUT))
+    var goal_cx = Scalar[dtype](PConstants.GOAL_X)
+    var goal_cy = Scalar[dtype](PConstants.GOAL_Y)
+    var goal_angle = Scalar[dtype](PConstants.GOAL_ANGLE)
+    for r in range(OUT):
+        for c in range(OUT):
+            var py = (Scalar[dtype](r) + Scalar[dtype](0.5)) * scale
+            var px = (Scalar[dtype](c) + Scalar[dtype](0.5)) * scale
+            var rgb = _render_pixel(
+                px, py, block_cx, block_cy, block_angle,
+                agent_cx, agent_cy, goal_cx, goal_cy, goal_angle,
+            )
+            pixels[r, c, 0] = rgb[0]
+            pixels[r, c, 1] = rgb[1]
+            pixels[r, c, 2] = rgb[2]
+
+
+# =============================================================================
 # GPU: kernel rendering all envs in a batch.
 # =============================================================================
 

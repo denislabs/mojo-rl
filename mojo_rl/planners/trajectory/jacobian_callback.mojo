@@ -47,7 +47,7 @@ implement both.
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
+from mojo_rl.nn.constants import DT as dtype
 
 
 trait RolloutJacobianCallbackCPU(ImplicitlyDestructible):

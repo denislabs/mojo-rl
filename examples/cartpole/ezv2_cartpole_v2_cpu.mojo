@@ -11,13 +11,13 @@ Run (no GPU):
     pixi run mojo run -I . examples/cartpole/ezv2_cartpole_v2_cpu.mojo
 """
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Kaiming
-from mojo_rl.nn2.optimizer.adam import Adam
-from mojo_rl.deep_agents2.efficient_zero_v2.nets import (
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, MZPredNet, EZProjectorNet, EZPredictorNet,
 )
-from mojo_rl.deep_agents2.efficient_zero_v2.selfplay_cpu import (
+from mojo_rl.deep_agents.efficient_zero_v2.selfplay_cpu import (
     run_ezv2_selfplay_cpu,
 )
 from mojo_rl.envs.cartpole import CartPoleEnv
@@ -61,10 +61,18 @@ def main() raises:
     opred.lr = Scalar[DT](3e-4)
     oproj.lr = Scalar[DT](3e-4)
     opredh.lr = Scalar[DT](3e-4)
+    # Gradient clipping (reference uses 5; MuZero example uses 10). Without it
+    # the dominant SimSiam consistency loss (coef 2.0) makes the update noisy.
+    orep.max_grad_norm = Scalar[DT](5.0)
+    odyn.max_grad_norm = Scalar[DT](5.0)
+    opred.max_grad_norm = Scalar[DT](5.0)
+    oproj.max_grad_norm = Scalar[DT](5.0)
+    opredh.max_grad_norm = Scalar[DT](5.0)
 
     print("EZv2 CartPole convergence (v2, CPU — MuZero BPTT + SimSiam)")
     print("  LATENT", LATENT, "H", H, "PROJ", PROJ, "BINS", BINS,
-          "sims", NUM_SIMS, "K", K, "N", N, "B", B, "lr 3e-4 cons 2.0")
+          "sims", NUM_SIMS, "K", K, "N", N, "B", B,
+          "lr 3e-4 cons 2.0 v±20 vcoef 0.5 clip 5 reanalyze temp")
 
     var loss = run_ezv2_selfplay_cpu[
         CartPoleEnv[DType.float64], Rep, Dyn, Pred, Proj, Predh,
@@ -76,10 +84,12 @@ def main() raises:
         learning_starts=500,
         train_per_iter=1,
         gamma=Scalar[DT](0.997),
-        v_min=Scalar[DT](-10.0),
-        v_max=Scalar[DT](10.0),
-        value_coef=Scalar[DT](0.25),
+        v_min=Scalar[DT](-20.0),
+        v_max=Scalar[DT](20.0),
+        value_coef=Scalar[DT](0.5),
         consistency_coef=Scalar[DT](2.0),
+        temperature_decay_steps=30000,
+        reanalyze_every=1,
         eval_every=2000,
         eval_episodes=5,
         seed=42,

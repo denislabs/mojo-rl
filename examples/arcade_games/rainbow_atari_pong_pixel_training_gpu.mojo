@@ -7,26 +7,27 @@ This is the Atari counterpart to `rainbow_pong_pixel_training_gpu.mojo`,
 which trains on the *native* GPU Pong physics engine. The crucial
 difference: the Atari emulator is **CPU-only** (the 6502 opcode dispatch
 diverges on the GPU), so there is no `BatchedGpuDiscreteEnv` path here.
-Instead we step a single CPU-emulated env and train the CNN Q-network on
-the GPU, via `run_offpolicy_discrete_train` (driver row: cpu env / gpu
-train / 1 env). One env step + one train step per iteration (replay
-ratio 1.0).
+Instead `N_ENVS` CPU-emulated envs step in parallel across CPU cores
+(`BatchedCpuDiscreteEnv`, the Stage-1 lever from `docs/ATARI_AUDIT.md`)
+while the CNN Q-network selects actions and trains on the GPU, via
+`run_offpolicy_discrete_train_cpu_env_gpu_agent` (driver row: cpu env /
+gpu train / N_ENVS). Each env applies ALE-style random no-op starts
+(`noop_max=30`) on reset — without them N deterministic emulators driven
+by a near-deterministic policy would step in lockstep.
 
 The 4×84×84 pixel pipeline — render → max-pool (sprite-flicker) →
 grayscale → box-filter resize 160×210→84×84 → 4-frame ring stack — is
-already built into `AtariEnv[PongDef, 1]`; no wrapper needed. Frame skip
+already built into `AtariEnv[1]`; no wrapper needed. Frame skip
 is fixed at 4 internally for pixel mode.
 
 Rainbow components: C51 + Double + PER + Dueling + Noisy + N-step.
 
-Network (assembled inline — deep_agents2 ships no Rainbow-CNN preset):
-
-  Conv2D[4→32, 8×8, s4] → ReLU →
-  Conv2D[32→64, 4×4, s2] → ReLU →
-  Conv2D[64→64, 3×3, s1] → ReLU →
-  Flatten → LinearReLU[3136→512] →
-  NoisyLinear[512 → (1+ACT)·NA] →
-  DuelingHeadC51[ACT, NA]          # V[NA] + A[ACT,NA] → per-action atom logits
+The whole agent comes from the `RainbowCNN` preset in
+`mojo_rl/deep_agents/c51/config.mojo` — Nature-CNN backbone + noisy
+dueling distributional heads + N-step-over-PER replay with the uint8 obs
+ring (lossless here too: AtariEnv emits exact `k/255` pixel obs), tuned
+pixel defaults baked in (lr 6.25e-5, warmup 20k, ε=0). Only the
+Pong-specific value support (V_MIN/V_MAX ±2) is overridden.
 
 Note: Atari Pong exposes 6 ALE actions (NOOP, FIRE, RIGHT, LEFT,
 RIGHTFIRE, LEFTFIRE) — FIRE serves the ball — vs the native engine's 3.
@@ -46,23 +47,13 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn2.constants import DT
+from mojo_rl.nn.constants import DT
 
-from mojo_rl.nn2.combinators.sequential import Sequential
-from mojo_rl.nn2.primitives.conv2d import Conv2D
-from mojo_rl.nn2.primitives.relu import ReLU
-from mojo_rl.nn2.primitives.flatten import Flatten
-from mojo_rl.nn2.primitives.linear_relu import LinearReLU
-from mojo_rl.nn2.primitives.noisy_linear import NoisyLinear
-from mojo_rl.nn2.primitives.dueling_head_c51 import DuelingHeadC51
-
-from mojo_rl.deep_agents2.c51.trainer import C51Trainer
-from mojo_rl.deep_agents2.training.blocks import NStepSampleStep
-from mojo_rl.deep_agents2.data.any_per_replay import AnyPerReplay
-from mojo_rl.deep_agents2.training import run_offpolicy_discrete_train
+from mojo_rl.deep_agents.c51.config import RainbowCNN
+from mojo_rl.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
 
 from mojo_rl.envs.atari import AtariEnv, load_rom
-from mojo_rl.envs.atari.games.pong import PongDef
+from mojo_rl.envs.atari.games.registry import AtariGame
 from mojo_rl.envs.atari.flags import OBS_WIDTH, OBS_HEIGHT
 
 
@@ -73,15 +64,30 @@ from mojo_rl.envs.atari.flags import OBS_WIDTH, OBS_HEIGHT
 # Atari Pong pixel: 4×84×84 = 28224 observation, 6 ALE actions.
 comptime FRAMES = 4
 comptime OBS_DIM = FRAMES * OBS_WIDTH * OBS_HEIGHT  # 4 * 84 * 84 = 28224
-comptime NUM_ACTIONS = PongDef.NUM_ACTIONS  # 6 (NOOP/FIRE/RIGHT/LEFT/R+F/L+F)
+comptime NUM_ACTIONS = 6  # Pong minimal set (NOOP/FIRE/RIGHT/LEFT/R+F/L+F)
 
 comptime NUM_ATOMS = 51
 comptime HIDDEN = 512
 comptime N_STEP = 3
 
-# GPU-resident replay → capacity is VRAM-bound (obs + next_obs per slot,
-# 2·28224 floats each). Keep modest; raise on large-VRAM cards.
-comptime BUFFER_CAPACITY = 12_000
+# Emulator envs stepped in parallel across CPU cores. Size to the host's
+# core count (each env is an independent 6502/TIA emulation, ~near-linear
+# scaling); env memory is trivial (~0.3 MB/env).
+comptime N_ENVS = 8
+# Gradient updates per driver iteration (= per N_ENVS env transitions).
+# Replay ratio = UPDATES_PER_STEP / N_ENVS = 0.25, matching the converged
+# native Rainbow-pixel run (64 envs / 16 grad steps).
+comptime UPDATES_PER_STEP = 2
+# ALE-standard random no-op starts: k ~ U[0, 30] NOOPs after every reset.
+comptime NOOP_MAX = 30
+
+# GPU-resident replay → capacity is VRAM-bound (obs + next_obs per slot).
+# uint8 obs storage (OBS_STORE_DT below) shrinks each slot's pixel payload
+# 4× vs the float ring, so 48k slots ≈ the old 12k float footprint.
+comptime BUFFER_CAPACITY = 48_000
+# Obs ring storage dtype: AtariEnv pixel obs are exact k/255 → uint8
+# quantize/dequant is bit-lossless. Pixel-only.
+comptime OBS_STORE_DT = DType.uint8
 comptime BATCH_SIZE = 32
 
 # Distributional support — must bracket the DISCOUNTED return (≈ ±0.3..±6
@@ -92,8 +98,6 @@ comptime V_MIN = Scalar[DT](-2.0)
 comptime V_MAX = Scalar[DT](2.0)
 
 comptime WARMUP = 20_000
-# Single CPU-emulated env: stepping (not training) is the bottleneck.
-# ~minutes/hours depending on hardware; lower for faster local loops.
 comptime NUM_STEPS = 2_000_000
 comptime LR = Scalar[DT](6.25e-5)
 
@@ -106,28 +110,20 @@ comptime CKPT_PATH = "checkpoints/rainbow_atari_pong_pixel.ckpt"
 comptime ROM_PATH = "roms/pong.bin"
 
 
-# Rainbow CNN Q-net: Nature backbone + noisy dueling distributional heads.
-# Conv geometry: 84→20→9→7, 64·7·7 = 3136.
-comptime RainbowCNNNet = Sequential[
-    Conv2D[FRAMES, 32, 8, 4, 0, 84, 84],
-    ReLU[32 * 20 * 20],
-    Conv2D[32, 64, 4, 2, 0, 20, 20],
-    ReLU[64 * 9 * 9],
-    Conv2D[64, 64, 3, 1, 0, 9, 9],
-    ReLU[64 * 7 * 7],
-    Flatten[64 * 7 * 7],
-    LinearReLU[64 * 7 * 7, HIDDEN],
-    NoisyLinear[HIDDEN, (1 + NUM_ACTIONS) * NUM_ATOMS],
-    DuelingHeadC51[NUM_ACTIONS, NUM_ATOMS],
+comptime AtariPongPixel = AtariEnv[1, DT]
+comptime BatchedAtariPong = BatchedCpuDiscreteEnv[
+    AtariPongPixel, N_ENVS, OBS_DIM
 ]
 
-comptime SAMPLE = NStepSampleStep[
-    N_STEP, AnyPerReplay["gpu", OBS_DIM, 1, BUFFER_CAPACITY], BATCH_SIZE
-]
-comptime RainbowTrainer = C51Trainer[
-    "gpu", SAMPLE, RainbowCNNNet, NUM_ATOMS, NUM_ACTIONS, True
-]
-comptime AtariPongPixel = AtariEnv[PongDef, 1, DT]
+
+def _make_envs(
+    rom: UnsafePointer[UInt8, MutAnyOrigin], rom_size: Int
+) -> List[AtariPongPixel]:
+    """N_ENVS independent emulator instances sharing the read-only ROM."""
+    var envs = List[AtariPongPixel]()
+    for _ in range(N_ENVS):
+        envs.append(AtariPongPixel(AtariGame.PONG, rom, rom_size))
+    return envs^
 
 
 # =============================================================================
@@ -142,36 +138,45 @@ def main() raises:
     print("=" * 70)
     print()
 
-    # Load ROM once; both env instances share the read-only buffer.
+    # Load ROM once; all env instances share the read-only buffer.
     print("Loading ROM:", ROM_PATH)
     var rom_data = load_rom(ROM_PATH)
     print("ROM loaded:", rom_data.size, "bytes")
     print()
 
     with DeviceContext() as ctx:
-        var trainer = RainbowTrainer.make(
+        # Whole agent from the preset — Nature-CNN backbone + noisy dueling
+        # distributional heads + N-step-over-PER replay (uint8 obs ring, the
+        # preset default). Config-tuned scalars (lr 6.25e-5, ε=0 noisy,
+        # warmup 20k, PER α=0.5/β=0.4, nstep=N_STEP) apply; only the Pong
+        # value support deviates.
+        var agent = RainbowCNN[
+            "gpu", NUM_ACTIONS, BATCH_SIZE, BUFFER_CAPACITY,
+            FRAMES, NUM_ATOMS, HIDDEN, N_STEP, OBS_STORE_DT,
+        ](
             ctx=ctx,
             lr=LR,
-            gamma=Scalar[DT](0.99),
-            tau=Scalar[DT](0.005),
-            epsilon=Scalar[DT](0.0),  # Noisy nets supply exploration
             learning_starts=WARMUP,
-            target_update_freq=500,
-            max_grad_norm=Scalar[DT](10.0),
-            per_alpha=Scalar[DT](0.5),
-            per_beta=Scalar[DT](0.4),
-            per_epsilon=Scalar[DT](1e-6),
-            nstep=N_STEP,
             v_min=V_MIN,
             v_max=V_MAX,
         )
 
-        var env = AtariPongPixel(rom_data.data.value(), rom_data.size)
-        # Separate env instance for deterministic (noise-off) greedy eval.
-        var eval_env = AtariPongPixel(rom_data.data.value(), rom_data.size)
+        var env = BatchedAtariPong(
+            _make_envs(rom_data.data.value(), rom_data.size),
+            noop_max=NOOP_MAX,
+        )
+        # Separate batched env for deterministic (noise-off) greedy eval.
+        var eval_env = BatchedAtariPong(
+            _make_envs(rom_data.data.value(), rom_data.size),
+            noop_max=NOOP_MAX,
+        )
 
-        print("Environment: Atari 2600 Pong (CPU emulation, single env, Pixel)")
-        print("Agent: Rainbow DQN CNN (deep_agents2 C51, GPU train)")
+        print(
+            "Environment: Atari 2600 Pong (CPU emulation,",
+            N_ENVS,
+            "parallel envs, Pixel)",
+        )
+        print("Agent: Rainbow DQN CNN (deep_agents C51, GPU train)")
         print(
             "  Components: C51 + Double + PER + Dueling + Noisy +",
             N_STEP,
@@ -186,7 +191,20 @@ def main() raises:
         print("  Network: Nature CNN + Noisy Dueling Distributional heads")
         print("  Atoms:", NUM_ATOMS, "support [", V_MIN, ",", V_MAX, "]")
         print("  N-step:", N_STEP)
-        print("  Buffer capacity:", BUFFER_CAPACITY, "(GPU-resident)")
+        print("  N envs (parallel CPU):", N_ENVS)
+        print(
+            "  Updates/iter:",
+            UPDATES_PER_STEP,
+            "(replay ratio",
+            Float64(UPDATES_PER_STEP) / Float64(N_ENVS),
+            ")",
+        )
+        print("  No-op starts: U[0,", NOOP_MAX, "]")
+        print(
+            "  Buffer capacity:",
+            BUFFER_CAPACITY,
+            "(GPU-resident, uint8 obs ring)",
+        )
         print("  Batch size:", BATCH_SIZE)
         print("  Learning rate:", LR)
         print("  Warmup:", WARMUP)
@@ -204,22 +222,26 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="Rainbow Atari Pong Pixel GPU (deep_agents2)",
+            run_name="Rainbow Atari Pong Pixel GPU (deep_agents)",
             buffer_size=64,
             api_key=api_key,
         )
-        logger.set_config("agent", "Rainbow DQN CNN (deep_agents2)")
+        logger.set_config("agent", "Rainbow DQN CNN (deep_agents)")
         logger.set_config("env", "Atari Pong (Pixel)")
         logger.set_config("obs", "4x84x84")
         logger.set_config("lr", String(LR))
         logger.set_config("gamma", "0.99")
         logger.set_config("batch_size", String(BATCH_SIZE))
         logger.set_config("buffer_capacity", String(BUFFER_CAPACITY))
+        logger.set_config("obs_store_dtype", "uint8")
         logger.set_config("n_step", String(N_STEP))
         logger.set_config("num_atoms", String(NUM_ATOMS))
         logger.set_config("v_min", String(V_MIN))
         logger.set_config("v_max", String(V_MAX))
         logger.set_config("num_actions", String(NUM_ACTIONS))
+        logger.set_config("n_envs", String(N_ENVS))
+        logger.set_config("updates_per_step", String(UPDATES_PER_STEP))
+        logger.set_config("noop_max", String(NOOP_MAX))
 
         # =====================================================================
         # Train
@@ -231,22 +253,23 @@ def main() raises:
         var start_time = perf_counter_ns()
 
         try:
-            var _ep_returns = run_offpolicy_discrete_train[
-                RainbowTrainer, AtariPongPixel, RemoteLogger
+            var _ep_returns = agent.train_cpu_batched[
+                BatchedAtariPong, N_ENVS, N_STEP, RemoteLogger
             ](
-                trainer,
                 env,
                 NUM_STEPS,
-                ctx=ctx,
+                rng_seed=UInt64(42),
+                updates_per_step=UPDATES_PER_STEP,
                 print_every=20_000,
                 verbose=True,
+                nstep_gamma=Scalar[DT](0.99),
                 logger=UnsafePointer(to=logger),
                 diag_every=5_000,
                 checkpoint_every=CKPT_EVERY,
                 checkpoint_path=String(CKPT_PATH),
                 eval_env=UnsafePointer(to=eval_env),
                 eval_every=100_000,
-                eval_episodes=3,  # each is a full episode → keep small
+                eval_episodes=N_ENVS,  # one parallel wave of full episodes
             )
 
             var elapsed_s = Float64(perf_counter_ns() - start_time) / 1e9
@@ -263,8 +286,8 @@ def main() raises:
                 "Transitions/second:",
                 String(Float64(NUM_STEPS) / elapsed_s)[byte=:9],
             )
-            print("Final mean return (last 10):", trainer.mean_return())
-            print("Episodes completed:", trainer.ep_count())
+            print("Final mean return (last 10):", agent.mean_return())
+            print("Episodes completed:", agent.ep_count())
             print("=" * 70)
 
         except e:

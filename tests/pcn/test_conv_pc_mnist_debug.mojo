@@ -13,8 +13,8 @@ from std.math import sin
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.constants import DT as dtype
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn import (
     PCBlock,
     PCSequential,
@@ -53,7 +53,7 @@ def main() raises:
     var params_lt = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
     ](params_buf)
-    NET.initialize_params[Xavier[7], dtype](params_lt)
+    NET.pc_init_params[PCXavier, dtype](params_lt)
 
     var x_buf = alloc[Scalar[dtype]](BATCH * NET.IN_DIM)
     var y_buf = alloc[Scalar[dtype]](BATCH * NET.OUT_DIM)

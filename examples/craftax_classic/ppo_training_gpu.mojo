@@ -1,17 +1,15 @@
-"""PPO GPU Training on Craftax-Classic.
+"""PPO GPU Training on Craftax-Classic (deep_agents, GPU-batched).
 
-End-to-end PPO on the Mojo port of Craftax-Classic. Feedforward MLP
-(no recurrence) — same baseline used by Craftax_Baselines `ppo.py`.
+nn port of the legacy DeepPPOAgent example. Uses the da2 GPU-batched
+discrete on-policy path: PPODiscreteAgent.train_batched over a
+BatchedGpuDiscreteEnv wrapping CraftaxClassicEnv (256 parallel envs on
+device). Feedforward MLP (no recurrence) — same baseline as
+Craftax_Baselines `ppo.py`.
 
-Reference (paper / leaderboard, all on Craftax-Full not Classic):
-  - PPO     11.9%  of max=226  (≈ 2.6 per-episode return at 1B steps)
-  - PPO-RNN 15.3%
-  - Random   ~ 0
-
-On Classic (max return ≈ 22), our 20-update Apple smoke already hit
-AvgR(100) = 3.46 / Best = 9.1, so the env, reward, obs, and policy
-gradient are wired correctly. This config is sized for a serious GPU
-run (~16M env steps) — expect convergence well above smoke values.
+Reference (paper / leaderboard, Craftax-Full): PPO 11.9% of max=226
+(≈ 2.6 per-episode return at 1B steps); Random ≈ 0. On Classic
+(max return ≈ 22) the env/reward/obs/policy-gradient are wired correctly;
+this config is sized for a serious GPU run (~16M env steps).
 
 Run with:
     pixi run -e nvidia mojo run -I . examples/craftax_classic/ppo_training_gpu.mojo
@@ -19,144 +17,83 @@ Run with:
 """
 
 from std.random import seed
-from std.time import perf_counter_ns
-
 from std.gpu.host import DeviceContext
 
-from mojo_rl.deep_agents.core.agents import DeepPPOAgent
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.deep_agents.ppo_discrete import PPODiscreteAgent
+from mojo_rl.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
+
 from mojo_rl.envs.craftax_classic import CraftaxClassicEnv
 
 
-# =============================================================================
-# Constants
-# =============================================================================
+comptime OBS_DIM = CraftaxClassicEnv[DT].OBS_DIM       # 1345
+comptime NUM_ACTIONS = CraftaxClassicEnv[DT].NUM_ACTIONS  # 17
 
-comptime OBS_DIM = CraftaxClassicEnv[DType.float32].OBS_DIM  # 1345
-comptime NUM_ACTIONS = CraftaxClassicEnv[DType.float32].NUM_ACTIONS  # 17
-
-# Network: wider than Pong because obs is mostly sparse one-hot.
-comptime HIDDEN_DIM = 256
+# Network: wider than classic-control because obs is mostly sparse one-hot.
+comptime HIDDEN = 256
 
 # PPO rollout shape — matches Craftax_Baselines defaults closely.
 comptime ROLLOUT_LEN = 128
-comptime N_ENVS = 256              # parallel envs on GPU
-comptime GPU_MINIBATCH_SIZE = 2048
+comptime N_ENVS = 256                 # parallel envs on GPU
+comptime MINIBATCH = 2048             # 128*256 = 32768 → 16 minibatches
+comptime N_EPOCHS = 4
 
-# Run length. Each update = ROLLOUT_LEN * N_ENVS = 32,768 transitions.
-# 500 updates ≈ 16M transitions — comfortably above the 10M Phase-5
-# gate. Bump higher (e.g. 5000 → 160M) for a publication-grade run.
+# Each update = ROLLOUT_LEN * N_ENVS = 32,768 transitions. 500 updates
+# ≈ 16M env steps. Bump for a publication-grade run.
 comptime NUM_UPDATES = 500
+comptime TOTAL_ENV_STEPS = ROLLOUT_LEN * N_ENVS * NUM_UPDATES
 
-comptime dtype = DType.float32
+comptime ActorNet = Sequential[
+    Linear[OBS_DIM, HIDDEN], Tanh[HIDDEN],
+    Linear[HIDDEN, HIDDEN], Tanh[HIDDEN],
+    Linear[HIDDEN, NUM_ACTIONS],
+]
+comptime CriticNet = Sequential[
+    Linear[OBS_DIM, HIDDEN], Tanh[HIDDEN],
+    Linear[HIDDEN, HIDDEN], Tanh[HIDDEN],
+    Linear[HIDDEN, 1],
+]
 
 
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO GPU Training on Craftax-Classic (smoke)")
+    print("PPO GPU-batched (da2) — Craftax-Classic")
     print("=" * 70)
+    print("  obs_dim:", OBS_DIM, " actions:", NUM_ACTIONS, " hidden:", HIDDEN)
+    print("  rollout:", ROLLOUT_LEN, " n_envs:", N_ENVS, " minibatch:", MINIBATCH)
+    print("  updates:", NUM_UPDATES, " total env steps:", TOTAL_ENV_STEPS)
     print()
 
-    with DeviceContext() as ctx:
-        var agent = DeepPPOAgent[
-            obs_dim=OBS_DIM,
-            num_actions=NUM_ACTIONS,
-            hidden_dim=HIDDEN_DIM,
-            rollout_len=ROLLOUT_LEN,
-            n_envs=N_ENVS,
-            gpu_minibatch_size=GPU_MINIBATCH_SIZE,
-            actor_lr=0.0003,
-            critic_lr=0.001,
-        ](
-            gamma=0.99,
-            gae_lambda=0.95,
-            clip_epsilon=0.2,
-            entropy_coef=0.01,
-            value_loss_coef=0.5,
-            num_epochs=4,
-            target_kl=0.015,
-            max_grad_norm=0.5,
-            clip_value=True,
-            norm_adv_per_minibatch=True,
-            checkpoint_every=50,
-            checkpoint_path="ppo_craftax_classic.ckpt",
-        )
+    var ctx = DeviceContext()
 
-        var transitions_per_update = ROLLOUT_LEN * N_ENVS
-        var total_transitions = transitions_per_update * NUM_UPDATES
+    var agent = PPODiscreteAgent[
+        "gpu", ActorNet, CriticNet,
+        OBS_DIM, NUM_ACTIONS, ROLLOUT_LEN, MINIBATCH, N_EPOCHS, N_ENVS,
+    ](
+        ctx=ctx,
+        actor_lr=Scalar[DT](3e-4),
+        critic_lr=Scalar[DT](1e-3),
+        gamma=Scalar[DT](0.99),
+        gae_lambda=Scalar[DT](0.95),
+        clip_eps=Scalar[DT](0.2),
+        entropy_coef=Scalar[DT](0.01),
+        max_grad_norm=Scalar[DT](0.5),
+    )
 
-        print("Environment: Craftax-Classic (GPU-batched)")
-        print("Agent: PPO (feedforward MLP)")
-        print("  Observation dim:", OBS_DIM)
-        print("  Actions:", NUM_ACTIONS)
-        print("  Hidden dim:", HIDDEN_DIM)
-        print("  Rollout length:", ROLLOUT_LEN)
-        print("  N envs (parallel):", N_ENVS)
-        print("  Minibatch size:", GPU_MINIBATCH_SIZE)
-        print("  Transitions per update:", transitions_per_update)
-        print("  Total updates:", NUM_UPDATES)
-        print("  Total transitions:", total_transitions)
-        print()
-        print("Reward shape: Σ Δachievements + 0.1 × Δhealth")
-        print("  Random policy: typically 0 reward (no achievements reached)")
-        print("  Smoke target:  > 0 (something gets discovered)")
-        print("  Paper PPO:     ~2.6 over 1B steps (11.9% of max=22)")
-        print()
+    var env = BatchedGpuDiscreteEnv[CraftaxClassicEnv[DT], N_ENVS, OBS_DIM, 1](
+        ctx
+    )
 
-        print("Starting GPU training...")
-        print("-" * 70)
-        var start_time = perf_counter_ns()
+    _ = agent.train_batched(
+        ctx, env, TOTAL_ENV_STEPS, print_every=ROLLOUT_LEN * N_ENVS * 10,
+        verbose=True,
+    )
 
-        try:
-            var metrics = agent.train_gpu[CraftaxClassicEnv[dtype]](
-                ctx,
-                num_updates=NUM_UPDATES,
-                verbose=True,
-                print_every=10,
-            )
-
-            var end_time = perf_counter_ns()
-            var elapsed_s = Float64(end_time - start_time) / 1e9
-
-            print("-" * 70)
-            print()
-            print(">>> train_gpu returned successfully! <<<")
-
-            print("=" * 70)
-            print("GPU Training Complete")
-            print("=" * 70)
-            print("Total updates:", NUM_UPDATES)
-            print("Total transitions:", total_transitions)
-            print("Training time:", String(elapsed_s)[byte=:6], "seconds")
-            print(
-                "Transitions/second:",
-                String(Float64(total_transitions) / elapsed_s)[byte=:9],
-            )
-            print()
-
-            var final_avg = metrics.mean_reward_last_n(100)
-            print(
-                "Final average reward (last 100 episodes):",
-                String(final_avg)[byte=:8],
-            )
-            print("Best episode reward:", String(metrics.max_reward())[byte=:8])
-            print()
-
-            if final_avg > 2.0:
-                print("GREAT: agent discovering multiple achievements")
-            elif final_avg > 0.5:
-                print("LEARNING: at least one achievement per episode on average")
-            elif final_avg > 0.05:
-                print("EARLY SIGNAL: achievements triggered, scaling reward")
-            elif final_avg > 0.0:
-                print("MINIMAL: tiny reward — needs more updates")
-            else:
-                print("NO SIGNAL: agent hasn't found any achievements yet")
-            print()
-            print("=" * 70)
-
-        except e:
-            print("!!! EXCEPTION CAUGHT !!!")
-            print("Error:", e)
-
-    print(">>> main() completed normally <<<")
+    print("=" * 70)
+    print("Final mean ep return (last 10):", agent.mean_return())
+    print("Episodes completed:            ", agent.ep_count())
+    print("=" * 70)

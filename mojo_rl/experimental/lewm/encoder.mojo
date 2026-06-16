@@ -1,139 +1,146 @@
-"""LeWM Encoder — ViT-derived image encoder + Projector head.
+"""LeWM nn nets — encoder, action embedder, AR predictor, pred projector.
 
-Maps a single image `(B, in_channels * img_h * img_w)` to a JEPA embedding
-`(B, embed_dim)`. Reference uses ViT-tiny + a separate Projector MLP
-(`references/le-wm-main/train.py:82-110`).
+Pure `Sequential` aliases over existing nn composites + the Phase A/B
+primitives. No new compute. Mirrors the legacy `experimental/lewm/`
+architecture (docs/LEWM_PORT_PLAN.md §3) on nn.
 
-mojo-rl already has a CIFAR-validated `ViT` composite (Phase B in
-`docs/TRANSFORMER_VIT.md`, ≥70% top-1). We reuse all of it *except* the
-classification head: instead of `Linear[hidden, n_classes]`, we attach a
-JEPA-style projector — `Linear[hidden, 2048] → BatchNorm1D → GELU →
-Linear[2048, embed_dim]`. This matches the reference projector and lets the
-Trainer's full-recipe AdamW+cosine schedule supervise it.
-
-Encoder differences from reference:
-
-  - TokenMean over patches (instead of CLS token). See
-    `docs/LEWM_PORT_PLAN.md` §3.3 — accepted simplification for the POC.
-  - No `interpolate_pos_encoding`: position embedding is a fixed-shape
-    learnable `BiasAdd[n_patches * hidden_dim]`. Fine as long as we train
-    + plan at the same image size.
-
-The output's PARAM_SIZE absorbs the full ViT param count plus the projector
-head; CACHE_SIZE / WORKSPACE_SIZE_PER_SAMPLE scale with depth × seq_len.
-
-Usage (Phase 2 POC config — 32×32 images, tiny ViT, embed=128):
-
-    comptime ENC = LeWMEncoder[
-        in_channels=3, img_h=32, img_w=32, patch_size=4,
-        hidden_dim=128, n_heads=4, n_layers=4, n_patches=64,
-        embed_dim=128, ff_mult=4, projector_hidden=512,
-    ]
-
-The composite is a `Model`, so `NetworkState[ENC, ...]` etc. work directly.
+- `LeWMEncoder`  : ViT body (PatchEmbed → pos BiasAdd → N×TransformerBlock →
+                   per-token LayerNorm → TokenMean) + JEPA projector MLP
+                   (Linear → BatchNorm1D → GELU → Linear). Maps a flattened
+                   image (B, IN_CH·IMG·IMG) → (B, EMB). Run at BATCH=B·T.
+- `ActionEmbedder`: per-step Conv1d-k1 stack (Tokenwise LinearSwish×2 + Linear)
+                   mapping (B, T·ACT) → (B, T·EMB).
+- `ARPredictor`  : RepeatConditional[DEPTH, ConditionalTransformerBlock] over
+                   the H-token context (the learnable position BiasAdd is a
+                   separate node in the JEPA graph, applied to x before this —
+                   it can't chain into an ARITY=2 module).
+- `PredProj`     : per-token projector on the predictor output (Tokenwise).
 """
 
-from ...nn.model import (
-    Sequential,
-    Linear,
-    LayerNorm,
-    BatchNorm1D,
-    Tokenwise,
+from ...nn.combinators import Sequential, Repeat, Tokenwise, RepeatConditional
+from ...nn.models.vit import PatchEmbed
+from ...nn.models.transformer import TransformerBlock
+from ...nn.primitives.linear import Linear
+from ...nn.primitives.linear_swish import LinearSwish
+from ...nn.primitives.batch_norm_1d import BatchNorm1D
+from ...nn.primitives.gelu import GELU
+from ...nn.primitives.layer_norm import LayerNorm
+from ...nn.primitives.token_mean import TokenMean
+from ...nn.primitives.bias_add import BiasAdd
+from ...nn.primitives.conditional_transformer_block import (
+    ConditionalTransformerBlock,
 )
-from ...nn.model.autodiff_layers import GELU, TokenMean, Transpose2D
-from ...nn.model.conv2d_layer import Conv2DLayer
-from ...nn.autodiff import AutoDiffChain
-from ...nn.autodiff.primitives import BiasAdd
+from ...nn.primitives.learned_tokens import LearnedTokens
+from ...nn.primitives.slice import Slice
 
 
-# =============================================================================
-# PatchEmbed — mirror of `composites.PatchEmbed`. Inlined here so the encoder
-# is self-contained and doesn't drag in the entire composites.mojo module
-# (which also pulls Transformer / GPT / classifier-head aliases we don't
-# need). Same wiring as the canonical ViT path.
-# =============================================================================
-
-comptime LeWMPatchEmbed[
-    in_channels: Int,
-    img_h: Int,
-    img_w: Int,
-    patch_size: Int,
-    hidden_dim: Int,
-    n_patches: Int,
-] = Sequential[
-    Conv2DLayer[
-        in_channels, hidden_dim, patch_size, patch_size, 0, img_h, img_w
-    ],
-    Transpose2D[hidden_dim, n_patches],
-]
-
-
-# =============================================================================
-# Projector MLP — replaces ViT's classification head.
-#
-#   Linear[hidden, projector_hidden] → BatchNorm1D → GELU → Linear[projector_hidden, embed_dim]
-#
-# BatchNorm1D matches reference (`norm_fn=torch.nn.BatchNorm1d` in
-# `train.py`). At inference time the BN uses running stats — relevant when
-# we use the encoder as a goal-image cost model in MPC.
-# =============================================================================
-
+# Projector MLP: (B, HIDDEN) → (B, EMB). BatchNorm1D matches the reference.
 comptime LeWMProjector[
-    hidden_dim: Int,
-    projector_hidden: Int,
-    embed_dim: Int,
+    HIDDEN: Int, PROJ_H: Int, EMB: Int
 ] = Sequential[
-    Linear[hidden_dim, projector_hidden],
-    BatchNorm1D[projector_hidden],
-    GELU[projector_hidden],
-    Linear[projector_hidden, embed_dim],
+    Linear[HIDDEN, PROJ_H],
+    BatchNorm1D[PROJ_H],
+    GELU[PROJ_H],
+    Linear[PROJ_H, EMB],
 ]
 
 
-# =============================================================================
-# LeWMEncoder — full image-to-embedding pipeline.
-#
-# Layout:
-#   1. PatchEmbed         : Conv2D + Transpose2D, channel-major → patch-major
-#   2. Pos embedding      : learnable BiasAdd[n_patches * hidden_dim]
-#   3. Transformer stack  : n_layers × non-causal TransformerBlock
-#   4. Final per-token LN : Tokenwise[n_patches, LayerNorm[hidden_dim]]
-#   5. TokenMean          : (B, n_patches * hidden_dim) → (B, hidden_dim)
-#   6. Projector MLP      : (B, hidden_dim) → (B, embed_dim)
-#
-# We re-implement the transformer stack inline using the same
-# `TransformerBlock` from the canonical ViT — non-causal, ff_mult=4 default,
-# matches the existing nanoGPT-style init recipe used by `vit_cifar_training_gpu.mojo`.
-# =============================================================================
-
-from ...nn.composites import TransformerBlock
-from ...nn.model import Repeat
-
+# Encoder: image → embedding. Run at effective BATCH = B·T (one image per row).
 comptime LeWMEncoder[
-    in_channels: Int,
-    img_h: Int,
-    img_w: Int,
-    patch_size: Int,
-    hidden_dim: Int,
-    n_heads: Int,
-    n_layers: Int,
-    n_patches: Int,
-    embed_dim: Int,
-    ff_mult: Int = 4,
-    projector_hidden: Int = 2048,
+    IN_CH: Int,
+    IMG: Int,
+    PATCH: Int,
+    N_PATCHES: Int,
+    HIDDEN: Int,
+    ENC_HEADS: Int,
+    ENC_LAYERS: Int,
+    EMB: Int,
+    PROJ_H: Int,
+    FF_MULT: Int = 4,
 ] = Sequential[
-    LeWMPatchEmbed[
-        in_channels, img_h, img_w, patch_size, hidden_dim, n_patches
-    ],
-    AutoDiffChain[BiasAdd[n_patches * hidden_dim]],
+    PatchEmbed[IN_CH, IMG, IMG, PATCH, HIDDEN, N_PATCHES],
+    BiasAdd[N_PATCHES * HIDDEN],
     Repeat[
-        n_layers,
-        TransformerBlock[
-            hidden_dim, n_heads, n_patches, ff_mult * hidden_dim, False
-        ],
-        False,
+        ENC_LAYERS,
+        TransformerBlock[HIDDEN, ENC_HEADS, N_PATCHES, FF_MULT * HIDDEN, False],
     ],
-    Tokenwise[n_patches, LayerNorm[hidden_dim]],
-    TokenMean[n_patches, hidden_dim],
-    LeWMProjector[hidden_dim, projector_hidden, embed_dim],
+    Tokenwise[N_PATCHES, LayerNorm[HIDDEN]],
+    TokenMean[N_PATCHES, HIDDEN],
+    LeWMProjector[HIDDEN, PROJ_H, EMB],
+]
+
+
+# CLS-token encoder variant: prepend a learnable [CLS] token, run the
+# transformer over N_PATCHES+1 tokens, then read the CLS token (slice [0:HID])
+# instead of mean-pooling. Same external interface as `LeWMEncoder` (image →
+# (B, EMB)), so it drops into the loss graph identically. Motivation: the
+# closed-loop probe showed the mean-pooled latent under-encodes the small
+# agent/pusher (washed out across N_PATCHES); a CLS token can attend
+# selectively to control-relevant patches (the prediction objective rewards
+# encoding the pusher, since actions move it). No new primitives — reuses
+# `LearnedTokens[…, PREPEND=True]` (prepend CLS) + `Slice` (extract token 0).
+# The CLS token is initialized small (std 0.02, ViT convention) via
+# LearnedTokens' INIT_STD: fan_in=1 Kaiming would give std≈1.4, a constant
+# that swamps the per-image attention signal and collapses the readout (all
+# images → near-identical CLS → batch-variance collapse → BatchNorm/SIGReg
+# blow up). Mean-pooling is immune; the CLS readout is not.
+comptime LeWMEncoderCLS[
+    IN_CH: Int,
+    IMG: Int,
+    PATCH: Int,
+    N_PATCHES: Int,
+    HIDDEN: Int,
+    ENC_HEADS: Int,
+    ENC_LAYERS: Int,
+    EMB: Int,
+    PROJ_H: Int,
+    FF_MULT: Int = 4,
+] = Sequential[
+    PatchEmbed[IN_CH, IMG, IMG, PATCH, HIDDEN, N_PATCHES],
+    LearnedTokens[N_PATCHES, 1, HIDDEN, True, 0.02],     # prepend [CLS] (ViT init)
+    BiasAdd[(N_PATCHES + 1) * HIDDEN],                   # pos embed incl CLS
+    Repeat[
+        ENC_LAYERS,
+        TransformerBlock[
+            HIDDEN, ENC_HEADS, N_PATCHES + 1, FF_MULT * HIDDEN, False
+        ],
+    ],
+    Tokenwise[N_PATCHES + 1, LayerNorm[HIDDEN]],
+    Slice[(N_PATCHES + 1) * HIDDEN, 0, HIDDEN],          # take [CLS] (token 0)
+    LeWMProjector[HIDDEN, PROJ_H, EMB],
+]
+
+
+# Action embedder: (B, T·ACT) → (B, T·EMB). Conv1d-k1 ≡ per-token Linear.
+#   LinearSwish (Linear+SiLU) ×2 then a bare Linear, all Tokenwise over T.
+comptime ActionEmbedder[
+    T: Int, ACT: Int, SMOOTHED: Int, EMB: Int, MLP_SCALE: Int = 4
+] = Sequential[
+    Tokenwise[T, LinearSwish[ACT, SMOOTHED]],
+    Tokenwise[T, LinearSwish[SMOOTHED, MLP_SCALE * EMB]],
+    Tokenwise[T, Linear[MLP_SCALE * EMB, EMB]],
+]
+
+
+# AR predictor: learnable position embedding over the H-token context, then a
+# DEPTH-stack of AdaLN-zero conditional blocks. ARITY=2: forward(x, c) where x
+# is the context embeddings (B, H·EMB) and c the action conditioning.
+comptime ARPredictor[
+    EMB: Int, HEADS: Int, H: Int, FF: Int, DEPTH: Int, HEAD_DIM: Int = 0
+] = RepeatConditional[
+    DEPTH, ConditionalTransformerBlock[EMB, HEADS, H, FF, HEAD_DIM]
+]
+
+
+# Predictor output projector: per-token MLP (B, H·EMB) → (B, H·EMB).
+comptime PredProj[
+    H: Int, EMB: Int, PROJ_H: Int
+] = Tokenwise[
+    H,
+    Sequential[
+        Linear[EMB, PROJ_H],
+        BatchNorm1D[PROJ_H],
+        GELU[PROJ_H],
+        Linear[PROJ_H, EMB],
+    ],
 ]

@@ -40,25 +40,25 @@ buffer unlocks, and the prerequisite for imagination RL on a real env.
 from std.memory import alloc
 from std.math import sqrt, log, cos, abs
 
-from mojo_rl.nn2.constants import DT
-from mojo_rl.nn2.initializer import Xavier
-from mojo_rl.nn2.optimizer import Adam
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.optimizer import Adam
 from layout import TileTensor, row_major
 
-from mojo_rl.deep_agents2.dreamer4.tokenizer import Dreamer4Tokenizer
-from mojo_rl.deep_agents2.dreamer4.agent import Dreamer4Agent
-from mojo_rl.deep_agents2.dreamer4.pong_reward_buffer import (
+from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
+from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
+from mojo_rl.deep_agents.dreamer4.pong_reward_buffer import (
     Dreamer4PongRewardBuffer,
 )
-from mojo_rl.deep_agents2.dreamer4.recon_loss import (
+from mojo_rl.deep_agents.dreamer4.recon_loss import (
     masked_recon_loss, full_recon_psnr,
 )
-from mojo_rl.deep_agents2.dreamer4.patchify import downscale_box, temporal_patchify
-from mojo_rl.deep_agents2.dreamer4.imag_rl_loss import (
+from mojo_rl.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
+from mojo_rl.deep_agents.dreamer4.imag_rl_loss import (
     continue_pred, continue_bce_loss, continue_bce_backward,
 )
-from mojo_rl.deep_agents2.dreamerv3.dists_discrete import cat_argmax
-from mojo_rl.deep_agents2.dreamerv3.twohot import symexp_twohot_bins, twohot_pred
+from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_argmax
+from mojo_rl.deep_agents.dreamerv3.twohot import symexp_twohot_bins, twohot_pred
 
 
 def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:

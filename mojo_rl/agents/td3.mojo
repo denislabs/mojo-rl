@@ -57,7 +57,7 @@ from mojo_rl.core import (
     BoxContinuousActionEnv,
     RenderableEnv,
 )
-from mojo_rl.nn.gpu.random import gaussian_noise
+from mojo_rl.nn.random import gaussian_noise
 
 
 struct TD3Agent(Copyable, Movable):

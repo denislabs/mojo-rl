@@ -1,17 +1,42 @@
-"""REDQ-OFE agent — REDQ with an OFENet feature extractor.
+"""REDQ-OFE package.
 
-OFENet is a DenseNet-style feature extractor trained via an auxiliary
-next-state-prediction MSE loss. Actor and critics consume OFE features
-(phi_s, phi_sa) with stop-gradient — OFE params are updated only by the
-aux loss, matching the paper.
-
-Reference: Ota et al., "Can Increasing Input Dimensionality Improve
-Deep Reinforcement Learning?" (ICML 2020) and `references/OFENet-main/`.
+Phase O.1 — OFE composite (Sequential aliases over `SkipConcat`-based
+            DenseBlocks): `OFEDenseBlock`, `OFEStateBranch6/8`,
+            `OFEActionBranch6/8`, `OFEPredictorHead`.
+Later phases: OFEFeatureStep, OFEAuxLossStep, REDQOFETrainer, REDQOFEAgent.
 """
 
-from .config import (
-    REDQOFEConfig,
-    DefaultREDQOFEConfig6,
-    DefaultREDQOFEConfig8,
+from .ofe_nets import (
+    OFEDenseBlock,
+    OFEStateBranch6,
+    OFEStateBranch8,
+    OFEActionBranch6,
+    OFEActionBranch8,
+    OFEPredictorHead,
+    state_branch_out_dim,
+    action_branch_out_dim,
+    predictor_in_dim,
 )
-from .redq_ofe import REDQOFEAgent, REDQOFEGPUState
+from .kernels import aux_mse_grad_cpu, aux_mse_loss_cpu
+from .aux_loss_step import OFEAuxLossStep
+from .feature_step import OFEFeatureStep
+from .ensemble_target_y_block_ofe import EnsembleTargetYBlockOFE
+from .ensemble_critic_step_ofe import EnsembleCriticStepOFE
+from .ensemble_actor_step_ofe import EnsembleActorStepOFE
+from .trainer import REDQOFETrainer, REDQOFEStepResult
+from .metrics import REDQOFEMetrics
+from .agent import REDQOFEAgent
+from .config import (
+    REDQOFEConfigT,
+    REDQOFE6Config,
+    REDQOFE8Config,
+    LargeREDQOFE6Config,
+    LargeREDQOFE8Config,
+    REDQOFEActor,
+    REDQOFECritic,
+    agent_from_config_ofe,
+    REDQOFE6,
+    REDQOFE8,
+    LargeREDQOFE6,
+    LargeREDQOFE8,
+)

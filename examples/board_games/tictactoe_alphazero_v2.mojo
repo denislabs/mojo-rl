@@ -1,7 +1,7 @@
-"""AlphaZero on TicTacToe (deep_agents2 / nn2) — full GPU with remote logging.
+"""AlphaZero on TicTacToe (deep_agents / nn) — full GPU with remote logging.
 
 Second-generation port of `tictactoe_alphazero.mojo`. Uses the config-free
-nn2 net torsos + the `AlphaZeroAgent` facade, and exercises the production
+nn net torsos + the `AlphaZeroAgent` facade, and exercises the production
 telemetry: two pluggable `GPUEvaluator` opponents (minimax + random), a
 per-report progress print, and a `RemoteLogger` metrics sink. The periodic eval
 plays the agent at full **MCTS** strength (temp=0), so the numbers reflect the
@@ -24,17 +24,17 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents2.alphazero.nets import AZMLPNet
-from mojo_rl.deep_agents2.alphazero.agent import AlphaZeroAgent
-from mojo_rl.deep_agents2.zero.symmetries import D4SquareAugmenter
-from mojo_rl.deep_agents2.zero.evaluators import (
+from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
+from mojo_rl.deep_agents.alphazero.agent import AlphaZeroAgent
+from mojo_rl.deep_agents.zero.symmetries import D4SquareAugmenter
+from mojo_rl.deep_agents.zero.evaluators import (
     RandomOpponent, GPUMinimaxTicTacToe,
 )
 from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
 
 
 def main() raises:
-    print("=== AlphaZero on TicTacToe (deep_agents2 / nn2) ===")
+    print("=== AlphaZero on TicTacToe (deep_agents / nn) ===")
     print()
 
     # ── Logger setup ────────────────────────────────────────────
@@ -44,14 +44,14 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="AlphaZero TicTacToe (nn2)",
+        run_name="AlphaZero TicTacToe (nn)",
         buffer_size=22,
         api_key=api_key,
     )
     logger.set_config("agent", "AlphaZero")
     logger.set_config("env", "TicTacToe")
     logger.set_config("network", "AZMLPNet[27,9,128]")
-    logger.set_config("framework", "deep_agents2/nn2")
+    logger.set_config("framework", "deep_agents/nn")
 
     comptime OBS = 27
     comptime ACT = 9

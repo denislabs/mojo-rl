@@ -27,7 +27,7 @@ from mojo_rl.core import (
     GPUDiscreteEnv,
     RenderableEnv,
 )
-from mojo_rl.nn import dtype as gpu_dtype
+from mojo_rl.nn.constants import DT as gpu_dtype
 from mojo_rl.render import Renderer2D, SDL_Color
 
 from .constants import (
