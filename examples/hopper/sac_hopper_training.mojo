@@ -1,28 +1,33 @@
-"""SAC training on Walker2d (CPU) via the new `SACAgent` facade.
+"""SAC training on Hopper (CPU) via the new `SACAgent` facade.
 
-Walker2d counterpart of `examples/half_cheetah/sac_half_cheetah_nn_agent.mojo`.
-Uses the new `deep_agents/` surface:
+CPU nn counterpart of the legacy `sac_hopper_training_gpu.mojo` (which uses
+`deep_agents.core.agents.DeepSACAgent`). Mirrors the half_cheetah nn CPU
+example (`sac_half_cheetah_training.mojo`) with Hopper's dimensions and the
+ERE/early-termination settings the legacy Hopper script uses.
 
-  * `SACAgent[...]` — facade over `SACTrainer` + the single-env off-policy
-    driver.
-  * `RemoteLogger` — streams metrics at every chunk boundary AND at the
-    driver's `print_every` cadence.
+  * `SACAgent["cpu", ...]` — facade over `SACTrainer` + the single-env
+    off-policy driver. ERE (Emphasizing Recent Experience) on, matching the
+    legacy Hopper recipe.
+  * `RemoteLogger` — streams metrics to a dashboard at the driver's
+    `print_every`/`diag_every` cadence. Config (server URL + API key) read
+    from a `.env` via `mojo_rl.core.dotenv`.
   * Single-file checkpointing — `agent.save(CHECKPOINT_PATH)` writes ONE
-    `.ckpt` file (overwritten each chunk) under a single `nn-ckpt v2`
-    envelope.
+    `.ckpt` file (overwritten each cadence) under a single `nn-ckpt v2`
+    envelope containing actor + twin critics + their Adam states +
+    `alpha_opt` ScalarAdam.
 
 After training, the final checkpoint is reloaded into the same agent and a
-greedy probe confirms the action reproduces to `|diff| < 1e-5`.
+greedy probe confirms the action vector reproduces dimension-by-dimension to
+`|diff| < 1e-5`.
 
-Walker2d (Phyics3dEnv, MuJoCo-style):
-  * 17D observation (qpos[1:9] + qvel[0:9])
-  * 6D continuous action (thigh/leg/foot torques × 2 legs)
-  * Reward ≈ forward velocity + healthy bonus − control cost; episode ends
-    when the torso leaves a healthy height/angle range
-    (`TERMINATE_ON_UNHEALTHY=True`).
+Hopper (Phyics3dEnv, MuJoCo-style):
+  * 11D observation (qpos + qvel excluding rootx)
+  * 3D continuous action (joint torques)
+  * Reward ≈ forward velocity + alive bonus - 1e-3·||action||²
+  * Early termination on unhealthy state (`TERMINATE_ON_UNHEALTHY=True`).
 
 Run:
-    pixi run mojo run -I . examples/walker2d/sac_walker2d_nn_agent.mojo
+    pixi run mojo run -I . examples/hopper/sac_hopper_training.mojo
 """
 
 from std.random import seed
@@ -31,40 +36,55 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.sac import SAC
-from mojo_rl.envs.walker2d import Walker2d
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
+from mojo_rl.deep_agents.sac import SACAgent
+from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
+from mojo_rl.envs.hopper import Hopper, HopperConfig
 
 
 # =============================================================================
-# Architecture
+# Architecture (matches the legacy DeepSACAgent hopper training)
 # =============================================================================
 
-comptime EnvT = Walker2d[DT, TERMINATE_ON_UNHEALTHY=True]
-comptime OBS_DIM = EnvT.OBS_DIM  # 17
-comptime ACT_DIM = EnvT.ACTION_DIM  # 6
+comptime OBS_DIM = HopperConfig.OBS_DIM  # 11
+comptime ACT_DIM = HopperConfig.ACTION_DIM  #  3
 comptime HIDDEN = 256
-comptime BATCH = 256
-comptime REPLAY_CAPACITY = 100_000
+comptime BATCH = 64
+comptime REPLAY_CAPACITY = 200_000
 
-# Training duration. CPU single-env; drop NUM_STEPS to 20_000 for a smoke run.
-comptime NUM_STEPS = 600_000
-comptime PRINT_EVERY = 5_000
-comptime DIAG_EVERY = 5_000
-comptime CHECKPOINT_EVERY = 50_000
+# Training duration. Drop NUM_STEPS to ~20_000 for a smoke run.
+comptime NUM_STEPS = 1_000_000
+comptime PRINT_EVERY = 10_000  # driver-cadence verbose + `avg_reward`/`episodes` emit
+comptime DIAG_EVERY = 5_000  # `flush_metrics` cadence — full SACMetrics bundle
+comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
 
-comptime CHECKPOINT_PATH = "sac_walker2d_nn.ckpt"
+comptime CHECKPOINT_PATH = "sac_hopper_nn.ckpt"
 
-# Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac):
-# the canonical fused-`LinearReLU` `SACActorNet` / `SACCriticNet`. Using the
-# preset here keeps the CPU checkpoint layout identical to the GPU trainer's,
-# so a checkpoint trained on either target loads in the other (and in the
-# eval script).
+
+comptime ActorNet = StochasticActor[
+    OBS_DIM,
+    ACT_DIM,
+    Linear[OBS_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
+]
+comptime CriticNet = Sequential[
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, 1],
+]
 
 
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("SAC (deep_agents) — Walker2d CPU + checkpoints + logger")
+    print("SAC (deep_agents) — Hopper CPU + checkpoints + logger")
     print("=" * 70)
     print("  OBS_DIM            =", OBS_DIM)
     print("  ACT_DIM            =", ACT_DIM)
@@ -85,34 +105,47 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="SAC Walker2d NN2 (CPU)",
+        run_name="SAC Hopper NN2 (CPU)",
         buffer_size=200,
         api_key=api_key,
     )
     logger.set_config("algorithm", "SAC")
-    logger.set_config("env", "Walker2d")
+    logger.set_config("env", "Hopper")
     logger.set_config("hidden", String(HIDDEN))
     logger.set_config("batch", String(BATCH))
+    logger.set_config("ere", "0.996")
 
     var logger_ptr = UnsafePointer(to=logger)
 
     # ─── Agent + env ─────────────────────────────────────────────────────
-    # `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` builds the SACAgent with
-    # the fused default nets + SAC's tuned defaults (lr=3e-4, gamma=0.99,
-    # tau=0.005, init_alpha=0.2, target_entropy=-ACT, …). Override only the
-    # example-specific knobs; the rest come from the preset.
-    var agent = SAC[
-        "cpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN
+    var agent = SACAgent[
+        "cpu",
+        UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
+        ActorNet,
+        CriticNet,
     ](
+        actor_lr=3e-4,
+        critic_lr=1e-3,  # CleanRL default: q_lr higher than policy_lr
+        alpha_lr=3e-4,
+        gamma=0.99,
+        tau=0.005,
+        action_scale=1.0,
+        init_alpha=0.2,
+        target_entropy=-Scalar[DT](ACT_DIM),  # SAC default heuristic (-3)
+        learning_starts=1_000,
         window_size=100,
         initial_episode_fill=0.0,
+        # ERE — same shape the legacy Hopper recipe uses. Down-weights
+        # ancient transitions; helps on long horizons.
+        use_ere=True,
+        ere_eta=0.996,
     )
-    var env = EnvT()
+    var env = Hopper[DT, TERMINATE_ON_UNHEALTHY=True]()
 
     # ─── Single train() call — auto-flush + auto-checkpoint ──────────────
     var t_start = perf_counter_ns()
     _ = agent.train_single[
-        EnvT,
+        Hopper[DT, TERMINATE_ON_UNHEALTHY=True],
         L=RemoteLogger,
     ](
         env,
@@ -132,20 +165,20 @@ def main() raises:
     # ─── Summary ─────────────────────────────────────────────────────────
     print("=" * 70)
     print("Training complete")
-    print("  total env_steps        =", total)
-    print("  elapsed                =", elapsed_s, "s")
+    print("  total env_steps           =", total)
+    print("  elapsed                   =", elapsed_s, "s")
     print("  mean ep return (last 100) =", agent.mean_return())
-    print("  episodes completed     =", agent.ep_count())
-    print("  remote points sent     =", logger.total_logged())
+    print("  episodes completed        =", agent.ep_count())
+    print("  remote points sent        =", logger.total_logged())
     print("=" * 70)
 
     var final_avg = Float64(agent.mean_return())
-    if final_avg > 4000.0:
-        print("EXCELLENT — walking fast (mean > 4000).")
-    elif final_avg > 2000.0:
-        print("STRONG — sustained walking (mean > 2000).")
-    elif final_avg > 1000.0:
-        print("PROGRESS — staying upright + moving (mean > 1000).")
+    if final_avg > 3000.0:
+        print("EXCELLENT — hopping fast (mean > 3000).")
+    elif final_avg > 1500.0:
+        print("STRONG — learned to hop (mean > 1500).")
+    elif final_avg > 500.0:
+        print("PROGRESS — early locomotion (mean > 500).")
     elif final_avg > 0.0:
         print("LEARNING — positive return (mean > 0).")
     else:

@@ -1,16 +1,15 @@
-"""SAC training on Swimmer (GPU, multi-env) via the new `SACAgent` facade.
+"""SAC training on InvertedDoublePendulum (GPU, multi-env) via `SACAgent`.
 
-GPU successor of `sac_swimmer_nn_agent.mojo` and counterpart of the legacy
-`sac_swimmer_training_gpu.mojo`. Mirrors
-`examples/half_cheetah/sac_half_cheetah_nn_agent_gpu.mojo`:
+GPU successor of `sac_inverted_double_pendulum_training.mojo` and counterpart
+of the legacy `sac_inverted_double_pendulum_training_gpu.mojo`. Mirrors
+`examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`:
 
   * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
-    off-policy driver (`run_offpolicy_train_batched`). All optimizers, the
-    replay buffer, and the SAC train-step pipeline run on-device.
-  * `BatchedGpuEnv[Swimmer[DT], N_ENVS, OBS, ACT]` — wraps the Swimmer
+    off-policy driver. All optimizers, the replay buffer, and the SAC
+    train-step pipeline run on-device.
+  * `BatchedGpuEnv[InvertedDoublePendulum[DT], N_ENVS, OBS, ACT]` — wraps the
     physics3d env (`GPUContinuousEnv`) into a `BatchedEnv`.
-  * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count` at the driver's
-    `print_every` cadence.
+  * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count`.
 
 `updates_per_step=N_ENVS` keeps the effective UTD = 1 per collected transition.
 
@@ -18,15 +17,15 @@ NOTE on checkpointing: the facade's `save`/`load` are CPU-only and the batched
 `train` entry point has no inline checkpoint/diag cadence (those live on
 `train_single`). This GPU example trains + summarizes only.
 
-Swimmer (Phyics3dEnv, MuJoCo-style):
-  * 8D observation (qpos[2:5] + qvel[0:5])
-  * 2D continuous action (2 rotational motor torques)
-  * Reward ≈ x_velocity - 0.0001·||action||²
-  * No early termination (`TERMINATE_ON_UNHEALTHY=False`).
+InvertedDoublePendulum (Phyics3dEnv, MuJoCo-style):
+  * 9D observation (cart_x, sin/cos of both pole angles, clipped velocities)
+  * 1D continuous action (cart slider force)
+  * Reward = alive bonus − distance/velocity penalties; episode ends when the
+    tip drops (`TERMINATE_ON_UNHEALTHY=True`). Max return ≈ 9300.
 
 Run:
-    pixi run -e apple  mojo run -I . examples/swimmer/sac_swimmer_nn_agent_gpu.mojo  # Apple Silicon
-    pixi run -e nvidia mojo run -I . examples/swimmer/sac_swimmer_nn_agent_gpu.mojo  # NVIDIA GPU
+    pixi run -e apple  mojo run -I . examples/inverted_double_pendulum/sac_inverted_double_pendulum_training_gpu.mojo  # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/inverted_double_pendulum/sac_inverted_double_pendulum_training_gpu.mojo  # NVIDIA GPU
 """
 
 from std.gpu.host import DeviceContext
@@ -43,30 +42,28 @@ from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
 from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.swimmer import Swimmer
+from mojo_rl.envs.inverted_double_pendulum import InvertedDoublePendulum
 
 
 # =============================================================================
 # Architecture
 # =============================================================================
 
-comptime EnvT = Swimmer[DT, TERMINATE_ON_UNHEALTHY=False]
-comptime OBS_DIM = EnvT.OBS_DIM  # 8
-comptime ACT_DIM = EnvT.ACTION_DIM  # 2
-comptime HIDDEN = 256
+comptime EnvT = InvertedDoublePendulum[DT, TERMINATE_ON_UNHEALTHY=True]
+comptime OBS_DIM = EnvT.OBS_DIM  # 9
+comptime ACT_DIM = EnvT.ACTION_DIM  # 1
+comptime HIDDEN = 128
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
 comptime BATCH = 256
 comptime REPLAY_CAPACITY = 1_000_000
-# Sized to the legacy `sac_swimmer_training_gpu.mojo` parallel-env count.
-# Per-env physics workspace scales with NV²+contacts; bump up with GPU headroom.
-comptime N_ENVS = 16
+# Sized to the legacy `sac_inverted_double_pendulum_training_gpu.mojo` env count.
+comptime N_ENVS = 4
 
 # Training duration. Drop NUM_STEPS to ~50_000 for a smoke run.
-comptime NUM_STEPS = 1_500_000
+comptime NUM_STEPS = 500_000
 comptime WARMUP_STEPS = 5_000
-comptime PRINT_EVERY = 50_000
-comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
+comptime PRINT_EVERY = 25_000
 
 
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
@@ -91,7 +88,7 @@ comptime CriticNet = Sequential[
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("SAC (deep_agents) — Swimmer GPU (multi-env) + logger")
+    print("SAC (deep_agents) — InvertedDoublePendulum GPU (multi-env) + logger")
     print("=" * 70)
     print("  OBS_DIM            =", OBS_DIM)
     print("  ACT_DIM            =", ACT_DIM)
@@ -112,12 +109,12 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC Swimmer NN2 (GPU)",
+            run_name="SAC InvertedDoublePendulum NN2 (GPU)",
             buffer_size=64,
             api_key=api_key,
         )
         logger.set_config("algorithm", "SAC")
-        logger.set_config("env", "Swimmer")
+        logger.set_config("env", "InvertedDoublePendulum")
         logger.set_config("target", "gpu")
         logger.set_config("hidden", String(HIDDEN))
         logger.set_config("batch", String(BATCH))
@@ -164,7 +161,6 @@ def main() raises:
             print_every=PRINT_EVERY,
             verbose=True,
             logger=logger_ptr,
-            diag_every=DIAG_EVERY,
         )
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()
@@ -182,14 +178,14 @@ def main() raises:
         print("=" * 70)
 
         var final_avg = Float64(agent.mean_return())
-        if final_avg > 100.0:
-            print("EXCELLENT — swimming fast (mean > 100).")
-        elif final_avg > 40.0:
-            print("STRONG — learned to swim (mean > 40).")
-        elif final_avg > 20.0:
-            print("PROGRESS — early locomotion (mean > 20).")
-        elif final_avg > 0.0:
-            print("LEARNING — positive return (mean > 0).")
+        if final_avg > 9000.0:
+            print("EXCELLENT — balancing reliably (mean > 9000).")
+        elif final_avg > 5000.0:
+            print("STRONG — mostly upright (mean > 5000).")
+        elif final_avg > 1000.0:
+            print("PROGRESS — learning to balance (mean > 1000).")
+        elif final_avg > 100.0:
+            print("LEARNING — some control (mean > 100).")
         else:
-            print("EARLY — still exploring (mean < 0).")
+            print("EARLY — still falling fast (mean < 100).")
         print("=" * 70)

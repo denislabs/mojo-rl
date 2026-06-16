@@ -1,7 +1,7 @@
 """Evaluate + render a trained Walker2d SAC (deep_agents) checkpoint.
 
 Loads the one-file `nn-ckpt v2` checkpoint written by either Walker2d SAC
-trainer (`sac_walker2d_nn_agent.mojo` CPU or `sac_walker2d_nn_agent_gpu.mojo`
+trainer (`sac_walker2d_training.mojo` CPU or `sac_walker2d_training_gpu.mojo`
 GPU) and runs deterministic (greedy / actor-mean, no sampling) episodes with
 live 3D rendering via the physics3d `RenderableEnv` interface — the same
 renderer the legacy `sac_walker2d_eval_cpu.mojo` drives, but on the new
@@ -79,7 +79,7 @@ def main() raises:
         print("Train first:")
         print(
             "  pixi run mojo run -I ."
-            " examples/walker2d/sac_walker2d_nn_agent.mojo"
+            " examples/walker2d/sac_walker2d_training.mojo"
         )
         return
     print()

@@ -1,28 +1,30 @@
-"""SAC training on InvertedPendulum (CPU) via the new `SACAgent` facade.
+"""SAC training on Swimmer (CPU) via the new `SACAgent` facade.
 
-InvertedPendulum counterpart of
-`examples/half_cheetah/sac_half_cheetah_nn_agent.mojo`. Uses the new
-`deep_agents/` surface:
+Swimmer counterpart of `examples/half_cheetah/sac_half_cheetah_training.mojo`.
+Uses the new `deep_agents/` surface:
 
   * `SACAgent[...]` — facade over `SACTrainer` + the single-env off-policy
     driver.
-  * `RemoteLogger` — streams metrics at every chunk boundary AND at the
-    driver's `print_every` cadence.
+  * `RemoteLogger` — streams metrics to a dashboard at every chunk boundary
+    AND at the driver's `print_every` cadence. Config (server URL + API key)
+    read from a `.env` via `mojo_rl.core.dotenv`.
   * Single-file checkpointing — `agent.save(CHECKPOINT_PATH)` writes ONE
     `.ckpt` file (overwritten each chunk) under a single `nn-ckpt v2`
-    envelope.
+    envelope containing actor + twin critics + their Adam states +
+    `alpha_opt` ScalarAdam.
 
 After training, the final checkpoint is reloaded into the same agent and a
-greedy probe confirms the action reproduces to `|diff| < 1e-5`.
+greedy probe confirms the action vector reproduces dimension-by-dimension to
+`|diff| < 1e-5`.
 
-InvertedPendulum (Phyics3dEnv, MuJoCo-style):
-  * 4D observation (qpos[0:2] + qvel[0:2])
-  * 1D continuous action (cart slider force)
-  * Reward = +1 per step while upright; episode ends when the pole falls
-    (`TERMINATE_ON_UNHEALTHY=True`). Max return ≈ 1000.
+Swimmer (Phyics3dEnv, MuJoCo-style):
+  * 8D observation (qpos[2:5] + qvel[0:5])
+  * 2D continuous action (2 rotational motor torques)
+  * Reward ≈ x_velocity - 0.0001·||action||²
+  * No early termination (`TERMINATE_ON_UNHEALTHY=False`).
 
 Run:
-    pixi run mojo run -I . examples/inverted_pendulum/sac_inverted_pendulum_nn_agent.mojo
+    pixi run mojo run -I . examples/swimmer/sac_swimmer_training.mojo
 """
 
 from std.random import seed
@@ -37,27 +39,27 @@ from mojo_rl.nn.primitives.relu import ReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
-from mojo_rl.envs.inverted_pendulum import InvertedPendulum
+from mojo_rl.envs.swimmer import Swimmer
 
 
 # =============================================================================
 # Architecture
 # =============================================================================
 
-comptime EnvT = InvertedPendulum[DT, TERMINATE_ON_UNHEALTHY=True]
-comptime OBS_DIM = EnvT.OBS_DIM  # 4
-comptime ACT_DIM = EnvT.ACTION_DIM  # 1
+comptime EnvT = Swimmer[DT, TERMINATE_ON_UNHEALTHY=False]
+comptime OBS_DIM = EnvT.OBS_DIM  # 8
+comptime ACT_DIM = EnvT.ACTION_DIM  # 2
 comptime HIDDEN = 256
 comptime BATCH = 256
 comptime REPLAY_CAPACITY = 100_000
 
 # Training duration. CPU single-env; drop NUM_STEPS to 20_000 for a smoke run.
-comptime NUM_STEPS = 100_000
+comptime NUM_STEPS = 200_000
 comptime PRINT_EVERY = 5_000
 comptime DIAG_EVERY = 5_000
-comptime CHECKPOINT_EVERY = 25_000
+comptime CHECKPOINT_EVERY = 50_000
 
-comptime CHECKPOINT_PATH = "sac_inverted_pendulum_nn.ckpt"
+comptime CHECKPOINT_PATH = "sac_swimmer_nn.ckpt"
 
 
 comptime ActorNet = StochasticActor[
@@ -80,7 +82,7 @@ comptime CriticNet = Sequential[
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("SAC (deep_agents) — InvertedPendulum CPU + checkpoints + logger")
+    print("SAC (deep_agents) — Swimmer CPU + checkpoints + logger")
     print("=" * 70)
     print("  OBS_DIM            =", OBS_DIM)
     print("  ACT_DIM            =", ACT_DIM)
@@ -101,12 +103,12 @@ def main() raises:
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="SAC InvertedPendulum NN2 (CPU)",
+        run_name="SAC Swimmer NN2 (CPU)",
         buffer_size=200,
         api_key=api_key,
     )
     logger.set_config("algorithm", "SAC")
-    logger.set_config("env", "InvertedPendulum")
+    logger.set_config("env", "Swimmer")
     logger.set_config("hidden", String(HIDDEN))
     logger.set_config("batch", String(BATCH))
 
@@ -166,16 +168,16 @@ def main() raises:
     print("=" * 70)
 
     var final_avg = Float64(agent.mean_return())
-    if final_avg > 950.0:
-        print("EXCELLENT — balancing reliably (mean > 950).")
-    elif final_avg > 500.0:
-        print("STRONG — mostly upright (mean > 500).")
-    elif final_avg > 100.0:
-        print("PROGRESS — learning to balance (mean > 100).")
-    elif final_avg > 10.0:
-        print("LEARNING — some control (mean > 10).")
+    if final_avg > 100.0:
+        print("EXCELLENT — swimming fast (mean > 100).")
+    elif final_avg > 40.0:
+        print("STRONG — learned to swim (mean > 40).")
+    elif final_avg > 20.0:
+        print("PROGRESS — early locomotion (mean > 20).")
+    elif final_avg > 0.0:
+        print("LEARNING — positive return (mean > 0).")
     else:
-        print("EARLY — still falling fast (mean < 10).")
+        print("EARLY — still exploring (mean < 0).")
     print("=" * 70)
 
     # ─── Save/load round-trip smoke test ─────────────────────────────────

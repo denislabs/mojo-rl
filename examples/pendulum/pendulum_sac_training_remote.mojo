@@ -16,7 +16,7 @@ comptime-elided via `comptime if L.ENABLED` — `pendulum_sac_nn_driver.mojo`
 still produces `mean_ret(10) = -169.04118` at 30k steps seed=42.
 
 Run:
-    pixi run mojo run -I . examples/pendulum/pendulum_sac_nn_agent_remote.mojo
+    pixi run mojo run -I . examples/pendulum/pendulum_sac_training_remote.mojo
 """
 
 from std.random import seed

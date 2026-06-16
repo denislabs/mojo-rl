@@ -8,7 +8,7 @@ off-policy path as CartPole — only the obs/action dims and net width change
 LunarLander is considered solved at avg reward > 200 over 100 episodes;
 this CPU example is a usage smoke run, not a full convergence run.
 
-Run with: pixi run mojo run -I . examples/lunar_lander/lunar_lander_dqn_nn_agent.mojo
+Run with: pixi run mojo run -I . examples/lunar_lander/lunar_lander_dqn_training.mojo
 """
 
 from std.random import seed

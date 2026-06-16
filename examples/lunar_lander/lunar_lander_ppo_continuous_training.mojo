@@ -9,7 +9,7 @@ This CPU example is a usage smoke run; for a longer convergence run, scale
 TOTAL_TIMESTEPS up (continuous PPO benefits from the GPU on-policy driver,
 mirrored by the other da2 PPO driver examples).
 
-Run with: pixi run mojo run -I . examples/lunar_lander/lunar_lander_ppo_continuous_nn_agent.mojo
+Run with: pixi run mojo run -I . examples/lunar_lander/lunar_lander_ppo_continuous_training.mojo
 """
 
 from std.random import seed

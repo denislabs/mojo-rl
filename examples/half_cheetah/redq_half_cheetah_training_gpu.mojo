@@ -29,8 +29,8 @@ HalfCheetah (Phyics3dEnv, MuJoCo-style):
   * No early termination (`TERMINATE_ON_UNHEALTHY=False`).
 
 Run:
-    pixi run -e apple  mojo run -I . examples/half_cheetah/redq_half_cheetah_nn_agent_gpu.mojo  # Apple Silicon
-    pixi run -e nvidia mojo run -I . examples/half_cheetah/redq_half_cheetah_nn_agent_gpu.mojo  # NVIDIA GPU
+    pixi run -e apple  mojo run -I . examples/half_cheetah/redq_half_cheetah_training_gpu.mojo  # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/half_cheetah/redq_half_cheetah_training_gpu.mojo  # NVIDIA GPU
 """
 
 from std.gpu.host import DeviceContext

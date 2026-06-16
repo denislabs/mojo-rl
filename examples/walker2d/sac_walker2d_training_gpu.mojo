@@ -1,8 +1,8 @@
 """SAC training on Walker2d (GPU, multi-env) via the new `SACAgent` facade.
 
-GPU successor of `sac_walker2d_nn_agent.mojo` and counterpart of the legacy
+GPU successor of `sac_walker2d_training.mojo` and counterpart of the legacy
 `sac_walker2d_training_gpu.mojo`. Mirrors
-`examples/half_cheetah/sac_half_cheetah_nn_agent_gpu.mojo`:
+`examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`:
 
   * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver. All optimizers, the replay buffer, and the SAC
@@ -32,8 +32,8 @@ Walker2d (Phyics3dEnv, MuJoCo-style):
     (`TERMINATE_ON_UNHEALTHY=True`).
 
 Run:
-    pixi run -e apple  mojo run -I . examples/walker2d/sac_walker2d_nn_agent_gpu.mojo  # Apple Silicon
-    pixi run -e nvidia mojo run -I . examples/walker2d/sac_walker2d_nn_agent_gpu.mojo  # NVIDIA GPU
+    pixi run -e apple  mojo run -I . examples/walker2d/sac_walker2d_training_gpu.mojo  # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/walker2d/sac_walker2d_training_gpu.mojo  # NVIDIA GPU
 """
 
 from std.gpu.host import DeviceContext

@@ -2,7 +2,7 @@
 checkpoint.
 
 Companion to `sac_humanoid_nn_eval_cpu.mojo`, but matched to the LayerNorm
-critic variant of the trainer (`sac_humanoid_nn_agent_gpu.mojo`). That run
+critic variant of the trainer (`sac_humanoid_training_gpu.mojo`). That run
 swaps the preset's plain fused-`LinearReLU` critic for a pre-activation
 LayerNorm MLP (`Linear → LayerNorm → ReLU`, repeated), which changes the
 critic's `PARAM_SIZE` — so its checkpoint (`sac_humanoid_nn_ln.ckpt`) is NOT
@@ -108,7 +108,7 @@ def main() raises:
         print("Train first (GPU):")
         print(
             "  pixi run -e nvidia mojo run -I ."
-            " examples/humanoid/sac_humanoid_nn_agent_gpu.mojo"
+            " examples/humanoid/sac_humanoid_training_gpu.mojo"
         )
         return
     print()

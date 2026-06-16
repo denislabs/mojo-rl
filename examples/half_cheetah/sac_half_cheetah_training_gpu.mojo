@@ -1,31 +1,45 @@
-"""SAC training on InvertedPendulum (GPU, multi-env) via the new `SACAgent` facade.
+"""SAC training on HalfCheetah (GPU, multi-env) via the new `SACAgent` facade.
 
-GPU successor of `sac_inverted_pendulum_nn_agent.mojo` and counterpart of the
-legacy `sac_inverted_pendulum_training_gpu.mojo`. Mirrors
-`examples/half_cheetah/sac_half_cheetah_nn_agent_gpu.mojo`:
+GPU successor of `sac_half_cheetah_training.mojo` (the CPU nn example) and
+direct counterpart of the legacy `sac_half_cheetah_training_gpu.mojo` (which
+uses `deep_agents.core.agents.DeepSACAgent.train_gpu`). Uses the new
+`deep_agents/` surface end-to-end:
 
   * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
-    off-policy driver. All optimizers, the replay buffer, and the SAC
-    train-step pipeline run on-device.
-  * `BatchedGpuEnv[InvertedPendulum[DT], N_ENVS, OBS, ACT]` — wraps the
-    physics3d env (`GPUContinuousEnv`) into a `BatchedEnv`.
-  * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count`.
+    off-policy driver (`run_offpolicy_train_batched`). All optimizers, the
+    replay buffer, and the SAC train-step pipeline run on-device.
+  * `BatchedGpuEnv[HalfCheetah[DT], N_ENVS, OBS, ACT]` — wraps the
+    HalfCheetah physics3d env (which conforms to `GPUContinuousEnv`) into a
+    `BatchedEnv`. Steps/resets/obs-extraction all dispatch HalfCheetah's
+    native GPU physics kernels — the exact same kernels the legacy
+    `train_gpu[HalfCheetah[...]]` path drives, just behind the deep_agents
+    wrapper.
+  * `RemoteLogger` — streams `avg_reward` + `episodes` at the driver's
+    `print_every` cadence, AND (via `diag_every`) the full SAC metric bundle
+    — `actor_loss`, `critic_loss`, `alpha`, `mean_q`, `mean_reward`,
+    `train_steps`, … — so the dashboard shows the same panels as the
+    single-env path. Config (server URL + API key) read from a `.env` via
+    `mojo_rl.core.dotenv`.
 
-`updates_per_step=N_ENVS` keeps the effective UTD = 1 per collected transition.
+`updates_per_step=N_ENVS` keeps the effective UTD = 1 per collected
+transition: each driver iteration steps all `N_ENVS` envs once and runs
+`N_ENVS` gradient updates.
 
-NOTE on checkpointing: the facade's `save`/`load` are CPU-only and the batched
-`train` entry point has no inline checkpoint/diag cadence (those live on
-`train_single`). This GPU example trains + summarizes only.
+NOTE on checkpointing: the facade's `save`/`load` are CPU-only (they write a
+`nn-ckpt v2` envelope from host-resident params), and the batched `train`
+entry point has no inline checkpoint/diag cadence (those live on
+`train_single`). This GPU example therefore trains + summarizes only; for
+mid-run checkpointing use the CPU example or the single-env cross-target path.
 
-InvertedPendulum (Phyics3dEnv, MuJoCo-style):
-  * 4D observation (qpos[0:2] + qvel[0:2])
-  * 1D continuous action (cart slider force)
-  * Reward = +1 per step while upright; episode ends when the pole falls
-    (`TERMINATE_ON_UNHEALTHY=True`). Max return ≈ 1000.
+HalfCheetah (Phyics3dEnv, MuJoCo-style):
+  * 17D observation (qpos + qvel excluding rootx and head)
+  * 6D continuous action (joint torques)
+  * Reward ≈ forward velocity - 0.1·||action||²
+  * No early termination (`TERMINATE_ON_UNHEALTHY=False`).
 
 Run:
-    pixi run -e apple  mojo run -I . examples/inverted_pendulum/sac_inverted_pendulum_nn_agent_gpu.mojo  # Apple Silicon
-    pixi run -e nvidia mojo run -I . examples/inverted_pendulum/sac_inverted_pendulum_nn_agent_gpu.mojo  # NVIDIA GPU
+    pixi run -e apple  mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo  # Apple Silicon
+    pixi run -e nvidia mojo run -I . examples/half_cheetah/sac_half_cheetah_training_gpu.mojo  # NVIDIA GPU
 """
 
 from std.gpu.host import DeviceContext
@@ -38,49 +52,47 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
 from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.inverted_pendulum import InvertedPendulum
+from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 
 # =============================================================================
-# Architecture
+# Architecture (matches the CPU nn / legacy DeepSACAgent half_cheetah runs)
 # =============================================================================
 
-comptime EnvT = InvertedPendulum[DT, TERMINATE_ON_UNHEALTHY=True]
-comptime OBS_DIM = EnvT.OBS_DIM  # 4
-comptime ACT_DIM = EnvT.ACTION_DIM  # 1
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
+comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM  #  6
 comptime HIDDEN = 256
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
 comptime BATCH = 256
 comptime REPLAY_CAPACITY = 1_000_000
-# Sized to the legacy `sac_inverted_pendulum_training_gpu.mojo` env count.
-comptime N_ENVS = 8
+comptime N_ENVS = 32
 
-# Training duration. Drop NUM_STEPS to ~50_000 for a smoke run.
-comptime NUM_STEPS = 300_000
-comptime WARMUP_STEPS = 5_000
-comptime PRINT_EVERY = 25_000
+# Training duration (off-policy uses env steps, not episodes). Drop NUM_STEPS
+# to ~50_000 for a smoke run.
+comptime NUM_STEPS = 600_000
+comptime WARMUP_STEPS = 10_000
+comptime PRINT_EVERY = 50_000  # driver-cadence verbose + env/mean_ret emit
+comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
 
+comptime EnvT = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
 
 comptime ActorNet = StochasticActor[
     OBS_DIM,
     ACT_DIM,
-    Linear[OBS_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    LinearReLU[OBS_DIM + ACT_DIM, HIDDEN],
+    LinearReLU[HIDDEN, HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -88,7 +100,7 @@ comptime CriticNet = Sequential[
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("SAC (deep_agents) — InvertedPendulum GPU (multi-env) + logger")
+    print("SAC (deep_agents) — HalfCheetah GPU (multi-env) + logger")
     print("=" * 70)
     print("  OBS_DIM            =", OBS_DIM)
     print("  ACT_DIM            =", ACT_DIM)
@@ -109,12 +121,12 @@ def main() raises:
 
         var logger = RemoteLogger(
             server_url=url,
-            run_name="SAC InvertedPendulum NN2 (GPU)",
+            run_name="SAC HalfCheetah NN2 (GPU)",
             buffer_size=64,
             api_key=api_key,
         )
         logger.set_config("algorithm", "SAC")
-        logger.set_config("env", "InvertedPendulum")
+        logger.set_config("env", "HalfCheetah")
         logger.set_config("target", "gpu")
         logger.set_config("hidden", String(HIDDEN))
         logger.set_config("batch", String(BATCH))
@@ -124,6 +136,8 @@ def main() raises:
         var logger_ptr = UnsafePointer(to=logger)
 
         # ─── Agent + batched GPU env ─────────────────────────────────────
+        # GPU training: the DeviceContext MUST be threaded through the agent
+        # (the trainer keeps it for H2D/D2H staging + all on-device kernels).
         var agent = SACAgent[
             "gpu",
             UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
@@ -142,16 +156,21 @@ def main() raises:
             learning_starts=WARMUP_STEPS,
             window_size=100,
             initial_episode_fill=0.0,
+            # use_bf16=True,
         )
         var env = BatchedEnvT(ctx)
 
         # ─── Single train() call — batched GPU off-policy driver ─────────
+        # Every PRINT_EVERY env-steps the driver emits `env/mean_ret` +
+        # `env/ep_count` through the logger and prints a progress line.
+        # `updates_per_step=N_ENVS` ⇒ effective UTD = 1 per transition.
         print("Starting GPU training...")
         print("-" * 70)
         var t_start = perf_counter_ns()
         _ = agent.train[
             BatchedEnvT,
             N_ENVS=N_ENVS,
+            USE_TRAIN_CUDA_GRAPH=True,
             L=RemoteLogger,
         ](
             env,
@@ -161,6 +180,7 @@ def main() raises:
             print_every=PRINT_EVERY,
             verbose=True,
             logger=logger_ptr,
+            diag_every=DIAG_EVERY,
         )
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()
@@ -178,14 +198,14 @@ def main() raises:
         print("=" * 70)
 
         var final_avg = Float64(agent.mean_return())
-        if final_avg > 950.0:
-            print("EXCELLENT — balancing reliably (mean > 950).")
-        elif final_avg > 500.0:
-            print("STRONG — mostly upright (mean > 500).")
+        if final_avg > 4000.0:
+            print("EXCELLENT — running fast (mean > 4000).")
+        elif final_avg > 1000.0:
+            print("STRONG — learned locomotion (mean > 1000).")
         elif final_avg > 100.0:
-            print("PROGRESS — learning to balance (mean > 100).")
-        elif final_avg > 10.0:
-            print("LEARNING — some control (mean > 10).")
+            print("PROGRESS — early locomotion (mean > 100).")
+        elif final_avg > 0.0:
+            print("LEARNING — positive return (mean > 0).")
         else:
-            print("EARLY — still falling fast (mean < 10).")
+            print("EARLY — still exploring (mean < 0).")
         print("=" * 70)

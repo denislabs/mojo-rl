@@ -1,30 +1,28 @@
-"""PPO training on HalfCheetah (CPU) via the new `PPOAgent` facade.
+"""SAC training on InvertedDoublePendulum (CPU) via the new `SACAgent` facade.
 
-Sibling of `sac_half_cheetah_nn_agent.mojo` for the on-policy
-Gaussian-policy PPO flavour. Uses the new `deep_agents/` surface:
+InvertedDoublePendulum counterpart of
+`examples/half_cheetah/sac_half_cheetah_training.mojo`. Uses the new
+`deep_agents/` surface:
 
-  * `PPOAgent[...]` — facade over `PPOTrainer` + the single-env
-    on-policy driver. PPO is on-policy → no replay buffer, no
-    `SAMPLE` block, no `learning_starts`. Every `ROLLOUT_LEN` env
-    steps the driver computes GAE and runs `N_EPOCHS` passes of
-    minibatch SGD (`MINIBATCH` rows each).
-  * `RemoteLogger` — driver `print_every` cadence (`avg_reward` /
-    `episodes`) + chunk cadence (`PPOMetrics`).
-  * One-file `.ckpt` envelope holding actor (incl. Gaussian
-    log-std parameter) + critic + Adam states.
+  * `SACAgent[...]` — facade over `SACTrainer` + the single-env off-policy
+    driver.
+  * `RemoteLogger` — streams metrics at every chunk boundary AND at the
+    driver's `print_every` cadence.
+  * Single-file checkpointing — `agent.save(CHECKPOINT_PATH)` writes ONE
+    `.ckpt` file (overwritten each chunk) under a single `nn-ckpt v2`
+    envelope.
 
-Metric names (driver cadence): `avg_reward`, `episodes`.
-Chunk cadence (`PPOMetrics` fields): `actor_loss`, `critic_loss`,
-  `train_steps`, `n_updates`.
+After training, the final checkpoint is reloaded into the same agent and a
+greedy probe confirms the action reproduces to `|diff| < 1e-5`.
 
-HalfCheetah (Physics3dEnv, MuJoCo-style):
-  * 17D observation (qpos + qvel excluding rootx and head)
-  * 6D continuous action (joint torques)
-  * Reward ≈ forward velocity - 0.1·||action||²
-  * No early termination (`TERMINATE_ON_UNHEALTHY=False`).
+InvertedDoublePendulum (Phyics3dEnv, MuJoCo-style):
+  * 9D observation (cart_x, sin/cos of both pole angles, clipped velocities)
+  * 1D continuous action (cart slider force)
+  * Reward = alive bonus − distance/velocity penalties; episode ends when the
+    tip drops (`TERMINATE_ON_UNHEALTHY=True`). Max return ≈ 9300.
 
 Run:
-    pixi run mojo run -I . examples/half_cheetah/ppo_half_cheetah_nn_agent.mojo
+    pixi run mojo run -I . examples/inverted_double_pendulum/sac_inverted_double_pendulum_training.mojo
 """
 
 from std.random import seed
@@ -35,48 +33,46 @@ from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.tanh import Tanh
-from mojo_rl.deep_agents.primitives.gaussian_head import GaussianHead
-from mojo_rl.deep_agents.ppo import PPOAgent
-from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
+from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
+from mojo_rl.deep_agents.sac import SACAgent
+from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
+from mojo_rl.envs.inverted_double_pendulum import InvertedDoublePendulum
 
 
 # =============================================================================
-# Architecture (CleanRL-style continuous PPO: Tanh MLP + GaussianHead)
+# Architecture
 # =============================================================================
 
-comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
-comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM  #  6
-comptime HIDDEN = 256
-comptime ROLLOUT_LEN = 2_048
-comptime MINIBATCH = 64
-comptime N_EPOCHS = 10
+comptime EnvT = InvertedDoublePendulum[DT, TERMINATE_ON_UNHEALTHY=True]
+comptime OBS_DIM = EnvT.OBS_DIM  # 9
+comptime ACT_DIM = EnvT.ACTION_DIM  # 1
+comptime HIDDEN = 128
+comptime BATCH = 256
+comptime REPLAY_CAPACITY = 100_000
 
-# Training duration. Match the legacy-script scale; drop NUM_STEPS to
-# ~20k for a smoke run. NOTE: PPO env-step count is independent of
-# ROLLOUT_LEN; the driver groups them into chunks internally.
-comptime NUM_STEPS = 1_000_000
-comptime PRINT_EVERY = 50_000
-comptime DIAG_EVERY = 50_000
-comptime CHECKPOINT_EVERY = 50_000
+# Training duration. CPU single-env; drop NUM_STEPS to 20_000 for a smoke run.
+comptime NUM_STEPS = 150_000
+comptime PRINT_EVERY = 5_000
+comptime DIAG_EVERY = 5_000
+comptime CHECKPOINT_EVERY = 25_000
 
-comptime CHECKPOINT_PATH = "ppo_half_cheetah_nn.ckpt"
+comptime CHECKPOINT_PATH = "sac_inverted_double_pendulum_nn.ckpt"
 
-comptime LOG_STD_INIT: Scalar[DT] = -0.5
-comptime MAX_TORQUE: Scalar[DT] = 1.0  # HalfCheetah torque range
 
-comptime ActorNet = Sequential[
+comptime ActorNet = StochasticActor[
+    OBS_DIM,
+    ACT_DIM,
     Linear[OBS_DIM, HIDDEN],
-    Tanh[HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, HIDDEN],
-    Tanh[HIDDEN],
-    GaussianHead[HIDDEN, ACT_DIM],
+    ReLU[HIDDEN],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM, HIDDEN],
-    Tanh[HIDDEN],
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, HIDDEN],
-    Tanh[HIDDEN],
+    ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -84,14 +80,13 @@ comptime CriticNet = Sequential[
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("PPO (deep_agents) — HalfCheetah CPU + checkpoints + logger")
+    print("SAC (deep_agents) — InvertedDoublePendulum CPU + checkpoints + logger")
     print("=" * 70)
     print("  OBS_DIM            =", OBS_DIM)
     print("  ACT_DIM            =", ACT_DIM)
     print("  HIDDEN             =", HIDDEN)
-    print("  ROLLOUT_LEN        =", ROLLOUT_LEN)
-    print("  MINIBATCH          =", MINIBATCH)
-    print("  N_EPOCHS           =", N_EPOCHS)
+    print("  BATCH              =", BATCH)
+    print("  REPLAY_CAPACITY    =", REPLAY_CAPACITY)
     print("  NUM_STEPS          =", NUM_STEPS)
     print("  PRINT_EVERY        =", PRINT_EVERY)
     print("  DIAG_EVERY         =", DIAG_EVERY)
@@ -100,64 +95,50 @@ def main() raises:
     print("=" * 70)
 
     # ─── Logger (remote) ───────────────────────────────────
-
     var env_vars = load_dotenv()
     var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
     var url = env_vars.get("RL_MONITOR_URL", "")
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="PPO HalfCheetah NN2 (CPU)",
+        run_name="SAC InvertedDoublePendulum NN2 (CPU)",
         buffer_size=200,
         api_key=api_key,
     )
-    logger.set_config("algorithm", "PPO")
-    logger.set_config("env", "HalfCheetah")
+    logger.set_config("algorithm", "SAC")
+    logger.set_config("env", "InvertedDoublePendulum")
     logger.set_config("hidden", String(HIDDEN))
-    logger.set_config("rollout_len", String(ROLLOUT_LEN))
-    logger.set_config("minibatch", String(MINIBATCH))
-    logger.set_config("n_epochs", String(N_EPOCHS))
+    logger.set_config("batch", String(BATCH))
 
     var logger_ptr = UnsafePointer(to=logger)
 
     # ─── Agent + env ─────────────────────────────────────────────────────
-    var agent = PPOAgent[
+    var agent = SACAgent[
         "cpu",
+        UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet,
         CriticNet,
-        OBS_DIM,
-        ACT_DIM,
-        ROLLOUT_LEN,
-        MINIBATCH,
-        N_EPOCHS,
     ](
         actor_lr=3e-4,
-        critic_lr=1e-3,
+        critic_lr=3e-4,
+        alpha_lr=3e-4,
         gamma=0.99,
-        gae_lambda=0.95,
-        clip_eps=0.2,
-        entropy_coef=0.0,
-        action_scale=MAX_TORQUE,
-        log_std_init=LOG_STD_INIT,
-        # Canonical PPO grad-norm clip (Schulman 2017). Closed the
-        # nn-vs-bespoke gap on Pendulum 200k (-230 → -135 at seed=42).
-        max_grad_norm=0.5,
+        tau=0.005,
+        action_scale=1.0,
+        init_alpha=0.2,
+        target_entropy=-Scalar[DT](ACT_DIM),  # SAC default heuristic
+        learning_starts=1_000,
+        window_size=100,
+        initial_episode_fill=0.0,
+        use_ere=False,
+        ere_eta=0.996,
     )
-
-    # CleanRL-style log_std init — the trainer leaves this to the caller
-    # because Mojo nightly can't reflect into Sequential's variadic
-    # children generically. Index 4 = `GaussianHead` (children: Linear,
-    # Tanh, Linear, Tanh, GaussianHead).
-    var ls_ptr = agent.trainer.actor.children[4].log_std.value_unsafe_ptr_cpu()
-    for k in range(ACT_DIM):
-        ls_ptr[k] = LOG_STD_INIT
-
-    var env = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]()
+    var env = EnvT()
 
     # ─── Single train() call — auto-flush + auto-checkpoint ──────────────
     var t_start = perf_counter_ns()
     _ = agent.train_single[
-        HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False],
+        EnvT,
         L=RemoteLogger,
     ](
         env,
@@ -185,16 +166,16 @@ def main() raises:
     print("=" * 70)
 
     var final_avg = Float64(agent.mean_return())
-    if final_avg > 4000.0:
-        print("EXCELLENT — running fast (mean > 4000).")
+    if final_avg > 9000.0:
+        print("EXCELLENT — balancing reliably (mean > 9000).")
+    elif final_avg > 5000.0:
+        print("STRONG — mostly upright (mean > 5000).")
     elif final_avg > 1000.0:
-        print("STRONG — learned locomotion (mean > 1000).")
+        print("PROGRESS — learning to balance (mean > 1000).")
     elif final_avg > 100.0:
-        print("PROGRESS — early locomotion (mean > 100).")
-    elif final_avg > 0.0:
-        print("LEARNING — positive return (mean > 0).")
+        print("LEARNING — some control (mean > 100).")
     else:
-        print("EARLY — still exploring (mean < 0).")
+        print("EARLY — still falling fast (mean < 100).")
     print("=" * 70)
 
     # ─── Save/load round-trip smoke test ─────────────────────────────────

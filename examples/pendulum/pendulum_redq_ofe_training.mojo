@@ -21,7 +21,7 @@ Training:
   - critic + actor + α step on the same UTD=1 cadence as SAC
 
 Run:
-    pixi run mojo run -I . examples/pendulum/pendulum_redq_ofe_nn_agent.mojo
+    pixi run mojo run -I . examples/pendulum/pendulum_redq_ofe_training.mojo
 
 Reference numbers from the smoke test (seed=42, 5k steps,
 HIDDEN=64, PER_UNIT=8):

@@ -10,7 +10,7 @@ Bit-identity gate vs the driver-based example:
   seed=42, 30k steps → mean_ret(10) = -169.04118
 
 Run:
-    pixi run mojo run -I . examples/pendulum/pendulum_sac_nn_agent.mojo
+    pixi run mojo run -I . examples/pendulum/pendulum_sac_training.mojo
 """
 
 from std.random import seed

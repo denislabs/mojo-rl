@@ -1,7 +1,7 @@
 """Evaluate + render a trained Humanoid SAC (deep_agents) checkpoint.
 
 Loads the one-file `nn-ckpt v2` checkpoint written by the Humanoid SAC GPU
-trainer (`sac_humanoid_nn_agent_gpu.mojo`) and runs deterministic (greedy /
+trainer (`sac_humanoid_training_gpu.mojo`) and runs deterministic (greedy /
 actor-mean, no sampling) episodes with live 3D rendering via the physics3d
 `RenderableEnv` interface — the same renderer the legacy
 `sac_humanoid_eval_cpu.mojo` drives, but on the new `SACAgent` facade.
@@ -88,7 +88,7 @@ def main() raises:
         print("Train first (GPU):")
         print(
             "  pixi run -e nvidia mojo run -I ."
-            " examples/humanoid/sac_humanoid_nn_agent_gpu.mojo"
+            " examples/humanoid/sac_humanoid_training_gpu.mojo"
         )
         return
     print()

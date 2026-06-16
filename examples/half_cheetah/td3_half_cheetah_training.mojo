@@ -1,33 +1,35 @@
-"""SAC training on Hopper (CPU) via the new `SACAgent` facade.
+"""TD3 training on HalfCheetah (CPU) via the new `TD3Agent` facade.
 
-CPU nn counterpart of the legacy `sac_hopper_training_gpu.mojo` (which uses
-`deep_agents.core.agents.DeepSACAgent`). Mirrors the half_cheetah nn CPU
-example (`sac_half_cheetah_nn_agent.mojo`) with Hopper's dimensions and the
-ERE/early-termination settings the legacy Hopper script uses.
+Sibling of `sac_half_cheetah_training.mojo` and
+`ddpg_half_cheetah_training.mojo`. TD3 adds three tricks on top of
+DDPG:
 
-  * `SACAgent["cpu", ...]` — facade over `SACTrainer` + the single-env
-    off-policy driver. ERE (Emphasizing Recent Experience) on, matching the
-    legacy Hopper recipe.
-  * `RemoteLogger` — streams metrics to a dashboard at the driver's
-    `print_every`/`diag_every` cadence. Config (server URL + API key) read
-    from a `.env` via `mojo_rl.core.dotenv`.
-  * Single-file checkpointing — `agent.save(CHECKPOINT_PATH)` writes ONE
-    `.ckpt` file (overwritten each cadence) under a single `nn-ckpt v2`
-    envelope containing actor + twin critics + their Adam states +
-    `alpha_opt` ScalarAdam.
+  * Twin critics (the trainer instantiates two copies of `CriticNet`
+    internally and takes the min for the TD target).
+  * Target-policy smoothing (Gaussian noise on the target action,
+    `target_policy_noise` / `target_noise_clip`).
+  * Delayed actor updates (`policy_delay`).
 
-After training, the final checkpoint is reloaded into the same agent and a
-greedy probe confirms the action vector reproduces dimension-by-dimension to
-`|diff| < 1e-5`.
+Uses the new `deep_agents/` surface:
 
-Hopper (Phyics3dEnv, MuJoCo-style):
-  * 11D observation (qpos + qvel excluding rootx)
-  * 3D continuous action (joint torques)
-  * Reward ≈ forward velocity + alive bonus - 1e-3·||action||²
-  * Early termination on unhealthy state (`TERMINATE_ON_UNHEALTHY=True`).
+  * `TD3Agent[...]` — facade over `TD3Trainer` + the single-env
+    off-policy driver.
+  * `RemoteLogger` — driver `print_every` cadence + chunk cadence.
+  * One-file `.ckpt` envelope holding actor + both critics + Adam
+    states.
+
+Metric names (driver cadence): `avg_reward`, `episodes`.
+Chunk cadence (`TD3Metrics` fields): `actor_loss`, `critic_loss`,
+  `train_steps`, `n_actor_updates`, `n_critic_updates` (actor delayed).
+
+HalfCheetah (Physics3dEnv, MuJoCo-style):
+  * 17D observation (qpos + qvel excluding rootx and head)
+  * 6D continuous action (joint torques)
+  * Reward ≈ forward velocity - 0.1·||action||²
+  * No early termination (`TERMINATE_ON_UNHEALTHY=False`).
 
 Run:
-    pixi run mojo run -I . examples/hopper/sac_hopper_nn_agent.mojo
+    pixi run mojo run -I . examples/half_cheetah/td3_half_cheetah_training.mojo
 """
 
 from std.random import seed
@@ -39,38 +41,39 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
+from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.deep_agents.td3 import TD3Agent
 from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
-from mojo_rl.envs.hopper import Hopper, HopperConfig
+from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 
 # =============================================================================
-# Architecture (matches the legacy DeepSACAgent hopper training)
+# Architecture
 # =============================================================================
 
-comptime OBS_DIM = HopperConfig.OBS_DIM  # 11
-comptime ACT_DIM = HopperConfig.ACTION_DIM  #  3
+comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
+comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM  #  6
 comptime HIDDEN = 256
 comptime BATCH = 64
-comptime REPLAY_CAPACITY = 200_000
+comptime REPLAY_CAPACITY = 100_000
 
-# Training duration. Drop NUM_STEPS to ~20_000 for a smoke run.
-comptime NUM_STEPS = 1_000_000
-comptime PRINT_EVERY = 10_000  # driver-cadence verbose + `avg_reward`/`episodes` emit
-comptime DIAG_EVERY = 5_000  # `flush_metrics` cadence — full SACMetrics bundle
-comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
+comptime NUM_STEPS = 100_000
+comptime PRINT_EVERY = 5_000
+comptime DIAG_EVERY = 5_000
+comptime CHECKPOINT_EVERY = 50_000
 
-comptime CHECKPOINT_PATH = "sac_hopper_nn.ckpt"
+comptime CHECKPOINT_PATH = "td3_half_cheetah_nn.ckpt"
 
 
-comptime ActorNet = StochasticActor[
-    OBS_DIM,
-    ACT_DIM,
+# TD3 actor is deterministic (Tanh-bounded). Twin critics live inside
+# `TD3Trainer` — pass a single `CriticNet`, the trainer makes two.
+comptime ActorNet = Sequential[
     Linear[OBS_DIM, HIDDEN],
     ReLU[HIDDEN],
     Linear[HIDDEN, HIDDEN],
     ReLU[HIDDEN],
+    Linear[HIDDEN, ACT_DIM],
+    Tanh[ACT_DIM],
 ]
 comptime CriticNet = Sequential[
     Linear[OBS_DIM + ACT_DIM, HIDDEN],
@@ -84,7 +87,7 @@ comptime CriticNet = Sequential[
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("SAC (deep_agents) — Hopper CPU + checkpoints + logger")
+    print("TD3 (deep_agents) — HalfCheetah CPU + checkpoints + logger")
     print("=" * 70)
     print("  OBS_DIM            =", OBS_DIM)
     print("  ACT_DIM            =", ACT_DIM)
@@ -99,53 +102,51 @@ def main() raises:
     print("=" * 70)
 
     # ─── Logger (remote) ───────────────────────────────────
+
     var env_vars = load_dotenv()
     var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
     var url = env_vars.get("RL_MONITOR_URL", "")
 
     var logger = RemoteLogger(
         server_url=url,
-        run_name="SAC Hopper NN2 (CPU)",
+        run_name="TD3 HalfCheetah NN2 (CPU)",
         buffer_size=200,
         api_key=api_key,
     )
-    logger.set_config("algorithm", "SAC")
-    logger.set_config("env", "Hopper")
+    logger.set_config("algorithm", "TD3")
+    logger.set_config("env", "HalfCheetah")
     logger.set_config("hidden", String(HIDDEN))
     logger.set_config("batch", String(BATCH))
-    logger.set_config("ere", "0.996")
+    logger.set_config("policy_delay", "2")
 
     var logger_ptr = UnsafePointer(to=logger)
 
     # ─── Agent + env ─────────────────────────────────────────────────────
-    var agent = SACAgent[
+    var agent = TD3Agent[
         "cpu",
         UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet,
         CriticNet,
     ](
         actor_lr=3e-4,
-        critic_lr=1e-3,  # CleanRL default: q_lr higher than policy_lr
-        alpha_lr=3e-4,
+        critic_lr=3e-4,
         gamma=0.99,
         tau=0.005,
         action_scale=1.0,
-        init_alpha=0.2,
-        target_entropy=-Scalar[DT](ACT_DIM),  # SAC default heuristic (-3)
+        exploration_noise=0.1,
+        target_policy_noise=0.2,
+        target_noise_clip=0.5,
+        policy_delay=2,
         learning_starts=1_000,
         window_size=100,
         initial_episode_fill=0.0,
-        # ERE — same shape the legacy Hopper recipe uses. Down-weights
-        # ancient transitions; helps on long horizons.
-        use_ere=True,
-        ere_eta=0.996,
     )
-    var env = Hopper[DT, TERMINATE_ON_UNHEALTHY=True]()
+    var env = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]()
 
     # ─── Single train() call — auto-flush + auto-checkpoint ──────────────
     var t_start = perf_counter_ns()
     _ = agent.train_single[
-        Hopper[DT, TERMINATE_ON_UNHEALTHY=True],
+        HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False],
         L=RemoteLogger,
     ](
         env,
@@ -165,20 +166,20 @@ def main() raises:
     # ─── Summary ─────────────────────────────────────────────────────────
     print("=" * 70)
     print("Training complete")
-    print("  total env_steps           =", total)
-    print("  elapsed                   =", elapsed_s, "s")
+    print("  total env_steps        =", total)
+    print("  elapsed                =", elapsed_s, "s")
     print("  mean ep return (last 100) =", agent.mean_return())
-    print("  episodes completed        =", agent.ep_count())
-    print("  remote points sent        =", logger.total_logged())
+    print("  episodes completed     =", agent.ep_count())
+    print("  remote points sent     =", logger.total_logged())
     print("=" * 70)
 
     var final_avg = Float64(agent.mean_return())
-    if final_avg > 3000.0:
-        print("EXCELLENT — hopping fast (mean > 3000).")
-    elif final_avg > 1500.0:
-        print("STRONG — learned to hop (mean > 1500).")
-    elif final_avg > 500.0:
-        print("PROGRESS — early locomotion (mean > 500).")
+    if final_avg > 4000.0:
+        print("EXCELLENT — running fast (mean > 4000).")
+    elif final_avg > 1000.0:
+        print("STRONG — learned locomotion (mean > 1000).")
+    elif final_avg > 100.0:
+        print("PROGRESS — early locomotion (mean > 100).")
     elif final_avg > 0.0:
         print("LEARNING — positive return (mean > 0).")
     else:

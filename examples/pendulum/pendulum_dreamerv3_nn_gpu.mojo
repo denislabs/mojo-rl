@@ -1,7 +1,7 @@
 """DreamerV3 (nn) — Pendulum lighthouse driver, GPU / size1m config.
 
 PR5c Step 7 (GPU). Same end-to-end loop as the CPU driver
-(`pendulum_dreamerv3_nn_agent.mojo`) but instantiates the agent with
+(`pendulum_dreamerv3_training.mojo`) but instantiates the agent with
 `train_target="gpu"` and the full **size1m** RSSM config (DETER=512, BLOCKS=8,
 units=64, BINS=255, B=16, T=64) at the reference replay ratio. Run this for
 the real ~1.1M-step convergence run once an NVIDIA GPU is available.

@@ -1,6 +1,6 @@
 """MBPO training on HalfCheetah (GPU) via the new `MBPOAgent` facade.
 
-GPU sibling of `mbpo_half_cheetah_nn_agent.mojo` (CPU). Same deep_agents
+GPU sibling of `mbpo_half_cheetah_training.mojo` (CPU). Same deep_agents
 surface, but `train_target="gpu"`: the SAC sub-update + dynamics-ensemble
 training + synthetic rollouts run on-device (the env is still stepped on
 CPU — MBPO uses the single-env driver path). Because the GPU can afford the

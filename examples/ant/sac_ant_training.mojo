@@ -1,6 +1,6 @@
 """SAC training on Ant (CPU) via the new `SACAgent` facade.
 
-Ant counterpart of `examples/half_cheetah/sac_half_cheetah_nn_agent.mojo`.
+Ant counterpart of `examples/half_cheetah/sac_half_cheetah_training.mojo`.
 Uses the new `deep_agents/` surface:
 
   * `SACAgent[...]` — facade over `SACTrainer` + the single-env off-policy
@@ -22,7 +22,7 @@ Ant (Phyics3dEnv, MuJoCo-style):
     (`TERMINATE_ON_UNHEALTHY=True`).
 
 Run:
-    pixi run mojo run -I . examples/ant/sac_ant_nn_agent.mojo
+    pixi run mojo run -I . examples/ant/sac_ant_training.mojo
 """
 
 from std.random import seed

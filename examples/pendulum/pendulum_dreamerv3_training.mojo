@@ -26,7 +26,7 @@ Known v1 caveats before expecting convergence:
     train_every, and see the GPU-phase levers in the runbook.
 
 Run (CPU):
-  pixi run mojo run -I . examples/pendulum/pendulum_dreamerv3_nn_agent.mojo
+  pixi run mojo run -I . examples/pendulum/pendulum_dreamerv3_training.mojo
 """
 
 from std.memory import alloc

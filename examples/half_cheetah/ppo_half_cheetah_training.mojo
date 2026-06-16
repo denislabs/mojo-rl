@@ -1,39 +1,30 @@
-"""SAC training on HalfCheetah (CPU) via the new `SACAgent` facade.
+"""PPO training on HalfCheetah (CPU) via the new `PPOAgent` facade.
 
-Direct successor of `sac_half_cheetah_training_cpu.mojo` (which uses
-the legacy `deep_agents.core.agents.DeepSACAgent`). Uses the new
-`deep_agents/` surface:
+Sibling of `sac_half_cheetah_training.mojo` for the on-policy
+Gaussian-policy PPO flavour. Uses the new `deep_agents/` surface:
 
-  * `SACAgent[...]` — facade over `SACTrainer` + the single-env
-    off-policy driver. ERE (Emphasizing Recent Experience) on, same
-    hyperparams as `sac_pendulum_v2_training_cpu.mojo:71-72`.
-  * `RemoteLogger` — streams metrics to a dashboard at every chunk
-    boundary AND at the driver's `print_every` cadence. Config (server
-    URL + API key) read from a `.env` via `mojo_rl.core.dotenv`.
-  * Single-file checkpointing — `agent.save(CHECKPOINT_PATH)` writes
-    ONE `.ckpt` file (overwritten each chunk) under a single
-    `nn-ckpt v2` envelope containing actor + twin critics + their
-    Adam states + `alpha_opt` ScalarAdam.
+  * `PPOAgent[...]` — facade over `PPOTrainer` + the single-env
+    on-policy driver. PPO is on-policy → no replay buffer, no
+    `SAMPLE` block, no `learning_starts`. Every `ROLLOUT_LEN` env
+    steps the driver computes GAE and runs `N_EPOCHS` passes of
+    minibatch SGD (`MINIBATCH` rows each).
+  * `RemoteLogger` — driver `print_every` cadence (`avg_reward` /
+    `episodes`) + chunk cadence (`PPOMetrics`).
+  * One-file `.ckpt` envelope holding actor (incl. Gaussian
+    log-std parameter) + critic + Adam states.
 
-Metric names match the legacy GPU-SAC convention so an existing
-dashboard parses them unchanged:
-  driver cadence (every `PRINT_EVERY` env-steps): `avg_reward`, `episodes`
-  chunk cadence (between checkpoints): all `SACMetrics` fields —
-    `actor_loss`, `critic_loss`, `alpha`, `mean_target`, `mean_reward`,
-    `mean_done`, `mean_abs_action`, `train_steps`, `n_updates`.
+Metric names (driver cadence): `avg_reward`, `episodes`.
+Chunk cadence (`PPOMetrics` fields): `actor_loss`, `critic_loss`,
+  `train_steps`, `n_updates`.
 
-After training, the final checkpoint is reloaded into the same agent
-and a greedy probe confirms the action vector reproduces dimension-by-
-dimension to `|diff| < 1e-5`.
-
-HalfCheetah (Phyics3dEnv, MuJoCo-style):
+HalfCheetah (Physics3dEnv, MuJoCo-style):
   * 17D observation (qpos + qvel excluding rootx and head)
   * 6D continuous action (joint torques)
   * Reward ≈ forward velocity - 0.1·||action||²
   * No early termination (`TERMINATE_ON_UNHEALTHY=False`).
 
 Run:
-    pixi run mojo run -I . examples/half_cheetah/sac_half_cheetah_nn_agent.mojo
+    pixi run mojo run -I . examples/half_cheetah/ppo_half_cheetah_training.mojo
 """
 
 from std.random import seed
@@ -44,46 +35,48 @@ from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
+from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.deep_agents.primitives.gaussian_head import GaussianHead
+from mojo_rl.deep_agents.ppo import PPOAgent
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 
 # =============================================================================
-# Architecture (matches the legacy DeepSACAgent half_cheetah training)
+# Architecture (CleanRL-style continuous PPO: Tanh MLP + GaussianHead)
 # =============================================================================
 
 comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
 comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM  #  6
 comptime HIDDEN = 256
-comptime BATCH = 64
-comptime REPLAY_CAPACITY = 100_000
+comptime ROLLOUT_LEN = 2_048
+comptime MINIBATCH = 64
+comptime N_EPOCHS = 10
 
-# Training duration. Match the legacy script's 500k-step run; if you want
-# a smoke run, drop NUM_STEPS to 20_000 and NUM_CHECKPOINTS to 2.
-comptime NUM_STEPS = 100_000
-comptime PRINT_EVERY = 5_000  # driver-cadence verbose + `avg_reward`/`episodes` emit
-comptime DIAG_EVERY = 5_000  # `flush_metrics` cadence — full SACMetrics bundle
-comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
+# Training duration. Match the legacy-script scale; drop NUM_STEPS to
+# ~20k for a smoke run. NOTE: PPO env-step count is independent of
+# ROLLOUT_LEN; the driver groups them into chunks internally.
+comptime NUM_STEPS = 1_000_000
+comptime PRINT_EVERY = 50_000
+comptime DIAG_EVERY = 50_000
+comptime CHECKPOINT_EVERY = 50_000
 
-comptime CHECKPOINT_PATH = "sac_half_cheetah_nn.ckpt"
+comptime CHECKPOINT_PATH = "ppo_half_cheetah_nn.ckpt"
 
+comptime LOG_STD_INIT: Scalar[DT] = -0.5
+comptime MAX_TORQUE: Scalar[DT] = 1.0  # HalfCheetah torque range
 
-comptime ActorNet = StochasticActor[
-    OBS_DIM,
-    ACT_DIM,
+comptime ActorNet = Sequential[
     Linear[OBS_DIM, HIDDEN],
-    ReLU[HIDDEN],
+    Tanh[HIDDEN],
     Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    Tanh[HIDDEN],
+    GaussianHead[HIDDEN, ACT_DIM],
 ]
 comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    ReLU[HIDDEN],
+    Linear[OBS_DIM, HIDDEN],
+    Tanh[HIDDEN],
     Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
+    Tanh[HIDDEN],
     Linear[HIDDEN, 1],
 ]
 
@@ -91,13 +84,14 @@ comptime CriticNet = Sequential[
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("SAC (deep_agents) — HalfCheetah CPU + checkpoints + logger")
+    print("PPO (deep_agents) — HalfCheetah CPU + checkpoints + logger")
     print("=" * 70)
     print("  OBS_DIM            =", OBS_DIM)
     print("  ACT_DIM            =", ACT_DIM)
     print("  HIDDEN             =", HIDDEN)
-    print("  BATCH              =", BATCH)
-    print("  REPLAY_CAPACITY    =", REPLAY_CAPACITY)
+    print("  ROLLOUT_LEN        =", ROLLOUT_LEN)
+    print("  MINIBATCH          =", MINIBATCH)
+    print("  N_EPOCHS           =", N_EPOCHS)
     print("  NUM_STEPS          =", NUM_STEPS)
     print("  PRINT_EVERY        =", PRINT_EVERY)
     print("  DIAG_EVERY         =", DIAG_EVERY)
@@ -111,64 +105,56 @@ def main() raises:
     var api_key = env_vars.get("RL_MONITOR_API_KEY", "")
     var url = env_vars.get("RL_MONITOR_URL", "")
 
-    # `buffer_size` controls how many `log_scalar` calls accumulate
-    # before the logger does a synchronous HTTP POST. Larger buffer =
-    # fewer flushes = lower training overhead. At the default 200, a
-    # 500k-step HalfCheetah run sees ~3-5 flushes total (vs. 100+ if
-    # we forced a flush every print_every). The dashboard receives
-    # data slightly less often, but for offline analysis there's no
-    # practical difference. Drop to ~20 for near-real-time monitoring
-    # at the cost of more network roundtrips.
     var logger = RemoteLogger(
         server_url=url,
-        run_name="SAC HalfCheetah NN2 (CPU)",
+        run_name="PPO HalfCheetah NN2 (CPU)",
         buffer_size=200,
         api_key=api_key,
     )
-    logger.set_config("algorithm", "SAC")
+    logger.set_config("algorithm", "PPO")
     logger.set_config("env", "HalfCheetah")
     logger.set_config("hidden", String(HIDDEN))
-    logger.set_config("batch", String(BATCH))
-    logger.set_config("ere", "0.996")
+    logger.set_config("rollout_len", String(ROLLOUT_LEN))
+    logger.set_config("minibatch", String(MINIBATCH))
+    logger.set_config("n_epochs", String(N_EPOCHS))
 
     var logger_ptr = UnsafePointer(to=logger)
 
     # ─── Agent + env ─────────────────────────────────────────────────────
-    var agent = SACAgent[
+    var agent = PPOAgent[
         "cpu",
-        UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet,
         CriticNet,
+        OBS_DIM,
+        ACT_DIM,
+        ROLLOUT_LEN,
+        MINIBATCH,
+        N_EPOCHS,
     ](
         actor_lr=3e-4,
-        critic_lr=3e-4,
-        alpha_lr=3e-4,
+        critic_lr=1e-3,
         gamma=0.99,
-        tau=0.005,
-        action_scale=1.0,
-        init_alpha=0.2,
-        target_entropy=-Scalar[DT](ACT_DIM),  # SAC default heuristic
-        learning_starts=1_000,
-        window_size=100,
-        initial_episode_fill=0.0,
-        # ERE — same shape used in sac_pendulum_v2_training_cpu.mojo:71-72.
-        # Down-weights ancient transitions; helps on long horizons.
-        use_ere=False,
-        ere_eta=0.996,
+        gae_lambda=0.95,
+        clip_eps=0.2,
+        entropy_coef=0.0,
+        action_scale=MAX_TORQUE,
+        log_std_init=LOG_STD_INIT,
+        # Canonical PPO grad-norm clip (Schulman 2017). Closed the
+        # nn-vs-bespoke gap on Pendulum 200k (-230 → -135 at seed=42).
+        max_grad_norm=0.5,
     )
+
+    # CleanRL-style log_std init — the trainer leaves this to the caller
+    # because Mojo nightly can't reflect into Sequential's variadic
+    # children generically. Index 4 = `GaussianHead` (children: Linear,
+    # Tanh, Linear, Tanh, GaussianHead).
+    var ls_ptr = agent.trainer.actor.children[4].log_std.value_unsafe_ptr_cpu()
+    for k in range(ACT_DIM):
+        ls_ptr[k] = LOG_STD_INIT
+
     var env = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]()
 
     # ─── Single train() call — auto-flush + auto-checkpoint ──────────────
-    # `agent.train_single` drives the env loop internally and:
-    #   * Every PRINT_EVERY env-steps: driver emits `avg_reward` +
-    #     `episodes` through the logger (legacy GPU-SAC names).
-    #   * Every DIAG_EVERY env-steps: agent.flush_metrics emits the full
-    #     SACMetrics bundle (actor_loss / critic_loss / alpha /
-    #     mean_target / mean_reward / mean_done / mean_abs_action /
-    #     train_steps / n_updates).
-    #   * Every CHECKPOINT_EVERY env-steps: agent.save overwrites
-    #     CHECKPOINT_PATH with the one-file v2 envelope. A final save
-    #     also runs at total_timesteps.
     var t_start = perf_counter_ns()
     _ = agent.train_single[
         HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False],
@@ -212,8 +198,6 @@ def main() raises:
     print("=" * 70)
 
     # ─── Save/load round-trip smoke test ─────────────────────────────────
-    # Greedy-probe the trained agent, reload the FINAL checkpoint into a
-    # fresh agent, and confirm the same greedy action comes out.
     var probe_obs = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
     for d in range(OBS_DIM):
         probe_obs[d] = Scalar[DT](0.1 * Float64(d - OBS_DIM // 2))
