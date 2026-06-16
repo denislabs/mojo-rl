@@ -38,6 +38,7 @@ from mojo_rl.deep_agents2.muzero.nets_spatial import (
 from mojo_rl.deep_agents2.muzero.selfplay_arena_gumbel_2p import (
     run_muzero_selfplay_arena_gumbel_2p,
 )
+from mojo_rl.nn2.training.lr_scheduler import LinearWarmupSchedule
 from mojo_rl.deep_agents2.zero.symmetries import HFlipColumnAugmenter
 from mojo_rl.deep_agents2.zero.evaluators import (
     RandomOpponent,
@@ -92,6 +93,11 @@ def main() raises:
     # muzero-general C4 recipe (td_steps=42). The unroll length K stays 5.
     comptime N = 42
     comptime MAX_PLIES = 42
+    # Linear LR warmup over the first LR_WARMUP optimizer steps (0 → base lr).
+    # The CH=64/3-block net is unstable early under the base 2e-3 (the 32/2 run
+    # had a clean start; the bigger net crashed to ~0.13 eval1 at ~step 2k).
+    # Warmup ramps in the LR so the first few hundred updates don't blow up.
+    comptime LR_WARMUP = 1000
 
     comptime Env = ConnectFourEnv[DType.float64]
     comptime Rep = MZRepNetC4Spatial[CH, HH, WW, NB]
@@ -121,6 +127,7 @@ def main() raises:
         ARENA_GAMES=64,
         EVAL_GAMES=64,
         TEMP_MOVES=20,
+        SCHEDULER=LinearWarmupSchedule[LR_WARMUP],
     ](
         ctx,
         rep, dyn, pred,

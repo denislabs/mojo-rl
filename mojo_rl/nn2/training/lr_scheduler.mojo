@@ -12,9 +12,13 @@ The base LR is whatever the caller set on `trainer.optim` before calling
 
 Built-ins:
   - `ConstantSchedule`                          scale ≡ 1.0
+  - `LinearWarmupSchedule[WARMUP]`              linear 0 → 1, then constant 1.0
   - `CosineSchedule[MIN_SCALE]`                 cosine 1 → MIN_SCALE
   - `WarmupCosineSchedule[WARMUP, MIN_SCALE]`   linear warmup then cosine
   - `StepSchedule[DROP_EVERY, GAMMA]`           ×GAMMA every DROP_EVERY epochs
+
+`epoch`/`total_epochs` are a generic (index, horizon) pair — a step-granularity
+loop (e.g. RL self-play) can call `lr_scale_at(train_step, total_train_steps)`.
 """
 
 from std.math import cos
@@ -41,6 +45,26 @@ struct ConstantSchedule(Scheduler):
 
     @staticmethod
     def lr_scale_at(epoch: Int, total_epochs: Int) -> Float64:
+        return 1.0
+
+
+@fieldwise_init
+struct LinearWarmupSchedule[WARMUP_EPOCHS: Int = 5](Scheduler):
+    """Linear warmup 0 → 1 over WARMUP_EPOCHS, then constant 1.0 (no decay).
+
+    The plain-warmup recipe for stabilizing the early, high-variance phase of
+    training without touching the late-stage LR — e.g. self-play RL where a
+    wider/deeper net is unstable for the first few hundred optimizer steps under
+    the base LR. Call with `(train_step, _)`; the horizon arg is unused.
+    """
+
+    comptime IS_CONSTANT: Bool = False
+
+    @staticmethod
+    def lr_scale_at(epoch: Int, total_epochs: Int) -> Float64:
+        comptime assert Self.WARMUP_EPOCHS >= 1, "WARMUP_EPOCHS must be >= 1"
+        if epoch < Self.WARMUP_EPOCHS:
+            return Float64(epoch + 1) / Float64(Self.WARMUP_EPOCHS)
         return 1.0
 
 

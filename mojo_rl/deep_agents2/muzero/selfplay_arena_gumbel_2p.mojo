@@ -49,6 +49,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer.adam import Adam
+from mojo_rl.nn2.training.lr_scheduler import Scheduler, ConstantSchedule
 from mojo_rl.nn2.core.map_params import hard_copy_params
 from mojo_rl.nn2.core.checkpoint import save_state_v2_body_gpu
 from mojo_rl.nn2.initializer import Kaiming
@@ -608,6 +609,11 @@ def run_muzero_selfplay_arena_gumbel_2p[
     ARENA_GAMES: Int = 32,
     EVAL_GAMES: Int = 64,
     TEMP_MOVES: Int = 8,
+    # LR schedule over OPTIMIZER STEPS (`train_steps`), not moves. Default
+    # ConstantSchedule leaves `lr` untouched (bit-identical to before). Use e.g.
+    # LinearWarmupSchedule[N] to ramp 0→lr over the first N grad updates — tames
+    # the early instability a wider/deeper net shows under the base LR.
+    SCHEDULER: Scheduler = ConstantSchedule,
 ](
     ctx: DeviceContext,
     mut rep: REP,           # the BEST representation net (final weights on return)
@@ -1031,6 +1037,16 @@ def run_muzero_selfplay_arena_gumbel_2p[
             l_dyn.set_attr["training"](Scalar[DT](1.0))
             l_pred.set_attr["training"](Scalar[DT](1.0))
             for _t in range(train_per_iter):
+                # LR schedule over optimizer steps (default constant → no code).
+                comptime if not SCHEDULER.IS_CONSTANT:
+                    var _scl = Scalar[DT](
+                        SCHEDULER.lr_scale_at(
+                            train_steps, iterations * train_per_iter
+                        )
+                    )
+                    orep.lr = lr * _scl
+                    odyn.lr = lr * _scl
+                    opred.lr = lr * _scl
                 # Prioritized device sample: gathers the obs window into
                 # `d_obs_seq` and the n-step targets into the host slabs.
                 rb.sample_training_batch_seq_per_gpu[B, K, N](
