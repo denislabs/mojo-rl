@@ -3,6 +3,10 @@
 Self-contained, CPU-only helpers used by the linear/tabular continuous
 agents (`mojo_rl/agents/{sac,ddpg,td3}`). Ported verbatim from the legacy
 `nn/gpu/random.mojo` ahead of the legacy-`nn` sunset.
+
+Lives inside the `nn2/random/` package (alongside `box_muller`) rather than a
+sibling `nn2/random.mojo` module — a sibling file shadows the package, which
+breaks `from mojo_rl.nn2.random.box_muller import ...` resolution.
 """
 
 from std.math import cos, sin, log, sqrt, pi
