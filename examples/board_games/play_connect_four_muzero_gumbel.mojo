@@ -16,9 +16,10 @@ You are Red (first), MuZero is Yellow. Controls:
   Left/Right arrows: move the column selector; Space/Return: drop
   R: reset after the game ends; close the window to quit.
 
-The network dims here MUST match the trained checkpoint (CH / BINS / 6×7). If you
-retrain with different `CH`/`BINS`, update them here too or the load will fail on
-a shape mismatch.
+The network dims here MUST match the trained checkpoint (CH / NB / BINS / 6×7). If
+you retrain with different `CH`/`NB`/`BINS`, update them here too or the load will
+fail on a name/shape mismatch. These default to the spatial example's current
+config (CH=64, NB=3); for an older CH=32 / 2-block checkpoint set CH=32, NB=2.
 
 Usage (after a training run has written the checkpoint):
     pixi run -e nvidia mojo run -I . examples/board_games/play_connect_four_muzero_gumbel.mojo
@@ -54,7 +55,8 @@ def main() raises:
     # ── architecture — MUST match the trained checkpoint ──
     comptime OBS = 126
     comptime ACT = 7
-    comptime CH = 32
+    comptime CH = 64          # must match the trained checkpoint (was 32)
+    comptime NB = 3           # residual blocks per net (was 2)
     comptime HH = 6
     comptime WW = 7
     comptime LATENT = CH * HH * WW
@@ -64,9 +66,9 @@ def main() raises:
     comptime MAX_NODES = 256
     comptime MAX_K = 4
 
-    comptime Rep = MZRepNetC4Spatial[CH, HH, WW]
-    comptime Dyn = MZDynNetC4Spatial[CH, ACT, BINS, HH, WW]
-    comptime Pred = MZPredNetC4Spatial[CH, ACT, BINS, HH, WW]
+    comptime Rep = MZRepNetC4Spatial[CH, HH, WW, NB]
+    comptime Dyn = MZDynNetC4Spatial[CH, ACT, BINS, HH, WW, NB]
+    comptime Pred = MZPredNetC4Spatial[CH, ACT, BINS, HH, WW, NB]
 
     var ckpt = String("connect_four_muzero_gumbel_spatial.ckpt")
 

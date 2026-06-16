@@ -11,7 +11,8 @@ spatial dynamics gives g weight-sharing over the board, which is what the
 EZv2/AlphaZero spatial model buys.
 
 All conv blocks are BatchNorm-FREE (the arena's params-only promotion can't carry
-BN running stats). C = latent channels (LATENT = C·6·7; C=32 → 1344). The spatial
+BN running stats). C = latent channels (LATENT = C·6·7; C=64 → 2688), NB = residual
+blocks per net (h/g/f), the muzero-general `blocks` knob. The spatial
 latent + conv dynamics are heavier than the flat path, so this starts at 64
 sims/move (raise NUM_SIMS once you see the wall-clock).
 
@@ -62,12 +63,13 @@ def main() raises:
     )
     logger.set_config("agent", "GumbelMuZero")
     logger.set_config("env", "ConnectFour")
-    logger.set_config("network", "MZ spatial conv h/g/f [C=32, 6x7]")
+    logger.set_config("network", "MZ spatial conv h/g/f [C=64, 3 blocks, 6x7]")
     logger.set_config("framework", "deep_agents2/nn2")
 
     comptime OBS = 126
     comptime ACT = 7
-    comptime CH = 32          # latent channels → LATENT = CH*6*7 = 1344
+    comptime CH = 64          # latent channels → LATENT = CH*6*7 = 2688
+    comptime NB = 3           # residual blocks per net (muzero-general `blocks`)
     comptime HH = 6
     comptime WW = 7
     comptime LATENT = CH * HH * WW
@@ -92,9 +94,9 @@ def main() raises:
     comptime MAX_PLIES = 42
 
     comptime Env = ConnectFourEnv[DType.float64]
-    comptime Rep = MZRepNetC4Spatial[CH, HH, WW]
-    comptime Dyn = MZDynNetC4Spatial[CH, ACT, BINS, HH, WW]
-    comptime Pred = MZPredNetC4Spatial[CH, ACT, BINS, HH, WW]
+    comptime Rep = MZRepNetC4Spatial[CH, HH, WW, NB]
+    comptime Dyn = MZDynNetC4Spatial[CH, ACT, BINS, HH, WW, NB]
+    comptime Pred = MZPredNetC4Spatial[CH, ACT, BINS, HH, WW, NB]
     comptime Aug = HFlipColumnAugmenter[ROWS=6, COLS=7, PLANES=3]
 
     var ctx = DeviceContext()
@@ -104,8 +106,8 @@ def main() raises:
     # init_zero (EZv2): zero the policy/value/reward head output Linears so the
     # model starts with a uniform policy prior + neutral value/reward — stable
     # MCTS targets early and more early exploration (composes with temp_min).
-    mzc4_init_zero_pred["gpu", CH, ACT, BINS, HH, WW](pred, ctx)
-    mzc4_init_zero_dyn["gpu", CH, ACT, BINS, HH, WW](dyn, ctx)
+    mzc4_init_zero_pred["gpu", CH, ACT, BINS, HH, WW, NB](pred, ctx)
+    mzc4_init_zero_dyn["gpu", CH, ACT, BINS, HH, WW, NB](dyn, ctx)
 
     var res = run_muzero_selfplay_arena_gumbel_2p[
         Env, Rep, Dyn, Pred, Aug,

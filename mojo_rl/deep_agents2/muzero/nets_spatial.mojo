@@ -39,6 +39,7 @@ from mojo_rl.nn2.core.target_storage import TargetStorage, assert_tag_for
 from mojo_rl.nn2.combinators.sequential import Sequential
 from mojo_rl.nn2.combinators.parallel import Parallel
 from mojo_rl.nn2.combinators.residual import Residual
+from mojo_rl.nn2.combinators.repeat import Repeat
 from mojo_rl.nn2.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn2.combinators.graph_nodes import InputSlot, Node
 from mojo_rl.nn2.primitives.conv2d import Conv2D
@@ -65,16 +66,27 @@ comptime C4ResBlock[C: Int, H: Int, W: Int] = Residual[
 ]
 
 
+# ── post-activation residual TOWER: `NB` independent [ResBlock, ReLU] units
+#    chained (`Repeat`, own weights per copy). One unit = a 3×3 residual block
+#    whose summed output is ReLU'd before the next block. This is the single
+#    depth knob shared by h / g / f — the muzero-general `blocks` parameter.
+#    NB=1 is one block + trailing ReLU; deeper stacks add tactical capacity for
+#    the value-fit ceiling. Repeat names children `.{i}`, so the tower's params
+#    live under one extra index vs. the old hand-unrolled blocks.
+comptime C4ResTower[NB: Int, C: Int, H: Int, W: Int] = Repeat[
+    NB, Sequential[C4ResBlock[C, H, W], ReLU[C * H * W]]
+]
+
+
 # ──────────────────────────────────────────────────────────────────────
 # h — representation: 3×H×W board planes → spatial latent [C,H,W]
 # ──────────────────────────────────────────────────────────────────────
-comptime MZRepNetC4Spatial[C: Int, H: Int, W: Int] = Sequential[
+comptime MZRepNetC4Spatial[C: Int, H: Int, W: Int, NB: Int = 2] = Sequential[
     Conv2D[3, C, 3, 1, 1, H, W],
     ReLU[C * H * W],
-    C4ResBlock[C, H, W],
-    ReLU[C * H * W],
-    C4ResBlock[C, H, W],
-    ReLU[C * H * W],
+    # NB residual blocks (each followed by ReLU). Default 2 reproduces the
+    # original depth; bump NB for more capacity (muzero-general `blocks`).
+    C4ResTower[NB, C, H, W],
     # MinMaxNorm scales the flat latent to [0,1] (idempotent under the
     # planner's scale-hidden kernel; stays inside the autodiff graph so
     # training gets the scaling gradient — same tail every MZRepNet ends in).
@@ -101,12 +113,12 @@ comptime C4ActionPlane[ACT: Int, H: Int, W: Int] = BroadcastTokens[H, ACT]
 # g — convolutional dynamics DAG (ComputeGraph).
 #   input  [z(C·H·W) | onehot(ACT)]   output [z'(C·H·W) | reward_logits(BINS)]
 # z → state[C,H,W]; action → column-marked [1,H,W] → Conv1×1 → [REDC,H,W] embed;
-# channel-concat → Conv3×3(→C) += residual-to-z → ReLU → 1×ResBlock = z'
+# channel-concat → Conv3×3(→C) += residual-to-z → ReLU → NB×ResBlock = z'
 # (MinMaxNorm'd). Reward branch off z': Conv1×1(C→REDC)→ReLU→MLP[32]→BINS. All
 # BatchNorm-free (LayerNorm on the action embed, MinMaxNorm on the next latent).
 # ──────────────────────────────────────────────────────────────────────
 comptime MZDynC4SpatialGraph[
-    C: Int, ACT: Int, BINS: Int, H: Int, W: Int, REDC: Int,
+    C: Int, ACT: Int, BINS: Int, H: Int, W: Int, REDC: Int, NB: Int,
 ] = ComputeGraph[
     C * H * W + BINS,
     InputSlot["in", C * H * W + ACT],
@@ -126,7 +138,7 @@ comptime MZDynC4SpatialGraph[
     Node["c1", Conv2D[C + REDC, C, 3, 1, 1, H, W], "cat"],
     Node["res", Add[C * H * W, 2], "c1", "z"],
     Node["rl", ReLU[C * H * W], "res"],
-    Node["zpre", C4ResBlock[C, H, W], "rl"],
+    Node["zpre", C4ResTower[NB, C, H, W], "rl"],
     Node["zp", MinMaxNorm[C * H * W], "zpre"],
     Node[
         "rew",
@@ -162,7 +174,7 @@ def _mzc4dyn_copy_kernel[N: Int](
 # Contract: IN_DIMS[0]=LATENT+ACT, OUT_DIM=LATENT+BINS.
 # ──────────────────────────────────────────────────────────────────────
 struct MZDynNetC4Spatial[
-    C: Int, ACT: Int, BINS: Int, H: Int, W: Int, REDC: Int = 16,
+    C: Int, ACT: Int, BINS: Int, H: Int, W: Int, NB: Int = 1, REDC: Int = 16,
 ](Module):
     comptime ARITY: Int = 1
     comptime LATENT = Self.C * Self.H * Self.W
@@ -170,7 +182,7 @@ struct MZDynNetC4Spatial[
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_DIM)
     comptime OUT_DIM = Self.LATENT + Self.BINS
     comptime Graph = MZDynC4SpatialGraph[
-        Self.C, Self.ACT, Self.BINS, Self.H, Self.W, Self.REDC
+        Self.C, Self.ACT, Self.BINS, Self.H, Self.W, Self.REDC, Self.NB
     ]
 
     var graph: Self.Graph
@@ -278,10 +290,12 @@ struct MZDynNetC4Spatial[
 # `MZPredNet`, so the prediction adapter slices it unchanged.
 # ──────────────────────────────────────────────────────────────────────
 comptime MZPredNetC4Spatial[
-    C: Int, ACT: Int, BINS: Int, H: Int, W: Int, REDC: Int = 16, FC: Int = 64,
+    C: Int, ACT: Int, BINS: Int, H: Int, W: Int,
+    NB: Int = 1, REDC: Int = 16, FC: Int = 64,
 ] = Sequential[
-    C4ResBlock[C, H, W],
-    ReLU[C * H * W],
+    # Shared NB-block residual torso, then the two conv heads. The tower is one
+    # Sequential child (index 0), so the Parallel heads sit at index 1.
+    C4ResTower[NB, C, H, W],
     Parallel[
         Sequential[
             Conv2D[C, REDC, 1, 1, 0, H, W],
@@ -311,41 +325,43 @@ comptime MZPredNetC4Spatial[
 # exact zero-init; a small scale keeps some Kaiming asymmetry.
 #
 # Param names follow the combinator naming (Sequential→`.{i}`, Parallel→`.a`/
-# `.b`, ComputeGraph node→`.{node}`, Linear leaf→`.weight`/`.bias`). These torsos
-# are BN-FREE, so each head's output Linear is one index earlier than EZv2's
-# BN heads:
-#   • MZPredNetC4Spatial = Sequential[ResBlock(0), ReLU(1), Parallel(2)[a, b]];
-#     each head is Sequential[Conv(0), ReLU(1), Linear(2), ReLU(3), Linear(4)],
-#     so the output Linears are `2.a.4.*` (policy) / `2.b.4.*` (value).
+# `.b`, Repeat→`.{i}`, ComputeGraph node→`.{node}`, Linear leaf→`.weight`/
+# `.bias`). These torsos are BN-FREE, so each head's output Linear is one index
+# earlier than EZv2's BN heads:
+#   • MZPredNetC4Spatial = Sequential[C4ResTower(0), Parallel(1)[a, b]] — the
+#     shared torso is ONE tower child, so the Parallel sits at index 1 (NB
+#     does not move it). Each head is Sequential[Conv(0), ReLU(1), Linear(2),
+#     ReLU(3), Linear(4)], so the output Linears are `1.a.4.*` (policy) /
+#     `1.b.4.*` (value).
 #   • MZDynC4SpatialGraph reward branch is node `rew` (a 5-child Sequential); its
-#     output Linear is child 4 → `rew.4.*`.
+#     output Linear is child 4 → `rew.4.*` (independent of NB / the zpre tower).
 # Only the OUTPUT layer is scaled — scaling the whole head chokes the hidden
 # layers' gradient (see zero_init.mojo).
 # ──────────────────────────────────────────────────────────────────────
 def mzc4_init_zero_pred[
     target: StaticString,
     C: Int, ACT: Int, BINS: Int, H: Int, W: Int,
-    REDC: Int = 16, FC: Int = 64,
+    NB: Int = 1, REDC: Int = 16, FC: Int = 64,
 ](
-    mut pred: MZPredNetC4Spatial[C, ACT, BINS, H, W, REDC, FC],
+    mut pred: MZPredNetC4Spatial[C, ACT, BINS, H, W, NB, REDC, FC],
     ctx: Optional[DeviceContext] = None,
     scale: Scalar[DT] = Scalar[DT](0.0),
 ) raises:
     """Zero (or `scale`) the policy + value head output Linears → uniform policy
     + neutral value at init."""
-    scale_output_module[target, MZPredNetC4Spatial[C, ACT, BINS, H, W, REDC, FC]](
-        pred, "2.a.4.weight", "2.a.4.bias", scale, ctx
-    )
-    scale_output_module[target, MZPredNetC4Spatial[C, ACT, BINS, H, W, REDC, FC]](
-        pred, "2.b.4.weight", "2.b.4.bias", scale, ctx
-    )
+    scale_output_module[
+        target, MZPredNetC4Spatial[C, ACT, BINS, H, W, NB, REDC, FC]
+    ](pred, "1.a.4.weight", "1.a.4.bias", scale, ctx)
+    scale_output_module[
+        target, MZPredNetC4Spatial[C, ACT, BINS, H, W, NB, REDC, FC]
+    ](pred, "1.b.4.weight", "1.b.4.bias", scale, ctx)
 
 
 def mzc4_init_zero_dyn[
     target: StaticString,
-    C: Int, ACT: Int, BINS: Int, H: Int, W: Int, REDC: Int = 16,
+    C: Int, ACT: Int, BINS: Int, H: Int, W: Int, NB: Int = 1, REDC: Int = 16,
 ](
-    mut dyn: MZDynNetC4Spatial[C, ACT, BINS, H, W, REDC],
+    mut dyn: MZDynNetC4Spatial[C, ACT, BINS, H, W, NB, REDC],
     ctx: Optional[DeviceContext] = None,
     scale: Scalar[DT] = Scalar[DT](0.0),
 ) raises:
