@@ -23,9 +23,9 @@ from std.memory import alloc, memset
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
+from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
 from mojo_rl.nn2.datasets.cifar10 import CIFAR10
 from mojo_rl.experimental.pcn import (
     PCBlock,
@@ -68,7 +68,7 @@ comptime TRAINER = PCTrainer[
     PCBlock[256, 10, PCIdentity],
     dtype=dtype,
 ]
-comptime OPT = Adam[LR=ADAM_LR]
+comptime OPT = PCAdam[LR=ADAM_LR]
 
 
 def main() raises:
@@ -84,7 +84,7 @@ def main() raises:
     memset(grads_buf, 0, NET.PARAM_SIZE)
     var params = LayoutTensor[dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin](params_buf)
     var grads = LayoutTensor[dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin](grads_buf)
-    NET.initialize_params[Xavier[7], dtype](params)
+    NET.pc_init_params[PCXavier, dtype](params)
 
     var opt_state_buf = alloc[Scalar[dtype]](NET.PARAM_SIZE * OPT.STATE_PER_PARAM)
     var opt_global_buf = alloc[Scalar[dtype]](OPT.GLOBAL_STATE_SIZE)

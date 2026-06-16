@@ -27,8 +27,8 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.math import sqrt
 
-from mojo_rl.nn.constants import TPB
-from mojo_rl.nn.initializer import Initializer
+from .pc_constants import TPB
+from .pc_initializer import PCInitializer
 
 from .predictive_model import PCBlockTrait
 
@@ -50,14 +50,14 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
         pass
 
     @staticmethod
-    def initialize_params[
-        INIT: Initializer, dtype: DType = DType.float32
+    def pc_init_params[
+        INIT: PCInitializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-    ):
-        # γ initialized to 1 → initial transform is pure RMSNorm.
+    ) raises:
+        """nn2 init: γ = 1 (INIT unused — RMSNorm scale, not a weight)."""
         for i in range(Self.dim):
             params.ptr[i] = Scalar[dtype](1)
 

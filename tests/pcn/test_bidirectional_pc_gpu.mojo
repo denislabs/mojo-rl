@@ -22,9 +22,10 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype, TPB
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.experimental.pcn.pc_constants import TPB
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
+from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
 from mojo_rl.nn2.datasets.mnist import MNIST
 from mojo_rl.experimental.pcn import (
     PCBlock,
@@ -62,7 +63,7 @@ comptime DOWN_PARAM_SIZE = DOWN_NET.PARAM_SIZE
 comptime DB0_PARAM_SIZE = DB0.PARAM_SIZE
 comptime DB1_PARAM_SIZE = DB1.PARAM_SIZE
 
-comptime OPT = Adam[LR=ADAM_LR]
+comptime OPT = PCAdam[LR=ADAM_LR]
 
 
 # =============================================================================
@@ -135,7 +136,7 @@ def main() raises:
     var up_params_init_t = LayoutTensor[
         dtype, Layout.row_major(UP_PARAM_SIZE), MutAnyOrigin
     ](up_params_host.unsafe_ptr())
-    UP_NET.initialize_params[Xavier[], dtype](up_params_init_t)
+    UP_NET.pc_init_params[PCXavier, dtype](up_params_init_t)
 
     var up_params_dbuf = ctx.enqueue_create_buffer[dtype](UP_PARAM_SIZE)
     ctx.enqueue_copy(up_params_dbuf, up_params_host)
@@ -166,7 +167,7 @@ def main() raises:
     var dn_params_init_t = LayoutTensor[
         dtype, Layout.row_major(DOWN_PARAM_SIZE), MutAnyOrigin
     ](dn_params_host.unsafe_ptr())
-    DOWN_NET.initialize_params[Xavier[], dtype](dn_params_init_t)
+    DOWN_NET.pc_init_params[PCXavier, dtype](dn_params_init_t)
 
     var dn_params_dbuf = ctx.enqueue_create_buffer[dtype](DOWN_PARAM_SIZE)
     ctx.enqueue_copy(dn_params_dbuf, dn_params_host)

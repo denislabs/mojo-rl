@@ -25,8 +25,7 @@ from std.math import sqrt, log, cos, sin, tanh, pi
 from std.random.philox import Random as PhiloxRandom
 from std.sys import simd_width_of
 
-from mojo_rl.nn.constants import TPB
-from mojo_rl.nn.initializer import Initializer
+from .pc_constants import TPB
 
 from .pc_sequential import PCSequential
 

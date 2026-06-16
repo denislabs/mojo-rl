@@ -32,8 +32,8 @@ from layout import Layout, LayoutTensor
 from std.memory import alloc
 from std.sys import CompilationTarget
 
-from mojo_rl.nn.initializer import Initializer
-from mojo_rl.nn.autodiff.apple_cblas import apple_sgemm_accum
+from .pc_initializer import PCInitializer
+from .pc_apple_cblas import apple_sgemm_accum
 
 from .predictive_model import PCActivation, PCReLU
 
@@ -80,17 +80,18 @@ struct ConvTransposePCBlock[
     # =========================================================================
 
     @staticmethod
-    def initialize_params[
-        INIT: Initializer, dtype: DType = DType.float32
+    def pc_init_params[
+        INIT: PCInitializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-    ):
+    ) raises:
+        """nn2 init: conv-transpose W via INIT.fill(fan_in/out); zero bias."""
         var W_view = LayoutTensor[
             dtype, Layout.row_major(Self.W_SIZE), MutAnyOrigin
         ](params.ptr)
-        INIT.init[
+        INIT.fill[
             Self.W_SIZE,
             Self.in_channels * Self.kernel_size * Self.kernel_size,
             Self.out_channels * Self.kernel_size * Self.kernel_size,

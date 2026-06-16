@@ -24,9 +24,9 @@ from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
+from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
 from mojo_rl.nn2.datasets.mnist import MNIST
 from mojo_rl.experimental.pcn import (
     PCBlock,
@@ -61,7 +61,7 @@ comptime TRAINER = PCTrainer[
     PCBlock[128, 10, PCIdentity],
     dtype=dtype,
 ]
-comptime OPT = Adam[LR=ADAM_LR]
+comptime OPT = PCAdam[LR=ADAM_LR]
 
 
 def main() raises:
@@ -80,7 +80,7 @@ def main() raises:
     var params_host_lt = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
     ](params_buf)
-    NET.initialize_params[Xavier[7], dtype](params_host_lt)
+    NET.pc_init_params[PCXavier, dtype](params_host_lt)
 
     var params_d = ctx.enqueue_create_buffer[dtype](NET.PARAM_SIZE)
     var grads_d = ctx.enqueue_create_buffer[dtype](NET.PARAM_SIZE)

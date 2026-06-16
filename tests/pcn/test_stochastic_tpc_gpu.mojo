@@ -19,9 +19,10 @@ from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype, TPB
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.experimental.pcn.pc_constants import TPB
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
+from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
 from mojo_rl.nn2.datasets.mnist import MNIST
 from mojo_rl.experimental.pcn import (
     PCBlock,
@@ -53,7 +54,7 @@ comptime TRAINER = PCTrainer[
     PCBlock[HIDDEN, DATA_DIM, PCTanh],
     dtype=dtype,
 ]
-comptime OPT = Adam[LR=ADAM_LR]
+comptime OPT = PCAdam[LR=ADAM_LR]
 
 comptime PHILOX_BUMP_PER_STEP = UInt64(
     BATCH * NET.LATENT_DIM * (T_MIXING + T_SAMPLING) * 2
@@ -266,7 +267,7 @@ def main() raises:
         var params_init_t = LayoutTensor[
             dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
         ](params_init_host.unsafe_ptr())
-        NET.initialize_params[Xavier[], dtype](params_init_t)
+        NET.pc_init_params[PCXavier, dtype](params_init_t)
         ctx.enqueue_copy(params_dbuf, params_init_host)
 
         for i in range(NET.PARAM_SIZE * OPT.STATE_PER_PARAM):

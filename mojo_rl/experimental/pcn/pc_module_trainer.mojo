@@ -1,0 +1,101 @@
+"""Drive nn2 Adam over a PCModule — `pc_module_train_one_batch` (Phase A spike).
+
+One Bogacz-canonical PC training step on the nn2 storage layer:
+  1. PCN's own settling loop fills the weight gradient (`net.weights.grd`)
+     via the existing `PCTrainer.compute_grads_only` static path — the
+     local error-minimization math is reused verbatim.
+  2. nn2 `Adam.step` consumes that gradient and updates the weights
+     (`net.weights.val`). No negation: `weight_grad` already stores the
+     standard +∂E/∂W (see `pc_module.mojo` header).
+
+Working buffers (latents, μ/ε, a_below, z_below, dx) are allocated per call
+here — moving them onto the holder as `Scratch`/`Cache` is Phase B. The
+weight slab is the storage that matters for the optimizer + checkpoint, and
+that now lives in `net.weights` (a `Param`).
+"""
+
+from layout import Layout, LayoutTensor
+
+from mojo_rl.nn2.constants import DT
+from mojo_rl.nn2.core.optimizer import Optimizer
+
+from .predictive_model import PCBlockTrait
+from .pc_sequential import PCSequential
+from .pc_trainer import PCTrainer, PCTrainResult
+from .pc_module import PCModule
+
+
+def _zeroed(n: Int) -> List[Scalar[DT]]:
+    var s = List[Scalar[DT]](capacity=n)
+    for _ in range(n):
+        s.append(Scalar[DT](0))
+    return s^
+
+
+def pc_module_train_one_batch[
+    BATCH: Int, OPT: Optimizer, *BLOCKS: PCBlockTrait
+](
+    mut net: PCModule[*BLOCKS],
+    mut opt: OPT,
+    x_in: LayoutTensor[
+        DT, Layout.row_major(BATCH, PCSequential[*BLOCKS].IN_DIM), MutAnyOrigin
+    ],
+    y_target: LayoutTensor[
+        DT, Layout.row_major(BATCH, PCSequential[*BLOCKS].OUT_DIM), MutAnyOrigin
+    ],
+    T_infer: Int,
+    lr_x: Scalar[DT],
+) raises -> PCTrainResult:
+    comptime NET = PCSequential[*BLOCKS]
+
+    # Weight + grad views over the owned Param's CPU storage.
+    var params = LayoutTensor[
+        DT, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
+    ](net.weights.value_unsafe_ptr_cpu())
+    var grads = LayoutTensor[
+        DT, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
+    ](net.weights.grad_unsafe_ptr_cpu())
+
+    # Per-call working buffers (Phase B → Scratch/Cache on the holder).
+    var latents_s = _zeroed(BATCH * NET.LATENT_DIM)
+    var mu_eps_s = _zeroed(BATCH * NET.SCRATCH_OUT_DIM)
+    var a_below_s = _zeroed(BATCH * NET.SCRATCH_IN_DIM)
+    var z_below_s = _zeroed(BATCH * NET.SCRATCH_IN_DIM)
+    var dx_s = _zeroed(BATCH * NET.LATENT_DIM)
+
+    var latents = LayoutTensor[
+        DT, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin
+    ](latents_s.unsafe_ptr())
+    var mu_eps = LayoutTensor[
+        DT, Layout.row_major(BATCH, NET.SCRATCH_OUT_DIM), MutAnyOrigin
+    ](mu_eps_s.unsafe_ptr())
+    var a_below = LayoutTensor[
+        DT, Layout.row_major(BATCH, NET.SCRATCH_IN_DIM), MutAnyOrigin
+    ](a_below_s.unsafe_ptr())
+    var z_below = LayoutTensor[
+        DT, Layout.row_major(BATCH, NET.SCRATCH_IN_DIM), MutAnyOrigin
+    ](z_below_s.unsafe_ptr())
+    var dx = LayoutTensor[
+        DT, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin
+    ](dx_s.unsafe_ptr())
+
+    # 1. Settling loop fills `grads` (= net.weights.grd) with +∂E/∂W.
+    var result = PCTrainer[*BLOCKS].compute_grads_only[BATCH](
+        params,
+        grads,
+        latents,
+        mu_eps,
+        a_below,
+        z_below,
+        dx,
+        x_in,
+        y_target,
+        T_infer,
+        lr_x,
+    )
+
+    # 2. nn2 optimizer (Adam/AdamW/…) consumes net.weights.grd, updates
+    #    net.weights.val.
+    opt.step["cpu", PCModule[*BLOCKS]](net)
+
+    return result

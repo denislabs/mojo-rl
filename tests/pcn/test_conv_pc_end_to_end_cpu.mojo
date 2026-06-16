@@ -20,7 +20,7 @@ from std.memory import alloc, memset
 from std.math import sin
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn import (
     PCBlock,
     PCSequential,
@@ -66,7 +66,7 @@ def main() raises:
     var grads = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
     ](grads_buf)
-    NET.initialize_params[Xavier[7], dtype](params)
+    NET.pc_init_params[PCXavier, dtype](params)
 
     # ── Per-batch latents + scratch ──────────────────────────────────────────
     var lat_buf = alloc[Scalar[dtype]](BATCH * NET.LATENT_DIM)

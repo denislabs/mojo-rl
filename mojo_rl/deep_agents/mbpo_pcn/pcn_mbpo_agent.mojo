@@ -52,8 +52,13 @@ from mojo_rl.deep_agents.core.replay import HeapReplayBuffer, GPUReplayBuffer
 from mojo_rl.deep_agents.core.utils import obs_to_inline
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.deep_agents.mbpo_pcn.pcn_mbpo_config import PCNMBPOConfig
-from mojo_rl.experimental.pcn import (
+# Direct module-path imports: these MBPO/SAC experiment modules are removed from
+# the core PCN package surface (experimental/pcn/__init__) during the nn2
+# re-architecture. This legacy agent rides out with the sunset sweep.
+from mojo_rl.experimental.pcn.pc_dynamics_ensemble_instance import (
     PCDynamicsEnsembleInstanceCPU,
+)
+from mojo_rl.experimental.pcn.pc_dynamics_ensemble_instance_gpu import (
     PCDynamicsEnsembleInstanceGPU,
 )
 from mojo_rl.deep_agents.core.agents.offpolicy_agent import GenericGPUState

@@ -34,9 +34,9 @@ from std.gpu.host import DeviceContext
 from std.memory import alloc
 from std.sys import CompilationTarget
 
-from mojo_rl.nn.constants import TPB
-from mojo_rl.nn.initializer import Initializer
-from mojo_rl.nn.autodiff.apple_cblas import apple_sgemm_accum
+from .pc_constants import TPB
+from .pc_initializer import PCInitializer
+from .pc_apple_cblas import apple_sgemm_accum
 
 from .predictive_model import PCActivation, PCReLU, PCBlockTrait
 
@@ -83,18 +83,19 @@ struct ConvPCBlock[
     # =========================================================================
 
     @staticmethod
-    def initialize_params[
-        INIT: Initializer, dtype: DType = DType.float32
+    def pc_init_params[
+        INIT: PCInitializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-    ):
+    ) raises:
+        """nn2 init: conv W via INIT.fill(conv fan_in/out); zero per-channel b."""
         comptime W_SIZE = Self.out_channels * Self.col_size
         var W_view = LayoutTensor[
             dtype, Layout.row_major(W_SIZE), MutAnyOrigin
         ](params.ptr)
-        INIT.init[
+        INIT.fill[
             W_SIZE,
             Self.in_channels * Self.kernel_size * Self.kernel_size,
             Self.out_channels * Self.kernel_size * Self.kernel_size,

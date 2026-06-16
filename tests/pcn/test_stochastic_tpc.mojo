@@ -26,9 +26,9 @@ from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
+from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
 from mojo_rl.nn2.datasets.mnist import MNIST
 from mojo_rl.experimental.pcn import (
     PCBlock,
@@ -61,7 +61,7 @@ comptime TRAINER = PCTrainer[
     PCBlock[HIDDEN, DATA_DIM, PCTanh],
     dtype=dtype,
 ]
-comptime OPT = Adam[LR=ADAM_LR]
+comptime OPT = PCAdam[LR=ADAM_LR]
 
 # Bump per SGLD-step to keep substreams disjoint.
 comptime PHILOX_BUMP_PER_STEP = UInt64(
@@ -222,7 +222,7 @@ def main() raises:
         memset(z_below_buf_raw, 0, BATCH * NET.SCRATCH_IN_DIM)
         memset(dx_buf_raw, 0, BATCH * NET.LATENT_DIM)
         memset(noise_buf_raw, 0, BATCH * NET.LATENT_DIM)
-        NET.initialize_params[Xavier[], dtype](params)
+        NET.pc_init_params[PCXavier, dtype](params)
 
         # Per-phase RNGs: one for obs corruption, one for SGLD substream offset.
         var obs_rng = PhiloxRandom(seed=UInt64(23 + phase), offset=UInt64(0))

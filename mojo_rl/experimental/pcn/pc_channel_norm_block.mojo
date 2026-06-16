@@ -26,8 +26,8 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.math import sqrt
 
-from mojo_rl.nn.constants import TPB
-from mojo_rl.nn.initializer import Initializer
+from .pc_constants import TPB
+from .pc_initializer import PCInitializer
 
 from .predictive_model import PCBlockTrait
 
@@ -50,13 +50,14 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         pass
 
     @staticmethod
-    def initialize_params[
-        INIT: Initializer, dtype: DType = DType.float32
+    def pc_init_params[
+        INIT: PCInitializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-    ):
+    ) raises:
+        """nn2 init: per-channel γ = 1 (INIT unused — normalization scale)."""
         for c in range(Self.channels):
             params.ptr[c] = Scalar[dtype](1)
 

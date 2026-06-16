@@ -30,9 +30,9 @@ from std.gpu.host import DeviceContext
 from std.memory import alloc
 from std.math import sqrt
 
-from mojo_rl.nn.initializer import Initializer
 
 from .predictive_model import PCActivation, PCReLU, PCBlockTrait
+from .pc_initializer import PCInitializer
 from .pc_conv_block import ConvPCBlock
 
 comptime _RMS_EPS: Float64 = 1e-6
@@ -75,14 +75,15 @@ struct NormConvPCBlock[
         pass
 
     @staticmethod
-    def initialize_params[
-        INIT: Initializer, dtype: DType = DType.float32
+    def pc_init_params[
+        INIT: PCInitializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-    ):
-        Self.INNER.initialize_params[INIT, dtype](params)
+    ) raises:
+        """nn2 init: delegate to the inner conv block's nn2 init."""
+        Self.INNER.pc_init_params[INIT, dtype](params)
 
     # ── parameter-free per-input-channel RMSNorm:  out = u / rms_c  ───────────
     @staticmethod

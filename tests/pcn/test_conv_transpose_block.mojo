@@ -16,7 +16,7 @@ from std.memory import alloc
 from std.math import sin
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn.pc_conv_transpose_block import (
     ConvTransposePCBlock,
 )
@@ -76,7 +76,7 @@ def main() raises:
     )
     var a = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](a_buf)
     var z = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](z_buf)
-    CB.initialize_params[Xavier[3], dtype](params)  # bias starts at 0
+    CB.pc_init_params[PCXavier, dtype](params)  # bias starts at 0
 
     # ── 1. Adjoint identity ───────────────────────────────────────────────────
     CB.predict[BATCH, dtype](x, params, mu, a)  # μ = T x  (Identity act, 0 bias)

@@ -20,7 +20,7 @@ from std.math import sin
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
 from mojo_rl.experimental.pcn import PCReLU
 
@@ -73,7 +73,7 @@ def run_gpu_parity[
     var params = LayoutTensor[dtype, Layout.row_major(PSZ), MutAnyOrigin](
         params_buf
     )
-    CB.initialize_params[Xavier[42], dtype](params)
+    CB.pc_init_params[PCXavier, dtype](params)
 
     var x = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](x_buf)
     var a_c = LayoutTensor[dtype, Layout.row_major(BATCH, IN), MutAnyOrigin](

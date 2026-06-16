@@ -25,9 +25,9 @@ from std.time import perf_counter_ns
 from std.math import exp
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
+from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
 from mojo_rl.nn2.datasets.mnist import MNIST
 from mojo_rl.experimental.pcn import (
     PCBlock,
@@ -67,7 +67,7 @@ comptime DB2 = PCBlock[HIDDEN, 784, PCReLU]
 comptime DOWN_NET = PCSequential[DB0, DB1, DB2]
 comptime DOWN_PARAM_SIZE = DOWN_NET.PARAM_SIZE
 
-comptime OPT = Adam[LR=ADAM_LR]
+comptime OPT = PCAdam[LR=ADAM_LR]
 
 
 def main() raises:
@@ -96,7 +96,7 @@ def main() raises:
     var up_grads = LayoutTensor[dtype, Layout.row_major(UP_PARAM_SIZE), MutAnyOrigin](up_grads_buf)
     var up_opt_state = LayoutTensor[dtype, Layout.row_major(UP_PARAM_SIZE, OPT.STATE_PER_PARAM), MutAnyOrigin](up_opt_state_buf)
     var up_opt_global = LayoutTensor[dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin](up_opt_global_buf)
-    UP_NET.initialize_params[Xavier[], dtype](up_params)
+    UP_NET.pc_init_params[PCXavier, dtype](up_params)
 
     # ── Allocate DOWN params + Adam state ───────────────────────────────────
     var dn_params_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE)
@@ -111,7 +111,7 @@ def main() raises:
     var dn_grads = LayoutTensor[dtype, Layout.row_major(DOWN_PARAM_SIZE), MutAnyOrigin](dn_grads_buf)
     var dn_opt_state = LayoutTensor[dtype, Layout.row_major(DOWN_PARAM_SIZE, OPT.STATE_PER_PARAM), MutAnyOrigin](dn_opt_state_buf)
     var dn_opt_global = LayoutTensor[dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin](dn_opt_global_buf)
-    DOWN_NET.initialize_params[Xavier[], dtype](dn_params)
+    DOWN_NET.pc_init_params[PCXavier, dtype](dn_params)
 
     # ── Shared latents x0, x1 (both HIDDEN-dim) ────────────────────────────
     var x0_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)

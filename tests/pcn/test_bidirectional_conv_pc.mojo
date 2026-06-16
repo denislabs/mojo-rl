@@ -23,9 +23,9 @@ from std.time import perf_counter_ns
 from std.math import exp
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import dtype
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn2.constants import DT as dtype
+from mojo_rl.experimental.pcn.pc_initializer import PCXavier
+from mojo_rl.experimental.pcn.pc_optimizer import PCAdam
 from mojo_rl.nn2.datasets.mnist import MNIST
 from mojo_rl.experimental.pcn import (
     PCBlock,
@@ -73,7 +73,7 @@ comptime DB1 = ConvTransposePCBlock[C1, C0, 4, 2, 1, 7, 7, PCReLU]  # 784 → 15
 comptime DB2 = ConvTransposePCBlock[C0, 1, 4, 2, 1, 14, 14, PCReLU]  # 1568 → 784
 comptime DOWN_PARAM_SIZE = DB0.PARAM_SIZE + DB1.PARAM_SIZE + DB2.PARAM_SIZE
 
-comptime OPT = Adam[LR=ADAM_LR]
+comptime OPT = PCAdam[LR=ADAM_LR]
 
 
 def main() raises:
@@ -101,7 +101,7 @@ def main() raises:
     var up_grads = LayoutTensor[dtype, Layout.row_major(UP_PARAM_SIZE), MutAnyOrigin](up_grads_buf)
     var up_os = LayoutTensor[dtype, Layout.row_major(UP_PARAM_SIZE, OPT.STATE_PER_PARAM), MutAnyOrigin](up_os_buf)
     var up_og = LayoutTensor[dtype, Layout.row_major(OPT.GLOBAL_STATE_SIZE), MutAnyOrigin](up_og_buf)
-    UP_NET.initialize_params[Xavier[], dtype](up_params)
+    UP_NET.pc_init_params[PCXavier, dtype](up_params)
 
     # ── DOWN params + Adam (init each block separately) ─────────────────────
     var dn_params_buf = alloc[Scalar[dtype]](DOWN_PARAM_SIZE)
@@ -119,9 +119,9 @@ def main() raises:
     var dn_p0v = LayoutTensor[dtype, Layout.row_major(DB0.PARAM_SIZE), MutAnyOrigin](dn_params_buf)
     var dn_p1v = LayoutTensor[dtype, Layout.row_major(DB1.PARAM_SIZE), MutAnyOrigin](dn_params_buf + DB0.PARAM_SIZE)
     var dn_p2v = LayoutTensor[dtype, Layout.row_major(DB2.PARAM_SIZE), MutAnyOrigin](dn_params_buf + DB0.PARAM_SIZE + DB1.PARAM_SIZE)
-    DB0.initialize_params[Xavier[], dtype](dn_p0v)
-    DB1.initialize_params[Xavier[], dtype](dn_p1v)
-    DB2.initialize_params[Xavier[], dtype](dn_p2v)
+    DB0.pc_init_params[PCXavier, dtype](dn_p0v)
+    DB1.pc_init_params[PCXavier, dtype](dn_p1v)
+    DB2.pc_init_params[PCXavier, dtype](dn_p2v)
 
     # ── Shared latents ──────────────────────────────────────────────────────
     var x0_buf = alloc[Scalar[dtype]](BATCH * X0_DIM)

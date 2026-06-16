@@ -29,9 +29,9 @@ For Phase 1 (CPU), no alignment padding between blocks. Add for GPU later.
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.initializer import Initializer
 
 from .predictive_model import PCBlockTrait
+from .pc_initializer import PCInitializer
 
 
 @fieldwise_init
@@ -135,15 +135,15 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
     # =========================================================================
 
     @staticmethod
-    def initialize_params[
-        INIT: Initializer, dtype: DType = DType.float32
+    def pc_init_params[
+        INIT: PCInitializer, dtype: DType = DType.float32
     ](
         mut params: LayoutTensor[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
-    ):
-        """Init each block's params with its own fan_in/fan_out."""
-        # Zero the buffer first (no-op for INIT but pads any unused slots)
+    ) raises:
+        """nn2 re-architecture init: per-block `pc_init_params` (vendored
+        `PCInitializer`, legacy-`nn`-free). Mirror of `initialize_params`."""
         for i in range(Self.PARAM_SIZE):
             params.ptr[i] = Scalar[dtype](0)
 
@@ -153,7 +153,7 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
                 Layout.row_major(Self.block_types[i].PARAM_SIZE),
                 MutAnyOrigin,
             ](params.ptr + Self._param_offset[i]())
-            Self.block_types[i].initialize_params[INIT, dtype](li_p)
+            Self.block_types[i].pc_init_params[INIT, dtype](li_p)
 
     # =========================================================================
     # Forward eval — plain feedforward bottom-up, NO latent allocation,
