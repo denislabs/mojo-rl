@@ -49,6 +49,7 @@ from mojo_rl.nn2.constants import DT
 from mojo_rl.nn2.core.module import Module, mptr
 from mojo_rl.nn2.optimizer.adam import Adam
 from mojo_rl.nn2.core.map_params import hard_copy_params
+from mojo_rl.nn2.core.checkpoint import save_state_v2_body_gpu
 from mojo_rl.nn2.initializer import Kaiming
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -89,6 +90,24 @@ struct MZArenaResult(Copyable, Movable):
 struct MZArenaRunResult(Copyable, Movable):
     var last_loss: Float64
     var promotions: Int
+
+
+def _mz_save_trio[
+    REP: Module, DYN: Module, PRED: Module,
+](
+    ctx: DeviceContext,
+    mut rep: REP, mut dyn: DYN, mut pred: PRED,
+    path: String,
+) raises:
+    """Write the rep/dyn/pred trio to ``path`` as a one-file nn2-ckpt v2 envelope
+    (sections rep/dyn/pred) — the same format `MuZeroAgent.save` and the play
+    script load. Weights only (optimizers are session-local)."""
+    var body = String("")
+    save_state_v2_body_gpu(rep, body, String("rep"), ctx)
+    save_state_v2_body_gpu(dyn, body, String("dyn"), ctx)
+    save_state_v2_body_gpu(pred, body, String("pred"), ctx)
+    with open(path, "w") as f:
+        f.write(String("nn2-ckpt v2\n") + body)
 
 
 def _mz_should_promote(
@@ -619,6 +638,8 @@ def run_muzero_selfplay_arena_gumbel_2p[
     target_sync_interval: Int = 0,   # grad steps between learner→target syncs;
     #                                  0 = refresh target to live just before each
     #                                  trigger (live-learner reanalyze).
+    checkpoint_every: Int = 0,       # moves between checkpoint saves (0 = off)
+    checkpoint_path: String = String(""),  # rolling save of the BEST trio
 ) raises -> MZArenaRunResult:
     """Two-player Gumbel MuZero self-play with Arena gating. `rep`/`dyn`/`pred`
     are the BEST nets and hold the final (best) weights on return. One loop pass
@@ -1189,6 +1210,21 @@ def run_muzero_selfplay_arena_gumbel_2p[
                 print(line)
             if logger:
                 logger.value()[].log_scalars(names, values, it + 1)
+
+        # ── 9. Periodic checkpoint: rolling save of the BEST trio (the
+        #      deployable artifact) so a long run is recoverable and playable
+        #      mid-training. Overwrites `checkpoint_path` each time. ──
+        if (
+            checkpoint_every > 0
+            and checkpoint_path.byte_length() > 0
+            and (it + 1) % checkpoint_every == 0
+        ):
+            rep.set_attr["training"](Scalar[DT](0.0))
+            dyn.set_attr["training"](Scalar[DT](0.0))
+            pred.set_attr["training"](Scalar[DT](0.0))
+            _mz_save_trio[REP, DYN, PRED](ctx, rep, dyn, pred, checkpoint_path)
+            if verbose:
+                print("  checkpoint @ move", it + 1, "→", checkpoint_path)
 
     # ── Final flush: promote the learner if it ended clearly ahead ──
     var final_rec = mz_candidate_winrate[

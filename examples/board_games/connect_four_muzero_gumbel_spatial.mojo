@@ -153,6 +153,10 @@ def main() raises:
         reanalyze_every=4,
         reanalyze_batch=128,
         target_sync_interval=200,
+        # Rolling checkpoint of the best net every 2k moves → playable /
+        # recoverable mid-run (play it with play_connect_four_muzero_gumbel).
+        checkpoint_every=2_000,
+        checkpoint_path=String("connect_four_muzero_gumbel_spatial.ckpt"),
     )
 
     logger.close()

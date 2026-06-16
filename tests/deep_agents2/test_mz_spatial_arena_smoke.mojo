@@ -107,6 +107,8 @@ def main() raises:
         reanalyze_every=2,
         reanalyze_batch=4,
         target_sync_interval=0,
+        checkpoint_every=20,
+        checkpoint_path=String("/tmp/c4_mz_smoke.ckpt"),
     )
 
     if res.last_loss - res.last_loss != 0.0:
