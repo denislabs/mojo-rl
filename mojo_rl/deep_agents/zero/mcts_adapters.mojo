@@ -31,8 +31,8 @@ from mojo_rl.planners.tree_search import PredictionGPU, EnvStepGPU
 
 
 @fieldwise_init
-struct AZPredGPU[OBS: Int, ACT: Int, NET: Module](
-    Movable, ImplicitlyDeletable, PredictionGPU
+struct AZPredGPU[OBS: Int, ACT: Int, NET: Module, o: Origin[mut=True]](
+    ImplicitlyDeletable, Movable, PredictionGPU
 ):
     """AlphaZero prediction adapter: ``obs → policy_logits ⊕ raw_value``.
 
@@ -51,13 +51,15 @@ struct AZPredGPU[OBS: Int, ACT: Int, NET: Module](
     comptime ACTION_DIM: Int = Self.ACT
     comptime PRED_OUT_DIM: Int = Self.ACT + 1
 
-    var net: UnsafePointer[Self.NET, MutAnyOrigin]
+    var net: UnsafePointer[Self.NET, Self.o]
 
     @staticmethod
-    def make(mut net: Self.NET) -> Self:
+    def make(ref[Self.o] net: Self.NET) -> Self:
         return Self(net=UnsafePointer(to=net))
 
-    def predict_gpu[B: Int](
+    def predict_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         hidden: LayoutTensor[
@@ -82,7 +84,7 @@ struct AZEnvGPU[
     STATE: Int,
     OBSD: Int,
     A: Int,
-](Movable, ImplicitlyDeletable, EnvStepGPU):
+](EnvStepGPU, ImplicitlyDeletable, Movable):
     """AlphaZero env-step adapter — true game rules as MCTS leaf expansion.
 
     Stateless wrapper over the env's static ``step_kernel_gpu``. The planner
@@ -97,7 +99,9 @@ struct AZEnvGPU[
     comptime OBS_DIM: Int = Self.OBSD
     comptime ACTION_DIM: Int = Self.A
 
-    def step_gpu[B: Int](
+    def step_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         mut states: DeviceBuffer[DT],
