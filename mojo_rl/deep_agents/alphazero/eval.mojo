@@ -29,7 +29,11 @@ from mojo_rl.nn.core.module import Module, mptr
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (
-    GenericGPUMCTS, GenericCPUMCTS, AlphaGoPUCT, NoNoise, SelfPlay,
+    GenericGPUMCTS,
+    GenericCPUMCTS,
+    AlphaGoPUCT,
+    NoNoise,
+    SelfPlay,
 )
 from ..zero.evaluators import GPUEvaluator, CPUEvaluator, RandomOpponent
 from ..zero.mcts_adapters import AZPredGPU, AZEnvGPU
@@ -46,9 +50,7 @@ def _xs(s: UInt64) -> UInt64:
 
 
 @always_inline
-def _mptr(
-    b: DeviceBuffer[DT]
-) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+def _mptr(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     """Origin-erase a device buffer pointer so `Module.forward` (which pins
     `origin=MutAnyOrigin` on its output) accepts the tile."""
     return mptr(b.unsafe_ptr())
@@ -178,11 +180,7 @@ def eval_policy_vs_random_cpu[
     NET: Module,
     N_GAMES: Int,
     MAX_PLIES: Int,
-](
-    mut net: NET,
-    agent_player: Int = 0,
-    seed: UInt64 = 1,
-) raises -> EvalResult:
+](mut net: NET, agent_player: Int = 0, seed: UInt64 = 1,) raises -> EvalResult:
     """CPU counterpart to `eval_policy_vs_random`: play `N_GAMES` games on a
     single CPU env where the agent picks ``argmax`` of its (CPU) policy head over
     legal moves and the opponent plays a uniform random legal move. Pure-policy
@@ -267,11 +265,7 @@ def eval_mcts_vs_opponent_cpu[
     NUM_SIMS: Int,
     MAX_NODES: Int,
     MAX_PLIES: Int,
-](
-    mut net: NET,
-    agent_player: Int = 0,
-    seed: UInt64 = 1,
-) raises -> EvalResult:
+](mut net: NET, agent_player: Int = 0, seed: UInt64 = 1,) raises -> EvalResult:
     """CPU full-strength eval: the agent plays via `GenericCPUMCTS` (temp=0,
     NoNoise, argmax-visit), the opponent via its `CPUEvaluator`. The CPU twin of
     `eval_mcts_vs_opponent`; plays `N_GAMES` games sequentially on one env."""
@@ -279,7 +273,13 @@ def eval_mcts_vs_opponent_cpu[
     comptime ACT = NET.OUT_DIM - 1
     comptime LATENT = ENV.SAVE_SIZE
     comptime EVAL_MCTS = GenericCPUMCTS[
-        ACT, LATENT, NUM_SIMS, MAX_NODES, AlphaGoPUCT[1.0], NoNoise, SelfPlay,
+        ACT,
+        LATENT,
+        NUM_SIMS,
+        MAX_NODES,
+        AlphaGoPUCT[1.0],
+        NoNoise,
+        SelfPlay,
         NORMALIZE_Q=False,  # raw Q∈[-1,1] like legacy
     ]
 
@@ -380,8 +380,17 @@ def eval_mcts_vs_opponent[
     comptime ACT = NET.OUT_DIM - 1
     comptime STATE = ENV.STATE_SIZE
     comptime EVAL_MCTS = GenericGPUMCTS[
-        N_GAMES, ACT, OBS, 1, MAX_NODES, NUM_SIMS, 1,
-        AlphaGoPUCT[1.0], NoNoise, SelfPlay, STATE_SIZE=STATE,
+        N_GAMES,
+        ACT,
+        OBS,
+        1,
+        MAX_NODES,
+        NUM_SIMS,
+        1,
+        AlphaGoPUCT[1.0],
+        NoNoise,
+        SelfPlay,
+        STATE_SIZE=STATE,
     ]
     # Resets let early-finishing games stop interfering; +ACT slack covers any
     # desync between fast and slow games before all first-games complete.
@@ -422,26 +431,37 @@ def eval_mcts_vs_opponent[
             # for the first `open_plies` plies, splitting the lockstep batch
             # into distinct games (see docstring).
             RandomOpponent.select_action_gpu[N_GAMES, ACT, STATE](
-                ctx, actions_dev, legal_dev, states,
+                ctx,
+                actions_dev,
+                legal_dev,
+                states,
                 seed + UInt64(move) * 131 + 17,
             )
         elif agent_turn:
             var pred = AZPredGPU[OBS, ACT, NET].make(net)
             var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
-            var root_obs = LayoutTensor[
-                DT, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
-            ](obs_dev.unsafe_ptr())
-            var root_legal = LayoutTensor[
-                DT, Layout.row_major(N_GAMES * ACT), MutAnyOrigin
-            ](legal_dev.unsafe_ptr())
+            var root_obs = LayoutTensor[DT, Layout.row_major(N_GAMES, OBS)](
+                obs_dev
+            )
+            var root_legal = LayoutTensor[DT, Layout.row_major(N_GAMES * ACT)](
+                legal_dev
+            )
             mcts.search_gpu_alphazero[type_of(pred), type_of(env_ad)](
-                ctx, pred, env_ad, root_obs, states, root_legal,
+                ctx,
+                pred,
+                env_ad,
+                root_obs,
+                states,
+                root_legal,
                 rng_seed=seed + UInt64(move),
             )
             ctx.enqueue_copy(actions_dev, mcts.actions_out)
         else:
             OPP.select_action_gpu[N_GAMES, ACT, STATE](
-                ctx, actions_dev, legal_dev, states,
+                ctx,
+                actions_dev,
+                legal_dev,
+                states,
                 seed + UInt64(move) * 31 + 7,
             )
         ctx.synchronize()

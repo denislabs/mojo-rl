@@ -162,14 +162,18 @@ struct RandomOpponent(GPUEvaluator & CPUEvaluator):
         comptime TPB = 256
         comptime ENV_BLOCKS = (N_ENVS + TPB - 1) // TPB
         comptime run = _random_legal_kernel[N_ENVS, ACT]
-        var act_t = LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin](
-            actions_out.unsafe_ptr()
-        )
-        var lm_t = LayoutTensor[
-            DT, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
-        ](legal_masks.unsafe_ptr())
+        var act_t = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS)](actions_out))
+        var lm_t = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS * ACT), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS * ACT)](legal_masks))
         ctx.enqueue_function[run](
-            act_t, lm_t, rng_seed, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            act_t,
+            lm_t,
+            rng_seed,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
 
 
@@ -182,10 +186,18 @@ def _ttt_winner(board: InlineArray[Int, 9]) -> Int:
     """0=none, else winning mark (1 or 2)."""
     for r in range(3):
         var i = r * 3
-        if board[i] != 0 and board[i] == board[i + 1] and board[i + 1] == board[i + 2]:
+        if (
+            board[i] != 0
+            and board[i] == board[i + 1]
+            and board[i + 1] == board[i + 2]
+        ):
             return board[i]
     for c in range(3):
-        if board[c] != 0 and board[c] == board[c + 3] and board[c + 3] == board[c + 6]:
+        if (
+            board[c] != 0
+            and board[c] == board[c + 3]
+            and board[c + 3] == board[c + 6]
+        ):
             return board[c]
     if board[0] != 0 and board[0] == board[4] and board[4] == board[8]:
         return board[0]
@@ -208,7 +220,7 @@ def _ttt_minimax_iter(mut board: InlineArray[Int, 9], my_mark: Int) -> Int:
     var opp_mark = 3 - my_mark
     var depth = 0
     stk_action[0] = 0
-    stk_best[0] = 2      # opponent minimizes
+    stk_best[0] = 2  # opponent minimizes
     stk_is_max[0] = 0
     stk_mark[0] = opp_mark
     stk_placed[0] = -1
@@ -365,14 +377,19 @@ struct GPUMinimaxTicTacToe(GPUEvaluator & CPUEvaluator):
         comptime TPB = 128
         comptime ENV_BLOCKS = (N_ENVS + TPB - 1) // TPB
         comptime run = _ttt_minimax_kernel[N_ENVS, STATE_SIZE]
-        var act_t = LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin](
-            actions_out.unsafe_ptr()
-        )
-        var gs_t = LayoutTensor[
-            DT, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
-        ](game_states.unsafe_ptr())
+        var act_t = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS)](actions_out))
+        var gs_t = rebind[
+            LayoutTensor[
+                DT, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+            ]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS * STATE_SIZE)](game_states))
         ctx.enqueue_function[run](
-            act_t, gs_t, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            act_t,
+            gs_t,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )
 
 
@@ -389,7 +406,13 @@ def _c4_count_dir(
     var cnt = 0
     var c = col + dc
     var r = row + dr
-    while c >= 0 and c < COLS and r >= 0 and r < ROWS and board[c * ROWS + r] == mark:
+    while (
+        c >= 0
+        and c < COLS
+        and r >= 0
+        and r < ROWS
+        and board[c * ROWS + r] == mark
+    ):
         cnt += 1
         c += dc
         r += dr
@@ -401,13 +424,17 @@ def _c4_check_win(
 ) -> Bool:
     return (
         _c4_count_dir(board, col, row, mark, 1, 0)
-        + _c4_count_dir(board, col, row, mark, -1, 0) >= 3
+        + _c4_count_dir(board, col, row, mark, -1, 0)
+        >= 3
         or _c4_count_dir(board, col, row, mark, 0, 1)
-        + _c4_count_dir(board, col, row, mark, 0, -1) >= 3
+        + _c4_count_dir(board, col, row, mark, 0, -1)
+        >= 3
         or _c4_count_dir(board, col, row, mark, 1, 1)
-        + _c4_count_dir(board, col, row, mark, -1, -1) >= 3
+        + _c4_count_dir(board, col, row, mark, -1, -1)
+        >= 3
         or _c4_count_dir(board, col, row, mark, 1, -1)
-        + _c4_count_dir(board, col, row, mark, -1, 1) >= 3
+        + _c4_count_dir(board, col, row, mark, -1, 1)
+        >= 3
     )
 
 
@@ -586,12 +613,17 @@ struct GPUMinimaxConnectFour[DEPTH: Int = 5](GPUEvaluator & CPUEvaluator):
         comptime TPB = 32
         comptime ENV_BLOCKS = (N_ENVS + TPB - 1) // TPB
         comptime run = _c4_minimax_kernel[N_ENVS, STATE_SIZE, Self.DEPTH]
-        var act_t = LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin](
-            actions_out.unsafe_ptr()
-        )
-        var gs_t = LayoutTensor[
-            DT, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
-        ](game_states.unsafe_ptr())
+        var act_t = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS)](actions_out))
+        var gs_t = rebind[
+            LayoutTensor[
+                DT, Layout.row_major(N_ENVS * STATE_SIZE), MutAnyOrigin
+            ]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS * STATE_SIZE)](game_states))
         ctx.enqueue_function[run](
-            act_t, gs_t, grid_dim=(ENV_BLOCKS,), block_dim=(TPB,),
+            act_t,
+            gs_t,
+            grid_dim=(ENV_BLOCKS,),
+            block_dim=(TPB,),
         )

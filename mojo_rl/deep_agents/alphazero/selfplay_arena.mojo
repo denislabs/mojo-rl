@@ -57,7 +57,10 @@ from mojo_rl.nn.combinators.graph_nodes import InputSlot, Node, ExternalNode
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import (
-    GenericGPUMCTS, AlphaGoPUCT, DirichletNoise, SelfPlay,
+    GenericGPUMCTS,
+    AlphaGoPUCT,
+    DirichletNoise,
+    SelfPlay,
 )
 
 from .loss_ops import AZLossOp
@@ -73,11 +76,14 @@ from ..zero.evaluators import GPUEvaluator, RandomOpponent
 struct ArenaRunResult(Copyable, Movable):
     """Summary of an arena-gated run: last mean train loss + how many times the
     learner was accepted over the best."""
+
     var last_loss: Float64
     var promotions: Int
 
 
-def append_az_train_diagnostics[ACT: Int, BATCH: Int](
+def append_az_train_diagnostics[
+    ACT: Int, BATCH: Int
+](
     pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
     tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
     mut names: List[String],
@@ -204,7 +210,8 @@ def _eval_both_colors[
     convention. The agent plays at full search strength (`eval_mcts_vs_opponent`)
     so the numbers reflect the deployed agent, not the bare policy head.
     `open_plies > 0` diversifies openings so a deterministic opponent yields a
-    real winrate instead of one canonical line ×N (see eval_mcts_vs_opponent)."""
+    real winrate instead of one canonical line ×N (see eval_mcts_vs_opponent).
+    """
     var p0 = eval_mcts_vs_opponent[
         ENV, NET, OPP, N_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES
     ](ctx, net, agent_player=0, seed=seed, open_plies=open_plies)
@@ -228,18 +235,18 @@ def run_alphazero_selfplay_arena[
     BATCH: Int,
     CAP: Int,
     MAX_TRAJ: Int,
-    ARENA_GAMES: Int = 32,        # arena games per color (comptime: sizes buffers)
-    RESULT_IDX: Int = 10,         # vestigial (MCTS arena/eval attribute by
+    ARENA_GAMES: Int = 32,  # arena games per color (comptime: sizes buffers)
+    RESULT_IDX: Int = 10,  # vestigial (MCTS arena/eval attribute by
     #                               reward+turn); kept for caller API stability
     MAX_PLIES: Int = 9,
-    OPP1: GPUEvaluator = RandomOpponent,   # primary eval opponent (do_eval)
-    OPP2: GPUEvaluator = RandomOpponent,   # secondary eval opponent (do_eval2)
-    L: Logger = NoOpLogger,                # metrics sink (NoOp = silent)
-    EVAL_GAMES: Int = 64,                  # games per color in each periodic eval
-    TEMP_MOVES: Int = 4,                   # plies sampled ∝ visits per game
+    OPP1: GPUEvaluator = RandomOpponent,  # primary eval opponent (do_eval)
+    OPP2: GPUEvaluator = RandomOpponent,  # secondary eval opponent (do_eval2)
+    L: Logger = NoOpLogger,  # metrics sink (NoOp = silent)
+    EVAL_GAMES: Int = 64,  # games per color in each periodic eval
+    TEMP_MOVES: Int = 4,  # plies sampled ∝ visits per game
     #                                        before switching to greedy (opening
     #                                        diversity); scale to game length
-    BATCH_SIMS: Int = 1,                   # MCTS leaves expanded per round
+    BATCH_SIMS: Int = 1,  # MCTS leaves expanded per round
     #                                        (virtual-loss batching). >1 cuts net
     #                                        forwards by this factor: NUM_SIMS /
     #                                        BATCH_SIMS rounds. Must divide
@@ -247,7 +254,7 @@ def run_alphazero_selfplay_arena[
     #                                        forced within-round collisions.
 ](
     ctx: DeviceContext,
-    mut net: NET,                 # the BEST net — holds final weights on return
+    mut net: NET,  # the BEST net — holds final weights on return
     iterations: Int,
     learning_starts: Int = 0,
     train_per_iter: Int = 1,
@@ -256,22 +263,22 @@ def run_alphazero_selfplay_arena[
     arena_every: Int = 100,
     arena_open_plies: Int = 2,
     promote_threshold: Float64 = 0.55,
-    report_every: Int = 0,        # 0 → fall back to arena_every (0 = no reports)
-    diag_every: Int = 0,          # cheap per-batch train diagnostics every N
+    report_every: Int = 0,  # 0 → fall back to arena_every (0 = no reports)
+    diag_every: Int = 0,  # cheap per-batch train diagnostics every N
     #                               moves (train-axis), decoupled from the
     #                               expensive periodic eval; 0 = off
-    do_eval: Bool = True,         # MCTS-eval the best vs OPP1 each report
-    do_eval2: Bool = False,       # also MCTS-eval vs OPP2 each report
-    verbose: Bool = True,         # print a per-report progress line
+    do_eval: Bool = True,  # MCTS-eval the best vs OPP1 each report
+    do_eval2: Bool = False,  # also MCTS-eval vs OPP2 each report
+    verbose: Bool = True,  # print a per-report progress line
     logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
-    max_grad_norm: Float64 = 0.0, # global grad-norm clip (0 = off). The 5-block
+    max_grad_norm: Float64 = 0.0,  # global grad-norm clip (0 = off). The 5-block
     #                               ResNet at lr=2e-3 spikes grad norms → policy
     #                               CE climbs back past uniform → arena
     #                               regression; 1.0 is the legacy AlphaZero.jl
     #                               value and the #1 stability fix.
     weight_decay: Float64 = 0.0,  # decoupled (AdamW) weight decay (0 = off ≡
     #                               plain Adam; 1e-4 matches the legacy config).
-    eval_open_plies: Int = 0,     # uniform-random legal plies opening each
+    eval_open_plies: Int = 0,  # uniform-random legal plies opening each
     #                               periodic-eval game (both sides). 0 = the
     #                               canonical single-line "perfect-play gate";
     #                               ≥2 = diversified openings → real winrate.
@@ -285,12 +292,20 @@ def run_alphazero_selfplay_arena[
     # collect+train+eval round — hence the deliberate `move` / `games` labels.
     comptime OBS = NET.IN_DIMS[0]
     comptime ACT = NET.OUT_DIM - 1
-    comptime W = NET.OUT_DIM          # ACT + 1
+    comptime W = NET.OUT_DIM  # ACT + 1
     comptime STATE = ENV.STATE_SIZE
     comptime NSYM = AUG.NUM_SYMMETRIES
     comptime MCTS = GenericGPUMCTS[
-        N_ENVS, ACT, OBS, 1, MAX_NODES, NUM_SIMS, BATCH_SIMS,
-        AlphaGoPUCT[1.0], DirichletNoise[0.25, 0.25], SelfPlay,
+        N_ENVS,
+        ACT,
+        OBS,
+        1,
+        MAX_NODES,
+        NUM_SIMS,
+        BATCH_SIMS,
+        AlphaGoPUCT[1.0],
+        DirichletNoise[0.25, 0.25],
+        SelfPlay,
         STATE_SIZE=STATE,
     ]
     comptime Graph = ComputeGraph[
@@ -326,7 +341,9 @@ def run_alphazero_selfplay_arena[
     var term = ctx.enqueue_create_buffer[DT](N_ENVS)
     var obs_next = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
     var legal_next = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
-    var ep_steps_dev = ctx.enqueue_create_buffer[DT](N_ENVS)  # per-env ply count
+    var ep_steps_dev = ctx.enqueue_create_buffer[DT](
+        N_ENVS
+    )  # per-env ply count
     var tb_obs = ctx.enqueue_create_buffer[DT](BATCH * OBS)
     var tb_tgt = ctx.enqueue_create_buffer[DT](BATCH * W)
     var tb_loss = ctx.enqueue_create_buffer[DT](BATCH)
@@ -369,22 +386,33 @@ def run_alphazero_selfplay_arena[
 
     # ── Initialize all games ──
     ENV.reset_kernel_gpu[N_ENVS, STATE](ctx, states)
-    ENV.extract_obs_kernel_gpu[N_ENVS, STATE, OBS](ctx, states, obs_dev, legal_dev)
+    ENV.extract_obs_kernel_gpu[N_ENVS, STATE, OBS](
+        ctx, states, obs_dev, legal_dev
+    )
     ctx.synchronize()
 
     var last_loss: Float64 = 0.0
     var promotions = 0
-    var total_games = 0          # cumulative finished self-play games
+    var total_games = 0  # cumulative finished self-play games
 
     # Effective reporting cadence: explicit `report_every`, else piggy-back on
     # the arena cadence (0 ⇒ no periodic eval/print/log at all).
     var rep = report_every if report_every > 0 else arena_every
     if verbose:
         print(
-            "AlphaZero self-play:", iterations, "moves,",
-            N_ENVS, "envs,", NUM_SIMS, "sims/move | eval(MCTS)1=", OPP1.NAME,
-            "eval2=", OPP2.NAME if do_eval2 else String("off"),
-            "| report_every=", rep, "moves",
+            "AlphaZero self-play:",
+            iterations,
+            "moves,",
+            N_ENVS,
+            "envs,",
+            NUM_SIMS,
+            "sims/move | eval(MCTS)1=",
+            OPP1.NAME,
+            "eval2=",
+            OPP2.NAME if do_eval2 else String("off"),
+            "| report_every=",
+            rep,
+            "moves",
         )
 
     for it in range(iterations):
@@ -392,14 +420,17 @@ def run_alphazero_selfplay_arena[
         net.set_attr["training"](Scalar[DT](0.0))
         var pred = AZPredGPU[OBS, ACT, NET].make(net)
         var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
-        var root_obs = LayoutTensor[
-            DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
-        ](obs_dev.unsafe_ptr())
-        var root_legal = LayoutTensor[
-            DT, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
-        ](legal_dev.unsafe_ptr())
+        var root_obs = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS)](obs_dev)
+        var root_legal = LayoutTensor[DT, Layout.row_major(N_ENVS * ACT)](
+            legal_dev
+        )
         mcts.search_gpu_alphazero[type_of(pred), type_of(env_ad)](
-            ctx, pred, env_ad, root_obs, states, root_legal,
+            ctx,
+            pred,
+            env_ad,
+            root_obs,
+            states,
+            root_legal,
             rng_seed=seed + UInt64(it),
         )
 
@@ -427,21 +458,28 @@ def run_alphazero_selfplay_arena[
         #     policies_out, so the one-hot policy this overwrites for greedy
         #     plies is harmless. The kernel is legal-mask aware.
         ctx.enqueue_copy(ep_steps_dev, ep_steps_h)
-        var ep_t = LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin](
-            ep_steps_dev.unsafe_ptr()
+        var ep_t = LayoutTensor[DT, Layout.row_major(N_ENVS)](ep_steps_dev)
+        var legal_t = LayoutTensor[DT, Layout.row_major(N_ENVS * ACT)](
+            legal_dev
         )
-        var legal_t = LayoutTensor[
-            DT, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
-        ](legal_dev.unsafe_ptr())
         mcts.extract_actions_temp[TEMP_MOVES](
-            ctx, ep_t, legal_t,
+            ctx,
+            ep_t,
+            legal_t,
             rng_seed=UInt32((seed + UInt64(it)) & 0xFFFFFFFF),
             temp_min=0.0,
         )
 
         # 3. Step every game by its chosen action.
         ENV.step_kernel_gpu[N_ENVS, STATE, OBS](
-            ctx, states, mcts.actions_out, rew, done, term, obs_next, legal_next,
+            ctx,
+            states,
+            mcts.actions_out,
+            rew,
+            done,
+            term,
+            obs_next,
+            legal_next,
         )
         ctx.enqueue_copy(done_h, done)
         ctx.enqueue_copy(rew_h, rew)
@@ -487,7 +525,9 @@ def run_alphazero_selfplay_arena[
         ENV.selective_reset_kernel_gpu[N_ENVS, STATE](
             ctx, states, done, rng_seed=seed + UInt64(it)
         )
-        ENV.extract_obs_kernel_gpu[N_ENVS, STATE, OBS](ctx, states, obs_dev, legal_dev)
+        ENV.extract_obs_kernel_gpu[N_ENVS, STATE, OBS](
+            ctx, states, obs_dev, legal_dev
+        )
         ctx.synchronize()
 
         # 6. Train the LEARNER (train mode for BatchNorm).
@@ -518,11 +558,7 @@ def run_alphazero_selfplay_arena[
             #     train axis and decoupled from the expensive periodic eval. The
             #     graph's "pred" node still holds the last train batch's net
             #     output; the matching targets are in `tb_tgt_h`. One small D2H.
-            if (
-                Bool(logger)
-                and diag_every > 0
-                and (it + 1) % diag_every == 0
-            ):
+            if Bool(logger) and diag_every > 0 and (it + 1) % diag_every == 0:
                 var pred_src = graph.node_out_ptr["pred"]()
                 var pred_dev = DeviceBuffer[DT](
                     ctx, pred_src, BATCH * W, owning=False
@@ -546,9 +582,20 @@ def run_alphazero_selfplay_arena[
             and len(replay) >= BATCH
         ):
             var rec = candidate_winrate_mcts[
-                ENV, NET, NET, ARENA_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES,
-            ](ctx, learner, net, seed=seed + UInt64(it) * 7 + 1,
-              open_plies=arena_open_plies)
+                ENV,
+                NET,
+                NET,
+                ARENA_GAMES,
+                NUM_SIMS,
+                MAX_NODES,
+                MAX_PLIES,
+            ](
+                ctx,
+                learner,
+                net,
+                seed=seed + UInt64(it) * 7 + 1,
+                open_plies=arena_open_plies,
+            )
             var accepted = should_promote(
                 rec, promote_threshold, min_decisive=ARENA_GAMES // 2
             )
@@ -557,11 +604,18 @@ def run_alphazero_selfplay_arena[
                 promotions += 1
             if verbose:
                 print(
-                    "  arena @ move", it + 1,
-                    "| learner vs best (MCTS)  W", rec.wins, "D", rec.draws,
-                    "L", rec.losses,
+                    "  arena @ move",
+                    it + 1,
+                    "| learner vs best (MCTS)  W",
+                    rec.wins,
+                    "D",
+                    rec.draws,
+                    "L",
+                    rec.losses,
                     "→ ACCEPTED" if accepted else "→ rejected",
-                    "(promotions", promotions, ")",
+                    "(promotions",
+                    promotions,
+                    ")",
                 )
 
         # 8. Periodic report: MCTS-eval the LEARNER (the net actively training,
@@ -590,13 +644,13 @@ def run_alphazero_selfplay_arena[
                 var e1 = _eval_both_colors[
                     ENV, NET, OPP1, EVAL_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES
                 ](
-                    ctx, learner, seed=seed + UInt64(it) * 13 + 5,
+                    ctx,
+                    learner,
+                    seed=seed + UInt64(it) * 13 + 5,
                     open_plies=eval_open_plies,
                 )
                 var tot1 = e1.wins + e1.draws + e1.losses
-                var wr1 = (
-                    Float64(e1.wins) / Float64(tot1) if tot1 > 0 else 0.0
-                )
+                var wr1 = Float64(e1.wins) / Float64(tot1) if tot1 > 0 else 0.0
                 names.append(String("eval1_win"))
                 values.append(Float64(e1.wins))
                 names.append(String("eval1_draw"))
@@ -606,22 +660,30 @@ def run_alphazero_selfplay_arena[
                 names.append(String("eval1_winrate"))
                 values.append(wr1)
                 line += (
-                    " | vs " + OPP1.NAME + " W" + String(e1.wins)
-                    + " D" + String(e1.draws) + " L" + String(e1.losses)
-                    + " (wr " + String(Int(wr1 * 100.0)) + "%)"
+                    " | vs "
+                    + OPP1.NAME
+                    + " W"
+                    + String(e1.wins)
+                    + " D"
+                    + String(e1.draws)
+                    + " L"
+                    + String(e1.losses)
+                    + " (wr "
+                    + String(Int(wr1 * 100.0))
+                    + "%)"
                 )
 
             if do_eval2:
                 var e2 = _eval_both_colors[
                     ENV, NET, OPP2, EVAL_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES
                 ](
-                    ctx, learner, seed=seed + UInt64(it) * 17 + 9,
+                    ctx,
+                    learner,
+                    seed=seed + UInt64(it) * 17 + 9,
                     open_plies=eval_open_plies,
                 )
                 var tot2 = e2.wins + e2.draws + e2.losses
-                var wr2 = (
-                    Float64(e2.wins) / Float64(tot2) if tot2 > 0 else 0.0
-                )
+                var wr2 = Float64(e2.wins) / Float64(tot2) if tot2 > 0 else 0.0
                 names.append(String("eval2_win"))
                 values.append(Float64(e2.wins))
                 names.append(String("eval2_draw"))
@@ -631,9 +693,17 @@ def run_alphazero_selfplay_arena[
                 names.append(String("eval2_winrate"))
                 values.append(wr2)
                 line += (
-                    " | vs " + OPP2.NAME + " W" + String(e2.wins)
-                    + " D" + String(e2.draws) + " L" + String(e2.losses)
-                    + " (wr " + String(Int(wr2 * 100.0)) + "%)"
+                    " | vs "
+                    + OPP2.NAME
+                    + " W"
+                    + String(e2.wins)
+                    + " D"
+                    + String(e2.draws)
+                    + " L"
+                    + String(e2.losses)
+                    + " (wr "
+                    + String(Int(wr2 * 100.0))
+                    + "%)"
                 )
 
             if verbose:
@@ -644,9 +714,17 @@ def run_alphazero_selfplay_arena[
     # Final flush: ensure the returned best is at least as new as the learner if
     # the learner ended clearly ahead (covers runs shorter than arena_every).
     var final_rec = candidate_winrate_mcts[
-        ENV, NET, NET, ARENA_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES,
+        ENV,
+        NET,
+        NET,
+        ARENA_GAMES,
+        NUM_SIMS,
+        MAX_NODES,
+        MAX_PLIES,
     ](ctx, learner, net, seed=seed + 9991, open_plies=arena_open_plies)
-    if should_promote(final_rec, promote_threshold, min_decisive=ARENA_GAMES // 2):
+    if should_promote(
+        final_rec, promote_threshold, min_decisive=ARENA_GAMES // 2
+    ):
         hard_copy_params["gpu", M=NET](learner, net, ctx)
         promotions += 1
 

@@ -73,7 +73,9 @@ def _asdt[SDT: DType](n: Int) -> UnsafePointer[Scalar[SDT], MutAnyOrigin]:
 # but with host-precomputed slots (PER + within-episode window clamping live
 # on the host), so it is a pure indexed gather.
 # ──────────────────────────────────────────────────────────────────────
-def _ez_obs_gather_kernel[M: Int, OBS: Int, CAP: Int, SDT: DType](
+def _ez_obs_gather_kernel[
+    M: Int, OBS: Int, CAP: Int, SDT: DType
+](
     ring: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     slots: LayoutTensor[DType.int32, Layout.row_major(M), MutAnyOrigin],
     dst: LayoutTensor[DT, Layout.row_major(M, OBS), MutAnyOrigin],
@@ -89,7 +91,7 @@ def _ez_obs_gather_kernel[M: Int, OBS: Int, CAP: Int, SDT: DType](
 
 struct PrioritizedMCTSSequenceReplay[
     OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
-](Movable, ImplicitlyDeletable):
+](ImplicitlyDeletable, Movable):
     """Prioritized ring of MCTS-labelled steps + episode index + a per-slot
     `SumTree`. ``CAP`` = max resident steps. ``OBS_STORE_DT`` mirrors
     `MCTSSequenceReplay` (DT or uint8 pixel storage). ``alpha``/``beta`` are
@@ -98,11 +100,11 @@ struct PrioritizedMCTSSequenceReplay[
 
     comptime SDT = Self.OBS_STORE_DT
 
-    var obs: DeviceBuffer[Self.SDT]                    # [CAP, OBS] on device
+    var obs: DeviceBuffer[Self.SDT]  # [CAP, OBS] on device
     var act: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var done: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var pol: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP, ACT]
+    var pol: UnsafePointer[Scalar[DT], MutAnyOrigin]  # [CAP, ACT]
     var val: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var tp: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var legal: UnsafePointer[Scalar[DT], MutAnyOrigin]  # [CAP, ACT]
@@ -116,13 +118,13 @@ struct PrioritizedMCTSSequenceReplay[
     var total: Int
     var rng: UInt64
 
-    var tree: SumTree[DT]          # priority per ring slot
-    var max_prio: Scalar[DT]       # running max priority (new-sample init)
+    var tree: SumTree[DT]  # priority per ring slot
+    var max_prio: Scalar[DT]  # running max priority (new-sample init)
     var alpha: Scalar[DT]
     var beta: Scalar[DT]
-    var eps: Scalar[DT]            # priority floor so nothing is unreachable
+    var eps: Scalar[DT]  # priority floor so nothing is unreachable
 
-    var ctx: DeviceContext         # for device-ring store / gather
+    var ctx: DeviceContext  # for device-ring store / gather
 
     def __init__(
         out self,
@@ -154,13 +156,20 @@ struct PrioritizedMCTSSequenceReplay[
         self.eps = Scalar[DT](1e-6)
 
     def __del__(deinit self):
-        self.act.free(); self.rew.free(); self.done.free()
-        self.pol.free(); self.val.free(); self.tp.free(); self.legal.free()
+        self.act.free()
+        self.rew.free()
+        self.done.free()
+        self.pol.free()
+        self.val.free()
+        self.tp.free()
+        self.legal.free()
         self._stage_u8.free()
 
     def _xorshift(mut self) -> UInt64:
         var x = self.rng
-        x = x ^ (x << 13); x = x ^ (x >> 7); x = x ^ (x << 17)
+        x = x ^ (x << 13)
+        x = x ^ (x >> 7)
+        x = x ^ (x << 17)
         self.rng = x
         return x
 
@@ -170,12 +179,20 @@ struct PrioritizedMCTSSequenceReplay[
     def num_steps(self) -> Int:
         return self.total if self.total < Self.CAP else Self.CAP
 
-    def _ring_lt(self) -> LayoutTensor[
+    def _ring_lt(
+        self,
+    ) -> LayoutTensor[
         Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
     ]:
-        return LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.obs.unsafe_ptr())
+        return rebind[
+            LayoutTensor[
+                Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
+            ]
+        ](
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](
+                self.obs
+            )
+        )
 
     def store_episode(
         mut self,
@@ -206,11 +223,9 @@ struct PrioritizedMCTSSequenceReplay[
             self.rew[slot] = ep_rew[i]
             self.val[slot] = ep_val[i]
             self.tp[slot] = ep_tp[i]
-            self.done[slot] = (
-                Scalar[DT](1.0) if (
-                    i == length - 1 and not truncated
-                ) else Scalar[DT](0.0)
-            )
+            self.done[slot] = Scalar[DT](1.0) if (
+                i == length - 1 and not truncated
+            ) else Scalar[DT](0.0)
             # new step → max priority (overwrites any stale priority on this slot)
             self.tree.update(slot, self.max_prio)
             self.total += 1
@@ -239,7 +254,7 @@ struct PrioritizedMCTSSequenceReplay[
                     0, (m - first) * Self.OBS
                 )
                 self.ctx.enqueue_copy(sub2, self._stage_u8 + first * Self.OBS)
-            self.ctx.synchronize()   # staging reused next chunk
+            self.ctx.synchronize()  # staging reused next chunk
             done_steps += m
 
         self.ep_start.append(start)
@@ -286,23 +301,29 @@ struct PrioritizedMCTSSequenceReplay[
         return (e, off)
 
     def sample_training_batch_seq_per_gpu[
-        B: Int, K: Int, N: Int,
+        B: Int,
+        K: Int,
+        N: Int,
     ](
         mut self,
         ctx: DeviceContext,
         gamma: Scalar[DT],
-        out_obs_dev: DeviceBuffer[DT],                          # [(K+1)*B, OBS]
-        d_slots: DeviceBuffer[DType.int32],                     # [(K+1)*B]
-        h_slots: UnsafePointer[Int32, MutAnyOrigin],            # [(K+1)*B]
-        mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K, B]
-        mut policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT]
+        out_obs_dev: DeviceBuffer[DT],  # [(K+1)*B, OBS]
+        d_slots: DeviceBuffer[DType.int32],  # [(K+1)*B]
+        h_slots: UnsafePointer[Int32, MutAnyOrigin],  # [(K+1)*B]
+        mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K, B]
+        mut policy_tgt: UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ],  # [K+1, B, ACT]
         mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
-        mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
-        mut is_weights: UnsafePointer[Scalar[DT], MutAnyOrigin], # [B] IS weights
-        mut sample_slots: UnsafePointer[Int, MutAnyOrigin],      # [B] ring slots
+        mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K, B]
+        mut is_weights: UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ],  # [B] IS weights
+        mut sample_slots: UnsafePointer[Int, MutAnyOrigin],  # [B] ring slots
         cons_mask: Optional[
             UnsafePointer[Scalar[DT], MutAnyOrigin]
-        ] = None,                                                # [K, B]
+        ] = None,  # [K, B]
     ) raises:
         """Prioritized window sample with **device-side obs gather**: each window
         start is drawn ∝ priorityᵅ (stratified over B equal-mass bins) with
@@ -333,7 +354,7 @@ struct PrioritizedMCTSSequenceReplay[
         var max_w = Scalar[DT](0.0)
         for b in range(B):
             # stratified target in bin b
-            var u = (Float64(self._xorshift() % UInt64(1_000_000)) / 1_000_000.0)
+            var u = Float64(self._xorshift() % UInt64(1_000_000)) / 1_000_000.0
             var target = (Scalar[DT](b) + Scalar[DT](u)) * seg
             var slot = self.tree.sample(target)
             sample_slots[b] = slot
@@ -351,7 +372,7 @@ struct PrioritizedMCTSSequenceReplay[
             max_w = Scalar[DT](1.0)
 
         for b in range(B):
-            is_weights[b] = is_weights[b] / max_w   # normalize by batch max
+            is_weights[b] = is_weights[b] / max_w  # normalize by batch max
             var pos = self._slot_to_pos(sample_slots[b])
             var e = pos[0]
             var s = pos[1]
@@ -375,9 +396,9 @@ struct PrioritizedMCTSSequenceReplay[
             if cons_mask:
                 var cm = cons_mask.value()
                 for k in range(K):
-                    cm[k * B + b] = (
-                        Scalar[DT](1.0) if s + k + 1 < L else Scalar[DT](0.0)
-                    )
+                    cm[k * B + b] = Scalar[DT](
+                        1.0
+                    ) if s + k + 1 < L else Scalar[DT](0.0)
 
             for h in range(HR):
                 if s + h >= L:
@@ -419,21 +440,29 @@ struct PrioritizedMCTSSequenceReplay[
                     actions[k * B + b] = self.act[aslot]
                 reward_tgt[k * B + b] = w_rew[k]
 
-        w_rew.free(); w_done.free(); w_val.free(); w_tp.free(); w_vt.free()
+        w_rew.free()
+        w_done.free()
+        w_val.free()
+        w_tp.free()
+        w_vt.free()
 
         # ── device gather: H2D the M slot indices, assemble the obs slab ──
         ctx.enqueue_copy(d_slots, h_slots)
         var ring_lt = self._ring_lt()
-        var slots_lt = LayoutTensor[
-            DType.int32, Layout.row_major(M), MutAnyOrigin
-        ](d_slots.unsafe_ptr())
-        var out_lt = LayoutTensor[
-            DT, Layout.row_major(M, Self.OBS), MutAnyOrigin
-        ](out_obs_dev.unsafe_ptr())
+        var slots_lt = rebind[
+            LayoutTensor[DType.int32, Layout.row_major(M), MutAnyOrigin]
+        ](LayoutTensor[DType.int32, Layout.row_major(M)](d_slots))
+        var out_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(M, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(M, Self.OBS)](out_obs_dev))
         comptime n_blocks = (M * Self.OBS + TPB - 1) // TPB
         comptime kernel = _ez_obs_gather_kernel[M, Self.OBS, Self.CAP, Self.SDT]
         ctx.enqueue_function[kernel](
-            ring_lt, slots_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            ring_lt,
+            slots_lt,
+            out_lt,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
 
     def gather_obs_for_positions[
@@ -441,8 +470,8 @@ struct PrioritizedMCTSSequenceReplay[
     ](
         mut self,
         ctx: DeviceContext,
-        out_obs_dev: DeviceBuffer[DT],                # [M, OBS]
-        d_slots: DeviceBuffer[DType.int32],           # [M]
+        out_obs_dev: DeviceBuffer[DT],  # [M, OBS]
+        d_slots: DeviceBuffer[DType.int32],  # [M]
         h_slots: UnsafePointer[Int32, MutAnyOrigin],  # [M]
         ep_idx: List[Int],
         offset: List[Int],
@@ -464,21 +493,25 @@ struct PrioritizedMCTSSequenceReplay[
             h_slots[m] = Int32((self.ep_start[e] + o) % Self.CAP)
         ctx.enqueue_copy(d_slots, h_slots)
         var ring_lt = self._ring_lt()
-        var slots_lt = LayoutTensor[
-            DType.int32, Layout.row_major(M), MutAnyOrigin
-        ](d_slots.unsafe_ptr())
-        var out_lt = LayoutTensor[
-            DT, Layout.row_major(M, Self.OBS), MutAnyOrigin
-        ](out_obs_dev.unsafe_ptr())
+        var slots_lt = rebind[
+            LayoutTensor[DType.int32, Layout.row_major(M), MutAnyOrigin]
+        ](LayoutTensor[DType.int32, Layout.row_major(M)](d_slots))
+        var out_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(M, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(M, Self.OBS)](out_obs_dev))
         comptime n_blocks = (M * Self.OBS + TPB - 1) // TPB
         comptime kernel = _ez_obs_gather_kernel[M, Self.OBS, Self.CAP, Self.SDT]
         ctx.enqueue_function[kernel](
-            ring_lt, slots_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            ring_lt,
+            slots_lt,
+            out_lt,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
 
     def update_priorities(
         mut self,
-        slots: UnsafePointer[Int, MutAnyOrigin],      # [n] ring slots
+        slots: UnsafePointer[Int, MutAnyOrigin],  # [n] ring slots
         priorities: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [n] |TD error|
         n: Int,
     ):

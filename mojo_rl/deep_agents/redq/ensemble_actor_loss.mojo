@@ -53,16 +53,18 @@ from .ensemble import CriticEnsemble
 # ────────────────────────────────────────────────────────────────────
 
 
-def _eal_zero_kernel[N: Int](
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-):
+def _eal_zero_kernel[
+    N: Int
+](dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],):
     """`dst[i] = 0`."""
     var idx = Int(global_idx.x)
     if idx < N:
         dst[idx] = Scalar[DT](0.0)
 
 
-def _eal_add_into_kernel[N: Int](
+def _eal_add_into_kernel[
+    N: Int
+](
     dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
 ):
@@ -72,10 +74,9 @@ def _eal_add_into_kernel[N: Int](
         dst[idx] = dst[idx] + src[idx]
 
 
-def _eal_fill_const_kernel[N: Int](
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    value: Scalar[DT],
-):
+def _eal_fill_const_kernel[
+    N: Int
+](dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin], value: Scalar[DT],):
     """`dst[i] = value` — seeds grad_q_i with the −1/(N·B) constant."""
     var idx = Int(global_idx.x)
     if idx < N:
@@ -83,7 +84,11 @@ def _eal_fill_const_kernel[N: Int](
 
 
 def _eal_concat_sa_extract_lp_kernel[
-    OBS: Int, ACT: Int, BATCH: Int, SA_DIM: Int, ALP_DIM: Int,
+    OBS: Int,
+    ACT: Int,
+    BATCH: Int,
+    SA_DIM: Int,
+    ALP_DIM: Int,
 ](
     s: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
     alp: LayoutTensor[DT, Layout.row_major(BATCH, ALP_DIM), MutAnyOrigin],
@@ -108,13 +113,21 @@ def _eal_concat_sa_extract_lp_kernel[
 
 
 def _eal_build_grad_alp_kernel[
-    BATCH: Int, OBS: Int, ACT: Int, SA_DIM: Int, ALP_DIM: Int,
+    BATCH: Int,
+    OBS: Int,
+    ACT: Int,
+    SA_DIM: Int,
+    ALP_DIM: Int,
 ](
     grad_sa_sum: LayoutTensor[
-        DT, Layout.row_major(BATCH, SA_DIM), MutAnyOrigin,
+        DT,
+        Layout.row_major(BATCH, SA_DIM),
+        MutAnyOrigin,
     ],
     grad_alp: LayoutTensor[
-        DT, Layout.row_major(BATCH, ALP_DIM), MutAnyOrigin,
+        DT,
+        Layout.row_major(BATCH, ALP_DIM),
+        MutAnyOrigin,
     ],
     grad_lp_const: Scalar[DT],
 ):
@@ -129,9 +142,7 @@ def _eal_build_grad_alp_kernel[
     var b = idx // ALP_DIM
     var j = idx % ALP_DIM
     if j < ACT:
-        grad_alp[b, j] = rebind[Scalar[DT]](
-            grad_sa_sum[b, OBS + j]
-        )
+        grad_alp[b, j] = rebind[Scalar[DT]](grad_sa_sum[b, OBS + j])
     else:
         grad_alp[b, j] = grad_lp_const
 
@@ -173,13 +184,16 @@ struct EnsembleActorLoss[
     var _mb_grad_q_i: Scratch["eal_mb_grad_q_i", Self.BATCH]
     var _mb_grad_sa_i: Scratch["eal_mb_grad_sa_i", Self.BATCH * Self.SA_DIM]
     var _mb_grad_sa_sum: Scratch[
-        "eal_mb_grad_sa_sum", Self.BATCH * Self.SA_DIM,
+        "eal_mb_grad_sa_sum",
+        Self.BATCH * Self.SA_DIM,
     ]
     var _mb_grad_alp: Scratch[
-        "eal_mb_grad_alp", Self.BATCH * (Self.ACT + 1),
+        "eal_mb_grad_alp",
+        Self.BATCH * (Self.ACT + 1),
     ]
     var _mb_grad_ao: Scratch[
-        "eal_mb_grad_ao", Self.BATCH * (2 * Self.ACT),
+        "eal_mb_grad_ao",
+        Self.BATCH * (2 * Self.ACT),
     ]
     var _mb_grad_obs: Scratch["eal_mb_grad_obs", Self.BATCH * Self.OBS]
 
@@ -202,19 +216,24 @@ struct EnsembleActorLoss[
         self._mb_q_sum = Scratch["eal_mb_q_sum", Self.BATCH]()
         self._mb_grad_q_i = Scratch["eal_mb_grad_q_i", Self.BATCH]()
         self._mb_grad_sa_i = Scratch[
-            "eal_mb_grad_sa_i", Self.BATCH * Self.SA_DIM,
+            "eal_mb_grad_sa_i",
+            Self.BATCH * Self.SA_DIM,
         ]()
         self._mb_grad_sa_sum = Scratch[
-            "eal_mb_grad_sa_sum", Self.BATCH * Self.SA_DIM,
+            "eal_mb_grad_sa_sum",
+            Self.BATCH * Self.SA_DIM,
         ]()
         self._mb_grad_alp = Scratch[
-            "eal_mb_grad_alp", Self.BATCH * (Self.ACT + 1),
+            "eal_mb_grad_alp",
+            Self.BATCH * (Self.ACT + 1),
         ]()
         self._mb_grad_ao = Scratch[
-            "eal_mb_grad_ao", Self.BATCH * (2 * Self.ACT),
+            "eal_mb_grad_ao",
+            Self.BATCH * (2 * Self.ACT),
         ]()
         self._mb_grad_obs = Scratch[
-            "eal_mb_grad_obs", Self.BATCH * Self.OBS,
+            "eal_mb_grad_obs",
+            Self.BATCH * Self.OBS,
         ]()
         self._mb_lp_dev = None
         self._mb_q_sum_host = None
@@ -222,30 +241,32 @@ struct EnsembleActorLoss[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString](
+    def make[
+        target: StaticString
+    ](
         action_scale: Scalar[DT] = Scalar[DT](1.0),
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "EnsembleActorLoss: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "EnsembleActorLoss: target must be 'cpu' or 'gpu'"
         comptime if target == "gpu":
             if not ctx:
                 raise Error(
                     "EnsembleActorLoss.make[target='gpu']: ctx required"
                 )
-        comptime assert Self.ACTOR.IN_DIMS[0] == Self.OBS, (
-            "EnsembleActorLoss: ACTOR.IN_DIM must equal OBS"
-        )
-        comptime assert Self.ACTOR.OUT_DIM == 2 * Self.ACT, (
-            "EnsembleActorLoss: ACTOR.OUT_DIM must equal 2·ACT"
-        )
-        comptime assert Self.CRITIC.IN_DIMS[0] == Self.SA_DIM, (
-            "EnsembleActorLoss: CRITIC.IN_DIM must equal OBS+ACT"
-        )
-        comptime assert Self.CRITIC.OUT_DIM == 1, (
-            "EnsembleActorLoss: CRITIC.OUT_DIM must equal 1"
-        )
+        comptime assert (
+            Self.ACTOR.IN_DIMS[0] == Self.OBS
+        ), "EnsembleActorLoss: ACTOR.IN_DIM must equal OBS"
+        comptime assert (
+            Self.ACTOR.OUT_DIM == 2 * Self.ACT
+        ), "EnsembleActorLoss: ACTOR.OUT_DIM must equal 2·ACT"
+        comptime assert (
+            Self.CRITIC.IN_DIMS[0] == Self.SA_DIM
+        ), "EnsembleActorLoss: CRITIC.IN_DIM must equal OBS+ACT"
+        comptime assert (
+            Self.CRITIC.OUT_DIM == 1
+        ), "EnsembleActorLoss: CRITIC.OUT_DIM must equal 1"
         var b = Self()
         b.rsample = RSample[Self.ACT].make[target, Zero](ctx=ctx)
         b.rsample.action_scale = action_scale
@@ -292,17 +313,20 @@ struct EnsembleActorLoss[
         var ao_p = self._mb_ao.target_ptr[target]()
         var s_t = TileTensor(mb_s_ptr, row_major[Self.BATCH, Self.OBS]())
         var ao_t = TileTensor(
-            ao_p, row_major[Self.BATCH, 2 * Self.ACT](),
+            ao_p,
+            row_major[Self.BATCH, 2 * Self.ACT](),
         )
         actor.forward[target, Self.BATCH, POLICY](s_t, output=ao_t)
 
         # ── Step 2 — rsample.forward(ao) → _mb_alp [B, ACT+1].
         var alp_p = self._mb_alp.target_ptr[target]()
         var alp_t = TileTensor(
-            alp_p, row_major[Self.BATCH, Self.ALP_DIM](),
+            alp_p,
+            row_major[Self.BATCH, Self.ALP_DIM](),
         )
         self.rsample.forward[target, Self.BATCH, POLICY](
-            ao_t, output=alp_t,
+            ao_t,
+            output=alp_t,
         )
 
         # ── Step 3 — sa = concat(s, action) + extract lp[b] = alp[b, ACT].
@@ -327,30 +351,45 @@ struct EnsembleActorLoss[
             # is needed there.
             var ctx = self.ts.ctx.value()
             var s_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin,
+                DT,
+                Layout.row_major(Self.BATCH, Self.OBS),
+                MutAnyOrigin,
             ](mb_s_ptr)
             var alp_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.ALP_DIM), MutAnyOrigin,
+                DT,
+                Layout.row_major(Self.BATCH, Self.ALP_DIM),
+                MutAnyOrigin,
             ](alp_p)
             var sa_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.SA_DIM), MutAnyOrigin,
+                DT,
+                Layout.row_major(Self.BATCH, Self.SA_DIM),
+                MutAnyOrigin,
             ](sa_p)
             var lp_dev = self._mb_lp_dev.value()
             var lp_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-            ](lp_dev.unsafe_ptr())
+                DT,
+                Layout.row_major(Self.BATCH),
+            ](lp_dev)
             comptime total_sa = Self.BATCH * Self.SA_DIM
             comptime n_blocks = (total_sa + TPB - 1) // TPB
             comptime kernel = _eal_concat_sa_extract_lp_kernel[
-                Self.OBS, Self.ACT, Self.BATCH,
-                Self.SA_DIM, Self.ALP_DIM,
+                Self.OBS,
+                Self.ACT,
+                Self.BATCH,
+                Self.SA_DIM,
+                Self.ALP_DIM,
             ]
             ctx.enqueue_function[kernel](
-                s_lt, alp_lt, sa_lt, lp_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+                s_lt,
+                alp_lt,
+                sa_lt,
+                lp_lt,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
         var sa_t = TileTensor(
-            sa_p, row_major[Self.BATCH, Self.SA_DIM](),
+            sa_p,
+            row_major[Self.BATCH, Self.SA_DIM](),
         )
 
         # ── Step 4 — loop N online critic forwards; accumulate Σᵢ Qᵢ(s,a).
@@ -362,18 +401,24 @@ struct EnsembleActorLoss[
         else:
             var ctx = self.ts.ctx.value()
             var q_sum_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                DT,
+                Layout.row_major(Self.BATCH),
+                MutAnyOrigin,
             ](q_sum_p)
             comptime n_blocks_b = (Self.BATCH + TPB - 1) // TPB
             comptime zero_b = _eal_zero_kernel[Self.BATCH]
             ctx.enqueue_function[zero_b](
-                q_sum_lt, grid_dim=n_blocks_b, block_dim=TPB,
+                q_sum_lt,
+                grid_dim=n_blocks_b,
+                block_dim=TPB,
             )
 
         for i in range(Self.N):
             var q_i_t = TileTensor(q_i_p, row_major[Self.BATCH, 1]())
             ensemble.pairs[i].online.forward[
-                target, Self.BATCH, POLICY,
+                target,
+                Self.BATCH,
+                POLICY,
             ](sa_t, output=q_i_t)
             comptime if target == "cpu":
                 for b in range(Self.BATCH):
@@ -381,16 +426,22 @@ struct EnsembleActorLoss[
             else:
                 var ctx = self.ts.ctx.value()
                 var q_sum_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                    DT,
+                    Layout.row_major(Self.BATCH),
+                    MutAnyOrigin,
                 ](q_sum_p)
                 var q_i_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                    DT,
+                    Layout.row_major(Self.BATCH),
+                    MutAnyOrigin,
                 ](q_i_p)
                 comptime n_blocks_a = (Self.BATCH + TPB - 1) // TPB
                 comptime add_b = _eal_add_into_kernel[Self.BATCH]
                 ctx.enqueue_function[add_b](
-                    q_sum_lt, q_i_lt,
-                    grid_dim=n_blocks_a, block_dim=TPB,
+                    q_sum_lt,
+                    q_i_lt,
+                    grid_dim=n_blocks_a,
+                    block_dim=TPB,
                 )
 
         # ── Step 5 — host-side scalar reduction: loss + log_prob_mean.
@@ -431,16 +482,21 @@ struct EnsembleActorLoss[
         else:
             var ctx = self.ts.ctx.value()
             var grad_q_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
+                DT,
+                Layout.row_major(Self.BATCH),
+                MutAnyOrigin,
             ](grad_q_i_p)
             comptime n_blocks_q = (Self.BATCH + TPB - 1) // TPB
             comptime fill_b = _eal_fill_const_kernel[Self.BATCH]
             ctx.enqueue_function[fill_b](
-                grad_q_lt, grad_q_val,
-                grid_dim=n_blocks_q, block_dim=TPB,
+                grad_q_lt,
+                grad_q_val,
+                grid_dim=n_blocks_q,
+                block_dim=TPB,
             )
         var grad_q_i_t = TileTensor(
-            grad_q_i_p, row_major[Self.BATCH, 1](),
+            grad_q_i_p,
+            row_major[Self.BATCH, 1](),
         )
 
         # ── Step 7 — for each critic: vjp[input_only] → accumulate grad_sa.
@@ -451,20 +507,24 @@ struct EnsembleActorLoss[
         else:
             var ctx = self.ts.ctx.value()
             var grad_sa_sum_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH * Self.SA_DIM), MutAnyOrigin,
+                DT,
+                Layout.row_major(Self.BATCH * Self.SA_DIM),
+                MutAnyOrigin,
             ](grad_sa_sum_p)
             comptime total_gss = Self.BATCH * Self.SA_DIM
             comptime n_blocks_z = (total_gss + TPB - 1) // TPB
             comptime zero_gss = _eal_zero_kernel[total_gss]
             ctx.enqueue_function[zero_gss](
                 grad_sa_sum_lt,
-                grid_dim=n_blocks_z, block_dim=TPB,
+                grid_dim=n_blocks_z,
+                block_dim=TPB,
             )
 
         var grad_sa_i_p = self._mb_grad_sa_i.target_ptr[target]()
         for i in range(Self.N):
             var grad_sa_i_t = TileTensor(
-                grad_sa_i_p, row_major[Self.BATCH, Self.SA_DIM](),
+                grad_sa_i_p,
+                row_major[Self.BATCH, Self.SA_DIM](),
             )
             # Re-run critic.forward with the exact same sa — critic caches the
             # forward state for the immediately-following vjp call. We did
@@ -474,10 +534,15 @@ struct EnsembleActorLoss[
             # robust to any future caching changes).
             var q_i_t = TileTensor(q_i_p, row_major[Self.BATCH, 1]())
             ensemble.pairs[i].online.forward[
-                target, Self.BATCH, POLICY,
+                target,
+                Self.BATCH,
+                POLICY,
             ](sa_t, output=q_i_t)
             ensemble.pairs[i].online.vjp[
-                target, Self.BATCH, POLICY, mode="input_only",
+                target,
+                Self.BATCH,
+                POLICY,
+                mode="input_only",
             ](grad_q_i_t, grad_sa_i_t)
             comptime if target == "cpu":
                 for k in range(Self.BATCH * Self.SA_DIM):
@@ -485,17 +550,23 @@ struct EnsembleActorLoss[
             else:
                 var ctx = self.ts.ctx.value()
                 var grad_sa_sum_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH * Self.SA_DIM), MutAnyOrigin,
+                    DT,
+                    Layout.row_major(Self.BATCH * Self.SA_DIM),
+                    MutAnyOrigin,
                 ](grad_sa_sum_p)
                 var grad_sa_i_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH * Self.SA_DIM), MutAnyOrigin,
+                    DT,
+                    Layout.row_major(Self.BATCH * Self.SA_DIM),
+                    MutAnyOrigin,
                 ](grad_sa_i_p)
                 comptime total_gss = Self.BATCH * Self.SA_DIM
                 comptime n_blocks_a = (total_gss + TPB - 1) // TPB
                 comptime add_gss = _eal_add_into_kernel[total_gss]
                 ctx.enqueue_function[add_gss](
-                    grad_sa_sum_lt, grad_sa_i_lt,
-                    grid_dim=n_blocks_a, block_dim=TPB,
+                    grad_sa_sum_lt,
+                    grad_sa_i_lt,
+                    grid_dim=n_blocks_a,
+                    block_dim=TPB,
                 )
 
         # ── Step 8 — assemble grad_alp [B, ACT+1]:
@@ -512,47 +583,63 @@ struct EnsembleActorLoss[
         else:
             var ctx = self.ts.ctx.value()
             var grad_sa_sum_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.SA_DIM), MutAnyOrigin,
+                DT,
+                Layout.row_major(Self.BATCH, Self.SA_DIM),
+                MutAnyOrigin,
             ](grad_sa_sum_p)
             var grad_alp_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.ALP_DIM), MutAnyOrigin,
+                DT,
+                Layout.row_major(Self.BATCH, Self.ALP_DIM),
+                MutAnyOrigin,
             ](grad_alp_p)
             comptime total_galp = Self.BATCH * Self.ALP_DIM
             comptime n_blocks_g = (total_galp + TPB - 1) // TPB
             comptime build_galp = _eal_build_grad_alp_kernel[
-                Self.BATCH, Self.OBS, Self.ACT,
-                Self.SA_DIM, Self.ALP_DIM,
+                Self.BATCH,
+                Self.OBS,
+                Self.ACT,
+                Self.SA_DIM,
+                Self.ALP_DIM,
             ]
             ctx.enqueue_function[build_galp](
-                grad_sa_sum_lt, grad_alp_lt, grad_lp_val,
-                grid_dim=n_blocks_g, block_dim=TPB,
+                grad_sa_sum_lt,
+                grad_alp_lt,
+                grad_lp_val,
+                grid_dim=n_blocks_g,
+                block_dim=TPB,
             )
         var grad_alp_t = TileTensor(
-            grad_alp_p, row_major[Self.BATCH, Self.ALP_DIM](),
+            grad_alp_p,
+            row_major[Self.BATCH, Self.ALP_DIM](),
         )
 
         # ── Step 9 — rsample.vjp(grad_alp) → grad_ao [B, 2·ACT].
         var grad_ao_p = self._mb_grad_ao.target_ptr[target]()
         var grad_ao_t = TileTensor(
-            grad_ao_p, row_major[Self.BATCH, 2 * Self.ACT](),
+            grad_ao_p,
+            row_major[Self.BATCH, 2 * Self.ACT](),
         )
         self.rsample.vjp[target, Self.BATCH, POLICY](
-            grad_alp_t, grad_ao_t,
+            grad_alp_t,
+            grad_ao_t,
         )
 
         # ── Step 10 — actor.vjp(grad_ao) → grad_obs (discarded);
         # accumulates actor param grads.
         var grad_obs_p = self._mb_grad_obs.target_ptr[target]()
         var grad_obs_t = TileTensor(
-            grad_obs_p, row_major[Self.BATCH, Self.OBS](),
+            grad_obs_p,
+            row_major[Self.BATCH, Self.OBS](),
         )
         actor.vjp[target, Self.BATCH, POLICY, mode="all"](
-            grad_ao_t, grad_obs_t,
+            grad_ao_t,
+            grad_obs_t,
         )
 
         # ── Step 11 — actor_opt.step(actor).
         actor_opt.step[target, M=Self.ACTOR](actor)
 
         return EnsembleActorLossResult(
-            loss=loss, log_prob_mean=log_prob_mean,
+            loss=loss,
+            log_prob_mean=log_prob_mean,
         )

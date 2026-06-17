@@ -32,7 +32,10 @@ from mojo_rl.nn.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn.combinators.graph_nodes import InputSlot, Node, ExternalNode
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (
-    GenericGPUMCTS, AlphaGoPUCT, DirichletNoise, SelfPlay,
+    GenericGPUMCTS,
+    AlphaGoPUCT,
+    DirichletNoise,
+    SelfPlay,
 )
 
 from .loss_ops import AZLossOp
@@ -60,11 +63,19 @@ def run_alphazero_selfplay[
 ) raises -> Float64:
     comptime OBS = NET.IN_DIMS[0]
     comptime ACT = NET.OUT_DIM - 1
-    comptime W = NET.OUT_DIM          # ACT + 1
+    comptime W = NET.OUT_DIM  # ACT + 1
     comptime STATE = ENV.STATE_SIZE
     comptime MCTS = GenericGPUMCTS[
-        N_ENVS, ACT, OBS, 1, MAX_NODES, NUM_SIMS, 1,
-        AlphaGoPUCT[1.0], DirichletNoise[0.25, 0.25], SelfPlay,
+        N_ENVS,
+        ACT,
+        OBS,
+        1,
+        MAX_NODES,
+        NUM_SIMS,
+        1,
+        AlphaGoPUCT[1.0],
+        DirichletNoise[0.25, 0.25],
+        SelfPlay,
         STATE_SIZE=STATE,
     ]
     comptime Graph = ComputeGraph[
@@ -142,14 +153,17 @@ def run_alphazero_selfplay[
         net.set_attr["training"](Scalar[DT](0.0))
         var pred = AZPredGPU[OBS, ACT, NET].make(net)
         var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
-        var root_obs = LayoutTensor[
-            DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
-        ](obs_dev.unsafe_ptr())
-        var root_legal = LayoutTensor[
-            DT, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
-        ](legal_dev.unsafe_ptr())
+        var root_obs = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS)](obs_dev)
+        var root_legal = LayoutTensor[DT, Layout.row_major(N_ENVS * ACT)](
+            legal_dev
+        )
         mcts.search_gpu_alphazero[type_of(pred), type_of(env_ad)](
-            ctx, pred, env_ad, root_obs, states, root_legal,
+            ctx,
+            pred,
+            env_ad,
+            root_obs,
+            states,
+            root_legal,
             rng_seed=seed + UInt64(it),
         )
 
@@ -170,8 +184,14 @@ def run_alphazero_selfplay[
 
         # 3. Step every game by its chosen action.
         ENV.step_kernel_gpu[N_ENVS, STATE, OBS](
-            ctx, states, mcts.actions_out, rew, done, term,
-            obs_next, legal_next,
+            ctx,
+            states,
+            mcts.actions_out,
+            rew,
+            done,
+            term,
+            obs_next,
+            legal_next,
         )
         ctx.enqueue_copy(done_h, done)
         ctx.enqueue_copy(rew_h, rew)

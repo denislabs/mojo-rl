@@ -53,10 +53,17 @@ def run_alphazero_gumbel_selfplay[
 ) raises -> Float64:
     comptime OBS = NET.IN_DIMS[0]
     comptime ACT = NET.OUT_DIM - 1
-    comptime W = NET.OUT_DIM          # ACT + 1
+    comptime W = NET.OUT_DIM  # ACT + 1
     comptime STATE = ENV.STATE_SIZE
     comptime MCTS = GumbelGPUMCTS[
-        N_ENVS, ACT, OBS, 1, MAX_NODES, MAX_K, NUM_SIMS, SelfPlay,
+        N_ENVS,
+        ACT,
+        OBS,
+        1,
+        MAX_NODES,
+        MAX_K,
+        NUM_SIMS,
+        SelfPlay,
         STATE_SIZE=STATE,
     ]
     comptime Graph = ComputeGraph[
@@ -134,12 +141,16 @@ def run_alphazero_gumbel_selfplay[
         net.set_attr["training"](Scalar[DT](0.0))
         var pred = AZPredGPU[OBS, ACT, NET].make(net)
         var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
-        var root_obs = LayoutTensor[
-            DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
-        ](obs_dev.unsafe_ptr())
+        var root_obs = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS)](obs_dev)
         mcts.search_gpu_alphazero[type_of(pred), type_of(env_ad)](
-            ctx, pred, env_ad, root_obs, states, legal_dev,
-            k_actual=MAX_K, rng_seed=UInt32((seed + UInt64(it)) & 0xFFFFFFFF),
+            ctx,
+            pred,
+            env_ad,
+            root_obs,
+            states,
+            legal_dev,
+            k_actual=MAX_K,
+            rng_seed=UInt32((seed + UInt64(it)) & 0xFFFFFFFF),
         )
 
         # 2. Pull root obs + IMPROVED policy to host; record into trajectory.
@@ -173,7 +184,7 @@ def run_alphazero_gumbel_selfplay[
                 if r <= cum and p > 0.0:
                     a_sel = a
                     break
-            if a_sel < 0:               # numeric fallback: argmax
+            if a_sel < 0:  # numeric fallback: argmax
                 var bv = -1.0
                 for a in range(ACT):
                     var p = Float64(pol_h.unsafe_ptr()[e * ACT + a])
@@ -183,7 +194,14 @@ def run_alphazero_gumbel_selfplay[
             act_h.unsafe_ptr()[e] = Scalar[DT](a_sel)
         ctx.enqueue_copy(act_dev, act_h)
         ENV.step_kernel_gpu[N_ENVS, STATE, OBS](
-            ctx, states, act_dev, rew, done, term, obs_next, legal_next,
+            ctx,
+            states,
+            act_dev,
+            rew,
+            done,
+            term,
+            obs_next,
+            legal_next,
         )
         ctx.enqueue_copy(done_h, done)
         ctx.enqueue_copy(rew_h, rew)

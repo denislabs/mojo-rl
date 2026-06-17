@@ -33,10 +33,12 @@ def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 
 # ── GPU kernels ────────────────────────────────────────────────────────
-def _gather_k[NROWS: Int, EMB: Int](
-    task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [NROWS]
-    param: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [NUM_TASKS, EMB]
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],        # [NROWS, EMB]
+def _gather_k[
+    NROWS: Int, EMB: Int
+](
+    task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [NROWS]
+    param: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [NUM_TASKS, EMB]
+    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [NROWS, EMB]
 ):
     var i = Int(global_idx.x)
     if i < NROWS * EMB:
@@ -46,10 +48,12 @@ def _gather_k[NROWS: Int, EMB: Int](
         dst[i] = param[t * EMB + e]
 
 
-def _accum_k[NTASKS: Int, EMB: Int, NROWS: Int, ROWW: Int, COFF: Int](
-    task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [NROWS]
+def _accum_k[
+    NTASKS: Int, EMB: Int, NROWS: Int, ROWW: Int, COFF: Int
+](
+    task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [NROWS]
     grad_wide: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [NROWS, ROWW]
-    grad_tab: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [NTASKS, EMB] (+=)
+    grad_tab: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [NTASKS, EMB] (+=)
 ):
     """One thread per table element (task,e); loops rows summing matching
     contributions → atomic-free scatter-add. NROWS is small relative to the
@@ -65,13 +69,19 @@ def _accum_k[NTASKS: Int, EMB: Int, NROWS: Int, ROWW: Int, COFF: Int](
         grad_tab[idx] = grad_tab[idx] + s
 
 
-def _adam_k[N: Int](
+def _adam_k[
+    N: Int
+](
     param: UnsafePointer[Scalar[DT], MutAnyOrigin],
     grad: UnsafePointer[Scalar[DT], MutAnyOrigin],
     m: UnsafePointer[Scalar[DT], MutAnyOrigin],
     v: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    lr: Scalar[DT], beta1: Scalar[DT], beta2: Scalar[DT], eps: Scalar[DT],
-    bc1: Scalar[DT], bc2: Scalar[DT],
+    lr: Scalar[DT],
+    beta1: Scalar[DT],
+    beta2: Scalar[DT],
+    eps: Scalar[DT],
+    bc1: Scalar[DT],
+    bc2: Scalar[DT],
 ):
     var i = Int(global_idx.x)
     if i < N:
@@ -96,10 +106,10 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
     comptime N = Self.NUM_TASKS * Self.TASK_EMB
 
     # CPU storage (null on GPU).
-    var param: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var grad: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var m: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var v: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var param: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var grad: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var m: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var v: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
     # GPU storage (None on CPU).
     var d_param: Optional[DeviceBuffer[DT]]
     var d_grad: Optional[DeviceBuffer[DT]]
@@ -125,7 +135,10 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
         self.grad = alloc[Scalar[DT]](1)
         self.m = alloc[Scalar[DT]](1)
         self.v = alloc[Scalar[DT]](1)
-        self.d_param = None; self.d_grad = None; self.d_m = None; self.d_v = None
+        self.d_param = None
+        self.d_grad = None
+        self.d_m = None
+        self.d_v = None
         self.ctx = None
         self.is_gpu = False
         self.host_n = 0
@@ -137,14 +150,16 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
         self.b2pow = Scalar[DT](1.0)
 
     @staticmethod
-    def make[target: StaticString](
+    def make[
+        target: StaticString
+    ](
         ctx: Optional[DeviceContext] = None,
         lr: Scalar[DT] = Scalar[DT](3e-4),
         zero_init: Bool = False,
     ) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "TaskEmbedding: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "TaskEmbedding: target must be 'cpu' or 'gpu'"
         var s = Self()
         s.lr = lr
         comptime N = Self.N
@@ -189,17 +204,20 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
             dm.enqueue_fill(0.0)
             dv.enqueue_fill(0.0)
             c.synchronize()
-            s.d_param = dp^; s.d_grad = dg^; s.d_m = dm^; s.d_v = dv^
+            s.d_param = dp^
+            s.d_grad = dg^
+            s.d_m = dm^
+            s.d_v = dv^
             host.free()
         return s^
 
     @always_inline
     def _pp(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return _dp(self.d_param.value()) if self.is_gpu else self.param
+        return _dp(self.d_param.value()) if self.is_gpu else mptr(self.param)
 
     @always_inline
     def _gp(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return _dp(self.d_grad.value()) if self.is_gpu else self.grad
+        return _dp(self.d_grad.value()) if self.is_gpu else mptr(self.grad)
 
     def zero_grad[target: StaticString](mut self) raises:
         comptime N = Self.N
@@ -213,13 +231,16 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
                 self._gp(), grid_dim=nb, block_dim=TPB
             )
 
-    def gather[target: StaticString, NROWS: Int](
+    def gather[
+        target: StaticString, NROWS: Int
+    ](
         self,
-        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [NROWS]
-        dst: UnsafePointer[Scalar[DT], MutAnyOrigin],        # [NROWS, TASK_EMB]
+        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [NROWS]
+        dst: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [NROWS, TASK_EMB]
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        """`dst[row] = param[task_ids[row]]`. CPU pointers / GPU device pointers."""
+        """`dst[row] = param[task_ids[row]]`. CPU pointers / GPU device pointers.
+        """
         comptime EMB = Self.TASK_EMB
         comptime if target == "cpu":
             for row in range(NROWS):
@@ -237,7 +258,7 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
         target: StaticString, NROWS: Int, ROWW: Int, COFF: Int
     ](
         mut self,
-        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [NROWS]
+        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [NROWS]
         grad_wide: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [NROWS, ROWW]
         ctx: Optional[DeviceContext] = None,
     ) raises:
@@ -256,9 +277,7 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
             comptime nt = (Self.N + TPB - 1) // TPB
             c.enqueue_function[
                 _accum_k[Self.NUM_TASKS, EMB, NROWS, ROWW, COFF]
-            ](
-                task_ids, grad_wide, self._gp(), grid_dim=nt, block_dim=TPB
-            )
+            ](task_ids, grad_wide, self._gp(), grid_dim=nt, block_dim=TPB)
 
     def step[target: StaticString](mut self) raises:
         comptime N = Self.N
@@ -269,12 +288,13 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
         comptime if target == "cpu":
             for i in range(N):
                 var g = self.grad[i]
-                var m_new = self.beta1 * self.m[i] + (
-                    Scalar[DT](1.0) - self.beta1
-                ) * g
-                var v_new = self.beta2 * self.v[i] + (
-                    Scalar[DT](1.0) - self.beta2
-                ) * g * g
+                var m_new = (
+                    self.beta1 * self.m[i] + (Scalar[DT](1.0) - self.beta1) * g
+                )
+                var v_new = (
+                    self.beta2 * self.v[i]
+                    + (Scalar[DT](1.0) - self.beta2) * g * g
+                )
                 self.m[i] = m_new
                 self.v[i] = v_new
                 self.param[i] = self.param[i] - self.lr * (m_new / bc1) / (
@@ -284,10 +304,18 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
             var c = self.ctx.value()
             comptime nb = (N + TPB - 1) // TPB
             c.enqueue_function[_adam_k[N]](
-                self._pp(), self._gp(),
-                _dp(self.d_m.value()), _dp(self.d_v.value()),
-                self.lr, self.beta1, self.beta2, self.eps, bc1, bc2,
-                grid_dim=nb, block_dim=TPB,
+                self._pp(),
+                self._gp(),
+                _dp(self.d_m.value()),
+                _dp(self.d_v.value()),
+                self.lr,
+                self.beta1,
+                self.beta2,
+                self.eps,
+                bc1,
+                bc2,
+                grid_dim=nb,
+                block_dim=TPB,
             )
 
     # ── Checkpoint (CPU-resident serialization; GPU syncs around it) ──────
@@ -355,7 +383,10 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
         if header != expect:
             raise Error(
                 "TaskEmbedding.load_body: header mismatch, expected `"
-                + expect + "`, got `" + header + "`"
+                + expect
+                + "`, got `"
+                + header
+                + "`"
             )
         idx += 1
         if self.host_n < Self.N:
@@ -364,11 +395,16 @@ struct TaskEmbedding[NUM_TASKS: Int, TASK_EMB: Int](
             self.v = alloc[Scalar[DT]](Self.N)
             self.host_n = Self.N
         for i in range(Self.N):
-            self.param[i] = Scalar[DT](atof(lines[idx])); idx += 1
+            self.param[i] = Scalar[DT](atof(lines[idx]))
+            idx += 1
         for i in range(Self.N):
-            self.m[i] = Scalar[DT](atof(lines[idx])); idx += 1
+            self.m[i] = Scalar[DT](atof(lines[idx]))
+            idx += 1
         for i in range(Self.N):
-            self.v[i] = Scalar[DT](atof(lines[idx])); idx += 1
-        self.b1pow = Scalar[DT](atof(lines[idx])); idx += 1
-        self.b2pow = Scalar[DT](atof(lines[idx])); idx += 1
+            self.v[i] = Scalar[DT](atof(lines[idx]))
+            idx += 1
+        self.b1pow = Scalar[DT](atof(lines[idx]))
+        idx += 1
+        self.b2pow = Scalar[DT](atof(lines[idx]))
+        idx += 1
         self.upload_from_host()

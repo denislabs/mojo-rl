@@ -455,12 +455,10 @@ def run_alphazero_selfplay_arena_gumbel[
         net.set_attr["training"](Scalar[DT](0.0))
         var pred = AZPredGPU[OBS, ACT, NET].make(net)
         var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
-        var root_obs = LayoutTensor[
-            DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
-        ](obs_dev.unsafe_ptr())
-        var root_legal = LayoutTensor[
-            DT, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
-        ](legal_dev.unsafe_ptr())
+        var root_obs = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS)](obs_dev)
+        var root_legal = LayoutTensor[DT, Layout.row_major(N_ENVS * ACT)](
+            legal_dev
+        )
         mcts.search_gpu_alphazero[type_of(pred), type_of(env_ad)](
             ctx,
             pred,
