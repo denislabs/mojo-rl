@@ -405,8 +405,8 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
         var prior = mptr(inputs.tile[1, BATCH, Self.SC]().ptr)
         var o = typed_view_mut[BATCH, 2](output).ptr
         comptime if target == "cpu":
-            var dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
-            var rep: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
+            var dyn = alloc[Scalar[DT]](BATCH)
+            var rep = alloc[Scalar[DT]](BATCH)
             self.kl.forward[BATCH](post, prior, dyn, rep)
             for b in range(BATCH):
                 o[b * 2] = dyn[b]
@@ -453,8 +453,8 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
         var g_post = mptr(grad_inputs.tile[0, BATCH, Self.SC]().ptr)
         var g_prior = mptr(grad_inputs.tile[1, BATCH, Self.SC]().ptr)
         comptime if target == "cpu":
-            var d_dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
-            var d_rep: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
+            var d_dyn = alloc[Scalar[DT]](BATCH)
+            var d_rep = alloc[Scalar[DT]](BATCH)
             for b in range(BATCH):
                 d_dyn[b] = go[b * 2]
                 d_rep[b] = go[b * 2 + 1]
