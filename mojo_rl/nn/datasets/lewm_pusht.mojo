@@ -56,6 +56,7 @@ from mojo_rl.io.hdf5 import (
     H5T_SGN_2,
     hsize_t,
 )
+from mojo_rl.nn.core.module import mptr
 
 
 comptime _HF_REPO = "quentinll/lewm-pusht"
@@ -170,16 +171,16 @@ struct LewmPushTWindow(Movable):
         self.state_dim = state_dim
 
         var n_pixels = num_steps * 3 * pixel_h * pixel_w
-        self.pixels = alloc[Scalar[DType.uint8]](n_pixels)
+        self.pixels = mptr(alloc[Scalar[DType.uint8]](n_pixels))
         var n_pixels_dense = num_steps * frameskip * 3 * pixel_h * pixel_w
-        self.pixels_dense = alloc[Scalar[DType.uint8]](n_pixels_dense)
-        self.action = alloc[Scalar[DType.float32]](
+        self.pixels_dense = mptr(alloc[Scalar[DType.uint8]](n_pixels_dense))
+        self.action = mptr(alloc[Scalar[DType.float32]](
             num_steps * frameskip * action_dim
-        )
-        self.proprio = alloc[Scalar[DType.float32]](
+        ))
+        self.proprio = mptr(alloc[Scalar[DType.float32]](
             num_steps * proprio_dim
-        )
-        self.state = alloc[Scalar[DType.float32]](num_steps * state_dim)
+        ))
+        self.state = mptr(alloc[Scalar[DType.float32]](num_steps * state_dim))
 
     def __del__(deinit self):
         self.pixels.free()
@@ -305,7 +306,7 @@ struct LewmPushTExpert(Movable, Sized):
             or ep_len_ds.signedness != H5T_SGN_2:
             raise Error("ep_len: expected int32")
         self.n_episodes = Int(ep_len_ds.dims[0])
-        var ep_len_buf = alloc[Scalar[DType.int32]](self.n_episodes)
+        var ep_len_buf = mptr(alloc[Scalar[DType.int32]](self.n_episodes))
         ep_len_ds.read_all[DType.int32](ep_len_buf)
         self.ep_len = List[Int32](capacity=self.n_episodes)
         for i in range(self.n_episodes):
@@ -320,7 +321,7 @@ struct LewmPushTExpert(Movable, Sized):
             raise Error("ep_offset: expected int64")
         if Int(ep_off_ds.dims[0]) != self.n_episodes:
             raise Error("ep_offset / ep_len length mismatch")
-        var ep_off_buf = alloc[Scalar[DType.int64]](self.n_episodes)
+        var ep_off_buf = mptr(alloc[Scalar[DType.int64]](self.n_episodes))
         ep_off_ds.read_all[DType.int64](ep_off_buf)
         self.ep_offset = List[Int64](capacity=self.n_episodes)
         for i in range(self.n_episodes):
@@ -329,7 +330,7 @@ struct LewmPushTExpert(Movable, Sized):
 
         # action (flat)
         var n_act = self.n_total_frames * self.action_dim
-        var act_buf = alloc[Scalar[DType.float32]](n_act)
+        var act_buf = mptr(alloc[Scalar[DType.float32]](n_act))
         self._dset_action.read_all[DType.float32](act_buf)
         self.action_flat = List[Float32](capacity=n_act)
         for i in range(n_act):
@@ -338,7 +339,7 @@ struct LewmPushTExpert(Movable, Sized):
 
         # proprio (flat)
         var n_pro = self.n_total_frames * self.proprio_dim
-        var pro_buf = alloc[Scalar[DType.float32]](n_pro)
+        var pro_buf = mptr(alloc[Scalar[DType.float32]](n_pro))
         self._dset_proprio.read_all[DType.float32](pro_buf)
         self.proprio_flat = List[Float32](capacity=n_pro)
         for i in range(n_pro):
@@ -347,7 +348,7 @@ struct LewmPushTExpert(Movable, Sized):
 
         # state (flat)
         var n_st = self.n_total_frames * self.state_dim
-        var st_buf = alloc[Scalar[DType.float32]](n_st)
+        var st_buf = mptr(alloc[Scalar[DType.float32]](n_st))
         self._dset_state.read_all[DType.float32](st_buf)
         self.state_flat = List[Float32](capacity=n_st)
         for i in range(n_st):

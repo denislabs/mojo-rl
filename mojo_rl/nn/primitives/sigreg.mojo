@@ -251,7 +251,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             var cache = TileTensor(self.cache_z.cpu, row_major[BATCH, T * P]())
             var seed = self._forward_seed(UInt64(Int(self.cache_z.cpu_ptr())))
             var a = InlineArray[Scalar[DT], D * P](uninitialized=True)
-            Self._generate_a_cpu(seed, a.unsafe_ptr())
+            Self._generate_a_cpu(seed, mptr(a.unsafe_ptr()))
 
             for b in range(BATCH):
                 for t in range(T):
@@ -373,7 +373,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
                 UInt64(Int(self.cache_z.cpu_ptr()))
             )
             var a = InlineArray[Scalar[DT], D * P](uninitialized=True)
-            Self._generate_a_cpu(seed, a.unsafe_ptr())
+            Self._generate_a_cpu(seed, mptr(a.unsafe_ptr()))
 
             comptime NTPK = T * P * K
             var cm = InlineArray[Scalar[DT], NTPK](uninitialized=True)

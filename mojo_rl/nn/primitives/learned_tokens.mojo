@@ -26,7 +26,7 @@ from ..core import (
     Initializer, AMPPolicy, NoAMP, Param, ParamVisitor,
     for_each_param_auto, zero_grad_auto,
 )
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
@@ -155,7 +155,7 @@ struct LearnedTokens[
             var host = ctx_v.enqueue_create_host_buffer[DT](Self.NEW_N)
             ctx_v.synchronize()
             comptime if Self.INIT_STD > 0.0:
-                _lt_fill_normal(host.unsafe_ptr(), Self.NEW_N, Self.INIT_STD)
+                _lt_fill_normal(mptr(host.unsafe_ptr()), Self.NEW_N, Self.INIT_STD)
             else:
                 INIT.init_weight(
                     host.unsafe_ptr(), Self.NEW_N, Self.N_NEW, Self.D

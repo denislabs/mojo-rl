@@ -463,10 +463,10 @@ struct LinearAct[IN: Int, OUT: Int, OP: ElementOp](Module):
                 var cache_in_p = self._cached_input_ptr.value()
                 var cT_buf: UnsafePointer[
                     Scalar[DT], MutAnyOrigin
-                ] = alloc[Scalar[DT]](BATCH * Self.IN)
+                ] = mptr(alloc[Scalar[DT]](BATCH * Self.IN))
                 var dW_tmp_buf: UnsafePointer[
                     Scalar[DT], MutAnyOrigin
-                ] = alloc[Scalar[DT]](gw_n)
+                ] = mptr(alloc[Scalar[DT]](gw_n))
                 for bi in range(BATCH):
                     for i in range(Self.IN):
                         cT_buf[i * BATCH + bi] = cache_in_p[

@@ -584,9 +584,9 @@ struct Conv2D[
         comptime if target == "cpu":
             var w_p = self.weight.value_unsafe_ptr_cpu()
             var b_p = self.bias.value_unsafe_ptr_cpu()
-            var col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+            var col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
                 Scalar[DT]
-            ](Self.SPATIAL_OUT * Self.COL_SIZE)
+            ](Self.SPATIAL_OUT * Self.COL_SIZE))
             var w_tt = TileTensor(
                 self.weight.val.cpu, row_major[Self.OC, Self.COL_SIZE](),
             )
@@ -782,16 +782,16 @@ struct Conv2D[
                 var dw_p = self.weight.grad_unsafe_ptr_cpu()
                 var db_p = self.bias.grad_unsafe_ptr_cpu()
 
-                var col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+                var col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
                     Scalar[DT]
-                ](Self.SPATIAL_OUT * Self.COL_SIZE)
+                ](Self.SPATIAL_OUT * Self.COL_SIZE))
                 var dw_tmp: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
                 comptime if (
                     CompilationTarget.is_macos() and DT == DType.float32
                 ):
                     dw_tmp = None
                 else:
-                    dw_tmp = alloc[Scalar[DT]](Self.W_SIZE)
+                    dw_tmp = mptr(alloc[Scalar[DT]](Self.W_SIZE))
 
                 for b in range(BATCH):
                     # ---- 1. Rebuild col_b for this batch (reads x) ----
@@ -1043,18 +1043,18 @@ struct Conv2D[
             for k in range(BATCH * Self.IN_DIM_FLAT):
                 gi_p[k] = Scalar[DT](0.0)
 
-            var d_col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+            var d_col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
                 Scalar[DT]
-            ](Self.SPATIAL_OUT * Self.COL_SIZE)
+            ](Self.SPATIAL_OUT * Self.COL_SIZE))
             var go_b_T_buf: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
             comptime if (
                 CompilationTarget.is_macos() and DT == DType.float32
             ):
                 go_b_T_buf = None
             else:
-                go_b_T_buf = alloc[Scalar[DT]](
+                go_b_T_buf = mptr(alloc[Scalar[DT]](
                     Self.SPATIAL_OUT * Self.OC
-                )
+                ))
 
             var w_tt = TileTensor(
                 self.weight.val.cpu, row_major[Self.OC, Self.COL_SIZE](),
