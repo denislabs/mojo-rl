@@ -55,20 +55,24 @@ def _sigmoid(x: Scalar[DT]) -> Scalar[DT]:
 
 
 def continue_pred[
-    N: Int
+    N: Int,
+    logits_o: Origin[mut=True],
+    out_c_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [N]
-    out_c: UnsafePointer[Scalar[DT], MutAnyOrigin],    # OUT [N] = sigmoid
+    logits: UnsafePointer[Scalar[DT], logits_o],   # [N]
+    out_c: UnsafePointer[Scalar[DT], out_c_o],    # OUT [N] = sigmoid
 ):
     for i in range(N):
         out_c[i] = _sigmoid(logits[i])
 
 
 def continue_bce_loss[
-    N: Int
+    N: Int,
+    logits_o: Origin[mut=True],
+    target_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [N] continue logits
-    target: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [N] continue flag 0/1
+    logits: UnsafePointer[Scalar[DT], logits_o],   # [N] continue logits
+    target: UnsafePointer[Scalar[DT], target_o],   # [N] continue flag 0/1
 ) raises -> Float64:
     """Σ binary cross-entropy of the continue flag (mean is the caller's job)."""
     var loss = Float64(0.0)
@@ -83,12 +87,15 @@ def continue_bce_loss[
 
 
 def continue_bce_backward[
-    N: Int
+    N: Int,
+    logits_o: Origin[mut=True],
+    target_o: Origin[mut=True],
+    grad_logits_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [N]
-    target: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [N]
+    logits: UnsafePointer[Scalar[DT], logits_o],   # [N]
+    target: UnsafePointer[Scalar[DT], target_o],   # [N]
     upstream: Scalar[DT],
-    grad_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [N] (zeroed+filled)
+    grad_logits: UnsafePointer[Scalar[DT], grad_logits_o],  # [N] (zeroed+filled)
 ):
     """∂BCE/∂logit = upstream·(σ(logit) − target)."""
     for i in range(N):
@@ -108,13 +115,17 @@ from ..dreamerv3.dists_discrete import (
 # ─────────────────────────────────────────────────────────────────────────
 @always_inline
 def lambda_returns[
-    B: Int, H: Int
+    B: Int, H: Int,
+    rew_o: Origin[mut=True],
+    val_o: Origin[mut=True],
+    con_o: Origin[mut=True],
+    out_ret_o: Origin[mut=True],
 ](
-    rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B,H]
-    val: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B,H]
-    con: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B,H]  (= γ·(1−term))
+    rew: UnsafePointer[Scalar[DT], rew_o],   # [B,H]
+    val: UnsafePointer[Scalar[DT], val_o],   # [B,H]
+    con: UnsafePointer[Scalar[DT], con_o],   # [B,H]  (= γ·(1−term))
     lam: Scalar[DT],
-    out_ret: UnsafePointer[Scalar[DT], MutAnyOrigin],  # OUT [B,H-1]
+    out_ret: UnsafePointer[Scalar[DT], out_ret_o],  # OUT [B,H-1]
 ):
     comptime assert H >= 2, "lambda_returns needs H >= 2"
     comptime HM1 = H - 1
@@ -138,12 +149,16 @@ def lambda_returns[
 # vlogits is [B,H,BINS]; trained over the states t ∈ [0,H−1) that have a return.
 # ─────────────────────────────────────────────────────────────────────────
 def value_td_loss_cpu[
-    B: Int, H: Int, BINS: Int
+    B: Int, H: Int, BINS: Int,
+    vlogits_o: Origin[mut=True],
+    bins_o: Origin[mut=True],
+    ret_o: Origin[mut=True],
+    out_loss_o: Origin[mut=True],
 ](
-    vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B,H,BINS]
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [BINS]
-    ret: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [B,H-1] sg target
-    out_loss: UnsafePointer[Scalar[DT], MutAnyOrigin],  # OUT [B,H-1]
+    vlogits: UnsafePointer[Scalar[DT], vlogits_o],  # [B,H,BINS]
+    bins: UnsafePointer[Scalar[DT], bins_o],     # [BINS]
+    ret: UnsafePointer[Scalar[DT], ret_o],      # [B,H-1] sg target
+    out_loss: UnsafePointer[Scalar[DT], out_loss_o],  # OUT [B,H-1]
 ) raises:
     comptime HM1 = H - 1
     for b in range(B):
@@ -154,13 +169,18 @@ def value_td_loss_cpu[
 
 
 def value_td_loss_backward[
-    B: Int, H: Int, BINS: Int
+    B: Int, H: Int, BINS: Int,
+    vlogits_o: Origin[mut=True],
+    bins_o: Origin[mut=True],
+    ret_o: Origin[mut=True],
+    d_loss_o: Origin[mut=True],
+    grad_vlogits_o: Origin[mut=True],
 ](
-    vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B,H,BINS]
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [BINS]
-    ret: UnsafePointer[Scalar[DT], MutAnyOrigin],      # [B,H-1]
-    d_loss: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B,H-1] cotangent
-    grad_vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B,H,BINS]
+    vlogits: UnsafePointer[Scalar[DT], vlogits_o],  # [B,H,BINS]
+    bins: UnsafePointer[Scalar[DT], bins_o],     # [BINS]
+    ret: UnsafePointer[Scalar[DT], ret_o],      # [B,H-1]
+    d_loss: UnsafePointer[Scalar[DT], d_loss_o],   # [B,H-1] cotangent
+    grad_vlogits: UnsafePointer[Scalar[DT], grad_vlogits_o],  # [B,H,BINS]
 ) raises:
     """Backward of `value_td_loss_cpu` (target sg'd). grad_vlogits ZEROED then
     accumulated."""
@@ -188,10 +208,12 @@ def value_td_loss_backward[
 # ─────────────────────────────────────────────────────────────────────────
 @always_inline
 def _reverse_kl_fwd[
-    C: Int
+    C: Int,
+    p_o: Origin[mut=True],
+    q_o: Origin[mut=True],
 ](
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [C] policy mixed probs
-    q: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [C] prior  mixed probs
+    p: UnsafePointer[Scalar[DT], p_o],   # [C] policy mixed probs
+    q: UnsafePointer[Scalar[DT], q_o],   # [C] prior  mixed probs
 ) -> Scalar[DT]:
     var kl = Scalar[DT](0.0)
     for a in range(C):
@@ -201,14 +223,18 @@ def _reverse_kl_fwd[
 
 @always_inline
 def _reverse_kl_bwd[
-    C: Int
+    C: Int,
+    sm_o: Origin[mut=True],
+    p_o: Origin[mut=True],
+    q_o: Origin[mut=True],
+    grad_logits_o: Origin[mut=True],
 ](
-    sm: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [C] policy PRE-mix softmax
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [C] policy mixed probs
-    q: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [C] prior  mixed probs
+    sm: UnsafePointer[Scalar[DT], sm_o],  # [C] policy PRE-mix softmax
+    p: UnsafePointer[Scalar[DT], p_o],   # [C] policy mixed probs
+    q: UnsafePointer[Scalar[DT], q_o],   # [C] prior  mixed probs
     u: Scalar[DT],
     upstream: Scalar[DT],
-    grad_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # accumulate [.,C]
+    grad_logits: UnsafePointer[Scalar[DT], grad_logits_o],  # accumulate [.,C]
     base: Int,
 ):
     var one_m_u = Scalar[DT](1.0) - u
@@ -229,12 +255,16 @@ def _reverse_kl_bwd[
 # loss and fills the policy-logit gradient.
 # ─────────────────────────────────────────────────────────────────────────
 def pmpo_policy_loss_cpu[
-    B: Int, H: Int, NACT: Int
+    B: Int, H: Int, NACT: Int,
+    plogits_o: Origin[mut=True],
+    prior_logits_o: Origin[mut=True],
+    actions_o: Origin[mut=True],
+    adv_o: Origin[mut=True],
 ](
-    plogits: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B,H,NACT]
-    prior_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B,H,NACT] frozen
-    actions: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B,H] class ids
-    adv: UnsafePointer[Scalar[DT], MutAnyOrigin],           # [B,H-1]
+    plogits: UnsafePointer[Scalar[DT], plogits_o],       # [B,H,NACT]
+    prior_logits: UnsafePointer[Scalar[DT], prior_logits_o],  # [B,H,NACT] frozen
+    actions: UnsafePointer[Scalar[DT], actions_o],       # [B,H] class ids
+    adv: UnsafePointer[Scalar[DT], adv_o],           # [B,H-1]
     alpha: Scalar[DT],
     beta: Scalar[DT],
 ) raises -> Float64:
@@ -286,16 +316,21 @@ def pmpo_policy_loss_cpu[
 
 
 def pmpo_policy_loss_backward[
-    B: Int, H: Int, NACT: Int
+    B: Int, H: Int, NACT: Int,
+    plogits_o: Origin[mut=True],
+    prior_logits_o: Origin[mut=True],
+    actions_o: Origin[mut=True],
+    adv_o: Origin[mut=True],
+    grad_plogits_o: Origin[mut=True],
 ](
-    plogits: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B,H,NACT]
-    prior_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B,H,NACT]
-    actions: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B,H]
-    adv: UnsafePointer[Scalar[DT], MutAnyOrigin],           # [B,H-1]
+    plogits: UnsafePointer[Scalar[DT], plogits_o],       # [B,H,NACT]
+    prior_logits: UnsafePointer[Scalar[DT], prior_logits_o],  # [B,H,NACT]
+    actions: UnsafePointer[Scalar[DT], actions_o],       # [B,H]
+    adv: UnsafePointer[Scalar[DT], adv_o],           # [B,H-1]
     alpha: Scalar[DT],
     beta: Scalar[DT],
     upstream: Scalar[DT],
-    grad_plogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B,H,NACT]
+    grad_plogits: UnsafePointer[Scalar[DT], grad_plogits_o],  # [B,H,NACT]
 ) raises:
     """Backward of `pmpo_policy_loss_cpu` w.r.t. the policy logits (advantages,
     actions, and prior are sg'd). grad_plogits ZEROED then accumulated.

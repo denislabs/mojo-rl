@@ -51,13 +51,20 @@ def bc_mtp_loss[
     NACT: Int,
     NBINS: Int,
     D_IN: Int,
+    actions_o: Origin[mut=True],
+    rewards_o: Origin[mut=True],
+    bins_o: Origin[mut=True],
 ](
     mut ph: PH,
     mut rh: RH,
+    # `h`/`plog`/`rlog`/`gpl`/`grl`/`grad_h`/`grad_h_tmp` are each wrapped in a
+    # TileTensor fed to the MTP-head Module forward/vjp (TensorPack input +
+    # by-ref MutAnyOrigin output) — the irreducible Any-origin boundary (see
+    # plan §"TensorPack inputs are irreducible"), so they stay MutAnyOrigin.
     h: UnsafePointer[Scalar[DT], MutAnyOrigin],          # [B*T, D_IN] = h_t
-    actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [B*T] class ids (fp)
-    rewards: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [B*T]
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [NBINS]
+    actions: UnsafePointer[Scalar[DT], actions_o],    # [B*T] class ids (fp)
+    rewards: UnsafePointer[Scalar[DT], rewards_o],    # [B*T]
+    bins: UnsafePointer[Scalar[DT], bins_o],       # [NBINS]
     # scratch (caller-owned)
     plog: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B*T, NMTP*NACT]
     rlog: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B*T, NMTP*NBINS]

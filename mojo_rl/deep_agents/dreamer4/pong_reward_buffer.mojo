@@ -197,13 +197,17 @@ struct Dreamer4PongRewardBuffer(Movable):
         return True
 
     def sample_reward_window_batch[
-        B: Int, T: Int, ACT: Int
+        B: Int, T: Int, ACT: Int,
+        pix_fp32_o: Origin[mut=True],
+        act_onehot_o: Origin[mut=True],
+        rew_o: Origin[mut=True],
+        done_o: Origin[mut=True],
     ](
         mut self,
-        pix_fp32: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],  # [B*T*FRAME]
-        act_onehot: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],  # [B*T*ACT]
-        rew: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],         # [B*T]
-        done: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],        # [B*T]
+        pix_fp32: UnsafePointer[Scalar[DType.float32], pix_fp32_o],  # [B*T*FRAME]
+        act_onehot: UnsafePointer[Scalar[DType.float32], act_onehot_o],  # [B*T*ACT]
+        rew: UnsafePointer[Scalar[DType.float32], rew_o],         # [B*T]
+        done: UnsafePointer[Scalar[DType.float32], done_o],        # [B*T]
     ) raises:
         """Sample B contiguous-T windows. Fills, for each (b, t):
           pix_fp32:    fp32 pixels in [0, 1], CHW per frame.

@@ -43,8 +43,8 @@ from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
 
 
 @always_inline
-def _dlt[N: Int](
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+def _dlt[N: Int, p_o: Origin[mut=True]](
+    p: UnsafePointer[Scalar[DT], p_o]
 ) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
     return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
 
@@ -209,12 +209,16 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDeletable):
             self.cache_n = batch
 
     @staticmethod
-    def _softmax_mix(
-        z: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    def _softmax_mix[
+        z_o: Origin[mut=True],
+        sm_out_o: Origin[mut=True],
+        p_out_o: Origin[mut=True],
+    ](
+        z: UnsafePointer[Scalar[DT], z_o],
         base: Int,
         u: Scalar[DT],
-        mut sm_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mut p_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut sm_out: UnsafePointer[Scalar[DT], sm_out_o],
+        mut p_out: UnsafePointer[Scalar[DT], p_out_o],
     ):
         """softmax + unimix mix for one (b,s) group of CLASSES lanes."""
         var zmax = z[base]
@@ -235,13 +239,17 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDeletable):
             p_out[base + c] = one_m_u * sm + uni
 
     def forward[
-        BATCH: Int
+        BATCH: Int,
+        post_logits_o: Origin[mut=True],
+        prior_logits_o: Origin[mut=True],
+        dyn_out_o: Origin[mut=True],
+        rep_out_o: Origin[mut=True],
     ](
         mut self,
-        post_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        prior_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mut dyn_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mut rep_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        post_logits: UnsafePointer[Scalar[DT], post_logits_o],
+        prior_logits: UnsafePointer[Scalar[DT], prior_logits_o],
+        mut dyn_out: UnsafePointer[Scalar[DT], dyn_out_o],
+        mut rep_out: UnsafePointer[Scalar[DT], rep_out_o],
     ) raises:
         self._ensure_cache(BATCH)
         var smpo = mptr(self.sm_post.unsafe_ptr())
@@ -265,13 +273,17 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDeletable):
             )
 
     def backward[
-        BATCH: Int
+        BATCH: Int,
+        d_dyn_o: Origin[mut=True],
+        d_rep_o: Origin[mut=True],
+        grad_post_o: Origin[mut=True],
+        grad_prior_o: Origin[mut=True],
     ](
         mut self,
-        d_dyn: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        d_rep: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mut grad_post: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mut grad_prior: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        d_dyn: UnsafePointer[Scalar[DT], d_dyn_o],
+        d_rep: UnsafePointer[Scalar[DT], d_rep_o],
+        mut grad_post: UnsafePointer[Scalar[DT], grad_post_o],
+        mut grad_prior: UnsafePointer[Scalar[DT], grad_prior_o],
     ) raises:
         var smpo = mptr(self.sm_post.unsafe_ptr())
         var smpr = mptr(self.sm_prior.unsafe_ptr())

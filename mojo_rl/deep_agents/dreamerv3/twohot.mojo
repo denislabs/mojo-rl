@@ -40,9 +40,10 @@ def _symexp(x: Scalar[DT]) -> Scalar[DT]:
 
 
 def symexp_twohot_bins[
-    BINS: Int
+    BINS: Int,
+    bins_out_o: Origin[mut=True],
 ](
-    bins_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    bins_out: UnsafePointer[Scalar[DT], bins_out_o],
     lo: Scalar[DT] = Scalar[DT](-20.0),
 ):
     """Generate the `symexp_twohot` bins (assumes BINS odd, as 255).
@@ -68,11 +69,13 @@ def symexp_twohot_bins[
 
 @always_inline
 def twohot_pred[
-    BINS: Int
+    BINS: Int,
+    logits_o: Origin[mut=True],
+    bins_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    logits: UnsafePointer[Scalar[DT], logits_o],
     base: Int,
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    bins: UnsafePointer[Scalar[DT], bins_o],
 ) -> Scalar[DT]:
     """Σ_c softmax(logits[base:base+BINS])_c · bins_c."""
     var zmax = logits[base]
@@ -91,11 +94,13 @@ def twohot_pred[
 
 @always_inline
 def twohot_loss[
-    BINS: Int
+    BINS: Int,
+    logits_o: Origin[mut=True],
+    bins_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    logits: UnsafePointer[Scalar[DT], logits_o],
     base: Int,
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    bins: UnsafePointer[Scalar[DT], bins_o],
     target: Scalar[DT],
 ) -> Scalar[DT]:
     """Twohot cross-entropy of `target` against logits[base:base+BINS]."""
@@ -149,14 +154,17 @@ def twohot_loss[
 
 @always_inline
 def twohot_loss_backward[
-    BINS: Int
+    BINS: Int,
+    logits_o: Origin[mut=True],
+    bins_o: Origin[mut=True],
+    grad_logits_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    logits: UnsafePointer[Scalar[DT], logits_o],
     base: Int,
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    bins: UnsafePointer[Scalar[DT], bins_o],
     target: Scalar[DT],
     upstream: Scalar[DT],
-    grad_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    grad_logits: UnsafePointer[Scalar[DT], grad_logits_o],
 ):
     """Accumulate `upstream · (softmax(logits) − twohot(target))` into
     grad_logits[base:base+BINS] (target detached; standard CE gradient)."""

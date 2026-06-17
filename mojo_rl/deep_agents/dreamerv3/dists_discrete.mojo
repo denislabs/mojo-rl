@@ -30,13 +30,16 @@ comptime UNIMIX = Scalar[DT](0.01)
 
 @always_inline
 def cat_softmax_mix[
-    C: Int
+    C: Int,
+    logits_o: Origin[mut=True],
+    out_sm_o: Origin[mut=True],
+    out_p_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    logits: UnsafePointer[Scalar[DT], logits_o],
     base: Int,
     u: Scalar[DT],
-    out_sm: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [C] pre-mix softmax
-    out_p: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [C] unimix-mixed probs
+    out_sm: UnsafePointer[Scalar[DT], out_sm_o],  # [C] pre-mix softmax
+    out_p: UnsafePointer[Scalar[DT], out_p_o],  # [C] unimix-mixed probs
 ):
     """Softmax(logits[base:base+C]) → out_sm, then unimix → out_p."""
     var mx = logits[base]
@@ -57,9 +60,10 @@ def cat_softmax_mix[
 
 @always_inline
 def cat_sample[
-    C: Int
+    C: Int,
+    logits_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    logits: UnsafePointer[Scalar[DT], logits_o],
     base: Int,
     u: Scalar[DT],
     u01: Scalar[DT],  # uniform in [0,1)
@@ -82,8 +86,9 @@ def cat_sample[
 
 @always_inline
 def cat_argmax[
-    C: Int
-](logits: UnsafePointer[Scalar[DT], MutAnyOrigin], base: Int) -> Int:
+    C: Int,
+    logits_o: Origin[mut=True],
+](logits: UnsafePointer[Scalar[DT], logits_o], base: Int) -> Int:
     """Greedy class = argmax logits (= argmax unimix probs)."""
     var k = 0
     var best = logits[base]
@@ -96,14 +101,17 @@ def cat_argmax[
 
 @always_inline
 def cat_fwd[
-    C: Int
+    C: Int,
+    logits_o: Origin[mut=True],
+    out_sm_o: Origin[mut=True],
+    out_p_o: Origin[mut=True],
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    logits: UnsafePointer[Scalar[DT], logits_o],
     base: Int,
     u: Scalar[DT],
     k: Int,  # sampled class index
-    out_sm: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [C] scratch (pre-mix)
-    out_p: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [C] scratch (mixed)
+    out_sm: UnsafePointer[Scalar[DT], out_sm_o],  # [C] scratch (pre-mix)
+    out_p: UnsafePointer[Scalar[DT], out_p_o],  # [C] scratch (mixed)
 ) -> Tuple[Scalar[DT], Scalar[DT]]:
     """Returns (logp(k), entropy). Fills out_sm/out_p for the backward."""
     cat_softmax_mix[C](logits, base, u, out_sm, out_p)
@@ -116,17 +124,20 @@ def cat_fwd[
 
 @always_inline
 def cat_bwd[
-    C: Int
+    C: Int,
+    sm_o: Origin[mut=True],
+    p_o: Origin[mut=True],
+    grad_logits_o: Origin[mut=True],
 ](
     sm: UnsafePointer[
-        Scalar[DT], MutAnyOrigin
+        Scalar[DT], sm_o
     ],  # [C] pre-mix softmax (from fwd)
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [C] mixed probs (from fwd)
+    p: UnsafePointer[Scalar[DT], p_o],  # [C] mixed probs (from fwd)
     u: Scalar[DT],
     k: Int,  # sampled class index
     d_logp: Scalar[DT],  # upstream ∂L/∂logp
     d_ent: Scalar[DT],  # upstream ∂L/∂entropy
-    grad_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # accumulate [.,C]
+    grad_logits: UnsafePointer[Scalar[DT], grad_logits_o],  # accumulate [.,C]
     base: Int,
 ):
     """Accumulate ∂L/∂logits at [base:base+C] from logp(k) + entropy paths."""

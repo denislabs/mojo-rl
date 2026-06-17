@@ -31,8 +31,9 @@ from .normalize import PercentileNormalize
 
 @always_inline
 def _argmax[
-    ACT: Int
-](act: UnsafePointer[Scalar[DT], MutAnyOrigin], base: Int) -> Int:
+    ACT: Int,
+    act_o: Origin[mut=True],
+](act: UnsafePointer[Scalar[DT], act_o], base: Int) -> Int:
     """Chosen class = argmax of the one-hot action over ACT lanes."""
     var k = 0
     var best = act[base]
@@ -44,25 +45,36 @@ def _argmax[
 
 
 def imag_loss_cpu[
-    BK: Int, T: Int, ACT: Int, BINS: Int, DISCRETE: Bool = False
+    BK: Int, T: Int, ACT: Int, BINS: Int, DISCRETE: Bool = False,
+    act_o: Origin[mut=True] = MutAnyOrigin,
+    rew_o: Origin[mut=True] = MutAnyOrigin,
+    con_o: Origin[mut=True] = MutAnyOrigin,
+    vlogits_o: Origin[mut=True] = MutAnyOrigin,
+    svlogits_o: Origin[mut=True] = MutAnyOrigin,
+    pmean_o: Origin[mut=True] = MutAnyOrigin,
+    pstd_raw_o: Origin[mut=True] = MutAnyOrigin,
+    bins_o: Origin[mut=True] = MutAnyOrigin,
+    out_policy_loss_o: Origin[mut=True] = MutAnyOrigin,
+    out_value_loss_o: Origin[mut=True] = MutAnyOrigin,
+    out_ret_o: Origin[mut=True] = MutAnyOrigin,
 ](
-    act: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,ACT]
-    rew: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
-    con: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
-    vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
-    svlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
-    pmean: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,ACT] raw
-    pstd_raw: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,ACT]
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BINS]
+    act: UnsafePointer[Scalar[DT], act_o],  # [BK,T,ACT]
+    rew: UnsafePointer[Scalar[DT], rew_o],  # [BK,T]
+    con: UnsafePointer[Scalar[DT], con_o],  # [BK,T]
+    vlogits: UnsafePointer[Scalar[DT], vlogits_o],  # [BK,T,BINS]
+    svlogits: UnsafePointer[Scalar[DT], svlogits_o],  # [BK,T,BINS]
+    pmean: UnsafePointer[Scalar[DT], pmean_o],  # [BK,T,ACT] raw
+    pstd_raw: UnsafePointer[Scalar[DT], pstd_raw_o],  # [BK,T,ACT]
+    bins: UnsafePointer[Scalar[DT], bins_o],  # [BINS]
     minstd: Scalar[DT],
     maxstd: Scalar[DT],
     lam: Scalar[DT],
     actent: Scalar[DT],
     slowreg: Scalar[DT],
     mut retnorm: PercentileNormalize,
-    out_policy_loss: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T-1]
-    out_value_loss: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T-1]
-    out_ret: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T-1]
+    out_policy_loss: UnsafePointer[Scalar[DT], out_policy_loss_o],  # [BK,T-1]
+    out_value_loss: UnsafePointer[Scalar[DT], out_value_loss_o],  # [BK,T-1]
+    out_ret: UnsafePointer[Scalar[DT], out_ret_o],  # [BK,T-1]
     slowtar: Bool = False,  # bootstrap λ-return from slowvalue (EMA target)
 ) raises:
     comptime assert T >= 2, "imag_loss needs T >= 2"
@@ -163,27 +175,40 @@ def imag_loss_cpu[
 
 
 def imag_loss_backward[
-    BK: Int, T: Int, ACT: Int, BINS: Int, DISCRETE: Bool = False
+    BK: Int, T: Int, ACT: Int, BINS: Int, DISCRETE: Bool = False,
+    act_o: Origin[mut=True] = MutAnyOrigin,
+    rew_o: Origin[mut=True] = MutAnyOrigin,
+    con_o: Origin[mut=True] = MutAnyOrigin,
+    vlogits_o: Origin[mut=True] = MutAnyOrigin,
+    svlogits_o: Origin[mut=True] = MutAnyOrigin,
+    pmean_o: Origin[mut=True] = MutAnyOrigin,
+    pstd_raw_o: Origin[mut=True] = MutAnyOrigin,
+    bins_o: Origin[mut=True] = MutAnyOrigin,
+    d_policy_o: Origin[mut=True] = MutAnyOrigin,
+    d_value_o: Origin[mut=True] = MutAnyOrigin,
+    grad_vlogits_o: Origin[mut=True] = MutAnyOrigin,
+    grad_pmean_o: Origin[mut=True] = MutAnyOrigin,
+    grad_pstd_raw_o: Origin[mut=True] = MutAnyOrigin,
 ](
-    act: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,ACT]
-    rew: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
-    con: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
-    vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
-    svlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
-    pmean: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,ACT] raw
-    pstd_raw: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,ACT]
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BINS]
+    act: UnsafePointer[Scalar[DT], act_o],  # [BK,T,ACT]
+    rew: UnsafePointer[Scalar[DT], rew_o],  # [BK,T]
+    con: UnsafePointer[Scalar[DT], con_o],  # [BK,T]
+    vlogits: UnsafePointer[Scalar[DT], vlogits_o],  # [BK,T,BINS]
+    svlogits: UnsafePointer[Scalar[DT], svlogits_o],  # [BK,T,BINS]
+    pmean: UnsafePointer[Scalar[DT], pmean_o],  # [BK,T,ACT] raw
+    pstd_raw: UnsafePointer[Scalar[DT], pstd_raw_o],  # [BK,T,ACT]
+    bins: UnsafePointer[Scalar[DT], bins_o],  # [BINS]
     minstd: Scalar[DT],
     maxstd: Scalar[DT],
     lam: Scalar[DT],
     actent: Scalar[DT],
     slowreg: Scalar[DT],
     rscale: Scalar[DT],  # from forward (sg'd)
-    d_policy: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T-1] cotangent
-    d_value: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T-1] cotangent
-    grad_vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
-    grad_pmean: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,ACT]
-    grad_pstd_raw: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,ACT]
+    d_policy: UnsafePointer[Scalar[DT], d_policy_o],  # [BK,T-1] cotangent
+    d_value: UnsafePointer[Scalar[DT], d_value_o],  # [BK,T-1] cotangent
+    grad_vlogits: UnsafePointer[Scalar[DT], grad_vlogits_o],  # [BK,T,BINS]
+    grad_pmean: UnsafePointer[Scalar[DT], grad_pmean_o],  # [BK,T,ACT]
+    grad_pstd_raw: UnsafePointer[Scalar[DT], grad_pstd_raw_o],  # [BK,T,ACT]
     slowtar: Bool = False,  # bootstrap λ-return from slowvalue (EMA target)
 ) raises:
     """Backward of `imag_loss_cpu`. retnorm (`rscale`), adv, weight are
