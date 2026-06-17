@@ -2862,9 +2862,11 @@ def get_gpu_shader_formats(
     ]()(device)
 
 
-def create_gpu_compute_pipeline(
+def create_gpu_compute_pipeline[
+    info_origin: Origin[mut=False],
+](
     device: Ptr[GPUDevice, MutAnyOrigin],
-    createinfo: Ptr[GPUComputePipelineCreateInfo, ImmutAnyOrigin],
+    createinfo: Ptr[GPUComputePipelineCreateInfo, info_origin],
     out ret: Ptr[GPUComputePipeline, MutAnyOrigin],
 ) raises:
     """Creates a pipeline object to be used in a compute workflow.
@@ -2916,8 +2918,8 @@ def create_gpu_compute_pipeline(
         lib,
         "SDL_CreateGPUComputePipeline",
         def(
-            device: Ptr[GPUDevice, MutAnyOrigin],
-            createinfo: Ptr[GPUComputePipelineCreateInfo, ImmutAnyOrigin],
+            Ptr[GPUDevice, MutAnyOrigin],
+            Ptr[GPUComputePipelineCreateInfo, info_origin],
         ) thin -> Ptr[GPUComputePipeline, MutAnyOrigin],
     ]()(device, createinfo)
     if Int(ret) == 0:
@@ -2974,9 +2976,11 @@ def create_gpu_graphics_pipeline[
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def create_gpu_sampler(
+def create_gpu_sampler[
+    info_origin: Origin[mut=False],
+](
     device: Ptr[GPUDevice, MutAnyOrigin],
-    createinfo: Ptr[GPUSamplerCreateInfo, ImmutAnyOrigin],
+    createinfo: Ptr[GPUSamplerCreateInfo, info_origin],
     out ret: Ptr[GPUSampler, MutAnyOrigin],
 ) raises:
     """Creates a sampler object to be used when binding textures in a graphics
@@ -3003,8 +3007,8 @@ def create_gpu_sampler(
         lib,
         "SDL_CreateGPUSampler",
         def(
-            device: Ptr[GPUDevice, MutAnyOrigin],
-            createinfo: Ptr[GPUSamplerCreateInfo, ImmutAnyOrigin],
+            Ptr[GPUDevice, MutAnyOrigin],
+            Ptr[GPUSamplerCreateInfo, info_origin],
         ) thin -> Ptr[GPUSampler, MutAnyOrigin],
     ]()(device, createinfo)
     if Int(ret) == 0:
@@ -3173,9 +3177,11 @@ def create_gpu_texture[
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def create_gpu_buffer(
+def create_gpu_buffer[
+    info_origin: Origin[mut=False],
+](
     device: Ptr[GPUDevice, MutAnyOrigin],
-    createinfo: Ptr[GPUBufferCreateInfo, ImmutAnyOrigin],
+    createinfo: Ptr[GPUBufferCreateInfo, info_origin],
     out ret: Ptr[GPUBuffer, MutAnyOrigin],
 ) raises:
     """Creates a buffer object to be used in graphics or compute workflows.
@@ -3216,17 +3222,19 @@ def create_gpu_buffer(
         lib,
         "SDL_CreateGPUBuffer",
         def(
-            device: Ptr[GPUDevice, MutAnyOrigin],
-            createinfo: Ptr[GPUBufferCreateInfo, ImmutAnyOrigin],
+            Ptr[GPUDevice, MutAnyOrigin],
+            Ptr[GPUBufferCreateInfo, info_origin],
         ) thin -> Ptr[GPUBuffer, MutAnyOrigin],
     ]()(device, createinfo)
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def create_gpu_transfer_buffer(
+def create_gpu_transfer_buffer[
+    info_origin: Origin[mut=False],
+](
     device: Ptr[GPUDevice, MutAnyOrigin],
-    createinfo: Ptr[GPUTransferBufferCreateInfo, ImmutAnyOrigin],
+    createinfo: Ptr[GPUTransferBufferCreateInfo, info_origin],
     out ret: Ptr[GPUTransferBuffer, MutAnyOrigin],
 ) raises:
     """Creates a transfer buffer to be used when uploading to or downloading from
@@ -3257,8 +3265,8 @@ def create_gpu_transfer_buffer(
         lib,
         "SDL_CreateGPUTransferBuffer",
         def(
-            device: Ptr[GPUDevice, MutAnyOrigin],
-            createinfo: Ptr[GPUTransferBufferCreateInfo, ImmutAnyOrigin],
+            Ptr[GPUDevice, MutAnyOrigin],
+            Ptr[GPUTransferBufferCreateInfo, info_origin],
         ) thin -> Ptr[GPUTransferBuffer, MutAnyOrigin],
     ]()(device, createinfo)
     if Int(ret) == 0:
@@ -3621,10 +3629,12 @@ def acquire_gpu_command_buffer(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def push_gpu_vertex_uniform_data(
+def push_gpu_vertex_uniform_data[
+    data_origin: Origin[mut=False],
+](
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     slot_index: UInt32,
-    data: Ptr[NoneType, ImmutAnyOrigin],
+    data: Ptr[NoneType, data_origin],
     length: UInt32,
 ) raises -> None:
     """Pushes data to a vertex uniform slot on the command buffer.
@@ -3648,18 +3658,20 @@ def push_gpu_vertex_uniform_data(
         lib,
         "SDL_PushGPUVertexUniformData",
         def(
-            command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
-            slot_index: UInt32,
-            data: Ptr[NoneType, ImmutAnyOrigin],
-            length: UInt32,
+            Ptr[GPUCommandBuffer, MutAnyOrigin],
+            UInt32,
+            Ptr[NoneType, data_origin],
+            UInt32,
         ) thin -> None,
     ]()(command_buffer, slot_index, data, length)
 
 
-def push_gpu_fragment_uniform_data(
+def push_gpu_fragment_uniform_data[
+    data_origin: Origin[mut=False],
+](
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     slot_index: UInt32,
-    data: Ptr[NoneType, ImmutAnyOrigin],
+    data: Ptr[NoneType, data_origin],
     length: UInt32,
 ) raises -> None:
     """Pushes data to a fragment uniform slot on the command buffer.
@@ -3683,18 +3695,20 @@ def push_gpu_fragment_uniform_data(
         lib,
         "SDL_PushGPUFragmentUniformData",
         def(
-            command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
-            slot_index: UInt32,
-            data: Ptr[NoneType, ImmutAnyOrigin],
-            length: UInt32,
+            Ptr[GPUCommandBuffer, MutAnyOrigin],
+            UInt32,
+            Ptr[NoneType, data_origin],
+            UInt32,
         ) thin -> None,
     ]()(command_buffer, slot_index, data, length)
 
 
-def push_gpu_compute_uniform_data(
+def push_gpu_compute_uniform_data[
+    data_origin: Origin[mut=False],
+](
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     slot_index: UInt32,
-    data: Ptr[NoneType, ImmutAnyOrigin],
+    data: Ptr[NoneType, data_origin],
     length: UInt32,
 ) raises -> None:
     """Pushes data to a uniform slot on the command buffer.
@@ -3718,19 +3732,22 @@ def push_gpu_compute_uniform_data(
         lib,
         "SDL_PushGPUComputeUniformData",
         def(
-            command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
-            slot_index: UInt32,
-            data: Ptr[NoneType, ImmutAnyOrigin],
-            length: UInt32,
+            Ptr[GPUCommandBuffer, MutAnyOrigin],
+            UInt32,
+            Ptr[NoneType, data_origin],
+            UInt32,
         ) thin -> None,
     ]()(command_buffer, slot_index, data, length)
 
 
-def begin_gpu_render_pass(
+def begin_gpu_render_pass[
+    color_origin: Origin[mut=False],
+    depth_origin: Origin[mut=False],
+](
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
-    color_target_infos: Ptr[GPUColorTargetInfo, ImmutAnyOrigin],
+    color_target_infos: Ptr[GPUColorTargetInfo, color_origin],
     num_color_targets: UInt32,
-    depth_stencil_target_info: Ptr[GPUDepthStencilTargetInfo, ImmutAnyOrigin],
+    depth_stencil_target_info: Ptr[GPUDepthStencilTargetInfo, depth_origin],
 ) raises -> Ptr[GPURenderPass, MutAnyOrigin]:
     """Begins a render pass on a command buffer.
 
@@ -3762,12 +3779,10 @@ def begin_gpu_render_pass(
         lib,
         "SDL_BeginGPURenderPass",
         def(
-            command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
-            color_target_infos: Ptr[GPUColorTargetInfo, ImmutAnyOrigin],
-            num_color_targets: UInt32,
-            depth_stencil_target_info: Ptr[
-                GPUDepthStencilTargetInfo, ImmutAnyOrigin
-            ],
+            Ptr[GPUCommandBuffer, MutAnyOrigin],
+            Ptr[GPUColorTargetInfo, color_origin],
+            UInt32,
+            Ptr[GPUDepthStencilTargetInfo, depth_origin],
         ) thin -> Ptr[GPURenderPass, MutAnyOrigin],
     ]()(
         command_buffer,
@@ -3802,9 +3817,11 @@ def bind_gpu_graphics_pipeline(
     ]()(render_pass, graphics_pipeline)
 
 
-def set_gpu_viewport(
+def set_gpu_viewport[
+    viewport_origin: Origin[mut=False],
+](
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
-    viewport: Ptr[GPUViewport, ImmutAnyOrigin],
+    viewport: Ptr[GPUViewport, viewport_origin],
 ) raises -> None:
     """Sets the current viewport state on a command buffer.
 
@@ -3819,15 +3836,17 @@ def set_gpu_viewport(
         lib,
         "SDL_SetGPUViewport",
         def(
-            render_pass: Ptr[GPURenderPass, MutAnyOrigin],
-            viewport: Ptr[GPUViewport, ImmutAnyOrigin],
+            Ptr[GPURenderPass, MutAnyOrigin],
+            Ptr[GPUViewport, viewport_origin],
         ) thin -> None,
     ]()(render_pass, viewport)
 
 
-def set_gpu_scissor(
+def set_gpu_scissor[
+    scissor_origin: Origin[mut=False],
+](
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
-    scissor: Ptr[Rect, ImmutAnyOrigin],
+    scissor: Ptr[Rect, scissor_origin],
 ) raises -> None:
     """Sets the current scissor state on a command buffer.
 
@@ -3842,8 +3861,8 @@ def set_gpu_scissor(
         lib,
         "SDL_SetGPUScissor",
         def(
-            render_pass: Ptr[GPURenderPass, MutAnyOrigin],
-            scissor: Ptr[Rect, ImmutAnyOrigin],
+            Ptr[GPURenderPass, MutAnyOrigin],
+            Ptr[Rect, scissor_origin],
         ) thin -> None,
     ]()(render_pass, scissor)
 
@@ -3891,10 +3910,12 @@ def set_gpu_stencil_reference(
     ]()(render_pass, reference)
 
 
-def bind_gpu_vertex_buffers(
+def bind_gpu_vertex_buffers[
+    binding_origin: Origin[mut=False],
+](
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     first_slot: UInt32,
-    bindings: Ptr[GPUBufferBinding, ImmutAnyOrigin],
+    bindings: Ptr[GPUBufferBinding, binding_origin],
     num_bindings: UInt32,
 ) raises -> None:
     """Binds vertex buffers on a command buffer for use with subsequent draw
@@ -3914,17 +3935,19 @@ def bind_gpu_vertex_buffers(
         lib,
         "SDL_BindGPUVertexBuffers",
         def(
-            render_pass: Ptr[GPURenderPass, MutAnyOrigin],
-            first_slot: UInt32,
-            bindings: Ptr[GPUBufferBinding, ImmutAnyOrigin],
-            num_bindings: UInt32,
+            Ptr[GPURenderPass, MutAnyOrigin],
+            UInt32,
+            Ptr[GPUBufferBinding, binding_origin],
+            UInt32,
         ) thin -> None,
     ]()(render_pass, first_slot, bindings, num_bindings)
 
 
-def bind_gpu_index_buffer(
+def bind_gpu_index_buffer[
+    binding_origin: Origin[mut=False],
+](
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
-    binding: Ptr[GPUBufferBinding, ImmutAnyOrigin],
+    binding: Ptr[GPUBufferBinding, binding_origin],
     index_element_size: GPUIndexElementSize,
 ) raises -> None:
     """Binds an index buffer on a command buffer for use with subsequent draw
@@ -3943,17 +3966,19 @@ def bind_gpu_index_buffer(
         lib,
         "SDL_BindGPUIndexBuffer",
         def(
-            render_pass: Ptr[GPURenderPass, MutAnyOrigin],
-            binding: Ptr[GPUBufferBinding, ImmutAnyOrigin],
-            index_element_size: GPUIndexElementSize,
+            Ptr[GPURenderPass, MutAnyOrigin],
+            Ptr[GPUBufferBinding, binding_origin],
+            GPUIndexElementSize,
         ) thin -> None,
     ]()(render_pass, binding, index_element_size)
 
 
-def bind_gpu_vertex_samplers(
+def bind_gpu_vertex_samplers[
+    binding_origin: Origin[mut=False],
+](
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     first_slot: UInt32,
-    texture_sampler_bindings: Ptr[GPUTextureSamplerBinding, ImmutAnyOrigin],
+    texture_sampler_bindings: Ptr[GPUTextureSamplerBinding, binding_origin],
     num_bindings: UInt32,
 ) raises -> None:
     """Binds texture-sampler pairs for use on the vertex shader.
@@ -3978,12 +4003,10 @@ def bind_gpu_vertex_samplers(
         lib,
         "SDL_BindGPUVertexSamplers",
         def(
-            render_pass: Ptr[GPURenderPass, MutAnyOrigin],
-            first_slot: UInt32,
-            texture_sampler_bindings: Ptr[
-                GPUTextureSamplerBinding, ImmutAnyOrigin
-            ],
-            num_bindings: UInt32,
+            Ptr[GPURenderPass, MutAnyOrigin],
+            UInt32,
+            Ptr[GPUTextureSamplerBinding, binding_origin],
+            UInt32,
         ) thin -> None,
     ]()(render_pass, first_slot, texture_sampler_bindings, num_bindings)
 
@@ -4058,10 +4081,12 @@ def bind_gpu_vertex_storage_buffers(
     ]()(render_pass, first_slot, storage_buffers, num_bindings)
 
 
-def bind_gpu_fragment_samplers(
+def bind_gpu_fragment_samplers[
+    binding_origin: Origin[mut=False],
+](
     render_pass: Ptr[GPURenderPass, MutAnyOrigin],
     first_slot: UInt32,
-    texture_sampler_bindings: Ptr[GPUTextureSamplerBinding, ImmutAnyOrigin],
+    texture_sampler_bindings: Ptr[GPUTextureSamplerBinding, binding_origin],
     num_bindings: UInt32,
 ) raises -> None:
     """Binds texture-sampler pairs for use on the fragment shader.
@@ -4086,12 +4111,10 @@ def bind_gpu_fragment_samplers(
         lib,
         "SDL_BindGPUFragmentSamplers",
         def(
-            render_pass: Ptr[GPURenderPass, MutAnyOrigin],
-            first_slot: UInt32,
-            texture_sampler_bindings: Ptr[
-                GPUTextureSamplerBinding, ImmutAnyOrigin
-            ],
-            num_bindings: UInt32,
+            Ptr[GPURenderPass, MutAnyOrigin],
+            UInt32,
+            Ptr[GPUTextureSamplerBinding, binding_origin],
+            UInt32,
         ) thin -> None,
     ]()(render_pass, first_slot, texture_sampler_bindings, num_bindings)
 
@@ -4351,14 +4374,17 @@ def end_gpu_render_pass(
     ]()(render_pass)
 
 
-def begin_gpu_compute_pass(
+def begin_gpu_compute_pass[
+    tex_binding_origin: Origin[mut=False],
+    buf_binding_origin: Origin[mut=False],
+](
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     storage_texture_bindings: Ptr[
-        GPUStorageTextureReadWriteBinding, ImmutAnyOrigin
+        GPUStorageTextureReadWriteBinding, tex_binding_origin
     ],
     num_storage_texture_bindings: UInt32,
     storage_buffer_bindings: Ptr[
-        GPUStorageBufferReadWriteBinding, ImmutAnyOrigin
+        GPUStorageBufferReadWriteBinding, buf_binding_origin
     ],
     num_storage_buffer_bindings: UInt32,
 ) raises -> Ptr[GPUComputePass, MutAnyOrigin]:
@@ -4404,15 +4430,11 @@ def begin_gpu_compute_pass(
         lib,
         "SDL_BeginGPUComputePass",
         def(
-            command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
-            storage_texture_bindings: Ptr[
-                GPUStorageTextureReadWriteBinding, ImmutAnyOrigin
-            ],
-            num_storage_texture_bindings: UInt32,
-            storage_buffer_bindings: Ptr[
-                GPUStorageBufferReadWriteBinding, ImmutAnyOrigin
-            ],
-            num_storage_buffer_bindings: UInt32,
+            Ptr[GPUCommandBuffer, MutAnyOrigin],
+            Ptr[GPUStorageTextureReadWriteBinding, tex_binding_origin],
+            UInt32,
+            Ptr[GPUStorageBufferReadWriteBinding, buf_binding_origin],
+            UInt32,
         ) thin -> Ptr[GPUComputePass, MutAnyOrigin],
     ]()(
         command_buffer,
@@ -4446,10 +4468,12 @@ def bind_gpu_compute_pipeline(
     ]()(compute_pass, compute_pipeline)
 
 
-def bind_gpu_compute_samplers(
+def bind_gpu_compute_samplers[
+    binding_origin: Origin[mut=False],
+](
     compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
     first_slot: UInt32,
-    texture_sampler_bindings: Ptr[GPUTextureSamplerBinding, ImmutAnyOrigin],
+    texture_sampler_bindings: Ptr[GPUTextureSamplerBinding, binding_origin],
     num_bindings: UInt32,
 ) raises -> None:
     """Binds texture-sampler pairs for use on the compute shader.
@@ -4474,12 +4498,10 @@ def bind_gpu_compute_samplers(
         lib,
         "SDL_BindGPUComputeSamplers",
         def(
-            compute_pass: Ptr[GPUComputePass, MutAnyOrigin],
-            first_slot: UInt32,
-            texture_sampler_bindings: Ptr[
-                GPUTextureSamplerBinding, ImmutAnyOrigin
-            ],
-            num_bindings: UInt32,
+            Ptr[GPUComputePass, MutAnyOrigin],
+            UInt32,
+            Ptr[GPUTextureSamplerBinding, binding_origin],
+            UInt32,
         ) thin -> None,
     ]()(compute_pass, first_slot, texture_sampler_bindings, num_bindings)
 
@@ -4733,10 +4755,13 @@ def begin_gpu_copy_pass(
     ]()(command_buffer)
 
 
-def upload_to_gpu_texture(
+def upload_to_gpu_texture[
+    src_origin: Origin[mut=False],
+    dst_origin: Origin[mut=False],
+](
     copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
-    source: Ptr[GPUTextureTransferInfo, ImmutAnyOrigin],
-    destination: Ptr[GPUTextureRegion, ImmutAnyOrigin],
+    source: Ptr[GPUTextureTransferInfo, src_origin],
+    destination: Ptr[GPUTextureRegion, dst_origin],
     cycle: Bool,
 ) raises -> None:
     """Uploads data from a transfer buffer to a texture.
@@ -4761,18 +4786,21 @@ def upload_to_gpu_texture(
         lib,
         "SDL_UploadToGPUTexture",
         def(
-            copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
-            source: Ptr[GPUTextureTransferInfo, ImmutAnyOrigin],
-            destination: Ptr[GPUTextureRegion, ImmutAnyOrigin],
-            cycle: Bool,
+            Ptr[GPUCopyPass, MutAnyOrigin],
+            Ptr[GPUTextureTransferInfo, src_origin],
+            Ptr[GPUTextureRegion, dst_origin],
+            Bool,
         ) thin -> None,
     ]()(copy_pass, source, destination, cycle)
 
 
-def upload_to_gpu_buffer(
+def upload_to_gpu_buffer[
+    src_origin: Origin[mut=False],
+    dst_origin: Origin[mut=False],
+](
     copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
-    source: Ptr[GPUTransferBufferLocation, ImmutAnyOrigin],
-    destination: Ptr[GPUBufferRegion, ImmutAnyOrigin],
+    source: Ptr[GPUTransferBufferLocation, src_origin],
+    destination: Ptr[GPUBufferRegion, dst_origin],
     cycle: Bool,
 ) raises -> None:
     """Uploads data from a transfer buffer to a buffer.
@@ -4794,18 +4822,21 @@ def upload_to_gpu_buffer(
         lib,
         "SDL_UploadToGPUBuffer",
         def(
-            copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
-            source: Ptr[GPUTransferBufferLocation, ImmutAnyOrigin],
-            destination: Ptr[GPUBufferRegion, ImmutAnyOrigin],
-            cycle: Bool,
+            Ptr[GPUCopyPass, MutAnyOrigin],
+            Ptr[GPUTransferBufferLocation, src_origin],
+            Ptr[GPUBufferRegion, dst_origin],
+            Bool,
         ) thin -> None,
     ]()(copy_pass, source, destination, cycle)
 
 
-def copy_gpu_texture_to_texture(
+def copy_gpu_texture_to_texture[
+    src_origin: Origin[mut=False],
+    dst_origin: Origin[mut=False],
+](
     copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
-    source: Ptr[GPUTextureLocation, ImmutAnyOrigin],
-    destination: Ptr[GPUTextureLocation, ImmutAnyOrigin],
+    source: Ptr[GPUTextureLocation, src_origin],
+    destination: Ptr[GPUTextureLocation, dst_origin],
     w: UInt32,
     h: UInt32,
     d: UInt32,
@@ -4833,21 +4864,24 @@ def copy_gpu_texture_to_texture(
         lib,
         "SDL_CopyGPUTextureToTexture",
         def(
-            copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
-            source: Ptr[GPUTextureLocation, ImmutAnyOrigin],
-            destination: Ptr[GPUTextureLocation, ImmutAnyOrigin],
-            w: UInt32,
-            h: UInt32,
-            d: UInt32,
-            cycle: Bool,
+            Ptr[GPUCopyPass, MutAnyOrigin],
+            Ptr[GPUTextureLocation, src_origin],
+            Ptr[GPUTextureLocation, dst_origin],
+            UInt32,
+            UInt32,
+            UInt32,
+            Bool,
         ) thin -> None,
     ]()(copy_pass, source, destination, w, h, d, cycle)
 
 
-def copy_gpu_buffer_to_buffer(
+def copy_gpu_buffer_to_buffer[
+    src_origin: Origin[mut=False],
+    dst_origin: Origin[mut=False],
+](
     copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
-    source: Ptr[GPUBufferLocation, ImmutAnyOrigin],
-    destination: Ptr[GPUBufferLocation, ImmutAnyOrigin],
+    source: Ptr[GPUBufferLocation, src_origin],
+    destination: Ptr[GPUBufferLocation, dst_origin],
     size: UInt32,
     cycle: Bool,
 ) raises -> None:
@@ -4871,19 +4905,22 @@ def copy_gpu_buffer_to_buffer(
         lib,
         "SDL_CopyGPUBufferToBuffer",
         def(
-            copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
-            source: Ptr[GPUBufferLocation, ImmutAnyOrigin],
-            destination: Ptr[GPUBufferLocation, ImmutAnyOrigin],
-            size: UInt32,
-            cycle: Bool,
+            Ptr[GPUCopyPass, MutAnyOrigin],
+            Ptr[GPUBufferLocation, src_origin],
+            Ptr[GPUBufferLocation, dst_origin],
+            UInt32,
+            Bool,
         ) thin -> None,
     ]()(copy_pass, source, destination, size, cycle)
 
 
-def download_from_gpu_texture(
+def download_from_gpu_texture[
+    src_origin: Origin[mut=False],
+    dst_origin: Origin[mut=False],
+](
     copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
-    source: Ptr[GPUTextureRegion, ImmutAnyOrigin],
-    destination: Ptr[GPUTextureTransferInfo, ImmutAnyOrigin],
+    source: Ptr[GPUTextureRegion, src_origin],
+    destination: Ptr[GPUTextureTransferInfo, dst_origin],
 ) raises -> None:
     """Copies data from a texture to a transfer buffer on the GPU timeline.
 
@@ -4903,17 +4940,20 @@ def download_from_gpu_texture(
         lib,
         "SDL_DownloadFromGPUTexture",
         def(
-            copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
-            source: Ptr[GPUTextureRegion, ImmutAnyOrigin],
-            destination: Ptr[GPUTextureTransferInfo, ImmutAnyOrigin],
+            Ptr[GPUCopyPass, MutAnyOrigin],
+            Ptr[GPUTextureRegion, src_origin],
+            Ptr[GPUTextureTransferInfo, dst_origin],
         ) thin -> None,
     ]()(copy_pass, source, destination)
 
 
-def download_from_gpu_buffer(
+def download_from_gpu_buffer[
+    src_origin: Origin[mut=False],
+    dst_origin: Origin[mut=False],
+](
     copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
-    source: Ptr[GPUBufferRegion, ImmutAnyOrigin],
-    destination: Ptr[GPUTransferBufferLocation, ImmutAnyOrigin],
+    source: Ptr[GPUBufferRegion, src_origin],
+    destination: Ptr[GPUTransferBufferLocation, dst_origin],
 ) raises -> None:
     """Copies data from a buffer to a transfer buffer on the GPU timeline.
 
@@ -4932,9 +4972,9 @@ def download_from_gpu_buffer(
         lib,
         "SDL_DownloadFromGPUBuffer",
         def(
-            copy_pass: Ptr[GPUCopyPass, MutAnyOrigin],
-            source: Ptr[GPUBufferRegion, ImmutAnyOrigin],
-            destination: Ptr[GPUTransferBufferLocation, ImmutAnyOrigin],
+            Ptr[GPUCopyPass, MutAnyOrigin],
+            Ptr[GPUBufferRegion, src_origin],
+            Ptr[GPUTransferBufferLocation, dst_origin],
         ) thin -> None,
     ]()(copy_pass, source, destination)
 
@@ -4980,9 +5020,11 @@ def generate_mipmaps_for_gpu_texture(
     ]()(command_buffer, texture)
 
 
-def blit_gpu_texture(
+def blit_gpu_texture[
+    info_origin: Origin[mut=False],
+](
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
-    info: Ptr[GPUBlitInfo, ImmutAnyOrigin],
+    info: Ptr[GPUBlitInfo, info_origin],
 ) raises -> None:
     """Blits from a source texture region to a destination texture region.
 
@@ -4999,8 +5041,8 @@ def blit_gpu_texture(
         lib,
         "SDL_BlitGPUTexture",
         def(
-            command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
-            info: Ptr[GPUBlitInfo, ImmutAnyOrigin],
+            Ptr[GPUCommandBuffer, MutAnyOrigin],
+            Ptr[GPUBlitInfo, info_origin],
         ) thin -> None,
     ]()(command_buffer, info)
 
@@ -5242,12 +5284,16 @@ def get_gpu_swapchain_texture_format(
     ]()(device, window)
 
 
-def acquire_gpu_swapchain_texture(
+def acquire_gpu_swapchain_texture[
+    tex_origin: Origin[mut=True],
+    w_origin: Origin[mut=True],
+    h_origin: Origin[mut=True],
+](
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     window: Ptr[Window, MutAnyOrigin],
-    swapchain_texture: Ptr[Ptr[GPUTexture, MutAnyOrigin], MutAnyOrigin],
-    swapchain_texture_width: Ptr[UInt32, MutAnyOrigin],
-    swapchain_texture_height: Ptr[UInt32, MutAnyOrigin],
+    swapchain_texture: Ptr[Ptr[GPUTexture, MutAnyOrigin], tex_origin],
+    swapchain_texture_width: Ptr[UInt32, w_origin],
+    swapchain_texture_height: Ptr[UInt32, h_origin],
 ) raises:
     """Acquire a texture to use in presentation.
 
@@ -5294,11 +5340,11 @@ def acquire_gpu_swapchain_texture(
         lib,
         "SDL_AcquireGPUSwapchainTexture",
         def(
-            command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
-            window: Ptr[Window, MutAnyOrigin],
-            swapchain_texture: Ptr[Ptr[GPUTexture, MutAnyOrigin], MutAnyOrigin],
-            swapchain_texture_width: Ptr[UInt32, MutAnyOrigin],
-            swapchain_texture_height: Ptr[UInt32, MutAnyOrigin],
+            Ptr[GPUCommandBuffer, MutAnyOrigin],
+            Ptr[Window, MutAnyOrigin],
+            Ptr[Ptr[GPUTexture, MutAnyOrigin], tex_origin],
+            Ptr[UInt32, w_origin],
+            Ptr[UInt32, h_origin],
         ) thin -> Bool,
     ]()(
         command_buffer,
@@ -5344,12 +5390,16 @@ def wait_for_gpu_swapchain(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def wait_and_acquire_gpu_swapchain_texture(
+def wait_and_acquire_gpu_swapchain_texture[
+    tex_origin: Origin[mut=True],
+    w_origin: Origin[mut=True],
+    h_origin: Origin[mut=True],
+](
     command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
     window: Ptr[Window, MutAnyOrigin],
-    swapchain_texture: Ptr[Ptr[GPUTexture, MutAnyOrigin], MutAnyOrigin],
-    swapchain_texture_width: Ptr[UInt32, MutAnyOrigin],
-    swapchain_texture_height: Ptr[UInt32, MutAnyOrigin],
+    swapchain_texture: Ptr[Ptr[GPUTexture, MutAnyOrigin], tex_origin],
+    swapchain_texture_width: Ptr[UInt32, w_origin],
+    swapchain_texture_height: Ptr[UInt32, h_origin],
 ) raises:
     """Blocks the thread until a swapchain texture is available to be acquired,
     and then acquires it.
@@ -5397,11 +5447,11 @@ def wait_and_acquire_gpu_swapchain_texture(
         lib,
         "SDL_WaitAndAcquireGPUSwapchainTexture",
         def(
-            command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
-            window: Ptr[Window, MutAnyOrigin],
-            swapchain_texture: Ptr[Ptr[GPUTexture, MutAnyOrigin], MutAnyOrigin],
-            swapchain_texture_width: Ptr[UInt32, MutAnyOrigin],
-            swapchain_texture_height: Ptr[UInt32, MutAnyOrigin],
+            Ptr[GPUCommandBuffer, MutAnyOrigin],
+            Ptr[Window, MutAnyOrigin],
+            Ptr[Ptr[GPUTexture, MutAnyOrigin], tex_origin],
+            Ptr[UInt32, w_origin],
+            Ptr[UInt32, h_origin],
         ) thin -> Bool,
     ]()(
         command_buffer,
