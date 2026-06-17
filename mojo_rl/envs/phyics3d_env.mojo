@@ -840,11 +840,14 @@ struct Phyics3dEnv[
         Uses CONFIG's custom extraction if available (e.g., sin/cos encoding),
         otherwise falls back to MODEL_DEF's default qpos[skip:]+qvel extraction.
         """
+        # `states` feeds the CONFIG/MODEL_DEF extract_obs_gpu trait methods whose
+        # params are MutAnyOrigin, so view the read-only buffer mut via a local
+        # rebind (no write happens) to get a concrete mut view that widens in.
+        var states_buf_mut = states_buf
         var states = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
-            MutAnyOrigin,
-        ](states_buf.unsafe_ptr())
+        ](states_buf_mut)
         var obs = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
@@ -923,11 +926,13 @@ struct Phyics3dEnv[
             else:
                 dones[i] = Scalar[gpu_dtype](0.0)
 
+        # `obs` feeds the is_terminal_from_obs_gpu trait method (MutAnyOrigin
+        # param); view the read-only buffer mut via a local rebind.
+        var obs_buf_mut = obs_buf
         var obs_t = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
-            MutAnyOrigin,
-        ](obs_buf.unsafe_ptr())
+        ](obs_buf_mut)
         var dones_t = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE)
         ](dones_buf)
@@ -1085,14 +1090,17 @@ struct Phyics3dEnv[
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
         ](states_buf)
+        # `model`/`actions` feed compute_reward_and_done_gpu (MutAnyOrigin trait
+        # params); view the read-only buffers mut via local rebinds.
+        var model_buf_mut = model_buf
         var model = LayoutTensor[
-            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-        ](model_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE)
+        ](model_buf_mut)
+        var actions_buf_mut = actions_buf
         var actions = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, Self.MODEL_DEF.ACTION_DIM),
-            MutAnyOrigin,
-        ](actions_buf.unsafe_ptr())
+        ](actions_buf_mut)
         var rewards = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE)
         ](rewards_buf)
