@@ -93,7 +93,7 @@ comptime SHEET_BYTES: Int = SHEET_WIDTH * SHEET_HEIGHT * SPRITE_BPP
 
 
 def _blit_sprite_to_sheet(
-    sheet: UnsafePointer[UInt8, MutAnyOrigin],
+    sheet: UnsafePointer[UInt8, MutUntrackedOrigin],
     slot_idx: Int,
     raw_bytes: PythonObject,
     src_w: Int,
@@ -117,7 +117,7 @@ def _blit_sprite_to_sheet(
 
 
 def _load_one(
-    sheet: UnsafePointer[UInt8, MutAnyOrigin],
+    sheet: UnsafePointer[UInt8, MutUntrackedOrigin],
     slot_idx: Int,
     asset_dir: String,
     filename: String,
@@ -134,7 +134,7 @@ def _load_one(
 
 def build_sprite_sheet(
     asset_dir: String,
-) raises -> UnsafePointer[UInt8, MutAnyOrigin]:
+) raises -> UnsafePointer[UInt8, MutUntrackedOrigin]:
     """Allocate and populate the full Craftax-Classic sprite sheet.
 
     Returns a heap buffer the caller owns (must be freed via `.free()`).
