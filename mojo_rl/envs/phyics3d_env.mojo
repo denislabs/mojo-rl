@@ -615,8 +615,7 @@ struct Phyics3dEnv[
         var states = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
-            MutAnyOrigin,
-        ](states_buf.unsafe_ptr())
+        ](states_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -633,8 +632,8 @@ struct Phyics3dEnv[
         Self.MODEL_DEF.init_model_gpu(ctx, model_buf)
 
         var model = LayoutTensor[
-            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-        ](model_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE)
+        ](model_buf)
 
         @parameter
         @always_inline
@@ -693,11 +692,10 @@ struct Phyics3dEnv[
         var states = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
-            MutAnyOrigin,
-        ](states_buf.unsafe_ptr())
+        ](states_buf)
         var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -726,8 +724,8 @@ struct Phyics3dEnv[
             Self.MODEL_DEF.init_model_gpu(ctx, model_buf)
 
         var model = LayoutTensor[
-            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-        ](model_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE)
+        ](model_buf)
 
         if Bool(rng_counter_ptr):
             var counter_t = LayoutTensor[
@@ -850,8 +848,7 @@ struct Phyics3dEnv[
         var obs = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, OBS_DIM_VAL),
-            MutAnyOrigin,
-        ](obs_buf.unsafe_ptr())
+        ](obs_buf)
 
         comptime QPOS_OFF = qpos_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()
         comptime QVEL_OFF = qvel_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()
@@ -932,8 +929,8 @@ struct Phyics3dEnv[
             MutAnyOrigin,
         ](obs_buf.unsafe_ptr())
         var dones_t = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         ctx.enqueue_function[term_obs_wrapper](
             obs_t,
             dones_t,
@@ -1004,8 +1001,8 @@ struct Phyics3dEnv[
         # Use the base pointer of workspace_buf (= start of model section).
         # A single-thread kernel writes curriculum values at the correct offset.
         var model = LayoutTensor[
-            gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
-        ](workspace_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(1, MODEL_SIZE)
+        ](workspace_buf)
 
         @parameter
         @always_inline
@@ -1034,8 +1031,8 @@ struct Phyics3dEnv[
     ](ctx: DeviceContext, mut states_buf: DeviceBuffer[gpu_dtype]) raises:
         """Run config's pre-step hook for all environments on GPU."""
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
         comptime META_OFF = metadata_offset[
@@ -1086,8 +1083,8 @@ struct Phyics3dEnv[
     ) raises:
         """Extract observations, compute rewards, check termination."""
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var model = LayoutTensor[
             gpu_dtype, Layout.row_major(1, MODEL_SIZE), MutAnyOrigin
         ](model_buf.unsafe_ptr())
@@ -1097,17 +1094,17 @@ struct Phyics3dEnv[
             MutAnyOrigin,
         ](actions_buf.unsafe_ptr())
         var rewards = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](rewards_buf)
         var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         var terminated_out = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated_buf)
         var obs = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL)
+        ](obs_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
         comptime QPOS_OFF = qpos_offset[Self.MODEL_DEF.NQ, Self.MODEL_DEF.NV]()

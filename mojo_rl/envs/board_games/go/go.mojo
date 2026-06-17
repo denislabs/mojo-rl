@@ -1193,26 +1193,26 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var actions = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
-        ](actions_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](actions_buf)
         var rewards = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](rewards_buf)
         var dones = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         var terminated_out = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated_buf)
         var obs = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs_buf)
         var legal_masks = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, GoEnv[Self.SIZE].NUM_ACTIONS), MutAnyOrigin
-        ](legal_masks_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, GoEnv[Self.SIZE].NUM_ACTIONS)
+        ](legal_masks_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
@@ -1254,8 +1254,8 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         rng_seed: UInt64 = 0,
     ) raises:
         var states = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @parameter
@@ -1281,11 +1281,11 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var dones = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @parameter
@@ -1312,14 +1312,14 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         mut legal_masks_buf: DeviceBuffer[board_dtype],
     ) raises:
         var states = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var obs = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs_buf)
         var legal_masks = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, GoEnv[Self.SIZE].NUM_ACTIONS), MutAnyOrigin
-        ](legal_masks_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, GoEnv[Self.SIZE].NUM_ACTIONS)
+        ](legal_masks_buf)
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @parameter

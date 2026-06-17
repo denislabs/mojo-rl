@@ -295,8 +295,7 @@ struct PushTV2[DTYPE: DType](
         return LayoutTensor[
             dtype,
             Layout.row_major(1, PushTLayout.STATE_SIZE),
-            MutAnyOrigin,
-        ](self.state_data.unsafe_ptr())
+        ](Span(self.state_data))
 
     @always_inline
     def _shapes_view(
@@ -325,8 +324,7 @@ struct PushTV2[DTYPE: DType](
             Layout.row_major(
                 1, PushTLayout.MAX_CONTACTS, CONTACT_DATA_SIZE
             ),
-            MutAnyOrigin,
-        ](self.contacts_data.unsafe_ptr())
+        ](Span(self.contacts_data))
 
     def _cpu_reset(mut self):
         var rng = PhiloxRandom(seed=self.rng_seed, offset=self.rng_counter)
@@ -345,8 +343,8 @@ struct PushTV2[DTYPE: DType](
         var s = self._state_view()
         _seed_env_state_gpu[1, PushTLayout.STATE_SIZE](s, 0, ax, ay, bx, by, ba)
         var obs_view = LayoutTensor[
-            dtype, Layout.row_major(1, PConstants.OBS_DIM), MutAnyOrigin
-        ](self.state_data.unsafe_ptr())  # OBS at offset 0
+            dtype, Layout.row_major(1, PConstants.OBS_DIM)
+        ](Span(self.state_data))  # OBS at offset 0
         _write_obs_single_env[1, PushTLayout.STATE_SIZE, PConstants.OBS_DIM](
             s, obs_view, 0
         )
@@ -439,8 +437,8 @@ struct PushTV2[DTYPE: DType](
 
         # Refresh obs slot (so get_state sees up-to-date keypoints)
         var obs_view = LayoutTensor[
-            dtype, Layout.row_major(1, PConstants.OBS_DIM), MutAnyOrigin
-        ](self.state_data.unsafe_ptr())
+            dtype, Layout.row_major(1, PConstants.OBS_DIM)
+        ](Span(self.state_data))
         _write_obs_single_env[1, PushTLayout.STATE_SIZE, PConstants.OBS_DIM](
             s, obs_view, 0
         )
@@ -554,8 +552,8 @@ struct PushTV2[DTYPE: DType](
         rng_seed: UInt64 = 0,
     ) raises:
         var states_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states)
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @parameter
@@ -596,11 +594,11 @@ struct PushTV2[DTYPE: DType](
         ] = None,
     ) raises:
         var states_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states)
         var dones_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](dones)
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @parameter
@@ -640,18 +638,18 @@ struct PushTV2[DTYPE: DType](
         mut obs: DeviceBuffer[dtype],
     ) raises:
         var st_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states)
         var ob_t = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs)
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
         @parameter
         @always_inline
         def extract(
             st: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+                dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
             ],
             ob: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
@@ -728,23 +726,23 @@ struct PushTV2[DTYPE: DType](
             )
 
         var states_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states)
         var actions_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
-        ](actions.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM)
+        ](actions)
         var rewards_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](rewards)
         var dones_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](dones)
         var terminated_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated)
         var obs_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs)
         var shapes_tensor = LayoutTensor[
             dtype,
             Layout.row_major(PushTShapeBuf.NUM_SHAPES, SHAPE_MAX_SIZE),
@@ -764,7 +762,7 @@ struct PushTV2[DTYPE: DType](
             ac: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, ACTION_DIM),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             rw: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -849,7 +847,7 @@ struct PushTV2[DTYPE: DType](
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ],
         actions: LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
         ],
         rewards: LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin

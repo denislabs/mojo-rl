@@ -217,8 +217,7 @@ struct PushTEnv[DTYPE: DType](
         return LayoutTensor[
             dtype,
             Layout.row_major(1, PushTLayout.STATE_SIZE),
-            MutAnyOrigin,
-        ](self.state_data.unsafe_ptr())
+        ](Span(self.state_data))
 
     @always_inline
     def _shapes_view(
@@ -250,8 +249,7 @@ struct PushTEnv[DTYPE: DType](
             Layout.row_major(
                 1, PushTLayout.MAX_CONTACTS, CONTACT_DATA_SIZE
             ),
-            MutAnyOrigin,
-        ](self.contacts_data.unsafe_ptr())
+        ](Span(self.contacts_data))
 
     # =========================================================================
     # Initialization helpers

@@ -1093,28 +1093,28 @@ struct CarRacing[DTYPE: DType](
             rng_counter_ptr: Optional GPU counter pointer for deterministic RNG sequencing.
         """
         var states_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states)
 
         var actions_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
-        ](actions.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM)
+        ](actions)
 
         var rewards_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](rewards)
 
         var dones_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](dones)
 
         var terminated_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated)
 
         var obs_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -1125,7 +1125,7 @@ struct CarRacing[DTYPE: DType](
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
             actions: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+                dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
             ],
             rewards: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -1187,8 +1187,8 @@ struct CarRacing[DTYPE: DType](
                      values across calls for varied initial states.
         """
         var states_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -1248,12 +1248,12 @@ struct CarRacing[DTYPE: DType](
                      seed from GPU memory instead of rng_seed parameter.
         """
         var states_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states)
 
         var dones_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](dones)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -1344,11 +1344,11 @@ struct CarRacing[DTYPE: DType](
         """Extract observations from state buffer (trivial copy: obs = state[0:OBS_DIM]).
         """
         var states = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL)
+        ](states_buf)
         var obs = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL)
+        ](obs_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -1358,7 +1358,7 @@ struct CarRacing[DTYPE: DType](
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             obs: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
@@ -1743,12 +1743,11 @@ struct CarRacing[DTYPE: DType](
         var states_tensor = LayoutTensor[
             dtype,
             Layout.row_major(BATCH_SIZE, CRConstants.STATE_SIZE),
-            MutAnyOrigin,
-        ](states.unsafe_ptr())
+        ](states)
 
         var obs_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -1758,7 +1757,7 @@ struct CarRacing[DTYPE: DType](
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, CRConstants.STATE_SIZE),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             obs: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
@@ -1794,7 +1793,7 @@ struct CarRacing[DTYPE: DType](
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ],
         actions: LayoutTensor[
-            dtype, Layout.row_major(BATCH, ACTION_DIM), MutAnyOrigin
+            dtype, Layout.row_major(BATCH, ACTION_DIM), ImmutAnyOrigin
         ],
         rewards: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
         dones: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
@@ -2001,8 +2000,7 @@ struct CarRacing[DTYPE: DType](
         var tiles_tensor = LayoutTensor[
             dtype,
             Layout.row_major(MAX_TRACK_TILES, TILE_DATA_SIZE),
-            MutAnyOrigin,
-        ](tiles_host.unsafe_ptr())
+        ](tiles_host)
 
         # Copy track data to host buffer
         track.to_buffer[MAX_TRACK_TILES](tiles_tensor)

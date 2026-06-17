@@ -426,8 +426,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         var states = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, STATE_SIZE),
-            MutAnyOrigin,
-        ](states_buf.unsafe_ptr())
+        ](states_buf)
 
         var scratch_buf = ctx.enqueue_create_buffer[gpu_dtype](
             BATCH_SIZE * Self.WORLD_GEN_WS_PER_ENV
@@ -435,8 +434,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         var scratch = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE * Self.WORLD_GEN_WS_PER_ENV),
-            MutAnyOrigin,
-        ](scratch_buf.unsafe_ptr())
+        ](scratch_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed_scalar = Scalar[DType.uint64](rng_seed)
@@ -533,11 +531,10 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         var states = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, STATE_SIZE),
-            MutAnyOrigin,
-        ](states_buf.unsafe_ptr())
+        ](states_buf)
         var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
 
         var scratch_buf = ctx.enqueue_create_buffer[gpu_dtype](
             BATCH_SIZE * Self.WORLD_GEN_WS_PER_ENV
@@ -545,8 +542,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         var scratch = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE * Self.WORLD_GEN_WS_PER_ENV),
-            MutAnyOrigin,
-        ](scratch_buf.unsafe_ptr())
+        ](scratch_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed_scalar = Scalar[DType.uint64](rng_seed)
@@ -646,28 +642,26 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         var states = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, STATE_SIZE),
-            MutAnyOrigin,
-        ](states_buf.unsafe_ptr())
+        ](states_buf)
         var rewards = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](rewards_buf)
         var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         var terminated_out = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated_buf)
         var obs = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, OBS_DIM),
-            MutAnyOrigin,
-        ](obs_buf.unsafe_ptr())
+        ](obs_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         var actions = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
-        ](actions_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](actions_buf)
         var seed_scalar = Scalar[DType.uint64](rng_seed)
 
         @parameter
@@ -741,16 +735,18 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         mut obs_buf: DeviceBuffer[gpu_dtype],
     ) raises:
         """Encode the symbolic obs into `obs_buf` for every env."""
+        # `encode_symbolic_obs` reads state through the mutable `State` pointer
+        # alias, so the view must be mut. Rebind the read-only buffer through a
+        # mut local to get a mut=True concrete-origin view (no unsafe_ptr).
+        var states_buf_mut = states_buf
         var states = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, STATE_SIZE),
-            MutAnyOrigin,
-        ](states_buf.unsafe_ptr())
+        ](states_buf_mut)
         var obs = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, OBS_DIM),
-            MutAnyOrigin,
-        ](obs_buf.unsafe_ptr())
+        ](obs_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
