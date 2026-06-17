@@ -69,9 +69,9 @@ def _rsample_pack_kernel[
         var b = idx // OUT
         var d = idx % OUT
         if d < ACT:
-            output[b, d] = rebind[Scalar[DT]](action[b, d])
+            output[b, d] = action[b, d]
         else:
-            output[b, d] = rebind[Scalar[DT]](log_prob[b])
+            output[b, d] = log_prob[b]
 
 
 def _rsample_unpack_kernel[
@@ -95,7 +95,7 @@ def _rsample_unpack_kernel[
     if idx < total:
         var b = idx // OUT
         var d = idx % OUT
-        var v = rebind[Scalar[DT]](grad_output[b, d])
+        var v = grad_output[b, d]
         if d < ACT:
             grad_action[b, d] = v
         else:

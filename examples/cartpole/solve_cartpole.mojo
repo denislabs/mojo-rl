@@ -196,7 +196,7 @@ def main() raises:
     for i in range(len(obs_raw)):
         obs_f64.append(Float64(obs_raw[i]))
 
-    for step in range(500):
+    for _ in range(500):
         var tiles = tc.get_tiles(obs_f64)
         var action = agent_q.get_best_action(tiles)
         var result = env_q.step_obs(action)

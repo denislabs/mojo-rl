@@ -79,9 +79,9 @@ struct TensorPack[N: Int](Copyable, Movable):
             "implicit single-tensor TensorPack is only valid for N == 1;"
             " multi-arity leaves must build the pack via TensorPack.of(...)"
         )
-        var ps = InlineArray[
-            UnsafePointer[Scalar[DT], MutAnyOrigin], Self.N
-        ](uninitialized=True)
+        var ps = InlineArray[UnsafePointer[Scalar[DT], MutAnyOrigin], Self.N](
+            uninitialized=True
+        )
         ps[0] = mptr(t.ptr)
         self.ptrs = ps^
 
@@ -99,9 +99,9 @@ struct TensorPack[N: Int](Copyable, Movable):
         leaf's `*inputs` / `*grad_inputs` pack, splatted in as
         `of(*inputs)`). Extracts + reburies each `.ptr` to `MutAnyOrigin`
         — the single erasure chokepoint."""
-        var ps = InlineArray[
-            UnsafePointer[Scalar[DT], MutAnyOrigin], Self.N
-        ](uninitialized=True)
+        var ps = InlineArray[UnsafePointer[Scalar[DT], MutAnyOrigin], Self.N](
+            uninitialized=True
+        )
         comptime for i in range(Self.N):
             ps[i] = mptr(inputs[i].ptr)
         return Self(ps^)
@@ -112,9 +112,7 @@ struct TensorPack[N: Int](Copyable, Movable):
         comptime assert i < Self.N, "TensorPack.ptr: index out of range"
         return self.ptrs[i]
 
-    def lt[
-        i: Int, L: Layout
-    ](self) -> LayoutTensor[DT, L, MutAnyOrigin]:
+    def lt[i: Int, L: Layout](self) -> LayoutTensor[DT, L, MutAnyOrigin]:
         """Typed GPU `LayoutTensor` over view `i` — for kernel args."""
         comptime assert i < Self.N, "TensorPack.lt: index out of range"
         return LayoutTensor[DT, L, MutAnyOrigin](self.ptrs[i])
