@@ -460,7 +460,7 @@ def add_gamepad_mapping(var mapping: String) raises -> c_int:
     return _get_dylib_function[
         lib,
         "SDL_AddGamepadMapping",
-        def(mapping: Ptr[c_char, ImmutAnyOrigin]) thin -> c_int,
+        def(Ptr[c_char, ImmutOrigin(origin_of(mapping))]) thin -> c_int,
     ]()(mapping.as_c_string_slice().unsafe_ptr())
 
 
@@ -540,7 +540,7 @@ def add_gamepad_mappings_from_file(var file: String) raises -> c_int:
     return _get_dylib_function[
         lib,
         "SDL_AddGamepadMappingsFromFile",
-        def(file: Ptr[c_char, ImmutAnyOrigin]) thin -> c_int,
+        def(Ptr[c_char, ImmutOrigin(origin_of(file))]) thin -> c_int,
     ]()(file.as_c_string_slice().unsafe_ptr())
 
 
@@ -661,7 +661,7 @@ def set_gamepad_mapping(instance_id: JoystickID, var mapping: String) raises:
         lib,
         "SDL_SetGamepadMapping",
         def(
-            instance_id: JoystickID, mapping: Ptr[c_char, ImmutAnyOrigin]
+            JoystickID, Ptr[c_char, ImmutOrigin(origin_of(mapping))]
         ) thin -> Bool,
     ]()(instance_id, mapping.as_c_string_slice().unsafe_ptr())
     if not ret:
@@ -1554,7 +1554,7 @@ def get_gamepad_type_from_string(var str: String) raises -> GamepadType:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadTypeFromString",
-        def(str: Ptr[c_char, ImmutAnyOrigin]) thin -> GamepadType,
+        def(Ptr[c_char, ImmutOrigin(origin_of(str))]) thin -> GamepadType,
     ]()(str.as_c_string_slice().unsafe_ptr())
 
 
@@ -1606,7 +1606,7 @@ def get_gamepad_axis_from_string(var str: String) raises -> GamepadAxis:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadAxisFromString",
-        def(str: Ptr[c_char, ImmutAnyOrigin]) thin -> GamepadAxis,
+        def(Ptr[c_char, ImmutOrigin(origin_of(str))]) thin -> GamepadAxis,
     ]()(str.as_c_string_slice().unsafe_ptr())
 
 
@@ -1711,7 +1711,7 @@ def get_gamepad_button_from_string(var str: String) raises -> GamepadButton:
     return _get_dylib_function[
         lib,
         "SDL_GetGamepadButtonFromString",
-        def(str: Ptr[c_char, ImmutAnyOrigin]) thin -> GamepadButton,
+        def(Ptr[c_char, ImmutOrigin(origin_of(str))]) thin -> GamepadButton,
     ]()(str.as_c_string_slice().unsafe_ptr())
 
 

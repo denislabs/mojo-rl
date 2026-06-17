@@ -2641,7 +2641,7 @@ def gpu_supports_shader_formats(
         lib,
         "SDL_GPUSupportsShaderFormats",
         def(
-            format_flags: GPUShaderFormat, name: Ptr[c_char, ImmutAnyOrigin]
+            GPUShaderFormat, Ptr[c_char, ImmutOrigin(origin_of(name))]
         ) thin -> Bool,
     ]()(format_flags, name.as_c_string_slice().unsafe_ptr())
 
@@ -2689,9 +2689,9 @@ def create_gpu_device(
         lib,
         "SDL_CreateGPUDevice",
         def(
-            format_flags: GPUShaderFormat,
-            debug_mode: Bool,
-            name: Ptr[c_char, ImmutAnyOrigin],
+            GPUShaderFormat,
+            Bool,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
         ) thin -> Ptr[GPUDevice, MutAnyOrigin],
     ]()(format_flags, debug_mode, name.as_c_string_slice().unsafe_ptr())
     if Int(ret) == 0:
@@ -3258,9 +3258,9 @@ def set_gpu_buffer_name(
         lib,
         "SDL_SetGPUBufferName",
         def(
-            device: Ptr[GPUDevice, MutAnyOrigin],
-            buffer: Ptr[GPUBuffer, MutAnyOrigin],
-            text: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[GPUDevice, MutAnyOrigin],
+            Ptr[GPUBuffer, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(text))],
         ) thin -> None,
     ]()(device, buffer, text.as_c_string_slice().unsafe_ptr())
 
@@ -3292,9 +3292,9 @@ def set_gpu_texture_name(
         lib,
         "SDL_SetGPUTextureName",
         def(
-            device: Ptr[GPUDevice, MutAnyOrigin],
-            texture: Ptr[GPUTexture, MutAnyOrigin],
-            text: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[GPUDevice, MutAnyOrigin],
+            Ptr[GPUTexture, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(text))],
         ) thin -> None,
     ]()(device, texture, text.as_c_string_slice().unsafe_ptr())
 
@@ -3317,8 +3317,8 @@ def insert_gpu_debug_label(
         lib,
         "SDL_InsertGPUDebugLabel",
         def(
-            command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
-            text: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[GPUCommandBuffer, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(text))],
         ) thin -> None,
     ]()(command_buffer, text.as_c_string_slice().unsafe_ptr())
 
@@ -3350,8 +3350,8 @@ def push_gpu_debug_group(
         lib,
         "SDL_PushGPUDebugGroup",
         def(
-            command_buffer: Ptr[GPUCommandBuffer, MutAnyOrigin],
-            name: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[GPUCommandBuffer, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
         ) thin -> None,
     ]()(command_buffer, name.as_c_string_slice().unsafe_ptr())
 

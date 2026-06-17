@@ -472,9 +472,9 @@ def set_app_metadata(
         lib,
         "SDL_SetAppMetadata",
         def(
-            appname: Ptr[c_char, ImmutAnyOrigin],
-            appversion: Ptr[c_char, ImmutAnyOrigin],
-            appidentifier: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(appname))],
+            Ptr[c_char, ImmutOrigin(origin_of(appversion))],
+            Ptr[c_char, ImmutOrigin(origin_of(appidentifier))],
         ) thin -> Bool,
     ]()(
         appname.as_c_string_slice().unsafe_ptr(),
@@ -552,8 +552,8 @@ def set_app_metadata_property(var name: String, var value: String) raises:
         lib,
         "SDL_SetAppMetadataProperty",
         def(
-            name: Ptr[c_char, ImmutAnyOrigin],
-            value: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[c_char, ImmutOrigin(origin_of(value))],
         ) thin -> Bool,
     ]()(
         name.as_c_string_slice().unsafe_ptr(),
@@ -591,5 +591,5 @@ def get_app_metadata_property(
     return _get_dylib_function[
         lib,
         "SDL_GetAppMetadataProperty",
-        def(name: Ptr[c_char, ImmutAnyOrigin]) thin -> Ptr[c_char, ImmutAnyOrigin],
+        def(Ptr[c_char, ImmutOrigin(origin_of(name))]) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(name.as_c_string_slice().unsafe_ptr())

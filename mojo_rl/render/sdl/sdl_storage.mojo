@@ -364,7 +364,7 @@ def open_title_storage(
         lib,
         "SDL_OpenTitleStorage",
         def(
-            override: Ptr[c_char, ImmutAnyOrigin], props: PropertiesID
+            Ptr[c_char, ImmutOrigin(origin_of(override))], PropertiesID
         ) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(override.as_c_string_slice().unsafe_ptr(), props)
     if Int(ret) == 0:
@@ -400,9 +400,9 @@ def open_user_storage(
         lib,
         "SDL_OpenUserStorage",
         def(
-            org: Ptr[c_char, ImmutAnyOrigin],
-            app: Ptr[c_char, ImmutAnyOrigin],
-            props: PropertiesID,
+            Ptr[c_char, ImmutOrigin(origin_of(org))],
+            Ptr[c_char, ImmutOrigin(origin_of(app))],
+            PropertiesID,
         ) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(
         org.as_c_string_slice().unsafe_ptr(),
@@ -436,7 +436,7 @@ def open_file_storage(
     ret = _get_dylib_function[
         lib,
         "SDL_OpenFileStorage",
-        def(path: Ptr[c_char, ImmutAnyOrigin]) thin -> Ptr[Storage, MutAnyOrigin],
+        def(Ptr[c_char, ImmutOrigin(origin_of(path))]) thin -> Ptr[Storage, MutAnyOrigin],
     ]()(path.as_c_string_slice().unsafe_ptr())
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -550,9 +550,9 @@ def get_storage_file_size(
         lib,
         "SDL_GetStorageFileSize",
         def(
-            storage: Ptr[Storage, MutAnyOrigin],
-            path: Ptr[c_char, ImmutAnyOrigin],
-            length: Ptr[UInt64, MutAnyOrigin],
+            Ptr[Storage, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[UInt64, MutAnyOrigin],
         ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), length)
 
@@ -587,10 +587,10 @@ def read_storage_file(
         lib,
         "SDL_ReadStorageFile",
         def(
-            storage: Ptr[Storage, MutAnyOrigin],
-            path: Ptr[c_char, ImmutAnyOrigin],
-            destination: Ptr[NoneType, MutAnyOrigin],
-            length: UInt64,
+            Ptr[Storage, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[NoneType, MutAnyOrigin],
+            UInt64,
         ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), destination, length)
 
@@ -620,10 +620,10 @@ def write_storage_file(
         lib,
         "SDL_WriteStorageFile",
         def(
-            storage: Ptr[Storage, MutAnyOrigin],
-            path: Ptr[c_char, ImmutAnyOrigin],
-            source: Ptr[NoneType, ImmutAnyOrigin],
-            length: UInt64,
+            Ptr[Storage, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[NoneType, ImmutAnyOrigin],
+            UInt64,
         ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), source, length)
 
@@ -648,8 +648,8 @@ def create_storage_directory(
         lib,
         "SDL_CreateStorageDirectory",
         def(
-            storage: Ptr[Storage, MutAnyOrigin],
-            path: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[Storage, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
         ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr())
     if not ret:
@@ -694,10 +694,10 @@ def enumerate_storage_directory(
         lib,
         "SDL_EnumerateStorageDirectory",
         def(
-            storage: Ptr[Storage, MutAnyOrigin],
-            path: Ptr[c_char, ImmutAnyOrigin],
-            callback: EnumerateDirectoryCallback,
-            userdata: Ptr[NoneType, MutAnyOrigin],
+            Ptr[Storage, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            EnumerateDirectoryCallback,
+            Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), callback, userdata)
     if not ret:
@@ -724,8 +724,8 @@ def remove_storage_path(
         lib,
         "SDL_RemoveStoragePath",
         def(
-            storage: Ptr[Storage, MutAnyOrigin],
-            path: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[Storage, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
         ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr())
     if not ret:
@@ -755,9 +755,9 @@ def rename_storage_path(
         lib,
         "SDL_RenameStoragePath",
         def(
-            storage: Ptr[Storage, MutAnyOrigin],
-            oldpath: Ptr[c_char, ImmutAnyOrigin],
-            newpath: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[Storage, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(oldpath))],
+            Ptr[c_char, ImmutOrigin(origin_of(newpath))],
         ) thin -> Bool,
     ]()(
         storage,
@@ -791,9 +791,9 @@ def copy_storage_file(
         lib,
         "SDL_CopyStorageFile",
         def(
-            storage: Ptr[Storage, MutAnyOrigin],
-            oldpath: Ptr[c_char, ImmutAnyOrigin],
-            newpath: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[Storage, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(oldpath))],
+            Ptr[c_char, ImmutOrigin(origin_of(newpath))],
         ) thin -> Bool,
     ]()(
         storage,
@@ -828,9 +828,9 @@ def get_storage_path_info(
         lib,
         "SDL_GetStoragePathInfo",
         def(
-            storage: Ptr[Storage, MutAnyOrigin],
-            path: Ptr[c_char, ImmutAnyOrigin],
-            info: Ptr[PathInfo, MutAnyOrigin],
+            Ptr[Storage, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[PathInfo, MutAnyOrigin],
         ) thin -> Bool,
     ]()(storage, path.as_c_string_slice().unsafe_ptr(), info)
     if not ret:
@@ -912,11 +912,11 @@ def glob_storage_directory(
         lib,
         "SDL_GlobStorageDirectory",
         def(
-            storage: Ptr[Storage, MutAnyOrigin],
-            path: Ptr[c_char, ImmutAnyOrigin],
-            pattern: Ptr[c_char, ImmutAnyOrigin],
-            flags: GlobFlags,
-            count: Ptr[c_int, MutAnyOrigin],
+            Ptr[Storage, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[c_char, ImmutOrigin(origin_of(pattern))],
+            GlobFlags,
+            Ptr[c_int, MutAnyOrigin],
         ) thin -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
     ]()(
         storage,

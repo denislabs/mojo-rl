@@ -248,12 +248,12 @@ def create_window_and_renderer(
         lib,
         "SDL_CreateWindowAndRenderer",
         def(
-            title: Ptr[c_char, ImmutAnyOrigin],
-            width: c_int,
-            height: c_int,
-            window_flags: WindowFlags,
-            window: Ptr[Ptr[Window, MutAnyOrigin], MutAnyOrigin],
-            renderer: Ptr[Ptr[Renderer, MutAnyOrigin], MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(title))],
+            c_int,
+            c_int,
+            WindowFlags,
+            Ptr[Ptr[Window, MutAnyOrigin], MutAnyOrigin],
+            Ptr[Ptr[Renderer, MutAnyOrigin], MutAnyOrigin],
         ) thin -> Bool,
     ]()(
         title.as_c_string_slice().unsafe_ptr(),
@@ -304,8 +304,8 @@ def create_renderer(
         lib,
         "SDL_CreateRenderer",
         def(
-            window: Ptr[Window, MutAnyOrigin],
-            name: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[Window, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
         ) thin -> Ptr[Renderer, MutAnyOrigin],
     ]()(window, name.as_c_string_slice().unsafe_ptr())
 
@@ -3891,10 +3891,10 @@ def render_debug_text(
         lib,
         "SDL_RenderDebugText",
         def(
-            renderer: Ptr[Renderer, MutAnyOrigin],
-            x: c_float,
-            y: c_float,
-            str: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[Renderer, MutAnyOrigin],
+            c_float,
+            c_float,
+            Ptr[c_char, ImmutOrigin(origin_of(str))],
         ) thin -> Bool,
     ]()(renderer, x, y, str.as_c_string_slice().unsafe_ptr())
     if not ret:

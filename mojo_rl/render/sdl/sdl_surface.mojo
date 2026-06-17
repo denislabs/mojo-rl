@@ -741,7 +741,7 @@ def load_bmp(var file: String, out ret: Ptr[Surface, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_LoadBMP",
-        def(file: Ptr[c_char, ImmutAnyOrigin]) thin -> Ptr[Surface, MutAnyOrigin],
+        def(Ptr[c_char, ImmutOrigin(origin_of(file))]) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(file.as_c_string_slice().unsafe_ptr())
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -816,8 +816,8 @@ def save_bmp(surface: Ptr[Surface, MutAnyOrigin], var file: String) raises:
         lib,
         "SDL_SaveBMP",
         def(
-            surface: Ptr[Surface, MutAnyOrigin],
-            file: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[Surface, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(file))],
         ) thin -> Bool,
     ]()(surface, file.as_c_string_slice().unsafe_ptr())
     if not ret:

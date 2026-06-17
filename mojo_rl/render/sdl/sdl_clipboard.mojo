@@ -94,7 +94,7 @@ def set_clipboard_text(var text: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetClipboardText",
-        def(text: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool,
+        def(Ptr[c_char, ImmutOrigin(origin_of(text))]) thin -> Bool,
     ]()(text.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -158,7 +158,7 @@ def set_primary_selection_text(var text: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetPrimarySelectionText",
-        def(text: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool,
+        def(Ptr[c_char, ImmutOrigin(origin_of(text))]) thin -> Bool,
     ]()(text.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -346,8 +346,8 @@ def get_clipboard_data(
         lib,
         "SDL_GetClipboardData",
         def(
-            mime_type: Ptr[c_char, ImmutAnyOrigin],
-            size: Ptr[c_size_t, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(mime_type))],
+            Ptr[c_size_t, MutAnyOrigin],
         ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(mime_type.as_c_string_slice().unsafe_ptr(), size)
     if Int(ret) == 0:
@@ -373,7 +373,7 @@ def has_clipboard_data(var mime_type: String) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_HasClipboardData",
-        def(mime_type: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool,
+        def(Ptr[c_char, ImmutOrigin(origin_of(mime_type))]) thin -> Bool,
     ]()(mime_type.as_c_string_slice().unsafe_ptr())
 
 

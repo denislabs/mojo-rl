@@ -1563,10 +1563,10 @@ def create_window(
         lib,
         "SDL_CreateWindow",
         def(
-            title: Ptr[c_char, ImmutAnyOrigin],
-            w: c_int,
-            h: c_int,
-            flags: WindowFlags,
+            Ptr[c_char, ImmutOrigin(origin_of(title))],
+            c_int,
+            c_int,
+            WindowFlags,
         ) thin -> Ptr[Window, MutAnyOrigin],
     ]()(title.as_c_string_slice().unsafe_ptr(), w, h, flags)
     if Int(ret) == 0:
@@ -2068,8 +2068,8 @@ def set_window_title(
         lib,
         "SDL_SetWindowTitle",
         def(
-            window: Ptr[Window, MutAnyOrigin],
-            title: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[Window, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(title))],
         ) thin -> Bool,
     ]()(window, title.as_c_string_slice().unsafe_ptr())
     if not ret:
@@ -4021,7 +4021,7 @@ def gl_load_library(var path: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_GL_LoadLibrary",
-        def(path: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool,
+        def(Ptr[c_char, ImmutOrigin(origin_of(path))]) thin -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -4084,7 +4084,7 @@ def gl_get_proc_address(var proc: String) raises -> def() thin -> None:
     return _get_dylib_function[
         lib,
         "SDL_GL_GetProcAddress",
-        def(proc: Ptr[c_char, ImmutAnyOrigin]) thin -> def() thin -> None,
+        def(Ptr[c_char, ImmutOrigin(origin_of(proc))]) thin -> def() thin -> None,
     ]()(proc.as_c_string_slice().unsafe_ptr())
 
 
@@ -4111,7 +4111,7 @@ def egl_get_proc_address(var proc: String) raises -> def() thin -> None:
     return _get_dylib_function[
         lib,
         "SDL_EGL_GetProcAddress",
-        def(proc: Ptr[c_char, ImmutAnyOrigin]) thin -> def() thin -> None,
+        def(Ptr[c_char, ImmutOrigin(origin_of(proc))]) thin -> def() thin -> None,
     ]()(proc.as_c_string_slice().unsafe_ptr())
 
 
@@ -4156,7 +4156,7 @@ def gl_extension_supported(var extension: String) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_GL_ExtensionSupported",
-        def(extension: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool,
+        def(Ptr[c_char, ImmutOrigin(origin_of(extension))]) thin -> Bool,
     ]()(extension.as_c_string_slice().unsafe_ptr())
 
 

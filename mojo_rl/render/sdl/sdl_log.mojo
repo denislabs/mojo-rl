@@ -263,8 +263,8 @@ def set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
         lib,
         "SDL_SetLogPriorityPrefix",
         def(
-            priority: LogPriority,
-            prefix: Ptr[c_char, ImmutAnyOrigin],
+            LogPriority,
+            Ptr[c_char, ImmutOrigin(origin_of(prefix))],
         ) thin -> Bool,
     ]()(priority, prefix.as_c_string_slice().unsafe_ptr())
     if not ret:

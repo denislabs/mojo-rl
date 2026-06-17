@@ -2491,10 +2491,10 @@ def load_wav(
         lib,
         "SDL_LoadWAV",
         def(
-            path: Ptr[c_char, ImmutAnyOrigin],
-            spec: Ptr[AudioSpec, MutAnyOrigin],
-            audio_buf: Ptr[Ptr[UInt8, MutAnyOrigin], MutAnyOrigin],
-            audio_len: Ptr[UInt32, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[AudioSpec, MutAnyOrigin],
+            Ptr[Ptr[UInt8, MutAnyOrigin], MutAnyOrigin],
+            Ptr[UInt32, MutAnyOrigin],
         ) thin -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr(), spec, audio_buf, audio_len)
     if not ret:
