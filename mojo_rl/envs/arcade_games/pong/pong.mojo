@@ -975,23 +975,23 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
         ] = None,
     ) raises:
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var actions = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
-        ](actions_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](actions_buf)
         var rewards = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](rewards_buf)
         var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         var terminated_out = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated_buf)
         var obs = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed = Scalar[DType.uint64](rng_seed)
@@ -1085,12 +1085,14 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
         mismatch on (s, s') silently corrupted every transition and made the
         GPU-batched agent train to a uniform distribution. Keep this in lock-
         step with the obs block in `step_kernel_gpu`."""
+        # `states_buf` is read-only here; its mut=False view widens into the
+        # ImmutAnyOrigin wrapper param below.
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var obs = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
@@ -1100,7 +1102,7 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
             states: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             obs: LayoutTensor[
                 gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
@@ -1141,8 +1143,8 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
         rng_seed: UInt64 = 0,
     ) raises:
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
@@ -1180,11 +1182,11 @@ struct PongEnv[DTYPE: DType, HIT_REWARD: Float64 = 0.1](
         ] = None,
     ) raises:
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 

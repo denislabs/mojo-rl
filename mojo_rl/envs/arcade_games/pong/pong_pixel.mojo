@@ -447,20 +447,20 @@ struct PongPixelEnv[
         ] = None,
     ) raises:
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var actions = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
-        ](actions_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](actions_buf)
         var rewards = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](rewards_buf)
         var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         var terminated_out = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed = Scalar[DType.uint64](rng_seed)
@@ -702,8 +702,8 @@ struct PongPixelEnv[
         """Reset all environments. Frame stack is initialized in init_step_workspace_gpu.
         """
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
@@ -742,11 +742,11 @@ struct PongPixelEnv[
     ) raises:
         """Reset done environments and clear their frame stacks."""
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 

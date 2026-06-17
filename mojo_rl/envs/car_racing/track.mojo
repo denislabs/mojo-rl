@@ -225,7 +225,9 @@ struct TrackTile[DTYPE: DType](Copyable, ImplicitlyCopyable, Movable):
         MAX_TILES: Int
     ](
         self,
-        mut tiles: LayoutTensor[
+        # by-value (not `mut`): a concrete-origin view widens into MutAnyOrigin
+        # by value (as kernel params do); setitem writes through the pointer.
+        tiles: LayoutTensor[
             dtype,
             Layout.row_major(MAX_TILES, TILE_DATA_SIZE),
             MutAnyOrigin,
@@ -656,7 +658,8 @@ struct TrackGenerator[DTYPE: DType](Copyable, Movable):
         MAX_TILES: Int
     ](
         self,
-        mut tiles: LayoutTensor[
+        # by-value (not `mut`): see per-tile `to_buffer` above.
+        tiles: LayoutTensor[
             dtype,
             Layout.row_major(MAX_TILES, TILE_DATA_SIZE),
             MutAnyOrigin,
