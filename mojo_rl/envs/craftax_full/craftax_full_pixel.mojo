@@ -677,7 +677,7 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
     comptime TPB: Int = 256
 
     var inner: CraftaxFullEnv[Self.DTYPE]
-    var _atlas: UnsafePointer[Float32, MutAnyOrigin]
+    var _atlas: UnsafePointer[Float32, MutUntrackedOrigin]
     var _atlas_loaded: Bool
 
     def __init__(out self):

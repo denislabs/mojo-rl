@@ -428,7 +428,7 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
     comptime STEP_WS_PER_ENV: Int = 0
 
     var inner: CraftaxClassicEnv[Self.DTYPE]
-    var _atlas: UnsafePointer[Float32, MutAnyOrigin]   # CPU-side atlas
+    var _atlas: UnsafePointer[Float32, MutUntrackedOrigin]   # CPU-side atlas
     var _atlas_loaded: Bool
 
     def __init__(out self):
