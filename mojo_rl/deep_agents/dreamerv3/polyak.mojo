@@ -28,35 +28,45 @@ def _polyak_mix_k(
 
 
 @fieldwise_init
-struct _PolyakCollect(ParamVisitor):
+struct _PolyakCollect[op: Origin[mut=True]](ParamVisitor):
     var ptrs: UnsafePointer[
-        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], MutAnyOrigin
+        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], Self.op
     ]
 
     def visit(
-        mut self, name: String,
-        param: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
-        grad: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
-        n_elems: Int, apply_decay: Bool,
+        mut self,
+        name: String,
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        n_elems: Int,
+        apply_decay: Bool,
     ) raises:
-        self.ptrs[].append(
-            mptr(param.ptr)
-        )
+        self.ptrs[].append(mptr(param.ptr))
 
 
 @fieldwise_init
-struct _PolyakMix(ParamVisitor):
+struct _PolyakMix[op: Origin[mut=True]](ParamVisitor):
     var ptrs: UnsafePointer[
-        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], MutAnyOrigin
+        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], Self.op
     ]
     var rate: Scalar[DT]
     var idx: Int
 
     def visit(
-        mut self, name: String,
-        param: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
-        grad: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
-        n_elems: Int, apply_decay: Bool,
+        mut self,
+        name: String,
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        n_elems: Int,
+        apply_decay: Bool,
     ) raises:
         var dp = mptr(param.ptr)
         var sp = self.ptrs[][self.idx]
@@ -67,19 +77,25 @@ struct _PolyakMix(ParamVisitor):
 
 
 @fieldwise_init
-struct _PolyakMixGPU(ParamVisitor):
+struct _PolyakMixGPU[op: Origin[mut=True]](ParamVisitor):
     var ptrs: UnsafePointer[
-        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], MutAnyOrigin
+        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], Self.op
     ]
     var rate: Scalar[DT]
     var idx: Int
     var ctx: DeviceContext
 
     def visit(
-        mut self, name: String,
-        param: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
-        grad: TileTensor[dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...],
-        n_elems: Int, apply_decay: Bool,
+        mut self,
+        name: String,
+        param: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        grad: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        ],
+        n_elems: Int,
+        apply_decay: Bool,
     ) raises:
         var dp = mptr(param.ptr)
         var sp = self.ptrs[][self.idx]
@@ -93,18 +109,20 @@ struct _PolyakMixGPU(ParamVisitor):
 def polyak_module[
     target: StaticString, V: Module
 ](
-    mut src: V, mut dst: V, rate: Scalar[DT],
+    mut src: V,
+    mut dst: V,
+    rate: Scalar[DT],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     var sp = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
     var c = _PolyakCollect(ptrs=UnsafePointer(to=sp))
-    src.for_each_param[target, _PolyakCollect](String(""), c)
+    src.for_each_param[target, type_of(c)](String(""), c)
     comptime if target == "cpu":
         var m = _PolyakMix(ptrs=UnsafePointer(to=sp), rate=rate, idx=0)
-        dst.for_each_param[target, _PolyakMix](String(""), m)
+        dst.for_each_param[target, type_of(m)](String(""), m)
     else:
         var m = _PolyakMixGPU(
             ptrs=UnsafePointer(to=sp), rate=rate, idx=0, ctx=ctx.value()
         )
-        dst.for_each_param[target, _PolyakMixGPU](String(""), m)
+        dst.for_each_param[target, type_of(m)](String(""), m)
     _ = sp^

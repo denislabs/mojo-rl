@@ -36,14 +36,16 @@ def _pcopy_k(
 
 
 @fieldwise_init
-struct _CollectVisitor(ParamVisitor):
+struct _CollectVisitor[
+    on: Origin[mut=True], op: Origin[mut=True], ol: Origin[mut=True]
+](ParamVisitor):
     """Records (name, param-ptr, n) for every param in the source graph."""
 
-    var names: UnsafePointer[List[String], MutAnyOrigin]
+    var names: UnsafePointer[List[String], Self.on]
     var ptrs: UnsafePointer[
-        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], MutAnyOrigin
+        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], Self.op
     ]
-    var lens: UnsafePointer[List[Int], MutAnyOrigin]
+    var lens: UnsafePointer[List[Int], Self.ol]
 
     def visit(
         mut self,
@@ -58,22 +60,22 @@ struct _CollectVisitor(ParamVisitor):
         apply_decay: Bool,
     ) raises:
         self.names[].append(name)
-        self.ptrs[].append(
-            mptr(param.ptr)
-        )
+        self.ptrs[].append(mptr(param.ptr))
         self.lens[].append(n_elems)
 
 
 @fieldwise_init
-struct _CopyByNameVisitor(ParamVisitor):
+struct _CopyByNameVisitor[
+    on: Origin[mut=True], op: Origin[mut=True], ol: Origin[mut=True]
+](ParamVisitor):
     """For each destination param, copies values from the matching source
     name (skips names with no source match)."""
 
-    var names: UnsafePointer[List[String], MutAnyOrigin]
+    var names: UnsafePointer[List[String], Self.on]
     var ptrs: UnsafePointer[
-        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], MutAnyOrigin
+        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], Self.op
     ]
-    var lens: UnsafePointer[List[Int], MutAnyOrigin]
+    var lens: UnsafePointer[List[Int], Self.ol]
 
     def visit(
         mut self,
@@ -98,15 +100,17 @@ struct _CopyByNameVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _CopyByNameVisitorGPU(ParamVisitor):
+struct _CopyByNameVisitorGPU[
+    on: Origin[mut=True], op: Origin[mut=True], ol: Origin[mut=True]
+](ParamVisitor):
     """GPU mirror of `_CopyByNameVisitor` — enqueues a device copy kernel
     for each destination param whose name matches a collected source."""
 
-    var names: UnsafePointer[List[String], MutAnyOrigin]
+    var names: UnsafePointer[List[String], Self.on]
     var ptrs: UnsafePointer[
-        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], MutAnyOrigin
+        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], Self.op
     ]
-    var lens: UnsafePointer[List[Int], MutAnyOrigin]
+    var lens: UnsafePointer[List[Int], Self.ol]
     var ctx: DeviceContext
 
     def visit(
@@ -152,7 +156,7 @@ def collect_params[
         ptrs=UnsafePointer(to=ptrs),
         lens=UnsafePointer(to=lens),
     )
-    src.for_each_param[target, _CollectVisitor](String(""), cv)
+    src.for_each_param[target, type_of(cv)](String(""), cv)
 
 
 def apply_params[
@@ -173,7 +177,7 @@ def apply_params[
             ptrs=UnsafePointer(to=ptrs),
             lens=UnsafePointer(to=lens),
         )
-        dst.for_each_param[target, _CopyByNameVisitor](String(""), cp)
+        dst.for_each_param[target, type_of(cp)](String(""), cp)
     else:
         var cp = _CopyByNameVisitorGPU(
             names=UnsafePointer(to=names),
@@ -181,4 +185,4 @@ def apply_params[
             lens=UnsafePointer(to=lens),
             ctx=ctx.value(),
         )
-        dst.for_each_param[target, _CopyByNameVisitorGPU](String(""), cp)
+        dst.for_each_param[target, type_of(cp)](String(""), cp)
