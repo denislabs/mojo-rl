@@ -14,8 +14,10 @@ from ..constants import DT
 
 trait Initializer:
     @staticmethod
-    def init_weight(
-        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    def init_weight[
+        buf_origin: Origin[mut=True]
+    ](
+        buf: UnsafePointer[Scalar[DT], buf_origin],
         n_elems: Int,
         fan_in: Int,
         fan_out: Int,
@@ -23,8 +25,10 @@ trait Initializer:
         ...
 
     @staticmethod
-    def init_bias(
-        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    def init_bias[
+        buf_origin: Origin[mut=True]
+    ](
+        buf: UnsafePointer[Scalar[DT], buf_origin],
         n_elems: Int,
     ):
         ...

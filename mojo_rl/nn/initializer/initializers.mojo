@@ -23,8 +23,10 @@ comptime _TWO_PI: Float64 = 6.283185307179586
 
 struct Kaiming(Initializer):
     @staticmethod
-    def init_weight(
-        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    def init_weight[
+        buf_origin: Origin[mut=True]
+    ](
+        buf: UnsafePointer[Scalar[DT], buf_origin],
         n_elems: Int,
         fan_in: Int,
         fan_out: Int,
@@ -35,8 +37,10 @@ struct Kaiming(Initializer):
             buf[i] = Scalar[DT]((r * 2.0 - 1.0) * bound)
 
     @staticmethod
-    def init_bias(
-        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    def init_bias[
+        buf_origin: Origin[mut=True]
+    ](
+        buf: UnsafePointer[Scalar[DT], buf_origin],
         n_elems: Int,
     ):
         for i in range(n_elems):
@@ -45,8 +49,10 @@ struct Kaiming(Initializer):
 
 struct Xavier(Initializer):
     @staticmethod
-    def init_weight(
-        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    def init_weight[
+        buf_origin: Origin[mut=True]
+    ](
+        buf: UnsafePointer[Scalar[DT], buf_origin],
         n_elems: Int,
         fan_in: Int,
         fan_out: Int,
@@ -57,8 +63,10 @@ struct Xavier(Initializer):
             buf[i] = Scalar[DT]((r * 2.0 - 1.0) * bound)
 
     @staticmethod
-    def init_bias(
-        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    def init_bias[
+        buf_origin: Origin[mut=True]
+    ](
+        buf: UnsafePointer[Scalar[DT], buf_origin],
         n_elems: Int,
     ):
         for i in range(n_elems):
@@ -69,8 +77,10 @@ struct Zero(Initializer):
     """All zeros — primarily for unit tests."""
 
     @staticmethod
-    def init_weight(
-        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    def init_weight[
+        buf_origin: Origin[mut=True]
+    ](
+        buf: UnsafePointer[Scalar[DT], buf_origin],
         n_elems: Int,
         fan_in: Int,
         fan_out: Int,
@@ -79,8 +89,10 @@ struct Zero(Initializer):
             buf[i] = 0.0
 
     @staticmethod
-    def init_bias(
-        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    def init_bias[
+        buf_origin: Origin[mut=True]
+    ](
+        buf: UnsafePointer[Scalar[DT], buf_origin],
         n_elems: Int,
     ):
         for i in range(n_elems):
@@ -95,8 +107,10 @@ struct Normal[MEAN: Float64, STD: Float64](Initializer):
     but ignored — Normal is fan-independent)."""
 
     @staticmethod
-    def init_weight(
-        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    def init_weight[
+        buf_origin: Origin[mut=True]
+    ](
+        buf: UnsafePointer[Scalar[DT], buf_origin],
         n_elems: Int,
         fan_in: Int,
         fan_out: Int,
@@ -117,8 +131,10 @@ struct Normal[MEAN: Float64, STD: Float64](Initializer):
                 i += 1
 
     @staticmethod
-    def init_bias(
-        buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    def init_bias[
+        buf_origin: Origin[mut=True]
+    ](
+        buf: UnsafePointer[Scalar[DT], buf_origin],
         n_elems: Int,
     ):
         for i in range(n_elems):
