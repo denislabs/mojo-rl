@@ -85,11 +85,16 @@ struct Trainer[
     var loss_fn: Self.LOSS
 
     # CPU side (used when target=="cpu" — length-1 stubs otherwise).
-    var input_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var target_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var output_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var grad_out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var grad_in_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    # R1/muptr tier: these are `alloc`'d, manually-managed slabs freed in
+    # `__del__`, so the honest origin is `MutUntrackedOrigin` (untracked
+    # heap memory) — NOT the `MutAnyOrigin` wildcard. The wildcard erasure
+    # is confined to the forward/vjp boundary, where each slab is wrapped
+    # with `mptr(...)` to match the Module trait's `MutAnyOrigin` params.
+    var input_buf: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var target_buf: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var output_buf: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var grad_out_buf: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var grad_in_buf: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
 
     # GPU side (Some when target=="gpu", None when "cpu").
     var input_dev: Optional[DeviceBuffer[DT]]
@@ -141,21 +146,13 @@ struct Trainer[
         comptime assert (
             Self.LOSS.OUT_DIM == Self.NET.OUT_DIM
         ), "Trainer: loss N_CLASSES must equal net OUT_DIM"
-        var in_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[Scalar[DT]](
-            Self.BATCH * Self.IN_DIM
-        ))
-        var tg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[Scalar[DT]](
-            Self.BATCH * Self.OUT_DIM
-        ))
-        var out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
-            Scalar[DT]
-        ](Self.BATCH * Self.OUT_DIM))
-        var go_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[Scalar[DT]](
-            Self.BATCH * Self.OUT_DIM
-        ))
-        var gi_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[Scalar[DT]](
-            Self.BATCH * Self.IN_DIM
-        ))
+        # `alloc` returns `MutUntrackedOrigin` natively — store it directly
+        # (no `mptr` widen); the field type matches.
+        var in_buf = alloc[Scalar[DT]](Self.BATCH * Self.IN_DIM)
+        var tg_buf = alloc[Scalar[DT]](Self.BATCH * Self.OUT_DIM)
+        var out_buf = alloc[Scalar[DT]](Self.BATCH * Self.OUT_DIM)
+        var go_buf = alloc[Scalar[DT]](Self.BATCH * Self.OUT_DIM)
+        var gi_buf = alloc[Scalar[DT]](Self.BATCH * Self.IN_DIM)
         return Self(
             net=net^,
             optim=optim^,
@@ -205,21 +202,12 @@ struct Trainer[
             Self.BATCH * Self.OUT_DIM
         )
         ctx.synchronize()
-        var stub_in: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
-            Scalar[DT]
-        ](1))
-        var stub_tg: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
-            Scalar[DT]
-        ](1))
-        var stub_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
-            Scalar[DT]
-        ](1))
-        var stub_go: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
-            Scalar[DT]
-        ](1))
-        var stub_gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
-            Scalar[DT]
-        ](1))
+        # Length-1 untracked stubs (GPU uses the `*_dev` buffers instead).
+        var stub_in = alloc[Scalar[DT]](1)
+        var stub_tg = alloc[Scalar[DT]](1)
+        var stub_out = alloc[Scalar[DT]](1)
+        var stub_go = alloc[Scalar[DT]](1)
+        var stub_gi = alloc[Scalar[DT]](1)
         return Self(
             net=net^,
             optim=optim^,
@@ -271,22 +259,22 @@ struct Trainer[
         comptime assert input.flat_rank == 2, "input must be rank-2"
         comptime assert targets.flat_rank == 2, "targets must be rank-2"
         comptime if Self.target == "cpu":
-            # MutAnyOrigin laundering: trait variadics on the unified
-            # Module require origin=MutAnyOrigin. `*_buf` fields are
-            # already `UnsafePointer[Scalar[DT], MutAnyOrigin]` (see
-            # struct decl); only `input` needs rebinding.
+            # MutAnyOrigin laundering: trait variadics on the unified Module
+            # require origin=MutAnyOrigin. `input` and the untracked `*_buf`
+            # slabs are wrapped with `mptr(...)` to match the trait's by-ref
+            # MutAnyOrigin params (the wildcard is confined to this boundary).
             var input_p = mptr(input.ptr)
             var input_my = TileTensor(
                 input_p, row_major[Self.BATCH, Self.IN_DIM]()
             )
             var output = TileTensor(
-                self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
+                mptr(self.output_buf), row_major[Self.BATCH, Self.OUT_DIM]()
             )
             var grad_out = TileTensor(
-                self.grad_out_buf, row_major[Self.BATCH, Self.OUT_DIM]()
+                mptr(self.grad_out_buf), row_major[Self.BATCH, Self.OUT_DIM]()
             )
             var grad_in = TileTensor(
-                self.grad_in_buf, row_major[Self.BATCH, Self.IN_DIM]()
+                mptr(self.grad_in_buf), row_major[Self.BATCH, Self.IN_DIM]()
             )
             self.optim.zero_grad[Self.target](self.net)
             self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
@@ -419,10 +407,10 @@ struct Trainer[
             for k in range(Self.BATCH * Self.OUT_DIM):
                 self.target_buf[k] = targets[k]
             var input = TileTensor(
-                self.input_buf, row_major[Self.BATCH, Self.IN_DIM]()
+                mptr(self.input_buf), row_major[Self.BATCH, Self.IN_DIM]()
             )
             var targets = TileTensor(
-                self.target_buf, row_major[Self.BATCH, Self.OUT_DIM]()
+                mptr(self.target_buf), row_major[Self.BATCH, Self.OUT_DIM]()
             )
             return self._train_step_views(input, targets)
         else:
@@ -459,10 +447,10 @@ struct Trainer[
             for k in range(Self.BATCH * Self.IN_DIM):
                 self.input_buf[k] = input[k]
             var input = TileTensor(
-                self.input_buf, row_major[Self.BATCH, Self.IN_DIM]()
+                mptr(self.input_buf), row_major[Self.BATCH, Self.IN_DIM]()
             )
             var output = TileTensor(
-                self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
+                mptr(self.output_buf), row_major[Self.BATCH, Self.OUT_DIM]()
             )
             self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 input, output=output
@@ -603,7 +591,7 @@ struct Trainer[
             var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
             var input = TileTensor(x_ptr, row_major[Self.BATCH, Self.IN_DIM]())
             var output = TileTensor(
-                self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
+                mptr(self.output_buf), row_major[Self.BATCH, Self.OUT_DIM]()
             )
             self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 input, output=output
