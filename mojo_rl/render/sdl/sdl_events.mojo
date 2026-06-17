@@ -1579,7 +1579,9 @@ def flush_events(min_type: UInt32, max_type: UInt32) raises -> None:
     ]()(min_type, max_type)
 
 
-def poll_event(event: Ptr[Event, MutAnyOrigin]) raises -> Bool:
+def poll_event[
+    event_origin: Origin[mut=True]
+](event: Ptr[Event, event_origin]) raises -> Bool:
     """Poll for currently pending events.
 
     If `event` is not NULL, the next event is removed from the queue and stored
@@ -1625,7 +1627,7 @@ def poll_event(event: Ptr[Event, MutAnyOrigin]) raises -> Bool:
     """
 
     return _get_dylib_function[
-        lib, "SDL_PollEvent", def(event: Ptr[Event, MutAnyOrigin]) thin -> Bool
+        lib, "SDL_PollEvent", def(Ptr[Event, event_origin]) thin -> Bool
     ]()(event)
 
 

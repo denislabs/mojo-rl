@@ -2056,7 +2056,10 @@ struct GPUVertexAttribute(ImplicitlyCopyable, Movable):
 
 
 @fieldwise_init
-struct GPUVertexInputState(ImplicitlyCopyable, Movable):
+struct GPUVertexInputState[
+    vbd_origin: Origin[mut=False],
+    va_origin: Origin[mut=False],
+](ImplicitlyCopyable, Movable):
     """A structure specifying the parameters of a graphics pipeline vertex input
     state.
 
@@ -2064,12 +2067,12 @@ struct GPUVertexInputState(ImplicitlyCopyable, Movable):
     """
 
     var vertex_buffer_descriptions: Ptr[
-        GPUVertexBufferDescription, ImmutAnyOrigin
+        GPUVertexBufferDescription, Self.vbd_origin
     ]
     """A pointer to an array of vertex buffer descriptions."""
     var num_vertex_buffers: UInt32
     """The number of vertex buffer descriptions in the above array."""
-    var vertex_attributes: Ptr[GPUVertexAttribute, ImmutAnyOrigin]
+    var vertex_attributes: Ptr[GPUVertexAttribute, Self.va_origin]
     """A pointer to an array of vertex attribute descriptions."""
     var num_vertex_attributes: UInt32
     """The number of vertex attribute descriptions in the above array."""
@@ -2122,7 +2125,10 @@ struct GPUColorTargetBlendState(ImplicitlyCopyable, Movable):
 
 
 @fieldwise_init
-struct GPUShaderCreateInfo(ImplicitlyCopyable, Movable):
+struct GPUShaderCreateInfo[
+    code_origin: Origin[mut=False],
+    ep_origin: Origin[mut=False],
+](ImplicitlyCopyable, Movable):
     """A structure specifying code and metadata for creating a shader object.
 
     Docs: https://wiki.libsdl.org/SDL3/GPUShaderCreateInfo.
@@ -2130,9 +2136,9 @@ struct GPUShaderCreateInfo(ImplicitlyCopyable, Movable):
 
     var code_size: c_size_t
     """The size in bytes of the code pointed to."""
-    var code: Ptr[UInt8, ImmutAnyOrigin]
+    var code: Ptr[UInt8, Self.code_origin]
     """A pointer to shader code."""
-    var entrypoint: Ptr[c_char, ImmutAnyOrigin]
+    var entrypoint: Ptr[c_char, Self.ep_origin]
     """A pointer to a null-terminated UTF-8 string specifying the entry point function name for the shader."""
     var format: GPUShaderFormat
     """The format of the shader code."""
@@ -2317,7 +2323,9 @@ struct GPUColorTargetDescription(ImplicitlyCopyable, Movable):
 
 
 @fieldwise_init
-struct GPUGraphicsPipelineTargetInfo(ImplicitlyCopyable, Movable):
+struct GPUGraphicsPipelineTargetInfo[
+    ctd_origin: Origin[mut=False],
+](ImplicitlyCopyable, Movable):
     """A structure specifying the descriptions of render targets used in a
     graphics pipeline.
 
@@ -2325,7 +2333,7 @@ struct GPUGraphicsPipelineTargetInfo(ImplicitlyCopyable, Movable):
     """
 
     var color_target_descriptions: Ptr[
-        GPUColorTargetDescription, ImmutAnyOrigin
+        GPUColorTargetDescription, Self.ctd_origin
     ]
     """A pointer to an array of color target descriptions."""
     var num_color_targets: UInt32
@@ -2340,7 +2348,11 @@ struct GPUGraphicsPipelineTargetInfo(ImplicitlyCopyable, Movable):
 
 
 @fieldwise_init
-struct GPUGraphicsPipelineCreateInfo(ImplicitlyCopyable, Movable):
+struct GPUGraphicsPipelineCreateInfo[
+    vbd_origin: Origin[mut=False],
+    va_origin: Origin[mut=False],
+    ctd_origin: Origin[mut=False],
+](ImplicitlyCopyable, Movable):
     """A structure specifying the parameters of a graphics pipeline state.
 
     Docs: https://wiki.libsdl.org/SDL3/GPUGraphicsPipelineCreateInfo.
@@ -2350,7 +2362,7 @@ struct GPUGraphicsPipelineCreateInfo(ImplicitlyCopyable, Movable):
     """The vertex shader used by the graphics pipeline."""
     var fragment_shader: Ptr[GPUShader, MutAnyOrigin]
     """The fragment shader used by the graphics pipeline."""
-    var vertex_input_state: GPUVertexInputState
+    var vertex_input_state: GPUVertexInputState[Self.vbd_origin, Self.va_origin]
     """The vertex layout of the graphics pipeline."""
     var primitive_type: GPUPrimitiveType
     """The primitive topology of the graphics pipeline."""
@@ -2360,7 +2372,7 @@ struct GPUGraphicsPipelineCreateInfo(ImplicitlyCopyable, Movable):
     """The multisample state of the graphics pipeline."""
     var depth_stencil_state: GPUDepthStencilState
     """The depth-stencil state of the graphics pipeline."""
-    var target_info: GPUGraphicsPipelineTargetInfo
+    var target_info: GPUGraphicsPipelineTargetInfo[Self.ctd_origin]
     """Formats and blend modes for the render targets of the graphics pipeline."""
 
     var props: PropertiesID
@@ -2912,9 +2924,17 @@ def create_gpu_compute_pipeline(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def create_gpu_graphics_pipeline(
+def create_gpu_graphics_pipeline[
+    vbd_origin: Origin[mut=False],
+    va_origin: Origin[mut=False],
+    ctd_origin: Origin[mut=False],
+    info_origin: Origin[mut=False],
+](
     device: Ptr[GPUDevice, MutAnyOrigin],
-    createinfo: Ptr[GPUGraphicsPipelineCreateInfo, ImmutAnyOrigin],
+    createinfo: Ptr[
+        GPUGraphicsPipelineCreateInfo[vbd_origin, va_origin, ctd_origin],
+        info_origin,
+    ],
     out ret: Ptr[GPUGraphicsPipeline, MutAnyOrigin],
 ) raises:
     """Creates a pipeline object to be used in a graphics workflow.
@@ -2941,8 +2961,13 @@ def create_gpu_graphics_pipeline(
         lib,
         "SDL_CreateGPUGraphicsPipeline",
         def(
-            device: Ptr[GPUDevice, MutAnyOrigin],
-            createinfo: Ptr[GPUGraphicsPipelineCreateInfo, ImmutAnyOrigin],
+            Ptr[GPUDevice, MutAnyOrigin],
+            Ptr[
+                GPUGraphicsPipelineCreateInfo[
+                    vbd_origin, va_origin, ctd_origin
+                ],
+                info_origin,
+            ],
         ) thin -> Ptr[GPUGraphicsPipeline, MutAnyOrigin],
     ]()(device, createinfo)
     if Int(ret) == 0:
@@ -2986,9 +3011,15 @@ def create_gpu_sampler(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def create_gpu_shader(
+def create_gpu_shader[
+    code_origin: Origin[mut=False],
+    ep_origin: Origin[mut=False],
+    info_origin: Origin[mut=False],
+](
     device: Ptr[GPUDevice, MutAnyOrigin],
-    createinfo: Ptr[GPUShaderCreateInfo, ImmutAnyOrigin],
+    createinfo: Ptr[
+        GPUShaderCreateInfo[code_origin, ep_origin], info_origin
+    ],
     out ret: Ptr[GPUShader, MutAnyOrigin],
 ) raises:
     """Creates a shader to be used when creating a graphics pipeline.
@@ -3068,17 +3099,19 @@ def create_gpu_shader(
         lib,
         "SDL_CreateGPUShader",
         def(
-            device: Ptr[GPUDevice, MutAnyOrigin],
-            createinfo: Ptr[GPUShaderCreateInfo, ImmutAnyOrigin],
+            Ptr[GPUDevice, MutAnyOrigin],
+            Ptr[GPUShaderCreateInfo[code_origin, ep_origin], info_origin],
         ) thin -> Ptr[GPUShader, MutAnyOrigin],
     ]()(device, createinfo)
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def create_gpu_texture(
+def create_gpu_texture[
+    info_origin: Origin[mut=False],
+](
     device: Ptr[GPUDevice, MutAnyOrigin],
-    createinfo: Ptr[GPUTextureCreateInfo, ImmutAnyOrigin],
+    createinfo: Ptr[GPUTextureCreateInfo, info_origin],
     out ret: Ptr[GPUTexture, MutAnyOrigin],
 ) raises:
     """Creates a texture object to be used in graphics or compute workflows.
@@ -3132,8 +3165,8 @@ def create_gpu_texture(
         lib,
         "SDL_CreateGPUTexture",
         def(
-            device: Ptr[GPUDevice, MutAnyOrigin],
-            createinfo: Ptr[GPUTextureCreateInfo, ImmutAnyOrigin],
+            Ptr[GPUDevice, MutAnyOrigin],
+            Ptr[GPUTextureCreateInfo, info_origin],
         ) thin -> Ptr[GPUTexture, MutAnyOrigin],
     ]()(device, createinfo)
     if Int(ret) == 0:
