@@ -30,7 +30,6 @@ weight init (trunc_normal scaled) is deferred to the consumer PR; `make`
 forwards the supplied `INIT` (treated like a dense layer of fan IN→OUT).
 """
 
-from std.memory import alloc
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
@@ -258,24 +257,31 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 # Accelerate) `xblk @ kernel[k]`, then scatter + add bias.
                 # kernel[k] = w_p[w_blk + i*OPB + o] is already a row-major
                 # [IPB, OPB] tile at offset w_blk. Scratch reused per block.
-                var xblk_buf = alloc[Scalar[DT]](BATCH * Self.IPB)
-                var oblk_buf = alloc[Scalar[DT]](BATCH * Self.OPB)
+                # R1: owning RAII `List`s replace the raw alloc/free scratch.
+                # The `TileTensor(list, …)` ctor origin-LINKS each tile to its
+                # list (no `MutAnyOrigin` wildcard, no manual `free`).
+                var xblk_list = List[Scalar[DT]](
+                    length=BATCH * Self.IPB, fill=Scalar[DT](0)
+                )
+                var oblk_list = List[Scalar[DT]](
+                    length=BATCH * Self.OPB, fill=Scalar[DT](0)
+                )
                 for k in range(Self.BLOCKS):
                     var in_col0 = k * Self.IPB
                     for b in range(BATCH):
                         var xb_base = b * Self.IPB
                         var src_base = b * Self.IN + in_col0
                         for i in range(Self.IPB):
-                            xblk_buf[xb_base + i] = in_p[src_base + i]
+                            xblk_list[xb_base + i] = in_p[src_base + i]
                     var w_blk = k * Self.IPB * Self.OPB
                     var xblk_tt = TileTensor(
-                        xblk_buf, row_major[BATCH, Self.IPB](),
+                        xblk_list, row_major[BATCH, Self.IPB](),
                     )
                     var kernel_k_tt = TileTensor(
                         w_p + w_blk, row_major[Self.IPB, Self.OPB](),
                     )
                     var oblk_tt = TileTensor(
-                        oblk_buf, row_major[BATCH, Self.OPB](),
+                        oblk_list, row_major[BATCH, Self.OPB](),
                     )
                     max_matmul[target="cpu"](oblk_tt, xblk_tt, kernel_k_tt, None)
                     var out_col0 = k * Self.OPB
@@ -284,10 +290,8 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                         var dst_base = b * Self.OUT + out_col0
                         for o in range(Self.OPB):
                             out_p[dst_base + o] = (
-                                oblk_buf[ob_base + o] + b_p[out_col0 + o]
+                                oblk_list[ob_base + o] + b_p[out_col0 + o]
                             )
-                oblk_buf.free()
-                xblk_buf.free()
         else:
             var ctx = self.ts.ctx.value()
             var w_p = mptr(self.weight.val.dev.value().unsafe_ptr())
@@ -369,26 +373,34 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                 comptime if Self.BLOCKS == 1:
                     # Dense: x is already contiguous [BATCH, IN]; transpose
                     # into cT [IN, BATCH] and matmul straight into the temp.
-                    var cT_buf = alloc[Scalar[DT]](BATCH * Self.IN)
-                    var dW_buf = alloc[Scalar[DT]](Self.IN * Self.OUT)
+                    var cT_list = List[Scalar[DT]](
+                        length=BATCH * Self.IN, fill=Scalar[DT](0)
+                    )
+                    var dW_list = List[Scalar[DT]](
+                        length=Self.IN * Self.OUT, fill=Scalar[DT](0)
+                    )
                     for b in range(BATCH):
                         for i in range(Self.IN):
-                            cT_buf[i * BATCH + b] = x_p[b * Self.IN + i]
+                            cT_list[i * BATCH + b] = x_p[b * Self.IN + i]
                     var cT_tt = TileTensor(
-                        cT_buf, row_major[Self.IN, BATCH](),
+                        cT_list, row_major[Self.IN, BATCH](),
                     )
                     var dW_tt = TileTensor(
-                        dW_buf, row_major[Self.IN, Self.OUT](),
+                        dW_list, row_major[Self.IN, Self.OUT](),
                     )
                     max_matmul[target="cpu"](dW_tt, cT_tt, grad_output_v, None)
                     for idx in range(Self.IN * Self.OUT):
-                        gw_p[idx] = gw_p[idx] + dW_buf[idx]
-                    dW_buf.free()
-                    cT_buf.free()
+                        gw_p[idx] = gw_p[idx] + dW_list[idx]
                 else:
-                    var xT_buf = alloc[Scalar[DT]](Self.IPB * BATCH)
-                    var gob_buf = alloc[Scalar[DT]](BATCH * Self.OPB)
-                    var dW_buf = alloc[Scalar[DT]](Self.IPB * Self.OPB)
+                    var xT_list = List[Scalar[DT]](
+                        length=Self.IPB * BATCH, fill=Scalar[DT](0)
+                    )
+                    var gob_list = List[Scalar[DT]](
+                        length=BATCH * Self.OPB, fill=Scalar[DT](0)
+                    )
+                    var dW_list = List[Scalar[DT]](
+                        length=Self.IPB * Self.OPB, fill=Scalar[DT](0)
+                    )
                     for k in range(Self.BLOCKS):
                         var in_col0 = k * Self.IPB
                         var out_col0 = k * Self.OPB
@@ -396,27 +408,24 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                         for b in range(BATCH):
                             var x_src = b * Self.IN + in_col0
                             for i in range(Self.IPB):
-                                xT_buf[i * BATCH + b] = x_p[x_src + i]
+                                xT_list[i * BATCH + b] = x_p[x_src + i]
                             var go_src = b * Self.OUT + out_col0
                             var gob_dst = b * Self.OPB
                             for o in range(Self.OPB):
-                                gob_buf[gob_dst + o] = go_p[go_src + o]
+                                gob_list[gob_dst + o] = go_p[go_src + o]
                         var xT_tt = TileTensor(
-                            xT_buf, row_major[Self.IPB, BATCH](),
+                            xT_list, row_major[Self.IPB, BATCH](),
                         )
                         var gob_tt = TileTensor(
-                            gob_buf, row_major[BATCH, Self.OPB](),
+                            gob_list, row_major[BATCH, Self.OPB](),
                         )
                         var dW_tt = TileTensor(
-                            dW_buf, row_major[Self.IPB, Self.OPB](),
+                            dW_list, row_major[Self.IPB, Self.OPB](),
                         )
                         max_matmul[target="cpu"](dW_tt, xT_tt, gob_tt, None)
                         var w_blk = k * Self.IPB * Self.OPB
                         for idx in range(Self.IPB * Self.OPB):
-                            gw_p[w_blk + idx] = gw_p[w_blk + idx] + dW_buf[idx]
-                    dW_buf.free()
-                    gob_buf.free()
-                    xT_buf.free()
+                            gw_p[w_blk + idx] = gw_p[w_blk + idx] + dW_list[idx]
             else:
                 var ctx = self.ts.ctx.value()
                 var gw_p = mptr(self.weight.grd.dev.value().unsafe_ptr())
@@ -473,24 +482,28 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                     grad_input_v, grad_output_v, w_tt, None,
                 )
             else:
-                var gob_buf2 = alloc[Scalar[DT]](BATCH * Self.OPB)
-                var gxb_buf = alloc[Scalar[DT]](BATCH * Self.IPB)
+                var gob_list2 = List[Scalar[DT]](
+                    length=BATCH * Self.OPB, fill=Scalar[DT](0)
+                )
+                var gxb_list = List[Scalar[DT]](
+                    length=BATCH * Self.IPB, fill=Scalar[DT](0)
+                )
                 for k in range(Self.BLOCKS):
                     var out_col0 = k * Self.OPB
                     for b in range(BATCH):
                         var go_src = b * Self.OUT + out_col0
                         var gob_dst = b * Self.OPB
                         for o in range(Self.OPB):
-                            gob_buf2[gob_dst + o] = go_p[go_src + o]
+                            gob_list2[gob_dst + o] = go_p[go_src + o]
                     var w_blk = k * Self.IPB * Self.OPB
                     var gob_tt = TileTensor(
-                        gob_buf2, row_major[BATCH, Self.OPB](),
+                        gob_list2, row_major[BATCH, Self.OPB](),
                     )
                     var kernel_k_tt = TileTensor(
                         w_p + w_blk, row_major[Self.IPB, Self.OPB](),
                     )
                     var gxb_tt = TileTensor(
-                        gxb_buf, row_major[BATCH, Self.IPB](),
+                        gxb_list, row_major[BATCH, Self.IPB](),
                     )
                     max_matmul[transpose_b=True, target="cpu"](
                         gxb_tt, gob_tt, kernel_k_tt, None,
@@ -500,9 +513,7 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
                         var gxb_src = b * Self.IPB
                         var dst = b * Self.IN + in_col0
                         for i in range(Self.IPB):
-                            gi_p[dst + i] = gxb_buf[gxb_src + i]
-                gxb_buf.free()
-                gob_buf2.free()
+                            gi_p[dst + i] = gxb_list[gxb_src + i]
         else:
             var ctx = self.ts.ctx.value()
             var w_p = mptr(self.weight.val.dev.value().unsafe_ptr())
