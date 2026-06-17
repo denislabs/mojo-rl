@@ -1005,8 +1005,7 @@ struct ILQRGPUBatched[
         var z_seq_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._N * Self._L),
-            MutAnyOrigin,
-        ](self.z_seq_buf.unsafe_ptr())
+        ](self.z_seq_buf)
         ctx.enqueue_function[ilqr_copy_z0_kernel[dtype, Self._N, Self._L]](
             z0,
             z_seq_view,
@@ -1024,8 +1023,7 @@ struct ILQRGPUBatched[
         var z_trial_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._N * Self._L),
-            MutAnyOrigin,
-        ](self.z_trial_buf.unsafe_ptr())
+        ](self.z_trial_buf)
         ctx.enqueue_function[ilqr_copy_z0_kernel[dtype, Self._N, Self._L]](
             z0,
             z_trial_view,
@@ -1050,8 +1048,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._L),
-                    MutAnyOrigin,
-                ](self.z_seq_buf.unsafe_ptr() + t * Self._N * Self._L)
+                ](
+                    self.z_seq_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._L, Self._N * Self._L
+                    )
+                )
             )
             var u_t = rebind[
                 LayoutTensor[
@@ -1063,8 +1064,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._A),
-                    MutAnyOrigin,
-                ](self.U_buf.unsafe_ptr() + t * Self._N * Self._A)
+                ](
+                    self.U_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._A, Self._N * Self._A
+                    )
+                )
             )
             var z_next = rebind[
                 LayoutTensor[
@@ -1076,12 +1080,21 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._L),
-                    MutAnyOrigin,
-                ](self.z_seq_buf.unsafe_ptr() + (t + 1) * Self._N * Self._L)
+                ](
+                    self.z_seq_buf.create_sub_buffer[dtype](
+                        (t + 1) * Self._N * Self._L, Self._N * Self._L
+                    )
+                )
             )
-            var c_t = LayoutTensor[
-                dtype, Layout.row_major(Self._N), MutAnyOrigin
-            ](self.step_cost_buf.unsafe_ptr() + t * Self._N)
+            var c_t = rebind[
+                LayoutTensor[dtype, Layout.row_major(Self._N), MutAnyOrigin]
+            ](
+                LayoutTensor[dtype, Layout.row_major(Self._N)](
+                    self.step_cost_buf.create_sub_buffer[dtype](
+                        t * Self._N, Self._N
+                    )
+                )
+            )
             callback.step_gpu[Self._N](ctx, z_t, u_t, z_next, c_t)
 
         self._terminal_on_z_seq(ctx, callback)
@@ -1096,9 +1109,11 @@ struct ILQRGPUBatched[
                 MutAnyOrigin,
             ]
         ](
-            LayoutTensor[
-                dtype, Layout.row_major(Self._N, Self._L), MutAnyOrigin
-            ](self.z_seq_buf.unsafe_ptr() + Self._T * Self._N * Self._L)
+            LayoutTensor[dtype, Layout.row_major(Self._N, Self._L)](
+                self.z_seq_buf.create_sub_buffer[dtype](
+                    Self._T * Self._N * Self._L, Self._N * Self._L
+                )
+            )
         )
         var Vz = rebind[
             LayoutTensor[
@@ -1107,9 +1122,9 @@ struct ILQRGPUBatched[
                 MutAnyOrigin,
             ]
         ](
-            LayoutTensor[
-                dtype, Layout.row_major(Self._N, Self._L), MutAnyOrigin
-            ](self.V_z_term_buf.unsafe_ptr())
+            LayoutTensor[dtype, Layout.row_major(Self._N, Self._L)](
+                self.V_z_term_buf
+            )
         )
         var Vzz = rebind[
             LayoutTensor[
@@ -1121,11 +1136,10 @@ struct ILQRGPUBatched[
             LayoutTensor[
                 dtype,
                 Layout.row_major(Self._N, Self._L, Self._L),
-                MutAnyOrigin,
-            ](self.V_zz_term_buf.unsafe_ptr())
+            ](self.V_zz_term_buf)
         )
-        var term = LayoutTensor[dtype, Layout.row_major(Self._N), MutAnyOrigin](
-            self.term_cost_buf.unsafe_ptr()
+        var term = LayoutTensor[dtype, Layout.row_major(Self._N)](
+            self.term_cost_buf
         )
         callback.terminal_gpu[Self._N](ctx, z_T, Vz, Vzz, term)
 
@@ -1139,9 +1153,11 @@ struct ILQRGPUBatched[
                 MutAnyOrigin,
             ]
         ](
-            LayoutTensor[
-                dtype, Layout.row_major(Self._N, Self._L), MutAnyOrigin
-            ](self.z_trial_buf.unsafe_ptr() + Self._T * Self._N * Self._L)
+            LayoutTensor[dtype, Layout.row_major(Self._N, Self._L)](
+                self.z_trial_buf.create_sub_buffer[dtype](
+                    Self._T * Self._N * Self._L, Self._N * Self._L
+                )
+            )
         )
         var Vz = rebind[
             LayoutTensor[
@@ -1150,9 +1166,9 @@ struct ILQRGPUBatched[
                 MutAnyOrigin,
             ]
         ](
-            LayoutTensor[
-                dtype, Layout.row_major(Self._N, Self._L), MutAnyOrigin
-            ](self.V_z_term_buf.unsafe_ptr())
+            LayoutTensor[dtype, Layout.row_major(Self._N, Self._L)](
+                self.V_z_term_buf
+            )
         )
         var Vzz = rebind[
             LayoutTensor[
@@ -1164,24 +1180,23 @@ struct ILQRGPUBatched[
             LayoutTensor[
                 dtype,
                 Layout.row_major(Self._N, Self._L, Self._L),
-                MutAnyOrigin,
-            ](self.V_zz_term_buf.unsafe_ptr())
+            ](self.V_zz_term_buf)
         )
-        var term = LayoutTensor[dtype, Layout.row_major(Self._N), MutAnyOrigin](
-            self.term_cost_buf.unsafe_ptr()
+        var term = LayoutTensor[dtype, Layout.row_major(Self._N)](
+            self.term_cost_buf
         )
         callback.terminal_gpu[Self._N](ctx, z_T, Vz, Vzz, term)
 
     def _reduce_total_cost(mut self, ctx: DeviceContext) raises:
         var step_view = LayoutTensor[
-            dtype, Layout.row_major(Self._T * Self._N), MutAnyOrigin
-        ](self.step_cost_buf.unsafe_ptr())
-        var term_view = LayoutTensor[
-            dtype, Layout.row_major(Self._N), MutAnyOrigin
-        ](self.term_cost_buf.unsafe_ptr())
-        var out_view = LayoutTensor[
-            dtype, Layout.row_major(Self._N), MutAnyOrigin
-        ](self.total_cost_buf.unsafe_ptr())
+            dtype, Layout.row_major(Self._T * Self._N)
+        ](self.step_cost_buf)
+        var term_view = LayoutTensor[dtype, Layout.row_major(Self._N)](
+            self.term_cost_buf
+        )
+        var out_view = LayoutTensor[dtype, Layout.row_major(Self._N)](
+            self.total_cost_buf
+        )
         ctx.enqueue_function[ilqr_reduce_cost_kernel[dtype, Self._T, Self._N]](
             step_view,
             term_view,
@@ -1192,14 +1207,14 @@ struct ILQRGPUBatched[
 
     def _reduce_trial_cost(mut self, ctx: DeviceContext) raises:
         var step_view = LayoutTensor[
-            dtype, Layout.row_major(Self._T * Self._N), MutAnyOrigin
-        ](self.step_cost_buf.unsafe_ptr())
-        var term_view = LayoutTensor[
-            dtype, Layout.row_major(Self._N), MutAnyOrigin
-        ](self.term_cost_buf.unsafe_ptr())
-        var out_view = LayoutTensor[
-            dtype, Layout.row_major(Self._N), MutAnyOrigin
-        ](self.trial_cost_buf.unsafe_ptr())
+            dtype, Layout.row_major(Self._T * Self._N)
+        ](self.step_cost_buf)
+        var term_view = LayoutTensor[dtype, Layout.row_major(Self._N)](
+            self.term_cost_buf
+        )
+        var out_view = LayoutTensor[dtype, Layout.row_major(Self._N)](
+            self.trial_cost_buf
+        )
         ctx.enqueue_function[ilqr_reduce_cost_kernel[dtype, Self._T, Self._N]](
             step_view,
             term_view,
@@ -1222,8 +1237,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._L),
-                    MutAnyOrigin,
-                ](self.z_seq_buf.unsafe_ptr() + t * Self._N * Self._L)
+                ](
+                    self.z_seq_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._L, Self._N * Self._L
+                    )
+                )
             )
             var u_t = rebind[
                 LayoutTensor[
@@ -1235,8 +1253,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._A),
-                    MutAnyOrigin,
-                ](self.U_buf.unsafe_ptr() + t * Self._N * Self._A)
+                ](
+                    self.U_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._A, Self._N * Self._A
+                    )
+                )
             )
             var A_t = rebind[
                 LayoutTensor[
@@ -1248,8 +1269,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._L, Self._L),
-                    MutAnyOrigin,
-                ](self.A_seq_buf.unsafe_ptr() + t * Self._N * Self._LL)
+                ](
+                    self.A_seq_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._LL, Self._N * Self._LL
+                    )
+                )
             )
             var B_t = rebind[
                 LayoutTensor[
@@ -1261,8 +1285,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._L, Self._A),
-                    MutAnyOrigin,
-                ](self.B_seq_buf.unsafe_ptr() + t * Self._N * Self._LA)
+                ](
+                    self.B_seq_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._LA, Self._N * Self._LA
+                    )
+                )
             )
             var lz_t = rebind[
                 LayoutTensor[
@@ -1274,8 +1301,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._L),
-                    MutAnyOrigin,
-                ](self.l_z_seq_buf.unsafe_ptr() + t * Self._N * Self._L)
+                ](
+                    self.l_z_seq_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._L, Self._N * Self._L
+                    )
+                )
             )
             var lu_t = rebind[
                 LayoutTensor[
@@ -1287,8 +1317,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._A),
-                    MutAnyOrigin,
-                ](self.l_u_seq_buf.unsafe_ptr() + t * Self._N * Self._A)
+                ](
+                    self.l_u_seq_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._A, Self._N * Self._A
+                    )
+                )
             )
             var lzz_t = rebind[
                 LayoutTensor[
@@ -1300,8 +1333,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._L, Self._L),
-                    MutAnyOrigin,
-                ](self.l_zz_seq_buf.unsafe_ptr() + t * Self._N * Self._LL)
+                ](
+                    self.l_zz_seq_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._LL, Self._N * Self._LL
+                    )
+                )
             )
             var luu_t = rebind[
                 LayoutTensor[
@@ -1313,8 +1349,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._A, Self._A),
-                    MutAnyOrigin,
-                ](self.l_uu_seq_buf.unsafe_ptr() + t * Self._N * Self._AA)
+                ](
+                    self.l_uu_seq_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._AA, Self._N * Self._AA
+                    )
+                )
             )
             var lzu_t = rebind[
                 LayoutTensor[
@@ -1326,8 +1365,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._L, Self._A),
-                    MutAnyOrigin,
-                ](self.l_zu_seq_buf.unsafe_ptr() + t * Self._N * Self._LA)
+                ](
+                    self.l_zu_seq_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._LA, Self._N * Self._LA
+                    )
+                )
             )
             callback.linearize_gpu[Self._N](
                 ctx, z_t, u_t, A_t, B_t, lz_t, lu_t, lzz_t, luu_t, lzu_t
@@ -1339,57 +1381,48 @@ struct ILQRGPUBatched[
         var A_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._LL),
-            MutAnyOrigin,
-        ](self.A_seq_buf.unsafe_ptr())
+        ](self.A_seq_buf)
         var B_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._LA),
-            MutAnyOrigin,
-        ](self.B_seq_buf.unsafe_ptr())
+        ](self.B_seq_buf)
         var lz_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._L),
-            MutAnyOrigin,
-        ](self.l_z_seq_buf.unsafe_ptr())
+        ](self.l_z_seq_buf)
         var lu_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._A),
-            MutAnyOrigin,
-        ](self.l_u_seq_buf.unsafe_ptr())
+        ](self.l_u_seq_buf)
         var lzz_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._LL),
-            MutAnyOrigin,
-        ](self.l_zz_seq_buf.unsafe_ptr())
+        ](self.l_zz_seq_buf)
         var luu_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._AA),
-            MutAnyOrigin,
-        ](self.l_uu_seq_buf.unsafe_ptr())
+        ](self.l_uu_seq_buf)
         var lzu_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._LA),
-            MutAnyOrigin,
-        ](self.l_zu_seq_buf.unsafe_ptr())
-        var Vz_view = LayoutTensor[
-            dtype, Layout.row_major(Self._N * Self._L), MutAnyOrigin
-        ](self.V_z_term_buf.unsafe_ptr())
+        ](self.l_zu_seq_buf)
+        var Vz_view = LayoutTensor[dtype, Layout.row_major(Self._N * Self._L)](
+            self.V_z_term_buf
+        )
         var Vzz_view = LayoutTensor[
-            dtype, Layout.row_major(Self._N * Self._LL), MutAnyOrigin
-        ](self.V_zz_term_buf.unsafe_ptr())
+            dtype, Layout.row_major(Self._N * Self._LL)
+        ](self.V_zz_term_buf)
         var K_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._LA),
-            MutAnyOrigin,
-        ](self.K_seq_buf.unsafe_ptr())
+        ](self.K_seq_buf)
         var k_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._A),
-            MutAnyOrigin,
-        ](self.k_seq_buf.unsafe_ptr())
-        var bw_view = LayoutTensor[
-            DType.int32, Layout.row_major(Self._N), MutAnyOrigin
-        ](self.bw_ok_buf.unsafe_ptr())
+        ](self.k_seq_buf)
+        var bw_view = LayoutTensor[DType.int32, Layout.row_major(Self._N)](
+            self.bw_ok_buf
+        )
         ctx.enqueue_function[
             ilqr_backward_pass_kernel[dtype, Self._N, Self._T, Self._L, Self._A]
         ](
@@ -1416,33 +1449,27 @@ struct ILQRGPUBatched[
         var U_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._A),
-            MutAnyOrigin,
-        ](self.U_buf.unsafe_ptr())
+        ](self.U_buf)
         var k_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._A),
-            MutAnyOrigin,
-        ](self.k_seq_buf.unsafe_ptr())
+        ](self.k_seq_buf)
         var K_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._LA),
-            MutAnyOrigin,
-        ](self.K_seq_buf.unsafe_ptr())
+        ](self.K_seq_buf)
         var zseq_view = LayoutTensor[
             dtype,
             Layout.row_major((Self._T + 1) * Self._N * Self._L),
-            MutAnyOrigin,
-        ](self.z_seq_buf.unsafe_ptr())
+        ](self.z_seq_buf)
         var ztrial_view = LayoutTensor[
             dtype,
             Layout.row_major((Self._T + 1) * Self._N * Self._L),
-            MutAnyOrigin,
-        ](self.z_trial_buf.unsafe_ptr())
+        ](self.z_trial_buf)
         var Utrial_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._A),
-            MutAnyOrigin,
-        ](self.U_trial_buf.unsafe_ptr())
+        ](self.U_trial_buf)
         for t in range(Self._T):
             ctx.enqueue_function[
                 ilqr_apply_control_update_kernel[
@@ -1470,8 +1497,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._L),
-                    MutAnyOrigin,
-                ](self.z_trial_buf.unsafe_ptr() + t * Self._N * Self._L)
+                ](
+                    self.z_trial_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._L, Self._N * Self._L
+                    )
+                )
             )
             var u_t = rebind[
                 LayoutTensor[
@@ -1483,8 +1513,11 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._A),
-                    MutAnyOrigin,
-                ](self.U_trial_buf.unsafe_ptr() + t * Self._N * Self._A)
+                ](
+                    self.U_trial_buf.create_sub_buffer[dtype](
+                        t * Self._N * Self._A, Self._N * Self._A
+                    )
+                )
             )
             var z_next = rebind[
                 LayoutTensor[
@@ -1496,12 +1529,21 @@ struct ILQRGPUBatched[
                 LayoutTensor[
                     dtype,
                     Layout.row_major(Self._N, Self._L),
-                    MutAnyOrigin,
-                ](self.z_trial_buf.unsafe_ptr() + (t + 1) * Self._N * Self._L)
+                ](
+                    self.z_trial_buf.create_sub_buffer[dtype](
+                        (t + 1) * Self._N * Self._L, Self._N * Self._L
+                    )
+                )
             )
-            var c_t = LayoutTensor[
-                dtype, Layout.row_major(Self._N), MutAnyOrigin
-            ](self.step_cost_buf.unsafe_ptr() + t * Self._N)
+            var c_t = rebind[
+                LayoutTensor[dtype, Layout.row_major(Self._N), MutAnyOrigin]
+            ](
+                LayoutTensor[dtype, Layout.row_major(Self._N)](
+                    self.step_cost_buf.create_sub_buffer[dtype](
+                        t * Self._N, Self._N
+                    )
+                )
+            )
             callback.step_gpu[Self._N](ctx, z_t, u_t, z_next, c_t)
 
         self._terminal_on_z_trial(ctx, callback)
@@ -1510,29 +1552,25 @@ struct ILQRGPUBatched[
         var Utrial_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._A),
-            MutAnyOrigin,
-        ](self.U_trial_buf.unsafe_ptr())
+        ](self.U_trial_buf)
         var ztrial_view = LayoutTensor[
             dtype,
             Layout.row_major((Self._T + 1) * Self._N * Self._L),
-            MutAnyOrigin,
-        ](self.z_trial_buf.unsafe_ptr())
-        var trial_view = LayoutTensor[
-            dtype, Layout.row_major(Self._N), MutAnyOrigin
-        ](self.trial_cost_buf.unsafe_ptr())
+        ](self.z_trial_buf)
+        var trial_view = LayoutTensor[dtype, Layout.row_major(Self._N)](
+            self.trial_cost_buf
+        )
         var U_view = LayoutTensor[
             dtype,
             Layout.row_major(Self._T * Self._N * Self._A),
-            MutAnyOrigin,
-        ](self.U_buf.unsafe_ptr())
+        ](self.U_buf)
         var zseq_view = LayoutTensor[
             dtype,
             Layout.row_major((Self._T + 1) * Self._N * Self._L),
-            MutAnyOrigin,
-        ](self.z_seq_buf.unsafe_ptr())
-        var total_view = LayoutTensor[
-            dtype, Layout.row_major(Self._N), MutAnyOrigin
-        ](self.total_cost_buf.unsafe_ptr())
+        ](self.z_seq_buf)
+        var total_view = LayoutTensor[dtype, Layout.row_major(Self._N)](
+            self.total_cost_buf
+        )
         ctx.enqueue_function[
             ilqr_accept_kernel[dtype, Self._N, Self._T, Self._L, Self._A]
         ](
