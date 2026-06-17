@@ -44,15 +44,15 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
     comptime ACT = Self.ACT_
     comptime CAP = Self.CAP_
 
-    var obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var act: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var dne: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var obs: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var act: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var rew: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var dne: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
     # Per-transition task id (DT-encoded), [CAP]. Written only by the
     # multi-task `record_task` path; the single-task `record` never touches it
     # (so the single-task RNG/compute stream is byte-identical). Allocated
     # always — a tiny [CAP] buffer that costs nothing when unused.
-    var task: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var task: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
     var size: Int
     var pos: Int
 
@@ -75,7 +75,7 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
         """Trait factory. CPU backend — `ctx` is ignored."""
         comptime assert target == "cpu", (
             "SequenceReplay is the CPU backend; use GPUSequenceReplay for"
-            " target == \"gpu\""
+            ' target == "gpu"'
         )
         return Self.new()
 
@@ -140,7 +140,8 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
         return self.pos
 
     def sample_batch[
-        B: Int, T: Int,
+        B: Int,
+        T: Int,
     ](
         mut self,
         obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -187,14 +188,17 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
                 dne_out[b * T + k] = self.dne[phys]
 
     def sample_batch_task[
-        B: Int, T: Int,
+        B: Int,
+        T: Int,
     ](
         mut self,
         obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
         act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
         rew_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
         dne_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        task_out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B] one task/window
+        task_out: UnsafePointer[
+            Scalar[DT], MutAnyOrigin
+        ],  # [B] one task/window
     ) raises:
         """Multi-task variant of `sample_batch`: identical window sampling, plus
         one `task_id` per window written to `task_out[b]` (read at the window's

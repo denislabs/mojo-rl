@@ -90,7 +90,9 @@ def _obs_dequant[SDT: DType](x: Scalar[SDT]) -> Scalar[DT]:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _store_one_kernel[OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT](
+def _store_one_kernel[
+    OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT
+](
     stage_s: LayoutTensor[DT, Layout.row_major(OBS), MutAnyOrigin],
     stage_a: LayoutTensor[DT, Layout.row_major(ACT), MutAnyOrigin],
     stage_r: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
@@ -123,9 +125,9 @@ def _store_one_kernel[OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT](
         buf_d[s] = stage_d[0]
 
 
-def _increment_rng_offset_kernel[BATCH: Int](
-    offset: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
-):
+def _increment_rng_offset_kernel[
+    BATCH: Int
+](offset: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],):
     """Bump the device RNG offset by `2 * BATCH` (the same stride the host
     used). Launch grid=(1,), block=(1,). Enqueued AFTER the sample kernel
     so the sample reads offset N and the next call reads N + 2·BATCH —
@@ -136,7 +138,9 @@ def _increment_rng_offset_kernel[BATCH: Int](
         offset[0] = offset[0] + UInt64(BATCH * 2)
 
 
-def _bump_size_kernel[CAP: Int](
+def _bump_size_kernel[
+    CAP: Int
+](
     size_buf: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
     n: Int32,
 ):
@@ -155,10 +159,10 @@ def _bump_size_kernel[CAP: Int](
         size_buf[0] = Scalar[DType.int32](s)
 
 
-def _sample_indices_range_kernel[BATCH: Int](
-    indices: LayoutTensor[
-        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
-    ],
+def _sample_indices_range_kernel[
+    BATCH: Int
+](
+    indices: LayoutTensor[DType.int32, Layout.row_major(BATCH), MutAnyOrigin],
     lo: Int32,
     hi: Int32,
     seed: UInt64,
@@ -187,10 +191,10 @@ def _sample_indices_range_kernel[BATCH: Int](
     indices[i] = Scalar[DType.int32](idx)
 
 
-def _sample_indices_kernel[BATCH: Int](
-    indices: LayoutTensor[
-        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
-    ],
+def _sample_indices_kernel[
+    BATCH: Int
+](
+    indices: LayoutTensor[DType.int32, Layout.row_major(BATCH), MutAnyOrigin],
     size_buf: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
     seed: UInt64,
     offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
@@ -223,10 +227,10 @@ def _sample_indices_kernel[BATCH: Int](
     indices[i] = Scalar[DType.int32](idx)
 
 
-def _sample_indices_ere_kernel[BATCH: Int, CAP: Int](
-    indices: LayoutTensor[
-        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
-    ],
+def _sample_indices_ere_kernel[
+    BATCH: Int, CAP: Int
+](
+    indices: LayoutTensor[DType.int32, Layout.row_major(BATCH), MutAnyOrigin],
     size: Int32,
     write_pos: Int32,
     c_k: Int32,
@@ -278,7 +282,11 @@ def _sample_indices_ere_kernel[BATCH: Int, CAP: Int](
 
 
 def _gather_batch_kernel[
-    BATCH: Int, OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT,
+    BATCH: Int,
+    OBS: Int,
+    ACT: Int,
+    CAP: Int,
+    SDT: DType = DT,
 ](
     mb_s: LayoutTensor[DT, Layout.row_major(BATCH, OBS), MutAnyOrigin],
     mb_a: LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin],
@@ -290,9 +298,7 @@ def _gather_batch_kernel[
     buf_r: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
     buf_sp: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
-    indices: LayoutTensor[
-        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
-    ],
+    indices: LayoutTensor[DType.int32, Layout.row_major(BATCH), MutAnyOrigin],
 ):
     """Element-parallel gather: one thread per (batch lane × obs element).
 
@@ -325,7 +331,11 @@ def _gather_batch_kernel[
 
 
 def _store_batch_kernel[
-    N_ENVS: Int, OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT,
+    N_ENVS: Int,
+    OBS: Int,
+    ACT: Int,
+    CAP: Int,
+    SDT: DType = DT,
 ](
     src_obs: LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin],
     src_act: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
@@ -371,9 +381,9 @@ def _store_batch_kernel[
 
 
 @fieldwise_init
-struct GPUReplay[
-    OBS_: Int, ACT_: Int, CAP_: Int, OBS_STORE_DT_: DType = DT
-](ReplayBuffer):
+struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int, OBS_STORE_DT_: DType = DT](
+    ReplayBuffer
+):
     """Device-resident circular replay buffer.
 
     Stored layout:
@@ -500,12 +510,21 @@ struct GPUReplay[
         hd[0] = Scalar[DT](0.0)
 
         return Self(
-            obs=s^, act=a^, rew=r^, nxt=sp^, dne=d^,
-            stage_obs=stage_s^, stage_act=stage_a^, stage_rew=stage_r^,
-            stage_nxt=stage_sp^, stage_dne=stage_d^,
+            obs=s^,
+            act=a^,
+            rew=r^,
+            nxt=sp^,
+            dne=d^,
+            stage_obs=stage_s^,
+            stage_act=stage_a^,
+            stage_rew=stage_r^,
+            stage_nxt=stage_sp^,
+            stage_dne=stage_d^,
             indices=idx_buf^,
-            _h_rew=hr, _h_dne=hd,
-            size=0, pos=0,
+            _h_rew=hr,
+            _h_dne=hd,
+            size=0,
+            pos=0,
             rng_seed=UInt64(0xC0FFEE_DECADE_0042),
             _rng_offset_dev=rng_off^,
             _size_dev=size_dev^,
@@ -549,10 +568,9 @@ struct GPUReplay[
         var sp_p = mptr(sp.unsafe_ptr())
         self.add(ctx.value(), s_p, a_p, r, sp_p, d)
 
-    def sample_into[BATCH: Int](
-        mut self,
-        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
-    ) raises:
+    def sample_into[
+        BATCH: Int
+    ](mut self, mut state: TrainerState[Self.OBS, Self.ACT, BATCH],) raises:
         """Trait-surface sampling: launch the gather into the device
         mirrors of `state.mb_*` using `state.ctx`."""
         self.sample[BATCH](
@@ -653,36 +671,28 @@ struct GPUReplay[
         ctx.enqueue_copy(self.stage_nxt, sp)
         ctx.enqueue_copy(self.stage_dne, self._h_dne)
 
-        var stage_s_lt = LayoutTensor[
-            DT, Layout.row_major(Self.OBS), MutAnyOrigin
-        ](self.stage_obs.unsafe_ptr())
-        var stage_a_lt = LayoutTensor[
-            DT, Layout.row_major(Self.ACT), MutAnyOrigin
-        ](self.stage_act.unsafe_ptr())
-        var stage_r_lt = LayoutTensor[
-            DT, Layout.row_major(1), MutAnyOrigin
-        ](self.stage_rew.unsafe_ptr())
-        var stage_sp_lt = LayoutTensor[
-            DT, Layout.row_major(Self.OBS), MutAnyOrigin
-        ](self.stage_nxt.unsafe_ptr())
-        var stage_d_lt = LayoutTensor[
-            DT, Layout.row_major(1), MutAnyOrigin
-        ](self.stage_dne.unsafe_ptr())
+        var stage_s_lt = LayoutTensor[DT, Layout.row_major(Self.OBS)](
+            self.stage_obs
+        )
+        var stage_a_lt = LayoutTensor[DT, Layout.row_major(Self.ACT)](
+            self.stage_act
+        )
+        var stage_r_lt = LayoutTensor[DT, Layout.row_major(1)](self.stage_rew)
+        var stage_sp_lt = LayoutTensor[DT, Layout.row_major(Self.OBS)](
+            self.stage_nxt
+        )
+        var stage_d_lt = LayoutTensor[DT, Layout.row_major(1)](self.stage_dne)
         var buf_s_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.obs.unsafe_ptr())
-        var buf_a_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
-        ](self.act.unsafe_ptr())
-        var buf_r_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.rew.unsafe_ptr())
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS)
+        ](self.obs)
+        var buf_a_lt = LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](
+            self.act
+        )
+        var buf_r_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew)
         var buf_sp_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.nxt.unsafe_ptr())
-        var buf_d_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.dne.unsafe_ptr())
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS)
+        ](self.nxt)
+        var buf_d_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne)
 
         # Single-block kernel. TPB = max(OBS, ACT) so each lane has a
         # thread; rew/dne are written by lane 0 only.
@@ -691,10 +701,19 @@ struct GPUReplay[
             Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[kernel](
-            stage_s_lt, stage_a_lt, stage_r_lt, stage_sp_lt, stage_d_lt,
-            buf_s_lt, buf_a_lt, buf_r_lt, buf_sp_lt, buf_d_lt,
+            stage_s_lt,
+            stage_a_lt,
+            stage_r_lt,
+            stage_sp_lt,
+            stage_d_lt,
+            buf_s_lt,
+            buf_a_lt,
+            buf_r_lt,
+            buf_sp_lt,
+            buf_d_lt,
             Int32(self.pos),
-            grid_dim=1, block_dim=TPB,
+            grid_dim=1,
+            block_dim=TPB,
         )
 
         self.pos = (self.pos + 1) % Self.CAP
@@ -703,14 +722,19 @@ struct GPUReplay[
 
         # Mirror the host `size` bump onto the device counter the (possibly
         # CUDA-graph-captured) sample kernel reads.
-        var size_lt = LayoutTensor[
-            DType.int32, Layout.row_major(1), MutAnyOrigin
-        ](self._size_dev.unsafe_ptr())
+        var size_lt = LayoutTensor[DType.int32, Layout.row_major(1)](
+            self._size_dev
+        )
         ctx.enqueue_function[_bump_size_kernel[Self.CAP]](
-            size_lt, Int32(1), grid_dim=1, block_dim=1,
+            size_lt,
+            Int32(1),
+            grid_dim=1,
+            block_dim=1,
         )
 
-    def add_batch[N_ENVS: Int](
+    def add_batch[
+        N_ENVS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         src_obs: DeviceBuffer[DT],
@@ -731,46 +755,51 @@ struct GPUReplay[
         otherwise make (one kernel + zero D2H vs N kernels + 5N D2H).
         """
         comptime assert N_ENVS > 0, "N_ENVS must be > 0"
-        var src_obs_lt = LayoutTensor[
-            DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
-        ](src_obs.unsafe_ptr())
-        var src_act_lt = LayoutTensor[
-            DT, Layout.row_major(N_ENVS, Self.ACT), MutAnyOrigin
-        ](src_act.unsafe_ptr())
-        var src_rew_lt = LayoutTensor[
-            DT, Layout.row_major(N_ENVS), MutAnyOrigin
-        ](src_rew.unsafe_ptr())
-        var src_nxt_lt = LayoutTensor[
-            DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
-        ](src_nxt.unsafe_ptr())
-        var src_dne_lt = LayoutTensor[
-            DT, Layout.row_major(N_ENVS), MutAnyOrigin
-        ](src_dne.unsafe_ptr())
+        var src_obs_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS)](src_obs))
+        var src_act_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.ACT), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS, Self.ACT)](src_act))
+        var src_rew_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS)](src_rew))
+        var src_nxt_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS)](src_nxt))
+        var src_dne_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS)](src_dne))
         var buf_s_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.obs.unsafe_ptr())
-        var buf_a_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
-        ](self.act.unsafe_ptr())
-        var buf_r_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.rew.unsafe_ptr())
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS)
+        ](self.obs)
+        var buf_a_lt = LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](
+            self.act
+        )
+        var buf_r_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew)
         var buf_sp_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.nxt.unsafe_ptr())
-        var buf_d_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.dne.unsafe_ptr())
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS)
+        ](self.nxt)
+        var buf_d_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne)
 
         comptime n_blocks = (N_ENVS * Self.OBS + TPB - 1) // TPB
         comptime kernel = _store_batch_kernel[
             N_ENVS, Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[kernel](
-            src_obs_lt, src_act_lt, src_rew_lt, src_nxt_lt, src_dne_lt,
-            buf_s_lt, buf_a_lt, buf_r_lt, buf_sp_lt, buf_d_lt,
+            src_obs_lt,
+            src_act_lt,
+            src_rew_lt,
+            src_nxt_lt,
+            src_dne_lt,
+            buf_s_lt,
+            buf_a_lt,
+            buf_r_lt,
+            buf_sp_lt,
+            buf_d_lt,
             Int32(self.pos),
-            grid_dim=n_blocks, block_dim=TPB,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
         self.pos = (self.pos + N_ENVS) % Self.CAP
         self.size += N_ENVS
@@ -779,14 +808,19 @@ struct GPUReplay[
 
         # Mirror the host `size` bump onto the device counter the (possibly
         # CUDA-graph-captured) sample kernel reads.
-        var size_lt = LayoutTensor[
-            DType.int32, Layout.row_major(1), MutAnyOrigin
-        ](self._size_dev.unsafe_ptr())
+        var size_lt = LayoutTensor[DType.int32, Layout.row_major(1)](
+            self._size_dev
+        )
         ctx.enqueue_function[_bump_size_kernel[Self.CAP]](
-            size_lt, Int32(N_ENVS), grid_dim=1, block_dim=1,
+            size_lt,
+            Int32(N_ENVS),
+            grid_dim=1,
+            block_dim=1,
         )
 
-    def sample[BATCH: Int](
+    def sample[
+        BATCH: Int
+    ](
         mut self,
         ctx: DeviceContext,
         mb_s: DeviceBuffer[DT],
@@ -807,22 +841,22 @@ struct GPUReplay[
         comptime assert BATCH > 0, "BATCH must be > 0"
         if BATCH > self.batch_capacity:
             raise Error(
-                "GPUReplay.sample[BATCH=" + String(BATCH)
-                + "] exceeds batch_capacity=" + String(self.batch_capacity)
+                "GPUReplay.sample[BATCH="
+                + String(BATCH)
+                + "] exceeds batch_capacity="
+                + String(self.batch_capacity)
             )
 
-        var idx_lt = LayoutTensor[
-            DType.int32, Layout.row_major(BATCH), MutAnyOrigin
-        ](self.indices.unsafe_ptr())
-        var off_lt = LayoutTensor[
-            DType.uint64, Layout.row_major(1), MutAnyOrigin
-        ](self._rng_offset_dev.unsafe_ptr())
+        var idx_lt = LayoutTensor[DType.int32, Layout.row_major(BATCH)](
+            self.indices
+        )
+        var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self._rng_offset_dev
+        )
         comptime n_blocks = (BATCH + TPB - 1) // TPB
         if self.ere_enabled:
             # Host-side compute c_k = clamp(floor(size · η^k), c_min, size).
-            var c = Int(
-                Scalar[DT](self.size) * self._ere_eta_pow_k
-            )
+            var c = Int(Scalar[DT](self.size) * self._ere_eta_pow_k)
             if c < self._ere_c_min:
                 c = self._ere_c_min
             if c > self.size:
@@ -830,15 +864,18 @@ struct GPUReplay[
             if c < 1:
                 c = 1
             comptime ere_kernel = _sample_indices_ere_kernel[
-                BATCH, Self.CAP,
+                BATCH,
+                Self.CAP,
             ]
             ctx.enqueue_function[ere_kernel](
                 idx_lt,
                 Int32(self.size),
                 Int32(self.pos),
                 Int32(c),
-                self.rng_seed, off_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+                self.rng_seed,
+                off_lt,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
             # Advance k, η^k; wrap at k_max.
             self._ere_k = self._ere_k + 1
@@ -847,65 +884,77 @@ struct GPUReplay[
                 self._ere_k = 0
                 self._ere_eta_pow_k = Scalar[DT](1.0)
         else:
-            var size_lt = LayoutTensor[
-                DType.int32, Layout.row_major(1), MutAnyOrigin
-            ](self._size_dev.unsafe_ptr())
+            var size_lt = LayoutTensor[DType.int32, Layout.row_major(1)](
+                self._size_dev
+            )
             comptime indices_kernel = _sample_indices_kernel[BATCH]
             ctx.enqueue_function[indices_kernel](
-                idx_lt, size_lt,
-                self.rng_seed, off_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+                idx_lt,
+                size_lt,
+                self.rng_seed,
+                off_lt,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
         # Bump RNG offset on-device (after the sample kernel reads it) so
         # back-to-back calls draw disjoint streams — CUDA-graph capturable.
         comptime inc_kernel = _increment_rng_offset_kernel[BATCH]
         ctx.enqueue_function[inc_kernel](
-            off_lt, grid_dim=1, block_dim=1,
+            off_lt,
+            grid_dim=1,
+            block_dim=1,
         )
 
-        var mb_s_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
-        ](mb_s.unsafe_ptr())
-        var mb_a_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.ACT), MutAnyOrigin
-        ](mb_a.unsafe_ptr())
-        var mb_r_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH), MutAnyOrigin
-        ](mb_r.unsafe_ptr())
-        var mb_sp_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
-        ](mb_sp.unsafe_ptr())
-        var mb_d_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH), MutAnyOrigin
-        ](mb_d.unsafe_ptr())
+        var mb_s_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS)](mb_s))
+        var mb_a_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH, Self.ACT), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH, Self.ACT)](mb_a))
+        var mb_r_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH)](mb_r))
+        var mb_sp_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS)](mb_sp))
+        var mb_d_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH)](mb_d))
         var buf_s_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.obs.unsafe_ptr())
-        var buf_a_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
-        ](self.act.unsafe_ptr())
-        var buf_r_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.rew.unsafe_ptr())
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS)
+        ](self.obs)
+        var buf_a_lt = LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](
+            self.act
+        )
+        var buf_r_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew)
         var buf_sp_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.nxt.unsafe_ptr())
-        var buf_d_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.dne.unsafe_ptr())
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS)
+        ](self.nxt)
+        var buf_d_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne)
 
         comptime n_blocks_gather = (BATCH * Self.OBS + TPB - 1) // TPB
         comptime gather_kernel = _gather_batch_kernel[
             BATCH, Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[gather_kernel](
-            mb_s_lt, mb_a_lt, mb_r_lt, mb_sp_lt, mb_d_lt,
-            buf_s_lt, buf_a_lt, buf_r_lt, buf_sp_lt, buf_d_lt,
+            mb_s_lt,
+            mb_a_lt,
+            mb_r_lt,
+            mb_sp_lt,
+            mb_d_lt,
+            buf_s_lt,
+            buf_a_lt,
+            buf_r_lt,
+            buf_sp_lt,
+            buf_d_lt,
             idx_lt,
-            grid_dim=n_blocks_gather, block_dim=TPB,
+            grid_dim=n_blocks_gather,
+            block_dim=TPB,
         )
 
-    def sample_range[BATCH: Int](
+    def sample_range[
+        BATCH: Int
+    ](
         mut self,
         ctx: DeviceContext,
         lo: Int,
@@ -923,61 +972,73 @@ struct GPUReplay[
         comptime assert BATCH > 0, "BATCH must be > 0"
         if BATCH > self.batch_capacity:
             raise Error(
-                "GPUReplay.sample_range[BATCH=" + String(BATCH)
-                + "] exceeds batch_capacity=" + String(self.batch_capacity)
+                "GPUReplay.sample_range[BATCH="
+                + String(BATCH)
+                + "] exceeds batch_capacity="
+                + String(self.batch_capacity)
             )
-        var idx_lt = LayoutTensor[
-            DType.int32, Layout.row_major(BATCH), MutAnyOrigin
-        ](self.indices.unsafe_ptr())
-        var off_lt = LayoutTensor[
-            DType.uint64, Layout.row_major(1), MutAnyOrigin
-        ](self._rng_offset_dev.unsafe_ptr())
+        var idx_lt = LayoutTensor[DType.int32, Layout.row_major(BATCH)](
+            self.indices
+        )
+        var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self._rng_offset_dev
+        )
         comptime n_blocks = (BATCH + TPB - 1) // TPB
         comptime range_kernel = _sample_indices_range_kernel[BATCH]
         ctx.enqueue_function[range_kernel](
-            idx_lt, Int32(lo), Int32(hi), self.rng_seed, off_lt,
-            grid_dim=n_blocks, block_dim=TPB,
+            idx_lt,
+            Int32(lo),
+            Int32(hi),
+            self.rng_seed,
+            off_lt,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
         comptime inc_kernel = _increment_rng_offset_kernel[BATCH]
         ctx.enqueue_function[inc_kernel](off_lt, grid_dim=1, block_dim=1)
 
-        var mb_s_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
-        ](mb_s.unsafe_ptr())
-        var mb_a_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.ACT), MutAnyOrigin
-        ](mb_a.unsafe_ptr())
-        var mb_r_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH), MutAnyOrigin
-        ](mb_r.unsafe_ptr())
-        var mb_sp_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin
-        ](mb_sp.unsafe_ptr())
-        var mb_d_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH), MutAnyOrigin
-        ](mb_d.unsafe_ptr())
+        var mb_s_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS)](mb_s))
+        var mb_a_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH, Self.ACT), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH, Self.ACT)](mb_a))
+        var mb_r_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH)](mb_r))
+        var mb_sp_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS)](mb_sp))
+        var mb_d_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH)](mb_d))
         var buf_s_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.obs.unsafe_ptr())
-        var buf_a_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
-        ](self.act.unsafe_ptr())
-        var buf_r_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.rew.unsafe_ptr())
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS)
+        ](self.obs)
+        var buf_a_lt = LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](
+            self.act
+        )
+        var buf_r_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew)
         var buf_sp_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.nxt.unsafe_ptr())
-        var buf_d_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.dne.unsafe_ptr())
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS)
+        ](self.nxt)
+        var buf_d_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne)
         comptime n_blocks_gather = (BATCH * Self.OBS + TPB - 1) // TPB
         comptime gather_kernel = _gather_batch_kernel[
             BATCH, Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[gather_kernel](
-            mb_s_lt, mb_a_lt, mb_r_lt, mb_sp_lt, mb_d_lt,
-            buf_s_lt, buf_a_lt, buf_r_lt, buf_sp_lt, buf_d_lt,
+            mb_s_lt,
+            mb_a_lt,
+            mb_r_lt,
+            mb_sp_lt,
+            mb_d_lt,
+            buf_s_lt,
+            buf_a_lt,
+            buf_r_lt,
+            buf_sp_lt,
+            buf_d_lt,
             idx_lt,
-            grid_dim=n_blocks_gather, block_dim=TPB,
+            grid_dim=n_blocks_gather,
+            block_dim=TPB,
         )

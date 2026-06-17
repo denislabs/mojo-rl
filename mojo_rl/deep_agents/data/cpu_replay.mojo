@@ -26,17 +26,18 @@ from mojo_rl.nn.constants import DT
 from ..training.replay_buffer import ReplayBuffer
 from ..training.trainer_block import TrainerState
 
+
 @fieldwise_init
 struct CPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime CAP = Self.CAP_
 
-    var obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var act: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var nxt: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var dne: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var obs: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var act: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var rew: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var nxt: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var dne: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
     var size: Int
     var pos: Int
 
@@ -104,10 +105,9 @@ struct CPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
             r_out[k] = self.rew[idx]
             d_out[k] = self.dne[idx]
 
-    def sample_into[BATCH: Int](
-        mut self,
-        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
-    ) raises:
+    def sample_into[
+        BATCH: Int
+    ](mut self, mut state: TrainerState[Self.OBS, Self.ACT, BATCH],) raises:
         """Trait-surface sampling: write a uniform minibatch into the
         host mirrors of `state.mb_*`."""
         self.sample(
