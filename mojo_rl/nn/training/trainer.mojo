@@ -601,9 +601,7 @@ struct Trainer[
         var n_correct: Int = 0
         for b in range(N_BATCHES):
             var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
-            var input = TileTensor(
-                x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
-            )
+            var input = TileTensor(x_ptr, row_major[Self.BATCH, Self.IN_DIM]())
             var output = TileTensor(
                 self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
             )
@@ -673,9 +671,9 @@ struct Trainer[
             seed_host.unsafe_ptr()[0] = rng_seed
             ctx.enqueue_copy(seed, seed_host)
             ctx.synchronize()
-            var idx_t = LayoutTensor[
-                DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
-            ](idx.unsafe_ptr())
+            var idx_t = LayoutTensor[DType.int32, Layout.row_major(N_TRAIN)](
+                idx
+            )
             ctx.enqueue_function[init_identity_indices_kernel[N_TRAIN]](
                 idx_t,
                 grid_dim=(BLOCKS_INIT,),
@@ -690,12 +688,24 @@ struct Trainer[
             var t0 = perf_counter_ns()
             var epoch_loss: Scalar[DT] = 0.0
             if shuffle:
-                var idx_t = LayoutTensor[
-                    DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
-                ](indices_dev.value().unsafe_ptr())
-                var seed_t = LayoutTensor[
-                    DType.uint64, Layout.row_major(1), MutAnyOrigin
-                ](seed_dev.value().unsafe_ptr())
+                var idx_t = rebind[
+                    LayoutTensor[
+                        DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+                    ]
+                ](
+                    LayoutTensor[DType.int32, Layout.row_major(N_TRAIN)](
+                        indices_dev.value()
+                    )
+                )
+                var seed_t = rebind[
+                    LayoutTensor[
+                        DType.uint64, Layout.row_major(1), MutAnyOrigin
+                    ]
+                ](
+                    LayoutTensor[DType.uint64, Layout.row_major(1)](
+                        seed_dev.value()
+                    )
+                )
                 ctx.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
                     idx_t, seed_t, grid_dim=(1,), block_dim=(1,)
                 )
@@ -714,9 +724,15 @@ struct Trainer[
                         Layout.row_major(N_TRAIN, Self.OUT_DIM),
                         MutAnyOrigin,
                     ](y_base)
-                    var idx_t = LayoutTensor[
-                        DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
-                    ](indices_dev.value().unsafe_ptr())
+                    var idx_t = rebind[
+                        LayoutTensor[
+                            DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+                        ]
+                    ](
+                        LayoutTensor[DType.int32, Layout.row_major(N_TRAIN)](
+                            indices_dev.value()
+                        )
+                    )
                     var sx_p = shuf_x_dev.value().unsafe_ptr()
                     var sy_p = shuf_y_dev.value().unsafe_ptr()
                     var shuf_x_t = LayoutTensor[
@@ -874,9 +890,9 @@ struct Trainer[
             seed_host.unsafe_ptr()[0] = rng_seed
             ctx.enqueue_copy(seed, seed_host)
             ctx.synchronize()
-            var idx_t = LayoutTensor[
-                DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
-            ](idx.unsafe_ptr())
+            var idx_t = LayoutTensor[DType.int32, Layout.row_major(N_TRAIN)](
+                idx
+            )
             ctx.enqueue_function[init_identity_indices_kernel[N_TRAIN]](
                 idx_t,
                 grid_dim=(BLOCKS_INIT,),
@@ -891,12 +907,24 @@ struct Trainer[
             var t0 = perf_counter_ns()
             var epoch_loss: Scalar[DT] = 0.0
             if shuffle:
-                var idx_t = LayoutTensor[
-                    DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
-                ](indices_dev.value().unsafe_ptr())
-                var seed_t = LayoutTensor[
-                    DType.uint64, Layout.row_major(1), MutAnyOrigin
-                ](seed_dev.value().unsafe_ptr())
+                var idx_t = rebind[
+                    LayoutTensor[
+                        DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+                    ]
+                ](
+                    LayoutTensor[DType.int32, Layout.row_major(N_TRAIN)](
+                        indices_dev.value()
+                    )
+                )
+                var seed_t = rebind[
+                    LayoutTensor[
+                        DType.uint64, Layout.row_major(1), MutAnyOrigin
+                    ]
+                ](
+                    LayoutTensor[DType.uint64, Layout.row_major(1)](
+                        seed_dev.value()
+                    )
+                )
                 ctx.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
                     idx_t, seed_t, grid_dim=(1,), block_dim=(1,)
                 )
@@ -914,9 +942,15 @@ struct Trainer[
                 var raw_lt = LayoutTensor[
                     DT, Layout.row_major(N_TRAIN, Self.IN_DIM), MutAnyOrigin
                 ](raw_x)
-                var aug_lt = LayoutTensor[
-                    DT, Layout.row_major(N_TRAIN, Self.IN_DIM), MutAnyOrigin
-                ](aug_dev.value().unsafe_ptr())
+                var aug_lt = rebind[
+                    LayoutTensor[
+                        DT, Layout.row_major(N_TRAIN, Self.IN_DIM), MutAnyOrigin
+                    ]
+                ](
+                    LayoutTensor[DT, Layout.row_major(N_TRAIN, Self.IN_DIM)](
+                        aug_dev.value()
+                    )
+                )
                 AUGMENTER.augment[N_TRAIN, Self.IN_DIM, DT](
                     ctx, aug_lt, raw_lt, epoch, aug_seed
                 )
@@ -932,9 +966,15 @@ struct Trainer[
                         Layout.row_major(N_TRAIN, Self.OUT_DIM),
                         MutAnyOrigin,
                     ](y_base)
-                    var idx_t = LayoutTensor[
-                        DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
-                    ](indices_dev.value().unsafe_ptr())
+                    var idx_t = rebind[
+                        LayoutTensor[
+                            DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
+                        ]
+                    ](
+                        LayoutTensor[DType.int32, Layout.row_major(N_TRAIN)](
+                            indices_dev.value()
+                        )
+                    )
                     var sx_p = shuf_x_dev.value().unsafe_ptr()
                     var sy_p = shuf_y_dev.value().unsafe_ptr()
                     var shuf_x_t = LayoutTensor[

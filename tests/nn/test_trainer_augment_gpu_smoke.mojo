@@ -35,13 +35,17 @@ def main() raises:
     var ctx = DeviceContext()
 
     comptime Net = Sequential[
-        Conv2DBatchNormReLU[3, 16, 3, 2, 1, 32, 32],     # → 16×16×16
-        Conv2DBatchNormReLU[16, 32, 3, 2, 1, 16, 16],    # → 32×8×8 = 2048
+        Conv2DBatchNormReLU[3, 16, 3, 2, 1, 32, 32],  # → 16×16×16
+        Conv2DBatchNormReLU[16, 32, 3, 2, 1, 16, 16],  # → 32×8×8 = 2048
         Flatten[32 * 8 * 8],
         Linear[32 * 8 * 8, N_CLASSES],
     ]
     var trainer = Trainer[
-        Net, Adam, CrossEntropyLoss[N_CLASSES], BATCH, target="gpu",
+        Net,
+        Adam,
+        CrossEntropyLoss[N_CLASSES],
+        BATCH,
+        target="gpu",
     ].make[INIT=Kaiming](ctx)
     trainer.optim.lr = Scalar[DT](0.001)
 
@@ -57,11 +61,9 @@ def main() raises:
         yh.unsafe_ptr()[i * N_CLASSES + Int(ds.train_labels[i])] = 1.0
     for i in range(NTE * IN_DIM):
         txh.unsafe_ptr()[i] = ds.test_images[i]
-    var tlbl: UnsafePointer[Int32, MutAnyOrigin] = (
-        ctx.enqueue_create_host_buffer[DType.int32](NTE).unsafe_ptr()
-    )
+    var tlbl = List[Int32]()
     for i in range(NTE):
-        tlbl[i] = Int32(ds.test_labels[i])
+        tlbl.append(Int32(ds.test_labels[i]))
 
     var xd = ctx.enqueue_create_buffer[DT](NTR * IN_DIM)
     var yd = ctx.enqueue_create_buffer[DT](NTR * N_CLASSES)
@@ -75,9 +77,17 @@ def main() raises:
     var train_y = TileTensor(yd, row_major[NTR, N_CLASSES]())
     var test_x = TileTensor(txd, row_major[NTE, IN_DIM]())
 
-    var result = trainer.train_gpu[NTR, NTE, AUGMENTER=CIFAR10CropFlipAugmenter](
-        train_x, train_y, test_x, tlbl,
-        epochs=EPOCHS, shuffle=True, rng_seed=UInt64(42), aug_seed=UInt64(1000),
+    var result = trainer.train_gpu[
+        NTR, NTE, AUGMENTER=CIFAR10CropFlipAugmenter
+    ](
+        train_x,
+        train_y,
+        test_x,
+        tlbl,
+        epochs=EPOCHS,
+        shuffle=True,
+        rng_seed=UInt64(42),
+        aug_seed=UInt64(1000),
     )
 
     var best: Float64 = 0.0
