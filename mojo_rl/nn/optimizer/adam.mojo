@@ -234,10 +234,12 @@ def _upload_i32(
 
 
 @fieldwise_init
-struct _AdamCPUInitVisitor(ParamVisitor):
-    var m_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var v_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
+struct _AdamCPUInitVisitor[
+    om: Origin[mut=True], ov: Origin[mut=True], oo: Origin[mut=True]
+](ParamVisitor):
+    var m_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.om]
+    var v_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.ov]
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
 
     def visit(
         mut self,
@@ -259,10 +261,12 @@ struct _AdamCPUInitVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _AdamCPUStepVisitor(ParamVisitor):
-    var m_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var v_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
+struct _AdamCPUStepVisitor[
+    om: Origin[mut=True], ov: Origin[mut=True], oo: Origin[mut=True]
+](ParamVisitor):
+    var m_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.om]
+    var v_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.ov]
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
     var idx: Int
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
@@ -363,9 +367,11 @@ struct _ZeroGradCPUVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _AdamGPUInitVisitor(ParamVisitor):
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
-    var total_ptr: UnsafePointer[Int, MutAnyOrigin]
+struct _AdamGPUInitVisitor[oo: Origin[mut=True], ot: Origin[mut=True]](
+    ParamVisitor
+):
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
+    var total_ptr: UnsafePointer[Int, Self.ot]
 
     def visit(
         mut self,
@@ -384,12 +390,12 @@ struct _AdamGPUInitVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _AdamGPUStepVisitor(ParamVisitor):
+struct _AdamGPUStepVisitor[oo: Origin[mut=True]](ParamVisitor):
     var ctx: DeviceContext
     var m_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var v_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var bc_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
     var idx: Int
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
@@ -413,19 +419,31 @@ struct _AdamGPUStepVisitor(ParamVisitor):
         var m_off = self.m_base + off
         var v_off = self.v_base + off
         var param_w_ptr = mptr(param.ptr)
-        var grad_w_ptr  = mptr(grad.ptr)
+        var grad_w_ptr = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         # Decoupled weight decay pre-pass (see CPU visitor). Extra kernel
         # only when wd > 0 — wd == 0 enqueues nothing (bit-identical).
         if self.weight_decay > Scalar[DT](0.0) and apply_decay:
             self.ctx.enqueue_function[_adam_decay_kernel](
-                param_w_ptr, self.lr * self.weight_decay, n_elems,
-                grid_dim=n_blocks, block_dim=TPB,
+                param_w_ptr,
+                self.lr * self.weight_decay,
+                n_elems,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
         self.ctx.enqueue_function[_adam_update_kernel](
-            param_w_ptr, grad_w_ptr, m_off, v_off, self.bc_base, n_elems,
-            self.lr, self.beta1, self.beta2, self.eps,
-            grid_dim=n_blocks, block_dim=TPB,
+            param_w_ptr,
+            grad_w_ptr,
+            m_off,
+            v_off,
+            self.bc_base,
+            n_elems,
+            self.lr,
+            self.beta1,
+            self.beta2,
+            self.eps,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
         self.idx += 1
 
@@ -449,20 +467,25 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
         var grad_w_ptr = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_zero_fill_kernel](
-            grad_w_ptr, n_elems, grid_dim=n_blocks, block_dim=TPB,
+            grad_w_ptr,
+            n_elems,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
 
 
 @fieldwise_init
-struct _MTDescriptorCollector(ParamVisitor):
+struct _MTDescriptorCollector[opa: Origin[mut=True], oga: Origin[mut=True]](
+    ParamVisitor
+):
     """Walks the model's params (NVIDIA grouped path) WITHOUT launching kernels,
     gathering each param's value/grad pointer ADDRESS into host Lists (later
     uploaded to device descriptor arrays). Run ONCE in `make[target='gpu']` —
     the per-Param DeviceBuffers are allocated and stable, so the addresses stay
     valid for the optimizer's lifetime."""
 
-    var param_addrs_ptr: UnsafePointer[List[UInt64], MutAnyOrigin]
-    var grad_addrs_ptr: UnsafePointer[List[UInt64], MutAnyOrigin]
+    var param_addrs_ptr: UnsafePointer[List[UInt64], Self.opa]
+    var grad_addrs_ptr: UnsafePointer[List[UInt64], Self.oga]
 
     def visit(
         mut self,
@@ -577,15 +600,14 @@ struct Adam(Optimizer, Saveable):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, M: Module](
-        mut model: M,
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    def make[
+        target: StaticString, M: Module
+    ](mut model: M, ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified CPU/GPU factory — no hyperparams. User sets `opt.lr`
         etc. after. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "Adam: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "Adam: target must be 'cpu' or 'gpu'"
         var opt = Self()
         comptime if target == "cpu":
             var visitor = _AdamCPUInitVisitor(
@@ -593,8 +615,9 @@ struct Adam(Optimizer, Saveable):
                 v_flat_ptr=UnsafePointer(to=opt.v_flat),
                 offsets_ptr=UnsafePointer(to=opt.offsets),
             )
-            model.for_each_param[target, _AdamCPUInitVisitor](
-                String(""), visitor,
+            model.for_each_param[target, type_of(visitor)](
+                String(""),
+                visitor,
             )
             opt.total_size = len(opt.m_flat)
             opt.ts = TargetStorage.make_cpu()
@@ -604,8 +627,9 @@ struct Adam(Optimizer, Saveable):
                 offsets_ptr=UnsafePointer(to=opt.offsets),
                 total_ptr=UnsafePointer(to=opt.total_size),
             )
-            model.for_each_param[target, _AdamGPUInitVisitor](
-                String(""), visitor,
+            model.for_each_param[target, type_of(visitor)](
+                String(""),
+                visitor,
             )
             var m_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
             var v_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
@@ -638,9 +662,7 @@ struct Adam(Optimizer, Saveable):
                     param_addrs_ptr=UnsafePointer(to=pa),
                     grad_addrs_ptr=UnsafePointer(to=ga),
                 )
-                model.for_each_param[target, _MTDescriptorCollector](
-                    String(""), coll
-                )
+                model.for_each_param[target, type_of(coll)](String(""), coll)
                 # Moment offsets are exactly the init walker's `offsets`
                 # (same walk order = dense per-param prefix sums), narrowed to
                 # int32. The grouped kernels use them to map a flat element
@@ -737,7 +759,8 @@ struct Adam(Optimizer, Saveable):
                     # init walker ran in `make[target='gpu']`.
                     if not self._clip_state:
                         self._clip_state = GradClipState.make(
-                            self.ts.ctx.value(), len(self.offsets),
+                            self.ts.ctx.value(),
+                            len(self.offsets),
                         )
                     clip_grads_auto_gpu[M](
                         model,
@@ -758,24 +781,32 @@ struct Adam(Optimizer, Saveable):
                 v_flat_ptr=UnsafePointer(to=self.v_flat),
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,
-                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
-                bias_correction1=bc1, bias_correction2=bc2,
+                lr=self.lr,
+                beta1=self.beta1,
+                beta2=self.beta2,
+                eps=self.eps,
+                bias_correction1=bc1,
+                bias_correction2=bc2,
                 weight_decay=self.weight_decay,
             )
-            model.for_each_param[target, _AdamCPUStepVisitor](String(""), visitor)
+            model.for_each_param[target, type_of(visitor)](String(""), visitor)
         else:
             var ctx = self.ts.ctx.value()
-            var step_ptr: UnsafePointer[UInt32, MutAnyOrigin] = (
-                self.step_dev.value().unsafe_ptr()
-            )
-            var bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = (
-                self.bc_dev.value().unsafe_ptr()
-            )
+            var step_ptr: UnsafePointer[
+                UInt32, MutAnyOrigin
+            ] = self.step_dev.value().unsafe_ptr()
+            var bc_ptr: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.bc_dev.value().unsafe_ptr()
             # On-device step bump + bias-correction. No host scalar feeds the
             # update kernel → CUDA-graph capturable.
             ctx.enqueue_function[_adam_step_prep_kernel](
-                step_ptr, bc_ptr, self.beta1, self.beta2,
-                grid_dim=1, block_dim=1,
+                step_ptr,
+                bc_ptr,
+                self.beta1,
+                self.beta2,
+                grid_dim=1,
+                block_dim=1,
             )
             comptime if has_nvidia_gpu_accelerator() and USE_GROUPED_GPU_OPTIMIZER:
                 # Grouped: ONE launch updates every param tensor. Reads the
@@ -793,10 +824,13 @@ struct Adam(Optimizer, Saveable):
                         bc_base=bc_ptr,
                         offsets_ptr=UnsafePointer(to=self.offsets),
                         idx=0,
-                        lr=self.lr, beta1=self.beta1, beta2=self.beta2,
-                        eps=self.eps, weight_decay=self.weight_decay,
+                        lr=self.lr,
+                        beta1=self.beta1,
+                        beta2=self.beta2,
+                        eps=self.eps,
+                        weight_decay=self.weight_decay,
                     )
-                    model.for_each_param[target, _AdamGPUStepVisitor](
+                    model.for_each_param[target, type_of(wd_visitor)](
                         String(""), wd_visitor
                     )
                 elif self._mt_n_params > 0:
@@ -816,7 +850,10 @@ struct Adam(Optimizer, Saveable):
                         mptr(self.m_dev.value().unsafe_ptr()),
                         mptr(self.v_dev.value().unsafe_ptr()),
                         bc_ptr,
-                        self.lr, self.beta1, self.beta2, self.eps,
+                        self.lr,
+                        self.beta1,
+                        self.beta2,
+                        self.eps,
                         grid_dim=n_blocks,
                         block_dim=TPB,
                     )
@@ -828,10 +865,13 @@ struct Adam(Optimizer, Saveable):
                     bc_base=bc_ptr,
                     offsets_ptr=UnsafePointer(to=self.offsets),
                     idx=0,
-                    lr=self.lr, beta1=self.beta1, beta2=self.beta2,
-                    eps=self.eps, weight_decay=self.weight_decay,
+                    lr=self.lr,
+                    beta1=self.beta1,
+                    beta2=self.beta2,
+                    eps=self.eps,
+                    weight_decay=self.weight_decay,
                 )
-                model.for_each_param[target, _AdamGPUStepVisitor](
+                model.for_each_param[target, type_of(visitor)](
                     String(""), visitor
                 )
 
@@ -861,9 +901,9 @@ struct Adam(Optimizer, Saveable):
         mut g: ComputeGraph[OUT, *NODES],
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "Adam.make_graph: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "Adam.make_graph: target must be 'cpu' or 'gpu'"
         var opt = Self()
         comptime if target == "cpu":
             var visitor = _AdamCPUInitVisitor(
@@ -871,7 +911,7 @@ struct Adam(Optimizer, Saveable):
                 v_flat_ptr=UnsafePointer(to=opt.v_flat),
                 offsets_ptr=UnsafePointer(to=opt.offsets),
             )
-            g.for_each_param[target, _AdamCPUInitVisitor](String(""), visitor)
+            g.for_each_param[target, type_of(visitor)](String(""), visitor)
             opt.total_size = len(opt.m_flat)
             opt.ts = TargetStorage.make_cpu()
         else:
@@ -880,7 +920,7 @@ struct Adam(Optimizer, Saveable):
                 offsets_ptr=UnsafePointer(to=opt.offsets),
                 total_ptr=UnsafePointer(to=opt.total_size),
             )
-            g.for_each_param[target, _AdamGPUInitVisitor](String(""), visitor)
+            g.for_each_param[target, type_of(visitor)](String(""), visitor)
             var m_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
             var v_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
             m_real.enqueue_fill(0.0)
@@ -929,7 +969,8 @@ struct Adam(Optimizer, Saveable):
             if self.max_grad_norm > Scalar[DT](0.0):
                 if not self._clip_state:
                     self._clip_state = GradClipState.make(
-                        self.ts.ctx.value(), len(self.offsets),
+                        self.ts.ctx.value(),
+                        len(self.offsets),
                     )
                 clip_grads_graph_gpu(
                     g,
@@ -949,22 +990,30 @@ struct Adam(Optimizer, Saveable):
                 v_flat_ptr=UnsafePointer(to=self.v_flat),
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,
-                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
-                bias_correction1=bc1, bias_correction2=bc2,
+                lr=self.lr,
+                beta1=self.beta1,
+                beta2=self.beta2,
+                eps=self.eps,
+                bias_correction1=bc1,
+                bias_correction2=bc2,
                 weight_decay=self.weight_decay,
             )
-            g.for_each_param[target, _AdamCPUStepVisitor](String(""), visitor)
+            g.for_each_param[target, type_of(visitor)](String(""), visitor)
         else:
             var ctx = self.ts.ctx.value()
-            var step_ptr: UnsafePointer[UInt32, MutAnyOrigin] = (
-                self.step_dev.value().unsafe_ptr()
-            )
-            var bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = (
-                self.bc_dev.value().unsafe_ptr()
-            )
+            var step_ptr: UnsafePointer[
+                UInt32, MutAnyOrigin
+            ] = self.step_dev.value().unsafe_ptr()
+            var bc_ptr: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.bc_dev.value().unsafe_ptr()
             ctx.enqueue_function[_adam_step_prep_kernel](
-                step_ptr, bc_ptr, self.beta1, self.beta2,
-                grid_dim=1, block_dim=1,
+                step_ptr,
+                bc_ptr,
+                self.beta1,
+                self.beta2,
+                grid_dim=1,
+                block_dim=1,
             )
             var visitor = _AdamGPUStepVisitor(
                 ctx=ctx,
@@ -973,10 +1022,13 @@ struct Adam(Optimizer, Saveable):
                 bc_base=bc_ptr,
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,
-                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
+                lr=self.lr,
+                beta1=self.beta1,
+                beta2=self.beta2,
+                eps=self.eps,
                 weight_decay=self.weight_decay,
             )
-            g.for_each_param[target, _AdamGPUStepVisitor](String(""), visitor)
+            g.for_each_param[target, type_of(visitor)](String(""), visitor)
 
     # ─────────────────────────── Saveable (CPU only) ───────────────────────────
     # Saved fields:
@@ -1018,31 +1070,50 @@ struct Adam(Optimizer, Saveable):
             out += String(v_ptr[k]) + "\n"
 
     def load(
-        mut self, lines: List[String], mut idx: Int, prefix: String,
+        mut self,
+        lines: List[String],
+        mut idx: Int,
+        prefix: String,
     ) raises:
         self.lr = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".lr")))
         idx += 1
-        self.beta1 = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".beta1")))
+        self.beta1 = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".beta1"))
+        )
         idx += 1
-        self.beta2 = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".beta2")))
+        self.beta2 = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".beta2"))
+        )
         idx += 1
-        self.eps = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".eps")))
+        self.eps = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".eps"))
+        )
         idx += 1
-        self.step_count = atol(_expect_kv_line(lines, idx, prefix + ".step_count"))
+        self.step_count = atol(
+            _expect_kv_line(lines, idx, prefix + ".step_count")
+        )
         idx += 1
-        self.beta1_pow_t = Scalar[DT](atof(
-            _expect_kv_line(lines, idx, prefix + ".beta1_pow_t")
-        ))
+        self.beta1_pow_t = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".beta1_pow_t"))
+        )
         idx += 1
-        self.beta2_pow_t = Scalar[DT](atof(
-            _expect_kv_line(lines, idx, prefix + ".beta2_pow_t")
-        ))
+        self.beta2_pow_t = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".beta2_pow_t"))
+        )
         idx += 1
         Adam._load_flat_section(
-            lines, idx, prefix + ".m_flat", self.m_flat, self.total_size,
+            lines,
+            idx,
+            prefix + ".m_flat",
+            self.m_flat,
+            self.total_size,
         )
         Adam._load_flat_section(
-            lines, idx, prefix + ".v_flat", self.v_flat, self.total_size,
+            lines,
+            idx,
+            prefix + ".v_flat",
+            self.v_flat,
+            self.total_size,
         )
 
     # ─── GPU checkpoint sync (Phase 2 — GPU checkpointing) ───────────────
@@ -1107,25 +1178,32 @@ struct Adam(Optimizer, Saveable):
     ) raises:
         if idx >= len(lines):
             raise Error(
-                "Adam.load: out of input at `" + expected_prefix
-                + "#size=...` (idx " + String(idx) + ")"
+                "Adam.load: out of input at `"
+                + expected_prefix
+                + "#size=...` (idx "
+                + String(idx)
+                + ")"
             )
         var header = lines[idx]
-        var expected_header = (
-            expected_prefix + "#size=" + String(expected_size)
-        )
+        var expected_header = expected_prefix + "#size=" + String(expected_size)
         if header != expected_header:
             raise Error(
                 "Adam.load: section header mismatch. Expected `"
-                + expected_header + "`, got `" + header + "`"
+                + expected_header
+                + "`, got `"
+                + header
+                + "`"
             )
         idx += 1
         var t_ptr = mptr(target.unsafe_ptr())
         for k in range(expected_size):
             if idx >= len(lines):
                 raise Error(
-                    "Adam.load: short read for `" + expected_prefix
-                    + "` at element " + String(k) + " of "
+                    "Adam.load: short read for `"
+                    + expected_prefix
+                    + "` at element "
+                    + String(k)
+                    + " of "
                     + String(expected_size)
                 )
             t_ptr[k] = Scalar[DT](atof(lines[idx]))

@@ -180,10 +180,12 @@ def _zero_fill_kernel(
 
 
 @fieldwise_init
-struct _DreamerCPUInitVisitor(ParamVisitor):
-    var nu_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var mu_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
+struct _DreamerCPUInitVisitor[
+    onu: Origin[mut=True], omu: Origin[mut=True], oo: Origin[mut=True]
+](ParamVisitor):
+    var nu_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.onu]
+    var mu_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.omu]
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
 
     def visit(
         mut self,
@@ -205,10 +207,12 @@ struct _DreamerCPUInitVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _DreamerCPUStepVisitor(ParamVisitor):
-    var nu_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var mu_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
+struct _DreamerCPUStepVisitor[
+    onu: Origin[mut=True], omu: Origin[mut=True], oo: Origin[mut=True]
+](ParamVisitor):
+    var nu_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.onu]
+    var mu_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.omu]
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
     var idx: Int
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
@@ -334,9 +338,11 @@ struct _ZeroGradCPUVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _DreamerGPUInitVisitor(ParamVisitor):
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
-    var total_ptr: UnsafePointer[Int, MutAnyOrigin]
+struct _DreamerGPUInitVisitor[oo: Origin[mut=True], ot: Origin[mut=True]](
+    ParamVisitor
+):
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
+    var total_ptr: UnsafePointer[Int, Self.ot]
 
     def visit(
         mut self,
@@ -355,13 +361,13 @@ struct _DreamerGPUInitVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _DreamerGPUStepVisitor(ParamVisitor):
+struct _DreamerGPUStepVisitor[oo: Origin[mut=True]](ParamVisitor):
     var ctx: DeviceContext
     var nu_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var mu_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var scale_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var bc_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
     var idx: Int
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
@@ -390,18 +396,34 @@ struct _DreamerGPUStepVisitor(ParamVisitor):
 
         # Pass A: per-leaf AGC scale into scale_base[idx] (single block).
         self.ctx.enqueue_function[_agc_scale_kernel](
-            p_ptr, g_ptr, self.scale_base, self.idx, n_elems,
-            self.agc_clip, self.agc_pmin,
-            grid_dim=1, block_dim=AGC_TPB,
+            p_ptr,
+            g_ptr,
+            self.scale_base,
+            self.idx,
+            n_elems,
+            self.agc_clip,
+            self.agc_pmin,
+            grid_dim=1,
+            block_dim=AGC_TPB,
         )
         # Pass B: rms → momentum → lr (grid over elements). Same stream →
         # ordered after Pass A, so scale_base[idx] is ready.
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_dreamer_update_kernel](
-            p_ptr, g_ptr, nu_off, mu_off, self.scale_base, self.bc_base,
-            self.idx, n_elems,
-            self.lr, self.beta1, self.beta2, self.eps,
-            grid_dim=n_blocks, block_dim=TPB,
+            p_ptr,
+            g_ptr,
+            nu_off,
+            mu_off,
+            self.scale_base,
+            self.bc_base,
+            self.idx,
+            n_elems,
+            self.lr,
+            self.beta1,
+            self.beta2,
+            self.eps,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
         self.idx += 1
 
@@ -425,7 +447,10 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
         var grad_w_ptr = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_zero_fill_kernel](
-            grad_w_ptr, n_elems, grid_dim=n_blocks, block_dim=TPB,
+            grad_w_ptr,
+            n_elems,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
 
 
@@ -441,7 +466,7 @@ struct DreamerOpt(Optimizer, Saveable):
     # GPU storage
     var nu_dev: Optional[DeviceBuffer[DT]]
     var mu_dev: Optional[DeviceBuffer[DT]]
-    var scale_dev: Optional[DeviceBuffer[DT]]   # [N_PARAMS] AGC scale scratch
+    var scale_dev: Optional[DeviceBuffer[DT]]  # [N_PARAMS] AGC scale scratch
     # On-device step + bias-correction state (GPU path only). Keeps the step
     # counter off the host so the GPU `step` is CUDA-graph capturable. `bc_dev`
     # layout: [beta1_pow_t, beta2_pow_t, bias_correction1, bias_correction2].
@@ -456,8 +481,8 @@ struct DreamerOpt(Optimizer, Saveable):
     # Public mut hyperparams. Defaults match the DreamerV3 reference
     # (`agent.py:_make_opt` + `configs.yaml`).
     var lr: Scalar[DT]
-    var beta1: Scalar[DT]   # momentum
-    var beta2: Scalar[DT]   # rms
+    var beta1: Scalar[DT]  # momentum
+    var beta2: Scalar[DT]  # rms
     var eps: Scalar[DT]
     var agc_clip: Scalar[DT]
     var agc_pmin: Scalar[DT]
@@ -489,16 +514,15 @@ struct DreamerOpt(Optimizer, Saveable):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, M: Module](
-        mut model: M,
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    def make[
+        target: StaticString, M: Module
+    ](mut model: M, ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified CPU/GPU factory — no hyperparams. User sets `opt.lr`
         etc. after (or drives `opt.lr` from a warmup schedule). `ctx=None`
         on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "DreamerOpt: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "DreamerOpt: target must be 'cpu' or 'gpu'"
         var opt = Self()
         comptime if target == "cpu":
             var visitor = _DreamerCPUInitVisitor(
@@ -506,8 +530,9 @@ struct DreamerOpt(Optimizer, Saveable):
                 mu_flat_ptr=UnsafePointer(to=opt.mu_flat),
                 offsets_ptr=UnsafePointer(to=opt.offsets),
             )
-            model.for_each_param[target, _DreamerCPUInitVisitor](
-                String(""), visitor,
+            model.for_each_param[target, type_of(visitor)](
+                String(""),
+                visitor,
             )
             opt.total_size = len(opt.nu_flat)
             opt.ts = TargetStorage.make_cpu()
@@ -517,8 +542,9 @@ struct DreamerOpt(Optimizer, Saveable):
                 offsets_ptr=UnsafePointer(to=opt.offsets),
                 total_ptr=UnsafePointer(to=opt.total_size),
             )
-            model.for_each_param[target, _DreamerGPUInitVisitor](
-                String(""), visitor,
+            model.for_each_param[target, type_of(visitor)](
+                String(""),
+                visitor,
             )
             var nu_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
             var mu_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
@@ -577,26 +603,33 @@ struct DreamerOpt(Optimizer, Saveable):
                 mu_flat_ptr=UnsafePointer(to=self.mu_flat),
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,
-                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
-                agc_clip=self.agc_clip, agc_pmin=self.agc_pmin,
-                bias_correction1=bc1, bias_correction2=bc2,
+                lr=self.lr,
+                beta1=self.beta1,
+                beta2=self.beta2,
+                eps=self.eps,
+                agc_clip=self.agc_clip,
+                agc_pmin=self.agc_pmin,
+                bias_correction1=bc1,
+                bias_correction2=bc2,
             )
-            model.for_each_param[target, _DreamerCPUStepVisitor](
-                String(""), visitor
-            )
+            model.for_each_param[target, type_of(visitor)](String(""), visitor)
         else:
             var ctx = self.ts.ctx.value()
-            var step_ptr: UnsafePointer[UInt32, MutAnyOrigin] = (
-                self.step_dev.value().unsafe_ptr()
-            )
-            var bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = (
-                self.bc_dev.value().unsafe_ptr()
-            )
+            var step_ptr: UnsafePointer[
+                UInt32, MutAnyOrigin
+            ] = self.step_dev.value().unsafe_ptr()
+            var bc_ptr: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.bc_dev.value().unsafe_ptr()
             # On-device step bump + bias-correction. No host scalar feeds the
             # update kernel → CUDA-graph capturable.
             ctx.enqueue_function[_dreamer_step_prep_kernel](
-                step_ptr, bc_ptr, self.beta1, self.beta2,
-                grid_dim=1, block_dim=1,
+                step_ptr,
+                bc_ptr,
+                self.beta1,
+                self.beta2,
+                grid_dim=1,
+                block_dim=1,
             )
             var visitor = _DreamerGPUStepVisitor(
                 ctx=ctx,
@@ -606,12 +639,14 @@ struct DreamerOpt(Optimizer, Saveable):
                 bc_base=bc_ptr,
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,
-                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
-                agc_clip=self.agc_clip, agc_pmin=self.agc_pmin,
+                lr=self.lr,
+                beta1=self.beta1,
+                beta2=self.beta2,
+                eps=self.eps,
+                agc_clip=self.agc_clip,
+                agc_pmin=self.agc_pmin,
             )
-            model.for_each_param[target, _DreamerGPUStepVisitor](
-                String(""), visitor
-            )
+            model.for_each_param[target, type_of(visitor)](String(""), visitor)
 
     # ──────────────────────────────────────────────────────────────────
     # ComputeGraph overloads — a `ComputeGraph` exposes the same
@@ -629,9 +664,9 @@ struct DreamerOpt(Optimizer, Saveable):
         mut g: ComputeGraph[OUT, *NODES],
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "DreamerOpt.make_graph: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "DreamerOpt.make_graph: target must be 'cpu' or 'gpu'"
         var opt = Self()
         comptime if target == "cpu":
             var visitor = _DreamerCPUInitVisitor(
@@ -639,7 +674,7 @@ struct DreamerOpt(Optimizer, Saveable):
                 mu_flat_ptr=UnsafePointer(to=opt.mu_flat),
                 offsets_ptr=UnsafePointer(to=opt.offsets),
             )
-            g.for_each_param[target, _DreamerCPUInitVisitor](String(""), visitor)
+            g.for_each_param[target, type_of(visitor)](String(""), visitor)
             opt.total_size = len(opt.nu_flat)
             opt.ts = TargetStorage.make_cpu()
         else:
@@ -648,7 +683,7 @@ struct DreamerOpt(Optimizer, Saveable):
                 offsets_ptr=UnsafePointer(to=opt.offsets),
                 total_ptr=UnsafePointer(to=opt.total_size),
             )
-            g.for_each_param[target, _DreamerGPUInitVisitor](String(""), visitor)
+            g.for_each_param[target, type_of(visitor)](String(""), visitor)
             var nu_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
             var mu_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
             nu_real.enqueue_fill(0.0)
@@ -702,24 +737,33 @@ struct DreamerOpt(Optimizer, Saveable):
                 mu_flat_ptr=UnsafePointer(to=self.mu_flat),
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,
-                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
-                agc_clip=self.agc_clip, agc_pmin=self.agc_pmin,
-                bias_correction1=bc1, bias_correction2=bc2,
+                lr=self.lr,
+                beta1=self.beta1,
+                beta2=self.beta2,
+                eps=self.eps,
+                agc_clip=self.agc_clip,
+                agc_pmin=self.agc_pmin,
+                bias_correction1=bc1,
+                bias_correction2=bc2,
             )
-            g.for_each_param[target, _DreamerCPUStepVisitor](String(""), visitor)
+            g.for_each_param[target, type_of(visitor)](String(""), visitor)
         else:
             var ctx = self.ts.ctx.value()
-            var step_ptr: UnsafePointer[UInt32, MutAnyOrigin] = (
-                self.step_dev.value().unsafe_ptr()
-            )
-            var bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = (
-                self.bc_dev.value().unsafe_ptr()
-            )
+            var step_ptr: UnsafePointer[
+                UInt32, MutAnyOrigin
+            ] = self.step_dev.value().unsafe_ptr()
+            var bc_ptr: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.bc_dev.value().unsafe_ptr()
             # On-device step bump + bias-correction. No host scalar feeds the
             # update kernel → CUDA-graph capturable.
             ctx.enqueue_function[_dreamer_step_prep_kernel](
-                step_ptr, bc_ptr, self.beta1, self.beta2,
-                grid_dim=1, block_dim=1,
+                step_ptr,
+                bc_ptr,
+                self.beta1,
+                self.beta2,
+                grid_dim=1,
+                block_dim=1,
             )
             var visitor = _DreamerGPUStepVisitor(
                 ctx=ctx,
@@ -729,10 +773,14 @@ struct DreamerOpt(Optimizer, Saveable):
                 bc_base=bc_ptr,
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,
-                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
-                agc_clip=self.agc_clip, agc_pmin=self.agc_pmin,
+                lr=self.lr,
+                beta1=self.beta1,
+                beta2=self.beta2,
+                eps=self.eps,
+                agc_clip=self.agc_clip,
+                agc_pmin=self.agc_pmin,
             )
-            g.for_each_param[target, _DreamerGPUStepVisitor](String(""), visitor)
+            g.for_each_param[target, type_of(visitor)](String(""), visitor)
 
     # ─────────────────────────── Saveable (CPU only) ───────────────────────────
     # Mirrors Adam's layout with the two extra AGC hyperparams. Topology-
@@ -761,39 +809,58 @@ struct DreamerOpt(Optimizer, Saveable):
             out += String(mu_ptr[k]) + "\n"
 
     def load(
-        mut self, lines: List[String], mut idx: Int, prefix: String,
+        mut self,
+        lines: List[String],
+        mut idx: Int,
+        prefix: String,
     ) raises:
         self.lr = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".lr")))
         idx += 1
-        self.beta1 = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".beta1")))
+        self.beta1 = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".beta1"))
+        )
         idx += 1
-        self.beta2 = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".beta2")))
+        self.beta2 = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".beta2"))
+        )
         idx += 1
-        self.eps = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".eps")))
+        self.eps = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".eps"))
+        )
         idx += 1
-        self.agc_clip = Scalar[DT](atof(
-            _expect_kv_line(lines, idx, prefix + ".agc_clip")
-        ))
+        self.agc_clip = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".agc_clip"))
+        )
         idx += 1
-        self.agc_pmin = Scalar[DT](atof(
-            _expect_kv_line(lines, idx, prefix + ".agc_pmin")
-        ))
+        self.agc_pmin = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".agc_pmin"))
+        )
         idx += 1
-        self.step_count = atol(_expect_kv_line(lines, idx, prefix + ".step_count"))
+        self.step_count = atol(
+            _expect_kv_line(lines, idx, prefix + ".step_count")
+        )
         idx += 1
-        self.beta1_pow_t = Scalar[DT](atof(
-            _expect_kv_line(lines, idx, prefix + ".beta1_pow_t")
-        ))
+        self.beta1_pow_t = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".beta1_pow_t"))
+        )
         idx += 1
-        self.beta2_pow_t = Scalar[DT](atof(
-            _expect_kv_line(lines, idx, prefix + ".beta2_pow_t")
-        ))
+        self.beta2_pow_t = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".beta2_pow_t"))
+        )
         idx += 1
         DreamerOpt._load_flat_section(
-            lines, idx, prefix + ".nu_flat", self.nu_flat, self.total_size,
+            lines,
+            idx,
+            prefix + ".nu_flat",
+            self.nu_flat,
+            self.total_size,
         )
         DreamerOpt._load_flat_section(
-            lines, idx, prefix + ".mu_flat", self.mu_flat, self.total_size,
+            lines,
+            idx,
+            prefix + ".mu_flat",
+            self.mu_flat,
+            self.total_size,
         )
 
     @staticmethod
@@ -806,25 +873,32 @@ struct DreamerOpt(Optimizer, Saveable):
     ) raises:
         if idx >= len(lines):
             raise Error(
-                "DreamerOpt.load: out of input at `" + expected_prefix
-                + "#size=...` (idx " + String(idx) + ")"
+                "DreamerOpt.load: out of input at `"
+                + expected_prefix
+                + "#size=...` (idx "
+                + String(idx)
+                + ")"
             )
         var header = lines[idx]
-        var expected_header = (
-            expected_prefix + "#size=" + String(expected_size)
-        )
+        var expected_header = expected_prefix + "#size=" + String(expected_size)
         if header != expected_header:
             raise Error(
                 "DreamerOpt.load: section header mismatch. Expected `"
-                + expected_header + "`, got `" + header + "`"
+                + expected_header
+                + "`, got `"
+                + header
+                + "`"
             )
         idx += 1
         var t_ptr = mptr(target.unsafe_ptr())
         for k in range(expected_size):
             if idx >= len(lines):
                 raise Error(
-                    "DreamerOpt.load: short read for `" + expected_prefix
-                    + "` at element " + String(k) + " of "
+                    "DreamerOpt.load: short read for `"
+                    + expected_prefix
+                    + "` at element "
+                    + String(k)
+                    + " of "
                     + String(expected_size)
                 )
             t_ptr[k] = Scalar[DT](atof(lines[idx]))

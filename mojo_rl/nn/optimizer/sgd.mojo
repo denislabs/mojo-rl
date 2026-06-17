@@ -80,10 +80,12 @@ def _zero_fill_kernel(
 
 
 @fieldwise_init
-struct _SGDCPUInitVisitor(ParamVisitor):
-    var vel_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
-    var apply_decay_ptr: UnsafePointer[List[Bool], MutAnyOrigin]
+struct _SGDCPUInitVisitor[
+    ovel: Origin[mut=True], oo: Origin[mut=True], oa: Origin[mut=True]
+](ParamVisitor):
+    var vel_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.ovel]
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
+    var apply_decay_ptr: UnsafePointer[List[Bool], Self.oa]
 
     def visit(
         mut self,
@@ -105,10 +107,12 @@ struct _SGDCPUInitVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _SGDCPUStepVisitor(ParamVisitor):
-    var vel_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
-    var apply_decay_ptr: UnsafePointer[List[Bool], MutAnyOrigin]
+struct _SGDCPUStepVisitor[
+    ovel: Origin[mut=True], oo: Origin[mut=True], oa: Origin[mut=True]
+](ParamVisitor):
+    var vel_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.ovel]
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
+    var apply_decay_ptr: UnsafePointer[List[Bool], Self.oa]
     var idx: Int
     var lr: Scalar[DT]
     var momentum: Scalar[DT]
@@ -178,10 +182,12 @@ struct _ZeroGradCPUVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _SGDGPUInitVisitor(ParamVisitor):
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
-    var apply_decay_ptr: UnsafePointer[List[Bool], MutAnyOrigin]
-    var total_ptr: UnsafePointer[Int, MutAnyOrigin]
+struct _SGDGPUInitVisitor[
+    oo: Origin[mut=True], oa: Origin[mut=True], ot: Origin[mut=True]
+](ParamVisitor):
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
+    var apply_decay_ptr: UnsafePointer[List[Bool], Self.oa]
+    var total_ptr: UnsafePointer[Int, Self.ot]
 
     def visit(
         mut self,
@@ -201,11 +207,13 @@ struct _SGDGPUInitVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _SGDGPUStepVisitor(ParamVisitor):
+struct _SGDGPUStepVisitor[oo: Origin[mut=True], oa: Origin[mut=True]](
+    ParamVisitor
+):
     var ctx: DeviceContext
     var vel_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
-    var apply_decay_ptr: UnsafePointer[List[Bool], MutAnyOrigin]
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
+    var apply_decay_ptr: UnsafePointer[List[Bool], Self.oa]
     var idx: Int
     var lr: Scalar[DT]
     var momentum: Scalar[DT]
@@ -230,10 +238,16 @@ struct _SGDGPUStepVisitor(ParamVisitor):
         var grad_w_ptr = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_sgd_update_kernel](
-            param_w_ptr, grad_w_ptr, vel_off, n_elems,
-            self.lr, self.momentum, self.weight_decay,
+            param_w_ptr,
+            grad_w_ptr,
+            vel_off,
+            n_elems,
+            self.lr,
+            self.momentum,
+            self.weight_decay,
             Int(1) if decay_flag else Int(0),
-            grid_dim=n_blocks, block_dim=TPB,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
         self.idx += 1
 
@@ -257,7 +271,10 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
         var grad_w_ptr = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_zero_fill_kernel](
-            grad_w_ptr, n_elems, grid_dim=n_blocks, block_dim=TPB,
+            grad_w_ptr,
+            n_elems,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
 
 
@@ -300,14 +317,13 @@ struct SGD(Optimizer):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, M: Module](
-        mut model: M,
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    def make[
+        target: StaticString, M: Module
+    ](mut model: M, ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "SGD: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "SGD: target must be 'cpu' or 'gpu'"
         var opt = Self()
         comptime if target == "cpu":
             var visitor = _SGDCPUInitVisitor(
@@ -315,7 +331,7 @@ struct SGD(Optimizer):
                 offsets_ptr=UnsafePointer(to=opt.offsets),
                 apply_decay_ptr=UnsafePointer(to=opt.apply_decay),
             )
-            model.for_each_param[target, _SGDCPUInitVisitor](String(""), visitor)
+            model.for_each_param[target, type_of(visitor)](String(""), visitor)
             opt.total_size = len(opt.vel_flat)
             opt.ts = TargetStorage.make_cpu()
         else:
@@ -325,7 +341,7 @@ struct SGD(Optimizer):
                 apply_decay_ptr=UnsafePointer(to=opt.apply_decay),
                 total_ptr=UnsafePointer(to=opt.total_size),
             )
-            model.for_each_param[target, _SGDGPUInitVisitor](String(""), visitor)
+            model.for_each_param[target, type_of(visitor)](String(""), visitor)
             var vel_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
             vel_real.enqueue_fill(0.0)
             opt.vel_dev = vel_real^
@@ -363,10 +379,13 @@ struct SGD(Optimizer):
             if self.max_grad_norm > Scalar[DT](0.0):
                 if not self._clip_state:
                     self._clip_state = GradClipState.make(
-                        self.ts.ctx.value(), len(self.offsets),
+                        self.ts.ctx.value(),
+                        len(self.offsets),
                     )
                 clip_grads_auto_gpu[M](
-                    model, self.ts.ctx.value(), self._clip_state.value(),
+                    model,
+                    self.ts.ctx.value(),
+                    self._clip_state.value(),
                     self.max_grad_norm,
                 )
 
@@ -376,10 +395,11 @@ struct SGD(Optimizer):
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 apply_decay_ptr=UnsafePointer(to=self.apply_decay),
                 idx=0,
-                lr=self.lr, momentum=self.momentum,
+                lr=self.lr,
+                momentum=self.momentum,
                 weight_decay=self.weight_decay,
             )
-            model.for_each_param[target, _SGDCPUStepVisitor](String(""), visitor)
+            model.for_each_param[target, type_of(visitor)](String(""), visitor)
         else:
             var visitor = _SGDGPUStepVisitor(
                 ctx=self.ts.ctx.value(),
@@ -387,7 +407,8 @@ struct SGD(Optimizer):
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 apply_decay_ptr=UnsafePointer(to=self.apply_decay),
                 idx=0,
-                lr=self.lr, momentum=self.momentum,
+                lr=self.lr,
+                momentum=self.momentum,
                 weight_decay=self.weight_decay,
             )
-            model.for_each_param[target, _SGDGPUStepVisitor](String(""), visitor)
+            model.for_each_param[target, type_of(visitor)](String(""), visitor)

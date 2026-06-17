@@ -22,6 +22,7 @@ from layout import TileTensor, row_major
 
 from ..constants import DT, CPU_SIMD_W, TPB, USE_GROUPED_GPU_OPTIMIZER
 from ..core import ParamVisitor
+
 # Grouped multi-tensor helpers shared with Adam (NVIDIA-only path). The
 # descriptor collector + flat-index helper + uploaders are algorithm-
 # agnostic; only the per-element update kernel differs (AdamW folds in the
@@ -179,11 +180,16 @@ def _grouped_adamw_update_kernel(
 
 
 @fieldwise_init
-struct _AdamWCPUInitVisitor(ParamVisitor):
-    var m_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var v_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
-    var apply_decay_ptr: UnsafePointer[List[Bool], MutAnyOrigin]
+struct _AdamWCPUInitVisitor[
+    om: Origin[mut=True],
+    ov: Origin[mut=True],
+    oo: Origin[mut=True],
+    oa: Origin[mut=True],
+](ParamVisitor):
+    var m_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.om]
+    var v_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.ov]
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
+    var apply_decay_ptr: UnsafePointer[List[Bool], Self.oa]
 
     def visit(
         mut self,
@@ -206,11 +212,16 @@ struct _AdamWCPUInitVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _AdamWCPUStepVisitor(ParamVisitor):
-    var m_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var v_flat_ptr: UnsafePointer[List[Scalar[DT]], MutAnyOrigin]
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
-    var apply_decay_ptr: UnsafePointer[List[Bool], MutAnyOrigin]
+struct _AdamWCPUStepVisitor[
+    om: Origin[mut=True],
+    ov: Origin[mut=True],
+    oo: Origin[mut=True],
+    oa: Origin[mut=True],
+](ParamVisitor):
+    var m_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.om]
+    var v_flat_ptr: UnsafePointer[List[Scalar[DT]], Self.ov]
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
+    var apply_decay_ptr: UnsafePointer[List[Bool], Self.oa]
     var idx: Int
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
@@ -310,10 +321,12 @@ struct _ZeroGradCPUVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _AdamWGPUInitVisitor(ParamVisitor):
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
-    var apply_decay_ptr: UnsafePointer[List[Bool], MutAnyOrigin]
-    var total_ptr: UnsafePointer[Int, MutAnyOrigin]
+struct _AdamWGPUInitVisitor[
+    oo: Origin[mut=True], oa: Origin[mut=True], ot: Origin[mut=True]
+](ParamVisitor):
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
+    var apply_decay_ptr: UnsafePointer[List[Bool], Self.oa]
+    var total_ptr: UnsafePointer[Int, Self.ot]
 
     def visit(
         mut self,
@@ -333,13 +346,15 @@ struct _AdamWGPUInitVisitor(ParamVisitor):
 
 
 @fieldwise_init
-struct _AdamWGPUStepVisitor(ParamVisitor):
+struct _AdamWGPUStepVisitor[oo: Origin[mut=True], oa: Origin[mut=True]](
+    ParamVisitor
+):
     var ctx: DeviceContext
     var m_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var v_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
     var bc_base: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var offsets_ptr: UnsafePointer[List[Int], MutAnyOrigin]
-    var apply_decay_ptr: UnsafePointer[List[Bool], MutAnyOrigin]
+    var offsets_ptr: UnsafePointer[List[Int], Self.oo]
+    var apply_decay_ptr: UnsafePointer[List[Bool], Self.oa]
     var idx: Int
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
@@ -364,14 +379,23 @@ struct _AdamWGPUStepVisitor(ParamVisitor):
         var m_off = self.m_base + off
         var v_off = self.v_base + off
         var param_w_ptr = mptr(param.ptr)
-        var grad_w_ptr  = mptr(grad.ptr)
+        var grad_w_ptr = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_adamw_update_kernel](
-            param_w_ptr, grad_w_ptr, m_off, v_off, self.bc_base, n_elems,
-            self.lr, self.beta1, self.beta2, self.eps,
+            param_w_ptr,
+            grad_w_ptr,
+            m_off,
+            v_off,
+            self.bc_base,
+            n_elems,
+            self.lr,
+            self.beta1,
+            self.beta2,
+            self.eps,
             self.weight_decay,
             Int(1) if decay_flag else Int(0),
-            grid_dim=n_blocks, block_dim=TPB,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
         self.idx += 1
 
@@ -395,7 +419,10 @@ struct _ZeroGradGPUVisitor(ParamVisitor):
         var grad_w_ptr = mptr(grad.ptr)
         var n_blocks = (n_elems + TPB - 1) // TPB
         self.ctx.enqueue_function[_zero_fill_kernel](
-            grad_w_ptr, n_elems, grid_dim=n_blocks, block_dim=TPB,
+            grad_w_ptr,
+            n_elems,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
 
 
@@ -482,14 +509,13 @@ struct AdamW(Optimizer, Saveable):
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString, M: Module](
-        mut model: M,
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    def make[
+        target: StaticString, M: Module
+    ](mut model: M, ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "AdamW: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "AdamW: target must be 'cpu' or 'gpu'"
         var opt = Self()
         comptime if target == "cpu":
             var visitor = _AdamWCPUInitVisitor(
@@ -498,8 +524,9 @@ struct AdamW(Optimizer, Saveable):
                 offsets_ptr=UnsafePointer(to=opt.offsets),
                 apply_decay_ptr=UnsafePointer(to=opt.apply_decay),
             )
-            model.for_each_param[target, _AdamWCPUInitVisitor](
-                String(""), visitor,
+            model.for_each_param[target, type_of(visitor)](
+                String(""),
+                visitor,
             )
             opt.total_size = len(opt.m_flat)
             opt.ts = TargetStorage.make_cpu()
@@ -510,8 +537,9 @@ struct AdamW(Optimizer, Saveable):
                 apply_decay_ptr=UnsafePointer(to=opt.apply_decay),
                 total_ptr=UnsafePointer(to=opt.total_size),
             )
-            model.for_each_param[target, _AdamWGPUInitVisitor](
-                String(""), visitor,
+            model.for_each_param[target, type_of(visitor)](
+                String(""),
+                visitor,
             )
             var m_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
             var v_real = ctx_v.enqueue_create_buffer[DT](opt.total_size)
@@ -544,9 +572,7 @@ struct AdamW(Optimizer, Saveable):
                     param_addrs_ptr=UnsafePointer(to=pa),
                     grad_addrs_ptr=UnsafePointer(to=ga),
                 )
-                model.for_each_param[target, _MTDescriptorCollector](
-                    String(""), coll
-                )
+                model.for_each_param[target, type_of(coll)](String(""), coll)
                 # Moment offsets = the init walker's dense per-param prefix
                 # sums (same walk order), narrowed to int32; apply_decay
                 # flags narrowed to 1/0 int32 (same walk order).
@@ -644,7 +670,8 @@ struct AdamW(Optimizer, Saveable):
                     # Per-Param path (Apple / non-grouped).
                     if not self._clip_state:
                         self._clip_state = GradClipState.make(
-                            self.ts.ctx.value(), len(self.offsets),
+                            self.ts.ctx.value(),
+                            len(self.offsets),
                         )
                     clip_grads_auto_gpu[M](
                         model,
@@ -665,22 +692,30 @@ struct AdamW(Optimizer, Saveable):
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 apply_decay_ptr=UnsafePointer(to=self.apply_decay),
                 idx=0,
-                lr=self.lr, beta1=self.beta1, beta2=self.beta2, eps=self.eps,
+                lr=self.lr,
+                beta1=self.beta1,
+                beta2=self.beta2,
+                eps=self.eps,
                 weight_decay=self.weight_decay,
-                bc1=bc1, bc2=bc2,
+                bc1=bc1,
+                bc2=bc2,
             )
-            model.for_each_param[target, _AdamWCPUStepVisitor](String(""), visitor)
+            model.for_each_param[target, type_of(visitor)](String(""), visitor)
         else:
             var ctx = self.ts.ctx.value()
-            var step_ptr: UnsafePointer[UInt32, MutAnyOrigin] = (
-                self.step_dev.value().unsafe_ptr()
-            )
-            var bc_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin] = (
-                self.bc_dev.value().unsafe_ptr()
-            )
+            var step_ptr: UnsafePointer[
+                UInt32, MutAnyOrigin
+            ] = self.step_dev.value().unsafe_ptr()
+            var bc_ptr: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.bc_dev.value().unsafe_ptr()
             ctx.enqueue_function[_adamw_step_prep_kernel](
-                step_ptr, bc_ptr, self.beta1, self.beta2,
-                grid_dim=1, block_dim=1,
+                step_ptr,
+                bc_ptr,
+                self.beta1,
+                self.beta2,
+                grid_dim=1,
+                block_dim=1,
             )
             comptime if has_nvidia_gpu_accelerator() and USE_GROUPED_GPU_OPTIMIZER:
                 # Grouped: ONE launch updates every param tensor, reading
@@ -708,7 +743,10 @@ struct AdamW(Optimizer, Saveable):
                         mptr(self.m_dev.value().unsafe_ptr()),
                         mptr(self.v_dev.value().unsafe_ptr()),
                         bc_ptr,
-                        self.lr, self.beta1, self.beta2, self.eps,
+                        self.lr,
+                        self.beta1,
+                        self.beta2,
+                        self.eps,
                         self.weight_decay,
                         grid_dim=n_blocks,
                         block_dim=TPB,
@@ -722,11 +760,13 @@ struct AdamW(Optimizer, Saveable):
                     offsets_ptr=UnsafePointer(to=self.offsets),
                     apply_decay_ptr=UnsafePointer(to=self.apply_decay),
                     idx=0,
-                    lr=self.lr, beta1=self.beta1, beta2=self.beta2,
+                    lr=self.lr,
+                    beta1=self.beta1,
+                    beta2=self.beta2,
                     eps=self.eps,
                     weight_decay=self.weight_decay,
                 )
-                model.for_each_param[target, _AdamWGPUStepVisitor](
+                model.for_each_param[target, type_of(visitor)](
                     String(""), visitor
                 )
 
@@ -755,35 +795,54 @@ struct AdamW(Optimizer, Saveable):
             out += String(v_ptr[k]) + "\n"
 
     def load(
-        mut self, lines: List[String], mut idx: Int, prefix: String,
+        mut self,
+        lines: List[String],
+        mut idx: Int,
+        prefix: String,
     ) raises:
         self.lr = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".lr")))
         idx += 1
-        self.beta1 = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".beta1")))
+        self.beta1 = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".beta1"))
+        )
         idx += 1
-        self.beta2 = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".beta2")))
+        self.beta2 = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".beta2"))
+        )
         idx += 1
-        self.eps = Scalar[DT](atof(_expect_kv_line(lines, idx, prefix + ".eps")))
+        self.eps = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".eps"))
+        )
         idx += 1
-        self.weight_decay = Scalar[DT](atof(
-            _expect_kv_line(lines, idx, prefix + ".weight_decay")
-        ))
+        self.weight_decay = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".weight_decay"))
+        )
         idx += 1
-        self.step_count = atol(_expect_kv_line(lines, idx, prefix + ".step_count"))
+        self.step_count = atol(
+            _expect_kv_line(lines, idx, prefix + ".step_count")
+        )
         idx += 1
-        self.beta1_pow_t = Scalar[DT](atof(
-            _expect_kv_line(lines, idx, prefix + ".beta1_pow_t")
-        ))
+        self.beta1_pow_t = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".beta1_pow_t"))
+        )
         idx += 1
-        self.beta2_pow_t = Scalar[DT](atof(
-            _expect_kv_line(lines, idx, prefix + ".beta2_pow_t")
-        ))
+        self.beta2_pow_t = Scalar[DT](
+            atof(_expect_kv_line(lines, idx, prefix + ".beta2_pow_t"))
+        )
         idx += 1
         AdamW._load_flat_section(
-            lines, idx, prefix + ".m_flat", self.m_flat, self.total_size,
+            lines,
+            idx,
+            prefix + ".m_flat",
+            self.m_flat,
+            self.total_size,
         )
         AdamW._load_flat_section(
-            lines, idx, prefix + ".v_flat", self.v_flat, self.total_size,
+            lines,
+            idx,
+            prefix + ".v_flat",
+            self.v_flat,
+            self.total_size,
         )
 
     # ─── GPU checkpoint sync (mirrors Adam) ──────────────────────────────
@@ -836,25 +895,32 @@ struct AdamW(Optimizer, Saveable):
     ) raises:
         if idx >= len(lines):
             raise Error(
-                "AdamW.load: out of input at `" + expected_prefix
-                + "#size=...` (idx " + String(idx) + ")"
+                "AdamW.load: out of input at `"
+                + expected_prefix
+                + "#size=...` (idx "
+                + String(idx)
+                + ")"
             )
         var header = lines[idx]
-        var expected_header = (
-            expected_prefix + "#size=" + String(expected_size)
-        )
+        var expected_header = expected_prefix + "#size=" + String(expected_size)
         if header != expected_header:
             raise Error(
                 "AdamW.load: section header mismatch. Expected `"
-                + expected_header + "`, got `" + header + "`"
+                + expected_header
+                + "`, got `"
+                + header
+                + "`"
             )
         idx += 1
         var t_ptr = mptr(target.unsafe_ptr())
         for k in range(expected_size):
             if idx >= len(lines):
                 raise Error(
-                    "AdamW.load: short read for `" + expected_prefix
-                    + "` at element " + String(k) + " of "
+                    "AdamW.load: short read for `"
+                    + expected_prefix
+                    + "` at element "
+                    + String(k)
+                    + " of "
                     + String(expected_size)
                 )
             t_ptr[k] = Scalar[DT](atof(lines[idx]))
