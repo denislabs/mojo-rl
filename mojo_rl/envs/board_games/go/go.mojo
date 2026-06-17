@@ -762,6 +762,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     def _gpu_count_liberties[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
+        visited_origin: Origin[mut=True],
     ](
         states: LayoutTensor[
             board_dtype,
@@ -770,7 +771,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         ],
         game: Int,
         start: Int,
-        visited: UnsafePointer[Bool, MutAnyOrigin],
+        visited: UnsafePointer[Bool, visited_origin],
     ) -> Int:
         """Count liberties of group at `start`. Uses visited buffer on stack.
         Bounded iteration for GPU safety (max BOARD_SIZE iterations)."""
@@ -848,6 +849,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     def _gpu_remove_group[
         BATCH_SIZE: Int,
         STATE_SIZE: Int,
+        visited_origin: Origin[mut=True],
     ](
         states: LayoutTensor[
             board_dtype,
@@ -856,7 +858,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
         ],
         game: Int,
         start: Int,
-        visited: UnsafePointer[Bool, MutAnyOrigin],
+        visited: UnsafePointer[Bool, visited_origin],
     ) -> Int:
         """Remove group at `start`. Returns count removed."""
         comptime BS = GoEnv[Self.SIZE].BOARD_SIZE
