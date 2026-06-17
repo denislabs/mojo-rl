@@ -403,7 +403,7 @@ struct SGD(Optimizer):
         else:
             var visitor = _SGDGPUStepVisitor(
                 ctx=self.ts.ctx.value(),
-                vel_base=self.vel_dev.value().unsafe_ptr(),
+                vel_base=mptr(self.vel_dev.value().unsafe_ptr()),
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 apply_decay_ptr=UnsafePointer(to=self.apply_decay),
                 idx=0,

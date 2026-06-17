@@ -703,12 +703,8 @@ struct AdamW(Optimizer, Saveable):
             model.for_each_param[target, type_of(visitor)](String(""), visitor)
         else:
             var ctx = self.ts.ctx.value()
-            var step_ptr: UnsafePointer[
-                UInt32, MutAnyOrigin
-            ] = self.step_dev.value().unsafe_ptr()
-            var bc_ptr: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.bc_dev.value().unsafe_ptr()
+            var step_ptr = mptr(self.step_dev.value().unsafe_ptr())
+            var bc_ptr = mptr(self.bc_dev.value().unsafe_ptr())
             ctx.enqueue_function[_adamw_step_prep_kernel](
                 step_ptr,
                 bc_ptr,
@@ -754,8 +750,8 @@ struct AdamW(Optimizer, Saveable):
             else:
                 var visitor = _AdamWGPUStepVisitor(
                     ctx=ctx,
-                    m_base=self.m_dev.value().unsafe_ptr(),
-                    v_base=self.v_dev.value().unsafe_ptr(),
+                    m_base=mptr(self.m_dev.value().unsafe_ptr()),
+                    v_base=mptr(self.v_dev.value().unsafe_ptr()),
                     bc_base=bc_ptr,
                     offsets_ptr=UnsafePointer(to=self.offsets),
                     apply_decay_ptr=UnsafePointer(to=self.apply_decay),

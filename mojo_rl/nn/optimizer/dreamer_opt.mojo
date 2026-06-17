@@ -615,12 +615,8 @@ struct DreamerOpt(Optimizer, Saveable):
             model.for_each_param[target, type_of(visitor)](String(""), visitor)
         else:
             var ctx = self.ts.ctx.value()
-            var step_ptr: UnsafePointer[
-                UInt32, MutAnyOrigin
-            ] = self.step_dev.value().unsafe_ptr()
-            var bc_ptr: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.bc_dev.value().unsafe_ptr()
+            var step_ptr = mptr(self.step_dev.value().unsafe_ptr())
+            var bc_ptr = mptr(self.bc_dev.value().unsafe_ptr())
             # On-device step bump + bias-correction. No host scalar feeds the
             # update kernel → CUDA-graph capturable.
             ctx.enqueue_function[_dreamer_step_prep_kernel](
@@ -633,9 +629,9 @@ struct DreamerOpt(Optimizer, Saveable):
             )
             var visitor = _DreamerGPUStepVisitor(
                 ctx=ctx,
-                nu_base=self.nu_dev.value().unsafe_ptr(),
-                mu_base=self.mu_dev.value().unsafe_ptr(),
-                scale_base=self.scale_dev.value().unsafe_ptr(),
+                nu_base=mptr(self.nu_dev.value().unsafe_ptr()),
+                mu_base=mptr(self.mu_dev.value().unsafe_ptr()),
+                scale_base=mptr(self.scale_dev.value().unsafe_ptr()),
                 bc_base=bc_ptr,
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,
@@ -749,12 +745,8 @@ struct DreamerOpt(Optimizer, Saveable):
             g.for_each_param[target, type_of(visitor)](String(""), visitor)
         else:
             var ctx = self.ts.ctx.value()
-            var step_ptr: UnsafePointer[
-                UInt32, MutAnyOrigin
-            ] = self.step_dev.value().unsafe_ptr()
-            var bc_ptr: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.bc_dev.value().unsafe_ptr()
+            var step_ptr = mptr(self.step_dev.value().unsafe_ptr())
+            var bc_ptr = mptr(self.bc_dev.value().unsafe_ptr())
             # On-device step bump + bias-correction. No host scalar feeds the
             # update kernel → CUDA-graph capturable.
             ctx.enqueue_function[_dreamer_step_prep_kernel](
@@ -767,9 +759,9 @@ struct DreamerOpt(Optimizer, Saveable):
             )
             var visitor = _DreamerGPUStepVisitor(
                 ctx=ctx,
-                nu_base=self.nu_dev.value().unsafe_ptr(),
-                mu_base=self.mu_dev.value().unsafe_ptr(),
-                scale_base=self.scale_dev.value().unsafe_ptr(),
+                nu_base=mptr(self.nu_dev.value().unsafe_ptr()),
+                mu_base=mptr(self.mu_dev.value().unsafe_ptr()),
+                scale_base=mptr(self.scale_dev.value().unsafe_ptr()),
                 bc_base=bc_ptr,
                 offsets_ptr=UnsafePointer(to=self.offsets),
                 idx=0,

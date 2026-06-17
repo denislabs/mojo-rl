@@ -28,6 +28,7 @@ from std.gpu import thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import DT
+from ..core.module import mptr
 
 
 # state_dev layout — single [6] device buffer.
@@ -176,7 +177,7 @@ struct ScalarAdam(Movable & ImplicitlyDeletable):
         (the `Scale` nodes' multiplier source) is refreshed in place."""
         comptime kernel = _scalar_adam_step_kernel
         ctx.enqueue_function[kernel](
-            self.state_dev.value().unsafe_ptr(),
+            mptr(self.state_dev.value().unsafe_ptr()),
             lp_mean_ptr,
             target_entropy,
             self.lr,
@@ -191,7 +192,7 @@ struct ScalarAdam(Movable & ImplicitlyDeletable):
         """Pointer to `state_dev[ALPHA]` — the live α the `Scale` nodes
         read via `multiplier_ptr`. Stable for the buffer's lifetime
         (one-time wiring at trainer make)."""
-        return self.state_dev.value().unsafe_ptr() + _SA_ALPHA
+        return mptr(self.state_dev.value().unsafe_ptr()) + _SA_ALPHA
 
     def read_alpha(mut self) raises -> Scalar[DT]:
         """D2H the live device α (flush cadence only — NOT per step)."""
