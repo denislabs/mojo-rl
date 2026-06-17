@@ -231,7 +231,7 @@ def agent_atlas_size(block_pixel_size: Int) -> Int:
 
 
 def _blit_resized_to_atlas(
-    atlas: UnsafePointer[Float32, MutAnyOrigin],
+    atlas: UnsafePointer[Float32, MutUntrackedOrigin],
     slot_idx: Int,
     block_pixel_size: Int,
     raw_bytes: PythonObject,
@@ -250,7 +250,7 @@ def _blit_resized_to_atlas(
 
 
 def _load_one_resized(
-    atlas: UnsafePointer[Float32, MutAnyOrigin],
+    atlas: UnsafePointer[Float32, MutUntrackedOrigin],
     slot_idx: Int,
     block_pixel_size: Int,
     asset_dir: String,
@@ -270,7 +270,7 @@ def _load_one_resized(
 def build_agent_atlas(
     asset_dir: String,
     block_pixel_size: Int,
-) raises -> UnsafePointer[Float32, MutAnyOrigin]:
+) raises -> UnsafePointer[Float32, MutUntrackedOrigin]:
     """Build the float32 RGBA atlas at the agent's small block_pixel_size.
 
     Returns a heap buffer owned by caller (must be freed via `.free()`).
