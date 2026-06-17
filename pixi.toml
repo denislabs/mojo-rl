@@ -65,13 +65,13 @@ version = "0.1.0"
 backend = { name = "pixi-build-mojo", version = "0.1.*" }
 
 [package.host-dependencies]
-mojo-compiler = ">=1.0.0b2.dev2026061606,<2"
+mojo-compiler = ">=1.0.0b3.dev2026061606,<2"
 
 [package.build-dependencies]
-mojo-compiler = ">=1.0.0b2.dev2026061606,<2"
+mojo-compiler = ">=1.0.0b3.dev2026061606,<2"
 
 [package.run-dependencies]
-mojo-compiler = ">=1.0.0b2.dev2026061606,<2"
+mojo-compiler = ">=1.0.0b3.dev2026061606,<2"
 
 # Point Mojo's embedded Python at the *active* env (CONDA_PREFIX), not a hardcoded
 # `default` env — otherwise `pixi run -e nvidia/apple` loads the wrong libpython and
