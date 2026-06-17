@@ -11,7 +11,6 @@ Backward order: `inner.vjp[mode]` runs first (writes into mid),
 then `grad_input = mid + grad_output` SIMD-add. Identical to v1.
 """
 
-from std.memory import alloc
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
@@ -25,7 +24,8 @@ from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
 def _elementwise_add_kernel[
-    BATCH: Int, DIM: Int,
+    BATCH: Int,
+    DIM: Int,
 ](
     a: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     b: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -36,7 +36,9 @@ def _elementwise_add_kernel[
     if idx < total:
         var bi = idx // DIM
         var di = idx % DIM
-        dst[bi, di] = rebind[Scalar[DT]](a[bi, di]) + rebind[Scalar[DT]](b[bi, di])
+        dst[bi, di] = rebind[Scalar[DT]](a[bi, di]) + rebind[Scalar[DT]](
+            b[bi, di]
+        )
 
 
 struct Residual[Inner: Module](Module):
@@ -46,7 +48,7 @@ struct Residual[Inner: Module](Module):
 
     var inner: Self.Inner
 
-    var mid_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var mid_cpu: List[Scalar[DT]]
     var mid_dev: Optional[DeviceBuffer[DT]]
     var mid_cap: Int
 
@@ -57,7 +59,7 @@ struct Residual[Inner: Module](Module):
             Self.Inner.IN_DIMS[0] == Self.Inner.OUT_DIM
         ), "Residual requires Inner.IN_DIMS[0] == Inner.OUT_DIM"
         self.inner = Self.Inner()
-        self.mid_cpu = alloc[Scalar[DT]](1)
+        self.mid_cpu = List[Scalar[DT]]()
         self.mid_dev = None
         self.mid_cap = 0
         self.ts = TargetStorage.make_uninit()
@@ -65,13 +67,11 @@ struct Residual[Inner: Module](Module):
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "Residual: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "Residual: target must be 'cpu' or 'gpu'"
         var r = Self()
         r.inner = Self.Inner.make[target, INIT](ctx=ctx)
         comptime if target == "cpu":
@@ -82,13 +82,10 @@ struct Residual[Inner: Module](Module):
             r.ts = TargetStorage.make_gpu(ctx_v)
         return r^
 
-    def __del__(deinit self):
-        self.mid_cpu.free()
-
     def _ensure_mid_cpu(mut self, needed: Int):
+        # List owns the storage (RAII): grow in place, no manual alloc/free.
         if self.mid_cap < needed:
-            self.mid_cpu.free()
-            self.mid_cpu = alloc[Scalar[DT]](needed)
+            self.mid_cpu.resize(needed, Scalar[DT](0))
             self.mid_cap = needed
 
     def _ensure_mid_gpu(mut self, needed: Int) raises:
@@ -106,8 +103,12 @@ struct Residual[Inner: Module](Module):
         mut self,
         inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            mut=True,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises:
         assert_tag_for["Residual", target](self.ts.target_tag)
@@ -116,11 +117,14 @@ struct Residual[Inner: Module](Module):
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.IN_DIMS[0])
-            var mid = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIMS[0]]())
+            var mid = TileTensor(
+                mptr(self.mid_cpu.unsafe_ptr()),
+                row_major[BATCH, Self.IN_DIMS[0]](),
+            )
             self.inner.forward[target, BATCH, POLICY=POLICY](input, output=mid)
             var ip = mptr(input.ptr)
             var op = mptr(output_v.ptr)
-            var mp = self.mid_cpu
+            var mp = self.mid_cpu.unsafe_ptr()
             comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
             while k + CPU_SIMD_W <= N:
@@ -134,20 +138,27 @@ struct Residual[Inner: Module](Module):
                 k += 1
         else:
             self._ensure_mid_gpu(BATCH * Self.IN_DIMS[0])
-            var in_p_w  = mptr(input.ptr)
+            var in_p_w = mptr(input.ptr)
             var out_p_w = mptr(output_v.ptr)
-            var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
+            var mp: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.mid_dev.value().unsafe_ptr()
             var mid = TileTensor(mp, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.forward[target, BATCH, POLICY=POLICY](input, output=mid)
             comptime layout = Layout.row_major(BATCH, Self.IN_DIMS[0])
-            var mid_lt = LayoutTensor[DT, layout, MutAnyOrigin](self.mid_dev.value())
-            var in_lt  = LayoutTensor[DT, layout, MutAnyOrigin](in_p_w)
+            var mid_lt = LayoutTensor[DT, layout, MutAnyOrigin](
+                self.mid_dev.value()
+            )
+            var in_lt = LayoutTensor[DT, layout, MutAnyOrigin](in_p_w)
             var out_lt = LayoutTensor[DT, layout, MutAnyOrigin](out_p_w)
             comptime n_blocks = (BATCH * Self.IN_DIMS[0] + TPB - 1) // TPB
             comptime kernel = _elementwise_add_kernel[BATCH, Self.IN_DIMS[0]]
             self.ts.ctx.value().enqueue_function[kernel](
-                mid_lt, in_lt, out_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+                mid_lt,
+                in_lt,
+                out_lt,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     # ----- Backward --------------------------------------------------------
@@ -160,8 +171,11 @@ struct Residual[Inner: Module](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         grad_inputs: TensorPack[Self.ARITY],
     ) raises:
@@ -174,19 +188,26 @@ struct Residual[Inner: Module](Module):
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.IN_DIMS[0])
-            var tmp = TileTensor(self.mid_cpu, row_major[BATCH, Self.IN_DIMS[0]]())
+            var tmp = TileTensor(
+                mptr(self.mid_cpu.unsafe_ptr()),
+                row_major[BATCH, Self.IN_DIMS[0]](),
+            )
             self.inner.vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
+                target,
+                BATCH,
+                POLICY=POLICY,
+                mode=mode,
             ](grad_output_v, tmp)
             var gop = mptr(grad_output_v.ptr)
             var gip = mptr(grad_input_v.ptr)
-            var tp = self.mid_cpu
+            var tp = self.mid_cpu.unsafe_ptr()
             comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
             while k + CPU_SIMD_W <= N:
                 gip.store(
                     k,
-                    tp.load[width=CPU_SIMD_W](k) + gop.load[width=CPU_SIMD_W](k),
+                    tp.load[width=CPU_SIMD_W](k)
+                    + gop.load[width=CPU_SIMD_W](k),
                 )
                 k += CPU_SIMD_W
             while k < N:
@@ -196,20 +217,30 @@ struct Residual[Inner: Module](Module):
             self._ensure_mid_gpu(BATCH * Self.IN_DIMS[0])
             var go_p_w = mptr(grad_output_v.ptr)
             var gi_p_w = mptr(grad_input_v.ptr)
-            var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
+            var mp: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.mid_dev.value().unsafe_ptr()
             var tmp = TileTensor(mp, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
+                target,
+                BATCH,
+                POLICY=POLICY,
+                mode=mode,
             ](grad_output_v, tmp)
             comptime layout = Layout.row_major(BATCH, Self.IN_DIMS[0])
-            var tmp_lt = LayoutTensor[DT, layout, MutAnyOrigin](self.mid_dev.value())
-            var go_lt  = LayoutTensor[DT, layout, MutAnyOrigin](go_p_w)
-            var gi_lt  = LayoutTensor[DT, layout, MutAnyOrigin](gi_p_w)
+            var tmp_lt = LayoutTensor[DT, layout, MutAnyOrigin](
+                self.mid_dev.value()
+            )
+            var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_p_w)
+            var gi_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi_p_w)
             comptime n_blocks = (BATCH * Self.IN_DIMS[0] + TPB - 1) // TPB
             comptime kernel = _elementwise_add_kernel[BATCH, Self.IN_DIMS[0]]
             self.ts.ctx.value().enqueue_function[kernel](
-                tmp_lt, go_lt, gi_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+                tmp_lt,
+                go_lt,
+                gi_lt,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     # ----- Walkers ---------------------------------------------------------

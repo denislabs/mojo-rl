@@ -21,7 +21,6 @@ Scratch (4 slabs, lazy-grown to BATCH), mirroring `Parallel`:
   - `gi_inner`/`gi_skip`   (BATCH×IN_DIM):  per-branch grad_inputs
 """
 
-from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -42,15 +41,15 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
     var inner: Self.Inner
     var skip: Self.Skip
 
-    var inner_out_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var skip_out_cpu:  UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var gi_inner_cpu:  UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var gi_skip_cpu:   UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var inner_out_cpu: List[Scalar[DT]]
+    var skip_out_cpu: List[Scalar[DT]]
+    var gi_inner_cpu: List[Scalar[DT]]
+    var gi_skip_cpu: List[Scalar[DT]]
 
     var inner_out_dev: Optional[DeviceBuffer[DT]]
-    var skip_out_dev:  Optional[DeviceBuffer[DT]]
-    var gi_inner_dev:  Optional[DeviceBuffer[DT]]
-    var gi_skip_dev:   Optional[DeviceBuffer[DT]]
+    var skip_out_dev: Optional[DeviceBuffer[DT]]
+    var gi_inner_dev: Optional[DeviceBuffer[DT]]
+    var gi_skip_dev: Optional[DeviceBuffer[DT]]
     var scratch_n_batch: Int
 
     var ts: TargetStorage
@@ -63,67 +62,64 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
             Self.Inner.OUT_DIM == Self.Skip.OUT_DIM
         ), "ProjectedResidual requires Inner.OUT_DIM == Skip.OUT_DIM"
         self.inner = Self.Inner()
-        self.skip  = Self.Skip()
-        self.inner_out_cpu = alloc[Scalar[DT]](1)
-        self.skip_out_cpu  = alloc[Scalar[DT]](1)
-        self.gi_inner_cpu  = alloc[Scalar[DT]](1)
-        self.gi_skip_cpu   = alloc[Scalar[DT]](1)
+        self.skip = Self.Skip()
+        self.inner_out_cpu = List[Scalar[DT]]()
+        self.skip_out_cpu = List[Scalar[DT]]()
+        self.gi_inner_cpu = List[Scalar[DT]]()
+        self.gi_skip_cpu = List[Scalar[DT]]()
         self.inner_out_dev = None
-        self.skip_out_dev  = None
-        self.gi_inner_dev  = None
-        self.gi_skip_dev   = None
+        self.skip_out_dev = None
+        self.gi_inner_dev = None
+        self.gi_skip_dev = None
         self.scratch_n_batch = 0
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "ProjectedResidual: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "ProjectedResidual: target must be 'cpu' or 'gpu'"
         var r = Self()
         r.inner = Self.Inner.make[target, INIT](ctx=ctx)
-        r.skip  = Self.Skip.make[target, INIT](ctx=ctx)
+        r.skip = Self.Skip.make[target, INIT](ctx=ctx)
         comptime if target == "cpu":
             r.ts = TargetStorage.make_cpu()
         else:
             var ctx_v = require_ctx["ProjectedResidual.make[target='gpu']"](ctx)
             r.inner_out_dev = ctx_v.enqueue_create_buffer[DT](1)
-            r.skip_out_dev  = ctx_v.enqueue_create_buffer[DT](1)
-            r.gi_inner_dev  = ctx_v.enqueue_create_buffer[DT](1)
-            r.gi_skip_dev   = ctx_v.enqueue_create_buffer[DT](1)
+            r.skip_out_dev = ctx_v.enqueue_create_buffer[DT](1)
+            r.gi_inner_dev = ctx_v.enqueue_create_buffer[DT](1)
+            r.gi_skip_dev = ctx_v.enqueue_create_buffer[DT](1)
             r.ts = TargetStorage.make_gpu(ctx_v)
         return r^
 
-    def __del__(deinit self):
-        self.inner_out_cpu.free()
-        self.skip_out_cpu.free()
-        self.gi_inner_cpu.free()
-        self.gi_skip_cpu.free()
-
     def _ensure_scratch_cpu(mut self, batch: Int):
+        # List owns the storage (RAII): grow in place, no manual alloc/free.
         if self.scratch_n_batch < batch:
-            self.inner_out_cpu.free()
-            self.skip_out_cpu.free()
-            self.gi_inner_cpu.free()
-            self.gi_skip_cpu.free()
-            self.inner_out_cpu = alloc[Scalar[DT]](batch * Self.OUT_DIM)
-            self.skip_out_cpu  = alloc[Scalar[DT]](batch * Self.OUT_DIM)
-            self.gi_inner_cpu  = alloc[Scalar[DT]](batch * Self.IN_DIMS[0])
-            self.gi_skip_cpu   = alloc[Scalar[DT]](batch * Self.IN_DIMS[0])
+            self.inner_out_cpu.resize(batch * Self.OUT_DIM, Scalar[DT](0))
+            self.skip_out_cpu.resize(batch * Self.OUT_DIM, Scalar[DT](0))
+            self.gi_inner_cpu.resize(batch * Self.IN_DIMS[0], Scalar[DT](0))
+            self.gi_skip_cpu.resize(batch * Self.IN_DIMS[0], Scalar[DT](0))
             self.scratch_n_batch = batch
 
     def _ensure_scratch_gpu(mut self, batch: Int) raises:
         if self.scratch_n_batch < batch:
             var c = self.ts.ctx.value()
-            self.inner_out_dev = c.enqueue_create_buffer[DT](batch * Self.OUT_DIM)
-            self.skip_out_dev  = c.enqueue_create_buffer[DT](batch * Self.OUT_DIM)
-            self.gi_inner_dev  = c.enqueue_create_buffer[DT](batch * Self.IN_DIMS[0])
-            self.gi_skip_dev   = c.enqueue_create_buffer[DT](batch * Self.IN_DIMS[0])
+            self.inner_out_dev = c.enqueue_create_buffer[DT](
+                batch * Self.OUT_DIM
+            )
+            self.skip_out_dev = c.enqueue_create_buffer[DT](
+                batch * Self.OUT_DIM
+            )
+            self.gi_inner_dev = c.enqueue_create_buffer[DT](
+                batch * Self.IN_DIMS[0]
+            )
+            self.gi_skip_dev = c.enqueue_create_buffer[DT](
+                batch * Self.IN_DIMS[0]
+            )
             self.scratch_n_batch = batch
 
     # ----- Forward ---------------------------------------------------------
@@ -136,8 +132,12 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         mut self,
         inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            mut=True,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises:
         assert_tag_for["ProjectedResidual", target](self.ts.target_tag)
@@ -146,12 +146,22 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
 
         comptime if target == "cpu":
             self._ensure_scratch_cpu(BATCH)
-            var inner_out = TileTensor(self.inner_out_cpu, row_major[BATCH, Self.OUT_DIM]())
-            var skip_out  = TileTensor(self.skip_out_cpu,  row_major[BATCH, Self.OUT_DIM]())
-            self.inner.forward[target, BATCH, POLICY=POLICY](input, output=inner_out)
-            self.skip.forward[target, BATCH, POLICY=POLICY](input, output=skip_out)
-            var ap = self.inner_out_cpu
-            var bp = self.skip_out_cpu
+            var inner_out = TileTensor(
+                mptr(self.inner_out_cpu.unsafe_ptr()),
+                row_major[BATCH, Self.OUT_DIM](),
+            )
+            var skip_out = TileTensor(
+                mptr(self.skip_out_cpu.unsafe_ptr()),
+                row_major[BATCH, Self.OUT_DIM](),
+            )
+            self.inner.forward[target, BATCH, POLICY=POLICY](
+                input, output=inner_out
+            )
+            self.skip.forward[target, BATCH, POLICY=POLICY](
+                input, output=skip_out
+            )
+            var ap = self.inner_out_cpu.unsafe_ptr()
+            var bp = self.skip_out_cpu.unsafe_ptr()
             var op = mptr(output_v.ptr)
             comptime N = BATCH * Self.OUT_DIM
             var k = 0
@@ -167,21 +177,36 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         else:
             self._ensure_scratch_gpu(BATCH)
             var out_p_w = mptr(output_v.ptr)
-            var pa: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.inner_out_dev.value().unsafe_ptr()
-            var pb: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.skip_out_dev.value().unsafe_ptr()
+            var pa: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.inner_out_dev.value().unsafe_ptr()
+            var pb: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.skip_out_dev.value().unsafe_ptr()
             var inner_out = TileTensor(pa, row_major[BATCH, Self.OUT_DIM]())
-            var skip_out  = TileTensor(pb, row_major[BATCH, Self.OUT_DIM]())
-            self.inner.forward[target, BATCH, POLICY=POLICY](input, output=inner_out)
-            self.skip.forward[target, BATCH, POLICY=POLICY](input, output=skip_out)
+            var skip_out = TileTensor(pb, row_major[BATCH, Self.OUT_DIM]())
+            self.inner.forward[target, BATCH, POLICY=POLICY](
+                input, output=inner_out
+            )
+            self.skip.forward[target, BATCH, POLICY=POLICY](
+                input, output=skip_out
+            )
             comptime layout = Layout.row_major(BATCH, Self.OUT_DIM)
-            var a_lt = LayoutTensor[DT, layout, MutAnyOrigin](self.inner_out_dev.value())
-            var b_lt = LayoutTensor[DT, layout, MutAnyOrigin](self.skip_out_dev.value())
+            var a_lt = LayoutTensor[DT, layout, MutAnyOrigin](
+                self.inner_out_dev.value()
+            )
+            var b_lt = LayoutTensor[DT, layout, MutAnyOrigin](
+                self.skip_out_dev.value()
+            )
             var o_lt = LayoutTensor[DT, layout, MutAnyOrigin](out_p_w)
             comptime n_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
             comptime kernel = _elementwise_add_kernel[BATCH, Self.OUT_DIM]
             self.ts.ctx.value().enqueue_function[kernel](
-                a_lt, b_lt, o_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+                a_lt,
+                b_lt,
+                o_lt,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     # ----- Backward --------------------------------------------------------
@@ -194,8 +219,11 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         grad_inputs: TensorPack[Self.ARITY],
     ) raises:
@@ -208,16 +236,28 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
 
         comptime if target == "cpu":
             self._ensure_scratch_cpu(BATCH)
-            var gi_inner = TileTensor(self.gi_inner_cpu, row_major[BATCH, Self.IN_DIMS[0]]())
-            var gi_skip  = TileTensor(self.gi_skip_cpu,  row_major[BATCH, Self.IN_DIMS[0]]())
+            var gi_inner = TileTensor(
+                mptr(self.gi_inner_cpu.unsafe_ptr()),
+                row_major[BATCH, Self.IN_DIMS[0]](),
+            )
+            var gi_skip = TileTensor(
+                mptr(self.gi_skip_cpu.unsafe_ptr()),
+                row_major[BATCH, Self.IN_DIMS[0]](),
+            )
             self.inner.vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
+                target,
+                BATCH,
+                POLICY=POLICY,
+                mode=mode,
             ](grad_output_v, gi_inner)
             self.skip.vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
+                target,
+                BATCH,
+                POLICY=POLICY,
+                mode=mode,
             ](grad_output_v, gi_skip)
-            var ap = self.gi_inner_cpu
-            var bp = self.gi_skip_cpu
+            var ap = self.gi_inner_cpu.unsafe_ptr()
+            var bp = self.gi_skip_cpu.unsafe_ptr()
             var gp = mptr(grad_input_v.ptr)
             comptime N = BATCH * Self.IN_DIMS[0]
             var k = 0
@@ -232,26 +272,45 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
                 k += 1
         else:
             self._ensure_scratch_gpu(BATCH)
-            var pia: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.gi_inner_dev.value().unsafe_ptr()
-            var pib: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.gi_skip_dev.value().unsafe_ptr()
+            var pia: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.gi_inner_dev.value().unsafe_ptr()
+            var pib: UnsafePointer[
+                Scalar[DT], MutAnyOrigin
+            ] = self.gi_skip_dev.value().unsafe_ptr()
             var gi_inner = TileTensor(pia, row_major[BATCH, Self.IN_DIMS[0]]())
-            var gi_skip  = TileTensor(pib, row_major[BATCH, Self.IN_DIMS[0]]())
+            var gi_skip = TileTensor(pib, row_major[BATCH, Self.IN_DIMS[0]]())
             self.inner.vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
+                target,
+                BATCH,
+                POLICY=POLICY,
+                mode=mode,
             ](grad_output_v, gi_inner)
             self.skip.vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
+                target,
+                BATCH,
+                POLICY=POLICY,
+                mode=mode,
             ](grad_output_v, gi_skip)
             var gi_p_w = mptr(grad_input_v.ptr)
             comptime layout_in = Layout.row_major(BATCH, Self.IN_DIMS[0])
-            var gi_a_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](self.gi_inner_dev.value())
-            var gi_b_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](self.gi_skip_dev.value())
+            var gi_a_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](
+                self.gi_inner_dev.value()
+            )
+            var gi_b_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](
+                self.gi_skip_dev.value()
+            )
             var gi_out_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](gi_p_w)
             comptime n_blocks = (BATCH * Self.IN_DIMS[0] + TPB - 1) // TPB
-            comptime sum_kernel = _elementwise_add_kernel[BATCH, Self.IN_DIMS[0]]
+            comptime sum_kernel = _elementwise_add_kernel[
+                BATCH, Self.IN_DIMS[0]
+            ]
             self.ts.ctx.value().enqueue_function[sum_kernel](
-                gi_a_lt, gi_b_lt, gi_out_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+                gi_a_lt,
+                gi_b_lt,
+                gi_out_lt,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     # ----- Walkers ---------------------------------------------------------

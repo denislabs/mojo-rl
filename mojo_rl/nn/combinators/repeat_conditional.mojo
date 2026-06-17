@@ -15,7 +15,6 @@ ConditionalTransformerBlock[...]]`. Each block has its own params
 single grad_c scratch + accumulation.
 """
 
-from std.memory import alloc
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
@@ -28,7 +27,9 @@ from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
 
-def _rc_accum_kernel[NN: Int](
+def _rc_accum_kernel[
+    NN: Int
+](
     dst: LayoutTensor[DT, Layout.row_major(NN), MutAnyOrigin],
     src: LayoutTensor[DT, Layout.row_major(NN), MutAnyOrigin],
 ):
@@ -37,9 +38,9 @@ def _rc_accum_kernel[NN: Int](
         dst[i] = rebind[Scalar[DT]](dst[i]) + rebind[Scalar[DT]](src[i])
 
 
-def _rc_zero_kernel[NN: Int](
-    dst: LayoutTensor[DT, Layout.row_major(NN), MutAnyOrigin],
-):
+def _rc_zero_kernel[
+    NN: Int
+](dst: LayoutTensor[DT, Layout.row_major(NN), MutAnyOrigin],):
     var i = Int(global_idx.x)
     if i < NN:
         dst[i] = Scalar[DT](0.0)
@@ -56,29 +57,29 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
         return String("RepeatConditional")
 
     var children: List[Self.Inner]
-    var mid_cpu: List[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var mid_cpu: List[List[Scalar[DT]]]
     var mid_dev: List[DeviceBuffer[DT]]
     var mid_caps: List[Int]
     # grad_c scratch (one buffer reused across the reverse pass).
-    var gc_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var gc_cpu: List[Scalar[DT]]
     var gc_dev: Optional[DeviceBuffer[DT]]
     var gc_cap: Int
     var ts: TargetStorage
 
     def __init__(out self):
         comptime assert Self.N >= 1, "RepeatConditional requires N >= 1"
-        comptime assert Self.Inner.ARITY == 2, (
-            "RepeatConditional: Inner must be ARITY=2 (forward(x, c))"
-        )
+        comptime assert (
+            Self.Inner.ARITY == 2
+        ), "RepeatConditional: Inner must be ARITY=2 (forward(x, c))"
         comptime assert (
             Self.Inner.IN_DIMS[0] == Self.Inner.OUT_DIM
             and Self.Inner.IN_DIMS[1] == Self.Inner.OUT_DIM
         ), "RepeatConditional: Inner must be dim-preserving with IN0==IN1==OUT"
         self.children = List[Self.Inner]()
-        self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+        self.mid_cpu = List[List[Scalar[DT]]]()
         self.mid_dev = List[DeviceBuffer[DT]]()
         self.mid_caps = List[Int]()
-        self.gc_cpu = alloc[Scalar[DT]](1)
+        self.gc_cpu = List[Scalar[DT]]()
         self.gc_dev = None
         self.gc_cap = 0
         self.ts = TargetStorage.make_uninit()
@@ -87,16 +88,16 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "RepeatConditional: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "RepeatConditional: target must be 'cpu' or 'gpu'"
         var r = Self()
         comptime for _i in range(Self.N):
             r.children.append(Self.Inner.make[target, INIT](ctx=ctx))
         comptime if target == "cpu":
             comptime if Self.N >= 2:
                 for _ in range(Self.N - 1):
-                    r.mid_cpu.append(alloc[Scalar[DT]](1))
+                    r.mid_cpu.append(List[Scalar[DT]]())
                     r.mid_caps.append(0)
             r.ts = TargetStorage.make_cpu()
         else:
@@ -109,15 +110,10 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
             r.ts = TargetStorage.make_gpu(ctx_v)
         return r^
 
-    def __del__(deinit self):
-        for p in self.mid_cpu:
-            p.free()
-        self.gc_cpu.free()
-
     def _ensure_mid_cpu[i: Int](mut self, needed: Int):
+        # List owns the storage (RAII): grow in place, no manual alloc/free.
         if self.mid_caps[i] < needed:
-            self.mid_cpu[i].free()
-            self.mid_cpu[i] = alloc[Scalar[DT]](needed)
+            self.mid_cpu[i].resize(needed, Scalar[DT](0))
             self.mid_caps[i] = needed
 
     def _ensure_mid_gpu[i: Int](mut self, needed: Int) raises:
@@ -134,19 +130,24 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
                     needed
                 )
             else:
-                self.gc_cpu.free()
-                self.gc_cpu = alloc[Scalar[DT]](needed)
+                self.gc_cpu.resize(needed, Scalar[DT](0))
             self.gc_cap = needed
 
     # ----- Forward ---------------------------------------------------------
     def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            mut=True,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises:
         assert_tag_for["RepeatConditional", target](self.ts.target_tag)
@@ -157,45 +158,54 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
 
         comptime if Self.N == 1:
             self.children[0].forward[target, BATCH, POLICY=POLICY](
-            TensorPack[Self.Inner.ARITY].of(x, c), output=out,
-        )
+                TensorPack[Self.Inner.ARITY].of(x, c),
+                output=out,
+            )
         else:
             var midp = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
             comptime for k in range(Self.N - 1):
                 comptime if target == "cpu":
                     self._ensure_mid_cpu[k](BATCH * D)
-                    midp.append(self.mid_cpu[k])
+                    midp.append(mptr(self.mid_cpu[k].unsafe_ptr()))
                 else:
                     self._ensure_mid_gpu[k](BATCH * D)
-                    midp.append(self.mid_dev[k].unsafe_ptr())
+                    midp.append(mptr(self.mid_dev[k].unsafe_ptr()))
 
             comptime for i in range(Self.N):
                 comptime if i == 0:
                     var om = TileTensor(midp[0], row_major[BATCH, D]())
                     self.children[0].forward[target, BATCH, POLICY=POLICY](
-            TensorPack[Self.Inner.ARITY].of(x, c), output=om,
-        )
+                        TensorPack[Self.Inner.ARITY].of(x, c),
+                        output=om,
+                    )
                 elif i == Self.N - 1:
                     var im = TileTensor(midp[Self.N - 2], row_major[BATCH, D]())
                     self.children[i].forward[target, BATCH, POLICY=POLICY](
-            TensorPack[Self.Inner.ARITY].of(im, c), output=out,
-        )
+                        TensorPack[Self.Inner.ARITY].of(im, c),
+                        output=out,
+                    )
                 else:
                     var im = TileTensor(midp[i - 1], row_major[BATCH, D]())
                     var om = TileTensor(midp[i], row_major[BATCH, D]())
                     self.children[i].forward[target, BATCH, POLICY=POLICY](
-            TensorPack[Self.Inner.ARITY].of(im, c), output=om,
-        )
+                        TensorPack[Self.Inner.ARITY].of(im, c),
+                        output=om,
+                    )
 
     # ----- Backward --------------------------------------------------------
     def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
+        target: StaticString,
+        BATCH: Int,
+        POLICY: AMPPolicy = NoAMP,
         mode: StaticString = "all",
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         grad_inputs: TensorPack[Self.ARITY],
     ) raises:
@@ -209,16 +219,18 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
         var gc = grad_inputs.tile[1, BATCH, D]()
 
         comptime if Self.N == 1:
-            self.children[0].vjp[target, BATCH, POLICY=POLICY, mode=mode](go, TensorPack[Self.Inner.ARITY].of(gx, gc))
+            self.children[0].vjp[target, BATCH, POLICY=POLICY, mode=mode](
+                go, TensorPack[Self.Inner.ARITY].of(gx, gc)
+            )
             return
 
         # grad_c accumulator: zero it, then add each block's grad_c.
         var gc_p = mptr(gc.ptr)
         comptime total = BATCH * D
         self._ensure_gc(total)
-        var gc_tmp = (
-            self.gc_dev.value().unsafe_ptr() if self.ts.ctx else self.gc_cpu
-        )
+        var gc_tmp = mptr(
+            self.gc_dev.value().unsafe_ptr()
+        ) if self.ts.ctx else mptr(self.gc_cpu.unsafe_ptr())
         # Zero the grad_c accumulator (target-aware).
         comptime if target == "cpu":
             for i in range(total):
@@ -228,41 +240,44 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
             comptime zblocks = (total + TPB - 1) // TPB
             self.ts.ctx.value().enqueue_function[_rc_zero_kernel[total]](
                 LayoutTensor[DT, zlay, MutAnyOrigin](gc_p),
-                grid_dim=zblocks, block_dim=TPB,
+                grid_dim=zblocks,
+                block_dim=TPB,
             )
 
         var midp = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
         comptime for k in range(Self.N - 1):
             comptime if target == "cpu":
                 self._ensure_mid_cpu[k](BATCH * D)
-                midp.append(self.mid_cpu[k])
+                midp.append(mptr(self.mid_cpu[k].unsafe_ptr()))
             else:
                 self._ensure_mid_gpu[k](BATCH * D)
-                midp.append(self.mid_dev[k].unsafe_ptr())
+                midp.append(mptr(self.mid_dev[k].unsafe_ptr()))
 
         comptime for ri in range(Self.N):
             comptime i = Self.N - 1 - ri
             var gc_tmp_t = TileTensor(gc_tmp, row_major[BATCH, D]())
             comptime if i == Self.N - 1:
                 var gim = TileTensor(midp[Self.N - 2], row_major[BATCH, D]())
-                self.children[i].vjp[
-                    target, BATCH, POLICY=POLICY, mode=mode
-                ](go, TensorPack[Self.Inner.ARITY].of(gim, gc_tmp_t))
+                self.children[i].vjp[target, BATCH, POLICY=POLICY, mode=mode](
+                    go, TensorPack[Self.Inner.ARITY].of(gim, gc_tmp_t)
+                )
             elif i == 0:
                 var gom = TileTensor(midp[0], row_major[BATCH, D]())
-                self.children[0].vjp[
-                    target, BATCH, POLICY=POLICY, mode=mode
-                ](gom, TensorPack[Self.Inner.ARITY].of(gx, gc_tmp_t))
+                self.children[0].vjp[target, BATCH, POLICY=POLICY, mode=mode](
+                    gom, TensorPack[Self.Inner.ARITY].of(gx, gc_tmp_t)
+                )
             else:
                 var gom = TileTensor(midp[i], row_major[BATCH, D]())
                 var gim = TileTensor(midp[i - 1], row_major[BATCH, D]())
-                self.children[i].vjp[
-                    target, BATCH, POLICY=POLICY, mode=mode
-                ](gom, TensorPack[Self.Inner.ARITY].of(gim, gc_tmp_t))
+                self.children[i].vjp[target, BATCH, POLICY=POLICY, mode=mode](
+                    gom, TensorPack[Self.Inner.ARITY].of(gim, gc_tmp_t)
+                )
             # grad_c += gc_tmp
             self._accum[target, total](gc_p, gc_tmp)
 
-    def _accum[target: StaticString, NN: Int](
+    def _accum[
+        target: StaticString, NN: Int
+    ](
         mut self,
         dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
         src: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -277,12 +292,14 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
             self.ts.ctx.value().enqueue_function[kern](
                 LayoutTensor[DT, lay, MutAnyOrigin](dst),
                 LayoutTensor[DT, lay, MutAnyOrigin](src),
-                grid_dim=n_blocks, block_dim=TPB,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     # ----- Walkers ---------------------------------------------------------
     def for_each_param[
-        target: StaticString, V: ParamVisitor,
+        target: StaticString,
+        V: ParamVisitor,
     ](mut self, prefix: String, mut visitor: V) raises:
         assert_tag_for["RepeatConditional", target](self.ts.target_tag)
         var sep = "." if prefix.byte_length() > 0 else ""
@@ -292,7 +309,8 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
             )
 
     def for_each_state[
-        target: StaticString, V: ParamVisitor,
+        target: StaticString,
+        V: ParamVisitor,
     ](mut self, prefix: String, mut visitor: V) raises:
         assert_tag_for["RepeatConditional", target](self.ts.target_tag)
         var sep = "." if prefix.byte_length() > 0 else ""

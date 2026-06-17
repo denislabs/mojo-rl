@@ -17,14 +17,13 @@ need per-application caches or a forward recompute in backward. Pass
 read the same as the legacy `mojo_rl.nn` Repeat.
 """
 
-from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ..constants import DT
 from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
+from ..core.module import Module, typed_view, typed_view_mut, mptr
 from ..core.tensor_pack import TensorPack
 from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
 
@@ -36,7 +35,7 @@ struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
     comptime D = Self.Inner.OUT_DIM  # per-boundary slab width
 
     var children: List[Self.Inner]
-    var mid_cpu: List[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var mid_cpu: List[List[Scalar[DT]]]
     var mid_dev: List[DeviceBuffer[DT]]
     var mid_caps: List[Int]
     var ts: TargetStorage
@@ -51,7 +50,7 @@ struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
             Self.Inner.IN_DIMS[0] == Self.Inner.OUT_DIM
         ), "Repeat requires Inner.IN_DIMS[0] == Inner.OUT_DIM"
         self.children = List[Self.Inner]()
-        self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+        self.mid_cpu = List[List[Scalar[DT]]]()
         self.mid_dev = List[DeviceBuffer[DT]]()
         self.mid_caps = List[Int]()
         self.ts = TargetStorage.make_uninit()
@@ -59,20 +58,18 @@ struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified CPU/GPU factory — builds N independent `Inner` copies."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "Repeat: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "Repeat: target must be 'cpu' or 'gpu'"
         var r = Self()
         comptime for _i in range(Self.N):
             r.children.append(Self.Inner.make[target, INIT](ctx=ctx))
         comptime if target == "cpu":
             comptime if Self.N >= 2:
                 for _ in range(Self.N - 1):
-                    r.mid_cpu.append(alloc[Scalar[DT]](1))
+                    r.mid_cpu.append(List[Scalar[DT]]())
                     r.mid_caps.append(0)
             r.ts = TargetStorage.make_cpu()
         else:
@@ -84,19 +81,17 @@ struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
             r.ts = TargetStorage.make_gpu(ctx_v)
         return r^
 
-    def __del__(deinit self):
-        for p in self.mid_cpu:
-            p.free()
-
     def _ensure_mid_cpu[i: Int](mut self, needed: Int):
+        # List owns the storage (RAII): grow in place, no manual alloc/free.
         if self.mid_caps[i] < needed:
-            self.mid_cpu[i].free()
-            self.mid_cpu[i] = alloc[Scalar[DT]](needed)
+            self.mid_cpu[i].resize(needed, Scalar[DT](0))
             self.mid_caps[i] = needed
 
     def _ensure_mid_gpu[i: Int](mut self, needed: Int) raises:
         if self.mid_caps[i] < needed:
-            self.mid_dev[i] = self.ts.ctx.value().enqueue_create_buffer[DT](needed)
+            self.mid_dev[i] = self.ts.ctx.value().enqueue_create_buffer[DT](
+                needed
+            )
             self.mid_caps[i] = needed
 
     # ----- Forward ---------------------------------------------------------
@@ -109,8 +104,12 @@ struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
         mut self,
         inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            mut=True,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises:
         assert_tag_for["Repeat", target](self.ts.target_tag)
@@ -128,10 +127,10 @@ struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
             comptime for k in range(Self.N - 1):
                 comptime if target == "cpu":
                     self._ensure_mid_cpu[k](BATCH * D)
-                    midp.append(self.mid_cpu[k])
+                    midp.append(mptr(self.mid_cpu[k].unsafe_ptr()))
                 else:
                     self._ensure_mid_gpu[k](BATCH * D)
-                    midp.append(self.mid_dev[k].unsafe_ptr())
+                    midp.append(mptr(self.mid_dev[k].unsafe_ptr()))
 
             comptime for i in range(Self.N):
                 comptime if i == 0:
@@ -161,8 +160,11 @@ struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         grad_inputs: TensorPack[Self.ARITY],
     ) raises:
@@ -175,7 +177,10 @@ struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
 
         comptime if Self.N == 1:
             self.children[0].vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
+                target,
+                BATCH,
+                POLICY=POLICY,
+                mode=mode,
             ](grad_output_v, grad_input_v)
         else:
             comptime D = Self.D
@@ -183,28 +188,39 @@ struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
             comptime for k in range(Self.N - 1):
                 comptime if target == "cpu":
                     self._ensure_mid_cpu[k](BATCH * D)
-                    midp.append(self.mid_cpu[k])
+                    midp.append(mptr(self.mid_cpu[k].unsafe_ptr()))
                 else:
                     self._ensure_mid_gpu[k](BATCH * D)
-                    midp.append(self.mid_dev[k].unsafe_ptr())
+                    midp.append(mptr(self.mid_dev[k].unsafe_ptr()))
 
             comptime for ri in range(Self.N):
                 comptime i = Self.N - 1 - ri
                 comptime if i == Self.N - 1:
-                    var gim = TileTensor(midp[Self.N - 2], row_major[BATCH, D]())
+                    var gim = TileTensor(
+                        midp[Self.N - 2], row_major[BATCH, D]()
+                    )
                     self.children[i].vjp[
-                        target, BATCH, POLICY=POLICY, mode=mode,
+                        target,
+                        BATCH,
+                        POLICY=POLICY,
+                        mode=mode,
                     ](grad_output_v, gim)
                 elif i == 0:
                     var gom = TileTensor(midp[0], row_major[BATCH, D]())
                     self.children[0].vjp[
-                        target, BATCH, POLICY=POLICY, mode=mode,
+                        target,
+                        BATCH,
+                        POLICY=POLICY,
+                        mode=mode,
                     ](gom, grad_input_v)
                 else:
                     var gom = TileTensor(midp[i], row_major[BATCH, D]())
                     var gim = TileTensor(midp[i - 1], row_major[BATCH, D]())
                     self.children[i].vjp[
-                        target, BATCH, POLICY=POLICY, mode=mode,
+                        target,
+                        BATCH,
+                        POLICY=POLICY,
+                        mode=mode,
                     ](gom, gim)
 
     # ----- Walkers ---------------------------------------------------------
