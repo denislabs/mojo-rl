@@ -60,7 +60,6 @@ CPU/GPU parity completeness, exercised by the parity test.
 """
 
 from std.math import exp, tanh
-from std.memory import alloc
 from linalg.matmul import matmul as max_matmul
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
@@ -541,8 +540,13 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         var h_tt = TileTensor(h_p, row_major[BATCH, H]())
         var W_ih_tt = TileTensor(W_ih_p, row_major[Self.IN0_DIM, THREE_H]())
         var W_hh_tt = TileTensor(W_hh_p, row_major[H, THREE_H]())
-        var ix_buf = alloc[Scalar[DT]](BATCH * THREE_H)
-        var hx_buf = alloc[Scalar[DT]](BATCH * THREE_H)
+        # R1: owning RAII `List`s replace the raw alloc+free scratch. The
+        # `TileTensor(list, …)` ctor origin-LINKS each tile to its list so the
+        # lifetime checker keeps the lists alive through the tiles' last use
+        # (no `_ = list^` pins, no manual `free`); scalar indexing uses the
+        # list directly.
+        var ix_buf = List[Scalar[DT]](length=BATCH * THREE_H, fill=Scalar[DT](0))
+        var hx_buf = List[Scalar[DT]](length=BATCH * THREE_H, fill=Scalar[DT](0))
         var ix_tt = TileTensor(ix_buf, row_major[BATCH, THREE_H]())
         var hx_tt = TileTensor(hx_buf, row_major[BATCH, THREE_H]())
         max_matmul[target="cpu"](ix_tt, x_tt, W_ih_tt, None)
@@ -577,8 +581,6 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
                 out_p[out_off + col] = (
                     (Scalar[DT](1.0) - zg) * ng + zg * h_p[h_off + col]
                 )
-        ix_buf.free()
-        hx_buf.free()
 
     # ------------------------------------------------------------------
     # Backward.
@@ -711,8 +713,13 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             # [BATCH, 3H] + bias accumulate. Reads caches + cached h only
             # (NOT the dx/dh slabs). d_ix/d_hx are local — phase 2
             # recomputes them (the loop is cheap vs the matmuls).
-            var d_ix_buf = alloc[Scalar[DT]](BATCH * THREE_H)
-            var d_hx_buf = alloc[Scalar[DT]](BATCH * THREE_H)
+            # R1: owning RAII `List`s (origin-linked tiles, no free/pins).
+            var d_ix_buf = List[Scalar[DT]](
+                length=BATCH * THREE_H, fill=Scalar[DT](0)
+            )
+            var d_hx_buf = List[Scalar[DT]](
+                length=BATCH * THREE_H, fill=Scalar[DT](0)
+            )
             for b in range(BATCH):
                 var c_off = b * H
                 var g_off = b * THREE_H
@@ -753,8 +760,10 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             # dW_ih += xᵀ @ d_ix, dW_hh += hᵀ @ d_hx via BLAS. Transpose
             # x/h FIRST: that consumes the reads of x_p/h_p before phase 2
             # clobbers the aliased input slabs.
-            var xT_buf = alloc[Scalar[DT]](Self.IN0_DIM * BATCH)
-            var hT_buf = alloc[Scalar[DT]](H * BATCH)
+            var xT_buf = List[Scalar[DT]](
+                length=Self.IN0_DIM * BATCH, fill=Scalar[DT](0)
+            )
+            var hT_buf = List[Scalar[DT]](length=H * BATCH, fill=Scalar[DT](0))
             for b in range(BATCH):
                 for k in range(Self.IN0_DIM):
                     xT_buf[k * BATCH + b] = x_p[b * Self.IN0_DIM + k]
@@ -762,8 +771,12 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
                     hT_buf[k * BATCH + b] = h_p[b * H + k]
             var xT_tt = TileTensor(xT_buf, row_major[Self.IN0_DIM, BATCH]())
             var hT_tt = TileTensor(hT_buf, row_major[H, BATCH]())
-            var dWih_buf = alloc[Scalar[DT]](Self.IN0_DIM * THREE_H)
-            var dWhh_buf = alloc[Scalar[DT]](H * THREE_H)
+            var dWih_buf = List[Scalar[DT]](
+                length=Self.IN0_DIM * THREE_H, fill=Scalar[DT](0)
+            )
+            var dWhh_buf = List[Scalar[DT]](
+                length=H * THREE_H, fill=Scalar[DT](0)
+            )
             var dWih_tt = TileTensor(dWih_buf, row_major[Self.IN0_DIM, THREE_H]())
             var dWhh_tt = TileTensor(dWhh_buf, row_major[H, THREE_H]())
             max_matmul[target="cpu"](dWih_tt, xT_tt, d_ix_tt, None)
@@ -772,12 +785,6 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
                 dW_ih_p[i] += dWih_buf[i]
             for i in range(H * THREE_H):
                 dW_hh_p[i] += dWhh_buf[i]
-            xT_buf.free()
-            hT_buf.free()
-            dWih_buf.free()
-            dWhh_buf.free()
-            d_ix_buf.free()
-            d_hx_buf.free()
 
     def vjp_grad_input[
         target: StaticString,
@@ -858,8 +865,9 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
         # accumulation — that was phase 1). Reads caches + cached h; this
         # read precedes the dx/dh writes below that clobber the aliased
         # slabs.
-        var d_ix_buf = alloc[Scalar[DT]](BATCH * THREE_H)
-        var d_hx_buf = alloc[Scalar[DT]](BATCH * THREE_H)
+        # R1: owning RAII `List`s (origin-linked tiles, no free/pins).
+        var d_ix_buf = List[Scalar[DT]](length=BATCH * THREE_H, fill=Scalar[DT](0))
+        var d_hx_buf = List[Scalar[DT]](length=BATCH * THREE_H, fill=Scalar[DT](0))
         for b in range(BATCH):
             var c_off = b * H
             var g_off = b * THREE_H
@@ -901,5 +909,3 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
             var c_off = b * H
             for col in range(H):
                 dh_p[c_off + col] += go_p[c_off + col] * z_c[c_off + col]
-        d_ix_buf.free()
-        d_hx_buf.free()

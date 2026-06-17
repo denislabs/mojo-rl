@@ -32,7 +32,6 @@ Cache (per timestep, BATCH-major): [i | f | g | o | tanh(c_t)], 5·H wide.
 """
 
 from std.math import exp, tanh
-from std.memory import alloc
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -489,10 +488,14 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             # Linear's CPU path — was naive BATCH·(IN+H)·4H scalar dots.
             #   ix = x @ W_ih  [BATCH, 4H],  hx = h_prev @ W_hh  [BATCH, 4H].
             # The gate nonlinearities below stay scalar (O(BATCH·H)).
-            var ix_buf = alloc[Scalar[DT]](BATCH * FOURH)
-            var hx_buf = alloc[Scalar[DT]](BATCH * FOURH)
-            var ix_tt = TileTensor(ix_buf, row_major[BATCH, FOURH]())
-            var hx_tt = TileTensor(hx_buf, row_major[BATCH, FOURH]())
+            # R1: owning RAII `List`s replace the raw alloc+free scratch. The
+            # `TileTensor(list, …)` ctor origin-LINKS each tile to its list, so
+            # the lifetime checker keeps the lists alive through their last use
+            # with no manual `free` and no `_ = list^` pins.
+            var ix_list = List[Scalar[DT]](length=BATCH * FOURH, fill=Scalar[DT](0))
+            var hx_list = List[Scalar[DT]](length=BATCH * FOURH, fill=Scalar[DT](0))
+            var ix_tt = TileTensor(ix_list, row_major[BATCH, FOURH]())
+            var hx_tt = TileTensor(hx_list, row_major[BATCH, FOURH]())
             var Wih_tt = TileTensor(W_ih_p, row_major[Self.IN_, FOURH]())
             var Whh_tt = TileTensor(W_hh_p, row_major[Self.HIDDEN, FOURH]())
             max_matmul[target="cpu"](ix_tt, xv, Wih_tt, None)
@@ -500,7 +503,7 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             for bi in range(BATCH):
                 for k in range(FOURH):
                     var pre: Scalar[DT] = (
-                        ix_buf[bi * FOURH + k] + hx_buf[bi * FOURH + k] + b_p[k]
+                        ix_list[bi * FOURH + k] + hx_list[bi * FOURH + k] + b_p[k]
                     )
                     var act: Scalar[DT]
                     if k < 3 * H:
@@ -518,8 +521,6 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
                     ct[bi, j] = c_new
                     ht[bi, j] = o_v * tc
                     cc[bi, 4 * H + j] = tc
-            hx_buf.free()
-            ix_buf.free()
         else:
             var ctx = self.ts.ctx.value()
             var x_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_), MutAnyOrigin](
@@ -587,10 +588,12 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             var W_hh_p = self.W_hh.value_unsafe_ptr_cpu()
             var b_p = self.b.value_unsafe_ptr_cpu()
             # BLAS gate pre-activations (see step_forward).
-            var ix_buf = alloc[Scalar[DT]](BATCH * FOURH)
-            var hx_buf = alloc[Scalar[DT]](BATCH * FOURH)
-            var ix_tt = TileTensor(ix_buf, row_major[BATCH, FOURH]())
-            var hx_tt = TileTensor(hx_buf, row_major[BATCH, FOURH]())
+            # R1: owning RAII `List`s replace the raw alloc+free scratch (see
+            # step_forward); the tile ctor origin-links each list.
+            var ix_list = List[Scalar[DT]](length=BATCH * FOURH, fill=Scalar[DT](0))
+            var hx_list = List[Scalar[DT]](length=BATCH * FOURH, fill=Scalar[DT](0))
+            var ix_tt = TileTensor(ix_list, row_major[BATCH, FOURH]())
+            var hx_tt = TileTensor(hx_list, row_major[BATCH, FOURH]())
             var Wih_tt = TileTensor(W_ih_p, row_major[Self.IN_, FOURH]())
             var Whh_tt = TileTensor(W_hh_p, row_major[Self.HIDDEN, FOURH]())
             max_matmul[target="cpu"](ix_tt, xv, Wih_tt, None)
@@ -599,7 +602,7 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
                 var gates = InlineArray[Scalar[DT], 4 * Self.HIDDEN](fill=0.0)
                 for k in range(FOURH):
                     var pre: Scalar[DT] = (
-                        ix_buf[bi * FOURH + k] + hx_buf[bi * FOURH + k] + b_p[k]
+                        ix_list[bi * FOURH + k] + hx_list[bi * FOURH + k] + b_p[k]
                     )
                     if k < 3 * H:
                         gates[k] = _sigmoid(pre) if k < 2 * H else tanh(pre)
@@ -609,8 +612,6 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
                     var c_new = gates[H + j] * cp[bi, j] + gates[j] * gates[2 * H + j]
                     ct[bi, j] = c_new
                     ht[bi, j] = gates[3 * H + j] * tanh(c_new)
-            hx_buf.free()
-            ix_buf.free()
         else:
             var ctx = self.ts.ctx.value()
             var x_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_), MutAnyOrigin](
@@ -708,7 +709,9 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             # dx / dh_prev work below can run through BLAS like Linear's CPU
             # backward (was naive BATCH·(IN+H)·4H scalar loops). The cell-state
             # grad path `dcp = dc_total ⊙ f` stays scalar (O(BATCH·H)).
-            var dpre_buf = alloc[Scalar[DT]](BATCH * FOURH)
+            # R1: owning RAII `List` (origin-linked via the tile ctor) replaces
+            # the raw alloc+free scratch.
+            var dpre_list = List[Scalar[DT]](length=BATCH * FOURH, fill=Scalar[DT](0))
             for bi in range(BATCH):
                 for j in range(H):
                     var i_v = cc[bi, j]
@@ -725,47 +728,45 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
                     var dg_post = dc_total * i_v
                     dcp[bi, j] = dc_total * f_v
                     var base = bi * FOURH
-                    dpre_buf[base + j]         = di_post * i_v * (Scalar[DT](1.0) - i_v)
-                    dpre_buf[base + H + j]     = df_post * f_v * (Scalar[DT](1.0) - f_v)
-                    dpre_buf[base + 2 * H + j] = dg_post * (Scalar[DT](1.0) - g_v * g_v)
-                    dpre_buf[base + 3 * H + j] = do_post * o_v * (Scalar[DT](1.0) - o_v)
-            var dpre_tt = TileTensor(dpre_buf, row_major[BATCH, FOURH]())
+                    dpre_list[base + j]         = di_post * i_v * (Scalar[DT](1.0) - i_v)
+                    dpre_list[base + H + j]     = df_post * f_v * (Scalar[DT](1.0) - f_v)
+                    dpre_list[base + 2 * H + j] = dg_post * (Scalar[DT](1.0) - g_v * g_v)
+                    dpre_list[base + 3 * H + j] = do_post * o_v * (Scalar[DT](1.0) - o_v)
+            var dpre_tt = TileTensor(dpre_list, row_major[BATCH, FOURH]())
 
             # ── dW_ih += xᵀ @ d_pre, dW_hh += h_prevᵀ @ d_pre, db += Σ_b d_pre.
             # Transpose x / h_prev into contiguous [IN, BATCH] / [H, BATCH]
             # FIRST — this reads the cached x / h_prev BEFORE the dx / dh_prev
             # matmuls below clobber the aliased input slabs (leaf
             # backward-order invariant). Matmul into a temp then accumulate.
-            var xT_buf = alloc[Scalar[DT]](Self.IN_ * BATCH)
+            # R1: owning RAII `List`s (origin-linked via the tile ctors)
+            # replace the raw alloc+free scratch.
+            var xT_list = List[Scalar[DT]](length=Self.IN_ * BATCH, fill=Scalar[DT](0))
             for bi in range(BATCH):
                 for j in range(Self.IN_):
-                    xT_buf[j * BATCH + bi] = xv[bi, j]
-            var hT_buf = alloc[Scalar[DT]](Self.HIDDEN * BATCH)
+                    xT_list[j * BATCH + bi] = xv[bi, j]
+            var hT_list = List[Scalar[DT]](length=Self.HIDDEN * BATCH, fill=Scalar[DT](0))
             for bi in range(BATCH):
                 for j in range(H):
-                    hT_buf[j * BATCH + bi] = hp[bi, j]
-            var dWih_tmp = alloc[Scalar[DT]](Self.IN_ * FOURH)
-            var dWhh_tmp = alloc[Scalar[DT]](Self.HIDDEN * FOURH)
-            var xT_tt = TileTensor(xT_buf, row_major[Self.IN_, BATCH]())
-            var hT_tt = TileTensor(hT_buf, row_major[Self.HIDDEN, BATCH]())
-            var dWih_tmp_tt = TileTensor(dWih_tmp, row_major[Self.IN_, FOURH]())
-            var dWhh_tmp_tt = TileTensor(dWhh_tmp, row_major[Self.HIDDEN, FOURH]())
+                    hT_list[j * BATCH + bi] = hp[bi, j]
+            var dWih_tmp_list = List[Scalar[DT]](length=Self.IN_ * FOURH, fill=Scalar[DT](0))
+            var dWhh_tmp_list = List[Scalar[DT]](length=Self.HIDDEN * FOURH, fill=Scalar[DT](0))
+            var xT_tt = TileTensor(xT_list, row_major[Self.IN_, BATCH]())
+            var hT_tt = TileTensor(hT_list, row_major[Self.HIDDEN, BATCH]())
+            var dWih_tmp_tt = TileTensor(dWih_tmp_list, row_major[Self.IN_, FOURH]())
+            var dWhh_tmp_tt = TileTensor(dWhh_tmp_list, row_major[Self.HIDDEN, FOURH]())
             max_matmul[target="cpu"](dWih_tmp_tt, xT_tt, dpre_tt, None)
             max_matmul[target="cpu"](dWhh_tmp_tt, hT_tt, dpre_tt, None)
             for idx in range(Self.IN_ * FOURH):
-                dW_ih_p[idx] += dWih_tmp[idx]
+                dW_ih_p[idx] += dWih_tmp_list[idx]
             for idx in range(Self.HIDDEN * FOURH):
-                dW_hh_p[idx] += dWhh_tmp[idx]
+                dW_hh_p[idx] += dWhh_tmp_list[idx]
             # db — cheap O(BATCH·4H) reduction; keep scalar.
             for k in range(FOURH):
                 var sb: Scalar[DT] = 0.0
                 for bi in range(BATCH):
-                    sb += dpre_buf[bi * FOURH + k]
+                    sb += dpre_list[bi * FOURH + k]
                 db_p[k] += sb
-            dWhh_tmp.free()
-            dWih_tmp.free()
-            hT_buf.free()
-            xT_buf.free()
 
             # ── dx = d_pre @ W_ihᵀ, dh_prev = d_pre @ W_hhᵀ via BLAS. These
             # WRITE the slabs that x / h_prev alias — safe now (dW reads done).
@@ -773,7 +774,6 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             var Whh_tt = TileTensor(W_hh_p, row_major[Self.HIDDEN, FOURH]())
             max_matmul[transpose_b=True, target="cpu"](dxv, dpre_tt, Wih_tt, None)
             max_matmul[transpose_b=True, target="cpu"](dhp, dpre_tt, Whh_tt, None)
-            dpre_buf.free()
         else:
             var ctx = self.ts.ctx.value()
             self._ensure_dcomb_gpu(BATCH)

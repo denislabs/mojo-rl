@@ -39,7 +39,6 @@ Use in Noisy DQN: replace the last `Linear[H, NA]` in the Q-net with
 """
 
 from std.math import sqrt as fsqrt, log as flog, cos as fcos, pi
-from std.memory import alloc
 from std.random import random_float64
 from std.gpu import global_idx, thread_idx, block_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -749,23 +748,30 @@ struct NoisyLinear[IN: Int, OUT: Int](Module):
                 # read of `x_p` before grad_x clobbers the aliased input slab
                 # (the leaf backward-order invariant). grad_mu_w += dW,
                 # grad_sigma_w += dW · f(ε_in[i]) · f(ε_out[j]).
-                var cT_buf = alloc[Scalar[DT]](BATCH * Self.IN)
-                var dW_buf = alloc[Scalar[DT]](Self.IN * Self.OUT)
+                # R1: owning RAII `List`s replace the raw alloc+free scratch.
+                # The `TileTensor(list, …)` ctor origin-LINKS each tile to its
+                # list (concrete + tracked, no `MutAnyOrigin` wildcard, no
+                # manual `free`) — the lifetime checker keeps the lists alive
+                # through the tiles' last use with no `_ = list^` pins.
+                var cT_list = List[Scalar[DT]](
+                    length=BATCH * Self.IN, fill=Scalar[DT](0)
+                )
+                var dW_list = List[Scalar[DT]](
+                    length=Self.IN * Self.OUT, fill=Scalar[DT](0)
+                )
                 for b in range(BATCH):
                     for i in range(Self.IN):
-                        cT_buf[i * BATCH + b] = x_p[b * Self.IN + i]
-                var cT_tt = TileTensor(cT_buf, row_major[Self.IN, BATCH]())
-                var dW_tt = TileTensor(dW_buf, row_major[Self.IN, Self.OUT]())
+                        cT_list[i * BATCH + b] = x_p[b * Self.IN + i]
+                var cT_tt = TileTensor(cT_list, row_major[Self.IN, BATCH]())
+                var dW_tt = TileTensor(dW_list, row_major[Self.IN, Self.OUT]())
                 max_matmul[target="cpu"](dW_tt, cT_tt, grad_out_v, None)
                 for i in range(Self.IN):
                     var ni = ni_p[i]
                     for j in range(Self.OUT):
                         var idx = i * Self.OUT + j
-                        var dw = dW_buf[idx]
+                        var dw = dW_list[idx]
                         g_mu_w[idx] = g_mu_w[idx] + dw
                         g_sg_w[idx] = g_sg_w[idx] + dw * ni * no_p[j]
-                dW_buf.free()
-                cT_buf.free()
 
             else:
                 var ctx = self.ts.ctx.value()
