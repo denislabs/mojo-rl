@@ -14,16 +14,19 @@ inner Sequential or Parallel — they each own their own internal
 slabs).
 """
 
-from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from mojo_rl.nn.core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn.core.module import Module, typed_view, typed_view_mut, mptr
 from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.target_storage import require_ctx, TargetStorage, assert_tag_for
+from mojo_rl.nn.core.target_storage import (
+    require_ctx,
+    TargetStorage,
+    assert_tag_for,
+)
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.combinators.parallel import Parallel
 from mojo_rl.nn.primitives.linear import Linear
@@ -46,16 +49,16 @@ struct StochasticActor[
         Linear[Self.HIDDEN, Self.ACT_DIM],
     ]
 
-    var mid_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var mid_cpu: List[Scalar[DT]]
     var mid_dev: Optional[DeviceBuffer[DT]]
     var mid_cap: Int
 
     var ts: TargetStorage
 
     def __init__(out self):
-        comptime assert Self.N_TRUNK >= 1, (
-            "StochasticActor requires at least one TRUNK module"
-        )
+        comptime assert (
+            Self.N_TRUNK >= 1
+        ), "StochasticActor requires at least one TRUNK module"
         comptime assert (
             Self.TRUNK[0].IN_DIMS[0] == Self.OBS_DIM
         ), "StochasticActor: TRUNK[0].IN_DIM must equal OBS_DIM"
@@ -64,7 +67,7 @@ struct StochasticActor[
             Linear[Self.HIDDEN, Self.ACT_DIM],
             Linear[Self.HIDDEN, Self.ACT_DIM],
         ]()
-        self.mid_cpu = alloc[Scalar[DT]](1)
+        self.mid_cpu = List[Scalar[DT]]()
         self.mid_dev = None
         self.mid_cap = 0
         self.ts = TargetStorage.make_uninit()
@@ -72,13 +75,11 @@ struct StochasticActor[
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "StochasticActor: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "StochasticActor: target must be 'cpu' or 'gpu'"
         var a = Self()
         a.trunk = Sequential[*Self.TRUNK].make[target, INIT](ctx=ctx)
         a.heads = Parallel[
@@ -93,13 +94,10 @@ struct StochasticActor[
             a.ts = TargetStorage.make_gpu(ctx_v)
         return a^
 
-    def __del__(deinit self):
-        self.mid_cpu.free()
-
     def _ensure_mid_cpu(mut self, needed: Int):
+        # List owns the storage (RAII): grow in place, no manual alloc/free.
         if self.mid_cap < needed:
-            self.mid_cpu.free()
-            self.mid_cpu = alloc[Scalar[DT]](needed)
+            self.mid_cpu.resize(needed, Scalar[DT](0))
             self.mid_cap = needed
 
     def _ensure_mid_gpu(mut self, needed: Int) raises:
@@ -117,8 +115,12 @@ struct StochasticActor[
         mut self,
         inputs: TensorPack[Self.ARITY],
         mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            mut=True,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises:
         assert_tag_for["StochasticActor", target](self.ts.target_tag)
@@ -126,13 +128,18 @@ struct StochasticActor[
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.HIDDEN)
-            var mid = TileTensor(self.mid_cpu, row_major[BATCH, Self.HIDDEN]())
+            var mid = TileTensor(
+                mptr(self.mid_cpu.unsafe_ptr()),
+                row_major[BATCH, Self.HIDDEN](),
+            )
             self.trunk.forward[target, BATCH, POLICY=POLICY](input, output=mid)
             self.heads.forward[target, BATCH, POLICY=POLICY](mid, output=output)
         else:
             self._ensure_mid_gpu(BATCH * Self.HIDDEN)
-            var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
-            var mid = TileTensor(mp, row_major[BATCH, Self.HIDDEN]())
+            var mid = TileTensor(
+                mptr(self.mid_dev.value().unsafe_ptr()),
+                row_major[BATCH, Self.HIDDEN](),
+            )
             self.trunk.forward[target, BATCH, POLICY=POLICY](input, output=mid)
             self.heads.forward[target, BATCH, POLICY=POLICY](mid, output=output)
 
@@ -146,8 +153,11 @@ struct StochasticActor[
     ](
         mut self,
         grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         grad_inputs: TensorPack[Self.ARITY],
     ) raises:
@@ -159,22 +169,39 @@ struct StochasticActor[
 
         comptime if target == "cpu":
             self._ensure_mid_cpu(BATCH * Self.HIDDEN)
-            var mid = TileTensor(self.mid_cpu, row_major[BATCH, Self.HIDDEN]())
+            var mid = TileTensor(
+                mptr(self.mid_cpu.unsafe_ptr()),
+                row_major[BATCH, Self.HIDDEN](),
+            )
             self.heads.vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
+                target,
+                BATCH,
+                POLICY=POLICY,
+                mode=mode,
             ](grad_output, mid)
             self.trunk.vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
+                target,
+                BATCH,
+                POLICY=POLICY,
+                mode=mode,
             ](mid, grad_input)
         else:
             self._ensure_mid_gpu(BATCH * Self.HIDDEN)
-            var mp: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.mid_dev.value().unsafe_ptr()
-            var mid = TileTensor(mp, row_major[BATCH, Self.HIDDEN]())
+            var mid = TileTensor(
+                mptr(self.mid_dev.value().unsafe_ptr()),
+                row_major[BATCH, Self.HIDDEN](),
+            )
             self.heads.vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
+                target,
+                BATCH,
+                POLICY=POLICY,
+                mode=mode,
             ](grad_output, mid)
             self.trunk.vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
+                target,
+                BATCH,
+                POLICY=POLICY,
+                mode=mode,
             ](mid, grad_input)
 
     # ----- Walkers ---------------------------------------------------------
