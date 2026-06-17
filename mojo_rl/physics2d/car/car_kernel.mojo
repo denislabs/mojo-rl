@@ -32,7 +32,7 @@ from .constants import (
 from .layout import CarRacingLayout
 from .car_dynamics import CarDynamics
 
-from ..constants import dtype, TPB
+from ..constants import dtype, TPB, erase_origin
 
 
 struct CarPhysicsKernel:
@@ -131,13 +131,13 @@ struct CarPhysicsKernel:
             dtype,
             Layout.row_major(BATCH, STATE_SIZE),
             MutAnyOrigin,
-        ](state_buf.unsafe_ptr())
+        ](erase_origin(state_buf.unsafe_ptr()))
 
         var tiles = LayoutTensor[
             dtype,
             Layout.row_major(MAX_TILES, TILE_DATA_SIZE),
             MutAnyOrigin,
-        ](tiles_buf.unsafe_ptr())
+        ](erase_origin(tiles_buf.unsafe_ptr()))
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 

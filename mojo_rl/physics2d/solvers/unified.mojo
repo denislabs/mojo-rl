@@ -43,6 +43,7 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ..constants import (
+    erase_origin,
     dtype,
     TPB,
     CONTACT_DATA_SIZE,
@@ -221,18 +222,18 @@ struct UnifiedConstraintSolver:
         """
         var state = LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+        ](erase_origin(state_buf.unsafe_ptr()))
         var contacts = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
             MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
+        ](erase_origin(contacts_buf.unsafe_ptr()))
         var contact_counts = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](contact_counts_buf.unsafe_ptr())
+        ](erase_origin(contact_counts_buf.unsafe_ptr()))
         var joint_counts = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](joint_counts_buf.unsafe_ptr())
+        ](erase_origin(joint_counts_buf.unsafe_ptr()))
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -320,18 +321,18 @@ struct UnifiedConstraintSolver:
         """
         var state = LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+        ](erase_origin(state_buf.unsafe_ptr()))
         var contacts = LayoutTensor[
             dtype,
             Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
             MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
+        ](erase_origin(contacts_buf.unsafe_ptr()))
         var contact_counts = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](contact_counts_buf.unsafe_ptr())
+        ](erase_origin(contact_counts_buf.unsafe_ptr()))
         var joint_counts = LayoutTensor[
             dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](joint_counts_buf.unsafe_ptr())
+        ](erase_origin(joint_counts_buf.unsafe_ptr()))
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
