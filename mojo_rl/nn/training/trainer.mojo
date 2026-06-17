@@ -141,21 +141,21 @@ struct Trainer[
         comptime assert (
             Self.LOSS.OUT_DIM == Self.NET.OUT_DIM
         ), "Trainer: loss N_CLASSES must equal net OUT_DIM"
-        var in_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
+        var in_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[Scalar[DT]](
             Self.BATCH * Self.IN_DIM
-        )
-        var tg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
+        ))
+        var tg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[Scalar[DT]](
             Self.BATCH * Self.OUT_DIM
-        )
-        var out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+        ))
+        var out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
             Scalar[DT]
-        ](Self.BATCH * Self.OUT_DIM)
-        var go_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
+        ](Self.BATCH * Self.OUT_DIM))
+        var go_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[Scalar[DT]](
             Self.BATCH * Self.OUT_DIM
-        )
-        var gi_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
+        ))
+        var gi_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[Scalar[DT]](
             Self.BATCH * Self.IN_DIM
-        )
+        ))
         return Self(
             net=net^,
             optim=optim^,
@@ -205,21 +205,21 @@ struct Trainer[
             Self.BATCH * Self.OUT_DIM
         )
         ctx.synchronize()
-        var stub_in: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+        var stub_in: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
             Scalar[DT]
-        ](1)
-        var stub_tg: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+        ](1))
+        var stub_tg: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
             Scalar[DT]
-        ](1)
-        var stub_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+        ](1))
+        var stub_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
             Scalar[DT]
-        ](1)
-        var stub_go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+        ](1))
+        var stub_go: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
             Scalar[DT]
-        ](1)
-        var stub_gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
+        ](1))
+        var stub_gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
             Scalar[DT]
-        ](1)
+        ](1))
         return Self(
             net=net^,
             optim=optim^,
@@ -307,13 +307,13 @@ struct Trainer[
             # MutAnyOrigin laundering — see train_step's else-branch comment.
             var out_ptr: UnsafePointer[
                 Scalar[DT], MutAnyOrigin
-            ] = self.output_dev.value().unsafe_ptr()
+            ] = mptr(self.output_dev.value().unsafe_ptr())
             var go_ptr: UnsafePointer[
                 Scalar[DT], MutAnyOrigin
-            ] = self.grad_out_dev.value().unsafe_ptr()
+            ] = mptr(self.grad_out_dev.value().unsafe_ptr())
             var gi_ptr: UnsafePointer[
                 Scalar[DT], MutAnyOrigin
-            ] = self.grad_in_dev.value().unsafe_ptr()
+            ] = mptr(self.grad_in_dev.value().unsafe_ptr())
             var in_ptr_my = mptr(input.ptr)
             var input_my = TileTensor(
                 in_ptr_my, row_major[Self.BATCH, Self.IN_DIM]()
@@ -396,10 +396,10 @@ struct Trainer[
         ), "Trainer.train_step_device requires target='gpu'"
         var in_ptr: UnsafePointer[
             Scalar[DT], MutAnyOrigin
-        ] = self.input_dev.value().unsafe_ptr()
+        ] = mptr(self.input_dev.value().unsafe_ptr())
         var tg_ptr: UnsafePointer[
             Scalar[DT], MutAnyOrigin
-        ] = self.target_dev.value().unsafe_ptr()
+        ] = mptr(self.target_dev.value().unsafe_ptr())
         var input = TileTensor(in_ptr, row_major[Self.BATCH, Self.IN_DIM]())
         var targets = TileTensor(tg_ptr, row_major[Self.BATCH, Self.OUT_DIM]())
         _ = self._train_step_views[CAPTURE=True](input, targets)
@@ -440,10 +440,10 @@ struct Trainer[
             # (different fields, different buffers) as overlapping `self.*`.
             var in_ptr: UnsafePointer[
                 Scalar[DT], MutAnyOrigin
-            ] = self.input_dev.value().unsafe_ptr()
+            ] = mptr(self.input_dev.value().unsafe_ptr())
             var tg_ptr: UnsafePointer[
                 Scalar[DT], MutAnyOrigin
-            ] = self.target_dev.value().unsafe_ptr()
+            ] = mptr(self.target_dev.value().unsafe_ptr())
             var input = TileTensor(in_ptr, row_major[Self.BATCH, Self.IN_DIM]())
             var targets = TileTensor(
                 tg_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
@@ -480,10 +480,10 @@ struct Trainer[
             ctx.enqueue_copy(self.input_dev.value(), in_host_buf)
             var in_ptr: UnsafePointer[
                 Scalar[DT], MutAnyOrigin
-            ] = self.input_dev.value().unsafe_ptr()
+            ] = mptr(self.input_dev.value().unsafe_ptr())
             var out_ptr: UnsafePointer[
                 Scalar[DT], MutAnyOrigin
-            ] = self.output_dev.value().unsafe_ptr()
+            ] = mptr(self.output_dev.value().unsafe_ptr())
             var input = TileTensor(in_ptr, row_major[Self.BATCH, Self.IN_DIM]())
             var output = TileTensor(
                 out_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
@@ -733,8 +733,8 @@ struct Trainer[
                             indices_dev.value()
                         )
                     )
-                    var sx_p = shuf_x_dev.value().unsafe_ptr()
-                    var sy_p = shuf_y_dev.value().unsafe_ptr()
+                    var sx_p = mptr(shuf_x_dev.value().unsafe_ptr())
+                    var sy_p = mptr(shuf_y_dev.value().unsafe_ptr())
                     var shuf_x_t = LayoutTensor[
                         DT,
                         Layout.row_major(Self.BATCH, Self.IN_DIM),
@@ -866,7 +866,7 @@ struct Trainer[
         var x_base = raw_x
         comptime if USE_AUG:
             aug_dev = ctx.enqueue_create_buffer[DT](N_TRAIN * Self.IN_DIM)
-            x_base = aug_dev.value().unsafe_ptr()
+            x_base = mptr(aug_dev.value().unsafe_ptr())
 
         # LR schedule: capture the caller-set base LR; per epoch the LR is
         # set to base_lr * SCHEDULER.lr_scale_at(epoch, epochs). Skipped
@@ -975,8 +975,8 @@ struct Trainer[
                             indices_dev.value()
                         )
                     )
-                    var sx_p = shuf_x_dev.value().unsafe_ptr()
-                    var sy_p = shuf_y_dev.value().unsafe_ptr()
+                    var sx_p = mptr(shuf_x_dev.value().unsafe_ptr())
+                    var sy_p = mptr(shuf_y_dev.value().unsafe_ptr())
                     var shuf_x_t = LayoutTensor[
                         DT,
                         Layout.row_major(Self.BATCH, Self.IN_DIM),
