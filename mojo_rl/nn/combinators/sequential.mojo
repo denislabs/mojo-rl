@@ -336,18 +336,26 @@ def _forward_gpu[
     # doesn't flag adjacent slab refs (distinct DeviceBuffers) as aliases.
     comptime for i in range(N):
         comptime if i == 0:
-            var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[0].unsafe_ptr()
-            var out_mid = TileTensor(p, row_major[BATCH, MODULES[0].OUT_DIM]())
+            var out_mid = TileTensor(
+                mptr(seq.mid_dev[0].unsafe_ptr()),
+                row_major[BATCH, MODULES[0].OUT_DIM](),
+            )
             seq.children[0].forward[target, BATCH, POLICY=POLICY](input, output=out_mid)
         elif i == N - 1:
-            var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[N - 2].unsafe_ptr()
-            var in_mid = TileTensor(p, row_major[BATCH, MODULES[N - 1].IN_DIMS[0]]())
+            var in_mid = TileTensor(
+                mptr(seq.mid_dev[N - 2].unsafe_ptr()),
+                row_major[BATCH, MODULES[N - 1].IN_DIMS[0]](),
+            )
             seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output=output)
         else:
-            var pi: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i - 1].unsafe_ptr()
-            var po: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i].unsafe_ptr()
-            var in_mid  = TileTensor(pi, row_major[BATCH, MODULES[i].IN_DIMS[0]]())
-            var out_mid = TileTensor(po, row_major[BATCH, MODULES[i].OUT_DIM]())
+            var in_mid = TileTensor(
+                mptr(seq.mid_dev[i - 1].unsafe_ptr()),
+                row_major[BATCH, MODULES[i].IN_DIMS[0]](),
+            )
+            var out_mid = TileTensor(
+                mptr(seq.mid_dev[i].unsafe_ptr()),
+                row_major[BATCH, MODULES[i].OUT_DIM](),
+            )
             seq.children[i].forward[target, BATCH, POLICY=POLICY](in_mid, output=out_mid)
 
 
@@ -435,8 +443,10 @@ def _backward_gpu[
     comptime for j in range(N):
         comptime i = N - 1 - j
         comptime if i == N - 1:
-            var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[N - 2].unsafe_ptr()
-            var out_grad = TileTensor(p, row_major[BATCH, MODULES[N - 1].IN_DIMS[0]]())
+            var out_grad = TileTensor(
+                mptr(seq.mid_dev[N - 2].unsafe_ptr()),
+                row_major[BATCH, MODULES[N - 1].IN_DIMS[0]](),
+            )
             seq.children[N - 1].vjp_param_grads[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output)
@@ -444,8 +454,10 @@ def _backward_gpu[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](grad_output, out_grad)
         elif i == 0:
-            var p: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[0].unsafe_ptr()
-            var in_grad = TileTensor(p, row_major[BATCH, MODULES[0].OUT_DIM]())
+            var in_grad = TileTensor(
+                mptr(seq.mid_dev[0].unsafe_ptr()),
+                row_major[BATCH, MODULES[0].OUT_DIM](),
+            )
             seq.children[0].vjp_param_grads[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](in_grad)
@@ -453,10 +465,14 @@ def _backward_gpu[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](in_grad, grad_input)
         else:
-            var pi: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i].unsafe_ptr()
-            var po: UnsafePointer[Scalar[DT], MutAnyOrigin] = seq.mid_dev[i - 1].unsafe_ptr()
-            var in_grad  = TileTensor(pi, row_major[BATCH, MODULES[i].OUT_DIM]())
-            var out_grad = TileTensor(po, row_major[BATCH, MODULES[i].IN_DIMS[0]]())
+            var in_grad = TileTensor(
+                mptr(seq.mid_dev[i].unsafe_ptr()),
+                row_major[BATCH, MODULES[i].OUT_DIM](),
+            )
+            var out_grad = TileTensor(
+                mptr(seq.mid_dev[i - 1].unsafe_ptr()),
+                row_major[BATCH, MODULES[i].IN_DIMS[0]](),
+            )
             seq.children[i].vjp_param_grads[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](in_grad)

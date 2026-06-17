@@ -177,14 +177,14 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         else:
             self._ensure_scratch_gpu(BATCH)
             var out_p_w = mptr(output_v.ptr)
-            var pa: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.inner_out_dev.value().unsafe_ptr()
-            var pb: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.skip_out_dev.value().unsafe_ptr()
-            var inner_out = TileTensor(pa, row_major[BATCH, Self.OUT_DIM]())
-            var skip_out = TileTensor(pb, row_major[BATCH, Self.OUT_DIM]())
+            var inner_out = TileTensor(
+                mptr(self.inner_out_dev.value().unsafe_ptr()),
+                row_major[BATCH, Self.OUT_DIM](),
+            )
+            var skip_out = TileTensor(
+                mptr(self.skip_out_dev.value().unsafe_ptr()),
+                row_major[BATCH, Self.OUT_DIM](),
+            )
             self.inner.forward[target, BATCH, POLICY=POLICY](
                 input, output=inner_out
             )
@@ -272,14 +272,14 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
                 k += 1
         else:
             self._ensure_scratch_gpu(BATCH)
-            var pia: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.gi_inner_dev.value().unsafe_ptr()
-            var pib: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.gi_skip_dev.value().unsafe_ptr()
-            var gi_inner = TileTensor(pia, row_major[BATCH, Self.IN_DIMS[0]]())
-            var gi_skip = TileTensor(pib, row_major[BATCH, Self.IN_DIMS[0]]())
+            var gi_inner = TileTensor(
+                mptr(self.gi_inner_dev.value().unsafe_ptr()),
+                row_major[BATCH, Self.IN_DIMS[0]](),
+            )
+            var gi_skip = TileTensor(
+                mptr(self.gi_skip_dev.value().unsafe_ptr()),
+                row_major[BATCH, Self.IN_DIMS[0]](),
+            )
             self.inner.vjp[
                 target,
                 BATCH,

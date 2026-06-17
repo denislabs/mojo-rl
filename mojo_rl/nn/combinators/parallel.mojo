@@ -208,10 +208,14 @@ struct Parallel[A: Module, B: Module](Module):
         else:
             self._ensure_scratch_gpu(BATCH)
             var out_p_w = mptr(output_v.ptr)
-            var pa: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_a_dev.value().unsafe_ptr()
-            var pb: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_b_dev.value().unsafe_ptr()
-            var out_a_tt = TileTensor(pa, row_major[BATCH, Self.OUT_A]())
-            var out_b_tt = TileTensor(pb, row_major[BATCH, Self.OUT_B]())
+            var out_a_tt = TileTensor(
+                mptr(self.out_a_dev.value().unsafe_ptr()),
+                row_major[BATCH, Self.OUT_A](),
+            )
+            var out_b_tt = TileTensor(
+                mptr(self.out_b_dev.value().unsafe_ptr()),
+                row_major[BATCH, Self.OUT_B](),
+            )
             self.branch_a.forward[target, BATCH, POLICY=POLICY](input, output=out_a_tt)
             self.branch_b.forward[target, BATCH, POLICY=POLICY](input, output=out_b_tt)
             comptime layout_a = Layout.row_major(BATCH, Self.OUT_A)
@@ -284,11 +288,6 @@ struct Parallel[A: Module, B: Module](Module):
             self._ensure_scratch_gpu(BATCH)
             var go_p_w = mptr(grad_output_v.ptr)
             var gi_p_w = mptr(grad_input_v.ptr)
-            var pa: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_a_dev.value().unsafe_ptr()
-            var pb: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.out_b_dev.value().unsafe_ptr()
-            var pia: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.gi_a_dev.value().unsafe_ptr()
-            var pib: UnsafePointer[Scalar[DT], MutAnyOrigin] = self.gi_b_dev.value().unsafe_ptr()
-
             comptime layout_a = Layout.row_major(BATCH, Self.OUT_A)
             comptime layout_b = Layout.row_major(BATCH, Self.OUT_B)
             comptime layout_p = Layout.row_major(BATCH, Self.OUT_DIM)
@@ -304,10 +303,22 @@ struct Parallel[A: Module, B: Module](Module):
                 grid_dim=n_blocks_split, block_dim=TPB,
             )
 
-            var go_a_tt = TileTensor(pa, row_major[BATCH, Self.OUT_A]())
-            var go_b_tt = TileTensor(pb, row_major[BATCH, Self.OUT_B]())
-            var gi_a_tt = TileTensor(pia, row_major[BATCH, Self.IN_DIMS[0]]())
-            var gi_b_tt = TileTensor(pib, row_major[BATCH, Self.IN_DIMS[0]]())
+            var go_a_tt = TileTensor(
+                mptr(self.out_a_dev.value().unsafe_ptr()),
+                row_major[BATCH, Self.OUT_A](),
+            )
+            var go_b_tt = TileTensor(
+                mptr(self.out_b_dev.value().unsafe_ptr()),
+                row_major[BATCH, Self.OUT_B](),
+            )
+            var gi_a_tt = TileTensor(
+                mptr(self.gi_a_dev.value().unsafe_ptr()),
+                row_major[BATCH, Self.IN_DIMS[0]](),
+            )
+            var gi_b_tt = TileTensor(
+                mptr(self.gi_b_dev.value().unsafe_ptr()),
+                row_major[BATCH, Self.IN_DIMS[0]](),
+            )
             self.branch_a.vjp[
                 target, BATCH, POLICY=POLICY, mode=mode,
             ](go_a_tt, gi_a_tt)

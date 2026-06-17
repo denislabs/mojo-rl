@@ -253,10 +253,10 @@ struct SkipConcat[Inner: Module](Module):
             self._ensure_inner_buf_gpu(BATCH * OUT_INNER)
             var in_p_w = mptr(input.ptr)
             var out_p_w = mptr(output_v.ptr)
-            var sp: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.inner_buf_dev.value().unsafe_ptr()
-            var inner_tt = TileTensor(sp, row_major[BATCH, OUT_INNER]())
+            var inner_tt = TileTensor(
+                mptr(self.inner_buf_dev.value().unsafe_ptr()),
+                row_major[BATCH, OUT_INNER](),
+            )
             self.inner.forward[target, BATCH, POLICY=POLICY](
                 input,
                 output=inner_tt,
@@ -377,7 +377,7 @@ struct SkipConcat[Inner: Module](Module):
             )
             # 2. inner.vjp(scratch, grad_input) — overwrites grad_input.
             var inner_tt = TileTensor(
-                self.inner_buf_dev.value().unsafe_ptr(),
+                mptr(self.inner_buf_dev.value().unsafe_ptr()),
                 row_major[BATCH, OUT_INNER](),
             )
             self.inner.vjp[
