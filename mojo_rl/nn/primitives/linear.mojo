@@ -534,9 +534,12 @@ struct Linear[IN: Int, OUT: Int](Module):
                 else:
                     comptime gw_n = Self.IN * Self.OUT
                     # Non-Apple / non-fp32 portable fallback. Owning RAII
-                    # `List`s — accessed directly; a raw `.unsafe_ptr()` is
-                    # taken only where an API needs one (the TileTensor ctor
-                    # for max_matmul, and the SIMD `.load[width]` accumulate).
+                    # `List`s — the `TileTensor(list, …)` ctor origin-LINKS
+                    # each tile to its list (concrete + tracked), so the
+                    # lifetime checker keeps the lists alive through the tiles'
+                    # last use with no `_ = list^` pins; the SIMD accumulate
+                    # reuses the tile's own origin-linked `.ptr` rather than a
+                    # fresh `.unsafe_ptr()`.
                     var cT_list = List[Scalar[DT]](
                         length=BATCH * Self.IN, fill=Scalar[DT](0)
                     )
@@ -549,16 +552,16 @@ struct Linear[IN: Int, OUT: Int](Module):
                                 bi * Self.IN + i
                             ]
                     var cT_tt = TileTensor(
-                        cT_list.unsafe_ptr(), row_major[Self.IN, BATCH](),
+                        cT_list, row_major[Self.IN, BATCH](),
                     )
                     var dW_tmp_tt = TileTensor(
-                        dW_tmp_list.unsafe_ptr(),
+                        dW_tmp_list,
                         row_major[Self.IN, Self.OUT](),
                     )
                     max_matmul[target="cpu"](
                         dW_tmp_tt, cT_tt, grad_output_v, None,
                     )
-                    var dW_tmp_p = dW_tmp_list.unsafe_ptr()  # SIMD .load needs a ptr
+                    var dW_tmp_p = dW_tmp_tt.ptr  # reuse the tile's origin-linked ptr
                     var dw_i = 0
                     while dw_i + CPU_SIMD_W <= gw_n:
                         var gw_v = gw_ptr.load[width=CPU_SIMD_W](dw_i)
@@ -568,12 +571,6 @@ struct Linear[IN: Int, OUT: Int](Module):
                     while dw_i < gw_n:
                         gw_ptr[dw_i] = gw_ptr[dw_i] + dW_tmp_list[dw_i]
                         dw_i += 1
-                    # Pin the lists past their last direct use: the TileTensors
-                    # / `dW_tmp_p` hold raw borrow-view ptrs with no origin
-                    # link back, so without this the lists could be destroyed
-                    # before max_matmul / the accumulate read them.
-                    _ = cT_list^
-                    _ = dW_tmp_list^
             else:
                 var ctx = self.ts.ctx.value()
 

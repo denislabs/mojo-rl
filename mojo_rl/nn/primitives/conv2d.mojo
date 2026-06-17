@@ -60,7 +60,6 @@ allocated at `make` time.
 """
 
 from std.math import ceildiv
-from std.memory import alloc
 from std.sys import CompilationTarget
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
 from std.gpu.primitives import block
@@ -110,9 +109,10 @@ from ..core.target_storage import (
 
 def _im2col_one_batch[
     IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OH: Int, OW: Int,
+    o: Origin[mut=True],
 ](
     in_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    col_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    col_p: UnsafePointer[Scalar[DT], o],
 ):
     """Pack the IC·H·W input slab into an [OH·OW, IC·K·K] col matrix.
 
@@ -143,8 +143,9 @@ def _im2col_one_batch[
 
 def _col2im_one_batch[
     IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OH: Int, OW: Int,
+    o: Origin[mut=True],
 ](
-    d_col_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    d_col_p: UnsafePointer[Scalar[DT], o],
     d_in_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
 ):
     """Scatter-add an [OH·OW, IC·K·K] col matrix back into a [IC·H·W]
@@ -584,9 +585,21 @@ struct Conv2D[
         comptime if target == "cpu":
             var w_p = self.weight.value_unsafe_ptr_cpu()
             var b_p = self.bias.value_unsafe_ptr_cpu()
-            var col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
-                Scalar[DT]
-            ](Self.SPATIAL_OUT * Self.COL_SIZE))
+            # R1: owning RAII `List` replaces the raw alloc+mptr+free scratch
+            # (mirrors `linear_act.mojo`). The `TileTensor(list, …)` ctor
+            # origin-LINKS the col tile to its list (concrete + tracked, no
+            # `MutAnyOrigin` wildcard, no manual `free`) — so the lifetime
+            # checker keeps the list alive through the tile's last use with
+            # no `_ = list^` pin. The im2col helper's ptr arg reuses the
+            # tile's own (origin-linked) `.ptr` rather than a fresh
+            # `.unsafe_ptr()`.
+            var col_buf_list = List[Scalar[DT]](
+                length=Self.SPATIAL_OUT * Self.COL_SIZE, fill=Scalar[DT](0)
+            )
+            var col_tt = TileTensor(
+                col_buf_list,
+                row_major[Self.SPATIAL_OUT, Self.COL_SIZE](),
+            )
             var w_tt = TileTensor(
                 self.weight.val.cpu, row_major[Self.OC, Self.COL_SIZE](),
             )
@@ -596,11 +609,7 @@ struct Conv2D[
                     Self.H, Self.W, Self.OH, Self.OW,
                 ](
                     in_p + b * Self.IN_DIM_FLAT,
-                    col_buf,
-                )
-                var col_tt = TileTensor(
-                    col_buf,
-                    row_major[Self.SPATIAL_OUT, Self.COL_SIZE](),
+                    col_tt.ptr,
                 )
                 var out_b_p = out_p + b * Self.OUT_DIM_FLAT
                 var out_tt = TileTensor(
@@ -625,7 +634,6 @@ struct Conv2D[
                     while i < Self.SPATIAL_OUT:
                         row[i] = row[i] + bv
                         i += 1
-            col_buf.free()
         else:
             # im2col + GEMM: col = im2col(x) [BS, COL]; out_packed = col @ Wᵀ
             # [BS, OC]; scatter → output [BATCH, OC·SO] + bias. The GEMM runs
@@ -782,16 +790,32 @@ struct Conv2D[
                 var dw_p = self.weight.grad_unsafe_ptr_cpu()
                 var db_p = self.bias.grad_unsafe_ptr_cpu()
 
-                var col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
-                    Scalar[DT]
-                ](Self.SPATIAL_OUT * Self.COL_SIZE))
-                var dw_tmp: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+                # R1: owning RAII `List`s replace the raw alloc+mptr+free
+                # scratch (mirrors `linear_act.mojo`). The `TileTensor(list,
+                # …)` ctor origin-LINKS each tile to its list (concrete +
+                # tracked, no `MutAnyOrigin` wildcard, no manual `free`) — so
+                # the lifetime checker keeps the lists alive through the
+                # tiles' last use with no `_ = list^` pins. Where an API
+                # needs a raw ptr (im2col helper, cblas rebind, SIMD load)
+                # we reuse the tile's own (origin-linked) `.ptr`. `dw_tmp` is
+                # `None` on the Apple-fp32 cblas path (beta=1 GEMM, no temp).
+                var col_buf_list = List[Scalar[DT]](
+                    length=Self.SPATIAL_OUT * Self.COL_SIZE,
+                    fill=Scalar[DT](0),
+                )
+                var col_tt = TileTensor(
+                    col_buf_list,
+                    row_major[Self.SPATIAL_OUT, Self.COL_SIZE](),
+                )
+                var dw_tmp: Optional[List[Scalar[DT]]]
                 comptime if (
                     CompilationTarget.is_macos() and DT == DType.float32
                 ):
                     dw_tmp = None
                 else:
-                    dw_tmp = mptr(alloc[Scalar[DT]](Self.W_SIZE))
+                    dw_tmp = List[Scalar[DT]](
+                        length=Self.W_SIZE, fill=Scalar[DT](0)
+                    )
 
                 for b in range(BATCH):
                     # ---- 1. Rebuild col_b for this batch (reads x) ----
@@ -800,11 +824,7 @@ struct Conv2D[
                         Self.H, Self.W, Self.OH, Self.OW,
                     ](
                         x_p + b * Self.IN_DIM_FLAT,
-                        col_buf,
-                    )
-                    var col_tt = TileTensor(
-                        col_buf,
-                        row_major[Self.SPATIAL_OUT, Self.COL_SIZE](),
+                        col_tt.ptr,
                     )
 
                     # ---- 2. d_out_b view + d_bias accumulate ----------
@@ -843,7 +863,7 @@ struct Conv2D[
                             ),
                             Int32(Self.SPATIAL_OUT),
                             rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                                col_buf
+                                col_tt.ptr
                             ),
                             Int32(Self.COL_SIZE),
                             Float32(1.0),
@@ -853,11 +873,11 @@ struct Conv2D[
                             Int32(Self.COL_SIZE),
                         )
                     else:
-                        var dw_tmp_p = dw_tmp.value()
                         var dw_tmp_tt = TileTensor(
-                            dw_tmp_p,
+                            dw_tmp.value(),
                             row_major[Self.OC, Self.COL_SIZE](),
                         )
+                        var dw_tmp_p = dw_tmp_tt.ptr
                         max_matmul[target="cpu"](
                             dw_tmp_tt, go_b_tt, col_tt, None,
                         )
@@ -870,12 +890,6 @@ struct Conv2D[
                         while i < Self.W_SIZE:
                             dw_p[i] = dw_p[i] + dw_tmp_p[i]
                             i += 1
-
-                col_buf.free()
-                comptime if not (
-                    CompilationTarget.is_macos() and DT == DType.float32
-                ):
-                    dw_tmp.value().free()
             else:
                 # im2col + GEMM dW: rebuild col[BS, COL] from the cached
                 # input, transpose grad_output → goᵀ[OC, BS], then
@@ -1043,18 +1057,31 @@ struct Conv2D[
             for k in range(BATCH * Self.IN_DIM_FLAT):
                 gi_p[k] = Scalar[DT](0.0)
 
-            var d_col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = mptr(alloc[
-                Scalar[DT]
-            ](Self.SPATIAL_OUT * Self.COL_SIZE))
-            var go_b_T_buf: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+            # R1: owning RAII `List`s replace the raw alloc+mptr+free scratch
+            # (mirrors `linear_act.mojo`). The `TileTensor(list, …)` ctor
+            # origin-LINKS each tile to its list (concrete + tracked, no
+            # `MutAnyOrigin` wildcard, no manual `free`) — so the lifetime
+            # checker keeps the lists alive through the tiles' last use with
+            # no `_ = list^` pins. Where an API needs a raw ptr (cblas
+            # rebind, the transpose index writes, col2im helper) we reuse
+            # the tile's own (origin-linked) `.ptr`. `go_b_T_buf` is `None`
+            # on the Apple-fp32 path (cblas does the transpose).
+            var d_col_buf_list = List[Scalar[DT]](
+                length=Self.SPATIAL_OUT * Self.COL_SIZE, fill=Scalar[DT](0)
+            )
+            var d_col_tt = TileTensor(
+                d_col_buf_list,
+                row_major[Self.SPATIAL_OUT, Self.COL_SIZE](),
+            )
+            var go_b_T_buf: Optional[List[Scalar[DT]]]
             comptime if (
                 CompilationTarget.is_macos() and DT == DType.float32
             ):
                 go_b_T_buf = None
             else:
-                go_b_T_buf = mptr(alloc[Scalar[DT]](
-                    Self.SPATIAL_OUT * Self.OC
-                ))
+                go_b_T_buf = List[Scalar[DT]](
+                    length=Self.SPATIAL_OUT * Self.OC, fill=Scalar[DT](0)
+                )
 
             var w_tt = TileTensor(
                 self.weight.val.cpu, row_major[Self.OC, Self.COL_SIZE](),
@@ -1093,27 +1120,23 @@ struct Conv2D[
                         Int32(Self.COL_SIZE),
                         Float32(0.0),
                         rebind[UnsafePointer[Float32, MutAnyOrigin]](
-                            d_col_buf
+                            d_col_tt.ptr
                         ),
                         Int32(Self.COL_SIZE),
                     )
                 else:
                     # Build d_out_b.T into go_b_T_buf, then untransposed
                     # matmul. The temp is SPATIAL_OUT × OC.
-                    var go_b_T_buf_p = go_b_T_buf.value()
+                    var go_b_T_tt = TileTensor(
+                        go_b_T_buf.value(),
+                        row_major[Self.SPATIAL_OUT, Self.OC](),
+                    )
+                    var go_b_T_buf_p = go_b_T_tt.ptr
                     for s in range(Self.SPATIAL_OUT):
                         for oc in range(Self.OC):
                             go_b_T_buf_p[s * Self.OC + oc] = go_b_p[
                                 oc * Self.SPATIAL_OUT + s
                             ]
-                    var go_b_T_tt = TileTensor(
-                        go_b_T_buf_p,
-                        row_major[Self.SPATIAL_OUT, Self.OC](),
-                    )
-                    var d_col_tt = TileTensor(
-                        d_col_buf,
-                        row_major[Self.SPATIAL_OUT, Self.COL_SIZE](),
-                    )
                     max_matmul[target="cpu"](
                         d_col_tt, go_b_T_tt, w_tt, None,
                     )
@@ -1123,15 +1146,9 @@ struct Conv2D[
                     Self.IC, Self.K, Self.S, Self.P,
                     Self.H, Self.W, Self.OH, Self.OW,
                 ](
-                    d_col_buf,
+                    d_col_tt.ptr,
                     gi_p + b * Self.IN_DIM_FLAT,
                 )
-
-            d_col_buf.free()
-            comptime if not (
-                CompilationTarget.is_macos() and DT == DType.float32
-            ):
-                go_b_T_buf.value().free()
         else:
             var go_p = grad_output_v.ptr
             var gi_p = grad_input_v.ptr
