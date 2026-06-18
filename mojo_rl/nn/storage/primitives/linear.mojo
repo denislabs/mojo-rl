@@ -23,6 +23,7 @@ from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
+from mojo_rl.nn.core.initializer import Initializer
 from ..loss.sac import polyak_tensor
 
 
@@ -330,5 +331,16 @@ struct Linear[IN_: Int, OUT_: Int, AMP: Bool = False](Module):
     ) raises:
         polyak_tensor[target, Self.W_SIZE](self.weight.val, src.weight.val, tau, ctx)
         polyak_tensor[target, Self.B_SIZE](self.bias.val, src.bias.val, tau, ctx)
+
+    def reinit[
+        target: StaticString, INIT: Initializer
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        INIT.init_weight(
+            self.weight.val.data.unsafe_ptr(), Self.W_SIZE, Self.IN_, Self.OUT_
+        )
+        INIT.init_bias(self.bias.val.data.unsafe_ptr(), Self.B_SIZE)
+        comptime if target == "gpu":
+            self.weight.val.upload(ctx.value())
+            self.bias.val.upload(ctx.value())
 
 

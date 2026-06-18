@@ -10,6 +10,7 @@ a borrowing `TensorRefs[1]`. Slice scope: N >= 2.
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.initializer import Initializer
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.tensor_pack import TensorPack
@@ -140,3 +141,9 @@ struct Sequential[*MODULES: Module](Module):
     ) raises:
         comptime for i in range(Self.N):
             self.children[i].polyak_from[target](src.children[i], tau, ctx)
+
+    def reinit[
+        target: StaticString, INIT: Initializer
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        comptime for i in range(Self.N):
+            self.children[i].reinit[target, INIT](ctx)

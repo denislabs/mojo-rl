@@ -60,7 +60,7 @@ def _adam_update_kernel[N: Int](
     param[i] = p - lr * m_hat / (sqrt(v_hat) + eps)
 
 
-struct Adam(ParamVisitor):
+struct Adam(ParamVisitor, Movable):
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
     var beta2: Scalar[DT]

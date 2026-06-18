@@ -44,3 +44,5 @@ from .optimizer.adam import Adam
 from .loss.mse import mse_forward, mse_backward
 from .loss.mse_loss import MSELoss
 from .loss.sac import polyak_tensor, sac_target_y
+from .loss.cross_entropy import CrossEntropyLoss
+from .training.trainer import Trainer
