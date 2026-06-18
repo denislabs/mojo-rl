@@ -23,6 +23,7 @@ from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
+from ..loss.sac import polyak_tensor
 
 
 # ── kernels (non-GEMM ops; the three matmuls go through max_matmul) ──────
@@ -320,5 +321,14 @@ struct Linear[IN_: Int, OUT_: Int, AMP: Bool = False](Module):
     ](mut self, ctx: Optional[DeviceContext]) raises:
         self.weight.zero_grad[target](ctx)
         self.bias.zero_grad[target](ctx)
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        polyak_tensor[target, Self.W_SIZE](self.weight.val, src.weight.val, tau, ctx)
+        polyak_tensor[target, Self.B_SIZE](self.bias.val, src.bias.val, tau, ctx)
 
 

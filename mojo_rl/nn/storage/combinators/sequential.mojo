@@ -9,6 +9,7 @@ a borrowing `TensorRefs[1]`. Slice scope: N >= 2.
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.nn.constants import DT
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.tensor_pack import TensorPack
@@ -130,3 +131,12 @@ struct Sequential[*MODULES: Module](Module):
     ](mut self, ctx: Optional[DeviceContext]) raises:
         comptime for i in range(Self.N):
             self.children[i].zero_grad[target](ctx)
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime for i in range(Self.N):
+            self.children[i].polyak_from[target](src.children[i], tau, ctx)

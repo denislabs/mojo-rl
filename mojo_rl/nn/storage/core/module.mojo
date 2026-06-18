@@ -11,6 +11,7 @@ the GPU view can be built. `ctx` is the GPU `DeviceContext` (ignored on CPU).
 
 from std.gpu.host import DeviceContext
 
+from mojo_rl.nn.constants import DT
 from .tensor import Tensor
 from .tensor_refs import TensorRefs
 from .param import ParamVisitor
@@ -56,4 +57,16 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
     def zero_grad[
         target: StaticString
     ](mut self, ctx: Optional[DeviceContext]) raises:
+        pass
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """Soft-update this (target) module's params toward `src` (online):
+        `p_self = tau·p_src + (1-tau)·p_self`. Default no-op (param-less
+        leaves + leaves whose polyak isn't exercised yet); param leaves
+        override on their `Param`s, combinators recurse into children."""
         pass

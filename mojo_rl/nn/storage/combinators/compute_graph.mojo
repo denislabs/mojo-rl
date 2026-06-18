@@ -174,3 +174,13 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](
     ](mut self, ctx: Optional[DeviceContext]) raises:
         comptime for i in range(Self.N):
             self.children[i].zero_grad[target](ctx)
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """Soft-update every node toward `src`'s matching node (target ← online)."""
+        comptime for i in range(Self.N):
+            self.children[i].polyak_from[target](src.children[i], tau, ctx)
