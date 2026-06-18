@@ -1,11 +1,11 @@
 """MLP on MNIST (CPU) — storage-surface (nn.storage) port.
 
 The nn.storage twin of mlp_mnist_training_cpu.mojo. Uses the storage Trainer
-(batch loop + top-1 eval), Sequential[Linear, ReLU, ...] (unfused — the storage
-surface has Linear + Elementwise ReLU, not a fused LinearReLU yet),
-CrossEntropyLoss, Adam, and Kaiming init via the `reinit` walk.
+(batch loop + top-1 eval), Sequential[LinearReLU, LinearReLU, Linear] (fused —
+matches the legacy architecture), CrossEntropyLoss, Adam, and Kaiming init via
+the `reinit` walk.
 
-Architecture: Linear(784→256) → ReLU → Linear(256→128) → ReLU → Linear(128→10)
+Architecture: LinearReLU(784→256) → LinearReLU(256→128) → Linear(128→10)
 Data:         MNIST via mojo_rl.nn.datasets.MNIST (framework-agnostic loader)
 
 Run:

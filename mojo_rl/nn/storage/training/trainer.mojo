@@ -3,11 +3,19 @@
 Holds a `MODEL` (Module producing logits [BATCH, NC]), an `Adam`, and a
 `CrossEntropyLoss[NC]`. `train_epoch` runs the batch loop (forward → CE loss
 accumulate → CE vjp → model.vjp → opt.step) over a flat dataset; `eval_top1`
-runs forward + argmax accuracy. CPU + GPU (per-batch upload on GPU).
+runs forward + argmax accuracy.
+
+Data path (matches legacy "resident dataset + slice", no per-batch transfer):
+- GPU: the whole dataset is uploaded to device ONCE (lazily, on first use), then
+  each batch input is a zero-copy `create_sub_buffer` VIEW into that resident
+  buffer (no per-batch H2D). The owned `batch_x/batch_y` just carry the view.
+- CPU: the host `List` is already resident; each batch is a cheap `memcpy` slice
+  (a zero-copy view would need an offset threaded through `forward`, not worth it
+  — the copy is a few % of CPU wall time).
 
 Flat-dataset convention (the example builds these): `train_x` = [N·IN] row-major
 images, `train_y` = [N·NC] one-hot labels; `test_x` = [N·IN], `test_labels` =
-[N] integer class ids (as DT). Topology must match what was trained.
+[N] integer class ids. Topology must match what was trained.
 """
 
 from std.gpu.host import DeviceContext
@@ -33,6 +41,12 @@ struct Trainer[
     var logits: Tensor
     var grad: Tensor
     var gi: Tensor
+    # GPU-resident dataset (uploaded once; batches are sub-buffer views).
+    var ds_x: Tensor
+    var ds_y: Tensor
+    var ds_tx: Tensor
+    var _up_train: Bool
+    var _up_test: Bool
 
     def __init__(out self):
         self.model = Self.MODEL()
@@ -43,6 +57,11 @@ struct Trainer[
         self.logits = Tensor()
         self.grad = Tensor()
         self.gi = Tensor()
+        self.ds_x = Tensor()
+        self.ds_y = Tensor()
+        self.ds_tx = Tensor()
+        self._up_train = False
+        self._up_test = False
 
     @staticmethod
     def make[
@@ -55,15 +74,40 @@ struct Trainer[
             t.model = Self.MODEL.make_cpu()
             t.loss = CrossEntropyLoss[Self.NC].make_cpu()
             t.model.reinit["cpu", INIT](None)
+            t.batch_x = Tensor.alloc(Self.BATCH * Self.IN)
+            t.batch_y = Tensor.alloc(Self.BATCH * Self.NC)
         else:
             var c = ctx.value()
             t.model = Self.MODEL.make_gpu(c)
             t.loss = CrossEntropyLoss[Self.NC].make_gpu(c)
             t.model.reinit["gpu", INIT](ctx)
+            # batch_x/batch_y carry sub-buffer views on GPU — no owned slab.
         t.opt = Adam(lr=lr)
-        t.batch_x = Tensor.alloc(Self.BATCH * Self.IN)
-        t.batch_y = Tensor.alloc(Self.BATCH * Self.NC)
         return t^
+
+    @staticmethod
+    def _upload_dataset(
+        mut dst: Tensor, ref src: List[Scalar[DT]], n: Int, ctx: DeviceContext
+    ) raises:
+        """Host List → resident device buffer (one-time, no per-batch H2D)."""
+        dst.dev = ctx.enqueue_create_buffer[DT](n)
+        var hb = ctx.enqueue_create_host_buffer[DT](n)
+        ctx.synchronize()
+        memcpy(dest=hb.unsafe_ptr(), src=src.unsafe_ptr(), count=n)
+        ctx.enqueue_copy(dst.dev.value(), hb)
+        ctx.synchronize()
+        dst.n = n
+
+    def _slice_train(mut self, x0: Int, y0: Int) raises:
+        """Point batch_x/batch_y at GPU sub-buffer views of the resident set."""
+        self.batch_x.dev = Optional(
+            self.ds_x.dev.value().create_sub_buffer[DT](x0, Self.BATCH * Self.IN)
+        )
+        self.batch_x.n = Self.BATCH * Self.IN
+        self.batch_y.dev = Optional(
+            self.ds_y.dev.value().create_sub_buffer[DT](y0, Self.BATCH * Self.NC)
+        )
+        self.batch_y.n = Self.BATCH * Self.NC
 
     def train_epoch[
         N_TRAIN: Int
@@ -74,15 +118,24 @@ struct Trainer[
         ctx: Optional[DeviceContext],
     ) raises -> Scalar[DT]:
         comptime n_batches = N_TRAIN // Self.BATCH
+        comptime if Self.target == "gpu":
+            if not self._up_train:
+                Self._upload_dataset(
+                    self.ds_x, train_x, N_TRAIN * Self.IN, ctx.value()
+                )
+                Self._upload_dataset(
+                    self.ds_y, train_y, N_TRAIN * Self.NC, ctx.value()
+                )
+                self._up_train = True
         self.loss.reset_accum[Self.target]()
         for nb in range(n_batches):
             var x0 = nb * Self.BATCH * Self.IN
             var y0 = nb * Self.BATCH * Self.NC
-            memcpy(dest=self.batch_x.data.unsafe_ptr(), src=train_x.unsafe_ptr() + x0, count=Self.BATCH * Self.IN)
-            memcpy(dest=self.batch_y.data.unsafe_ptr(), src=train_y.unsafe_ptr() + y0, count=Self.BATCH * Self.NC)
-            comptime if Self.target == "gpu":
-                self.batch_x.upload(ctx.value())
-                self.batch_y.upload(ctx.value())
+            comptime if Self.target == "cpu":
+                memcpy(dest=self.batch_x.data.unsafe_ptr(), src=train_x.unsafe_ptr() + x0, count=Self.BATCH * Self.IN)
+                memcpy(dest=self.batch_y.data.unsafe_ptr(), src=train_y.unsafe_ptr() + y0, count=Self.BATCH * Self.NC)
+            else:
+                self._slice_train(x0, y0)
             self.model.zero_grad[Self.target](ctx)
             self.model.forward[Self.target, Self.BATCH](
                 TensorRefs[Self.MODEL.ARITY].of1(self.batch_x), self.logits, ctx
@@ -109,12 +162,24 @@ struct Trainer[
         ctx: Optional[DeviceContext],
     ) raises -> Float64:
         comptime n_batches = N_TEST // Self.BATCH
+        comptime if Self.target == "gpu":
+            if not self._up_test:
+                Self._upload_dataset(
+                    self.ds_tx, test_x, N_TEST * Self.IN, ctx.value()
+                )
+                self._up_test = True
         var correct = 0
         for nb in range(n_batches):
             var x0 = nb * Self.BATCH * Self.IN
-            memcpy(dest=self.batch_x.data.unsafe_ptr(), src=test_x.unsafe_ptr() + x0, count=Self.BATCH * Self.IN)
-            comptime if Self.target == "gpu":
-                self.batch_x.upload(ctx.value())
+            comptime if Self.target == "cpu":
+                memcpy(dest=self.batch_x.data.unsafe_ptr(), src=test_x.unsafe_ptr() + x0, count=Self.BATCH * Self.IN)
+            else:
+                self.batch_x.dev = Optional(
+                    self.ds_tx.dev.value().create_sub_buffer[DT](
+                        x0, Self.BATCH * Self.IN
+                    )
+                )
+                self.batch_x.n = Self.BATCH * Self.IN
             self.model.forward[Self.target, Self.BATCH](
                 TensorRefs[Self.MODEL.ARITY].of1(self.batch_x), self.logits, ctx
             )

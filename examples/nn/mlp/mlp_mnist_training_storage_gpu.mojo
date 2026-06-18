@@ -1,9 +1,10 @@
 """MLP on MNIST (GPU) — storage-surface (nn.storage) port.
 
 The GPU twin of mlp_mnist_training_storage_cpu.mojo. Same storage Trainer /
-Sequential[Linear, ReLU, ...] / CrossEntropyLoss / Adam / Kaiming, with
-target="gpu": the Trainer uploads each batch and runs the model + loss + Adam on
-device. The caller owns the DeviceContext and reuses it for make/train/eval.
+Sequential[LinearReLU, LinearReLU, Linear] / CrossEntropyLoss / Adam / Kaiming,
+with target="gpu". The Trainer uploads the dataset to device ONCE and slices each
+batch as a zero-copy `create_sub_buffer` view (no per-batch H2D — matches legacy
+data movement). The caller owns the DeviceContext and reuses it for make/train/eval.
 
 Run (Apple):  pixi run -e apple mojo run -I . examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo
 Run (NVIDIA): pixi run -e nvidia mojo run -I . examples/nn/mlp/mlp_mnist_training_storage_gpu.mojo
