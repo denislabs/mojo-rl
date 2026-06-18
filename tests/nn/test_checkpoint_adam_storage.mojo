@@ -1,0 +1,91 @@
+"""Checkpoint save/load round-trip + Adam.step adapter (CPU + GPU).
+
+- Train a Sequential MLP via the model-walking `opt.step(model)` adapter.
+- save_params → fresh model → load_params; the loaded model's forward output
+  must match the trained model's (positional param round-trip).
+
+Run: pixi run -e apple mojo run -I . tests/nn/test_checkpoint_adam_storage.mojo
+"""
+
+from std.testing import assert_true
+from std.gpu.host import DeviceContext
+
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.checkpoint import save_params, load_params
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import ReLU
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.storage.loss.mse import mse_forward, mse_backward
+
+
+comptime B = 4
+comptime IN = 3
+comptime H = 6
+comptime OUT = 2
+comptime MODEL = Sequential[Linear[IN, H], ReLU[H], Linear[H, OUT]]
+
+
+def _check[target: StaticString](path: String, ctx: Optional[DeviceContext]) raises -> Bool:
+    comptime TOL = Scalar[DT](1e-5)
+    var model = MODEL.make_cpu() if target == "cpu" else MODEL.make_gpu(ctx.value())
+    var opt = Adam(lr=0.05)
+
+    var x = Tensor.alloc(B * IN)
+    var tgt = Tensor.alloc(B * OUT)
+    for i in range(B * IN):
+        x.data[i] = Scalar[DT]((i % 5) - 2) * 0.5
+    for i in range(B * OUT):
+        tgt.data[i] = Scalar[DT](1) if (i % 2 == 0) else Scalar[DT](-1)
+    var pred = Tensor.alloc(B * OUT)
+    var grad = Tensor.alloc(B * OUT)
+    var gi = Tensor.alloc(B * IN)
+
+    comptime if target == "gpu":
+        x.upload(ctx.value()); tgt.upload(ctx.value())
+
+    # train via the opt.step(model) adapter
+    for _ in range(40):
+        model.zero_grad[target](ctx)
+        model.forward[target, B](TensorRefs[1].of1(x), pred, ctx)
+        mse_backward[target, B, OUT](pred, tgt, grad, ctx)
+        model.vjp[target, B](TensorRefs[1].of1(x), grad, TensorRefs[1].of1(gi), ctx)
+        opt.step[target](model, ctx)
+
+    # reference forward output of the TRAINED model
+    model.forward[target, B](TensorRefs[1].of1(x), pred, ctx)
+    comptime if target == "gpu":
+        pred.download(ctx.value())
+    var ref_out = List[Scalar[DT]](length=B * OUT, fill=Scalar[DT](0))
+    for i in range(B * OUT):
+        ref_out[i] = pred.data[i]
+
+    # save → fresh model → load → forward must match
+    save_params[target](model, path, ctx)
+    var fresh = MODEL.make_cpu() if target == "cpu" else MODEL.make_gpu(ctx.value())
+    load_params[target](fresh, path, ctx)
+    var pred2 = Tensor.alloc(B * OUT)
+    fresh.forward[target, B](TensorRefs[1].of1(x), pred2, ctx)
+    comptime if target == "gpu":
+        pred2.download(ctx.value())
+
+    var ok = True
+    for i in range(B * OUT):
+        if abs(pred2.data[i] - ref_out[i]) > TOL:
+            ok = False
+    return ok
+
+
+def main() raises:
+    print("=" * 70)
+    print("Checkpoint round-trip + Adam.step adapter")
+    print("=" * 70)
+    var oc = _check["cpu"]("/tmp/storage_ckpt_cpu.txt", None)
+    print("  CPU:", "OK" if oc else "FAIL")
+    var c = DeviceContext()
+    var og = _check["gpu"]("/tmp/storage_ckpt_gpu.txt", Optional(c))
+    print("  GPU:", "OK" if og else "FAIL")
+    assert_true(oc and og, "checkpoint round-trip")
+    print("CHECKPOINT + ADAM.STEP OK")

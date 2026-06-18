@@ -26,6 +26,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
 from ..core.param import ParamVisitor
+from ..core.module import Module
 
 
 def _adam_update_kernel[N: Int](
@@ -98,6 +99,15 @@ struct Adam(ParamVisitor):
         self._b2_pow = self._b2_pow * self.beta2
         self.bc1 = Scalar[DT](1.0) - self._b1_pow
         self.bc2 = Scalar[DT](1.0) - self._b2_pow
+
+    def step[
+        target: StaticString, M: Module
+    ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
+        """Model-walking convenience (the legacy `opt.step(model)` call style):
+        bump the step then apply Adam to every Param via `for_each_param`.
+        Equivalent to `opt.begin_step(); model.for_each_param[target](opt, ctx)`."""
+        self.begin_step()
+        model.for_each_param[target](self, ctx)
 
     def visit[
         target: StaticString, N: Int
