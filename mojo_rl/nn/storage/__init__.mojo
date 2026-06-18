@@ -33,4 +33,5 @@ from .primitives.flatten import Flatten
 from .primitives.embedding import Embedding
 from .combinators.sequential import Sequential
 from .optimizer.sgd import SGD
+from .optimizer.adam import Adam
 from .loss.mse import mse_forward, mse_backward

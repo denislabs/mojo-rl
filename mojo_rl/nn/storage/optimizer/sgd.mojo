@@ -45,6 +45,8 @@ struct SGD(ParamVisitor):
         mut self,
         mut param: Tensor,
         mut grad: Tensor,
+        mut m: Tensor,   # unused (SGD is stateless)
+        mut v: Tensor,   # unused
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:

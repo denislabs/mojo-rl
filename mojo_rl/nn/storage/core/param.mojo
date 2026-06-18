@@ -1,10 +1,17 @@
 """Param[NAME, DECAY, SIZE] + ParamVisitor — storage-native params.
 
-The user's idea: "make ParamO a Tensor." A param is just two `Tensor`s
-(`val` + `grd`), each carrying CPU + GPU storage — so params are STORAGES,
-unified with activations. The optimizer walks them via `ParamVisitor`, which
-receives the `Tensor`s + `target` + `ctx` and updates the active buffer
-(`.data` on CPU, `.dev` via a kernel on GPU). No separate CPU-only param type.
+The user's idea: "make ParamO a Tensor." A param is just `Tensor`s, each carrying
+CPU + GPU storage — so params are STORAGES, unified with activations. The
+optimizer walks them via `ParamVisitor`, which receives the `Tensor`s + `target`
++ `ctx` and updates the active buffer (`.data` on CPU, `.dev` via a kernel on
+GPU). No separate CPU-only param type.
+
+A Param owns FOUR Tensors: `val` + `grd` (always) plus `m` + `v` — the per-param
+optimizer moment state (Adam). `m`/`v` stay EMPTY (lazy, zero-cost) until a
+stateful optimizer's `visit` calls `ensure`/`ensure_gpu` on them on its first
+step; SGD ignores them. Co-locating moment state with the param (rather than a
+flat side-table in the optimizer) keeps the storage design stateless at the
+visitor and rides the param walk for checkpointing (Stage 4).
 """
 
 from std.gpu.host import DeviceContext
@@ -18,6 +25,8 @@ trait ParamVisitor(ImplicitlyDeletable):
         mut self,
         mut param: Tensor,
         mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
@@ -29,10 +38,14 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](
 ):
     var val: Tensor
     var grd: Tensor
+    var m: Tensor   # optimizer 1st-moment state (Adam) — lazy, empty for SGD
+    var v: Tensor   # optimizer 2nd-moment state (Adam) — lazy, empty for SGD
 
     def __init__(out self):
         self.val = Tensor()
         self.grd = Tensor()
+        self.m = Tensor()
+        self.v = Tensor()
 
     @staticmethod
     def make_cpu() raises -> Self:
@@ -57,7 +70,7 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](
         mut self, mut visitor: V, ctx: Optional[DeviceContext]
     ) raises:
         visitor.visit[target, Self.SIZE](
-            self.val, self.grd, Self.APPLY_DECAY, ctx
+            self.val, self.grd, self.m, self.v, Self.APPLY_DECAY, ctx
         )
 
     def zero_grad[
