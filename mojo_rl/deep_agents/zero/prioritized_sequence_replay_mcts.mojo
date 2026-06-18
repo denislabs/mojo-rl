@@ -42,7 +42,7 @@ replay — only the *which-window* draw and the IS weights differ.
 
 from std.memory import alloc
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -59,10 +59,6 @@ comptime STORE_CHUNK = 1024
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return mptr(alloc[Scalar[DT]](n))
-
-
-def _asdt[SDT: DType](n: Int) -> UnsafePointer[Scalar[SDT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[SDT]](n))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -101,16 +97,16 @@ struct PrioritizedMCTSSequenceReplay[
     comptime SDT = Self.OBS_STORE_DT
 
     var obs: DeviceBuffer[Self.SDT]  # [CAP, OBS] on device
-    var act: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var done: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var pol: UnsafePointer[Scalar[DT], MutAnyOrigin]  # [CAP, ACT]
-    var val: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var tp: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var legal: UnsafePointer[Scalar[DT], MutAnyOrigin]  # [CAP, ACT]
+    var act: List[Scalar[DT]]
+    var rew: List[Scalar[DT]]
+    var done: List[Scalar[DT]]
+    var pol: List[Scalar[DT]]  # [CAP, ACT]
+    var val: List[Scalar[DT]]
+    var tp: List[Scalar[DT]]
+    var legal: List[Scalar[DT]]  # [CAP, ACT]
 
     # Host staging for the device-ring obs store (quantize → sub-buffer H2D).
-    var _stage_u8: UnsafePointer[Scalar[Self.SDT], MutAnyOrigin]  # [CHUNK, OBS]
+    var _stage_u8: HostBuffer[Self.SDT]  # [CHUNK, OBS]
 
     var ep_start: List[Int]
     var ep_len: List[Int]
@@ -136,14 +132,20 @@ struct PrioritizedMCTSSequenceReplay[
         self.ctx = ctx
         self.obs = ctx.enqueue_create_buffer[Self.SDT](Self.CAP * Self.OBS)
         self.obs.enqueue_fill(Scalar[Self.SDT](0))
-        self._stage_u8 = _asdt[Self.SDT](STORE_CHUNK * Self.OBS)
-        self.act = _a(Self.CAP)
-        self.rew = _a(Self.CAP)
-        self.done = _a(Self.CAP)
-        self.pol = _a(Self.CAP * Self.ACT)
-        self.val = _a(Self.CAP)
-        self.tp = _a(Self.CAP)
-        self.legal = _a(Self.CAP * Self.ACT)
+        self._stage_u8 = ctx.enqueue_create_host_buffer[Self.SDT](
+            STORE_CHUNK * Self.OBS
+        )
+        self.act = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.rew = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.done = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.pol = List[Scalar[DT]](
+            length=Self.CAP * Self.ACT, fill=Scalar[DT](0)
+        )
+        self.val = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.tp = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.legal = List[Scalar[DT]](
+            length=Self.CAP * Self.ACT, fill=Scalar[DT](0)
+        )
         self.ep_start = List[Int]()
         self.ep_len = List[Int]()
         self.ep_trunc = List[Bool]()
@@ -154,16 +156,6 @@ struct PrioritizedMCTSSequenceReplay[
         self.alpha = alpha
         self.beta = beta
         self.eps = Scalar[DT](1e-6)
-
-    def __del__(deinit self):
-        self.act.free()
-        self.rew.free()
-        self.done.free()
-        self.pol.free()
-        self.val.free()
-        self.tp.free()
-        self.legal.free()
-        self._stage_u8.free()
 
     def _xorshift(mut self) -> UInt64:
         var x = self.rng
@@ -253,7 +245,9 @@ struct PrioritizedMCTSSequenceReplay[
                 var sub2 = self.obs.create_sub_buffer[Self.SDT](
                     0, (m - first) * Self.OBS
                 )
-                self.ctx.enqueue_copy(sub2, self._stage_u8 + first * Self.OBS)
+                self.ctx.enqueue_copy(
+                    sub2, self._stage_u8.unsafe_ptr() + first * Self.OBS
+                )
             self.ctx.synchronize()  # staging reused next chunk
             done_steps += m
 

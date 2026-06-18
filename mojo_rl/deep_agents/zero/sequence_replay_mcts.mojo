@@ -36,10 +36,6 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return mptr(alloc[Scalar[DT]](n))
 
 
-def _asdt[SDT: DType](n: Int) -> UnsafePointer[Scalar[SDT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[SDT]](n))
-
-
 struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT](
     Movable, ImplicitlyDeletable
 ):
@@ -56,14 +52,14 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
 
     comptime SDT = Self.OBS_STORE_DT
 
-    var obs: UnsafePointer[Scalar[Self.SDT], MutAnyOrigin]   # [CAP, OBS] in SDT
-    var act: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP] action index
-    var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP]
-    var done: UnsafePointer[Scalar[DT], MutAnyOrigin]  # [CAP] terminal flag
-    var pol: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP, ACT] visit policy
-    var val: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP] root value
-    var tp: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [CAP] to_play
-    var legal: UnsafePointer[Scalar[DT], MutAnyOrigin] # [CAP, ACT] legal mask (reanalyze)
+    var obs: List[Scalar[Self.SDT]]   # [CAP, OBS] in SDT
+    var act: List[Scalar[DT]]   # [CAP] action index
+    var rew: List[Scalar[DT]]   # [CAP]
+    var done: List[Scalar[DT]]  # [CAP] terminal flag
+    var pol: List[Scalar[DT]]   # [CAP, ACT] visit policy
+    var val: List[Scalar[DT]]   # [CAP] root value
+    var tp: List[Scalar[DT]]    # [CAP] to_play
+    var legal: List[Scalar[DT]] # [CAP, ACT] legal mask (reanalyze)
 
     var ep_start: List[Int]   # absolute start step of each resident episode
     var ep_len: List[Int]
@@ -72,23 +68,25 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
     var rng: UInt64
 
     def __init__(out self, seed: UInt64 = 0):
-        self.obs = _asdt[Self.SDT](Self.CAP * Self.OBS)
-        self.act = _a(Self.CAP)
-        self.rew = _a(Self.CAP)
-        self.done = _a(Self.CAP)
-        self.pol = _a(Self.CAP * Self.ACT)
-        self.val = _a(Self.CAP)
-        self.tp = _a(Self.CAP)
-        self.legal = _a(Self.CAP * Self.ACT)
+        self.obs = List[Scalar[Self.SDT]](
+            length=Self.CAP * Self.OBS, fill=Scalar[Self.SDT](0)
+        )
+        self.act = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.rew = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.done = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.pol = List[Scalar[DT]](
+            length=Self.CAP * Self.ACT, fill=Scalar[DT](0)
+        )
+        self.val = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.tp = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.legal = List[Scalar[DT]](
+            length=Self.CAP * Self.ACT, fill=Scalar[DT](0)
+        )
         self.ep_start = List[Int]()
         self.ep_len = List[Int]()
         self.ep_trunc = List[Bool]()
         self.total = 0
         self.rng = seed ^ UInt64(0x9E3779B97F4A7C15)
-
-    def __del__(deinit self):
-        self.obs.free(); self.act.free(); self.rew.free(); self.done.free()
-        self.pol.free(); self.val.free(); self.tp.free(); self.legal.free()
 
     def _xorshift(mut self) -> UInt64:
         var x = self.rng
@@ -261,8 +259,8 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
                     w_val[h] = Scalar[DT](0.0)     # terminal value 0
                     w_tp[h] = Scalar[DT](0.0)
                 else:
-                    self._read_step[1](self.val, e, s + h, w_val, h)
-                    self._read_step[1](self.tp, e, s + h, w_tp, h)
+                    self._read_step[1](self.val.unsafe_ptr(), e, s + h, w_val, h)
+                    self._read_step[1](self.tp.unsafe_ptr(), e, s + h, w_tp, h)
 
             compute_nstep_value_targets[K, N](
                 w_rew, w_done, w_val, w_tp, gamma, w_vt, last_valid=lv
@@ -354,18 +352,18 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
                     )
 
             for h in range(HR):
-                self._read_step[1](self.rew, e, s + h, w_rew, h)
+                self._read_step[1](self.rew.unsafe_ptr(), e, s + h, w_rew, h)
                 if s + h >= L:
                     w_done[h] = Scalar[DT](1.0)
                 else:
-                    self._read_step[1](self.done, e, s + h, w_done, h)
+                    self._read_step[1](self.done.unsafe_ptr(), e, s + h, w_done, h)
             for h in range(HV):
                 if s + h >= L:
                     w_val[h] = Scalar[DT](0.0)
                     w_tp[h] = Scalar[DT](0.0)
                 else:
-                    self._read_step[1](self.val, e, s + h, w_val, h)
-                    self._read_step[1](self.tp, e, s + h, w_tp, h)
+                    self._read_step[1](self.val.unsafe_ptr(), e, s + h, w_val, h)
+                    self._read_step[1](self.tp.unsafe_ptr(), e, s + h, w_tp, h)
 
             compute_nstep_value_targets[K, N](
                 w_rew, w_done, w_val, w_tp, gamma, w_vt, last_valid=lv
