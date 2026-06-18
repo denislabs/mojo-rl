@@ -19,6 +19,7 @@ from .core.param import Param, ParamVisitor
 from .core.module import Module
 from .core.checkpoint import save_params, load_params
 from .primitives.linear import Linear
+from .primitives.linear_relu import LinearReLU
 from .primitives.add import Add
 from .primitives.elementwise import Elementwise
 from .primitives.activations import (

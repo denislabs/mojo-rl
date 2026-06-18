@@ -18,7 +18,7 @@ from mojo_rl.nn.datasets import MNIST
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.initializer import Kaiming
 from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.activations import ReLU
+from mojo_rl.nn.storage.primitives.linear_relu import LinearReLU
 from mojo_rl.nn.storage.combinators.sequential import Sequential
 from mojo_rl.nn.storage.training.trainer import Trainer
 
@@ -38,8 +38,8 @@ def main() raises:
     var c = DeviceContext()
 
     comptime Net = Sequential[
-        Linear[IN_DIM, H1], ReLU[H1],
-        Linear[H1, H2], ReLU[H2],
+        LinearReLU[IN_DIM, H1],
+        LinearReLU[H1, H2],
         Linear[H2, NC],
     ]
     print("initializing network (GPU)...")

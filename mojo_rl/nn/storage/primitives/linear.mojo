@@ -13,10 +13,16 @@ first binds the element to a named `ref` (`ref in0 = inputs[0]`) that lives for
 the whole function, then builds views from that.
 """
 
+from std.sys import CompilationTarget
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
+from linalg.matmul.cpu.apple_accelerate import (
+    get_cblas_f32_function,
+    _CBLASOrder,
+    _CBLASTranspose,
+)
 
 from mojo_rl.nn.constants import DT
 from ..core.tensor import Tensor, TensorImpl
@@ -254,18 +260,46 @@ struct Linear[IN_: Int, OUT_: Int, AMP: Bool = False](Module):
             for b in range(B):
                 for j in range(Self.OUT_):
                     gb_v[j] += go_v[b, j]
-            # grad_w += cacheᵀ @ go  (transpose, matmul into dW_tmp, accumulate)
-            var cT_v = TileTensor(self.cacheT.data, row_major[Self.IN_, B]())
-            for b in range(B):
-                for k in range(Self.IN_):
-                    cT_v[k, b] = x_v[b, k]
-            var dW_v = TileTensor(
-                self.dW_tmp.data, row_major[Self.IN_, Self.OUT_]()
+            # grad_w += xᵀ @ go. Apple-fp32: ONE fused cblas_sgemm (TRANSPOSE A=x,
+            # beta=1 → no transpose buffer, no temp, no accumulate loop — matches
+            # legacy Linear). Else: transpose into cacheT + max_matmul + add.
+            comptime IS_APPLE_F32 = (
+                CompilationTarget.is_macos() and DT == DType.float32
             )
-            max_matmul[target="cpu"](dW_v, cT_v, go_v, None)
-            for k in range(Self.IN_):
-                for j in range(Self.OUT_):
-                    gw_v[k, j] += dW_v[k, j]
+            comptime if IS_APPLE_F32:
+                var cblas = get_cblas_f32_function()
+                cblas(
+                    _CBLASOrder.ROW_MAJOR,
+                    _CBLASTranspose.TRANSPOSE,
+                    _CBLASTranspose.NO_TRANSPOSE,
+                    Int32(Self.IN_), Int32(Self.OUT_), Int32(B),
+                    Float32(1.0),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        fin.data.unsafe_ptr()
+                    ),
+                    Int32(Self.IN_),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        grad_output.data.unsafe_ptr()
+                    ),
+                    Int32(Self.OUT_),
+                    Float32(1.0),
+                    rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                        self.weight.grd.data.unsafe_ptr()
+                    ),
+                    Int32(Self.OUT_),
+                )
+            else:
+                var cT_v = TileTensor(self.cacheT.data, row_major[Self.IN_, B]())
+                for b in range(B):
+                    for k in range(Self.IN_):
+                        cT_v[k, b] = x_v[b, k]
+                var dW_v = TileTensor(
+                    self.dW_tmp.data, row_major[Self.IN_, Self.OUT_]()
+                )
+                max_matmul[target="cpu"](dW_v, cT_v, go_v, None)
+                for k in range(Self.IN_):
+                    for j in range(Self.OUT_):
+                        gw_v[k, j] += dW_v[k, j]
             # grad_input = go @ Wᵀ
             max_matmul[transpose_b=True, target="cpu"](gi_v, go_v, w_v, None)
         else:

@@ -11,6 +11,7 @@ images, `train_y` = [N·NC] one-hot labels; `test_x` = [N·IN], `test_labels` =
 """
 
 from std.gpu.host import DeviceContext
+from std.memory import memcpy
 
 from mojo_rl.nn.constants import DT
 from ..core.tensor import Tensor
@@ -77,10 +78,8 @@ struct Trainer[
         for nb in range(n_batches):
             var x0 = nb * Self.BATCH * Self.IN
             var y0 = nb * Self.BATCH * Self.NC
-            for i in range(Self.BATCH * Self.IN):
-                self.batch_x.data[i] = train_x[x0 + i]
-            for i in range(Self.BATCH * Self.NC):
-                self.batch_y.data[i] = train_y[y0 + i]
+            memcpy(dest=self.batch_x.data.unsafe_ptr(), src=train_x.unsafe_ptr() + x0, count=Self.BATCH * Self.IN)
+            memcpy(dest=self.batch_y.data.unsafe_ptr(), src=train_y.unsafe_ptr() + y0, count=Self.BATCH * Self.NC)
             comptime if Self.target == "gpu":
                 self.batch_x.upload(ctx.value())
                 self.batch_y.upload(ctx.value())
@@ -113,8 +112,7 @@ struct Trainer[
         var correct = 0
         for nb in range(n_batches):
             var x0 = nb * Self.BATCH * Self.IN
-            for i in range(Self.BATCH * Self.IN):
-                self.batch_x.data[i] = test_x[x0 + i]
+            memcpy(dest=self.batch_x.data.unsafe_ptr(), src=test_x.unsafe_ptr() + x0, count=Self.BATCH * Self.IN)
             comptime if Self.target == "gpu":
                 self.batch_x.upload(ctx.value())
             self.model.forward[Self.target, Self.BATCH](
