@@ -1,0 +1,351 @@
+"""LayerNorm[DIM] — per-row (feature-axis) layer normalisation (storage surface).
+
+Transformed from legacy `nn.primitives.LayerNorm` (surface-only change). γ/β are
+`Param`s (decay=False); the per-row x̂ + inv_std cache is leaf-owned (output-
+caching, no input aliasing). No running State, no train/eval split. The CPU SIMD
+feature-axis loops and the three GPU kernels (forward / backward-dx 1-block-per-
+row, backward-dparams 1-block-per-col) are carried over verbatim.
+
+Backward (cache):  g = go·γ ; mean_g = mean_d(g) ; mean_g_xhat = mean_d(g·x̂)
+    dx = inv_std·(g - mean_g - x̂·mean_g_xhat) ; dγ += Σ_b go·x̂ ; dβ += Σ_b go
+"""
+
+from std.math import sqrt
+from std.gpu import thread_idx, block_idx
+from std.gpu.primitives import block
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor, TileTensor, row_major
+
+from mojo_rl.nn.constants import DT, CPU_SIMD_W
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+
+
+comptime LN_EPS: Scalar[DT] = 1e-5
+comptime LN_TPB: Int = 128
+
+
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
+def _layer_norm_forward_kernel[
+    BATCH: Int, DIM: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    beta: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    var b = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if b >= BATCH:
+        return
+    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
+    var my_sum: Scalar[DT] = 0.0
+    var idx = t
+    while idx < DIM:
+        my_sum += rebind[Scalar[DT]](input[b, idx])
+        idx += LN_TPB
+    var mean_val = block.sum[block_size=LN_TPB, broadcast=True](val=my_sum) * inv_dim
+    var my_var: Scalar[DT] = 0.0
+    idx = t
+    while idx < DIM:
+        var diff = rebind[Scalar[DT]](input[b, idx]) - mean_val
+        my_var += diff * diff
+        idx += LN_TPB
+    var var_val = block.sum[block_size=LN_TPB, broadcast=True](val=my_var) * inv_dim
+    var inv_std: Scalar[DT] = 1.0 / sqrt(var_val + LN_EPS)
+    if t == 0:
+        cache_inv_std[b] = inv_std
+    idx = t
+    while idx < DIM:
+        var x = rebind[Scalar[DT]](input[b, idx])
+        var x_hat = (x - mean_val) * inv_std
+        cache_xhat[b, idx] = x_hat
+        var g_d = rebind[Scalar[DT]](gamma[idx])
+        var bt_d = rebind[Scalar[DT]](beta[idx])
+        output[b, idx] = g_d * x_hat + bt_d
+        idx += LN_TPB
+
+
+def _layer_norm_backward_dx_kernel[
+    BATCH: Int, DIM: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+):
+    var b = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if b >= BATCH:
+        return
+    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
+    var inv_std = rebind[Scalar[DT]](cache_inv_std[b])
+    var my_g: Scalar[DT] = 0.0
+    var my_g_xhat: Scalar[DT] = 0.0
+    var idx = t
+    while idx < DIM:
+        var go = rebind[Scalar[DT]](grad_output[b, idx])
+        var gm = rebind[Scalar[DT]](gamma[idx])
+        var xh = rebind[Scalar[DT]](cache_xhat[b, idx])
+        var g = go * gm
+        my_g += g
+        my_g_xhat += g * xh
+        idx += LN_TPB
+    var mean_g = block.sum[block_size=LN_TPB, broadcast=True](val=my_g) * inv_dim
+    var mean_g_xhat = block.sum[block_size=LN_TPB, broadcast=True](
+        val=my_g_xhat
+    ) * inv_dim
+    idx = t
+    while idx < DIM:
+        var go = rebind[Scalar[DT]](grad_output[b, idx])
+        var gm = rebind[Scalar[DT]](gamma[idx])
+        var xh = rebind[Scalar[DT]](cache_xhat[b, idx])
+        var g = go * gm
+        grad_input[b, idx] = inv_std * (g - mean_g - xh * mean_g_xhat)
+        idx += LN_TPB
+
+
+def _layer_norm_backward_dparams_kernel[
+    BATCH: Int, DIM: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    grad_gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    grad_beta: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+):
+    var col = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if col >= DIM:
+        return
+    var my_dg: Scalar[DT] = 0.0
+    var my_db: Scalar[DT] = 0.0
+    var bi = t
+    while bi < BATCH:
+        var go = rebind[Scalar[DT]](grad_output[bi, col])
+        var xh = rebind[Scalar[DT]](cache_xhat[bi, col])
+        my_dg += go * xh
+        my_db += go
+        bi += LN_TPB
+    var total_dg = block.sum[block_size=LN_TPB, broadcast=False](val=my_dg)
+    var total_db = block.sum[block_size=LN_TPB, broadcast=False](val=my_db)
+    if t == 0:
+        grad_gamma[col] = rebind[Scalar[DT]](grad_gamma[col]) + total_dg[0]
+        grad_beta[col] = rebind[Scalar[DT]](grad_beta[col]) + total_db[0]
+
+
+struct LayerNorm[DIM_: Int](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime OUT_DIM = Self.DIM_
+
+    var gamma: Param["gamma", False, Self.DIM_]
+    var beta: Param["beta", False, Self.DIM_]
+    var cache_xhat: Tensor      # [BATCH, DIM]
+    var cache_inv_std: Tensor   # [BATCH]
+
+    def __init__(out self):
+        self.gamma = Param["gamma", False, Self.DIM_]()
+        self.beta = Param["beta", False, Self.DIM_]()
+        self.cache_xhat = Tensor()
+        self.cache_inv_std = Tensor()
+
+    @staticmethod
+    def make_cpu() raises -> Self:
+        var ln = Self()
+        ln.gamma = Param["gamma", False, Self.DIM_].make_cpu()
+        ln.beta = Param["beta", False, Self.DIM_].make_cpu()
+        for k in range(Self.DIM_):
+            ln.gamma.val.data[k] = Scalar[DT](1.0)  # γ←1, β←0
+        return ln^
+
+    @staticmethod
+    def make_gpu(ctx: DeviceContext) raises -> Self:
+        var ln = Self()
+        ln.gamma = Param["gamma", False, Self.DIM_].make_gpu(ctx)
+        ln.beta = Param["beta", False, Self.DIM_].make_gpu(ctx)
+        for k in range(Self.DIM_):
+            ln.gamma.val.data[k] = Scalar[DT](1.0)
+        ln.gamma.val.upload(ctx)
+        ln.beta.val.upload(ctx)
+        return ln^
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin
+    ](
+        mut self,
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ref in0 = inputs[0]
+        comptime if target == "cpu":
+            out.ensure(B * Self.DIM_)
+            self.cache_xhat.ensure(B * Self.DIM_)
+            self.cache_inv_std.ensure(B)
+            var inv_v = TileTensor(self.cache_inv_std.data, row_major[B]())
+            var in_p = in0.data.unsafe_ptr()
+            var out_p = out.data.unsafe_ptr()
+            var g_p = self.gamma.val.data.unsafe_ptr()
+            var b_p = self.beta.val.data.unsafe_ptr()
+            var xh_p = self.cache_xhat.data.unsafe_ptr()
+            comptime W = CPU_SIMD_W
+            var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM_)
+            for b in range(B):
+                var row = b * Self.DIM_
+                var acc = SIMD[DT, W](0)
+                var d = 0
+                while d + W <= Self.DIM_:
+                    acc += in_p.load[width=W](row + d)
+                    d += W
+                var s = acc.reduce_add()
+                while d < Self.DIM_:
+                    s += in_p[row + d]
+                    d += 1
+                var mean = s * inv_dim
+                var meanv = SIMD[DT, W](mean)
+                var vacc = SIMD[DT, W](0)
+                d = 0
+                while d + W <= Self.DIM_:
+                    var diff = in_p.load[width=W](row + d) - meanv
+                    vacc += diff * diff
+                    d += W
+                var sv = vacc.reduce_add()
+                while d < Self.DIM_:
+                    var diff = in_p[row + d] - mean
+                    sv += diff * diff
+                    d += 1
+                var var_v = sv * inv_dim
+                var inv_std = Scalar[DT](1.0) / sqrt(var_v + LN_EPS)
+                inv_v[b] = inv_std
+                var isv = SIMD[DT, W](inv_std)
+                d = 0
+                while d + W <= Self.DIM_:
+                    var xh = (in_p.load[width=W](row + d) - meanv) * isv
+                    xh_p.store(row + d, xh)
+                    out_p.store(
+                        row + d,
+                        g_p.load[width=W](d) * xh + b_p.load[width=W](d),
+                    )
+                    d += W
+                while d < Self.DIM_:
+                    var xh = (in_p[row + d] - mean) * inv_std
+                    xh_p[row + d] = xh
+                    out_p[row + d] = g_p[d] * xh + b_p[d]
+                    d += 1
+        else:
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.DIM_)
+            self.cache_xhat.ensure_gpu(c, B * Self.DIM_)
+            self.cache_inv_std.ensure_gpu(c, B)
+            comptime l2d = Layout.row_major(B, Self.DIM_)
+            comptime lb = Layout.row_major(B)
+            comptime ld = Layout.row_major(Self.DIM_)
+            c.enqueue_function[_layer_norm_forward_kernel[B, Self.DIM_]](
+                in0.lt_gpu[l2d](), out.lt_gpu[l2d](),
+                self.gamma.val.lt_gpu[ld](), self.beta.val.lt_gpu[ld](),
+                self.cache_xhat.lt_gpu[l2d](), self.cache_inv_std.lt_gpu[lb](),
+                grid_dim=B, block_dim=LN_TPB,
+            )
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+    ](
+        mut self,
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ref gin = grad_inputs[0]
+        comptime if target == "cpu":
+            gin.ensure(B * Self.DIM_)
+            var inv_v = TileTensor(self.cache_inv_std.data, row_major[B]())
+            var go_p = grad_output.data.unsafe_ptr()
+            var gi_p = gin.data.unsafe_ptr()
+            var g_p = self.gamma.val.data.unsafe_ptr()
+            var gg_p = self.gamma.grd.data.unsafe_ptr()
+            var gb_p = self.beta.grd.data.unsafe_ptr()
+            var xh_p = self.cache_xhat.data.unsafe_ptr()
+            comptime W = CPU_SIMD_W
+            var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM_)
+            for b in range(B):
+                var row = b * Self.DIM_
+                var inv_std = inv_v[b]
+                var acc_g = SIMD[DT, W](0)
+                var acc_gx = SIMD[DT, W](0)
+                var d = 0
+                while d + W <= Self.DIM_:
+                    var g = go_p.load[width=W](row + d) * g_p.load[width=W](d)
+                    acc_g += g
+                    acc_gx += g * xh_p.load[width=W](row + d)
+                    d += W
+                var sum_g = acc_g.reduce_add()
+                var sum_g_xhat = acc_gx.reduce_add()
+                while d < Self.DIM_:
+                    var g = go_p[row + d] * g_p[d]
+                    sum_g += g
+                    sum_g_xhat += g * xh_p[row + d]
+                    d += 1
+                var mean_g = sum_g * inv_dim
+                var mean_g_xhat = sum_g_xhat * inv_dim
+                var mg = SIMD[DT, W](mean_g)
+                var mgx = SIMD[DT, W](mean_g_xhat)
+                var isv = SIMD[DT, W](inv_std)
+                d = 0
+                while d + W <= Self.DIM_:
+                    var g = go_p.load[width=W](row + d) * g_p.load[width=W](d)
+                    var xh = xh_p.load[width=W](row + d)
+                    gi_p.store(row + d, isv * (g - mg - xh * mgx))
+                    d += W
+                while d < Self.DIM_:
+                    var g = go_p[row + d] * g_p[d]
+                    var xh = xh_p[row + d]
+                    gi_p[row + d] = inv_std * (g - mean_g - xh * mean_g_xhat)
+                    d += 1
+                # dγ += go·x̂ ; dβ += go  (accumulated across the batch)
+                d = 0
+                while d + W <= Self.DIM_:
+                    var go = go_p.load[width=W](row + d)
+                    gg_p.store(
+                        d, gg_p.load[width=W](d) + go * xh_p.load[width=W](row + d)
+                    )
+                    gb_p.store(d, gb_p.load[width=W](d) + go)
+                    d += W
+                while d < Self.DIM_:
+                    gg_p[d] = gg_p[d] + go_p[row + d] * xh_p[row + d]
+                    gb_p[d] = gb_p[d] + go_p[row + d]
+                    d += 1
+        else:
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.DIM_)
+            comptime l2d = Layout.row_major(B, Self.DIM_)
+            comptime lb = Layout.row_major(B)
+            comptime ld = Layout.row_major(Self.DIM_)
+            c.enqueue_function[_layer_norm_backward_dx_kernel[B, Self.DIM_]](
+                grad_output.lt_gpu[l2d](), self.gamma.val.lt_gpu[ld](),
+                self.cache_xhat.lt_gpu[l2d](), self.cache_inv_std.lt_gpu[lb](),
+                gin.lt_gpu[l2d](),
+                grid_dim=B, block_dim=LN_TPB,
+            )
+            c.enqueue_function[_layer_norm_backward_dparams_kernel[B, Self.DIM_]](
+                grad_output.lt_gpu[l2d](), self.cache_xhat.lt_gpu[l2d](),
+                self.gamma.grd.lt_gpu[ld](), self.beta.grd.lt_gpu[ld](),
+                grid_dim=Self.DIM_, block_dim=LN_TPB,
+            )
+
+    def for_each_param[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
+        self.gamma.visit_with[target](visitor, ctx)
+        self.beta.visit_with[target](visitor, ctx)
+
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.gamma.zero_grad[target](ctx)
+        self.beta.zero_grad[target](ctx)
