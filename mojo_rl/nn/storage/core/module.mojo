@@ -1,4 +1,4 @@
-"""ModuleS — the storage-passing Module trait (N-ary, CPU + GPU).
+"""Module — the storage-passing Module trait (N-ary, CPU + GPU).
 
 forward/vjp take a borrowing `TensorRefs[ARITY, o]` input pack (origin-tracked,
 inferred via `o`) + a single `Tensor` output/grad. The pack's origin `o` is the
@@ -13,10 +13,10 @@ from std.gpu.host import DeviceContext
 
 from .tensor import Tensor
 from .tensor_refs import TensorRefs
-from .param import ParamVisitorS
+from .param import ParamVisitor
 
 
-trait ModuleS(Defaultable & Movable & ImplicitlyDeletable):
+trait Module(Defaultable & Movable & ImplicitlyDeletable):
     comptime ARITY: Int
     comptime IN_DIMS: InlineArray[Int, Self.ARITY]
     comptime OUT_DIM: Int
@@ -48,7 +48,7 @@ trait ModuleS(Defaultable & Movable & ImplicitlyDeletable):
     ) raises:
         ...
 
-    def for_each_param[target: StaticString, V: ParamVisitorS](
+    def for_each_param[target: StaticString, V: ParamVisitor](
         mut self, mut visitor: V, ctx: Optional[DeviceContext]
     ) raises:
         pass

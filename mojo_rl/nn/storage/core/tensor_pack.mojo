@@ -1,6 +1,6 @@
 """TensorPack[N] — an owned bag of N `Tensor` storages with a subscript that
 returns an origin-erased ref. Used by orchestrators for their inter-module
-buffer pools (SeqS's `act`/`grd`) AND as the multi-arity input / grad_input
+buffer pools (Sequential's `act`/`grd`) AND as the multi-arity input / grad_input
 container for ≥2-ary leaves (no §B0 origin-union constraint — these are
 independent storages, not origin-pinned views).
 """

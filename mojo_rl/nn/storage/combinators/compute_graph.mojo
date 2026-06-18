@@ -18,35 +18,37 @@ Run: pixi run mojo run -I . mojo_rl/nn/storage/compute_graph.mojo
 """
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.tensor import Tensor
-from mojo_rl.nn.storage.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.tensor_pack import TensorPack
-from mojo_rl.nn.storage.leaves import LinS, ReLUS, AddS
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.tensor_pack import TensorPack
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.add import Add
+from mojo_rl.nn.storage.primitives.activations import ReLU
 
 
 struct ResidualGraph[IN: Int, H: Int](Movable & ImplicitlyDeletable):
-    var lin1: LinS[Self.IN, Self.H]
-    var relu: ReLUS[Self.H]
-    var lin2: LinS[Self.H, Self.IN]
-    var add: AddS[Self.IN]
+    var lin1: Linear[Self.IN, Self.H]
+    var relu: ReLU[Self.H]
+    var lin2: Linear[Self.H, Self.IN]
+    var add: Add[Self.IN]
     var act: TensorPack[5]  # node outputs 0..4 (0 = input copy)
     var grd: TensorPack[5]  # node grads (fan-out accumulates here)
 
     def __init__(out self):
-        self.lin1 = LinS[Self.IN, Self.H]()
-        self.relu = ReLUS[Self.H]()
-        self.lin2 = LinS[Self.H, Self.IN]()
-        self.add = AddS[Self.IN]()
+        self.lin1 = Linear[Self.IN, Self.H]()
+        self.relu = ReLU[Self.H]()
+        self.lin2 = Linear[Self.H, Self.IN]()
+        self.add = Add[Self.IN]()
         self.act = TensorPack[5]()
         self.grd = TensorPack[5]()
 
     @staticmethod
     def make_cpu() raises -> Self:
         var g = Self()
-        g.lin1 = LinS[Self.IN, Self.H].make_cpu()
-        g.relu = ReLUS[Self.H].make_cpu()
-        g.lin2 = LinS[Self.H, Self.IN].make_cpu()
-        g.add = AddS[Self.IN].make_cpu()
+        g.lin1 = Linear[Self.IN, Self.H].make_cpu()
+        g.relu = ReLU[Self.H].make_cpu()
+        g.lin2 = Linear[Self.H, Self.IN].make_cpu()
+        g.add = Add[Self.IN].make_cpu()
         return g^
 
     def forward[B: Int](mut self, ref x: Tensor, mut out: Tensor) raises:

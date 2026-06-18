@@ -1,6 +1,6 @@
 """Graph[*NODES] — a GENERAL ComputeGraph executor over the storage design.
 
-Generalises the hand-wired residual: declare any list of `ModuleS` nodes
+Generalises the hand-wired residual: declare any list of `Module` nodes
 (unary or binary) plus an `edges` table, and the graph runs the DAG. Nodes are
 given in topological order; node `i` writes pool slot `i+1` (slot 0 = the graph
 input), and `edges[i]` lists the pool slots feeding node `i` (in `0..i`). All
@@ -15,14 +15,16 @@ Run: pixi run mojo run -I . mojo_rl/nn/storage/graph.mojo
 """
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.tensor import Tensor
-from mojo_rl.nn.storage.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.tensor_pack import TensorPack
-from mojo_rl.nn.storage.module import ModuleS
-from mojo_rl.nn.storage.leaves import LinS, ReLUS, AddS
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.tensor_pack import TensorPack
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.add import Add
+from mojo_rl.nn.storage.primitives.activations import ReLU
 
 
-struct Graph[*NODES: ModuleS](Movable & ImplicitlyDeletable):
+struct Graph[*NODES: Module](Movable & ImplicitlyDeletable):
     comptime N = Self.NODES.size
     var children: Tuple[*Self.NODES]
     var pool: TensorPack[Self.N + 1]   # slot 0 = input, 1..N = node outputs
@@ -141,7 +143,7 @@ def main() raises:
     #   edges:           [0]            [1]               [2]   [3, 0]
     # Slot 0 (the input) feeds BOTH node0 and node3 → backward fans out.
     var g = Graph[
-        LinS[IN, H], ReLUS[H], LinS[H, IN], AddS[IN]
+        Linear[IN, H], ReLU[H], Linear[H, IN], Add[IN]
     ].make_cpu()
     var edges = List[List[Int]]()
     edges.append([0])

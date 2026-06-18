@@ -1,13 +1,13 @@
-"""ElementwiseS[DIM, OP] — generic elementwise activation on the storage surface.
+"""Elementwise[DIM, OP] — generic elementwise activation on the storage surface.
 
 The storage-surface twin of legacy `nn.primitives.Elementwise[DIM, OP]`. Reuses
 the legacy `ElementOp` trait + `ops/` structs VERBATIM (they depend only on
 `DT`), so the per-lane math is bit-identical. Every concrete activation is a
 one-line alias:
 
-    comptime ReLUS    = ElementwiseS[DIM, ReLUOp]      # see leaves below
-    comptime TanhS    = ElementwiseS[DIM, TanhOp]
-    comptime SigmoidS = ElementwiseS[DIM, SigmoidOp]
+    comptime ReLU    = Elementwise[DIM, ReLUOp]      # see leaves below
+    comptime Tanh    = Elementwise[DIM, TanhOp]
+    comptime Sigmoid = Elementwise[DIM, SigmoidOp]
 
 KEY simplification vs legacy: the storage `vjp` receives `forward_input` (x)
 explicitly (invariant §3.1), so there is NO cache field and NO
@@ -26,10 +26,10 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, CPU_SIMD_W, TPB
 from mojo_rl.nn.core.element_op import ElementOp
-from .tensor import Tensor
-from .tensor_refs import TensorRefs
-from .module import ModuleS
-from .param import ParamVisitorS
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
 
 
 # ── GPU kernels (OP supplies the math via comptime) ─────────────────────
@@ -62,7 +62,7 @@ def _ew_bwd_kernel[
             gi[i] = OP.backward_scalar(xv, gov)
 
 
-struct ElementwiseS[DIM_: Int, OP: ElementOp](ModuleS):
+struct Elementwise[DIM_: Int, OP: ElementOp](Module):
     comptime ARITY = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
@@ -156,7 +156,7 @@ struct ElementwiseS[DIM_: Int, OP: ElementOp](ModuleS):
             )
 
     def for_each_param[
-        target: StaticString, V: ParamVisitorS
+        target: StaticString, V: ParamVisitor
     ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
         pass
 

@@ -1,4 +1,4 @@
-"""SeqS[*MODULES] — storage-passing orchestrator (N-ary, CPU + GPU).
+"""Sequential[*MODULES] — storage-passing orchestrator (N-ary, CPU + GPU).
 
 Threads `comptime target` + `ctx` to its unary children. Inter-module buffers
 live in two owning `TensorPack`s; the children lazily allocate their slabs on
@@ -9,14 +9,14 @@ a borrowing `TensorRefs[1]`. Slice scope: N >= 2.
 
 from std.gpu.host import DeviceContext
 
-from .tensor import Tensor
-from .tensor_refs import TensorRefs
-from .tensor_pack import TensorPack
-from .module import ModuleS
-from .param import ParamVisitorS
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.tensor_pack import TensorPack
+from ..core.module import Module
+from ..core.param import ParamVisitor
 
 
-struct SeqS[*MODULES: ModuleS](ModuleS):
+struct Sequential[*MODULES: Module](Module):
     comptime ARITY = 1
     comptime N = Self.MODULES.size
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.MODULES[0].IN_DIMS[0])
@@ -27,15 +27,15 @@ struct SeqS[*MODULES: ModuleS](ModuleS):
     var grd: TensorPack[Self.N]
 
     def __init__(out self):
-        comptime assert Self.N >= 2, "SeqS slice requires N >= 2"
+        comptime assert Self.N >= 2, "Sequential slice requires N >= 2"
         comptime for i in range(Self.N):
             comptime assert (
                 Self.MODULES[i].ARITY == 1
-            ), "SeqS chains UNARY children only (ARITY == 1)"
+            ), "Sequential chains UNARY children only (ARITY == 1)"
         comptime for i in range(Self.N - 1):
             comptime assert (
                 Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIMS[0]
-            ), "SeqS: adjacent child dims must match"
+            ), "Sequential: adjacent child dims must match"
         self.children = Tuple[*Self.MODULES]()
         self.act = TensorPack[Self.N]()
         self.grd = TensorPack[Self.N]()
@@ -119,7 +119,7 @@ struct SeqS[*MODULES: ModuleS](ModuleS):
                     ctx,
                 )
 
-    def for_each_param[target: StaticString, V: ParamVisitorS](
+    def for_each_param[target: StaticString, V: ParamVisitor](
         mut self, mut visitor: V, ctx: Optional[DeviceContext]
     ) raises:
         comptime for i in range(Self.N):

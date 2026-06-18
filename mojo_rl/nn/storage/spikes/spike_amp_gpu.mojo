@@ -1,24 +1,24 @@
-"""End-to-end GPU training (storage slice): LinS → ReLUS → LinS, SGD on MSE,
+"""End-to-end GPU training (storage slice): Linear → ReLU → Linear, SGD on MSE,
 Apple Metal. SAME code as spike_train.mojo with target="gpu" + a ctx; device
-params (ParamS), device buffers, kernels. Loss monitor downloads `pred`.
+params (Param), device buffers, kernels. Loss monitor downloads `pred`.
 
 Should converge to the SAME loss as the CPU run (deterministic init/data,
 matching naive math) — a CPU/GPU parity check on the full training loop.
 
 Run: pixi run -e apple mojo run -I . \
-    mojo_rl/nn/storage/spike_train_gpu.mojo
+    mojo_rl/nn/storage/spike_amp_gpu.mojo
 """
 
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.tensor import Tensor
-from mojo_rl.nn.storage.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.leaves import LinS, ReLUS
-from mojo_rl.nn.storage.sequential import SeqS
-from mojo_rl.nn.storage.optim_loss import (
-    SGDS, mse_forward, mse_backward,
-)
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import ReLU
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.optimizer.sgd import SGD
+from mojo_rl.nn.storage.loss.mse import mse_forward, mse_backward
 
 
 def main() raises:
@@ -28,8 +28,8 @@ def main() raises:
     comptime OUT = 2
     var ctx = DeviceContext()
 
-    var model = SeqS[LinS[IN, H], ReLUS[H], LinS[H, OUT]].make_gpu(ctx)
-    var opt = SGDS(lr=0.1, wd=0.0)
+    var model = Sequential[Linear[IN, H, True], ReLU[H], Linear[H, OUT, True]].make_gpu(ctx)
+    var opt = SGD(lr=0.1, wd=0.0)
 
     var x = Tensor.alloc(B * IN)
     var tgt = Tensor.alloc(B * OUT)
@@ -66,6 +66,6 @@ def main() raises:
 
     print("final mse", last)
     if last < first:
-        print("GPU LIGHTHOUSE OK — loss", first, "->", last)
+        print("AMP GPU LIGHTHOUSE OK — loss", first, "->", last)
     else:
-        print("GPU LIGHTHOUSE FAIL")
+        print("AMP GPU LIGHTHOUSE FAIL")

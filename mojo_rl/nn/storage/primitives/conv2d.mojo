@@ -1,4 +1,4 @@
-"""ConvS[IC, OC, K, S, P, H, W] — 2D convolution on the storage surface.
+"""Conv2D[IC, OC, K, S, P, H, W] — 2D convolution on the storage surface.
 
 The Conv2D de-risk for the storage migration (plan §2/§5: the ONE unproven
 kernel). Reduction is identical to legacy `nn.primitives.Conv2D` — im2col +
@@ -36,10 +36,10 @@ from linalg.matmul.cpu.apple_accelerate import (
 )
 
 from mojo_rl.nn.constants import DT, TPB
-from .tensor import Tensor
-from .tensor_refs import TensorRefs
-from .module import ModuleS
-from .param import ParamS, ParamVisitorS
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
 
 
 comptime CONV_DW_TPB: Int = 128
@@ -249,10 +249,10 @@ def _backward_db_kernel[
         grad_bias[oc] = rebind[Scalar[DT]](grad_bias[oc]) + total[0]
 
 
-# ── ConvS ────────────────────────────────────────────────────────────────
-struct ConvS[
+# ── Conv2D ────────────────────────────────────────────────────────────────
+struct Conv2D[
     IC_: Int, OC_: Int, K_: Int, S_: Int, P_: Int, H_: Int, W_: Int
-](ModuleS):
+](Module):
     comptime ARITY = 1
     comptime OH = (Self.H_ + 2 * Self.P_ - Self.K_) // Self.S_ + 1
     comptime OW = (Self.W_ + 2 * Self.P_ - Self.K_) // Self.S_ + 1
@@ -265,8 +265,8 @@ struct ConvS[
     comptime COL = Self.IC_ * Self.K_ * Self.K_
     comptime SO = Self.OH * Self.OW
 
-    var weight: ParamS["weight", True, Self.W_SIZE]
-    var bias: ParamS["bias", False, Self.B_SIZE]
+    var weight: Param["weight", True, Self.W_SIZE]
+    var bias: Param["bias", False, Self.B_SIZE]
     # GPU im2col + GEMM scratch (lazy, reused — capture-safe).
     var col_t: Tensor      # [BS, COL]  (im2col / d_col)
     var outp_t: Tensor     # [BS, OC]   (out_packed / go_packed)
@@ -274,8 +274,8 @@ struct ConvS[
     var dW_tmp: Tensor     # [OC, COL]
 
     def __init__(out self):
-        self.weight = ParamS["weight", True, Self.W_SIZE]()
-        self.bias = ParamS["bias", False, Self.B_SIZE]()
+        self.weight = Param["weight", True, Self.W_SIZE]()
+        self.bias = Param["bias", False, Self.B_SIZE]()
         self.col_t = Tensor()
         self.outp_t = Tensor()
         self.goT_t = Tensor()
@@ -290,16 +290,16 @@ struct ConvS[
     @staticmethod
     def make_cpu() raises -> Self:
         var c = Self()
-        c.weight = ParamS["weight", True, Self.W_SIZE].make_cpu()
-        c.bias = ParamS["bias", False, Self.B_SIZE].make_cpu()
+        c.weight = Param["weight", True, Self.W_SIZE].make_cpu()
+        c.bias = Param["bias", False, Self.B_SIZE].make_cpu()
         Self._init_w(c.weight.val)
         return c^
 
     @staticmethod
     def make_gpu(ctx: DeviceContext) raises -> Self:
         var c = Self()
-        c.weight = ParamS["weight", True, Self.W_SIZE].make_gpu(ctx)
-        c.bias = ParamS["bias", False, Self.B_SIZE].make_gpu(ctx)
+        c.weight = Param["weight", True, Self.W_SIZE].make_gpu(ctx)
+        c.bias = Param["bias", False, Self.B_SIZE].make_gpu(ctx)
         Self._init_w(c.weight.val)
         c.weight.val.upload(ctx)
         c.bias.val.upload(ctx)
@@ -563,7 +563,7 @@ struct ConvS[
             )
 
     def for_each_param[
-        target: StaticString, V: ParamVisitorS
+        target: StaticString, V: ParamVisitor
     ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
         self.weight.visit_with[target](visitor, ctx)
         self.bias.visit_with[target](visitor, ctx)

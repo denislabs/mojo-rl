@@ -1,9 +1,9 @@
-"""Direct LinS forward+vjp smoke (storage, CPU). New N-ary target signatures."""
+"""Direct Linear forward+vjp smoke (storage, CPU). New N-ary target signatures."""
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.tensor import Tensor
-from mojo_rl.nn.storage.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.leaves import LinS
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.primitives.linear import Linear
 
 
 def main() raises:
@@ -11,7 +11,7 @@ def main() raises:
     comptime IN = 3
     comptime OUT = 2
 
-    var lin = LinS[IN, OUT].make_cpu()
+    var lin = Linear[IN, OUT].make_cpu()
     var x = Tensor.alloc(B * IN)
     for i in range(B * IN):
         x.data[i] = Scalar[DT](i + 1)

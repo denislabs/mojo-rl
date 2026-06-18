@@ -1,10 +1,10 @@
-"""LinS + ReLUS + AddS — ModuleS conformers (CPU + GPU, naive math/kernels).
+"""Linear — Module conformer (CPU + GPU). y = x @ W + b via max_matmul.
 
 Each forward/vjp branches `comptime if target == "cpu"` (tracked `TileTensor`
 over `.data`) `else` (device `LayoutTensor` via `lt_gpu` + a naive kernel).
 The storage surface (`ref/mut Tensor`, `TensorRefs`) is identical on both
 targets; the only GPU erasure is the kernel-arg `MutAnyOrigin`. Params are
-`ParamS` (two `Tensor`s, cpu+dev).
+`Param` (two `Tensor`s, cpu+dev).
 
 LIFETIME NOTE: a pack subscript (`inputs[k]`) returns a TEMPORARY ref. Building
 a view from `inputs[k].data` directly and using it LATER dangles (the temporary
@@ -19,10 +19,10 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 
 from mojo_rl.nn.constants import DT
-from .tensor import Tensor, TensorImpl
-from .tensor_refs import TensorRefs
-from .module import ModuleS
-from .param import ParamS, ParamVisitorS
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
 
 
 # ── kernels (non-GEMM ops; the three matmuls go through max_matmul) ──────
@@ -72,55 +72,6 @@ def _lin_gb_kernel[
             s += go[b, j]
         gb[j] += s
 
-
-def _relu_fwd_kernel[
-    M: Int
-](
-    x: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-    o: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-):
-    var i = Int(global_idx.x)
-    if i < M:
-        var v = x[i]
-        o[i] = v if v > 0 else 0.0
-
-
-def _relu_bwd_kernel[
-    M: Int
-](
-    x: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-    go: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-    gi: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-):
-    var i = Int(global_idx.x)
-    if i < M:
-        gi[i] = go[i] if x[i] > 0 else 0.0
-
-
-def _add_fwd_kernel[
-    M: Int
-](
-    a: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-    b: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-    o: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-):
-    var i = Int(global_idx.x)
-    if i < M:
-        o[i] = a[i] + b[i]
-
-
-def _copy_kernel[
-    M: Int
-](
-    src: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-):
-    var i = Int(global_idx.x)
-    if i < M:
-        dst[i] = src[i]
-
-
-# AMP casts (fp32 master ↔ bf16 compute).
 comptime BF16 = DType.bfloat16
 
 
@@ -147,15 +98,15 @@ def _cast_b2f_kernel[
 
 
 # ── Linear ─────────────────────────────────────────────────────────────
-struct LinS[IN_: Int, OUT_: Int, AMP: Bool = False](ModuleS):
+struct Linear[IN_: Int, OUT_: Int, AMP: Bool = False](Module):
     comptime ARITY = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_)
     comptime OUT_DIM = Self.OUT_
     comptime W_SIZE = Self.IN_ * Self.OUT_
     comptime B_SIZE = Self.OUT_
 
-    var weight: ParamS["weight", True, Self.W_SIZE]
-    var bias: ParamS["bias", False, Self.B_SIZE]
+    var weight: Param["weight", True, Self.W_SIZE]
+    var bias: Param["bias", False, Self.B_SIZE]
     # grad_w scratch (lazy): cacheᵀ [IN, B] + dW_tmp [IN, OUT] for the
     # transpose + max_matmul + accumulate path (max_matmul rejects transpose_a).
     var cacheT: Tensor
@@ -166,8 +117,8 @@ struct LinS[IN_: Int, OUT_: Int, AMP: Bool = False](ModuleS):
     var o_bf: TensorImpl[BF16]
 
     def __init__(out self):
-        self.weight = ParamS["weight", True, Self.W_SIZE]()
-        self.bias = ParamS["bias", False, Self.B_SIZE]()
+        self.weight = Param["weight", True, Self.W_SIZE]()
+        self.bias = Param["bias", False, Self.B_SIZE]()
         self.cacheT = Tensor()
         self.dW_tmp = Tensor()
         self.x_bf = TensorImpl[BF16]()
@@ -185,16 +136,16 @@ struct LinS[IN_: Int, OUT_: Int, AMP: Bool = False](ModuleS):
     @staticmethod
     def make_cpu() raises -> Self:
         var l = Self()
-        l.weight = ParamS["weight", True, Self.W_SIZE].make_cpu()
-        l.bias = ParamS["bias", False, Self.B_SIZE].make_cpu()
+        l.weight = Param["weight", True, Self.W_SIZE].make_cpu()
+        l.bias = Param["bias", False, Self.B_SIZE].make_cpu()
         Self._init_w(l.weight.val)
         return l^
 
     @staticmethod
     def make_gpu(ctx: DeviceContext) raises -> Self:
         var l = Self()
-        l.weight = ParamS["weight", True, Self.W_SIZE].make_gpu(ctx)
-        l.bias = ParamS["bias", False, Self.B_SIZE].make_gpu(ctx)
+        l.weight = Param["weight", True, Self.W_SIZE].make_gpu(ctx)
+        l.bias = Param["bias", False, Self.B_SIZE].make_gpu(ctx)
         Self._init_w(l.weight.val)  # host init
         l.weight.val.upload(ctx)  # → device
         l.bias.val.upload(ctx)  # zeros → device
@@ -359,7 +310,7 @@ struct LinS[IN_: Int, OUT_: Int, AMP: Bool = False](ModuleS):
             max_matmul[transpose_b=True, target="gpu"](gi_v, go_v2, w_v, c)
 
     def for_each_param[
-        target: StaticString, V: ParamVisitorS
+        target: StaticString, V: ParamVisitor
     ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
         self.weight.visit_with[target](visitor, ctx)
         self.bias.visit_with[target](visitor, ctx)
@@ -371,176 +322,3 @@ struct LinS[IN_: Int, OUT_: Int, AMP: Bool = False](ModuleS):
         self.bias.zero_grad[target](ctx)
 
 
-# ── ReLU ───────────────────────────────────────────────────────────────
-struct ReLUS[DIM_: Int](ModuleS):
-    comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
-    comptime OUT_DIM = Self.DIM_
-
-    def __init__(out self):
-        pass
-
-    @staticmethod
-    def make_cpu() raises -> Self:
-        return Self()
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        return Self()
-
-    def forward[
-        target: StaticString, B: Int, o: MutOrigin
-    ](
-        mut self,
-        inputs: TensorRefs[1, o],
-        mut out: Tensor,
-        ctx: Optional[DeviceContext] = None,
-    ) raises:
-        comptime M = B * Self.DIM_
-        ref in0 = inputs[0]
-        comptime if target == "cpu":
-            out.ensure(M)
-            var x = TileTensor(in0.data, row_major[M]())
-            var o = TileTensor(out.data, row_major[M]())
-            for i in range(M):
-                var v = x[i]
-                o[i] = v if v > 0 else 0.0
-        else:
-            var c = ctx.value()
-            out.ensure_gpu(c, M)
-            var xl = in0.lt_gpu[Layout.row_major(M)]()
-            var ol = out.lt_gpu[Layout.row_major(M)]()
-            c.enqueue_function[_relu_fwd_kernel[M]](
-                xl, ol, grid_dim=(M + 255) // 256, block_dim=256
-            )
-
-    def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
-    ](
-        mut self,
-        forward_input: TensorRefs[1, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi],
-        ctx: Optional[DeviceContext] = None,
-    ) raises:
-        comptime M = B * Self.DIM_
-        ref fin = forward_input[0]
-        ref gin = grad_inputs[0]
-        comptime if target == "cpu":
-            gin.ensure(M)
-            var x = TileTensor(fin.data, row_major[M]())
-            var go = TileTensor(grad_output.data, row_major[M]())
-            var gi = TileTensor(gin.data, row_major[M]())
-            for i in range(M):
-                gi[i] = go[i] if x[i] > 0 else 0.0
-        else:
-            var c = ctx.value()
-            gin.ensure_gpu(c, M)
-            var xl = fin.lt_gpu[Layout.row_major(M)]()
-            var gol = grad_output.lt_gpu[Layout.row_major(M)]()
-            var gil = gin.lt_gpu[Layout.row_major(M)]()
-            c.enqueue_function[_relu_bwd_kernel[M]](
-                xl, gol, gil, grid_dim=(M + 255) // 256, block_dim=256
-            )
-
-    def for_each_param[
-        target: StaticString, V: ParamVisitorS
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
-        pass
-
-    def zero_grad[
-        target: StaticString
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        pass
-
-
-# ── Add (binary) ───────────────────────────────────────────────────────
-struct AddS[DIM_: Int](ModuleS):
-    comptime ARITY = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.DIM_)
-    comptime OUT_DIM = Self.DIM_
-
-    def __init__(out self):
-        pass
-
-    @staticmethod
-    def make_cpu() raises -> Self:
-        return Self()
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        return Self()
-
-    def forward[
-        target: StaticString, B: Int, o: MutOrigin
-    ](
-        mut self,
-        inputs: TensorRefs[2, o],
-        mut out: Tensor,
-        ctx: Optional[DeviceContext] = None,
-    ) raises:
-        comptime M = B * Self.DIM_
-        ref a0 = inputs[0]
-        ref a1 = inputs[1]
-        comptime if target == "cpu":
-            out.ensure(M)
-            var a = TileTensor(a0.data, row_major[M]())
-            var b = TileTensor(a1.data, row_major[M]())
-            var o = TileTensor(out.data, row_major[M]())
-            for i in range(M):
-                o[i] = a[i] + b[i]
-        else:
-            var c = ctx.value()
-            out.ensure_gpu(c, M)
-            var al = a0.lt_gpu[Layout.row_major(M)]()
-            var bl = a1.lt_gpu[Layout.row_major(M)]()
-            var ol = out.lt_gpu[Layout.row_major(M)]()
-            c.enqueue_function[_add_fwd_kernel[M]](
-                al, bl, ol, grid_dim=(M + 255) // 256, block_dim=256
-            )
-
-    def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
-    ](
-        mut self,
-        forward_input: TensorRefs[2, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[2, ogi],
-        ctx: Optional[DeviceContext] = None,
-    ) raises:
-        comptime M = B * Self.DIM_
-        ref g0 = grad_inputs[0]
-        ref g1 = grad_inputs[1]
-        comptime if target == "cpu":
-            g0.ensure(M)
-            g1.ensure(M)
-            var go = TileTensor(grad_output.data, row_major[M]())
-            var gi0 = TileTensor(g0.data, row_major[M]())
-            var gi1 = TileTensor(g1.data, row_major[M]())
-            for i in range(M):
-                gi0[i] = go[i]
-                gi1[i] = go[i]
-        else:
-            var c = ctx.value()
-            g0.ensure_gpu(c, M)
-            g1.ensure_gpu(c, M)
-            var gol = grad_output.lt_gpu[Layout.row_major(M)]()
-            var gi0l = g0.lt_gpu[Layout.row_major(M)]()
-            var gi1l = g1.lt_gpu[Layout.row_major(M)]()
-            comptime nblk = (M + 255) // 256
-            c.enqueue_function[_copy_kernel[M]](
-                gol, gi0l, grid_dim=nblk, block_dim=256
-            )
-            c.enqueue_function[_copy_kernel[M]](
-                gol, gi1l, grid_dim=nblk, block_dim=256
-            )
-
-    def for_each_param[
-        target: StaticString, V: ParamVisitorS
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
-        pass
-
-    def zero_grad[
-        target: StaticString
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        pass

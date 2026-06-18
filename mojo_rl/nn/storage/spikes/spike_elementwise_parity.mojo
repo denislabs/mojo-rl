@@ -1,4 +1,4 @@
-"""ElementwiseS parity harness (CPU): forward + vjp vs a direct ElementOp
+"""Elementwise parity harness (CPU): forward + vjp vs a direct ElementOp
 reference, over the owns_cache=False (ReLU/Mish/GELU/Swish) and
 owns_cache=True (Tanh/Sigmoid) families. Validates the storage plumbing
 (ensure/SIMD-ptr/TensorRefs + the recompute-y backward) — the math itself is
@@ -11,9 +11,9 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.element_op import ElementOp
-from mojo_rl.nn.storage.tensor import Tensor
-from mojo_rl.nn.storage.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.elementwise import ElementwiseS
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.relu_op import ReLUOp
 from mojo_rl.nn.primitives.ops.tanh_op import TanhOp
 from mojo_rl.nn.primitives.ops.sigmoid_op import SigmoidOp
@@ -35,12 +35,12 @@ def _check[
     var gi = Tensor.alloc(M)
 
     comptime if target == "cpu":
-        var leaf = ElementwiseS[DIM, OP].make_cpu()
+        var leaf = Elementwise[DIM, OP].make_cpu()
         leaf.forward["cpu", B](TensorRefs[1].of1(x), out, None)
         leaf.vjp["cpu", B](TensorRefs[1].of1(x), go, TensorRefs[1].of1(gi), None)
     else:
         var c = ctx.value()
-        var leaf = ElementwiseS[DIM, OP].make_gpu(c)
+        var leaf = Elementwise[DIM, OP].make_gpu(c)
         x.upload(c)
         go.upload(c)
         leaf.forward["gpu", B](TensorRefs[1].of1(x), out, ctx)
@@ -73,9 +73,9 @@ def _run[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
 
 
 def main() raises:
-    print("ElementwiseS parity (CPU):")
+    print("Elementwise parity (CPU):")
     var all_ok = _run["cpu"](None)
-    print("ElementwiseS parity (GPU):")
+    print("Elementwise parity (GPU):")
     var c = DeviceContext()
     all_ok = _run["gpu"](Optional(c)) and all_ok
     if all_ok:

@@ -1,17 +1,18 @@
-"""Integration gate: SeqS[LinS, ReLUE, LinS] trains identically to the hand-
-written ReLUS chain — proves the generic ElementwiseS composes in the
-orchestrator as a drop-in ModuleS. Expect the SAME loss curve as spike_train.
+"""Integration gate: Sequential[Linear, ReLU, Linear] trains identically to the hand-
+written ReLU chain — proves the generic Elementwise composes in the
+orchestrator as a drop-in Module. Expect the SAME loss curve as spike_train.
 
 Run: pixi run mojo run -I . mojo_rl/nn/storage/spike_train_elementwise.mojo
 """
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.tensor import Tensor
-from mojo_rl.nn.storage.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.leaves import LinS
-from mojo_rl.nn.storage.activations import ReLUE
-from mojo_rl.nn.storage.sequential import SeqS
-from mojo_rl.nn.storage.optim_loss import SGDS, mse_forward, mse_backward
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import ReLU
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.optimizer.sgd import SGD
+from mojo_rl.nn.storage.loss.mse import mse_forward, mse_backward
 
 
 def main() raises:
@@ -20,8 +21,8 @@ def main() raises:
     comptime H = 6
     comptime OUT = 2
 
-    var model = SeqS[LinS[IN, H], ReLUE[H], LinS[H, OUT]].make_cpu()
-    var opt = SGDS(lr=0.1, wd=0.0)
+    var model = Sequential[Linear[IN, H], ReLU[H], Linear[H, OUT]].make_cpu()
+    var opt = SGD(lr=0.1, wd=0.0)
 
     var x = Tensor.alloc(B * IN)
     var tgt = Tensor.alloc(B * OUT)
@@ -50,8 +51,8 @@ def main() raises:
         model.for_each_param["cpu"](opt, None)
 
     print("first", first, "final", last)
-    # spike_train (hand-written ReLUS) lands at 0.0028509053.
+    # spike_train (hand-written ReLU) lands at 0.0028509053.
     if abs(last - Scalar[DT](0.0028509053)) < 1e-6:
-        print("ELEMENTWISE COMPOSE OK — bit-identical to hand-written ReLUS")
+        print("ELEMENTWISE COMPOSE OK — bit-identical to hand-written ReLU")
     else:
         print("ELEMENTWISE COMPOSE MISMATCH")

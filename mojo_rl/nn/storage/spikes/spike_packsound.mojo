@@ -1,7 +1,7 @@
 """Is TensorPack's untracked __getitem__ SOUND under store+reload?"""
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.tensor import Tensor
-from mojo_rl.nn.storage.tensor_pack import TensorPack
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_pack import TensorPack
 
 
 def main() raises:

@@ -1,7 +1,7 @@
 """Does a Pointer[Tensor, o] pack (origin-threaded) survive a call?"""
 from std.memory import Pointer
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor import Tensor
 
 
 @fieldwise_init

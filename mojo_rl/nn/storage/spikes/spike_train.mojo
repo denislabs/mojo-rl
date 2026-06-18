@@ -1,18 +1,18 @@
-"""End-to-end CPU training (storage slice): LinS → ReLUS → LinS, SGD on MSE.
-Self-contained (storage-native ParamS/SGDS/mse). Bit-identical anchor for the
+"""End-to-end CPU training (storage slice): Linear → ReLU → Linear, SGD on MSE.
+Self-contained (storage-native Param/SGD/mse). Bit-identical anchor for the
 GPU run (spike_train_gpu.mojo).
 
 Run: pixi run mojo run -I . mojo_rl/nn/storage/spike_train.mojo
 """
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.tensor import Tensor
-from mojo_rl.nn.storage.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.leaves import LinS, ReLUS
-from mojo_rl.nn.storage.sequential import SeqS
-from mojo_rl.nn.storage.optim_loss import (
-    SGDS, mse_forward, mse_backward,
-)
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import ReLU
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.optimizer.sgd import SGD
+from mojo_rl.nn.storage.loss.mse import mse_forward, mse_backward
 
 
 def main() raises:
@@ -21,8 +21,8 @@ def main() raises:
     comptime H = 6
     comptime OUT = 2
 
-    var model = SeqS[LinS[IN, H], ReLUS[H], LinS[H, OUT]].make_cpu()
-    var opt = SGDS(lr=0.1, wd=0.0)
+    var model = Sequential[Linear[IN, H], ReLU[H], Linear[H, OUT]].make_cpu()
+    var opt = SGD(lr=0.1, wd=0.0)
 
     var x = Tensor.alloc(B * IN)
     var tgt = Tensor.alloc(B * OUT)

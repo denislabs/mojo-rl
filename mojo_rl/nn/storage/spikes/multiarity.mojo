@@ -1,4 +1,4 @@
-"""Multi-arity: AddS (binary) conforms ModuleS, driven via TensorRefs[2].
+"""Multi-arity: Add (binary) conforms Module, driven via TensorRefs[2].
 
 The §B0 constraint made concrete: a homogeneous `TensorRefs[2, o]` needs both
 inputs to share ONE origin, so they're sourced from one owner — a `TensorPack`
@@ -9,17 +9,17 @@ Run: pixi run mojo run -I . mojo_rl/nn/storage/multiarity.mojo
 """
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.tensor import Tensor
-from mojo_rl.nn.storage.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.tensor_pack import TensorPack
-from mojo_rl.nn.storage.leaves import AddS
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.tensor_pack import TensorPack
+from mojo_rl.nn.storage.primitives.add import Add
 
 
 def main() raises:
     comptime B = 2
     comptime DIM = 3
 
-    var add = AddS[DIM].make_cpu()
+    var add = Add[DIM].make_cpu()
 
     # Two inputs from ONE pool → shared origin (the §B0 requirement).
     var inp = TensorPack[2]()
@@ -46,6 +46,6 @@ def main() raises:
 
     var total = out.data[0] + out.data[5] + grad[0].data[0] + grad[1].data[0]
     if total == Scalar[DT](34):  # 11 + 21 + 1 + 1
-        print("MULTI-ARITY OK — AddS conforms ModuleS via TensorRefs[2]")
+        print("MULTI-ARITY OK — Add conforms Module via TensorRefs[2]")
     else:
         print("MULTI-ARITY FAIL (total", total, ")")

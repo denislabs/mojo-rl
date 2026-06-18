@@ -14,11 +14,11 @@ from std.testing import assert_true
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.conv2d import Conv2D
+from mojo_rl.nn.primitives.conv2d import Conv2D as LegacyConv2D
 from mojo_rl.nn.initializer import Zero
-from mojo_rl.nn.storage.tensor import Tensor
-from mojo_rl.nn.storage.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.conv2d import ConvS
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.primitives.conv2d import Conv2D
 
 
 def test_conv_parity() raises:
@@ -39,7 +39,7 @@ def test_conv_parity() raises:
     comptime TOL = Scalar[DT](1e-5)
 
     # ---- legacy leaf ----
-    var leg = Conv2D[IC, OC, K, S, P, H, W].make[target="cpu", INIT=Zero]()
+    var leg = LegacyConv2D[IC, OC, K, S, P, H, W].make[target="cpu", INIT=Zero]()
     var lw = leg.weight.value_unsafe_ptr_cpu()
     var lb = leg.bias.value_unsafe_ptr_cpu()
     for k in range(W_SIZE):
@@ -65,7 +65,7 @@ def test_conv_parity() raises:
     leg.vjp["cpu", B](go_t, gi_t)
 
     # ---- storage leaf (identical weights) ----
-    var st = ConvS[IC, OC, K, S, P, H, W].make_cpu()
+    var st = Conv2D[IC, OC, K, S, P, H, W].make_cpu()
     for k in range(W_SIZE):
         st.weight.val.data[k] = lw[k]
     for k in range(OC):

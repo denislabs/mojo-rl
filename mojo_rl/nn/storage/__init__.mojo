@@ -6,22 +6,26 @@ by `ref`/`mut` and build their typed views INTERNALLY, so the wildcard origin
 is gone from leaf bodies — the only residual erasure is the GPU kernel-arg ABI
 (`MutAnyOrigin`) and the one load-bearing `TensorPack.__getitem__` pin.
 
-Promoted from the proven POC (`experimental/nn/storage/`); the design narrative
-+ every dead-end is in `docs/ORIGIN_DESIGN_REVIEW.md` §7.7–7.17.
+Subpackage layout mirrors legacy `nn/` (core / primitives / combinators /
+optimizer / loss) so the final migration is a directory move. Types carry their
+definitive names (no `S` suffix); the legacy surface is aliased in side-by-side
+parity tests (`Conv2D as LegacyConv2D`).
 """
 
-from .tensor import Tensor, TensorImpl
-from .tensor_refs import TensorRefs
-from .tensor_pack import TensorPack
-from .param import ParamS, ParamVisitorS
-from .module import ModuleS
-from .leaves import LinS, ReLUS, AddS
-from .elementwise import ElementwiseS
-from .activations import (
-    ReLUE, TanhS, SigmoidS, GELUS, MishS, SwishS, SymlogS,
+from .core.tensor import Tensor, TensorImpl
+from .core.tensor_refs import TensorRefs
+from .core.tensor_pack import TensorPack
+from .core.param import Param, ParamVisitor
+from .core.module import Module
+from .primitives.linear import Linear
+from .primitives.add import Add
+from .primitives.elementwise import Elementwise
+from .primitives.activations import (
+    ReLU, Tanh, Sigmoid, GELU, Mish, Swish, Symlog,
 )
-from .conv2d import ConvS
-from .batch_norm_1d import BatchNorm1DS
-from .batch_norm_2d import BatchNorm2DS
-from .sequential import SeqS
-from .optim_loss import SGDS, mse_forward, mse_backward
+from .primitives.conv2d import Conv2D
+from .primitives.batch_norm_1d import BatchNorm1D
+from .primitives.batch_norm_2d import BatchNorm2D
+from .combinators.sequential import Sequential
+from .optimizer.sgd import SGD
+from .loss.mse import mse_forward, mse_backward

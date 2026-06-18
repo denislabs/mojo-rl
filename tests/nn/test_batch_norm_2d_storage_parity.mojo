@@ -11,11 +11,11 @@ from std.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.batch_norm_2d import BatchNorm2D
+from mojo_rl.nn.primitives.batch_norm_2d import BatchNorm2D as LegacyBatchNorm2D
 from mojo_rl.nn.initializer import Zero
-from mojo_rl.nn.storage.tensor import Tensor
-from mojo_rl.nn.storage.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.batch_norm_2d import BatchNorm2DS
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.primitives.batch_norm_2d import BatchNorm2D
 
 
 comptime C = 3
@@ -28,7 +28,7 @@ comptime FLAT = C * HH * WW
 def test_bn2d_cpu_parity() raises:
     print("test_bn2d_cpu_parity (legacy vs storage, CPU) ...")
     comptime TOL = Scalar[DT](1e-6)
-    var leg = BatchNorm2D[C, HH, WW].make[target="cpu", INIT=Zero]()
+    var leg = LegacyBatchNorm2D[C, HH, WW].make[target="cpu", INIT=Zero]()
     var lg = leg.gamma.value_unsafe_ptr_cpu()
     var lb = leg.beta.value_unsafe_ptr_cpu()
     for k in range(C):
@@ -55,7 +55,7 @@ def test_bn2d_cpu_parity() raises:
     leg.set_attr["training"](Scalar[DT](0.0))
     leg.forward["cpu", B](x_t, output=ye_t)
 
-    var st = BatchNorm2DS[C, HH, WW].make_cpu()
+    var st = BatchNorm2D[C, HH, WW].make_cpu()
     for k in range(C):
         st.gamma.val.data[k] = lg[k]
         st.beta.val.data[k] = lb[k]
@@ -104,8 +104,8 @@ def test_bn2d_gpu_parity() raises:
     print("test_bn2d_gpu_parity (storage GPU vs storage CPU) ...")
     comptime TOL = Scalar[DT](3e-5)
     var c = DeviceContext()
-    var cpu = BatchNorm2DS[C, HH, WW].make_cpu()
-    var gpu = BatchNorm2DS[C, HH, WW].make_gpu(c)
+    var cpu = BatchNorm2D[C, HH, WW].make_cpu()
+    var gpu = BatchNorm2D[C, HH, WW].make_gpu(c)
     for k in range(C):
         cpu.gamma.val.data[k] = Scalar[DT](0.7 + 0.1 * Float64(k))
         cpu.beta.val.data[k] = Scalar[DT](-0.3 + 0.05 * Float64(k))

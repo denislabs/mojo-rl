@@ -1,4 +1,4 @@
-"""ConvS parity harness: forward + vjp (d_input, d_weight, d_bias) vs an
+"""Conv2D parity harness: forward + vjp (d_input, d_weight, d_bias) vs an
 INDEPENDENT direct-convolution reference (naive nested loops — a different
 algorithm than im2col+GEMM, so this is a true oracle, not a circular check).
 CPU + GPU.
@@ -9,9 +9,9 @@ Run: pixi run -e apple mojo run -I . mojo_rl/nn/storage/spike_conv_parity.mojo
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.tensor import Tensor
-from mojo_rl.nn.storage.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.conv2d import ConvS
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.primitives.conv2d import Conv2D
 
 
 # Compile-time conv geometry for the test instance.
@@ -95,10 +95,10 @@ def main() raises:
                                 )
 
     var ok_cpu = _run["cpu"](x, w, bias, go, ref_out, ref_gi, ref_dw, ref_db, None)
-    print("ConvS parity CPU:", "OK" if ok_cpu else "FAIL")
+    print("Conv2D parity CPU:", "OK" if ok_cpu else "FAIL")
     var c = DeviceContext()
     var ok_gpu = _run["gpu"](x, w, bias, go, ref_out, ref_gi, ref_dw, ref_db, Optional(c))
-    print("ConvS parity GPU:", "OK" if ok_gpu else "FAIL")
+    print("Conv2D parity GPU:", "OK" if ok_gpu else "FAIL")
     if ok_cpu and ok_gpu:
         print("CONV PARITY OK")
     else:
@@ -119,7 +119,7 @@ def _run[
     ctx: Optional[DeviceContext],
 ) raises -> Bool:
     comptime TOL = Scalar[DT](2e-4)
-    var conv = ConvS[IC, OC, K, S, P, H, W].make_cpu() if target == "cpu" else ConvS[IC, OC, K, S, P, H, W].make_gpu(ctx.value())
+    var conv = Conv2D[IC, OC, K, S, P, H, W].make_cpu() if target == "cpu" else Conv2D[IC, OC, K, S, P, H, W].make_gpu(ctx.value())
     # overwrite weights/bias deterministically
     for i in range(len(w)):
         conv.weight.val.data[i] = w[i]

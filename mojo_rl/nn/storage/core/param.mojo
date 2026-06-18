@@ -1,8 +1,8 @@
-"""ParamS[NAME, DECAY, SIZE] + ParamVisitorS — storage-native params.
+"""Param[NAME, DECAY, SIZE] + ParamVisitor — storage-native params.
 
 The user's idea: "make ParamO a Tensor." A param is just two `Tensor`s
 (`val` + `grd`), each carrying CPU + GPU storage — so params are STORAGES,
-unified with activations. The optimizer walks them via `ParamVisitorS`, which
+unified with activations. The optimizer walks them via `ParamVisitor`, which
 receives the `Tensor`s + `target` + `ctx` and updates the active buffer
 (`.data` on CPU, `.dev` via a kernel on GPU). No separate CPU-only param type.
 """
@@ -13,7 +13,7 @@ from mojo_rl.nn.constants import DT
 from .tensor import Tensor
 
 
-trait ParamVisitorS(ImplicitlyDeletable):
+trait ParamVisitor(ImplicitlyDeletable):
     def visit[target: StaticString, N: Int](
         mut self,
         mut param: Tensor,
@@ -24,7 +24,7 @@ trait ParamVisitorS(ImplicitlyDeletable):
         ...
 
 
-struct ParamS[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](
+struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](
     Movable & ImplicitlyDeletable
 ):
     var val: Tensor
@@ -53,7 +53,7 @@ struct ParamS[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](
         p.grd.dev.value().enqueue_fill(Scalar[DT](0))
         return p^
 
-    def visit_with[target: StaticString, V: ParamVisitorS](
+    def visit_with[target: StaticString, V: ParamVisitor](
         mut self, mut visitor: V, ctx: Optional[DeviceContext]
     ) raises:
         visitor.visit[target, Self.SIZE](

@@ -1,10 +1,10 @@
-"""BatchNorm2DS[C, H, W, MOMENTUM, EPSILON] — per-channel BN for spatial inputs.
+"""BatchNorm2D[C, H, W, MOMENTUM, EPSILON] — per-channel BN for spatial inputs.
 
 Transformed from legacy `nn.primitives.BatchNorm2D` (surface-only change). The
 per-channel reduction over batch×spatial, the multi-block GPU reduction
 (partial → finalize → scatter, the Σx/Σx² one-pass variance form), the finite-
 guarded EMA, and the train/eval split are all carried over verbatim. Same State
-treatment as BatchNorm1DS: γ/β are ParamS (optimized); running_mean/var are
+treatment as BatchNorm1D: γ/β are Param (optimized); running_mean/var are
 owned `Tensor`s evolved only by the forward EMA (not optimized).
 """
 
@@ -15,10 +15,10 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from .tensor import Tensor
-from .tensor_refs import TensorRefs
-from .module import ModuleS
-from .param import ParamS, ParamVisitorS
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
 
 
 comptime BN2D_DEFAULT_EPS: Float64 = 1e-5
@@ -288,19 +288,19 @@ def _bn2d_bwd_scatter_kernel[
             s += BN2D_TPB
 
 
-struct BatchNorm2DS[
+struct BatchNorm2D[
     C_: Int, H_: Int, W_: Int,
     MOMENTUM: Float64 = BN2D_DEFAULT_MOM,
     EPSILON: Float64 = BN2D_DEFAULT_EPS,
-](ModuleS):
+](Module):
     comptime ARITY = 1
     comptime FLAT_DIM = Self.C_ * Self.H_ * Self.W_
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.FLAT_DIM)
     comptime OUT_DIM = Self.FLAT_DIM
     comptime SPATIAL = Self.H_ * Self.W_
 
-    var gamma: ParamS["gamma", False, Self.C_]
-    var beta: ParamS["beta", False, Self.C_]
+    var gamma: Param["gamma", False, Self.C_]
+    var beta: Param["beta", False, Self.C_]
     var running_mean: Tensor  # [C] State
     var running_var: Tensor   # [C] State
     var cache_xhat: Tensor    # [BATCH, FLAT]
@@ -317,8 +317,8 @@ struct BatchNorm2DS[
     var training: Bool
 
     def __init__(out self):
-        self.gamma = ParamS["gamma", False, Self.C_]()
-        self.beta = ParamS["beta", False, Self.C_]()
+        self.gamma = Param["gamma", False, Self.C_]()
+        self.beta = Param["beta", False, Self.C_]()
         self.running_mean = Tensor()
         self.running_var = Tensor()
         self.cache_xhat = Tensor()
@@ -336,8 +336,8 @@ struct BatchNorm2DS[
     @staticmethod
     def make_cpu() raises -> Self:
         var bn = Self()
-        bn.gamma = ParamS["gamma", False, Self.C_].make_cpu()
-        bn.beta = ParamS["beta", False, Self.C_].make_cpu()
+        bn.gamma = Param["gamma", False, Self.C_].make_cpu()
+        bn.beta = Param["beta", False, Self.C_].make_cpu()
         for k in range(Self.C_):
             bn.gamma.val.data[k] = Scalar[DT](1.0)
         bn.running_mean = Tensor.alloc(Self.C_)
@@ -349,8 +349,8 @@ struct BatchNorm2DS[
     @staticmethod
     def make_gpu(ctx: DeviceContext) raises -> Self:
         var bn = Self()
-        bn.gamma = ParamS["gamma", False, Self.C_].make_gpu(ctx)
-        bn.beta = ParamS["beta", False, Self.C_].make_gpu(ctx)
+        bn.gamma = Param["gamma", False, Self.C_].make_gpu(ctx)
+        bn.beta = Param["beta", False, Self.C_].make_gpu(ctx)
         for k in range(Self.C_):
             bn.gamma.val.data[k] = Scalar[DT](1.0)
         bn.gamma.val.upload(ctx)
@@ -498,7 +498,7 @@ struct BatchNorm2DS[
     ) raises:
         if not self.cache_is_training:
             raise Error(
-                "BatchNorm2DS.vjp: training-mode cache not populated. Call"
+                "BatchNorm2D.vjp: training-mode cache not populated. Call"
                 " forward with training=True before vjp."
             )
         ref gin = grad_inputs[0]
@@ -579,7 +579,7 @@ struct BatchNorm2DS[
             )
 
     def for_each_param[
-        target: StaticString, V: ParamVisitorS
+        target: StaticString, V: ParamVisitor
     ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
         self.gamma.visit_with[target](visitor, ctx)
         self.beta.visit_with[target](visitor, ctx)
