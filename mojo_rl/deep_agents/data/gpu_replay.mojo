@@ -42,7 +42,6 @@ identical by construction. GPU SAC convergence is gated by
 
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.memory import alloc
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
@@ -434,9 +433,13 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int, OBS_STORE_DT_: DType = DT](
 
     # Host scratch for the scalar fields (rew, dne) so `add` can issue
     # a uniform host→device enqueue_copy for all five fields. 1 scalar
-    # each.
-    var _h_rew: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _h_dne: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    # each. Owning RAII `List` (was a raw `alloc`'d `MutAnyOrigin` pointer
+    # that was never freed — a leak). The `enqueue_copy` sites pass
+    # `.unsafe_ptr()` (a plain unpinned host pointer → the EAGER copy
+    # overload); a `HostBuffer` here would take the async-DMA overload and
+    # race the single-slot reuse in `add`.
+    var _h_rew: List[Scalar[DT]]
+    var _h_dne: List[Scalar[DT]]
 
     # CPU bookkeeping.
     var size: Int
@@ -504,10 +507,8 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int, OBS_STORE_DT_: DType = DT](
         var size_dev = ctx.enqueue_create_buffer[DType.int32](1)
         size_dev.enqueue_fill(Int32(0))
 
-        var hr = alloc[Scalar[DT]](1)
-        var hd = alloc[Scalar[DT]](1)
-        hr[0] = Scalar[DT](0.0)
-        hd[0] = Scalar[DT](0.0)
+        var hr = List[Scalar[DT]](length=1, fill=Scalar[DT](0))
+        var hd = List[Scalar[DT]](length=1, fill=Scalar[DT](0))
 
         return Self(
             obs=s^,
@@ -521,8 +522,8 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int, OBS_STORE_DT_: DType = DT](
             stage_nxt=stage_sp^,
             stage_dne=stage_d^,
             indices=idx_buf^,
-            _h_rew=hr,
-            _h_dne=hd,
+            _h_rew=hr^,
+            _h_dne=hd^,
             size=0,
             pos=0,
             rng_seed=UInt64(0xC0FFEE_DECADE_0042),
@@ -667,9 +668,9 @@ struct GPUReplay[OBS_: Int, ACT_: Int, CAP_: Int, OBS_STORE_DT_: DType = DT](
         self._h_dne[0] = d
         ctx.enqueue_copy(self.stage_obs, s)
         ctx.enqueue_copy(self.stage_act, a)
-        ctx.enqueue_copy(self.stage_rew, self._h_rew)
+        ctx.enqueue_copy(self.stage_rew, self._h_rew.unsafe_ptr())
         ctx.enqueue_copy(self.stage_nxt, sp)
-        ctx.enqueue_copy(self.stage_dne, self._h_dne)
+        ctx.enqueue_copy(self.stage_dne, self._h_dne.unsafe_ptr())
 
         var stage_s_lt = LayoutTensor[DT, Layout.row_major(Self.OBS)](
             self.stage_obs

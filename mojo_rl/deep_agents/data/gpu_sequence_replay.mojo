@@ -46,7 +46,6 @@ see gpu_replay.mojo).
 
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.memory import alloc
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
@@ -256,8 +255,13 @@ struct GPUSequenceReplay[
     var batch_capacity: Int
 
     # Host scratch for scalar staging so `record` issues uniform H2D copies.
-    var _h_rew: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _h_dne: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    # Owning RAII `List` (was a raw `alloc`'d `MutAnyOrigin` pointer that was
+    # never freed — a leak). The `enqueue_copy` sites pass `.unsafe_ptr()` (a
+    # plain unpinned host pointer → the EAGER copy overload, capturing the
+    # value at enqueue time); a `HostBuffer` here would take the async-DMA
+    # overload and race the single-slot reuse in `record`.
+    var _h_rew: List[Scalar[DT]]
+    var _h_dne: List[Scalar[DT]]
 
     # Stored context — needed by the host `sample_batch` bridge (no ctx arg).
     var ctx: DeviceContext
@@ -297,10 +301,8 @@ struct GPUSequenceReplay[
         var rng_off = ctx.enqueue_create_buffer[DType.uint64](1)
         rng_off.enqueue_fill(UInt64(0))
 
-        var hr = alloc[Scalar[DT]](1)
-        var hd = alloc[Scalar[DT]](1)
-        hr[0] = Scalar[DT](0.0)
-        hd[0] = Scalar[DT](0.0)
+        var hr = List[Scalar[DT]](length=1, fill=Scalar[DT](0))
+        var hd = List[Scalar[DT]](length=1, fill=Scalar[DT](0))
 
         return Self(
             obs=s^,
@@ -313,8 +315,8 @@ struct GPUSequenceReplay[
             stage_dne=stage_d^,
             starts=starts^,
             batch_capacity=batch_capacity,
-            _h_rew=hr,
-            _h_dne=hd,
+            _h_rew=hr^,
+            _h_dne=hd^,
             ctx=ctx,
             size=0,
             pos=0,
@@ -358,8 +360,8 @@ struct GPUSequenceReplay[
         self._h_dne[0] = d
         self.ctx.enqueue_copy(self.stage_obs, s)
         self.ctx.enqueue_copy(self.stage_act, a)
-        self.ctx.enqueue_copy(self.stage_rew, self._h_rew)
-        self.ctx.enqueue_copy(self.stage_dne, self._h_dne)
+        self.ctx.enqueue_copy(self.stage_rew, self._h_rew.unsafe_ptr())
+        self.ctx.enqueue_copy(self.stage_dne, self._h_dne.unsafe_ptr())
 
         var stage_s_lt = LayoutTensor[DT, Layout.row_major(Self.OBS)](
             self.stage_obs
