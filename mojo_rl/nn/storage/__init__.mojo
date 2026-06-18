@@ -28,6 +28,7 @@ from .primitives.batch_norm_1d import BatchNorm1D
 from .primitives.batch_norm_2d import BatchNorm2D
 from .primitives.layer_norm import LayerNorm
 from .primitives.rms_norm import RMSNorm
+from .primitives.noisy_linear import NoisyLinear
 from .combinators.sequential import Sequential
 from .optimizer.sgd import SGD
 from .loss.mse import mse_forward, mse_backward
