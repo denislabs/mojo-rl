@@ -21,5 +21,7 @@ from .activations import (
     ReLUE, TanhS, SigmoidS, GELUS, MishS, SwishS, SymlogS,
 )
 from .conv2d import ConvS
+from .batch_norm_1d import BatchNorm1DS
+from .batch_norm_2d import BatchNorm2DS
 from .sequential import SeqS
 from .optim_loss import SGDS, mse_forward, mse_backward
