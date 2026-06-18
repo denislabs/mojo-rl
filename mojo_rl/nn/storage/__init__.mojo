@@ -31,6 +31,7 @@ from .primitives.rms_norm import RMSNorm
 from .primitives.noisy_linear import NoisyLinear
 from .primitives.flatten import Flatten
 from .primitives.embedding import Embedding
+from .primitives.rsample import RSample
 from .combinators.sequential import Sequential
 from .combinators.compute_graph import ComputeGraph
 from .optimizer.sgd import SGD
