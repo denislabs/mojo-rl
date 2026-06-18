@@ -35,7 +35,7 @@ host buffer; `read_obs` gathers a single obs row device→host.
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.memory import alloc
 from layout import Layout, LayoutTensor
 
@@ -44,10 +44,6 @@ from mojo_rl.nn.core.module import mptr
 from mojo_rl.core.sum_tree import SumTree
 from ..data.gpu_replay import _obs_quant, _obs_dequant
 from .nstep_targets import compute_nstep_value_targets
-
-
-def _ai(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
-    return alloc[Int](n)
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -119,13 +115,13 @@ struct GPUMCTSSequenceReplay[
     var obs_dev: DeviceBuffer[Self.SDT]   # [CAP, OBS]
 
     # host metadata rings (indexed by ring slot = abs_pos % CAP)
-    var act: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [CAP]
-    var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [CAP]
-    var done: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP]
-    var val: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [CAP]
-    var tp: UnsafePointer[Scalar[DT], MutAnyOrigin]     # [CAP]
-    var pol: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [CAP, ACT]
-    var legal: UnsafePointer[Scalar[DT], MutAnyOrigin]  # [CAP, ACT]
+    var act: List[Scalar[DT]]    # [CAP]
+    var rew: List[Scalar[DT]]    # [CAP]
+    var done: List[Scalar[DT]]   # [CAP]
+    var val: List[Scalar[DT]]    # [CAP]
+    var tp: List[Scalar[DT]]     # [CAP]
+    var pol: List[Scalar[DT]]    # [CAP, ACT]
+    var legal: List[Scalar[DT]]  # [CAP, ACT]
 
     # closed-episode index (absolute start positions).
     var ep_start: List[Int]
@@ -140,13 +136,13 @@ struct GPUMCTSSequenceReplay[
 
     # cached gather staging (lazily sized to B on first sample).
     var d_slots: Optional[DeviceBuffer[DType.int32]]
-    var h_slots: UnsafePointer[Int32, MutAnyOrigin]
+    var h_slots: HostBuffer[DType.int32]
     var slots_n: Int
     # separate cached staging for reanalyze chunk gathers (sized to the chunk =
     # N_ENVS, kept apart from the training-batch slots so the two don't thrash
     # each other's lazily-sized buffers when B != chunk).
     var d_rslots: Optional[DeviceBuffer[DType.int32]]
-    var h_rslots: UnsafePointer[Int32, MutAnyOrigin]
+    var h_rslots: HostBuffer[DType.int32]
     var rslots_n: Int
 
     # ── PER (only maintained when `per` is True; uniform path untouched) ──
@@ -162,10 +158,10 @@ struct GPUMCTSSequenceReplay[
     var alpha: Scalar[DT]
     var beta: Scalar[DT]
     var eps: Scalar[DT]
-    var slot_astart: UnsafePointer[Int, MutAnyOrigin]   # [CAP]
-    var slot_off: UnsafePointer[Int, MutAnyOrigin]      # [CAP]
-    var slot_len: UnsafePointer[Int, MutAnyOrigin]      # [CAP] episode length
-    var slot_trunc: UnsafePointer[Int, MutAnyOrigin]    # [CAP] 0/1 truncated
+    var slot_astart: List[Int]   # [CAP]
+    var slot_off: List[Int]      # [CAP]
+    var slot_len: List[Int]      # [CAP] episode length
+    var slot_trunc: List[Int]    # [CAP] 0/1 truncated
 
     def __init__(
         out self,
@@ -181,13 +177,17 @@ struct GPUMCTSSequenceReplay[
         self.ctx = ctx
         self.obs_dev = ctx.enqueue_create_buffer[Self.SDT](Self.CAP * Self.OBS)
         ctx.enqueue_memset(self.obs_dev, 0)
-        self.act = _a(Self.CAP)
-        self.rew = _a(Self.CAP)
-        self.done = _a(Self.CAP)
-        self.val = _a(Self.CAP)
-        self.tp = _a(Self.CAP)
-        self.pol = _a(Self.CAP * Self.ACT)
-        self.legal = _a(Self.CAP * Self.ACT)
+        self.act = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.rew = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.done = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.val = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.tp = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
+        self.pol = List[Scalar[DT]](
+            length=Self.CAP * Self.ACT, fill=Scalar[DT](0)
+        )
+        self.legal = List[Scalar[DT]](
+            length=Self.CAP * Self.ACT, fill=Scalar[DT](0)
+        )
         self.ep_start = List[Int]()
         self.ep_len = List[Int]()
         self.ep_trunc = List[Bool]()
@@ -199,10 +199,10 @@ struct GPUMCTSSequenceReplay[
         self.gtotal = 0
         self.rng = seed ^ UInt64(0x9E3779B97F4A7C15)
         self.d_slots = None
-        self.h_slots = mptr(alloc[Int32](1))
+        self.h_slots = ctx.enqueue_create_host_buffer[DType.int32](1)
         self.slots_n = 0
         self.d_rslots = None
-        self.h_rslots = mptr(alloc[Int32](1))
+        self.h_rslots = ctx.enqueue_create_host_buffer[DType.int32](1)
         self.rslots_n = 0
         self.per = per
         self.tree = SumTree[DT](Self.CAP)
@@ -210,18 +210,10 @@ struct GPUMCTSSequenceReplay[
         self.alpha = alpha
         self.beta = beta
         self.eps = Scalar[DT](1e-6)
-        self.slot_astart = _ai(Self.CAP)
-        self.slot_off = _ai(Self.CAP)
-        self.slot_len = _ai(Self.CAP)
-        self.slot_trunc = _ai(Self.CAP)
-
-    def __del__(deinit self):
-        self.act.free(); self.rew.free(); self.done.free(); self.val.free()
-        self.tp.free(); self.pol.free(); self.legal.free()
-        self.h_slots.free()
-        self.h_rslots.free()
-        self.slot_astart.free(); self.slot_off.free()
-        self.slot_len.free(); self.slot_trunc.free()
+        self.slot_astart = List[Int](length=Self.CAP, fill=0)
+        self.slot_off = List[Int](length=Self.CAP, fill=0)
+        self.slot_len = List[Int](length=Self.CAP, fill=0)
+        self.slot_trunc = List[Int](length=Self.CAP, fill=0)
 
     def _xorshift(mut self) -> UInt64:
         var x = self.rng
@@ -355,8 +347,7 @@ struct GPUMCTSSequenceReplay[
 
     def _ensure_slots(mut self, n: Int) raises:
         if self.slots_n != n:
-            self.h_slots.free()
-            self.h_slots = mptr(alloc[Int32](n))
+            self.h_slots = self.ctx.enqueue_create_host_buffer[DType.int32](n)
             self.d_slots = self.ctx.enqueue_create_buffer[DType.int32](n)
             self.slots_n = n
 
@@ -613,8 +604,7 @@ struct GPUMCTSSequenceReplay[
 
     def _ensure_rslots(mut self, n: Int) raises:
         if self.rslots_n != n:
-            self.h_rslots.free()
-            self.h_rslots = mptr(alloc[Int32](n))
+            self.h_rslots = self.ctx.enqueue_create_host_buffer[DType.int32](n)
             self.d_rslots = self.ctx.enqueue_create_buffer[DType.int32](n)
             self.rslots_n = n
 
