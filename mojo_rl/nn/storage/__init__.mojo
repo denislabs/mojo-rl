@@ -32,6 +32,10 @@ from .primitives.noisy_linear import NoisyLinear
 from .primitives.flatten import Flatten
 from .primitives.embedding import Embedding
 from .primitives.rsample import RSample
+from .primitives.binary_elementwise import (
+    BinaryElementwise, BinaryElemMin, BinarySub,
+)
+from .primitives.concat import Concat2
 from .combinators.sequential import Sequential
 from .combinators.compute_graph import ComputeGraph
 from .optimizer.sgd import SGD
