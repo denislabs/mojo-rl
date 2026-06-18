@@ -23,7 +23,7 @@ continuous block.
 """
 
 from std.gpu.host import DeviceContext, HostBuffer
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core import Module, Optimizer
@@ -165,7 +165,7 @@ struct PPODiscreteActorLoss[
 
         # ── Seed backward with 1/BATCH per row, then walk vjp.
         var grad_p = self._grad_seed.target_ptr[target]()
-        seed_grad_inv_batch[target, BB](grad_p, ctx=self.ts.ctx)
+        seed_grad_inv_batch[target, BB](LayoutTensor[DT, Layout.row_major(BB, 1), MutAnyOrigin](grad_p), ctx=self.ts.ctx)
         var grad_t = TileTensor(grad_p, row_major[BB, 1]())
         self.graph.vjp[target, BB, POLICY](grad_t)
 

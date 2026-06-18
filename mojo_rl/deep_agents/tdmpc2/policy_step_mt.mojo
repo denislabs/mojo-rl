@@ -207,7 +207,7 @@ struct PolicyStepMT[
         self._set_q_stats(qavg, BB)
 
         var grad = alloc[Scalar[DT]](BB)
-        seed_grad_inv_batch[target, BB](grad, ctx=None)
+        seed_grad_inv_batch[target, BB](LayoutTensor[DT, Layout.row_major(BB, 1), MutAnyOrigin](grad), ctx=None)
         var grad_t = TileTensor(grad, row_major[BB, 1]())
         self.graph.vjp[target, BB](grad_t)
 
@@ -266,7 +266,7 @@ struct PolicyStepMT[
         self._set_q_stats(qavg_p, BB)
 
         var d_grad = self.d_grad.value()
-        seed_grad_inv_batch[target, BB](_dp(d_grad), ctx=ctx)
+        seed_grad_inv_batch[target, BB](LayoutTensor[DT, Layout.row_major(BB, 1), MutAnyOrigin](_dp(d_grad)), ctx=ctx)
         var grad_t = TileTensor(_dp(d_grad), row_major[BB, 1]())
         self.graph.vjp[target, BB](grad_t)
 
