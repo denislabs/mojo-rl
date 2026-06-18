@@ -30,7 +30,6 @@ the buffer is non-wrapping; once full, the oldest element is at
 and resolve to physical indices via `(_origin + s + k) mod CAP`.
 """
 
-from std.memory import alloc
 from std.random import random_float64
 from std.gpu.host import DeviceContext
 
@@ -44,26 +43,30 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
     comptime ACT = Self.ACT_
     comptime CAP = Self.CAP_
 
-    var obs: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
-    var act: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
-    var rew: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
-    var dne: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    # Owning RAII `List` rings (host-indexed only). Replaces the raw `alloc`'d
+    # `MutUntrackedOrigin` pointers, which — with no `__del__` and a trait that
+    # is `ImplicitlyDeletable` — were never freed (a genuine leak). `List`
+    # destruction frees them automatically.
+    var obs: List[Scalar[DT]]
+    var act: List[Scalar[DT]]
+    var rew: List[Scalar[DT]]
+    var dne: List[Scalar[DT]]
     # Per-transition task id (DT-encoded), [CAP]. Written only by the
     # multi-task `record_task` path; the single-task `record` never touches it
     # (so the single-task RNG/compute stream is byte-identical). Allocated
     # always — a tiny [CAP] buffer that costs nothing when unused.
-    var task: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    var task: List[Scalar[DT]]
     var size: Int
     var pos: Int
 
     @staticmethod
     def new() -> Self:
         return Self(
-            obs=alloc[Scalar[DT]](Self.CAP * Self.OBS),
-            act=alloc[Scalar[DT]](Self.CAP * Self.ACT),
-            rew=alloc[Scalar[DT]](Self.CAP),
-            dne=alloc[Scalar[DT]](Self.CAP),
-            task=alloc[Scalar[DT]](Self.CAP),
+            obs=List[Scalar[DT]](length=Self.CAP * Self.OBS, fill=Scalar[DT](0)),
+            act=List[Scalar[DT]](length=Self.CAP * Self.ACT, fill=Scalar[DT](0)),
+            rew=List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0)),
+            dne=List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0)),
+            task=List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0)),
             size=0,
             pos=0,
         )

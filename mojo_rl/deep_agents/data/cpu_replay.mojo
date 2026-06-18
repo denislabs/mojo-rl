@@ -18,7 +18,6 @@ that pre-date the trait. `ctx` args are ignored (CPU-only).
 `CPUReplay[3, 1, 50000]` for Pendulum.
 """
 
-from std.memory import alloc
 from std.random import random_float64
 from std.gpu.host import DeviceContext
 
@@ -33,22 +32,26 @@ struct CPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     comptime ACT = Self.ACT_
     comptime CAP = Self.CAP_
 
-    var obs: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
-    var act: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
-    var rew: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
-    var nxt: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
-    var dne: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
+    # Owning RAII `List` rings (host-indexed only). Replaces the raw `alloc`'d
+    # `MutUntrackedOrigin` pointers, which — with no `__del__` and a trait that
+    # is `ImplicitlyDeletable` — were never freed (a genuine leak). `List`
+    # destruction frees them automatically.
+    var obs: List[Scalar[DT]]
+    var act: List[Scalar[DT]]
+    var rew: List[Scalar[DT]]
+    var nxt: List[Scalar[DT]]
+    var dne: List[Scalar[DT]]
     var size: Int
     var pos: Int
 
     @staticmethod
     def new() -> Self:
         return Self(
-            obs=alloc[Scalar[DT]](Self.CAP * Self.OBS),
-            act=alloc[Scalar[DT]](Self.CAP * Self.ACT),
-            rew=alloc[Scalar[DT]](Self.CAP),
-            nxt=alloc[Scalar[DT]](Self.CAP * Self.OBS),
-            dne=alloc[Scalar[DT]](Self.CAP),
+            obs=List[Scalar[DT]](length=Self.CAP * Self.OBS, fill=Scalar[DT](0)),
+            act=List[Scalar[DT]](length=Self.CAP * Self.ACT, fill=Scalar[DT](0)),
+            rew=List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0)),
+            nxt=List[Scalar[DT]](length=Self.CAP * Self.OBS, fill=Scalar[DT](0)),
+            dne=List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0)),
             size=0,
             pos=0,
         )
