@@ -1,146 +1,176 @@
-"""ResidualGraph — a ComputeGraph (DAG) prototype over the storage design.
+"""ComputeGraph[NUM_IN, *NODES] — typed multi-input DAG over the storage design.
 
-Proves the storage pool/TensorRefs design maps onto a GRAPH, not just a chain:
-a residual block `out = Add(Lin2(ReLU(Lin1(x))), x)` — a SKIP connection, the
-thing `Sequential` can't express. The whole DAG's activations (INCLUDING the
-input) live in ONE `TensorPack` node pool, so every edge references the pool
-and multi-input nodes (the `Add`) get same-origin inputs for free (§B0).
+The keystone orchestrator for agent loss/target graphs (SAC actor-loss,
+target-y, twin critic). Generalises the single-input `graph.mojo` prototype:
 
-  node 0 = input (copied into the pool)
-  node 1 = Lin1(node0)   node 2 = ReLU(node1)   node 3 = Lin2(node2)
-  node 4 = Add(node3, node0)   ← reads node3 AND node0 (the skip)
+  - `NUM_IN` EXTERNAL input slots (0 .. NUM_IN-1) — the graph's leaves (state,
+    action, reward, a reparam sample, …), seeded each forward.
+  - `*NODES: Module` in topological order; node `i` writes pool slot
+    `NUM_IN + i`. `edges[i]` lists the slots feeding node `i` (each in
+    `0 .. NUM_IN+i-1`), so any node can read an external input OR an earlier
+    node's output (skips / fan-out).
+  - ALL activations live in ONE owning `TensorPack` pool → every edge is
+    same-origin (§B0), no raw pointers (cf. legacy `GraphNode`'s out_ptr/
+    grad_out_ptr raw-pointer model that the storage design replaces).
+  - Backward walks reverse-topo; each node's `vjp` scatters its grad_inputs
+    into `tmp`, which the graph ACCUMULATES into the fed slots' grad buffers
+    (fan-out summation). `vjp` writes the external-input grads back into
+    `grad_inputs` for chaining.
+  - `node_output(i)` exposes a node's forward output (the `node_out_ptr`
+    equivalent — for diagnostics / reading an intermediate like `min_q`).
 
-Backward fans out: node0's grad accumulates the Lin1 path + the skip path —
-the DAG behaviour Sequential lacks. CPU prototype (the GPU leaf path is already
-proven); the new thing here is the graph STRUCTURE.
-
-Run: pixi run mojo run -I . mojo_rl/nn/storage/compute_graph.mojo
+CPU path (validates the builder API + unblocks SAC blocks; SAC has a CPU
+training path). GPU graph execution (device pool-seed / grad-accumulate
+kernels) is the mechanical next step — the leaves already run on GPU.
 """
 
+from std.gpu.host import DeviceContext
+
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.tensor_pack import TensorPack
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.add import Add
-from mojo_rl.nn.storage.primitives.activations import ReLU
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.tensor_pack import TensorPack
+from ..core.module import Module
+from ..core.param import ParamVisitor
 
 
-struct ResidualGraph[IN: Int, H: Int](Movable & ImplicitlyDeletable):
-    var lin1: Linear[Self.IN, Self.H]
-    var relu: ReLU[Self.H]
-    var lin2: Linear[Self.H, Self.IN]
-    var add: Add[Self.IN]
-    var act: TensorPack[5]  # node outputs 0..4 (0 = input copy)
-    var grd: TensorPack[5]  # node grads (fan-out accumulates here)
+struct ComputeGraph[NUM_IN: Int, *NODES: Module](
+    Movable & ImplicitlyDeletable
+):
+    comptime N = Self.NODES.size
+    comptime NSLOT = Self.NUM_IN + Self.N
+    comptime OUT_DIM = Self.NODES[Self.N - 1].OUT_DIM
+    var children: Tuple[*Self.NODES]
+    var pool: TensorPack[Self.NSLOT]    # 0..NUM_IN-1 = inputs, then node outs
+    var gpool: TensorPack[Self.NSLOT]   # grads (zeroed + fan-out-accumulated)
+    var tmp: TensorPack[2]              # grad_inputs scratch (max arity 2)
+    var slot_n: List[Int]               # logical elem count per slot (forward)
 
     def __init__(out self):
-        self.lin1 = Linear[Self.IN, Self.H]()
-        self.relu = ReLU[Self.H]()
-        self.lin2 = Linear[Self.H, Self.IN]()
-        self.add = Add[Self.IN]()
-        self.act = TensorPack[5]()
-        self.grd = TensorPack[5]()
+        comptime assert Self.N >= 1, "ComputeGraph needs >= 1 node"
+        comptime assert Self.NUM_IN >= 1, "ComputeGraph needs >= 1 input"
+        self.children = Tuple[*Self.NODES]()
+        self.pool = TensorPack[Self.NSLOT]()
+        self.gpool = TensorPack[Self.NSLOT]()
+        self.tmp = TensorPack[2]()
+        self.slot_n = List[Int](length=Self.NSLOT, fill=0)
 
     @staticmethod
     def make_cpu() raises -> Self:
         var g = Self()
-        g.lin1 = Linear[Self.IN, Self.H].make_cpu()
-        g.relu = ReLU[Self.H].make_cpu()
-        g.lin2 = Linear[Self.H, Self.IN].make_cpu()
-        g.add = Add[Self.IN].make_cpu()
+        comptime for i in range(Self.N):
+            g.children[i] = Self.NODES[i].make_cpu()
         return g^
 
-    def forward[B: Int](mut self, ref x: Tensor, mut out: Tensor) raises:
-        # node 0 = input copy.
-        self.act[0].ensure(B * Self.IN)
-        for i in range(B * Self.IN):
-            self.act[0].data[i] = x.data[i]
-        # node 1/2/3 = the branch.
-        self.lin1.forward["cpu", B](
-            TensorRefs[1].of1(self.act[0]), self.act[1], None
-        )
-        self.relu.forward["cpu", B](
-            TensorRefs[1].of1(self.act[1]), self.act[2], None
-        )
-        self.lin2.forward["cpu", B](
-            TensorRefs[1].of1(self.act[2]), self.act[3], None
-        )
-        # node 4 = Add(node3, node0) — the SKIP. Both inputs from the pool.
-        self.add.forward["cpu", B](
-            TensorRefs[2].of2(self.act[3], self.act[0]), self.act[4], None
-        )
-        out.ensure(B * Self.IN)
-        for i in range(B * Self.IN):
-            out.data[i] = self.act[4].data[i]
+    def node_output(mut self, node_i: Int) raises -> ref [MutAnyOrigin] Tensor:
+        """The forward output of node `node_i` (pool slot NUM_IN+node_i) — the
+        storage `node_out_ptr` equivalent for diagnostics / intermediate reads.
+        """
+        return self.pool[Self.NUM_IN + node_i]
 
-    def vjp[B: Int](mut self, ref x: Tensor, mut grad_out: Tensor) raises:
-        # Reverse topo. grad[4] = grad_out; Add splits it to grad[3] and a
-        # SEPARATE skip buffer; the input grad node[0] ACCUMULATES the Lin1
-        # path and the skip path (the DAG fan-out).
-        for k in range(5):
-            self.grd[k].ensure(B * Self.IN if (k == 0 or k >= 3) else B * Self.H)
-        var skip = Tensor.alloc(B * Self.IN)  # grad into node0 via the skip edge
+    def forward[
+        B: Int
+    ](
+        mut self,
+        edges: List[List[Int]],
+        mut inputs: TensorPack[Self.NUM_IN],
+        mut out: Tensor,
+    ) raises:
+        # Seed external input slots.
+        for k in range(Self.NUM_IN):
+            var nk = inputs[k].n
+            self.slot_n[k] = nk
+            self.pool[k].ensure(nk)
+            for q in range(nk):
+                self.pool[k].data[q] = inputs[k].data[q]
+        # Topological forward; gather each node's inputs from the pool by slot.
+        comptime for i in range(Self.N):
+            self.slot_n[Self.NUM_IN + i] = B * Self.NODES[i].OUT_DIM
+            comptime if Self.NODES[i].ARITY == 1:
+                self.children[i].forward["cpu", B](
+                    TensorRefs[Self.NODES[i].ARITY].of1(self.pool[edges[i][0]]),
+                    self.pool[Self.NUM_IN + i], None,
+                )
+            elif Self.NODES[i].ARITY == 2:
+                self.children[i].forward["cpu", B](
+                    TensorRefs[Self.NODES[i].ARITY].of2(
+                        self.pool[edges[i][0]], self.pool[edges[i][1]]
+                    ),
+                    self.pool[Self.NUM_IN + i], None,
+                )
+        var dN = B * Self.OUT_DIM
+        out.ensure(dN)
+        for q in range(dN):
+            out.data[q] = self.pool[Self.NSLOT - 1].data[q]
 
-        # node 4 (Add): grad_out → grad[3] and skip.
-        self.add.vjp["cpu", B](
-            TensorRefs[2].of2(self.act[3], self.act[0]),
-            grad_out,
-            TensorRefs[2].of2(self.grd[3], skip),
-            None,
-        )
-        # node 3 (Lin2): grad[3] → grad[2].
-        self.lin2.vjp["cpu", B](
-            TensorRefs[1].of1(self.act[2]),
-            self.grd[3],
-            TensorRefs[1].of1(self.grd[2]),
-            None,
-        )
-        # node 2 (ReLU): grad[2] → grad[1].
-        self.relu.vjp["cpu", B](
-            TensorRefs[1].of1(self.act[1]),
-            self.grd[2],
-            TensorRefs[1].of1(self.grd[1]),
-            None,
-        )
-        # node 1 (Lin1): grad[1] → grad[0].
-        self.lin1.vjp["cpu", B](
-            TensorRefs[1].of1(self.act[0]),
-            self.grd[1],
-            TensorRefs[1].of1(self.grd[0]),
-            None,
-        )
-        # FAN-OUT accumulation: node0 grad = Lin1-path (grd[0]) + skip.
-        for i in range(B * Self.IN):
-            self.grd[0].data[i] += skip.data[i]
-        # input grad (for chaining); copy out for inspection.
-        grad_out.ensure(B * Self.IN)
-        for i in range(B * Self.IN):
-            grad_out.data[i] = self.grd[0].data[i]
-        _ = skip^
+    def vjp[
+        B: Int
+    ](
+        mut self,
+        edges: List[List[Int]],
+        mut grad_out: Tensor,
+        mut grad_inputs: TensorPack[Self.NUM_IN],
+    ) raises:
+        # Size + ZERO every grad slot (forward-recorded slot_n), then seed the
+        # output slot's grad = grad_out.
+        for k in range(Self.NSLOT):
+            var dk = self.slot_n[k]
+            self.gpool[k].ensure(dk)
+            for q in range(dk):
+                self.gpool[k].data[q] = 0
+        var dN = B * Self.OUT_DIM
+        for q in range(dN):
+            self.gpool[Self.NSLOT - 1].data[q] = grad_out.data[q]
+        # Reverse-topo: each node scatters grad_inputs into tmp; the graph
+        # ACCUMULATES tmp into the fed slots' grad buffers (fan-out sum).
+        comptime for jj in range(Self.N):
+            comptime i = Self.N - 1 - jj
+            comptime if Self.NODES[i].ARITY == 1:
+                var a0 = B * Self.NODES[i].IN_DIMS[0]
+                self.tmp[0].ensure(a0)
+                self.children[i].vjp["cpu", B](
+                    TensorRefs[Self.NODES[i].ARITY].of1(self.pool[edges[i][0]]),
+                    self.gpool[Self.NUM_IN + i],
+                    TensorRefs[Self.NODES[i].ARITY].of1(self.tmp[0]),
+                    None,
+                )
+                var e0 = edges[i][0]
+                for q in range(a0):
+                    self.gpool[e0].data[q] += self.tmp[0].data[q]
+            elif Self.NODES[i].ARITY == 2:
+                var a0 = B * Self.NODES[i].IN_DIMS[0]
+                var a1 = B * Self.NODES[i].IN_DIMS[1]
+                self.tmp[0].ensure(a0)
+                self.tmp[1].ensure(a1)
+                self.children[i].vjp["cpu", B](
+                    TensorRefs[Self.NODES[i].ARITY].of2(
+                        self.pool[edges[i][0]], self.pool[edges[i][1]]
+                    ),
+                    self.gpool[Self.NUM_IN + i],
+                    TensorRefs[Self.NODES[i].ARITY].of2(self.tmp[0], self.tmp[1]),
+                    None,
+                )
+                var e0 = edges[i][0]
+                var e1 = edges[i][1]
+                for q in range(a0):
+                    self.gpool[e0].data[q] += self.tmp[0].data[q]
+                for q in range(a1):
+                    self.gpool[e1].data[q] += self.tmp[1].data[q]
+        # Write external-input grads back (slots 0..NUM_IN-1) for chaining.
+        for k in range(Self.NUM_IN):
+            var dk = self.slot_n[k]
+            grad_inputs[k].ensure(dk)
+            for q in range(dk):
+                grad_inputs[k].data[q] = self.gpool[k].data[q]
 
+    def for_each_param[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
+        comptime for i in range(Self.N):
+            self.children[i].for_each_param[target](visitor, ctx)
 
-def main() raises:
-    comptime B = 2
-    comptime IN = 3
-    comptime H = 4
-
-    var g = ResidualGraph[IN, H].make_cpu()
-    var x = Tensor.alloc(B * IN)
-    for i in range(B * IN):
-        x.data[i] = Scalar[DT](i + 1) * 0.5
-    var out = Tensor.alloc(B * IN)
-    g.forward[B](x, out)
-
-    # out should equal branch(x) + x. Check the skip term is present:
-    # out[i] - branch[i] == x[i]  →  out - branch == x. We can at least
-    # confirm forward ran and out is finite + the skip added x back.
-    print("x:   ", x.data[0], x.data[1], x.data[5])
-    print("out: ", out.data[0], out.data[1], out.data[5])
-
-    var go = Tensor.alloc(B * IN)
-    for i in range(B * IN):
-        go.data[i] = Scalar[DT](1)
-    g.vjp[B](x, go)
-    print("grad_input (fan-out accumulated):", go.data[0], go.data[1])
-    print("COMPUTE GRAPH OK — residual DAG (skip + fan-out) on the pool")
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        comptime for i in range(Self.N):
+            self.children[i].zero_grad[target](ctx)

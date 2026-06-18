@@ -32,6 +32,7 @@ from .primitives.noisy_linear import NoisyLinear
 from .primitives.flatten import Flatten
 from .primitives.embedding import Embedding
 from .combinators.sequential import Sequential
+from .combinators.compute_graph import ComputeGraph
 from .optimizer.sgd import SGD
 from .optimizer.adam import Adam
 from .loss.mse import mse_forward, mse_backward
