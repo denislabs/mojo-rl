@@ -16,9 +16,6 @@ here is **scratch ownership**, not DAG topology.
 
 CPU + GPU.
 
-Free helpers `critic_update_step` / `twin_critic_update_step` in
-`training/off_policy_critic.mojo` stay available for prototyping
-algorithms that don't want the block plumbing.
 
 Surface:
     CriticUpdateBlock[CRITIC, BATCH, SA_DIM]
@@ -40,7 +37,7 @@ Surface:
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major, lt_to_tt
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -59,12 +56,18 @@ from ..training.off_policy_critic import concat_sa, concat_sa_gpu
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _scale_grad_by_weights_kernel[BATCH: Int](
+def _scale_grad_by_weights_kernel[
+    BATCH: Int
+](
     mb_grad_q: LayoutTensor[
-        DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
+        DT,
+        Layout.row_major(BATCH, 1),
+        MutAnyOrigin,
     ],
     weights: LayoutTensor[
-        DT, Layout.row_major(BATCH), MutAnyOrigin,
+        DT,
+        Layout.row_major(BATCH),
+        MutAnyOrigin,
     ],
 ):
     """Per-lane in-place scaling: `mb_grad_q[i, 0] *= weights[i]`.
@@ -82,12 +85,18 @@ def _scale_grad_by_weights_kernel[BATCH: Int](
     mb_grad_q[i, 0] = mb_grad_q[i, 0] * weights[i]
 
 
-def _capture_td_residuals_kernel[BATCH: Int](
+def _capture_td_residuals_kernel[
+    BATCH: Int
+](
     mb_grad_q: LayoutTensor[
-        DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
+        DT,
+        Layout.row_major(BATCH, 1),
+        MutAnyOrigin,
     ],
     out_residuals: LayoutTensor[
-        DT, Layout.row_major(BATCH), MutAnyOrigin,
+        DT,
+        Layout.row_major(BATCH),
+        MutAnyOrigin,
     ],
 ):
     """Per-lane recovery of the unscaled TD residual `Q − y` from
@@ -125,19 +134,19 @@ struct CriticUpdateBlock[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    def make[
+        target: StaticString
+    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "CriticUpdateBlock: target must be 'cpu' or 'gpu'"
-        )
-        comptime assert Self.CRITIC.IN_DIMS[0] == Self.SA_DIM, (
-            "CriticUpdateBlock: CRITIC.IN_DIM must equal SA_DIM"
-        )
-        comptime assert Self.CRITIC.OUT_DIM == 1, (
-            "CriticUpdateBlock: CRITIC.OUT_DIM must equal 1"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "CriticUpdateBlock: target must be 'cpu' or 'gpu'"
+        comptime assert (
+            Self.CRITIC.IN_DIMS[0] == Self.SA_DIM
+        ), "CriticUpdateBlock: CRITIC.IN_DIM must equal SA_DIM"
+        comptime assert (
+            Self.CRITIC.OUT_DIM == 1
+        ), "CriticUpdateBlock: CRITIC.OUT_DIM must equal 1"
         var blk = Self()
         blk.mse_loss = MSELoss[1].make[target](ctx=ctx)
         blk.ts = TargetStorage.make[target](ctx=ctx)
@@ -158,9 +167,19 @@ struct CriticUpdateBlock[
         y_t: TileTensor[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        weights_p: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-        td_residuals_p: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        weights: Optional[
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.BATCH),
+                MutAnyOrigin,
+            ]
+        ] = None,
+        td_residuals: Optional[
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.BATCH),
+                MutAnyOrigin,
+            ]
         ] = None,
     ) raises -> Scalar[DT]:
         """Phase C.3c — `weights_p` (optional, default None)
@@ -180,16 +199,22 @@ struct CriticUpdateBlock[
         """
         assert_tag_for["CriticUpdateBlock", target](self.ts.target_tag)
 
-        var mb_q_p = self._mb_q.target_ptr[target]()
-        var mb_grad_q_p = self._mb_grad_q.target_ptr[target]()
-        var mb_grad_sa_p = self._mb_grad_sa.target_ptr[target]()
+        var mb_q = self._mb_q.lt_target[
+            target, Layout.row_major(Self.BATCH, 1)
+        ]()
+        var mb_grad_q = self._mb_grad_q.lt_target[
+            target, Layout.row_major(Self.BATCH, 1)
+        ]()
+        var mb_grad_sa = self._mb_grad_sa.lt_target[
+            target, Layout.row_major(Self.BATCH, Self.SA_DIM)
+        ]()
 
         # Launder caller-supplied tiles to MutAnyOrigin — Module's variadic
         # forward/vjp surface requires it.
         var sa_p = mptr(sa_t.ptr)
         var sa_t_rb = TileTensor(sa_p, row_major[Self.BATCH, Self.SA_DIM]())
 
-        var mb_q_t = TileTensor(mb_q_p, row_major[Self.BATCH, 1]())
+        var mb_q_t = lt_to_tt(mb_q)
         opt.zero_grad[target, M=Self.CRITIC](critic)
         critic.forward[target, Self.BATCH, POLICY](sa_t_rb, output=mb_q_t)
         # Slice 3 — on GPU with ACCUMULATE, the loss reduction stays on
@@ -201,70 +226,63 @@ struct CriticUpdateBlock[
         var loss: Scalar[DT]
         comptime if target == "gpu" and ACCUMULATE:
             self.mse_loss.forward_accumulate[target, Self.BATCH, POLICY](
-                mb_q_t, y_t,
+                mb_q_t,
+                y_t,
             )
             loss = Scalar[DT](0.0)
         else:
             loss = self.mse_loss.forward[target, Self.BATCH, POLICY](
-                mb_q_t, y_t,
+                mb_q_t,
+                y_t,
             )
 
-        var mb_grad_q_t = TileTensor(mb_grad_q_p, row_major[Self.BATCH, 1]())
+        var mb_grad_q_t = lt_to_tt(mb_grad_q)
         self.mse_loss.vjp[target, Self.BATCH, POLICY](y_t, mb_grad_q_t)
 
         # PER residual capture (raw signed TD `Q − y = mb_grad_q · BATCH`),
         # taken BEFORE the IS-weight scaling below so priorities reflect
         # error magnitude not weighted gradient. None → no capture.
-        if td_residuals_p:
-            var td_p = td_residuals_p.value()
+        if td_residuals:
+            var td = td_residuals.value()
+
             comptime if target == "cpu":
                 var scale = Scalar[DT](Self.BATCH)
                 for i in range(Self.BATCH):
-                    td_p[i] = mb_grad_q_p[i] * scale
+                    td[i] = mb_grad_q[i, 0] * scale
             else:
-                var grad_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin,
-                ](mb_grad_q_p)
-                var out_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-                ](td_p)
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
                 comptime capture_kernel = _capture_td_residuals_kernel[
                     Self.BATCH
                 ]
                 var ctx = self.ts.ctx.value()
                 ctx.enqueue_function[capture_kernel](
-                    grad_lt, out_lt,
-                    grid_dim=n_blocks, block_dim=TPB,
+                    mb_grad_q,
+                    td,
+                    grid_dim=n_blocks,
+                    block_dim=TPB,
                 )
 
         # Phase C.3c — IS-weight scaling, gated on Optional sentinel.
-        if weights_p:
-            var w_p = weights_p.value()
+        if weights:
+            var w = weights.value()
+
             comptime if target == "cpu":
                 for i in range(Self.BATCH):
-                    mb_grad_q_p[i] = mb_grad_q_p[i] * w_p[i]
+                    mb_grad_q[i, 0] *= w[i]
             else:
-                var grad_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin,
-                ](mb_grad_q_p)
-                var w_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-                ](w_p)
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
                 comptime scale_kernel = _scale_grad_by_weights_kernel[
                     Self.BATCH
                 ]
                 var ctx = self.ts.ctx.value()
                 ctx.enqueue_function[scale_kernel](
-                    grad_lt, w_lt,
-                    grid_dim=n_blocks, block_dim=TPB,
+                    mb_grad_q,
+                    w,
+                    grid_dim=n_blocks,
+                    block_dim=TPB,
                 )
 
-        var mb_grad_sa_t = TileTensor(
-            mb_grad_sa_p,
-            row_major[Self.BATCH, Self.SA_DIM](),
-        )
+        var mb_grad_sa_t = lt_to_tt(mb_grad_sa)
         critic.vjp[target, Self.BATCH, POLICY](mb_grad_q_t, mb_grad_sa_t)
         opt.step[target, M=Self.CRITIC](critic)
         return loss
@@ -295,20 +313,20 @@ struct TwinCriticUpdateBlock[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    def make[
+        target: StaticString
+    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "TwinCriticUpdateBlock: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "TwinCriticUpdateBlock: target must be 'cpu' or 'gpu'"
         var blk = Self()
-        blk.c1 = CriticUpdateBlock[
-            Self.CRITIC, Self.BATCH, Self.SA_DIM
-        ].make[target](ctx=ctx)
-        blk.c2 = CriticUpdateBlock[
-            Self.CRITIC, Self.BATCH, Self.SA_DIM
-        ].make[target](ctx=ctx)
+        blk.c1 = CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM].make[
+            target
+        ](ctx=ctx)
+        blk.c2 = CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM].make[
+            target
+        ](ctx=ctx)
         blk.ts = TargetStorage.make[target](ctx=ctx)
         init_scratch_auto[Self, target](blk, ctx)
         return blk^
@@ -323,45 +341,65 @@ struct TwinCriticUpdateBlock[
         mut critic1_opt: Adam,
         mut critic2: Self.CRITIC,
         mut critic2_opt: Adam,
-        mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mb_s: LayoutTensor[
+            DT, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ],
+        mb_a: LayoutTensor[
+            DT, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
+        ],
         mb_y_t: TileTensor[
             dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
         ],
-        weights_p: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-        td_residuals_p: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        weights: Optional[
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.BATCH),
+                MutAnyOrigin,
+            ]
+        ] = None,
+        td_residuals: Optional[
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.BATCH),
+                MutAnyOrigin,
+            ]
         ] = None,
     ) raises -> Scalar[DT]:
         """Phase C.3c — `weights_p` (optional, default None) flows
         through both sub-block updates so both critics receive the
         same per-sample PER weighting. Bit-identical when None.
 
-        `td_residuals_p` (optional, default None) captures the signed
+        `td_residuals` (optional, default None) captures the signed
         TD residual from critic1 only — canonical choice for PER
         priority refresh; critic2 sees the same target so |Q1−y| is
         a representative single-critic proxy (Schaul et al. §3.1).
         """
         assert_tag_for["TwinCriticUpdateBlock", target](self.ts.target_tag)
 
-        var sa_p = self._mb_sa.target_ptr[target]()
+        var sa = self._mb_sa.lt_target[
+            target, Layout.row_major(Self.BATCH, Self.SA_DIM)
+        ]()
         comptime if target == "cpu":
-            concat_sa[Self.OBS, Self.ACT, Self.BATCH](
-                mb_s_ptr, mb_a_ptr, sa_p
-            )
+            concat_sa[Self.OBS, Self.ACT, Self.BATCH](mb_s, mb_a, sa)
         else:
             concat_sa_gpu[Self.OBS, Self.ACT, Self.BATCH](
-                self.ts.ctx.value(), mb_s_ptr, mb_a_ptr, sa_p
+                self.ts.ctx.value(), mb_s, mb_a, sa
             )
-        var sa_t = TileTensor(sa_p, row_major[Self.BATCH, Self.SA_DIM]())
+        var sa_t = lt_to_tt(sa)
 
         var loss1 = self.c1.step[target, POLICY, ACCUMULATE](
-            critic1, critic1_opt, sa_t, mb_y_t,
-            weights_p=weights_p,
-            td_residuals_p=td_residuals_p,
+            critic1,
+            critic1_opt,
+            sa_t,
+            mb_y_t,
+            weights=weights,
+            td_residuals=td_residuals,
         )
         var loss2 = self.c2.step[target, POLICY, ACCUMULATE](
-            critic2, critic2_opt, sa_t, mb_y_t,
-            weights_p=weights_p,
+            critic2,
+            critic2_opt,
+            sa_t,
+            mb_y_t,
+            weights=weights,
         )
         return loss1 + loss2

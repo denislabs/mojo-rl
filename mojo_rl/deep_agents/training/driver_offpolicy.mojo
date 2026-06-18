@@ -43,6 +43,7 @@ through the `BatchedEnv` trait.
 
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from layout import Layout, LayoutTensor
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
@@ -86,10 +87,18 @@ trait OffPolicyAgent(Movable, ImplicitlyDeletable):
         N_ENVS: Int
     ](
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        alp_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_OBS_DIM), MutAnyOrigin
+        ],
+        action: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        ao_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, 2 * Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        alp_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM + 1), MutAnyOrigin
+        ],
         step_idx: Int,
     ) raises:
         ...
@@ -111,13 +120,19 @@ trait OffPolicyAgent(Movable, ImplicitlyDeletable):
     ](
         mut self,
         ctx: Optional[DeviceContext],
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_OBS_DIM), MutAnyOrigin
+        ],
+        action: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        ao_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, 2 * Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
     ) raises:
         """Batched deterministic (greedy) action selection for GPU-parallel
-        eval (`run_offpolicy_eval_batched`). Pointer contract is target-side
-        (host for CPU trainers, device for GPU); `ao_scratch_ptr` is a
+        eval (`run_offpolicy_eval_batched`). View contract is target-side
+        (host for CPU trainers, device for GPU); `ao_scratch` is a
         N_ENVS*2*ACT actor-output scratch.
 
         DEFAULT = a correct-but-serial per-env fallback that loops
@@ -126,28 +141,30 @@ trait OffPolicyAgent(Movable, ImplicitlyDeletable):
         OVERRIDES this with a single batched actor forward + greedy kernel."""
         comptime OBS = Self.AGENT_OBS_DIM
         comptime ACT = Self.AGENT_ACT_DIM
-        _ = ao_scratch_ptr  # the per-env fallback uses select_greedy_action's
-        #                      own N=1 scratch; no batched scratch needed.
+        _ = ao_scratch  # the per-env fallback uses select_greedy_action's
+        #                  own N=1 scratch; no batched scratch needed.
         var obs_h = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
         var act_h = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
         comptime if Self.AGENT_TRAIN_TARGET == "cpu":
             for e in range(N_ENVS):
                 for d in range(OBS):
-                    obs_h[d] = obs_ptr[e * OBS + d]
+                    obs_h[d] = rebind[Scalar[DT]](obs[e, d])
                 self.select_greedy_action(obs_h, act_h)
                 for j in range(ACT):
-                    action_ptr[e * ACT + j] = act_h[j]
+                    action[e, j] = act_h[j]
         else:
+            # Serial per-env D2H/H2D: build owning=False device sub-views of
+            # row `e` from the LayoutTensor base ptr (`.ptr`).
             var c = ctx.value()
             for e in range(N_ENVS):
                 var obs_view = DeviceBuffer[DT](
-                    c, obs_ptr + e * OBS, OBS, owning=False,
+                    c, obs.ptr + e * OBS, OBS, owning=False,
                 )
                 c.enqueue_copy(obs_h.unsafe_ptr(), obs_view)
                 c.synchronize()
                 self.select_greedy_action(obs_h, act_h)
                 var act_view = DeviceBuffer[DT](
-                    c, action_ptr + e * ACT, ACT, owning=False,
+                    c, action.ptr + e * ACT, ACT, owning=False,
                 )
                 c.enqueue_copy(act_view, act_h.unsafe_ptr())
             c.synchronize()
@@ -490,10 +507,18 @@ def run_offpolicy_train[
         # this driver in cadence-sized blocks). Equivalent to `step` when
         # `base_step=0` (single-call usage).
         trainer.select_action_batched[1](
-            obs_scratch.target_ptr[train_target](),
-            action_scratch.target_ptr[train_target](),
-            ao.target_ptr[train_target](),
-            alp.target_ptr[train_target](),
+            LayoutTensor[DT, Layout.row_major(1, OBS), MutAnyOrigin](
+                obs_scratch.target_ptr[train_target]()
+            ),
+            LayoutTensor[DT, Layout.row_major(1, ACT), MutAnyOrigin](
+                action_scratch.target_ptr[train_target]()
+            ),
+            LayoutTensor[DT, Layout.row_major(1, 2 * ACT), MutAnyOrigin](
+                ao.target_ptr[train_target]()
+            ),
+            LayoutTensor[DT, Layout.row_major(1, ACT + 1), MutAnyOrigin](
+                alp.target_ptr[train_target]()
+            ),
             base_step + step,
         )
 
@@ -703,9 +728,15 @@ def run_offpolicy_eval_batched[
         # Greedy action → eval_env.action_ptr() (target-side pointer).
         trainer.select_greedy_action_batched[EVAL_ENVS](
             ctx,
-            eval_env.obs_ptr(),
-            eval_env.action_ptr(),
-            ao.target_ptr[target](),
+            LayoutTensor[DT, Layout.row_major(EVAL_ENVS, OBS), MutAnyOrigin](
+                eval_env.obs_ptr()
+            ),
+            LayoutTensor[DT, Layout.row_major(EVAL_ENVS, ACT), MutAnyOrigin](
+                eval_env.action_ptr()
+            ),
+            LayoutTensor[
+                DT, Layout.row_major(EVAL_ENVS, 2 * ACT), MutAnyOrigin
+            ](ao.target_ptr[target]()),
         )
         eval_env.step_batch[EVAL_ENVS](
             ctx=ctx, rng_seed=rng_seed + UInt64(step + 1),
@@ -1015,10 +1046,18 @@ def run_offpolicy_train_batched[
         # `base_step + step_idx` is the cumulative env-step counter (see
         # the `base_step` note in `run_offpolicy_train`).
         trainer.select_action_batched[N_ENVS](
-            env.obs_ptr(),
-            env.action_ptr(),
-            ao.target_ptr[train_target](),
-            alp.target_ptr[train_target](),
+            LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin](
+                env.obs_ptr()
+            ),
+            LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin](
+                env.action_ptr()
+            ),
+            LayoutTensor[DT, Layout.row_major(N_ENVS, 2 * ACT), MutAnyOrigin](
+                ao.target_ptr[train_target]()
+            ),
+            LayoutTensor[DT, Layout.row_major(N_ENVS, ACT + 1), MutAnyOrigin](
+                alp.target_ptr[train_target]()
+            ),
             base_step + step_idx,
         )
 
@@ -1533,10 +1572,18 @@ def run_offpolicy_train_cpu_env_gpu_agent[
 
         # ── 2. Action selection on device (warmup gated inside trainer).
         trainer.select_action_batched[N_ENVS](
-            obs_dev.dev_ptr(),
-            action_dev.dev_ptr(),
-            ao.dev_ptr(),
-            alp.dev_ptr(),
+            LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin](
+                obs_dev.dev_ptr()
+            ),
+            LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin](
+                action_dev.dev_ptr()
+            ),
+            LayoutTensor[DT, Layout.row_major(N_ENVS, 2 * ACT), MutAnyOrigin](
+                ao.dev_ptr()
+            ),
+            LayoutTensor[DT, Layout.row_major(N_ENVS, ACT + 1), MutAnyOrigin](
+                alp.dev_ptr()
+            ),
             abs_step,
         )
 

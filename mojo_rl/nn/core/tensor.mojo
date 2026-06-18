@@ -86,26 +86,20 @@ struct Tensor[
 
     # ----- factories ------------------------------------------------------
 
+    # `make_cpu` / `make_gpu` are thin wrappers over the single `init_with`
+    # allocation codepath (was: each re-spelled the List / device-buffer /
+    # staging block). One place to get allocation right; the factories just
+    # pin the target.
     @staticmethod
     def make_cpu() raises -> Self:
         var t = Self()
-        comptime if Self.SIZE > 0:
-            t.cpu = List[Scalar[Self.dtype]](
-                length=Self.SIZE, fill=Scalar[Self.dtype](0)
-            )
+        t.init_with["cpu"](None)
         return t^
 
     @staticmethod
     def make_gpu(ctx: DeviceContext) raises -> Self:
         var t = Self()
-        comptime if Self.SIZE > 0:
-            t.dev = ctx.enqueue_create_buffer[Self.dtype](Self.SIZE)
-            t.cap = Self.SIZE
-            comptime if Self.STAGING:
-                t.cpu = List[Scalar[Self.dtype]](
-                    length=Self.SIZE, fill=Scalar[Self.dtype](0)
-                )
-                t.hbuf = ctx.enqueue_create_host_buffer[Self.dtype](Self.SIZE)
+        t.init_with["gpu"](ctx)
         return t^
 
     def init_with[
@@ -186,5 +180,37 @@ struct Tensor[
     def lt[
         layout: Layout
     ](self) -> LayoutTensor[Self.dtype, layout, MutAnyOrigin]:
-        """Typed device view of the buffer at the given comptime layout."""
-        return LayoutTensor[Self.dtype, layout, MutAnyOrigin](self.dev_ptr())
+        """Typed device view of the buffer at the given comptime layout.
+        Origin-linking ctor (no `dev_ptr()`/`mptr`/`unsafe_ptr` round-trip);
+        see `lt_target` for why the `MutAnyOrigin` unifier stays."""
+        return LayoutTensor[Self.dtype, layout, MutAnyOrigin](self.dev.value())
+
+    def lt_target[
+        target: StaticString, layout: Layout
+    ](mut self) -> LayoutTensor[Self.dtype, layout, MutAnyOrigin]:
+        """Typed view of the target buffer at the given comptime layout.
+
+        This is the origin-LINKING constructor (`LayoutTensor(buffer)` —
+        no `.unsafe_ptr()` / `mptr` round-trip), so the pointer plumbing
+        is gone. The remaining `MutAnyOrigin` here is DELIBERATE and
+        load-bearing, not laziness — two reasons it can't be a tracked
+        `origin_of(self)`:
+          1. The one method dispatches over `target`: the CPU branch
+             builds from `Span(self.cpu)` (origin `origin_of(self.cpu)`)
+             and the GPU branch from `ref` to `self.dev.value()` (a
+             different origin). The buffer ctors INFER origin from their
+             argument — you can't force a common `origin_of(self)` — so a
+             single return type must use the `MutAnyOrigin` unifier.
+          2. The dominant consumer is `Module.forward`/`vjp`, whose
+             variadic `TensorPack` surface is `MutAnyOrigin` (§B0). A
+             tracked view would need an explicit launder at every such
+             call site, moving the wildcard rather than removing it.
+        i.e. this is the named CPU/GPU-storage + Module boundary."""
+        comptime if target == "cpu":
+            return LayoutTensor[Self.dtype, layout, MutAnyOrigin](self.cpu)
+        elif target == "gpu":
+            return LayoutTensor[Self.dtype, layout, MutAnyOrigin](
+                self.dev.value()
+            )
+        else:
+            comptime assert False, "target must be 'cpu' or 'gpu'"

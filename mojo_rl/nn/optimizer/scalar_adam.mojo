@@ -26,7 +26,7 @@ per step → capturable). The host fields are NOT updated on the GPU path;
 from std.math import sqrt as fsqrt, exp as fexp
 from std.gpu import thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-
+from layout import LayoutTensor, Layout
 from ..constants import DT
 from ..core.module import mptr
 
@@ -42,8 +42,8 @@ comptime _SA_STATE_N = 6
 
 
 def _scalar_adam_step_kernel(
-    state: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    lp_mean: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    state: LayoutTensor[DT, Layout.row_major(6, 1), MutAnyOrigin],
+    lp_mean: LayoutTensor[DT, Layout.row_major(1, 1), ImmutAnyOrigin],
     target_entropy: Scalar[DT],
     lr: Scalar[DT],
     beta1: Scalar[DT],
@@ -60,23 +60,23 @@ def _scalar_adam_step_kernel(
     if Int(thread_idx.x) != 0:
         return
     var one: Scalar[DT] = 1.0
-    var grad = -(lp_mean[0] + target_entropy)
-    var m = beta1 * state[_SA_M] + (one - beta1) * grad
-    var v = beta2 * state[_SA_V] + (one - beta2) * grad * grad
+    var grad = -(lp_mean[0, 0] + target_entropy)
+    var m = beta1 * state[_SA_M, 0] + (one - beta1) * grad
+    var v = beta2 * state[_SA_V, 0] + (one - beta2) * grad * grad
     # β₁ᵗ / β₂ᵗ as running products — same fp32 sequence the host loop
     # produced (β₁·β₁·…·β₁, t times), so the device update tracks the host
     # math to ULP modulo the lp_mean reduction-order delta.
-    var b1pow = state[_SA_B1POW] * beta1
-    var b2pow = state[_SA_B2POW] * beta2
+    var b1pow = state[_SA_B1POW, 0] * beta1
+    var b2pow = state[_SA_B2POW, 0] * beta2
     var m_hat = m / (one - b1pow)
     var v_hat = v / (one - b2pow)
-    var la = state[_SA_LOG_ALPHA] - lr * m_hat / (fsqrt(v_hat) + eps)
-    state[_SA_M] = m
-    state[_SA_V] = v
-    state[_SA_B1POW] = b1pow
-    state[_SA_B2POW] = b2pow
-    state[_SA_LOG_ALPHA] = la
-    state[_SA_ALPHA] = fexp(la)
+    var la = state[_SA_LOG_ALPHA, 0] - lr * m_hat / (fsqrt(v_hat) + eps)
+    state[_SA_M, 0] = m
+    state[_SA_V, 0] = v
+    state[_SA_B1POW, 0] = b1pow
+    state[_SA_B2POW, 0] = b2pow
+    state[_SA_LOG_ALPHA, 0] = la
+    state[_SA_ALPHA, 0] = fexp(la)
 
 
 struct ScalarAdam(Movable & ImplicitlyDeletable):
@@ -124,13 +124,21 @@ struct ScalarAdam(Movable & ImplicitlyDeletable):
     @staticmethod
     def new(initial: Scalar[DT], lr: Scalar[DT]) -> Self:
         return Self(
-            value=initial, m=0.0, v=0.0, t=0,
-            lr=lr, beta1=0.9, beta2=0.999, eps=1e-8,
+            value=initial,
+            m=0.0,
+            v=0.0,
+            t=0,
+            lr=lr,
+            beta1=0.9,
+            beta2=0.999,
+            eps=1e-8,
         )
 
     @staticmethod
     def new_device(
-        ctx: DeviceContext, initial: Scalar[DT], lr: Scalar[DT],
+        ctx: DeviceContext,
+        initial: Scalar[DT],
+        lr: Scalar[DT],
     ) raises -> Self:
         """GPU factory — allocates `state_dev` = [log_α, m, v, β₁ᵗ, β₂ᵗ, α]
         initialised to [initial, 0, 0, 1, 1, exp(initial)]. The host fields
@@ -169,16 +177,20 @@ struct ScalarAdam(Movable & ImplicitlyDeletable):
     def step_device(
         mut self,
         ctx: DeviceContext,
-        lp_mean_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        lp_mean: DeviceBuffer[DT],
         target_entropy: Scalar[DT],
     ) raises:
         """GPU step — enqueues the 1-thread kernel reading the device
         `lp_mean` grad. No D2H, no host scalar update; `state_dev[ALPHA]`
         (the `Scale` nodes' multiplier source) is refreshed in place."""
         comptime kernel = _scalar_adam_step_kernel
+        var state_lt = LayoutTensor[DT, Layout.row_major(6, 1), MutAnyOrigin](
+            self.state_dev.value()
+        )
+        var lp_mean_lt = LayoutTensor[DT, Layout.row_major(1, 1)](lp_mean)
         ctx.enqueue_function[kernel](
-            mptr(self.state_dev.value().unsafe_ptr()),
-            lp_mean_ptr,
+            state_lt,
+            lp_mean_lt,
             target_entropy,
             self.lr,
             self.beta1,

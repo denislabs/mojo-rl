@@ -34,7 +34,7 @@ from std.random.philox import Random as PhiloxRandom
 from std.time import perf_counter_ns
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major, lt_to_tt
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT, TPB
@@ -681,32 +681,35 @@ struct REDQTrainer[
         N_ENVS: Int,
     ](
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        alp_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_OBS_DIM), MutAnyOrigin
+        ],
+        action: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        ao_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, 2 * Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        alp_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM + 1), MutAnyOrigin
+        ],
         step_idx: Int,
     ) raises:
         """Single batched entry — CPU + GPU. CPU uses host
         `random_float64` for warmup; GPU launches a Philox kernel."""
         comptime assert N_ENVS > 0, "N_ENVS must be > 0"
         comptime ACT = Self.ACT_DIM
-        comptime OBS = Self.OBS_DIM
 
         if step_idx < self.learning_starts:
             comptime if Self.train_target == "cpu":
                 # CPU warmup: uniform random in [-scale, +scale].
-                for i in range(N_ENVS * ACT):
-                    var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                    action_ptr[i] = u * self.action_scale
+                for env in range(N_ENVS):
+                    for j in range(ACT):
+                        var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                        action[env, j] = u * self.action_scale
             else:
                 # GPU warmup: Philox kernel; advance offset by 2·N·A
                 # (each step_uniform consumes 2 raw uint32s per lane).
-                var action_lt = LayoutTensor[
-                    DT,
-                    Layout.row_major(N_ENVS, ACT),
-                    MutAnyOrigin,
-                ](action_ptr)
                 comptime total = N_ENVS * ACT
                 comptime n_blocks = (total + TPB - 1) // TPB
                 comptime warmup_kernel = _redq_warmup_uniform_kernel[
@@ -715,7 +718,7 @@ struct REDQTrainer[
                 ]
                 var ctx = self.ctx.value()
                 ctx.enqueue_function[warmup_kernel](
-                    action_lt,
+                    action,
                     self.action_scale,
                     self._warmup_rng_seed,
                     self._warmup_rng_offset,
@@ -727,9 +730,9 @@ struct REDQTrainer[
 
         # Policy forward — actor + rsample. Both target-parametric;
         # N_ENVS rolls through transparently.
-        var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
-        var ao_t = TileTensor(ao_scratch_ptr, row_major[N_ENVS, 2 * ACT]())
-        var alp_t = TileTensor(alp_scratch_ptr, row_major[N_ENVS, ACT + 1]())
+        var obs_t = lt_to_tt(obs)
+        var ao_t = lt_to_tt(ao_scratch)
+        var alp_t = lt_to_tt(alp_scratch)
         self.actor.forward[Self.train_target, N_ENVS](obs_t, output=ao_t)
         self.actor_blk.inner.rsample.forward[Self.train_target, N_ENVS](
             ao_t,
@@ -739,33 +742,21 @@ struct REDQTrainer[
         # Clamp action.
         comptime if Self.train_target == "cpu":
             for env in range(N_ENVS):
-                var src = alp_scratch_ptr + env * (ACT + 1)
-                var dst = action_ptr + env * ACT
                 for j in range(ACT):
-                    var a = src[j]
+                    var a = alp_scratch[env, j]
                     if a > self.action_scale:
                         a = self.action_scale
                     elif a < -self.action_scale:
                         a = -self.action_scale
-                    dst[j] = a
+                    action[env, j] = a
         else:
-            var alp_lt = LayoutTensor[
-                DT,
-                Layout.row_major(N_ENVS, ACT + 1),
-                MutAnyOrigin,
-            ](alp_scratch_ptr)
-            var action_lt = LayoutTensor[
-                DT,
-                Layout.row_major(N_ENVS, ACT),
-                MutAnyOrigin,
-            ](action_ptr)
             comptime total = N_ENVS * ACT
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime clamp_kernel = _redq_action_clamp_kernel[N_ENVS, ACT]
             var ctx = self.ctx.value()
             ctx.enqueue_function[clamp_kernel](
-                alp_lt,
-                action_lt,
+                alp_scratch,
+                action,
                 self.action_scale,
                 grid_dim=n_blocks,
                 block_dim=TPB,
@@ -786,12 +777,22 @@ struct REDQTrainer[
         comptime if Self.train_target == "gpu":
             var ctx = self.ctx.value()
             ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
+        var ob1_v = LayoutTensor[
+            DT, Layout.row_major(1, Self.OBS_DIM), MutAnyOrigin
+        ](self._ob1.target_ptr[Self.train_target]())
+        # action view aliases _alp1's buffer (layout (1, ACT)).
+        var act1_v = LayoutTensor[
+            DT, Layout.row_major(1, Self.ACT_DIM), MutAnyOrigin
+        ](self._alp1.target_ptr[Self.train_target]())
+        var ao1_v = LayoutTensor[
+            DT, Layout.row_major(1, 2 * Self.ACT_DIM), MutAnyOrigin
+        ](self._ao1.target_ptr[Self.train_target]())
+        # alp_scratch view over the same _alp1 buffer (layout (1, ACT+1)).
+        var alp1_v = LayoutTensor[
+            DT, Layout.row_major(1, Self.ACT_DIM + 1), MutAnyOrigin
+        ](self._alp1.target_ptr[Self.train_target]())
         self.select_action_batched[1](
-            self._ob1.target_ptr[Self.train_target](),
-            self._alp1.target_ptr[Self.train_target](),  # action_ptr aliasing
-            self._ao1.target_ptr[Self.train_target](),
-            self._alp1.target_ptr[Self.train_target](),
-            step_idx,
+            ob1_v, act1_v, ao1_v, alp1_v, step_idx
         )
         comptime if Self.train_target == "gpu":
             var ctx = self.ctx.value()

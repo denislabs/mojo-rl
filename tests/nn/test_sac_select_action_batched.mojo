@@ -21,6 +21,7 @@ exercised by `test_sac_pendulum_multi_seed.mojo`.
 from std.gpu.host import DeviceContext
 from std.math import isnan, isinf
 from std.testing import assert_true
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.linear import Linear
@@ -70,6 +71,16 @@ def _assert_finite_clamped(
         )
 
 
+def _lt[
+    N: Int, D: Int
+](
+    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+) -> LayoutTensor[DT, Layout.row_major(N, D), MutAnyOrigin]:
+    """Wrap a target-side scratch pointer in the typed [N, D] view the
+    `select_action_batched` LayoutTensor surface now expects."""
+    return LayoutTensor[DT, Layout.row_major(N, D), MutAnyOrigin](p)
+
+
 def test_cpu_n1() raises:
     print("--- CPU + N_ENVS=1 via select_action_batched ---")
     var trainer = SACTrainer[
@@ -92,10 +103,10 @@ def test_cpu_n1() raises:
 
     # Warmup step.
     trainer.select_action_batched[1](
-        obs.target_ptr["cpu"](),
-        action.target_ptr["cpu"](),
-        ao.target_ptr["cpu"](),
-        alp.target_ptr["cpu"](),
+        _lt[1, OBS](obs.target_ptr["cpu"]()),
+        _lt[1, ACT](action.target_ptr["cpu"]()),
+        _lt[1, 2 * ACT](ao.target_ptr["cpu"]()),
+        _lt[1, ACT + 1](alp.target_ptr["cpu"]()),
         step_idx=0,
     )
     _assert_finite_clamped(action.host_ptr(), ACT, "cpu1-warmup")
@@ -103,10 +114,10 @@ def test_cpu_n1() raises:
 
     # Post-warmup step (policy path).
     trainer.select_action_batched[1](
-        obs.target_ptr["cpu"](),
-        action.target_ptr["cpu"](),
-        ao.target_ptr["cpu"](),
-        alp.target_ptr["cpu"](),
+        _lt[1, OBS](obs.target_ptr["cpu"]()),
+        _lt[1, ACT](action.target_ptr["cpu"]()),
+        _lt[1, 2 * ACT](ao.target_ptr["cpu"]()),
+        _lt[1, ACT + 1](alp.target_ptr["cpu"]()),
         step_idx=WARMUP + 1,
     )
     _assert_finite_clamped(action.host_ptr(), ACT, "cpu1-policy")
@@ -145,10 +156,10 @@ def test_gpu_n1() raises:
 
     # Warmup step.
     trainer.select_action_batched[1](
-        obs.target_ptr["gpu"](),
-        action.target_ptr["gpu"](),
-        ao.target_ptr["gpu"](),
-        alp.target_ptr["gpu"](),
+        _lt[1, OBS](obs.target_ptr["gpu"]()),
+        _lt[1, ACT](action.target_ptr["gpu"]()),
+        _lt[1, 2 * ACT](ao.target_ptr["gpu"]()),
+        _lt[1, ACT + 1](alp.target_ptr["gpu"]()),
         step_idx=0,
     )
     # D2H action.
@@ -159,10 +170,10 @@ def test_gpu_n1() raises:
 
     # Post-warmup step (policy path).
     trainer.select_action_batched[1](
-        obs.target_ptr["gpu"](),
-        action.target_ptr["gpu"](),
-        ao.target_ptr["gpu"](),
-        alp.target_ptr["gpu"](),
+        _lt[1, OBS](obs.target_ptr["gpu"]()),
+        _lt[1, ACT](action.target_ptr["gpu"]()),
+        _lt[1, 2 * ACT](ao.target_ptr["gpu"]()),
+        _lt[1, ACT + 1](alp.target_ptr["gpu"]()),
         step_idx=WARMUP + 1,
     )
     ctx.enqueue_copy(action.host_ptr(), action.dev.value())
@@ -203,10 +214,10 @@ def test_gpu_n8() raises:
 
     # Warmup step (Philox kernel).
     trainer.select_action_batched[N_ENVS](
-        obs.target_ptr["gpu"](),
-        action.target_ptr["gpu"](),
-        ao.target_ptr["gpu"](),
-        alp.target_ptr["gpu"](),
+        _lt[N_ENVS, OBS](obs.target_ptr["gpu"]()),
+        _lt[N_ENVS, ACT](action.target_ptr["gpu"]()),
+        _lt[N_ENVS, 2 * ACT](ao.target_ptr["gpu"]()),
+        _lt[N_ENVS, ACT + 1](alp.target_ptr["gpu"]()),
         step_idx=0,
     )
     ctx.enqueue_copy(action.host_ptr(), action.dev.value())
@@ -218,10 +229,10 @@ def test_gpu_n8() raises:
 
     # Post-warmup step (batched policy + clamp kernel).
     trainer.select_action_batched[N_ENVS](
-        obs.target_ptr["gpu"](),
-        action.target_ptr["gpu"](),
-        ao.target_ptr["gpu"](),
-        alp.target_ptr["gpu"](),
+        _lt[N_ENVS, OBS](obs.target_ptr["gpu"]()),
+        _lt[N_ENVS, ACT](action.target_ptr["gpu"]()),
+        _lt[N_ENVS, 2 * ACT](ao.target_ptr["gpu"]()),
+        _lt[N_ENVS, ACT + 1](alp.target_ptr["gpu"]()),
         step_idx=WARMUP + 1,
     )
     ctx.enqueue_copy(action.host_ptr(), action.dev.value())

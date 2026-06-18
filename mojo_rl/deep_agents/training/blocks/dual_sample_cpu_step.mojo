@@ -93,23 +93,22 @@ struct DualSampleCpuStep[
             state.did_step = False
             return
 
-        var mb_s_p = state.mb_s.cpu_ptr()
-        var mb_a_p = state.mb_a.cpu_ptr()
-        var mb_r_p = state.mb_r.cpu_ptr()
-        var mb_sp_p = state.mb_sp.cpu_ptr()
-        var mb_d_p = state.mb_d.cpu_ptr()
-
         # Real partition: rows [0, REAL_BS).
         self.real_buf.value().sample(
             Self.REAL_BS,
-            mb_s_p, mb_a_p, mb_r_p, mb_sp_p, mb_d_p,
+            state.mb_s.cpu,
+            state.mb_a.cpu,
+            state.mb_r.cpu,
+            state.mb_sp.cpu,
+            state.mb_d.cpu,
         )
-        # Synth partition: rows [REAL_BS, BATCH).
+        # Synth partition: rows [REAL_BS, BATCH) via `row_offset`.
         self.synth_buf.value().sample(
             Self.SYNTH_BS,
-            mb_s_p + Self.REAL_BS * Self.OBS,
-            mb_a_p + Self.REAL_BS * Self.ACT,
-            mb_r_p + Self.REAL_BS,
-            mb_sp_p + Self.REAL_BS * Self.OBS,
-            mb_d_p + Self.REAL_BS,
+            state.mb_s.cpu,
+            state.mb_a.cpu,
+            state.mb_r.cpu,
+            state.mb_sp.cpu,
+            state.mb_d.cpu,
+            row_offset=Self.REAL_BS,
         )

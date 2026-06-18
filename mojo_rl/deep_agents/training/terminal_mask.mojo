@@ -23,24 +23,26 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB
 
 
-def _mask_bootstrap_kernel[N: Int](
+def _mask_bootstrap_kernel[
+    N: Int
+](
     r: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     term: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    y: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    y: LayoutTensor[DT, Layout.row_major(N, 1), MutAnyOrigin],
 ):
     var i = Int(global_idx.x)
     if i < N:
-        var nonterm = Scalar[DT](1.0) - rebind[Scalar[DT]](term[i])
-        y[i] = rebind[Scalar[DT]](r[i]) + nonterm * rebind[Scalar[DT]](y[i])
+        var nonterm: y.element_type = 1.0 - term[i]
+        y[i, 0] = r[i] + nonterm * y[i, 0]
 
 
 def apply_terminal_mask[
     target: StaticString, N: Int
 ](
     ctx: Optional[DeviceContext],
-    mb_r_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mb_term_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mb_r: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    mb_term: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    mb_y: LayoutTensor[DT, Layout.row_major(N, 1), MutAnyOrigin],
 ) raises:
     """In-place `mb_y[b] = r[b] + (1 − term[b]) · mb_y[b]` over N samples.
 
@@ -48,14 +50,14 @@ def apply_terminal_mask[
     target. `ctx` is required (and used) only on the GPU path."""
     comptime if target == "cpu":
         for b in range(N):
-            var nonterm = Scalar[DT](1.0) - mb_term_ptr[b]
-            mb_y_ptr[b] = mb_r_ptr[b] + nonterm * mb_y_ptr[b]
+            var nonterm: mb_y.element_type = 1.0 - mb_term[b]
+            mb_y[b, 0] = mb_r[b] + nonterm * mb_y[b, 0]
     else:
-        comptime layout = Layout.row_major(N)
-        var r_lt = LayoutTensor[DT, layout, MutAnyOrigin](mb_r_ptr)
-        var t_lt = LayoutTensor[DT, layout, MutAnyOrigin](mb_term_ptr)
-        var y_lt = LayoutTensor[DT, layout, MutAnyOrigin](mb_y_ptr)
         comptime n_blocks = (N + TPB - 1) // TPB
         ctx.value().enqueue_function[_mask_bootstrap_kernel[N]](
-            r_lt, t_lt, y_lt, grid_dim=n_blocks, block_dim=TPB,
+            mb_r,
+            mb_term,
+            mb_y,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )

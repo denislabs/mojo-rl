@@ -5,7 +5,8 @@ The owned inner `SACActorLoss` also holds the shared `rsample` consumed
 by the trainer's `select_action`.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
+from layout import Layout
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -33,7 +34,9 @@ struct SACActorStep[
         self.inner = Self.Inner()
 
     @staticmethod
-    def make[target: StaticString = "cpu"](
+    def make[
+        target: StaticString = "cpu"
+    ](
         action_scale: Scalar[DT],
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
@@ -55,13 +58,17 @@ struct SACActorStep[
         mut critic2: Self.CRITIC,
     ) raises:
         var res = self.inner.forward_backward[
-            target, OPT=Adam, POLICY=POLICY,
+            target,
+            OPT=Adam,
+            POLICY=POLICY,
         ](
             actor,
             actor_opt,
             critic1,
             critic2,
-            state.mb_s.target_ptr[target](),
+            state.mb_s.lt_target[
+                target, Layout.row_major(Self.BATCH, Self.Inner.OBS_DIM)
+            ](),
             state.alpha,
         )
         state.actor_loss = res.loss
@@ -69,13 +76,14 @@ struct SACActorStep[
 
     # ── Slice 4 — GPU device-α + device-reduction passthroughs to the
     # owned SACActorLoss. CPU never calls these (host scalar path).
-    def lp_mean_dev_ptr(
+    def lp_mean_dev(
         mut self,
-    ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self.inner.lp_mean_dev_ptr()
+    ) -> DeviceBuffer[DT]:
+        return self.inner.lp_mean_dev()
 
     def set_alpha_ptr(
-        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut self,
+        p: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ):
         self.inner.set_alpha_ptr(p)
 

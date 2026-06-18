@@ -34,7 +34,7 @@ from std.time import perf_counter_ns
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major, lt_to_tt
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT, TPB
@@ -104,13 +104,16 @@ def _ddpg_warmup_uniform_kernel[
 def _ddpg_noise_clamp_kernel[
     N_ENVS: Int, ACT: Int
 ](
-    ao: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
+    ao: LayoutTensor[DT, Layout.row_major(N_ENVS, 2 * ACT), MutAnyOrigin],
     noise: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
     action_out: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
     sigma: Scalar[DT],
     action_scale: Scalar[DT],
 ):
-    """`action_out = clamp(ao + noise·sigma, ±scale)` per lane."""
+    """`action_out = clamp(ao + noise·sigma, ±scale)` per lane. `ao` is the
+    wider actor-output scratch (actor writes its `ACT` lanes into the leading
+    `[env, :ACT]` of each `2*ACT` row); `noise` is the contiguous `N_ENVS*ACT`
+    box-muller fill (ACT-packed, NOT the ACT+1 alp stride)."""
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     var total = N_ENVS * ACT
     if i >= total:
@@ -564,37 +567,43 @@ struct DDPGTrainer[
     # ─── OffPolicyAgentGpu surface (drivers) ──────────────────────────
 
     def select_action_batched[
-        N_ENVS: Int
+        N_ENVS: Int,
     ](
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        alp_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_OBS_DIM), MutAnyOrigin
+        ],
+        action: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        ao_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, 2 * Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        alp_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM + 1), MutAnyOrigin
+        ],
         step_idx: Int,
     ) raises:
         comptime assert N_ENVS > 0, "N_ENVS must be > 0"
-        comptime OBS = Self.OBS_DIM
         comptime ACT = Self.ACT_DIM
 
         # ── Warmup: uniform action in [-action_scale, +scale].
         if step_idx < self.learning_starts:
             comptime if Self.train_target == "cpu":
                 # CPU warmup: random_float64 lane-by-lane (bit-identical to
-                # the prior trainer's batched body).
-                for i in range(N_ENVS * ACT):
-                    var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                    action_ptr[i] = u * self.action_scale
+                # the prior trainer's batched body). Flat index i == env*ACT+j
+                # (j fastest) → env-outer/j-inner preserves RNG draw order.
+                for env in range(N_ENVS):
+                    for j in range(ACT):
+                        var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                        action[env, j] = u * self.action_scale
             else:
-                var action_lt = LayoutTensor[
-                    DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
-                ](action_ptr)
                 comptime total = N_ENVS * ACT
                 comptime n_blocks = (total + TPB - 1) // TPB
                 comptime warmup_kernel = _ddpg_warmup_uniform_kernel[N_ENVS, ACT]
                 var ctx = self.ctx.value()
                 ctx.enqueue_function[warmup_kernel](
-                    action_lt,
+                    action,
                     self.action_scale,
                     self._warmup_rng_seed,
                     self._warmup_rng_offset,
@@ -608,44 +617,47 @@ struct DDPGTrainer[
         var sigma = self.noise_scale * self.action_scale
         comptime if Self.train_target == "cpu":
             # Actor output into the first N_ENVS*ACT of the ao scratch.
-            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
-            var ao_t = TileTensor(ao_scratch_ptr, row_major[N_ENVS, ACT]())
+            var obs_t = lt_to_tt(obs)
+            var ao_t = lt_to_tt(ao_scratch)
             self.actor_pair.online.forward["cpu", N_ENVS](obs_t, output=ao_t)
-            # Gaussian noise into alp scratch (capacity N_ENVS*(ACT+1) ≥
-            # N_ENVS*ACT). Same RNG source as the prior batched CPU body.
-            box_muller_normal(alp_scratch_ptr, N_ENVS * ACT)
-            for i in range(N_ENVS * ACT):
-                var a = ao_scratch_ptr[i] + alp_scratch_ptr[i] * sigma
-                if a > self.action_scale:
-                    a = self.action_scale
-                elif a < -self.action_scale:
-                    a = -self.action_scale
-                action_ptr[i] = a
+            # Gaussian noise contiguously into the leading N_ENVS*ACT of the
+            # alp scratch (capacity N_ENVS*(ACT+1) ≥ N_ENVS*ACT). box_muller
+            # fills the raw base ptr flat, so the noise is ACT-packed (flat
+            # index env*ACT+j) — read it flat to stay bit-identical to the
+            # prior batched CPU body's `alp_scratch_ptr[i]`.
+            var noise_ptr = alp_scratch.ptr
+            box_muller_normal(noise_ptr, N_ENVS * ACT)
+            for env in range(N_ENVS):
+                for j in range(ACT):
+                    var a = ao_scratch[env, j] + noise_ptr[env * ACT + j] * sigma
+                    if a > self.action_scale:
+                        a = self.action_scale
+                    elif a < -self.action_scale:
+                        a = -self.action_scale
+                    action[env, j] = a
         else:
             var ctx = self.ctx.value()
-            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
-            var ao_t = TileTensor(ao_scratch_ptr, row_major[N_ENVS, ACT]())
+            var obs_t = lt_to_tt(obs)
+            var ao_t = lt_to_tt(ao_scratch)
             self.actor_pair.online.forward["gpu", N_ENVS](obs_t, output=ao_t)
-            # Device Gaussian noise into the alp scratch.
+            # Device Gaussian noise contiguously into the leading N_ENVS*ACT
+            # of the alp scratch (ACT-packed, flat).
             comptime total = N_ENVS * ACT
             box_muller_normal_gpu[total](
-                ctx, alp_scratch_ptr,
+                ctx, alp_scratch.ptr,
                 self._noise_rng_seed, self._noise_rng_offset,
             )
             self._noise_rng_offset += UInt64(((total + 1) // 2) * 2)
-            var ao_lt = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
-            ](ao_scratch_ptr)
+            # Contiguous (N_ENVS, ACT) view over the ACT-packed noise fill —
+            # NOT the wider (N_ENVS, ACT+1) alp stride — so the kernel reads
+            # the same lanes box_muller wrote.
             var noise_lt = LayoutTensor[
                 DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
-            ](alp_scratch_ptr)
-            var action_lt = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
-            ](action_ptr)
+            ](alp_scratch.ptr)
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime nc_kernel = _ddpg_noise_clamp_kernel[N_ENVS, ACT]
             ctx.enqueue_function[nc_kernel](
-                ao_lt, noise_lt, action_lt, sigma, self.action_scale,
+                ao_scratch, noise_lt, action, sigma, self.action_scale,
                 grid_dim=n_blocks, block_dim=TPB,
             )
 

@@ -185,21 +185,25 @@ struct DualSampleStep[
             if self.synth_cpu.value().size < Self.SYNTH_BS:
                 state.did_step = False
                 return
-            var mb_s_p = state.mb_s.cpu_ptr()
-            var mb_a_p = state.mb_a.cpu_ptr()
-            var mb_r_p = state.mb_r.cpu_ptr()
-            var mb_sp_p = state.mb_sp.cpu_ptr()
-            var mb_d_p = state.mb_d.cpu_ptr()
+            # Real partition → rows [0, REAL_BS); synth → [REAL_BS, BATCH).
+            # `row_offset` stacks both into the same `state.mb_*.cpu` lists
+            # (replaces the old pointer-offset writes).
             self.real_cpu.value().sample(
-                Self.REAL_BS, mb_s_p, mb_a_p, mb_r_p, mb_sp_p, mb_d_p,
+                Self.REAL_BS,
+                state.mb_s.cpu,
+                state.mb_a.cpu,
+                state.mb_r.cpu,
+                state.mb_sp.cpu,
+                state.mb_d.cpu,
             )
             self.synth_cpu.value().sample(
                 Self.SYNTH_BS,
-                mb_s_p + Self.REAL_BS * Self.OBS,
-                mb_a_p + Self.REAL_BS * Self.ACT,
-                mb_r_p + Self.REAL_BS,
-                mb_sp_p + Self.REAL_BS * Self.OBS,
-                mb_d_p + Self.REAL_BS,
+                state.mb_s.cpu,
+                state.mb_a.cpu,
+                state.mb_r.cpu,
+                state.mb_sp.cpu,
+                state.mb_d.cpu,
+                row_offset=Self.REAL_BS,
             )
         else:
             if self.real_gpu.value().count() < Self.REAL_BS:

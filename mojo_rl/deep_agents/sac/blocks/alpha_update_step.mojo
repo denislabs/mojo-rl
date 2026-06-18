@@ -7,15 +7,16 @@ buffer; `alpha_opt.step_device` reads it on-device and refreshes the device
 Holds target_entropy as a small hyperparam.
 """
 
-from std.gpu.host import DeviceContext
-
+from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.optimizer.scalar_adam import ScalarAdam
 from ...training.trainer_block import TrainerState
 
 
 struct AlphaUpdateStep[
-    OBS_: Int, ACT_: Int, BATCH_: Int,
+    OBS_: Int,
+    ACT_: Int,
+    BATCH_: Int,
 ](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
@@ -24,7 +25,7 @@ struct AlphaUpdateStep[
     var target_entropy: Scalar[DT]
 
     def __init__(out self):
-        self.target_entropy = Scalar[DT](-1.0)
+        self.target_entropy = -1.0
 
     @staticmethod
     def make(target_entropy: Scalar[DT]) -> Self:
@@ -38,7 +39,7 @@ struct AlphaUpdateStep[
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut alpha_opt: ScalarAdam,
-        lp_mean_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+        lp_mean: Optional[DeviceBuffer[DT]] = None,
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime if target == "cpu":
@@ -49,5 +50,7 @@ struct AlphaUpdateStep[
             # forms `-(lp_mean + H_target)`, and writes the device α in
             # place. No host work, no D2H.
             alpha_opt.step_device(
-                ctx.value(), lp_mean_ptr.value(), self.target_entropy,
+                ctx.value(),
+                lp_mean.value(),
+                self.target_entropy,
             )

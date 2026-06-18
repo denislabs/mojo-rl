@@ -5,7 +5,7 @@ Reusable across SAC, TD3, MBPO.
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
+from layout import TileTensor, row_major, LayoutTensor, Layout
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -16,13 +16,19 @@ from ..trainer_block import TrainerState
 
 
 struct TwinCriticStep[
-    OBS_: Int, ACT_: Int, BATCH_: Int, CRITIC: Module,
+    OBS_: Int,
+    ACT_: Int,
+    BATCH_: Int,
+    CRITIC: Module,
 ](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
     comptime Inner = TwinCriticUpdateBlock[
-        Self.CRITIC, Self.BATCH, Self.OBS, Self.ACT,
+        Self.CRITIC,
+        Self.BATCH,
+        Self.OBS,
+        Self.ACT,
     ]
 
     var inner: Self.Inner
@@ -31,9 +37,9 @@ struct TwinCriticStep[
         self.inner = Self.Inner()
 
     @staticmethod
-    def make[target: StaticString = "cpu"](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    def make[
+        target: StaticString = "cpu"
+    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified make — matmul-style `Optional[DeviceContext]`. Inner
         block now accepts the optional directly (no boundary shim)."""
         var b = Self()
@@ -53,28 +59,49 @@ struct TwinCriticStep[
         mut critic2_opt: Adam,
     ) raises:
         var mb_y_t = TileTensor(
-            state.mb_y.target_ptr[target](), row_major[Self.BATCH, 1](),
+            state.mb_y.target_ptr[target](),
+            row_major[Self.BATCH, 1](),
         )
         # PER hook: when state.has_per is set, forward IS weights into the
         # update and capture per-sample signed TD residuals. When unset,
         # both pointers stay None and the inner block falls back to the
         # uniform path (bit-identical to pre-PER).
-        var weights_p: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        var weights: Optional[
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.BATCH),
+                MutAnyOrigin,
+            ]
         ] = None
-        var td_res_p: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        var td_residuals: Optional[
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.BATCH),
+                MutAnyOrigin,
+            ]
         ] = None
         if state.has_per:
-            weights_p = state.mb_w.target_ptr[target]()
-            td_res_p  = state.td_residuals.target_ptr[target]()
+            weights = state.mb_w.lt_target[
+                target, Layout.row_major(Self.BATCH)
+            ]()
+            td_residuals = state.td_residuals.lt_target[
+                target, Layout.row_major(Self.BATCH)
+            ]()
+
         var loss = self.inner.step[target, POLICY, ACCUMULATE](
-            critic1, critic1_opt, critic2, critic2_opt,
-            state.mb_s.target_ptr[target](),
-            state.mb_a.target_ptr[target](),
+            critic1,
+            critic1_opt,
+            critic2,
+            critic2_opt,
+            state.mb_s.lt_target[
+                target, Layout.row_major(Self.BATCH, Self.OBS)
+            ](),
+            state.mb_a.lt_target[
+                target, Layout.row_major(Self.BATCH, Self.ACT)
+            ](),
             mb_y_t,
-            weights_p=weights_p,
-            td_residuals_p=td_res_p,
+            weights=weights,
+            td_residuals=td_residuals,
         )
         # With ACCUMULATE (GPU) the per-batch loss is reduced on-device into
         # the critics' accumulators; `loss` is a 0 sentinel here and the

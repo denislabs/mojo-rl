@@ -47,10 +47,16 @@ struct CPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     @staticmethod
     def new() -> Self:
         return Self(
-            obs=List[Scalar[DT]](length=Self.CAP * Self.OBS, fill=Scalar[DT](0)),
-            act=List[Scalar[DT]](length=Self.CAP * Self.ACT, fill=Scalar[DT](0)),
+            obs=List[Scalar[DT]](
+                length=Self.CAP * Self.OBS, fill=Scalar[DT](0)
+            ),
+            act=List[Scalar[DT]](
+                length=Self.CAP * Self.ACT, fill=Scalar[DT](0)
+            ),
             rew=List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0)),
-            nxt=List[Scalar[DT]](length=Self.CAP * Self.OBS, fill=Scalar[DT](0)),
+            nxt=List[Scalar[DT]](
+                length=Self.CAP * Self.OBS, fill=Scalar[DT](0)
+            ),
             dne=List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0)),
             size=0,
             pos=0,
@@ -89,24 +95,32 @@ struct CPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     def sample(
         mut self,
         n: Int,
-        s_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        a_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        r_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        sp_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        d_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut s_out: List[Scalar[DT]],
+        mut a_out: List[Scalar[DT]],
+        mut r_out: List[Scalar[DT]],
+        mut sp_out: List[Scalar[DT]],
+        mut d_out: List[Scalar[DT]],
+        row_offset: Int = 0,
     ):
-        """Uniform random sampling with replacement, n items."""
+        """Uniform random sampling with replacement, n items.
+
+        `row_offset` writes the n drawn rows starting at logical row
+        `row_offset` of the output lists, so a dual real+synth buffer can
+        stack both partitions into one minibatch without pointer
+        arithmetic (real with `row_offset=0`, synth with
+        `row_offset=REAL_BS`). Default 0 == fill from the top."""
         for k in range(n):
             var idx = Int(random_float64() * Float64(self.size))
             if idx >= self.size:
                 idx = self.size - 1
+            var row = row_offset + k
             for i in range(Self.OBS):
-                s_out[k * Self.OBS + i] = self.obs[idx * Self.OBS + i]
-                sp_out[k * Self.OBS + i] = self.nxt[idx * Self.OBS + i]
+                s_out[row * Self.OBS + i] = self.obs[idx * Self.OBS + i]
+                sp_out[row * Self.OBS + i] = self.nxt[idx * Self.OBS + i]
             for j in range(Self.ACT):
-                a_out[k * Self.ACT + j] = self.act[idx * Self.ACT + j]
-            r_out[k] = self.rew[idx]
-            d_out[k] = self.dne[idx]
+                a_out[row * Self.ACT + j] = self.act[idx * Self.ACT + j]
+            r_out[row] = self.rew[idx]
+            d_out[row] = self.dne[idx]
 
     def sample_into[
         BATCH: Int
@@ -115,11 +129,11 @@ struct CPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
         host mirrors of `state.mb_*`."""
         self.sample(
             BATCH,
-            state.mb_s.cpu_ptr(),
-            state.mb_a.cpu_ptr(),
-            state.mb_r.cpu_ptr(),
-            state.mb_sp.cpu_ptr(),
-            state.mb_d.cpu_ptr(),
+            state.mb_s.cpu,
+            state.mb_a.cpu,
+            state.mb_r.cpu,
+            state.mb_sp.cpu,
+            state.mb_d.cpu,
         )
 
     def count(self) -> Int:

@@ -51,13 +51,22 @@ Surface:
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
+from layout import (
+    TileTensor,
+    row_major,
+    TensorLayout,
+    Layout,
+    LayoutTensor,
+    lt_to_tt,
+)
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.target_storage import (
-    TargetStorage, assert_tag_for, require_ctx,
+    TargetStorage,
+    assert_tag_for,
+    require_ctx,
 )
 from mojo_rl.nn.initializer import Zero
 from mojo_rl.nn.combinators.compute_graph import ComputeGraph
@@ -125,8 +134,8 @@ struct TargetYBlock[
     def make[
         target: StaticString
     ](
-        action_scale: Scalar[DT] = Scalar[DT](1.0),
-        gamma: Scalar[DT] = Scalar[DT](0.99),
+        action_scale: Scalar[DT] = 1.0,
+        gamma: Scalar[DT] = 0.99,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
         """Unified CPU/GPU factory (absorbed the former TargetYStep wrapper).
@@ -166,7 +175,8 @@ struct TargetYBlock[
         return blk^
 
     def set_alpha_ptr(
-        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut self,
+        p: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ):
         """One-time GPU wiring: point the `alpha_lp` Scale node at the
         device α buffer so the target-y forward reads α on-device. After
@@ -181,11 +191,13 @@ struct TargetYBlock[
         mut actor: Self.ACTOR,
         mut critic1_target: Self.CRITIC,
         mut critic2_target: Self.CRITIC,
-        mb_sp_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_r_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_term_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mb_sp: LayoutTensor[
+            DT, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+        ],
+        mb_r: LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin],
+        mb_term: LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin],
         alpha: Scalar[DT],
-        mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mb_y: LayoutTensor[DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin],
     ) raises:
         """Compute `mb_y[b] = r[b] + (1−term[b])·γ·(min(Q1_t, Q2_t)(sp, a')
         − α·log_prob(a'|sp))` in-place into `mb_y_ptr`.
@@ -212,7 +224,7 @@ struct TargetYBlock[
         self.graph.set_external["q2", Self.CRITIC](critic2_target)
 
         # Set inputs (rank-2 view over the rank-1 caller buffer).
-        var mb_sp_t = TileTensor(mb_sp_ptr, row_major[Self.BATCH, Self.OBS]())
+        var mb_sp_t = lt_to_tt(mb_sp)
         self.graph.set_input["sp", Self.BATCH](mb_sp_t)
 
         # α: CPU bakes the host scalar per call; γ was baked in at make().
@@ -224,12 +236,16 @@ struct TargetYBlock[
 
         # Forward writes the bootstrap `γ·soft_v` into mb_y (graph's last
         # node is `gamma_softv`, OUT_DIM=1).
-        var mb_y_t = TileTensor(mb_y_ptr, row_major[Self.BATCH, 1]())
+        var mb_y_t = lt_to_tt(mb_y)
         self.graph.forward[target, Self.BATCH, POLICY](mb_y_t)
 
         # Reward add + terminal mask: mb_y[b] = r[b] + (1−term[b])·mb_y[b].
+
         apply_terminal_mask[target, Self.BATCH](
-            self.ts.ctx, mb_r_ptr, mb_term_ptr, mb_y_ptr,
+            self.ts.ctx,
+            mb_r,
+            mb_term,
+            mb_y,
         )
 
     def step[
@@ -246,10 +262,14 @@ struct TargetYBlock[
         the minibatch pointers from `state` and delegates to the positional
         `step`. Writes `state.mb_y` in-place."""
         self.step[target, POLICY](
-            actor, tgt1, tgt2,
-            state.mb_sp.target_ptr[target](),
-            state.mb_r.target_ptr[target](),
-            state.mb_d.target_ptr[target](),
+            actor,
+            tgt1,
+            tgt2,
+            state.mb_sp.lt_target[
+                target, Layout.row_major(Self.BATCH, Self.OBS)
+            ](),
+            state.mb_r.lt_target[target, Layout.row_major(Self.BATCH)](),
+            state.mb_d.lt_target[target, Layout.row_major(Self.BATCH)](),
             state.alpha,
-            state.mb_y.target_ptr[target](),
+            state.mb_y.lt_target[target, Layout.row_major(Self.BATCH, 1)](),
         )

@@ -33,7 +33,7 @@ helper); the GPU port will add a `concat_phi_sa_gpu` kernel.
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -131,11 +131,36 @@ struct EnsembleCriticStepOFE[
         var sa_in_p = self._mb_sa_in.target_ptr[target]()
         comptime if target == "cpu":
             concat_sa[Self.PHI_S_DIM, Self.ACT, Self.BATCH](
-                mb_phi_s_ptr, mb_a_ptr, sa_in_p,
+                LayoutTensor[
+                    DT,
+                    Layout.row_major(Self.BATCH, Self.PHI_S_DIM),
+                    MutAnyOrigin,
+                ](mb_phi_s_ptr),
+                LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
+                ](mb_a_ptr),
+                LayoutTensor[
+                    DT,
+                    Layout.row_major(Self.BATCH, Self.PHI_S_DIM + Self.ACT),
+                    MutAnyOrigin,
+                ](sa_in_p),
             )
         else:
             concat_sa_gpu[Self.PHI_S_DIM, Self.ACT, Self.BATCH](
-                self.ts.ctx.value(), mb_phi_s_ptr, mb_a_ptr, sa_in_p,
+                self.ts.ctx.value(),
+                LayoutTensor[
+                    DT,
+                    Layout.row_major(Self.BATCH, Self.PHI_S_DIM),
+                    MutAnyOrigin,
+                ](mb_phi_s_ptr),
+                LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
+                ](mb_a_ptr),
+                LayoutTensor[
+                    DT,
+                    Layout.row_major(Self.BATCH, Self.PHI_S_DIM + Self.ACT),
+                    MutAnyOrigin,
+                ](sa_in_p),
             )
 
         # 2. action_branch.forward(sa_in) → φ(s, a) [BATCH, PHI_SA_DIM].

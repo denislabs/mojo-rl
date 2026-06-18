@@ -51,7 +51,7 @@ Surface:
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -182,7 +182,10 @@ struct DDPGTargetYBlock[
         self.graph.forward[target, Self.BATCH, POLICY](mb_y_t)
 
         apply_terminal_mask[target, Self.BATCH](
-            self.ts.ctx, mb_r_ptr, mb_term_ptr, mb_y_ptr,
+            self.ts.ctx,
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin](mb_r_ptr),
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin](mb_term_ptr),
+            LayoutTensor[DT, Layout.row_major(Self.BATCH, 1), MutAnyOrigin](mb_y_ptr),
         )
 
     def step[

@@ -216,10 +216,29 @@ struct DDPGActorLoss[
         var mb_a_t = TileTensor(mb_a_p, row_major[BB, ACT]())
         actor.forward[target, BB, POLICY](mb_s_t, output=mb_a_t)
         comptime if target == "cpu":
-            concat_sa[OBS, ACT, BB](mb_s_ptr, mb_a_p, mb_sa_p)
+            concat_sa[OBS, ACT, BB](
+                LayoutTensor[DT, Layout.row_major(BB, OBS), MutAnyOrigin](
+                    mb_s_ptr
+                ),
+                LayoutTensor[DT, Layout.row_major(BB, ACT), MutAnyOrigin](
+                    mb_a_p
+                ),
+                LayoutTensor[DT, Layout.row_major(BB, OBS + ACT), MutAnyOrigin](
+                    mb_sa_p
+                ),
+            )
         else:
             concat_sa_gpu[OBS, ACT, BB](
-                self.ts.ctx.value(), mb_s_ptr, mb_a_p, mb_sa_p
+                self.ts.ctx.value(),
+                LayoutTensor[DT, Layout.row_major(BB, OBS), MutAnyOrigin](
+                    mb_s_ptr
+                ),
+                LayoutTensor[DT, Layout.row_major(BB, ACT), MutAnyOrigin](
+                    mb_a_p
+                ),
+                LayoutTensor[DT, Layout.row_major(BB, OBS + ACT), MutAnyOrigin](
+                    mb_sa_p
+                ),
             )
         var mb_sa_t = TileTensor(mb_sa_p, row_major[BB, SA]())
         var mb_q_t = TileTensor(mb_q_p, row_major[BB, 1]())

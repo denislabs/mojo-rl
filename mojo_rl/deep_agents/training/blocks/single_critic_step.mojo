@@ -15,7 +15,7 @@ CUDA-graph capturable.
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
+from layout import TileTensor, row_major, LayoutTensor, Layout
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -30,7 +30,10 @@ from ..trainer_block import TrainerState
 
 
 struct SingleCriticStep[
-    OBS_: Int, ACT_: Int, BATCH_: Int, CRITIC: Module,
+    OBS_: Int,
+    ACT_: Int,
+    BATCH_: Int,
+    CRITIC: Module,
 ](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
@@ -49,13 +52,13 @@ struct SingleCriticStep[
         self.ts = TargetStorage.make_uninit()
 
     @staticmethod
-    def make[target: StaticString = "cpu"](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    def make[
+        target: StaticString = "cpu"
+    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
         """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "SingleCriticStep: target must be 'cpu' or 'gpu'"
-        )
+        comptime assert (
+            target == "cpu" or target == "gpu"
+        ), "SingleCriticStep: target must be 'cpu' or 'gpu'"
         var b = Self()
         b.inner = Self.Inner.make[target](ctx=ctx)
         b.ts = TargetStorage.make[target](ctx=ctx)
@@ -78,16 +81,28 @@ struct SingleCriticStep[
         var sa_p = self._mb_sa.target_ptr[target]()
         comptime if target == "cpu":
             concat_sa[Self.OBS, Self.ACT, Self.BATCH](
-                state.mb_s.target_ptr[target](),
-                state.mb_a.target_ptr[target](),
-                sa_p,
+                LayoutTensor[DT, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin](
+                    state.mb_s.target_ptr[target]()
+                ),
+                LayoutTensor[DT, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin](
+                    state.mb_a.target_ptr[target]()
+                ),
+                LayoutTensor[DT, Layout.row_major(Self.BATCH, Self.OBS + Self.ACT), MutAnyOrigin](
+                    sa_p
+                ),
             )
         else:
             concat_sa_gpu[Self.OBS, Self.ACT, Self.BATCH](
                 self.ts.ctx.value(),
-                state.mb_s.target_ptr[target](),
-                state.mb_a.target_ptr[target](),
-                sa_p,
+                LayoutTensor[DT, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin](
+                    state.mb_s.target_ptr[target]()
+                ),
+                LayoutTensor[DT, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin](
+                    state.mb_a.target_ptr[target]()
+                ),
+                LayoutTensor[DT, Layout.row_major(Self.BATCH, Self.OBS + Self.ACT), MutAnyOrigin](
+                    sa_p
+                ),
             )
         var sa_t = TileTensor(sa_p, row_major[Self.BATCH, Self.SA]())
         var y_t = TileTensor(
@@ -97,20 +112,27 @@ struct SingleCriticStep[
         # PER hook (mirrors TwinCriticStep): forward IS weights + capture
         # signed TD residuals when state.has_per is set. None otherwise →
         # uniform path, bit-identical to pre-PER.
-        var weights_p: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        var weights: Optional[
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None
-        var td_res_p: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        var td_residuals: Optional[
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None
         if state.has_per:
-            weights_p = state.mb_w.target_ptr[target]()
-            td_res_p = state.td_residuals.target_ptr[target]()
+            weights = state.mb_w.lt_target[
+                target, Layout.row_major(Self.BATCH)
+            ]()
+            td_residuals = state.td_residuals.lt_target[
+                target, Layout.row_major(Self.BATCH)
+            ]()
 
         var loss = self.inner.step[target, POLICY, ACCUMULATE](
-            critic, critic_opt, sa_t, y_t,
-            weights_p=weights_p,
-            td_residuals_p=td_res_p,
+            critic,
+            critic_opt,
+            sa_t,
+            y_t,
+            weights=weights,
+            td_residuals=td_residuals,
         )
         # With ACCUMULATE (GPU) `loss` is a 0 sentinel and the real metric
         # is read from the critic's device accumulator at flush. Otherwise

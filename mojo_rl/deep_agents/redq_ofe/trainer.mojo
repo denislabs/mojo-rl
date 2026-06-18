@@ -52,7 +52,7 @@ from std.math import exp as fexp, tanh as ftanh
 from std.random import random_float64
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major, lt_to_tt
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -1102,10 +1102,18 @@ struct REDQOFETrainer[
         N_ENVS: Int,
     ](
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        alp_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_OBS_DIM), MutAnyOrigin
+        ],
+        action: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        ao_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, 2 * Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        alp_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM + 1), MutAnyOrigin
+        ],
         step_idx: Int,
     ) raises:
         """Single batched entry for the off-policy driver.
@@ -1121,17 +1129,14 @@ struct REDQOFETrainer[
         # Warmup → uniform random in [-action_scale, +action_scale].
         if step_idx < self.learning_starts:
             comptime if Self.train_target == "cpu":
-                for i in range(N_ENVS * Self.ACT):
-                    var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                    action_ptr[i] = u * self.action_scale
+                for env_idx in range(N_ENVS):
+                    for j in range(Self.ACT):
+                        var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                        action[env_idx, j] = u * self.action_scale
             else:
                 # GPU warmup: Philox kernel. Advance the host offset
                 # by 2·N·A each call (step_uniform consumes 2 raw
                 # uint32 lanes).
-                var action_lt = LayoutTensor[
-                    DT, Layout.row_major(N_ENVS, Self.ACT),
-                    MutAnyOrigin,
-                ](action_ptr)
                 comptime total_w = N_ENVS * Self.ACT
                 comptime n_blocks_w = (total_w + TPB - 1) // TPB
                 comptime warmup_kernel = _redq_warmup_uniform_kernel[
@@ -1139,7 +1144,7 @@ struct REDQOFETrainer[
                 ]
                 var ctx = self.ctx.value()
                 ctx.enqueue_function[warmup_kernel](
-                    action_lt,
+                    action,
                     self.action_scale,
                     self._warmup_rng_seed,
                     self._warmup_rng_offset,
@@ -1166,8 +1171,8 @@ struct REDQOFETrainer[
                 self._phi_s_batched_dev_cap = needed
             phi_s_p = self._phi_s_batched_dev.value().unsafe_ptr()
 
-        # (1) state_branch(obs_ptr) → phi_s_p.
-        var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, Self.OBS]())
+        # (1) state_branch(obs) → phi_s_p (separate OFE feature scratch).
+        var obs_t = lt_to_tt(obs)
         var phi_s_t = TileTensor(
             phi_s_p, row_major[N_ENVS, Self.PHI_S_DIM](),
         )
@@ -1176,51 +1181,35 @@ struct REDQOFETrainer[
         )
 
         # (2) actor(phi_s) → ao.
-        var ao_t = TileTensor(
-            ao_scratch_ptr,
-            row_major[N_ENVS, 2 * Self.ACT](),
-        )
+        var ao_t = lt_to_tt(ao_scratch)
         self.actor.forward[Self.train_target, N_ENVS](
             phi_s_t, output=ao_t,
         )
 
         # (3) rsample(ao) → alp = (action | log_prob).
-        var alp_t = TileTensor(
-            alp_scratch_ptr,
-            row_major[N_ENVS, Self.ACT + 1](),
-        )
+        var alp_t = lt_to_tt(alp_scratch)
         self.actor_blk.rsample.forward[Self.train_target, N_ENVS](
             ao_t, output=alp_t,
         )
 
-        # (4) Clamp into action_ptr (drop the log_prob slot).
+        # (4) Clamp into action (drop the log_prob slot).
         comptime if Self.train_target == "cpu":
             for env_idx in range(N_ENVS):
-                var src = alp_scratch_ptr + env_idx * (Self.ACT + 1)
-                var dst = action_ptr + env_idx * Self.ACT
                 for j in range(Self.ACT):
-                    var a = src[j]
+                    var a = alp_scratch[env_idx, j]
                     if a > self.action_scale:
                         a = self.action_scale
                     elif a < -self.action_scale:
                         a = -self.action_scale
-                    dst[j] = a
+                    action[env_idx, j] = a
         else:
-            var alp_lt = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, Self.ACT + 1),
-                MutAnyOrigin,
-            ](alp_scratch_ptr)
-            var action_lt = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, Self.ACT),
-                MutAnyOrigin,
-            ](action_ptr)
             comptime total_c = N_ENVS * Self.ACT
             comptime n_blocks_c = (total_c + TPB - 1) // TPB
             comptime clamp_kernel = _redq_action_clamp_kernel[
                 N_ENVS, Self.ACT,
             ]
             self.ctx.value().enqueue_function[clamp_kernel](
-                alp_lt, action_lt, self.action_scale,
+                alp_scratch, action, self.action_scale,
                 grid_dim=n_blocks_c, block_dim=TPB,
             )
 

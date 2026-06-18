@@ -27,7 +27,7 @@ swap, mirroring how SAC's TwinCriticUpdateBlock evolved.
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -99,16 +99,32 @@ struct EnsembleCriticStep[
         var sa_p = self._mb_sa.target_ptr[target]()
         comptime if target == "cpu":
             concat_sa[Self.OBS, Self.ACT, Self.BATCH](
-                state.mb_s.target_ptr[target](),
-                state.mb_a.target_ptr[target](),
-                sa_p,
+                LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+                ](state.mb_s.target_ptr[target]()),
+                LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
+                ](state.mb_a.target_ptr[target]()),
+                LayoutTensor[
+                    DT,
+                    Layout.row_major(Self.BATCH, Self.OBS + Self.ACT),
+                    MutAnyOrigin,
+                ](sa_p),
             )
         else:
             concat_sa_gpu[Self.OBS, Self.ACT, Self.BATCH](
                 self.ts.ctx.value(),
-                state.mb_s.target_ptr[target](),
-                state.mb_a.target_ptr[target](),
-                sa_p,
+                LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
+                ](state.mb_s.target_ptr[target]()),
+                LayoutTensor[
+                    DT, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
+                ](state.mb_a.target_ptr[target]()),
+                LayoutTensor[
+                    DT,
+                    Layout.row_major(Self.BATCH, Self.OBS + Self.ACT),
+                    MutAnyOrigin,
+                ](sa_p),
             )
         var sa_t = TileTensor(sa_p, row_major[Self.BATCH, Self.SA_DIM]())
         var mb_y_t = TileTensor(
