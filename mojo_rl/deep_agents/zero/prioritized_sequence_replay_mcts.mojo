@@ -42,7 +42,7 @@ replay — only the *which-window* draw and the IS weights differ.
 
 from std.memory import alloc
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -106,7 +106,7 @@ struct PrioritizedMCTSSequenceReplay[
     var legal: List[Scalar[DT]]  # [CAP, ACT]
 
     # Host staging for the device-ring obs store (quantize → sub-buffer H2D).
-    var _stage_u8: HostBuffer[Self.SDT]  # [CHUNK, OBS]
+    var _stage_u8: List[Scalar[Self.SDT]]  # [CHUNK, OBS]
 
     var ep_start: List[Int]
     var ep_len: List[Int]
@@ -132,8 +132,8 @@ struct PrioritizedMCTSSequenceReplay[
         self.ctx = ctx
         self.obs = ctx.enqueue_create_buffer[Self.SDT](Self.CAP * Self.OBS)
         self.obs.enqueue_fill(Scalar[Self.SDT](0))
-        self._stage_u8 = ctx.enqueue_create_host_buffer[Self.SDT](
-            STORE_CHUNK * Self.OBS
+        self._stage_u8 = List[Scalar[Self.SDT]](
+            length=STORE_CHUNK * Self.OBS, fill=Scalar[Self.SDT](0)
         )
         self.act = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
         self.rew = List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0))
@@ -240,7 +240,7 @@ struct PrioritizedMCTSSequenceReplay[
             var sub1 = self.obs.create_sub_buffer[Self.SDT](
                 slot0 * Self.OBS, first * Self.OBS
             )
-            self.ctx.enqueue_copy(sub1, self._stage_u8)
+            self.ctx.enqueue_copy(sub1, self._stage_u8.unsafe_ptr())
             if m > first:
                 var sub2 = self.obs.create_sub_buffer[Self.SDT](
                     0, (m - first) * Self.OBS

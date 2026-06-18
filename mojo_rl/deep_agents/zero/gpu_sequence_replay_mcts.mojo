@@ -35,7 +35,7 @@ host buffer; `read_obs` gathers a single obs row device→host.
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import alloc
 from layout import Layout, LayoutTensor
 
@@ -136,13 +136,13 @@ struct GPUMCTSSequenceReplay[
 
     # cached gather staging (lazily sized to B on first sample).
     var d_slots: Optional[DeviceBuffer[DType.int32]]
-    var h_slots: HostBuffer[DType.int32]
+    var h_slots: List[Int32]
     var slots_n: Int
     # separate cached staging for reanalyze chunk gathers (sized to the chunk =
     # N_ENVS, kept apart from the training-batch slots so the two don't thrash
     # each other's lazily-sized buffers when B != chunk).
     var d_rslots: Optional[DeviceBuffer[DType.int32]]
-    var h_rslots: HostBuffer[DType.int32]
+    var h_rslots: List[Int32]
     var rslots_n: Int
 
     # ── PER (only maintained when `per` is True; uniform path untouched) ──
@@ -199,10 +199,10 @@ struct GPUMCTSSequenceReplay[
         self.gtotal = 0
         self.rng = seed ^ UInt64(0x9E3779B97F4A7C15)
         self.d_slots = None
-        self.h_slots = ctx.enqueue_create_host_buffer[DType.int32](1)
+        self.h_slots = List[Int32](length=1, fill=Int32(0))
         self.slots_n = 0
         self.d_rslots = None
-        self.h_rslots = ctx.enqueue_create_host_buffer[DType.int32](1)
+        self.h_rslots = List[Int32](length=1, fill=Int32(0))
         self.rslots_n = 0
         self.per = per
         self.tree = SumTree[DT](Self.CAP)
@@ -347,7 +347,7 @@ struct GPUMCTSSequenceReplay[
 
     def _ensure_slots(mut self, n: Int) raises:
         if self.slots_n != n:
-            self.h_slots = self.ctx.enqueue_create_host_buffer[DType.int32](n)
+            self.h_slots = List[Int32](length=n, fill=Int32(0))
             self.d_slots = self.ctx.enqueue_create_buffer[DType.int32](n)
             self.slots_n = n
 
@@ -431,7 +431,7 @@ struct GPUMCTSSequenceReplay[
                 reward_tgt[k * B + b] = w_rew[k]
 
         # ── gather obs0 device→device into the caller's buffer ──
-        self.ctx.enqueue_copy(self.d_slots.value(), self.h_slots)
+        self.ctx.enqueue_copy(self.d_slots.value(), self.h_slots.unsafe_ptr())
         var slots_t = LayoutTensor[
             DType.int32, Layout.row_major(B), MutAnyOrigin
         ](mptr(self.d_slots.value().unsafe_ptr()))
@@ -566,7 +566,7 @@ struct GPUMCTSSequenceReplay[
                 reward_tgt[k * B + b] = w_rew[k]
 
         # ── gather obs0 device→device into the caller's buffer ──
-        self.ctx.enqueue_copy(self.d_slots.value(), self.h_slots)
+        self.ctx.enqueue_copy(self.d_slots.value(), self.h_slots.unsafe_ptr())
         var slots_t = LayoutTensor[
             DType.int32, Layout.row_major(B), MutAnyOrigin
         ](mptr(self.d_slots.value().unsafe_ptr()))
@@ -604,7 +604,7 @@ struct GPUMCTSSequenceReplay[
 
     def _ensure_rslots(mut self, n: Int) raises:
         if self.rslots_n != n:
-            self.h_rslots = self.ctx.enqueue_create_host_buffer[DType.int32](n)
+            self.h_rslots = List[Int32](length=n, fill=Int32(0))
             self.d_rslots = self.ctx.enqueue_create_buffer[DType.int32](n)
             self.rslots_n = n
 
@@ -630,7 +630,7 @@ struct GPUMCTSSequenceReplay[
             eps.append(p[0])
             offs.append(p[1])
             self.h_rslots[r] = Int32(self._slot(self.ep_start[p[0]], p[1]))
-        self.ctx.enqueue_copy(self.d_rslots.value(), self.h_rslots)
+        self.ctx.enqueue_copy(self.d_rslots.value(), self.h_rslots.unsafe_ptr())
         var slots_t = LayoutTensor[
             DType.int32, Layout.row_major(R), MutAnyOrigin
         ](mptr(self.d_rslots.value().unsafe_ptr()))
