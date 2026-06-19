@@ -496,18 +496,5 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
             )
             max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_v, c)
 
-    def for_each_param[
-        target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
-        self.mu_w.visit_with[target](visitor, ctx)
-        self.sigma_w.visit_with[target](visitor, ctx)
-        self.mu_b.visit_with[target](visitor, ctx)
-        self.sigma_b.visit_with[target](visitor, ctx)
-
-    def zero_grad[
-        target: StaticString
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        self.mu_w.zero_grad[target](ctx)
-        self.sigma_w.zero_grad[target](ctx)
-        self.mu_b.zero_grad[target](ctx)
-        self.sigma_b.zero_grad[target](ctx)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the Param fields).

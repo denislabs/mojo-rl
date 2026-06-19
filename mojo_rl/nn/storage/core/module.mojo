@@ -16,6 +16,7 @@ from .initializer import Initializer
 from .tensor import Tensor
 from .tensor_refs import TensorRefs
 from .param import ParamVisitor
+from .walkers import for_each_param_auto, zero_grad_auto
 
 
 trait Module(Defaultable & Movable & ImplicitlyDeletable):
@@ -55,12 +56,20 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
     def for_each_param[target: StaticString, V: ParamVisitor](
         mut self, mut visitor: V, ctx: Optional[DeviceContext]
     ) raises:
-        pass
+        """Default: reflection-walk every `IsParam` field of the concrete
+        leaf and dispatch the visitor. Param-less leaves reflect to a no-op;
+        Param-bearing leaves no longer need to override (forgetting it can no
+        longer silently skip params in checkpoint/optimizer walks).
+        Combinators + wrapper leaves (children are Module-typed, not IsParam)
+        still override to recurse into children."""
+        for_each_param_auto[Self, V, target](self, visitor, ctx)
 
     def zero_grad[
         target: StaticString
     ](mut self, ctx: Optional[DeviceContext]) raises:
-        pass
+        """Default: reflection-walk every `IsParam` field and zero its grad.
+        Param-less leaves reflect to a no-op; combinators override to recurse."""
+        zero_grad_auto[Self, target](self, ctx)
 
     def polyak_from[
         target: StaticString

@@ -128,12 +128,5 @@ struct Add[DIM_: Int](Module):
                 gol, gi1l, grid_dim=nblk, block_dim=256
             )
 
-    def for_each_param[
-        target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
-        pass
-
-    def zero_grad[
-        target: StaticString
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        pass
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).

@@ -357,14 +357,5 @@ struct LayerNorm[DIM_: Int](Module):
                 block_dim=LN_TPB,
             )
 
-    def for_each_param[
-        target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
-        self.gamma.visit_with[target](visitor, ctx)
-        self.beta.visit_with[target](visitor, ctx)
-
-    def zero_grad[
-        target: StaticString
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        self.gamma.zero_grad[target](ctx)
-        self.beta.zero_grad[target](ctx)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the Param fields).

@@ -236,12 +236,5 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int](Module):
                 block_dim=TPB,
             )
 
-    def for_each_param[
-        target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
-        self.weight.visit_with[target](visitor, ctx)
-
-    def zero_grad[
-        target: StaticString
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        self.weight.zero_grad[target](ctx)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the Param fields).

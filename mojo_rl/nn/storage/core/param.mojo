@@ -33,9 +33,37 @@ trait ParamVisitor(ImplicitlyDeletable):
         ...
 
 
-struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](
-    Movable & ImplicitlyDeletable
-):
+# ──────────────────────────────────────────────────────────────────────
+# IsParam — marker trait so reflection (core/walkers.mojo) can filter the
+# Param-typed fields of a leaf and dispatch the visitor / zero_grad. The
+# `Module.for_each_param` / `zero_grad` trait DEFAULTS reflection-walk
+# these, so a Param-bearing leaf no longer needs to hand-write the walk —
+# forgetting it can no longer silently skip params in the optimizer /
+# checkpoint walks (the S1 footgun fix on the storage ABI).
+# ──────────────────────────────────────────────────────────────────────
+
+
+trait IsParam(Movable & ImplicitlyDeletable):
+    """Marker — a field-type the param-walker should visit."""
+
+    def param_name(self) -> StaticString:
+        ...
+
+    def param_decay(self) -> Bool:
+        ...
+
+    def visit_with[target: StaticString, V: ParamVisitor](
+        mut self, mut visitor: V, ctx: Optional[DeviceContext]
+    ) raises:
+        ...
+
+    def zero_grad[target: StaticString](
+        mut self, ctx: Optional[DeviceContext]
+    ) raises:
+        ...
+
+
+struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam):
     var val: Tensor
     var grd: Tensor
     var m: Tensor   # optimizer 1st-moment state (Adam) — lazy, empty for SGD
@@ -62,6 +90,12 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](
             p.grd.ensure_gpu(c, Self.SIZE)
             p.grd.dev.value().enqueue_fill(Scalar[DT](0))
         return p^
+
+    def param_name(self) -> StaticString:
+        return Self.NAME
+
+    def param_decay(self) -> Bool:
+        return Self.APPLY_DECAY
 
     def visit_with[target: StaticString, V: ParamVisitor](
         mut self, mut visitor: V, ctx: Optional[DeviceContext]

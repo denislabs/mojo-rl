@@ -728,14 +728,5 @@ struct Conv2D[IC_: Int, OC_: Int, K_: Int, S_: Int, P_: Int, H_: Int, W_: Int](
                 block_dim=CONV_DW_TPB,
             )
 
-    def for_each_param[
-        target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
-        self.weight.visit_with[target](visitor, ctx)
-        self.bias.visit_with[target](visitor, ctx)
-
-    def zero_grad[
-        target: StaticString
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        self.weight.zero_grad[target](ctx)
-        self.bias.zero_grad[target](ctx)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the Param fields).

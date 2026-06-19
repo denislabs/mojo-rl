@@ -340,17 +340,8 @@ struct Linear[IN_: Int, OUT_: Int, AMP: Bool = False](Module):
             var gi_v = TileTensor(gin.dev.value(), row_major[B, Self.IN_]())
             max_matmul[transpose_b=True, target="gpu"](gi_v, go_v2, w_v, c)
 
-    def for_each_param[
-        target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
-        self.weight.visit_with[target](visitor, ctx)
-        self.bias.visit_with[target](visitor, ctx)
-
-    def zero_grad[
-        target: StaticString
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        self.weight.zero_grad[target](ctx)
-        self.bias.zero_grad[target](ctx)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the `weight` + `bias` Params).
 
     def polyak_from[
         target: StaticString
