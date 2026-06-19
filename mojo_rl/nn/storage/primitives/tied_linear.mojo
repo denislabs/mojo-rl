@@ -13,9 +13,8 @@ transposed (`out = x @ Wᵀ`). PyTorch ties by making both modules reference one
     optimizer / checkpoint walk collects the shared weight EXACTLY ONCE, via
     the *source* leaf (the embedding). `for_each_param`/`zero_grad` therefore
     inherit the Module reflection defaults, which reflect to a no-op here;
-  * holds **borrowed pointers to the source weight's storage cells**
-    (`src_val` / `src_grd` — `UnsafePointer[Tensor]` to the owner's
-    `Param.val` / `Param.grd`), wired once after construction via `tie_to`
+  * holds a **borrowed reference to the source weight's storage cells**
+    (`src_val` / `src_grd`), wired once after construction via `tie_to`
     (the analog of `lm_head.weight = wte.weight` in __init__);
   * reads the source value transposed in forward / grad-input, and
     **accumulates** its weight gradient straight into the source grad
@@ -23,25 +22,34 @@ transposed (`out = x @ Wᵀ`). PyTorch ties by making both modules reference one
     correct because storage grads are `+=` and `zero_grad` clears the cell
     once per step (the source leaf owns + zeroes it).
 
-BORROWING REPRESENTATION (the crux): rather than the legacy raw scalar
-`UnsafePointer[Scalar[DT]]` to the val/grad *buffers*, this holds an
-`UnsafePointer[Tensor, MutAnyOrigin]` to the owner's `Param.val` / `Param.grd`
-*storage cells*. Dereferencing yields a mutable `Tensor`, so forward/vjp build
-their typed views with the SAME storage-surface calls every other leaf uses —
-`TileTensor(t.data, …)` / cblas over `t.data.unsafe_ptr()` on CPU, and
-`t.lt["gpu", layout]()` on GPU — instead of re-deriving raw scalar offsets.
-A `Tensor`-cell pointer (not a `Pointer[Tensor, o]`) is used deliberately so
-the struct stays origin-free and conforms to `Module` without infecting its
-type with a borrow origin (the same reason the legacy reached for an
-UnsafePointer). fp32 compute only (no AMP) for v1.
+BORROWING REPRESENTATION (the crux): the borrow is the SAFE `std.memory.Pointer`
+(single-element, no arithmetic, bounds-safe deref — NOT a raw `UnsafePointer`),
+holding a `Pointer[Tensor, MutAnyOrigin]` to the owner's `Param.val` /
+`Param.grd` *storage cells*. Dereferencing yields a mutable `Tensor`, so
+forward/vjp build their typed views with the SAME storage-surface calls every
+other leaf uses — `TileTensor(t.data, …)` / cblas on CPU, `t.lt["gpu", layout]()`
+on GPU. `tie_to` takes the source cells BY `ref` and builds the `Pointer`
+internally, so no pointer is constructed at the call site.
 
-POINTER-STABILITY RULE (load-bearing): `tie_to` captures a raw pointer to the
-owner's `Param.val` / `Param.grd` *cells*, so the OWNER must outlive every
-forward/vjp on this head. In real use that is automatic — the source leaf
-(embedding) lives inside the same model struct that owns this head — but it
-means `tie_to` must run after the owning model reaches its final home (and
-after any load), and a standalone owner cell (e.g. in a test) must be kept
-alive past the tied calls. A destroyed owner leaves a dangling pointer; on GPU
+The origin is the wildcard `MutAnyOrigin` (not a TRACKED origin `o` like
+`TensorRefs`) DELIBERATELY: a tracked `Pointer[Tensor, o]` would force a
+borrow-origin TYPE PARAMETER onto this struct, which would ripple into every
+combinator that holds it (`Sequential`/`Tokenwise`/… are parametric over
+`*MODULES: Module` and would each have to thread `o`). The wildcard keeps the
+struct origin-free so it conforms to `Module` and drops into a generic
+`Sequential` trained by the standard `Trainer` loop. The trade: the wildcard
+does not pin the owner, so the POINTER-STABILITY RULE below is load-bearing.
+This is the storage-clean evolution of the legacy raw `UnsafePointer[Scalar]`
+to the val/grad buffers: safe single-element reference, Tensor-cell granularity,
+fp32 compute only (no AMP) for v1.
+
+POINTER-STABILITY RULE (load-bearing): `tie_to` captures a wildcard-origin
+reference to the owner's `Param.val` / `Param.grd` *cells*, so the OWNER must
+outlive every forward/vjp on this head. In real use that is automatic — the
+source leaf (embedding) lives inside the same model struct that owns this head
+— but it means `tie_to` must run after the owning model reaches its final home
+(and after any load), and a standalone owner cell (e.g. in a test) must be kept
+alive past the tied calls. A destroyed owner leaves a dangling reference; on GPU
 that surfaces as the head reading a freed device buffer (zeros / empty `.dev`).
 
 Shapes (IN = EMBED, OUT = VOCAB; source weight is `[OUT, IN]`):
@@ -51,6 +59,7 @@ Shapes (IN = EMBED, OUT = VOCAB; source weight is `[OUT, IN]`):
 """
 
 from std.sys import CompilationTarget
+from std.memory import Pointer
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -109,8 +118,10 @@ struct TiedLinear[IN_: Int, OUT_: Int](Module):
     # No owned weight/bias Param — the weight is borrowed (reflection finds no
     # `IsParam` field here, so the optimizer never double-counts the shared
     # weight). `tie_to` points these at the source weight's val/grad cells.
-    var src_val: Optional[UnsafePointer[Tensor, MutAnyOrigin]]
-    var src_grd: Optional[UnsafePointer[Tensor, MutAnyOrigin]]
+    # SAFE `Pointer` (not raw `UnsafePointer`); wildcard origin so the struct
+    # stays origin-free (see module docstring).
+    var src_val: Optional[Pointer[Tensor, MutAnyOrigin]]
+    var src_grd: Optional[Pointer[Tensor, MutAnyOrigin]]
 
     def __init__(out self):
         self.src_val = None
@@ -129,27 +140,27 @@ struct TiedLinear[IN_: Int, OUT_: Int](Module):
 
     # ----- Tie wiring -----------------------------------------------------
 
-    def tie_to(
-        mut self,
-        val: UnsafePointer[Tensor, MutAnyOrigin],
-        grd: UnsafePointer[Tensor, MutAnyOrigin],
-    ):
+    def tie_to(mut self, ref val: Tensor, ref grd: Tensor):
         """Point this head at the source weight's value + grad storage cells
-        (the owner's `Param.val` / `Param.grd`, laid out `[OUT, IN]`). The
-        caller passes `UnsafePointer(to=owner.weight.val)` / `.grd`. Call once
-        after the owning model settles in its final home (and after any load);
-        the source leaf keeps the cells alive. Idempotent."""
-        self.src_val = val
-        self.src_grd = grd
+        (the owner's `Param.val` / `Param.grd`, laid out `[OUT, IN]`). Pass the
+        cells BY `ref` (e.g. `head.tie_to(emb.weight.val, emb.weight.grd)`);
+        the safe `Pointer` is built internally — no pointer at the call site.
+        Call once after the owning model settles in its final home (and after
+        any load); the source leaf keeps the cells alive. Idempotent. The
+        captured origin is the wildcard `MutAnyOrigin` (see module docstring),
+        so the POINTER-STABILITY RULE applies: the owner must outlive this head.
+        """
+        self.src_val = rebind[Pointer[Tensor, MutAnyOrigin]](Pointer(to=val))
+        self.src_grd = rebind[Pointer[Tensor, MutAnyOrigin]](Pointer(to=grd))
 
-    def _val(self) raises -> UnsafePointer[Tensor, MutAnyOrigin]:
+    def _val(self) raises -> Pointer[Tensor, MutAnyOrigin]:
         if not self.src_val:
             raise Error(
                 "TiedLinear: not wired — call tie_to(...) before forward/vjp"
             )
         return self.src_val.value()
 
-    def _grd(self) raises -> UnsafePointer[Tensor, MutAnyOrigin]:
+    def _grd(self) raises -> Pointer[Tensor, MutAnyOrigin]:
         if not self.src_grd:
             raise Error(
                 "TiedLinear: not wired — call tie_to(...) before forward/vjp"

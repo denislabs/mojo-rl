@@ -75,7 +75,7 @@ def test_tied_cpu_parity() raises:
     for k in range(OUT * IN):
         sW.data[k] = Wv[k]
     var st = TiedLinear[IN, OUT].make["cpu", Deterministic]()
-    st.tie_to(UnsafePointer(to=sW), UnsafePointer(to=sgW))
+    st.tie_to(sW, sgW)
 
     var sx = Tensor.alloc(B * IN)
     var sgo = Tensor.alloc(B * OUT)
@@ -125,7 +125,7 @@ def test_tied_gpu_parity() raises:
     for k in range(OUT * IN):
         cW.data[k] = Wv[k]
     var cpu = TiedLinear[IN, OUT].make["cpu", Deterministic]()
-    cpu.tie_to(UnsafePointer(to=cW), UnsafePointer(to=cgW))
+    cpu.tie_to(cW, cgW)
     var cx = Tensor.alloc(B * IN)
     var cgo = Tensor.alloc(B * OUT)
     var c_out = Tensor.alloc(B * OUT)
@@ -145,7 +145,7 @@ def test_tied_gpu_parity() raises:
     gW.upload(c)
     ggW.upload(c)  # zeroed grad cell on device
     var gpu = TiedLinear[IN, OUT].make["gpu", Deterministic](Optional(c))
-    gpu.tie_to(UnsafePointer(to=gW), UnsafePointer(to=ggW))
+    gpu.tie_to(gW, ggW)
     var gx = Tensor.alloc(B * IN)
     var ggo = Tensor.alloc(B * OUT)
     for i in range(B * IN):
