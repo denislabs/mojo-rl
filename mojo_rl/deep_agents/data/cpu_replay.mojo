@@ -126,14 +126,14 @@ struct CPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
         BATCH: Int
     ](mut self, mut state: TrainerState[Self.OBS, Self.ACT, BATCH],) raises:
         """Trait-surface sampling: write a uniform minibatch into the
-        host mirrors of `state.mb_*`."""
+        host `data` lists of `state.mb_*`."""
         self.sample(
             BATCH,
-            state.mb_s.cpu,
-            state.mb_a.cpu,
-            state.mb_r.cpu,
-            state.mb_sp.cpu,
-            state.mb_d.cpu,
+            state.mb_s.data,
+            state.mb_a.data,
+            state.mb_r.data,
+            state.mb_sp.data,
+            state.mb_d.data,
         )
 
     def count(self) -> Int:

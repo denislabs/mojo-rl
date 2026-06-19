@@ -190,19 +190,19 @@ struct DualSampleStep[
             # (replaces the old pointer-offset writes).
             self.real_cpu.value().sample(
                 Self.REAL_BS,
-                state.mb_s.cpu,
-                state.mb_a.cpu,
-                state.mb_r.cpu,
-                state.mb_sp.cpu,
-                state.mb_d.cpu,
+                state.mb_s.data,
+                state.mb_a.data,
+                state.mb_r.data,
+                state.mb_sp.data,
+                state.mb_d.data,
             )
             self.synth_cpu.value().sample(
                 Self.SYNTH_BS,
-                state.mb_s.cpu,
-                state.mb_a.cpu,
-                state.mb_r.cpu,
-                state.mb_sp.cpu,
-                state.mb_d.cpu,
+                state.mb_s.data,
+                state.mb_a.data,
+                state.mb_r.data,
+                state.mb_sp.data,
+                state.mb_d.data,
                 row_offset=Self.REAL_BS,
             )
         else:
