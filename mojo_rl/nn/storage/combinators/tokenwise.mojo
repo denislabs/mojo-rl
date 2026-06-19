@@ -19,6 +19,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
+from ..core.walkers import join_name
 
 
 struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
@@ -72,13 +73,19 @@ struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
-        self.inner.for_each_param[target](visitor, ctx)
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.inner.for_each_param[target](
+            visitor, ctx, join_name(prefix, String(0))
+        )
 
     def for_each_state[
         target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
-        self.inner.for_each_state[target](visitor, ctx)
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.inner.for_each_state[target](
+            visitor, ctx, join_name(prefix, String(0))
+        )
 
     def zero_grad[
         target: StaticString

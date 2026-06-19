@@ -25,6 +25,7 @@ from std.reflection import reflect
 
 from .tensor import Tensor
 from .param import ParamVisitor
+from .walkers import join_name
 
 
 trait IsState(Movable & ImplicitlyDeletable):
@@ -36,7 +37,10 @@ trait IsState(Movable & ImplicitlyDeletable):
         ...
 
     def visit_with[target: StaticString, V: ParamVisitor](
-        mut self, mut visitor: V, ctx: Optional[DeviceContext]
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        full_name: String = String(""),
     ) raises:
         ...
 
@@ -65,19 +69,25 @@ struct State[NAME: StaticString, SIZE: Int](IsState):
         return Self.NAME
 
     def visit_with[target: StaticString, V: ParamVisitor](
-        mut self, mut visitor: V, ctx: Optional[DeviceContext]
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        full_name: String = String(""),
     ) raises:
         var g = Tensor()
         var m = Tensor()
         var v = Tensor()
         visitor.visit[target, Self.SIZE](
-            self.t, g, m, v, False, ctx
+            full_name, self.t, g, m, v, False, ctx
         )
 
 
 def for_each_state_auto[
     T: AnyType, V: ParamVisitor, target: StaticString
-](mut t: T, mut visitor: V, ctx: Optional[DeviceContext]) raises:
+](
+    mut t: T, mut visitor: V, ctx: Optional[DeviceContext],
+    prefix: String = String(""),
+) raises:
     """Walk every `IsState`-typed field of `t` and dispatch the visitor.
     Mirrors `for_each_param_auto` (walkers.mojo); backs the
     `Module.for_each_state` trait default. Combinators override
@@ -87,4 +97,6 @@ def for_each_state_auto[
         comptime ft = field_types[idx]
         comptime if conforms_to(ft, IsState):
             ref s = reflect[T].field_ref[idx](t)
-            s.visit_with[target, V](visitor, ctx)
+            s.visit_with[target, V](
+                visitor, ctx, join_name(prefix, String(s.state_name()))
+            )

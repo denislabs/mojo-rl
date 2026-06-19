@@ -20,23 +20,37 @@ from std.reflection import reflect
 from .param import IsParam, ParamVisitor
 
 
+def join_name(prefix: String, seg: String) -> String:
+    """Compose a dotted path segment: "a" + "b" -> "a.b"; "" + "b" -> "b"."""
+    if prefix.byte_length() > 0:
+        return prefix + "." + seg
+    return seg
+
+
 def for_each_param_auto[
     T: AnyType, V: ParamVisitor, target: StaticString
-](mut t: T, mut visitor: V, ctx: Optional[DeviceContext]) raises:
+](
+    mut t: T, mut visitor: V, ctx: Optional[DeviceContext],
+    prefix: String = String(""),
+) raises:
     """Walk every `Param`-typed field of `t` and dispatch the visitor.
 
     A leaf just declares
         var weight: Param["weight", True,  IN*OUT]
         var bias:   Param["bias",   False, OUT]
     and inherits the `Module.for_each_param` default, which calls this.
-    Reflection picks the `IsParam` fields and forwards each.
+    Reflection picks the `IsParam` fields and forwards each, composing the
+    dotted name `prefix.<param_name>` for named consumers (checkpoint /
+    named_params); the default empty prefix yields bare param names.
     """
     comptime field_types = reflect[T].field_types()
     comptime for idx in range(reflect[T].field_count()):
         comptime ft = field_types[idx]
         comptime if conforms_to(ft, IsParam):
             ref p = reflect[T].field_ref[idx](t)
-            p.visit_with[target, V](visitor, ctx)
+            p.visit_with[target, V](
+                visitor, ctx, join_name(prefix, String(p.param_name()))
+            )
 
 
 def zero_grad_auto[

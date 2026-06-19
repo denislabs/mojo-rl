@@ -21,6 +21,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
+from ..core.walkers import join_name
 from .residual import _resid_add_kernel
 
 
@@ -150,15 +151,25 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
-        self.inner.for_each_param[target](visitor, ctx)
-        self.skip.for_each_param[target](visitor, ctx)
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.inner.for_each_param[target](
+            visitor, ctx, join_name(prefix, String(0))
+        )
+        self.skip.for_each_param[target](
+            visitor, ctx, join_name(prefix, String(1))
+        )
 
     def for_each_state[
         target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
-        self.inner.for_each_state[target](visitor, ctx)
-        self.skip.for_each_state[target](visitor, ctx)
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.inner.for_each_state[target](
+            visitor, ctx, join_name(prefix, String(0))
+        )
+        self.skip.for_each_state[target](
+            visitor, ctx, join_name(prefix, String(1))
+        )
 
     def zero_grad[
         target: StaticString

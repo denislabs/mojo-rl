@@ -18,7 +18,8 @@ from .core.tensor_pack import TensorPack
 from .core.param import Param, ParamVisitor, IsParam
 from .core.state import State, IsState
 from .core.module import Module
-from .core.walkers import for_each_param_auto, zero_grad_auto
+from .core.walkers import for_each_param_auto, zero_grad_auto, join_name
+from .core.named_params import NamedParam, named_params, named_states
 from .core.initializer import (
     Initializer, Kaiming, Xavier, Zero, Normal, Deterministic,
 )

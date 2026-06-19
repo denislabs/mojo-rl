@@ -22,6 +22,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
+from ..core.walkers import join_name
 
 
 struct _GradStash(ParamVisitor):
@@ -37,7 +38,7 @@ struct _GradStash(ParamVisitor):
         self.idx = 0
 
     def visit[target: StaticString, N: Int](
-        mut self, mut param: Tensor, mut grad: Tensor,
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
         mut m: Tensor, mut v: Tensor, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
@@ -103,15 +104,21 @@ struct StopGradParams[Inner: Module](Module):
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
         # Params stay visible: other loss paths / the optimizer still see them.
-        self.inner.for_each_param[target](visitor, ctx)
+        self.inner.for_each_param[target](
+            visitor, ctx, join_name(prefix, String(0))
+        )
 
     def for_each_state[
         target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
         # States pass through normally (no grads to stash).
-        self.inner.for_each_state[target](visitor, ctx)
+        self.inner.for_each_state[target](
+            visitor, ctx, join_name(prefix, String(0))
+        )
 
     def zero_grad[
         target: StaticString

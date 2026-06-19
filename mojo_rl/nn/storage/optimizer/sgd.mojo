@@ -43,6 +43,7 @@ struct SGD(ParamVisitor):
         target: StaticString, N: Int
     ](
         mut self,
+        name: String,
         mut param: Tensor,
         mut grad: Tensor,
         mut m: Tensor,  # unused (SGD is stateless)

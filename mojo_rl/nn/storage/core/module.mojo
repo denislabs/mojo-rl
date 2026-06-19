@@ -55,15 +55,19 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
         ...
 
     def for_each_param[target: StaticString, V: ParamVisitor](
-        mut self, mut visitor: V, ctx: Optional[DeviceContext]
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
     ) raises:
         """Default: reflection-walk every `IsParam` field of the concrete
         leaf and dispatch the visitor. Param-less leaves reflect to a no-op;
         Param-bearing leaves no longer need to override (forgetting it can no
         longer silently skip params in checkpoint/optimizer walks).
         Combinators + wrapper leaves (children are Module-typed, not IsParam)
-        still override to recurse into children."""
-        for_each_param_auto[Self, V, target](self, visitor, ctx)
+        still override to recurse into children. `prefix` (default empty) is
+        the dotted path so far; the walker composes `prefix.<param_name>`."""
+        for_each_param_auto[Self, V, target](self, visitor, ctx, prefix)
 
     def zero_grad[
         target: StaticString
@@ -73,14 +77,17 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
         zero_grad_auto[Self, target](self, ctx)
 
     def for_each_state[target: StaticString, V: ParamVisitor](
-        mut self, mut visitor: V, ctx: Optional[DeviceContext]
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
     ) raises:
         """Default: reflection-walk every `IsState` field of the concrete leaf
         and dispatch the visitor. The checkpoint path runs this right after
         `for_each_param`, so State fields (e.g. BatchNorm running stats) are
         persisted; the optimizer path (`for_each_param`) never reaches them.
         State-less leaves reflect to a no-op; combinators override to recurse."""
-        for_each_state_auto[Self, V, target](self, visitor, ctx)
+        for_each_state_auto[Self, V, target](self, visitor, ctx, prefix)
 
     def polyak_from[
         target: StaticString

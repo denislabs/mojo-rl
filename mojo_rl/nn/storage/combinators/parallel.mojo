@@ -26,6 +26,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.tensor_pack import TensorPack
 from ..core.module import Module
 from ..core.param import ParamVisitor
+from ..core.walkers import join_name
 from ..primitives.linear import _accum_kernel  # dst[i] += src[i]
 
 
@@ -244,15 +245,21 @@ struct Parallel[*BRANCHES: Module](Module):
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
         comptime for i in range(Self.N):
-            self.branches[i].for_each_param[target](visitor, ctx)
+            self.branches[i].for_each_param[target](
+                visitor, ctx, join_name(prefix, String(i))
+            )
 
     def for_each_state[
         target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
         comptime for i in range(Self.N):
-            self.branches[i].for_each_state[target](visitor, ctx)
+            self.branches[i].for_each_state[target](
+                visitor, ctx, join_name(prefix, String(i))
+            )
 
     def zero_grad[
         target: StaticString

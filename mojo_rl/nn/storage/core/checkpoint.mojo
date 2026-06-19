@@ -45,7 +45,7 @@ struct CheckpointWriter(ParamVisitor):
         self.content = String("storage-ckpt v1\n")
 
     def visit[target: StaticString, N: Int](
-        mut self, mut param: Tensor, mut grad: Tensor,
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
         mut m: Tensor, mut v: Tensor, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
@@ -65,7 +65,7 @@ struct CheckpointReader(ParamVisitor):
         self.off = 0
 
     def visit[target: StaticString, N: Int](
-        mut self, mut param: Tensor, mut grad: Tensor,
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
         mut m: Tensor, mut v: Tensor, apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:

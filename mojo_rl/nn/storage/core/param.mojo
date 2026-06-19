@@ -23,6 +23,7 @@ from .tensor import Tensor
 trait ParamVisitor(ImplicitlyDeletable):
     def visit[target: StaticString, N: Int](
         mut self,
+        name: String,
         mut param: Tensor,
         mut grad: Tensor,
         mut m: Tensor,
@@ -30,6 +31,11 @@ trait ParamVisitor(ImplicitlyDeletable):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
+        """`name` is the dotted path of this param/state in the module tree
+        (e.g. "0.weight"); composed by the walker from the combinator child
+        indices + the field's param_name/state_name. Empty when walked with the
+        default prefix. Optimizer visitors ignore it; checkpoint / named_params
+        visitors use it."""
         ...
 
 
@@ -53,7 +59,10 @@ trait IsParam(Movable & ImplicitlyDeletable):
         ...
 
     def visit_with[target: StaticString, V: ParamVisitor](
-        mut self, mut visitor: V, ctx: Optional[DeviceContext]
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        full_name: String = String(""),
     ) raises:
         ...
 
@@ -98,10 +107,14 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam):
         return Self.APPLY_DECAY
 
     def visit_with[target: StaticString, V: ParamVisitor](
-        mut self, mut visitor: V, ctx: Optional[DeviceContext]
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        full_name: String = String(""),
     ) raises:
         visitor.visit[target, Self.SIZE](
-            self.val, self.grd, self.m, self.v, Self.APPLY_DECAY, ctx
+            full_name, self.val, self.grd, self.m, self.v,
+            Self.APPLY_DECAY, ctx,
         )
 
     def zero_grad[
