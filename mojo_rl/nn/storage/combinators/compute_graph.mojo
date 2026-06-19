@@ -37,6 +37,7 @@ from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
 from ..core.amp import AMPPolicy, NoAMP
+from .external_ref import IsExternal
 
 
 def _cg_accum_kernel[
@@ -79,6 +80,17 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
             g.children[i] = Self.NODES[i].make[target, INIT](ctx)
         return g^
 
+    @staticmethod
+    def _ext_before[upto: Int]() -> Int:
+        """Count `IsExternal` marker nodes in `NODES[0:upto]` — the index of the
+        threaded external arg that supplies node `upto` (externals are passed in
+        node order). Comptime-folded."""
+        var c = 0
+        comptime for j in range(upto):
+            comptime if conforms_to(Self.NODES[j], IsExternal):
+                c += 1
+        return c
+
     def node_output(mut self, node_i: Int) raises -> ref[MutAnyOrigin] Tensor:
         """The forward output of node `node_i` (pool slot NUM_IN+node_i) — the
         storage `node_out_ptr` equivalent for diagnostics / intermediate reads.
@@ -86,14 +98,22 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
         return self.pool[Self.NUM_IN + node_i]
 
     def forward[
-        B: Int, target: StaticString = "cpu", POLICY: AMPPolicy = NoAMP
+        B: Int,
+        target: StaticString = "cpu",
+        POLICY: AMPPolicy = NoAMP,
+        *EXT: Module,
     ](
         mut self,
         edges: List[List[Int]],
         mut inputs: TensorPack[Self.NUM_IN],
         mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
+        mut *externals: *EXT,
     ) raises:
+        # `externals` supplies the `ExternalRef` (IsExternal) marker slots, in
+        # node order, as TRACKED `mut` refs threaded from the trainer (which owns
+        # the actor/critics). This is load-bearing: storing them as wildcard
+        # pointers miscompiles the GPU matmul (see external_ref.mojo).
         # Seed external input slots (device-to-device copy on GPU).
         for k in range(Self.NUM_IN):
             var nk = inputs[k].n
@@ -109,7 +129,34 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
         # Topological forward; gather each node's inputs from the pool by slot.
         comptime for i in range(Self.N):
             self.slot_n[Self.NUM_IN + i] = B * Self.NODES[i].OUT_DIM
-            comptime if Self.NODES[i].ARITY == 1:
+            comptime if conforms_to(Self.NODES[i], IsExternal):
+                # External slot — dispatch to the threaded module (tracked ref).
+                comptime ei = Self._ext_before[i]()
+                comptime if EXT[ei].ARITY == 1:
+                    externals[ei].forward[target, B, POLICY=POLICY](
+                        TensorRefs[EXT[ei].ARITY](self.pool[edges[i][0]]),
+                        self.pool[Self.NUM_IN + i],
+                        ctx,
+                    )
+                elif EXT[ei].ARITY == 2:
+                    externals[ei].forward[target, B, POLICY=POLICY](
+                        TensorRefs[EXT[ei].ARITY](
+                            self.pool[edges[i][0]], self.pool[edges[i][1]]
+                        ),
+                        self.pool[Self.NUM_IN + i],
+                        ctx,
+                    )
+                elif EXT[ei].ARITY == 3:
+                    externals[ei].forward[target, B, POLICY=POLICY](
+                        TensorRefs[EXT[ei].ARITY](
+                            self.pool[edges[i][0]],
+                            self.pool[edges[i][1]],
+                            self.pool[edges[i][2]],
+                        ),
+                        self.pool[Self.NUM_IN + i],
+                        ctx,
+                    )
+            elif Self.NODES[i].ARITY == 1:
                 self.children[i].forward[target, B, POLICY=POLICY](
                     TensorRefs[Self.NODES[i].ARITY](self.pool[edges[i][0]]),
                     self.pool[Self.NUM_IN + i],
@@ -146,13 +193,17 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
             )
 
     def vjp[
-        B: Int, target: StaticString = "cpu", POLICY: AMPPolicy = NoAMP
+        B: Int,
+        target: StaticString = "cpu",
+        POLICY: AMPPolicy = NoAMP,
+        *EXT: Module,
     ](
         mut self,
         edges: List[List[Int]],
         mut grad_out: Tensor,
         mut grad_inputs: TensorPack[Self.NUM_IN],
         ctx: Optional[DeviceContext] = None,
+        mut *externals: *EXT,
     ) raises:
         # Size + ZERO every grad slot (forward-recorded slot_n), then seed the
         # output slot's grad = grad_out.
@@ -183,12 +234,21 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
                     self.tmp[0].ensure(a0)
                 else:
                     self.tmp[0].ensure_gpu(ctx.value(), a0)
-                self.children[i].vjp[target, B, POLICY=POLICY](
-                    TensorRefs[Self.NODES[i].ARITY](self.pool[edges[i][0]]),
-                    self.gpool[Self.NUM_IN + i],
-                    TensorRefs[Self.NODES[i].ARITY](self.tmp[0]),
-                    ctx,
-                )
+                comptime if conforms_to(Self.NODES[i], IsExternal):
+                    comptime ei = Self._ext_before[i]()
+                    externals[ei].vjp[target, B, POLICY=POLICY](
+                        TensorRefs[EXT[ei].ARITY](self.pool[edges[i][0]]),
+                        self.gpool[Self.NUM_IN + i],
+                        TensorRefs[EXT[ei].ARITY](self.tmp[0]),
+                        ctx,
+                    )
+                else:
+                    self.children[i].vjp[target, B, POLICY=POLICY](
+                        TensorRefs[Self.NODES[i].ARITY](self.pool[edges[i][0]]),
+                        self.gpool[Self.NUM_IN + i],
+                        TensorRefs[Self.NODES[i].ARITY](self.tmp[0]),
+                        ctx,
+                    )
                 var e0 = edges[i][0]
                 comptime if target == "cpu":
                     for q in range(a0):
@@ -210,14 +270,27 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
                 else:
                     self.tmp[0].ensure_gpu(ctx.value(), a0)
                     self.tmp[1].ensure_gpu(ctx.value(), a1)
-                self.children[i].vjp[target, B, POLICY=POLICY](
-                    TensorRefs[Self.NODES[i].ARITY](
-                        self.pool[edges[i][0]], self.pool[edges[i][1]]
-                    ),
-                    self.gpool[Self.NUM_IN + i],
-                    TensorRefs[Self.NODES[i].ARITY](self.tmp[0], self.tmp[1]),
-                    ctx,
-                )
+                comptime if conforms_to(Self.NODES[i], IsExternal):
+                    comptime ei = Self._ext_before[i]()
+                    externals[ei].vjp[target, B, POLICY=POLICY](
+                        TensorRefs[EXT[ei].ARITY](
+                            self.pool[edges[i][0]], self.pool[edges[i][1]]
+                        ),
+                        self.gpool[Self.NUM_IN + i],
+                        TensorRefs[EXT[ei].ARITY](self.tmp[0], self.tmp[1]),
+                        ctx,
+                    )
+                else:
+                    self.children[i].vjp[target, B, POLICY=POLICY](
+                        TensorRefs[Self.NODES[i].ARITY](
+                            self.pool[edges[i][0]], self.pool[edges[i][1]]
+                        ),
+                        self.gpool[Self.NUM_IN + i],
+                        TensorRefs[Self.NODES[i].ARITY](
+                            self.tmp[0], self.tmp[1]
+                        ),
+                        ctx,
+                    )
                 var e0 = edges[i][0]
                 var e1 = edges[i][1]
                 comptime if target == "cpu":
@@ -251,18 +324,33 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
                     self.tmp[0].ensure_gpu(ctx.value(), a0)
                     self.tmp[1].ensure_gpu(ctx.value(), a1)
                     self.tmp[2].ensure_gpu(ctx.value(), a2)
-                self.children[i].vjp[target, B, POLICY=POLICY](
-                    TensorRefs[Self.NODES[i].ARITY](
-                        self.pool[edges[i][0]],
-                        self.pool[edges[i][1]],
-                        self.pool[edges[i][2]],
-                    ),
-                    self.gpool[Self.NUM_IN + i],
-                    TensorRefs[Self.NODES[i].ARITY](
-                        self.tmp[0], self.tmp[1], self.tmp[2]
-                    ),
-                    ctx,
-                )
+                comptime if conforms_to(Self.NODES[i], IsExternal):
+                    comptime ei = Self._ext_before[i]()
+                    externals[ei].vjp[target, B, POLICY=POLICY](
+                        TensorRefs[EXT[ei].ARITY](
+                            self.pool[edges[i][0]],
+                            self.pool[edges[i][1]],
+                            self.pool[edges[i][2]],
+                        ),
+                        self.gpool[Self.NUM_IN + i],
+                        TensorRefs[EXT[ei].ARITY](
+                            self.tmp[0], self.tmp[1], self.tmp[2]
+                        ),
+                        ctx,
+                    )
+                else:
+                    self.children[i].vjp[target, B, POLICY=POLICY](
+                        TensorRefs[Self.NODES[i].ARITY](
+                            self.pool[edges[i][0]],
+                            self.pool[edges[i][1]],
+                            self.pool[edges[i][2]],
+                        ),
+                        self.gpool[Self.NUM_IN + i],
+                        TensorRefs[Self.NODES[i].ARITY](
+                            self.tmp[0], self.tmp[1], self.tmp[2]
+                        ),
+                        ctx,
+                    )
                 var e0 = edges[i][0]
                 var e1 = edges[i][1]
                 var e2 = edges[i][2]
