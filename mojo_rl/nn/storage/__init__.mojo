@@ -55,6 +55,7 @@ from .combinators.branch_concat import BranchConcat
 from .combinators.stop_grad_params import StopGradParams
 from .combinators.compute_graph import ComputeGraph
 from .optimizer.optimizer import Optimizer
+from .optimizer.param_arena import ParamArena, polyak_arenas
 from .optimizer.sgd import SGD
 from .optimizer.adam import Adam, AdamW
 from .optimizer.schedules import LinearWarmupSchedule

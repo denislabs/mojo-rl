@@ -18,9 +18,10 @@ ParamArena IS the placement `ParamVisitor` (its `visit` reads its own `val`/`grd
 the device ops never compile into the CPU path.
 """
 
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
 from ..core.param import ParamVisitor
 from ..core.module import Module
@@ -103,3 +104,41 @@ struct ParamArena(Movable & ParamVisitor):
         """Zero the whole grad arena in ONE fill (vs N per-param fills)."""
         if self.adopted and self.total > 0:
             self.grd.dev.value().enqueue_fill(Scalar[DT](0))
+
+
+def _polyak_kernel(
+    target: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    online: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    total: Int,
+    tau: Scalar[DT],
+):
+    """target[i] = (1-τ)·target[i] + τ·online[i] over the whole value arena."""
+    var i = Int(global_idx.x)
+    if i < total:
+        target[i] = (Scalar[DT](1.0) - tau) * target[i] + tau * online[i]
+
+
+def polyak_arenas(
+    mut target: ParamArena,
+    mut online: ParamArena,
+    tau: Scalar[DT],
+    ctx: DeviceContext,
+) raises:
+    """Grouped target-net soft-update: `target = (1-τ)·target + τ·online` in ONE
+    kernel over the contiguous value arenas (vs N per-param launches via
+    `Module.polyak_from`). Both models must be arena-backed (same param layout →
+    same `total`). `online` is `mut` for the GPU-ABI (read-only in the kernel)."""
+    if target.total == 0 or target.total != online.total:
+        raise Error(
+            "polyak_arenas: arena size mismatch (target "
+            + String(target.total) + " vs online " + String(online.total) + ")"
+        )
+    var nblk = (target.total + TPB - 1) // TPB
+    ctx.enqueue_function[_polyak_kernel](
+        target.val.dev.value(),
+        online.val.dev.value(),
+        target.total,
+        tau,
+        grid_dim=nblk,
+        block_dim=TPB,
+    )
