@@ -1,0 +1,89 @@
+"""Tokenwise[SEQ_LEN, Inner] — apply a shared-weight Module per token.
+
+A sequence sample is laid out `(SEQ_LEN, Inner.IN)` row-major. Tokenwise
+reinterprets the `(BATCH, SEQ_LEN*Inner.IN)` slab as `(BATCH*SEQ_LEN, Inner.IN)`
+and runs `Inner` once over that flattened batch — same weights at every position.
+The reshape is pure index reinterpretation (row-major flat index is identical),
+so there's NO mid-slab and NO extra kernel: forward/vjp delegate straight to
+`Inner` at batch `BATCH*SEQ_LEN`.
+
+  IN_DIM  = SEQ_LEN * Inner.IN_DIMS[0]
+  OUT_DIM = SEQ_LEN * Inner.OUT_DIM
+"""
+
+from std.gpu.host import DeviceContext
+
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.initializer import Initializer
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+
+
+struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_LEN * Self.Inner.IN_DIMS[0])
+    comptime OUT_DIM = Self.SEQ_LEN * Self.Inner.OUT_DIM
+
+    var inner: Self.Inner
+
+    def __init__(out self):
+        comptime assert Self.SEQ_LEN >= 1, "Tokenwise requires SEQ_LEN >= 1"
+        self.inner = Self.Inner()
+
+    @staticmethod
+    def make_cpu() raises -> Self:
+        var t = Self()
+        t.inner = Self.Inner.make_cpu()
+        return t^
+
+    @staticmethod
+    def make_gpu(ctx: DeviceContext) raises -> Self:
+        var t = Self()
+        t.inner = Self.Inner.make_gpu(ctx)
+        return t^
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin
+    ](
+        mut self, inputs: TensorRefs[1, o], mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.inner.forward[target, B * Self.SEQ_LEN](
+            TensorRefs[Self.Inner.ARITY].of1(inputs[0]), out, ctx
+        )
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+    ](
+        mut self, forward_input: TensorRefs[1, ofi], mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi], ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.inner.vjp[target, B * Self.SEQ_LEN](
+            TensorRefs[Self.Inner.ARITY].of1(forward_input[0]),
+            grad_output,
+            TensorRefs[Self.Inner.ARITY].of1(grad_inputs[0]), ctx,
+        )
+
+    def for_each_param[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
+        self.inner.for_each_param[target](visitor, ctx)
+
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.inner.zero_grad[target](ctx)
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT], ctx: Optional[DeviceContext]
+    ) raises:
+        self.inner.polyak_from[target](src.inner, tau, ctx)
+
+    def reinit[
+        target: StaticString, INIT: Initializer
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.inner.reinit[target, INIT](ctx)
