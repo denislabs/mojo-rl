@@ -83,6 +83,9 @@ def save_params[
 ](mut model: M, path: String, ctx: Optional[DeviceContext] = None) raises:
     var w = CheckpointWriter()
     model.for_each_param[target](w, ctx)
+    # States (e.g. BatchNorm running stats) ride the same stream, right after
+    # the params — state-less models append nothing (format-compatible).
+    model.for_each_state[target](w, ctx)
     with open(path, "w") as f:
         f.write(w.content)
 
@@ -102,3 +105,4 @@ def load_params[
         values.append(Scalar[DT](atof(line)))
     var r = CheckpointReader(values^)
     model.for_each_param[target](r, ctx)
+    model.for_each_state[target](r, ctx)

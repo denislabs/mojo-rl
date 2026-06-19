@@ -19,6 +19,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
+from ..core.state import State
 from ..core.initializer import Initializer
 
 
@@ -334,8 +335,8 @@ struct BatchNorm2D[
 
     var gamma: Param["gamma", False, Self.C_]
     var beta: Param["beta", False, Self.C_]
-    var running_mean: Tensor  # [C] State
-    var running_var: Tensor  # [C] State
+    var running_mean: State["running_mean", Self.C_]  # [C] State
+    var running_var: State["running_var", Self.C_]  # [C] State
     var cache_xhat: Tensor  # [BATCH, FLAT]
     var cache_inv_std: Tensor  # [C]
     var cache_mean: Tensor  # [C] (GPU multiblock normalize)
@@ -352,8 +353,8 @@ struct BatchNorm2D[
     def __init__(out self):
         self.gamma = Param["gamma", False, Self.C_]()
         self.beta = Param["beta", False, Self.C_]()
-        self.running_mean = Tensor()
-        self.running_var = Tensor()
+        self.running_mean = State["running_mean", Self.C_]()
+        self.running_var = State["running_var", Self.C_]()
         self.cache_xhat = Tensor()
         self.cache_inv_std = Tensor()
         self.cache_mean = Tensor()
@@ -375,16 +376,16 @@ struct BatchNorm2D[
         bn.beta = Param["beta", False, Self.C_].make[target](ctx)
         for k in range(Self.C_):
             bn.gamma.val.data[k] = Scalar[DT](1.0)
-        bn.running_mean = Tensor.alloc(Self.C_)
-        bn.running_var = Tensor.alloc(Self.C_)
+        bn.running_mean = State["running_mean", Self.C_].make[target](ctx)
+        bn.running_var = State["running_var", Self.C_].make[target](ctx)
         for k in range(Self.C_):
-            bn.running_var.data[k] = Scalar[DT](1.0)
+            bn.running_var.t.data[k] = Scalar[DT](1.0)
         comptime if target != "cpu":
             var c = ctx.value()
             bn.gamma.val.upload(c)
             bn.beta.val.upload(c)
-            bn.running_mean.upload(c)
-            bn.running_var.upload(c)
+            bn.running_mean.t.upload(c)
+            bn.running_var.t.upload(c)
             # Multi-block scratch + channel caches.
             comptime PR = Self.C_ * BN2D_RBLOCKS
             bn.cache_inv_std.ensure_gpu(c, Self.C_)
@@ -416,8 +417,8 @@ struct BatchNorm2D[
             var out_p = out.data.unsafe_ptr()
             var g_p = self.gamma.val.data.unsafe_ptr()
             var b_p = self.beta.val.data.unsafe_ptr()
-            var rm_v = TileTensor(self.running_mean.data, row_major[Self.C_]())
-            var rv_v = TileTensor(self.running_var.data, row_major[Self.C_]())
+            var rm_v = TileTensor(self.running_mean.t.data, row_major[Self.C_]())
+            var rv_v = TileTensor(self.running_var.t.data, row_major[Self.C_]())
             var inv_n = Scalar[DT](1.0) / Scalar[DT](Float64(B * Self.SPATIAL))
             if self.training:
                 self.cache_xhat.ensure(B * Self.FLAT_DIM)
@@ -506,8 +507,8 @@ struct BatchNorm2D[
                 ](
                     self.bn_psum.lt["gpu", lpr](),
                     self.bn_psumsq.lt["gpu", lpr](),
-                    self.running_mean.lt["gpu", lc](),
-                    self.running_var.lt["gpu", lc](),
+                    self.running_mean.t.lt["gpu", lc](),
+                    self.running_var.t.lt["gpu", lc](),
                     self.cache_mean.lt["gpu", lc](),
                     self.cache_inv_std.lt["gpu", lc](),
                     grid_dim=Self.C_,
@@ -548,8 +549,8 @@ struct BatchNorm2D[
                     out.lt["gpu", l2d](),
                     self.gamma.val.lt["gpu", lc](),
                     self.beta.val.lt["gpu", lc](),
-                    self.running_mean.lt["gpu", lc](),
-                    self.running_var.lt["gpu", lc](),
+                    self.running_mean.t.lt["gpu", lc](),
+                    self.running_var.t.lt["gpu", lc](),
                     grid_dim=Self.C_,
                     block_dim=BN2D_TPB,
                 )

@@ -31,6 +31,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
+from ..core.state import State
 from ..core.initializer import Initializer
 
 
@@ -193,8 +194,8 @@ struct BatchNorm1D[
     var gamma: Param["gamma", False, Self.DIM_]
     var beta: Param["beta", False, Self.DIM_]
     # Running stats (State): EMA-updated in forward, never optimized.
-    var running_mean: Tensor
-    var running_var: Tensor
+    var running_mean: State["running_mean", Self.DIM_]
+    var running_var: State["running_var", Self.DIM_]
     # Training cache (owned storage — sound; not a back-pointer).
     var cache_xhat: Tensor  # [BATCH, DIM]
     var cache_inv_std: Tensor  # [DIM]
@@ -204,8 +205,8 @@ struct BatchNorm1D[
     def __init__(out self):
         self.gamma = Param["gamma", False, Self.DIM_]()
         self.beta = Param["beta", False, Self.DIM_]()
-        self.running_mean = Tensor()
-        self.running_var = Tensor()
+        self.running_mean = State["running_mean", Self.DIM_]()
+        self.running_var = State["running_var", Self.DIM_]()
         self.cache_xhat = Tensor()
         self.cache_inv_std = Tensor()
         self.cache_is_training = False
@@ -220,16 +221,16 @@ struct BatchNorm1D[
         bn.beta = Param["beta", False, Self.DIM_].make[target](ctx)
         for k in range(Self.DIM_):
             bn.gamma.val.data[k] = Scalar[DT](1.0)  # γ←1, β←0
-        bn.running_mean = Tensor.alloc(Self.DIM_)  # ←0
-        bn.running_var = Tensor.alloc(Self.DIM_)
+        bn.running_mean = State["running_mean", Self.DIM_].make[target](ctx)  # ←0
+        bn.running_var = State["running_var", Self.DIM_].make[target](ctx)
         for k in range(Self.DIM_):
-            bn.running_var.data[k] = Scalar[DT](1.0)  # σ²_run←1
+            bn.running_var.t.data[k] = Scalar[DT](1.0)  # σ²_run←1
         comptime if target != "cpu":
             var dctx = ctx.value()
             bn.gamma.val.upload(dctx)
             bn.beta.val.upload(dctx)  # zeros → device
-            bn.running_mean.upload(dctx)
-            bn.running_var.upload(dctx)
+            bn.running_mean.t.upload(dctx)
+            bn.running_var.t.upload(dctx)
         return bn^
 
     def set_training(mut self, v: Bool):
@@ -254,9 +255,9 @@ struct BatchNorm1D[
             )
             var beta_v = TileTensor(self.beta.val.data, row_major[Self.DIM_]())
             var rm_v = TileTensor(
-                self.running_mean.data, row_major[Self.DIM_]()
+                self.running_mean.t.data, row_major[Self.DIM_]()
             )
-            var rv_v = TileTensor(self.running_var.data, row_major[Self.DIM_]())
+            var rv_v = TileTensor(self.running_var.t.data, row_major[Self.DIM_]())
             if self.training:
                 self.cache_xhat.ensure(B * Self.DIM_)
                 self.cache_inv_std.ensure(Self.DIM_)
@@ -318,8 +319,8 @@ struct BatchNorm1D[
                     out.lt["gpu", l2d](),
                     self.gamma.val.lt["gpu", ld](),
                     self.beta.val.lt["gpu", ld](),
-                    self.running_mean.lt["gpu", ld](),
-                    self.running_var.lt["gpu", ld](),
+                    self.running_mean.t.lt["gpu", ld](),
+                    self.running_var.t.lt["gpu", ld](),
                     self.cache_xhat.lt["gpu", l2d](),
                     self.cache_inv_std.lt["gpu", ld](),
                     grid_dim=Self.DIM_,
@@ -338,8 +339,8 @@ struct BatchNorm1D[
                     out.lt["gpu", l2d](),
                     self.gamma.val.lt["gpu", ld](),
                     self.beta.val.lt["gpu", ld](),
-                    self.running_mean.lt["gpu", ld](),
-                    self.running_var.lt["gpu", ld](),
+                    self.running_mean.t.lt["gpu", ld](),
+                    self.running_var.t.lt["gpu", ld](),
                     grid_dim=Self.DIM_,
                     block_dim=BN_TPB,
                 )

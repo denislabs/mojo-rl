@@ -86,10 +86,10 @@ def test_bn2d_cpu_parity() raises:
     var mdg: Scalar[DT] = 0
     var mdb: Scalar[DT] = 0
     for f in range(C):
-        if abs(st.running_mean.data[f] - leg.running_mean.t.cpu[f]) > mrm:
-            mrm = abs(st.running_mean.data[f] - leg.running_mean.t.cpu[f])
-        if abs(st.running_var.data[f] - leg.running_var.t.cpu[f]) > mrv:
-            mrv = abs(st.running_var.data[f] - leg.running_var.t.cpu[f])
+        if abs(st.running_mean.t.data[f] - leg.running_mean.t.cpu[f]) > mrm:
+            mrm = abs(st.running_mean.t.data[f] - leg.running_mean.t.cpu[f])
+        if abs(st.running_var.t.data[f] - leg.running_var.t.cpu[f]) > mrv:
+            mrv = abs(st.running_var.t.data[f] - leg.running_var.t.cpu[f])
         if abs(st.gamma.grd.data[f] - leg.gamma.grd.cpu[f]) > mdg:
             mdg = abs(st.gamma.grd.data[f] - leg.gamma.grd.cpu[f])
         if abs(st.beta.grd.data[f] - leg.beta.grd.cpu[f]) > mdb:
@@ -140,7 +140,7 @@ def test_bn2d_gpu_parity() raises:
     gpu.vjp["gpu", B](TensorRefs[1](gx), ggo, TensorRefs[1](g_gi), Optional(c))
     g_out.download(c)
     g_gi.download(c)
-    gpu.running_var.download(c)
+    gpu.running_var.t.download(c)
     gpu.gamma.grd.download(c)
 
     var mo: Scalar[DT] = 0
@@ -151,8 +151,8 @@ def test_bn2d_gpu_parity() raises:
     var mrv: Scalar[DT] = 0
     var mdg: Scalar[DT] = 0
     for f in range(C):
-        if abs(gpu.running_var.data[f] - cpu.running_var.data[f]) > mrv:
-            mrv = abs(gpu.running_var.data[f] - cpu.running_var.data[f])
+        if abs(gpu.running_var.t.data[f] - cpu.running_var.t.data[f]) > mrv:
+            mrv = abs(gpu.running_var.t.data[f] - cpu.running_var.t.data[f])
         if abs(gpu.gamma.grd.data[f] - cpu.gamma.grd.data[f]) > mdg:
             mdg = abs(gpu.gamma.grd.data[f] - cpu.gamma.grd.data[f])
     print("  max Δ: out", mo, " gi", mgi, " rv", mrv, " dg", mdg)

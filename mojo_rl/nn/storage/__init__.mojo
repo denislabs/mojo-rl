@@ -15,8 +15,10 @@ parity tests (`Conv2D as LegacyConv2D`).
 from .core.tensor import Tensor, TensorImpl
 from .core.tensor_refs import TensorRefs
 from .core.tensor_pack import TensorPack
-from .core.param import Param, ParamVisitor
+from .core.param import Param, ParamVisitor, IsParam
+from .core.state import State, IsState
 from .core.module import Module
+from .core.walkers import for_each_param_auto, zero_grad_auto
 from .core.initializer import (
     Initializer, Kaiming, Xavier, Zero, Normal, Deterministic,
 )

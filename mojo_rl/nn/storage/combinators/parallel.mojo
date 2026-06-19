@@ -248,6 +248,12 @@ struct Parallel[*BRANCHES: Module](Module):
         comptime for i in range(Self.N):
             self.branches[i].for_each_param[target](visitor, ctx)
 
+    def for_each_state[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
+        comptime for i in range(Self.N):
+            self.branches[i].for_each_state[target](visitor, ctx)
+
     def zero_grad[
         target: StaticString
     ](mut self, ctx: Optional[DeviceContext]) raises:

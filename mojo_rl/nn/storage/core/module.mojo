@@ -17,6 +17,7 @@ from .tensor import Tensor
 from .tensor_refs import TensorRefs
 from .param import ParamVisitor
 from .walkers import for_each_param_auto, zero_grad_auto
+from .state import for_each_state_auto
 
 
 trait Module(Defaultable & Movable & ImplicitlyDeletable):
@@ -70,6 +71,16 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
         """Default: reflection-walk every `IsParam` field and zero its grad.
         Param-less leaves reflect to a no-op; combinators override to recurse."""
         zero_grad_auto[Self, target](self, ctx)
+
+    def for_each_state[target: StaticString, V: ParamVisitor](
+        mut self, mut visitor: V, ctx: Optional[DeviceContext]
+    ) raises:
+        """Default: reflection-walk every `IsState` field of the concrete leaf
+        and dispatch the visitor. The checkpoint path runs this right after
+        `for_each_param`, so State fields (e.g. BatchNorm running stats) are
+        persisted; the optimizer path (`for_each_param`) never reaches them.
+        State-less leaves reflect to a no-op; combinators override to recurse."""
+        for_each_state_auto[Self, V, target](self, visitor, ctx)
 
     def polyak_from[
         target: StaticString
