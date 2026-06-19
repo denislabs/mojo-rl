@@ -44,6 +44,7 @@ from .combinators.parallel import Parallel
 from .combinators.repeat import Repeat
 from .combinators.projected_residual import ProjectedResidual
 from .combinators.tokenwise import Tokenwise
+from .combinators.skip_concat import SkipConcat
 from .combinators.compute_graph import ComputeGraph
 from .optimizer.sgd import SGD
 from .optimizer.adam import Adam
