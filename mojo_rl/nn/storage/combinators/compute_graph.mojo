@@ -58,7 +58,7 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
     var children: Tuple[*Self.NODES]
     var pool: TensorPack[Self.NSLOT]  # 0..NUM_IN-1 = inputs, then node outs
     var gpool: TensorPack[Self.NSLOT]  # grads (zeroed + fan-out-accumulated)
-    var tmp: TensorPack[2]  # grad_inputs scratch (max arity 2)
+    var tmp: TensorPack[3]  # grad_inputs scratch (max arity 3)
     var slot_n: List[Int]  # logical elem count per slot (forward)
 
     def __init__(out self):
@@ -67,7 +67,7 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
         self.children = Tuple[*Self.NODES]()
         self.pool = TensorPack[Self.NSLOT]()
         self.gpool = TensorPack[Self.NSLOT]()
-        self.tmp = TensorPack[2]()
+        self.tmp = TensorPack[3]()
         self.slot_n = List[Int](length=Self.NSLOT, fill=0)
 
     @staticmethod
@@ -119,6 +119,16 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
                 self.children[i].forward[target, B, POLICY=POLICY](
                     TensorRefs[Self.NODES[i].ARITY](
                         self.pool[edges[i][0]], self.pool[edges[i][1]]
+                    ),
+                    self.pool[Self.NUM_IN + i],
+                    ctx,
+                )
+            elif Self.NODES[i].ARITY == 3:
+                self.children[i].forward[target, B, POLICY=POLICY](
+                    TensorRefs[Self.NODES[i].ARITY](
+                        self.pool[edges[i][0]],
+                        self.pool[edges[i][1]],
+                        self.pool[edges[i][2]],
                     ),
                     self.pool[Self.NUM_IN + i],
                     ctx,
@@ -227,6 +237,60 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
                         self.gpool[e1].lt["gpu", Layout.row_major(a1)](),
                         self.tmp[1].lt["gpu", Layout.row_major(a1)](),
                         grid_dim=(a1 + TPB - 1) // TPB,
+                        block_dim=TPB,
+                    )
+            elif Self.NODES[i].ARITY == 3:
+                comptime a0 = B * Self.NODES[i].IN_DIMS[0]
+                comptime a1 = B * Self.NODES[i].IN_DIMS[1]
+                comptime a2 = B * Self.NODES[i].IN_DIMS[2]
+                comptime if target == "cpu":
+                    self.tmp[0].ensure(a0)
+                    self.tmp[1].ensure(a1)
+                    self.tmp[2].ensure(a2)
+                else:
+                    self.tmp[0].ensure_gpu(ctx.value(), a0)
+                    self.tmp[1].ensure_gpu(ctx.value(), a1)
+                    self.tmp[2].ensure_gpu(ctx.value(), a2)
+                self.children[i].vjp[target, B, POLICY=POLICY](
+                    TensorRefs[Self.NODES[i].ARITY](
+                        self.pool[edges[i][0]],
+                        self.pool[edges[i][1]],
+                        self.pool[edges[i][2]],
+                    ),
+                    self.gpool[Self.NUM_IN + i],
+                    TensorRefs[Self.NODES[i].ARITY](
+                        self.tmp[0], self.tmp[1], self.tmp[2]
+                    ),
+                    ctx,
+                )
+                var e0 = edges[i][0]
+                var e1 = edges[i][1]
+                var e2 = edges[i][2]
+                comptime if target == "cpu":
+                    for q in range(a0):
+                        self.gpool[e0].data[q] += self.tmp[0].data[q]
+                    for q in range(a1):
+                        self.gpool[e1].data[q] += self.tmp[1].data[q]
+                    for q in range(a2):
+                        self.gpool[e2].data[q] += self.tmp[2].data[q]
+                else:
+                    var c = ctx.value()
+                    c.enqueue_function[_cg_accum_kernel[a0]](
+                        self.gpool[e0].lt["gpu", Layout.row_major(a0)](),
+                        self.tmp[0].lt["gpu", Layout.row_major(a0)](),
+                        grid_dim=(a0 + TPB - 1) // TPB,
+                        block_dim=TPB,
+                    )
+                    c.enqueue_function[_cg_accum_kernel[a1]](
+                        self.gpool[e1].lt["gpu", Layout.row_major(a1)](),
+                        self.tmp[1].lt["gpu", Layout.row_major(a1)](),
+                        grid_dim=(a1 + TPB - 1) // TPB,
+                        block_dim=TPB,
+                    )
+                    c.enqueue_function[_cg_accum_kernel[a2]](
+                        self.gpool[e2].lt["gpu", Layout.row_major(a2)](),
+                        self.tmp[2].lt["gpu", Layout.row_major(a2)](),
+                        grid_dim=(a2 + TPB - 1) // TPB,
                         block_dim=TPB,
                     )
         # Write external-input grads back (slots 0..NUM_IN-1) for chaining.
