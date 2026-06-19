@@ -1,0 +1,129 @@
+"""StopGradParams[Inner] — let grad flow through, freeze Inner's params.
+
+Forward: passthrough to `inner.forward`.
+Backward: grad flows to grad_input as normal, but Inner's params receive NO grad
+from this path (their grads end the call exactly as they began it). Inner's params
+stay VISIBLE to the optimizer (for_each_param passes through), so OTHER loss paths
+can still update them — contrast `primitives/StopGrad`, which zeros grad_input.
+
+The storage `Module.vjp` computes input-grad and param-grad together, so rather
+than ripple an `input_only` mode through every leaf, this wrapper SNAPSHOTs
+Inner's param grads, runs the full `inner.vjp` (correct grad_input, param grads
+accumulate), then RESTOREs the snapshot — undoing only this path's param-grad
+contribution while preserving any prior accumulation. Net result is identical to
+legacy's `vjp[mode="input_only"]`.
+"""
+
+from std.gpu.host import DeviceContext
+
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.initializer import Initializer
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+
+
+struct _GradStash(ParamVisitor):
+    """Two-pass param-grad save/restore. First walk (restoring=False) copies each
+    param's grad into `saved`; second walk (restoring=True) copies it back."""
+    var saved: List[Tensor]
+    var restoring: Bool
+    var idx: Int
+
+    def __init__(out self):
+        self.saved = List[Tensor]()
+        self.restoring = False
+        self.idx = 0
+
+    def visit[target: StaticString, N: Int](
+        mut self, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        if not self.restoring:
+            var t = Tensor.alloc(N)
+            comptime if target == "cpu":
+                for k in range(N):
+                    t.data[k] = grad.data[k]
+            else:
+                t.ensure_gpu(ctx.value(), N)
+                ctx.value().enqueue_copy(t.dev.value(), grad.dev.value())
+            self.saved.append(t^)
+        else:
+            comptime if target == "cpu":
+                for k in range(N):
+                    grad.data[k] = self.saved[self.idx].data[k]
+            else:
+                ctx.value().enqueue_copy(
+                    grad.dev.value(), self.saved[self.idx].dev.value()
+                )
+            self.idx += 1
+
+
+struct StopGradParams[Inner: Module](Module):
+    comptime ARITY = Self.Inner.ARITY
+    comptime IN_DIMS = Self.Inner.IN_DIMS
+    comptime OUT_DIM = Self.Inner.OUT_DIM
+
+    var inner: Self.Inner
+
+    def __init__(out self):
+        self.inner = Self.Inner()
+
+    @staticmethod
+    def make_cpu() raises -> Self:
+        var s = Self()
+        s.inner = Self.Inner.make_cpu()
+        return s^
+
+    @staticmethod
+    def make_gpu(ctx: DeviceContext) raises -> Self:
+        var s = Self()
+        s.inner = Self.Inner.make_gpu(ctx)
+        return s^
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin
+    ](
+        mut self, inputs: TensorRefs[Self.ARITY, o], mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.inner.forward[target, B](inputs, out, ctx)
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+    ](
+        mut self, forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor, grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        var stash = _GradStash()
+        self.inner.for_each_param[target](stash, ctx)  # snapshot
+        self.inner.vjp[target, B](forward_input, grad_output, grad_inputs, ctx)
+        stash.restoring = True
+        stash.idx = 0
+        self.inner.for_each_param[target](stash, ctx)  # restore (freeze params)
+
+    def for_each_param[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext]) raises:
+        # Params stay visible: other loss paths / the optimizer still see them.
+        self.inner.for_each_param[target](visitor, ctx)
+
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.inner.zero_grad[target](ctx)
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT], ctx: Optional[DeviceContext]
+    ) raises:
+        self.inner.polyak_from[target](src.inner, tau, ctx)
+
+    def reinit[
+        target: StaticString, INIT: Initializer
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.inner.reinit[target, INIT](ctx)

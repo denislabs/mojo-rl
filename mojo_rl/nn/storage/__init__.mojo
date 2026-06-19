@@ -46,6 +46,7 @@ from .combinators.projected_residual import ProjectedResidual
 from .combinators.tokenwise import Tokenwise
 from .combinators.skip_concat import SkipConcat
 from .combinators.branch_concat import BranchConcat
+from .combinators.stop_grad_params import StopGradParams
 from .combinators.compute_graph import ComputeGraph
 from .optimizer.sgd import SGD
 from .optimizer.adam import Adam
