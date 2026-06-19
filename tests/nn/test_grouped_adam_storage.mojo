@@ -19,7 +19,6 @@ from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.linear import Linear
 from mojo_rl.nn.storage.combinators.sequential import Sequential
 from mojo_rl.nn.storage.optimizer.adam import Adam
-from mojo_rl.nn.storage.optimizer.grouped_adam import GroupedAdam
 
 
 comptime D = 4
@@ -71,10 +70,10 @@ def main() raises:
         a.vjp["gpu", B](TensorRefs[1](x), go, TensorRefs[1](gi), Optional(c))
         optA.step["gpu"](a, Optional(c))
 
-    # Model B — GroupedAdam (arena, single kernel).
+    # Model B — Adam in arena mode (adopt → single kernel).
     var b = NET.make["gpu", Deterministic](Optional(c))
-    var optB = GroupedAdam(lr=1e-2)
-    optB.adopt(b, c)
+    var optB = Adam(lr=1e-2)
+    optB.adopt["gpu"](b, Optional(c))
     for step in range(K):
         var x = Tensor.alloc(B * D); var go = Tensor.alloc(B * O)
         _feed(x, go, step, c)
@@ -82,7 +81,7 @@ def main() raises:
         optB.zero_grad()
         b.forward["gpu", B](TensorRefs[1](x), out, Optional(c))
         b.vjp["gpu", B](TensorRefs[1](x), go, TensorRefs[1](gi), Optional(c))
-        optB.step(c)
+        optB.step["gpu"](b, Optional(c))
 
     var ca = _ValCapture(); a.for_each_param["gpu"](ca, Optional(c))
     var cb = _ValCapture(); b.for_each_param["gpu"](cb, Optional(c))
