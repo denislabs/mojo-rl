@@ -59,6 +59,7 @@ from .optimizer.adam import Adam, AdamW
 from .optimizer.schedules import LinearWarmupSchedule
 from .optimizer.grad_clip import clip_grad_norm
 from .optimizer.scalar_adam import ScalarAdam
+from .optimizer.grouped_adam import GroupedAdam
 from .loss.mse import mse_forward, mse_backward
 from .loss.mse_loss import MSELoss
 from .loss.sac import polyak_tensor, sac_target_y
