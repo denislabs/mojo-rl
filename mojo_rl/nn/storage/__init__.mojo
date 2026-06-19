@@ -33,6 +33,7 @@ from .primitives.linear_sigmoid import LinearSigmoid
 from .primitives.linear_swish import LinearSwish
 from .primitives.block_linear import BlockLinear
 from .primitives.tied_linear import TiedLinear
+from .primitives.gru_cell import GRUCell
 from .primitives.add import Add
 from .primitives.elementwise import Elementwise
 from .primitives.activations import (
