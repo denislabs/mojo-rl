@@ -1,35 +1,33 @@
-"""StochasticActor — actor head wrapping a feature trunk + GaussianHead.
+"""StochasticActor — actor net: feature trunk + (mu, log_std) heads (storage).
 
-  obs → Sequential[*TRUNK] → (BATCH × HIDDEN)
-                             → Parallel[Linear, Linear]
-                             → packed [mu | log_std]
+  obs → Sequential[*TRUNK] → (B × HIDDEN) → Parallel[Linear, Linear]
+                                          → packed [mu | log_std]  (B × 2·ACT)
 
-Composes the Phase C combinators with Phase B Linear. Same scaffold
-collapse as everywhere else: `ts: TargetStorage`, `backward[mode]`
-collapses v1's `backward` + `backward_input`, walkers recurse into
-trunk + heads.
+A plain storage `Module` (ARITY 1). The trunk→heads intermediate is the owned
+`_mid` Tensor (+ `_mid_grad` for the backward), mirroring how storage Sequential
+caches per-child activations: forward writes `_mid` (trunk out) then heads read it;
+vjp uses the cached `_mid` as heads' forward-input and routes the mid-grad into the
+trunk's vjp. RSample is applied SEPARATELY by the SAC actor block (this net stops
+at [mu | log_std]).
 
-The trunk-to-heads mid slab is owned by this combinator (not by the
-inner Sequential or Parallel — they each own their own internal
-slabs).
+STORAGE migration (Stage 5): legacy TargetStorage/mptr/TileTensor/`mode`/
+typed_view gone; the trunk+heads are gated storage combinators so correctness is
+inherited. Walkers recurse into trunk + heads.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from mojo_rl.nn.core.module import Module, typed_view, typed_view_mut, mptr
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
-)
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.combinators.parallel import Parallel
-from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.param import ParamVisitor
+from mojo_rl.nn.storage.core.initializer import Initializer
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.storage.core.walkers import join_name
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.combinators.parallel import Parallel
+from mojo_rl.nn.storage.primitives.linear import Linear
 
 
 struct StochasticActor[
@@ -42,18 +40,15 @@ struct StochasticActor[
     comptime OUT_DIM = 2 * Self.ACT_DIM
     comptime N_TRUNK = Self.TRUNK.size
     comptime HIDDEN = Self.TRUNK[Self.N_TRUNK - 1].OUT_DIM
-
-    var trunk: Sequential[*Self.TRUNK]
-    var heads: Parallel[
+    comptime Heads = Parallel[
         Linear[Self.HIDDEN, Self.ACT_DIM],
         Linear[Self.HIDDEN, Self.ACT_DIM],
     ]
 
-    var mid_cpu: List[Scalar[DT]]
-    var mid_dev: Optional[DeviceBuffer[DT]]
-    var mid_cap: Int
-
-    var ts: TargetStorage
+    var trunk: Sequential[*Self.TRUNK]
+    var heads: Self.Heads
+    var _mid: Tensor       # trunk output (= heads input), cached for vjp
+    var _mid_grad: Tensor  # grad wrt _mid, routed trunk-ward in vjp
 
     def __init__(out self):
         comptime assert (
@@ -63,159 +58,86 @@ struct StochasticActor[
             Self.TRUNK[0].IN_DIMS[0] == Self.OBS_DIM
         ), "StochasticActor: TRUNK[0].IN_DIM must equal OBS_DIM"
         self.trunk = Sequential[*Self.TRUNK]()
-        self.heads = Parallel[
-            Linear[Self.HIDDEN, Self.ACT_DIM],
-            Linear[Self.HIDDEN, Self.ACT_DIM],
-        ]()
-        self.mid_cpu = List[Scalar[DT]]()
-        self.mid_dev = None
-        self.mid_cap = 0
-        self.ts = TargetStorage.make_uninit()
+        self.heads = Self.Heads()
+        self._mid = Tensor()
+        self._mid_grad = Tensor()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None,) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
         comptime assert (
             target == "cpu" or target == "gpu"
         ), "StochasticActor: target must be 'cpu' or 'gpu'"
         var a = Self()
-        a.trunk = Sequential[*Self.TRUNK].make[target, INIT](ctx=ctx)
-        a.heads = Parallel[
-            Linear[Self.HIDDEN, Self.ACT_DIM],
-            Linear[Self.HIDDEN, Self.ACT_DIM],
-        ].make[target, INIT](ctx=ctx)
-        comptime if target == "cpu":
-            a.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["StochasticActor.make[target='gpu']"](ctx)
-            a.mid_dev = ctx_v.enqueue_create_buffer[DT](1)
-            a.ts = TargetStorage.make_gpu(ctx_v)
+        a.trunk = Sequential[*Self.TRUNK].make[target, INIT](ctx)
+        a.heads = Self.Heads.make[target, INIT](ctx)
         return a^
 
-    def _ensure_mid_cpu(mut self, needed: Int):
-        # List owns the storage (RAII): grow in place, no manual alloc/free.
-        if self.mid_cap < needed:
-            self.mid_cpu.resize(needed, Scalar[DT](0))
-            self.mid_cap = needed
-
-    def _ensure_mid_gpu(mut self, needed: Int) raises:
-        if self.mid_cap < needed:
-            self.mid_dev = self.ts.ctx.value().enqueue_create_buffer[DT](needed)
-            self.mid_cap = needed
-
-    # ----- Forward ---------------------------------------------------------
-
     def forward[
-        target: StaticString,
-        BATCH: Int,
+        target: StaticString, B: Int, o: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True,
-            dtype=DT,
-            address_space=AddressSpace.GENERIC,
-            element_size=1,
-            origin=MutAnyOrigin,
-            ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["StochasticActor", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
-        comptime if target == "cpu":
-            self._ensure_mid_cpu(BATCH * Self.HIDDEN)
-            var mid = TileTensor(
-                mptr(self.mid_cpu.unsafe_ptr()),
-                row_major[BATCH, Self.HIDDEN](),
-            )
-            self.trunk.forward[target, BATCH, POLICY=POLICY](input, output=mid)
-            self.heads.forward[target, BATCH, POLICY=POLICY](mid, output=output)
-        else:
-            self._ensure_mid_gpu(BATCH * Self.HIDDEN)
-            var mid = TileTensor(
-                mptr(self.mid_dev.value().unsafe_ptr()),
-                row_major[BATCH, Self.HIDDEN](),
-            )
-            self.trunk.forward[target, BATCH, POLICY=POLICY](input, output=mid)
-            self.heads.forward[target, BATCH, POLICY=POLICY](mid, output=output)
-
-    # ----- Backward --------------------------------------------------------
+        self.trunk.forward[target, B, POLICY=POLICY](inputs, self._mid, ctx)
+        self.heads.forward[target, B, POLICY=POLICY](
+            TensorRefs[1](self._mid), out, ctx
+        )
 
     def vjp[
-        target: StaticString,
-        BATCH: Int,
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT,
-            address_space=AddressSpace.GENERIC,
-            element_size=1,
-            origin=MutAnyOrigin,
-            ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["StochasticActor", target](self.ts.target_tag)
-        var grad_input = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
-        comptime if target == "cpu":
-            self._ensure_mid_cpu(BATCH * Self.HIDDEN)
-            var mid = TileTensor(
-                mptr(self.mid_cpu.unsafe_ptr()),
-                row_major[BATCH, Self.HIDDEN](),
-            )
-            self.heads.vjp[
-                target,
-                BATCH,
-                POLICY=POLICY,
-                mode=mode,
-            ](grad_output, mid)
-            self.trunk.vjp[
-                target,
-                BATCH,
-                POLICY=POLICY,
-                mode=mode,
-            ](mid, grad_input)
-        else:
-            self._ensure_mid_gpu(BATCH * Self.HIDDEN)
-            var mid = TileTensor(
-                mptr(self.mid_dev.value().unsafe_ptr()),
-                row_major[BATCH, Self.HIDDEN](),
-            )
-            self.heads.vjp[
-                target,
-                BATCH,
-                POLICY=POLICY,
-                mode=mode,
-            ](grad_output, mid)
-            self.trunk.vjp[
-                target,
-                BATCH,
-                POLICY=POLICY,
-                mode=mode,
-            ](mid, grad_input)
-
-    # ----- Walkers ---------------------------------------------------------
+        self.heads.vjp[target, B, POLICY=POLICY](
+            TensorRefs[1](self._mid),
+            grad_output,
+            TensorRefs[1](self._mid_grad),
+            ctx,
+        )
+        self.trunk.vjp[target, B, POLICY=POLICY](
+            forward_input, self._mid_grad, grad_inputs, ctx
+        )
 
     def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["StochasticActor", target](self.ts.target_tag)
-        var sep = "." if prefix.byte_length() > 0 else ""
-        self.trunk.for_each_param[target, V](prefix + sep + "trunk", visitor)
-        self.heads.for_each_param[target, V](prefix + sep + "heads", visitor)
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.trunk.for_each_param[target](
+            visitor, ctx, join_name(prefix, String("trunk"))
+        )
+        self.heads.for_each_param[target](
+            visitor, ctx, join_name(prefix, String("heads"))
+        )
 
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["StochasticActor", target](self.ts.target_tag)
-        self.trunk.zero_grad[target]()
-        self.heads.zero_grad[target]()
+    def for_each_state[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.trunk.for_each_state[target](
+            visitor, ctx, join_name(prefix, String("trunk"))
+        )
+        self.heads.for_each_state[target](
+            visitor, ctx, join_name(prefix, String("heads"))
+        )
+
+    def zero_grad[target: StaticString](
+        mut self, ctx: Optional[DeviceContext]
+    ) raises:
+        self.trunk.zero_grad[target](ctx)
+        self.heads.zero_grad[target](ctx)
+
+    def polyak_from[target: StaticString](
+        mut self, mut src: Self, tau: Scalar[DT], ctx: Optional[DeviceContext]
+    ) raises:
+        self.trunk.polyak_from[target](src.trunk, tau, ctx)
+        self.heads.polyak_from[target](src.heads, tau, ctx)
