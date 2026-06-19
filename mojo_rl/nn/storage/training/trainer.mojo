@@ -28,15 +28,17 @@ from ..core.module import Module
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
 from ..optimizer.adam import Adam
+from ..optimizer.optimizer import Optimizer
 from ..loss.cross_entropy import CrossEntropyLoss
 
 
 struct Trainer[
     MODEL: Module, NC: Int, IN: Int, BATCH: Int, target: StaticString,
     POLICY: AMPPolicy = NoAMP,
+    OPT: Optimizer = Adam,
 ](Movable & ImplicitlyDeletable):
     var model: Self.MODEL
-    var opt: Adam
+    var opt: Self.OPT
     var loss: CrossEntropyLoss[Self.NC]
     var batch_x: Tensor
     var batch_y: Tensor
@@ -52,7 +54,7 @@ struct Trainer[
 
     def __init__(out self):
         self.model = Self.MODEL()
-        self.opt = Adam()
+        self.opt = Self.OPT()
         self.loss = CrossEntropyLoss[Self.NC]()
         self.batch_x = Tensor()
         self.batch_y = Tensor()
@@ -83,7 +85,12 @@ struct Trainer[
         else:
             t.loss = CrossEntropyLoss[Self.NC].make_gpu(ctx.value())
             # batch_x/batch_y carry sub-buffer views on GPU — no owned slab.
-        t.opt = Adam(lr=lr)
+        t.opt = Self.OPT()
+        t.opt.set_lr(lr)
+        # Engage the optimizer's contiguous-arena mode (GPU single-kernel step);
+        # a NO-OP on CPU. Must come AFTER the model is made + initialized — it
+        # rebinds the model's param buffers to arena slices.
+        t.opt.adopt[Self.target](t.model, ctx)
         return t^
 
     @staticmethod
@@ -149,7 +156,7 @@ struct Trainer[
                 )
             else:
                 self._slice_train(x0, y0)
-            self.model.zero_grad[Self.target](ctx)
+            self.opt.zero_grad[Self.target](self.model, ctx)
             self.model.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 TensorRefs[Self.MODEL.ARITY](self.batch_x), self.logits, ctx
             )

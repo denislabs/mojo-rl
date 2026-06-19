@@ -19,6 +19,7 @@ from ..core.param import ParamVisitor
 from ..core.module import Module
 from .param_arena import ParamArena
 from .grad_clip import clip_grad_norm, clip_arena_grads
+from .optimizer import Optimizer
 
 
 def _sgd_kernel[
@@ -57,12 +58,16 @@ def _grouped_sgd_kernel(
     val[i] -= lr * d
 
 
-struct SGD(Movable, ParamVisitor):
+struct SGD(Movable, ParamVisitor, Optimizer):
     var lr: Scalar[DT]
     var wd: Scalar[DT]
     var arena: ParamArena
 
-    def __init__(out self, lr: Scalar[DT] = 1e-2, wd: Scalar[DT] = 0.0):
+    def __init__(out self):
+        """No-arg default (satisfies Defaultable for the generic Trainer)."""
+        self = Self(lr=Scalar[DT](1e-2))
+
+    def __init__(out self, lr: Scalar[DT], wd: Scalar[DT] = 0.0):
         self.lr = lr
         self.wd = wd
         self.arena = ParamArena()
@@ -100,9 +105,21 @@ struct SGD(Movable, ParamVisitor):
             block_dim=TPB,
         )
 
-    def zero_grad(mut self) raises:
-        """Adopted GPU only: zero the grad arena in ONE fill."""
-        self.arena.zero_grad()
+    def zero_grad[
+        target: StaticString, M: Module
+    ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
+        """GPU+adopted → zero the grad arena in ONE fill; else per-param."""
+        comptime if target == "gpu":
+            if self.arena.adopted:
+                self.arena.zero_grad()
+                return
+        model.zero_grad[target](ctx)
+
+    def set_lr(mut self, lr: Scalar[DT]):
+        self.lr = lr
+
+    def get_lr(self) -> Scalar[DT]:
+        return self.lr
 
     def clip_grads[
         target: StaticString, M: Module

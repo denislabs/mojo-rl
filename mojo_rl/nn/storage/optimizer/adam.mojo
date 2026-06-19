@@ -29,6 +29,7 @@ from ..core.param import ParamVisitor
 from ..core.module import Module
 from .param_arena import ParamArena
 from .grad_clip import clip_grad_norm, clip_arena_grads
+from .optimizer import Optimizer
 
 
 def _adam_update_kernel[
@@ -98,7 +99,7 @@ def _grouped_adam_kernel(
     val[i] = p - lr * m_hat / (sqrt(v_hat) + eps)
 
 
-struct Adam(Movable, ParamVisitor):
+struct Adam(Movable, ParamVisitor, Optimizer):
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
     var beta2: Scalar[DT]
@@ -114,9 +115,13 @@ struct Adam(Movable, ParamVisitor):
     var m_arena: Tensor
     var v_arena: Tensor
 
+    def __init__(out self):
+        """No-arg default (satisfies Defaultable for the generic Trainer)."""
+        self = Self(lr=Scalar[DT](1e-3))
+
     def __init__(
         out self,
-        lr: Scalar[DT] = 1e-3,
+        lr: Scalar[DT],  # required → disambiguates from the no-arg ctor
         beta1: Scalar[DT] = 0.9,
         beta2: Scalar[DT] = 0.999,
         eps: Scalar[DT] = 1e-8,
@@ -191,10 +196,22 @@ struct Adam(Movable, ParamVisitor):
             block_dim=TPB,
         )
 
-    def zero_grad(mut self) raises:
-        """Adopted GPU only: zero the grad arena in ONE fill. (CPU / un-adopted:
-        use `model.zero_grad[target]`.)"""
-        self.arena.zero_grad()
+    def zero_grad[
+        target: StaticString, M: Module
+    ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
+        """GPU+adopted → zero the grad arena in ONE fill; else per-param via the
+        model."""
+        comptime if target == "gpu":
+            if self.arena.adopted:
+                self.arena.zero_grad()
+                return
+        model.zero_grad[target](ctx)
+
+    def set_lr(mut self, lr: Scalar[DT]):
+        self.lr = lr
+
+    def get_lr(self) -> Scalar[DT]:
+        return self.lr
 
     def clip_grads[
         target: StaticString, M: Module

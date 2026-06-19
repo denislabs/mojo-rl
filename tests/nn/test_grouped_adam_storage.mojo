@@ -78,7 +78,7 @@ def main() raises:
         var x = Tensor.alloc(B * D); var go = Tensor.alloc(B * O)
         _feed(x, go, step, c)
         var out = Tensor.alloc(B * O); var gi = Tensor.alloc(B * D)
-        optB.zero_grad()
+        optB.zero_grad["gpu"](b, Optional(c))
         b.forward["gpu", B](TensorRefs[1](x), out, Optional(c))
         b.vjp["gpu", B](TensorRefs[1](x), go, TensorRefs[1](gi), Optional(c))
         optB.step["gpu"](b, Optional(c))
