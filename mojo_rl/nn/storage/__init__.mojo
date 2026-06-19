@@ -40,6 +40,7 @@ from .primitives.binary_elementwise import (
 from .primitives.concat import Concat2
 from .combinators.sequential import Sequential
 from .combinators.residual import Residual
+from .combinators.parallel import Parallel
 from .combinators.compute_graph import ComputeGraph
 from .optimizer.sgd import SGD
 from .optimizer.adam import Adam
