@@ -68,6 +68,19 @@ from .primitives.clamp import Clamp
 from .primitives.gather_cols import GatherCols
 from .primitives.dueling_head import DuelingHead
 from .primitives.dueling_head_c51 import DuelingHeadC51
+# Phase E remainder — RL-utility + LeWM leaves
+from .primitives.slice import Slice
+from .primitives.reduce import Reduce, Sum, Mean, ReduceOp, SumOp, MeanOp
+from .primitives.reduce_max import ReduceMax
+from .primitives.gather_action_slice import GatherActionSlice
+from .primitives.zero_linear import ZeroLinear
+from .primitives.silu import SiLU
+from .primitives.stop_grad import StopGrad
+from .primitives.sigreg import SIGReg
+from .primitives.layer_norm_no_affine import LayerNormNoAffine
+from .primitives.mse_per_sample import MSEPerSample
+from .primitives.gate import Gate
+from .primitives.modulate import Modulate
 from .combinators.sequential import Sequential
 from .combinators.residual import Residual
 from .combinators.parallel import Parallel
