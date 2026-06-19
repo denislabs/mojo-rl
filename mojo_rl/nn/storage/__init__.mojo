@@ -47,6 +47,9 @@ from .primitives.min_max_norm import MinMaxNorm
 from .primitives.sim_norm import SimNorm
 from .primitives.noisy_linear import NoisyLinear
 from .primitives.flatten import Flatten
+from .primitives.dropout import Dropout
+from .primitives.avg_pool_2d import AvgPool2D
+from .primitives.max_pool_2d import MaxPool2D
 from .primitives.embedding import Embedding
 from .primitives.rsample import RSample
 from .primitives.binary_elementwise import (

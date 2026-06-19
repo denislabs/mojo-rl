@@ -1,0 +1,266 @@
+"""AvgPool2D[C, K, S, P, H, W] — 2D average pooling on the storage surface.
+
+Storage-surface port of legacy `nn.primitives.AvgPool2D` (the kernels + SIMD
+math are carried VERBATIM — only the surface changed). `[B, C·H·W]` in,
+`[B, C·OH·OW]` out where `OH = (H + 2P - K)//S + 1`, `OW = (W + 2P - K)//S + 1`.
+
+Padding convention: `count_include_pad = True` (PyTorch default). Denominator is
+always `K·K`; padded cells contribute 0 to the sum but still count in the
+average. No params, no cache — backward broadcasts each output gradient
+uniformly to its `K·K` input window with weight `1/(K·K)`; padded lanes never
+receive gradient. The legacy two-phase / cache machinery dissolves because the
+storage surface never needs the input in backward.
+
+GPU layout: forward is output-indexed (1 thread per output cell); backward is
+input-indexed (1 thread per input cell, looping over overlapping output windows)
+— no atomics even for overlapping pool configurations.
+"""
+
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor, TileTensor, row_major
+
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
+
+
+def _avg_pool_2d_forward_kernel[
+    BATCH: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
+    inv_kk: Scalar[DT],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = BATCH * OUT_FLAT
+    if idx >= total:
+        return
+    var b = idx // OUT_FLAT
+    var out_pos = idx % OUT_FLAT
+    var spatial_out = OH * OW
+    var c = out_pos // spatial_out
+    var rem = out_pos % spatial_out
+    var oh = rem // OW
+    var ow = rem % OW
+
+    var in_c_off = c * H * W
+    var s: Scalar[DT] = 0.0
+    for kh in range(K):
+        var ih = oh * S + kh - P
+        if ih < 0 or ih >= H:
+            continue
+        for kw in range(K):
+            var iw = ow * S + kw - P
+            if iw < 0 or iw >= W:
+                continue
+            s += rebind[Scalar[DT]](input[b, in_c_off + ih * W + iw])
+    output[b, out_pos] = s * inv_kk
+
+
+def _avg_pool_2d_backward_kernel[
+    BATCH: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int,
+](
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
+    ],
+    grad_input: LayoutTensor[
+        DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin,
+    ],
+    inv_kk: Scalar[DT],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var total = BATCH * IN_FLAT
+    if idx >= total:
+        return
+    var b = idx // IN_FLAT
+    var in_pos = idx % IN_FLAT
+    var hw = H * W
+    var c = in_pos // hw
+    var rem = in_pos % hw
+    var ih = rem // W
+    var iw = rem % W
+
+    # Output windows that contain input cell (ih, iw).
+    var oh_max_raw = ih + P
+    var ow_max_raw = iw + P
+    if oh_max_raw < 0 or ow_max_raw < 0:
+        grad_input[b, in_pos] = Scalar[DT](0.0)
+        return
+    var oh_top = oh_max_raw // S
+    var ow_top = ow_max_raw // S
+    var oh_bot_raw = ih + P - K + 1
+    var ow_bot_raw = iw + P - K + 1
+    var oh_bot: Int = 0
+    if oh_bot_raw > 0:
+        oh_bot = (oh_bot_raw + S - 1) // S
+    var ow_bot: Int = 0
+    if ow_bot_raw > 0:
+        ow_bot = (ow_bot_raw + S - 1) // S
+    if oh_top >= OH:
+        oh_top = OH - 1
+    if ow_top >= OW:
+        ow_top = OW - 1
+
+    var spatial_out = OH * OW
+    var out_c_off = c * spatial_out
+    var acc: Scalar[DT] = 0.0
+    var oh = oh_bot
+    while oh <= oh_top:
+        var ow = ow_bot
+        while ow <= ow_top:
+            acc += rebind[Scalar[DT]](
+                grad_output[b, out_c_off + oh * OW + ow]
+            )
+            ow += 1
+        oh += 1
+    grad_input[b, in_pos] = acc * inv_kk
+
+
+struct AvgPool2D[
+    C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+](Module):
+    comptime ARITY: Int = 1
+    comptime OH: Int = (Self.H + 2 * Self.P - Self.K) // Self.S + 1
+    comptime OW: Int = (Self.W + 2 * Self.P - Self.K) // Self.S + 1
+    comptime IN_FLAT: Int = Self.C * Self.H * Self.W
+    comptime OUT_FLAT: Int = Self.C * Self.OH * Self.OW
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_FLAT)
+    comptime OUT_DIM = Self.OUT_FLAT
+
+    def __init__(out self):
+        pass
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        comptime assert target == "cpu" or target == "gpu", (
+            "AvgPool2D: target must be 'cpu' or 'gpu'"
+        )
+        comptime assert Self.K > 0 and Self.S > 0, (
+            "AvgPool2D: K and S must be positive"
+        )
+        comptime assert Self.OH > 0 and Self.OW > 0, (
+            "AvgPool2D: invalid spatial shape — check H/W/K/S/P"
+        )
+        return Self()
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
+    ](
+        mut self,
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ref in0 = inputs[0]
+        var inv_kk = Scalar[DT](1.0 / Float64(Self.K * Self.K))
+        comptime if target == "cpu":
+            out.ensure(B * Self.OUT_FLAT)
+            for b in range(B):
+                var in_base = b * Self.IN_FLAT
+                var out_base = b * Self.OUT_FLAT
+                for c in range(Self.C):
+                    var in_c_base = in_base + c * Self.H * Self.W
+                    var out_c_base = out_base + c * Self.OH * Self.OW
+                    for oh in range(Self.OH):
+                        for ow in range(Self.OW):
+                            var s: Scalar[DT] = 0.0
+                            for kh in range(Self.K):
+                                var ih = oh * Self.S + kh - Self.P
+                                if ih < 0 or ih >= Self.H:
+                                    continue
+                                for kw in range(Self.K):
+                                    var iw = ow * Self.S + kw - Self.P
+                                    if iw < 0 or iw >= Self.W:
+                                        continue
+                                    s += in0.data[in_c_base + ih * Self.W + iw]
+                            out.data[out_c_base + oh * Self.OW + ow] = (
+                                s * inv_kk
+                            )
+        else:
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT_FLAT)
+            comptime total = B * Self.OUT_FLAT
+            comptime n_blocks = (total + TPB - 1) // TPB
+            c.enqueue_function[
+                _avg_pool_2d_forward_kernel[
+                    B, Self.C, Self.K, Self.S, Self.P,
+                    Self.H, Self.W, Self.OH, Self.OW,
+                    Self.IN_FLAT, Self.OUT_FLAT,
+                ]
+            ](
+                in0.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                out.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                inv_kk,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
+
+    def vjp[
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ref gin = grad_inputs[0]
+        var inv_kk = Scalar[DT](1.0 / Float64(Self.K * Self.K))
+        comptime if target == "cpu":
+            gin.ensure(B * Self.IN_FLAT)
+            for k in range(B * Self.IN_FLAT):
+                gin.data[k] = Scalar[DT](0.0)
+            for b in range(B):
+                var in_base = b * Self.IN_FLAT
+                var out_base = b * Self.OUT_FLAT
+                for c in range(Self.C):
+                    var in_c_base = in_base + c * Self.H * Self.W
+                    var out_c_base = out_base + c * Self.OH * Self.OW
+                    for oh in range(Self.OH):
+                        for ow in range(Self.OW):
+                            var go_val = (
+                                grad_output.data[out_c_base + oh * Self.OW + ow]
+                                * inv_kk
+                            )
+                            for kh in range(Self.K):
+                                var ih = oh * Self.S + kh - Self.P
+                                if ih < 0 or ih >= Self.H:
+                                    continue
+                                for kw in range(Self.K):
+                                    var iw = ow * Self.S + kw - Self.P
+                                    if iw < 0 or iw >= Self.W:
+                                        continue
+                                    gin.data[
+                                        in_c_base + ih * Self.W + iw
+                                    ] += go_val
+        else:
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.IN_FLAT)
+            comptime total = B * Self.IN_FLAT
+            comptime n_blocks = (total + TPB - 1) // TPB
+            c.enqueue_function[
+                _avg_pool_2d_backward_kernel[
+                    B, Self.C, Self.K, Self.S, Self.P,
+                    Self.H, Self.W, Self.OH, Self.OW,
+                    Self.IN_FLAT, Self.OUT_FLAT,
+                ]
+            ](
+                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                gin.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                inv_kk,
+                grid_dim=n_blocks, block_dim=TPB,
+            )
+
+    # for_each_param / zero_grad / polyak_from inherit the Module defaults
+    # (param-less → no-op).
