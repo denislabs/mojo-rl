@@ -55,7 +55,9 @@ from .combinators.branch_concat import BranchConcat
 from .combinators.stop_grad_params import StopGradParams
 from .combinators.compute_graph import ComputeGraph
 from .optimizer.sgd import SGD
-from .optimizer.adam import Adam
+from .optimizer.adam import Adam, AdamW
+from .optimizer.schedules import LinearWarmupSchedule
+from .optimizer.grad_clip import clip_grad_norm
 from .loss.mse import mse_forward, mse_backward
 from .loss.mse_loss import MSELoss
 from .loss.sac import polyak_tensor, sac_target_y

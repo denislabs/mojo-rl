@@ -165,3 +165,11 @@ struct Adam(Movable, ParamVisitor):
                 grid_dim=nblk,
                 block_dim=TPB,
             )
+
+
+# AdamW is just Adam with decoupled weight decay (`wd > 0`, gated per param by
+# APPLY_DECAY) — the `_adam_update_kernel` / CPU path already apply `p -= lr·wd·p`
+# before the moment update, which is AdamW's decoupled-decay rule. The alias is
+# for API parity with the legacy `nn.optimizer.AdamW`; construct as
+# `AdamW(lr=..., wd=0.01)` (pass a nonzero `wd` — the Adam default is 0.0).
+comptime AdamW = Adam
