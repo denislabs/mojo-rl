@@ -125,4 +125,13 @@ from .loss.mse import mse_forward, mse_backward
 from .loss.mse_loss import MSELoss
 from .loss.sac import polyak_tensor, sac_target_y
 from .loss.cross_entropy import CrossEntropyLoss
+from .loss.soft_cross_entropy import SoftCrossEntropyLoss
+from .loss.gaussian_nll_loss import GaussianNLLLoss
+from .loss.sequence_cross_entropy import SequenceCrossEntropyLoss
+from .loss.two_hot import (
+    compute_bins, compute_symlog_bins, fill_bins, fill_symlog_bins,
+    two_hot_encode, two_hot_encode_batch, two_hot_encode_symlog_batch,
+    decode_value, decode_value_batch, decode_value_batch_linear,
+    symlog, symexp,
+)
 from .training.trainer import Trainer
