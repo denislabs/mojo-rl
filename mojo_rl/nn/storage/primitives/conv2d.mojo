@@ -41,6 +41,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
 from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 comptime CONV_DW_TPB: Int = 128
@@ -354,7 +355,7 @@ struct Conv2D[IC_: Int, OC_: Int, K_: Int, S_: Int, P_: Int, H_: Int, W_: Int](
         return c^
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         inputs: TensorRefs[1, o],
@@ -458,7 +459,11 @@ struct Conv2D[IC_: Int, OC_: Int, K_: Int, S_: Int, P_: Int, H_: Int, W_: Int](
             )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         forward_input: TensorRefs[1, ofi],

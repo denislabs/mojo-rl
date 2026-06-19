@@ -20,6 +20,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
 
 
 def _resid_add_kernel[
@@ -59,7 +60,7 @@ struct Residual[Inner: Module](Module):
         return r^
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         inputs: TensorRefs[1, o],
@@ -67,7 +68,7 @@ struct Residual[Inner: Module](Module):
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref in0 = inputs[0]
-        self.inner.forward[target, B](
+        self.inner.forward[target, B, POLICY=POLICY](
             TensorRefs[Self.Inner.ARITY](in0), self.mid, ctx
         )
         comptime N = B * Self.DIM
@@ -96,7 +97,8 @@ struct Residual[Inner: Module](Module):
             )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         forward_input: TensorRefs[1, ofi],
@@ -107,7 +109,7 @@ struct Residual[Inner: Module](Module):
         ref fin = forward_input[0]
         ref gin = grad_inputs[0]
         # mid := grad wrt inner's input; then grad_input = mid + grad_output.
-        self.inner.vjp[target, B](
+        self.inner.vjp[target, B, POLICY=POLICY](
             TensorRefs[Self.Inner.ARITY](fin),
             grad_output,
             TensorRefs[Self.Inner.ARITY](self.mid),

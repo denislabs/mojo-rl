@@ -27,6 +27,7 @@ from ..core.tensor_pack import TensorPack
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
 from ..primitives.linear import _accum_kernel  # dst[i] += src[i]
 
 
@@ -142,7 +143,7 @@ struct Parallel[*BRANCHES: Module](Module):
         return p^
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         inputs: TensorRefs[1, o],
@@ -151,7 +152,7 @@ struct Parallel[*BRANCHES: Module](Module):
     ) raises:
         ref in0 = inputs[0]
         comptime for i in range(Self.N):
-            self.branches[i].forward[target, B](
+            self.branches[i].forward[target, B, POLICY=POLICY](
                 TensorRefs[Self.BRANCHES[i].ARITY](in0), self.slabs[i], ctx
             )
         comptime if target == "cpu":
@@ -179,7 +180,8 @@ struct Parallel[*BRANCHES: Module](Module):
                 )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         forward_input: TensorRefs[1, ofi],
@@ -217,7 +219,7 @@ struct Parallel[*BRANCHES: Module](Module):
                     grid_dim=(B * oi + TPB - 1) // TPB,
                     block_dim=TPB,
                 )
-            self.branches[i].vjp[target, B](
+            self.branches[i].vjp[target, B, POLICY=POLICY](
                 TensorRefs[Self.BRANCHES[i].ARITY](fin),
                 self.slabs[i],
                 TensorRefs[Self.BRANCHES[i].ARITY](self.gi_temp),

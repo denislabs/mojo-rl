@@ -37,6 +37,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 comptime LOG_STD_MIN: Scalar[DT] = -5.0
@@ -181,7 +182,7 @@ struct RSample[ACT_: Int](Module):
             self.noise_offset.dev.value().enqueue_fill(UInt64(0))
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         inputs: TensorRefs[1, o],
@@ -244,7 +245,11 @@ struct RSample[ACT_: Int](Module):
             )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         forward_input: TensorRefs[1, ofi],

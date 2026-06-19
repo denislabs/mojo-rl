@@ -31,6 +31,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 # ── GPU kernels (OP supplies the math via comptime) ─────────────────────
@@ -78,7 +79,7 @@ struct Elementwise[DIM_: Int, OP: ElementOp](Module):
         return Self()
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         inputs: TensorRefs[1, o],
@@ -115,7 +116,11 @@ struct Elementwise[DIM_: Int, OP: ElementOp](Module):
             )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         forward_input: TensorRefs[1, ofi],

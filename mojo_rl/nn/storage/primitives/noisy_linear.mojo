@@ -33,6 +33,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
 from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 from .linear import _transpose_kernel, _accum_kernel
 
 
@@ -268,7 +269,7 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
         self.noise_scale = v
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         inputs: TensorRefs[1, o],
@@ -389,7 +390,11 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
             )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         forward_input: TensorRefs[1, ofi],

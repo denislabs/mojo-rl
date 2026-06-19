@@ -22,6 +22,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
 from .residual import _resid_add_kernel
 
 
@@ -62,7 +63,7 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         return r^
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         inputs: TensorRefs[1, o],
@@ -70,10 +71,10 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref in0 = inputs[0]
-        self.inner.forward[target, B](
+        self.inner.forward[target, B, POLICY=POLICY](
             TensorRefs[Self.Inner.ARITY](in0), self.inner_out, ctx
         )
-        self.skip.forward[target, B](
+        self.skip.forward[target, B, POLICY=POLICY](
             TensorRefs[Self.Skip.ARITY](in0), self.skip_out, ctx
         )
         comptime N = B * Self.OUT_DIM
@@ -102,7 +103,8 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
             )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         forward_input: TensorRefs[1, ofi],
@@ -112,13 +114,13 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
     ) raises:
         ref fin = forward_input[0]
         ref gin = grad_inputs[0]
-        self.inner.vjp[target, B](
+        self.inner.vjp[target, B, POLICY=POLICY](
             TensorRefs[Self.Inner.ARITY](fin),
             grad_output,
             TensorRefs[Self.Inner.ARITY](self.gi_inner),
             ctx,
         )
-        self.skip.vjp[target, B](
+        self.skip.vjp[target, B, POLICY=POLICY](
             TensorRefs[Self.Skip.ARITY](fin),
             grad_output,
             TensorRefs[Self.Skip.ARITY](self.gi_skip),

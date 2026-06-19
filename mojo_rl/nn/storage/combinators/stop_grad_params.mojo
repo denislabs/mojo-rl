@@ -23,6 +23,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
 
 
 struct _GradStash(ParamVisitor):
@@ -81,15 +82,16 @@ struct StopGradParams[Inner: Module](Module):
         return s^
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self, inputs: TensorRefs[Self.ARITY, o], mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        self.inner.forward[target, B](inputs, out, ctx)
+        self.inner.forward[target, B, POLICY=POLICY](inputs, out, ctx)
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP
     ](
         mut self, forward_input: TensorRefs[Self.ARITY, ofi],
         mut grad_output: Tensor, grad_inputs: TensorRefs[Self.ARITY, ogi],
@@ -97,7 +99,9 @@ struct StopGradParams[Inner: Module](Module):
     ) raises:
         var stash = _GradStash()
         self.inner.for_each_param[target](stash, ctx)  # snapshot
-        self.inner.vjp[target, B](forward_input, grad_output, grad_inputs, ctx)
+        self.inner.vjp[target, B, POLICY=POLICY](
+            forward_input, grad_output, grad_inputs, ctx
+        )
         stash.restoring = True
         stash.idx = 0
         self.inner.for_each_param[target](stash, ctx)  # restore (freeze params)

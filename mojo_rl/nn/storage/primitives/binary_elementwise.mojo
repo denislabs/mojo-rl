@@ -24,6 +24,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 def _be_fwd_kernel[
@@ -74,7 +75,7 @@ struct BinaryElementwise[DIM_: Int, OP: BinaryElementOp](Module):
         return Self()
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         inputs: TensorRefs[2, o],
@@ -115,7 +116,11 @@ struct BinaryElementwise[DIM_: Int, OP: BinaryElementOp](Module):
             )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         forward_input: TensorRefs[2, ofi],

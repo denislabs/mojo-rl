@@ -23,6 +23,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
 from .parallel import _par_concat_kernel, _par_split_kernel
 from .residual import _resid_add_kernel
 
@@ -56,7 +57,7 @@ struct SkipConcat[Inner: Module](Module):
         return s^
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         inputs: TensorRefs[1, o],
@@ -64,7 +65,7 @@ struct SkipConcat[Inner: Module](Module):
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref in0 = inputs[0]
-        self.inner.forward[target, B](
+        self.inner.forward[target, B, POLICY=POLICY](
             TensorRefs[Self.Inner.ARITY](in0), self.inner_out, ctx
         )
         comptime if target == "cpu":
@@ -89,7 +90,8 @@ struct SkipConcat[Inner: Module](Module):
             )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         forward_input: TensorRefs[1, ofi],
@@ -124,7 +126,7 @@ struct SkipConcat[Inner: Module](Module):
                 grid_dim=(B * Self.OUT_DIM + TPB - 1) // TPB,
                 block_dim=TPB,
             )
-        self.inner.vjp[target, B](
+        self.inner.vjp[target, B, POLICY=POLICY](
             TensorRefs[Self.Inner.ARITY](fin),
             self.go_inner,
             TensorRefs[Self.Inner.ARITY](self.gi_inner),

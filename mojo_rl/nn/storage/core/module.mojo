@@ -18,6 +18,7 @@ from .tensor_refs import TensorRefs
 from .param import ParamVisitor
 from .walkers import for_each_param_auto, zero_grad_auto
 from .state import for_each_state_auto
+from .amp import AMPPolicy, NoAMP
 
 
 trait Module(Defaultable & Movable & ImplicitlyDeletable):
@@ -35,16 +36,23 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
         `[target, INIT]` to their children."""
         ...
 
-    def forward[target: StaticString, B: Int, o: MutOrigin](
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
         mut self,
         inputs: TensorRefs[Self.ARITY, o],
         mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        """`POLICY` (trailing, default NoAMP, specified by keyword at AMP call
+        sites) is the mixed-precision policy threaded Trainer→combinators→leaves;
+        matmul leaves comptime-branch on `POLICY.compute_dtype`."""
         ...
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         forward_input: TensorRefs[Self.ARITY, ofi],

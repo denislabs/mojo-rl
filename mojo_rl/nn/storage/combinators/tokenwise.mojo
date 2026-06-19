@@ -20,6 +20,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
 
 
 struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
@@ -44,19 +45,20 @@ struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
         return t^
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         inputs: TensorRefs[1, o],
         mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        self.inner.forward[target, B * Self.SEQ_LEN](
+        self.inner.forward[target, B * Self.SEQ_LEN, POLICY=POLICY](
             TensorRefs[Self.Inner.ARITY](inputs[0]), out, ctx
         )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         forward_input: TensorRefs[1, ofi],
@@ -64,7 +66,7 @@ struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
         grad_inputs: TensorRefs[1, ogi],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        self.inner.vjp[target, B * Self.SEQ_LEN](
+        self.inner.vjp[target, B * Self.SEQ_LEN, POLICY=POLICY](
             TensorRefs[Self.Inner.ARITY](forward_input[0]),
             grad_output,
             TensorRefs[Self.Inner.ARITY](grad_inputs[0]),

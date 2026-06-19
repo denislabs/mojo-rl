@@ -33,6 +33,7 @@ from ..core.module import Module
 from ..core.param import Param, ParamVisitor
 from ..core.state import State
 from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 comptime BN_DEFAULT_EPS: Float64 = 1e-5
@@ -237,7 +238,7 @@ struct BatchNorm1D[
         self.training = v
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         inputs: TensorRefs[1, o],
@@ -346,7 +347,11 @@ struct BatchNorm1D[
                 )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         forward_input: TensorRefs[1, ofi],

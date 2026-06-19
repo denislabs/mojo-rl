@@ -36,6 +36,7 @@ from ..core.tensor_pack import TensorPack
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
 
 
 def _cg_accum_kernel[
@@ -85,7 +86,7 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
         return self.pool[Self.NUM_IN + node_i]
 
     def forward[
-        B: Int, target: StaticString = "cpu"
+        B: Int, target: StaticString = "cpu", POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         edges: List[List[Int]],
@@ -109,13 +110,13 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
         comptime for i in range(Self.N):
             self.slot_n[Self.NUM_IN + i] = B * Self.NODES[i].OUT_DIM
             comptime if Self.NODES[i].ARITY == 1:
-                self.children[i].forward[target, B](
+                self.children[i].forward[target, B, POLICY=POLICY](
                     TensorRefs[Self.NODES[i].ARITY](self.pool[edges[i][0]]),
                     self.pool[Self.NUM_IN + i],
                     ctx,
                 )
             elif Self.NODES[i].ARITY == 2:
-                self.children[i].forward[target, B](
+                self.children[i].forward[target, B, POLICY=POLICY](
                     TensorRefs[Self.NODES[i].ARITY](
                         self.pool[edges[i][0]], self.pool[edges[i][1]]
                     ),
@@ -135,7 +136,7 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
             )
 
     def vjp[
-        B: Int, target: StaticString = "cpu"
+        B: Int, target: StaticString = "cpu", POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         edges: List[List[Int]],
@@ -172,7 +173,7 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
                     self.tmp[0].ensure(a0)
                 else:
                     self.tmp[0].ensure_gpu(ctx.value(), a0)
-                self.children[i].vjp[target, B](
+                self.children[i].vjp[target, B, POLICY=POLICY](
                     TensorRefs[Self.NODES[i].ARITY](self.pool[edges[i][0]]),
                     self.gpool[Self.NUM_IN + i],
                     TensorRefs[Self.NODES[i].ARITY](self.tmp[0]),
@@ -199,7 +200,7 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
                 else:
                     self.tmp[0].ensure_gpu(ctx.value(), a0)
                     self.tmp[1].ensure_gpu(ctx.value(), a1)
-                self.children[i].vjp[target, B](
+                self.children[i].vjp[target, B, POLICY=POLICY](
                     TensorRefs[Self.NODES[i].ARITY](
                         self.pool[edges[i][0]], self.pool[edges[i][1]]
                     ),

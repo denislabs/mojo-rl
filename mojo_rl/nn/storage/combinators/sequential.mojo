@@ -17,6 +17,7 @@ from ..core.tensor_pack import TensorPack
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
 
 
 struct Sequential[*MODULES: Module](Module):
@@ -53,7 +54,7 @@ struct Sequential[*MODULES: Module](Module):
         return s^
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         inputs: TensorRefs[1, o],
@@ -62,13 +63,13 @@ struct Sequential[*MODULES: Module](Module):
     ) raises:
         comptime for i in range(Self.N):
             comptime if i == 0:
-                self.children[0].forward[target, B](
+                self.children[0].forward[target, B, POLICY=POLICY](
                     TensorRefs[Self.MODULES[0].ARITY](inputs[0]),
                     self.act[0],
                     ctx,
                 )
             elif i == Self.N - 1:
-                self.children[Self.N - 1].forward[target, B](
+                self.children[Self.N - 1].forward[target, B, POLICY=POLICY](
                     TensorRefs[Self.MODULES[Self.N - 1].ARITY](
                         self.act[Self.N - 2]
                     ),
@@ -76,14 +77,15 @@ struct Sequential[*MODULES: Module](Module):
                     ctx,
                 )
             else:
-                self.children[i].forward[target, B](
+                self.children[i].forward[target, B, POLICY=POLICY](
                     TensorRefs[Self.MODULES[i].ARITY](self.act[i - 1]),
                     self.act[i],
                     ctx,
                 )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP
     ](
         mut self,
         forward_input: TensorRefs[1, ofi],
@@ -94,7 +96,7 @@ struct Sequential[*MODULES: Module](Module):
         comptime for j in range(Self.N):
             comptime i = Self.N - 1 - j
             comptime if i == Self.N - 1:
-                self.children[Self.N - 1].vjp[target, B](
+                self.children[Self.N - 1].vjp[target, B, POLICY=POLICY](
                     TensorRefs[Self.MODULES[Self.N - 1].ARITY](
                         self.act[Self.N - 2]
                     ),
@@ -105,14 +107,14 @@ struct Sequential[*MODULES: Module](Module):
                     ctx,
                 )
             elif i == 0:
-                self.children[0].vjp[target, B](
+                self.children[0].vjp[target, B, POLICY=POLICY](
                     TensorRefs[Self.MODULES[0].ARITY](forward_input[0]),
                     self.grd[0],
                     TensorRefs[Self.MODULES[0].ARITY](grad_inputs[0]),
                     ctx,
                 )
             else:
-                self.children[i].vjp[target, B](
+                self.children[i].vjp[target, B, POLICY=POLICY](
                     TensorRefs[Self.MODULES[i].ARITY](self.act[i - 1]),
                     self.grd[i],
                     TensorRefs[Self.MODULES[i].ARITY](self.grd[i - 1]),
