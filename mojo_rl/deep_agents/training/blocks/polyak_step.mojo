@@ -15,7 +15,7 @@ parameterless (matches the rest of the SAC pipeline blocks).
 """
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.storage.core.module import Module
 from ...core.online_target_pair import OnlineTargetPair
 from ..trainer_block import TrainerState
 
