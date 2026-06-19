@@ -26,12 +26,14 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 from ..optimizer.adam import Adam
 from ..loss.cross_entropy import CrossEntropyLoss
 
 
 struct Trainer[
-    MODEL: Module, NC: Int, IN: Int, BATCH: Int, target: StaticString
+    MODEL: Module, NC: Int, IN: Int, BATCH: Int, target: StaticString,
+    POLICY: AMPPolicy = NoAMP,
 ](Movable & ImplicitlyDeletable):
     var model: Self.MODEL
     var opt: Adam
@@ -148,7 +150,7 @@ struct Trainer[
             else:
                 self._slice_train(x0, y0)
             self.model.zero_grad[Self.target](ctx)
-            self.model.forward[Self.target, Self.BATCH](
+            self.model.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 TensorRefs[Self.MODEL.ARITY](self.batch_x), self.logits, ctx
             )
             self.loss.forward_accumulate[Self.target, Self.BATCH](
@@ -157,7 +159,7 @@ struct Trainer[
             self.loss.vjp[Self.target, Self.BATCH](
                 self.logits, self.batch_y, self.grad, ctx
             )
-            self.model.vjp[Self.target, Self.BATCH](
+            self.model.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 TensorRefs[Self.MODEL.ARITY](self.batch_x),
                 self.grad,
                 TensorRefs[Self.MODEL.ARITY](self.gi),
@@ -197,7 +199,7 @@ struct Trainer[
                     )
                 )
                 self.batch_x.n = Self.BATCH * Self.IN
-            self.model.forward[Self.target, Self.BATCH](
+            self.model.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
                 TensorRefs[Self.MODEL.ARITY](self.batch_x), self.logits, ctx
             )
             comptime if Self.target == "gpu":
