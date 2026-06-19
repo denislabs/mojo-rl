@@ -26,6 +26,13 @@ from .core.initializer import (
 from .core.checkpoint import save_params, load_params
 from .primitives.linear import Linear
 from .primitives.linear_relu import LinearReLU
+from .primitives.linear_act import LinearAct
+from .primitives.linear_tanh import LinearTanh
+from .primitives.linear_mish import LinearMish
+from .primitives.linear_sigmoid import LinearSigmoid
+from .primitives.linear_swish import LinearSwish
+from .primitives.block_linear import BlockLinear
+from .primitives.tied_linear import TiedLinear
 from .primitives.add import Add
 from .primitives.elementwise import Elementwise
 from .primitives.activations import (
@@ -36,6 +43,8 @@ from .primitives.batch_norm_1d import BatchNorm1D
 from .primitives.batch_norm_2d import BatchNorm2D
 from .primitives.layer_norm import LayerNorm
 from .primitives.rms_norm import RMSNorm
+from .primitives.min_max_norm import MinMaxNorm
+from .primitives.sim_norm import SimNorm
 from .primitives.noisy_linear import NoisyLinear
 from .primitives.flatten import Flatten
 from .primitives.embedding import Embedding
@@ -44,6 +53,11 @@ from .primitives.binary_elementwise import (
     BinaryElementwise, BinaryElemMin, BinarySub,
 )
 from .primitives.concat import Concat2
+from .primitives.scale import Scale
+from .primitives.clamp import Clamp
+from .primitives.gather_cols import GatherCols
+from .primitives.dueling_head import DuelingHead
+from .primitives.dueling_head_c51 import DuelingHeadC51
 from .combinators.sequential import Sequential
 from .combinators.residual import Residual
 from .combinators.parallel import Parallel
