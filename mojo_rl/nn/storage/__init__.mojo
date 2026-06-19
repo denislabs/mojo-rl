@@ -81,6 +81,19 @@ from .primitives.layer_norm_no_affine import LayerNormNoAffine
 from .primitives.mse_per_sample import MSEPerSample
 from .primitives.gate import Gate
 from .primitives.modulate import Modulate
+# Phase E remainder — transformer / Dreamer4 plumbing leaves
+from .primitives.bias_add import BiasAdd
+from .primitives.transpose_2d import Transpose2D
+from .primitives.token_mean import TokenMean
+from .primitives.qkv_to_major import QKVToMajor
+from .primitives.swiglu import SwiGLU
+from .primitives.space_time_transpose import SpaceTimeTranspose
+from .primitives.sinusoidal_pos import SinusoidalPosAdd
+from .primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
+from .primitives.broadcast_tokens import BroadcastTokens
+from .primitives.learned_tokens import LearnedTokens
+from .primitives.learned_queries import LearnedQueries
+from .primitives.mae_replacer import MAEReplacer
 from .combinators.sequential import Sequential
 from .combinators.residual import Residual
 from .combinators.parallel import Parallel
