@@ -94,6 +94,16 @@ from .primitives.broadcast_tokens import BroadcastTokens
 from .primitives.learned_tokens import LearnedTokens
 from .primitives.learned_queries import LearnedQueries
 from .primitives.mae_replacer import MAEReplacer
+# Phase F — transformer/Dreamer4 BLOCKS (composites over models.transformer)
+from .primitives.modality_space_attention import ModalitySpaceAttention
+from .primitives.dynamics_space_attention import (
+    DynamicsSpaceAttention,
+    DYN_MOD_ACTION, DYN_MOD_SIGNAL, DYN_MOD_STEP, DYN_MOD_SPATIAL,
+    DYN_MOD_REGISTER, DYN_MOD_AGENT,
+)
+from .primitives.decoder_block import DecoderBlock
+from .primitives.time_attention_latents import TimeAttentionLatents
+from .primitives.conditional_transformer_block import ConditionalTransformerBlock
 from .combinators.sequential import Sequential
 from .combinators.residual import Residual
 from .combinators.parallel import Parallel
