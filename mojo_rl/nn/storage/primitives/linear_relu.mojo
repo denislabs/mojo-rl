@@ -281,5 +281,23 @@ struct LinearReLU[IN_: Int, OUT_: Int](Module):
             var gi_v = TileTensor(gin.dev.value(), row_major[B, Self.IN_]())
             max_matmul[transpose_b=True, target="gpu"](gi_v, go_v2, w_v, c)
 
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self,
+        mut src: Self,
+        tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """Soft-update weight + bias toward `src` (target ← online). Required
+        for use as a target net (SAC/TD3/DDPG critics are LinearReLU MLPs); the
+        Module default is a no-op, which would silently freeze the target."""
+        polyak_tensor[target, Self.W_SIZE](
+            self.weight.val, src.weight.val, tau, ctx
+        )
+        polyak_tensor[target, Self.B_SIZE](
+            self.bias.val, src.bias.val, tau, ctx
+        )
+
     # for_each_param / zero_grad inherit the Module reflection defaults
     # (core/walkers.mojo auto-discovers the Param fields).
