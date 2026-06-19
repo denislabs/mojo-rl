@@ -34,6 +34,8 @@ from .primitives.linear_swish import LinearSwish
 from .primitives.block_linear import BlockLinear
 from .primitives.tied_linear import TiedLinear
 from .primitives.gru_cell import GRUCell
+from .primitives.lstm_cell import LSTMCell
+from .primitives.lstm_seq import LSTMSeq
 from .primitives.attention import ScaledDotProductAttention
 from .primitives.masked_attention import (
     MaskedAttention, causal_mask, all_allow_mask, build_modality_mask,
