@@ -11,3 +11,8 @@ from .transformer import (
 from .conv import Conv2DReLU, Conv2DBatchNormReLU
 from .resnet import ResBlockConv2DBN, ResBlockDownsampleBN
 from .vit import PatchEmbed, ViT
+from .gpt import (
+    GPT, GPTDrop, GPTDropTied,
+    MultiHeadAttentionDrop, TransformerFFNDrop, TransformerBlockDrop,
+    gpt_scale_residual_proj, gpt_wire_tie,
+)

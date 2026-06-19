@@ -153,6 +153,24 @@ struct TiedLinear[IN_: Int, OUT_: Int](Module):
         self.src_val = rebind[Pointer[Tensor, MutAnyOrigin]](Pointer(to=val))
         self.src_grd = rebind[Pointer[Tensor, MutAnyOrigin]](Pointer(to=grd))
 
+    def tie_to_ptr(
+        mut self,
+        val: Pointer[Tensor, MutAnyOrigin],
+        grd: Pointer[Tensor, MutAnyOrigin],
+    ):
+        """Wire via pre-built wildcard `Pointer` VALUES (vs `tie_to`'s `ref`
+        args). Use this when the owner and this head are BOTH sub-paths of one
+        enclosing struct (e.g. a GPT model where the embedding owns the weight
+        and the LM head borrows it): a `ref` arg would borrow the enclosing
+        struct immutably while `mut self` borrows it mutably → exclusivity
+        conflict. A wildcard `Pointer` value holds NO tracked borrow of the
+        enclosing struct, so the caller can build it (`rebind[...](Pointer(to=
+        owner.weight.val))` into a local) — releasing the structural borrow —
+        then call this. Same POINTER-STABILITY RULE applies (owner outlives
+        head). Idempotent."""
+        self.src_val = val
+        self.src_grd = grd
+
     def _val(self) raises -> Pointer[Tensor, MutAnyOrigin]:
         if not self.src_val:
             raise Error(
