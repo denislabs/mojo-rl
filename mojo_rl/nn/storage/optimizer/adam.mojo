@@ -1,27 +1,21 @@
 """Adam — storage-native Adam / AdamW optimizer (CPU + GPU).
 
-A `ParamVisitor`, but stateful: the per-param 1st/2nd moments live on the `Param`
-(`m`/`v` Tensors), lazily zero-allocated. Hyperparams + step counter `t` + bias-
-correction running powers. Decoupled weight decay (`wd > 0`, gated by the param's
-`APPLY_DECAY`) makes this AdamW; `wd == 0` is plain Adam.
-
-Two GPU execution modes, ONE class, IDENTICAL math (bit-parity, gated):
+A `ParamVisitor`, but stateful: per-param 1st/2nd moments. Two GPU modes, ONE
+class, IDENTICAL math (bit-parity, gated):
 
   - per-param (default, CPU + GPU): `step` walks `for_each_param`, one kernel /
-    CPU loop per Param. The universal correctness path; CPU↔GPU parity check.
-  - arena (GPU, opt-in via `adopt`): `adopt[target](model)` packs every param into
-    4 CONTIGUOUS device buffers (val/grd/m/v) and rebinds each Param's val/grd to
-    `create_sub_buffer` slices — so forward reads / backward writes the arena
-    transparently and grads land contiguous. `step` is then ONE flat kernel over
-    `[0,total)`. Collapses N launches → 1, runs on Apple AND NVIDIA (the arenas
-    are passed as their own buffers — no per-param address table). `adopt` is a
-    NO-OP on CPU, so agent code is identical on both targets:
+    CPU loop per Param. The universal correctness path + CPU↔GPU parity check.
+    Moments live on the `Param` (`m`/`v` Tensors), lazily zero-allocated.
+  - arena (GPU, opt-in via `adopt`): a shared `ParamArena` packs params into
+    contiguous val/grd buffers (+ this optimizer's own contiguous m/v arenas);
+    `step` is ONE flat kernel over `[0,total)`, collapsing N launches → 1. Runs on
+    Apple AND NVIDIA. `adopt` is a NO-OP on CPU → agent code is target-agnostic:
 
-        opt.adopt[target](model, ctx)     # GPU: pack arena;  CPU: nothing
-        opt.step[target](model, ctx)      # GPU+adopted: 1 kernel;  else per-param
+        opt.adopt[target](model, ctx); opt.step[target](model, ctx)
 
-Lifetime: the optimizer owns the arenas; the model's param slices reference them
-(DeviceBuffer is refcounted → destruction order is safe).
+Decoupled weight decay (`wd > 0`, gated by `APPLY_DECAY` / the arena `decay_mask`)
+makes this AdamW. Lifetime: the arena/moments are optimizer-owned; param slices
+reference them (DeviceBuffer is refcounted → destruction order is safe).
 """
 
 from std.math import sqrt
@@ -33,7 +27,8 @@ from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
 from ..core.param import ParamVisitor
 from ..core.module import Module
-from ..core.named_params import named_params
+from .param_arena import ParamArena
+from .grad_clip import clip_grad_norm, clip_arena_grads
 
 
 def _adam_update_kernel[
@@ -85,10 +80,7 @@ def _grouped_adam_kernel(
     bc2: Scalar[DT],
     wd: Scalar[DT],
 ):
-    """Arena update (all params at once over runtime-length flat buffers).
-    `decay[i]` (0/1) gates AdamW's decoupled decay per element. UnsafePointer is
-    required for runtime-length flat indexing — the accepted GPU-ABI boundary, NOT
-    a per-param address table."""
+    """Arena update (all params at once over runtime-length flat buffers)."""
     var i = Int(global_idx.x)
     if i >= total:
         return
@@ -113,20 +105,14 @@ struct Adam(Movable, ParamVisitor):
     var eps: Scalar[DT]
     var wd: Scalar[DT]
     var t: Int
-    var _b1_pow: Scalar[DT]  # β1ᵗ (running)
-    var _b2_pow: Scalar[DT]  # β2ᵗ (running)
-    var bc1: Scalar[DT]  # 1 - β1ᵗ
-    var bc2: Scalar[DT]  # 1 - β2ᵗ
-    # Arena mode (GPU, set by `adopt`). Empty / 0 / False when un-adopted.
-    var val_arena: Tensor
-    var grd_arena: Tensor
+    var _b1_pow: Scalar[DT]
+    var _b2_pow: Scalar[DT]
+    var bc1: Scalar[DT]
+    var bc2: Scalar[DT]
+    # Arena mode (GPU, set by `adopt`): shared val/grd packing + own m/v arenas.
+    var arena: ParamArena
     var m_arena: Tensor
     var v_arena: Tensor
-    var decay_mask: Tensor
-    var total: Int
-    var _adopt_off: Int  # running offset during the adopt walk
-    var _placing: Bool  # True only during adopt's placement walk
-    var _adopted: Bool
 
     def __init__(
         out self,
@@ -146,15 +132,9 @@ struct Adam(Movable, ParamVisitor):
         self._b2_pow = Scalar[DT](1.0)
         self.bc1 = Scalar[DT](1.0)
         self.bc2 = Scalar[DT](1.0)
-        self.val_arena = Tensor()
-        self.grd_arena = Tensor()
+        self.arena = ParamArena()
         self.m_arena = Tensor()
         self.v_arena = Tensor()
-        self.decay_mask = Tensor()
-        self.total = 0
-        self._adopt_off = 0
-        self._placing = False
-        self._adopted = False
 
     def begin_step(mut self):
         """Bump the step counter + refresh bias corrections. Once per step."""
@@ -167,37 +147,13 @@ struct Adam(Movable, ParamVisitor):
     def adopt[
         target: StaticString, M: Module
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
-        """Engage arena mode (GPU). Allocates the 4 arenas, copies param values
-        in, rebinds each Param's val/grd to arena slices, builds the decay mask.
-        NO-OP on CPU (per-param has no launch overhead to collapse). Call ONCE
-        after the model is made + initialized, before the first step."""
+        """Engage arena mode (GPU); NO-OP on CPU. Packs val/grd via the shared
+        ParamArena and allocates this optimizer's m/v arenas to match."""
+        self.arena.adopt[target](model, ctx)
         comptime if target == "gpu":
             var c = ctx.value()
-            var nps = named_params["gpu"](model)
-            var total = 0
-            for i in range(len(nps)):
-                total += nps[i].size
-            self.total = total
-
-            var dm = Tensor.alloc(total)  # host decay mask
-            var off = 0
-            for i in range(len(nps)):
-                var d = Scalar[DT](1.0) if nps[i].decay else Scalar[DT](0.0)
-                for k in range(nps[i].size):
-                    dm.data[off + k] = d
-                off += nps[i].size
-            dm.upload(c)
-            self.decay_mask = dm^
-
-            self.val_arena = Tensor.alloc_gpu(c, total)  # zeroed
-            self.grd_arena = Tensor.alloc_gpu(c, total)
-            self.m_arena = Tensor.alloc_gpu(c, total)
-            self.v_arena = Tensor.alloc_gpu(c, total)
-            self._adopt_off = 0
-            self._placing = True
-            model.for_each_param["gpu"](self, Optional(c))
-            self._placing = False
-            self._adopted = True
+            self.m_arena = Tensor.alloc_gpu(c, self.arena.total)
+            self.v_arena = Tensor.alloc_gpu(c, self.arena.total)
 
     def step[
         target: StaticString, M: Module
@@ -208,22 +164,22 @@ struct Adam(Movable, ParamVisitor):
         comptime if target == "cpu":
             model.for_each_param["cpu"](self, ctx)
         else:
-            if self._adopted:
+            if self.arena.adopted:
                 self._grouped_step(ctx.value())
             else:
                 model.for_each_param["gpu"](self, ctx)
 
     def _grouped_step(mut self, c: DeviceContext) raises:
-        if self.total == 0:
+        if self.arena.total == 0:
             return
-        var nblk = (self.total + TPB - 1) // TPB
+        var nblk = (self.arena.total + TPB - 1) // TPB
         c.enqueue_function[_grouped_adam_kernel](
-            self.val_arena.dev.value(),
-            self.grd_arena.dev.value(),
+            self.arena.val.dev.value(),
+            self.arena.grd.dev.value(),
             self.m_arena.dev.value(),
             self.v_arena.dev.value(),
-            self.decay_mask.dev.value(),
-            self.total,
+            self.arena.decay_mask.dev.value(),
+            self.arena.total,
             self.lr,
             self.beta1,
             self.beta2,
@@ -236,10 +192,23 @@ struct Adam(Movable, ParamVisitor):
         )
 
     def zero_grad(mut self) raises:
-        """Adopted GPU only: zero the whole grad arena in ONE fill (vs N per-param
-        fills). For CPU / un-adopted, use `model.zero_grad[target]` as usual."""
-        if self._adopted and self.total > 0:
-            self.grd_arena.dev.value().enqueue_fill(Scalar[DT](0))
+        """Adopted GPU only: zero the grad arena in ONE fill. (CPU / un-adopted:
+        use `model.zero_grad[target]`.)"""
+        self.arena.zero_grad()
+
+    def clip_grads[
+        target: StaticString, M: Module
+    ](
+        mut self, mut model: M, max_norm: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises -> Scalar[DT]:
+        """Global grad-norm clip, returns the pre-clip norm. GPU+adopted → arena
+        reduction+scale (capture-safe, no per-param D2H); else → per-param
+        `clip_grad_norm`. Symmetric across targets."""
+        comptime if target == "gpu":
+            if self.arena.adopted:
+                return clip_arena_grads(self.arena, max_norm, ctx.value())
+        return clip_grad_norm[target](model, max_norm, ctx)
 
     def visit[
         target: StaticString, N: Int
@@ -253,26 +222,6 @@ struct Adam(Movable, ParamVisitor):
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
-        # Placement walk (adopt): GPU-only, gated comptime so the device ops never
-        # compile into the CPU path. `param`/`grad` are the val/grd Tensors; the
-        # mut refs chain back to the model's Param, so the rebinds persist.
-        comptime if target == "gpu":
-            if self._placing:
-                var c = ctx.value()
-                var vsub = self.val_arena.dev.value().create_sub_buffer[DT](
-                    self._adopt_off, N
-                )
-                c.enqueue_copy(vsub, param.dev.value())  # preserve init values
-                param.dev = Optional(vsub)
-                param.n = N
-                var gsub = self.grd_arena.dev.value().create_sub_buffer[DT](
-                    self._adopt_off, N
-                )
-                grad.dev = Optional(gsub)
-                grad.n = N
-                self._adopt_off += N
-                return
-
         comptime if target == "cpu":
             m.ensure(N)  # lazy zero-alloc on first step
             v.ensure(N)
@@ -316,8 +265,7 @@ struct Adam(Movable, ParamVisitor):
             )
 
 
-# AdamW is just Adam with decoupled weight decay (`wd > 0`, gated per param by
+# AdamW is Adam with decoupled weight decay (`wd > 0`, gated per param by
 # APPLY_DECAY) — both the per-param and arena paths apply `p -= lr·wd·p` before
-# the moment update (AdamW's decoupled-decay rule). Construct as
-# `AdamW(lr=..., wd=0.01)` (pass a nonzero `wd` — the Adam default is 0.0).
+# the moment update. Construct as `AdamW(lr=..., wd=0.01)`.
 comptime AdamW = Adam

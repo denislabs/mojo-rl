@@ -22,7 +22,7 @@ cross-model global norm (matches the deep_agents convention).
 """
 
 from std.math import sqrt
-from std.gpu import global_idx, thread_idx
+from std.gpu import global_idx, thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
@@ -31,6 +31,7 @@ from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
 from ..core.param import ParamVisitor
 from ..core.module import Module
+from .param_arena import ParamArena
 
 
 comptime GC_TPB: Int = 128  # single-block reduction width
@@ -195,3 +196,104 @@ def clip_grad_norm[
                 var sc = _ScaleGPU(scale)
                 model.for_each_param[target](sc, ctx)
     return norm
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Arena grad-clip — the capture-safe path over a ParamArena's contiguous
+# grad buffer. THREE kernels, ZERO D2H during the clip (the per-param path
+# above does a D2H per Param, so it can't be CUDA-graph-captured). Used by
+# `Adam.clip_grads` / `SGD.clip_grads` when the optimizer is adopted.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _arena_sumsq_kernel(
+    grd: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    total: Int,
+    partials: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """Flat grid over the grad arena: each block reduces its chunk of `g²` via
+    block.sum; thread 0 writes the block total to `partials[block_idx]`."""
+    var flat = Int(global_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    if flat < total:
+        var g = grd[flat]
+        my_sum = g * g
+    var tot = block.sum[block_size=TPB, broadcast=False](val=my_sum)
+    if Int(thread_idx.x) == 0:
+        partials[Int(block_idx.x)] = tot[0]
+
+
+def _arena_finalize_kernel(
+    partials: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    n_blocks: Int,
+    scale_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    norm_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    max_norm: Scalar[DT],
+    eps: Scalar[DT],
+):
+    """Single-block reduction of the per-block partials → ‖grad‖, then
+    `scale = min(1, max_norm/max(norm,eps))` (non-finite → 0). Writes both."""
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < n_blocks:
+        my_sum += partials[k]
+        k += GC_TPB
+    var s = block.sum[block_size=GC_TPB, broadcast=False](val=my_sum)
+    if t == 0:
+        var norm = sqrt(s[0])
+        norm_buf[0] = norm
+        if norm - norm != Scalar[DT](0.0):  # non-finite guard
+            scale_buf[0] = Scalar[DT](0.0)
+        elif max_norm <= Scalar[DT](0.0):
+            scale_buf[0] = Scalar[DT](1.0)  # no clip
+        else:
+            var denom = norm if norm > eps else eps
+            var ratio = max_norm / denom
+            scale_buf[0] = ratio if ratio < Scalar[DT](1.0) else Scalar[DT](1.0)
+
+
+def _arena_scale_kernel(
+    grd: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    total: Int,
+    scale_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """`grd[i] *= scale_buf[0]` (scale 0 hard-zeroes — non-finite sentinel)."""
+    var i = Int(global_idx.x)
+    if i < total:
+        var s = scale_buf[0]
+        grd[i] = grd[i] * s if s != Scalar[DT](0.0) else Scalar[DT](0.0)
+
+
+def clip_arena_grads(
+    mut arena: ParamArena,
+    max_norm: Scalar[DT],
+    ctx: DeviceContext,
+    eps: Scalar[DT] = 1e-6,
+) raises -> Scalar[DT]:
+    """Clip the global L2 norm of an adopted optimizer's contiguous grad arena in
+    place; returns the pre-clip norm. Three on-device kernels, no per-param D2H
+    (capture-safe). The single norm D2H at the end is for the return value only —
+    skip it under CUDA-graph capture. `max_norm <= 0` → no clip."""
+    var total = arena.total
+    if total == 0:
+        return Scalar[DT](0.0)
+    var nblk = (total + TPB - 1) // TPB
+    var partials = Tensor.alloc_gpu(ctx, nblk)
+    var scale_buf = Tensor.alloc_gpu(ctx, 1)
+    var norm_buf = Tensor.alloc_gpu(ctx, 1)
+    ctx.enqueue_function[_arena_sumsq_kernel](
+        arena.grd.dev.value(), total, partials.dev.value(),
+        grid_dim=nblk, block_dim=TPB,
+    )
+    ctx.enqueue_function[_arena_finalize_kernel](
+        partials.dev.value(), nblk, scale_buf.dev.value(),
+        norm_buf.dev.value(), max_norm, eps,
+        grid_dim=1, block_dim=GC_TPB,
+    )
+    ctx.enqueue_function[_arena_scale_kernel](
+        arena.grd.dev.value(), total, scale_buf.dev.value(),
+        grid_dim=nblk, block_dim=TPB,
+    )
+    norm_buf.download(ctx)
+    return norm_buf.data[0]
