@@ -42,6 +42,7 @@ from ..core.module import Module
 from ..core.param import Param, ParamVisitor
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
+from ..loss.sac import polyak_tensor
 
 
 comptime CONV_DW_TPB: Int = 128
@@ -732,6 +733,25 @@ struct Conv2D[IC_: Int, OC_: Int, K_: Int, S_: Int, P_: Int, H_: Int, W_: Int](
                 grid_dim=nb_dx,
                 block_dim=CONV_DW_TPB,
             )
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self,
+        mut src: Self,
+        tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """Soft-update weight + bias toward `src` (target ← online). Required
+        for use as a target net (pixel-obs critics use Conv2D); the Module
+        default is a no-op which would silently freeze the target (see
+        LinearReLU polyak bug, Stage-5)."""
+        polyak_tensor[target, Self.W_SIZE](
+            self.weight.val, src.weight.val, tau, ctx
+        )
+        polyak_tensor[target, Self.B_SIZE](
+            self.bias.val, src.bias.val, tau, ctx
+        )
 
     # for_each_param / zero_grad inherit the Module reflection defaults
     # (core/walkers.mojo auto-discovers the Param fields).

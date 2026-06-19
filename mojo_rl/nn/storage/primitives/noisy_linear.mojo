@@ -34,6 +34,7 @@ from ..core.module import Module
 from ..core.param import Param, ParamVisitor
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
+from ..loss.sac import polyak_tensor
 from .linear import _transpose_kernel, _accum_kernel
 
 
@@ -500,6 +501,27 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
                 self.w_eff.dev.value(), row_major[Self.IN_, Self.OUT_]()
             )
             max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_v, c)
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self,
+        mut src: Self,
+        tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """Soft-update all four noise params toward `src` (target ← online).
+        Required for use as a target net (Rainbow/Noisy-DQN target nets are
+        NoisyLinear); the Module default is a no-op which would silently
+        freeze the target (see LinearReLU polyak bug, Stage-5)."""
+        polyak_tensor[target, Self.W_SIZE](self.mu_w.val, src.mu_w.val, tau, ctx)
+        polyak_tensor[target, Self.W_SIZE](
+            self.sigma_w.val, src.sigma_w.val, tau, ctx
+        )
+        polyak_tensor[target, Self.B_SIZE](self.mu_b.val, src.mu_b.val, tau, ctx)
+        polyak_tensor[target, Self.B_SIZE](
+            self.sigma_b.val, src.sigma_b.val, tau, ctx
+        )
 
     # for_each_param / zero_grad inherit the Module reflection defaults
     # (core/walkers.mojo auto-discovers the Param fields).
