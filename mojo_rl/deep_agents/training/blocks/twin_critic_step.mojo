@@ -2,15 +2,19 @@
 
 Reads state.mb_s, state.mb_a, state.mb_y → writes state.critic_loss.
 Reusable across SAC, TD3, MBPO.
+
+STORAGE migration (Stage 5): passes the storage `TrainerState` minibatch Tensors
+(mb_s/mb_a/mb_y) straight into the inner block (which builds views internally).
+PER weight / TD-residual views are built via `state.mb_*.lt[target, layout]`.
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major, LayoutTensor, Layout
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from ...loss.critic_update_block import TwinCriticUpdateBlock
 from ..trainer_block import TrainerState
 
@@ -40,8 +44,6 @@ struct TwinCriticStep[
     def make[
         target: StaticString = "cpu"
     ](ctx: Optional[DeviceContext] = None,) raises -> Self:
-        """Unified make — matmul-style `Optional[DeviceContext]`. Inner
-        block now accepts the optional directly (no boundary shim)."""
         var b = Self()
         b.inner = Self.Inner.make[target](ctx=ctx)
         return b^
@@ -58,33 +60,18 @@ struct TwinCriticStep[
         mut critic2: Self.CRITIC,
         mut critic2_opt: Adam,
     ) raises:
-        var mb_y_t = TileTensor(
-            state.mb_y.target_ptr[target](),
-            row_major[Self.BATCH, 1](),
-        )
         # PER hook: when state.has_per is set, forward IS weights into the
-        # update and capture per-sample signed TD residuals. When unset,
-        # both pointers stay None and the inner block falls back to the
-        # uniform path (bit-identical to pre-PER).
+        # update and capture per-sample signed TD residuals. When unset, both
+        # stay None and the inner block falls back to the uniform path.
         var weights: Optional[
-            LayoutTensor[
-                DT,
-                Layout.row_major(Self.BATCH),
-                MutAnyOrigin,
-            ]
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None
         var td_residuals: Optional[
-            LayoutTensor[
-                DT,
-                Layout.row_major(Self.BATCH),
-                MutAnyOrigin,
-            ]
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None
         if state.has_per:
-            weights = state.mb_w.lt_target[
-                target, Layout.row_major(Self.BATCH)
-            ]()
-            td_residuals = state.td_residuals.lt_target[
+            weights = state.mb_w.lt[target, Layout.row_major(Self.BATCH)]()
+            td_residuals = state.td_residuals.lt[
                 target, Layout.row_major(Self.BATCH)
             ]()
 
@@ -93,17 +80,13 @@ struct TwinCriticStep[
             critic1_opt,
             critic2,
             critic2_opt,
-            state.mb_s.lt_target[
-                target, Layout.row_major(Self.BATCH, Self.OBS)
-            ](),
-            state.mb_a.lt_target[
-                target, Layout.row_major(Self.BATCH, Self.ACT)
-            ](),
-            mb_y_t,
+            state.mb_s,
+            state.mb_a,
+            state.mb_y,
             weights=weights,
             td_residuals=td_residuals,
+            ctx=state.ctx,
         )
-        # With ACCUMULATE (GPU) the per-batch loss is reduced on-device into
-        # the critics' accumulators; `loss` is a 0 sentinel here and the
-        # real metric is read at flush. Otherwise `loss` is the live scalar.
+        # With ACCUMULATE (GPU) the per-batch loss is reduced on-device into the
+        # critics' accumulators; `loss` is a 0 sentinel here, real metric at flush.
         state.critic_loss = loss

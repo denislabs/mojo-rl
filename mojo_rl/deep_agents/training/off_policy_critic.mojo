@@ -20,13 +20,9 @@ each `mut` arg distinctly. See memory:
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor, row_major, lt_to_tt
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.loss.mse import MSELoss
 
 
 def concat_sa[

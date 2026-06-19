@@ -1,114 +1,78 @@
-"""CriticUpdateBlock / TwinCriticUpdateBlock — critic-update LossBlocks.
+"""CriticUpdateBlock / TwinCriticUpdateBlock — critic-update LossBlocks (storage).
 
-Phase 2 Track B migration: pre-Phase-2 each block declared a mix of
-CPU `List` + GPU `Optional[DeviceBuffer]` + `_n` size-tracking fields
-and hand-wrote a 3-arm runtime-tag-branching `_mb_X_ptr()` helper per
-buffer. Post-migration, scratch is a `Scratch[NAME, SIZE]` field and
-the ptr helpers collapse to compile-time `cpu_ptr()` / `dev_ptr()`
-inside a `comptime if target == "cpu"` branch.
+Single Module forward + MSELoss + backward + opt step (no fan-out, no DAG — a
+ComputeGraph would just add overhead; the win is scratch ownership). The critic
+`M` is a plain storage `Module` taking the PRE-CONCATENATED `[B, OBS+ACT]` input
+(config = `Sequential[LinearReLU[OBS+ACT,H], …, Linear[H,1]]`); the (s,a) concat
+happens here via `concat_sa` into the owned `_mb_sa` Tensor.
 
-Self-contained: each block absorbs the scratch buffers (`mb_q`,
-`mb_grad_q`, `mb_grad_sa`) the trainer would otherwise own. Mirrors
-the SACActorLoss ownership pattern but stays linear — the chain is
-a single Module forward + MSELoss + backward + opt step, no fan-out,
-no Slice/Min, so a full ComputeGraph would just add overhead. The win
-here is **scratch ownership**, not DAG topology.
+STORAGE migration (Stage 5):
+  - scratch `Scratch` fields -> owned storage `Tensor`s (alloc on target).
+  - `TargetStorage`/`assert_tag_for`/`init_scratch_auto`/`mptr`/TileTensor gone.
+  - `critic.forward/vjp` use the storage surface: `forward[target,B](TensorRefs,
+    mut out, ctx)`, `vjp[target,B](TensorRefs(input), mut grad_out,
+    TensorRefs(grad_in), ctx)` — vjp takes the forward input explicitly (no cache).
+  - storage `MSELoss[1]` (forward/forward_accumulate/vjp/read_accum, no POLICY).
+  - optimizer step via storage `Adam.step[target, M](critic, ctx)`.
 
 CPU + GPU.
 
-
 Surface:
     CriticUpdateBlock[CRITIC, BATCH, SA_DIM]
-        - `make[target]() raises -> Self`                 (CPU)
-        - `make[target](ctx) raises -> Self`              (GPU)
-        - `step[target](mut critic, mut opt, sa_t, y_t) raises -> Scalar[DT]`
-            zero_grad → critic.forward → mse.forward → mse.backward →
-            critic.backward → opt.step; returns scalar loss.
-
+        step[target, POLICY, ACCUMULATE](mut critic, mut opt, mut sa, mut y,
+             weights=None, td_residuals=None, ctx) -> Scalar[DT]
     TwinCriticUpdateBlock[CRITIC, BATCH, OBS, ACT]
-        - owns 2× CriticUpdateBlock + `_mb_sa` scratch
-        - `make[target]() raises -> Self`                 (CPU)
-        - `make[target](ctx) raises -> Self`              (GPU)
-        - `step[target](mut c1, mut c1_opt, mut c2, mut c2_opt,
-                        mb_s_ptr, mb_a_ptr, mb_y_t) raises -> Scalar[DT]`
-            concat_sa → c1.step + c2.step; returns sum of losses.
+        step[target, POLICY, ACCUMULATE](mut c1, mut c1_opt, mut c2, mut c2_opt,
+             mut mb_s, mut mb_a, mut mb_y, weights=None, td_residuals=None, ctx)
+             -> Scalar[DT]
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor, row_major, lt_to_tt
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.core.scratch import Scratch
-from mojo_rl.nn.core.scratch_walkers import init_scratch_auto
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.storage.loss.mse_loss import MSELoss
 from .loss_block import LossBlock
-from mojo_rl.nn.loss.mse import MSELoss
 from ..training.off_policy_critic import concat_sa, concat_sa_gpu
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Phase C.3c — IS-weighted MSE gradient scaling kernel.
+# IS-weighted MSE gradient scaling + TD-residual capture kernels (PER).
 # ──────────────────────────────────────────────────────────────────────
 
 
 def _scale_grad_by_weights_kernel[
     BATCH: Int
 ](
-    mb_grad_q: LayoutTensor[
-        DT,
-        Layout.row_major(BATCH, 1),
-        MutAnyOrigin,
-    ],
-    weights: LayoutTensor[
-        DT,
-        Layout.row_major(BATCH),
-        MutAnyOrigin,
-    ],
+    mb_grad_q: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    weights: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
 ):
-    """Per-lane in-place scaling: `mb_grad_q[i, 0] *= weights[i]`.
-
-    Phase C.3c. Inserted between MSE.vjp and Critic.vjp inside
-    `CriticUpdateBlock.step` when PER passes a non-null IS-weights
-    pointer. The weighted gradient flows through Critic.vjp unchanged
-    afterwards, giving the per-sample PER correction
-    `grad_θ ∝ Σ_b w_b · (Q_b − y_b) · ∂Q/∂θ` that Schaul et al. §3.4
-    prescribes.
-    """
+    """Per-lane in-place scaling `mb_grad_q[i,0] *= weights[i]` — the PER
+    correction `grad_θ ∝ Σ_b w_b·(Q_b−y_b)·∂Q/∂θ` (Schaul et al. §3.4)."""
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH:
         return
-    mb_grad_q[i, 0] = mb_grad_q[i, 0] * weights[i]
+    mb_grad_q[i, 0] = mb_grad_q[i, 0] * rebind[Scalar[DT]](weights[i])
 
 
 def _capture_td_residuals_kernel[
     BATCH: Int
 ](
-    mb_grad_q: LayoutTensor[
-        DT,
-        Layout.row_major(BATCH, 1),
-        MutAnyOrigin,
-    ],
-    out_residuals: LayoutTensor[
-        DT,
-        Layout.row_major(BATCH),
-        MutAnyOrigin,
-    ],
+    mb_grad_q: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
+    out_residuals: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
 ):
-    """Per-lane recovery of the unscaled TD residual `Q − y` from
-    `mb_grad_q = (Q − y) / BATCH` (the value MSE.vjp wrote). Used by
-    PER to refresh sum-tree priorities after the critic step. Run
-    BEFORE the IS-weight scaling so the captured residuals are the
-    raw signed TD error, not the IS-weighted gradient.
-    """
+    """Recover the unscaled signed TD residual `Q−y = mb_grad_q·BATCH` (the
+    value MSE.vjp wrote) for PER priority refresh. Run BEFORE IS scaling."""
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH:
         return
-    out_residuals[i] = mb_grad_q[i, 0] * Scalar[DT](BATCH)
+    out_residuals[i] = rebind[Scalar[DT]](mb_grad_q[i, 0]) * Scalar[DT](BATCH)
 
 
 struct CriticUpdateBlock[
@@ -119,25 +83,20 @@ struct CriticUpdateBlock[
     """Single-critic MSE update step. Owns all intermediate scratch."""
 
     var mse_loss: MSELoss[1]
-
-    var _mb_q: Scratch["mb_q", Self.BATCH]
-    var _mb_grad_q: Scratch["mb_grad_q", Self.BATCH]
-    var _mb_grad_sa: Scratch["mb_grad_sa", Self.BATCH * Self.SA_DIM]
-
-    var ts: TargetStorage
+    var _mb_q: Tensor
+    var _mb_grad_q: Tensor
+    var _mb_grad_sa: Tensor
 
     def __init__(out self):
         self.mse_loss = MSELoss[1]()
-        self._mb_q = Scratch["mb_q", Self.BATCH]()
-        self._mb_grad_q = Scratch["mb_grad_q", Self.BATCH]()
-        self._mb_grad_sa = Scratch["mb_grad_sa", Self.BATCH * Self.SA_DIM]()
-        self.ts = TargetStorage.make_uninit()
+        self._mb_q = Tensor()
+        self._mb_grad_q = Tensor()
+        self._mb_grad_sa = Tensor()
 
     @staticmethod
     def make[
         target: StaticString
     ](ctx: Optional[DeviceContext] = None,) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
         comptime assert (
             target == "cpu" or target == "gpu"
         ), "CriticUpdateBlock: target must be 'cpu' or 'gpu'"
@@ -148,9 +107,17 @@ struct CriticUpdateBlock[
             Self.CRITIC.OUT_DIM == 1
         ), "CriticUpdateBlock: CRITIC.OUT_DIM must equal 1"
         var blk = Self()
-        blk.mse_loss = MSELoss[1].make[target](ctx=ctx)
-        blk.ts = TargetStorage.make[target](ctx=ctx)
-        init_scratch_auto[Self, target](blk, ctx)
+        comptime if target == "cpu":
+            blk.mse_loss = MSELoss[1].make_cpu()
+            blk._mb_q = Tensor.alloc(Self.BATCH)
+            blk._mb_grad_q = Tensor.alloc(Self.BATCH)
+            blk._mb_grad_sa = Tensor.alloc(Self.BATCH * Self.SA_DIM)
+        else:
+            var c = ctx.value()
+            blk.mse_loss = MSELoss[1].make_gpu(c)
+            blk._mb_q = Tensor.alloc_gpu(c, Self.BATCH)
+            blk._mb_grad_q = Tensor.alloc_gpu(c, Self.BATCH)
+            blk._mb_grad_sa = Tensor.alloc_gpu(c, Self.BATCH * Self.SA_DIM)
         return blk^
 
     def step[
@@ -161,130 +128,84 @@ struct CriticUpdateBlock[
         mut self,
         mut critic: Self.CRITIC,
         mut opt: Adam,
-        sa_t: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        y_t: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
+        mut sa: Tensor,
+        mut y: Tensor,
         weights: Optional[
-            LayoutTensor[
-                DT,
-                Layout.row_major(Self.BATCH),
-                MutAnyOrigin,
-            ]
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None,
         td_residuals: Optional[
-            LayoutTensor[
-                DT,
-                Layout.row_major(Self.BATCH),
-                MutAnyOrigin,
-            ]
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None,
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Scalar[DT]:
-        """Phase C.3c — `weights_p` (optional, default None)
-        is a `[BATCH]` per-sample IS weight vector. When provided, the
-        gradient `mb_grad_q` produced by `mse.vjp` is scaled in-place
-        by `weights_p[i]` before flowing into `critic.vjp`. CPU path
-        does a sequential loop; GPU path launches
-        `_scale_grad_by_weights_kernel`. None → unweighted
-        MSE → bit-identical to pre-C.3c.
+        """zero_grad → critic.forward → MSE.forward(+accum) → MSE.vjp →
+        [PER td capture + IS-weight scale] → critic.vjp → opt.step. Returns
+        the scalar loss (0 sentinel under GPU ACCUMULATE; read at flush)."""
+        critic.zero_grad[target](ctx)
+        critic.forward[target, Self.BATCH, POLICY=POLICY](
+            TensorRefs[Self.CRITIC.ARITY](sa), self._mb_q, ctx
+        )
 
-        `td_residuals_p` (optional, default None) is a
-        `[BATCH]` output vector. When provided, the unscaled signed TD
-        residual `(Q − y)` is captured between `mse.vjp` and the IS-
-        weight scaling and written here. Used by PER to refresh sum-
-        tree priorities. Captured BEFORE IS scaling so priorities
-        reflect the true error magnitude, not the IS-weighted gradient.
-        """
-        assert_tag_for["CriticUpdateBlock", target](self.ts.target_tag)
-
-        var mb_q = self._mb_q.lt_target[
-            target, Layout.row_major(Self.BATCH, 1)
-        ]()
-        var mb_grad_q = self._mb_grad_q.lt_target[
-            target, Layout.row_major(Self.BATCH, 1)
-        ]()
-        var mb_grad_sa = self._mb_grad_sa.lt_target[
-            target, Layout.row_major(Self.BATCH, Self.SA_DIM)
-        ]()
-
-        # Launder caller-supplied tiles to MutAnyOrigin — Module's variadic
-        # forward/vjp surface requires it.
-        var sa_p = mptr(sa_t.ptr)
-        var sa_t_rb = TileTensor(sa_p, row_major[Self.BATCH, Self.SA_DIM]())
-
-        var mb_q_t = lt_to_tt(mb_q)
-        opt.zero_grad[target, M=Self.CRITIC](critic)
-        critic.forward[target, Self.BATCH, POLICY](sa_t_rb, output=mb_q_t)
-        # Slice 3 — on GPU with ACCUMULATE, the loss reduction stays on
-        # device (no per-step D2H, CUDA-graph capturable); the host reads
-        # the accumulator at `diag_every` flush via `mse_loss.read_accum`.
-        # `forward_accumulate` caches logits exactly like `forward`, so the
-        # vjp below is unaffected. Returned scalar is a 0 sentinel in that
-        # mode. Default path (CPU, or ACCUMULATE=False) is unchanged.
         var loss: Scalar[DT]
         comptime if target == "gpu" and ACCUMULATE:
-            self.mse_loss.forward_accumulate[target, Self.BATCH, POLICY](
-                mb_q_t,
-                y_t,
+            self.mse_loss.forward_accumulate[target, Self.BATCH](
+                self._mb_q, y, ctx
             )
             loss = Scalar[DT](0.0)
         else:
-            loss = self.mse_loss.forward[target, Self.BATCH, POLICY](
-                mb_q_t,
-                y_t,
+            loss = self.mse_loss.forward[target, Self.BATCH](
+                self._mb_q, y, ctx
             )
 
-        var mb_grad_q_t = lt_to_tt(mb_grad_q)
-        self.mse_loss.vjp[target, Self.BATCH, POLICY](y_t, mb_grad_q_t)
+        self.mse_loss.vjp[target, Self.BATCH](self._mb_q, y, self._mb_grad_q, ctx)
 
-        # PER residual capture (raw signed TD `Q − y = mb_grad_q · BATCH`),
-        # taken BEFORE the IS-weight scaling below so priorities reflect
-        # error magnitude not weighted gradient. None → no capture.
+        # PER residual capture (raw signed TD `Q−y`), BEFORE IS scaling.
         if td_residuals:
             var td = td_residuals.value()
-
             comptime if target == "cpu":
-                var scale = Scalar[DT](Self.BATCH)
                 for i in range(Self.BATCH):
-                    td[i] = mb_grad_q[i, 0] * scale
+                    td[i] = self._mb_grad_q.data[i] * Scalar[DT](Self.BATCH)
             else:
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
-                comptime capture_kernel = _capture_td_residuals_kernel[
-                    Self.BATCH
-                ]
-                var ctx = self.ts.ctx.value()
-                ctx.enqueue_function[capture_kernel](
-                    mb_grad_q,
+                ctx.value().enqueue_function[
+                    _capture_td_residuals_kernel[Self.BATCH]
+                ](
+                    self._mb_grad_q.lt[
+                        "gpu", Layout.row_major(Self.BATCH, 1)
+                    ](),
                     td,
                     grid_dim=n_blocks,
                     block_dim=TPB,
                 )
 
-        # Phase C.3c — IS-weight scaling, gated on Optional sentinel.
+        # IS-weight scaling (PER), gated on Optional sentinel.
         if weights:
             var w = weights.value()
-
             comptime if target == "cpu":
                 for i in range(Self.BATCH):
-                    mb_grad_q[i, 0] *= w[i]
+                    self._mb_grad_q.data[i] = (
+                        self._mb_grad_q.data[i] * rebind[Scalar[DT]](w[i])
+                    )
             else:
                 comptime n_blocks = (Self.BATCH + TPB - 1) // TPB
-                comptime scale_kernel = _scale_grad_by_weights_kernel[
-                    Self.BATCH
-                ]
-                var ctx = self.ts.ctx.value()
-                ctx.enqueue_function[scale_kernel](
-                    mb_grad_q,
+                ctx.value().enqueue_function[
+                    _scale_grad_by_weights_kernel[Self.BATCH]
+                ](
+                    self._mb_grad_q.lt[
+                        "gpu", Layout.row_major(Self.BATCH, 1)
+                    ](),
                     w,
                     grid_dim=n_blocks,
                     block_dim=TPB,
                 )
 
-        var mb_grad_sa_t = lt_to_tt(mb_grad_sa)
-        critic.vjp[target, Self.BATCH, POLICY](mb_grad_q_t, mb_grad_sa_t)
-        opt.step[target, M=Self.CRITIC](critic)
+        critic.vjp[target, Self.BATCH, POLICY=POLICY](
+            TensorRefs[Self.CRITIC.ARITY](sa),
+            self._mb_grad_q,
+            TensorRefs[Self.CRITIC.ARITY](self._mb_grad_sa),
+            ctx,
+        )
+        opt.step[target, M=Self.CRITIC](critic, ctx)
         return loss
 
 
@@ -295,40 +216,37 @@ struct TwinCriticUpdateBlock[
     ACT: Int,
 ](LossBlock):
     """Twin-critic update against shared target `y`. Owns two
-    `CriticUpdateBlock`s + a shared `_mb_sa` scratch."""
+    `CriticUpdateBlock`s + a shared `_mb_sa` concat scratch."""
 
     comptime SA_DIM = Self.OBS + Self.ACT
 
     var c1: CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]
     var c2: CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]
-
-    var _mb_sa: Scratch["mb_sa", Self.BATCH * Self.SA_DIM]
-
-    var ts: TargetStorage
+    var _mb_sa: Tensor
 
     def __init__(out self):
         self.c1 = CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]()
         self.c2 = CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]()
-        self._mb_sa = Scratch["mb_sa", Self.BATCH * Self.SA_DIM]()
-        self.ts = TargetStorage.make_uninit()
+        self._mb_sa = Tensor()
 
     @staticmethod
     def make[
         target: StaticString
     ](ctx: Optional[DeviceContext] = None,) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
         comptime assert (
             target == "cpu" or target == "gpu"
         ), "TwinCriticUpdateBlock: target must be 'cpu' or 'gpu'"
         var blk = Self()
-        blk.c1 = CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM].make[
-            target
-        ](ctx=ctx)
-        blk.c2 = CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM].make[
-            target
-        ](ctx=ctx)
-        blk.ts = TargetStorage.make[target](ctx=ctx)
-        init_scratch_auto[Self, target](blk, ctx)
+        blk.c1 = CriticUpdateBlock[
+            Self.CRITIC, Self.BATCH, Self.SA_DIM
+        ].make[target](ctx=ctx)
+        blk.c2 = CriticUpdateBlock[
+            Self.CRITIC, Self.BATCH, Self.SA_DIM
+        ].make[target](ctx=ctx)
+        comptime if target == "cpu":
+            blk._mb_sa = Tensor.alloc(Self.BATCH * Self.SA_DIM)
+        else:
+            blk._mb_sa = Tensor.alloc_gpu(ctx.value(), Self.BATCH * Self.SA_DIM)
         return blk^
 
     def step[
@@ -341,65 +259,39 @@ struct TwinCriticUpdateBlock[
         mut critic1_opt: Adam,
         mut critic2: Self.CRITIC,
         mut critic2_opt: Adam,
-        mb_s: LayoutTensor[
-            DT, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
-        ],
-        mb_a: LayoutTensor[
-            DT, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
-        ],
-        mb_y_t: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
+        mut mb_s: Tensor,
+        mut mb_a: Tensor,
+        mut mb_y: Tensor,
         weights: Optional[
-            LayoutTensor[
-                DT,
-                Layout.row_major(Self.BATCH),
-                MutAnyOrigin,
-            ]
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None,
         td_residuals: Optional[
-            LayoutTensor[
-                DT,
-                Layout.row_major(Self.BATCH),
-                MutAnyOrigin,
-            ]
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None,
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Scalar[DT]:
-        """Phase C.3c — `weights_p` (optional, default None) flows
-        through both sub-block updates so both critics receive the
-        same per-sample PER weighting. Bit-identical when None.
-
-        `td_residuals` (optional, default None) captures the signed
-        TD residual from critic1 only — canonical choice for PER
-        priority refresh; critic2 sees the same target so |Q1−y| is
-        a representative single-critic proxy (Schaul et al. §3.1).
-        """
-        assert_tag_for["TwinCriticUpdateBlock", target](self.ts.target_tag)
-
-        var sa = self._mb_sa.lt_target[
-            target, Layout.row_major(Self.BATCH, Self.SA_DIM)
-        ]()
+        """concat (s,a) → c1.step + c2.step against shared `mb_y`. `td_residuals`
+        captured from critic1 only (canonical PER proxy)."""
         comptime if target == "cpu":
-            concat_sa[Self.OBS, Self.ACT, Self.BATCH](mb_s, mb_a, sa)
+            concat_sa[Self.OBS, Self.ACT, Self.BATCH](
+                mb_s.lt["cpu", Layout.row_major(Self.BATCH, Self.OBS)](),
+                mb_a.lt["cpu", Layout.row_major(Self.BATCH, Self.ACT)](),
+                self._mb_sa.lt["cpu", Layout.row_major(Self.BATCH, Self.SA_DIM)](),
+            )
         else:
             concat_sa_gpu[Self.OBS, Self.ACT, Self.BATCH](
-                self.ts.ctx.value(), mb_s, mb_a, sa
+                ctx.value(),
+                mb_s.lt["gpu", Layout.row_major(Self.BATCH, Self.OBS)](),
+                mb_a.lt["gpu", Layout.row_major(Self.BATCH, Self.ACT)](),
+                self._mb_sa.lt["gpu", Layout.row_major(Self.BATCH, Self.SA_DIM)](),
             )
-        var sa_t = lt_to_tt(sa)
 
         var loss1 = self.c1.step[target, POLICY, ACCUMULATE](
-            critic1,
-            critic1_opt,
-            sa_t,
-            mb_y_t,
-            weights=weights,
-            td_residuals=td_residuals,
+            critic1, critic1_opt, self._mb_sa, mb_y,
+            weights=weights, td_residuals=td_residuals, ctx=ctx,
         )
         var loss2 = self.c2.step[target, POLICY, ACCUMULATE](
-            critic2,
-            critic2_opt,
-            sa_t,
-            mb_y_t,
-            weights=weights,
+            critic2, critic2_opt, self._mb_sa, mb_y,
+            weights=weights, ctx=ctx,
         )
         return loss1 + loss2
