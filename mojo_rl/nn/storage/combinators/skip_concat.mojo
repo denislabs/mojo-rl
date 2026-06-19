@@ -17,7 +17,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
-from mojo_rl.nn.core.initializer import Initializer
+from ..core.initializer import Initializer
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
@@ -35,7 +35,7 @@ struct SkipConcat[Inner: Module](Module):
 
     var inner: Self.Inner
     var inner_out: Tensor
-    var go_pass: Tensor   # grad_output[:, :IN]   (bwd)
+    var go_pass: Tensor  # grad_output[:, :IN]   (bwd)
     var go_inner: Tensor  # grad_output[:, IN:]   (bwd, fed to inner)
     var gi_inner: Tensor  # inner's grad-input
 
@@ -47,26 +47,24 @@ struct SkipConcat[Inner: Module](Module):
         self.gi_inner = Tensor()
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var s = Self()
-        s.inner = Self.Inner.make_cpu()
-        return s^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var s = Self()
-        s.inner = Self.Inner.make_gpu(ctx)
+        s.inner = Self.Inner.make[target, INIT](ctx)
         return s^
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin
     ](
-        mut self, inputs: TensorRefs[1, o], mut out: Tensor,
+        mut self,
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref in0 = inputs[0]
         self.inner.forward[target, B](
-            TensorRefs[Self.Inner.ARITY].of1(in0), self.inner_out, ctx
+            TensorRefs[Self.Inner.ARITY](in0), self.inner_out, ctx
         )
         comptime if target == "cpu":
             out.ensure(B * Self.OUT_DIM)
@@ -75,22 +73,28 @@ struct SkipConcat[Inner: Module](Module):
                 for j in range(Self.IN):
                     out.data[ob + j] = in0.data[b * Self.IN + j]
                 for j in range(Self.OINNER):
-                    out.data[ob + Self.IN + j] = self.inner_out.data[b * Self.OINNER + j]
+                    out.data[ob + Self.IN + j] = self.inner_out.data[
+                        b * Self.OINNER + j
+                    ]
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.OUT_DIM)
             c.enqueue_function[_par_concat_kernel[B, Self.IN, Self.OINNER]](
-                in0.lt_gpu[Layout.row_major(B, Self.IN)](),
-                self.inner_out.lt_gpu[Layout.row_major(B, Self.OINNER)](),
-                out.lt_gpu[Layout.row_major(B, Self.OUT_DIM)](),
-                grid_dim=(B * Self.OUT_DIM + TPB - 1) // TPB, block_dim=TPB,
+                in0.lt["gpu", Layout.row_major(B, Self.IN)](),
+                self.inner_out.lt["gpu", Layout.row_major(B, Self.OINNER)](),
+                out.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
+                grid_dim=(B * Self.OUT_DIM + TPB - 1) // TPB,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
     ](
-        mut self, forward_input: TensorRefs[1, ofi], mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi], ctx: Optional[DeviceContext] = None,
+        mut self,
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         ref fin = forward_input[0]
         ref gin = grad_inputs[0]
@@ -101,22 +105,29 @@ struct SkipConcat[Inner: Module](Module):
             for b in range(B):
                 var gb = b * Self.OUT_DIM
                 for j in range(Self.IN):
-                    self.go_pass.data[b * Self.IN + j] = grad_output.data[gb + j]
+                    self.go_pass.data[b * Self.IN + j] = grad_output.data[
+                        gb + j
+                    ]
                 for j in range(Self.OINNER):
-                    self.go_inner.data[b * Self.OINNER + j] = grad_output.data[gb + Self.IN + j]
+                    self.go_inner.data[b * Self.OINNER + j] = grad_output.data[
+                        gb + Self.IN + j
+                    ]
         else:
             var c = ctx.value()
             self.go_pass.ensure_gpu(c, B * Self.IN)
             self.go_inner.ensure_gpu(c, B * Self.OINNER)
             c.enqueue_function[_par_split_kernel[B, Self.IN, Self.OINNER]](
-                grad_output.lt_gpu[Layout.row_major(B, Self.OUT_DIM)](),
-                self.go_pass.lt_gpu[Layout.row_major(B, Self.IN)](),
-                self.go_inner.lt_gpu[Layout.row_major(B, Self.OINNER)](),
-                grid_dim=(B * Self.OUT_DIM + TPB - 1) // TPB, block_dim=TPB,
+                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
+                self.go_pass.lt["gpu", Layout.row_major(B, Self.IN)](),
+                self.go_inner.lt["gpu", Layout.row_major(B, Self.OINNER)](),
+                grid_dim=(B * Self.OUT_DIM + TPB - 1) // TPB,
+                block_dim=TPB,
             )
         self.inner.vjp[target, B](
-            TensorRefs[Self.Inner.ARITY].of1(fin), self.go_inner,
-            TensorRefs[Self.Inner.ARITY].of1(self.gi_inner), ctx,
+            TensorRefs[Self.Inner.ARITY](fin),
+            self.go_inner,
+            TensorRefs[Self.Inner.ARITY](self.gi_inner),
+            ctx,
         )
         # grad_input = go_pass + gi_inner
         comptime NIN = B * Self.IN
@@ -137,10 +148,11 @@ struct SkipConcat[Inner: Module](Module):
             var c = ctx.value()
             gin.ensure_gpu(c, NIN)
             c.enqueue_function[_resid_add_kernel[NIN]](
-                self.go_pass.lt_gpu[Layout.row_major(NIN)](),
-                self.gi_inner.lt_gpu[Layout.row_major(NIN)](),
-                gin.lt_gpu[Layout.row_major(NIN)](),
-                grid_dim=(NIN + TPB - 1) // TPB, block_dim=TPB,
+                self.go_pass.lt["gpu", Layout.row_major(NIN)](),
+                self.gi_inner.lt["gpu", Layout.row_major(NIN)](),
+                gin.lt["gpu", Layout.row_major(NIN)](),
+                grid_dim=(NIN + TPB - 1) // TPB,
+                block_dim=TPB,
             )
 
     def for_each_param[
@@ -159,8 +171,3 @@ struct SkipConcat[Inner: Module](Module):
         mut self, mut src: Self, tau: Scalar[DT], ctx: Optional[DeviceContext]
     ) raises:
         self.inner.polyak_from[target](src.inner, tau, ctx)
-
-    def reinit[
-        target: StaticString, INIT: Initializer
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        self.inner.reinit[target, INIT](ctx)

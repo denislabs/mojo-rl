@@ -27,21 +27,51 @@ from .tensor import Tensor
 struct TensorRefs[N: Int, o: MutOrigin](Copyable, Movable):
     var ptrs: InlineArray[Pointer[Tensor, Self.o], Self.N]
 
-    @staticmethod
-    def of1(ref [Self.o] t0: Tensor) -> Self:
+    def __init__(out self, ref[Self.o] tensor: Tensor) raises:
         comptime assert Self.N == 1, "of1 requires N == 1"
-        return Self(
-            InlineArray[Pointer[Tensor, Self.o], Self.N](fill=Pointer(to=t0))
+        self.ptrs = InlineArray[Pointer[Tensor, Self.o], Self.N](
+            fill=Pointer(to=tensor)
         )
 
-    @staticmethod
-    def of2(ref [Self.o] t0: Tensor, ref [Self.o] t1: Tensor) -> Self:
+    def __init__(
+        out self, ref[Self.o] t0: Tensor, ref[Self.o] t1: Tensor
+    ) raises:
         comptime assert Self.N == 2, "of2 requires N == 2"
-        var a = InlineArray[Pointer[Tensor, Self.o], Self.N](
-            fill=Pointer(to=t0)
+        self.ptrs = InlineArray[Pointer[Tensor, Self.o], Self.N](
+            uninitialized=True
         )
-        a[1] = Pointer(to=t1)
-        return Self(a^)
+        self.ptrs[0] = Pointer(to=t0)
+        self.ptrs[1] = Pointer(to=t1)
 
-    def __getitem__(self, index: Int) -> ref [Self.o] Tensor:
+    def __init__(
+        out self,
+        ref[Self.o] t0: Tensor,
+        ref[Self.o] t1: Tensor,
+        ref[Self.o] t2: Tensor,
+    ) raises:
+        comptime assert Self.N == 3, "of3 requires N == 3"
+        self.ptrs = InlineArray[Pointer[Tensor, Self.o], Self.N](
+            uninitialized=True
+        )
+        self.ptrs[0] = Pointer(to=t0)
+        self.ptrs[1] = Pointer(to=t1)
+        self.ptrs[2] = Pointer(to=t2)
+
+    def __init__(
+        out self,
+        ref[Self.o] t0: Tensor,
+        ref[Self.o] t1: Tensor,
+        ref[Self.o] t2: Tensor,
+        ref[Self.o] t3: Tensor,
+    ) raises:
+        comptime assert Self.N == 4, "of4 requires N == 4"
+        self.ptrs = InlineArray[Pointer[Tensor, Self.o], Self.N](
+            uninitialized=True
+        )
+        self.ptrs[0] = Pointer(to=t0)
+        self.ptrs[1] = Pointer(to=t1)
+        self.ptrs[2] = Pointer(to=t2)
+        self.ptrs[3] = Pointer(to=t3)
+
+    def __getitem__(self, index: Int) -> ref[Self.o] Tensor:
         return self.ptrs[index][]

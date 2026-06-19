@@ -17,6 +17,9 @@ from .core.tensor_refs import TensorRefs
 from .core.tensor_pack import TensorPack
 from .core.param import Param, ParamVisitor
 from .core.module import Module
+from .core.initializer import (
+    Initializer, Kaiming, Xavier, Zero, Normal, Deterministic,
+)
 from .core.checkpoint import save_params, load_params
 from .primitives.linear import Linear
 from .primitives.linear_relu import LinearReLU

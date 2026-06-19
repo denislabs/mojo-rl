@@ -1,7 +1,7 @@
 """SGD + MSE — storage-native optimizer + loss (CPU + GPU).
 
 All operate on `Tensor` storages with a `comptime target`. CPU reads `.data`;
-GPU builds a device `LayoutTensor` via `lt_gpu[…](mut self)` and launches a
+GPU builds a device `LayoutTensor` via `lt["gpu", …](mut self)` and launches a
 kernel (args `MutAnyOrigin` — the ABI boundary). `mse_forward` is CPU-only (a
 scalar monitor; the GPU driver downloads `pred` first).
 """
@@ -14,6 +14,7 @@ from mojo_rl.nn.constants import DT
 from ..core.tensor import Tensor
 from ..core.param import ParamVisitor
 
+
 def _mse_back_kernel[
     M: Int
 ](
@@ -25,6 +26,7 @@ def _mse_back_kernel[
     var i = Int(global_idx.x)
     if i < M:
         grad[i] = scale * (pred[i] - tgt[i])
+
 
 # ── loss ───────────────────────────────────────────────────────────────
 def mse_forward[
@@ -56,9 +58,9 @@ def mse_backward[
         var c = ctx.value()
         grad.ensure_gpu(c, M)
         comptime layout = Layout.row_major(M)
-        var pl = pred.lt_gpu[layout]()
-        var tl = tgt.lt_gpu[layout]()
-        var gl = grad.lt_gpu[layout]()
+        var pl = pred.lt["gpu", layout]()
+        var tl = tgt.lt["gpu", layout]()
+        var gl = grad.lt["gpu", layout]()
         comptime nblk = (M + 255) // 256
         c.enqueue_function[_mse_back_kernel[M]](
             pl, tl, gl, scale, grid_dim=nblk, block_dim=256

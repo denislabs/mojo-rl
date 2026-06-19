@@ -1,7 +1,7 @@
 """SGD + MSE — storage-native optimizer + loss (CPU + GPU).
 
 All operate on `Tensor` storages with a `comptime target`. CPU reads `.data`;
-GPU builds a device `LayoutTensor` via `lt_gpu[…](mut self)` and launches a
+GPU builds a device `LayoutTensor` via `lt["gpu", …](mut self)` and launches a
 kernel (args `MutAnyOrigin` — the ABI boundary). `mse_forward` is CPU-only (a
 scalar monitor; the GPU driver downloads `pred` first).
 """
@@ -45,8 +45,8 @@ struct SGD(ParamVisitor):
         mut self,
         mut param: Tensor,
         mut grad: Tensor,
-        mut m: Tensor,   # unused (SGD is stateless)
-        mut v: Tensor,   # unused
+        mut m: Tensor,  # unused (SGD is stateless)
+        mut v: Tensor,  # unused
         apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
@@ -60,8 +60,8 @@ struct SGD(ParamVisitor):
         else:
             var c = ctx.value()
             comptime layout = Layout.row_major(N)
-            var pl = param.lt_gpu[layout]()
-            var gl = grad.lt_gpu[layout]()
+            var pl = param.lt["gpu", layout]()
+            var gl = grad.lt["gpu", layout]()
             comptime nblk = (N + 255) // 256
             c.enqueue_function[_sgd_kernel[N]](
                 pl,
@@ -72,5 +72,3 @@ struct SGD(ParamVisitor):
                 grid_dim=nblk,
                 block_dim=256,
             )
-
-

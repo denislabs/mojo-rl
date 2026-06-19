@@ -19,6 +19,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
 
 
 comptime BN2D_DEFAULT_EPS: Float64 = 1e-5
@@ -366,43 +367,34 @@ struct BatchNorm2D[
         self.training = True
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var bn = Self()
-        bn.gamma = Param["gamma", False, Self.C_].make_cpu()
-        bn.beta = Param["beta", False, Self.C_].make_cpu()
+        bn.gamma = Param["gamma", False, Self.C_].make[target](ctx)
+        bn.beta = Param["beta", False, Self.C_].make[target](ctx)
         for k in range(Self.C_):
             bn.gamma.val.data[k] = Scalar[DT](1.0)
         bn.running_mean = Tensor.alloc(Self.C_)
         bn.running_var = Tensor.alloc(Self.C_)
         for k in range(Self.C_):
             bn.running_var.data[k] = Scalar[DT](1.0)
-        return bn^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var bn = Self()
-        bn.gamma = Param["gamma", False, Self.C_].make_gpu(ctx)
-        bn.beta = Param["beta", False, Self.C_].make_gpu(ctx)
-        for k in range(Self.C_):
-            bn.gamma.val.data[k] = Scalar[DT](1.0)
-        bn.gamma.val.upload(ctx)
-        bn.beta.val.upload(ctx)
-        bn.running_mean = Tensor.alloc(Self.C_)
-        bn.running_var = Tensor.alloc(Self.C_)
-        for k in range(Self.C_):
-            bn.running_var.data[k] = Scalar[DT](1.0)
-        bn.running_mean.upload(ctx)
-        bn.running_var.upload(ctx)
-        # Multi-block scratch + channel caches.
-        comptime PR = Self.C_ * BN2D_RBLOCKS
-        bn.cache_inv_std.ensure_gpu(ctx, Self.C_)
-        bn.cache_mean.ensure_gpu(ctx, Self.C_)
-        bn.bn_psum.ensure_gpu(ctx, PR)
-        bn.bn_psumsq.ensure_gpu(ctx, PR)
-        bn.bn_pdg.ensure_gpu(ctx, PR)
-        bn.bn_pdb.ensure_gpu(ctx, PR)
-        bn.bn_m1.ensure_gpu(ctx, Self.C_)
-        bn.bn_m2.ensure_gpu(ctx, Self.C_)
+        comptime if target != "cpu":
+            var c = ctx.value()
+            bn.gamma.val.upload(c)
+            bn.beta.val.upload(c)
+            bn.running_mean.upload(c)
+            bn.running_var.upload(c)
+            # Multi-block scratch + channel caches.
+            comptime PR = Self.C_ * BN2D_RBLOCKS
+            bn.cache_inv_std.ensure_gpu(c, Self.C_)
+            bn.cache_mean.ensure_gpu(c, Self.C_)
+            bn.bn_psum.ensure_gpu(c, PR)
+            bn.bn_psumsq.ensure_gpu(c, PR)
+            bn.bn_pdg.ensure_gpu(c, PR)
+            bn.bn_pdb.ensure_gpu(c, PR)
+            bn.bn_m1.ensure_gpu(c, Self.C_)
+            bn.bn_m2.ensure_gpu(c, Self.C_)
         return bn^
 
     def set_training(mut self, v: Bool):
@@ -495,9 +487,9 @@ struct BatchNorm2D[
                         G,
                     ]
                 ](
-                    in0.lt_gpu[l2d](),
-                    self.bn_psum.lt_gpu[lpr](),
-                    self.bn_psumsq.lt_gpu[lpr](),
+                    in0.lt["gpu", l2d](),
+                    self.bn_psum.lt["gpu", lpr](),
+                    self.bn_psumsq.lt["gpu", lpr](),
                     grid_dim=Self.C_ * G,
                     block_dim=BN2D_TPB,
                 )
@@ -512,12 +504,12 @@ struct BatchNorm2D[
                         Self.MOMENTUM,
                     ]
                 ](
-                    self.bn_psum.lt_gpu[lpr](),
-                    self.bn_psumsq.lt_gpu[lpr](),
-                    self.running_mean.lt_gpu[lc](),
-                    self.running_var.lt_gpu[lc](),
-                    self.cache_mean.lt_gpu[lc](),
-                    self.cache_inv_std.lt_gpu[lc](),
+                    self.bn_psum.lt["gpu", lpr](),
+                    self.bn_psumsq.lt["gpu", lpr](),
+                    self.running_mean.lt["gpu", lc](),
+                    self.running_var.lt["gpu", lc](),
+                    self.cache_mean.lt["gpu", lc](),
+                    self.cache_inv_std.lt["gpu", lc](),
                     grid_dim=Self.C_,
                     block_dim=1,
                 )
@@ -531,13 +523,13 @@ struct BatchNorm2D[
                         G,
                     ]
                 ](
-                    in0.lt_gpu[l2d](),
-                    out.lt_gpu[l2d](),
-                    self.gamma.val.lt_gpu[lc](),
-                    self.beta.val.lt_gpu[lc](),
-                    self.cache_mean.lt_gpu[lc](),
-                    self.cache_inv_std.lt_gpu[lc](),
-                    self.cache_xhat.lt_gpu[l2d](),
+                    in0.lt["gpu", l2d](),
+                    out.lt["gpu", l2d](),
+                    self.gamma.val.lt["gpu", lc](),
+                    self.beta.val.lt["gpu", lc](),
+                    self.cache_mean.lt["gpu", lc](),
+                    self.cache_inv_std.lt["gpu", lc](),
+                    self.cache_xhat.lt["gpu", l2d](),
                     grid_dim=Self.C_ * G,
                     block_dim=BN2D_TPB,
                 )
@@ -552,12 +544,12 @@ struct BatchNorm2D[
                         Self.EPSILON,
                     ]
                 ](
-                    in0.lt_gpu[l2d](),
-                    out.lt_gpu[l2d](),
-                    self.gamma.val.lt_gpu[lc](),
-                    self.beta.val.lt_gpu[lc](),
-                    self.running_mean.lt_gpu[lc](),
-                    self.running_var.lt_gpu[lc](),
+                    in0.lt["gpu", l2d](),
+                    out.lt["gpu", l2d](),
+                    self.gamma.val.lt["gpu", lc](),
+                    self.beta.val.lt["gpu", lc](),
+                    self.running_mean.lt["gpu", lc](),
+                    self.running_var.lt["gpu", lc](),
                     grid_dim=Self.C_,
                     block_dim=BN2D_TPB,
                 )
@@ -634,13 +626,13 @@ struct BatchNorm2D[
                     G,
                 ]
             ](
-                grad_output.lt_gpu[l2d](),
-                self.gamma.val.lt_gpu[lc](),
-                self.cache_xhat.lt_gpu[l2d](),
-                self.bn_psum.lt_gpu[lpr](),
-                self.bn_psumsq.lt_gpu[lpr](),
-                self.bn_pdg.lt_gpu[lpr](),
-                self.bn_pdb.lt_gpu[lpr](),
+                grad_output.lt["gpu", l2d](),
+                self.gamma.val.lt["gpu", lc](),
+                self.cache_xhat.lt["gpu", l2d](),
+                self.bn_psum.lt["gpu", lpr](),
+                self.bn_psumsq.lt["gpu", lpr](),
+                self.bn_pdg.lt["gpu", lpr](),
+                self.bn_pdb.lt["gpu", lpr](),
                 grid_dim=Self.C_ * G,
                 block_dim=BN2D_TPB,
             )
@@ -654,14 +646,14 @@ struct BatchNorm2D[
                     "all",
                 ]
             ](
-                self.bn_psum.lt_gpu[lpr](),
-                self.bn_psumsq.lt_gpu[lpr](),
-                self.bn_pdg.lt_gpu[lpr](),
-                self.bn_pdb.lt_gpu[lpr](),
-                self.bn_m1.lt_gpu[lc](),
-                self.bn_m2.lt_gpu[lc](),
-                self.gamma.grd.lt_gpu[lc](),
-                self.beta.grd.lt_gpu[lc](),
+                self.bn_psum.lt["gpu", lpr](),
+                self.bn_psumsq.lt["gpu", lpr](),
+                self.bn_pdg.lt["gpu", lpr](),
+                self.bn_pdb.lt["gpu", lpr](),
+                self.bn_m1.lt["gpu", lc](),
+                self.bn_m2.lt["gpu", lc](),
+                self.gamma.grd.lt["gpu", lc](),
+                self.beta.grd.lt["gpu", lc](),
                 grid_dim=Self.C_,
                 block_dim=1,
             )
@@ -675,13 +667,13 @@ struct BatchNorm2D[
                     G,
                 ]
             ](
-                grad_output.lt_gpu[l2d](),
-                self.gamma.val.lt_gpu[lc](),
-                self.cache_xhat.lt_gpu[l2d](),
-                self.cache_inv_std.lt_gpu[lc](),
-                self.bn_m1.lt_gpu[lc](),
-                self.bn_m2.lt_gpu[lc](),
-                gin.lt_gpu[l2d](),
+                grad_output.lt["gpu", l2d](),
+                self.gamma.val.lt["gpu", lc](),
+                self.cache_xhat.lt["gpu", l2d](),
+                self.cache_inv_std.lt["gpu", lc](),
+                self.bn_m1.lt["gpu", lc](),
+                self.bn_m2.lt["gpu", lc](),
+                gin.lt["gpu", l2d](),
                 grid_dim=Self.C_ * G,
                 block_dim=BN2D_TPB,
             )

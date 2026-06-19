@@ -12,7 +12,7 @@ the GPU view can be built. `ctx` is the GPU `DeviceContext` (ignored on CPU).
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Initializer
+from .initializer import Initializer
 from .tensor import Tensor
 from .tensor_refs import TensorRefs
 from .param import ParamVisitor
@@ -24,11 +24,13 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
     comptime OUT_DIM: Int
 
     @staticmethod
-    def make_cpu() raises -> Self:
-        ...
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU (impls
+        raise at runtime if missing). Params are allocated AND initialized with
+        `INIT` at construction (no separate reinit pass); combinators thread
+        `[target, INIT]` to their children."""
         ...
 
     def forward[target: StaticString, B: Int, o: MutOrigin](
@@ -70,13 +72,4 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
         `p_self = tau·p_src + (1-tau)·p_self`. Default no-op (param-less
         leaves + leaves whose polyak isn't exercised yet); param leaves
         override on their `Param`s, combinators recurse into children."""
-        pass
-
-    def reinit[
-        target: StaticString, INIT: Initializer
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        """(Re)initialize params with `INIT` (Kaiming/Xavier/…). Default
-        no-op (param-less leaves keep it); param leaves override (init their
-        weight via `INIT.init_weight` + bias), combinators recurse. Lets the
-        Trainer install a proper init over the leaves' deterministic make()."""
         pass

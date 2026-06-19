@@ -13,6 +13,7 @@ from mojo_rl.nn.primitives.embedding import Embedding as LegacyEmbedding
 from mojo_rl.nn.initializer import Zero
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.flatten import Flatten
 from mojo_rl.nn.storage.primitives.embedding import Embedding
 
@@ -26,7 +27,7 @@ def test_flatten() raises:
     var c = DeviceContext()
     var ok = True
     # CPU
-    var fc = Flatten[DIM].make_cpu()
+    var fc = Flatten[DIM].make["cpu", Deterministic]()
     var x = Tensor.alloc(M)
     var go = Tensor.alloc(M)
     for i in range(M):
@@ -34,13 +35,13 @@ def test_flatten() raises:
         go.data[i] = Scalar[DT]((i % 5) - 2) * 0.4
     var out = Tensor.alloc(M)
     var gi = Tensor.alloc(M)
-    fc.forward["cpu", B](TensorRefs[1].of1(x), out, None)
-    fc.vjp["cpu", B](TensorRefs[1].of1(x), go, TensorRefs[1].of1(gi), None)
+    fc.forward["cpu", B](TensorRefs[1](x), out, None)
+    fc.vjp["cpu", B](TensorRefs[1](x), go, TensorRefs[1](gi), None)
     for i in range(M):
         if abs(out.data[i] - x.data[i]) > TOL: ok = False
         if abs(gi.data[i] - go.data[i]) > TOL: ok = False
     # GPU
-    var fg = Flatten[DIM].make_gpu(c)
+    var fg = Flatten[DIM].make["gpu", Deterministic](Optional(c))
     var gx = Tensor.alloc(M)
     var ggo = Tensor.alloc(M)
     for i in range(M):
@@ -49,8 +50,8 @@ def test_flatten() raises:
     gx.upload(c); ggo.upload(c)
     var gout = Tensor.alloc(M)
     var ggi = Tensor.alloc(M)
-    fg.forward["gpu", B](TensorRefs[1].of1(gx), gout, Optional(c))
-    fg.vjp["gpu", B](TensorRefs[1].of1(gx), ggo, TensorRefs[1].of1(ggi), Optional(c))
+    fg.forward["gpu", B](TensorRefs[1](gx), gout, Optional(c))
+    fg.vjp["gpu", B](TensorRefs[1](gx), ggo, TensorRefs[1](ggi), Optional(c))
     gout.download(c); ggi.download(c)
     for i in range(M):
         if abs(gout.data[i] - x.data[i]) > TOL: ok = False
@@ -85,7 +86,7 @@ def _emb_check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Boo
     leg.zero_grad["cpu"]()
     leg.vjp["cpu", B](go_t, gi_t)
 
-    var st = Embedding[VOCAB, EMBED].make_cpu() if target == "cpu" else Embedding[VOCAB, EMBED].make_gpu(ctx.value())
+    var st = Embedding[VOCAB, EMBED].make[target, Deterministic](ctx)
     for k in range(VOCAB * EMBED):
         st.weight.val.data[k] = lw[k]
     var sx = Tensor.alloc(B * VOCAB)
@@ -97,16 +98,16 @@ def _emb_check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Boo
     for i in range(B * EMBED):
         sgo.data[i] = go[i]
     comptime if target == "cpu":
-        st.forward["cpu", B](TensorRefs[1].of1(sx), sout, None)
+        st.forward["cpu", B](TensorRefs[1](sx), sout, None)
         st.zero_grad["cpu"](None)
-        st.vjp["cpu", B](TensorRefs[1].of1(sx), sgo, TensorRefs[1].of1(sgi), None)
+        st.vjp["cpu", B](TensorRefs[1](sx), sgo, TensorRefs[1](sgi), None)
     else:
         var c = ctx.value()
         st.weight.val.upload(c)
         sx.upload(c); sgo.upload(c)
-        st.forward["gpu", B](TensorRefs[1].of1(sx), sout, ctx)
+        st.forward["gpu", B](TensorRefs[1](sx), sout, ctx)
         st.zero_grad["gpu"](ctx)
-        st.vjp["gpu", B](TensorRefs[1].of1(sx), sgo, TensorRefs[1].of1(sgi), ctx)
+        st.vjp["gpu", B](TensorRefs[1](sx), sgo, TensorRefs[1](sgi), ctx)
         sout.download(c); sgi.download(c); st.weight.grd.download(c)
 
     var ok = True

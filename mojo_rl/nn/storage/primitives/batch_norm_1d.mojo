@@ -31,6 +31,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
 
 
 comptime BN_DEFAULT_EPS: Float64 = 1e-5
@@ -211,33 +212,24 @@ struct BatchNorm1D[
         self.training = True
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var bn = Self()
-        bn.gamma = Param["gamma", False, Self.DIM_].make_cpu()
-        bn.beta = Param["beta", False, Self.DIM_].make_cpu()
+        bn.gamma = Param["gamma", False, Self.DIM_].make[target](ctx)
+        bn.beta = Param["beta", False, Self.DIM_].make[target](ctx)
         for k in range(Self.DIM_):
             bn.gamma.val.data[k] = Scalar[DT](1.0)  # γ←1, β←0
         bn.running_mean = Tensor.alloc(Self.DIM_)  # ←0
         bn.running_var = Tensor.alloc(Self.DIM_)
         for k in range(Self.DIM_):
             bn.running_var.data[k] = Scalar[DT](1.0)  # σ²_run←1
-        return bn^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var bn = Self()
-        bn.gamma = Param["gamma", False, Self.DIM_].make_gpu(ctx)
-        bn.beta = Param["beta", False, Self.DIM_].make_gpu(ctx)
-        for k in range(Self.DIM_):
-            bn.gamma.val.data[k] = Scalar[DT](1.0)
-        bn.gamma.val.upload(ctx)
-        bn.beta.val.upload(ctx)  # zeros → device
-        bn.running_mean = Tensor.alloc(Self.DIM_)
-        bn.running_var = Tensor.alloc(Self.DIM_)
-        for k in range(Self.DIM_):
-            bn.running_var.data[k] = Scalar[DT](1.0)
-        bn.running_mean.upload(ctx)
-        bn.running_var.upload(ctx)
+        comptime if target != "cpu":
+            var dctx = ctx.value()
+            bn.gamma.val.upload(dctx)
+            bn.beta.val.upload(dctx)  # zeros → device
+            bn.running_mean.upload(dctx)
+            bn.running_var.upload(dctx)
         return bn^
 
     def set_training(mut self, v: Bool):
@@ -322,14 +314,14 @@ struct BatchNorm1D[
                         Self.MOMENTUM,
                     ]
                 ](
-                    in0.lt_gpu[l2d](),
-                    out.lt_gpu[l2d](),
-                    self.gamma.val.lt_gpu[ld](),
-                    self.beta.val.lt_gpu[ld](),
-                    self.running_mean.lt_gpu[ld](),
-                    self.running_var.lt_gpu[ld](),
-                    self.cache_xhat.lt_gpu[l2d](),
-                    self.cache_inv_std.lt_gpu[ld](),
+                    in0.lt["gpu", l2d](),
+                    out.lt["gpu", l2d](),
+                    self.gamma.val.lt["gpu", ld](),
+                    self.beta.val.lt["gpu", ld](),
+                    self.running_mean.lt["gpu", ld](),
+                    self.running_var.lt["gpu", ld](),
+                    self.cache_xhat.lt["gpu", l2d](),
+                    self.cache_inv_std.lt["gpu", ld](),
                     grid_dim=Self.DIM_,
                     block_dim=BN_TPB,
                 )
@@ -342,12 +334,12 @@ struct BatchNorm1D[
                         Self.EPSILON,
                     ]
                 ](
-                    in0.lt_gpu[l2d](),
-                    out.lt_gpu[l2d](),
-                    self.gamma.val.lt_gpu[ld](),
-                    self.beta.val.lt_gpu[ld](),
-                    self.running_mean.lt_gpu[ld](),
-                    self.running_var.lt_gpu[ld](),
+                    in0.lt["gpu", l2d](),
+                    out.lt["gpu", l2d](),
+                    self.gamma.val.lt["gpu", ld](),
+                    self.beta.val.lt["gpu", ld](),
+                    self.running_mean.lt["gpu", ld](),
+                    self.running_var.lt["gpu", ld](),
                     grid_dim=Self.DIM_,
                     block_dim=BN_TPB,
                 )
@@ -415,13 +407,13 @@ struct BatchNorm1D[
             comptime l2d = Layout.row_major(B, Self.DIM_)
             comptime ld = Layout.row_major(Self.DIM_)
             c.enqueue_function[_bn1d_backward_kernel[B, Self.DIM_]](
-                grad_output.lt_gpu[l2d](),
-                self.gamma.val.lt_gpu[ld](),
-                self.cache_xhat.lt_gpu[l2d](),
-                self.cache_inv_std.lt_gpu[ld](),
-                gin.lt_gpu[l2d](),
-                self.gamma.grd.lt_gpu[ld](),
-                self.beta.grd.lt_gpu[ld](),
+                grad_output.lt["gpu", l2d](),
+                self.gamma.val.lt["gpu", ld](),
+                self.cache_xhat.lt["gpu", l2d](),
+                self.cache_inv_std.lt["gpu", ld](),
+                gin.lt["gpu", l2d](),
+                self.gamma.grd.lt["gpu", ld](),
+                self.beta.grd.lt["gpu", ld](),
                 grid_dim=Self.DIM_,
                 block_dim=BN_TPB,
             )

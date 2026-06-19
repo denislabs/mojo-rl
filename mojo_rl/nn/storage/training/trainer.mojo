@@ -25,7 +25,7 @@ from mojo_rl.nn.constants import DT
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
-from mojo_rl.nn.core.initializer import Initializer
+from ..core.initializer import Initializer
 from ..optimizer.adam import Adam
 from ..loss.cross_entropy import CrossEntropyLoss
 
@@ -66,21 +66,20 @@ struct Trainer[
     @staticmethod
     def make[
         INIT: Initializer
-    ](ctx: Optional[DeviceContext] = None, lr: Scalar[DT] = 1e-3) raises -> Self:
+    ](
+        ctx: Optional[DeviceContext] = None, lr: Scalar[DT] = 1e-3
+    ) raises -> Self:
         """`ctx` required on GPU (the caller owns it and reuses it for
         train/eval so all device buffers share one context)."""
         var t = Self()
+        # One factory: allocates + initializes the model with INIT at construction.
+        t.model = Self.MODEL.make[Self.target, INIT](ctx)
         comptime if Self.target == "cpu":
-            t.model = Self.MODEL.make_cpu()
             t.loss = CrossEntropyLoss[Self.NC].make_cpu()
-            t.model.reinit["cpu", INIT](None)
             t.batch_x = Tensor.alloc(Self.BATCH * Self.IN)
             t.batch_y = Tensor.alloc(Self.BATCH * Self.NC)
         else:
-            var c = ctx.value()
-            t.model = Self.MODEL.make_gpu(c)
-            t.loss = CrossEntropyLoss[Self.NC].make_gpu(c)
-            t.model.reinit["gpu", INIT](ctx)
+            t.loss = CrossEntropyLoss[Self.NC].make_gpu(ctx.value())
             # batch_x/batch_y carry sub-buffer views on GPU — no owned slab.
         t.opt = Adam(lr=lr)
         return t^
@@ -101,11 +100,15 @@ struct Trainer[
     def _slice_train(mut self, x0: Int, y0: Int) raises:
         """Point batch_x/batch_y at GPU sub-buffer views of the resident set."""
         self.batch_x.dev = Optional(
-            self.ds_x.dev.value().create_sub_buffer[DT](x0, Self.BATCH * Self.IN)
+            self.ds_x.dev.value().create_sub_buffer[DT](
+                x0, Self.BATCH * Self.IN
+            )
         )
         self.batch_x.n = Self.BATCH * Self.IN
         self.batch_y.dev = Optional(
-            self.ds_y.dev.value().create_sub_buffer[DT](y0, Self.BATCH * Self.NC)
+            self.ds_y.dev.value().create_sub_buffer[DT](
+                y0, Self.BATCH * Self.NC
+            )
         )
         self.batch_y.n = Self.BATCH * Self.NC
 
@@ -132,13 +135,21 @@ struct Trainer[
             var x0 = nb * Self.BATCH * Self.IN
             var y0 = nb * Self.BATCH * Self.NC
             comptime if Self.target == "cpu":
-                memcpy(dest=self.batch_x.data.unsafe_ptr(), src=train_x.unsafe_ptr() + x0, count=Self.BATCH * Self.IN)
-                memcpy(dest=self.batch_y.data.unsafe_ptr(), src=train_y.unsafe_ptr() + y0, count=Self.BATCH * Self.NC)
+                memcpy(
+                    dest=self.batch_x.data.unsafe_ptr(),
+                    src=train_x.unsafe_ptr() + x0,
+                    count=Self.BATCH * Self.IN,
+                )
+                memcpy(
+                    dest=self.batch_y.data.unsafe_ptr(),
+                    src=train_y.unsafe_ptr() + y0,
+                    count=Self.BATCH * Self.NC,
+                )
             else:
                 self._slice_train(x0, y0)
             self.model.zero_grad[Self.target](ctx)
             self.model.forward[Self.target, Self.BATCH](
-                TensorRefs[Self.MODEL.ARITY].of1(self.batch_x), self.logits, ctx
+                TensorRefs[Self.MODEL.ARITY](self.batch_x), self.logits, ctx
             )
             self.loss.forward_accumulate[Self.target, Self.BATCH](
                 self.logits, self.batch_y, ctx
@@ -147,8 +158,10 @@ struct Trainer[
                 self.logits, self.batch_y, self.grad, ctx
             )
             self.model.vjp[Self.target, Self.BATCH](
-                TensorRefs[Self.MODEL.ARITY].of1(self.batch_x), self.grad,
-                TensorRefs[Self.MODEL.ARITY].of1(self.gi), ctx,
+                TensorRefs[Self.MODEL.ARITY](self.batch_x),
+                self.grad,
+                TensorRefs[Self.MODEL.ARITY](self.gi),
+                ctx,
             )
             self.opt.step[Self.target](self.model, ctx)
         return self.loss.read_accum[Self.target](ctx)
@@ -172,7 +185,11 @@ struct Trainer[
         for nb in range(n_batches):
             var x0 = nb * Self.BATCH * Self.IN
             comptime if Self.target == "cpu":
-                memcpy(dest=self.batch_x.data.unsafe_ptr(), src=test_x.unsafe_ptr() + x0, count=Self.BATCH * Self.IN)
+                memcpy(
+                    dest=self.batch_x.data.unsafe_ptr(),
+                    src=test_x.unsafe_ptr() + x0,
+                    count=Self.BATCH * Self.IN,
+                )
             else:
                 self.batch_x.dev = Optional(
                     self.ds_tx.dev.value().create_sub_buffer[DT](
@@ -181,7 +198,7 @@ struct Trainer[
                 )
                 self.batch_x.n = Self.BATCH * Self.IN
             self.model.forward[Self.target, Self.BATCH](
-                TensorRefs[Self.MODEL.ARITY].of1(self.batch_x), self.logits, ctx
+                TensorRefs[Self.MODEL.ARITY](self.batch_x), self.logits, ctx
             )
             comptime if Self.target == "gpu":
                 self.logits.download(ctx.value())

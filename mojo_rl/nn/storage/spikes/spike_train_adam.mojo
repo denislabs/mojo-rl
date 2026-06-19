@@ -13,6 +13,7 @@ from mojo_rl.nn.storage.primitives.activations import ReLU
 from mojo_rl.nn.storage.combinators.sequential import Sequential
 from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.nn.storage.loss.mse import mse_forward, mse_backward
+from mojo_rl.nn.storage.core.initializer import Deterministic
 
 
 def main() raises:
@@ -21,7 +22,9 @@ def main() raises:
     comptime H = 6
     comptime OUT = 2
 
-    var model = Sequential[Linear[IN, H], ReLU[H], Linear[H, OUT]].make_cpu()
+    var model = Sequential[
+        Linear[IN, H], ReLU[H], Linear[H, OUT]
+    ].make["cpu", Deterministic]()
     var opt = Adam(lr=0.05)
 
     var x = Tensor.alloc(B * IN)
@@ -39,7 +42,7 @@ def main() raises:
     var last: Scalar[DT] = 0
     for step in range(60):
         model.zero_grad["cpu"](None)
-        model.forward["cpu", B](TensorRefs[1].of1(x), pred, None)
+        model.forward["cpu", B](TensorRefs[1](x), pred, None)
         var loss = mse_forward[B, OUT](pred, tgt)
         if step == 0:
             first = loss
@@ -47,7 +50,7 @@ def main() raises:
         if step % 12 == 0:
             print("step", step, " mse", loss)
         mse_backward["cpu", B, OUT](pred, tgt, grad)
-        model.vjp["cpu", B](TensorRefs[1].of1(x), grad, TensorRefs[1].of1(gi), None)
+        model.vjp["cpu", B](TensorRefs[1](x), grad, TensorRefs[1](gi), None)
         opt.begin_step()
         model.for_each_param["cpu"](opt, None)
 

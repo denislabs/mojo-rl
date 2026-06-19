@@ -13,6 +13,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.core.tensor_pack import TensorPack
 from mojo_rl.nn.storage.primitives.binary_elementwise import BinaryElemMin
 from mojo_rl.nn.storage.primitives.concat import Concat2
@@ -27,7 +28,7 @@ comptime D1 = 4
 def _check_min[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
     comptime M = B * DIM
     comptime TOL = Scalar[DT](1e-6)
-    var op = BinaryElemMin[DIM].make_cpu() if target == "cpu" else BinaryElemMin[DIM].make_gpu(ctx.value())
+    var op = BinaryElemMin[DIM].make[target, Deterministic](ctx)
     var ins = TensorPack[2]()
     ins[0].ensure(M)
     ins[1].ensure(M)
@@ -39,13 +40,13 @@ def _check_min[target: StaticString](ctx: Optional[DeviceContext]) raises -> Boo
     var out = Tensor.alloc(M)
     var g = TensorPack[2]()
     comptime if target == "cpu":
-        op.forward["cpu", B](TensorRefs[2].of2(ins[0], ins[1]), out, None)
-        op.vjp["cpu", B](TensorRefs[2].of2(ins[0], ins[1]), go, TensorRefs[2].of2(g[0], g[1]), None)
+        op.forward["cpu", B](TensorRefs[2](ins[0], ins[1]), out, None)
+        op.vjp["cpu", B](TensorRefs[2](ins[0], ins[1]), go, TensorRefs[2](g[0], g[1]), None)
     else:
         var c = ctx.value()
         ins[0].upload(c); ins[1].upload(c); go.upload(c)
-        op.forward["gpu", B](TensorRefs[2].of2(ins[0], ins[1]), out, ctx)
-        op.vjp["gpu", B](TensorRefs[2].of2(ins[0], ins[1]), go, TensorRefs[2].of2(g[0], g[1]), ctx)
+        op.forward["gpu", B](TensorRefs[2](ins[0], ins[1]), out, ctx)
+        op.vjp["gpu", B](TensorRefs[2](ins[0], ins[1]), go, TensorRefs[2](g[0], g[1]), ctx)
         out.download(c); g[0].download(c); g[1].download(c)
     var ok = True
     for i in range(M):
@@ -64,7 +65,7 @@ def _check_min[target: StaticString](ctx: Optional[DeviceContext]) raises -> Boo
 def _check_concat[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
     comptime OUT = D0 + D1
     comptime TOL = Scalar[DT](1e-6)
-    var op = Concat2[D0, D1].make_cpu() if target == "cpu" else Concat2[D0, D1].make_gpu(ctx.value())
+    var op = Concat2[D0, D1].make[target, Deterministic](ctx)
     var ins = TensorPack[2]()
     ins[0].ensure(B * D0)
     ins[1].ensure(B * D1)
@@ -78,13 +79,13 @@ def _check_concat[target: StaticString](ctx: Optional[DeviceContext]) raises -> 
     var out = Tensor.alloc(B * OUT)
     var g = TensorPack[2]()
     comptime if target == "cpu":
-        op.forward["cpu", B](TensorRefs[2].of2(ins[0], ins[1]), out, None)
-        op.vjp["cpu", B](TensorRefs[2].of2(ins[0], ins[1]), go, TensorRefs[2].of2(g[0], g[1]), None)
+        op.forward["cpu", B](TensorRefs[2](ins[0], ins[1]), out, None)
+        op.vjp["cpu", B](TensorRefs[2](ins[0], ins[1]), go, TensorRefs[2](g[0], g[1]), None)
     else:
         var c = ctx.value()
         ins[0].upload(c); ins[1].upload(c); go.upload(c)
-        op.forward["gpu", B](TensorRefs[2].of2(ins[0], ins[1]), out, ctx)
-        op.vjp["gpu", B](TensorRefs[2].of2(ins[0], ins[1]), go, TensorRefs[2].of2(g[0], g[1]), ctx)
+        op.forward["gpu", B](TensorRefs[2](ins[0], ins[1]), out, ctx)
+        op.vjp["gpu", B](TensorRefs[2](ins[0], ins[1]), go, TensorRefs[2](g[0], g[1]), ctx)
         out.download(c); g[0].download(c); g[1].download(c)
     var ok = True
     for bi in range(B):

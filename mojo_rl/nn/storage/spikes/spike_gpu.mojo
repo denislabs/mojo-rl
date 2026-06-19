@@ -1,7 +1,7 @@
 """GPU proof for the storage-passing design — binary add, CPU vs GPU parity.
 
 Same `ref Tensor` / `mut Tensor` surface as the CPU slice. The GPU path builds
-a device `LayoutTensor` INTERNALLY via `Tensor.lt_gpu[layout]()` and launches a
+a device `LayoutTensor` INTERNALLY via `Tensor.lt["gpu", layout]()` and launches a
 kernel; the kernel args are `MutAnyOrigin` (the GPU ABI boundary — the one,
 expected erasure). No origin params on the storage surface either way.
 
@@ -41,15 +41,15 @@ def add_cpu[B: Int, DIM: Int](ref a: Tensor, ref b: Tensor, mut out: Tensor):
 def add_gpu[
     B: Int, DIM: Int
 ](ctx: DeviceContext, mut a: Tensor, mut b: Tensor, mut out: Tensor) raises:
-    # inputs are `mut` so the origin-linking `lt_gpu[…](mut self)` ctor can
+    # inputs are `mut` so the origin-linking `lt["gpu", …](mut self)` ctor can
     # supply the MutAnyOrigin device view (the buffer is read, not written).
     # In the trait path, `inputs[k]` is already a mutable MutAnyOrigin ref, so
     # it composes without this `mut`.
     out.ensure_gpu(ctx, B * DIM)
     comptime layout = Layout.row_major(B, DIM)
-    var al = a.lt_gpu[layout]()
-    var bl = b.lt_gpu[layout]()
-    var ol = out.lt_gpu[layout]()
+    var al = a.lt["gpu", layout]()
+    var bl = b.lt["gpu", layout]()
+    var ol = out.lt["gpu", layout]()
     comptime kernel = _add_kernel[B, DIM]
     comptime nblk = (B * DIM + 255) // 256
     ctx.enqueue_function[kernel](al, bl, ol, grid_dim=nblk, block_dim=256)

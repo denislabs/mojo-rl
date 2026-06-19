@@ -16,7 +16,9 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 from linalg.matmul.cpu.apple_accelerate import (
-    get_cblas_f32_function, _CBLASOrder, _CBLASTranspose,
+    get_cblas_f32_function,
+    _CBLASOrder,
+    _CBLASTranspose,
 )
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
@@ -24,7 +26,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
-from mojo_rl.nn.core.initializer import Initializer
+from ..core.initializer import Initializer
 from ..loss.sac import polyak_tensor
 from .linear import _lin_gb_kernel, _transpose_kernel, _accum_kernel
 
@@ -45,7 +47,9 @@ def _bias_relu_mask_kernel[
         o[b, j] = z if z > 0 else Scalar[DT](0.0)
 
 
-def _gate_kernel[N: Int](
+def _gate_kernel[
+    N: Int
+](
     go: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     mask: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
 ):
@@ -63,7 +67,7 @@ struct LinearReLU[IN_: Int, OUT_: Int](Module):
 
     var weight: Param["weight", True, Self.W_SIZE]
     var bias: Param["bias", False, Self.B_SIZE]
-    var mask: Tensor       # [B, OUT] relu mask (owned cache)
+    var mask: Tensor  # [B, OUT] relu mask (owned cache)
     var cacheT: Tensor
     var dW_tmp: Tensor
 
@@ -75,32 +79,22 @@ struct LinearReLU[IN_: Int, OUT_: Int](Module):
         self.dW_tmp = Tensor()
 
     @staticmethod
-    def _init_w(mut w: Tensor):
-        for k in range(Self.W_SIZE):
-            w.data[k] = Scalar[DT](((k % 7) - 3)) * 0.1
-
-    @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var l = Self()
-        l.weight = Param["weight", True, Self.W_SIZE].make_cpu()
-        l.bias = Param["bias", False, Self.B_SIZE].make_cpu()
-        Self._init_w(l.weight.val)
-        return l^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var l = Self()
-        l.weight = Param["weight", True, Self.W_SIZE].make_gpu(ctx)
-        l.bias = Param["bias", False, Self.B_SIZE].make_gpu(ctx)
-        Self._init_w(l.weight.val)
-        l.weight.val.upload(ctx)
-        l.bias.val.upload(ctx)
+        l.weight = Param["weight", True, Self.W_SIZE].make[target](ctx)
+        l.bias = Param["bias", False, Self.B_SIZE].make[target](ctx)
+        INIT.init_weight[target](l.weight.val, Self.W_SIZE, Self.IN_, Self.OUT_, ctx)
+        INIT.init_bias[target](l.bias.val, Self.B_SIZE, ctx)
         return l^
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin
     ](
-        mut self, inputs: TensorRefs[1, o], mut out: Tensor,
+        mut self,
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref in0 = inputs[0]
@@ -108,7 +102,9 @@ struct LinearReLU[IN_: Int, OUT_: Int](Module):
             out.ensure(B * Self.OUT_)
             self.mask.ensure(B * Self.OUT_)
             var x_v = TileTensor(in0.data, row_major[B, Self.IN_]())
-            var w_v = TileTensor(self.weight.val.data, row_major[Self.IN_, Self.OUT_]())
+            var w_v = TileTensor(
+                self.weight.val.data, row_major[Self.IN_, Self.OUT_]()
+            )
             var out_v = TileTensor(out.data, row_major[B, Self.OUT_]())
             max_matmul[target="cpu"](out_v, x_v, w_v, None)
             # fused bias + ReLU + mask, SIMD over the OUT dim (flat pointers —
@@ -138,21 +134,27 @@ struct LinearReLU[IN_: Int, OUT_: Int](Module):
             out.ensure_gpu(c, B * Self.OUT_)
             self.mask.ensure_gpu(c, B * Self.OUT_)
             var x_v = TileTensor(in0.dev.value(), row_major[B, Self.IN_]())
-            var w_v = TileTensor(self.weight.val.dev.value(), row_major[Self.IN_, Self.OUT_]())
+            var w_v = TileTensor(
+                self.weight.val.dev.value(), row_major[Self.IN_, Self.OUT_]()
+            )
             var out_v = TileTensor(out.dev.value(), row_major[B, Self.OUT_]())
             max_matmul[target="gpu"](out_v, x_v, w_v, c)
             c.enqueue_function[_bias_relu_mask_kernel[B, Self.OUT_]](
-                out.lt_gpu[Layout.row_major(B, Self.OUT_)](),
-                self.bias.val.lt_gpu[Layout.row_major(Self.OUT_)](),
-                self.mask.lt_gpu[Layout.row_major(B, Self.OUT_)](),
-                grid_dim=(B * Self.OUT_ + TPB - 1) // TPB, block_dim=TPB,
+                out.lt["gpu", Layout.row_major(B, Self.OUT_)](),
+                self.bias.val.lt["gpu", Layout.row_major(Self.OUT_)](),
+                self.mask.lt["gpu", Layout.row_major(B, Self.OUT_)](),
+                grid_dim=(B * Self.OUT_ + TPB - 1) // TPB,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
     ](
-        mut self, forward_input: TensorRefs[1, ofi], mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi], ctx: Optional[DeviceContext] = None,
+        mut self,
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         ref fin = forward_input[0]
         ref gin = grad_inputs[0]
@@ -172,7 +174,9 @@ struct LinearReLU[IN_: Int, OUT_: Int](Module):
                 kk += 1
             var go_v = TileTensor(grad_output.data, row_major[B, Self.OUT_]())
             var gi_v = TileTensor(gin.data, row_major[B, Self.IN_]())
-            var w_v = TileTensor(self.weight.val.data, row_major[Self.IN_, Self.OUT_]())
+            var w_v = TileTensor(
+                self.weight.val.data, row_major[Self.IN_, Self.OUT_]()
+            )
             var gb_v = TileTensor(self.bias.grd.data, row_major[Self.OUT_]())
             for b in range(B):
                 for j in range(Self.OUT_):
@@ -181,27 +185,44 @@ struct LinearReLU[IN_: Int, OUT_: Int](Module):
             comptime if IS_APPLE_F32:
                 var cblas = get_cblas_f32_function()
                 cblas(
-                    _CBLASOrder.ROW_MAJOR, _CBLASTranspose.TRANSPOSE,
+                    _CBLASOrder.ROW_MAJOR,
+                    _CBLASTranspose.TRANSPOSE,
                     _CBLASTranspose.NO_TRANSPOSE,
-                    Int32(Self.IN_), Int32(Self.OUT_), Int32(B), Float32(1.0),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](fin.data.unsafe_ptr()),
                     Int32(Self.IN_),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](grad_output.data.unsafe_ptr()),
-                    Int32(Self.OUT_), Float32(1.0),
-                    rebind[UnsafePointer[Float32, MutAnyOrigin]](self.weight.grd.data.unsafe_ptr()),
+                    Int32(Self.OUT_),
+                    Int32(B),
+                    Float32(1.0),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        fin.data.unsafe_ptr()
+                    ),
+                    Int32(Self.IN_),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        grad_output.data.unsafe_ptr()
+                    ),
+                    Int32(Self.OUT_),
+                    Float32(1.0),
+                    rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                        self.weight.grd.data.unsafe_ptr()
+                    ),
                     Int32(Self.OUT_),
                 )
             else:
                 self.cacheT.ensure(Self.IN_ * B)
                 self.dW_tmp.ensure(Self.W_SIZE)
                 var x_v = TileTensor(fin.data, row_major[B, Self.IN_]())
-                var cT_v = TileTensor(self.cacheT.data, row_major[Self.IN_, B]())
+                var cT_v = TileTensor(
+                    self.cacheT.data, row_major[Self.IN_, B]()
+                )
                 for b in range(B):
                     for k in range(Self.IN_):
                         cT_v[k, b] = x_v[b, k]
-                var dW_v = TileTensor(self.dW_tmp.data, row_major[Self.IN_, Self.OUT_]())
+                var dW_v = TileTensor(
+                    self.dW_tmp.data, row_major[Self.IN_, Self.OUT_]()
+                )
                 max_matmul[target="cpu"](dW_v, cT_v, go_v, None)
-                var gw_v = TileTensor(self.weight.grd.data, row_major[Self.IN_, Self.OUT_]())
+                var gw_v = TileTensor(
+                    self.weight.grd.data, row_major[Self.IN_, Self.OUT_]()
+                )
                 for k in range(Self.IN_):
                     for j in range(Self.OUT_):
                         gw_v[k, j] += dW_v[k, j]
@@ -213,31 +234,45 @@ struct LinearReLU[IN_: Int, OUT_: Int](Module):
             self.dW_tmp.ensure_gpu(c, Self.W_SIZE)
             # gate grad by mask
             c.enqueue_function[_gate_kernel[M]](
-                grad_output.lt_gpu[Layout.row_major(M)](),
-                self.mask.lt_gpu[Layout.row_major(M)](),
-                grid_dim=(M + TPB - 1) // TPB, block_dim=TPB,
+                grad_output.lt["gpu", Layout.row_major(M)](),
+                self.mask.lt["gpu", Layout.row_major(M)](),
+                grid_dim=(M + TPB - 1) // TPB,
+                block_dim=TPB,
             )
             c.enqueue_function[_lin_gb_kernel[B, Self.OUT_]](
-                grad_output.lt_gpu[Layout.row_major(B, Self.OUT_)](),
-                self.bias.grd.lt_gpu[Layout.row_major(Self.OUT_)](),
-                grid_dim=(Self.OUT_ + TPB - 1) // TPB, block_dim=TPB,
+                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_)](),
+                self.bias.grd.lt["gpu", Layout.row_major(Self.OUT_)](),
+                grid_dim=(Self.OUT_ + TPB - 1) // TPB,
+                block_dim=TPB,
             )
             c.enqueue_function[_transpose_kernel[B, Self.IN_]](
-                fin.lt_gpu[Layout.row_major(B, Self.IN_)](),
-                self.cacheT.lt_gpu[Layout.row_major(Self.IN_, B)](),
-                grid_dim=(B * Self.IN_ + TPB - 1) // TPB, block_dim=TPB,
+                fin.lt["gpu", Layout.row_major(B, Self.IN_)](),
+                self.cacheT.lt["gpu", Layout.row_major(Self.IN_, B)](),
+                grid_dim=(B * Self.IN_ + TPB - 1) // TPB,
+                block_dim=TPB,
             )
-            var cT_v = TileTensor(self.cacheT.dev.value(), row_major[Self.IN_, B]())
-            var go_v = TileTensor(grad_output.dev.value(), row_major[B, Self.OUT_]())
-            var dW_v = TileTensor(self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]())
+            var cT_v = TileTensor(
+                self.cacheT.dev.value(), row_major[Self.IN_, B]()
+            )
+            var go_v = TileTensor(
+                grad_output.dev.value(), row_major[B, Self.OUT_]()
+            )
+            var dW_v = TileTensor(
+                self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]()
+            )
             max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
             c.enqueue_function[_accum_kernel[Self.W_SIZE]](
-                self.weight.grd.lt_gpu[Layout.row_major(Self.W_SIZE)](),
-                self.dW_tmp.lt_gpu[Layout.row_major(Self.W_SIZE)](),
-                grid_dim=(Self.W_SIZE + TPB - 1) // TPB, block_dim=TPB,
+                self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                grid_dim=(Self.W_SIZE + TPB - 1) // TPB,
+                block_dim=TPB,
             )
-            var go_v2 = TileTensor(grad_output.dev.value(), row_major[B, Self.OUT_]())
-            var w_v = TileTensor(self.weight.val.dev.value(), row_major[Self.IN_, Self.OUT_]())
+            var go_v2 = TileTensor(
+                grad_output.dev.value(), row_major[B, Self.OUT_]()
+            )
+            var w_v = TileTensor(
+                self.weight.val.dev.value(), row_major[Self.IN_, Self.OUT_]()
+            )
             var gi_v = TileTensor(gin.dev.value(), row_major[B, Self.IN_]())
             max_matmul[transpose_b=True, target="gpu"](gi_v, go_v2, w_v, c)
 
@@ -247,15 +282,8 @@ struct LinearReLU[IN_: Int, OUT_: Int](Module):
         self.weight.visit_with[target](visitor, ctx)
         self.bias.visit_with[target](visitor, ctx)
 
-    def zero_grad[target: StaticString](mut self, ctx: Optional[DeviceContext]) raises:
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
         self.weight.zero_grad[target](ctx)
         self.bias.zero_grad[target](ctx)
-
-    def reinit[
-        target: StaticString, INIT: Initializer
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        INIT.init_weight(self.weight.val.data.unsafe_ptr(), Self.W_SIZE, Self.IN_, Self.OUT_)
-        INIT.init_bias(self.bias.val.data.unsafe_ptr(), Self.B_SIZE)
-        comptime if target == "gpu":
-            self.weight.val.upload(ctx.value())
-            self.bias.val.upload(ctx.value())

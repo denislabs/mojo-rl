@@ -20,6 +20,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
 
 
 def _dims2(d0: Int, d1: Int) -> InlineArray[Int, 2]:
@@ -74,11 +75,9 @@ struct Concat2[D0_: Int, D1_: Int](Module):
         pass
 
     @staticmethod
-    def make_cpu() raises -> Self:
-        return Self()
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         return Self()
 
     def forward[
@@ -98,16 +97,19 @@ struct Concat2[D0_: Int, D1_: Int](Module):
                 for c in range(Self.D0_):
                     out.data[bi * OUT + c] = a.data[bi * Self.D0_ + c]
                 for c in range(Self.D1_):
-                    out.data[bi * OUT + Self.D0_ + c] = b.data[bi * Self.D1_ + c]
+                    out.data[bi * OUT + Self.D0_ + c] = b.data[
+                        bi * Self.D1_ + c
+                    ]
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * OUT)
             comptime nblk = (B * OUT + TPB - 1) // TPB
             c.enqueue_function[_concat_fwd_kernel[B, Self.D0_, Self.D1_, OUT]](
-                a.lt_gpu[Layout.row_major(B, Self.D0_)](),
-                b.lt_gpu[Layout.row_major(B, Self.D1_)](),
-                out.lt_gpu[Layout.row_major(B, OUT)](),
-                grid_dim=nblk, block_dim=TPB,
+                a.lt["gpu", Layout.row_major(B, Self.D0_)](),
+                b.lt["gpu", Layout.row_major(B, Self.D1_)](),
+                out.lt["gpu", Layout.row_major(B, OUT)](),
+                grid_dim=nblk,
+                block_dim=TPB,
             )
 
     def vjp[
@@ -129,17 +131,20 @@ struct Concat2[D0_: Int, D1_: Int](Module):
                 for c in range(Self.D0_):
                     gi0.data[bi * Self.D0_ + c] = grad_output.data[bi * OUT + c]
                 for c in range(Self.D1_):
-                    gi1.data[bi * Self.D1_ + c] = grad_output.data[bi * OUT + Self.D0_ + c]
+                    gi1.data[bi * Self.D1_ + c] = grad_output.data[
+                        bi * OUT + Self.D0_ + c
+                    ]
         else:
             var c = ctx.value()
             gi0.ensure_gpu(c, B * Self.D0_)
             gi1.ensure_gpu(c, B * Self.D1_)
             comptime nblk = (B * OUT + TPB - 1) // TPB
             c.enqueue_function[_concat_bwd_kernel[B, Self.D0_, Self.D1_, OUT]](
-                grad_output.lt_gpu[Layout.row_major(B, OUT)](),
-                gi0.lt_gpu[Layout.row_major(B, Self.D0_)](),
-                gi1.lt_gpu[Layout.row_major(B, Self.D1_)](),
-                grid_dim=nblk, block_dim=TPB,
+                grad_output.lt["gpu", Layout.row_major(B, OUT)](),
+                gi0.lt["gpu", Layout.row_major(B, Self.D0_)](),
+                gi1.lt["gpu", Layout.row_major(B, Self.D1_)](),
+                grid_dim=nblk,
+                block_dim=TPB,
             )
 
     def for_each_param[

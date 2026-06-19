@@ -17,6 +17,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.noisy_linear import NoisyLinear
 
 
@@ -27,7 +28,7 @@ comptime B = 6
 
 def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
     comptime TOL = Scalar[DT](2e-4)
-    var nl = NoisyLinear[IN, OUT].make_cpu() if target == "cpu" else NoisyLinear[IN, OUT].make_gpu(ctx.value())
+    var nl = NoisyLinear[IN, OUT].make[target, Deterministic](ctx)
     # deterministic params (override the default init)
     for k in range(IN * OUT):
         nl.mu_w.val.data[k] = Scalar[DT]((k % 9) - 4) * 0.05
@@ -46,17 +47,17 @@ def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
     var gi = Tensor.alloc(B * IN)
 
     comptime if target == "cpu":
-        nl.forward["cpu", B](TensorRefs[1].of1(x), out, None)
+        nl.forward["cpu", B](TensorRefs[1](x), out, None)
         nl.zero_grad["cpu"](None)
-        nl.vjp["cpu", B](TensorRefs[1].of1(x), go, TensorRefs[1].of1(gi), None)
+        nl.vjp["cpu", B](TensorRefs[1](x), go, TensorRefs[1](gi), None)
     else:
         var c = ctx.value()
         nl.mu_w.val.upload(c); nl.sigma_w.val.upload(c)
         nl.mu_b.val.upload(c); nl.sigma_b.val.upload(c)
         x.upload(c); go.upload(c)
-        nl.forward["gpu", B](TensorRefs[1].of1(x), out, ctx)
+        nl.forward["gpu", B](TensorRefs[1](x), out, ctx)
         nl.zero_grad["gpu"](ctx)
-        nl.vjp["gpu", B](TensorRefs[1].of1(x), go, TensorRefs[1].of1(gi), ctx)
+        nl.vjp["gpu", B](TensorRefs[1](x), go, TensorRefs[1](gi), ctx)
         out.download(c); gi.download(c)
         nl.noise_in.download(c); nl.noise_out.download(c)
         nl.mu_w.grd.download(c); nl.sigma_w.grd.download(c)

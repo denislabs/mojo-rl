@@ -48,22 +48,19 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](
         self.v = Tensor()
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Allocate val/grd. `val` keeps a CPU list for host init; the owning
+        leaf's `INIT.init_weight[target]` fills it and (on GPU) uploads, which
+        allocates `val.dev`. On GPU `grd.dev` is allocated + zeroed here."""
         var p = Self()
         p.val = Tensor.alloc(Self.SIZE)
         p.grd = Tensor.alloc(Self.SIZE)
-        return p^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        # `val` keeps a CPU list for host init; the owning leaf fills it and
-        # calls `val.upload(ctx)` (which allocates `val.dev`). `grd.dev` is
-        # allocated + zeroed here.
-        var p = Self()
-        p.val = Tensor.alloc(Self.SIZE)
-        p.grd = Tensor.alloc(Self.SIZE)
-        p.grd.ensure_gpu(ctx, Self.SIZE)
-        p.grd.dev.value().enqueue_fill(Scalar[DT](0))
+        comptime if target == "gpu":
+            var c = ctx.value()
+            p.grd.ensure_gpu(c, Self.SIZE)
+            p.grd.dev.value().enqueue_fill(Scalar[DT](0))
         return p^
 
     def visit_with[target: StaticString, V: ParamVisitor](

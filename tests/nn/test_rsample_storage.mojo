@@ -14,6 +14,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.rsample import (
     RSample, _clamp_ls, LOG_STD_MIN, LOG_STD_MAX, EPS_TANH_CORR, LOG_2PI,
 )
@@ -28,7 +29,7 @@ comptime SCALE = Scalar[DT](2.0)
 
 def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
     comptime TOL = Scalar[DT](1e-5) if target == "cpu" else Scalar[DT](2e-5)
-    var r = RSample[ACT].make_cpu() if target == "cpu" else RSample[ACT].make_gpu(ctx.value())
+    var r = RSample[ACT].make[target, Deterministic](ctx)
     r.action_scale = SCALE
 
     var ao = Tensor.alloc(B * AO)
@@ -41,13 +42,13 @@ def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
     var gi = Tensor.alloc(B * AO)
 
     comptime if target == "cpu":
-        r.forward["cpu", B](TensorRefs[1].of1(ao), out, None)
-        r.vjp["cpu", B](TensorRefs[1].of1(ao), go, TensorRefs[1].of1(gi), None)
+        r.forward["cpu", B](TensorRefs[1](ao), out, None)
+        r.vjp["cpu", B](TensorRefs[1](ao), go, TensorRefs[1](gi), None)
     else:
         var c = ctx.value()
         ao.upload(c); go.upload(c)
-        r.forward["gpu", B](TensorRefs[1].of1(ao), out, ctx)
-        r.vjp["gpu", B](TensorRefs[1].of1(ao), go, TensorRefs[1].of1(gi), ctx)
+        r.forward["gpu", B](TensorRefs[1](ao), out, ctx)
+        r.vjp["gpu", B](TensorRefs[1](ao), go, TensorRefs[1](gi), ctx)
         out.download(c); gi.download(c)
         r.z.download(c)
 

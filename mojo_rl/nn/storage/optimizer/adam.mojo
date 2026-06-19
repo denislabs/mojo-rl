@@ -29,7 +29,9 @@ from ..core.param import ParamVisitor
 from ..core.module import Module
 
 
-def _adam_update_kernel[N: Int](
+def _adam_update_kernel[
+    N: Int
+](
     param: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     grad: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     m: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
@@ -60,17 +62,17 @@ def _adam_update_kernel[N: Int](
     param[i] = p - lr * m_hat / (sqrt(v_hat) + eps)
 
 
-struct Adam(ParamVisitor, Movable):
+struct Adam(Movable, ParamVisitor):
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
     var beta2: Scalar[DT]
     var eps: Scalar[DT]
     var wd: Scalar[DT]
     var t: Int
-    var _b1_pow: Scalar[DT]   # β1ᵗ (running)
-    var _b2_pow: Scalar[DT]   # β2ᵗ (running)
-    var bc1: Scalar[DT]       # 1 - β1ᵗ
-    var bc2: Scalar[DT]       # 1 - β2ᵗ
+    var _b1_pow: Scalar[DT]  # β1ᵗ (running)
+    var _b2_pow: Scalar[DT]  # β2ᵗ (running)
+    var bc1: Scalar[DT]  # 1 - β1ᵗ
+    var bc2: Scalar[DT]  # 1 - β2ᵗ
 
     def __init__(
         out self,
@@ -105,7 +107,8 @@ struct Adam(ParamVisitor, Movable):
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
         """Model-walking convenience (the legacy `opt.step(model)` call style):
         bump the step then apply Adam to every Param via `for_each_param`.
-        Equivalent to `opt.begin_step(); model.for_each_param[target](opt, ctx)`."""
+        Equivalent to `opt.begin_step(); model.for_each_param[target](opt, ctx)`.
+        """
         self.begin_step()
         model.for_each_param[target](self, ctx)
 
@@ -146,9 +149,18 @@ struct Adam(ParamVisitor, Movable):
             comptime layout = Layout.row_major(N)
             comptime nblk = (N + TPB - 1) // TPB
             c.enqueue_function[_adam_update_kernel[N]](
-                param.lt_gpu[layout](), grad.lt_gpu[layout](),
-                m.lt_gpu[layout](), v.lt_gpu[layout](),
-                self.lr, self.beta1, self.beta2, self.eps,
-                self.bc1, self.bc2, self.wd, Int(apply_decay),
-                grid_dim=nblk, block_dim=TPB,
+                param.lt["gpu", layout](),
+                grad.lt["gpu", layout](),
+                m.lt["gpu", layout](),
+                v.lt["gpu", layout](),
+                self.lr,
+                self.beta1,
+                self.beta2,
+                self.eps,
+                self.bc1,
+                self.bc2,
+                self.wd,
+                Int(apply_decay),
+                grid_dim=nblk,
+                block_dim=TPB,
             )

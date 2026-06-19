@@ -36,6 +36,7 @@ from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
 
 
 comptime LOG_STD_MIN: Scalar[DT] = -5.0
@@ -79,7 +80,9 @@ def _draw_normal_cpu(mut buf: List[Scalar[DT]], n: Int):
 def _rsample_fwd_kernel[
     ACT: Int, BATCH: Int, OUT: Int
 ](
-    actor_output: LayoutTensor[DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin],
+    actor_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin
+    ],
     z: LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin],
     output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
     action_scale: Scalar[DT],
@@ -97,8 +100,10 @@ def _rsample_fwd_kernel[
         output[b, j] = action_scale * y
         var corr = action_scale * (Scalar[DT](1.0) - y * y) + EPS_TANH_CORR
         lp += (
-            Scalar[DT](-0.5) * zj * zj - ls
-            - Scalar[DT](0.5) * LOG_2PI - log(corr)
+            Scalar[DT](-0.5) * zj * zj
+            - ls
+            - Scalar[DT](0.5) * LOG_2PI
+            - log(corr)
         )
     output[b, ACT] = lp
 
@@ -106,7 +111,9 @@ def _rsample_fwd_kernel[
 def _rsample_bwd_kernel[
     ACT: Int, BATCH: Int, OUT: Int
 ](
-    actor_output: LayoutTensor[DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin],
+    actor_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin
+    ],
     z: LayoutTensor[DT, Layout.row_major(BATCH, ACT), MutAnyOrigin],
     grad_out: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
     grad_in: LayoutTensor[DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin],
@@ -129,7 +136,9 @@ def _rsample_bwd_kernel[
     var da_dmu = c_om
     var da_dls = c_om * zj * std
     var dlp_dmu = (Scalar[DT](2.0) * y * c_om) / corr
-    var dlp_dls = Scalar[DT](-1.0) + (Scalar[DT](2.0) * y * c_om * zj * std) / corr
+    var dlp_dls = (
+        Scalar[DT](-1.0) + (Scalar[DT](2.0) * y * c_om * zj * std) / corr
+    )
     var ga = rebind[Scalar[DT]](grad_out[b, j])
     var glp = rebind[Scalar[DT]](grad_out[b, ACT])
     grad_in[b, j] = ga * da_dmu + glp * dlp_dmu
@@ -142,12 +151,12 @@ def _rsample_bwd_kernel[
 struct RSample[ACT_: Int](Module):
     comptime ARITY = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=2 * Self.ACT_)
-    comptime OUT_DIM = Self.ACT_ + 1   # packed [action | log_prob]
+    comptime OUT_DIM = Self.ACT_ + 1  # packed [action | log_prob]
 
     var action_scale: Scalar[DT]
     var noise_seed: UInt64
-    var noise_offset: TensorImpl[DType.uint64]   # GPU Philox offset
-    var z: Tensor                                # [BATCH, ACT] cached noise
+    var noise_offset: TensorImpl[DType.uint64]  # GPU Philox offset
+    var z: Tensor  # [BATCH, ACT] cached noise
 
     def __init__(out self):
         self.action_scale = Scalar[DT](1.0)
@@ -156,14 +165,14 @@ struct RSample[ACT_: Int](Module):
         self.z = Tensor()
 
     @staticmethod
-    def make_cpu() raises -> Self:
-        return Self()
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var r = Self()
-        r.noise_offset.ensure_gpu(ctx, 1)
-        r.noise_offset.dev.value().enqueue_fill(UInt64(0))
+        comptime if target == "gpu":
+            var c = ctx.value()
+            r.noise_offset.ensure_gpu(c, 1)
+            r.noise_offset.dev.value().enqueue_fill(UInt64(0))
         return r^
 
     def set_noise_seed(mut self, seed: UInt64) raises:
@@ -195,10 +204,15 @@ struct RSample[ACT_: Int](Module):
                     var zj = self.z.data[b * Self.ACT_ + j]
                     var y = ftanh(mu + std * zj)
                     out.data[b * OUT + j] = self.action_scale * y
-                    var corr = self.action_scale * (Scalar[DT](1.0) - y * y) + EPS_TANH_CORR
+                    var corr = (
+                        self.action_scale * (Scalar[DT](1.0) - y * y)
+                        + EPS_TANH_CORR
+                    )
                     lp += (
-                        Scalar[DT](-0.5) * zj * zj - ls
-                        - Scalar[DT](0.5) * LOG_2PI - log(corr)
+                        Scalar[DT](-0.5) * zj * zj
+                        - ls
+                        - Scalar[DT](0.5) * LOG_2PI
+                        - log(corr)
                     )
                 out.data[b * OUT + Self.ACT_] = lp
         else:
@@ -208,20 +222,25 @@ struct RSample[ACT_: Int](Module):
             comptime NZ = B * Self.ACT_
             comptime nb_z = (NZ + TPB - 1) // TPB
             c.enqueue_function[_box_muller_kernel_dev[NZ]](
-                self.z.lt_gpu[Layout.row_major(NZ)](), self.noise_seed,
-                self.noise_offset.lt_gpu[Layout.row_major(1)](),
-                grid_dim=nb_z, block_dim=TPB,
+                self.z.lt["gpu", Layout.row_major(NZ)](),
+                self.noise_seed,
+                self.noise_offset.lt["gpu", Layout.row_major(1)](),
+                grid_dim=nb_z,
+                block_dim=TPB,
             )
             c.enqueue_function[advance_rng_offset_kernel[((NZ + 1) // 2) * 2]](
-                self.noise_offset.lt_gpu[Layout.row_major(1)](), grid_dim=1, block_dim=1
+                self.noise_offset.lt["gpu", Layout.row_major(1)](),
+                grid_dim=1,
+                block_dim=1,
             )
             comptime nb_b = (B + TPB - 1) // TPB
             c.enqueue_function[_rsample_fwd_kernel[Self.ACT_, B, OUT]](
-                ao.lt_gpu[Layout.row_major(B, AO)](),
-                self.z.lt_gpu[Layout.row_major(B, Self.ACT_)](),
-                out.lt_gpu[Layout.row_major(B, OUT)](),
+                ao.lt["gpu", Layout.row_major(B, AO)](),
+                self.z.lt["gpu", Layout.row_major(B, Self.ACT_)](),
+                out.lt["gpu", Layout.row_major(B, OUT)](),
                 self.action_scale,
-                grid_dim=nb_b, block_dim=TPB,
+                grid_dim=nb_b,
+                block_dim=TPB,
             )
 
     def vjp[
@@ -245,7 +264,9 @@ struct RSample[ACT_: Int](Module):
                     var mu = ao.data[b * AO + j]
                     var ls_raw = ao.data[b * AO + Self.ACT_ + j]
                     var ls = _clamp_ls(ls_raw)
-                    var clamped = (ls_raw < LOG_STD_MIN) or (ls_raw > LOG_STD_MAX)
+                    var clamped = (ls_raw < LOG_STD_MIN) or (
+                        ls_raw > LOG_STD_MAX
+                    )
                     var std = exp(ls)
                     var zj = self.z.data[b * Self.ACT_ + j]
                     var y = ftanh(mu + std * zj)
@@ -254,24 +275,30 @@ struct RSample[ACT_: Int](Module):
                     var da_dmu = c_om
                     var da_dls = c_om * zj * std
                     var dlp_dmu = (Scalar[DT](2.0) * y * c_om) / corr
-                    var dlp_dls = Scalar[DT](-1.0) + (Scalar[DT](2.0) * y * c_om * zj * std) / corr
+                    var dlp_dls = (
+                        Scalar[DT](-1.0)
+                        + (Scalar[DT](2.0) * y * c_om * zj * std) / corr
+                    )
                     var ga = grad_output.data[b * OUT + j]
                     gin.data[b * AO + j] = ga * da_dmu + glp * dlp_dmu
                     if clamped:
                         gin.data[b * AO + Self.ACT_ + j] = Scalar[DT](0.0)
                     else:
-                        gin.data[b * AO + Self.ACT_ + j] = ga * da_dls + glp * dlp_dls
+                        gin.data[b * AO + Self.ACT_ + j] = (
+                            ga * da_dls + glp * dlp_dls
+                        )
         else:
             var c = ctx.value()
             gin.ensure_gpu(c, B * AO)
             comptime nb = (B * Self.ACT_ + TPB - 1) // TPB
             c.enqueue_function[_rsample_bwd_kernel[Self.ACT_, B, OUT]](
-                ao.lt_gpu[Layout.row_major(B, AO)](),
-                self.z.lt_gpu[Layout.row_major(B, Self.ACT_)](),
-                grad_output.lt_gpu[Layout.row_major(B, OUT)](),
-                gin.lt_gpu[Layout.row_major(B, AO)](),
+                ao.lt["gpu", Layout.row_major(B, AO)](),
+                self.z.lt["gpu", Layout.row_major(B, Self.ACT_)](),
+                grad_output.lt["gpu", Layout.row_major(B, OUT)](),
+                gin.lt["gpu", Layout.row_major(B, AO)](),
                 self.action_scale,
-                grid_dim=nb, block_dim=TPB,
+                grid_dim=nb,
+                block_dim=TPB,
             )
 
     def for_each_param[

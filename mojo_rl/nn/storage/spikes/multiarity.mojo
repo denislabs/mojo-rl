@@ -13,23 +13,24 @@ from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
 from mojo_rl.nn.storage.core.tensor_pack import TensorPack
 from mojo_rl.nn.storage.primitives.add import Add
+from mojo_rl.nn.storage.core.initializer import Deterministic
 
 
 def main() raises:
     comptime B = 2
     comptime DIM = 3
 
-    var add = Add[DIM].make_cpu()
+    var add = Add[DIM].make["cpu", Deterministic]()
 
     # Two inputs from ONE pool → shared origin (the §B0 requirement).
     var inp = TensorPack[2]()
     for k in range(2):
         inp[k].ensure(B * DIM)
     for i in range(B * DIM):
-        inp[0].data[i] = Scalar[DT](i + 1)     # a
-        inp[1].data[i] = Scalar[DT](10 + i)    # b
+        inp[0].data[i] = Scalar[DT](i + 1)  # a
+        inp[1].data[i] = Scalar[DT](10 + i)  # b
     var out = Tensor.alloc(B * DIM)
-    add.forward["cpu", B](TensorRefs[2].of2(inp[0], inp[1]), out, None)
+    add.forward["cpu", B](TensorRefs[2](inp[0], inp[1]), out, None)
     print("a+b:", out.data[0], out.data[1], out.data[5])  # 11, 13, 21
 
     var go = Tensor.alloc(B * DIM)
@@ -37,9 +38,9 @@ def main() raises:
         go.data[i] = Scalar[DT](1)
     var grad = TensorPack[2]()
     add.vjp["cpu", B](
-        TensorRefs[2].of2(inp[0], inp[1]),
+        TensorRefs[2](inp[0], inp[1]),
         go,
-        TensorRefs[2].of2(grad[0], grad[1]),
+        TensorRefs[2](grad[0], grad[1]),
         None,
     )
     print("grad_a[0], grad_b[0]:", grad[0].data[0], grad[1].data[0])  # 1, 1

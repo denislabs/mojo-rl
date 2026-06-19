@@ -25,7 +25,9 @@ from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
 from ..core.tensor import Tensor
 
 
-def _mse_fwd_kernel[BATCH: Int, DIM: Int](
+def _mse_fwd_kernel[
+    BATCH: Int, DIM: Int
+](
     logits: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     targets: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     partial: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
@@ -34,12 +36,16 @@ def _mse_fwd_kernel[BATCH: Int, DIM: Int](
     if b < BATCH:
         var s: Scalar[DT] = 0.0
         for j in range(DIM):
-            var d = rebind[Scalar[DT]](logits[b, j]) - rebind[Scalar[DT]](targets[b, j])
+            var d = rebind[Scalar[DT]](logits[b, j]) - rebind[Scalar[DT]](
+                targets[b, j]
+            )
             s += Scalar[DT](0.5) * d * d
         partial[b] = s
 
 
-def _mse_reduce_kernel[BATCH: Int](
+def _mse_reduce_kernel[
+    BATCH: Int
+](
     partial: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     acc: LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin],
 ):
@@ -56,7 +62,9 @@ def _mse_reduce_kernel[BATCH: Int](
         acc[1] = rebind[Scalar[DT]](acc[1]) + Scalar[DT](1.0)
 
 
-def _mse_bwd_kernel[BATCH: Int, DIM: Int](
+def _mse_bwd_kernel[
+    BATCH: Int, DIM: Int
+](
     logits: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     targets: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     grad: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -71,8 +79,8 @@ def _mse_bwd_kernel[BATCH: Int, DIM: Int](
 
 
 struct MSELoss[DIM_: Int](Movable & ImplicitlyDeletable):
-    var partial: Tensor    # GPU [BATCH] per-row partials (lazy)
-    var loss_acc: Tensor   # GPU [2] = [sum_of_means, count]
+    var partial: Tensor  # GPU [BATCH] per-row partials (lazy)
+    var loss_acc: Tensor  # GPU [2] = [sum_of_means, count]
     var _acc_sum: Scalar[DT]
     var _acc_n: Int
 
@@ -93,7 +101,9 @@ struct MSELoss[DIM_: Int](Movable & ImplicitlyDeletable):
         l.loss_acc.dev.value().enqueue_fill(Scalar[DT](0))
         return l^
 
-    def _mean_loss_cpu[B: Int](self, ref logits: Tensor, ref targets: Tensor) -> Scalar[DT]:
+    def _mean_loss_cpu[
+        B: Int
+    ](self, ref logits: Tensor, ref targets: Tensor) -> Scalar[DT]:
         var s: Scalar[DT] = 0.0
         for i in range(B * Self.DIM_):
             var d = logits.data[i] - targets.data[i]
@@ -103,7 +113,9 @@ struct MSELoss[DIM_: Int](Movable & ImplicitlyDeletable):
     def forward[
         target: StaticString, B: Int
     ](
-        mut self, mut logits: Tensor, mut targets: Tensor,
+        mut self,
+        mut logits: Tensor,
+        mut targets: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Scalar[DT]:
         comptime if target == "cpu":
@@ -113,10 +125,11 @@ struct MSELoss[DIM_: Int](Movable & ImplicitlyDeletable):
             self.partial.ensure_gpu(c, B)
             comptime nblk = (B + TPB_REDUCE - 1) // TPB_REDUCE
             c.enqueue_function[_mse_fwd_kernel[B, Self.DIM_]](
-                logits.lt_gpu[Layout.row_major(B, Self.DIM_)](),
-                targets.lt_gpu[Layout.row_major(B, Self.DIM_)](),
-                self.partial.lt_gpu[Layout.row_major(B)](),
-                grid_dim=nblk, block_dim=TPB_REDUCE,
+                logits.lt["gpu", Layout.row_major(B, Self.DIM_)](),
+                targets.lt["gpu", Layout.row_major(B, Self.DIM_)](),
+                self.partial.lt["gpu", Layout.row_major(B)](),
+                grid_dim=nblk,
+                block_dim=TPB_REDUCE,
             )
             self.partial.download(c)
             var s: Scalar[DT] = 0.0
@@ -127,7 +140,9 @@ struct MSELoss[DIM_: Int](Movable & ImplicitlyDeletable):
     def forward_accumulate[
         target: StaticString, B: Int
     ](
-        mut self, mut logits: Tensor, mut targets: Tensor,
+        mut self,
+        mut logits: Tensor,
+        mut targets: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime if target == "cpu":
@@ -138,15 +153,17 @@ struct MSELoss[DIM_: Int](Movable & ImplicitlyDeletable):
             self.partial.ensure_gpu(c, B)
             comptime nblk = (B + TPB_REDUCE - 1) // TPB_REDUCE
             c.enqueue_function[_mse_fwd_kernel[B, Self.DIM_]](
-                logits.lt_gpu[Layout.row_major(B, Self.DIM_)](),
-                targets.lt_gpu[Layout.row_major(B, Self.DIM_)](),
-                self.partial.lt_gpu[Layout.row_major(B)](),
-                grid_dim=nblk, block_dim=TPB_REDUCE,
+                logits.lt["gpu", Layout.row_major(B, Self.DIM_)](),
+                targets.lt["gpu", Layout.row_major(B, Self.DIM_)](),
+                self.partial.lt["gpu", Layout.row_major(B)](),
+                grid_dim=nblk,
+                block_dim=TPB_REDUCE,
             )
             c.enqueue_function[_mse_reduce_kernel[B]](
-                self.partial.lt_gpu[Layout.row_major(B)](),
-                self.loss_acc.lt_gpu[Layout.row_major(2)](),
-                grid_dim=1, block_dim=TPB_REDUCE,
+                self.partial.lt["gpu", Layout.row_major(B)](),
+                self.loss_acc.lt["gpu", Layout.row_major(2)](),
+                grid_dim=1,
+                block_dim=TPB_REDUCE,
             )
 
     def reset_accum[target: StaticString](mut self) raises:
@@ -156,7 +173,9 @@ struct MSELoss[DIM_: Int](Movable & ImplicitlyDeletable):
         else:
             self.loss_acc.dev.value().enqueue_fill(Scalar[DT](0))
 
-    def read_accum[target: StaticString](mut self, ctx: Optional[DeviceContext] = None) raises -> Scalar[DT]:
+    def read_accum[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext] = None) raises -> Scalar[DT]:
         comptime if target == "cpu":
             if self._acc_n == 0:
                 return Scalar[DT](0.0)
@@ -172,21 +191,27 @@ struct MSELoss[DIM_: Int](Movable & ImplicitlyDeletable):
     def vjp[
         target: StaticString, B: Int
     ](
-        mut self, mut logits: Tensor, mut targets: Tensor, mut grad: Tensor,
+        mut self,
+        mut logits: Tensor,
+        mut targets: Tensor,
+        mut grad: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime M = B * Self.DIM_
         comptime if target == "cpu":
             grad.ensure(M)
             for i in range(M):
-                grad.data[i] = (logits.data[i] - targets.data[i]) / Scalar[DT](B)
+                grad.data[i] = (logits.data[i] - targets.data[i]) / Scalar[DT](
+                    B
+                )
         else:
             var c = ctx.value()
             grad.ensure_gpu(c, M)
             comptime nblk = (M + TPB - 1) // TPB
             c.enqueue_function[_mse_bwd_kernel[B, Self.DIM_]](
-                logits.lt_gpu[Layout.row_major(B, Self.DIM_)](),
-                targets.lt_gpu[Layout.row_major(B, Self.DIM_)](),
-                grad.lt_gpu[Layout.row_major(B, Self.DIM_)](),
-                grid_dim=nblk, block_dim=TPB,
+                logits.lt["gpu", Layout.row_major(B, Self.DIM_)](),
+                targets.lt["gpu", Layout.row_major(B, Self.DIM_)](),
+                grad.lt["gpu", Layout.row_major(B, Self.DIM_)](),
+                grid_dim=nblk,
+                block_dim=TPB,
             )

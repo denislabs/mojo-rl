@@ -23,6 +23,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
 
 
 def _be_fwd_kernel[
@@ -67,11 +68,9 @@ struct BinaryElementwise[DIM_: Int, OP: BinaryElementOp](Module):
         pass
 
     @staticmethod
-    def make_cpu() raises -> Self:
-        return Self()
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         return Self()
 
     def forward[
@@ -92,8 +91,13 @@ struct BinaryElementwise[DIM_: Int, OP: BinaryElementOp](Module):
             var op = out.data.unsafe_ptr()
             var k = 0
             while k + CPU_SIMD_W <= M:
-                op.store(k, Self.OP.forward_simd[CPU_SIMD_W](
-                    ap.load[width=CPU_SIMD_W](k), bp.load[width=CPU_SIMD_W](k)))
+                op.store(
+                    k,
+                    Self.OP.forward_simd[CPU_SIMD_W](
+                        ap.load[width=CPU_SIMD_W](k),
+                        bp.load[width=CPU_SIMD_W](k),
+                    ),
+                )
                 k += CPU_SIMD_W
             while k < M:
                 op[k] = Self.OP.forward_scalar(ap[k], bp[k])
@@ -103,9 +107,11 @@ struct BinaryElementwise[DIM_: Int, OP: BinaryElementOp](Module):
             out.ensure_gpu(c, M)
             comptime nblk = (M + TPB - 1) // TPB
             c.enqueue_function[_be_fwd_kernel[M, Self.OP]](
-                a.lt_gpu[Layout.row_major(M)](), b.lt_gpu[Layout.row_major(M)](),
-                out.lt_gpu[Layout.row_major(M)](),
-                grid_dim=nblk, block_dim=TPB,
+                a.lt["gpu", Layout.row_major(M)](),
+                b.lt["gpu", Layout.row_major(M)](),
+                out.lt["gpu", Layout.row_major(M)](),
+                grid_dim=nblk,
+                block_dim=TPB,
             )
 
     def vjp[
@@ -133,7 +139,8 @@ struct BinaryElementwise[DIM_: Int, OP: BinaryElementOp](Module):
             var k = 0
             while k + CPU_SIMD_W <= M:
                 var cc = Self.OP.cache_simd[CPU_SIMD_W](
-                    ap.load[width=CPU_SIMD_W](k), bp.load[width=CPU_SIMD_W](k))
+                    ap.load[width=CPU_SIMD_W](k), bp.load[width=CPU_SIMD_W](k)
+                )
                 var gv = gp.load[width=CPU_SIMD_W](k)
                 g0.store(k, Self.OP.backward_simd_x[CPU_SIMD_W](cc, gv))
                 g1.store(k, Self.OP.backward_simd_y[CPU_SIMD_W](cc, gv))
@@ -149,10 +156,13 @@ struct BinaryElementwise[DIM_: Int, OP: BinaryElementOp](Module):
             gi1.ensure_gpu(c, M)
             comptime nblk = (M + TPB - 1) // TPB
             c.enqueue_function[_be_bwd_kernel[M, Self.OP]](
-                a.lt_gpu[Layout.row_major(M)](), b.lt_gpu[Layout.row_major(M)](),
-                grad_output.lt_gpu[Layout.row_major(M)](),
-                gi0.lt_gpu[Layout.row_major(M)](), gi1.lt_gpu[Layout.row_major(M)](),
-                grid_dim=nblk, block_dim=TPB,
+                a.lt["gpu", Layout.row_major(M)](),
+                b.lt["gpu", Layout.row_major(M)](),
+                grad_output.lt["gpu", Layout.row_major(M)](),
+                gi0.lt["gpu", Layout.row_major(M)](),
+                gi1.lt["gpu", Layout.row_major(M)](),
+                grid_dim=nblk,
+                block_dim=TPB,
             )
 
     def for_each_param[

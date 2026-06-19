@@ -15,6 +15,7 @@ from mojo_rl.nn.primitives.layer_norm import LayerNorm as LegacyLayerNorm
 from mojo_rl.nn.initializer import Zero
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.layer_norm import LayerNorm
 
 
@@ -48,7 +49,7 @@ def test_ln_cpu_parity() raises:
     leg.zero_grad["cpu"]()
     leg.vjp["cpu", B](go_t, gi_t)
 
-    var st = LayerNorm[DIM].make_cpu()
+    var st = LayerNorm[DIM].make["cpu", Deterministic]()
     for k in range(DIM):
         st.gamma.val.data[k] = lg[k]
         st.beta.val.data[k] = lb[k]
@@ -59,9 +60,9 @@ def test_ln_cpu_parity() raises:
     for i in range(B * DIM):
         sx.data[i] = x[i]
         sgo.data[i] = go[i]
-    st.forward["cpu", B](TensorRefs[1].of1(sx), sout, None)
+    st.forward["cpu", B](TensorRefs[1](sx), sout, None)
     st.zero_grad["cpu"](None)
-    st.vjp["cpu", B](TensorRefs[1].of1(sx), sgo, TensorRefs[1].of1(sgi), None)
+    st.vjp["cpu", B](TensorRefs[1](sx), sgo, TensorRefs[1](sgi), None)
 
     var mo: Scalar[DT] = 0
     var mgi: Scalar[DT] = 0
@@ -85,8 +86,8 @@ def test_ln_gpu_parity() raises:
     print("test_ln_gpu_parity (storage GPU vs storage CPU) ...")
     comptime TOL = Scalar[DT](2e-5)
     var c = DeviceContext()
-    var cpu = LayerNorm[DIM].make_cpu()
-    var gpu = LayerNorm[DIM].make_gpu(c)
+    var cpu = LayerNorm[DIM].make["cpu", Deterministic]()
+    var gpu = LayerNorm[DIM].make["gpu", Deterministic](Optional(c))
     for k in range(DIM):
         cpu.gamma.val.data[k] = Scalar[DT](0.6 + 0.07 * Float64(k))
         cpu.beta.val.data[k] = Scalar[DT](-0.15 + 0.04 * Float64(k))
@@ -102,9 +103,9 @@ def test_ln_gpu_parity() raises:
         sgo.data[i] = Scalar[DT]((i % 7) - 3) * 0.22
     var c_out = Tensor.alloc(B * DIM)
     var c_gi = Tensor.alloc(B * DIM)
-    cpu.forward["cpu", B](TensorRefs[1].of1(sx), c_out, None)
+    cpu.forward["cpu", B](TensorRefs[1](sx), c_out, None)
     cpu.zero_grad["cpu"](None)
-    cpu.vjp["cpu", B](TensorRefs[1].of1(sx), sgo, TensorRefs[1].of1(c_gi), None)
+    cpu.vjp["cpu", B](TensorRefs[1](sx), sgo, TensorRefs[1](c_gi), None)
 
     var gx = Tensor.alloc(B * DIM)
     var ggo = Tensor.alloc(B * DIM)
@@ -115,9 +116,9 @@ def test_ln_gpu_parity() raises:
     ggo.upload(c)
     var g_out = Tensor.alloc(B * DIM)
     var g_gi = Tensor.alloc(B * DIM)
-    gpu.forward["gpu", B](TensorRefs[1].of1(gx), g_out, Optional(c))
+    gpu.forward["gpu", B](TensorRefs[1](gx), g_out, Optional(c))
     gpu.zero_grad["gpu"](Optional(c))
-    gpu.vjp["gpu", B](TensorRefs[1].of1(gx), ggo, TensorRefs[1].of1(g_gi), Optional(c))
+    gpu.vjp["gpu", B](TensorRefs[1](gx), ggo, TensorRefs[1](g_gi), Optional(c))
     g_out.download(c)
     g_gi.download(c)
     gpu.gamma.grd.download(c)

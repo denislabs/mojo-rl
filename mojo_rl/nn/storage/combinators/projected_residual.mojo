@@ -16,7 +16,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
-from mojo_rl.nn.core.initializer import Initializer
+from ..core.initializer import Initializer
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
@@ -52,31 +52,28 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         self.gi_skip = Tensor()
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var r = Self()
-        r.inner = Self.Inner.make_cpu()
-        r.skip = Self.Skip.make_cpu()
-        return r^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var r = Self()
-        r.inner = Self.Inner.make_gpu(ctx)
-        r.skip = Self.Skip.make_gpu(ctx)
+        r.inner = Self.Inner.make[target, INIT](ctx)
+        r.skip = Self.Skip.make[target, INIT](ctx)
         return r^
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin
     ](
-        mut self, inputs: TensorRefs[1, o], mut out: Tensor,
+        mut self,
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref in0 = inputs[0]
         self.inner.forward[target, B](
-            TensorRefs[Self.Inner.ARITY].of1(in0), self.inner_out, ctx
+            TensorRefs[Self.Inner.ARITY](in0), self.inner_out, ctx
         )
         self.skip.forward[target, B](
-            TensorRefs[Self.Skip.ARITY].of1(in0), self.skip_out, ctx
+            TensorRefs[Self.Skip.ARITY](in0), self.skip_out, ctx
         )
         comptime N = B * Self.OUT_DIM
         comptime if target == "cpu":
@@ -96,27 +93,35 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
             var c = ctx.value()
             out.ensure_gpu(c, N)
             c.enqueue_function[_resid_add_kernel[N]](
-                self.inner_out.lt_gpu[Layout.row_major(N)](),
-                self.skip_out.lt_gpu[Layout.row_major(N)](),
-                out.lt_gpu[Layout.row_major(N)](),
-                grid_dim=(N + TPB - 1) // TPB, block_dim=TPB,
+                self.inner_out.lt["gpu", Layout.row_major(N)](),
+                self.skip_out.lt["gpu", Layout.row_major(N)](),
+                out.lt["gpu", Layout.row_major(N)](),
+                grid_dim=(N + TPB - 1) // TPB,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
     ](
-        mut self, forward_input: TensorRefs[1, ofi], mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi], ctx: Optional[DeviceContext] = None,
+        mut self,
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         ref fin = forward_input[0]
         ref gin = grad_inputs[0]
         self.inner.vjp[target, B](
-            TensorRefs[Self.Inner.ARITY].of1(fin), grad_output,
-            TensorRefs[Self.Inner.ARITY].of1(self.gi_inner), ctx,
+            TensorRefs[Self.Inner.ARITY](fin),
+            grad_output,
+            TensorRefs[Self.Inner.ARITY](self.gi_inner),
+            ctx,
         )
         self.skip.vjp[target, B](
-            TensorRefs[Self.Skip.ARITY].of1(fin), grad_output,
-            TensorRefs[Self.Skip.ARITY].of1(self.gi_skip), ctx,
+            TensorRefs[Self.Skip.ARITY](fin),
+            grad_output,
+            TensorRefs[Self.Skip.ARITY](self.gi_skip),
+            ctx,
         )
         comptime NIN = B * Self.IN
         comptime if target == "cpu":
@@ -136,10 +141,11 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
             var c = ctx.value()
             gin.ensure_gpu(c, NIN)
             c.enqueue_function[_resid_add_kernel[NIN]](
-                self.gi_inner.lt_gpu[Layout.row_major(NIN)](),
-                self.gi_skip.lt_gpu[Layout.row_major(NIN)](),
-                gin.lt_gpu[Layout.row_major(NIN)](),
-                grid_dim=(NIN + TPB - 1) // TPB, block_dim=TPB,
+                self.gi_inner.lt["gpu", Layout.row_major(NIN)](),
+                self.gi_skip.lt["gpu", Layout.row_major(NIN)](),
+                gin.lt["gpu", Layout.row_major(NIN)](),
+                grid_dim=(NIN + TPB - 1) // TPB,
+                block_dim=TPB,
             )
 
     def for_each_param[
@@ -161,9 +167,3 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
     ) raises:
         self.inner.polyak_from[target](src.inner, tau, ctx)
         self.skip.polyak_from[target](src.skip, tau, ctx)
-
-    def reinit[
-        target: StaticString, INIT: Initializer
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        self.inner.reinit[target, INIT](ctx)
-        self.skip.reinit[target, INIT](ctx)

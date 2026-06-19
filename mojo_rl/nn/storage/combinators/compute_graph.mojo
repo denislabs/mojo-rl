@@ -29,6 +29,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
+from ..core.initializer import Initializer
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.tensor_pack import TensorPack
@@ -36,7 +37,9 @@ from ..core.module import Module
 from ..core.param import ParamVisitor
 
 
-def _cg_accum_kernel[N: Int](
+def _cg_accum_kernel[
+    N: Int
+](
     dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
 ):
@@ -46,17 +49,15 @@ def _cg_accum_kernel[N: Int](
         dst[i] = rebind[Scalar[DT]](dst[i]) + rebind[Scalar[DT]](src[i])
 
 
-struct ComputeGraph[NUM_IN: Int, *NODES: Module](
-    Movable & ImplicitlyDeletable
-):
+struct ComputeGraph[NUM_IN: Int, *NODES: Module](Movable & ImplicitlyDeletable):
     comptime N = Self.NODES.size
     comptime NSLOT = Self.NUM_IN + Self.N
     comptime OUT_DIM = Self.NODES[Self.N - 1].OUT_DIM
     var children: Tuple[*Self.NODES]
-    var pool: TensorPack[Self.NSLOT]    # 0..NUM_IN-1 = inputs, then node outs
-    var gpool: TensorPack[Self.NSLOT]   # grads (zeroed + fan-out-accumulated)
-    var tmp: TensorPack[2]              # grad_inputs scratch (max arity 2)
-    var slot_n: List[Int]               # logical elem count per slot (forward)
+    var pool: TensorPack[Self.NSLOT]  # 0..NUM_IN-1 = inputs, then node outs
+    var gpool: TensorPack[Self.NSLOT]  # grads (zeroed + fan-out-accumulated)
+    var tmp: TensorPack[2]  # grad_inputs scratch (max arity 2)
+    var slot_n: List[Int]  # logical elem count per slot (forward)
 
     def __init__(out self):
         comptime assert Self.N >= 1, "ComputeGraph needs >= 1 node"
@@ -68,20 +69,15 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](
         self.slot_n = List[Int](length=Self.NSLOT, fill=0)
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var g = Self()
         comptime for i in range(Self.N):
-            g.children[i] = Self.NODES[i].make_cpu()
+            g.children[i] = Self.NODES[i].make[target, INIT](ctx)
         return g^
 
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var g = Self()
-        comptime for i in range(Self.N):
-            g.children[i] = Self.NODES[i].make_gpu(ctx)
-        return g^
-
-    def node_output(mut self, node_i: Int) raises -> ref [MutAnyOrigin] Tensor:
+    def node_output(mut self, node_i: Int) raises -> ref[MutAnyOrigin] Tensor:
         """The forward output of node `node_i` (pool slot NUM_IN+node_i) — the
         storage `node_out_ptr` equivalent for diagnostics / intermediate reads.
         """
@@ -113,15 +109,17 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](
             self.slot_n[Self.NUM_IN + i] = B * Self.NODES[i].OUT_DIM
             comptime if Self.NODES[i].ARITY == 1:
                 self.children[i].forward[target, B](
-                    TensorRefs[Self.NODES[i].ARITY].of1(self.pool[edges[i][0]]),
-                    self.pool[Self.NUM_IN + i], ctx,
+                    TensorRefs[Self.NODES[i].ARITY](self.pool[edges[i][0]]),
+                    self.pool[Self.NUM_IN + i],
+                    ctx,
                 )
             elif Self.NODES[i].ARITY == 2:
                 self.children[i].forward[target, B](
-                    TensorRefs[Self.NODES[i].ARITY].of2(
+                    TensorRefs[Self.NODES[i].ARITY](
                         self.pool[edges[i][0]], self.pool[edges[i][1]]
                     ),
-                    self.pool[Self.NUM_IN + i], ctx,
+                    self.pool[Self.NUM_IN + i],
+                    ctx,
                 )
         var dN = B * Self.OUT_DIM
         comptime if target == "cpu":
@@ -131,7 +129,9 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](
         else:
             var c = ctx.value()
             out.ensure_gpu(c, dN)
-            c.enqueue_copy(out.dev.value(), self.pool[Self.NSLOT - 1].dev.value())
+            c.enqueue_copy(
+                out.dev.value(), self.pool[Self.NSLOT - 1].dev.value()
+            )
 
     def vjp[
         B: Int, target: StaticString = "cpu"
@@ -172,9 +172,9 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](
                 else:
                     self.tmp[0].ensure_gpu(ctx.value(), a0)
                 self.children[i].vjp[target, B](
-                    TensorRefs[Self.NODES[i].ARITY].of1(self.pool[edges[i][0]]),
+                    TensorRefs[Self.NODES[i].ARITY](self.pool[edges[i][0]]),
                     self.gpool[Self.NUM_IN + i],
-                    TensorRefs[Self.NODES[i].ARITY].of1(self.tmp[0]),
+                    TensorRefs[Self.NODES[i].ARITY](self.tmp[0]),
                     ctx,
                 )
                 var e0 = edges[i][0]
@@ -184,9 +184,10 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](
                 else:
                     var c = ctx.value()
                     c.enqueue_function[_cg_accum_kernel[a0]](
-                        self.gpool[e0].lt_gpu[Layout.row_major(a0)](),
-                        self.tmp[0].lt_gpu[Layout.row_major(a0)](),
-                        grid_dim=(a0 + TPB - 1) // TPB, block_dim=TPB,
+                        self.gpool[e0].lt["gpu", Layout.row_major(a0)](),
+                        self.tmp[0].lt["gpu", Layout.row_major(a0)](),
+                        grid_dim=(a0 + TPB - 1) // TPB,
+                        block_dim=TPB,
                     )
             elif Self.NODES[i].ARITY == 2:
                 comptime a0 = B * Self.NODES[i].IN_DIMS[0]
@@ -198,11 +199,11 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](
                     self.tmp[0].ensure_gpu(ctx.value(), a0)
                     self.tmp[1].ensure_gpu(ctx.value(), a1)
                 self.children[i].vjp[target, B](
-                    TensorRefs[Self.NODES[i].ARITY].of2(
+                    TensorRefs[Self.NODES[i].ARITY](
                         self.pool[edges[i][0]], self.pool[edges[i][1]]
                     ),
                     self.gpool[Self.NUM_IN + i],
-                    TensorRefs[Self.NODES[i].ARITY].of2(self.tmp[0], self.tmp[1]),
+                    TensorRefs[Self.NODES[i].ARITY](self.tmp[0], self.tmp[1]),
                     ctx,
                 )
                 var e0 = edges[i][0]
@@ -215,14 +216,16 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](
                 else:
                     var c = ctx.value()
                     c.enqueue_function[_cg_accum_kernel[a0]](
-                        self.gpool[e0].lt_gpu[Layout.row_major(a0)](),
-                        self.tmp[0].lt_gpu[Layout.row_major(a0)](),
-                        grid_dim=(a0 + TPB - 1) // TPB, block_dim=TPB,
+                        self.gpool[e0].lt["gpu", Layout.row_major(a0)](),
+                        self.tmp[0].lt["gpu", Layout.row_major(a0)](),
+                        grid_dim=(a0 + TPB - 1) // TPB,
+                        block_dim=TPB,
                     )
                     c.enqueue_function[_cg_accum_kernel[a1]](
-                        self.gpool[e1].lt_gpu[Layout.row_major(a1)](),
-                        self.tmp[1].lt_gpu[Layout.row_major(a1)](),
-                        grid_dim=(a1 + TPB - 1) // TPB, block_dim=TPB,
+                        self.gpool[e1].lt["gpu", Layout.row_major(a1)](),
+                        self.tmp[1].lt["gpu", Layout.row_major(a1)](),
+                        grid_dim=(a1 + TPB - 1) // TPB,
+                        block_dim=TPB,
                     )
         # Write external-input grads back (slots 0..NUM_IN-1) for chaining.
         for k in range(Self.NUM_IN):
@@ -234,7 +237,9 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](
             else:
                 var c = ctx.value()
                 grad_inputs[k].ensure_gpu(c, dk)
-                c.enqueue_copy(grad_inputs[k].dev.value(), self.gpool[k].dev.value())
+                c.enqueue_copy(
+                    grad_inputs[k].dev.value(), self.gpool[k].dev.value()
+                )
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
@@ -251,9 +256,12 @@ struct ComputeGraph[NUM_IN: Int, *NODES: Module](
     def polyak_from[
         target: StaticString
     ](
-        mut self, mut src: Self, tau: Scalar[DT],
+        mut self,
+        mut src: Self,
+        tau: Scalar[DT],
         ctx: Optional[DeviceContext],
     ) raises:
-        """Soft-update every node toward `src`'s matching node (target ← online)."""
+        """Soft-update every node toward `src`'s matching node (target ← online).
+        """
         comptime for i in range(Self.N):
             self.children[i].polyak_from[target](src.children[i], tau, ctx)

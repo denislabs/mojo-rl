@@ -11,6 +11,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_pack import TensorPack
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.linear import Linear
 from mojo_rl.nn.storage.primitives.activations import ReLU
 from mojo_rl.nn.storage.primitives.concat import Concat2
@@ -82,8 +83,8 @@ def _check_polyak_module() raises -> Bool:
     comptime SA = S + A
     comptime TOL = Scalar[DT](1e-6)
     var tau = Scalar[DT](0.5)
-    var online = ComputeGraph[2, Concat2[S, A], Linear[SA, H], ReLU[H], Linear[H, 1]].make_cpu()
-    var targ = ComputeGraph[2, Concat2[S, A], Linear[SA, H], ReLU[H], Linear[H, 1]].make_cpu()
+    var online = ComputeGraph[2, Concat2[S, A], Linear[SA, H], ReLU[H], Linear[H, 1]].make["cpu", Deterministic]()
+    var targ = ComputeGraph[2, Concat2[S, A], Linear[SA, H], ReLU[H], Linear[H, 1]].make["cpu", Deterministic]()
     # perturb online node1 (Linear[SA,H]) weights
     for i in range(SA * H):
         online.children[1].weight.val.data[i] += Scalar[DT](0.4)

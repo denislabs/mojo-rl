@@ -21,6 +21,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
 
 
 comptime LN_EPS: Scalar[DT] = 1e-5
@@ -29,7 +30,8 @@ comptime LN_TPB: Int = 128
 
 # ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _layer_norm_forward_kernel[
-    BATCH: Int, DIM: Int,
+    BATCH: Int,
+    DIM: Int,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -48,14 +50,18 @@ def _layer_norm_forward_kernel[
     while idx < DIM:
         my_sum += rebind[Scalar[DT]](input[b, idx])
         idx += LN_TPB
-    var mean_val = block.sum[block_size=LN_TPB, broadcast=True](val=my_sum) * inv_dim
+    var mean_val = (
+        block.sum[block_size=LN_TPB, broadcast=True](val=my_sum) * inv_dim
+    )
     var my_var: Scalar[DT] = 0.0
     idx = t
     while idx < DIM:
         var diff = rebind[Scalar[DT]](input[b, idx]) - mean_val
         my_var += diff * diff
         idx += LN_TPB
-    var var_val = block.sum[block_size=LN_TPB, broadcast=True](val=my_var) * inv_dim
+    var var_val = (
+        block.sum[block_size=LN_TPB, broadcast=True](val=my_var) * inv_dim
+    )
     var inv_std: Scalar[DT] = 1.0 / sqrt(var_val + LN_EPS)
     if t == 0:
         cache_inv_std[b] = inv_std
@@ -71,7 +77,8 @@ def _layer_norm_forward_kernel[
 
 
 def _layer_norm_backward_dx_kernel[
-    BATCH: Int, DIM: Int,
+    BATCH: Int,
+    DIM: Int,
 ](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
@@ -96,10 +103,12 @@ def _layer_norm_backward_dx_kernel[
         my_g += g
         my_g_xhat += g * xh
         idx += LN_TPB
-    var mean_g = block.sum[block_size=LN_TPB, broadcast=True](val=my_g) * inv_dim
-    var mean_g_xhat = block.sum[block_size=LN_TPB, broadcast=True](
-        val=my_g_xhat
-    ) * inv_dim
+    var mean_g = (
+        block.sum[block_size=LN_TPB, broadcast=True](val=my_g) * inv_dim
+    )
+    var mean_g_xhat = (
+        block.sum[block_size=LN_TPB, broadcast=True](val=my_g_xhat) * inv_dim
+    )
     idx = t
     while idx < DIM:
         var go = rebind[Scalar[DT]](grad_output[b, idx])
@@ -111,7 +120,8 @@ def _layer_norm_backward_dx_kernel[
 
 
 def _layer_norm_backward_dparams_kernel[
-    BATCH: Int, DIM: Int,
+    BATCH: Int,
+    DIM: Int,
 ](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -145,8 +155,8 @@ struct LayerNorm[DIM_: Int](Module):
 
     var gamma: Param["gamma", False, Self.DIM_]
     var beta: Param["beta", False, Self.DIM_]
-    var cache_xhat: Tensor      # [BATCH, DIM]
-    var cache_inv_std: Tensor   # [BATCH]
+    var cache_xhat: Tensor  # [BATCH, DIM]
+    var cache_inv_std: Tensor  # [BATCH]
 
     def __init__(out self):
         self.gamma = Param["gamma", False, Self.DIM_]()
@@ -155,23 +165,18 @@ struct LayerNorm[DIM_: Int](Module):
         self.cache_inv_std = Tensor()
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var ln = Self()
-        ln.gamma = Param["gamma", False, Self.DIM_].make_cpu()
-        ln.beta = Param["beta", False, Self.DIM_].make_cpu()
+        ln.gamma = Param["gamma", False, Self.DIM_].make[target](ctx)
+        ln.beta = Param["beta", False, Self.DIM_].make[target](ctx)
         for k in range(Self.DIM_):
             ln.gamma.val.data[k] = Scalar[DT](1.0)  # γ←1, β←0
-        return ln^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var ln = Self()
-        ln.gamma = Param["gamma", False, Self.DIM_].make_gpu(ctx)
-        ln.beta = Param["beta", False, Self.DIM_].make_gpu(ctx)
-        for k in range(Self.DIM_):
-            ln.gamma.val.data[k] = Scalar[DT](1.0)
-        ln.gamma.val.upload(ctx)
-        ln.beta.val.upload(ctx)
+        comptime if target != "cpu":
+            var dctx = ctx.value()
+            ln.gamma.val.upload(dctx)
+            ln.beta.val.upload(dctx)
         return ln^
 
     def forward[
@@ -246,10 +251,14 @@ struct LayerNorm[DIM_: Int](Module):
             comptime lb = Layout.row_major(B)
             comptime ld = Layout.row_major(Self.DIM_)
             c.enqueue_function[_layer_norm_forward_kernel[B, Self.DIM_]](
-                in0.lt_gpu[l2d](), out.lt_gpu[l2d](),
-                self.gamma.val.lt_gpu[ld](), self.beta.val.lt_gpu[ld](),
-                self.cache_xhat.lt_gpu[l2d](), self.cache_inv_std.lt_gpu[lb](),
-                grid_dim=B, block_dim=LN_TPB,
+                in0.lt["gpu", l2d](),
+                out.lt["gpu", l2d](),
+                self.gamma.val.lt["gpu", ld](),
+                self.beta.val.lt["gpu", ld](),
+                self.cache_xhat.lt["gpu", l2d](),
+                self.cache_inv_std.lt["gpu", lb](),
+                grid_dim=B,
+                block_dim=LN_TPB,
             )
 
     def vjp[
@@ -312,7 +321,9 @@ struct LayerNorm[DIM_: Int](Module):
                 while d + W <= Self.DIM_:
                     var go = go_p.load[width=W](row + d)
                     gg_p.store(
-                        d, gg_p.load[width=W](d) + go * xh_p.load[width=W](row + d)
+                        d,
+                        gg_p.load[width=W](d)
+                        + go * xh_p.load[width=W](row + d),
                     )
                     gb_p.store(d, gb_p.load[width=W](d) + go)
                     d += W
@@ -327,15 +338,23 @@ struct LayerNorm[DIM_: Int](Module):
             comptime lb = Layout.row_major(B)
             comptime ld = Layout.row_major(Self.DIM_)
             c.enqueue_function[_layer_norm_backward_dx_kernel[B, Self.DIM_]](
-                grad_output.lt_gpu[l2d](), self.gamma.val.lt_gpu[ld](),
-                self.cache_xhat.lt_gpu[l2d](), self.cache_inv_std.lt_gpu[lb](),
-                gin.lt_gpu[l2d](),
-                grid_dim=B, block_dim=LN_TPB,
+                grad_output.lt["gpu", l2d](),
+                self.gamma.val.lt["gpu", ld](),
+                self.cache_xhat.lt["gpu", l2d](),
+                self.cache_inv_std.lt["gpu", lb](),
+                gin.lt["gpu", l2d](),
+                grid_dim=B,
+                block_dim=LN_TPB,
             )
-            c.enqueue_function[_layer_norm_backward_dparams_kernel[B, Self.DIM_]](
-                grad_output.lt_gpu[l2d](), self.cache_xhat.lt_gpu[l2d](),
-                self.gamma.grd.lt_gpu[ld](), self.beta.grd.lt_gpu[ld](),
-                grid_dim=Self.DIM_, block_dim=LN_TPB,
+            c.enqueue_function[
+                _layer_norm_backward_dparams_kernel[B, Self.DIM_]
+            ](
+                grad_output.lt["gpu", l2d](),
+                self.cache_xhat.lt["gpu", l2d](),
+                self.gamma.grd.lt["gpu", ld](),
+                self.beta.grd.lt["gpu", ld](),
+                grid_dim=Self.DIM_,
+                block_dim=LN_TPB,
             )
 
     def for_each_param[

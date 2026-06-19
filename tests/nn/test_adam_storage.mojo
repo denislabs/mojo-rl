@@ -59,7 +59,7 @@ def _reference(decay: Bool) -> List[Scalar[DT]]:
 
 def _run[target: StaticString, decay: Bool](ctx: Optional[DeviceContext]) raises -> Bool:
     comptime TOL = Scalar[DT](1e-6) if target == "cpu" else Scalar[DT](1e-5)
-    var p = Param["w", decay, K].make_cpu() if target == "cpu" else Param["w", decay, K].make_gpu(ctx.value())
+    var p = Param["w", decay, K].make[target](ctx)
     for i in range(K):
         p.val.data[i] = Scalar[DT](i - 8) * 0.05
     var opt = Adam(lr=LR, beta1=B1, beta2=B2, eps=EPS, wd=WD)

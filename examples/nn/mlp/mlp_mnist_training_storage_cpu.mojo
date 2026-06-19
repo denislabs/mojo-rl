@@ -18,7 +18,7 @@ from std.time import perf_counter_ns
 
 from mojo_rl.nn.datasets import MNIST
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.storage.core.initializer import Kaiming
 from mojo_rl.nn.storage.primitives.linear import Linear
 from mojo_rl.nn.storage.primitives.linear_relu import LinearReLU
 from mojo_rl.nn.storage.combinators.sequential import Sequential

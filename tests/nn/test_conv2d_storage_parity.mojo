@@ -18,6 +18,7 @@ from mojo_rl.nn.primitives.conv2d import Conv2D as LegacyConv2D
 from mojo_rl.nn.initializer import Zero
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.conv2d import Conv2D
 
 
@@ -65,7 +66,7 @@ def test_conv_parity() raises:
     leg.vjp["cpu", B](go_t, gi_t)
 
     # ---- storage leaf (identical weights) ----
-    var st = Conv2D[IC, OC, K, S, P, H, W].make_cpu()
+    var st = Conv2D[IC, OC, K, S, P, H, W].make["cpu", Deterministic]()
     for k in range(W_SIZE):
         st.weight.val.data[k] = lw[k]
     for k in range(OC):
@@ -78,9 +79,9 @@ def test_conv_parity() raises:
         sx.data[i] = x[i]
     for i in range(B * OUT_FLAT):
         sgo.data[i] = go[i]
-    st.forward["cpu", B](TensorRefs[1].of1(sx), sout, None)
+    st.forward["cpu", B](TensorRefs[1](sx), sout, None)
     st.zero_grad["cpu"](None)
-    st.vjp["cpu", B](TensorRefs[1].of1(sx), sgo, TensorRefs[1].of1(sgi), None)
+    st.vjp["cpu", B](TensorRefs[1](sx), sgo, TensorRefs[1](sgi), None)
 
     # ---- compare ----
     var max_out: Scalar[DT] = 0

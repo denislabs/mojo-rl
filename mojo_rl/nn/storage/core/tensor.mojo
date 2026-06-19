@@ -5,7 +5,7 @@ by the method's `target`. `dt` defaults to `DT` (fp32), so the surface stays
 `Tensor`; AMP scratch is `Tensor[DType.bfloat16]`. The KEY idea is unchanged:
 leaves/orchestrators pass `ref`/`mut Tensor` (the STORAGE), and each method
 builds its typed view INTERNALLY — `TileTensor(self.data, …)` on CPU, or
-`self.lt_gpu[layout]()` (a device `LayoutTensor`) on GPU. The only erasure on
+`self.lt["gpu", layout]()` (a device `LayoutTensor`) on GPU. The only erasure on
 the GPU path is the kernel-arg `MutAnyOrigin` (the GPU ABI).
 """
 
@@ -54,12 +54,17 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
             self.dev = ctx.enqueue_create_buffer[Self.dt](n)
             self.n = n
 
-    def lt_gpu[
-        layout: Layout
+    def lt[
+        target: StaticString, layout: Layout
     ](mut self) -> LayoutTensor[Self.dt, layout, MutAnyOrigin]:
         """Typed device view at `layout`. Origin-linking ctor (no
         `.unsafe_ptr()`); `MutAnyOrigin` is the GPU kernel-ABI boundary."""
-        return LayoutTensor[Self.dt, layout, MutAnyOrigin](self.dev.value())
+        comptime if target == "cpu":
+            return LayoutTensor[Self.dt, layout, MutAnyOrigin](self.data)
+        elif target == "gpu":
+            return LayoutTensor[Self.dt, layout, MutAnyOrigin](self.dev.value())
+        else:
+            comptime assert False, "target must be 'cpu' or 'gpu'"
 
     def upload(mut self, ctx: DeviceContext) raises:
         """CPU `data` → device buffer (via a pinned host staging buffer)."""
@@ -77,7 +82,9 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
         ctx.enqueue_copy(hb, self.dev.value())
         ctx.synchronize()
         if len(self.data) < self.n:
-            self.data = List[Scalar[Self.dt]](length=self.n, fill=Scalar[Self.dt](0))
+            self.data = List[Scalar[Self.dt]](
+                length=self.n, fill=Scalar[Self.dt](0)
+            )
         for i in range(self.n):
             self.data[i] = hb[i]
 

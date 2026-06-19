@@ -13,6 +13,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.core.checkpoint import save_params, load_params
 from mojo_rl.nn.storage.primitives.linear import Linear
 from mojo_rl.nn.storage.primitives.activations import ReLU
@@ -30,7 +31,7 @@ comptime MODEL = Sequential[Linear[IN, H], ReLU[H], Linear[H, OUT]]
 
 def _check[target: StaticString](path: String, ctx: Optional[DeviceContext]) raises -> Bool:
     comptime TOL = Scalar[DT](1e-5)
-    var model = MODEL.make_cpu() if target == "cpu" else MODEL.make_gpu(ctx.value())
+    var model = MODEL.make[target, Deterministic](ctx)
     var opt = Adam(lr=0.05)
 
     var x = Tensor.alloc(B * IN)
@@ -49,13 +50,13 @@ def _check[target: StaticString](path: String, ctx: Optional[DeviceContext]) rai
     # train via the opt.step(model) adapter
     for _ in range(40):
         model.zero_grad[target](ctx)
-        model.forward[target, B](TensorRefs[1].of1(x), pred, ctx)
+        model.forward[target, B](TensorRefs[1](x), pred, ctx)
         mse_backward[target, B, OUT](pred, tgt, grad, ctx)
-        model.vjp[target, B](TensorRefs[1].of1(x), grad, TensorRefs[1].of1(gi), ctx)
+        model.vjp[target, B](TensorRefs[1](x), grad, TensorRefs[1](gi), ctx)
         opt.step[target](model, ctx)
 
     # reference forward output of the TRAINED model
-    model.forward[target, B](TensorRefs[1].of1(x), pred, ctx)
+    model.forward[target, B](TensorRefs[1](x), pred, ctx)
     comptime if target == "gpu":
         pred.download(ctx.value())
     var ref_out = List[Scalar[DT]](length=B * OUT, fill=Scalar[DT](0))
@@ -64,10 +65,10 @@ def _check[target: StaticString](path: String, ctx: Optional[DeviceContext]) rai
 
     # save → fresh model → load → forward must match
     save_params[target](model, path, ctx)
-    var fresh = MODEL.make_cpu() if target == "cpu" else MODEL.make_gpu(ctx.value())
+    var fresh = MODEL.make[target, Deterministic](ctx)
     load_params[target](fresh, path, ctx)
     var pred2 = Tensor.alloc(B * OUT)
-    fresh.forward[target, B](TensorRefs[1].of1(x), pred2, ctx)
+    fresh.forward[target, B](TensorRefs[1](x), pred2, ctx)
     comptime if target == "gpu":
         pred2.download(ctx.value())
 

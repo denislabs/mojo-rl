@@ -75,7 +75,7 @@ struct ToyBlock[D: Int](Module):
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var tb = Self()
         comptime if target == "cpu":
-            tb.w = Param["w", True, Self.D].make_cpu()
+            tb.w = Param["w", True, Self.D].make["cpu"]()
             tb.ts = TargetStorage.make_cpu()
         else:
             raise Error("ToyBlock: CPU-only spike")

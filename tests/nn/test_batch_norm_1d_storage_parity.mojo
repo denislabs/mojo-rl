@@ -21,6 +21,7 @@ from mojo_rl.nn.primitives.batch_norm_1d import BatchNorm1D as LegacyBatchNorm1D
 from mojo_rl.nn.initializer import Zero
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.batch_norm_1d import BatchNorm1D
 
 
@@ -59,7 +60,7 @@ def test_bn1d_parity() raises:
     leg.forward["cpu", B](x_t, output=ye_t)
 
     # ---- storage ----
-    var st = BatchNorm1D[DIM].make_cpu()
+    var st = BatchNorm1D[DIM].make["cpu", Deterministic]()
     for k in range(DIM):
         st.gamma.val.data[k] = lg[k]
         st.beta.val.data[k] = lb[k]
@@ -71,11 +72,11 @@ def test_bn1d_parity() raises:
     for i in range(B * DIM):
         sx.data[i] = x[i]
         sgo.data[i] = go[i]
-    st.forward["cpu", B](TensorRefs[1].of1(sx), sout, None)   # training
+    st.forward["cpu", B](TensorRefs[1](sx), sout, None)   # training
     st.zero_grad["cpu"](None)
-    st.vjp["cpu", B](TensorRefs[1].of1(sx), sgo, TensorRefs[1].of1(sgi), None)
+    st.vjp["cpu", B](TensorRefs[1](sx), sgo, TensorRefs[1](sgi), None)
     st.set_training(False)                                    # eval
-    st.forward["cpu", B](TensorRefs[1].of1(sx), soute, None)
+    st.forward["cpu", B](TensorRefs[1](sx), soute, None)
 
     # ---- compare ----
     var mo: Scalar[DT] = 0
@@ -124,8 +125,8 @@ def test_bn1d_gpu_parity() raises:
     var c = DeviceContext()
 
     # CPU reference (storage).
-    var cpu = BatchNorm1D[DIM].make_cpu()
-    var gpu = BatchNorm1D[DIM].make_gpu(c)
+    var cpu = BatchNorm1D[DIM].make["cpu", Deterministic]()
+    var gpu = BatchNorm1D[DIM].make["gpu", Deterministic](Optional(c))
     for k in range(DIM):
         cpu.gamma.val.data[k] = Scalar[DT](0.5 + 0.1 * Float64(k))
         cpu.beta.val.data[k] = Scalar[DT](-0.2 + 0.05 * Float64(k))
@@ -141,9 +142,9 @@ def test_bn1d_gpu_parity() raises:
         sgo.data[i] = Scalar[DT]((i % 7) - 3) * 0.3
     var c_out = Tensor.alloc(B * DIM)
     var c_gi = Tensor.alloc(B * DIM)
-    cpu.forward["cpu", B](TensorRefs[1].of1(sx), c_out, None)
+    cpu.forward["cpu", B](TensorRefs[1](sx), c_out, None)
     cpu.zero_grad["cpu"](None)
-    cpu.vjp["cpu", B](TensorRefs[1].of1(sx), sgo, TensorRefs[1].of1(c_gi), None)
+    cpu.vjp["cpu", B](TensorRefs[1](sx), sgo, TensorRefs[1](c_gi), None)
 
     var gx = Tensor.alloc(B * DIM)
     var ggo = Tensor.alloc(B * DIM)
@@ -154,9 +155,9 @@ def test_bn1d_gpu_parity() raises:
     ggo.upload(c)
     var g_out = Tensor.alloc(B * DIM)
     var g_gi = Tensor.alloc(B * DIM)
-    gpu.forward["gpu", B](TensorRefs[1].of1(gx), g_out, Optional(c))
+    gpu.forward["gpu", B](TensorRefs[1](gx), g_out, Optional(c))
     gpu.zero_grad["gpu"](Optional(c))
-    gpu.vjp["gpu", B](TensorRefs[1].of1(gx), ggo, TensorRefs[1].of1(g_gi), Optional(c))
+    gpu.vjp["gpu", B](TensorRefs[1](gx), ggo, TensorRefs[1](g_gi), Optional(c))
     g_out.download(c)
     g_gi.download(c)
     gpu.running_mean.download(c)

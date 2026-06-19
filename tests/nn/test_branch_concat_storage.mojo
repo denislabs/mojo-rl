@@ -14,6 +14,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.linear import Linear
 from mojo_rl.nn.storage.combinators.branch_concat import BranchConcat
 
@@ -29,10 +30,10 @@ comptime BC = BranchConcat[Linear[D, O0], Linear[D, O1], Linear[D, O2]]
 
 def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
     comptime TOL = Scalar[DT](1e-4)
-    var bc = BC.make_cpu() if target == "cpu" else BC.make_gpu(ctx.value())
-    var b0 = Linear[D, O0].make_cpu() if target == "cpu" else Linear[D, O0].make_gpu(ctx.value())
-    var b1 = Linear[D, O1].make_cpu() if target == "cpu" else Linear[D, O1].make_gpu(ctx.value())
-    var b2 = Linear[D, O2].make_cpu() if target == "cpu" else Linear[D, O2].make_gpu(ctx.value())
+    var bc = BC.make[target, Deterministic](ctx)
+    var b0 = Linear[D, O0].make[target, Deterministic](ctx)
+    var b1 = Linear[D, O1].make[target, Deterministic](ctx)
+    var b2 = Linear[D, O2].make[target, Deterministic](ctx)
 
     var x = Tensor.alloc(B * D)
     var go = Tensor.alloc(B * OUT)
@@ -61,14 +62,14 @@ def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
         x.upload(ctx.value()); go.upload(ctx.value())
         g0.upload(ctx.value()); g1.upload(ctx.value()); g2.upload(ctx.value())
 
-    bc.forward[target, B](TensorRefs[1].of1(x), out, ctx)
-    b0.forward[target, B](TensorRefs[1].of1(x), o0, ctx)
-    b1.forward[target, B](TensorRefs[1].of1(x), o1, ctx)
-    b2.forward[target, B](TensorRefs[1].of1(x), o2, ctx)
-    bc.vjp[target, B](TensorRefs[1].of1(x), go, TensorRefs[1].of1(gi), ctx)
-    b0.vjp[target, B](TensorRefs[1].of1(x), g0, TensorRefs[1].of1(gi0), ctx)
-    b1.vjp[target, B](TensorRefs[1].of1(x), g1, TensorRefs[1].of1(gi1), ctx)
-    b2.vjp[target, B](TensorRefs[1].of1(x), g2, TensorRefs[1].of1(gi2), ctx)
+    bc.forward[target, B](TensorRefs[1](x), out, ctx)
+    b0.forward[target, B](TensorRefs[1](x), o0, ctx)
+    b1.forward[target, B](TensorRefs[1](x), o1, ctx)
+    b2.forward[target, B](TensorRefs[1](x), o2, ctx)
+    bc.vjp[target, B](TensorRefs[1](x), go, TensorRefs[1](gi), ctx)
+    b0.vjp[target, B](TensorRefs[1](x), g0, TensorRefs[1](gi0), ctx)
+    b1.vjp[target, B](TensorRefs[1](x), g1, TensorRefs[1](gi1), ctx)
+    b2.vjp[target, B](TensorRefs[1](x), g2, TensorRefs[1](gi2), ctx)
 
     comptime if target == "gpu":
         out.download(ctx.value())

@@ -40,6 +40,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
 
 
 comptime CONV_DW_TPB: Int = 128
@@ -65,14 +66,18 @@ def _im2col_cpu[
                         if ih < 0 or ih >= H or iw < 0 or iw >= W:
                             col_list[col_kh_base + kw] = Scalar[DT](0)
                         else:
-                            col_list[col_kh_base + kw] = (
-                                in_list[in_c_base + ih * W + iw]
-                            )
+                            col_list[col_kh_base + kw] = in_list[
+                                in_c_base + ih * W + iw
+                            ]
 
 
 def _col2im_cpu[
     IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OH: Int, OW: Int
-](ref d_col_list: List[Scalar[DT]], mut d_in_list: List[Scalar[DT]], in_off: Int):
+](
+    ref d_col_list: List[Scalar[DT]],
+    mut d_in_list: List[Scalar[DT]],
+    in_off: Int,
+):
     """Scatter-add d_col[OH·OW, IC·K·K] back into d_in_list[IC·H·W] at
     `in_off` (must be pre-zeroed)."""
     comptime CK = IC * K * K
@@ -91,15 +96,26 @@ def _col2im_cpu[
                         var iw = ow * S + kw - P
                         if iw < 0 or iw >= W:
                             continue
-                        d_in_list[in_c_base + ih * W + iw] += (
-                            d_col_list[col_kh_base + kw]
-                        )
+                        d_in_list[in_c_base + ih * W + iw] += d_col_list[
+                            col_kh_base + kw
+                        ]
 
 
 # ── GPU kernels (re-derived; args MutAnyOrigin = the GPU ABI boundary) ──
 def _im2col_kernel[
-    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
-    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int,
+    BATCH: Int,
+    IC: Int,
+    K: Int,
+    S: Int,
+    P: Int,
+    H: Int,
+    W: Int,
+    OH: Int,
+    OW: Int,
+    IN_FLAT: Int,
+    COL: Int,
+    SO: Int,
+    BS: Int,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
     col: LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin],
@@ -126,7 +142,11 @@ def _im2col_kernel[
 
 
 def _scatter_bias_kernel[
-    BATCH: Int, OC: Int, SO: Int, OUT_FLAT: Int, BS: Int,
+    BATCH: Int,
+    OC: Int,
+    SO: Int,
+    OUT_FLAT: Int,
+    BS: Int,
 ](
     out_packed: LayoutTensor[DT, Layout.row_major(BS, OC), MutAnyOrigin],
     bias: LayoutTensor[DT, Layout.row_major(OC), MutAnyOrigin],
@@ -139,16 +159,21 @@ def _scatter_bias_kernel[
     var out_pos = idx % OUT_FLAT
     var oc = out_pos // SO
     var s = out_pos % SO
-    output[b, out_pos] = (
-        rebind[Scalar[DT]](out_packed[b * SO + s, oc])
-        + rebind[Scalar[DT]](bias[oc])
-    )
+    output[b, out_pos] = rebind[Scalar[DT]](
+        out_packed[b * SO + s, oc]
+    ) + rebind[Scalar[DT]](bias[oc])
 
 
 def _go_transpose_kernel[
-    BATCH: Int, OC: Int, SO: Int, OUT_FLAT: Int, BS: Int,
+    BATCH: Int,
+    OC: Int,
+    SO: Int,
+    OUT_FLAT: Int,
+    BS: Int,
 ](
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin
+    ],
     go_T: LayoutTensor[DT, Layout.row_major(OC, BS), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
@@ -161,7 +186,9 @@ def _go_transpose_kernel[
     go_T[oc, col] = rebind[Scalar[DT]](grad_output[b, oc * SO + s])
 
 
-def _accum_kernel[N: Int](
+def _accum_kernel[
+    N: Int
+](
     dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
 ):
@@ -171,9 +198,15 @@ def _accum_kernel[N: Int](
 
 
 def _go_pack_kernel[
-    BATCH: Int, OC: Int, SO: Int, OUT_FLAT: Int, BS: Int,
+    BATCH: Int,
+    OC: Int,
+    SO: Int,
+    OUT_FLAT: Int,
+    BS: Int,
 ](
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin
+    ],
     go_packed: LayoutTensor[DT, Layout.row_major(BS, OC), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
@@ -187,11 +220,24 @@ def _go_pack_kernel[
 
 
 def _dx_col2im_kernel[
-    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
-    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int,
+    BATCH: Int,
+    IC: Int,
+    K: Int,
+    S: Int,
+    P: Int,
+    H: Int,
+    W: Int,
+    OH: Int,
+    OW: Int,
+    IN_FLAT: Int,
+    COL: Int,
+    SO: Int,
+    BS: Int,
 ](
     d_col: LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin],
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+    grad_input: LayoutTensor[
+        DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin
+    ],
 ):
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= BATCH * IN_FLAT:
@@ -225,9 +271,15 @@ def _dx_col2im_kernel[
 
 
 def _backward_db_kernel[
-    BATCH: Int, OC: Int, OH: Int, OW: Int, OUT_FLAT: Int,
+    BATCH: Int,
+    OC: Int,
+    OH: Int,
+    OW: Int,
+    OUT_FLAT: Int,
 ](
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin
+    ],
     grad_bias: LayoutTensor[DT, Layout.row_major(OC), MutAnyOrigin],
 ):
     var oc = Int(block_idx.x)
@@ -250,9 +302,9 @@ def _backward_db_kernel[
 
 
 # ── Conv2D ────────────────────────────────────────────────────────────────
-struct Conv2D[
-    IC_: Int, OC_: Int, K_: Int, S_: Int, P_: Int, H_: Int, W_: Int
-](Module):
+struct Conv2D[IC_: Int, OC_: Int, K_: Int, S_: Int, P_: Int, H_: Int, W_: Int](
+    Module
+):
     comptime ARITY = 1
     comptime OH = (Self.H_ + 2 * Self.P_ - Self.K_) // Self.S_ + 1
     comptime OW = (Self.W_ + 2 * Self.P_ - Self.K_) // Self.S_ + 1
@@ -268,10 +320,10 @@ struct Conv2D[
     var weight: Param["weight", True, Self.W_SIZE]
     var bias: Param["bias", False, Self.B_SIZE]
     # GPU im2col + GEMM scratch (lazy, reused — capture-safe).
-    var col_t: Tensor      # [BS, COL]  (im2col / d_col)
-    var outp_t: Tensor     # [BS, OC]   (out_packed / go_packed)
-    var goT_t: Tensor      # [OC, BS]   (goᵀ for dW)
-    var dW_tmp: Tensor     # [OC, COL]
+    var col_t: Tensor  # [BS, COL]  (im2col / d_col)
+    var outp_t: Tensor  # [BS, OC]   (out_packed / go_packed)
+    var goT_t: Tensor  # [OC, BS]   (goᵀ for dW)
+    var dW_tmp: Tensor  # [OC, COL]
 
     def __init__(out self):
         self.weight = Param["weight", True, Self.W_SIZE]()
@@ -288,21 +340,17 @@ struct Conv2D[
             w.data[k] = Scalar[DT]((k % 7) - 3) * 0.1
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var c = Self()
-        c.weight = Param["weight", True, Self.W_SIZE].make_cpu()
-        c.bias = Param["bias", False, Self.B_SIZE].make_cpu()
+        c.weight = Param["weight", True, Self.W_SIZE].make[target](ctx)
+        c.bias = Param["bias", False, Self.B_SIZE].make[target](ctx)
         Self._init_w(c.weight.val)
-        return c^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var c = Self()
-        c.weight = Param["weight", True, Self.W_SIZE].make_gpu(ctx)
-        c.bias = Param["bias", False, Self.B_SIZE].make_gpu(ctx)
-        Self._init_w(c.weight.val)
-        c.weight.val.upload(ctx)
-        c.bias.val.upload(ctx)
+        comptime if target != "cpu":
+            var dctx = ctx.value()
+            c.weight.val.upload(dctx)
+            c.bias.val.upload(dctx)
         return c^
 
     def forward[
@@ -316,15 +364,25 @@ struct Conv2D[
         ref in0 = inputs[0]
         comptime if target == "cpu":
             out.ensure(B * Self.OUT_FLAT)
-            var col = List[Scalar[DT]](length=Self.SO * Self.COL, fill=Scalar[DT](0))
-            var out_b = List[Scalar[DT]](length=Self.OC_ * Self.SO, fill=Scalar[DT](0))
+            var col = List[Scalar[DT]](
+                length=Self.SO * Self.COL, fill=Scalar[DT](0)
+            )
+            var out_b = List[Scalar[DT]](
+                length=Self.OC_ * Self.SO, fill=Scalar[DT](0)
+            )
             var w_tt = TileTensor(
                 self.weight.val.data, row_major[Self.OC_, Self.COL]()
             )
             for b in range(B):
                 _im2col_cpu[
-                    Self.IC_, Self.K_, Self.S_, Self.P_,
-                    Self.H_, Self.W_, Self.OH, Self.OW,
+                    Self.IC_,
+                    Self.K_,
+                    Self.S_,
+                    Self.P_,
+                    Self.H_,
+                    Self.W_,
+                    Self.OH,
+                    Self.OW,
                 ](in0.data, b * Self.IN_FLAT, col)
                 var col_tt = TileTensor(col, row_major[Self.SO, Self.COL]())
                 var out_b_tt = TileTensor(out_b, row_major[Self.OC_, Self.SO]())
@@ -348,31 +406,55 @@ struct Conv2D[
             self.outp_t.ensure_gpu(c, BS * Self.OC_)
             # (1) im2col → col[BS, COL]
             comptime nb_col = (BS * Self.COL + TPB - 1) // TPB
-            c.enqueue_function[_im2col_kernel[
-                B, Self.IC_, Self.K_, Self.S_, Self.P_,
-                Self.H_, Self.W_, Self.OH, Self.OW,
-                Self.IN_FLAT, Self.COL, Self.SO, BS,
-            ]](
-                in0.lt_gpu[Layout.row_major(B, Self.IN_FLAT)](),
-                self.col_t.lt_gpu[Layout.row_major(BS, Self.COL)](),
-                grid_dim=nb_col, block_dim=TPB,
+            c.enqueue_function[
+                _im2col_kernel[
+                    B,
+                    Self.IC_,
+                    Self.K_,
+                    Self.S_,
+                    Self.P_,
+                    Self.H_,
+                    Self.W_,
+                    Self.OH,
+                    Self.OW,
+                    Self.IN_FLAT,
+                    Self.COL,
+                    Self.SO,
+                    BS,
+                ]
+            ](
+                in0.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                grid_dim=nb_col,
+                block_dim=TPB,
             )
             # (2) out_packed[BS,OC] = col[BS,COL] @ W[OC,COL]ᵀ
-            var col_tt = TileTensor(self.col_t.dev.value(), row_major[BS, Self.COL]())
+            var col_tt = TileTensor(
+                self.col_t.dev.value(), row_major[BS, Self.COL]()
+            )
             var w_tt = TileTensor(
                 self.weight.val.dev.value(), row_major[Self.OC_, Self.COL]()
             )
-            var outp_tt = TileTensor(self.outp_t.dev.value(), row_major[BS, Self.OC_]())
+            var outp_tt = TileTensor(
+                self.outp_t.dev.value(), row_major[BS, Self.OC_]()
+            )
             max_matmul[transpose_b=True, target="gpu"](outp_tt, col_tt, w_tt, c)
             # (3) scatter → output[B, OC·SO] + bias
             comptime nb_sc = (B * Self.OUT_FLAT + TPB - 1) // TPB
-            c.enqueue_function[_scatter_bias_kernel[
-                B, Self.OC_, Self.SO, Self.OUT_FLAT, BS,
-            ]](
-                self.outp_t.lt_gpu[Layout.row_major(BS, Self.OC_)](),
-                self.bias.val.lt_gpu[Layout.row_major(Self.OC_)](),
-                out.lt_gpu[Layout.row_major(B, Self.OUT_FLAT)](),
-                grid_dim=nb_sc, block_dim=TPB,
+            c.enqueue_function[
+                _scatter_bias_kernel[
+                    B,
+                    Self.OC_,
+                    Self.SO,
+                    Self.OUT_FLAT,
+                    BS,
+                ]
+            ](
+                self.outp_t.lt["gpu", Layout.row_major(BS, Self.OC_)](),
+                self.bias.val.lt["gpu", Layout.row_major(Self.OC_)](),
+                out.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                grid_dim=nb_sc,
+                block_dim=TPB,
             )
 
     def vjp[
@@ -390,8 +472,12 @@ struct Conv2D[
             gin.ensure(B * Self.IN_FLAT)
             for k in range(B * Self.IN_FLAT):
                 gin.data[k] = Scalar[DT](0)
-            var col = List[Scalar[DT]](length=Self.SO * Self.COL, fill=Scalar[DT](0))
-            var d_col = List[Scalar[DT]](length=Self.SO * Self.COL, fill=Scalar[DT](0))
+            var col = List[Scalar[DT]](
+                length=Self.SO * Self.COL, fill=Scalar[DT](0)
+            )
+            var d_col = List[Scalar[DT]](
+                length=Self.SO * Self.COL, fill=Scalar[DT](0)
+            )
             var w_tt = TileTensor(
                 self.weight.val.data, row_major[Self.OC_, Self.COL]()
             )
@@ -412,8 +498,14 @@ struct Conv2D[
                     self.bias.grd.data[oc] += acc
                 # rebuild col_b = im2col(x_b)
                 _im2col_cpu[
-                    Self.IC_, Self.K_, Self.S_, Self.P_,
-                    Self.H_, Self.W_, Self.OH, Self.OW,
+                    Self.IC_,
+                    Self.K_,
+                    Self.S_,
+                    Self.P_,
+                    Self.H_,
+                    Self.W_,
+                    Self.OH,
+                    Self.OW,
                 ](fin.data, b * Self.IN_FLAT, col)
                 comptime if IS_APPLE_F32:
                     var cblas = get_cblas_f32_function()
@@ -423,7 +515,9 @@ struct Conv2D[
                         _CBLASOrder.ROW_MAJOR,
                         _CBLASTranspose.NO_TRANSPOSE,
                         _CBLASTranspose.NO_TRANSPOSE,
-                        Int32(Self.OC_), Int32(Self.COL), Int32(Self.SO),
+                        Int32(Self.OC_),
+                        Int32(Self.COL),
+                        Int32(Self.SO),
                         Float32(1.0),
                         rebind[UnsafePointer[Float32, ImmutAnyOrigin]](go_b_p),
                         Int32(Self.SO),
@@ -442,7 +536,9 @@ struct Conv2D[
                         _CBLASOrder.ROW_MAJOR,
                         _CBLASTranspose.TRANSPOSE,
                         _CBLASTranspose.NO_TRANSPOSE,
-                        Int32(Self.SO), Int32(Self.COL), Int32(Self.OC_),
+                        Int32(Self.SO),
+                        Int32(Self.COL),
+                        Int32(Self.OC_),
                         Float32(1.0),
                         rebind[UnsafePointer[Float32, ImmutAnyOrigin]](go_b_p),
                         Int32(Self.SO),
@@ -463,7 +559,9 @@ struct Conv2D[
                     )
                     for i in range(Self.OC_ * Self.SO):
                         go_b[i] = grad_output.data[go_base + i]
-                    var go_b_tt = TileTensor(go_b, row_major[Self.OC_, Self.SO]())
+                    var go_b_tt = TileTensor(
+                        go_b, row_major[Self.OC_, Self.SO]()
+                    )
                     # dW += go_b[OC,SO] @ col[SO,COL]
                     var dw_tmp = List[Scalar[DT]](
                         length=Self.W_SIZE, fill=Scalar[DT](0)
@@ -484,12 +582,20 @@ struct Conv2D[
                     var go_b_T_tt = TileTensor(
                         go_b_T, row_major[Self.SO, Self.OC_]()
                     )
-                    var d_col_tt = TileTensor(d_col, row_major[Self.SO, Self.COL]())
+                    var d_col_tt = TileTensor(
+                        d_col, row_major[Self.SO, Self.COL]()
+                    )
                     max_matmul[target="cpu"](d_col_tt, go_b_T_tt, w_tt, None)
                 # col2im → grad_input_b (scatter-add)
                 _col2im_cpu[
-                    Self.IC_, Self.K_, Self.S_, Self.P_,
-                    Self.H_, Self.W_, Self.OH, Self.OW,
+                    Self.IC_,
+                    Self.K_,
+                    Self.S_,
+                    Self.P_,
+                    Self.H_,
+                    Self.W_,
+                    Self.OH,
+                    Self.OW,
                 ](d_col, gin.data, b * Self.IN_FLAT)
         else:
             var c = ctx.value()
@@ -501,65 +607,125 @@ struct Conv2D[
             self.dW_tmp.ensure_gpu(c, Self.W_SIZE)
             # (1) col = im2col(x)
             comptime nb_col = (BS * Self.COL + TPB - 1) // TPB
-            c.enqueue_function[_im2col_kernel[
-                B, Self.IC_, Self.K_, Self.S_, Self.P_,
-                Self.H_, Self.W_, Self.OH, Self.OW,
-                Self.IN_FLAT, Self.COL, Self.SO, BS,
-            ]](
-                fin.lt_gpu[Layout.row_major(B, Self.IN_FLAT)](),
-                self.col_t.lt_gpu[Layout.row_major(BS, Self.COL)](),
-                grid_dim=nb_col, block_dim=TPB,
+            c.enqueue_function[
+                _im2col_kernel[
+                    B,
+                    Self.IC_,
+                    Self.K_,
+                    Self.S_,
+                    Self.P_,
+                    Self.H_,
+                    Self.W_,
+                    Self.OH,
+                    Self.OW,
+                    Self.IN_FLAT,
+                    Self.COL,
+                    Self.SO,
+                    BS,
+                ]
+            ](
+                fin.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                grid_dim=nb_col,
+                block_dim=TPB,
             )
             # (2) goᵀ[OC,BS] = transpose(grad_output)
             comptime nb_got = (Self.OC_ * BS + TPB - 1) // TPB
-            c.enqueue_function[_go_transpose_kernel[
-                B, Self.OC_, Self.SO, Self.OUT_FLAT, BS,
-            ]](
-                grad_output.lt_gpu[Layout.row_major(B, Self.OUT_FLAT)](),
-                self.goT_t.lt_gpu[Layout.row_major(Self.OC_, BS)](),
-                grid_dim=nb_got, block_dim=TPB,
+            c.enqueue_function[
+                _go_transpose_kernel[
+                    B,
+                    Self.OC_,
+                    Self.SO,
+                    Self.OUT_FLAT,
+                    BS,
+                ]
+            ](
+                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                self.goT_t.lt["gpu", Layout.row_major(Self.OC_, BS)](),
+                grid_dim=nb_got,
+                block_dim=TPB,
             )
             # (3) dW_tmp = goᵀ @ col → accumulate into grad_w
-            var goT_tt = TileTensor(self.goT_t.dev.value(), row_major[Self.OC_, BS]())
-            var col_tt = TileTensor(self.col_t.dev.value(), row_major[BS, Self.COL]())
-            var dW_tmp_tt = TileTensor(self.dW_tmp.dev.value(), row_major[Self.OC_, Self.COL]())
+            var goT_tt = TileTensor(
+                self.goT_t.dev.value(), row_major[Self.OC_, BS]()
+            )
+            var col_tt = TileTensor(
+                self.col_t.dev.value(), row_major[BS, Self.COL]()
+            )
+            var dW_tmp_tt = TileTensor(
+                self.dW_tmp.dev.value(), row_major[Self.OC_, Self.COL]()
+            )
             max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, c)
             comptime nb_acc = (Self.W_SIZE + TPB - 1) // TPB
             c.enqueue_function[_accum_kernel[Self.W_SIZE]](
-                self.weight.grd.lt_gpu[Layout.row_major(Self.W_SIZE)](),
-                self.dW_tmp.lt_gpu[Layout.row_major(Self.W_SIZE)](),
-                grid_dim=nb_acc, block_dim=TPB,
+                self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                grid_dim=nb_acc,
+                block_dim=TPB,
             )
             # (4) d_bias — 1 block per OC
-            c.enqueue_function[_backward_db_kernel[
-                B, Self.OC_, Self.OH, Self.OW, Self.OUT_FLAT,
-            ]](
-                grad_output.lt_gpu[Layout.row_major(B, Self.OUT_FLAT)](),
-                self.bias.grd.lt_gpu[Layout.row_major(Self.OC_)](),
-                grid_dim=Self.OC_, block_dim=CONV_DW_TPB,
+            c.enqueue_function[
+                _backward_db_kernel[
+                    B,
+                    Self.OC_,
+                    Self.OH,
+                    Self.OW,
+                    Self.OUT_FLAT,
+                ]
+            ](
+                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                self.bias.grd.lt["gpu", Layout.row_major(Self.OC_)](),
+                grid_dim=Self.OC_,
+                block_dim=CONV_DW_TPB,
             )
             # (5) d_input: go_packed → d_col = go_packed @ W → col2im
             comptime nb_gp = (BS * Self.OC_ + TPB - 1) // TPB
-            c.enqueue_function[_go_pack_kernel[
-                B, Self.OC_, Self.SO, Self.OUT_FLAT, BS,
-            ]](
-                grad_output.lt_gpu[Layout.row_major(B, Self.OUT_FLAT)](),
-                self.outp_t.lt_gpu[Layout.row_major(BS, Self.OC_)](),
-                grid_dim=nb_gp, block_dim=TPB,
+            c.enqueue_function[
+                _go_pack_kernel[
+                    B,
+                    Self.OC_,
+                    Self.SO,
+                    Self.OUT_FLAT,
+                    BS,
+                ]
+            ](
+                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                self.outp_t.lt["gpu", Layout.row_major(BS, Self.OC_)](),
+                grid_dim=nb_gp,
+                block_dim=TPB,
             )
-            var gopack_tt = TileTensor(self.outp_t.dev.value(), row_major[BS, Self.OC_]())
-            var w_tt = TileTensor(self.weight.val.dev.value(), row_major[Self.OC_, Self.COL]())
-            var dcol_tt = TileTensor(self.col_t.dev.value(), row_major[BS, Self.COL]())
+            var gopack_tt = TileTensor(
+                self.outp_t.dev.value(), row_major[BS, Self.OC_]()
+            )
+            var w_tt = TileTensor(
+                self.weight.val.dev.value(), row_major[Self.OC_, Self.COL]()
+            )
+            var dcol_tt = TileTensor(
+                self.col_t.dev.value(), row_major[BS, Self.COL]()
+            )
             max_matmul[target="gpu"](dcol_tt, gopack_tt, w_tt, c)
             comptime nb_dx = (B * Self.IN_FLAT + CONV_DW_TPB - 1) // CONV_DW_TPB
-            c.enqueue_function[_dx_col2im_kernel[
-                B, Self.IC_, Self.K_, Self.S_, Self.P_,
-                Self.H_, Self.W_, Self.OH, Self.OW,
-                Self.IN_FLAT, Self.COL, Self.SO, BS,
-            ]](
-                self.col_t.lt_gpu[Layout.row_major(BS, Self.COL)](),
-                gin.lt_gpu[Layout.row_major(B, Self.IN_FLAT)](),
-                grid_dim=nb_dx, block_dim=CONV_DW_TPB,
+            c.enqueue_function[
+                _dx_col2im_kernel[
+                    B,
+                    Self.IC_,
+                    Self.K_,
+                    Self.S_,
+                    Self.P_,
+                    Self.H_,
+                    Self.W_,
+                    Self.OH,
+                    Self.OW,
+                    Self.IN_FLAT,
+                    Self.COL,
+                    Self.SO,
+                    BS,
+                ]
+            ](
+                self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                gin.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                grid_dim=nb_dx,
+                block_dim=CONV_DW_TPB,
             )
 
     def for_each_param[

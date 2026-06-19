@@ -12,6 +12,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
 from mojo_rl.nn.storage.primitives.conv2d import Conv2D
+from mojo_rl.nn.storage.core.initializer import Deterministic
 
 
 # Compile-time conv geometry for the test instance.
@@ -70,7 +71,9 @@ def main() raises:
                                     continue
                                 acc += (
                                     w[_w_idx(oc, ic, kh, kw)]
-                                    * x.data[b * IN_FLAT + ic * H * W + ih * W + iw]
+                                    * x.data[
+                                        b * IN_FLAT + ic * H * W + ih * W + iw
+                                    ]
                                 )
                     ref_out[b * OUT_FLAT + oc * OH * OW + oh * OW + ow] = acc
     for b in range(B):
@@ -88,16 +91,22 @@ def main() raises:
                                 var iw = ow * S + kw - P
                                 if iw < 0 or iw >= W:
                                     continue
-                                var xv = x.data[b * IN_FLAT + ic * H * W + ih * W + iw]
+                                var xv = x.data[
+                                    b * IN_FLAT + ic * H * W + ih * W + iw
+                                ]
                                 ref_dw[_w_idx(oc, ic, kh, kw)] += g * xv
-                                ref_gi[b * IN_FLAT + ic * H * W + ih * W + iw] += (
-                                    w[_w_idx(oc, ic, kh, kw)] * g
-                                )
+                                ref_gi[
+                                    b * IN_FLAT + ic * H * W + ih * W + iw
+                                ] += (w[_w_idx(oc, ic, kh, kw)] * g)
 
-    var ok_cpu = _run["cpu"](x, w, bias, go, ref_out, ref_gi, ref_dw, ref_db, None)
+    var ok_cpu = _run["cpu"](
+        x, w, bias, go, ref_out, ref_gi, ref_dw, ref_db, None
+    )
     print("Conv2D parity CPU:", "OK" if ok_cpu else "FAIL")
     var c = DeviceContext()
-    var ok_gpu = _run["gpu"](x, w, bias, go, ref_out, ref_gi, ref_dw, ref_db, Optional(c))
+    var ok_gpu = _run["gpu"](
+        x, w, bias, go, ref_out, ref_gi, ref_dw, ref_db, Optional(c)
+    )
     print("Conv2D parity GPU:", "OK" if ok_gpu else "FAIL")
     if ok_cpu and ok_gpu:
         print("CONV PARITY OK")
@@ -119,7 +128,7 @@ def _run[
     ctx: Optional[DeviceContext],
 ) raises -> Bool:
     comptime TOL = Scalar[DT](2e-4)
-    var conv = Conv2D[IC, OC, K, S, P, H, W].make_cpu() if target == "cpu" else Conv2D[IC, OC, K, S, P, H, W].make_gpu(ctx.value())
+    var conv = Conv2D[IC, OC, K, S, P, H, W].make[target, Deterministic](ctx)
     # overwrite weights/bias deterministically
     for i in range(len(w)):
         conv.weight.val.data[i] = w[i]
@@ -136,18 +145,18 @@ def _run[
     var gi = Tensor.alloc(B * IN_FLAT)
 
     comptime if target == "cpu":
-        conv.forward["cpu", B](TensorRefs[1].of1(xin), out, None)
+        conv.forward["cpu", B](TensorRefs[1](xin), out, None)
         conv.zero_grad["cpu"](None)
-        conv.vjp["cpu", B](TensorRefs[1].of1(xin), go, TensorRefs[1].of1(gi), None)
+        conv.vjp["cpu", B](TensorRefs[1](xin), go, TensorRefs[1](gi), None)
     else:
         var c = ctx.value()
         conv.weight.val.upload(c)
         conv.bias.val.upload(c)
         xin.upload(c)
         go.upload(c)
-        conv.forward["gpu", B](TensorRefs[1].of1(xin), out, ctx)
+        conv.forward["gpu", B](TensorRefs[1](xin), out, ctx)
         conv.zero_grad["gpu"](ctx)
-        conv.vjp["gpu", B](TensorRefs[1].of1(xin), go, TensorRefs[1].of1(gi), ctx)
+        conv.vjp["gpu", B](TensorRefs[1](xin), go, TensorRefs[1](gi), ctx)
         out.download(c)
         gi.download(c)
         conv.weight.grd.download(c)

@@ -19,7 +19,9 @@ from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
 from ..core.tensor import Tensor
 
 
-def _ce_fwd_kernel[BATCH: Int, NC: Int](
+def _ce_fwd_kernel[
+    BATCH: Int, NC: Int
+](
     logits: LayoutTensor[DT, Layout.row_major(BATCH, NC), MutAnyOrigin],
     targets: LayoutTensor[DT, Layout.row_major(BATCH, NC), MutAnyOrigin],
     partial: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
@@ -43,7 +45,9 @@ def _ce_fwd_kernel[BATCH: Int, NC: Int](
         partial[b] = s
 
 
-def _ce_reduce_kernel[BATCH: Int](
+def _ce_reduce_kernel[
+    BATCH: Int
+](
     partial: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     acc: LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin],
 ):
@@ -59,7 +63,9 @@ def _ce_reduce_kernel[BATCH: Int](
         acc[1] = rebind[Scalar[DT]](acc[1]) + Scalar[DT](1.0)
 
 
-def _ce_bwd_kernel[BATCH: Int, NC: Int](
+def _ce_bwd_kernel[
+    BATCH: Int, NC: Int
+](
     logits: LayoutTensor[DT, Layout.row_major(BATCH, NC), MutAnyOrigin],
     targets: LayoutTensor[DT, Layout.row_major(BATCH, NC), MutAnyOrigin],
     grad: LayoutTensor[DT, Layout.row_major(BATCH, NC), MutAnyOrigin],
@@ -83,8 +89,8 @@ def _ce_bwd_kernel[BATCH: Int, NC: Int](
 
 
 struct CrossEntropyLoss[NC_: Int](Movable & ImplicitlyDeletable):
-    var partial: Tensor    # GPU [BATCH] per-row losses (lazy)
-    var loss_acc: Tensor   # GPU [2] = [sum_of_means, count]
+    var partial: Tensor  # GPU [BATCH] per-row losses (lazy)
+    var loss_acc: Tensor  # GPU [2] = [sum_of_means, count]
     var _acc_sum: Scalar[DT]
     var _acc_n: Int
 
@@ -105,7 +111,9 @@ struct CrossEntropyLoss[NC_: Int](Movable & ImplicitlyDeletable):
         l.loss_acc.dev.value().enqueue_fill(Scalar[DT](0))
         return l^
 
-    def _mean_loss_cpu[B: Int](self, ref logits: Tensor, ref targets: Tensor) -> Scalar[DT]:
+    def _mean_loss_cpu[
+        B: Int
+    ](self, ref logits: Tensor, ref targets: Tensor) -> Scalar[DT]:
         var s: Scalar[DT] = 0.0
         for b in range(B):
             var m = logits.data[b * Self.NC_]
@@ -118,13 +126,17 @@ struct CrossEntropyLoss[NC_: Int](Movable & ImplicitlyDeletable):
                 sum_exp += exp(logits.data[b * Self.NC_ + c] - m)
             var lse = m + log(sum_exp)
             for c in range(Self.NC_):
-                s += -targets.data[b * Self.NC_ + c] * (logits.data[b * Self.NC_ + c] - lse)
+                s += -targets.data[b * Self.NC_ + c] * (
+                    logits.data[b * Self.NC_ + c] - lse
+                )
         return s / Scalar[DT](B)
 
     def forward[
         target: StaticString, B: Int
     ](
-        mut self, mut logits: Tensor, mut targets: Tensor,
+        mut self,
+        mut logits: Tensor,
+        mut targets: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Scalar[DT]:
         comptime if target == "cpu":
@@ -134,10 +146,11 @@ struct CrossEntropyLoss[NC_: Int](Movable & ImplicitlyDeletable):
             self.partial.ensure_gpu(c, B)
             comptime nblk = (B + TPB_REDUCE - 1) // TPB_REDUCE
             c.enqueue_function[_ce_fwd_kernel[B, Self.NC_]](
-                logits.lt_gpu[Layout.row_major(B, Self.NC_)](),
-                targets.lt_gpu[Layout.row_major(B, Self.NC_)](),
-                self.partial.lt_gpu[Layout.row_major(B)](),
-                grid_dim=nblk, block_dim=TPB_REDUCE,
+                logits.lt["gpu", Layout.row_major(B, Self.NC_)](),
+                targets.lt["gpu", Layout.row_major(B, Self.NC_)](),
+                self.partial.lt["gpu", Layout.row_major(B)](),
+                grid_dim=nblk,
+                block_dim=TPB_REDUCE,
             )
             self.partial.download(c)
             var s: Scalar[DT] = 0.0
@@ -148,7 +161,9 @@ struct CrossEntropyLoss[NC_: Int](Movable & ImplicitlyDeletable):
     def forward_accumulate[
         target: StaticString, B: Int
     ](
-        mut self, mut logits: Tensor, mut targets: Tensor,
+        mut self,
+        mut logits: Tensor,
+        mut targets: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime if target == "cpu":
@@ -159,15 +174,17 @@ struct CrossEntropyLoss[NC_: Int](Movable & ImplicitlyDeletable):
             self.partial.ensure_gpu(c, B)
             comptime nblk = (B + TPB_REDUCE - 1) // TPB_REDUCE
             c.enqueue_function[_ce_fwd_kernel[B, Self.NC_]](
-                logits.lt_gpu[Layout.row_major(B, Self.NC_)](),
-                targets.lt_gpu[Layout.row_major(B, Self.NC_)](),
-                self.partial.lt_gpu[Layout.row_major(B)](),
-                grid_dim=nblk, block_dim=TPB_REDUCE,
+                logits.lt["gpu", Layout.row_major(B, Self.NC_)](),
+                targets.lt["gpu", Layout.row_major(B, Self.NC_)](),
+                self.partial.lt["gpu", Layout.row_major(B)](),
+                grid_dim=nblk,
+                block_dim=TPB_REDUCE,
             )
             c.enqueue_function[_ce_reduce_kernel[B]](
-                self.partial.lt_gpu[Layout.row_major(B)](),
-                self.loss_acc.lt_gpu[Layout.row_major(2)](),
-                grid_dim=1, block_dim=TPB_REDUCE,
+                self.partial.lt["gpu", Layout.row_major(B)](),
+                self.loss_acc.lt["gpu", Layout.row_major(2)](),
+                grid_dim=1,
+                block_dim=TPB_REDUCE,
             )
 
     def reset_accum[target: StaticString](mut self) raises:
@@ -177,7 +194,9 @@ struct CrossEntropyLoss[NC_: Int](Movable & ImplicitlyDeletable):
         else:
             self.loss_acc.dev.value().enqueue_fill(Scalar[DT](0))
 
-    def read_accum[target: StaticString](mut self, ctx: Optional[DeviceContext] = None) raises -> Scalar[DT]:
+    def read_accum[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext] = None) raises -> Scalar[DT]:
         comptime if target == "cpu":
             if self._acc_n == 0:
                 return Scalar[DT](0.0)
@@ -193,7 +212,10 @@ struct CrossEntropyLoss[NC_: Int](Movable & ImplicitlyDeletable):
     def vjp[
         target: StaticString, B: Int
     ](
-        mut self, mut logits: Tensor, mut targets: Tensor, mut grad: Tensor,
+        mut self,
+        mut logits: Tensor,
+        mut targets: Tensor,
+        mut grad: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime M = B * Self.NC_
@@ -219,8 +241,9 @@ struct CrossEntropyLoss[NC_: Int](Movable & ImplicitlyDeletable):
             grad.ensure_gpu(c, M)
             comptime nblk = (B + TPB_REDUCE - 1) // TPB_REDUCE
             c.enqueue_function[_ce_bwd_kernel[B, Self.NC_]](
-                logits.lt_gpu[Layout.row_major(B, Self.NC_)](),
-                targets.lt_gpu[Layout.row_major(B, Self.NC_)](),
-                grad.lt_gpu[Layout.row_major(B, Self.NC_)](),
-                grid_dim=nblk, block_dim=TPB_REDUCE,
+                logits.lt["gpu", Layout.row_major(B, Self.NC_)](),
+                targets.lt["gpu", Layout.row_major(B, Self.NC_)](),
+                grad.lt["gpu", Layout.row_major(B, Self.NC_)](),
+                grid_dim=nblk,
+                block_dim=TPB_REDUCE,
             )

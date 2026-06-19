@@ -16,9 +16,12 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
 
 
-def _flatten_copy_kernel[N: Int](
+def _flatten_copy_kernel[
+    N: Int
+](
     src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
 ):
@@ -36,11 +39,9 @@ struct Flatten[DIM_: Int](Module):
         pass
 
     @staticmethod
-    def make_cpu() raises -> Self:
-        return Self()
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         return Self()
 
     def forward[
@@ -69,9 +70,10 @@ struct Flatten[DIM_: Int](Module):
             out.ensure_gpu(c, N)
             comptime nblk = (N + TPB - 1) // TPB
             c.enqueue_function[_flatten_copy_kernel[N]](
-                in0.lt_gpu[Layout.row_major(N)](),
-                out.lt_gpu[Layout.row_major(N)](),
-                grid_dim=nblk, block_dim=TPB,
+                in0.lt["gpu", Layout.row_major(N)](),
+                out.lt["gpu", Layout.row_major(N)](),
+                grid_dim=nblk,
+                block_dim=TPB,
             )
 
     def vjp[
@@ -101,9 +103,10 @@ struct Flatten[DIM_: Int](Module):
             gin.ensure_gpu(c, N)
             comptime nblk = (N + TPB - 1) // TPB
             c.enqueue_function[_flatten_copy_kernel[N]](
-                grad_output.lt_gpu[Layout.row_major(N)](),
-                gin.lt_gpu[Layout.row_major(N)](),
-                grid_dim=nblk, block_dim=TPB,
+                grad_output.lt["gpu", Layout.row_major(N)](),
+                gin.lt["gpu", Layout.row_major(N)](),
+                grid_dim=nblk,
+                block_dim=TPB,
             )
 
     def for_each_param[

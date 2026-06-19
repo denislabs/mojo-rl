@@ -14,6 +14,7 @@ from mojo_rl.nn.core.element_op import ElementOp
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
 from mojo_rl.nn.storage.primitives.elementwise import Elementwise
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.primitives.ops.relu_op import ReLUOp
 from mojo_rl.nn.primitives.ops.tanh_op import TanhOp
 from mojo_rl.nn.primitives.ops.sigmoid_op import SigmoidOp
@@ -27,7 +28,9 @@ def _check[
     comptime M = B * DIM
     var x = Tensor.alloc(M)
     for i in range(M):
-        x.data[i] = Scalar[DT]((i % 9) - 4) * 0.37  # spans negatives + positives
+        x.data[i] = (
+            Scalar[DT]((i % 9) - 4) * 0.37
+        )  # spans negatives + positives
     var go = Tensor.alloc(M)
     for i in range(M):
         go.data[i] = Scalar[DT]((i % 5) - 2) * 0.5
@@ -35,16 +38,16 @@ def _check[
     var gi = Tensor.alloc(M)
 
     comptime if target == "cpu":
-        var leaf = Elementwise[DIM, OP].make_cpu()
-        leaf.forward["cpu", B](TensorRefs[1].of1(x), out, None)
-        leaf.vjp["cpu", B](TensorRefs[1].of1(x), go, TensorRefs[1].of1(gi), None)
+        var leaf = Elementwise[DIM, OP].make["cpu", Deterministic]()
+        leaf.forward["cpu", B](TensorRefs[1](x), out, None)
+        leaf.vjp["cpu", B](TensorRefs[1](x), go, TensorRefs[1](gi), None)
     else:
         var c = ctx.value()
-        var leaf = Elementwise[DIM, OP].make_gpu(c)
+        var leaf = Elementwise[DIM, OP].make["gpu", Deterministic](Optional(c))
         x.upload(c)
         go.upload(c)
-        leaf.forward["gpu", B](TensorRefs[1].of1(x), out, ctx)
-        leaf.vjp["gpu", B](TensorRefs[1].of1(x), go, TensorRefs[1].of1(gi), ctx)
+        leaf.forward["gpu", B](TensorRefs[1](x), out, ctx)
+        leaf.vjp["gpu", B](TensorRefs[1](x), go, TensorRefs[1](gi), ctx)
         out.download(c)
         gi.download(c)
 

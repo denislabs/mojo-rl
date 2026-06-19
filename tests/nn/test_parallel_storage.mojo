@@ -13,6 +13,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.linear import Linear
 from mojo_rl.nn.storage.combinators.parallel import Parallel
 
@@ -27,9 +28,9 @@ comptime PAR = Parallel[Linear[D, DA], Linear[D, DB]]
 
 def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
     comptime TOL = Scalar[DT](1e-4)
-    var par = PAR.make_cpu() if target == "cpu" else PAR.make_gpu(ctx.value())
-    var a = Linear[D, DA].make_cpu() if target == "cpu" else Linear[D, DA].make_gpu(ctx.value())
-    var bb = Linear[D, DB].make_cpu() if target == "cpu" else Linear[D, DB].make_gpu(ctx.value())
+    var par = PAR.make[target, Deterministic](ctx)
+    var a = Linear[D, DA].make[target, Deterministic](ctx)
+    var bb = Linear[D, DB].make[target, Deterministic](ctx)
 
     var x = Tensor.alloc(B * D)
     var go = Tensor.alloc(B * OUT)
@@ -57,12 +58,12 @@ def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
         x.upload(ctx.value()); go.upload(ctx.value())
         go_a.upload(ctx.value()); go_b.upload(ctx.value())
 
-    par.forward[target, B](TensorRefs[1].of1(x), out, ctx)
-    a.forward[target, B](TensorRefs[1].of1(x), oa, ctx)
-    bb.forward[target, B](TensorRefs[1].of1(x), ob, ctx)
-    par.vjp[target, B](TensorRefs[1].of1(x), go, TensorRefs[1].of1(gi), ctx)
-    a.vjp[target, B](TensorRefs[1].of1(x), go_a, TensorRefs[1].of1(gia), ctx)
-    bb.vjp[target, B](TensorRefs[1].of1(x), go_b, TensorRefs[1].of1(gib), ctx)
+    par.forward[target, B](TensorRefs[1](x), out, ctx)
+    a.forward[target, B](TensorRefs[1](x), oa, ctx)
+    bb.forward[target, B](TensorRefs[1](x), ob, ctx)
+    par.vjp[target, B](TensorRefs[1](x), go, TensorRefs[1](gi), ctx)
+    a.vjp[target, B](TensorRefs[1](x), go_a, TensorRefs[1](gia), ctx)
+    bb.vjp[target, B](TensorRefs[1](x), go_b, TensorRefs[1](gib), ctx)
 
     comptime if target == "gpu":
         out.download(ctx.value()); oa.download(ctx.value()); ob.download(ctx.value())

@@ -13,6 +13,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.linear import Linear
 from mojo_rl.nn.storage.combinators.sequential import Sequential
 from mojo_rl.nn.storage.combinators.repeat import Repeat
@@ -34,10 +35,10 @@ def _close(ref a: Tensor, ref b: Tensor) -> Bool:
 
 
 def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
-    var rep = REP3.make_cpu() if target == "cpu" else REP3.make_gpu(ctx.value())
-    var seq = SEQ3.make_cpu() if target == "cpu" else SEQ3.make_gpu(ctx.value())
-    var rep1 = REP1.make_cpu() if target == "cpu" else REP1.make_gpu(ctx.value())
-    var lin = Linear[D, D].make_cpu() if target == "cpu" else Linear[D, D].make_gpu(ctx.value())
+    var rep = REP3.make[target, Deterministic](ctx)
+    var seq = SEQ3.make[target, Deterministic](ctx)
+    var rep1 = REP1.make[target, Deterministic](ctx)
+    var lin = Linear[D, D].make[target, Deterministic](ctx)
 
     var x = Tensor.alloc(N)
     var go = Tensor.alloc(N)
@@ -60,14 +61,14 @@ def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
         go.upload(ctx.value()); go2.upload(ctx.value())
         go3.upload(ctx.value()); go4.upload(ctx.value())
 
-    rep.forward[target, B](TensorRefs[1].of1(x), o_r, ctx)
-    seq.forward[target, B](TensorRefs[1].of1(x), o_s, ctx)
-    rep1.forward[target, B](TensorRefs[1].of1(x), o_r1, ctx)
-    lin.forward[target, B](TensorRefs[1].of1(x), o_l, ctx)
-    rep.vjp[target, B](TensorRefs[1].of1(x), go, TensorRefs[1].of1(gi_r), ctx)
-    seq.vjp[target, B](TensorRefs[1].of1(x), go2, TensorRefs[1].of1(gi_s), ctx)
-    rep1.vjp[target, B](TensorRefs[1].of1(x), go3, TensorRefs[1].of1(gi_r1), ctx)
-    lin.vjp[target, B](TensorRefs[1].of1(x), go4, TensorRefs[1].of1(gi_l), ctx)
+    rep.forward[target, B](TensorRefs[1](x), o_r, ctx)
+    seq.forward[target, B](TensorRefs[1](x), o_s, ctx)
+    rep1.forward[target, B](TensorRefs[1](x), o_r1, ctx)
+    lin.forward[target, B](TensorRefs[1](x), o_l, ctx)
+    rep.vjp[target, B](TensorRefs[1](x), go, TensorRefs[1](gi_r), ctx)
+    seq.vjp[target, B](TensorRefs[1](x), go2, TensorRefs[1](gi_s), ctx)
+    rep1.vjp[target, B](TensorRefs[1](x), go3, TensorRefs[1](gi_r1), ctx)
+    lin.vjp[target, B](TensorRefs[1](x), go4, TensorRefs[1](gi_l), ctx)
 
     comptime if target == "gpu":
         o_r.download(ctx.value()); o_s.download(ctx.value())

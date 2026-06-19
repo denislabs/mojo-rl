@@ -17,6 +17,7 @@ from mojo_rl.nn.storage.primitives.activations import ReLU
 from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.nn.storage.loss.mse import mse_forward, mse_backward
+from mojo_rl.nn.storage.core.initializer import Deterministic
 
 
 def main() raises:
@@ -27,7 +28,7 @@ def main() raises:
 
     var g = ComputeGraph[
         2, Add[IN], Linear[IN, H], ReLU[H], Linear[H, OUT]
-    ].make_cpu()
+    ].make["cpu", Deterministic]()
     var edges = List[List[Int]]()
     edges.append([0, 1])   # Add(x0, x1)
     edges.append([2])      # Linear(Add)

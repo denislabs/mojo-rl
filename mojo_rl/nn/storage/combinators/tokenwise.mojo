@@ -14,7 +14,7 @@ so there's NO mid-slab and NO extra kernel: forward/vjp delegate straight to
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Initializer
+from ..core.initializer import Initializer
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
@@ -23,7 +23,9 @@ from ..core.param import ParamVisitor
 
 struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
     comptime ARITY = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_LEN * Self.Inner.IN_DIMS[0])
+    comptime IN_DIMS = InlineArray[Int, 1](
+        fill=Self.SEQ_LEN * Self.Inner.IN_DIMS[0]
+    )
     comptime OUT_DIM = Self.SEQ_LEN * Self.Inner.OUT_DIM
 
     var inner: Self.Inner
@@ -33,37 +35,39 @@ struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
         self.inner = Self.Inner()
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var t = Self()
-        t.inner = Self.Inner.make_cpu()
-        return t^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var t = Self()
-        t.inner = Self.Inner.make_gpu(ctx)
+        t.inner = Self.Inner.make[target, INIT](ctx)
         return t^
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin
     ](
-        mut self, inputs: TensorRefs[1, o], mut out: Tensor,
+        mut self,
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
         self.inner.forward[target, B * Self.SEQ_LEN](
-            TensorRefs[Self.Inner.ARITY].of1(inputs[0]), out, ctx
+            TensorRefs[Self.Inner.ARITY](inputs[0]), out, ctx
         )
 
     def vjp[
         target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
     ](
-        mut self, forward_input: TensorRefs[1, ofi], mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi], ctx: Optional[DeviceContext] = None,
+        mut self,
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         self.inner.vjp[target, B * Self.SEQ_LEN](
-            TensorRefs[Self.Inner.ARITY].of1(forward_input[0]),
+            TensorRefs[Self.Inner.ARITY](forward_input[0]),
             grad_output,
-            TensorRefs[Self.Inner.ARITY].of1(grad_inputs[0]), ctx,
+            TensorRefs[Self.Inner.ARITY](grad_inputs[0]),
+            ctx,
         )
 
     def for_each_param[
@@ -82,8 +86,3 @@ struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
         mut self, mut src: Self, tau: Scalar[DT], ctx: Optional[DeviceContext]
     ) raises:
         self.inner.polyak_from[target](src.inner, tau, ctx)
-
-    def reinit[
-        target: StaticString, INIT: Initializer
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        self.inner.reinit[target, INIT](ctx)

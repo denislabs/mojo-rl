@@ -18,6 +18,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
 
 
 # ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
@@ -47,7 +48,9 @@ def _embedding_fwd_kernel[
 def _embedding_grad_in_kernel[
     BATCH: Int, VOCAB: Int, EMBED_DIM: Int
 ](
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, EMBED_DIM), MutAnyOrigin],
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, EMBED_DIM), MutAnyOrigin
+    ],
     weight: LayoutTensor[DT, Layout.row_major(VOCAB, EMBED_DIM), MutAnyOrigin],
     grad_input: LayoutTensor[DT, Layout.row_major(BATCH, VOCAB), MutAnyOrigin],
 ):
@@ -68,9 +71,13 @@ def _embedding_grad_in_kernel[
 def _embedding_grad_w_kernel[
     BATCH: Int, VOCAB: Int, EMBED_DIM: Int
 ](
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, EMBED_DIM), MutAnyOrigin],
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, EMBED_DIM), MutAnyOrigin
+    ],
     cache_in: LayoutTensor[DT, Layout.row_major(BATCH, VOCAB), MutAnyOrigin],
-    grad_weight: LayoutTensor[DT, Layout.row_major(VOCAB, EMBED_DIM), MutAnyOrigin],
+    grad_weight: LayoutTensor[
+        DT, Layout.row_major(VOCAB, EMBED_DIM), MutAnyOrigin
+    ],
 ):
     var gid = Int(global_idx.x)
     comptime total = VOCAB * EMBED_DIM
@@ -93,7 +100,7 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int](Module):
     comptime W_SIZE = Self.VOCAB_ * Self.EMBED_DIM_
 
     var weight: Param["weight", True, Self.W_SIZE]
-    var cache_in: Tensor   # [BATCH, VOCAB] one-hot
+    var cache_in: Tensor  # [BATCH, VOCAB] one-hot
 
     def __init__(out self):
         self.weight = Param["weight", True, Self.W_SIZE]()
@@ -105,18 +112,14 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int](Module):
             w.data[k] = Scalar[DT](((k % 11) - 5)) * 0.07
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var e = Self()
-        e.weight = Param["weight", True, Self.W_SIZE].make_cpu()
+        e.weight = Param["weight", True, Self.W_SIZE].make[target](ctx)
         Self._init_w(e.weight.val)
-        return e^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var e = Self()
-        e.weight = Param["weight", True, Self.W_SIZE].make_gpu(ctx)
-        Self._init_w(e.weight.val)
-        e.weight.val.upload(ctx)
+        comptime if target != "cpu":
+            e.weight.val.upload(ctx.value())
         return e^
 
     def forward[
@@ -136,7 +139,9 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int](Module):
             var w_v = TileTensor(
                 self.weight.val.data, row_major[Self.VOCAB_, Self.EMBED_DIM_]()
             )
-            var cin = TileTensor(self.cache_in.data, row_major[B, Self.VOCAB_]())
+            var cin = TileTensor(
+                self.cache_in.data, row_major[B, Self.VOCAB_]()
+            )
             for b in range(B):
                 for v in range(Self.VOCAB_):
                     cin[b, v] = input[b, v]
@@ -154,10 +159,15 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int](Module):
             comptime lw = Layout.row_major(Self.VOCAB_, Self.EMBED_DIM_)
             comptime total = B * Self.EMBED_DIM_
             comptime nblk = (total + TPB - 1) // TPB
-            c.enqueue_function[_embedding_fwd_kernel[B, Self.VOCAB_, Self.EMBED_DIM_]](
-                in0.lt_gpu[lbv](), self.weight.val.lt_gpu[lw](),
-                out.lt_gpu[lbe](), self.cache_in.lt_gpu[lbv](),
-                grid_dim=nblk, block_dim=TPB,
+            c.enqueue_function[
+                _embedding_fwd_kernel[B, Self.VOCAB_, Self.EMBED_DIM_]
+            ](
+                in0.lt["gpu", lbv](),
+                self.weight.val.lt["gpu", lw](),
+                out.lt["gpu", lbe](),
+                self.cache_in.lt["gpu", lbv](),
+                grid_dim=nblk,
+                block_dim=TPB,
             )
 
     def vjp[
@@ -172,7 +182,9 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int](Module):
         ref gin = grad_inputs[0]
         comptime if target == "cpu":
             gin.ensure(B * Self.VOCAB_)
-            var go_v = TileTensor(grad_output.data, row_major[B, Self.EMBED_DIM_]())
+            var go_v = TileTensor(
+                grad_output.data, row_major[B, Self.EMBED_DIM_]()
+            )
             var gi_v = TileTensor(gin.data, row_major[B, Self.VOCAB_]())
             var w_v = TileTensor(
                 self.weight.val.data, row_major[Self.VOCAB_, Self.EMBED_DIM_]()
@@ -186,7 +198,9 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int](Module):
             var gw_v = TileTensor(
                 self.weight.grd.data, row_major[Self.VOCAB_, Self.EMBED_DIM_]()
             )
-            var cin = TileTensor(self.cache_in.data, row_major[B, Self.VOCAB_]())
+            var cin = TileTensor(
+                self.cache_in.data, row_major[B, Self.VOCAB_]()
+            )
             for v in range(Self.VOCAB_):
                 for j in range(Self.EMBED_DIM_):
                     var acc: Scalar[DT] = 0.0
@@ -201,17 +215,25 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int](Module):
             comptime lw = Layout.row_major(Self.VOCAB_, Self.EMBED_DIM_)
             comptime gi_total = B * Self.VOCAB_
             comptime gi_blk = (gi_total + TPB - 1) // TPB
-            c.enqueue_function[_embedding_grad_in_kernel[B, Self.VOCAB_, Self.EMBED_DIM_]](
-                grad_output.lt_gpu[lbe](), self.weight.val.lt_gpu[lw](),
-                gin.lt_gpu[lbv](),
-                grid_dim=gi_blk, block_dim=TPB,
+            c.enqueue_function[
+                _embedding_grad_in_kernel[B, Self.VOCAB_, Self.EMBED_DIM_]
+            ](
+                grad_output.lt["gpu", lbe](),
+                self.weight.val.lt["gpu", lw](),
+                gin.lt["gpu", lbv](),
+                grid_dim=gi_blk,
+                block_dim=TPB,
             )
             comptime gw_total = Self.W_SIZE
             comptime gw_blk = (gw_total + TPB - 1) // TPB
-            c.enqueue_function[_embedding_grad_w_kernel[B, Self.VOCAB_, Self.EMBED_DIM_]](
-                grad_output.lt_gpu[lbe](), self.cache_in.lt_gpu[lbv](),
-                self.weight.grd.lt_gpu[lw](),
-                grid_dim=gw_blk, block_dim=TPB,
+            c.enqueue_function[
+                _embedding_grad_w_kernel[B, Self.VOCAB_, Self.EMBED_DIM_]
+            ](
+                grad_output.lt["gpu", lbe](),
+                self.cache_in.lt["gpu", lbv](),
+                self.weight.grd.lt["gpu", lw](),
+                grid_dim=gw_blk,
+                block_dim=TPB,
             )
 
     def for_each_param[

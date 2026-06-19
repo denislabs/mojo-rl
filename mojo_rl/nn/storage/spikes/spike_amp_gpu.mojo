@@ -19,6 +19,7 @@ from mojo_rl.nn.storage.primitives.activations import ReLU
 from mojo_rl.nn.storage.combinators.sequential import Sequential
 from mojo_rl.nn.storage.optimizer.sgd import SGD
 from mojo_rl.nn.storage.loss.mse import mse_forward, mse_backward
+from mojo_rl.nn.storage.core.initializer import Deterministic
 
 
 def main() raises:
@@ -28,7 +29,9 @@ def main() raises:
     comptime OUT = 2
     var ctx = DeviceContext()
 
-    var model = Sequential[Linear[IN, H, True], ReLU[H], Linear[H, OUT, True]].make_gpu(ctx)
+    var model = Sequential[
+        Linear[IN, H, True], ReLU[H], Linear[H, OUT, True]
+    ].make["gpu", Deterministic](Optional(ctx))
     var opt = SGD(lr=0.1, wd=0.0)
 
     var x = Tensor.alloc(B * IN)
@@ -48,7 +51,7 @@ def main() raises:
     var last: Scalar[DT] = 0
     for step in range(40):
         model.zero_grad["gpu"](ctx)
-        model.forward["gpu", B](TensorRefs[1].of1(x), pred, ctx)
+        model.forward["gpu", B](TensorRefs[1](x), pred, ctx)
 
         pred.download(ctx)  # monitor only
         var loss = mse_forward[B, OUT](pred, tgt)
@@ -59,9 +62,7 @@ def main() raises:
             print("step", step, " mse", loss)
 
         mse_backward["gpu", B, OUT](pred, tgt, grad, ctx)
-        model.vjp["gpu", B](
-            TensorRefs[1].of1(x), grad, TensorRefs[1].of1(gi), ctx
-        )
+        model.vjp["gpu", B](TensorRefs[1](x), grad, TensorRefs[1](gi), ctx)
         model.for_each_param["gpu"](opt, ctx)
 
     print("final mse", last)

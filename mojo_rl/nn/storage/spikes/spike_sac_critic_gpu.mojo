@@ -18,6 +18,7 @@ from mojo_rl.nn.storage.primitives.concat import Concat2
 from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.nn.storage.loss.mse_loss import MSELoss
+from mojo_rl.nn.storage.core.initializer import Deterministic
 
 
 def main() raises:
@@ -30,7 +31,7 @@ def main() raises:
 
     var critic = ComputeGraph[
         2, Concat2[S, A], Linear[SA, H], ReLU[H], Linear[H, 1]
-    ].make_gpu(c)
+    ].make["gpu", Deterministic](Optional(c))
     var edges = List[List[Int]]()
     edges.append([0, 1])
     edges.append([2])

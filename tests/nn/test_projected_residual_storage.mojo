@@ -13,6 +13,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.linear import Linear
 from mojo_rl.nn.storage.combinators.sequential import Sequential
 from mojo_rl.nn.storage.combinators.projected_residual import ProjectedResidual
@@ -29,9 +30,9 @@ comptime PR = ProjectedResidual[INNER, SKIP]
 
 def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
     comptime TOL = Scalar[DT](1e-4)
-    var pr = PR.make_cpu() if target == "cpu" else PR.make_gpu(ctx.value())
-    var inner = INNER.make_cpu() if target == "cpu" else INNER.make_gpu(ctx.value())
-    var skip = SKIP.make_cpu() if target == "cpu" else SKIP.make_gpu(ctx.value())
+    var pr = PR.make[target, Deterministic](ctx)
+    var inner = INNER.make[target, Deterministic](ctx)
+    var skip = SKIP.make[target, Deterministic](ctx)
 
     var x = Tensor.alloc(B * D)
     var go = Tensor.alloc(B * O)
@@ -54,12 +55,12 @@ def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
         x.upload(ctx.value())
         go.upload(ctx.value()); go2.upload(ctx.value()); go3.upload(ctx.value())
 
-    pr.forward[target, B](TensorRefs[1].of1(x), out, ctx)
-    inner.forward[target, B](TensorRefs[1].of1(x), io, ctx)
-    skip.forward[target, B](TensorRefs[1].of1(x), so, ctx)
-    pr.vjp[target, B](TensorRefs[1].of1(x), go, TensorRefs[1].of1(gi), ctx)
-    inner.vjp[target, B](TensorRefs[1].of1(x), go2, TensorRefs[1].of1(gi_in), ctx)
-    skip.vjp[target, B](TensorRefs[1].of1(x), go3, TensorRefs[1].of1(gi_sk), ctx)
+    pr.forward[target, B](TensorRefs[1](x), out, ctx)
+    inner.forward[target, B](TensorRefs[1](x), io, ctx)
+    skip.forward[target, B](TensorRefs[1](x), so, ctx)
+    pr.vjp[target, B](TensorRefs[1](x), go, TensorRefs[1](gi), ctx)
+    inner.vjp[target, B](TensorRefs[1](x), go2, TensorRefs[1](gi_in), ctx)
+    skip.vjp[target, B](TensorRefs[1](x), go3, TensorRefs[1](gi_sk), ctx)
 
     comptime if target == "gpu":
         out.download(ctx.value()); io.download(ctx.value()); so.download(ctx.value())

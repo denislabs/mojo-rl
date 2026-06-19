@@ -17,7 +17,7 @@ legacy's `vjp[mode="input_only"]`.
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Initializer
+from ..core.initializer import Initializer
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
@@ -72,15 +72,11 @@ struct StopGradParams[Inner: Module](Module):
         self.inner = Self.Inner()
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var s = Self()
-        s.inner = Self.Inner.make_cpu()
-        return s^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var s = Self()
-        s.inner = Self.Inner.make_gpu(ctx)
+        s.inner = Self.Inner.make[target, INIT](ctx)
         return s^
 
     def forward[
@@ -122,8 +118,3 @@ struct StopGradParams[Inner: Module](Module):
         mut self, mut src: Self, tau: Scalar[DT], ctx: Optional[DeviceContext]
     ) raises:
         self.inner.polyak_from[target](src.inner, tau, ctx)
-
-    def reinit[
-        target: StaticString, INIT: Initializer
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        self.inner.reinit[target, INIT](ctx)

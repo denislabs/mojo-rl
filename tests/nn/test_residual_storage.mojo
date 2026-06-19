@@ -15,6 +15,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Deterministic
 from mojo_rl.nn.storage.primitives.linear import Linear
 from mojo_rl.nn.storage.combinators.sequential import Sequential
 from mojo_rl.nn.storage.combinators.residual import Residual
@@ -29,8 +30,8 @@ comptime RES = Residual[INNER]
 
 def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
     comptime TOL = Scalar[DT](1e-4)
-    var res = RES.make_cpu() if target == "cpu" else RES.make_gpu(ctx.value())
-    var inner = INNER.make_cpu() if target == "cpu" else INNER.make_gpu(ctx.value())
+    var res = RES.make[target, Deterministic](ctx)
+    var inner = INNER.make[target, Deterministic](ctx)
 
     var x = Tensor.alloc(N)
     var go_orig = List[Scalar[DT]](length=N, fill=Scalar[DT](0))
@@ -50,10 +51,10 @@ def _check[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:
     comptime if target == "gpu":
         x.upload(ctx.value()); go.upload(ctx.value()); go2.upload(ctx.value())
 
-    res.forward[target, B](TensorRefs[1].of1(x), out_res, ctx)
-    inner.forward[target, B](TensorRefs[1].of1(x), out_in, ctx)
-    res.vjp[target, B](TensorRefs[1].of1(x), go, TensorRefs[1].of1(gi_res), ctx)
-    inner.vjp[target, B](TensorRefs[1].of1(x), go2, TensorRefs[1].of1(gi_in), ctx)
+    res.forward[target, B](TensorRefs[1](x), out_res, ctx)
+    inner.forward[target, B](TensorRefs[1](x), out_in, ctx)
+    res.vjp[target, B](TensorRefs[1](x), go, TensorRefs[1](gi_res), ctx)
+    inner.vjp[target, B](TensorRefs[1](x), go2, TensorRefs[1](gi_in), ctx)
 
     comptime if target == "gpu":
         out_res.download(ctx.value()); out_in.download(ctx.value())

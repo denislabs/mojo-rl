@@ -19,6 +19,7 @@ from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
 
 
 comptime RMS_EPS: Scalar[DT] = 1e-4
@@ -27,7 +28,8 @@ comptime RMS_TPB: Int = 128
 
 # ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _rms_norm_forward_kernel[
-    BATCH: Int, DIM: Int,
+    BATCH: Int,
+    DIM: Int,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -46,7 +48,9 @@ def _rms_norm_forward_kernel[
         var x = rebind[Scalar[DT]](input[b, idx])
         my_sumsq += x * x
         idx += RMS_TPB
-    var mean2 = block.sum[block_size=RMS_TPB, broadcast=True](val=my_sumsq) * inv_dim
+    var mean2 = (
+        block.sum[block_size=RMS_TPB, broadcast=True](val=my_sumsq) * inv_dim
+    )
     var inv_rms: Scalar[DT] = 1.0 / sqrt(mean2 + RMS_EPS)
     if t == 0:
         cache_inv_rms[b] = inv_rms
@@ -60,7 +64,8 @@ def _rms_norm_forward_kernel[
 
 
 def _rms_norm_backward_dx_kernel[
-    BATCH: Int, DIM: Int,
+    BATCH: Int,
+    DIM: Int,
 ](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
@@ -93,7 +98,8 @@ def _rms_norm_backward_dx_kernel[
 
 
 def _rms_norm_backward_dgamma_kernel[
-    BATCH: Int, DIM: Int,
+    BATCH: Int,
+    DIM: Int,
 ](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     cache_norm: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
@@ -121,8 +127,8 @@ struct RMSNorm[DIM_: Int](Module):
     comptime OUT_DIM = Self.DIM_
 
     var gamma: Param["gamma", False, Self.DIM_]
-    var cache_norm: Tensor      # [BATCH, DIM]
-    var cache_inv_rms: Tensor   # [BATCH]
+    var cache_norm: Tensor  # [BATCH, DIM]
+    var cache_inv_rms: Tensor  # [BATCH]
 
     def __init__(out self):
         self.gamma = Param["gamma", False, Self.DIM_]()
@@ -130,20 +136,15 @@ struct RMSNorm[DIM_: Int](Module):
         self.cache_inv_rms = Tensor()
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var rn = Self()
-        rn.gamma = Param["gamma", False, Self.DIM_].make_cpu()
+        rn.gamma = Param["gamma", False, Self.DIM_].make[target](ctx)
         for k in range(Self.DIM_):
             rn.gamma.val.data[k] = Scalar[DT](1.0)
-        return rn^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var rn = Self()
-        rn.gamma = Param["gamma", False, Self.DIM_].make_gpu(ctx)
-        for k in range(Self.DIM_):
-            rn.gamma.val.data[k] = Scalar[DT](1.0)
-        rn.gamma.val.upload(ctx)
+        comptime if target != "cpu":
+            rn.gamma.val.upload(ctx.value())
         return rn^
 
     def forward[
@@ -203,10 +204,13 @@ struct RMSNorm[DIM_: Int](Module):
             comptime lb = Layout.row_major(B)
             comptime ld = Layout.row_major(Self.DIM_)
             c.enqueue_function[_rms_norm_forward_kernel[B, Self.DIM_]](
-                in0.lt_gpu[l2d](), out.lt_gpu[l2d](),
-                self.gamma.val.lt_gpu[ld](),
-                self.cache_norm.lt_gpu[l2d](), self.cache_inv_rms.lt_gpu[lb](),
-                grid_dim=B, block_dim=RMS_TPB,
+                in0.lt["gpu", l2d](),
+                out.lt["gpu", l2d](),
+                self.gamma.val.lt["gpu", ld](),
+                self.cache_norm.lt["gpu", l2d](),
+                self.cache_inv_rms.lt["gpu", lb](),
+                grid_dim=B,
+                block_dim=RMS_TPB,
             )
 
     def vjp[
@@ -251,7 +255,9 @@ struct RMSNorm[DIM_: Int](Module):
                 while d + W <= Self.DIM_:
                     var go = go_p.load[width=W](row + d)
                     var n = nm_p.load[width=W](row + d)
-                    gi_p.store(row + d, irv * (go * g_p.load[width=W](d) - n * rscaled))
+                    gi_p.store(
+                        row + d, irv * (go * g_p.load[width=W](d) - n * rscaled)
+                    )
                     d += W
                 while d < Self.DIM_:
                     var go = go_p[row + d]
@@ -265,7 +271,8 @@ struct RMSNorm[DIM_: Int](Module):
                     gg_p.store(
                         d,
                         gg_p.load[width=W](d)
-                        + go_p.load[width=W](row + d) * nm_p.load[width=W](row + d),
+                        + go_p.load[width=W](row + d)
+                        * nm_p.load[width=W](row + d),
                     )
                     d += W
                 while d < Self.DIM_:
@@ -278,15 +285,20 @@ struct RMSNorm[DIM_: Int](Module):
             comptime lb = Layout.row_major(B)
             comptime ld = Layout.row_major(Self.DIM_)
             c.enqueue_function[_rms_norm_backward_dx_kernel[B, Self.DIM_]](
-                grad_output.lt_gpu[l2d](), self.gamma.val.lt_gpu[ld](),
-                self.cache_norm.lt_gpu[l2d](), self.cache_inv_rms.lt_gpu[lb](),
-                gin.lt_gpu[l2d](),
-                grid_dim=B, block_dim=RMS_TPB,
+                grad_output.lt["gpu", l2d](),
+                self.gamma.val.lt["gpu", ld](),
+                self.cache_norm.lt["gpu", l2d](),
+                self.cache_inv_rms.lt["gpu", lb](),
+                gin.lt["gpu", l2d](),
+                grid_dim=B,
+                block_dim=RMS_TPB,
             )
             c.enqueue_function[_rms_norm_backward_dgamma_kernel[B, Self.DIM_]](
-                grad_output.lt_gpu[l2d](), self.cache_norm.lt_gpu[l2d](),
-                self.gamma.grd.lt_gpu[ld](),
-                grid_dim=Self.DIM_, block_dim=RMS_TPB,
+                grad_output.lt["gpu", l2d](),
+                self.cache_norm.lt["gpu", l2d](),
+                self.gamma.grd.lt["gpu", ld](),
+                grid_dim=Self.DIM_,
+                block_dim=RMS_TPB,
             )
 
     def for_each_param[

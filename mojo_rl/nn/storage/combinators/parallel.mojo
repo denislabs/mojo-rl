@@ -20,7 +20,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
-from mojo_rl.nn.core.initializer import Initializer
+from ..core.initializer import Initializer
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.tensor_pack import TensorPack
@@ -45,7 +45,9 @@ def _cumulative_offset[index: Int, *BRANCHES: Module]() -> Int:
 
 
 # ── per-branch offset write/read into the packed buffer ─────────────────
-def _par_write_kernel[B: Int, OI: Int, OD: Int](
+def _par_write_kernel[
+    B: Int, OI: Int, OD: Int
+](
     slab: LayoutTensor[DT, Layout.row_major(B, OI), MutAnyOrigin],
     packed: LayoutTensor[DT, Layout.row_major(B, OD), MutAnyOrigin],
     off: Int,
@@ -57,7 +59,9 @@ def _par_write_kernel[B: Int, OI: Int, OD: Int](
         packed[bi, off + ji] = rebind[Scalar[DT]](slab[bi, ji])
 
 
-def _par_read_kernel[B: Int, OI: Int, OD: Int](
+def _par_read_kernel[
+    B: Int, OI: Int, OD: Int
+](
     packed: LayoutTensor[DT, Layout.row_major(B, OD), MutAnyOrigin],
     slab: LayoutTensor[DT, Layout.row_major(B, OI), MutAnyOrigin],
     off: Int,
@@ -70,7 +74,9 @@ def _par_read_kernel[B: Int, OI: Int, OD: Int](
 
 
 # ── 2-branch concat/split kernels — kept for SkipConcat's input|inner merge.
-def _par_concat_kernel[B: Int, OA: Int, OB: Int](
+def _par_concat_kernel[
+    B: Int, OA: Int, OB: Int
+](
     a: LayoutTensor[DT, Layout.row_major(B, OA), MutAnyOrigin],
     bb: LayoutTensor[DT, Layout.row_major(B, OB), MutAnyOrigin],
     packed: LayoutTensor[DT, Layout.row_major(B, OA + OB), MutAnyOrigin],
@@ -86,7 +92,9 @@ def _par_concat_kernel[B: Int, OA: Int, OB: Int](
             packed[bi, ji] = rebind[Scalar[DT]](bb[bi, ji - OA])
 
 
-def _par_split_kernel[B: Int, OA: Int, OB: Int](
+def _par_split_kernel[
+    B: Int, OA: Int, OB: Int
+](
     packed: LayoutTensor[DT, Layout.row_major(B, OA + OB), MutAnyOrigin],
     a: LayoutTensor[DT, Layout.row_major(B, OA), MutAnyOrigin],
     bb: LayoutTensor[DT, Layout.row_major(B, OB), MutAnyOrigin],
@@ -124,29 +132,26 @@ struct Parallel[*BRANCHES: Module](Module):
         self.gi_temp = Tensor()
 
     @staticmethod
-    def make_cpu() raises -> Self:
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var p = Self()
         comptime for i in range(Self.N):
-            p.branches[i] = Self.BRANCHES[i].make_cpu()
-        return p^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var p = Self()
-        comptime for i in range(Self.N):
-            p.branches[i] = Self.BRANCHES[i].make_gpu(ctx)
+            p.branches[i] = Self.BRANCHES[i].make[target, INIT](ctx)
         return p^
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin
     ](
-        mut self, inputs: TensorRefs[1, o], mut out: Tensor,
+        mut self,
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref in0 = inputs[0]
         comptime for i in range(Self.N):
             self.branches[i].forward[target, B](
-                TensorRefs[Self.BRANCHES[i].ARITY].of1(in0), self.slabs[i], ctx
+                TensorRefs[Self.BRANCHES[i].ARITY](in0), self.slabs[i], ctx
             )
         comptime if target == "cpu":
             out.ensure(B * Self.OUT_DIM)
@@ -155,7 +160,9 @@ struct Parallel[*BRANCHES: Module](Module):
                 comptime oi = Self.BRANCHES[i].OUT_DIM
                 for b in range(B):
                     for j in range(oi):
-                        out.data[b * Self.OUT_DIM + off + j] = self.slabs[i].data[b * oi + j]
+                        out.data[b * Self.OUT_DIM + off + j] = self.slabs[
+                            i
+                        ].data[b * oi + j]
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.OUT_DIM)
@@ -163,17 +170,21 @@ struct Parallel[*BRANCHES: Module](Module):
                 comptime off = _cumulative_offset[i, *Self.BRANCHES]()
                 comptime oi = Self.BRANCHES[i].OUT_DIM
                 c.enqueue_function[_par_write_kernel[B, oi, Self.OUT_DIM]](
-                    self.slabs[i].lt_gpu[Layout.row_major(B, oi)](),
-                    out.lt_gpu[Layout.row_major(B, Self.OUT_DIM)](),
+                    self.slabs[i].lt["gpu", Layout.row_major(B, oi)](),
+                    out.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
                     off,
-                    grid_dim=(B * oi + TPB - 1) // TPB, block_dim=TPB,
+                    grid_dim=(B * oi + TPB - 1) // TPB,
+                    block_dim=TPB,
                 )
 
     def vjp[
         target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin
     ](
-        mut self, forward_input: TensorRefs[1, ofi], mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi], ctx: Optional[DeviceContext] = None,
+        mut self,
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         ref fin = forward_input[0]
         ref gin = grad_inputs[0]
@@ -193,18 +204,23 @@ struct Parallel[*BRANCHES: Module](Module):
             comptime if target == "cpu":
                 for b in range(B):
                     for j in range(oi):
-                        self.slabs[i].data[b * oi + j] = grad_output.data[b * Self.OUT_DIM + off + j]
+                        self.slabs[i].data[b * oi + j] = grad_output.data[
+                            b * Self.OUT_DIM + off + j
+                        ]
             else:
                 var c = ctx.value()
                 c.enqueue_function[_par_read_kernel[B, oi, Self.OUT_DIM]](
-                    grad_output.lt_gpu[Layout.row_major(B, Self.OUT_DIM)](),
-                    self.slabs[i].lt_gpu[Layout.row_major(B, oi)](),
+                    grad_output.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
+                    self.slabs[i].lt["gpu", Layout.row_major(B, oi)](),
                     off,
-                    grid_dim=(B * oi + TPB - 1) // TPB, block_dim=TPB,
+                    grid_dim=(B * oi + TPB - 1) // TPB,
+                    block_dim=TPB,
                 )
             self.branches[i].vjp[target, B](
-                TensorRefs[Self.BRANCHES[i].ARITY].of1(fin), self.slabs[i],
-                TensorRefs[Self.BRANCHES[i].ARITY].of1(self.gi_temp), ctx,
+                TensorRefs[Self.BRANCHES[i].ARITY](fin),
+                self.slabs[i],
+                TensorRefs[Self.BRANCHES[i].ARITY](self.gi_temp),
+                ctx,
             )
             comptime if target == "cpu":
                 var gp = gin.data.unsafe_ptr()
@@ -220,9 +236,10 @@ struct Parallel[*BRANCHES: Module](Module):
             else:
                 var c = ctx.value()
                 c.enqueue_function[_accum_kernel[NIN]](
-                    gin.lt_gpu[Layout.row_major(NIN)](),
-                    self.gi_temp.lt_gpu[Layout.row_major(NIN)](),
-                    grid_dim=(NIN + TPB - 1) // TPB, block_dim=TPB,
+                    gin.lt["gpu", Layout.row_major(NIN)](),
+                    self.gi_temp.lt["gpu", Layout.row_major(NIN)](),
+                    grid_dim=(NIN + TPB - 1) // TPB,
+                    block_dim=TPB,
                 )
 
     def for_each_param[
@@ -244,9 +261,3 @@ struct Parallel[*BRANCHES: Module](Module):
     ) raises:
         comptime for i in range(Self.N):
             self.branches[i].polyak_from[target](src.branches[i], tau, ctx)
-
-    def reinit[
-        target: StaticString, INIT: Initializer
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        comptime for i in range(Self.N):
-            self.branches[i].reinit[target, INIT](ctx)
