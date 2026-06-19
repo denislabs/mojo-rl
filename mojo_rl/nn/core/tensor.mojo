@@ -179,7 +179,7 @@ struct Tensor[
 
     def lt[
         layout: Layout
-    ](self) -> LayoutTensor[Self.dtype, layout, MutAnyOrigin]:
+    ](mut self) -> LayoutTensor[Self.dtype, layout, MutAnyOrigin]:
         """Typed device view of the buffer at the given comptime layout.
         Origin-linking ctor (no `dev_ptr()`/`mptr`/`unsafe_ptr` round-trip);
         see `lt_target` for why the `MutAnyOrigin` unifier stays."""

@@ -140,16 +140,16 @@ def _bn1d_backward_kernel[
     if f >= DIM:
         return
     var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(BATCH))
-    var g = rebind[Scalar[DT]](gamma[f])
-    var inv_std = rebind[Scalar[DT]](cache_inv_std[f])
-    var my_sum_dxhat: Scalar[DT] = 0.0
-    var my_sum_dxhat_xhat: Scalar[DT] = 0.0
-    var my_dgamma: Scalar[DT] = 0.0
-    var my_dbeta: Scalar[DT] = 0.0
+    var g = gamma[f]
+    var inv_std = cache_inv_std[f]
+    var my_sum_dxhat: grad_output.element_type = 0.0
+    var my_sum_dxhat_xhat: grad_output.element_type = 0.0
+    var my_dgamma: grad_output.element_type = 0.0
+    var my_dbeta: grad_output.element_type = 0.0
     var b = t
     while b < BATCH:
-        var dy = rebind[Scalar[DT]](grad_output[b, f])
-        var xh = rebind[Scalar[DT]](cache_xhat[b, f])
+        var dy = grad_output[b, f]
+        var xh = cache_xhat[b, f]
         var dxhat = dy * g
         my_sum_dxhat += dxhat
         my_sum_dxhat_xhat += dxhat * xh
@@ -167,14 +167,14 @@ def _bn1d_backward_kernel[
     )
     var d_beta_tot = block.sum[block_size=BN_TPB, broadcast=False](val=my_dbeta)
     if t == 0:
-        grad_gamma[f] = rebind[Scalar[DT]](grad_gamma[f]) + d_gamma_tot[0]
-        grad_beta[f] = rebind[Scalar[DT]](grad_beta[f]) + d_beta_tot[0]
+        grad_gamma[f] = grad_gamma[f] + d_gamma_tot[0]
+        grad_beta[f] = grad_beta[f] + d_beta_tot[0]
     var m1 = sum_dxhat * inv_n
     var m2 = sum_dxhat_xhat * inv_n
     b = t
     while b < BATCH:
-        var dy = rebind[Scalar[DT]](grad_output[b, f])
-        var xh = rebind[Scalar[DT]](cache_xhat[b, f])
+        var dy = grad_output[b, f]
+        var xh = cache_xhat[b, f]
         var dxhat = dy * g
         grad_input[b, f] = inv_std * (dxhat - m1 - xh * m2)
         b += BN_TPB
