@@ -61,7 +61,7 @@ from .episode_tracker import EpisodeTracker
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait OffPolicyAgent(Movable, ImplicitlyDeletable):
+trait OffPolicyAgent(ImplicitlyDeletable, Movable):
     """Single-trait surface for the off-policy drivers.
     Exposes `AGENT_TRAIN_TARGET` (so the driver can comptime-gate
     H2D/D2H around the env step) and routes all action selection
@@ -158,13 +158,19 @@ trait OffPolicyAgent(Movable, ImplicitlyDeletable):
             var c = ctx.value()
             for e in range(N_ENVS):
                 var obs_view = DeviceBuffer[DT](
-                    c, obs.ptr + e * OBS, OBS, owning=False,
+                    c,
+                    obs.ptr + e * OBS,
+                    OBS,
+                    owning=False,
                 )
                 c.enqueue_copy(obs_h.unsafe_ptr(), obs_view)
                 c.synchronize()
                 self.select_greedy_action(obs_h, act_h)
                 var act_view = DeviceBuffer[DT](
-                    c, action.ptr + e * ACT, ACT, owning=False,
+                    c,
+                    action.ptr + e * ACT,
+                    ACT,
+                    owning=False,
                 )
                 c.enqueue_copy(act_view, act_h.unsafe_ptr())
             c.synchronize()
@@ -310,7 +316,9 @@ trait OffPolicyAgent(Movable, ImplicitlyDeletable):
     # the trait can be uniform across algorithms whose `flush_metrics`
     # return different `*Metrics` structs.
 
-    def flush_metrics_through_logger[L: Logger](
+    def flush_metrics_through_logger[
+        L: Logger
+    ](
         mut self,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]],
         step: Int,
@@ -355,7 +363,10 @@ trait OffPolicyAgentGpu(OffPolicyAgent):
         mut self,
         ctx: DeviceContext,
         mut nstep_buf: GPUNStepBuffer[
-            NS, Self.AGENT_OBS_DIM, Self.AGENT_ACT_DIM, N_ENVS,
+            NS,
+            Self.AGENT_OBS_DIM,
+            Self.AGENT_ACT_DIM,
+            N_ENVS,
         ],
         prev_obs_dev: DeviceBuffer[DT],
         action_dev: DeviceBuffer[DT],
@@ -451,10 +462,12 @@ def run_offpolicy_train[
     # mirrors for the per-step H2D/D2H around the env step.
     comptime needs_boundary_copy: Bool = env_target != train_target
     var obs_scratch = DriverScratch["obs", 1, OBS].make[train_target](
-        ctx=ctx, with_host_mirror=needs_boundary_copy,
+        ctx=ctx,
+        with_host_mirror=needs_boundary_copy,
     )
     var action_scratch = DriverScratch["action", 1, ACT].make[train_target](
-        ctx=ctx, with_host_mirror=needs_boundary_copy,
+        ctx=ctx,
+        with_host_mirror=needs_boundary_copy,
     )
     var ao = DriverScratch["ao", 1, 2 * ACT].make[train_target](ctx=ctx)
     var alp = DriverScratch["alp", 1, ACT + 1].make[train_target](ctx=ctx)
@@ -600,11 +613,7 @@ def run_offpolicy_train[
         # endpoint); forcing one every print_every was the dominant
         # logger overhead in profiling.
         comptime if L.ENABLED:
-            if (
-                print_every > 0
-                and abs_step % print_every == 0
-                and Bool(logger)
-            ):
+            if print_every > 0 and abs_step % print_every == 0 and Bool(logger):
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
@@ -649,12 +658,8 @@ def run_offpolicy_train[
         # `flush()` early-returns when the buffer is empty, so this is a
         # no-op on the vast majority of steps.
         comptime if L.ENABLED:
-            if (
-                Bool(logger)
-                and (
-                    (print_every > 0 and abs_step % print_every == 0)
-                    or diag_due
-                )
+            if Bool(logger) and (
+                (print_every > 0 and abs_step % print_every == 0) or diag_due
             ):
                 logger.value()[].flush()
 
@@ -710,6 +715,7 @@ def run_offpolicy_eval_batched[
     Same-target only (eval env's `ENV_TARGET` == trainer's `AGENT_TRAIN_TARGET`).
     """
     comptime ACT = A.AGENT_ACT_DIM
+    comptime OBS = A.AGENT_OBS_DIM
     comptime target = A.AGENT_TRAIN_TARGET
 
     # Actor-output (mean|log_std) scratch on the train target.
@@ -739,7 +745,8 @@ def run_offpolicy_eval_batched[
             ](ao.target_ptr[target]()),
         )
         eval_env.step_batch[EVAL_ENVS](
-            ctx=ctx, rng_seed=rng_seed + UInt64(step + 1),
+            ctx=ctx,
+            rng_seed=rng_seed + UInt64(step + 1),
         )
 
         # Read reward + done host-side, accumulate, record on episode end.
@@ -754,10 +761,16 @@ def run_offpolicy_eval_batched[
         else:
             var c = ctx.value()
             var rew_view = DeviceBuffer[DT](
-                c, eval_env.reward_ptr(), EVAL_ENVS, owning=False,
+                c,
+                eval_env.reward_ptr(),
+                EVAL_ENVS,
+                owning=False,
             )
             var done_view = DeviceBuffer[DT](
-                c, eval_env.done_ptr(), EVAL_ENVS, owning=False,
+                c,
+                eval_env.done_ptr(),
+                EVAL_ENVS,
+                owning=False,
             )
             c.enqueue_copy(rew_h.unsafe_ptr(), rew_view)
             c.enqueue_copy(done_h.unsafe_ptr(), done_view)
@@ -769,7 +782,8 @@ def run_offpolicy_eval_batched[
                     per_env[e] = Scalar[DT](0.0)
 
         eval_env.selective_reset_batch[EVAL_ENVS](
-            ctx=ctx, rng_seed=rng_seed + UInt64(step + 1) * UInt64(7),
+            ctx=ctx,
+            rng_seed=rng_seed + UInt64(step + 1) * UInt64(7),
         )
         step += 1
 
@@ -937,7 +951,10 @@ def run_offpolicy_train_batched[
     if ctx:
         nstep_buf = Optional(
             GPUNStepBuffer[
-                NS, A.AGENT_OBS_DIM, A.AGENT_ACT_DIM, N_ENVS,
+                NS,
+                A.AGENT_OBS_DIM,
+                A.AGENT_ACT_DIM,
+                N_ENVS,
             ].new(ctx.value(), gamma=nstep_gamma)
         )
 
@@ -966,15 +983,14 @@ def run_offpolicy_train_batched[
 
     # All scratches on the single target (env_target == train_target).
     var ao = DriverScratch["ao", N_ENVS, 2 * ACT].make[train_target](ctx=ctx)
-    var alp = DriverScratch["alp", N_ENVS, ACT + 1].make[train_target](
+    var alp = DriverScratch["alp", N_ENVS, ACT + 1].make[train_target](ctx=ctx)
+    var prev_obs = DriverScratch["prev_obs", N_ENVS, OBS].make[env_target](
         ctx=ctx
     )
-    var prev_obs = DriverScratch["prev_obs", N_ENVS, OBS].make[
-        env_target
-    ](ctx=ctx)
 
     var per_env_returns = List[Scalar[DT]](
-        length=N_ENVS, fill=Scalar[DT](0.0),
+        length=N_ENVS,
+        fill=Scalar[DT](0.0),
     )
 
     # Deferred episode-tracking readback (GPU env only). A ring of pinned host
@@ -1017,7 +1033,9 @@ def run_offpolicy_train_batched[
     var next_diag: Int = diag_every if diag_every > 0 else total_env_steps + 1
     # Independent counter for the checkpoint cadence. Disabled when
     # checkpoint_every == 0 or checkpoint_path is empty.
-    var ckpt_on: Bool = checkpoint_every > 0 and checkpoint_path.byte_length() > 0
+    var ckpt_on: Bool = (
+        checkpoint_every > 0 and checkpoint_path.byte_length() > 0
+    )
     var next_ckpt: Int = checkpoint_every if ckpt_on else total_env_steps + 1
     # Deterministic-eval cadence — armed only when both `eval_every > 0` and an
     # isolated `eval_env` is supplied. First eval fires at `eval_every` (not at
@@ -1037,7 +1055,10 @@ def run_offpolicy_train_batched[
             # over env.obs_ptr() (owning=False — env still owns memory).
             var c = ctx.value()
             var env_obs_view = DeviceBuffer[DT](
-                c, env.obs_ptr(), N_ENVS * OBS, owning=False,
+                c,
+                env.obs_ptr(),
+                N_ENVS * OBS,
+                owning=False,
             )
             c.enqueue_copy(prev_obs.dev.value(), env_obs_view)
 
@@ -1085,13 +1106,15 @@ def run_offpolicy_train_batched[
             var ce = ctx.value()
             if not env_graph:
                 env.step_batch[N_ENVS](
-                    ctx=ctx, rng_seed=rng_seed + UInt64(iter_idx + 1),
+                    ctx=ctx,
+                    rng_seed=rng_seed + UInt64(iter_idx + 1),
                 )
                 ce.synchronize()
                 var g = CUDAGraph(ce)
                 g.begin_capture()
                 env.step_batch[N_ENVS](
-                    ctx=ctx, rng_seed=rng_seed + UInt64(iter_idx + 1),
+                    ctx=ctx,
+                    rng_seed=rng_seed + UInt64(iter_idx + 1),
                 )
                 g.end_capture()
                 if verbose:
@@ -1128,20 +1151,32 @@ def run_offpolicy_train_batched[
             # record_batch_gpu_nstep.
             var c = ctx.value()
             var action_buf = DeviceBuffer[DT](
-                c, env.action_ptr(), N_ENVS * ACT, owning=False,
+                c,
+                env.action_ptr(),
+                N_ENVS * ACT,
+                owning=False,
             )
             var reward_buf = DeviceBuffer[DT](
-                c, env.reward_ptr(), N_ENVS, owning=False,
+                c,
+                env.reward_ptr(),
+                N_ENVS,
+                owning=False,
             )
             var obs_buf = DeviceBuffer[DT](
-                c, env.obs_ptr(), N_ENVS * OBS, owning=False,
+                c,
+                env.obs_ptr(),
+                N_ENVS * OBS,
+                owning=False,
             )
             # Replay stores `terminated` (natural termination only), NOT the
             # combined `done`, so the TD bootstrap is kept on time-limit
             # truncation and dropped on real termination. Episode tracking and
             # selective reset below still use `done_ptr()`.
             var term_buf = DeviceBuffer[DT](
-                c, env.terminated_ptr(), N_ENVS, owning=False,
+                c,
+                env.terminated_ptr(),
+                N_ENVS,
+                owning=False,
             )
             comptime if NS > 1:
                 trainer.record_batch_gpu_nstep[N_ENVS, NS](
@@ -1181,10 +1216,16 @@ def run_offpolicy_train_batched[
             # `step_idx + N_ENVS` — the same value the print/diag blocks test.
             var c = ctx.value()
             var reward_view = DeviceBuffer[DT](
-                c, env.reward_ptr(), N_ENVS, owning=False,
+                c,
+                env.reward_ptr(),
+                N_ENVS,
+                owning=False,
             )
             var done_view = DeviceBuffer[DT](
-                c, env.done_ptr(), N_ENVS, owning=False,
+                c,
+                env.done_ptr(),
+                N_ENVS,
+                owning=False,
             )
             c.enqueue_copy(ring_reward[pending_eps], reward_view)
             c.enqueue_copy(ring_done[pending_eps], done_view)
@@ -1307,11 +1348,7 @@ def run_offpolicy_train_batched[
         # Logger emit at the same cadence (independent of verbose).
         # Comptime-elided when L=NoOpLogger (default).
         comptime if L.ENABLED:
-            if (
-                print_every > 0
-                and step_idx >= next_log
-                and Bool(logger)
-            ):
+            if print_every > 0 and step_idx >= next_log and Bool(logger):
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
@@ -1354,11 +1391,7 @@ def run_offpolicy_train_batched[
         # under-counts by that factor. `avg_reward` / `episodes` above stay
         # on `base_step + step_idx` — those are env-level.
         comptime if L.ENABLED:
-            if (
-                diag_every > 0
-                and step_idx >= next_diag
-                and Bool(logger)
-            ):
+            if diag_every > 0 and step_idx >= next_diag and Bool(logger):
                 trainer.flush_metrics_through_logger[L](
                     logger, trainer.total_train_steps()
                 )
@@ -1546,7 +1579,8 @@ def run_offpolicy_train_cpu_env_gpu_agent[
     var alp = DriverScratch["he_alp", N_ENVS, ACT + 1].make["gpu"](ctx=ctx)
 
     var per_env_returns = List[Scalar[DT]](
-        length=N_ENVS, fill=Scalar[DT](0.0),
+        length=N_ENVS,
+        fill=Scalar[DT](0.0),
     )
 
     # CPU env: ctx ignored. Wrap in Optional(None) for the trait sig.
@@ -1593,7 +1627,8 @@ def run_offpolicy_train_cpu_env_gpu_agent[
 
         # ── 4. Step CPU envs (writes host obs/reward/done/terminated).
         env.step_batch[N_ENVS](
-            ctx=None, rng_seed=rng_seed + UInt64(iter_idx + 1),
+            ctx=None,
+            rng_seed=rng_seed + UInt64(iter_idx + 1),
         )
 
         # ── 5. H2D next-obs / reward / terminated, then GPU replay push.
@@ -1628,7 +1663,8 @@ def run_offpolicy_train_cpu_env_gpu_agent[
 
         # ── 8. Selective env reset (host).
         env.selective_reset_batch[N_ENVS](
-            ctx=None, rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
+            ctx=None,
+            rng_seed=rng_seed + UInt64(iter_idx + 1) * UInt64(7),
         )
 
         step_idx += N_ENVS
@@ -1658,11 +1694,7 @@ def run_offpolicy_train_cpu_env_gpu_agent[
 
         # Logger emit at the print cadence (comptime-elided for NoOpLogger).
         comptime if L.ENABLED:
-            if (
-                print_every > 0
-                and step_idx >= next_log
-                and Bool(logger)
-            ):
+            if print_every > 0 and step_idx >= next_log and Bool(logger):
                 logger.value()[].log_scalar(
                     "avg_reward",
                     Float64(trainer.mean_return()),
