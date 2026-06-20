@@ -63,6 +63,10 @@ struct Scale[DIM_: Int](Module):
     def set_multiplier(mut self, value: Scalar[DT]):
         self.multiplier = value
 
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        comptime if ATTR == "multiplier":
+            self.multiplier = value
+
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](

@@ -181,6 +181,10 @@ struct RSample[ACT_: Int](Module):
         if self.noise_offset.dev:
             self.noise_offset.dev.value().enqueue_fill(UInt64(0))
 
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        comptime if ATTR == "action_scale":
+            self.action_scale = value
+
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](

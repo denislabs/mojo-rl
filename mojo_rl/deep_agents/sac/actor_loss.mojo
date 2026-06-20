@@ -1,20 +1,19 @@
-"""SACActorLoss — SAC actor loss on storage ComputeGraph + ExternalRef.
+"""SACActorLoss — SAC actor loss on the storage ComputeGraph (named DX).
 
   loss_per_b[b] = α·log π(a|s) − min(Q1(s,a), Q2(s,a)),   a ~ π(·|s)
   loss          = mean_b(loss_per_b);   ∂loss/∂loss_per_b = 1/BATCH
 
-STORAGE migration (Stage 5): rebuilt on `ComputeGraph[NUM_IN, *NODES]` — the
-online actor + the two ONLINE critics are `ExternalRef` markers threaded as
+STORAGE migration (Stage 5): the graph is declared with the legacy NAME-wired DX
+(`InputSlot`/`Node`/`ExternalNode`, edges by predecessor name — no runtime edge
+list). The online actor + the two ONLINE critics are `ExternalNode`s threaded as
 tracked `mut` refs into `graph.forward`/`vjp` (the actor accumulates param grads
 and is stepped; the critics' grads are computed-then-discarded — the critic
-block zero_grads before its own update, so the legacy MODE="input_only" is just a
-skipped-compute optimization). The `Scale` node's runtime `multiplier` carries the
-moving α (host scalar; device-α/CUDA-graph capture deferred). Mean loss + mean
-log_prob are host reductions (per-step D2H on GPU; cheap at SAC scales).
+block zero_grads before its own update). The `Scale` node's runtime `multiplier`
+carries the moving α (host scalar). Mean loss + mean log_prob are host reductions
+(per-step D2H on GPU; cheap at SAC scales).
 
-  graph: ExternalRef[ACTOR] → RSample → {Slice(action), Slice(logp)} →
-         Concat2(s,action) → ExternalRef[CRITIC]×2 → BinaryElemMin = min_q;
-         Scale(logp)=α·logp ; BinarySub(α·logp, min_q) = loss_per_b (output)
+  graph: s → actor → rsample → {action, logp} ; (s, action) → concat →
+         q1, q2 → min_q ;  α·logp = Scale(logp) ;  loss = α·logp − min_q (output)
 """
 
 from std.gpu.host import DeviceContext
@@ -23,7 +22,6 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.storage.core.module import Module
 from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_pack import TensorPack
 from mojo_rl.nn.storage.core.initializer import Zero
 from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.nn.storage.primitives.rsample import RSample
@@ -34,7 +32,7 @@ from mojo_rl.nn.storage.primitives.binary_elementwise import (
     BinaryElemMin, BinarySub,
 )
 from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.external_ref import ExternalRef
+from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node, ExternalNode
 from ..loss.loss_block import LossBlock
 
 
@@ -55,48 +53,27 @@ struct SACActorLoss[
     comptime SA_DIM = Self.OBS_DIM + Self.ACT_DIM
 
     comptime Graph = ComputeGraph[
-        1,
-        ExternalRef[Self.ACTOR],                       # 0 s → [mu|ls]
-        RSample[Self.ACT_DIM],                         # 1 → [a|logp]
-        Slice[Self.ALP_DIM, 0, Self.ACT_DIM],          # 2 action
-        Slice[Self.ALP_DIM, Self.ACT_DIM, Self.ALP_DIM], # 3 log_prob
-        Concat2[Self.OBS_DIM, Self.ACT_DIM],           # 4 (s, a)
-        ExternalRef[Self.CRITIC],                      # 5 q1
-        ExternalRef[Self.CRITIC],                      # 6 q2
-        BinaryElemMin[1],                              # 7 min_q
-        Scale[1],                                      # 8 α·logp
-        BinarySub[1],                                  # 9 loss_per_b (output)
+        InputSlot["s", Self.OBS_DIM],                        # s
+        ExternalNode["actor", Self.ACTOR, "s"],              # → [mu|ls]
+        Node["rsample", RSample[Self.ACT_DIM], "actor"],     # → [a|logp]
+        Node["action", Slice[Self.ALP_DIM, 0, Self.ACT_DIM], "rsample"],
+        Node["logp", Slice[Self.ALP_DIM, Self.ACT_DIM, Self.ALP_DIM], "rsample"],
+        Node["concat", Concat2[Self.OBS_DIM, Self.ACT_DIM], "s", "action"],
+        ExternalNode["q1", Self.CRITIC, "concat"],
+        ExternalNode["q2", Self.CRITIC, "concat"],
+        Node["min_q", BinaryElemMin[1], "q1", "q2"],
+        Node["alogp", Scale[1], "logp"],                     # α·logp
+        Node["loss", BinarySub[1], "alogp", "min_q"],        # loss_per_b (output)
     ]
 
     var graph: Self.Graph
-    var _edges: List[List[Int]]
-    var _inp: TensorPack[1]
     var _loss_out: Tensor   # [B] loss_per_b (graph output)
     var _grad_seed: Tensor  # [B] = 1/BATCH (backward seed)
-    var _gin: TensorPack[1] # grad wrt s (discarded)
 
     def __init__(out self):
         self.graph = Self.Graph()
-        self._edges = Self._build_edges()
-        self._inp = TensorPack[1]()
         self._loss_out = Tensor()
         self._grad_seed = Tensor()
-        self._gin = TensorPack[1]()
-
-    @staticmethod
-    def _build_edges() -> List[List[Int]]:
-        var e = List[List[Int]]()
-        e.append([0])      # 0 actor(s=slot0)
-        e.append([1])      # 1 rsample(actor_out=slot1)
-        e.append([2])      # 2 slice action(alp=slot2)
-        e.append([2])      # 3 slice logp(alp=slot2)
-        e.append([0, 3])   # 4 concat(s=slot0, action=slot3)
-        e.append([5])      # 5 critic1(sa=slot5)
-        e.append([5])      # 6 critic2(sa=slot5)
-        e.append([6, 7])   # 7 min(q1=slot6, q2=slot7)
-        e.append([4])      # 8 scale(logp=slot4)
-        e.append([9, 8])   # 9 sub(α·logp=slot9, min_q=slot8) = α·logp − min_q
-        return e^
 
     @staticmethod
     def make[
@@ -119,16 +96,14 @@ struct SACActorLoss[
         ), "SACActorLoss: CRITIC.OUT_DIM must equal 1"
         var blk = Self()
         blk.graph = Self.Graph.make[target, Zero](ctx)
-        blk.graph.children[1].action_scale = action_scale  # the RSample node
+        blk.graph.set_node_attr["rsample", "action_scale"](action_scale)
         comptime if target == "cpu":
-            blk._inp[0].ensure(Self.BATCH * Self.OBS_DIM)
             blk._loss_out = Tensor.alloc(Self.BATCH)
             blk._grad_seed = Tensor.alloc(Self.BATCH)
             for b in range(Self.BATCH):
                 blk._grad_seed.data[b] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
         else:
             var c = ctx.value()
-            blk._inp[0].ensure_gpu(c, Self.BATCH * Self.OBS_DIM)
             blk._loss_out = Tensor.alloc_gpu(c, Self.BATCH)
             blk._grad_seed = Tensor.alloc(Self.BATCH)
             for b in range(Self.BATCH):
@@ -151,37 +126,30 @@ struct SACActorLoss[
     ) raises -> SACActorLossOut:
         comptime BB = Self.BATCH
         actor.zero_grad[target](ctx)
-        self.graph.children[8].set_multiplier(alpha)  # Scale node α
+        self.graph.set_node_attr["alogp", "multiplier"](alpha)  # α
 
-        # seed the graph input slot with s.
-        comptime if target == "cpu":
-            self._inp[0].ensure(BB * Self.OBS_DIM)
-            for q in range(BB * Self.OBS_DIM):
-                self._inp[0].data[q] = mb_s.data[q]
-        else:
-            var c = ctx.value()
-            self._inp[0].ensure_gpu(c, BB * Self.OBS_DIM)
-            c.enqueue_copy(self._inp[0].dev.value(), mb_s.dev.value())
-
+        # Seed the graph input slot with s (a COPY into the graph pool), then
+        # forward (actor + online critics threaded as tracked refs).
+        self.graph.set_input["s", BB](mb_s, ctx)
         self.graph.forward[BB, target, POLICY](
-            self._edges, self._inp, self._loss_out, ctx, actor, critic1, critic2
+            self._loss_out, ctx, actor, critic1, critic2
         )
 
         # mean loss + mean log_prob (host reduction; D2H on GPU).
         comptime if target == "gpu":
             self._loss_out.download(ctx.value())
-            self.graph.node_output(3).download(ctx.value())
+            self.graph.node_output["logp"]().download(ctx.value())
         var loss_sum: Scalar[DT] = 0.0
         var lp_sum: Scalar[DT] = 0.0
         for b in range(BB):
             loss_sum += self._loss_out.data[b]
-            lp_sum += self.graph.node_output(3).data[b]
+            lp_sum += self.graph.node_output["logp"]().data[b]
         var inv_b = Scalar[DT](1.0) / Scalar[DT](BB)
 
         # backward (seed = 1/BATCH) + actor step. Grad flows through the
         # critics (param grads discarded) into the actor (stepped).
         self.graph.vjp[BB, target, POLICY](
-            self._edges, self._grad_seed, self._gin, ctx, actor, critic1, critic2
+            self._grad_seed, ctx, actor, critic1, critic2
         )
         actor_opt.step[target, M=Self.ACTOR](actor, ctx)
 

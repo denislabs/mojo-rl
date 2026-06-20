@@ -108,3 +108,12 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
         leaves + leaves whose polyak isn't exercised yet); param leaves
         override on their `Param`s, combinators recurse into children."""
         pass
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Set a named runtime scalar attribute on this module (e.g. a `Scale`
+        node's `multiplier` = the moving SAC α, or an `RSample` node's
+        `action_scale`). Default no-op; the few leaves with a tunable scalar
+        override and branch on `ATTR`. `ComputeGraph.set_node_attr[NAME, ATTR]`
+        dispatches this to the named node — the name-wired replacement for
+        reaching into `graph.children[i].op.<field>`."""
+        pass

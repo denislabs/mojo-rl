@@ -42,8 +42,8 @@ def _check(mut blk: BLK, mut st: TrainerState[OBS, ACT, BATCH]) raises -> Bool:
     # on GPU before calling).
     var ok = True
     for b in range(BATCH):
-        var mq = blk.graph.node_output(7).data[b]
-        var lp = blk.graph.node_output(3).data[b]
+        var mq = blk.graph.node_output["min_q"]().data[b]
+        var lp = blk.graph.node_output["logp"]().data[b]
         var soft = mq - ALPHA * lp
         var y_ref = st.mb_r.data[b] + GAMMA * (Scalar[DT](1.0) - st.mb_d.data[b]) * soft
         if isnan(st.mb_y.data[b]) or isinf(st.mb_y.data[b]):
@@ -93,8 +93,8 @@ def test_gpu() raises:
     blk.step["gpu"](st, actor, t1, t2)
     # download outputs the host check reads.
     st.mb_y.download(c)
-    blk.graph.node_output(7).download(c)
-    blk.graph.node_output(3).download(c)
+    blk.graph.node_output["min_q"]().download(c)
+    blk.graph.node_output["logp"]().download(c)
     assert_true(_check(blk, st), "gpu mb_y == r + γ(1-d)(min_q - α·logp)")
     print("  ok")
 

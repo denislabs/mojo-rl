@@ -16,6 +16,7 @@ from mojo_rl.nn.storage.primitives.linear import Linear
 from mojo_rl.nn.storage.primitives.activations import ReLU
 from mojo_rl.nn.storage.primitives.concat import Concat2
 from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node
 from mojo_rl.nn.storage.loss.sac import polyak_tensor, sac_target_y
 
 
@@ -83,22 +84,31 @@ def _check_polyak_module() raises -> Bool:
     comptime SA = S + A
     comptime TOL = Scalar[DT](1e-6)
     var tau = Scalar[DT](0.5)
-    var online = ComputeGraph[2, Concat2[S, A], Linear[SA, H], ReLU[H], Linear[H, 1]].make["cpu", Deterministic]()
-    var targ = ComputeGraph[2, Concat2[S, A], Linear[SA, H], ReLU[H], Linear[H, 1]].make["cpu", Deterministic]()
-    # perturb online node1 (Linear[SA,H]) weights
+    comptime CriticGraph = ComputeGraph[
+        InputSlot["s", S],
+        InputSlot["a", A],
+        Node["concat", Concat2[S, A], "s", "a"],
+        Node["l1", Linear[SA, H], "concat"],   # children[3]
+        Node["relu", ReLU[H], "l1"],
+        Node["l2", Linear[H, 1], "relu"],      # children[5]
+    ]
+    var online = CriticGraph.make["cpu", Deterministic]()
+    var targ = CriticGraph.make["cpu", Deterministic]()
+    # perturb online l1 (Linear[SA,H]) weights — children[3].op (literal index
+    # keeps the concrete Node type so `.op` resolves).
     for i in range(SA * H):
-        online.children[1].weight.val.data[i] += Scalar[DT](0.4)
+        online.children[3].op.weight.val.data[i] += Scalar[DT](0.4)
     # snapshot a couple of target/online weights
-    var w_t_old = targ.children[1].weight.val.data[5]
-    var w_o = online.children[1].weight.val.data[5]
-    var b_t_old = targ.children[3].bias.val.data[0]
-    var b_o = online.children[3].bias.val.data[0]
+    var w_t_old = targ.children[3].op.weight.val.data[5]
+    var w_o = online.children[3].op.weight.val.data[5]
+    var b_t_old = targ.children[5].op.bias.val.data[0]
+    var b_o = online.children[5].op.bias.val.data[0]
     targ.polyak_from["cpu"](online, tau, None)
     var ok = True
     var w_ref = tau * w_o + (Scalar[DT](1.0) - tau) * w_t_old
-    if abs(targ.children[1].weight.val.data[5] - w_ref) > TOL: ok = False
+    if abs(targ.children[3].op.weight.val.data[5] - w_ref) > TOL: ok = False
     var b_ref = tau * b_o + (Scalar[DT](1.0) - tau) * b_t_old
-    if abs(targ.children[3].bias.val.data[0] - b_ref) > TOL: ok = False
+    if abs(targ.children[5].op.bias.val.data[0] - b_ref) > TOL: ok = False
     return ok
 
 

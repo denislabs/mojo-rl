@@ -114,7 +114,9 @@ from .combinators.skip_concat import SkipConcat
 from .combinators.branch_concat import BranchConcat
 from .combinators.stop_grad_params import StopGradParams
 from .combinators.compute_graph import ComputeGraph
-from .combinators.external_ref import ExternalRef, IsExternal
+from .combinators.graph_decl import (
+    GraphDecl, InputSlot, Node, ExternalNode, IsExternal,
+)
 from .optimizer.optimizer import Optimizer
 from .optimizer.param_arena import ParamArena, polyak_arenas
 from .optimizer.sgd import SGD

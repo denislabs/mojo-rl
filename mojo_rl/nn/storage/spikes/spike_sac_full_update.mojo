@@ -38,6 +38,7 @@ from mojo_rl.nn.storage.primitives.rsample import RSample
 from mojo_rl.nn.storage.primitives.binary_elementwise import BinaryElemMin
 from mojo_rl.nn.storage.combinators.sequential import Sequential
 from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node
 from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.nn.storage.optimizer.scalar_adam import ScalarAdam
 from mojo_rl.nn.storage.loss.mse_loss import MSELoss
@@ -68,38 +69,33 @@ def main() raises:
 
     # ── actor: obs → trunk → {mu, ls} → concat → rsample ───────────────
     var actor = ComputeGraph[
-        1,
-        Sequential[Linear[S, H], ReLU[H]],
-        Linear[H, A],
-        Linear[H, A],
-        Concat2[A, A],
-        RSample[A],
+        InputSlot["obs", S],
+        Node["trunk", Sequential[Linear[S, H], ReLU[H]], "obs"],
+        Node["mu", Linear[H, A], "trunk"],
+        Node["ls", Linear[H, A], "trunk"],
+        Node["concat", Concat2[A, A], "mu", "ls"],
+        Node["rsample", RSample[A], "concat"],
     ].make["cpu", Deterministic]()
-    var a_edges = List[List[Int]]()
-    a_edges.append([0])
-    a_edges.append([1])
-    a_edges.append([1])
-    a_edges.append([2, 3])
-    a_edges.append([4])
 
     # ── twin online + target critics (same init → identical at start) ──
     comptime CriticG = ComputeGraph[
-        2, Concat2[S, A], Linear[SA, H], ReLU[H], Linear[H, 1]
+        InputSlot["s", S],
+        InputSlot["a", A],
+        Node["concat", Concat2[S, A], "s", "a"],
+        Node["l1", Linear[SA, H], "concat"],   # children[3]
+        Node["relu", ReLU[H], "l1"],
+        Node["q", Linear[H, 1], "relu"],
     ]
     var c1 = CriticG.make["cpu", Deterministic]()
     var c2 = CriticG.make["cpu", Deterministic]()
     var c1t = CriticG.make["cpu", Deterministic]()
     var c2t = CriticG.make["cpu", Deterministic]()
     # perturb c2 (and its target) so min(q1,q2) is non-trivial
+    # (children[3].op = l1 Linear[SA,H])
     var cap = Scalar[DT](0.05)
     for i in range(SA * H):
-        c2.children[1].weight.val.data[i] += cap
-        c2t.children[1].weight.val.data[i] += cap
-    var c_edges = List[List[Int]]()
-    c_edges.append([0, 1])
-    c_edges.append([2])
-    c_edges.append([3])
-    c_edges.append([4])
+        c2.children[3].op.weight.val.data[i] += cap
+        c2t.children[3].op.weight.val.data[i] += cap
 
     var minop = BinaryElemMin[1].make["cpu", Deterministic]()
     var mse = MSELoss[1].make_cpu()
@@ -110,14 +106,14 @@ def main() raises:
     var alpha_opt = ScalarAdam.new(flog(Scalar[DT](0.2)), Scalar[DT](3e-4))
 
     # ── fixed synthetic batch (s, a_replay, r, s', done) ───────────────
-    var s_pack = TensorPack[1](); s_pack[0].ensure(B * S)
-    var sp_pack = TensorPack[1](); sp_pack[0].ensure(B * S)
+    var s_obs = Tensor.alloc(B * S)            # s
+    var sp_obs = Tensor.alloc(B * S)           # s'
     var a_replay = Tensor.alloc(B * A)
     var r = Tensor.alloc(B)
     var done = Tensor.alloc(B)
     for i in range(B * S):
-        s_pack[0].data[i] = Scalar[DT]((i % 7) - 3) * 0.2
-        sp_pack[0].data[i] = Scalar[DT]((i % 5) - 2) * 0.25
+        s_obs.data[i] = Scalar[DT]((i % 7) - 3) * 0.2
+        sp_obs.data[i] = Scalar[DT]((i % 5) - 2) * 0.25
     for i in range(B * A):
         a_replay.data[i] = Scalar[DT]((i % 3) - 1) * 0.5
     for b in range(B):
@@ -126,39 +122,33 @@ def main() raises:
 
     # ── working tensors ────────────────────────────────────────────────
     var nact = Tensor.alloc(B * AOUT)          # next-state actor out
-    var next_action = TensorPack[1](); next_action[0].ensure(B * A)
+    var next_action = Tensor.alloc(B * A)
     var next_logp = Tensor.alloc(B)
     var min_qt = Tensor.alloc(B)
     var y = Tensor.alloc(B)
     var qt = TensorPack[2](); qt[0].ensure(B); qt[1].ensure(B)
 
-    var sp_critic_in = TensorPack[2]()         # (s', a') for target critics
-    sp_critic_in[0].ensure(B * S); sp_critic_in[1].ensure(B * A)
-    var s_critic_in = TensorPack[2]()          # (s, a_replay) for online critics
-    s_critic_in[0].ensure(B * S); s_critic_in[1].ensure(B * A)
-    for i in range(B * S):
-        s_critic_in[0].data[i] = s_pack[0].data[i]
-    for i in range(B * A):
-        s_critic_in[1].data[i] = a_replay.data[i]
-
+    var sp_crit_a = Tensor.alloc(B * A)        # a' for target critics
     var q1 = Tensor.alloc(B); var q2 = Tensor.alloc(B)
     var grad_q = Tensor.alloc(B)
-    var cgin = TensorPack[2]()
 
     # actor-step working tensors
     var act_out = Tensor.alloc(B * AOUT)
-    var pact = TensorPack[1](); pact[0].ensure(B * A)
     var aq = TensorPack[2](); aq[0].ensure(B); aq[1].ensure(B)
     var minq = Tensor.alloc(B)
     var grad_min = Tensor.alloc(B)
     var gq = TensorPack[2]()
     var ga0 = Tensor.alloc(B * A)
     var grad_actout = Tensor.alloc(B * AOUT)
-    var actor_gin = TensorPack[1]()
-    var actor_cin = TensorPack[2]()            # (s, a~π) for online critics
-    actor_cin[0].ensure(B * S); actor_cin[1].ensure(B * A)
-    for i in range(B * S):
-        actor_cin[0].data[i] = s_pack[0].data[i]
+    var actor_act = Tensor.alloc(B * A)        # a~π for online critics
+
+    # online critics fixed on (s, a_replay) across the loop; target-critic
+    # inputs (s', a') are re-seeded each step.
+    c1.set_input["s", B](s_obs); c1.set_input["a", B](a_replay)
+    c2.set_input["s", B](s_obs); c2.set_input["a", B](a_replay)
+    c1t.set_input["s", B](sp_obs); c2t.set_input["s", B](sp_obs)
+    # actor input slot for the target-y forward is s'; reset to s for the
+    # actor step. Seeded inside the loop.
 
     comptime STEPS = 500
     var ok = True
@@ -170,42 +160,44 @@ def main() raises:
         var alpha = fexp(alpha_opt.value)
 
         # ── 1. target_y (detached: no grad through actor/target critics) ─
-        actor.forward[B](a_edges, sp_pack, nact)
+        actor.set_input["obs", B](sp_obs)
+        actor.forward[B](nact)
         for b in range(B):
             for j in range(A):
-                next_action[0].data[b * A + j] = nact.data[b * AOUT + j]
+                next_action.data[b * A + j] = nact.data[b * AOUT + j]
             next_logp.data[b] = nact.data[b * AOUT + A]
-        for i in range(B * S):
-            sp_critic_in[0].data[i] = sp_pack[0].data[i]
         for i in range(B * A):
-            sp_critic_in[1].data[i] = next_action[0].data[i]
-        c1t.forward[B](c_edges, sp_critic_in, qt[0])
-        c2t.forward[B](c_edges, sp_critic_in, qt[1])
+            sp_crit_a.data[i] = next_action.data[i]
+        c1t.set_input["a", B](sp_crit_a)
+        c2t.set_input["a", B](sp_crit_a)
+        c1t.forward[B](qt[0])
+        c2t.forward[B](qt[1])
         minop.forward["cpu", B](TensorRefs[2](qt[0], qt[1]), min_qt)
         sac_target_y["cpu", B](r, done, min_qt, next_logp, GAMMA, alpha, y, None)
 
         # ── 2. critic step (replay action) ──────────────────────────────
-        c1.forward[B](c_edges, s_critic_in, q1)
-        c2.forward[B](c_edges, s_critic_in, q2)
+        c1.set_input["a", B](a_replay); c2.set_input["a", B](a_replay)
+        c1.forward[B](q1)
+        c2.forward[B](q2)
         var cl1 = mse.forward["cpu", B](q1, y, None)
         var cl2 = mse.forward["cpu", B](q2, y, None)
         last_critic = cl1 + cl2
         mse.vjp["cpu", B](q1, y, grad_q, None)
-        c1.zero_grad["cpu"](None); c1.vjp[B](c_edges, grad_q, cgin)
+        c1.zero_grad["cpu"](None); c1.vjp[B](grad_q)
         c1_opt.begin_step(); c1.for_each_param["cpu"](c1_opt, None)
         mse.vjp["cpu", B](q2, y, grad_q, None)
-        c2.zero_grad["cpu"](None); c2.vjp[B](c_edges, grad_q, cgin)
+        c2.zero_grad["cpu"](None); c2.vjp[B](grad_q)
         c2_opt.begin_step(); c2.for_each_param["cpu"](c2_opt, None)
 
         # ── 3. actor step (fresh policy action, online critics frozen) ──
-        actor.forward[B](a_edges, s_pack, act_out)
-        for i in range(B * S):
-            actor_cin[0].data[i] = s_pack[0].data[i]
+        actor.set_input["obs", B](s_obs)
+        actor.forward[B](act_out)
         for b in range(B):
             for j in range(A):
-                actor_cin[1].data[b * A + j] = act_out.data[b * AOUT + j]
-        c1.forward[B](c_edges, actor_cin, aq[0])
-        c2.forward[B](c_edges, actor_cin, aq[1])
+                actor_act.data[b * A + j] = act_out.data[b * AOUT + j]
+        c1.set_input["a", B](actor_act); c2.set_input["a", B](actor_act)
+        c1.forward[B](aq[0])
+        c2.forward[B](aq[1])
         minop.forward["cpu", B](TensorRefs[2](aq[0], aq[1]), minq)
         var aloss: Scalar[DT] = 0
         var logp_sum: Scalar[DT] = 0
@@ -223,18 +215,18 @@ def main() raises:
             TensorRefs[2](aq[0], aq[1]), grad_min, TensorRefs[2](gq[0], gq[1])
         )
         c1.zero_grad["cpu"](None); c2.zero_grad["cpu"](None)
-        c1.vjp[B](c_edges, gq[0], cgin)
+        c1.vjp[B](gq[0])
         for i in range(B * A):
-            ga0.data[i] = cgin[1].data[i]
-        c2.vjp[B](c_edges, gq[1], cgin)
+            ga0.data[i] = c1.grad_input["a"]().data[i]
+        c2.vjp[B](gq[1])
         for b in range(B):
             for j in range(A):
                 grad_actout.data[b * AOUT + j] = (
-                    ga0.data[b * A + j] + cgin[1].data[b * A + j]
+                    ga0.data[b * A + j] + c2.grad_input["a"]().data[b * A + j]
                 )
             grad_actout.data[b * AOUT + A] = alpha / Scalar[DT](B)
         actor.zero_grad["cpu"](None)
-        actor.vjp[B](a_edges, grad_actout, actor_gin)
+        actor.vjp[B](grad_actout)
         actor_opt.begin_step(); actor.for_each_param["cpu"](actor_opt, None)
 
         # ── 4. alpha step ───────────────────────────────────────────────
@@ -258,8 +250,8 @@ def main() raises:
         # online↔target gap (first online/target critic, layer-1 weights)
         var gap: Scalar[DT] = 0
         for i in range(SA * H):
-            var dlt = c1.children[1].weight.val.data[i] - (
-                c1t.children[1].weight.val.data[i]
+            var dlt = c1.children[3].op.weight.val.data[i] - (
+                c1t.children[3].op.weight.val.data[i]
             )
             var ad = dlt if dlt >= Scalar[DT](0.0) else -dlt
             if ad > gap:

@@ -13,11 +13,11 @@ Run: pixi run mojo run -I . mojo_rl/nn/storage/spikes/spike_sac_critic.mojo
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_pack import TensorPack
 from mojo_rl.nn.storage.primitives.linear import Linear
 from mojo_rl.nn.storage.primitives.activations import ReLU
 from mojo_rl.nn.storage.primitives.concat import Concat2
 from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node
 from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.nn.storage.loss.mse_loss import MSELoss
 from mojo_rl.nn.storage.core.initializer import Deterministic
@@ -31,36 +31,36 @@ def main() raises:
     comptime SA = S + A
 
     var critic = ComputeGraph[
-        2, Concat2[S, A], Linear[SA, H], ReLU[H], Linear[H, 1]
+        InputSlot["s", S],
+        InputSlot["a", A],
+        Node["concat", Concat2[S, A], "s", "a"],   # Concat2(state, action)
+        Node["l1", Linear[SA, H], "concat"],       # Linear(concat)
+        Node["relu", ReLU[H], "l1"],               # ReLU
+        Node["q", Linear[H, 1], "relu"],           # Linear → q
     ].make["cpu", Deterministic]()
-    var edges = List[List[Int]]()
-    edges.append([0, 1])   # Concat2(state, action)
-    edges.append([2])      # Linear(concat)
-    edges.append([3])      # ReLU
-    edges.append([4])      # Linear → q
 
-    var inp = TensorPack[2]()
-    inp[0].ensure(B * S)
-    inp[1].ensure(B * A)
+    var s = Tensor.alloc(B * S)
+    var a = Tensor.alloc(B * A)
     var target_y = Tensor.alloc(B * 1)
     for i in range(B * S):
-        inp[0].data[i] = Scalar[DT]((i % 7) - 3) * 0.25
+        s.data[i] = Scalar[DT]((i % 7) - 3) * 0.25
     for i in range(B * A):
-        inp[1].data[i] = Scalar[DT]((i % 5) - 2) * 0.3
+        a.data[i] = Scalar[DT]((i % 5) - 2) * 0.3
     for b in range(B):
         target_y.data[b] = Scalar[DT]((b % 4) - 2) * 0.5   # fixed regression target
+    critic.set_input["s", B](s)
+    critic.set_input["a", B](a)
 
     var mse = MSELoss[1].make_cpu()
     var opt = Adam(lr=0.01)
     var q = Tensor.alloc(B * 1)
     var grad_q = Tensor.alloc(B * 1)
-    var gin = TensorPack[2]()
 
     var first: Scalar[DT] = 0
     var last: Scalar[DT] = 0
     for step in range(120):
         critic.zero_grad["cpu"](None)
-        critic.forward[B](edges, inp, q)
+        critic.forward[B](q)
         var loss = mse.forward["cpu", B](q, target_y, None)
         if step == 0:
             first = loss
@@ -68,7 +68,7 @@ def main() raises:
         if step % 24 == 0:
             print("step", step, " critic_loss", loss)
         mse.vjp["cpu", B](q, target_y, grad_q, None)
-        critic.vjp[B](edges, grad_q, gin)
+        critic.vjp[B](grad_q)
         opt.begin_step()
         critic.for_each_param["cpu"](opt, None)
 

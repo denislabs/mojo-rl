@@ -40,12 +40,12 @@ from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
-from ..core.tensor_pack import TensorPack
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
 from ..core.amp import AMPPolicy, NoAMP
 from ..combinators.compute_graph import ComputeGraph
+from ..combinators.graph_decl import InputSlot, Node
 from ..combinators.tokenwise import Tokenwise
 from ..combinators.residual import Residual
 from ..combinators.sequential import Sequential
@@ -62,35 +62,26 @@ struct DecoderBlock[N: Int, HID: Int, FF: Int](Module):
     comptime OUT_DIM = Self.SEQ_DIM
 
     comptime Graph = ComputeGraph[
-        2,
-        Tokenwise[Self.N, Linear[Self.HID, Self.HID]],
-        Add[Self.SEQ_DIM],
-        Residual[
-            Sequential[
-                Tokenwise[Self.N, LayerNorm[Self.HID]],
-                TransformerFFN[Self.N, Self.HID, Self.FF],
-            ]
+        InputSlot["x", Self.SEQ_DIM],        # residual stream
+        InputSlot["c", Self.SEQ_DIM],        # injection source
+        Node["inj", Tokenwise[Self.N, Linear[Self.HID, Self.HID]], "c"],
+        Node["xa", Add[Self.SEQ_DIM], "x", "inj"],
+        Node[
+            "out",
+            Residual[
+                Sequential[
+                    Tokenwise[Self.N, LayerNorm[Self.HID]],
+                    TransformerFFN[Self.N, Self.HID, Self.FF],
+                ]
+            ],
+            "xa",
         ],
     ]
 
     var graph: Self.Graph
-    # Staging for the borrowed inputs / grad_inputs the graph wants as
-    # owned packs (it copies the seeds into its own pool).
-    var in_stage: TensorPack[2]
-    var gin_stage: TensorPack[2]
 
     def __init__(out self):
         self.graph = Self.Graph()
-        self.in_stage = TensorPack[2]()
-        self.gin_stage = TensorPack[2]()
-
-    @staticmethod
-    def _edges() -> List[List[Int]]:
-        var e = List[List[Int]]()
-        e.append([1])  # node0 inj reads slot 1 (c)
-        e.append([0, 2])  # node1 xa reads slot 0 (x) + slot 2 (inj)
-        e.append([3])  # node2 out reads slot 3 (xa)
-        return e^
 
     @staticmethod
     def make[
@@ -113,27 +104,10 @@ struct DecoderBlock[N: Int, HID: Int, FF: Int](Module):
     ) raises:
         ref x = inputs[0]
         ref c = inputs[1]
-        comptime DN = B * Self.SEQ_DIM
-        # Seed the staging pack with the two borrowed inputs.
-        comptime if target == "cpu":
-            self.in_stage[0].ensure(DN)
-            self.in_stage[1].ensure(DN)
-            for q in range(DN):
-                self.in_stage[0].data[q] = x.data[q]
-                self.in_stage[1].data[q] = c.data[q]
-            self.in_stage[0].n = DN
-            self.in_stage[1].n = DN
-        else:
-            var cc = ctx.value()
-            self.in_stage[0].ensure_gpu(cc, DN)
-            self.in_stage[1].ensure_gpu(cc, DN)
-            cc.enqueue_copy(self.in_stage[0].dev.value(), x.dev.value())
-            cc.enqueue_copy(self.in_stage[1].dev.value(), c.dev.value())
-            self.in_stage[0].n = DN
-            self.in_stage[1].n = DN
-        self.graph.forward[B, target, POLICY=POLICY](
-            Self._edges(), self.in_stage, out, ctx
-        )
+        # Seed the named input slots (the graph copies into its own pool).
+        self.graph.set_input["x", B](x, ctx)
+        self.graph.set_input["c", B](c, ctx)
+        self.graph.forward[B, target, POLICY=POLICY](out, ctx)
 
     def vjp[
         target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
@@ -148,22 +122,21 @@ struct DecoderBlock[N: Int, HID: Int, FF: Int](Module):
         ref gx = grad_inputs[0]
         ref gc = grad_inputs[1]
         comptime DN = B * Self.SEQ_DIM
-        self.graph.vjp[B, target, POLICY=POLICY](
-            Self._edges(), grad_output, self.gin_stage, ctx
-        )
-        # Copy the graph's external-input grads back into grad_inputs.
+        self.graph.vjp[B, target, POLICY=POLICY](grad_output, ctx)
+        # Copy the graph's named-input grads back into grad_inputs.
         comptime if target == "cpu":
             gx.ensure(DN)
             gc.ensure(DN)
             for q in range(DN):
-                gx.data[q] = self.gin_stage[0].data[q]
-                gc.data[q] = self.gin_stage[1].data[q]
+                gx.data[q] = self.graph.grad_input["x"]().data[q]
+            for q in range(DN):
+                gc.data[q] = self.graph.grad_input["c"]().data[q]
         else:
             var cc = ctx.value()
             gx.ensure_gpu(cc, DN)
             gc.ensure_gpu(cc, DN)
-            cc.enqueue_copy(gx.dev.value(), self.gin_stage[0].dev.value())
-            cc.enqueue_copy(gc.dev.value(), self.gin_stage[1].dev.value())
+            cc.enqueue_copy(gx.dev.value(), self.graph.grad_input["x"]().dev.value())
+            cc.enqueue_copy(gc.dev.value(), self.graph.grad_input["c"]().dev.value())
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
