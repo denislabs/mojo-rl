@@ -38,7 +38,9 @@ from mojo_rl.nn.storage.core.initializer import Xavier, Zero
 from mojo_rl.nn.storage.primitives.rsample import RSample
 from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.nn.storage.optimizer.scalar_adam import ScalarAdam
-from mojo_rl.nn.storage.core.checkpoint import save_params, load_params
+from mojo_rl.nn.storage.core.checkpoint import (
+    CheckpointWriter, CheckpointReader, _split_lines,
+)
 
 from mojo_rl.nn.core.log_bundle import log_bundle
 from mojo_rl.nn.core.metric import LogScalar
@@ -114,6 +116,13 @@ struct SACTrainer[
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
     var _alpha_accum: Scalar[DT]
+    # Diagnostic accumulators (CPU): batch means drained at flush_metrics.
+    var _mean_q_accum: Scalar[DT]            # online Q1(s, a) over the batch
+    var _mean_target_accum: Scalar[DT]       # Bellman target y
+    var _mean_reward_accum: Scalar[DT]       # batch reward
+    var _mean_next_q_accum: Scalar[DT]       # min(Q1_t,Q2_t)(s',a') bootstrap
+    var _mean_done_accum: Scalar[DT]         # batch done
+    var _mean_abs_action_accum: Scalar[DT]   # mean |action|
     var _update_count: Int
     var _total_train_steps: Int
 
@@ -159,6 +168,12 @@ struct SACTrainer[
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum = Scalar[DT](0.0)
+        self._mean_q_accum = Scalar[DT](0.0)
+        self._mean_target_accum = Scalar[DT](0.0)
+        self._mean_reward_accum = Scalar[DT](0.0)
+        self._mean_next_q_accum = Scalar[DT](0.0)
+        self._mean_done_accum = Scalar[DT](0.0)
+        self._mean_abs_action_accum = Scalar[DT](0.0)
         self._update_count = 0
         self._total_train_steps = 0
 
@@ -319,6 +334,33 @@ struct SACTrainer[
         self._actor_L_accum += out.loss
         self._critic_L_accum += self.state.critic_loss
         self._alpha_accum += fexp(self.alpha_opt.value)
+        # Diagnostic batch means (CPU host data; GPU path leaves these 0.0,
+        # same convention as the legacy GPU-SAC diagnostics).
+        comptime if Self.train_target == "cpu":
+            comptime B = Self.BATCH
+            comptime A = Self.ACT_DIM
+            var inv_b = Scalar[DT](1.0) / Scalar[DT](B)
+            var sq: Scalar[DT] = 0.0
+            var sy: Scalar[DT] = 0.0
+            var sr: Scalar[DT] = 0.0
+            var snq: Scalar[DT] = 0.0
+            var sd: Scalar[DT] = 0.0
+            for b in range(B):
+                sq += self.twin_critic_blk.inner.c1._mb_q.data[b]
+                sy += self.state.mb_y.data[b]
+                sr += self.state.mb_r.data[b]
+                snq += self.target_y_blk.graph.node_output["min_q"]().data[b]
+                sd += self.state.mb_d.data[b]
+            var saa: Scalar[DT] = 0.0
+            for k in range(B * A):
+                var av = self.state.mb_a.data[k]
+                saa += av if av >= 0 else -av
+            self._mean_q_accum += sq * inv_b
+            self._mean_target_accum += sy * inv_b
+            self._mean_reward_accum += sr * inv_b
+            self._mean_next_q_accum += snq * inv_b
+            self._mean_done_accum += sd * inv_b
+            self._mean_abs_action_accum += saa / Scalar[DT](B * A)
         self._update_count += 1
         self._total_train_steps += 1
         return True
@@ -542,27 +584,33 @@ struct SACTrainer[
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> SACMetrics:
-        """Drain accumulators into a SACMetrics bundle. CPU host scalars
-        only; the rich per-batch diags are omitted (the legacy GPU device
-        accumulators are not part of the storage CPU gate)."""
+        """Drain accumulators into a SACMetrics bundle. On CPU the full
+        per-batch diagnostics (mean_q / mean_target / mean_next_q / mean_reward
+        / mean_done / mean_abs_action) are real; the GPU path leaves them 0.0."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
         var bundle = SACMetrics(
             actor_loss=LogScalar[DT](self._actor_L_accum * inv),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
             alpha=LogScalar[DT](self._alpha_accum * inv),
-            mean_q=LogScalar[DT](Scalar[DT](0.0)),
-            mean_target=LogScalar[DT](Scalar[DT](0.0)),
-            mean_reward=LogScalar[DT](Scalar[DT](0.0)),
-            mean_next_q=LogScalar[DT](Scalar[DT](0.0)),
-            mean_done=LogScalar[DT](Scalar[DT](0.0)),
-            mean_abs_action=LogScalar[DT](Scalar[DT](0.0)),
+            mean_q=LogScalar[DT](self._mean_q_accum * inv),
+            mean_target=LogScalar[DT](self._mean_target_accum * inv),
+            mean_reward=LogScalar[DT](self._mean_reward_accum * inv),
+            mean_next_q=LogScalar[DT](self._mean_next_q_accum * inv),
+            mean_done=LogScalar[DT](self._mean_done_accum * inv),
+            mean_abs_action=LogScalar[DT](self._mean_abs_action_accum * inv),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum = Scalar[DT](0.0)
+        self._mean_q_accum = Scalar[DT](0.0)
+        self._mean_target_accum = Scalar[DT](0.0)
+        self._mean_reward_accum = Scalar[DT](0.0)
+        self._mean_next_q_accum = Scalar[DT](0.0)
+        self._mean_done_accum = Scalar[DT](0.0)
+        self._mean_abs_action_accum = Scalar[DT](0.0)
         self._update_count = 0
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
@@ -594,31 +642,45 @@ struct SACTrainer[
         self._update_count = 0
         return out
 
-    # ─── Checkpoint (storage save_params for the 3 modules) ────────────
+    # ─── Checkpoint (ONE file: actor + twin critics in a v2 envelope) ──────
     def save_state(mut self, path: String) raises:
-        """Write the actor + twin critic online nets via storage
-        `save_params`. Three files: `path`.actor / .critic1 / .critic2.
-        Optimizer moments + α are NOT persisted (resume re-warms)."""
-        save_params[Self.train_target, Self.ACTOR](
-            self.actor, path + ".actor", self.ctx, save_moments=False
-        )
-        save_params[Self.train_target, Self.CRITIC](
-            self.pair1.online, path + ".critic1", self.ctx, save_moments=False
-        )
-        save_params[Self.train_target, Self.CRITIC](
-            self.pair2.online, path + ".critic2", self.ctx, save_moments=False
-        )
+        """Write actor + the two ONLINE critics into a SINGLE `nn-ckpt v2`
+        file, sections name-prefixed `actor.` / `critic1.` / `critic2.` (one
+        shared `CheckpointWriter` → one header → one `open`). Optimizer moments
+        + α are NOT persisted (resume re-warms)."""
+        var w = CheckpointWriter(save_moments=False)
+        w.mode = 0
+        self.actor.for_each_param[Self.train_target](w, self.ctx, "actor")
+        self.pair1.online.for_each_param[Self.train_target](w, self.ctx, "critic1")
+        self.pair2.online.for_each_param[Self.train_target](w, self.ctx, "critic2")
+        w.mode = 1
+        self.actor.for_each_state[Self.train_target](w, self.ctx, "actor")
+        self.pair1.online.for_each_state[Self.train_target](w, self.ctx, "critic1")
+        self.pair2.online.for_each_state[Self.train_target](w, self.ctx, "critic2")
+        with open(path, "w") as f:
+            f.write(w.content)
 
     def load_state(mut self, path: String) raises:
-        load_params[Self.train_target, Self.ACTOR](
-            self.actor, path + ".actor", self.ctx
-        )
-        load_params[Self.train_target, Self.CRITIC](
-            self.pair1.online, path + ".critic1", self.ctx
-        )
-        load_params[Self.train_target, Self.CRITIC](
-            self.pair2.online, path + ".critic2", self.ctx
-        )
+        """Restore actor + twin online critics from the single envelope (same
+        walk order as `save_state`), then hard-copy online → target."""
+        var content: String
+        with open(path, "r") as f:
+            content = String(f.read())
+        var lines = _split_lines(content)
+        var body = List[String]()
+        for li in range(len(lines)):
+            if lines[li].startswith("storage-ckpt"):
+                continue
+            body.append(lines[li])
+        var r = CheckpointReader(body^)
+        r.mode = 0
+        self.actor.for_each_param[Self.train_target](r, self.ctx, "actor")
+        self.pair1.online.for_each_param[Self.train_target](r, self.ctx, "critic1")
+        self.pair2.online.for_each_param[Self.train_target](r, self.ctx, "critic2")
+        r.mode = 1
+        self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")
+        self.pair1.online.for_each_state[Self.train_target](r, self.ctx, "critic1")
+        self.pair2.online.for_each_state[Self.train_target](r, self.ctx, "critic2")
         self.pair1.target_net.polyak_from[Self.train_target](
             self.pair1.online, Scalar[DT](1.0), self.ctx
         )
