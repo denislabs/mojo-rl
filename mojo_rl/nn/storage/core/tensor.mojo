@@ -32,6 +32,36 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
         self.hbuf = None
         self.hcap = 0
 
+    # ----- unified CPU/GPU allocator -------------------------------------
+    @staticmethod
+    def make[
+        target: StaticString
+    ](n: Int, ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Unified allocator (zero-filled, length `n`) — dispatches to
+        `alloc` / `alloc_gpu`. `ctx` is ignored on CPU and required on GPU.
+        Lets `[target]`-generic code allocate without a `comptime if` branch
+        at every site (the CPU/GPU-path unification the leaves want)."""
+        comptime if target == "cpu":
+            return Self.alloc(n)
+        elif target == "gpu":
+            if not ctx:
+                raise Error("Tensor.make[target='gpu']: ctx required")
+            return Self.alloc_gpu(ctx.value(), n)
+        else:
+            comptime assert False, "target must be 'cpu' or 'gpu'"
+
+    def ensure[
+        target: StaticString
+    ](mut self, n: Int, ctx: Optional[DeviceContext] = None) raises:
+        """Unified lazy-(re)allocate to >= `n` — dispatches to the target's
+        `ensure` / `ensure_gpu`. The `[target]`-generic companion to `make`."""
+        comptime if target == "cpu":
+            self.ensure(n)
+        elif target == "gpu":
+            self.ensure_gpu(ctx.value(), n)
+        else:
+            comptime assert False, "target must be 'cpu' or 'gpu'"
+
     # ----- CPU -----------------------------------------------------------
     @staticmethod
     def alloc(n: Int) raises -> Self:

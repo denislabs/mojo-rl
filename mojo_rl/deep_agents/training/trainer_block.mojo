@@ -84,26 +84,17 @@ struct TrainerState[
             "TrainerState: target must be 'cpu' or 'gpu'"
         )
         var s = Self()
-        comptime if target == "cpu":
-            s.mb_s  = Tensor.alloc(Self.BATCH * Self.OBS)
-            s.mb_a  = Tensor.alloc(Self.BATCH * Self.ACT)
-            s.mb_r  = Tensor.alloc(Self.BATCH)
-            s.mb_sp = Tensor.alloc(Self.BATCH * Self.OBS)
-            s.mb_d  = Tensor.alloc(Self.BATCH)
-            s.mb_y  = Tensor.alloc(Self.BATCH)
-            s.mb_w         = Tensor.alloc(Self.BATCH)
-            s.td_residuals = Tensor.alloc(Self.BATCH)
-        else:
-            if not ctx:
-                raise Error("TrainerState.make[target='gpu']: ctx required")
-            var c = ctx.value()
-            s.mb_s  = Tensor.alloc_gpu(c, Self.BATCH * Self.OBS)
-            s.mb_a  = Tensor.alloc_gpu(c, Self.BATCH * Self.ACT)
-            s.mb_r  = Tensor.alloc_gpu(c, Self.BATCH)
-            s.mb_sp = Tensor.alloc_gpu(c, Self.BATCH * Self.OBS)
-            s.mb_d  = Tensor.alloc_gpu(c, Self.BATCH)
-            s.mb_y  = Tensor.alloc_gpu(c, Self.BATCH)
-            s.mb_w         = Tensor.alloc_gpu(c, Self.BATCH)
-            s.td_residuals = Tensor.alloc_gpu(c, Self.BATCH)
+        # Unified allocator: `make[target]` dispatches alloc/alloc_gpu (and
+        # raises if gpu w/o ctx), so the CPU and GPU minibatch staging buffers
+        # collapse into ONE branch-free block — the CPU/GPU-path unification.
+        s.mb_s  = Tensor.make[target](Self.BATCH * Self.OBS, ctx)
+        s.mb_a  = Tensor.make[target](Self.BATCH * Self.ACT, ctx)
+        s.mb_r  = Tensor.make[target](Self.BATCH, ctx)
+        s.mb_sp = Tensor.make[target](Self.BATCH * Self.OBS, ctx)
+        s.mb_d  = Tensor.make[target](Self.BATCH, ctx)
+        s.mb_y  = Tensor.make[target](Self.BATCH, ctx)
+        s.mb_w         = Tensor.make[target](Self.BATCH, ctx)
+        s.td_residuals = Tensor.make[target](Self.BATCH, ctx)
+        comptime if target == "gpu":
             s.ctx = ctx
         return s^
