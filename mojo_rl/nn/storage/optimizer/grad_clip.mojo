@@ -265,23 +265,23 @@ def _arena_scale_kernel(
         grd[i] = grd[i] * s if s != Scalar[DT](0.0) else Scalar[DT](0.0)
 
 
-def clip_arena_grads(
+def _clip_arena_grads_kernels(
     mut arena: ParamArena,
+    mut partials: Tensor,
+    mut scale_buf: Tensor,
+    mut norm_buf: Tensor,
     max_norm: Scalar[DT],
     ctx: DeviceContext,
-    eps: Scalar[DT] = 1e-6,
-) raises -> Scalar[DT]:
-    """Clip the global L2 norm of an adopted optimizer's contiguous grad arena in
-    place; returns the pre-clip norm. Three on-device kernels, no per-param D2H
-    (capture-safe). The single norm D2H at the end is for the return value only —
-    skip it under CUDA-graph capture. `max_norm <= 0` → no clip."""
+    eps: Scalar[DT],
+) raises:
+    """The three on-device clip kernels (sumsq → finalize → scale), writing the
+    pre-clip norm into `norm_buf` and the scale into `scale_buf`. NO allocation,
+    NO D2H — every buffer is caller-owned and reused, so this whole sequence is
+    CUDA-graph-capturable. `max_norm <= 0` → scale 1 (no clip)."""
     var total = arena.total
     if total == 0:
-        return Scalar[DT](0.0)
+        return
     var nblk = (total + TPB - 1) // TPB
-    var partials = Tensor.alloc_gpu(ctx, nblk)
-    var scale_buf = Tensor.alloc_gpu(ctx, 1)
-    var norm_buf = Tensor.alloc_gpu(ctx, 1)
     ctx.enqueue_function[_arena_sumsq_kernel](
         arena.grd.dev.value(), total, partials.dev.value(),
         grid_dim=nblk, block_dim=TPB,
@@ -294,6 +294,49 @@ def clip_arena_grads(
     ctx.enqueue_function[_arena_scale_kernel](
         arena.grd.dev.value(), total, scale_buf.dev.value(),
         grid_dim=nblk, block_dim=TPB,
+    )
+
+
+def clip_arena_grads_captured(
+    mut arena: ParamArena,
+    mut partials: Tensor,
+    mut scale_buf: Tensor,
+    mut norm_buf: Tensor,
+    max_norm: Scalar[DT],
+    ctx: DeviceContext,
+    eps: Scalar[DT] = 1e-6,
+) raises:
+    """CUDA-graph-safe clip: caller-owned scratch (`partials` sized to the
+    arena's block count, `scale_buf`/`norm_buf` size 1), NO allocation and NO
+    D2H. The pre-clip norm is left in `norm_buf` on-device — read it at flush
+    cadence (never per step) if you need the value. Use under capture instead of
+    `clip_arena_grads` (which allocates + D2Hs each call → aborts in a capture
+    region)."""
+    _clip_arena_grads_kernels(
+        arena, partials, scale_buf, norm_buf, max_norm, ctx, eps
+    )
+
+
+def clip_arena_grads(
+    mut arena: ParamArena,
+    max_norm: Scalar[DT],
+    ctx: DeviceContext,
+    eps: Scalar[DT] = 1e-6,
+) raises -> Scalar[DT]:
+    """Clip the global L2 norm of an adopted optimizer's contiguous grad arena in
+    place; returns the pre-clip norm. Allocates scratch + one norm D2H per call —
+    the convenience (NON-captured) path. Under CUDA-graph capture use
+    `clip_arena_grads_captured` with persistent scratch instead. `max_norm <= 0`
+    → no clip."""
+    var total = arena.total
+    if total == 0:
+        return Scalar[DT](0.0)
+    var nblk = (total + TPB - 1) // TPB
+    var partials = Tensor.alloc_gpu(ctx, nblk)
+    var scale_buf = Tensor.alloc_gpu(ctx, 1)
+    var norm_buf = Tensor.alloc_gpu(ctx, 1)
+    _clip_arena_grads_kernels(
+        arena, partials, scale_buf, norm_buf, max_norm, ctx, eps
     )
     norm_buf.download(ctx)
     return norm_buf.data[0]

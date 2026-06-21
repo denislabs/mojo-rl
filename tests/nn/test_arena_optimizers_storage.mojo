@@ -135,6 +135,43 @@ def main() raises:
     print("  clipped-grad max|arena-perparam| =", clip_max)
     var clip_ok = norm_ok and clip_max < Scalar[DT](1e-3)
 
-    print("  SGD:", "OK" if sgd_ok else "FAIL", " clip:", "OK" if clip_ok else "FAIL")
-    assert_true(sgd_ok and clip_ok, "arena optimizers parity")
+    # ---- 3. clip_grads_device (capture-safe) == clip_grads (non-capture) -
+    # Same arena kernels; clip_grads_device just uses persistent scratch and
+    # skips the norm D2H (read separately via read_clip_norm). Bit-identical.
+    var r = NET.make["gpu", Deterministic](Optional(c))
+    var optR = Adam(lr=1e-2)
+    optR.adopt["gpu"](r, Optional(c))
+    _populate_grads(r, c)
+    var s = NET.make["gpu", Deterministic](Optional(c))
+    var optS = Adam(lr=1e-2)
+    optS.adopt["gpu"](s, Optional(c))
+    _populate_grads(s, c)
+
+    var thr = normP * Scalar[DT](0.5)  # force clipping (same grads as p)
+    var normR = optR.clip_grads["gpu"](r, thr, Optional(c))  # non-capture path
+    optS.clip_grads_device["gpu"](s, thr, Optional(c))       # capture-safe path
+    var normS = optS.read_clip_norm(c)
+    var gr = _Capture(True); r.for_each_param["gpu"](gr, Optional(c))
+    var gs = _Capture(True); s.for_each_param["gpu"](gs, Optional(c))
+    var dev_max = Scalar[DT](0.0)
+    for i in range(len(gr.vals)):
+        var d = abs(gr.vals[i] - gs.vals[i])
+        if d > dev_max:
+            dev_max = d
+    print(
+        "  clip_grads_device vs clip_grads: max|grad diff| =", dev_max,
+        " norm diff =", abs(normR - normS),
+    )
+    var dev_ok = (
+        dev_max < Scalar[DT](1e-6)
+        and abs(normR - normS) < Scalar[DT](1e-4)
+        and normR > Scalar[DT](0.0)
+    )
+
+    print(
+        "  SGD:", "OK" if sgd_ok else "FAIL",
+        " clip:", "OK" if clip_ok else "FAIL",
+        " clip_device:", "OK" if dev_ok else "FAIL",
+    )
+    assert_true(sgd_ok and clip_ok and dev_ok, "arena optimizers parity")
     print("ARENA OPTIMIZERS OK")

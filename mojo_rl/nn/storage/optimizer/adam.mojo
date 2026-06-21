@@ -28,7 +28,9 @@ from ..core.tensor import Tensor
 from ..core.param import ParamVisitor
 from ..core.module import Module
 from .param_arena import ParamArena
-from .grad_clip import clip_grad_norm, clip_arena_grads
+from .grad_clip import (
+    clip_grad_norm, clip_arena_grads, clip_arena_grads_captured,
+)
 from .optimizer import Optimizer
 
 
@@ -144,6 +146,12 @@ struct Adam(Movable, ParamVisitor, Optimizer):
     # advances under CUDA-graph replay instead of freezing at the host-baked
     # capture-time value. CPU + per-param paths use the host `bc1/bc2`.
     var _pow_dev: Tensor
+    # Persistent grad-clip scratch (GPU arena, allocated by `adopt`): block
+    # partials + scale + pre-clip norm. Owned here so `clip_grads_device` does
+    # NO per-call allocation (capture-safe). Empty until `adopt` on GPU.
+    var _clip_partials: Tensor
+    var _clip_scale: Tensor
+    var _clip_norm: Tensor
 
     def __init__(out self):
         """No-arg default (satisfies Defaultable for the generic Trainer)."""
@@ -168,6 +176,9 @@ struct Adam(Movable, ParamVisitor, Optimizer):
         self.bc1 = Scalar[DT](1.0)
         self.bc2 = Scalar[DT](1.0)
         self._pow_dev = Tensor()
+        self._clip_partials = Tensor()
+        self._clip_scale = Tensor()
+        self._clip_norm = Tensor()
         self.arena = ParamArena()
         self.m_arena = Tensor()
         self.v_arena = Tensor()
@@ -193,6 +204,12 @@ struct Adam(Movable, ParamVisitor, Optimizer):
             # `[β₁ᵗ, β₂ᵗ]` seeded to β^0 = 1; advanced on-device each step.
             self._pow_dev = Tensor.alloc_gpu(c, 2)
             self._pow_dev.dev.value().enqueue_fill(Scalar[DT](1.0))
+            # Persistent grad-clip scratch (one block-partials slot per TPB chunk
+            # of the arena, + scale + norm) so `clip_grads_device` never allocs.
+            var nblk = (self.arena.total + TPB - 1) // TPB
+            self._clip_partials = Tensor.alloc_gpu(c, nblk if nblk > 0 else 1)
+            self._clip_scale = Tensor.alloc_gpu(c, 1)
+            self._clip_norm = Tensor.alloc_gpu(c, 1)
 
     def step[
         target: StaticString, M: Module
@@ -268,6 +285,35 @@ struct Adam(Movable, ParamVisitor, Optimizer):
             if self.arena.adopted:
                 return clip_arena_grads(self.arena, max_norm, ctx.value())
         return clip_grad_norm[target](model, max_norm, ctx)
+
+    def clip_grads_device[
+        target: StaticString, M: Module
+    ](
+        mut self, mut model: M, max_norm: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """CUDA-graph-safe grad-norm clip (GPU + adopted): on-device kernels over
+        persistent scratch, NO allocation and NO D2H — drop this into the captured
+        train-step sequence. The pre-clip norm lands in the device `_clip_norm`
+        buffer; read it via `read_clip_norm` at flush cadence if you log it. Off
+        the GPU-arena path it falls back to `clip_grads` (which D2Hs — NOT
+        capture-safe; only correct when not capturing)."""
+        comptime if target == "gpu":
+            if self.arena.adopted:
+                clip_arena_grads_captured(
+                    self.arena, self._clip_partials, self._clip_scale,
+                    self._clip_norm, max_norm, ctx.value(),
+                )
+                return
+        _ = self.clip_grads[target, M](model, max_norm, ctx)
+
+    def read_clip_norm(mut self, ctx: DeviceContext) raises -> Scalar[DT]:
+        """D2H the last pre-clip grad norm from `clip_grads_device` (flush
+        cadence only — NOT per step). 0 if never clipped on device."""
+        if not self._clip_norm.dev:
+            return Scalar[DT](0.0)
+        self._clip_norm.download(ctx)
+        return self._clip_norm.data[0]
 
     def visit[
         target: StaticString, N: Int
