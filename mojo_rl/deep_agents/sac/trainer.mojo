@@ -416,7 +416,13 @@ struct SACTrainer[
         self.target_y_blk.step[Self.train_target](
             self.state, self.actor, self.pair1.target_net, self.pair2.target_net
         )
-        self.twin_critic_blk.step[Self.train_target](
+        # ACCUMULATE on GPU: the per-batch critic loss is reduced on-device into
+        # each critic's MSELoss accumulator (read at flush) — NO per-step D2H.
+        # CPU keeps the host `MSELoss.forward` scalar. Metric-only; the gradient
+        # (mse_loss.vjp + critic.vjp) is identical either way.
+        self.twin_critic_blk.step[
+            Self.train_target, ACCUMULATE = Self.train_target == "gpu"
+        ](
             self.state,
             self.pair1.online,
             self.critic1_opt,
@@ -822,6 +828,7 @@ struct SACTrainer[
         # per-step D2H — drained once here at flush cadence).
         var actor_val: Scalar[DT]
         var alpha_val: Scalar[DT]
+        var critic_val: Scalar[DT]
         comptime if Self.train_target == "gpu":
             mq = self._mean_q_dev.read["gpu"]()
             mtgt = self._mean_target_dev.read["gpu"]()
@@ -831,6 +838,13 @@ struct SACTrainer[
             maa = self._mean_abs_action_dev.read["gpu"]()
             actor_val = self.actor_loss_blk.read_loss_accum(self.ctx.value())
             alpha_val = self.alpha_opt.read_alpha()
+            # critic loss = c1 + c2 window means (matches the CPU `loss1+loss2`
+            # the twin block returns); device accumulators, ONE D2H each here.
+            critic_val = self.twin_critic_blk.inner.c1.mse_loss.read_accum[
+                "gpu"
+            ](self.ctx) + self.twin_critic_blk.inner.c2.mse_loss.read_accum[
+                "gpu"
+            ](self.ctx)
         else:
             mq = self._mean_q_accum * inv
             mtgt = self._mean_target_accum * inv
@@ -840,9 +854,10 @@ struct SACTrainer[
             maa = self._mean_abs_action_accum * inv
             actor_val = self._actor_L_accum * inv
             alpha_val = self._alpha_accum * inv
+            critic_val = self._critic_L_accum * inv
         var bundle = SACMetrics(
             actor_loss=LogScalar[DT](actor_val),
-            critic_loss=LogScalar[DT](self._critic_L_accum * inv),
+            critic_loss=LogScalar[DT](critic_val),
             alpha=LogScalar[DT](alpha_val),
             mean_q=LogScalar[DT](mq),
             mean_target=LogScalar[DT](mtgt),
@@ -870,6 +885,8 @@ struct SACTrainer[
             self._mean_done_dev.reset["gpu"]()
             self._mean_abs_action_dev.reset["gpu"]()
             self.actor_loss_blk.reset_loss_accum()
+            self.twin_critic_blk.inner.c1.mse_loss.reset_accum["gpu"]()
+            self.twin_critic_blk.inner.c2.mse_loss.reset_accum["gpu"]()
         self._update_count = 0
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)
@@ -896,15 +913,22 @@ struct SACTrainer[
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
         var actor_val: Scalar[DT]
         var alpha_val: Scalar[DT]
+        var critic_val: Scalar[DT]
         comptime if Self.train_target == "gpu":
             actor_val = self.actor_loss_blk.read_loss_accum(self.ctx.value())
             alpha_val = self.alpha_opt.read_alpha()
+            critic_val = self.twin_critic_blk.inner.c1.mse_loss.read_accum[
+                "gpu"
+            ](self.ctx) + self.twin_critic_blk.inner.c2.mse_loss.read_accum[
+                "gpu"
+            ](self.ctx)
         else:
             actor_val = self._actor_L_accum * inv
             alpha_val = self._alpha_accum * inv
+            critic_val = self._critic_L_accum * inv
         var out = (
             actor_val,
-            self._critic_L_accum * inv,
+            critic_val,
             alpha_val,
             self._update_count,
         )
