@@ -16,7 +16,11 @@ from mojo_rl.nn.storage.core.initializer import Deterministic
 def _run[
     target: StaticString, VOCAB: Int, ED: Int, B: Int
 ](ctx: Optional[DeviceContext]) raises -> Bool:
-    comptime TOL = Scalar[DT](2e-4)
+    # CPU is naive f32 → bit-tight vs the f32 oracle. GPU routes through
+    # max_matmul, which uses TF32 tensor cores on NVIDIA (Ampere+) by default
+    # (~1e-3 relative, growing with the reduction length) — the same precision
+    # Linear/Conv2D already train on. Gate the GPU path TF32-aware, not bit-tight.
+    comptime TOL = Scalar[DT](2e-4) if target == "cpu" else Scalar[DT](2e-3)
     var e = Embedding[VOCAB, ED].make[target, Deterministic](ctx)
 
     # Deterministic dense input + grad_output (dense exercises the GEMM).
