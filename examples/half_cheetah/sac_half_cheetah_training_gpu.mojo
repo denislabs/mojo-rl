@@ -171,7 +171,7 @@ def main() raises:
             BatchedEnvT,
             N_ENVS=N_ENVS,
             USE_TRAIN_CUDA_GRAPH=False,
-            USE_ENV_CUDA_GRAPH=False,
+            USE_ENV_CUDA_GRAPH=True,
             L=RemoteLogger,
         ](
             env,

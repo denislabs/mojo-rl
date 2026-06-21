@@ -14,8 +14,6 @@ from std.math import sqrt
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
-from std.utils import Index
-from std.utils.numerics import get_accum_type
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, CPU_SIMD_W
@@ -29,14 +27,9 @@ from ..core.amp import AMPPolicy, NoAMP
 
 comptime LN_EPS: Scalar[DT] = 1e-5
 comptime LN_TPB: Int = 128
-# Reductions/normalization run in the accumulation dtype (f32 for bf16 inputs;
-# identity for DT=f32). Vectorized global loads use VEC-wide SIMD when DIM is a
-# multiple of VEC, else scalar (VEC=1) — chosen comptime per kernel from DIM.
-comptime LN_ACC = get_accum_type[DT]()
 
 
-# ── GPU kernels (vectorized + accum_type; block-per-row, threads cooperate
-#    over the feature axis with VEC-wide strided loads) ──────────────────
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _layer_norm_forward_kernel[
     BATCH: Int,
     DIM: Int,
@@ -52,37 +45,36 @@ def _layer_norm_forward_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
-    comptime VEC = 4 if DIM % 4 == 0 else 1
-    var inv_dim = Scalar[LN_ACC](1.0) / Scalar[LN_ACC](DIM)
-    var my_sum = Scalar[LN_ACC](0)
-    var idx = t * VEC
+    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
+    var my_sum: Scalar[DT] = 0.0
+    var idx = t
     while idx < DIM:
-        my_sum += input.load[width=VEC](b, idx).cast[LN_ACC]().reduce_add()
-        idx += LN_TPB * VEC
+        my_sum += rebind[Scalar[DT]](input[b, idx])
+        idx += LN_TPB
     var mean_val = (
         block.sum[block_size=LN_TPB, broadcast=True](val=my_sum) * inv_dim
     )
-    var my_var = Scalar[LN_ACC](0)
-    idx = t * VEC
+    var my_var: Scalar[DT] = 0.0
+    idx = t
     while idx < DIM:
-        var diff = input.load[width=VEC](b, idx).cast[LN_ACC]() - mean_val
-        my_var += (diff * diff).reduce_add()
-        idx += LN_TPB * VEC
+        var diff = rebind[Scalar[DT]](input[b, idx]) - mean_val
+        my_var += diff * diff
+        idx += LN_TPB
     var var_val = (
         block.sum[block_size=LN_TPB, broadcast=True](val=my_var) * inv_dim
     )
-    var inv_std = Scalar[LN_ACC](1.0) / sqrt(var_val + LN_EPS.cast[LN_ACC]())
+    var inv_std: Scalar[DT] = 1.0 / sqrt(var_val + LN_EPS)
     if t == 0:
-        cache_inv_std[b] = inv_std.cast[DT]()
-    idx = t * VEC
+        cache_inv_std[b] = inv_std
+    idx = t
     while idx < DIM:
-        var x = input.load[width=VEC](b, idx).cast[LN_ACC]()
+        var x = rebind[Scalar[DT]](input[b, idx])
         var x_hat = (x - mean_val) * inv_std
-        cache_xhat.store[width=VEC](b, idx, x_hat.cast[DT]())
-        var g_d = gamma.load[width=VEC](Index(idx)).cast[LN_ACC]()
-        var bt_d = beta.load[width=VEC](Index(idx)).cast[LN_ACC]()
-        output.store[width=VEC](b, idx, (g_d * x_hat + bt_d).cast[DT]())
-        idx += LN_TPB * VEC
+        cache_xhat[b, idx] = x_hat
+        var g_d = rebind[Scalar[DT]](gamma[idx])
+        var bt_d = rebind[Scalar[DT]](beta[idx])
+        output[b, idx] = g_d * x_hat + bt_d
+        idx += LN_TPB
 
 
 def _layer_norm_backward_dx_kernel[
@@ -99,36 +91,33 @@ def _layer_norm_backward_dx_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
-    comptime VEC = 4 if DIM % 4 == 0 else 1
-    var inv_dim = Scalar[LN_ACC](1.0) / Scalar[LN_ACC](DIM)
-    var inv_std = rebind[Scalar[DT]](cache_inv_std[b]).cast[LN_ACC]()
-    var my_g = Scalar[LN_ACC](0)
-    var my_g_xhat = Scalar[LN_ACC](0)
-    var idx = t * VEC
+    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
+    var inv_std = rebind[Scalar[DT]](cache_inv_std[b])
+    var my_g: Scalar[DT] = 0.0
+    var my_g_xhat: Scalar[DT] = 0.0
+    var idx = t
     while idx < DIM:
-        var go = grad_output.load[width=VEC](b, idx).cast[LN_ACC]()
-        var gm = gamma.load[width=VEC](Index(idx)).cast[LN_ACC]()
-        var xh = cache_xhat.load[width=VEC](b, idx).cast[LN_ACC]()
+        var go = rebind[Scalar[DT]](grad_output[b, idx])
+        var gm = rebind[Scalar[DT]](gamma[idx])
+        var xh = rebind[Scalar[DT]](cache_xhat[b, idx])
         var g = go * gm
-        my_g += g.reduce_add()
-        my_g_xhat += (g * xh).reduce_add()
-        idx += LN_TPB * VEC
+        my_g += g
+        my_g_xhat += g * xh
+        idx += LN_TPB
     var mean_g = (
         block.sum[block_size=LN_TPB, broadcast=True](val=my_g) * inv_dim
     )
     var mean_g_xhat = (
         block.sum[block_size=LN_TPB, broadcast=True](val=my_g_xhat) * inv_dim
     )
-    idx = t * VEC
+    idx = t
     while idx < DIM:
-        var go = grad_output.load[width=VEC](b, idx).cast[LN_ACC]()
-        var gm = gamma.load[width=VEC](Index(idx)).cast[LN_ACC]()
-        var xh = cache_xhat.load[width=VEC](b, idx).cast[LN_ACC]()
+        var go = rebind[Scalar[DT]](grad_output[b, idx])
+        var gm = rebind[Scalar[DT]](gamma[idx])
+        var xh = rebind[Scalar[DT]](cache_xhat[b, idx])
         var g = go * gm
-        grad_input.store[width=VEC](
-            b, idx, (inv_std * (g - mean_g - xh * mean_g_xhat)).cast[DT]()
-        )
-        idx += LN_TPB * VEC
+        grad_input[b, idx] = inv_std * (g - mean_g - xh * mean_g_xhat)
+        idx += LN_TPB
 
 
 def _layer_norm_backward_dparams_kernel[
