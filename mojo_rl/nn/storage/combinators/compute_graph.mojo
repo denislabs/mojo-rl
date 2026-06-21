@@ -6,7 +6,7 @@ NAMES baked in (`InputSlot` / `Node` / `ExternalNode`, see graph_decl.mojo);
 the graph resolves every edge to a pool-slot index at COMPILE TIME — no runtime
 `List[List[Int]]` edge list to hand-build and keep in sync.
 
-```mojo
+```
 comptime G = ComputeGraph[
     InputSlot["s", OBS],                     # slot 0 — external input
     ExternalNode["actor", ACTOR, "s"],       # slot 1 — supplied at forward
@@ -121,17 +121,15 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
 
     def set_input[
         slot_name: StaticString, B: Int
-    ](
-        mut self, mut src: Tensor, ctx: Optional[DeviceContext] = None
-    ) raises:
+    ](mut self, mut src: Tensor, ctx: Optional[DeviceContext] = None) raises:
         """Seed the named input slot's pool entry with `src` (a COPY — no cached
         pointer). Call once per input before each `forward`. CPU copies element-
         wise; GPU does a device-to-device `enqueue_copy`."""
         comptime slot = Self._slot_of[slot_name]()
         comptime assert slot >= 0, "set_input: no InputSlot named " + slot_name
-        comptime assert (
-            Self.DECLS[slot].KIND == 0
-        ), "set_input: '" + slot_name + "' is not an InputSlot"
+        comptime assert Self.DECLS[slot].KIND == 0, (
+            "set_input: '" + slot_name + "' is not an InputSlot"
+        )
         var n = B * Self.DECLS[slot].OUT_DIM
         self.slot_n[slot] = n
         if ctx:
@@ -156,14 +154,18 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             comptime if Self.DECLS[i].NAME == NAME:
                 self.children[i].set_attr[ATTR](value)
 
-    def node_output[name: StaticString](mut self) raises -> ref[MutAnyOrigin] Tensor:
+    def node_output[
+        name: StaticString
+    ](mut self) raises -> ref[MutAnyOrigin] Tensor:
         """The forward output of the named node — for diagnostics / reading an
         intermediate (e.g. `log_prob`). Comptime name → slot."""
         comptime slot = Self._slot_of[name]()
         comptime assert slot >= 0, "node_output: no node named " + name
         return self.pool[slot]
 
-    def grad_input[name: StaticString](mut self) raises -> ref[MutAnyOrigin] Tensor:
+    def grad_input[
+        name: StaticString
+    ](mut self) raises -> ref[MutAnyOrigin] Tensor:
         """The accumulated gradient flowing back to the named input slot (read
         after `vjp`). Comptime name → grad-pool slot."""
         comptime slot = Self._slot_of[name]()
@@ -442,8 +444,12 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
-      prefix: String = String("")) raises:
+    ](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
         comptime for i in range(Self.N):
             self.children[i].for_each_param[target](
                 visitor, ctx, join_name(prefix, String(Self.DECLS[i].NAME))
@@ -451,8 +457,12 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
 
     def for_each_state[
         target: StaticString, V: ParamVisitor
-    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
-      prefix: String = String("")) raises:
+    ](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
         comptime for i in range(Self.N):
             self.children[i].for_each_state[target](
                 visitor, ctx, join_name(prefix, String(Self.DECLS[i].NAME))

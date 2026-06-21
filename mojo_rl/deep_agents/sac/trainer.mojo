@@ -25,12 +25,14 @@ once (on the sample block type).
 
 from std.math import exp as fexp, log as flog, tanh as ftanh
 from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.storage.core.module import Module
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
@@ -55,6 +57,69 @@ from .target_y_block import TargetYBlock
 from .actor_loss import SACActorLoss
 from .blocks.alpha_update_step import AlphaUpdateStep
 from .metrics import SACMetrics
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU device kernels for the batched action-selection path. Mirror the
+# DDPG trainer's device body (Philox warmup + copy/clamp) adapted to the
+# storage actor/rsample surface (which take owned Tensors, so obs is
+# COPIED into the trainer's device scratch before the actor forward).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _sac_warmup_uniform_kernel[
+    N_ENVS: Int, ACT: Int
+](
+    action_dest: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
+    action_scale: Scalar[DT],
+    seed: UInt64,
+    offset_base: UInt64,
+):
+    """Per-lane Philox uniform → [N_ENVS, ACT] of Uniform(-scale, +scale)."""
+    var i = Int(global_idx.x)
+    var total = N_ENVS * ACT
+    if i >= total:
+        return
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var s = Scalar[DT](2.0) * Scalar[DT](u) - Scalar[DT](1.0)
+    action_dest[i // ACT, i % ACT] = s * action_scale
+
+
+def _sac_copy2d_kernel[
+    N_ENVS: Int, D: Int
+](
+    src: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
+):
+    """dst[e,d] = src[e,d] — bridge the driver's obs view into the trainer's
+    owned device scratch the storage actor.forward consumes."""
+    var i = Int(global_idx.x)
+    var total = N_ENVS * D
+    if i < total:
+        dst[i // D, i % D] = rebind[Scalar[DT]](src[i // D, i % D])
+
+
+def _sac_clamp_action_kernel[
+    N_ENVS: Int, ACT: Int, ALP: Int
+](
+    alp: LayoutTensor[DT, Layout.row_major(N_ENVS, ALP), MutAnyOrigin],
+    action: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
+    scale: Scalar[DT],
+):
+    """action[e,j] = clamp(alp[e,j], ±scale) — drop the trailing log-prob
+    column of the rsample output and clamp the squashed action."""
+    var i = Int(global_idx.x)
+    var total = N_ENVS * ACT
+    if i < total:
+        var e = i // ACT
+        var j = i % ACT
+        var a = rebind[Scalar[DT]](alp[e, j])
+        if a > scale:
+            a = scale
+        elif a < -scale:
+            a = -scale
+        action[e, j] = a
 
 
 struct SACTrainer[
@@ -112,6 +177,10 @@ struct SACTrainer[
     var action_scale: Scalar[DT]
     var learning_starts: Int
 
+    # Philox state for the GPU batched warmup kernel (gpu path only).
+    var _warmup_rng_seed: UInt64
+    var _warmup_rng_offset: UInt64
+
     # Host metric accumulators (CPU path; simple scalars like the test).
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
@@ -165,6 +234,8 @@ struct SACTrainer[
         self._alp_scr = Tensor()
         self.action_scale = Scalar[DT](1.0)
         self.learning_starts = 1_000
+        self._warmup_rng_seed = UInt64(0x5AC_C0FFEE)
+        self._warmup_rng_offset = UInt64(0)
         self._actor_L_accum = Scalar[DT](0.0)
         self._critic_L_accum = Scalar[DT](0.0)
         self._alpha_accum = Scalar[DT](0.0)
@@ -292,9 +363,10 @@ struct SACTrainer[
     def train_step(mut self, step_idx: Int) raises -> Bool:
         self.state.step_idx = step_idx
         self.state.did_step = True
-        comptime if Self.train_target == "cpu":
-            self.state.alpha = fexp(self.alpha_opt.value)
-        else:
+        # α is a HOST scalar both on CPU and GPU (the blocks read state.alpha
+        # into their Scale node / sac_target_y; device-α capture is deferred).
+        self.state.alpha = fexp(self.alpha_opt.value)
+        comptime if Self.train_target == "gpu":
             self.state.ctx = self.ctx
 
         self.sample_blk.step(self.state)
@@ -400,10 +472,18 @@ struct SACTrainer[
                         action[env, j] = u * self.action_scale
                 return
             else:
-                raise Error(
-                    "SACTrainer.select_action_batched: GPU warmup not yet"
-                    " migrated to storage"
+                var c = self.ctx.value()
+                comptime tot = N_ENVS * ACT
+                c.enqueue_function[_sac_warmup_uniform_kernel[N_ENVS, ACT]](
+                    action,
+                    self.action_scale,
+                    self._warmup_rng_seed,
+                    self._warmup_rng_offset,
+                    grid_dim=(tot + TPB - 1) // TPB,
+                    block_dim=TPB,
                 )
+                self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
+                return
 
         # ── Policy forward through the STORAGE surface.
         comptime if Self.train_target == "cpu":
@@ -435,14 +515,39 @@ struct SACTrainer[
             _ = ao_scratch
             _ = alp_scratch
         else:
-            _ = obs
-            _ = action
+            # Bridge the driver's device obs view → owned device scratch
+            # (storage actor.forward consumes an owned Tensor), run actor →
+            # rsample on device, then clamp the squashed action out.
+            var c = self.ctx.value()
+            self._ob_scr.ensure_gpu(c, N_ENVS * OBS)
+            self._ao_scr.ensure_gpu(c, N_ENVS * 2 * ACT)
+            self._alp_scr.ensure_gpu(c, N_ENVS * (ACT + 1))
+            comptime tot_obs = N_ENVS * OBS
+            c.enqueue_function[_sac_copy2d_kernel[N_ENVS, OBS]](
+                obs,
+                self._ob_scr.lt["gpu", Layout.row_major(N_ENVS, OBS)](),
+                grid_dim=(tot_obs + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
+            self.actor.forward["gpu", N_ENVS](
+                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
+                self.ctx,
+            )
+            self.sel.forward["gpu", N_ENVS](
+                TensorRefs[1](self._ao_scr), self._alp_scr, self.ctx
+            )
+            comptime tot_act = N_ENVS * ACT
+            c.enqueue_function[
+                _sac_clamp_action_kernel[N_ENVS, ACT, ACT + 1]
+            ](
+                self._alp_scr.lt["gpu", Layout.row_major(N_ENVS, ACT + 1)](),
+                action,
+                self.action_scale,
+                grid_dim=(tot_act + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
             _ = ao_scratch
             _ = alp_scratch
-            raise Error(
-                "SACTrainer.select_action_batched: GPU policy path not yet"
-                " migrated to storage"
-            )
 
     def select_greedy_action(
         mut self,
@@ -467,12 +572,26 @@ struct SACTrainer[
                     a = -self.action_scale
                 action_out[j] = a
         else:
-            _ = obs
-            _ = action_out
-            raise Error(
-                "SACTrainer.select_greedy_action: GPU path not yet migrated"
-                " to storage"
+            # Fresh single-env Tensors (NOT the batched _ob/_ao scratch, whose
+            # `n` is sized for N_ENVS during training — `upload` walks `n` host
+            # elements, so reusing them here would read past the 1-env fill).
+            var c = self.ctx.value()
+            var ob = Tensor.alloc(OBS)
+            for d in range(OBS):
+                ob.data[d] = obs[d]
+            ob.upload(c)
+            var ao = Tensor.alloc_gpu(c, 2 * ACT)
+            self.actor.forward["gpu", 1](
+                TensorRefs[Self.ACTOR.ARITY](ob), ao, self.ctx
             )
+            ao.download(c)
+            for j in range(ACT):
+                var a = ftanh(ao.data[j]) * self.action_scale
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                action_out[j] = a
 
     def select_action(
         mut self,
@@ -510,12 +629,32 @@ struct SACTrainer[
                     a = -self.action_scale
                 action_out[j] = a
         else:
-            _ = obs
-            _ = action_out
-            raise Error(
-                "SACTrainer.select_action: GPU path not yet migrated to"
-                " storage"
+            if step_idx < self.learning_starts:
+                for j in range(ACT):
+                    var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                    action_out[j] = u * self.action_scale
+                return
+            # Fresh single-env Tensors (see select_greedy_action for why the
+            # batched scratch can't be reused on the host-list path).
+            var c = self.ctx.value()
+            var ob = Tensor.alloc(OBS)
+            for d in range(OBS):
+                ob.data[d] = obs[d]
+            ob.upload(c)
+            var ao = Tensor.alloc_gpu(c, 2 * ACT)
+            var alp = Tensor.alloc_gpu(c, ACT + 1)
+            self.actor.forward["gpu", 1](
+                TensorRefs[Self.ACTOR.ARITY](ob), ao, self.ctx
             )
+            self.sel.forward["gpu", 1](TensorRefs[1](ao), alp, self.ctx)
+            alp.download(c)
+            for j in range(ACT):
+                var a = alp.data[j]
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                action_out[j] = a
 
     # ─── Record ────────────────────────────────────────────────────────
     def record(
@@ -556,7 +695,11 @@ struct SACTrainer[
         obs_dev: DeviceBuffer[DT],
         done_dev: DeviceBuffer[DT],
     ) raises:
-        raise Error("SACTrainer.record_batch_gpu: GPU path not yet migrated")
+        """Delegate the N_ENVS device transitions to the sample block's GPU
+        replay (one kernel launch)."""
+        self.sample_blk.add_batch_gpu[N_ENVS](
+            ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
+        )
 
     def record_batch_gpu_nstep[
         N_ENVS: Int, NS: Int
@@ -572,9 +715,12 @@ struct SACTrainer[
         obs_dev: DeviceBuffer[DT],
         done_dev: DeviceBuffer[DT],
     ) raises:
-        raise Error(
-            "SACTrainer.record_batch_gpu_nstep: GPU path not yet migrated"
+        """Push the device transitions through the n-step buffer, then store
+        matured n-step transitions into the GPU replay via the sample block."""
+        nstep_buf.process(
+            ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
         )
+        self.sample_blk.store_via_block_gpu[N_ENVS, NS](ctx, nstep_buf)
 
     # ─── Metrics / logging ─────────────────────────────────────────────
     def flush_metrics[

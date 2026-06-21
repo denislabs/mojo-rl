@@ -5,7 +5,8 @@ This restores the legacy ComputeGraph DX (edges wired by NAME, baked into the
 node declarations) on top of the storage-passing internals. Instead of a runtime
 `List[List[Int]]` edge list hand-built per block, the graph is declared as:
 
-```mojo
+```
+
 comptime Graph = ComputeGraph[
     InputSlot["s", OBS],                            # external input
     ExternalNode["actor", ACTOR, "s"],              # supplied at forward
@@ -125,7 +126,9 @@ struct InputSlot[slot_name: StaticString, DIM_: Int](GraphDecl):
         return Self()
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin,
+        target: StaticString,
+        B: Int,
+        o: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
@@ -139,7 +142,10 @@ struct InputSlot[slot_name: StaticString, DIM_: Int](GraphDecl):
         )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
@@ -175,9 +181,9 @@ struct Node[
     var op: Self.Op
 
     def __init__(out self):
-        comptime assert Self.in_names.size == Self.Op.ARITY, (
-            "Node: number of in_names must match Op.ARITY"
-        )
+        comptime assert (
+            Self.in_names.size == Self.Op.ARITY
+        ), "Node: number of in_names must match Op.ARITY"
         self.op = Self.Op()
 
     @staticmethod
@@ -189,7 +195,9 @@ struct Node[
         return n^
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin,
+        target: StaticString,
+        B: Int,
+        o: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
@@ -200,7 +208,10 @@ struct Node[
         self.op.forward[target, B, o, POLICY=POLICY](inputs, out, ctx)
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
@@ -272,9 +283,9 @@ struct ExternalNode[
     comptime IN_NAMES = names_to_inline_array[Self.ARITY, *Self.in_names]()
 
     def __init__(out self):
-        comptime assert Self.in_names.size == Self.M.ARITY, (
-            "ExternalNode: number of in_names must match M.ARITY"
-        )
+        comptime assert (
+            Self.in_names.size == Self.M.ARITY
+        ), "ExternalNode: number of in_names must match M.ARITY"
 
     @staticmethod
     def make[
@@ -283,7 +294,9 @@ struct ExternalNode[
         return Self()
 
     def forward[
-        target: StaticString, B: Int, o: MutOrigin,
+        target: StaticString,
+        B: Int,
+        o: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
@@ -297,7 +310,10 @@ struct ExternalNode[
         )
 
     def vjp[
-        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
