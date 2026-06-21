@@ -19,6 +19,7 @@ from std.math import sqrt
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
+from std.utils.numerics import get_accum_type
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
@@ -32,9 +33,14 @@ from ..core.amp import AMPPolicy, NoAMP
 
 comptime LNNA_EPS: Scalar[DT] = 1e-6
 comptime LNNA_TPB: Int = 128
+# Single-pass register-cache (mirrors storage LayerNorm; γ/β dropped). Read the
+# thread's feature slice ONCE, raw-moments mean/var, normalize from registers
+# when ELEMS≤cap, else 2-read fallback. accum_type = f32 for bf16 (identity f32).
+comptime LNNA_ACC = get_accum_type[DT]()
+comptime LNNA_REG_CAP = 8
 
 
-# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
+# ── GPU kernels (single-pass register-cached; block-per-row) ────────────
 def _lnna_forward_kernel[
     BATCH: Int, DIM: Int,
 ](
@@ -47,38 +53,75 @@ def _lnna_forward_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
-    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
+    comptime ELEMS = (DIM + LNNA_TPB - 1) // LNNA_TPB
+    comptime REG_CACHE = ELEMS <= LNNA_REG_CAP
+    var inv_dim = Scalar[LNNA_ACC](1.0) / Scalar[LNNA_ACC](DIM)
+    var my_sum = Scalar[LNNA_ACC](0)
+    var my_sumsq = Scalar[LNNA_ACC](0)
 
-    var my_sum: Scalar[DT] = 0.0
-    var idx = t
-    while idx < DIM:
-        my_sum += rebind[Scalar[DT]](input[b, idx])
-        idx += LNNA_TPB
-    var mean_val = (
-        block.sum[block_size=LNNA_TPB, broadcast=True](val=my_sum) * inv_dim
-    )
+    comptime if REG_CACHE:
+        var slice = InlineArray[Scalar[LNNA_ACC], ELEMS](
+            fill=Scalar[LNNA_ACC](0)
+        )
 
-    var my_var: Scalar[DT] = 0.0
-    idx = t
-    while idx < DIM:
-        var diff = rebind[Scalar[DT]](input[b, idx]) - mean_val
-        my_var += diff * diff
-        idx += LNNA_TPB
-    var var_val = (
-        block.sum[block_size=LNNA_TPB, broadcast=True](val=my_var) * inv_dim
-    )
+        comptime for e in range(ELEMS):
+            var col = t + e * LNNA_TPB
+            if col < DIM:
+                var x = rebind[Scalar[DT]](input[b, col]).cast[LNNA_ACC]()
+                slice[e] = x
+                my_sum += x
+                my_sumsq += x * x
+        var mean_val = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_sum) * inv_dim
+        )
+        var ex2 = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_sumsq)
+            * inv_dim
+        )
+        var var_val = ex2 - mean_val * mean_val
+        if var_val < Scalar[LNNA_ACC](0):
+            var_val = Scalar[LNNA_ACC](0)
+        var inv_std = Scalar[LNNA_ACC](1.0) / sqrt(
+            var_val + LNNA_EPS.cast[LNNA_ACC]()
+        )
+        if t == 0:
+            cache_inv_std[b] = inv_std.cast[DT]()
 
-    var inv_std: Scalar[DT] = 1.0 / sqrt(var_val + LNNA_EPS)
-    if t == 0:
-        cache_inv_std[b] = inv_std
-
-    idx = t
-    while idx < DIM:
-        var x = rebind[Scalar[DT]](input[b, idx])
-        var x_hat = (x - mean_val) * inv_std
-        cache_xhat[b, idx] = x_hat
-        output[b, idx] = x_hat
-        idx += LNNA_TPB
+        comptime for e in range(ELEMS):
+            var col = t + e * LNNA_TPB
+            if col < DIM:
+                var x_hat = (slice[e] - mean_val) * inv_std
+                cache_xhat[b, col] = x_hat.cast[DT]()
+                output[b, col] = x_hat.cast[DT]()
+    else:
+        var idx = t
+        while idx < DIM:
+            var x = rebind[Scalar[DT]](input[b, idx]).cast[LNNA_ACC]()
+            my_sum += x
+            my_sumsq += x * x
+            idx += LNNA_TPB
+        var mean_val = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_sum) * inv_dim
+        )
+        var ex2 = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_sumsq)
+            * inv_dim
+        )
+        var var_val = ex2 - mean_val * mean_val
+        if var_val < Scalar[LNNA_ACC](0):
+            var_val = Scalar[LNNA_ACC](0)
+        var inv_std = Scalar[LNNA_ACC](1.0) / sqrt(
+            var_val + LNNA_EPS.cast[LNNA_ACC]()
+        )
+        if t == 0:
+            cache_inv_std[b] = inv_std.cast[DT]()
+        idx = t
+        while idx < DIM:
+            var x = rebind[Scalar[DT]](input[b, idx]).cast[LNNA_ACC]()
+            var x_hat = (x - mean_val) * inv_std
+            cache_xhat[b, idx] = x_hat.cast[DT]()
+            output[b, idx] = x_hat.cast[DT]()
+            idx += LNNA_TPB
 
 
 def _lnna_backward_kernel[
@@ -93,31 +136,65 @@ def _lnna_backward_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
-    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
-    var inv_std = rebind[Scalar[DT]](cache_inv_std[b])
+    comptime ELEMS = (DIM + LNNA_TPB - 1) // LNNA_TPB
+    comptime REG_CACHE = ELEMS <= LNNA_REG_CAP
+    var inv_dim = Scalar[LNNA_ACC](1.0) / Scalar[LNNA_ACC](DIM)
+    var inv_std = rebind[Scalar[DT]](cache_inv_std[b]).cast[LNNA_ACC]()
+    var my_g = Scalar[LNNA_ACC](0)
+    var my_g_xhat = Scalar[LNNA_ACC](0)
 
-    var my_g: Scalar[DT] = 0.0
-    var my_g_xhat: Scalar[DT] = 0.0
-    var idx = t
-    while idx < DIM:
-        var g = rebind[Scalar[DT]](grad_output[b, idx])
-        var xh = rebind[Scalar[DT]](cache_xhat[b, idx])
-        my_g += g
-        my_g_xhat += g * xh
-        idx += LNNA_TPB
-    var mean_g = (
-        block.sum[block_size=LNNA_TPB, broadcast=True](val=my_g) * inv_dim
-    )
-    var mean_g_xhat = (
-        block.sum[block_size=LNNA_TPB, broadcast=True](val=my_g_xhat) * inv_dim
-    )
+    comptime if REG_CACHE:
+        var g_s = InlineArray[Scalar[LNNA_ACC], ELEMS](fill=Scalar[LNNA_ACC](0))
+        var xh_s = InlineArray[Scalar[LNNA_ACC], ELEMS](
+            fill=Scalar[LNNA_ACC](0)
+        )
 
-    idx = t
-    while idx < DIM:
-        var g = rebind[Scalar[DT]](grad_output[b, idx])
-        var xh = rebind[Scalar[DT]](cache_xhat[b, idx])
-        grad_input[b, idx] = inv_std * (g - mean_g - xh * mean_g_xhat)
-        idx += LNNA_TPB
+        comptime for e in range(ELEMS):
+            var col = t + e * LNNA_TPB
+            if col < DIM:
+                var g = rebind[Scalar[DT]](grad_output[b, col]).cast[LNNA_ACC]()
+                var xh = rebind[Scalar[DT]](cache_xhat[b, col]).cast[LNNA_ACC]()
+                g_s[e] = g
+                xh_s[e] = xh
+                my_g += g
+                my_g_xhat += g * xh
+        var mean_g = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_g) * inv_dim
+        )
+        var mean_g_xhat = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_g_xhat)
+            * inv_dim
+        )
+
+        comptime for e in range(ELEMS):
+            var col = t + e * LNNA_TPB
+            if col < DIM:
+                grad_input[b, col] = (
+                    inv_std * (g_s[e] - mean_g - xh_s[e] * mean_g_xhat)
+                ).cast[DT]()
+    else:
+        var idx = t
+        while idx < DIM:
+            var g = rebind[Scalar[DT]](grad_output[b, idx]).cast[LNNA_ACC]()
+            var xh = rebind[Scalar[DT]](cache_xhat[b, idx]).cast[LNNA_ACC]()
+            my_g += g
+            my_g_xhat += g * xh
+            idx += LNNA_TPB
+        var mean_g = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_g) * inv_dim
+        )
+        var mean_g_xhat = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_g_xhat)
+            * inv_dim
+        )
+        idx = t
+        while idx < DIM:
+            var g = rebind[Scalar[DT]](grad_output[b, idx]).cast[LNNA_ACC]()
+            var xh = rebind[Scalar[DT]](cache_xhat[b, idx]).cast[LNNA_ACC]()
+            grad_input[b, idx] = (
+                inv_std * (g - mean_g - xh * mean_g_xhat)
+            ).cast[DT]()
+            idx += LNNA_TPB
 
 
 struct LayerNormNoAffine[DIM_: Int](Module):

@@ -400,6 +400,125 @@ def _ab_bwd[
     _time_bwd[BATCH, DIM, True, WARMUP, ITERS](ctx, "single")
 
 
+# ───────────── MinMaxNorm forward: block.min/max reduction (D1) ─────────────
+def _mmn_fwd_scalar[
+    BATCH: Int, DIM: Int
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+):
+    var b = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if b >= BATCH:
+        return
+    var my_min = Scalar[DT](1e30)
+    var my_max = Scalar[DT](-1e30)
+    var idx = t
+    while idx < DIM:
+        var v = rebind[Scalar[DT]](input[b, idx])
+        if v < my_min:
+            my_min = v
+        if v > my_max:
+            my_max = v
+        idx += TPB
+    var min_val = block.min[block_size=TPB, broadcast=True](val=my_min)
+    var max_val = block.max[block_size=TPB, broadcast=True](val=my_max)
+    var s = max_val - min_val
+    if s < Scalar[DT](1e-5):
+        s = Scalar[DT](1e-5)
+    var inv_s = Scalar[DT](1.0) / s
+    idx = t
+    while idx < DIM:
+        var x = rebind[Scalar[DT]](input[b, idx])
+        cache[b, idx] = x
+        output[b, idx] = (x - min_val) * inv_s
+        idx += TPB
+
+
+def _mmn_fwd_single[
+    BATCH: Int, DIM: Int
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+):
+    var b = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if b >= BATCH:
+        return
+    comptime ELEMS = (DIM + TPB - 1) // TPB
+    var my_min = Scalar[DT](1e30)
+    var my_max = Scalar[DT](-1e30)
+    var slice = InlineArray[Scalar[DT], ELEMS](fill=Scalar[DT](0))
+
+    comptime for e in range(ELEMS):
+        var col = t + e * TPB
+        if col < DIM:
+            var v = rebind[Scalar[DT]](input[b, col])
+            slice[e] = v
+            if v < my_min:
+                my_min = v
+            if v > my_max:
+                my_max = v
+    var min_val = block.min[block_size=TPB, broadcast=True](val=my_min)
+    var max_val = block.max[block_size=TPB, broadcast=True](val=my_max)
+    var s = max_val - min_val
+    if s < Scalar[DT](1e-5):
+        s = Scalar[DT](1e-5)
+    var inv_s = Scalar[DT](1.0) / s
+
+    comptime for e in range(ELEMS):
+        var col = t + e * TPB
+        if col < DIM:
+            cache[b, col] = slice[e]
+            output[b, col] = (slice[e] - min_val) * inv_s
+
+
+def _time_mmn[
+    BATCH: Int, DIM: Int, CACHED: Bool, WARMUP: Int, ITERS: Int
+](ctx: DeviceContext, label: StaticString) raises:
+    var inp = ctx.enqueue_create_buffer[DT](BATCH * DIM)
+    var out = ctx.enqueue_create_buffer[DT](BATCH * DIM)
+    var ca = ctx.enqueue_create_buffer[DT](BATCH * DIM)
+    _ = inp.enqueue_fill(Scalar[DT](0.013))
+
+    comptime l2d = Layout.row_major(BATCH, DIM)
+    var it = LayoutTensor[DT, l2d, MutAnyOrigin](inp)
+    var ot = LayoutTensor[DT, l2d, MutAnyOrigin](out)
+    var ct = LayoutTensor[DT, l2d, MutAnyOrigin](ca)
+
+    comptime kern = _mmn_fwd_single[
+        BATCH, DIM
+    ] if CACHED else _mmn_fwd_scalar[BATCH, DIM]
+    comptime for _ in range(WARMUP):
+        ctx.enqueue_function[kern](
+            it, ot, ct, grid_dim=BATCH, block_dim=TPB
+        )
+    ctx.synchronize()
+    var t0 = perf_counter_ns()
+    comptime for _ in range(ITERS):
+        ctx.enqueue_function[kern](
+            it, ot, ct, grid_dim=BATCH, block_dim=TPB
+        )
+    ctx.synchronize()
+    var t1 = perf_counter_ns()
+    var us = Float64(t1 - t0) / Float64(ITERS) / 1000.0
+    var gb = 3.0 * Float64(BATCH) * Float64(DIM) * 4.0 / 1e9
+    var gbps = gb / (us / 1e6)
+    print(
+        "  ", label, " B=", BATCH, " D=", DIM, " | ", us, "us/iter ", gbps,
+        "GB/s",
+    )
+
+
+def _ab_mmn[
+    BATCH: Int, DIM: Int, WARMUP: Int, ITERS: Int
+](ctx: DeviceContext) raises:
+    _time_mmn[BATCH, DIM, False, WARMUP, ITERS](ctx, "scalar")
+    _time_mmn[BATCH, DIM, True, WARMUP, ITERS](ctx, "single")
+
+
 def main() raises:
     var ctx = DeviceContext()
     print("LayerNorm forward GPU — baseline(scalar 3-read) vs single(1-read) [fp32]")
@@ -417,6 +536,13 @@ def main() raises:
     _ab_bwd[4096, 1024, 10, 100](ctx)
     _ab_bwd[1024, 4096, 10, 100](ctx)
     _ab_bwd[16384, 256, 10, 100](ctx)
+    print("-" * 66)
+    print("MinMaxNorm forward GPU — baseline(2-read) vs single(1-read) [fp32] (D1)")
+    print("-" * 66)
+    _ab_mmn[4096, 256, 10, 100](ctx)
+    _ab_mmn[4096, 512, 10, 100](ctx)
+    _ab_mmn[4096, 1024, 10, 100](ctx)
+    _ab_mmn[16384, 256, 10, 100](ctx)
     print("=" * 66)
     print("single/scalar speedup = µs ratio. Forward + backward-dx both cut the")
     print("input re-read; if single≈scalar the kernel was L2/latency-bound.")

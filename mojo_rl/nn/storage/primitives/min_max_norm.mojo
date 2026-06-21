@@ -35,6 +35,9 @@ from ..core.amp import AMPPolicy, NoAMP
 
 comptime MMN_EPS: Scalar[DT] = 1e-5
 comptime MMN_TPB: Int = 128
+# Forward register-caches the thread's feature slice (read once → min/max →
+# normalize from registers) when ELEMS≤cap; else the legacy 2-read path.
+comptime MMN_REG_CAP = 8
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -56,34 +59,59 @@ def _min_max_norm_forward_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
+    comptime ELEMS = (DIM + MMN_TPB - 1) // MMN_TPB
+    comptime REG_CACHE = ELEMS <= MMN_REG_CAP
 
     var pos_inf = Scalar[DT](1e30)
     var neg_inf = Scalar[DT](-1e30)
     var my_min = pos_inf
     var my_max = neg_inf
-    var idx = t
-    while idx < DIM:
-        var v = rebind[Scalar[DT]](input[b, idx])
-        if v < my_min:
-            my_min = v
-        if v > my_max:
-            my_max = v
-        idx += MMN_TPB
 
-    var min_val = block.min[block_size=MMN_TPB, broadcast=True](val=my_min)
-    var max_val = block.max[block_size=MMN_TPB, broadcast=True](val=my_max)
+    comptime if REG_CACHE:
+        var slice = InlineArray[Scalar[DT], ELEMS](fill=Scalar[DT](0))
 
-    var s = max_val - min_val
-    if s < MMN_EPS:
-        s = MMN_EPS
-    var inv_s = Scalar[DT](1.0) / s
+        comptime for e in range(ELEMS):
+            var col = t + e * MMN_TPB
+            if col < DIM:
+                var v = rebind[Scalar[DT]](input[b, col])
+                slice[e] = v
+                if v < my_min:
+                    my_min = v
+                if v > my_max:
+                    my_max = v
+        var min_val = block.min[block_size=MMN_TPB, broadcast=True](val=my_min)
+        var max_val = block.max[block_size=MMN_TPB, broadcast=True](val=my_max)
+        var s = max_val - min_val
+        if s < MMN_EPS:
+            s = MMN_EPS
+        var inv_s = Scalar[DT](1.0) / s
 
-    idx = t
-    while idx < DIM:
-        var x = rebind[Scalar[DT]](input[b, idx])
-        cache[b, idx] = x
-        output[b, idx] = (x - min_val) * inv_s
-        idx += MMN_TPB
+        comptime for e in range(ELEMS):
+            var col = t + e * MMN_TPB
+            if col < DIM:
+                cache[b, col] = slice[e]
+                output[b, col] = (slice[e] - min_val) * inv_s
+    else:
+        var idx = t
+        while idx < DIM:
+            var v = rebind[Scalar[DT]](input[b, idx])
+            if v < my_min:
+                my_min = v
+            if v > my_max:
+                my_max = v
+            idx += MMN_TPB
+        var min_val = block.min[block_size=MMN_TPB, broadcast=True](val=my_min)
+        var max_val = block.max[block_size=MMN_TPB, broadcast=True](val=my_max)
+        var s = max_val - min_val
+        if s < MMN_EPS:
+            s = MMN_EPS
+        var inv_s = Scalar[DT](1.0) / s
+        idx = t
+        while idx < DIM:
+            var x = rebind[Scalar[DT]](input[b, idx])
+            cache[b, idx] = x
+            output[b, idx] = (x - min_val) * inv_s
+            idx += MMN_TPB
 
 
 def _min_max_norm_backward_kernel[

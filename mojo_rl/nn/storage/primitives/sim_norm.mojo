@@ -49,23 +49,47 @@ def _sim_norm_forward_kernel[
     var g = idx % GROUPS
     var base = g * GROUP_SIZE
 
-    var max_val = rebind[Scalar[DT]](input[b, base])
-    for k in range(1, GROUP_SIZE):
-        var v = rebind[Scalar[DT]](input[b, base + k])
-        if v > max_val:
-            max_val = v
+    # Register-cache the group: read the input once, then reuse exp(x-max) for
+    # both the normaliser sum and the write (the legacy kernel read input 3×
+    # and recomputed exp twice). Capped so the local array stays in registers.
+    comptime if GROUP_SIZE <= 32:
+        var grp = InlineArray[Scalar[DT], GROUP_SIZE](fill=Scalar[DT](0))
+        var max_val = rebind[Scalar[DT]](input[b, base])
+        grp[0] = max_val
 
-    var sum_exp: Scalar[DT] = 0.0
-    for k in range(GROUP_SIZE):
-        var v = rebind[Scalar[DT]](input[b, base + k])
-        sum_exp += exp(v - max_val)
-    var inv_sum = Scalar[DT](1.0) / sum_exp
+        comptime for k in range(1, GROUP_SIZE):
+            var v = rebind[Scalar[DT]](input[b, base + k])
+            grp[k] = v
+            if v > max_val:
+                max_val = v
+        var sum_exp: Scalar[DT] = 0.0
 
-    for k in range(GROUP_SIZE):
-        var v = rebind[Scalar[DT]](input[b, base + k])
-        var y = exp(v - max_val) * inv_sum
-        output[b, base + k] = y
-        cache[b, base + k] = y
+        comptime for k in range(GROUP_SIZE):
+            var ek = exp(grp[k] - max_val)
+            grp[k] = ek
+            sum_exp += ek
+        var inv_sum = Scalar[DT](1.0) / sum_exp
+
+        comptime for k in range(GROUP_SIZE):
+            var y = grp[k] * inv_sum
+            output[b, base + k] = y
+            cache[b, base + k] = y
+    else:
+        var max_val = rebind[Scalar[DT]](input[b, base])
+        for k in range(1, GROUP_SIZE):
+            var v = rebind[Scalar[DT]](input[b, base + k])
+            if v > max_val:
+                max_val = v
+        var sum_exp: Scalar[DT] = 0.0
+        for k in range(GROUP_SIZE):
+            var v = rebind[Scalar[DT]](input[b, base + k])
+            sum_exp += exp(v - max_val)
+        var inv_sum = Scalar[DT](1.0) / sum_exp
+        for k in range(GROUP_SIZE):
+            var v = rebind[Scalar[DT]](input[b, base + k])
+            var y = exp(v - max_val) * inv_sum
+            output[b, base + k] = y
+            cache[b, base + k] = y
 
 
 def _sim_norm_backward_kernel[
