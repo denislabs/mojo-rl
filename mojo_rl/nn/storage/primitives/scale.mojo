@@ -41,15 +41,39 @@ def _scale_kernel[
         output[idx] = rebind[Scalar[DT]](input[idx]) * multiplier
 
 
+def _scale_dev_kernel[
+    N: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    mptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    # Device-resident multiplier variant — reads the scale factor from
+    # `mptr[0]` instead of a baked scalar arg, so the value can be updated by
+    # another GPU kernel (SAC's on-device alpha) without breaking CUDA-graph
+    # capture. Every thread reads the same `mptr[0]`.
+    var idx = Int(global_idx.x)
+    if idx < N:
+        output[idx] = rebind[Scalar[DT]](input[idx]) * mptr[0]
+
+
 struct Scale[DIM_: Int](Module):
     comptime ARITY = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
 
     var multiplier: Scalar[DT]
+    # Optional device-resident multiplier source. When set (via `set_attr_ptr`),
+    # the GPU forward/vjp read the scale factor from `multiplier_ptr[0]` instead
+    # of baking `multiplier` into the kernel args — required for CUDA-graph
+    # capture when another GPU kernel (SAC's on-device alpha) updates the value
+    # each step. None -> baked-scalar path (bit-identical). CPU always uses the
+    # host `multiplier`.
+    var multiplier_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     def __init__(out self):
         self.multiplier = Scalar[DT](1.0)
+        self.multiplier_ptr = None
 
     @staticmethod
     def make[
@@ -66,6 +90,12 @@ struct Scale[DIM_: Int](Module):
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         comptime if ATTR == "multiplier":
             self.multiplier = value
+
+    def set_attr_ptr[
+        ATTR: StaticString
+    ](mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+        comptime if ATTR == "multiplier":
+            self.multiplier_ptr = p
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
@@ -93,13 +123,22 @@ struct Scale[DIM_: Int](Module):
             var c = ctx.value()
             out.ensure_gpu(c, N)
             comptime n_blocks = (N + TPB - 1) // TPB
-            c.enqueue_function[_scale_kernel[N]](
-                in0.lt["gpu", Layout.row_major(N)](),
-                out.lt["gpu", Layout.row_major(N)](),
-                self.multiplier,
-                grid_dim=n_blocks,
-                block_dim=TPB,
-            )
+            if self.multiplier_ptr:
+                c.enqueue_function[_scale_dev_kernel[N]](
+                    in0.lt["gpu", Layout.row_major(N)](),
+                    out.lt["gpu", Layout.row_major(N)](),
+                    self.multiplier_ptr.value(),
+                    grid_dim=n_blocks,
+                    block_dim=TPB,
+                )
+            else:
+                c.enqueue_function[_scale_kernel[N]](
+                    in0.lt["gpu", Layout.row_major(N)](),
+                    out.lt["gpu", Layout.row_major(N)](),
+                    self.multiplier,
+                    grid_dim=n_blocks,
+                    block_dim=TPB,
+                )
 
     def vjp[
         target: StaticString,
@@ -132,13 +171,22 @@ struct Scale[DIM_: Int](Module):
             var c = ctx.value()
             gin.ensure_gpu(c, N)
             comptime n_blocks = (N + TPB - 1) // TPB
-            c.enqueue_function[_scale_kernel[N]](
-                grad_output.lt["gpu", Layout.row_major(N)](),
-                gin.lt["gpu", Layout.row_major(N)](),
-                self.multiplier,
-                grid_dim=n_blocks,
-                block_dim=TPB,
-            )
+            if self.multiplier_ptr:
+                c.enqueue_function[_scale_dev_kernel[N]](
+                    grad_output.lt["gpu", Layout.row_major(N)](),
+                    gin.lt["gpu", Layout.row_major(N)](),
+                    self.multiplier_ptr.value(),
+                    grid_dim=n_blocks,
+                    block_dim=TPB,
+                )
+            else:
+                c.enqueue_function[_scale_kernel[N]](
+                    grad_output.lt["gpu", Layout.row_major(N)](),
+                    gin.lt["gpu", Layout.row_major(N)](),
+                    self.multiplier,
+                    grid_dim=n_blocks,
+                    block_dim=TPB,
+                )
 
     # for_each_param / zero_grad inherit the Module reflection no-op defaults
     # (param-less: reflection finds no IsParam fields).

@@ -259,6 +259,11 @@ struct Node[
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         self.op.set_attr[ATTR](value)
 
+    def set_attr_ptr[
+        ATTR: StaticString
+    ](mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+        self.op.set_attr_ptr[ATTR](p)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # ExternalNode — a named graph slot whose module is supplied at forward

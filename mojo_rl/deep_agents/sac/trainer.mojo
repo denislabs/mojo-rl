@@ -339,7 +339,21 @@ struct SACTrainer[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.CRITIC,
         ].make(tau=tau)
 
-        t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
+        # On GPU the entropy temperature lives in a device buffer updated by a
+        # 1-thread kernel; on CPU it stays a host scalar (bit-identity path).
+        comptime if Self.train_target == "gpu":
+            t.alpha_opt = ScalarAdam.new_device(
+                ctx.value(), flog(init_alpha), alpha_lr
+            )
+            # One-time wiring of the device α buffer into both Scale-consuming
+            # blocks (target-y soft-V and actor-loss α·log_prob). After this
+            # neither block bakes α as a per-step host scalar; both read it
+            # on-device, and the device ScalarAdam refreshes it each step.
+            var alpha_p = t.alpha_opt.alpha_dev_ptr()
+            t.target_y_blk.set_alpha_ptr(alpha_p)
+            t.actor_loss_blk.set_alpha_ptr(alpha_p)
+        else:
+            t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
 
         t.sel = RSample[Self.ACT_DIM].make[Self.train_target, Zero](ctx)
         t.sel.action_scale = action_scale
@@ -387,10 +401,12 @@ struct SACTrainer[
     def train_step(mut self, step_idx: Int) raises -> Bool:
         self.state.step_idx = step_idx
         self.state.did_step = True
-        # α is a HOST scalar both on CPU and GPU (the blocks read state.alpha
-        # into their Scale node / sac_target_y; device-α capture is deferred).
-        self.state.alpha = fexp(self.alpha_opt.value)
-        comptime if Self.train_target == "gpu":
+        # CPU bakes the host α scalar into the target-y / actor Scale nodes per
+        # step. On GPU α lives on-device (wired once at make) and is refreshed
+        # by the device ScalarAdam; `state.alpha` is stale/unused on GPU.
+        comptime if Self.train_target == "cpu":
+            self.state.alpha = fexp(self.alpha_opt.value)
+        else:
             self.state.ctx = self.ctx
 
         self.sample_blk.step(self.state)
@@ -418,7 +434,17 @@ struct SACTrainer[
         )
         self.state.log_prob_mean = out.log_prob_mean
         self.state.actor_loss = out.loss
-        self.alpha_blk.step[Self.train_target](self.state, self.alpha_opt)
+        # CPU: host-scalar grad from state.log_prob_mean. GPU: the device
+        # ScalarAdam reads the actor-loss `lp_mean` device buffer directly (no
+        # D2H) and refreshes the device α the Scale nodes read.
+        comptime if Self.train_target == "cpu":
+            self.alpha_blk.step[Self.train_target](self.state, self.alpha_opt)
+        else:
+            self.alpha_opt.step_device(
+                self.ctx.value(),
+                self.actor_loss_blk.lp_mean_dev(),
+                self.alpha_blk.target_entropy,
+            )
         self.polyak_blk.step[Self.train_target](
             self.state, self.pair1, self.pair2
         )
@@ -791,6 +817,11 @@ struct SACTrainer[
         var mnq: Scalar[DT]
         var md: Scalar[DT]
         var maa: Scalar[DT]
+        # actor_loss + α: CPU reads the host accumulators; GPU reads the
+        # device-resident actor-loss accumulator + the live device α (no
+        # per-step D2H — drained once here at flush cadence).
+        var actor_val: Scalar[DT]
+        var alpha_val: Scalar[DT]
         comptime if Self.train_target == "gpu":
             mq = self._mean_q_dev.read["gpu"]()
             mtgt = self._mean_target_dev.read["gpu"]()
@@ -798,6 +829,8 @@ struct SACTrainer[
             mnq = self._mean_next_q_dev.read["gpu"]()
             md = self._mean_done_dev.read["gpu"]()
             maa = self._mean_abs_action_dev.read["gpu"]()
+            actor_val = self.actor_loss_blk.read_loss_accum(self.ctx.value())
+            alpha_val = self.alpha_opt.read_alpha()
         else:
             mq = self._mean_q_accum * inv
             mtgt = self._mean_target_accum * inv
@@ -805,10 +838,12 @@ struct SACTrainer[
             mnq = self._mean_next_q_accum * inv
             md = self._mean_done_accum * inv
             maa = self._mean_abs_action_accum * inv
+            actor_val = self._actor_L_accum * inv
+            alpha_val = self._alpha_accum * inv
         var bundle = SACMetrics(
-            actor_loss=LogScalar[DT](self._actor_L_accum * inv),
+            actor_loss=LogScalar[DT](actor_val),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
-            alpha=LogScalar[DT](self._alpha_accum * inv),
+            alpha=LogScalar[DT](alpha_val),
             mean_q=LogScalar[DT](mq),
             mean_target=LogScalar[DT](mtgt),
             mean_reward=LogScalar[DT](mr),
@@ -834,6 +869,7 @@ struct SACTrainer[
             self._mean_next_q_dev.reset["gpu"]()
             self._mean_done_dev.reset["gpu"]()
             self._mean_abs_action_dev.reset["gpu"]()
+            self.actor_loss_blk.reset_loss_accum()
         self._update_count = 0
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)

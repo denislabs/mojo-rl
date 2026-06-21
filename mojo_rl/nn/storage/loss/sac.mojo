@@ -77,6 +77,62 @@ def _target_y_kernel[
         )
 
 
+def _target_y_dev_kernel[
+    B: Int
+](
+    r: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    done: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    min_q: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    logp: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    y: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    gamma: Scalar[DT],
+    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    # Device-alpha variant: reads alpha from `alpha_ptr[0]` (SAC's on-device
+    # temperature buffer) instead of a baked scalar arg, so the target-y stays
+    # CUDA-graph capturable while the device ScalarAdam refreshes alpha.
+    var b = Int(global_idx.x)
+    if b < B:
+        var soft = rebind[Scalar[DT]](min_q[b]) - alpha_ptr[0] * rebind[
+            Scalar[DT]
+        ](logp[b])
+        y[b] = (
+            rebind[Scalar[DT]](r[b])
+            + gamma * (Scalar[DT](1.0) - rebind[Scalar[DT]](done[b])) * soft
+        )
+
+
+def sac_target_y_dev[
+    target: StaticString, B: Int
+](
+    mut r: Tensor,
+    mut done: Tensor,
+    mut min_q: Tensor,
+    mut logp: Tensor,
+    gamma: Scalar[DT],
+    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut y: Tensor,
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Device-alpha variant of `sac_target_y` — alpha read from `alpha_ptr[0]`
+    (SAC's on-device temperature). GPU only."""
+    comptime assert target == "gpu", "sac_target_y_dev: target must be 'gpu'"
+    var c = ctx.value()
+    y.ensure_gpu(c, B)
+    comptime nblk = (B + TPB - 1) // TPB
+    c.enqueue_function[_target_y_dev_kernel[B]](
+        r.lt["gpu", Layout.row_major(B)](),
+        done.lt["gpu", Layout.row_major(B)](),
+        min_q.lt["gpu", Layout.row_major(B)](),
+        logp.lt["gpu", Layout.row_major(B)](),
+        y.lt["gpu", Layout.row_major(B)](),
+        gamma,
+        alpha_ptr,
+        grid_dim=nblk,
+        block_dim=TPB,
+    )
+
+
 def sac_target_y[
     target: StaticString, B: Int
 ](

@@ -154,6 +154,18 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             comptime if Self.DECLS[i].NAME == NAME:
                 self.children[i].set_attr[ATTR](value)
 
+    def set_node_attr_ptr[
+        NAME: StaticString, ATTR: StaticString
+    ](mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+        """Point a runtime scalar attribute `ATTR` on the named node's inner op
+        at a device buffer (e.g. `set_node_attr_ptr["alogp", "multiplier"](p)`
+        wires SAC's on-device alpha into the actor-loss Scale node). Dispatches
+        via the uniform `Module.set_attr_ptr[ATTR]` trait method (no-op on ops
+        without that attr). The device-alpha capture-wiring boundary."""
+        comptime for i in range(Self.N):
+            comptime if Self.DECLS[i].NAME == NAME:
+                self.children[i].set_attr_ptr[ATTR](p)
+
     def node_output[
         name: StaticString
     ](mut self) raises -> ref[MutAnyOrigin] Tensor:

@@ -33,7 +33,7 @@ from mojo_rl.nn.storage.primitives.concat import Concat2
 from mojo_rl.nn.storage.primitives.binary_elementwise import BinaryElemMin
 from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node, ExternalNode
-from mojo_rl.nn.storage.loss.sac import sac_target_y
+from mojo_rl.nn.storage.loss.sac import sac_target_y, sac_target_y_dev
 from ..loss.loss_block import LossBlock
 from ..training.trainer_block import TrainerState
 
@@ -67,12 +67,23 @@ struct TargetYBlock[
     var action_scale: Scalar[DT]
     var gamma: Scalar[DT]
     var _min_q: Tensor        # graph output
+    # Optional on-device alpha source (SAC GPU device-alpha path). When set,
+    # target-y reads alpha from this device buffer instead of `state.alpha`.
+    var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     def __init__(out self):
         self.graph = Self.Graph()
         self.action_scale = Scalar[DT](1.0)
         self.gamma = Scalar[DT](0.99)
         self._min_q = Tensor()
+        self._alpha_ptr = None
+
+    def set_alpha_ptr(
+        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    ):
+        """Wire SAC's on-device alpha buffer into target-y (GPU device-alpha
+        path). After this, `step` on GPU reads alpha from the device buffer."""
+        self._alpha_ptr = p
 
     @staticmethod
     def make[
@@ -129,7 +140,22 @@ struct TargetYBlock[
         )
 
         # y = r + γ·(1−done)·(min_q − α·logp). min_q = graph output;
-        # logp = node_output["logp"] (the Slice(logp) branch, [B]). α = host scalar.
+        # logp = node_output["logp"] (the Slice(logp) branch, [B]).
+        # CPU: α = host scalar (state.alpha). GPU device-α: α read on-device
+        # from the wired buffer (no D2H); else baked host scalar.
+        comptime if target == "gpu":
+            if self._alpha_ptr:
+                sac_target_y_dev[target, Self.BATCH](
+                    state.mb_r,
+                    state.mb_d,
+                    self._min_q,
+                    self.graph.node_output["logp"](),
+                    self.gamma,
+                    self._alpha_ptr.value(),
+                    state.mb_y,
+                    ctx,
+                )
+                return
         sac_target_y[target, Self.BATCH](
             state.mb_r,
             state.mb_d,

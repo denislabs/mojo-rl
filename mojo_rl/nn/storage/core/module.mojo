@@ -109,6 +109,15 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
         override on their `Param`s, combinators recurse into children."""
         pass
 
+    def set_attr_ptr[
+        ATTR: StaticString
+    ](mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+        """Point a named runtime scalar attribute at a device buffer (e.g. a
+        `Scale` node's `multiplier` = SAC's on-device alpha). Default no-op;
+        the few leaves with a device-resident scalar source override and branch
+        on `ATTR`. Dispatched via `ComputeGraph.set_node_attr_ptr[NAME, ATTR]`."""
+        pass
+
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         """Set a named runtime scalar attribute on this module (e.g. a `Scale`
         node's `multiplier` = the moving SAC α, or an `RSample` node's
