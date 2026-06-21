@@ -3,9 +3,10 @@
 Assembles the migrated `mojo_rl.nn.storage` SAC blocks into a single
 driver-conforming `SACTrainer` that conforms `OffPolicyAgentGpu` so both
 the CPU single-env driver (`run_offpolicy_train`) and the batched drivers
-type-check. The CPU path is the production path; the GPU-only batched
-record / device-kernel-capture methods raise until the GPU storage path
-is wired.
+type-check. Both the CPU and GPU paths are wired; the GPU per-update hot
+loop is sync-free (loss / α / critic / diagnostics device-resident, read
+only at flush), so it supports CUDA-graph capture via
+`train_device_kernels` / `note_train_update` / `learning_starts_count`.
 
 Pipeline (per train step, mirrors the proven convergence test):
   state.step_idx = step; state.alpha = exp(alpha_opt.value)
@@ -518,6 +519,91 @@ struct SACTrainer[
 
     def total_train_steps(self) -> Int:
         return self._total_train_steps
+
+    # ─── CUDA-graph capture surface (OffPolicyAgentGpu) ────────────────
+    #
+    # The SAC GPU hot loop is sync-free (diagnostics, actor loss, α and critic
+    # loss are all device-resident, read only at flush), so the per-update
+    # device-kernel sequence is capturable. `train_device_kernels` is that
+    # sequence with NO host gate and NO host counters — the body of the driver's
+    # capture closure. The driver gates entry on `learning_starts_count()` and
+    # advances host counters once per logical update via `note_train_update()`.
+    # Mirrors `train_step`'s GPU path (kept in sync by hand — both run sample →
+    # target_y → twin_critic[ACCUMULATE] → actor_loss → α step_device → polyak →
+    # device diagnostics).
+    def train_device_kernels(mut self) raises:
+        comptime assert Self.train_target == "gpu", (
+            "train_device_kernels is GPU-only (CUDA-graph capture path)"
+        )
+        # Pin step_idx past warmup so the sample block's gate passes; the driver
+        # only enters capture once the buffer is warm.
+        self.state.step_idx = self.learning_starts
+        self.state.did_step = True
+        self.state.ctx = self.ctx
+        self.sample_blk.step(self.state)
+
+        self.target_y_blk.step["gpu"](
+            self.state, self.actor, self.pair1.target_net, self.pair2.target_net
+        )
+        self.twin_critic_blk.step["gpu", ACCUMULATE=True](
+            self.state,
+            self.pair1.online,
+            self.critic1_opt,
+            self.pair2.online,
+            self.critic2_opt,
+        )
+        _ = self.actor_loss_blk.forward_backward["gpu"](
+            self.actor,
+            self.actor_opt,
+            self.pair1.online,
+            self.pair2.online,
+            self.state.mb_s,
+            self.state.alpha,
+            self.ctx,
+        )
+        self.alpha_opt.step_device(
+            self.ctx.value(),
+            self.actor_loss_blk.lp_mean_dev(),
+            self.alpha_blk.target_entropy,
+        )
+        self.polyak_blk.step["gpu"](self.state, self.pair1, self.pair2)
+        self.sample_blk.update_priorities(self.state)
+
+        # Device diagnostics (fold each batch mean into the device accumulators;
+        # captured + replayed → advances identically to the non-captured path).
+        comptime lb = Layout.row_major(Self.BATCH)
+        comptime lba = Layout.row_major(Self.BATCH * Self.ACT_DIM)
+        self._mean_q_dev.accumulate_gpu_lt[Self.BATCH](
+            self.twin_critic_blk.inner.c1._mb_q.lt["gpu", lb]()
+        )
+        self._mean_target_dev.accumulate_gpu_lt[Self.BATCH](
+            self.state.mb_y.lt["gpu", lb]()
+        )
+        self._mean_reward_dev.accumulate_gpu_lt[Self.BATCH](
+            self.state.mb_r.lt["gpu", lb]()
+        )
+        self._mean_next_q_dev.accumulate_gpu_lt[Self.BATCH](
+            self.target_y_blk.graph.node_output["min_q"]().lt["gpu", lb]()
+        )
+        self._mean_done_dev.accumulate_gpu_lt[Self.BATCH](
+            self.state.mb_d.lt["gpu", lb]()
+        )
+        self._mean_abs_action_dev.accumulate_gpu_abs_lt[Self.BATCH * Self.ACT_DIM](
+            self.state.mb_a.lt["gpu", lba]()
+        )
+
+    def note_train_update(mut self):
+        """Advance one logical update's host counters under graph replay (the
+        device work is replayed by the captured graph; loss / α / diagnostics
+        are device-resident and drained at flush, so only the counters live on
+        the host)."""
+        self._update_count += 1
+        self._total_train_steps += 1
+
+    def learning_starts_count(self) -> Int:
+        """Env-step threshold after which the replay is warm enough to train —
+        the driver gates the capture path on this."""
+        return self.learning_starts
 
     # ─── Action selection ──────────────────────────────────────────────
     def select_action_batched[

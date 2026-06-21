@@ -7,8 +7,10 @@ Exercises the migrated SACTrainer GPU surface end-to-end:
   - train_step on GPU (target_y / twin-critic / actor-loss / α / polyak blocks),
   - select_greedy_action GPU (used by the eval).
 
-CUDA-graph capture is DISABLED (USE_TRAIN_CUDA_GRAPH=False) — this gates the
-per-step device path; capture is a separate optimization.
+CUDA-graph capture is ENABLED (USE_TRAIN_CUDA_GRAPH=True) — exercises the
+trainer's `train_device_kernels` / `note_train_update` / `learning_starts_count`
+capture surface. On Apple Metal `CUDAGraph` is a no-op (the closure runs each
+iteration, identical to the non-captured path); on NVIDIA it captures + replays.
 
 Convergence is measured by a GREEDY EVAL on a CPU Pendulum env (the GPU agent's
 `select_greedy_action` runs host→device→host per step), which gives a real
@@ -82,7 +84,7 @@ def main() raises:
         _ = agent.train[
             BatchedEnvT,
             N_ENVS=N_ENVS,
-            USE_TRAIN_CUDA_GRAPH=False,
+            USE_TRAIN_CUDA_GRAPH=True,
         ](
             env,
             NUM_STEPS,
