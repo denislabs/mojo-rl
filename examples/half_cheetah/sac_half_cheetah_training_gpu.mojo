@@ -170,7 +170,7 @@ def main() raises:
         _ = agent.train[
             BatchedEnvT,
             N_ENVS=N_ENVS,
-            USE_TRAIN_CUDA_GRAPH=True,
+            USE_TRAIN_CUDA_GRAPH=False,
             L=RemoteLogger,
         ](
             env,
