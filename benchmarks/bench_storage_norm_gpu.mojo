@@ -167,6 +167,127 @@ def _ln_fwd_single[
             idx += TPB
 
 
+# ───────────── backward-dx: baseline (re-read) vs single (cached) ─────────────
+def _ln_bwd_scalar[
+    BATCH: Int, DIM: Int
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+):
+    var b = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if b >= BATCH:
+        return
+    var inv_dim = Scalar[ACC](1.0) / Scalar[ACC](DIM)
+    var inv_std = rebind[Scalar[DT]](cache_inv_std[b]).cast[ACC]()
+    var my_g = Scalar[ACC](0)
+    var my_g_xhat = Scalar[ACC](0)
+    var idx = t
+    while idx < DIM:
+        var go = rebind[Scalar[DT]](grad_output[b, idx]).cast[ACC]()
+        var gm = rebind[Scalar[DT]](gamma[idx]).cast[ACC]()
+        var xh = rebind[Scalar[DT]](cache_xhat[b, idx]).cast[ACC]()
+        var g = go * gm
+        my_g += g
+        my_g_xhat += g * xh
+        idx += TPB
+    var mean_g = block.sum[block_size=TPB, broadcast=True](val=my_g) * inv_dim
+    var mean_g_xhat = (
+        block.sum[block_size=TPB, broadcast=True](val=my_g_xhat) * inv_dim
+    )
+    idx = t
+    while idx < DIM:
+        var go = rebind[Scalar[DT]](grad_output[b, idx]).cast[ACC]()
+        var gm = rebind[Scalar[DT]](gamma[idx]).cast[ACC]()
+        var xh = rebind[Scalar[DT]](cache_xhat[b, idx]).cast[ACC]()
+        var g = go * gm
+        grad_input[b, idx] = (
+            inv_std * (g - mean_g - xh * mean_g_xhat)
+        ).cast[DT]()
+        idx += TPB
+
+
+def _ln_bwd_single[
+    BATCH: Int, DIM: Int
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+):
+    var b = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if b >= BATCH:
+        return
+    comptime ELEMS = (DIM + TPB - 1) // TPB
+    comptime REG_CACHE = ELEMS <= 8
+    var inv_dim = Scalar[ACC](1.0) / Scalar[ACC](DIM)
+    var inv_std = rebind[Scalar[DT]](cache_inv_std[b]).cast[ACC]()
+    var my_g = Scalar[ACC](0)
+    var my_g_xhat = Scalar[ACC](0)
+
+    comptime if REG_CACHE:
+        var g_s = InlineArray[Scalar[ACC], ELEMS](fill=Scalar[ACC](0))
+        var xh_s = InlineArray[Scalar[ACC], ELEMS](fill=Scalar[ACC](0))
+
+        @parameter
+        for e in range(ELEMS):
+            var col = t + e * TPB
+            if col < DIM:
+                var go = rebind[Scalar[DT]](grad_output[b, col]).cast[ACC]()
+                var gm = rebind[Scalar[DT]](gamma[col]).cast[ACC]()
+                var xh = rebind[Scalar[DT]](cache_xhat[b, col]).cast[ACC]()
+                var g = go * gm
+                g_s[e] = g
+                xh_s[e] = xh
+                my_g += g
+                my_g_xhat += g * xh
+        var mean_g = (
+            block.sum[block_size=TPB, broadcast=True](val=my_g) * inv_dim
+        )
+        var mean_g_xhat = (
+            block.sum[block_size=TPB, broadcast=True](val=my_g_xhat) * inv_dim
+        )
+
+        @parameter
+        for e in range(ELEMS):
+            var col = t + e * TPB
+            if col < DIM:
+                grad_input[b, col] = (
+                    inv_std * (g_s[e] - mean_g - xh_s[e] * mean_g_xhat)
+                ).cast[DT]()
+    else:
+        var idx = t
+        while idx < DIM:
+            var go = rebind[Scalar[DT]](grad_output[b, idx]).cast[ACC]()
+            var gm = rebind[Scalar[DT]](gamma[idx]).cast[ACC]()
+            var xh = rebind[Scalar[DT]](cache_xhat[b, idx]).cast[ACC]()
+            var g = go * gm
+            my_g += g
+            my_g_xhat += g * xh
+            idx += TPB
+        var mean_g = (
+            block.sum[block_size=TPB, broadcast=True](val=my_g) * inv_dim
+        )
+        var mean_g_xhat = (
+            block.sum[block_size=TPB, broadcast=True](val=my_g_xhat) * inv_dim
+        )
+        idx = t
+        while idx < DIM:
+            var go = rebind[Scalar[DT]](grad_output[b, idx]).cast[ACC]()
+            var gm = rebind[Scalar[DT]](gamma[idx]).cast[ACC]()
+            var xh = rebind[Scalar[DT]](cache_xhat[b, idx]).cast[ACC]()
+            var g = go * gm
+            grad_input[b, idx] = (
+                inv_std * (g - mean_g - xh * mean_g_xhat)
+            ).cast[DT]()
+            idx += TPB
+
+
 def _time[
     BATCH: Int, DIM: Int, VECTORIZED: Bool, WARMUP: Int, ITERS: Int
 ](ctx: DeviceContext, label: StaticString) raises:
@@ -230,6 +351,59 @@ def _ab[
     _time[BATCH, DIM, True, WARMUP, ITERS](ctx, "single")
 
 
+def _time_bwd[
+    BATCH: Int, DIM: Int, CACHED: Bool, WARMUP: Int, ITERS: Int
+](ctx: DeviceContext, label: StaticString) raises:
+    var go = ctx.enqueue_create_buffer[DT](BATCH * DIM)
+    var gam = ctx.enqueue_create_buffer[DT](DIM)
+    var xh = ctx.enqueue_create_buffer[DT](BATCH * DIM)
+    var iv = ctx.enqueue_create_buffer[DT](BATCH)
+    var gi = ctx.enqueue_create_buffer[DT](BATCH * DIM)
+    _ = go.enqueue_fill(Scalar[DT](0.01))
+    _ = gam.enqueue_fill(Scalar[DT](1.0))
+    _ = xh.enqueue_fill(Scalar[DT](0.5))
+    _ = iv.enqueue_fill(Scalar[DT](1.0))
+
+    comptime l2d = Layout.row_major(BATCH, DIM)
+    comptime ld = Layout.row_major(DIM)
+    comptime lb = Layout.row_major(BATCH)
+    var got = LayoutTensor[DT, l2d, MutAnyOrigin](go)
+    var gt = LayoutTensor[DT, ld, MutAnyOrigin](gam)
+    var xt = LayoutTensor[DT, l2d, MutAnyOrigin](xh)
+    var ivt = LayoutTensor[DT, lb, MutAnyOrigin](iv)
+    var git = LayoutTensor[DT, l2d, MutAnyOrigin](gi)
+
+    comptime kern = _ln_bwd_single[
+        BATCH, DIM
+    ] if CACHED else _ln_bwd_scalar[BATCH, DIM]
+    comptime for _ in range(WARMUP):
+        ctx.enqueue_function[kern](
+            got, gt, xt, ivt, git, grid_dim=BATCH, block_dim=TPB
+        )
+    ctx.synchronize()
+    var t0 = perf_counter_ns()
+    comptime for _ in range(ITERS):
+        ctx.enqueue_function[kern](
+            got, gt, xt, ivt, git, grid_dim=BATCH, block_dim=TPB
+        )
+    ctx.synchronize()
+    var t1 = perf_counter_ns()
+    var us = Float64(t1 - t0) / Float64(ITERS) / 1000.0
+    var gb = 4.0 * Float64(BATCH) * Float64(DIM) * 4.0 / 1e9
+    var gbps = gb / (us / 1e6)
+    print(
+        "  ", label, " B=", BATCH, " D=", DIM, " | ", us, "us/iter ", gbps,
+        "GB/s",
+    )
+
+
+def _ab_bwd[
+    BATCH: Int, DIM: Int, WARMUP: Int, ITERS: Int
+](ctx: DeviceContext) raises:
+    _time_bwd[BATCH, DIM, False, WARMUP, ITERS](ctx, "scalar")
+    _time_bwd[BATCH, DIM, True, WARMUP, ITERS](ctx, "single")
+
+
 def main() raises:
     var ctx = DeviceContext()
     print("LayerNorm forward GPU — baseline(scalar 3-read) vs single(1-read) [fp32]")
@@ -239,6 +413,14 @@ def main() raises:
     _ab[4096, 1024, 10, 100](ctx)
     _ab[1024, 4096, 10, 100](ctx)
     _ab[16384, 256, 10, 100](ctx)
+    print("-" * 66)
+    print("LayerNorm backward-dx GPU — baseline(re-read) vs single(cached) [fp32]")
+    print("-" * 66)
+    _ab_bwd[4096, 256, 10, 100](ctx)
+    _ab_bwd[4096, 512, 10, 100](ctx)
+    _ab_bwd[4096, 1024, 10, 100](ctx)
+    _ab_bwd[1024, 4096, 10, 100](ctx)
+    _ab_bwd[16384, 256, 10, 100](ctx)
     print("=" * 66)
-    print("vec/scalar GB/s ratio = realized speedup. If vec is already near")
-    print("peak HBM bandwidth, the kernel is done; if not, more headroom.")
+    print("single/scalar speedup = µs ratio. Forward + backward-dx both cut the")
+    print("input re-read; if single≈scalar the kernel was L2/latency-bound.")

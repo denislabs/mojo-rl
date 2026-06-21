@@ -139,33 +139,72 @@ def _layer_norm_backward_dx_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
-    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
-    var inv_std = rebind[Scalar[DT]](cache_inv_std[b])
-    var my_g: Scalar[DT] = 0.0
-    var my_g_xhat: Scalar[DT] = 0.0
-    var idx = t
-    while idx < DIM:
-        var go = rebind[Scalar[DT]](grad_output[b, idx])
-        var gm = rebind[Scalar[DT]](gamma[idx])
-        var xh = rebind[Scalar[DT]](cache_xhat[b, idx])
-        var g = go * gm
-        my_g += g
-        my_g_xhat += g * xh
-        idx += LN_TPB
-    var mean_g = (
-        block.sum[block_size=LN_TPB, broadcast=True](val=my_g) * inv_dim
-    )
-    var mean_g_xhat = (
-        block.sum[block_size=LN_TPB, broadcast=True](val=my_g_xhat) * inv_dim
-    )
-    idx = t
-    while idx < DIM:
-        var go = rebind[Scalar[DT]](grad_output[b, idx])
-        var gm = rebind[Scalar[DT]](gamma[idx])
-        var xh = rebind[Scalar[DT]](cache_xhat[b, idx])
-        var g = go * gm
-        grad_input[b, idx] = inv_std * (g - mean_g - xh * mean_g_xhat)
-        idx += LN_TPB
+    comptime ELEMS = (DIM + LN_TPB - 1) // LN_TPB
+    comptime REG_CACHE = ELEMS <= LN_REG_CAP
+    var inv_dim = Scalar[LN_ACC](1.0) / Scalar[LN_ACC](DIM)
+    var inv_std = rebind[Scalar[DT]](cache_inv_std[b]).cast[LN_ACC]()
+    var my_g = Scalar[LN_ACC](0)
+    var my_g_xhat = Scalar[LN_ACC](0)
+
+    comptime if REG_CACHE:
+        # Cache g=go·γ and x̂ once; the write pass reads no global memory.
+        var g_s = InlineArray[Scalar[LN_ACC], ELEMS](fill=Scalar[LN_ACC](0))
+        var xh_s = InlineArray[Scalar[LN_ACC], ELEMS](fill=Scalar[LN_ACC](0))
+
+        @parameter
+        for e in range(ELEMS):
+            var col = t + e * LN_TPB
+            if col < DIM:
+                var go = rebind[Scalar[DT]](grad_output[b, col]).cast[LN_ACC]()
+                var gm = rebind[Scalar[DT]](gamma[col]).cast[LN_ACC]()
+                var xh = rebind[Scalar[DT]](cache_xhat[b, col]).cast[LN_ACC]()
+                var g = go * gm
+                g_s[e] = g
+                xh_s[e] = xh
+                my_g += g
+                my_g_xhat += g * xh
+        var mean_g = (
+            block.sum[block_size=LN_TPB, broadcast=True](val=my_g) * inv_dim
+        )
+        var mean_g_xhat = (
+            block.sum[block_size=LN_TPB, broadcast=True](val=my_g_xhat)
+            * inv_dim
+        )
+
+        @parameter
+        for e in range(ELEMS):
+            var col = t + e * LN_TPB
+            if col < DIM:
+                grad_input[b, col] = (
+                    inv_std * (g_s[e] - mean_g - xh_s[e] * mean_g_xhat)
+                ).cast[DT]()
+    else:
+        var idx = t
+        while idx < DIM:
+            var go = rebind[Scalar[DT]](grad_output[b, idx]).cast[LN_ACC]()
+            var gm = rebind[Scalar[DT]](gamma[idx]).cast[LN_ACC]()
+            var xh = rebind[Scalar[DT]](cache_xhat[b, idx]).cast[LN_ACC]()
+            var g = go * gm
+            my_g += g
+            my_g_xhat += g * xh
+            idx += LN_TPB
+        var mean_g = (
+            block.sum[block_size=LN_TPB, broadcast=True](val=my_g) * inv_dim
+        )
+        var mean_g_xhat = (
+            block.sum[block_size=LN_TPB, broadcast=True](val=my_g_xhat)
+            * inv_dim
+        )
+        idx = t
+        while idx < DIM:
+            var go = rebind[Scalar[DT]](grad_output[b, idx]).cast[LN_ACC]()
+            var gm = rebind[Scalar[DT]](gamma[idx]).cast[LN_ACC]()
+            var xh = rebind[Scalar[DT]](cache_xhat[b, idx]).cast[LN_ACC]()
+            var g = go * gm
+            grad_input[b, idx] = (
+                inv_std * (g - mean_g - xh * mean_g_xhat)
+            ).cast[DT]()
+            idx += LN_TPB
 
 
 def _layer_norm_backward_dparams_kernel[

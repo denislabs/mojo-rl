@@ -124,24 +124,55 @@ def _rms_norm_backward_dx_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
-    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
-    var inv_rms = rebind[Scalar[DT]](cache_inv_rms[b])
-    var my_r: Scalar[DT] = 0.0
-    var idx = t
-    while idx < DIM:
-        var go = rebind[Scalar[DT]](grad_output[b, idx])
-        var gm = rebind[Scalar[DT]](gamma[idx])
-        var n = rebind[Scalar[DT]](cache_norm[b, idx])
-        my_r += go * gm * n
-        idx += RMS_TPB
-    var R = block.sum[block_size=RMS_TPB, broadcast=True](val=my_r)
-    idx = t
-    while idx < DIM:
-        var go = rebind[Scalar[DT]](grad_output[b, idx])
-        var gm = rebind[Scalar[DT]](gamma[idx])
-        var n = rebind[Scalar[DT]](cache_norm[b, idx])
-        grad_input[b, idx] = inv_rms * (go * gm - n * R * inv_dim)
-        idx += RMS_TPB
+    comptime ELEMS = (DIM + RMS_TPB - 1) // RMS_TPB
+    comptime REG_CACHE = ELEMS <= RMS_REG_CAP
+    var inv_dim = Scalar[RMS_ACC](1.0) / Scalar[RMS_ACC](DIM)
+    var inv_rms = rebind[Scalar[DT]](cache_inv_rms[b]).cast[RMS_ACC]()
+    var my_r = Scalar[RMS_ACC](0)
+
+    comptime if REG_CACHE:
+        # Cache gg=go·γ and n once; the write pass reads no global memory.
+        var gg_s = InlineArray[Scalar[RMS_ACC], ELEMS](fill=Scalar[RMS_ACC](0))
+        var n_s = InlineArray[Scalar[RMS_ACC], ELEMS](fill=Scalar[RMS_ACC](0))
+
+        @parameter
+        for e in range(ELEMS):
+            var col = t + e * RMS_TPB
+            if col < DIM:
+                var go = rebind[Scalar[DT]](grad_output[b, col]).cast[RMS_ACC]()
+                var gm = rebind[Scalar[DT]](gamma[col]).cast[RMS_ACC]()
+                var n = rebind[Scalar[DT]](cache_norm[b, col]).cast[RMS_ACC]()
+                var gg = go * gm
+                gg_s[e] = gg
+                n_s[e] = n
+                my_r += gg * n
+        var R = block.sum[block_size=RMS_TPB, broadcast=True](val=my_r)
+
+        @parameter
+        for e in range(ELEMS):
+            var col = t + e * RMS_TPB
+            if col < DIM:
+                grad_input[b, col] = (
+                    inv_rms * (gg_s[e] - n_s[e] * R * inv_dim)
+                ).cast[DT]()
+    else:
+        var idx = t
+        while idx < DIM:
+            var go = rebind[Scalar[DT]](grad_output[b, idx]).cast[RMS_ACC]()
+            var gm = rebind[Scalar[DT]](gamma[idx]).cast[RMS_ACC]()
+            var n = rebind[Scalar[DT]](cache_norm[b, idx]).cast[RMS_ACC]()
+            my_r += go * gm * n
+            idx += RMS_TPB
+        var R = block.sum[block_size=RMS_TPB, broadcast=True](val=my_r)
+        idx = t
+        while idx < DIM:
+            var go = rebind[Scalar[DT]](grad_output[b, idx]).cast[RMS_ACC]()
+            var gm = rebind[Scalar[DT]](gamma[idx]).cast[RMS_ACC]()
+            var n = rebind[Scalar[DT]](cache_norm[b, idx]).cast[RMS_ACC]()
+            grad_input[b, idx] = (
+                inv_rms * (go * gm - n * R * inv_dim)
+            ).cast[DT]()
+            idx += RMS_TPB
 
 
 def _rms_norm_backward_dgamma_kernel[
