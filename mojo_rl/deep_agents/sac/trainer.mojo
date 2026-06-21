@@ -886,13 +886,26 @@ struct SACTrainer[
 
     def flush_train_log(
         mut self,
-    ) -> Tuple[Scalar[DT], Scalar[DT], Scalar[DT], Int]:
+    ) raises -> Tuple[Scalar[DT], Scalar[DT], Scalar[DT], Int]:
+        """(actor_loss, critic_loss, alpha, n_updates) over the window.
+        Secondary log path — `flush_metrics` is the authoritative bundle. On
+        GPU actor_loss + α are read from the device accumulator / live device α
+        (matching `flush_metrics`); the host scalars are never advanced on the
+        GPU path, so reading them here would report 0 / a frozen init-α."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var actor_val: Scalar[DT]
+        var alpha_val: Scalar[DT]
+        comptime if Self.train_target == "gpu":
+            actor_val = self.actor_loss_blk.read_loss_accum(self.ctx.value())
+            alpha_val = self.alpha_opt.read_alpha()
+        else:
+            actor_val = self._actor_L_accum * inv
+            alpha_val = self._alpha_accum * inv
         var out = (
-            self._actor_L_accum * inv,
+            actor_val,
             self._critic_L_accum * inv,
-            self._alpha_accum * inv,
+            alpha_val,
             self._update_count,
         )
         self._actor_L_accum = Scalar[DT](0.0)
