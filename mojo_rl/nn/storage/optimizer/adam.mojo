@@ -48,7 +48,12 @@ def _adam_update_kernel[
     wd: Scalar[DT],
     apply_decay: Int,
 ):
-    """Per-param update (one Param, comptime size N)."""
+    """Per-param update (one Param, comptime size N).
+
+    NOTE: `bc1/bc2` are host-baked here — fine for CPU and for the un-captured
+    per-param GPU walk, but NOT CUDA-graph-safe (they'd freeze at capture-time).
+    The capture path uses `adopt` → `_grouped_adam_kernel`, which reads β^t from
+    a device buffer. Don't capture a non-adopted GPU optimizer."""
     var i = Int(global_idx.x)
     if i >= N:
         return
@@ -66,6 +71,22 @@ def _adam_update_kernel[
     param[i] = p - lr * m_hat / (sqrt(v_hat) + eps)
 
 
+def _adam_advance_pow_kernel(
+    powbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    beta1: Scalar[DT],
+    beta2: Scalar[DT],
+):
+    """Advance the device-resident bias-correction powers `[β₁ᵗ, β₂ᵗ]` (1
+    thread). β^t lives on-device so it advances on every CUDA-graph REPLAY —
+    a host-baked `bc` scalar would freeze at the capture-time step, scaling
+    every replayed update by the early (t≈1) correction. Mirrors ScalarAdam's
+    on-device `β^t` state."""
+    if Int(global_idx.x) != 0:
+        return
+    powbuf[0] = powbuf[0] * beta1
+    powbuf[1] = powbuf[1] * beta2
+
+
 def _grouped_adam_kernel(
     val: UnsafePointer[Scalar[DT], MutAnyOrigin],
     grd: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -77,15 +98,19 @@ def _grouped_adam_kernel(
     beta1: Scalar[DT],
     beta2: Scalar[DT],
     eps: Scalar[DT],
-    bc1: Scalar[DT],
-    bc2: Scalar[DT],
+    powbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
     wd: Scalar[DT],
 ):
-    """Arena update (all params at once over runtime-length flat buffers)."""
+    """Arena update (all params at once over runtime-length flat buffers).
+    `bc1/bc2` are read from the device `powbuf` (`[β₁ᵗ, β₂ᵗ]`, advanced by
+    `_adam_advance_pow_kernel` just before) so they advance under graph replay.
+    """
     var i = Int(global_idx.x)
     if i >= total:
         return
     var one = Scalar[DT](1.0)
+    var bc1 = one - powbuf[0]
+    var bc2 = one - powbuf[1]
     var p = val[i]
     if decay[i] != Scalar[DT](0.0):
         p -= lr * wd * p
@@ -114,6 +139,11 @@ struct Adam(Movable, ParamVisitor, Optimizer):
     var arena: ParamArena
     var m_arena: Tensor
     var v_arena: Tensor
+    # Device-resident bias-correction powers `[β₁ᵗ, β₂ᵗ]` (GPU arena path only,
+    # allocated by `adopt`). Advanced on-device each step so the correction
+    # advances under CUDA-graph replay instead of freezing at the host-baked
+    # capture-time value. CPU + per-param paths use the host `bc1/bc2`.
+    var _pow_dev: Tensor
 
     def __init__(out self):
         """No-arg default (satisfies Defaultable for the generic Trainer)."""
@@ -137,6 +167,7 @@ struct Adam(Movable, ParamVisitor, Optimizer):
         self._b2_pow = Scalar[DT](1.0)
         self.bc1 = Scalar[DT](1.0)
         self.bc2 = Scalar[DT](1.0)
+        self._pow_dev = Tensor()
         self.arena = ParamArena()
         self.m_arena = Tensor()
         self.v_arena = Tensor()
@@ -159,6 +190,9 @@ struct Adam(Movable, ParamVisitor, Optimizer):
             var c = ctx.value()
             self.m_arena = Tensor.alloc_gpu(c, self.arena.total)
             self.v_arena = Tensor.alloc_gpu(c, self.arena.total)
+            # `[β₁ᵗ, β₂ᵗ]` seeded to β^0 = 1; advanced on-device each step.
+            self._pow_dev = Tensor.alloc_gpu(c, 2)
+            self._pow_dev.dev.value().enqueue_fill(Scalar[DT](1.0))
 
     def step[
         target: StaticString, M: Module
@@ -177,6 +211,15 @@ struct Adam(Movable, ParamVisitor, Optimizer):
     def _grouped_step(mut self, c: DeviceContext) raises:
         if self.arena.total == 0:
             return
+        # Advance β^t on-device BEFORE the update reads it — captured into the
+        # graph so it advances per replay (host `bc1/bc2` would freeze).
+        c.enqueue_function[_adam_advance_pow_kernel](
+            self._pow_dev.dev.value(),
+            self.beta1,
+            self.beta2,
+            grid_dim=1,
+            block_dim=1,
+        )
         var nblk = (self.arena.total + TPB - 1) // TPB
         c.enqueue_function[_grouped_adam_kernel](
             self.arena.val.dev.value(),
@@ -189,8 +232,7 @@ struct Adam(Movable, ParamVisitor, Optimizer):
             self.beta1,
             self.beta2,
             self.eps,
-            self.bc1,
-            self.bc2,
+            self._pow_dev.dev.value(),
             self.wd,
             grid_dim=nblk,
             block_dim=TPB,
