@@ -31,7 +31,7 @@ Cache (per timestep, BATCH-major): [i | f | g | o | tanh(c_t)], 5·H wide.
 """
 
 from std.math import exp, tanh
-from std.gpu import thread_idx, block_idx
+from std.gpu import thread_idx, block_idx, global_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -62,61 +62,51 @@ def _sigmoid(x: Scalar[DT]) -> Scalar[DT]:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _lstm_fwd_kernel[
-    BATCH: Int, IN_: Int, H: Int, CACHE: Int, WITH_CACHE: Bool,
+def _lstm_gate_fwd_kernel[
+    BATCH: Int, H: Int, CACHE: Int, WITH_CACHE: Bool,
 ](
-    x: LayoutTensor[DT, Layout.row_major(BATCH, IN_), MutAnyOrigin],
-    W_ih: LayoutTensor[DT, Layout.row_major(IN_, 4 * H), MutAnyOrigin],
-    W_hh: LayoutTensor[DT, Layout.row_major(H, 4 * H), MutAnyOrigin],
+    ix: LayoutTensor[DT, Layout.row_major(BATCH, 4 * H), MutAnyOrigin],
+    hx: LayoutTensor[DT, Layout.row_major(BATCH, 4 * H), MutAnyOrigin],
     b: LayoutTensor[DT, Layout.row_major(4 * H), MutAnyOrigin],
-    h_prev: LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin],
     c_prev: LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin],
     h_t: LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin],
     c_t: LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin],
     cache: LayoutTensor[DT, Layout.row_major(BATCH, CACHE), MutAnyOrigin],
 ):
-    """One block per sample; threads stride over j ∈ [0, H)."""
-    var bi = Int(block_idx.x)
-    if bi >= BATCH:
+    """Elementwise gate/cell from the two GEMM pre-activations (ix = x·W_ih,
+    hx = h_prev·W_hh). One thread per (sample, hidden unit)."""
+    var gid = Int(global_idx.x)
+    if gid >= BATCH * H:
         return
-    var j = Int(thread_idx.x)
-    while j < H:
-        var i_pre = Scalar[DT](0)
-        var f_pre = Scalar[DT](0)
-        var g_pre = Scalar[DT](0)
-        var o_pre = Scalar[DT](0)
-        for jj in range(IN_):
-            var xv = rebind[Scalar[DT]](x[bi, jj])
-            i_pre += xv * rebind[Scalar[DT]](W_ih[jj, j])
-            f_pre += xv * rebind[Scalar[DT]](W_ih[jj, H + j])
-            g_pre += xv * rebind[Scalar[DT]](W_ih[jj, 2 * H + j])
-            o_pre += xv * rebind[Scalar[DT]](W_ih[jj, 3 * H + j])
-        for jj in range(H):
-            var hv = rebind[Scalar[DT]](h_prev[bi, jj])
-            i_pre += hv * rebind[Scalar[DT]](W_hh[jj, j])
-            f_pre += hv * rebind[Scalar[DT]](W_hh[jj, H + j])
-            g_pre += hv * rebind[Scalar[DT]](W_hh[jj, 2 * H + j])
-            o_pre += hv * rebind[Scalar[DT]](W_hh[jj, 3 * H + j])
-        i_pre += rebind[Scalar[DT]](b[j])
-        f_pre += rebind[Scalar[DT]](b[H + j])
-        g_pre += rebind[Scalar[DT]](b[2 * H + j])
-        o_pre += rebind[Scalar[DT]](b[3 * H + j])
+    var bi = gid // H
+    var j = gid % H
+    var i_pre = rebind[Scalar[DT]](ix[bi, j]) + rebind[Scalar[DT]](
+        hx[bi, j]
+    ) + rebind[Scalar[DT]](b[j])
+    var f_pre = rebind[Scalar[DT]](ix[bi, H + j]) + rebind[Scalar[DT]](
+        hx[bi, H + j]
+    ) + rebind[Scalar[DT]](b[H + j])
+    var g_pre = rebind[Scalar[DT]](ix[bi, 2 * H + j]) + rebind[Scalar[DT]](
+        hx[bi, 2 * H + j]
+    ) + rebind[Scalar[DT]](b[2 * H + j])
+    var o_pre = rebind[Scalar[DT]](ix[bi, 3 * H + j]) + rebind[Scalar[DT]](
+        hx[bi, 3 * H + j]
+    ) + rebind[Scalar[DT]](b[3 * H + j])
 
-        var i_val = _sigmoid(i_pre)
-        var f_val = _sigmoid(f_pre)
-        var g_val = tanh(g_pre)
-        var o_val = _sigmoid(o_pre)
-        var c_new = f_val * rebind[Scalar[DT]](c_prev[bi, j]) + i_val * g_val
-        var tc = tanh(c_new)
-        c_t[bi, j] = c_new
-        h_t[bi, j] = o_val * tc
-        comptime if WITH_CACHE:
-            cache[bi, j] = i_val
-            cache[bi, H + j] = f_val
-            cache[bi, 2 * H + j] = g_val
-            cache[bi, 3 * H + j] = o_val
-            cache[bi, 4 * H + j] = tc
-        j += TPB
+    var i_val = _sigmoid(i_pre)
+    var f_val = _sigmoid(f_pre)
+    var g_val = tanh(g_pre)
+    var o_val = _sigmoid(o_pre)
+    var c_new = f_val * rebind[Scalar[DT]](c_prev[bi, j]) + i_val * g_val
+    var tc = tanh(c_new)
+    c_t[bi, j] = c_new
+    h_t[bi, j] = o_val * tc
+    comptime if WITH_CACHE:
+        cache[bi, j] = i_val
+        cache[bi, H + j] = f_val
+        cache[bi, 2 * H + j] = g_val
+        cache[bi, 3 * H + j] = o_val
+        cache[bi, 4 * H + j] = tc
 
 
 def _lstm_bwd_input_kernel[
@@ -278,6 +268,9 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
     var W_hh: Param["W_hh", True,  Self.W_HH_SIZE]
     var b:    Param["b",    False, Self.B_SIZE]
     var _dcomb: Tensor  # GPU d_combined scratch (lazy by BATCH)
+    # GPU forward GEMM scratch (lazy by BATCH): ix = x·W_ih, hx = h_prev·W_hh.
+    var _ix: Tensor
+    var _hx: Tensor
 
     # ------------------------------------------------------------------
     # Defaultable + factory.
@@ -288,6 +281,8 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
         self.W_hh = Param["W_hh", True,  Self.W_HH_SIZE]()
         self.b    = Param["b",    False, Self.B_SIZE]()
         self._dcomb = Tensor()
+        self._ix = Tensor()
+        self._hx = Tensor()
 
     @staticmethod
     def make[
@@ -444,6 +439,8 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             h.ensure_gpu(dctx, h_t_off + BATCH * H)
             c.ensure_gpu(dctx, c_t_off + BATCH * H)
             cache.ensure_gpu(dctx, cache_off + BATCH * Self.CACHE_SIZE)
+            self._ix.ensure_gpu(dctx, BATCH * FOURH)
+            self._hx.ensure_gpu(dctx, BATCH * FOURH)
             var xb = x.dev.value().create_sub_buffer[DT](x_off, BATCH * Self.IN_)
             var hpb = h.dev.value().create_sub_buffer[DT](h_prev_off, BATCH * H)
             var cpb = c.dev.value().create_sub_buffer[DT](c_prev_off, BATCH * H)
@@ -452,18 +449,36 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             var ccb = cache.dev.value().create_sub_buffer[DT](
                 cache_off, BATCH * Self.CACHE_SIZE
             )
-            comptime kern = _lstm_fwd_kernel[BATCH, Self.IN_, H, Self.CACHE_SIZE, True]
-            dctx.enqueue_function[kern](
-                LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_), MutAnyOrigin](xb),
-                self.W_ih.val.lt["gpu", Layout.row_major(Self.IN_, FOURH)](),
-                self.W_hh.val.lt["gpu", Layout.row_major(H, FOURH)](),
+            # ix = x @ W_ih ; hx = h_prev @ W_hh  (two GEMMs, was a hand-rolled
+            # per-thread inner product over IN_+H for all 4 gates).
+            var x_v = TileTensor(xb, row_major[BATCH, Self.IN_]())
+            var hp_v = TileTensor(hpb, row_major[BATCH, Self.HIDDEN]())
+            var Wih_v = TileTensor(
+                self.W_ih.val.dev.value(), row_major[Self.IN_, FOURH]()
+            )
+            var Whh_v = TileTensor(
+                self.W_hh.val.dev.value(), row_major[Self.HIDDEN, FOURH]()
+            )
+            var ix_v = TileTensor(self._ix.dev.value(), row_major[BATCH, FOURH]())
+            var hx_v = TileTensor(self._hx.dev.value(), row_major[BATCH, FOURH]())
+            max_matmul[target="gpu"](ix_v, x_v, Wih_v, dctx)
+            max_matmul[target="gpu"](hx_v, hp_v, Whh_v, dctx)
+            # elementwise gates + cell update + cache.
+            comptime gk = _lstm_gate_fwd_kernel[BATCH, H, Self.CACHE_SIZE, True]
+            comptime nblk = (BATCH * H + TPB - 1) // TPB
+            dctx.enqueue_function[gk](
+                LayoutTensor[DT, Layout.row_major(BATCH, FOURH), MutAnyOrigin](
+                    self._ix.dev.value()
+                ),
+                LayoutTensor[DT, Layout.row_major(BATCH, FOURH), MutAnyOrigin](
+                    self._hx.dev.value()
+                ),
                 self.b.val.lt["gpu", Layout.row_major(FOURH)](),
-                LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](hpb),
                 LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](cpb),
                 LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](htb),
                 LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](ctb),
                 LayoutTensor[DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin](ccb),
-                grid_dim=(BATCH,), block_dim=(TPB,),
+                grid_dim=(nblk,), block_dim=(TPB,),
             )
 
     def step_forward_no_cache[target: StaticString, BATCH: Int](
@@ -515,23 +530,42 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             var c = ctx.value()
             h_t.ensure_gpu(c, BATCH * H)
             c_t.ensure_gpu(c, BATCH * H)
-            # Reuse the fused kernel with WITH_CACHE=False (cache view unused —
-            # alias h_t's buffer as a dummy, never written when WITH_CACHE=False).
-            comptime kern = _lstm_fwd_kernel[BATCH, Self.IN_, H, Self.CACHE_SIZE, False]
+            self._ix.ensure_gpu(c, BATCH * FOURH)
+            self._hx.ensure_gpu(c, BATCH * FOURH)
+            # ix = x @ W_ih ; hx = h_prev @ W_hh, then gates (WITH_CACHE=False).
+            var x_v = TileTensor(x.dev.value(), row_major[BATCH, Self.IN_]())
+            var hp_v = TileTensor(
+                h_prev.dev.value(), row_major[BATCH, Self.HIDDEN]()
+            )
+            var Wih_v = TileTensor(
+                self.W_ih.val.dev.value(), row_major[Self.IN_, FOURH]()
+            )
+            var Whh_v = TileTensor(
+                self.W_hh.val.dev.value(), row_major[Self.HIDDEN, FOURH]()
+            )
+            var ix_v = TileTensor(self._ix.dev.value(), row_major[BATCH, FOURH]())
+            var hx_v = TileTensor(self._hx.dev.value(), row_major[BATCH, FOURH]())
+            max_matmul[target="gpu"](ix_v, x_v, Wih_v, c)
+            max_matmul[target="gpu"](hx_v, hp_v, Whh_v, c)
+            # cache unused (WITH_CACHE=False) — alias h_t's buffer as a dummy.
+            comptime gk = _lstm_gate_fwd_kernel[BATCH, H, Self.CACHE_SIZE, False]
+            comptime nblk = (BATCH * H + TPB - 1) // TPB
             var dummy = LayoutTensor[
                 DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
             ](h_t.dev.value())
-            c.enqueue_function[kern](
-                x.lt["gpu", Layout.row_major(BATCH, Self.IN_)](),
-                self.W_ih.val.lt["gpu", Layout.row_major(Self.IN_, FOURH)](),
-                self.W_hh.val.lt["gpu", Layout.row_major(H, FOURH)](),
+            c.enqueue_function[gk](
+                LayoutTensor[DT, Layout.row_major(BATCH, FOURH), MutAnyOrigin](
+                    self._ix.dev.value()
+                ),
+                LayoutTensor[DT, Layout.row_major(BATCH, FOURH), MutAnyOrigin](
+                    self._hx.dev.value()
+                ),
                 self.b.val.lt["gpu", Layout.row_major(FOURH)](),
-                h_prev.lt["gpu", Layout.row_major(BATCH, H)](),
                 c_prev.lt["gpu", Layout.row_major(BATCH, H)](),
                 h_t.lt["gpu", Layout.row_major(BATCH, H)](),
                 c_t.lt["gpu", Layout.row_major(BATCH, H)](),
                 dummy,
-                grid_dim=(BATCH,), block_dim=(TPB,),
+                grid_dim=(nblk,), block_dim=(TPB,),
             )
 
     def step_backward[target: StaticString, BATCH: Int](
