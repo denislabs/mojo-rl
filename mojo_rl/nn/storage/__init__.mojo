@@ -20,6 +20,7 @@ from .core.state import State, IsState
 from .core.module import Module
 from .core.walkers import for_each_param_auto, zero_grad_auto, join_name
 from .core.named_params import NamedParam, named_params, named_states
+from .core.describe import describe, print_describe, DescribeVisitor
 from .core.initializer import (
     Initializer, Kaiming, Xavier, Zero, Normal, Deterministic,
 )
@@ -62,7 +63,7 @@ from .primitives.rsample import RSample
 from .primitives.binary_elementwise import (
     BinaryElementwise, BinaryElemMin, BinarySub,
 )
-from .primitives.concat import Concat2
+from .primitives.concat import Concat, Concat2
 from .primitives.scale import Scale
 from .primitives.clamp import Clamp
 from .primitives.gather_cols import GatherCols

@@ -1,14 +1,19 @@
-"""Concat2[D0, D1] — binary feature-axis concatenation (storage surface).
+"""Concat[*DIMS] — variadic feature-axis concatenation (storage surface).
 
-  inputs (in0 [BATCH, D0], in1 [BATCH, D1])  →  output [BATCH, D0+D1]
-  out[b, 0:D0] = in0[b] ; out[b, D0:D0+D1] = in1[b]
+  inputs (in0 [BATCH, DIMS[0]], in1 [BATCH, DIMS[1]], …)  →  [BATCH, ΣDIMS]
+  out[b, off_i : off_i+DIMS[i]] = in_i[b]      off_i = Σ_{j<i} DIMS[j]  (comptime)
 
-The SAC critic's `concat(state, action)` input. ARITY 2; fits the ComputeGraph's
-binary dispatch. No params, no cache (backward is a pure slice-split of
-grad_output). Higher-arity concat (>2 inputs) can be expressed as a chain of
-Concat2 in the graph.
+`ARITY = DIMS.size` (≥ 2), `OUT_DIM = Σ DIMS[i]`. Mirrors the legacy variadic
+`Concat[*DIMS]`; the storage `TensorRefs[ARITY]` input pack makes the N-ary form
+as clean as a binary one (the legacy framework only had `Concat2` here, which
+forced 3+-input concats to be expressed as a chain — this restores the variadic
+primitive). The SAC critic's `concat(state, action)` is just N=2 (`Concat2`,
+the parametric alias below); tdmpc2 / redq_ofe graphs use N=2…4.
 
-Backward: grad_in0 = grad_out[:, 0:D0] ; grad_in1 = grad_out[:, D0:D0+D1].
+No params, no cache (backward is a pure slice-split of grad_output). GPU forward
+launches N small slab-copy kernels (one per input); backward symmetric.
+
+Backward: grad_in_i[b, :] = grad_output[b, off_i : off_i+DIMS[i]].
 """
 
 from std.gpu import global_idx
@@ -24,56 +29,66 @@ from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
 
 
-def _dims2(d0: Int, d1: Int) -> InlineArray[Int, 2]:
-    var a = InlineArray[Int, 2](fill=0)
-    a[0] = d0
-    a[1] = d1
-    return a
+# ── comptime variadic helpers (mirror Parallel / legacy concat) ─────────
+def _total_dim[*DIMS: Int]() -> Int:
+    var s = 0
+    comptime for i in range(DIMS.size):
+        s += DIMS[i]
+    return s
 
 
-def _concat_fwd_kernel[
-    BATCH: Int, D0: Int, D1: Int, OUT: Int
+def _cum_offset[index: Int, *DIMS: Int]() -> Int:
+    var s = 0
+    comptime for j in range(index):
+        s += DIMS[j]
+    return s
+
+
+def _build_in_dims[*DIMS: Int]() -> InlineArray[Int, DIMS.size]:
+    var d = InlineArray[Int, DIMS.size](fill=0)
+    comptime for k in range(DIMS.size):
+        d[k] = DIMS[k]
+    return d
+
+
+# ── per-slab copy kernels (one launch per input; legacy-style) ──────────
+def _concat_copy_in_kernel[
+    BATCH: Int, SRC_DIM: Int, OUT_DIM: Int, DST_OFF: Int
 ](
-    a: LayoutTensor[DT, Layout.row_major(BATCH, D0), MutAnyOrigin],
-    b: LayoutTensor[DT, Layout.row_major(BATCH, D1), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
+    src: LayoutTensor[DT, Layout.row_major(BATCH, SRC_DIM), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
-    if idx >= BATCH * OUT:
-        return
-    var bi = idx // OUT
-    var c = idx % OUT
-    if c < D0:
-        output[bi, c] = rebind[Scalar[DT]](a[bi, c])
-    else:
-        output[bi, c] = rebind[Scalar[DT]](b[bi, c - D0])
+    var total = BATCH * SRC_DIM
+    if idx < total:
+        var b = idx // SRC_DIM
+        var d = idx % SRC_DIM
+        output[b, DST_OFF + d] = rebind[Scalar[DT]](src[b, d])
 
 
-def _concat_bwd_kernel[
-    BATCH: Int, D0: Int, D1: Int, OUT: Int
+def _concat_copy_out_kernel[
+    BATCH: Int, DST_DIM: Int, OUT_DIM: Int, SRC_OFF: Int
 ](
-    go: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
-    gi0: LayoutTensor[DT, Layout.row_major(BATCH, D0), MutAnyOrigin],
-    gi1: LayoutTensor[DT, Layout.row_major(BATCH, D1), MutAnyOrigin],
+    grad_output: LayoutTensor[
+        DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+    ],
+    grad_in: LayoutTensor[DT, Layout.row_major(BATCH, DST_DIM), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
-    if idx >= BATCH * OUT:
-        return
-    var bi = idx // OUT
-    var c = idx % OUT
-    if c < D0:
-        gi0[bi, c] = rebind[Scalar[DT]](go[bi, c])
-    else:
-        gi1[bi, c - D0] = rebind[Scalar[DT]](go[bi, c])
+    var total = BATCH * DST_DIM
+    if idx < total:
+        var b = idx // DST_DIM
+        var d = idx % DST_DIM
+        grad_in[b, d] = rebind[Scalar[DT]](grad_output[b, SRC_OFF + d])
 
 
-struct Concat2[D0_: Int, D1_: Int](Module):
-    comptime ARITY = 2
-    comptime IN_DIMS = _dims2(Self.D0_, Self.D1_)
-    comptime OUT_DIM = Self.D0_ + Self.D1_
+struct Concat[*DIMS: Int](Module):
+    comptime ARITY = Self.DIMS.size
+    comptime IN_DIMS = _build_in_dims[*Self.DIMS]()
+    comptime OUT_DIM = _total_dim[*Self.DIMS]()
 
     def __init__(out self):
-        pass
+        comptime assert Self.DIMS.size >= 2, "Concat: needs at least 2 inputs"
 
     @staticmethod
     def make[
@@ -85,33 +100,36 @@ struct Concat2[D0_: Int, D1_: Int](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[2, o],
+        inputs: TensorRefs[Self.ARITY, o],
         mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime OUT = Self.D0_ + Self.D1_
-        ref a = inputs[0]
-        ref b = inputs[1]
+        comptime OUT = Self.OUT_DIM
         comptime if target == "cpu":
             out.ensure(B * OUT)
-            for bi in range(B):
-                for c in range(Self.D0_):
-                    out.data[bi * OUT + c] = a.data[bi * Self.D0_ + c]
-                for c in range(Self.D1_):
-                    out.data[bi * OUT + Self.D0_ + c] = b.data[
-                        bi * Self.D1_ + c
-                    ]
+            comptime for i in range(Self.DIMS.size):
+                comptime D = Self.DIMS[i]
+                comptime OFF = _cum_offset[i, *Self.DIMS]()
+                ref in_i = inputs[i]
+                for b in range(B):
+                    for d in range(D):
+                        out.data[b * OUT + OFF + d] = in_i.data[b * D + d]
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * OUT)
-            comptime nblk = (B * OUT + TPB - 1) // TPB
-            c.enqueue_function[_concat_fwd_kernel[B, Self.D0_, Self.D1_, OUT]](
-                a.lt["gpu", Layout.row_major(B, Self.D0_)](),
-                b.lt["gpu", Layout.row_major(B, Self.D1_)](),
-                out.lt["gpu", Layout.row_major(B, OUT)](),
-                grid_dim=nblk,
-                block_dim=TPB,
-            )
+            comptime for i in range(Self.DIMS.size):
+                comptime D = Self.DIMS[i]
+                comptime OFF = _cum_offset[i, *Self.DIMS]()
+                comptime nblk = (B * D + TPB - 1) // TPB
+                ref in_i = inputs[i]
+                c.enqueue_function[
+                    _concat_copy_in_kernel[B, D, OUT, OFF]
+                ](
+                    in_i.lt["gpu", Layout.row_major(B, D)](),
+                    out.lt["gpu", Layout.row_major(B, OUT)](),
+                    grid_dim=nblk,
+                    block_dim=TPB,
+                )
 
     def vjp[
         target: StaticString,
@@ -121,36 +139,43 @@ struct Concat2[D0_: Int, D1_: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[2, ofi],
+        forward_input: TensorRefs[Self.ARITY, ofi],
         mut grad_output: Tensor,
-        grad_inputs: TensorRefs[2, ogi],
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime OUT = Self.D0_ + Self.D1_
-        ref gi0 = grad_inputs[0]
-        ref gi1 = grad_inputs[1]
+        comptime OUT = Self.OUT_DIM
         comptime if target == "cpu":
-            gi0.ensure(B * Self.D0_)
-            gi1.ensure(B * Self.D1_)
-            for bi in range(B):
-                for c in range(Self.D0_):
-                    gi0.data[bi * Self.D0_ + c] = grad_output.data[bi * OUT + c]
-                for c in range(Self.D1_):
-                    gi1.data[bi * Self.D1_ + c] = grad_output.data[
-                        bi * OUT + Self.D0_ + c
-                    ]
+            comptime for i in range(Self.DIMS.size):
+                comptime D = Self.DIMS[i]
+                comptime OFF = _cum_offset[i, *Self.DIMS]()
+                ref gi = grad_inputs[i]
+                gi.ensure(B * D)
+                for b in range(B):
+                    for d in range(D):
+                        gi.data[b * D + d] = grad_output.data[b * OUT + OFF + d]
         else:
             var c = ctx.value()
-            gi0.ensure_gpu(c, B * Self.D0_)
-            gi1.ensure_gpu(c, B * Self.D1_)
-            comptime nblk = (B * OUT + TPB - 1) // TPB
-            c.enqueue_function[_concat_bwd_kernel[B, Self.D0_, Self.D1_, OUT]](
-                grad_output.lt["gpu", Layout.row_major(B, OUT)](),
-                gi0.lt["gpu", Layout.row_major(B, Self.D0_)](),
-                gi1.lt["gpu", Layout.row_major(B, Self.D1_)](),
-                grid_dim=nblk,
-                block_dim=TPB,
-            )
+            comptime for i in range(Self.DIMS.size):
+                comptime D = Self.DIMS[i]
+                comptime OFF = _cum_offset[i, *Self.DIMS]()
+                comptime nblk = (B * D + TPB - 1) // TPB
+                ref gi = grad_inputs[i]
+                gi.ensure_gpu(c, B * D)
+                c.enqueue_function[
+                    _concat_copy_out_kernel[B, D, OUT, OFF]
+                ](
+                    grad_output.lt["gpu", Layout.row_major(B, OUT)](),
+                    gi.lt["gpu", Layout.row_major(B, D)](),
+                    grid_dim=nblk,
+                    block_dim=TPB,
+                )
 
     # for_each_param / zero_grad inherit the Module reflection no-op defaults
     # (param-less: reflection finds no IsParam fields).
+
+
+# ── Concat2[D0, D1] — parametric alias kept for call-site compatibility ──
+# The legacy storage surface exposed a fixed binary `Concat2`; it is now just
+# the N=2 instance of the variadic `Concat` (mirrors `BranchConcat = Parallel`).
+comptime Concat2[D0_: Int, D1_: Int] = Concat[D0_, D1_]
