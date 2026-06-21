@@ -14,6 +14,7 @@ from std.math import sqrt
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
+from std.utils.numerics import get_accum_type
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, CPU_SIMD_W
@@ -27,9 +28,15 @@ from ..core.amp import AMPPolicy, NoAMP
 
 comptime LN_EPS: Scalar[DT] = 1e-5
 comptime LN_TPB: Int = 128
+# Reductions run in the accumulation dtype (f32 for bf16 inputs; identity for
+# DT=f32). ELEMS = per-thread feature slice; each thread reads its slice ONCE
+# into registers, derives mean/var from raw moments (E[x²]−E[x]²) in a single
+# read, then normalizes from registers — vs the legacy 3× input re-read.
+comptime LN_ACC = get_accum_type[DT]()
+comptime LN_REG_CAP = 8  # max per-thread slice (≈ DIM≤1024) to register-cache
 
 
-# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
+# ── GPU kernels (single-pass register-cached forward; block-per-row) ────
 def _layer_norm_forward_kernel[
     BATCH: Int,
     DIM: Int,
@@ -45,36 +52,77 @@ def _layer_norm_forward_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
-    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
-    var my_sum: Scalar[DT] = 0.0
-    var idx = t
-    while idx < DIM:
-        my_sum += rebind[Scalar[DT]](input[b, idx])
-        idx += LN_TPB
-    var mean_val = (
-        block.sum[block_size=LN_TPB, broadcast=True](val=my_sum) * inv_dim
-    )
-    var my_var: Scalar[DT] = 0.0
-    idx = t
-    while idx < DIM:
-        var diff = rebind[Scalar[DT]](input[b, idx]) - mean_val
-        my_var += diff * diff
-        idx += LN_TPB
-    var var_val = (
-        block.sum[block_size=LN_TPB, broadcast=True](val=my_var) * inv_dim
-    )
-    var inv_std: Scalar[DT] = 1.0 / sqrt(var_val + LN_EPS)
-    if t == 0:
-        cache_inv_std[b] = inv_std
-    idx = t
-    while idx < DIM:
-        var x = rebind[Scalar[DT]](input[b, idx])
-        var x_hat = (x - mean_val) * inv_std
-        cache_xhat[b, idx] = x_hat
-        var g_d = rebind[Scalar[DT]](gamma[idx])
-        var bt_d = rebind[Scalar[DT]](beta[idx])
-        output[b, idx] = g_d * x_hat + bt_d
-        idx += LN_TPB
+    comptime ELEMS = (DIM + LN_TPB - 1) // LN_TPB
+    # Register-cache the thread's feature slice only when it is small enough to
+    # stay in registers (≤ LN_REG_CAP); else a spill would make it slower than
+    # the 2-read raw-moments fallback (still better than the legacy 3 reads).
+    comptime REG_CACHE = ELEMS <= LN_REG_CAP
+    var inv_dim = Scalar[LN_ACC](1.0) / Scalar[LN_ACC](DIM)
+    var my_sum = Scalar[LN_ACC](0)
+    var my_sumsq = Scalar[LN_ACC](0)
+
+    comptime if REG_CACHE:
+        var slice = InlineArray[Scalar[LN_ACC], ELEMS](fill=Scalar[LN_ACC](0))
+
+        @parameter
+        for e in range(ELEMS):
+            var col = t + e * LN_TPB
+            if col < DIM:
+                var x = rebind[Scalar[DT]](input[b, col]).cast[LN_ACC]()
+                slice[e] = x
+                my_sum += x
+                my_sumsq += x * x
+        var mean_val = (
+            block.sum[block_size=LN_TPB, broadcast=True](val=my_sum) * inv_dim
+        )
+        var ex2 = (
+            block.sum[block_size=LN_TPB, broadcast=True](val=my_sumsq) * inv_dim
+        )
+        var var_val = ex2 - mean_val * mean_val
+        if var_val < Scalar[LN_ACC](0):
+            var_val = Scalar[LN_ACC](0)
+        var inv_std = Scalar[LN_ACC](1.0) / sqrt(var_val + LN_EPS.cast[LN_ACC]())
+        if t == 0:
+            cache_inv_std[b] = inv_std.cast[DT]()
+
+        @parameter
+        for e in range(ELEMS):
+            var col = t + e * LN_TPB
+            if col < DIM:
+                var x_hat = (slice[e] - mean_val) * inv_std
+                cache_xhat[b, col] = x_hat.cast[DT]()
+                var g_d = rebind[Scalar[DT]](gamma[col]).cast[LN_ACC]()
+                var bt_d = rebind[Scalar[DT]](beta[col]).cast[LN_ACC]()
+                output[b, col] = (g_d * x_hat + bt_d).cast[DT]()
+    else:
+        # 2-read raw-moments: stats pass (sum + Σx²) then normalize pass.
+        var idx = t
+        while idx < DIM:
+            var x = rebind[Scalar[DT]](input[b, idx]).cast[LN_ACC]()
+            my_sum += x
+            my_sumsq += x * x
+            idx += LN_TPB
+        var mean_val = (
+            block.sum[block_size=LN_TPB, broadcast=True](val=my_sum) * inv_dim
+        )
+        var ex2 = (
+            block.sum[block_size=LN_TPB, broadcast=True](val=my_sumsq) * inv_dim
+        )
+        var var_val = ex2 - mean_val * mean_val
+        if var_val < Scalar[LN_ACC](0):
+            var_val = Scalar[LN_ACC](0)
+        var inv_std = Scalar[LN_ACC](1.0) / sqrt(var_val + LN_EPS.cast[LN_ACC]())
+        if t == 0:
+            cache_inv_std[b] = inv_std.cast[DT]()
+        idx = t
+        while idx < DIM:
+            var x = rebind[Scalar[DT]](input[b, idx]).cast[LN_ACC]()
+            var x_hat = (x - mean_val) * inv_std
+            cache_xhat[b, idx] = x_hat.cast[DT]()
+            var g_d = rebind[Scalar[DT]](gamma[idx]).cast[LN_ACC]()
+            var bt_d = rebind[Scalar[DT]](beta[idx]).cast[LN_ACC]()
+            output[b, idx] = (g_d * x_hat + bt_d).cast[DT]()
+            idx += LN_TPB
 
 
 def _layer_norm_backward_dx_kernel[

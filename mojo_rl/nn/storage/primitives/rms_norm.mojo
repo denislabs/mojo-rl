@@ -12,6 +12,7 @@ from std.math import sqrt
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
+from std.utils.numerics import get_accum_type
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, CPU_SIMD_W
@@ -25,9 +26,15 @@ from ..core.amp import AMPPolicy, NoAMP
 
 comptime RMS_EPS: Scalar[DT] = 1e-4
 comptime RMS_TPB: Int = 128
+# Reductions run in the accumulation dtype (f32 for bf16 inputs; identity for
+# DT=f32). ELEMS = per-thread feature slice; each thread reads its slice ONCE
+# into registers, computes Σx² in that single read, then normalizes from
+# registers — vs the legacy 2× input re-read.
+comptime RMS_ACC = get_accum_type[DT]()
+comptime RMS_REG_CAP = 8  # max per-thread slice (≈ DIM≤1024) to register-cache
 
 
-# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
+# ── GPU kernels (single-pass register-cached forward; block-per-row) ────
 def _rms_norm_forward_kernel[
     BATCH: Int,
     DIM: Int,
@@ -42,26 +49,65 @@ def _rms_norm_forward_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
-    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
-    var my_sumsq: Scalar[DT] = 0.0
-    var idx = t
-    while idx < DIM:
-        var x = rebind[Scalar[DT]](input[b, idx])
-        my_sumsq += x * x
-        idx += RMS_TPB
-    var mean2 = (
-        block.sum[block_size=RMS_TPB, broadcast=True](val=my_sumsq) * inv_dim
-    )
-    var inv_rms: Scalar[DT] = 1.0 / sqrt(mean2 + RMS_EPS)
-    if t == 0:
-        cache_inv_rms[b] = inv_rms
-    idx = t
-    while idx < DIM:
-        var x = rebind[Scalar[DT]](input[b, idx])
-        var n = x * inv_rms
-        cache_norm[b, idx] = n
-        output[b, idx] = n * rebind[Scalar[DT]](gamma[idx])
-        idx += RMS_TPB
+    comptime ELEMS = (DIM + RMS_TPB - 1) // RMS_TPB
+    # Register-cache the thread's feature slice only when small enough to stay
+    # in registers (≤ RMS_REG_CAP); else 2-read fallback (still beats the
+    # legacy 2 reads only marginally — kept for the no-spill guarantee).
+    comptime REG_CACHE = ELEMS <= RMS_REG_CAP
+    var inv_dim = Scalar[RMS_ACC](1.0) / Scalar[RMS_ACC](DIM)
+    var my_sumsq = Scalar[RMS_ACC](0)
+
+    comptime if REG_CACHE:
+        var slice = InlineArray[Scalar[RMS_ACC], ELEMS](fill=Scalar[RMS_ACC](0))
+
+        @parameter
+        for e in range(ELEMS):
+            var col = t + e * RMS_TPB
+            if col < DIM:
+                var x = rebind[Scalar[DT]](input[b, col]).cast[RMS_ACC]()
+                slice[e] = x
+                my_sumsq += x * x
+        var mean2 = (
+            block.sum[block_size=RMS_TPB, broadcast=True](val=my_sumsq)
+            * inv_dim
+        )
+        var inv_rms = Scalar[RMS_ACC](1.0) / sqrt(
+            mean2 + RMS_EPS.cast[RMS_ACC]()
+        )
+        if t == 0:
+            cache_inv_rms[b] = inv_rms.cast[DT]()
+
+        @parameter
+        for e in range(ELEMS):
+            var col = t + e * RMS_TPB
+            if col < DIM:
+                var n = slice[e] * inv_rms
+                cache_norm[b, col] = n.cast[DT]()
+                var g = rebind[Scalar[DT]](gamma[col]).cast[RMS_ACC]()
+                output[b, col] = (n * g).cast[DT]()
+    else:
+        var idx = t
+        while idx < DIM:
+            var x = rebind[Scalar[DT]](input[b, idx]).cast[RMS_ACC]()
+            my_sumsq += x * x
+            idx += RMS_TPB
+        var mean2 = (
+            block.sum[block_size=RMS_TPB, broadcast=True](val=my_sumsq)
+            * inv_dim
+        )
+        var inv_rms = Scalar[RMS_ACC](1.0) / sqrt(
+            mean2 + RMS_EPS.cast[RMS_ACC]()
+        )
+        if t == 0:
+            cache_inv_rms[b] = inv_rms.cast[DT]()
+        idx = t
+        while idx < DIM:
+            var x = rebind[Scalar[DT]](input[b, idx]).cast[RMS_ACC]()
+            var n = x * inv_rms
+            cache_norm[b, idx] = n.cast[DT]()
+            var g = rebind[Scalar[DT]](gamma[idx]).cast[RMS_ACC]()
+            output[b, idx] = (n * g).cast[DT]()
+            idx += RMS_TPB
 
 
 def _rms_norm_backward_dx_kernel[
