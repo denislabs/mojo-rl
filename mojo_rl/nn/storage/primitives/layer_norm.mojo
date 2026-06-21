@@ -64,8 +64,7 @@ def _layer_norm_forward_kernel[
     comptime if REG_CACHE:
         var slice = InlineArray[Scalar[LN_ACC], ELEMS](fill=Scalar[LN_ACC](0))
 
-        @parameter
-        for e in range(ELEMS):
+        comptime for e in range(ELEMS):
             var col = t + e * LN_TPB
             if col < DIM:
                 var x = rebind[Scalar[DT]](input[b, col]).cast[LN_ACC]()
@@ -85,8 +84,7 @@ def _layer_norm_forward_kernel[
         if t == 0:
             cache_inv_std[b] = inv_std.cast[DT]()
 
-        @parameter
-        for e in range(ELEMS):
+        comptime for e in range(ELEMS):
             var col = t + e * LN_TPB
             if col < DIM:
                 var x_hat = (slice[e] - mean_val) * inv_std
@@ -151,8 +149,7 @@ def _layer_norm_backward_dx_kernel[
         var g_s = InlineArray[Scalar[LN_ACC], ELEMS](fill=Scalar[LN_ACC](0))
         var xh_s = InlineArray[Scalar[LN_ACC], ELEMS](fill=Scalar[LN_ACC](0))
 
-        @parameter
-        for e in range(ELEMS):
+        comptime for e in range(ELEMS):
             var col = t + e * LN_TPB
             if col < DIM:
                 var go = rebind[Scalar[DT]](grad_output[b, col]).cast[LN_ACC]()
@@ -171,8 +168,7 @@ def _layer_norm_backward_dx_kernel[
             * inv_dim
         )
 
-        @parameter
-        for e in range(ELEMS):
+        comptime for e in range(ELEMS):
             var col = t + e * LN_TPB
             if col < DIM:
                 grad_input[b, col] = (

@@ -107,8 +107,7 @@ def _ln_fwd_single[
     comptime if REG_CACHE:
         var slice = InlineArray[Scalar[ACC], ELEMS](fill=Scalar[ACC](0))
 
-        @parameter
-        for e in range(ELEMS):
+        comptime for e in range(ELEMS):
             var col = t + e * TPB
             if col < DIM:
                 var x = rebind[Scalar[DT]](input[b, col]).cast[ACC]()
@@ -128,8 +127,7 @@ def _ln_fwd_single[
         if t == 0:
             cache_inv_std[b] = inv_std.cast[DT]()
 
-        @parameter
-        for e in range(ELEMS):
+        comptime for e in range(ELEMS):
             var col = t + e * TPB
             if col < DIM:
                 var x_hat = (slice[e] - mean_val) * inv_std
@@ -234,8 +232,7 @@ def _ln_bwd_single[
         var g_s = InlineArray[Scalar[ACC], ELEMS](fill=Scalar[ACC](0))
         var xh_s = InlineArray[Scalar[ACC], ELEMS](fill=Scalar[ACC](0))
 
-        @parameter
-        for e in range(ELEMS):
+        comptime for e in range(ELEMS):
             var col = t + e * TPB
             if col < DIM:
                 var go = rebind[Scalar[DT]](grad_output[b, col]).cast[ACC]()
@@ -253,8 +250,7 @@ def _ln_bwd_single[
             block.sum[block_size=TPB, broadcast=True](val=my_g_xhat) * inv_dim
         )
 
-        @parameter
-        for e in range(ELEMS):
+        comptime for e in range(ELEMS):
             var col = t + e * TPB
             if col < DIM:
                 grad_input[b, col] = (
