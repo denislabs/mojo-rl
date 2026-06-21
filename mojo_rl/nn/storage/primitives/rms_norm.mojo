@@ -12,6 +12,8 @@ from std.math import sqrt
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
+from std.utils import Index
+from std.utils.numerics import get_accum_type
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, CPU_SIMD_W
@@ -25,9 +27,13 @@ from ..core.amp import AMPPolicy, NoAMP
 
 comptime RMS_EPS: Scalar[DT] = 1e-4
 comptime RMS_TPB: Int = 128
+# Reductions/normalization run in the accumulation dtype (f32 for bf16 inputs;
+# identity for DT=f32). VEC-wide vectorized global loads when DIM % VEC == 0.
+comptime RMS_ACC = get_accum_type[DT]()
 
 
-# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
+# ── GPU kernels (vectorized + accum_type; block-per-row, threads cooperate
+#    over the feature axis with VEC-wide strided loads) ──────────────────
 def _rms_norm_forward_kernel[
     BATCH: Int,
     DIM: Int,
@@ -42,26 +48,28 @@ def _rms_norm_forward_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
-    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
-    var my_sumsq: Scalar[DT] = 0.0
-    var idx = t
+    comptime VEC = 4 if DIM % 4 == 0 else 1
+    var inv_dim = Scalar[RMS_ACC](1.0) / Scalar[RMS_ACC](DIM)
+    var my_sumsq = Scalar[RMS_ACC](0)
+    var idx = t * VEC
     while idx < DIM:
-        var x = rebind[Scalar[DT]](input[b, idx])
-        my_sumsq += x * x
-        idx += RMS_TPB
+        var x = input.load[width=VEC](b, idx).cast[RMS_ACC]()
+        my_sumsq += (x * x).reduce_add()
+        idx += RMS_TPB * VEC
     var mean2 = (
         block.sum[block_size=RMS_TPB, broadcast=True](val=my_sumsq) * inv_dim
     )
-    var inv_rms: Scalar[DT] = 1.0 / sqrt(mean2 + RMS_EPS)
+    var inv_rms = Scalar[RMS_ACC](1.0) / sqrt(mean2 + RMS_EPS.cast[RMS_ACC]())
     if t == 0:
-        cache_inv_rms[b] = inv_rms
-    idx = t
+        cache_inv_rms[b] = inv_rms.cast[DT]()
+    idx = t * VEC
     while idx < DIM:
-        var x = rebind[Scalar[DT]](input[b, idx])
+        var x = input.load[width=VEC](b, idx).cast[RMS_ACC]()
         var n = x * inv_rms
-        cache_norm[b, idx] = n
-        output[b, idx] = n * rebind[Scalar[DT]](gamma[idx])
-        idx += RMS_TPB
+        cache_norm.store[width=VEC](b, idx, n.cast[DT]())
+        var g = gamma.load[width=VEC](Index(idx)).cast[RMS_ACC]()
+        output.store[width=VEC](b, idx, (n * g).cast[DT]())
+        idx += RMS_TPB * VEC
 
 
 def _rms_norm_backward_dx_kernel[
@@ -78,24 +86,27 @@ def _rms_norm_backward_dx_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
-    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
-    var inv_rms = rebind[Scalar[DT]](cache_inv_rms[b])
-    var my_r: Scalar[DT] = 0.0
-    var idx = t
+    comptime VEC = 4 if DIM % 4 == 0 else 1
+    var inv_dim = Scalar[RMS_ACC](1.0) / Scalar[RMS_ACC](DIM)
+    var inv_rms = rebind[Scalar[DT]](cache_inv_rms[b]).cast[RMS_ACC]()
+    var my_r = Scalar[RMS_ACC](0)
+    var idx = t * VEC
     while idx < DIM:
-        var go = rebind[Scalar[DT]](grad_output[b, idx])
-        var gm = rebind[Scalar[DT]](gamma[idx])
-        var n = rebind[Scalar[DT]](cache_norm[b, idx])
-        my_r += go * gm * n
-        idx += RMS_TPB
+        var go = grad_output.load[width=VEC](b, idx).cast[RMS_ACC]()
+        var gm = gamma.load[width=VEC](Index(idx)).cast[RMS_ACC]()
+        var n = cache_norm.load[width=VEC](b, idx).cast[RMS_ACC]()
+        my_r += (go * gm * n).reduce_add()
+        idx += RMS_TPB * VEC
     var R = block.sum[block_size=RMS_TPB, broadcast=True](val=my_r)
-    idx = t
+    idx = t * VEC
     while idx < DIM:
-        var go = rebind[Scalar[DT]](grad_output[b, idx])
-        var gm = rebind[Scalar[DT]](gamma[idx])
-        var n = rebind[Scalar[DT]](cache_norm[b, idx])
-        grad_input[b, idx] = inv_rms * (go * gm - n * R * inv_dim)
-        idx += RMS_TPB
+        var go = grad_output.load[width=VEC](b, idx).cast[RMS_ACC]()
+        var gm = gamma.load[width=VEC](Index(idx)).cast[RMS_ACC]()
+        var n = cache_norm.load[width=VEC](b, idx).cast[RMS_ACC]()
+        grad_input.store[width=VEC](
+            b, idx, (inv_rms * (go * gm - n * R * inv_dim)).cast[DT]()
+        )
+        idx += RMS_TPB * VEC
 
 
 def _rms_norm_backward_dgamma_kernel[
