@@ -50,6 +50,7 @@ from mojo_rl.nn.core.metric import LogScalar
 from ..data.n_step_replay import GPUNStepBuffer
 from ..core.online_target_pair import OnlineTargetPair
 from ..training.episode_tracker import EpisodeTracker
+from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.blocks import SampleBlock, TwinCriticStep, PolyakStep
@@ -185,13 +186,22 @@ struct SACTrainer[
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
     var _alpha_accum: Scalar[DT]
-    # Diagnostic accumulators (CPU): batch means drained at flush_metrics.
+    # Diagnostic accumulators (CPU path): batch means drained at flush_metrics.
     var _mean_q_accum: Scalar[DT]            # online Q1(s, a) over the batch
     var _mean_target_accum: Scalar[DT]       # Bellman target y
     var _mean_reward_accum: Scalar[DT]       # batch reward
     var _mean_next_q_accum: Scalar[DT]       # min(Q1_t,Q2_t)(s',a') bootstrap
     var _mean_done_accum: Scalar[DT]         # batch done
     var _mean_abs_action_accum: Scalar[DT]   # mean |action|
+    # Diagnostic accumulators (GPU path): device-resident running means folded
+    # in by a tiny reduction kernel EACH update (no per-step D2H — capture-safe)
+    # and read with ONE D2H per `diag_every` flush. Mirrors MBPO/DQN.
+    var _mean_q_dev: DeviceMeanAccum
+    var _mean_target_dev: DeviceMeanAccum
+    var _mean_reward_dev: DeviceMeanAccum
+    var _mean_next_q_dev: DeviceMeanAccum
+    var _mean_done_dev: DeviceMeanAccum
+    var _mean_abs_action_dev: DeviceMeanAccum
     var _update_count: Int
     var _total_train_steps: Int
 
@@ -245,6 +255,12 @@ struct SACTrainer[
         self._mean_next_q_accum = Scalar[DT](0.0)
         self._mean_done_accum = Scalar[DT](0.0)
         self._mean_abs_action_accum = Scalar[DT](0.0)
+        self._mean_q_dev = DeviceMeanAccum()
+        self._mean_target_dev = DeviceMeanAccum()
+        self._mean_reward_dev = DeviceMeanAccum()
+        self._mean_next_q_dev = DeviceMeanAccum()
+        self._mean_done_dev = DeviceMeanAccum()
+        self._mean_abs_action_dev = DeviceMeanAccum()
         self._update_count = 0
         self._total_train_steps = 0
 
@@ -353,6 +369,14 @@ struct SACTrainer[
             t._ob_scr.ensure(Self.OBS_DIM)
             t._ao_scr.ensure(2 * Self.ACT_DIM)
             t._alp_scr.ensure(Self.ACT_DIM + 1)
+        else:
+            # Device-resident diagnostic accumulators (no per-step D2H).
+            t._mean_q_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._mean_target_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._mean_reward_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._mean_next_q_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._mean_done_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._mean_abs_action_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
         return t^
 
     def set_beta(mut self, beta: Scalar[DT]):
@@ -406,11 +430,13 @@ struct SACTrainer[
         self._actor_L_accum += out.loss
         self._critic_L_accum += self.state.critic_loss
         self._alpha_accum += fexp(self.alpha_opt.value)
-        # Diagnostic batch means (CPU host data; GPU path leaves these 0.0,
-        # same convention as the legacy GPU-SAC diagnostics).
+        # Diagnostic batch means. CPU sums the host scratches directly; GPU
+        # folds each batch mean into a device-resident accumulator via a tiny
+        # reduction kernel — NO per-step D2H (capture-safe), read once per
+        # `diag_every` flush. Mirrors the MBPO/DQN diagnostic path.
+        comptime B = Self.BATCH
+        comptime A = Self.ACT_DIM
         comptime if Self.train_target == "cpu":
-            comptime B = Self.BATCH
-            comptime A = Self.ACT_DIM
             var inv_b = Scalar[DT](1.0) / Scalar[DT](B)
             var sq: Scalar[DT] = 0.0
             var sy: Scalar[DT] = 0.0
@@ -433,6 +459,27 @@ struct SACTrainer[
             self._mean_next_q_accum += snq * inv_b
             self._mean_done_accum += sd * inv_b
             self._mean_abs_action_accum += saa / Scalar[DT](B * A)
+        else:
+            comptime lb = Layout.row_major(B)
+            comptime lba = Layout.row_major(B * A)
+            self._mean_q_dev.accumulate_gpu_lt[B](
+                self.twin_critic_blk.inner.c1._mb_q.lt["gpu", lb]()
+            )
+            self._mean_target_dev.accumulate_gpu_lt[B](
+                self.state.mb_y.lt["gpu", lb]()
+            )
+            self._mean_reward_dev.accumulate_gpu_lt[B](
+                self.state.mb_r.lt["gpu", lb]()
+            )
+            self._mean_next_q_dev.accumulate_gpu_lt[B](
+                self.target_y_blk.graph.node_output["min_q"]().lt["gpu", lb]()
+            )
+            self._mean_done_dev.accumulate_gpu_lt[B](
+                self.state.mb_d.lt["gpu", lb]()
+            )
+            self._mean_abs_action_dev.accumulate_gpu_abs_lt[B * A](
+                self.state.mb_a.lt["gpu", lba]()
+            )
         self._update_count += 1
         self._total_train_steps += 1
         return True
@@ -730,21 +777,44 @@ struct SACTrainer[
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> SACMetrics:
-        """Drain accumulators into a SACMetrics bundle. On CPU the full
-        per-batch diagnostics (mean_q / mean_target / mean_next_q / mean_reward
-        / mean_done / mean_abs_action) are real; the GPU path leaves them 0.0."""
+        """Drain accumulators into a SACMetrics bundle. The per-batch
+        diagnostics (mean_q / mean_target / mean_next_q / mean_reward /
+        mean_done / mean_abs_action) are real on BOTH targets: CPU reads the
+        host accumulators (averaged over the window); GPU reads the
+        device-resident `DeviceMeanAccum`s with ONE D2H each at this flush —
+        never in the per-step hot loop."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
+        var mq: Scalar[DT]
+        var mtgt: Scalar[DT]
+        var mr: Scalar[DT]
+        var mnq: Scalar[DT]
+        var md: Scalar[DT]
+        var maa: Scalar[DT]
+        comptime if Self.train_target == "gpu":
+            mq = self._mean_q_dev.read["gpu"]()
+            mtgt = self._mean_target_dev.read["gpu"]()
+            mr = self._mean_reward_dev.read["gpu"]()
+            mnq = self._mean_next_q_dev.read["gpu"]()
+            md = self._mean_done_dev.read["gpu"]()
+            maa = self._mean_abs_action_dev.read["gpu"]()
+        else:
+            mq = self._mean_q_accum * inv
+            mtgt = self._mean_target_accum * inv
+            mr = self._mean_reward_accum * inv
+            mnq = self._mean_next_q_accum * inv
+            md = self._mean_done_accum * inv
+            maa = self._mean_abs_action_accum * inv
         var bundle = SACMetrics(
             actor_loss=LogScalar[DT](self._actor_L_accum * inv),
             critic_loss=LogScalar[DT](self._critic_L_accum * inv),
             alpha=LogScalar[DT](self._alpha_accum * inv),
-            mean_q=LogScalar[DT](self._mean_q_accum * inv),
-            mean_target=LogScalar[DT](self._mean_target_accum * inv),
-            mean_reward=LogScalar[DT](self._mean_reward_accum * inv),
-            mean_next_q=LogScalar[DT](self._mean_next_q_accum * inv),
-            mean_done=LogScalar[DT](self._mean_done_accum * inv),
-            mean_abs_action=LogScalar[DT](self._mean_abs_action_accum * inv),
+            mean_q=LogScalar[DT](mq),
+            mean_target=LogScalar[DT](mtgt),
+            mean_reward=LogScalar[DT](mr),
+            mean_next_q=LogScalar[DT](mnq),
+            mean_done=LogScalar[DT](md),
+            mean_abs_action=LogScalar[DT](maa),
             train_steps=LogScalar[DT](Scalar[DT](self._total_train_steps)),
             n_updates=LogScalar[DT](Scalar[DT](self._update_count)),
         )
@@ -757,6 +827,13 @@ struct SACTrainer[
         self._mean_next_q_accum = Scalar[DT](0.0)
         self._mean_done_accum = Scalar[DT](0.0)
         self._mean_abs_action_accum = Scalar[DT](0.0)
+        comptime if Self.train_target == "gpu":
+            self._mean_q_dev.reset["gpu"]()
+            self._mean_target_dev.reset["gpu"]()
+            self._mean_reward_dev.reset["gpu"]()
+            self._mean_next_q_dev.reset["gpu"]()
+            self._mean_done_dev.reset["gpu"]()
+            self._mean_abs_action_dev.reset["gpu"]()
         self._update_count = 0
         if Bool(logger):
             log_bundle(logger.value()[], bundle, step)

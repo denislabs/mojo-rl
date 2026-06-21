@@ -97,6 +97,28 @@ def main() raises:
         print("  DIAG critic_loss=", m.critic_loss.to_f64())
         print("  DIAG alpha      =", m.alpha.to_f64())
         print("  DIAG train_steps=", m.train_steps.to_f64())
+        # Per-batch means must be real on the GPU path too (they used to flush
+        # 0.0 — the GPU branch now D2H-stages the batch tensors via the
+        # persistent host-staging buffer). mean_done MAY legitimately be 0.
+        print("  DIAG mean_q         =", m.mean_q.to_f64())
+        print("  DIAG mean_target    =", m.mean_target.to_f64())
+        print("  DIAG mean_next_q    =", m.mean_next_q.to_f64())
+        print("  DIAG mean_reward    =", m.mean_reward.to_f64())
+        print("  DIAG mean_done      =", m.mean_done.to_f64())
+        print("  DIAG mean_abs_action=", m.mean_abs_action.to_f64())
+        assert_true(m.mean_q.to_f64() != 0.0, "GPU mean_q populated (not 0.0)")
+        assert_true(
+            m.mean_target.to_f64() != 0.0, "GPU mean_target populated (not 0.0)"
+        )
+        assert_true(
+            m.mean_next_q.to_f64() != 0.0, "GPU mean_next_q populated (not 0.0)"
+        )
+        assert_true(
+            m.mean_reward.to_f64() != 0.0, "GPU mean_reward populated (not 0.0)"
+        )
+        assert_true(
+            m.mean_abs_action.to_f64() > 0.0, "GPU mean_abs_action populated"
+        )
 
         var final_eval = agent.eval(
             cpu_env, num_episodes=10, max_steps_per_episode=200

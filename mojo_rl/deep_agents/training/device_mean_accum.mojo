@@ -24,6 +24,7 @@ this only on GPU.
 from std.gpu import thread_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB_REDUCE
 
@@ -84,6 +85,48 @@ def _mean_abs_diff_reduce_add_kernel[N: Int](
     while k < N:
         var d = a[k] - b[k]
         my_sum += d if d >= Scalar[DT](0.0) else -d
+        k += TPB_REDUCE
+    var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
+    if t == 0:
+        acc[0] = acc[0] + total[0] / Scalar[DT](N)
+        acc[1] = acc[1] + Scalar[DT](1.0)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Storage-native variants: take `LayoutTensor` views (built from a storage
+# `Tensor`'s device buffer via `lt` / direct buffer access) instead of raw
+# `UnsafePointer`s — so the storage SAC path never touches `unsafe_ptr`. Same
+# reduction as the raw-ptr kernels above.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _mean_reduce_add_kernel_lt[N: Int](
+    data: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    acc: LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin],
+):
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < N:
+        my_sum += rebind[Scalar[DT]](data[k])
+        k += TPB_REDUCE
+    var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
+    if t == 0:
+        acc[0] = acc[0] + total[0] / Scalar[DT](N)
+        acc[1] = acc[1] + Scalar[DT](1.0)
+
+
+def _mean_abs_reduce_add_kernel_lt[N: Int](
+    data: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    acc: LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin],
+):
+    """LayoutTensor twin of `_mean_abs_reduce_add_kernel` (mean of |data[k]|)."""
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < N:
+        var v = rebind[Scalar[DT]](data[k])
+        my_sum += v if v >= Scalar[DT](0.0) else -v
         k += TPB_REDUCE
     var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
     if t == 0:
@@ -155,6 +198,35 @@ struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDeletable):
             self.acc_dev.value().unsafe_ptr(),
             grid_dim=1,
             block_dim=TPB_REDUCE,
+        )
+
+    def accumulate_gpu_lt[N: Int](
+        mut self,
+        data: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    ) raises:
+        """Storage-native `accumulate_gpu`: reduce the `[N]` device view on
+        device and fold `(mean, +1)` in. The caller builds `data` via the
+        storage tensor's `lt["gpu", Layout.row_major(N)]()` — no `unsafe_ptr`.
+        """
+        var ctx = self.ctx.value()
+        var acc = LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin](
+            self.acc_dev.value()
+        )
+        ctx.enqueue_function[_mean_reduce_add_kernel_lt[N]](
+            data, acc, grid_dim=1, block_dim=TPB_REDUCE
+        )
+
+    def accumulate_gpu_abs_lt[N: Int](
+        mut self,
+        data: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    ) raises:
+        """Storage-native `accumulate_gpu_abs` (mean of |data[k]|)."""
+        var ctx = self.ctx.value()
+        var acc = LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin](
+            self.acc_dev.value()
+        )
+        ctx.enqueue_function[_mean_abs_reduce_add_kernel_lt[N]](
+            data, acc, grid_dim=1, block_dim=TPB_REDUCE
         )
 
     def accumulate_gpu_abs_diff[N: Int](
