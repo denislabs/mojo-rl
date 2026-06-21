@@ -126,6 +126,63 @@ def _grouped_adam_kernel(
     val[i] = p - lr * m_hat / (sqrt(v_hat) + eps)
 
 
+def _adam_warmup_lr_kernel(
+    lr_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    step_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    target_lr: Scalar[DT],
+    warmup: Scalar[DT],
+):
+    """On-device LinearWarmup: `lr = target·min(step/warmup, 1)`, then `step+=1`
+    (1 thread). Both `lr` and `step` live on-device, so the schedule advances on
+    every CUDA-graph REPLAY — a host `opt.lr = sched.lr_at(t)` write would freeze
+    at the capture-time (near-0 ramp) value. `warmup <= 0` → constant target."""
+    if Int(global_idx.x) != 0:
+        return
+    var t = step_buf[0]
+    var lr = target_lr
+    if warmup > Scalar[DT](0.0) and t < warmup:
+        lr = target_lr * t / warmup
+    lr_buf[0] = lr
+    step_buf[0] = t + Scalar[DT](1.0)
+
+
+def _grouped_adam_kernel_devlr(
+    val: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    grd: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    m: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    v: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    decay: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    total: Int,
+    beta1: Scalar[DT],
+    beta2: Scalar[DT],
+    eps: Scalar[DT],
+    powbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    lr_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    wd: Scalar[DT],
+):
+    """`_grouped_adam_kernel` but `lr` is read from the device `lr_buf` (written
+    by `_adam_warmup_lr_kernel`) — the capture-safe scheduled-LR path. Identical
+    math; only the LR source differs."""
+    var i = Int(global_idx.x)
+    if i >= total:
+        return
+    var one = Scalar[DT](1.0)
+    var lr = lr_buf[0]
+    var bc1 = one - powbuf[0]
+    var bc2 = one - powbuf[1]
+    var p = val[i]
+    if decay[i] != Scalar[DT](0.0):
+        p -= lr * wd * p
+    var g = grd[i]
+    var m_new = beta1 * m[i] + (one - beta1) * g
+    var v_new = beta2 * v[i] + (one - beta2) * g * g
+    m[i] = m_new
+    v[i] = v_new
+    var m_hat = m_new / bc1
+    var v_hat = v_new / bc2
+    val[i] = p - lr * m_hat / (sqrt(v_hat) + eps)
+
+
 struct Adam(Movable, ParamVisitor, Optimizer):
     var lr: Scalar[DT]
     var beta1: Scalar[DT]
@@ -152,6 +209,16 @@ struct Adam(Movable, ParamVisitor, Optimizer):
     var _clip_partials: Tensor
     var _clip_scale: Tensor
     var _clip_norm: Tensor
+    # Opt-in on-device LR schedule (GPU arena). When `_sched_active`, the grouped
+    # step runs an on-device LinearWarmup into `_lr_dev` (step in `_step_dev`)
+    # and the update reads `_lr_dev` — capture-safe. OFF by default → the update
+    # uses the host `lr` (unchanged, zero overhead). Drive via
+    # `attach_warmup_schedule`.
+    var _lr_dev: Tensor
+    var _step_dev: Tensor
+    var _sched_active: Bool
+    var _sched_target_lr: Scalar[DT]
+    var _sched_warmup: Int
 
     def __init__(out self):
         """No-arg default (satisfies Defaultable for the generic Trainer)."""
@@ -179,6 +246,11 @@ struct Adam(Movable, ParamVisitor, Optimizer):
         self._clip_partials = Tensor()
         self._clip_scale = Tensor()
         self._clip_norm = Tensor()
+        self._lr_dev = Tensor()
+        self._step_dev = Tensor()
+        self._sched_active = False
+        self._sched_target_lr = Scalar[DT](0.0)
+        self._sched_warmup = 0
         self.arena = ParamArena()
         self.m_arena = Tensor()
         self.v_arena = Tensor()
@@ -210,6 +282,12 @@ struct Adam(Movable, ParamVisitor, Optimizer):
             self._clip_partials = Tensor.alloc_gpu(c, nblk if nblk > 0 else 1)
             self._clip_scale = Tensor.alloc_gpu(c, 1)
             self._clip_norm = Tensor.alloc_gpu(c, 1)
+            # Device LR + step for the opt-in on-device schedule (seeded to the
+            # current host lr / step 0; only used when `attach_warmup_schedule`).
+            self._lr_dev = Tensor.alloc_gpu(c, 1)
+            self._lr_dev.dev.value().enqueue_fill(self.lr)
+            self._step_dev = Tensor.alloc_gpu(c, 1)
+            self._step_dev.dev.value().enqueue_fill(Scalar[DT](0.0))
 
     def step[
         target: StaticString, M: Module
@@ -238,6 +316,35 @@ struct Adam(Movable, ParamVisitor, Optimizer):
             block_dim=1,
         )
         var nblk = (self.arena.total + TPB - 1) // TPB
+        if self._sched_active:
+            # On-device LinearWarmup → `_lr_dev` (advances `_step_dev`), then the
+            # device-LR update kernel. Both captured → schedule advances per
+            # replay. Default (no schedule) keeps the host-`lr` kernel below.
+            c.enqueue_function[_adam_warmup_lr_kernel](
+                self._lr_dev.dev.value(),
+                self._step_dev.dev.value(),
+                self._sched_target_lr,
+                Scalar[DT](self._sched_warmup),
+                grid_dim=1,
+                block_dim=1,
+            )
+            c.enqueue_function[_grouped_adam_kernel_devlr](
+                self.arena.val.dev.value(),
+                self.arena.grd.dev.value(),
+                self.m_arena.dev.value(),
+                self.v_arena.dev.value(),
+                self.arena.decay_mask.dev.value(),
+                self.arena.total,
+                self.beta1,
+                self.beta2,
+                self.eps,
+                self._pow_dev.dev.value(),
+                self._lr_dev.dev.value(),
+                self.wd,
+                grid_dim=nblk,
+                block_dim=TPB,
+            )
+            return
         c.enqueue_function[_grouped_adam_kernel](
             self.arena.val.dev.value(),
             self.arena.grd.dev.value(),
@@ -265,6 +372,16 @@ struct Adam(Movable, ParamVisitor, Optimizer):
                 self.arena.zero_grad()
                 return
         model.zero_grad[target](ctx)
+
+    def attach_warmup_schedule(mut self, target_lr: Scalar[DT], warmup_steps: Int):
+        """Drive the LR with an ON-DEVICE LinearWarmup ramp (0 → target over
+        `warmup_steps` update steps, then constant) so it's CUDA-graph-safe — the
+        ramp advances on every replay. GPU-arena path only; a no-op stub for
+        CPU/non-adopted (use host `set_lr` + a host schedule there). Replaces the
+        host `opt.lr = sched.lr_at(t)` pattern, which freezes under capture."""
+        self._sched_active = True
+        self._sched_target_lr = target_lr
+        self._sched_warmup = warmup_steps
 
     def set_lr(mut self, lr: Scalar[DT]):
         self.lr = lr

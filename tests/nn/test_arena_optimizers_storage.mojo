@@ -168,10 +168,43 @@ def main() raises:
         and normR > Scalar[DT](0.0)
     )
 
+    # ---- 4. on-device LR warmup == host LinearWarmup applied each step ---
+    # `attach_warmup_schedule` runs the ramp on-device (capture-safe); the
+    # reference sets `opt.lr = target·min(k/warmup,1)` on the host each step.
+    # Same grads + same LR sequence + same bias correction → identical params.
+    comptime WUP = 5
+    var tgt = Scalar[DT](1e-2)
+    var u = NET.make["gpu", Deterministic](Optional(c))
+    var optU = Adam(lr=tgt)
+    optU.adopt["gpu"](u, Optional(c))
+    optU.attach_warmup_schedule(tgt, WUP)               # device schedule
+    var w = NET.make["gpu", Deterministic](Optional(c))
+    var optW = Adam(lr=tgt)
+    optW.adopt["gpu"](w, Optional(c))                   # host-driven reference
+    for k in range(8):
+        optU.zero_grad["gpu"](u, Optional(c)); _populate_grads(u, c)
+        optU.step["gpu"](u, Optional(c))
+        var ratio = Scalar[DT](k) / Scalar[DT](WUP)
+        optW.lr = tgt * ratio if k < WUP else tgt   # lr_at(k)
+        optW.zero_grad["gpu"](w, Optional(c)); _populate_grads(w, c)
+        optW.step["gpu"](w, Optional(c))
+    var pu = _Capture(False); u.for_each_param["gpu"](pu, Optional(c))
+    var pw = _Capture(False); w.for_each_param["gpu"](pw, Optional(c))
+    var sched_max = Scalar[DT](0.0)
+    for i in range(len(pu.vals)):
+        var d = abs(pu.vals[i] - pw.vals[i])
+        if d > sched_max:
+            sched_max = d
+    print("  device-warmup vs host-warmup: max|param diff| =", sched_max)
+    var sched_ok = sched_max < Scalar[DT](1e-6)
+
     print(
         "  SGD:", "OK" if sgd_ok else "FAIL",
         " clip:", "OK" if clip_ok else "FAIL",
         " clip_device:", "OK" if dev_ok else "FAIL",
+        " sched:", "OK" if sched_ok else "FAIL",
     )
-    assert_true(sgd_ok and clip_ok and dev_ok, "arena optimizers parity")
+    assert_true(
+        sgd_ok and clip_ok and dev_ok and sched_ok, "arena optimizers parity"
+    )
     print("ARENA OPTIMIZERS OK")
