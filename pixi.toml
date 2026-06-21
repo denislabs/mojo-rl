@@ -80,8 +80,11 @@ mojo-compiler = ">=1.0.0b3.dev2026061606,<2"
 [target.osx-arm64.activation]
 env = { MOJO_PYTHON_LIBRARY = "$CONDA_PREFIX/lib/libpython3.13.dylib" }
 
+# NOTE: the linux-64 (nvidia) solve-group resolves python 3.12 (osx-arm64/apple
+# resolves 3.13) — keep this lib version in sync with the actual env, else Mojo's
+# Python interop aborts on the first import (e.g. RemoteLogger.flush → urllib).
 [target.linux-64.activation]
-env = { MOJO_PYTHON_LIBRARY = "$CONDA_PREFIX/lib/libpython3.13.so" }
+env = { MOJO_PYTHON_LIBRARY = "$CONDA_PREFIX/lib/libpython3.12.so" }
 
 [environments]
 nvidia = { features = ["nvidia"], solve-group = "nvidia" }
