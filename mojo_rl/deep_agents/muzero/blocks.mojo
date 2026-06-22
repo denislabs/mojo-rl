@@ -39,6 +39,7 @@ from mojo_rl.nn.storage.core.module import Module
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
 from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.storage.optimizer.grad_clip import clip_grad_norm
 
 from .loss_ops import soft_ce_slice_loss_and_grad
 from ..zero.twohot_targets import mz_two_hot_target_batch
@@ -160,14 +161,15 @@ def mz_unroll_train_step_cpu[
     mut orep: Adam,
     mut odyn: Adam,
     mut opred: Adam,
-    obs0: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    obs0: List[Scalar[DT]],
+    actions: List[Scalar[DT]],
+    policy_tgt: List[Scalar[DT]],
+    value_tgt: List[Scalar[DT]],
+    reward_tgt: List[Scalar[DT]],
     v_min: Scalar[DT],
     v_max: Scalar[DT],
     value_coef: Scalar[DT] = Scalar[DT](1.0),
+    max_grad_norm: Float64 = 0.0,
     loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) raises -> Scalar[DT]:
     """One CPU MuZero unroll training step. Returns the mean total loss
@@ -322,10 +324,14 @@ def mz_unroll_train_step_cpu[
         TensorRefs[REP.ARITY](obs0_t), gz, TensorRefs[REP.ARITY](gobs), None
     )
 
+    # Global grad-norm clip per net (max_grad_norm <= 0 ⇒ no-op), then step.
+    _ = clip_grad_norm["cpu", PRED](pred, Scalar[DT](max_grad_norm), None)
     opred.begin_step()
     pred.for_each_param["cpu"](opred, None)
+    _ = clip_grad_norm["cpu", DYN](dyn, Scalar[DT](max_grad_norm), None)
     odyn.begin_step()
     dyn.for_each_param["cpu"](odyn, None)
+    _ = clip_grad_norm["cpu", REP](rep, Scalar[DT](max_grad_norm), None)
     orep.begin_step()
     rep.for_each_param["cpu"](orep, None)
 
@@ -575,14 +581,15 @@ def mz_unroll_train_step_gpu[
     mut odyn: Adam,
     mut opred: Adam,
     mut scratch: MZScratch[B, K, OBS, ACT, LATENT, BINS],
-    obs0: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    obs0: List[Scalar[DT]],
+    actions: List[Scalar[DT]],
+    policy_tgt: List[Scalar[DT]],
+    value_tgt: List[Scalar[DT]],
+    reward_tgt: List[Scalar[DT]],
     v_min: Scalar[DT],
     v_max: Scalar[DT],
     value_coef: Scalar[DT] = Scalar[DT](1.0),
+    max_grad_norm: Float64 = 0.0,
     loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
     is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
     out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
@@ -641,12 +648,14 @@ def mz_unroll_train_step_gpu[
     # ── H2D the host batch slabs (fully overwrites the cached buffers) ──
     # ``obs_on_device``: the caller already filled ``scratch.d_obs0`` on-device
     # so skip the obs H2D and ignore ``obs0``.
+    # `.unsafe_ptr()` here is the sanctioned H2D-staging boundary (host List →
+    # device buffer); the batch inputs are owned Lists everywhere else.
     comptime if not obs_on_device:
-        ctx.enqueue_copy(d_obs0.dev.value(), obs0)
-    ctx.enqueue_copy(d_act.dev.value(), actions)
-    ctx.enqueue_copy(d_pol.dev.value(), policy_tgt)
-    ctx.enqueue_copy(d_val.dev.value(), value_tgt)
-    ctx.enqueue_copy(d_rew.dev.value(), reward_tgt)
+        ctx.enqueue_copy(d_obs0.dev.value(), obs0.unsafe_ptr())
+    ctx.enqueue_copy(d_act.dev.value(), actions.unsafe_ptr())
+    ctx.enqueue_copy(d_pol.dev.value(), policy_tgt.unsafe_ptr())
+    ctx.enqueue_copy(d_val.dev.value(), value_tgt.unsafe_ptr())
+    ctx.enqueue_copy(d_rew.dev.value(), reward_tgt.unsafe_ptr())
 
     # ── PER (optional): copy IS weights to device; priorities written at k=0 ──
     var has_isw = Bool(is_weights)
@@ -824,10 +833,14 @@ def mz_unroll_train_step_gpu[
         TensorRefs[REP.ARITY](d_obs0), gz, TensorRefs[REP.ARITY](gobs), octx
     )
 
+    # Global grad-norm clip per net (max_grad_norm <= 0 ⇒ no-op), then step.
+    _ = clip_grad_norm["gpu", PRED](pred, Scalar[DT](max_grad_norm), octx)
     opred.begin_step()
     pred.for_each_param["gpu"](opred, octx)
+    _ = clip_grad_norm["gpu", DYN](dyn, Scalar[DT](max_grad_norm), octx)
     odyn.begin_step()
     dyn.for_each_param["gpu"](odyn, octx)
+    _ = clip_grad_norm["gpu", REP](rep, Scalar[DT](max_grad_norm), octx)
     orep.begin_step()
     rep.for_each_param["gpu"](orep, octx)
 

@@ -46,7 +46,6 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.module import mptr
 from mojo_rl.core.sum_tree import SumTree
 from .nstep_targets import compute_nstep_value_targets
 from ..data.gpu_replay import _obs_quant, _obs_dequant
@@ -58,7 +57,9 @@ comptime STORE_CHUNK = 1024
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    """Local per-window scratch (w_rew/w_done/…) feeding the shared raw-pointer
+    `compute_nstep_value_targets`; alloc'd + freed within one sample call."""
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -188,13 +189,13 @@ struct PrioritizedMCTSSequenceReplay[
 
     def store_episode(
         mut self,
-        ep_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ep_act: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ep_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ep_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ep_val: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ep_tp: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ep_legal: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ep_obs: List[Scalar[DT]],
+        ep_act: List[Scalar[DT]],
+        ep_rew: List[Scalar[DT]],
+        ep_pol: List[Scalar[DT]],
+        ep_val: List[Scalar[DT]],
+        ep_tp: List[Scalar[DT]],
+        ep_legal: List[Scalar[DT]],
         length: Int,
         truncated: Bool = False,
     ) raises:
@@ -304,17 +305,13 @@ struct PrioritizedMCTSSequenceReplay[
         gamma: Scalar[DT],
         out_obs_dev: DeviceBuffer[DT],  # [(K+1)*B, OBS]
         d_slots: DeviceBuffer[DType.int32],  # [(K+1)*B]
-        h_slots: UnsafePointer[Int32, MutAnyOrigin],  # [(K+1)*B]
-        mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K, B]
-        mut policy_tgt: UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ],  # [K+1, B, ACT]
-        mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
-        mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K, B]
-        mut is_weights: UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ],  # [B] IS weights
-        mut sample_slots: UnsafePointer[Int, MutAnyOrigin],  # [B] ring slots
+        mut h_slots: List[Int32],  # [(K+1)*B]
+        mut actions: List[Scalar[DT]],  # [K, B]
+        mut policy_tgt: List[Scalar[DT]],  # [K+1, B, ACT]
+        mut value_tgt: List[Scalar[DT]],  # [K+1, B]
+        mut reward_tgt: List[Scalar[DT]],  # [K, B]
+        mut is_weights: List[Scalar[DT]],  # [B] IS weights
+        mut sample_slots: List[Int],  # [B] ring slots
         cons_mask: Optional[
             UnsafePointer[Scalar[DT], MutAnyOrigin]
         ] = None,  # [K, B]
@@ -441,7 +438,7 @@ struct PrioritizedMCTSSequenceReplay[
         w_vt.free()
 
         # ── device gather: H2D the M slot indices, assemble the obs slab ──
-        ctx.enqueue_copy(d_slots, h_slots)
+        ctx.enqueue_copy(d_slots, h_slots.unsafe_ptr())  # sanctioned H2D-staging boundary
         var ring_lt = self._ring_lt()
         var slots_lt = rebind[
             LayoutTensor[DType.int32, Layout.row_major(M), MutAnyOrigin]
@@ -466,7 +463,7 @@ struct PrioritizedMCTSSequenceReplay[
         ctx: DeviceContext,
         out_obs_dev: DeviceBuffer[DT],  # [M, OBS]
         d_slots: DeviceBuffer[DType.int32],  # [M]
-        h_slots: UnsafePointer[Int32, MutAnyOrigin],  # [M]
+        mut h_slots: List[Int32],  # [M]
         ep_idx: List[Int],
         offset: List[Int],
     ) raises:
@@ -485,7 +482,7 @@ struct PrioritizedMCTSSequenceReplay[
             if o < 0:
                 o = 0
             h_slots[m] = Int32((self.ep_start[e] + o) % Self.CAP)
-        ctx.enqueue_copy(d_slots, h_slots)
+        ctx.enqueue_copy(d_slots, h_slots.unsafe_ptr())  # sanctioned H2D-staging boundary
         var ring_lt = self._ring_lt()
         var slots_lt = rebind[
             LayoutTensor[DType.int32, Layout.row_major(M), MutAnyOrigin]
@@ -505,8 +502,8 @@ struct PrioritizedMCTSSequenceReplay[
 
     def update_priorities(
         mut self,
-        slots: UnsafePointer[Int, MutAnyOrigin],  # [n] ring slots
-        priorities: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [n] |TD error|
+        slots: List[Int],  # [n] ring slots
+        priorities: List[Scalar[DT]],  # [n] |TD error|
         n: Int,
     ):
         """Write back fresh priorities (``|TD error|`` + eps)ᵅ for the sampled
@@ -526,7 +523,7 @@ struct PrioritizedMCTSSequenceReplay[
         mut self,
         ep_idx: Int,
         offset: Int,
-        new_policy: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        new_policy: List[Scalar[DT]],
         new_value: Scalar[DT],
     ):
         if ep_idx < 0 or ep_idx >= len(self.ep_start):

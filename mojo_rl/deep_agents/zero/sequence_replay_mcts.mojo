@@ -24,7 +24,6 @@ timing). Pure data refresh — no recompute here.
 from std.memory import alloc
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
 from .nstep_targets import compute_nstep_value_targets
 # Same quantize/dequantize helpers the GPU replays use: `SDT == DT` is a pure
 # rebind; `uint8` stores `round(x·255)` and reads back `k/255` — bit-lossless
@@ -33,7 +32,10 @@ from ..data.gpu_replay import _obs_quant, _obs_dequant
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    """Local per-window scratch (w_rew/w_done/…) that feeds the shared
+    `compute_nstep_value_targets` (raw-pointer, used by every replay incl.
+    un-migrated GPU/continuous). Function-local: alloc'd + freed in one call."""
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT](
@@ -102,13 +104,13 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
 
     def store_episode(
         mut self,
-        ep_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L, OBS]
-        ep_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L]
-        ep_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L]
-        ep_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L, ACT]
-        ep_val: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L]
-        ep_tp: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [L]
-        ep_legal: UnsafePointer[Scalar[DT], MutAnyOrigin], # [L, ACT] legal mask
+        ep_obs: List[Scalar[DT]],   # [L, OBS]
+        ep_act: List[Scalar[DT]],   # [L]
+        ep_rew: List[Scalar[DT]],   # [L]
+        ep_pol: List[Scalar[DT]],   # [L, ACT]
+        ep_val: List[Scalar[DT]],   # [L]
+        ep_tp: List[Scalar[DT]],    # [L]
+        ep_legal: List[Scalar[DT]], # [L, ACT] legal mask
         length: Int,
         truncated: Bool = False,
     ):
@@ -175,7 +177,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
         self,
         ep_idx: Int,
         offset: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut out: List[Scalar[DT]],
         out_base: Int,
     ):
         """Dequantized obs read (``Self.OBS`` cells) at episode-relative
@@ -213,11 +215,11 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
     ](
         mut self,
         gamma: Scalar[DT],
-        mut obs0: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B, OBS]
-        mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K, B]
-        mut policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT]
-        mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
-        mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
+        mut obs0: List[Scalar[DT]],       # [B, OBS]
+        mut actions: List[Scalar[DT]],    # [K, B]
+        mut policy_tgt: List[Scalar[DT]], # [K+1, B, ACT]
+        mut value_tgt: List[Scalar[DT]],  # [K+1, B]
+        mut reward_tgt: List[Scalar[DT]], # [K, B]
     ):
         """Fill the time-major unroll batch for ``B`` windows. Each row picks a
         step-uniform (episode, start); the K+N horizon is read with absorbing
@@ -295,11 +297,11 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
     ](
         mut self,
         gamma: Scalar[DT],
-        mut obs_seq: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K+1, B, OBS]
-        mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K, B]
-        mut policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT]
-        mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
-        mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
+        mut obs_seq: List[Scalar[DT]],    # [K+1, B, OBS]
+        mut actions: List[Scalar[DT]],    # [K, B]
+        mut policy_tgt: List[Scalar[DT]], # [K+1, B, ACT]
+        mut value_tgt: List[Scalar[DT]],  # [K+1, B]
+        mut reward_tgt: List[Scalar[DT]], # [K, B]
         cons_mask: Optional[
             UnsafePointer[Scalar[DT], MutAnyOrigin]
         ] = None,                                                # [K, B]
@@ -394,7 +396,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
         mut self,
         ep_idx: Int,
         offset: Int,
-        new_policy: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [ACT]
+        new_policy: List[Scalar[DT]],  # [ACT]
         new_value: Scalar[DT],
     ):
         """Reanalyze hook: overwrite a stored step's MCTS policy + root value
@@ -420,7 +422,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
         self,
         ep_idx: Int,
         offset: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [OBS]
+        mut out: List[Scalar[DT]],  # [OBS]
     ):
         """Copy the stored observation at ``(ep_idx, offset)`` into ``out``.
         MuZero reanalyze replans from the observation alone (no env state)."""

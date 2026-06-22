@@ -63,18 +63,19 @@ def main() raises:
     agent2.load(path1)
     agent2.save(path2)
 
+    # The storage agent checkpoint is 3 per-net sidecars (path + .rep/.dyn/.pred);
+    # compare each to prove the save/load round-trip reproduces serialization.
     var c1: String
     var c2: String
-    with open(path1, "r") as f:
-        c1 = f.read()
-    with open(path2, "r") as f:
-        c2 = f.read()
-    assert_true(
-        c1 == c2,
-        "GPU checkpoint round-trip did not reproduce the serialization",
-    )
-    print(
-        "checkpoint round-trip: byte-identical (", c1.byte_length(), "bytes )"
-    )
+    for suf in [String(".rep"), String(".dyn"), String(".pred")]:
+        with open(path1 + suf, "r") as f:
+            c1 = f.read()
+        with open(path2 + suf, "r") as f:
+            c2 = f.read()
+        assert_true(
+            c1 == c2,
+            "GPU checkpoint round-trip did not reproduce " + suf,
+        )
+    print("checkpoint round-trip: byte-identical (3 sidecars)")
 
     print("MuZeroAgent GPU facade smoke: OK")

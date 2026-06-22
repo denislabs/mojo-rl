@@ -15,8 +15,8 @@ from std.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents.muzero.selfplay_gpu_device import (
     run_muzero_selfplay_gpu_device,
@@ -47,12 +47,12 @@ def main() raises:
 
     # ── A: vanilla device-search MuZero ──
     var env = CartPoleEnv[DType.float64]()
-    var rep = Rep.make["gpu", INIT=Kaiming](ctx=ctx)
-    var dyn = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
-    var pred = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
-    var orep = Adam.make["gpu", M=Rep](rep, ctx)
-    var odyn = Adam.make["gpu", M=Dyn](dyn, ctx)
-    var opred = Adam.make["gpu", M=Pred](pred, ctx)
+    var rep = Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred = Pred.make["gpu", Kaiming](Optional(ctx))
+    var orep = Adam(lr=Scalar[DT](1e-3))
+    var odyn = Adam(lr=Scalar[DT](1e-3))
+    var opred = Adam(lr=Scalar[DT](1e-3))
     orep.lr = Scalar[DT](3e-4)
     odyn.lr = Scalar[DT](3e-4)
     opred.lr = Scalar[DT](3e-4)
@@ -77,12 +77,12 @@ def main() raises:
 
     # ── B: Gumbel MuZero ──
     var env2 = CartPoleEnv[DType.float64]()
-    var rep2 = Rep.make["gpu", INIT=Kaiming](ctx=ctx)
-    var dyn2 = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
-    var pred2 = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
-    var orep2 = Adam.make["gpu", M=Rep](rep2, ctx)
-    var odyn2 = Adam.make["gpu", M=Dyn](dyn2, ctx)
-    var opred2 = Adam.make["gpu", M=Pred](pred2, ctx)
+    var rep2 = Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn2 = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred2 = Pred.make["gpu", Kaiming](Optional(ctx))
+    var orep2 = Adam(lr=Scalar[DT](1e-3))
+    var odyn2 = Adam(lr=Scalar[DT](1e-3))
+    var opred2 = Adam(lr=Scalar[DT](1e-3))
     orep2.lr = Scalar[DT](3e-4)
     odyn2.lr = Scalar[DT](3e-4)
     opred2.lr = Scalar[DT](3e-4)

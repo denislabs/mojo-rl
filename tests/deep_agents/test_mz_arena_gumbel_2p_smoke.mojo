@@ -12,7 +12,7 @@ long NVIDIA run, out of scope here).
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.storage.core.initializer import Kaiming
 from mojo_rl.deep_agents.muzero.nets import (
     MZRepNetC4Conv, MZDynNet, MZPredNet
 )
@@ -38,9 +38,9 @@ def main() raises:
     comptime Aug = HFlipColumnAugmenter[ROWS=6, COLS=7, PLANES=3]
 
     var ctx = DeviceContext()
-    var rep = Rep.make["gpu", INIT=Kaiming](ctx=ctx)
-    var dyn = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
-    var pred = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
+    var rep = Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred = Pred.make["gpu", Kaiming](Optional(ctx))
 
     var res = run_muzero_selfplay_arena_gumbel_2p[
         Env, Rep, Dyn, Pred, Aug,

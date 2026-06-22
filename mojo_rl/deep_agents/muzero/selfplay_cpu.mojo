@@ -81,6 +81,7 @@ def run_muzero_selfplay_cpu[
     seed: UInt64 = 0,
     max_ep_steps: Int = 500,
     value_coef: Scalar[DT] = Scalar[DT](0.25),
+    max_grad_norm: Float64 = 0.0,
     temperature_decay_steps: Int = 0,
     reanalyze_every: Int = 0,
     eval_every: Int = 0,
@@ -113,18 +114,21 @@ def run_muzero_selfplay_cpu[
         v_min=v_min, v_max=v_max
     )
 
-    # training batch slabs (time-major), allocated once
-    var t_obs0 = _a(B * OBS)
-    var t_act = _a(K * B)
-    var t_pol = _a((K + 1) * B * ACT)
-    var t_val = _a((K + 1) * B)
-    var t_rew = _a(K * B)
+    # training batch slabs (time-major) — owned Lists (RAII), filled by the
+    # replay's List API and read by the List-input unroll. No raw pointers.
+    var t_obs0 = List[Scalar[DT]](length=B * OBS, fill=0)
+    var t_act = List[Scalar[DT]](length=K * B, fill=0)
+    var t_pol = List[Scalar[DT]](length=(K + 1) * B * ACT, fill=0)
+    var t_val = List[Scalar[DT]](length=(K + 1) * B, fill=0)
+    var t_rew = List[Scalar[DT]](length=K * B, fill=0)
 
-    # reanalyze scratch
-    var r_obs = _a(OBS)
-    var r_pol = _a(ACT)
+    # reanalyze scratch (owned Lists; read_obs/update_targets take Lists)
+    var r_obs = List[Scalar[DT]](length=OBS, fill=0)
+    var r_pol = List[Scalar[DT]](length=ACT, fill=0)
 
-    # logger scratch: per-component loss split + root prediction probe
+    # logger scratch: per-component loss split (optional `loss_parts` output of
+    # the unroll, kept as a raw buffer — `Optional[List]` would copy on .value())
+    # + root-prediction probe buffer for the diagnostics helper.
     var l_parts = _a(3)            # [policy, value, reward] means
     var d_pred = _a(B * (ACT + BINS))
 
@@ -202,13 +206,7 @@ def run_muzero_selfplay_cpu[
             # Time-limit cut (env truncation or our max_ep_steps cap) is NOT a
             # terminal: the replay must bootstrap past it, not target value 0.
             rb.store_episode(
-                e_obs.unsafe_ptr().as_unsafe_any_origin(),
-                e_act.unsafe_ptr().as_unsafe_any_origin(),
-                e_rew.unsafe_ptr().as_unsafe_any_origin(),
-                e_pol.unsafe_ptr().as_unsafe_any_origin(),
-                e_val.unsafe_ptr().as_unsafe_any_origin(),
-                e_tp.unsafe_ptr().as_unsafe_any_origin(),
-                e_legal.unsafe_ptr().as_unsafe_any_origin(),
+                e_obs, e_act, e_rew, e_pol, e_val, e_tp, e_legal,
                 ep_len,
                 truncated=not env.was_terminated(),
             )
@@ -234,7 +232,7 @@ def run_muzero_selfplay_cpu[
                     ](
                         rep, dyn, pred, orep, odyn, opred,
                         t_obs0, t_act, t_pol, t_val, t_rew,
-                        v_min, v_max, value_coef,
+                        v_min, v_max, value_coef, max_grad_norm,
                         loss_parts=l_parts,
                     )
                 )
@@ -379,7 +377,5 @@ def run_muzero_selfplay_cpu[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
-    r_obs.free(); r_pol.free()
     l_parts.free(); d_pred.free()
     return last_loss

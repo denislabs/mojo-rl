@@ -40,14 +40,15 @@ from std.memory import alloc
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.module import mptr
 from mojo_rl.core.sum_tree import SumTree
 from ..data.gpu_replay import _obs_quant, _obs_dequant
 from .nstep_targets import compute_nstep_value_targets
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    """Local per-window scratch (w_rew/w_done/…) feeding the shared raw-pointer
+    `compute_nstep_value_targets`; alloc'd + freed within one sample call."""
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -245,10 +246,10 @@ struct GPUMCTSSequenceReplay[
 
     def record_obs_meta(
         mut self,
-        src_obs: DeviceBuffer[DT],                          # [N_ENVS, OBS]
-        h_act: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [N_ENVS]
-        h_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [N_ENVS, ACT]
-        h_val: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [N_ENVS]
+        src_obs: DeviceBuffer[DT],          # [N_ENVS, OBS]
+        h_act: List[Scalar[DT]],            # [N_ENVS]
+        h_pol: List[Scalar[DT]],            # [N_ENVS, ACT]
+        h_val: List[Scalar[DT]],            # [N_ENVS]
     ) raises:
         """Phase 1 of a step: store the root obs (device→device) + chosen action
         + MCTS policy/value (host) for all ``N_ENVS`` envs, extending each env's
@@ -256,10 +257,10 @@ struct GPUMCTSSequenceReplay[
         var base = self.gtotal % Self.CAP
         var src_t = LayoutTensor[
             DT, Layout.row_major(Self.N_ENVS, Self.OBS), MutAnyOrigin
-        ](mptr(src_obs.unsafe_ptr()))
+        ](src_obs.unsafe_ptr().as_unsafe_any_origin())
         var buf_t = LayoutTensor[
             Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](mptr(self.obs_dev.unsafe_ptr()))
+        ](self.obs_dev.unsafe_ptr().as_unsafe_any_origin())
         comptime nb = (Self.N_ENVS * Self.OBS + TPB - 1) // TPB
         self.ctx.enqueue_function[
             _mz_obs_store_batch_kernel[Self.N_ENVS, Self.OBS, Self.CAP, Self.SDT]
@@ -291,9 +292,9 @@ struct GPUMCTSSequenceReplay[
 
     def record_outcome(
         mut self,
-        h_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [N_ENVS]
-        h_done: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [N_ENVS]
-        h_term: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [N_ENVS]
+        h_rew: List[Scalar[DT]],   # [N_ENVS]
+        h_done: List[Scalar[DT]],  # [N_ENVS]
+        h_term: List[Scalar[DT]],  # [N_ENVS]
         max_ep_steps: Int,
     ):
         """Phase 2 of a step: write each env's reward into its just-written slot
@@ -356,11 +357,11 @@ struct GPUMCTSSequenceReplay[
     ](
         mut self,
         gamma: Scalar[DT],
-        mut d_obs0: DeviceBuffer[DT],                            # [B, OBS] (out)
-        mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K, B]
-        mut policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT]
-        mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
-        mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
+        mut d_obs0: DeviceBuffer[DT],     # [B, OBS] (out)
+        mut actions: List[Scalar[DT]],    # [K, B]
+        mut policy_tgt: List[Scalar[DT]], # [K+1, B, ACT]
+        mut value_tgt: List[Scalar[DT]],  # [K+1, B]
+        mut reward_tgt: List[Scalar[DT]], # [K, B]
     ) raises:
         """Device-obs twin of `MCTSSequenceReplay.sample_training_batch`: the
         host metadata + n-step targets are computed exactly as there (strided
@@ -434,13 +435,13 @@ struct GPUMCTSSequenceReplay[
         self.ctx.enqueue_copy(self.d_slots.value(), self.h_slots.unsafe_ptr())
         var slots_t = LayoutTensor[
             DType.int32, Layout.row_major(B), MutAnyOrigin
-        ](mptr(self.d_slots.value().unsafe_ptr()))
+        ](self.d_slots.value().unsafe_ptr().as_unsafe_any_origin())
         var buf_t = LayoutTensor[
             Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](mptr(self.obs_dev.unsafe_ptr()))
+        ](self.obs_dev.unsafe_ptr().as_unsafe_any_origin())
         var out_t = LayoutTensor[
             DT, Layout.row_major(B, Self.OBS), MutAnyOrigin
-        ](mptr(d_obs0.unsafe_ptr()))
+        ](d_obs0.unsafe_ptr().as_unsafe_any_origin())
         comptime nb = (B * Self.OBS + TPB - 1) // TPB
         self.ctx.enqueue_function[
             _mz_obs_gather_kernel[B, Self.OBS, Self.CAP, Self.SDT]
@@ -453,13 +454,13 @@ struct GPUMCTSSequenceReplay[
     ](
         mut self,
         gamma: Scalar[DT],
-        mut d_obs0: DeviceBuffer[DT],                            # [B, OBS] (out)
-        mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K, B]
-        mut policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT]
-        mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
-        mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
-        mut is_weights: UnsafePointer[Scalar[DT], MutAnyOrigin], # [B] IS weights
-        mut sample_slots: UnsafePointer[Int, MutAnyOrigin],      # [B] ring slots
+        mut d_obs0: DeviceBuffer[DT],     # [B, OBS] (out)
+        mut actions: List[Scalar[DT]],    # [K, B]
+        mut policy_tgt: List[Scalar[DT]], # [K+1, B, ACT]
+        mut value_tgt: List[Scalar[DT]],  # [K+1, B]
+        mut reward_tgt: List[Scalar[DT]], # [K, B]
+        mut is_weights: List[Scalar[DT]], # [B] IS weights
+        mut sample_slots: List[Int],      # [B] ring slots
     ) raises:
         """Prioritized device-obs twin of `sample_training_batch_dev`: window
         starts are drawn ∝ priorityᵅ (stratified over B equal-mass bins) with
@@ -569,13 +570,13 @@ struct GPUMCTSSequenceReplay[
         self.ctx.enqueue_copy(self.d_slots.value(), self.h_slots.unsafe_ptr())
         var slots_t = LayoutTensor[
             DType.int32, Layout.row_major(B), MutAnyOrigin
-        ](mptr(self.d_slots.value().unsafe_ptr()))
+        ](self.d_slots.value().unsafe_ptr().as_unsafe_any_origin())
         var buf_t = LayoutTensor[
             Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](mptr(self.obs_dev.unsafe_ptr()))
+        ](self.obs_dev.unsafe_ptr().as_unsafe_any_origin())
         var out_t = LayoutTensor[
             DT, Layout.row_major(B, Self.OBS), MutAnyOrigin
-        ](mptr(d_obs0.unsafe_ptr()))
+        ](d_obs0.unsafe_ptr().as_unsafe_any_origin())
         comptime nb = (B * Self.OBS + TPB - 1) // TPB
         self.ctx.enqueue_function[
             _mz_obs_gather_kernel[B, Self.OBS, Self.CAP, Self.SDT]
@@ -585,8 +586,8 @@ struct GPUMCTSSequenceReplay[
 
     def update_priorities(
         mut self,
-        slots: UnsafePointer[Int, MutAnyOrigin],              # [n] ring slots
-        priorities: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [n] |value error|
+        slots: List[Int],              # [n] ring slots
+        priorities: List[Scalar[DT]],  # [n] |value error|
         n: Int,
     ):
         """Write back fresh priorities ``(|value error| + eps)ᵅ`` for the sampled
@@ -633,13 +634,13 @@ struct GPUMCTSSequenceReplay[
         self.ctx.enqueue_copy(self.d_rslots.value(), self.h_rslots.unsafe_ptr())
         var slots_t = LayoutTensor[
             DType.int32, Layout.row_major(R), MutAnyOrigin
-        ](mptr(self.d_rslots.value().unsafe_ptr()))
+        ](self.d_rslots.value().unsafe_ptr().as_unsafe_any_origin())
         var buf_t = LayoutTensor[
             Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](mptr(self.obs_dev.unsafe_ptr()))
+        ](self.obs_dev.unsafe_ptr().as_unsafe_any_origin())
         var out_t = LayoutTensor[
             DT, Layout.row_major(R, Self.OBS), MutAnyOrigin
-        ](mptr(out_obs.unsafe_ptr()))
+        ](out_obs.unsafe_ptr().as_unsafe_any_origin())
         comptime nb = (R * Self.OBS + TPB - 1) // TPB
         self.ctx.enqueue_function[
             _mz_obs_gather_kernel[R, Self.OBS, Self.CAP, Self.SDT]
@@ -655,30 +656,31 @@ struct GPUMCTSSequenceReplay[
         mut self,
         ep_idx: Int,
         offset: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [OBS] host
+        mut out: List[Scalar[DT]],   # [OBS] host
     ) raises:
         """Copy stored obs at ``(ep_idx, offset)`` device→host (1-row gather)."""
         var slot = self._slot(self.ep_start[ep_idx], offset)
         # one-row gather via tiny throwaway device buffers.
         var d_one = self.ctx.enqueue_create_buffer[DType.int32](1)
         var d_out = self.ctx.enqueue_create_buffer[DT](Self.OBS)
-        var hs = mptr(alloc[Int32](1))
+        var hs = alloc[Int32](1).as_unsafe_any_origin()
         hs[0] = Int32(slot)
         self.ctx.enqueue_copy(d_one, hs)
         var slots_t = LayoutTensor[
             DType.int32, Layout.row_major(1), MutAnyOrigin
-        ](mptr(d_one.unsafe_ptr()))
+        ](d_one.unsafe_ptr().as_unsafe_any_origin())
         var buf_t = LayoutTensor[
             Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](mptr(self.obs_dev.unsafe_ptr()))
+        ](self.obs_dev.unsafe_ptr().as_unsafe_any_origin())
         var out_t = LayoutTensor[
             DT, Layout.row_major(1, Self.OBS), MutAnyOrigin
-        ](mptr(d_out.unsafe_ptr()))
+        ](d_out.unsafe_ptr().as_unsafe_any_origin())
         comptime nb = (Self.OBS + TPB - 1) // TPB
         self.ctx.enqueue_function[
             _mz_obs_gather_kernel[1, Self.OBS, Self.CAP, Self.SDT]
         ](slots_t, buf_t, out_t, grid_dim=nb, block_dim=TPB)
-        self.ctx.enqueue_copy(out, d_out)
+        # `.unsafe_ptr()`: sanctioned D2H-staging boundary (device row → host List).
+        self.ctx.enqueue_copy(out.unsafe_ptr(), d_out)
         self.ctx.synchronize()
         hs.free()
 
@@ -686,7 +688,7 @@ struct GPUMCTSSequenceReplay[
         mut self,
         ep_idx: Int,
         offset: Int,
-        new_policy: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [ACT]
+        new_policy: List[Scalar[DT]],  # [ACT]
         new_value: Scalar[DT],
     ):
         if ep_idx < 0 or ep_idx >= len(self.ep_start):

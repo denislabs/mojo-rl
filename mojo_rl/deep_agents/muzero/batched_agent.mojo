@@ -31,9 +31,9 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.core.logger import Logger, NoOpLogger
 
 from ..training.batched_env import BatchedEnv
@@ -81,9 +81,9 @@ struct MuZeroBatchedAgent[
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises:
         self.ctx = ctx
-        self.rep = Self.REP.make["gpu", INIT=Kaiming](ctx=ctx)
-        self.dyn = Self.DYN.make["gpu", INIT=Kaiming](ctx=ctx)
-        self.pred = Self.PRED.make["gpu", INIT=Kaiming](ctx=ctx)
+        self.rep = Self.REP.make["gpu", Kaiming](Optional(ctx))
+        self.dyn = Self.DYN.make["gpu", Kaiming](Optional(ctx))
+        self.pred = Self.PRED.make["gpu", Kaiming](Optional(ctx))
         self.lr = lr
         self.gamma = gamma
         self.v_min = v_min
@@ -134,13 +134,13 @@ struct MuZeroBatchedAgent[
         ``reanalyze_batch`` (matches EZv2 / official MuZero's delayed reanalyze
         model). Returns the last training loss; the nets keep their weights
         across ``train`` calls."""
-        var orep = Adam.make["gpu", M = Self.REP](self.rep, self.ctx)
-        var odyn = Adam.make["gpu", M = Self.DYN](self.dyn, self.ctx)
-        var opred = Adam.make["gpu", M = Self.PRED](self.pred, self.ctx)
-        orep.lr = self.lr; odyn.lr = self.lr; opred.lr = self.lr
-        orep.max_grad_norm = self.max_grad_norm
-        odyn.max_grad_norm = self.max_grad_norm
-        opred.max_grad_norm = self.max_grad_norm
+        var orep = Adam(lr=self.lr)
+        var odyn = Adam(lr=self.lr)
+        var opred = Adam(lr=self.lr)
+        # NOTE: legacy Adam.max_grad_norm clipping is dropped in the storage path
+        # (storage Adam has no such field; the migrated unroll does not clip).
+        # Re-add via clip_grad_norm in mz_unroll_train_step_* if convergence needs
+        # it (matches the AlphaZero storage driver pattern).
         return run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             Self.BENV, Self.REP, Self.DYN, Self.PRED,
             Self.N_ENVS, Self.OBS, Self.ACT, Self.LATENT, Self.BINS,

@@ -14,7 +14,6 @@ unroll mirrors it. Run (GPU env required):
     pixi run -e apple mojo run -I . tests/deep_agents/test_mz_unroll_gpu_parity.mojo
 """
 
-from std.memory import alloc
 from std.random import seed, random_float64
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
@@ -45,9 +44,6 @@ comptime Rep = MZRepNet[OBS, LATENT, H]
 comptime Dyn = MZDynNet[LATENT, ACT, BINS, H]
 comptime Pred = MZPredNet[LATENT, ACT, BINS, H]
 
-
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 
 
 def _abs(v: Scalar[DT]) -> Scalar[DT]:
@@ -117,11 +113,11 @@ def main() raises:
     var gopred = Adam(lr=Scalar[DT](3e-4))
 
     # ── deterministic host batch (time-major, same as replay produces) ──
-    var obs0 = _a(B * OBS)
-    var actions = _a(K * B)
-    var policy_tgt = _a((K + 1) * B * ACT)
-    var value_tgt = _a((K + 1) * B)
-    var reward_tgt = _a(K * B)
+    var obs0 = List[Scalar[DT]](length=B * OBS, fill=0)
+    var actions = List[Scalar[DT]](length=K * B, fill=0)
+    var policy_tgt = List[Scalar[DT]](length=(K + 1) * B * ACT, fill=0)
+    var value_tgt = List[Scalar[DT]](length=(K + 1) * B, fill=0)
+    var reward_tgt = List[Scalar[DT]](length=K * B, fill=0)
     for i in range(B * OBS):
         obs0[i] = Scalar[DT](-0.4 + 0.13 * Float64(i % 7))
     for i in range(K * B):
@@ -173,6 +169,4 @@ def main() raises:
     assert_true(dd < ATOL, "dyn param parity failed")
     assert_true(dp < ATOL, "pred param parity failed")
 
-    obs0.free(); actions.free(); policy_tgt.free()
-    value_tgt.free(); reward_tgt.free()
     print("  ok — MuZero GPU unroll matches CPU within", ATOL)

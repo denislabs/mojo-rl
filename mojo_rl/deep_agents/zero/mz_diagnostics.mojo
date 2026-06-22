@@ -38,8 +38,8 @@ def append_mz_train_diagnostics[
     ACT: Int, BINS: Int, BATCH: Int,
 ](
     pred: UnsafePointer[Scalar[DT], MutAnyOrigin],        # [BATCH, ACT+BINS]
-    policy_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BATCH, ACT]
-    value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [BATCH] raw scalar
+    policy_tgt: List[Scalar[DT]],  # [BATCH, ACT]
+    value_tgt: List[Scalar[DT]],   # [BATCH] raw scalar
     v_min: Scalar[DT],
     v_max: Scalar[DT],
     mut names: List[String],

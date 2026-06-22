@@ -34,7 +34,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import mptr
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.storage.core.initializer import Kaiming
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents.muzero.selfplay_gpu import mz_sync_gpu_to_cpu
 from mojo_rl.deep_agents.zero.mcts_adapters_mz import (
@@ -74,12 +74,12 @@ def main() raises:
     var ctx = DeviceContext()
 
     # ── GPU nets + byte-exact CPU mirrors ──
-    var rep_g = Rep.make["gpu", INIT=Kaiming](ctx=ctx)
-    var dyn_g = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
-    var pred_g = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
-    var rep_c = Rep.make["cpu", INIT=Kaiming]()
-    var dyn_c = Dyn.make["cpu", INIT=Kaiming]()
-    var pred_c = Pred.make["cpu", INIT=Kaiming]()
+    var rep_g = Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn_g = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred_g = Pred.make["gpu", Kaiming](Optional(ctx))
+    var rep_c = Rep.make["cpu", Kaiming]()
+    var dyn_c = Dyn.make["cpu", Kaiming]()
+    var pred_c = Pred.make["cpu", Kaiming]()
     mz_sync_gpu_to_cpu(rep_g, rep_c, ctx)
     mz_sync_gpu_to_cpu(dyn_g, dyn_c, ctx)
     mz_sync_gpu_to_cpu(pred_g, pred_c, ctx)
