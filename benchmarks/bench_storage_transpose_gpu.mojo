@@ -26,6 +26,7 @@ from layout import Layout, LayoutTensor
 comptime DT = DType.float32
 comptime TPB = 128
 comptime TILE = 32
+comptime BR = 8           # BLOCK_ROWS: 32x8 block, 4 elems/thread (variant C)
 
 
 # ── naive: one thread per element, strided read of src ────────────────────
@@ -81,8 +82,42 @@ def _t2d_tiled[
         dst[b, j2 * A + i2] = rebind[Scalar[DT]](tile[tx, ty])
 
 
+# ── tiled + BLOCK_ROWS: 32x8 block, 4 elems/thread (canonical NVIDIA) ──────
+def _t2d_tiled_br[
+    BATCH: Int, A: Int, B: Int
+](
+    src: LayoutTensor[DT, Layout.row_major(BATCH, A * B), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(BATCH, A * B), MutAnyOrigin],
+):
+    var tile = LayoutTensor[
+        DT,
+        Layout.row_major(TILE, TILE + 1),
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var b = Int(block_idx.z)
+    var cy = Int(block_idx.y) * TILE        # tile origin in i (A)
+    var cx = Int(block_idx.x) * TILE        # tile origin in j (B)
+    var tx = Int(thread_idx.x)              # [0, TILE)
+    var ty = Int(thread_idx.y)              # [0, BR)
+
+    var j = cx + tx
+    comptime for r in range(0, TILE, BR):
+        var i = cy + ty + r
+        if i < A and j < B:
+            tile[ty + r, tx] = rebind[Scalar[DT]](src[b, i * B + j])
+    barrier()
+
+    var i2 = cy + tx                        # out col (coalesced)
+    comptime for r in range(0, TILE, BR):
+        var j2 = cx + ty + r                # out row
+        if i2 < A and j2 < B:
+            dst[b, j2 * A + i2] = rebind[Scalar[DT]](tile[tx, ty + r])
+
+
 def _time[
-    BATCH: Int, A: Int, B: Int, TILED: Bool, WARMUP: Int, ITERS: Int
+    BATCH: Int, A: Int, B: Int, MODE: Int, WARMUP: Int, ITERS: Int
 ](ctx: DeviceContext, label: StaticString) raises:
     comptime AB = A * B
     var s = ctx.enqueue_create_buffer[DT](BATCH * AB)
@@ -93,9 +128,24 @@ def _time[
     var dl = LayoutTensor[DT, Layout.row_major(BATCH, AB), MutAnyOrigin](d)
     var us = Float64(0)
 
-    comptime if TILED:
-        comptime gx = (B + TILE - 1) // TILE
-        comptime gy = (A + TILE - 1) // TILE
+    comptime gx = (B + TILE - 1) // TILE
+    comptime gy = (A + TILE - 1) // TILE
+    comptime nb = (BATCH * AB + TPB - 1) // TPB
+
+    comptime if MODE == 0:
+        comptime for _ in range(WARMUP):
+            ctx.enqueue_function[_t2d_naive[BATCH, A, B]](
+                sl, dl, grid_dim=nb, block_dim=TPB
+            )
+        ctx.synchronize()
+        var t0 = perf_counter_ns()
+        comptime for _ in range(ITERS):
+            ctx.enqueue_function[_t2d_naive[BATCH, A, B]](
+                sl, dl, grid_dim=nb, block_dim=TPB
+            )
+        ctx.synchronize()
+        us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
+    elif MODE == 1:
         comptime for _ in range(WARMUP):
             ctx.enqueue_function[_t2d_tiled[BATCH, A, B]](
                 sl, dl, grid_dim=(gx, gy, BATCH), block_dim=(TILE, TILE)
@@ -109,16 +159,15 @@ def _time[
         ctx.synchronize()
         us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
     else:
-        comptime nb = (BATCH * AB + TPB - 1) // TPB
         comptime for _ in range(WARMUP):
-            ctx.enqueue_function[_t2d_naive[BATCH, A, B]](
-                sl, dl, grid_dim=nb, block_dim=TPB
+            ctx.enqueue_function[_t2d_tiled_br[BATCH, A, B]](
+                sl, dl, grid_dim=(gx, gy, BATCH), block_dim=(TILE, BR)
             )
         ctx.synchronize()
         var t0 = perf_counter_ns()
         comptime for _ in range(ITERS):
-            ctx.enqueue_function[_t2d_naive[BATCH, A, B]](
-                sl, dl, grid_dim=nb, block_dim=TPB
+            ctx.enqueue_function[_t2d_tiled_br[BATCH, A, B]](
+                sl, dl, grid_dim=(gx, gy, BATCH), block_dim=(TILE, BR)
             )
         ctx.synchronize()
         us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
@@ -134,13 +183,14 @@ def _time[
 def _ab[
     BATCH: Int, A: Int, B: Int, WARMUP: Int, ITERS: Int
 ](ctx: DeviceContext) raises:
-    _time[BATCH, A, B, False, WARMUP, ITERS](ctx, "naive")
-    _time[BATCH, A, B, True, WARMUP, ITERS](ctx, "tiled")
+    _time[BATCH, A, B, 0, WARMUP, ITERS](ctx, "naive   ")
+    _time[BATCH, A, B, 1, WARMUP, ITERS](ctx, "tiled32 ")
+    _time[BATCH, A, B, 2, WARMUP, ITERS](ctx, "tiled_br")
 
 
-def _verify[BATCH: Int, A: Int, B: Int](ctx: DeviceContext) raises:
+def _verify[BATCH: Int, A: Int, B: Int, MODE: Int](ctx: DeviceContext) raises:
     """Index-fill correctness: src[b,k]=b*1000+k; dst[b,j*A+i] must equal
-    src[b,i*B+j]. Confirms the tiled permutation matches the naive one."""
+    src[b,i*B+j]. Confirms both tiled variants match the analytic map."""
     comptime AB = A * B
     var s = ctx.enqueue_create_buffer[DT](BATCH * AB)
     var d = ctx.enqueue_create_buffer[DT](BATCH * AB)
@@ -153,9 +203,14 @@ def _verify[BATCH: Int, A: Int, B: Int](ctx: DeviceContext) raises:
     var dl = LayoutTensor[DT, Layout.row_major(BATCH, AB), MutAnyOrigin](d)
     comptime gx = (B + TILE - 1) // TILE
     comptime gy = (A + TILE - 1) // TILE
-    ctx.enqueue_function[_t2d_tiled[BATCH, A, B]](
-        sl, dl, grid_dim=(gx, gy, BATCH), block_dim=(TILE, TILE)
-    )
+    comptime if MODE == 1:
+        ctx.enqueue_function[_t2d_tiled[BATCH, A, B]](
+            sl, dl, grid_dim=(gx, gy, BATCH), block_dim=(TILE, TILE)
+        )
+    else:
+        ctx.enqueue_function[_t2d_tiled_br[BATCH, A, B]](
+            sl, dl, grid_dim=(gx, gy, BATCH), block_dim=(TILE, BR)
+        )
     ctx.synchronize()
     var bad = 0
     with d.map_to_host() as hd:
@@ -166,16 +221,19 @@ def _verify[BATCH: Int, A: Int, B: Int](ctx: DeviceContext) raises:
                     var want = Scalar[DT](b * 1000 + i * B + j)
                     if got != want:
                         bad += 1
-    print("  verify B=", BATCH, " A=", A, " B=", B, " mismatches=", bad)
+    print("  verify mode=", MODE, " B=", BATCH, " A=", A, " B=", B,
+          " mismatches=", bad)
 
 
 def main() raises:
     var ctx = DeviceContext()
     print("Transpose2D GPU — naive scattered vs shared-mem tiled [fp32] (B1)")
     print("=" * 66)
-    # correctness (tiled vs analytic) on odd shapes that exercise tile edges
-    _verify[3, 37, 50](ctx)
-    _verify[2, 196, 65](ctx)
+    # correctness (both tiled variants vs analytic) on tile-edge shapes
+    _verify[3, 37, 50, 1](ctx)
+    _verify[3, 37, 50, 2](ctx)
+    _verify[2, 196, 65, 1](ctx)
+    _verify[2, 196, 65, 2](ctx)
     print("-" * 66)
     # ViT PatchEmbed: (embed_dim, n_patches)
     _ab[256, 192, 196, 5, 100](ctx)
@@ -185,4 +243,5 @@ def main() raises:
     _ab[64, 512, 512, 5, 50](ctx)
     _ab[16, 1024, 1024, 5, 50](ctx)
     print("=" * 66)
-    print("tiled/naive speedup = coalescing the strided read was the bottleneck.")
+    print("tiled32 = current B1 (32x32, 1elem/thread); tiled_br = 32x8, 4elem/thread.")
+    print("tiled_br > tiled32 = occupancy/ILP win → promote to B1'.")
