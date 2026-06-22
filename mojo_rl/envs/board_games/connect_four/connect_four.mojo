@@ -210,21 +210,15 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     # Saveable
     # ========================================================================
 
-    def save_env_state(
-        self,
-        dst: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-    ):
+    def save_env_state(self, mut dst: List[Scalar[nn_dtype]]):
         for i in range(46):
             dst[i] = Scalar[nn_dtype](Float64(self.state[i]))
         dst[46] = Scalar[nn_dtype](1.0) if self.done else Scalar[nn_dtype](0.0)
 
-    def load_env_state(
-        mut self,
-        data: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-    ):
+    def load_env_state(mut self, src: List[Scalar[nn_dtype]]):
         for i in range(46):
-            self.state[i] = Scalar[Self.dtype](Float64(data[i]))
-        self.done = Float64(data[46]) > 0.5
+            self.state[i] = Scalar[Self.dtype](Float64(src[i]))
+        self.done = Float64(src[46]) > 0.5
 
     # ========================================================================
     # Env trait methods

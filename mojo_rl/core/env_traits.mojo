@@ -1059,16 +1059,11 @@ trait Saveable:
     comptime SAVE_SIZE: Int
     """Size of the state array to save/restore."""
 
-    def save_env_state(
-        self,
-        dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    ):
-        """Copy current state to output buffer [SAVE_SIZE]."""
+    def save_env_state(self, mut dst: List[Scalar[dtype]]):
+        """Copy current state into `dst[0:SAVE_SIZE]` (caller pre-sizes `dst`
+        to >= SAVE_SIZE). Owned `List` — no raw pointer, no manual free."""
         ...
 
-    def load_env_state(
-        mut self,
-        data: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    ):
-        """Restore state from buffer [SAVE_SIZE]."""
+    def load_env_state(mut self, src: List[Scalar[dtype]]):
+        """Restore state from `src[0:SAVE_SIZE]`."""
         ...

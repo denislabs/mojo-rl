@@ -182,21 +182,15 @@ struct TicTacToeEnv[DTYPE: DType = DType.float64](
     # Saveable
     # ========================================================================
 
-    def save_env_state(
-        self,
-        dst: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-    ):
+    def save_env_state(self, mut dst: List[Scalar[nn_dtype]]):
         for i in range(12):
             dst[i] = Scalar[nn_dtype](Float64(self.state[i]))
         dst[12] = Scalar[nn_dtype](1.0) if self.done else Scalar[nn_dtype](0.0)
 
-    def load_env_state(
-        mut self,
-        data: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-    ):
+    def load_env_state(mut self, src: List[Scalar[nn_dtype]]):
         for i in range(12):
-            self.state[i] = Scalar[Self.dtype](Float64(data[i]))
-        self.done = Float64(data[12]) > 0.5
+            self.state[i] = Scalar[Self.dtype](Float64(src[i]))
+        self.done = Float64(src[12]) > 0.5
 
     # ========================================================================
     # Env trait methods

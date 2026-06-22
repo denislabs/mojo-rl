@@ -23,7 +23,7 @@ the old `nn.Network` to an nn `Module` (`forward["cpu", B]`). The env must be
 """
 
 from std.math import exp
-from std.memory import alloc, UnsafePointer
+from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.module import Module
@@ -52,11 +52,10 @@ struct AZRepCPU[
         mut self, obs: List[Float64], mut hidden_out: List[Float64]
     ) raises:
         _ = obs  # unused — read env state directly
-        var tmp = alloc[Scalar[DT]](Self.E.SAVE_SIZE)
+        var tmp = List[Scalar[DT]](length=Self.E.SAVE_SIZE, fill=0)
         self.env[].save_env_state(tmp)
         for i in range(Self.E.SAVE_SIZE):
             hidden_out[i] = Float64(tmp[i])
-        tmp.free()
 
 
 @fieldwise_init
@@ -78,7 +77,7 @@ struct AZDynCPU[
         action: Int,
         mut hidden_out: List[Float64],
     ) raises -> Float64:
-        var tmp = alloc[Scalar[DT]](Self.E.SAVE_SIZE)
+        var tmp = List[Scalar[DT]](length=Self.E.SAVE_SIZE, fill=0)
         for i in range(Self.E.SAVE_SIZE):
             tmp[i] = Scalar[DT](hidden_in[i])
         self.env[].load_env_state(tmp)
@@ -86,7 +85,6 @@ struct AZDynCPU[
         self.env[].save_env_state(tmp)
         for i in range(Self.E.SAVE_SIZE):
             hidden_out[i] = Float64(tmp[i])
-        tmp.free()
         return 0.0
 
 
@@ -113,11 +111,10 @@ struct AZPredCPU[
     def predict_cpu(
         mut self, hidden: List[Float64], mut policy_out: List[Float64]
     ) raises -> Float64:
-        var tmp = alloc[Scalar[DT]](Self.E.SAVE_SIZE)
+        var tmp = List[Scalar[DT]](length=Self.E.SAVE_SIZE, fill=0)
         for i in range(Self.E.SAVE_SIZE):
             tmp[i] = Scalar[DT](hidden[i])
         self.env[].load_env_state(tmp)
-        tmp.free()
 
         var game_result = self.env[].game_result()
         if game_result != 0:
