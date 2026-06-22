@@ -175,7 +175,18 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
         if ctx:
             var c = ctx.value()
             self.pool[slot].ensure_gpu(c, n)
-            c.enqueue_copy(self.pool[slot].dev.value(), src.dev.value())
+            # Copy EXACTLY `n` elements (the logical B·OUT_DIM), not buffer-to-
+            # buffer. The pool buffer grows monotonically (`ensure_gpu` never
+            # shrinks), so a graph SHARED across two batch sizes (e.g. DreamerV3
+            # rew/con driven at B by WM and at NS=T·B by AC) leaves an NS-sized
+            # pool that a plain `enqueue_copy` would mismatch against a B-sized
+            # src (and vice-versa). Sub-buffer windows of `n` on both sides make
+            # the copy size-exact — matching the CPU branch's element-wise `n`
+            # loop — so the larger buffer's tail is simply left untouched (the
+            # node's `forward[B]` reads only the first `n`).
+            var src_sub = src.dev.value().create_sub_buffer[DT](0, n)
+            var pool_sub = self.pool[slot].dev.value().create_sub_buffer[DT](0, n)
+            c.enqueue_copy(pool_sub, src_sub)
         else:
             self.pool[slot].ensure(n)
             for q in range(n):
@@ -287,7 +298,14 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
         else:
             var c = ctx.value()
             out.ensure_gpu(c, dN)
-            c.enqueue_copy(out.dev.value(), self.pool[Self.N - 1].dev.value())
+            # Size-exact (`dN`) sub-buffer copy: the output node's pool buffer
+            # may be larger than `dN` if this graph was previously driven at a
+            # larger batch (monotone `ensure_gpu`), so copy only the logical dN.
+            var src_sub = self.pool[Self.N - 1].dev.value().create_sub_buffer[DT](
+                0, dN
+            )
+            var out_sub = out.dev.value().create_sub_buffer[DT](0, dN)
+            c.enqueue_copy(out_sub, src_sub)
 
     def vjp[
         B: Int,
@@ -316,9 +334,14 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             for q in range(dN):
                 self.gpool[Self.N - 1].data[q] = grad_out.data[q]
         else:
-            ctx.value().enqueue_copy(
-                self.gpool[Self.N - 1].dev.value(), grad_out.dev.value()
+            # Size-exact (`dN`) seed copy (see `forward`): the output grad slot
+            # may be larger than dN if the graph was driven at a larger batch.
+            var c = ctx.value()
+            var go_sub = grad_out.dev.value().create_sub_buffer[DT](0, dN)
+            var gp_sub = self.gpool[Self.N - 1].dev.value().create_sub_buffer[DT](
+                0, dN
             )
+            c.enqueue_copy(gp_sub, go_sub)
         # Reverse-topo: each node scatters grad_inputs into tmp; the graph
         # ACCUMULATES tmp into the fed slots' grad buffers (fan-out sum). Input
         # slots (KIND==0) have no vjp — their grad slot is the accumulator.

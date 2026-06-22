@@ -211,10 +211,73 @@ struct DreamerV3Agent[
             comptime assert Self.train_target == "gpu", (
                 "select_action: train_target must be 'cpu' or 'gpu'"
             )
-            # GPU B=1 inference is a storage-port TODO (the storage GPU WM
-            # paths in blocks.mojo are likewise stubbed; DreamerV3 v1 trains +
-            # acts on CPU).
-            raise Error("dreamerv3 select_action GPU: storage port TODO")
+            comptime assert not Self.DISCRETE, (
+                "discrete GPU select_action not ported — use train_target='cpu'"
+            )
+            # GPU B=1 inference (hybrid): device enc/core/policy forwards reusing
+            # the trainer's LIVE GPU modules (buffers grow-only, so B=1 shares
+            # the B=B/NS training instances). H2D obs+belief, device forwards,
+            # D2H posterior + policy logits, host sample. Mirrors `_wm_gpu`'s
+            # upload/download marshalling; structurally identical to the CPU
+            # branch above so the sample below is shared.
+            var ctx = self.trainer.ctx.value()
+            # device staging Tensors (B=1 widths). `.ensure(n)` also sizes the
+            # host `.data` List for the ones written host-side (obt/bd/bs/la/feat)
+            # before upload — `Tensor.make["gpu"]` allocates the device buffer
+            # only (empty `.data`).
+            var obt = Tensor.make["gpu"](Self.OBS, self.trainer.ctx)
+            obt.ensure(Self.OBS)
+            var tok = Tensor.make["gpu"](TOK, self.trainer.ctx)
+            var bd = Tensor.make["gpu"](D, self.trainer.ctx)
+            bd.ensure(D)
+            var bs = Tensor.make["gpu"](SCl, self.trainer.ctx)
+            bs.ensure(SCl)
+            var la = Tensor.make["gpu"](ACTD, self.trainer.ctx)
+            la.ensure(ACTD)
+            var feat = Tensor.make["gpu"](FEATl, self.trainer.ctx)
+            feat.ensure(FEATl)
+            var cscr = Tensor.make["gpu"](CARRY, self.trainer.ctx)
+            # H2D obs + belief carry (belief_* / last_action are host-resident).
+            for k in range(Self.OBS):
+                obt.data[k] = obs[k]
+            obt.upload(ctx)
+            for k in range(D):
+                bd.data[k] = self.belief_deter.data[k]
+            bd.upload(ctx)
+            for k in range(SCl):
+                bs.data[k] = self.belief_stoch.data[k]
+            bs.upload(ctx)
+            for k in range(ACTD):
+                la.data[k] = self.last_action.data[k]
+            la.upload(ctx)
+            # 1. encode obs → token (B=1)
+            self.trainer.enc.forward[Self.train_target, 1](
+                TensorRefs[1](obt), tok, self.trainer.ctx
+            )
+            # 2. observe via the core graph (B=1) → nd + posterior stoch sample
+            self.trainer.core.set_input["deter", 1](bd, self.trainer.ctx)
+            self.trainer.core.set_input["stoch", 1](bs, self.trainer.ctx)
+            self.trainer.core.set_input["action", 1](la, self.trainer.ctx)
+            self.trainer.core.set_input["tokens", 1](tok, self.trainer.ctx)
+            self.trainer.core.forward[1, Self.train_target](cscr, self.trainer.ctx)
+            ref nd = self.trainer.core.node_output["nd"]()
+            ref stoch_new = self.trainer.core.node_output["stoch_new"]()
+            nd.download(ctx)
+            stoch_new.download(ctx)
+            for k in range(D):
+                nd_h.data[k] = nd.data[k]
+            for k in range(SCl):
+                sn_h.data[k] = stoch_new.data[k]
+            # 3. feat = concat([nd, stoch_new]) on host → H2D → policy
+            for k in range(D):
+                feat.data[k] = nd_h.data[k]
+            for k in range(SCl):
+                feat.data[D + k] = sn_h.data[k]
+            feat.upload(ctx)
+            self.trainer.policy.forward[Self.train_target, 1](
+                TensorRefs[1](feat), pol, self.trainer.ctx
+            )
+            pol.download(ctx)
         comptime if Self.DISCRETE:
             # ── discrete: categorical sample (explore) / argmax (greedy) →
             # one-hot out_action[ACT]. The one-hot is what the WM conditions on
