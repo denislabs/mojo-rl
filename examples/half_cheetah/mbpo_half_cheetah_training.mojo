@@ -53,7 +53,7 @@ from mojo_rl.nn.storage.primitives.linear import Linear
 from mojo_rl.nn.storage.primitives.activations import ReLU
 from mojo_rl.nn.storage.primitives.layer_norm import LayerNorm
 from mojo_rl.nn.storage.primitives.elementwise import Elementwise
-from mojo_rl.nn.storage.primitives.ops.swish_op import SwishOp
+from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.mbpo import MBPOAgent
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
