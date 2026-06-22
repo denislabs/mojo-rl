@@ -51,11 +51,11 @@ from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 # CUDA-graph capture of the SAC sub-update loop (NVIDIA only). The profile is
 # launch-bound (cuLaunchKernelEx ~64% of wall); capture collapses the ~100+
 # kernels/update into one cuGraphLaunch/env-step. Flip True to measure.
-comptime USE_TRAIN_CUDA_GRAPH = False
+comptime USE_TRAIN_CUDA_GRAPH = True
 comptime NUM_ROLLOUTS_PER_STEP = 100_000  # synthetic rollouts per model-train round
-comptime SAC_UPDATES_PER_STEP = 20        # SAC sub-updates per env-step (UTD)
-comptime MODEL_TRAIN_FREQ = 250           # env-steps between dynamics retrains
-comptime DYN_MAX_EPOCHS = 150             # ceiling; holdout early-stop governs
+comptime SAC_UPDATES_PER_STEP = 20  # SAC sub-updates per env-step (UTD)
+comptime MODEL_TRAIN_FREQ = 250  # env-steps between dynamics retrains
+comptime DYN_MAX_EPOCHS = 150  # ceiling; holdout early-stop governs
 comptime DYN_EPOCHS_PER_ROUND = 4
 
 # ─── Run length (short — bounded window that still hits training) ──────────
@@ -116,7 +116,9 @@ def main() raises:
     seed(42)
     print("=== MBPO HalfCheetah nsys profile (deep_agents / nn, GPU) ===")
     print("  Steps:", NUM_STEPS, "| learning_starts:", LEARNING_STARTS)
-    print("  BATCH:", BATCH, "| N_ENSEMBLE/ELITES:", N_ENSEMBLE, "/", NUM_ELITES)
+    print(
+        "  BATCH:", BATCH, "| N_ENSEMBLE/ELITES:", N_ENSEMBLE, "/", NUM_ELITES
+    )
     print("  num_rollouts_per_step:", NUM_ROLLOUTS_PER_STEP)
     print("  sac_updates_per_step :", SAC_UPDATES_PER_STEP)
     print("  model_train_freq     :", MODEL_TRAIN_FREQ)
