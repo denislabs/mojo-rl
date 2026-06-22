@@ -38,6 +38,8 @@ from .shuffle_kernels import (
     increment_seed_kernel,
     gather_rows_kernel,
 )
+from .augmenter import Augmenter, IdentityAugmenter
+from ..optimizer.lr_scheduler import Scheduler, ConstantSchedule
 
 
 @fieldwise_init
@@ -251,7 +253,10 @@ struct Trainer[
         return Float64(correct) / Float64(n_batches * Self.BATCH)
 
     def train_gpu[
-        N_TRAIN: Int, N_TEST: Int
+        N_TRAIN: Int,
+        N_TEST: Int,
+        AUGMENTER: Augmenter = IdentityAugmenter,
+        SCHEDULER: Scheduler = ConstantSchedule,
     ](
         mut self,
         ref train_x: List[Scalar[DT]],
@@ -263,6 +268,7 @@ struct Trainer[
         print_progress: Bool = True,
         shuffle: Bool = False,
         rng_seed: UInt64 = 42,
+        aug_seed: UInt64 = 1000,
     ) raises -> TrainResult:
         """Whole-dataset GPU training run with per-epoch top-1 eval — the
         one-call convenience over `train_epoch`/`eval_top1`. Uploads train+test
@@ -271,9 +277,17 @@ struct Trainer[
         `shuffle=True` runs an on-device Fisher-Yates permutation of the train
         set each epoch (device-resident indices/seed, gather into owned batch
         buffers — capture-friendly, no host involvement); `shuffle=False` slices
-        contiguous sub-buffer views (zero-copy). BatchNorm is toggled to train
-        mode before each epoch and eval mode before the test pass via
-        `set_attr["training"]` (no-op for nets without BN)."""
+        contiguous sub-buffer views (zero-copy).
+
+        `AUGMENTER` (default identity): when not a no-op, an augmentation buffer
+        is allocated once and `AUGMENTER.augment` FULLY rewrites it from the raw
+        resident train set each epoch; training then reads the augmented buffer
+        (the labels are never augmented). `SCHEDULER` (default constant): when not
+        constant, the optimizer LR is set to `base_lr * lr_scale_at(epoch,
+        epochs)` each epoch (base_lr = the LR on the optimizer before the call).
+
+        BatchNorm is toggled to train mode before each epoch and eval mode before
+        the test pass via `set_attr["training"]` (no-op for nets without BN)."""
         comptime assert (
             Self.target == "gpu"
         ), "Trainer.train_gpu requires target='gpu'"
@@ -287,6 +301,8 @@ struct Trainer[
         comptime blocks_init = (N_TRAIN + TPB - 1) // TPB
         comptime blocks_gx = (Self.BATCH * Self.IN + TPB - 1) // TPB
         comptime blocks_gy = (Self.BATCH * Self.NC + TPB - 1) // TPB
+        comptime USE_AUG = not AUGMENTER.IS_NOOP
+        comptime USE_SCHED = not SCHEDULER.IS_CONSTANT
         var c = ctx.value()
         var result = TrainResult.empty()
 
@@ -295,6 +311,16 @@ struct Trainer[
             Self._upload_dataset(self.ds_x, train_x, N_TRAIN * Self.IN, c)
             Self._upload_dataset(self.ds_y, train_y, N_TRAIN * Self.NC, c)
             self._up_train = True
+
+        # Augmentation working buffer (X only; rewritten from raw ds_x each
+        # epoch). Labels (ds_y) are never augmented.
+        var aug = Tensor()
+        comptime if USE_AUG:
+            aug = Tensor.alloc_gpu(c, N_TRAIN * Self.IN)
+
+        # LR schedule: capture the caller-set base LR; per-epoch LR is set to
+        # base_lr * scale. Constant default leaves the LR exactly as set.
+        var base_lr = self.opt.get_lr()
 
         # Shuffle scratch (device-resident; allocated once, reused per epoch).
         # Owned gather targets `gx`/`gy` — NOT self.batch_x (which eval_top1
@@ -320,8 +346,22 @@ struct Trainer[
 
         for epoch in range(epochs):
             var t0 = perf_counter_ns()
+            comptime if USE_SCHED:
+                self.opt.set_lr(
+                    base_lr
+                    * Scalar[DT](SCHEDULER.lr_scale_at(epoch, epochs))
+                )
             self.loss.reset_accum["gpu"]()
             self.model.set_attr["training"](Scalar[DT](1.0))
+            # (Re)build the augmented training set from the raw resident set.
+            comptime if USE_AUG:
+                AUGMENTER.augment[N_TRAIN, Self.IN, DT](
+                    c,
+                    aug.lt["gpu", Layout.row_major(N_TRAIN, Self.IN)](),
+                    self.ds_x.lt["gpu", Layout.row_major(N_TRAIN, Self.IN)](),
+                    epoch,
+                    aug_seed,
+                )
             if shuffle:
                 c.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
                     indices.lt["gpu", Layout.row_major(N_TRAIN)](),
@@ -337,18 +377,35 @@ struct Trainer[
             for nb in range(n_batches):
                 if shuffle:
                     var off = nb * Self.BATCH
-                    c.enqueue_function[
-                        gather_rows_kernel[N_TRAIN, Self.BATCH, Self.IN, DT]
-                    ](
-                        gx.lt["gpu", Layout.row_major(Self.BATCH, Self.IN)](),
-                        self.ds_x.lt[
-                            "gpu", Layout.row_major(N_TRAIN, Self.IN)
-                        ](),
-                        indices.lt["gpu", Layout.row_major(N_TRAIN)](),
-                        off,
-                        grid_dim=blocks_gx,
-                        block_dim=TPB,
-                    )
+                    # Gather X from the augmented set (if any) else raw ds_x.
+                    comptime if USE_AUG:
+                        c.enqueue_function[
+                            gather_rows_kernel[N_TRAIN, Self.BATCH, Self.IN, DT]
+                        ](
+                            gx.lt[
+                                "gpu", Layout.row_major(Self.BATCH, Self.IN)
+                            ](),
+                            aug.lt["gpu", Layout.row_major(N_TRAIN, Self.IN)](),
+                            indices.lt["gpu", Layout.row_major(N_TRAIN)](),
+                            off,
+                            grid_dim=blocks_gx,
+                            block_dim=TPB,
+                        )
+                    else:
+                        c.enqueue_function[
+                            gather_rows_kernel[N_TRAIN, Self.BATCH, Self.IN, DT]
+                        ](
+                            gx.lt[
+                                "gpu", Layout.row_major(Self.BATCH, Self.IN)
+                            ](),
+                            self.ds_x.lt[
+                                "gpu", Layout.row_major(N_TRAIN, Self.IN)
+                            ](),
+                            indices.lt["gpu", Layout.row_major(N_TRAIN)](),
+                            off,
+                            grid_dim=blocks_gx,
+                            block_dim=TPB,
+                        )
                     c.enqueue_function[
                         gather_rows_kernel[N_TRAIN, Self.BATCH, Self.NC, DT]
                     ](
@@ -379,9 +436,28 @@ struct Trainer[
                     )
                     self.opt.step["gpu"](self.model, ctx)
                 else:
-                    self._slice_train(
-                        nb * Self.BATCH * Self.IN, nb * Self.BATCH * Self.NC
+                    var x0 = nb * Self.BATCH * Self.IN
+                    var y0 = nb * Self.BATCH * Self.NC
+                    # Sub-buffer view of X from the augmented set else raw ds_x.
+                    comptime if USE_AUG:
+                        self.batch_x.dev = Optional(
+                            aug.dev.value().create_sub_buffer[DT](
+                                x0, Self.BATCH * Self.IN
+                            )
+                        )
+                    else:
+                        self.batch_x.dev = Optional(
+                            self.ds_x.dev.value().create_sub_buffer[DT](
+                                x0, Self.BATCH * Self.IN
+                            )
+                        )
+                    self.batch_x.n = Self.BATCH * Self.IN
+                    self.batch_y.dev = Optional(
+                        self.ds_y.dev.value().create_sub_buffer[DT](
+                            y0, Self.BATCH * Self.NC
+                        )
                     )
+                    self.batch_y.n = Self.BATCH * Self.NC
                     self.opt.zero_grad["gpu"](self.model, ctx)
                     self.model.forward[
                         "gpu", Self.BATCH, POLICY = Self.POLICY
