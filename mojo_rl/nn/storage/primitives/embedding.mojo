@@ -21,22 +21,13 @@ from ..core.module import Module
 from ..core.param import Param, ParamVisitor
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
+from .linear import _transpose_tiled_kernel, _T_TILE, _T_BR
 
 
 # ── GPU kernels: the three matmuls go through max_matmul (mirrors Linear);
 #    only the input-transpose (for grad_w = inputᵀ@grad_out, since max_matmul
-#    rejects transpose_a) and the grad_weight accumulate remain hand-rolled. ──
-def _emb_transpose_kernel[
-    ROWS: Int, COLS: Int
-](
-    src: LayoutTensor[DT, Layout.row_major(ROWS, COLS), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(COLS, ROWS), MutAnyOrigin],
-):
-    var idx = Int(global_idx.x)
-    if idx < ROWS * COLS:
-        dst[idx % COLS, idx // COLS] = src[idx // COLS, idx % COLS]
-
-
+#    rejects transpose_a) and the grad_weight accumulate remain hand-rolled.
+#    The input-transpose reuses Linear's B1' tiled transpose. ──
 def _emb_accum_kernel[
     N: Int
 ](
@@ -127,14 +118,16 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int](Module):
                 out.dev.value(), row_major[B, Self.EMBED_DIM_]()
             )
             max_matmul[target="gpu"](out_v, in_v, w_v, c)
-            # cache_inᵀ[VOCAB, B] = input[B, VOCAB]ᵀ  (for grad_w in backward)
-            comptime tot = B * Self.VOCAB_
-            comptime nblk = (tot + TPB - 1) // TPB
-            c.enqueue_function[_emb_transpose_kernel[B, Self.VOCAB_]](
+            # cache_inᵀ[VOCAB, B] = input[B, VOCAB]ᵀ  (for grad_w in backward),
+            # via Linear's B1' tiled transpose.
+            c.enqueue_function[_transpose_tiled_kernel[B, Self.VOCAB_]](
                 in0.lt["gpu", lbv](),
                 self.cache_inT.lt["gpu", lvb](),
-                grid_dim=nblk,
-                block_dim=TPB,
+                grid_dim=(
+                    (Self.VOCAB_ + _T_TILE - 1) // _T_TILE,
+                    (B + _T_TILE - 1) // _T_TILE,
+                ),
+                block_dim=(_T_TILE, _T_BR),
             )
 
     def vjp[
