@@ -15,8 +15,9 @@ The full nanoGPT recipe expressed entirely through the framework:
 
 So training + eval + generation are a handful of calls; there is no
 hand-written loop, no manual forward/vjp/step, and no tying plumbing. See
-`mojo_rl/nn/training/autoregressive_trainer.mojo`,
-`mojo_rl/nn/primitives/tied_linear.mojo`, and `mojo_rl/nn/models/gpt.mojo`.
+`mojo_rl/nn/storage/training/autoregressive_trainer.mojo`,
+`mojo_rl/nn/storage/primitives/tied_linear.mojo`, and
+`mojo_rl/nn/storage/models/gpt.mojo`.
 
 Default config is sized for NVIDIA. On Apple it OOMs — shrink SEQ→64,
 EMBED→64, LAYERS→2, BATCH→16, TOTAL_ITERS→400 for a dev run.
@@ -32,12 +33,13 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import CharTokenizer, load_text, train_val_split
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.models.gpt import GPTDropTied
-from mojo_rl.nn.models.gpt import gpt_scale_residual_proj, gpt_wire_tie
-from mojo_rl.nn.loss import SequenceCrossEntropyLoss
-from mojo_rl.nn.optimizer import AdamW
-from mojo_rl.nn.training import Trainer, AutoregressiveTrainer
-from mojo_rl.nn.initializer import Normal
+from mojo_rl.nn.storage.models.gpt import GPTDropTied
+from mojo_rl.nn.storage.models.gpt import gpt_scale_residual_proj, gpt_wire_tie
+from mojo_rl.nn.storage.optimizer.adam import AdamW
+from mojo_rl.nn.storage.training.autoregressive_trainer import (
+    AutoregressiveTrainer,
+)
+from mojo_rl.nn.storage.core.initializer import Normal
 
 
 # ── Full nanoGPT-class config (NVIDIA) ──
@@ -73,8 +75,6 @@ comptime GPT_MODEL = GPTDropTied[
     VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True, DROPOUT_P,
     UInt64(0xC0FFEE), USE_MAX_ATTN,
 ]
-comptime GPT_LOSS = SequenceCrossEntropyLoss[SEQ, VOCAB]
-comptime GPT_TRAINER = Trainer[GPT_MODEL, AdamW, GPT_LOSS, BATCH, target="gpu"]
 comptime GPT_AR = AutoregressiveTrainer[
     GPT_MODEL, AdamW, VOCAB, SEQ, BATCH, target="gpu"
 ]
@@ -117,34 +117,31 @@ def main() raises:
         + " val=" + String(len(split.val))
     )
 
-    # ── Build model + optimizer + the generic Trainer ──
+    # ── Build model + optimizer ──
     var ctx = DeviceContext()
     print("[init] building nn GPT on GPU...")
-    var net = GPT_MODEL.make["gpu", INIT = Normal[0.0, 0.02]](ctx)
-    var loss_fn = GPT_LOSS.make["gpu"](ctx)
-    var optim = AdamW.make["gpu", M = type_of(net)](net, ctx)
-    optim.lr = BASE_LR
-    optim.weight_decay = WD
-    optim.beta2 = BETA2
-    optim.max_grad_norm = GRAD_CLIP
-    var trainer = GPT_TRAINER.make_from(net^, optim^, loss_fn^, ctx)
+    var net = GPT_MODEL.make["gpu", INIT = Normal[0.0, 0.02]](Optional(ctx))
+    # AdamW = storage Adam with decoupled weight decay (`wd`); nanoGPT's
+    # grad-norm clip is applied per step by the driver (grad_clip arg).
+    var optim = AdamW(lr=BASE_LR, beta2=BETA2, wd=WD)
 
-    # ── Wrap in the autoregressive driver (owns corpus + sampling + LR) ──
+    # ── Wrap in the autoregressive driver (owns corpus + sampling + LR; engages
+    # the optimizer's arena via opt.adopt once the net is in its final home) ──
     var artr = GPT_AR.make_from(
-        trainer^, tok^, split^, BASE_LR, WARMUP_ITERS, TOTAL_ITERS,
-        MIN_LR_SCALE,
+        net^, optim^, tok^, split^, ctx,
+        BASE_LR, WARMUP_ITERS, TOTAL_ITERS, MIN_LR_SCALE, GRAD_CLIP,
     )
 
     # ── Model-construction surgery on the net in its final home ──
     comptime if SCALED_INIT:
         gpt_scale_residual_proj[
-            VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True, DROPOUT_P,
+            "gpu", VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True, DROPOUT_P,
             UInt64(0xC0FFEE), USE_MAX_ATTN,
-        ](artr.trainer.net, ctx)
+        ](artr.net, Optional(ctx))
     gpt_wire_tie[
         "gpu", VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True, DROPOUT_P,
         UInt64(0xC0FFEE), USE_MAX_ATTN,
-    ](artr.trainer.net)
+    ](artr.net)
     ctx.synchronize()
 
     var val_init = artr.val_loss(N_VAL_WINDOWS)
