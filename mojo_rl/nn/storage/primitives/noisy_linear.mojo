@@ -35,7 +35,7 @@ from ..core.param import Param, ParamVisitor
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
 from ..loss.sac import polyak_tensor
-from .linear import _transpose_kernel, _accum_kernel
+from .linear import _transpose_tiled_kernel, _accum_kernel, _T_TILE, _T_BR
 
 
 # ── CPU host sampler: f(z) = sign(z)·√|z|, z ~ N(0,1) via Box-Muller ────
@@ -457,13 +457,15 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
                 grid_dim=Self.OUT_,
                 block_dim=TPB,
             )
-            # grad_w: transpose x → cacheᵀ, dW = cacheᵀ @ go.
-            comptime nb_t = (B * Self.IN_ + TPB - 1) // TPB
-            c.enqueue_function[_transpose_kernel[B, Self.IN_]](
+            # grad_w: transpose x → cacheᵀ (B1' tiled), dW = cacheᵀ @ go.
+            c.enqueue_function[_transpose_tiled_kernel[B, Self.IN_]](
                 fin.lt["gpu", Layout.row_major(B, Self.IN_)](),
                 self.cacheT.lt["gpu", Layout.row_major(Self.IN_, B)](),
-                grid_dim=nb_t,
-                block_dim=TPB,
+                grid_dim=(
+                    (Self.IN_ + _T_TILE - 1) // _T_TILE,
+                    (B + _T_TILE - 1) // _T_TILE,
+                ),
+                block_dim=(_T_TILE, _T_BR),
             )
             var cT_tt = TileTensor(
                 self.cacheT.dev.value(), row_major[Self.IN_, B]()
