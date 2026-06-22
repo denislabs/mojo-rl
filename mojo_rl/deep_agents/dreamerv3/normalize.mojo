@@ -21,7 +21,6 @@ interpolation matching `jnp.percentile` (method='linear').
 from std.math import sqrt
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
 
 
 @always_inline
@@ -108,7 +107,9 @@ struct PercentileNormalize(Movable & ImplicitlyDeletable):
         if self.impl == "perc":
             # Sort a scratch copy for percentile reads.
             var tmp = List[Scalar[DT]](length=n, fill=Scalar[DT](0.0))
-            var tp = mptr(tmp.unsafe_ptr())
+            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                tmp.unsafe_ptr()
+            )
             for i in range(n):
                 tp[i] = x[i]
             _insertion_sort(tp, n)

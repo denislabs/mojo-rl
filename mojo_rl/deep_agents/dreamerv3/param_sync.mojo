@@ -1,188 +1,117 @@
-"""Name-keyed parameter sync between two ComputeGraphs (CPU).
+"""Name-keyed parameter sync between two ComputeGraphs (storage-native).
 
 The DreamerV3 trainer optimizes the RSSM core/prior params inside the
 `WMCoreGraph`, but the imagination rollout runs them through a separate
 `WMImagineGraph` (no obs/token path). Both graphs name the shared nodes
 identically (`x0`/`x1`/`x2`/`dhin`/`h`/`gru` core + `pr0`/`pr1`/`prior`),
-so their `for_each_param` walks emit matching names for the shared
-sub-modules. `sync_params` copies values for every NAME that exists in
-both — the imagine graph becomes a read-only mirror of the trained core
-each AC step (the imagine graph is never optimized).
+so their `for_each_param` walks emit matching dotted names for the shared
+sub-modules.
 
-CPU-only (param.ptr is the CPU slab); a GPU variant would enqueue a
-device-to-device copy. v1 trains the WM on CPU.
+`collect_graph_params` snapshots the trained source graph's params into a
+`name → values` Dict (downloads on GPU). `apply_graph_params` then copies,
+by NAME, every value that exists in the snapshot into the destination graph
+(uploads on GPU) — the imagine graph becomes a read-only mirror of the
+trained core each AC step. The src/dst graphs are DIFFERENT types sharing
+some node names; the dict skip-on-miss handles the non-shared params.
+
+Two functions (not one) because Mojo forbids two variadic `*DECLS` packs in
+one signature — collect over `src`, apply over `dst`, threaded by the Dict.
 """
 
-from layout import TileTensor
-from std.gpu import global_idx
-from std.gpu.memory import AddressSpace
+from std.collections import Dict
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.module import mptr
-from mojo_rl.nn.core import ParamVisitor, GraphNode
-from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.param import ParamVisitor
+from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.storage.combinators.graph_decl import GraphDecl
 
 
-def _pcopy_k(
-    src: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    n: Int,
-):
-    """Runtime-length device→device copy (one param slab)."""
-    var i = Int(global_idx.x)
-    if i < n:
-        dst[i] = src[i]
+# Snapshot visitor: copy each param's values into the dict by name (downloads
+# on GPU first so `param.data` is current).
+struct _SnapshotVisitor(Movable, ParamVisitor):
+    var d: Dict[String, List[Scalar[DT]]]
 
+    def __init__(out self):
+        self.d = Dict[String, List[Scalar[DT]]]()
 
-@fieldwise_init
-struct _CollectVisitor[
-    on: Origin[mut=True], op: Origin[mut=True], ol: Origin[mut=True]
-](ParamVisitor):
-    """Records (name, param-ptr, n) for every param in the source graph."""
+    def take(deinit self) -> Dict[String, List[Scalar[DT]]]:
+        return self.d^
 
-    var names: UnsafePointer[List[String], Self.on]
-    var ptrs: UnsafePointer[
-        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], Self.op
-    ]
-    var lens: UnsafePointer[List[Int], Self.ol]
-
-    def visit(
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
         apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
-        self.names[].append(name)
-        self.ptrs[].append(mptr(param.ptr))
-        self.lens[].append(n_elems)
+        comptime if target == "gpu":
+            param.download(ctx.value())
+        var vals = List[Scalar[DT]](length=N, fill=Scalar[DT](0))
+        for i in range(N):
+            vals[i] = param.data[i]
+        self.d[name] = vals^
 
 
-@fieldwise_init
-struct _CopyByNameVisitor[
-    on: Origin[mut=True], op: Origin[mut=True], ol: Origin[mut=True]
-](ParamVisitor):
-    """For each destination param, copies values from the matching source
-    name (skips names with no source match)."""
+# Named-import visitor: for each dst param, if its name is in the snapshot,
+# copy the values into the slab (uploads on GPU). Names not present are left
+# at their current value (the dst-only params with no source match).
+struct _NamedImportVisitor(ParamVisitor):
+    var d: Dict[String, List[Scalar[DT]]]
+    var missing: Int
 
-    var names: UnsafePointer[List[String], Self.on]
-    var ptrs: UnsafePointer[
-        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], Self.op
-    ]
-    var lens: UnsafePointer[List[Int], Self.ol]
+    def __init__(out self, var d: Dict[String, List[Scalar[DT]]]):
+        self.d = d^
+        self.missing = 0
 
-    def visit(
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
         apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
-        var dp = mptr(param.ptr)
-        for i in range(len(self.names[])):
-            if self.names[][i] == name:
-                var sp = self.ptrs[][i]
-                var nn = self.lens[][i] if self.lens[][i] < n_elems else n_elems
-                for k in range(nn):
-                    dp[k] = sp[k]
-                return
+        if name not in self.d:
+            self.missing += 1
+            return
+        ref vals = self.d[name]
+        param.ensure(N)
+        var nn = len(vals) if len(vals) < N else N
+        for i in range(nn):
+            param.data[i] = vals[i]
+        param.n = N
+        comptime if target == "gpu":
+            param.upload(ctx.value())
 
 
-@fieldwise_init
-struct _CopyByNameVisitorGPU[
-    on: Origin[mut=True], op: Origin[mut=True], ol: Origin[mut=True]
-](ParamVisitor):
-    """GPU mirror of `_CopyByNameVisitor` — enqueues a device copy kernel
-    for each destination param whose name matches a collected source."""
-
-    var names: UnsafePointer[List[String], Self.on]
-    var ptrs: UnsafePointer[
-        List[UnsafePointer[Scalar[DT], MutAnyOrigin]], Self.op
-    ]
-    var lens: UnsafePointer[List[Int], Self.ol]
-    var ctx: DeviceContext
-
-    def visit(
-        mut self,
-        name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int,
-        apply_decay: Bool,
-    ) raises:
-        var dp = mptr(param.ptr)
-        for i in range(len(self.names[])):
-            if self.names[][i] == name:
-                var sp = self.ptrs[][i]
-                var nn = self.lens[][i] if self.lens[][i] < n_elems else n_elems
-                var nb = (nn + TPB - 1) // TPB
-                self.ctx.enqueue_function[_pcopy_k](
-                    sp, dp, nn, grid_dim=nb, block_dim=TPB
-                )
-                return
-
-
-# Mojo forbids two variadic `*NODES` packs in one signature, so the sync
-# is two calls (collect from src, apply to dst) — each over one graph.
-
-
-def collect_params[
-    target: StaticString, OUT: Int, *NODES: GraphNode
+def collect_graph_params[
+    target: StaticString, *DECLS: GraphDecl
 ](
-    mut src: ComputeGraph[OUT, *NODES],
-    mut names: List[String],
-    mut ptrs: List[UnsafePointer[Scalar[DT], MutAnyOrigin]],
-    mut lens: List[Int],
-) raises:
-    """Record (name, param-ptr, n) for every param in `src`. Target-agnostic
-    (just stores pointers; the pointer is host on CPU, device on GPU)."""
-    var cv = _CollectVisitor(
-        names=UnsafePointer(to=names),
-        ptrs=UnsafePointer(to=ptrs),
-        lens=UnsafePointer(to=lens),
-    )
-    src.for_each_param[target, type_of(cv)](String(""), cv)
+    mut src: ComputeGraph[*DECLS],
+    ctx: Optional[DeviceContext] = None,
+) raises -> Dict[String, List[Scalar[DT]]]:
+    """Snapshot every param of `src` into a `name → values` Dict (downloads
+    on GPU). Target-agnostic result (host values either way)."""
+    var v = _SnapshotVisitor()
+    src.for_each_param[target](v, ctx)
+    return v^.take()
 
 
-def apply_params[
-    target: StaticString, OUT: Int, *NODES: GraphNode
+def apply_graph_params[
+    target: StaticString, *DECLS: GraphDecl
 ](
-    mut dst: ComputeGraph[OUT, *NODES],
-    mut names: List[String],
-    mut ptrs: List[UnsafePointer[Scalar[DT], MutAnyOrigin]],
-    mut lens: List[Int],
+    mut dst: ComputeGraph[*DECLS],
+    read snap: Dict[String, List[Scalar[DT]]],
     ctx: Optional[DeviceContext] = None,
 ) raises:
-    """Copy every shared-name param value from the collected source into
-    `dst` (skips names with no match). CPU = host slab copy; GPU = enqueue a
-    device copy kernel per matched param."""
-    comptime if target == "cpu":
-        var cp = _CopyByNameVisitor(
-            names=UnsafePointer(to=names),
-            ptrs=UnsafePointer(to=ptrs),
-            lens=UnsafePointer(to=lens),
-        )
-        dst.for_each_param[target, type_of(cp)](String(""), cp)
-    else:
-        var cp = _CopyByNameVisitorGPU(
-            names=UnsafePointer(to=names),
-            ptrs=UnsafePointer(to=ptrs),
-            lens=UnsafePointer(to=lens),
-            ctx=ctx.value(),
-        )
-        dst.for_each_param[target, type_of(cp)](String(""), cp)
+    """Copy every shared-name param value from the snapshot into `dst` (skips
+    names with no match; uploads on GPU)."""
+    var v = _NamedImportVisitor(snap.copy())
+    dst.for_each_param[target](v, ctx)
