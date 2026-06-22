@@ -34,12 +34,12 @@ a noisy regularizer but not reference-faithful. Enable only to probe value-loss
 instability.
 """
 
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
-from mojo_rl.nn.primitives.mish import Mish
-from mojo_rl.nn.primitives.sim_norm import SimNorm
-from mojo_rl.nn.primitives.dropout import Dropout
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.layer_norm import LayerNorm
+from mojo_rl.nn.storage.primitives.activations import Mish
+from mojo_rl.nn.storage.primitives.sim_norm import SimNorm
+from mojo_rl.nn.storage.primitives.dropout import Dropout
 
 
 # Fixed comptime seed for the Q-trunk dropout (shared across the NQ heads — see
