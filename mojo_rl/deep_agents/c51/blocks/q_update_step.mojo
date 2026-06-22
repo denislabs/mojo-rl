@@ -1,15 +1,23 @@
-"""C51QUpdateStep — wraps C51QUpdateBlock.
+"""C51QUpdateStep — wraps C51QUpdateBlock (STORAGE).
 
-Reads `state.mb_s / mb_a` + caller-supplied `mb_m_ptr` (target
-distribution) → writes `state.critic_loss`.
+Reads `state.mb_s / mb_a` + the caller-supplied `mb_m` (target distribution
+Tensor, owned by the trainer) → writes `state.critic_loss`. The distributional
+analogue of `dqn/blocks/q_update_step.mojo`.
+
+STORAGE migration (Stage 5): passes the storage `TrainerState` minibatch
+`Tensor`s + the trainer's `_mb_m` straight into the migrated `C51QUpdateBlock`;
+PER IS-weights / per-sample-CE capture are `state.mb_w` / `state.td_residuals`
+`.lt` views. CPU + GPU.
 """
 
 from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from ..q_update_block import C51QUpdateBlock
 from ...training.trainer_block import TrainerState
 
@@ -48,30 +56,34 @@ struct C51QUpdateStep[
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut q_online: Self.Q_NET,
         mut q_opt: Adam,
-        mb_m_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut mb_m: Tensor,
     ) raises:
-        """PER hook: when `state.has_per`, forward IS weights into the
-        update and capture per-sample CE residuals.
+        """PER hook: when `state.has_per`, forward IS weights into the update +
+        capture per-sample CE residuals.
 
         `ACCUMULATE` (GPU only) forwards to the inner block's device loss
         accumulator (CUDA-graph capture); `state.critic_loss` then holds a 0
         sentinel — read the running loss via `inner.ce_loss.read_accum`."""
-        var weights_p: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        var weights: Optional[
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None
-        var td_res_p: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        var td_residuals: Optional[
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None
         if state.has_per:
-            weights_p = state.mb_w.target_ptr[target]()
-            td_res_p = state.td_residuals.target_ptr[target]()
+            weights = state.mb_w.lt[target, Layout.row_major(Self.BATCH)]()
+            td_residuals = state.td_residuals.lt[
+                target, Layout.row_major(Self.BATCH)
+            ]()
+
         var loss = self.inner.step[target, POLICY, ACCUMULATE](
             q_online,
             q_opt,
-            state.mb_s.target_ptr[target](),
-            state.mb_a.target_ptr[target](),
-            mb_m_ptr,
-            weights_p=weights_p,
-            td_residuals_p=td_res_p,
+            state.mb_s,
+            state.mb_a,
+            mb_m,
+            weights=weights,
+            td_residuals=td_residuals,
+            ctx=state.ctx,
         )
         state.critic_loss = loss

@@ -904,7 +904,11 @@ struct DQNTrainer[
         var lines = _split_lines(content)
         for i in range(len(lines)):
             if lines[i].startswith(key):
-                return Scalar[DT](atof(String(lines[i][len(key):])))
+                # `key` ends with '=' and the value has no '=', so split on '='
+                # and take the tail (nightly String has no positional slicing).
+                var parts = lines[i].split("=")
+                if len(parts) >= 2:
+                    return Scalar[DT](atof(parts[len(parts) - 1]))
         return default
 
     def flush_timer_log(mut self) -> String:
