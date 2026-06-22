@@ -56,38 +56,12 @@ from .state import for_each_state_auto
 from .tensor_pack import TensorPack
 
 
-# ──────────────────────────────────────────────────────────────────────
-# mptr — THE origin-erasure chokepoint (S2′, 2026-06-08).
-#
-# The codebase erases pointer origins to `MutAnyOrigin` constantly (the
-# variadic-TileTensor limitation is irreducible — see audit §B0). Before
-# this helper that meant ~800 inline copies of the verbose
-#   rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](view.ptr)
-# drowning the actual math. `mptr` collapses each to `mptr(view.ptr)` (or
-# `mptr(view)` straight from a TileTensor). Dtype-generic, so it also
-# absorbs the bf16 AMP rebinds. The unsafe step now lives in ONE place.
-# ──────────────────────────────────────────────────────────────────────
-
-
-@always_inline
-def mptr[
-    dt: DType, o: Origin
-](p: UnsafePointer[Scalar[dt], o]) -> UnsafePointer[Scalar[dt], MutAnyOrigin]:
-    """Erase a `Scalar[dt]` pointer's origin to `MutAnyOrigin`. Replaces
-    the inline `rebind[UnsafePointer[Scalar[dt], MutAnyOrigin]](p)` dance."""
-    return rebind[UnsafePointer[Scalar[dt], MutAnyOrigin]](p)
-
-
-@always_inline
-def mptr(
-    t: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, origin=MutAnyOrigin, ...,
-    ],
-) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    """Erased base pointer of a TileTensor view — `mptr(view)` instead of
-    `rebind[...](view.ptr)`."""
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](t.ptr)
+# `mptr` — THE origin-erasure chokepoint (S2′, 2026-06-08) — relocated to the
+# framework-agnostic `.ptr` module (Phase 0 of the legacy-`nn` removal) so the
+# shared infra that uses it (replay/batched_env/datasets) no longer depends on
+# this legacy Module file. Re-exported here for legacy leaves that still spell
+# `from ..core.module import mptr`; those die together with this file.
+from .ptr import mptr
 
 
 # ──────────────────────────────────────────────────────────────────────

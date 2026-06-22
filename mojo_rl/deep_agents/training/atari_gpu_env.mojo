@@ -25,7 +25,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
+from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.nn.core.target_storage import require_ctx
 from mojo_rl.deep_agents.training.batched_env import BatchedEnv
 

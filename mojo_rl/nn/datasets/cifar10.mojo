@@ -16,7 +16,7 @@ we copy pixels as-is after normalizing to Float32 / 255.
 
 from std.python import Python, PythonObject
 
-from mojo_rl.nn.core.module import mptr
+from mojo_rl.nn.core.ptr import mptr
 
 
 comptime _CIFAR_URL = (

@@ -46,7 +46,7 @@ from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.module import mptr
+from mojo_rl.nn.core.ptr import mptr
 from ..training.replay_buffer import ReplayBuffer
 from ..training.trainer_block import TrainerState
 

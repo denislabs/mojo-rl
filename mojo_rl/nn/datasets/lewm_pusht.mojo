@@ -56,7 +56,7 @@ from mojo_rl.io.hdf5 import (
     H5T_SGN_2,
     hsize_t,
 )
-from mojo_rl.nn.core.module import mptr
+from mojo_rl.nn.core.ptr import mptr
 
 
 comptime _HF_REPO = "quentinll/lewm-pusht"

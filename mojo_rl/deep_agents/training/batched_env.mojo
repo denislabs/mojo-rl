@@ -46,7 +46,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
+from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.core.env_traits import (
     BoxContinuousActionEnv,
     BoxDiscreteActionEnv,
