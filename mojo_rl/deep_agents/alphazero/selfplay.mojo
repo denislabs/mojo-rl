@@ -47,7 +47,7 @@ from mojo_rl.planners.tree_search import (
 
 from .loss_ops import AZLossOp
 from ..zero.mcts_adapters import AZPredGPU, AZEnvGPU
-from ..zero.example_replay import MCTSExampleReplay
+from ..zero.gpu_example_replay import GpuMCTSExampleReplay
 
 
 def run_alphazero_selfplay[
@@ -96,7 +96,9 @@ def run_alphazero_selfplay[
     var opt = Adam(lr=lr)
     var graph = Graph.make["gpu", Zero](octx)
     var mcts = MCTS(ctx, gamma=1.0, v_min=-1.0, v_max=1.0)
-    var replay = MCTSExampleReplay[OBS, W, CAP]()
+    # Fully device-resident replay: obs / packed-target / per-env trajectory all
+    # stay on the GPU (no per-step obs/policy D2H, no per-train-step batch H2D).
+    var replay = GpuMCTSExampleReplay[OBS, ACT, CAP, N_ENVS, MAX_TRAJ](ctx)
 
     # ── Env / MCTS device buffers (category-B; RAII DeviceBuffer) ──
     var states = ctx.enqueue_create_buffer[DT](N_ENVS * STATE)
@@ -107,23 +109,11 @@ def run_alphazero_selfplay[
     var term = ctx.enqueue_create_buffer[DT](N_ENVS)
     var obs_next = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
     var legal_next = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
-
-    # ── Host staging for the MCTS root obs / policy + step results ──
-    var obs_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * OBS)
-    var pol_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * ACT)
-    var done_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
-    var rew_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
     ctx.synchronize()
 
-    # ── Host trajectory storage (per-env in-progress game) — owned Lists. ──
-    var traj_obs = List[Scalar[DT]](length=N_ENVS * MAX_TRAJ * OBS, fill=0)
-    var traj_pol = List[Scalar[DT]](length=N_ENVS * MAX_TRAJ * ACT, fill=0)
-    var traj_len = List[Int](length=N_ENVS, fill=0)
-    var tmp_tgt = List[Scalar[DT]](length=W, fill=0)
-
-    # ── Train-batch storage Tensors (the nn surface) ──
-    var obs_t = Tensor.alloc(BATCH * OBS)
-    var tgt_t = Tensor.alloc(BATCH * W)
+    # ── Train-batch storage Tensors (device-resident; the nn surface) ──
+    var obs_t = Tensor.alloc_gpu(ctx, BATCH * OBS)
+    var tgt_t = Tensor.alloc_gpu(ctx, BATCH * W)
     var loss_t = Tensor.alloc_gpu(ctx, BATCH)
     var grad_t = Tensor.alloc(BATCH)
     for i in range(BATCH):
@@ -160,20 +150,9 @@ def run_alphazero_selfplay[
             rng_seed=seed + UInt64(it),
         )
 
-        # 2. Pull root obs + visit-count policy to host, record into trajectory.
-        ctx.enqueue_copy(obs_h, obs_dev)
-        ctx.enqueue_copy(pol_h, mcts.policies_out)
-        ctx.synchronize()
-        for e in range(N_ENVS):
-            var k = traj_len[e]
-            if k < MAX_TRAJ:
-                var ob = (e * MAX_TRAJ + k) * OBS
-                for j in range(OBS):
-                    traj_obs[ob + j] = obs_h[e * OBS + j]
-                var pb = (e * MAX_TRAJ + k) * ACT
-                for a in range(ACT):
-                    traj_pol[pb + a] = pol_h[e * ACT + a]
-                traj_len[e] = k + 1
+        # 2. Record this move's root obs + visit policy into each env's open
+        #    trajectory — device→device, no D2H.
+        replay.record_step_gpu(obs_dev, mcts.policies_out)
 
         # 3. Step every game by its chosen action.
         ENV.step_kernel_gpu[N_ENVS, STATE, OBS](
@@ -186,27 +165,11 @@ def run_alphazero_selfplay[
             obs_next,
             legal_next,
         )
-        ctx.enqueue_copy(done_h, done)
-        ctx.enqueue_copy(rew_h, rew)
-        ctx.synchronize()
 
-        # 4. Flush finished games into replay with value targets z.
-        for e in range(N_ENVS):
-            if done_h[e] > 0.5:
-                var L = traj_len[e]
-                var win = Float64(rew_h[e]) > 0.5
-                for k in range(L):
-                    var z: Float64 = 0.0
-                    if win:
-                        z = 1.0 if ((L - 1 - k) % 2 == 0) else -1.0
-                    var pb = (e * MAX_TRAJ + k) * ACT
-                    for a in range(ACT):
-                        tmp_tgt[a] = traj_pol[pb + a]
-                    tmp_tgt[ACT] = Scalar[DT](z)
-                    replay.record(
-                        traj_obs, (e * MAX_TRAJ + k) * OBS, tmp_tgt, 0
-                    )
-                traj_len[e] = 0
+        # 4. Flush finished games into the ring with in-kernel value targets z
+        #    (the replay reads back only the tiny done/rew vectors for control
+        #    flow; the trajectory→ring copies are device→device).
+        replay.flush_finished_gpu(done, rew)
 
         # 5. Reset finished games, refresh obs/legal for the next move.
         ENV.selective_reset_kernel_gpu[N_ENVS, STATE](
@@ -222,9 +185,7 @@ def run_alphazero_selfplay[
         if len(replay) >= BATCH and it >= learning_starts:
             net.set_attr["training"](Scalar[DT](1.0))
             for _t in range(train_per_iter):
-                replay.sample_batch_tensors[BATCH](obs_t, tgt_t)
-                obs_t.upload(ctx)
-                tgt_t.upload(ctx)
+                replay.sample_batch_gpu[BATCH](obs_t, tgt_t)
                 net.zero_grad["gpu"](octx)
                 graph.set_input["obs", BATCH](obs_t, octx)
                 graph.set_input["tgt", BATCH](tgt_t, octx)
