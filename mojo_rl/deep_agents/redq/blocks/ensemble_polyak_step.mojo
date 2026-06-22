@@ -13,7 +13,7 @@ every iteration.
 """
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.storage.core.module import Module
 
 from ..ensemble import CriticEnsemble
 from ...training.trainer_block import TrainerState

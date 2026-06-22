@@ -36,9 +36,9 @@ in isolation.
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Initializer
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.initializer import Initializer
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from ..core.online_target_pair import OnlineTargetPair
 
 
@@ -77,7 +77,11 @@ struct CriticEnsemble[CRITIC: Module, N: Int](
         var e = Self()
         for _ in range(Self.N):
             var pair = OnlineTargetPair[Self.CRITIC].make[target, INIT](ctx)
-            var opt = Adam.make[target, M=Self.CRITIC](pair.online, ctx=ctx)
+            # Storage Adam: `Adam(lr)` + `adopt[target, M]` (no-op on CPU, arena
+            # mode on GPU). Mirrors how SAC/DDPG build their critic opts.
+            var opt = Adam(lr=Scalar[DT](1e-3))
+            comptime if target == "gpu":
+                opt.adopt[target, M=Self.CRITIC](pair.online, ctx)
             e.pairs.append(pair^)
             e.opts.append(opt^)
         return e^

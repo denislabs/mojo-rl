@@ -1,40 +1,28 @@
-"""EnsembleCriticStep — N-critic gradient step against a shared target y.
+"""EnsembleCriticStep — N-critic gradient step against a shared target y (STORAGE).
 
-Phase R.1 (CPU). Replaces SAC's `TwinCriticStep` for the REDQ ensemble:
-loops over the N online critics in `CriticEnsemble[CRITIC, N]` and
-runs one `CriticUpdateBlock.step` per critic against `state.mb_s`,
-`state.mb_a`, `state.mb_y`. Sums the per-critic losses into
-`state.critic_loss` (matches SAC's `loss1 + loss2` convention).
+Replaces SAC's `TwinCriticStep` for the REDQ ensemble: loops over the N online
+critics in `CriticEnsemble[CRITIC, N]` and runs one storage `CriticUpdateBlock.
+step` per critic against `state.mb_s` / `state.mb_a` / `state.mb_y`. Sums the
+per-critic losses into `state.critic_loss` (matches SAC's `loss1 + loss2`).
 
-Design — ONE `CriticUpdateBlock` instance, reused per critic:
-  SAC's `TwinCriticUpdateBlock` owns TWO `CriticUpdateBlock`s, each
-  with its own `_mb_q`/`_mb_grad_q`/`_mb_grad_sa` scratch. For N=10
-  ensembles that would 5× the per-block scratch with no functional
-  win — the scratches are pure intermediates (overwritten each
-  `CriticUpdateBlock.step` call, never read between calls). We hold
-  ONE block and reuse it; each loop iteration overwrites the
-  intermediates and `opt.step` consumes them before the next critic
-  is touched.
+ONE `CriticUpdateBlock` instance, reused per critic — the scratch are pure
+intermediates (overwritten each `step` call, consumed by `opt.step` before the
+next critic). The storage `CriticUpdateBlock` owns the concat(s,a) → forward →
+MSE → vjp → opt.step pipeline, so this block carries no scratch of its own.
 
-Scratch ownership at this block level: only `_mb_sa`, the shared
-concat(s, a) buffer. The N (critic, opt) pairs live in
-`CriticEnsemble` (R.0) and are passed by `mut ensemble`.
-
-R.1 is CPU-only. GPU comes with the full REDQTrainer GPU port (R.5
-or later); the surface here is deliberately shaped so the GPU path
-will just be a comptime-if branch in `step` and a `concat_sa_gpu`
-swap, mirroring how SAC's TwinCriticUpdateBlock evolved.
+STORAGE migration (Stage 5): imports the storage `CriticUpdateBlock` (which
+already builds (s,a) internally via the storage `mb_*` Tensors) — so the legacy
+`_mb_sa` scratch + `concat_sa` here are gone.
 """
 
 from std.gpu.host import DeviceContext
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.scratch import Scratch
-from mojo_rl.nn.core.scratch_walkers import init_scratch_auto
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
 
 from ...loss.critic_update_block import CriticUpdateBlock
 from ...training.off_policy_critic import concat_sa, concat_sa_gpu
@@ -55,23 +43,18 @@ struct EnsembleCriticStep[
     comptime SA_DIM = Self.OBS + Self.ACT
 
     var member_step: CriticUpdateBlock[Self.CRITIC, Self.BATCH, Self.SA_DIM]
-    var _mb_sa: Scratch["mb_sa", Self.BATCH * Self.SA_DIM]
-    var ts: TargetStorage
+    var _mb_sa: Tensor   # shared concat(s, a) scratch
 
     def __init__(out self):
         self.member_step = CriticUpdateBlock[
             Self.CRITIC, Self.BATCH, Self.SA_DIM,
         ]()
-        self._mb_sa = Scratch["mb_sa", Self.BATCH * Self.SA_DIM]()
-        self.ts = TargetStorage.make_uninit()
+        self._mb_sa = Tensor()
 
     @staticmethod
     def make[target: StaticString](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """CPU + GPU factory. R.1 was CPU-only; R.5 adds the GPU branch
-        (concat_sa_gpu + inner CriticUpdateBlock.step["gpu"], which is
-        already GPU-capable from the SAC port)."""
         comptime assert target == "cpu" or target == "gpu", (
             "EnsembleCriticStep: target must be 'cpu' or 'gpu'"
         )
@@ -79,8 +62,10 @@ struct EnsembleCriticStep[
         blk.member_step = CriticUpdateBlock[
             Self.CRITIC, Self.BATCH, Self.SA_DIM,
         ].make[target](ctx=ctx)
-        blk.ts = TargetStorage.make[target](ctx=ctx)
-        init_scratch_auto[Self, target](blk, ctx)
+        comptime if target == "cpu":
+            blk._mb_sa = Tensor.alloc(Self.BATCH * Self.SA_DIM)
+        else:
+            blk._mb_sa = Tensor.alloc_gpu(ctx.value(), Self.BATCH * Self.SA_DIM)
         return blk^
 
     def step[
@@ -91,54 +76,38 @@ struct EnsembleCriticStep[
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut ensemble: CriticEnsemble[Self.CRITIC, Self.N],
     ) raises:
-        """One ensemble-wide critic gradient step. Reads
-        `state.mb_s` / `state.mb_a` / `state.mb_y`, writes
-        `state.critic_loss = Σᵢ loss_i`."""
-        assert_tag_for["EnsembleCriticStep", target](self.ts.target_tag)
-
-        var sa_p = self._mb_sa.target_ptr[target]()
+        """One ensemble-wide critic gradient step. Reads `state.mb_s` /
+        `state.mb_a` / `state.mb_y`, writes `state.critic_loss = Σᵢ loss_i`."""
+        var ctx = state.ctx
+        # Build the shared concat(s, a) once; pass it to each critic update.
         comptime if target == "cpu":
             concat_sa[Self.OBS, Self.ACT, Self.BATCH](
-                LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
-                ](state.mb_s.target_ptr[target]()),
-                LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
-                ](state.mb_a.target_ptr[target]()),
-                LayoutTensor[
-                    DT,
-                    Layout.row_major(Self.BATCH, Self.OBS + Self.ACT),
-                    MutAnyOrigin,
-                ](sa_p),
+                state.mb_s.lt["cpu", Layout.row_major(Self.BATCH, Self.OBS)](),
+                state.mb_a.lt["cpu", Layout.row_major(Self.BATCH, Self.ACT)](),
+                self._mb_sa.lt[
+                    "cpu", Layout.row_major(Self.BATCH, Self.SA_DIM)
+                ](),
             )
         else:
             concat_sa_gpu[Self.OBS, Self.ACT, Self.BATCH](
-                self.ts.ctx.value(),
-                LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH, Self.OBS), MutAnyOrigin
-                ](state.mb_s.target_ptr[target]()),
-                LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH, Self.ACT), MutAnyOrigin
-                ](state.mb_a.target_ptr[target]()),
-                LayoutTensor[
-                    DT,
-                    Layout.row_major(Self.BATCH, Self.OBS + Self.ACT),
-                    MutAnyOrigin,
-                ](sa_p),
+                ctx.value(),
+                state.mb_s.lt["gpu", Layout.row_major(Self.BATCH, Self.OBS)](),
+                state.mb_a.lt["gpu", Layout.row_major(Self.BATCH, Self.ACT)](),
+                self._mb_sa.lt[
+                    "gpu", Layout.row_major(Self.BATCH, Self.SA_DIM)
+                ](),
             )
-        var sa_t = TileTensor(sa_p, row_major[Self.BATCH, Self.SA_DIM]())
-        var mb_y_t = TileTensor(
-            state.mb_y.target_ptr[target](),
-            row_major[Self.BATCH, 1](),
-        )
 
         var loss_sum: Scalar[DT] = Scalar[DT](0.0)
         for i in range(Self.N):
-            var loss = self.member_step.step[target, POLICY](
+            var loss = self.member_step.step[
+                target, POLICY, ACCUMULATE=False
+            ](
                 ensemble.pairs[i].online,
                 ensemble.opts[i],
-                sa_t,
-                mb_y_t,
+                self._mb_sa,
+                state.mb_y,
+                ctx=ctx,
             )
             loss_sum += loss
         state.critic_loss = loss_sum
