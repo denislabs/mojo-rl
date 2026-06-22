@@ -21,7 +21,7 @@ from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.optimizer import Optimizer
+from mojo_rl.nn.storage.optimizer.optimizer import Optimizer
 
 from .predictive_model import PCBlockTrait
 from .pc_sequential import PCSequential
@@ -121,7 +121,7 @@ def pc_module_train_one_batch_gpu[
     )
 
     # 2. nn optimizer consumes net.weights.grd, updates net.weights.val.
-    opt.step["gpu", PCModule[*BLOCKS]](net)
+    opt.step["gpu", PCModule[*BLOCKS]](net, ctx)
 
 
 def pc_module_train_one_batch_gpu[

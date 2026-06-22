@@ -27,7 +27,7 @@ from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.storage.optimizer.adam import Adam
 
 from mojo_rl.experimental.pcn.pc_block import PCBlock
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock
@@ -80,13 +80,12 @@ def main() raises:
     )
     var teacher_params = LayoutTensor[
         DT, Layout.row_major(Seq.PARAM_SIZE), MutAnyOrigin
-    ](teacher.weights.value_unsafe_ptr_cpu())
+    ](teacher.weights.val.data.unsafe_ptr())
     Seq.forward_eval[BATCH](x_in, teacher_params, y_target)
 
     # Student (different draws) trains to match.
     var net = Net.make_pcn[PCXavier]()
-    var opt = Adam.make["cpu", Net](net)
-    opt.lr = Scalar[DT](5e-3)
+    var opt = Adam(lr=Scalar[DT](5e-3))
 
     var loss_first = Float64(0.0)
     var loss_last = Float64(0.0)

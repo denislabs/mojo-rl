@@ -31,7 +31,6 @@ The −sign on weight_grad is baked in (as in PCBlock) so callers can do
 from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
-from std.memory import alloc
 from std.sys import CompilationTarget
 
 from .pc_constants import TPB
@@ -117,9 +116,8 @@ struct ConvPCBlock[
         a_below: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
-        cache: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        mut cache: List[Scalar[dtype]],
     ):
-        var ap = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](a_below.ptr)
         for b in range(BATCH):
             for oh in range(Self.out_h):
                 for ow in range(Self.out_w):
@@ -143,12 +141,14 @@ struct ConvPCBlock[
                                     and iw >= 0
                                     and iw < Self.in_w
                                 ):
-                                    cache[col_idx] = ap[
-                                        b * Self.IN_DIM
-                                        + c * Self.in_h * Self.in_w
-                                        + ih * Self.in_w
-                                        + iw
-                                    ]
+                                    cache[col_idx] = rebind[Scalar[dtype]](
+                                        a_below[
+                                            b,
+                                            c * Self.in_h * Self.in_w
+                                            + ih * Self.in_w
+                                            + iw,
+                                        ]
+                                    )
                                 else:
                                     cache[col_idx] = Scalar[dtype](0)
 
@@ -203,12 +203,15 @@ struct ConvPCBlock[
 
         comptime if use_apple:
             # im2col → per-batch  out_b[oc,s] = Σ_k W[oc,k]·col_b[s,k]  (W @ colᵀ)
-            var cache = alloc[Scalar[dtype]](BATCH * Self.CACHE)
+            var cache = List[Scalar[dtype]](
+                length=BATCH * Self.CACHE, fill=Scalar[dtype](0)
+            )
             Self._im2col_cpu[BATCH, dtype](a_below, cache)
+            # cblas FFI boundary: A/B/C pointers (kept rebinds).
             var Wp = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](params.ptr)
             for b in range(BATCH):
                 var col_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                    cache + b * Self.CACHE
+                    cache.unsafe_ptr() + b * Self.CACHE
                 )
                 var out_b = rebind[UnsafePointer[Float32, MutAnyOrigin]](
                     mu.ptr + b * Self.OUT_DIM
@@ -229,33 +232,22 @@ struct ConvPCBlock[
                     )
                 except:
                     pass
-            # + bias
-            var mp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](mu.ptr)
-            var wp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-                params.ptr
-            )
+            # + bias (scalar LayoutTensor indexing)
             for b in range(BATCH):
                 for oc in range(Self.out_channels):
-                    var bias_val = wp[W_SIZE + oc]
-                    var off = b * Self.OUT_DIM + oc * Self.spatial_out
+                    var bias_val = params[W_SIZE + oc]
+                    var off = oc * Self.spatial_out
                     for s in range(Self.spatial_out):
-                        mp[off + s] = mp[off + s] + bias_val
-            cache.free()
+                        mu[b, off + s] = mu[b, off + s] + bias_val
+            _ = cache^
         else:
-            var ap = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-                a_below.ptr
-            )
-            var wp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-                params.ptr
-            )
-            var mp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](mu.ptr)
             for b in range(BATCH):
                 for oc in range(Self.out_channels):
-                    var bias_val = wp[W_SIZE + oc]
+                    var bias_val = params[W_SIZE + oc]
                     for oh in range(Self.out_h):
                         for ow in range(Self.out_w):
                             var s = oh * Self.out_w + ow
-                            var acc: Scalar[dtype] = bias_val
+                            var acc = bias_val
                             for c in range(Self.in_channels):
                                 for kh in range(Self.kernel_size):
                                     for kw in range(Self.kernel_size):
@@ -283,13 +275,12 @@ struct ConvPCBlock[
                                                 + ih * Self.in_w
                                                 + iw
                                             )
-                                            acc += (
-                                                wp[oc * Self.col_size + c_k]
-                                                * ap[b * Self.IN_DIM + in_idx]
+                                            acc = (
+                                                acc
+                                                + params[oc * Self.col_size + c_k]
+                                                * a_below[b, in_idx]
                                             )
-                            mp[
-                                b * Self.OUT_DIM + oc * Self.spatial_out + s
-                            ] = acc
+                            mu[b, oc * Self.spatial_out + s] = acc
 
     # =========================================================================
     # eps_compute:  ε = x_above − μ   (elementwise, identical to PCBlock)
@@ -309,11 +300,10 @@ struct ConvPCBlock[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
     ):
-        var xp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](x_above.ptr)
-        var mp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](mu.ptr)
-        var ep = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](eps.ptr)
-        for i in range(BATCH * Self.OUT_DIM):
-            ep[i] = xp[i] - mp[i]
+        # ε = x_above − μ (elementwise; scalar LayoutTensor indexing).
+        for sb in range(BATCH):
+            for j in range(Self.OUT_DIM):
+                eps[sb, j] = x_above[sb, j] - mu[sb, j]
 
     # =========================================================================
     # pull_back:  z_below = Convᵀ(ε; W)  (col2im scatter; w.r.t a_below, no act)
@@ -336,21 +326,24 @@ struct ConvPCBlock[
         comptime use_apple = CompilationTarget.is_macos() and (
             dtype == DType.float32
         )
-        var zp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_below.ptr)
-        for i in range(BATCH * Self.IN_DIM):
-            zp[i] = Scalar[dtype](0)
+        for b in range(BATCH):
+            for i in range(Self.IN_DIM):
+                z_below[b, i] = Scalar[dtype](0)
 
         comptime if use_apple:
             # per-batch  dcol_b[s,k] = Σ_oc ε_b[oc,s]·W[oc,k]  (εᵀ @ W), then
             # col2im scatter dcol → z_below (accumulate over overlaps).
-            var dcol = alloc[Scalar[dtype]](BATCH * Self.CACHE)
+            var dcol = List[Scalar[dtype]](
+                length=BATCH * Self.CACHE, fill=Scalar[dtype](0)
+            )
+            # cblas FFI boundary: A/B/C pointers (kept rebinds).
             var Wp = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](params.ptr)
             for b in range(BATCH):
                 var eps_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
                     eps_above.ptr + b * Self.OUT_DIM
                 )
                 var dcol_b = rebind[UnsafePointer[Float32, MutAnyOrigin]](
-                    dcol + b * Self.CACHE
+                    dcol.unsafe_ptr() + b * Self.CACHE
                 )
                 try:
                     apple_sgemm_accum[transpose_a=True, transpose_b=False](
@@ -368,7 +361,6 @@ struct ConvPCBlock[
                     )
                 except:
                     pass
-            var dcp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](dcol)
             for b in range(BATCH):
                 for oh in range(Self.out_h):
                     for ow in range(Self.out_w):
@@ -400,26 +392,22 @@ struct ConvPCBlock[
                                             + ih * Self.in_w
                                             + iw
                                         )
-                                        zp[b * Self.IN_DIM + in_idx] += dcp[
+                                        z_below[b, in_idx] = z_below[
+                                            b, in_idx
+                                        ] + dcol[
                                             b * Self.CACHE
                                             + s * Self.col_size
                                             + c_k
                                         ]
-            dcol.free()
+            _ = dcol^
         else:
-            var wp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-                params.ptr
-            )
-            var ep = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-                eps_above.ptr
-            )
             for b in range(BATCH):
                 for oc in range(Self.out_channels):
                     for oh in range(Self.out_h):
                         for ow in range(Self.out_w):
                             var s = oh * Self.out_w + ow
-                            var g = ep[
-                                b * Self.OUT_DIM + oc * Self.spatial_out + s
+                            var g = eps_above[
+                                b, oc * Self.spatial_out + s
                             ]
                             for c in range(Self.in_channels):
                                 for kh in range(Self.kernel_size):
@@ -448,9 +436,11 @@ struct ConvPCBlock[
                                                 + ih * Self.in_w
                                                 + iw
                                             )
-                                            zp[b * Self.IN_DIM + in_idx] += (
-                                                wp[oc * Self.col_size + c_k] * g
-                                            )
+                                            z_below[b, in_idx] = z_below[
+                                                b, in_idx
+                                            ] + params[
+                                                oc * Self.col_size + c_k
+                                            ] * g
 
     # =========================================================================
     # act_derivative_mul:  z_out = z_in ⊙ ACT'(x_below)  (reused verbatim)
@@ -496,25 +486,24 @@ struct ConvPCBlock[
         comptime use_apple = CompilationTarget.is_macos() and (
             dtype == DType.float32
         )
-        var gp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](grads.ptr)
-        var ep = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            eps_above.ptr
-        )
         for i in range(Self.PARAM_SIZE):
-            gp[i] = Scalar[dtype](0)
+            grads[i] = Scalar[dtype](0)
 
         comptime if use_apple:
             # im2col, then accumulate  dW += (−1)·ε_b @ col_b  over the batch
             # (alpha=−1, beta=1) → dW = −Σ_b ε_b @ col_b. db = −Σ ε (scalar).
-            var cache = alloc[Scalar[dtype]](BATCH * Self.CACHE)
+            var cache = List[Scalar[dtype]](
+                length=BATCH * Self.CACHE, fill=Scalar[dtype](0)
+            )
             Self._im2col_cpu[BATCH, dtype](a_below, cache)
+            # cblas FFI boundary: A/B/C pointers (kept rebinds).
             var Cw = rebind[UnsafePointer[Float32, MutAnyOrigin]](grads.ptr)
             for b in range(BATCH):
                 var eps_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
                     eps_above.ptr + b * Self.OUT_DIM
                 )
                 var col_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                    cache + b * Self.CACHE
+                    cache.unsafe_ptr() + b * Self.CACHE
                 )
                 try:
                     apple_sgemm_accum[transpose_a=False, transpose_b=False](
@@ -535,15 +524,12 @@ struct ConvPCBlock[
             for oc in range(Self.out_channels):
                 var db_acc: Scalar[dtype] = 0
                 for b in range(BATCH):
-                    var off = b * Self.OUT_DIM + oc * Self.spatial_out
+                    var off = oc * Self.spatial_out
                     for s in range(Self.spatial_out):
-                        db_acc += ep[off + s]
-                gp[W_SIZE + oc] = -db_acc
-            cache.free()
+                        db_acc += rebind[Scalar[dtype]](eps_above[b, off + s])
+                grads[W_SIZE + oc] = -db_acc
+            _ = cache^
         else:
-            var ap = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-                a_below.ptr
-            )
             # dW[oc, c_k] = −Σ_{b,s} ε[b, oc·so+s] · (im2col(a_below) patch)
             # db[oc]      = −Σ_{b,s} ε[b, oc·so+s]
             for b in range(BATCH):
@@ -552,10 +538,8 @@ struct ConvPCBlock[
                     for oh in range(Self.out_h):
                         for ow in range(Self.out_w):
                             var s = oh * Self.out_w + ow
-                            var g = ep[
-                                b * Self.OUT_DIM + oc * Self.spatial_out + s
-                            ]
-                            db_acc += g
+                            var g = eps_above[b, oc * Self.spatial_out + s]
+                            db_acc += rebind[Scalar[dtype]](g)
                             for c in range(Self.in_channels):
                                 for kh in range(Self.kernel_size):
                                     for kw in range(Self.kernel_size):
@@ -583,11 +567,12 @@ struct ConvPCBlock[
                                                 + ih * Self.in_w
                                                 + iw
                                             )
-                                            gp[oc * Self.col_size + c_k] += (
-                                                -g
-                                                * ap[b * Self.IN_DIM + in_idx]
-                                            )
-                    gp[W_SIZE + oc] += -db_acc
+                                            grads[
+                                                oc * Self.col_size + c_k
+                                            ] = grads[
+                                                oc * Self.col_size + c_k
+                                            ] + (-g * a_below[b, in_idx])
+                    grads[W_SIZE + oc] = grads[W_SIZE + oc] + (-db_acc)
 
     # =========================================================================
     # GPU kernels (P2) — naive, atomic-free GATHER forms so each output thread

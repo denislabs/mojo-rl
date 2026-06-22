@@ -2,7 +2,7 @@
 
 PCN has NO checkpointing of its own. Because `PCModule` conforms to nn
 `Module` (its weight slab is a `Saveable` `Param`), it gets the v2
-checkpoint envelope for free: `save_state_v2` / `load_state_v2` walk
+checkpoint envelope for free: `save_params` / `load_params` (nn.storage) walk
 `for_each_param` and serialize named, size-checked sections.
 
 This test also drives training with **AdamW** (not Adam), exercising the
@@ -25,8 +25,8 @@ from std.math import abs
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.optimizer import AdamW
-from mojo_rl.nn.core.checkpoint import save_state_v2, load_state_v2
+from mojo_rl.nn.storage.optimizer.adam import AdamW
+from mojo_rl.nn.storage.core.checkpoint import save_params, load_params
 
 from mojo_rl.experimental.pcn.pc_block import PCBlock
 from mojo_rl.experimental.pcn.predictive_model import PCIdentity
@@ -79,31 +79,32 @@ def main() raises:
 
     # Train with AdamW (proves optimizer-generic trainer).
     var net = Net.make_pcn[PCXavier]()
-    var opt = AdamW.make["cpu", Net](net)
-    opt.lr = Scalar[DT](1e-2)
+    var opt = AdamW(lr=Scalar[DT](1e-2))
     for _ in range(60):
         _ = pc_module_train_one_batch[BATCH](
             net, opt, x_in, y_target, T_INFER, Scalar[DT](0.1)
         )
 
-    # Save trained weights.
-    save_state_v2[Net](net, PATH)
+    # Save trained weights (weights only — the test validates val round-trip).
+    save_params["cpu", Net](net, PATH, save_moments=False)
 
     # Fresh net (different draws) — must differ before load.
     var net2 = Net.make_pcn[PCXavier]()
     var pre_diff = Float64(0.0)
     for k in range(PSIZE):
         pre_diff += abs(
-            Float64(net.weights.val.cpu[k]) - Float64(net2.weights.val.cpu[k])
+            Float64(net.weights.val.data[k])
+            - Float64(net2.weights.val.data[k])
         )
     assert_true(pre_diff > 1e-3, "fresh net unexpectedly equals trained net")
 
     # Load — weights must now match the trained net.
-    load_state_v2[Net](net2, PATH)
+    load_params["cpu", Net](net2, PATH)
     var post_diff = Float64(0.0)
     for k in range(PSIZE):
         post_diff += abs(
-            Float64(net.weights.val.cpu[k]) - Float64(net2.weights.val.cpu[k])
+            Float64(net.weights.val.data[k])
+            - Float64(net2.weights.val.data[k])
         )
     print("weight |Δ| sum: pre-load =", pre_diff, " post-load =", post_diff)
     assert_true(post_diff < 1e-4, "loaded weights do not match saved weights")
@@ -112,10 +113,10 @@ def main() raises:
     var o1 = List[Scalar[DT]](length=BATCH * OUT, fill=Scalar[DT](0))
     var o2 = List[Scalar[DT]](length=BATCH * OUT, fill=Scalar[DT](0))
     var p1 = LayoutTensor[DT, Layout.row_major(PSIZE), MutAnyOrigin](
-        net.weights.value_unsafe_ptr_cpu()
+        net.weights.val.data.unsafe_ptr()
     )
     var p2 = LayoutTensor[DT, Layout.row_major(PSIZE), MutAnyOrigin](
-        net2.weights.value_unsafe_ptr_cpu()
+        net2.weights.val.data.unsafe_ptr()
     )
     var out1 = LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin](
         o1.unsafe_ptr()

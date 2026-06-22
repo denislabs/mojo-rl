@@ -26,16 +26,16 @@ feeds Adam with **no negation** — confirmed in `pc_block.mojo` (the "−sign
 expected by Optimizer.step").
 """
 
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.param import Param
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.target_storage import TargetStorage
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.param import Param
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Initializer
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
 
 from .predictive_model import PCBlockTrait
 from .pc_sequential import PCSequential
@@ -51,7 +51,7 @@ struct PCModule[*BLOCKS: PCBlockTrait](Module):
             PCBlock[8, 2, PCIdentity],
         ]
         var net = Net.make_pcn[PCXavier]()
-        var opt = Adam.make["cpu", Net](net)
+        var opt = Adam(lr=Scalar[DT](1e-2))   # nn.storage Adam/AdamW
     """
 
     comptime NET = PCSequential[*Self.BLOCKS]
@@ -65,11 +65,9 @@ struct PCModule[*BLOCKS: PCBlockTrait](Module):
     # the legacy `params` buffer). `APPLY_DECAY=False`: PC weight decay, if
     # any, is handled in the PC energy, not via the optimizer.
     var weights: Param["pc_params", False, Self.NET.PARAM_SIZE]
-    var ts: TargetStorage
 
     def __init__(out self):
         self.weights = Param["pc_params", False, Self.NET.PARAM_SIZE]()
-        self.ts = TargetStorage.make_uninit()
 
     # ── Real PCN constructor (CPU) ───────────────────────────────────────
 
@@ -81,12 +79,13 @@ struct PCModule[*BLOCKS: PCBlockTrait](Module):
         nn-`Initializer`-based `make` below is unusable for PCN (different
         init contract), so this is the constructor real code calls."""
         var net = Self()
-        net.weights = Param["pc_params", False, Self.NET.PARAM_SIZE].make_cpu()
-        net.ts = TargetStorage.make_cpu()
+        net.weights = Param["pc_params", False, Self.NET.PARAM_SIZE].make[
+            "cpu"
+        ]()
 
         var params = LayoutTensor[
             DT, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
-        ](net.weights.value_unsafe_ptr_cpu())
+        ](net.weights.val.data)
         Self.NET.pc_init_params[INIT, DT](params)
         return net^
 
@@ -99,19 +98,22 @@ struct PCModule[*BLOCKS: PCBlockTrait](Module):
         `weights.val.dev`; nn `Adam.make['gpu']` and `compute_grads_only_gpu`
         read them on-device."""
         var net = Self()
-        net.weights = Param["pc_params", False, Self.NET.PARAM_SIZE].make_gpu(
-            ctx
-        )
-        net.ts = TargetStorage.make_gpu(ctx)
+        net.weights = Param["pc_params", False, Self.NET.PARAM_SIZE].make[
+            "gpu"
+        ](ctx)
+        # storage `Param.make["gpu"]` allocates grd.dev but leaves val on the
+        # host (a leaf's INIT.upload normally fills val.dev). PCN inits per
+        # block on the host, so allocate val.dev here and upload into it below.
+        net.weights.val.ensure_gpu(ctx, Self.NET.PARAM_SIZE)
         # Init on host, then upload to the device value buffer.
         var host = List[Scalar[DT]](
             length=Self.NET.PARAM_SIZE, fill=Scalar[DT](0)
         )
         var host_view = LayoutTensor[
             DT, Layout.row_major(Self.NET.PARAM_SIZE), MutAnyOrigin
-        ](host.unsafe_ptr())
+        ](host)
         Self.NET.pc_init_params[INIT, DT](host_view)
-        ctx.enqueue_copy(net.weights.val.dev.value(), host.unsafe_ptr())
+        ctx.enqueue_copy(net.weights.val.dev.value(), host)
         ctx.synchronize()
         _ = host^
         return net^
@@ -121,9 +123,7 @@ struct PCModule[*BLOCKS: PCBlockTrait](Module):
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
         raise Error(
             "PCModule.make: PCN initializes per-block (fan_in/fan_out), not"
             " via the nn Initializer contract. Use make_pcn[PCInitializer]()."
@@ -134,14 +134,13 @@ struct PCModule[*BLOCKS: PCBlockTrait](Module):
     def forward[
         target: StaticString,
         BATCH: Int,
+        o: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         raise Error(
             "PCModule.forward: PCN uses the settling loop"
@@ -151,15 +150,15 @@ struct PCModule[*BLOCKS: PCBlockTrait](Module):
     def vjp[
         target: StaticString,
         BATCH: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         raise Error(
             "PCModule.vjp: PCN uses local error-minimization (weight_grad),"

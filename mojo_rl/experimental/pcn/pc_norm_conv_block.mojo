@@ -27,7 +27,6 @@ new. CPU; GPU deferred (raise-stubs) — the CIFAR experiment runs on CPU.
 
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext
-from std.memory import alloc
 from std.math import sqrt
 
 
@@ -90,21 +89,27 @@ struct NormConvPCBlock[
     def _channel_rmsnorm[
         BATCH: Int, dtype: DType
     ](
-        u: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-        dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        u: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
+        mut dst: LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
+        ],
     ):
         for b in range(BATCH):
             for c in range(Self.in_channels):
-                var off = b * Self.IN_DIM + c * Self.spatial_in
+                var base = c * Self.spatial_in
                 var ss: Float64 = 0.0
                 for s in range(Self.spatial_in):
-                    var v = Float64(u[off + s])
+                    var v = Float64(
+                        rebind[Scalar[dtype]](u[b, base + s])
+                    )
                     ss += v * v
                 var inv_r = Scalar[dtype](
                     1.0 / sqrt(ss / Float64(Self.spatial_in) + _RMS_EPS)
                 )
                 for s in range(Self.spatial_in):
-                    dst[off + s] = u[off + s] * inv_r
+                    dst[b, base + s] = u[b, base + s] * inv_r
 
     # =========================================================================
     # predict:  a = RMSNorm_ch(ACT(x_below));  μ = Conv(a)   (a cached for wgrad)
@@ -127,20 +132,19 @@ struct NormConvPCBlock[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
     ):
-        # u = ACT(x_below)  → scratch;  a_below = RMSNorm_ch(u)
-        var u_buf = alloc[Scalar[dtype]](BATCH * Self.IN_DIM)
+        # u = ACT(x_below)  → owned scratch;  a_below = RMSNorm_ch(u)
+        var u_buf = List[Scalar[dtype]](
+            length=BATCH * Self.IN_DIM, fill=Scalar[dtype](0)
+        )
         var u = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ](u_buf)
         Self.ACT.apply[BATCH, Self.IN_DIM, dtype](x_below, u)
-        Self._channel_rmsnorm[BATCH, dtype](
-            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](u.ptr),
-            rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](a_below.ptr),
-        )
+        Self._channel_rmsnorm[BATCH, dtype](u, a_below)
         # μ = Conv(a_below).  INNER (Identity-style use): pass a_below as the
         # conv input; its a_below_out scratch (=u) is discarded.
         Self.INNER._conv_forward[BATCH, dtype](a_below, params, mu)
-        u_buf.free()
+        _ = u_buf^
 
     @staticmethod
     def eps_compute[
@@ -193,35 +197,46 @@ struct NormConvPCBlock[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
     ):
-        var xp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](x_below.ptr)
-        var zi = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_in.ptr)
-
-        # u = ACT(x_below)
-        var u_buf = alloc[Scalar[dtype]](BATCH * Self.IN_DIM)
+        # u = ACT(x_below)  → owned scratch
+        var u_buf = List[Scalar[dtype]](
+            length=BATCH * Self.IN_DIM, fill=Scalar[dtype](0)
+        )
         var u = LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ](u_buf)
         Self.ACT.apply[BATCH, Self.IN_DIM, dtype](x_below, u)
-        var up = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](u.ptr)
 
         # g = RMSNorm_ch_Jᵀ(z_in; u)  (per input channel over spatial_in)
-        var g_buf = alloc[Scalar[dtype]](BATCH * Self.IN_DIM)
+        var g_buf = List[Scalar[dtype]](
+            length=BATCH * Self.IN_DIM, fill=Scalar[dtype](0)
+        )
         for b in range(BATCH):
             for c in range(Self.in_channels):
-                var off = b * Self.IN_DIM + c * Self.spatial_in
+                var base = c * Self.spatial_in
+                var off = b * Self.IN_DIM + base
                 var ss: Float64 = 0.0
                 for s in range(Self.spatial_in):
-                    var v = Float64(up[off + s])
+                    var v = Float64(rebind[Scalar[dtype]](u[b, base + s]))
                     ss += v * v
                 var inv_r = 1.0 / sqrt(ss / Float64(Self.spatial_in) + _RMS_EPS)
                 var dot: Float64 = 0.0
                 for s in range(Self.spatial_in):
-                    dot += Float64(zi[off + s]) * Float64(up[off + s]) * inv_r
+                    dot += (
+                        Float64(rebind[Scalar[dtype]](z_in[b, base + s]))
+                        * Float64(rebind[Scalar[dtype]](u[b, base + s]))
+                        * inv_r
+                    )
                 var dot_over = dot / Float64(Self.spatial_in)
                 for s in range(Self.spatial_in):
-                    var n_s = Float64(up[off + s]) * inv_r
+                    var n_s = (
+                        Float64(rebind[Scalar[dtype]](u[b, base + s])) * inv_r
+                    )
                     g_buf[off + s] = Scalar[dtype](
-                        inv_r * (Float64(zi[off + s]) - n_s * dot_over)
+                        inv_r
+                        * (
+                            Float64(rebind[Scalar[dtype]](z_in[b, base + s]))
+                            - n_s * dot_over
+                        )
                     )
         # z_out = ACT'(x_below) ⊙ g
         var g = LayoutTensor[
@@ -230,8 +245,8 @@ struct NormConvPCBlock[
         Self.ACT.apply_derivative_mul[BATCH, Self.IN_DIM, dtype](
             x_below, g, z_out
         )
-        u_buf.free()
-        g_buf.free()
+        _ = u_buf^
+        _ = g_buf^
 
     @staticmethod
     def weight_grad[

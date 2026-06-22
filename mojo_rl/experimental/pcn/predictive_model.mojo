@@ -31,12 +31,9 @@ from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from std.math import exp, tanh
-from std.sys import simd_width_of
 
 from .pc_constants import TPB
 from .pc_initializer import PCInitializer
-
-comptime _SW = simd_width_of[DType.float32]()
 
 
 # =============================================================================
@@ -120,24 +117,11 @@ struct PCReLU(PCActivation):
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         mut a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
-        var xp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](x.ptr)
-        var ap = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](a.ptr)
-        comptime N = BATCH * DIM
-        comptime zero = SIMD[dtype, _SW](0)
-        comptime if dtype == DType.float32:
-            var i = 0
-            while i + _SW <= N:
-                var v = xp.load[width=_SW](i)
-                ap.store(i, v.gt(zero).select(v, zero))
-                i += _SW
-            while i < N:
-                var v = xp[i]
-                ap[i] = v if v > 0 else Scalar[dtype](0)
-                i += 1
-        else:
-            for i in range(N):
-                var v = xp[i]
-                ap[i] = v if v > 0 else Scalar[dtype](0)
+        # ReLU elementwise via direct LayoutTensor indexing (no raw pointers).
+        for b in range(BATCH):
+            for i in range(DIM):
+                var v = rebind[Scalar[dtype]](x[b, i])
+                a[b, i] = v if v > 0 else Scalar[dtype](0)
 
     @staticmethod
     def apply_derivative_mul[
@@ -149,27 +133,13 @@ struct PCReLU(PCActivation):
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
     ):
-        var xp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](x.ptr)
-        var zp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_in.ptr)
-        var op = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_out.ptr)
-        comptime N = BATCH * DIM
-        comptime zero = SIMD[dtype, _SW](0)
-        comptime if dtype == DType.float32:
-            var i = 0
-            while i + _SW <= N:
-                var xv = xp.load[width=_SW](i)
-                var zv = zp.load[width=_SW](i)
-                var mask = xv.gt(zero)
-                op.store(i, mask.select(zv, zero))
-                i += _SW
-            while i < N:
-                var xv = xp[i]
-                op[i] = zp[i] if xv > 0 else Scalar[dtype](0)
-                i += 1
-        else:
-            for i in range(N):
-                var xv = xp[i]
-                op[i] = zp[i] if xv > 0 else Scalar[dtype](0)
+        # ReLU derivative gating via direct LayoutTensor indexing.
+        for b in range(BATCH):
+            for i in range(DIM):
+                var xv = rebind[Scalar[dtype]](x[b, i])
+                z_out[b, i] = rebind[Scalar[dtype]](
+                    z_in[b, i]
+                ) if xv > 0 else Scalar[dtype](0)
 
     # ── GPU kernels (naive: one thread per element) ──────────────────────────
 
@@ -261,20 +231,10 @@ struct PCIdentity(PCActivation):
         x: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
         mut a: LayoutTensor[dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     ):
-        var sp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](x.ptr)
-        var dp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](a.ptr)
-        comptime N = BATCH * DIM
-        comptime if dtype == DType.float32:
-            var i = 0
-            while i + _SW <= N:
-                dp.store(i, sp.load[width=_SW](i))
-                i += _SW
-            while i < N:
-                dp[i] = sp[i]
-                i += 1
-        else:
-            for i in range(N):
-                dp[i] = sp[i]
+        # Identity: a = x (elementwise copy via direct LayoutTensor indexing).
+        for b in range(BATCH):
+            for i in range(DIM):
+                a[b, i] = x[b, i]
 
     @staticmethod
     def apply_derivative_mul[
@@ -286,20 +246,10 @@ struct PCIdentity(PCActivation):
             dtype, Layout.row_major(BATCH, DIM), MutAnyOrigin
         ],
     ):
-        var sp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_in.ptr)
-        var dp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_out.ptr)
-        comptime N = BATCH * DIM
-        comptime if dtype == DType.float32:
-            var i = 0
-            while i + _SW <= N:
-                dp.store(i, sp.load[width=_SW](i))
-                i += _SW
-            while i < N:
-                dp[i] = sp[i]
-                i += 1
-        else:
-            for i in range(N):
-                dp[i] = sp[i]
+        # Identity derivative = 1: z_out = z_in (copy via LayoutTensor indexing).
+        for b in range(BATCH):
+            for i in range(DIM):
+                z_out[b, i] = z_in[b, i]
 
     # ── GPU kernels (naive copy) ─────────────────────────────────────────────
 

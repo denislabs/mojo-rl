@@ -200,8 +200,14 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
         for _ in range(BATCH * Self.SCRATCH_OUT_DIM):
             mu_storage.append(0)
 
-        var a_ptr = a_storage.unsafe_ptr()
-        var mu_ptr = mu_storage.unsafe_ptr()
+        var a_full = LayoutTensor[
+            dtype, Layout.row_major(BATCH * Self.SCRATCH_IN_DIM), MutAnyOrigin
+        ](a_storage)
+        var a_ptr = a_full.ptr
+        var mu_full = LayoutTensor[
+            dtype, Layout.row_major(BATCH * Self.SCRATCH_OUT_DIM), MutAnyOrigin
+        ](mu_storage)
+        var mu_ptr = mu_full.ptr
 
         comptime for i in range(Self.N):
             var li_p = LayoutTensor[
@@ -314,7 +320,10 @@ struct PCSequential[*BLOCKS: PCBlockTrait]:
         )
         for _ in range(BATCH * Self.SCRATCH_IN_DIM):
             a_storage.append(0)
-        var a_ptr = a_storage.unsafe_ptr()
+        var a_full = LayoutTensor[
+            dtype, Layout.row_major(BATCH * Self.SCRATCH_IN_DIM), MutAnyOrigin
+        ](a_storage)
+        var a_ptr = a_full.ptr
 
         comptime for i in range(Self.N - 1):  # only fill interior latents
             var li_p = LayoutTensor[

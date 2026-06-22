@@ -22,19 +22,17 @@ forward/backward is small (a few hundred params for typical world-model
 sizes) and runs on host without dominating wall time.
 """
 
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 from std.math import sqrt, tanh
-from std.memory import alloc
 from std.random.philox import Random as PhiloxRandom
-from std.sys import CompilationTarget, simd_width_of
+from std.sys import CompilationTarget
 from linalg.matmul import matmul as max_matmul
 from linalg.matmul.cpu.apple_accelerate import (
     get_cblas_f32_function,
     _CBLASOrder,
     _CBLASTranspose,
 )
-
-comptime _SW = simd_width_of[DType.float32]()
+from layout.tile_tensor import lt_to_tt
 
 
 struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
@@ -140,75 +138,46 @@ struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
         ],
     ):
         """Forward pass; caches `hidden_pre`, `hidden_act` for backward."""
-        var inp_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            enc_input.ptr
-        )
-        var hp_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            hidden_pre.ptr
-        )
-        var ha_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            hidden_act.ptr
-        )
-        var out_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            output.ptr
-        )
-        var w1_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            params.ptr + Self.W1_OFFSET
-        )
-        var b1_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            params.ptr + Self.B1_OFFSET
-        )
-        var w2_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            params.ptr + Self.W2_OFFSET
-        )
-        var b2_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            params.ptr + Self.B2_OFFSET
-        )
+        # Param sub-views over the flat slab (no rebind; like the block path).
+        var W1 = LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim, Self.hidden_dim), MutAnyOrigin
+        ](params.ptr + Self.W1_OFFSET)
+        var b1 = LayoutTensor[
+            dtype, Layout.row_major(Self.hidden_dim), MutAnyOrigin
+        ](params.ptr + Self.B1_OFFSET)
+        var W2 = LayoutTensor[
+            dtype, Layout.row_major(Self.hidden_dim, Self.out_dim), MutAnyOrigin
+        ](params.ptr + Self.W2_OFFSET)
+        var b2 = LayoutTensor[
+            dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
+        ](params.ptr + Self.B2_OFFSET)
 
-        # h_pre = input @ W1 + b1
-        var inp_tt = TileTensor(inp_p, row_major[BATCH, Self.in_dim]())
-        var w1_tt = TileTensor(w1_p, row_major[Self.in_dim, Self.hidden_dim]())
-        var hp_tt = TileTensor(hp_p, row_major[BATCH, Self.hidden_dim]())
+        # h_pre = input @ W1
         try:
-            max_matmul[target="cpu"](hp_tt, inp_tt, w1_tt, None)
+            max_matmul[target="cpu"](
+                lt_to_tt(hidden_pre), lt_to_tt(enc_input), lt_to_tt(W1), None
+            )
         except:
             pass
-        # bias add + tanh
+        # bias add + tanh (scalar element indexing, identical iteration order)
         for b in range(BATCH):
-            var off = b * Self.hidden_dim
-            var j = 0
-            comptime if dtype == DType.float32:
-                while j + _SW <= Self.hidden_dim:
-                    var v = hp_p.load[width=_SW](off + j) + b1_p.load[width=_SW](j)
-                    hp_p.store(off + j, v)
-                    j += _SW
-            while j < Self.hidden_dim:
-                hp_p[off + j] = hp_p[off + j] + b1_p[j]
-                j += 1
+            for j in range(Self.hidden_dim):
+                hidden_pre[b, j] = hidden_pre[b, j] + b1[j]
             for k in range(Self.hidden_dim):
-                ha_p[off + k] = Scalar[dtype](tanh(Float64(hp_p[off + k])))
+                hidden_act[b, k] = Scalar[dtype](
+                    tanh(Float64(rebind[Scalar[dtype]](hidden_pre[b, k])))
+                )
 
-        # output = h_act @ W2 + b2
-        var ha_tt = TileTensor(ha_p, row_major[BATCH, Self.hidden_dim]())
-        var w2_tt = TileTensor(w2_p, row_major[Self.hidden_dim, Self.out_dim]())
-        var out_tt = TileTensor(out_p, row_major[BATCH, Self.out_dim]())
+        # output = h_act @ W2
         try:
-            max_matmul[target="cpu"](out_tt, ha_tt, w2_tt, None)
+            max_matmul[target="cpu"](
+                lt_to_tt(output), lt_to_tt(hidden_act), lt_to_tt(W2), None
+            )
         except:
             pass
         for b in range(BATCH):
-            var off = b * Self.out_dim
-            var j = 0
-            comptime if dtype == DType.float32:
-                while j + _SW <= Self.out_dim:
-                    out_p.store(
-                        off + j,
-                        out_p.load[width=_SW](off + j) + b2_p.load[width=_SW](j),
-                    )
-                    j += _SW
-            while j < Self.out_dim:
-                out_p[off + j] = out_p[off + j] + b2_p[j]
-                j += 1
+            for j in range(Self.out_dim):
+                output[b, j] = output[b, j] + b2[j]
 
     # =========================================================================
     # Backward:  given dL/d(output), accumulate into grads (zero-initialized).
@@ -239,24 +208,27 @@ struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
         for i in range(Self.PARAM_SIZE):
             grads.ptr[i] = Scalar[dtype](0.0)
 
-        var gp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](grads.ptr)
-        var pp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](params.ptr)
-        var ha_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            hidden_act.ptr
-        )
-        var dz_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            dz_out.ptr
-        )
-        var inp_p = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            enc_input.ptr
-        )
-        var dw2_p = gp + Self.W2_OFFSET
-        var db2_p = gp + Self.B2_OFFSET
-        var dw1_p = gp + Self.W1_OFFSET
-        var db1_p = gp + Self.B1_OFFSET
+        # Grad + param sub-views over the slabs (no rebind; like the block path).
+        var dW1 = LayoutTensor[
+            dtype, Layout.row_major(Self.in_dim, Self.hidden_dim), MutAnyOrigin
+        ](grads.ptr + Self.W1_OFFSET)
+        var db1 = LayoutTensor[
+            dtype, Layout.row_major(Self.hidden_dim), MutAnyOrigin
+        ](grads.ptr + Self.B1_OFFSET)
+        var dW2 = LayoutTensor[
+            dtype, Layout.row_major(Self.hidden_dim, Self.out_dim), MutAnyOrigin
+        ](grads.ptr + Self.W2_OFFSET)
+        var db2 = LayoutTensor[
+            dtype, Layout.row_major(Self.out_dim), MutAnyOrigin
+        ](grads.ptr + Self.B2_OFFSET)
+        var W2 = LayoutTensor[
+            dtype, Layout.row_major(Self.hidden_dim, Self.out_dim), MutAnyOrigin
+        ](params.ptr + Self.W2_OFFSET)
 
         # dW2 = h_act^T @ dz_out
         comptime if CompilationTarget.is_macos() and dtype == DType.float32:
+            # Apple Accelerate cblas FFI boundary (Scalar→Float32 + origin),
+            # kept as-is per the nn.storage convention.
             try:
                 var cblas_gemm = get_cblas_f32_function()
                 cblas_gemm(
@@ -267,72 +239,77 @@ struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
                     Int32(Self.out_dim),
                     Int32(BATCH),
                     Float32(1.0),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](ha_p),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        hidden_act.ptr
+                    ),
                     Int32(Self.hidden_dim),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](dz_p),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](dz_out.ptr),
                     Int32(Self.out_dim),
                     Float32(0.0),
-                    rebind[UnsafePointer[Float32, MutAnyOrigin]](dw2_p),
+                    rebind[UnsafePointer[Float32, MutAnyOrigin]](dW2.ptr),
                     Int32(Self.out_dim),
                 )
             except:
                 pass
         else:
-            var cT_buf: UnsafePointer[
-                Scalar[dtype], MutAnyOrigin
-            ] = alloc[Scalar[dtype]](BATCH * Self.hidden_dim)
+            # Portable: materialize h_act^T into an owned List, GEMM via lt_to_tt.
+            var cT = List[Scalar[dtype]](
+                length=Self.hidden_dim * BATCH, fill=Scalar[dtype](0)
+            )
             for bi in range(BATCH):
                 for i in range(Self.hidden_dim):
-                    cT_buf[i * BATCH + bi] = ha_p[bi * Self.hidden_dim + i]
-            var cT_tt = TileTensor(cT_buf, row_major[Self.hidden_dim, BATCH]())
-            var dz_tt = TileTensor(dz_p, row_major[BATCH, Self.out_dim]())
-            var dw2_tt = TileTensor(
-                dw2_p, row_major[Self.hidden_dim, Self.out_dim](),
-            )
+                    cT[i * BATCH + bi] = rebind[Scalar[dtype]](
+                        hidden_act[bi, i]
+                    )
+            var cT_view = LayoutTensor[
+                dtype, Layout.row_major(Self.hidden_dim, BATCH), MutAnyOrigin
+            ](cT)
             try:
-                max_matmul[target="cpu"](dw2_tt, cT_tt, dz_tt, None)
+                max_matmul[target="cpu"](
+                    lt_to_tt(dW2), lt_to_tt(cT_view), lt_to_tt(dz_out), None
+                )
             except:
                 pass
-            cT_buf.free()
+            _ = cT^
 
-        # db2 = column-sum(dz_out)
+        # db2 = column-sum(dz_out) (stays in LayoutTensor element type)
         for j in range(Self.out_dim):
-            var s: Scalar[dtype] = 0
-            for b in range(BATCH):
-                s += dz_p[b * Self.out_dim + j]
-            db2_p[j] = s
+            var s = dz_out[0, j]
+            for b in range(1, BATCH):
+                s = s + dz_out[b, j]
+            db2[j] = s
 
-        # dh_act = dz_out @ W2^T
-        var w2_p = pp + Self.W2_OFFSET
-        var dh_act_buf: UnsafePointer[
-            Scalar[dtype], MutAnyOrigin
-        ] = alloc[Scalar[dtype]](BATCH * Self.hidden_dim)
-        var dh_tt = TileTensor(
-            dh_act_buf, row_major[BATCH, Self.hidden_dim](),
+        # dh_act = dz_out @ W2^T (owned scratch List, no raw alloc)
+        var dh_act = List[Scalar[dtype]](
+            length=BATCH * Self.hidden_dim, fill=Scalar[dtype](0)
         )
-        var dz_tt2 = TileTensor(dz_p, row_major[BATCH, Self.out_dim]())
-        var w2_tt = TileTensor(
-            w2_p, row_major[Self.hidden_dim, Self.out_dim](),
-        )
+        var dh_act_view = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.hidden_dim), MutAnyOrigin
+        ](dh_act)
         try:
-            max_matmul[transpose_b=True, target="cpu"](dh_tt, dz_tt2, w2_tt, None)
+            max_matmul[transpose_b=True, target="cpu"](
+                lt_to_tt(dh_act_view), lt_to_tt(dz_out), lt_to_tt(W2), None
+            )
         except:
             pass
 
-        # dh_pre = dh_act * (1 - h_act²)
-        var dh_pre_buf: UnsafePointer[
-            Scalar[dtype], MutAnyOrigin
-        ] = alloc[Scalar[dtype]](BATCH * Self.hidden_dim)
+        # dh_pre = dh_act * (1 - h_act²)  (owned scratch List)
+        var dh_pre = List[Scalar[dtype]](
+            length=BATCH * Self.hidden_dim, fill=Scalar[dtype](0)
+        )
+        var dh_pre_view = LayoutTensor[
+            dtype, Layout.row_major(BATCH, Self.hidden_dim), MutAnyOrigin
+        ](dh_pre)
         for b in range(BATCH):
             for j in range(Self.hidden_dim):
-                var idx = b * Self.hidden_dim + j
-                var ha = ha_p[idx]
-                dh_pre_buf[idx] = dh_act_buf[idx] * (
-                    Scalar[dtype](1) - ha * ha
-                )
+                var ha = rebind[Scalar[dtype]](hidden_act[b, j])
+                dh_pre_view[b, j] = rebind[Scalar[dtype]](
+                    dh_act_view[b, j]
+                ) * (Scalar[dtype](1) - ha * ha)
 
         # dW1 = input^T @ dh_pre
         comptime if CompilationTarget.is_macos() and dtype == DType.float32:
+            # Apple Accelerate cblas FFI boundary, kept as-is.
             try:
                 var cblas_gemm2 = get_cblas_f32_function()
                 cblas_gemm2(
@@ -343,42 +320,45 @@ struct PCEncoder[in_dim: Int, hidden_dim: Int, out_dim: Int]:
                     Int32(Self.hidden_dim),
                     Int32(BATCH),
                     Float32(1.0),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](inp_p),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        enc_input.ptr
+                    ),
                     Int32(Self.in_dim),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](dh_pre_buf),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        dh_pre_view.ptr
+                    ),
                     Int32(Self.hidden_dim),
                     Float32(0.0),
-                    rebind[UnsafePointer[Float32, MutAnyOrigin]](dw1_p),
+                    rebind[UnsafePointer[Float32, MutAnyOrigin]](dW1.ptr),
                     Int32(Self.hidden_dim),
                 )
             except:
                 pass
         else:
-            var iT_buf: UnsafePointer[
-                Scalar[dtype], MutAnyOrigin
-            ] = alloc[Scalar[dtype]](BATCH * Self.in_dim)
+            # Portable: materialize input^T into an owned List, GEMM via lt_to_tt.
+            var iT = List[Scalar[dtype]](
+                length=Self.in_dim * BATCH, fill=Scalar[dtype](0)
+            )
             for bi in range(BATCH):
                 for i in range(Self.in_dim):
-                    iT_buf[i * BATCH + bi] = inp_p[bi * Self.in_dim + i]
-            var iT_tt = TileTensor(iT_buf, row_major[Self.in_dim, BATCH]())
-            var dp_tt = TileTensor(
-                dh_pre_buf, row_major[BATCH, Self.hidden_dim](),
-            )
-            var dw1_tt = TileTensor(
-                dw1_p, row_major[Self.in_dim, Self.hidden_dim](),
-            )
+                    iT[i * BATCH + bi] = rebind[Scalar[dtype]](enc_input[bi, i])
+            var iT_view = LayoutTensor[
+                dtype, Layout.row_major(Self.in_dim, BATCH), MutAnyOrigin
+            ](iT)
             try:
-                max_matmul[target="cpu"](dw1_tt, iT_tt, dp_tt, None)
+                max_matmul[target="cpu"](
+                    lt_to_tt(dW1), lt_to_tt(iT_view), lt_to_tt(dh_pre_view), None
+                )
             except:
                 pass
-            iT_buf.free()
+            _ = iT^
 
-        # db1 = column-sum(dh_pre)
+        # db1 = column-sum(dh_pre) (stays in LayoutTensor element type)
         for j in range(Self.hidden_dim):
-            var s: Scalar[dtype] = 0
-            for b in range(BATCH):
-                s += dh_pre_buf[b * Self.hidden_dim + j]
-            db1_p[j] = s
+            var s = dh_pre_view[0, j]
+            for b in range(1, BATCH):
+                s = s + dh_pre_view[b, j]
+            db1[j] = s
 
-        dh_pre_buf.free()
-        dh_act_buf.free()
+        _ = dh_pre^
+        _ = dh_act^
