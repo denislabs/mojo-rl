@@ -43,6 +43,7 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.storage.loss.two_hot import (
     fill_bins,
     decode_value_batch,
+    two_hot_decode_batch,
     two_hot_ce_loss_batch,
     two_hot_ce_backward_batch,
     decode_value_backward_batch,

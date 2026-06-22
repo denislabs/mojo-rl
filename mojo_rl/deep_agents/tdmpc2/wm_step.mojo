@@ -1,4 +1,4 @@
-"""TD-MPC2 world-model BPTT step (CPU; GPU is P4).
+"""TD-MPC2 world-model BPTT step (storage framework; CPU + GPU).
 
 Mirrors DreamerV3's `WMStep` carry-passthrough BPTT and the validated
 `tests/nn/spike_wm_bptt.mojo` scan. The world model's dynamics, reward, and
@@ -10,38 +10,35 @@ BPTT scan, encoder backward, and steps one Adam per module.
   z_0 = encode(obs[0])
   for t in 0..H-1:
       out_t = WMGraph(z=carry_t, a=a_t, z_enc_next=sg·encode(obs[t+1]),
-                      r=r_t, td=td_t)            # dyn/rew/Q bound as externals
-      carry_{t+1} = out_t[:, 7:]                 # znext (dynamics output)
+                      r=r_t, td=td_t)            # dyn/rew/Q threaded externals
+      carry_{t+1} = out_t[:, 8:]                 # znext (dynamics output)
   reverse scan seeds loss cols (coef·ρ^t/norm) + znext cols (carry grad),
   vjp accumulates into the external modules, grad_input["z"] threads back.
 
-This is the multi-step gradient flow the legacy CPU path skipped
-(`deep_agents/tdmpc2/tdmpc2.mojo:861-867`). Normalization matches reference
-`_update` (consistency = MSE mean over batch×latent; reward = CE mean over
-batch; value = CE mean over batch×num_q; all ·ρ^t and ÷horizon).
+Storage migration (Stage 5): inputs are storage `Tensor`s (`.data` host /
+`.dev` device). The 5 online Q heads are passed as DISTINCT fields q0..q4
+(storage threads externals into one `forward`/`vjp` call in node order;
+two `mut` subscripts of one List can't alias). The legacy `set_external` /
+`graph.forward(out_only)` / `node_out_ptr` / `grad_input_ptr` are replaced by
+threaded externals + `node_output` / `grad_input`.
 
 Inputs (t-major, contiguous per step):
   obs [(H+1),B,OBS], act [H,B,ACT], r [H,B], td [H,B] (stop-grad targets).
 """
 
-from std.memory import alloc
-from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.module import mptr
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.optimizer.adam import Adam
 
 from .nets import (
     TDMPC2Encoder, TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Termination,
 )
 from .wm_graph import TDMPC2WMGraph, NQ, NLOSS, TERM_COL
-
-
-@always_inline
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
 
 
 @fieldwise_init
@@ -58,38 +55,12 @@ struct WMLossOut(Copyable & Movable):
         return self.consistency + self.reward + self.value + self.termination
 
 
-# ── GPU marshalling helpers + kernels (mirror dreamerv3/blocks + the
-#    spike_wm_bptt_gpu device-buffer orchestration). ─────────────────────
-@always_inline
-def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(b.unsafe_ptr())
-
-
-@always_inline
-def _lt[N: Int](
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
-    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
-
-
-def _upload(
-    ctx: DeviceContext, src: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int
-) raises -> DeviceBuffer[DT]:
-    """Host raw pointer → fresh device buffer (one H2D)."""
-    var d = ctx.enqueue_create_buffer[DT](n)
-    var h = ctx.enqueue_create_host_buffer[DT](n)
-    ctx.synchronize()
-    for i in range(n):
-        h.unsafe_ptr()[i] = src[i]
-    ctx.enqueue_copy(d, h)
-    ctx.synchronize()
-    return d^
-
-
-def _copyk[N: Int](
+# ── GPU kernels (operate over storage Tensor `.lt` views) ───────────────
+def _copy_slice_k[N: Int](
     src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
 ):
+    """dst[i] = src[i] over a contiguous N-window (sub-buffer views)."""
     var i = Int(global_idx.x)
     if i < N:
         dst[i] = rebind[Scalar[DT]](src[i])
@@ -191,27 +162,25 @@ struct WMStep[
     var termination_coef: Scalar[DT]
     var rho: Scalar[DT]
 
-    # Persistent GPU scratch (allocated once in make[gpu]; None on CPU). Reused
-    # across train steps to avoid per-step device allocation + per-upload syncs.
-    var d_obs: Optional[DeviceBuffer[DT]]
-    var d_act: Optional[DeviceBuffer[DT]]
-    var d_rew: Optional[DeviceBuffer[DT]]
-    var d_td: Optional[DeviceBuffer[DT]]
-    var d_done: Optional[DeviceBuffer[DT]]
-    var d_carry: Optional[DeviceBuffer[DT]]
-    var d_zen: Optional[DeviceBuffer[DT]]
-    var d_out: Optional[DeviceBuffer[DT]]
-    var d_scratch: Optional[DeviceBuffer[DT]]
-    var d_seed: Optional[DeviceBuffer[DT]]
-    var d_gz: Optional[DeviceBuffer[DT]]
-    var d_acc: Optional[DeviceBuffer[DT]]
-    var d_gobs: Optional[DeviceBuffer[DT]]
-    var h_obs: Optional[HostBuffer[DT]]
-    var h_act: Optional[HostBuffer[DT]]
-    var h_rew: Optional[HostBuffer[DT]]
-    var h_td: Optional[HostBuffer[DT]]
-    var h_done: Optional[HostBuffer[DT]]
-    var h_acc: Optional[HostBuffer[DT]]
+    # Persistent scratch Tensors (allocated once in make). On CPU they back the
+    # host `.data`; on GPU they back the device buffers. Reused across steps to
+    # avoid per-step (re)allocation.
+    var carry: Tensor    # [(H+1)*B*LATENT]
+    var zen: Tensor      # [H*B*LATENT]
+    var out_t: Tensor    # [B*OUTW]
+    var scratch: Tensor  # [B*OUTW]
+    var seed: Tensor     # [B*OUTW]
+    var gz: Tensor       # [B*LATENT]
+    var gobs: Tensor     # [B*OBS]
+    var acc: Tensor      # [4] metric accumulator
+    # per-step input scratch (one window each, copied from the full input).
+    var in_z: Tensor     # [B*LATENT]
+    var in_a: Tensor     # [B*ACT]
+    var in_zen: Tensor   # [B*LATENT]
+    var in_r: Tensor     # [B]
+    var in_td: Tensor    # [B]
+    var in_done: Tensor  # [B]
+    var obs_step: Tensor  # [B*OBS] encoder input window
 
     def __init__(out self):
         self.consistency_coef = Scalar[DT](20.0)
@@ -219,13 +188,21 @@ struct WMStep[
         self.value_coef = Scalar[DT](0.1)
         self.termination_coef = Scalar[DT](0.0)
         self.rho = Scalar[DT](0.5)
-        self.d_obs = None; self.d_act = None; self.d_rew = None
-        self.d_td = None; self.d_done = None; self.d_carry = None
-        self.d_zen = None
-        self.d_out = None; self.d_scratch = None; self.d_seed = None
-        self.d_gz = None; self.d_acc = None; self.d_gobs = None
-        self.h_obs = None; self.h_act = None; self.h_rew = None
-        self.h_td = None; self.h_done = None; self.h_acc = None
+        self.carry = Tensor()
+        self.zen = Tensor()
+        self.out_t = Tensor()
+        self.scratch = Tensor()
+        self.seed = Tensor()
+        self.gz = Tensor()
+        self.gobs = Tensor()
+        self.acc = Tensor()
+        self.in_z = Tensor()
+        self.in_a = Tensor()
+        self.in_zen = Tensor()
+        self.in_r = Tensor()
+        self.in_td = Tensor()
+        self.in_done = Tensor()
+        self.obs_step = Tensor()
 
     @staticmethod
     def make[target: StaticString](
@@ -235,35 +212,45 @@ struct WMStep[
         comptime assert target == "cpu" or target == "gpu", (
             "WMStep: target must be 'cpu' or 'gpu'"
         )
+        comptime LAT = Self.LATENT
+        comptime OW = Self.OUTW
+        comptime BB = Self.B
         var s = Self()
         s.termination_coef = termination_coef
-        comptime if target == "gpu":
-            var c = ctx.value()
-            comptime LAT = Self.LATENT
-            comptime OW = Self.OUTW
-            s.d_obs = c.enqueue_create_buffer[DT]((Self.H + 1) * Self.B * Self.OBS)
-            s.d_act = c.enqueue_create_buffer[DT](Self.H * Self.B * Self.ACT)
-            s.d_rew = c.enqueue_create_buffer[DT](Self.H * Self.B)
-            s.d_td = c.enqueue_create_buffer[DT](Self.H * Self.B)
-            s.d_done = c.enqueue_create_buffer[DT](Self.H * Self.B)
-            s.d_carry = c.enqueue_create_buffer[DT]((Self.H + 1) * Self.B * LAT)
-            s.d_zen = c.enqueue_create_buffer[DT](Self.H * Self.B * LAT)
-            s.d_out = c.enqueue_create_buffer[DT](Self.B * OW)
-            s.d_scratch = c.enqueue_create_buffer[DT](Self.B * OW)
-            s.d_seed = c.enqueue_create_buffer[DT](Self.B * OW)
-            s.d_gz = c.enqueue_create_buffer[DT](Self.B * LAT)
-            s.d_acc = c.enqueue_create_buffer[DT](4)
-            s.d_gobs = c.enqueue_create_buffer[DT](Self.B * Self.OBS)
-            s.h_obs = c.enqueue_create_host_buffer[DT](
-                (Self.H + 1) * Self.B * Self.OBS
-            )
-            s.h_act = c.enqueue_create_host_buffer[DT](Self.H * Self.B * Self.ACT)
-            s.h_rew = c.enqueue_create_host_buffer[DT](Self.H * Self.B)
-            s.h_td = c.enqueue_create_host_buffer[DT](Self.H * Self.B)
-            s.h_done = c.enqueue_create_host_buffer[DT](Self.H * Self.B)
-            s.h_acc = c.enqueue_create_host_buffer[DT](4)
-            c.synchronize()
+        s.carry = Tensor.make[target]((Self.H + 1) * BB * LAT, ctx)
+        s.zen = Tensor.make[target](Self.H * BB * LAT, ctx)
+        s.out_t = Tensor.make[target](BB * OW, ctx)
+        s.scratch = Tensor.make[target](BB * OW, ctx)
+        s.seed = Tensor.make[target](BB * OW, ctx)
+        s.gz = Tensor.make[target](BB * LAT, ctx)
+        s.gobs = Tensor.make[target](BB * Self.OBS, ctx)
+        s.acc = Tensor.make[target](4, ctx)
+        s.in_z = Tensor.make[target](BB * LAT, ctx)
+        s.in_a = Tensor.make[target](BB * Self.ACT, ctx)
+        s.in_zen = Tensor.make[target](BB * LAT, ctx)
+        s.in_r = Tensor.make[target](BB, ctx)
+        s.in_td = Tensor.make[target](BB, ctx)
+        s.in_done = Tensor.make[target](BB, ctx)
+        s.obs_step = Tensor.make[target](BB * Self.OBS, ctx)
         return s^
+
+    # ── copy a contiguous [n]-window from src (offset off) into dst[0:n] ──
+    @staticmethod
+    def _copy_window[target: StaticString](
+        mut src: Tensor,
+        off: Int,
+        mut dst: Tensor,
+        n: Int,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "cpu":
+            for i in range(n):
+                dst.data[i] = src.data[off + i]
+        else:
+            var c = ctx.value()
+            # device-to-device copy of the window via a sub-buffer view.
+            var sub = src.dev.value().create_sub_buffer[DT](off, n)
+            c.enqueue_copy(dst.dev.value(), sub)
 
     def step[target: StaticString](
         mut self,
@@ -271,399 +258,298 @@ struct WMStep[
         mut enc: Self.EncT,
         mut dyn: Self.DynT,
         mut rew_net: Self.RewT,
-        mut q: List[Self.QNetT],
+        mut q0: Self.QNetT,
+        mut q1: Self.QNetT,
+        mut q2: Self.QNetT,
+        mut q3: Self.QNetT,
+        mut q4: Self.QNetT,
         mut term_net: Self.TermT,
         mut enc_opt: Adam,
         mut dyn_opt: Adam,
         mut rew_opt: Adam,
-        mut q_opt: List[Adam],
+        mut qo0: Adam,
+        mut qo1: Adam,
+        mut qo2: Adam,
+        mut qo3: Adam,
+        mut qo4: Adam,
         mut term_opt: Adam,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(H+1),B,OBS] (host)
-        act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B,ACT]
-        rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B]
-        td: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B]
-        done: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [H,B] BCE target
+        mut obs: Tensor,   # [(H+1),B,OBS]
+        mut act: Tensor,   # [H,B,ACT]
+        mut rew: Tensor,   # [H,B]
+        mut td: Tensor,    # [H,B]
+        mut done: Tensor,  # [H,B] BCE target
         ctx: Optional[DeviceContext] = None,
-    ) raises -> WMLossOut:
-        comptime if target == "cpu":
-            return self._wm_cpu[target](
-                graph, enc, dyn, rew_net, q, term_net,
-                enc_opt, dyn_opt, rew_opt, q_opt, term_opt,
-                obs, act, rew, td, done,
-            )
-        else:
-            return self._wm_gpu[target](
-                graph, enc, dyn, rew_net, q, term_net,
-                enc_opt, dyn_opt, rew_opt, q_opt, term_opt,
-                obs, act, rew, td, done,
-                ctx.value(),
-            )
-
-    def _wm_cpu[target: StaticString](
-        mut self,
-        mut graph: Self.GraphT,
-        mut enc: Self.EncT,
-        mut dyn: Self.DynT,
-        mut rew_net: Self.RewT,
-        mut q: List[Self.QNetT],
-        mut term_net: Self.TermT,
-        mut enc_opt: Adam,
-        mut dyn_opt: Adam,
-        mut rew_opt: Adam,
-        mut q_opt: List[Adam],
-        mut term_opt: Adam,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(H+1),B,OBS]
-        act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B,ACT]
-        rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B]
-        td: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B]
-        done: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [H,B] BCE target
-    ) raises -> WMLossOut:
-        comptime LAT = Self.LATENT
-        comptime OW = Self.OUTW
-
-        # ── Bind external modules (stable for this step). ──────────────
-        graph.set_external["znext", Self.DynT](dyn)
-        graph.set_external["rlog", Self.RewT](rew_net)
-        graph.set_external["q0", Self.QNetT](q[0])
-        graph.set_external["q1", Self.QNetT](q[1])
-        graph.set_external["q2", Self.QNetT](q[2])
-        graph.set_external["q3", Self.QNetT](q[3])
-        graph.set_external["q4", Self.QNetT](q[4])
-        graph.set_external["term", Self.TermT](term_net)
-
-        var carry = _alloc((Self.H + 1) * Self.B * LAT)
-        var zen = _alloc(Self.H * Self.B * LAT)
-        var out = _alloc(Self.B * OW)
-
-        # ── 1. Consistency targets: encode(obs[t+1]), stop-grad. ───────
-        for t in range(Self.H):
-            var src = obs + (t + 1) * Self.B * Self.OBS
-            var dst = zen + t * Self.B * LAT
-            var dst_t = TileTensor(dst, row_major[Self.B, LAT]())
-            enc.forward[target, Self.B](
-                TileTensor(src, row_major[Self.B, Self.OBS]()),
-                output=dst_t,
-            )
-
-        # ── 2. z_0 = encode(obs[0]) — last enc.forward → cache = obs[0]. ─
-        var z0_t = TileTensor(carry, row_major[Self.B, LAT]())
-        enc.forward[target, Self.B](
-            TileTensor(obs, row_major[Self.B, Self.OBS]()),
-            output=z0_t,
-        )
-
-        # ── 3. Forward scan: roll latents, accumulate weighted loss. ───
-        var cons_t: Scalar[DT] = 0.0
-        var rew_t: Scalar[DT] = 0.0
-        var val_t: Scalar[DT] = 0.0
-        var term_t: Scalar[DT] = 0.0
-        var rho_t: Scalar[DT] = 1.0
-        var inv_b = Scalar[DT](1.0) / Scalar[DT](Self.B)
-        var inv_h = Scalar[DT](1.0) / Scalar[DT](Self.H)
-        var inv_lat = Scalar[DT](1.0) / Scalar[DT](LAT)
-        var inv_nq = Scalar[DT](1.0) / Scalar[DT](NQ)
-        for t in range(Self.H):
-            self._set_step_inputs[target](graph, carry, zen, act, rew, td, done, t)
-            var ot = TileTensor(out, row_major[Self.B, OW]())
-            graph.forward[target, Self.B](ot)
-            var nxt = carry + (t + 1) * Self.B * LAT
-            for b in range(Self.B):
-                for k in range(LAT):
-                    nxt[b * LAT + k] = out[b * OW + NLOSS + k]
-                var cons = out[b * OW + 0]
-                var rl = out[b * OW + 1]
-                var vl: Scalar[DT] = 0.0
-                for qq in range(NQ):
-                    vl += out[b * OW + 2 + qq]
-                var tl = out[b * OW + TERM_COL]
-                cons_t += rho_t * inv_h * self.consistency_coef * inv_b * inv_lat * cons
-                rew_t += rho_t * inv_h * self.reward_coef * inv_b * rl
-                val_t += rho_t * inv_h * self.value_coef * inv_b * inv_nq * vl
-                term_t += rho_t * inv_h * self.termination_coef * inv_b * tl
-            rho_t *= self.rho
-
-        # ── 4. Zero grads (encoder + all external WM modules). ─────────
-        enc_opt.zero_grad[target, Self.EncT](enc)
-        dyn_opt.zero_grad[target, Self.DynT](dyn)
-        rew_opt.zero_grad[target, Self.RewT](rew_net)
-        for i in range(NQ):
-            q_opt[i].zero_grad[target, Self.QNetT](q[i])
-        term_opt.zero_grad[target, Self.TermT](term_net)
-
-        # ── 5. Reverse-scan BPTT. ──────────────────────────────────────
-        var gz = _alloc(Self.B * LAT)
-        for i in range(Self.B * LAT):
-            gz[i] = 0.0
-        var seed = _alloc(Self.B * OW)
-        var scratch = _alloc(Self.B * OW)
-
-        var rho_rev: Scalar[DT] = 1.0
-        for _ in range(Self.H - 1):
-            rho_rev *= self.rho
-
-        for rev in range(Self.H):
-            var t = Self.H - 1 - rev
-            self._set_step_inputs[target](graph, carry, zen, act, rew, td, done, t)
-            var sct = TileTensor(scratch, row_major[Self.B, OW]())
-            graph.forward[target, Self.B](sct)
-
-            var sc_cons = self.consistency_coef * rho_rev * inv_b * inv_lat * inv_h
-            var sc_rew = self.reward_coef * rho_rev * inv_b * inv_h
-            var sc_val = self.value_coef * rho_rev * inv_b * inv_nq * inv_h
-            var sc_term = self.termination_coef * rho_rev * inv_b * inv_h
-            for b in range(Self.B):
-                seed[b * OW + 0] = sc_cons
-                seed[b * OW + 1] = sc_rew
-                for qq in range(NQ):
-                    seed[b * OW + 2 + qq] = sc_val
-                seed[b * OW + TERM_COL] = sc_term
-                for k in range(LAT):
-                    seed[b * OW + NLOSS + k] = gz[b * LAT + k]
-            graph.vjp[target, Self.B](TileTensor(seed, row_major[Self.B, OW]()))
-
-            var gzin = graph.grad_input_ptr["z"]()
-            for i in range(Self.B * LAT):
-                gz[i] = gzin[i]
-            rho_rev /= self.rho
-
-        # ── 6. Encoder backward from the t=0 carry grad. ───────────────
-        var z0r_t = TileTensor(carry, row_major[Self.B, LAT]())
-        enc.forward[target, Self.B](
-            TileTensor(obs, row_major[Self.B, Self.OBS]()),
-            output=z0r_t,
-        )
-        var gobs = _alloc(Self.B * Self.OBS)
-        var gobs_t = TileTensor(gobs, row_major[Self.B, Self.OBS]())
-        enc.vjp[target, Self.B](
-            TileTensor(gz, row_major[Self.B, LAT]()),
-            gobs_t,
-        )
-
-        # ── 7. Optimizer steps (one Adam per module). ──────────────────
-        enc_opt.step[target, Self.EncT](enc)
-        dyn_opt.step[target, Self.DynT](dyn)
-        rew_opt.step[target, Self.RewT](rew_net)
-        for i in range(NQ):
-            q_opt[i].step[target, Self.QNetT](q[i])
-        term_opt.step[target, Self.TermT](term_net)
-
-        carry.free(); zen.free(); out.free()
-        gz.free(); seed.free(); scratch.free(); gobs.free()
-        return WMLossOut(cons_t, rew_t, val_t, term_t)
-
-    def _wm_gpu[target: StaticString](
-        mut self,
-        mut graph: Self.GraphT,
-        mut enc: Self.EncT,
-        mut dyn: Self.DynT,
-        mut rew_net: Self.RewT,
-        mut q: List[Self.QNetT],
-        mut term_net: Self.TermT,
-        mut enc_opt: Adam,
-        mut dyn_opt: Adam,
-        mut rew_opt: Adam,
-        mut q_opt: List[Adam],
-        mut term_opt: Adam,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(H+1),B,OBS] host
-        act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B,ACT] host
-        rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [H,B] host
-        td: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B] host
-        done: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [H,B] host BCE target
-        ctx: DeviceContext,
     ) raises -> WMLossOut:
         comptime LAT = Self.LATENT
         comptime OW = Self.OUTW
         comptime BB = Self.B
-        comptime OBSD = Self.OBS
-
-        # ── bind persistent scratch + stage inputs (fill host buffers
-        #    in-place, async H2D, single sync at the end) ────────────────
-        var d_obs = self.d_obs.value()
-        var d_act = self.d_act.value()
-        var d_rew = self.d_rew.value()
-        var d_td = self.d_td.value()
-        var d_done = self.d_done.value()
-        var d_carry = self.d_carry.value()
-        var d_zen = self.d_zen.value()
-        var d_out = self.d_out.value()
-        var d_scratch = self.d_scratch.value()
-        var d_seed = self.d_seed.value()
-        var d_gz = self.d_gz.value()
-        var d_acc = self.d_acc.value()
-        var d_gobs = self.d_gobs.value()
-        var ho = self.h_obs.value()
-        var ha = self.h_act.value()
-        var hr = self.h_rew.value()
-        var htd = self.h_td.value()
-        var hdone = self.h_done.value()
-        for i in range((Self.H + 1) * BB * OBSD):
-            ho.unsafe_ptr()[i] = obs[i]
-        for i in range(Self.H * BB * Self.ACT):
-            ha.unsafe_ptr()[i] = act[i]
-        for i in range(Self.H * BB):
-            hr.unsafe_ptr()[i] = rew[i]
-            htd.unsafe_ptr()[i] = td[i]
-            hdone.unsafe_ptr()[i] = done[i]
-        ctx.enqueue_copy(d_obs, ho)
-        ctx.enqueue_copy(d_act, ha)
-        ctx.enqueue_copy(d_rew, hr)
-        ctx.enqueue_copy(d_td, htd)
-        ctx.enqueue_copy(d_done, hdone)
-        d_acc.enqueue_fill(0.0)
-
-        graph.set_external["znext", Self.DynT](dyn)
-        graph.set_external["rlog", Self.RewT](rew_net)
-        graph.set_external["q0", Self.QNetT](q[0])
-        graph.set_external["q1", Self.QNetT](q[1])
-        graph.set_external["q2", Self.QNetT](q[2])
-        graph.set_external["q3", Self.QNetT](q[3])
-        graph.set_external["q4", Self.QNetT](q[4])
-        graph.set_external["term", Self.TermT](term_net)
-
-        comptime nb_lat = (BB * LAT + TPB - 1) // TPB
-        comptime nb_b = (BB + TPB - 1) // TPB
-        comptime ext_k = _extract_carry_k[BB, LAT, OW]
-        comptime acc_k = _accum_metric_k[BB, OW, NQ]
-        comptime seed_k = _seed_wm_k[BB, OW, LAT, NQ]
-        comptime cp_k = _copyk[BB * LAT]
 
         var inv_b = Scalar[DT](1.0) / Scalar[DT](BB)
         var inv_h = Scalar[DT](1.0) / Scalar[DT](Self.H)
         var inv_lat = Scalar[DT](1.0) / Scalar[DT](LAT)
         var inv_nq = Scalar[DT](1.0) / Scalar[DT](NQ)
 
-        # ── 1. consistency targets enc(obs[t+1]) → d_zen[t] (stop-grad) ─
+        # ── 1. consistency targets enc(obs[t+1]) → zen[t] (stop-grad) ─────
         for t in range(Self.H):
-            var dst = _dp(d_zen) + t * BB * LAT
-            var dst_t = TileTensor(dst, row_major[BB, LAT]())
-            enc.forward[target, BB](
-                TileTensor(
-                    _dp(d_obs) + (t + 1) * BB * OBSD, row_major[BB, OBSD]()
-                ),
-                output=dst_t,
+            Self._copy_window[target](
+                obs, (t + 1) * BB * Self.OBS, self.obs_step, BB * Self.OBS, ctx
             )
-        # ── 2. z_0 = enc(obs[0]) → d_carry[0] (cache = obs[0]) ─────────
-        var z0_t = TileTensor(_dp(d_carry), row_major[BB, LAT]())
-        enc.forward[target, BB](
-            TileTensor(_dp(d_obs), row_major[BB, OBSD]()), output=z0_t,
-        )
+            enc.forward[target, BB](
+                TensorRefs[1](self.obs_step), self.in_zen, ctx
+            )
+            # in_zen → zen[t] window
+            Self._copy_window_into[target](
+                self.in_zen, self.zen, t * BB * LAT, BB * LAT, ctx
+            )
 
-        # ── 3. forward scan ────────────────────────────────────────────
+        # ── 2. z_0 = enc(obs[0]) → carry[0] ───────────────────────────────
+        Self._copy_window[target](obs, 0, self.obs_step, BB * Self.OBS, ctx)
+        enc.forward[target, BB](
+            TensorRefs[1](self.obs_step), self.in_z, ctx
+        )
+        Self._copy_window_into[target](self.in_z, self.carry, 0, BB * LAT, ctx)
+
+        # ── 3. forward scan: roll latents, accumulate weighted metric ──────
+        comptime if target == "gpu":
+            self.acc.dev.value().enqueue_fill(Scalar[DT](0))
+        else:
+            for i in range(4):
+                self.acc.data[i] = 0
+
         var rho_t = Scalar[DT](1.0)
         for t in range(Self.H):
-            self._set_step_inputs[target](
-                graph, _dp(d_carry), _dp(d_zen), _dp(d_act), _dp(d_rew),
-                _dp(d_td), _dp(d_done), t,
+            self._seed_step[target](graph, t, act, rew, td, done, ctx)
+            graph.forward[BB, target](
+                self.out_t, ctx, dyn, rew_net, q0, q1, q2, q3, q4, term_net
             )
-            var ot = TileTensor(_dp(d_out), row_major[BB, OW]())
-            graph.forward[target, BB](ot)
-            ctx.enqueue_function[ext_k](
-                _lt[BB * OW](_dp(d_out)),
-                _lt[BB * LAT](_dp(d_carry) + (t + 1) * BB * LAT),
-                grid_dim=nb_lat, block_dim=TPB,
-            )
-            ctx.enqueue_function[acc_k](
-                _lt[BB * OW](_dp(d_out)), _lt[4](_dp(d_acc)),
+            # carry[t+1] = out[:, NLOSS:]
+            self._extract_carry[target]((t + 1) * BB * LAT, ctx)
+            self._accum_metric[target](
                 self.consistency_coef * rho_t * inv_b * inv_lat * inv_h,
                 self.reward_coef * rho_t * inv_b * inv_h,
                 self.value_coef * rho_t * inv_b * inv_nq * inv_h,
                 self.termination_coef * rho_t * inv_b * inv_h,
-                grid_dim=1, block_dim=1,
+                ctx,
             )
             rho_t *= self.rho
 
-        # ── 4. zero grads + gz ─────────────────────────────────────────
-        enc_opt.zero_grad[target, Self.EncT](enc)
-        dyn_opt.zero_grad[target, Self.DynT](dyn)
-        rew_opt.zero_grad[target, Self.RewT](rew_net)
-        for i in range(NQ):
-            q_opt[i].zero_grad[target, Self.QNetT](q[i])
-        term_opt.zero_grad[target, Self.TermT](term_net)
-        d_gz.enqueue_fill(0.0)
+        # ── 4. zero grads + gz ─────────────────────────────────────────────
+        enc_opt.zero_grad[target, M=Self.EncT](enc, ctx)
+        dyn_opt.zero_grad[target, M=Self.DynT](dyn, ctx)
+        rew_opt.zero_grad[target, M=Self.RewT](rew_net, ctx)
+        qo0.zero_grad[target, M=Self.QNetT](q0, ctx)
+        qo1.zero_grad[target, M=Self.QNetT](q1, ctx)
+        qo2.zero_grad[target, M=Self.QNetT](q2, ctx)
+        qo3.zero_grad[target, M=Self.QNetT](q3, ctx)
+        qo4.zero_grad[target, M=Self.QNetT](q4, ctx)
+        term_opt.zero_grad[target, M=Self.TermT](term_net, ctx)
+        comptime if target == "gpu":
+            self.gz.dev.value().enqueue_fill(Scalar[DT](0))
+        else:
+            for i in range(BB * LAT):
+                self.gz.data[i] = 0
 
-        # ── 5. reverse-scan BPTT ───────────────────────────────────────
+        # ── 5. reverse-scan BPTT ───────────────────────────────────────────
         var rho_rev = Scalar[DT](1.0)
         for _ in range(Self.H - 1):
             rho_rev *= self.rho
         for rev in range(Self.H):
             var t = Self.H - 1 - rev
-            self._set_step_inputs[target](
-                graph, _dp(d_carry), _dp(d_zen), _dp(d_act), _dp(d_rew),
-                _dp(d_td), _dp(d_done), t,
+            self._seed_step[target](graph, t, act, rew, td, done, ctx)
+            graph.forward[BB, target](
+                self.scratch, ctx, dyn, rew_net, q0, q1, q2, q3, q4, term_net
             )
-            var sct = TileTensor(_dp(d_scratch), row_major[BB, OW]())
-            graph.forward[target, BB](sct)
-            ctx.enqueue_function[seed_k](
-                _lt[BB * OW](_dp(d_seed)), _lt[BB * LAT](_dp(d_gz)),
+            self._build_seed[target](
                 self.consistency_coef * rho_rev * inv_b * inv_lat * inv_h,
                 self.reward_coef * rho_rev * inv_b * inv_h,
                 self.value_coef * rho_rev * inv_b * inv_nq * inv_h,
                 self.termination_coef * rho_rev * inv_b * inv_h,
-                grid_dim=nb_b, block_dim=TPB,
+                ctx,
             )
-            graph.vjp[target, BB](
-                TileTensor(_dp(d_seed), row_major[BB, OW]())
+            graph.vjp[BB, target](
+                self.seed, ctx, dyn, rew_net, q0, q1, q2, q3, q4, term_net
             )
-            ctx.enqueue_function[cp_k](
-                _lt[BB * LAT](graph.grad_input_ptr["z"]()),
-                _lt[BB * LAT](_dp(d_gz)),
-                grid_dim=nb_lat, block_dim=TPB,
-            )
+            # gz = grad_input["z"]
+            self._copy_grad_z[target](graph, ctx)
             rho_rev /= self.rho
 
-        # ── 6. encoder backward from t=0 carry grad ────────────────────
-        var z0r_t = TileTensor(_dp(d_carry), row_major[BB, LAT]())
+        # ── 6. encoder backward from t=0 carry grad ────────────────────────
+        Self._copy_window[target](obs, 0, self.obs_step, BB * Self.OBS, ctx)
         enc.forward[target, BB](
-            TileTensor(_dp(d_obs), row_major[BB, OBSD]()), output=z0r_t,
+            TensorRefs[1](self.obs_step), self.in_z, ctx
         )
-        var gobs_t = TileTensor(_dp(d_gobs), row_major[BB, OBSD]())
         enc.vjp[target, BB](
-            TileTensor(_dp(d_gz), row_major[BB, LAT]()), gobs_t,
+            TensorRefs[1](self.obs_step), self.gz, TensorRefs[1](self.gobs), ctx
         )
 
-        # ── 7. optimizer steps ─────────────────────────────────────────
-        enc_opt.step[target, Self.EncT](enc)
-        dyn_opt.step[target, Self.DynT](dyn)
-        rew_opt.step[target, Self.RewT](rew_net)
-        for i in range(NQ):
-            q_opt[i].step[target, Self.QNetT](q[i])
-        term_opt.step[target, Self.TermT](term_net)
+        # ── 7. optimizer steps ─────────────────────────────────────────────
+        enc_opt.step[target, M=Self.EncT](enc, ctx)
+        dyn_opt.step[target, M=Self.DynT](dyn, ctx)
+        rew_opt.step[target, M=Self.RewT](rew_net, ctx)
+        qo0.step[target, M=Self.QNetT](q0, ctx)
+        qo1.step[target, M=Self.QNetT](q1, ctx)
+        qo2.step[target, M=Self.QNetT](q2, ctx)
+        qo3.step[target, M=Self.QNetT](q3, ctx)
+        qo4.step[target, M=Self.QNetT](q4, ctx)
+        term_opt.step[target, M=Self.TermT](term_net, ctx)
 
-        var h = self.h_acc.value()
-        ctx.enqueue_copy(h, d_acc)
-        ctx.synchronize()
+        # ── read the metric accumulator ────────────────────────────────────
+        comptime if target == "gpu":
+            self.acc.download(ctx.value())
         return WMLossOut(
-            h.unsafe_ptr()[0], h.unsafe_ptr()[1], h.unsafe_ptr()[2],
-            h.unsafe_ptr()[3],
+            self.acc.data[0], self.acc.data[1], self.acc.data[2],
+            self.acc.data[3],
         )
 
-    def _set_step_inputs[target: StaticString](
-        self,
+    # ── copy in_t[0:n] into dst at offset off ──────────────────────────────
+    @staticmethod
+    def _copy_window_into[target: StaticString](
+        mut src: Tensor,
+        mut dst: Tensor,
+        off: Int,
+        n: Int,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "cpu":
+            for i in range(n):
+                dst.data[off + i] = src.data[i]
+        else:
+            var c = ctx.value()
+            var sub = dst.dev.value().create_sub_buffer[DT](off, n)
+            c.enqueue_copy(sub, src.dev.value())
+
+    def _seed_step[target: StaticString](
+        mut self,
         mut graph: Self.GraphT,
-        carry: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        zen: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        rew: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        td: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        done: UnsafePointer[Scalar[DT], MutAnyOrigin],
         t: Int,
+        mut act: Tensor,
+        mut rew: Tensor,
+        mut td: Tensor,
+        mut done: Tensor,
+        ctx: Optional[DeviceContext],
     ) raises:
         comptime LAT = Self.LATENT
-        graph.set_input["z", Self.B](
-            TileTensor(carry + t * Self.B * LAT, row_major[Self.B, LAT]())
-        )
-        graph.set_input["a", Self.B](
-            TileTensor(act + t * Self.B * Self.ACT, row_major[Self.B, Self.ACT]())
-        )
-        graph.set_input["z_enc_next", Self.B](
-            TileTensor(zen + t * Self.B * LAT, row_major[Self.B, LAT]())
-        )
-        graph.set_input["r", Self.B](
-            TileTensor(rew + t * Self.B, row_major[Self.B, 1]())
-        )
-        graph.set_input["td", Self.B](
-            TileTensor(td + t * Self.B, row_major[Self.B, 1]())
-        )
-        graph.set_input["done", Self.B](
-            TileTensor(done + t * Self.B, row_major[Self.B, 1]())
-        )
+        comptime BB = Self.B
+        # z = carry[t]
+        Self._copy_window[target](self.carry, t * BB * LAT, self.in_z, BB * LAT, ctx)
+        Self._copy_window[target](act, t * BB * Self.ACT, self.in_a, BB * Self.ACT, ctx)
+        Self._copy_window[target](self.zen, t * BB * LAT, self.in_zen, BB * LAT, ctx)
+        Self._copy_window[target](rew, t * BB, self.in_r, BB, ctx)
+        Self._copy_window[target](td, t * BB, self.in_td, BB, ctx)
+        Self._copy_window[target](done, t * BB, self.in_done, BB, ctx)
+        graph.set_input["z", BB](self.in_z, ctx)
+        graph.set_input["a", BB](self.in_a, ctx)
+        graph.set_input["z_enc_next", BB](self.in_zen, ctx)
+        graph.set_input["r", BB](self.in_r, ctx)
+        graph.set_input["td", BB](self.in_td, ctx)
+        graph.set_input["done", BB](self.in_done, ctx)
+
+    def _extract_carry[target: StaticString](
+        mut self, off: Int, ctx: Optional[DeviceContext]
+    ) raises:
+        comptime LAT = Self.LATENT
+        comptime OW = Self.OUTW
+        comptime BB = Self.B
+        comptime if target == "cpu":
+            for b in range(BB):
+                for k in range(LAT):
+                    self.carry.data[off + b * LAT + k] = self.out_t.data[
+                        b * OW + NLOSS + k
+                    ]
+        else:
+            var c = ctx.value()
+            comptime nb = (BB * LAT + TPB - 1) // TPB
+            var carry_sub = self.carry.dev.value().create_sub_buffer[DT](
+                off, BB * LAT
+            )
+            c.enqueue_function[_extract_carry_k[BB, LAT, OW]](
+                self.out_t.lt["gpu", Layout.row_major(BB * OW)](),
+                LayoutTensor[DT, Layout.row_major(BB * LAT), MutAnyOrigin](
+                    carry_sub
+                ),
+                grid_dim=nb, block_dim=TPB,
+            )
+
+    def _accum_metric[target: StaticString](
+        mut self,
+        sc_cons: Scalar[DT],
+        sc_rew: Scalar[DT],
+        sc_val: Scalar[DT],
+        sc_term: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime OW = Self.OUTW
+        comptime BB = Self.B
+        comptime if target == "cpu":
+            var sc: Scalar[DT] = 0.0
+            var sr: Scalar[DT] = 0.0
+            var sv: Scalar[DT] = 0.0
+            var st: Scalar[DT] = 0.0
+            for b in range(BB):
+                sc += sc_cons * self.out_t.data[b * OW + 0]
+                sr += sc_rew * self.out_t.data[b * OW + 1]
+                var v: Scalar[DT] = 0.0
+                for q in range(NQ):
+                    v += self.out_t.data[b * OW + 2 + q]
+                sv += sc_val * v
+                st += sc_term * self.out_t.data[b * OW + TERM_COL]
+            self.acc.data[0] += sc
+            self.acc.data[1] += sr
+            self.acc.data[2] += sv
+            self.acc.data[3] += st
+        else:
+            var c = ctx.value()
+            c.enqueue_function[_accum_metric_k[BB, OW, NQ]](
+                self.out_t.lt["gpu", Layout.row_major(BB * OW)](),
+                self.acc.lt["gpu", Layout.row_major(4)](),
+                sc_cons, sc_rew, sc_val, sc_term,
+                grid_dim=1, block_dim=1,
+            )
+
+    def _build_seed[target: StaticString](
+        mut self,
+        sc_cons: Scalar[DT],
+        sc_rew: Scalar[DT],
+        sc_val: Scalar[DT],
+        sc_term: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime LAT = Self.LATENT
+        comptime OW = Self.OUTW
+        comptime BB = Self.B
+        comptime if target == "cpu":
+            for b in range(BB):
+                self.seed.data[b * OW + 0] = sc_cons
+                self.seed.data[b * OW + 1] = sc_rew
+                for q in range(NQ):
+                    self.seed.data[b * OW + 2 + q] = sc_val
+                self.seed.data[b * OW + TERM_COL] = sc_term
+                for k in range(LAT):
+                    self.seed.data[b * OW + NLOSS + k] = self.gz.data[b * LAT + k]
+        else:
+            var c = ctx.value()
+            comptime nb = (BB + TPB - 1) // TPB
+            c.enqueue_function[_seed_wm_k[BB, OW, LAT, NQ]](
+                self.seed.lt["gpu", Layout.row_major(BB * OW)](),
+                self.gz.lt["gpu", Layout.row_major(BB * LAT)](),
+                sc_cons, sc_rew, sc_val, sc_term,
+                grid_dim=nb, block_dim=TPB,
+            )
+
+    def _copy_grad_z[target: StaticString](
+        mut self, mut graph: Self.GraphT, ctx: Optional[DeviceContext]
+    ) raises:
+        comptime LAT = Self.LATENT
+        comptime BB = Self.B
+        comptime if target == "cpu":
+            ref gzin = graph.grad_input["z"]()
+            for i in range(BB * LAT):
+                self.gz.data[i] = gzin.data[i]
+        else:
+            var c = ctx.value()
+            comptime nb = (BB * LAT + TPB - 1) // TPB
+            c.enqueue_function[_copy_slice_k[BB * LAT]](
+                graph.grad_input["z"]().lt["gpu", Layout.row_major(BB * LAT)](),
+                self.gz.lt["gpu", Layout.row_major(BB * LAT)](),
+                grid_dim=nb, block_dim=TPB,
+            )

@@ -1,4 +1,4 @@
-"""TD-MPC2 agent (deep_agents, CPU + GPU, MPC-off) — Pendulum lighthouse.
+"""TD-MPC2 agent (deep_agents, storage framework, CPU + GPU, MPC-off).
 
 Single `target`-generic struct owning the world model (encoder, dynamics,
 reward, Q ensemble online + target, policy) + their optimizers + the WM
@@ -6,40 +6,37 @@ ComputeGraph + the training blocks (WMStep BPTT, PolicyStep, TDTargetStep)
 + a SequenceReplay (host). `target` ("cpu"/"gpu") is comptime; `ctx` is
 threaded for GPU.
 
-Acting is MPC-off: `a = π(encode(obs))` (reference `cfg.mpc=False`). MPPI
-planning is deferred to the GPU batched planner (P4+). See
-docs/TDMPC2_DEEP_AGENTS_PORT.md.
+Storage migration (Stage 5): the 5 online Q heads, 5 target Q heads, and 5
+Q optimizers are DISTINCT FIELDS (q0..q4 / qt0..qt4 / qo0..qo4; NQ fixed = 5).
+Storage threads externals into ONE forward/vjp call (two `mut` subscripts of
+one List can't alias). The WM step threads all 5 online Q as distinct args;
+the random PAIR steps (policy: online (pa,pb); td: target (ta,tb)) use a
+comptime-unrolled guarded dispatch so two DISTINCT fields are threaded.
+
+Acting is MPC-off: `a = π(encode(obs))` (reference `cfg.mpc=False`).
 
 train_step: sample length-T window (host) → transpose to t-major → TD
 targets (stop-grad) → WM BPTT → policy update on encoded latents → Polyak.
-Replay stays host; GPU blocks upload/download internally (correctness-first;
-a GPUSequenceReplay would remove the per-step transfers later).
+Replay stays host; the steps upload/download internally via storage Tensors.
 """
 
-from std.memory import alloc
 from std.math import tanh
 from std.random import random_float64
-
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
-from mojo_rl.nn.initializer import Kaiming, Zero
-from mojo_rl.nn.optimizer.adam import Adam
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
-from mojo_rl.deep_agents.primitives.rsample import RSample
-from mojo_rl.deep_agents.dreamerv3.polyak import polyak_module
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Kaiming, Zero
+from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.storage.primitives.rsample import RSample
+from mojo_rl.nn.storage.core.checkpoint import (
+    CheckpointWriter, CheckpointReader, _split_lines,
+)
+
 from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
 from mojo_rl.planners.trajectory.mppi import MPPIGPUBatched
-from mojo_rl.nn.core.checkpoint import (
-    save_state_v2_body, load_state_v2_body,
-    save_state_v2_body_gpu, load_state_v2_body_gpu,
-)
-from mojo_rl.deep_agents.core.checkpoint_helpers import (
-    save_optimizer_v2_body, load_optimizer_v2_body,
-    save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
-    split_lines_v2, read_file_v2, expect_v2_header,
-)
 from mojo_rl.core.logger import Logger
 from .callback import TDMPC2RolloutCallbackGPU
 from .metrics import TDMPC2Metrics
@@ -52,29 +49,6 @@ from .wm_graph import TDMPC2WMGraph, NQ
 from .wm_step import WMStep
 from .policy_step import PolicyStep
 from .td_target_step import TDTargetStep
-
-
-@always_inline
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
-
-
-@always_inline
-def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(b.unsafe_ptr())
-
-
-def _upload(
-    ctx: DeviceContext, src: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int
-) raises -> DeviceBuffer[DT]:
-    var d = ctx.enqueue_create_buffer[DT](n)
-    var h = ctx.enqueue_create_host_buffer[DT](n)
-    ctx.synchronize()
-    for i in range(n):
-        h.unsafe_ptr()[i] = src[i]
-    ctx.enqueue_copy(d, h)
-    ctx.synchronize()
-    return d^
 
 
 @fieldwise_init
@@ -92,15 +66,10 @@ struct TDMPC2Agent[
     B: Int,
     H: Int,
     CAP: Int,
-    # MPC (MPPIGPUBatched) planning config — defaults match the reference.
-    # Used only by select_action_mpc (GPU). Existing instantiations that omit
-    # these get the reference values.
     NUM_SAMPLES: Int = 512,
     NUM_PI_TRAJS: Int = 24,
     NUM_ELITES: Int = 64,
     NUM_ITERS: Int = 6,
-    # Q-trunk dropout prob (item D, §14.4). 0.0 = always-on no-op (bit-identical
-    # default); >0 enables the experimental Q-net dropout (see nets.mojo caveats).
     QP: Float64 = 0.0,
 ](Movable & ImplicitlyDeletable):
     comptime EncT = TDMPC2Encoder[Self.OBS, Self.ENC, Self.LATENT, Self.SN]
@@ -126,7 +95,6 @@ struct TDMPC2Agent[
         Self.OBS, Self.ENC, Self.ACT, Self.LATENT, Self.MLP, Self.BINS,
         Self.SN, Self.VMIN, Self.VMAX, Self.B, Self.H, Self.QP,
     ]
-    # MPC: single-env (N_ENVS=1) batched planner + its rollout callback.
     comptime MPC_BT = Self.NUM_SAMPLES + Self.NUM_PI_TRAJS
     comptime PlannerT = MPPIGPUBatched[
         Self.LATENT, Self.ACT, Self.H, Self.NUM_SAMPLES, Self.NUM_PI_TRAJS,
@@ -140,16 +108,30 @@ struct TDMPC2Agent[
     var encoder: Self.EncT
     var dynamics: Self.DynT
     var reward: Self.RewT
-    var q: List[Self.QNetT]
-    var qt: List[Self.QNetT]
+    # 5 online Q heads (distinct fields; threaded as externals).
+    var q0: Self.QNetT
+    var q1: Self.QNetT
+    var q2: Self.QNetT
+    var q3: Self.QNetT
+    var q4: Self.QNetT
+    # 5 target Q heads.
+    var qt0: Self.QNetT
+    var qt1: Self.QNetT
+    var qt2: Self.QNetT
+    var qt3: Self.QNetT
+    var qt4: Self.QNetT
     var policy: Self.PolicyT
-    # Termination head (item B). Always present; trains only when bce_coef > 0.
     var termination: Self.TermT
 
     var enc_opt: Adam
     var dyn_opt: Adam
     var rew_opt: Adam
-    var q_opt: List[Adam]
+    # 5 Q optimizers.
+    var qo0: Adam
+    var qo1: Adam
+    var qo2: Adam
+    var qo3: Adam
+    var qo4: Adam
     var pi_opt: Adam
     var term_opt: Adam
 
@@ -162,15 +144,12 @@ struct TDMPC2Agent[
 
     var gamma: Scalar[DT]
     var tau: Scalar[DT]
-    # Termination BCE coefficient (item B): 0 = non-episodic (bit-identical);
-    # >0 trains the termination head on episodic envs (Hopper/Walker/Humanoid).
     var bce_coef: Scalar[DT]
     var action_scale: Scalar[DT]
     var learning_starts: Int
     var step_count: Int
     var _last_wm: Scalar[DT]
     var _last_pi: Scalar[DT]
-    # per-component last + diag-window accumulators (drained by flush_metrics).
     var _last_cons: Scalar[DT]
     var _last_rew: Scalar[DT]
     var _last_val: Scalar[DT]
@@ -180,7 +159,6 @@ struct TDMPC2Agent[
     var _val_acc: Scalar[DT]
     var _term_acc: Scalar[DT]
     var _pi_acc: Scalar[DT]
-    # Q + TD-target diagnostics (means window-averaged; min/max last-step).
     var _q_mean_acc: Scalar[DT]
     var _q_min_last: Scalar[DT]
     var _q_max_last: Scalar[DT]
@@ -189,11 +167,33 @@ struct TDMPC2Agent[
     var _td_max_last: Scalar[DT]
     var _n_diag: Int
     var ctx: Optional[DeviceContext]
-    # MPC planner (persistent warm-start; None on CPU). The rollout callback
-    # is built transiently in select_action_mpc (it points at self's modules,
-    # valid only during the call — never stored, to avoid self-pointer hazards).
     var planner: Optional[Self.PlannerT]
     var temperature: Scalar[DT]
+
+    # ── comptime accessors: distinct online / target Q field by index ──────
+    def get_q[i: Int](mut self) -> ref[MutAnyOrigin] Self.QNetT:
+        comptime if i == 0:
+            return self.q0
+        elif i == 1:
+            return self.q1
+        elif i == 2:
+            return self.q2
+        elif i == 3:
+            return self.q3
+        else:
+            return self.q4
+
+    def get_qt[i: Int](mut self) -> ref[MutAnyOrigin] Self.QNetT:
+        comptime if i == 0:
+            return self.qt0
+        elif i == 1:
+            return self.qt1
+        elif i == 2:
+            return self.qt2
+        elif i == 3:
+            return self.qt3
+        else:
+            return self.qt4
 
     @staticmethod
     def make(
@@ -213,56 +213,64 @@ struct TDMPC2Agent[
         var rew = Self.RewT.make[tg, INIT=Kaiming](ctx=ctx)
         var pol = Self.PolicyT.make[tg, INIT=Kaiming](ctx=ctx)
 
-        var q = List[Self.QNetT]()
-        var qt = List[Self.QNetT]()
-        var q_opt = List[Adam]()
-        for _ in range(NQ):
-            var qn = Self.QNetT.make[tg, INIT=Kaiming](ctx=ctx)
-            var qtn = Self.QNetT.make[tg, INIT=Kaiming](ctx=ctx)
-            var qo = Adam.make[tg, Self.QNetT](qn, ctx=ctx)
-            qo.lr = lr
-            q.append(qn^)
-            qt.append(qtn^)
-            q_opt.append(qo^)
-        for i in range(NQ):
-            polyak_module[tg, Self.QNetT](q[i], qt[i], Scalar[DT](1.0), ctx=ctx)
+        var q0 = Self.QNetT.make[tg, INIT=Kaiming](ctx=ctx)
+        var q1 = Self.QNetT.make[tg, INIT=Kaiming](ctx=ctx)
+        var q2 = Self.QNetT.make[tg, INIT=Kaiming](ctx=ctx)
+        var q3 = Self.QNetT.make[tg, INIT=Kaiming](ctx=ctx)
+        var q4 = Self.QNetT.make[tg, INIT=Kaiming](ctx=ctx)
+        var qt0 = Self.QNetT.make[tg, INIT=Kaiming](ctx=ctx)
+        var qt1 = Self.QNetT.make[tg, INIT=Kaiming](ctx=ctx)
+        var qt2 = Self.QNetT.make[tg, INIT=Kaiming](ctx=ctx)
+        var qt3 = Self.QNetT.make[tg, INIT=Kaiming](ctx=ctx)
+        var qt4 = Self.QNetT.make[tg, INIT=Kaiming](ctx=ctx)
 
-        # Q-dropout (item D): target-Q nets are used only for stop-grad targets
-        # (td_target) + the MPPI terminal bootstrap (callback) — both eval
-        # contexts, so force their Dropout to eval mode (no masking). Online Q
-        # keeps training=True (drops in the WM/policy training graphs, matching
-        # the reference, which keeps the model in train mode through update()).
-        # Skipped entirely at QP=0.0 to leave the bit-identical default untouched.
+        var qo0 = Adam(lr=lr)
+        var qo1 = Adam(lr=lr)
+        var qo2 = Adam(lr=lr)
+        var qo3 = Adam(lr=lr)
+        var qo4 = Adam(lr=lr)
+        comptime if tg == "gpu":
+            qo0.adopt[tg, Self.QNetT](q0, ctx)
+            qo1.adopt[tg, Self.QNetT](q1, ctx)
+            qo2.adopt[tg, Self.QNetT](q2, ctx)
+            qo3.adopt[tg, Self.QNetT](q3, ctx)
+            qo4.adopt[tg, Self.QNetT](q4, ctx)
+
+        # hard-copy online → target (tau = 1.0).
+        qt0.polyak_from[tg](q0, Scalar[DT](1.0), ctx)
+        qt1.polyak_from[tg](q1, Scalar[DT](1.0), ctx)
+        qt2.polyak_from[tg](q2, Scalar[DT](1.0), ctx)
+        qt3.polyak_from[tg](q3, Scalar[DT](1.0), ctx)
+        qt4.polyak_from[tg](q4, Scalar[DT](1.0), ctx)
+
+        # Q-dropout (item D): target Q nets eval (no masking) when QP>0.
         comptime if Self.QP > 0.0:
-            for i in range(NQ):
-                qt[i].set_attr["training"](Scalar[DT](0.0))
+            qt0.set_attr["training"](Scalar[DT](0.0))
+            qt1.set_attr["training"](Scalar[DT](0.0))
+            qt2.set_attr["training"](Scalar[DT](0.0))
+            qt3.set_attr["training"](Scalar[DT](0.0))
+            qt4.set_attr["training"](Scalar[DT](0.0))
 
-        # Termination head (item B). RNG-discipline for a *truly* bit-identical
-        # off-path: Kaiming init draws from the global RNG (initializers.mojo),
-        # which would shift the downstream warmup/exploration stream. So at
-        # bce_coef=0 (non-episodic) build it with Zero init — no RNG draw, no
-        # gradient, fully inert → the encoder/dynamics/reward/Q/policy AND the
-        # rollout RNG are bit-identical to the pre-item-B agent. Only when
-        # bce_coef>0 (an episodic run, where HalfCheetah parity is moot) do we
-        # Kaiming-init so the head can actually learn state-dependent
-        # termination. Built last so it never perturbs the other nets' init.
+        # Termination head (item B): Zero-init at bce_coef=0 (no RNG draw → other
+        # nets bit-identical), Kaiming when episodic. Built last.
         var term: Self.TermT
         if bce_coef > Scalar[DT](0.0):
             term = Self.TermT.make[tg, INIT=Kaiming](ctx=ctx)
         else:
             term = Self.TermT.make[tg, INIT=Zero](ctx=ctx)
 
-        var enc_opt = Adam.make[tg, Self.EncT](enc, ctx=ctx)
-        enc_opt.lr = lr * enc_lr_scale
-        var dyn_opt = Adam.make[tg, Self.DynT](dyn, ctx=ctx)
-        dyn_opt.lr = lr
-        var rew_opt = Adam.make[tg, Self.RewT](rew, ctx=ctx)
-        rew_opt.lr = lr
-        var pi_opt = Adam.make[tg, Self.PolicyT](pol, ctx=ctx)
-        pi_opt.lr = lr
+        var enc_opt = Adam(lr=lr * enc_lr_scale)
+        var dyn_opt = Adam(lr=lr)
+        var rew_opt = Adam(lr=lr)
+        var pi_opt = Adam(lr=lr)
         pi_opt.eps = Scalar[DT](1e-5)
-        var term_opt = Adam.make[tg, Self.TermT](term, ctx=ctx)
-        term_opt.lr = lr
+        var term_opt = Adam(lr=lr)
+        comptime if tg == "gpu":
+            enc_opt.adopt[tg, Self.EncT](enc, ctx)
+            dyn_opt.adopt[tg, Self.DynT](dyn, ctx)
+            rew_opt.adopt[tg, Self.RewT](rew, ctx)
+            pi_opt.adopt[tg, Self.PolicyT](pol, ctx)
+            term_opt.adopt[tg, Self.TermT](term, ctx)
 
         var ar = RSample[Self.ACT].make[tg, INIT=Zero](ctx=ctx)
         ar.action_scale = action_scale
@@ -272,9 +280,12 @@ struct TDMPC2Agent[
             planner = Self.PlannerT(ctx.value())
 
         return Self(
-            encoder=enc^, dynamics=dyn^, reward=rew^, q=q^, qt=qt^, policy=pol^,
-            termination=term^,
-            enc_opt=enc_opt^, dyn_opt=dyn_opt^, rew_opt=rew_opt^, q_opt=q_opt^,
+            encoder=enc^, dynamics=dyn^, reward=rew^,
+            q0=q0^, q1=q1^, q2=q2^, q3=q3^, q4=q4^,
+            qt0=qt0^, qt1=qt1^, qt2=qt2^, qt3=qt3^, qt4=qt4^,
+            policy=pol^, termination=term^,
+            enc_opt=enc_opt^, dyn_opt=dyn_opt^, rew_opt=rew_opt^,
+            qo0=qo0^, qo1=qo1^, qo2=qo2^, qo3=qo3^, qo4=qo4^,
             pi_opt=pi_opt^, term_opt=term_opt^,
             wm_graph=Self.GraphT.make[tg, INIT=Kaiming](ctx=ctx),
             wm_step=Self.WMStepT.make[tg](ctx=ctx, termination_coef=bce_coef),
@@ -302,80 +313,56 @@ struct TDMPC2Agent[
     # ── acting (MPC-off): a = π(encode(obs)) ───────────────────────────
     def select_action(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut act_out: List[Scalar[DT]],
         explore: Bool = True,
     ) raises:
         comptime tg = Self.target
         comptime A = Self.ACT
         comptime LAT = Self.LATENT
-        comptime if tg == "cpu":
-            var z = _alloc(LAT)
-            var z_t = TileTensor(z, row_major[1, LAT]())
-            self.encoder.forward[tg, 1](
-                TileTensor(obs, row_major[1, Self.OBS]()), output=z_t,
-            )
-            var pio = _alloc(2 * A)
-            var pio_t = TileTensor(pio, row_major[1, 2 * A]())
-            self.policy.forward[tg, 1](z_t, output=pio_t)
-            if explore:
-                var alp = _alloc(A + 1)
-                var alp_t = TileTensor(alp, row_major[1, A + 1]())
-                self.act_rsample.forward[tg, 1](pio_t, output=alp_t)
-                for j in range(A):
-                    act_out[j] = alp[j]
-                alp.free()
-            else:
-                for j in range(A):
-                    act_out[j] = tanh(pio[j]) * self.action_scale
-            z.free(); pio.free()
+        var ctx = self.ctx
+        # stage obs into a Tensor, upload on GPU.
+        var ob = Tensor.alloc(Self.OBS)
+        for d in range(Self.OBS):
+            ob.data[d] = obs[d]
+        comptime if tg == "gpu":
+            ob.upload(ctx.value())
+        var z = Tensor.make[tg](LAT, ctx)
+        self.encoder.forward[tg, 1](TensorRefs[1](ob), z, ctx)
+        var pio = Tensor.make[tg](2 * A, ctx)
+        self.policy.forward[tg, 1](TensorRefs[1](z), pio, ctx)
+        if explore:
+            var alp = Tensor.make[tg](A + 1, ctx)
+            self.act_rsample.forward[tg, 1](TensorRefs[1](pio), alp, ctx)
+            comptime if tg == "gpu":
+                alp.download(ctx.value())
+            for j in range(A):
+                act_out[j] = alp.data[j]
         else:
-            var ctx = self.ctx.value()
-            var d_obs = _upload(ctx, obs, Self.OBS)
-            var d_z = ctx.enqueue_create_buffer[DT](LAT)
-            var z_t = TileTensor(_dp(d_z), row_major[1, LAT]())
-            self.encoder.forward[tg, 1](
-                TileTensor(_dp(d_obs), row_major[1, Self.OBS]()), output=z_t,
-            )
-            var d_pio = ctx.enqueue_create_buffer[DT](2 * A)
-            var pio_t = TileTensor(_dp(d_pio), row_major[1, 2 * A]())
-            self.policy.forward[tg, 1](z_t, output=pio_t)
-            if explore:
-                var d_alp = ctx.enqueue_create_buffer[DT](A + 1)
-                var alp_t = TileTensor(_dp(d_alp), row_major[1, A + 1]())
-                self.act_rsample.forward[tg, 1](pio_t, output=alp_t)
-                var h = ctx.enqueue_create_host_buffer[DT](A + 1)
-                ctx.enqueue_copy(h, d_alp)
-                ctx.synchronize()
-                for j in range(A):
-                    act_out[j] = h.unsafe_ptr()[j]
-            else:
-                var h = ctx.enqueue_create_host_buffer[DT](2 * A)
-                ctx.enqueue_copy(h, d_pio)
-                ctx.synchronize()
-                for j in range(A):
-                    act_out[j] = tanh(h.unsafe_ptr()[j]) * self.action_scale
+            comptime if tg == "gpu":
+                pio.download(ctx.value())
+            for j in range(A):
+                act_out[j] = tanh(pio.data[j]) * self.action_scale
 
     def select_greedy_action(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut act_out: List[Scalar[DT]],
     ) raises:
         self.select_action(obs, act_out, explore=False)
 
     def mpc_start_episode(mut self) raises:
-        """Reset the MPC planner's warm-start state (call on env reset)."""
         comptime if Self.target == "gpu":
             self.planner.value().start_episode(0)
 
     def select_action_mpc(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        mut act_out: List[Scalar[DT]],
         explore: Bool = True,
     ) raises:
         """MPC acting: plan in latent space via MPPIGPUBatched (single env).
-        GPU only — the per-sample CPU planner is too slow for acting."""
+        GPU only."""
         comptime assert Self.target == "gpu", (
             "select_action_mpc requires target='gpu' (CPU MPPI is eval-only)"
         )
@@ -383,27 +370,26 @@ struct TDMPC2Agent[
         comptime LAT = Self.LATENT
         var ctx = self.ctx.value()
 
-        # encode obs → z0 [1, LATENT] on device
-        var d_obs = _upload(ctx, obs, Self.OBS)
-        var d_z0 = ctx.enqueue_create_buffer[DT](LAT)
-        var z0_t = TileTensor(_dp(d_z0), row_major[1, LAT]())
+        var ob = Tensor.alloc(Self.OBS)
+        for d in range(Self.OBS):
+            ob.data[d] = obs[d]
+        ob.upload(ctx)
+        var z0 = Tensor.alloc_gpu(ctx, LAT)
         self.encoder.forward[Self.target, 1](
-            TileTensor(_dp(d_obs), row_major[1, Self.OBS]()), output=z0_t,
+            TensorRefs[1](ob), z0, Optional(ctx)
         )
 
-        # transient callback over self's modules (uses TARGET Q for the
-        # terminal bootstrap; never stored → no self-pointer hazard).
+        # transient callback over self's modules (target Q for the bootstrap).
         var cb = Self.MpcCB.make(
-            self.dynamics, self.reward, self.policy, self.qt,
+            self.dynamics, self.reward, self.policy,
+            self.qt0, self.qt1, self.qt2, self.qt3, self.qt4,
             self.action_scale, ctx,
         )
 
         var d_out = ctx.enqueue_create_buffer[DT](A)
-        var z0_lt = LayoutTensor[DT, Layout.row_major(1, LAT), MutAnyOrigin](
-            _dp(d_z0)
-        )
+        var z0_lt = z0.lt["gpu", Layout.row_major(1, LAT)]()
         var out_lt = LayoutTensor[DT, Layout.row_major(1 * A), MutAnyOrigin](
-            _dp(d_out)
+            d_out
         )
         self.planner.value().plan_gpu[Self.MpcCB](
             ctx, cb, z0_lt, out_lt,
@@ -420,12 +406,20 @@ struct TDMPC2Agent[
 
     def record(
         mut self,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        act: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref obs: List[Scalar[DT]],
+        ref act: List[Scalar[DT]],
         reward: Scalar[DT],
         done: Scalar[DT],
-    ):
-        self.replay.record(obs, act, reward, done)
+    ) raises:
+        self.replay.record(
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                UnsafePointer(to=obs[0])
+            ),
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                UnsafePointer(to=act[0])
+            ),
+            reward, done,
+        )
 
     def last_wm_loss(self) -> Scalar[DT]:
         return self._last_wm
@@ -448,8 +442,6 @@ struct TDMPC2Agent[
     def pi_scale(self) -> Scalar[DT]:
         return self.pol_step.scale.value
 
-    # ── Metrics: drain the diag-window accumulators into a bundle and, if a
-    #    logger is wired, stream one log_scalar per field (driver cadence). ──
     def flush_metrics[
         L: Logger
     ](
@@ -478,10 +470,6 @@ struct TDMPC2Agent[
         )
         if Bool(logger):
             var lg = logger.value()
-            # Names follow the dashboard's KNOWN_GROUPS conventions:
-            #   reward_loss → World Model Losses; value_loss → Critic Loss;
-            #   wm_loss → Loss; policy_loss → Policy Loss; pi_scale → Policy
-            #   Scale. consistency_loss is TD-MPC2-specific (ungrouped).
             lg[].log_scalar("consistency_loss", Float64(m.consistency_loss), step)
             lg[].log_scalar("reward_loss", Float64(m.reward_loss), step)
             lg[].log_scalar("value_loss", Float64(m.value_loss), step)
@@ -495,7 +483,6 @@ struct TDMPC2Agent[
             lg[].log_scalar("td_target_mean", Float64(m.td_target_mean), step)
             lg[].log_scalar("td_target_min", Float64(m.td_target_min), step)
             lg[].log_scalar("td_target_max", Float64(m.td_target_max), step)
-        # reset the chunk accumulators
         self._cons_acc = Scalar[DT](0.0)
         self._rew_acc = Scalar[DT](0.0)
         self._val_acc = Scalar[DT](0.0)
@@ -515,108 +502,128 @@ struct TDMPC2Agent[
     ) raises:
         _ = self.flush_metrics[L](logger, step)
 
-    # ── Checkpointing (one-file nn-ckpt v2 envelope) ──────────────────
+    # ── Checkpointing (storage one-file v2 envelope) ───────────────────
     def save_state(mut self, path: String) raises:
-        """Save every world-model module (encoder/dynamics/reward + online
-        & target Q ensemble + policy) and its optimizer. running_scale is
-        NOT saved (re-converges via its EMA in ~100 steps). Overwrites
-        `path`."""
+        """Save every world-model module + the Q ensemble (online + target) +
+        policy + termination into a SINGLE storage-ckpt envelope. running_scale
+        + optimizer moments are NOT persisted (resume re-warms)."""
         comptime tg = Self.target
-        var body = String("")
-        comptime if tg == "cpu":
-            save_state_v2_body(self.encoder, body, "encoder")
-            save_state_v2_body(self.dynamics, body, "dynamics")
-            save_state_v2_body(self.reward, body, "reward")
-            save_state_v2_body(self.policy, body, "policy")
-            for i in range(NQ):
-                save_state_v2_body(self.q[i], body, "q" + String(i))
-                save_state_v2_body(self.qt[i], body, "qt" + String(i))
-            save_optimizer_v2_body(self.enc_opt, body, "enc_opt")
-            save_optimizer_v2_body(self.dyn_opt, body, "dyn_opt")
-            save_optimizer_v2_body(self.rew_opt, body, "rew_opt")
-            save_optimizer_v2_body(self.pi_opt, body, "pi_opt")
-            for i in range(NQ):
-                save_optimizer_v2_body(self.q_opt[i], body, "q_opt" + String(i))
-            # Termination head (item B) — appended LAST so pre-item-B
-            # checkpoints (which lack it) still load via the guard below.
-            save_state_v2_body(self.termination, body, "termination")
-            save_optimizer_v2_body(self.term_opt, body, "term_opt")
-        else:
-            var c = self.ctx.value()
-            save_state_v2_body_gpu(self.encoder, body, "encoder", c)
-            save_state_v2_body_gpu(self.dynamics, body, "dynamics", c)
-            save_state_v2_body_gpu(self.reward, body, "reward", c)
-            save_state_v2_body_gpu(self.policy, body, "policy", c)
-            for i in range(NQ):
-                save_state_v2_body_gpu(self.q[i], body, "q" + String(i), c)
-                save_state_v2_body_gpu(self.qt[i], body, "qt" + String(i), c)
-            save_optimizer_v2_body_gpu(self.enc_opt, body, "enc_opt")
-            save_optimizer_v2_body_gpu(self.dyn_opt, body, "dyn_opt")
-            save_optimizer_v2_body_gpu(self.rew_opt, body, "rew_opt")
-            save_optimizer_v2_body_gpu(self.pi_opt, body, "pi_opt")
-            for i in range(NQ):
-                save_optimizer_v2_body_gpu(
-                    self.q_opt[i], body, "q_opt" + String(i)
-                )
-            save_state_v2_body_gpu(self.termination, body, "termination", c)
-            save_optimizer_v2_body_gpu(self.term_opt, body, "term_opt")
-        var content = String("nn-ckpt v2\n") + body
+        var w = CheckpointWriter(save_moments=False)
+        w.mode = 0
+        self.encoder.for_each_param[tg](w, self.ctx, "encoder")
+        self.dynamics.for_each_param[tg](w, self.ctx, "dynamics")
+        self.reward.for_each_param[tg](w, self.ctx, "reward")
+        self.policy.for_each_param[tg](w, self.ctx, "policy")
+        self.q0.for_each_param[tg](w, self.ctx, "q0")
+        self.q1.for_each_param[tg](w, self.ctx, "q1")
+        self.q2.for_each_param[tg](w, self.ctx, "q2")
+        self.q3.for_each_param[tg](w, self.ctx, "q3")
+        self.q4.for_each_param[tg](w, self.ctx, "q4")
+        self.qt0.for_each_param[tg](w, self.ctx, "qt0")
+        self.qt1.for_each_param[tg](w, self.ctx, "qt1")
+        self.qt2.for_each_param[tg](w, self.ctx, "qt2")
+        self.qt3.for_each_param[tg](w, self.ctx, "qt3")
+        self.qt4.for_each_param[tg](w, self.ctx, "qt4")
+        self.termination.for_each_param[tg](w, self.ctx, "termination")
+        w.mode = 1
+        self.encoder.for_each_state[tg](w, self.ctx, "encoder")
+        self.dynamics.for_each_state[tg](w, self.ctx, "dynamics")
+        self.reward.for_each_state[tg](w, self.ctx, "reward")
+        self.policy.for_each_state[tg](w, self.ctx, "policy")
+        self.q0.for_each_state[tg](w, self.ctx, "q0")
+        self.q1.for_each_state[tg](w, self.ctx, "q1")
+        self.q2.for_each_state[tg](w, self.ctx, "q2")
+        self.q3.for_each_state[tg](w, self.ctx, "q3")
+        self.q4.for_each_state[tg](w, self.ctx, "q4")
+        self.qt0.for_each_state[tg](w, self.ctx, "qt0")
+        self.qt1.for_each_state[tg](w, self.ctx, "qt1")
+        self.qt2.for_each_state[tg](w, self.ctx, "qt2")
+        self.qt3.for_each_state[tg](w, self.ctx, "qt3")
+        self.qt4.for_each_state[tg](w, self.ctx, "qt4")
+        self.termination.for_each_state[tg](w, self.ctx, "termination")
         with open(path, "w") as f:
-            f.write(content)
+            f.write(w.content)
 
     def load_state(mut self, path: String) raises:
         """Inverse of `save_state` (online + target Q both restored)."""
         comptime tg = Self.target
-        var content = read_file_v2(path)
-        var lines = split_lines_v2(content)
-        expect_v2_header(lines)
-        var idx: Int = 1
-        comptime if tg == "cpu":
-            load_state_v2_body(self.encoder, lines, idx, "encoder")
-            load_state_v2_body(self.dynamics, lines, idx, "dynamics")
-            load_state_v2_body(self.reward, lines, idx, "reward")
-            load_state_v2_body(self.policy, lines, idx, "policy")
-            for i in range(NQ):
-                load_state_v2_body(self.q[i], lines, idx, "q" + String(i))
-                load_state_v2_body(self.qt[i], lines, idx, "qt" + String(i))
-            load_optimizer_v2_body(self.enc_opt, lines, idx, "enc_opt")
-            load_optimizer_v2_body(self.dyn_opt, lines, idx, "dyn_opt")
-            load_optimizer_v2_body(self.rew_opt, lines, idx, "rew_opt")
-            load_optimizer_v2_body(self.pi_opt, lines, idx, "pi_opt")
-            for i in range(NQ):
-                load_optimizer_v2_body(
-                    self.q_opt[i], lines, idx, "q_opt" + String(i)
-                )
-            # Termination head — present only in item-B-era checkpoints; older
-            # files end here, so guard on remaining lines (term stays at init,
-            # which is fine when bce_coef=0).
-            if idx < len(lines):
-                load_state_v2_body(self.termination, lines, idx, "termination")
-                load_optimizer_v2_body(self.term_opt, lines, idx, "term_opt")
-        else:
-            var c = self.ctx.value()
-            load_state_v2_body_gpu(self.encoder, lines, idx, "encoder", c)
-            load_state_v2_body_gpu(self.dynamics, lines, idx, "dynamics", c)
-            load_state_v2_body_gpu(self.reward, lines, idx, "reward", c)
-            load_state_v2_body_gpu(self.policy, lines, idx, "policy", c)
-            for i in range(NQ):
-                load_state_v2_body_gpu(self.q[i], lines, idx, "q" + String(i), c)
-                load_state_v2_body_gpu(
-                    self.qt[i], lines, idx, "qt" + String(i), c
-                )
-            load_optimizer_v2_body_gpu(self.enc_opt, lines, idx, "enc_opt")
-            load_optimizer_v2_body_gpu(self.dyn_opt, lines, idx, "dyn_opt")
-            load_optimizer_v2_body_gpu(self.rew_opt, lines, idx, "rew_opt")
-            load_optimizer_v2_body_gpu(self.pi_opt, lines, idx, "pi_opt")
-            for i in range(NQ):
-                load_optimizer_v2_body_gpu(
-                    self.q_opt[i], lines, idx, "q_opt" + String(i)
-                )
-            if idx < len(lines):
-                load_state_v2_body_gpu(
-                    self.termination, lines, idx, "termination", c
-                )
-                load_optimizer_v2_body_gpu(self.term_opt, lines, idx, "term_opt")
+        var content: String
+        with open(path, "r") as f:
+            content = String(f.read())
+        var lines = _split_lines(content)
+        var body = List[String]()
+        for li in range(len(lines)):
+            if lines[li].startswith("storage-ckpt"):
+                continue
+            body.append(lines[li])
+        var r = CheckpointReader(body^)
+        r.mode = 0
+        self.encoder.for_each_param[tg](r, self.ctx, "encoder")
+        self.dynamics.for_each_param[tg](r, self.ctx, "dynamics")
+        self.reward.for_each_param[tg](r, self.ctx, "reward")
+        self.policy.for_each_param[tg](r, self.ctx, "policy")
+        self.q0.for_each_param[tg](r, self.ctx, "q0")
+        self.q1.for_each_param[tg](r, self.ctx, "q1")
+        self.q2.for_each_param[tg](r, self.ctx, "q2")
+        self.q3.for_each_param[tg](r, self.ctx, "q3")
+        self.q4.for_each_param[tg](r, self.ctx, "q4")
+        self.qt0.for_each_param[tg](r, self.ctx, "qt0")
+        self.qt1.for_each_param[tg](r, self.ctx, "qt1")
+        self.qt2.for_each_param[tg](r, self.ctx, "qt2")
+        self.qt3.for_each_param[tg](r, self.ctx, "qt3")
+        self.qt4.for_each_param[tg](r, self.ctx, "qt4")
+        self.termination.for_each_param[tg](r, self.ctx, "termination")
+        r.mode = 1
+        self.encoder.for_each_state[tg](r, self.ctx, "encoder")
+        self.dynamics.for_each_state[tg](r, self.ctx, "dynamics")
+        self.reward.for_each_state[tg](r, self.ctx, "reward")
+        self.policy.for_each_state[tg](r, self.ctx, "policy")
+        self.q0.for_each_state[tg](r, self.ctx, "q0")
+        self.q1.for_each_state[tg](r, self.ctx, "q1")
+        self.q2.for_each_state[tg](r, self.ctx, "q2")
+        self.q3.for_each_state[tg](r, self.ctx, "q3")
+        self.q4.for_each_state[tg](r, self.ctx, "q4")
+        self.qt0.for_each_state[tg](r, self.ctx, "qt0")
+        self.qt1.for_each_state[tg](r, self.ctx, "qt1")
+        self.qt2.for_each_state[tg](r, self.ctx, "qt2")
+        self.qt3.for_each_state[tg](r, self.ctx, "qt3")
+        self.qt4.for_each_state[tg](r, self.ctx, "qt4")
+        self.termination.for_each_state[tg](r, self.ctx, "termination")
+
+    # ── td-target dispatch: thread the random target pair as DISTINCT fields ─
+    def _td_dispatch(
+        mut self,
+        a: Int, b: Int,
+        mut obs: Tensor, mut rew: Tensor, mut done: Tensor, mut td: Tensor,
+        gamma: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime tg = Self.target
+        comptime for i in range(NQ):
+            comptime for j in range(NQ):
+                comptime if i < j:
+                    if (a == i and b == j) or (a == j and b == i):
+                        self.td_step.step[tg](
+                            self.encoder, self.policy,
+                            self.get_qt[i](), self.get_qt[j](),
+                            obs, rew, done, td, gamma, ctx,
+                        )
+
+    def _policy_dispatch(
+        mut self,
+        a: Int, b: Int,
+        mut zpol: Tensor,
+    ) raises -> Scalar[DT]:
+        comptime tg = Self.target
+        comptime for i in range(NQ):
+            comptime for j in range(NQ):
+                comptime if i < j:
+                    if (a == i and b == j) or (a == j and b == i):
+                        return self.pol_step.step[tg](
+                            self.policy, self.get_q[i](), self.get_q[j](),
+                            self.pi_opt, zpol, self.ctx,
+                        )
+        return Scalar[DT](0.0)
 
     def train_step(mut self) raises -> Bool:
         self.step_count += 1
@@ -633,29 +640,43 @@ struct TDMPC2Agent[
         comptime BB = Self.B
 
         # ── sample (b-major) + transpose to t-major (host) ─────────────
-        var ob = _alloc(BB * (HH + 1) * OBSD)
-        var ab = _alloc(BB * HH * ACTD)
-        var rb = _alloc(BB * HH)
-        var db = _alloc(BB * HH)
-        self.replay.sample_batch[BB, HH](ob, ab, rb, db)
+        var ob = List[Scalar[DT]](length=BB * (HH + 1) * OBSD, fill=0)
+        var ab = List[Scalar[DT]](length=BB * HH * ACTD, fill=0)
+        var rb = List[Scalar[DT]](length=BB * HH, fill=0)
+        var dbf = List[Scalar[DT]](length=BB * HH, fill=0)
+        self.replay.sample_batch[BB, HH](
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                UnsafePointer(to=ob[0])
+            ),
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                UnsafePointer(to=ab[0])
+            ),
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                UnsafePointer(to=rb[0])
+            ),
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                UnsafePointer(to=dbf[0])
+            ),
+        )
 
-        var ot = _alloc((HH + 1) * BB * OBSD)
-        var at = _alloc(HH * BB * ACTD)
-        var rt = _alloc(HH * BB)
-        var dt = _alloc(HH * BB)
+        # t-major input Tensors.
+        var ot = Tensor.alloc((HH + 1) * BB * OBSD)
+        var at = Tensor.alloc(HH * BB * ACTD)
+        var rt = Tensor.alloc(HH * BB)
+        var dt = Tensor.alloc(HH * BB)
+        var td = Tensor.alloc(HH * BB)
         for b in range(BB):
             for t in range(HH + 1):
                 for i in range(OBSD):
-                    ot[(t * BB + b) * OBSD + i] = ob[
+                    ot.data[(t * BB + b) * OBSD + i] = ob[
                         (b * (HH + 1) + t) * OBSD + i
                     ]
             for t in range(HH):
                 for j in range(ACTD):
-                    at[(t * BB + b) * ACTD + j] = ab[(b * HH + t) * ACTD + j]
-                rt[t * BB + b] = rb[b * HH + t]
-                dt[t * BB + b] = db[b * HH + t]
+                    at.data[(t * BB + b) * ACTD + j] = ab[(b * HH + t) * ACTD + j]
+                rt.data[t * BB + b] = rb[b * HH + t]
+                dt.data[t * BB + b] = dbf[b * HH + t]
 
-        var td = _alloc(HH * BB)
         var ta = Int(random_float64() * Float64(NQ))
         if ta >= NQ:
             ta = NQ - 1
@@ -665,81 +686,62 @@ struct TDMPC2Agent[
             pa = NQ - 1
         var pb = (pa + 1) % NQ
 
-        comptime if tg == "cpu":
-            self.td_step.step[tg](
-                self.encoder, self.policy, self.qt, ta, tb,
-                ot, rt, dt, td, self.gamma,
-            )
-            var wl = self.wm_step.step[tg](
-                self.wm_graph, self.encoder, self.dynamics, self.reward, self.q,
-                self.termination,
-                self.enc_opt, self.dyn_opt, self.rew_opt, self.q_opt,
-                self.term_opt,
-                ot, at, rt, td, dt,
-            )
-            self._last_cons = wl.consistency
-            self._last_rew = wl.reward
-            self._last_val = wl.value
-            self._last_term = wl.termination
-            self._last_wm = wl.total()
-            var zpol = _alloc(Self.PB * LAT)
-            var zpol_t = TileTensor(zpol, row_major[Self.PB, LAT]())
-            self.encoder.forward[tg, Self.PB](
-                TileTensor(ot, row_major[Self.PB, OBSD]()), output=zpol_t,
-            )
-            self._last_pi = self.pol_step.step[tg](
-                self.policy, self.q, pa, pb, self.pi_opt, zpol,
-            )
-            zpol.free()
-            for i in range(NQ):
-                polyak_module[tg, Self.QNetT](
-                    self.q[i], self.qt[i], self.tau
-                )
-        else:
-            var ctx = self.ctx.value()
-            self.td_step.step[tg](
-                self.encoder, self.policy, self.qt, ta, tb,
-                ot, rt, dt, td, self.gamma, ctx=ctx,
-            )
-            var wl = self.wm_step.step[tg](
-                self.wm_graph, self.encoder, self.dynamics, self.reward, self.q,
-                self.termination,
-                self.enc_opt, self.dyn_opt, self.rew_opt, self.q_opt,
-                self.term_opt,
-                ot, at, rt, td, dt, ctx=ctx,
-            )
-            self._last_cons = wl.consistency
-            self._last_rew = wl.reward
-            self._last_val = wl.value
-            self._last_term = wl.termination
-            self._last_wm = wl.total()
-            var d_ot = _upload(ctx, ot, Self.PB * OBSD)
-            var d_zpol = ctx.enqueue_create_buffer[DT](Self.PB * LAT)
-            var zpol_t = TileTensor(_dp(d_zpol), row_major[Self.PB, LAT]())
-            self.encoder.forward[tg, Self.PB](
-                TileTensor(_dp(d_ot), row_major[Self.PB, OBSD]()), output=zpol_t,
-            )
-            self._last_pi = self.pol_step.step[tg](
-                self.policy, self.q, pa, pb, self.pi_opt, _dp(d_zpol), ctx=ctx,
-            )
-            for i in range(NQ):
-                polyak_module[tg, Self.QNetT](
-                    self.q[i], self.qt[i], self.tau, ctx=ctx
-                )
+        var ctx = self.ctx
+        comptime if tg == "gpu":
+            ot.upload(ctx.value())
+            at.upload(ctx.value())
+            rt.upload(ctx.value())
+            dt.upload(ctx.value())
+            td.upload(ctx.value())
 
-        # TD-target stats over the [H*B] targets (host in both paths).
+        # ── TD targets (stop-grad) ─────────────────────────────────────
+        self._td_dispatch(ta, tb, ot, rt, dt, td, self.gamma, ctx)
+
+        # ── WM BPTT ─────────────────────────────────────────────────────
+        var wl = self.wm_step.step[tg](
+            self.wm_graph, self.encoder, self.dynamics, self.reward,
+            self.q0, self.q1, self.q2, self.q3, self.q4, self.termination,
+            self.enc_opt, self.dyn_opt, self.rew_opt,
+            self.qo0, self.qo1, self.qo2, self.qo3, self.qo4, self.term_opt,
+            ot, at, rt, td, dt, ctx,
+        )
+        self._last_cons = wl.consistency
+        self._last_rew = wl.reward
+        self._last_val = wl.value
+        self._last_term = wl.termination
+        self._last_wm = wl.total()
+
+        # ── policy update on encoded latents ───────────────────────────
+        var zpol = Tensor.make[tg](Self.PB * LAT, ctx)
+        var obs_pb = Tensor.alloc(Self.PB * OBSD)
+        for i in range(Self.PB * OBSD):
+            obs_pb.data[i] = ot.data[i]
+        comptime if tg == "gpu":
+            obs_pb.upload(ctx.value())
+        self.encoder.forward[tg, Self.PB](TensorRefs[1](obs_pb), zpol, ctx)
+        self._last_pi = self._policy_dispatch(pa, pb, zpol)
+
+        # ── Polyak (target ← online) ────────────────────────────────────
+        self.qt0.polyak_from[tg](self.q0, self.tau, ctx)
+        self.qt1.polyak_from[tg](self.q1, self.tau, ctx)
+        self.qt2.polyak_from[tg](self.q2, self.tau, ctx)
+        self.qt3.polyak_from[tg](self.q3, self.tau, ctx)
+        self.qt4.polyak_from[tg](self.q4, self.tau, ctx)
+
+        # ── TD-target stats over the [H*B] targets (host on both paths) ──
+        comptime if tg == "gpu":
+            td.download(ctx.value())
         var td_sum: Scalar[DT] = 0.0
-        var td_mn = td[0]
-        var td_mx = td[0]
+        var td_mn = td.data[0]
+        var td_mx = td.data[0]
         for i in range(HH * BB):
-            var v = td[i]
+            var v = td.data[i]
             td_sum += v
             if v < td_mn:
                 td_mn = v
             if v > td_mx:
                 td_mx = v
 
-        # diag-window accumulation (drained by flush_metrics).
         self._cons_acc += self._last_cons
         self._rew_acc += self._last_rew
         self._val_acc += self._last_val
@@ -752,8 +754,4 @@ struct TDMPC2Agent[
         self._td_min_last = td_mn
         self._td_max_last = td_mx
         self._n_diag += 1
-
-        ob.free(); ab.free(); rb.free(); db.free()
-        ot.free(); at.free(); rt.free(); dt.free()
-        td.free()
         return True

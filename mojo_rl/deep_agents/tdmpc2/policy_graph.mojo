@@ -47,7 +47,7 @@ comptime TDMPC2PolicyGraph[
 ] = ComputeGraph[
     InputSlot["z", LATENT],
     ExternalNode["pi_out", TDMPC2Policy[LATENT, ACT, MLP], "z"],
-    ExternalNode["alp", RSample[ACT], "pi_out"],
+    Node["alp", RSample[ACT], "pi_out"],
     Node["action", Slice[ACT + 1, 0, ACT], "alp"],
     Node["log_prob", Slice[ACT + 1, ACT, ACT + 1], "alp"],
     Node["za", Concat[LATENT, ACT], "z", "action"],
