@@ -122,12 +122,12 @@ def eval_policy_vs_random[
                 var best = -1
                 var bestv = Float64(-1e30)
                 for a in range(ACT):
-                    if Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5:
-                        var v = Float64(pred_h.unsafe_ptr()[e * W + a])
+                    if legal_h[e * ACT + a] > 0.5:
+                        var v = Float64(pred_h[e * W + a])
                         if v > bestv:
                             bestv = v
                             best = a
-                actions_h.unsafe_ptr()[e] = Scalar[DT](best if best >= 0 else 0)
+                actions_h[e] = Scalar[DT](best if best >= 0 else 0)
         else:
             for e in range(N_GAMES):
                 var cnt = 0
@@ -213,7 +213,9 @@ def eval_policy_vs_random_cpu[
                     obs_t.data[i] = Scalar[DT](obs_raw[i]) if i < len(
                         obs_raw
                     ) else Scalar[DT](0.0)
-                net.forward["cpu", 1](TensorRefs[NET.ARITY](obs_t), pred_t, None)
+                net.forward["cpu", 1](
+                    TensorRefs[NET.ARITY](obs_t), pred_t, None
+                )
                 var best = -1
                 var bestv = Float64(-1e30)
                 for a in range(ACT):
@@ -302,7 +304,7 @@ def eval_mcts_vs_opponent_cpu[
         _ = env.reset()
         var ply = 0
         while env.game_result() == 0 and ply < MAX_PLIES:
-            var act = 0
+            var act: Int
             if env.current_player() == agent_player:
                 env.save_env_state(root_save)
                 var legal = env.legal_action_mask()

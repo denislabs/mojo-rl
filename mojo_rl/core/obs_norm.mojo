@@ -81,11 +81,7 @@ def update_obs_norm_kernel[
     var new_mean = old_mean + delta * n / new_count
 
     var m2_old = old_var * old_count
-    var m2_new = (
-        m2_old
-        + batch_m2
-        + delta * delta * old_count * n / new_count
-    )
+    var m2_new = m2_old + batch_m2 + delta * delta * old_count * n / new_count
     var new_var = m2_new / new_count
 
     mean[d] = new_mean
@@ -188,7 +184,9 @@ struct ObsNormStats[OBS_DIM: Int](Movable):
 
     def update_and_apply[
         BATCH: Int
-    ](mut self, ctx: DeviceContext, mut obs_buf: DeviceBuffer[gpu_dtype]) raises:
+    ](
+        mut self, ctx: DeviceContext, mut obs_buf: DeviceBuffer[gpu_dtype]
+    ) raises:
         """Update running stats from `obs_buf` (BATCH × OBS_DIM), then
         normalize `obs_buf` in place. Skips the update if frozen.
         """
@@ -209,23 +207,21 @@ struct ObsNormStats[OBS_DIM: Int](Movable):
 
     def _update[
         BATCH: Int
-    ](mut self, ctx: DeviceContext, mut obs_buf: DeviceBuffer[gpu_dtype]) raises:
-        # Direct-from-buffer construction: origin inferred from each binding,
-        # no `.unsafe_ptr()` and no MutAnyOrigin escape hatch. `obs_buf` is
-        # `mut` and `self` is `mut`, so all four views are mut=True, matching
-        # the writing kernel's MutAnyOrigin params.
+    ](
+        mut self, ctx: DeviceContext, mut obs_buf: DeviceBuffer[gpu_dtype]
+    ) raises:
         var obs = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH, Self.OBS_DIM)
         ](obs_buf)
-        var mean_t = LayoutTensor[
-            gpu_dtype, Layout.row_major(Self.OBS_DIM)
-        ](self.mean_buf)
-        var var_t = LayoutTensor[
-            gpu_dtype, Layout.row_major(Self.OBS_DIM)
-        ](self.var_buf)
-        var count_t = LayoutTensor[
-            gpu_dtype, Layout.row_major(1)
-        ](self.count_buf)
+        var mean_t = LayoutTensor[gpu_dtype, Layout.row_major(Self.OBS_DIM)](
+            self.mean_buf
+        )
+        var var_t = LayoutTensor[gpu_dtype, Layout.row_major(Self.OBS_DIM)](
+            self.var_buf
+        )
+        var count_t = LayoutTensor[gpu_dtype, Layout.row_major(1)](
+            self.count_buf
+        )
 
         comptime kernel = update_obs_norm_kernel[BATCH, Self.OBS_DIM]
         comptime BLOCKS = (Self.OBS_DIM + _TPB_UPDATE - 1) // _TPB_UPDATE
@@ -248,12 +244,12 @@ struct ObsNormStats[OBS_DIM: Int](Movable):
         var obs = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH, Self.OBS_DIM)
         ](obs_buf)
-        var mean_t = LayoutTensor[
-            gpu_dtype, Layout.row_major(Self.OBS_DIM)
-        ](self.mean_buf)
-        var var_t = LayoutTensor[
-            gpu_dtype, Layout.row_major(Self.OBS_DIM)
-        ](self.var_buf)
+        var mean_t = LayoutTensor[gpu_dtype, Layout.row_major(Self.OBS_DIM)](
+            self.mean_buf
+        )
+        var var_t = LayoutTensor[gpu_dtype, Layout.row_major(Self.OBS_DIM)](
+            self.var_buf
+        )
 
         comptime kernel = apply_obs_norm_kernel[BATCH, Self.OBS_DIM]
         comptime TOTAL = BATCH * Self.OBS_DIM

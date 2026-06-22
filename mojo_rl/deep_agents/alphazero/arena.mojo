@@ -54,8 +54,6 @@ def _xs(s: UInt64) -> UInt64:
     return x
 
 
-
-
 @always_inline
 def _argmax_legal[
     ACT: Int
@@ -151,12 +149,12 @@ def arena_match[
                 var best = -1
                 var bestv = Float64(-1e30)
                 for act in range(ACT):
-                    if Float64(legal_h.unsafe_ptr()[e * ACT + act]) > 0.5:
-                        var v = Float64(pred_h.unsafe_ptr()[e * W + act])
+                    if Float64(legal_h[e * ACT + act]) > 0.5:
+                        var v = Float64(pred_h[e * W + act])
                         if v > bestv:
                             bestv = v
                             best = act
-                actions_h.unsafe_ptr()[e] = Scalar[DT](best if best >= 0 else 0)
+                actions_h[e] = Scalar[DT](best if best >= 0 else 0)
             ctx.enqueue_copy(actions_dev, actions_h)
             ctx.synchronize()
 
@@ -174,7 +172,7 @@ def arena_match[
     var draws = 0
     var losses = 0
     for e in range(N_GAMES):
-        var r = Int(Float64(states_h.unsafe_ptr()[e * STATE + RESULT_IDX]))
+        var r = Int(Float64(states_h[e * STATE + RESULT_IDX]))
         if r == a_win:
             wins += 1
         elif r == a_loss:
@@ -312,9 +310,9 @@ def arena_match_mcts[
 
         all_done = True
         for e in range(N_GAMES):
-            if not eval_done[e] and Float64(done_h.unsafe_ptr()[e]) > 0.5:
+            if not eval_done[e] and Float64(done_h[e]) > 0.5:
                 eval_done[e] = True
-                var r = Float64(rew_h.unsafe_ptr()[e])
+                var r = Float64(rew_h[e])
                 if r > 0.5:
                     eval_result[e] = 1 if a_turn else 2
                 elif r < -0.5:
@@ -473,7 +471,7 @@ def arena_match_cpu[
         _ = env.reset()
         var ply = 0
         while env.game_result() == 0 and ply < MAX_PLIES:
-            var act = 0
+            var act: Int
             var legal = env.legal_action_mask()
             if ply < open_plies:
                 rng = _xs(rng)
