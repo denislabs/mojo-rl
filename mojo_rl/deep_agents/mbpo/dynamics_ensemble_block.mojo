@@ -32,11 +32,12 @@ keeps the bespoke double-softplus soft-clamp NLL grad + per-dim bound Adam.
 """
 
 from std.math import exp as fexp, log as flog, sqrt as fsqrt
-from std.gpu import global_idx
+from std.gpu import global_idx, thread_idx
+from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
 from mojo_rl.nn.storage.core.module import Module
 from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.storage.core.tensor import Tensor
@@ -247,6 +248,28 @@ def _dyn_mse_only_kernel[
     ploss[b] = row / Scalar[DT](PRED_DIM)
 
 
+def _dyn_ploss_reduce_kernel[
+    BATCH: Int
+](
+    ploss: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    acc: LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin],
+):
+    """Block-reduce the per-row learnable-NLL losses and fold the batch MEAN
+    into a device accumulator `acc = [sum_of_means, count]`. Mirrors
+    GaussianNLLLoss `_gnll_reduce_kernel` so the dynamics loss scalar is read
+    ONCE at flush instead of D2H'd (full `ctx.synchronize()`) per train step."""
+    var t = Int(thread_idx.x)
+    var my_sum = Scalar[DT](0.0)
+    var k = t
+    while k < BATCH:
+        my_sum += rebind[Scalar[DT]](ploss[k])
+        k += TPB_REDUCE
+    var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
+    if t == 0:
+        acc[0] = rebind[Scalar[DT]](acc[0]) + total[0] / Scalar[DT](BATCH)
+        acc[1] = rebind[Scalar[DT]](acc[1]) + Scalar[DT](1.0)
+
+
 struct DynamicsEnsembleBlock[
     DynNet: Module,
     N: Int,
@@ -289,6 +312,10 @@ struct DynamicsEnsembleBlock[
     var _bnd_gmax: Tensor    # [BATCH * PRED_DIM]
     var _bnd_gmin: Tensor
     var _bnd_ploss: Tensor   # [BATCH] (staging on GPU)
+    # Device accumulator [sum_of_batch_means, count] for the learnable-NLL
+    # training loss — reduced on-device each step, read once at flush (avoids
+    # the per-step D2H + ctx.synchronize() of the old host readback).
+    var _dyn_loss_acc: Tensor  # GPU [2] (+ host mirror)
 
     def __init__(out self):
         comptime assert Self.OUT_DIM == 2 * Self.PRED_DIM, (
@@ -323,6 +350,7 @@ struct DynamicsEnsembleBlock[
         self._bnd_gmax = Tensor()
         self._bnd_gmin = Tensor()
         self._bnd_ploss = Tensor()
+        self._dyn_loss_acc = Tensor()
 
     @staticmethod
     def make[
@@ -386,10 +414,14 @@ struct DynamicsEnsembleBlock[
         # device buffer; on CPU only the host list is used.
         comptime if target == "cpu":
             blk._bnd_ploss = Tensor.alloc(Self.BATCH)
+            blk._dyn_loss_acc = Tensor.alloc(2)
         else:
             blk._bnd_ploss = Tensor.alloc_gpu(ctx.value(), Self.BATCH)
             # ensure a host mirror exists for D2H of the per-row loss.
             blk._bnd_ploss.ensure(Self.BATCH)
+            blk._dyn_loss_acc = Tensor.alloc_gpu(ctx.value(), 2)
+            blk._dyn_loss_acc.dev.value().enqueue_fill(Scalar[DT](0.0))
+            blk._dyn_loss_acc.ensure(2)  # host mirror for the flush-time read
         blk._init_bounds[target]()
         return blk^
 
@@ -442,10 +474,14 @@ struct DynamicsEnsembleBlock[
         mut in_t: Tensor,
         mut out_mu_t: Tensor,
         mut out_lv_t: Tensor,
+        out_off: Int = 0,
     ) raises:
         """Forward `members[member_idx]` on `in_t` (BATCH × IN_DIM). Split the
-        BATCH × OUT_DIM output into `out_mu_t` + `out_lv_t` (both BATCH × PRED).
-        The clamped logvar is what callers sample / log."""
+        BATCH × OUT_DIM output into `out_mu_t` + `out_lv_t` (both BATCH × PRED),
+        written starting at element `out_off` in each (so callers can forward
+        an elite directly into its slice of a stacked NELITES·BATCH×PRED buffer
+        — no fresh alloc + D2D copy per elite). The clamped logvar is what
+        callers sample / log."""
         self.members[member_idx].forward[target, Self.BATCH, POLICY=POLICY](
             TensorRefs[Self.DynNet.ARITY](in_t), self._mb_pred, self.ctx
         )
@@ -455,7 +491,7 @@ struct DynamicsEnsembleBlock[
             var bo = member_idx * Self.PRED_DIM
             for b in range(Self.BATCH):
                 var src = b * Self.OUT_DIM
-                var dst = b * Self.PRED_DIM
+                var dst = out_off + b * Self.PRED_DIM
                 for j in range(Self.PRED_DIM):
                     out_mu_t.data[dst + j] = self._mb_pred.data[src + j]
                     var raw = self._mb_pred.data[src + Self.PRED_DIM + j]
@@ -479,12 +515,12 @@ struct DynamicsEnsembleBlock[
             var pred_lt = self._mb_pred.lt[
                 "gpu", Layout.row_major(Self.BATCH, Self.OUT_DIM)
             ]()
-            var mu_lt = out_mu_t.lt[
+            var mu_lt = out_mu_t.lt_at[
                 "gpu", Layout.row_major(Self.BATCH, Self.PRED_DIM)
-            ]()
-            var lv_lt = out_lv_t.lt[
+            ](out_off)
+            var lv_lt = out_lv_t.lt_at[
                 "gpu", Layout.row_major(Self.BATCH, Self.PRED_DIM)
-            ]()
+            ](out_off)
             if self.learnable_bounds:
                 var bo = member_idx * Self.PRED_DIM
                 var max_lt = self._max_lv.lt_at[
@@ -514,13 +550,18 @@ struct DynamicsEnsembleBlock[
     # Learnable-bounds helpers (soft-clamp NLL grad + bound Adam step).
     # ------------------------------------------------------------------
 
-    def _nll_grad_learnable[target: StaticString](
+    def _nll_grad_learnable[target: StaticString, ACCUMULATE: Bool = False](
         mut self, member_idx: Int, mut mb_target_t: Tensor,
     ) raises -> Scalar[DT]:
         """Soft-clamp Gaussian-NLL forward+grad for one member. Reads the
         already-computed `_mb_pred` (BATCH × OUT_DIM), writes the network grad
         into `_mb_grad` + per-(b,d) bound grads into `_bnd_gmax`/`_bnd_gmin`.
-        Returns the scalar NLL (nn convention)."""
+        Returns the scalar NLL (nn convention).
+
+        `ACCUMULATE=True` (GPU training): fold the batch-mean loss into the
+        device accumulator `_dyn_loss_acc` via a reduce kernel and return 0.0 —
+        NO per-step D2H/`ctx.synchronize()`. `ACCUMULATE=False` (CPU, holdout,
+        tests): D2H + host-sum the scalar as before."""
         var bo = member_idx * Self.PRED_DIM
         comptime if target == "cpu":
             var inv_norm = Scalar[DT](2.0) / Scalar[DT](Self.BATCH * Self.PRED_DIM)
@@ -592,11 +633,20 @@ struct DynamicsEnsembleBlock[
                 grad_lt, gmax_lt, gmin_lt, ploss_lt,
                 grid_dim=n_rows, block_dim=TPB,
             )
-            self._bnd_ploss.download(ctx)
-            var total = Scalar[DT](0.0)
-            for b in range(Self.BATCH):
-                total += self._bnd_ploss.data[b]
-            return total / Scalar[DT](Self.BATCH)
+            comptime if ACCUMULATE:
+                # Device reduce → accumulator; read once at flush (no sync).
+                ctx.enqueue_function[_dyn_ploss_reduce_kernel[Self.BATCH]](
+                    ploss_lt,
+                    self._dyn_loss_acc.lt["gpu", Layout.row_major(2)](),
+                    grid_dim=1, block_dim=TPB_REDUCE,
+                )
+                return Scalar[DT](0.0)
+            else:
+                self._bnd_ploss.download(ctx)
+                var total = Scalar[DT](0.0)
+                for b in range(Self.BATCH):
+                    total += self._bnd_ploss.data[b]
+                return total / Scalar[DT](Self.BATCH)
 
     def _bounds_step[target: StaticString](mut self, member_idx: Int) raises:
         """Adam-update member `member_idx`'s per-dim bounds from the grads in
@@ -681,15 +731,21 @@ struct DynamicsEnsembleBlock[
     # Train member — one Gaussian-NLL gradient step.
     # ------------------------------------------------------------------
 
-    def train_member_step[target: StaticString, POLICY: AMPPolicy = NoAMP](
+    def train_member_step[
+        target: StaticString, POLICY: AMPPolicy = NoAMP, ACCUMULATE: Bool = False
+    ](
         mut self,
         member_idx: Int,
         mut mb_in_t: Tensor,
         mut mb_target_t: Tensor,
     ) raises -> Scalar[DT]:
         """One Gaussian-NLL gradient step on member `member_idx`. Caller owns
-        `mb_in_t` (BATCH × IN_DIM) and `mb_target_t` (BATCH × PRED). Returns the
-        scalar NLL (averaged over BATCH)."""
+        `mb_in_t` (BATCH × IN_DIM) and `mb_target_t` (BATCH × PRED).
+
+        `ACCUMULATE=True` (GPU training) folds the loss into the device
+        accumulator and returns 0.0 — no per-step D2H. Read it at flush via
+        `read_dyn_loss_accum`. `ACCUMULATE=False` returns the scalar NLL
+        (averaged over BATCH), D2H'ing it (CPU is sync-free anyway)."""
         self.opts[member_idx].zero_grad[target, M=Self.DynNet](
             self.members[member_idx], self.ctx
         )
@@ -698,11 +754,20 @@ struct DynamicsEnsembleBlock[
         )
         var loss: Scalar[DT]
         if self.learnable_bounds:
-            loss = self._nll_grad_learnable[target](member_idx, mb_target_t)
-        else:
-            loss = self.loss.forward[target, Self.BATCH](
-                self._mb_pred, mb_target_t, self.ctx
+            loss = self._nll_grad_learnable[target, ACCUMULATE](
+                member_idx, mb_target_t
             )
+        else:
+            comptime if target == "gpu" and ACCUMULATE:
+                # Device-accumulate (no D2H); the grad is recomputed by `vjp`.
+                self.loss.forward_accumulate[target, Self.BATCH](
+                    self._mb_pred, mb_target_t, self.ctx
+                )
+                loss = Scalar[DT](0.0)
+            else:
+                loss = self.loss.forward[target, Self.BATCH](
+                    self._mb_pred, mb_target_t, self.ctx
+                )
             self.loss.vjp[target, Self.BATCH](
                 self._mb_pred, mb_target_t, self._mb_grad, self.ctx
             )
@@ -720,6 +785,29 @@ struct DynamicsEnsembleBlock[
         if self.learnable_bounds:
             self._bounds_step[target](member_idx)
         return loss
+
+    def read_dyn_loss_accum[target: StaticString](mut self) raises -> Scalar[DT]:
+        """Mean training NLL accumulated since the last reset (the
+        `ACCUMULATE=True` device path). Learnable bounds → our own [sum,count]
+        accumulator; fixed bounds → the GaussianNLLLoss device accumulator."""
+        if self.learnable_bounds:
+            comptime if target == "gpu":
+                self._dyn_loss_acc.download(self.ctx.value())
+                var s = self._dyn_loss_acc.data[0]
+                var n = self._dyn_loss_acc.data[1]
+                if n == Scalar[DT](0.0):
+                    return Scalar[DT](0.0)
+                return s / n
+            else:
+                return Scalar[DT](0.0)
+        return self.loss.read_accum[target](self.ctx)
+
+    def reset_dyn_loss_accum[target: StaticString](mut self) raises:
+        if self.learnable_bounds:
+            comptime if target == "gpu":
+                self._dyn_loss_acc.dev.value().enqueue_fill(Scalar[DT](0.0))
+            return
+        self.loss.reset_accum[target]()
 
     # ------------------------------------------------------------------
     # Eval member loss — holdout-set scoring (no gradient).

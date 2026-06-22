@@ -245,6 +245,51 @@ def _normalize_input_kernel[
     data[b, c] = (v - m) / s
 
 
+def _mbpo_fit_scaler_kernel[
+    OBS: Int, ACT: Int, DYN_IN: Int, CAP: Int
+](
+    obs: LayoutTensor[DT, Layout.row_major(CAP, OBS), MutAnyOrigin],
+    act: LayoutTensor[DT, Layout.row_major(CAP, ACT), MutAnyOrigin],
+    mean_out: LayoutTensor[DT, Layout.row_major(DYN_IN), MutAnyOrigin],
+    std_out: LayoutTensor[DT, Layout.row_major(DYN_IN), MutAnyOrigin],
+    n_data: Int32,
+):
+    """Per-column z-score fit of the dynamics input over the first `n_data`
+    rows of the real buffer (obs ++ act). One thread per DYN_IN column — a
+    fully on-device replacement for the old full-buffer D2H + host loop +
+    H2D + double `ctx.synchronize()`. `std < 1e-12 → 1` (matches the host fit)."""
+    var c = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if c >= DYN_IN:
+        return
+    var n = Int(n_data)
+    if n < 1:
+        mean_out[c] = Scalar[DT](0.0)
+        std_out[c] = Scalar[DT](1.0)
+        return
+    var inv_n = Scalar[DT](1.0) / Scalar[DT](n)
+    var sum = Scalar[DT](0.0)
+    for i in range(n):
+        if c < OBS:
+            sum += rebind[Scalar[DT]](obs[i, c])
+        else:
+            sum += rebind[Scalar[DT]](act[i, c - OBS])
+    var mean = sum * inv_n
+    var ss = Scalar[DT](0.0)
+    for i in range(n):
+        var v: Scalar[DT]
+        if c < OBS:
+            v = rebind[Scalar[DT]](obs[i, c])
+        else:
+            v = rebind[Scalar[DT]](act[i, c - OBS])
+        var d = v - mean
+        ss += d * d
+    var std = fsqrt(ss * inv_n)
+    if std < Scalar[DT](1e-12):
+        std = Scalar[DT](1.0)
+    mean_out[c] = mean
+    std_out[c] = std
+
+
 struct MBPOTrainer[
     train_target: StaticString,
     ACTOR: Module,
@@ -1025,9 +1070,15 @@ struct MBPOTrainer[
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
         if self._dyn_step_count > 0:
-            self._dyn_loss_last = self._dyn_loss_accum / Scalar[DT](
-                self._dyn_step_count
-            )
+            comptime if Self.train_target == "gpu":
+                # Device-accumulated mean (one D2H at this diag cadence, not
+                # per gradient step); reset for the next window.
+                self._dyn_loss_last = self.ensemble.read_dyn_loss_accum["gpu"]()
+                self.ensemble.reset_dyn_loss_accum["gpu"]()
+            else:
+                self._dyn_loss_last = self._dyn_loss_accum / Scalar[DT](
+                    self._dyn_step_count
+                )
         var actor_mean: Scalar[DT]
         var critic_mean: Scalar[DT]
         var alpha_val: Scalar[DT]
@@ -1426,19 +1477,38 @@ struct MBPOTrainer[
         if n_data < 2:
             return
         var ctx = self.ctx.value()
-        comptime cap_obs = Self.REPLAY_CAPACITY * Self.OBS_DIM
-        comptime cap_act = Self.REPLAY_CAPACITY * Self.ACT_DIM
-        var host_obs = List[Scalar[DT]](length=cap_obs, fill=Scalar[DT](0.0))
-        var host_act = List[Scalar[DT]](length=cap_act, fill=Scalar[DT](0.0))
-        ctx.enqueue_copy(host_obs, self.sample_blk.real_gpu.value().obs)
-        ctx.enqueue_copy(host_act, self.sample_blk.real_gpu.value().act)
-        ctx.synchronize()
-        self._dyn_input_std_mean = Self._compute_scaler_host(
-            host_obs, host_act, self._in_mean.data, self._in_std.data, n_data
+        # On-device per-column mean/std fit over the first `n_data` real rows —
+        # replaces the old full-buffer D2H (now 20 MB at REPLAY_CAPACITY=300k) +
+        # host loop + H2D + two `ctx.synchronize()`. Writes _in_mean/_in_std on
+        # device; the normalize kernels read those on the same stream (no sync).
+        comptime fit_kernel = _mbpo_fit_scaler_kernel[
+            Self.OBS_DIM, Self.ACT_DIM, Self.DYN_IN, Self.REPLAY_CAPACITY
+        ]
+        comptime n_blocks = (Self.DYN_IN + TPB - 1) // TPB
+        ctx.enqueue_function[fit_kernel](
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.REPLAY_CAPACITY, Self.OBS_DIM),
+                MutAnyOrigin,
+            ](self.sample_blk.real_gpu.value().obs),
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.REPLAY_CAPACITY, Self.ACT_DIM),
+                MutAnyOrigin,
+            ](self.sample_blk.real_gpu.value().act),
+            self._in_mean.lt["gpu", Layout.row_major(Self.DYN_IN)](),
+            self._in_std.lt["gpu", Layout.row_major(Self.DYN_IN)](),
+            Int32(n_data),
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
-        self._in_mean.dev.value().enqueue_copy_from(Span(self._in_mean.data))
-        self._in_std.dev.value().enqueue_copy_from(Span(self._in_std.data))
-        ctx.synchronize()
+        # Diagnostic only (mean input-scaler std): a tiny DYN_IN-float D2H once
+        # per model-train round — NOT per gradient step.
+        self._in_std.download(ctx)
+        var s = Scalar[DT](0.0)
+        for c in range(Self.DYN_IN):
+            s += self._in_std.data[c]
+        self._dyn_input_std_mean = s / Scalar[DT](Self.DYN_IN)
 
     def _normalize_dyn_in_cpu(mut self):
         for k in range(Self.BATCH):
@@ -1747,10 +1817,12 @@ struct MBPOTrainer[
                 for _ep in range(self.dyn_holdout_check_every):
                     for _ in range(steps_per_epoch):
                         self._build_dyn_batch_gpu(0, n_train)
-                        var dyn_loss = self.ensemble.train_member_step["gpu"](
-                            m, self._dyn_in, self._dyn_tgt
-                        )
-                        self._dyn_loss_accum += dyn_loss
+                        # ACCUMULATE=True: fold the loss into the device
+                        # accumulator (read once at flush) instead of a per-step
+                        # D2H + ctx.synchronize().
+                        _ = self.ensemble.train_member_step[
+                            "gpu", ACCUMULATE=True
+                        ](m, self._dyn_in, self._dyn_tgt)
                         self._dyn_step_count += 1
                 var hl = self._eval_member_holdout_gpu(m, hold_lo, hold_hi)
                 # Reference early-stop: relative improvement > 1% on holdout
@@ -1835,35 +1907,17 @@ struct MBPOTrainer[
 
                 var n_elites = len(self.ensemble.elite_indices)
                 for e in range(n_elites):
-                    # Forward each elite into its slice of the stacked device
-                    # buffers via fresh sub-Tensors (predict_member writes them).
-                    var mu_e = Tensor.alloc_gpu(ctx, Self.BATCH * Self.DYN_PRED)
-                    var lv_e = Tensor.alloc_gpu(ctx, Self.BATCH * Self.DYN_PRED)
+                    # Forward each elite DIRECTLY into its slice of the stacked
+                    # device buffers (predict_member writes via lt_at at the
+                    # offset) — no fresh per-elite alloc + D2D copy per chunk.
+                    var off = e * Self.BATCH * Self.DYN_PRED
                     self.ensemble.predict_member["gpu"](
                         self.ensemble.elite_indices[e],
-                        self._dyn_in, mu_e, lv_e,
+                        self._dyn_in,
+                        self._ro_mu_all,
+                        self._ro_lv_all,
+                        out_off=off,
                     )
-                    var off = e * Self.BATCH * Self.DYN_PRED
-                    var dst_mu = self._ro_mu_all.lt_at[
-                        "gpu", Layout.row_major(Self.BATCH * Self.DYN_PRED)
-                    ](off)
-                    var dst_lv = self._ro_lv_all.lt_at[
-                        "gpu", Layout.row_major(Self.BATCH * Self.DYN_PRED)
-                    ](off)
-                    ctx.enqueue_copy(
-                        self._ro_mu_all.dev.value().create_sub_buffer[DT](
-                            off, Self.BATCH * Self.DYN_PRED
-                        ),
-                        mu_e.dev.value(),
-                    )
-                    ctx.enqueue_copy(
-                        self._ro_lv_all.dev.value().create_sub_buffer[DT](
-                            off, Self.BATCH * Self.DYN_PRED
-                        ),
-                        lv_e.dev.value(),
-                    )
-                    _ = dst_mu
-                    _ = dst_lv
 
                 comptime assign_kernel = _mbpo_elite_assign_kernel[Self.BATCH]
                 ctx.enqueue_function[assign_kernel](
