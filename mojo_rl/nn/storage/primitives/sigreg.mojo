@@ -267,6 +267,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             comptime N_PARTIALS = Self._n_partials()
             comptime lay_a = Layout.row_major(D, P)
             comptime lay_cmsm = Layout.row_major(T, P * K)
+            comptime lay_in = Layout.row_major(B, T * D)
             comptime lay_cache = Layout.row_major(B, T * P)
             comptime lay_out = Layout.row_major(B, 1)
             comptime lay_part = Layout.row_major(N_PARTIALS)
@@ -286,15 +287,16 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
                 grid_dim=((P + TPB - 1) // TPB,),
                 block_dim=(TPB,),
             )
-            # cache_z[B*T, P] = input[B*T, D] @ A[D, P]  (A4-style GEMM; the
-            # input slab [B, T*D] reinterprets row-major as [B*T, D], cache_z
-            # [B, T*P] as [B*T, P] — both contiguous, no transpose needed).
-            var proj_in_v = TileTensor(in0.dev.value(), row_major[B * T, D]())
-            var proj_a_v = TileTensor(self.ws_a.dev.value(), row_major[D, P]())
-            var proj_out_v = TileTensor(
-                self.cache_z.dev.value(), row_major[B * T, P]()
+            # cache_z[B*T, P] = X @ A — kept hand-rolled (faster at M=B·T=96, the
+            # real LeWM regime; see _sr_project note + bench). max_matmul only
+            # wins forward at M≥~1.5k, which no LeWM config hits.
+            c.enqueue_function[_sr_project[B, T, D, P]](
+                in0.lt["gpu", lay_in](),
+                self.ws_a.lt["gpu", lay_a](),
+                self.cache_z.lt["gpu", lay_cache](),
+                grid_dim=((B * T * P + TPB - 1) // TPB,),
+                block_dim=(TPB,),
             )
-            max_matmul[target="gpu"](proj_out_v, proj_in_v, proj_a_v, c)
             c.enqueue_function[_sr_cm_sm[B, T, P, K, N_PARTIALS, True]](
                 self.cache_z.lt["gpu", lay_cache](),
                 self.ws_cm.lt["gpu", lay_cmsm](),
@@ -504,10 +506,31 @@ def _sr_norm_a[D: Int, P: Int](
         a_t[d, p_idx] = v * inv_norm
 
 
-# NOTE: the forward projection `Z = X @ A` and the backward `grad_in = dLdz @ Aᵀ`
-# now route through `max_matmul` directly in forward()/vjp() (A4-style); the old
-# hand-rolled `_sr_project` / `_sr_matmul_a` scalar-GEMM kernels were removed
-# (see benchmarks/bench_storage_sigreg_gemm_gpu.mojo for the A/B microbench).
+# Forward projection `Z = X @ A` keeps this hand-rolled scalar GEMM: at the real
+# LeWM shapes M=B·T is tiny (16·6=96), so the grid (B·T·P ≈ 98k threads, short
+# K=D loop) is already saturated and BEATS a tensor-core GEMM that underutilizes
+# at M=96 (NVIDIA: naive 6.8/3.9µs vs max_matmul 7.9/7.9µs at pusht/pong; the GEMM
+# only wins at M≥~1.5k). The backward `grad_in = dLdz @ Aᵀ` DID move to max_matmul
+# (its naive grid is only B·T·D threads each with a long uncoalesced K=P loop →
+# 4.4× win at P=1024, wash at P=256, never worse). See vjp() + the A/B microbench
+# benchmarks/bench_storage_sigreg_gemm_gpu.mojo.
+def _sr_project[BATCH: Int, T: Int, D: Int, P: Int](
+    input_t: LayoutTensor[DT, Layout.row_major(BATCH, T * D), MutAnyOrigin],
+    a_t: LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin],
+    cache_t: LayoutTensor[DT, Layout.row_major(BATCH, T * P), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= BATCH * T * P:
+        return
+    var p_idx = idx % P
+    var t_idx = (idx // P) % T
+    var b = idx // (T * P)
+    var z = Scalar[DT](0)
+    for d in range(D):
+        var xi = rebind[Scalar[DT]](input_t[b, t_idx * D + d])
+        var aval = rebind[Scalar[DT]](a_t[d, p_idx])
+        z += xi * aval
+    cache_t[b, t_idx * P + p_idx] = z
 
 
 def _sr_cm_sm[
