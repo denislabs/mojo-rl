@@ -52,7 +52,7 @@ from mojo_rl.nn.storage.core.checkpoint import (
 
 from mojo_rl.nn.core.log_bundle import log_bundle
 from mojo_rl.nn.core.metric import LogScalar
-from mojo_rl.nn.training.timer import Timer
+from mojo_rl.nn.storage.training.timer import Timer
 
 from ..training.device_mean_accum import DeviceMeanAccum
 from ..ppo.trainer import _ppo_ev_kernel

@@ -10,7 +10,7 @@ Verifies:
 
 from std.time import perf_counter_ns
 
-from mojo_rl.nn.training.timer import Timer
+from mojo_rl.nn.storage.training.timer import Timer
 from mojo_rl.nn.constants import DT
 
 

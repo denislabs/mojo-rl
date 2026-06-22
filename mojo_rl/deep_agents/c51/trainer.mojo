@@ -40,7 +40,7 @@ from mojo_rl.nn.storage.core.checkpoint import (
 
 from mojo_rl.nn.core.log_bundle import log_bundle
 from mojo_rl.nn.core.metric import LogScalar
-from mojo_rl.nn.training.timer import Timer
+from mojo_rl.nn.storage.training.timer import Timer
 
 from ..core.online_target_pair import OnlineTargetPair
 from ..training.episode_tracker import EpisodeTracker

@@ -45,7 +45,7 @@ from mojo_rl.nn.storage.core.checkpoint import (
 from mojo_rl.nn.core.log_bundle import log_bundle
 from mojo_rl.nn.core.metric import LogScalar
 from mojo_rl.nn.core.save_scalar import _expect_kv_line
-from mojo_rl.nn.training.timer import Timer
+from mojo_rl.nn.storage.training.timer import Timer
 
 from ..core.online_target_pair import OnlineTargetPair
 from ..data.n_step_replay import GPUNStepBuffer
