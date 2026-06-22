@@ -62,6 +62,10 @@ struct Scale[DIM_: Int](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
 
+    @staticmethod
+    def display_label() -> String:
+        return String("Scale")
+
     var multiplier: Scalar[DT]
     # Optional device-resident multiplier source. When set (via `set_attr_ptr`),
     # the GPU forward/vjp read the scale factor from `multiplier_ptr[0]` instead

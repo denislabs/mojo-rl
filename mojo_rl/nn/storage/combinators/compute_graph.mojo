@@ -123,39 +123,33 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                 s = j
         return s
 
-    @staticmethod
-    def _kind_label[kind: Int]() -> String:
-        """Category tag for a decl KIND (0=InputSlot, 1=owned Node, 2=External)
-        — the node `label` fed to a GraphVisitor (the descriptive identity is
-        the node NAME; storage leaves carry no `display_label`)."""
-        comptime if kind == 0:
-            return String("input")
-        elif kind == 1:
-            return String("node")
-        else:
-            return String("external")
-
     def describe[
         V: GraphVisitor
     ](mut self, graph_name: String, mut visitor: V) raises:
         """Walk the comptime topology into a pluggable `GraphVisitor` sink:
-        `begin`, then per decl a `node` call followed by one `edge` call per
-        input (resolved to the source decl by NAME), then `end`. Pure topology —
-        no buffers, no device. Drives the Text / Mermaid exporters."""
+        `begin`, then per decl a `node` call (op `display_label`), one
+        `node_inner` per inner display step (container ops expand their
+        children), and one `edge` per input (resolved to the source decl by
+        NAME), then `end`. Pure topology — no buffers, no device. Drives the
+        Text / Mermaid / FusionReport exporters."""
         visitor.begin(graph_name, Self.N)
         comptime for i in range(Self.N):
             comptime kind = Self.DECLS[i].KIND
+            var name = String(Self.DECLS[i].NAME)
             visitor.node(
                 i,
-                String(Self.DECLS[i].NAME),
-                Self._kind_label[kind](),
+                name,
+                Self.DECLS[i].display_label_via(),
                 kind,
                 Self.DECLS[i].OUT_DIM,
             )
+            var steps = Self.DECLS[i].display_steps_via()
+            for s in range(len(steps)):
+                visitor.node_inner(name, s, steps[s].label, steps[s].out_dim)
             comptime for k in range(Self.DECLS[i].ARITY):
                 comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
                 visitor.edge(
-                    String(Self.DECLS[i].NAME),
+                    name,
                     String(Self.DECLS[i].IN_NAMES[k]),
                     k,
                     Self.DECLS[sk].OUT_DIM,

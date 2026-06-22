@@ -18,6 +18,7 @@ from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
 from ..core.amp import AMPPolicy, NoAMP
+from ..core.graph_visitor import DisplayStep
 
 
 struct Sequential[*MODULES: Module](Module):
@@ -25,6 +26,25 @@ struct Sequential[*MODULES: Module](Module):
     comptime N = Self.MODULES.size
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.MODULES[0].IN_DIMS[0])
     comptime OUT_DIM = Self.MODULES[Self.N - 1].OUT_DIM
+
+    @staticmethod
+    def display_label() -> String:
+        return String("Sequential")
+
+    @staticmethod
+    def display_steps() -> List[DisplayStep]:
+        """Expand the chain — one step per child (its display label + output
+        width) — so `ComputeGraph.describe` exporters open a Sequential node
+        instead of showing one opaque box."""
+        var steps = List[DisplayStep]()
+        comptime for i in range(Self.N):
+            steps.append(
+                DisplayStep(
+                    Self.MODULES[i].display_label(),
+                    Self.MODULES[i].OUT_DIM,
+                )
+            )
+        return steps^
 
     var children: Tuple[*Self.MODULES]
     var act: TensorPack[Self.N]

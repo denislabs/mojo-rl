@@ -66,6 +66,10 @@ struct BinaryElementwise[DIM_: Int, OP: BinaryElementOp](Module):
     comptime IN_DIMS = InlineArray[Int, 2](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
 
+    @staticmethod
+    def display_label() -> String:
+        return Self.OP.display_label()
+
     def __init__(out self):
         pass
 

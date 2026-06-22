@@ -19,6 +19,7 @@ from .param import ParamVisitor
 from .walkers import for_each_param_auto, zero_grad_auto
 from .state import for_each_state_auto
 from .amp import AMPPolicy, NoAMP
+from .graph_visitor import DisplayStep
 
 
 trait Module(Defaultable & Movable & ImplicitlyDeletable):
@@ -126,3 +127,20 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
         dispatches this to the named node — the name-wired replacement for
         reaching into `graph.children[i].op.<field>`."""
         pass
+
+    # Display surface — read by `ComputeGraph.describe` exporters. Both carry
+    # defaults, so existing conformers need no change; leaves override
+    # `display_label` with their type name, and containers (`Sequential`)
+    # override `display_steps` to expand into their children.
+    @staticmethod
+    def display_label() -> String:
+        """Short display name for graph exporters. Default generic; leaves
+        override with their type name (e.g. "Linear")."""
+        return String("module")
+
+    @staticmethod
+    def display_steps() -> List[DisplayStep]:
+        """Inner display steps for container modules — one per child, each
+        `(child_label, child_out_dim)`. Default empty = atomic leaf;
+        `Sequential` overrides to expand its chain."""
+        return List[DisplayStep]()

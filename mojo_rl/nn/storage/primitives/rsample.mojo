@@ -154,6 +154,10 @@ struct RSample[ACT_: Int](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=2 * Self.ACT_)
     comptime OUT_DIM = Self.ACT_ + 1  # packed [action | log_prob]
 
+    @staticmethod
+    def display_label() -> String:
+        return String("RSample")
+
     var action_scale: Scalar[DT]
     var noise_seed: UInt64
     var noise_offset: TensorImpl[DType.uint64]  # GPU Philox offset

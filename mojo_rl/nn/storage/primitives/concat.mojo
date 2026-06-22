@@ -87,6 +87,10 @@ struct Concat[*DIMS: Int](Module):
     comptime IN_DIMS = _build_in_dims[*Self.DIMS]()
     comptime OUT_DIM = _total_dim[*Self.DIMS]()
 
+    @staticmethod
+    def display_label() -> String:
+        return String("Concat")
+
     def __init__(out self):
         comptime assert Self.DIMS.size >= 2, "Concat: needs at least 2 inputs"
 

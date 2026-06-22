@@ -55,6 +55,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.param import ParamVisitor
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
+from ..core.graph_visitor import DisplayStep
 
 
 trait IsExternal:
@@ -98,6 +99,18 @@ trait GraphDecl(Module):
     comptime KIND: Int
     comptime IN_NAMES: InlineArray[StaticString, Self.ARITY]
 
+    @staticmethod
+    def display_label_via() -> String:
+        """The wrapped op's display label (for `ComputeGraph.describe`) —
+        `_via` because the decl's own `Module.display_label` would report the
+        wrapper, not the op."""
+        ...
+
+    @staticmethod
+    def display_steps_via() -> List[DisplayStep]:
+        """The wrapped op's inner display steps (containers expand)."""
+        ...
+
 
 # ──────────────────────────────────────────────────────────────────────
 # InputSlot — a named external input (KIND=0, ARITY=0). No compute; its
@@ -115,6 +128,14 @@ struct InputSlot[slot_name: StaticString, DIM_: Int](GraphDecl):
     comptime IN_DIMS = InlineArray[Int, 0]()
     comptime IN_NAMES = InlineArray[StaticString, 0]()
     comptime OUT_DIM = Self.DIM_
+
+    @staticmethod
+    def display_label_via() -> String:
+        return String("input")
+
+    @staticmethod
+    def display_steps_via() -> List[DisplayStep]:
+        return List[DisplayStep]()
 
     def __init__(out self):
         pass
@@ -177,6 +198,14 @@ struct Node[
     comptime IN_DIMS = Self.Op.IN_DIMS
     comptime OUT_DIM = Self.Op.OUT_DIM
     comptime IN_NAMES = names_to_inline_array[Self.ARITY, *Self.in_names]()
+
+    @staticmethod
+    def display_label_via() -> String:
+        return Self.Op.display_label()
+
+    @staticmethod
+    def display_steps_via() -> List[DisplayStep]:
+        return Self.Op.display_steps()
 
     var op: Self.Op
 
@@ -286,6 +315,14 @@ struct ExternalNode[
     comptime IN_DIMS = Self.M.IN_DIMS
     comptime OUT_DIM = Self.M.OUT_DIM
     comptime IN_NAMES = names_to_inline_array[Self.ARITY, *Self.in_names]()
+
+    @staticmethod
+    def display_label_via() -> String:
+        return Self.M.display_label()
+
+    @staticmethod
+    def display_steps_via() -> List[DisplayStep]:
+        return Self.M.display_steps()
 
     def __init__(out self):
         comptime assert (

@@ -96,6 +96,10 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_)
     comptime OUT_DIM = Self.OUT_
     comptime W_SIZE = Self.IN_ * Self.OUT_
+
+    @staticmethod
+    def display_label() -> String:
+        return String("LinearAct")
     comptime B_SIZE = Self.OUT_
 
     var weight: Param["weight", True, Self.W_SIZE]
