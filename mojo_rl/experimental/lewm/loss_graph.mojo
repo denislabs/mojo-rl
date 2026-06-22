@@ -16,17 +16,14 @@ representations, with SIGReg as the sole anti-collapse term). Our original
 port detached `tgt` — a deviation removed 2026-06-10 (reference audit).
 
 λ is the `sig_s` Scale multiplier — `set_node_attr["sig_s","multiplier"](λ)`.
-The collapse probes read the `emb` node output via `node_out_ptr["emb"]`.
+The collapse probes read the `emb` node output via `node_output["emb"]`.
 """
 
-from ...nn.core.module import Module
-from ...nn.combinators import ComputeGraph, InputSlot, Node, Tokenwise
-from ...nn.primitives.slice import Slice
-from ...nn.primitives.bias_add import BiasAdd
-from ...nn.primitives.scale import Scale
-from ...nn.primitives.add import Add
-from ...nn.primitives.mse_per_sample import MSEPerSample
-from ...nn.primitives.sigreg import SIGReg
+from ...nn.storage.core.module import Module
+from ...nn.storage import (
+    ComputeGraph, InputSlot, Node, Tokenwise,
+    Slice, BiasAdd, Scale, Add, MSEPerSample, SIGReg,
+)
 from .encoder import LeWMEncoder, ActionEmbedder, ARPredictor, PredProj
 
 
@@ -63,7 +60,6 @@ comptime LeWMLossGraph[
         HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H, ENC_FF_MULT,
     ],
 ] = ComputeGraph[
-    1,
     InputSlot["pixels", T * IN_CH * IMG * IMG],
     InputSlot["actions", T * ACT],
     Node["emb", Tokenwise[T, ENC], "pixels"],
@@ -81,5 +77,5 @@ comptime LeWMLossGraph[
     Node["pl", MSEPerSample[H * EMB], "pred", "tgt"],
     Node["sig", SIGReg[EMB, T, SIG_PROJ, SIG_KNOTS], "emb"],
     Node["sig_s", Scale[1], "sig"],
-    Node["loss", Add[1, 2], "pl", "sig_s"],
+    Node["loss", Add[1], "pl", "sig_s"],
 ]

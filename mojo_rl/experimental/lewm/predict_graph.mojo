@@ -1,4 +1,4 @@
-"""LeWMPredictGraph — predictor-from-latents (the MPC inference path).
+"""LeWMPredictGraph — predictor-from-latents (the MPC inference path), storage.
 
 The loss graph couples encoder→predictor (its context always comes from
 encoding pixels). Autoregressive MPC needs the predictor to run on ARBITRARY
@@ -14,9 +14,12 @@ nodes in `LeWMLossGraph` (a suffix of its param set, minus the encoder
 `emb`). So `LeWMPredictor.sync_from_named` copies the trained weights by
 NAME from the trainer's exported dict — exact, order-independent.
 
-The graph output is `pred` (B, H·EMB), so `forward` writes it straight to
-the caller's output tile (no node_out_ptr needed). Forward-only; no params
-of its own beyond the synced snapshot.
+Storage surface: the graph owns its activation pool (no Scratch / TargetStorage).
+The public `forward` keeps its raw-`TileTensor` facade (the MPC kernels feed it
+host/device pointers); inside, inputs are bridged into the graph's storage
+`set_input` and the `pred` output is copied back to the caller's tile. The only
+residual unsafe is the device-pointer ↔ `DeviceBuffer` bridge at this raw
+boundary (GPU ABI interop), not the framework.
 """
 
 from std.collections import Dict
@@ -25,12 +28,10 @@ from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
 from ...nn.constants import DT
-from ...nn.core import ParamVisitor
-from ...nn.core.target_storage import TargetStorage, assert_tag_for
-from ...nn.initializer import Kaiming
-from ...nn.combinators import ComputeGraph, InputSlot, Node
-from ...nn.primitives.slice import Slice
-from ...nn.primitives.bias_add import BiasAdd
+from ...nn.storage import (
+    Tensor, ParamVisitor, Kaiming,
+    ComputeGraph, InputSlot, Node, Slice, BiasAdd,
+)
 from .encoder import ActionEmbedder, ARPredictor, PredProj
 
 
@@ -39,7 +40,6 @@ comptime LeWMPredictGraph[
     H: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int, PRED_PROJ_H: Int,
     PRED_DIM_HEAD: Int = 0,
 ] = ComputeGraph[
-    H * EMB,
     InputSlot["latent_ctx", H * EMB],
     InputSlot["actions", T * ACT],
     Node["act_emb", ActionEmbedder[T, ACT, SMOOTHED, EMB, AE_MLP], "actions"],
@@ -54,48 +54,32 @@ comptime LeWMPredictGraph[
 ]
 
 
-# Import visitor: copy each param from a name→values dict (CPU direct /
-# GPU H2D). Missing names are left at their init (shouldn't happen if the
-# predict graph node names match the trainer's).
+# Import visitor: copy each param/state from a name→values dict (CPU direct /
+# GPU host-fill + upload). Missing names are left at their init (shouldn't
+# happen if the predict-graph node names match the trainer's).
 struct _NamedImportVisitor(ParamVisitor):
     var d: Dict[String, List[Scalar[DT]]]
-    var ctx: Optional[DeviceContext]
     var missing: Int
 
-    def __init__(
-        out self, var d: Dict[String, List[Scalar[DT]]],
-        ctx: Optional[DeviceContext] = None,
-    ):
+    def __init__(out self, var d: Dict[String, List[Scalar[DT]]]):
         self.d = d^
-        self.ctx = ctx
         self.missing = 0
 
-    def visit(
-        mut self, name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int, apply_decay: Bool,
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
         if name not in self.d:
             self.missing += 1
             return
         ref vals = self.d[name]
-        var p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        if self.ctx:
-            var c = self.ctx.value()
-            var host = List[Scalar[DT]](length=n_elems, fill=Scalar[DT](0.0))
-            for i in range(n_elems):
-                host[i] = vals[i]
-            var dev = DeviceBuffer[DT](c, p, n_elems, owning=False)
-            c.enqueue_copy(dev, host.unsafe_ptr())
-            c.synchronize()
-        else:
-            for i in range(n_elems):
-                p[i] = vals[i]
+        param.ensure(N)
+        for i in range(N):
+            param.data[i] = vals[i]
+        param.n = N
+        comptime if target == "gpu":
+            param.upload(ctx.value())
 
 
 struct LeWMPredictor[
@@ -115,17 +99,24 @@ struct LeWMPredictor[
     comptime ACTIN = Self.T * Self.ACT
 
     var graph: Self.PG
-    var ts: TargetStorage
+    var ctx: Optional[DeviceContext]
+    # Owned graph-output buffer (graph.forward writes here; copied to caller).
+    var out_buf: Tensor
 
     def __init__(out self):
         self.graph = Self.PG()
-        self.ts = TargetStorage.make_uninit()
+        self.ctx = None
+        self.out_buf = Tensor()
 
     @staticmethod
     def make(ctx: Optional[DeviceContext] = None) raises -> Self:
         var p = Self()
-        p.graph = Self.PG.make[target = Self.target, INIT=Kaiming](ctx=ctx)
-        p.ts = TargetStorage.make[Self.target](ctx=ctx)
+        p.graph = Self.PG.make[Self.target, Kaiming](ctx=ctx)
+        p.ctx = ctx
+        comptime if Self.target == "gpu":
+            p.out_buf = Tensor.alloc_gpu(ctx.value(), Self.BATCH * Self.HE)
+        else:
+            p.out_buf = Tensor.alloc(Self.BATCH * Self.HE)
         return p^
 
     def sync_from_named(
@@ -135,9 +126,9 @@ struct LeWMPredictor[
         stats) with the trainer's snapshot, matched by `for_each_param` /
         `for_each_state` name. State sync makes eval-mode BN at planning
         normalize identically to the trainer's warmed running stats."""
-        var v = _NamedImportVisitor(d^, ctx=self.ts.ctx)
-        self.graph.for_each_param[Self.target, _NamedImportVisitor]("", v)
-        self.graph.for_each_state[Self.target, _NamedImportVisitor]("", v)
+        var v = _NamedImportVisitor(d^)
+        self.graph.for_each_param[Self.target, _NamedImportVisitor](v, self.ctx)
+        self.graph.for_each_state[Self.target, _NamedImportVisitor](v, self.ctx)
 
     def set_bn_training(mut self, training: Bool) raises:
         """Flip PredProj's BatchNorm (node "pred") between training and
@@ -146,6 +137,31 @@ struct LeWMPredictor[
         batch, coupling candidate scores."""
         var v = Scalar[DT](1.0) if training else Scalar[DT](0.0)
         self.graph.set_node_attr["pred", "training"](v)
+
+    def _seed_input[
+        slot_name: StaticString, N: Int
+    ](
+        mut self,
+        src: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Bridge a raw input tile into the named graph input slot (storage
+        `set_input` copies it into the pool). CPU: copy into a host `List`;
+        GPU: wrap the device pointer in a non-owning `DeviceBuffer`."""
+        var t = Tensor()
+        comptime if Self.target == "cpu":
+            t.data = List[Scalar[DT]](length=N, fill=Scalar[DT](0))
+            for i in range(N):
+                t.data[i] = rebind[Scalar[DT]](src.ptr[i])
+            t.n = N
+        else:
+            var c = self.ctx.value()
+            var sp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](src.ptr)
+            t.dev = DeviceBuffer[DT](c, sp, N, owning=False)
+            t.n = N
+        self.graph.set_input[slot_name, Self.BATCH](t, self.ctx)
 
     def forward(
         mut self,
@@ -164,7 +180,17 @@ struct LeWMPredictor[
     ) raises:
         """Run the predictor: (latent_ctx, actions) → pred (B, H·EMB),
         written to `pred_out`."""
-        assert_tag_for["LeWMPredictor", Self.target](self.ts.target_tag)
-        self.graph.set_input["latent_ctx", Self.BATCH](latent_ctx)
-        self.graph.set_input["actions", Self.BATCH](actions)
-        self.graph.forward[Self.target, Self.BATCH](pred_out)
+        self._seed_input["latent_ctx", Self.BATCH * Self.HE](latent_ctx)
+        self._seed_input["actions", Self.BATCH * Self.ACTIN](actions)
+        self.graph.forward[Self.BATCH, Self.target](self.out_buf, self.ctx)
+        comptime N = Self.BATCH * Self.HE
+        comptime if Self.target == "cpu":
+            for i in range(N):
+                pred_out.ptr[i] = self.out_buf.data[i]
+        else:
+            var c = self.ctx.value()
+            var dp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                pred_out.ptr
+            )
+            var db = DeviceBuffer[DT](c, dp, N, owning=False)
+            c.enqueue_copy(db, self.out_buf.dev.value())

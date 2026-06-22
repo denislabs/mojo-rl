@@ -28,7 +28,7 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from ...nn.constants import DT
-from ...nn.core.module import Module
+from ...nn.storage.core.module import Module
 from mojo_rl.planners.trajectory import ContinuousCEMOptimizer
 from mojo_rl.envs.pusht import PushTEnv, PushTAction
 from mojo_rl.envs.pusht.constants import PConstants

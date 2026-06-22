@@ -1,50 +1,147 @@
-"""LeWMTrainer — config-driven offline JEPA trainer over LeWMLossGraph.
+"""LeWMTrainer — offline JEPA trainer over LeWMLossGraph (storage surface).
 
-Owns the loss graph + one Adam (graph overloads) + scratch. `train_step`
-runs zero_grad → set_input → forward → mean-reduce → seed 1/B → vjp →
+Owns the loss graph + one Adam + owned graph-IO scratch `Tensor`s. `train_step`
+runs zero_grad → set_input → forward → mean-reduce → seed 1/B → vjp → (clip) →
 Adam.step, returning the batch-mean loss. `collapse_probes` computes the
 representation-collapse diagnostics off the `emb` node (var_min over latent
-dims, mean |off-diagonal correlation|). `save_params` / `load_params`
-persist the graph's parameters (Adam state not persisted — eval/MPC only
-needs weights; resume is a follow-up).
+dims, mean |off-diagonal correlation|). `save_params` / `load_params` persist
+the graph's parameters in a flat text format (Adam state not persisted —
+eval/MPC only needs weights).
 
-Parameterized directly by dims + BATCH + train_target; presets are type
-aliases.
+Storage notes vs the legacy nn version:
+  - `Scratch`/`TargetStorage`/`assert_tag_for` are gone — the loss output and the
+    1/B grad seed are owned `Tensor` fields (device buffer on GPU, host List on
+    CPU); the device context is a stored `Optional[DeviceContext]`.
+  - The Adam graph overloads (`make_graph`/`step_graph`/`zero_grad_graph`) are
+    replaced by the uniform storage Adam: `opt.adopt`/`opt.zero_grad`/
+    `opt.clip_grads`/`opt.step` over the graph (a `Module`). `weight_decay` is the
+    AdamW `wd`; `max_grad_norm` is applied via `clip_grads` before the step.
+  - Graph IO is storage `Tensor`s and `node_output(name)` (not raw pointers); the
+    public facade keeps raw `TileTensor`/host-pointer args (the data/MPC stack
+    feeds them), bridged into the graph internally.
 
-GPU path (Phase E). The graph IO buffers (loss output [BATCH,1], grad seed
-[BATCH,1]) are `Scratch` fields → device buffers on GPU, host lists on CPU.
-The backward seed is the constant `1/BATCH`, written once at `make` (no
-per-step host work — the SAC capturability discipline). On GPU `train_step`
-device-reduces the per-sample loss into a `(Σmean, count)` accumulator and
-returns a `0` sentinel; the driver drains it at flush cadence via
-`read_loss_accum` / `reset_loss_accum`. `collapse_probes` D2H-copies the
-`emb` node once (a diagnostic, off the capture hot loop). Checkpoint
-visitors wrap each param's device pointer in a non-owning `DeviceBuffer`
-for D2H (save) / H2D (load).
+The backward seed is the constant `1/BATCH`, written once at `make`. On GPU
+`train_step` device-reduces the per-sample loss into a `(Σmean, count)`
+accumulator and returns a `0` sentinel; the driver drains it at flush cadence
+via `read_loss_accum` / `reset_loss_accum`.
 """
 
 from std.collections import Dict
-from std.memory import alloc
-from std.gpu import thread_idx
+from std.gpu import thread_idx, global_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.math import sqrt
 
-from ...nn.constants import DT, TPB_REDUCE
-from ...nn.core import ParamVisitor
-from ...nn.core.amp import AMPPolicy, NoAMP
-from ...nn.core.scratch import Scratch
-from ...nn.core.scratch_walkers import init_scratch_auto
-from ...nn.core.target_storage import TargetStorage, assert_tag_for
-from ...nn.initializer import Kaiming
-from ...nn.optimizer.adam import Adam
-from ...nn.core.module import Module
+from ...nn.constants import DT, TPB, TPB_REDUCE
+from ...nn.storage import Tensor, ParamVisitor, Kaiming, Adam, Module
+from ...nn.storage.core.amp import AMPPolicy, NoAMP
 from .encoder import LeWMEncoder
 from .loss_graph import LeWMLossGraph
 
 from mojo_rl.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
+
+
+# ── grad-norm clip over the graph's params (CPU loops / GPU reduce+scale) ──
+# The graph owns all params but is not a `Module`, so the optimizer's
+# Module-constrained `clip_grads` can't take it; this is a two-pass clip via
+# `graph.for_each_param` (the storage ParamVisitor), mirroring `grad_clip`.
+comptime _GC_TPB: Int = 128
+
+
+def _clip_sumsq_kernel[N: Int](
+    grad: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    out_sum: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+):
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < N:
+        var g = rebind[Scalar[DT]](grad[k])
+        my_sum += g * g
+        k += _GC_TPB
+    var total = block.sum[block_size=_GC_TPB, broadcast=False](val=my_sum)
+    if t == 0:
+        out_sum[0] = total[0]
+
+
+def _clip_scale_kernel[N: Int](
+    grad: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    scale: Scalar[DT],
+):
+    var i = Int(global_idx.x)
+    if i < N:
+        grad[i] = rebind[Scalar[DT]](grad[i]) * scale if scale != Scalar[DT](
+            0.0
+        ) else Scalar[DT](0.0)
+
+
+def _scale_from_norm(
+    norm: Scalar[DT], max_norm: Scalar[DT], eps: Scalar[DT]
+) -> Scalar[DT]:
+    """`min(1, max_norm / max(norm, eps))`; non-finite norm → 0 (NaN guard)."""
+    if norm - norm != Scalar[DT](0.0):
+        return Scalar[DT](0.0)
+    var denom = norm if norm > eps else eps
+    var ratio = max_norm / denom
+    return ratio if ratio < Scalar[DT](1.0) else Scalar[DT](1.0)
+
+
+struct _SumSqV(ParamVisitor):
+    var sum_sq: Scalar[DT]
+    var psum: Tensor  # reusable [1] device scalar (GPU)
+
+    def __init__(out self):
+        self.sum_sq = Scalar[DT](0.0)
+        self.psum = Tensor()
+
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "cpu":
+            for i in range(N):
+                var g = grad.data[i]
+                self.sum_sq += g * g
+        else:
+            var c = ctx.value()
+            self.psum.ensure_gpu(c, 1)
+            c.enqueue_function[_clip_sumsq_kernel[N]](
+                grad.lt["gpu", Layout.row_major(N)](),
+                self.psum.lt["gpu", Layout.row_major(1)](),
+                grid_dim=1, block_dim=_GC_TPB,
+            )
+            self.psum.download(c)
+            self.sum_sq += self.psum.data[0]
+
+
+struct _ScaleV(ParamVisitor):
+    var scale: Scalar[DT]
+
+    def __init__(out self, scale: Scalar[DT]):
+        self.scale = scale
+
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "cpu":
+            if self.scale == Scalar[DT](0.0):
+                for i in range(N):
+                    grad.data[i] = Scalar[DT](0.0)
+            else:
+                for i in range(N):
+                    grad.data[i] = grad.data[i] * self.scale
+        else:
+            var c = ctx.value()
+            c.enqueue_function[_clip_scale_kernel[N]](
+                grad.lt["gpu", Layout.row_major(N)](),
+                self.scale,
+                grid_dim=(N + TPB - 1) // TPB, block_dim=TPB,
+            )
 
 
 # ── GPU loss reduction: acc[0] += mean(src); acc[1] += 1 ───────────────
@@ -66,115 +163,72 @@ def _reduce_mean_acc_kernel[BATCH: Int](
         acc[1] = acc[1] + Scalar[DT](1.0)
 
 
-# ── checkpoint visitors (params only, in for_each_param order) ─────────
-# `ctx` is None on CPU (direct host deref) and Some on GPU (wrap each
-# param's device pointer in a non-owning DeviceBuffer for the transfer).
+# ── checkpoint / export visitors (storage ParamVisitor signature) ──────
 struct _SaveVisitor(ParamVisitor):
+    """Collect each param's values in for_each_param walk order (GPU: D2H)."""
     var vals: List[Scalar[DT]]
-    var ctx: Optional[DeviceContext]
 
-    def __init__(out self, ctx: Optional[DeviceContext] = None):
+    def __init__(out self):
         self.vals = List[Scalar[DT]]()
-        self.ctx = ctx
 
-    def visit(
-        mut self, name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int, apply_decay: Bool,
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
-        var p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        if self.ctx:
-            var c = self.ctx.value()
-            var dev = DeviceBuffer[DT](c, p, n_elems, owning=False)
-            var host = List[Scalar[DT]](length=n_elems, fill=Scalar[DT](0.0))
-            c.enqueue_copy(host.unsafe_ptr(), dev)
-            c.synchronize()
-            for i in range(n_elems):
-                self.vals.append(host[i])
-        else:
-            for i in range(n_elems):
-                self.vals.append(p[i])
+        comptime if target == "gpu":
+            param.download(ctx.value())
+        for i in range(N):
+            self.vals.append(param.data[i])
 
 
 struct _LoadVisitor(ParamVisitor):
+    """Restore each param's values in for_each_param walk order (GPU: H2D)."""
     var vals: List[Scalar[DT]]
     var idx: Int
-    var ctx: Optional[DeviceContext]
 
-    def __init__(
-        out self, var vals: List[Scalar[DT]],
-        ctx: Optional[DeviceContext] = None,
-    ):
+    def __init__(out self, var vals: List[Scalar[DT]]):
         self.vals = vals^
         self.idx = 0
-        self.ctx = ctx
 
-    def visit(
-        mut self, name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int, apply_decay: Bool,
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
-        var p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        if self.ctx:
-            var c = self.ctx.value()
-            var host = List[Scalar[DT]](length=n_elems, fill=Scalar[DT](0.0))
-            for i in range(n_elems):
-                host[i] = self.vals[self.idx]
-                self.idx += 1
-            var dev = DeviceBuffer[DT](c, p, n_elems, owning=False)
-            c.enqueue_copy(dev, host.unsafe_ptr())
-            c.synchronize()
-        else:
-            for i in range(n_elems):
-                p[i] = self.vals[self.idx]
-                self.idx += 1
+        param.ensure(N)
+        for i in range(N):
+            param.data[i] = self.vals[self.idx]
+            self.idx += 1
+        param.n = N
+        comptime if target == "gpu":
+            param.upload(ctx.value())
 
 
-# Named export: record each param's name → values (CPU direct / GPU D2H).
-# Feeds LeWMPredictor.sync_from_named for the MPC predictor-from-latents path.
 struct _NamedExportVisitor(ParamVisitor):
-    var d: UnsafePointer[Dict[String, List[Scalar[DT]]], MutAnyOrigin]
-    var ctx: Optional[DeviceContext]
+    """Record each param/state's name → values (GPU: D2H). Owns the dict; feeds
+    LeWMPredictor.sync_from_named for the MPC predictor-from-latents path."""
+    var d: Dict[String, List[Scalar[DT]]]
 
-    def __init__(
-        out self,
-        d: UnsafePointer[Dict[String, List[Scalar[DT]]], MutAnyOrigin],
-        ctx: Optional[DeviceContext] = None,
-    ):
-        self.d = d
-        self.ctx = ctx
+    def __init__(out self):
+        self.d = Dict[String, List[Scalar[DT]]]()
 
-    def visit(
-        mut self, name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int, apply_decay: Bool,
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
-        var p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        var vals = List[Scalar[DT]](length=n_elems, fill=Scalar[DT](0.0))
-        if self.ctx:
-            var c = self.ctx.value()
-            var dev = DeviceBuffer[DT](c, p, n_elems, owning=False)
-            c.enqueue_copy(vals.unsafe_ptr(), dev)
-            c.synchronize()
-        else:
-            for i in range(n_elems):
-                vals[i] = p[i]
-        self.d[][name] = vals^
+        comptime if target == "gpu":
+            param.download(ctx.value())
+        var vals = List[Scalar[DT]](length=N, fill=Scalar[DT](0.0))
+        for i in range(N):
+            vals[i] = param.data[i]
+        self.d[name] = vals^
+
+    def take(deinit self) -> Dict[String, List[Scalar[DT]]]:
+        """Consume the visitor, yielding its accumulated dict (avoids a
+        partial field-move-out of a still-live value)."""
+        return self.d^
 
 
 struct LeWMTrainer[
@@ -190,13 +244,6 @@ struct LeWMTrainer[
         HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H, ENC_FF_MULT,
     ],
 ](Movable & ImplicitlyDeletable):
-    # PRED_DIM_HEAD 0 ⇒ standard EMB/PRED_HEADS attention; >0 ⇒ the paper's
-    # expanded predictor attention (e.g. 16 heads × 64 = 1024 inner > EMB).
-    # Added last (after train_target) so existing positional call sites are
-    # unchanged. Bit-identical at the default 0.
-    # ENC = encoder type (last param, dims-derived default = mean-pooled
-    # LeWMEncoder). Pass LeWMEncoderCLS[...same dims...] for the CLS variant;
-    # existing callers omit it and stay bit-identical.
     comptime LG = LeWMLossGraph[
         Self.IN_CH, Self.IMG, Self.PATCH, Self.HIDDEN, Self.ENC_HEADS,
         Self.ENC_LAYERS, Self.EMB, Self.ENC_PROJ_H, Self.ENC_FF_MULT,
@@ -208,32 +255,31 @@ struct LeWMTrainer[
     comptime PIX = Self.T * Self.IN_CH * Self.IMG * Self.IMG
     comptime ACTIN = Self.T * Self.ACT
     comptime TE = Self.T * Self.EMB
+    comptime HE = Self.H * Self.EMB
 
     var graph: Self.LG
     var opt: Adam
+    var max_grad_norm: Scalar[DT]
+    var ctx: Optional[DeviceContext]
     # Graph IO scratch: device buffer on GPU, host list on CPU.
-    var _loss_out: Scratch["lewm_loss_out", Self.BATCH]
-    var _grad_seed: Scratch["lewm_grad_seed", Self.BATCH]
+    var loss_out: Tensor   # per-sample loss [BATCH]
+    var grad_seed: Tensor  # constant 1/BATCH backward seed [BATCH]
     # GPU-only `(Σmean, count)` loss accumulator (drained at flush).
     var _loss_acc_dev: Optional[DeviceBuffer[DT]]
-    # Host staging: probe emb (B·TE) + eval-loss D2H (BATCH). Always host.
-    var emb_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var loss_host: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var ts: TargetStorage
+    # Host staging (RAII Lists): probe emb (BATCH·TE) + eval-loss D2H (BATCH).
+    var emb_buf: List[Scalar[DT]]
+    var loss_host: List[Scalar[DT]]
 
     def __init__(out self):
         self.graph = Self.LG()
         self.opt = Adam()
-        self._loss_out = Scratch["lewm_loss_out", Self.BATCH]()
-        self._grad_seed = Scratch["lewm_grad_seed", Self.BATCH]()
+        self.max_grad_norm = Scalar[DT](0.0)
+        self.ctx = None
+        self.loss_out = Tensor()
+        self.grad_seed = Tensor()
         self._loss_acc_dev = None
-        self.emb_buf = alloc[Scalar[DT]](Self.BATCH * Self.TE)
-        self.loss_host = alloc[Scalar[DT]](Self.BATCH)
-        self.ts = TargetStorage.make_uninit()
-
-    def __del__(deinit self):
-        self.emb_buf.free()
-        self.loss_host.free()
+        self.emb_buf = List[Scalar[DT]]()
+        self.loss_host = List[Scalar[DT]]()
 
     @staticmethod
     def make(
@@ -245,42 +291,66 @@ struct LeWMTrainer[
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
         var t = Self()
-        t.graph = Self.LG.make[target = Self.train_target, INIT=Kaiming](
-            ctx=ctx
-        )
+        t.graph = Self.LG.make[Self.train_target, Kaiming](ctx=ctx)
         t.graph.set_node_attr["sig_s", "multiplier"](lam)
         # Per-step SIGReg projection resampling (reference draws fresh
-        # projections EVERY forward; a fixed A lets training game the
-        # sketch by hiding non-Gaussianity in the null directions).
-        # Default off = bit-identical to before.
+        # projections EVERY forward). Default off = bit-identical to before.
         if sigreg_resample:
             t.graph.set_node_attr["sig", "resample"](Scalar[DT](1.0))
-        t.opt = Adam.make_graph[Self.train_target](t.graph, ctx=ctx)
-        t.opt.lr = lr
-        # Global grad-norm clip (0.0 = disabled, bit-identical to before).
-        # The CLS readout concentrates all the encoder gradient through one
-        # token and can blow up mid-training (~step 1800 on the paper run);
-        # clipping at e.g. 1.0 caps the step so an outlier batch can't
-        # explode the residual stream. Applied in Adam.step_graph.
-        t.opt.max_grad_norm = max_grad_norm
-        # Decoupled (AdamW-style) weight decay — the reference trains with
-        # AdamW wd=1e-3. 0.0 = disabled (bit-identical). Decay-exempt
-        # params (BatchNorm γ/β etc.) are skipped via apply_decay.
-        t.opt.weight_decay = weight_decay
-        t.ts = TargetStorage.make[Self.train_target](ctx=ctx)
-        init_scratch_auto[Self, Self.train_target](t, ctx)
-        # The backward seed for a mean-over-batch loss is the constant
-        # 1/BATCH in every slot — write it once (nothing in the step
-        # mutates it, so this stays out of the per-step / capturable path).
-        seed_grad_inv_batch[Self.train_target, Self.BATCH](
-            t._grad_seed.target_ptr[Self.train_target](), ctx=ctx
-        )
+        # Decoupled (AdamW-style) weight decay — wd>0 makes Adam → AdamW;
+        # decay-exempt params (BatchNorm γ/β etc.) are skipped via apply_decay.
+        t.opt = Adam(lr=lr, wd=weight_decay)
+        t.max_grad_norm = max_grad_norm
+        t.ctx = ctx
         comptime if Self.train_target == "gpu":
             var c = ctx.value()
+            # NOTE: the graph owns all params but is not a `Module`, so Adam's
+            # arena (`adopt`) — which requires a Module — can't be engaged here;
+            # the step walks `graph.for_each_param` (per-param kernels). A
+            # graph-aware grouped arena is a GPU-perf follow-up.
+            t.loss_out = Tensor.alloc_gpu(c, Self.BATCH)
+            t.grad_seed = Tensor.alloc_gpu(c, Self.BATCH)
             var acc = c.enqueue_create_buffer[DT](2)
             acc.enqueue_fill(0.0)
             t._loss_acc_dev = acc^
+        else:
+            t.loss_out = Tensor.alloc(Self.BATCH)
+            t.grad_seed = Tensor.alloc(Self.BATCH)
+        # The backward seed for a mean-over-batch loss is the constant 1/BATCH
+        # in every slot — write it once (nothing in the step mutates it).
+        seed_grad_inv_batch[Self.train_target, Self.BATCH](
+            t.grad_seed.lt[Self.train_target, Layout.row_major(Self.BATCH, 1)](),
+            ctx=ctx,
+        )
+        t.emb_buf = List[Scalar[DT]](
+            length=Self.BATCH * Self.TE, fill=Scalar[DT](0.0)
+        )
+        t.loss_host = List[Scalar[DT]](length=Self.BATCH, fill=Scalar[DT](0.0))
         return t^
+
+    def _seed_input[
+        slot_name: StaticString, N: Int
+    ](
+        mut self,
+        src: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Bridge a raw input tile into the named graph input slot (storage
+        `set_input` copies it into the pool)."""
+        var tt = Tensor()
+        comptime if Self.train_target == "cpu":
+            tt.data = List[Scalar[DT]](length=N, fill=Scalar[DT](0))
+            for i in range(N):
+                tt.data[i] = rebind[Scalar[DT]](src.ptr[i])
+            tt.n = N
+        else:
+            var c = self.ctx.value()
+            var sp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](src.ptr)
+            tt.dev = DeviceBuffer[DT](c, sp, N, owning=False)
+            tt.n = N
+        self.graph.set_input[slot_name, Self.BATCH](tt, self.ctx)
 
     def train_step[
         POLICY: AMPPolicy = NoAMP,
@@ -295,34 +365,46 @@ struct LeWMTrainer[
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises -> Scalar[DT]:
-        assert_tag_for["LeWMTrainer", Self.train_target](self.ts.target_tag)
-        self.opt.zero_grad_graph[Self.train_target](self.graph)
-        self.graph.set_input["pixels", Self.BATCH](pix)
-        self.graph.set_input["actions", Self.BATCH](act)
-
-        var loss_p = self._loss_out.target_ptr[Self.train_target]()
-        var loss_t = TileTensor(loss_p, row_major[Self.BATCH, 1]())
-        self.graph.forward[Self.train_target, Self.BATCH, POLICY](loss_t)
+        self.graph.zero_grad[Self.train_target](self.ctx)
+        self._seed_input["pixels", Self.BATCH * Self.PIX](pix)
+        self._seed_input["actions", Self.BATCH * Self.ACTIN](act)
+        self.graph.forward[Self.BATCH, Self.train_target, POLICY](
+            self.loss_out, self.ctx
+        )
 
         var m: Scalar[DT] = 0.0
         comptime if Self.train_target == "cpu":
             for b in range(Self.BATCH):
-                m += loss_p[b]
+                m += self.loss_out.data[b]
             m /= Scalar[DT](Self.BATCH)
         else:
-            # Device reduce-accumulate; the driver drains `_loss_acc_dev`
-            # at flush cadence. `m` stays a 0 sentinel (no per-step D2H).
-            var ctx = self.ts.ctx.value()
+            # Device reduce-accumulate; the driver drains `_loss_acc_dev` at
+            # flush cadence. `m` stays a 0 sentinel (no per-step D2H).
+            var c = self.ctx.value()
             comptime red = _reduce_mean_acc_kernel[Self.BATCH]
-            ctx.enqueue_function[red](
-                loss_p, self._loss_acc_dev.value().unsafe_ptr(),
+            c.enqueue_function[red](
+                self.loss_out.dev.value().unsafe_ptr(),
+                self._loss_acc_dev.value().unsafe_ptr(),
                 grid_dim=1, block_dim=TPB_REDUCE,
             )
 
-        var gseed_p = self._grad_seed.target_ptr[Self.train_target]()
-        var gseed_t = TileTensor(gseed_p, row_major[Self.BATCH, 1]())
-        self.graph.vjp[Self.train_target, Self.BATCH, POLICY](gseed_t)
-        self.opt.step_graph[Self.train_target](self.graph)
+        self.graph.vjp[Self.BATCH, Self.train_target, POLICY](
+            self.grad_seed, self.ctx
+        )
+        # Global grad-norm clip (0.0 = disabled) — two-pass over graph params.
+        if self.max_grad_norm > Scalar[DT](0.0):
+            var ss = _SumSqV()
+            self.graph.for_each_param[Self.train_target, _SumSqV](ss, self.ctx)
+            var scale = _scale_from_norm(
+                sqrt(ss.sum_sq), self.max_grad_norm, Scalar[DT](1e-6)
+            )
+            if scale < Scalar[DT](1.0):
+                var sc = _ScaleV(scale)
+                self.graph.for_each_param[Self.train_target, _ScaleV](
+                    sc, self.ctx
+                )
+        self.opt.begin_step()
+        self.graph.for_each_param[Self.train_target](self.opt, self.ctx)
         return m
 
     def eval_loss[
@@ -339,25 +421,21 @@ struct LeWMTrainer[
         ],
     ) raises -> Scalar[DT]:
         """Forward-only batch-mean loss (no grad / no optimizer step)."""
-        assert_tag_for["LeWMTrainer", Self.train_target](self.ts.target_tag)
-        self.graph.set_input["pixels", Self.BATCH](pix)
-        self.graph.set_input["actions", Self.BATCH](act)
-        var loss_p = self._loss_out.target_ptr[Self.train_target]()
-        var loss_t = TileTensor(loss_p, row_major[Self.BATCH, 1]())
-        self.graph.forward[Self.train_target, Self.BATCH, POLICY](loss_t)
+        self._seed_input["pixels", Self.BATCH * Self.PIX](pix)
+        self._seed_input["actions", Self.BATCH * Self.ACTIN](act)
+        self.graph.forward[Self.BATCH, Self.train_target, POLICY](
+            self.loss_out, self.ctx
+        )
 
         var m: Scalar[DT] = 0.0
         comptime if Self.train_target == "cpu":
             for b in range(Self.BATCH):
-                m += loss_p[b]
+                m += self.loss_out.data[b]
         else:
             # eval is off the capture hot loop — D2H the [BATCH] vector once.
-            var ctx = self.ts.ctx.value()
-            var dev = DeviceBuffer[DT](ctx, loss_p, Self.BATCH, owning=False)
-            ctx.enqueue_copy(self.loss_host, dev)
-            ctx.synchronize()
+            self.loss_out.download(self.ctx.value())
             for b in range(Self.BATCH):
-                m += self.loss_host[b]
+                m += self.loss_out.data[b]
         return m / Scalar[DT](Self.BATCH)
 
     def forward_into[
@@ -378,30 +456,26 @@ struct LeWMTrainer[
         """Forward-only readout for eval/planning: run the graph over
         (pix, act) and copy the predicted latents (`pred` node) and the
         encoded target latents (`tgt` node) — both (BATCH, H·EMB) — to the
-        caller's host buffers. `tgt` is action-independent (the encoded
-        real future), so it's the fixed goal a planner scores against;
-        `pred` is the action-conditioned prediction. No grad / no step."""
-        assert_tag_for["LeWMTrainer", Self.train_target](self.ts.target_tag)
-        comptime HE = Self.H * Self.EMB
-        self.graph.set_input["pixels", Self.BATCH](pix)
-        self.graph.set_input["actions", Self.BATCH](act)
-        var loss_p = self._loss_out.target_ptr[Self.train_target]()
-        var loss_t = TileTensor(loss_p, row_major[Self.BATCH, 1]())
-        self.graph.forward[Self.train_target, Self.BATCH, POLICY](loss_t)
-        var pred_src = self.graph.node_out_ptr["pred"]()
-        var tgt_src = self.graph.node_out_ptr["tgt"]()
-        comptime N = Self.BATCH * HE
+        caller's host buffers. No grad / no step."""
+        self._seed_input["pixels", Self.BATCH * Self.PIX](pix)
+        self._seed_input["actions", Self.BATCH * Self.ACTIN](act)
+        self.graph.forward[Self.BATCH, Self.train_target, POLICY](
+            self.loss_out, self.ctx
+        )
+        comptime N = Self.BATCH * Self.HE
+        ref pred_src = self.graph.node_output["pred"]()
+        ref tgt_src = self.graph.node_output["tgt"]()
         comptime if Self.train_target == "cpu":
             for i in range(N):
-                pred_host[i] = pred_src[i]
-                tgt_host[i] = tgt_src[i]
+                pred_host[i] = pred_src.data[i]
+                tgt_host[i] = tgt_src.data[i]
         else:
-            var ctx = self.ts.ctx.value()
-            var pred_dev = DeviceBuffer[DT](ctx, pred_src, N, owning=False)
-            var tgt_dev = DeviceBuffer[DT](ctx, tgt_src, N, owning=False)
-            ctx.enqueue_copy(pred_host, pred_dev)
-            ctx.enqueue_copy(tgt_host, tgt_dev)
-            ctx.synchronize()
+            var c = self.ctx.value()
+            pred_src.download(c)
+            tgt_src.download(c)
+            for i in range(N):
+                pred_host[i] = pred_src.data[i]
+                tgt_host[i] = tgt_src.data[i]
 
     def read_node_into[
         name: StaticString,
@@ -411,41 +485,32 @@ struct LeWMTrainer[
         n: Int,
     ) raises:
         """Copy the named graph node's output (n elements) to a host buffer.
-        Valid after a forward (`forward_into`/`train_step`/`eval_loss`) has
-        populated the node buffers. Used by the MPC path to read `emb`."""
-        var src = self.graph.node_out_ptr[name]()
+        Valid after a forward has populated the node buffers."""
+        ref src = self.graph.node_output[name]()
         comptime if Self.train_target == "cpu":
             for i in range(n):
-                host[i] = src[i]
+                host[i] = src.data[i]
         else:
-            var ctx = self.ts.ctx.value()
-            var dev = DeviceBuffer[DT](ctx, src, n, owning=False)
-            ctx.enqueue_copy(host, dev)
-            ctx.synchronize()
+            src.download(self.ctx.value())
+            for i in range(n):
+                host[i] = src.data[i]
 
     def export_named_params(mut self) raises -> Dict[String, List[Scalar[DT]]]:
         """Snapshot all graph params AND state (BatchNorm running stats) as
-        a name→values dict (CPU/GPU). Feeds `LeWMPredictor.sync_from_named`
-        so the MPC predictor shares the trained encoder-free weights
-        (matched by name) — including running stats, so eval-mode BN at
-        planning normalizes identically to the trainer's graph."""
-        var d = Dict[String, List[Scalar[DT]]]()
-        var v = _NamedExportVisitor(UnsafePointer(to=d), ctx=self.ts.ctx)
-        self.graph.for_each_param[Self.train_target, _NamedExportVisitor]("", v)
-        self.graph.for_each_state[Self.train_target, _NamedExportVisitor]("", v)
-        _ = v^
-        return d^
+        a name→values dict (CPU/GPU). Feeds `LeWMPredictor.sync_from_named`."""
+        var v = _NamedExportVisitor()
+        self.graph.for_each_param[Self.train_target, _NamedExportVisitor](
+            v, self.ctx
+        )
+        self.graph.for_each_state[Self.train_target, _NamedExportVisitor](
+            v, self.ctx
+        )
+        return v^.take()
 
     def set_bn_training(mut self, training: Bool) raises:
         """Flip the graph's BatchNorm layers between training (batch stats +
-        EMA update) and eval (running stats) mode. The reference plans under
-        `model.eval()`; planning with training-mode BN distorts the latent
-        goal-matching cost (start/goal encoded in separate batches see
-        different batch statistics). BN lives in the encoder projector
-        (inside node "emb") and PredProj (node "pred"); `set_attr` recurses
-        through Tokenwise/Sequential. NOTE: checkpoints don't persist
-        running stats — warm them with a few hundred training-mode forwards
-        over dataset windows before flipping to eval."""
+        EMA update) and eval (running stats) mode. BN lives in the encoder
+        projector (node "emb") and PredProj (node "pred")."""
         var v = Scalar[DT](1.0) if training else Scalar[DT](0.0)
         self.graph.set_node_attr["emb", "training"](v)
         self.graph.set_node_attr["pred", "training"](v)
@@ -457,13 +522,12 @@ struct LeWMTrainer[
 
     def read_loss_accum(mut self) raises -> Scalar[DT]:
         """D2H the device loss accumulator once and return the window mean
-        (Σmean / count). 0 if no steps. GPU only — CPU `train_step` already
-        returns the per-step loss."""
+        (Σmean / count). 0 if no steps. GPU only."""
         comptime if Self.train_target == "gpu":
-            var ctx = self.ts.ctx.value()
-            var h = ctx.enqueue_create_host_buffer[DT](2)
-            ctx.enqueue_copy(h, self._loss_acc_dev.value())
-            ctx.synchronize()
+            var c = self.ctx.value()
+            var h = c.enqueue_create_host_buffer[DT](2)
+            c.enqueue_copy(h, self._loss_acc_dev.value())
+            c.synchronize()
             var s = h.unsafe_ptr()[0]
             var n = h.unsafe_ptr()[1]
             if n == Scalar[DT](0.0):
@@ -476,22 +540,20 @@ struct LeWMTrainer[
         """(var_min, gram_off) over the last forward's `emb`, viewed as
         BATCH·T samples of EMB latent dims. Healthy: var_min > 0.1,
         gram_off < 0.5 (legacy thresholds)."""
-        var emb_src = self.graph.node_out_ptr["emb"]()
         comptime ns = Self.BATCH * Self.T
         comptime D = Self.EMB
+        ref emb_src = self.graph.node_output["emb"]()
         comptime if Self.train_target == "cpu":
             for i in range(ns * D):
-                self.emb_buf[i] = emb_src[i]
+                self.emb_buf[i] = emb_src.data[i]
         else:
-            # D2H the emb node output once (diagnostic, off the hot loop).
-            var ctx = self.ts.ctx.value()
-            var dev = DeviceBuffer[DT](ctx, emb_src, ns * D, owning=False)
-            ctx.enqueue_copy(self.emb_buf, dev)
-            ctx.synchronize()
+            emb_src.download(self.ctx.value())
+            for i in range(ns * D):
+                self.emb_buf[i] = emb_src.data[i]
 
         # per-dim mean + variance
-        var mean = alloc[Scalar[DT]](D)
-        var std = alloc[Scalar[DT]](D)
+        var mean = List[Scalar[DT]](length=D, fill=Scalar[DT](0.0))
+        var std = List[Scalar[DT]](length=D, fill=Scalar[DT](0.0))
         var var_min = Scalar[DT](1e30)
         for d in range(D):
             var s: Scalar[DT] = 0.0
@@ -499,14 +561,14 @@ struct LeWMTrainer[
                 s += self.emb_buf[r * D + d]
             var mu = s / Scalar[DT](ns)
             mean[d] = mu
-            var v: Scalar[DT] = 0.0
+            var vv: Scalar[DT] = 0.0
             for r in range(ns):
                 var df = self.emb_buf[r * D + d] - mu
-                v += df * df
-            v /= Scalar[DT](ns)
-            std[d] = sqrt(v + Scalar[DT](1e-8))
-            if v < var_min:
-                var_min = v
+                vv += df * df
+            vv /= Scalar[DT](ns)
+            std[d] = sqrt(vv + Scalar[DT](1e-8))
+            if vv < var_min:
+                var_min = vv
 
         # mean |off-diagonal correlation|
         var acc: Scalar[DT] = 0.0
@@ -515,23 +577,21 @@ struct LeWMTrainer[
             for j in range(D):
                 if i == j:
                     continue
-                var c: Scalar[DT] = 0.0
+                var cc: Scalar[DT] = 0.0
                 for r in range(ns):
-                    c += (
+                    cc += (
                         (self.emb_buf[r * D + i] - mean[i])
                         * (self.emb_buf[r * D + j] - mean[j])
                     )
-                c /= Scalar[DT](ns)
-                acc += (c / (std[i] * std[j])).__abs__()
+                cc /= Scalar[DT](ns)
+                acc += (cc / (std[i] * std[j])).__abs__()
                 cnt += 1
         var gram_off = acc / Scalar[DT](cnt)
-        mean.free()
-        std.free()
         return (var_min, gram_off)
 
     def save_params(mut self, path: String) raises:
-        var v = _SaveVisitor(ctx=self.ts.ctx)
-        self.graph.for_each_param[Self.train_target, _SaveVisitor]("", v)
+        var v = _SaveVisitor()
+        self.graph.for_each_param[Self.train_target, _SaveVisitor](v, self.ctx)
         var s = String()
         s += String(len(v.vals)) + "\n"
         for i in range(len(v.vals)):
@@ -542,11 +602,11 @@ struct LeWMTrainer[
     def load_params(mut self, path: String) raises:
         var content: String
         with open(path, "r") as f:
-            content = f.read()
+            content = String(f.read())
         var lines = content.split("\n")
         var n = Int(lines[0])
         var vals = List[Scalar[DT]]()
         for i in range(n):
             vals.append(Scalar[DT](Float64(lines[i + 1])))
-        var v = _LoadVisitor(vals^, ctx=self.ts.ctx)
-        self.graph.for_each_param[Self.train_target, _LoadVisitor]("", v)
+        var v = _LoadVisitor(vals^)
+        self.graph.for_each_param[Self.train_target, _LoadVisitor](v, self.ctx)

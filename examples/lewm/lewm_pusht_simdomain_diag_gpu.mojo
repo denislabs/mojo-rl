@@ -142,7 +142,10 @@ def main() raises:
     var pix_t = TileTensor(_p(pix_dev), row_major[B, PIX]())
     var act_t = TileTensor(_p(act_dev), row_major[B, ACTIN]())
     _ = wm.eval_loss(pix_t, act_t)
-    var emb_ptr = wm.graph.node_out_ptr["emb"]()
+    ref emb_tensor = wm.graph.node_output["emb"]()
+    var emb_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        emb_tensor.dev.value().unsafe_ptr()
+    )
     var emb_t = TileTensor(emb_ptr, row_major[DEC_BATCH, EMB]())
 
     # ── decode → recon (patch space) ────────────────────────────────────

@@ -1,31 +1,25 @@
-"""LeWMDecoderTrainer — trains the reconstruction probe on frozen `emb`.
+"""LeWMDecoderTrainer — trains the reconstruction probe on frozen `emb` (storage).
 
-Owns `LeWMDecoderLossGraph` + one Adam (graph overloads) + IO scratch.
+Owns `LeWMDecoderLossGraph` + one Adam + owned IO scratch `Tensor`s.
 `train_step(emb, tgt)` runs zero_grad → set_input → forward → mean-reduce →
-seed 1/B → vjp → Adam.step on the decoder params only (the encoder is
-external and frozen — `emb` is fed as data). `recon_into` reads the `recon`
-node (patch space) for visualization. Mirrors `LeWMTrainer`'s GPU discipline
-(device loss accumulator drained at flush; constant grad seed written once).
+seed 1/B → vjp → Adam.step on the decoder params (the encoder is external and
+frozen — `emb` is fed as data). `recon_into` reads the `recon` node (patch
+space) for visualization.
 
-Parameterized by the decoder dims + the per-frame BATCH (= B·T frames) +
-train_target. The caller derives N_Q / PATCH_PX from (C, IMG, PATCH_D).
+Storage surface: same shape as `LeWMTrainer` (owned `Tensor` scratch, stored
+`ctx`, per-param Adam over `graph.for_each_param`, `node_output`); the public
+facade keeps raw `TileTensor`/host-pointer args, bridged into the graph.
 """
 
-from std.memory import alloc
 from std.gpu import thread_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from layout import Layout, TileTensor, row_major
 
 from ...nn.constants import DT, TPB_REDUCE
-from ...nn.core import ParamVisitor
-from ...nn.core.amp import AMPPolicy, NoAMP
-from ...nn.core.scratch import Scratch
-from ...nn.core.scratch_walkers import init_scratch_auto
-from ...nn.core.target_storage import TargetStorage, assert_tag_for
-from ...nn.initializer import Kaiming
-from ...nn.optimizer.adam import Adam
+from ...nn.storage import Tensor, ParamVisitor, Kaiming, Adam
+from ...nn.storage.core.amp import AMPPolicy, NoAMP
 from .decoder import LeWMDecoderLossGraph
 
 from mojo_rl.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
@@ -49,73 +43,41 @@ def _dec_reduce_mean_acc_kernel[BATCH: Int](
 
 struct _SaveVisitor(ParamVisitor):
     var vals: List[Scalar[DT]]
-    var ctx: Optional[DeviceContext]
 
-    def __init__(out self, ctx: Optional[DeviceContext] = None):
+    def __init__(out self):
         self.vals = List[Scalar[DT]]()
-        self.ctx = ctx
 
-    def visit(
-        mut self, name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int, apply_decay: Bool,
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
-        var p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        if self.ctx:
-            var c = self.ctx.value()
-            var dev = DeviceBuffer[DT](c, p, n_elems, owning=False)
-            var host = List[Scalar[DT]](length=n_elems, fill=Scalar[DT](0.0))
-            c.enqueue_copy(host.unsafe_ptr(), dev)
-            c.synchronize()
-            for i in range(n_elems):
-                self.vals.append(host[i])
-        else:
-            for i in range(n_elems):
-                self.vals.append(p[i])
+        comptime if target == "gpu":
+            param.download(ctx.value())
+        for i in range(N):
+            self.vals.append(param.data[i])
 
 
 struct _LoadVisitor(ParamVisitor):
     var vals: List[Scalar[DT]]
     var idx: Int
-    var ctx: Optional[DeviceContext]
 
-    def __init__(
-        out self, var vals: List[Scalar[DT]],
-        ctx: Optional[DeviceContext] = None,
-    ):
+    def __init__(out self, var vals: List[Scalar[DT]]):
         self.vals = vals^
         self.idx = 0
-        self.ctx = ctx
 
-    def visit(
-        mut self, name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int, apply_decay: Bool,
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
-        var p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](param.ptr)
-        if self.ctx:
-            var c = self.ctx.value()
-            var host = List[Scalar[DT]](length=n_elems, fill=Scalar[DT](0.0))
-            for i in range(n_elems):
-                host[i] = self.vals[self.idx]
-                self.idx += 1
-            var dev = DeviceBuffer[DT](c, p, n_elems, owning=False)
-            c.enqueue_copy(dev, host.unsafe_ptr())
-            c.synchronize()
-        else:
-            for i in range(n_elems):
-                p[i] = self.vals[self.idx]
-                self.idx += 1
+        param.ensure(N)
+        for i in range(N):
+            param.data[i] = self.vals[self.idx]
+            self.idx += 1
+        param.n = N
+        comptime if target == "gpu":
+            param.upload(ctx.value())
 
 
 struct LeWMDecoderTrainer[
@@ -129,28 +91,23 @@ struct LeWMDecoderTrainer[
 
     var graph: Self.DG
     var opt: Adam
-    var _loss_out: Scratch["dec_loss_out", Self.BATCH]
-    var _grad_seed: Scratch["dec_grad_seed", Self.BATCH]
+    var ctx: Optional[DeviceContext]
+    var loss_out: Tensor   # per-sample loss [BATCH]
+    var grad_seed: Tensor  # constant 1/BATCH backward seed [BATCH]
     # Dummy `tgt` so a cold `recon_into` (no prior train_step) can run the
-    # full loss-graph forward — the loss it computes is ignored; `recon`
-    # (computed before `loss`) does not depend on `tgt`.
-    var _tgt_dummy: Scratch["dec_tgt_dummy", Self.BATCH * Self.RECON]
+    # full loss-graph forward — `recon` (computed before `loss`) is
+    # tgt-independent, so the loss it computes is ignored.
+    var tgt_dummy: Tensor
     var _loss_acc_dev: Optional[DeviceBuffer[DT]]
-    var loss_host: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var ts: TargetStorage
 
     def __init__(out self):
         self.graph = Self.DG()
         self.opt = Adam()
-        self._loss_out = Scratch["dec_loss_out", Self.BATCH]()
-        self._grad_seed = Scratch["dec_grad_seed", Self.BATCH]()
-        self._tgt_dummy = Scratch["dec_tgt_dummy", Self.BATCH * Self.RECON]()
+        self.ctx = None
+        self.loss_out = Tensor()
+        self.grad_seed = Tensor()
+        self.tgt_dummy = Tensor()
         self._loss_acc_dev = None
-        self.loss_host = alloc[Scalar[DT]](Self.BATCH)
-        self.ts = TargetStorage.make_uninit()
-
-    def __del__(deinit self):
-        self.loss_host.free()
 
     @staticmethod
     def make(
@@ -158,22 +115,49 @@ struct LeWMDecoderTrainer[
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
         var t = Self()
-        t.graph = Self.DG.make[target = Self.train_target, INIT=Kaiming](
-            ctx=ctx
-        )
-        t.opt = Adam.make_graph[Self.train_target](t.graph, ctx=ctx)
-        t.opt.lr = lr
-        t.ts = TargetStorage.make[Self.train_target](ctx=ctx)
-        init_scratch_auto[Self, Self.train_target](t, ctx)
-        seed_grad_inv_batch[Self.train_target, Self.BATCH](
-            t._grad_seed.target_ptr[Self.train_target](), ctx=ctx
-        )
+        t.graph = Self.DG.make[Self.train_target, Kaiming](ctx=ctx)
+        t.opt = Adam(lr=lr)
+        t.ctx = ctx
         comptime if Self.train_target == "gpu":
             var c = ctx.value()
+            t.loss_out = Tensor.alloc_gpu(c, Self.BATCH)
+            t.grad_seed = Tensor.alloc_gpu(c, Self.BATCH)
+            t.tgt_dummy = Tensor.alloc_gpu(c, Self.BATCH * Self.RECON)
             var acc = c.enqueue_create_buffer[DT](2)
             acc.enqueue_fill(0.0)
             t._loss_acc_dev = acc^
+        else:
+            t.loss_out = Tensor.alloc(Self.BATCH)
+            t.grad_seed = Tensor.alloc(Self.BATCH)
+            t.tgt_dummy = Tensor.alloc(Self.BATCH * Self.RECON)
+        seed_grad_inv_batch[Self.train_target, Self.BATCH](
+            t.grad_seed.lt[Self.train_target, Layout.row_major(Self.BATCH, 1)](),
+            ctx=ctx,
+        )
         return t^
+
+    def _seed_input[
+        slot_name: StaticString, N: Int
+    ](
+        mut self,
+        src: TileTensor[
+            dtype=DT, address_space=AddressSpace.GENERIC,
+            element_size=1, origin=MutAnyOrigin, ...,
+        ],
+    ) raises:
+        """Bridge a raw input tile into the named graph input slot."""
+        var tt = Tensor()
+        comptime if Self.train_target == "cpu":
+            tt.data = List[Scalar[DT]](length=N, fill=Scalar[DT](0))
+            for i in range(N):
+                tt.data[i] = rebind[Scalar[DT]](src.ptr[i])
+            tt.n = N
+        else:
+            var c = self.ctx.value()
+            var sp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](src.ptr)
+            tt.dev = DeviceBuffer[DT](c, sp, N, owning=False)
+            tt.n = N
+        self.graph.set_input[slot_name, Self.BATCH](tt, self.ctx)
 
     def train_step[
         POLICY: AMPPolicy = NoAMP,
@@ -188,34 +172,32 @@ struct LeWMDecoderTrainer[
             element_size=1, origin=MutAnyOrigin, ...,
         ],
     ) raises -> Scalar[DT]:
-        assert_tag_for["LeWMDecoderTrainer", Self.train_target](
-            self.ts.target_tag
+        self.graph.zero_grad[Self.train_target](self.ctx)
+        self._seed_input["emb", Self.BATCH * Self.EMB](emb)
+        self._seed_input["tgt", Self.BATCH * Self.RECON](tgt)
+        self.graph.forward[Self.BATCH, Self.train_target, POLICY](
+            self.loss_out, self.ctx
         )
-        self.opt.zero_grad_graph[Self.train_target](self.graph)
-        self.graph.set_input["emb", Self.BATCH](emb)
-        self.graph.set_input["tgt", Self.BATCH](tgt)
-
-        var loss_p = self._loss_out.target_ptr[Self.train_target]()
-        var loss_t = TileTensor(loss_p, row_major[Self.BATCH, 1]())
-        self.graph.forward[Self.train_target, Self.BATCH, POLICY](loss_t)
 
         var m: Scalar[DT] = 0.0
         comptime if Self.train_target == "cpu":
             for b in range(Self.BATCH):
-                m += loss_p[b]
+                m += self.loss_out.data[b]
             m /= Scalar[DT](Self.BATCH)
         else:
-            var ctx = self.ts.ctx.value()
+            var c = self.ctx.value()
             comptime red = _dec_reduce_mean_acc_kernel[Self.BATCH]
-            ctx.enqueue_function[red](
-                loss_p, self._loss_acc_dev.value().unsafe_ptr(),
+            c.enqueue_function[red](
+                self.loss_out.dev.value().unsafe_ptr(),
+                self._loss_acc_dev.value().unsafe_ptr(),
                 grid_dim=1, block_dim=TPB_REDUCE,
             )
 
-        var gseed_p = self._grad_seed.target_ptr[Self.train_target]()
-        var gseed_t = TileTensor(gseed_p, row_major[Self.BATCH, 1]())
-        self.graph.vjp[Self.train_target, Self.BATCH, POLICY](gseed_t)
-        self.opt.step_graph[Self.train_target](self.graph)
+        self.graph.vjp[Self.BATCH, Self.train_target, POLICY](
+            self.grad_seed, self.ctx
+        )
+        self.opt.begin_step()
+        self.graph.for_each_param[Self.train_target](self.opt, self.ctx)
         return m
 
     def recon_into[
@@ -230,38 +212,32 @@ struct LeWMDecoderTrainer[
     ) raises:
         """Forward-only readout of the `recon` node (B, N_Q·PATCH_PX, patch
         space) into a host buffer. Caller un-patchifies for display."""
-        assert_tag_for["LeWMDecoderTrainer", Self.train_target](
-            self.ts.target_tag
+        # The loss graph's forward computes loss = MSE(recon, tgt), so BOTH
+        # inputs must point at valid buffers even though we only read `recon`
+        # (computed before `loss`, tgt-independent). Bind the dummy tgt so a
+        # cold recon_into (loaded weights, no prior train_step) doesn't crash.
+        self._seed_input["emb", Self.BATCH * Self.EMB](emb)
+        self.graph.set_input["tgt", Self.BATCH](self.tgt_dummy, self.ctx)
+        self.graph.forward[Self.BATCH, Self.train_target, POLICY](
+            self.loss_out, self.ctx
         )
-        # The loss graph's forward computes the `loss` node = MSE(recon, tgt),
-        # so BOTH inputs must point at valid buffers even though we only read
-        # `recon` (which is computed before `loss` and is tgt-independent).
-        # A cold recon_into (loaded weights, no prior train_step) would crash
-        # on an unset `tgt` slot — so always bind the dummy tgt buffer here.
-        self.graph.set_input["emb", Self.BATCH](emb)
-        var tgt_p = self._tgt_dummy.target_ptr[Self.train_target]()
-        var tgt_t = TileTensor(tgt_p, row_major[Self.BATCH, Self.RECON]())
-        self.graph.set_input["tgt", Self.BATCH](tgt_t)
-        var loss_p = self._loss_out.target_ptr[Self.train_target]()
-        var loss_t = TileTensor(loss_p, row_major[Self.BATCH, 1]())
-        self.graph.forward[Self.train_target, Self.BATCH, POLICY](loss_t)
-        var src = self.graph.node_out_ptr["recon"]()
         comptime N = Self.BATCH * Self.RECON
+        ref src = self.graph.node_output["recon"]()
         comptime if Self.train_target == "cpu":
             for i in range(N):
-                recon_host[i] = src[i]
+                recon_host[i] = src.data[i]
         else:
-            var ctx = self.ts.ctx.value()
-            var dev = DeviceBuffer[DT](ctx, src, N, owning=False)
-            ctx.enqueue_copy(recon_host, dev)
-            ctx.synchronize()
+            var c = self.ctx.value()
+            src.download(c)
+            for i in range(N):
+                recon_host[i] = src.data[i]
 
     def read_loss_accum(mut self) raises -> Scalar[DT]:
         comptime if Self.train_target == "gpu":
-            var ctx = self.ts.ctx.value()
-            var h = ctx.enqueue_create_host_buffer[DT](2)
-            ctx.enqueue_copy(h, self._loss_acc_dev.value())
-            ctx.synchronize()
+            var c = self.ctx.value()
+            var h = c.enqueue_create_host_buffer[DT](2)
+            c.enqueue_copy(h, self._loss_acc_dev.value())
+            c.synchronize()
             var s = h.unsafe_ptr()[0]
             var n = h.unsafe_ptr()[1]
             if n == Scalar[DT](0.0):
@@ -275,8 +251,8 @@ struct LeWMDecoderTrainer[
             self._loss_acc_dev.value().enqueue_fill(0.0)
 
     def save_params(mut self, path: String) raises:
-        var v = _SaveVisitor(ctx=self.ts.ctx)
-        self.graph.for_each_param[Self.train_target, _SaveVisitor]("", v)
+        var v = _SaveVisitor()
+        self.graph.for_each_param[Self.train_target, _SaveVisitor](v, self.ctx)
         var s = String()
         s += String(len(v.vals)) + "\n"
         for i in range(len(v.vals)):
@@ -287,11 +263,11 @@ struct LeWMDecoderTrainer[
     def load_params(mut self, path: String) raises:
         var content: String
         with open(path, "r") as f:
-            content = f.read()
+            content = String(f.read())
         var lines = content.split("\n")
         var n = Int(lines[0])
         var vals = List[Scalar[DT]]()
         for i in range(n):
             vals.append(Scalar[DT](Float64(lines[i + 1])))
-        var v = _LoadVisitor(vals^, ctx=self.ts.ctx)
-        self.graph.for_each_param[Self.train_target, _LoadVisitor]("", v)
+        var v = _LoadVisitor(vals^)
+        self.graph.for_each_param[Self.train_target, _LoadVisitor](v, self.ctx)

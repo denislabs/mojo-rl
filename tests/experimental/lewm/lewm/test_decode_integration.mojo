@@ -110,7 +110,10 @@ def main() raises:
 
     # frozen WM forward → emb node; reinterpret (B, T·EMB) as (B·T, EMB)
     _ = wm.eval_loss(pix_t, act_t)
-    var emb_ptr = wm.graph.node_out_ptr["emb"]()
+    ref emb_tensor = wm.graph.node_output["emb"]()
+    var emb_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        emb_tensor.dev.value().unsafe_ptr()
+    )
     var emb_t = TileTensor(emb_ptr, row_major[DEC_BATCH, EMB]())
 
     # target patches from the same frames

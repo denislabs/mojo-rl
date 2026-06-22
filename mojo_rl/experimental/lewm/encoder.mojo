@@ -17,21 +17,13 @@ architecture (docs/LEWM_PORT_PLAN.md §3) on nn.
 - `PredProj`     : per-token projector on the predictor output (Tokenwise).
 """
 
-from ...nn.combinators import Sequential, Repeat, Tokenwise, RepeatConditional
-from ...nn.models.vit import PatchEmbed
-from ...nn.models.transformer import TransformerBlock
-from ...nn.primitives.linear import Linear
-from ...nn.primitives.linear_swish import LinearSwish
-from ...nn.primitives.batch_norm_1d import BatchNorm1D
-from ...nn.primitives.gelu import GELU
-from ...nn.primitives.layer_norm import LayerNorm
-from ...nn.primitives.token_mean import TokenMean
-from ...nn.primitives.bias_add import BiasAdd
-from ...nn.primitives.conditional_transformer_block import (
-    ConditionalTransformerBlock,
+from ...nn.storage import (
+    Sequential, Repeat, Tokenwise, RepeatConditional,
+    Linear, LinearSwish, BatchNorm1D, GELU, LayerNorm, TokenMean, BiasAdd,
+    ConditionalTransformerBlock, LearnedTokens, Slice,
 )
-from ...nn.primitives.learned_tokens import LearnedTokens
-from ...nn.primitives.slice import Slice
+from ...nn.storage.models.vit import PatchEmbed
+from ...nn.storage.models.transformer import TransformerBlock
 
 
 # Projector MLP: (B, HIDDEN) → (B, EMB). BatchNorm1D matches the reference.

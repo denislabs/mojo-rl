@@ -32,15 +32,11 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
 from ...nn.constants import DT, TPB
-from ...nn.combinators import (
+from ...nn.storage import (
     ComputeGraph, InputSlot, Node, Tokenwise, RepeatConditional,
+    Linear, LayerNorm, BroadcastTokens, LearnedQueries, DecoderBlock,
+    MSEPerSample,
 )
-from ...nn.primitives.linear import Linear
-from ...nn.primitives.layer_norm import LayerNorm
-from ...nn.primitives.broadcast_tokens import BroadcastTokens
-from ...nn.primitives.learned_queries import LearnedQueries
-from ...nn.primitives.decoder_block import DecoderBlock
-from ...nn.primitives.mse_per_sample import MSEPerSample
 
 
 # Reconstruction graph: emb → recon patches.  N_Q = (IMG//PATCH_D)^2,
@@ -48,7 +44,6 @@ from ...nn.primitives.mse_per_sample import MSEPerSample
 comptime LeWMDecoder[
     EMB: Int, HID: Int, N_Q: Int, PATCH_PX: Int, FF: Int, N_LAYERS: Int,
 ] = ComputeGraph[
-    N_Q * PATCH_PX,
     InputSlot["emb", EMB],
     Node["g", Linear[EMB, HID], "emb"],
     Node["gN", BroadcastTokens[N_Q, HID], "g"],
@@ -67,7 +62,6 @@ comptime LeWMDecoder[
 comptime LeWMDecoderLossGraph[
     EMB: Int, HID: Int, N_Q: Int, PATCH_PX: Int, FF: Int, N_LAYERS: Int,
 ] = ComputeGraph[
-    1,
     InputSlot["emb", EMB],
     InputSlot["tgt", N_Q * PATCH_PX],
     Node["g", Linear[EMB, HID], "emb"],
