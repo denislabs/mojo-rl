@@ -25,10 +25,17 @@ from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.nn.storage.core.initializer import Zero
 from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node, ExternalNode
+from mojo_rl.nn.storage.combinators.graph_decl import (
+    InputSlot,
+    Node,
+    ExternalNode,
+)
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.planners.tree_search import (
-    GenericCPUMCTS, AlphaGoPUCT, DirichletNoise, SelfPlay,
+    GenericCPUMCTS,
+    AlphaGoPUCT,
+    DirichletNoise,
+    SelfPlay,
 )
 
 from .loss_ops import AZLossOp
@@ -63,11 +70,16 @@ def run_alphazero_selfplay_cpu[
 ) raises -> Float64:
     comptime OBS = NET.IN_DIMS[0]
     comptime ACT = NET.OUT_DIM - 1
-    comptime W = NET.OUT_DIM          # ACT + 1
+    comptime W = NET.OUT_DIM  # ACT + 1
     comptime LATENT = ENV.SAVE_SIZE
     comptime MCTS = GenericCPUMCTS[
-        ACT, LATENT, NUM_SIMS, MAX_NODES,
-        AlphaGoPUCT[1.0], DirichletNoise[0.25, 0.25], SelfPlay,
+        ACT,
+        LATENT,
+        NUM_SIMS,
+        MAX_NODES,
+        AlphaGoPUCT[1.0],
+        DirichletNoise[0.25, 0.25],
+        SelfPlay,
         NORMALIZE_Q=False,  # raw Q∈[-1,1] like legacy (MinMax over-explores)
     ]
     comptime Graph = ComputeGraph[
@@ -104,20 +116,32 @@ def run_alphazero_selfplay_cpu[
     for it in range(iterations):
         # 1. MCTS search from the live env state (eval mode for any BatchNorm).
         net.set_attr["training"](Scalar[DT](0.0))
-        env.save_env_state(root_save)            # snapshot root (search trashes it)
+        env.save_env_state(root_save)  # snapshot root (search trashes it)
+        # TODO(unsafe-origin): rep/dyn/pred each hold a NON-OWNING mutable handle
+        # to the SAME `env` (the planner mutates it through them during search) —
+        # a deliberate 3-way mutable alias that `GenericCPUMCTS.search` takes all
+        # at once. A concrete `Pointer[E, o]` (TensorRefs-style, as `AZPredGPU`'s
+        # single-ptr `o: Origin` does) would trip exclusivity here, so the handles
+        # stay `MutAnyOrigin` and we discard the origin explicitly via
+        # `as_unsafe_any_origin()`. A clean fix needs the planner to take `env`
+        # ONCE (e.g. thread it through `search`) instead of embedding 3 aliases.
         var env_ptr = UnsafePointer(to=env)
-        var rep = AZRepCPU[ENV, OBS](env=env_ptr)
-        var dyn = AZDynCPU[ENV, ACT](env=env_ptr)
+        var net_ptr = UnsafePointer(to=net)
+        var rep = AZRepCPU[ENV, OBS](env=env_ptr.as_unsafe_any_origin())
+        var dyn = AZDynCPU[ENV, ACT](env=env_ptr.as_unsafe_any_origin())
         var pred = AZPredCPU[ENV, OBS, ACT, NET](
-            env=env_ptr, net=UnsafePointer(to=net)
+            env=env_ptr.as_unsafe_any_origin(),
+            net=net_ptr.as_unsafe_any_origin(),
         )
         var mcts = MCTS(gamma=1.0)
         var legal = env.legal_action_mask()
         var root_obs = List[Float64](length=OBS, fill=Float64(0.0))  # ignored
         var policy = mcts.search[
-            AZRepCPU[ENV, OBS], AZDynCPU[ENV, ACT], AZPredCPU[ENV, OBS, ACT, NET]
+            AZRepCPU[ENV, OBS],
+            AZDynCPU[ENV, ACT],
+            AZPredCPU[ENV, OBS, ACT, NET],
         ](rep, dyn, pred, root_obs, add_noise=True, legal_mask=legal)
-        env.load_env_state(root_save)            # restore env to root
+        env.load_env_state(root_save)  # restore env to root
 
         # 2. Record (canonical obs, visit policy) into the trajectory.
         if traj_len < MAX_TRAJ:
@@ -140,7 +164,7 @@ def run_alphazero_selfplay_cpu[
             if u <= cum and policy[a] > 0.0:
                 chosen = a
                 break
-        if chosen < 0:                            # numeric fallback: argmax legal
+        if chosen < 0:  # numeric fallback: argmax legal
             var bestv = Float64(-1.0)
             for a in range(ACT):
                 if policy[a] > bestv:
@@ -153,7 +177,7 @@ def run_alphazero_selfplay_cpu[
 
         # 4. On a finished game: assign z, flush to replay, reset.
         if done:
-            var gr = env.game_result()            # 1=P0 win, 2=P1 win, 3=draw
+            var gr = env.game_result()  # 1=P0 win, 2=P1 win, 3=draw
             for k in range(traj_len):
                 var z: Float64 = 0.0
                 if gr == 1:

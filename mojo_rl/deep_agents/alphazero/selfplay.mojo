@@ -17,19 +17,26 @@ One `run_alphazero_selfplay` call drives `iterations` self-play *moves* across
      CPU/GPU AZ loss graph) and update the net.
 
 Returns the last observed mean train loss (0.0 if training never triggered).
-This is the driver; the agent/checkpoint facade (a thin struct over it) lands next.
+
+Storage surface: the AZ loss runs on the storage ComputeGraph (net threaded as a
+forward/vjp external arg; `set_input` takes a `Tensor`; Adam via `begin_step` +
+`for_each_param`). The per-env trajectory is an owned `List` (RAII); the env /
+MCTS device buffers stay category-B raw `DeviceBuffer`s. The training batch is
+bridged into storage Tensors by `sample_batch_tensors` + `upload`.
 """
 
-from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.optimizer import Adam
-from mojo_rl.nn.initializer import Zero
-from mojo_rl.nn.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.combinators.graph_nodes import InputSlot, Node, ExternalNode
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.initializer import Zero
+from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.storage.combinators.graph_decl import (
+    InputSlot, Node, ExternalNode,
+)
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (
     GenericGPUMCTS,
@@ -79,20 +86,19 @@ def run_alphazero_selfplay[
         STATE_SIZE=STATE,
     ]
     comptime Graph = ComputeGraph[
-        1,
         InputSlot["obs", OBS],
         ExternalNode["pred", NET, "obs"],
         InputSlot["tgt", W],
         Node["loss", AZLossOp[ACT], "pred", "tgt"],
     ]
 
-    var opt = Adam.make["gpu", M=NET](net, ctx)
-    opt.lr = lr
-    var graph = Graph.make["gpu", INIT=Zero](ctx=ctx)
+    var octx = Optional[DeviceContext](ctx)
+    var opt = Adam(lr=lr)
+    var graph = Graph.make["gpu", Zero](octx)
     var mcts = MCTS(ctx, gamma=1.0, v_min=-1.0, v_max=1.0)
     var replay = MCTSExampleReplay[OBS, W, CAP]()
 
-    # ── Device buffers ──
+    # ── Env / MCTS device buffers (category-B; RAII DeviceBuffer) ──
     var states = ctx.enqueue_create_buffer[DT](N_ENVS * STATE)
     var obs_dev = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
     var legal_dev = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
@@ -101,41 +107,28 @@ def run_alphazero_selfplay[
     var term = ctx.enqueue_create_buffer[DT](N_ENVS)
     var obs_next = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
     var legal_next = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
-    var tb_obs = ctx.enqueue_create_buffer[DT](BATCH * OBS)
-    var tb_tgt = ctx.enqueue_create_buffer[DT](BATCH * W)
-    var tb_loss = ctx.enqueue_create_buffer[DT](BATCH)
-    var tb_grad = ctx.enqueue_create_buffer[DT](BATCH)
 
-    # ── Host buffers ──
+    # ── Host staging for the MCTS root obs / policy + step results ──
     var obs_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * OBS)
     var pol_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * ACT)
     var done_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
     var rew_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
-    var tb_obs_h = ctx.enqueue_create_host_buffer[DT](BATCH * OBS)
-    var tb_tgt_h = ctx.enqueue_create_host_buffer[DT](BATCH * W)
-    var loss_h = ctx.enqueue_create_host_buffer[DT](BATCH)
-    var grad_h = ctx.enqueue_create_host_buffer[DT](BATCH)
     ctx.synchronize()
 
-    # ── Host trajectory storage (per-env in-progress game) ──
-    var traj_obs = alloc[Scalar[DT]](N_ENVS * MAX_TRAJ * OBS)
-    var traj_pol = alloc[Scalar[DT]](N_ENVS * MAX_TRAJ * ACT)
-    var traj_len = alloc[Int](N_ENVS)
-    var tmp_tgt = alloc[Scalar[DT]](W)
-    for e in range(N_ENVS):
-        traj_len[e] = 0
+    # ── Host trajectory storage (per-env in-progress game) — owned Lists. ──
+    var traj_obs = List[Scalar[DT]](length=N_ENVS * MAX_TRAJ * OBS, fill=0)
+    var traj_pol = List[Scalar[DT]](length=N_ENVS * MAX_TRAJ * ACT, fill=0)
+    var traj_len = List[Int](length=N_ENVS, fill=0)
+    var tmp_tgt = List[Scalar[DT]](length=W, fill=0)
 
-    # Constant 1/BATCH grad seed (uploaded once).
+    # ── Train-batch storage Tensors (the nn surface) ──
+    var obs_t = Tensor.alloc(BATCH * OBS)
+    var tgt_t = Tensor.alloc(BATCH * W)
+    var loss_t = Tensor.alloc_gpu(ctx, BATCH)
+    var grad_t = Tensor.alloc(BATCH)
     for i in range(BATCH):
-        grad_h.unsafe_ptr()[i] = Scalar[DT](1.0) / Scalar[DT](BATCH)
-    ctx.enqueue_copy(tb_grad, grad_h)
-    ctx.synchronize()
-
-    # Train-graph IO tiles (stable buffers; created once, reused each step).
-    var tbo_t = TileTensor(tb_obs, row_major[BATCH, OBS]())
-    var tbt_t = TileTensor(tb_tgt, row_major[BATCH, W]())
-    var loss_t = TileTensor(tb_loss, row_major[BATCH, 1]())
-    var grad_t = TileTensor(tb_grad, row_major[BATCH, 1]())
+        grad_t.data[i] = Scalar[DT](1.0) / Scalar[DT](BATCH)
+    grad_t.upload(ctx)  # constant 1/BATCH grad seed, uploaded once
 
     # ── Initialize all games ──
     ENV.reset_kernel_gpu[N_ENVS, STATE](ctx, states)
@@ -176,10 +169,10 @@ def run_alphazero_selfplay[
             if k < MAX_TRAJ:
                 var ob = (e * MAX_TRAJ + k) * OBS
                 for j in range(OBS):
-                    traj_obs[ob + j] = obs_h.unsafe_ptr()[e * OBS + j]
+                    traj_obs[ob + j] = obs_h[e * OBS + j]
                 var pb = (e * MAX_TRAJ + k) * ACT
                 for a in range(ACT):
-                    traj_pol[pb + a] = pol_h.unsafe_ptr()[e * ACT + a]
+                    traj_pol[pb + a] = pol_h[e * ACT + a]
                 traj_len[e] = k + 1
 
         # 3. Step every game by its chosen action.
@@ -199,9 +192,9 @@ def run_alphazero_selfplay[
 
         # 4. Flush finished games into replay with value targets z.
         for e in range(N_ENVS):
-            if done_h.unsafe_ptr()[e] > 0.5:
+            if done_h[e] > 0.5:
                 var L = traj_len[e]
-                var win = Float64(rew_h.unsafe_ptr()[e]) > 0.5
+                var win = Float64(rew_h[e]) > 0.5
                 for k in range(L):
                     var z: Float64 = 0.0
                     if win:
@@ -210,7 +203,9 @@ def run_alphazero_selfplay[
                     for a in range(ACT):
                         tmp_tgt[a] = traj_pol[pb + a]
                     tmp_tgt[ACT] = Scalar[DT](z)
-                    replay.record(traj_obs + (e * MAX_TRAJ + k) * OBS, tmp_tgt)
+                    replay.record(
+                        traj_obs, (e * MAX_TRAJ + k) * OBS, tmp_tgt, 0
+                    )
                 traj_len[e] = 0
 
         # 5. Reset finished games, refresh obs/legal for the next move.
@@ -227,28 +222,20 @@ def run_alphazero_selfplay[
         if len(replay) >= BATCH and it >= learning_starts:
             net.set_attr["training"](Scalar[DT](1.0))
             for _t in range(train_per_iter):
-                replay.sample_batch[BATCH](
-                    tb_obs_h.unsafe_ptr(), tb_tgt_h.unsafe_ptr()
-                )
-                ctx.enqueue_copy(tb_obs, tb_obs_h)
-                ctx.enqueue_copy(tb_tgt, tb_tgt_h)
-                ctx.synchronize()
-                opt.zero_grad["gpu", M=NET](net)
-                graph.set_external["pred", NET](net)
-                graph.set_input["obs", BATCH](tbo_t)
-                graph.set_input["tgt", BATCH](tbt_t)
-                graph.forward["gpu", BATCH](loss_t)
-                graph.vjp["gpu", BATCH](grad_t)
-                opt.step["gpu", M=NET](net)
-            ctx.enqueue_copy(loss_h, tb_loss)
-            ctx.synchronize()
+                replay.sample_batch_tensors[BATCH](obs_t, tgt_t)
+                obs_t.upload(ctx)
+                tgt_t.upload(ctx)
+                net.zero_grad["gpu"](octx)
+                graph.set_input["obs", BATCH](obs_t, octx)
+                graph.set_input["tgt", BATCH](tgt_t, octx)
+                graph.forward[BATCH, "gpu"](loss_t, octx, net)
+                graph.vjp[BATCH, "gpu"](grad_t, octx, net)
+                opt.begin_step()
+                net.for_each_param["gpu"](opt, octx)
+            loss_t.download(ctx)
             var ml: Float64 = 0.0
             for b in range(BATCH):
-                ml += Float64(loss_h.unsafe_ptr()[b])
+                ml += Float64(loss_t.data[b])
             last_loss = ml / Float64(BATCH)
 
-    traj_obs.free()
-    traj_pol.free()
-    traj_len.free()
-    tmp_tgt.free()
     return last_loss
