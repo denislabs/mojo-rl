@@ -1,18 +1,18 @@
-"""PPOActorTrainStep — PPO actor gradient step.
+"""PPOActorTrainStep — PPO actor gradient step (STORAGE).
 
-Thin wrapper around `PPOActorLoss.forward_backward[target, OPT]`,
-which is dual-target. Reads (mb_obs, mb_act, mb_olp,
-mb_adv) from `OnPolicyState`. Returns the mean per-batch loss for
-logging.
+Thin wrapper around `PPOActorLoss.forward_backward[target, POLICY]`,
+which is dual-target. Reads (mb_obs, mb_act, mb_olp, mb_adv) from
+`OnPolicyState` and passes them as storage `Tensor`s. Returns the mean
+per-batch loss for logging.
 """
 
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from ..actor_loss import PPOActorLoss
-from mojo_rl.nn.optimizer.adam import Adam
 from ...training.onpolicy_state import OnPolicyState
 
 
@@ -65,11 +65,15 @@ struct PPOActorTrainStep[
         ],
         mut actor: Self.ACTOR,
         mut actor_opt: Adam,
+        max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Scalar[DT]:
-        var s_p   = state.mb_obs.target_ptr[target]()
-        var a_p   = state.mb_act.target_ptr[target]()
-        var olp_p = state.mb_olp.target_ptr[target]()
-        var adv_p = state.mb_adv.target_ptr[target]()
-        return self.inner.forward_backward[target, OPT=Adam, POLICY=POLICY](
-            actor, actor_opt, s_p, a_p, olp_p, adv_p,
+        return self.inner.forward_backward[target, POLICY=POLICY](
+            actor,
+            actor_opt,
+            state.mb_obs,
+            state.mb_act,
+            state.mb_olp,
+            state.mb_adv,
+            max_grad_norm,
+            state.ctx,
         )

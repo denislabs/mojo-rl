@@ -1,22 +1,23 @@
-"""PPOCriticTrainStep — PPO critic gradient step.
+"""PPOCriticTrainStep — PPO critic gradient step (STORAGE).
 
 Wraps `critic.forward + MSELoss.forward + MSELoss.vjp + critic.vjp +
 critic_opt.step` over the minibatch (s, ret) slot of `OnPolicyState`.
 
-Reads state.mb_obs / state.mb_ret → writes state.mb_v / state.mb_gv /
-state.mb_gi (the gradient flowing into the obs side is unused
-downstream but the scratch is owned by the state so we just fill it
-through).
+STORAGE migration: critic is a storage `Module`, the loss is a storage
+`MSELoss[1]` (make_cpu / make_gpu; vjp recomputes from logits+targets — no
+cache). All inputs are passed as storage `Tensor`s; the obs-side grad lands in
+`state.mb_gi` (unused downstream but owned by the state). Gradient clipping is
+an explicit `clip_grads` call between vjp and step, only when max_grad_norm > 0.
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.loss.mse import MSELoss
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.storage.loss.mse_loss import MSELoss
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from ...training.onpolicy_state import OnPolicyState
 
 
@@ -42,7 +43,10 @@ struct PPOCriticTrainStep[
             "PPOCriticTrainStep: target must be 'cpu' or 'gpu'"
         )
         var b = Self()
-        b.inner = Self.Inner.make[target](ctx=ctx)
+        comptime if target == "cpu":
+            b.inner = Self.Inner.make_cpu()
+        else:
+            b.inner = Self.Inner.make_gpu(ctx.value())
         return b^
 
     def step[
@@ -58,25 +62,28 @@ struct PPOCriticTrainStep[
         ],
         mut critic: Self.CRITIC,
         mut critic_opt: Adam,
+        max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Scalar[DT]:
-        var mb_obs_p = state.mb_obs.target_ptr[target]()
-        var mb_v_p   = state.mb_v.target_ptr[target]()
-        var mb_gv_p  = state.mb_gv.target_ptr[target]()
-        var mb_gi_p  = state.mb_gi.target_ptr[target]()
-        var mb_ret_p = state.mb_ret.target_ptr[target]()
-
-        var mb_obs_t = TileTensor(
-            mb_obs_p, row_major[Self.MINIBATCH, Self.OBS]()
+        comptime MB = Self.MINIBATCH
+        critic_opt.zero_grad[target, M=Self.CRITIC](critic, state.ctx)
+        critic.forward[target, MB, POLICY=POLICY](
+            TensorRefs[Self.CRITIC.ARITY](state.mb_obs), state.mb_v, state.ctx
         )
-        var mb_v_t   = TileTensor(mb_v_p,   row_major[Self.MINIBATCH, 1]())
-        var mb_gv_t  = TileTensor(mb_gv_p,  row_major[Self.MINIBATCH, 1]())
-        var mb_gi_t  = TileTensor(mb_gi_p,  row_major[Self.MINIBATCH, Self.OBS]())
-        var mb_ret_t = TileTensor(mb_ret_p, row_major[Self.MINIBATCH, 1]())
-
-        critic.forward[target, Self.MINIBATCH](mb_obs_t, output=mb_v_t)
-        var loss = self.inner.forward[target, Self.MINIBATCH](mb_v_t, mb_ret_t)
-        self.inner.vjp[target, Self.MINIBATCH](mb_ret_t, mb_gv_t)
-        critic_opt.zero_grad[target, M=Self.CRITIC](critic)
-        critic.vjp[target, Self.MINIBATCH](mb_gv_t, mb_gi_t)
-        critic_opt.step[target, M=Self.CRITIC](critic)
+        var loss = self.inner.forward[target, MB](
+            state.mb_v, state.mb_ret, state.ctx
+        )
+        self.inner.vjp[target, MB](
+            state.mb_v, state.mb_ret, state.mb_gv, state.ctx
+        )
+        critic.vjp[target, MB, POLICY=POLICY](
+            TensorRefs[Self.CRITIC.ARITY](state.mb_obs),
+            state.mb_gv,
+            TensorRefs[Self.CRITIC.ARITY](state.mb_gi),
+            state.ctx,
+        )
+        if max_grad_norm > Scalar[DT](0.0):
+            _ = critic_opt.clip_grads[target, M=Self.CRITIC](
+                critic, max_grad_norm, state.ctx
+            )
+        critic_opt.step[target, M=Self.CRITIC](critic, state.ctx)
         return loss
