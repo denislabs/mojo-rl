@@ -20,9 +20,11 @@ images, `train_y` = [N·NC] one-hot labels; `test_x` = [N·IN], `test_labels` =
 
 from std.gpu.host import DeviceContext
 from std.memory import memcpy
+from std.time import perf_counter_ns
+from layout import Layout
 
-from mojo_rl.nn.constants import DT
-from ..core.tensor import Tensor
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.initializer import Initializer
@@ -30,6 +32,31 @@ from ..core.amp import AMPPolicy, NoAMP
 from ..optimizer.adam import Adam
 from ..optimizer.optimizer import Optimizer
 from ..loss.cross_entropy import CrossEntropyLoss
+from .shuffle_kernels import (
+    init_identity_indices_kernel,
+    fisher_yates_shuffle_kernel,
+    increment_seed_kernel,
+    gather_rows_kernel,
+)
+
+
+@fieldwise_init
+struct TrainResult(Movable & ImplicitlyDeletable):
+    """Per-epoch training history returned by `Trainer.train_gpu`."""
+
+    var epoch_train_loss: List[Float64]
+    var epoch_test_top1: List[Float64]
+    var epoch_train_s: List[Float64]
+    var epoch_eval_s: List[Float64]
+
+    @staticmethod
+    def empty() -> Self:
+        return Self(
+            epoch_train_loss=List[Float64](),
+            epoch_test_top1=List[Float64](),
+            epoch_train_s=List[Float64](),
+            epoch_eval_s=List[Float64](),
+        )
 
 
 struct Trainer[
@@ -222,3 +249,176 @@ struct Trainer[
                 if best == Int(test_labels[nb * Self.BATCH + b]):
                     correct += 1
         return Float64(correct) / Float64(n_batches * Self.BATCH)
+
+    def train_gpu[
+        N_TRAIN: Int, N_TEST: Int
+    ](
+        mut self,
+        ref train_x: List[Scalar[DT]],
+        ref train_y: List[Scalar[DT]],
+        ref test_x: List[Scalar[DT]],
+        ref test_labels: List[Int32],
+        ctx: Optional[DeviceContext],
+        epochs: Int = 1,
+        print_progress: Bool = True,
+        shuffle: Bool = False,
+        rng_seed: UInt64 = 42,
+    ) raises -> TrainResult:
+        """Whole-dataset GPU training run with per-epoch top-1 eval — the
+        one-call convenience over `train_epoch`/`eval_top1`. Uploads train+test
+        ONCE (resident), then each epoch trains over all batches and evaluates.
+
+        `shuffle=True` runs an on-device Fisher-Yates permutation of the train
+        set each epoch (device-resident indices/seed, gather into owned batch
+        buffers — capture-friendly, no host involvement); `shuffle=False` slices
+        contiguous sub-buffer views (zero-copy). BatchNorm is toggled to train
+        mode before each epoch and eval mode before the test pass via
+        `set_attr["training"]` (no-op for nets without BN)."""
+        comptime assert (
+            Self.target == "gpu"
+        ), "Trainer.train_gpu requires target='gpu'"
+        comptime assert (
+            N_TRAIN % Self.BATCH == 0
+        ), "train_gpu: N_TRAIN must be divisible by BATCH"
+        comptime assert (
+            N_TEST % Self.BATCH == 0
+        ), "train_gpu: N_TEST must be divisible by BATCH"
+        comptime n_batches = N_TRAIN // Self.BATCH
+        comptime blocks_init = (N_TRAIN + TPB - 1) // TPB
+        comptime blocks_gx = (Self.BATCH * Self.IN + TPB - 1) // TPB
+        comptime blocks_gy = (Self.BATCH * Self.NC + TPB - 1) // TPB
+        var c = ctx.value()
+        var result = TrainResult.empty()
+
+        # Resident train set (once). Test is uploaded lazily by eval_top1.
+        if not self._up_train:
+            Self._upload_dataset(self.ds_x, train_x, N_TRAIN * Self.IN, c)
+            Self._upload_dataset(self.ds_y, train_y, N_TRAIN * Self.NC, c)
+            self._up_train = True
+
+        # Shuffle scratch (device-resident; allocated once, reused per epoch).
+        # Owned gather targets `gx`/`gy` — NOT self.batch_x (which eval_top1
+        # repoints at a test sub-buffer, so reusing it as a gather target would
+        # corrupt the test set).
+        var indices = TensorImpl[DType.int32]()
+        var seed = TensorImpl[DType.uint64]()
+        var gx = Tensor()
+        var gy = Tensor()
+        if shuffle:
+            indices = TensorImpl[DType.int32].alloc_gpu(c, N_TRAIN)
+            c.enqueue_function[init_identity_indices_kernel[N_TRAIN]](
+                indices.lt["gpu", Layout.row_major(N_TRAIN)](),
+                grid_dim=blocks_init,
+                block_dim=TPB,
+            )
+            seed.ensure(1)
+            seed.data[0] = rng_seed
+            seed.n = 1
+            seed.upload(c)
+            gx = Tensor.alloc_gpu(c, Self.BATCH * Self.IN)
+            gy = Tensor.alloc_gpu(c, Self.BATCH * Self.NC)
+
+        for epoch in range(epochs):
+            var t0 = perf_counter_ns()
+            self.loss.reset_accum["gpu"]()
+            self.model.set_attr["training"](Scalar[DT](1.0))
+            if shuffle:
+                c.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
+                    indices.lt["gpu", Layout.row_major(N_TRAIN)](),
+                    seed.lt["gpu", Layout.row_major(1)](),
+                    grid_dim=1,
+                    block_dim=1,
+                )
+                c.enqueue_function[increment_seed_kernel](
+                    seed.lt["gpu", Layout.row_major(1)](),
+                    grid_dim=1,
+                    block_dim=1,
+                )
+            for nb in range(n_batches):
+                if shuffle:
+                    var off = nb * Self.BATCH
+                    c.enqueue_function[
+                        gather_rows_kernel[N_TRAIN, Self.BATCH, Self.IN, DT]
+                    ](
+                        gx.lt["gpu", Layout.row_major(Self.BATCH, Self.IN)](),
+                        self.ds_x.lt[
+                            "gpu", Layout.row_major(N_TRAIN, Self.IN)
+                        ](),
+                        indices.lt["gpu", Layout.row_major(N_TRAIN)](),
+                        off,
+                        grid_dim=blocks_gx,
+                        block_dim=TPB,
+                    )
+                    c.enqueue_function[
+                        gather_rows_kernel[N_TRAIN, Self.BATCH, Self.NC, DT]
+                    ](
+                        gy.lt["gpu", Layout.row_major(Self.BATCH, Self.NC)](),
+                        self.ds_y.lt[
+                            "gpu", Layout.row_major(N_TRAIN, Self.NC)
+                        ](),
+                        indices.lt["gpu", Layout.row_major(N_TRAIN)](),
+                        off,
+                        grid_dim=blocks_gy,
+                        block_dim=TPB,
+                    )
+                    self.opt.zero_grad["gpu"](self.model, ctx)
+                    self.model.forward[
+                        "gpu", Self.BATCH, POLICY = Self.POLICY
+                    ](TensorRefs[Self.MODEL.ARITY](gx), self.logits, ctx)
+                    self.loss.forward_accumulate["gpu", Self.BATCH](
+                        self.logits, gy, ctx
+                    )
+                    self.loss.vjp["gpu", Self.BATCH](
+                        self.logits, gy, self.grad, ctx
+                    )
+                    self.model.vjp["gpu", Self.BATCH, POLICY = Self.POLICY](
+                        TensorRefs[Self.MODEL.ARITY](gx),
+                        self.grad,
+                        TensorRefs[Self.MODEL.ARITY](self.gi),
+                        ctx,
+                    )
+                    self.opt.step["gpu"](self.model, ctx)
+                else:
+                    self._slice_train(
+                        nb * Self.BATCH * Self.IN, nb * Self.BATCH * Self.NC
+                    )
+                    self.opt.zero_grad["gpu"](self.model, ctx)
+                    self.model.forward[
+                        "gpu", Self.BATCH, POLICY = Self.POLICY
+                    ](
+                        TensorRefs[Self.MODEL.ARITY](self.batch_x),
+                        self.logits,
+                        ctx,
+                    )
+                    self.loss.forward_accumulate["gpu", Self.BATCH](
+                        self.logits, self.batch_y, ctx
+                    )
+                    self.loss.vjp["gpu", Self.BATCH](
+                        self.logits, self.batch_y, self.grad, ctx
+                    )
+                    self.model.vjp["gpu", Self.BATCH, POLICY = Self.POLICY](
+                        TensorRefs[Self.MODEL.ARITY](self.batch_x),
+                        self.grad,
+                        TensorRefs[Self.MODEL.ARITY](self.gi),
+                        ctx,
+                    )
+                    self.opt.step["gpu"](self.model, ctx)
+            var avg = Float64(self.loss.read_accum["gpu"](ctx))
+            c.synchronize()
+            var t1 = perf_counter_ns()
+            self.model.set_attr["training"](Scalar[DT](0.0))
+            var top1 = self.eval_top1[N_TEST](test_x, test_labels, ctx)
+            var t2 = perf_counter_ns()
+            result.epoch_train_loss.append(avg)
+            result.epoch_test_top1.append(top1)
+            result.epoch_train_s.append(Float64(t1 - t0) / 1e9)
+            result.epoch_eval_s.append(Float64(t2 - t1) / 1e9)
+            if print_progress:
+                print(
+                    "epoch " + String(epoch)
+                    + " | train_loss=" + String(avg)
+                    + " | test_top1=" + String(top1 * 100.0) + "%"
+                    + " | train=" + String(Float64(t1 - t0) / 1e9) + "s"
+                    + " | eval=" + String(Float64(t2 - t1) / 1e9) + "s"
+                )
+        return result^
