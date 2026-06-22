@@ -23,7 +23,6 @@ Ported from `deep_agents/muzero/evaluators.mojo` onto `nn` (`DT`).
 
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.memory import alloc
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
@@ -341,13 +340,12 @@ struct GPUMinimaxTicTacToe(GPUEvaluator & CPUEvaluator):
         E: TwoPlayerDiscreteEnv & Saveable
     ](mut env: E, rng_seed: UInt64) raises -> Int:
         _ = rng_seed
-        var buf = alloc[Scalar[DT]](E.SAVE_SIZE)
+        var buf = List[Scalar[DT]](length=E.SAVE_SIZE, fill=0)
         env.save_env_state(buf)
         var board = InlineArray[Int, 9](fill=0)
         for i in range(9):
             board[i] = Int(buf[i])
         var player = Int(buf[9])
-        buf.free()
         var my_mark = player + 1
         var best_action = -1
         var best_score = -2
@@ -569,13 +567,12 @@ struct GPUMinimaxConnectFour[DEPTH: Int = 5](GPUEvaluator & CPUEvaluator):
         _ = rng_seed
         comptime ROWS = 6
         comptime COLS = 7
-        var buf = alloc[Scalar[DT]](E.SAVE_SIZE)
+        var buf = List[Scalar[DT]](length=E.SAVE_SIZE, fill=0)
         env.save_env_state(buf)
         var board = InlineArray[Int, 42](fill=0)
         for i in range(42):
             board[i] = Int(buf[i])
         var player = Int(buf[42])
-        buf.free()
         var my_mark = player + 1
         var opp_mark = 2 - player
         var best_score = -300

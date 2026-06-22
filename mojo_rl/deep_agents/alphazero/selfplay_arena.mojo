@@ -43,17 +43,21 @@ behaviour.
 """
 
 from std.math import exp, log, tanh
-from std.memory import alloc
+from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.optimizer import AdamW
-from mojo_rl.nn.initializer import Zero, Kaiming
-from mojo_rl.nn.core.map_params import hard_copy_params
-from mojo_rl.nn.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.combinators.graph_nodes import InputSlot, Node, ExternalNode
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.storage.optimizer.grad_clip import clip_grad_norm
+from mojo_rl.nn.storage.core.initializer import Zero, Kaiming
+from mojo_rl.nn.storage.core.hard_copy import hard_copy
+from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.storage.combinators.graph_decl import (
+    InputSlot, Node, ExternalNode,
+)
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import (
@@ -84,8 +88,8 @@ struct ArenaRunResult(Copyable, Movable):
 def append_az_train_diagnostics[
     ACT: Int, BATCH: Int
 ](
-    pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    pred: List[Scalar[DT]],
+    tgt: List[Scalar[DT]],
     mut names: List[String],
     mut values: List[Float64],
 ):
@@ -309,30 +313,27 @@ def run_alphazero_selfplay_arena[
         STATE_SIZE=STATE,
     ]
     comptime Graph = ComputeGraph[
-        1,
         InputSlot["obs", OBS],
         ExternalNode["pred", NET, "obs"],
         InputSlot["tgt", W],
         Node["loss", AZLossOp[ACT], "pred", "tgt"],
     ]
 
+    var octx = Optional[DeviceContext](ctx)
     # Learner net (trains) initialised to the best net's weights.
-    var learner = NET.make["gpu", INIT=Kaiming](ctx=ctx)
-    hard_copy_params["gpu", M=NET](net, learner, ctx)
+    var learner = NET.make["gpu", Kaiming](octx)
+    hard_copy["gpu"](net, learner, octx)
 
-    var opt = AdamW.make["gpu", M=NET](learner, ctx)
-    opt.lr = lr
-    # Decoupled weight decay + global grad-norm clip (both 0 ⇒ AdamW reduces
-    # to plain Adam, bit-identical, so TicTacToe is unaffected). Per-param
-    # decay flags come from the net's Param decay bits (conv/linear weights
-    # decay; biases + BN/LayerNorm affine params do not).
-    opt.weight_decay = Scalar[DT](weight_decay)
-    opt.max_grad_norm = Scalar[DT](max_grad_norm)
-    var graph = Graph.make["gpu", INIT=Zero](ctx=ctx)
+    # Decoupled weight decay (AdamW) — `wd=0` ⇒ plain Adam (bit-identical, so
+    # TicTacToe is unaffected). Per-param decay flags come from the net's Param
+    # decay bits. The global grad-norm clip is applied separately each step via
+    # `clip_grad_norm` (max_grad_norm <= 0 ⇒ no-op).
+    var opt = Adam(lr=lr, wd=Scalar[DT](weight_decay))
+    var graph = Graph.make["gpu", Zero](octx)
     var mcts = MCTS(ctx, gamma=1.0, v_min=-1.0, v_max=1.0)
     var replay = MCTSExampleReplay[OBS, W, CAP]()
 
-    # ── Device buffers ──
+    # ── Env / MCTS device buffers (category-B; RAII DeviceBuffer) ──
     var states = ctx.enqueue_create_buffer[DT](N_ENVS * STATE)
     var obs_dev = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
     var legal_dev = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
@@ -341,48 +342,32 @@ def run_alphazero_selfplay_arena[
     var term = ctx.enqueue_create_buffer[DT](N_ENVS)
     var obs_next = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
     var legal_next = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
-    var ep_steps_dev = ctx.enqueue_create_buffer[DT](
-        N_ENVS
-    )  # per-env ply count
-    var tb_obs = ctx.enqueue_create_buffer[DT](BATCH * OBS)
-    var tb_tgt = ctx.enqueue_create_buffer[DT](BATCH * W)
-    var tb_loss = ctx.enqueue_create_buffer[DT](BATCH)
-    var tb_grad = ctx.enqueue_create_buffer[DT](BATCH)
+    var ep_steps_dev = ctx.enqueue_create_buffer[DT](N_ENVS)  # per-env ply count
 
-    # ── Host buffers ──
+    # ── Host staging for the MCTS root obs / policy + step + temperature ──
     var obs_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * OBS)
     var pol_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * ACT)
     var done_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
     var rew_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
-    var tb_obs_h = ctx.enqueue_create_host_buffer[DT](BATCH * OBS)
-    var tb_tgt_h = ctx.enqueue_create_host_buffer[DT](BATCH * W)
-    var loss_h = ctx.enqueue_create_host_buffer[DT](BATCH)
-    var grad_h = ctx.enqueue_create_host_buffer[DT](BATCH)
-    var pred_h = ctx.enqueue_create_host_buffer[DT](BATCH * W)  # diag: net out
     var ep_steps_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)  # per-env ply
     ctx.synchronize()
 
-    # ── Host trajectory storage (per-env in-progress game) ──
-    # Augmenter signatures pin MutAnyOrigin — rebind the owned slabs to match.
-    var traj_obs = mptr(alloc[Scalar[DT]](N_ENVS * MAX_TRAJ * OBS))
-    var traj_pol = mptr(alloc[Scalar[DT]](N_ENVS * MAX_TRAJ * ACT))
-    var traj_len = alloc[Int](N_ENVS)
-    var tmp_tgt = alloc[Scalar[DT]](W)
-    var aug_obs = mptr(alloc[Scalar[DT]](OBS))
-    var aug_pol = mptr(alloc[Scalar[DT]](ACT))
-    for e in range(N_ENVS):
-        traj_len[e] = 0
+    # ── Host trajectory storage (per-env in-progress game) — owned Lists. ──
+    var traj_obs = List[Scalar[DT]](length=N_ENVS * MAX_TRAJ * OBS, fill=0)
+    var traj_pol = List[Scalar[DT]](length=N_ENVS * MAX_TRAJ * ACT, fill=0)
+    var traj_len = List[Int](length=N_ENVS, fill=0)
+    var tmp_tgt = List[Scalar[DT]](length=W, fill=0)
+    var aug_obs = List[Scalar[DT]](length=OBS, fill=0)
+    var aug_pol = List[Scalar[DT]](length=ACT, fill=0)
 
-    # Constant 1/BATCH grad seed (uploaded once).
+    # ── Train-batch storage Tensors (the nn surface) ──
+    var obs_t = Tensor.alloc(BATCH * OBS)
+    var tgt_t = Tensor.alloc(BATCH * W)
+    var loss_t = Tensor.alloc_gpu(ctx, BATCH)
+    var grad_t = Tensor.alloc(BATCH)
     for i in range(BATCH):
-        grad_h.unsafe_ptr()[i] = Scalar[DT](1.0) / Scalar[DT](BATCH)
-    ctx.enqueue_copy(tb_grad, grad_h)
-    ctx.synchronize()
-
-    var tbo_t = TileTensor(tb_obs, row_major[BATCH, OBS]())
-    var tbt_t = TileTensor(tb_tgt, row_major[BATCH, W]())
-    var loss_t = TileTensor(tb_loss, row_major[BATCH, 1]())
-    var grad_t = TileTensor(tb_grad, row_major[BATCH, 1]())
+        grad_t.data[i] = Scalar[DT](1.0) / Scalar[DT](BATCH)
+    grad_t.upload(ctx)  # constant 1/BATCH grad seed, uploaded once
 
     # ── Initialize all games ──
     ENV.reset_kernel_gpu[N_ENVS, STATE](ctx, states)
@@ -440,15 +425,15 @@ def run_alphazero_selfplay_arena[
         ctx.synchronize()
         for e in range(N_ENVS):
             # Current ply of env e's game = ep_steps for the temperature kernel.
-            ep_steps_h.unsafe_ptr()[e] = Scalar[DT](traj_len[e])
+            ep_steps_h[e] = Scalar[DT](traj_len[e])
             var k = traj_len[e]
             if k < MAX_TRAJ:
                 var ob = (e * MAX_TRAJ + k) * OBS
                 for j in range(OBS):
-                    traj_obs[ob + j] = obs_h.unsafe_ptr()[e * OBS + j]
+                    traj_obs[ob + j] = obs_h[e * OBS + j]
                 var pb = (e * MAX_TRAJ + k) * ACT
                 for a in range(ACT):
-                    traj_pol[pb + a] = pol_h.unsafe_ptr()[e * ACT + a]
+                    traj_pol[pb + a] = pol_h[e * ACT + a]
                 traj_len[e] = k + 1
 
         # 2b. Apply the temperature schedule to the actual move: re-derive
@@ -487,10 +472,10 @@ def run_alphazero_selfplay_arena[
 
         # 4. Flush finished games with value target z, augmented by symmetry.
         for e in range(N_ENVS):
-            if done_h.unsafe_ptr()[e] > 0.5:
+            if done_h[e] > 0.5:
                 total_games += 1
                 var L = traj_len[e]
-                var win = Float64(rew_h.unsafe_ptr()[e]) > 0.5
+                var win = Float64(rew_h[e]) > 0.5
                 for k in range(L):
                     var z: Float64 = 0.0
                     if win:
@@ -513,12 +498,12 @@ def run_alphazero_selfplay_arena[
                     if not pol_ok:
                         continue
                     for s in range(NSYM):
-                        AUG.augment_obs[OBS](traj_obs + ob, s, aug_obs)
-                        AUG.augment_policy[ACT](traj_pol + pb, s, aug_pol)
+                        AUG.augment_obs[OBS](traj_obs, ob, s, aug_obs)
+                        AUG.augment_policy[ACT](traj_pol, pb, s, aug_pol)
                         for a in range(ACT):
                             tmp_tgt[a] = aug_pol[a]
                         tmp_tgt[ACT] = Scalar[DT](z)
-                        replay.record(aug_obs, tmp_tgt)
+                        replay.record(aug_obs, 0, tmp_tgt, 0)
                 traj_len[e] = 0
 
         # 5. Reset finished games, refresh obs/legal.
@@ -534,43 +519,39 @@ def run_alphazero_selfplay_arena[
         if len(replay) >= BATCH and it >= learning_starts:
             learner.set_attr["training"](Scalar[DT](1.0))
             for _t in range(train_per_iter):
-                replay.sample_batch[BATCH](
-                    tb_obs_h.unsafe_ptr(), tb_tgt_h.unsafe_ptr()
+                replay.sample_batch_tensors[BATCH](obs_t, tgt_t)
+                obs_t.upload(ctx)
+                tgt_t.upload(ctx)
+                learner.zero_grad["gpu"](octx)
+                graph.set_input["obs", BATCH](obs_t, octx)
+                graph.set_input["tgt", BATCH](tgt_t, octx)
+                graph.forward[BATCH, "gpu"](loss_t, octx, learner)
+                graph.vjp[BATCH, "gpu"](grad_t, octx, learner)
+                # Global grad-norm clip (max_grad_norm <= 0 ⇒ no-op), then step.
+                _ = clip_grad_norm["gpu", NET](
+                    learner, Scalar[DT](max_grad_norm), octx
                 )
-                ctx.enqueue_copy(tb_obs, tb_obs_h)
-                ctx.enqueue_copy(tb_tgt, tb_tgt_h)
-                ctx.synchronize()
-                opt.zero_grad["gpu", M=NET](learner)
-                graph.set_external["pred", NET](learner)
-                graph.set_input["obs", BATCH](tbo_t)
-                graph.set_input["tgt", BATCH](tbt_t)
-                graph.forward["gpu", BATCH](loss_t)
-                graph.vjp["gpu", BATCH](grad_t)
-                opt.step["gpu", M=NET](learner)
-            ctx.enqueue_copy(loss_h, tb_loss)
-            ctx.synchronize()
+                opt.begin_step()
+                learner.for_each_param["gpu"](opt, octx)
+            loss_t.download(ctx)
             var ml: Float64 = 0.0
             for b in range(BATCH):
-                ml += Float64(loss_h.unsafe_ptr()[b])
+                ml += Float64(loss_t.data[b])
             last_loss = ml / Float64(BATCH)
 
             # 6b. Dense per-batch training diagnostics (legacy parity), on the
             #     train axis and decoupled from the expensive periodic eval. The
             #     graph's "pred" node still holds the last train batch's net
-            #     output; the matching targets are in `tb_tgt_h`. One small D2H.
+            #     output; the matching targets are in `tgt_t`. One small D2H.
             if Bool(logger) and diag_every > 0 and (it + 1) % diag_every == 0:
-                var pred_src = graph.node_out_ptr["pred"]()
-                var pred_dev = DeviceBuffer[DT](
-                    ctx, pred_src, BATCH * W, owning=False
-                )
-                ctx.enqueue_copy(pred_h, pred_dev)
-                ctx.synchronize()
+                ref pred_node = graph.node_output["pred"]()
+                pred_node.download(ctx)
                 var dnames = List[String]()
                 var dvalues = List[Float64]()
                 dnames.append(String("loss"))
                 dvalues.append(last_loss)
                 append_az_train_diagnostics[ACT, BATCH](
-                    pred_h.unsafe_ptr(), tb_tgt_h.unsafe_ptr(), dnames, dvalues
+                    pred_node.data, tgt_t.data, dnames, dvalues
                 )
                 logger.value()[].log_scalars(dnames, dvalues, it + 1)
 
@@ -600,7 +581,7 @@ def run_alphazero_selfplay_arena[
                 rec, promote_threshold, min_decisive=ARENA_GAMES // 2
             )
             if accepted:
-                hard_copy_params["gpu", M=NET](learner, net, ctx)
+                hard_copy["gpu"](learner, net, octx)
                 promotions += 1
             if verbose:
                 print(
@@ -725,13 +706,7 @@ def run_alphazero_selfplay_arena[
     if should_promote(
         final_rec, promote_threshold, min_decisive=ARENA_GAMES // 2
     ):
-        hard_copy_params["gpu", M=NET](learner, net, ctx)
+        hard_copy["gpu"](learner, net, octx)
         promotions += 1
 
-    traj_obs.free()
-    traj_pol.free()
-    traj_len.free()
-    tmp_tgt.free()
-    aug_obs.free()
-    aug_pol.free()
     return ArenaRunResult(last_loss=last_loss, promotions=promotions)

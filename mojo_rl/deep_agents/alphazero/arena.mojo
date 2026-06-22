@@ -24,12 +24,12 @@ diverse positions; counts then reflect relative strength, not one game.
 decisive games).
 """
 
-from std.memory import alloc
+from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
+from mojo_rl.nn.storage.core.module import Module
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (
@@ -54,9 +54,6 @@ def _xs(s: UInt64) -> UInt64:
     return x
 
 
-@always_inline
-def _mptr(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(b.unsafe_ptr())
 
 
 @always_inline
@@ -117,8 +114,8 @@ def arena_match[
     ENV.reset_kernel_gpu[N_GAMES, STATE](ctx, states)
     ctx.synchronize()
 
-    var obs_t = TileTensor(_mptr(obs_dev), row_major[N_GAMES, OBS]())
-    var pred_t = TileTensor(_mptr(pred_dev), row_major[N_GAMES, W]())
+    var pred_ad_a = AZPredGPU[OBS, ACT, NETA].make(a)
+    var pred_ad_b = AZPredGPU[OBS, ACT, NETB].make(b)
     var rng = seed | 1
 
     for ply in range(MAX_PLIES):
@@ -138,10 +135,16 @@ def arena_match[
             ctx.enqueue_copy(legal_h, legal_dev)
             ctx.synchronize()
             var a_turn = (ply % 2) == a_player
+            var obs_lt = LayoutTensor[
+                DT, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
+            ](obs_dev)
+            var pred_lt = LayoutTensor[
+                DT, Layout.row_major(N_GAMES, W), MutAnyOrigin
+            ](pred_dev)
             if a_turn:
-                a.forward["gpu", N_GAMES](obs_t, output=pred_t)
+                pred_ad_a.predict_gpu[N_GAMES](ctx, obs_lt, pred_lt)
             else:
-                b.forward["gpu", N_GAMES](obs_t, output=pred_t)
+                pred_ad_b.predict_gpu[N_GAMES](ctx, obs_lt, pred_lt)
             ctx.enqueue_copy(pred_h, pred_dev)
             ctx.synchronize()
             for e in range(N_GAMES):
@@ -445,15 +448,19 @@ def arena_match_cpu[
     b.set_attr["training"](Scalar[DT](0.0))
 
     var env = ENV()
-    var root_save = alloc[Scalar[DT]](LATENT)
+    var root_save = List[Scalar[DT]](length=LATENT, fill=0)
     var env_ptr = UnsafePointer(to=env)
-    var rep = AZRepCPU[ENV, OBS](env=env_ptr)
-    var dyn = AZDynCPU[ENV, ACT](env=env_ptr)
+    var a_ptr = UnsafePointer(to=a)
+    var b_ptr = UnsafePointer(to=b)
+    var rep = AZRepCPU[ENV, OBS](env=env_ptr.as_unsafe_any_origin())
+    var dyn = AZDynCPU[ENV, ACT](env=env_ptr.as_unsafe_any_origin())
     var pred_a = AZPredCPU[ENV, OBS, ACT, NETA](
-        env=env_ptr, net=UnsafePointer(to=a)
+        env=env_ptr.as_unsafe_any_origin(),
+        net=a_ptr.as_unsafe_any_origin(),
     )
     var pred_b = AZPredCPU[ENV, OBS, ACT, NETB](
-        env=env_ptr, net=UnsafePointer(to=b)
+        env=env_ptr.as_unsafe_any_origin(),
+        net=b_ptr.as_unsafe_any_origin(),
     )
     var mcts = AMCTS(gamma=1.0)
 
@@ -504,7 +511,6 @@ def arena_match_cpu[
         else:
             draws += 1
 
-    root_save.free()
     return EvalResult(wins=wins, draws=draws, losses=losses)
 
 

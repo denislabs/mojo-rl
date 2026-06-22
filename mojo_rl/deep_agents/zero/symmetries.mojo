@@ -14,7 +14,9 @@ board envs:
   * policy: one entry per cell (`D4` square games, `ACT == SIDE*SIDE`) or per
     column (`HFlip` column games, `ACT == COLS`).
 
-Ported from `deep_agents/alphazero/strategies.mojo` onto `nn` (`DT`).
+Storage-clean: inputs are owned `List`s + a source offset (`src_off`) into the
+caller's trajectory buffer (no raw pointer / pointer arithmetic); the output is
+written into a fresh owned `List`.
 """
 
 from mojo_rl.nn.constants import DT
@@ -28,21 +30,24 @@ trait BoardAugmenter:
 
     @staticmethod
     def augment_obs[OBS: Int](
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        src: List[Scalar[DT]],
+        src_off: Int,
         sym_idx: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut dst: List[Scalar[DT]],
     ):
-        """Write symmetry `sym_idx` of `obs[OBS]` into `out[OBS]`."""
+        """Write symmetry `sym_idx` of `src[src_off : src_off+OBS]` into
+        `dst[0:OBS]`."""
         ...
 
     @staticmethod
     def augment_policy[ACT: Int](
-        policy: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        src: List[Scalar[DT]],
+        src_off: Int,
         sym_idx: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut dst: List[Scalar[DT]],
     ):
-        """Write symmetry `sym_idx` of `policy[ACT]` into `out[ACT]`, with the
-        same per-cell permutation as `augment_obs`."""
+        """Write symmetry `sym_idx` of `src[src_off : src_off+ACT]` into
+        `dst[0:ACT]`, with the same per-cell permutation as `augment_obs`."""
         ...
 
 
@@ -56,21 +61,23 @@ struct IdentityAugmenter(BoardAugmenter):
 
     @staticmethod
     def augment_obs[OBS: Int](
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        src: List[Scalar[DT]],
+        src_off: Int,
         sym_idx: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut dst: List[Scalar[DT]],
     ):
         for i in range(OBS):
-            out[i] = obs[i]
+            dst[i] = src[src_off + i]
 
     @staticmethod
     def augment_policy[ACT: Int](
-        policy: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        src: List[Scalar[DT]],
+        src_off: Int,
         sym_idx: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut dst: List[Scalar[DT]],
     ):
         for i in range(ACT):
-            out[i] = policy[i]
+            dst[i] = src[src_off + i]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -107,38 +114,42 @@ struct D4SquareAugmenter[SIDE: Int, PLANES: Int](BoardAugmenter):
 
     @staticmethod
     def augment_obs[OBS: Int](
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        src: List[Scalar[DT]],
+        src_off: Int,
         sym_idx: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut dst: List[Scalar[DT]],
     ):
         if sym_idx == 0:
             for i in range(OBS):
-                out[i] = obs[i]
+                dst[i] = src[src_off + i]
             return
         comptime CHAN = Self.SIDE * Self.SIDE
         for plane in range(Self.PLANES):
             var p_off = plane * CHAN
             for r in range(Self.SIDE):
                 for c in range(Self.SIDE):
-                    var src = _d4_src(sym_idx, Self.SIDE, r, c)
-                    out[p_off + r * Self.SIDE + c] = obs[
-                        p_off + src[0] * Self.SIDE + src[1]
+                    var s = _d4_src(sym_idx, Self.SIDE, r, c)
+                    dst[p_off + r * Self.SIDE + c] = src[
+                        src_off + p_off + s[0] * Self.SIDE + s[1]
                     ]
 
     @staticmethod
     def augment_policy[ACT: Int](
-        policy: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        src: List[Scalar[DT]],
+        src_off: Int,
         sym_idx: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut dst: List[Scalar[DT]],
     ):
         if sym_idx == 0:
             for i in range(ACT):
-                out[i] = policy[i]
+                dst[i] = src[src_off + i]
             return
         for r in range(Self.SIDE):
             for c in range(Self.SIDE):
-                var src = _d4_src(sym_idx, Self.SIDE, r, c)
-                out[r * Self.SIDE + c] = policy[src[0] * Self.SIDE + src[1]]
+                var s = _d4_src(sym_idx, Self.SIDE, r, c)
+                dst[r * Self.SIDE + c] = src[
+                    src_off + s[0] * Self.SIDE + s[1]
+                ]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -154,32 +165,34 @@ struct HFlipColumnAugmenter[ROWS: Int, COLS: Int, PLANES: Int](BoardAugmenter):
 
     @staticmethod
     def augment_obs[OBS: Int](
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        src: List[Scalar[DT]],
+        src_off: Int,
         sym_idx: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut dst: List[Scalar[DT]],
     ):
         if sym_idx == 0:
             for i in range(OBS):
-                out[i] = obs[i]
+                dst[i] = src[src_off + i]
             return
         comptime CHAN = Self.ROWS * Self.COLS
         for plane in range(Self.PLANES):
             var p_off = plane * CHAN
             for row in range(Self.ROWS):
                 for col in range(Self.COLS):
-                    out[p_off + row * Self.COLS + col] = obs[
-                        p_off + row * Self.COLS + (Self.COLS - 1 - col)
+                    dst[p_off + row * Self.COLS + col] = src[
+                        src_off + p_off + row * Self.COLS + (Self.COLS - 1 - col)
                     ]
 
     @staticmethod
     def augment_policy[ACT: Int](
-        policy: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        src: List[Scalar[DT]],
+        src_off: Int,
         sym_idx: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut dst: List[Scalar[DT]],
     ):
         if sym_idx == 0:
             for i in range(ACT):
-                out[i] = policy[i]
+                dst[i] = src[src_off + i]
             return
         for c in range(ACT):
-            out[c] = policy[ACT - 1 - c]
+            dst[c] = src[src_off + ACT - 1 - c]
