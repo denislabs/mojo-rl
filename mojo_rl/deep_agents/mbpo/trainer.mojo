@@ -44,7 +44,7 @@ from mojo_rl.nn.storage.core.checkpoint import (
 
 from mojo_rl.nn.core.log_bundle import log_bundle
 from mojo_rl.nn.core.metric import LogScalar
-from mojo_rl.nn.random.box_muller import box_muller_normal_gpu
+from mojo_rl.nn.random.box_muller import _box_muller_kernel
 
 from ..core.online_target_pair import OnlineTargetPair
 from ..data.n_step_replay import GPUNStepBuffer
@@ -1348,9 +1348,10 @@ struct MBPOTrainer[
             self._in_mean.data[c] = Scalar[DT](0.0)
             self._in_std.data[c] = Scalar[DT](1.0)
         comptime if target == "gpu":
-            var ctx = self.ctx.value()
-            ctx.enqueue_copy(self._in_mean.dev.value(), self._in_mean.data.unsafe_ptr())
-            ctx.enqueue_copy(self._in_std.dev.value(), self._in_std.data.unsafe_ptr())
+            self._in_mean.dev.value().enqueue_copy_from(
+                Span(self._in_mean.data)
+            )
+            self._in_std.dev.value().enqueue_copy_from(Span(self._in_std.data))
 
     @staticmethod
     def _compute_scaler_host(
@@ -1435,8 +1436,8 @@ struct MBPOTrainer[
         self._dyn_input_std_mean = Self._compute_scaler_host(
             host_obs, host_act, self._in_mean.data, self._in_std.data, n_data
         )
-        ctx.enqueue_copy(self._in_mean.dev.value(), self._in_mean.data.unsafe_ptr())
-        ctx.enqueue_copy(self._in_std.dev.value(), self._in_std.data.unsafe_ptr())
+        self._in_mean.dev.value().enqueue_copy_from(Span(self._in_mean.data))
+        self._in_std.dev.value().enqueue_copy_from(Span(self._in_std.data))
         ctx.synchronize()
 
     def _normalize_dyn_in_cpu(mut self):
@@ -1836,31 +1837,21 @@ struct MBPOTrainer[
                         self._dyn_in, mu_e, lv_e,
                     )
                     var off = e * Self.BATCH * Self.DYN_PRED
-                    var dst_mu = LayoutTensor[
-                        DT,
-                        Layout.row_major(Self.BATCH * Self.DYN_PRED),
-                        MutAnyOrigin,
-                    ](self._ro_mu_all.dev.value().unsafe_ptr() + off)
-                    var dst_lv = LayoutTensor[
-                        DT,
-                        Layout.row_major(Self.BATCH * Self.DYN_PRED),
-                        MutAnyOrigin,
-                    ](self._ro_lv_all.dev.value().unsafe_ptr() + off)
+                    var dst_mu = self._ro_mu_all.lt_at[
+                        "gpu", Layout.row_major(Self.BATCH * Self.DYN_PRED)
+                    ](off)
+                    var dst_lv = self._ro_lv_all.lt_at[
+                        "gpu", Layout.row_major(Self.BATCH * Self.DYN_PRED)
+                    ](off)
                     ctx.enqueue_copy(
-                        DeviceBuffer[DT](
-                            ctx,
-                            self._ro_mu_all.dev.value().unsafe_ptr() + off,
-                            Self.BATCH * Self.DYN_PRED,
-                            owning=False,
+                        self._ro_mu_all.dev.value().create_sub_buffer[DT](
+                            off, Self.BATCH * Self.DYN_PRED
                         ),
                         mu_e.dev.value(),
                     )
                     ctx.enqueue_copy(
-                        DeviceBuffer[DT](
-                            ctx,
-                            self._ro_lv_all.dev.value().unsafe_ptr() + off,
-                            Self.BATCH * Self.DYN_PRED,
-                            owning=False,
+                        self._ro_lv_all.dev.value().create_sub_buffer[DT](
+                            off, Self.BATCH * Self.DYN_PRED
                         ),
                         lv_e.dev.value(),
                     )
@@ -1905,11 +1896,13 @@ struct MBPOTrainer[
                     block_dim=TPB,
                 )
 
-                box_muller_normal_gpu[n_noise](
-                    ctx,
-                    self._ro_noise.dev.value().unsafe_ptr(),
+                comptime nb_noise = (n_noise + TPB - 1) // TPB
+                ctx.enqueue_function[_box_muller_kernel[n_noise]](
+                    self._ro_noise.lt["gpu", Layout.row_major(n_noise)](),
                     self._roll_rng_seed,
                     self._roll_rng_offset,
+                    grid_dim=nb_noise,
+                    block_dim=TPB,
                 )
                 self._roll_rng_offset += UInt64(((n_noise + 1) // 2) * 2)
                 ctx.enqueue_function[post_kernel](

@@ -465,12 +465,12 @@ struct DynamicsEnsembleBlock[
             ]()
             if self.learnable_bounds:
                 var bo = member_idx * Self.PRED_DIM
-                var max_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
-                ](self._max_lv.dev.value().unsafe_ptr() + bo)
-                var min_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
-                ](self._min_lv.dev.value().unsafe_ptr() + bo)
+                var max_lt = self._max_lv.lt_at[
+                    "gpu", Layout.row_major(Self.PRED_DIM)
+                ](bo)
+                var min_lt = self._min_lv.lt_at[
+                    "gpu", Layout.row_major(Self.PRED_DIM)
+                ](bo)
                 comptime soft_kernel = _soft_clamp_split_kernel[
                     Self.BATCH, Self.OUT_DIM, Self.PRED_DIM
                 ]
@@ -543,12 +543,12 @@ struct DynamicsEnsembleBlock[
             var tgt_lt = mb_target_t.lt[
                 "gpu", Layout.row_major(Self.BATCH, Self.PRED_DIM)
             ]()
-            var max_lt = LayoutTensor[
-                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
-            ](self._max_lv.dev.value().unsafe_ptr() + bo)
-            var min_lt = LayoutTensor[
-                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
-            ](self._min_lv.dev.value().unsafe_ptr() + bo)
+            var max_lt = self._max_lv.lt_at[
+                "gpu", Layout.row_major(Self.PRED_DIM)
+            ](bo)
+            var min_lt = self._min_lv.lt_at[
+                "gpu", Layout.row_major(Self.PRED_DIM)
+            ](bo)
             var grad_lt = self._mb_grad.lt[
                 "gpu", Layout.row_major(Self.BATCH, Self.OUT_DIM)
             ]()
@@ -620,24 +620,24 @@ struct DynamicsEnsembleBlock[
                 ) / (fsqrt(v2 / bc2) + eps)
         else:
             var ctx = self.ctx.value()
-            var max_lt = LayoutTensor[
-                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
-            ](self._max_lv.dev.value().unsafe_ptr() + bo)
-            var min_lt = LayoutTensor[
-                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
-            ](self._min_lv.dev.value().unsafe_ptr() + bo)
-            var mm_lt = LayoutTensor[
-                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
-            ](self._max_lv_m.dev.value().unsafe_ptr() + bo)
-            var mv_lt = LayoutTensor[
-                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
-            ](self._max_lv_v.dev.value().unsafe_ptr() + bo)
-            var nm_lt = LayoutTensor[
-                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
-            ](self._min_lv_m.dev.value().unsafe_ptr() + bo)
-            var nv_lt = LayoutTensor[
-                DT, Layout.row_major(Self.PRED_DIM), MutAnyOrigin,
-            ](self._min_lv_v.dev.value().unsafe_ptr() + bo)
+            var max_lt = self._max_lv.lt_at[
+                "gpu", Layout.row_major(Self.PRED_DIM)
+            ](bo)
+            var min_lt = self._min_lv.lt_at[
+                "gpu", Layout.row_major(Self.PRED_DIM)
+            ](bo)
+            var mm_lt = self._max_lv_m.lt_at[
+                "gpu", Layout.row_major(Self.PRED_DIM)
+            ](bo)
+            var mv_lt = self._max_lv_v.lt_at[
+                "gpu", Layout.row_major(Self.PRED_DIM)
+            ](bo)
+            var nm_lt = self._min_lv_m.lt_at[
+                "gpu", Layout.row_major(Self.PRED_DIM)
+            ](bo)
+            var nv_lt = self._min_lv_v.lt_at[
+                "gpu", Layout.row_major(Self.PRED_DIM)
+            ](bo)
             var gmax_lt = self._bnd_gmax.lt[
                 "gpu", Layout.row_major(Self.BATCH, Self.PRED_DIM)
             ]()
