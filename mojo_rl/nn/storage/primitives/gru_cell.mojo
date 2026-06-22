@@ -52,6 +52,7 @@ from ..core.param import Param, ParamVisitor
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
 from ..loss.sac import polyak_tensor
+from .linear import _transpose_tiled_kernel, _T_TILE, _T_BR
 
 
 @always_inline
@@ -152,18 +153,6 @@ def _gru_gate_grad_kernel[
     d_hx[bi, j] = d_pre_r
     d_hx[bi, H + j] = d_pre_z
     d_hx[bi, 2 * H + j] = d_hn
-
-
-def _gru_transpose_kernel[
-    ROWS: Int, COLS: Int,
-](
-    src: LayoutTensor[DT, Layout.row_major(ROWS, COLS), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(COLS, ROWS), MutAnyOrigin],
-):
-    """dst[COLS, ROWS] = src[ROWS, COLS]ᵀ."""
-    var idx = Int(global_idx.x)
-    if idx < ROWS * COLS:
-        dst[idx % COLS, idx // COLS] = src[idx // COLS, idx % COLS]
 
 
 def _gru_accum_kernel[
@@ -467,17 +456,25 @@ struct GRUCell[IN_: Int, HIDDEN: Int](Module):
 
             # Capture xᵀ / h_prevᵀ before dx/dh writes (defensive; packs don't
             # alias under the storage surface, but mirrors LSTM/Linear).
-            comptime txk = _gru_transpose_kernel[B, Self.IN0_DIM]
+            comptime txk = _transpose_tiled_kernel[B, Self.IN0_DIM]
             c.enqueue_function[txk](
                 x_in.lt["gpu", Layout.row_major(B, Self.IN0_DIM)](),
                 self._xT.lt["gpu", Layout.row_major(Self.IN0_DIM, B)](),
-                grid_dim=((B * Self.IN0_DIM + TPB - 1) // TPB,), block_dim=(TPB,),
+                grid_dim=(
+                    (Self.IN0_DIM + _T_TILE - 1) // _T_TILE,
+                    (B + _T_TILE - 1) // _T_TILE,
+                ),
+                block_dim=(_T_TILE, _T_BR),
             )
-            comptime thk = _gru_transpose_kernel[B, H]
+            comptime thk = _transpose_tiled_kernel[B, H]
             c.enqueue_function[thk](
                 h_lt,
                 self._hT.lt["gpu", Layout.row_major(H, B)](),
-                grid_dim=(nblk,), block_dim=(TPB,),
+                grid_dim=(
+                    (H + _T_TILE - 1) // _T_TILE,
+                    (B + _T_TILE - 1) // _T_TILE,
+                ),
+                block_dim=(_T_TILE, _T_BR),
             )
 
             # dx = d_ix @ W_ihᵀ ; dh = d_hx @ W_hhᵀ (then += go⊙z).

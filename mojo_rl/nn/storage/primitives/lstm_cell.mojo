@@ -45,6 +45,7 @@ from ..core.param import Param
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
 from ..loss.sac import polyak_tensor
+from .linear import _transpose_tiled_kernel, _T_TILE, _T_BR
 
 
 @always_inline
@@ -147,19 +148,6 @@ def _lstm_gate_grad_kernel[
     d_comb[bi, H + j]     = df_post * f_v * (one - f_v)
     d_comb[bi, 2 * H + j] = dg_post * (one - g_v * g_v)
     d_comb[bi, 3 * H + j] = do_post * o_v * (one - o_v)
-
-
-def _lstm_transpose_kernel[
-    ROWS: Int, COLS: Int,
-](
-    src: LayoutTensor[DT, Layout.row_major(ROWS, COLS), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(COLS, ROWS), MutAnyOrigin],
-):
-    """dst[COLS, ROWS] = src[ROWS, COLS]ᵀ (captures x / h_prev for the dW GEMMs
-    before dx / dh_prev clobber an aliased input slab)."""
-    var idx = Int(global_idx.x)
-    if idx < ROWS * COLS:
-        dst[idx % COLS, idx // COLS] = src[idx // COLS, idx % COLS]
 
 
 def _lstm_accum_kernel[
@@ -690,19 +678,26 @@ struct LSTMCell[IN_: Int, HIDDEN: Int](Module):
             )
 
             # Capture xᵀ / h_prevᵀ BEFORE dx / dh_prev writes (may alias x /
-            # h_prev under LSTMSeq's shared buffers).
-            comptime txk = _lstm_transpose_kernel[BATCH, Self.IN_]
-            comptime nbx = (BATCH * Self.IN_ + TPB - 1) // TPB
+            # h_prev under LSTMSeq's shared buffers). B1' tiled transpose.
+            comptime txk = _transpose_tiled_kernel[BATCH, Self.IN_]
             c.enqueue_function[txk](
                 LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_), MutAnyOrigin](xb),
                 self._xT.lt["gpu", Layout.row_major(Self.IN_, BATCH)](),
-                grid_dim=(nbx,), block_dim=(TPB,),
+                grid_dim=(
+                    (Self.IN_ + _T_TILE - 1) // _T_TILE,
+                    (BATCH + _T_TILE - 1) // _T_TILE,
+                ),
+                block_dim=(_T_TILE, _T_BR),
             )
-            comptime thk = _lstm_transpose_kernel[BATCH, H]
+            comptime thk = _transpose_tiled_kernel[BATCH, H]
             c.enqueue_function[thk](
                 LayoutTensor[DT, Layout.row_major(BATCH, H), MutAnyOrigin](hpb),
                 self._hT.lt["gpu", Layout.row_major(H, BATCH)](),
-                grid_dim=(nbh,), block_dim=(TPB,),
+                grid_dim=(
+                    (H + _T_TILE - 1) // _T_TILE,
+                    (BATCH + _T_TILE - 1) // _T_TILE,
+                ),
+                block_dim=(_T_TILE, _T_BR),
             )
 
             # dx = d_comb @ W_ihᵀ ; dh_prev = d_comb @ W_hhᵀ.
