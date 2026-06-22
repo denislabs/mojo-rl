@@ -40,6 +40,7 @@ CPU + GPU (the leaves + the pool-seed / grad-accumulate run on device).
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
+from std.memory import Pointer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -69,11 +70,24 @@ def _cg_accum_kernel[
 struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
     comptime N = Self.DECLS.size
     comptime OUT_DIM = Self.DECLS[Self.N - 1].OUT_DIM
+    comptime MAXARITY = Self._max_arity()
     var children: Tuple[*Self.DECLS]
     var pool: TensorPack[Self.N]  # one slot per decl (slot i ↔ decl i)
     var gpool: TensorPack[Self.N]  # grads (zeroed + fan-out-accumulated)
-    var tmp: TensorPack[3]  # grad_inputs scratch (max arity 3)
+    var tmp: TensorPack[Self.MAXARITY]  # grad_inputs scratch (max node arity)
     var slot_n: List[Int]  # logical elem count per slot (forward)
+
+    @staticmethod
+    def _max_arity() -> Int:
+        """The largest `ARITY` over all decls — the width of the grad-input
+        scratch `tmp` pool and the per-node input-ref array. Comptime-folded
+        (mirrors `_ext_before`). ≥1 so `tmp` always has at least one slot."""
+        var m = 1
+        comptime for j in range(Self.N):
+            comptime aj = Self.DECLS[j].ARITY
+            if aj > m:
+                m = aj
+        return m
 
     def __init__(out self):
         comptime assert Self.N >= 1, "ComputeGraph needs >= 1 node"
@@ -84,7 +98,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
         self.children = Tuple[*Self.DECLS]()
         self.pool = TensorPack[Self.N]()
         self.gpool = TensorPack[Self.N]()
-        self.tmp = TensorPack[3]()
+        self.tmp = TensorPack[Self.MAXARITY]()
         self.slot_n = List[Int](length=Self.N, fill=0)
 
     @staticmethod
@@ -118,6 +132,32 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             comptime if Self.DECLS[j].KIND == 2:
                 c += 1
         return c
+
+    @staticmethod
+    def _accumulate_grads[
+        B: Int, target: StaticString, NA: Int, i: Int
+    ](
+        mut gpool: TensorPack[Self.N],
+        mut tmp: TensorPack[Self.MAXARITY],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """Fan-out-accumulate node `i`'s grad_inputs (`tmp[0:NA]`) into the fed
+        slots' grad buffers (`gpool[sk] += tmp[k]`). Shared by the owned /
+        external vjp branches; `NA` is the branch-appropriate arity."""
+        comptime for k in range(NA):
+            comptime ak = B * Self.DECLS[i].IN_DIMS[k]
+            comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
+            comptime if target == "cpu":
+                for q in range(ak):
+                    gpool[sk].data[q] += tmp[k].data[q]
+            else:
+                var c = ctx.value()
+                c.enqueue_function[_cg_accum_kernel[ak]](
+                    gpool[sk].lt["gpu", Layout.row_major(ak)](),
+                    tmp[k].lt["gpu", Layout.row_major(ak)](),
+                    grid_dim=(ak + TPB - 1) // TPB,
+                    block_dim=TPB,
+                )
 
     def set_input[
         slot_name: StaticString, B: Int
@@ -205,57 +245,37 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                 pass  # input slot — already seeded by set_input
             else:
                 self.slot_n[i] = B * Self.DECLS[i].OUT_DIM
-                comptime s0 = Self._slot_of[Self.DECLS[i].IN_NAMES[0]]()
+                # Build this node's input-ref array generically (any arity):
+                # each slot's pool entry is fed via the §B0 wildcard subscript,
+                # so all refs share MutAnyOrigin (same as the unrolled form).
+                # The external branch keys its arity off `EXT[ei].ARITY` (the
+                # threaded module's), which the type system does not unify with
+                # the provably-equal `DECLS[i].ARITY` — hence the split.
                 comptime if Self.DECLS[i].KIND == 2:
                     # External slot — dispatch to the threaded module.
                     comptime ei = Self._ext_before[i]()
-                    comptime if EXT[ei].ARITY == 1:
-                        externals[ei].forward[target, B, POLICY=POLICY](
-                            TensorRefs[EXT[ei].ARITY](self.pool[s0]),
-                            self.pool[i],
-                            ctx,
-                        )
-                    elif EXT[ei].ARITY == 2:
-                        comptime s1 = Self._slot_of[Self.DECLS[i].IN_NAMES[1]]()
-                        externals[ei].forward[target, B, POLICY=POLICY](
-                            TensorRefs[EXT[ei].ARITY](
-                                self.pool[s0], self.pool[s1]
-                            ),
-                            self.pool[i],
-                            ctx,
-                        )
-                    elif EXT[ei].ARITY == 3:
-                        comptime s1 = Self._slot_of[Self.DECLS[i].IN_NAMES[1]]()
-                        comptime s2 = Self._slot_of[Self.DECLS[i].IN_NAMES[2]]()
-                        externals[ei].forward[target, B, POLICY=POLICY](
-                            TensorRefs[EXT[ei].ARITY](
-                                self.pool[s0], self.pool[s1], self.pool[s2]
-                            ),
-                            self.pool[i],
-                            ctx,
-                        )
-                elif Self.DECLS[i].ARITY == 1:
-                    self.children[i].forward[target, B, POLICY=POLICY](
-                        TensorRefs[Self.DECLS[i].ARITY](self.pool[s0]),
+                    comptime AE = EXT[ei].ARITY
+                    var inrefs = InlineArray[
+                        Pointer[Tensor, MutAnyOrigin], AE
+                    ](uninitialized=True)
+                    comptime for k in range(AE):
+                        comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
+                        inrefs[k] = Pointer(to=self.pool[sk])
+                    externals[ei].forward[target, B, POLICY=POLICY](
+                        TensorRefs[AE, MutAnyOrigin](inrefs),
                         self.pool[i],
                         ctx,
                     )
-                elif Self.DECLS[i].ARITY == 2:
-                    comptime s1 = Self._slot_of[Self.DECLS[i].IN_NAMES[1]]()
+                else:
+                    comptime A = Self.DECLS[i].ARITY
+                    var inrefs = InlineArray[
+                        Pointer[Tensor, MutAnyOrigin], A
+                    ](uninitialized=True)
+                    comptime for k in range(A):
+                        comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
+                        inrefs[k] = Pointer(to=self.pool[sk])
                     self.children[i].forward[target, B, POLICY=POLICY](
-                        TensorRefs[Self.DECLS[i].ARITY](
-                            self.pool[s0], self.pool[s1]
-                        ),
-                        self.pool[i],
-                        ctx,
-                    )
-                elif Self.DECLS[i].ARITY == 3:
-                    comptime s1 = Self._slot_of[Self.DECLS[i].IN_NAMES[1]]()
-                    comptime s2 = Self._slot_of[Self.DECLS[i].IN_NAMES[2]]()
-                    self.children[i].forward[target, B, POLICY=POLICY](
-                        TensorRefs[Self.DECLS[i].ARITY](
-                            self.pool[s0], self.pool[s1], self.pool[s2]
-                        ),
+                        TensorRefs[A, MutAnyOrigin](inrefs),
                         self.pool[i],
                         ctx,
                     )
@@ -306,152 +326,65 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             comptime i = Self.N - 1 - jj
             comptime if Self.DECLS[i].KIND == 0:
                 pass
-            elif Self.DECLS[i].ARITY == 1:
-                comptime a0 = B * Self.DECLS[i].IN_DIMS[0]
-                comptime s0 = Self._slot_of[Self.DECLS[i].IN_NAMES[0]]()
-                comptime if target == "cpu":
-                    self.tmp[0].ensure(a0)
-                else:
-                    self.tmp[0].ensure_gpu(ctx.value(), a0)
+            else:
+                # Generic reverse step (any arity): ensure the tmp grad-input
+                # slots, build the forward-input + grad-input ref arrays from
+                # the pool / tmp (all §B0 wildcard MutAnyOrigin), dispatch the
+                # node's vjp, then fan-out-accumulate each tmp[k] into the fed
+                # slot's grad buffer. External branch keys arity off
+                # `EXT[ei].ARITY` (see the forward note).
                 comptime if Self.DECLS[i].KIND == 2:
                     comptime ei = Self._ext_before[i]()
+                    comptime AE = EXT[ei].ARITY
+                    var firefs = InlineArray[
+                        Pointer[Tensor, MutAnyOrigin], AE
+                    ](uninitialized=True)
+                    var girefs = InlineArray[
+                        Pointer[Tensor, MutAnyOrigin], AE
+                    ](uninitialized=True)
+                    comptime for k in range(AE):
+                        comptime ak = B * Self.DECLS[i].IN_DIMS[k]
+                        comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
+                        comptime if target == "cpu":
+                            self.tmp[k].ensure(ak)
+                        else:
+                            self.tmp[k].ensure_gpu(ctx.value(), ak)
+                        firefs[k] = Pointer(to=self.pool[sk])
+                        girefs[k] = Pointer(to=self.tmp[k])
                     externals[ei].vjp[target, B, POLICY=POLICY](
-                        TensorRefs[EXT[ei].ARITY](self.pool[s0]),
+                        TensorRefs[AE, MutAnyOrigin](firefs),
                         self.gpool[i],
-                        TensorRefs[EXT[ei].ARITY](self.tmp[0]),
+                        TensorRefs[AE, MutAnyOrigin](girefs),
                         ctx,
                     )
+                    Self._accumulate_grads[B, target, AE, i](
+                        self.gpool, self.tmp, ctx
+                    )
                 else:
+                    comptime A = Self.DECLS[i].ARITY
+                    var firefs = InlineArray[
+                        Pointer[Tensor, MutAnyOrigin], A
+                    ](uninitialized=True)
+                    var girefs = InlineArray[
+                        Pointer[Tensor, MutAnyOrigin], A
+                    ](uninitialized=True)
+                    comptime for k in range(A):
+                        comptime ak = B * Self.DECLS[i].IN_DIMS[k]
+                        comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
+                        comptime if target == "cpu":
+                            self.tmp[k].ensure(ak)
+                        else:
+                            self.tmp[k].ensure_gpu(ctx.value(), ak)
+                        firefs[k] = Pointer(to=self.pool[sk])
+                        girefs[k] = Pointer(to=self.tmp[k])
                     self.children[i].vjp[target, B, POLICY=POLICY](
-                        TensorRefs[Self.DECLS[i].ARITY](self.pool[s0]),
+                        TensorRefs[A, MutAnyOrigin](firefs),
                         self.gpool[i],
-                        TensorRefs[Self.DECLS[i].ARITY](self.tmp[0]),
+                        TensorRefs[A, MutAnyOrigin](girefs),
                         ctx,
                     )
-                comptime if target == "cpu":
-                    for q in range(a0):
-                        self.gpool[s0].data[q] += self.tmp[0].data[q]
-                else:
-                    var c = ctx.value()
-                    c.enqueue_function[_cg_accum_kernel[a0]](
-                        self.gpool[s0].lt["gpu", Layout.row_major(a0)](),
-                        self.tmp[0].lt["gpu", Layout.row_major(a0)](),
-                        grid_dim=(a0 + TPB - 1) // TPB,
-                        block_dim=TPB,
-                    )
-            elif Self.DECLS[i].ARITY == 2:
-                comptime a0 = B * Self.DECLS[i].IN_DIMS[0]
-                comptime a1 = B * Self.DECLS[i].IN_DIMS[1]
-                comptime s0 = Self._slot_of[Self.DECLS[i].IN_NAMES[0]]()
-                comptime s1 = Self._slot_of[Self.DECLS[i].IN_NAMES[1]]()
-                comptime if target == "cpu":
-                    self.tmp[0].ensure(a0)
-                    self.tmp[1].ensure(a1)
-                else:
-                    self.tmp[0].ensure_gpu(ctx.value(), a0)
-                    self.tmp[1].ensure_gpu(ctx.value(), a1)
-                comptime if Self.DECLS[i].KIND == 2:
-                    comptime ei = Self._ext_before[i]()
-                    externals[ei].vjp[target, B, POLICY=POLICY](
-                        TensorRefs[EXT[ei].ARITY](self.pool[s0], self.pool[s1]),
-                        self.gpool[i],
-                        TensorRefs[EXT[ei].ARITY](self.tmp[0], self.tmp[1]),
-                        ctx,
-                    )
-                else:
-                    self.children[i].vjp[target, B, POLICY=POLICY](
-                        TensorRefs[Self.DECLS[i].ARITY](
-                            self.pool[s0], self.pool[s1]
-                        ),
-                        self.gpool[i],
-                        TensorRefs[Self.DECLS[i].ARITY](
-                            self.tmp[0], self.tmp[1]
-                        ),
-                        ctx,
-                    )
-                comptime if target == "cpu":
-                    for q in range(a0):
-                        self.gpool[s0].data[q] += self.tmp[0].data[q]
-                    for q in range(a1):
-                        self.gpool[s1].data[q] += self.tmp[1].data[q]
-                else:
-                    var c = ctx.value()
-                    c.enqueue_function[_cg_accum_kernel[a0]](
-                        self.gpool[s0].lt["gpu", Layout.row_major(a0)](),
-                        self.tmp[0].lt["gpu", Layout.row_major(a0)](),
-                        grid_dim=(a0 + TPB - 1) // TPB,
-                        block_dim=TPB,
-                    )
-                    c.enqueue_function[_cg_accum_kernel[a1]](
-                        self.gpool[s1].lt["gpu", Layout.row_major(a1)](),
-                        self.tmp[1].lt["gpu", Layout.row_major(a1)](),
-                        grid_dim=(a1 + TPB - 1) // TPB,
-                        block_dim=TPB,
-                    )
-            elif Self.DECLS[i].ARITY == 3:
-                comptime a0 = B * Self.DECLS[i].IN_DIMS[0]
-                comptime a1 = B * Self.DECLS[i].IN_DIMS[1]
-                comptime a2 = B * Self.DECLS[i].IN_DIMS[2]
-                comptime s0 = Self._slot_of[Self.DECLS[i].IN_NAMES[0]]()
-                comptime s1 = Self._slot_of[Self.DECLS[i].IN_NAMES[1]]()
-                comptime s2 = Self._slot_of[Self.DECLS[i].IN_NAMES[2]]()
-                comptime if target == "cpu":
-                    self.tmp[0].ensure(a0)
-                    self.tmp[1].ensure(a1)
-                    self.tmp[2].ensure(a2)
-                else:
-                    self.tmp[0].ensure_gpu(ctx.value(), a0)
-                    self.tmp[1].ensure_gpu(ctx.value(), a1)
-                    self.tmp[2].ensure_gpu(ctx.value(), a2)
-                comptime if Self.DECLS[i].KIND == 2:
-                    comptime ei = Self._ext_before[i]()
-                    externals[ei].vjp[target, B, POLICY=POLICY](
-                        TensorRefs[EXT[ei].ARITY](
-                            self.pool[s0], self.pool[s1], self.pool[s2]
-                        ),
-                        self.gpool[i],
-                        TensorRefs[EXT[ei].ARITY](
-                            self.tmp[0], self.tmp[1], self.tmp[2]
-                        ),
-                        ctx,
-                    )
-                else:
-                    self.children[i].vjp[target, B, POLICY=POLICY](
-                        TensorRefs[Self.DECLS[i].ARITY](
-                            self.pool[s0], self.pool[s1], self.pool[s2]
-                        ),
-                        self.gpool[i],
-                        TensorRefs[Self.DECLS[i].ARITY](
-                            self.tmp[0], self.tmp[1], self.tmp[2]
-                        ),
-                        ctx,
-                    )
-                comptime if target == "cpu":
-                    for q in range(a0):
-                        self.gpool[s0].data[q] += self.tmp[0].data[q]
-                    for q in range(a1):
-                        self.gpool[s1].data[q] += self.tmp[1].data[q]
-                    for q in range(a2):
-                        self.gpool[s2].data[q] += self.tmp[2].data[q]
-                else:
-                    var c = ctx.value()
-                    c.enqueue_function[_cg_accum_kernel[a0]](
-                        self.gpool[s0].lt["gpu", Layout.row_major(a0)](),
-                        self.tmp[0].lt["gpu", Layout.row_major(a0)](),
-                        grid_dim=(a0 + TPB - 1) // TPB,
-                        block_dim=TPB,
-                    )
-                    c.enqueue_function[_cg_accum_kernel[a1]](
-                        self.gpool[s1].lt["gpu", Layout.row_major(a1)](),
-                        self.tmp[1].lt["gpu", Layout.row_major(a1)](),
-                        grid_dim=(a1 + TPB - 1) // TPB,
-                        block_dim=TPB,
-                    )
-                    c.enqueue_function[_cg_accum_kernel[a2]](
-                        self.gpool[s2].lt["gpu", Layout.row_major(a2)](),
-                        self.tmp[2].lt["gpu", Layout.row_major(a2)](),
-                        grid_dim=(a2 + TPB - 1) // TPB,
-                        block_dim=TPB,
+                    Self._accumulate_grads[B, target, A, i](
+                        self.gpool, self.tmp, ctx
                     )
 
     def for_each_param[
