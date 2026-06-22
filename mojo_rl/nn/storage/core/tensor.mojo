@@ -110,6 +110,31 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
         else:
             comptime assert False, "target must be 'cpu' or 'gpu'"
 
+    def lt_at[
+        target: StaticString, layout: Layout
+    ](mut self, offset: Int) raises -> LayoutTensor[Self.dt, layout, MutAnyOrigin]:
+        """Typed GPU view at element `offset` into the device buffer — a
+        stacked-ensemble / per-step sub-view — WITHOUT `.unsafe_ptr()`. The
+        sanctioned replacement for
+        `LayoutTensor[..MutAnyOrigin](buf.dev.value().unsafe_ptr() + offset)`:
+        a memory-sharing `create_sub_buffer` (offset + `layout.size()`, in
+        elements) feeds the same explicit-`MutAnyOrigin` DeviceBuffer ctor `lt`
+        uses, so the returned static `layout` matches the kernel ABI exactly
+        (callers/kernels identical to `lt`, just offset).
+
+        GPU-only: the per-member offset views that needed raw pointers are all on
+        the GPU kernel path; CPU branches index the owning `self.data` List
+        directly (no ABI erasure, so no helper needed). The parent buffer owns
+        the storage — the sub-buffer handle dying after this returns is safe
+        (the `MutAnyOrigin` cast erases its origin; the memory outlives via the
+        parent)."""
+        comptime assert target == "gpu", (
+            "lt_at is GPU-only (offset sub-view); CPU indexes self.data directly"
+        )
+        comptime sz = layout.size()
+        var sub = self.dev.value().create_sub_buffer[Self.dt](offset, sz)
+        return LayoutTensor[Self.dt, layout, MutAnyOrigin](sub)
+
     def upload(mut self, ctx: DeviceContext) raises:
         """CPU `data` → device buffer (via the persistent host staging buffer).
         The device buffer is (re)allocated to `self.n` (original semantics —
