@@ -34,11 +34,11 @@ every other family.
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.primitives.tanh import Tanh
-from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.storage.primitives.activations import Tanh
+from mojo_rl.nn.storage.combinators.sequential import Sequential
 
 from ..training.blocks import SampleBlock, ReplaySampleStep
 from ..data.any_replay import AnyReplay

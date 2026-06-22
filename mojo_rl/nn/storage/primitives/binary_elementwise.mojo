@@ -19,6 +19,7 @@ from mojo_rl.nn.constants import DT, CPU_SIMD_W, TPB
 from mojo_rl.nn.core.binary_element_op import BinaryElementOp
 from mojo_rl.nn.primitives.ops.binary_elem_min_op import BinaryElemMinOp
 from mojo_rl.nn.primitives.ops.binary_sub_op import BinarySubOp
+from mojo_rl.nn.primitives.ops.binary_add_op import BinaryAddOp
 from ..core.tensor import Tensor
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
@@ -176,3 +177,4 @@ struct BinaryElementwise[DIM_: Int, OP: BinaryElementOp](Module):
 
 comptime BinaryElemMin[DIM: Int] = BinaryElementwise[DIM, BinaryElemMinOp]
 comptime BinarySub[DIM: Int] = BinaryElementwise[DIM, BinarySubOp]
+comptime BinaryElemAdd[DIM: Int] = BinaryElementwise[DIM, BinaryAddOp]

@@ -7,8 +7,9 @@ Learning diagnostics mirror the SAC bundle (CPU-only diag walk):
   * `mean_reward` — mean reward of the minibatch (`state.mb_r`)
 
 `train_steps` is the cumulative count of trainer updates (NOT reset on
-flush); `n_updates` is per-chunk. On the (unreachable today) GPU train
-path the three diagnostics read 0.0 — same convention as DQN/C51/PPO."""
+flush); `n_updates` is per-chunk. On the storage GPU train path these
+diagnostics are populated from device-resident accumulators (read once at
+flush), same as SAC — not 0.0."""
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.metric import LogScalar

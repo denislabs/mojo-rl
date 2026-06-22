@@ -1,14 +1,15 @@
-"""DDPGActorStep — DDPG actor (DPG) gradient step (owns DDPGActorLoss).
+"""DDPGActorStep — DDPG actor (DPG) gradient step (owns storage DDPGActorLoss).
 
-Writes state.actor_loss.
+Writes state.actor_loss. Thin wrapper over the storage `DDPGActorLoss`
+(forward_backward takes owned Tensors + Adam + ctx).
 """
 
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from ..actor_loss import DDPGActorLoss
 from ...training.trainer_block import TrainerState
 
@@ -48,11 +49,12 @@ struct DDPGActorStep[
         mut actor_opt: Adam,
         mut critic: Self.CRITIC,
     ) raises:
-        var loss = self.inner.forward_backward[target, OPT=Adam, POLICY=POLICY](
+        var loss = self.inner.forward_backward[target, POLICY](
             actor,
             actor_opt,
             critic,
-            state.mb_s.target_ptr[target](),
+            state.mb_s,
+            state.ctx,
         )
         # On GPU `loss` is a 0 sentinel — the real metric is drained from
         # the inner device accumulator at flush (read_loss_accum).
@@ -62,5 +64,5 @@ struct DDPGActorStep[
     def reset_loss_accum(mut self) raises:
         self.inner.reset_loss_accum()
 
-    def read_loss_accum(mut self) raises -> Scalar[DT]:
-        return self.inner.read_loss_accum()
+    def read_loss_accum(mut self, ctx: DeviceContext) raises -> Scalar[DT]:
+        return self.inner.read_loss_accum(ctx)

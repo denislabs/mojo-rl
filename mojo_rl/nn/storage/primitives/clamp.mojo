@@ -91,6 +91,15 @@ struct Clamp[DIM_: Int](Module):
         self.min_val = min_val
         self.max_val = max_val
 
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Named-attribute setter so a `ComputeGraph` can configure the bounds
+        via `set_node_attr["node", "min_val"/"max_val"]` (mirrors `Scale`).
+        Needed by the TD3 target-y graph (noise clip + action clamp)."""
+        comptime if ATTR == "min_val":
+            self.min_val = value
+        elif ATTR == "max_val":
+            self.max_val = value
+
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](

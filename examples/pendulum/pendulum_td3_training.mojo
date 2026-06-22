@@ -3,10 +3,10 @@
 from std.random import seed
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import ReLU
+from mojo_rl.nn.storage.primitives.activations import Tanh
 from mojo_rl.deep_agents.td3 import TD3Agent
 from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
 from mojo_rl.deep_agents.training.batched_env import BatchedCpuEnv
