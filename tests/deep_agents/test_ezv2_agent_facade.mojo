@@ -51,14 +51,19 @@ def main() raises:
     # checkpoint byte-identity: save → fresh load → save.
     var path = String("/tmp/ezv2_agent_ckpt.txt")
     agent.save(path)
-    var bytes1 = _read(path)
 
     var agent2 = Agent(lr=0.01)
     agent2.load(path)
     var path2 = String("/tmp/ezv2_agent_ckpt2.txt")
     agent2.save(path2)
-    var bytes2 = _read(path2)
 
-    print("ckpt bytes:", bytes1.byte_length(), "vs", bytes2.byte_length())
-    assert_true(bytes1 == bytes2, "checkpoint round-trip not byte-identical")
+    # storage agent checkpoint = 5 per-net sidecars (.rep/.dyn/.pred/.proj/.predh).
+    for suf in [
+        String(".rep"), String(".dyn"), String(".pred"),
+        String(".proj"), String(".predh"),
+    ]:
+        assert_true(
+            _read(path + suf) == _read(path2 + suf),
+            "checkpoint round-trip not byte-identical for " + suf,
+        )
     print("EZv2DiscreteAgent facade: OK")

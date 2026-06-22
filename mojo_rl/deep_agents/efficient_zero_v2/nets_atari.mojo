@@ -1,4 +1,4 @@
-"""EfficientZeroV2 **Atari** networks (nn) — the spatial-latent model.
+"""EfficientZeroV2 **Atari** networks (storage nn) — the spatial-latent model.
 
 Full-parity port of the official EZv2 Atari backbone
 (`references/EfficientZeroV2-main/ez/agents/models/base_model.py`,
@@ -17,46 +17,49 @@ rides through the planner / replay / MCTS adapters as a **flat** ``LATENT = 64·
 ``GPUMCTSSequenceReplay`` / the ``MZ*GPU`` adapters stay untouched; only
 ``LATENT`` changes (128 → 2304).
 
-This file currently provides the **representation** tower; the convolutional
-dynamics (action-plane embed + residual-to-state) and the conv value/policy /
-value-prefix-LSTM reward heads land alongside once the planner-integration design
-(action encoding, scale-hidden) is pinned — see the parity doc.
-
 Spatial-shape convention (matches ``Conv2D`` / the ResNet composites):
     OH = (H + 2*P - K) // S + 1
 
 Note on bias: the reference convs are ``bias=False`` (every conv is BN-followed,
-so the bias is redundant — BN re-centres). nn ``Conv2D`` carries a bias; for the
-one conv whose BN is dropped (the no-BN downsample skip below) this is a benign
-extra parameter, logged in the parity doc.
+so the bias is redundant — BN re-centres). Storage ``Conv2D`` carries a bias; for
+the one conv whose BN is dropped (the no-BN downsample skip below) this is a
+benign extra parameter, logged in the parity doc.
+
+Storage migration: the dynamics ComputeGraph drops the legacy leading
+output-count param (storage infers OUT_DIM from the last node) and the
+``EZDynNetAtari`` wrapper threads ``ctx`` through ``forward``/``vjp`` (no
+``TargetStorage``). It KEEPS ``set_attr`` because this backbone is BatchNorm-based
+(unlike the BN-free Connect-Four spatial nets) — BN train/eval must propagate.
 """
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.combinators.parallel import Parallel
-from mojo_rl.nn.combinators.projected_residual import ProjectedResidual
-from mojo_rl.nn.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.combinators.graph_nodes import InputSlot, Node
-from mojo_rl.nn.primitives.conv2d import Conv2D
-from mojo_rl.nn.primitives.batch_norm_2d import BatchNorm2D
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.primitives.avg_pool_2d import AvgPool2D
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.slice import Slice
-from mojo_rl.nn.primitives.concat import Concat
-from mojo_rl.nn.primitives.add import Add
-from mojo_rl.nn.primitives.broadcast_tokens import BroadcastTokens
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
-from mojo_rl.nn.models.resnet import ResBlockConv2DBN
+from mojo_rl.nn.storage.core.initializer import Initializer
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.param import ParamVisitor
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.storage.core.walkers import join_name
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.combinators.parallel import Parallel
+from mojo_rl.nn.storage.combinators.projected_residual import ProjectedResidual
+from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node
+from mojo_rl.nn.storage.primitives.conv2d import Conv2D
+from mojo_rl.nn.storage.primitives.batch_norm_2d import BatchNorm2D
+from mojo_rl.nn.storage.primitives.activations import ReLU
+from mojo_rl.nn.storage.primitives.avg_pool_2d import AvgPool2D
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.slice import Slice
+from mojo_rl.nn.storage.primitives.concat import Concat
+from mojo_rl.nn.storage.primitives.add import Add
+from mojo_rl.nn.storage.primitives.broadcast_tokens import BroadcastTokens
+from mojo_rl.nn.storage.primitives.layer_norm import LayerNorm
+from mojo_rl.nn.storage.models.resnet import ResBlockConv2DBN
 from mojo_rl.deep_agents.dreamerv3.zero_init import (
     scale_output_module, scale_output_graph,
 )
@@ -174,9 +177,10 @@ comptime EZActionPlane[ACT: Int] = Sequential[
 # = z'. Reward branch off z': Conv1×1(64→16)→BN→ReLU→MLP[32]→BINS (a fused,
 # stateless stand-in for the value-prefix LSTM — see docs/EZV2_ATARI_PARITY.md
 # §D; honoring the LSTM needs a shared-planner (h,c)-pool rewrite).
+# Storage ComputeGraph: OUT_DIM is inferred from the last node ("out"), so there
+# is no leading output-count param (vs. the legacy `ComputeGraph[OUT, ...]`).
 # ──────────────────────────────────────────────────────────────────────
 comptime EZDynAtariGraph[ACT: Int, BINS: Int] = ComputeGraph[
-    EZ_LATENT + BINS,
     InputSlot["in", EZ_LATENT + ACT],
     # split the flat input into the latent state and the action onehot
     Node["z",    Slice[EZ_LATENT + ACT, 0, EZ_LATENT],            "in"],
@@ -196,7 +200,7 @@ comptime EZDynAtariGraph[ACT: Int, BINS: Int] = ComputeGraph[
                      BatchNorm2D[EZ_C, EZ_HW, EZ_HW],
                  ],                                               "cat"],
     # residual to the INPUT state, then ReLU
-    Node["res",  Add[EZ_LATENT, 2],                               "c1", "z"],
+    Node["res",  Add[EZ_LATENT],                                  "c1", "z"],
     Node["rl",   ReLU[EZ_LATENT],                                 "res"],
     # 1× post-activated ResBlock(64) → next state z'
     Node["zp",   ResBlockConv2DBN[EZ_C, 3, 1, EZ_HW, EZ_HW],      "rl"],
@@ -214,9 +218,8 @@ comptime EZDynAtariGraph[ACT: Int, BINS: Int] = ComputeGraph[
 ]
 
 
-# ──────────────────────────────────────────────────────────────────────
-# GPU/CPU raw-pointer copy (vjp grad copy-back). N is comptime.
-# ──────────────────────────────────────────────────────────────────────
+# GPU LayoutTensor copy for the vjp input-grad copy-back (dst, src both real
+# graph-pool / grad-pool buffers).
 def _ezdyn_copy_kernel[N: Int](
     dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
@@ -228,14 +231,11 @@ def _ezdyn_copy_kernel[N: Int](
 
 # ──────────────────────────────────────────────────────────────────────
 # EZDynNetAtari — single-input Module wrapper over the dynamics graph.
-#
-# The `MZDynGPU` adapter calls `forward["gpu",B](in_t, output=out_t)` with one
-# concatenated `[z|onehot]` tile — but `ComputeGraph` is driven via
-# `set_input`/`forward(output)`. This thin wrapper bridges the two: forward
-# feeds the slot then runs the graph; vjp runs the graph backward then copies
-# the slot's accumulated input-gradient into `grad_inputs[0]` (the unroll's
-# BPTT needs ∂/∂z). Param/state walks + the BatchNorm train/eval toggle
-# delegate to the graph. Contract: IN_DIMS[0]=LATENT+ACT, OUT_DIM=LATENT+BINS.
+# forward feeds the slot then runs the graph; vjp runs the graph backward then
+# copies the slot's accumulated input-grad into grad_inputs[0] (the unroll's
+# BPTT needs ∂/∂[z|action]). Param/state walks delegate to the graph. KEEPS
+# set_attr (BatchNorm train/eval). Storage: no TargetStorage (ctx arg-threaded).
+# Contract: IN_DIMS[0]=LATENT+ACT, OUT_DIM=LATENT+BINS.
 # ──────────────────────────────────────────────────────────────────────
 struct EZDynNetAtari[ACT: Int, BINS: Int](Module):
     comptime ARITY: Int = 1
@@ -246,14 +246,12 @@ struct EZDynNetAtari[ACT: Int, BINS: Int](Module):
     comptime Graph = EZDynAtariGraph[Self.ACT, Self.BINS]
 
     var graph: Self.Graph
-    var ts: TargetStorage
 
     def __init__(out self):
         comptime assert Self.Graph.OUT_DIM == Self.OUT_DIM, (
             "EZDynNetAtari: graph OUT_DIM must equal LATENT+BINS"
         )
         self.graph = Self.Graph()
-        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
@@ -263,78 +261,77 @@ struct EZDynNetAtari[ACT: Int, BINS: Int](Module):
             "EZDynNetAtari: target must be 'cpu' or 'gpu'"
         )
         var s = Self()
-        s.graph = Self.Graph.make[target, INIT](ctx=ctx)
-        comptime if target == "cpu":
-            s.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("EZDynNetAtari.make[target='gpu']: ctx required")
-            s.ts = TargetStorage.make_gpu(ctx.value())
+        s.graph = Self.Graph.make[target, INIT](ctx)
         return s^
 
     def forward[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        o: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["EZDynNetAtari", target](self.ts.target_tag)
-        self.graph.set_input["in", BATCH](
-            inputs.tile[0, BATCH, Self.IN_DIM]()
-        )
-        self.graph.forward[target, BATCH, POLICY=POLICY](output)
+        self.graph.set_input["in", B](inputs[0], ctx)
+        self.graph.forward[B, target, POLICY=POLICY](out, ctx)
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["EZDynNetAtari", target](self.ts.target_tag)
-        self.graph.vjp[target, BATCH, POLICY=POLICY, mode=mode](grad_output)
-        # copy slot["in"].grad_out → grad_inputs[0]  (∂/∂[z|action])
-        comptime N = BATCH * Self.IN_DIM
-        var dst = mptr(grad_inputs.tile[0, BATCH, Self.IN_DIM]().ptr)
-        var src = self.graph.grad_input_ptr["in"]()
+        self.graph.vjp[B, target, POLICY=POLICY](grad_output, ctx)
+        comptime N = B * Self.IN_DIM
         comptime if target == "cpu":
+            ref gin = self.graph.grad_input["in"]()
+            ref dst = grad_inputs[0]
             for i in range(N):
-                dst[i] = src[i]
+                dst.data[i] = gin.data[i]
         else:
-            var dst_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](dst)
-            var src_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](src)
+            var c = ctx.value()
             comptime nb = (N + TPB - 1) // TPB
-            self.ts.ctx.value().enqueue_function[_ezdyn_copy_kernel[N]](
-                dst_lt, src_lt, grid_dim=nb, block_dim=TPB,
+            c.enqueue_function[_ezdyn_copy_kernel[N]](
+                grad_inputs[0].lt["gpu", Layout.row_major(N)](),
+                self.graph.grad_input["in"]().lt["gpu", Layout.row_major(N)](),
+                grid_dim=nb, block_dim=TPB,
             )
 
     def for_each_param[
         target: StaticString,
         V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["EZDynNetAtari", target](self.ts.target_tag)
-        var sep = "." if prefix.byte_length() > 0 else ""
-        self.graph.for_each_param[target, V](prefix + sep + "graph", visitor)
+    ](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        self.graph.for_each_param[target, V](
+            visitor, ctx, join_name(prefix, String("graph"))
+        )
 
     def for_each_state[
         target: StaticString,
         V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["EZDynNetAtari", target](self.ts.target_tag)
-        var sep = "." if prefix.byte_length() > 0 else ""
-        self.graph.for_each_state[target, V](prefix + sep + "graph", visitor)
+    ](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        self.graph.for_each_state[target, V](
+            visitor, ctx, join_name(prefix, String("graph"))
+        )
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         self.graph.set_attr[ATTR](value)
@@ -346,11 +343,10 @@ struct EZDynNetAtari[ACT: Int, BINS: Int](Module):
 # `ValuePolicyNetwork` (base_model.py:166-213): a shared ResBlock(64), then two
 # conv heads — Conv1×1(64→16)→BN→ReLU→flatten 576→MLP[32]→(ACT policy / BINS
 # value categorical). `init_zero=True` zeros the last layer of each head (stable
-# zero outputs at init) — a DOCUMENTED FOLLOW-UP here (needs per-layer zero
-# init; the dreamerv3 `zero_init` visitor is the mechanism). Activation in the
-# head MLP is ELU in the reference; nn has no ELU, so ReLU is substituted
-# (logged). Output packing `[policy(ACT) | value(BINS)]` matches `MZPredNet`, so
-# the planner's prediction adapter slices it unchanged.
+# zero outputs at init) — see `ez_atari_init_zero_pred`. Activation in the head
+# MLP is ELU in the reference; nn has no ELU, so ReLU is substituted (logged).
+# Output packing `[policy(ACT) | value(BINS)]` matches `MZPredNet`, so the
+# planner's prediction adapter slices it unchanged.
 # ──────────────────────────────────────────────────────────────────────
 comptime EZPredNetAtari[ACT: Int, BINS: Int] = Sequential[
     # shared num_blocks=1 ResBlock(64)
@@ -386,10 +382,11 @@ comptime EZPredNetAtari[ACT: Int, BINS: Int] = Sequential[
 # policy prior (stable MCTS targets before the heads have learned). We reuse
 # the DreamerV3 `scale_output_*` visitors (scale=0.0 == exact zero-init).
 #
-# Param names follow the combinator naming (Sequential→`.{i}`, Parallel→
-# `.a`/`.b`, ComputeGraph→`.{node}`, Linear leaf→`.weight`/`.bias`):
-#   • EZPredNetAtari = Sequential[ResBlock(0), Parallel(1)[policy=a, value=b]];
-#     each head's output Linear is Sequential child 5 → `1.a.5.*` / `1.b.5.*`.
+# Param names follow the STORAGE combinator naming (Sequential→`.{i}`, Parallel→
+# `.{i}` by branch INDEX [NOT `.a`/`.b` as in legacy nn], ComputeGraph node→
+# `.{node}`, Linear leaf→`.weight`/`.bias`):
+#   • EZPredNetAtari = Sequential[ResBlock(0), Parallel(1)[policy=0, value=1]];
+#     each head's output Linear is Sequential child 5 → `1.0.5.*` / `1.1.5.*`.
 #   • EZDynAtariGraph reward branch is node `rew` (a 6-child Sequential); its
 #     output Linear is child 5 → `rew.5.*`.
 # Only the OUTPUT layer is scaled — scaling the whole head would choke the
@@ -405,10 +402,10 @@ def ez_atari_init_zero_pred[
     """Zero (or `scale`) the policy + value head output Linears of the
     prediction net. scale=0.0 → uniform policy + neutral value at init."""
     scale_output_module[target, EZPredNetAtari[ACT, BINS]](
-        pred, "1.a.5.weight", "1.a.5.bias", scale, ctx
+        pred, "1.0.5.weight", "1.0.5.bias", scale, ctx
     )
     scale_output_module[target, EZPredNetAtari[ACT, BINS]](
-        pred, "1.b.5.weight", "1.b.5.bias", scale, ctx
+        pred, "1.1.5.weight", "1.1.5.bias", scale, ctx
     )
 
 

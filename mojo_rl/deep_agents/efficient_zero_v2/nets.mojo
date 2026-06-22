@@ -34,10 +34,10 @@ The discrete EZv2 reuses ``MZRepNet`` / ``MZDynNet`` / ``MZPredNet`` directly
 prediction head — see ``nets_continuous.mojo``.
 """
 
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.primitives.batch_norm_1d import BatchNorm1D
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import ReLU
+from mojo_rl.nn.storage.primitives.batch_norm_1d import BatchNorm1D
 
 # Re-export the MuZero learned model — discrete EZv2 uses it unchanged.
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet

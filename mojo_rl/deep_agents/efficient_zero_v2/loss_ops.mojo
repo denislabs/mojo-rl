@@ -44,10 +44,10 @@ comptime _COS_EPS: Scalar[DT] = Scalar[DT](1e-12)
 def consistency_loss_and_grad[
     BATCH: Int, DIM: Int,
 ](
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    t: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    p: List[Scalar[DT]],
+    t: List[Scalar[DT]],
     grad_scale: Scalar[DT],
-    mut grad_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut grad_p: List[Scalar[DT]],
     mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
 ) -> Scalar[DT]:
     """Negative-cosine SimSiam consistency over ``BATCH`` rows of ``DIM``.

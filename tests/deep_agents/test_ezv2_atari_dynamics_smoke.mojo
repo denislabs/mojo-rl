@@ -11,15 +11,15 @@ Run:
     pixi run -e apple mojo run -I . tests/deep_agents/test_ezv2_atari_dynamics_smoke.mojo
 """
 
-from std.memory import alloc
 from std.math import isnan, isinf
-from std.gpu.memory import AddressSpace
 from std.testing import assert_true, assert_equal
-from layout import TileTensor, row_major
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.core import ParamVisitor
+from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.storage.core.param import ParamVisitor
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
 from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import (
     EZDynNetAtari, EZ_LATENT,
 )
@@ -34,23 +34,19 @@ comptime IN = EZ_LATENT + ACT      # 2322
 comptime OUT = EZ_LATENT + BINS    # 2905
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
-
-
 def _det(i: Int, scale: Float64) -> Scalar[DT]:
     var v = (Float64((i * 2654435761) % 1000) / 500.0) - 1.0
     return Scalar[DT](v * scale)
 
 
-def _finite(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int) -> Bool:
+def _finite(p: List[Scalar[DT]], n: Int) -> Bool:
     for i in range(n):
         if isnan(p[i]) or isinf(p[i]):
             return False
     return True
 
 
-def _any_nonzero(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int) -> Bool:
+def _any_nonzero(p: List[Scalar[DT]], n: Int) -> Bool:
     for i in range(n):
         if p[i] != Scalar[DT](0.0):
             return True
@@ -65,21 +61,15 @@ struct GradStats(ParamVisitor):
         self.n_params = 0
         self.n_nonzero = 0
 
-    def visit(
-        mut self, name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int, apply_decay: Bool,
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
         self.n_params += 1
-        var g = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
         var any: Bool = False
-        for i in range(n_elems):
-            if g[i] != Scalar[DT](0.0):
+        for i in range(N):
+            if grad.data[i] != Scalar[DT](0.0):
                 any = True
                 break
         if any:
@@ -96,30 +86,30 @@ def main() raises:
     assert_equal(Dyn.IN_DIMS[0], IN, "dyn input = LATENT+ACT")
     assert_equal(Dyn.OUT_DIM, OUT, "dyn output = LATENT+BINS")
 
-    var m = Dyn.make[target="cpu", INIT=Kaiming]()
+    var m = Dyn.make["cpu", Kaiming]()
     m.set_attr["training"](Scalar[DT](1.0))
 
-    var x = _a(B * IN); var y = _a(B * OUT)
-    var go = _a(B * OUT); var gx = _a(B * IN)
+    var x = Tensor.alloc(B * IN)
+    var y = Tensor.alloc(B * OUT)
+    var go = Tensor.alloc(B * OUT)
+    var gx = Tensor.alloc(B * IN)
     for k in range(B * IN):
-        x[k] = _det(k + 1, 0.3)
+        x.data[k] = _det(k + 1, 0.3)
     for k in range(B * OUT):
-        go[k] = _det(k + 3, 1.0)
+        go.data[k] = _det(k + 3, 1.0)
 
-    var x_t = TileTensor(x, row_major[B, IN]())
-    var y_t = TileTensor(y, row_major[B, OUT]())
-    m.forward["cpu", B](x_t, output=y_t)
-    assert_true(_finite(y, B * OUT), "dyn output finite")
+    m.forward["cpu", B](TensorRefs[Dyn.ARITY](x), y, None)
+    assert_true(_finite(y.data, B * OUT), "dyn output finite")
 
-    var go_t = TileTensor(go, row_major[B, OUT]())
-    var gx_t = TileTensor(gx, row_major[B, IN]())
-    m.vjp["cpu", B](go_t, gx_t)
-    assert_true(_finite(gx, B * IN), "dyn grad_input finite")
+    m.vjp["cpu", B](
+        TensorRefs[Dyn.ARITY](x), go, TensorRefs[Dyn.ARITY](gx), None
+    )
+    assert_true(_finite(gx.data, B * IN), "dyn grad_input finite")
     # The latent half of grad_input must be non-zero (BPTT ∂/∂z copy-back).
-    assert_true(_any_nonzero(gx, B * EZ_LATENT), "dyn grad_input(z) non-zero")
+    assert_true(_any_nonzero(gx.data, B * EZ_LATENT), "dyn grad_input(z) non-zero")
 
     var gs = GradStats()
-    m.for_each_param["cpu", GradStats]("dyn", gs)
+    m.for_each_param["cpu"](gs, None)
     print("   params=", gs.n_params, " nonzero-grad=", gs.n_nonzero)
     assert_true(gs.n_params > 0, "dyn has params")
     assert_true(gs.n_nonzero * 10 >= gs.n_params * 8,

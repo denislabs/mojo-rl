@@ -6,11 +6,16 @@ every train step — the prior per-step ``enqueue_create_buffer`` in
 ``blocks.mojo`` / ``blocks_continuous.mojo`` exploded disk on NVIDIA and added
 allocation latency. ``PROJ`` is ``PROJM.OUT_DIM`` (passed explicitly since a
 struct can't derive it from a Module type param).
+
+Device buffers are owned storage ``Tensor`` fields (like muzero's ``MZScratch``)
+so the storage ``forward(TensorRefs[Tensor])`` / ``.lt`` device views work; the
+``h_*`` host mirrors stay ``HostBuffer`` (host staging for zero-fill + D2H).
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext, HostBuffer
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.storage.core.tensor import Tensor
 
 
 struct EZV2UnrollScratch[
@@ -28,57 +33,64 @@ struct EZV2UnrollScratch[
     comptime DYN_OUT = Self.LATENT + Self.BINS
 
     # H2D host batch slabs
-    var d_obs: Optional[DeviceBuffer[DT]]
-    var d_act: Optional[DeviceBuffer[DT]]
-    var d_pol: Optional[DeviceBuffer[DT]]
-    var d_val: Optional[DeviceBuffer[DT]]
-    var d_rew: Optional[DeviceBuffer[DT]]
+    var d_obs: Tensor
+    var d_act: Tensor
+    var d_pol: Tensor
+    var d_val: Tensor
+    var d_rew: Tensor
     # device scratch
-    var d_zst: Optional[DeviceBuffer[DT]]
-    var d_din: Optional[DeviceBuffer[DT]]
-    var d_dout: Optional[DeviceBuffer[DT]]
-    var d_pout: Optional[DeviceBuffer[DT]]
-    var d_gpout: Optional[DeviceBuffer[DT]]
-    var d_gdout: Optional[DeviceBuffer[DT]]
-    var d_gz: Optional[DeviceBuffer[DT]]
-    var d_gpin: Optional[DeviceBuffer[DT]]
-    var d_gdin: Optional[DeviceBuffer[DT]]
-    var d_gobs: Optional[DeviceBuffer[DT]]
-    var d_twv: Optional[DeviceBuffer[DT]]
-    var d_twr: Optional[DeviceBuffer[DT]]
-    var d_loss: Optional[DeviceBuffer[DT]]
+    var d_zst: Tensor
+    # work tiles for sub-slab forwards (storage forward needs a whole-Tensor
+    # input/output; sub-slabs of d_obs/d_zst bridge through these via copy kernels)
+    var d_obs_work: Tensor   # [B, OBS] — one obs-seq position at a time
+    var z_work: Tensor       # [B, LATENT] — rep/dyn forward output
+    var zk_work: Tensor      # [B, LATENT] — reverse-scan forward input
+    var d_din: Tensor
+    var d_dout: Tensor
+    var d_pout: Tensor
+    var d_gpout: Tensor
+    var d_gdout: Tensor
+    var d_gz: Tensor
+    var d_gpin: Tensor
+    var d_gdin: Tensor
+    var d_gobs: Tensor
+    var d_twv: Tensor
+    var d_twr: Tensor
+    var d_loss: Tensor
     # consistency scratch
-    var d_tstore: Optional[DeviceBuffer[DT]]
-    var d_ztmp: Optional[DeviceBuffer[DT]]
-    var d_projo: Optional[DeviceBuffer[DT]]
-    var d_pk: Optional[DeviceBuffer[DT]]
-    var d_gpk: Optional[DeviceBuffer[DT]]
-    var d_gproj: Optional[DeviceBuffer[DT]]
-    var d_gzcons: Optional[DeviceBuffer[DT]]
-    # consistency episode-boundary mask [K, B] + all-ones host fallback
-    var d_cmask: Optional[DeviceBuffer[DT]]
+    var d_tstore: Tensor
+    var d_ztmp: Tensor
+    var d_projo: Tensor
+    var d_pk: Tensor
+    var d_gpk: Tensor
+    var d_gproj: Tensor
+    var d_gzcons: Tensor
+    # consistency episode-boundary mask [K, B]
+    var d_cmask: Tensor
     var h_cmask_ones: Optional[HostBuffer[DT]]
     # host loss mirror (zero-fill + D2H reduce)
     var h_loss: Optional[HostBuffer[DT]]
     # PER: per-sample IS weights [B] (H2D) + per-sample priority [B] (D2H)
-    var d_isw: Optional[DeviceBuffer[DT]]
-    var d_prio: Optional[DeviceBuffer[DT]]
+    var d_isw: Tensor
+    var d_prio: Tensor
     var h_prio: Optional[HostBuffer[DT]]
 
     def __init__(out self):
-        self.d_obs = None; self.d_act = None; self.d_pol = None
-        self.d_val = None; self.d_rew = None
-        self.d_zst = None; self.d_din = None; self.d_dout = None
-        self.d_pout = None; self.d_gpout = None; self.d_gdout = None
-        self.d_gz = None; self.d_gpin = None; self.d_gdin = None
-        self.d_gobs = None; self.d_twv = None; self.d_twr = None
-        self.d_loss = None
-        self.d_tstore = None; self.d_ztmp = None; self.d_projo = None
-        self.d_pk = None; self.d_gpk = None; self.d_gproj = None
-        self.d_gzcons = None
-        self.d_cmask = None; self.h_cmask_ones = None
+        self.d_obs = Tensor(); self.d_act = Tensor(); self.d_pol = Tensor()
+        self.d_val = Tensor(); self.d_rew = Tensor()
+        self.d_zst = Tensor()
+        self.d_obs_work = Tensor(); self.z_work = Tensor(); self.zk_work = Tensor()
+        self.d_din = Tensor(); self.d_dout = Tensor()
+        self.d_pout = Tensor(); self.d_gpout = Tensor(); self.d_gdout = Tensor()
+        self.d_gz = Tensor(); self.d_gpin = Tensor(); self.d_gdin = Tensor()
+        self.d_gobs = Tensor(); self.d_twv = Tensor(); self.d_twr = Tensor()
+        self.d_loss = Tensor()
+        self.d_tstore = Tensor(); self.d_ztmp = Tensor(); self.d_projo = Tensor()
+        self.d_pk = Tensor(); self.d_gpk = Tensor(); self.d_gproj = Tensor()
+        self.d_gzcons = Tensor()
+        self.d_cmask = Tensor(); self.h_cmask_ones = None
         self.h_loss = None
-        self.d_isw = None; self.d_prio = None; self.h_prio = None
+        self.d_isw = Tensor(); self.d_prio = Tensor(); self.h_prio = None
 
     @staticmethod
     def make(ctx: DeviceContext) raises -> Self:
@@ -93,39 +105,42 @@ struct EZV2UnrollScratch[
         comptime dout = Self.DYN_OUT
         comptime pred = Self.PRED_OUT
         var s = Self()
-        s.d_obs = ctx.enqueue_create_buffer[DT]((k + 1) * b * obs)
-        s.d_act = ctx.enqueue_create_buffer[DT](k * b)
-        s.d_pol = ctx.enqueue_create_buffer[DT]((k + 1) * b * act)
-        s.d_val = ctx.enqueue_create_buffer[DT]((k + 1) * b)
-        s.d_rew = ctx.enqueue_create_buffer[DT](k * b)
-        s.d_zst = ctx.enqueue_create_buffer[DT]((k + 1) * b * lat)
-        s.d_din = ctx.enqueue_create_buffer[DT](b * din)
-        s.d_dout = ctx.enqueue_create_buffer[DT](b * dout)
-        s.d_pout = ctx.enqueue_create_buffer[DT](b * pred)
-        s.d_gpout = ctx.enqueue_create_buffer[DT](b * pred)
-        s.d_gdout = ctx.enqueue_create_buffer[DT](b * dout)
-        s.d_gz = ctx.enqueue_create_buffer[DT](b * lat)
-        s.d_gpin = ctx.enqueue_create_buffer[DT](b * lat)
-        s.d_gdin = ctx.enqueue_create_buffer[DT](b * din)
-        s.d_gobs = ctx.enqueue_create_buffer[DT](b * obs)
-        s.d_twv = ctx.enqueue_create_buffer[DT](b * bins)
-        s.d_twr = ctx.enqueue_create_buffer[DT](b * bins)
+        s.d_obs = Tensor.alloc_gpu(ctx, (k + 1) * b * obs)
+        s.d_act = Tensor.alloc_gpu(ctx, k * b)
+        s.d_pol = Tensor.alloc_gpu(ctx, (k + 1) * b * act)
+        s.d_val = Tensor.alloc_gpu(ctx, (k + 1) * b)
+        s.d_rew = Tensor.alloc_gpu(ctx, k * b)
+        s.d_zst = Tensor.alloc_gpu(ctx, (k + 1) * b * lat)
+        s.d_obs_work = Tensor.alloc_gpu(ctx, b * obs)
+        s.z_work = Tensor.alloc_gpu(ctx, b * lat)
+        s.zk_work = Tensor.alloc_gpu(ctx, b * lat)
+        s.d_din = Tensor.alloc_gpu(ctx, b * din)
+        s.d_dout = Tensor.alloc_gpu(ctx, b * dout)
+        s.d_pout = Tensor.alloc_gpu(ctx, b * pred)
+        s.d_gpout = Tensor.alloc_gpu(ctx, b * pred)
+        s.d_gdout = Tensor.alloc_gpu(ctx, b * dout)
+        s.d_gz = Tensor.alloc_gpu(ctx, b * lat)
+        s.d_gpin = Tensor.alloc_gpu(ctx, b * lat)
+        s.d_gdin = Tensor.alloc_gpu(ctx, b * din)
+        s.d_gobs = Tensor.alloc_gpu(ctx, b * obs)
+        s.d_twv = Tensor.alloc_gpu(ctx, b * bins)
+        s.d_twr = Tensor.alloc_gpu(ctx, b * bins)
         # 4 contiguous [B] blocks: policy | value | reward | consistency.
-        s.d_loss = ctx.enqueue_create_buffer[DT](4 * b)
-        s.d_tstore = ctx.enqueue_create_buffer[DT](k * b * proj)
-        s.d_ztmp = ctx.enqueue_create_buffer[DT](b * lat)
-        s.d_projo = ctx.enqueue_create_buffer[DT](b * proj)
-        s.d_pk = ctx.enqueue_create_buffer[DT](b * proj)
-        s.d_gpk = ctx.enqueue_create_buffer[DT](b * proj)
-        s.d_gproj = ctx.enqueue_create_buffer[DT](b * proj)
-        s.d_gzcons = ctx.enqueue_create_buffer[DT](b * lat)
+        s.d_loss = Tensor.alloc_gpu(ctx, 4 * b)
+        s.d_tstore = Tensor.alloc_gpu(ctx, k * b * proj)
+        s.d_ztmp = Tensor.alloc_gpu(ctx, b * lat)
+        s.d_projo = Tensor.alloc_gpu(ctx, b * proj)
+        s.d_pk = Tensor.alloc_gpu(ctx, b * proj)
+        s.d_gpk = Tensor.alloc_gpu(ctx, b * proj)
+        s.d_gproj = Tensor.alloc_gpu(ctx, b * proj)
+        s.d_gzcons = Tensor.alloc_gpu(ctx, b * lat)
         # consistency boundary mask [K, B]; the host mirror stays all-ones for
         # callers that pass no mask (≡ the unmasked pre-mask behaviour).
-        s.d_cmask = ctx.enqueue_create_buffer[DT](k * b)
+        s.d_cmask = Tensor.alloc_gpu(ctx, k * b)
         s.h_cmask_ones = ctx.enqueue_create_host_buffer[DT](k * b)
         s.h_loss = ctx.enqueue_create_host_buffer[DT](4 * b)
-        s.d_isw = ctx.enqueue_create_buffer[DT](b)
-        s.d_prio = ctx.enqueue_create_buffer[DT](b)
+        s.d_isw = Tensor.alloc_gpu(ctx, b)
+        s.d_prio = Tensor.alloc_gpu(ctx, b)
         s.h_prio = ctx.enqueue_create_host_buffer[DT](b)
         ctx.synchronize()
         for i in range(k * b):
@@ -151,51 +166,57 @@ struct EZV2UnrollContScratch[
     comptime DYN_OUT = Self.LATENT + Self.BINS
 
     # H2D host batch slabs
-    var d_obs: Optional[DeviceBuffer[DT]]
-    var d_act: Optional[DeviceBuffer[DT]]
-    var d_pol: Optional[DeviceBuffer[DT]]
-    var d_val: Optional[DeviceBuffer[DT]]
-    var d_rew: Optional[DeviceBuffer[DT]]
+    var d_obs: Tensor
+    var d_act: Tensor
+    var d_pol: Tensor
+    var d_val: Tensor
+    var d_rew: Tensor
     # device scratch
-    var d_zst: Optional[DeviceBuffer[DT]]
-    var d_din: Optional[DeviceBuffer[DT]]
-    var d_dout: Optional[DeviceBuffer[DT]]
-    var d_pout: Optional[DeviceBuffer[DT]]
-    var d_gpout: Optional[DeviceBuffer[DT]]
-    var d_gdout: Optional[DeviceBuffer[DT]]
-    var d_gz: Optional[DeviceBuffer[DT]]
-    var d_gpin: Optional[DeviceBuffer[DT]]
-    var d_gdin: Optional[DeviceBuffer[DT]]
-    var d_gobs: Optional[DeviceBuffer[DT]]
-    var d_twv: Optional[DeviceBuffer[DT]]
-    var d_twr: Optional[DeviceBuffer[DT]]
-    var d_loss: Optional[DeviceBuffer[DT]]
+    var d_zst: Tensor
+    # work tiles for sub-slab forwards (see discrete scratch).
+    var d_obs_work: Tensor   # [B, OBS]
+    var z_work: Tensor       # [B, LATENT]
+    var zk_work: Tensor      # [B, LATENT]
+    var d_din: Tensor
+    var d_dout: Tensor
+    var d_pout: Tensor
+    var d_gpout: Tensor
+    var d_gdout: Tensor
+    var d_gz: Tensor
+    var d_gpin: Tensor
+    var d_gdin: Tensor
+    var d_gobs: Tensor
+    var d_twv: Tensor
+    var d_twr: Tensor
+    var d_loss: Tensor
     # consistency scratch
-    var d_tstore: Optional[DeviceBuffer[DT]]
-    var d_ztmp: Optional[DeviceBuffer[DT]]
-    var d_projo: Optional[DeviceBuffer[DT]]
-    var d_pk: Optional[DeviceBuffer[DT]]
-    var d_gpk: Optional[DeviceBuffer[DT]]
-    var d_gproj: Optional[DeviceBuffer[DT]]
-    var d_gzcons: Optional[DeviceBuffer[DT]]
+    var d_tstore: Tensor
+    var d_ztmp: Tensor
+    var d_projo: Tensor
+    var d_pk: Tensor
+    var d_gpk: Tensor
+    var d_gproj: Tensor
+    var d_gzcons: Tensor
     # consistency episode-boundary mask [K, B] + all-ones host fallback
-    var d_cmask: Optional[DeviceBuffer[DT]]
+    var d_cmask: Tensor
     var h_cmask_ones: Optional[HostBuffer[DT]]
     # host loss mirror (zero-fill + D2H reduce)
     var h_loss: Optional[HostBuffer[DT]]
 
     def __init__(out self):
-        self.d_obs = None; self.d_act = None; self.d_pol = None
-        self.d_val = None; self.d_rew = None
-        self.d_zst = None; self.d_din = None; self.d_dout = None
-        self.d_pout = None; self.d_gpout = None; self.d_gdout = None
-        self.d_gz = None; self.d_gpin = None; self.d_gdin = None
-        self.d_gobs = None; self.d_twv = None; self.d_twr = None
-        self.d_loss = None
-        self.d_tstore = None; self.d_ztmp = None; self.d_projo = None
-        self.d_pk = None; self.d_gpk = None; self.d_gproj = None
-        self.d_gzcons = None
-        self.d_cmask = None; self.h_cmask_ones = None
+        self.d_obs = Tensor(); self.d_act = Tensor(); self.d_pol = Tensor()
+        self.d_val = Tensor(); self.d_rew = Tensor()
+        self.d_zst = Tensor()
+        self.d_obs_work = Tensor(); self.z_work = Tensor(); self.zk_work = Tensor()
+        self.d_din = Tensor(); self.d_dout = Tensor()
+        self.d_pout = Tensor(); self.d_gpout = Tensor(); self.d_gdout = Tensor()
+        self.d_gz = Tensor(); self.d_gpin = Tensor(); self.d_gdin = Tensor()
+        self.d_gobs = Tensor(); self.d_twv = Tensor(); self.d_twr = Tensor()
+        self.d_loss = Tensor()
+        self.d_tstore = Tensor(); self.d_ztmp = Tensor(); self.d_projo = Tensor()
+        self.d_pk = Tensor(); self.d_gpk = Tensor(); self.d_gproj = Tensor()
+        self.d_gzcons = Tensor()
+        self.d_cmask = Tensor(); self.h_cmask_ones = None
         self.h_loss = None
 
     @staticmethod
@@ -211,35 +232,38 @@ struct EZV2UnrollContScratch[
         comptime dout = Self.DYN_OUT
         comptime pred = Self.PRED_OUT
         var s = Self()
-        s.d_obs = ctx.enqueue_create_buffer[DT]((k + 1) * b * obs)
-        s.d_act = ctx.enqueue_create_buffer[DT](k * b * adim)
-        s.d_pol = ctx.enqueue_create_buffer[DT]((k + 1) * b * adim)
-        s.d_val = ctx.enqueue_create_buffer[DT]((k + 1) * b)
-        s.d_rew = ctx.enqueue_create_buffer[DT](k * b)
-        s.d_zst = ctx.enqueue_create_buffer[DT]((k + 1) * b * lat)
-        s.d_din = ctx.enqueue_create_buffer[DT](b * din)
-        s.d_dout = ctx.enqueue_create_buffer[DT](b * dout)
-        s.d_pout = ctx.enqueue_create_buffer[DT](b * pred)
-        s.d_gpout = ctx.enqueue_create_buffer[DT](b * pred)
-        s.d_gdout = ctx.enqueue_create_buffer[DT](b * dout)
-        s.d_gz = ctx.enqueue_create_buffer[DT](b * lat)
-        s.d_gpin = ctx.enqueue_create_buffer[DT](b * lat)
-        s.d_gdin = ctx.enqueue_create_buffer[DT](b * din)
-        s.d_gobs = ctx.enqueue_create_buffer[DT](b * obs)
-        s.d_twv = ctx.enqueue_create_buffer[DT](b * bins)
-        s.d_twr = ctx.enqueue_create_buffer[DT](b * bins)
+        s.d_obs = Tensor.alloc_gpu(ctx, (k + 1) * b * obs)
+        s.d_act = Tensor.alloc_gpu(ctx, k * b * adim)
+        s.d_pol = Tensor.alloc_gpu(ctx, (k + 1) * b * adim)
+        s.d_val = Tensor.alloc_gpu(ctx, (k + 1) * b)
+        s.d_rew = Tensor.alloc_gpu(ctx, k * b)
+        s.d_zst = Tensor.alloc_gpu(ctx, (k + 1) * b * lat)
+        s.d_obs_work = Tensor.alloc_gpu(ctx, b * obs)
+        s.z_work = Tensor.alloc_gpu(ctx, b * lat)
+        s.zk_work = Tensor.alloc_gpu(ctx, b * lat)
+        s.d_din = Tensor.alloc_gpu(ctx, b * din)
+        s.d_dout = Tensor.alloc_gpu(ctx, b * dout)
+        s.d_pout = Tensor.alloc_gpu(ctx, b * pred)
+        s.d_gpout = Tensor.alloc_gpu(ctx, b * pred)
+        s.d_gdout = Tensor.alloc_gpu(ctx, b * dout)
+        s.d_gz = Tensor.alloc_gpu(ctx, b * lat)
+        s.d_gpin = Tensor.alloc_gpu(ctx, b * lat)
+        s.d_gdin = Tensor.alloc_gpu(ctx, b * din)
+        s.d_gobs = Tensor.alloc_gpu(ctx, b * obs)
+        s.d_twv = Tensor.alloc_gpu(ctx, b * bins)
+        s.d_twr = Tensor.alloc_gpu(ctx, b * bins)
         # 4 contiguous [B] blocks: policy | value | reward | consistency.
-        s.d_loss = ctx.enqueue_create_buffer[DT](4 * b)
-        s.d_tstore = ctx.enqueue_create_buffer[DT](k * b * proj)
-        s.d_ztmp = ctx.enqueue_create_buffer[DT](b * lat)
-        s.d_projo = ctx.enqueue_create_buffer[DT](b * proj)
-        s.d_pk = ctx.enqueue_create_buffer[DT](b * proj)
-        s.d_gpk = ctx.enqueue_create_buffer[DT](b * proj)
-        s.d_gproj = ctx.enqueue_create_buffer[DT](b * proj)
-        s.d_gzcons = ctx.enqueue_create_buffer[DT](b * lat)
+        s.d_loss = Tensor.alloc_gpu(ctx, 4 * b)
+        s.d_tstore = Tensor.alloc_gpu(ctx, k * b * proj)
+        s.d_ztmp = Tensor.alloc_gpu(ctx, b * lat)
+        s.d_projo = Tensor.alloc_gpu(ctx, b * proj)
+        s.d_pk = Tensor.alloc_gpu(ctx, b * proj)
+        s.d_gpk = Tensor.alloc_gpu(ctx, b * proj)
+        s.d_gproj = Tensor.alloc_gpu(ctx, b * proj)
+        s.d_gzcons = Tensor.alloc_gpu(ctx, b * lat)
         # consistency boundary mask [K, B]; the host mirror stays all-ones for
         # callers that pass no mask (≡ the unmasked pre-mask behaviour).
-        s.d_cmask = ctx.enqueue_create_buffer[DT](k * b)
+        s.d_cmask = Tensor.alloc_gpu(ctx, k * b)
         s.h_cmask_ones = ctx.enqueue_create_host_buffer[DT](k * b)
         s.h_loss = ctx.enqueue_create_host_buffer[DT](4 * b)
         ctx.synchronize()

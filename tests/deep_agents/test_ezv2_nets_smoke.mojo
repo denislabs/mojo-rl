@@ -11,23 +11,19 @@ Run:
     pixi run mojo run -I . tests/deep_agents/test_ezv2_nets_smoke.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_equal, assert_true
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Kaiming
 from mojo_rl.deep_agents.efficient_zero_v2.nets import (
     EZProjectorNet,
     EZPredictorNet,
 )
 
 
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
-
-
-def _all_finite(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int) -> Bool:
+def _all_finite(p: List[Scalar[DT]], n: Int) -> Bool:
     for i in range(n):
         var v = Float64(p[i])
         if not (v == v) or v > 1e30 or v < -1e30:
@@ -52,35 +48,30 @@ def main() raises:
     assert_equal(Pred.OUT_DIM, PROJ, "predictor OUT")
     print("contracts: OK")
 
-    var proj = Proj.make["cpu", INIT=Kaiming]()
-    var pred = Pred.make["cpu", INIT=Kaiming]()
+    var proj = Proj.make["cpu", Kaiming]()
+    var pred = Pred.make["cpu", Kaiming]()
 
     # ── projector: hidden → projection ──
-    var hin = _alloc(B * HIDDEN)
+    var hin = Tensor.alloc(B * HIDDEN)
     for i in range(B * HIDDEN):
-        hin[i] = Scalar[DT](0.13) * Scalar[DT](i % 9) - Scalar[DT](0.4)
-    var pj = _alloc(B * PROJ)
-    var hin_t = TileTensor(hin, row_major[B, HIDDEN]())
-    var pj_t = TileTensor(pj, row_major[B, PROJ]())
-    proj.forward["cpu", B](hin_t, output=pj_t)
-    assert_true(_all_finite(pj, B * PROJ), "projector non-finite (train mode)")
+        hin.data[i] = Scalar[DT](0.13) * Scalar[DT](i % 9) - Scalar[DT](0.4)
+    var pj = Tensor.alloc(B * PROJ)
+    proj.forward["cpu", B](TensorRefs[Proj.ARITY](hin), pj, None)
+    assert_true(_all_finite(pj.data, B * PROJ), "projector non-finite (train mode)")
     print("projector forward finite (train mode): OK")
 
     # ── predictor: projection → projection ──
-    var pr = _alloc(B * PROJ)
-    var pr_t = TileTensor(pr, row_major[B, PROJ]())
-    pred.forward["cpu", B](pj_t, output=pr_t)
-    assert_true(_all_finite(pr, B * PROJ), "predictor non-finite (train mode)")
+    var pr = Tensor.alloc(B * PROJ)
+    pred.forward["cpu", B](TensorRefs[Pred.ARITY](pj), pr, None)
+    assert_true(_all_finite(pr.data, B * PROJ), "predictor non-finite (train mode)")
     print("predictor forward finite (train mode): OK")
 
     # ── BN eval seam: flip to eval, forward must stay finite ──
     proj.set_attr["training"](Scalar[DT](0.0))
     pred.set_attr["training"](Scalar[DT](0.0))
-    var pj2 = _alloc(B * PROJ)
-    var pj2_t = TileTensor(pj2, row_major[B, PROJ]())
-    proj.forward["cpu", B](hin_t, output=pj2_t)
-    assert_true(_all_finite(pj2, B * PROJ), "projector non-finite (eval mode)")
+    var pj2 = Tensor.alloc(B * PROJ)
+    proj.forward["cpu", B](TensorRefs[Proj.ARITY](hin), pj2, None)
+    assert_true(_all_finite(pj2.data, B * PROJ), "projector non-finite (eval mode)")
     print("BN eval seam (set_attr['training']=0) finite: OK")
 
-    hin.free(); pj.free(); pr.free(); pj2.free()
     print("EZv2 SimSiam nets smoke: OK")

@@ -140,7 +140,7 @@ def append_value_diagnostics[
     ROW: Int, VOFF: Int, BINS: Int, B: Int,
 ](
     pred: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B, ROW]
-    value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [B] raw scalar
+    value_tgt: List[Scalar[DT]],  # [B] raw scalar
     v_min: Scalar[DT],
     v_max: Scalar[DT],
     mut names: List[String],

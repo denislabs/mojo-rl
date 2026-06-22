@@ -27,8 +27,8 @@ from std.testing import assert_true
 from layout import Layout, LayoutTensor, TileTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.optimizer.sgd import SGD
+from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.storage.optimizer.sgd import SGD
 from mojo_rl.nn.core import ParamVisitor
 from mojo_rl.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, MZPredNet, EZProjectorNet, EZPredictorNet,
@@ -147,19 +147,19 @@ def _run_once(
     (reported_loss, post-step first-param-of-pred). Re-seeds the global RNG so
     all calls start from BIT-IDENTICAL parameters (init uses random_float64)."""
     seed(12345)
-    var rep = Rep.make["gpu", INIT=Kaiming](ctx)
-    var dyn = Dyn.make["gpu", INIT=Kaiming](ctx)
-    var pred = Pred.make["gpu", INIT=Kaiming](ctx)
-    var proj = Proj.make["gpu", INIT=Kaiming](ctx)
-    var predh = Predh.make["gpu", INIT=Kaiming](ctx)
+    var rep = Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred = Pred.make["gpu", Kaiming](Optional(ctx))
+    var proj = Proj.make["gpu", Kaiming](Optional(ctx))
+    var predh = Predh.make["gpu", Kaiming](Optional(ctx))
     # SGD (not Adam): Adam's first-step update ≈ lr·sign(g) is invariant to
     # positive gradient scaling, which would mask the IS-weight effect; SGD's
     # lr·g update reflects it directly.
-    var orep = SGD.make["gpu", M=Rep](rep, ctx)
-    var odyn = SGD.make["gpu", M=Dyn](dyn, ctx)
-    var opred = SGD.make["gpu", M=Pred](pred, ctx)
-    var oproj = SGD.make["gpu", M=Proj](proj, ctx)
-    var opredh = SGD.make["gpu", M=Predh](predh, ctx)
+    var orep = SGD(lr=Scalar[DT](0.1))
+    var odyn = SGD(lr=Scalar[DT](0.1))
+    var opred = SGD(lr=Scalar[DT](0.1))
+    var oproj = SGD(lr=Scalar[DT](0.1))
+    var opredh = SGD(lr=Scalar[DT](0.1))
     var scratch = EZV2UnrollScratch[B, K, OBS, ACT, LATENT, BINS, PROJ].make(ctx)
 
     var loss = Float64(

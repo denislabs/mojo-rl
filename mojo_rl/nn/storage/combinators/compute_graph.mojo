@@ -470,6 +470,12 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                 visitor, ctx, join_name(prefix, String(Self.DECLS[i].NAME))
             )
 
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Propagate a named attribute (e.g. BatchNorm "training") to every
+        node's module — the graph counterpart of the combinators' set_attr."""
+        comptime for i in range(Self.N):
+            self.children[i].set_attr[ATTR](value)
+
     def zero_grad[
         target: StaticString
     ](mut self, ctx: Optional[DeviceContext]) raises:

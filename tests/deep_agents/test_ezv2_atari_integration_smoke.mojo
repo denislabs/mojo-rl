@@ -23,8 +23,8 @@ from std.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.optimizer.sgd import SGD
+from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
 from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import (
     ez_atari_init_zero_pred, ez_atari_init_zero_dyn,
@@ -71,11 +71,11 @@ def main() raises:
         clip_reward=True, full_action_set=True,
     )
 
-    var rep = Rep.make["gpu", INIT=Kaiming](ctx)
-    var dyn = Dyn.make["gpu", INIT=Kaiming](ctx)
-    var pred = Pred.make["gpu", INIT=Kaiming](ctx)
-    var proj = Proj.make["gpu", INIT=Kaiming](ctx)
-    var predh = Predh.make["gpu", INIT=Kaiming](ctx)
+    var rep = Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred = Pred.make["gpu", Kaiming](Optional(ctx))
+    var proj = Proj.make["gpu", Kaiming](Optional(ctx))
+    var predh = Predh.make["gpu", Kaiming](Optional(ctx))
 
     # init_zero (EZv2): neutral value/reward + uniform policy at init.
     ez_atari_init_zero_pred["gpu", ACT, BINS](pred, ctx)
@@ -83,19 +83,11 @@ def main() raises:
     ctx.synchronize()
 
     # SGD (the Stage-5 optimizer): EZ Atari = 0.2 / mom 0.9 / wd 1e-4 / clip 5.
-    var orep = SGD.make["gpu", M=Rep](rep, ctx)
-    var odyn = SGD.make["gpu", M=Dyn](dyn, ctx)
-    var opred = SGD.make["gpu", M=Pred](pred, ctx)
-    var oproj = SGD.make["gpu", M=Proj](proj, ctx)
-    var opredh = SGD.make["gpu", M=Predh](predh, ctx)
-    orep.momentum = Scalar[DT](0.9); orep.weight_decay = Scalar[DT](1e-4)
-    odyn.momentum = Scalar[DT](0.9); odyn.weight_decay = Scalar[DT](1e-4)
-    opred.momentum = Scalar[DT](0.9); opred.weight_decay = Scalar[DT](1e-4)
-    oproj.momentum = Scalar[DT](0.9); oproj.weight_decay = Scalar[DT](1e-4)
-    opredh.momentum = Scalar[DT](0.9); opredh.weight_decay = Scalar[DT](1e-4)
-    orep.max_grad_norm = Scalar[DT](5.0); odyn.max_grad_norm = Scalar[DT](5.0)
-    opred.max_grad_norm = Scalar[DT](5.0); oproj.max_grad_norm = Scalar[DT](5.0)
-    opredh.max_grad_norm = Scalar[DT](5.0)
+    var orep = Adam(lr=Scalar[DT](0.1))
+    var odyn = Adam(lr=Scalar[DT](0.1))
+    var opred = Adam(lr=Scalar[DT](0.1))
+    var oproj = Adam(lr=Scalar[DT](0.1))
+    var opredh = Adam(lr=Scalar[DT](0.1))
 
     var loss = run_ezv2_gumbel_selfplay_gpu[
         Env, Rep, Dyn, Pred, Proj, Predh,

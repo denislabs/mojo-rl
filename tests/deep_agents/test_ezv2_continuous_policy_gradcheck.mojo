@@ -12,7 +12,6 @@ Run:
     pixi run mojo run -I . tests/deep_agents/test_ezv2_continuous_policy_gradcheck.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_true, assert_almost_equal
 
 from mojo_rl.nn.constants import DT
@@ -21,30 +20,21 @@ from mojo_rl.deep_agents.efficient_zero_v2.loss_ops_continuous import (
 )
 
 
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
-
-
 def _loss_only[
     BATCH: Int, ACT_DIM: Int,
-](
-    musig: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
-) -> Scalar[DT]:
-    var junk = _alloc(BATCH * 2 * ACT_DIM)
-    var l = continuous_policy_loss_and_grad[BATCH, ACT_DIM](
+](musig: List[Scalar[DT]], tgt: List[Scalar[DT]]) -> Scalar[DT]:
+    var junk = List[Scalar[DT]](length=BATCH * 2 * ACT_DIM, fill=0)
+    return continuous_policy_loss_and_grad[BATCH, ACT_DIM](
         musig, tgt, Scalar[DT](1.0), junk,
     )
-    junk.free()
-    return l
 
 
 def main() raises:
     comptime BATCH = 3
     comptime ACT_DIM = 2
 
-    var musig = _alloc(BATCH * 2 * ACT_DIM)
-    var tgt = _alloc(BATCH * ACT_DIM)
+    var musig = List[Scalar[DT]](length=BATCH * 2 * ACT_DIM, fill=0)
+    var tgt = List[Scalar[DT]](length=BATCH * ACT_DIM, fill=0)
 
     # arbitrary μ_raw / σ_raw and in-range target actions (|a| < max_action=1).
     for b in range(BATCH):
@@ -59,7 +49,7 @@ def main() raises:
                 Scalar[DT](0.35) * Scalar[DT]((d + 1) % 3) - Scalar[DT](0.4)
             )
 
-    var grad = _alloc(BATCH * 2 * ACT_DIM)
+    var grad = List[Scalar[DT]](length=BATCH * 2 * ACT_DIM, fill=0)
     var l0 = continuous_policy_loss_and_grad[BATCH, ACT_DIM](
         musig, tgt, Scalar[DT](1.0), grad,
     )
@@ -87,7 +77,7 @@ def main() raises:
     print("max |analytic - finite-diff| =", max_err)
 
     # grad_scale linearity.
-    var grad2 = _alloc(BATCH * 2 * ACT_DIM)
+    var grad2 = List[Scalar[DT]](length=BATCH * 2 * ACT_DIM, fill=0)
     _ = continuous_policy_loss_and_grad[BATCH, ACT_DIM](
         musig, tgt, Scalar[DT](0.25), grad2,
     )
@@ -98,5 +88,4 @@ def main() raises:
         )
     print("grad_scale linearity: OK")
 
-    musig.free(); tgt.free(); grad.free(); grad2.free()
     print("EZv2 continuous policy gradcheck: OK")

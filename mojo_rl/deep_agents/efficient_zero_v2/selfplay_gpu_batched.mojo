@@ -37,15 +37,18 @@ Run (GPU env required): see `tests/deep_agents/test_ezv2_atari_batched_smoke.moj
 from std.math import exp, log
 from std.memory import alloc, memcpy
 from std.time import perf_counter_ns
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.core.optimizer import Optimizer
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.storage.optimizer.optimizer import Optimizer
 from mojo_rl.core.logger import Logger, NoOpLogger
-from mojo_rl.planners.tree_search import GumbelGPUMCTS, SinglePlayer
+from mojo_rl.planners.tree_search import (
+    GumbelGPUMCTS, SinglePlayer,
+    RepresentationGPU, DynamicsGPU, PredictionGPU,
+)
 
 from ..training.batched_env import BatchedEnv
 from .blocks import ezv2_unroll_train_step_gpu
@@ -57,7 +60,7 @@ from ..muzero.selfplay_gpu_batched import _sample_action
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 def _ai(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
@@ -85,7 +88,6 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     N: Int,
     REANA_W: Int = N_ENVS,
     OBS_STORE_DT: DType = DT,
-    O: Optimizer = Adam,
     L: Logger = NoOpLogger,
 ](
     ctx: DeviceContext,
@@ -95,11 +97,11 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     mut pred: PRED,
     mut proj: PROJM,
     mut predh: PREDH,
-    mut orep: O,
-    mut odyn: O,
-    mut opred: O,
-    mut oproj: O,
-    mut opredh: O,
+    mut orep: Adam,
+    mut odyn: Adam,
+    mut opred: Adam,
+    mut oproj: Adam,
+    mut opredh: Adam,
     iterations: Int,
     learning_starts: Int = 256,         # in STORED STEPS
     train_per_iter: Int = N_ENVS,       # UTD 1:1 (grad steps == env steps)
@@ -169,20 +171,20 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     # device gather fills scratch.d_obs directly; only the small label slabs are
     # host (H2D'd by the train step). The per-(k,b) ring-slot index array drives
     # the gather.
-    var t_act = _a(K * B)
-    var t_pol = _a((K + 1) * B * ACT)
-    var t_val = _a((K + 1) * B)
-    var t_rew = _a(K * B)
+    var t_act = List[Scalar[DT]](length=K * B, fill=0)
+    var t_pol = List[Scalar[DT]](length=(K + 1) * B * ACT, fill=0)
+    var t_val = List[Scalar[DT]](length=(K + 1) * B, fill=0)
+    var t_rew = List[Scalar[DT]](length=K * B, fill=0)
     var t_cmask = _a(K * B)
-    var t_isw = _a(B)              # PER importance-sampling weights
-    var t_prio = _a(B)            # PER value-error priorities (writeback)
-    var t_slots = _ai(B)         # PER sampled ring slots
+    var t_isw = List[Scalar[DT]](length=B, fill=0)              # PER importance-sampling weights
+    var t_prio = List[Scalar[DT]](length=B, fill=0)            # PER value-error priorities (writeback)
+    var t_slots = List[Int](length=B, fill=0)         # PER sampled ring slots
     var l_parts = _a(4)
-    var t_obs_dummy = _a(1)      # unused obs_seq arg (obs_on_device=True)
+    var t_obs_dummy = List[Scalar[DT]](length=1, fill=0)      # unused obs_seq arg (obs_on_device=True)
     # gather slot index arrays: training [(K+1)*B] + reanalyze [REANA_W]
-    var h_obs_slots = alloc[Int32]((K + 1) * B)
+    var h_obs_slots = List[Int32](length=(K + 1) * B, fill=0)
     var d_obs_slots = ctx.enqueue_create_buffer[DType.int32]((K + 1) * B)
-    var h_reana_slots = alloc[Int32](REANA_W)
+    var h_reana_slots = List[Int32](length=REANA_W, fill=0)
     var d_reana_slots = ctx.enqueue_create_buffer[DType.int32](REANA_W)
 
     var train_scratch = EZV2UnrollScratch[
@@ -192,8 +194,8 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
     # reanalyze scratch — REANA_W wide. obs gathered on-device into d_reana (no
     # host read_obs / H2D); improved policy/value D2H'd into host mirrors.
     var d_reana = ctx.enqueue_create_buffer[DT](REANA_W * OBS)
-    var h_pol_w = _a(REANA_W * ACT)
-    var h_val_w = _a(REANA_W)
+    var h_pol_w = List[Scalar[DT]](length=REANA_W * ACT, fill=0)
+    var h_val_w = List[Scalar[DT]](length=REANA_W, fill=0)
 
     # per-env episode accumulators. obs uses a manually grown raw buffer (NOT a
     # List): List.resize/append on a 110592-wide obs reallocs+copies the whole
@@ -263,11 +265,11 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
         var _t0 = perf_counter_ns()
         ctx.enqueue_copy(d_obs, env.obs_ptr())
         var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
-            MutAnyOrigin](mptr(d_obs.unsafe_ptr()))
+            MutAnyOrigin](d_obs.unsafe_ptr().as_unsafe_any_origin())
         planner.search_gpu[
-            MZRepGPU[OBS, LATENT, REP],
-            MZDynGPU[LATENT, ACT, BINS, DYN],
-            MZPredGPU[LATENT, ACT, BINS, PRED],
+            type_of(rep_a),
+            type_of(dyn_a),
+            type_of(pred_a),
         ](ctx, rep_a, dyn_a, pred_a, obs_t,
           apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
         mcts_seed += UInt32(1)
@@ -325,14 +327,19 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
             var done = done_host[e] > Scalar[DT](0.5)
             var terminated = term_host[e] > Scalar[DT](0.5)
             if done or ep_len[e] >= max_ep_steps:
+                # eo_buf[e] is a raw growable pixel buffer; store_episode takes a
+                # List, so copy the resident obs into one (episodes end rarely).
+                var eo_l = List[Scalar[DT]](length=ep_len[e] * OBS, fill=0)
+                for i in range(ep_len[e] * OBS):
+                    eo_l[i] = eo_buf[e][i]
                 rb.store_episode(
-                    eo_buf[e],
-                    mptr(e_act[e].unsafe_ptr()),
-                    mptr(e_rew[e].unsafe_ptr()),
-                    mptr(e_pol[e].unsafe_ptr()),
-                    mptr(e_val[e].unsafe_ptr()),
-                    mptr(e_tp[e].unsafe_ptr()),
-                    mptr(e_legal[e].unsafe_ptr()),
+                    eo_l,
+                    e_act[e],
+                    e_rew[e],
+                    e_pol[e],
+                    e_val[e],
+                    e_tp[e],
+                    e_legal[e],
                     ep_len[e],
                     truncated=not terminated,
                 )
@@ -368,8 +375,8 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                 # slab on-device straight into scratch.d_obs (no host build/H2D).
                 var _tsamp = perf_counter_ns()
                 rb.sample_training_batch_seq_per_gpu[B, K, N](
-                    ctx, gamma, train_scratch.d_obs.value(),
-                    d_obs_slots, mptr(h_obs_slots),
+                    ctx, gamma, train_scratch.d_obs.dev.value(),
+                    d_obs_slots, h_obs_slots,
                     t_act, t_pol, t_val, t_rew, t_isw, t_slots,
                     cons_mask=t_cmask,
                 )
@@ -385,9 +392,14 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                         t_obs_dummy, t_act, t_pol, t_val, t_rew,
                         v_min, v_max, value_coef, consistency_coef,
                         cons_mask=t_cmask, loss_parts=l_parts,
-                        is_weights=t_isw, out_prio=t_prio,
+                        is_weights=Optional(
+                            t_isw.unsafe_ptr().as_unsafe_any_origin()
+                        ),
+                        out_prio=Optional(
+                            t_prio.unsafe_ptr().as_unsafe_any_origin()
+                        ),
                         obs_on_device=True,
-                        phase_ns=mptr(phase_ns),
+                        phase_ns=phase_ns.as_unsafe_any_origin(),
                         diag_sync=diag_sync,
                     )
                 )
@@ -426,29 +438,30 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                     rpos_o.append(rpos[1])
                 # gather the REANA_W positions' obs on-device into d_reana
                 rb.gather_obs_for_positions[REANA_W](
-                    ctx, d_reana, d_reana_slots, mptr(h_reana_slots),
+                    ctx, d_reana, d_reana_slots, h_reana_slots,
                     rpos_e, rpos_o,
                 )
                 ts_re_host += Float64(perf_counter_ns() - _trh)
                 var _trs = perf_counter_ns()
                 var reana_t = LayoutTensor[DT, Layout.row_major(REANA_W, OBS),
-                    MutAnyOrigin](mptr(d_reana.unsafe_ptr()))
+                    MutAnyOrigin](d_reana.unsafe_ptr().as_unsafe_any_origin())
                 reana_planner.search_gpu[
-                    MZRepGPU[OBS, LATENT, REP],
-                    MZDynGPU[LATENT, ACT, BINS, DYN],
-                    MZPredGPU[LATENT, ACT, BINS, PRED],
+                    type_of(rep_a),
+                    type_of(dyn_a),
+                    type_of(pred_a),
                 ](ctx, rep_a, dyn_a, pred_a, reana_t,
                   apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed)
                 mcts_seed += UInt32(1)
-                ctx.enqueue_copy(h_pol_w, reana_planner.policies_view())
-                ctx.enqueue_copy(h_val_w, reana_planner.root_value_view())
+                ctx.enqueue_copy(h_pol_w.unsafe_ptr(), reana_planner.policies_view())
+                ctx.enqueue_copy(h_val_w.unsafe_ptr(), reana_planner.root_value_view())
                 ctx.synchronize()
                 ts_re_search += Float64(perf_counter_ns() - _trs)
                 var _trh2 = perf_counter_ns()
                 for e in range(REANA_W):
-                    rb.update_targets(
-                        rpos_e[e], rpos_o[e], h_pol_w + (e * ACT), h_val_w[e]
-                    )
+                    var pol_e = List[Scalar[DT]](length=ACT, fill=0)
+                    for a in range(ACT):
+                        pol_e[a] = h_pol_w[e * ACT + a]
+                    rb.update_targets(rpos_e[e], rpos_o[e], pol_e, h_val_w[e])
                 ts_re_host += Float64(perf_counter_ns() - _trh2)
         ts_reana += Float64(perf_counter_ns() - _t_reana0)
 
@@ -565,11 +578,9 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
               "s/iter )")
         print("=" * 60)
 
-    t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
-    t_cmask.free(); t_isw.free(); t_prio.free(); t_slots.free(); l_parts.free()
-    t_obs_dummy.free(); h_obs_slots.free(); h_reana_slots.free()
+    t_cmask.free(); l_parts.free()
+
     h_pol.free(); h_val.free()
-    h_pol_w.free(); h_val_w.free()
     for e in range(N_ENVS):
         eo_buf[e].free()
     phase_ns.free()
@@ -589,15 +600,18 @@ def _ez_eval_greedy_cpu_batched[
     MAX_NODES: Int,
     MAX_K: Int,
     NUM_SIMS: Int,
+    RA: RepresentationGPU,
+    DA: DynamicsGPU,
+    PA: PredictionGPU,
 ](
     ctx: DeviceContext,
     eval_env: UnsafePointer[ENV, MutAnyOrigin],
     mut planner: GumbelGPUMCTS[
         N_ENVS, ACT, LATENT, BINS, MAX_NODES, MAX_K, NUM_SIMS, SinglePlayer
     ],
-    mut rep_a: MZRepGPU[OBS, LATENT, REP],
-    mut dyn_a: MZDynGPU[LATENT, ACT, BINS, DYN],
-    mut pred_a: MZPredGPU[LATENT, ACT, BINS, PRED],
+    mut rep_a: RA,
+    mut dyn_a: DA,
+    mut pred_a: PA,
     d_obs: DeviceBuffer[DT],
     h_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],
     target_episodes: Int,
@@ -621,13 +635,9 @@ def _ez_eval_greedy_cpu_batched[
         if done_count >= target_episodes:
             break
         ctx.enqueue_copy(d_obs, eval_env[].obs_ptr())
-        var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
-            MutAnyOrigin](mptr(d_obs.unsafe_ptr()))
-        planner.search_gpu[
-            MZRepGPU[OBS, LATENT, REP],
-            MZDynGPU[LATENT, ACT, BINS, DYN],
-            MZPredGPU[LATENT, ACT, BINS, PRED],
-        ](ctx, rep_a, dyn_a, pred_a, obs_t,
+        var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, RA.OBS_DIM),
+            MutAnyOrigin](d_obs.unsafe_ptr().as_unsafe_any_origin())
+        planner.search_gpu[RA, DA, PA](ctx, rep_a, dyn_a, pred_a, obs_t,
           apply_legal=False, k_actual=MAX_K, rng_seed=es)
         es += UInt32(1)
         ctx.enqueue_copy(h_pol, planner.policies_view())

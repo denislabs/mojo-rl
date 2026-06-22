@@ -16,8 +16,8 @@ Run (no GPU):
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, MZPredNet, EZProjectorNet, EZPredictorNet,
 )
@@ -50,16 +50,16 @@ def main() raises:
     comptime Predh = EZPredictorNet[PROJ, BOTTLENECK]
 
     var env = CartPoleEnv[DType.float64]()
-    var rep = Rep.make["cpu", INIT=Kaiming]()
-    var dyn = Dyn.make["cpu", INIT=Kaiming]()
-    var pred = Pred.make["cpu", INIT=Kaiming]()
-    var proj = Proj.make["cpu", INIT=Kaiming]()
-    var predh = Predh.make["cpu", INIT=Kaiming]()
-    var orep = Adam.make["cpu", M=Rep](rep)
-    var odyn = Adam.make["cpu", M=Dyn](dyn)
-    var opred = Adam.make["cpu", M=Pred](pred)
-    var oproj = Adam.make["cpu", M=Proj](proj)
-    var opredh = Adam.make["cpu", M=Predh](predh)
+    var rep = Rep.make["cpu", Kaiming]()
+    var dyn = Dyn.make["cpu", Kaiming]()
+    var pred = Pred.make["cpu", Kaiming]()
+    var proj = Proj.make["cpu", Kaiming]()
+    var predh = Predh.make["cpu", Kaiming]()
+    var orep = Adam(lr=Scalar[DT](1e-3))
+    var odyn = Adam(lr=Scalar[DT](1e-3))
+    var opred = Adam(lr=Scalar[DT](1e-3))
+    var oproj = Adam(lr=Scalar[DT](1e-3))
+    var opredh = Adam(lr=Scalar[DT](1e-3))
     orep.lr = Scalar[DT](0.01)
     odyn.lr = Scalar[DT](0.01)
     opred.lr = Scalar[DT](0.01)
