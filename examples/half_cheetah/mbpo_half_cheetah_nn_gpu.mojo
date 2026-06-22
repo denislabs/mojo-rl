@@ -39,12 +39,12 @@ from std.gpu.host import DeviceContext
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
-from mojo_rl.nn.primitives.elementwise import Elementwise
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import ReLU
+from mojo_rl.nn.storage.primitives.layer_norm import LayerNorm
+from mojo_rl.nn.storage.primitives.elementwise import Elementwise
+from mojo_rl.nn.storage.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.mbpo import MBPOAgent
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
@@ -102,9 +102,7 @@ comptime FIXED_ALPHA: Scalar[DT] = 0.12  # legacy's stable equilibrium
 comptime INIT_ALPHA: Scalar[DT] = FIXED_ALPHA if FIX_ALPHA else 0.2
 comptime ALPHA_LR: Scalar[DT] = 0.0 if FIX_ALPHA else 3e-4
 comptime RUN_NAME = (
-    "MBPO HalfCheetah NN (GPU) — early-stop+elite, fixed alpha=0.12"
-    if FIX_ALPHA
-    else "MBPO HalfCheetah NN (GPU) — AdamW wd=5e-5 + learnable logvar bounds"
+    "MBPO HalfCheetah NN (GPU) — early-stop+elite, fixed alpha=0.12" if FIX_ALPHA else "MBPO HalfCheetah NN (GPU) — AdamW wd=5e-5 + learnable logvar bounds"
 )
 
 
