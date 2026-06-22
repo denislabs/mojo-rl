@@ -42,7 +42,13 @@ from ..core.param import Param, ParamVisitor
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
 from ..loss.sac import polyak_tensor
-from .linear import _lin_gb_kernel, _transpose_kernel, _accum_kernel
+from .linear import (
+    _lin_gb_kernel,
+    _transpose_tiled_kernel,
+    _accum_kernel,
+    _T_TILE,
+    _T_BR,
+)
 
 
 def _bias_act_cache_kernel[
@@ -284,11 +290,14 @@ struct LinearAct[IN_: Int, OUT_: Int, OP: ElementOp](Module):
                 grid_dim=(Self.OUT_ + TPB - 1) // TPB,
                 block_dim=TPB,
             )
-            c.enqueue_function[_transpose_kernel[B, Self.IN_]](
+            c.enqueue_function[_transpose_tiled_kernel[B, Self.IN_]](
                 fin.lt["gpu", Layout.row_major(B, Self.IN_)](),
                 self.cacheT.lt["gpu", Layout.row_major(Self.IN_, B)](),
-                grid_dim=(B * Self.IN_ + TPB - 1) // TPB,
-                block_dim=TPB,
+                grid_dim=(
+                    (Self.IN_ + _T_TILE - 1) // _T_TILE,
+                    (B + _T_TILE - 1) // _T_TILE,
+                ),
+                block_dim=(_T_TILE, _T_BR),
             )
             var cT_v = TileTensor(
                 self.cacheT.dev.value(), row_major[Self.IN_, B]()

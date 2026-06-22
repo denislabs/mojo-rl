@@ -14,7 +14,8 @@ the whole function, then builds views from that.
 """
 
 from std.sys import CompilationTarget
-from std.gpu import global_idx
+from std.gpu import global_idx, thread_idx, block_idx, barrier
+from std.gpu.memory import AddressSpace
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
@@ -46,6 +47,8 @@ def _bias_add_kernel[
         o[idx // OUT, idx % OUT] += bias[idx % OUT]
 
 
+# Naive grad_w transpose (one thread/elem, strided read). Still used by
+# linear_relu / noisy_linear; linear + linear_act use the tiled B1' kernel below.
 def _transpose_kernel[
     ROWS: Int, COLS: Int
 ](
@@ -55,6 +58,46 @@ def _transpose_kernel[
     var idx = Int(global_idx.x)
     if idx < ROWS * COLS:
         dst[idx % COLS, idx // COLS] = src[idx // COLS, idx % COLS]
+
+
+comptime _T_TILE = 32
+comptime _T_BR = 8        # 32x8 BLOCK_ROWS, 4 elems/thread (B1')
+
+
+# Tiled grad_w transpose: 32x8 BLOCK_ROWS shared-mem tile (B1'). Coalesces the
+# strided src read the naive kernel suffers; bench (RTX 5090) showed up to 1.65x
+# on skinny grad_w (large ROWS·COLS), neutral on square. Launch with
+# grid_dim=(ceildiv(COLS,32), ceildiv(ROWS,32)), block_dim=(32, 8).
+def _transpose_tiled_kernel[
+    ROWS: Int, COLS: Int
+](
+    src: LayoutTensor[DT, Layout.row_major(ROWS, COLS), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(COLS, ROWS), MutAnyOrigin],
+):
+    var tile = LayoutTensor[
+        DT,
+        Layout.row_major(_T_TILE, _T_TILE + 1),   # +1 pad → no bank conflicts
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var cy = Int(block_idx.y) * _T_TILE       # tile origin in ROWS
+    var cx = Int(block_idx.x) * _T_TILE       # tile origin in COLS
+    var tx = Int(thread_idx.x)                # [0, _T_TILE)
+    var ty = Int(thread_idx.y)                # [0, _T_BR)
+
+    var c = cx + tx
+    comptime for r in range(0, _T_TILE, _T_BR):
+        var rr = cy + ty + r
+        if rr < ROWS and c < COLS:
+            tile[ty + r, tx] = rebind[Scalar[DT]](src[rr, c])
+    barrier()
+
+    var r2 = cy + tx                          # dst col (coalesced, stride 1)
+    comptime for r in range(0, _T_TILE, _T_BR):
+        var c2 = cx + ty + r                  # dst row
+        if r2 < ROWS and c2 < COLS:
+            dst[c2, r2] = rebind[Scalar[DT]](tile[tx, ty + r])
 
 
 def _accum_kernel[
@@ -313,11 +356,18 @@ struct Linear[IN_: Int, OUT_: Int, AMP: Bool = False](Module):
             c.enqueue_function[_lin_gb_kernel[B, Self.OUT_]](
                 gol, gbl, grid_dim=(Self.OUT_ + 255) // 256, block_dim=256
             )
-            # grad_w += cacheᵀ @ go: transpose x → cacheT, matmul, accumulate.
+            # grad_w += cacheᵀ @ go: transpose x → cacheT (B1' tiled), matmul,
+            # accumulate.
             var xl = fin.lt["gpu", Layout.row_major(B, Self.IN_)]()
             var cTl = self.cacheT.lt["gpu", Layout.row_major(Self.IN_, B)]()
-            c.enqueue_function[_transpose_kernel[B, Self.IN_]](
-                xl, cTl, grid_dim=(B * Self.IN_ + 255) // 256, block_dim=256
+            c.enqueue_function[_transpose_tiled_kernel[B, Self.IN_]](
+                xl,
+                cTl,
+                grid_dim=(
+                    (Self.IN_ + _T_TILE - 1) // _T_TILE,
+                    (B + _T_TILE - 1) // _T_TILE,
+                ),
+                block_dim=(_T_TILE, _T_BR),
             )
             var cT_v = TileTensor(
                 self.cacheT.dev.value(), row_major[Self.IN_, B]()
