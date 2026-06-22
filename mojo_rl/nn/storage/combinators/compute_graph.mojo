@@ -50,6 +50,7 @@ from ..core.tensor_refs import TensorRefs
 from ..core.tensor_pack import TensorPack
 from ..core.module import Module
 from ..core.param import ParamVisitor
+from ..core.graph_visitor import GraphVisitor
 from ..core.walkers import join_name
 from ..core.amp import AMPPolicy, NoAMP
 from .graph_decl import GraphDecl
@@ -121,6 +122,45 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             comptime if Self.DECLS[j].NAME == nm:
                 s = j
         return s
+
+    @staticmethod
+    def _kind_label[kind: Int]() -> String:
+        """Category tag for a decl KIND (0=InputSlot, 1=owned Node, 2=External)
+        — the node `label` fed to a GraphVisitor (the descriptive identity is
+        the node NAME; storage leaves carry no `display_label`)."""
+        comptime if kind == 0:
+            return String("input")
+        elif kind == 1:
+            return String("node")
+        else:
+            return String("external")
+
+    def describe[
+        V: GraphVisitor
+    ](mut self, graph_name: String, mut visitor: V) raises:
+        """Walk the comptime topology into a pluggable `GraphVisitor` sink:
+        `begin`, then per decl a `node` call followed by one `edge` call per
+        input (resolved to the source decl by NAME), then `end`. Pure topology —
+        no buffers, no device. Drives the Text / Mermaid exporters."""
+        visitor.begin(graph_name, Self.N)
+        comptime for i in range(Self.N):
+            comptime kind = Self.DECLS[i].KIND
+            visitor.node(
+                i,
+                String(Self.DECLS[i].NAME),
+                Self._kind_label[kind](),
+                kind,
+                Self.DECLS[i].OUT_DIM,
+            )
+            comptime for k in range(Self.DECLS[i].ARITY):
+                comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
+                visitor.edge(
+                    String(Self.DECLS[i].NAME),
+                    String(Self.DECLS[i].IN_NAMES[k]),
+                    k,
+                    Self.DECLS[sk].OUT_DIM,
+                )
+        visitor.end()
 
     @staticmethod
     def _ext_before[upto: Int]() -> Int:
