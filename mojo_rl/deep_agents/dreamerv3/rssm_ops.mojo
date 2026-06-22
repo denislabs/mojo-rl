@@ -8,24 +8,28 @@ in PR5b's `core_vjp`); the graph handles all grad routing/accumulation.
   * `ActionSquash[ACT]`         — a = action / sg(max(1, |action|))
   * `BlockGroupAssemble[D,H,G]` — per block g: [deter[g·dpb:+dpb], x0, x1, x2]
   * `GRUGate[D,G]`              — block-interleaved GRU gates + mix with deter
+  * `StraightThroughSample[S,C]`— one-hot categorical sample, straight-through
 
-CPU-only for the spike (GPU is a straightforward kernel port if the design
-holds). Each follows the nn leaf pattern (Concat template): ARITY / IN_DIMS
-/ OUT_DIM, `make[target,INIT]`, `forward`, `vjp`; no params → inherits the
-no-op `for_each_param`/`zero_grad`.
+Storage-surface port (off legacy `nn`): each follows the storage leaf pattern
+(elementwise.mojo template): ARITY / IN_DIMS / OUT_DIM, `make[target,INIT]`,
+`forward(inputs: TensorRefs, mut out: Tensor)`, `vjp(forward_input, grad_output,
+grad_inputs)`. NO `TargetStorage`, NO cached-pointer fields — the storage `vjp`
+receives `forward_input` (the SAME inputs the forward saw), so the backward
+RECOMPUTES anything it needs (e.g. softmax) from `forward_input[i]`. No params →
+inherits the no-op `for_each_param`/`zero_grad`.
 """
 
 from std.math import tanh, exp
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module, typed_view, typed_view_mut, mptr
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.initializer import Initializer
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
 
 
 @always_inline
@@ -33,18 +37,13 @@ def _sig(x: Scalar[DT]) -> Scalar[DT]:
     return Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-x))
 
 
-@always_inline
-def _dev_lt[N: Int](
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
-    """Wrap a flat device pointer as a row-major [N] LayoutTensor for kernels."""
-    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
-
-
 # ──────────────────────────────────────────────────────────────────────
-# GPU kernels for the custom RSSM ops (PR5c Step 5). Top-level fns so
-# `enqueue_function` can bind them. Each mirrors the op's CPU body. Math
-# is identical to the CPU path → CPU↔GPU parity ≤1e-4 (per-op spikes).
+# GPU kernels for the custom RSSM ops. Top-level fns so `enqueue_function`
+# can bind them. Each mirrors the op's CPU body. Math is identical to the
+# CPU path → CPU↔GPU parity ≤1e-4 (per-op spikes). KEPT AS-IS from the
+# legacy file — they take `LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]`
+# (the GPU kernel ABI), now fed by `Tensor.lt["gpu", layout]()` at the
+# launch sites.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -194,11 +193,11 @@ def _bga_bwd_x_kernel[
         gx2[i] = s2
 
 
-# ── StraightThroughSample: per (b,s) group of C lanes — softmax (cached) +
-#    one-hot argmax (fwd); grad_z = (1-u)·sm·(go − Σ go·sm) (bwd). ────────
+# ── StraightThroughSample: per (b,s) group of C lanes — softmax + one-hot
+#    argmax (fwd); grad_z = (1-u)·sm·(go − Σ go·sm) (bwd). The bwd RECOMPUTES
+#    softmax(z) from `forward_input[0]` (z) — no cached `sm` field. ───────
 def _st_fwd_kernel[NG: Int, C: Int](
     z: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
-    sm: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
     o: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
 ):
     var gg = Int(global_idx.x)
@@ -211,19 +210,12 @@ def _st_fwd_kernel[NG: Int, C: Int](
             if zc > zmax:
                 zmax = zc
                 amax = c
-        var ssum: Scalar[DT] = 0.0
         for c in range(C):
-            var e = exp(rebind[Scalar[DT]](z[base + c]) - zmax)
-            sm[base + c] = e
-            ssum += e
-        var inv = Scalar[DT](1.0) / ssum
-        for c in range(C):
-            sm[base + c] = rebind[Scalar[DT]](sm[base + c]) * inv
             o[base + c] = Scalar[DT](1.0) if c == amax else Scalar[DT](0.0)
 
 
 def _st_bwd_kernel[NG: Int, C: Int](
-    sm: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    z: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
     go: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
     gz: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
     one_m_u: Scalar[DT],
@@ -231,13 +223,28 @@ def _st_bwd_kernel[NG: Int, C: Int](
     var gg = Int(global_idx.x)
     if gg < NG:
         var base = gg * C
+        # Recompute softmax(z) (numerically-stable max-subtract).
+        var zmax = rebind[Scalar[DT]](z[base])
+        for c in range(1, C):
+            var zc = rebind[Scalar[DT]](z[base + c])
+            if zc > zmax:
+                zmax = zc
+        var ssum: Scalar[DT] = 0.0
+        for c in range(C):
+            ssum += exp(rebind[Scalar[DT]](z[base + c]) - zmax)
+        var inv = Scalar[DT](1.0) / ssum
         var dot: Scalar[DT] = 0.0
         for c in range(C):
-            dot += rebind[Scalar[DT]](go[base + c]) * rebind[Scalar[DT]](sm[base + c])
+            var smc = exp(rebind[Scalar[DT]](z[base + c]) - zmax) * inv
+            dot += rebind[Scalar[DT]](go[base + c]) * smc
         for c in range(C):
-            gz[base + c] = one_m_u * rebind[Scalar[DT]](sm[base + c]) * (
-                rebind[Scalar[DT]](go[base + c]) - dot
-            )
+            var smc = exp(rebind[Scalar[DT]](z[base + c]) - zmax) * inv
+            gz[base + c] = one_m_u * smc * (rebind[Scalar[DT]](go[base + c]) - dot)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# ActionSquash[ACT] — a = action / sg(max(1, |action|))   (arity 1)
+# ──────────────────────────────────────────────────────────────────────
 
 
 struct ActionSquash[ACT: Int](Module):
@@ -249,88 +256,76 @@ struct ActionSquash[ACT: Int](Module):
     def display_label() -> String:
         return String("ActionSquash")
 
-    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var ts: TargetStorage
-
     def __init__(out self):
-        self._cached_input_ptr = None
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "ActionSquash: target must be 'cpu' or 'gpu'"
-        )
-        var s = Self()
-        comptime if target == "cpu":
-            s.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("ActionSquash.make[gpu]: ctx required")
-            s.ts = TargetStorage.make_gpu(ctx.value())
-        return s^
+        return Self()
 
     def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["ActionSquash", target](self.ts.target_tag)
-        var iv = inputs.tile[0, BATCH, Self.ACT]()
-        var ov = typed_view_mut[BATCH, Self.ACT](output)
-        var ip = mptr(iv.ptr)
-        self._cached_input_ptr = ip
+        comptime N = B * Self.ACT
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            for i in range(BATCH * Self.ACT):
-                var v = ip[i]
+            out.ensure(N)
+            for i in range(N):
+                var v = in0.data[i]
                 var av = v if v >= Scalar[DT](0.0) else -v
                 var denom = av if av > Scalar[DT](1.0) else Scalar[DT](1.0)
-                ov.ptr[i] = v / denom
+                out.data[i] = v / denom
         else:
-            comptime N = BATCH * Self.ACT
-            var op = mptr(ov.ptr)
+            var c = ctx.value()
+            out.ensure_gpu(c, N)
             comptime nb = (N + TPB - 1) // TPB
-            comptime kf = _asq_fwd_kernel[N]
-            self.ts.ctx.value().enqueue_function[kf](
-                _dev_lt[N](ip), _dev_lt[N](op), grid_dim=nb, block_dim=TPB
+            c.enqueue_function[_asq_fwd_kernel[N]](
+                in0.lt["gpu", Layout.row_major(N)](),
+                out.lt["gpu", Layout.row_major(N)](),
+                grid_dim=nb,
+                block_dim=TPB,
             )
 
     def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        var gov = typed_view[BATCH, Self.ACT](grad_output)
-        var giv = grad_inputs.tile[0, BATCH, Self.ACT]()
-        var xp = self._cached_input_ptr.value()
+        comptime N = B * Self.ACT
+        ref fin = forward_input[0]
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            for i in range(BATCH * Self.ACT):
-                var v = xp[i]
+            gin.ensure(N)
+            for i in range(N):
+                var v = fin.data[i]
                 var av = v if v >= Scalar[DT](0.0) else -v
                 var denom = av if av > Scalar[DT](1.0) else Scalar[DT](1.0)
-                giv.ptr[i] = gov.ptr[i] / denom
+                gin.data[i] = grad_output.data[i] / denom
         else:
-            comptime N = BATCH * Self.ACT
-            var gop = mptr(gov.ptr)
-            var gip = mptr(giv.ptr)
+            var c = ctx.value()
+            gin.ensure_gpu(c, N)
             comptime nb = (N + TPB - 1) // TPB
-            comptime kb = _asq_bwd_kernel[N]
-            self.ts.ctx.value().enqueue_function[kb](
-                _dev_lt[N](xp), _dev_lt[N](gop), _dev_lt[N](gip),
-                grid_dim=nb, block_dim=TPB,
+            c.enqueue_function[_asq_bwd_kernel[N]](
+                fin.lt["gpu", Layout.row_major(N)](),
+                grad_output.lt["gpu", Layout.row_major(N)](),
+                gin.lt["gpu", Layout.row_major(N)](),
+                grid_dim=nb,
+                block_dim=TPB,
             )
 
 
@@ -357,128 +352,134 @@ struct BlockGroupAssemble[DETER: Int, H: Int, BLOCKS: Int](Module):
         d[0] = Self.DETER
         return d
 
-    var ts: TargetStorage
-
     def __init__(out self):
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "BlockGroupAssemble: target must be 'cpu' or 'gpu'"
-        )
-        var s = Self()
-        comptime if target == "cpu":
-            s.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("BlockGroupAssemble.make[gpu]: ctx required")
-            s.ts = TargetStorage.make_gpu(ctx.value())
-        return s^
+        return Self()
 
     def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["BlockGroupAssemble", target](self.ts.target_tag)
         comptime D = Self.DETER
         comptime HH = Self.H
         comptime g = Self.BLOCKS
         comptime dpb = Self.DPB
         comptime pg = Self.PER_GROUP
-        var deter = inputs.tile[0, BATCH, D]().ptr
-        var x0 = inputs.tile[1, BATCH, HH]().ptr
-        var x1 = inputs.tile[2, BATCH, HH]().ptr
-        var x2 = inputs.tile[3, BATCH, HH]().ptr
-        var o = typed_view_mut[BATCH, Self.OUT_DIM](output).ptr
+        comptime OUT = Self.OUT_DIM
+        ref deter = inputs[0]
+        ref x0 = inputs[1]
+        ref x1 = inputs[2]
+        ref x2 = inputs[3]
         comptime if target == "cpu":
-            for b in range(BATCH):
+            out.ensure(B * OUT)
+            for b in range(B):
                 for grp in range(g):
-                    var off = b * Self.OUT_DIM + grp * pg
+                    var off = b * OUT + grp * pg
                     for k in range(dpb):
-                        o[off + k] = deter[b * D + grp * dpb + k]
+                        out.data[off + k] = deter.data[b * D + grp * dpb + k]
                     for k in range(HH):
-                        o[off + dpb + k] = x0[b * HH + k]
+                        out.data[off + dpb + k] = x0.data[b * HH + k]
                     for k in range(HH):
-                        o[off + dpb + HH + k] = x1[b * HH + k]
+                        out.data[off + dpb + HH + k] = x1.data[b * HH + k]
                     for k in range(HH):
-                        o[off + dpb + 2 * HH + k] = x2[b * HH + k]
+                        out.data[off + dpb + 2 * HH + k] = x2.data[b * HH + k]
         else:
-            comptime NO = BATCH * Self.OUT_DIM
+            var c = ctx.value()
+            comptime NO = B * OUT
+            out.ensure_gpu(c, NO)
             comptime nb = (NO + TPB - 1) // TPB
-            comptime kf = _bga_fwd_kernel[NO, Self.OUT_DIM, D, HH, dpb, pg]
-            var dp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](deter)
-            var x0p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](x0)
-            var x1p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](x1)
-            var x2p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](x2)
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
-            self.ts.ctx.value().enqueue_function[kf](
-                _dev_lt[NO](dp), _dev_lt[NO](x0p), _dev_lt[NO](x1p),
-                _dev_lt[NO](x2p), _dev_lt[NO](op), grid_dim=nb, block_dim=TPB,
+            c.enqueue_function[_bga_fwd_kernel[NO, OUT, D, HH, dpb, pg]](
+                deter.lt["gpu", Layout.row_major(NO)](),
+                x0.lt["gpu", Layout.row_major(NO)](),
+                x1.lt["gpu", Layout.row_major(NO)](),
+                x2.lt["gpu", Layout.row_major(NO)](),
+                out.lt["gpu", Layout.row_major(NO)](),
+                grid_dim=nb,
+                block_dim=TPB,
             )
 
     def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime D = Self.DETER
         comptime HH = Self.H
         comptime g = Self.BLOCKS
         comptime dpb = Self.DPB
         comptime pg = Self.PER_GROUP
-        var go = typed_view[BATCH, Self.OUT_DIM](grad_output).ptr
-        var g_deter = grad_inputs.tile[0, BATCH, D]().ptr
-        var g_x0 = grad_inputs.tile[1, BATCH, HH]().ptr
-        var g_x1 = grad_inputs.tile[2, BATCH, HH]().ptr
-        var g_x2 = grad_inputs.tile[3, BATCH, HH]().ptr
+        comptime OUT = Self.OUT_DIM
+        ref g_deter = grad_inputs[0]
+        ref g_x0 = grad_inputs[1]
+        ref g_x1 = grad_inputs[2]
+        ref g_x2 = grad_inputs[3]
         comptime if target == "cpu":
-            for i in range(BATCH * HH):
-                g_x0[i] = 0.0
-                g_x1[i] = 0.0
-                g_x2[i] = 0.0
-            for b in range(BATCH):
+            g_deter.ensure(B * D)
+            g_x0.ensure(B * HH)
+            g_x1.ensure(B * HH)
+            g_x2.ensure(B * HH)
+            for i in range(B * HH):
+                g_x0.data[i] = 0.0
+                g_x1.data[i] = 0.0
+                g_x2.data[i] = 0.0
+            for b in range(B):
                 for grp in range(g):
-                    var off = b * Self.OUT_DIM + grp * pg
+                    var off = b * OUT + grp * pg
                     for k in range(dpb):
-                        g_deter[b * D + grp * dpb + k] = go[off + k]
+                        g_deter.data[b * D + grp * dpb + k] = grad_output.data[
+                            off + k
+                        ]
                     for k in range(HH):
-                        g_x0[b * HH + k] += go[off + dpb + k]
-                        g_x1[b * HH + k] += go[off + dpb + HH + k]
-                        g_x2[b * HH + k] += go[off + dpb + 2 * HH + k]
+                        g_x0.data[b * HH + k] += grad_output.data[off + dpb + k]
+                        g_x1.data[b * HH + k] += grad_output.data[
+                            off + dpb + HH + k
+                        ]
+                        g_x2.data[b * HH + k] += grad_output.data[
+                            off + dpb + 2 * HH + k
+                        ]
         else:
-            comptime GON = BATCH * Self.OUT_DIM
-            comptime ND = BATCH * D
-            comptime NH = BATCH * HH
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
-            var gdp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_deter)
-            var g0p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_x0)
-            var g1p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_x1)
-            var g2p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_x2)
+            var c = ctx.value()
+            comptime GON = B * OUT
+            comptime ND = B * D
+            comptime NH = B * HH
+            g_deter.ensure_gpu(c, ND)
+            g_x0.ensure_gpu(c, NH)
+            g_x1.ensure_gpu(c, NH)
+            g_x2.ensure_gpu(c, NH)
             comptime nbd = (ND + TPB - 1) // TPB
-            comptime kd = _bga_bwd_deter_kernel[ND, GON, Self.OUT_DIM, D, dpb, pg]
-            self.ts.ctx.value().enqueue_function[kd](
-                _dev_lt[GON](gop), _dev_lt[ND](gdp), grid_dim=nbd, block_dim=TPB,
+            c.enqueue_function[_bga_bwd_deter_kernel[ND, GON, OUT, D, dpb, pg]](
+                grad_output.lt["gpu", Layout.row_major(GON)](),
+                g_deter.lt["gpu", Layout.row_major(ND)](),
+                grid_dim=nbd,
+                block_dim=TPB,
             )
             comptime nbh = (NH + TPB - 1) // TPB
-            comptime kx = _bga_bwd_x_kernel[NH, GON, Self.OUT_DIM, HH, dpb, pg, g]
-            self.ts.ctx.value().enqueue_function[kx](
-                _dev_lt[GON](gop), _dev_lt[NH](g0p), _dev_lt[NH](g1p),
-                _dev_lt[NH](g2p), grid_dim=nbh, block_dim=TPB,
+            c.enqueue_function[
+                _bga_bwd_x_kernel[NH, GON, OUT, HH, dpb, pg, g]
+            ](
+                grad_output.lt["gpu", Layout.row_major(GON)](),
+                g_x0.lt["gpu", Layout.row_major(NH)](),
+                g_x1.lt["gpu", Layout.row_major(NH)](),
+                g_x2.lt["gpu", Layout.row_major(NH)](),
+                grid_dim=nbh,
+                block_dim=TPB,
             )
 
 
@@ -506,129 +507,122 @@ struct GRUGate[DETER: Int, BLOCKS: Int](Module):
         d[0] = Self.GRU_DIM
         return d
 
-    var _gru_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _deter_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var ts: TargetStorage
-
     def __init__(out self):
-        self._gru_ptr = None
-        self._deter_ptr = None
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "GRUGate: target must be 'cpu' or 'gpu'"
-        )
-        var s = Self()
-        comptime if target == "cpu":
-            s.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("GRUGate.make[gpu]: ctx required")
-            s.ts = TargetStorage.make_gpu(ctx.value())
-        return s^
+        return Self()
 
     def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["GRUGate", target](self.ts.target_tag)
         comptime D = Self.DETER
         comptime g = Self.BLOCKS
         comptime dpb = Self.DPB
         comptime opb = Self.OPB
-        var gru = mptr(inputs.tile[0, BATCH, Self.GRU_DIM]().ptr)
-        var deter = mptr(inputs.tile[1, BATCH, D]().ptr)
-        self._gru_ptr = gru
-        self._deter_ptr = deter
-        var o = typed_view_mut[BATCH, D](output).ptr
+        comptime GD = Self.GRU_DIM
+        ref gru = inputs[0]
+        ref deter = inputs[1]
         comptime if target == "cpu":
-            for b in range(BATCH):
+            out.ensure(B * D)
+            for b in range(B):
                 for grp in range(g):
-                    var gb = b * Self.GRU_DIM + grp * opb
+                    var gb = b * GD + grp * opb
                     var dbase = b * D + grp * dpb
                     for k in range(dpb):
-                        var reset = _sig(gru[gb + k])
-                        var cand = tanh(reset * gru[gb + dpb + k])
-                        var upd = _sig(gru[gb + 2 * dpb + k] - Scalar[DT](1.0))
-                        o[dbase + k] = upd * cand + (
+                        var reset = _sig(gru.data[gb + k])
+                        var cand = tanh(reset * gru.data[gb + dpb + k])
+                        var upd = _sig(gru.data[gb + 2 * dpb + k] - Scalar[DT](1.0))
+                        out.data[dbase + k] = upd * cand + (
                             Scalar[DT](1.0) - upd
-                        ) * deter[dbase + k]
+                        ) * deter.data[dbase + k]
         else:
-            comptime N = BATCH * D
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
+            var c = ctx.value()
+            comptime N = B * D
+            out.ensure_gpu(c, N)
             comptime nb = (N + TPB - 1) // TPB
-            comptime kf = _gru_fwd_kernel[N, D, dpb]
-            self.ts.ctx.value().enqueue_function[kf](
-                _dev_lt[N * 3](gru), _dev_lt[N](deter), _dev_lt[N](op),
-                grid_dim=nb, block_dim=TPB,
+            # gru is [B, 3D] = N*3 elements; deter/out are [B, D] = N.
+            c.enqueue_function[_gru_fwd_kernel[N, D, dpb]](
+                gru.lt["gpu", Layout.row_major(N * 3)](),
+                deter.lt["gpu", Layout.row_major(N)](),
+                out.lt["gpu", Layout.row_major(N)](),
+                grid_dim=nb,
+                block_dim=TPB,
             )
 
     def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime D = Self.DETER
         comptime g = Self.BLOCKS
         comptime dpb = Self.DPB
         comptime opb = Self.OPB
-        var go = typed_view[BATCH, D](grad_output).ptr
-        var g_gru = grad_inputs.tile[0, BATCH, Self.GRU_DIM]().ptr
-        var g_deter = grad_inputs.tile[1, BATCH, D]().ptr
-        var gru = self._gru_ptr.value()
-        var deter = self._deter_ptr.value()
+        comptime GD = Self.GRU_DIM
+        ref gru = forward_input[0]
+        ref deter = forward_input[1]
+        ref g_gru = grad_inputs[0]
+        ref g_deter = grad_inputs[1]
         comptime if target == "cpu":
-            for i in range(BATCH * Self.GRU_DIM):
-                g_gru[i] = 0.0
-            for b in range(BATCH):
+            g_gru.ensure(B * GD)
+            g_deter.ensure(B * D)
+            for i in range(B * GD):
+                g_gru.data[i] = 0.0
+            for b in range(B):
                 for grp in range(g):
-                    var gb = b * Self.GRU_DIM + grp * opb
+                    var gb = b * GD + grp * opb
                     var dbase = b * D + grp * dpb
                     for k in range(dpb):
-                        var r_pre = gru[gb + k]
-                        var c_pre = gru[gb + dpb + k]
-                        var u_pre = gru[gb + 2 * dpb + k] - Scalar[DT](1.0)
+                        var r_pre = gru.data[gb + k]
+                        var c_pre = gru.data[gb + dpb + k]
+                        var u_pre = gru.data[gb + 2 * dpb + k] - Scalar[DT](1.0)
                         var reset = _sig(r_pre)
                         var cand = tanh(reset * c_pre)
                         var upd = _sig(u_pre)
-                        var d_prev = deter[dbase + k]
-                        var gov = go[dbase + k]
+                        var d_prev = deter.data[dbase + k]
+                        var gov = grad_output.data[dbase + k]
                         var d_update = gov * (cand - d_prev)
                         var d_cand = gov * upd
-                        g_deter[dbase + k] = gov * (Scalar[DT](1.0) - upd)
+                        g_deter.data[dbase + k] = gov * (Scalar[DT](1.0) - upd)
                         var d_m = d_cand * (Scalar[DT](1.0) - cand * cand)
-                        g_gru[gb + k] = d_m * c_pre * reset * (
+                        g_gru.data[gb + k] = d_m * c_pre * reset * (
                             Scalar[DT](1.0) - reset
                         )
-                        g_gru[gb + dpb + k] = d_m * reset
-                        g_gru[gb + 2 * dpb + k] = d_update * upd * (
+                        g_gru.data[gb + dpb + k] = d_m * reset
+                        g_gru.data[gb + 2 * dpb + k] = d_update * upd * (
                             Scalar[DT](1.0) - upd
                         )
         else:
-            comptime N = BATCH * D
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
+            var c = ctx.value()
+            comptime N = B * D
+            g_gru.ensure_gpu(c, N * 3)
+            g_deter.ensure_gpu(c, N)
             comptime nb = (N + TPB - 1) // TPB
-            comptime kb = _gru_bwd_kernel[N, D, dpb]
-            self.ts.ctx.value().enqueue_function[kb](
-                _dev_lt[N * 3](gru), _dev_lt[N](deter), _dev_lt[N](gop),
-                _dev_lt[N * 3](g_gru), _dev_lt[N](g_deter),
-                grid_dim=nb, block_dim=TPB,
+            c.enqueue_function[_gru_bwd_kernel[N, D, dpb]](
+                gru.lt["gpu", Layout.row_major(N * 3)](),
+                deter.lt["gpu", Layout.row_major(N)](),
+                grad_output.lt["gpu", Layout.row_major(N)](),
+                g_gru.lt["gpu", Layout.row_major(N * 3)](),
+                g_deter.lt["gpu", Layout.row_major(N)](),
+                grid_dim=nb,
+                block_dim=TPB,
             )
 
 
@@ -641,7 +635,8 @@ struct GRUGate[DETER: Int, BLOCKS: Int](Module):
 #
 # Forward currently takes the argmax (deterministic placeholder); the trainer
 # wires a PhiloxRandom categorical sample. The backward — the trainable path —
-# is exact and validated (st_fixture).
+# is exact and validated (st_fixture). The storage vjp RECOMPUTES softmax(z)
+# from `forward_input[0]` (no cached `sm`), bit-identical to the cached path.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -655,131 +650,106 @@ struct StraightThroughSample[STOCH: Int, CLASSES: Int](Module):
     def display_label() -> String:
         return String("STSample")
 
-    var unimix: Scalar[DT]
-    var _sm: List[Scalar[DT]]   # cached softmax(z), [B·S·C] (CPU)
-    var _n: Int
-    var _sm_dev: Optional[DeviceBuffer[DT]]   # cached softmax(z) (GPU)
-    var _sm_dev_n: Int
-    var ts: TargetStorage
+    var unimix: Scalar[DT]   # real hyperparam (unimix prob), NOT cache
 
     def __init__(out self):
         self.unimix = Scalar[DT](0.01)
-        self._sm = List[Scalar[DT]]()
-        self._n = 0
-        self._sm_dev = None
-        self._sm_dev_n = 0
-        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "StraightThroughSample: target must be 'cpu' or 'gpu'"
-        )
-        var s = Self()
-        comptime if target == "cpu":
-            s.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("StraightThroughSample.make[gpu]: ctx required")
-            s.ts = TargetStorage.make_gpu(ctx.value())
-        return s^
-
-    def _ensure(mut self, n: Int):
-        if self._n < n:
-            self._sm = List[Scalar[DT]](length=n, fill=Scalar[DT](0.0))
-            self._n = n
+        return Self()
 
     def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["StraightThroughSample", target](self.ts.target_tag)
         comptime C = Self.CLASSES
-        var z = inputs.tile[0, BATCH, Self.SC]().ptr
-        var o = typed_view_mut[BATCH, Self.SC](output).ptr
+        ref z = inputs[0]
         comptime if target == "cpu":
-            self._ensure(BATCH * Self.SC)
-            var sm = mptr(self._sm.unsafe_ptr())
-            for b in range(BATCH):
+            out.ensure(B * Self.SC)
+            for b in range(B):
                 for s in range(Self.STOCH):
                     var base = (b * Self.STOCH + s) * C
-                    var zmax = z[base]
+                    var zmax = z.data[base]
                     var amax = 0
                     for c in range(1, C):
-                        if z[base + c] > zmax:
-                            zmax = z[base + c]
+                        if z.data[base + c] > zmax:
+                            zmax = z.data[base + c]
                             amax = c
-                    var ssum: Scalar[DT] = 0.0
                     for c in range(C):
-                        var e = exp(z[base + c] - zmax)
-                        sm[base + c] = e
-                        ssum += e
-                    var inv = Scalar[DT](1.0) / ssum
-                    for c in range(C):
-                        sm[base + c] = sm[base + c] * inv
-                        o[base + c] = (
+                        out.data[base + c] = (
                             Scalar[DT](1.0) if c == amax else Scalar[DT](0.0)
                         )
         else:
-            comptime NN = BATCH * Self.SC
-            comptime NG = BATCH * Self.STOCH
-            var ctx = self.ts.ctx.value()
-            if (not self._sm_dev) or self._sm_dev_n < NN:
-                self._sm_dev = ctx.enqueue_create_buffer[DT](NN)
-                self._sm_dev_n = NN
-            var smp = mptr(self._sm_dev.value().unsafe_ptr())
-            var zp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](z)
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
+            var c = ctx.value()
+            comptime NN = B * Self.SC
+            comptime NG = B * Self.STOCH
+            out.ensure_gpu(c, NN)
             comptime nb = (NG + TPB - 1) // TPB
-            comptime kf = _st_fwd_kernel[NG, C]
-            ctx.enqueue_function[kf](
-                _dev_lt[NN](zp), _dev_lt[NN](smp), _dev_lt[NN](op),
-                grid_dim=nb, block_dim=TPB,
+            c.enqueue_function[_st_fwd_kernel[NG, C]](
+                z.lt["gpu", Layout.row_major(NN)](),
+                out.lt["gpu", Layout.row_major(NN)](),
+                grid_dim=nb,
+                block_dim=TPB,
             )
 
     def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime C = Self.CLASSES
-        var go = typed_view[BATCH, Self.SC](grad_output).ptr
-        var gz = grad_inputs.tile[0, BATCH, Self.SC]().ptr
+        ref z = forward_input[0]
+        ref gz = grad_inputs[0]
         var one_m_u = Scalar[DT](1.0) - self.unimix
         comptime if target == "cpu":
-            var sm = mptr(self._sm.unsafe_ptr())
-            for b in range(BATCH):
+            gz.ensure(B * Self.SC)
+            for b in range(B):
                 for s in range(Self.STOCH):
                     var base = (b * Self.STOCH + s) * C
+                    # Recompute softmax(z) (numerically-stable max-subtract).
+                    var zmax = z.data[base]
+                    for c in range(1, C):
+                        if z.data[base + c] > zmax:
+                            zmax = z.data[base + c]
+                    var ssum: Scalar[DT] = 0.0
+                    for c in range(C):
+                        ssum += exp(z.data[base + c] - zmax)
+                    var inv = Scalar[DT](1.0) / ssum
                     var dot: Scalar[DT] = 0.0
                     for c in range(C):
-                        dot += go[base + c] * sm[base + c]
+                        var smc = exp(z.data[base + c] - zmax) * inv
+                        dot += grad_output.data[base + c] * smc
                     for c in range(C):
-                        gz[base + c] = one_m_u * sm[base + c] * (go[base + c] - dot)
+                        var smc = exp(z.data[base + c] - zmax) * inv
+                        gz.data[base + c] = one_m_u * smc * (
+                            grad_output.data[base + c] - dot
+                        )
         else:
-            comptime NN = BATCH * Self.SC
-            comptime NG = BATCH * Self.STOCH
-            var ctx = self.ts.ctx.value()
-            var smp = mptr(self._sm_dev.value().unsafe_ptr())
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
-            var gzp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](gz)
+            var c = ctx.value()
+            comptime NN = B * Self.SC
+            comptime NG = B * Self.STOCH
+            gz.ensure_gpu(c, NN)
             comptime nb = (NG + TPB - 1) // TPB
-            comptime kb = _st_bwd_kernel[NG, C]
-            ctx.enqueue_function[kb](
-                _dev_lt[NN](smp), _dev_lt[NN](gop), _dev_lt[NN](gzp),
-                one_m_u, grid_dim=nb, block_dim=TPB,
+            c.enqueue_function[_st_bwd_kernel[NG, C]](
+                z.lt["gpu", Layout.row_major(NN)](),
+                grad_output.lt["gpu", Layout.row_major(NN)](),
+                gz.lt["gpu", Layout.row_major(NN)](),
+                one_m_u,
+                grid_dim=nb,
+                block_dim=TPB,
             )

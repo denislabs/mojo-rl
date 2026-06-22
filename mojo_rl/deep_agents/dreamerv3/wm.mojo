@@ -28,15 +28,15 @@ Param load + checkpoint use the `ParamVisitor` name-walk
 (`for_each_param`); the node-index access in the spikes is test-only.
 """
 
-from mojo_rl.nn.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.combinators.graph_nodes import InputSlot, Node
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.block_linear import BlockLinear
-from mojo_rl.nn.primitives.rms_norm import RMSNorm
-from mojo_rl.nn.primitives.elementwise import Elementwise
+from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.block_linear import BlockLinear
+from mojo_rl.nn.storage.primitives.rms_norm import RMSNorm
+from mojo_rl.nn.storage.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.gelu_op import GELUOp
-from mojo_rl.nn.primitives.concat import Concat
+from mojo_rl.nn.storage.primitives.concat import Concat
 from mojo_rl.nn.core.element_op import ElementOp
 from .rssm_ops import (
     ActionSquash, BlockGroupAssemble, GRUGate, StraightThroughSample,
@@ -56,7 +56,6 @@ from .nets import DreamerDecoder, DreamerRewardMLP, DreamerContMLP
 
 
 comptime DecLossGraph[SC: Int, DETER: Int, OBS: Int, DEC_U: Int, A: ElementOp = GELUOp] = ComputeGraph[
-    1,
     InputSlot["stoch_new", SC],
     InputSlot["nd", DETER],
     InputSlot["rtgt", OBS],
@@ -67,7 +66,6 @@ comptime DecLossGraph[SC: Int, DETER: Int, OBS: Int, DEC_U: Int, A: ElementOp = 
 
 
 comptime RewLossGraph[DETER: Int, SC: Int, HU: Int, BINS: Int, A: ElementOp = GELUOp] = ComputeGraph[
-    1,
     InputSlot["nd", DETER],
     InputSlot["stoch_new", SC],
     InputSlot["rtgt", 1],
@@ -78,7 +76,6 @@ comptime RewLossGraph[DETER: Int, SC: Int, HU: Int, BINS: Int, A: ElementOp = GE
 
 
 comptime ConLossGraph[DETER: Int, SC: Int, HU: Int, A: ElementOp = GELUOp] = ComputeGraph[
-    1,
     InputSlot["nd", DETER],
     InputSlot["stoch_new", SC],
     InputSlot["ctgt", 1],
@@ -100,7 +97,6 @@ comptime WMImagineGraph[
     DETER: Int, H: Int, STOCH: Int, CLASSES: Int, BLOCKS: Int, ACT: Int,
     A: ElementOp = GELUOp,
 ] = ComputeGraph[
-    DETER + STOCH * CLASSES,
     InputSlot["deter", DETER],
     InputSlot["stoch", STOCH * CLASSES],
     InputSlot["action", ACT],
@@ -129,7 +125,6 @@ comptime WMObserveGraph[
     DETER: Int, H: Int, STOCH: Int, CLASSES: Int, BLOCKS: Int,
     ACT: Int, TOKEN: Int, A: ElementOp = GELUOp,
 ] = ComputeGraph[
-    STOCH * CLASSES,
     InputSlot["deter", DETER],
     InputSlot["stoch", STOCH * CLASSES],
     InputSlot["action", ACT],
@@ -166,7 +161,6 @@ comptime WMCoreGraph[
     DETER: Int, H: Int, STOCH: Int, CLASSES: Int, BLOCKS: Int,
     ACT: Int, TOKEN: Int, A: ElementOp = GELUOp,
 ] = ComputeGraph[
-    2 + DETER + STOCH * CLASSES,
     InputSlot["deter", DETER],
     InputSlot["stoch", STOCH * CLASSES],
     InputSlot["action", ACT],
@@ -202,7 +196,6 @@ comptime WMLossGraph[
     ACT: Int, TOKEN: Int, OBS: Int, DEC_U: Int, HU: Int, BINS: Int,
     A: ElementOp = GELUOp,
 ] = ComputeGraph[
-    5 + DETER + STOCH * CLASSES,
     InputSlot["deter", DETER],
     InputSlot["stoch", STOCH * CLASSES],
     InputSlot["action", ACT],
