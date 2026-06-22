@@ -1,55 +1,47 @@
-"""EnsembleTargetYBlockOFE — REDQ-OFE target-y computation.
+"""EnsembleTargetYBlockOFE — REDQ-OFE target-y computation (STORAGE).
 
-Phase O.2.b.1 (CPU). Mirrors `EnsembleTargetYBlock` from `redq/` but
-reads φ(s') (precomputed by `OFEFeatureStep`) instead of raw next-obs
-and runs the OFE `action_branch` forward to obtain φ(s', a') before
-the N target-critic forwards.
+Mirrors `redq.EnsembleTargetYBlock` but reads φ(s') (precomputed by
+`OFEFeatureStep`, passed by `mut Tensor` ref) instead of raw next-obs, and
+runs the OFE `action_branch` forward to obtain φ(s', a') before the N
+target-critic forwards.
 
-Pipeline (per step) — differences from the non-OFE block are flagged
-with ▌:
+Pipeline (per step) — differences from the non-OFE block flagged ▌:
 
   1.   actor.forward(φ(s')) → raw [B, 2·ACT]                ▌ φ in
   2.   rsample.forward(raw) → packed [B, ACT+1] = (a' | logπ)
   3.   sa_in = concat(φ(s'), a')                            ▌ wider
-       (dim PHI_S_DIM + ACT, on the heap as `_mb_sa_in`)
   4. ▌ action_branch.forward(sa_in) → φ(s', a')              ▌ NEW
-       (dim PHI_SA_DIM, on the heap as `_mb_phi_spap`)
-  5.   for i in 0..N:
-         target_net_i.forward(φ(s', a')) → row i of stacked Q
-  6.   redq_ensemble_target_cpu → mb_y[b]
+  5.   for i in 0..N: target_net_i.forward(φ(s', a')) → row i of stacked Q
+  6.   redq_ensemble_target → mb_y[b]
 
-Gradient policy
-===============
-Forward-only block. The OFE state-branch was already run (in
-`OFEFeatureStep`) before this block. The action-branch forward here
-populates its cache, but the cache will be clobbered by later
-forwards (critic step, actor step, aux step) and the RL path NEVER
-calls `action_branch.vjp` — so the clobber is harmless.
+Forward-only — actor + action_branch + target critics are read but never
+receive gradient here.
 
-The `actor` and target critics are also read-only here (target_y
-seeds the critic update; no gradient flows back through actor / target
-critics on this path).
-
-Subset bookkeeping (subset_idxs, set_subset_idxs, resample_subset_idxs):
-identical to `EnsembleTargetYBlock` — copy-pasted, since the
-MODE=MIN combine still selects N_MIN of N stacked Qs.
+STORAGE migration (Stage 5): scratch are owned `nn.storage.Tensor`s; the
+actor + RSample + action_branch + critics use the storage Module surface; the
+combine reuses `redq/kernels.mojo`. The concat(φ(s'), a') + log-prob extract
+reuses REDQ's `_redq_concat_sa_extract_lp_kernel` on GPU (its "OBS" param is
+just the first-input width — passing PHI_S_DIM there is correct).
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 from std.random import random_float64
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.scratch import Scratch
-from mojo_rl.nn.core.scratch_walkers import init_scratch_auto
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
-from mojo_rl.nn.initializer import Zero
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor, TensorImpl
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Zero
+from mojo_rl.nn.storage.primitives.rsample import RSample
 
-from ..primitives.rsample import RSample
+from ..training.trainer_block import TrainerState
 from ..redq.ensemble import CriticEnsemble
-from ..redq.ensemble_target_y_block import _redq_concat_sa_extract_lp_kernel
+from ..redq.ensemble_target_y_block import (
+    _redq_concat_sa_extract_lp_kernel, _copy_row_kernel,
+)
 from ..redq.kernels import (
     redq_ensemble_target_cpu,
     redq_ensemble_target_gpu,
@@ -64,6 +56,7 @@ struct EnsembleTargetYBlockOFE[
     CRITIC: Module,         # IN=PHI_SA_DIM, OUT=1
     N_: Int,
     BATCH_: Int,
+    OBS_: Int,
     PHI_S_DIM_: Int,
     ACT_: Int,
     N_MIN_: Int,
@@ -71,6 +64,7 @@ struct EnsembleTargetYBlockOFE[
 ](Movable & ImplicitlyDeletable):
     comptime N = Self.N_
     comptime BATCH = Self.BATCH_
+    comptime OBS = Self.OBS_
     comptime PHI_S_DIM = Self.PHI_S_DIM_
     comptime ACT = Self.ACT_
     comptime N_MIN = Self.N_MIN_
@@ -81,49 +75,37 @@ struct EnsembleTargetYBlockOFE[
 
     var rsample: RSample[Self.ACT]
 
-    var _mb_ao: Scratch["of_y_mb_ao", Self.BATCH * (2 * Self.ACT)]
-    var _mb_alp: Scratch["of_y_mb_alp", Self.BATCH * (Self.ACT + 1)]
-    var _mb_sa_in: Scratch["of_y_mb_sa_in", Self.BATCH * Self.SA_IN_DIM]
-    var _mb_phi_spap: Scratch[
-        "of_y_mb_phi_spap", Self.BATCH * Self.PHI_SA_DIM,
-    ]
-    var _mb_stacked_q: Scratch["of_y_mb_stacked_q", Self.N * Self.BATCH]
-    var _mb_lp: Scratch["of_y_mb_lp", Self.BATCH]
+    var _mb_ao: Tensor          # [BATCH, 2*ACT]
+    var _mb_alp: Tensor         # [BATCH, ACT+1]
+    var _mb_sa_in: Tensor       # [BATCH, SA_IN_DIM]
+    var _mb_phi_spap: Tensor    # [BATCH, PHI_SA_DIM]
+    var _mb_stacked_q: Tensor   # [N, BATCH] flat
+    var _mb_q_i: Tensor         # [BATCH] per-critic forward scratch
+    var _mb_lp: Tensor          # [BATCH]
 
     var subset_idxs: List[Int]
-    # GPU mirror of `subset_idxs` — uploaded once per `step["gpu"]` call.
-    # None on CPU.
-    var _subset_dev: Optional[DeviceBuffer[DType.uint32]]
+    var _subset_dev: TensorImpl[DType.uint32]
 
     var action_scale: Scalar[DT]
     var gamma: Scalar[DT]
-    var ts: TargetStorage
+    var ctx: Optional[DeviceContext]
 
     def __init__(out self):
         self.rsample = RSample[Self.ACT]()
-        self._mb_ao = Scratch[
-            "of_y_mb_ao", Self.BATCH * (2 * Self.ACT),
-        ]()
-        self._mb_alp = Scratch[
-            "of_y_mb_alp", Self.BATCH * (Self.ACT + 1),
-        ]()
-        self._mb_sa_in = Scratch[
-            "of_y_mb_sa_in", Self.BATCH * Self.SA_IN_DIM,
-        ]()
-        self._mb_phi_spap = Scratch[
-            "of_y_mb_phi_spap", Self.BATCH * Self.PHI_SA_DIM,
-        ]()
-        self._mb_stacked_q = Scratch[
-            "of_y_mb_stacked_q", Self.N * Self.BATCH,
-        ]()
-        self._mb_lp = Scratch["of_y_mb_lp", Self.BATCH]()
+        self._mb_ao = Tensor()
+        self._mb_alp = Tensor()
+        self._mb_sa_in = Tensor()
+        self._mb_phi_spap = Tensor()
+        self._mb_stacked_q = Tensor()
+        self._mb_q_i = Tensor()
+        self._mb_lp = Tensor()
         self.subset_idxs = List[Int](length=Self.N_MIN, fill=0)
         for k in range(Self.N_MIN):
             self.subset_idxs[k] = k
-        self._subset_dev = None
+        self._subset_dev = TensorImpl[DType.uint32]()
         self.action_scale = Scalar[DT](1.0)
         self.gamma = Scalar[DT](0.99)
-        self.ts = TargetStorage.make_uninit()
+        self.ctx = None
 
     @staticmethod
     def make[target: StaticString](
@@ -141,9 +123,7 @@ struct EnsembleTargetYBlockOFE[
                 )
         comptime assert (
             Self.MODE == REDQ_TARGET_MIN or Self.MODE == REDQ_TARGET_AVE
-        ), (
-            "EnsembleTargetYBlockOFE: MODE must be MIN (0) or AVE (1)"
-        )
+        ), "EnsembleTargetYBlockOFE: MODE must be MIN (0) or AVE (1)"
         comptime assert Self.ACTOR.IN_DIMS[0] == Self.PHI_S_DIM, (
             "EnsembleTargetYBlockOFE: ACTOR.IN_DIM must equal PHI_S_DIM"
         )
@@ -164,16 +144,28 @@ struct EnsembleTargetYBlockOFE[
         blk.rsample.action_scale = action_scale
         blk.action_scale = action_scale
         blk.gamma = gamma
-        blk.ts = TargetStorage.make[target](ctx=ctx)
-        init_scratch_auto[Self, target](blk, ctx)
-        comptime if target == "gpu":
-            blk._subset_dev = ctx.value().enqueue_create_buffer[
-                DType.uint32
-            ](Self.N_MIN)
+        blk.ctx = ctx
+        comptime if target == "cpu":
+            blk._mb_ao = Tensor.alloc(Self.BATCH * (2 * Self.ACT))
+            blk._mb_alp = Tensor.alloc(Self.BATCH * Self.ALP_DIM)
+            blk._mb_sa_in = Tensor.alloc(Self.BATCH * Self.SA_IN_DIM)
+            blk._mb_phi_spap = Tensor.alloc(Self.BATCH * Self.PHI_SA_DIM)
+            blk._mb_stacked_q = Tensor.alloc(Self.N * Self.BATCH)
+            blk._mb_q_i = Tensor.alloc(Self.BATCH)
+            blk._mb_lp = Tensor.alloc(Self.BATCH)
+        else:
+            var c = ctx.value()
+            blk._mb_ao = Tensor.alloc_gpu(c, Self.BATCH * (2 * Self.ACT))
+            blk._mb_alp = Tensor.alloc_gpu(c, Self.BATCH * Self.ALP_DIM)
+            blk._mb_sa_in = Tensor.alloc_gpu(c, Self.BATCH * Self.SA_IN_DIM)
+            blk._mb_phi_spap = Tensor.alloc_gpu(c, Self.BATCH * Self.PHI_SA_DIM)
+            blk._mb_stacked_q = Tensor.alloc_gpu(c, Self.N * Self.BATCH)
+            blk._mb_q_i = Tensor.alloc_gpu(c, Self.BATCH)
+            blk._mb_lp = Tensor.alloc_gpu(c, Self.BATCH)
+            blk._subset_dev.ensure_gpu(c, Self.N_MIN)
         return blk^
 
     def set_subset_idxs(mut self, idxs: List[Int]) raises:
-        """Pin the MODE=MIN subset deterministically (test hook)."""
         if len(idxs) != Self.N_MIN:
             raise Error(
                 "set_subset_idxs: expected length " + String(Self.N_MIN)
@@ -188,9 +180,6 @@ struct EnsembleTargetYBlockOFE[
             self.subset_idxs[k] = idxs[k]
 
     def resample_subset_idxs(mut self) raises:
-        """Fisher-Yates partial shuffle: pick N_MIN distinct indices
-        from {0..N-1}. Production drivers call this every train step
-        before `step`."""
         var picks = List[Int](length=Self.N, fill=0)
         for i in range(Self.N):
             picks[i] = i
@@ -204,147 +193,133 @@ struct EnsembleTargetYBlockOFE[
             self.subset_idxs[i] = picks[i]
 
     def step[
-        target: StaticString = "cpu",
+        target: StaticString,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut actor: Self.ACTOR,
         mut action_branch: Self.AB,
         mut ensemble: CriticEnsemble[Self.CRITIC, Self.N],
-        mb_phi_sp_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_r_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_term_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut phi_sp: Tensor,
         alpha: Scalar[DT],
-        mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
-        """Writes `mb_y[b] = r[b] + (1 − term[b]) · γ · (combined_Q[b]
-        − α · log_π(a'|s')[b])` into `mb_y_ptr`. Forward-only."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "EnsembleTargetYBlockOFE.step: target must be 'cpu' or 'gpu'"
-        )
-        assert_tag_for["EnsembleTargetYBlockOFE", target](self.ts.target_tag)
+        """Write `state.mb_y[b] = r[b] + (1 − term[b]) · γ · (combined_Q[b]
+        − α · log_prob[b])` in-place. Reads φ(s') (= `phi_sp`) + state.mb_r /
+        state.mb_d (BATCH-width). Forward-only. The actor input is φ(s')
+        (= `phi_sp`), NOT the raw next-obs `state.mb_sp`."""
+        var ctx = state.ctx
 
         # 1. actor.forward(φ(s')) → _mb_ao [BATCH, 2·ACT].
-        var ao_p = self._mb_ao.target_ptr[target]()
-        var phi_sp_t = TileTensor(
-            mb_phi_sp_ptr, row_major[Self.BATCH, Self.PHI_S_DIM](),
-        )
-        var ao_t = TileTensor(
-            ao_p, row_major[Self.BATCH, 2 * Self.ACT](),
-        )
-        actor.forward[target, Self.BATCH, POLICY](phi_sp_t, output=ao_t)
-
-        # 2. rsample → _mb_alp [BATCH, ACT+1] = (a' | log_prob).
-        var alp_p = self._mb_alp.target_ptr[target]()
-        var alp_t = TileTensor(
-            alp_p, row_major[Self.BATCH, Self.ALP_DIM](),
-        )
-        self.rsample.forward[target, Self.BATCH, POLICY](
-            ao_t, output=alp_t,
+        actor.forward[target, Self.BATCH, POLICY=POLICY](
+            TensorRefs[Self.ACTOR.ARITY](phi_sp), self._mb_ao, ctx
         )
 
-        # 3. sa_in = concat(φ(s'), a') + extract log_prob into _mb_lp.
-        var sa_in_p = self._mb_sa_in.target_ptr[target]()
-        var lp_p = self._mb_lp.target_ptr[target]()
+        # 2. rsample → _mb_alp [BATCH, ACT+1] (packed a' | log_prob).
+        self.rsample.forward[target, Self.BATCH, POLICY=POLICY](
+            TensorRefs[1](self._mb_ao), self._mb_alp, ctx
+        )
+
+        # 3. sa_in = concat(φ(s'), a') + extract log_prob.
         comptime if target == "cpu":
             for b in range(Self.BATCH):
                 for d in range(Self.PHI_S_DIM):
-                    sa_in_p[b * Self.SA_IN_DIM + d] = mb_phi_sp_ptr[
-                        b * Self.PHI_S_DIM + d
-                    ]
-                for j in range(Self.ACT):
-                    sa_in_p[b * Self.SA_IN_DIM + Self.PHI_S_DIM + j] = (
-                        alp_p[b * Self.ALP_DIM + j]
+                    self._mb_sa_in.data[b * Self.SA_IN_DIM + d] = (
+                        phi_sp.data[b * Self.PHI_S_DIM + d]
                     )
-                lp_p[b] = alp_p[b * Self.ALP_DIM + Self.ACT]
+                for j in range(Self.ACT):
+                    self._mb_sa_in.data[b * Self.SA_IN_DIM + Self.PHI_S_DIM + j] = (
+                        self._mb_alp.data[b * Self.ALP_DIM + j]
+                    )
+                self._mb_lp.data[b] = (
+                    self._mb_alp.data[b * Self.ALP_DIM + Self.ACT]
+                )
         else:
-            # Reuse REDQ's `_redq_concat_sa_extract_lp_kernel` — its
-            # "OBS" param is just the first-input width, so passing
-            # PHI_S_DIM in that slot is correct.
-            var ctx = self.ts.ctx.value()
-            var phi_sp_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.PHI_S_DIM),
-                MutAnyOrigin,
-            ](mb_phi_sp_ptr)
-            var alp_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.ALP_DIM),
-                MutAnyOrigin,
-            ](alp_p)
-            var sa_in_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.SA_IN_DIM),
-                MutAnyOrigin,
-            ](sa_in_p)
-            var lp_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-            ](lp_p)
+            var c = ctx.value()
             comptime total_sa = Self.BATCH * Self.SA_IN_DIM
             comptime n_blocks = (total_sa + TPB - 1) // TPB
             comptime kernel = _redq_concat_sa_extract_lp_kernel[
                 Self.PHI_S_DIM, Self.ACT, Self.BATCH,
                 Self.SA_IN_DIM, Self.ALP_DIM,
             ]
-            ctx.enqueue_function[kernel](
-                phi_sp_lt, alp_lt, sa_in_lt, lp_lt,
+            c.enqueue_function[kernel](
+                phi_sp.lt[
+                    "gpu", Layout.row_major(Self.BATCH, Self.PHI_S_DIM)
+                ](),
+                self._mb_alp.lt[
+                    "gpu", Layout.row_major(Self.BATCH, Self.ALP_DIM)
+                ](),
+                self._mb_sa_in.lt[
+                    "gpu", Layout.row_major(Self.BATCH, Self.SA_IN_DIM)
+                ](),
+                self._mb_lp.lt["gpu", Layout.row_major(Self.BATCH)](),
                 grid_dim=n_blocks, block_dim=TPB,
             )
 
         # 4. action_branch.forward(sa_in) → φ(s', a') [BATCH, PHI_SA_DIM].
-        var sa_in_t = TileTensor(
-            sa_in_p, row_major[Self.BATCH, Self.SA_IN_DIM](),
-        )
-        var phi_spap_p = self._mb_phi_spap.target_ptr[target]()
-        var phi_spap_t = TileTensor(
-            phi_spap_p, row_major[Self.BATCH, Self.PHI_SA_DIM](),
-        )
-        action_branch.forward[target, Self.BATCH, POLICY](
-            sa_in_t, output=phi_spap_t,
+        action_branch.forward[target, Self.BATCH, POLICY=POLICY](
+            TensorRefs[Self.AB.ARITY](self._mb_sa_in), self._mb_phi_spap, ctx
         )
 
-        # 5. Loop N target critic forwards on φ(s', a'). Each writes
-        # its [BATCH, 1] output directly into row i of _mb_stacked_q.
-        var stacked_p = self._mb_stacked_q.target_ptr[target]()
+        # 5. Loop N target critic forwards on φ(s', a') → row i of stacked Q.
         for i in range(Self.N):
-            var row_p = stacked_p + i * Self.BATCH
-            var q_i_t = TileTensor(row_p, row_major[Self.BATCH, 1]())
             ensemble.pairs[i].target_net.forward[
-                target, Self.BATCH, POLICY,
-            ](phi_spap_t, output=q_i_t)
+                target, Self.BATCH, POLICY=POLICY
+            ](
+                TensorRefs[Self.CRITIC.ARITY](self._mb_phi_spap),
+                self._mb_q_i,
+                ctx,
+            )
+            comptime if target == "cpu":
+                var base = i * Self.BATCH
+                for b in range(Self.BATCH):
+                    self._mb_stacked_q.data[base + b] = self._mb_q_i.data[b]
+            else:
+                var c = ctx.value()
+                comptime nb = (Self.BATCH + TPB - 1) // TPB
+                c.enqueue_function[
+                    _copy_row_kernel[Self.N * Self.BATCH, Self.BATCH]
+                ](
+                    self._mb_q_i.lt["gpu", Layout.row_major(Self.BATCH)](),
+                    self._mb_stacked_q.lt[
+                        "gpu", Layout.row_major(Self.N * Self.BATCH)
+                    ](),
+                    i * Self.BATCH,
+                    grid_dim=nb, block_dim=TPB,
+                )
 
-        # 6. Combine + α·logπ + γ + terminal mask.
+        # 6. Combine + α·lp + γ + terminal mask → state.mb_y.
         comptime if target == "cpu":
             redq_ensemble_target_cpu[
                 Self.N, Self.N_MIN, Self.MODE, Self.BATCH,
             ](
-                mb_r_ptr,
-                stacked_p,
-                mb_term_ptr,
-                lp_p,
-                self.subset_idxs.unsafe_ptr(),
+                state.mb_r,
+                self._mb_stacked_q,
+                state.mb_d,
+                self._mb_lp,
+                self.subset_idxs,
                 self.gamma,
                 alpha,
-                mb_y_ptr,
+                state.mb_y,
             )
         else:
-            # Upload subset_idxs (host List[Int] → device uint32 buffer)
-            # once per step. Same pattern as REDQ's GPU target-y.
-            var ctx = self.ts.ctx.value()
-            var subset_host = ctx.enqueue_create_host_buffer[
-                DType.uint32
-            ](Self.N_MIN)
-            var subset_host_p = subset_host.unsafe_ptr()
+            var c = ctx.value()
+            self._subset_dev.ensure_host(c, Self.N_MIN)
+            var hb = self._subset_dev.hbuf.value()
+            c.synchronize()
             for k in range(Self.N_MIN):
-                subset_host_p[k] = UInt32(self.subset_idxs[k])
-            ctx.enqueue_copy(self._subset_dev.value(), subset_host_p)
+                hb[k] = UInt32(self.subset_idxs[k])
+            c.enqueue_copy(self._subset_dev.dev.value(), hb)
             redq_ensemble_target_gpu[
                 Self.N, Self.N_MIN, Self.MODE, Self.BATCH,
             ](
-                ctx,
-                mb_y_ptr,
-                mb_r_ptr,
-                stacked_p,
-                mb_term_ptr,
-                lp_p,
-                self._subset_dev.value().unsafe_ptr(),
+                c,
+                state.mb_y,
+                state.mb_r,
+                self._mb_stacked_q,
+                state.mb_d,
+                self._mb_lp,
+                self._subset_dev.lt["gpu", Layout.row_major(Self.N_MIN)](),
                 self.gamma,
                 alpha,
             )

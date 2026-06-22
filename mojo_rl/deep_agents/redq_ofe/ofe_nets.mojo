@@ -1,10 +1,9 @@
-"""OFENet composite — DenseNet-style feature extractor for REDQ-OFE.
+"""OFENet composite — DenseNet-style feature extractor for REDQ-OFE (STORAGE).
 
 Reference: Ota et al., "Can Increasing Input Dimensionality Improve Deep
 RL?" (ICML 2020); the authors' TF2 implementation in
 `references/OFENet-main/teflon/ofe/network.py`; and the REDQ-OFE
-PyTorch port in `references/REDQ-main/`. nn-side mirror of the legacy
-`mojo_rl/nn/composites_ofenet.mojo`.
+PyTorch port in `references/REDQ-main/`.
 
 Architecture — DenseNet variant with LayerNorm:
     block = SkipConcat[Linear → LayerNorm → SiLU]
@@ -18,27 +17,26 @@ Each block grows the width by `per_unit`, so block `i` has
 `Repeat[N, Block]` can't express this because every block has a
 different IN — we enumerate them explicitly.
 
+STORAGE migration (Stage 5): net defs swapped from the legacy `nn`
+combinators/primitives to `nn.storage.{combinators,primitives}`
+(`SkipConcat`, `Sequential`, `Linear`, `LayerNorm`, `SiLU`). The
+DenseNet math + LayerNorm-not-BatchNorm decision are unchanged.
+
 LayerNorm vs BatchNorm
 ======================
 The original OFENet paper sandwiches BatchNorm1D between Linear and
 Swish. The REDQ-OFE PyTorch port (Chen et al., 2021) reports
-divergence with PyTorch BN and uses no normalisation; the legacy
-`composites_ofenet.mojo` documents the empirical failure modes that
-forced the switch to LayerNorm here. We keep that decision — LayerNorm
-has no train/eval split, so the OFE forward in aux mode and inference
-mode produce the same output, and per-sample normalisation bounds the
-feature scale through the 6–8-block stack.
+divergence with PyTorch BN and uses no normalisation; we keep the
+LayerNorm decision — LayerNorm has no train/eval split, so the OFE
+forward in aux mode and inference mode produce the same output, and
+per-sample normalisation bounds the feature scale through the
+6–8-block stack.
 
 Predictor head
 ==============
-Legacy bundles the whole prediction chain (state branch + action branch
-+ Linear head + the `SplitApply[StateBranch, Identity, state_dim]`
-bifurcation) as `OFENetPredictor6/8`. nn has no SplitApply / Identity
-yet — and the trainer is going to call the state branch separately
-anyway (φ(s) feeds the actor and critics, not just the aux predictor)
-— so we expose `OFEStateBranch`, `OFEActionBranch`, and
-`OFEPredictorHead` as separate modules. The trainer (Phase O.2) wires
-them via the `Concat` primitive to assemble:
+We expose `OFEStateBranch`, `OFEActionBranch`, and `OFEPredictorHead`
+as separate modules (no SplitApply / Identity). The trainer wires them
+via the `Concat` primitive to assemble:
 
     obs (BATCH, OBS)               ──► OFEStateBranch  ──► φ(s)
     Concat[φ(s).dim, ACT](φ(s), a) ──► OFEActionBranch ──► φ(s, a)
@@ -46,8 +44,6 @@ them via the `Concat` primitive to assemble:
 
 Dimensions
 ==========
-Both branches use a constant `per_unit` growth per block, so:
-
     state_branch.OUT_DIM  = OBS + N * per_unit
     action_branch.OUT_DIM = OBS + ACT + 2 * N * per_unit
                           = state_branch.OUT_DIM + ACT + N * per_unit
@@ -59,11 +55,11 @@ Typical hyperparams from `references/OFENet-main/gins/`:
     Ant / Humanoid:                  N=8, per_unit=30, phi_s.dim = OBS+240
 """
 
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.combinators.skip_concat import SkipConcat
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
-from mojo_rl.nn.primitives.silu import SiLU
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.combinators.skip_concat import SkipConcat
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.layer_norm import LayerNorm
+from mojo_rl.nn.storage.primitives.silu import SiLU
 
 
 # =============================================================================
@@ -114,8 +110,7 @@ comptime OFEStateBranch8[OBS: Int, per_unit: Int] = Sequential[
 # =============================================================================
 #
 # `SA_IN` is the input dim *after* the (φ(s), a) concat — typically
-# `state_branch.OUT_DIM + ACT`. We accept it as a single param so callers
-# can compute it once and pass through.
+# `state_branch.OUT_DIM + ACT`.
 
 comptime OFEActionBranch6[SA_IN: Int, per_unit: Int] = Sequential[
     OFEDenseBlock[SA_IN + 0 * per_unit, per_unit],
@@ -151,9 +146,6 @@ comptime OFEPredictorHead[PHI_SA_DIM: Int, OBS: Int] = Linear[PHI_SA_DIM, OBS]
 # =============================================================================
 # Comptime helpers — compute the output dim of each branch
 # =============================================================================
-#
-# Used by the trainer to size φ(s) / φ(s, a) / pred buffers without
-# touching the Module IR.
 
 
 def state_branch_out_dim(OBS: Int, N_BLOCKS: Int, per_unit: Int) -> Int:
