@@ -27,7 +27,7 @@ from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.storage.core.initializer import Kaiming
 from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents.zero.mcts_adapters import AZPredGPU, AZEnvGPU
 from mojo_rl.planners.tree_search import (
@@ -64,7 +64,7 @@ def main() raises:
     ]
 
     var ctx = DeviceContext()
-    var net = Net.make["gpu", INIT=Kaiming](ctx=ctx)
+    var net = Net.make["gpu", Kaiming](Optional(ctx))
     var pred = AZPredGPU[OBS, ACT, Net].make(net)
     var env = AZEnvGPU[Env, STATE, OBS, ACT]()
     var mcts1 = MCTS1(ctx, gamma=1.0, v_min=-1.0, v_max=1.0)

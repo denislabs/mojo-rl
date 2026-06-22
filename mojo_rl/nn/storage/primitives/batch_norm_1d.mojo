@@ -237,6 +237,12 @@ struct BatchNorm1D[
     def set_training(mut self, v: Bool):
         self.training = v
 
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Named-attr hook so a parent combinator can toggle BN train/eval via
+        `net.set_attr["training"](1.0/0.0)`. `value != 0` → training."""
+        comptime if ATTR == "training":
+            self.training = value != Scalar[DT](0.0)
+
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](

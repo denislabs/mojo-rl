@@ -167,3 +167,6 @@ struct Residual[Inner: Module](Module):
         mut self, mut src: Self, tau: Scalar[DT], ctx: Optional[DeviceContext]
     ) raises:
         self.inner.polyak_from[target](src.inner, tau, ctx)
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        self.inner.set_attr[ATTR](value)

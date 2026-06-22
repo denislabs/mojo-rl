@@ -402,6 +402,14 @@ struct BatchNorm2D[
     def set_training(mut self, v: Bool):
         self.training = v
 
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Named-attr hook so a parent `Sequential`/`Repeat`/… can toggle BN
+        train/eval via `net.set_attr["training"](1.0/0.0)` (the AZ CNN/ResNet
+        drivers' BN switch). `value != 0` → training (batch stats + running-stat
+        updates); else eval (running stats)."""
+        comptime if ATTR == "training":
+            self.training = value != Scalar[DT](0.0)
+
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](

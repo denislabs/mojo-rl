@@ -155,3 +155,10 @@ struct Sequential[*MODULES: Module](Module):
     ) raises:
         comptime for i in range(Self.N):
             self.children[i].polyak_from[target](src.children[i], tau, ctx)
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Recurse a named runtime attribute (e.g. BatchNorm's "training") into
+        every child — the plain-Sequential analog of ComputeGraph's
+        `set_node_attr`. Leaves without the attr no-op."""
+        comptime for i in range(Self.N):
+            self.children[i].set_attr[ATTR](value)

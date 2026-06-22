@@ -11,7 +11,7 @@ Run (Apple Metal):
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.storage.core.initializer import Kaiming
 from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents.alphazero.selfplay import run_alphazero_selfplay
 from mojo_rl.deep_agents.alphazero.arena import (
@@ -31,8 +31,8 @@ def main() raises:
     comptime NG = 64
 
     var ctx = DeviceContext()
-    var trained = Net.make["gpu", INIT=Kaiming](ctx=ctx)
-    var fresh = Net.make["gpu", INIT=Kaiming](ctx=ctx)
+    var trained = Net.make["gpu", Kaiming](Optional(ctx))
+    var fresh = Net.make["gpu", Kaiming](Optional(ctx))
 
     _ = run_alphazero_selfplay[
         Env, Net, N_ENVS=16, NUM_SIMS=24, MAX_NODES=64,

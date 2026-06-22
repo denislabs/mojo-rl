@@ -157,3 +157,7 @@ struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
     ) raises:
         for i in range(Self.N):
             self.children[i].polyak_from[target](src.children[i], tau, ctx)
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        for i in range(Self.N):
+            self.children[i].set_attr[ATTR](value)

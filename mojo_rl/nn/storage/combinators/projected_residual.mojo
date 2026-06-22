@@ -186,3 +186,7 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
     ) raises:
         self.inner.polyak_from[target](src.inner, tau, ctx)
         self.skip.polyak_from[target](src.skip, tau, ctx)
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        self.inner.set_attr[ATTR](value)
+        self.skip.set_attr[ATTR](value)

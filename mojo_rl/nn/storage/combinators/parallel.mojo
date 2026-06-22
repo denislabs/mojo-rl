@@ -276,3 +276,7 @@ struct Parallel[*BRANCHES: Module](Module):
     ) raises:
         comptime for i in range(Self.N):
             self.branches[i].polyak_from[target](src.branches[i], tau, ctx)
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        comptime for i in range(Self.N):
+            self.branches[i].set_attr[ATTR](value)
