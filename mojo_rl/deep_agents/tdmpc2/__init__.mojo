@@ -38,3 +38,22 @@ from .config import (
     agent_from_config,
     TDMPC2,
 )
+
+# Multi-task (item C, §14.3) — task-conditioned world model + learned per-task
+# embedding table.
+from .task_embedding import TaskEmbedding
+from .nets_mt import (
+    TDMPC2EncoderMT,
+    TDMPC2DynamicsMT,
+    TDMPC2RewardMT,
+    TDMPC2QNetMT,
+    TDMPC2TerminationMT,
+    TDMPC2PolicyMT,
+)
+from .wm_graph_mt import TDMPC2WMGraphMT
+from .policy_graph_mt import TDMPC2PolicyGraphMT
+from .wm_step_mt import WMStepMT
+from .policy_step_mt import PolicyStepMT
+from .td_target_step_mt import TDTargetStepMT
+from .agent_mt import TDMPC2MultiTaskAgent
+from .config_mt import TDMPC2MultiTask
