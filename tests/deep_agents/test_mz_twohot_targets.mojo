@@ -10,7 +10,6 @@ Run:
     pixi run mojo run -I . tests/deep_agents/test_mz_twohot_targets.mojo
 """
 
-from std.memory import alloc
 from std.math import log
 from std.testing import assert_true, assert_almost_equal
 
@@ -21,10 +20,6 @@ from mojo_rl.deep_agents.zero.twohot_targets import (
     mz_two_hot_target_batch,
     mz_decode_value_batch,
 )
-
-
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 
 
 def main() raises:
@@ -55,7 +50,7 @@ def main() raises:
 
     # ── (2) two-hot targets are a valid distribution ──
     # Raw values whose h(x) lands inside [v_min, v_max].
-    var raw = _alloc(BATCH)
+    var raw = List[Scalar[DT]](length=BATCH, fill=0)
     raw[0] = Scalar[DT](0.0)
     raw[1] = Scalar[DT](1.7)
     raw[2] = Scalar[DT](-2.3)
@@ -63,8 +58,8 @@ def main() raises:
     raw[4] = Scalar[DT](-8.0)
     raw[5] = Scalar[DT](3.14159)
 
-    var tgt = _alloc(BATCH * NUM_BINS)
-    mz_two_hot_target_batch[BATCH, NUM_BINS](raw, v_min, v_max, tgt)
+    var tgt = List[Scalar[DT]](length=BATCH * NUM_BINS, fill=0)
+    mz_two_hot_target_batch[BATCH, NUM_BINS](raw, 0, v_min, v_max, tgt, 0)
     for b in range(BATCH):
         var s = Scalar[DT](0.0)
         var nnz = 0
@@ -85,15 +80,15 @@ def main() raises:
     # ── (3) encode → (treat target as softmax probs) decode round-trip ──
     # Convert the two-hot probs to logits via log so softmax recovers them,
     # then decode and compare to the raw value (within bin resolution).
-    var logits = _alloc(BATCH * NUM_BINS)
+    var logits = List[Scalar[DT]](length=BATCH * NUM_BINS, fill=0)
     for b in range(BATCH):
         for i in range(NUM_BINS):
             var p = tgt[b * NUM_BINS + i]
             logits[b * NUM_BINS + i] = (
                 log(p) if p > Scalar[DT](1e-12) else Scalar[DT](-50.0)
             )
-    var decoded = _alloc(BATCH)
-    mz_decode_value_batch[BATCH, NUM_BINS](logits, v_min, v_max, decoded)
+    var decoded = List[Scalar[DT]](length=BATCH, fill=0)
+    mz_decode_value_batch[BATCH, NUM_BINS](logits, 0, v_min, v_max, decoded, 0)
     # bin resolution in h-space = 20/50 = 0.4; h⁻¹ expands it near the edges,
     # so allow a modest absolute tolerance.
     for b in range(BATCH):
@@ -103,8 +98,4 @@ def main() raises:
         )
     print("(3) encode->decode round-trip: OK")
 
-    raw.free()
-    tgt.free()
-    logits.free()
-    decoded.free()
     print("MuZero two-hot targets (h-transform + linear two-hot): OK")

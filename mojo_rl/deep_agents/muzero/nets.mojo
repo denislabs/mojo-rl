@@ -32,15 +32,15 @@ Reward & value share the same ``BINS`` and the same ``[v_min,v_max]`` support as
 `zero/twohot_targets.mojo` and the planner constructor — keep them in sync.
 """
 
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.combinators.parallel import Parallel
-from mojo_rl.nn.combinators.residual import Residual
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_mish import LinearMish
-from mojo_rl.nn.primitives.min_max_norm import MinMaxNorm
-from mojo_rl.nn.primitives.conv2d import Conv2D
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.primitives.flatten import Flatten
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.combinators.parallel import Parallel
+from mojo_rl.nn.storage.combinators.residual import Residual
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.linear_mish import LinearMish
+from mojo_rl.nn.storage.primitives.min_max_norm import MinMaxNorm
+from mojo_rl.nn.storage.primitives.conv2d import Conv2D
+from mojo_rl.nn.storage.primitives.activations import ReLU
+from mojo_rl.nn.storage.primitives.flatten import Flatten
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -9,17 +9,13 @@ Run:
     pixi run mojo run -I . tests/deep_agents/test_mz_nets_smoke.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_equal, assert_true
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Kaiming
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
-
-
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 
 
 def main() raises:
@@ -43,22 +39,20 @@ def main() raises:
     assert_equal(Pred.OUT_DIM, ACT + BINS, "pred OUT (policy|value)")
     print("contracts: OK")
 
-    var rep = Rep.make["cpu", INIT=Kaiming]()
-    var dyn = Dyn.make["cpu", INIT=Kaiming]()
-    var pred = Pred.make["cpu", INIT=Kaiming]()
+    var rep = Rep.make["cpu", Kaiming]()
+    var dyn = Dyn.make["cpu", Kaiming]()
+    var pred = Pred.make["cpu", Kaiming]()
 
     # ── h: obs → z ──
-    var obs = _alloc(B * OBS)
+    var obs = Tensor.alloc(B * OBS)
     for i in range(B * OBS):
-        obs[i] = Scalar[DT](0.1) * Scalar[DT](i % 7) - Scalar[DT](0.3)
-    var z0 = _alloc(B * LATENT)
-    var obs_t = TileTensor(obs, row_major[B, OBS]())
-    var z0_t = TileTensor(z0, row_major[B, LATENT]())
-    rep.forward["cpu", B](obs_t, output=z0_t)
+        obs.data[i] = Scalar[DT](0.1) * Scalar[DT](i % 7) - Scalar[DT](0.3)
+    var z0 = Tensor.alloc(B * LATENT)
+    rep.forward["cpu", B](TensorRefs[Rep.ARITY](obs), z0, None)
     var fin = True
     var in01 = True
     for i in range(B * LATENT):
-        var v = Float64(z0[i])
+        var v = Float64(z0.data[i])
         if not (v == v) or v > 1e30 or v < -1e30:
             fin = False
         if v < -1e-4 or v > 1.0 + 1e-4:
@@ -68,29 +62,25 @@ def main() raises:
     print("h (rep) forward finite + latent in [0,1]: OK")
 
     # ── g: [z ⊕ onehot(a)] → [z' | reward_logits] ──
-    var dyn_in = _alloc(B * (LATENT + ACT))
+    var dyn_in = Tensor.alloc(B * (LATENT + ACT))
     for b in range(B):
         for i in range(LATENT):
-            dyn_in[b * (LATENT + ACT) + i] = z0[b * LATENT + i]
-        # one-hot action: alternate a=0 / a=1 per row.
+            dyn_in.data[b * (LATENT + ACT) + i] = z0.data[b * LATENT + i]
         for a in range(ACT):
-            dyn_in[b * (LATENT + ACT) + LATENT + a] = Scalar[DT](0.0)
-        dyn_in[b * (LATENT + ACT) + LATENT + (b % ACT)] = Scalar[DT](1.0)
-    var dyn_out = _alloc(B * (LATENT + BINS))
-    var din_t = TileTensor(dyn_in, row_major[B, LATENT + ACT]())
-    var dout_t = TileTensor(dyn_out, row_major[B, LATENT + BINS]())
-    dyn.forward["cpu", B](din_t, output=dout_t)
+            dyn_in.data[b * (LATENT + ACT) + LATENT + a] = Scalar[DT](0.0)
+        dyn_in.data[b * (LATENT + ACT) + LATENT + (b % ACT)] = Scalar[DT](1.0)
+    var dyn_out = Tensor.alloc(B * (LATENT + BINS))
+    dyn.forward["cpu", B](TensorRefs[Dyn.ARITY](dyn_in), dyn_out, None)
     fin = True
     in01 = True
     for b in range(B):
         var base = b * (LATENT + BINS)
         for i in range(LATENT + BINS):
-            var v = Float64(dyn_out[base + i])
+            var v = Float64(dyn_out.data[base + i])
             if not (v == v) or v > 1e30 or v < -1e30:
                 fin = False
-        # latent split (first LATENT) must be min-max scaled; reward logits raw.
         for i in range(LATENT):
-            var lv = Float64(dyn_out[base + i])
+            var lv = Float64(dyn_out.data[base + i])
             if lv < -1e-4 or lv > 1.0 + 1e-4:
                 in01 = False
     assert_true(fin, "dyn non-finite")
@@ -98,17 +88,14 @@ def main() raises:
     print("g (dyn) forward finite + next-latent in [0,1]: OK")
 
     # ── f: z → [policy_logits | value_logits] ──
-    var pred_out = _alloc(B * (ACT + BINS))
-    var pin_t = TileTensor(z0, row_major[B, LATENT]())
-    var pout_t = TileTensor(pred_out, row_major[B, ACT + BINS]())
-    pred.forward["cpu", B](pin_t, output=pout_t)
+    var pred_out = Tensor.alloc(B * (ACT + BINS))
+    pred.forward["cpu", B](TensorRefs[Pred.ARITY](z0), pred_out, None)
     fin = True
     for i in range(B * (ACT + BINS)):
-        var v = Float64(pred_out[i])
+        var v = Float64(pred_out.data[i])
         if not (v == v) or v > 1e30 or v < -1e30:
             fin = False
     assert_true(fin, "pred non-finite")
     print("f (pred) forward finite: OK")
 
-    obs.free(); z0.free(); dyn_in.free(); dyn_out.free(); pred_out.free()
     print("MuZero h/g/f nets smoke: OK")

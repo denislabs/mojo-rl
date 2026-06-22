@@ -16,8 +16,8 @@ from std.memory import alloc
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents.muzero.blocks import mz_unroll_train_step_cpu
 
@@ -41,15 +41,12 @@ def main() raises:
     comptime Dyn = MZDynNet[LATENT, ACT, BINS, H]
     comptime Pred = MZPredNet[LATENT, ACT, BINS, H]
 
-    var rep = Rep.make["cpu", INIT=Kaiming]()
-    var dyn = Dyn.make["cpu", INIT=Kaiming]()
-    var pred = Pred.make["cpu", INIT=Kaiming]()
-    var orep = Adam.make["cpu", M=Rep](rep)
-    var odyn = Adam.make["cpu", M=Dyn](dyn)
-    var opred = Adam.make["cpu", M=Pred](pred)
-    orep.lr = Scalar[DT](0.01)
-    odyn.lr = Scalar[DT](0.01)
-    opred.lr = Scalar[DT](0.01)
+    var rep = Rep.make["cpu", Kaiming]()
+    var dyn = Dyn.make["cpu", Kaiming]()
+    var pred = Pred.make["cpu", Kaiming]()
+    var orep = Adam(lr=Scalar[DT](0.01))
+    var odyn = Adam(lr=Scalar[DT](0.01))
+    var opred = Adam(lr=Scalar[DT](0.01))
 
     # ── one fixed batch (time-major) ──
     var obs0 = _a(B * OBS)
