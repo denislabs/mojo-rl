@@ -19,11 +19,11 @@ bootstrap target. Returns the last training loss.
 from std.math import exp, log
 from std.memory import alloc
 
-from layout import TileTensor, row_major
-
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 from ..zero.mz_diagnostics import append_mz_train_diagnostics
@@ -41,7 +41,9 @@ from ..zero.temperature import visit_temperature
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    """Category-B raw batch/episode scratch feeding the raw-pointer replay +
+    unroll-input boundary (not the nn surface)."""
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 def run_muzero_selfplay_cpu[
@@ -100,12 +102,15 @@ def run_muzero_selfplay_cpu[
     ](gamma=Float64(gamma))
     var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
 
-    var rep_a = MZRepCPU[OBS, LATENT, REP](net=UnsafePointer(to=rep))
+    var rep_a = MZRepCPU[OBS, LATENT, REP](
+        net=UnsafePointer(to=rep).as_unsafe_any_origin()
+    )
     var dyn_a = MZDynCPU[LATENT, ACT, BINS, DYN](
-        net=UnsafePointer(to=dyn), v_min=v_min, v_max=v_max
+        net=UnsafePointer(to=dyn).as_unsafe_any_origin(), v_min=v_min, v_max=v_max
     )
     var pred_a = MZPredCPU[LATENT, ACT, BINS, PRED](
-        net=UnsafePointer(to=pred), v_min=v_min, v_max=v_max
+        net=UnsafePointer(to=pred).as_unsafe_any_origin(),
+        v_min=v_min, v_max=v_max
     )
 
     # training batch slabs (time-major), allocated once
@@ -121,7 +126,6 @@ def run_muzero_selfplay_cpu[
 
     # logger scratch: per-component loss split + root prediction probe
     var l_parts = _a(3)            # [policy, value, reward] means
-    var d_z = _a(B * LATENT)
     var d_pred = _a(B * (ACT + BINS))
 
     # episode accumulation buffers
@@ -198,13 +202,13 @@ def run_muzero_selfplay_cpu[
             # Time-limit cut (env truncation or our max_ep_steps cap) is NOT a
             # terminal: the replay must bootstrap past it, not target value 0.
             rb.store_episode(
-                mptr(e_obs.unsafe_ptr()),
-                mptr(e_act.unsafe_ptr()),
-                mptr(e_rew.unsafe_ptr()),
-                mptr(e_pol.unsafe_ptr()),
-                mptr(e_val.unsafe_ptr()),
-                mptr(e_tp.unsafe_ptr()),
-                mptr(e_legal.unsafe_ptr()),
+                e_obs.unsafe_ptr().as_unsafe_any_origin(),
+                e_act.unsafe_ptr().as_unsafe_any_origin(),
+                e_rew.unsafe_ptr().as_unsafe_any_origin(),
+                e_pol.unsafe_ptr().as_unsafe_any_origin(),
+                e_val.unsafe_ptr().as_unsafe_any_origin(),
+                e_tp.unsafe_ptr().as_unsafe_any_origin(),
+                e_legal.unsafe_ptr().as_unsafe_any_origin(),
                 ep_len,
                 truncated=not env.was_terminated(),
             )
@@ -243,12 +247,18 @@ def run_muzero_selfplay_cpu[
             and rb.num_episodes() > 0
             and (it + 1) % diag_every == 0
         ):
-            var z_t = TileTensor(d_z, row_major[B, LATENT]())
-            rep.forward["cpu", B](
-                TileTensor(t_obs0, row_major[B, OBS]()), output=z_t
-            )
-            var pred_t = TileTensor(d_pred, row_major[B, ACT + BINS]())
-            pred.forward["cpu", B](z_t, output=pred_t)
+            # storage forward (h then f) for the root-pred probe: copy the raw
+            # batch obs into an owned Tensor, run, copy the pred output back into
+            # the raw diag buffer for `append_mz_train_diagnostics`.
+            var obs_t = Tensor.alloc(B * OBS)
+            for i in range(B * OBS):
+                obs_t.data[i] = t_obs0[i]
+            var z_t = Tensor.alloc(B * LATENT)
+            rep.forward["cpu", B](TensorRefs[REP.ARITY](obs_t), z_t, None)
+            var pred_t = Tensor.alloc(B * (ACT + BINS))
+            pred.forward["cpu", B](TensorRefs[PRED.ARITY](z_t), pred_t, None)
+            for i in range(B * (ACT + BINS)):
+                d_pred[i] = pred_t.data[i]
             var dn = List[String]()
             var dv = List[Float64]()
             dn.append(String("loss")); dv.append(last_loss)
@@ -371,5 +381,5 @@ def run_muzero_selfplay_cpu[
 
     t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     r_obs.free(); r_pol.free()
-    l_parts.free(); d_z.free(); d_pred.free()
+    l_parts.free(); d_pred.free()
     return last_loss

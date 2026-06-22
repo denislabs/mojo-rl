@@ -153,7 +153,7 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
         FIELD_DIM: Int,
     ](
         self,
-        field: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        field: List[Scalar[DT]],
         ep_idx: Int,
         offset: Int,
         mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -259,8 +259,8 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
                     w_val[h] = Scalar[DT](0.0)     # terminal value 0
                     w_tp[h] = Scalar[DT](0.0)
                 else:
-                    self._read_step[1](self.val.unsafe_ptr(), e, s + h, w_val, h)
-                    self._read_step[1](self.tp.unsafe_ptr(), e, s + h, w_tp, h)
+                    self._read_step[1](self.val, e, s + h, w_val, h)
+                    self._read_step[1](self.tp, e, s + h, w_tp, h)
 
             compute_nstep_value_targets[K, N](
                 w_rew, w_done, w_val, w_tp, gamma, w_vt, last_valid=lv
@@ -352,18 +352,18 @@ struct MCTSSequenceReplay[OBS: Int, ACT: Int, CAP: Int, OBS_STORE_DT: DType = DT
                     )
 
             for h in range(HR):
-                self._read_step[1](self.rew.unsafe_ptr(), e, s + h, w_rew, h)
+                self._read_step[1](self.rew, e, s + h, w_rew, h)
                 if s + h >= L:
                     w_done[h] = Scalar[DT](1.0)
                 else:
-                    self._read_step[1](self.done.unsafe_ptr(), e, s + h, w_done, h)
+                    self._read_step[1](self.done, e, s + h, w_done, h)
             for h in range(HV):
                 if s + h >= L:
                     w_val[h] = Scalar[DT](0.0)
                     w_tp[h] = Scalar[DT](0.0)
                 else:
-                    self._read_step[1](self.val.unsafe_ptr(), e, s + h, w_val, h)
-                    self._read_step[1](self.tp.unsafe_ptr(), e, s + h, w_tp, h)
+                    self._read_step[1](self.val, e, s + h, w_val, h)
+                    self._read_step[1](self.tp, e, s + h, w_tp, h)
 
             compute_nstep_value_targets[K, N](
                 w_rew, w_done, w_val, w_tp, gamma, w_vt, last_valid=lv
