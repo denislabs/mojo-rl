@@ -1,18 +1,18 @@
-"""LayerNorm legacy ↔ storage parity (CPU bit-identical) + storage GPU vs CPU.
+"""LayerNorm storage primitive — CPU correctness (golden) + GPU vs CPU.
 
-Both use the same SIMD feature-axis math, so legacy↔storage CPU is bit-identical
-(out + grad_input + grad_gamma + grad_beta). Run:
-  pixi run -e apple mojo run -I . tests/nn/test_layer_norm_storage_parity.mojo
+Standalone storage test (no legacy oracle — converted from the former
+`_storage_parity` test in legacy-removal Phase 0b). The CPU check asserts the
+storage forward/backward against golden fingerprints (S = Σ vᵢ, W = Σ vᵢ·(i+1) —
+the weight catches sign/position errors that a plain sum would cancel), captured
+from the bit-identical legacy↔storage run the parity test used to verify. The GPU
+check is storage-only (GPU vs CPU consistency). Run:
+  pixi run -e apple mojo run -I . tests/nn/test_layer_norm_storage.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.layer_norm import LayerNorm as LegacyLayerNorm
-from mojo_rl.nn.initializer import Zero
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
 from mojo_rl.nn.storage.core.initializer import Deterministic
@@ -23,67 +23,47 @@ comptime DIM = 10
 comptime B = 6
 
 
-def test_ln_cpu_parity() raises:
-    print("test_ln_cpu_parity (legacy vs storage, CPU) ...")
-    comptime TOL = Scalar[DT](1e-6)
-    var leg = LegacyLayerNorm[DIM].make[target="cpu", INIT=Zero]()
-    var lg = leg.gamma.value_unsafe_ptr_cpu()
-    var lb = leg.beta.value_unsafe_ptr_cpu()
-    for k in range(DIM):
-        lg[k] = Scalar[DT](0.6 + 0.07 * Float64(k))
-        lb[k] = Scalar[DT](-0.15 + 0.04 * Float64(k))
+def _check(name: String, data: Tensor, n: Int,
+           es: Scalar[DT], ew: Scalar[DT], tol: Scalar[DT]) -> Bool:
+    """Assert tensor fingerprint (Σ vᵢ, Σ vᵢ·(i+1)) matches golden (es, ew)."""
+    var s: Scalar[DT] = 0
+    var w: Scalar[DT] = 0
+    for i in range(n):
+        s += data.data[i]
+        w += data.data[i] * Scalar[DT](i + 1)
+    var ok = abs(s - es) < tol and abs(w - ew) < tol
+    print("  ", name, "S", s, "(exp", es, ") W", w, "(exp", ew, ")", "OK" if ok else "FAIL")
+    return ok
 
-    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * DIM)
-    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * DIM)
-    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * DIM)
-    var gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * DIM)
-    for i in range(B * DIM):
-        x[i] = Scalar[DT]((i % 13) - 6) * 0.18
-        go[i] = Scalar[DT]((i % 7) - 3) * 0.22
 
-    var x_t = TileTensor(x, row_major[B, DIM]())
-    var y_t = TileTensor(y, row_major[B, DIM]())
-    var go_t = TileTensor(go, row_major[B, DIM]())
-    var gi_t = TileTensor(gi, row_major[B, DIM]())
-    leg.forward["cpu", B](x_t, output=y_t)
-    leg.zero_grad["cpu"]()
-    leg.vjp["cpu", B](go_t, gi_t)
-
+def test_ln_cpu_golden() raises:
+    print("test_ln_cpu_golden (storage CPU vs golden) ...")
+    comptime TOL = Scalar[DT](5e-3)
     var st = LayerNorm[DIM].make["cpu", Deterministic]()
     for k in range(DIM):
-        st.gamma.val.data[k] = lg[k]
-        st.beta.val.data[k] = lb[k]
+        st.gamma.val.data[k] = Scalar[DT](0.6 + 0.07 * Float64(k))
+        st.beta.val.data[k] = Scalar[DT](-0.15 + 0.04 * Float64(k))
     var sx = Tensor.alloc(B * DIM)
     var sgo = Tensor.alloc(B * DIM)
     var sout = Tensor.alloc(B * DIM)
     var sgi = Tensor.alloc(B * DIM)
     for i in range(B * DIM):
-        sx.data[i] = x[i]
-        sgo.data[i] = go[i]
+        sx.data[i] = Scalar[DT]((i % 13) - 6) * 0.18
+        sgo.data[i] = Scalar[DT]((i % 7) - 3) * 0.22
     st.forward["cpu", B](TensorRefs[1](sx), sout, None)
     st.zero_grad["cpu"](None)
     st.vjp["cpu", B](TensorRefs[1](sx), sgo, TensorRefs[1](sgi), None)
 
-    var mo: Scalar[DT] = 0
-    var mgi: Scalar[DT] = 0
-    for i in range(B * DIM):
-        if abs(sout.data[i] - y[i]) > mo: mo = abs(sout.data[i] - y[i])
-        if abs(sgi.data[i] - gi[i]) > mgi: mgi = abs(sgi.data[i] - gi[i])
-    var mdg: Scalar[DT] = 0
-    var mdb: Scalar[DT] = 0
-    for k in range(DIM):
-        if abs(st.gamma.grd.data[k] - leg.gamma.grd.cpu[k]) > mdg:
-            mdg = abs(st.gamma.grd.data[k] - leg.gamma.grd.cpu[k])
-        if abs(st.beta.grd.data[k] - leg.beta.grd.cpu[k]) > mdb:
-            mdb = abs(st.beta.grd.data[k] - leg.beta.grd.cpu[k])
-    print("  max Δ: out", mo, " gi", mgi, " dg", mdg, " db", mdb)
-    assert_true(mo < TOL and mgi < TOL and mdg < TOL and mdb < TOL,
-                "LayerNorm CPU parity")
+    var ok = _check("out", sout, B * DIM, 3.7573538, 154.60642, TOL)
+    ok = _check("gi", sgi, B * DIM, 0.0, -3.592206, TOL) and ok
+    ok = _check("dgamma", st.gamma.grd, DIM, -2.1457193, -17.76936, TOL) and ok
+    ok = _check("dbeta", st.beta.grd, DIM, -1.3199999, -9.24, TOL) and ok
+    assert_true(ok, "LayerNorm CPU golden")
     print("  ok")
 
 
-def test_ln_gpu_parity() raises:
-    print("test_ln_gpu_parity (storage GPU vs storage CPU) ...")
+def test_ln_gpu_vs_cpu() raises:
+    print("test_ln_gpu_vs_cpu (storage GPU vs storage CPU) ...")
     comptime TOL = Scalar[DT](2e-5)
     var c = DeviceContext()
     var cpu = LayerNorm[DIM].make["cpu", Deterministic]()
@@ -140,8 +120,8 @@ def test_ln_gpu_parity() raises:
 
 def main() raises:
     print("=" * 70)
-    print("LayerNorm legacy ↔ storage parity")
+    print("LayerNorm storage primitive (CPU golden + GPU vs CPU)")
     print("=" * 70)
-    test_ln_cpu_parity()
-    test_ln_gpu_parity()
+    test_ln_cpu_golden()
+    test_ln_gpu_vs_cpu()
     print("ALL PASSED")
