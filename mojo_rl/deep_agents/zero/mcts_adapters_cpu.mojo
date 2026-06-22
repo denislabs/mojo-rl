@@ -24,10 +24,11 @@ the old `nn.Network` to an nn `Module` (`forward["cpu", B]`). The env must be
 
 from std.math import exp
 from std.memory import alloc, UnsafePointer
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.planners.tree_search import Representation, Dynamics, Prediction
 
@@ -126,37 +127,30 @@ struct AZPredCPU[
                 return 0.0
             return -1.0  # win-terminal: the player to move just lost
 
-        # Non-terminal: run the net on the canonical obs.
+        # Non-terminal: run the net on the canonical obs (storage surface —
+        # owned host `Tensor`s, no raw pointers).
         comptime IN = Self.NET.IN_DIMS[0]
         comptime OUT = Self.NET.OUT_DIM
         var obs_raw = self.env[].get_obs_list()
-        var obs_buf = alloc[Scalar[DT]](IN)
+        var obs_t = Tensor.alloc(IN)
         for i in range(IN):
-            obs_buf[i] = Scalar[DT](obs_raw[i]) if i < len(obs_raw) else Scalar[
-                DT
-            ](0.0)
-        var pred_buf = alloc[Scalar[DT]](OUT)
-        var obs_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](obs_buf),
-            row_major[1, IN](),
-        )
-        var pred_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](pred_buf),
-            row_major[1, OUT](),
-        )
-        self.net[].forward["cpu", 1](obs_t, output=pred_t)
+            obs_t.data[i] = (
+                Scalar[DT](obs_raw[i]) if i < len(obs_raw) else Scalar[DT](0.0)
+            )
+        var pred_t = Tensor.alloc(OUT)
+        self.net[].forward["cpu", 1](TensorRefs[Self.NET.ARITY](obs_t), pred_t, None)
 
         # Legal-masked softmax over the policy logits (illegal → 0, renormalize).
         var legal = self.env[].legal_action_mask()
         var max_l: Float64 = -1e18
         for a in range(Self.ACT):
-            var lv = Float64(pred_buf[a])
+            var lv = Float64(pred_t.data[a])
             if a < len(legal) and legal[a] and lv > max_l:
                 max_l = lv
         var sum_e: Float64 = 0.0
         for a in range(Self.ACT):
             if a < len(legal) and legal[a]:
-                policy_out[a] = exp(Float64(pred_buf[a]) - max_l)
+                policy_out[a] = exp(Float64(pred_t.data[a]) - max_l)
                 sum_e += policy_out[a]
             else:
                 policy_out[a] = 0.0
@@ -164,9 +158,7 @@ struct AZPredCPU[
             for a in range(Self.ACT):
                 policy_out[a] /= sum_e
 
-        var raw_v = Float64(pred_buf[Self.ACT])
-        obs_buf.free()
-        pred_buf.free()
+        var raw_v = Float64(pred_t.data[Self.ACT])
         if raw_v > 15.0:
             return 1.0
         if raw_v < -15.0:
