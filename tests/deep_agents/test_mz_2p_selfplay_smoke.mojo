@@ -14,8 +14,8 @@ Run (no GPU):
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents.muzero.selfplay_2p_cpu import run_muzero_selfplay_2p_cpu
 from mojo_rl.deep_agents.zero.evaluators import RandomOpponent
@@ -40,15 +40,12 @@ def main() raises:
     comptime Pred = MZPredNet[LATENT, ACT, BINS, H]
 
     var env = TicTacToeEnv[DType.float64]()
-    var rep = Rep.make["cpu", INIT=Kaiming]()
-    var dyn = Dyn.make["cpu", INIT=Kaiming]()
-    var pred = Pred.make["cpu", INIT=Kaiming]()
-    var orep = Adam.make["cpu", M=Rep](rep)
-    var odyn = Adam.make["cpu", M=Dyn](dyn)
-    var opred = Adam.make["cpu", M=Pred](pred)
-    orep.lr = Scalar[DT](0.002)
-    odyn.lr = Scalar[DT](0.002)
-    opred.lr = Scalar[DT](0.002)
+    var rep = Rep.make["cpu", Kaiming]()
+    var dyn = Dyn.make["cpu", Kaiming]()
+    var pred = Pred.make["cpu", Kaiming]()
+    var orep = Adam(lr=Scalar[DT](0.002))
+    var odyn = Adam(lr=Scalar[DT](0.002))
+    var opred = Adam(lr=Scalar[DT](0.002))
 
     var loss = run_muzero_selfplay_2p_cpu[
         TicTacToeEnv[DType.float64], Rep, Dyn, Pred,

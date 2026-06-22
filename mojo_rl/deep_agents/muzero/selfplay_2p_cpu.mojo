@@ -31,8 +31,8 @@ from std.math import exp, log
 from std.memory import alloc
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.planners.tree_search import (
     GenericCPUMCTS,
@@ -49,7 +49,9 @@ from ..zero.temperature import visit_temperature
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    """Category-B raw batch/episode scratch feeding the raw-pointer replay +
+    unroll-input boundary (not the nn surface)."""
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 @always_inline
@@ -111,12 +113,15 @@ def run_muzero_selfplay_2p_cpu[
     ](gamma=Float64(gamma))
     var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
 
-    var rep_a = MZRepCPU[OBS, LATENT, REP](net=UnsafePointer(to=rep))
+    var rep_a = MZRepCPU[OBS, LATENT, REP](
+        net=UnsafePointer(to=rep).as_unsafe_any_origin()
+    )
     var dyn_a = MZDynCPU[LATENT, ACT, BINS, DYN](
-        net=UnsafePointer(to=dyn), v_min=v_min, v_max=v_max
+        net=UnsafePointer(to=dyn).as_unsafe_any_origin(), v_min=v_min, v_max=v_max
     )
     var pred_a = MZPredCPU[LATENT, ACT, BINS, PRED](
-        net=UnsafePointer(to=pred), v_min=v_min, v_max=v_max
+        net=UnsafePointer(to=pred).as_unsafe_any_origin(),
+        v_min=v_min, v_max=v_max
     )
 
     # training batch slabs (time-major), allocated once
@@ -211,13 +216,13 @@ def run_muzero_selfplay_2p_cpu[
             # Board games end with `done`; only the max_ep_steps loop cap is a
             # (theoretical) truncation — flag it so targets bootstrap past it.
             rb.store_episode(
-                mptr(e_obs.unsafe_ptr()),
-                mptr(e_act.unsafe_ptr()),
-                mptr(e_rew.unsafe_ptr()),
-                mptr(e_pol.unsafe_ptr()),
-                mptr(e_val.unsafe_ptr()),
-                mptr(e_tp.unsafe_ptr()),
-                mptr(e_legal.unsafe_ptr()),
+                e_obs.unsafe_ptr().as_unsafe_any_origin(),
+                e_act.unsafe_ptr().as_unsafe_any_origin(),
+                e_rew.unsafe_ptr().as_unsafe_any_origin(),
+                e_pol.unsafe_ptr().as_unsafe_any_origin(),
+                e_val.unsafe_ptr().as_unsafe_any_origin(),
+                e_tp.unsafe_ptr().as_unsafe_any_origin(),
+                e_legal.unsafe_ptr().as_unsafe_any_origin(),
                 ep_len,
                 truncated=not done,
             )
