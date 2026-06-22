@@ -225,6 +225,28 @@ def _soft_clamp_split_kernel[
     )
 
 
+def _dyn_mse_only_kernel[
+    BATCH: Int, OUT_DIM: Int, PRED_DIM: Int
+](
+    pred: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    target: LayoutTensor[DT, Layout.row_major(BATCH, PRED_DIM), MutAnyOrigin],
+    ploss: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+):
+    """Per-row mean-over-dims MSE of the MEAN head only — the reference
+    holdout/elite metric (`inc_var_loss=False`, bnn.py:193). Variance head is
+    ignored; one thread per batch row."""
+    var b = Int(global_idx.x)
+    if b >= BATCH:
+        return
+    var row = Scalar[DT](0.0)
+    for d in range(PRED_DIM):
+        var diff = rebind[Scalar[DT]](pred[b, d]) - rebind[Scalar[DT]](
+            target[b, d]
+        )
+        row += diff * diff
+    ploss[b] = row / Scalar[DT](PRED_DIM)
+
+
 struct DynamicsEnsembleBlock[
     DynNet: Module,
     N: Int,
@@ -721,6 +743,61 @@ struct DynamicsEnsembleBlock[
         return self.loss.forward[target, Self.BATCH](
             self._mb_pred, mb_target_t, self.ctx
         )
+
+    def eval_member_mse[
+        target: StaticString, POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        member_idx: Int,
+        mut mb_in_t: Tensor,
+        mut mb_target_t: Tensor,
+    ) raises -> Scalar[DT]:
+        """Plain MSE of the MEAN head only — the reference's holdout / elite
+        metric (`inc_var_loss=False`). Independent of the (learnable) logvar
+        bounds: selecting elites by NLL rewards OVER-confidence (a member can
+        lower NLL by shrinking variance), so rollouts then sample near-
+        deterministic, biased dynamics. MSE selects the most ACCURATE members,
+        which is what `update_elites` / holdout early-stop must rank on."""
+        self.members[member_idx].forward[target, Self.BATCH, POLICY=POLICY](
+            TensorRefs[Self.DynNet.ARITY](mb_in_t), self._mb_pred, self.ctx
+        )
+        comptime if target == "cpu":
+            var total = Scalar[DT](0.0)
+            for b in range(Self.BATCH):
+                var po = b * Self.OUT_DIM
+                var to = b * Self.PRED_DIM
+                var row = Scalar[DT](0.0)
+                for d in range(Self.PRED_DIM):
+                    var diff = self._mb_pred.data[po + d] - mb_target_t.data[
+                        to + d
+                    ]
+                    row += diff * diff
+                total += row / Scalar[DT](Self.PRED_DIM)
+            return total / Scalar[DT](Self.BATCH)
+        else:
+            var ctx = self.ctx.value()
+            var pred_lt = self._mb_pred.lt[
+                "gpu", Layout.row_major(Self.BATCH, Self.OUT_DIM)
+            ]()
+            var tgt_lt = mb_target_t.lt[
+                "gpu", Layout.row_major(Self.BATCH, Self.PRED_DIM)
+            ]()
+            var ploss_lt = self._bnd_ploss.lt[
+                "gpu", Layout.row_major(Self.BATCH)
+            ]()
+            comptime n_rows = (Self.BATCH + TPB - 1) // TPB
+            comptime mse_kernel = _dyn_mse_only_kernel[
+                Self.BATCH, Self.OUT_DIM, Self.PRED_DIM
+            ]
+            ctx.enqueue_function[mse_kernel](
+                pred_lt, tgt_lt, ploss_lt,
+                grid_dim=n_rows, block_dim=TPB,
+            )
+            self._bnd_ploss.download(ctx)
+            var total = Scalar[DT](0.0)
+            for b in range(Self.BATCH):
+                total += self._bnd_ploss.data[b]
+            return total / Scalar[DT](Self.BATCH)
 
     # ------------------------------------------------------------------
     # Elite ranking.

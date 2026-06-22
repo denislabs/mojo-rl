@@ -1496,7 +1496,7 @@ struct MBPOTrainer[
                 var idx = n_train + ((c * Self.BATCH + k) % n_holdout)
                 self._fill_dyn_batch_cpu(k, idx)
             self._normalize_dyn_in_cpu()
-            total += self.ensemble.eval_member_loss["cpu"](
+            total += self.ensemble.eval_member_mse["cpu"](
                 m, self._dyn_in, self._dyn_tgt
             )
         return total / Scalar[DT](n_chunks)
@@ -1541,7 +1541,12 @@ struct MBPOTrainer[
                         self._dyn_loss_accum += dyn_loss
                         self._dyn_step_count += 1
                 var hl = self._eval_member_holdout_cpu(m, n_train, n_holdout)
-                if hl < best - Scalar[DT](1e-2):
+                # Reference early-stop: a member "improves" only if its holdout
+                # MSE drops by > 1% RELATIVE (bnn.py `_save_best`). An absolute
+                # threshold doesn't transfer across the data-dependent MSE
+                # scale. `(best - hl) > 0.01·best` ⟺ relative improvement > 1%
+                # (best > 0; avoids div-by-zero).
+                if (best - hl) > Scalar[DT](0.01) * best:
                     best = hl
                     since = 0
                 else:
@@ -1705,7 +1710,7 @@ struct MBPOTrainer[
         var total = Scalar[DT](0.0)
         for _ in range(n_chunks):
             self._build_dyn_batch_gpu(lo, hi)
-            total += self.ensemble.eval_member_loss["gpu"](
+            total += self.ensemble.eval_member_mse["gpu"](
                 m, self._dyn_in, self._dyn_tgt
             )
         return total / Scalar[DT](n_chunks)
@@ -1748,7 +1753,9 @@ struct MBPOTrainer[
                         self._dyn_loss_accum += dyn_loss
                         self._dyn_step_count += 1
                 var hl = self._eval_member_holdout_gpu(m, hold_lo, hold_hi)
-                if hl < best - Scalar[DT](1e-2):
+                # Reference early-stop: relative improvement > 1% on holdout
+                # MSE (bnn.py `_save_best`); see the CPU path for the rationale.
+                if (best - hl) > Scalar[DT](0.01) * best:
                     best = hl
                     since = 0
                 else:
