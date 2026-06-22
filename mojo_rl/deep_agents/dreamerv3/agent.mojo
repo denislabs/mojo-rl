@@ -32,15 +32,13 @@ agent.py` facade shape (select_action / select_greedy_action / record /
 train_step).
 """
 
-from std.memory import alloc
 from std.math import tanh
 from std.random import random_float64
-from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.module import mptr
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
 from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
 from mojo_rl.deep_agents.dreamerv3.dists import bounded_std
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import (
@@ -49,30 +47,10 @@ from mojo_rl.deep_agents.dreamerv3.dists_discrete import (
 
 
 @always_inline
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
-
-
-@always_inline
-def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(b.unsafe_ptr())
-
-
-@always_inline
-def _lt[N: Int](
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
-    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
-
-
-def _icopy[N: Int](
-    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-):
-    """Contiguous device→device copy (raw node_out_ptr → owned buffer)."""
-    var i = Int(global_idx.x)
-    if i < N:
-        dst[i] = rebind[Scalar[DT]](src[i])
+def _hp(mut t: Tensor) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    """Host-pointer view of a storage Tensor's CPU `data` — for the raw-pointer
+    cat_sample/cat_argmax helpers (CPU only)."""
+    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](t.data.unsafe_ptr())
 
 
 @fieldwise_init
@@ -97,9 +75,9 @@ struct DreamerV3Agent[
     comptime MAXSTD = Scalar[DT](1.0)
 
     var trainer: Self.TrainerT
-    var belief_deter: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [DETER]
-    var belief_stoch: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [SC]
-    var last_action: UnsafePointer[Scalar[DT], MutAnyOrigin]    # [ACT]
+    var belief_deter: Tensor   # [DETER]
+    var belief_stoch: Tensor   # [SC]
+    var last_action: Tensor    # [ACT]
     var action_scale: Scalar[DT]
 
     @staticmethod
@@ -119,9 +97,9 @@ struct DreamerV3Agent[
                 warmup_steps=warmup_steps, out_init_scale=out_init_scale,
                 actent=actent, slowtar=slowtar,
             ),
-            belief_deter=_alloc(Self.DETER),
-            belief_stoch=_alloc(Self.SC),
-            last_action=_alloc(Self.ACT),
+            belief_deter=Tensor.alloc(Self.DETER),
+            belief_stoch=Tensor.alloc(Self.SC),
+            last_action=Tensor.alloc(Self.ACT),
             action_scale=action_scale,
         )
         a.reset_belief()
@@ -129,11 +107,11 @@ struct DreamerV3Agent[
 
     def reset_belief(mut self):
         for i in range(Self.DETER):
-            self.belief_deter[i] = 0.0
+            self.belief_deter.data[i] = 0.0
         for i in range(Self.SC):
-            self.belief_stoch[i] = 0.0
+            self.belief_stoch.data[i] = 0.0
         for i in range(Self.ACT):
-            self.last_action[i] = 0.0
+            self.last_action.data[i] = 0.0
 
     def record(
         mut self,
@@ -195,122 +173,48 @@ struct DreamerV3Agent[
         comptime CARRY = 2 + D + SCl
         # feat = concat([nd, stoch_new]); both branches fill nd_h / sn_h (the
         # posterior carry, host) then sample identically below.
-        var nd_h = _alloc(D)
-        var sn_h = _alloc(SCl)
-        var pol = _alloc(POUTl)
+        var nd_h = Tensor.alloc(D)
+        var sn_h = Tensor.alloc(SCl)
+        var pol = Tensor.alloc(POUTl)
         comptime if Self.train_target == "cpu":
             # 1. encode obs → token (B=1)
-            var tok = _alloc(TOK)
-            var tkt = TileTensor(tok, row_major[1, TOK]())
+            var obt = Tensor.alloc(Self.OBS)
+            for k in range(Self.OBS):
+                obt.data[k] = obs[k]
+            var tok = Tensor.alloc(TOK)
             self.trainer.enc.forward[Self.train_target, 1](
-                TileTensor(obs, row_major[1, Self.OBS]()), output=tkt
+                TensorRefs[1](obt), tok, None
             )
             # 2. observe via the core graph (B=1) → nd + posterior stoch sample
-            self.trainer.core.set_input["deter", 1](
-                TileTensor(self.belief_deter, row_major[1, D]())
-            )
-            self.trainer.core.set_input["stoch", 1](
-                TileTensor(self.belief_stoch, row_major[1, SCl]())
-            )
-            self.trainer.core.set_input["action", 1](
-                TileTensor(self.last_action, row_major[1, ACTD]())
-            )
-            self.trainer.core.set_input["tokens", 1](
-                TileTensor(tok, row_major[1, TOK]())
-            )
-            var cscr = _alloc(CARRY)
-            var cscrt = TileTensor(cscr, row_major[1, CARRY]())
-            self.trainer.core.forward[Self.train_target, 1](cscrt)
-            var nd = self.trainer.core.node_out_ptr["nd"]()
-            var stoch_new = self.trainer.core.node_out_ptr["stoch_new"]()
+            self.trainer.core.set_input["deter", 1](self.belief_deter, None)
+            self.trainer.core.set_input["stoch", 1](self.belief_stoch, None)
+            self.trainer.core.set_input["action", 1](self.last_action, None)
+            self.trainer.core.set_input["tokens", 1](tok, None)
+            var cscr = Tensor.alloc(CARRY)
+            self.trainer.core.forward[1, Self.train_target](cscr, None)
+            ref nd = self.trainer.core.node_output["nd"]()
+            ref stoch_new = self.trainer.core.node_output["stoch_new"]()
             for k in range(D):
-                nd_h[k] = nd[k]
+                nd_h.data[k] = nd.data[k]
             for k in range(SCl):
-                sn_h[k] = stoch_new[k]
+                sn_h.data[k] = stoch_new.data[k]
             # 3. feat = concat([nd, stoch_new]) → policy(feat)
-            var feat = _alloc(FEATl)
+            var feat = Tensor.alloc(FEATl)
             for k in range(D):
-                feat[k] = nd_h[k]
+                feat.data[k] = nd_h.data[k]
             for k in range(SCl):
-                feat[D + k] = sn_h[k]
-            var polt = TileTensor(pol, row_major[1, POUTl]())
+                feat.data[D + k] = sn_h.data[k]
             self.trainer.policy.forward[Self.train_target, 1](
-                TileTensor(feat, row_major[1, FEATl]()), output=polt
+                TensorRefs[1](feat), pol, None
             )
-            tok.free(); cscr.free(); feat.free()
         else:
-            comptime assert not Self.DISCRETE, (
-                "discrete GPU select_action not yet ported — use 'cpu'"
+            comptime assert Self.train_target == "gpu", (
+                "select_action: train_target must be 'cpu' or 'gpu'"
             )
-            # GPU B=1 inference (hybrid): device enc/core/policy forwards;
-            # H2D obs+belief, D2H posterior + policy logits, host sample.
-            # Reuses the trainer's LIVE GPU modules (buffers grow-only, so
-            # B=1 shares the B=B/NS training instances — no inference copies).
-            var ctx = self.trainer.ctx.value()
-            comptime nbD = (D + TPB - 1) // TPB
-            comptime nbS = (SCl + TPB - 1) // TPB
-            comptime cpD = _icopy[D]
-            comptime cpS = _icopy[SCl]
-            var d_obs = ctx.enqueue_create_buffer[DT](Self.OBS)
-            var d_deter = ctx.enqueue_create_buffer[DT](D)
-            var d_stoch = ctx.enqueue_create_buffer[DT](SCl)
-            var d_act = ctx.enqueue_create_buffer[DT](ACTD)
-            var d_tok = ctx.enqueue_create_buffer[DT](TOK)
-            var d_carry = ctx.enqueue_create_buffer[DT](CARRY)
-            var d_feat = ctx.enqueue_create_buffer[DT](FEATl)
-            var d_pol = ctx.enqueue_create_buffer[DT](2 * ACTD)
-            var d_nd = ctx.enqueue_create_buffer[DT](D)
-            var d_sn = ctx.enqueue_create_buffer[DT](SCl)
-            ctx.enqueue_copy(d_obs, obs)
-            ctx.enqueue_copy(d_deter, self.belief_deter)
-            ctx.enqueue_copy(d_stoch, self.belief_stoch)
-            ctx.enqueue_copy(d_act, self.last_action)
-            ctx.synchronize()
-            # 1. encode obs → token
-            var tkt = TileTensor(_dp(d_tok), row_major[1, TOK]())
-            self.trainer.enc.forward[Self.train_target, 1](
-                TileTensor(_dp(d_obs), row_major[1, Self.OBS]()), output=tkt
-            )
-            # 2. observe via the core graph
-            self.trainer.core.set_input["deter", 1](
-                TileTensor(_dp(d_deter), row_major[1, D]())
-            )
-            self.trainer.core.set_input["stoch", 1](
-                TileTensor(_dp(d_stoch), row_major[1, SCl]())
-            )
-            self.trainer.core.set_input["action", 1](
-                TileTensor(_dp(d_act), row_major[1, ACTD]())
-            )
-            self.trainer.core.set_input["tokens", 1](
-                TileTensor(_dp(d_tok), row_major[1, TOK]())
-            )
-            var cscrt = TileTensor(_dp(d_carry), row_major[1, CARRY]())
-            self.trainer.core.forward[Self.train_target, 1](cscrt)
-            # 3. D2H posterior (kernel-copy raw node ptr → owned buffer → host)
-            ctx.enqueue_function[cpD](
-                _lt[D](self.trainer.core.node_out_ptr["nd"]()),
-                _lt[D](_dp(d_nd)), grid_dim=nbD, block_dim=TPB,
-            )
-            ctx.enqueue_function[cpS](
-                _lt[SCl](self.trainer.core.node_out_ptr["stoch_new"]()),
-                _lt[SCl](_dp(d_sn)), grid_dim=nbS, block_dim=TPB,
-            )
-            ctx.synchronize()
-            ctx.enqueue_copy(nd_h, d_nd); ctx.enqueue_copy(sn_h, d_sn)
-            ctx.synchronize()
-            # 4. feat = concat([nd, stoch_new]) on host → H2D → policy
-            var feat = _alloc(FEATl)
-            for k in range(D):
-                feat[k] = nd_h[k]
-            for k in range(SCl):
-                feat[D + k] = sn_h[k]
-            ctx.enqueue_copy(d_feat, feat); ctx.synchronize()
-            var polt = TileTensor(_dp(d_pol), row_major[1, 2 * ACTD]())
-            self.trainer.policy.forward[Self.train_target, 1](
-                TileTensor(_dp(d_feat), row_major[1, FEATl]()), output=polt
-            )
-            ctx.synchronize(); ctx.enqueue_copy(pol, d_pol); ctx.synchronize()
-            feat.free()
+            # GPU B=1 inference is a storage-port TODO (the storage GPU WM
+            # paths in blocks.mojo are likewise stubbed; DreamerV3 v1 trains +
+            # acts on CPU).
+            raise Error("dreamerv3 select_action GPU: storage port TODO")
         comptime if Self.DISCRETE:
             # ── discrete: categorical sample (explore) / argmax (greedy) →
             # one-hot out_action[ACT]. The one-hot is what the WM conditions on
@@ -318,9 +222,9 @@ struct DreamerV3Agent[
             var k: Int
             if explore:
                 var u01 = Scalar[DT](random_float64())
-                k = cat_sample[ACTD](pol, 0, UNIMIX, u01)
+                k = cat_sample[ACTD](_hp(pol), 0, UNIMIX, u01)
             else:
-                k = cat_argmax[ACTD](pol, 0)
+                k = cat_argmax[ACTD](_hp(pol), 0)
             for a in range(ACTD):
                 out_action[a] = Scalar[DT](1.0) if a == k else Scalar[DT](0.0)
         else:
@@ -330,11 +234,11 @@ struct DreamerV3Agent[
             # always [-1,1]. (The WM's ActionSquash then only clips rare |a|>1
             # outliers instead of saturating the whole range.)
             for a in range(ACTD):
-                var mean = tanh(pol[a])
+                var mean = tanh(pol.data[a])
                 var act_a = mean
                 if explore:
                     var std = bounded_std(
-                        pol[ACTD + a], Self.MINSTD, Self.MAXSTD
+                        pol.data[ACTD + a], Self.MINSTD, Self.MAXSTD
                     )
                     var z = Scalar[DT](random_float64() * 2.0 - 1.0)
                     act_a = mean + std * z
@@ -345,12 +249,11 @@ struct DreamerV3Agent[
                 out_action[a] = act_a
         # update belief (both paths)
         for k in range(D):
-            self.belief_deter[k] = nd_h[k]
+            self.belief_deter.data[k] = nd_h.data[k]
         for k in range(SCl):
-            self.belief_stoch[k] = sn_h[k]
+            self.belief_stoch.data[k] = sn_h.data[k]
         for a in range(ACTD):
-            self.last_action[a] = out_action[a]
-        nd_h.free(); sn_h.free(); pol.free()
+            self.last_action.data[a] = out_action[a]
 
     def select_greedy_action(
         mut self,
