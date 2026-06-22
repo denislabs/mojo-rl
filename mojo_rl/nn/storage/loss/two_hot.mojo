@@ -28,6 +28,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
 
 # Scalar symlog / symexp live in the canonical shared math helper (DT-only)
 # and are re-exported here so `from ...storage.loss.two_hot import symlog`
@@ -355,16 +356,19 @@ def decode_value_batch_linear[
 
 
 def two_hot_ce_loss_batch[
-    BATCH: Int, NUM_BINS: Int, SYMLOG: Bool = True
+    BATCH: Int, NUM_BINS: Int, SYMLOG: Bool, o: MutOrigin
 ](
-    ref logits: Tensor,
+    inputs: TensorRefs[2, o],
     ref bins: Tensor,
-    ref targets: Tensor,
     mut out: Tensor,
 ):
-    """CPU fused two-hot soft cross-entropy. `logits` [BATCH*NUM_BINS],
-    `bins` [NUM_BINS], `targets` [BATCH] (raw; symlog'd here iff SYMLOG),
-    `out` [BATCH] (written)."""
+    """CPU fused two-hot soft cross-entropy. `inputs[0]` = logits
+    [BATCH*NUM_BINS], `inputs[1]` = targets [BATCH] (raw; symlog'd here iff
+    SYMLOG), `bins` [NUM_BINS], `out` [BATCH] (written). The operands arrive
+    as a `TensorRefs` (one shared origin) so a graph node can pass its pooled
+    inputs + write its pooled output without a §B0 ref/mut aliasing clash."""
+    ref logits = inputs[0]
+    ref targets = inputs[1]
     out.ensure(BATCH)
     for b in range(BATCH):
         var base = b * NUM_BINS
@@ -409,17 +413,25 @@ def two_hot_ce_loss_batch[
 
 
 def two_hot_ce_backward_batch[
-    BATCH: Int, NUM_BINS: Int, SYMLOG: Bool = True
+    BATCH: Int, NUM_BINS: Int, SYMLOG: Bool, ofi: MutOrigin, ogi: MutOrigin
 ](
-    ref logits: Tensor,
+    forward_input: TensorRefs[2, ofi],
     ref bins: Tensor,
-    ref targets: Tensor,
     ref grad_out: Tensor,
-    mut grad_logits: Tensor,
+    grad_inputs: TensorRefs[2, ogi],
 ):
-    """CPU backward of `two_hot_ce_loss_batch`. Writes
-    `grad_logits` [BATCH*NUM_BINS] = grad_out·(softmax − two-hot target)."""
+    """CPU backward of `two_hot_ce_loss_batch`. `forward_input[0]` = logits,
+    `[1]` = targets; writes `grad_inputs[0]` [BATCH*NUM_BINS] =
+    grad_out·(softmax − two-hot target) and zeroes `grad_inputs[1]` [BATCH]
+    (target detached). TensorRefs operands → §B0-safe from a graph node."""
+    ref logits = forward_input[0]
+    ref targets = forward_input[1]
+    ref grad_logits = grad_inputs[0]
+    ref grad_targets = grad_inputs[1]
     grad_logits.ensure(BATCH * NUM_BINS)
+    grad_targets.ensure(BATCH)
+    for b in range(BATCH):
+        grad_targets.data[b] = Scalar[DT](0.0)
     for b in range(BATCH):
         var base = b * NUM_BINS
         var raw = targets.data[b]
@@ -468,19 +480,50 @@ def two_hot_ce_backward_batch[
         )
 
 
-def decode_value_backward_batch[
-    BATCH: Int, NUM_BINS: Int
+def two_hot_decode_batch[
+    BATCH: Int, NUM_BINS: Int, o: MutOrigin
 ](
-    ref logits: Tensor,
+    inputs: TensorRefs[1, o],
+    ref bins: Tensor,
+    mut out: Tensor,
+):
+    """CPU symexp decode as a graph node: `inputs[0]` = logits
+    [BATCH*NUM_BINS], `out` [BATCH] (written). TensorRefs form of
+    `decode_value_batch` (kept separately for eval/callback callers)."""
+    ref logits = inputs[0]
+    out.ensure(BATCH)
+    for b in range(BATCH):
+        var base = b * NUM_BINS
+        var max_val = logits.data[base]
+        for i in range(1, NUM_BINS):
+            var lv = logits.data[base + i]
+            if lv > max_val:
+                max_val = lv
+        var sum_exp = Scalar[DT](0.0)
+        for i in range(NUM_BINS):
+            sum_exp += exp(logits.data[base + i] - max_val)
+        var s = Scalar[DT](0.0)
+        for i in range(NUM_BINS):
+            var prob = exp(logits.data[base + i] - max_val) / sum_exp
+            s += prob * bins.data[i]
+        out.data[b] = symexp(s)
+
+
+def decode_value_backward_batch[
+    BATCH: Int, NUM_BINS: Int, ofi: MutOrigin, ogi: MutOrigin
+](
+    forward_input: TensorRefs[1, ofi],
     ref bins: Tensor,
     ref grad_out: Tensor,
-    mut grad_logits: Tensor,
+    grad_inputs: TensorRefs[1, ogi],
 ):
-    """CPU backward of `decode_value_batch` (symexp decode). For
+    """CPU backward of `two_hot_decode_batch` (symexp decode). For
     s = Σ_c softmax(logits)_c·bins_c and v = symexp(s):
         dv/ds        = exp(|s|)
         d v/d logit_c = dv/ds · softmax_c · (bins_c − s)
-    Writes `grad_logits` [BATCH*NUM_BINS] = grad_out · dv/dlogit."""
+    Writes `grad_inputs[0]` [BATCH*NUM_BINS] = grad_out · dv/dlogit."""
+    ref logits = forward_input[0]
+    ref grad_logits = grad_inputs[0]
     grad_logits.ensure(BATCH * NUM_BINS)
     for b in range(BATCH):
         var base = b * NUM_BINS
