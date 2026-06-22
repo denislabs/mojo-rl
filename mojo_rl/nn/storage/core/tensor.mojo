@@ -91,6 +91,70 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
             self.dev = ctx.enqueue_create_buffer[Self.dt](n)
             self.n = n
 
+    @staticmethod
+    def view_gpu(
+        ctx: DeviceContext,
+        ptr: UnsafePointer[Scalar[Self.dt], MutAnyOrigin],
+        n: Int,
+    ) raises -> Self:
+        """BORROWING device view — wrap an EXTERNALLY-owned device buffer (e.g.
+        an MCTS planner's search buffer, reached as a `LayoutTensor.ptr`) in a
+        non-owning `Tensor` so it can be fed straight to `forward`/`vjp` with NO
+        copy. The caller owns the memory and MUST keep it alive for the view's
+        lifetime; `owning=False` means this `Tensor` never frees it (it dies as
+        a plain handle, the storage outlives it via the owner).
+
+        This is the sanctioned boundary between the storage `Module` surface and
+        the raw device-buffer interop of `planners/tree_search` — the adapters
+        in `deep_agents/zero/mcts_adapters*` build one of these per net input and
+        output, then call `net.forward["gpu", B](TensorRefs(in_view), out_view)`.
+        The net's whole forward/vjp then runs on the safe storage surface; only
+        this thin wrap touches a raw pointer (irreducible GPU ABI).
+
+        GPU-only: the CPU `data` List owns its storage and cannot alias external
+        memory, so CPU adapters copy into an owned `Tensor` instead (no analog —
+        like `lt_at`).
+
+        ⚠️ A single non-owning view is fine as a kernel operand, but TWO
+        simultaneous non-owning views as operands of ONE kernel miscompile on
+        Metal (deterministic prefix-drop — the exclusivity/wildcard-origin class
+        of the prior ExternalRef GPU bug). For the adapter's input+output case,
+        prefer `copy_from_device`/`copy_to_device` (owned scratch + a small D2D
+        copy at the boundary; the external buffer is only ever a copy ENDPOINT,
+        never a kernel operand)."""
+        var t = Self()
+        t.dev = DeviceBuffer[Self.dt](ctx, ptr, n, owning=False)
+        t.n = n
+        return t^
+
+    def copy_from_device(
+        mut self,
+        ctx: DeviceContext,
+        src: UnsafePointer[Scalar[Self.dt], MutAnyOrigin],
+        n: Int,
+    ) raises:
+        """Device→device copy an EXTERNALLY-owned buffer INTO this Tensor's own
+        device buffer (lazily allocated to >= n). The external pointer (e.g. an
+        MCTS planner's `LayoutTensor.ptr`) is wrapped in a transient non-owning
+        `DeviceBuffer` used ONLY as a copy endpoint — never a kernel operand —
+        so the net's forward/vjp then runs entirely on owned storage. This is
+        the robust adapter-boundary INPUT bridge (see `view_gpu`'s warning)."""
+        self.ensure_gpu(ctx, n)
+        var src_buf = DeviceBuffer[Self.dt](ctx, src, n, owning=False)
+        ctx.enqueue_copy(self.dev.value(), src_buf)
+
+    def copy_to_device(
+        mut self,
+        ctx: DeviceContext,
+        dst: UnsafePointer[Scalar[Self.dt], MutAnyOrigin],
+        n: Int,
+    ) raises:
+        """Device→device copy this Tensor's own device buffer OUT to an
+        EXTERNALLY-owned buffer (the planner side). Mirror of
+        `copy_from_device`; the adapter-boundary OUTPUT bridge."""
+        var dst_buf = DeviceBuffer[Self.dt](ctx, dst, n, owning=False)
+        ctx.enqueue_copy(dst_buf, self.dev.value())
+
     def ensure_host(mut self, ctx: DeviceContext, n: Int) raises:
         """Lazy-(re)allocate the pinned host staging buffer to >= n. Reused
         across upload/download so the hot loop doesn't churn pinned buffers."""

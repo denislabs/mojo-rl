@@ -11,37 +11,30 @@ where ``pred = [policy_logits(ACT) | raw_value(1)]`` (the net output) and
     loss_b = −Σ_a π_a · log_softmax(logits)_a   +   (tanh(raw_value) − z)²
 
 i.e. soft cross-entropy of the policy against the MCTS visit-count distribution
-(``trainer.py`` / ``Connect4NNet.py:91``) plus value MSE on the **tanh-squashed**
-value head (AlphaZero value ∈ [-1,1]). The value squash lives here (not in the
-net) so the same raw value head feeds the MCTS expand kernel's ``VALUE_SQUASH``.
+plus value MSE on the **tanh-squashed** value head (AlphaZero value ∈ [-1,1]).
+The value squash lives here (not in the net) so the same raw value head feeds
+the MCTS expand kernel's ``VALUE_SQUASH``.
 
 Gradients (target detached, ``grad_target = 0``):
   * policy: ``grad_logits_a = up · (softmax(logits)_a − π_a)``  (Σπ = 1)
   * value:  ``grad_raw = up · 2·(tanh(raw) − z)·(1 − tanh(raw)²)``
 
-No trainable params (inherits the no-op param walkers). Mirrors the DreamerV3
-``wm_loss_ops.mojo`` op pattern (cache input ptrs in forward; write both
-grad_inputs in vjp); CPU + GPU.
+No trainable params (inherits the no-op param walkers). Storage surface: `vjp`
+receives `forward_input` (no cached input pointers), `ctx` is a method arg (no
+`TargetStorage`); CPU indexes `.data`, GPU builds device views via `.lt`.
 """
 
 from std.math import exp, log, tanh
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext
 from std.gpu import global_idx
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module, typed_view, typed_view_mut, mptr
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
-
-
-@always_inline
-def _dlt[N: Int](
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
-    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.initializer import Initializer
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
 
 
 # ── GPU kernels (one thread per batch row). ───────────────────────────────
@@ -107,18 +100,8 @@ struct AZLossOp[ACT: Int](Module):
     comptime IN_DIMS = InlineArray[Int, 2](fill=Self.ACT + 1)
     comptime OUT_DIM = 1
 
-    @staticmethod
-    def display_label() -> String:
-        return String("AZLoss")
-
-    var _pred_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _tgt_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var ts: TargetStorage
-
     def __init__(out self):
-        self._pred_ptr = None
-        self._tgt_ptr = None
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
@@ -127,105 +110,103 @@ struct AZLossOp[ACT: Int](Module):
         comptime assert target == "cpu" or target == "gpu", (
             "AZLossOp: target must be 'cpu' or 'gpu'"
         )
-        var s = Self()
-        comptime if target == "cpu":
-            s.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("AZLossOp.make[gpu]: ctx required")
-            s.ts = TargetStorage.make_gpu(ctx.value())
-        return s^
+        return Self()
 
     def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["AZLossOp", target](self.ts.target_tag)
         comptime W = Self.ACT + 1
-        var pred = mptr(inputs.tile[0, BATCH, W]().ptr)
-        var tgt = mptr(inputs.tile[1, BATCH, W]().ptr)
-        self._pred_ptr = pred
-        self._tgt_ptr = tgt
-        var o = typed_view_mut[BATCH, 1](output).ptr
+        ref pred = inputs[0]
+        ref tgt = inputs[1]
         comptime if target == "cpu":
-            for b in range(BATCH):
+            out.ensure(B)
+            for b in range(B):
                 var base = b * W
-                var zmax = pred[base]
+                var zmax = pred.data[base]
                 for c in range(1, Self.ACT):
-                    if pred[base + c] > zmax:
-                        zmax = pred[base + c]
+                    if pred.data[base + c] > zmax:
+                        zmax = pred.data[base + c]
                 var ssum: Scalar[DT] = 0.0
                 for c in range(Self.ACT):
-                    ssum += exp(pred[base + c] - zmax)
+                    ssum += exp(pred.data[base + c] - zmax)
                 var lse = zmax + log(ssum)
                 var ce: Scalar[DT] = 0.0
                 for c in range(Self.ACT):
-                    ce += tgt[base + c] * (pred[base + c] - lse)
-                var tv = tanh(pred[base + Self.ACT])
-                var d = tv - tgt[base + Self.ACT]
-                o[b] = -ce + d * d
+                    ce += tgt.data[base + c] * (pred.data[base + c] - lse)
+                var tv = tanh(pred.data[base + Self.ACT])
+                var d = tv - tgt.data[base + Self.ACT]
+                out.data[b] = -ce + d * d
         else:
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
-            comptime nb = (BATCH + TPB - 1) // TPB
-            comptime kf = _az_loss_fwd_kernel[BATCH, Self.ACT]
-            self.ts.ctx.value().enqueue_function[kf](
-                _dlt[BATCH * W](pred), _dlt[BATCH * W](tgt),
-                _dlt[BATCH](op), grid_dim=nb, block_dim=TPB,
+            var c = ctx.value()
+            out.ensure_gpu(c, B)
+            var predl = pred.lt["gpu", Layout.row_major(B * W)]()
+            var tgtl = tgt.lt["gpu", Layout.row_major(B * W)]()
+            var ol = out.lt["gpu", Layout.row_major(B)]()
+            comptime nb = (B + TPB - 1) // TPB
+            c.enqueue_function[_az_loss_fwd_kernel[B, Self.ACT]](
+                predl, tgtl, ol, grid_dim=nb, block_dim=TPB
             )
 
     def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime W = Self.ACT + 1
-        var go = typed_view[BATCH, 1](grad_output).ptr
-        var g_pred = grad_inputs.tile[0, BATCH, W]().ptr
-        var g_tgt = grad_inputs.tile[1, BATCH, W]().ptr
-        var pred = self._pred_ptr.value()
-        var tgt = self._tgt_ptr.value()
+        ref pred = forward_input[0]
+        ref tgt = forward_input[1]
+        ref g_pred = grad_inputs[0]
+        ref g_tgt = grad_inputs[1]
         comptime if target == "cpu":
-            for b in range(BATCH):
+            g_pred.ensure(B * W)
+            g_tgt.ensure(B * W)
+            for b in range(B):
                 var base = b * W
-                var up = go[b]
-                var zmax = pred[base]
+                var up = grad_output.data[b]
+                var zmax = pred.data[base]
                 for c in range(1, Self.ACT):
-                    if pred[base + c] > zmax:
-                        zmax = pred[base + c]
+                    if pred.data[base + c] > zmax:
+                        zmax = pred.data[base + c]
                 var ssum: Scalar[DT] = 0.0
                 for c in range(Self.ACT):
-                    ssum += exp(pred[base + c] - zmax)
+                    ssum += exp(pred.data[base + c] - zmax)
                 var inv = Scalar[DT](1.0) / ssum
                 for c in range(Self.ACT):
-                    var sm = exp(pred[base + c] - zmax) * inv
-                    g_pred[base + c] = up * (sm - tgt[base + c])
-                    g_tgt[base + c] = 0.0
-                var tv = tanh(pred[base + Self.ACT])
-                var d = tv - tgt[base + Self.ACT]
-                g_pred[base + Self.ACT] = (
+                    var sm = exp(pred.data[base + c] - zmax) * inv
+                    g_pred.data[base + c] = up * (sm - tgt.data[base + c])
+                    g_tgt.data[base + c] = 0.0
+                var tv = tanh(pred.data[base + Self.ACT])
+                var d = tv - tgt.data[base + Self.ACT]
+                g_pred.data[base + Self.ACT] = (
                     up * Scalar[DT](2.0) * d * (Scalar[DT](1.0) - tv * tv)
                 )
-                g_tgt[base + Self.ACT] = 0.0
+                g_tgt.data[base + Self.ACT] = 0.0
         else:
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
-            var gpp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_pred)
-            var gtp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_tgt)
-            comptime nb = (BATCH + TPB - 1) // TPB
-            comptime kb = _az_loss_bwd_kernel[BATCH, Self.ACT]
-            self.ts.ctx.value().enqueue_function[kb](
-                _dlt[BATCH](gop), _dlt[BATCH * W](pred), _dlt[BATCH * W](tgt),
-                _dlt[BATCH * W](gpp), _dlt[BATCH * W](gtp),
-                grid_dim=nb, block_dim=TPB,
+            var c = ctx.value()
+            g_pred.ensure_gpu(c, B * W)
+            g_tgt.ensure_gpu(c, B * W)
+            var gol = grad_output.lt["gpu", Layout.row_major(B)]()
+            var predl = pred.lt["gpu", Layout.row_major(B * W)]()
+            var tgtl = tgt.lt["gpu", Layout.row_major(B * W)]()
+            var gpl = g_pred.lt["gpu", Layout.row_major(B * W)]()
+            var gtl = g_tgt.lt["gpu", Layout.row_major(B * W)]()
+            comptime nb = (B + TPB - 1) // TPB
+            c.enqueue_function[_az_loss_bwd_kernel[B, Self.ACT]](
+                gol, predl, tgtl, gpl, gtl, grid_dim=nb, block_dim=TPB
             )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).
