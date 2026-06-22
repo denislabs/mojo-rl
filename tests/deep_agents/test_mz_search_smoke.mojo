@@ -24,7 +24,7 @@ from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.storage.core.initializer import Kaiming
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents.zero.mcts_adapters_mz import (
     MZRepGPU, MZDynGPU, MZPredGPU,
@@ -57,9 +57,9 @@ def main() raises:
     ]
 
     var ctx = DeviceContext()
-    var rep_net = Rep.make["gpu", INIT=Kaiming](ctx=ctx)
-    var dyn_net = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
-    var pred_net = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
+    var rep_net = Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn_net = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred_net = Pred.make["gpu", Kaiming](Optional(ctx))
     var rep = MZRepGPU[OBS, LATENT, Rep].make(rep_net)
     var dyn = MZDynGPU[LATENT, ACT, BINS, Dyn].make(dyn_net)
     var pred = MZPredGPU[LATENT, ACT, BINS, Pred].make(pred_net)
@@ -81,7 +81,7 @@ def main() raises:
 
     var root_obs = LayoutTensor[
         DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
-    ](obs.unsafe_ptr())
+    ](obs)
 
     # ── Run the full MuZero learned-dynamics MCTS search ──
     mcts.search_gpu[type_of(rep), type_of(dyn), type_of(pred)](
