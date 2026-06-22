@@ -12,24 +12,31 @@ batched-leaf bias that retired `BATCH_SIMS > 1` on the classic orchestrator.
 Actions are sampled host-side ∝ the improved policy (the legal mask is already
 folded in), matching the validated EZv2 / MuZero Gumbel drivers. Returns the
 last observed mean train loss (0.0 if training never triggered).
+
+Storage surface: the AZ loss runs on the storage ComputeGraph and the replay is
+the fully device-resident `GpuMCTSExampleReplay` (obs / target never leave the
+GPU; the improved policy is pulled to host only to sample the action, which this
+driver does on the host by design).
 """
 
-from std.memory import alloc
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.optimizer import Adam
-from mojo_rl.nn.initializer import Zero
-from mojo_rl.nn.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.combinators.graph_nodes import InputSlot, Node, ExternalNode
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.initializer import Zero
+from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.storage.combinators.graph_decl import (
+    InputSlot, Node, ExternalNode,
+)
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import GumbelGPUMCTS, SelfPlay
 
 from .loss_ops import AZLossOp
 from ..zero.mcts_adapters import AZPredGPU, AZEnvGPU
-from ..zero.example_replay import MCTSExampleReplay
+from ..zero.gpu_example_replay import GpuMCTSExampleReplay
 
 
 def run_alphazero_gumbel_selfplay[
@@ -67,20 +74,19 @@ def run_alphazero_gumbel_selfplay[
         STATE_SIZE=STATE,
     ]
     comptime Graph = ComputeGraph[
-        1,
         InputSlot["obs", OBS],
         ExternalNode["pred", NET, "obs"],
         InputSlot["tgt", W],
         Node["loss", AZLossOp[ACT], "pred", "tgt"],
     ]
 
-    var opt = Adam.make["gpu", M=NET](net, ctx)
-    opt.lr = lr
-    var graph = Graph.make["gpu", INIT=Zero](ctx=ctx)
+    var octx = Optional[DeviceContext](ctx)
+    var opt = Adam(lr=lr)
+    var graph = Graph.make["gpu", Zero](octx)
     var mcts = MCTS(ctx, gamma=1.0, v_min=-1.0, v_max=1.0)
-    var replay = MCTSExampleReplay[OBS, W, CAP]()
+    var replay = GpuMCTSExampleReplay[OBS, ACT, CAP, N_ENVS, MAX_TRAJ](ctx)
 
-    # ── Device buffers ──
+    # ── Env / MCTS device buffers (category-B; RAII DeviceBuffer) ──
     var states = ctx.enqueue_create_buffer[DT](N_ENVS * STATE)
     var obs_dev = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
     var legal_dev = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
@@ -90,41 +96,20 @@ def run_alphazero_gumbel_selfplay[
     var term = ctx.enqueue_create_buffer[DT](N_ENVS)
     var obs_next = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
     var legal_next = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
-    var tb_obs = ctx.enqueue_create_buffer[DT](BATCH * OBS)
-    var tb_tgt = ctx.enqueue_create_buffer[DT](BATCH * W)
-    var tb_loss = ctx.enqueue_create_buffer[DT](BATCH)
-    var tb_grad = ctx.enqueue_create_buffer[DT](BATCH)
 
-    # ── Host buffers ──
-    var obs_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * OBS)
+    # ── Host staging: improved policy (action sampling) + chosen actions ──
     var pol_h = ctx.enqueue_create_host_buffer[DT](N_ENVS * ACT)
     var act_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
-    var done_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
-    var rew_h = ctx.enqueue_create_host_buffer[DT](N_ENVS)
-    var tb_obs_h = ctx.enqueue_create_host_buffer[DT](BATCH * OBS)
-    var tb_tgt_h = ctx.enqueue_create_host_buffer[DT](BATCH * W)
-    var loss_h = ctx.enqueue_create_host_buffer[DT](BATCH)
-    var grad_h = ctx.enqueue_create_host_buffer[DT](BATCH)
     ctx.synchronize()
 
-    # ── Host trajectory storage (per-env in-progress game) ──
-    var traj_obs = alloc[Scalar[DT]](N_ENVS * MAX_TRAJ * OBS)
-    var traj_pol = alloc[Scalar[DT]](N_ENVS * MAX_TRAJ * ACT)
-    var traj_len = alloc[Int](N_ENVS)
-    var tmp_tgt = alloc[Scalar[DT]](W)
-    for e in range(N_ENVS):
-        traj_len[e] = 0
-
-    # Constant 1/BATCH grad seed (uploaded once).
+    # ── Train-batch storage Tensors (device-resident; the nn surface) ──
+    var obs_t = Tensor.alloc_gpu(ctx, BATCH * OBS)
+    var tgt_t = Tensor.alloc_gpu(ctx, BATCH * W)
+    var loss_t = Tensor.alloc_gpu(ctx, BATCH)
+    var grad_t = Tensor.alloc(BATCH)
     for i in range(BATCH):
-        grad_h.unsafe_ptr()[i] = Scalar[DT](1.0) / Scalar[DT](BATCH)
-    ctx.enqueue_copy(tb_grad, grad_h)
-    ctx.synchronize()
-
-    var tbo_t = TileTensor(tb_obs, row_major[BATCH, OBS]())
-    var tbt_t = TileTensor(tb_tgt, row_major[BATCH, W]())
-    var loss_t = TileTensor(tb_loss, row_major[BATCH, 1]())
-    var grad_t = TileTensor(tb_grad, row_major[BATCH, 1]())
+        grad_t.data[i] = Scalar[DT](1.0) / Scalar[DT](BATCH)
+    grad_t.upload(ctx)
 
     # ── Initialize all games ──
     ENV.reset_kernel_gpu[N_ENVS, STATE](ctx, states)
@@ -153,24 +138,16 @@ def run_alphazero_gumbel_selfplay[
             rng_seed=UInt32((seed + UInt64(it)) & 0xFFFFFFFF),
         )
 
-        # 2. Pull root obs + IMPROVED policy to host; record into trajectory.
-        ctx.enqueue_copy(obs_h, obs_dev)
-        ctx.enqueue_copy(pol_h, mcts.policies_view())
+        # 2. Record root obs + IMPROVED policy into the device replay
+        #    (device→device), and pull the policy to host for action sampling.
+        var pol_view = mcts.policies_view()
+        replay.record_step_gpu(obs_dev, pol_view)
+        ctx.enqueue_copy(pol_h, pol_view)
         ctx.synchronize()
-        for e in range(N_ENVS):
-            var k = traj_len[e]
-            if k < MAX_TRAJ:
-                var ob = (e * MAX_TRAJ + k) * OBS
-                for j in range(OBS):
-                    traj_obs[ob + j] = obs_h.unsafe_ptr()[e * OBS + j]
-                var pb = (e * MAX_TRAJ + k) * ACT
-                for a in range(ACT):
-                    traj_pol[pb + a] = pol_h.unsafe_ptr()[e * ACT + a]
-                traj_len[e] = k + 1
 
-        # 3. Sample each env's action ∝ improved policy (legal-masked) and
-        #    step every game. The improved policy IS the exploration —
-        #    Gumbel root sampling already injected it, no temperature knob.
+        # 3. Sample each env's action ∝ improved policy (legal-masked) and step
+        #    every game. The improved policy IS the exploration — Gumbel root
+        #    sampling already injected it, no temperature knob.
         for e in range(N_ENVS):
             rng = rng ^ (rng << 13)
             rng = rng ^ (rng >> 7)
@@ -179,7 +156,7 @@ def run_alphazero_gumbel_selfplay[
             var cum = 0.0
             var a_sel = -1
             for a in range(ACT):
-                var p = Float64(pol_h.unsafe_ptr()[e * ACT + a])
+                var p = Float64(pol_h[e * ACT + a])
                 cum += p
                 if r <= cum and p > 0.0:
                     a_sel = a
@@ -187,11 +164,11 @@ def run_alphazero_gumbel_selfplay[
             if a_sel < 0:  # numeric fallback: argmax
                 var bv = -1.0
                 for a in range(ACT):
-                    var p = Float64(pol_h.unsafe_ptr()[e * ACT + a])
+                    var p = Float64(pol_h[e * ACT + a])
                     if p > bv:
                         bv = p
                         a_sel = a
-            act_h.unsafe_ptr()[e] = Scalar[DT](a_sel)
+            act_h[e] = Scalar[DT](a_sel)
         ctx.enqueue_copy(act_dev, act_h)
         ENV.step_kernel_gpu[N_ENVS, STATE, OBS](
             ctx,
@@ -203,26 +180,10 @@ def run_alphazero_gumbel_selfplay[
             obs_next,
             legal_next,
         )
-        ctx.enqueue_copy(done_h, done)
-        ctx.enqueue_copy(rew_h, rew)
-        ctx.synchronize()
 
-        # 4. Flush finished games into replay with value targets z
+        # 4. Flush finished games into the ring with in-kernel value targets z
         #    (strict-alternation parity; same convention as the PUCT driver).
-        for e in range(N_ENVS):
-            if done_h.unsafe_ptr()[e] > 0.5:
-                var L = traj_len[e]
-                var win = Float64(rew_h.unsafe_ptr()[e]) > 0.5
-                for k in range(L):
-                    var z: Float64 = 0.0
-                    if win:
-                        z = 1.0 if ((L - 1 - k) % 2 == 0) else -1.0
-                    var pb = (e * MAX_TRAJ + k) * ACT
-                    for a in range(ACT):
-                        tmp_tgt[a] = traj_pol[pb + a]
-                    tmp_tgt[ACT] = Scalar[DT](z)
-                    replay.record(traj_obs + (e * MAX_TRAJ + k) * OBS, tmp_tgt)
-                traj_len[e] = 0
+        replay.flush_finished_gpu(done, rew)
 
         # 5. Reset finished games, refresh obs/legal for the next move.
         ENV.selective_reset_kernel_gpu[N_ENVS, STATE](
@@ -237,28 +198,18 @@ def run_alphazero_gumbel_selfplay[
         if len(replay) >= BATCH and it >= learning_starts:
             net.set_attr["training"](Scalar[DT](1.0))
             for _t in range(train_per_iter):
-                replay.sample_batch[BATCH](
-                    tb_obs_h.unsafe_ptr(), tb_tgt_h.unsafe_ptr()
-                )
-                ctx.enqueue_copy(tb_obs, tb_obs_h)
-                ctx.enqueue_copy(tb_tgt, tb_tgt_h)
-                ctx.synchronize()
-                opt.zero_grad["gpu", M=NET](net)
-                graph.set_external["pred", NET](net)
-                graph.set_input["obs", BATCH](tbo_t)
-                graph.set_input["tgt", BATCH](tbt_t)
-                graph.forward["gpu", BATCH](loss_t)
-                graph.vjp["gpu", BATCH](grad_t)
-                opt.step["gpu", M=NET](net)
-            ctx.enqueue_copy(loss_h, tb_loss)
-            ctx.synchronize()
+                replay.sample_batch_gpu[BATCH](obs_t, tgt_t)
+                net.zero_grad["gpu"](octx)
+                graph.set_input["obs", BATCH](obs_t, octx)
+                graph.set_input["tgt", BATCH](tgt_t, octx)
+                graph.forward[BATCH, "gpu"](loss_t, octx, net)
+                graph.vjp[BATCH, "gpu"](grad_t, octx, net)
+                opt.begin_step()
+                net.for_each_param["gpu"](opt, octx)
+            loss_t.download(ctx)
             var ml: Float64 = 0.0
             for b in range(BATCH):
-                ml += Float64(loss_h.unsafe_ptr()[b])
+                ml += Float64(loss_t.data[b])
             last_loss = ml / Float64(BATCH)
 
-    traj_obs.free()
-    traj_pol.free()
-    traj_len.free()
-    tmp_tgt.free()
     return last_loss
