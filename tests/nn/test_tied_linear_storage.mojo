@@ -1,24 +1,19 @@
-"""TiedLinear legacy ↔ storage parity (CPU) + storage GPU vs CPU.
+"""TiedLinear storage primitive — CPU correctness (golden) + GPU vs CPU.
 
-The weight is BORROWED (tied) from an external owner cell. Both legacy and
-storage tie to the SAME source weight values + the same input, and we compare
-out + grad_input + the SHARED weight grad (max|Δ| < 1e-6 CPU). GPU compares
-storage GPU vs storage CPU (TOL ~2e-5).
-
-Run:
-  rm -f mojo_rl.mojoc && pixi run mojo run -I . tests/nn/test_tied_linear_storage_parity.mojo
-  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . tests/nn/test_tied_linear_storage_parity.mojo
+Standalone storage test (no legacy oracle — converted from the former
+`_storage_parity` test in legacy-removal Phase 0b). The weight is BORROWED
+(tied) from an external owner cell. The CPU check asserts the storage
+forward/backward against golden fingerprints (S = Σ vᵢ, W = Σ vᵢ·(i+1) — the
+weight catches sign/position errors that a plain sum would cancel), captured
+from the bit-identical legacy↔storage run the parity test used to verify. The
+GPU check is storage-only (GPU vs CPU consistency). Run:
+  pixi run -e apple mojo run -I . tests/nn/test_tied_linear_storage.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.tied_linear import TiedLinear as LegacyTiedLinear
-from mojo_rl.nn.initializer import Zero
-from mojo_rl.nn.core.module import mptr
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
 from mojo_rl.nn.storage.core.initializer import Deterministic
@@ -30,11 +25,24 @@ comptime OUT = 7   # VOCAB
 comptime B = 4
 
 
-def test_tied_cpu_parity() raises:
-    print("test_tied_cpu_parity (legacy vs storage, CPU) ...")
-    comptime TOL = Scalar[DT](1e-6)
+def _check(name: String, data: Tensor, n: Int,
+           es: Scalar[DT], ew: Scalar[DT], tol: Scalar[DT]) -> Bool:
+    """Assert tensor fingerprint (Σ vᵢ, Σ vᵢ·(i+1)) matches golden (es, ew)."""
+    var s: Scalar[DT] = 0
+    var w: Scalar[DT] = 0
+    for i in range(n):
+        s += data.data[i]
+        w += data.data[i] * Scalar[DT](i + 1)
+    var ok = abs(s - es) < tol and abs(w - ew) < tol
+    print("  ", name, "S", s, "(exp", es, ") W", w, "(exp", ew, ")", "OK" if ok else "FAIL")
+    return ok
 
-    # Shared source weight + grad values (laid out [OUT, IN]) and inputs.
+
+def test_tied_cpu_golden() raises:
+    print("test_tied_cpu_golden (storage CPU vs golden) ...")
+    comptime TOL = Scalar[DT](5e-3)
+
+    # Shared source weight values (laid out [OUT, IN]) and inputs.
     var Wv = List[Scalar[DT]](length=OUT * IN, fill=0.0)
     var xv = List[Scalar[DT]](length=B * IN, fill=0.0)
     var gov = List[Scalar[DT]](length=B * OUT, fill=0.0)
@@ -44,30 +52,6 @@ def test_tied_cpu_parity() raises:
         xv[i] = Scalar[DT]((i % 11) - 5) * 0.17
     for i in range(B * OUT):
         gov[i] = Scalar[DT]((i % 7) - 3) * 0.23
-
-    # ── Legacy: tie to raw scalar buffers ────────────────────────────────
-    var legW: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OUT * IN)
-    var leggW: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OUT * IN)
-    var legx: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * IN)
-    var legout: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * OUT)
-    var leggo: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * OUT)
-    var leggi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * IN)
-    for k in range(OUT * IN):
-        legW[k] = Wv[k]
-        leggW[k] = 0.0
-    for i in range(B * IN):
-        legx[i] = xv[i]
-    for i in range(B * OUT):
-        leggo[i] = gov[i]
-
-    var leg = LegacyTiedLinear[IN, OUT].make[target="cpu", INIT=Zero]()
-    leg.tie_to(mptr(legW), mptr(leggW))
-    var lx_t = TileTensor(legx, row_major[B, IN]())
-    var lout_t = TileTensor(legout, row_major[B, OUT]())
-    var lgo_t = TileTensor(leggo, row_major[B, OUT]())
-    var lgi_t = TileTensor(leggi, row_major[B, IN]())
-    leg.forward["cpu", B](lx_t, output=lout_t)
-    leg.vjp["cpu", B](lgo_t, lgi_t)
 
     # ── Storage: tie to owner Tensor cells ───────────────────────────────
     var sW = Tensor.alloc(OUT * IN)
@@ -88,23 +72,16 @@ def test_tied_cpu_parity() raises:
     st.forward["cpu", B](TensorRefs[1](sx), sout, None)
     st.vjp["cpu", B](TensorRefs[1](sx), sgo, TensorRefs[1](sgi), None)
 
-    var mo: Scalar[DT] = 0
-    var mgi: Scalar[DT] = 0
-    for i in range(B * OUT):
-        if abs(sout.data[i] - legout[i]) > mo: mo = abs(sout.data[i] - legout[i])
-    for i in range(B * IN):
-        if abs(sgi.data[i] - leggi[i]) > mgi: mgi = abs(sgi.data[i] - leggi[i])
-    var mdw: Scalar[DT] = 0
-    for k in range(OUT * IN):
-        if abs(sgW.data[k] - leggW[k]) > mdw: mdw = abs(sgW.data[k] - leggW[k])
-    print("  max Δ: out", mo, " gi", mgi, " dW", mdw)
-    assert_true(mo < TOL and mgi < TOL and mdw < TOL, "TiedLinear CPU parity")
+    var ok = _check("out", sout, B * OUT, 1.3089999, 11.4631, TOL)
+    ok = _check("gi", sgi, B * IN, 3.7444, 38.000603, TOL) and ok
+    ok = _check("dW", sgW, OUT * IN, 5.9604645e-08, -49.266003, TOL) and ok
+    assert_true(ok, "TiedLinear CPU golden")
     _ = sW.n  # keep borrowed owner cell alive past the tied calls
     print("  ok")
 
 
-def test_tied_gpu_parity() raises:
-    print("test_tied_gpu_parity (storage GPU vs storage CPU) ...")
+def test_tied_gpu_vs_cpu() raises:
+    print("test_tied_gpu_vs_cpu (storage GPU vs storage CPU) ...")
     comptime TOL = Scalar[DT](2e-5)
     var c = DeviceContext()
 
@@ -182,8 +159,8 @@ def test_tied_gpu_parity() raises:
 
 def main() raises:
     print("=" * 70)
-    print("TiedLinear legacy ↔ storage parity")
+    print("TiedLinear storage primitive (CPU golden + GPU vs CPU)")
     print("=" * 70)
-    test_tied_cpu_parity()
-    test_tied_gpu_parity()
+    test_tied_cpu_golden()
+    test_tied_gpu_vs_cpu()
     print("ALL PASSED")

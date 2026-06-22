@@ -1,21 +1,23 @@
-"""Storage GaussianNLLLoss + SequenceCrossEntropyLoss parity gate.
+"""Storage GaussianNLLLoss + SequenceCrossEntropyLoss — CPU golden + GPU vs CPU.
 
-Per loss:
-  - CPU parity vs LEGACY (`mojo_rl.nn.loss.*`): identical inputs, |forward Δ|
-    < 1e-6 and max|grad Δ| < 1e-6.
+Standalone storage test (no legacy oracle — converted from the former
+`_storage_parity` test in legacy-removal Phase 0b). Per loss:
+  - CPU golden: run the STORAGE loss with the same inputs/targets/config the
+    parity test fed the storage side; assert the scalar forward loss directly
+    and the input-gradient tensor against golden fingerprints (S = Σ vᵢ,
+    W = Σ vᵢ·(i+1) — the weight catches sign/position errors a plain sum would
+    cancel), captured from the bit-identical legacy↔storage run.
   - storage GPU-vs-CPU forward + grad TOL ~2e-5.
 
 Run:
   rm -f mojo_rl.mojoc && pixi run mojo run -I . \
-      tests/nn/test_gaussian_seqce_loss_storage_parity.mojo
+      tests/nn/test_gaussian_seqce_loss_storage.mojo
   rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . \
-      tests/nn/test_gaussian_seqce_loss_storage_parity.mojo
+      tests/nn/test_gaussian_seqce_loss_storage.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.storage.core.tensor import Tensor
@@ -26,10 +28,20 @@ from mojo_rl.nn.storage.loss.gaussian_nll_loss import (
 from mojo_rl.nn.storage.loss.sequence_cross_entropy import (
     SequenceCrossEntropyLoss as StorSeqCE,
 )
-from mojo_rl.nn.loss.gaussian_nll_loss import GaussianNLLLoss as LegacyGNLL
-from mojo_rl.nn.loss.sequence_cross_entropy import (
-    SequenceCrossEntropyLoss as LegacySeqCE,
-)
+
+
+def _check(name: String, data: Tensor, n: Int,
+           es: Scalar[DT], ew: Scalar[DT], tol: Scalar[DT]) -> Bool:
+    """Assert tensor fingerprint (Σ vᵢ, Σ vᵢ·(i+1)) matches golden (es, ew)."""
+    var s: Scalar[DT] = 0
+    var w: Scalar[DT] = 0
+    for i in range(n):
+        s += data.data[i]
+        w += data.data[i] * Scalar[DT](i + 1)
+    var ok = abs(s - es) < tol and abs(w - ew) < tol
+    print("  ", name, "S", s, "(exp", es, ") W", w, "(exp", ew, ")",
+          "OK" if ok else "FAIL")
+    return ok
 
 
 # ───────────────────────────── GaussianNLL ─────────────────────────────
@@ -60,24 +72,9 @@ def _gnll_tgt(i: Int) -> Scalar[DT]:
     return ts[i]
 
 
-def test_gnll_cpu_vs_legacy() raises -> Bool:
-    comptime TOL = Scalar[DT](1e-6)
-    # --- legacy ---
-    var leg = LegacyGNLL[G_DIM].make[target="cpu"]()
-    var l_log = alloc[Scalar[DT]](G_NLOG)
-    var l_tgt = alloc[Scalar[DT]](G_NTGT)
-    var l_grad = alloc[Scalar[DT]](G_NLOG)
-    for i in range(G_NLOG):
-        l_log[i] = _gnll_logits(i)
-    for i in range(G_NTGT):
-        l_tgt[i] = _gnll_tgt(i)
-    var l_log_t = TileTensor(l_log, row_major[G_B, G_IN]())
-    var l_tgt_t = TileTensor(l_tgt, row_major[G_B, G_DIM]())
-    var l_grad_t = TileTensor(l_grad, row_major[G_B, G_IN]())
-    var leg_fwd = leg.forward["cpu", G_B](l_log_t, l_tgt_t)
-    leg.vjp["cpu", G_B](l_tgt_t, l_grad_t)
-
-    # --- storage ---
+def test_gnll_cpu_golden() raises -> Bool:
+    print("test_gnll_cpu_golden (storage CPU vs golden) ...")
+    comptime TOL = Scalar[DT](1e-2)
     var st = StorGNLL[G_DIM].make_cpu()
     var s_log = Tensor.alloc(G_NLOG)
     var s_tgt = Tensor.alloc(G_NTGT)
@@ -89,18 +86,12 @@ def test_gnll_cpu_vs_legacy() raises -> Bool:
     var st_fwd = st.forward["cpu", G_B](s_log, s_tgt, None)
     st.vjp["cpu", G_B](s_log, s_tgt, s_grad, None)
 
-    var ok = True
-    if abs(st_fwd - leg_fwd) > TOL:
-        ok = False
-    var maxg = Scalar[DT](0.0)
-    for i in range(G_NLOG):
-        var d = abs(s_grad.data[i] - l_grad[i])
-        if d > maxg:
-            maxg = d
-    if maxg > TOL:
-        ok = False
-    print("  GNLL CPU-vs-legacy: fwd Δ=", abs(st_fwd - leg_fwd),
-          " max grad Δ=", maxg, " ->", "OK" if ok else "FAIL")
+    comptime FWD_GOLD = Scalar[DT](58.7865)
+    var ok = abs(st_fwd - FWD_GOLD) < TOL
+    print("   fwd", st_fwd, "(exp", FWD_GOLD, ")", "OK" if ok else "FAIL")
+    ok = _check("grad", s_grad, G_NLOG, -1212.1953, -8802.23, TOL) and ok
+    assert_true(ok, "GaussianNLL CPU golden")
+    print("  ok")
     return ok
 
 
@@ -108,7 +99,7 @@ def _gnll_logits_gpu(i: Int) -> Scalar[DT]:
     # Tamer logvars (still touches both clamp bounds [-10,-2]) so inv_var
     # stays ~exp(3) and the large d/d_raw_logvar magnitudes don't make
     # fp32 GPU-vs-CPU error blow past ~2e-5 — the extreme -12→-10 clamp
-    # case (inv_var≈exp(10)≈22026) is covered by the exact CPU-vs-legacy
+    # case (inv_var≈exp(10)≈22026) is covered by the exact CPU golden
     # gate above instead.
     var ls = [
         Scalar[DT](0.1), Scalar[DT](0.5), Scalar[DT](-0.3),
@@ -183,25 +174,9 @@ def _seq_logit(i: Int) -> Scalar[DT]:
     return Scalar[DT](0.6 * (t - (t * t * t) / 6.0))
 
 
-def test_seqce_cpu_vs_legacy() raises -> Bool:
-    comptime TOL = Scalar[DT](1e-6)
-    # --- legacy ---
-    var leg = LegacySeqCE[S_SEQ, S_VOCAB].make["cpu"]()
-    var l_log = alloc[Scalar[DT]](S_N)
-    var l_tgt = alloc[Scalar[DT]](S_N)
-    var l_grad = alloc[Scalar[DT]](S_N)
-    for i in range(S_N):
-        l_log[i] = _seq_logit(i)
-        l_tgt[i] = Scalar[DT](0.0)
-    for r in range(S_BT):
-        l_tgt[r * S_VOCAB + (r % S_VOCAB)] = Scalar[DT](1.0)
-    var l_log_t = TileTensor(l_log, row_major[S_B, S_SEQ * S_VOCAB]())
-    var l_tgt_t = TileTensor(l_tgt, row_major[S_B, S_SEQ * S_VOCAB]())
-    var l_grad_t = TileTensor(l_grad, row_major[S_B, S_SEQ * S_VOCAB]())
-    var leg_fwd = leg.forward["cpu", S_B](l_log_t, l_tgt_t)
-    leg.vjp["cpu", S_B](l_tgt_t, l_grad_t)
-
-    # --- storage ---
+def test_seqce_cpu_golden() raises -> Bool:
+    print("test_seqce_cpu_golden (storage CPU vs golden) ...")
+    comptime TOL = Scalar[DT](5e-3)
     var st = StorSeqCE[S_SEQ, S_VOCAB].make_cpu()
     var s_log = Tensor.alloc(S_N)
     var s_tgt = Tensor.alloc(S_N)
@@ -214,18 +189,12 @@ def test_seqce_cpu_vs_legacy() raises -> Bool:
     var st_fwd = st.forward["cpu", S_B](s_log, s_tgt, None)
     st.vjp["cpu", S_B](s_log, s_tgt, s_grad, None)
 
-    var ok = True
-    if abs(st_fwd - leg_fwd) > TOL:
-        ok = False
-    var maxg = Scalar[DT](0.0)
-    for i in range(S_N):
-        var d = abs(s_grad.data[i] - l_grad[i])
-        if d > maxg:
-            maxg = d
-    if maxg > TOL:
-        ok = False
-    print("  SeqCE CPU-vs-legacy: fwd Δ=", abs(st_fwd - leg_fwd),
-          " max grad Δ=", maxg, " ->", "OK" if ok else "FAIL")
+    comptime FWD_GOLD = Scalar[DT](5.9516277)
+    var ok = abs(st_fwd - FWD_GOLD) < TOL
+    print("   fwd", st_fwd, "(exp", FWD_GOLD, ")", "OK" if ok else "FAIL")
+    ok = _check("grad", s_grad, S_N, -5.3070835e-08, -0.33215928, TOL) and ok
+    assert_true(ok, "SequenceCE CPU golden")
+    print("  ok")
     return ok
 
 
@@ -282,16 +251,16 @@ def test_seqce_gpu_vs_cpu(ctx: DeviceContext) raises -> Bool:
 
 def main() raises:
     print("=" * 70)
-    print("Storage GaussianNLL + SequenceCrossEntropy parity gate")
+    print("Storage GaussianNLL + SequenceCrossEntropy (CPU golden + GPU vs CPU)")
     print("=" * 70)
-    var g_cpu = test_gnll_cpu_vs_legacy()
-    var s_cpu = test_seqce_cpu_vs_legacy()
+    var g_cpu = test_gnll_cpu_golden()
+    var s_cpu = test_seqce_cpu_golden()
 
     var ctx = DeviceContext()
     var g_gpu = test_gnll_gpu_vs_cpu(ctx)
     var s_gpu = test_seqce_gpu_vs_cpu(ctx)
 
-    assert_true(g_cpu and s_cpu and g_gpu and s_gpu, "storage loss parity")
+    assert_true(g_cpu and s_cpu and g_gpu and s_gpu, "storage loss golden")
     print("=" * 70)
     print("ALL PASSED")
     print("=" * 70)

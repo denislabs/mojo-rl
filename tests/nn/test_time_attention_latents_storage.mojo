@@ -1,24 +1,21 @@
-"""TimeAttentionLatents legacy ↔ storage parity (CPU) + storage GPU vs CPU.
+"""TimeAttentionLatents storage primitive — CPU correctness (golden) + GPU vs CPU.
 
-Both paths carry the same gather/scatter kernels + inner causal MHA verbatim, so
-legacy↔storage CPU is ~bit-identical (out + grad_input). storage GPU↔CPU to a
-small tolerance. Also re-checks the structural invariants (non-latent outputs
-and non-latent input grads are exactly 0). Run:
-  rm -f mojo_rl.mojoc && pixi run mojo run -I . tests/nn/test_time_attention_latents_storage_parity.mojo
-  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . tests/nn/test_time_attention_latents_storage_parity.mojo
+Standalone storage test (no legacy oracle — converted from the former
+`_storage_parity` test in legacy-removal Phase 0b). The CPU check asserts the
+storage forward/backward against golden fingerprints (S = Σ vᵢ, W = Σ vᵢ·(i+1) —
+the weight catches sign/position errors that a plain sum would cancel), captured
+from the bit-identical legacy↔storage run the parity test used to verify. It also
+re-checks the structural invariants (non-latent outputs and non-latent input
+grads are exactly 0). The GPU check is storage-only (GPU vs CPU consistency).
+Run:
+  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . tests/nn/test_time_attention_latents_storage.mojo
 """
 
-from std.memory import alloc
 from std.math import abs
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.time_attention_latents import (
-    TimeAttentionLatents as LegacyTimeAttentionLatents,
-)
-from mojo_rl.nn.initializer import Zero
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
 from mojo_rl.nn.storage.core.initializer import Deterministic
@@ -27,9 +24,9 @@ from mojo_rl.nn.storage.primitives.time_attention_latents import (
 )
 
 
-# Both leaves get the SAME two Linear weights via the shared pattern
-# `(i % 7 - 3) * 0.1` (drilled into the inner MHA's two Linear leaves) so CPU
-# parity exercises real (nonzero) attention math, not the all-zero case.
+# The two inner-MHA Linear weights are set via the shared deterministic pattern
+# `(i % 7 - 3) * 0.1` (drilled into the inner MHA's two Linear leaves) so the CPU
+# check exercises real (nonzero) attention math, not the all-zero case.
 
 
 comptime D = 4
@@ -49,44 +46,26 @@ def _spread(i: Int, seed: Float64) -> Scalar[DT]:
     return Scalar[DT](0.5 * (t - (t * t * t) / 6.0))
 
 
-def test_cpu_parity() raises:
-    print("test_tal_cpu_parity (legacy vs storage, CPU) ...")
-    comptime TOL = Scalar[DT](1e-6)
+def _check(name: String, data: Tensor, n: Int,
+           es: Scalar[DT], ew: Scalar[DT], tol: Scalar[DT]) -> Bool:
+    """Assert tensor fingerprint (Σ vᵢ, Σ vᵢ·(i+1)) matches golden (es, ew)."""
+    var s: Scalar[DT] = 0
+    var w: Scalar[DT] = 0
+    for i in range(n):
+        s += data.data[i]
+        w += data.data[i] * Scalar[DT](i + 1)
+    var ok = abs(s - es) < tol and abs(w - ew) < tol
+    print("  ", name, "S", s, "(exp", es, ") W", w, "(exp", ew, ")", "OK" if ok else "FAIL")
+    return ok
 
-    # Legacy. INIT=Zero, then overwrite params with the shared deterministic
-    # pattern so the inner MHA projections match the storage leaf exactly.
-    var leg = LegacyTimeAttentionLatents[D, NH, T, S, L].make[
-        target="cpu", INIT=Zero
-    ]()
-    # Drill into the inner MHA (Sequential[Tokenwise[Linear], QKVToMajor, SDPA,
-    # Tokenwise[Linear]]) and set both Linear weights to the SAME deterministic
-    # pattern the storage `Deterministic` init produces.
+
+def test_tal_cpu_golden() raises:
+    print("test_tal_cpu_golden (storage CPU vs golden) ...")
+    comptime TOL = Scalar[DT](5e-3)
+
     comptime W0 = D * (3 * D)   # first proj  Linear[D, 3*D]
     comptime W1 = D * D         # out  proj   Linear[D, D]
-    var w0p = leg.mha.children[0].inner.weight.value_unsafe_ptr_cpu()
-    for i in range(W0):
-        w0p[i] = Scalar[DT]((i % 7) - 3) * 0.1
-    var w1p = leg.mha.children[3].inner.weight.value_unsafe_ptr_cpu()
-    for i in range(W1):
-        w1p[i] = Scalar[DT]((i % 7) - 3) * 0.1
-    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](IN_N)
-    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OUT_N)
-    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](OUT_N)
-    var gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](IN_N)
-    for i in range(IN_N):
-        x[i] = _spread(i, 1.3)
-    for i in range(OUT_N):
-        go[i] = _spread(i, 4.1)
 
-    var xt = TileTensor(x, row_major[BATCH, S * D]())
-    var yt = TileTensor(y, row_major[BATCH, S * D]())
-    var got = TileTensor(go, row_major[BATCH, S * D]())
-    var git = TileTensor(gi, row_major[BATCH, S * D]())
-    leg.forward["cpu", BATCH](xt, output=yt)
-    leg.zero_grad["cpu"]()
-    leg.vjp["cpu", BATCH](got, git)
-
-    # Storage. Set the same two Linear weights by drilling the identical tree.
     var st = TimeAttentionLatents[D, NH, T, S, L].make["cpu", Deterministic]()
     for i in range(W0):
         st.mha.children[0].inner.weight.val.data[i] = (
@@ -101,23 +80,16 @@ def test_cpu_parity() raises:
     var sout = Tensor.alloc(OUT_N)
     var sgi = Tensor.alloc(IN_N)
     for i in range(IN_N):
-        sx.data[i] = x[i]
+        sx.data[i] = _spread(i, 1.3)
     for i in range(OUT_N):
-        sgo.data[i] = go[i]
+        sgo.data[i] = _spread(i, 4.1)
     st.forward["cpu", BATCH](TensorRefs[1](sx), sout, None)
     st.zero_grad["cpu"](None)
     st.vjp["cpu", BATCH](TensorRefs[1](sx), sgo, TensorRefs[1](sgi), None)
 
-    var mo: Scalar[DT] = 0
-    for i in range(OUT_N):
-        if abs(sout.data[i] - y[i]) > mo:
-            mo = abs(sout.data[i] - y[i])
-    var mgi: Scalar[DT] = 0
-    for i in range(IN_N):
-        if abs(sgi.data[i] - gi[i]) > mgi:
-            mgi = abs(sgi.data[i] - gi[i])
-    print("  max Δ: out", mo, " gi", mgi)
-    assert_true(mo < TOL and mgi < TOL, "TimeAttentionLatents CPU parity")
+    var ok = _check("out", sout, OUT_N, 3.9190578, 129.1099, TOL)
+    ok = _check("gi", sgi, IN_N, 6.2534704, 321.60965, TOL) and ok
+    assert_true(ok, "TimeAttentionLatents CPU golden")
 
     # invariants on the storage output.
     var max_nl_out: Float64 = 0.0
@@ -143,8 +115,8 @@ def test_cpu_parity() raises:
     print("  ok")
 
 
-def test_gpu_parity() raises:
-    print("test_tal_gpu_parity (storage GPU vs CPU) ...")
+def test_tal_gpu_vs_cpu() raises:
+    print("test_tal_gpu_vs_cpu (storage GPU vs CPU) ...")
     comptime TOL = Scalar[DT](2e-5)
     var c = DeviceContext()
     var cpu = TimeAttentionLatents[D, NH, T, S, L].make["cpu", Deterministic]()
@@ -195,8 +167,8 @@ def test_gpu_parity() raises:
 
 def main() raises:
     print("=" * 70)
-    print("TimeAttentionLatents legacy ↔ storage parity")
+    print("TimeAttentionLatents storage primitive (CPU golden + GPU vs CPU)")
     print("=" * 70)
-    test_cpu_parity()
-    test_gpu_parity()
+    test_tal_cpu_golden()
+    test_tal_gpu_vs_cpu()
     print("ALL PASSED")

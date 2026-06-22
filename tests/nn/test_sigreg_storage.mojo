@@ -1,11 +1,13 @@
-"""SIGReg storage-surface gate — CPU and GPU, each self-consistent.
+"""SIGReg storage primitive — CPU and GPU gradcheck, each self-consistent.
 
-SIGReg's random projection A is derived from the cache_z BUFFER ADDRESS, so two
-DIFFERENT instances (legacy vs storage, or CPU vs GPU) draw DIFFERENT A and thus
-DIFFERENT statistics — value parity across instances is NOT meaningful (the
-legacy op + its own test note this explicitly). So, exactly like the legacy
-`tests/nn/test_sigreg.mojo`, we gradcheck EACH target of the STORAGE op against
-its OWN forward via central finite differences:
+Standalone storage test (no legacy oracle — converted from the former
+`_storage_parity` test in legacy-removal Phase 0b). SIGReg's random projection A
+is derived from the cache_z BUFFER ADDRESS, so two DIFFERENT instances (CPU vs
+GPU, or any two constructions) draw DIFFERENT A and thus DIFFERENT statistics —
+value parity across instances is NOT meaningful, and golden fingerprints are not
+reproducible. So, exactly like the legacy `tests/nn/test_sigreg.mojo`, we
+gradcheck EACH target of the STORAGE op against its OWN forward via central
+finite differences:
 
     L = sum_b w[b]·out[b,0] = G·stat,   G = sum_b w[b]
     analytic grad_input = vjp(w);   numeric = d(G·stat)/d input[k].
@@ -14,8 +16,8 @@ We also assert the transform semantics the consumer relies on: stat >= 0 and
 replicated across rows.
 
 Run:
-  rm -f mojo_rl.mojoc && pixi run mojo run -I . tests/nn/test_sigreg_storage_parity.mojo
-  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . tests/nn/test_sigreg_storage_parity.mojo
+  rm -f mojo_rl.mojoc && pixi run mojo run -I . tests/nn/test_sigreg_storage.mojo
+  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . tests/nn/test_sigreg_storage.mojo
 """
 
 from std.gpu.host import DeviceContext
@@ -165,7 +167,7 @@ def test_sigreg_storage_gpu_gradcheck() raises:
 
 def main() raises:
     print("=" * 70)
-    print("SIGReg storage-surface gate")
+    print("SIGReg storage primitive (CPU + GPU gradcheck)")
     print("=" * 70)
     test_sigreg_storage_cpu_gradcheck()
     test_sigreg_storage_gpu_gradcheck()

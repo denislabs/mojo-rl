@@ -1,20 +1,18 @@
-"""BlockLinear legacy ↔ storage parity (CPU) + storage GPU vs CPU.
+"""BlockLinear storage primitive — CPU correctness (golden) + GPU vs CPU.
 
-CPU: legacy BlockLinear vs storage BlockLinear with identical weights/bias/
-input — max|Δ| < 1e-6 on out + grad_input + weight.grd + bias.grd.
-GPU: storage GPU vs storage CPU, TOL ~2e-5. Run both:
-  rm -f mojo_rl.mojoc && pixi run mojo run -I . tests/nn/test_block_linear_storage_parity.mojo
-  rm -f mojo_rl.mojoc && pixi run -e apple mojo run -I . tests/nn/test_block_linear_storage_parity.mojo
+Standalone storage test (no legacy oracle — converted from the former
+`_storage_parity` test in legacy-removal Phase 0b). The CPU check asserts the
+storage forward/backward against golden fingerprints (S = Σ vᵢ, W = Σ vᵢ·(i+1) —
+the weight catches sign/position errors that a plain sum would cancel), captured
+from the bit-identical legacy↔storage run the parity test used to verify. The GPU
+check is storage-only (GPU vs CPU consistency). Run:
+  pixi run -e apple mojo run -I . tests/nn/test_block_linear_storage.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.block_linear import BlockLinear as LegacyBlockLinear
-from mojo_rl.nn.initializer import Zero
 from mojo_rl.nn.storage.core.tensor import Tensor
 from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
 from mojo_rl.nn.storage.core.initializer import Deterministic
@@ -27,75 +25,51 @@ comptime BLOCKS = 4
 comptime B = 6
 
 
-def test_bl_cpu_parity() raises:
-    print("test_bl_cpu_parity (legacy vs storage, CPU) ...")
-    comptime TOL = Scalar[DT](1e-6)
+def _check(name: String, data: Tensor, n: Int,
+           es: Scalar[DT], ew: Scalar[DT], tol: Scalar[DT]) -> Bool:
+    """Assert tensor fingerprint (Σ vᵢ, Σ vᵢ·(i+1)) matches golden (es, ew)."""
+    var s: Scalar[DT] = 0
+    var w: Scalar[DT] = 0
+    for i in range(n):
+        s += data.data[i]
+        w += data.data[i] * Scalar[DT](i + 1)
+    var ok = abs(s - es) < tol and abs(w - ew) < tol
+    print("  ", name, "S", s, "(exp", es, ") W", w, "(exp", ew, ")", "OK" if ok else "FAIL")
+    return ok
+
+
+def test_bl_cpu_golden() raises:
+    print("test_bl_cpu_golden (storage CPU vs golden) ...")
+    comptime TOL = Scalar[DT](5e-3)
     comptime W = BlockLinear[IN, OUT, BLOCKS].W_SIZE
-
-    var leg = LegacyBlockLinear[IN, OUT, BLOCKS].make[target="cpu", INIT=Zero]()
-    var lw = leg.weight.value_unsafe_ptr_cpu()
-    var lb = leg.bias.value_unsafe_ptr_cpu()
-    for k in range(W):
-        lw[k] = Scalar[DT](0.3 - 0.013 * Float64(k % 11))
-    for k in range(OUT):
-        lb[k] = Scalar[DT](-0.2 + 0.05 * Float64(k))
-
-    var x: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * IN)
-    var y: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * OUT)
-    var go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * OUT)
-    var gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](B * IN)
-    for i in range(B * IN):
-        x[i] = Scalar[DT]((i % 13) - 6) * 0.18
-    for i in range(B * OUT):
-        go[i] = Scalar[DT]((i % 7) - 3) * 0.22
-
-    var x_t = TileTensor(x, row_major[B, IN]())
-    var y_t = TileTensor(y, row_major[B, OUT]())
-    var go_t = TileTensor(go, row_major[B, OUT]())
-    var gi_t = TileTensor(gi, row_major[B, IN]())
-    leg.forward["cpu", B](x_t, output=y_t)
-    leg.zero_grad["cpu"]()
-    leg.vjp["cpu", B](go_t, gi_t)
 
     var st = BlockLinear[IN, OUT, BLOCKS].make["cpu", Deterministic]()
     for k in range(W):
-        st.weight.val.data[k] = lw[k]
+        st.weight.val.data[k] = Scalar[DT](0.3 - 0.013 * Float64(k % 11))
     for k in range(OUT):
-        st.bias.val.data[k] = lb[k]
+        st.bias.val.data[k] = Scalar[DT](-0.2 + 0.05 * Float64(k))
     var sx = Tensor.alloc(B * IN)
     var sgo = Tensor.alloc(B * OUT)
     var sout = Tensor.alloc(B * OUT)
     var sgi = Tensor.alloc(B * IN)
     for i in range(B * IN):
-        sx.data[i] = x[i]
+        sx.data[i] = Scalar[DT]((i % 13) - 6) * 0.18
     for i in range(B * OUT):
-        sgo.data[i] = go[i]
+        sgo.data[i] = Scalar[DT]((i % 7) - 3) * 0.22
     st.forward["cpu", B](TensorRefs[1](sx), sout, None)
     st.zero_grad["cpu"](None)
     st.vjp["cpu", B](TensorRefs[1](sx), sgo, TensorRefs[1](sgi), None)
 
-    var mo: Scalar[DT] = 0
-    var mgi: Scalar[DT] = 0
-    for i in range(B * OUT):
-        if abs(sout.data[i] - y[i]) > mo: mo = abs(sout.data[i] - y[i])
-    for i in range(B * IN):
-        if abs(sgi.data[i] - gi[i]) > mgi: mgi = abs(sgi.data[i] - gi[i])
-    var mdw: Scalar[DT] = 0
-    for k in range(W):
-        if abs(st.weight.grd.data[k] - leg.weight.grd.cpu[k]) > mdw:
-            mdw = abs(st.weight.grd.data[k] - leg.weight.grd.cpu[k])
-    var mdb: Scalar[DT] = 0
-    for k in range(OUT):
-        if abs(st.bias.grd.data[k] - leg.bias.grd.cpu[k]) > mdb:
-            mdb = abs(st.bias.grd.data[k] - leg.bias.grd.cpu[k])
-    print("  max Δ: out", mo, " gi", mgi, " dw", mdw, " db", mdb)
-    assert_true(mo < TOL and mgi < TOL and mdw < TOL and mdb < TOL,
-                "BlockLinear CPU parity")
+    var ok = _check("out", sout, B * OUT, -2.5319993, -35.17026, TOL)
+    ok = _check("gi", sgi, B * IN, -0.5139198, 12.668703, TOL) and ok
+    ok = _check("dweight", st.weight.grd, W, 1.7820005, -35.3628, TOL) and ok
+    ok = _check("dbias", st.bias.grd, OUT, -0.65999997, -6.82, TOL) and ok
+    assert_true(ok, "BlockLinear CPU golden")
     print("  ok")
 
 
-def test_bl_gpu_parity() raises:
-    print("test_bl_gpu_parity (storage GPU vs storage CPU) ...")
+def test_bl_gpu_vs_cpu() raises:
+    print("test_bl_gpu_vs_cpu (storage GPU vs storage CPU) ...")
     comptime TOL = Scalar[DT](2e-5)
     comptime W = BlockLinear[IN, OUT, BLOCKS].W_SIZE
     var c = DeviceContext()
@@ -162,8 +136,8 @@ def test_bl_gpu_parity() raises:
 
 def main() raises:
     print("=" * 70)
-    print("BlockLinear legacy ↔ storage parity")
+    print("BlockLinear storage primitive (CPU golden + GPU vs CPU)")
     print("=" * 70)
-    test_bl_cpu_parity()
-    test_bl_gpu_parity()
+    test_bl_cpu_golden()
+    test_bl_gpu_vs_cpu()
     print("ALL PASSED")
