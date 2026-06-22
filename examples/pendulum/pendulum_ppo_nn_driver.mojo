@@ -24,9 +24,9 @@ Run:
 from std.random import seed
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import Tanh
 from mojo_rl.deep_agents.primitives.gaussian_head import GaussianHead
 from mojo_rl.deep_agents.ppo.trainer import PPOTrainer
 from mojo_rl.deep_agents.training.driver_onpolicy import run_onpolicy_train
@@ -94,9 +94,7 @@ def main() raises:
     # vector. PPOTrainer leaves this to the caller (Mojo nightly
     # trait-typed comptime params can't reflect into Sequential's
     # variadic children generically).
-    var ls_ptr = trainer.actor.children[4].log_std.value_unsafe_ptr_cpu()
-    for k in range(ACT_DIM):
-        ls_ptr[k] = LOG_STD_INIT
+    trainer.actor.children[4].set_log_std_init["cpu"](LOG_STD_INIT)
 
     var env = PendulumEnv[DT]()
     var ep_returns = run_onpolicy_train(
