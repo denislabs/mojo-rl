@@ -20,14 +20,14 @@ Run (Apple Metal):
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.storage.core.initializer import Kaiming
 from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents.alphazero.selfplay_arena import (
     run_alphazero_selfplay_arena,
 )
 from mojo_rl.deep_agents.alphazero.eval import eval_policy_vs_random
 from mojo_rl.deep_agents.alphazero.arena import candidate_winrate
-from mojo_rl.nn.core.map_params import hard_copy_params
+from mojo_rl.nn.storage.core.hard_copy import hard_copy
 from mojo_rl.deep_agents.zero.symmetries import HFlipColumnAugmenter
 from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
@@ -44,11 +44,11 @@ def main() raises:
     comptime MAX_PLIES = 42
 
     var ctx = DeviceContext()
-    var best = Net.make["gpu", INIT=Kaiming](ctx=ctx)
+    var best = Net.make["gpu", Kaiming](Optional(ctx))
     # Frozen pre-training snapshot of `best` (same initial weights) for the
     # head-to-head "did it learn?" check.
-    var untrained = Net.make["gpu", INIT=Kaiming](ctx=ctx)
-    hard_copy_params["gpu", M=Net](best, untrained, ctx)
+    var untrained = Net.make["gpu", Kaiming](Optional(ctx))
+    hard_copy["gpu"](best, untrained, Optional(ctx))
 
     var before = eval_policy_vs_random[Env, Net, N_EVAL, RESULT_IDX, MAX_PLIES](
         ctx, best, agent_player=0, seed=12345
