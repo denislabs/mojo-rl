@@ -24,11 +24,11 @@ from std.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.primitives.dueling_head import DuelingHead
-from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
-from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import ReLU
+from mojo_rl.nn.storage.primitives.dueling_head import DuelingHead
+from mojo_rl.nn.storage.primitives.noisy_linear import NoisyLinear
+from mojo_rl.nn.storage.combinators.sequential import Sequential
 from mojo_rl.deep_agents.dqn.trainer import DQNTrainer
 from mojo_rl.deep_agents.training.driver_offpolicy_discrete import (
     run_offpolicy_discrete_train,

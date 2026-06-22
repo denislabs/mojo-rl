@@ -134,6 +134,26 @@ def _mean_abs_reduce_add_kernel_lt[N: Int](
         acc[1] = acc[1] + Scalar[DT](1.0)
 
 
+def _mean_abs_diff_reduce_add_kernel_lt[N: Int](
+    a: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    b: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    acc: LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin],
+):
+    """LayoutTensor twin of `_mean_abs_diff_reduce_add_kernel` (mean of
+    |a[k] − b[k]|) — for the DQN `mean_td_error` diag without `unsafe_ptr`."""
+    var t = Int(thread_idx.x)
+    var my_sum: Scalar[DT] = 0.0
+    var k = t
+    while k < N:
+        var d = rebind[Scalar[DT]](a[k]) - rebind[Scalar[DT]](b[k])
+        my_sum += d if d >= Scalar[DT](0.0) else -d
+        k += TPB_REDUCE
+    var total = block.sum[block_size=TPB_REDUCE, broadcast=False](val=my_sum)
+    if t == 0:
+        acc[0] = acc[0] + total[0] / Scalar[DT](N)
+        acc[1] = acc[1] + Scalar[DT](1.0)
+
+
 struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDeletable):
     """Running mean of a `[N]` buffer over a flush window.
 
@@ -243,6 +263,21 @@ struct DeviceMeanAccum(Copyable, Movable, ImplicitlyDeletable):
             self.acc_dev.value().unsafe_ptr(),
             grid_dim=1,
             block_dim=TPB_REDUCE,
+        )
+
+    def accumulate_gpu_abs_diff_lt[N: Int](
+        mut self,
+        a: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+        b: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    ) raises:
+        """Storage-native `accumulate_gpu_abs_diff` (mean of |a[k] − b[k]|) —
+        the DQN `mean_td_error` fold built from storage `lt` views."""
+        var ctx = self.ctx.value()
+        var acc = LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin](
+            self.acc_dev.value()
+        )
+        ctx.enqueue_function[_mean_abs_diff_reduce_add_kernel_lt[N]](
+            a, b, acc, grid_dim=1, block_dim=TPB_REDUCE
         )
 
     def accumulate_cpu[N: Int](

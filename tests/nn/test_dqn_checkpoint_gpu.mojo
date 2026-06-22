@@ -1,31 +1,39 @@
-"""DQN GPU checkpoint round-trip test (Phase 2 — GPU checkpointing).
+"""DQN GPU checkpoint round-trip test (storage nn).
 
-Validates that a GPU-trained DQN trainer can `save_state` and a fresh
-GPU trainer can `load_state` it, restoring params + Adam moments + step
-counter losslessly across the device→host→device round-trip.
+Validates that a GPU-trained DQN trainer can `save_state` and a fresh GPU
+trainer can `load_state` it, restoring Q-net params + state + the ε-greedy
+exploration scalars + the cumulative train-step counter across the
+device→host→device round-trip.
 
-Two invariants:
-  1. **Re-save byte-identity**: save → load into a fresh trainer →
-     save again ⇒ the two checkpoint files are byte-for-byte identical.
-     This proves every Param value AND every Adam moment (m/v) AND the
-     step counter `t` survived the round-trip exactly.
-  2. **Greedy-action agreement**: the loaded trainer picks the same
-     greedy action as the original on a battery of observations.
+STORAGE migration note: the storage checkpoint persists the ONLINE Q-net
+**params + state + ε + counter**, but NOT the optimizer moments (resume
+re-warms Adam — the same design choice as the storage SAC checkpoint). So this
+test no longer asserts an Adam m/v/bc round-trip (the legacy invariant 3);
+greedy-action agreement + GPU→CPU interchange remain the behavioural guarantees,
+and re-save byte-identity proves the param/ε/counter path is exact.
 
-Guards on `has_accelerator()` so it no-ops on CPU-only CI. Real numeric
-validation needs NVIDIA; on Apple it exercises the Metal copy path.
+Invariants:
+  1. **Re-save byte-identity**: save → load into a fresh trainer → save again
+     ⇒ the two files are byte-for-byte identical (every persisted field — Q-net
+     params + state + ε + counter — survived the round-trip exactly).
+  2. **Greedy-action agreement**: the loaded trainer picks the same greedy
+     action as the original on a battery of observations.
+  3. **GPU→CPU interchange**: a CPU trainer loads the GPU checkpoint and picks
+     the same greedy actions (train-on-GPU → eval-on-CPU).
+
+Guards on a DeviceContext probe so it no-ops on CPU-only CI.
 
 Run: pixi run -e apple mojo run -I . tests/nn/test_dqn_checkpoint_gpu.mojo
 """
 
 from std.random import seed
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext
 from std.testing import assert_true, assert_equal
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import ReLU
+from mojo_rl.nn.storage.combinators.sequential import Sequential
 from mojo_rl.deep_agents.dqn.trainer import DQNTrainer
 from mojo_rl.deep_agents.training.driver_offpolicy_discrete import (
     run_offpolicy_discrete_train,
@@ -63,8 +71,7 @@ def _read_file(path: String) raises -> String:
 
 
 def _obs(f: Scalar[DT]) -> List[Scalar[DT]]:
-    """Build a 4-D CartPole-shaped obs (length/fill idiom — positional
-    List literals aren't supported in Mojo nightly)."""
+    """Build a 4-D CartPole-shaped obs (length/fill idiom)."""
     var o = List[Scalar[DT]](length=OBS_DIM, fill=Scalar[DT](0.0))
     o[0] = f
     o[1] = -f
@@ -101,37 +108,6 @@ def _make_trained_gpu() raises -> DQNTrainer[
     return trainer^
 
 
-def _download(ctx: DeviceContext, buf: DeviceBuffer[DT], n: Int) raises -> List[
-    Scalar[DT]
-]:
-    var host = List[Scalar[DT]](length=n, fill=Scalar[DT](0.0))
-    ctx.enqueue_copy(host.unsafe_ptr(), buf)
-    ctx.synchronize()
-    return host^
-
-
-def _assert_lists_close(
-    a: List[Scalar[DT]], b: List[Scalar[DT]], label: String
-) raises:
-    # Tolerance, not exact equality: the v2 checkpoint serializes fp32 via
-    # `String(float)` (~7 sig figs), so a round-tripped moment can differ
-    # from the original in the low bits. The byte-identity invariant (re-
-    # save) already proves the on-disk → in-memory → on-disk path is
-    # exact; this checks the device buffers were actually repopulated
-    # (vs left at a fresh optimizer's zeros).
-    comptime TOL = Scalar[DT](1e-5)
-    assert_equal(len(a), len(b), label + ": length mismatch")
-    var max_dev = Scalar[DT](0.0)
-    for i in range(len(a)):
-        var d = abs(a[i] - b[i])
-        if d > max_dev:
-            max_dev = d
-    assert_true(
-        max_dev < TOL,
-        label + ": max abs dev " + String(max_dev) + " >= 1e-5",
-    )
-
-
 def _cpu_eval() raises -> DQNTrainer[
     "cpu", UniformSampleCpuStep[OBS_DIM, 1, BATCH, CAP], QNet,
 ]:
@@ -157,7 +133,7 @@ def _fresh_gpu() raises -> DQNTrainer[
 
 
 def test_dqn_gpu_checkpoint_roundtrip() raises:
-    print("--- DQN GPU checkpoint round-trip ---")
+    print("--- DQN GPU checkpoint round-trip (storage) ---")
     try:
         var _probe = DeviceContext()
     except:
@@ -173,13 +149,13 @@ def test_dqn_gpu_checkpoint_roundtrip() raises:
     loaded.save_state(CKPT_B)
     print("  loaded into fresh GPU trainer, re-saved ->", CKPT_B)
 
-    # Invariant 1: re-save byte-identity.
+    # Invariant 1: re-save byte-identity (params + state + ε + counter).
     var a = _read_file(CKPT_A)
     var b = _read_file(CKPT_B)
     assert_equal(
         a, b,
         "GPU checkpoint not byte-identical after save→load→save "
-        "(param or Adam-moment round-trip lossy)",
+        "(param/state/ε round-trip lossy)",
     )
     print("  re-save byte-identity OK (", a.byte_length(), "bytes )")
 
@@ -200,29 +176,8 @@ def test_dqn_gpu_checkpoint_roundtrip() raises:
     )
     print("  greedy-action agreement OK (", n_match, "/", n_total, ")")
 
-    # Invariant 3: Adam optimizer-state round-trip — device moments m/v
-    # AND bias-correction bc_dev must match exactly. Invariants 1-2 don't
-    # cover this (greedy depends only on params; re-save byte-identity
-    # holds even if bias-correction is consistently mishandled).
-    var ctx = trainer.ctx.value()
-    var n = trainer.q_opt.total_size
-    _assert_lists_close(
-        _download(ctx, trainer.q_opt.m_dev.value(), n),
-        _download(ctx, loaded.q_opt.m_dev.value(), n), "Adam m_dev",
-    )
-    _assert_lists_close(
-        _download(ctx, trainer.q_opt.v_dev.value(), n),
-        _download(ctx, loaded.q_opt.v_dev.value(), n), "Adam v_dev",
-    )
-    _assert_lists_close(
-        _download(ctx, trainer.q_opt.bc_dev.value(), 4),
-        _download(ctx, loaded.q_opt.bc_dev.value(), 4),
-        "Adam bc_dev (bias-correction)",
-    )
-    print("  optimizer-state round-trip OK ( m/v/bc match,", n, "moments )")
-
-    # Invariant 4: GPU→CPU interchange — the headline use case. A CPU
-    # trainer loads the GPU checkpoint and picks the same greedy actions.
+    # Invariant 3: GPU→CPU interchange — the headline use case. A CPU trainer
+    # loads the GPU checkpoint and picks the same greedy actions.
     var cpu_eval = _cpu_eval()
     cpu_eval.load_state(CKPT_A)
     var n_x = 0

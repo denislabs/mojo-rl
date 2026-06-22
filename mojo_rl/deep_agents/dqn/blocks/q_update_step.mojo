@@ -1,16 +1,22 @@
-"""DQNQUpdateStep — wraps DQNQUpdateBlock (owns the inner block).
+"""DQNQUpdateStep — wraps DQNQUpdateBlock (owns the inner block) (STORAGE).
 
-Reads `state.mb_s / mb_a / mb_y` → writes `state.critic_loss`. Analogue
-of `training/blocks/single_critic_step.mojo` but for a single-Q-net
-discrete agent (gather instead of `sa` concat).
+Reads `state.mb_s / mb_a / mb_y` → writes `state.critic_loss`. The single-Q-net
+discrete analogue of `training/blocks/single_critic_step.mojo` (gather instead
+of `sa` concat).
+
+STORAGE migration (Stage 5): passes the storage `TrainerState` minibatch
+`Tensor`s straight into the migrated `DQNQUpdateBlock`; PER IS-weights /
+TD-residual capture are built as `state.mb_w` / `state.td_residuals` `.lt`
+views (mirrors `SingleCriticStep`). CPU + GPU.
 """
 
 from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from ..q_update_block import DQNQUpdateBlock
 from ...training.trainer_block import TrainerState
 
@@ -49,31 +55,34 @@ struct DQNQUpdateStep[
         mut q_online: Self.Q_NET,
         mut q_opt: Adam,
     ) raises:
-        """PER hook: when `state.has_per`, forward IS weights into the
-        update + capture per-sample signed TD residuals so the sample
-        block can refresh sum-tree priorities. When unset, both
-        pointers stay None and the inner block falls back to the
-        uniform path (bit-identical to pre-PER).
+        """PER hook: when `state.has_per`, forward IS weights into the update +
+        capture per-sample signed TD residuals so the sample block can refresh
+        sum-tree priorities. When unset, both stay None and the inner block
+        falls back to the uniform path (bit-identical to pre-PER).
 
         `ACCUMULATE` (GPU only) forwards to the inner block's device loss
         accumulator (CUDA-graph capture); `state.critic_loss` then holds a 0
         sentinel — read the running loss via `inner.mse_loss.read_accum`."""
-        var weights_p: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        var weights: Optional[
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None
-        var td_res_p: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        var td_residuals: Optional[
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None
         if state.has_per:
-            weights_p = state.mb_w.target_ptr[target]()
-            td_res_p = state.td_residuals.target_ptr[target]()
+            weights = state.mb_w.lt[target, Layout.row_major(Self.BATCH)]()
+            td_residuals = state.td_residuals.lt[
+                target, Layout.row_major(Self.BATCH)
+            ]()
+
         var loss = self.inner.step[target, POLICY, ACCUMULATE](
             q_online,
             q_opt,
-            state.mb_s.target_ptr[target](),
-            state.mb_a.target_ptr[target](),
-            state.mb_y.target_ptr[target](),
-            weights_p=weights_p,
-            td_residuals_p=td_res_p,
+            state.mb_s,
+            state.mb_a,
+            state.mb_y,
+            weights=weights,
+            td_residuals=td_residuals,
+            ctx=state.ctx,
         )
         state.critic_loss = loss
