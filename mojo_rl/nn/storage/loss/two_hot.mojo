@@ -22,8 +22,11 @@ Storage-surface port of the legacy nn helpers
 
 from std.math import exp, log
 from std.math import abs as math_abs
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
 
 # Scalar symlog / symexp live in the canonical shared math helper (DT-only)
@@ -330,3 +333,359 @@ def decode_value_batch_linear[
             val += prob * bins.data[i]
 
         values.data[b] = val
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Fused soft cross-entropy against a two-hot target  (value / reward heads).
+#
+# Given logits[B,NUM_BINS], a bin grid, and a per-row target SCALAR, the CE is
+#   CE[b] = -(w_lo·logp[lo] + w_hi·logp[hi])
+# where (lo,hi) are the two bins bracketing the (optionally symlog'd) target and
+# (w_lo,w_hi) the linear-interpolation weights (lo==hi → 0.5/0.5). This is the
+# bin-agnostic form shared by TD-MPC2 (linear bins in symlog space) and
+# DreamerV3 (symlog-spaced bins) value heads. `SYMLOG=True` compresses the raw
+# target before bracketing (both heads do this); pass `SYMLOG=False` for a
+# target already in bin space. Backward: grad_logits = grad_out·(softmax − two-
+# hot target); the target itself is detached (its grad is the caller's to zero).
+#
+# Provided in two forms with identical math: Tensor `.data` CPU helpers and
+# generic GPU kernels — so the op wrappers (and DreamerV3, on migration) share
+# one implementation rather than each carrying a private copy.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def two_hot_ce_loss_batch[
+    BATCH: Int, NUM_BINS: Int, SYMLOG: Bool = True
+](
+    ref logits: Tensor,
+    ref bins: Tensor,
+    ref targets: Tensor,
+    mut out: Tensor,
+):
+    """CPU fused two-hot soft cross-entropy. `logits` [BATCH*NUM_BINS],
+    `bins` [NUM_BINS], `targets` [BATCH] (raw; symlog'd here iff SYMLOG),
+    `out` [BATCH] (written)."""
+    out.ensure(BATCH)
+    for b in range(BATCH):
+        var base = b * NUM_BINS
+        var raw = targets.data[b]
+        var target = symlog(raw) if SYMLOG else raw
+        # bracket via count of bins ≤ target.
+        var n_le = 0
+        for c in range(NUM_BINS):
+            if bins.data[c] <= target:
+                n_le += 1
+        var below = n_le - 1
+        var above = n_le
+        if below < 0:
+            below = 0
+        if below > NUM_BINS - 1:
+            below = NUM_BINS - 1
+        if above > NUM_BINS - 1:
+            above = NUM_BINS - 1
+        var w_below: Scalar[DT]
+        var w_above: Scalar[DT]
+        if below == above:
+            w_below = Scalar[DT](0.5)
+            w_above = Scalar[DT](0.5)
+        else:
+            var db = math_abs(bins.data[below] - target)
+            var da = math_abs(bins.data[above] - target)
+            var tot = db + da
+            w_below = da / tot
+            w_above = db / tot
+        # log-sum-exp over the row.
+        var zmax = logits.data[base]
+        for c in range(1, NUM_BINS):
+            if logits.data[base + c] > zmax:
+                zmax = logits.data[base + c]
+        var ssum = Scalar[DT](0.0)
+        for c in range(NUM_BINS):
+            ssum += exp(logits.data[base + c] - zmax)
+        var lse = zmax + log(ssum)
+        var lp_b = logits.data[base + below] - lse
+        var lp_a = logits.data[base + above] - lse
+        out.data[b] = -(w_below * lp_b + w_above * lp_a)
+
+
+def two_hot_ce_backward_batch[
+    BATCH: Int, NUM_BINS: Int, SYMLOG: Bool = True
+](
+    ref logits: Tensor,
+    ref bins: Tensor,
+    ref targets: Tensor,
+    ref grad_out: Tensor,
+    mut grad_logits: Tensor,
+):
+    """CPU backward of `two_hot_ce_loss_batch`. Writes
+    `grad_logits` [BATCH*NUM_BINS] = grad_out·(softmax − two-hot target)."""
+    grad_logits.ensure(BATCH * NUM_BINS)
+    for b in range(BATCH):
+        var base = b * NUM_BINS
+        var raw = targets.data[b]
+        var target = symlog(raw) if SYMLOG else raw
+        var up = grad_out.data[b]
+        var n_le = 0
+        for c in range(NUM_BINS):
+            if bins.data[c] <= target:
+                n_le += 1
+        var below = n_le - 1
+        var above = n_le
+        if below < 0:
+            below = 0
+        if below > NUM_BINS - 1:
+            below = NUM_BINS - 1
+        if above > NUM_BINS - 1:
+            above = NUM_BINS - 1
+        var w_below: Scalar[DT]
+        var w_above: Scalar[DT]
+        if below == above:
+            w_below = Scalar[DT](0.5)
+            w_above = Scalar[DT](0.5)
+        else:
+            var db = math_abs(bins.data[below] - target)
+            var da = math_abs(bins.data[above] - target)
+            var tot = db + da
+            w_below = da / tot
+            w_above = db / tot
+        var zmax = logits.data[base]
+        for c in range(1, NUM_BINS):
+            if logits.data[base + c] > zmax:
+                zmax = logits.data[base + c]
+        var ssum = Scalar[DT](0.0)
+        for c in range(NUM_BINS):
+            ssum += exp(logits.data[base + c] - zmax)
+        var inv = Scalar[DT](1.0) / ssum
+        for c in range(NUM_BINS):
+            grad_logits.data[base + c] = up * (
+                exp(logits.data[base + c] - zmax) * inv
+            )
+        grad_logits.data[base + below] = (
+            grad_logits.data[base + below] - up * w_below
+        )
+        grad_logits.data[base + above] = (
+            grad_logits.data[base + above] - up * w_above
+        )
+
+
+def decode_value_backward_batch[
+    BATCH: Int, NUM_BINS: Int
+](
+    ref logits: Tensor,
+    ref bins: Tensor,
+    ref grad_out: Tensor,
+    mut grad_logits: Tensor,
+):
+    """CPU backward of `decode_value_batch` (symexp decode). For
+    s = Σ_c softmax(logits)_c·bins_c and v = symexp(s):
+        dv/ds        = exp(|s|)
+        d v/d logit_c = dv/ds · softmax_c · (bins_c − s)
+    Writes `grad_logits` [BATCH*NUM_BINS] = grad_out · dv/dlogit."""
+    grad_logits.ensure(BATCH * NUM_BINS)
+    for b in range(BATCH):
+        var base = b * NUM_BINS
+        var up = grad_out.data[b]
+        var zmax = logits.data[base]
+        for c in range(1, NUM_BINS):
+            if logits.data[base + c] > zmax:
+                zmax = logits.data[base + c]
+        var ssum = Scalar[DT](0.0)
+        for c in range(NUM_BINS):
+            ssum += exp(logits.data[base + c] - zmax)
+        var inv = Scalar[DT](1.0) / ssum
+        var s = Scalar[DT](0.0)
+        for c in range(NUM_BINS):
+            s += exp(logits.data[base + c] - zmax) * inv * bins.data[c]
+        var a = math_abs(s)
+        var dds = exp(a)
+        for c in range(NUM_BINS):
+            var p = exp(logits.data[base + c] - zmax) * inv
+            grad_logits.data[base + c] = up * dds * p * (bins.data[c] - s)
+
+
+# ── GPU kernels (one thread per batch row) — same math as the CPU helpers. ──
+
+
+def two_hot_ce_fwd_kernel[
+    B: Int, BINS: Int, SYMLOG: Bool
+](
+    lg: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
+    tg: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    bins: LayoutTensor[DT, Layout.row_major(BINS), MutAnyOrigin],
+    o: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b < B:
+        var base = b * BINS
+        var raw = rebind[Scalar[DT]](tg[b])
+        var target: Scalar[DT]
+        comptime if SYMLOG:
+            var sgn = Scalar[DT](1.0) if raw >= Scalar[DT](0.0) else Scalar[DT](
+                -1.0
+            )
+            var av = raw if raw >= Scalar[DT](0.0) else -raw
+            target = sgn * log(Scalar[DT](1.0) + av)
+        else:
+            target = raw
+        var n_le = 0
+        for c in range(BINS):
+            if rebind[Scalar[DT]](bins[c]) <= target:
+                n_le += 1
+        var below = n_le - 1
+        var above = n_le
+        if below < 0:
+            below = 0
+        if below > BINS - 1:
+            below = BINS - 1
+        if above > BINS - 1:
+            above = BINS - 1
+        var w_below: Scalar[DT]
+        var w_above: Scalar[DT]
+        if below == above:
+            w_below = Scalar[DT](0.5)
+            w_above = Scalar[DT](0.5)
+        else:
+            var db = rebind[Scalar[DT]](bins[below]) - target
+            var da = rebind[Scalar[DT]](bins[above]) - target
+            db = db if db >= Scalar[DT](0.0) else -db
+            da = da if da >= Scalar[DT](0.0) else -da
+            var tot = db + da
+            w_below = da / tot
+            w_above = db / tot
+        var zmax = rebind[Scalar[DT]](lg[base])
+        for c in range(1, BINS):
+            var v = rebind[Scalar[DT]](lg[base + c])
+            if v > zmax:
+                zmax = v
+        var ssum = Scalar[DT](0.0)
+        for c in range(BINS):
+            ssum += exp(rebind[Scalar[DT]](lg[base + c]) - zmax)
+        var lse = zmax + log(ssum)
+        var lp_b = rebind[Scalar[DT]](lg[base + below]) - lse
+        var lp_a = rebind[Scalar[DT]](lg[base + above]) - lse
+        o[b] = -(w_below * lp_b + w_above * lp_a)
+
+
+def two_hot_ce_bwd_kernel[
+    B: Int, BINS: Int, SYMLOG: Bool
+](
+    go: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    lg: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
+    tg: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    bins: LayoutTensor[DT, Layout.row_major(BINS), MutAnyOrigin],
+    glg: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b < B:
+        var base = b * BINS
+        var raw = rebind[Scalar[DT]](tg[b])
+        var target: Scalar[DT]
+        comptime if SYMLOG:
+            var sgn = Scalar[DT](1.0) if raw >= Scalar[DT](0.0) else Scalar[DT](
+                -1.0
+            )
+            var av = raw if raw >= Scalar[DT](0.0) else -raw
+            target = sgn * log(Scalar[DT](1.0) + av)
+        else:
+            target = raw
+        var up = rebind[Scalar[DT]](go[b])
+        var n_le = 0
+        for c in range(BINS):
+            if rebind[Scalar[DT]](bins[c]) <= target:
+                n_le += 1
+        var below = n_le - 1
+        var above = n_le
+        if below < 0:
+            below = 0
+        if below > BINS - 1:
+            below = BINS - 1
+        if above > BINS - 1:
+            above = BINS - 1
+        var w_below: Scalar[DT]
+        var w_above: Scalar[DT]
+        if below == above:
+            w_below = Scalar[DT](0.5)
+            w_above = Scalar[DT](0.5)
+        else:
+            var db = rebind[Scalar[DT]](bins[below]) - target
+            var da = rebind[Scalar[DT]](bins[above]) - target
+            db = db if db >= Scalar[DT](0.0) else -db
+            da = da if da >= Scalar[DT](0.0) else -da
+            var tot = db + da
+            w_below = da / tot
+            w_above = db / tot
+        var zmax = rebind[Scalar[DT]](lg[base])
+        for c in range(1, BINS):
+            var v = rebind[Scalar[DT]](lg[base + c])
+            if v > zmax:
+                zmax = v
+        var ssum = Scalar[DT](0.0)
+        for c in range(BINS):
+            ssum += exp(rebind[Scalar[DT]](lg[base + c]) - zmax)
+        var inv = Scalar[DT](1.0) / ssum
+        for c in range(BINS):
+            glg[base + c] = up * (exp(rebind[Scalar[DT]](lg[base + c]) - zmax) * inv)
+        glg[base + below] = rebind[Scalar[DT]](glg[base + below]) - up * w_below
+        glg[base + above] = rebind[Scalar[DT]](glg[base + above]) - up * w_above
+
+
+def decode_value_fwd_kernel[
+    B: Int, BINS: Int
+](
+    lg: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
+    bins: LayoutTensor[DT, Layout.row_major(BINS), MutAnyOrigin],
+    o: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b < B:
+        var base = b * BINS
+        var zmax = rebind[Scalar[DT]](lg[base])
+        for c in range(1, BINS):
+            var v = rebind[Scalar[DT]](lg[base + c])
+            if v > zmax:
+                zmax = v
+        var ssum = Scalar[DT](0.0)
+        for c in range(BINS):
+            ssum += exp(rebind[Scalar[DT]](lg[base + c]) - zmax)
+        var inv = Scalar[DT](1.0) / ssum
+        var s = Scalar[DT](0.0)
+        for c in range(BINS):
+            s += exp(rebind[Scalar[DT]](lg[base + c]) - zmax) * inv * rebind[
+                Scalar[DT]
+            ](bins[c])
+        var sgn = Scalar[DT](1.0) if s >= Scalar[DT](0.0) else Scalar[DT](-1.0)
+        var a = s if s >= Scalar[DT](0.0) else -s
+        o[b] = sgn * (exp(a) - Scalar[DT](1.0))
+
+
+def decode_value_bwd_kernel[
+    B: Int, BINS: Int
+](
+    go: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    lg: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
+    bins: LayoutTensor[DT, Layout.row_major(BINS), MutAnyOrigin],
+    glg: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
+):
+    var b = Int(global_idx.x)
+    if b < B:
+        var base = b * BINS
+        var up = rebind[Scalar[DT]](go[b])
+        var zmax = rebind[Scalar[DT]](lg[base])
+        for c in range(1, BINS):
+            var v = rebind[Scalar[DT]](lg[base + c])
+            if v > zmax:
+                zmax = v
+        var ssum = Scalar[DT](0.0)
+        for c in range(BINS):
+            ssum += exp(rebind[Scalar[DT]](lg[base + c]) - zmax)
+        var inv = Scalar[DT](1.0) / ssum
+        var s = Scalar[DT](0.0)
+        for c in range(BINS):
+            s += exp(rebind[Scalar[DT]](lg[base + c]) - zmax) * inv * rebind[
+                Scalar[DT]
+            ](bins[c])
+        var a = s if s >= Scalar[DT](0.0) else -s
+        var dds = exp(a)
+        for c in range(BINS):
+            var p = exp(rebind[Scalar[DT]](lg[base + c]) - zmax) * inv
+            glg[base + c] = up * dds * p * (rebind[Scalar[DT]](bins[c]) - s)
