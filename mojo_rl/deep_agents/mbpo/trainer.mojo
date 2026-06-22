@@ -45,6 +45,7 @@ from mojo_rl.nn.storage.core.checkpoint import (
 from mojo_rl.nn.core.log_bundle import log_bundle
 from mojo_rl.nn.core.metric import LogScalar
 from mojo_rl.nn.random.box_muller import _box_muller_kernel
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 
 from ..core.online_target_pair import OnlineTargetPair
 from ..data.n_step_replay import GPUNStepBuffer
@@ -423,6 +424,12 @@ struct MBPOTrainer[
     var dyn_batch_size: Int
     var last_dyn_step: Int
     var _use_bf16: Bool
+    # CUDA-graph capture of the SAC sub-update loop (NVIDIA only; default off).
+    # `_train_graph` is captured once then replayed each env-step, collapsing
+    # the ~100+ kernel launches per update into one cuGraphLaunch — the fix for
+    # the launch-bound profile (cuLaunchKernelEx = 64% of wall time).
+    var _use_train_cuda_graph: Bool
+    var _train_graph: Optional[CUDAGraph]
     var dyn_holdout_ratio: Scalar[DT]
     var dyn_max_epochs: Int
     var dyn_patience: Int
@@ -539,6 +546,8 @@ struct MBPOTrainer[
         self.dyn_holdout_check_every = 5
         self.last_dyn_step = -1
         self._use_bf16 = False
+        self._use_train_cuda_graph = False
+        self._train_graph = None
         self._warmup_rng_seed = UInt64(0xC0FFEE_C0DE)
         self._warmup_rng_offset = UInt64(0)
         self._roll_rng_seed = UInt64(0xB0A75E_D00D)
@@ -591,6 +600,7 @@ struct MBPOTrainer[
         dyn_weight_decay: Scalar[DT] = Scalar[DT](5e-5),
         dyn_learnable_bounds: Bool = False,
         use_bf16: Bool = False,
+        use_train_cuda_graph: Bool = False,
     ) raises -> Self:
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
@@ -734,6 +744,7 @@ struct MBPOTrainer[
         t.dyn_batch_size = dyn_batch_size
         t.dyn_max_epochs = dyn_max_epochs
         t._use_bf16 = use_bf16
+        t._use_train_cuda_graph = use_train_cuda_graph
 
         t.sample_blk.setup[Self.train_target](learning_starts, ctx=ctx)
         t._set_scaler_identity[Self.train_target]()
@@ -913,6 +924,11 @@ struct MBPOTrainer[
         else:
             if self._use_bf16:
                 return self._run_sac_updates[Bf16Compute](step_idx)
+            # CUDA-graph capture/replay of the SAC sub-update loop (NoAMP only;
+            # AMP + capture has known stdlib issues). Captures the whole
+            # sac_updates_per_step sequence once, replays it each env-step.
+            if self._use_train_cuda_graph:
+                return self._run_sac_updates_graph()
             return self._run_sac_updates[NoAMP](step_idx)
 
     def _run_sac_updates[
@@ -1027,6 +1043,103 @@ struct MBPOTrainer[
             self._total_train_steps += 1
             any = True
         return any
+
+    # ─── CUDA-graph capture surface (OffPolicyAgentGpu) ───────────────────
+
+    def train_device_kernels(mut self) raises:
+        """ONE SAC sub-update as a pure device-kernel sequence (no host work) —
+        the body captured into the CUDA graph and replayed. Mirrors SAC's
+        `train_device_kernels`. GPU + NoAMP only. All per-iteration state that
+        changes between replays is device-resident: sample RNG offset
+        (advances on-device), alpha (step_device), critic/actor loss +
+        diagnostics (device accumulators). Host counters live in
+        `note_train_update`; the loss accums (`_actor_L_accum`/`_critic_L_accum`)
+        are GPU-unused sentinels (flush reads device accumulators)."""
+        comptime if Self.train_target == "gpu":
+            comptime B = Self.BATCH
+            comptime A = Self.ACT_DIM
+            # Pin past warmup so the sample gate passes; bind device ctx.
+            self.state.step_idx = self.learning_starts
+            self.state.did_step = True
+            self.state.ctx = self.ctx
+
+            self.sample_blk.step["gpu"](self.state)
+            self.target_y_blk.step["gpu", NoAMP](
+                self.state,
+                self.actor,
+                self.pair1.target_net,
+                self.pair2.target_net,
+            )
+            self.twin_critic_blk.step["gpu", NoAMP, ACCUMULATE=True](
+                self.state,
+                self.pair1.online,
+                self.critic1_opt,
+                self.pair2.online,
+                self.critic2_opt,
+            )
+            var out = self.actor_loss_blk.forward_backward["gpu", NoAMP](
+                self.actor,
+                self.actor_opt,
+                self.pair1.online,
+                self.pair2.online,
+                self.state.mb_s,
+                self.state.alpha,
+                self.ctx,
+            )
+            _ = out
+            self.alpha_opt.step_device(
+                self.ctx.value(),
+                self.actor_loss_blk.lp_mean_dev(),
+                self.alpha_blk.target_entropy,
+            )
+            self.polyak_blk.step["gpu"](self.state, self.pair1, self.pair2)
+
+            comptime lb = Layout.row_major(B)
+            comptime lba = Layout.row_major(B * A)
+            self._q_mean_dev.accumulate_gpu_lt[B](
+                self.twin_critic_blk.inner.c1._mb_q.lt["gpu", lb]()
+            )
+            self._reward_mean_dev.accumulate_gpu_lt[B](
+                self.state.mb_r.lt["gpu", lb]()
+            )
+            self._td_mean_dev.accumulate_gpu_lt[B](
+                self.state.mb_y.lt["gpu", lb]()
+            )
+            self._done_mean_dev.accumulate_gpu_lt[B](
+                self.state.mb_d.lt["gpu", lb]()
+            )
+            self._action_abs_mean_dev.accumulate_gpu_abs_lt[B * A](
+                self.state.mb_a.lt["gpu", lba]()
+            )
+        else:
+            raise Error("train_device_kernels: GPU-only (CUDA-graph capture)")
+
+    def note_train_update(mut self):
+        """Advance one logical update's host bookkeeping (the device work is the
+        replayed graph; loss/alpha/diagnostics drain at flush)."""
+        self._update_count += 1
+        self._total_train_steps += 1
+
+    def _run_sac_updates_graph(mut self) raises -> Bool:
+        """Capture-once / replay the `sac_updates_per_step` SAC loop as one CUDA
+        graph. The graph is moved into a disjoint local for the capture call so
+        the closure can borrow `self` mutably without overlapping a mut borrow
+        of the `_train_graph` field (the exclusivity rule the driver sidesteps
+        via separate locals)."""
+        var ctx = self.ctx.value()
+        var g = self._train_graph^
+        self._train_graph = None
+
+        def _captured() capturing raises -> None:
+            for _ in range(self.sac_updates_per_step):
+                self.train_device_kernels()
+
+        maybe_capture_replay[_captured](g, ctx)
+        self._train_graph = g^
+
+        for _ in range(self.sac_updates_per_step):
+            self.note_train_update()
+        return True
 
     # ─── Logging surface ─────────────────────────────────────────────────
 

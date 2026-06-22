@@ -6,10 +6,11 @@ architecture / ensemble sizing / dynamics hyperparameters as the real run, so
 an nsys capture reflects production cost — only the *durations* are shrunk:
 tiny warmup, ~a few hundred training env-steps, no logger, no checkpoints.
 
-Unlike the SAC profiler there is NO `USE_TRAIN_CUDA_GRAPH` / batched-env knob:
 MBPO trains via the single-env (`train_single`) path (env stepped on CPU; the
 SAC sub-update + dynamics-ensemble training + synthetic rollouts run on
-device), and CUDA-graph capture is a no-op on that path.
+device). `USE_TRAIN_CUDA_GRAPH` (below) captures the SAC sub-update loop into a
+CUDA graph and replays it — the launch-overhead fix (NVIDIA only; no-op
+elsewhere). There is no batched-env knob (this path is single-env).
 
 Where MBPO spends time (flip the knobs below and re-profile to isolate each):
   * Synthetic rollouts — `NUM_ROLLOUTS_PER_STEP` model forwards through the
@@ -47,6 +48,10 @@ from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 
 # ─── Profiling knobs (cost levers — flip and re-profile to isolate) ────────
+# CUDA-graph capture of the SAC sub-update loop (NVIDIA only). The profile is
+# launch-bound (cuLaunchKernelEx ~64% of wall); capture collapses the ~100+
+# kernels/update into one cuGraphLaunch/env-step. Flip True to measure.
+comptime USE_TRAIN_CUDA_GRAPH = False
 comptime NUM_ROLLOUTS_PER_STEP = 100_000  # synthetic rollouts per model-train round
 comptime SAC_UPDATES_PER_STEP = 20        # SAC sub-updates per env-step (UTD)
 comptime MODEL_TRAIN_FREQ = 250           # env-steps between dynamics retrains
@@ -115,6 +120,7 @@ def main() raises:
     print("  num_rollouts_per_step:", NUM_ROLLOUTS_PER_STEP)
     print("  sac_updates_per_step :", SAC_UPDATES_PER_STEP)
     print("  model_train_freq     :", MODEL_TRAIN_FREQ)
+    print("  USE_TRAIN_CUDA_GRAPH :", USE_TRAIN_CUDA_GRAPH)
     print()
 
     with DeviceContext() as ctx:
@@ -156,6 +162,7 @@ def main() raises:
             dyn_max_epochs=DYN_MAX_EPOCHS,
             dyn_weight_decay=5e-5,
             dyn_learnable_bounds=True,
+            use_train_cuda_graph=USE_TRAIN_CUDA_GRAPH,
         )
         var env = EnvT()
 
