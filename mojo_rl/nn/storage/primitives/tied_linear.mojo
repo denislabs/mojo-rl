@@ -276,16 +276,27 @@ struct TiedLinear[IN_: Int, OUT_: Int](Module):
                     Int32(Self.IN_),
                 )
             else:
-                var x_v = TileTensor(fin.data, row_major[B, Self.IN_]())
-                var gw_v = TileTensor(
-                    gw.data, row_major[Self.OUT_, Self.IN_]()
+                # Non-Apple CPU: dWsrc = doutᵀ @ x via the generic CPU GEMM
+                # (transpose dout → temp, then max_matmul + accumulate; mirrors
+                # Linear/Embedding's grad_w — was a naive O(OUT·IN·B) triple loop).
+                var goT = List[Scalar[DT]](
+                    length=Self.OUT_ * B, fill=Scalar[DT](0)
                 )
-                for v in range(Self.OUT_):
-                    for e in range(Self.IN_):
-                        var acc: Scalar[DT] = 0.0
-                        for b in range(B):
-                            acc += go_v[b, v] * x_v[b, e]
-                        gw_v[v, e] += acc
+                for b in range(B):
+                    for v in range(Self.OUT_):
+                        goT[v * B + b] = go_v[b, v]
+                var dW_tmp = List[Scalar[DT]](
+                    length=Self.OUT_ * Self.IN_, fill=Scalar[DT](0)
+                )
+                var goT_tt = TileTensor(goT, row_major[Self.OUT_, B]())
+                var x_v = TileTensor(fin.data, row_major[B, Self.IN_]())
+                var dW_tt = TileTensor(
+                    dW_tmp, row_major[Self.OUT_, Self.IN_]()
+                )
+                max_matmul[target="cpu"](dW_tt, goT_tt, x_v, None)
+                var gw_p = gw.data.unsafe_ptr()
+                for i in range(Self.OUT_ * Self.IN_):
+                    gw_p[i] += dW_tmp[i]
             # ── (2) grad-input = dout @ Wsrc.
             max_matmul[target="cpu"](gi_v, go_v, w_v, None)
         else:
