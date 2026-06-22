@@ -1,7 +1,7 @@
-"""PPODiscreteActStep — N_ENVS-batched categorical action selection.
+"""PPODiscreteActStep — N_ENVS-batched categorical action selection (STORAGE).
 
 Discrete sibling of `ppo/blocks/act_step.mojo`. Per env-step:
-  1. actor.forward[BATCH=N_ENVS] on `state.ob1` → own `logits` scratch
+  1. actor.forward[BATCH=N_ENVS] on `state.ob1` → own `logits` Tensor
      (N_ENVS × N_ACTIONS).
   2. critic.forward[BATCH=N_ENVS] on `state.ob1` → `state.v1`.
   3. Host-side: per env, softmax(logits) → categorical sample via a
@@ -17,8 +17,14 @@ on the discrete path).
 
 The actor's logit output is wider than `state.ao1` (which is sized for
 the continuous [mu|log_std]=2·ACT layout), so this block owns its own
-`logits` Scratch (sized at struct level via `N_ENVS_`), giving both a
-host mirror and — on GPU — a device buffer for the on-device forward.
+`logits` storage `Tensor` (sized at struct level via `N_ENVS_`), giving
+both a host mirror and — on GPU — a device buffer for the on-device forward.
+
+STORAGE migration: nets are storage `Module`s (`forward[target, B, POLICY](
+TensorRefs[1](ob1), logits, ctx)`). The obs/output staging works on the storage
+tensors' host `.data` (sanctioned host loops). On GPU `ob1.upload(ctx)` stages
+H2D, the actor/critic forward runs on device, then `logits.download` /
+`v1.download` read the result back on host for the sampling walk.
 
 Greedy variant: deterministic argmax over logits — no sampling, no
 cache writes (eval bypasses the rollout buffer).
@@ -27,11 +33,12 @@ cache writes (eval bypasses the rollout buffer).
 from std.math import exp as fexp, log as flog
 from std.gpu.host import DeviceContext
 from std.random import random_float64
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.scratch import Scratch
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
 from ...training.onpolicy_state import OnPolicyState
 
 
@@ -48,12 +55,10 @@ struct PPODiscreteActStep[
 
     # Own logit buffer (host mirror + device buffer on GPU). Sized for
     # the full N_ENVS sweep; the greedy N=1 path uses the first row.
-    var logits: Scratch["disc_logits", Self.N_ENVS_ * Self.N_ACTIONS_, True]
+    var logits: Tensor
 
     def __init__(out self):
-        self.logits = Scratch[
-            "disc_logits", Self.N_ENVS_ * Self.N_ACTIONS_, True
-        ]()
+        self.logits = Tensor()
 
     @staticmethod
     def make[target: StaticString](
@@ -66,7 +71,7 @@ struct PPODiscreteActStep[
             if not ctx:
                 raise Error("PPODiscreteActStep.make[target='gpu']: ctx required")
         var s = Self()
-        s.logits.init_with[target](ctx)
+        s.logits = Tensor.make[target](Self.N_ENVS_ * Self.N_ACTIONS_, ctx)
         return s^
 
     def step[
@@ -74,6 +79,7 @@ struct PPODiscreteActStep[
         ROLLOUT_LEN: Int,
         MINIBATCH: Int,
         N_ENVS: Int,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         mut state: OnPolicyState[
@@ -92,75 +98,71 @@ struct PPODiscreteActStep[
             "PPODiscreteActStep.step: method N_ENVS must equal struct N_ENVS_"
         )
         comptime N = Self.N_ACTIONS
-        var ob1_cpu_p  = state.ob1.cpu_ptr()
-        var v1_cpu_p   = state.v1.cpu_ptr()
-        var lg_cpu_p   = self.logits.cpu_ptr()
-        var ca_cpu_p   = state.cached_action.cpu_ptr()
-        var clp_cpu_p  = state.cached_log_prob.cpu_ptr()
-        var cval_cpu_p = state.cached_value.cpu_ptr()
 
-        # Stage N_ENVS × OBS into host mirror of ob1.
+        # Stage N_ENVS × OBS into the host mirror of ob1 (index `.data`
+        # directly; obs_ptr is the driver trait ABI).
         for e in range(N_ENVS):
             for d in range(Self.OBS):
-                ob1_cpu_p[e * Self.OBS + d] = obs_ptr[e * Self.OBS + d]
+                state.ob1.data[e * Self.OBS + d] = obs_ptr[e * Self.OBS + d]
 
-        comptime if target == "cpu":
-            var ob1_t = TileTensor(ob1_cpu_p, row_major[N_ENVS, Self.OBS]())
-            var lg_t  = TileTensor(lg_cpu_p, row_major[N_ENVS, N]())
-            actor.forward[target, N_ENVS](ob1_t, output=lg_t)
-            var v1_t = TileTensor(v1_cpu_p, row_major[N_ENVS, 1]())
-            critic.forward[target, N_ENVS](ob1_t, output=v1_t)
-        else:
+        comptime if target == "gpu":
             var ctx = state.ctx.value()
-            ctx.enqueue_copy(state.ob1.dev.value(), ob1_cpu_p)
-            var ob1_dev_t = TileTensor(
-                state.ob1.dev_ptr(), row_major[N_ENVS, Self.OBS](),
+            state.ob1.upload(ctx)
+            actor.forward[target, N_ENVS, POLICY=POLICY](
+                TensorRefs[Self.ACTOR.ARITY](state.ob1), self.logits, state.ctx
             )
-            var lg_dev_t = TileTensor(
-                self.logits.dev_ptr(), row_major[N_ENVS, N](),
+            critic.forward[target, N_ENVS, POLICY=POLICY](
+                TensorRefs[Self.CRITIC.ARITY](state.ob1), state.v1, state.ctx
             )
-            var v1_dev_t = TileTensor(
-                state.v1.dev_ptr(), row_major[N_ENVS, 1](),
+            self.logits.download(ctx)
+            state.v1.download(ctx)
+        else:
+            actor.forward[target, N_ENVS, POLICY=POLICY](
+                TensorRefs[Self.ACTOR.ARITY](state.ob1), self.logits, state.ctx
             )
-            actor.forward[target, N_ENVS](ob1_dev_t, output=lg_dev_t)
-            critic.forward[target, N_ENVS](ob1_dev_t, output=v1_dev_t)
-            ctx.enqueue_copy(lg_cpu_p, self.logits.dev.value())
-            ctx.enqueue_copy(v1_cpu_p, state.v1.dev.value())
-            ctx.synchronize()
+            critic.forward[target, N_ENVS, POLICY=POLICY](
+                TensorRefs[Self.CRITIC.ARITY](state.ob1), state.v1, state.ctx
+            )
 
-        # Host-side softmax + categorical sample per env.
+        # Host-side softmax + categorical sample per env (index `.data`).
+        ref lg = self.logits.data
+        ref v1 = state.v1.data
+        ref ca = state.cached_action.data
+        ref clp = state.cached_log_prob.data
+        ref cval = state.cached_value.data
         for e in range(N_ENVS):
             var base = e * N
-            var max_l = lg_cpu_p[base]
+            var max_l = lg[base]
             for j in range(1, N):
-                var lj = lg_cpu_p[base + j]
+                var lj = lg[base + j]
                 if lj > max_l:
                     max_l = lj
             var sum_exp: Scalar[DT] = 0.0
             for j in range(N):
-                sum_exp += fexp(lg_cpu_p[base + j] - max_l)
+                sum_exp += fexp(lg[base + j] - max_l)
             # Sample via inverse-CDF over the softmax.
             var u = Scalar[DT](random_float64())
             var cum: Scalar[DT] = 0.0
             var a_idx: Int = N - 1
             for j in range(N):
-                var p_j = fexp(lg_cpu_p[base + j] - max_l) / sum_exp
+                var p_j = fexp(lg[base + j] - max_l) / sum_exp
                 cum += p_j
                 if u <= cum:
                     a_idx = j
                     break
             var log_sum = flog(sum_exp)
-            var log_p_a = (lg_cpu_p[base + a_idx] - max_l) - log_sum
-            ca_cpu_p[e]   = Scalar[DT](a_idx)
+            var log_p_a = (lg[base + a_idx] - max_l) - log_sum
+            ca[e] = Scalar[DT](a_idx)
             action_ptr[e] = Scalar[DT](a_idx)
-            clp_cpu_p[e]  = log_p_a
-            cval_cpu_p[e] = v1_cpu_p[e]
+            clp[e] = log_p_a
+            cval[e] = v1[e]
 
     def step_greedy_n1[
         target: StaticString,
         ROLLOUT_LEN: Int,
         MINIBATCH: Int,
         N_ENVS: Int,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         mut state: OnPolicyState[
@@ -173,30 +175,24 @@ struct PPODiscreteActStep[
         logits of env 0. Returns the action index. Does not touch the
         cache. Always BATCH=1."""
         comptime N = Self.N_ACTIONS
-        var ob1_cpu_p = state.ob1.cpu_ptr()
-        var lg_cpu_p  = self.logits.cpu_ptr()
         for d in range(Self.OBS):
-            ob1_cpu_p[d] = obs[d]
-        comptime if target == "cpu":
-            var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS]())
-            var lg_t  = TileTensor(lg_cpu_p, row_major[1, N]())
-            actor.forward[target, 1](ob1_t, output=lg_t)
-        else:
+            state.ob1.data[d] = obs[d]
+        comptime if target == "gpu":
             var ctx = state.ctx.value()
-            ctx.enqueue_copy(state.ob1.dev.value(), ob1_cpu_p)
-            var ob1_dev_t = TileTensor(
-                state.ob1.dev_ptr(), row_major[1, Self.OBS](),
+            state.ob1.upload(ctx)
+            actor.forward[target, 1, POLICY=POLICY](
+                TensorRefs[Self.ACTOR.ARITY](state.ob1), self.logits, state.ctx
             )
-            var lg_dev_t = TileTensor(
-                self.logits.dev_ptr(), row_major[1, N](),
+            self.logits.download(ctx)
+        else:
+            actor.forward[target, 1, POLICY=POLICY](
+                TensorRefs[Self.ACTOR.ARITY](state.ob1), self.logits, state.ctx
             )
-            actor.forward[target, 1](ob1_dev_t, output=lg_dev_t)
-            ctx.enqueue_copy(lg_cpu_p, self.logits.dev.value())
-            ctx.synchronize()
+        ref lg = self.logits.data
         var best: Int = 0
-        var best_l = lg_cpu_p[0]
+        var best_l = lg[0]
         for j in range(1, N):
-            if lg_cpu_p[j] > best_l:
-                best_l = lg_cpu_p[j]
+            if lg[j] > best_l:
+                best_l = lg[j]
                 best = j
         return best
