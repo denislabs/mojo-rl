@@ -28,12 +28,11 @@ linear mean/logvar head.
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.primitives.elementwise import Elementwise
-from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.storage.primitives.activations import Swish
+from mojo_rl.nn.storage.combinators.sequential import Sequential
 
 from ..primitives.stochastic_actor import StochasticActor
 
@@ -62,10 +61,10 @@ comptime MBPOCriticNet[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
 
 
 comptime MBPODynNet[OBS: Int, ACT: Int, DYN_HIDDEN: Int] = Sequential[
-    Linear[OBS + ACT, DYN_HIDDEN], Elementwise[DYN_HIDDEN, SwishOp],
-    Linear[DYN_HIDDEN, DYN_HIDDEN], Elementwise[DYN_HIDDEN, SwishOp],
-    Linear[DYN_HIDDEN, DYN_HIDDEN], Elementwise[DYN_HIDDEN, SwishOp],
-    Linear[DYN_HIDDEN, DYN_HIDDEN], Elementwise[DYN_HIDDEN, SwishOp],
+    Linear[OBS + ACT, DYN_HIDDEN], Swish[DYN_HIDDEN],
+    Linear[DYN_HIDDEN, DYN_HIDDEN], Swish[DYN_HIDDEN],
+    Linear[DYN_HIDDEN, DYN_HIDDEN], Swish[DYN_HIDDEN],
+    Linear[DYN_HIDDEN, DYN_HIDDEN], Swish[DYN_HIDDEN],
     Linear[DYN_HIDDEN, 2 * (1 + OBS)],
 ]
 """Probabilistic dynamics net: 4 Swish hidden layers → mean+logvar head
