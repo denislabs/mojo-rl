@@ -15,9 +15,9 @@ from std.random import seed
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import Tanh
 from mojo_rl.deep_agents.primitives.gaussian_head import GaussianHead
 from mojo_rl.deep_agents.a2c import A2CAgent
 
@@ -58,9 +58,7 @@ def main() raises:
         log_std_init=LOG_STD_INIT,
     )
 
-    var ls_ptr = agent.inner.trainer.actor.children[4].log_std.value_unsafe_ptr_cpu()
-    for k in range(ACT_DIM):
-        ls_ptr[k] = LOG_STD_INIT
+    agent.inner.trainer.actor.children[4].set_log_std_init["cpu"](LOG_STD_INIT)
 
     var env = PendulumEnv[DT]()
     _ = agent.train_single(env, TOTAL_TIMESTEPS, print_every=1_024, verbose=True)
