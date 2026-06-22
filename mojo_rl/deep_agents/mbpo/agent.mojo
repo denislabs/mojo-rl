@@ -51,6 +51,7 @@ struct MBPOAgent[
     REAL_RATIO_PCT: Int = 5,
     LOGVAR_MIN: Float64 = -10.0,
     LOGVAR_MAX: Float64 = -2.0,
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](Movable & ImplicitlyDeletable):
     """Thin facade over `MBPOTrainer` + off-policy drivers."""
 
@@ -60,6 +61,7 @@ struct MBPOAgent[
         Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
         Self.N_ENSEMBLE, Self.NUM_ELITES,
         Self.REAL_RATIO_PCT, Self.LOGVAR_MIN, Self.LOGVAR_MAX,
+        Self.USE_TRAIN_CUDA_GRAPH,
     ]
 
     var trainer: Self.TrainerT
@@ -89,13 +91,12 @@ struct MBPOAgent[
         dyn_weight_decay: Scalar[DT] = 5e-5,
         dyn_learnable_bounds: Bool = False,
         use_bf16: Bool = False,
-        use_train_cuda_graph: Bool = False,
     ) raises:
         """Construct an MBPOAgent. Forwards every kwarg to `MBPOTrainer.make`.
         `ctx` is required for `train_target='gpu'`; `use_bf16` (GPU) enables
-        mixed-precision on the SAC sub-update. `use_train_cuda_graph` (GPU,
-        NoAMP) captures the SAC sub-update loop into a CUDA graph and replays it
-        — collapses the launch-bound per-update kernel dispatch (NVIDIA only;
+        mixed-precision on the SAC sub-update. CUDA-graph capture of the SAC
+        sub-update loop + per-member dynamics-train step is the comptime
+        `USE_TRAIN_CUDA_GRAPH` agent parameter (GPU + NoAMP; NVIDIA only,
         no-op elsewhere)."""
         self.trainer = Self.TrainerT.make(
             ctx=ctx,
@@ -121,7 +122,6 @@ struct MBPOAgent[
             dyn_weight_decay=dyn_weight_decay,
             dyn_learnable_bounds=dyn_learnable_bounds,
             use_bf16=use_bf16,
-            use_train_cuda_graph=use_train_cuda_graph,
         )
 
     # ─── Training entry points ─────────────────────────────────────────

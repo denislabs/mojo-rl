@@ -91,6 +91,13 @@ comptime LOGVAR_MIN_F = -10.0
 # looser fixed ceiling.
 comptime LOGVAR_MAX_F = -5.0
 
+# CUDA-graph capture of the SAC sub-update loop + per-member dynamics-train
+# step (NVIDIA only; NoAMP + uniform replay). Profiling showed the GPU run is
+# launch-bound (cuLaunchKernelEx ~64% of wall) — capture collapses the SAC
+# loop to one cuGraphLaunch/env-step (~2.5× wall in the profile). Set False if
+# enabling bf16/PER.
+comptime USE_TRAIN_CUDA_GRAPH = True
+
 comptime NUM_STEPS = 300_000  # MBPO needs ~10× fewer real steps than SAC
 comptime PRINT_EVERY = 10_000
 comptime DIAG_EVERY = 5_000
@@ -212,6 +219,7 @@ def main() raises:
             REAL_RATIO_PCT,
             LOGVAR_MIN_F,
             LOGVAR_MAX_F,
+            USE_TRAIN_CUDA_GRAPH,
         ](
             ctx=ctx,
             actor_lr=3e-4,

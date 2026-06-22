@@ -141,6 +141,7 @@ def main() raises:
             REAL_RATIO_PCT,
             LOGVAR_MIN_F,
             LOGVAR_MAX_F,
+            USE_TRAIN_CUDA_GRAPH,
         ](
             ctx=ctx,
             actor_lr=3e-4,
@@ -164,7 +165,6 @@ def main() raises:
             dyn_max_epochs=DYN_MAX_EPOCHS,
             dyn_weight_decay=5e-5,
             dyn_learnable_bounds=True,
-            use_train_cuda_graph=USE_TRAIN_CUDA_GRAPH,
         )
         var env = EnvT()
 

@@ -306,6 +306,7 @@ struct MBPOTrainer[
     REAL_RATIO_PCT: Int = 5,
     LOGVAR_MIN: Float64 = -10.0,
     LOGVAR_MAX: Float64 = -2.0,
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](OffPolicyAgentGpu):
     comptime DYN_IN: Int = Self.OBS_DIM + Self.ACT_DIM
     comptime DYN_PRED: Int = 1 + Self.OBS_DIM
@@ -424,12 +425,14 @@ struct MBPOTrainer[
     var dyn_batch_size: Int
     var last_dyn_step: Int
     var _use_bf16: Bool
-    # CUDA-graph capture of the SAC sub-update loop (NVIDIA only; default off).
-    # `_train_graph` is captured once then replayed each env-step, collapsing
-    # the ~100+ kernel launches per update into one cuGraphLaunch — the fix for
-    # the launch-bound profile (cuLaunchKernelEx = 64% of wall time).
-    var _use_train_cuda_graph: Bool
+    # CUDA-graph capture (gated by the comptime `USE_TRAIN_CUDA_GRAPH`; NVIDIA
+    # only). `_train_graph` captures the SAC sub-update loop (one cuGraphLaunch
+    # per env-step vs ~100+ launches/update). `_dyn_graphs[m]` captures each
+    # dynamics member's `train_member_step` (the batch-build stays eager, so the
+    # graph reads the persistent `_dyn_in`/`_dyn_tgt` buffers and replays across
+    # rounds with no re-instantiate). Both fix the launch-bound profile.
     var _train_graph: Optional[CUDAGraph]
+    var _dyn_graphs: List[Optional[CUDAGraph]]
     var dyn_holdout_ratio: Scalar[DT]
     var dyn_max_epochs: Int
     var dyn_patience: Int
@@ -546,8 +549,8 @@ struct MBPOTrainer[
         self.dyn_holdout_check_every = 5
         self.last_dyn_step = -1
         self._use_bf16 = False
-        self._use_train_cuda_graph = False
         self._train_graph = None
+        self._dyn_graphs = List[Optional[CUDAGraph]]()
         self._warmup_rng_seed = UInt64(0xC0FFEE_C0DE)
         self._warmup_rng_offset = UInt64(0)
         self._roll_rng_seed = UInt64(0xB0A75E_D00D)
@@ -600,7 +603,6 @@ struct MBPOTrainer[
         dyn_weight_decay: Scalar[DT] = Scalar[DT](5e-5),
         dyn_learnable_bounds: Bool = False,
         use_bf16: Bool = False,
-        use_train_cuda_graph: Bool = False,
     ) raises -> Self:
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
@@ -744,7 +746,11 @@ struct MBPOTrainer[
         t.dyn_batch_size = dyn_batch_size
         t.dyn_max_epochs = dyn_max_epochs
         t._use_bf16 = use_bf16
-        t._use_train_cuda_graph = use_train_cuda_graph
+        # Per-member dynamics-train graph slots (capture-once / replay). Always
+        # populated so indexing is valid; only used when USE_TRAIN_CUDA_GRAPH.
+        comptime if Self.USE_TRAIN_CUDA_GRAPH:
+            for _ in range(Self.N_ENSEMBLE):
+                t._dyn_graphs.append(None)
 
         t.sample_blk.setup[Self.train_target](learning_starts, ctx=ctx)
         t._set_scaler_identity[Self.train_target]()
@@ -925,11 +931,12 @@ struct MBPOTrainer[
             if self._use_bf16:
                 return self._run_sac_updates[Bf16Compute](step_idx)
             # CUDA-graph capture/replay of the SAC sub-update loop (NoAMP only;
-            # AMP + capture has known stdlib issues). Captures the whole
-            # sac_updates_per_step sequence once, replays it each env-step.
-            if self._use_train_cuda_graph:
+            # AMP + capture has known stdlib issues). Comptime-gated so the
+            # eager path is the only one compiled when the flag is off.
+            comptime if Self.USE_TRAIN_CUDA_GRAPH:
                 return self._run_sac_updates_graph()
-            return self._run_sac_updates[NoAMP](step_idx)
+            else:
+                return self._run_sac_updates[NoAMP](step_idx)
 
     def _run_sac_updates[
         POLICY: AMPPolicy = NoAMP,
@@ -1140,6 +1147,27 @@ struct MBPOTrainer[
         for _ in range(self.sac_updates_per_step):
             self.note_train_update()
         return True
+
+    def _dyn_train_step_graph(mut self, m: Int) raises:
+        """Capture-once / replay member `m`'s `train_member_step` (the
+        batch-build ran eagerly just before, into _dyn_in/_dyn_tgt). Each member
+        keeps its own graph in `_dyn_graphs[m]`. The slot is moved into a
+        disjoint local for the capture call (Optional.take leaves it None) so
+        the closure can borrow self without overlapping the slot's mut borrow;
+        on non-NVIDIA `maybe_capture_replay` runs the step eagerly and leaves
+        the local None (slot stays None → eager every call)."""
+        var ctx = self.ctx.value()
+        var g = Optional[CUDAGraph](None)
+        if self._dyn_graphs[m]:
+            g = Optional[CUDAGraph](self._dyn_graphs[m].take())
+
+        def _captured() capturing raises -> None:
+            _ = self.ensemble.train_member_step["gpu", ACCUMULATE=True](
+                m, self._dyn_in, self._dyn_tgt
+            )
+
+        maybe_capture_replay[_captured](g, ctx)
+        self._dyn_graphs[m] = g^
 
     # ─── Logging surface ─────────────────────────────────────────────────
 
@@ -1929,13 +1957,18 @@ struct MBPOTrainer[
                     break
                 for _ep in range(self.dyn_holdout_check_every):
                     for _ in range(steps_per_epoch):
+                        # Batch-build stays EAGER (fresh sample + correct
+                        # [0,n_train) range each step); only the network train
+                        # step is captured/replayed (it reads the persistent
+                        # _dyn_in/_dyn_tgt buffers). ACCUMULATE=True folds the
+                        # loss into the device accumulator (read once at flush).
                         self._build_dyn_batch_gpu(0, n_train)
-                        # ACCUMULATE=True: fold the loss into the device
-                        # accumulator (read once at flush) instead of a per-step
-                        # D2H + ctx.synchronize().
-                        _ = self.ensemble.train_member_step[
-                            "gpu", ACCUMULATE=True
-                        ](m, self._dyn_in, self._dyn_tgt)
+                        comptime if Self.USE_TRAIN_CUDA_GRAPH:
+                            self._dyn_train_step_graph(m)
+                        else:
+                            _ = self.ensemble.train_member_step[
+                                "gpu", ACCUMULATE=True
+                            ](m, self._dyn_in, self._dyn_tgt)
                         self._dyn_step_count += 1
                 var hl = self._eval_member_holdout_gpu(m, hold_lo, hold_hi)
                 # Reference early-stop: relative improvement > 1% on holdout
