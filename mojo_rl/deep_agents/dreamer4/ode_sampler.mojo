@@ -20,15 +20,21 @@ Conditioning indices (per the reference):
 K must be a power of two ≤ KMAX and divide KMAX. Pure host loop calling the
 dynamics forward; returns the predicted frame [B, NSP·DSP].
 
+STORAGE: the dynamics forward goes through the storage `Module` surface
+(`dyn.forward["cpu", BF](TensorRefs[M.ARITY](in_t), out_t, None)`). The host-scratch
+working buffers (`packed`/`zhat`/`z`/`sig_idx`/`step_idx`) stay `List`s; we
+bridge `packed` ↔ a boundary input `Tensor` and read the output `Tensor` back
+into `zhat` at each forward, mirroring `shortcut_loss._run_fwd` (CPU branch).
+
 PHASE 2.5: CPU.
 """
 
 from std.math import max
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
-from .shortcut_loss import ShortcutDynamics, _ilog2
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from .shortcut_loss import ShortcutDynamics, _ilog2, _mao
 
 
 def sample_one_timestep[
@@ -72,14 +78,11 @@ def sample_one_timestep[
     for i in range(B * ND):
         z[i] = z_init[i]
 
-    var packed_p = mptr(packed.unsafe_ptr())
-    var sig_p = mptr(sig_idx.unsafe_ptr())
-    var step_p = mptr(step_idx.unsafe_ptr())
-    var packed_t = TileTensor(packed_p, row_major[BF, ND]())
-    var zhat_t = TileTensor(
-        mptr(zhat.unsafe_ptr()),
-        row_major[BF, ND](),
-    )
+    # Boundary tensors bridging the host-scratch buffers to the storage Module
+    # surface (mirror shortcut_loss._run_fwd, CPU branch): copy `packed` into
+    # `in_t.data` before each forward, run forward, read `out_t.data` → `zhat`.
+    var in_t = Tensor.alloc(BF * ND)
+    var out_t = Tensor.alloc(BF * ND)
 
     for i in range(K):
         var tau = Float64(i) / Float64(K)
@@ -90,8 +93,12 @@ def sample_one_timestep[
             sig_idx[last_bt] = Scalar[DT](Float64(sig_i))
             for k in range(ND):
                 packed[last_bt * ND + k] = z[b * ND + k]
-        dyn.set_indices(sig_p, step_p, BF)
-        dyn.forward["cpu", BF](packed_t, output=zhat_t)
+        dyn.set_indices(_mao(sig_idx.unsafe_ptr()), _mao(step_idx.unsafe_ptr()), BF)
+        for j in range(BF * ND):
+            in_t.data[j] = packed[j]
+        dyn.forward["cpu", BF](TensorRefs[M.ARITY](in_t), out_t, None)
+        for j in range(BF * ND):
+            zhat[j] = out_t.data[j]
         var denom = max(1e-4, 1.0 - tau)
         for b in range(B):
             var last_bt = b * T + (T - 1)

@@ -33,18 +33,27 @@ categorical action sample and `z_noise[B,T,ND]` for each frame's τ=0 ODE seed.
 `agent_in[B*T,AGD]` is the (already broadcast) task embedding. CPU; the
 transformer forward runs on whatever target the module was built for.
 
+STORAGE: the dynamics + head forwards go through the storage `Module` surface.
+`_fwd_window` bridges the host-scratch `packed`/`zhat` buffers to two boundary
+`Tensor`s (mirror `shortcut_loss._run_fwd`): FWD="cpu" fills `out_t.data`
+directly; FWD="gpu" uploads `in_t` → device forward → downloads `out_t`. The
+agent tokens h_t come from `dyn.agent_out_ptr_cpu()` (CPU) or a D2H copy of
+`dyn.agent_out_dev()` into a host staging `HostBuffer` (GPU). The head outputs
+feed the raw-pointer host helpers (`cat_sample`/`twohot_pred`), so the head I/O
+stays raw scratch and is bridged at the head forward the same way.
+
 NOTE: this requires an action-conditioned, agent-capable dynamics
 (`Dreamer4Dynamics` with ADIM = NACT one-hot and NAGENT > 0).
 """
 
-from std.memory import alloc
 from std.math import max
-from layout import TileTensor, row_major
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
-from .shortcut_loss import ShortcutDynamics, AgentDynamics, _ilog2
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from .shortcut_loss import ShortcutDynamics, AgentDynamics, _ilog2, _mao
 from ..dreamerv3.dists_discrete import cat_sample, UNIMIX
 from ..dreamerv3.twohot import twohot_pred
 
@@ -69,47 +78,35 @@ def _fwd_window[
     packed_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
     zhat_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
     h_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut in_t: Tensor,
+    mut out_t: Tensor,
     ctx: Optional[DeviceContext],
-    dev_in: Optional[DeviceBuffer[DT]],
-    dev_out: Optional[DeviceBuffer[DT]],
-    h_in: Optional[HostBuffer[DT]],
-    h_out: Optional[HostBuffer[DT]],
     h_ag: Optional[HostBuffer[DT]],
 ) raises:
     dyn.set_indices(sig_p, step_p, BF)
     dyn.set_actions(act_p, mask_p, BF)
     dyn.set_agent_in(agent_in, BF)
+    # copy host-scratch `packed` into the boundary input Tensor
+    for i in range(BF * ND):
+        in_t.data[i] = packed_p[i]
     comptime if FWD == "cpu":
-        var packed_t = TileTensor(packed_p, row_major[BF, ND]())
-        var zhat_t = TileTensor(zhat_p, row_major[BF, ND]())
-        dyn.forward["cpu", BF](packed_t, output=zhat_t)
+        dyn.forward["cpu", BF](TensorRefs[M.ARITY](in_t), out_t, None)
+        for i in range(BF * ND):
+            zhat_p[i] = out_t.data[i]
         var ao = dyn.agent_out_ptr_cpu()
         for i in range(BF * AGD):
             h_host[i] = ao[i]
     else:
         var c = ctx.value()
-        var di = dev_in.value()
-        var do_ = dev_out.value()
-        var hi = h_in.value()
-        var ho = h_out.value()
-        var hb = h_ag.value()
+        in_t.upload(c)
+        dyn.forward["gpu", BF](TensorRefs[M.ARITY](in_t), out_t, ctx)
+        out_t.download(c)
         for i in range(BF * ND):
-            hi.unsafe_ptr()[i] = packed_p[i]
-        c.enqueue_copy(di, hi)
-        var it = TileTensor(
-            mptr(di.unsafe_ptr()),
-            row_major[BF, ND](),
-        )
-        var ot = TileTensor(
-            mptr(do_.unsafe_ptr()),
-            row_major[BF, ND](),
-        )
-        dyn.forward["gpu", BF](it, output=ot)
-        c.enqueue_copy(ho, do_)
+            zhat_p[i] = out_t.data[i]
+        # agent tokens h_t: D2H copy of dyn.agent_out_dev() into host staging
+        var hb = h_ag.value()
         c.enqueue_copy(hb, dyn.agent_out_dev())
         c.synchronize()
-        for i in range(BF * ND):
-            zhat_p[i] = ho.unsafe_ptr()[i]
         for i in range(BF * AGD):
             h_host[i] = hb.unsafe_ptr()[i]
 
@@ -129,22 +126,35 @@ def _annotate[
     out_h: UnsafePointer[Scalar[DT], MutAnyOrigin],
     out_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],
     out_val: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut hin_t: Tensor,
+    mut plout_t: Tensor,
+    mut vlout_t: Tensor,
+    mut rlout_t: Tensor,
 ) raises:
     """Gather h_state_i (from the host-side `h_host` produced by `_fwd_window`)
     for all B, run the heads, store out_h/out_rew/out_val and leave the policy
-    logits in `pl` for sampling."""
+    logits in `pl` for sampling. The heads are storage Sequential Modules: copy
+    the gathered h into a boundary input `Tensor`, run the forward, then copy the
+    output `Tensor` back into the raw `pl`/`vl`/`rl` scratch the host helpers
+    (`twohot_pred`/`cat_sample`) index."""
     for b in range(B):
         var src = (b * T + state_i) * AGD
         for k in range(AGD):
             hg[b * AGD + k] = h_host[src + k]
             out_h[(b * T + state_i) * AGD + k] = h_host[src + k]
-    var hg_t = TileTensor(hg, row_major[B, AGD]())
-    var pl_t = TileTensor(pl, row_major[B, PLOG]())
-    var vl_t = TileTensor(vl, row_major[B, NBINS]())
-    var rl_t = TileTensor(rl, row_major[B, RLOG]())
-    ph.forward["cpu", B](hg_t, output=pl_t)
-    vh.forward["cpu", B](hg_t, output=vl_t)
-    rh.forward["cpu", B](hg_t, output=rl_t)
+    # bridge gathered h → boundary input Tensor (heads run CPU)
+    for i in range(B * AGD):
+        hin_t.data[i] = hg[i]
+    ph.forward["cpu", B](TensorRefs[PH.ARITY](hin_t), plout_t, None)
+    vh.forward["cpu", B](TensorRefs[VH.ARITY](hin_t), vlout_t, None)
+    rh.forward["cpu", B](TensorRefs[RH.ARITY](hin_t), rlout_t, None)
+    # copy head outputs back into the raw scratch the host helpers index
+    for i in range(B * PLOG):
+        pl[i] = plout_t.data[i]
+    for i in range(B * NBINS):
+        vl[i] = vlout_t.data[i]
+    for i in range(B * RLOG):
+        rl[i] = rlout_t.data[i]
     for b in range(B):
         out_val[b * T + state_i] = twohot_pred[NBINS](vl, b * NBINS, bins)
         out_rew[b * T + state_i] = twohot_pred[NBINS](rl, b * RLOG, bins)
@@ -198,19 +208,22 @@ def imagine_rollout[
     var h_host = List[Scalar[DT]]()            # h_t [BF, AGD] (host mirror)
     h_host.resize(BF * AGD, 0.0)
 
-    # GPU forward scratch (device packed/zhat + host staging for packed/zhat/h)
-    var dev_in = Optional[DeviceBuffer[DT]](None)
-    var dev_out = Optional[DeviceBuffer[DT]](None)
-    var h_in = Optional[HostBuffer[DT]](None)
-    var h_out = Optional[HostBuffer[DT]](None)
+    # boundary Tensors for the dynamics forward (mirror shortcut_loss._run_fwd):
+    # CPU uses owned host storage; GPU upload/download through them.
+    var in_t = Tensor.make[FWD](BF * ND, dctx)
+    var out_t = Tensor.make[FWD](BF * ND, dctx)
+    # agent-out D2H staging (GPU only)
     var h_ag = Optional[HostBuffer[DT]](None)
     comptime if FWD == "gpu":
         var c = dctx.value()
-        dev_in = c.enqueue_create_buffer[DT](BF * ND)
-        dev_out = c.enqueue_create_buffer[DT](BF * ND)
-        h_in = c.enqueue_create_host_buffer[DT](BF * ND)
-        h_out = c.enqueue_create_host_buffer[DT](BF * ND)
         h_ag = c.enqueue_create_host_buffer[DT](BF * AGD)
+
+    # boundary Tensors for the heads (always CPU)
+    var hin_t = Tensor.alloc(B * AGD)
+    var plout_t = Tensor.alloc(B * PLOG)
+    var vlout_t = Tensor.alloc(B * NBINS)
+    var rlout_t = Tensor.alloc(B * RLOG)
+
     var act_oh = List[Scalar[DT]]()
     act_oh.resize(BF * ADIM, 0.0)
     var act_mask = List[Scalar[DT]]()
@@ -238,33 +251,28 @@ def imagine_rollout[
             for i in range(ND):
                 packed[bt * ND + i] = ctx[(b * NCTX + c) * ND + i]
 
-    var packed_p = mptr(packed.unsafe_ptr())
-    var zhat_p = mptr(zhat.unsafe_ptr())
-    var sig_p = mptr(sig.unsafe_ptr())
-    var step_p = mptr(step.unsafe_ptr())
-    var act_p = mptr(act_oh.unsafe_ptr())
-    var mask_p = mptr(act_mask.unsafe_ptr())
-    var hg_p = mptr(hgather.unsafe_ptr())
-    var pl = mptr(plog.unsafe_ptr())
-    var vl = mptr(vlog.unsafe_ptr())
-    var rl = mptr(rlog.unsafe_ptr())
-    var hh_p = mptr(h_host.unsafe_ptr())
-
     # ── autoregressive generation ───────────────────────────────────────
     for tgt in range(NCTX, T):
         var state_i = tgt - 1
         # 1+3. read h_state_i (frames 0..state_i clean) and annotate r/v
         _fwd_window[M, FWD, BF, ND, AGD](
-            dyn, sig_p, step_p, act_p, mask_p, agent_in, packed_p, zhat_p,
-            hh_p, dctx, dev_in, dev_out, h_in, h_out, h_ag,
+            dyn, _mao(sig.unsafe_ptr()), _mao(step.unsafe_ptr()),
+            _mao(act_oh.unsafe_ptr()), _mao(act_mask.unsafe_ptr()), agent_in,
+            _mao(packed.unsafe_ptr()), _mao(zhat.unsafe_ptr()),
+            _mao(h_host.unsafe_ptr()), in_t, out_t, dctx, h_ag,
         )
         _annotate[PH, VH, RH, B, T, AGD, PLOG, NBINS, RLOG](
-            ph, vh, rh, state_i, hh_p, hg_p, pl, vl, rl, bins,
+            ph, vh, rh, state_i, _mao(h_host.unsafe_ptr()),
+            _mao(hgather.unsafe_ptr()), _mao(plog.unsafe_ptr()),
+            _mao(vlog.unsafe_ptr()), _mao(rlog.unsafe_ptr()), bins,
             out_h, out_rew, out_val,
+            hin_t, plout_t, vlout_t, rlout_t,
         )
         # 2. sample action a_state_i from the dist-0 policy block
         for b in range(B):
-            var k = cat_sample[NACT](pl, b * PLOG, UNIMIX, u01[b * T + state_i])
+            var k = cat_sample[NACT](
+                _mao(plog.unsafe_ptr()), b * PLOG, UNIMIX, u01[b * T + state_i]
+            )
             out_act[b * (T - 1) + state_i] = Scalar[DT](Float64(k))
             # set frame tgt's action token = one-hot(a_state_i)
             for a in range(ADIM):
@@ -283,8 +291,10 @@ def imagine_rollout[
             for b in range(B):
                 sig[b * T + tgt] = Scalar[DT](Float64(sig_i))
             _fwd_window[M, FWD, BF, ND, AGD](
-                dyn, sig_p, step_p, act_p, mask_p, agent_in, packed_p, zhat_p,
-                hh_p, dctx, dev_in, dev_out, h_in, h_out, h_ag,
+                dyn, _mao(sig.unsafe_ptr()), _mao(step.unsafe_ptr()),
+                _mao(act_oh.unsafe_ptr()), _mao(act_mask.unsafe_ptr()), agent_in,
+                _mao(packed.unsafe_ptr()), _mao(zhat.unsafe_ptr()),
+                _mao(h_host.unsafe_ptr()), in_t, out_t, dctx, h_ag,
             )
             var denom = max(1e-4, 1.0 - tau)
             for b in range(B):
@@ -300,10 +310,15 @@ def imagine_rollout[
 
     # ── final state T-1: read h, annotate (bootstrap value/reward) ──────
     _fwd_window[M, FWD, BF, ND, AGD](
-        dyn, sig_p, step_p, act_p, mask_p, agent_in, packed_p, zhat_p,
-        hh_p, dctx, dev_in, dev_out, h_in, h_out, h_ag,
+        dyn, _mao(sig.unsafe_ptr()), _mao(step.unsafe_ptr()),
+        _mao(act_oh.unsafe_ptr()), _mao(act_mask.unsafe_ptr()), agent_in,
+        _mao(packed.unsafe_ptr()), _mao(zhat.unsafe_ptr()),
+        _mao(h_host.unsafe_ptr()), in_t, out_t, dctx, h_ag,
     )
     _annotate[PH, VH, RH, B, T, AGD, PLOG, NBINS, RLOG](
-        ph, vh, rh, T - 1, hh_p, hg_p, pl, vl, rl, bins,
+        ph, vh, rh, T - 1, _mao(h_host.unsafe_ptr()),
+        _mao(hgather.unsafe_ptr()), _mao(plog.unsafe_ptr()),
+        _mao(vlog.unsafe_ptr()), _mao(rlog.unsafe_ptr()), bins,
         out_h, out_rew, out_val,
+        hin_t, plout_t, vlout_t, rlout_t,
     )

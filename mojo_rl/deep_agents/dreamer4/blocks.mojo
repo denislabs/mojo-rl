@@ -22,19 +22,22 @@ tokens); attention spans the sequence. `SwiGLU[HID]` is wrapped per-token so
 each token's 2·HID projection is split into (u, v) correctly.
 """
 
-from mojo_rl.nn.combinators import Sequential, Residual, Repeat, Tokenwise
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.rms_norm import RMSNorm
-from mojo_rl.nn.primitives.qkv_to_major import QKVToMajor
-from mojo_rl.nn.primitives.swiglu import SwiGLU
-from mojo_rl.nn.primitives.tanh import Tanh
-from mojo_rl.nn.primitives.sigmoid import Sigmoid
-from mojo_rl.nn.primitives.slice import Slice
-from mojo_rl.nn.primitives.learned_tokens import LearnedTokens
-from mojo_rl.nn.primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
-from mojo_rl.nn.primitives.modality_space_attention import ModalitySpaceAttention
-from mojo_rl.nn.primitives.dynamics_space_attention import DynamicsSpaceAttention
-from mojo_rl.nn.primitives.time_attention_latents import TimeAttentionLatents
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.combinators.residual import Residual
+from mojo_rl.nn.storage.combinators.repeat import Repeat
+from mojo_rl.nn.storage.combinators.tokenwise import Tokenwise
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.rms_norm import RMSNorm
+from mojo_rl.nn.storage.primitives.qkv_to_major import QKVToMajor
+from mojo_rl.nn.storage.primitives.swiglu import SwiGLU
+from mojo_rl.nn.storage.primitives.activations import Tanh
+from mojo_rl.nn.storage.primitives.activations import Sigmoid
+from mojo_rl.nn.storage.primitives.slice import Slice
+from mojo_rl.nn.storage.primitives.learned_tokens import LearnedTokens
+from mojo_rl.nn.storage.primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
+from mojo_rl.nn.storage.primitives.modality_space_attention import ModalitySpaceAttention
+from mojo_rl.nn.storage.primitives.dynamics_space_attention import DynamicsSpaceAttention
+from mojo_rl.nn.storage.primitives.time_attention_latents import TimeAttentionLatents
 
 
 comptime Dreamer4SpaceSub[

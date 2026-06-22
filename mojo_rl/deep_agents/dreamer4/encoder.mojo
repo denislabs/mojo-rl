@@ -12,49 +12,34 @@ per-patch dropped mask that the reconstruction loss needs, which a
 single-output Sequential can't surface. The encoder holds three Module
 children — `proj`, `mae`, `body` — and delegates param/grad visiting to all
 three; `mae_mask_ptr()` / `advance_rng()` forward to the MAE leaf.
+
+Storage migration: intermediate scratch is storage `Tensor`s (one per cpu-List
++ device-buffer pair). `proj_out` / `masked` are populated during `forward` and
+re-read as the children's `forward_input` in `vjp` (storage children recompute
+from their forward_input), so they MUST persist as fields across forward→vjp.
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from mojo_rl.nn.core.module import Module, typed_view, typed_view_mut, mptr
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.target_storage import (
-    TargetStorage, assert_tag_for, ensure_cpu_buffer,
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.storage.core.param import Param, ParamVisitor
+from mojo_rl.nn.storage.core.initializer import Initializer
+from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.storage.core.walkers import (
+    for_each_param_auto, zero_grad_auto, join_name,
 )
-from mojo_rl.nn.combinators import Sequential, Tokenwise
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.tanh import Tanh
-from mojo_rl.nn.primitives.slice import Slice
-from mojo_rl.nn.primitives.learned_tokens import LearnedTokens
-from mojo_rl.nn.primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
-from mojo_rl.nn.primitives.mae_replacer import MAEReplacer
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.combinators.tokenwise import Tokenwise
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import Tanh
+from mojo_rl.nn.storage.primitives.slice import Slice
+from mojo_rl.nn.storage.primitives.learned_tokens import LearnedTokens
+from mojo_rl.nn.storage.primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
+from mojo_rl.nn.storage.primitives.mae_replacer import MAEReplacer
 from .blocks import Dreamer4Stack
-
-
-def _mao_tile[
-    BATCH: Int, N: Int
-](mut buf: List[Scalar[DT]]) -> TileTensor[
-    DT, type_of(row_major[BATCH, N]()), MutAnyOrigin
-]:
-    return TileTensor(
-        mptr(buf.unsafe_ptr()),
-        row_major[BATCH, N](),
-    )
-
-
-def _dev_tile[
-    BATCH: Int, N: Int
-](buf: DeviceBuffer[DT]) -> TileTensor[
-    DT, type_of(row_major[BATCH, N]()), MutAnyOrigin
-]:
-    return TileTensor(
-        mptr(buf.unsafe_ptr()),
-        row_major[BATCH, N](),
-    )
 
 
 struct Dreamer4Encoder[
@@ -85,40 +70,19 @@ struct Dreamer4Encoder[
     var proj: Self.PROJ
     var mae: Self.MAE
     var body: Self.BODY
-    var proj_out: List[Scalar[DT]]      # CPU scratch [BATCH*NP*D]
-    var masked: List[Scalar[DT]]
-    var grad_masked: List[Scalar[DT]]
-    var grad_proj: List[Scalar[DT]]
-    var po_dev: Optional[DeviceBuffer[DT]]     # GPU scratch
-    var mk_dev: Optional[DeviceBuffer[DT]]
-    var gmk_dev: Optional[DeviceBuffer[DT]]
-    var gpo_dev: Optional[DeviceBuffer[DT]]
-    var scratch_n: Int
-    var ts: TargetStorage
+    var proj_out: Tensor      # scratch [BATCH*ND]; populated in forward, reused in vjp
+    var masked: Tensor        # scratch [BATCH*ND]
+    var grad_masked: Tensor   # scratch [BATCH*ND]
+    var grad_proj: Tensor     # scratch [BATCH*ND]
 
     def __init__(out self):
         self.proj = Self.PROJ()
         self.mae = Self.MAE()
         self.body = Self.BODY()
-        self.proj_out = List[Scalar[DT]]()
-        self.masked = List[Scalar[DT]]()
-        self.grad_masked = List[Scalar[DT]]()
-        self.grad_proj = List[Scalar[DT]]()
-        self.po_dev = None
-        self.mk_dev = None
-        self.gmk_dev = None
-        self.gpo_dev = None
-        self.scratch_n = 0
-        self.ts = TargetStorage.make_uninit()
-
-    def _ensure_scratch_gpu(mut self, n: Int) raises:
-        if self.scratch_n < n:
-            var ctx = self.ts.ctx.value()
-            self.po_dev = ctx.enqueue_create_buffer[DT](n)
-            self.mk_dev = ctx.enqueue_create_buffer[DT](n)
-            self.gmk_dev = ctx.enqueue_create_buffer[DT](n)
-            self.gpo_dev = ctx.enqueue_create_buffer[DT](n)
-            self.scratch_n = n
+        self.proj_out = Tensor()
+        self.masked = Tensor()
+        self.grad_masked = Tensor()
+        self.grad_proj = Tensor()
 
     @staticmethod
     def make[
@@ -131,10 +95,6 @@ struct Dreamer4Encoder[
         m.proj = Self.PROJ.make[target=target, INIT=INIT](ctx)
         m.mae = Self.MAE.make[target=target, INIT=INIT](ctx)
         m.body = Self.BODY.make[target=target, INIT=INIT](ctx)
-        comptime if target == "cpu":
-            m.ts = TargetStorage.make_cpu()
-        else:
-            m.ts = TargetStorage.make_gpu(ctx.value())
         return m^
 
     @staticmethod
@@ -152,78 +112,89 @@ struct Dreamer4Encoder[
         return self.mae.mae_mask_ptr()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Dreamer4Encoder", target](self.ts.target_tag)
-        var inp = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        comptime LAY = type_of(row_major[BATCH, Self.ND]())
-        var po: TileTensor[DT, LAY, MutAnyOrigin]
-        var mk: TileTensor[DT, LAY, MutAnyOrigin]
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.proj_out, BATCH * Self.ND)
-            ensure_cpu_buffer(self.masked, BATCH * Self.ND)
-            po = _mao_tile[BATCH, Self.ND](self.proj_out)
-            mk = _mao_tile[BATCH, Self.ND](self.masked)
+            self.proj_out.ensure(B * Self.ND)
+            self.masked.ensure(B * Self.ND)
         else:
-            self._ensure_scratch_gpu(BATCH * Self.ND)
-            po = _dev_tile[BATCH, Self.ND](self.po_dev.value())
-            mk = _dev_tile[BATCH, Self.ND](self.mk_dev.value())
-        self.proj.forward[target, BATCH, POLICY=POLICY](inp, output=po)
-        self.mae.forward[target, BATCH, POLICY=POLICY](po, output=mk)
-        self.body.forward[target, BATCH, POLICY=POLICY](mk, output=out)
+            var c = ctx.value()
+            self.proj_out.ensure_gpu(c, B * Self.ND)
+            self.masked.ensure_gpu(c, B * Self.ND)
+        # proj consumes the module input pack directly.
+        self.proj.forward[target, B, POLICY=POLICY](inputs, self.proj_out, ctx)
+        self.mae.forward[target, B, POLICY=POLICY](
+            TensorRefs[Self.ARITY](self.proj_out), self.masked, ctx
+        )
+        self.body.forward[target, B, POLICY=POLICY](
+            TensorRefs[Self.ARITY](self.masked), out, ctx
+        )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Dreamer4Encoder", target](self.ts.target_tag)
-        var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gin = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        comptime LAY = type_of(row_major[BATCH, Self.ND]())
-        var gmk: TileTensor[DT, LAY, MutAnyOrigin]
-        var gpo: TileTensor[DT, LAY, MutAnyOrigin]
         comptime if target == "cpu":
-            ensure_cpu_buffer(self.grad_masked, BATCH * Self.ND)
-            ensure_cpu_buffer(self.grad_proj, BATCH * Self.ND)
-            gmk = _mao_tile[BATCH, Self.ND](self.grad_masked)
-            gpo = _mao_tile[BATCH, Self.ND](self.grad_proj)
+            self.grad_masked.ensure(B * Self.ND)
+            self.grad_proj.ensure(B * Self.ND)
         else:
-            self._ensure_scratch_gpu(BATCH * Self.ND)
-            gmk = _dev_tile[BATCH, Self.ND](self.gmk_dev.value())
-            gpo = _dev_tile[BATCH, Self.ND](self.gpo_dev.value())
-        self.body.vjp[target, BATCH, POLICY=POLICY, mode=mode](go, gmk)
-        self.mae.vjp[target, BATCH, POLICY=POLICY, mode=mode](gmk, gpo)
-        self.proj.vjp[target, BATCH, POLICY=POLICY, mode=mode](gpo, gin)
+            var c = ctx.value()
+            self.grad_masked.ensure_gpu(c, B * Self.ND)
+            self.grad_proj.ensure_gpu(c, B * Self.ND)
+        # body: forward_input = masked (from forward); grad_in = grad_masked.
+        self.body.vjp[target, B, POLICY=POLICY](
+            TensorRefs[Self.ARITY](self.masked),
+            grad_output,
+            TensorRefs[Self.ARITY](self.grad_masked),
+            ctx,
+        )
+        # mae: forward_input = proj_out; grad_out = grad_masked; grad_in = grad_proj.
+        self.mae.vjp[target, B, POLICY=POLICY](
+            TensorRefs[Self.ARITY](self.proj_out),
+            self.grad_masked,
+            TensorRefs[Self.ARITY](self.grad_proj),
+            ctx,
+        )
+        # proj: forward_input = module input; grad_out = grad_proj; grad_in = grad_inputs.
+        self.proj.vjp[target, B, POLICY=POLICY](
+            forward_input, self.grad_proj, grad_inputs, ctx
+        )
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["Dreamer4Encoder", target](self.ts.target_tag)
-        self.proj.for_each_param[target, V](prefix + ".proj", visitor)
-        self.mae.for_each_param[target, V](prefix + ".mae", visitor)
-        self.body.for_each_param[target, V](prefix + ".body", visitor)
+    ](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        self.proj.for_each_param[target, V](
+            visitor, ctx, join_name(prefix, "proj")
+        )
+        self.mae.for_each_param[target, V](
+            visitor, ctx, join_name(prefix, "mae")
+        )
+        self.body.for_each_param[target, V](
+            visitor, ctx, join_name(prefix, "body")
+        )
 
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["Dreamer4Encoder", target](self.ts.target_tag)
-        self.proj.zero_grad[target]()
-        self.mae.zero_grad[target]()
-        self.body.zero_grad[target]()
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.proj.zero_grad[target](ctx)
+        self.mae.zero_grad[target](ctx)
+        self.body.zero_grad[target](ctx)
