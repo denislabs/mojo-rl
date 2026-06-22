@@ -43,6 +43,7 @@ from std.gpu.host import DeviceContext
 from std.math import sin, cos, sqrt, log, exp, pi
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor, TileTensor, row_major
+from linalg.matmul import matmul as max_matmul
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
@@ -266,7 +267,6 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             comptime N_PARTIALS = Self._n_partials()
             comptime lay_a = Layout.row_major(D, P)
             comptime lay_cmsm = Layout.row_major(T, P * K)
-            comptime lay_in = Layout.row_major(B, T * D)
             comptime lay_cache = Layout.row_major(B, T * P)
             comptime lay_out = Layout.row_major(B, 1)
             comptime lay_part = Layout.row_major(N_PARTIALS)
@@ -286,13 +286,15 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
                 grid_dim=((P + TPB - 1) // TPB,),
                 block_dim=(TPB,),
             )
-            c.enqueue_function[_sr_project[B, T, D, P]](
-                in0.lt["gpu", lay_in](),
-                self.ws_a.lt["gpu", lay_a](),
-                self.cache_z.lt["gpu", lay_cache](),
-                grid_dim=((B * T * P + TPB - 1) // TPB,),
-                block_dim=(TPB,),
+            # cache_z[B*T, P] = input[B*T, D] @ A[D, P]  (A4-style GEMM; the
+            # input slab [B, T*D] reinterprets row-major as [B*T, D], cache_z
+            # [B, T*P] as [B*T, P] — both contiguous, no transpose needed).
+            var proj_in_v = TileTensor(in0.dev.value(), row_major[B * T, D]())
+            var proj_a_v = TileTensor(self.ws_a.dev.value(), row_major[D, P]())
+            var proj_out_v = TileTensor(
+                self.cache_z.dev.value(), row_major[B * T, P]()
             )
+            max_matmul[target="gpu"](proj_out_v, proj_in_v, proj_a_v, c)
             c.enqueue_function[_sr_cm_sm[B, T, P, K, N_PARTIALS, True]](
                 self.cache_z.lt["gpu", lay_cache](),
                 self.ws_cm.lt["gpu", lay_cmsm](),
@@ -404,7 +406,6 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             comptime lay_cmsm = Layout.row_major(T, P * K)
             comptime lay_cache = Layout.row_major(B, T * P)
             comptime lay_go = Layout.row_major(B, 1)
-            comptime lay_gi = Layout.row_major(B, T * D)
             comptime lay_dLdz = Layout.row_major(B, T * P)
             comptime lay_one = Layout.row_major(1)
             var seed = self._backward_seed(
@@ -445,12 +446,16 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
                 grid_dim=((B * T * P + TPB - 1) // TPB,),
                 block_dim=(TPB,),
             )
-            c.enqueue_function[_sr_matmul_a[B, T, D, P]](
-                self.ws_dLdz.lt["gpu", lay_dLdz](),
-                self.ws_a.lt["gpu", lay_a](),
-                gin.lt["gpu", lay_gi](),
-                grid_dim=((B * T * D + TPB - 1) // TPB,),
-                block_dim=(TPB,),
+            # grad_input[B*T, D] = dLdz[B*T, P] @ A[D, P]ᵀ  (contract over P;
+            # A consumed transpose_b, no physical transpose — mirrors Linear's
+            # grad_in = grad_out @ Wᵀ).
+            var ga_dl_v = TileTensor(
+                self.ws_dLdz.dev.value(), row_major[B * T, P]()
+            )
+            var ga_a_v = TileTensor(self.ws_a.dev.value(), row_major[D, P]())
+            var ga_gi_v = TileTensor(gin.dev.value(), row_major[B * T, D]())
+            max_matmul[transpose_b=True, target="gpu"](
+                ga_gi_v, ga_dl_v, ga_a_v, c
             )
 
     # for_each_param / zero_grad inherit the Module reflection defaults
@@ -499,23 +504,10 @@ def _sr_norm_a[D: Int, P: Int](
         a_t[d, p_idx] = v * inv_norm
 
 
-def _sr_project[BATCH: Int, T: Int, D: Int, P: Int](
-    input_t: LayoutTensor[DT, Layout.row_major(BATCH, T * D), MutAnyOrigin],
-    a_t: LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin],
-    cache_t: LayoutTensor[DT, Layout.row_major(BATCH, T * P), MutAnyOrigin],
-):
-    var idx = Int(global_idx.x)
-    if idx >= BATCH * T * P:
-        return
-    var p_idx = idx % P
-    var t_idx = (idx // P) % T
-    var b = idx // (T * P)
-    var z = Scalar[DT](0)
-    for d in range(D):
-        var xi = rebind[Scalar[DT]](input_t[b, t_idx * D + d])
-        var aval = rebind[Scalar[DT]](a_t[d, p_idx])
-        z += xi * aval
-    cache_t[b, t_idx * P + p_idx] = z
+# NOTE: the forward projection `Z = X @ A` and the backward `grad_in = dLdz @ Aᵀ`
+# now route through `max_matmul` directly in forward()/vjp() (A4-style); the old
+# hand-rolled `_sr_project` / `_sr_matmul_a` scalar-GEMM kernels were removed
+# (see benchmarks/bench_storage_sigreg_gemm_gpu.mojo for the A/B microbench).
 
 
 def _sr_cm_sm[
@@ -633,22 +625,3 @@ def _sr_dLdz[BATCH: Int, T: Int, P: Int, K: Int](
     var G = rebind[Scalar[DT]](g_t[0])
     var coef = G * Scalar[DT](2.0 / Float64(T * P))
     dLdz_t[b, t_idx * P + p_idx] = coef * acc
-
-
-def _sr_matmul_a[BATCH: Int, T: Int, D: Int, P: Int](
-    dLdz_t: LayoutTensor[DT, Layout.row_major(BATCH, T * P), MutAnyOrigin],
-    a_t: LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin],
-    grad_input_t: LayoutTensor[DT, Layout.row_major(BATCH, T * D), MutAnyOrigin],
-):
-    var idx = Int(global_idx.x)
-    if idx >= BATCH * T * D:
-        return
-    var d_idx = idx % D
-    var t_idx = (idx // D) % T
-    var b = idx // (T * D)
-    var acc = Scalar[DT](0)
-    for p in range(P):
-        var dL = rebind[Scalar[DT]](dLdz_t[b, t_idx * P + p])
-        var aval = rebind[Scalar[DT]](a_t[d_idx, p])
-        acc += aval * dL
-    grad_input_t[b, t_idx * D + d_idx] = acc
