@@ -15,12 +15,13 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Deterministic
 from mojo_rl.nn.primitives.linear import Linear
 
 
+comptime BF16 = DType.bfloat16
 comptime IN = 256
 comptime OUT = 256
 comptime B = 64
@@ -32,6 +33,15 @@ def _rand(i: Int) -> Scalar[DT]:
     """Cheap LCG hash → ~uniform [-0.5, 0.5] (non-cancelling, NN-like)."""
     var h = (UInt32(i) * UInt32(1103515245) + UInt32(12345)) & UInt32(0x7FFFFFFF)
     return Scalar[DT](Float64(Int(h % UInt32(1000))) / 1000.0 - 0.5)
+
+
+def _to_f32(b: TensorImpl[BF16], n: Int) raises -> Tensor:
+    """Copy a (downloaded) bf16 activation tensor into an fp32 Tensor so the
+    fp32 `_relerr` can compare it."""
+    var out = Tensor.alloc(n)
+    for i in range(n):
+        out.data[i] = b.data[i].cast[DT]()
+    return out^
 
 
 def _relerr(a: Tensor, b: Tensor, n: Int) -> Scalar[DT]:
@@ -54,8 +64,8 @@ def main() raises:
     print("AMP Linear bf16 vs fp32 numeric parity (Phase 1+2) —", IN, "x", OUT, "B", B)
     print("=" * 70)
     var c = DeviceContext()
-    var amp = Linear[IN, OUT, True].make["gpu", Deterministic](Optional(c))
-    var fp = Linear[IN, OUT, False].make["gpu", Deterministic](Optional(c))
+    var amp = Linear[IN, OUT, BF16].make["gpu", Deterministic](Optional(c))
+    var fp = Linear[IN, OUT].make["gpu", Deterministic](Optional(c))
 
     for k in range(W):
         amp.weight.val.data[k] = _rand(k)
@@ -67,33 +77,41 @@ def main() raises:
     fp.weight.val.upload(c); fp.bias.val.upload(c)
     amp.weight.val.version += 1   # force the bf16 weight cast
 
+    # fp32 input + its bf16 mirror (bf16-flow activations flow at bf16).
     var x = Tensor.alloc(B * IN)
+    var xb = TensorImpl[BF16].alloc(B * IN)
     for i in range(B * IN):
         x.data[i] = _rand(i + 7)
-    x.upload(c)
+        xb.data[i] = x.data[i].cast[BF16]()
+    x.upload(c); xb.upload(c)
 
     # ---- forward ----
-    var ya = Tensor.alloc(B * OUT)
-    var yf = Tensor.alloc(B * OUT)
-    amp.forward["gpu", B](TensorRefs[1](x), ya, Optional(c))
+    var ya = TensorImpl[BF16].alloc(B * OUT)   # bf16-flow output
+    var yf = Tensor.alloc(B * OUT)              # fp32 output
+    amp.forward["gpu", B](TensorRefs[1, ADT=BF16](xb), ya, Optional(c))
     fp.forward["gpu", B](TensorRefs[1](x), yf, Optional(c))
     ya.download(c); yf.download(c)
-    var e_fwd = _relerr(ya, yf, B * OUT)
+    var e_fwd = _relerr(_to_f32(ya, B * OUT), yf, B * OUT)
 
     # ---- backward ----
     var go = Tensor.alloc(B * OUT)
+    var gob = TensorImpl[BF16].alloc(B * OUT)
     for i in range(B * OUT):
         go.data[i] = _rand(i + 31)
-    go.upload(c)
-    var gia = Tensor.alloc(B * IN)
+        gob.data[i] = go.data[i].cast[BF16]()
+    go.upload(c); gob.upload(c)
+    var gia = TensorImpl[BF16].alloc(B * IN)   # bf16-flow grad_x
     var gif = Tensor.alloc(B * IN)
     amp.zero_grad["gpu"](Optional(c))
     fp.zero_grad["gpu"](Optional(c))
-    amp.vjp["gpu", B](TensorRefs[1](x), go, TensorRefs[1](gia), Optional(c))
+    amp.vjp["gpu", B](
+        TensorRefs[1, ADT=BF16](xb), gob, TensorRefs[1, ADT=BF16](gia),
+        Optional(c),
+    )
     fp.vjp["gpu", B](TensorRefs[1](x), go, TensorRefs[1](gif), Optional(c))
     gia.download(c); gif.download(c)
     amp.weight.grd.download(c); fp.weight.grd.download(c)
-    var e_gx = _relerr(gia, gif, B * IN)
+    var e_gx = _relerr(_to_f32(gia, B * IN), gif, B * IN)
     var e_gw = _relerr(amp.weight.grd, fp.weight.grd, W)
 
     print("  forward   rel.err =", e_fwd, "OK" if e_fwd < RELTOL else "FAIL")

@@ -23,7 +23,7 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Deterministic
 from mojo_rl.nn.primitives.linear import Linear
@@ -36,16 +36,23 @@ comptime B = 8
 comptime W = IN * OUT
 
 
-def _maxdiff(a: Tensor, b: Tensor, n: Int) -> Scalar[DT]:
+comptime BF16 = DType.bfloat16
+
+
+def _maxdiff(
+    a: TensorImpl[BF16], b: TensorImpl[BF16], n: Int
+) -> Scalar[DT]:
     var m: Scalar[DT] = 0
     for i in range(n):
-        var d = abs(a.data[i] - b.data[i])
+        var d = abs(a.data[i].cast[DT]() - b.data[i].cast[DT]())
         if d > m:
             m = d
     return m
 
 
-def _load_w(mut lin: Linear[IN, OUT, True], c: DeviceContext, seed: Int) raises:
+def _load_w(
+    mut lin: Linear[IN, OUT, DType.bfloat16], c: DeviceContext, seed: Int
+) raises:
     for k in range(W):
         lin.weight.val.data[k] = Scalar[DT](0.05 + 0.03 * Float64((k + seed) % 5))
     lin.weight.val.upload(c)
@@ -57,29 +64,30 @@ def main() raises:
     print("=" * 70)
     var c = DeviceContext()
 
-    var amp = Linear[IN, OUT, True].make["gpu", Deterministic](Optional(c))
+    var amp = Linear[IN, OUT, BF16].make["gpu", Deterministic](Optional(c))
     for k in range(OUT):
         amp.bias.val.data[k] = Scalar[DT](0)
     amp.bias.val.upload(c)
-    var x = Tensor.alloc(B * IN)
+    # Activations flow at bf16 (the whole point of bf16-flow).
+    var x = TensorImpl[BF16].alloc(B * IN)
     for i in range(B * IN):
-        x.data[i] = Scalar[DT](0.1 + 0.05 * Float64(i % 7))
+        x.data[i] = Scalar[BF16](0.1 + 0.05 * Float64(i % 7))
     x.upload(c)
 
-    var y0 = Tensor.alloc(B * OUT)
-    var y1 = Tensor.alloc(B * OUT)
-    var y2 = Tensor.alloc(B * OUT)
+    var y0 = TensorImpl[BF16].alloc(B * OUT)
+    var y1 = TensorImpl[BF16].alloc(B * OUT)
+    var y2 = TensorImpl[BF16].alloc(B * OUT)
 
     # baseline forward with W0 (force a cast via a version bump)
     _load_w(amp, c, 0)
     amp.weight.val.version += 1
-    amp.forward["gpu", B](TensorRefs[1](x), y0, Optional(c))
+    amp.forward["gpu", B](TensorRefs[1, ADT=BF16](x), y0, Optional(c))
     y0.download(c)
 
     # (A) invalidation: NEW weights W1 + version bump → output must CHANGE
     _load_w(amp, c, 2)
     amp.weight.val.version += 1   # what ParamVersionBump does on opt.step
-    amp.forward["gpu", B](TensorRefs[1](x), y1, Optional(c))
+    amp.forward["gpu", B](TensorRefs[1, ADT=BF16](x), y1, Optional(c))
     y1.download(c)
     var changed = _maxdiff(y1, y0, B * OUT)
     var a_ok = changed > Scalar[DT](0.01)
@@ -87,14 +95,14 @@ def main() raises:
 
     # (B) reuse: NEW weights W2 but NO version bump → cache reused → IDENTICAL
     _load_w(amp, c, 4)
-    amp.forward["gpu", B](TensorRefs[1](x), y2, Optional(c))
+    amp.forward["gpu", B](TensorRefs[1, ADT=BF16](x), y2, Optional(c))
     y2.download(c)
     var same = _maxdiff(y2, y1, B * OUT)
     var b_ok = same == Scalar[DT](0)
     print("  (B) reuse         max|y2-y1| =", same, "OK" if b_ok else "FAIL")
 
     # (C) integration, per-param path: Adam.step bumps the version
-    var m = Linear[IN, OUT, True].make["gpu", Deterministic](Optional(c))
+    var m = Linear[IN, OUT, BF16].make["gpu", Deterministic](Optional(c))
     var v0 = m.weight.val.version
     var opt = Adam(lr=Scalar[DT](1e-3))
     opt.zero_grad["gpu"](m, Optional(c))
@@ -106,7 +114,7 @@ def main() raises:
     # (D) integration, ARENA path: adopt() + step bumps the version too (the
     # grouped kernel bypasses visit, so the bump rides a separate for_each_param
     # walk — this is the path NVIDIA training actually uses).
-    var ma = Linear[IN, OUT, True].make["gpu", Deterministic](Optional(c))
+    var ma = Linear[IN, OUT, BF16].make["gpu", Deterministic](Optional(c))
     var optA = Adam(lr=Scalar[DT](1e-3))
     optA.adopt["gpu"](ma, Optional(c))
     var av0 = ma.weight.val.version
@@ -119,13 +127,15 @@ def main() raises:
     # (E) bf16 BACKWARD executes end-to-end (run-check only — Apple Metal bf16
     # GEMM numerics are garbage per the linalg bug, so parity is NVIDIA-gated;
     # here we just confirm the Phase-2 vjp path compiles + runs without crashing).
-    var go = Tensor.alloc(B * OUT)
+    var go = TensorImpl[BF16].alloc(B * OUT)
     for i in range(B * OUT):
-        go.data[i] = Scalar[DT](0.01 * Float64(i % 5))
+        go.data[i] = Scalar[BF16](0.01 * Float64(i % 5))
     go.upload(c)
-    var gi = Tensor.alloc(B * IN)
+    var gi = TensorImpl[BF16].alloc(B * IN)
     amp.zero_grad["gpu"](Optional(c))
-    amp.vjp["gpu", B](TensorRefs[1](x), go, TensorRefs[1](gi), Optional(c))
+    amp.vjp["gpu", B](
+        TensorRefs[1, ADT=BF16](x), go, TensorRefs[1, ADT=BF16](gi), Optional(c)
+    )
     gi.download(c)
     amp.weight.grd.download(c)
     c.synchronize()
