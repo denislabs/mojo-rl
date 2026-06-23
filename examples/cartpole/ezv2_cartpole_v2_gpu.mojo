@@ -16,8 +16,8 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.efficient_zero_v2.nets import (
@@ -54,28 +54,16 @@ def main() raises:
 
     var ctx = DeviceContext()
     var env = CartPoleEnv[DType.float32]()
-    var rep = Rep.make["gpu", INIT=Kaiming](ctx)
-    var dyn = Dyn.make["gpu", INIT=Kaiming](ctx)
-    var pred = Pred.make["gpu", INIT=Kaiming](ctx)
-    var proj = Proj.make["gpu", INIT=Kaiming](ctx)
-    var predh = Predh.make["gpu", INIT=Kaiming](ctx)
-    var orep = Adam.make["gpu", M=Rep](rep, ctx)
-    var odyn = Adam.make["gpu", M=Dyn](dyn, ctx)
-    var opred = Adam.make["gpu", M=Pred](pred, ctx)
-    var oproj = Adam.make["gpu", M=Proj](proj, ctx)
-    var opredh = Adam.make["gpu", M=Predh](predh, ctx)
-    orep.lr = Scalar[DT](3e-4)
-    odyn.lr = Scalar[DT](3e-4)
-    opred.lr = Scalar[DT](3e-4)
-    oproj.lr = Scalar[DT](3e-4)
-    opredh.lr = Scalar[DT](3e-4)
-    # Gradient clipping (reference uses 5; MuZero example uses 10). Without it
-    # the dominant SimSiam consistency loss (coef 2.0) makes the update noisy.
-    orep.max_grad_norm = Scalar[DT](5.0)
-    odyn.max_grad_norm = Scalar[DT](5.0)
-    opred.max_grad_norm = Scalar[DT](5.0)
-    oproj.max_grad_norm = Scalar[DT](5.0)
-    opredh.max_grad_norm = Scalar[DT](5.0)
+    var rep = Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred = Pred.make["gpu", Kaiming](Optional(ctx))
+    var proj = Proj.make["gpu", Kaiming](Optional(ctx))
+    var predh = Predh.make["gpu", Kaiming](Optional(ctx))
+    var orep = Adam(lr=Scalar[DT](3e-4))
+    var odyn = Adam(lr=Scalar[DT](3e-4))
+    var opred = Adam(lr=Scalar[DT](3e-4))
+    var oproj = Adam(lr=Scalar[DT](3e-4))
+    var opredh = Adam(lr=Scalar[DT](3e-4))
 
     # ── metrics logger (silent no-op without RL_MONITOR_URL in env/.env) ──
     var env_vars = load_dotenv()

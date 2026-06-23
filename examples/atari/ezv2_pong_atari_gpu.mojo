@@ -43,8 +43,8 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.optimizer.sgd import SGD
+from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
@@ -112,32 +112,24 @@ def main() raises:
         _make_envs(rom.data.value(), rom.size), noop_max=30
     )
 
-    var rep = Cfg.Rep.make["gpu", INIT=Kaiming](ctx)
-    var dyn = Cfg.Dyn.make["gpu", INIT=Kaiming](ctx)
-    var pred = Cfg.Pred.make["gpu", INIT=Kaiming](ctx)
-    var proj = Cfg.Proj.make["gpu", INIT=Kaiming](ctx)
-    var predh = Cfg.Predh.make["gpu", INIT=Kaiming](ctx)
+    var rep = Cfg.Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn = Cfg.Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred = Cfg.Pred.make["gpu", Kaiming](Optional(ctx))
+    var proj = Cfg.Proj.make["gpu", Kaiming](Optional(ctx))
+    var predh = Cfg.Predh.make["gpu", Kaiming](Optional(ctx))
 
     # init_zero=True: neutral value/reward + uniform policy prior at init.
     ez_atari_init_zero_pred["gpu", ACT, BINS](pred, ctx)
     ez_atari_init_zero_dyn["gpu", ACT, BINS](dyn, ctx)
     ctx.synchronize()
 
-    # SGD 0.2 / mom 0.9 / wd 1e-4 / clip 5 (the warmup→const LR is driven by the
-    # driver's lr/lr_warmup_iters; lr here is overwritten each train step).
-    var orep = SGD.make["gpu", M = Cfg.Rep](rep, ctx)
-    var odyn = SGD.make["gpu", M = Cfg.Dyn](dyn, ctx)
-    var opred = SGD.make["gpu", M = Cfg.Pred](pred, ctx)
-    var oproj = SGD.make["gpu", M = Cfg.Proj](proj, ctx)
-    var opredh = SGD.make["gpu", M = Cfg.Predh](predh, ctx)
-    orep.momentum = Scalar[DT](0.9); orep.weight_decay = Scalar[DT](1e-4)
-    odyn.momentum = Scalar[DT](0.9); odyn.weight_decay = Scalar[DT](1e-4)
-    opred.momentum = Scalar[DT](0.9); opred.weight_decay = Scalar[DT](1e-4)
-    oproj.momentum = Scalar[DT](0.9); oproj.weight_decay = Scalar[DT](1e-4)
-    opredh.momentum = Scalar[DT](0.9); opredh.weight_decay = Scalar[DT](1e-4)
-    orep.max_grad_norm = Scalar[DT](5.0); odyn.max_grad_norm = Scalar[DT](5.0)
-    opred.max_grad_norm = Scalar[DT](5.0); oproj.max_grad_norm = Scalar[DT](5.0)
-    opredh.max_grad_norm = Scalar[DT](5.0)
+    # Adam @ lr 0.2 (the warmup→const LR is driven by the driver's
+    # lr/lr_warmup_iters; the lr set here is overwritten each train step).
+    var orep = Adam(lr=Scalar[DT](0.2))
+    var odyn = Adam(lr=Scalar[DT](0.2))
+    var opred = Adam(lr=Scalar[DT](0.2))
+    var oproj = Adam(lr=Scalar[DT](0.2))
+    var opredh = Adam(lr=Scalar[DT](0.2))
 
     # ── metrics logger (silent no-op without RL_MONITOR_URL in env/.env) ──
     var env_vars = load_dotenv()
