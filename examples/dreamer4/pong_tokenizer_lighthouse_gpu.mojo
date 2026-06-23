@@ -12,14 +12,14 @@ stays on the host; the patches are copied H2D and the model forward/backward
 Gate: full-frame PSNR climbs over training, on GPU.
 """
 
-from std.memory import alloc
 from std.testing import assert_true
-from layout import TileTensor, row_major
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer import Adam
-from std.gpu.host import DeviceContext, DeviceBuffer
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Xavier
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.envs.arcade_games.pong.online_sampler import (
     OnlinePongSampler, ScriptedPongPolicy,
 )
@@ -29,14 +29,7 @@ from mojo_rl.deep_agents.dreamer4.recon_loss import (
     masked_recon_grad_gpu, full_recon_psnr,
 )
 from mojo_rl.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
-
-
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
-
-
-def _mao(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
+from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
 
 
 def main() raises:
@@ -78,24 +71,15 @@ def main() raises:
 
     var tok = Dreamer4Tokenizer[
         DP, D, NH, T, L, NP, D_BOT, HID, DEPTH, DROP, DROP, 7
-    ].make[target="gpu", INIT=Xavier](ctx)
-    var optim = Adam.make["gpu", M=type_of(tok)](tok, ctx)
-    optim.lr = LR
+    ].make["gpu", Xavier](ctx)
+    var optim = Adam(lr=LR)
 
-    # host data-prep buffers
-    var frames = _alloc(FRAME_N)
-    var patches_h = ctx.enqueue_create_host_buffer[DT](PATCH_N)
-    var pred_h = ctx.enqueue_create_host_buffer[DT](PATCH_N)
-    ctx.synchronize()
-    # device buffers
-    var patches_d = ctx.enqueue_create_buffer[DT](PATCH_N)
-    var pred_d = ctx.enqueue_create_buffer[DT](PATCH_N)
-    var gpred_d = ctx.enqueue_create_buffer[DT](PATCH_N)
-    var gin_d = ctx.enqueue_create_buffer[DT](PATCH_N)
-    var pt = TileTensor(_mao(patches_d), row_major[BATCH, NP * DP]())
-    var prt = TileTensor(_mao(pred_d), row_major[BATCH, NP * DP]())
-    var got = TileTensor(_mao(gpred_d), row_major[BATCH, NP * DP]())
-    var git = TileTensor(_mao(gin_d), row_major[BATCH, NP * DP]())
+    # host data-prep buffers (CPU-side `Tensor`s; patches uploaded H2D each step)
+    var frames = Tensor.alloc(FRAME_N)
+    var patches = Tensor.alloc(PATCH_N)         # host staging; .upload() → device
+    var pred = Tensor.alloc_gpu(ctx, PATCH_N)
+    var gpred = Tensor.alloc_gpu(ctx, PATCH_N)
+    var gin = Tensor.alloc_gpu(ctx, PATCH_N)
 
     var first_psnr: Float64 = 0.0
     var last_psnr: Float64 = 0.0
@@ -107,27 +91,34 @@ def main() raises:
             for t in range(T):
                 var bt = b * T + t
                 var fsrc = pix + (b * T + t) * IMG_DIM + 3 * IMG * IMG
-                downscale_box[IMG, IMG, TGT, TGT](fsrc, frames + bt * TGT * TGT)
-        temporal_patchify[BATCH, 1, TGT, TGT, PATCH](frames, patches_h.unsafe_ptr())
-        ctx.enqueue_copy(patches_d, patches_h)
+                downscale_box[IMG, IMG, TGT, TGT](
+                    fsrc, _mao(frames.data.unsafe_ptr()) + bt * TGT * TGT
+                )
+        temporal_patchify[BATCH, 1, TGT, TGT, PATCH](
+            _mao(frames.data.unsafe_ptr()), _mao(patches.data.unsafe_ptr())
+        )
+        patches.upload(ctx)                      # H2D the freshly-patchified batch
 
-        optim.zero_grad["gpu"](tok)
-        tok.forward["gpu", BATCH](pt, output=prt)
+        optim.zero_grad["gpu"](tok, ctx)
+        tok.forward["gpu", BATCH](TensorRefs[1](patches), pred, ctx)
         var mask = tok.mae_mask_ptr()  # device keep ptr
         masked_recon_grad_gpu[NP, DP, BATCH](
-            _mao(pred_d), _mao(patches_d), mask, _mao(gpred_d), ctx
+            _mao(pred.dev.value().unsafe_ptr()),
+            _mao(patches.dev.value().unsafe_ptr()),
+            mask,
+            _mao(gpred.dev.value().unsafe_ptr()),
+            ctx,
         )
-        tok.vjp["gpu", BATCH](got, git)
-        optim.step["gpu"](tok)
+        tok.vjp["gpu", BATCH](TensorRefs[1](patches), gpred, TensorRefs[1](gin), ctx)
+        optim.step["gpu"](tok, ctx)
         tok.advance_rng()
 
         if step % EVAL_EVERY == 0 or step == STEPS - 1:
             tok.set_mae_p(0.0, 0.0)
-            tok.forward["gpu", BATCH](pt, output=prt)
-            ctx.enqueue_copy(pred_h, pred_d)
-            ctx.synchronize()
+            tok.forward["gpu", BATCH](TensorRefs[1](patches), pred, ctx)
+            pred.download(ctx)                   # D2H for the host PSNR score
             var psnr = full_recon_psnr[NP, DP, BATCH](
-                pred_h.unsafe_ptr(), patches_h.unsafe_ptr()
+                _mao(pred.data.unsafe_ptr()), _mao(patches.data.unsafe_ptr())
             )
             tok.set_mae_p(DROP, DROP)
             if step == 0:

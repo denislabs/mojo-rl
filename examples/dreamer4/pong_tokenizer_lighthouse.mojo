@@ -12,13 +12,13 @@ Gate: full-frame PSNR climbs substantially over training — the tokenizer
 learns to encode+reconstruct real Pong frames. Pure CPU.
 """
 
-from std.memory import alloc
 from std.testing import assert_true
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Xavier
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.envs.arcade_games.pong.online_sampler import (
     OnlinePongSampler, ScriptedPongPolicy,
 )
@@ -28,10 +28,7 @@ from mojo_rl.deep_agents.dreamer4.recon_loss import (
     masked_recon_loss, full_recon_psnr,
 )
 from mojo_rl.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
-
-
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
+from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
 
 
 def main() raises:
@@ -75,18 +72,16 @@ def main() raises:
 
     var tok = Dreamer4Tokenizer[
         DP, D, NH, T, L, NP, D_BOT, HID, DEPTH, DROP, DROP, 7
-    ].make[target="cpu", INIT=Xavier]()
-    var optim = Adam.make["cpu", M=type_of(tok)](tok)
-    optim.lr = LR
+    ].make["cpu", Xavier](None)
+    var optim = Adam(lr=LR)
 
-    var frames = _alloc(FRAME_N)
-    var patches = _alloc(PATCH_N)
-    var pred = _alloc(PATCH_N)
-    var gpred = _alloc(PATCH_N)
-    var gin = _alloc(PATCH_N)
-    var pt = TileTensor(patches, row_major[BATCH, NP * DP]())
-    var prt = TileTensor(pred, row_major[BATCH, NP * DP]())
-    var git = TileTensor(gin, row_major[BATCH, NP * DP]())
+    # Storage scratch (forward/vjp operate over `Tensor`; loss helpers read the
+    # underlying host `data` via `_mao(...)`).
+    var frames = Tensor.alloc(FRAME_N)
+    var patches = Tensor.alloc(PATCH_N)
+    var pred = Tensor.alloc(PATCH_N)
+    var gpred = Tensor.alloc(PATCH_N)
+    var gin = Tensor.alloc(PATCH_N)
 
     var first_psnr: Float64 = 0.0
     var last_psnr: Float64 = 0.0
@@ -99,24 +94,34 @@ def main() raises:
             for t in range(T):
                 var bt = b * T + t
                 var fsrc = pix + (b * T + t) * IMG_DIM + 3 * IMG * IMG
-                downscale_box[IMG, IMG, TGT, TGT](fsrc, frames + bt * TGT * TGT)
-        temporal_patchify[BATCH, 1, TGT, TGT, PATCH](frames, patches)
+                downscale_box[IMG, IMG, TGT, TGT](
+                    fsrc, _mao(frames.data.unsafe_ptr()) + bt * TGT * TGT
+                )
+        temporal_patchify[BATCH, 1, TGT, TGT, PATCH](
+            _mao(frames.data.unsafe_ptr()), _mao(patches.data.unsafe_ptr())
+        )
 
         # train step (MAE masking active)
-        optim.zero_grad["cpu"](tok)
-        tok.forward["cpu", BATCH](pt, output=prt)
+        optim.zero_grad["cpu"](tok, None)
+        tok.forward["cpu", BATCH](TensorRefs[1](patches), pred, None)
         var mask = tok.mae_mask_ptr()
-        var loss = masked_recon_loss[NP, DP, BATCH](pred, patches, mask, gpred)
-        var got = TileTensor(gpred, row_major[BATCH, NP * DP]())
-        tok.vjp["cpu", BATCH](got, git)
-        optim.step["cpu"](tok)
+        var loss = masked_recon_loss[NP, DP, BATCH](
+            _mao(pred.data.unsafe_ptr()),
+            _mao(patches.data.unsafe_ptr()),
+            mask,
+            _mao(gpred.data.unsafe_ptr()),
+        )
+        tok.vjp["cpu", BATCH](TensorRefs[1](patches), gpred, TensorRefs[1](gin), None)
+        optim.step["cpu"](tok, None)
         tok.advance_rng()
 
         if step % EVAL_EVERY == 0 or step == STEPS - 1:
             # full-frame eval: p=0 (no masking), PSNR over all patches.
             tok.set_mae_p(0.0, 0.0)
-            tok.forward["cpu", BATCH](pt, output=prt)
-            var psnr = full_recon_psnr[NP, DP, BATCH](pred, patches)
+            tok.forward["cpu", BATCH](TensorRefs[1](patches), pred, None)
+            var psnr = full_recon_psnr[NP, DP, BATCH](
+                _mao(pred.data.unsafe_ptr()), _mao(patches.data.unsafe_ptr())
+            )
             tok.set_mae_p(DROP, DROP)
             if step == 0:
                 first_psnr = psnr

@@ -27,30 +27,26 @@ near-identical frame-to-frame, so one-step next-frame PSNR saturates at the
 — a property of the sparse content + tokenizer, not the dynamics. Pure CPU.
 """
 
-from std.memory import alloc
 from std.math import sqrt, log, log10, cos
 from std.testing import assert_true
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Xavier
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.envs.arcade_games.pong.online_sampler import (
     OnlinePongSampler, ScriptedPongPolicy,
 )
 from mojo_rl.experimental.lewm.pong_data import WindowSource
 from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
 from mojo_rl.deep_agents.dreamer4.dynamics import Dreamer4Dynamics
-from mojo_rl.deep_agents.dreamer4.shortcut_loss import dynamics_pretrain_loss
+from mojo_rl.deep_agents.dreamer4.shortcut_loss import dynamics_pretrain_loss, _mao
 from mojo_rl.deep_agents.dreamer4.ode_sampler import sample_one_timestep
 from mojo_rl.deep_agents.dreamer4.recon_loss import (
     masked_recon_loss, full_recon_psnr,
 )
 from mojo_rl.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
-
-
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 
 
 # ── tiny deterministic RNG (xorshift64* + Box-Muller) ──────────────────
@@ -134,41 +130,36 @@ def main() raises:
 
     var tok = Dreamer4Tokenizer[
         DP, D, NH, T, L, NP, D_BOT, HID, DEPTH, DROP, DROP, 7
-    ].make[target="cpu", INIT=Xavier]()
-    var topt = Adam.make["cpu", M=type_of(tok)](tok)
-    topt.lr = LR_TOK
+    ].make["cpu", Xavier](None)
+    var topt = Adam(lr=LR_TOK)
 
     var dyn = Dreamer4Dynamics[
         DSP, NSP, D_DYN, NH, T, NREG, HID_DYN, DEPTH_DYN, KMAX
-    ].make[target="cpu", INIT=Xavier]()
-    var dopt = Adam.make["cpu", M=type_of(dyn)](dyn)
-    dopt.lr = LR_DYN
+    ].make["cpu", Xavier](None)
+    var dopt = Adam(lr=LR_DYN)
 
-    var frames = _alloc(FRAME_N)
-    var patches = _alloc(PATCH_N)
-    var pred = _alloc(PATCH_N)
-    var gpred = _alloc(PATCH_N)
-    var gin = _alloc(PATCH_N)
-    var z1 = _alloc(ZN)
-    var gz = _alloc(ZN)
-    var z0n = _alloc(ZN)
-    var sigma = _alloc(BATCH)
-    var sig_idx = _alloc(BATCH)
-    var step_idx = _alloc(BATCH)
-    var grad_zhat = _alloc(ZN)
-    var zhat = _alloc(ZN)
-    var ctx_lat = _alloc(B * (T - 1) * ND)
-    var z_init = _alloc(B * ND)
-    var pred_last = _alloc(B * ND)
-    var zwin = _alloc(ZN)
-    var rec = _alloc(PATCH_N)
+    # Storage scratch. Buffers fed to forward/vjp are `Tensor`s; the loss/sampler
+    # helpers read their underlying host `data` via `_mao(...)`.
+    var frames = Tensor.alloc(FRAME_N)
+    var patches = Tensor.alloc(PATCH_N)
+    var pred = Tensor.alloc(PATCH_N)
+    var gpred = Tensor.alloc(PATCH_N)
+    var gin = Tensor.alloc(PATCH_N)
+    var z1 = Tensor.alloc(ZN)
+    var gz = Tensor.alloc(ZN)
+    var z0n = Tensor.alloc(ZN)
+    var sigma = Tensor.alloc(BATCH)
+    var sig_idx = Tensor.alloc(BATCH)
+    var step_idx = Tensor.alloc(BATCH)
+    var grad_zhat = Tensor.alloc(ZN)
+    var zhat = Tensor.alloc(ZN)
+    var ztil = Tensor.alloc(ZN)       # main-pass input z̃ (= storage dyn.vjp fwd_in)
+    var ctx_lat = Tensor.alloc(B * (T - 1) * ND)
+    var z_init = Tensor.alloc(B * ND)
+    var pred_last = Tensor.alloc(B * ND)
+    var zwin = Tensor.alloc(ZN)
+    var rec = Tensor.alloc(PATCH_N)
 
-    var pt = TileTensor(patches, row_major[BATCH, NP * DP]())
-    var prt = TileTensor(pred, row_major[BATCH, NP * DP]())
-    var git = TileTensor(gin, row_major[BATCH, NP * DP]())
-    var z1_t = TileTensor(z1, row_major[BATCH, ND]())
-    var zwin_t = TileTensor(zwin, row_major[BATCH, ND]())
-    var rec_t = TileTensor(rec, row_major[BATCH, NP * DP]())
     var rng = Rng(20260606)
 
     # ── Phase A: train tokenizer ────────────────────────────────────────
@@ -180,22 +171,33 @@ def main() raises:
             for t in range(T):
                 var bt = b * T + t
                 var fsrc = pix + bt * IMG_DIM + 3 * IMG * IMG
-                downscale_box[IMG, IMG, TGT, TGT](fsrc, frames + bt * TGT * TGT)
-        temporal_patchify[BATCH, 1, TGT, TGT, PATCH](frames, patches)
+                downscale_box[IMG, IMG, TGT, TGT](
+                    fsrc, _mao(frames.data.unsafe_ptr()) + bt * TGT * TGT
+                )
+        temporal_patchify[BATCH, 1, TGT, TGT, PATCH](
+            _mao(frames.data.unsafe_ptr()), _mao(patches.data.unsafe_ptr())
+        )
 
-        topt.zero_grad["cpu"](tok)
-        tok.forward["cpu", BATCH](pt, output=prt)
+        topt.zero_grad["cpu"](tok, None)
+        tok.forward["cpu", BATCH](TensorRefs[1](patches), pred, None)
         var mask = tok.mae_mask_ptr()
-        var loss = masked_recon_loss[NP, DP, BATCH](pred, patches, mask, gpred)
-        var got = TileTensor(gpred, row_major[BATCH, NP * DP]())
-        tok.vjp["cpu", BATCH](got, git)
-        topt.step["cpu"](tok)
+        var loss = masked_recon_loss[NP, DP, BATCH](
+            _mao(pred.data.unsafe_ptr()),
+            _mao(patches.data.unsafe_ptr()),
+            mask,
+            _mao(gpred.data.unsafe_ptr()),
+        )
+        tok.vjp["cpu", BATCH](TensorRefs[1](patches), gpred, TensorRefs[1](gin), None)
+        topt.step["cpu"](tok, None)
         tok.advance_rng()
         if step % 50 == 0:
             tok.set_mae_p(0.0, 0.0)
-            tok.forward["cpu", BATCH](pt, output=prt)
+            tok.forward["cpu", BATCH](TensorRefs[1](patches), pred, None)
             print("   tok step", step, " recon PSNR =",
-                  full_recon_psnr[NP, DP, BATCH](pred, patches), "dB")
+                  full_recon_psnr[NP, DP, BATCH](
+                      _mao(pred.data.unsafe_ptr()),
+                      _mao(patches.data.unsafe_ptr())
+                  ), "dB")
             tok.set_mae_p(DROP, DROP)
     tok.set_mae_p(0.0, 0.0)            # FREEZE: clean latents from here on
 
@@ -215,11 +217,15 @@ def main() raises:
             for t in range(T):
                 var bt = b * T + t
                 var fsrc = pix + bt * IMG_DIM + 3 * IMG * IMG
-                downscale_box[IMG, IMG, TGT, TGT](fsrc, frames + bt * TGT * TGT)
-        temporal_patchify[BATCH, 1, TGT, TGT, PATCH](frames, patches)
+                downscale_box[IMG, IMG, TGT, TGT](
+                    fsrc, _mao(frames.data.unsafe_ptr()) + bt * TGT * TGT
+                )
+        temporal_patchify[BATCH, 1, TGT, TGT, PATCH](
+            _mao(frames.data.unsafe_ptr()), _mao(patches.data.unsafe_ptr())
+        )
 
         # encode clean latents (tokenizer frozen, p=0)
-        tok.enc.forward["cpu", BATCH](pt, output=z1_t)
+        tok.enc.forward["cpu", BATCH](TensorRefs[1](patches), z1, None)
 
         if step >= 0:
             # sample per-(b,t) step/sigma + noise, then one shortcut step
@@ -235,21 +241,41 @@ def main() raises:
                     if j >= K:
                         j = K - 1
                     var scale = KMAX // K
-                    sigma[bt] = Scalar[DT](Float64(j) / Float64(K))
-                    sig_idx[bt] = Scalar[DT](Float64(j * scale))
-                    step_idx[bt] = Scalar[DT](Float64(stp))
+                    sigma.data[bt] = Scalar[DT](Float64(j) / Float64(K))
+                    sig_idx.data[bt] = Scalar[DT](Float64(j * scale))
+                    step_idx.data[bt] = Scalar[DT](Float64(stp))
             for i in range(ZN):
-                z0n[i] = Scalar[DT](rng.gauss())
+                z0n.data[i] = Scalar[DT](rng.gauss())
 
             var do_boot = step >= 30
-            dopt.zero_grad["cpu"](dyn)
+            dopt.zero_grad["cpu"](dyn, None)
             var loss = dynamics_pretrain_loss[
                 type_of(dyn), B, T, B_SELF, NSP, DSP, KMAX
-            ](dyn, z1, z0n, sigma, sig_idx, step_idx, do_boot, grad_zhat, zhat)
-            var gzt = TileTensor(grad_zhat, row_major[BATCH, ND]())
-            var gzi = TileTensor(gz, row_major[BATCH, ND]())
-            dyn.vjp["cpu", BATCH](gzt, gzi)
-            dopt.step["cpu"](dyn)
+            ](
+                dyn,
+                _mao(z1.data.unsafe_ptr()),
+                _mao(z0n.data.unsafe_ptr()),
+                _mao(sigma.data.unsafe_ptr()),
+                _mao(sig_idx.data.unsafe_ptr()),
+                _mao(step_idx.data.unsafe_ptr()),
+                do_boot,
+                _mao(grad_zhat.data.unsafe_ptr()),
+                _mao(zhat.data.unsafe_ptr()),
+            )
+            # Reconstruct the main-pass input z̃ = (1−σ)·z0 + σ·z1: the storage
+            # dyn.vjp recomputes the spatial-proj forward from it (identical to
+            # the loss's internal z̃).
+            for bt in range(BATCH):
+                var s = Float64(sigma.data[bt])
+                for i in range(ND):
+                    var idx = bt * ND + i
+                    ztil.data[idx] = Scalar[DT](
+                        (1.0 - s) * Float64(z0n.data[idx]) + s * Float64(z1.data[idx])
+                    )
+            dyn.vjp["cpu", BATCH](
+                TensorRefs[1](ztil), grad_zhat, TensorRefs[1](gz), None
+            )
+            dopt.step["cpu"](dyn, None)
             if step % EVAL_EVERY == 0:
                 print("   dyn step", step, " loss =", loss)
 
@@ -258,20 +284,25 @@ def main() raises:
             for b in range(B):
                 for t in range(T - 1):
                     for i in range(ND):
-                        ctx_lat[(b * (T - 1) + t) * ND + i] = z1[(b * T + t) * ND + i]
+                        ctx_lat.data[(b * (T - 1) + t) * ND + i] = (
+                            z1.data[(b * T + t) * ND + i]
+                        )
             for b in range(B):
                 for i in range(ND):
-                    z_init[b * ND + i] = Scalar[DT](rng.gauss())
+                    z_init.data[b * ND + i] = Scalar[DT](rng.gauss())
             sample_one_timestep[type_of(dyn), B, T, NSP, DSP, KMAX, KEVAL](
-                dyn, ctx_lat, z_init, pred_last
+                dyn,
+                _mao(ctx_lat.data.unsafe_ptr()),
+                _mao(z_init.data.unsafe_ptr()),
+                _mao(pred_last.data.unsafe_ptr()),
             )
             # latent-MSE: ODE-sampled last frame vs true last-frame latents
             var lse: Float64 = 0.0
             for b in range(B):
                 for i in range(ND):
                     var dl = (
-                        Float64(pred_last[b * ND + i])
-                        - Float64(z1[(b * T + (T - 1)) * ND + i])
+                        Float64(pred_last.data[b * ND + i])
+                        - Float64(z1.data[(b * T + (T - 1)) * ND + i])
                     )
                     lse += dl * dl
             var lmse = lse / Float64(B * ND)
@@ -280,15 +311,17 @@ def main() raises:
                     for i in range(ND):
                         var wi = (b * T + t) * ND + i
                         if t < T - 1:
-                            zwin[wi] = z1[wi]
+                            zwin.data[wi] = z1.data[wi]
                         else:
-                            zwin[wi] = pred_last[b * ND + i]
-            tok.dec.forward["cpu", BATCH](zwin_t, output=rec_t)
+                            zwin.data[wi] = pred_last.data[b * ND + i]
+            tok.dec.forward["cpu", BATCH](TensorRefs[1](zwin), rec, None)
             var sse: Float64 = 0.0
             for b in range(B):
                 var base = (b * T + (T - 1)) * NP * DP
                 for k in range(NP * DP):
-                    var dd = Float64(rec[base + k]) - Float64(patches[base + k])
+                    var dd = (
+                        Float64(rec.data[base + k]) - Float64(patches.data[base + k])
+                    )
                     sse += dd * dd
             var mse = sse / Float64(B * NP * DP)
             var psnr = 120.0 if mse <= 1e-12 else -10.0 * log10(mse)

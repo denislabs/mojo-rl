@@ -178,6 +178,23 @@ struct MAEReplacer[
     def mae_keep(ref self) -> ref [self.keep] Tensor:
         return self.keep
 
+    def mae_mask_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Raw per-patch `keep` pointer for the masked-recon loss ABI — the
+        device ptr when the keep Tensor lives on GPU, else the host ptr.
+
+        Restores the legacy accessor that `Dreamer4Encoder` / `Dreamer4Tokenizer`
+        forward to: the storage rename of this method to `mae_keep` (returning
+        the `Tensor`) left that forwarding path uncompiled, since the recon-loss
+        kernels (`masked_recon_loss` / `masked_recon_grad_gpu`) consume a raw
+        target-resident pointer, not a `Tensor`."""
+        if self.keep.dev:
+            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.keep.dev.value().unsafe_ptr()
+            )
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.keep.data.unsafe_ptr()
+        )
+
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](

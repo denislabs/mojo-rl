@@ -36,22 +36,19 @@ action→h→reward path the gate exercises is fully trained, so the signal is
 honest.)
 """
 
-from std.memory import alloc
 from std.testing import assert_true
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Xavier
+from mojo_rl.nn.storage.optimizer.adam import Adam
 from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
+from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
 from mojo_rl.deep_agents.dreamerv3.twohot import (
     symexp_twohot_bins, twohot_loss, twohot_loss_backward, twohot_pred,
 )
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_argmax
-
-
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 
 
 # tiny deterministic RNG (xorshift64*) for fresh action-sampling uniforms
@@ -125,95 +122,101 @@ def main() raises:
     print("Dreamer 4 imagination-RL lighthouse — greedy return beats BC prior")
     print("=" * 70)
 
-    var agent = Agent.make[target="cpu", INIT=Xavier]()
-    var bins = _alloc(NBINS)
-    symexp_twohot_bins[NBINS](bins, lo=Scalar[DT](-9.0))
+    var agent = Agent.make["cpu", Xavier](None)
+    var bins = Tensor.alloc(NBINS)
+    symexp_twohot_bins[NBINS](_mao(bins.data.unsafe_ptr()), lo=Scalar[DT](-9.0))
 
-    var task_ids = _alloc(B)
+    var task_ids = Tensor.alloc(B)
     for b in range(B):
-        task_ids[b] = Scalar[DT](0.0)
-    var agp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-        agent.agent_in.unsafe_ptr()
-    )
-    agent.te.embed_into["cpu", B, T](task_ids, agp)
+        task_ids.data[b] = Scalar[DT](0.0)
+    var agp = _mao(agent.agent_in.unsafe_ptr())
+    agent.te.embed_into["cpu", B, T](_mao(task_ids.data.unsafe_ptr()), agp)
 
     # ── Stage 1: supervised reward path (dyn transformer+act-MLP + reward) ──
     # Match the rollout's latent distribution: frame 0 (context) = 0.1, the
     # imagined frame 1 ≈ 0; the imagined frame's action token = a[b] (cover all
     # actions). Train r̂(h₁) = +1 if a[b] == GOOD else −1.
     print("- Stage 1: train world-model reward path (dyn + reward head)")
-    var dopt = Adam.make["cpu", M=Agent.DYN](agent.dyn)
-    dopt.lr = Scalar[DT](3e-3)
-    var ropt = Adam.make["cpu", M=Agent.RH](agent.rh)
-    ropt.lr = Scalar[DT](3e-3)
+    var dopt = Adam(lr=Scalar[DT](3e-3))
+    var ropt = Adam(lr=Scalar[DT](3e-3))
 
-    var zfix = _alloc(BF * ND)
-    var act_oh = _alloc(BF * ADIM)
-    var act_mask = _alloc(BF * ADIM)
-    var r_tgt = _alloc(B)                       # reward target on frame 1
+    var zfix = Tensor.alloc(BF * ND)
+    var act_oh = Tensor.alloc(BF * ADIM)
+    var act_mask = Tensor.alloc(BF * ADIM)
+    var r_tgt = Tensor.alloc(B)                       # reward target on frame 1
     for i in range(BF * ADIM):
-        act_mask[i] = Scalar[DT](1.0)
+        act_mask.data[i] = Scalar[DT](1.0)
     for i in range(BF * ADIM):
-        act_oh[i] = Scalar[DT](0.0)
+        act_oh.data[i] = Scalar[DT](0.0)
     for b in range(B):
         var f0 = (b * T + 0) * ND
         var f1 = (b * T + 1) * ND
         for i in range(ND):
-            zfix[f0 + i] = Scalar[DT](0.1)      # context frame
-            zfix[f1 + i] = Scalar[DT](0.0)      # imagined frame ≈ 0
+            zfix.data[f0 + i] = Scalar[DT](0.1)      # context frame
+            zfix.data[f1 + i] = Scalar[DT](0.0)      # imagined frame ≈ 0
         var a = b % NACT
-        for k in range(ADIM):                   # frame-1 action token = a
-            act_oh[(b * T + 1) * ADIM + k] = Scalar[DT](1.0 if k == a else 0.0)
-        r_tgt[b] = Scalar[DT](1.0 if a == GOOD else -1.0)
+        for k in range(ADIM):                        # frame-1 action token = a
+            act_oh.data[(b * T + 1) * ADIM + k] = Scalar[DT](1.0 if k == a else 0.0)
+        r_tgt.data[b] = Scalar[DT](1.0 if a == GOOD else -1.0)
 
-    var sigc = _alloc(BF)
-    var stepc = _alloc(BF)
+    var sigc = Tensor.alloc(BF)
+    var stepc = Tensor.alloc(BF)
     for i in range(BF):
-        sigc[i] = Scalar[DT](Float64(KMAX - 1))
-        stepc[i] = Scalar[DT](2.0)               # EMAX = log2(KMAX)
+        sigc.data[i] = Scalar[DT](Float64(KMAX - 1))
+        stepc.data[i] = Scalar[DT](2.0)              # EMAX = log2(KMAX)
 
-    var zfix_t = TileTensor(zfix, row_major[BF, ND]())
-    var zhat = _alloc(BF * ND)
-    var zhat_t = TileTensor(zhat, row_major[BF, ND]())
-    var rlog = _alloc(BF * RLOG)
-    var rlog_t = TileTensor(rlog, row_major[BF, RLOG]())
-    var grl = _alloc(BF * RLOG)
-    var grl_t = TileTensor(grl, row_major[BF, RLOG]())
-    var grad_hi = _alloc(BF * AGD)             # rh.vjp grad_input = grad wrt h
-    var grad_hi_t = TileTensor(grad_hi, row_major[BF, AGD]())
-    var gzero = _alloc(BF * ND)
-    var gzero_t = TileTensor(gzero, row_major[BF, ND]())
-    var gzt = _alloc(BF * ND)
-    var gzt_t = TileTensor(gzt, row_major[BF, ND]())
+    var zhat = Tensor.alloc(BF * ND)
+    var rlog = Tensor.alloc(BF * RLOG)
+    var grl = Tensor.alloc(BF * RLOG)
+    var grad_hi = Tensor.alloc(BF * AGD)             # rh.vjp grad_input = grad wrt h
+    var gzero = Tensor.alloc(BF * ND)
+    var gzt = Tensor.alloc(BF * ND)
     for i in range(BF * ND):
-        gzero[i] = Scalar[DT](0.0)
+        gzero.data[i] = Scalar[DT](0.0)
 
     var first_r: Float64 = 0.0
     var last_r: Float64 = 0.0
     for step in range(800):
-        dopt.zero_grad["cpu"](agent.dyn)
-        ropt.zero_grad["cpu"](agent.rh)
-        agent.dyn.set_indices(sigc, stepc, BF)
-        agent.dyn.set_actions(act_oh, act_mask, BF)
+        dopt.zero_grad["cpu"](agent.dyn, None)
+        ropt.zero_grad["cpu"](agent.rh, None)
+        agent.dyn.set_indices(
+            _mao(sigc.data.unsafe_ptr()), _mao(stepc.data.unsafe_ptr()), BF
+        )
+        agent.dyn.set_actions(
+            _mao(act_oh.data.unsafe_ptr()), _mao(act_mask.data.unsafe_ptr()), BF
+        )
         agent.dyn.set_agent_in(agp, BF)
-        agent.dyn.forward["cpu", BF](zfix_t, output=zhat_t)
+        agent.dyn.forward["cpu", BF](TensorRefs[1](zfix), zhat, None)
         var ht = agent.dyn.agent_out_ptr_cpu()
-        var ht_t = TileTensor(ht, row_major[BF, AGD]())
-        agent.rh.forward["cpu", BF](ht_t, output=rlog_t)
+        # h_t [BF, AGD] from the dynamics forward → reward head forward. Wrap it
+        # in a borrowing input `Tensor` for the storage Module surface.
+        var ht_t = Tensor.alloc(BF * AGD)
+        for i in range(BF * AGD):
+            ht_t.data[i] = ht[i]
+        agent.rh.forward["cpu", BF](TensorRefs[1](ht_t), rlog, None)
         for i in range(BF * RLOG):
-            grl[i] = Scalar[DT](0.0)
+            grl.data[i] = Scalar[DT](0.0)
         var rloss: Float64 = 0.0
-        for b in range(B):                       # loss on the imagined frame
+        for b in range(B):                           # loss on the imagined frame
             var bt = b * T + 1
-            rloss += Float64(twohot_loss[NBINS](rlog, bt * RLOG, bins, r_tgt[b]))
-            twohot_loss_backward[NBINS](
-                rlog, bt * RLOG, bins, r_tgt[b], Scalar[DT](1.0), grl
+            rloss += Float64(
+                twohot_loss[NBINS](
+                    _mao(rlog.data.unsafe_ptr()), bt * RLOG,
+                    _mao(bins.data.unsafe_ptr()), r_tgt.data[b]
+                )
             )
-        agent.rh.vjp["cpu", BF, mode="all"](grl_t, grad_hi_t)
-        agent.dyn.set_grad_h(grad_hi, BF)
-        agent.dyn.vjp["cpu", BF](gzero_t, gzt_t)
-        dopt.step["cpu"](agent.dyn)
-        ropt.step["cpu"](agent.rh)
+            twohot_loss_backward[NBINS](
+                _mao(rlog.data.unsafe_ptr()), bt * RLOG,
+                _mao(bins.data.unsafe_ptr()), r_tgt.data[b],
+                Scalar[DT](1.0), _mao(grl.data.unsafe_ptr())
+            )
+        agent.rh.vjp["cpu", BF](
+            TensorRefs[1](ht_t), grl, TensorRefs[1](grad_hi), None
+        )
+        agent.dyn.set_grad_h(_mao(grad_hi.data.unsafe_ptr()), BF)
+        agent.dyn.vjp["cpu", BF](TensorRefs[1](zfix), gzero, TensorRefs[1](gzt), None)
+        dopt.step["cpu"](agent.dyn, None)
+        ropt.step["cpu"](agent.rh, None)
         if step == 0:
             first_r = rloss
         last_r = rloss
@@ -228,30 +231,32 @@ def main() raises:
             var bt = b * T + 1
             print(
                 "a", b % NACT, "=",
-                Float64(twohot_pred[NBINS](rlog, bt * RLOG, bins)), end="  "
+                Float64(twohot_pred[NBINS](
+                    _mao(rlog.data.unsafe_ptr()), bt * RLOG,
+                    _mao(bins.data.unsafe_ptr())
+                )), end="  "
             )
     print()
 
     # ── snapshot the BC-prior policy ─────────────────────────────────────
     agent.snapshot_prior()
 
-    var ctx = _alloc(B * NCTX * ND)
+    var ctx = Tensor.alloc(B * NCTX * ND)
     for i in range(B * NCTX * ND):
-        ctx[i] = Scalar[DT](0.1)
-    var u01 = _alloc(B * T)
-    var znoise = _alloc(B * T * ND)
+        ctx.data[i] = Scalar[DT](0.1)
+    var u01 = Tensor.alloc(B * T)
+    var znoise = Tensor.alloc(B * T * ND)
     for i in range(B * T):
-        u01[i] = Scalar[DT](0.5)
+        u01.data[i] = Scalar[DT](0.5)
     for i in range(B * T * ND):
-        znoise[i] = Scalar[DT](0.0)              # match the trained frame-1 ≈ 0
+        znoise.data[i] = Scalar[DT](0.0)             # match the trained frame-1 ≈ 0
 
     # ── Stage 2: imagination RL (only policy + value heads train) ─────────
     # FRESH action-sampling uniforms each step: the rollout must explore so the
     # value head learns the EXPECTED return (the PMPO baseline); with a fixed
     # seed the value would fit one realized action and the advantage vanishes.
     print("- Stage 2: imagination RL (PMPO + value TD; transformer frozen)")
-    var opt = Adam.make["cpu", M=Agent](agent)
-    opt.lr = Scalar[DT](3e-2)
+    var opt = Adam(lr=Scalar[DT](3e-2))
     var rng = Rng(20260607)
 
     var base_frac: Float64 = -1.0
@@ -259,13 +264,19 @@ def main() raises:
     var last_p: Float64 = 0.0
     for step in range(300):
         for i in range(B * T):
-            u01[i] = Scalar[DT](rng.uniform())
-        opt.zero_grad["cpu"](agent)
-        var losses = agent.imag_train_step(ctx, u01, znoise, task_ids, bins)
+            u01.data[i] = Scalar[DT](rng.uniform())
+        opt.zero_grad["cpu"](agent, None)
+        var losses = agent.imag_train_step(
+            _mao(ctx.data.unsafe_ptr()),
+            _mao(u01.data.unsafe_ptr()),
+            _mao(znoise.data.unsafe_ptr()),
+            _mao(task_ids.data.unsafe_ptr()),
+            _mao(bins.data.unsafe_ptr()),
+        )
         if step == 0:
             base_frac = _greedy_good_fraction(agent.imag_policy_logits_ptr())
             first_p = losses[1]
-        opt.step["cpu"](agent)
+        opt.step["cpu"](agent, None)
         last_p = losses[1]
         if step % 50 == 0:
             print(
@@ -274,7 +285,13 @@ def main() raises:
                 _greedy_good_fraction(agent.imag_policy_logits_ptr()),
             )
 
-    var _f = agent.imag_train_step(ctx, u01, znoise, task_ids, bins)
+    var _f = agent.imag_train_step(
+        _mao(ctx.data.unsafe_ptr()),
+        _mao(u01.data.unsafe_ptr()),
+        _mao(znoise.data.unsafe_ptr()),
+        _mao(task_ids.data.unsafe_ptr()),
+        _mao(bins.data.unsafe_ptr()),
+    )
     var final_frac = _greedy_good_fraction(agent.imag_policy_logits_ptr())
 
     print("-" * 70)

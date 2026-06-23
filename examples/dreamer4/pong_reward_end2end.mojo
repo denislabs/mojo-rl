@@ -37,13 +37,13 @@ The reward head is the headline: it is the new capability the reward-bearing
 buffer unlocks, and the prerequisite for imagination RL on a real env.
 """
 
-from std.memory import alloc
 from std.math import sqrt, log, cos, abs
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer import Adam
-from layout import TileTensor, row_major
+from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.storage.core.initializer import Xavier
+from mojo_rl.nn.storage.optimizer.adam import Adam
 
 from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
 from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
@@ -54,15 +54,12 @@ from mojo_rl.deep_agents.dreamer4.recon_loss import (
     masked_recon_loss, full_recon_psnr,
 )
 from mojo_rl.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
+from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
 from mojo_rl.deep_agents.dreamer4.imag_rl_loss import (
     continue_pred, continue_bce_loss, continue_bce_backward,
 )
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_argmax
 from mojo_rl.deep_agents.dreamerv3.twohot import symexp_twohot_bins, twohot_pred
-
-
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 
 
 # deterministic RNG (xorshift64* + Box-Muller)
@@ -203,76 +200,93 @@ def main() raises:
 
     var tok = Dreamer4Tokenizer[
         DP, D, NH, T, L, NP, D_BOT, HID, DEPTH, DROP, DROP, 7
-    ].make[target="cpu", INIT=Xavier]()
-    var topt = Adam.make["cpu", M=type_of(tok)](tok)
-    topt.lr = LR_TOK
+    ].make["cpu", Xavier](None)
+    var topt = Adam(lr=LR_TOK)
 
-    var agent = Agent.make[target="cpu", INIT=Xavier]()
-    var aopt = Adam.make["cpu", M=Agent](agent)
-    aopt.lr = LR_AGENT
+    var agent = Agent.make["cpu", Xavier](None)
+    var aopt = Adam(lr=LR_AGENT)
     # separate optimizer for the continue head (trained off the clean h_t)
-    var copt = Adam.make["cpu", M=Agent.CH](agent.ch)
-    copt.lr = LR_CONT
+    var copt = Adam(lr=LR_CONT)
 
-    # scratch
-    var frames = _alloc(FRAME_N)
-    var patches = _alloc(PATCH_N)
-    var pred = _alloc(PATCH_N)
-    var gpred = _alloc(PATCH_N)
-    var gin = _alloc(PATCH_N)
-    var z1 = _alloc(ZN)
-    var z0n = _alloc(ZN)
-    var sigma = _alloc(BATCH)
-    var sig_idx = _alloc(BATCH)
-    var step_idx = _alloc(BATCH)
-    var task_ids = _alloc(B)
-    var act_idx = _alloc(BATCH)
-    var rew = _alloc(BATCH)            # REAL per-step reward (twohot target)
-    var done = _alloc(BATCH)           # REAL done flag
-    var cont_tgt = _alloc(BATCH)       # 1 − done
-    var bins = _alloc(NBINS)
-    symexp_twohot_bins[NBINS](bins, lo=Scalar[DT](-9.0))
+    # Storage scratch. Buffers fed to forward/vjp are `Tensor`s; loss / agent
+    # helpers read their underlying host `data` via `_mao(...)`.
+    var frames = Tensor.alloc(FRAME_N)
+    var patches = Tensor.alloc(PATCH_N)
+    var pred = Tensor.alloc(PATCH_N)
+    var gpred = Tensor.alloc(PATCH_N)
+    var gin = Tensor.alloc(PATCH_N)
+    var z1 = Tensor.alloc(ZN)
+    var z0n = Tensor.alloc(ZN)
+    var sigma = Tensor.alloc(BATCH)
+    var sig_idx = Tensor.alloc(BATCH)
+    var step_idx = Tensor.alloc(BATCH)
+    var task_ids = Tensor.alloc(B)
+    var act_idx = Tensor.alloc(BATCH)
+    var rew = Tensor.alloc(BATCH)            # REAL per-step reward (twohot target)
+    var done = Tensor.alloc(BATCH)           # REAL done flag
+    var cont_tgt = Tensor.alloc(BATCH)       # 1 − done
+    var bins = Tensor.alloc(NBINS)
+    symexp_twohot_bins[NBINS](_mao(bins.data.unsafe_ptr()), lo=Scalar[DT](-9.0))
     for b in range(B):
-        task_ids[b] = Scalar[DT](0.0)
+        task_ids.data[b] = Scalar[DT](0.0)
 
     # sampled windows (pixels/actions/rewards/dones) come straight from the buffer
-    var pix = _alloc(BATCH * IMG_DIM)
-    var act_oh = _alloc(BATCH * ACT)
+    var pix = Tensor.alloc(BATCH * IMG_DIM)
+    var act_oh = Tensor.alloc(BATCH * ACT)
 
-    var pt = TileTensor(patches, row_major[BATCH, NP * DP]())
-    var prt = TileTensor(pred, row_major[BATCH, NP * DP]())
-    var git = TileTensor(gin, row_major[BATCH, NP * DP]())
-    var z1_t = TileTensor(z1, row_major[BATCH, ND]())
     var rng = Rng(20260607)
 
     # ── Phase A: tokenizer ──────────────────────────────────────────────
     print("- Phase A: tokenizer")
     for step in range(STEPS_TOK):
-        buf.sample_reward_window_batch[B, T, ACT](pix, act_oh, rew, done)
-        _window_to_patches[B, T, IMG, IMG_DIM, TGT, PATCH](pix, frames, patches)
-        topt.zero_grad["cpu"](tok)
-        tok.forward["cpu", BATCH](pt, output=prt)
+        buf.sample_reward_window_batch[B, T, ACT](
+            _mao(pix.data.unsafe_ptr()), _mao(act_oh.data.unsafe_ptr()),
+            _mao(rew.data.unsafe_ptr()), _mao(done.data.unsafe_ptr())
+        )
+        _window_to_patches[B, T, IMG, IMG_DIM, TGT, PATCH](
+            _mao(pix.data.unsafe_ptr()),
+            _mao(frames.data.unsafe_ptr()),
+            _mao(patches.data.unsafe_ptr()),
+        )
+        topt.zero_grad["cpu"](tok, None)
+        tok.forward["cpu", BATCH](TensorRefs[1](patches), pred, None)
         var mask = tok.mae_mask_ptr()
-        var loss = masked_recon_loss[NP, DP, BATCH](pred, patches, mask, gpred)
-        var got = TileTensor(gpred, row_major[BATCH, NP * DP]())
-        tok.vjp["cpu", BATCH](got, git)
-        topt.step["cpu"](tok)
+        var loss = masked_recon_loss[NP, DP, BATCH](
+            _mao(pred.data.unsafe_ptr()),
+            _mao(patches.data.unsafe_ptr()),
+            mask,
+            _mao(gpred.data.unsafe_ptr()),
+        )
+        tok.vjp["cpu", BATCH](TensorRefs[1](patches), gpred, TensorRefs[1](gin), None)
+        topt.step["cpu"](tok, None)
         tok.advance_rng()
         if step % 50 == 0:
             tok.set_mae_p(0.0, 0.0)
-            tok.forward["cpu", BATCH](pt, output=prt)
+            tok.forward["cpu", BATCH](TensorRefs[1](patches), pred, None)
             print("   tok step", step, " recon PSNR =",
-                  full_recon_psnr[NP, DP, BATCH](pred, patches), "dB")
+                  full_recon_psnr[NP, DP, BATCH](
+                      _mao(pred.data.unsafe_ptr()),
+                      _mao(patches.data.unsafe_ptr())
+                  ), "dB")
             tok.set_mae_p(DROP, DROP)
     tok.set_mae_p(0.0, 0.0)            # FREEZE
 
     # ── Phase B: BC + reward head (real rewards) + continue head (dones) ──
     print("- Phase B: BC + reward model (real rewards) + continue model (dones)")
     for step in range(STEPS_BC):
-        buf.sample_reward_window_batch[B, T, ACT](pix, act_oh, rew, done)
-        _window_to_patches[B, T, IMG, IMG_DIM, TGT, PATCH](pix, frames, patches)
-        _onehot_to_idx[BATCH, ACT](act_oh, act_idx)
-        tok.enc.forward["cpu", BATCH](pt, output=z1_t)   # clean latents
+        buf.sample_reward_window_batch[B, T, ACT](
+            _mao(pix.data.unsafe_ptr()), _mao(act_oh.data.unsafe_ptr()),
+            _mao(rew.data.unsafe_ptr()), _mao(done.data.unsafe_ptr())
+        )
+        _window_to_patches[B, T, IMG, IMG_DIM, TGT, PATCH](
+            _mao(pix.data.unsafe_ptr()),
+            _mao(frames.data.unsafe_ptr()),
+            _mao(patches.data.unsafe_ptr()),
+        )
+        _onehot_to_idx[BATCH, ACT](
+            _mao(act_oh.data.unsafe_ptr()), _mao(act_idx.data.unsafe_ptr())
+        )
+        tok.enc.forward["cpu", BATCH](TensorRefs[1](patches), z1, None)  # clean latents
 
         for b in range(B):
             var is_self = b >= B_EMP
@@ -286,41 +300,52 @@ def main() raises:
                 if j >= K:
                     j = K - 1
                 var scale = KMAX // K
-                sigma[bt] = Scalar[DT](Float64(j) / Float64(K))
-                sig_idx[bt] = Scalar[DT](Float64(j * scale))
-                step_idx[bt] = Scalar[DT](Float64(stp))
+                sigma.data[bt] = Scalar[DT](Float64(j) / Float64(K))
+                sig_idx.data[bt] = Scalar[DT](Float64(j * scale))
+                step_idx.data[bt] = Scalar[DT](Float64(stp))
         for i in range(ZN):
-            z0n[i] = Scalar[DT](rng.gauss())
+            z0n.data[i] = Scalar[DT](rng.gauss())
 
-        aopt.zero_grad["cpu"](agent)
+        aopt.zero_grad["cpu"](agent, None)
         # ACTION-CONDITIONED world model: the action token moves the transition
         # (and hence the reward); reward head fits the transition-into reward
         # r[f-1]; policy clones the same-frame action. This is what makes the
         # imagined actions move the reward.
         var losses = agent.acwm_train_step(
-            z1, z0n, sigma, sig_idx, step_idx, step >= 30,
-            task_ids, act_idx, rew, bins,
+            _mao(z1.data.unsafe_ptr()),
+            _mao(z0n.data.unsafe_ptr()),
+            _mao(sigma.data.unsafe_ptr()),
+            _mao(sig_idx.data.unsafe_ptr()),
+            _mao(step_idx.data.unsafe_ptr()),
+            step >= 30,
+            _mao(task_ids.data.unsafe_ptr()),
+            _mao(act_idx.data.unsafe_ptr()),
+            _mao(rew.data.unsafe_ptr()),
+            _mao(bins.data.unsafe_ptr()),
             policy_weight=Scalar[DT](1.0), reward_weight=Scalar[DT](1.0),
         )
-        aopt.step["cpu"](agent)
+        aopt.step["cpu"](agent, None)
 
         # continue head on the clean h_t left by bc_train_step's clean forward
         var ht = agent.agent_out_ptr()
-        var ht_t = TileTensor(ht, row_major[BATCH, AGD]())
-        var clog = _alloc(BATCH)
-        var clog_t = TileTensor(clog, row_major[BATCH, 1]())
-        var gcl = _alloc(BATCH)
-        var gci = _alloc(BATCH * AGD)
-        var gci_t = TileTensor(gci, row_major[BATCH, AGD]())
+        var ht_t = Tensor.alloc(BATCH * AGD)
+        for i in range(BATCH * AGD):
+            ht_t.data[i] = ht[i]
+        var clog = Tensor.alloc(BATCH)
+        var gcl = Tensor.alloc(BATCH)
+        var gci = Tensor.alloc(BATCH * AGD)
         for i in range(BATCH):
-            cont_tgt[i] = Scalar[DT](1.0) - done[i]
-        copt.zero_grad["cpu"](agent.ch)
-        agent.ch.forward["cpu", BATCH](ht_t, output=clog_t)
-        continue_bce_backward[BATCH](clog, cont_tgt, Scalar[DT](1.0), gcl)
-        var gcl_t = TileTensor(gcl, row_major[BATCH, 1]())
-        agent.ch.vjp["cpu", BATCH, mode="all"](gcl_t, gci_t)
-        copt.step["cpu"](agent.ch)
-        clog.free(); gcl.free(); gci.free()
+            cont_tgt.data[i] = Scalar[DT](1.0) - done.data[i]
+        copt.zero_grad["cpu"](agent.ch, None)
+        agent.ch.forward["cpu", BATCH](TensorRefs[1](ht_t), clog, None)
+        continue_bce_backward[BATCH](
+            _mao(clog.data.unsafe_ptr()), _mao(cont_tgt.data.unsafe_ptr()),
+            Scalar[DT](1.0), _mao(gcl.data.unsafe_ptr())
+        )
+        agent.ch.vjp["cpu", BATCH](
+            TensorRefs[1](ht_t), gcl, TensorRefs[1](gci), None
+        )
+        copt.step["cpu"](agent.ch, None)
 
         if step % EVAL_EVERY == 0:
             print("   bc step", step, " video =", losses[0], " bc+reward =",
@@ -342,33 +367,50 @@ def main() raises:
     var collected_r = List[Float64]()    # true rewards, for the mean baseline
 
     for _ in range(EVAL_BATCHES):
-        buf.sample_reward_window_batch[B, T, ACT](pix, act_oh, rew, done)
-        _window_to_patches[B, T, IMG, IMG_DIM, TGT, PATCH](pix, frames, patches)
-        _onehot_to_idx[BATCH, ACT](act_oh, act_idx)
-        tok.enc.forward["cpu", BATCH](pt, output=z1_t)
+        buf.sample_reward_window_batch[B, T, ACT](
+            _mao(pix.data.unsafe_ptr()), _mao(act_oh.data.unsafe_ptr()),
+            _mao(rew.data.unsafe_ptr()), _mao(done.data.unsafe_ptr())
+        )
+        _window_to_patches[B, T, IMG, IMG_DIM, TGT, PATCH](
+            _mao(pix.data.unsafe_ptr()),
+            _mao(frames.data.unsafe_ptr()),
+            _mao(patches.data.unsafe_ptr()),
+        )
+        _onehot_to_idx[BATCH, ACT](
+            _mao(act_oh.data.unsafe_ptr()), _mao(act_idx.data.unsafe_ptr())
+        )
+        tok.enc.forward["cpu", BATCH](TensorRefs[1](patches), z1, None)
         for b in range(B):
             for t in range(T):
                 var bt = b * T + t
-                sigma[bt] = Scalar[DT](Float64(KMAX - 1) / Float64(KMAX))
-                sig_idx[bt] = Scalar[DT](Float64(KMAX - 1))
-                step_idx[bt] = Scalar[DT](Float64(EMAX))
+                sigma.data[bt] = Scalar[DT](Float64(KMAX - 1) / Float64(KMAX))
+                sig_idx.data[bt] = Scalar[DT](Float64(KMAX - 1))
+                step_idx.data[bt] = Scalar[DT](Float64(EMAX))
         for i in range(ZN):
-            z0n[i] = Scalar[DT](rng.gauss())
+            z0n.data[i] = Scalar[DT](rng.gauss())
         var _l = agent.acwm_train_step(
-            z1, z0n, sigma, sig_idx, step_idx, False,
-            task_ids, act_idx, rew, bins,
+            _mao(z1.data.unsafe_ptr()),
+            _mao(z0n.data.unsafe_ptr()),
+            _mao(sigma.data.unsafe_ptr()),
+            _mao(sig_idx.data.unsafe_ptr()),
+            _mao(step_idx.data.unsafe_ptr()),
+            False,
+            _mao(task_ids.data.unsafe_ptr()),
+            _mao(act_idx.data.unsafe_ptr()),
+            _mao(rew.data.unsafe_ptr()),
+            _mao(bins.data.unsafe_ptr()),
             policy_weight=Scalar[DT](1.0), reward_weight=Scalar[DT](1.0),
         )
         # reward predictions: dist-0 block of the reward logits. acwm fits the
         # TRANSITION-INTO reward, so r̂(h_f) targets the dataset reward r[f-1];
         # compare on frames f≥1 (frame 0 has no in-window preceding action).
-        var rlog = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            agent.rlog.unsafe_ptr()
-        )
+        var rlog = _mao(agent.rlog.unsafe_ptr())
         for b in range(B):
             for f in range(1, T):
-                var pr = Float64(twohot_pred[NBINS](rlog, (b * T + f) * RLOG, bins))
-                var tr = Float64(rew[b * T + f - 1])
+                var pr = Float64(twohot_pred[NBINS](
+                    rlog, (b * T + f) * RLOG, _mao(bins.data.unsafe_ptr())
+                ))
+                var tr = Float64(rew.data[b * T + f - 1])
                 collected_r.append(tr)
                 var is_r = abs(tr) > 1e-6
                 if is_r:
@@ -383,19 +425,21 @@ def main() raises:
 
         # continue predictions off the clean h_t
         var ht = agent.agent_out_ptr()
-        var ht_t = TileTensor(ht, row_major[BATCH, AGD]())
-        var clog = _alloc(BATCH)
-        var clog_t = TileTensor(clog, row_major[BATCH, 1]())
-        var chat = _alloc(BATCH)
-        agent.ch.forward["cpu", BATCH](ht_t, output=clog_t)
-        continue_pred[BATCH](clog, chat)
+        var ht_t = Tensor.alloc(BATCH * AGD)
+        for i in range(BATCH * AGD):
+            ht_t.data[i] = ht[i]
+        var clog = Tensor.alloc(BATCH)
+        var chat = Tensor.alloc(BATCH)
+        agent.ch.forward["cpu", BATCH](TensorRefs[1](ht_t), clog, None)
+        continue_pred[BATCH](
+            _mao(clog.data.unsafe_ptr()), _mao(chat.data.unsafe_ptr())
+        )
         for bt in range(BATCH):
-            var ct = 1.0 - Float64(done[bt])
-            var pc = 1.0 if Float64(chat[bt]) >= 0.5 else 0.0
+            var ct = 1.0 - Float64(done.data[bt])
+            var pc = 1.0 if Float64(chat.data[bt]) >= 0.5 else 0.0
             if abs(pc - ct) < 0.5:
                 cont_correct += 1
             cont_total += 1
-        clog.free(); chat.free()
 
     var mean_r = sum_true_r / Float64(n_all)
     for i in range(len(collected_r)):
@@ -419,11 +463,10 @@ def main() raises:
     # ── Phase C: imagination RL on real-env context (execution check) ───
     print("- Phase C: imagination RL from real starting frames (use_continue)")
     agent.snapshot_prior()
-    var iopt = Adam.make["cpu", M=Agent](agent)
-    iopt.lr = LR_IMAG
-    var ctx = _alloc(B * NCTX * ND)
-    var u01 = _alloc(B * T)
-    var znoise = _alloc(B * T * ND)
+    var iopt = Adam(lr=LR_IMAG)
+    var ctx = Tensor.alloc(B * NCTX * ND)
+    var u01 = Tensor.alloc(B * T)
+    var znoise = Tensor.alloc(B * T * ND)
     var first_v: Float64 = 0.0
     var last_v: Float64 = 0.0
     var first_p: Float64 = 0.0
@@ -432,25 +475,37 @@ def main() raises:
     for step in range(STEPS_IMAG):
         # real starting context: encode a fresh window, take its first frame's
         # clean latent as the NCTX=1 context for each sequence.
-        buf.sample_reward_window_batch[B, T, ACT](pix, act_oh, rew, done)
-        _window_to_patches[B, T, IMG, IMG_DIM, TGT, PATCH](pix, frames, patches)
-        tok.enc.forward["cpu", BATCH](pt, output=z1_t)
+        buf.sample_reward_window_batch[B, T, ACT](
+            _mao(pix.data.unsafe_ptr()), _mao(act_oh.data.unsafe_ptr()),
+            _mao(rew.data.unsafe_ptr()), _mao(done.data.unsafe_ptr())
+        )
+        _window_to_patches[B, T, IMG, IMG_DIM, TGT, PATCH](
+            _mao(pix.data.unsafe_ptr()),
+            _mao(frames.data.unsafe_ptr()),
+            _mao(patches.data.unsafe_ptr()),
+        )
+        tok.enc.forward["cpu", BATCH](TensorRefs[1](patches), z1, None)
         for b in range(B):
             for i in range(ND):
-                ctx[b * NCTX * ND + i] = z1[(b * T + 0) * ND + i]
+                ctx.data[b * NCTX * ND + i] = z1.data[(b * T + 0) * ND + i]
         for i in range(B * T):
-            u01[i] = Scalar[DT](rng.uniform())     # fresh exploration uniforms
+            u01.data[i] = Scalar[DT](rng.uniform())     # fresh exploration uniforms
         for i in range(B * T * ND):
-            znoise[i] = Scalar[DT](rng.gauss())
-        iopt.zero_grad["cpu"](agent)
+            znoise.data[i] = Scalar[DT](rng.gauss())
+        iopt.zero_grad["cpu"](agent, None)
         # γ=0.9 (not the 0.997 default): with only NCTX=1 context + a short
         # imagined window the untrained bootstrap value dominates a γ→1 return,
         # so a bounded γ keeps the execution check finite.
         var l = agent.imag_train_step(
-            ctx, u01, znoise, task_ids, bins, use_continue=True,
+            _mao(ctx.data.unsafe_ptr()),
+            _mao(u01.data.unsafe_ptr()),
+            _mao(znoise.data.unsafe_ptr()),
+            _mao(task_ids.data.unsafe_ptr()),
+            _mao(bins.data.unsafe_ptr()),
+            use_continue=True,
             gamma=Scalar[DT](0.9),
         )
-        iopt.step["cpu"](agent)
+        iopt.step["cpu"](agent, None)
         if step == 0:
             first_v = l[0]
             first_p = l[1]
