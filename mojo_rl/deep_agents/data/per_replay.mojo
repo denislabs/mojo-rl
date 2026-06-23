@@ -68,7 +68,6 @@ from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.ptr import mptr
 from ..training.replay_buffer import ReplayBuffer
 from ..training.trainer_block import TrainerState
 from .gpu_replay import (
@@ -527,13 +526,17 @@ struct GPUPrioritizedReplay[
     # Add — mirrors GPUReplay surface, plus tree leaf update.
     # ──────────────────────────────────────────────────────────────
 
-    def add(
+    def add[
+        s_o: Origin[mut=False],
+        a_o: Origin[mut=False],
+        sp_o: Origin[mut=False],
+    ](
         mut self,
         ctx: DeviceContext,
-        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        a: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        s: UnsafePointer[Scalar[DT], s_o],
+        a: UnsafePointer[Scalar[DT], a_o],
         r: Scalar[DT],
-        sp: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        sp: UnsafePointer[Scalar[DT], sp_o],
         d: Scalar[DT],
     ) raises:
         """Single-transition add. The base GPUReplay writes the slot
@@ -894,10 +897,12 @@ struct GPUPrioritizedReplay[
         pointer-based `add`. `ctx` required (raises if None)."""
         if not ctx:
             raise Error("GPUPrioritizedReplay.add: ctx required")
-        var s_p = mptr(s.unsafe_ptr())
-        var a_p = mptr(a.unsafe_ptr())
-        var sp_p = mptr(sp.unsafe_ptr())
-        self.add(ctx.value(), s_p, a_p, r, sp_p, d)
+        # Pass each List's own (concrete) origin straight through — the
+        # origin-parametric pointer `add` preserves exclusivity tracking
+        # instead of erasing to MutAnyOrigin via `mptr`.
+        self.add(
+            ctx.value(), s.unsafe_ptr(), a.unsafe_ptr(), r, sp.unsafe_ptr(), d
+        )
 
     def sample_into[
         BATCH: Int
