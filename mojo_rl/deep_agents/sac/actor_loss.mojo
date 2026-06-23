@@ -171,13 +171,11 @@ struct SACActorLoss[
         the per-step entropy grad."""
         return self._lp_mean.dev.value()
 
-    def set_alpha_ptr(
-        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    ):
+    def set_alpha_buf(mut self, buf: DeviceBuffer[DT]):
         """One-time GPU wiring: point the `alogp` Scale node at SAC's on-device
         α buffer. After this the actor-loss forward/vjp read α on-device, so
         `forward_backward` skips the per-step host α bake."""
-        self.graph.set_node_attr_ptr["alogp", "multiplier"](p)
+        self.graph.set_node_attr_buf["alogp", "multiplier"](buf)
 
     def reset_loss_accum(mut self) raises:
         """Zero the device (Σmean, count) loss accumulator — flush cadence."""
@@ -209,7 +207,7 @@ struct SACActorLoss[
         comptime BB = Self.BATCH
         actor.zero_grad[target](ctx)
         # CPU bakes the host α scalar into the `alogp` Scale node per step. On
-        # GPU α lives on-device (wired once at make via `set_alpha_ptr`) and is
+        # GPU α lives on-device (wired once at make via `set_alpha_buf`) and is
         # refreshed by the device ScalarAdam — no per-step host work.
         comptime if target == "cpu":
             self.graph.set_node_attr["alogp", "multiplier"](alpha)  # α

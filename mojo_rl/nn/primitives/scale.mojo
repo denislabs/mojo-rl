@@ -10,13 +10,15 @@ Backward: grad_in = m·grad_out
 moving α this way); `set_multiplier` mirrors the legacy `set_attr["multiplier"]`.
 No params, no cache. Conforms to `Module`.
 
-Deferred: the legacy device-resident `multiplier_ptr` / `_scale_dev_kernel`
-(SAC on-device α, CUDA-graph capture) is NOT ported yet — not needed by the
-current storage call sites.
+Device-resident multiplier (`multiplier_buf` / `_scale_dev_kernel`): when wired
+via `set_attr_buf["multiplier"]`, the GPU forward/vjp read the scale factor from
+a length-1 `DeviceBuffer` instead of a baked-scalar kernel arg. SAC uses this to
+let its on-device α (a sub-buffer view of the ScalarAdam state) update each step
+without breaking CUDA-graph capture. CPU always uses the host `multiplier`.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
@@ -46,7 +48,7 @@ def _scale_dev_kernel[
 ](
     input: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    mptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    multiplier: LayoutTensor[DT, Layout.row_major(1), ImmutAnyOrigin],
 ):
     # Device-resident multiplier variant — reads the scale factor from
     # `mptr[0]` instead of a baked scalar arg, so the value can be updated by
@@ -54,7 +56,7 @@ def _scale_dev_kernel[
     # capture. Every thread reads the same `mptr[0]`.
     var idx = Int(global_idx.x)
     if idx < N:
-        output[idx] = rebind[Scalar[DT]](input[idx]) * mptr[0]
+        output[idx] = rebind[Scalar[DT]](input[idx]) * multiplier[0]
 
 
 struct Scale[DIM_: Int](Module):
@@ -67,17 +69,17 @@ struct Scale[DIM_: Int](Module):
         return String("Scale")
 
     var multiplier: Scalar[DT]
-    # Optional device-resident multiplier source. When set (via `set_attr_ptr`),
+    # Optional device-resident multiplier source. When set (via `set_attr_buf`),
     # the GPU forward/vjp read the scale factor from `multiplier_ptr[0]` instead
     # of baking `multiplier` into the kernel args — required for CUDA-graph
     # capture when another GPU kernel (SAC's on-device alpha) updates the value
     # each step. None -> baked-scalar path (bit-identical). CPU always uses the
     # host `multiplier`.
-    var multiplier_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var multiplier_buf: Optional[DeviceBuffer[DT]]
 
     def __init__(out self):
         self.multiplier = Scalar[DT](1.0)
-        self.multiplier_ptr = None
+        self.multiplier_buf = None
 
     @staticmethod
     def make[
@@ -95,11 +97,11 @@ struct Scale[DIM_: Int](Module):
         comptime if ATTR == "multiplier":
             self.multiplier = value
 
-    def set_attr_ptr[
+    def set_attr_buf[
         ATTR: StaticString
-    ](mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+    ](mut self, buf: DeviceBuffer[DT]):
         comptime if ATTR == "multiplier":
-            self.multiplier_ptr = p
+            self.multiplier_buf = buf
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
@@ -127,11 +129,14 @@ struct Scale[DIM_: Int](Module):
             var c = ctx.value()
             out.ensure_gpu(c, N)
             comptime n_blocks = (N + TPB - 1) // TPB
-            if self.multiplier_ptr:
+            if self.multiplier_buf:
+                var mptr = LayoutTensor[
+                    DT, Layout.row_major(1), ImmutAnyOrigin
+                ](self.multiplier_buf.value())
                 c.enqueue_function[_scale_dev_kernel[N]](
                     in0.lt["gpu", Layout.row_major(N)](),
                     out.lt["gpu", Layout.row_major(N)](),
-                    self.multiplier_ptr.value(),
+                    mptr,
                     grid_dim=n_blocks,
                     block_dim=TPB,
                 )
@@ -175,11 +180,14 @@ struct Scale[DIM_: Int](Module):
             var c = ctx.value()
             gin.ensure_gpu(c, N)
             comptime n_blocks = (N + TPB - 1) // TPB
-            if self.multiplier_ptr:
+            if self.multiplier_buf:
+                var mptr = LayoutTensor[
+                    DT, Layout.row_major(1), ImmutAnyOrigin
+                ](self.multiplier_buf.value())
                 c.enqueue_function[_scale_dev_kernel[N]](
                     grad_output.lt["gpu", Layout.row_major(N)](),
                     gin.lt["gpu", Layout.row_major(N)](),
-                    self.multiplier_ptr.value(),
+                    mptr,
                     grid_dim=n_blocks,
                     block_dim=TPB,
                 )

@@ -9,7 +9,7 @@ erasure is the kernel-arg `MutAnyOrigin` (the ABI). `grad_output` is `mut` so
 the GPU view can be built. `ctx` is the GPU `DeviceContext` (ignored on CPU).
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from .initializer import Initializer
@@ -110,13 +110,14 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
         override on their `Param`s, combinators recurse into children."""
         pass
 
-    def set_attr_ptr[
+    def set_attr_buf[
         ATTR: StaticString
-    ](mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+    ](mut self, buf: DeviceBuffer[DT]):
         """Point a named runtime scalar attribute at a device buffer (e.g. a
-        `Scale` node's `multiplier` = SAC's on-device alpha). Default no-op;
+        `Scale` node's `multiplier` = SAC's on-device alpha). The `DeviceBuffer`
+        carries device-residency in the type (no raw pointer). Default no-op;
         the few leaves with a device-resident scalar source override and branch
-        on `ATTR`. Dispatched via `ComputeGraph.set_node_attr_ptr[NAME, ATTR]`."""
+        on `ATTR`. Dispatched via `ComputeGraph.set_node_attr_buf[NAME, ATTR]`."""
         pass
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):

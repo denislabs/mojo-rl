@@ -173,15 +173,23 @@ struct ScalarAdam(Movable & ImplicitlyDeletable):
         )
 
     def alpha_dev_ptr(mut self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        """Pointer to `state_dev[ALPHA]` — the live α SAC's `Scale` nodes read
-        via their multiplier source. The single raw GPU-ABI pointer this type
-        exposes (the capture-wiring boundary); stable for the buffer lifetime."""
+        """Pointer to `state_dev[ALPHA]` — the live α read by raw GPU-ABI kernel
+        consumers (SAC's `target_y` device-α path takes this as a kernel arg).
+        Stable for the buffer lifetime. Module-trait consumers (the actor-loss
+        `Scale` node) should prefer `alpha_dev_buffer` (type-safe DeviceBuffer)."""
         return (
             rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self.state_dev.value().unsafe_ptr()
             )
             + _SA_ALPHA
         )
+
+    def alpha_dev_buffer(mut self) raises -> DeviceBuffer[DT]:
+        """Length-1 device sub-buffer viewing `state_dev[ALPHA]` — the live α
+        SAC's `Scale` nodes read via their multiplier source. Memory-sharing
+        (`create_sub_buffer`), so in-place α refreshes by `step_device` are
+        visible; carries device-residency in the type (no raw pointer)."""
+        return self.state_dev.value().create_sub_buffer[DT](_SA_ALPHA, 1)
 
     def read_alpha(mut self) raises -> Scalar[DT]:
         """D2H the live device α (log cadence only — NOT per step)."""

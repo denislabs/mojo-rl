@@ -350,9 +350,10 @@ struct SACTrainer[
             # blocks (target-y soft-V and actor-loss α·log_prob). After this
             # neither block bakes α as a per-step host scalar; both read it
             # on-device, and the device ScalarAdam refreshes it each step.
-            var alpha_p = t.alpha_opt.alpha_dev_ptr()
-            t.target_y_blk.set_alpha_ptr(alpha_p)
-            t.actor_loss_blk.set_alpha_ptr(alpha_p)
+            # target-y reads α via a raw GPU-ABI kernel arg (its own kernel);
+            # the actor-loss Scale node takes a type-safe device sub-buffer.
+            t.target_y_blk.set_alpha_ptr(t.alpha_opt.alpha_dev_ptr())
+            t.actor_loss_blk.set_alpha_buf(t.alpha_opt.alpha_dev_buffer())
         else:
             t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
 

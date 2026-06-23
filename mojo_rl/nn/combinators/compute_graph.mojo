@@ -39,7 +39,7 @@ CPU + GPU (the leaves + the pool-seed / grad-accumulate run on device).
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import Pointer
 from layout import Layout, LayoutTensor
 
@@ -239,17 +239,17 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             comptime if Self.DECLS[i].NAME == NAME:
                 self.children[i].set_attr[ATTR](value)
 
-    def set_node_attr_ptr[
+    def set_node_attr_buf[
         NAME: StaticString, ATTR: StaticString
-    ](mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+    ](mut self, buf: DeviceBuffer[DT]):
         """Point a runtime scalar attribute `ATTR` on the named node's inner op
-        at a device buffer (e.g. `set_node_attr_ptr["alogp", "multiplier"](p)`
+        at a device buffer (e.g. `set_node_attr_buf["alogp", "multiplier"](buf)`
         wires SAC's on-device alpha into the actor-loss Scale node). Dispatches
-        via the uniform `Module.set_attr_ptr[ATTR]` trait method (no-op on ops
+        via the uniform `Module.set_attr_buf[ATTR]` trait method (no-op on ops
         without that attr). The device-alpha capture-wiring boundary."""
         comptime for i in range(Self.N):
             comptime if Self.DECLS[i].NAME == NAME:
-                self.children[i].set_attr_ptr[ATTR](p)
+                self.children[i].set_attr_buf[ATTR](buf)
 
     def node_output[
         name: StaticString

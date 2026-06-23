@@ -46,7 +46,7 @@ uniformly as `Module`s (same forward/vjp/walker dispatch as before) and only
 branches on `KIND` to skip inputs / route externals.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from ..core.module import Module
@@ -288,10 +288,10 @@ struct Node[
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         self.op.set_attr[ATTR](value)
 
-    def set_attr_ptr[
+    def set_attr_buf[
         ATTR: StaticString
-    ](mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
-        self.op.set_attr_ptr[ATTR](p)
+    ](mut self, buf: DeviceBuffer[DT]):
+        self.op.set_attr_buf[ATTR](buf)
 
 
 # ──────────────────────────────────────────────────────────────────────

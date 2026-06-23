@@ -649,9 +649,8 @@ struct MBPOTrainer[
             t.alpha_opt = ScalarAdam.new_device(
                 ctx.value(), flog(init_alpha), alpha_lr
             )
-            var alpha_p = t.alpha_opt.alpha_dev_ptr()
-            t.target_y_blk.set_alpha_ptr(alpha_p)
-            t.actor_loss_blk.set_alpha_ptr(alpha_p)
+            t.target_y_blk.set_alpha_ptr(t.alpha_opt.alpha_dev_ptr())
+            t.actor_loss_blk.set_alpha_buf(t.alpha_opt.alpha_dev_buffer())
             t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
             t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
             t._td_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
