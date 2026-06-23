@@ -118,12 +118,19 @@ def main() raises:
     print("\n[data] loading TinyShakespeare...")
     var text = load_text()
 
+    # ONE DeviceContext for both modes: the CUDA-graph interceptor records the
+    # Mojo stream from the first kernel launch globally, so capture must run on
+    # the SAME context/stream (two contexts → cuStreamBeginCapture fails 400).
+    # The eager trainer is freed before the capture trainer is built (each in
+    # its own `bench` scope), so peak memory is still one model.
+    var ctx = DeviceContext()
+
     print("[bench] eager (USE_TRAIN_CUDA_GRAPH=False) ...")
-    var eager_sps = bench[False](DeviceContext(), text)
+    var eager_sps = bench[False](ctx, text)
     print("  eager:   " + String(eager_sps) + " steps/s")
 
     print("[bench] capture (USE_TRAIN_CUDA_GRAPH=True) ...")
-    var cap_sps = bench[True](DeviceContext(), text)
+    var cap_sps = bench[True](ctx, text)
     print("  capture: " + String(cap_sps) + " steps/s")
 
     print(
