@@ -1,40 +1,22 @@
-"""Traits + target-tag infrastructure.
+"""Shared, framework-agnostic core surface.
 
-Note: target-tag constants (`TARGET_UNINIT/CPU/GPU`, `target_tag_for`)
-live in `core/target_tag.mojo` and are no longer re-exported here.
-Import them from `..core.target_tag` directly at the use site — keeps
-the constants close to their docstring and avoids a stale-re-export
-trap if their shape changes."""
+The legacy stateless-LayoutTensor framework (Module / Param / Tensor /
+combinators / optimizers / loss / checkpoint / autodiff walkers) was removed in
+the legacy-`nn` sunset (see `docs/STORAGE_NN_LEGACY_REMOVAL_SCOPE.md`); its
+replacement lives under `mojo_rl/nn/storage/`. What remains here is the shared
+infra consumed by the storage tree and the migrated agents: the `Op` traits the
+activation functors conform to, logging/serialization helpers, the device-buffer
+`TargetStorage`, and the `mptr` pointer-erasure chokepoint.
 
-from .param_visitor import ParamVisitor
-from .graph_visitor import GraphVisitor, DisplayStep
-from .module import Module, typed_view, typed_view_mut, mptr
-from .graph_node import GraphNode
-from .optimizer import Optimizer
-from .loss import Loss
-from .initializer import Initializer
-from .amp import AMPPolicy, NoAMP, Bf16Compute
-from .named_params import NamedParam, named_params
-from .map_params import polyak_update, hard_copy_params
-from .param import Param, IsParam
-from .walkers import for_each_param_auto, zero_grad_auto
-from .grad_clip import clip_grads_auto, clip_grads_auto_gpu, GradClipState
+Note: target-tag constants and most symbols are imported from their submodules
+directly at the use site; only the stable shared surface is re-exported here."""
+
 from .element_op import ElementOp
+from .binary_element_op import BinaryElementOp
 from .reduce_op import ReduceOp
-from .tensor import Tensor, IsScratch
-from .tensor_pack import TensorPack
-from .state import State, IsState, for_each_state_auto
-from .scratch import Scratch, Cache
-from .scratch_walkers import init_scratch_auto
-from .checkpoint import save_params, load_params, save_state_v2, load_state_v2
 from .saveable import Saveable
 from .save_scalar import SaveScalar, SaveI, SaveBool
-from .state_walker import dump_state, load_state
 from .metric import Metric, LogScalar
 from .log_bundle import log_bundle
-from .amp_matmul import (
-    cast_fp32_to_bf16,
-    cast_bf16_to_fp32,
-    LinearAMPState,
-    Conv2DAMPState,
-)
+from .target_storage import TargetStorage
+from .ptr import mptr
