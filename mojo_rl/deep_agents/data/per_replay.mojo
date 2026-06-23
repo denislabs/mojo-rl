@@ -936,9 +936,7 @@ struct GPUPrioritizedReplay[
                 block_dim=TPB,
             )
         else:
-            ctx.enqueue_copy(
-                state.mb_w.dev.value(), self._host_weights
-            )
+            ctx.enqueue_copy(state.mb_w.dev.value(), self._host_weights)
         state.has_per = True
 
     def update_priorities[
