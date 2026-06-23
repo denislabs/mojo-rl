@@ -400,23 +400,23 @@ struct Conv2D[
             self._w_cast_version = self.weight.val.version
 
     @staticmethod
-    def _init_w(mut w: Tensor):
-        # Deterministic small init (parity harness overwrites this anyway).
-        for k in range(Self.W_SIZE):
-            w.data[k] = Scalar[DT]((k % 7) - 3) * 0.1
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var c = Self()
         c.weight = Param["weight", True, Self.W_SIZE].make[target](ctx)
         c.bias = Param["bias", False, Self.B_SIZE].make[target](ctx)
-        Self._init_w(c.weight.val)
-        comptime if target != "cpu":
-            var dctx = ctx.value()
-            c.weight.val.upload(dctx)
-            c.bias.val.upload(dctx)
+        # Receptive-field-scaled fan_in/fan_out for a conv weight [OC, IC, K, K]
+        # so Kaiming/Xavier get the RIGHT bound. This previously called a fixed
+        # `(k%7-3)*0.1` placeholder that IGNORED `INIT` — a degenerate, non-random
+        # init that BatchNorm masked (CIFAR/ResNet) but BN-FREE conv nets (MuZero
+        # spatial h/g/f) could not recover from. `INIT=Deterministic` reproduces
+        # that exact pattern, so bit-parity gates are unchanged. `init_weight`/
+        # `init_bias` upload to device on GPU.
+        comptime fan_in = Self.IC_ * Self.K_ * Self.K_
+        comptime fan_out = Self.OC_ * Self.K_ * Self.K_
+        INIT.init_weight[target](c.weight.val, Self.W_SIZE, fan_in, fan_out, ctx)
+        INIT.init_bias[target](c.bias.val, Self.B_SIZE, ctx)
         return c^
 
     def forward[
