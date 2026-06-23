@@ -221,10 +221,12 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
         self.dW_tmp = Tensor()
 
     @staticmethod
-    def _init_params(mut self):
-        # Deterministic µ_W init (parity test overwrites). σ = σ0/√IN.
-        for k in range(Self.W_SIZE):
-            self.mu_w.val.data[k] = Scalar[DT](((k % 7) - 3)) * 0.1
+    def _init_sigma(mut self):
+        # σ init is the NoisyNet factorized prescription σ0/√IN — algorithm-
+        # specified (NOT a general initializer), so it stays hardcoded. The µ
+        # (mean) weights/biases honor INIT in `make`; the old `(k%7-3)*0.1`
+        # placeholder that IGNORED INIT was the bug (`Deterministic` reproduces
+        # that exact pattern, so the parity gate is unchanged).
         var sigma_init = Self.SIGMA0 / Scalar[DT](fsqrt(Float64(Self.IN_)))
         for k in range(Self.W_SIZE):
             self.sigma_w.val.data[k] = sigma_init
@@ -240,7 +242,12 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
         nl.sigma_w = Param["sigma_w", True, Self.W_SIZE].make[target](ctx)
         nl.mu_b = Param["mu_b", False, Self.B_SIZE].make[target](ctx)
         nl.sigma_b = Param["sigma_b", False, Self.B_SIZE].make[target](ctx)
-        Self._init_params(nl)
+        # µ (mean) params honor INIT; σ stays the NoisyNet prescription.
+        INIT.init_weight[target](
+            nl.mu_w.val, Self.W_SIZE, Self.IN_, Self.OUT_, ctx
+        )
+        INIT.init_bias[target](nl.mu_b.val, Self.B_SIZE, ctx)
+        Self._init_sigma(nl)
         comptime if target == "cpu":
             nl.noise_in = Tensor.alloc(Self.IN_)
             nl.noise_out = Tensor.alloc(Self.OUT_)
@@ -248,9 +255,8 @@ struct NoisyLinear[IN_: Int, OUT_: Int](Module):
             nl.b_eff = Tensor.alloc(Self.B_SIZE)
         else:
             var dctx = ctx.value()
-            nl.mu_w.val.upload(dctx)
+            # mu_w/mu_b uploaded by init_weight/init_bias; σ set host-side here.
             nl.sigma_w.val.upload(dctx)
-            nl.mu_b.val.upload(dctx)
             nl.sigma_b.val.upload(dctx)
             nl.noise_in.ensure_gpu(dctx, Self.IN_)
             nl.noise_out.ensure_gpu(dctx, Self.OUT_)

@@ -59,19 +59,18 @@ struct Embedding[VOCAB_: Int, EMBED_DIM_: Int](Module):
         self.gw_tmp = Tensor()
 
     @staticmethod
-    def _init_w(mut w: Tensor):
-        for k in range(Self.W_SIZE):
-            w.data[k] = Scalar[DT](((k % 11) - 5)) * 0.07
-
-    @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var e = Self()
         e.weight = Param["weight", True, Self.W_SIZE].make[target](ctx)
-        Self._init_w(e.weight.val)
-        comptime if target != "cpu":
-            e.weight.val.upload(ctx.value())
+        # Honor INIT (was a fixed `(k%11-5)*0.07` placeholder that IGNORED it).
+        # Embedding tables are usually Normal-init; pass the [in,out] = [VOCAB,
+        # EMBED_DIM] convention so Kaiming/Xavier are well-defined too.
+        # init_weight uploads to device on GPU.
+        INIT.init_weight[target](
+            e.weight.val, Self.W_SIZE, Self.VOCAB_, Self.EMBED_DIM_, ctx
+        )
         return e^
 
     def forward[
