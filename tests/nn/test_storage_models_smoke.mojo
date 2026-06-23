@@ -14,6 +14,7 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
@@ -59,13 +60,13 @@ def _run_cpu[M: Module, IN: Int, OUT: Int](name: String) raises -> Bool:
     for i in range(B * IN):
         x.data[i] = Scalar[DT]((i % 11) - 5) * 0.1
     var out = Tensor.alloc(B * OUT)
-    m.forward["cpu", B](TensorRefs[M.ARITY](x), out, None)
+    call_forward["cpu", B](m, TensorRefs[M.ARITY](x), out, None)
     var go = Tensor.alloc(B * OUT)
     for i in range(B * OUT):
         go.data[i] = Scalar[DT]((i % 7) - 3) * 0.2
     var gi = Tensor.alloc(B * IN)
     m.zero_grad["cpu"](None)
-    m.vjp["cpu", B](TensorRefs[M.ARITY](x), go, TensorRefs[M.ARITY](gi), None)
+    call_vjp["cpu", B](m, TensorRefs[M.ARITY](x), go, TensorRefs[M.ARITY](gi), None)
     var ok = _all_finite(out, B * OUT) and _all_finite(gi, B * IN)
     print("  ", name, "CPU fwd+vjp finite:", ok)
     return ok
@@ -78,14 +79,14 @@ def _run_gpu[M: Module, IN: Int, OUT: Int](name: String, c: DeviceContext) raise
         x.data[i] = Scalar[DT]((i % 11) - 5) * 0.1
     x.upload(c)
     var out = Tensor.alloc(B * OUT)
-    m.forward["gpu", B](TensorRefs[M.ARITY](x), out, Optional(c))
+    call_forward["gpu", B](m, TensorRefs[M.ARITY](x), out, Optional(c))
     var go = Tensor.alloc(B * OUT)
     for i in range(B * OUT):
         go.data[i] = Scalar[DT]((i % 7) - 3) * 0.2
     go.upload(c)
     var gi = Tensor.alloc(B * IN)
     m.zero_grad["gpu"](Optional(c))
-    m.vjp["gpu", B](TensorRefs[M.ARITY](x), go, TensorRefs[M.ARITY](gi), Optional(c))
+    call_vjp["gpu", B](m, TensorRefs[M.ARITY](x), go, TensorRefs[M.ARITY](gi), Optional(c))
     out.download(c)
     gi.download(c)
     var ok = _all_finite(out, B * OUT) and _all_finite(gi, B * IN)
