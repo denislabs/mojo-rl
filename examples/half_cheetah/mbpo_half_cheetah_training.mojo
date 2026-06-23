@@ -188,6 +188,7 @@ def main() raises:
         REAL_RATIO_PCT,
         LOGVAR_MIN_F,
         LOGVAR_MAX_F,
+        USE_TRAIN_CUDA_GRAPH=True,
     ](
         actor_lr=3e-4,
         critic_lr=3e-4,
