@@ -86,8 +86,10 @@ def _get_pixel_color(state: AtariState, pixel: Int) -> UInt8:
 
 
 @always_inline
-def _write_pixel_bgra(
-    buf: UnsafePointer[UInt8, MutAnyOrigin],
+def _write_pixel_bgra[
+    o: MutOrigin
+](
+    buf: UnsafePointer[UInt8, o],
     offset: Int,
     color_idx: UInt8,
     palette: InlineArray[UInt32, 256],
