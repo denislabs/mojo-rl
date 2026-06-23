@@ -33,6 +33,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -42,15 +43,51 @@ from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Zero
 from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.primitives.rsample import RSample
+from mojo_rl.nn.random.box_muller import advance_rng_offset_kernel
 
 from ..training.trainer_block import TrainerState
 from .ensemble import CriticEnsemble
 from .kernels import (
     redq_ensemble_target_cpu,
     redq_ensemble_target_gpu,
+    redq_ensemble_target_gpu_dev,
     REDQ_TARGET_MIN,
     REDQ_TARGET_AVE,
 )
+
+
+# ────────────────────────────────────────────────────────────────────
+# Device subset resample — Fisher-Yates partial shuffle on-device.
+# One thread; reads the Philox offset from `offset_buf[0]` (advanced by
+# `advance_rng_offset_kernel` after the draw), so each call AND each CUDA-graph
+# replay draws a fresh N_MIN-from-N subset without host RNG / upload. Mirrors the
+# RSample/box_muller device-RNG-counter pattern. GPU only.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _redq_resample_subset_kernel[
+    N: Int, N_MIN: Int
+](
+    subset: LayoutTensor[DType.uint32, Layout.row_major(N_MIN), MutAnyOrigin],
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    if Int(global_idx.x) != 0:
+        return
+    var offset_base = rebind[UInt64](offset_buf[0])
+    var picks = InlineArray[Int, N](uninitialized=True)
+    for i in range(N):
+        picks[i] = i
+    for i in range(N_MIN):
+        var rng = PhiloxRandom(seed=seed, offset=offset_base + UInt64(i))
+        var u = Float32(rng.step_uniform()[0])
+        var j = i + Int(u * Float32(N - i))
+        if j >= N:
+            j = N - 1
+        var tmp = picks[i]
+        picks[i] = picks[j]
+        picks[j] = tmp
+        subset[i] = UInt32(picks[i])
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -132,6 +169,15 @@ struct EnsembleTargetYBlock[
     # GPU mirror of `subset_idxs` — uploaded once per `step["gpu"]`. None on CPU.
     var _subset_dev: TensorImpl[DType.uint32]
 
+    # CUDA-graph device path (GPU + USE_TRAIN_CUDA_GRAPH). When `_device_resample`
+    # is set, `step` resamples the subset on-device (Philox + `_subset_offset`)
+    # instead of the host Fisher-Yates + upload, and reads alpha from `_alpha_ptr`
+    # (the device temperature buffer) — both capture-safe.
+    var _device_resample: Bool
+    var _subset_offset: TensorImpl[DType.uint64]  # device Philox offset [1]
+    var subset_seed: UInt64
+    var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+
     var action_scale: Scalar[DT]
     var gamma: Scalar[DT]
     var ctx: Optional[DeviceContext]
@@ -150,6 +196,10 @@ struct EnsembleTargetYBlock[
         for k in range(Self.N_MIN):
             self.subset_idxs[k] = k
         self._subset_dev = TensorImpl[DType.uint32]()
+        self._device_resample = False
+        self._subset_offset = TensorImpl[DType.uint64]()
+        self.subset_seed = UInt64(0x5EED_F00D)
+        self._alpha_ptr = None
         self.action_scale = Scalar[DT](1.0)
         self.gamma = Scalar[DT](0.99)
         self.ctx = None
@@ -208,7 +258,38 @@ struct EnsembleTargetYBlock[
             blk._mb_q_i = Tensor.alloc_gpu(c, Self.BATCH)
             blk._mb_lp = Tensor.alloc_gpu(c, Self.BATCH)
             blk._subset_dev.ensure_gpu(c, Self.N_MIN)
+            blk._subset_offset.ensure_gpu(c, 1)
+            blk._subset_offset.dev.value().enqueue_fill(UInt64(0))
         return blk^
+
+    def set_alpha_ptr(mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+        """Wire REDQ's on-device alpha buffer into the combine (GPU device-alpha
+        path). After this, `step` on GPU reads alpha from the device buffer
+        instead of the `alpha` arg — CUDA-graph capturable."""
+        self._alpha_ptr = p
+
+    def enable_device_resample(mut self, seed: UInt64 = UInt64(0x5EED_F00D)):
+        """Switch the GPU subset draw to the on-device Philox kernel (no host
+        RNG / upload). Required for CUDA-graph capture."""
+        self._device_resample = True
+        self.subset_seed = seed
+
+    def resample_subset_dev(mut self) raises:
+        """Enqueue one on-device Fisher-Yates subset draw into `_subset_dev`
+        (reads `_subset_offset`, then advances it). GPU + device path only."""
+        var c = self.ctx.value()
+        c.enqueue_function[_redq_resample_subset_kernel[Self.N, Self.N_MIN]](
+            self._subset_dev.lt["gpu", Layout.row_major(Self.N_MIN)](),
+            self.subset_seed,
+            self._subset_offset.lt["gpu", Layout.row_major(1)](),
+            grid_dim=1,
+            block_dim=1,
+        )
+        c.enqueue_function[advance_rng_offset_kernel[Self.N_MIN]](
+            self._subset_offset.lt["gpu", Layout.row_major(1)](),
+            grid_dim=1,
+            block_dim=1,
+        )
 
     def set_subset_idxs(mut self, idxs: List[Int]) raises:
         """Pin the MODE=MIN subset deterministically (test hook)."""
@@ -345,23 +426,41 @@ struct EnsembleTargetYBlock[
             )
         else:
             var c = ctx.value()
-            # Upload subset_idxs (host List[Int] → device uint32) once per step.
-            self._subset_dev.ensure_host(c, Self.N_MIN)
-            var hb = self._subset_dev.hbuf.value()
-            c.synchronize()
-            for k in range(Self.N_MIN):
-                hb[k] = UInt32(self.subset_idxs[k])
-            c.enqueue_copy(self._subset_dev.dev.value(), hb)
-            redq_ensemble_target_gpu[
-                Self.N, Self.N_MIN, Self.MODE, Self.BATCH,
-            ](
-                c,
-                state.mb_y,
-                state.mb_r,
-                self._mb_stacked_q,
-                state.mb_d,
-                self._mb_lp,
-                self._subset_dev.lt["gpu", Layout.row_major(Self.N_MIN)](),
-                self.gamma,
-                alpha,
-            )
+            if self._device_resample:
+                # CUDA-graph device path: resample subset on-device (no host
+                # upload) and read alpha from the device buffer. Capture-safe.
+                self.resample_subset_dev()
+                redq_ensemble_target_gpu_dev[
+                    Self.N, Self.N_MIN, Self.MODE, Self.BATCH,
+                ](
+                    c,
+                    state.mb_y,
+                    state.mb_r,
+                    self._mb_stacked_q,
+                    state.mb_d,
+                    self._mb_lp,
+                    self._subset_dev.lt["gpu", Layout.row_major(Self.N_MIN)](),
+                    self.gamma,
+                    self._alpha_ptr.value(),
+                )
+            else:
+                # Upload subset_idxs (host List[Int] → device uint32) per step.
+                self._subset_dev.ensure_host(c, Self.N_MIN)
+                var hb = self._subset_dev.hbuf.value()
+                c.synchronize()
+                for k in range(Self.N_MIN):
+                    hb[k] = UInt32(self.subset_idxs[k])
+                c.enqueue_copy(self._subset_dev.dev.value(), hb)
+                redq_ensemble_target_gpu[
+                    Self.N, Self.N_MIN, Self.MODE, Self.BATCH,
+                ](
+                    c,
+                    state.mb_y,
+                    state.mb_r,
+                    self._mb_stacked_q,
+                    state.mb_d,
+                    self._mb_lp,
+                    self._subset_dev.lt["gpu", Layout.row_major(Self.N_MIN)](),
+                    self.gamma,
+                    alpha,
+                )

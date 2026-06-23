@@ -52,6 +52,8 @@ from mojo_rl.nn.core.checkpoint import (
 from mojo_rl.nn.core.log_bundle import log_bundle
 from mojo_rl.nn.core.metric import LogScalar
 
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
+
 from ..data.n_step_replay import GPUNStepBuffer
 from ..training.episode_tracker import EpisodeTracker
 from ..training.device_mean_accum import DeviceMeanAccum
@@ -133,10 +135,18 @@ struct REDQTrainer[
     UTD: Int,
     POLICY_DELAY: Int,
     Q_MODE: Int,
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](OffPolicyAgentGpu):
     """Storage-framework REDQ trainer. `N` total critics; `N_MIN` MIN-subset;
     `UTD` inner critic updates per env step; `POLICY_DELAY` actor+α cadence;
-    `Q_MODE` ∈ {0=MIN, 1=AVE}."""
+    `Q_MODE` ∈ {0=MIN, 1=AVE}.
+
+    `USE_TRAIN_CUDA_GRAPH` (GPU + NoAMP; NVIDIA only, no-op elsewhere) captures
+    the whole UTD inner loop into one CUDA graph and replays it per env-step —
+    the launch-overhead fix. It switches the GPU inner step to a fully
+    device-resident path: on-device subset resample (Philox), device α
+    (`ScalarAdam.new_device` + `step_device`), and device loss/log-prob
+    reductions (no per-step D2H). Mirrors MBPO's `_run_sac_updates_graph`."""
 
     comptime OBS_DIM: Int = Self.SAMPLE.OBS
     comptime ACT_DIM: Int = Self.SAMPLE.ACT
@@ -207,6 +217,9 @@ struct REDQTrainer[
     var _actor_update_count: Int  # actor steps this chunk
     var _total_train_steps: Int   # cumulative inner steps (never reset)
 
+    # CUDA-graph capture slot (USE_TRAIN_CUDA_GRAPH; None until first capture).
+    var _train_graph: Optional[CUDAGraph]
+
     def __init__(out self):
         self.actor = Self.ACTOR()
         self.ensemble = CriticEnsemble[Self.CRITIC, Self.N]()
@@ -264,6 +277,7 @@ struct REDQTrainer[
         self._update_count = 0
         self._actor_update_count = 0
         self._total_train_steps = 0
+        self._train_graph = None
 
     @staticmethod
     def make(
@@ -307,7 +321,18 @@ struct REDQTrainer[
         for i in range(Self.N):
             t.ensemble.opts[i].lr = critic_lr
 
-        t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
+        # α temperature optimizer. The CUDA-graph path needs α on-device
+        # (device ScalarAdam + the kernels read it via `alpha_dev_ptr`); the
+        # eager path keeps the host ScalarAdam (bit-identical to before).
+        comptime if Self.train_target == "gpu":
+            if Self.USE_TRAIN_CUDA_GRAPH:
+                t.alpha_opt = ScalarAdam.new_device(
+                    ctx.value(), flog(init_alpha), alpha_lr
+                )
+            else:
+                t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
+        else:
+            t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
 
         t.target_y_blk = EnsembleTargetYBlock[
             Self.ACTOR, Self.CRITIC, Self.N, Self.BATCH, Self.OBS_DIM,
@@ -328,6 +353,15 @@ struct REDQTrainer[
         t.polyak_blk = EnsemblePolyakStep[
             Self.CRITIC, Self.N, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         ].make(tau=tau)
+
+        # CUDA-graph device path wiring: point target-y + actor-loss at the
+        # on-device α buffer, and switch the subset draw to the on-device Philox
+        # kernel — all host work removed from the inner step so it's capturable.
+        comptime if Self.train_target == "gpu":
+            if Self.USE_TRAIN_CUDA_GRAPH:
+                t.target_y_blk.set_alpha_ptr(t.alpha_opt.alpha_dev_ptr())
+                t.target_y_blk.enable_device_resample()
+                t.actor_blk.inner.set_alpha_ptr(t.alpha_opt.alpha_dev_ptr())
 
         t.sel = RSample[Self.ACT_DIM].make[Self.train_target, Zero](ctx)
         t.sel.action_scale = action_scale
@@ -428,6 +462,85 @@ struct REDQTrainer[
         self._update_count += 1
         self._total_train_steps += 1
 
+    # ─── Device inner step (CUDA-graph capture body) ───────────────────────
+    def _run_inner_step_device(mut self, i: Int) raises:
+        """One inner update as a PURE device-kernel sequence — the body captured
+        into the CUDA graph and replayed. Sample (device RNG advances on-device),
+        subset resample (device Philox), α read on-device, loss + diagnostics
+        device-resident. The actor + α step run only on the policy-delay
+        iteration (host `if` evaluated at capture → baked into the graph; valid
+        because UTD/POLICY_DELAY are comptime-constant). NO host counters — those
+        advance in `_run_inner_loop_graph`."""
+        comptime assert Self.train_target == "gpu", (
+            "_run_inner_step_device is GPU-only (CUDA-graph capture path)"
+        )
+        self.state.did_step = True
+        self.state.ctx = self.ctx
+        self.sample_blk.step(self.state)
+
+        # α arg unused here — target_y reads α from the wired device buffer.
+        self.target_y_blk.step["gpu"](
+            self.state, self.actor, self.ensemble, self.state.alpha
+        )
+        self.critic_blk.step["gpu", ACCUMULATE=True](self.state, self.ensemble)
+        self.polyak_blk.step["gpu"](self.state, self.ensemble)
+
+        if (i + 1) % Self.POLICY_DELAY == 0:
+            self.actor_blk.step["gpu"](
+                self.state, self.actor, self.actor_opt, self.ensemble
+            )
+            self.alpha_opt.step_device(
+                self.ctx.value(),
+                self.actor_blk.inner.lp_mean_dev(),
+                self.alpha_blk.target_entropy,
+            )
+
+        # Per-batch diagnostics — device-resident accumulators (capture-safe).
+        comptime B = Self.BATCH
+        comptime A = Self.ACT_DIM
+        comptime lb = Layout.row_major(B)
+        comptime lba = Layout.row_major(B * A)
+        self._q_mean_dev.accumulate_gpu_lt[B](
+            self.critic_blk.member_step._mb_q.lt["gpu", lb]()
+        )
+        self._target_mean_dev.accumulate_gpu_lt[B](
+            self.state.mb_y.lt["gpu", lb]()
+        )
+        self._reward_mean_dev.accumulate_gpu_lt[B](
+            self.state.mb_r.lt["gpu", lb]()
+        )
+        self._done_mean_dev.accumulate_gpu_lt[B](
+            self.state.mb_d.lt["gpu", lb]()
+        )
+        self._abs_action_mean_dev.accumulate_gpu_abs_lt[B * A](
+            self.state.mb_a.lt["gpu", lba]()
+        )
+
+    def _run_inner_loop_graph(mut self) raises -> Bool:
+        """Capture-once / replay the whole UTD inner loop as one CUDA graph
+        (mirrors MBPO's `_run_sac_updates_graph`). The graph is moved into a
+        disjoint local for the capture call so the closure can borrow `self`
+        without overlapping the `_train_graph` field's mut borrow. Host counters
+        advance once per logical inner update afterwards; losses/α/diagnostics
+        drain from device accumulators at flush."""
+        var ctx = self.ctx.value()
+        var g = self._train_graph^
+        self._train_graph = None
+
+        def _captured() capturing raises -> None:
+            for i in range(Self.UTD):
+                self._run_inner_step_device(i)
+
+        maybe_capture_replay[_captured](g, ctx)
+        self._train_graph = g^
+
+        for i in range(Self.UTD):
+            self._update_count += 1
+            self._total_train_steps += 1
+            if (i + 1) % Self.POLICY_DELAY == 0:
+                self._actor_update_count += 1
+        return True
+
     # ─── train_step — outer (one env step). Runs UTD inner updates. ─────────
     def train_step(mut self, step_idx: Int) raises -> Bool:
         self.state.step_idx = step_idx
@@ -438,6 +551,13 @@ struct REDQTrainer[
         self.sample_blk.step(self.state)
         if not self.state.did_step:
             return False
+
+        # CUDA-graph path: capture/replay the whole UTD loop (GPU only). The
+        # probe sample above gates warmup; the captured loop draws its own fresh
+        # minibatches per iteration (device RNG advances on replay).
+        comptime if Self.train_target == "gpu":
+            comptime if Self.USE_TRAIN_CUDA_GRAPH:
+                return self._run_inner_loop_graph()
 
         self._run_inner_step()
         for _ in range(Self.UTD - 1):
@@ -762,10 +882,34 @@ struct REDQTrainer[
             done_mean = self._done_accum * inv
             abs_action_mean = self._abs_action_accum * inv
 
+        # actor/critic loss + α. CUDA-graph path: drain the device accumulators
+        # (no host accumulation ran in the captured loop). Else host scalars.
+        var actor_loss_v: Scalar[DT]
+        var critic_loss_v: Scalar[DT]
+        var alpha_v: Scalar[DT]
+        comptime if Self.train_target == "gpu":
+            comptime if Self.USE_TRAIN_CUDA_GRAPH:
+                var c = self.ctx.value()
+                actor_loss_v = self.actor_blk.inner.read_loss_accum(c)
+                critic_loss_v = (
+                    self.critic_blk.member_step.mse_loss.read_accum["gpu"](c)
+                )
+                alpha_v = self.alpha_opt.read_alpha()
+                self.actor_blk.inner.reset_loss_accum()
+                self.critic_blk.member_step.mse_loss.reset_accum["gpu"]()
+            else:
+                actor_loss_v = self._actor_L_accum * inv_a
+                critic_loss_v = self._critic_L_accum * inv
+                alpha_v = self._alpha_accum * inv_a
+        else:
+            actor_loss_v = self._actor_L_accum * inv_a
+            critic_loss_v = self._critic_L_accum * inv
+            alpha_v = self._alpha_accum * inv_a
+
         var bundle = REDQMetrics(
-            actor_loss=LogScalar[DT](self._actor_L_accum * inv_a),
-            critic_loss=LogScalar[DT](self._critic_L_accum * inv),
-            alpha=LogScalar[DT](self._alpha_accum * inv_a),
+            actor_loss=LogScalar[DT](actor_loss_v),
+            critic_loss=LogScalar[DT](critic_loss_v),
+            alpha=LogScalar[DT](alpha_v),
             mean_q=LogScalar[DT](q_mean),
             mean_target=LogScalar[DT](target_mean),
             mean_reward=LogScalar[DT](reward_mean),

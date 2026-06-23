@@ -59,6 +59,7 @@ struct REDQAgent[
     UTD: Int,
     POLICY_DELAY: Int,
     Q_MODE: Int,
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](Movable & ImplicitlyDeletable):
     """Thin facade over `REDQTrainer` + off-policy drivers.
 
@@ -80,6 +81,7 @@ struct REDQAgent[
         Self.UTD,
         Self.POLICY_DELAY,
         Self.Q_MODE,
+        Self.USE_TRAIN_CUDA_GRAPH,
     ]
 
     def __init__(
@@ -109,6 +111,7 @@ struct REDQAgent[
             Self.UTD,
             Self.POLICY_DELAY,
             Self.Q_MODE,
+            Self.USE_TRAIN_CUDA_GRAPH,
         ].make(
             ctx=ctx,
             actor_lr=actor_lr,
@@ -156,6 +159,7 @@ struct REDQAgent[
                 Self.UTD,
                 Self.POLICY_DELAY,
                 Self.Q_MODE,
+                Self.USE_TRAIN_CUDA_GRAPH,
             ],
             E,
             L,
@@ -196,6 +200,7 @@ struct REDQAgent[
                 Self.UTD,
                 Self.POLICY_DELAY,
                 Self.Q_MODE,
+                Self.USE_TRAIN_CUDA_GRAPH,
             ],
             E,
         ](

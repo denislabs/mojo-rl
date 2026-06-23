@@ -156,6 +156,116 @@ def _redq_ensemble_target_kernel[
     out_y.ptr[b] = tgt
 
 
+# =============================================================================
+# Device-alpha kernel — CUDA-graph-capturable variant. Reads alpha from
+# `alpha_ptr[0]` (REDQ's on-device temperature buffer, ScalarAdam.alpha_dev_ptr)
+# instead of a baked scalar arg, so the combine stays valid across graph replays
+# while the device ScalarAdam refreshes alpha. Template:
+# `sac/target_y_block.mojo::_target_y_dev_kernel`.
+# =============================================================================
+
+
+def _redq_ensemble_target_dev_kernel[
+    N_ENSEMBLE: Int,
+    N_MIN: Int,
+    MODE: Int,
+    BATCH: Int,
+](
+    out_y: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    rewards: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    q_next: LayoutTensor[
+        DT, Layout.row_major(N_ENSEMBLE, BATCH), MutAnyOrigin,
+    ],
+    terms: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    log_probs: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    subset_idxs: LayoutTensor[
+        DType.uint32, Layout.row_major(N_MIN), MutAnyOrigin,
+    ],
+    gamma: Scalar[DT],
+    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """As `_redq_ensemble_target_kernel` but α read from `alpha_ptr[0]`."""
+    var b = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if b >= BATCH:
+        return
+
+    var combined: Scalar[DT] = Scalar[DT](0.0)
+    comptime if MODE == REDQ_TARGET_MIN:
+        var first_idx = Int(subset_idxs.ptr[0])
+        var v0 = q_next.ptr[first_idx * BATCH + b]
+        if v0 != v0:
+            v0 = Scalar[DT](0.0)
+        combined = v0
+        comptime for m in range(1, N_MIN):
+            var idx = Int(subset_idxs.ptr[m])
+            var v = q_next.ptr[idx * BATCH + b]
+            if v != v:
+                v = Scalar[DT](0.0)
+            if v < combined:
+                combined = v
+    comptime if MODE == REDQ_TARGET_AVE:
+        var acc: Scalar[DT] = Scalar[DT](0.0)
+        comptime for n in range(N_ENSEMBLE):
+            var v = q_next.ptr[n * BATCH + b]
+            if v != v:
+                v = Scalar[DT](0.0)
+            acc = acc + v
+        combined = acc / Scalar[DT](N_ENSEMBLE)
+
+    var lp = log_probs.ptr[b]
+    var nonterm = Scalar[DT](1.0) - terms.ptr[b]
+    var tgt = rewards.ptr[b] + nonterm * gamma * (combined - alpha_ptr[0] * lp)
+    if tgt != tgt:
+        tgt = Scalar[DT](0.0)
+    out_y.ptr[b] = tgt
+
+
+def redq_ensemble_target_gpu_dev[
+    N_ENSEMBLE: Int,
+    N_MIN: Int,
+    MODE: Int,
+    BATCH: Int,
+](
+    ctx: DeviceContext,
+    mut out_y: Tensor,          # [BATCH]
+    mut rewards: Tensor,        # [BATCH]
+    mut q_next: Tensor,         # [N_ENSEMBLE, BATCH]
+    mut terms: Tensor,          # [BATCH]
+    mut log_probs: Tensor,      # [BATCH]
+    subset_dev: LayoutTensor[
+        DType.uint32, Layout.row_major(N_MIN), MutAnyOrigin,
+    ],
+    gamma: Scalar[DT],
+    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+) raises:
+    """Device-alpha variant of `redq_ensemble_target_gpu` — alpha read from
+    `alpha_ptr[0]` (REDQ's on-device temperature). CUDA-graph capturable."""
+    comptime assert (
+        MODE == REDQ_TARGET_MIN or MODE == REDQ_TARGET_AVE
+    ), "redq_ensemble_target_gpu_dev: only MIN/AVE supported"
+    comptime assert N_MIN >= 1, "N_MIN must be >= 1"
+    comptime assert N_MIN <= N_ENSEMBLE, "N_MIN must be <= N_ENSEMBLE"
+
+    comptime lb = Layout.row_major(BATCH)
+    comptime lq = Layout.row_major(N_ENSEMBLE, BATCH)
+    comptime n_blocks = (BATCH + TPB - 1) // TPB
+    comptime kernel = _redq_ensemble_target_dev_kernel[
+        N_ENSEMBLE, N_MIN, MODE, BATCH,
+    ]
+    ctx.enqueue_function[kernel](
+        out_y.lt["gpu", lb](),
+        rewards.lt["gpu", lb](),
+        q_next.lt["gpu", lq](),
+        terms.lt["gpu", lb](),
+        log_probs.lt["gpu", lb](),
+        subset_dev,
+        gamma,
+        alpha_ptr,
+        grid_dim=n_blocks,
+        block_dim=TPB,
+    )
+
+
 def redq_ensemble_target_gpu[
     N_ENSEMBLE: Int,
     N_MIN: Int,

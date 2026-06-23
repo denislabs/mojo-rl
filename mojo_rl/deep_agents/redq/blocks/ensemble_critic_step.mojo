@@ -71,13 +71,17 @@ struct EnsembleCriticStep[
     def step[
         target: StaticString,
         POLICY: AMPPolicy = NoAMP,
+        ACCUMULATE: Bool = False,
     ](
         mut self,
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut ensemble: CriticEnsemble[Self.CRITIC, Self.N],
     ) raises:
         """One ensemble-wide critic gradient step. Reads `state.mb_s` /
-        `state.mb_a` / `state.mb_y`, writes `state.critic_loss = Σᵢ loss_i`."""
+        `state.mb_a` / `state.mb_y`, writes `state.critic_loss = Σᵢ loss_i`.
+        Under GPU `ACCUMULATE` the per-critic loss folds into the shared
+        `member_step.mse_loss` device accumulator (NO D2H — capture-safe) and
+        `state.critic_loss` stays 0 (read at flush via `read_accum`)."""
         var ctx = state.ctx
         # Build the shared concat(s, a) once; pass it to each critic update.
         comptime if target == "cpu":
@@ -101,7 +105,7 @@ struct EnsembleCriticStep[
         var loss_sum: Scalar[DT] = Scalar[DT](0.0)
         for i in range(Self.N):
             var loss = self.member_step.step[
-                target, POLICY, ACCUMULATE=False
+                target, POLICY, ACCUMULATE
             ](
                 ensemble.pairs[i].online,
                 ensemble.opts[i],

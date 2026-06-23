@@ -30,10 +30,10 @@ Returns `EnsembleActorLossResult { loss, log_prob_mean }`. The trainer reads
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
@@ -44,6 +44,7 @@ from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.primitives.rsample import RSample
 
 from .ensemble import CriticEnsemble
+from ..sac.actor_loss import reduce_mean_write_kernel, reduce_mean_acc_kernel
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -125,6 +126,53 @@ def _eal_build_grad_alp_kernel[
         grad_alp[b, j] = grad_lp_const
 
 
+# ────────────────────────────────────────────────────────────────────
+# Device-alpha kernels — CUDA-graph-capturable variants. Alpha read from
+# `alpha_ptr[0]` (REDQ's on-device temperature) instead of baked host scalars,
+# so the actor loss stays capturable while the device ScalarAdam refreshes α.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _eal_loss_per_b_dev_kernel[
+    BATCH: Int, N: Int
+](
+    q_sum: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    lp: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    loss_out: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
+    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """loss_out[b] = α·lp[b] − (1/N)·q_sum[b]. α read on-device. Per-b loss the
+    device reductions average into `_loss_acc` (no D2H)."""
+    var b = Int(global_idx.x)
+    if b >= BATCH:
+        return
+    var inv_n = Scalar[DT](1.0) / Scalar[DT](N)
+    var combined = rebind[Scalar[DT]](q_sum[b]) * inv_n
+    loss_out[b] = alpha_ptr[0] * rebind[Scalar[DT]](lp[b]) - combined
+
+
+def _eal_build_grad_alp_dev_kernel[
+    BATCH: Int, OBS: Int, ACT: Int, SA_DIM: Int, ALP_DIM: Int,
+](
+    grad_sa_sum: LayoutTensor[DT, Layout.row_major(BATCH, SA_DIM), MutAnyOrigin],
+    grad_alp: LayoutTensor[DT, Layout.row_major(BATCH, ALP_DIM), MutAnyOrigin],
+    inv_b: Scalar[DT],
+    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    """As `_eal_build_grad_alp_kernel` but grad_log_prob = α·inv_b with α read
+    on-device from `alpha_ptr[0]`."""
+    var idx = Int(global_idx.x)
+    var total = BATCH * ALP_DIM
+    if idx >= total:
+        return
+    var b = idx // ALP_DIM
+    var j = idx % ALP_DIM
+    if j < ACT:
+        grad_alp[b, j] = rebind[Scalar[DT]](grad_sa_sum[b, OBS + j])
+    else:
+        grad_alp[b, j] = alpha_ptr[0] * inv_b
+
+
 @fieldwise_init
 struct EnsembleActorLossResult(Movable & ImplicitlyDeletable):
     """Forward/backward result: scalar loss + log_prob_mean."""
@@ -166,6 +214,15 @@ struct EnsembleActorLoss[
     var _mb_grad_ao: Tensor     # [BATCH, 2*ACT]
     var _mb_grad_obs: Tensor    # [BATCH, OBS]
 
+    # CUDA-graph device-alpha path (GPU + USE_TRAIN_CUDA_GRAPH). When
+    # `_alpha_ptr` is set, the GPU forward_backward reads α on-device, reduces
+    # loss/log_prob on-device (no D2H), and returns 0 sentinels — the trainer
+    # drains `_loss_acc` at flush and the device ScalarAdam reads `_lp_mean`.
+    var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _mb_loss_out: Tensor    # [BATCH] per-b loss (device reduction source)
+    var _lp_mean: Tensor        # [1] mean(log_prob) — entropy grad for α
+    var _loss_acc: Tensor       # [2] (Σmean, count) actor-loss accumulator
+
     var ctx: Optional[DeviceContext]
 
     def __init__(out self):
@@ -182,6 +239,10 @@ struct EnsembleActorLoss[
         self._mb_grad_alp = Tensor()
         self._mb_grad_ao = Tensor()
         self._mb_grad_obs = Tensor()
+        self._alpha_ptr = None
+        self._mb_loss_out = Tensor()
+        self._lp_mean = Tensor()
+        self._loss_acc = Tensor()
         self.ctx = None
 
     @staticmethod
@@ -242,7 +303,38 @@ struct EnsembleActorLoss[
             b._mb_grad_alp = Tensor.alloc_gpu(c, Self.BATCH * Self.ALP_DIM)
             b._mb_grad_ao = Tensor.alloc_gpu(c, Self.BATCH * (2 * Self.ACT))
             b._mb_grad_obs = Tensor.alloc_gpu(c, Self.BATCH * Self.OBS)
+            b._mb_loss_out = Tensor.alloc_gpu(c, Self.BATCH)
+            b._lp_mean = Tensor.alloc_gpu(c, 1)
+            b._lp_mean.dev.value().enqueue_fill(Scalar[DT](0))
+            b._loss_acc = Tensor.alloc_gpu(c, 2)
+            b._loss_acc.dev.value().enqueue_fill(Scalar[DT](0))
         return b^
+
+    # ── Device-α accessors (GPU + CUDA-graph path) ────────────────────
+    def set_alpha_ptr(mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
+        """Wire REDQ's on-device alpha buffer into the actor loss. After this,
+        the GPU `forward_backward` reads α on-device and reduces loss/log_prob
+        on-device (no per-step D2H / host α)."""
+        self._alpha_ptr = p
+
+    def lp_mean_dev(mut self) -> DeviceBuffer[DT]:
+        """The device `_lp_mean` [1] buffer — the device ScalarAdam reads it as
+        the per-step entropy grad."""
+        return self._lp_mean.dev.value()
+
+    def reset_loss_accum(mut self) raises:
+        """Zero the device (Σmean, count) loss accumulator — flush cadence."""
+        self._loss_acc.dev.value().enqueue_fill(Scalar[DT](0))
+
+    def read_loss_accum(mut self, ctx: DeviceContext) raises -> Scalar[DT]:
+        """D2H the device loss accumulator once (flush cadence) → window mean
+        (Σmean / count). 0 if no steps."""
+        self._loss_acc.download(ctx)
+        var s = self._loss_acc.data[0]
+        var n = self._loss_acc.data[1]
+        if n == Scalar[DT](0.0):
+            return Scalar[DT](0.0)
+        return s / n
 
     def forward_backward[
         target: StaticString,
@@ -343,13 +435,37 @@ struct EnsembleActorLoss[
                 lp_sum += lp
         else:
             var c = ctx.value()
-            self._mb_q_sum.download(c)
-            self._mb_lp.download(c)
-            for b in range(BB):
-                var combined = self._mb_q_sum.data[b] * inv_n
-                var lp = self._mb_lp.data[b]
-                loss += alpha * lp - combined
-                lp_sum += lp
+            if self._alpha_ptr:
+                # Device-α path: per-b loss on-device (reads α from the device
+                # buffer) + device reductions, NO D2H. `_lp_mean` feeds the
+                # device ScalarAdam this step; `_loss_acc` drains at flush.
+                # Returned host scalars stay 0 sentinels.
+                comptime nbb = (BB + TPB - 1) // TPB
+                c.enqueue_function[_eal_loss_per_b_dev_kernel[BB, Self.N]](
+                    self._mb_q_sum.lt["gpu", Layout.row_major(BB)](),
+                    self._mb_lp.lt["gpu", Layout.row_major(BB)](),
+                    self._mb_loss_out.lt["gpu", Layout.row_major(BB)](),
+                    self._alpha_ptr.value(),
+                    grid_dim=nbb, block_dim=TPB,
+                )
+                c.enqueue_function[reduce_mean_write_kernel[BB]](
+                    self._mb_lp.lt["gpu", Layout.row_major(BB, 1)](),
+                    self._lp_mean.lt["gpu", Layout.row_major(1, 1)](),
+                    grid_dim=1, block_dim=TPB_REDUCE,
+                )
+                c.enqueue_function[reduce_mean_acc_kernel[BB]](
+                    self._mb_loss_out.lt["gpu", Layout.row_major(BB, 1)](),
+                    self._loss_acc.lt["gpu", Layout.row_major(1, 2)](),
+                    grid_dim=1, block_dim=TPB_REDUCE,
+                )
+            else:
+                self._mb_q_sum.download(c)
+                self._mb_lp.download(c)
+                for b in range(BB):
+                    var combined = self._mb_q_sum.data[b] * inv_n
+                    var lp = self._mb_lp.data[b]
+                    loss += alpha * lp - combined
+                    lp_sum += lp
         loss *= inv_b
         var log_prob_mean = lp_sum * inv_b
 
@@ -421,17 +537,36 @@ struct EnsembleActorLoss[
             var c = ctx.value()
             comptime total_galp = BB * Self.ALP_DIM
             comptime n_blocks_g = (total_galp + TPB - 1) // TPB
-            comptime build_galp = _eal_build_grad_alp_kernel[
-                BB, Self.OBS, Self.ACT, Self.SA_DIM, Self.ALP_DIM,
-            ]
-            c.enqueue_function[build_galp](
-                self._mb_grad_sa_sum.lt[
-                    "gpu", Layout.row_major(BB, Self.SA_DIM)
-                ](),
-                self._mb_grad_alp.lt["gpu", Layout.row_major(BB, Self.ALP_DIM)](),
-                grad_lp_val,
-                grid_dim=n_blocks_g, block_dim=TPB,
-            )
+            if self._alpha_ptr:
+                # Device-α grad: grad_log_prob = α·inv_b with α read on-device.
+                comptime build_galp_dev = _eal_build_grad_alp_dev_kernel[
+                    BB, Self.OBS, Self.ACT, Self.SA_DIM, Self.ALP_DIM,
+                ]
+                c.enqueue_function[build_galp_dev](
+                    self._mb_grad_sa_sum.lt[
+                        "gpu", Layout.row_major(BB, Self.SA_DIM)
+                    ](),
+                    self._mb_grad_alp.lt[
+                        "gpu", Layout.row_major(BB, Self.ALP_DIM)
+                    ](),
+                    inv_b,
+                    self._alpha_ptr.value(),
+                    grid_dim=n_blocks_g, block_dim=TPB,
+                )
+            else:
+                comptime build_galp = _eal_build_grad_alp_kernel[
+                    BB, Self.OBS, Self.ACT, Self.SA_DIM, Self.ALP_DIM,
+                ]
+                c.enqueue_function[build_galp](
+                    self._mb_grad_sa_sum.lt[
+                        "gpu", Layout.row_major(BB, Self.SA_DIM)
+                    ](),
+                    self._mb_grad_alp.lt[
+                        "gpu", Layout.row_major(BB, Self.ALP_DIM)
+                    ](),
+                    grad_lp_val,
+                    grid_dim=n_blocks_g, block_dim=TPB,
+                )
 
         # ── Step 9 — rsample.vjp(grad_alp) → grad_ao [B, 2·ACT].
         call_vjp[target, BB, POLICY=POLICY](
