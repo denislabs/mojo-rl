@@ -44,7 +44,6 @@ trait adapters, the legacy struct can be deleted.
 """
 
 from std.math import sqrt, log, exp
-from std.memory import alloc, memset
 from std.random import random_float64
 
 from mojo_rl.planners.common.min_max_stats import MinMaxStats
@@ -272,8 +271,9 @@ struct GenericCPUMCTS[
     var nodes: List[MCTSNode[Self.ACTION_DIM]]
     """Node arena. Cleared and rebuilt per ``search`` call."""
 
-    var hidden_states: UnsafePointer[Float64, MutAnyOrigin]
-    """``MAX_NODES × LATENT_DIM`` flat pool — one slot per node."""
+    var hidden_states: List[Float64]
+    """``MAX_NODES × LATENT_DIM`` flat pool — one slot per node (owned List,
+    RAII — no manual alloc/free, no MutAnyOrigin)."""
 
     var min_max: MinMaxStats
     """Q-value range tracker for PUCT normalization."""
@@ -283,19 +283,17 @@ struct GenericCPUMCTS[
 
     def __init__(out self, gamma: Float64 = 0.997):
         self.nodes = List[MCTSNode[Self.ACTION_DIM]](capacity=Self.MAX_NODES)
-        self.hidden_states = alloc[Float64](Self.MAX_NODES * Self.LATENT_DIM)
-        memset(self.hidden_states, 0, Self.MAX_NODES * Self.LATENT_DIM)
+        self.hidden_states = List[Float64](
+            length=Self.MAX_NODES * Self.LATENT_DIM, fill=Float64(0.0)
+        )
         self.min_max = MinMaxStats()
         self.gamma = gamma
 
     def __init__(out self, *, deinit take: Self):
         self.nodes = take.nodes^
-        self.hidden_states = take.hidden_states
+        self.hidden_states = take.hidden_states^
         self.min_max = take.min_max
         self.gamma = take.gamma
-
-    def __del__(deinit self):
-        self.hidden_states.free()
 
     # ══════════════════════════════════════════════════════════════════════
     # Public API
