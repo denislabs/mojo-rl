@@ -1174,8 +1174,8 @@ struct ACStep[
             vlog.unsafe_ptr(), svlog.unsafe_ptr(), pmean.unsafe_ptr(),
             pstd.unsafe_ptr(), bins,
             MINSTD, MAXSTD, self.lam, self.actent, self.slowreg,
-            retnorm, pol_loss.unsafe_ptr(), val_loss.unsafe_ptr(),
-            ret.unsafe_ptr(), self.slowtar,
+            retnorm, pol_loss, val_loss,
+            ret, self.slowtar,
         )
         var total: Scalar[DT] = 0.0
         for i in range(NS * TM1):
@@ -1422,8 +1422,8 @@ struct ACStep[
             vlog.unsafe_ptr(), svlog.unsafe_ptr(), pmean.unsafe_ptr(),
             pstd.unsafe_ptr(), bins,
             MINSTD, MAXSTD, self.lam, self.actent, self.slowreg,
-            retnorm, pol_loss.unsafe_ptr(), val_loss.unsafe_ptr(),
-            ret.unsafe_ptr(), self.slowtar,
+            retnorm, pol_loss, val_loss,
+            ret, self.slowtar,
         )
         var total: Scalar[DT] = 0.0
         for i in range(NS * TM1):

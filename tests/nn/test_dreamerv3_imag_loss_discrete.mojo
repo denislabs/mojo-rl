@@ -44,9 +44,9 @@ def _sum_policy(
     bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
     lam: Scalar[DT], actent: Scalar[DT], slowreg: Scalar[DT],
 ) raises -> Scalar[DT]:
-    var pol = alloc[Scalar[DT]](BK * TM1)
-    var val = alloc[Scalar[DT]](BK * TM1)
-    var ret = alloc[Scalar[DT]](BK * TM1)
+    var pol = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](0))
+    var val = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](0))
+    var ret = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](0))
     var rn = PercentileNormalize.make("none")
     imag_loss_cpu[BK, T, ACT, BINS, True](
         act, rew, con, vlog, svlog, logits, pstd, bins,
@@ -56,7 +56,6 @@ def _sum_policy(
     var s = Scalar[DT](0.0)
     for i in range(BK * TM1):
         s += pol[i]
-    pol.free(); val.free(); ret.free()
     return s
 
 
@@ -97,9 +96,9 @@ def main() raises:
                 svlog[(b * T + t) * BINS + c] = Scalar[DT](random_float64() * 0.5)
 
     # forward (for rscale) + analytic backward
-    var pol = alloc[Scalar[DT]](BK * TM1)
-    var val = alloc[Scalar[DT]](BK * TM1)
-    var ret = alloc[Scalar[DT]](BK * TM1)
+    var pol = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](0))
+    var val = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](0))
+    var ret = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](0))
     var rn = PercentileNormalize.make("none")
     imag_loss_cpu[BK, T, ACT, BINS, True](
         act, rew, con, vlog, svlog, logits, pstd, bins,
@@ -158,7 +157,7 @@ def main() raises:
     assert_true(max_rel < Scalar[DT](2e-2), "discrete imag_loss grad matches FD")
 
     act.free(); rew.free(); con.free(); vlog.free(); svlog.free()
-    logits.free(); pstd.free(); bins.free(); pol.free(); val.free(); ret.free()
+    logits.free(); pstd.free(); bins.free()  # pol/val/ret are now owned Lists
     d_pol.free(); d_val.free(); g_vlog.free(); g_logits.free(); g_pstd.free()
     print("=" * 70)
     print("PASSED — discrete imag_loss forward + policy gradient verified")

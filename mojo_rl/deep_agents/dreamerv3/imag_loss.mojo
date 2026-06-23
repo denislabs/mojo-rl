@@ -54,9 +54,6 @@ def imag_loss_cpu[
     pmean_o: Origin[mut=True] = MutAnyOrigin,
     pstd_raw_o: Origin[mut=True] = MutAnyOrigin,
     bins_o: Origin[mut=True] = MutAnyOrigin,
-    out_policy_loss_o: Origin[mut=True] = MutAnyOrigin,
-    out_value_loss_o: Origin[mut=True] = MutAnyOrigin,
-    out_ret_o: Origin[mut=True] = MutAnyOrigin,
 ](
     act: UnsafePointer[Scalar[DT], act_o],  # [BK,T,ACT]
     rew: UnsafePointer[Scalar[DT], rew_o],  # [BK,T]
@@ -72,9 +69,9 @@ def imag_loss_cpu[
     actent: Scalar[DT],
     slowreg: Scalar[DT],
     mut retnorm: PercentileNormalize,
-    out_policy_loss: UnsafePointer[Scalar[DT], out_policy_loss_o],  # [BK,T-1]
-    out_value_loss: UnsafePointer[Scalar[DT], out_value_loss_o],  # [BK,T-1]
-    out_ret: UnsafePointer[Scalar[DT], out_ret_o],  # [BK,T-1]
+    mut out_policy_loss: List[Scalar[DT]],  # [BK,T-1]
+    mut out_value_loss: List[Scalar[DT]],  # [BK,T-1]
+    mut out_ret: List[Scalar[DT]],  # [BK,T-1]
     slowtar: Bool = False,  # bootstrap λ-return from slowvalue (EMA target)
 ) raises:
     comptime assert T >= 2, "imag_loss needs T >= 2"

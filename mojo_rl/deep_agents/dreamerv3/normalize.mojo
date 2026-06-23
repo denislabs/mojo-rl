@@ -97,9 +97,7 @@ struct PercentileNormalize(Movable & ImplicitlyDeletable):
         p.debias = debias
         return p^
 
-    def update(
-        mut self, x: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int
-    ) raises:
+    def update(mut self, x: List[Scalar[DT]], n: Int) raises:
         """EMA-update the running statistics from a flat sample `x[0:n]`."""
         var keep = Scalar[DT](1.0) - self.rate
         if self.impl == "none":

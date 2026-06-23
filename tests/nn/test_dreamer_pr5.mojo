@@ -91,6 +91,17 @@ def _diff(
     return m
 
 
+def _diff(got: List[Scalar[DT]], expected: List[Scalar[DT]]) -> Scalar[DT]:
+    """List overload — for the storage-style List outputs (imag_loss)."""
+    var m: Scalar[DT] = 0.0
+    for i in range(len(expected)):
+        var d = got[i] - expected[i]
+        var ad = d if d >= Scalar[DT](0) else -d
+        if ad > m:
+            m = ad
+    return m
+
+
 def test_twohot() raises:
     print("test_twohot (pred / loss / bins) ...")
     var content: String
@@ -185,9 +196,9 @@ def test_imag_loss() raises:
         String("perc"), rate=0.01, perclo=5.0, perchi=95.0, limit=1.0,
         debias=False,
     )
-    var pol = alloc[Scalar[DT]](BK * TM1)
-    var vall = alloc[Scalar[DT]](BK * TM1)
-    var ret = alloc[Scalar[DT]](BK * TM1)
+    var pol = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](0))
+    var vall = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](0))
+    var ret = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](0))
     imag_loss_cpu[BK, T, ACT, BINS](
         act, rew, con, vlogits, svlogits, pmean, pstd_raw, bins,
         minstd, maxstd, lam, actent, slowreg, retnorm, pol, vall, ret,
