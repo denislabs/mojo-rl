@@ -16,6 +16,7 @@ itself spans the full sequence. `causal=False` → bidirectional (ViT);
   - `TransformerBlock`
 """
 
+from mojo_rl.nn.constants import DT
 from ..primitives.linear import Linear
 from ..primitives.layer_norm import LayerNorm
 from ..primitives.activations import GELU
@@ -33,32 +34,34 @@ from ..combinators.tokenwise import Tokenwise
 # case head_dim = dim/n_heads (inner == dim) — a strict generalization.
 comptime MultiHeadAttentionXL[
     dim: Int, n_heads: Int, head_dim: Int, seq_len: Int,
-    causal: Bool = False, use_max: Bool = True,
+    causal: Bool = False, use_max: Bool = True, ADT: DType = DT,
 ] = Sequential[
-    Tokenwise[seq_len, Linear[dim, 3 * n_heads * head_dim]],
-    QKVToMajor[seq_len, n_heads * head_dim],
+    Tokenwise[seq_len, Linear[dim, 3 * n_heads * head_dim, ADT]],
+    QKVToMajor[seq_len, n_heads * head_dim, ADT],
     ScaledDotProductAttention[
-        n_heads * head_dim, n_heads, seq_len, causal, use_max
+        n_heads * head_dim, n_heads, seq_len, causal, use_max, ADT
     ],
-    Tokenwise[seq_len, Linear[n_heads * head_dim, dim]],
+    Tokenwise[seq_len, Linear[n_heads * head_dim, dim, ADT]],
 ]
 
 
 comptime MultiHeadAttention[
     dim: Int, n_heads: Int, seq_len: Int, causal: Bool = False,
-    use_max: Bool = True,
+    use_max: Bool = True, ADT: DType = DT,
 ] = MultiHeadAttentionXL[
-    dim, n_heads, dim // n_heads, seq_len, causal, use_max
+    dim, n_heads, dim // n_heads, seq_len, causal, use_max, ADT
 ]
 
 
 # TransformerFFN: per-token Linear → GELU → per-token Linear.
 # GELU is pointwise, so applying it to the flat (BATCH, seq_len*ff_dim) tensor
 # is identical to per-token — no Tokenwise wrapper needed.
-comptime TransformerFFN[seq_len: Int, dim: Int, ff_dim: Int] = Sequential[
-    Tokenwise[seq_len, Linear[dim, ff_dim]],
-    GELU[seq_len * ff_dim],
-    Tokenwise[seq_len, Linear[ff_dim, dim]],
+comptime TransformerFFN[
+    seq_len: Int, dim: Int, ff_dim: Int, ADT: DType = DT,
+] = Sequential[
+    Tokenwise[seq_len, Linear[dim, ff_dim, ADT]],
+    GELU[seq_len * ff_dim, ADT],
+    Tokenwise[seq_len, Linear[ff_dim, dim, ADT]],
 ]
 
 
@@ -66,18 +69,18 @@ comptime TransformerFFN[seq_len: Int, dim: Int, ff_dim: Int] = Sequential[
 #   y = x + MHA(LN(x));  z = y + FFN(LN(y)).  IN_DIM == OUT_DIM == seq_len*dim.
 comptime TransformerBlock[
     dim: Int, n_heads: Int, seq_len: Int, ff_dim: Int, causal: Bool = False,
-    use_max: Bool = True,
+    use_max: Bool = True, ADT: DType = DT,
 ] = Sequential[
     Residual[
         Sequential[
-            Tokenwise[seq_len, LayerNorm[dim]],
-            MultiHeadAttention[dim, n_heads, seq_len, causal, use_max],
+            Tokenwise[seq_len, LayerNorm[dim, ADT]],
+            MultiHeadAttention[dim, n_heads, seq_len, causal, use_max, ADT],
         ]
     ],
     Residual[
         Sequential[
-            Tokenwise[seq_len, LayerNorm[dim]],
-            TransformerFFN[seq_len, dim, ff_dim],
+            Tokenwise[seq_len, LayerNorm[dim, ADT]],
+            TransformerFFN[seq_len, dim, ff_dim, ADT],
         ]
     ],
 ]

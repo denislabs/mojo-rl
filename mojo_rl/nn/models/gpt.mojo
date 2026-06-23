@@ -82,17 +82,19 @@ comptime GPT[
     ff_mult: Int = 4,
     causal: Bool = True,
     use_max: Bool = True,
+    ADT: DType = DT,
 ] = Sequential[
-    Tokenwise[seq_len, Embedding[vocab, embed_dim]],
-    BiasAdd[seq_len * embed_dim],
+    Tokenwise[seq_len, Embedding[vocab, embed_dim, ADT]],
+    BiasAdd[seq_len * embed_dim, ADT],
     Repeat[
         n_layers,
         TransformerBlock[
-            embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal, use_max
+            embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal, use_max,
+            ADT,
         ],
     ],
-    Tokenwise[seq_len, LayerNorm[embed_dim]],
-    Tokenwise[seq_len, Linear[embed_dim, vocab]],
+    Tokenwise[seq_len, LayerNorm[embed_dim, ADT]],
+    Tokenwise[seq_len, Linear[embed_dim, vocab, ADT]],
 ]
 
 
@@ -109,44 +111,46 @@ comptime GPT[
 
 comptime MultiHeadAttentionDrop[
     dim: Int, n_heads: Int, seq_len: Int, causal: Bool,
-    dropout_p: Float64, seed: UInt64, use_max: Bool = True,
+    dropout_p: Float64, seed: UInt64, use_max: Bool = True, ADT: DType = DT,
 ] = Sequential[
-    Tokenwise[seq_len, Linear[dim, 3 * dim]],
-    QKVToMajor[seq_len, dim],
-    ScaledDotProductAttention[dim, n_heads, seq_len, causal, use_max],
-    Tokenwise[seq_len, Linear[dim, dim]],
-    Dropout[seq_len * dim, dropout_p, seed],
+    Tokenwise[seq_len, Linear[dim, 3 * dim, ADT]],
+    QKVToMajor[seq_len, dim, ADT],
+    ScaledDotProductAttention[dim, n_heads, seq_len, causal, use_max, ADT],
+    Tokenwise[seq_len, Linear[dim, dim, ADT]],
+    Dropout[seq_len * dim, dropout_p, seed, ADT],
 ]
 
 
 comptime TransformerFFNDrop[
     seq_len: Int, dim: Int, ff_dim: Int, dropout_p: Float64, seed: UInt64,
+    ADT: DType = DT,
 ] = Sequential[
-    Tokenwise[seq_len, Linear[dim, ff_dim]],
-    GELU[seq_len * ff_dim],
-    Tokenwise[seq_len, Linear[ff_dim, dim]],
-    Dropout[seq_len * dim, dropout_p, seed],
+    Tokenwise[seq_len, Linear[dim, ff_dim, ADT]],
+    GELU[seq_len * ff_dim, ADT],
+    Tokenwise[seq_len, Linear[ff_dim, dim, ADT]],
+    Dropout[seq_len * dim, dropout_p, seed, ADT],
 ]
 
 
 comptime TransformerBlockDrop[
     dim: Int, n_heads: Int, seq_len: Int, ff_dim: Int, causal: Bool,
     dropout_p: Float64, seed_base: UInt64, use_max: Bool = True,
+    ADT: DType = DT,
 ] = Sequential[
     Residual[
         Sequential[
-            Tokenwise[seq_len, LayerNorm[dim]],
+            Tokenwise[seq_len, LayerNorm[dim, ADT]],
             MultiHeadAttentionDrop[
                 dim, n_heads, seq_len, causal, dropout_p,
-                seed_base + UInt64(1), use_max,
+                seed_base + UInt64(1), use_max, ADT,
             ],
         ]
     ],
     Residual[
         Sequential[
-            Tokenwise[seq_len, LayerNorm[dim]],
+            Tokenwise[seq_len, LayerNorm[dim, ADT]],
             TransformerFFNDrop[
-                seq_len, dim, ff_dim, dropout_p, seed_base + UInt64(2)
+                seq_len, dim, ff_dim, dropout_p, seed_base + UInt64(2), ADT
             ],
         ]
     ],
@@ -165,19 +169,20 @@ comptime GPTDrop[
     dropout_p: Float64 = 0.2,
     seed_base: UInt64 = UInt64(0xC0FFEE),
     use_max: Bool = True,
+    ADT: DType = DT,
 ] = Sequential[
-    Tokenwise[seq_len, Embedding[vocab, embed_dim]],
-    BiasAdd[seq_len * embed_dim],
-    Dropout[seq_len * embed_dim, dropout_p, seed_base],
+    Tokenwise[seq_len, Embedding[vocab, embed_dim, ADT]],
+    BiasAdd[seq_len * embed_dim, ADT],
+    Dropout[seq_len * embed_dim, dropout_p, seed_base, ADT],
     Repeat[
         n_layers,
         TransformerBlockDrop[
             embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal,
-            dropout_p, seed_base, use_max,
+            dropout_p, seed_base, use_max, ADT,
         ],
     ],
-    Tokenwise[seq_len, LayerNorm[embed_dim]],
-    Tokenwise[seq_len, Linear[embed_dim, vocab]],
+    Tokenwise[seq_len, LayerNorm[embed_dim, ADT]],
+    Tokenwise[seq_len, Linear[embed_dim, vocab, ADT]],
 ]
 
 
@@ -198,19 +203,20 @@ comptime GPTDropTied[
     dropout_p: Float64 = 0.2,
     seed_base: UInt64 = UInt64(0xC0FFEE),
     use_max: Bool = True,
+    ADT: DType = DT,
 ] = Sequential[
-    Tokenwise[seq_len, Embedding[vocab, embed_dim]],
-    BiasAdd[seq_len * embed_dim],
-    Dropout[seq_len * embed_dim, dropout_p, seed_base],
+    Tokenwise[seq_len, Embedding[vocab, embed_dim, ADT]],
+    BiasAdd[seq_len * embed_dim, ADT],
+    Dropout[seq_len * embed_dim, dropout_p, seed_base, ADT],
     Repeat[
         n_layers,
         TransformerBlockDrop[
             embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal,
-            dropout_p, seed_base, use_max,
+            dropout_p, seed_base, use_max, ADT,
         ],
     ],
-    Tokenwise[seq_len, LayerNorm[embed_dim]],
-    Tokenwise[seq_len, TiedLinear[embed_dim, vocab]],
+    Tokenwise[seq_len, LayerNorm[embed_dim, ADT]],
+    Tokenwise[seq_len, TiedLinear[embed_dim, vocab, ADT]],
 ]
 
 
@@ -242,10 +248,11 @@ def gpt_scale_residual_proj[
     dropout_p: Float64,
     seed_base: UInt64,
     use_max: Bool,
+    ADT: DType = DT,
 ](
     mut net: GPTDropTied[
         vocab, seq_len, embed_dim, n_heads, n_layers,
-        ff_mult, causal, dropout_p, seed_base, use_max,
+        ff_mult, causal, dropout_p, seed_base, use_max, ADT,
     ],
     ctx: Optional[DeviceContext] = None,
 ) raises:
@@ -297,10 +304,11 @@ def gpt_wire_tie[
     dropout_p: Float64,
     seed_base: UInt64,
     use_max: Bool,
+    ADT: DType = DT,
 ](
     mut net: GPTDropTied[
         vocab, seq_len, embed_dim, n_heads, n_layers,
-        ff_mult, causal, dropout_p, seed_base, use_max,
+        ff_mult, causal, dropout_p, seed_base, use_max, ADT,
     ],
 ) raises:
     """Point the `TiedLinear` LM head at the embedding's value + grad cells.
@@ -310,7 +318,7 @@ def gpt_wire_tie[
     carry both CPU + device storage)."""
     comptime LM_IDX = GPTDropTied[
         vocab, seq_len, embed_dim, n_heads, n_layers,
-        ff_mult, causal, dropout_p, seed_base, use_max,
+        ff_mult, causal, dropout_p, seed_base, use_max, ADT,
     ].N - 1
     # Build wildcard Pointer VALUES to the embedding (child 0) val/grad cells;
     # these hold no tracked borrow of `net`, so the structural borrow is
