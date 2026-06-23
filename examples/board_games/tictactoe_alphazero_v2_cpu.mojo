@@ -28,7 +28,6 @@ from std.memory import UnsafePointer
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.core.checkpoint import save_state_v2
 from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents.alphazero.agent import AlphaZeroAgent
 from mojo_rl.deep_agents.zero.symmetries import D4SquareAugmenter
@@ -135,10 +134,11 @@ def main() raises:
     logger.close()
 
     # Endline: greedy net-policy vs random after training (should clearly beat
-    # the baseline). The facade `agent.save` is GPU-only (needs a ctx), so the
-    # host-resident net is checkpointed directly via the CPU `save_state_v2`.
+    # the baseline). `agent.save` checkpoints the net through the storage
+    # facade — it threads `self.ctx` (None on this CPU path), so the
+    # host-resident net is written via the weights-only `save_params` surface.
     var after = agent.eval_vs_random_cpu[200, 9](agent_player=0, seed=12345)
-    save_state_v2(agent.net, String("tictactoe_alphazero_v2_cpu.ckpt"))
+    agent.save("tictactoe_alphazero_v2_cpu.ckpt")
 
     print()
     print(
