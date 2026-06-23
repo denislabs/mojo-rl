@@ -426,33 +426,32 @@ struct TDMPC2RolloutCallbackGPU[
     ) raises:
         """forward the `head`-th target-Q (distinct field) on self.za, decode
         into self.qa/qb. Runtime `head` → comptime-unrolled field select."""
-        comptime BT = Self.BT
         # forward the matching distinct head into self.qlog.
         if head == 0:
-            self.qt0[].forward["gpu", BT](
+            self.qt0[].forward["gpu", Self.BT](
                 TensorRefs[1](self.za), self.qlog, Optional(ctx)
             )
         elif head == 1:
-            self.qt1[].forward["gpu", BT](
+            self.qt1[].forward["gpu", Self.BT](
                 TensorRefs[1](self.za), self.qlog, Optional(ctx)
             )
         elif head == 2:
-            self.qt2[].forward["gpu", BT](
+            self.qt2[].forward["gpu", Self.BT](
                 TensorRefs[1](self.za), self.qlog, Optional(ctx)
             )
         elif head == 3:
-            self.qt3[].forward["gpu", BT](
+            self.qt3[].forward["gpu", Self.BT](
                 TensorRefs[1](self.za), self.qlog, Optional(ctx)
             )
         else:
-            self.qt4[].forward["gpu", BT](
+            self.qt4[].forward["gpu", Self.BT](
                 TensorRefs[1](self.za), self.qlog, Optional(ctx)
             )
         comptime if target_qa:
-            self.decode.forward["gpu", BT](
+            self.decode.forward["gpu", Self.BT](
                 TensorRefs[1](self.qlog), self.qa, Optional(ctx)
             )
         else:
-            self.decode.forward["gpu", BT](
+            self.decode.forward["gpu", Self.BT](
                 TensorRefs[1](self.qlog), self.qb, Optional(ctx)
             )

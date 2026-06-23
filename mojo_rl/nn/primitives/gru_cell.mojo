@@ -51,7 +51,7 @@ from ..core.module import Module
 from ..core.param import Param, ParamVisitor
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
-from ..loss.sac import polyak_tensor
+from ..core.polyak import polyak_tensor
 from .linear import _transpose_tiled_kernel, _T_TILE, _T_BR
 
 

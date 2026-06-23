@@ -81,7 +81,7 @@ struct PCBlock[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn init: W via INIT.fill(fan_in=in_dim, fan_out=out_dim); zero b."""
+        """Init: W via INIT.fill(fan_in=in_dim, fan_out=out_dim); zero b."""
         var W_view = LayoutTensor[
             dtype,
             Layout.row_major(Self.in_dim * Self.out_dim),
@@ -269,7 +269,9 @@ struct PCBlock[
                     Float32(1.0),
                     rebind[UnsafePointer[Float32, ImmutAnyOrigin]](a_below.ptr),
                     Int32(Self.in_dim),
-                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](eps_above.ptr),
+                    rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                        eps_above.ptr
+                    ),
                     Int32(Self.out_dim),
                     Float32(0.0),
                     rebind[UnsafePointer[Float32, MutAnyOrigin]](grads.ptr),
@@ -291,7 +293,10 @@ struct PCBlock[
             ](cT)
             try:
                 max_matmul[target="cpu"](
-                    lt_to_tt(W_grad), lt_to_tt(cT_view), lt_to_tt(eps_above), None
+                    lt_to_tt(W_grad),
+                    lt_to_tt(cT_view),
+                    lt_to_tt(eps_above),
+                    None,
                 )
             except:
                 pass

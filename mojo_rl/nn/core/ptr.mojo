@@ -1,4 +1,4 @@
-"""ptr — `mptr` origin-erasure chokepoint (framework-agnostic).
+"""Ptr — `mptr` origin-erasure chokepoint (framework-agnostic).
 
 Relocated out of the legacy `nn/core/module.mojo` (Phase 0 of the legacy-`nn`
 removal — see `docs/STORAGE_NN_LEGACY_REMOVAL_SCOPE.md`). `mptr` is a raw GPU
@@ -34,8 +34,11 @@ def mptr[
 @always_inline
 def mptr(
     t: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, origin=MutAnyOrigin, ...,
+        dtype=DT,
+        address_space=AddressSpace.GENERIC,
+        element_size=1,
+        origin=MutAnyOrigin,
+        ...,
     ],
 ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     """Erased base pointer of a TileTensor view — `mptr(view)` instead of

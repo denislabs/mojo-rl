@@ -42,8 +42,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ...nn.constants import DT
-from ...nn.storage.core.module import Module
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.module import Module
 from mojo_rl.planners.trajectory import ContinuousCEMOptimizer
 from mojo_rl.envs.pusht import PushTEnv, PushTAction
 from mojo_rl.envs.pusht.render import render_pusht_rgb_at, IMG_C
@@ -55,12 +55,16 @@ from .mpc import LeWMMPCScorer
 from .pusht_sim_bridge import sim_frame_chw_norm
 
 
-comptime _SUCCESS_POS_PX: Float64 = 20.0      # swm eval_state: ‖Δ[a,b]₄‖ < 20
+comptime _SUCCESS_POS_PX: Float64 = 20.0  # swm eval_state: ‖Δ[a,b]₄‖ < 20
 comptime _SUCCESS_ANG_RAD: Float64 = pi / 9.0  # block angle within 20°
 
 
 def _state_dist(
-    ax: Float64, ay: Float64, bx: Float64, by: Float64, bang: Float64,
+    ax: Float64,
+    ay: Float64,
+    bx: Float64,
+    by: Float64,
+    bang: Float64,
     g: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [ax,ay,bx,by,bang]
 ) -> Tuple[Float64, Float64]:
     """(4-vec positional distance, wrapped |block-angle diff|) vs goal."""
@@ -80,26 +84,75 @@ def _state_dist(
 
 
 def run_lewm_paper_protocol[
-    IN_CH: Int, IMG: Int, PATCH: Int, HIDDEN: Int, ENC_HEADS: Int,
-    ENC_LAYERS: Int, EMB: Int, ENC_PROJ_H: Int, ENC_FF_MULT: Int,
-    T: Int, ACT: Int, SMOOTHED: Int, AE_MLP: Int,
-    H: Int, N_PREDS: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
-    PRED_PROJ_H: Int, SIG_PROJ: Int, SIG_KNOTS: Int,
-    BATCH: Int, MPC_HORIZON: Int, target: StaticString,
-    PRED_DIM_HEAD: Int = 0, ACT_DIM: Int = 2, VIZ: Int = 96,
+    IN_CH: Int,
+    IMG: Int,
+    PATCH: Int,
+    HIDDEN: Int,
+    ENC_HEADS: Int,
+    ENC_LAYERS: Int,
+    EMB: Int,
+    ENC_PROJ_H: Int,
+    ENC_FF_MULT: Int,
+    T: Int,
+    ACT: Int,
+    SMOOTHED: Int,
+    AE_MLP: Int,
+    H: Int,
+    N_PREDS: Int,
+    PRED_HEADS: Int,
+    PRED_FF: Int,
+    DEPTH: Int,
+    PRED_PROJ_H: Int,
+    SIG_PROJ: Int,
+    SIG_KNOTS: Int,
+    BATCH: Int,
+    MPC_HORIZON: Int,
+    target: StaticString,
+    PRED_DIM_HEAD: Int = 0,
+    ACT_DIM: Int = 2,
+    VIZ: Int = 96,
     ENC: Module = LeWMEncoder[
-        IN_CH, IMG, PATCH, (IMG // PATCH) * (IMG // PATCH),
-        HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H, ENC_FF_MULT,
+        IN_CH,
+        IMG,
+        PATCH,
+        (IMG // PATCH) * (IMG // PATCH),
+        HIDDEN,
+        ENC_HEADS,
+        ENC_LAYERS,
+        EMB,
+        ENC_PROJ_H,
+        ENC_FF_MULT,
     ],
 ](
     mut wm: LeWMTrainer[
-        IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
-        ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
-        PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, BATCH, target,
-        PRED_DIM_HEAD, ENC,
+        IN_CH,
+        IMG,
+        PATCH,
+        HIDDEN,
+        ENC_HEADS,
+        ENC_LAYERS,
+        EMB,
+        ENC_PROJ_H,
+        ENC_FF_MULT,
+        T,
+        ACT,
+        SMOOTHED,
+        AE_MLP,
+        H,
+        N_PREDS,
+        PRED_HEADS,
+        PRED_FF,
+        DEPTH,
+        PRED_PROJ_H,
+        SIG_PROJ,
+        SIG_KNOTS,
+        BATCH,
+        target,
+        PRED_DIM_HEAD,
+        ENC,
     ],
     start_states: UnsafePointer[Scalar[DT], MutAnyOrigin],  # (BATCH,5)
-    goal_states: UnsafePointer[Scalar[DT], MutAnyOrigin],   # (BATCH,5)
+    goal_states: UnsafePointer[Scalar[DT], MutAnyOrigin],  # (BATCH,5)
     eval_budget: Int = 50,
     scale_x: Float64 = 100.0,
     scale_y: Float64 = 100.0,
@@ -132,12 +185,35 @@ def run_lewm_paper_protocol[
     comptime FRAMESKIP = ACT // ACT_DIM
     comptime VIZN = IN_CH * VIZ * VIZ
     comptime Scorer = LeWMMPCScorer[
-        EMB, T, ACT, SMOOTHED, AE_MLP, H, PRED_HEADS, PRED_FF, DEPTH,
-        PRED_PROJ_H, BATCH, MPC_HORIZON, target, PRED_DIM_HEAD,
+        EMB,
+        T,
+        ACT,
+        SMOOTHED,
+        AE_MLP,
+        H,
+        PRED_HEADS,
+        PRED_FF,
+        DEPTH,
+        PRED_PROJ_H,
+        BATCH,
+        MPC_HORIZON,
+        target,
+        PRED_DIM_HEAD,
     ]
     comptime Predictor = LeWMPredictor[
-        EMB, T, ACT, SMOOTHED, AE_MLP, H, PRED_HEADS, PRED_FF, DEPTH,
-        PRED_PROJ_H, BATCH, target, PRED_DIM_HEAD,
+        EMB,
+        T,
+        ACT,
+        SMOOTHED,
+        AE_MLP,
+        H,
+        PRED_HEADS,
+        PRED_FF,
+        DEPTH,
+        PRED_PROJ_H,
+        BATCH,
+        target,
+        PRED_DIM_HEAD,
     ]
     var ctx_v = ctx.value()
 
@@ -155,7 +231,7 @@ def run_lewm_paper_protocol[
     var goal_lat = alloc[Scalar[DT]](BE)
     var pix_dev = ctx_v.enqueue_create_buffer[DT](BATCH * PIX)
     var act_dev = ctx_v.enqueue_create_buffer[DT](BATCH * ACTIN)
-    act_dev.enqueue_fill(0.0)   # emb depends only on pixels
+    act_dev.enqueue_fill(0.0)  # emb depends only on pixels
     ctx_v.synchronize()
     var pix_d_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
         pix_dev.unsafe_ptr()
@@ -179,7 +255,11 @@ def run_lewm_paper_protocol[
     for b in range(BATCH):
         var g = goal_states + b * 5
         sim_frame_chw_norm[IMG](
-            g[2], g[3], g[4], g[0], g[1],
+            g[2],
+            g[3],
+            g[4],
+            g[0],
+            g[1],
             pix_host + (b * T) * IMG_DIM,
         )
         for t in range(1, T):
@@ -198,8 +278,11 @@ def run_lewm_paper_protocol[
             goal_lat[b * EMB + d] = emb_host[b * TE + d]
 
     var cem = ContinuousCEMOptimizer[BATCH, ACT](
-        horizon=NEEDED, cem_iters=cem_iters, cem_samples=cem_samples,
-        cem_topk=cem_topk, init_std=init_std,
+        horizon=NEEDED,
+        cem_iters=cem_iters,
+        cem_samples=cem_samples,
+        cem_topk=cem_topk,
+        init_std=init_std,
     )
     var plan = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
 
@@ -219,7 +302,11 @@ def run_lewm_paper_protocol[
             var bp = envs[b].block_pose()
             var ap = envs[b].agent_pos()
             sim_frame_chw_norm[IMG](
-                bp[0], bp[1], bp[2], ap[0], ap[1],
+                bp[0],
+                bp[1],
+                bp[2],
+                ap[0],
+                ap[1],
                 pix_host + (b * T) * IMG_DIM,
             )
             for t in range(1, T):
@@ -252,12 +339,20 @@ def run_lewm_paper_protocol[
                     if succeeded[b]:
                         continue
                     var ap = envs[b].agent_pos()
-                    var dx = Float64(
-                        plan[(b * NEEDED + blk) * ACT + k * ACT_DIM + 0]
-                    ) * act_std_x + act_mean_x
-                    var dy = Float64(
-                        plan[(b * NEEDED + blk) * ACT + k * ACT_DIM + 1]
-                    ) * act_std_y + act_mean_y
+                    var dx = (
+                        Float64(
+                            plan[(b * NEEDED + blk) * ACT + k * ACT_DIM + 0]
+                        )
+                        * act_std_x
+                        + act_mean_x
+                    )
+                    var dy = (
+                        Float64(
+                            plan[(b * NEEDED + blk) * ACT + k * ACT_DIM + 1]
+                        )
+                        * act_std_y
+                        + act_mean_y
+                    )
                     var tx = Scalar[DT](Float64(ap[0]) + dx * scale_x)
                     var ty = Scalar[DT](Float64(ap[1]) + dy * scale_y)
                     _ = envs[b].step(PushTAction[DT](tx, ty))
@@ -265,8 +360,11 @@ def run_lewm_paper_protocol[
                     var bp = envs[b].block_pose()
                     var ap2 = envs[b].agent_pos()
                     var r = _state_dist(
-                        Float64(ap2[0]), Float64(ap2[1]),
-                        Float64(bp[0]), Float64(bp[1]), Float64(bp[2]),
+                        Float64(ap2[0]),
+                        Float64(ap2[1]),
+                        Float64(bp[0]),
+                        Float64(bp[1]),
+                        Float64(bp[2]),
                         goal_states + b * 5,
                     )
                     if r[0] < _SUCCESS_POS_PX and r[1] < _SUCCESS_ANG_RAD:
@@ -282,14 +380,28 @@ def run_lewm_paper_protocol[
                 var bp = envs[b].block_pose()
                 var ap = envs[b].agent_pos()
                 var r = _state_dist(
-                    Float64(ap[0]), Float64(ap[1]),
-                    Float64(bp[0]), Float64(bp[1]), Float64(bp[2]),
+                    Float64(ap[0]),
+                    Float64(ap[1]),
+                    Float64(bp[0]),
+                    Float64(bp[1]),
+                    Float64(bp[2]),
                     goal_states + b * 5,
                 )
                 mp += r[0]
-            print("   plan", cyc + 1, "/", n_plans, " steps=", steps_done,
-                  " mean_pos_diff=", mp / Float64(BATCH),
-                  " success=", ns, "/", BATCH)
+            print(
+                "   plan",
+                cyc + 1,
+                "/",
+                n_plans,
+                " steps=",
+                steps_done,
+                " mean_pos_diff=",
+                mp / Float64(BATCH),
+                " success=",
+                ns,
+                "/",
+                BATCH,
+            )
 
         if do_viz:
             var bp0 = envs[0].block_pose()
@@ -297,15 +409,13 @@ def run_lewm_paper_protocol[
             var vt = LayoutTensor[
                 DT, Layout.row_major(VIZ, VIZ, IMG_C), MutAnyOrigin
             ](viz_tmp)
-            render_pusht_rgb_at[VIZ](
-                bp0[0], bp0[1], bp0[2], ap0[0], ap0[1], vt
-            )
+            render_pusht_rgb_at[VIZ](bp0[0], bp0[1], bp0[2], ap0[0], ap0[1], vt)
             for c in range(IN_CH):
                 for y in range(VIZ):
                     for x in range(VIZ):
-                        viz_buf[cyc * VIZN + c * VIZ * VIZ + y * VIZ + x] = (
-                            viz_tmp[(y * VIZ + x) * IN_CH + c]
-                        )
+                        viz_buf[
+                            cyc * VIZN + c * VIZ * VIZ + y * VIZ + x
+                        ] = viz_tmp[(y * VIZ + x) * IN_CH + c]
 
     # final metrics
     var ns = 0
@@ -316,8 +426,11 @@ def run_lewm_paper_protocol[
         var bp = envs[b].block_pose()
         var ap = envs[b].agent_pos()
         var r = _state_dist(
-            Float64(ap[0]), Float64(ap[1]),
-            Float64(bp[0]), Float64(bp[1]), Float64(bp[2]),
+            Float64(ap[0]),
+            Float64(ap[1]),
+            Float64(bp[0]),
+            Float64(bp[1]),
+            Float64(bp[2]),
             goal_states + b * 5,
         )
         mp += r[0]
@@ -326,11 +439,22 @@ def run_lewm_paper_protocol[
 
     if do_viz:
         save_image_row(
-            viz_path, viz_buf, n=n_plans, height=VIZ, width=VIZ,
-            channels=IN_CH, vmin=0.0, vmax=255.0,
+            viz_path,
+            viz_buf,
+            n=n_plans,
+            height=VIZ,
+            width=VIZ,
+            channels=IN_CH,
+            vmin=0.0,
+            vmax=255.0,
         )
 
-    pix_host.free(); emb_host.free(); start_lat.free(); goal_lat.free()
-    plan.free(); viz_buf.free(); viz_tmp.free()
+    pix_host.free()
+    emb_host.free()
+    start_lat.free()
+    goal_lat.free()
+    plan.free()
+    viz_buf.free()
+    viz_tmp.free()
     _ = scorer^
     return (success_rate, mp)

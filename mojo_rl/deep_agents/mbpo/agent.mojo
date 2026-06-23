@@ -131,7 +131,6 @@ struct MBPOAgent[
         N_ENVS: Int = 1,
         NS: Int = 1,
         L: Logger = NoOpLogger,
-        USE_TRAIN_CUDA_GRAPH: Bool = False,
         USE_ENV_CUDA_GRAPH: Bool = False,
     ](
         mut self,
@@ -160,7 +159,7 @@ struct MBPOAgent[
         var ctx = self.trainer.ctx
         return run_offpolicy_train_batched[
             Self.TrainerT, E, N_ENVS, NS, L,
-            USE_TRAIN_CUDA_GRAPH, USE_ENV_CUDA_GRAPH,
+            Self.USE_TRAIN_CUDA_GRAPH, USE_ENV_CUDA_GRAPH,
         ](
             ctx,
             self.trainer,

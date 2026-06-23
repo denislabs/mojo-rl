@@ -17,15 +17,17 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import Layout, TileTensor, row_major
 
-from ...nn.constants import DT, TPB_REDUCE
-from ...nn.storage import Tensor, ParamVisitor, Kaiming, Adam
-from ...nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.constants import DT, TPB_REDUCE
+from mojo_rl.nn import Tensor, ParamVisitor, Kaiming, Adam
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from .decoder import LeWMDecoderLossGraph
 
 from mojo_rl.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
 
 
-def _dec_reduce_mean_acc_kernel[BATCH: Int](
+def _dec_reduce_mean_acc_kernel[
+    BATCH: Int
+](
     src: UnsafePointer[Scalar[DT], MutAnyOrigin],
     acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
 ):
@@ -47,9 +49,16 @@ struct _SaveVisitor(ParamVisitor):
     def __init__(out self):
         self.vals = List[Scalar[DT]]()
 
-    def visit[target: StaticString, N: Int](
-        mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target == "gpu":
@@ -66,9 +75,16 @@ struct _LoadVisitor(ParamVisitor):
         self.vals = vals^
         self.idx = 0
 
-    def visit[target: StaticString, N: Int](
-        mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         param.ensure(N)
@@ -81,8 +97,14 @@ struct _LoadVisitor(ParamVisitor):
 
 
 struct LeWMDecoderTrainer[
-    EMB: Int, HID: Int, N_Q: Int, PATCH_PX: Int, FF: Int, N_LAYERS: Int,
-    BATCH: Int, train_target: StaticString = "cpu",
+    EMB: Int,
+    HID: Int,
+    N_Q: Int,
+    PATCH_PX: Int,
+    FF: Int,
+    N_LAYERS: Int,
+    BATCH: Int,
+    train_target: StaticString = "cpu",
 ](Movable & ImplicitlyDeletable):
     comptime DG = LeWMDecoderLossGraph[
         Self.EMB, Self.HID, Self.N_Q, Self.PATCH_PX, Self.FF, Self.N_LAYERS
@@ -92,7 +114,7 @@ struct LeWMDecoderTrainer[
     var graph: Self.DG
     var opt: Adam
     var ctx: Optional[DeviceContext]
-    var loss_out: Tensor   # per-sample loss [BATCH]
+    var loss_out: Tensor  # per-sample loss [BATCH]
     var grad_seed: Tensor  # constant 1/BATCH backward seed [BATCH]
     # Dummy `tgt` so a cold `recon_into` (no prior train_step) can run the
     # full loss-graph forward — `recon` (computed before `loss`) is
@@ -131,7 +153,9 @@ struct LeWMDecoderTrainer[
             t.grad_seed = Tensor.alloc(Self.BATCH)
             t.tgt_dummy = Tensor.alloc(Self.BATCH * Self.RECON)
         seed_grad_inv_batch[Self.train_target, Self.BATCH](
-            t.grad_seed.lt[Self.train_target, Layout.row_major(Self.BATCH, 1)](),
+            t.grad_seed.lt[
+                Self.train_target, Layout.row_major(Self.BATCH, 1)
+            ](),
             ctx=ctx,
         )
         return t^
@@ -141,8 +165,11 @@ struct LeWMDecoderTrainer[
     ](
         mut self,
         src: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises:
         """Bridge a raw input tile into the named graph input slot."""
@@ -164,12 +191,18 @@ struct LeWMDecoderTrainer[
     ](
         mut self,
         emb: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         tgt: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises -> Scalar[DT]:
         self.graph.zero_grad[Self.train_target](self.ctx)
@@ -190,7 +223,8 @@ struct LeWMDecoderTrainer[
             c.enqueue_function[red](
                 self.loss_out.dev.value().unsafe_ptr(),
                 self._loss_acc_dev.value().unsafe_ptr(),
-                grid_dim=1, block_dim=TPB_REDUCE,
+                grid_dim=1,
+                block_dim=TPB_REDUCE,
             )
 
         self.graph.vjp[Self.BATCH, Self.train_target, POLICY](
@@ -205,8 +239,11 @@ struct LeWMDecoderTrainer[
     ](
         mut self,
         emb: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         recon_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:

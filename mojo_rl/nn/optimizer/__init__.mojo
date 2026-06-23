@@ -1,1 +1,1 @@
-"""nn.storage.optimizer — see storage/__init__.mojo."""
+"""Optimizer — see storage/__init__.mojo."""

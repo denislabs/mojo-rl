@@ -725,12 +725,15 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     )
 
     # host mirrors (no full-obs D2H — only N_ENVS-wide scalar/policy traffic).
-    var h_pol = _a(N_ENVS * ACT)
-    var h_val = _a(N_ENVS)
-    var h_act = _a(N_ENVS)
-    var h_rew = _a(N_ENVS)
-    var h_done = _a(N_ENVS)
-    var h_term = _a(N_ENVS)
+    # Owned Lists (RAII): passed directly into the List-based device-replay API
+    # (record_obs_meta / record_outcome) and to the D2H/H2D staging copies via
+    # `.unsafe_ptr()`.
+    var h_pol = List[Scalar[DT]](length=N_ENVS * ACT, fill=0)
+    var h_val = List[Scalar[DT]](length=N_ENVS, fill=0)
+    var h_act = List[Scalar[DT]](length=N_ENVS, fill=0)
+    var h_rew = List[Scalar[DT]](length=N_ENVS, fill=0)
+    var h_done = List[Scalar[DT]](length=N_ENVS, fill=0)
+    var h_term = List[Scalar[DT]](length=N_ENVS, fill=0)
 
     # training metadata slabs (obs0 is gathered on-device into scratch.d_obs0).
     var t_act = List[Scalar[DT]](length=K * B, fill=0)
@@ -740,10 +743,10 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     var t_obs0_dummy = List[Scalar[DT]](length=1, fill=0)  # ignored (obs_on_device)
     var l_parts = _a(3)
     # PER scratch (only used when use_per): per-sample IS weights / new value-error
-    # priorities / sampled root ring slots.
-    var t_isw = _a(B)
-    var t_prio = _a(B)
-    var t_slots = _aint(B)
+    # priorities / sampled root ring slots — owned Lists (List replay API).
+    var t_isw = List[Scalar[DT]](length=B, fill=0)
+    var t_prio = List[Scalar[DT]](length=B, fill=0)
+    var t_slots = List[Int](length=B, fill=0)
     var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
 
     # diagnostics scratch (root re-forward on the last train batch's obs).
@@ -792,7 +795,12 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
         # ── 2. sample actions (host); record obs (device→device) + metadata ──
         var temp = visit_temperature(it, temperature_decay_steps)
         for e in range(N_ENVS):
-            h_act[e] = Scalar[DT](_sample_action(h_pol, e * ACT, ACT, temp, rng))
+            h_act[e] = Scalar[DT](
+                _sample_action(
+                    h_pol.unsafe_ptr().as_unsafe_any_origin(),
+                    e * ACT, ACT, temp, rng,
+                )
+            )
         # record_obs_meta enqueues the obs store kernel reading the ROOT obs
         # (env.obs_ptr()); stream order keeps it before the step kernel below.
         var obs_view = DeviceBuffer[DT](
@@ -837,7 +845,7 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
 
         # ── 5. train: gather obs0 device→device into scratch.d_obs0, unroll ──
         if trained:
-            var d_obs0_buf = scratch.d_obs0.value()
+            var d_obs0_buf = scratch.d_obs0.dev.value()
             for _ in range(train_per_iter):
                 var isw_opt = Optional[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
@@ -851,12 +859,14 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                         gamma, d_obs0_buf, t_act, t_pol, t_val, t_rew,
                         t_isw, t_slots,
                     )
+                    # Bridge the owned List PER scratch into the unroll's
+                    # Optional[UnsafePointer] loss-weight / out-priority params.
                     isw_opt = Optional[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](t_isw)
+                    ](t_isw.unsafe_ptr().as_unsafe_any_origin())
                     prio_opt = Optional[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](t_prio)
+                    ](t_prio.unsafe_ptr().as_unsafe_any_origin())
                 else:
                     # Uniform device sample — the converged Pong path, untouched.
                     rb.sample_training_batch_dev[B, K, N](
@@ -894,7 +904,7 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             and (it + 1) % diag_every == 0
         ):
             _mz_emit_batch_diag[REP, PRED, B, OBS, ACT, LATENT, BINS, L](
-                ctx, rep, pred, scratch.d_obs0.value(), d_diag_z, d_diag_pred,
+                ctx, rep, pred, scratch.d_obs0.dev.value(), d_diag_z, d_diag_pred,
                 h_diag_pred, t_pol, t_val, l_parts,
                 v_min, v_max, last_loss, it + 1, logger.value(),
             )
@@ -989,10 +999,9 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    t_act.free(); t_pol.free(); t_val.free(); t_rew.free(); t_obs0_dummy.free()
-    t_isw.free(); t_prio.free(); t_slots.free()
-    h_pol.free(); h_val.free(); h_act.free()
-    h_rew.free(); h_done.free(); h_term.free(); l_parts.free()
+    # t_*/h_* metadata + PER scratch are owned Lists (RAII) — only the raw
+    # UnsafePointer scratch (unroll loss_parts + diag host buffer) needs freeing.
+    l_parts.free()
     h_diag_pred.free()
     # keep the target nets (held only via UnsafePointer in the adapters) alive.
     _ = rep_t^

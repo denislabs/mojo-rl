@@ -27,17 +27,31 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor, row_major
 
-from ...nn.constants import DT
-from ...nn.storage import (
-    Tensor, ParamVisitor, Kaiming,
-    ComputeGraph, InputSlot, Node, Slice, BiasAdd,
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn import (
+    Tensor,
+    ParamVisitor,
+    Kaiming,
+    ComputeGraph,
+    InputSlot,
+    Node,
+    Slice,
+    BiasAdd,
 )
 from .encoder import ActionEmbedder, ARPredictor, PredProj
 
 
 comptime LeWMPredictGraph[
-    EMB: Int, T: Int, ACT: Int, SMOOTHED: Int, AE_MLP: Int,
-    H: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int, PRED_PROJ_H: Int,
+    EMB: Int,
+    T: Int,
+    ACT: Int,
+    SMOOTHED: Int,
+    AE_MLP: Int,
+    H: Int,
+    PRED_HEADS: Int,
+    PRED_FF: Int,
+    DEPTH: Int,
+    PRED_PROJ_H: Int,
     PRED_DIM_HEAD: Int = 0,
 ] = ComputeGraph[
     InputSlot["latent_ctx", H * EMB],
@@ -48,7 +62,8 @@ comptime LeWMPredictGraph[
     Node[
         "pred_raw",
         ARPredictor[EMB, PRED_HEADS, H, PRED_FF, DEPTH, PRED_DIM_HEAD],
-        "x_pe", "ctx_a",
+        "x_pe",
+        "ctx_a",
     ],
     Node["pred", PredProj[H, EMB, PRED_PROJ_H], "pred_raw"],
 ]
@@ -65,9 +80,16 @@ struct _NamedImportVisitor(ParamVisitor):
         self.d = d^
         self.missing = 0
 
-    def visit[target: StaticString, N: Int](
-        mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         if name not in self.d:
@@ -83,16 +105,34 @@ struct _NamedImportVisitor(ParamVisitor):
 
 
 struct LeWMPredictor[
-    EMB: Int, T: Int, ACT: Int, SMOOTHED: Int, AE_MLP: Int,
-    H: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int, PRED_PROJ_H: Int,
-    BATCH: Int, target: StaticString = "cpu", PRED_DIM_HEAD: Int = 0,
+    EMB: Int,
+    T: Int,
+    ACT: Int,
+    SMOOTHED: Int,
+    AE_MLP: Int,
+    H: Int,
+    PRED_HEADS: Int,
+    PRED_FF: Int,
+    DEPTH: Int,
+    PRED_PROJ_H: Int,
+    BATCH: Int,
+    target: StaticString = "cpu",
+    PRED_DIM_HEAD: Int = 0,
 ](Movable & ImplicitlyDeletable):
     # PRED_DIM_HEAD added last (after target) so existing positional call
     # sites (Pong, default 0 ⇒ EMB/PRED_HEADS) are unchanged; >0 selects the
     # paper's expanded predictor attention to match a paper-width WM.
     comptime PG = LeWMPredictGraph[
-        Self.EMB, Self.T, Self.ACT, Self.SMOOTHED, Self.AE_MLP,
-        Self.H, Self.PRED_HEADS, Self.PRED_FF, Self.DEPTH, Self.PRED_PROJ_H,
+        Self.EMB,
+        Self.T,
+        Self.ACT,
+        Self.SMOOTHED,
+        Self.AE_MLP,
+        Self.H,
+        Self.PRED_HEADS,
+        Self.PRED_FF,
+        Self.DEPTH,
+        Self.PRED_PROJ_H,
         Self.PRED_DIM_HEAD,
     ]
     comptime HE = Self.H * Self.EMB
@@ -120,7 +160,8 @@ struct LeWMPredictor[
         return p^
 
     def sync_from_named(
-        mut self, var d: Dict[String, List[Scalar[DT]]],
+        mut self,
+        var d: Dict[String, List[Scalar[DT]]],
     ) raises:
         """Overwrite the predictor's params AND state (BatchNorm running
         stats) with the trainer's snapshot, matched by `for_each_param` /
@@ -143,8 +184,11 @@ struct LeWMPredictor[
     ](
         mut self,
         src: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises:
         """Bridge a raw input tile into the named graph input slot (storage
@@ -166,16 +210,25 @@ struct LeWMPredictor[
     def forward(
         mut self,
         latent_ctx: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         actions: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         mut pred_out: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
+            mut=True,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            ...,
         ],
     ) raises:
         """Run the predictor: (latent_ctx, actions) → pred (B, H·EMB),

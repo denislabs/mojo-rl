@@ -31,10 +31,18 @@ from std.gpu.host import DeviceContext
 from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor
 
-from ...nn.constants import DT, TPB
-from ...nn.storage import (
-    ComputeGraph, InputSlot, Node, Tokenwise, RepeatConditional,
-    Linear, LayerNorm, BroadcastTokens, LearnedQueries, DecoderBlock,
+from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn import (
+    ComputeGraph,
+    InputSlot,
+    Node,
+    Tokenwise,
+    RepeatConditional,
+    Linear,
+    LayerNorm,
+    BroadcastTokens,
+    LearnedQueries,
+    DecoderBlock,
     MSEPerSample,
 )
 
@@ -42,7 +50,12 @@ from ...nn.storage import (
 # Reconstruction graph: emb → recon patches.  N_Q = (IMG//PATCH_D)^2,
 # PATCH_PX = C·PATCH_D·PATCH_D (caller supplies the derived dims).
 comptime LeWMDecoder[
-    EMB: Int, HID: Int, N_Q: Int, PATCH_PX: Int, FF: Int, N_LAYERS: Int,
+    EMB: Int,
+    HID: Int,
+    N_Q: Int,
+    PATCH_PX: Int,
+    FF: Int,
+    N_LAYERS: Int,
 ] = ComputeGraph[
     InputSlot["emb", EMB],
     Node["g", Linear[EMB, HID], "emb"],
@@ -51,7 +64,8 @@ comptime LeWMDecoder[
     Node[
         "xL",
         RepeatConditional[N_LAYERS, DecoderBlock[N_Q, HID, FF]],
-        "q0", "gN",
+        "q0",
+        "gN",
     ],
     Node["xf", Tokenwise[N_Q, LayerNorm[HID]], "xL"],
     Node["recon", Tokenwise[N_Q, Linear[HID, PATCH_PX]], "xf"],
@@ -60,7 +74,12 @@ comptime LeWMDecoder[
 
 # Training graph: adds the patchified target input + per-sample MSE.
 comptime LeWMDecoderLossGraph[
-    EMB: Int, HID: Int, N_Q: Int, PATCH_PX: Int, FF: Int, N_LAYERS: Int,
+    EMB: Int,
+    HID: Int,
+    N_Q: Int,
+    PATCH_PX: Int,
+    FF: Int,
+    N_LAYERS: Int,
 ] = ComputeGraph[
     InputSlot["emb", EMB],
     InputSlot["tgt", N_Q * PATCH_PX],
@@ -70,7 +89,8 @@ comptime LeWMDecoderLossGraph[
     Node[
         "xL",
         RepeatConditional[N_LAYERS, DecoderBlock[N_Q, HID, FF]],
-        "q0", "gN",
+        "q0",
+        "gN",
     ],
     Node["xf", Tokenwise[N_Q, LayerNorm[HID]], "xL"],
     Node["recon", Tokenwise[N_Q, Linear[HID, PATCH_PX]], "xf"],
@@ -114,8 +134,11 @@ def _patchify_kernel[
     var j = ij % PATCH_D
     var ph = p // GRID
     var pw = p % GRID
-    var src = b * (C * IMG * IMG) + c * (IMG * IMG) + (ph * PATCH_D + i) * IMG + (
-        pw * PATCH_D + j
+    var src = (
+        b * (C * IMG * IMG)
+        + c * (IMG * IMG)
+        + (ph * PATCH_D + i) * IMG
+        + (pw * PATCH_D + j)
     )
     dst.ptr[idx] = rebind[Scalar[DT]](img.ptr[src])
 
@@ -150,9 +173,13 @@ def _unpatchify_kernel[
     var pw = x // PATCH_D
     var j = x % PATCH_D
     var p = ph * GRID + pw
-    var psrc = b * (GRID * GRID * PATCH_PX) + p * PATCH_PX + c * (
-        PATCH_D * PATCH_D
-    ) + i * PATCH_D + j
+    var psrc = (
+        b * (GRID * GRID * PATCH_PX)
+        + p * PATCH_PX
+        + c * (PATCH_D * PATCH_D)
+        + i * PATCH_D
+        + j
+    )
     img.ptr[idx] = rebind[Scalar[DT]](patches.ptr[psrc])
 
 
@@ -177,12 +204,17 @@ def patchify[
                     for i in range(PATCH_D):
                         for j in range(PATCH_D):
                             var dst = (
-                                b * OUTN + p * PATCH_PX + c * (PATCH_D * PATCH_D)
-                                + i * PATCH_D + j
+                                b * OUTN
+                                + p * PATCH_PX
+                                + c * (PATCH_D * PATCH_D)
+                                + i * PATCH_D
+                                + j
                             )
                             var src = (
-                                b * IMGN + c * (IMG * IMG)
-                                + (ph * PATCH_D + i) * IMG + (pw * PATCH_D + j)
+                                b * IMGN
+                                + c * (IMG * IMG)
+                                + (ph * PATCH_D + i) * IMG
+                                + (pw * PATCH_D + j)
                             )
                             dst_buf[dst] = img[src]
     else:
@@ -223,8 +255,11 @@ def unpatchify[
                         var j = x % PATCH_D
                         var p = ph * GRID + pw
                         var psrc = (
-                            b * OUTN + p * PATCH_PX + c * (PATCH_D * PATCH_D)
-                            + i * PATCH_D + j
+                            b * OUTN
+                            + p * PATCH_PX
+                            + c * (PATCH_D * PATCH_D)
+                            + i * PATCH_D
+                            + j
                         )
                         var dst = b * IMGN + c * (IMG * IMG) + y * IMG + x
                         img[dst] = patches[psrc]

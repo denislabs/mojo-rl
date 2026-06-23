@@ -81,7 +81,7 @@ struct NormConvPCBlock[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn init: delegate to the inner conv block's nn init."""
+        """Delegate to the inner conv block's nn init."""
         Self.INNER.pc_init_params[INIT, dtype](params)
 
     # ── parameter-free per-input-channel RMSNorm:  out = u / rms_c  ───────────
@@ -101,9 +101,7 @@ struct NormConvPCBlock[
                 var base = c * Self.spatial_in
                 var ss: Float64 = 0.0
                 for s in range(Self.spatial_in):
-                    var v = Float64(
-                        rebind[Scalar[dtype]](u[b, base + s])
-                    )
+                    var v = Float64(rebind[Scalar[dtype]](u[b, base + s]))
                     ss += v * v
                 var inv_r = Scalar[dtype](
                     1.0 / sqrt(ss / Float64(Self.spatial_in) + _RMS_EPS)

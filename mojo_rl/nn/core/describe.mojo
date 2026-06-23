@@ -1,4 +1,4 @@
-"""describe — a module-introspection helper for the storage `nn` framework.
+"""Describe — a module-introspection helper for the storage `nn` framework.
 
 An ADDITIVE debugging / migration aid. `DescribeVisitor` is a `ParamVisitor`
 conformer (mirroring `_NamedCollector` in named_params.mojo) that accumulates,
@@ -22,6 +22,7 @@ from .module import Module
 
 struct DescribeRow(Copyable & Movable):
     """One visited param/state: its dotted name and comptime size."""
+
     var name: String
     var size: Int
 
@@ -33,6 +34,7 @@ struct DescribeRow(Copyable & Movable):
 struct DescribeVisitor(ParamVisitor):
     """Accumulates a `(name, size)` row per visited param/state plus running
     totals. Metadata-only — never reads buffers or the device."""
+
     var rows: List[DescribeRow]
     var total_params: Int
 
@@ -40,9 +42,16 @@ struct DescribeVisitor(ParamVisitor):
         self.rows = List[DescribeRow]()
         self.total_params = 0
 
-    def visit[target: StaticString, N: Int](
-        mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         self.rows.append(DescribeRow(name, N))
@@ -55,8 +64,11 @@ struct DescribeVisitor(ParamVisitor):
         for ref r in self.rows:
             s += r.name + ": " + String(r.size) + "\n"
         s += (
-            "total params: " + String(self.total_params)
-            + " across " + String(len(self.rows)) + " tensors"
+            "total params: "
+            + String(self.total_params)
+            + " across "
+            + String(len(self.rows))
+            + " tensors"
         )
         return s
 

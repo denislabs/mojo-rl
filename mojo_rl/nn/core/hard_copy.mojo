@@ -1,4 +1,4 @@
-"""hard_copy — verbatim Module→Module weight+state copy (tau=1 promotion).
+"""HardCopy — verbatim Module→Module weight+state copy (tau=1 promotion).
 
 The storage analog of legacy `map_params.hard_copy_params`: copies every Param
 value AND every State buffer (e.g. BatchNorm running stats) from `src` into
@@ -30,6 +30,7 @@ from .module import Module
 struct _CollectVisitor(ParamVisitor):
     """Reads each visited Param/State's values into an owned host `List`, in
     walk order. GPU params download first. Moments/grad are ignored."""
+
     var names: List[String]
     var vals: List[List[Scalar[DT]]]
 
@@ -37,9 +38,16 @@ struct _CollectVisitor(ParamVisitor):
         self.names = List[String]()
         self.vals = List[List[Scalar[DT]]]()
 
-    def visit[target: StaticString, N: Int](
-        mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target == "gpu":
@@ -54,6 +62,7 @@ struct _CollectVisitor(ParamVisitor):
 struct _InjectVisitor(ParamVisitor):
     """Writes collected values into each visited Param/State in the same walk
     order, validating name + size. GPU params upload after."""
+
     var names: List[String]
     var vals: List[List[Scalar[DT]]]
     var cur: Int
@@ -65,23 +74,37 @@ struct _InjectVisitor(ParamVisitor):
         self.vals = vals^
         self.cur = 0
 
-    def visit[target: StaticString, N: Int](
-        mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         if self.cur >= len(self.vals):
             raise Error("hard_copy: dst has more params/states than src")
         if self.names[self.cur] != name:
             raise Error(
-                "hard_copy: name mismatch — src '" + self.names[self.cur]
-                + "' vs dst '" + name + "' (topology drift)"
+                "hard_copy: name mismatch — src '"
+                + self.names[self.cur]
+                + "' vs dst '"
+                + name
+                + "' (topology drift)"
             )
         ref buf = self.vals[self.cur]
         if len(buf) != N:
             raise Error(
-                "hard_copy: size mismatch for '" + name + "' — src "
-                + String(len(buf)) + ", dst " + String(N)
+                "hard_copy: size mismatch for '"
+                + name
+                + "' — src "
+                + String(len(buf))
+                + ", dst "
+                + String(N)
             )
         for i in range(N):
             param.data[i] = buf[i]
@@ -90,9 +113,9 @@ struct _InjectVisitor(ParamVisitor):
         self.cur += 1
 
 
-def hard_copy[target: StaticString, M: Module](
-    mut src: M, mut dst: M, ctx: Optional[DeviceContext] = None
-) raises:
+def hard_copy[
+    target: StaticString, M: Module
+](mut src: M, mut dst: M, ctx: Optional[DeviceContext] = None) raises:
     """Copy `src` → `dst` verbatim (params + states, bit-identical). Optimizer
     moments are NOT copied. Stateless models do a params-only copy (empty state
     walk = no-op)."""

@@ -1,4 +1,4 @@
-"""named_params / named_states — reify a module's param/state tree to a flat
+"""NamedParams / NamedStates — reify a module's param/state tree to a flat
 list of (dotted-name, size, decay) records.
 
 The storage successor to legacy `named_params`. Legacy reified raw
@@ -35,14 +35,22 @@ struct _NamedCollector(ParamVisitor):
     """Appends one `NamedParam` metadata record per visited param/state.
     Touches neither the value/grad buffers nor the device, so it is
     target-agnostic (no `ctx` needed)."""
+
     var items: List[NamedParam]
 
     def __init__(out self):
         self.items = List[NamedParam]()
 
-    def visit[target: StaticString, N: Int](
-        mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         self.items.append(NamedParam(name, N, apply_decay))

@@ -89,8 +89,7 @@ struct ConvPCBlock[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn init: conv W via INIT.fill(conv fan_in/out); zero per-channel b.
-        """
+        """Init: conv W via INIT.fill(conv fan_in/out); zero per-channel b."""
         comptime W_SIZE = Self.out_channels * Self.col_size
         var W_view = LayoutTensor[
             dtype, Layout.row_major(W_SIZE), MutAnyOrigin
@@ -277,7 +276,9 @@ struct ConvPCBlock[
                                             )
                                             acc = (
                                                 acc
-                                                + params[oc * Self.col_size + c_k]
+                                                + params[
+                                                    oc * Self.col_size + c_k
+                                                ]
                                                 * a_below[b, in_idx]
                                             )
                             mu[b, oc * Self.spatial_out + s] = acc
@@ -392,13 +393,14 @@ struct ConvPCBlock[
                                             + ih * Self.in_w
                                             + iw
                                         )
-                                        z_below[b, in_idx] = z_below[
-                                            b, in_idx
-                                        ] + dcol[
-                                            b * Self.CACHE
-                                            + s * Self.col_size
-                                            + c_k
-                                        ]
+                                        z_below[b, in_idx] = (
+                                            z_below[b, in_idx]
+                                            + dcol[
+                                                b * Self.CACHE
+                                                + s * Self.col_size
+                                                + c_k
+                                            ]
+                                        )
             _ = dcol^
         else:
             for b in range(BATCH):
@@ -406,9 +408,7 @@ struct ConvPCBlock[
                     for oh in range(Self.out_h):
                         for ow in range(Self.out_w):
                             var s = oh * Self.out_w + ow
-                            var g = eps_above[
-                                b, oc * Self.spatial_out + s
-                            ]
+                            var g = eps_above[b, oc * Self.spatial_out + s]
                             for c in range(Self.in_channels):
                                 for kh in range(Self.kernel_size):
                                     for kw in range(Self.kernel_size):
@@ -436,11 +436,13 @@ struct ConvPCBlock[
                                                 + ih * Self.in_w
                                                 + iw
                                             )
-                                            z_below[b, in_idx] = z_below[
-                                                b, in_idx
-                                            ] + params[
-                                                oc * Self.col_size + c_k
-                                            ] * g
+                                            z_below[b, in_idx] = (
+                                                z_below[b, in_idx]
+                                                + params[
+                                                    oc * Self.col_size + c_k
+                                                ]
+                                                * g
+                                            )
 
     # =========================================================================
     # act_derivative_mul:  z_out = z_in ⊙ ACT'(x_below)  (reused verbatim)
@@ -571,7 +573,9 @@ struct ConvPCBlock[
                                                 oc * Self.col_size + c_k
                                             ] = grads[
                                                 oc * Self.col_size + c_k
-                                            ] + (-g * a_below[b, in_idx])
+                                            ] + (
+                                                -g * a_below[b, in_idx]
+                                            )
                     grads[W_SIZE + oc] = grads[W_SIZE + oc] + (-db_acc)
 
     # =========================================================================

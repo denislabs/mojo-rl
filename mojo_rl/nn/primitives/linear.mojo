@@ -32,7 +32,7 @@ from ..core.module import Module
 from ..core.param import Param, ParamVisitor
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
-from ..loss.sac import polyak_tensor
+from ..core.polyak import polyak_tensor
 
 
 # ── kernels (non-GEMM ops; the three matmuls go through max_matmul) ──────

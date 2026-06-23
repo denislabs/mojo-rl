@@ -603,7 +603,7 @@ trait PCBlockTrait(Movable & ImplicitlyCopyable):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn re-architecture init: same contract as `initialize_params`
+        """Same contract as `initialize_params`
         but driven by the vendored `PCInitializer` (legacy-`nn`-free), so
         `PCModule.make_pcn` initializes any block type without the legacy
         `nn.initializer` trait. Default raises — every `PCBlockTrait`

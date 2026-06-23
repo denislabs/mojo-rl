@@ -17,7 +17,8 @@ from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.nn.primitives.concat import Concat2
 from mojo_rl.nn.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn.combinators.graph_decl import InputSlot, Node
-from mojo_rl.nn.loss.sac import polyak_tensor, sac_target_y
+from mojo_rl.nn.core.polyak import polyak_tensor
+from mojo_rl.deep_agents.sac.target_y_block import sac_target_y
 
 
 def _check_polyak_tensor[target: StaticString](ctx: Optional[DeviceContext]) raises -> Bool:

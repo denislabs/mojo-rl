@@ -21,8 +21,9 @@ Surface:
 """
 
 from std.gpu.host import DeviceContext
-
-from mojo_rl.nn.constants import DT
+from std.gpu import global_idx
+from layout import Layout, LayoutTensor
+from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
@@ -33,9 +34,125 @@ from mojo_rl.nn.primitives.concat import Concat2
 from mojo_rl.nn.primitives.binary_elementwise import BinaryElemMin
 from mojo_rl.nn.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn.combinators.graph_decl import InputSlot, Node, ExternalNode
-from mojo_rl.nn.loss.sac import sac_target_y, sac_target_y_dev
 from ..loss.loss_block import LossBlock
 from ..training.trainer_block import TrainerState
+
+
+def _target_y_kernel[
+    B: Int
+](
+    r: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    done: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    min_q: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    logp: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    y: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    gamma: Scalar[DT],
+    alpha: Scalar[DT],
+):
+    var b = Int(global_idx.x)
+    if b < B:
+        var soft = rebind[Scalar[DT]](min_q[b]) - alpha * rebind[Scalar[DT]](
+            logp[b]
+        )
+        y[b] = (
+            rebind[Scalar[DT]](r[b])
+            + gamma * (Scalar[DT](1.0) - rebind[Scalar[DT]](done[b])) * soft
+        )
+
+
+def _target_y_dev_kernel[
+    B: Int
+](
+    r: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    done: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    min_q: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    logp: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    y: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
+    gamma: Scalar[DT],
+    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+):
+    # Device-alpha variant: reads alpha from `alpha_ptr[0]` (SAC's on-device
+    # temperature buffer) instead of a baked scalar arg, so the target-y stays
+    # CUDA-graph capturable while the device ScalarAdam refreshes alpha.
+    var b = Int(global_idx.x)
+    if b < B:
+        var soft = rebind[Scalar[DT]](min_q[b]) - alpha_ptr[0] * rebind[
+            Scalar[DT]
+        ](logp[b])
+        y[b] = (
+            rebind[Scalar[DT]](r[b])
+            + gamma * (Scalar[DT](1.0) - rebind[Scalar[DT]](done[b])) * soft
+        )
+
+
+def sac_target_y_dev[
+    target: StaticString, B: Int
+](
+    mut r: Tensor,
+    mut done: Tensor,
+    mut min_q: Tensor,
+    mut logp: Tensor,
+    gamma: Scalar[DT],
+    alpha_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut y: Tensor,
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Device-alpha variant of `sac_target_y` — alpha read from `alpha_ptr[0]`
+    (SAC's on-device temperature). GPU only."""
+    comptime assert target == "gpu", "sac_target_y_dev: target must be 'gpu'"
+    var c = ctx.value()
+    y.ensure_gpu(c, B)
+    comptime nblk = (B + TPB - 1) // TPB
+    c.enqueue_function[_target_y_dev_kernel[B]](
+        r.lt["gpu", Layout.row_major(B)](),
+        done.lt["gpu", Layout.row_major(B)](),
+        min_q.lt["gpu", Layout.row_major(B)](),
+        logp.lt["gpu", Layout.row_major(B)](),
+        y.lt["gpu", Layout.row_major(B)](),
+        gamma,
+        alpha_ptr,
+        grid_dim=nblk,
+        block_dim=TPB,
+    )
+
+
+def sac_target_y[
+    target: StaticString, B: Int
+](
+    mut r: Tensor,
+    mut done: Tensor,
+    mut min_q: Tensor,
+    mut logp: Tensor,
+    gamma: Scalar[DT],
+    alpha: Scalar[DT],
+    mut y: Tensor,
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """SAC target-y: y[b] = r + gamma·(1-done)·(min_q - alpha·log_prob).  min_q/logp from the
+    TARGET critics + actor on the NEXT state (caller detaches — no grad here).
+    """
+    comptime if target == "cpu":
+        y.ensure(B)
+        for b in range(B):
+            var soft = min_q.data[b] - alpha * logp.data[b]
+            y.data[b] = (
+                r.data[b] + gamma * (Scalar[DT](1.0) - done.data[b]) * soft
+            )
+    else:
+        var c = ctx.value()
+        y.ensure_gpu(c, B)
+        comptime nblk = (B + TPB - 1) // TPB
+        c.enqueue_function[_target_y_kernel[B]](
+            r.lt["gpu", Layout.row_major(B)](),
+            done.lt["gpu", Layout.row_major(B)](),
+            min_q.lt["gpu", Layout.row_major(B)](),
+            logp.lt["gpu", Layout.row_major(B)](),
+            y.lt["gpu", Layout.row_major(B)](),
+            gamma,
+            alpha,
+            grid_dim=nblk,
+            block_dim=TPB,
+        )
 
 
 struct TargetYBlock[
@@ -52,21 +169,21 @@ struct TargetYBlock[
     # ExternalNodes, supplied at forward by the trainer (tracked refs). min_q is
     # the output; log_prob is read by name via node_output["logp"].
     comptime Graph = ComputeGraph[
-        InputSlot["s", Self.OBS],                            # s'
-        ExternalNode["actor", Self.ACTOR, "s"],              # → [mu|ls]
-        Node["rsample", RSample[Self.ACT], "actor"],         # → [a'|logp']
+        InputSlot["s", Self.OBS],  # s'
+        ExternalNode["actor", Self.ACTOR, "s"],  # → [mu|ls]
+        Node["rsample", RSample[Self.ACT], "actor"],  # → [a'|logp']
         Node["action", Slice[Self.ALP_DIM, 0, Self.ACT], "rsample"],
         Node["logp", Slice[Self.ALP_DIM, Self.ACT, Self.ALP_DIM], "rsample"],
         Node["concat", Concat2[Self.OBS, Self.ACT], "s", "action"],
         ExternalNode["q1", Self.CRITIC, "concat"],
         ExternalNode["q2", Self.CRITIC, "concat"],
-        Node["min_q", BinaryElemMin[1], "q1", "q2"],         # output
+        Node["min_q", BinaryElemMin[1], "q1", "q2"],  # output
     ]
 
     var graph: Self.Graph
     var action_scale: Scalar[DT]
     var gamma: Scalar[DT]
-    var _min_q: Tensor        # graph output
+    var _min_q: Tensor  # graph output
     # Optional on-device alpha source (SAC GPU device-alpha path). When set,
     # target-y reads alpha from this device buffer instead of `state.alpha`.
     var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
@@ -78,9 +195,7 @@ struct TargetYBlock[
         self._min_q = Tensor()
         self._alpha_ptr = None
 
-    def set_alpha_ptr(
-        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    ):
+    def set_alpha_ptr(mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
         """Wire SAC's on-device alpha buffer into target-y (GPU device-alpha
         path). After this, `step` on GPU reads alpha from the device buffer."""
         self._alpha_ptr = p

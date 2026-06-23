@@ -34,9 +34,9 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.math import sqrt
 
-from ...nn.constants import DT, TPB, TPB_REDUCE
-from ...nn.storage import Tensor, ParamVisitor, Kaiming, Adam, Module
-from ...nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
+from mojo_rl.nn import Tensor, ParamVisitor, Kaiming, Adam, Module
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from .encoder import LeWMEncoder
 from .loss_graph import LeWMLossGraph
 
@@ -50,7 +50,9 @@ from mojo_rl.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
 comptime _GC_TPB: Int = 128
 
 
-def _clip_sumsq_kernel[N: Int](
+def _clip_sumsq_kernel[
+    N: Int
+](
     grad: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     out_sum: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
 ):
@@ -66,7 +68,9 @@ def _clip_sumsq_kernel[N: Int](
         out_sum[0] = total[0]
 
 
-def _clip_scale_kernel[N: Int](
+def _clip_scale_kernel[
+    N: Int
+](
     grad: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     scale: Scalar[DT],
 ):
@@ -96,9 +100,16 @@ struct _SumSqV(ParamVisitor):
         self.sum_sq = Scalar[DT](0.0)
         self.psum = Tensor()
 
-    def visit[target: StaticString, N: Int](
-        mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target == "cpu":
@@ -111,7 +122,8 @@ struct _SumSqV(ParamVisitor):
             c.enqueue_function[_clip_sumsq_kernel[N]](
                 grad.lt["gpu", Layout.row_major(N)](),
                 self.psum.lt["gpu", Layout.row_major(1)](),
-                grid_dim=1, block_dim=_GC_TPB,
+                grid_dim=1,
+                block_dim=_GC_TPB,
             )
             self.psum.download(c)
             self.sum_sq += self.psum.data[0]
@@ -123,9 +135,16 @@ struct _ScaleV(ParamVisitor):
     def __init__(out self, scale: Scalar[DT]):
         self.scale = scale
 
-    def visit[target: StaticString, N: Int](
-        mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target == "cpu":
@@ -140,14 +159,17 @@ struct _ScaleV(ParamVisitor):
             c.enqueue_function[_clip_scale_kernel[N]](
                 grad.lt["gpu", Layout.row_major(N)](),
                 self.scale,
-                grid_dim=(N + TPB - 1) // TPB, block_dim=TPB,
+                grid_dim=(N + TPB - 1) // TPB,
+                block_dim=TPB,
             )
 
 
 # ── GPU loss reduction: acc[0] += mean(src); acc[1] += 1 ───────────────
 # Single-block `block.sum` over the [BATCH] per-sample loss. No per-step
 # D2H — the driver drains the accumulator at flush cadence.
-def _reduce_mean_acc_kernel[BATCH: Int](
+def _reduce_mean_acc_kernel[
+    BATCH: Int
+](
     src: UnsafePointer[Scalar[DT], MutAnyOrigin],
     acc: UnsafePointer[Scalar[DT], MutAnyOrigin],
 ):
@@ -166,14 +188,22 @@ def _reduce_mean_acc_kernel[BATCH: Int](
 # ── checkpoint / export visitors (storage ParamVisitor signature) ──────
 struct _SaveVisitor(ParamVisitor):
     """Collect each param's values in for_each_param walk order (GPU: D2H)."""
+
     var vals: List[Scalar[DT]]
 
     def __init__(out self):
         self.vals = List[Scalar[DT]]()
 
-    def visit[target: StaticString, N: Int](
-        mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target == "gpu":
@@ -184,6 +214,7 @@ struct _SaveVisitor(ParamVisitor):
 
 struct _LoadVisitor(ParamVisitor):
     """Restore each param's values in for_each_param walk order (GPU: H2D)."""
+
     var vals: List[Scalar[DT]]
     var idx: Int
 
@@ -191,9 +222,16 @@ struct _LoadVisitor(ParamVisitor):
         self.vals = vals^
         self.idx = 0
 
-    def visit[target: StaticString, N: Int](
-        mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         param.ensure(N)
@@ -208,14 +246,22 @@ struct _LoadVisitor(ParamVisitor):
 struct _NamedExportVisitor(ParamVisitor):
     """Record each param/state's name → values (GPU: D2H). Owns the dict; feeds
     LeWMPredictor.sync_from_named for the MPC predictor-from-latents path."""
+
     var d: Dict[String, List[Scalar[DT]]]
 
     def __init__(out self):
         self.d = Dict[String, List[Scalar[DT]]]()
 
-    def visit[target: StaticString, N: Int](
-        mut self, name: String, mut param: Tensor, mut grad: Tensor,
-        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
         ctx: Optional[DeviceContext],
     ) raises:
         comptime if target == "gpu":
@@ -232,24 +278,66 @@ struct _NamedExportVisitor(ParamVisitor):
 
 
 struct LeWMTrainer[
-    IN_CH: Int, IMG: Int, PATCH: Int, HIDDEN: Int, ENC_HEADS: Int,
-    ENC_LAYERS: Int, EMB: Int, ENC_PROJ_H: Int, ENC_FF_MULT: Int,
-    T: Int, ACT: Int, SMOOTHED: Int, AE_MLP: Int,
-    H: Int, N_PREDS: Int, PRED_HEADS: Int, PRED_FF: Int, DEPTH: Int,
-    PRED_PROJ_H: Int, SIG_PROJ: Int, SIG_KNOTS: Int,
-    BATCH: Int, train_target: StaticString = "cpu",
+    IN_CH: Int,
+    IMG: Int,
+    PATCH: Int,
+    HIDDEN: Int,
+    ENC_HEADS: Int,
+    ENC_LAYERS: Int,
+    EMB: Int,
+    ENC_PROJ_H: Int,
+    ENC_FF_MULT: Int,
+    T: Int,
+    ACT: Int,
+    SMOOTHED: Int,
+    AE_MLP: Int,
+    H: Int,
+    N_PREDS: Int,
+    PRED_HEADS: Int,
+    PRED_FF: Int,
+    DEPTH: Int,
+    PRED_PROJ_H: Int,
+    SIG_PROJ: Int,
+    SIG_KNOTS: Int,
+    BATCH: Int,
+    train_target: StaticString = "cpu",
     PRED_DIM_HEAD: Int = 0,
     ENC: Module = LeWMEncoder[
-        IN_CH, IMG, PATCH, (IMG // PATCH) * (IMG // PATCH),
-        HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H, ENC_FF_MULT,
+        IN_CH,
+        IMG,
+        PATCH,
+        (IMG // PATCH) * (IMG // PATCH),
+        HIDDEN,
+        ENC_HEADS,
+        ENC_LAYERS,
+        EMB,
+        ENC_PROJ_H,
+        ENC_FF_MULT,
     ],
 ](Movable & ImplicitlyDeletable):
     comptime LG = LeWMLossGraph[
-        Self.IN_CH, Self.IMG, Self.PATCH, Self.HIDDEN, Self.ENC_HEADS,
-        Self.ENC_LAYERS, Self.EMB, Self.ENC_PROJ_H, Self.ENC_FF_MULT,
-        Self.T, Self.ACT, Self.SMOOTHED, Self.AE_MLP,
-        Self.H, Self.N_PREDS, Self.PRED_HEADS, Self.PRED_FF, Self.DEPTH,
-        Self.PRED_PROJ_H, Self.SIG_PROJ, Self.SIG_KNOTS, Self.PRED_DIM_HEAD,
+        Self.IN_CH,
+        Self.IMG,
+        Self.PATCH,
+        Self.HIDDEN,
+        Self.ENC_HEADS,
+        Self.ENC_LAYERS,
+        Self.EMB,
+        Self.ENC_PROJ_H,
+        Self.ENC_FF_MULT,
+        Self.T,
+        Self.ACT,
+        Self.SMOOTHED,
+        Self.AE_MLP,
+        Self.H,
+        Self.N_PREDS,
+        Self.PRED_HEADS,
+        Self.PRED_FF,
+        Self.DEPTH,
+        Self.PRED_PROJ_H,
+        Self.SIG_PROJ,
+        Self.SIG_KNOTS,
+        Self.PRED_DIM_HEAD,
         Self.ENC,
     ]
     comptime PIX = Self.T * Self.IN_CH * Self.IMG * Self.IMG
@@ -262,7 +350,7 @@ struct LeWMTrainer[
     var max_grad_norm: Scalar[DT]
     var ctx: Optional[DeviceContext]
     # Graph IO scratch: device buffer on GPU, host list on CPU.
-    var loss_out: Tensor   # per-sample loss [BATCH]
+    var loss_out: Tensor  # per-sample loss [BATCH]
     var grad_seed: Tensor  # constant 1/BATCH backward seed [BATCH]
     # GPU-only `(Σmean, count)` loss accumulator (drained at flush).
     var _loss_acc_dev: Optional[DeviceBuffer[DT]]
@@ -319,7 +407,9 @@ struct LeWMTrainer[
         # The backward seed for a mean-over-batch loss is the constant 1/BATCH
         # in every slot — write it once (nothing in the step mutates it).
         seed_grad_inv_batch[Self.train_target, Self.BATCH](
-            t.grad_seed.lt[Self.train_target, Layout.row_major(Self.BATCH, 1)](),
+            t.grad_seed.lt[
+                Self.train_target, Layout.row_major(Self.BATCH, 1)
+            ](),
             ctx=ctx,
         )
         t.emb_buf = List[Scalar[DT]](
@@ -333,8 +423,11 @@ struct LeWMTrainer[
     ](
         mut self,
         src: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises:
         """Bridge a raw input tile into the named graph input slot (storage
@@ -357,12 +450,18 @@ struct LeWMTrainer[
     ](
         mut self,
         pix: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         act: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises -> Scalar[DT]:
         self.graph.zero_grad[Self.train_target](self.ctx)
@@ -385,7 +484,8 @@ struct LeWMTrainer[
             c.enqueue_function[red](
                 self.loss_out.dev.value().unsafe_ptr(),
                 self._loss_acc_dev.value().unsafe_ptr(),
-                grid_dim=1, block_dim=TPB_REDUCE,
+                grid_dim=1,
+                block_dim=TPB_REDUCE,
             )
 
         self.graph.vjp[Self.BATCH, Self.train_target, POLICY](
@@ -412,12 +512,18 @@ struct LeWMTrainer[
     ](
         mut self,
         pix: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         act: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
     ) raises -> Scalar[DT]:
         """Forward-only batch-mean loss (no grad / no optimizer step)."""
@@ -443,12 +549,18 @@ struct LeWMTrainer[
     ](
         mut self,
         pix: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         act: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+            element_size=1,
+            origin=MutAnyOrigin,
+            ...,
         ],
         pred_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
         tgt_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -479,11 +591,7 @@ struct LeWMTrainer[
 
     def read_node_into[
         name: StaticString,
-    ](
-        mut self,
-        host: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        n: Int,
-    ) raises:
+    ](mut self, host: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int,) raises:
         """Copy the named graph node's output (n elements) to a host buffer.
         Valid after a forward has populated the node buffers."""
         ref src = self.graph.node_output[name]()
@@ -579,9 +687,8 @@ struct LeWMTrainer[
                     continue
                 var cc: Scalar[DT] = 0.0
                 for r in range(ns):
-                    cc += (
-                        (self.emb_buf[r * D + i] - mean[i])
-                        * (self.emb_buf[r * D + j] - mean[j])
+                    cc += (self.emb_buf[r * D + i] - mean[i]) * (
+                        self.emb_buf[r * D + j] - mean[j]
                     )
                 cc /= Scalar[DT](ns)
                 acc += (cc / (std[i] * std[j])).__abs__()

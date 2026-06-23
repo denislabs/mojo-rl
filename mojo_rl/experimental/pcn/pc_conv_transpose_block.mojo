@@ -86,7 +86,7 @@ struct ConvTransposePCBlock[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn init: conv-transpose W via INIT.fill(fan_in/out); zero bias."""
+        """Init: conv-transpose W via INIT.fill(fan_in/out); zero bias."""
         var W_view = LayoutTensor[
             dtype, Layout.row_major(Self.W_SIZE), MutAnyOrigin
         ](params.ptr)
@@ -248,11 +248,14 @@ struct ConvTransposePCBlock[
                                             + oh * Self.out_w
                                             + ow
                                         )
-                                        mu[b, mcol] = mu[b, mcol] + dcol[
-                                            b * Self.CACHE
-                                            + p_small * Self.col_size
-                                            + ocol
-                                        ]
+                                        mu[b, mcol] = (
+                                            mu[b, mcol]
+                                            + dcol[
+                                                b * Self.CACHE
+                                                + p_small * Self.col_size
+                                                + ocol
+                                            ]
+                                        )
             _ = dcol^
         else:
             for b in range(BATCH):
@@ -261,9 +264,7 @@ struct ConvTransposePCBlock[
                         for ic in range(Self.in_channels):
                             var av = a_below[
                                 b,
-                                ic * Self.small_spatial
-                                + ih * Self.in_w
-                                + iw,
+                                ic * Self.small_spatial + ih * Self.in_w + iw,
                             ]
                             for oc in range(Self.out_channels):
                                 for kh in range(Self.kernel_size):
@@ -429,9 +430,7 @@ struct ConvTransposePCBlock[
                                             )
                             z_below[
                                 b,
-                                ic * Self.small_spatial
-                                + ih * Self.in_w
-                                + iw,
+                                ic * Self.small_spatial + ih * Self.in_w + iw,
                             ] = acc
 
     # =========================================================================
@@ -529,9 +528,7 @@ struct ConvTransposePCBlock[
                         for ic in range(Self.in_channels):
                             var av = a_below[
                                 b,
-                                ic * Self.small_spatial
-                                + ih * Self.in_w
-                                + iw,
+                                ic * Self.small_spatial + ih * Self.in_w + iw,
                             ]
                             for oc in range(Self.out_channels):
                                 for kh in range(Self.kernel_size):

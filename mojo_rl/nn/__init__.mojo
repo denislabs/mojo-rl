@@ -1,4 +1,4 @@
-"""nn — the storage-passing neural-network framework.
+"""The storage-passing neural-network framework.
 
 The sole nn framework (the legacy stateless-`Module`/`TensorPack[MutAnyOrigin]`
 surface was removed; this storage-passing design was promoted from `nn/storage/`
@@ -22,7 +22,12 @@ from .core.walkers import for_each_param_auto, zero_grad_auto, join_name
 from .core.named_params import NamedParam, named_params, named_states
 from .core.describe import describe, print_describe, DescribeVisitor
 from .core.initializer import (
-    Initializer, Kaiming, Xavier, Zero, Normal, Deterministic,
+    Initializer,
+    Kaiming,
+    Xavier,
+    Zero,
+    Normal,
+    Deterministic,
 )
 from .core.checkpoint import save_params, load_params
 from .primitives.linear import Linear
@@ -39,12 +44,21 @@ from .primitives.lstm_cell import LSTMCell
 from .primitives.lstm_seq import LSTMSeq
 from .primitives.attention import ScaledDotProductAttention
 from .primitives.masked_attention import (
-    MaskedAttention, causal_mask, all_allow_mask, build_modality_mask,
+    MaskedAttention,
+    causal_mask,
+    all_allow_mask,
+    build_modality_mask,
 )
 from .primitives.add import Add
 from .primitives.elementwise import Elementwise
 from .primitives.activations import (
-    ReLU, Tanh, Sigmoid, GELU, Mish, Swish, Symlog,
+    ReLU,
+    Tanh,
+    Sigmoid,
+    GELU,
+    Mish,
+    Swish,
+    Symlog,
 )
 from .primitives.conv2d import Conv2D
 from .primitives.batch_norm_1d import BatchNorm1D
@@ -61,7 +75,9 @@ from .primitives.max_pool_2d import MaxPool2D
 from .primitives.embedding import Embedding
 from .primitives.rsample import RSample
 from .primitives.binary_elementwise import (
-    BinaryElementwise, BinaryElemMin, BinarySub,
+    BinaryElementwise,
+    BinaryElemMin,
+    BinarySub,
 )
 from .primitives.concat import Concat, Concat2
 from .primitives.scale import Scale
@@ -69,6 +85,7 @@ from .primitives.clamp import Clamp
 from .primitives.gather_cols import GatherCols
 from .primitives.dueling_head import DuelingHead
 from .primitives.dueling_head_c51 import DuelingHeadC51
+
 # Phase E remainder — RL-utility + LeWM leaves
 from .primitives.slice import Slice
 from .primitives.reduce import Reduce, Sum, Mean, ReduceOp, SumOp, MeanOp
@@ -82,6 +99,7 @@ from .primitives.layer_norm_no_affine import LayerNormNoAffine
 from .primitives.mse_per_sample import MSEPerSample
 from .primitives.gate import Gate
 from .primitives.modulate import Modulate
+
 # Phase E remainder — transformer / Dreamer4 plumbing leaves
 from .primitives.bias_add import BiasAdd
 from .primitives.transpose_2d import Transpose2D
@@ -95,16 +113,23 @@ from .primitives.broadcast_tokens import BroadcastTokens
 from .primitives.learned_tokens import LearnedTokens
 from .primitives.learned_queries import LearnedQueries
 from .primitives.mae_replacer import MAEReplacer
+
 # Phase F — transformer/Dreamer4 BLOCKS (composites over models.transformer)
 from .primitives.modality_space_attention import ModalitySpaceAttention
 from .primitives.dynamics_space_attention import (
     DynamicsSpaceAttention,
-    DYN_MOD_ACTION, DYN_MOD_SIGNAL, DYN_MOD_STEP, DYN_MOD_SPATIAL,
-    DYN_MOD_REGISTER, DYN_MOD_AGENT,
+    DYN_MOD_ACTION,
+    DYN_MOD_SIGNAL,
+    DYN_MOD_STEP,
+    DYN_MOD_SPATIAL,
+    DYN_MOD_REGISTER,
+    DYN_MOD_AGENT,
 )
 from .primitives.decoder_block import DecoderBlock
 from .primitives.time_attention_latents import TimeAttentionLatents
-from .primitives.conditional_transformer_block import ConditionalTransformerBlock
+from .primitives.conditional_transformer_block import (
+    ConditionalTransformerBlock,
+)
 from .combinators.sequential import Sequential
 from .combinators.residual import Residual
 from .combinators.parallel import Parallel
@@ -117,7 +142,11 @@ from .combinators.branch_concat import BranchConcat
 from .combinators.stop_grad_params import StopGradParams
 from .combinators.compute_graph import ComputeGraph
 from .combinators.graph_decl import (
-    GraphDecl, InputSlot, Node, ExternalNode, IsExternal,
+    GraphDecl,
+    InputSlot,
+    Node,
+    ExternalNode,
+    IsExternal,
 )
 from .optimizer.optimizer import Optimizer
 from .optimizer.param_arena import ParamArena, polyak_arenas
@@ -128,15 +157,22 @@ from .optimizer.grad_clip import clip_grad_norm
 from .optimizer.scalar_adam import ScalarAdam
 from .loss.mse import mse_forward, mse_backward
 from .loss.mse_loss import MSELoss
-from .loss.sac import polyak_tensor, sac_target_y
 from .loss.cross_entropy import CrossEntropyLoss
 from .loss.soft_cross_entropy import SoftCrossEntropyLoss
 from .loss.gaussian_nll_loss import GaussianNLLLoss
 from .loss.sequence_cross_entropy import SequenceCrossEntropyLoss
 from .loss.two_hot import (
-    compute_bins, compute_symlog_bins, fill_bins, fill_symlog_bins,
-    two_hot_encode, two_hot_encode_batch, two_hot_encode_symlog_batch,
-    decode_value, decode_value_batch, decode_value_batch_linear,
-    symlog, symexp,
+    compute_bins,
+    compute_symlog_bins,
+    fill_bins,
+    fill_symlog_bins,
+    two_hot_encode,
+    two_hot_encode_batch,
+    two_hot_encode_symlog_batch,
+    decode_value,
+    decode_value_batch,
+    decode_value_batch_linear,
+    symlog,
+    symexp,
 )
 from .training.trainer import Trainer

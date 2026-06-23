@@ -19,10 +19,18 @@ port detached `tgt` — a deviation removed 2026-06-10 (reference audit).
 The collapse probes read the `emb` node output via `node_output["emb"]`.
 """
 
-from ...nn.storage.core.module import Module
-from ...nn.storage import (
-    ComputeGraph, InputSlot, Node, Tokenwise,
-    Slice, BiasAdd, Scale, Add, MSEPerSample, SIGReg,
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn import (
+    ComputeGraph,
+    InputSlot,
+    Node,
+    Tokenwise,
+    Slice,
+    BiasAdd,
+    Scale,
+    Add,
+    MSEPerSample,
+    SIGReg,
 )
 from .encoder import LeWMEncoder, ActionEmbedder, ARPredictor, PredProj
 
@@ -56,8 +64,16 @@ comptime LeWMLossGraph[
     # elsewhere). A trailing type param with a dims-derived default keeps
     # every existing caller (which omits it) bit-identical.
     ENC: Module = LeWMEncoder[
-        IN_CH, IMG, PATCH, (IMG // PATCH) * (IMG // PATCH),
-        HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H, ENC_FF_MULT,
+        IN_CH,
+        IMG,
+        PATCH,
+        (IMG // PATCH) * (IMG // PATCH),
+        HIDDEN,
+        ENC_HEADS,
+        ENC_LAYERS,
+        EMB,
+        ENC_PROJ_H,
+        ENC_FF_MULT,
     ],
 ] = ComputeGraph[
     InputSlot["pixels", T * IN_CH * IMG * IMG],
@@ -71,7 +87,8 @@ comptime LeWMLossGraph[
     Node[
         "pred_raw",
         ARPredictor[EMB, PRED_HEADS, H, PRED_FF, DEPTH, PRED_DIM_HEAD],
-        "x_pe", "ctx_a",
+        "x_pe",
+        "ctx_a",
     ],
     Node["pred", PredProj[H, EMB, PRED_PROJ_H], "pred_raw"],
     Node["pl", MSEPerSample[H * EMB], "pred", "tgt"],

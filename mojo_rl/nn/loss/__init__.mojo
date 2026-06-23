@@ -1,1 +1,1 @@
-"""nn.storage.loss — see storage/__init__.mojo."""
+"""Loss — see loss/__init__.mojo."""
