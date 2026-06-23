@@ -39,7 +39,6 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
 from mojo_rl.nn.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
@@ -89,25 +88,15 @@ comptime ActorNet = StochasticActor[
     Linear[HIDDEN, HIDDEN],
     ReLU[HIDDEN],
 ]
-# Critic: keep in lockstep with mbpo_half_cheetah_nn_gpu.mojo (plain MLP =
-# reference parity; swap CriticNet to CriticNetLN there + here together to A/B).
-comptime CriticNetLN = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    LayerNorm[HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    LayerNorm[HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, 1],
-]
-comptime CriticNetPlain = Sequential[
+# Plain MLP critic — in lockstep with mbpo_half_cheetah_nn_gpu.mojo (reference
+# MBPO parity; the old LayerNorm critic suppressed value growth).
+comptime CriticNet = Sequential[
     Linear[OBS_DIM + ACT_DIM, HIDDEN],
     ReLU[HIDDEN],
     Linear[HIDDEN, HIDDEN],
     ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
-comptime CriticNet = CriticNetPlain  # ← A/B knob: swap to CriticNetLN
 # Dynamics output = 2 * (1 + OBS_DIM) = [r_mean, Δobs_mean[OBS], r_logvar, Δobs_logvar[OBS]].
 comptime DynNet = Sequential[
     Linear[OBS_DIM + ACT_DIM, DYN_HIDDEN],

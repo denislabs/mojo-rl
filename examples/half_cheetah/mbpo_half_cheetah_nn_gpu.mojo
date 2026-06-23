@@ -11,7 +11,9 @@ smooth convergence — and which measurably HURT on CPU (the CPU example keeps
 a conservative regime; see its comments).
 
 Carries the same convergence fixes as the CPU path:
-  * Critic LayerNorm (REDQ/SR-SAC stability) — bounds Q under high UTD.
+  * Plain MLP critic (reference MBPO / rlkit SAC). An earlier LayerNorm critic
+    suppressed value growth (Q stuck ~26, return plateaued ~250); dropping it
+    let the return climb to ~3600 @ 80k with no divergence.
   * Dynamics input normalization (per-DYN_IN z-score, refit each model-train
     round) — essential for HalfCheetah's unbounded obs.
   * Elite ranking + holdout early-stop scored on plain MSE of the MEAN head
@@ -48,7 +50,6 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.activations import ReLU
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
 from mojo_rl.nn.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
@@ -133,32 +134,17 @@ comptime ActorNet = StochasticActor[
     Linear[HIDDEN, HIDDEN],
     ReLU[HIDDEN],
 ]
-# ─── Critic: LayerNorm A/B ────────────────────────────────────────────────
-# Reference MBPO (rlkit SAC) uses a PLAIN MLP critic — no normalization. The
-# LayerNorm variant below was added here as a Q-EXPLOSION guard. But the
-# current failure mode is the OPPOSITE: Q saturates LOW (~26, consistent with
-# a slow ~0.25/step gait) and the return plateaus — i.e. value isn't growing,
-# not diverging. So the guard is both non-faithful AND a suspect for
-# suppressing value propagation. A/B: point `CriticNet` at `CriticNetLN`
-# (last line) to restore the old (LN) critic. A comptime ternary can't be used
-# here — the two branches are distinct `Sequential` types.
-comptime CriticNetLN = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    LayerNorm[HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    LayerNorm[HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, 1],
-]
-comptime CriticNetPlain = Sequential[
+# Plain MLP critic — matches reference MBPO (rlkit SAC). An earlier LayerNorm
+# critic (Q-explosion guard) suppressed value growth: Q saturated low (~26)
+# and the return plateaued at ~250. Dropping it let the return climb cleanly
+# (~3600 @ 80k env-steps) with no sign of divergence.
+comptime CriticNet = Sequential[
     Linear[OBS_DIM + ACT_DIM, HIDDEN],
     ReLU[HIDDEN],
     Linear[HIDDEN, HIDDEN],
     ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
-comptime CriticNet = CriticNetPlain  # ← A/B knob: swap to CriticNetLN
 # Dynamics output = 2 * (1 + OBS_DIM) = 2 * 18 = 36
 # Layout: [r_mean, r_logvar, Δobs_mean[OBS_DIM], Δobs_logvar[OBS_DIM]]
 comptime DynNet = Sequential[
@@ -248,8 +234,7 @@ def main() raises:
             window_size=100,
             initial_episode_fill=0.0,
             # Legacy GPU cadences — affordable on-device; the large fresh
-            # synthetic buffer is what keeps the high-UTD critic stable
-            # (together with the LayerNorm critic above).
+            # synthetic buffer is what keeps the high-UTD critic stable.
             model_train_freq=250,
             dyn_epochs_per_round=4,
             rollout_length=1,
