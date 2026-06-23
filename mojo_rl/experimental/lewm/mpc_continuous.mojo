@@ -116,7 +116,9 @@ def lewm_mpc_eval_continuous[
         horizon=NEEDED, num_samples=num_random, init_std=init_std
     )
     var rs_best = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
-    var random_min = shooter.optimize(scorer, rs_best, verbose=False)
+    var random_min = shooter.optimize(
+        scorer, rs_best.as_unsafe_any_origin(), verbose=False
+    )
     var random_mean = _meanf(shooter.sample_scores)
     rs_best.free()
 
@@ -128,7 +130,9 @@ def lewm_mpc_eval_continuous[
             cem_topk=cem_topk, init_std=init_std,
         )
         var cem_best = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
-        cem_score = cem.optimize(scorer, cem_best, verbose=False)
+        cem_score = cem.optimize(
+            scorer, cem_best.as_unsafe_any_origin(), verbose=False
+        )
         cem_best.free()
 
     if verbose:

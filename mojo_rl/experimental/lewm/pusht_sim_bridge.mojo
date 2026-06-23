@@ -34,7 +34,9 @@ def sim_frame_chw_norm[
     `dst_chw` — the LeWM encoder's per-frame input layout."""
     comptime HW = OUT * OUT
     var tmp = alloc[Scalar[DT]](HW * 3)   # HWC [0,255]
-    var pix = LayoutTensor[DT, Layout.row_major(OUT, OUT, 3), MutAnyOrigin](tmp)
+    var pix = LayoutTensor[DT, Layout.row_major(OUT, OUT, 3), MutAnyOrigin](
+        tmp.as_unsafe_any_origin()
+    )
     render_pusht_rgb_at[OUT](
         block_cx, block_cy, block_angle, agent_cx, agent_cy, pix
     )

@@ -241,10 +241,10 @@ def generate_world_cpu(
     var tree = InlineArray[Float32, MAP_SIZE](fill=Float32(0.0))
     return generate_world_inline(
         rng_seed,
-        water.unsafe_ptr().bitcast[Float32](),
-        mountain.unsafe_ptr().bitcast[Float32](),
-        path.unsafe_ptr().bitcast[Float32](),
-        tree.unsafe_ptr().bitcast[Float32](),
+        water.unsafe_ptr().bitcast[Float32]().as_unsafe_any_origin(),
+        mountain.unsafe_ptr().bitcast[Float32]().as_unsafe_any_origin(),
+        path.unsafe_ptr().bitcast[Float32]().as_unsafe_any_origin(),
+        tree.unsafe_ptr().bitcast[Float32]().as_unsafe_any_origin(),
         map_out,
         always_diamond,
     )

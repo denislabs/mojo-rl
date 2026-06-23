@@ -309,7 +309,7 @@ struct PushTV2[DTYPE: DType](
             dtype,
             Layout.row_major(PushTShapeBuf.NUM_SHAPES, SHAPE_MAX_SIZE),
             MutAnyOrigin,
-        ](self.shapes_data.unsafe_ptr().bitcast[Scalar[dtype]]())
+        ](self.shapes_data.unsafe_ptr().bitcast[Scalar[dtype]]().as_unsafe_any_origin())
 
     @always_inline
     def _contacts_view(
@@ -903,7 +903,7 @@ struct PushTV2[DTYPE: DType](
             dtype,
             Layout.row_major(1, PushTLayout.MAX_CONTACTS, CONTACT_DATA_SIZE),
             MutAnyOrigin,
-        ](contacts_local.unsafe_ptr())
+        ](contacts_local.unsafe_ptr().as_unsafe_any_origin())
         # Local 1-element state view aliased at this env's slot is NOT trivial
         # — the substep helper expects BATCH (here BATCH_SIZE) and indexes
         # with `env`, which is fine. So we can just pass the full state tensor

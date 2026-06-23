@@ -267,7 +267,9 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         # Generate world directly into the map section of state.
         # `generate_world_cpu` writes block IDs as Float32; cast to dtype.
         var map_ptr = self.state.unsafe_ptr().bitcast[Float32]() + S_MAP_BASE
-        var spawn = generate_world_cpu(seed, map_ptr, always_diamond)
+        var spawn = generate_world_cpu(
+            seed, map_ptr.as_unsafe_any_origin(), always_diamond
+        )
         var py = spawn[0]
         var px = spawn[1]
 
@@ -305,7 +307,9 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
         self._rng_counter += 1
         var rng = PhiloxRandom(seed=self._rng_counter, offset=0)
         var state_ptr = self.state.unsafe_ptr().bitcast[Float32]()
-        var result = apply_step_inline(state_ptr, action, rng)
+        var result = apply_step_inline(
+            state_ptr.as_unsafe_any_origin(), action, rng
+        )
         self.done = result[1]
         return (Scalar[Self.dtype](result[0]), self.done)
 

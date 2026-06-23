@@ -700,10 +700,10 @@ def generate_full_world(
     var spawn = generate_full_world_inline(
         seed,
         state_ptr,
-        water,
-        mountain,
-        path,
-        tree,
+        water.as_unsafe_any_origin(),
+        mountain.as_unsafe_any_origin(),
+        path.as_unsafe_any_origin(),
+        tree.as_unsafe_any_origin(),
     )
     water.free()
     mountain.free()

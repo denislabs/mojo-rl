@@ -97,7 +97,9 @@ struct LeWMTFScorer[
         self.trainer = trainer
         self.pix = pix
         self.ctx = ctx
-        self.act_host = alloc[Scalar[DT]](Self.BATCH * Self.ACTIN)
+        self.act_host = alloc[Scalar[DT]](
+            Self.BATCH * Self.ACTIN
+        ).as_unsafe_any_origin()
         self.pred_host = List[Scalar[DT]](
             length=Self.NPRED, fill=Scalar[DT](0)
         )
@@ -330,7 +332,9 @@ def lewm_action_awareness_eval[
             pix_dev.value().unsafe_ptr()
         )
 
-    var scorer = Scorer(UnsafePointer(to=trainer), pix_target, ctx=ctx)
+    var scorer = Scorer(
+        UnsafePointer(to=trainer).as_unsafe_any_origin(), pix_target, ctx=ctx
+    )
     scorer.prime()
 
     # ── Expert leg: the real recorded actions (first H steps).
@@ -349,7 +353,9 @@ def lewm_action_awareness_eval[
         horizon=H, num_samples=num_random
     )
     var rs_best = alloc[Scalar[DT]](BATCH * H * ACT)
-    var random_min = shooter.optimize(scorer, rs_best, verbose=False)
+    var random_min = shooter.optimize(
+        scorer, rs_best.as_unsafe_any_origin(), verbose=False
+    )
     var random_mean = _mean(shooter.sample_scores)
     rs_best.free()
 
@@ -364,7 +370,9 @@ def lewm_action_awareness_eval[
             cem_smoothing=cem_smoothing,
         )
         var cem_best = alloc[Scalar[DT]](BATCH * H * ACT)
-        cem_score = cem.optimize(scorer, cem_best, verbose=False)
+        cem_score = cem.optimize(
+            scorer, cem_best.as_unsafe_any_origin(), verbose=False
+        )
         cem_best.free()
 
     if verbose:

@@ -52,7 +52,7 @@ def _tp[
     d: Optional[DeviceBuffer[DT]],
 ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     comptime if target == "cpu":
-        return h
+        return h.as_unsafe_any_origin()
     else:
         return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
             d.value().unsafe_ptr()
@@ -308,7 +308,9 @@ def lewm_mpc_eval[
         horizon=NEEDED, num_samples=num_random
     )
     var rs_best = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
-    var random_min = shooter.optimize(scorer, rs_best, verbose=False)
+    var random_min = shooter.optimize(
+        scorer, rs_best.as_unsafe_any_origin(), verbose=False
+    )
     var random_mean = _mean(shooter.sample_scores)
     rs_best.free()
 
@@ -320,7 +322,9 @@ def lewm_mpc_eval[
             cem_topk=cem_topk, cem_smoothing=cem_smoothing,
         )
         var cem_best = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
-        cem_score = cem.optimize(scorer, cem_best, verbose=False)
+        cem_score = cem.optimize(
+            scorer, cem_best.as_unsafe_any_origin(), verbose=False
+        )
         cem_best.free()
 
     if verbose:

@@ -263,8 +263,10 @@ struct PongPixelEnv[
 
     def __init__(out self):
         self.inner = PongEnv[Self.DTYPE, Self.HIT_REWARD]()
-        self._frame_buf = alloc[UInt8](SCREEN_W * SCREEN_H)
-        self._frame_stack = alloc[Scalar[Self.DTYPE]](PIXEL_OBS_DIM)
+        self._frame_buf = alloc[UInt8](SCREEN_W * SCREEN_H).as_unsafe_any_origin()
+        self._frame_stack = alloc[Scalar[Self.DTYPE]](
+            PIXEL_OBS_DIM
+        ).as_unsafe_any_origin()
         self._frame_idx = 0
         # Zero frame stack
         for i in range(PIXEL_OBS_DIM):

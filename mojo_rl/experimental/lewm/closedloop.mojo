@@ -292,7 +292,7 @@ def run_lewm_closedloop[
                 goal_lat[b * EMB + d] = emb_host[b * TE + d]
         scorer.set_start_goal(start_lat, goal_lat)
 
-        _ = cem.optimize(scorer, plan, verbose=False)
+        _ = cem.optimize(scorer, plan.as_unsafe_any_origin(), verbose=False)
 
         # Execute the first FUTURE planned block. The scorer's context is
         # the start latent replicated H times, so plan blocks 0..H-2 pair
@@ -351,7 +351,7 @@ def run_lewm_closedloop[
             var ap0 = envs[0].agent_pos()
             var vt = LayoutTensor[
                 DT, Layout.row_major(VIZ, VIZ, IMG_C), MutAnyOrigin
-            ](viz_tmp)
+            ](viz_tmp.as_unsafe_any_origin())
             render_pusht_rgb_at[VIZ](bp0[0], bp0[1], bp0[2], ap0[0], ap0[1], vt)
             for c in range(IN_CH):
                 for y in range(VIZ):

@@ -273,7 +273,7 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
 
         # Generate 9-floor world directly into state.
         var state_ptr = self.state.unsafe_ptr().bitcast[Float32]()
-        var pos = generate_full_world(seed, state_ptr)
+        var pos = generate_full_world(seed, state_ptr.as_unsafe_any_origin())
         var py = pos[0]
         var px = pos[1]
 
@@ -345,7 +345,9 @@ struct CraftaxFullEnv[DTYPE: DType = DType.float32](
         self._rng_counter += 1
         var rng = PhiloxRandom(seed=self._rng_counter, offset=0)
         var state_ptr = self.state.unsafe_ptr().bitcast[Float32]()
-        var result = apply_step_inline(state_ptr, action, rng)
+        var result = apply_step_inline(
+            state_ptr.as_unsafe_any_origin(), action, rng
+        )
         self.done = result[1]
         return (Scalar[Self.dtype](result[0]), self.done)
 

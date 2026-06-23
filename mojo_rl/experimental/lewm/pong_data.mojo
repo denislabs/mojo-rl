@@ -70,9 +70,11 @@ struct WindowSource[
                 " params with C*FRAME*FRAME == IMG_DIM (e.g. C=3, FRAME=224)."
             )
         self.buf = buf^
-        self.pix_u8_host = alloc[Scalar[DType.uint8]](Self.NPIX)
-        self.act_host = alloc[Scalar[DT]](Self.NACT)
-        self.pix_fp32_host = alloc[Scalar[DT]](Self.NPIX)
+        self.pix_u8_host = alloc[Scalar[DType.uint8]](
+            Self.NPIX
+        ).as_unsafe_any_origin()
+        self.act_host = alloc[Scalar[DT]](Self.NACT).as_unsafe_any_origin()
+        self.pix_fp32_host = alloc[Scalar[DT]](Self.NPIX).as_unsafe_any_origin()
         self.pix_u8_dev = None
         self.pix_fp32_dev = None
         self.act_dev = None

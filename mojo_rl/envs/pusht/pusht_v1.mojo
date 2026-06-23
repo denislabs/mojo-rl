@@ -234,7 +234,7 @@ struct PushTEnv[DTYPE: DType](
             dtype,
             Layout.row_major(PushTShapeBuf.NUM_SHAPES, SHAPE_MAX_SIZE),
             MutAnyOrigin,
-        ](self.shapes_data.unsafe_ptr().bitcast[Scalar[dtype]]())
+        ](self.shapes_data.unsafe_ptr().bitcast[Scalar[dtype]]().as_unsafe_any_origin())
 
     @always_inline
     def _contacts_view(
