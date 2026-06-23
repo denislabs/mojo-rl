@@ -29,6 +29,7 @@ from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.planners.tree_search import (
     RepresentationGPU,
     DynamicsGPU,
@@ -80,7 +81,8 @@ struct MZRepGPU[OBS: Int, LATENT: Int, NET: Module, o: Origin[mut=True]](
         ctx.enqueue_function[_copy2d_kernel[B, ID]](
             obs, sin, grid_dim=(B * ID + TPB - 1) // TPB, block_dim=TPB
         )
-        self.net[].forward["gpu", B](
+        call_forward["gpu", B](
+            self.net[],
             TensorRefs[Self.NET.ARITY](self.sc_in), self.sc_out, Optional(ctx)
         )
         var sout = self.sc_out.lt["gpu", Layout.row_major(B, OD)]()
@@ -126,7 +128,8 @@ struct MZDynGPU[
         ctx.enqueue_function[_copy2d_kernel[B, ID]](
             dyn_in, sin, grid_dim=(B * ID + TPB - 1) // TPB, block_dim=TPB
         )
-        self.net[].forward["gpu", B](
+        call_forward["gpu", B](
+            self.net[],
             TensorRefs[Self.NET.ARITY](self.sc_in), self.sc_out, Optional(ctx)
         )
         var sout = self.sc_out.lt["gpu", Layout.row_major(B, OD)]()
@@ -172,7 +175,8 @@ struct MZPredGPU[
         ctx.enqueue_function[_copy2d_kernel[B, ID]](
             hidden, sin, grid_dim=(B * ID + TPB - 1) // TPB, block_dim=TPB
         )
-        self.net[].forward["gpu", B](
+        call_forward["gpu", B](
+            self.net[],
             TensorRefs[Self.NET.ARITY](self.sc_in), self.sc_out, Optional(ctx)
         )
         var sout = self.sc_out.lt["gpu", Layout.row_major(B, OD)]()
@@ -218,7 +222,8 @@ struct MZContPredGPU[
         ctx.enqueue_function[_copy2d_kernel[B, ID]](
             hidden, sin, grid_dim=(B * ID + TPB - 1) // TPB, block_dim=TPB
         )
-        self.net[].forward["gpu", B](
+        call_forward["gpu", B](
+            self.net[],
             TensorRefs[Self.NET.ARITY](self.sc_in), self.sc_out, Optional(ctx)
         )
         var sout = self.sc_out.lt["gpu", Layout.row_major(B, OD)]()

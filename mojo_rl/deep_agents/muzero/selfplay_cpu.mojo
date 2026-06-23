@@ -23,6 +23,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -252,9 +253,9 @@ def run_muzero_selfplay_cpu[
             for i in range(B * OBS):
                 obs_t.data[i] = t_obs0[i]
             var z_t = Tensor.alloc(B * LATENT)
-            rep.forward["cpu", B](TensorRefs[REP.ARITY](obs_t), z_t, None)
+            call_forward["cpu", B](rep, TensorRefs[REP.ARITY](obs_t), z_t, None)
             var pred_t = Tensor.alloc(B * (ACT + BINS))
-            pred.forward["cpu", B](TensorRefs[PRED.ARITY](z_t), pred_t, None)
+            call_forward["cpu", B](pred, TensorRefs[PRED.ARITY](z_t), pred_t, None)
             for i in range(B * (ACT + BINS)):
                 d_pred[i] = pred_t.data[i]
             var dn = List[String]()

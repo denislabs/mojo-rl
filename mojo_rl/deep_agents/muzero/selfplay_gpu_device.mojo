@@ -40,6 +40,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -99,10 +100,10 @@ def _mz_emit_train_diag[
     ctx.enqueue_copy(obs_sc.dev.value(), t_obs0.unsafe_ptr())
     var z_sc = Tensor()
     z_sc.ensure_gpu(ctx, B * LAT)
-    rep.forward["gpu", B](TensorRefs[REP.ARITY](obs_sc), z_sc, Optional(ctx))
+    call_forward["gpu", B](rep, TensorRefs[REP.ARITY](obs_sc), z_sc, Optional(ctx))
     var pred_sc = Tensor()
     pred_sc.ensure_gpu(ctx, B * PRED_OUT)
-    pred.forward["gpu", B](TensorRefs[PRED.ARITY](z_sc), pred_sc, Optional(ctx))
+    call_forward["gpu", B](pred, TensorRefs[PRED.ARITY](z_sc), pred_sc, Optional(ctx))
     ctx.enqueue_copy(h_pred, pred_sc.dev.value())
     ctx.synchronize()
     var dn = List[String]()

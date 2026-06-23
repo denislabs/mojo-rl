@@ -22,6 +22,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.planners.tree_search import Representation, Dynamics, Prediction
 from .twohot_targets import mz_decode_value_batch
 
@@ -56,7 +57,7 @@ struct MZRepCPU[OBS: Int, LATENT: Int, NET: Module](
         for i in range(IN):
             ib.data[i] = Scalar[DT](obs[i]) if i < len(obs) else Scalar[DT](0.0)
         var ob = Tensor.alloc(OUT)
-        self.net[].forward["cpu", 1](TensorRefs[Self.NET.ARITY](ib), ob, None)
+        call_forward["cpu", 1](self.net[], TensorRefs[Self.NET.ARITY](ib), ob, None)
         for i in range(Self.LATENT):
             hidden_out[i] = Float64(ob.data[i])
 
@@ -89,7 +90,7 @@ struct MZDynCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
             ib.data[Self.LATENT + a] = Scalar[DT](0.0)
         ib.data[Self.LATENT + action] = Scalar[DT](1.0)
         var ob = Tensor.alloc(OUT)
-        self.net[].forward["cpu", 1](TensorRefs[Self.NET.ARITY](ib), ob, None)
+        call_forward["cpu", 1](self.net[], TensorRefs[Self.NET.ARITY](ib), ob, None)
         for i in range(Self.LATENT):
             hidden_out[i] = Float64(ob.data[i])
         return _mz_decode_one[Self.BINS](
@@ -120,7 +121,7 @@ struct MZPredCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
         for i in range(Self.LATENT):
             ib.data[i] = Scalar[DT](hidden[i])
         var ob = Tensor.alloc(OUT)
-        self.net[].forward["cpu", 1](TensorRefs[Self.NET.ARITY](ib), ob, None)
+        call_forward["cpu", 1](self.net[], TensorRefs[Self.NET.ARITY](ib), ob, None)
 
         # softmax over the policy slice [0, ACT)
         var max_l = Float64(ob.data[0])

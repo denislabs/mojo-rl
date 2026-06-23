@@ -17,7 +17,6 @@ from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
-    mzc4_init_zero_pred, mzc4_init_zero_dyn,
 )
 from mojo_rl.deep_agents.muzero.selfplay_arena_gumbel_2p import (
     run_muzero_selfplay_arena_gumbel_2p,
@@ -46,12 +45,12 @@ def main() raises:
     var rep = Rep.make["gpu", Kaiming](Optional(ctx))
     var dyn = Dyn.make["gpu", Kaiming](Optional(ctx))
     var pred = Pred.make["gpu", Kaiming](Optional(ctx))
-    mzc4_init_zero_pred["gpu", CH, ACT, BINS, HH, WW](pred, ctx)
-    mzc4_init_zero_dyn["gpu", CH, ACT, BINS, HH, WW](dyn, ctx)
 
-    # Verify zero-init actually matched the head param names (a wrong name is a
-    # SILENT no-op): forward pred on a zero latent — with the output Linear
-    # zeroed the value logits must be exactly 0 (else the names didn't match).
+    # Zero-init is now baked into the net definitions (`InitWith[Linear, Zero]`
+    # on each output head), so `make` already produced zeroed heads. Verify it
+    # took effect: forward pred on a zero latent — the value logits must be
+    # exactly 0 (a regression in the wrapper/naming would surface here, not
+    # silently like the old positional-path `scale_output_module`).
     var z_in = Tensor.alloc(LATENT)          # host zeros
     z_in.ensure_gpu(ctx, LATENT)
     z_in.upload(ctx)                         # H2D zero latent

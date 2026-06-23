@@ -38,6 +38,7 @@ from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.optimizer.grad_clip import clip_grad_norm
 
@@ -207,7 +208,7 @@ def mz_unroll_train_step_cpu[
     var gscale = Scalar[DT](1.0) / Scalar[DT]((K + 1) * B)
 
     # ── forward scan: rep then K dynamics steps, store every z ──
-    rep.forward["cpu", B](TensorRefs[REP.ARITY](obs0_t), z_work, None)
+    call_forward["cpu", B](rep, TensorRefs[REP.ARITY](obs0_t), z_work, None)
     for i in range(B * LATENT):
         zst.data[i] = z_work.data[i]
 
@@ -222,7 +223,7 @@ def mz_unroll_train_step_cpu[
             for a in range(ACT):
                 din.data[dib + LATENT + a] = Scalar[DT](0.0)
             din.data[dib + LATENT + Int(actions[k * B + b])] = Scalar[DT](1.0)
-        dyn.forward["cpu", B](TensorRefs[DYN.ARITY](din), dout, None)
+        call_forward["cpu", B](dyn, TensorRefs[DYN.ARITY](din), dout, None)
         # store next latent z_{k+1} = dyn_out[:, :LATENT]
         var znoff = (k + 1) * B * LATENT
         for b in range(B):
@@ -247,7 +248,7 @@ def mz_unroll_train_step_cpu[
             zk_work.data[i] = zst.data[zoff + i]
 
         # (a) prediction head: re-forward for cache, seed grads, vjp → grad z_k
-        pred.forward["cpu", B](TensorRefs[PRED.ARITY](zk_work), pout, None)
+        call_forward["cpu", B](pred, TensorRefs[PRED.ARITY](zk_work), pout, None)
         # policy slice [0, ACT)
         for i in range(B * ACT):
             pol_tgt_l[i] = policy_tgt[k * B * ACT + i]
@@ -267,7 +268,8 @@ def mz_unroll_train_step_cpu[
         ](pout.data, twv.data, gscale * value_coef, gpout.data)
         loss += l_val_k
         l_val += l_val_k
-        pred.vjp["cpu", B](
+        call_vjp["cpu", B](
+            pred,
             TensorRefs[PRED.ARITY](zk_work),
             gpout,
             TensorRefs[PRED.ARITY](gpin),
@@ -287,7 +289,7 @@ def mz_unroll_train_step_cpu[
                 din.data[dib + LATENT + Int(actions[k * B + b])] = Scalar[DT](
                     1.0
                 )
-            dyn.forward["cpu", B](TensorRefs[DYN.ARITY](din), dout, None)
+            call_forward["cpu", B](dyn, TensorRefs[DYN.ARITY](din), dout, None)
             # grad_dyn_out = [ carry(grad z_{k+1}) | reward grad ]
             for b in range(B):
                 for i in range(LATENT):
@@ -302,7 +304,8 @@ def mz_unroll_train_step_cpu[
             )
             loss += l_rew_k
             l_rew += l_rew_k
-            dyn.vjp["cpu", B](
+            call_vjp["cpu", B](
+                dyn,
                 TensorRefs[DYN.ARITY](din),
                 gdout,
                 TensorRefs[DYN.ARITY](gdin),
@@ -320,8 +323,8 @@ def mz_unroll_train_step_cpu[
             gz.data[i] = gpin.data[i]
 
     # ── rep: grad wrt z_0 (== carry after the loop) → rep params ──
-    rep.vjp["cpu", B](
-        TensorRefs[REP.ARITY](obs0_t), gz, TensorRefs[REP.ARITY](gobs), None
+    call_vjp["cpu", B](
+        rep, TensorRefs[REP.ARITY](obs0_t), gz, TensorRefs[REP.ARITY](gobs), None
     )
 
     # Global grad-norm clip per net (max_grad_norm <= 0 ⇒ no-op), then step.
@@ -696,7 +699,7 @@ def mz_unroll_train_step_gpu[
     comptime kPrioCE = _mz_priority_ce_k[B, PRED_OUT, ACT, BINS]
 
     # ── forward scan: z0 = h(obs0); z_{k+1} = g(z_k, a_k).latent ──
-    rep.forward["gpu", B](TensorRefs[REP.ARITY](d_obs0), z_work, octx)
+    call_forward["gpu", B](rep, TensorRefs[REP.ARITY](d_obs0), z_work, octx)
     ctx.enqueue_function[kBcopy](
         z_work.lt["gpu", LBL](), zst.lt_at["gpu", LBL](0),
         grid_dim=nbLAT, block_dim=TPB,
@@ -708,7 +711,7 @@ def mz_unroll_train_step_gpu[
             d_act.lt_at["gpu", LB](k * B),
             grid_dim=nbDIN, block_dim=TPB,
         )
-        dyn.forward["gpu", B](TensorRefs[DYN.ARITY](din), dout, octx)
+        call_forward["gpu", B](dyn, TensorRefs[DYN.ARITY](din), dout, octx)
         ctx.enqueue_function[kCopyL](
             zst.lt_at["gpu", LBL]((k + 1) * B * LATENT),
             dout.lt["gpu", LBDO](),
@@ -730,7 +733,7 @@ def mz_unroll_train_step_gpu[
         )
 
         # (a) prediction head: re-forward (cache), seed grads, vjp → grad z_k
-        pred.forward["gpu", B](TensorRefs[PRED.ARITY](zk_work), pout, octx)
+        call_forward["gpu", B](pred, TensorRefs[PRED.ARITY](zk_work), pout, octx)
         # policy slice [0, ACT)
         ctx.enqueue_function[kPolCE](
             pout.lt["gpu", LBPO](),
@@ -766,7 +769,8 @@ def mz_unroll_train_step_gpu[
                 gpout.lt["gpu", LBPO](), d_isw.lt["gpu", LB](),
                 grid_dim=nbB, block_dim=TPB,
             )
-        pred.vjp["gpu", B](
+        call_vjp["gpu", B](
+            pred,
             TensorRefs[PRED.ARITY](zk_work),
             gpout,
             TensorRefs[PRED.ARITY](gpin),
@@ -781,7 +785,7 @@ def mz_unroll_train_step_gpu[
                 d_act.lt_at["gpu", LB](k * B),
                 grid_dim=nbDIN, block_dim=TPB,
             )
-            dyn.forward["gpu", B](TensorRefs[DYN.ARITY](din), dout, octx)
+            call_forward["gpu", B](dyn, TensorRefs[DYN.ARITY](din), dout, octx)
             # grad_dyn_out = [ carry(grad z_{k+1}) | reward grad ]
             ctx.enqueue_function[kCarry](
                 gdout.lt["gpu", LBDO](),
@@ -808,7 +812,8 @@ def mz_unroll_train_step_gpu[
                     gdout.lt["gpu", LBDO](), d_isw.lt["gpu", LB](),
                     grid_dim=nbB, block_dim=TPB,
                 )
-            dyn.vjp["gpu", B](
+            call_vjp["gpu", B](
+                dyn,
                 TensorRefs[DYN.ARITY](din),
                 gdout,
                 TensorRefs[DYN.ARITY](gdin),
@@ -829,8 +834,8 @@ def mz_unroll_train_step_gpu[
         )
 
     # ── rep: grad wrt z_0 (== carry after the loop) → rep params ──
-    rep.vjp["gpu", B](
-        TensorRefs[REP.ARITY](d_obs0), gz, TensorRefs[REP.ARITY](gobs), octx
+    call_vjp["gpu", B](
+        rep, TensorRefs[REP.ARITY](d_obs0), gz, TensorRefs[REP.ARITY](gobs), octx
     )
 
     # Global grad-norm clip per net (max_grad_norm <= 0 ⇒ no-op), then step.

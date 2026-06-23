@@ -73,6 +73,34 @@ struct Kaiming(Initializer):
         _zero_bias[target](b, n, ctx)
 
 
+struct ScaledKaiming[NUM: Int, DEN: Int](Initializer):
+    """He-uniform with the bound scaled by `NUM/DEN` (a rational so it is a
+    comptime param). `ScaledKaiming[0, 1]` == `Zero`; `ScaledKaiming[1, 10]`
+    keeps a tenth of the Kaiming magnitude — the "near-neutral but keep a little
+    asymmetry" output-head init (e.g. positive-reward tasks), without the brittle
+    scale-after-make surgery: wrap the leaf with `InitWith[Linear[...],
+    ScaledKaiming[1, 10]]`."""
+
+    @staticmethod
+    def init_weight[target: StaticString](
+        mut w: Tensor, n: Int, fan_in: Int, fan_out: Int,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        var bound = fsqrt(6.0 / Float64(fan_in)) * (
+            Float64(Self.NUM) / Float64(Self.DEN)
+        )
+        for i in range(n):
+            w.data[i] = Scalar[DT]((random_float64() * 2.0 - 1.0) * bound)
+        comptime if target == "gpu":
+            w.upload(ctx.value())
+
+    @staticmethod
+    def init_bias[target: StaticString](
+        mut b: Tensor, n: Int, ctx: Optional[DeviceContext]
+    ) raises:
+        _zero_bias[target](b, n, ctx)
+
+
 struct Xavier(Initializer):
     @staticmethod
     def init_weight[target: StaticString](

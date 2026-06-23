@@ -32,9 +32,9 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.initializer import Initializer, Zero
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -43,6 +43,7 @@ from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.combinators.parallel import Parallel
 from mojo_rl.nn.combinators.residual import Residual
 from mojo_rl.nn.combinators.repeat import Repeat
+from mojo_rl.nn.combinators.init_with import InitWith
 from mojo_rl.nn.combinators.compute_graph import ComputeGraph
 from mojo_rl.nn.combinators.graph_decl import InputSlot, Node
 from mojo_rl.nn.primitives.conv2d import Conv2D
@@ -54,9 +55,6 @@ from mojo_rl.nn.primitives.slice import Slice
 from mojo_rl.nn.primitives.concat import Concat
 from mojo_rl.nn.primitives.add import Add
 from mojo_rl.nn.primitives.broadcast_tokens import BroadcastTokens
-from mojo_rl.deep_agents.dreamerv3.zero_init import (
-    scale_output_module, scale_output_graph,
-)
 
 
 # ── BN-free identity-skip residual conv block (3×3, pad 1 → H×W preserved) ──
@@ -149,7 +147,9 @@ comptime MZDynC4SpatialGraph[
             ReLU[REDC * H * W],
             Linear[REDC * H * W, 32],
             ReLU[32],
-            Linear[32, BINS],
+            # OUTPUT head zero-init (neutral reward) declared structurally —
+            # replaces the post-hoc `scale_output_graph("rew.4.…")`.
+            InitWith[Linear[32, BINS], Zero],
         ],
         "zp",
     ],
@@ -300,71 +300,27 @@ comptime MZPredNetC4Spatial[
             ReLU[REDC * H * W],
             Linear[REDC * H * W, FC],
             ReLU[FC],
-            Linear[FC, ACT],
+            # OUTPUT head zero-init (uniform policy prior) declared structurally
+            # — replaces the fragile post-hoc `scale_output_module("1.0.4.…")`.
+            InitWith[Linear[FC, ACT], Zero],
         ],
         Sequential[
             Conv2D[C, REDC, 1, 1, 0, H, W],
             ReLU[REDC * H * W],
             Linear[REDC * H * W, FC],
             ReLU[FC],
-            Linear[FC, BINS],
+            # OUTPUT head zero-init (neutral value) declared structurally.
+            InitWith[Linear[FC, BINS], Zero],
         ],
     ],
 ]
 
 
-# ──────────────────────────────────────────────────────────────────────
-# init_zero (EZv2 `init_zero=True`) — scale each head's OUTPUT Linear at init.
-#
-# Zeros the last Linear of the policy + value heads (prediction) and the reward
-# head (dynamics), so the model starts with a uniform policy prior and neutral
-# value/reward predictions (stable MCTS targets before the heads have learned,
-# and more early self-play exploration from the uniform prior). `scale=0.0` is
-# exact zero-init; a small scale keeps some Kaiming asymmetry.
-#
-# Param names follow the STORAGE combinator naming (Sequential→`.{i}`, Parallel→
-# `.{i}` by branch INDEX [NOT `.a`/`.b` as in legacy nn], Repeat→`.{i}`,
-# ComputeGraph node→`.{node}`, Linear leaf→`.weight`/`.bias`). These torsos are
-# BN-FREE, so each head's output Linear is one index earlier than EZv2's BN heads:
-#   • MZPredNetC4Spatial = Sequential[C4ResTower(0), Parallel(1)[0, 1]] — the
-#     shared torso is ONE tower child, so the Parallel sits at index 1 (NB
-#     does not move it). Each head is Sequential[Conv(0), ReLU(1), Linear(2),
-#     ReLU(3), Linear(4)], so the output Linears are `1.0.4.*` (policy) /
-#     `1.1.4.*` (value).
-#   • MZDynC4SpatialGraph reward branch is node `rew` (a 5-child Sequential); its
-#     output Linear is child 4 → `rew.4.*` (independent of NB / the zpre tower).
-# Only the OUTPUT layer is scaled — scaling the whole head chokes the hidden
-# layers' gradient (see zero_init.mojo).
-# ──────────────────────────────────────────────────────────────────────
-def mzc4_init_zero_pred[
-    target: StaticString,
-    C: Int, ACT: Int, BINS: Int, H: Int, W: Int,
-    NB: Int = 1, REDC: Int = 16, FC: Int = 64,
-](
-    mut pred: MZPredNetC4Spatial[C, ACT, BINS, H, W, NB, REDC, FC],
-    ctx: Optional[DeviceContext] = None,
-    scale: Scalar[DT] = Scalar[DT](0.0),
-) raises:
-    """Zero (or `scale`) the policy + value head output Linears → uniform policy
-    + neutral value at init."""
-    scale_output_module[
-        target, MZPredNetC4Spatial[C, ACT, BINS, H, W, NB, REDC, FC]
-    ](pred, "1.0.4.weight", "1.0.4.bias", scale, ctx)
-    scale_output_module[
-        target, MZPredNetC4Spatial[C, ACT, BINS, H, W, NB, REDC, FC]
-    ](pred, "1.1.4.weight", "1.1.4.bias", scale, ctx)
-
-
-def mzc4_init_zero_dyn[
-    target: StaticString,
-    C: Int, ACT: Int, BINS: Int, H: Int, W: Int, NB: Int = 1, REDC: Int = 16,
-](
-    mut dyn: MZDynNetC4Spatial[C, ACT, BINS, H, W, NB, REDC],
-    ctx: Optional[DeviceContext] = None,
-    scale: Scalar[DT] = Scalar[DT](0.0),
-) raises:
-    """Zero (or `scale`) the reward head output Linear → neutral reward at init.
-    """
-    scale_output_graph[target](
-        dyn.graph, "rew.4.weight", "rew.4.bias", scale, ctx
-    )
+# init_zero (EZv2 `init_zero=True`) is now declared STRUCTURALLY: the policy /
+# value / reward OUTPUT Linears are each wrapped in `InitWith[Linear[...], Zero]`
+# above, so `MZPredNetC4Spatial.make` / `MZDynNetC4Spatial.make` build the model
+# already zero-inited (uniform policy prior + neutral value/reward) — no separate
+# post-make `mzc4_init_zero_*` pass, and no fragile positional param paths (the
+# `"1.0.4.weight"` strings) that silently no-op'd when the net was refactored.
+# For a near-neutral-but-not-zero head (the old `scale=0.1`), swap the wrapper's
+# initializer: `InitWith[Linear[FC, ACT], ScaledKaiming[1, 10]]`.

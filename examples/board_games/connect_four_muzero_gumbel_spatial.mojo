@@ -33,7 +33,6 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
-    mzc4_init_zero_pred, mzc4_init_zero_dyn,
 )
 from mojo_rl.deep_agents.muzero.selfplay_arena_gumbel_2p import (
     run_muzero_selfplay_arena_gumbel_2p,
@@ -109,11 +108,10 @@ def main() raises:
     var rep = Rep.make["gpu", INIT=Kaiming](ctx=ctx)
     var dyn = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
     var pred = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
-    # init_zero (EZv2): zero the policy/value/reward head output Linears so the
-    # model starts with a uniform policy prior + neutral value/reward — stable
-    # MCTS targets early and more early exploration (composes with temp_min).
-    mzc4_init_zero_pred["gpu", CH, ACT, BINS, HH, WW, NB](pred, ctx)
-    mzc4_init_zero_dyn["gpu", CH, ACT, BINS, HH, WW, NB](dyn, ctx)
+    # init_zero (EZv2) is baked into the net definitions: the policy/value/reward
+    # head output Linears are `InitWith[Linear[...], Zero]`, so `make` already
+    # produced a uniform policy prior + neutral value/reward (stable MCTS targets
+    # early + more early exploration). No post-make zeroing pass needed.
 
     var res = run_muzero_selfplay_arena_gumbel_2p[
         Env, Rep, Dyn, Pred, Aug,
