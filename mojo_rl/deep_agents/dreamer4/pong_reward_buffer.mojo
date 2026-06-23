@@ -34,8 +34,6 @@ where any of dones[start : start + T - 1] is set (episode boundary mid-window).
 The final frame may be done (a valid prediction / termination target).
 """
 
-from std.memory import alloc
-
 from mojo_rl.envs.arcade_games.pong.offline_buffer import (
     PONG_OBS_C,
     PONG_OBS_H,
@@ -105,45 +103,32 @@ struct Dreamer4PongRewardBuffer(Movable):
 
     var capacity: Int
     var n_frames: Int
-    var frames: UnsafePointer[UInt8, MutAnyOrigin]
-    var actions: UnsafePointer[UInt8, MutAnyOrigin]
-    var dones: UnsafePointer[UInt8, MutAnyOrigin]
-    var rewards: UnsafePointer[Scalar[DType.float32], MutAnyOrigin]
+    # Owned host buffers (RAII Lists — no manual alloc/free, no MutAnyOrigin).
+    var frames: List[UInt8]
+    var actions: List[UInt8]
+    var dones: List[UInt8]
+    var rewards: List[Scalar[DType.float32]]
     var rng: UInt64
 
     def __init__(out self, capacity: Int, seed: UInt64 = 0x9E3779B97F4A7C15):
         self.capacity = capacity
         self.n_frames = 0
-        self.frames = alloc[UInt8](capacity * PONG_FRAME_BYTES)
-        self.actions = alloc[UInt8](capacity)
-        self.dones = alloc[UInt8](capacity)
-        self.rewards = alloc[Scalar[DType.float32]](capacity)
+        self.frames = List[UInt8](length=capacity * PONG_FRAME_BYTES, fill=0)
+        self.actions = List[UInt8](length=capacity, fill=0)
+        self.dones = List[UInt8](length=capacity, fill=0)
+        self.rewards = List[Scalar[DType.float32]](
+            length=capacity, fill=Scalar[DType.float32](0.0)
+        )
         self.rng = seed | 1
-        for i in range(capacity * PONG_FRAME_BYTES):
-            self.frames[i] = 0
-        for i in range(capacity):
-            self.actions[i] = 0
-            self.dones[i] = 0
-            self.rewards[i] = Scalar[DType.float32](0.0)
 
     def __init__(out self, *, deinit take: Self):
         self.capacity = take.capacity
         self.n_frames = take.n_frames
-        self.frames = take.frames
-        self.actions = take.actions
-        self.dones = take.dones
-        self.rewards = take.rewards
+        self.frames = take.frames^
+        self.actions = take.actions^
+        self.dones = take.dones^
+        self.rewards = take.rewards^
         self.rng = take.rng
-
-    def __del__(deinit self):
-        if Int(self.frames) != 0:
-            self.frames.free()
-        if Int(self.actions) != 0:
-            self.actions.free()
-        if Int(self.dones) != 0:
-            self.dones.free()
-        if Int(self.rewards) != 0:
-            self.rewards.free()
 
     @always_inline
     def _u64(mut self) -> UInt64:
@@ -291,7 +276,7 @@ struct Dreamer4PongRewardBuffer(Movable):
         for i in range(self.n_frames):
             data.append(self.dones[i])
         # rewards: raw native fp32 bytes
-        var rb = self.rewards.bitcast[UInt8]()
+        var rb = self.rewards.unsafe_ptr().bitcast[UInt8]()
         for i in range(4 * self.n_frames):
             data.append(rb[i])
 
@@ -350,7 +335,7 @@ struct Dreamer4PongRewardBuffer(Movable):
         for i in range(n_frames):
             buf.dones[i] = data[off + i]
         off += n_frames
-        var rb = buf.rewards.bitcast[UInt8]()
+        var rb = buf.rewards.unsafe_ptr().bitcast[UInt8]()
         for i in range(4 * n_frames):
             rb[i] = data[off + i]
         buf.n_frames = n_frames

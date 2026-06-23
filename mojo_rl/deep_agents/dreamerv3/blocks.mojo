@@ -1278,9 +1278,9 @@ struct ACStep[
         for i in range(Self.B * TM1):
             d_rep[i] = inv_rep
         repl_loss_backward[Self.B, Self.T, BINSl](
-            _hp(st.mb_dne), term_bt.unsafe_ptr(), _hp(st.mb_rew),
-            boot_bt.unsafe_ptr(), _hp(self.vlr), _hp(self.svlr), bins,
-            self.horizon, self.lam, self.slowreg, d_rep.unsafe_ptr(),
+            _hp(st.mb_dne), term_bt, _hp(st.mb_rew),
+            boot_bt, _hp(self.vlr), _hp(self.svlr), bins,
+            self.horizon, self.lam, self.slowreg, d_rep,
             _hp(self.g_vlr),
         )
         value.vjp[target, BT](
@@ -1527,9 +1527,9 @@ struct ACStep[
         for i in range(Self.B * TM1):
             d_rep[i] = inv_rep
         repl_loss_backward[Self.B, Self.T, BINSl](
-            _hp(st.mb_dne), term_bt.unsafe_ptr(), _hp(st.mb_rew),
-            boot_bt.unsafe_ptr(), _hp(self.vlr), _hp(self.svlr), bins,
-            self.horizon, self.lam, self.slowreg, d_rep.unsafe_ptr(),
+            _hp(st.mb_dne), term_bt, _hp(st.mb_rew),
+            boot_bt, _hp(self.vlr), _hp(self.svlr), bins,
+            self.horizon, self.lam, self.slowreg, d_rep,
             _hp(self.g_vlr),
         )
         self.g_vlr.upload(ctx)

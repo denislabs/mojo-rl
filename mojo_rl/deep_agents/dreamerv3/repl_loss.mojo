@@ -81,16 +81,16 @@ def repl_loss_backward[
     BK: Int, T: Int, BINS: Int
 ](
     last: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
-    term: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
+    term: List[Scalar[DT]],  # [BK,T]
     rew: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
-    boot: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T]
+    boot: List[Scalar[DT]],  # [BK,T]
     vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
     svlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
     bins: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BINS]
     horizon: Scalar[DT],
     lam: Scalar[DT],
     slowreg: Scalar[DT],
-    d_repval: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T-1] cotangent
+    d_repval: List[Scalar[DT]],  # [BK,T-1] cotangent
     grad_vlogits: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BK,T,BINS]
 ) raises:
     """Backward of `repl_loss_cpu` w.r.t. the value logits (targets sg'd).
