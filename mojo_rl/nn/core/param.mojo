@@ -125,3 +125,31 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam):
                 self.grd.data[k] = Scalar[DT](0)
         else:
             self.grd.dev.value().enqueue_fill(Scalar[DT](0))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# ParamVersionBump — a no-op ParamVisitor that bumps each param VALUE's
+# `version` (host-side, no kernel). The optimizer runs it once per `step`
+# (through the existing `for_each_param` walk, so it recurses through
+# combinators for free) to signal "weights changed this step". AMP leaves
+# read `weight.val.version` to invalidate their cached bf16 weight — recast
+# iff the version advanced. This is the bug the legacy AMP never closed: it
+# cached the bf16 weight but NO caller ever invalidated it (the net trained
+# against a frozen cast). Covers BOTH optimizer paths uniformly — the
+# per-param walk AND the arena grouped step (which bypasses `visit`).
+# ──────────────────────────────────────────────────────────────────────
+struct ParamVersionBump(ParamVisitor):
+    def __init__(out self):
+        pass
+
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        param.version += 1

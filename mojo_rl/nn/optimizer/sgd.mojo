@@ -15,7 +15,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
-from ..core.param import ParamVisitor
+from ..core.param import ParamVisitor, ParamVersionBump
 from ..core.module import Module
 from .param_arena import ParamArena
 from .grad_clip import clip_grad_norm, clip_arena_grads
@@ -89,6 +89,10 @@ struct SGD(Movable, ParamVisitor, Optimizer):
                 self._grouped_step(ctx.value())
             else:
                 model.for_each_param["gpu"](self, ctx)
+        # AMP: invalidate cached bf16 weights (see Adam.step). Host-only walk;
+        # covers per-param AND arena paths.
+        var _bump = ParamVersionBump()
+        model.for_each_param[target](_bump, ctx)
 
     def _grouped_step(mut self, c: DeviceContext) raises:
         if self.arena.total == 0:

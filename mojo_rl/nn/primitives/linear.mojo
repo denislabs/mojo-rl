@@ -169,9 +169,17 @@ struct Linear[IN_: Int, OUT_: Int, AMP: Bool = False](Module):
     var cacheT: Tensor
     var dW_tmp: Tensor
     # AMP bf16 compute scratch (lazy; used only when AMP and target == "gpu").
+    # `w_bf` is the CACHED bf16 weight: recast from `weight.val` only when the
+    # optimizer has bumped `weight.val.version` since the last cast (tracked by
+    # `_w_cast_version`), so the 3.2M-elem weight cast happens ONCE per optimizer
+    # step rather than every forward. The legacy recast-every-forward tax is what
+    # turned bf16 into a net LOSS (measured 1.088x); caching it flips that.
     var x_bf: TensorImpl[BF16]
     var w_bf: TensorImpl[BF16]
     var o_bf: TensorImpl[BF16]
+    var go_bf: TensorImpl[BF16]      # grad_output bf16 (backward GEMMs)
+    var cacheT_bf: TensorImpl[BF16]  # transposed-x bf16 (backward grad_w)
+    var _w_cast_version: Int  # `weight.val.version` at last bf16 weight cast
 
     def __init__(out self):
         self.weight = Param["weight", True, Self.W_SIZE]()
@@ -181,6 +189,25 @@ struct Linear[IN_: Int, OUT_: Int, AMP: Bool = False](Module):
         self.x_bf = TensorImpl[BF16]()
         self.w_bf = TensorImpl[BF16]()
         self.o_bf = TensorImpl[BF16]()
+        self.go_bf = TensorImpl[BF16]()
+        self.cacheT_bf = TensorImpl[BF16]()
+        self._w_cast_version = -1  # < any real version → first forward casts
+
+    def _ensure_w_bf(mut self, c: DeviceContext) raises:
+        """Ensure the cached bf16 weight `w_bf` reflects the current fp32
+        `weight.val`. Recasts ONLY when the optimizer bumped `val.version` since
+        the last cast (so the 3.2M-elem cast is ONCE per step, not per fwd/bwd).
+        Shared by forward (the cast) and vjp (which REUSES it — no optimizer step
+        intervenes between a fwd and its bwd, so the forward's cast is valid)."""
+        self.w_bf.ensure_gpu(c, Self.W_SIZE)
+        if self.weight.val.version != self._w_cast_version:
+            c.enqueue_function[_cast_f2b_kernel[Self.W_SIZE]](
+                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                self.w_bf.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                grid_dim=(Self.W_SIZE + 255) // 256,
+                block_dim=256,
+            )
+            self._w_cast_version = self.weight.val.version
 
     @staticmethod
     def make[
@@ -226,18 +253,15 @@ struct Linear[IN_: Int, OUT_: Int, AMP: Bool = False](Module):
                 self.x_bf.ensure_gpu(c, B * Self.IN_)
                 self.w_bf.ensure_gpu(c, Self.W_SIZE)
                 self.o_bf.ensure_gpu(c, B * Self.OUT_)
+                # x (a fresh activation) is recast every forward.
                 c.enqueue_function[_cast_f2b_kernel[B * Self.IN_]](
                     in0.lt["gpu", Layout.row_major(B * Self.IN_)](),
                     self.x_bf.lt["gpu", Layout.row_major(B * Self.IN_)](),
                     grid_dim=(B * Self.IN_ + 255) // 256,
                     block_dim=256,
                 )
-                c.enqueue_function[_cast_f2b_kernel[Self.W_SIZE]](
-                    self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                    self.w_bf.lt["gpu", Layout.row_major(Self.W_SIZE)](),
-                    grid_dim=(Self.W_SIZE + 255) // 256,
-                    block_dim=256,
-                )
+                # W: recast only when the optimizer changed it (cached otherwise).
+                self._ensure_w_bf(c)
                 var x_bf_v = TileTensor(
                     self.x_bf.dev.value(), row_major[B, Self.IN_]()
                 )
@@ -360,8 +384,9 @@ struct Linear[IN_: Int, OUT_: Int, AMP: Bool = False](Module):
             c.enqueue_function[_lin_gb_kernel[B, Self.OUT_]](
                 gol, gbl, grid_dim=(Self.OUT_ + 255) // 256, block_dim=256
             )
-            # grad_w += cacheᵀ @ go: transpose x → cacheT (B1' tiled), matmul,
-            # accumulate.
+            # grad_w += cacheᵀ @ go: transpose x → cacheT (B1' tiled, fp32 —
+            # SHARED by both paths), then the two GEMMs (grad_w + grad_x) run in
+            # fp32 or bf16 per `Self.AMP`, then the shared grad_w accumulate.
             var xl = fin.lt["gpu", Layout.row_major(B, Self.IN_)]()
             var cTl = self.cacheT.lt["gpu", Layout.row_major(Self.IN_, B)]()
             c.enqueue_function[_transpose_tiled_kernel[B, Self.IN_]](
@@ -373,31 +398,60 @@ struct Linear[IN_: Int, OUT_: Int, AMP: Bool = False](Module):
                 ),
                 block_dim=(_T_TILE, _T_BR),
             )
-            var cT_v = TileTensor(
-                self.cacheT.dev.value(), row_major[Self.IN_, B]()
-            )
-            var go_v = TileTensor(
-                grad_output.dev.value(), row_major[B, Self.OUT_]()
-            )
             var dW_v = TileTensor(
                 self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]()
             )
-            max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
+            var gi_v = TileTensor(gin.dev.value(), row_major[B, Self.IN_]())
+            comptime if Self.AMP:
+                # bf16 backward GEMMs. grad_w = cacheTᵀ-form @ go, grad_x = go @ Wᵀ
+                # both cast their activation inputs to bf16; OUTPUTS stay fp32
+                # (cast-around / fp32 accum). Master grad/weight stay fp32. W
+                # reuses the forward's cached cast (no opt step between fwd↔bwd).
+                self.go_bf.ensure_gpu(c, B * Self.OUT_)
+                self.cacheT_bf.ensure_gpu(c, Self.IN_ * B)
+                self._ensure_w_bf(c)
+                c.enqueue_function[_cast_f2b_kernel[B * Self.OUT_]](
+                    grad_output.lt["gpu", Layout.row_major(B * Self.OUT_)](),
+                    self.go_bf.lt["gpu", Layout.row_major(B * Self.OUT_)](),
+                    grid_dim=(B * Self.OUT_ + 255) // 256,
+                    block_dim=256,
+                )
+                c.enqueue_function[_cast_f2b_kernel[Self.IN_ * B]](
+                    self.cacheT.lt["gpu", Layout.row_major(Self.IN_ * B)](),
+                    self.cacheT_bf.lt["gpu", Layout.row_major(Self.IN_ * B)](),
+                    grid_dim=(Self.IN_ * B + 255) // 256,
+                    block_dim=256,
+                )
+                var cTb_v = TileTensor(
+                    self.cacheT_bf.dev.value(), row_major[Self.IN_, B]()
+                )
+                var gob_v = TileTensor(
+                    self.go_bf.dev.value(), row_major[B, Self.OUT_]()
+                )
+                var wb_v = TileTensor(
+                    self.w_bf.dev.value(), row_major[Self.IN_, Self.OUT_]()
+                )
+                max_matmul[target="gpu"](dW_v, cTb_v, gob_v, c)
+                max_matmul[transpose_b=True, target="gpu"](gi_v, gob_v, wb_v, c)
+            else:
+                var cT_v = TileTensor(
+                    self.cacheT.dev.value(), row_major[Self.IN_, B]()
+                )
+                var go_v = TileTensor(
+                    grad_output.dev.value(), row_major[B, Self.OUT_]()
+                )
+                max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
+                var w_v = TileTensor(
+                    self.weight.val.dev.value(),
+                    row_major[Self.IN_, Self.OUT_](),
+                )
+                max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_v, c)
+            # grad_w += dW (shared accumulate into the fp32 master grad)
             var gwl = self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)]()
             var dWl = self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)]()
             c.enqueue_function[_accum_kernel[Self.W_SIZE]](
                 gwl, dWl, grid_dim=(Self.W_SIZE + 255) // 256, block_dim=256
             )
-            # grad_input = go @ Wᵀ
-            var go_v2 = TileTensor(
-                grad_output.dev.value(), row_major[B, Self.OUT_]()
-            )
-            var w_v = TileTensor(
-                self.weight.val.dev.value(),
-                row_major[Self.IN_, Self.OUT_](),
-            )
-            var gi_v = TileTensor(gin.dev.value(), row_major[B, Self.IN_]())
-            max_matmul[transpose_b=True, target="gpu"](gi_v, go_v2, w_v, c)
 
     # for_each_param / zero_grad inherit the Module reflection defaults
     # (core/walkers.mojo auto-discovers the `weight` + `bias` Params).

@@ -25,7 +25,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor
-from ..core.param import ParamVisitor
+from ..core.param import ParamVisitor, ParamVersionBump
 from ..core.module import Module
 from .param_arena import ParamArena
 from .grad_clip import (
@@ -302,6 +302,12 @@ struct Adam(Movable, ParamVisitor, Optimizer):
                 self._grouped_step(ctx.value())
             else:
                 model.for_each_param["gpu"](self, ctx)
+        # AMP: invalidate cached bf16 weights — bump every param-value version so
+        # leaves whose cached cast predates this step recast on next forward.
+        # Host-only walk (no kernels); covers per-param AND arena paths. Not
+        # CUDA-graph-capturable (host-side) — captured AMP is a Phase-5 concern.
+        var _bump = ParamVersionBump()
+        model.for_each_param[target](_bump, ctx)
 
     def _grouped_step(mut self, c: DeviceContext) raises:
         if self.arena.total == 0:

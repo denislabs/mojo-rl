@@ -24,6 +24,13 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
     # doesn't churn (and leak) pinned host buffers. `hcap` is its capacity.
     var hbuf: Optional[HostBuffer[Self.dt]]
     var hcap: Int
+    # Monotonic write-version of the VALUES, bumped by the optimizer once per
+    # step (on the param-value tensors it updates — see `ParamVersionBump`). AMP
+    # leaves read it to invalidate a cached low-precision weight copy: recast iff
+    # `val.version` advanced since the last cast (so the bf16 weight is cast ONCE
+    # per optimizer step, not once per forward — the Phase-1 economics fix).
+    # Inert on activation tensors (never bumped, never read there).
+    var version: Int
 
     def __init__(out self):
         self.data = List[Scalar[Self.dt]]()
@@ -31,6 +38,7 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
         self.n = 0
         self.hbuf = None
         self.hcap = 0
+        self.version = 0
 
     # ----- unified CPU/GPU allocator -------------------------------------
     @staticmethod
