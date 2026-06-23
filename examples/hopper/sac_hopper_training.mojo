@@ -3,11 +3,11 @@
 CPU nn counterpart of the legacy `sac_hopper_training_gpu.mojo` (which uses
 `deep_agents.core.agents.DeepSACAgent`). Mirrors the half_cheetah nn CPU
 example (`sac_half_cheetah_training.mojo`) with Hopper's dimensions and the
-ERE/early-termination settings the legacy Hopper script uses.
+early-termination settings the legacy Hopper script uses.
 
-  * `SACAgent["cpu", ...]` — facade over `SACTrainer` + the single-env
-    off-policy driver. ERE (Emphasizing Recent Experience) on, matching the
-    legacy Hopper recipe.
+  * `SAC["cpu", ...]` — facade over `SACTrainer` + the single-env off-policy
+    driver, built from the canonical fused-`LinearReLU` actor / twin critics
+    and SAC's tuned defaults.
   * `RemoteLogger` — streams metrics to a dashboard at the driver's
     `print_every`/`diag_every` cadence. Config (server URL + API key) read
     from a `.env` via `mojo_rl.core.dotenv`.
@@ -36,21 +36,17 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
-from mojo_rl.envs.hopper import Hopper, HopperConfig
+from mojo_rl.deep_agents.sac import SAC
+from mojo_rl.envs.hopper import Hopper
 
 
 # =============================================================================
-# Architecture (matches the legacy DeepSACAgent hopper training)
+# Architecture
 # =============================================================================
 
-comptime OBS_DIM = HopperConfig.OBS_DIM  # 11
-comptime ACT_DIM = HopperConfig.ACTION_DIM  #  3
+comptime EnvT = Hopper[DT, TERMINATE_ON_UNHEALTHY=True]
+comptime OBS_DIM = EnvT.OBS_DIM  # 11
+comptime ACT_DIM = EnvT.ACTION_DIM  #  3
 comptime HIDDEN = 256
 comptime BATCH = 64
 comptime REPLAY_CAPACITY = 200_000
@@ -63,22 +59,10 @@ comptime CHECKPOINT_EVERY = 50_000  # auto-save cadence (env steps)
 
 comptime CHECKPOINT_PATH = "sac_hopper_nn.ckpt"
 
-
-comptime ActorNet = StochasticActor[
-    OBS_DIM,
-    ACT_DIM,
-    Linear[OBS_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
-]
-comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, 1],
-]
+# Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac):
+# the canonical fused-`LinearReLU` `SACActorNet` / `SACCriticNet`, plus SAC's
+# tuned scalar defaults (lr=3e-4, gamma=0.99, tau=0.005, init_alpha=0.2,
+# target_entropy=-ACT, …). Override only the example-specific knobs below.
 
 
 def main() raises:
@@ -113,39 +97,22 @@ def main() raises:
     logger.set_config("env", "Hopper")
     logger.set_config("hidden", String(HIDDEN))
     logger.set_config("batch", String(BATCH))
-    logger.set_config("ere", "0.996")
 
     var logger_ptr = UnsafePointer(to=logger)
 
     # ─── Agent + env ─────────────────────────────────────────────────────
-    var agent = SACAgent[
-        "cpu",
-        UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-        ActorNet,
-        CriticNet,
+    var agent = SAC[
+        "cpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN
     ](
-        actor_lr=3e-4,
-        critic_lr=1e-3,  # CleanRL default: q_lr higher than policy_lr
-        alpha_lr=3e-4,
-        gamma=0.99,
-        tau=0.005,
-        action_scale=1.0,
-        init_alpha=0.2,
-        target_entropy=-Scalar[DT](ACT_DIM),  # SAC default heuristic (-3)
-        learning_starts=1_000,
         window_size=100,
         initial_episode_fill=0.0,
-        # ERE — same shape the legacy Hopper recipe uses. Down-weights
-        # ancient transitions; helps on long horizons.
-        use_ere=True,
-        ere_eta=0.996,
     )
-    var env = Hopper[DT, TERMINATE_ON_UNHEALTHY=True]()
+    var env = EnvT()
 
     # ─── Single train() call — auto-flush + auto-checkpoint ──────────────
     var t_start = perf_counter_ns()
     _ = agent.train_single[
-        Hopper[DT, TERMINATE_ON_UNHEALTHY=True],
+        EnvT,
         L=RemoteLogger,
     ](
         env,

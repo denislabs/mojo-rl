@@ -5,7 +5,7 @@ counterpart of the legacy `sac_hopper_training_gpu.mojo` (which uses
 `deep_agents.core.agents.DeepSACAgent.train_gpu`). Uses the new
 `deep_agents/` surface end-to-end:
 
-  * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
+  * `SAC["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
     off-policy driver (`run_offpolicy_train_batched`). All optimizers, the
     replay buffer, and the SAC train-step pipeline run on-device.
   * `BatchedGpuEnv[Hopper[DT], N_ENVS, OBS, ACT]` — wraps the Hopper
@@ -19,11 +19,6 @@ counterpart of the legacy `sac_hopper_training_gpu.mojo` (which uses
 
 `updates_per_step=N_ENVS` keeps the effective UTD = 1 per collected
 transition.
-
-NOTE on checkpointing: the facade's `save`/`load` are CPU-only, and the
-batched `train` entry point has no inline checkpoint/diag cadence (those live
-on `train_single`). This GPU example therefore trains + summarizes only; for
-mid-run checkpointing use the CPU example or the single-env cross-target path.
 
 Hopper (Phyics3dEnv, MuJoCo-style):
   * 11D observation (qpos + qvel excluding rootx)
@@ -43,22 +38,18 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
+from mojo_rl.deep_agents.sac import SAC
 from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.envs.hopper import Hopper, HopperConfig
+from mojo_rl.envs.hopper import Hopper
 
 
 # =============================================================================
-# Architecture (matches the CPU nn / legacy DeepSACAgent hopper runs)
+# Architecture
 # =============================================================================
 
-comptime OBS_DIM = HopperConfig.OBS_DIM  # 11
-comptime ACT_DIM = HopperConfig.ACTION_DIM  #  3
+comptime EnvT = Hopper[DT, TERMINATE_ON_UNHEALTHY=True]
+comptime OBS_DIM = EnvT.OBS_DIM  # 11
+comptime ACT_DIM = EnvT.ACTION_DIM  #  3
 comptime HIDDEN = 256
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
@@ -74,24 +65,12 @@ comptime PRINT_EVERY = 50_000  # driver-cadence verbose + env/mean_ret emit
 comptime DIAG_EVERY = 1_000  # full metric-bundle flush cadence (mean_q, …)
 
 
-comptime EnvT = Hopper[DT, TERMINATE_ON_UNHEALTHY=True]
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
 
-comptime ActorNet = StochasticActor[
-    OBS_DIM,
-    ACT_DIM,
-    Linear[OBS_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
-]
-comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, 1],
-]
+# Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac),
+# which bundles the canonical fused-`LinearReLU` `SACActorNet` /
+# `SACCriticNet` (matmul+bias+ReLU in one kernel) plus SAC's tuned defaults
+# (lr=3e-4, gamma=0.99, tau=0.005, init_alpha=0.2, target_entropy=-ACT, …).
 
 
 def main() raises:
@@ -129,33 +108,22 @@ def main() raises:
         logger.set_config("batch", String(BATCH))
         logger.set_config("n_envs", String(N_ENVS))
         logger.set_config("buffer_capacity", String(REPLAY_CAPACITY))
-        logger.set_config("ere", "0.996")
 
         var logger_ptr = UnsafePointer(to=logger)
 
         # ─── Agent + batched GPU env ─────────────────────────────────────
-        # GPU training: the DeviceContext MUST be threaded through the agent
-        # (the trainer keeps it for H2D/D2H staging + all on-device kernels).
-        var agent = SACAgent[
-            "gpu",
-            UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-            ActorNet,
-            CriticNet,
+        # `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` reads like a
+        # constructor: it builds the SACAgent with the fused default nets and
+        # SAC's tuned scalar defaults. The DeviceContext MUST be threaded
+        # through the agent (the trainer keeps it for H2D/D2H staging + all
+        # on-device kernels). Override only the example-specific knobs below.
+        var agent = SAC[
+            "gpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN
         ](
             ctx=ctx,
-            actor_lr=3e-4,
-            critic_lr=1e-3,  # CleanRL default: q_lr higher than policy_lr
-            alpha_lr=3e-4,
-            gamma=0.99,
-            tau=0.005,
-            action_scale=1.0,
-            init_alpha=0.2,
-            target_entropy=-Scalar[DT](ACT_DIM),  # SAC default heuristic (-3)
             learning_starts=WARMUP_STEPS,
             window_size=100,
             initial_episode_fill=0.0,
-            use_ere=True,
-            ere_eta=0.996,
         )
         var env = BatchedEnvT(ctx)
 
