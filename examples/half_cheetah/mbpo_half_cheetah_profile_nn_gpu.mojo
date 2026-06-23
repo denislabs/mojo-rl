@@ -89,7 +89,9 @@ comptime ActorNet = StochasticActor[
     Linear[HIDDEN, HIDDEN],
     ReLU[HIDDEN],
 ]
-comptime CriticNet = Sequential[
+# Critic: keep in lockstep with mbpo_half_cheetah_nn_gpu.mojo (plain MLP =
+# reference parity; swap CriticNet to CriticNetLN there + here together to A/B).
+comptime CriticNetLN = Sequential[
     Linear[OBS_DIM + ACT_DIM, HIDDEN],
     LayerNorm[HIDDEN],
     ReLU[HIDDEN],
@@ -98,6 +100,14 @@ comptime CriticNet = Sequential[
     ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
+comptime CriticNetPlain = Sequential[
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, 1],
+]
+comptime CriticNet = CriticNetPlain  # ← A/B knob: swap to CriticNetLN
 # Dynamics output = 2 * (1 + OBS_DIM) = [r_mean, Δobs_mean[OBS], r_logvar, Δobs_logvar[OBS]].
 comptime DynNet = Sequential[
     Linear[OBS_DIM + ACT_DIM, DYN_HIDDEN],

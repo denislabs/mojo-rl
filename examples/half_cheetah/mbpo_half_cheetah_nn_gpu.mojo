@@ -133,11 +133,16 @@ comptime ActorNet = StochasticActor[
     Linear[HIDDEN, HIDDEN],
     ReLU[HIDDEN],
 ]
-# Critic with pre-activation LayerNorm (REDQ/SR-SAC stability fix; mirrors
-# the legacy MBPO critic). Pattern: Linear → LayerNorm → ReLU, repeated.
-# Bounds the critic's feature magnitudes so Q can't diverge under high-UTD
-# synthetic-batch pressure (the Q-explosion we diagnosed on this surface).
-comptime CriticNet = Sequential[
+# ─── Critic: LayerNorm A/B ────────────────────────────────────────────────
+# Reference MBPO (rlkit SAC) uses a PLAIN MLP critic — no normalization. The
+# LayerNorm variant below was added here as a Q-EXPLOSION guard. But the
+# current failure mode is the OPPOSITE: Q saturates LOW (~26, consistent with
+# a slow ~0.25/step gait) and the return plateaus — i.e. value isn't growing,
+# not diverging. So the guard is both non-faithful AND a suspect for
+# suppressing value propagation. A/B: point `CriticNet` at `CriticNetLN`
+# (last line) to restore the old (LN) critic. A comptime ternary can't be used
+# here — the two branches are distinct `Sequential` types.
+comptime CriticNetLN = Sequential[
     Linear[OBS_DIM + ACT_DIM, HIDDEN],
     LayerNorm[HIDDEN],
     ReLU[HIDDEN],
@@ -146,6 +151,14 @@ comptime CriticNet = Sequential[
     ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
+comptime CriticNetPlain = Sequential[
+    Linear[OBS_DIM + ACT_DIM, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, HIDDEN],
+    ReLU[HIDDEN],
+    Linear[HIDDEN, 1],
+]
+comptime CriticNet = CriticNetPlain  # ← A/B knob: swap to CriticNetLN
 # Dynamics output = 2 * (1 + OBS_DIM) = 2 * 18 = 36
 # Layout: [r_mean, r_logvar, Δobs_mean[OBS_DIM], Δobs_logvar[OBS_DIM]]
 comptime DynNet = Sequential[
