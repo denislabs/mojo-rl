@@ -407,6 +407,11 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             comptime if Self.DECLS[i].KIND == 0:
                 pass
             else:
+                print(
+                    "[cg.vjp] node", i, Self.DECLS[i].NAME,
+                    "ARITY", Self.DECLS[i].ARITY,
+                    "OUT_DIM", Self.DECLS[i].OUT_DIM,
+                )
                 # Generic reverse step (any arity): ensure the tmp grad-input
                 # slots, build the forward-input + grad-input ref arrays from
                 # the pool / tmp (all §B0 wildcard MutAnyOrigin), dispatch the
