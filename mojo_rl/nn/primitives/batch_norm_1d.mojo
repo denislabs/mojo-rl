@@ -46,14 +46,13 @@ def _bn1d_forward_train_kernel[
     BATCH: Int,
     DIM: Int,
     EPSILON: Float64,
-    MOMENTUM: Float64,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     gamma: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
     beta: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
-    running_mean: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
-    running_var: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    cache_mean: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    cache_var: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
     cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     cache_inv_std: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
 ):
@@ -63,8 +62,6 @@ def _bn1d_forward_train_kernel[
         return
     var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(BATCH))
     var eps = Scalar[DT](EPSILON)
-    var mom = Scalar[DT](MOMENTUM)
-    var one_m = Scalar[DT](1.0) - mom
     var my_sum: input.element_type = 0.0
     var b = t
     while b < BATCH:
@@ -79,13 +76,13 @@ def _bn1d_forward_train_kernel[
         b += BN_TPB
     var var_ = block.sum[block_size=BN_TPB, broadcast=True](val=my_var) * inv_n
     var inv_std: input.element_type = 1.0 / sqrt(var_ + eps)
+    # Caches only — NO running-stat write here. The EMA runs in its own kernel
+    # (_bn1d_update_running_kernel); folding it in dropped the stores on NVIDIA
+    # at large BATCH (the BatchNorm2D B>64 store-drop, same cause).
     if t == 0:
+        cache_mean[f] = mean
+        cache_var[f] = var_
         cache_inv_std[f] = inv_std
-        if (mean - mean == 0.0) and (var_ - var_ == 0.0):
-            var rm = running_mean[f]
-            var rv = running_var[f]
-            running_mean[f] = one_m * rm + mom * mean
-            running_var[f] = one_m * rv + mom * var_
     var g = gamma[f]
     var bt = beta[f]
     b = t
@@ -95,6 +92,28 @@ def _bn1d_forward_train_kernel[
         cache_xhat[b, f] = xh
         output[b, f] = g * xh + bt
         b += BN_TPB
+
+
+def _bn1d_update_running_kernel[
+    DIM: Int,
+    MOMENTUM: Float64,
+](
+    cache_mean: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    cache_var: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    running_mean: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+    running_var: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
+):
+    """Running-stat EMA in its OWN kernel (one thread / feature). Mirrors the
+    BatchNorm2D split: keeping the running_mean/running_var read-modify-write out
+    of the reduction kernel keeps the NVIDIA backend from dropping the stores at
+    large BATCH. Unconditional (matches the CPU path; no NaN guard)."""
+    var f = Int(block_idx.x)
+    if f >= DIM:
+        return
+    var mom = Scalar[DT](MOMENTUM)
+    var one_m = Scalar[DT](1.0) - mom
+    running_mean[f] = one_m * running_mean[f] + mom * cache_mean[f]
+    running_var[f] = one_m * running_var[f] + mom * cache_var[f]
 
 
 def _bn1d_forward_eval_kernel[
@@ -200,6 +219,8 @@ struct BatchNorm1D[
     # Training cache (owned storage — sound; not a back-pointer).
     var cache_xhat: Tensor  # [BATCH, DIM]
     var cache_inv_std: Tensor  # [DIM]
+    var cache_mean: Tensor  # [DIM] (GPU: batch mean, fed to the running-stat EMA)
+    var cache_var: Tensor  # [DIM] (GPU: batch var, fed to the running-stat EMA)
     var cache_is_training: Bool
     var training: Bool
 
@@ -210,6 +231,8 @@ struct BatchNorm1D[
         self.running_var = State["running_var", Self.DIM_]()
         self.cache_xhat = Tensor()
         self.cache_inv_std = Tensor()
+        self.cache_mean = Tensor()
+        self.cache_var = Tensor()
         self.cache_is_training = False
         self.training = True
 
@@ -314,24 +337,36 @@ struct BatchNorm1D[
             if self.training:
                 self.cache_xhat.ensure_gpu(c, B * Self.DIM_)
                 self.cache_inv_std.ensure_gpu(c, Self.DIM_)
+                self.cache_mean.ensure_gpu(c, Self.DIM_)
+                self.cache_var.ensure_gpu(c, Self.DIM_)
                 c.enqueue_function[
                     _bn1d_forward_train_kernel[
                         B,
                         Self.DIM_,
                         Self.EPSILON,
-                        Self.MOMENTUM,
                     ]
                 ](
                     in0.lt["gpu", l2d](),
                     out.lt["gpu", l2d](),
                     self.gamma.val.lt["gpu", ld](),
                     self.beta.val.lt["gpu", ld](),
-                    self.running_mean.t.lt["gpu", ld](),
-                    self.running_var.t.lt["gpu", ld](),
+                    self.cache_mean.lt["gpu", ld](),
+                    self.cache_var.lt["gpu", ld](),
                     self.cache_xhat.lt["gpu", l2d](),
                     self.cache_inv_std.lt["gpu", ld](),
                     grid_dim=Self.DIM_,
                     block_dim=BN_TPB,
+                )
+                # Running-stat EMA in a dedicated kernel (see kernel docstring).
+                c.enqueue_function[
+                    _bn1d_update_running_kernel[Self.DIM_, Self.MOMENTUM]
+                ](
+                    self.cache_mean.lt["gpu", ld](),
+                    self.cache_var.lt["gpu", ld](),
+                    self.running_mean.t.lt["gpu", ld](),
+                    self.running_var.t.lt["gpu", ld](),
+                    grid_dim=Self.DIM_,
+                    block_dim=1,
                 )
                 self.cache_is_training = True
             else:
