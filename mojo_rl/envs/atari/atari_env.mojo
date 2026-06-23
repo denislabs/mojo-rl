@@ -477,8 +477,10 @@ struct AtariEnv[
             )
         self.frame_idx = (self.frame_idx + 1) % 4
 
-    def _write_rgb_stack_obs_into(
-        self, obs_out: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
+    def _write_rgb_stack_obs_into[
+        o: MutOrigin
+    ](
+        self, obs_out: UnsafePointer[Scalar[Self.dtype], o]
     ):
         """Write the 4-frame RGB stack (chronological, oldest first) as
         normalized floats [12,96,96] into `obs_out`. Channel order within a
@@ -608,8 +610,10 @@ struct AtariEnv[
     # ContinuousStateEnv trait
     # ========================================================================
 
-    def _write_stack_obs_into(
-        self, obs_out: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
+    def _write_stack_obs_into[
+        o: MutOrigin
+    ](
+        self, obs_out: UnsafePointer[Scalar[Self.dtype], o]
     ):
         """Write the 4-frame stack (chronological order, oldest first) as
         normalized floats into `obs_out` (FRAME_STACK_SIZE scalars).
@@ -631,8 +635,10 @@ struct AtariEnv[
                 )
             out_off += OBS_FRAME_SIZE
 
-    def _write_ram_obs_into(
-        self, obs_out: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]
+    def _write_ram_obs_into[
+        o: MutOrigin
+    ](
+        self, obs_out: UnsafePointer[Scalar[Self.dtype], o]
     ):
         """Write the 128 RAM bytes as normalized floats into `obs_out`."""
         comptime W = 16
