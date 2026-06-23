@@ -74,7 +74,7 @@ def redq_ensemble_target_cpu[
     comptime assert N_MIN <= N_ENSEMBLE, "N_MIN must be <= N_ENSEMBLE"
 
     for b in range(BATCH):
-        var combined: Scalar[DT] = Scalar[DT](0.0)
+        var combined: Scalar[DT]
         comptime if MODE == REDQ_TARGET_MIN:
             var first_idx = subset_idxs[0]
             combined = q_next.data[first_idx * BATCH + b]

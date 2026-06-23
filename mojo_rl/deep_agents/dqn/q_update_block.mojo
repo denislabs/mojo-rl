@@ -180,7 +180,7 @@ struct DQNQUpdateBlock[
         ] = None,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Scalar[DT]:
-        """zero_grad → Q.forward → gather → MSE forward(+accum) → MSE.vjp →
+        """`zero_grad` → Q.forward → gather → MSE forward(+accum) → MSE.vjp →
         [PER td capture + IS-weight scale] → scatter → Q.vjp → opt.step.
         Returns the scalar loss (0 sentinel under GPU ACCUMULATE; read at flush
         via `mse_loss.read_accum`)."""

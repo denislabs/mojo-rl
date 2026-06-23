@@ -57,7 +57,7 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn init: per-channel γ = 1 (INIT unused — normalization scale)."""
+        """NN init: per-channel γ = 1 (INIT unused — normalization scale)."""
         for c in range(Self.channels):
             params[c] = Scalar[dtype](1)
 

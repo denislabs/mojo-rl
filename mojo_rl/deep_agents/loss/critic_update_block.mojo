@@ -138,7 +138,7 @@ struct CriticUpdateBlock[
         ] = None,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Scalar[DT]:
-        """zero_grad → critic.forward → MSE.forward(+accum) → MSE.vjp →
+        """`zero_grad` → critic.forward → MSE.forward(+accum) → MSE.vjp →
         [PER td capture + IS-weight scale] → critic.vjp → opt.step. Returns
         the scalar loss (0 sentinel under GPU ACCUMULATE; read at flush)."""
         critic.zero_grad[target](ctx)
@@ -270,7 +270,7 @@ struct TwinCriticUpdateBlock[
         ] = None,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Scalar[DT]:
-        """concat (s,a) → c1.step + c2.step against shared `mb_y`. `td_residuals`
+        """`concat` (s,a) → c1.step + c2.step against shared `mb_y`. `td_residuals`
         captured from critic1 only (canonical PER proxy)."""
         comptime if target == "cpu":
             concat_sa[Self.OBS, Self.ACT, Self.BATCH](

@@ -73,7 +73,7 @@ def gather_rows_kernel[
     indices: LayoutTensor[DType.int32, Layout.row_major(N_TOTAL), MutAnyOrigin],
     offset: Int,
 ):
-    """batch_out[b, d] = full[indices[offset + b], d]. Parallel over
+    """`batch_out[b, d]` = full[indices[offset + b], d]. Parallel over
     BATCH * DIM threads."""
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH * DIM:

@@ -206,7 +206,7 @@ struct C51QUpdateBlock[
         ] = None,
         ctx: Optional[DeviceContext] = None,
     ) raises -> Scalar[DT]:
-        """zero_grad → Q.forward → gather slice → CE forward(+accum) → CE.vjp →
+        """`zero_grad` → Q.forward → gather slice → CE forward(+accum) → CE.vjp →
         [PER capture + IS scale] → scatter → Q.vjp → opt.step. Returns the
         scalar loss (0 sentinel under GPU ACCUMULATE; read at flush)."""
         comptime ROW = Self.NA * Self.N_ATOMS

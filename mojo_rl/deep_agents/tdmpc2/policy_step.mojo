@@ -171,7 +171,7 @@ struct PolicyStep[
                 self.qavg.data[b] = self.grad.data[b]
 
         # loss mean (CPU reads pool; GPU D2H the loss vector).
-        var loss_mean: Scalar[DT] = 0.0
+        var loss_mean: Scalar[DT]
         comptime if target == "cpu":
             var loss_sum: Scalar[DT] = 0.0
             for b in range(BB):
