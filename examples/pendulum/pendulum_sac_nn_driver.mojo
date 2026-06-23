@@ -1,10 +1,10 @@
-"""J.1.g-redesign-v2 — SAC training on Pendulum V1 via SACTrainer.
+"""SAC training on Pendulum V1 via the storage off-policy driver (CPU single-env).
 
-Bit-identity gate vs SACTrainerV2:
-  seed=42, 30k steps → mean_ret(10) = -167.572
-
-If this number matches the V2 driver, the ref-based block design is
-operationally equivalent (no algo or RNG-consumption-order drift).
+Lower-level counterpart of `pendulum_sac_training.mojo`: rather than the
+`SAC[...]` preset, this demos the off-policy driver directly — explicit
+`StochasticActor` / `Sequential` nets + `UniformSampleCpuStep` replay block,
+wired through `SACAgent.train` over a `BatchedCpuEnv[PendulumEnv, 1, ...]`
+(N_ENVS=1 ⇒ `run_offpolicy_train_batched`).
 
 Run:
     pixi run mojo run -I . examples/pendulum/pendulum_sac_nn_driver.mojo
@@ -13,14 +13,13 @@ Run:
 from std.random import seed
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import ReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac.trainer import SACTrainer
+from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
 from mojo_rl.deep_agents.training.batched_env import BatchedCpuEnv
-from mojo_rl.deep_agents.training.driver_offpolicy import run_offpolicy_train_batched
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -48,19 +47,21 @@ comptime CriticNet = Sequential[
     Linear[HIDDEN, 1],
 ]
 
+comptime BatchedEnvT = BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM]
+
 
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("nn SAC (ref-based blocks, no graph) — Pendulum V1 (CPU)")
+    print("nn SAC (off-policy driver, single-env) — Pendulum V1 (CPU)")
     print("=" * 70)
 
-    var trainer = SACTrainer[
+    var agent = SACAgent[
         "cpu",
         UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet,
         CriticNet,
-    ].make(
+    ](
         actor_lr=Scalar[DT](3e-4),
         critic_lr=Scalar[DT](1e-3),
         alpha_lr=Scalar[DT](3e-4),
@@ -74,20 +75,12 @@ def main() raises:
         initial_episode_fill=Scalar[DT](-1250.0),
     )
     var template = PendulumEnv[DT]()
-    var env = BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM](template)
+    var env = BatchedEnvT(template)
 
-    var ep_returns = run_offpolicy_train_batched[
-        SACTrainer[
-            "cpu",
-            UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-            ActorNet,
-            CriticNet,
-        ],
-        BatchedCpuEnv[PendulumEnv[DT], 1, OBS_DIM, ACT_DIM],
-        1,
+    var ep_returns = agent.train[
+        BatchedEnvT,
+        N_ENVS=1,
     ](
-        None,
-        trainer,
         env,
         TOTAL_TIMESTEPS,
         rng_seed=UInt64(42),
@@ -97,9 +90,9 @@ def main() raises:
     )
 
     print("=" * 70)
-    var final_mean = trainer.mean_return()
+    var final_mean = agent.mean_return()
     print("Final mean ep return (last 10): ", final_mean)
-    print("Episodes completed:             ", trainer.ep_count())
+    print("Episodes completed:             ", agent.ep_count())
     print("ep_returns list length:         ", len(ep_returns))
     if final_mean > -200.0:
         print("EXCELLENT — solved swing-up (>-200).")

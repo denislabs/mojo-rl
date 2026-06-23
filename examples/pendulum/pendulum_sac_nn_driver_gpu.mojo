@@ -1,12 +1,12 @@
-"""SAC training on Pendulum V1 via the nn GPU off-policy driver.
+"""SAC training on Pendulum V1 via the storage GPU off-policy driver (single-env).
 
-Phase B.5 — same algorithm + hyperparameters as the manual GPU example
-(`pendulum_sac_nn_trainer_gpu.mojo`) but routed through
-`run_offpolicy_train_gpu`. Env stays on CPU (PendulumEnv); only the SAC
-update path runs on GPU.
+Lower-level GPU counterpart of `pendulum_sac_nn_driver.mojo`. Same algorithm
+and hyperparameters, but the SAC update path runs on GPU while the env stays
+on CPU (`PendulumEnv`, cross-target). Routed through `SACAgent.train_single`
+(⇒ `run_offpolicy_train`) + `SACAgent.eval` (⇒ `run_offpolicy_eval`).
 
 Run:
-    pixi run mojo run -I . examples/pendulum/pendulum_sac_nn_driver_gpu.mojo
+    pixi run -e apple mojo run -I . examples/pendulum/pendulum_sac_nn_driver_gpu.mojo
 """
 
 from std.gpu.host import DeviceContext
@@ -14,16 +14,12 @@ from std.random import seed
 from std.time import perf_counter_ns
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import ReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac.trainer import SACTrainer
+from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
-from mojo_rl.deep_agents.training.driver_offpolicy import (
-    run_offpolicy_train,
-    run_offpolicy_eval,
-)
 
 from mojo_rl.envs.pendulum import PendulumEnv
 
@@ -56,16 +52,16 @@ comptime CriticNet = Sequential[
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("nn SAC (Phase B.5 GPU driver) — Pendulum V1 (GPU)")
+    print("nn SAC (off-policy driver, single-env) — Pendulum V1 (GPU)")
     print("=" * 70)
 
     var ctx = DeviceContext()
-    var trainer = SACTrainer[
+    var agent = SACAgent[
         "gpu",
         UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet,
         CriticNet,
-    ].make(
+    ](
         ctx=ctx,
         actor_lr=Scalar[DT](3e-4),
         critic_lr=Scalar[DT](1e-3),
@@ -81,24 +77,23 @@ def main() raises:
     )
     var env = PendulumEnv[DT]()
 
-    var _ep_returns = run_offpolicy_train(
-        trainer,
+    var _ep_returns = agent.train_single[
+        PendulumEnv[DT],
+    ](
         env,
         TOTAL_TIMESTEPS,
-        ctx=ctx,
         print_every=1_000,
         verbose=True,
     )
 
     print("=" * 70)
-    var final_mean = trainer.mean_return()
+    var final_mean = agent.mean_return()
     print("Final mean ep return (last 10): ", final_mean)
-    print("Episodes completed:             ", trainer.ep_count())
+    print("Episodes completed:             ", agent.ep_count())
 
     # Greedy eval after training.
     var eval_env = PendulumEnv[DT]()
-    var eval_mean = run_offpolicy_eval(
-        trainer,
+    var eval_mean = agent.eval[PendulumEnv[DT]](
         eval_env,
         num_episodes=10,
         max_steps_per_episode=200,

@@ -1,10 +1,10 @@
-"""SAC Walker2d (deep_agents / nn agent) — short run for nsys profiling.
+"""SAC Walker2d (deep_agents storage facade) — short run for nsys profiling.
 
-nn counterpart of `sac_walker2d_profile_graph.mojo` (which profiles the legacy
-`DeepSACAgent.train_gpu` path). Same env, dims, N_ENVS, step/warmup counts,
-replay capacity, and batch size so an nsys side-by-side is apples-to-apples —
-the only difference is the agent stack (deep_agents `SACAgent` facade +
-`run_offpolicy_train_batched`) and the optimization toggles below.
+Profiling harness around the storage `SACAgent` GPU-batched train step
+(`run_offpolicy_train_batched`). The legacy `nn` profiling counterpart was
+removed in the sunset; this is the storage-only profile. Walker2d, fixed
+dims, N_ENVS, step/warmup counts, replay capacity, and batch size so repeated
+nsys runs are apples-to-apples across the optimization toggles below.
 
 No logger, no checkpoints. Prints overall wall-clock so you can compare the
 host-side elapsed against the nsys GPU-busy total: if elapsed ≫ GPU busy, the
@@ -33,9 +33,9 @@ from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep

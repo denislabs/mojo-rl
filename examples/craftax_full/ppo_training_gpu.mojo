@@ -19,9 +19,9 @@ from std.random import seed
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.storage.primitives.linear import Linear
+from mojo_rl.nn.storage.primitives.activations import Tanh
 from mojo_rl.deep_agents.ppo_discrete import PPODiscreteAgent
 from mojo_rl.deep_agents.training.batched_env import BatchedGpuDiscreteEnv
 
