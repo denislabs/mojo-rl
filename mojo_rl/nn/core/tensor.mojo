@@ -221,6 +221,21 @@ struct TensorImpl[dt: DType = DT](Defaultable & Movable & ImplicitlyDeletable):
         ctx.enqueue_copy(self.dev.value(), hb)
         ctx.synchronize()
 
+    def upload_resident(mut self, ctx: DeviceContext) raises:
+        """CPU `data[:n]` → the EXISTING device buffer WITHOUT reallocating it
+        (the buffer must already exist and be sized >= `n`; lazily allocates on
+        the first call only). Unlike `upload` — which recreates `self.dev` every
+        call (changing the pointer) — this reuses the buffer, so a CUDA-graph
+        that captured this buffer stays valid across replays: only the CONTENTS
+        change. Use as the EAGER per-step input refresh under graph capture."""
+        self.ensure_gpu(ctx, self.n)
+        self.ensure_host(ctx, self.n)
+        var hb = self.hbuf.value()
+        ctx.synchronize()
+        for i in range(self.n):
+            hb[i] = self.data[i]
+        ctx.enqueue_copy(self.dev.value(), hb)
+
     def download_enqueue(mut self, ctx: DeviceContext) raises:
         """Enqueue the D2H copy into the persistent host buffer WITHOUT
         synchronizing. Pair with a later `ctx.synchronize()` + per-tensor

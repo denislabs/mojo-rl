@@ -41,6 +41,7 @@ from .shuffle_kernels import (
 )
 from .augmenter import Augmenter, IdentityAugmenter
 from ..optimizer.lr_scheduler import Scheduler, ConstantSchedule
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 
 
 # ── AMP boundary cast kernels (fp32 ↔ MADT) ─────────────────────────────
@@ -81,12 +82,28 @@ struct Trainer[
     MODEL: Module, NC: Int, IN: Int, BATCH: Int, target: StaticString,
     POLICY: AMPPolicy = NoAMP,
     OPT: Optimizer = Adam,
+    # Opt-in CUDA-graph capture of the per-batch DEVICE compute (zero_grad →
+    # forward → CE accumulate → vjp → opt.step). The batch-build (the
+    # contiguous-slice D2D copy into FIXED owned `batch_x`/`batch_y`) stays
+    # eager; the captured graph reads those fixed buffers and replays. fp32-only
+    # + contiguous-sweep only (no shuffle/aug under capture in this pass).
+    # Default OFF — on NVIDIA the nn GEMM (`linalg.matmul`) allocates a split-K
+    # workspace per call, illegal under stream capture; enable only once that's
+    # resolved. No-op on non-NVIDIA (runs eagerly, bit-identical).
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](Movable & ImplicitlyDeletable):
     # Model activation-flow dtype: `DT` for an fp32 model, `bfloat16` for a
     # bf16-flow model (`Sequential[Linear[..,bf16], …]`). The CASTS only happen
     # at boundaries; the fp32 case (MADT == DT) is the EXISTING code path with
     # no casts and no extra buffers (bit-identical).
     comptime MADT = Self.MODEL.ACT_DT
+    # Capture is GPU + fp32 only (the AMP step's cached-bf16 version bump is
+    # host-side, so it can't ride a captured graph).
+    comptime CAPTURE = (
+        Self.USE_TRAIN_CUDA_GRAPH
+        and (Self.target == "gpu")
+        and (Self.MADT == DT)
+    )
 
     var model: Self.MODEL
     var opt: Self.OPT
@@ -116,6 +133,9 @@ struct Trainer[
     var ds_tx: Tensor
     var _up_train: Bool
     var _up_test: Bool
+    # Lazily-captured per-batch compute graph (None until first capture). Only
+    # touched on the `CAPTURE` path; a no-op slot otherwise.
+    var _train_graph: Optional[CUDAGraph]
 
     def __init__(out self):
         self.model = Self.MODEL()
@@ -134,6 +154,7 @@ struct Trainer[
         self.ds_tx = Tensor()
         self._up_train = False
         self._up_test = False
+        self._train_graph = None
 
     @staticmethod
     def make[
@@ -155,6 +176,15 @@ struct Trainer[
         else:
             t.loss = CrossEntropyLoss[Self.NC].make_gpu(ctx.value())
             # batch_x/batch_y carry sub-buffer views on GPU — no owned slab.
+            # EXCEPT under capture: the graph must read STABLE buffers, so
+            # allocate fixed owned slabs and D2D-copy each batch's slice into
+            # them (a sub-buffer view repoints the pointer per batch → would
+            # invalidate the captured graph).
+            comptime if Self.CAPTURE:
+                t.batch_x = TensorImpl[Self.MADT].alloc_gpu(
+                    ctx.value(), Self.BATCH * Self.IN
+                )
+                t.batch_y = Tensor.alloc_gpu(ctx.value(), Self.BATCH * Self.NC)
         t.opt = Self.OPT()
         t.opt.set_lr(lr)
         # Engage the optimizer's contiguous-arena mode (GPU single-kernel step);
@@ -302,6 +332,67 @@ struct Trainer[
             block_dim=TPB,
         )
 
+    # ── CUDA-graph capture path (compute-only, fp32, contiguous sweep) ──────
+
+    def _compute_step_device(
+        mut self, ctx: Optional[DeviceContext]
+    ) raises:
+        """The PURE-DEVICE per-batch compute captured into the graph: zero_grad →
+        forward → CE accumulate → CE vjp → model.vjp → opt.step, reading the
+        FIXED owned `batch_x`/`batch_y` (the caller D2D-copies each batch's slice
+        into them eagerly before the replay). fp32-only (reaching here ⇒
+        `CAPTURE` ⇒ `MADT == DT`); the CE loss folds into the device accumulator,
+        drained at epoch end via `read_accum`. Must enqueue the SAME kernel
+        sequence every call (the captured graph stays valid on replay)."""
+        self.opt.zero_grad["gpu"](self.model, ctx)
+        Self._amp_train_step[Self.BATCH](
+            self.model,
+            self.opt,
+            self.loss,
+            self.batch_x,
+            self.batch_y,
+            self.logits,
+            self.grad,
+            self.gi,
+            self.logits_f32,
+            self.grad_f32,
+            ctx,
+        )
+
+    def _epoch_captured[
+        N_TRAIN: Int
+    ](mut self, c: DeviceContext) raises:
+        """One contiguous-sweep epoch on the capture path. Each batch's slice is
+        D2D-copied (eager) from the resident `ds_x`/`ds_y` into the FIXED owned
+        `batch_x`/`batch_y`, then the device compute is captured on the first
+        batch and replayed on the rest. No shuffle / no aug (guarded in
+        `train_gpu`)."""
+        comptime n_batches = N_TRAIN // Self.BATCH
+        for nb in range(n_batches):
+            var x0 = nb * Self.BATCH * Self.IN
+            var y0 = nb * Self.BATCH * Self.NC
+            # Eager D2D copy: resident-set sub-view (source) → fixed batch slab.
+            var sx = self.ds_x.dev.value().create_sub_buffer[DT](
+                x0, Self.BATCH * Self.IN
+            )
+            c.enqueue_copy(rebind[Tensor](self.batch_x).dev.value(), sx)
+            var sy = self.ds_y.dev.value().create_sub_buffer[DT](
+                y0, Self.BATCH * Self.NC
+            )
+            c.enqueue_copy(self.batch_y.dev.value(), sy)
+            # Capture-once / replay the device compute. Move the slot into a
+            # disjoint local (`take` leaves it None) so the closure can borrow
+            # `self` without overlapping the slot's mut borrow.
+            var g = Optional[CUDAGraph](None)
+            if self._train_graph:
+                g = Optional[CUDAGraph](self._train_graph.take())
+
+            def _cap() capturing raises -> None:
+                self._compute_step_device(Optional(c))
+
+            maybe_capture_replay[_cap](g, c)
+            self._train_graph = g^
+
     def train_epoch[
         N_TRAIN: Int
     ](
@@ -390,12 +481,23 @@ struct Trainer[
             else:
                 comptime if Self.MADT == DT:
                     ref bx = rebind[Tensor](self.batch_x)
-                    bx.dev = Optional(
-                        self.ds_tx.dev.value().create_sub_buffer[DT](
+                    comptime if Self.CAPTURE:
+                        # `batch_x` is a FIXED owned buffer on the capture path —
+                        # D2D-copy the test slice INTO it (repointing would
+                        # replace the owned buffer with a view, corrupting both
+                        # the captured-train invariant AND `ds_tx` on the next
+                        # epoch's train copy into `batch_x`).
+                        var sx = self.ds_tx.dev.value().create_sub_buffer[DT](
                             x0, Self.BATCH * Self.IN
                         )
-                    )
-                    bx.n = Self.BATCH * Self.IN
+                        ctx.value().enqueue_copy(bx.dev.value(), sx)
+                    else:
+                        bx.dev = Optional(
+                            self.ds_tx.dev.value().create_sub_buffer[DT](
+                                x0, Self.BATCH * Self.IN
+                            )
+                        )
+                        bx.n = Self.BATCH * Self.IN
                 else:
                     # bf16: fp32 view → batch_xf, then cast → batch_x (MADT).
                     self.batch_xf.dev = Optional(
@@ -501,6 +603,17 @@ struct Trainer[
         comptime blocks_gy = (Self.BATCH * Self.NC + TPB - 1) // TPB
         comptime USE_AUG = not AUGMENTER.IS_NOOP
         comptime USE_SCHED = not SCHEDULER.IS_CONSTANT
+        comptime assert (
+            (not Self.CAPTURE) or (not USE_AUG)
+        ), "CUDA-graph capture does not support AUGMENTER yet (contiguous sweep only)"
+        # Capture supports the contiguous sweep only in this pass (shuffle gathers
+        # vary the on-device offset per batch → a separate concern).
+        comptime if Self.CAPTURE:
+            if shuffle:
+                raise Error(
+                    "train_gpu: USE_TRAIN_CUDA_GRAPH supports the contiguous"
+                    " sweep only (shuffle=False) in this pass"
+                )
         var c = ctx.value()
         var result = TrainResult.empty()
 
@@ -548,156 +661,192 @@ struct Trainer[
 
         for epoch in range(epochs):
             var t0 = perf_counter_ns()
-            comptime if USE_SCHED:
-                self.opt.set_lr(
-                    base_lr
-                    * Scalar[DT](SCHEDULER.lr_scale_at(epoch, epochs))
-                )
+            comptime if Self.CAPTURE:
+                # LR onto the device so the captured `opt.step` reads the FRESH
+                # per-epoch LR on each replay (a host-baked `lr` would freeze at
+                # the capture-time value).
+                var eplr = base_lr
+                comptime if USE_SCHED:
+                    eplr = base_lr * Scalar[DT](
+                        SCHEDULER.lr_scale_at(epoch, epochs)
+                    )
+                self.opt.push_lr_device["gpu"](eplr, Optional(c))
+            else:
+                comptime if USE_SCHED:
+                    self.opt.set_lr(
+                        base_lr
+                        * Scalar[DT](SCHEDULER.lr_scale_at(epoch, epochs))
+                    )
             self.loss.reset_accum["gpu"]()
             self.model.set_attr["training"](Scalar[DT](1.0))
-            # (Re)build the augmented training set from the raw resident set.
-            comptime if USE_AUG:
-                AUGMENTER.augment[N_TRAIN, Self.IN, DT](
-                    c,
-                    aug.lt["gpu", Layout.row_major(N_TRAIN, Self.IN)](),
-                    self.ds_x.lt["gpu", Layout.row_major(N_TRAIN, Self.IN)](),
-                    epoch,
-                    aug_seed,
-                )
-            if shuffle:
-                c.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
-                    indices.lt["gpu", Layout.row_major(N_TRAIN)](),
-                    seed.lt["gpu", Layout.row_major(1)](),
-                    grid_dim=1,
-                    block_dim=1,
-                )
-                c.enqueue_function[increment_seed_kernel](
-                    seed.lt["gpu", Layout.row_major(1)](),
-                    grid_dim=1,
-                    block_dim=1,
-                )
-            for nb in range(n_batches):
-                if shuffle:
-                    var off = nb * Self.BATCH
-                    # Gather X from the augmented set (if any) else raw ds_x.
-                    comptime if USE_AUG:
-                        c.enqueue_function[
-                            gather_rows_kernel[N_TRAIN, Self.BATCH, Self.IN, DT]
-                        ](
-                            gx.lt[
-                                "gpu", Layout.row_major(Self.BATCH, Self.IN)
-                            ](),
-                            aug.lt["gpu", Layout.row_major(N_TRAIN, Self.IN)](),
-                            indices.lt["gpu", Layout.row_major(N_TRAIN)](),
-                            off,
-                            grid_dim=blocks_gx,
-                            block_dim=TPB,
-                        )
-                    else:
-                        c.enqueue_function[
-                            gather_rows_kernel[N_TRAIN, Self.BATCH, Self.IN, DT]
-                        ](
-                            gx.lt[
-                                "gpu", Layout.row_major(Self.BATCH, Self.IN)
-                            ](),
-                            self.ds_x.lt[
-                                "gpu", Layout.row_major(N_TRAIN, Self.IN)
-                            ](),
-                            indices.lt["gpu", Layout.row_major(N_TRAIN)](),
-                            off,
-                            grid_dim=blocks_gx,
-                            block_dim=TPB,
-                        )
-                    c.enqueue_function[
-                        gather_rows_kernel[N_TRAIN, Self.BATCH, Self.NC, DT]
-                    ](
-                        gy.lt["gpu", Layout.row_major(Self.BATCH, Self.NC)](),
-                        self.ds_y.lt[
-                            "gpu", Layout.row_major(N_TRAIN, Self.NC)
+            comptime if Self.CAPTURE:
+                # Contiguous-sweep capture: each batch's slice is D2D-copied into
+                # the FIXED owned `batch_x`/`batch_y` (eager), then the device
+                # compute is captured (first batch) / replayed (rest).
+                self._epoch_captured[N_TRAIN](c)
+            else:
+                # (Re)build the augmented training set from the raw resident set.
+                comptime if USE_AUG:
+                    AUGMENTER.augment[N_TRAIN, Self.IN, DT](
+                        c,
+                        aug.lt["gpu", Layout.row_major(N_TRAIN, Self.IN)](),
+                        self.ds_x.lt[
+                            "gpu", Layout.row_major(N_TRAIN, Self.IN)
                         ](),
-                        indices.lt["gpu", Layout.row_major(N_TRAIN)](),
-                        off,
-                        grid_dim=blocks_gy,
-                        block_dim=TPB,
+                        epoch,
+                        aug_seed,
                     )
-                    self.opt.zero_grad["gpu"](self.model, ctx)
-                    # fp32: gx IS the model input. bf16: cast gx → gxm (MADT).
-                    comptime if Self.MADT == DT:
-                        ref mi = rebind[TensorImpl[Self.MADT]](gx)
-                        Self._amp_train_step[Self.BATCH](
-                            self.model, self.opt, self.loss,
-                            mi, gy, self.logits, self.grad, self.gi,
-                            self.logits_f32, self.grad_f32, ctx,
-                        )
-                    else:
-                        gxm.ensure_gpu(c, Self.BATCH * Self.IN)
+                if shuffle:
+                    c.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
+                        indices.lt["gpu", Layout.row_major(N_TRAIN)](),
+                        seed.lt["gpu", Layout.row_major(1)](),
+                        grid_dim=1,
+                        block_dim=1,
+                    )
+                    c.enqueue_function[increment_seed_kernel](
+                        seed.lt["gpu", Layout.row_major(1)](),
+                        grid_dim=1,
+                        block_dim=1,
+                    )
+                for nb in range(n_batches):
+                    if shuffle:
+                        var off = nb * Self.BATCH
+                        # Gather X from the augmented set (if any) else raw ds_x.
+                        comptime if USE_AUG:
+                            c.enqueue_function[
+                                gather_rows_kernel[
+                                    N_TRAIN, Self.BATCH, Self.IN, DT
+                                ]
+                            ](
+                                gx.lt[
+                                    "gpu", Layout.row_major(Self.BATCH, Self.IN)
+                                ](),
+                                aug.lt[
+                                    "gpu", Layout.row_major(N_TRAIN, Self.IN)
+                                ](),
+                                indices.lt[
+                                    "gpu", Layout.row_major(N_TRAIN)
+                                ](),
+                                off,
+                                grid_dim=blocks_gx,
+                                block_dim=TPB,
+                            )
+                        else:
+                            c.enqueue_function[
+                                gather_rows_kernel[
+                                    N_TRAIN, Self.BATCH, Self.IN, DT
+                                ]
+                            ](
+                                gx.lt[
+                                    "gpu", Layout.row_major(Self.BATCH, Self.IN)
+                                ](),
+                                self.ds_x.lt[
+                                    "gpu", Layout.row_major(N_TRAIN, Self.IN)
+                                ](),
+                                indices.lt[
+                                    "gpu", Layout.row_major(N_TRAIN)
+                                ](),
+                                off,
+                                grid_dim=blocks_gx,
+                                block_dim=TPB,
+                            )
                         c.enqueue_function[
-                            _cast_kernel[DT, Self.MADT, Self.BATCH * Self.IN]
+                            gather_rows_kernel[N_TRAIN, Self.BATCH, Self.NC, DT]
                         ](
-                            gx.lt[
-                                "gpu", Layout.row_major(Self.BATCH * Self.IN)
+                            gy.lt[
+                                "gpu", Layout.row_major(Self.BATCH, Self.NC)
                             ](),
-                            gxm.lt[
-                                "gpu", Layout.row_major(Self.BATCH * Self.IN)
+                            self.ds_y.lt[
+                                "gpu", Layout.row_major(N_TRAIN, Self.NC)
                             ](),
-                            grid_dim=blocks_gx,
+                            indices.lt["gpu", Layout.row_major(N_TRAIN)](),
+                            off,
+                            grid_dim=blocks_gy,
                             block_dim=TPB,
                         )
+                        self.opt.zero_grad["gpu"](self.model, ctx)
+                        # fp32: gx IS the model input. bf16: cast gx → gxm (MADT).
+                        comptime if Self.MADT == DT:
+                            ref mi = rebind[TensorImpl[Self.MADT]](gx)
+                            Self._amp_train_step[Self.BATCH](
+                                self.model, self.opt, self.loss,
+                                mi, gy, self.logits, self.grad, self.gi,
+                                self.logits_f32, self.grad_f32, ctx,
+                            )
+                        else:
+                            gxm.ensure_gpu(c, Self.BATCH * Self.IN)
+                            c.enqueue_function[
+                                _cast_kernel[
+                                    DT, Self.MADT, Self.BATCH * Self.IN
+                                ]
+                            ](
+                                gx.lt[
+                                    "gpu",
+                                    Layout.row_major(Self.BATCH * Self.IN),
+                                ](),
+                                gxm.lt[
+                                    "gpu",
+                                    Layout.row_major(Self.BATCH * Self.IN),
+                                ](),
+                                grid_dim=blocks_gx,
+                                block_dim=TPB,
+                            )
+                            Self._amp_train_step[Self.BATCH](
+                                self.model, self.opt, self.loss,
+                                gxm, gy, self.logits, self.grad, self.gi,
+                                self.logits_f32, self.grad_f32, ctx,
+                            )
+                    else:
+                        var x0 = nb * Self.BATCH * Self.IN
+                        var y0 = nb * Self.BATCH * Self.NC
+                        # Sub-buffer view of X from the augmented set else raw
+                        # ds_x. fp32: the view lands in batch_x (zero-copy).
+                        # bf16: it lands in the fp32 staging batch_xf (cast →
+                        # batch_x below).
+                        comptime if Self.MADT == DT:
+                            ref bx = rebind[Tensor](self.batch_x)
+                            comptime if USE_AUG:
+                                bx.dev = Optional(
+                                    aug.dev.value().create_sub_buffer[DT](
+                                        x0, Self.BATCH * Self.IN
+                                    )
+                                )
+                            else:
+                                bx.dev = Optional(
+                                    self.ds_x.dev.value().create_sub_buffer[DT](
+                                        x0, Self.BATCH * Self.IN
+                                    )
+                                )
+                            bx.n = Self.BATCH * Self.IN
+                        else:
+                            comptime if USE_AUG:
+                                self.batch_xf.dev = Optional(
+                                    aug.dev.value().create_sub_buffer[DT](
+                                        x0, Self.BATCH * Self.IN
+                                    )
+                                )
+                            else:
+                                self.batch_xf.dev = Optional(
+                                    self.ds_x.dev.value().create_sub_buffer[DT](
+                                        x0, Self.BATCH * Self.IN
+                                    )
+                                )
+                            self.batch_xf.n = Self.BATCH * Self.IN
+                            Self._cast_input_to_madt(
+                                self.batch_xf, self.batch_x, c
+                            )
+                        self.batch_y.dev = Optional(
+                            self.ds_y.dev.value().create_sub_buffer[DT](
+                                y0, Self.BATCH * Self.NC
+                            )
+                        )
+                        self.batch_y.n = Self.BATCH * Self.NC
+                        self.opt.zero_grad["gpu"](self.model, ctx)
                         Self._amp_train_step[Self.BATCH](
                             self.model, self.opt, self.loss,
-                            gxm, gy, self.logits, self.grad, self.gi,
-                            self.logits_f32, self.grad_f32, ctx,
+                            self.batch_x, self.batch_y, self.logits, self.grad,
+                            self.gi, self.logits_f32, self.grad_f32, ctx,
                         )
-                else:
-                    var x0 = nb * Self.BATCH * Self.IN
-                    var y0 = nb * Self.BATCH * Self.NC
-                    # Sub-buffer view of X from the augmented set else raw ds_x.
-                    # fp32: the view lands in batch_x (zero-copy). bf16: it lands
-                    # in the fp32 staging batch_xf (cast → batch_x below).
-                    comptime if Self.MADT == DT:
-                        ref bx = rebind[Tensor](self.batch_x)
-                        comptime if USE_AUG:
-                            bx.dev = Optional(
-                                aug.dev.value().create_sub_buffer[DT](
-                                    x0, Self.BATCH * Self.IN
-                                )
-                            )
-                        else:
-                            bx.dev = Optional(
-                                self.ds_x.dev.value().create_sub_buffer[DT](
-                                    x0, Self.BATCH * Self.IN
-                                )
-                            )
-                        bx.n = Self.BATCH * Self.IN
-                    else:
-                        comptime if USE_AUG:
-                            self.batch_xf.dev = Optional(
-                                aug.dev.value().create_sub_buffer[DT](
-                                    x0, Self.BATCH * Self.IN
-                                )
-                            )
-                        else:
-                            self.batch_xf.dev = Optional(
-                                self.ds_x.dev.value().create_sub_buffer[DT](
-                                    x0, Self.BATCH * Self.IN
-                                )
-                            )
-                        self.batch_xf.n = Self.BATCH * Self.IN
-                        Self._cast_input_to_madt(
-                            self.batch_xf, self.batch_x, c
-                        )
-                    self.batch_y.dev = Optional(
-                        self.ds_y.dev.value().create_sub_buffer[DT](
-                            y0, Self.BATCH * Self.NC
-                        )
-                    )
-                    self.batch_y.n = Self.BATCH * Self.NC
-                    self.opt.zero_grad["gpu"](self.model, ctx)
-                    Self._amp_train_step[Self.BATCH](
-                        self.model, self.opt, self.loss,
-                        self.batch_x, self.batch_y, self.logits, self.grad,
-                        self.gi, self.logits_f32, self.grad_f32, ctx,
-                    )
             var avg = Float64(self.loss.read_accum["gpu"](ctx))
             c.synchronize()
             var t1 = perf_counter_ns()

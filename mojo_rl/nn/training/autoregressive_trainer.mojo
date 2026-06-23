@@ -46,6 +46,7 @@ from ..optimizer.adam import Adam
 from ..loss.sequence_cross_entropy import SequenceCrossEntropyLoss
 from .trainer import _cast_kernel  # AMP boundary cast (fp32 ↔ MADT)
 from mojo_rl.nn.datasets import CharTokenizer, DatasetSplit, make_batch
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 
 
 struct AutoregressiveTrainer[
@@ -55,6 +56,15 @@ struct AutoregressiveTrainer[
     SEQ: Int,
     BATCH: Int,
     target: StaticString = "gpu",
+    # Opt-in CUDA-graph capture of the per-step DEVICE compute (forward → SeqCE
+    # accumulate → vjp → grad-clip → opt.step). The batch-build (host sampling +
+    # one-hot + upload into the PERSISTENT `in_t`/`tgt_t` buffers) stays eager;
+    # the captured graph reads those fixed buffers and replays. fp32-only (the
+    # AMP step has a host-side version bump). Default OFF — on NVIDIA the nn
+    # GEMM (`linalg.matmul`) allocates a split-K workspace per call, illegal
+    # under stream capture; enable only once that's resolved. No-op on
+    # non-NVIDIA (runs eagerly, bit-identical).
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](Movable):
     comptime IN_DIM = Self.SEQ * Self.VOCAB
     comptime OUT_DIM = Self.SEQ * Self.VOCAB
@@ -64,6 +74,9 @@ struct AutoregressiveTrainer[
     # logits, grad_output, grad_input) flow at MADT; the loss + master weights
     # stay fp32 (the SeqCE softmax needs fp32). `MADT == DT` ⇒ zero casts.
     comptime MADT = Self.NET.ACT_DT
+    # Capture is fp32-only (the AMP step's cached-bf16 version bump is host-side,
+    # so it can't ride a captured graph). bf16-flow nets always run eager.
+    comptime CAPTURE = Self.USE_TRAIN_CUDA_GRAPH and (Self.MADT == DT)
 
     var net: Self.NET
     var opt: Self.OPT
@@ -88,6 +101,9 @@ struct AutoregressiveTrainer[
     var total_iters: Int
     var min_lr_scale: Float64
     var grad_clip: Scalar[DT]
+    # Lazily-captured per-step compute graph (None until the first capture). Only
+    # touched on the `CAPTURE` path; a no-op slot otherwise.
+    var _train_graph: Optional[CUDAGraph]
 
     def __init__(
         out self,
@@ -123,6 +139,7 @@ struct AutoregressiveTrainer[
         self.total_iters = total_iters
         self.min_lr_scale = min_lr_scale
         self.grad_clip = grad_clip
+        self._train_graph = None
 
     # ----- Factory --------------------------------------------------------
 
@@ -148,6 +165,9 @@ struct AutoregressiveTrainer[
         comptime assert (
             Self.target == "gpu"
         ), "AutoregressiveTrainer is GPU-only for now (eval/gen use device)"
+        comptime assert (
+            (not Self.USE_TRAIN_CUDA_GRAPH) or (Self.MADT == DT)
+        ), "USE_TRAIN_CUDA_GRAPH is fp32-only (the AMP step's bf16 version bump is host-side)"
         var loss = Self.LOSS.make_gpu(ctx)
         var s = Self(
             net^, opt^, loss^, ctx, tok^,
@@ -202,7 +222,11 @@ struct AutoregressiveTrainer[
                         Scalar[ADT](1)
                     )
         t.n = total
-        t.upload(ctx)
+        # Resident refresh (reuse the device buffer; no realloc) — bit-identical
+        # to `upload` but keeps the buffer pointer stable so the captured compute
+        # graph reads the SAME `in_t`/`tgt_t` each replay (the host rebuilds the
+        # one-hot in place every step before the replay).
+        t.upload_resident(ctx)
 
     # ----- Eval (per-token CE / top-1 over freshly sampled val windows) ---
 
@@ -391,6 +415,69 @@ struct AutoregressiveTrainer[
         self.opt.step[Self.target](self.net, Optional(self.ctx))
         return tl
 
+    # ----- CUDA-graph capture path (compute-only) ------------------------
+
+    def _compute_step_device(mut self) raises:
+        """The PURE-DEVICE compute captured into the graph: zero_grad → forward →
+        SeqCE accumulate → SeqCE vjp → net.vjp → (device grad-clip) → opt.step.
+
+        fp32-only (reaching here ⇒ `CAPTURE` ⇒ `MADT == DT`), so the MADT
+        activation buffers rebind to `Tensor` and the loss runs on them directly
+        (no AMP casts). Reads the PERSISTENT `in_t`/`tgt_t` (refreshed eagerly
+        before each replay). The per-step train CE is folded into the loss's
+        DEVICE accumulator (drained at flush) — never read here, since a D2H
+        would break capture. Must enqueue the SAME kernel sequence every call."""
+        var ctxo = Optional(self.ctx)
+        self.opt.zero_grad["gpu"](self.net, ctxo)
+        self.net.forward["gpu", Self.BATCH](
+            child_refs[Self.NET.ARITY, Self.MADT](self.in_t),
+            self.logits,
+            ctxo,
+        )
+        ref logd = rebind[Tensor](self.logits)
+        ref grdd = rebind[Tensor](self.grad)
+        self.loss.forward_accumulate["gpu", Self.BATCH](logd, self.tgt_t, ctxo)
+        self.loss.vjp["gpu", Self.BATCH](logd, self.tgt_t, grdd, ctxo)
+        self.net.vjp["gpu", Self.BATCH](
+            child_refs[Self.NET.ARITY, Self.MADT](self.in_t),
+            self.grad,
+            child_refs[Self.NET.ARITY, Self.MADT](self.gi),
+            ctxo,
+        )
+        if self.grad_clip > Scalar[DT](0.0):
+            self.opt.clip_grads_device["gpu"](
+                self.net, self.grad_clip, ctxo
+            )
+        self.opt.step["gpu"](self.net, ctxo)
+
+    def _train_step_captured(mut self, it: Int) raises:
+        """One captured/replayed train step. The batch-build (host window sample
+        + one-hot + RESIDENT upload into the persistent `in_t`/`tgt_t`) and the
+        LR push run EAGERLY; the device compute is captured on the first call and
+        replayed thereafter. The LR is pushed onto the device (`push_lr_device`)
+        so the captured `opt.step` reads the FRESH cosine LR each replay instead
+        of a host-baked capture-time value."""
+        self.opt.push_lr_device["gpu"](
+            self.base_lr * self._lr_scale(it), Optional(self.ctx)
+        )
+        var mb = make_batch(self.train_ids, Self.BATCH, Self.SEQ)
+        Self._upload_onehot[Self.MADT](
+            self.ctx, self.in_t, mb.inputs, Self.BATCH
+        )
+        Self._upload_onehot[DT](self.ctx, self.tgt_t, mb.targets, Self.BATCH)
+        # Move the slot into a disjoint local for the capture call (`take` leaves
+        # it None) so the closure can borrow `self` without overlapping the
+        # slot's mut borrow (mirrors the MBPO dynamics-graph pattern).
+        var g = Optional[CUDAGraph](None)
+        if self._train_graph:
+            g = Optional[CUDAGraph](self._train_graph.take())
+
+        def _captured() capturing raises -> None:
+            self._compute_step_device()
+
+        maybe_capture_replay[_captured](g, self.ctx)
+        self._train_graph = g^
+
     # ----- The packaged training run -------------------------------------
 
     def fit(
@@ -414,12 +501,28 @@ struct AutoregressiveTrainer[
         var n_val_batches = n_val_windows // Self.BATCH
 
         var last: Float64 = 0.0
+        # CAPTURE: the per-step train CE is accumulated on-device (no per-step
+        # D2H) and drained as a window-mean at each eval boundary. Reset the
+        # accumulator before the run; the eager path keeps reading per-step CE.
+        comptime if Self.CAPTURE:
+            self.loss.reset_accum["gpu"]()
         for it in range(self.total_iters):
-            var tl = self._train_step(it)
-            last = tl
+            var tl: Float64 = 0.0
+            comptime if Self.CAPTURE:
+                self._train_step_captured(it)
+            else:
+                tl = self._train_step(it)
+                last = tl
             if do_eval and (
                 (it + 1) % eval_every == 0 or (it + 1) == self.total_iters
             ):
+                comptime if Self.CAPTURE:
+                    # Window-mean train CE from the device accumulator, then
+                    # reset for the next window.
+                    tl = Float64(
+                        self.loss.read_accum["gpu"](Optional(self.ctx))
+                    )
+                    self.loss.reset_accum["gpu"]()
                 var v = self._eval_loss_ids(
                     val_mb.inputs, val_mb.targets, n_val_batches
                 )

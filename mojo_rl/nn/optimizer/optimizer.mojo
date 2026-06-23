@@ -58,9 +58,31 @@ trait Optimizer(Defaultable & Movable & ImplicitlyDeletable):
         Arena optimizers override with the capture-safe arena reduction."""
         return clip_grad_norm[target](model, max_norm, ctx)
 
+    def clip_grads_device[
+        target: StaticString, M: Module
+    ](
+        mut self, mut model: M, max_norm: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """CUDA-graph-safe grad-norm clip: on-device kernels, NO allocation and
+        NO D2H — drop into a captured train step. Default: falls back to
+        `clip_grads` (which may D2H → only correct when NOT capturing). Arena
+        optimizers override with the persistent-scratch device path."""
+        _ = self.clip_grads[target, M](model, max_norm, ctx)
+
     def set_lr(mut self, lr: Scalar[DT]):
         """Set the learning rate (for external LR schedules). Default no-op."""
         pass
+
+    def push_lr_device[
+        target: StaticString
+    ](mut self, lr: Scalar[DT], ctx: Optional[DeviceContext] = None) raises:
+        """Capture-safe LR update: write the next LR where a CUDA-graph-captured
+        `step` reads it (a device buffer), so an arbitrary host-computed schedule
+        survives replay. Default: host `set_lr` — correct when NOT capturing (the
+        un-captured kernel reads the host `lr`). Arena optimizers override to also
+        push the LR onto the device."""
+        self.set_lr(lr)
 
     def get_lr(self) -> Scalar[DT]:
         """Current learning rate. Default 1.0; optimizers with an `lr` field

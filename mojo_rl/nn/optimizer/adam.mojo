@@ -219,6 +219,15 @@ struct Adam(Movable, ParamVisitor, Optimizer):
     var _sched_active: Bool
     var _sched_target_lr: Scalar[DT]
     var _sched_warmup: Int
+    # Host-driven device LR (GPU arena). When set, the grouped step reads `lr`
+    # from `_lr_dev` (the device-LR kernel) but does NOT run the on-device
+    # warmup ramp — the HOST writes the next LR into `_lr_dev` each step via
+    # `push_lr_device` (a 1-elem `enqueue_fill`, NO realloc → the buffer pointer
+    # is stable so a captured graph that baked it stays valid). This is the
+    # capture-safe path for an ARBITRARY host-computed schedule (e.g. cosine),
+    # vs `attach_warmup_schedule`'s on-device LinearWarmup. Mutually exclusive
+    # with `_sched_active`.
+    var _lr_host_driven: Bool
 
     def __init__(out self):
         """No-arg default (satisfies Defaultable for the generic Trainer)."""
@@ -251,6 +260,7 @@ struct Adam(Movable, ParamVisitor, Optimizer):
         self._sched_active = False
         self._sched_target_lr = Scalar[DT](0.0)
         self._sched_warmup = 0
+        self._lr_host_driven = False
         self.arena = ParamArena()
         self.m_arena = Tensor()
         self.v_arena = Tensor()
@@ -351,6 +361,28 @@ struct Adam(Movable, ParamVisitor, Optimizer):
                 block_dim=TPB,
             )
             return
+        if self._lr_host_driven:
+            # Host-driven device LR: read `lr` from `_lr_dev` (the host wrote it
+            # via `push_lr_device` BEFORE this step / before the captured replay),
+            # no on-device warmup ramp. Capture-safe — the kernel sequence is
+            # fixed and `_lr_dev`'s pointer is stable.
+            c.enqueue_function[_grouped_adam_kernel_devlr](
+                self.arena.val.dev.value(),
+                self.arena.grd.dev.value(),
+                self.m_arena.dev.value(),
+                self.v_arena.dev.value(),
+                self.arena.decay_mask.dev.value(),
+                self.arena.total,
+                self.beta1,
+                self.beta2,
+                self.eps,
+                self._pow_dev.dev.value(),
+                self._lr_dev.dev.value(),
+                self.wd,
+                grid_dim=nblk,
+                block_dim=TPB,
+            )
+            return
         c.enqueue_function[_grouped_adam_kernel](
             self.arena.val.dev.value(),
             self.arena.grd.dev.value(),
@@ -394,6 +426,23 @@ struct Adam(Movable, ParamVisitor, Optimizer):
 
     def get_lr(self) -> Scalar[DT]:
         return self.lr
+
+    def push_lr_device[
+        target: StaticString
+    ](mut self, lr: Scalar[DT], ctx: Optional[DeviceContext] = None) raises:
+        """Capture-safe LR update for an arbitrary host-computed schedule. On the
+        GPU arena path, writes `lr` into the device `_lr_dev` buffer (1-elem
+        `enqueue_fill`, NO realloc → stable pointer) and engages the device-LR
+        kernel, so a CUDA-graph-captured `step` reads the FRESH LR on every
+        replay instead of the host-baked capture-time value. Call this EAGERLY
+        each step before the captured replay. Off the GPU-arena path it just
+        sets the host `lr` (the un-captured kernel reads it directly). Keeps the
+        host `lr` in sync either way (so `get_lr` stays meaningful)."""
+        self.lr = lr
+        comptime if target == "gpu":
+            if self.arena.adopted:
+                self._lr_host_driven = True
+                self._lr_dev.dev.value().enqueue_fill(lr)
 
     def clip_grads[
         target: StaticString, M: Module
