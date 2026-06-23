@@ -61,9 +61,8 @@ is a future C.3b chunk; this commit ships the primitive.
 """
 
 from std.gpu import barrier, block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.math import pow as fpow
-from std.memory import alloc
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
@@ -358,10 +357,12 @@ struct GPUPrioritizedReplay[
 
     # Host scratch for sample-time bookkeeping. Sized to
     # `batch_capacity` so multiple `sample[BATCH]` calls with
-    # different BATCH ≤ batch_capacity reuse the same buffers.
-    var _host_indices: List[Int32]
-    var _host_weights: List[Scalar[DT]]
-    var _host_td: List[Scalar[DT]]
+    # different BATCH ≤ batch_capacity reuse the same buffers. Pinned
+    # `HostBuffer`s — direct `[i]` access AND passed straight to
+    # `enqueue_copy` (no `.unsafe_ptr()`), pinned for faster H2D/D2H.
+    var _host_indices: HostBuffer[DType.int32]
+    var _host_weights: HostBuffer[DT]
+    var _host_td: HostBuffer[DT]
 
     # Last sample's BATCH (set by `sample`, consumed by
     # `update_priorities`).
@@ -396,18 +397,18 @@ struct GPUPrioritizedReplay[
         max_priority_dev.enqueue_fill(Scalar[DT](1.0))
         var weights = ctx.enqueue_create_buffer[DT](batch_capacity)
         weights.enqueue_fill(Scalar[DT](1.0))
-        var host_indices = List[Int32](
-            length=batch_capacity,
-            fill=Int32(0),
+        # Pinned host scratch (overwritten before read each sample; the fills
+        # below just match the prior List-init for determinism).
+        var host_indices = ctx.enqueue_create_host_buffer[DType.int32](
+            batch_capacity
         )
-        var host_weights = List[Scalar[DT]](
-            length=batch_capacity,
-            fill=Scalar[DT](1.0),
-        )
-        var host_td = List[Scalar[DT]](
-            length=batch_capacity,
-            fill=Scalar[DT](0.0),
-        )
+        var host_weights = ctx.enqueue_create_host_buffer[DT](batch_capacity)
+        var host_td = ctx.enqueue_create_host_buffer[DT](batch_capacity)
+        ctx.synchronize()
+        for i in range(batch_capacity):
+            host_indices[i] = Int32(0)
+            host_weights[i] = Scalar[DT](1.0)
+            host_td[i] = Scalar[DT](0.0)
         return Self(
             base=base^,
             tree=tree^,
@@ -445,12 +446,10 @@ struct GPUPrioritizedReplay[
         device path D2H-copies the tree and synchronizes, exactly the
         round-trip the hot path exists to avoid)."""
         comptime if Self.DEVICE_TREE_:
-            var h = alloc[Scalar[DT]](2 * Self.CAP - 1)
+            var h = ctx.enqueue_create_host_buffer[DT](2 * Self.CAP - 1)
             ctx.enqueue_copy(h, self.tree_dev)
             ctx.synchronize()
-            var total = h[0]
-            h.free()
-            return total
+            return h[0]
         else:
             return self.tree[0]
 
@@ -716,8 +715,8 @@ struct GPUPrioritizedReplay[
                 self._host_weights[i] = self._host_weights[i] / max_w_inv
 
             # Upload indices + weights to device.
-            ctx.enqueue_copy(self.base.indices, self._host_indices.unsafe_ptr())
-            ctx.enqueue_copy(self.weights, self._host_weights.unsafe_ptr())
+            ctx.enqueue_copy(self.base.indices, self._host_indices)
+            ctx.enqueue_copy(self.weights, self._host_weights)
         self._last_batch = BATCH
 
         # Gather kernel — reuses `_gather_batch_kernel` from
@@ -841,7 +840,7 @@ struct GPUPrioritizedReplay[
             )
             self._device_propagate(ctx)
         else:
-            ctx.enqueue_copy(self._host_td.unsafe_ptr(), td_errors_dev)
+            ctx.enqueue_copy(self._host_td, td_errors_dev)
             ctx.synchronize()
 
             var new_max = self.max_priority
@@ -933,7 +932,7 @@ struct GPUPrioritizedReplay[
             )
         else:
             ctx.enqueue_copy(
-                state.mb_w.dev.value(), self._host_weights.unsafe_ptr()
+                state.mb_w.dev.value(), self._host_weights
             )
         state.has_per = True
 
