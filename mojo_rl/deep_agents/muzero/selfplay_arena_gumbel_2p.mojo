@@ -80,11 +80,11 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 
 def _ai32(n: Int) -> UnsafePointer[Int32, MutAnyOrigin]:
-    return alloc[Int32](n)
+    return alloc[Int32](n).as_unsafe_any_origin()
 
 
 def _aint(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
-    return alloc[Int](n)
+    return alloc[Int](n).as_unsafe_any_origin()
 
 
 @always_inline

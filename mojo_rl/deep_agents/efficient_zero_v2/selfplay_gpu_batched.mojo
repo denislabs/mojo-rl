@@ -64,7 +64,7 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 
 def _ai(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
-    return alloc[Int](n)
+    return alloc[Int](n).as_unsafe_any_origin()
 
 
 def run_ezv2_gumbel_selfplay_gpu_batched[

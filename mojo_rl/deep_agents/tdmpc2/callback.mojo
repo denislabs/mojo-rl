@@ -81,10 +81,10 @@ struct TDMPC2RolloutCallbackCPU[
         qj: Int,
     ) raises -> Self:
         return Self(
-            dyn=UnsafePointer(to=dyn),
-            rew=UnsafePointer(to=rew),
-            pol=UnsafePointer(to=pol),
-            qt=UnsafePointer(to=qt),
+            dyn=UnsafePointer(to=dyn).as_unsafe_any_origin(),
+            rew=UnsafePointer(to=rew).as_unsafe_any_origin(),
+            pol=UnsafePointer(to=pol).as_unsafe_any_origin(),
+            qt=UnsafePointer(to=qt).as_unsafe_any_origin(),
             decode=TwoHotDecode[
                 Self.BINS, Self.VMIN, Self.VMAX
             ].make["cpu", INIT=Zero](),
@@ -265,14 +265,14 @@ struct TDMPC2RolloutCallbackGPU[
         ctx: DeviceContext,
     ) raises -> Self:
         return Self(
-            dyn=UnsafePointer(to=dyn),
-            rew=UnsafePointer(to=rew),
-            pol=UnsafePointer(to=pol),
-            qt0=UnsafePointer(to=qt0),
-            qt1=UnsafePointer(to=qt1),
-            qt2=UnsafePointer(to=qt2),
-            qt3=UnsafePointer(to=qt3),
-            qt4=UnsafePointer(to=qt4),
+            dyn=UnsafePointer(to=dyn).as_unsafe_any_origin(),
+            rew=UnsafePointer(to=rew).as_unsafe_any_origin(),
+            pol=UnsafePointer(to=pol).as_unsafe_any_origin(),
+            qt0=UnsafePointer(to=qt0).as_unsafe_any_origin(),
+            qt1=UnsafePointer(to=qt1).as_unsafe_any_origin(),
+            qt2=UnsafePointer(to=qt2).as_unsafe_any_origin(),
+            qt3=UnsafePointer(to=qt3).as_unsafe_any_origin(),
+            qt4=UnsafePointer(to=qt4).as_unsafe_any_origin(),
             decode=TwoHotDecode[
                 Self.BINS, Self.VMIN, Self.VMAX
             ].make["gpu", INIT=Zero](ctx=ctx),

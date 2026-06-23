@@ -66,7 +66,7 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 
 def _aint(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
-    return alloc[Int](n)
+    return alloc[Int](n).as_unsafe_any_origin()
 
 
 def _avg_last_n(returns: List[Float64], n: Int) -> Float64:
