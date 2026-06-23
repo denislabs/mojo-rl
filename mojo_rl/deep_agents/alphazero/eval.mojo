@@ -132,22 +132,22 @@ def eval_policy_vs_random[
             for e in range(N_GAMES):
                 var cnt = 0
                 for a in range(ACT):
-                    if Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5:
+                    if legal_h[e * ACT + a] > 0.5:
                         cnt += 1
                 if cnt == 0:
-                    actions_h.unsafe_ptr()[e] = Scalar[DT](0)
+                    actions_h[e] = Scalar[DT](0)
                 else:
                     rng = _xs(rng)
                     var pick = Int(rng % UInt64(cnt))
                     var chosen = 0
                     var seen = 0
                     for a in range(ACT):
-                        if Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5:
+                        if legal_h[e * ACT + a] > 0.5:
                             if seen == pick:
                                 chosen = a
                                 break
                             seen += 1
-                    actions_h.unsafe_ptr()[e] = Scalar[DT](chosen)
+                    actions_h[e] = Scalar[DT](chosen)
 
         ctx.enqueue_copy(actions_dev, actions_h)
         ctx.synchronize()
@@ -165,7 +165,7 @@ def eval_policy_vs_random[
     var draws = 0
     var losses = 0
     for e in range(N_GAMES):
-        var r = Int(Float64(states_h.unsafe_ptr()[e * STATE + RESULT_IDX]))
+        var r = Int(states_h[e * STATE + RESULT_IDX])
         if r == agent_win:
             wins += 1
         elif r == agent_loss:
@@ -474,9 +474,9 @@ def eval_mcts_vs_opponent[
 
         all_done = True
         for e in range(N_GAMES):
-            if not eval_done[e] and Float64(done_h.unsafe_ptr()[e]) > 0.5:
+            if not eval_done[e] and done_h[e] > 0.5:
                 eval_done[e] = True
-                var r = Float64(rew_h.unsafe_ptr()[e])
+                var r = Float64(rew_h[e])
                 # Reward accrues to the player who just moved.
                 if r > 0.5:
                     eval_result[e] = 1 if agent_turn else 2
@@ -597,12 +597,12 @@ def eval_policy_vs_opponent[
                 var best = -1
                 var bestv = Float64(-1e30)
                 for a in range(ACT):
-                    if Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5:
-                        var v = Float64(pred_h.unsafe_ptr()[e * W + a])
+                    if Float64(legal_h[e * ACT + a]) > 0.5:
+                        var v = Float64(pred_h[e * W + a])
                         if v > bestv:
                             bestv = v
                             best = a
-                actions_h.unsafe_ptr()[e] = Scalar[DT](best if best >= 0 else 0)
+                actions_h[e] = Scalar[DT](best if best >= 0 else 0)
             ctx.enqueue_copy(actions_dev, actions_h)
             ctx.synchronize()
         else:
@@ -627,7 +627,7 @@ def eval_policy_vs_opponent[
     var draws = 0
     var losses = 0
     for e in range(N_GAMES):
-        var r = Int(Float64(states_h.unsafe_ptr()[e * STATE + RESULT_IDX]))
+        var r = Int(Float64(states_h[e * STATE + RESULT_IDX]))
         if r == agent_win:
             wins += 1
         elif r == agent_loss:
