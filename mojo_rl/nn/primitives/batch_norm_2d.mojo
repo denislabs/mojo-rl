@@ -76,13 +76,11 @@ def _bn2d_finalize_stats_kernel[
     SPATIAL: Int,
     G: Int,
     EPSILON: Float64,
-    MOMENTUM: Float64,
 ](
     partial_sum: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
     partial_sumsq: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
-    running_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
-    running_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     cache_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
 ):
     var c = Int(block_idx.x)
@@ -103,12 +101,33 @@ def _bn2d_finalize_stats_kernel[
     var eps: partial_sum.element_type = Scalar[DT](EPSILON)
     var inv_std: partial_sum.element_type = 1.0 / sqrt(var_ + eps)
     cache_mean[c] = mean
+    cache_var[c] = var_
     cache_inv_std[c] = inv_std
-    if (mean - mean == Scalar[DT](0.0)) and (var_ - var_ == Scalar[DT](0.0)):
-        var mom = Scalar[DT](MOMENTUM)
-        var one_m = Scalar[DT](1.0) - mom
-        running_mean[c] = one_m * running_mean[c] + mom * mean
-        running_var[c] = one_m * running_var[c] + mom * var_
+
+
+def _bn2d_update_running_kernel[
+    C: Int,
+    MOMENTUM: Float64,
+](
+    cache_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    """Running-stat EMA, in its OWN kernel (one thread / channel). Split out of
+    `_bn2d_finalize_stats_kernel`: when that kernel ran the EMA inside its
+    reduction body, the running_mean/running_var read-modify-write STORES were
+    dropped by the NVIDIA backend at the B>64 (G=64) instantiation — running
+    stats stayed pinned at init (0/1), so eval (running-stat) accuracy collapsed
+    while train (batch-stat) accuracy was fine. As the kernel's sole job the
+    stores survive. Unconditional (matches the CPU path; no NaN guard)."""
+    var c = Int(block_idx.x)
+    if c >= C:
+        return
+    var mom = Scalar[DT](MOMENTUM)
+    var one_m = Scalar[DT](1.0) - mom
+    running_mean[c] = one_m * running_mean[c] + mom * cache_mean[c]
+    running_var[c] = one_m * running_var[c] + mom * cache_var[c]
 
 
 def _bn2d_normalize_kernel[
@@ -341,6 +360,7 @@ struct BatchNorm2D[
     var cache_xhat: Tensor  # [BATCH, FLAT]
     var cache_inv_std: Tensor  # [C]
     var cache_mean: Tensor  # [C] (GPU multiblock normalize)
+    var cache_var: Tensor  # [C] (GPU: batch var, fed to the running-stat EMA)
     # Multi-block reduction scratch ([C·RBLOCKS] or [C]).
     var bn_psum: Tensor
     var bn_psumsq: Tensor
@@ -359,6 +379,7 @@ struct BatchNorm2D[
         self.cache_xhat = Tensor()
         self.cache_inv_std = Tensor()
         self.cache_mean = Tensor()
+        self.cache_var = Tensor()
         self.bn_psum = Tensor()
         self.bn_psumsq = Tensor()
         self.bn_pdg = Tensor()
@@ -391,6 +412,7 @@ struct BatchNorm2D[
             comptime PR = Self.C_ * BN2D_RBLOCKS
             bn.cache_inv_std.ensure_gpu(c, Self.C_)
             bn.cache_mean.ensure_gpu(c, Self.C_)
+            bn.cache_var.ensure_gpu(c, Self.C_)
             bn.bn_psum.ensure_gpu(c, PR)
             bn.bn_psumsq.ensure_gpu(c, PR)
             bn.bn_pdg.ensure_gpu(c, PR)
@@ -503,7 +525,7 @@ struct BatchNorm2D[
                     grid_dim=Self.C_ * G,
                     block_dim=BN2D_TPB,
                 )
-                # Pass 2: mean/var/inv_std + EMA.
+                # Pass 2: mean/var/inv_std (caches only — NO running-stat write).
                 c.enqueue_function[
                     _bn2d_finalize_stats_kernel[
                         B,
@@ -511,15 +533,26 @@ struct BatchNorm2D[
                         Self.SPATIAL,
                         G,
                         Self.EPSILON,
-                        Self.MOMENTUM,
                     ]
                 ](
                     self.bn_psum.lt["gpu", lpr](),
                     self.bn_psumsq.lt["gpu", lpr](),
+                    self.cache_mean.lt["gpu", lc](),
+                    self.cache_var.lt["gpu", lc](),
+                    self.cache_inv_std.lt["gpu", lc](),
+                    grid_dim=Self.C_,
+                    block_dim=1,
+                )
+                # Pass 2b: running-stat EMA in a DEDICATED kernel (see kernel
+                # docstring — folding it into pass 2 dropped the stores on NVIDIA
+                # at B>64, pinning running stats at init and collapsing eval).
+                c.enqueue_function[
+                    _bn2d_update_running_kernel[Self.C_, Self.MOMENTUM]
+                ](
+                    self.cache_mean.lt["gpu", lc](),
+                    self.cache_var.lt["gpu", lc](),
                     self.running_mean.t.lt["gpu", lc](),
                     self.running_var.t.lt["gpu", lc](),
-                    self.cache_mean.lt["gpu", lc](),
-                    self.cache_inv_std.lt["gpu", lc](),
                     grid_dim=Self.C_,
                     block_dim=1,
                 )
