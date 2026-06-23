@@ -32,7 +32,7 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.storage.core.initializer import Kaiming
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.muzero.nets import (
@@ -46,7 +46,7 @@ from mojo_rl.deep_agents.zero.evaluators import (
     RandomOpponent,
     GPUMinimaxConnectFour,
 )
-from mojo_rl.nn.core.checkpoint import save_state_v2_body_gpu
+from mojo_rl.nn.storage.core.checkpoint import save_params
 from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
 
@@ -169,14 +169,14 @@ def main() raises:
     logger.close()
 
     # Persist the BEST net trio (rep/dyn/pred hold the final promoted weights —
-    # the deployable artifact, distinct from the drifting learner). One-file
-    # nn-ckpt v2 envelope, same format MuZeroAgent.save uses.
-    var body = String("")
-    save_state_v2_body_gpu(rep, body, String("rep"), ctx)
-    save_state_v2_body_gpu(dyn, body, String("dyn"), ctx)
-    save_state_v2_body_gpu(pred, body, String("pred"), ctx)
-    with open("connect_four_muzero_gumbel.ckpt", "w") as f:
-        f.write(String("nn-ckpt v2\n") + body)
+    # the deployable artifact, distinct from the drifting learner). The storage
+    # checkpoint is whole-file-per-model, so this writes three per-net files
+    # (`.rep` / `.dyn` / `.pred`), the same layout the driver's rolling
+    # checkpoint + `MuZeroAgent.save` use.
+    var ckpt = String("connect_four_muzero_gumbel.ckpt")
+    save_params["gpu", Rep](rep, ckpt + String(".rep"), Optional(ctx), False)
+    save_params["gpu", Dyn](dyn, ckpt + String(".dyn"), Optional(ctx), False)
+    save_params["gpu", Pred](pred, ckpt + String(".pred"), Optional(ctx), False)
 
     print()
     print("last_loss:", res.last_loss, "| promotions:", res.promotions)
