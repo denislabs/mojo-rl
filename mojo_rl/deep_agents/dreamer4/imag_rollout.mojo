@@ -53,6 +53,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from .shortcut_loss import ShortcutDynamics, AgentDynamics, _ilog2, _mao
 from ..dreamerv3.dists_discrete import cat_sample, UNIMIX
 from ..dreamerv3.twohot import twohot_pred
@@ -90,7 +91,7 @@ def _fwd_window[
     for i in range(BF * ND):
         in_t.data[i] = packed_p[i]
     comptime if FWD == "cpu":
-        dyn.forward["cpu", BF](TensorRefs[M.ARITY](in_t), out_t, None)
+        call_forward["cpu", BF](dyn, TensorRefs[M.ARITY](in_t), out_t, None)
         for i in range(BF * ND):
             zhat_p[i] = out_t.data[i]
         var ao = dyn.agent_out_ptr_cpu()
@@ -99,7 +100,7 @@ def _fwd_window[
     else:
         var c = ctx.value()
         in_t.upload(c)
-        dyn.forward["gpu", BF](TensorRefs[M.ARITY](in_t), out_t, ctx)
+        call_forward["gpu", BF](dyn, TensorRefs[M.ARITY](in_t), out_t, ctx)
         out_t.download(c)
         for i in range(BF * ND):
             zhat_p[i] = out_t.data[i]
@@ -145,9 +146,9 @@ def _annotate[
     # bridge gathered h → boundary input Tensor (heads run CPU)
     for i in range(B * AGD):
         hin_t.data[i] = hg[i]
-    ph.forward["cpu", B](TensorRefs[PH.ARITY](hin_t), plout_t, None)
-    vh.forward["cpu", B](TensorRefs[VH.ARITY](hin_t), vlout_t, None)
-    rh.forward["cpu", B](TensorRefs[RH.ARITY](hin_t), rlout_t, None)
+    call_forward["cpu", B](ph, TensorRefs[PH.ARITY](hin_t), plout_t, None)
+    call_forward["cpu", B](vh, TensorRefs[VH.ARITY](hin_t), vlout_t, None)
+    call_forward["cpu", B](rh, TensorRefs[RH.ARITY](hin_t), rlout_t, None)
     # copy head outputs back into the raw scratch the host helpers index
     for i in range(B * PLOG):
         pl[i] = plout_t.data[i]

@@ -43,6 +43,7 @@ from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.optimizer.optimizer import Optimizer
 from mojo_rl.nn.optimizer.grad_clip import clip_grad_norm
@@ -203,7 +204,7 @@ def ezv2_unroll_train_step_cpu[
     var cscale = consistency_coef / Scalar[DT](K * B)
 
     # ── forward scan: rep then K dynamics steps, store every z ──
-    rep.forward["cpu", B](TensorRefs[REP.ARITY](obs0_t), z_work, None)
+    call_forward["cpu", B](rep, TensorRefs[REP.ARITY](obs0_t), z_work, None)
     for i in range(B * LATENT):
         zst.data[i] = z_work.data[i]
 
@@ -217,7 +218,7 @@ def ezv2_unroll_train_step_cpu[
             for a in range(ACT):
                 din.data[dib + LATENT + a] = Scalar[DT](0.0)
             din.data[dib + LATENT + Int(actions[k * B + b])] = Scalar[DT](1.0)
-        dyn.forward["cpu", B](TensorRefs[DYN.ARITY](din), dout, None)
+        call_forward["cpu", B](dyn, TensorRefs[DYN.ARITY](din), dout, None)
         var znoff = (k + 1) * B * LATENT
         for b in range(B):
             for i in range(LATENT):
@@ -228,8 +229,8 @@ def ezv2_unroll_train_step_cpu[
     for k in range(1, K + 1):
         for i in range(B * OBS):
             obsk_t.data[i] = obs_seq[k * B * OBS + i]
-        rep.forward["cpu", B](TensorRefs[REP.ARITY](obsk_t), ztmp, None)
-        proj.forward["cpu", B](TensorRefs[PROJM.ARITY](ztmp), projo, None)
+        call_forward["cpu", B](rep, TensorRefs[REP.ARITY](obsk_t), ztmp, None)
+        call_forward["cpu", B](proj, TensorRefs[PROJM.ARITY](ztmp), projo, None)
         for i in range(B * PROJ):
             tstore.data[(k - 1) * B * PROJ + i] = projo.data[i]
 
@@ -254,7 +255,7 @@ def ezv2_unroll_train_step_cpu[
             zk_work.data[i] = zst.data[zoff + i]
 
         # (a) prediction head: re-forward for cache, seed grads, vjp → grad z_k
-        pred.forward["cpu", B](TensorRefs[PRED.ARITY](zk_work), pout, None)
+        call_forward["cpu", B](pred, TensorRefs[PRED.ARITY](zk_work), pout, None)
         for i in range(B * ACT):
             pol_tgt_l[i] = policy_tgt[k * B * ACT + i]
         var l_pol_k = soft_ce_slice_loss_and_grad[B, PRED_OUT, 0, ACT](
@@ -272,7 +273,8 @@ def ezv2_unroll_train_step_cpu[
         ](pout.data, twv.data, gscale * value_coef, gpout.data)
         loss += l_val_k
         l_val += l_val_k
-        pred.vjp["cpu", B](
+        call_vjp["cpu", B](
+            pred,
             TensorRefs[PRED.ARITY](zk_work),
             gpout,
             TensorRefs[PRED.ARITY](gpin),
@@ -281,8 +283,8 @@ def ezv2_unroll_train_step_cpu[
 
         # (b) consistency online branch (k >= 1): p_k = h_pred(g_proj(z_k))
         if k >= 1:
-            proj.forward["cpu", B](TensorRefs[PROJM.ARITY](zk_work), projo, None)
-            predh.forward["cpu", B](TensorRefs[PREDH.ARITY](projo), pk, None)
+            call_forward["cpu", B](proj, TensorRefs[PROJM.ARITY](zk_work), projo, None)
+            call_forward["cpu", B](predh, TensorRefs[PREDH.ARITY](projo), pk, None)
             for i in range(B * PROJ):
                 cons_t_l[i] = tstore.data[(k - 1) * B * PROJ + i]
             var mk = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](None)
@@ -293,13 +295,15 @@ def ezv2_unroll_train_step_cpu[
             )
             loss += l_cons_k
             l_cons += l_cons_k
-            predh.vjp["cpu", B](
+            call_vjp["cpu", B](
+                predh,
                 TensorRefs[PREDH.ARITY](projo),
                 gpk,
                 TensorRefs[PREDH.ARITY](gproj),
                 None,
             )
-            proj.vjp["cpu", B](
+            call_vjp["cpu", B](
+                proj,
                 TensorRefs[PROJM.ARITY](zk_work),
                 gproj,
                 TensorRefs[PROJM.ARITY](gzcons),
@@ -320,7 +324,7 @@ def ezv2_unroll_train_step_cpu[
                 din.data[dib + LATENT + Int(actions[k * B + b])] = Scalar[DT](
                     1.0
                 )
-            dyn.forward["cpu", B](TensorRefs[DYN.ARITY](din), dout, None)
+            call_forward["cpu", B](dyn, TensorRefs[DYN.ARITY](din), dout, None)
             for b in range(B):
                 for i in range(LATENT):
                     gdout.data[b * DYN_OUT + i] = gz.data[b * LATENT + i]
@@ -334,7 +338,8 @@ def ezv2_unroll_train_step_cpu[
             )
             loss += l_rew_k
             l_rew += l_rew_k
-            dyn.vjp["cpu", B](
+            call_vjp["cpu", B](
+                dyn,
                 TensorRefs[DYN.ARITY](din),
                 gdout,
                 TensorRefs[DYN.ARITY](gdin),
@@ -351,9 +356,9 @@ def ezv2_unroll_train_step_cpu[
             gz.data[i] = gpin.data[i]
 
     # ── rep: re-forward obs0 (cache clobbered by target pre-pass), then vjp ──
-    rep.forward["cpu", B](TensorRefs[REP.ARITY](obs0_t), z_work, None)
-    rep.vjp["cpu", B](
-        TensorRefs[REP.ARITY](obs0_t), gz, TensorRefs[REP.ARITY](gobs), None
+    call_forward["cpu", B](rep, TensorRefs[REP.ARITY](obs0_t), z_work, None)
+    call_vjp["cpu", B](
+        rep, TensorRefs[REP.ARITY](obs0_t), gz, TensorRefs[REP.ARITY](gobs), None
     )
 
     # Global grad-norm clip per net (max_grad_norm <= 0 ⇒ no-op), then step.
@@ -570,7 +575,7 @@ def ezv2_unroll_train_step_gpu[
         d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
         grid_dim=nbOBS, block_dim=TPB,
     )
-    rep.forward["gpu", B](TensorRefs[REP.ARITY](d_obs_work), z_work, octx)
+    call_forward["gpu", B](rep, TensorRefs[REP.ARITY](d_obs_work), z_work, octx)
     ctx.enqueue_function[kBcopy](
         z_work.lt["gpu", LBL](), zst.lt_at["gpu", LBL](0),
         grid_dim=nbLAT, block_dim=TPB,
@@ -582,7 +587,7 @@ def ezv2_unroll_train_step_gpu[
             d_act.lt_at["gpu", LB](k * B),
             grid_dim=nbDIN, block_dim=TPB,
         )
-        dyn.forward["gpu", B](TensorRefs[DYN.ARITY](din), dout, octx)
+        call_forward["gpu", B](dyn, TensorRefs[DYN.ARITY](din), dout, octx)
         ctx.enqueue_function[kCopyL](
             zst.lt_at["gpu", LBL]((k + 1) * B * LATENT),
             dout.lt["gpu", LBDO](),
@@ -597,8 +602,8 @@ def ezv2_unroll_train_step_gpu[
             d_obs_work.lt["gpu", LBOBS](),
             grid_dim=nbOBS, block_dim=TPB,
         )
-        rep.forward["gpu", B](TensorRefs[REP.ARITY](d_obs_work), ztmp, octx)
-        proj.forward["gpu", B](TensorRefs[PROJM.ARITY](ztmp), projo, octx)
+        call_forward["gpu", B](rep, TensorRefs[REP.ARITY](d_obs_work), ztmp, octx)
+        call_forward["gpu", B](proj, TensorRefs[PROJM.ARITY](ztmp), projo, octx)
         ctx.enqueue_function[kBcopyPROJ](
             projo.lt["gpu", LBPROJ](),
             tstore.lt_at["gpu", LBPROJ]((k - 1) * B * PROJ),
@@ -622,7 +627,7 @@ def ezv2_unroll_train_step_gpu[
         )
 
         # (a) prediction head: forward (cache), seed grads, vjp → grad z_k
-        pred.forward["gpu", B](TensorRefs[PRED.ARITY](zk_work), pout, octx)
+        call_forward["gpu", B](pred, TensorRefs[PRED.ARITY](zk_work), pout, octx)
         ctx.enqueue_function[kPolCE](
             pout.lt["gpu", LBPO](),
             d_pol.lt_at["gpu", LBACT](k * B * ACT),
@@ -654,15 +659,16 @@ def ezv2_unroll_train_step_gpu[
                 gpout.lt["gpu", LBPO](), d_isw.lt["gpu", LB](),
                 grid_dim=nbB, block_dim=TPB,
             )
-        pred.vjp["gpu", B](
+        call_vjp["gpu", B](
+            pred,
             TensorRefs[PRED.ARITY](zk_work), gpout,
             TensorRefs[PRED.ARITY](gpin), octx,
         )
 
         # (b) consistency online branch (k >= 1): p_k = h_pred(g_proj(z_k))
         if k >= 1:
-            proj.forward["gpu", B](TensorRefs[PROJM.ARITY](zk_work), projo, octx)
-            predh.forward["gpu", B](TensorRefs[PREDH.ARITY](projo), pk, octx)
+            call_forward["gpu", B](proj, TensorRefs[PROJM.ARITY](zk_work), projo, octx)
+            call_forward["gpu", B](predh, TensorRefs[PREDH.ARITY](projo), pk, octx)
             ctx.enqueue_function[kCons](
                 pk.lt["gpu", LBPROJ](),
                 tstore.lt_at["gpu", LBPROJ]((k - 1) * B * PROJ),
@@ -677,11 +683,13 @@ def ezv2_unroll_train_step_gpu[
                     gpk.lt["gpu", LBPROJ](), d_isw.lt["gpu", LB](),
                     grid_dim=nbB, block_dim=TPB,
                 )
-            predh.vjp["gpu", B](
+            call_vjp["gpu", B](
+                predh,
                 TensorRefs[PREDH.ARITY](projo), gpk,
                 TensorRefs[PREDH.ARITY](gproj), octx,
             )
-            proj.vjp["gpu", B](
+            call_vjp["gpu", B](
+                proj,
                 TensorRefs[PROJM.ARITY](zk_work), gproj,
                 TensorRefs[PROJM.ARITY](gzcons), octx,
             )
@@ -699,7 +707,7 @@ def ezv2_unroll_train_step_gpu[
                 d_act.lt_at["gpu", LB](k * B),
                 grid_dim=nbDIN, block_dim=TPB,
             )
-            dyn.forward["gpu", B](TensorRefs[DYN.ARITY](din), dout, octx)
+            call_forward["gpu", B](dyn, TensorRefs[DYN.ARITY](din), dout, octx)
             ctx.enqueue_function[kCarry](
                 gdout.lt["gpu", LBDO](),
                 gz.lt["gpu", LBL](),
@@ -724,7 +732,8 @@ def ezv2_unroll_train_step_gpu[
                     gdout.lt["gpu", LBDO](), d_isw.lt["gpu", LB](),
                     grid_dim=nbB, block_dim=TPB,
                 )
-            dyn.vjp["gpu", B](
+            call_vjp["gpu", B](
+                dyn,
                 TensorRefs[DYN.ARITY](din), gdout,
                 TensorRefs[DYN.ARITY](gdin), octx,
             )
@@ -746,8 +755,9 @@ def ezv2_unroll_train_step_gpu[
         d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
         grid_dim=nbOBS, block_dim=TPB,
     )
-    rep.forward["gpu", B](TensorRefs[REP.ARITY](d_obs_work), z_work, octx)
-    rep.vjp["gpu", B](
+    call_forward["gpu", B](rep, TensorRefs[REP.ARITY](d_obs_work), z_work, octx)
+    call_vjp["gpu", B](
+        rep,
         TensorRefs[REP.ARITY](d_obs_work), gz,
         TensorRefs[REP.ARITY](gobs), octx,
     )

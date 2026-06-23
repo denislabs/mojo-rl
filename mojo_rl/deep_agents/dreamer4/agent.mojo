@@ -39,6 +39,7 @@ from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.core.initializer import Initializer
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.core.walkers import join_name
 
 from .dynamics import Dreamer4Dynamics
@@ -349,7 +350,7 @@ struct Dreamer4Agent[
         for i in range(NB * IN):
             in_t.data[i] = inp[i]
         var out_t = Tensor.alloc(NB * OUT)
-        m.forward["cpu", NB](TensorRefs[M.ARITY](in_t), out_t, None)
+        call_forward["cpu", NB](m, TensorRefs[M.ARITY](in_t), out_t, None)
         for i in range(NB * OUT):
             out[i] = out_t.data[i]
 
@@ -367,8 +368,8 @@ struct Dreamer4Agent[
         for i in range(NB * OUT):
             go_t.data[i] = go[i]
         var gi_t = Tensor.alloc(NB * IN)
-        m.vjp["cpu", NB](
-            TensorRefs[M.ARITY](fin_t), go_t, TensorRefs[M.ARITY](gi_t), None
+        call_vjp["cpu", NB](
+            m, TensorRefs[M.ARITY](fin_t), go_t, TensorRefs[M.ARITY](gi_t), None
         )
 
     @staticmethod

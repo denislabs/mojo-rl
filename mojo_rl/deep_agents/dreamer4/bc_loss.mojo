@@ -27,6 +27,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward, call_vjp
 
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_fwd, cat_bwd
 from mojo_rl.deep_agents.dreamerv3.twohot import twohot_loss, twohot_loss_backward
@@ -95,8 +96,8 @@ def bc_mtp_loss[
         h_t.data[i] = h[i]
     var plog_t = Tensor.alloc(BT * PLOG)
     var rlog_t = Tensor.alloc(BT * RLOG)
-    ph.forward["cpu", BT](TensorRefs[PH.ARITY](h_t), plog_t, None)
-    rh.forward["cpu", BT](TensorRefs[RH.ARITY](h_t), rlog_t, None)
+    call_forward["cpu", BT](ph, TensorRefs[PH.ARITY](h_t), plog_t, None)
+    call_forward["cpu", BT](rh, TensorRefs[RH.ARITY](h_t), rlog_t, None)
     for i in range(BT * PLOG):
         plog[i] = plog_t.data[i]
     for i in range(BT * RLOG):
@@ -153,11 +154,12 @@ def bc_mtp_loss[
         grl_t.data[i] = grl[i]
     var grad_h_t = Tensor.alloc(BT * DIN)
     var grad_h_tmp_t = Tensor.alloc(BT * DIN)
-    ph.vjp["cpu", BT](
-        TensorRefs[PH.ARITY](h_t), gpl_t, TensorRefs[PH.ARITY](grad_h_t), None
+    call_vjp["cpu", BT](
+        ph, TensorRefs[PH.ARITY](h_t), gpl_t, TensorRefs[PH.ARITY](grad_h_t), None
     )  # grad_h from policy
-    rh.vjp["cpu", BT](
-        TensorRefs[RH.ARITY](h_t), grl_t, TensorRefs[RH.ARITY](grad_h_tmp_t), None
+    call_vjp["cpu", BT](
+        rh, TensorRefs[RH.ARITY](h_t), grl_t, TensorRefs[RH.ARITY](grad_h_tmp_t),
+        None,
     )  # grad_h from reward
     for i in range(BT * DIN):
         grad_h[i] = grad_h_t.data[i]

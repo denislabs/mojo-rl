@@ -46,6 +46,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward, call_vjp
 
 
 def _ilog2(n: Int) -> Int:
@@ -142,14 +143,14 @@ def _run_fwd[
         in_t.data[i] = in_host[i]
     comptime if FWD == "cpu":
         var out_t = Tensor.alloc(N)
-        dyn.forward["cpu", BATCH](TensorRefs[M.ARITY](in_t), out_t, None)
+        call_forward["cpu", BATCH](dyn, TensorRefs[M.ARITY](in_t), out_t, None)
         for i in range(N):
             out_host[i] = out_t.data[i]
     else:
         var c = ctx.value()
         in_t.upload(c)
         var out_t = Tensor.alloc_gpu(c, N)
-        dyn.forward["gpu", BATCH](TensorRefs[M.ARITY](in_t), out_t, ctx)
+        call_forward["gpu", BATCH](dyn, TensorRefs[M.ARITY](in_t), out_t, ctx)
         out_t.download(c)
         for i in range(N):
             out_host[i] = out_t.data[i]

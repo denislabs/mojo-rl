@@ -25,6 +25,7 @@ from std.memory import alloc
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
@@ -339,11 +340,11 @@ def run_ezv2_sampled_selfplay_gpu[
             ctx.enqueue_copy(obs_sc.dev.value(), t_obs_seq.unsafe_ptr())
             var z_sc = Tensor()
             z_sc.ensure_gpu(ctx, B * LATENT)
-            rep.forward["gpu", B](TensorRefs[REP.ARITY](obs_sc), z_sc, Optional(ctx))
+            call_forward["gpu", B](rep, TensorRefs[REP.ARITY](obs_sc), z_sc, Optional(ctx))
             var pred_sc = Tensor()
             pred_sc.ensure_gpu(ctx, B * CPRED_OUT)
-            pred.forward["gpu", B](
-                TensorRefs[PRED.ARITY](z_sc), pred_sc, Optional(ctx)
+            call_forward["gpu", B](
+                pred, TensorRefs[PRED.ARITY](z_sc), pred_sc, Optional(ctx)
             )
             ctx.enqueue_copy(h_diag_pred, pred_sc.dev.value())
             ctx.synchronize()

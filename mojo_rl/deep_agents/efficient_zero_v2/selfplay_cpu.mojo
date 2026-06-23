@@ -21,6 +21,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -89,13 +90,13 @@ def _collapse_diag[
     for i in range(B * OBS):
         obs_t.data[i] = obs0[i]
     var z_tn = Tensor.alloc(B * LATENT)
-    rep.forward["cpu", B](TensorRefs[REP.ARITY](obs_t), z_tn, None)
+    call_forward["cpu", B](rep, TensorRefs[REP.ARITY](obs_t), z_tn, None)
     for i in range(B * LATENT):
         z_buf[i] = z_tn.data[i]
     var latent_std = _mean_perdim_std[B, LATENT](z_buf)
 
     var p_tn = Tensor.alloc(B * PROJ)
-    proj.forward["cpu", B](TensorRefs[PROJM.ARITY](z_tn), p_tn, None)
+    call_forward["cpu", B](proj, TensorRefs[PROJM.ARITY](z_tn), p_tn, None)
     for i in range(B * PROJ):
         p_buf[i] = p_tn.data[i]
     # L2-normalize each row before measuring spread (SimSiam convention).
@@ -326,7 +327,7 @@ def run_ezv2_selfplay_cpu[
                 for i in range(B * LATENT):
                     z_in.data[i] = d_z[i]
                 var pred_tn = Tensor.alloc(B * (ACT + BINS))
-                pred.forward["cpu", B](TensorRefs[PRED.ARITY](z_in), pred_tn, None)
+                call_forward["cpu", B](pred, TensorRefs[PRED.ARITY](z_in), pred_tn, None)
                 for i in range(B * (ACT + BINS)):
                     d_pred[i] = pred_tn.data[i]
                 var dn = List[String]()
