@@ -35,9 +35,12 @@ from mojo_rl.planners.trajectory.score_callback import ScorePlanCallback
 from .trainer import LeWMTrainer
 
 
-def _mse_latent(
-    a: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DT], MutAnyOrigin],
+def _mse_latent[
+    ao: MutOrigin = MutAnyOrigin,
+    bo: MutOrigin = MutAnyOrigin,
+](
+    a: UnsafePointer[Scalar[DT], ao],
+    b: UnsafePointer[Scalar[DT], bo],
     n: Int,
 ) -> Float64:
     """Mean squared error over `n` elements. Lower is better."""
@@ -81,9 +84,9 @@ struct LeWMTFScorer[
     var ctx: Optional[DeviceContext]
     var act_host: UnsafePointer[Scalar[DT], MutAnyOrigin]   # (B, T·ACT)
     var act_dev: Optional[DeviceBuffer[DT]]
-    var pred_host: UnsafePointer[Scalar[DT], MutAnyOrigin]  # (B, H·EMB)
-    var goal_host: UnsafePointer[Scalar[DT], MutAnyOrigin]  # (B, H·EMB) fixed
-    var tgt_scratch: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var pred_host: List[Scalar[DT]]  # (B, H·EMB)
+    var goal_host: List[Scalar[DT]]  # (B, H·EMB) fixed
+    var tgt_scratch: List[Scalar[DT]]
 
     def __init__(
         out self,
@@ -95,9 +98,15 @@ struct LeWMTFScorer[
         self.pix = pix
         self.ctx = ctx
         self.act_host = alloc[Scalar[DT]](Self.BATCH * Self.ACTIN)
-        self.pred_host = alloc[Scalar[DT]](Self.NPRED)
-        self.goal_host = alloc[Scalar[DT]](Self.NPRED)
-        self.tgt_scratch = alloc[Scalar[DT]](Self.NPRED)
+        self.pred_host = List[Scalar[DT]](
+            length=Self.NPRED, fill=Scalar[DT](0)
+        )
+        self.goal_host = List[Scalar[DT]](
+            length=Self.NPRED, fill=Scalar[DT](0)
+        )
+        self.tgt_scratch = List[Scalar[DT]](
+            length=Self.NPRED, fill=Scalar[DT](0)
+        )
         self.act_dev = None
         comptime if Self.target == "gpu":
             self.act_dev = ctx.value().enqueue_create_buffer[DT](
@@ -106,9 +115,6 @@ struct LeWMTFScorer[
 
     def __del__(deinit self):
         self.act_host.free()
-        self.pred_host.free()
-        self.goal_host.free()
-        self.tgt_scratch.free()
 
     def _act_target_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         comptime if Self.target == "cpu":
@@ -130,8 +136,13 @@ struct LeWMTFScorer[
         var act_t = TileTensor(
             self._act_target_ptr(), row_major[Self.BATCH, Self.ACTIN]()
         )
-        var tgt_dst = self.goal_host if into_goal else self.tgt_scratch
-        self.trainer[].forward_into(pix_t, act_t, self.pred_host, tgt_dst)
+        var tgt_dst = (
+            self.goal_host.unsafe_ptr() if into_goal
+            else self.tgt_scratch.unsafe_ptr()
+        )
+        self.trainer[].forward_into(
+            pix_t, act_t, self.pred_host.unsafe_ptr(), tgt_dst
+        )
 
     def prime(mut self) raises:
         """Precompute the fixed goal latents (zero actions — `tgt` is
@@ -160,7 +171,9 @@ struct LeWMTFScorer[
                         Scalar[DT]
                     ](action_plan[b, t, a])
         self._forward(into_goal=False)
-        return _mse_latent(self.pred_host, self.goal_host, Self.NPRED)
+        return _mse_latent(
+            self.pred_host.unsafe_ptr(), self.goal_host.unsafe_ptr(), Self.NPRED
+        )
 
 
 def _mean(v: List[Float64]) -> Float64:

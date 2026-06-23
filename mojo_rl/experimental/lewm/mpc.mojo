@@ -45,9 +45,10 @@ from .mpc_kernels import (
 
 
 def _tp[
-    target: StaticString
+    target: StaticString,
+    ho: MutOrigin = MutAnyOrigin,
 ](
-    h: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    h: UnsafePointer[Scalar[DT], ho],
     d: Optional[DeviceBuffer[DT]],
 ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     comptime if target == "cpu":
@@ -80,13 +81,13 @@ struct LeWMMPCScorer[
     var pred_net: Self.Predictor
     var ctx: Optional[DeviceContext]
     # host buffers (always) + device mirrors (gpu)
-    var emb_start_h: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var emb_goal_h: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var emb_seq_h: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var latent_ctx_h: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var actions_buf_h: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var pred_h: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var plan_h: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var emb_start_h: List[Scalar[DT]]
+    var emb_goal_h: List[Scalar[DT]]
+    var emb_seq_h: List[Scalar[DT]]
+    var latent_ctx_h: List[Scalar[DT]]
+    var actions_buf_h: List[Scalar[DT]]
+    var pred_h: List[Scalar[DT]]
+    var plan_h: List[Scalar[DT]]
     var emb_start_d: Optional[DeviceBuffer[DT]]
     var emb_goal_d: Optional[DeviceBuffer[DT]]
     var emb_seq_d: Optional[DeviceBuffer[DT]]
@@ -100,13 +101,23 @@ struct LeWMMPCScorer[
         self.pred_net = pred_net^
         self.ctx = ctx
         comptime BE = Self.BATCH * Self.EMB
-        self.emb_start_h = alloc[Scalar[DT]](BE)
-        self.emb_goal_h = alloc[Scalar[DT]](BE)
-        self.emb_seq_h = alloc[Scalar[DT]](Self.BATCH * Self.ROLL_T * Self.EMB)
-        self.latent_ctx_h = alloc[Scalar[DT]](Self.BATCH * Self.HE)
-        self.actions_buf_h = alloc[Scalar[DT]](Self.BATCH * Self.ACTIN)
-        self.pred_h = alloc[Scalar[DT]](Self.BATCH * Self.HE)
-        self.plan_h = alloc[Scalar[DT]](Self.BATCH * Self.NEEDED * Self.ACT)
+        self.emb_start_h = List[Scalar[DT]](length=BE, fill=Scalar[DT](0))
+        self.emb_goal_h = List[Scalar[DT]](length=BE, fill=Scalar[DT](0))
+        self.emb_seq_h = List[Scalar[DT]](
+            length=Self.BATCH * Self.ROLL_T * Self.EMB, fill=Scalar[DT](0)
+        )
+        self.latent_ctx_h = List[Scalar[DT]](
+            length=Self.BATCH * Self.HE, fill=Scalar[DT](0)
+        )
+        self.actions_buf_h = List[Scalar[DT]](
+            length=Self.BATCH * Self.ACTIN, fill=Scalar[DT](0)
+        )
+        self.pred_h = List[Scalar[DT]](
+            length=Self.BATCH * Self.HE, fill=Scalar[DT](0)
+        )
+        self.plan_h = List[Scalar[DT]](
+            length=Self.BATCH * Self.NEEDED * Self.ACT, fill=Scalar[DT](0)
+        )
         self.emb_start_d = None; self.emb_goal_d = None
         self.emb_seq_d = None; self.latent_ctx_d = None
         self.actions_buf_d = None; self.pred_d = None; self.plan_d = None
@@ -126,15 +137,13 @@ struct LeWMMPCScorer[
                 Self.BATCH * Self.NEEDED * Self.ACT
             )
 
-    def __del__(deinit self):
-        self.emb_start_h.free(); self.emb_goal_h.free()
-        self.emb_seq_h.free(); self.latent_ctx_h.free()
-        self.actions_buf_h.free(); self.pred_h.free(); self.plan_h.free()
-
-    def set_start_goal(
+    def set_start_goal[
+        so: MutOrigin = MutAnyOrigin,
+        go: MutOrigin = MutAnyOrigin,
+    ](
         mut self,
-        start_src: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        goal_src: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        start_src: UnsafePointer[Scalar[DT], so],
+        goal_src: UnsafePointer[Scalar[DT], go],
     ) raises:
         """Set the fixed encoded start + goal latents (each (B, EMB))."""
         comptime BE = Self.BATCH * Self.EMB
@@ -143,8 +152,12 @@ struct LeWMMPCScorer[
             self.emb_goal_h[i] = goal_src[i]
         comptime if Self.target == "gpu":
             var c = self.ctx.value()
-            c.enqueue_copy(self.emb_start_d.value(), self.emb_start_h)
-            c.enqueue_copy(self.emb_goal_d.value(), self.emb_goal_h)
+            c.enqueue_copy(
+                self.emb_start_d.value(), self.emb_start_h.unsafe_ptr()
+            )
+            c.enqueue_copy(
+                self.emb_goal_d.value(), self.emb_goal_h.unsafe_ptr()
+            )
             c.synchronize()
 
     def score_plan[
@@ -164,15 +177,25 @@ struct LeWMMPCScorer[
                         Scalar[DT]
                     ](action_plan[b, t, a])
         comptime if Self.target == "gpu":
-            self.ctx.value().enqueue_copy(self.plan_d.value(), self.plan_h)
+            self.ctx.value().enqueue_copy(
+                self.plan_d.value(), self.plan_h.unsafe_ptr()
+            )
 
-        var es = _tp[Self.target](self.emb_seq_h, self.emb_seq_d)
-        var start = _tp[Self.target](self.emb_start_h, self.emb_start_d)
-        var goal = _tp[Self.target](self.emb_goal_h, self.emb_goal_d)
-        var lc = _tp[Self.target](self.latent_ctx_h, self.latent_ctx_d)
-        var ab = _tp[Self.target](self.actions_buf_h, self.actions_buf_d)
-        var pr = _tp[Self.target](self.pred_h, self.pred_d)
-        var plan = _tp[Self.target](self.plan_h, self.plan_d)
+        var es = _tp[Self.target](self.emb_seq_h.unsafe_ptr(), self.emb_seq_d)
+        var start = _tp[Self.target](
+            self.emb_start_h.unsafe_ptr(), self.emb_start_d
+        )
+        var goal = _tp[Self.target](
+            self.emb_goal_h.unsafe_ptr(), self.emb_goal_d
+        )
+        var lc = _tp[Self.target](
+            self.latent_ctx_h.unsafe_ptr(), self.latent_ctx_d
+        )
+        var ab = _tp[Self.target](
+            self.actions_buf_h.unsafe_ptr(), self.actions_buf_d
+        )
+        var pr = _tp[Self.target](self.pred_h.unsafe_ptr(), self.pred_d)
+        var plan = _tp[Self.target](self.plan_h.unsafe_ptr(), self.plan_d)
 
         mpc_replicate_start[
             Self.target, Self.BATCH, Self.H, Self.EMB, Self.ROLL_T

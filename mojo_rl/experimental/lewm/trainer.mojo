@@ -546,6 +546,8 @@ struct LeWMTrainer[
 
     def forward_into[
         POLICY: AMPPolicy = NoAMP,
+        ph_o: MutOrigin = MutAnyOrigin,
+        th_o: MutOrigin = MutAnyOrigin,
     ](
         mut self,
         pix: TileTensor[
@@ -562,8 +564,8 @@ struct LeWMTrainer[
             origin=MutAnyOrigin,
             ...,
         ],
-        pred_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        tgt_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        pred_host: UnsafePointer[Scalar[DT], ph_o],
+        tgt_host: UnsafePointer[Scalar[DT], th_o],
     ) raises:
         """Forward-only readout for eval/planning: run the graph over
         (pix, act) and copy the predicted latents (`pred` node) and the
@@ -591,7 +593,8 @@ struct LeWMTrainer[
 
     def read_node_into[
         name: StaticString,
-    ](mut self, host: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int,) raises:
+        h_o: MutOrigin = MutAnyOrigin,
+    ](mut self, host: UnsafePointer[Scalar[DT], h_o], n: Int,) raises:
         """Copy the named graph node's output (n elements) to a host buffer.
         Valid after a forward has populated the node buffers."""
         ref src = self.graph.node_output[name]()

@@ -48,9 +48,11 @@ def _u8_norm_kernel[N: Int](
 def u8_to_fp32_norm[
     target: StaticString,
     N: Int,
+    so: MutOrigin = MutAnyOrigin,
+    do: MutOrigin = MutAnyOrigin,
 ](
-    src: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    src: UnsafePointer[Scalar[DType.uint8], so],
+    dst: UnsafePointer[Scalar[DT], do],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Layout-preserving uint8 → fp32 ÷255 over `N` elements. Use when the
@@ -68,9 +70,9 @@ def u8_to_fp32_norm[
             raise Error("u8_to_fp32_norm[target='gpu']: ctx required")
         var c = ctx.value()
         var src_lt = LayoutTensor[
-            DType.uint8, Layout.row_major(N), MutAnyOrigin
+            DType.uint8, Layout.row_major(N), so
         ](src)
-        var dst_lt = LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](dst)
+        var dst_lt = LayoutTensor[DT, Layout.row_major(N), do](dst)
         comptime n_blocks = (N + TPB - 1) // TPB
         comptime kernel = _u8_norm_kernel[N]
         c.enqueue_function[kernel](
@@ -81,9 +83,11 @@ def u8_to_fp32_norm[
 def u8_hwc_to_chw_norm[
     target: StaticString,
     C: Int, H: Int, W: Int, BATCH: Int,
+    so: MutOrigin = MutAnyOrigin,
+    do: MutOrigin = MutAnyOrigin,
 ](
-    src: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    src: UnsafePointer[Scalar[DType.uint8], so],
+    dst: UnsafePointer[Scalar[DT], do],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Convert `src` (BATCH·H·W·C uint8, HWC) → `dst` (BATCH·C·H·W fp32,
@@ -105,10 +109,10 @@ def u8_hwc_to_chw_norm[
             raise Error("u8_hwc_to_chw_norm[target='gpu']: ctx required")
         var c = ctx.value()
         var src_lt = LayoutTensor[
-            DType.uint8, Layout.row_major(BATCH * HWC), MutAnyOrigin
+            DType.uint8, Layout.row_major(BATCH * HWC), so
         ](src)
         var dst_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH * HWC), MutAnyOrigin
+            DT, Layout.row_major(BATCH * HWC), do
         ](dst)
         comptime n = BATCH * HWC
         comptime n_blocks = (n + TPB - 1) // TPB
