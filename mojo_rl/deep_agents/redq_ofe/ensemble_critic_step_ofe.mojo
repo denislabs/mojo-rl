@@ -33,6 +33,7 @@ from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 
 from ..loss.critic_update_block import CriticUpdateBlock
 from ..training.off_policy_critic import concat_sa, concat_sa_gpu
@@ -137,7 +138,8 @@ struct EnsembleCriticStepOFE[
             )
 
         # 2. action_branch.forward(sa_in) → φ(s, a) [BATCH, PHI_SA_DIM].
-        action_branch.forward[target, Self.BATCH, POLICY=POLICY](
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            action_branch,
             TensorRefs[Self.AB.ARITY](self._mb_sa_in), self._mb_phi_sa, ctx
         )
 

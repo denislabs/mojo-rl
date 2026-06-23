@@ -45,6 +45,7 @@ from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.core.initializer import Xavier, Zero
 from mojo_rl.nn.primitives.rsample import RSample
 from mojo_rl.nn.optimizer.adam import Adam
@@ -591,10 +592,12 @@ struct REDQOFETrainer[
             self._ao_scr.ensure(N_ENVS * 2 * ACT)
             self._alp_scr.ensure(N_ENVS * (ACT + 1))
             # state_branch(obs) → φ(s) → actor(φ) → ao → rsample → alp.
-            self.state_branch.forward["cpu", N_ENVS](
+            call_forward["cpu", N_ENVS](
+                self.state_branch,
                 TensorRefs[Self.SB.ARITY](self._ob_scr), self._phi_scr
             )
-            self.actor.forward["cpu", N_ENVS](
+            call_forward["cpu", N_ENVS](
+                self.actor,
                 TensorRefs[Self.ACTOR.ARITY](self._phi_scr), self._ao_scr
             )
             self.sel.forward["cpu", N_ENVS](
@@ -623,10 +626,12 @@ struct REDQOFETrainer[
                 grid_dim=(tot_obs + TPB - 1) // TPB,
                 block_dim=TPB,
             )
-            self.state_branch.forward["gpu", N_ENVS](
+            call_forward["gpu", N_ENVS](
+                self.state_branch,
                 TensorRefs[Self.SB.ARITY](self._ob_scr), self._phi_scr, self.ctx
             )
-            self.actor.forward["gpu", N_ENVS](
+            call_forward["gpu", N_ENVS](
+                self.actor,
                 TensorRefs[Self.ACTOR.ARITY](self._phi_scr), self._ao_scr,
                 self.ctx,
             )
@@ -660,10 +665,12 @@ struct REDQOFETrainer[
             self._ao_scr.ensure(2 * ACT)
             for d in range(OBS):
                 self._ob_scr.data[d] = obs[d]
-            self.state_branch.forward["cpu", 1](
+            call_forward["cpu", 1](
+                self.state_branch,
                 TensorRefs[Self.SB.ARITY](self._ob_scr), self._phi_scr
             )
-            self.actor.forward["cpu", 1](
+            call_forward["cpu", 1](
+                self.actor,
                 TensorRefs[Self.ACTOR.ARITY](self._phi_scr), self._ao_scr
             )
             for j in range(ACT):
@@ -681,10 +688,12 @@ struct REDQOFETrainer[
             ob.upload(c)
             var phi = Tensor.alloc_gpu(c, PHI)
             var ao = Tensor.alloc_gpu(c, 2 * ACT)
-            self.state_branch.forward["gpu", 1](
+            call_forward["gpu", 1](
+                self.state_branch,
                 TensorRefs[Self.SB.ARITY](ob), phi, self.ctx
             )
-            self.actor.forward["gpu", 1](
+            call_forward["gpu", 1](
+                self.actor,
                 TensorRefs[Self.ACTOR.ARITY](phi), ao, self.ctx
             )
             ao.download(c)
@@ -717,10 +726,12 @@ struct REDQOFETrainer[
             self._alp_scr.ensure(ACT + 1)
             for d in range(OBS):
                 self._ob_scr.data[d] = obs[d]
-            self.state_branch.forward["cpu", 1](
+            call_forward["cpu", 1](
+                self.state_branch,
                 TensorRefs[Self.SB.ARITY](self._ob_scr), self._phi_scr
             )
-            self.actor.forward["cpu", 1](
+            call_forward["cpu", 1](
+                self.actor,
                 TensorRefs[Self.ACTOR.ARITY](self._phi_scr), self._ao_scr
             )
             self.sel.forward["cpu", 1](
@@ -742,10 +753,12 @@ struct REDQOFETrainer[
             var phi = Tensor.alloc_gpu(c, PHI)
             var ao = Tensor.alloc_gpu(c, 2 * ACT)
             var alp = Tensor.alloc_gpu(c, ACT + 1)
-            self.state_branch.forward["gpu", 1](
+            call_forward["gpu", 1](
+                self.state_branch,
                 TensorRefs[Self.SB.ARITY](ob), phi, self.ctx
             )
-            self.actor.forward["gpu", 1](
+            call_forward["gpu", 1](
+                self.actor,
                 TensorRefs[Self.ACTOR.ARITY](phi), ao, self.ctx
             )
             self.sel.forward["gpu", 1](TensorRefs[1](ao), alp, self.ctx)

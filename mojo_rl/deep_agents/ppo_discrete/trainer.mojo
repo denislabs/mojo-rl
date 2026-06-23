@@ -44,6 +44,7 @@ from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.core.initializer import Xavier
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.core.checkpoint import (
@@ -568,8 +569,8 @@ struct PPODiscreteTrainer[
         comptime N = Self.N_ACTIONS
         comptime MB = Self.MINIBATCH
 
-        self.actor.forward["cpu", MB](
-            TensorRefs[Self.ACTOR.ARITY](self.state.mb_obs),
+        call_forward["cpu", MB](
+            self.actor, TensorRefs[Self.ACTOR.ARITY](self.state.mb_obs),
             self._diag_logits, self.ctx,
         )
 
@@ -648,8 +649,8 @@ struct PPODiscreteTrainer[
         comptime MB = Self.MINIBATCH
         var ctx = self.ctx.value()
 
-        self.actor.forward["gpu", MB](
-            TensorRefs[Self.ACTOR.ARITY](self.state.mb_obs),
+        call_forward["gpu", MB](
+            self.actor, TensorRefs[Self.ACTOR.ARITY](self.state.mb_obs),
             self._diag_logits, self.ctx,
         )
 

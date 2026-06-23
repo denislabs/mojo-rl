@@ -21,6 +21,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from ...training.onpolicy_state import OnPolicyState
 
 
@@ -69,13 +70,13 @@ struct PPOGAEStep[
         comptime if target == "gpu":
             var ctx = state.ctx.value()
             state.bootstrap_obs.upload(ctx)
-            critic.forward[target, N_ENVS, POLICY=POLICY](
-                TensorRefs[Self.CRITIC.ARITY](state.bootstrap_obs), state.v1, state.ctx
+            call_forward[target, N_ENVS, POLICY=POLICY](
+                critic, TensorRefs[Self.CRITIC.ARITY](state.bootstrap_obs), state.v1, state.ctx
             )
             state.v1.download(ctx)
         else:
-            critic.forward[target, N_ENVS, POLICY=POLICY](
-                TensorRefs[Self.CRITIC.ARITY](state.bootstrap_obs), state.v1, state.ctx
+            call_forward[target, N_ENVS, POLICY=POLICY](
+                critic, TensorRefs[Self.CRITIC.ARITY](state.bootstrap_obs), state.v1, state.ctx
             )
 
         # Per-env GAE backward pass over T-major rollout buffers (host-side

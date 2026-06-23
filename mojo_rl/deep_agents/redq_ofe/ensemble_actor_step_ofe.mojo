@@ -49,6 +49,7 @@ from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.primitives.rsample import RSample
 
@@ -212,13 +213,13 @@ struct EnsembleActorStepOFE[
         actor.zero_grad[target](ctx)
 
         # ── Step 1 — actor.forward(φ(s)) → _mb_ao [B, 2·ACT].
-        actor.forward[target, BB, POLICY=POLICY](
-            TensorRefs[Self.ACTOR.ARITY](phi_s), self._mb_ao, ctx
+        call_forward[target, BB, POLICY=POLICY](
+            actor, TensorRefs[Self.ACTOR.ARITY](phi_s), self._mb_ao, ctx
         )
 
         # ── Step 2 — rsample.forward(ao) → _mb_alp [B, ACT+1].
-        self.rsample.forward[target, BB, POLICY=POLICY](
-            TensorRefs[1](self._mb_ao), self._mb_alp, ctx
+        call_forward[target, BB, POLICY=POLICY](
+            self.rsample, TensorRefs[1](self._mb_ao), self._mb_alp, ctx
         )
 
         # ── Step 3 — sa_in = concat(φ(s), a) + extract lp[b] = alp[b, ACT].
@@ -248,7 +249,8 @@ struct EnsembleActorStepOFE[
             )
 
         # ── Step 4 — action_branch.forward(sa_in) → φ(s, a).
-        action_branch.forward[target, BB, POLICY=POLICY](
+        call_forward[target, BB, POLICY=POLICY](
+            action_branch,
             TensorRefs[Self.AB.ARITY](self._mb_sa_in), self._mb_phi_sa, ctx
         )
 
@@ -264,7 +266,8 @@ struct EnsembleActorStepOFE[
                 grid_dim=nbb, block_dim=TPB,
             )
         for i in range(Self.N):
-            ensemble.pairs[i].online.forward[target, BB, POLICY=POLICY](
+            call_forward[target, BB, POLICY=POLICY](
+                ensemble.pairs[i].online,
                 TensorRefs[Self.CRITIC.ARITY](self._mb_phi_sa), self._mb_q_i, ctx
             )
             comptime if target == "cpu":
@@ -328,10 +331,12 @@ struct EnsembleActorStepOFE[
         for i in range(Self.N):
             # Re-forward the SAME φ(s,a) to refresh this critic's vjp cache,
             # then vjp. The critic's param grads accumulate but are DISCARDED.
-            ensemble.pairs[i].online.forward[target, BB, POLICY=POLICY](
+            call_forward[target, BB, POLICY=POLICY](
+                ensemble.pairs[i].online,
                 TensorRefs[Self.CRITIC.ARITY](self._mb_phi_sa), self._mb_q_i, ctx
             )
-            ensemble.pairs[i].online.vjp[target, BB, POLICY=POLICY](
+            call_vjp[target, BB, POLICY=POLICY](
+                ensemble.pairs[i].online,
                 TensorRefs[Self.CRITIC.ARITY](self._mb_phi_sa),
                 self._mb_grad_q_i,
                 TensorRefs[Self.CRITIC.ARITY](self._mb_grad_phi_sa_i),
@@ -356,7 +361,8 @@ struct EnsembleActorStepOFE[
                 )
 
         # ── Step 8 — action_branch.vjp → grad_sa_in (param grads discarded).
-        action_branch.vjp[target, BB, POLICY=POLICY](
+        call_vjp[target, BB, POLICY=POLICY](
+            action_branch,
             TensorRefs[Self.AB.ARITY](self._mb_sa_in),
             self._mb_grad_phi_sa_sum,
             TensorRefs[Self.AB.ARITY](self._mb_grad_sa_in),
@@ -390,7 +396,8 @@ struct EnsembleActorStepOFE[
             )
 
         # ── Step 10 — rsample.vjp(grad_alp) → grad_ao.
-        self.rsample.vjp[target, BB, POLICY=POLICY](
+        call_vjp[target, BB, POLICY=POLICY](
+            self.rsample,
             TensorRefs[1](self._mb_ao),
             self._mb_grad_alp,
             TensorRefs[1](self._mb_grad_ao),
@@ -399,7 +406,8 @@ struct EnsembleActorStepOFE[
 
         # ── Step 11 — actor.vjp(grad_ao) → grad_φ(s) (discarded); accumulates
         # actor param grads.
-        actor.vjp[target, BB, POLICY=POLICY](
+        call_vjp[target, BB, POLICY=POLICY](
+            actor,
             TensorRefs[Self.ACTOR.ARITY](phi_s),
             self._mb_grad_ao,
             TensorRefs[Self.ACTOR.ARITY](self._mb_grad_phi_s),

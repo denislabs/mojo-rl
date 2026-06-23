@@ -37,6 +37,7 @@ from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.core.initializer import Xavier, Zero
 from mojo_rl.nn.primitives.rsample import RSample
 from mojo_rl.nn.optimizer.adam import Adam
@@ -663,11 +664,12 @@ struct SACTrainer[
                     )
             self._ao_scr.ensure(N_ENVS * 2 * ACT)
             self._alp_scr.ensure(N_ENVS * (ACT + 1))
-            self.actor.forward["cpu", N_ENVS](
-                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr
+            call_forward["cpu", N_ENVS](
+                self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob_scr),
+                self._ao_scr,
             )
-            self.sel.forward["cpu", N_ENVS](
-                TensorRefs[1](self._ao_scr), self._alp_scr
+            call_forward["cpu", N_ENVS](
+                self.sel, TensorRefs[1](self._ao_scr), self._alp_scr
             )
             for env in range(N_ENVS):
                 for j in range(ACT):
@@ -695,12 +697,12 @@ struct SACTrainer[
                 grid_dim=(tot_obs + TPB - 1) // TPB,
                 block_dim=TPB,
             )
-            self.actor.forward["gpu", N_ENVS](
-                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
-                self.ctx,
+            call_forward["gpu", N_ENVS](
+                self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob_scr),
+                self._ao_scr, self.ctx,
             )
-            self.sel.forward["gpu", N_ENVS](
-                TensorRefs[1](self._ao_scr), self._alp_scr, self.ctx
+            call_forward["gpu", N_ENVS](
+                self.sel, TensorRefs[1](self._ao_scr), self._alp_scr, self.ctx
             )
             comptime tot_act = N_ENVS * ACT
             c.enqueue_function[
@@ -727,8 +729,9 @@ struct SACTrainer[
             self._ao_scr.ensure(2 * ACT)
             for d in range(OBS):
                 self._ob_scr.data[d] = obs[d]
-            self.actor.forward["cpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr
+            call_forward["cpu", 1](
+                self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob_scr),
+                self._ao_scr,
             )
             for j in range(ACT):
                 var a = ftanh(self._ao_scr.data[j]) * self.action_scale
@@ -747,8 +750,8 @@ struct SACTrainer[
                 ob.data[d] = obs[d]
             ob.upload(c)
             var ao = Tensor.alloc_gpu(c, 2 * ACT)
-            self.actor.forward["gpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](ob), ao, self.ctx
+            call_forward["gpu", 1](
+                self.actor, TensorRefs[Self.ACTOR.ARITY](ob), ao, self.ctx
             )
             ao.download(c)
             for j in range(ACT):
@@ -781,11 +784,12 @@ struct SACTrainer[
             self._alp_scr.ensure(ACT + 1)
             for d in range(OBS):
                 self._ob_scr.data[d] = obs[d]
-            self.actor.forward["cpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr
+            call_forward["cpu", 1](
+                self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob_scr),
+                self._ao_scr,
             )
-            self.sel.forward["cpu", 1](
-                TensorRefs[1](self._ao_scr), self._alp_scr
+            call_forward["cpu", 1](
+                self.sel, TensorRefs[1](self._ao_scr), self._alp_scr
             )
             for j in range(ACT):
                 var a = self._alp_scr.data[j]
@@ -809,10 +813,10 @@ struct SACTrainer[
             ob.upload(c)
             var ao = Tensor.alloc_gpu(c, 2 * ACT)
             var alp = Tensor.alloc_gpu(c, ACT + 1)
-            self.actor.forward["gpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](ob), ao, self.ctx
+            call_forward["gpu", 1](
+                self.actor, TensorRefs[Self.ACTOR.ARITY](ob), ao, self.ctx
             )
-            self.sel.forward["gpu", 1](TensorRefs[1](ao), alp, self.ctx)
+            call_forward["gpu", 1](self.sel, TensorRefs[1](ao), alp, self.ctx)
             alp.download(c)
             for j in range(ACT):
                 var a = alp.data[j]

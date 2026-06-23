@@ -43,6 +43,7 @@ from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.loss.gaussian_nll_loss import GaussianNLLLoss
 from mojo_rl.nn.optimizer.adam import Adam
 
@@ -482,7 +483,8 @@ struct DynamicsEnsembleBlock[
         an elite directly into its slice of a stacked NELITES·BATCH×PRED buffer
         — no fresh alloc + D2D copy per elite). The clamped logvar is what
         callers sample / log."""
-        self.members[member_idx].forward[target, Self.BATCH, POLICY=POLICY](
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            self.members[member_idx],
             TensorRefs[Self.DynNet.ARITY](in_t), self._mb_pred, self.ctx
         )
         comptime if target == "cpu":
@@ -749,7 +751,8 @@ struct DynamicsEnsembleBlock[
         self.opts[member_idx].zero_grad[target, M=Self.DynNet](
             self.members[member_idx], self.ctx
         )
-        self.members[member_idx].forward[target, Self.BATCH, POLICY=POLICY](
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            self.members[member_idx],
             TensorRefs[Self.DynNet.ARITY](mb_in_t), self._mb_pred, self.ctx
         )
         var loss: Scalar[DT]
@@ -773,7 +776,8 @@ struct DynamicsEnsembleBlock[
             )
         # member.vjp consumes `_mb_grad` (grad wrt output) → grad-input sink.
         # `_mb_pred` is reused as the discard sink (OUT_DIM >= IN_DIM asserted).
-        self.members[member_idx].vjp[target, Self.BATCH, POLICY=POLICY](
+        call_vjp[target, Self.BATCH, POLICY=POLICY](
+            self.members[member_idx],
             TensorRefs[Self.DynNet.ARITY](mb_in_t),
             self._mb_grad,
             TensorRefs[Self.DynNet.ARITY](self._mb_pred),
@@ -823,7 +827,8 @@ struct DynamicsEnsembleBlock[
     ) raises -> Scalar[DT]:
         """Holdout-set forward only. Returns the same NLL as
         `train_member_step` would compute, without mutating member weights."""
-        self.members[member_idx].forward[target, Self.BATCH, POLICY=POLICY](
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            self.members[member_idx],
             TensorRefs[Self.DynNet.ARITY](mb_in_t), self._mb_pred, self.ctx
         )
         if self.learnable_bounds:
@@ -846,7 +851,8 @@ struct DynamicsEnsembleBlock[
         lower NLL by shrinking variance), so rollouts then sample near-
         deterministic, biased dynamics. MSE selects the most ACCURATE members,
         which is what `update_elites` / holdout early-stop must rank on."""
-        self.members[member_idx].forward[target, Self.BATCH, POLICY=POLICY](
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            self.members[member_idx],
             TensorRefs[Self.DynNet.ARITY](mb_in_t), self._mb_pred, self.ctx
         )
         comptime if target == "cpu":

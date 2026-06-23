@@ -42,6 +42,7 @@ from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.core.initializer import Xavier
 from mojo_rl.nn.optimizer.adam import Adam
@@ -672,8 +673,8 @@ struct PPOTrainer[
 
         # Re-run the (post-update) actor on the gathered minibatch obs (host)
         # into the diag scratch Tensor.
-        self.actor.forward["cpu", MB](
-            TensorRefs[Self.ACTOR.ARITY](self.state.mb_obs), self._diag_ao, self.ctx
+        call_forward["cpu", MB](
+            self.actor, TensorRefs[Self.ACTOR.ARITY](self.state.mb_obs), self._diag_ao, self.ctx
         )
 
         ref ao = self._diag_ao.data
@@ -757,8 +758,8 @@ struct PPOTrainer[
 
         # Recompute the actor output on the gathered minibatch obs (device),
         # into the device-resident `_diag_ao` Tensor.
-        self.actor.forward["gpu", MB](
-            TensorRefs[Self.ACTOR.ARITY](self.state.mb_obs), self._diag_ao, self.ctx
+        call_forward["gpu", MB](
+            self.actor, TensorRefs[Self.ACTOR.ARITY](self.state.mb_obs), self._diag_ao, self.ctx
         )
 
         # Device views (`.lt`) for the diag kernels — no raw pointers.

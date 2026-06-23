@@ -26,6 +26,7 @@ from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.tensor_pack import TensorPack
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.core.initializer import Zero
 from .objective import PPODiscreteObjective
@@ -119,8 +120,8 @@ struct PPODiscreteActorLoss[
         actor_opt.zero_grad[target, M = Self.ACTOR](actor, ctx)
 
         # actor.forward(s) → _in[0] (the logit vector).
-        actor.forward[target, BB, POLICY=POLICY](
-            TensorRefs[Self.ACTOR.ARITY](mb_s), self._in[0], ctx
+        call_forward[target, BB, POLICY=POLICY](
+            actor, TensorRefs[Self.ACTOR.ARITY](mb_s), self._in[0], ctx
         )
         # Stage the three rollout-time inputs into the §B0 pool (action=width 1).
         Self._copy_into[target](self._in[1], mb_a, BB, ctx)
@@ -152,7 +153,8 @@ struct PPODiscreteActorLoss[
             ctx,
         )
         # actor.vjp(grad_actor_out) → actor param grads (obs grad discarded).
-        actor.vjp[target, BB, POLICY=POLICY](
+        call_vjp[target, BB, POLICY=POLICY](
+            actor,
             TensorRefs[Self.ACTOR.ARITY](mb_s),
             self._gin[0],
             TensorRefs[Self.ACTOR.ARITY](self._obs_grad),

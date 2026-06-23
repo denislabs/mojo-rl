@@ -35,6 +35,7 @@ from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.primitives.rsample import RSample
 
 from ..training.trainer_block import TrainerState
@@ -211,13 +212,13 @@ struct EnsembleTargetYBlockOFE[
         var ctx = state.ctx
 
         # 1. actor.forward(φ(s')) → _mb_ao [BATCH, 2·ACT].
-        actor.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[Self.ACTOR.ARITY](phi_sp), self._mb_ao, ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            actor, TensorRefs[Self.ACTOR.ARITY](phi_sp), self._mb_ao, ctx
         )
 
         # 2. rsample → _mb_alp [BATCH, ACT+1] (packed a' | log_prob).
-        self.rsample.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[1](self._mb_ao), self._mb_alp, ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            self.rsample, TensorRefs[1](self._mb_ao), self._mb_alp, ctx
         )
 
         # 3. sa_in = concat(φ(s'), a') + extract log_prob.
@@ -257,15 +258,15 @@ struct EnsembleTargetYBlockOFE[
             )
 
         # 4. action_branch.forward(sa_in) → φ(s', a') [BATCH, PHI_SA_DIM].
-        action_branch.forward[target, Self.BATCH, POLICY=POLICY](
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            action_branch,
             TensorRefs[Self.AB.ARITY](self._mb_sa_in), self._mb_phi_spap, ctx
         )
 
         # 5. Loop N target critic forwards on φ(s', a') → row i of stacked Q.
         for i in range(Self.N):
-            ensemble.pairs[i].target_net.forward[
-                target, Self.BATCH, POLICY=POLICY
-            ](
+            call_forward[target, Self.BATCH, POLICY=POLICY](
+                ensemble.pairs[i].target_net,
                 TensorRefs[Self.CRITIC.ARITY](self._mb_phi_spap),
                 self._mb_q_i,
                 ctx,

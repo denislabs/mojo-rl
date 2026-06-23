@@ -40,6 +40,7 @@ from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.primitives.rsample import RSample
 
 from ..training.trainer_block import TrainerState
@@ -254,13 +255,13 @@ struct EnsembleTargetYBlock[
         var ctx = state.ctx
 
         # 1. actor.forward(s') → _mb_ao [BATCH, 2·ACT].
-        actor.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[Self.ACTOR.ARITY](state.mb_sp), self._mb_ao, ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            actor, TensorRefs[Self.ACTOR.ARITY](state.mb_sp), self._mb_ao, ctx
         )
 
         # 2. rsample → _mb_alp [BATCH, ACT+1] (packed action | log_prob).
-        self.rsample.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[1](self._mb_ao), self._mb_alp, ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            self.rsample, TensorRefs[1](self._mb_ao), self._mb_alp, ctx
         )
 
         # 3. sa = concat(s', action) + extract log_prob.
@@ -304,9 +305,8 @@ struct EnsembleTargetYBlock[
         # the stacked buffer; the storage surface only exposes whole-Tensor
         # outputs, so we forward into `_mb_q_i` then copy the row.
         for i in range(Self.N):
-            ensemble.pairs[i].target_net.forward[
-                target, Self.BATCH, POLICY=POLICY
-            ](
+            call_forward[target, Self.BATCH, POLICY=POLICY](
+                ensemble.pairs[i].target_net,
                 TensorRefs[Self.CRITIC.ARITY](self._mb_sa),
                 self._mb_q_i,
                 ctx,

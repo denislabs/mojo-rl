@@ -66,6 +66,7 @@ from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.tensor_pack import TensorPack
 from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.primitives.concat import Concat
 
@@ -218,17 +219,18 @@ struct OFEAuxLossStep[
 
         # ── Forward chain ──────────────────────────────────────────────
         # φ(s) → cat_in[0]; concat(φ(s), mb_a copy) → sa_in.
-        state_branch.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[Self.SB.ARITY](state.mb_s), self.cat_in[0], ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            state_branch, TensorRefs[Self.SB.ARITY](state.mb_s), self.cat_in[0], ctx
         )
-        self.concat.forward[target, Self.BATCH, POLICY=POLICY](
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            self.concat,
             TensorRefs[2](self.cat_in[0], self.cat_in[1]), self.sa_in, ctx
         )
-        action_branch.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[Self.AB.ARITY](self.sa_in), self.phi_sa, ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            action_branch, TensorRefs[Self.AB.ARITY](self.sa_in), self.phi_sa, ctx
         )
-        predictor.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[Self.PRED.ARITY](self.phi_sa), self.pred, ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            predictor, TensorRefs[Self.PRED.ARITY](self.phi_sa), self.pred, ctx
         )
 
         # ── Loss + MSE gradient ────────────────────────────────────────
@@ -251,13 +253,15 @@ struct OFEAuxLossStep[
             )
 
         # ── Backward chain ─────────────────────────────────────────────
-        predictor.vjp[target, Self.BATCH, POLICY=POLICY](
+        call_vjp[target, Self.BATCH, POLICY=POLICY](
+            predictor,
             TensorRefs[Self.PRED.ARITY](self.phi_sa),
             self.g_pred,
             TensorRefs[Self.PRED.ARITY](self.g_phi_sa),
             ctx,
         )
-        action_branch.vjp[target, Self.BATCH, POLICY=POLICY](
+        call_vjp[target, Self.BATCH, POLICY=POLICY](
+            action_branch,
             TensorRefs[Self.AB.ARITY](self.sa_in),
             self.g_phi_sa,
             TensorRefs[Self.AB.ARITY](self.g_sa_in),
@@ -265,13 +269,15 @@ struct OFEAuxLossStep[
         )
         # Concat splits grad_sa_in into (grad_phi_s, grad_action). grad_action
         # (cat_gin[1]) is discarded — the buffer-sampled action has no upstream.
-        self.concat.vjp[target, Self.BATCH, POLICY=POLICY](
+        call_vjp[target, Self.BATCH, POLICY=POLICY](
+            self.concat,
             TensorRefs[2](self.cat_in[0], self.cat_in[1]),
             self.g_sa_in,
             TensorRefs[2](self.cat_gin[0], self.cat_gin[1]),
             ctx,
         )
-        state_branch.vjp[target, Self.BATCH, POLICY=POLICY](
+        call_vjp[target, Self.BATCH, POLICY=POLICY](
+            state_branch,
             TensorRefs[Self.SB.ARITY](state.mb_s),
             self.cat_gin[0],
             TensorRefs[Self.SB.ARITY](self.g_obs_dummy),

@@ -39,6 +39,7 @@ from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from ...training.onpolicy_state import OnPolicyState
 
 
@@ -108,20 +109,20 @@ struct PPODiscreteActStep[
         comptime if target == "gpu":
             var ctx = state.ctx.value()
             state.ob1.upload(ctx)
-            actor.forward[target, N_ENVS, POLICY=POLICY](
-                TensorRefs[Self.ACTOR.ARITY](state.ob1), self.logits, state.ctx
+            call_forward[target, N_ENVS, POLICY=POLICY](
+                actor, TensorRefs[Self.ACTOR.ARITY](state.ob1), self.logits, state.ctx
             )
-            critic.forward[target, N_ENVS, POLICY=POLICY](
-                TensorRefs[Self.CRITIC.ARITY](state.ob1), state.v1, state.ctx
+            call_forward[target, N_ENVS, POLICY=POLICY](
+                critic, TensorRefs[Self.CRITIC.ARITY](state.ob1), state.v1, state.ctx
             )
             self.logits.download(ctx)
             state.v1.download(ctx)
         else:
-            actor.forward[target, N_ENVS, POLICY=POLICY](
-                TensorRefs[Self.ACTOR.ARITY](state.ob1), self.logits, state.ctx
+            call_forward[target, N_ENVS, POLICY=POLICY](
+                actor, TensorRefs[Self.ACTOR.ARITY](state.ob1), self.logits, state.ctx
             )
-            critic.forward[target, N_ENVS, POLICY=POLICY](
-                TensorRefs[Self.CRITIC.ARITY](state.ob1), state.v1, state.ctx
+            call_forward[target, N_ENVS, POLICY=POLICY](
+                critic, TensorRefs[Self.CRITIC.ARITY](state.ob1), state.v1, state.ctx
             )
 
         # Host-side softmax + categorical sample per env (index `.data`).
@@ -180,13 +181,13 @@ struct PPODiscreteActStep[
         comptime if target == "gpu":
             var ctx = state.ctx.value()
             state.ob1.upload(ctx)
-            actor.forward[target, 1, POLICY=POLICY](
-                TensorRefs[Self.ACTOR.ARITY](state.ob1), self.logits, state.ctx
+            call_forward[target, 1, POLICY=POLICY](
+                actor, TensorRefs[Self.ACTOR.ARITY](state.ob1), self.logits, state.ctx
             )
             self.logits.download(ctx)
         else:
-            actor.forward[target, 1, POLICY=POLICY](
-                TensorRefs[Self.ACTOR.ARITY](state.ob1), self.logits, state.ctx
+            call_forward[target, 1, POLICY=POLICY](
+                actor, TensorRefs[Self.ACTOR.ARITY](state.ob1), self.logits, state.ctx
             )
         ref lg = self.logits.data
         var best: Int = 0

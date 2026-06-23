@@ -31,6 +31,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
@@ -259,14 +260,14 @@ struct C51TargetYBlock[
         comptime ROW = Self.NA * Self.N_ATOMS
 
         # Step 1: Q_target(sp) → _logits_t.
-        q_target.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[Self.Q_NET.ARITY](mb_sp), self._logits_t, ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            q_target, TensorRefs[Self.Q_NET.ARITY](mb_sp), self._logits_t, ctx
         )
 
         # Step 2 (DOUBLE only): Q_online(sp) → _logits_on.
         comptime if Self.DOUBLE:
-            q_online.forward[target, Self.BATCH, POLICY=POLICY](
-                TensorRefs[Self.Q_NET.ARITY](mb_sp), self._logits_on, ctx
+            call_forward[target, Self.BATCH, POLICY=POLICY](
+                q_online, TensorRefs[Self.Q_NET.ARITY](mb_sp), self._logits_on, ctx
             )
 
         comptime if target == "gpu":

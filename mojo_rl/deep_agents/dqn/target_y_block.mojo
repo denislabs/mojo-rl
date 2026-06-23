@@ -33,6 +33,7 @@ from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.tensor_pack import TensorPack
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.core.initializer import Zero
 from mojo_rl.nn.primitives.reduce_max import ReduceMax
 from mojo_rl.nn.primitives.gather_cols import GatherCols
@@ -178,15 +179,15 @@ struct DQNTargetYBlock[
         `q_online` is ignored on the standard path (DOUBLE=False). For Double,
         both nets are forwarded on `sp`."""
         # Step 1: Q_target(sp) → _gather_in[0] ([B, NA]).
-        q_target.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[Self.Q_NET.ARITY](mb_sp), self._gather_in[0], ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            q_target, TensorRefs[Self.Q_NET.ARITY](mb_sp), self._gather_in[0], ctx
         )
 
         # Step 2: best_q = either max or gather-by-online-argmax → _max_q.
         comptime if Self.DOUBLE:
             # Q_online(sp) → _q_on, argmax → _gather_in[1], gather Q_target → _max_q.
-            q_online.forward[target, Self.BATCH, POLICY=POLICY](
-                TensorRefs[Self.Q_NET.ARITY](mb_sp), self._q_on, ctx
+            call_forward[target, Self.BATCH, POLICY=POLICY](
+                q_online, TensorRefs[Self.Q_NET.ARITY](mb_sp), self._q_on, ctx
             )
             comptime if target == "cpu":
                 for bb in range(Self.BATCH):

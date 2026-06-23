@@ -36,6 +36,7 @@ from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 
 from ..training.trainer_block import TrainerState
 
@@ -98,9 +99,9 @@ struct OFEFeatureStep[
     ) raises:
         """Populate `phi_s` and `phi_sp` from `state.mb_s` / `state.mb_sp`."""
         var ctx = state.ctx
-        state_branch.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[Self.SB.ARITY](state.mb_s), self.phi_s, ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            state_branch, TensorRefs[Self.SB.ARITY](state.mb_s), self.phi_s, ctx
         )
-        state_branch.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[Self.SB.ARITY](state.mb_sp), self.phi_sp, ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            state_branch, TensorRefs[Self.SB.ARITY](state.mb_sp), self.phi_sp, ctx
         )

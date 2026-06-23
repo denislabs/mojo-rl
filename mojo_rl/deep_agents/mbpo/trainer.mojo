@@ -31,6 +31,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP, Bf16Compute
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
@@ -776,8 +777,8 @@ struct MBPOTrainer[
             self._alp1.ensure(ACT + 1)
             for d in range(OBS):
                 self._ob1.data[d] = obs[d]
-            self.actor.forward["cpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](self._ob1), self._ao1
+            call_forward["cpu", 1](
+                self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._ao1
             )
             self.sel.forward["cpu", 1](
                 TensorRefs[1](self._ao1), self._alp1
@@ -797,8 +798,8 @@ struct MBPOTrainer[
             ob.upload(c)
             var ao = Tensor.alloc_gpu(c, 2 * ACT)
             var alp = Tensor.alloc_gpu(c, ACT + 1)
-            self.actor.forward["gpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](ob), ao, self.ctx
+            call_forward["gpu", 1](
+                self.actor, TensorRefs[Self.ACTOR.ARITY](ob), ao, self.ctx
             )
             self.sel.forward["gpu", 1](TensorRefs[1](ao), alp, self.ctx)
             alp.download(c)
@@ -823,8 +824,8 @@ struct MBPOTrainer[
         self._alp1.ensure(ACT + 1)
         for d in range(OBS):
             self._ob1.data[d] = obs[d]
-        self.actor.forward["cpu", 1](
-            TensorRefs[Self.ACTOR.ARITY](self._ob1), self._ao1
+        call_forward["cpu", 1](
+            self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._ao1
         )
         self.sel.forward["cpu", 1](TensorRefs[1](self._ao1), self._alp1)
         for j in range(ACT):
@@ -847,8 +848,8 @@ struct MBPOTrainer[
             self._ao1.ensure(2 * ACT)
             for d in range(OBS):
                 self._ob1.data[d] = obs[d]
-            self.actor.forward["cpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](self._ob1), self._ao1
+            call_forward["cpu", 1](
+                self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._ao1
             )
             for j in range(ACT):
                 var a = ftanh(self._ao1.data[j]) * self.action_scale
@@ -864,8 +865,8 @@ struct MBPOTrainer[
                 ob.data[d] = obs[d]
             ob.upload(c)
             var ao = Tensor.alloc_gpu(c, 2 * ACT)
-            self.actor.forward["gpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](ob), ao, self.ctx
+            call_forward["gpu", 1](
+                self.actor, TensorRefs[Self.ACTOR.ARITY](ob), ao, self.ctx
             )
             ao.download(c)
             for j in range(ACT):
@@ -1438,8 +1439,8 @@ struct MBPOTrainer[
                     )
             self._ao1.ensure(N_ENVS * 2 * ACT)
             self._alp1.ensure(N_ENVS * (ACT + 1))
-            self.actor.forward["cpu", N_ENVS](
-                TensorRefs[Self.ACTOR.ARITY](self._ob1), self._ao1
+            call_forward["cpu", N_ENVS](
+                self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._ao1
             )
             self.sel.forward["cpu", N_ENVS](
                 TensorRefs[1](self._ao1), self._alp1
@@ -1466,8 +1467,8 @@ struct MBPOTrainer[
                 grid_dim=(tot_obs + TPB - 1) // TPB,
                 block_dim=TPB,
             )
-            self.actor.forward["gpu", N_ENVS](
-                TensorRefs[Self.ACTOR.ARITY](self._ob1), self._ao1, self.ctx
+            call_forward["gpu", N_ENVS](
+                self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._ao1, self.ctx
             )
             self.sel.forward["gpu", N_ENVS](
                 TensorRefs[1](self._ao1), self._alp1, self.ctx
@@ -2016,7 +2017,8 @@ struct MBPOTrainer[
 
             for _ in range(self.rollout_length):
                 # Policy action on imagined obs: actor → rsample → clamp.
-                self.actor.forward["gpu", Self.BATCH](
+                call_forward["gpu", Self.BATCH](
+                    self.actor,
                     TensorRefs[Self.ACTOR.ARITY](self._ro_obs),
                     self._ro_ao,
                     self.ctx,

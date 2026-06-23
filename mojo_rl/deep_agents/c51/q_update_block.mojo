@@ -36,6 +36,7 @@ from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.tensor_pack import TensorPack
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.core.initializer import Zero
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.loss.cross_entropy import CrossEntropyLoss
@@ -215,8 +216,8 @@ struct C51QUpdateBlock[
         q_online.zero_grad[target](ctx)
 
         # 2. Q_online(s) → _gather_in[0] ([B, NA·N_ATOMS]).
-        q_online.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[Self.Q_NET.ARITY](mb_s), self._gather_in[0], ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            q_online, TensorRefs[Self.Q_NET.ARITY](mb_s), self._gather_in[0], ctx
         )
 
         # 3. Stage mb_a into the gather pool (§B0), gather slice at a_taken.
@@ -337,7 +338,8 @@ struct C51QUpdateBlock[
             )
 
         # 7. Q_online.vjp(grad_logits_all) → grad_obs (discarded).
-        q_online.vjp[target, Self.BATCH, POLICY=POLICY](
+        call_vjp[target, Self.BATCH, POLICY=POLICY](
+            q_online,
             TensorRefs[Self.Q_NET.ARITY](mb_s),
             self._grad_logits_all,
             TensorRefs[Self.Q_NET.ARITY](self._grad_obs),

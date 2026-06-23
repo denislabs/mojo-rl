@@ -48,6 +48,7 @@ from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.core.initializer import Xavier
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.core.checkpoint import (
@@ -482,8 +483,9 @@ struct DDPGTrainer[
                     )
             self._ao_scr.ensure(N_ENVS * ACT)
             self._noise_scr.ensure(N_ENVS * ACT)
-            self.actor_pair.online.forward["cpu", N_ENVS](
-                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr
+            call_forward["cpu", N_ENVS](
+                self.actor_pair.online,
+                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
             )
             box_muller_normal(self._noise_scr.data.unsafe_ptr(), N_ENVS * ACT)
             for env in range(N_ENVS):
@@ -515,7 +517,8 @@ struct DDPGTrainer[
                 grid_dim=(tot_obs + TPB - 1) // TPB,
                 block_dim=TPB,
             )
-            self.actor_pair.online.forward["gpu", N_ENVS](
+            call_forward["gpu", N_ENVS](
+                self.actor_pair.online,
                 TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
                 self.ctx,
             )
@@ -558,8 +561,9 @@ struct DDPGTrainer[
             self._ao_scr.ensure(ACT)
             for d in range(OBS):
                 self._ob_scr.data[d] = obs[d]
-            self.actor_pair.online.forward["cpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr
+            call_forward["cpu", 1](
+                self.actor_pair.online,
+                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
             )
             for j in range(ACT):
                 var a = self._ao_scr.data[j]
@@ -577,8 +581,9 @@ struct DDPGTrainer[
                 ob.data[d] = obs[d]
             ob.upload(c)
             var ao = Tensor.alloc_gpu(c, ACT)
-            self.actor_pair.online.forward["gpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](ob), ao, self.ctx
+            call_forward["gpu", 1](
+                self.actor_pair.online, TensorRefs[Self.ACTOR.ARITY](ob), ao,
+                self.ctx,
             )
             ao.download(c)
             for j in range(ACT):
@@ -611,8 +616,9 @@ struct DDPGTrainer[
             self._noise_scr.ensure(ACT)
             for d in range(OBS):
                 self._ob_scr.data[d] = obs[d]
-            self.actor_pair.online.forward["cpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr
+            call_forward["cpu", 1](
+                self.actor_pair.online,
+                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
             )
             box_muller_normal(self._noise_scr.data.unsafe_ptr(), ACT)
             for j in range(ACT):
@@ -629,8 +635,9 @@ struct DDPGTrainer[
                 ob.data[d] = obs[d]
             ob.upload(c)
             var ao = Tensor.alloc_gpu(c, ACT)
-            self.actor_pair.online.forward["gpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](ob), ao, self.ctx
+            call_forward["gpu", 1](
+                self.actor_pair.online, TensorRefs[Self.ACTOR.ARITY](ob), ao,
+                self.ctx,
             )
             ao.download(c)
             # Host box-muller noise (matches the host-list CPU path).

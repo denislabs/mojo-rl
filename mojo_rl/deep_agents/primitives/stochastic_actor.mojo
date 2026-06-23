@@ -19,11 +19,12 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.core.initializer import Initializer
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.core.walkers import join_name
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.combinators.parallel import Parallel
@@ -83,9 +84,11 @@ struct StochasticActor[
         mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        self.trunk.forward[target, B, POLICY=POLICY](inputs, self._mid, ctx)
-        self.heads.forward[target, B, POLICY=POLICY](
-            TensorRefs[1](self._mid), out, ctx
+        call_forward[target, B, POLICY=POLICY](
+            self.trunk, inputs, self._mid, ctx
+        )
+        call_forward[target, B, POLICY=POLICY](
+            self.heads, TensorRefs[1](self._mid), out, ctx
         )
 
     def vjp[
@@ -98,14 +101,15 @@ struct StochasticActor[
         grad_inputs: TensorRefs[Self.ARITY, ogi],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        self.heads.vjp[target, B, POLICY=POLICY](
+        call_vjp[target, B, POLICY=POLICY](
+            self.heads,
             TensorRefs[1](self._mid),
             grad_output,
             TensorRefs[1](self._mid_grad),
             ctx,
         )
-        self.trunk.vjp[target, B, POLICY=POLICY](
-            forward_input, self._mid_grad, grad_inputs, ctx
+        call_vjp[target, B, POLICY=POLICY](
+            self.trunk, forward_input, self._mid_grad, grad_inputs, ctx
         )
 
     def for_each_param[

@@ -16,6 +16,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.loss.mse_loss import MSELoss
 from mojo_rl.nn.optimizer.adam import Adam
 from ...training.onpolicy_state import OnPolicyState
@@ -66,8 +67,8 @@ struct PPOCriticTrainStep[
     ) raises -> Scalar[DT]:
         comptime MB = Self.MINIBATCH
         critic_opt.zero_grad[target, M=Self.CRITIC](critic, state.ctx)
-        critic.forward[target, MB, POLICY=POLICY](
-            TensorRefs[Self.CRITIC.ARITY](state.mb_obs), state.mb_v, state.ctx
+        call_forward[target, MB, POLICY=POLICY](
+            critic, TensorRefs[Self.CRITIC.ARITY](state.mb_obs), state.mb_v, state.ctx
         )
         var loss = self.inner.forward[target, MB](
             state.mb_v, state.mb_ret, state.ctx
@@ -75,7 +76,8 @@ struct PPOCriticTrainStep[
         self.inner.vjp[target, MB](
             state.mb_v, state.mb_ret, state.mb_gv, state.ctx
         )
-        critic.vjp[target, MB, POLICY=POLICY](
+        call_vjp[target, MB, POLICY=POLICY](
+            critic,
             TensorRefs[Self.CRITIC.ARITY](state.mb_obs),
             state.mb_gv,
             TensorRefs[Self.CRITIC.ARITY](state.mb_gi),

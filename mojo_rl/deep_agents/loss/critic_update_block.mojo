@@ -36,6 +36,7 @@ from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.loss.mse_loss import MSELoss
 from .loss_block import LossBlock
@@ -142,8 +143,8 @@ struct CriticUpdateBlock[
         [PER td capture + IS-weight scale] → critic.vjp → opt.step. Returns
         the scalar loss (0 sentinel under GPU ACCUMULATE; read at flush)."""
         critic.zero_grad[target](ctx)
-        critic.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorRefs[Self.CRITIC.ARITY](sa), self._mb_q, ctx
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            critic, TensorRefs[Self.CRITIC.ARITY](sa), self._mb_q, ctx
         )
 
         var loss: Scalar[DT]
@@ -199,7 +200,8 @@ struct CriticUpdateBlock[
                     block_dim=TPB,
                 )
 
-        critic.vjp[target, Self.BATCH, POLICY=POLICY](
+        call_vjp[target, Self.BATCH, POLICY=POLICY](
+            critic,
             TensorRefs[Self.CRITIC.ARITY](sa),
             self._mb_grad_q,
             TensorRefs[Self.CRITIC.ARITY](self._mb_grad_sa),

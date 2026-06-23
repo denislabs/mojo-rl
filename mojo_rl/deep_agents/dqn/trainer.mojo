@@ -36,6 +36,7 @@ from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.core.initializer import Xavier
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.core.checkpoint import (
@@ -532,8 +533,10 @@ struct DQNTrainer[
         comptime if Self.train_target == "cpu":
             for i in range(N_ENVS * OBS):
                 self._ob_scr.data[i] = obs_ptr[i]
-            self.pair.online.forward["cpu", N_ENVS](
-                TensorRefs[Self.Q_NET.ARITY](self._ob_scr), self._q_scr
+            call_forward["cpu", N_ENVS](
+                self.pair.online,
+                TensorRefs[Self.Q_NET.ARITY](self._ob_scr),
+                self._q_scr,
             )
         else:
             var c = self.ctx.value()
@@ -541,8 +544,11 @@ struct DQNTrainer[
                 c, obs_ptr, N_ENVS * OBS, owning=False,
             )
             c.enqueue_copy(self._ob_scr.dev.value(), obs_dev)
-            self.pair.online.forward["gpu", N_ENVS](
-                TensorRefs[Self.Q_NET.ARITY](self._ob_scr), self._q_scr, self.ctx
+            call_forward["gpu", N_ENVS](
+                self.pair.online,
+                TensorRefs[Self.Q_NET.ARITY](self._ob_scr),
+                self._q_scr,
+                self.ctx,
             )
             self._q_scr.download(c)
 
@@ -624,8 +630,10 @@ struct DQNTrainer[
         comptime if Self.train_target == "cpu":
             for d in range(OBS):
                 self._ob_scr.data[d] = obs[d]
-            self.pair.online.forward["cpu", 1](
-                TensorRefs[Self.Q_NET.ARITY](self._ob_scr), self._q_scr
+            call_forward["cpu", 1](
+                self.pair.online,
+                TensorRefs[Self.Q_NET.ARITY](self._ob_scr),
+                self._q_scr,
             )
             return self._argmax_row(0)
         else:
@@ -635,8 +643,11 @@ struct DQNTrainer[
             for d in range(OBS):
                 obs_h[d] = obs[d]
             c.enqueue_copy(self._ob_scr.dev.value(), obs_h.unsafe_ptr())
-            self.pair.online.forward["gpu", 1](
-                TensorRefs[Self.Q_NET.ARITY](self._ob_scr), self._q_scr, self.ctx
+            call_forward["gpu", 1](
+                self.pair.online,
+                TensorRefs[Self.Q_NET.ARITY](self._ob_scr),
+                self._q_scr,
+                self.ctx,
             )
             self._q_scr.download(c)
             return self._argmax_row(0)

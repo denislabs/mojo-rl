@@ -39,6 +39,7 @@ from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.primitives.rsample import RSample
 
@@ -268,13 +269,13 @@ struct EnsembleActorLoss[
         actor.zero_grad[target](ctx)
 
         # ── Step 1 — actor.forward(s) → _mb_ao [B, 2·ACT].
-        actor.forward[target, BB, POLICY=POLICY](
-            TensorRefs[Self.ACTOR.ARITY](mb_s), self._mb_ao, ctx
+        call_forward[target, BB, POLICY=POLICY](
+            actor, TensorRefs[Self.ACTOR.ARITY](mb_s), self._mb_ao, ctx
         )
 
         # ── Step 2 — rsample.forward(ao) → _mb_alp [B, ACT+1].
-        self.rsample.forward[target, BB, POLICY=POLICY](
-            TensorRefs[1](self._mb_ao), self._mb_alp, ctx
+        call_forward[target, BB, POLICY=POLICY](
+            self.rsample, TensorRefs[1](self._mb_ao), self._mb_alp, ctx
         )
 
         # ── Step 3 — sa = concat(s, action) + extract lp[b] = alp[b, ACT].
@@ -315,7 +316,8 @@ struct EnsembleActorLoss[
                 grid_dim=nbb, block_dim=TPB,
             )
         for i in range(Self.N):
-            ensemble.pairs[i].online.forward[target, BB, POLICY=POLICY](
+            call_forward[target, BB, POLICY=POLICY](
+                ensemble.pairs[i].online,
                 TensorRefs[Self.CRITIC.ARITY](self._mb_sa), self._mb_q_i, ctx
             )
             comptime if target == "cpu":
@@ -380,10 +382,12 @@ struct EnsembleActorLoss[
             # Re-forward the SAME sa to refresh this critic's vjp cache, then
             # vjp. The critic's PARAM grads accumulate but are DISCARDED (the
             # next EnsembleCriticStep zero_grads before its own update).
-            ensemble.pairs[i].online.forward[target, BB, POLICY=POLICY](
+            call_forward[target, BB, POLICY=POLICY](
+                ensemble.pairs[i].online,
                 TensorRefs[Self.CRITIC.ARITY](self._mb_sa), self._mb_q_i, ctx
             )
-            ensemble.pairs[i].online.vjp[target, BB, POLICY=POLICY](
+            call_vjp[target, BB, POLICY=POLICY](
+                ensemble.pairs[i].online,
                 TensorRefs[Self.CRITIC.ARITY](self._mb_sa),
                 self._mb_grad_q_i,
                 TensorRefs[Self.CRITIC.ARITY](self._mb_grad_sa_i),
@@ -430,7 +434,8 @@ struct EnsembleActorLoss[
             )
 
         # ── Step 9 — rsample.vjp(grad_alp) → grad_ao [B, 2·ACT].
-        self.rsample.vjp[target, BB, POLICY=POLICY](
+        call_vjp[target, BB, POLICY=POLICY](
+            self.rsample,
             TensorRefs[1](self._mb_ao),
             self._mb_grad_alp,
             TensorRefs[1](self._mb_grad_ao),
@@ -439,7 +444,8 @@ struct EnsembleActorLoss[
 
         # ── Step 10 — actor.vjp(grad_ao) → grad_obs (discarded); accumulates
         # actor param grads.
-        actor.vjp[target, BB, POLICY=POLICY](
+        call_vjp[target, BB, POLICY=POLICY](
+            actor,
             TensorRefs[Self.ACTOR.ARITY](mb_s),
             self._mb_grad_ao,
             TensorRefs[Self.ACTOR.ARITY](self._mb_grad_obs),
