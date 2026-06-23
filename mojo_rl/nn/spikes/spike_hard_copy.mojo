@@ -12,13 +12,13 @@ Run: pixi run mojo run -I . mojo_rl/nn/storage/spikes/spike_hard_copy.mojo
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.param import ParamVisitor
-from mojo_rl.nn.storage.core.initializer import Deterministic, Zero
-from mojo_rl.nn.storage.core.hard_copy import hard_copy, _CollectVisitor
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.batch_norm_1d import BatchNorm1D
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.initializer import Deterministic, Zero
+from mojo_rl.nn.core.hard_copy import hard_copy, _CollectVisitor
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.batch_norm_1d import BatchNorm1D
 
 
 struct _FillVisitor(ParamVisitor):

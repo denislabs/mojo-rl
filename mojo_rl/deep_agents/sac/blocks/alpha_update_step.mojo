@@ -11,7 +11,7 @@ Holds `target_entropy` as a small hyperparam.
 
 from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.optimizer.scalar_adam import ScalarAdam
+from mojo_rl.nn.optimizer.scalar_adam import ScalarAdam
 from ...training.trainer_block import TrainerState
 
 

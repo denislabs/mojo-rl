@@ -23,7 +23,7 @@ allocates on the chosen target (CPU list / GPU buffer).
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor
 
 
 struct TrainerState[

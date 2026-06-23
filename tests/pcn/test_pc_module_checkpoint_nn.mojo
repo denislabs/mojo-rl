@@ -25,8 +25,8 @@ from std.math import abs
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.optimizer.adam import AdamW
-from mojo_rl.nn.storage.core.checkpoint import save_params, load_params
+from mojo_rl.nn.optimizer.adam import AdamW
+from mojo_rl.nn.core.checkpoint import save_params, load_params
 
 from mojo_rl.experimental.pcn.pc_block import PCBlock
 from mojo_rl.experimental.pcn.predictive_model import PCIdentity

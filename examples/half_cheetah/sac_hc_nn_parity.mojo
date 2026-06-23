@@ -27,10 +27,10 @@ from std.time import perf_counter_ns
 
 from mojo_rl.core.logger import CsvLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.activations import ReLU
-from mojo_rl.nn.storage.primitives.layer_norm import LayerNorm
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.nn.primitives.layer_norm import LayerNorm
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep

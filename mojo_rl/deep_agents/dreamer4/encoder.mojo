@@ -22,23 +22,23 @@ from their forward_input), so they MUST persist as fields across forward→vjp.
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.param import Param, ParamVisitor
-from mojo_rl.nn.storage.core.initializer import Initializer
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.storage.core.walkers import (
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.param import Param, ParamVisitor
+from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.walkers import (
     for_each_param_auto, zero_grad_auto, join_name,
 )
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.combinators.tokenwise import Tokenwise
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.activations import Tanh
-from mojo_rl.nn.storage.primitives.slice import Slice
-from mojo_rl.nn.storage.primitives.learned_tokens import LearnedTokens
-from mojo_rl.nn.storage.primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
-from mojo_rl.nn.storage.primitives.mae_replacer import MAEReplacer
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.combinators.tokenwise import Tokenwise
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import Tanh
+from mojo_rl.nn.primitives.slice import Slice
+from mojo_rl.nn.primitives.learned_tokens import LearnedTokens
+from mojo_rl.nn.primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
+from mojo_rl.nn.primitives.mae_replacer import MAEReplacer
 from .blocks import Dreamer4Stack
 
 

@@ -21,14 +21,14 @@ inference), so no BN train/eval toggle is needed here. Returns the last loss.
 from std.math import exp, log
 from std.memory import alloc
 from layout import Layout, LayoutTensor
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.optimizer.adam import Adam
-from mojo_rl.nn.storage.optimizer.optimizer import Optimizer
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.optimizer.optimizer import Optimizer
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import GumbelGPUMCTS, SinglePlayer

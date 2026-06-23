@@ -1,6 +1,6 @@
 """TD3Trainer — storage-framework TD3 trainer (CPU gate; GPU stretch).
 
-Assembles the migrated `mojo_rl.nn.storage` TD3 blocks into a single
+Assembles the migrated `mojo_rl.nn` TD3 blocks into a single
 driver-conforming `TD3Trainer` that conforms `OffPolicyAgentGpu` so both the
 CPU single-env driver (`run_offpolicy_train`) and the batched drivers
 type-check. Structural sibling of the storage `DDPGTrainer` with the TD3
@@ -40,13 +40,13 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP, Bf16Compute
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.initializer import Xavier
-from mojo_rl.nn.storage.optimizer.adam import Adam
-from mojo_rl.nn.storage.core.checkpoint import (
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP, Bf16Compute
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Xavier
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.core.checkpoint import (
     CheckpointWriter, CheckpointReader, _split_lines,
 )
 from mojo_rl.nn.random.box_muller import box_muller_normal, box_muller_normal_gpu

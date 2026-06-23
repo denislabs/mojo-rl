@@ -33,15 +33,15 @@ for ``AZMLPNet``.
 ``[policy(ACT) | value(1)]`` packing the planner expects.
 """
 
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.combinators.parallel import Parallel
-from mojo_rl.nn.storage.combinators.repeat import Repeat
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.storage.primitives.flatten import Flatten
-from mojo_rl.nn.storage.models.conv import Conv2DBatchNormReLU
-from mojo_rl.nn.storage.models.resnet import ResBlockConv2DBN
-from mojo_rl.nn.storage.primitives.batch_norm_2d import BN2D_DEFAULT_EPS
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.combinators.parallel import Parallel
+from mojo_rl.nn.combinators.repeat import Repeat
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.primitives.flatten import Flatten
+from mojo_rl.nn.models.conv import Conv2DBatchNormReLU
+from mojo_rl.nn.models.resnet import ResBlockConv2DBN
+from mojo_rl.nn.primitives.batch_norm_2d import BN2D_DEFAULT_EPS
 
 
 # ──────────────────────────────────────────────────────────────────────

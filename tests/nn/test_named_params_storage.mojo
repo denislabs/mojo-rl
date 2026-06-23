@@ -11,11 +11,11 @@ Run: pixi run mojo run -I . tests/nn/test_named_params_storage.mojo
 
 from std.testing import assert_true, assert_equal
 
-from mojo_rl.nn.storage.core.initializer import Deterministic
-from mojo_rl.nn.storage.core.named_params import named_params, named_states
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.batch_norm_1d import BatchNorm1D
-from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.core.initializer import Deterministic
+from mojo_rl.nn.core.named_params import named_params, named_states
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.batch_norm_1d import BatchNorm1D
+from mojo_rl.nn.combinators.sequential import Sequential
 
 
 comptime D = 4

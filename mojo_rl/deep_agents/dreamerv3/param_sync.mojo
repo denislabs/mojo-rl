@@ -22,10 +22,10 @@ from std.collections import Dict
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.param import ParamVisitor
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import GraphDecl
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import GraphDecl
 
 
 # Snapshot visitor: copy each param's values into the dict by name (downloads

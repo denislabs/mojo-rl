@@ -36,8 +36,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.deep_agents.dreamerv3.twohot import twohot_pred
 from mojo_rl.deep_agents.dreamerv3.dists import bounded_std
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_sample, UNIMIX
@@ -56,7 +56,7 @@ from mojo_rl.deep_agents.dreamerv3.wm import (
 from mojo_rl.deep_agents.dreamerv3.nets import (
     DreamerEncoder, DreamerValue, DreamerPolicyHead,
 )
-from mojo_rl.nn.storage.optimizer.dreamer_opt import DreamerOpt
+from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
 
 
 @always_inline

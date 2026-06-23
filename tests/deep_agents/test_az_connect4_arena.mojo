@@ -20,14 +20,14 @@ Run (Apple Metal):
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents.alphazero.selfplay_arena import (
     run_alphazero_selfplay_arena,
 )
 from mojo_rl.deep_agents.alphazero.eval import eval_policy_vs_random
 from mojo_rl.deep_agents.alphazero.arena import candidate_winrate
-from mojo_rl.nn.storage.core.hard_copy import hard_copy
+from mojo_rl.nn.core.hard_copy import hard_copy
 from mojo_rl.deep_agents.zero.symmetries import HFlipColumnAugmenter
 from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 

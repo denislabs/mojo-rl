@@ -19,9 +19,9 @@ from std.math import exp
 from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.planners.tree_search import Representation, Dynamics, Prediction
 from .twohot_targets import mz_decode_value_batch
 

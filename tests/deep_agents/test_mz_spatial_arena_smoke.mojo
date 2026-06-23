@@ -12,9 +12,9 @@ arena's `hard_copy_params` over the graph. Asserts a finite loss.
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
     mzc4_init_zero_pred, mzc4_init_zero_dyn,

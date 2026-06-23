@@ -21,9 +21,9 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.initializer import Zero
-from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.deep_agents.loss.seed_grad_inv_batch import seed_grad_inv_batch
 
 from .nets_mt import TDMPC2PolicyMT, TDMPC2QNetMT

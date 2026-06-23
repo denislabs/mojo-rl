@@ -12,13 +12,13 @@ Run: pixi run mojo run -I . tests/nn/test_storage_graph_export.mojo
 
 from std.testing import assert_true
 
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.activations import ReLU, Tanh
-from mojo_rl.nn.storage.primitives.concat import Concat2
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_export import (
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import ReLU, Tanh
+from mojo_rl.nn.primitives.concat import Concat2
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.combinators.graph_decl import InputSlot, Node
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_export import (
     TextExporter, MermaidExporter, FusionReportExporter,
 )
 

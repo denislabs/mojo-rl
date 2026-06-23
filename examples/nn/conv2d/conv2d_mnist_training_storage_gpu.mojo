@@ -19,13 +19,13 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import MNIST
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.initializer import Kaiming
-from mojo_rl.nn.storage.primitives.conv2d import Conv2D
-from mojo_rl.nn.storage.primitives.activations import ReLU
-from mojo_rl.nn.storage.primitives.flatten import Flatten
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.training.trainer import Trainer
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.primitives.conv2d import Conv2D
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.nn.primitives.flatten import Flatten
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.training.trainer import Trainer
 
 
 def main() raises:

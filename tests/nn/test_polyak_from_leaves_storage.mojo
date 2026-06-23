@@ -17,9 +17,9 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.primitives.noisy_linear import NoisyLinear
-from mojo_rl.nn.storage.primitives.conv2d import Conv2D
-from mojo_rl.nn.storage.core.initializer import Deterministic
+from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
+from mojo_rl.nn.primitives.conv2d import Conv2D
+from mojo_rl.nn.core.initializer import Deterministic
 
 
 def test_noisy_linear[target: StaticString](ctx: Optional[DeviceContext]) raises:

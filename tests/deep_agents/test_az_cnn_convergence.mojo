@@ -12,7 +12,7 @@ Run (Apple Metal):
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.alphazero.nets import AZTicTacToeCNN
 from mojo_rl.deep_agents.alphazero.selfplay import run_alphazero_selfplay
 from mojo_rl.deep_agents.alphazero.eval import eval_policy_vs_random

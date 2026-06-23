@@ -23,15 +23,15 @@ round-trip trivial. Returns the last loss.
 
 from std.memory import alloc
 from layout import Layout, LayoutTensor
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.optimizer.adam import Adam
-from mojo_rl.nn.storage.core.hard_copy import hard_copy
-from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.core.hard_copy import hard_copy
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import SampledGumbelGPUMCTS, SinglePlayer

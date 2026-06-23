@@ -24,10 +24,10 @@ from std.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.initializer import Kaiming
-from mojo_rl.nn.storage.primitives.sigreg import SIGReg
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.primitives.sigreg import SIGReg
 
 
 comptime EPS: Scalar[DT] = 2e-3

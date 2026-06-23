@@ -6,20 +6,20 @@ Should converge to the SAME loss as the CPU run (deterministic init/data,
 matching naive math) — a CPU/GPU parity check on the full training loop.
 
 Run: pixi run -e apple mojo run -I . \
-    mojo_rl/nn/storage/spike_train_gpu.mojo
+    mojo_rl/nn/storage/spike_amp_gpu.mojo
 """
 
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.activations import ReLU
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.optimizer.sgd import SGD
-from mojo_rl.nn.storage.loss.mse import mse_forward, mse_backward
-from mojo_rl.nn.storage.core.initializer import Deterministic
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.optimizer.sgd import SGD
+from mojo_rl.nn.loss.mse import mse_forward, mse_backward
+from mojo_rl.nn.core.initializer import Deterministic
 
 
 def main() raises:
@@ -30,7 +30,7 @@ def main() raises:
     var ctx = DeviceContext()
 
     var model = Sequential[
-        Linear[IN, H], ReLU[H], Linear[H, OUT]
+        Linear[IN, H, True], ReLU[H], Linear[H, OUT, True]
     ].make["gpu", Deterministic](Optional(ctx))
     var opt = SGD(lr=0.1, wd=0.0)
 
@@ -67,6 +67,6 @@ def main() raises:
 
     print("final mse", last)
     if last < first:
-        print("GPU LIGHTHOUSE OK — loss", first, "->", last)
+        print("AMP GPU LIGHTHOUSE OK — loss", first, "->", last)
     else:
-        print("GPU LIGHTHOUSE FAIL")
+        print("AMP GPU LIGHTHOUSE FAIL")

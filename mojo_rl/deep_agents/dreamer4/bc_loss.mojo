@@ -24,9 +24,9 @@ position p = b·T + j (j ∈ [0,T)). `actions` holds class indices as fp ints.
 from std.memory import alloc
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_fwd, cat_bwd
 from mojo_rl.deep_agents.dreamerv3.twohot import twohot_loss, twohot_loss_backward

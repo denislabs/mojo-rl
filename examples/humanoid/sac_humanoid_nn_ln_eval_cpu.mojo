@@ -27,10 +27,10 @@ Run:
 from std.random import seed
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.activations import ReLU
-from mojo_rl.nn.storage.primitives.layer_norm import LayerNorm
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.nn.primitives.layer_norm import LayerNorm
 from mojo_rl.deep_agents.sac import SACAgent, SACActorNet
 from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
 from mojo_rl.deep_agents.data.any_replay import AnyReplay

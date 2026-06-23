@@ -40,10 +40,10 @@ buffer unlocks, and the prerequisite for imagination RL on a real env.
 from std.math import sqrt, log, cos, abs
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.initializer import Xavier
-from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Xavier
+from mojo_rl.nn.optimizer.adam import Adam
 
 from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
 from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent

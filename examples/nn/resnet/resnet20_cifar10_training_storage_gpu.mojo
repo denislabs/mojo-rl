@@ -21,19 +21,19 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import CIFAR10
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.initializer import Kaiming
-from mojo_rl.nn.storage.models.conv import Conv2DBatchNormReLU
-from mojo_rl.nn.storage.models.resnet import (
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.models.conv import Conv2DBatchNormReLU
+from mojo_rl.nn.models.resnet import (
     ResBlockConv2DBN, ResBlockDownsampleBN,
 )
-from mojo_rl.nn.storage.primitives.avg_pool_2d import AvgPool2D
-from mojo_rl.nn.storage.primitives.flatten import Flatten
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.combinators.repeat import Repeat
-from mojo_rl.nn.storage.training.trainer import Trainer
-from mojo_rl.nn.storage.training.augmenter import CIFAR10CropFlipAugmenter
-from mojo_rl.nn.storage.optimizer.lr_scheduler import WarmupCosineSchedule
+from mojo_rl.nn.primitives.avg_pool_2d import AvgPool2D
+from mojo_rl.nn.primitives.flatten import Flatten
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.combinators.repeat import Repeat
+from mojo_rl.nn.training.trainer import Trainer
+from mojo_rl.nn.training.augmenter import CIFAR10CropFlipAugmenter
+from mojo_rl.nn.optimizer.lr_scheduler import WarmupCosineSchedule
 
 
 def main() raises:

@@ -1,6 +1,6 @@
 """SACTrainer — storage-framework SAC trainer (CPU gate; GPU stretch).
 
-Assembles the migrated `mojo_rl.nn.storage` SAC blocks into a single
+Assembles the migrated `mojo_rl.nn` SAC blocks into a single
 driver-conforming `SACTrainer` that conforms `OffPolicyAgentGpu` so both
 the CPU single-env driver (`run_offpolicy_train`) and the batched drivers
 type-check. Both the CPU and GPU paths are wired; the GPU per-update hot
@@ -34,14 +34,14 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.initializer import Xavier, Zero
-from mojo_rl.nn.storage.primitives.rsample import RSample
-from mojo_rl.nn.storage.optimizer.adam import Adam
-from mojo_rl.nn.storage.optimizer.scalar_adam import ScalarAdam
-from mojo_rl.nn.storage.core.checkpoint import (
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Xavier, Zero
+from mojo_rl.nn.primitives.rsample import RSample
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.optimizer.scalar_adam import ScalarAdam
+from mojo_rl.nn.core.checkpoint import (
     CheckpointWriter, CheckpointReader, _split_lines,
 )
 

@@ -43,9 +43,9 @@ from std.math import max
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 
 
 def _ilog2(n: Int) -> Int:

@@ -35,11 +35,11 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.optimizer.adam import Adam
-from mojo_rl.nn.storage.optimizer.grad_clip import clip_grad_norm
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.optimizer.grad_clip import clip_grad_norm
 
 from .loss_ops import soft_ce_slice_loss_and_grad
 from ..zero.twohot_targets import mz_two_hot_target_batch

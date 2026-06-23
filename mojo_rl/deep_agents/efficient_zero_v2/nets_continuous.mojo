@@ -20,10 +20,10 @@ identical to the discrete agent. Rep/Dyn aliases are re-exported for one-stop
 import.
 """
 
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.combinators.parallel import Parallel
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.linear_mish import LinearMish
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.combinators.parallel import Parallel
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.linear_mish import LinearMish
 
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet
 

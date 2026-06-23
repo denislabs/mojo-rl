@@ -20,17 +20,17 @@ from std.math import isfinite
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.param import ParamVisitor
-from mojo_rl.nn.storage.core.initializer import Deterministic, Kaiming
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.rms_norm import RMSNorm
-from mojo_rl.nn.storage.primitives.elementwise import Elementwise
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.initializer import Deterministic, Kaiming
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.rms_norm import RMSNorm
+from mojo_rl.nn.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.gelu_op import GELUOp
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import InputSlot, Node
 
 from mojo_rl.deep_agents.dreamerv3.normalize import PercentileNormalize
 from mojo_rl.deep_agents.dreamerv3.polyak import polyak_module

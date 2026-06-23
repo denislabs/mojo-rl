@@ -9,11 +9,11 @@ Run: pixi run mojo run -I . tests/nn/test_binadd_storage.mojo
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.initializer import Deterministic
-from mojo_rl.nn.storage.core.tensor_pack import TensorPack
-from mojo_rl.nn.storage.primitives.binary_elementwise import BinaryElemAdd
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Deterministic
+from mojo_rl.nn.core.tensor_pack import TensorPack
+from mojo_rl.nn.primitives.binary_elementwise import BinaryElemAdd
 
 
 comptime B = 4

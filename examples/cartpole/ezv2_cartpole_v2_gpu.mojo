@@ -16,8 +16,8 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.initializer import Kaiming
-from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.efficient_zero_v2.nets import (

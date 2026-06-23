@@ -18,14 +18,14 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import CharTokenizer, train_val_split
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.models.gpt import (
+from mojo_rl.nn.models.gpt import (
     GPTDropTied, gpt_scale_residual_proj, gpt_wire_tie,
 )
-from mojo_rl.nn.storage.optimizer.adam import AdamW
-from mojo_rl.nn.storage.training.autoregressive_trainer import (
+from mojo_rl.nn.optimizer.adam import AdamW
+from mojo_rl.nn.training.autoregressive_trainer import (
     AutoregressiveTrainer,
 )
-from mojo_rl.nn.storage.core.initializer import Normal
+from mojo_rl.nn.core.initializer import Normal
 
 
 comptime VOCAB = 4  # "abcd"

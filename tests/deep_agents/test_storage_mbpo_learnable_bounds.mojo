@@ -21,11 +21,11 @@ from std.math import isfinite
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.initializer import Kaiming
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.activations import Swish
-from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import Swish
+from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.deep_agents.mbpo.dynamics_ensemble_block import (
     DynamicsEnsembleBlock,
 )

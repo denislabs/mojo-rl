@@ -18,11 +18,11 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.initializer import Deterministic
-from mojo_rl.nn.storage.primitives.modulate import Modulate
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.initializer import Deterministic
+from mojo_rl.nn.primitives.modulate import Modulate
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import InputSlot, Node
 
 
 comptime DIM = 4

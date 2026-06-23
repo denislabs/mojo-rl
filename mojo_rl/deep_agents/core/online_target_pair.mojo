@@ -24,8 +24,8 @@ CPU + GPU.
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.initializer import Initializer
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Initializer
 
 
 struct OnlineTargetPair[M: Module](Movable & ImplicitlyDeletable):

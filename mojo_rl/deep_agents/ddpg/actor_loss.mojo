@@ -27,15 +27,15 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB_REDUCE
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.initializer import Zero
-from mojo_rl.nn.storage.optimizer.adam import Adam
-from mojo_rl.nn.storage.primitives.concat import Concat2
-from mojo_rl.nn.storage.primitives.scale import Scale
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node, ExternalNode
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.primitives.concat import Concat2
+from mojo_rl.nn.primitives.scale import Scale
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import InputSlot, Node, ExternalNode
 from ..loss.loss_block import LossBlock
 
 

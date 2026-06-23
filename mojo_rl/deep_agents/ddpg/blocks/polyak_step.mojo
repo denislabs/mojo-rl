@@ -4,7 +4,7 @@ Used by DDPG. (TD3 uses TD3DelayedActorPolyakStep — gated 3-pair polyak.)
 """
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.core.module import Module
 from ...core.online_target_pair import OnlineTargetPair
 from ...training.trainer_block import TrainerState
 

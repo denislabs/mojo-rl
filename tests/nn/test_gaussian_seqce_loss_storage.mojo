@@ -20,12 +20,12 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor
 
-from mojo_rl.nn.storage.loss.gaussian_nll_loss import (
+from mojo_rl.nn.loss.gaussian_nll_loss import (
     GaussianNLLLoss as StorGNLL,
 )
-from mojo_rl.nn.storage.loss.sequence_cross_entropy import (
+from mojo_rl.nn.loss.sequence_cross_entropy import (
     SequenceCrossEntropyLoss as StorSeqCE,
 )
 

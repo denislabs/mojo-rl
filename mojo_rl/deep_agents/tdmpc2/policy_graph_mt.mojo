@@ -16,14 +16,14 @@ value/TD-target step zero_grads them before its own update).
 See `policy_graph.mojo` for the loss structure.
 """
 
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node, ExternalNode
-from mojo_rl.nn.storage.primitives.slice import Slice
-from mojo_rl.nn.storage.primitives.concat import Concat
-from mojo_rl.nn.storage.primitives.add import Add
-from mojo_rl.nn.storage.primitives.scale import Scale
-from mojo_rl.nn.storage.primitives.binary_elementwise import BinarySub
-from mojo_rl.nn.storage.primitives.rsample import RSample
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import InputSlot, Node, ExternalNode
+from mojo_rl.nn.primitives.slice import Slice
+from mojo_rl.nn.primitives.concat import Concat
+from mojo_rl.nn.primitives.add import Add
+from mojo_rl.nn.primitives.scale import Scale
+from mojo_rl.nn.primitives.binary_elementwise import BinarySub
+from mojo_rl.nn.primitives.rsample import RSample
 
 from .nets_mt import TDMPC2PolicyMT, TDMPC2QNetMT
 from .losses import TwoHotDecode

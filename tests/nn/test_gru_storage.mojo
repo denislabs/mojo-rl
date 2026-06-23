@@ -22,11 +22,11 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.tensor_pack import TensorPack
-from mojo_rl.nn.storage.core.initializer import Deterministic
-from mojo_rl.nn.storage.primitives.gru_cell import GRUCell
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.tensor_pack import TensorPack
+from mojo_rl.nn.core.initializer import Deterministic
+from mojo_rl.nn.primitives.gru_cell import GRUCell
 
 
 comptime IN = 4

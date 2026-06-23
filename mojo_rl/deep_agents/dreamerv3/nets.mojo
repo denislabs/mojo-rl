@@ -15,12 +15,12 @@ Layer counts pinned to v1 defaults (enc/dec 2 hidden, prior 2, head MLP 1);
 `Repeat[n, Inner]` generalizes the depth later.
 """
 
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.rms_norm import RMSNorm
-from mojo_rl.nn.storage.primitives.elementwise import Elementwise
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.rms_norm import RMSNorm
+from mojo_rl.nn.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.gelu_op import GELUOp
-from mojo_rl.nn.storage.primitives.symlog import Symlog
+from mojo_rl.nn.primitives.symlog import Symlog
 from mojo_rl.nn.core.element_op import ElementOp
 
 

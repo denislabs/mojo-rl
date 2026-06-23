@@ -9,12 +9,12 @@ from std.math import sqrt, exp
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.primitives.layer_norm_no_affine import LayerNormNoAffine
-from mojo_rl.nn.storage.primitives.min_max_norm import MinMaxNorm
-from mojo_rl.nn.storage.primitives.sim_norm import SimNorm
-from mojo_rl.nn.storage.core.initializer import Deterministic
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.primitives.layer_norm_no_affine import LayerNormNoAffine
+from mojo_rl.nn.primitives.min_max_norm import MinMaxNorm
+from mojo_rl.nn.primitives.sim_norm import SimNorm
+from mojo_rl.nn.core.initializer import Deterministic
 
 comptime LNNA_EPS_REF: Scalar[DT] = 1e-6
 comptime MMN_EPS_REF: Scalar[DT] = 1e-5

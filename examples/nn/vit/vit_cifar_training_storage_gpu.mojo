@@ -18,12 +18,12 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import CIFAR10
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.initializer import Kaiming
-from mojo_rl.nn.storage.models.vit import ViT
-from mojo_rl.nn.storage.optimizer.adam import AdamW
-from mojo_rl.nn.storage.training.trainer import Trainer
-from mojo_rl.nn.storage.training.augmenter import CIFAR10CropFlipAugmenter
-from mojo_rl.nn.storage.optimizer.lr_scheduler import WarmupCosineSchedule
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.models.vit import ViT
+from mojo_rl.nn.optimizer.adam import AdamW
+from mojo_rl.nn.training.trainer import Trainer
+from mojo_rl.nn.training.augmenter import CIFAR10CropFlipAugmenter
+from mojo_rl.nn.optimizer.lr_scheduler import WarmupCosineSchedule
 
 
 comptime IN_CHANNELS = 3

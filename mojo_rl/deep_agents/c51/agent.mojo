@@ -24,7 +24,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.core.module import Module
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 
 from ..training.blocks import SampleBlock

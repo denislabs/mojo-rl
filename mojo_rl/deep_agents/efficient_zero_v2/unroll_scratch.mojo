@@ -15,7 +15,7 @@ so the storage ``forward(TensorRefs[Tensor])`` / ``.lt`` device views work; the
 from std.gpu.host import DeviceContext, HostBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor
 
 
 struct EZV2UnrollScratch[

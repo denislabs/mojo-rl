@@ -28,15 +28,15 @@ Param load + checkpoint use the `ParamVisitor` name-walk
 (`for_each_param`); the node-index access in the spikes is test-only.
 """
 
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.block_linear import BlockLinear
-from mojo_rl.nn.storage.primitives.rms_norm import RMSNorm
-from mojo_rl.nn.storage.primitives.elementwise import Elementwise
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import InputSlot, Node
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.block_linear import BlockLinear
+from mojo_rl.nn.primitives.rms_norm import RMSNorm
+from mojo_rl.nn.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.gelu_op import GELUOp
-from mojo_rl.nn.storage.primitives.concat import Concat
+from mojo_rl.nn.primitives.concat import Concat
 from mojo_rl.nn.core.element_op import ElementOp
 from .rssm_ops import (
     ActionSquash, BlockGroupAssemble, GRUGate, StraightThroughSample,

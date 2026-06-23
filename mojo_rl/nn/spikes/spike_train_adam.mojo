@@ -6,14 +6,14 @@ Run: pixi run mojo run -I . mojo_rl/nn/storage/spikes/spike_train_adam.mojo
 """
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.activations import ReLU
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.optimizer.adam import Adam
-from mojo_rl.nn.storage.loss.mse import mse_forward, mse_backward
-from mojo_rl.nn.storage.core.initializer import Deterministic
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.loss.mse import mse_forward, mse_backward
+from mojo_rl.nn.core.initializer import Deterministic
 
 
 def main() raises:

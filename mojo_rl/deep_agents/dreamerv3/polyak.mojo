@@ -9,7 +9,7 @@ which is exactly the legacy mix (no name matching, no index-keyed collect).
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.core.module import Module
 
 
 def polyak_module[

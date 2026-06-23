@@ -32,20 +32,20 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.storage.core.initializer import Xavier
-from mojo_rl.nn.storage.optimizer.adam import Adam
-from mojo_rl.nn.storage.core.checkpoint import (
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.initializer import Xavier
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.core.checkpoint import (
     CheckpointWriter, CheckpointReader, _split_lines,
 )
 
 from mojo_rl.nn.core.log_bundle import log_bundle
 from mojo_rl.nn.core.metric import LogScalar
 from mojo_rl.nn.core.save_scalar import _expect_kv_line
-from mojo_rl.nn.storage.training.timer import Timer
+from mojo_rl.nn.training.timer import Timer
 
 from ..core.online_target_pair import OnlineTargetPair
 from ..data.n_step_replay import GPUNStepBuffer

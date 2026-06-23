@@ -31,9 +31,9 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.initializer import Kaiming
-from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.logger import Logger, NoOpLogger
 
 from ..training.batched_env import BatchedEnv

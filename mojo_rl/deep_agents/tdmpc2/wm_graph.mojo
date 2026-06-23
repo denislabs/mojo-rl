@@ -28,9 +28,9 @@ NQ is fixed at 5 (reference `num_q`); the graph node list is written out
 (ComputeGraph node packs are not variadic).
 """
 
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node, ExternalNode
-from mojo_rl.nn.storage.primitives.concat import Concat
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import InputSlot, Node, ExternalNode
+from mojo_rl.nn.primitives.concat import Concat
 
 from .nets import TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Termination
 from .losses import MSELossPlain, TDMPC2TwoHotLoss, BCEWithLogitsLoss

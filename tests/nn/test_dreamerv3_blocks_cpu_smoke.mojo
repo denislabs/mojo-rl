@@ -18,9 +18,9 @@ from std.testing import assert_true
 from std.math import isfinite
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.initializer import Deterministic
-from mojo_rl.nn.storage.optimizer.dreamer_opt import DreamerOpt
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.initializer import Deterministic
+from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
 from mojo_rl.deep_agents.dreamerv3.twohot import symexp_twohot_bins
 from mojo_rl.deep_agents.dreamerv3.normalize import PercentileNormalize
 from mojo_rl.deep_agents.dreamerv3.blocks import (

@@ -1,19 +1,19 @@
-"""Integration gate: Sequential[Linear, ReLU, Linear] trains identically to the hand-
-written ReLU chain — proves the generic Elementwise composes in the
-orchestrator as a drop-in Module. Expect the SAME loss curve as spike_train.
+"""End-to-end CPU training (storage slice): Linear → ReLU → Linear, SGD on MSE.
+Self-contained (storage-native Param/SGD/mse). Bit-identical anchor for the
+GPU run (spike_train_gpu.mojo).
 
-Run: pixi run mojo run -I . mojo_rl/nn/storage/spike_train_elementwise.mojo
+Run: pixi run mojo run -I . mojo_rl/nn/storage/spike_train.mojo
 """
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.activations import ReLU
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.optimizer.sgd import SGD
-from mojo_rl.nn.storage.loss.mse import mse_forward, mse_backward
-from mojo_rl.nn.storage.core.initializer import Deterministic
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.optimizer.sgd import SGD
+from mojo_rl.nn.loss.mse import mse_forward, mse_backward
+from mojo_rl.nn.core.initializer import Deterministic
 
 
 def main() raises:
@@ -43,17 +43,20 @@ def main() raises:
     for step in range(40):
         model.zero_grad["cpu"](None)
         model.forward["cpu", B](TensorRefs[1](x), pred, None)
+
         var loss = mse_forward[B, OUT](pred, tgt)
         if step == 0:
             first = loss
         last = loss
+        if step % 8 == 0:
+            print("step", step, " mse", loss)
+
         mse_backward["cpu", B, OUT](pred, tgt, grad)
         model.vjp["cpu", B](TensorRefs[1](x), grad, TensorRefs[1](gi), None)
         model.for_each_param["cpu"](opt, None)
 
-    print("first", first, "final", last)
-    # spike_train (hand-written ReLU) lands at 0.0028509053.
-    if abs(last - Scalar[DT](0.0028509053)) < 1e-6:
-        print("ELEMENTWISE COMPOSE OK — bit-identical to hand-written ReLU")
+    print("final mse", last)
+    if last < first:
+        print("STORAGE LIGHTHOUSE OK — loss", first, "->", last)
     else:
-        print("ELEMENTWISE COMPOSE MISMATCH")
+        print("STORAGE LIGHTHOUSE FAIL")

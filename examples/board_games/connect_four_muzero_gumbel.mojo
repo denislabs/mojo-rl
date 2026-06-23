@@ -32,7 +32,7 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.muzero.nets import (
@@ -46,7 +46,7 @@ from mojo_rl.deep_agents.zero.evaluators import (
     RandomOpponent,
     GPUMinimaxConnectFour,
 )
-from mojo_rl.nn.storage.core.checkpoint import save_params
+from mojo_rl.nn.core.checkpoint import save_params
 from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
 

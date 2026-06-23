@@ -18,9 +18,9 @@ buffers' host `.data` (sanctioned host loops).
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from ...training.onpolicy_state import OnPolicyState
 
 

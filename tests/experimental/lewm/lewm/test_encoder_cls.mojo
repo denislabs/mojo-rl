@@ -11,7 +11,7 @@ from std.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage import Tensor, TensorRefs, Kaiming
+from mojo_rl.nn import Tensor, TensorRefs, Kaiming
 from mojo_rl.experimental.lewm.encoder import LeWMEncoderCLS
 
 

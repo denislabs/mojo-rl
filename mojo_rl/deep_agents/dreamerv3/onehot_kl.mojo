@@ -37,11 +37,11 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.initializer import Initializer
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 
 
 @always_inline

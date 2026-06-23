@@ -10,8 +10,8 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.loss.mse_loss import MSELoss
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.loss.mse_loss import MSELoss
 
 
 comptime B = 4

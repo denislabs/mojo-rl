@@ -33,9 +33,9 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.activations import Tanh
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import Tanh
 from mojo_rl.deep_agents.primitives.gaussian_head import GaussianHead
 from mojo_rl.deep_agents.ppo import PPOAgent
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig

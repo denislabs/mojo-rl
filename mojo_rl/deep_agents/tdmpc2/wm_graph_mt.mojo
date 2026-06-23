@@ -11,9 +11,9 @@ are unchanged — the embedding only routes gradient back to its slot (read via
 See `wm_graph.mojo` for the full column documentation.
 """
 
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node, ExternalNode
-from mojo_rl.nn.storage.primitives.concat import Concat
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import InputSlot, Node, ExternalNode
+from mojo_rl.nn.primitives.concat import Concat
 
 from .nets_mt import (
     TDMPC2DynamicsMT, TDMPC2RewardMT, TDMPC2QNetMT, TDMPC2TerminationMT,

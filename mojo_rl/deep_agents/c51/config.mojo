@@ -38,15 +38,15 @@ tuned defaults.
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.storage.primitives.noisy_linear import NoisyLinear
-from mojo_rl.nn.storage.primitives.dueling_head_c51 import DuelingHeadC51
-from mojo_rl.nn.storage.primitives.conv2d import Conv2D
-from mojo_rl.nn.storage.primitives.activations import ReLU
-from mojo_rl.nn.storage.primitives.flatten import Flatten
-from mojo_rl.nn.storage.combinators.sequential import Sequential
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
+from mojo_rl.nn.primitives.dueling_head_c51 import DuelingHeadC51
+from mojo_rl.nn.primitives.conv2d import Conv2D
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.nn.primitives.flatten import Flatten
+from mojo_rl.nn.combinators.sequential import Sequential
 
 from ..training.blocks import (
     SampleBlock,

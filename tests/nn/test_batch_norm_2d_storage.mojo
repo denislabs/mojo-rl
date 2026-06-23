@@ -14,10 +14,10 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.initializer import Deterministic
-from mojo_rl.nn.storage.primitives.batch_norm_2d import BatchNorm2D
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Deterministic
+from mojo_rl.nn.primitives.batch_norm_2d import BatchNorm2D
 
 
 comptime C = 3

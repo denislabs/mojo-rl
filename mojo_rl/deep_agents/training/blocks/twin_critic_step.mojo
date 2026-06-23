@@ -12,9 +12,9 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.optimizer.adam import Adam
 from ...loss.critic_update_block import TwinCriticUpdateBlock
 from ..trainer_block import TrainerState
 

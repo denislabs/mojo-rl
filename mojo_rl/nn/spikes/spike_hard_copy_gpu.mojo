@@ -9,11 +9,11 @@ Run (Apple Metal): pixi run -e apple mojo run -I . \
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.initializer import Deterministic, Zero
-from mojo_rl.nn.storage.core.hard_copy import hard_copy, _CollectVisitor
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.batch_norm_1d import BatchNorm1D
+from mojo_rl.nn.core.initializer import Deterministic, Zero
+from mojo_rl.nn.core.hard_copy import hard_copy, _CollectVisitor
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.batch_norm_1d import BatchNorm1D
 
 
 def main() raises:

@@ -55,11 +55,11 @@ Typical hyperparams from `references/OFENet-main/gins/`:
     Ant / Humanoid:                  N=8, per_unit=30, phi_s.dim = OBS+240
 """
 
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.combinators.skip_concat import SkipConcat
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.layer_norm import LayerNorm
-from mojo_rl.nn.storage.primitives.silu import SiLU
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.combinators.skip_concat import SkipConcat
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.layer_norm import LayerNorm
+from mojo_rl.nn.primitives.silu import SiLU
 
 
 # =============================================================================

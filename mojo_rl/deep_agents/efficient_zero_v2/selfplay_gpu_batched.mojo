@@ -41,9 +41,9 @@ from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.optimizer.adam import Adam
-from mojo_rl.nn.storage.optimizer.optimizer import Optimizer
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.optimizer.optimizer import Optimizer
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import (
     GumbelGPUMCTS, SinglePlayer,

@@ -57,22 +57,22 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.param import Param, ParamVisitor
-from mojo_rl.nn.storage.core.initializer import Initializer
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.storage.core.walkers import (
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.param import Param, ParamVisitor
+from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.walkers import (
     for_each_param_auto, zero_grad_auto, join_name,
 )
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.combinators.tokenwise import Tokenwise
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.silu import SiLU
-from mojo_rl.nn.storage.primitives.slice import Slice
-from mojo_rl.nn.storage.primitives.zero_linear import ZeroLinear
-from mojo_rl.nn.storage.primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.combinators.tokenwise import Tokenwise
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.silu import SiLU
+from mojo_rl.nn.primitives.slice import Slice
+from mojo_rl.nn.primitives.zero_linear import ZeroLinear
+from mojo_rl.nn.primitives.sinusoidal_pos_bt import SinusoidalPosAddBT
 from .blocks import Dreamer4Stack, Dreamer4DynStack
 from .shortcut_loss import ShortcutDynamics, AgentDynamics, _mao
 

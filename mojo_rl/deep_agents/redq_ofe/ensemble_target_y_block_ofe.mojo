@@ -30,12 +30,12 @@ from layout import Layout, LayoutTensor
 from std.random import random_float64
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor, TensorImpl
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.initializer import Zero
-from mojo_rl.nn.storage.primitives.rsample import RSample
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.primitives.rsample import RSample
 
 from ..training.trainer_block import TrainerState
 from ..redq.ensemble import CriticEnsemble

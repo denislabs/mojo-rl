@@ -37,8 +37,8 @@ from std.random import random_float64
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
 from mojo_rl.deep_agents.dreamerv3.dists import bounded_std
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import (

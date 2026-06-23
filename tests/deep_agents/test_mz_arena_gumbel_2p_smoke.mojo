@@ -12,7 +12,7 @@ long NVIDIA run, out of scope here).
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.muzero.nets import (
     MZRepNetC4Conv, MZDynNet, MZPredNet
 )

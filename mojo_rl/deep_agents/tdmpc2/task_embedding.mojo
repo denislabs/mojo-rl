@@ -29,7 +29,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor
 
 
 # ── GPU kernels (operate over storage Tensor `.lt` views) ────────────────

@@ -49,10 +49,10 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.activations import ReLU
-from mojo_rl.nn.storage.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep

@@ -29,7 +29,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.core.module import Module
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (

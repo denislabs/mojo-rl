@@ -16,7 +16,7 @@ reproducible tests). The self-play driver packs ``[π | z]`` before ``record``.
 """
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor
 
 
 @always_inline

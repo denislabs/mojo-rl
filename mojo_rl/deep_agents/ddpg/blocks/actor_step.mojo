@@ -7,9 +7,9 @@ Writes state.actor_loss. Thin wrapper over the storage `DDPGActorLoss`
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.optimizer.adam import Adam
 from ..actor_loss import DDPGActorLoss
 from ...training.trainer_block import TrainerState
 

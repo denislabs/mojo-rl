@@ -31,8 +31,8 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.initializer import Kaiming
-from mojo_rl.nn.storage.core.checkpoint import load_params
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.core.checkpoint import load_params
 from mojo_rl.deep_agents.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
 )

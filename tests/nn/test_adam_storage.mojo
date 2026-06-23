@@ -14,8 +14,8 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.param import Param
-from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.core.param import Param
+from mojo_rl.nn.optimizer.adam import Adam
 
 
 comptime K = 16

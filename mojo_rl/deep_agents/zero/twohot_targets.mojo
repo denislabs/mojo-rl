@@ -28,7 +28,7 @@ scalar transform is local. List-based (no raw pointers).
 from std.math import sqrt, exp
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.loss.two_hot import compute_bins, two_hot_encode
+from mojo_rl.nn.loss.two_hot import compute_bins, two_hot_encode
 
 
 # ──────────────────────────────────────────────────────────────────────

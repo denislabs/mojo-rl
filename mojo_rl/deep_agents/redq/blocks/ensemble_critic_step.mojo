@@ -19,10 +19,10 @@ from std.gpu.host import DeviceContext
 from layout import Layout
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 
 from ...loss.critic_update_block import CriticUpdateBlock
 from ...training.off_policy_critic import concat_sa, concat_sa_gpu

@@ -24,7 +24,7 @@ from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents.zero.mcts_adapters_mz import (
     MZRepGPU, MZDynGPU, MZPredGPU,

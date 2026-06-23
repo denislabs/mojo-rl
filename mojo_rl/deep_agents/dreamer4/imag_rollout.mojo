@@ -50,9 +50,9 @@ from std.math import max
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from .shortcut_loss import ShortcutDynamics, AgentDynamics, _ilog2, _mao
 from ..dreamerv3.dists_discrete import cat_sample, UNIMIX
 from ..dreamerv3.twohot import twohot_pred

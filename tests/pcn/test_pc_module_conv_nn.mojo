@@ -27,7 +27,7 @@ from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.optimizer.adam import Adam
 
 from mojo_rl.experimental.pcn.pc_block import PCBlock
 from mojo_rl.experimental.pcn.pc_conv_block import ConvPCBlock

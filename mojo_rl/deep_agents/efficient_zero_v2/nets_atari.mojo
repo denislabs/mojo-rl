@@ -37,29 +37,29 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.storage.core.initializer import Initializer
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.param import ParamVisitor
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.storage.core.walkers import join_name
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.combinators.parallel import Parallel
-from mojo_rl.nn.storage.combinators.projected_residual import ProjectedResidual
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node
-from mojo_rl.nn.storage.primitives.conv2d import Conv2D
-from mojo_rl.nn.storage.primitives.batch_norm_2d import BatchNorm2D
-from mojo_rl.nn.storage.primitives.activations import ReLU
-from mojo_rl.nn.storage.primitives.avg_pool_2d import AvgPool2D
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.slice import Slice
-from mojo_rl.nn.storage.primitives.concat import Concat
-from mojo_rl.nn.storage.primitives.add import Add
-from mojo_rl.nn.storage.primitives.broadcast_tokens import BroadcastTokens
-from mojo_rl.nn.storage.primitives.layer_norm import LayerNorm
-from mojo_rl.nn.storage.models.resnet import ResBlockConv2DBN
+from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.walkers import join_name
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.combinators.parallel import Parallel
+from mojo_rl.nn.combinators.projected_residual import ProjectedResidual
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import InputSlot, Node
+from mojo_rl.nn.primitives.conv2d import Conv2D
+from mojo_rl.nn.primitives.batch_norm_2d import BatchNorm2D
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.nn.primitives.avg_pool_2d import AvgPool2D
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.slice import Slice
+from mojo_rl.nn.primitives.concat import Concat
+from mojo_rl.nn.primitives.add import Add
+from mojo_rl.nn.primitives.broadcast_tokens import BroadcastTokens
+from mojo_rl.nn.primitives.layer_norm import LayerNorm
+from mojo_rl.nn.models.resnet import ResBlockConv2DBN
 from mojo_rl.deep_agents.dreamerv3.zero_init import (
     scale_output_module, scale_output_graph,
 )

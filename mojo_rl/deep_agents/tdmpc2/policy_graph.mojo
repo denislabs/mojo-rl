@@ -23,14 +23,14 @@ where the `qscaled` Scale multiplier folds `0.5/scale` and `alpha_lp` folds
 `entropy_coef·ACT`.
 """
 
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import InputSlot, Node, ExternalNode
-from mojo_rl.nn.storage.primitives.slice import Slice
-from mojo_rl.nn.storage.primitives.concat import Concat
-from mojo_rl.nn.storage.primitives.add import Add
-from mojo_rl.nn.storage.primitives.scale import Scale
-from mojo_rl.nn.storage.primitives.binary_elementwise import BinarySub
-from mojo_rl.nn.storage.primitives.rsample import RSample
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import InputSlot, Node, ExternalNode
+from mojo_rl.nn.primitives.slice import Slice
+from mojo_rl.nn.primitives.concat import Concat
+from mojo_rl.nn.primitives.add import Add
+from mojo_rl.nn.primitives.scale import Scale
+from mojo_rl.nn.primitives.binary_elementwise import BinarySub
+from mojo_rl.nn.primitives.rsample import RSample
 
 from .nets import TDMPC2Policy, TDMPC2QNet
 from .losses import TwoHotDecode

@@ -14,14 +14,14 @@ the periodic eval/print/flush, mirroring the GPU driver's telemetry.
 from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.optimizer.adam import Adam
-from mojo_rl.nn.storage.optimizer.grad_clip import clip_grad_norm
-from mojo_rl.nn.storage.core.initializer import Zero
-from mojo_rl.nn.storage.core.hard_copy import hard_copy
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import (
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.optimizer.grad_clip import clip_grad_norm
+from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.core.hard_copy import hard_copy
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import (
     InputSlot, Node, ExternalNode,
 )
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable

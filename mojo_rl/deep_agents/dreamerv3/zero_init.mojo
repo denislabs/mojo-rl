@@ -33,11 +33,11 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.param import ParamVisitor
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.storage.combinators.graph_decl import GraphDecl
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import GraphDecl
 
 
 def _scale_k[

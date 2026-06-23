@@ -15,7 +15,7 @@ Run: pixi run mojo run -I . tests/deep_agents/test_storage_redq_combined_q.mojo
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.deep_agents.redq.kernels import (
     redq_ensemble_target_cpu,
     REDQ_TARGET_MIN,

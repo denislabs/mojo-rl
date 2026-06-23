@@ -13,11 +13,11 @@ an explicit `clip_grads` call between vjp and step, only when max_grad_norm > 0.
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.storage.loss.mse_loss import MSELoss
-from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.loss.mse_loss import MSELoss
+from mojo_rl.nn.optimizer.adam import Adam
 from ...training.onpolicy_state import OnPolicyState
 
 

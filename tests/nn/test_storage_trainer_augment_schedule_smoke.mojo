@@ -18,11 +18,11 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.initializer import Kaiming
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.training.trainer import Trainer
-from mojo_rl.nn.storage.training.augmenter import CIFAR10CropFlipAugmenter
-from mojo_rl.nn.storage.optimizer.lr_scheduler import WarmupCosineSchedule
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.training.trainer import Trainer
+from mojo_rl.nn.training.augmenter import CIFAR10CropFlipAugmenter
+from mojo_rl.nn.optimizer.lr_scheduler import WarmupCosineSchedule
 
 
 comptime IN = 3 * 32 * 32  # 3072 (required by CIFAR augmenter)

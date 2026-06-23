@@ -18,9 +18,9 @@ from std.math import abs as math_abs
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor
 
-from mojo_rl.nn.storage.loss.two_hot import (
+from mojo_rl.nn.loss.two_hot import (
     compute_bins as st_compute_bins,
     compute_symlog_bins as st_compute_symlog_bins,
     fill_bins as st_fill_bins,

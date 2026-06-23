@@ -32,9 +32,9 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.storage.core.param import Param, ParamVisitor
-from mojo_rl.nn.storage.core.initializer import Initializer
-from mojo_rl.nn.storage.core.walkers import for_each_param_auto, zero_grad_auto
+from mojo_rl.nn.core.param import Param, ParamVisitor
+from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.walkers import for_each_param_auto, zero_grad_auto
 
 
 # ── GPU kernels ─────────────────────────────────────────────────────────

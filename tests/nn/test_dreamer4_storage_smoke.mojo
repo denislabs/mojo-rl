@@ -20,10 +20,10 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
-from mojo_rl.nn.storage.core.param import ParamVisitor
-from mojo_rl.nn.storage.core.initializer import Deterministic
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.initializer import Deterministic
 
 
 struct _GradSum(ParamVisitor):

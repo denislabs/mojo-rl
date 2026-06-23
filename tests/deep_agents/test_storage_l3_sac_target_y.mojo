@@ -16,10 +16,10 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.core.initializer import Xavier
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.linear_relu import LinearReLU
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.core.initializer import Xavier
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.training.trainer_block import TrainerState
 from mojo_rl.deep_agents.sac.target_y_block import TargetYBlock

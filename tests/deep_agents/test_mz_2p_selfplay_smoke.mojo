@@ -14,8 +14,8 @@ Run (no GPU):
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.initializer import Kaiming
-from mojo_rl.nn.storage.optimizer.adam import Adam
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents.muzero.selfplay_2p_cpu import run_muzero_selfplay_2p_cpu
 from mojo_rl.deep_agents.zero.evaluators import RandomOpponent

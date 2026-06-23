@@ -21,7 +21,7 @@ from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.optimizer.optimizer import Optimizer
+from mojo_rl.nn.optimizer.optimizer import Optimizer
 
 from .predictive_model import PCBlockTrait
 from .pc_sequential import PCSequential

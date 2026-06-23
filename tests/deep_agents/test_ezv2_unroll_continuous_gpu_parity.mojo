@@ -23,10 +23,10 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
-from mojo_rl.nn.storage.core.initializer import Kaiming
-from mojo_rl.nn.storage.optimizer.adam import Adam
-from mojo_rl.nn.storage.core.hard_copy import _CollectVisitor, _InjectVisitor
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.core.hard_copy import _CollectVisitor, _InjectVisitor
 from mojo_rl.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, EZProjectorNet, EZPredictorNet,
 )

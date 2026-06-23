@@ -17,7 +17,7 @@ default `max_grad_norm=0.5`).
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.module import Module
+from mojo_rl.nn.core.module import Module
 
 from ..ppo.config import PPOActorNet, PPOCriticNet
 from ..ppo_discrete.config import (

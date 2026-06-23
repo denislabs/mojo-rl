@@ -17,10 +17,10 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.primitives.linear import Linear
-from mojo_rl.nn.storage.primitives.activations import ReLU
-from mojo_rl.nn.storage.combinators.sequential import Sequential
-from mojo_rl.nn.storage.core.initializer import Xavier
+from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.core.initializer import Xavier
 from mojo_rl.deep_agents.core.online_target_pair import OnlineTargetPair
 
 

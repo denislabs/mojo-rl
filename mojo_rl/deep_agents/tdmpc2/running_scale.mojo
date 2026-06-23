@@ -15,7 +15,7 @@ host-side; reference does the same percentile on a small [batch] vector).
 from std.math import floor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor
 
 
 struct RunningScale(Movable & ImplicitlyDeletable):

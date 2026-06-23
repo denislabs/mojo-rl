@@ -32,8 +32,8 @@ PHASE 2.5: CPU.
 from std.math import max
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.storage.core.tensor import Tensor
-from mojo_rl.nn.storage.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from .shortcut_loss import ShortcutDynamics, _ilog2, _mao
 
 

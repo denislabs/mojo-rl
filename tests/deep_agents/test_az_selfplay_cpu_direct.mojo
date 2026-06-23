@@ -12,7 +12,7 @@ Run: pixi run mojo run -I . tests/deep_agents/test_az_selfplay_cpu_direct.mojo
 
 from std.testing import assert_true
 
-from mojo_rl.nn.storage.core.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents.alphazero.selfplay_cpu import run_alphazero_selfplay_cpu
 from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
