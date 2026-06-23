@@ -19,13 +19,14 @@ images, `train_y` = [N·NC] one-hot labels; `test_x` = [N·IN], `test_labels` =
 """
 
 from std.gpu.host import DeviceContext
+from std.gpu import global_idx
 from std.memory import memcpy
 from std.time import perf_counter_ns
-from layout import Layout
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.tensor import Tensor, TensorImpl
-from ..core.tensor_refs import TensorRefs
+from ..core.tensor_refs import TensorRefs, child_refs
 from ..core.module import Module
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
@@ -40,6 +41,21 @@ from .shuffle_kernels import (
 )
 from .augmenter import Augmenter, IdentityAugmenter
 from ..optimizer.lr_scheduler import Scheduler, ConstantSchedule
+
+
+# ── AMP boundary cast kernels (fp32 ↔ MADT) ─────────────────────────────
+# Used ONLY on the bf16-flow path (MADT != DT). The fp32 path never casts.
+# Parametrized by the source/destination dtypes + length so one pair handles
+# fp32→MADT (input/grad downcast) and MADT→fp32 (logits upcast for the loss).
+def _cast_kernel[
+    SRC: DType, DST: DType, N: Int
+](
+    src: LayoutTensor[SRC, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[DST, Layout.row_major(N), MutAnyOrigin],
+):
+    var i = Int(global_idx.x)
+    if i < N:
+        dst[i] = rebind[Scalar[SRC]](src[i]).cast[DST]()
 
 
 @fieldwise_init
@@ -66,15 +82,35 @@ struct Trainer[
     POLICY: AMPPolicy = NoAMP,
     OPT: Optimizer = Adam,
 ](Movable & ImplicitlyDeletable):
+    # Model activation-flow dtype: `DT` for an fp32 model, `bfloat16` for a
+    # bf16-flow model (`Sequential[Linear[..,bf16], …]`). The CASTS only happen
+    # at boundaries; the fp32 case (MADT == DT) is the EXISTING code path with
+    # no casts and no extra buffers (bit-identical).
+    comptime MADT = Self.MODEL.ACT_DT
+
     var model: Self.MODEL
     var opt: Self.OPT
     var loss: CrossEntropyLoss[Self.NC]
-    var batch_x: Tensor
-    var batch_y: Tensor
-    var logits: Tensor
-    var grad: Tensor
-    var gi: Tensor
-    # GPU-resident dataset (uploaded once; batches are sub-buffer views).
+    # Activation buffers that touch the MODEL flow at MADT. For an fp32 model
+    # `TensorImpl[MADT]` IS `Tensor`, so these are unchanged.
+    var batch_x: TensorImpl[Self.MADT]
+    var batch_y: Tensor  # fp32 labels (consumed by the fp32 loss)
+    var logits: TensorImpl[Self.MADT]  # model output (MADT)
+    var grad: TensorImpl[Self.MADT]  # grad_output fed to model.vjp (MADT)
+    var gi: TensorImpl[Self.MADT]  # model grad_input (MADT)
+    # fp32 loss-boundary scratch (used ONLY when MADT != DT). The loss runs in
+    # fp32: `logits` (MADT) is cast → `logits_f32`, and `grad_f32` (fp32, from
+    # the loss vjp) is cast → `grad` (MADT). For MADT == DT these stay empty and
+    # are never referenced (the fp32 path uses `logits`/`grad` directly).
+    var logits_f32: Tensor
+    var grad_f32: Tensor
+    # fp32 input staging (used ONLY when MADT != DT). The resident dataset is
+    # fp32, so a bf16 batch can't be a zero-copy fp32 sub-buffer view — the fp32
+    # batch slice lands here (sub-buffer view / memcpy / gather) and is then cast
+    # into the owned bf16 `batch_x`. For MADT == DT this stays empty and unused:
+    # the fp32 path stages directly into `batch_x` (zero-copy, unchanged).
+    var batch_xf: Tensor
+    # GPU-resident dataset (uploaded once; batches are sub-buffer views). fp32.
     var ds_x: Tensor
     var ds_y: Tensor
     var ds_tx: Tensor
@@ -85,11 +121,14 @@ struct Trainer[
         self.model = Self.MODEL()
         self.opt = Self.OPT()
         self.loss = CrossEntropyLoss[Self.NC]()
-        self.batch_x = Tensor()
+        self.batch_x = TensorImpl[Self.MADT]()
         self.batch_y = Tensor()
-        self.logits = Tensor()
-        self.grad = Tensor()
-        self.gi = Tensor()
+        self.logits = TensorImpl[Self.MADT]()
+        self.grad = TensorImpl[Self.MADT]()
+        self.gi = TensorImpl[Self.MADT]()
+        self.logits_f32 = Tensor()
+        self.grad_f32 = Tensor()
+        self.batch_xf = Tensor()
         self.ds_x = Tensor()
         self.ds_y = Tensor()
         self.ds_tx = Tensor()
@@ -109,7 +148,9 @@ struct Trainer[
         t.model = Self.MODEL.make[Self.target, INIT](ctx)
         comptime if Self.target == "cpu":
             t.loss = CrossEntropyLoss[Self.NC].make_cpu()
-            t.batch_x = Tensor.alloc(Self.BATCH * Self.IN)
+            # CPU is fp32-only (bf16-flow leaves are GPU-only) → MADT == DT here,
+            # so `TensorImpl[MADT]` IS `Tensor`; allocate the MADT slab directly.
+            t.batch_x = TensorImpl[Self.MADT].alloc(Self.BATCH * Self.IN)
             t.batch_y = Tensor.alloc(Self.BATCH * Self.NC)
         else:
             t.loss = CrossEntropyLoss[Self.NC].make_gpu(ctx.value())
@@ -136,19 +177,130 @@ struct Trainer[
         dst.n = n
 
     def _slice_train(mut self, x0: Int, y0: Int) raises:
-        """Point batch_x/batch_y at GPU sub-buffer views of the resident set."""
-        self.batch_x.dev = Optional(
-            self.ds_x.dev.value().create_sub_buffer[DT](
-                x0, Self.BATCH * Self.IN
+        """Point the batch input/labels at GPU sub-buffer views of the resident
+        set. fp32: `batch_x` IS the fp32 view (zero-copy, unchanged). bf16: the
+        fp32 view lands in `batch_xf` (cast → `batch_x` happens in the step)."""
+        comptime if Self.MADT == DT:
+            ref bx = rebind[Tensor](self.batch_x)
+            bx.dev = Optional(
+                self.ds_x.dev.value().create_sub_buffer[DT](
+                    x0, Self.BATCH * Self.IN
+                )
             )
-        )
-        self.batch_x.n = Self.BATCH * Self.IN
+            bx.n = Self.BATCH * Self.IN
+        else:
+            self.batch_xf.dev = Optional(
+                self.ds_x.dev.value().create_sub_buffer[DT](
+                    x0, Self.BATCH * Self.IN
+                )
+            )
+            self.batch_xf.n = Self.BATCH * Self.IN
         self.batch_y.dev = Optional(
             self.ds_y.dev.value().create_sub_buffer[DT](
                 y0, Self.BATCH * Self.NC
             )
         )
         self.batch_y.n = Self.BATCH * Self.NC
+
+    # ── AMP boundary-cast train step (factored across the 3 train-step sites) ──
+    @staticmethod
+    def _amp_train_step[
+        B: Int
+    ](
+        mut model: Self.MODEL,
+        mut opt: Self.OPT,
+        mut loss: CrossEntropyLoss[Self.NC],
+        mut model_in: TensorImpl[Self.MADT],
+        mut dy: Tensor,
+        mut logits: TensorImpl[Self.MADT],
+        mut grad: TensorImpl[Self.MADT],
+        mut gi: TensorImpl[Self.MADT],
+        mut logits_f32: Tensor,
+        mut grad_f32: Tensor,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """forward → CE loss (fp32 boundary) → model.vjp → opt.step. `model_in`
+        is the model input ALREADY at MADT (the caller casts/views it). zero_grad
+        is the caller's responsibility (kept at the sites, unchanged).
+
+        fp32 (MADT == DT): the EXISTING path verbatim — loss runs directly on
+        `logits`/`grad`, no casts, `logits_f32`/`grad_f32` untouched. bf16: cast
+        `logits`→`logits_f32` for the (fp32) loss, then `grad_f32`→`grad`."""
+        comptime if Self.MADT == DT:
+            # ── fp32 path (legacy, byte-identical) ──
+            model.forward[Self.target, B, POLICY = Self.POLICY](
+                child_refs[Self.MODEL.ARITY, Self.MADT](model_in), logits, ctx
+            )
+            # MADT IS DT here, but the opaque param doesn't collapse → rebind the
+            # MADT activation buffers to `Tensor` for the fp32 loss (a no-op cast).
+            ref logd = rebind[Tensor](logits)
+            ref grdd = rebind[Tensor](grad)
+            loss.forward_accumulate[Self.target, B](logd, dy, ctx)
+            loss.vjp[Self.target, B](logd, dy, grdd, ctx)
+            model.vjp[Self.target, B, POLICY = Self.POLICY](
+                child_refs[Self.MODEL.ARITY, Self.MADT](model_in),
+                grad,
+                child_refs[Self.MODEL.ARITY, Self.MADT](gi),
+                ctx,
+            )
+            opt.step[Self.target](model, ctx)
+        else:
+            # ── bf16-flow path (GPU-only) ──
+            comptime assert (
+                Self.target == "gpu"
+            ), "AMP bf16-flow Trainer is GPU-only"
+            comptime LOGN = B * Self.NC
+            var c = ctx.value()
+            model.forward["gpu", B, POLICY = Self.POLICY](
+                child_refs[Self.MODEL.ARITY, Self.MADT](model_in), logits, ctx
+            )
+            # LOSS (fp32): cast logits (MADT) → logits_f32.
+            logits_f32.ensure_gpu(c, LOGN)
+            c.enqueue_function[
+                _cast_kernel[Self.MADT, DT, LOGN]
+            ](
+                logits.lt["gpu", Layout.row_major(LOGN)](),
+                logits_f32.lt["gpu", Layout.row_major(LOGN)](),
+                grid_dim=(LOGN + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
+            loss.forward_accumulate["gpu", B](logits_f32, dy, ctx)
+            loss.vjp["gpu", B](logits_f32, dy, grad_f32, ctx)
+            # BACKWARD: cast grad_f32 (fp32) → grad (MADT).
+            grad.ensure_gpu(c, LOGN)
+            c.enqueue_function[
+                _cast_kernel[DT, Self.MADT, LOGN]
+            ](
+                grad_f32.lt["gpu", Layout.row_major(LOGN)](),
+                grad.lt["gpu", Layout.row_major(LOGN)](),
+                grid_dim=(LOGN + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
+            model.vjp["gpu", B, POLICY = Self.POLICY](
+                child_refs[Self.MODEL.ARITY, Self.MADT](model_in),
+                grad,
+                child_refs[Self.MODEL.ARITY, Self.MADT](gi),
+                ctx,
+            )
+            opt.step["gpu"](model, ctx)
+
+    @staticmethod
+    def _cast_input_to_madt(
+        mut batch_xf: Tensor,
+        mut model_in: TensorImpl[Self.MADT],
+        ctx: DeviceContext,
+    ) raises:
+        """bf16-flow only: cast the fp32 staging `batch_xf` → `model_in` (MADT).
+        @staticmethod (explicit refs) so it doesn't alias `self` at the call
+        sites (where both `batch_xf` and `batch_x` are `self` fields)."""
+        comptime NX = Self.BATCH * Self.IN
+        model_in.ensure_gpu(ctx, NX)
+        ctx.enqueue_function[_cast_kernel[DT, Self.MADT, NX]](
+            batch_xf.lt["gpu", Layout.row_major(NX)](),
+            model_in.lt["gpu", Layout.row_major(NX)](),
+            grid_dim=(NX + TPB - 1) // TPB,
+            block_dim=TPB,
+        )
 
     def train_epoch[
         N_TRAIN: Int
@@ -173,8 +325,10 @@ struct Trainer[
             var x0 = nb * Self.BATCH * Self.IN
             var y0 = nb * Self.BATCH * Self.NC
             comptime if Self.target == "cpu":
+                # CPU is fp32-only → MADT == DT; rebind batch_x to the fp32 slab.
+                ref bx = rebind[Tensor](self.batch_x)
                 memcpy(
-                    dest=self.batch_x.data.unsafe_ptr(),
+                    dest=bx.data.unsafe_ptr(),
                     src=train_x.unsafe_ptr() + x0,
                     count=Self.BATCH * Self.IN,
                 )
@@ -185,23 +339,25 @@ struct Trainer[
                 )
             else:
                 self._slice_train(x0, y0)
+                # bf16: cast the fp32 staging (batch_xf) → batch_x (MADT).
+                comptime if Self.MADT != DT:
+                    Self._cast_input_to_madt(
+                        self.batch_xf, self.batch_x, ctx.value()
+                    )
             self.opt.zero_grad[Self.target](self.model, ctx)
-            self.model.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                TensorRefs[Self.MODEL.ARITY](self.batch_x), self.logits, ctx
-            )
-            self.loss.forward_accumulate[Self.target, Self.BATCH](
-                self.logits, self.batch_y, ctx
-            )
-            self.loss.vjp[Self.target, Self.BATCH](
-                self.logits, self.batch_y, self.grad, ctx
-            )
-            self.model.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                TensorRefs[Self.MODEL.ARITY](self.batch_x),
+            Self._amp_train_step[Self.BATCH](
+                self.model,
+                self.opt,
+                self.loss,
+                self.batch_x,
+                self.batch_y,
+                self.logits,
                 self.grad,
-                TensorRefs[Self.MODEL.ARITY](self.gi),
+                self.gi,
+                self.logits_f32,
+                self.grad_f32,
                 ctx,
             )
-            self.opt.step[Self.target](self.model, ctx)
         return self.loss.read_accum[Self.target](ctx)
 
     def eval_top1[
@@ -220,36 +376,78 @@ struct Trainer[
                 )
                 self._up_test = True
         var correct = 0
+        comptime LOGN = Self.BATCH * Self.NC
         for nb in range(n_batches):
             var x0 = nb * Self.BATCH * Self.IN
             comptime if Self.target == "cpu":
+                # CPU is fp32-only → MADT == DT; rebind batch_x to the fp32 slab.
+                ref bx = rebind[Tensor](self.batch_x)
                 memcpy(
-                    dest=self.batch_x.data.unsafe_ptr(),
+                    dest=bx.data.unsafe_ptr(),
                     src=test_x.unsafe_ptr() + x0,
                     count=Self.BATCH * Self.IN,
                 )
             else:
-                self.batch_x.dev = Optional(
-                    self.ds_tx.dev.value().create_sub_buffer[DT](
-                        x0, Self.BATCH * Self.IN
+                comptime if Self.MADT == DT:
+                    ref bx = rebind[Tensor](self.batch_x)
+                    bx.dev = Optional(
+                        self.ds_tx.dev.value().create_sub_buffer[DT](
+                            x0, Self.BATCH * Self.IN
+                        )
                     )
-                )
-                self.batch_x.n = Self.BATCH * Self.IN
+                    bx.n = Self.BATCH * Self.IN
+                else:
+                    # bf16: fp32 view → batch_xf, then cast → batch_x (MADT).
+                    self.batch_xf.dev = Optional(
+                        self.ds_tx.dev.value().create_sub_buffer[DT](
+                            x0, Self.BATCH * Self.IN
+                        )
+                    )
+                    self.batch_xf.n = Self.BATCH * Self.IN
+                    Self._cast_input_to_madt(
+                        self.batch_xf, self.batch_x, ctx.value()
+                    )
             self.model.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                TensorRefs[Self.MODEL.ARITY](self.batch_x), self.logits, ctx
+                child_refs[Self.MODEL.ARITY, Self.MADT](self.batch_x),
+                self.logits,
+                ctx,
             )
-            comptime if Self.target == "gpu":
-                self.logits.download(ctx.value())
-            for b in range(Self.BATCH):
-                var best = 0
-                var bestv = self.logits.data[b * Self.NC]
-                for c in range(1, Self.NC):
-                    var v = self.logits.data[b * Self.NC + c]
-                    if v > bestv:
-                        bestv = v
-                        best = c
-                if best == Int(test_labels[nb * Self.BATCH + b]):
-                    correct += 1
+            comptime if Self.MADT == DT:
+                # fp32 path (unchanged): download logits, argmax on fp32 `data`.
+                ref logd = rebind[Tensor](self.logits)
+                comptime if Self.target == "gpu":
+                    logd.download(ctx.value())
+                for b in range(Self.BATCH):
+                    var best = 0
+                    var bestv = logd.data[b * Self.NC]
+                    for c in range(1, Self.NC):
+                        var v = logd.data[b * Self.NC + c]
+                        if v > bestv:
+                            bestv = v
+                            best = c
+                    if best == Int(test_labels[nb * Self.BATCH + b]):
+                        correct += 1
+            else:
+                # bf16: cast MADT logits → fp32 logits_f32, download, argmax.
+                var c = ctx.value()
+                self.logits_f32.ensure_gpu(c, LOGN)
+                c.enqueue_function[_cast_kernel[Self.MADT, DT, LOGN]](
+                    self.logits.lt["gpu", Layout.row_major(LOGN)](),
+                    self.logits_f32.lt["gpu", Layout.row_major(LOGN)](),
+                    grid_dim=(LOGN + TPB - 1) // TPB,
+                    block_dim=TPB,
+                )
+                self.logits_f32.download(c)
+                for b in range(Self.BATCH):
+                    var best = 0
+                    var bestv = self.logits_f32.data[b * Self.NC]
+                    for cc in range(1, Self.NC):
+                        var v = self.logits_f32.data[b * Self.NC + cc]
+                        if v > bestv:
+                            bestv = v
+                            best = cc
+                    if best == Int(test_labels[nb * Self.BATCH + b]):
+                        correct += 1
         return Float64(correct) / Float64(n_batches * Self.BATCH)
 
     def train_gpu[
@@ -328,8 +526,10 @@ struct Trainer[
         # corrupt the test set).
         var indices = TensorImpl[DType.int32]()
         var seed = TensorImpl[DType.uint64]()
-        var gx = Tensor()
-        var gy = Tensor()
+        var gx = Tensor()  # fp32 gather target (X)
+        var gy = Tensor()  # fp32 gather target (labels — always fp32 for loss)
+        # bf16: owned MADT model-input (gx is cast into it). Unused for fp32.
+        var gxm = TensorImpl[Self.MADT]()
         if shuffle:
             indices = TensorImpl[DType.int32].alloc_gpu(c, N_TRAIN)
             c.enqueue_function[init_identity_indices_kernel[N_TRAIN]](
@@ -343,6 +543,8 @@ struct Trainer[
             seed.upload(c)
             gx = Tensor.alloc_gpu(c, Self.BATCH * Self.IN)
             gy = Tensor.alloc_gpu(c, Self.BATCH * Self.NC)
+            comptime if Self.MADT != DT:
+                gxm = TensorImpl[Self.MADT].alloc_gpu(c, Self.BATCH * Self.IN)
 
         for epoch in range(epochs):
             var t0 = perf_counter_ns()
@@ -419,39 +621,71 @@ struct Trainer[
                         block_dim=TPB,
                     )
                     self.opt.zero_grad["gpu"](self.model, ctx)
-                    self.model.forward[
-                        "gpu", Self.BATCH, POLICY = Self.POLICY
-                    ](TensorRefs[Self.MODEL.ARITY](gx), self.logits, ctx)
-                    self.loss.forward_accumulate["gpu", Self.BATCH](
-                        self.logits, gy, ctx
-                    )
-                    self.loss.vjp["gpu", Self.BATCH](
-                        self.logits, gy, self.grad, ctx
-                    )
-                    self.model.vjp["gpu", Self.BATCH, POLICY = Self.POLICY](
-                        TensorRefs[Self.MODEL.ARITY](gx),
-                        self.grad,
-                        TensorRefs[Self.MODEL.ARITY](self.gi),
-                        ctx,
-                    )
-                    self.opt.step["gpu"](self.model, ctx)
+                    # fp32: gx IS the model input. bf16: cast gx → gxm (MADT).
+                    comptime if Self.MADT == DT:
+                        ref mi = rebind[TensorImpl[Self.MADT]](gx)
+                        Self._amp_train_step[Self.BATCH](
+                            self.model, self.opt, self.loss,
+                            mi, gy, self.logits, self.grad, self.gi,
+                            self.logits_f32, self.grad_f32, ctx,
+                        )
+                    else:
+                        gxm.ensure_gpu(c, Self.BATCH * Self.IN)
+                        c.enqueue_function[
+                            _cast_kernel[DT, Self.MADT, Self.BATCH * Self.IN]
+                        ](
+                            gx.lt[
+                                "gpu", Layout.row_major(Self.BATCH * Self.IN)
+                            ](),
+                            gxm.lt[
+                                "gpu", Layout.row_major(Self.BATCH * Self.IN)
+                            ](),
+                            grid_dim=blocks_gx,
+                            block_dim=TPB,
+                        )
+                        Self._amp_train_step[Self.BATCH](
+                            self.model, self.opt, self.loss,
+                            gxm, gy, self.logits, self.grad, self.gi,
+                            self.logits_f32, self.grad_f32, ctx,
+                        )
                 else:
                     var x0 = nb * Self.BATCH * Self.IN
                     var y0 = nb * Self.BATCH * Self.NC
                     # Sub-buffer view of X from the augmented set else raw ds_x.
-                    comptime if USE_AUG:
-                        self.batch_x.dev = Optional(
-                            aug.dev.value().create_sub_buffer[DT](
-                                x0, Self.BATCH * Self.IN
+                    # fp32: the view lands in batch_x (zero-copy). bf16: it lands
+                    # in the fp32 staging batch_xf (cast → batch_x below).
+                    comptime if Self.MADT == DT:
+                        ref bx = rebind[Tensor](self.batch_x)
+                        comptime if USE_AUG:
+                            bx.dev = Optional(
+                                aug.dev.value().create_sub_buffer[DT](
+                                    x0, Self.BATCH * Self.IN
+                                )
                             )
-                        )
+                        else:
+                            bx.dev = Optional(
+                                self.ds_x.dev.value().create_sub_buffer[DT](
+                                    x0, Self.BATCH * Self.IN
+                                )
+                            )
+                        bx.n = Self.BATCH * Self.IN
                     else:
-                        self.batch_x.dev = Optional(
-                            self.ds_x.dev.value().create_sub_buffer[DT](
-                                x0, Self.BATCH * Self.IN
+                        comptime if USE_AUG:
+                            self.batch_xf.dev = Optional(
+                                aug.dev.value().create_sub_buffer[DT](
+                                    x0, Self.BATCH * Self.IN
+                                )
                             )
+                        else:
+                            self.batch_xf.dev = Optional(
+                                self.ds_x.dev.value().create_sub_buffer[DT](
+                                    x0, Self.BATCH * Self.IN
+                                )
+                            )
+                        self.batch_xf.n = Self.BATCH * Self.IN
+                        Self._cast_input_to_madt(
+                            self.batch_xf, self.batch_x, c
                         )
-                    self.batch_x.n = Self.BATCH * Self.IN
                     self.batch_y.dev = Optional(
                         self.ds_y.dev.value().create_sub_buffer[DT](
                             y0, Self.BATCH * Self.NC
@@ -459,26 +693,11 @@ struct Trainer[
                     )
                     self.batch_y.n = Self.BATCH * Self.NC
                     self.opt.zero_grad["gpu"](self.model, ctx)
-                    self.model.forward[
-                        "gpu", Self.BATCH, POLICY = Self.POLICY
-                    ](
-                        TensorRefs[Self.MODEL.ARITY](self.batch_x),
-                        self.logits,
-                        ctx,
+                    Self._amp_train_step[Self.BATCH](
+                        self.model, self.opt, self.loss,
+                        self.batch_x, self.batch_y, self.logits, self.grad,
+                        self.gi, self.logits_f32, self.grad_f32, ctx,
                     )
-                    self.loss.forward_accumulate["gpu", Self.BATCH](
-                        self.logits, self.batch_y, ctx
-                    )
-                    self.loss.vjp["gpu", Self.BATCH](
-                        self.logits, self.batch_y, self.grad, ctx
-                    )
-                    self.model.vjp["gpu", Self.BATCH, POLICY = Self.POLICY](
-                        TensorRefs[Self.MODEL.ARITY](self.batch_x),
-                        self.grad,
-                        TensorRefs[Self.MODEL.ARITY](self.gi),
-                        ctx,
-                    )
-                    self.opt.step["gpu"](self.model, ctx)
             var avg = Float64(self.loss.read_accum["gpu"](ctx))
             c.synchronize()
             var t1 = perf_counter_ns()
