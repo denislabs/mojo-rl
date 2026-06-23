@@ -13,6 +13,11 @@ offsets make the N-ary form as clean as the old hardcoded 2-branch one. The
 
   ARITY  = 1            (one input, N branches)
   OUT_DIM = Σ BRANCHES[i].OUT_DIM
+
+All branches share ONE activation dtype (asserted in __init__); the concat
+changes OUT_DIM (Σ branch dims) but NOT the dtype, so every activation buffer
+(slabs, out, grads, gi_temp) is `TensorImpl[Self.ACT_DT]` and the concat/split
+kernels are parametrized by `ADT` (defaulting to DT → NoAMP unchanged).
 """
 
 from std.gpu import global_idx
@@ -21,14 +26,28 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
 from ..core.initializer import Initializer
-from ..core.tensor import Tensor
-from ..core.tensor_refs import TensorRefs
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs, child_refs
 from ..core.tensor_pack import TensorPack
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
 from ..core.amp import AMPPolicy, NoAMP
-from ..primitives.linear import _accum_kernel  # dst[i] += src[i]
+
+
+# ── grad-input accumulation (dst[i] += src[i]) ──────────────────────────
+# Local ADT-parametrized twin of linear's `_accum_kernel` (which is still
+# DT-hardcoded): the per-branch grad-inputs sum on the combinator's ACT_DT
+# buffers, so this must run at bf16 too. `ADT` defaults to DT → NoAMP unchanged.
+def _par_accum_kernel[
+    N: Int, ADT: DType = DT
+](
+    dst: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
+):
+    var i = Int(global_idx.x)
+    if i < N:
+        dst[i] = rebind[Scalar[ADT]](dst[i]) + rebind[Scalar[ADT]](src[i])
 
 
 # ── comptime variadic helpers ──────────────────────────────────────────
@@ -47,41 +66,43 @@ def _cumulative_offset[index: Int, *BRANCHES: Module]() -> Int:
 
 
 # ── per-branch offset write/read into the packed buffer ─────────────────
+# `ADT` is the combinator's activation dtype (DT by default → NoAMP unchanged);
+# the concat moves columns, never recasts, so all operands share it.
 def _par_write_kernel[
-    B: Int, OI: Int, OD: Int
+    B: Int, OI: Int, OD: Int, ADT: DType = DT
 ](
-    slab: LayoutTensor[DT, Layout.row_major(B, OI), MutAnyOrigin],
-    packed: LayoutTensor[DT, Layout.row_major(B, OD), MutAnyOrigin],
+    slab: LayoutTensor[ADT, Layout.row_major(B, OI), MutAnyOrigin],
+    packed: LayoutTensor[ADT, Layout.row_major(B, OD), MutAnyOrigin],
     off: Int,
 ):
     var idx = Int(global_idx.x)
     if idx < B * OI:
         var bi = idx // OI
         var ji = idx % OI
-        packed[bi, off + ji] = rebind[Scalar[DT]](slab[bi, ji])
+        packed[bi, off + ji] = rebind[Scalar[ADT]](slab[bi, ji])
 
 
 def _par_read_kernel[
-    B: Int, OI: Int, OD: Int
+    B: Int, OI: Int, OD: Int, ADT: DType = DT
 ](
-    packed: LayoutTensor[DT, Layout.row_major(B, OD), MutAnyOrigin],
-    slab: LayoutTensor[DT, Layout.row_major(B, OI), MutAnyOrigin],
+    packed: LayoutTensor[ADT, Layout.row_major(B, OD), MutAnyOrigin],
+    slab: LayoutTensor[ADT, Layout.row_major(B, OI), MutAnyOrigin],
     off: Int,
 ):
     var idx = Int(global_idx.x)
     if idx < B * OI:
         var bi = idx // OI
         var ji = idx % OI
-        slab[bi, ji] = rebind[Scalar[DT]](packed[bi, off + ji])
+        slab[bi, ji] = rebind[Scalar[ADT]](packed[bi, off + ji])
 
 
 # ── 2-branch concat/split kernels — kept for SkipConcat's input|inner merge.
 def _par_concat_kernel[
-    B: Int, OA: Int, OB: Int
+    B: Int, OA: Int, OB: Int, ADT: DType = DT
 ](
-    a: LayoutTensor[DT, Layout.row_major(B, OA), MutAnyOrigin],
-    bb: LayoutTensor[DT, Layout.row_major(B, OB), MutAnyOrigin],
-    packed: LayoutTensor[DT, Layout.row_major(B, OA + OB), MutAnyOrigin],
+    a: LayoutTensor[ADT, Layout.row_major(B, OA), MutAnyOrigin],
+    bb: LayoutTensor[ADT, Layout.row_major(B, OB), MutAnyOrigin],
+    packed: LayoutTensor[ADT, Layout.row_major(B, OA + OB), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     var total = B * (OA + OB)
@@ -89,17 +110,17 @@ def _par_concat_kernel[
         var bi = idx // (OA + OB)
         var ji = idx % (OA + OB)
         if ji < OA:
-            packed[bi, ji] = rebind[Scalar[DT]](a[bi, ji])
+            packed[bi, ji] = rebind[Scalar[ADT]](a[bi, ji])
         else:
-            packed[bi, ji] = rebind[Scalar[DT]](bb[bi, ji - OA])
+            packed[bi, ji] = rebind[Scalar[ADT]](bb[bi, ji - OA])
 
 
 def _par_split_kernel[
-    B: Int, OA: Int, OB: Int
+    B: Int, OA: Int, OB: Int, ADT: DType = DT
 ](
-    packed: LayoutTensor[DT, Layout.row_major(B, OA + OB), MutAnyOrigin],
-    a: LayoutTensor[DT, Layout.row_major(B, OA), MutAnyOrigin],
-    bb: LayoutTensor[DT, Layout.row_major(B, OB), MutAnyOrigin],
+    packed: LayoutTensor[ADT, Layout.row_major(B, OA + OB), MutAnyOrigin],
+    a: LayoutTensor[ADT, Layout.row_major(B, OA), MutAnyOrigin],
+    bb: LayoutTensor[ADT, Layout.row_major(B, OB), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     var total = B * (OA + OB)
@@ -107,9 +128,9 @@ def _par_split_kernel[
         var bi = idx // (OA + OB)
         var ji = idx % (OA + OB)
         if ji < OA:
-            a[bi, ji] = rebind[Scalar[DT]](packed[bi, ji])
+            a[bi, ji] = rebind[Scalar[ADT]](packed[bi, ji])
         else:
-            bb[bi, ji - OA] = rebind[Scalar[DT]](packed[bi, ji])
+            bb[bi, ji - OA] = rebind[Scalar[ADT]](packed[bi, ji])
 
 
 struct Parallel[*BRANCHES: Module](Module):
@@ -118,10 +139,13 @@ struct Parallel[*BRANCHES: Module](Module):
     comptime IN = Self.BRANCHES[0].IN_DIMS[0]
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.BRANCHES[0].IN_DIMS[0])
     comptime OUT_DIM = _total_out_dim[*Self.BRANCHES]()
+    # All branches share one activation dtype (asserted in __init__); concat
+    # changes OUT_DIM but not the dtype, so this is the slab/out/grad dtype.
+    comptime ACT_DT = Self.BRANCHES[0].ACT_DT
 
     var branches: Tuple[*Self.BRANCHES]
-    var slabs: TensorPack[Self.N]
-    var gi_temp: Tensor
+    var slabs: TensorPack[Self.N, Self.ACT_DT]
+    var gi_temp: TensorImpl[Self.ACT_DT]
 
     def __init__(out self):
         comptime assert Self.N >= 1, "Parallel requires >= 1 branch"
@@ -129,9 +153,13 @@ struct Parallel[*BRANCHES: Module](Module):
             comptime assert (
                 Self.BRANCHES[i].IN_DIMS[0] == Self.BRANCHES[0].IN_DIMS[0]
             ), "Parallel: all BRANCHES must share IN_DIM"
+        comptime for i in range(Self.N):
+            comptime assert (
+                Self.BRANCHES[i].ACT_DT == Self.ACT_DT
+            ), "Parallel: all BRANCHES must share ACT_DT (one activation dtype)"
         self.branches = Tuple[*Self.BRANCHES]()
-        self.slabs = TensorPack[Self.N]()
-        self.gi_temp = Tensor()
+        self.slabs = TensorPack[Self.N, Self.ACT_DT]()
+        self.gi_temp = TensorImpl[Self.ACT_DT]()
 
     @staticmethod
     def make[
@@ -146,14 +174,22 @@ struct Parallel[*BRANCHES: Module](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[1, o],
-        mut out: Tensor,
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        # Buffers are typed at Self.ACT_DT; each branch's forward wants the
+        # BRANCH's (ARITY, ACT_DT) (== Self.ACT_DT, asserted, but distinct to the
+        # checker). Bridge: `child_refs[cn, ci]` for the input, `rebind` for the
+        # mut slab. The concat (slabs → out) runs entirely at Self.ACT_DT.
         ref in0 = inputs[0]
         comptime for i in range(Self.N):
+            comptime ci = Self.BRANCHES[i].ACT_DT
+            comptime cn = Self.BRANCHES[i].ARITY
             self.branches[i].forward[target, B, POLICY=POLICY](
-                TensorRefs[Self.BRANCHES[i].ARITY](in0), self.slabs[i], ctx
+                child_refs[cn, ci](in0),
+                rebind[TensorImpl[ci]](self.slabs[i]),
+                ctx,
             )
         comptime if target == "cpu":
             out.ensure(B * Self.OUT_DIM)
@@ -171,7 +207,9 @@ struct Parallel[*BRANCHES: Module](Module):
             comptime for i in range(Self.N):
                 comptime off = _cumulative_offset[i, *Self.BRANCHES]()
                 comptime oi = Self.BRANCHES[i].OUT_DIM
-                c.enqueue_function[_par_write_kernel[B, oi, Self.OUT_DIM]](
+                c.enqueue_function[
+                    _par_write_kernel[B, oi, Self.OUT_DIM, Self.ACT_DT]
+                ](
                     self.slabs[i].lt["gpu", Layout.row_major(B, oi)](),
                     out.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
                     off,
@@ -184,9 +222,9 @@ struct Parallel[*BRANCHES: Module](Module):
         POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        forward_input: TensorRefs[1, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref fin = forward_input[0]
@@ -195,15 +233,17 @@ struct Parallel[*BRANCHES: Module](Module):
         comptime if target == "cpu":
             gin.ensure(NIN)
             for k in range(NIN):
-                gin.data[k] = Scalar[DT](0)
+                gin.data[k] = Scalar[Self.ACT_DT](0)
         else:
             var c0 = ctx.value()
             gin.ensure_gpu(c0, NIN)
-            gin.dev.value().enqueue_fill(Scalar[DT](0))
+            gin.dev.value().enqueue_fill(Scalar[Self.ACT_DT](0))
 
         comptime for i in range(Self.N):
             comptime off = _cumulative_offset[i, *Self.BRANCHES]()
             comptime oi = Self.BRANCHES[i].OUT_DIM
+            comptime ci = Self.BRANCHES[i].ACT_DT
+            comptime cn = Self.BRANCHES[i].ARITY
             comptime if target == "cpu":
                 for b in range(B):
                     for j in range(oi):
@@ -212,17 +252,21 @@ struct Parallel[*BRANCHES: Module](Module):
                         ]
             else:
                 var c = ctx.value()
-                c.enqueue_function[_par_read_kernel[B, oi, Self.OUT_DIM]](
+                c.enqueue_function[
+                    _par_read_kernel[B, oi, Self.OUT_DIM, Self.ACT_DT]
+                ](
                     grad_output.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
                     self.slabs[i].lt["gpu", Layout.row_major(B, oi)](),
                     off,
                     grid_dim=(B * oi + TPB - 1) // TPB,
                     block_dim=TPB,
                 )
+            # Branch vjp: gradient flows slabs[i] → gi_temp at the BRANCH's
+            # (ARITY, ACT_DT) — bridge fin/slab/gi_temp like forward.
             self.branches[i].vjp[target, B, POLICY=POLICY](
-                TensorRefs[Self.BRANCHES[i].ARITY](fin),
-                self.slabs[i],
-                TensorRefs[Self.BRANCHES[i].ARITY](self.gi_temp),
+                child_refs[cn, ci](fin),
+                rebind[TensorImpl[ci]](self.slabs[i]),
+                child_refs[cn, ci](self.gi_temp),
                 ctx,
             )
             comptime if target == "cpu":
@@ -238,7 +282,7 @@ struct Parallel[*BRANCHES: Module](Module):
                     k += 1
             else:
                 var c = ctx.value()
-                c.enqueue_function[_accum_kernel[NIN]](
+                c.enqueue_function[_par_accum_kernel[NIN, Self.ACT_DT]](
                     gin.lt["gpu", Layout.row_major(NIN)](),
                     self.gi_temp.lt["gpu", Layout.row_major(NIN)](),
                     grid_dim=(NIN + TPB - 1) // TPB,

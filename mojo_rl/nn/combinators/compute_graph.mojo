@@ -45,7 +45,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.initializer import Initializer
-from ..core.tensor import Tensor
+from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.tensor_pack import TensorPack
 from ..core.module import Module
@@ -57,25 +57,30 @@ from .graph_decl import GraphDecl
 
 
 def _cg_accum_kernel[
-    N: Int
+    N: Int, ADT: DType = DT
 ](
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
 ):
     """dst[i] += src[i] — fan-out grad accumulation on device."""
     var i = Int(global_idx.x)
     if i < N:
-        dst[i] = rebind[Scalar[DT]](dst[i]) + rebind[Scalar[DT]](src[i])
+        dst[i] = rebind[Scalar[ADT]](dst[i]) + rebind[Scalar[ADT]](src[i])
 
 
 struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
     comptime N = Self.DECLS.size
     comptime OUT_DIM = Self.DECLS[Self.N - 1].OUT_DIM
     comptime MAXARITY = Self._max_arity()
+    # The graph's activation dtype = the output node's; all COMPUTE nodes
+    # (KIND>0) share it (asserted in __init__). Input slots (KIND==0) have no
+    # wrapped module — their pool slot is still stored at this ACT_DT (seeded by
+    # `set_input`); their own `ACT_DT` label (DT) is irrelevant (forward no-ops).
+    comptime ACT_DT = Self.DECLS[Self.N - 1].ACT_DT
     var children: Tuple[*Self.DECLS]
-    var pool: TensorPack[Self.N]  # one slot per decl (slot i ↔ decl i)
-    var gpool: TensorPack[Self.N]  # grads (zeroed + fan-out-accumulated)
-    var tmp: TensorPack[Self.MAXARITY]  # grad_inputs scratch (max node arity)
+    var pool: TensorPack[Self.N, Self.ACT_DT]  # one slot per decl (slot i ↔ decl i)
+    var gpool: TensorPack[Self.N, Self.ACT_DT]  # grads (zeroed + accumulated)
+    var tmp: TensorPack[Self.MAXARITY, Self.ACT_DT]  # grad_inputs scratch
     var slot_n: List[Int]  # logical elem count per slot (forward)
 
     @staticmethod
@@ -96,10 +101,15 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             "ComputeGraph: the last decl must be a compute/external node"
             " (the graph output), not an InputSlot"
         )
+        comptime for i in range(Self.N):
+            comptime if Self.DECLS[i].KIND > 0:
+                comptime assert Self.DECLS[i].ACT_DT == Self.ACT_DT, (
+                    "ComputeGraph: all compute nodes must share one ACT_DT"
+                )
         self.children = Tuple[*Self.DECLS]()
-        self.pool = TensorPack[Self.N]()
-        self.gpool = TensorPack[Self.N]()
-        self.tmp = TensorPack[Self.MAXARITY]()
+        self.pool = TensorPack[Self.N, Self.ACT_DT]()
+        self.gpool = TensorPack[Self.N, Self.ACT_DT]()
+        self.tmp = TensorPack[Self.MAXARITY, Self.ACT_DT]()
         self.slot_n = List[Int](length=Self.N, fill=0)
 
     @staticmethod
@@ -171,8 +181,8 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
     def _accumulate_grads[
         B: Int, target: StaticString, NA: Int, i: Int
     ](
-        mut gpool: TensorPack[Self.N],
-        mut tmp: TensorPack[Self.MAXARITY],
+        mut gpool: TensorPack[Self.N, Self.ACT_DT],
+        mut tmp: TensorPack[Self.MAXARITY, Self.ACT_DT],
         ctx: Optional[DeviceContext],
     ) raises:
         """Fan-out-accumulate node `i`'s grad_inputs (`tmp[0:NA]`) into the fed
@@ -195,7 +205,8 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
 
     def set_input[
         slot_name: StaticString, B: Int
-    ](mut self, mut src: Tensor, ctx: Optional[DeviceContext] = None) raises:
+    ](mut self, mut src: TensorImpl[Self.ACT_DT],
+      ctx: Optional[DeviceContext] = None) raises:
         """Seed the named input slot's pool entry with `src` (a COPY — no cached
         pointer). Call once per input before each `forward`. CPU copies element-
         wise; GPU does a device-to-device `enqueue_copy`."""
@@ -218,8 +229,10 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             # the copy size-exact — matching the CPU branch's element-wise `n`
             # loop — so the larger buffer's tail is simply left untouched (the
             # node's `forward[B]` reads only the first `n`).
-            var src_sub = src.dev.value().create_sub_buffer[DT](0, n)
-            var pool_sub = self.pool[slot].dev.value().create_sub_buffer[DT](0, n)
+            var src_sub = src.dev.value().create_sub_buffer[Self.ACT_DT](0, n)
+            var pool_sub = self.pool[slot].dev.value().create_sub_buffer[
+                Self.ACT_DT
+            ](0, n)
             c.enqueue_copy(pool_sub, src_sub)
         else:
             self.pool[slot].ensure(n)
@@ -253,7 +266,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
 
     def node_output[
         name: StaticString
-    ](mut self) raises -> ref[MutAnyOrigin] Tensor:
+    ](mut self) raises -> ref[MutAnyOrigin] TensorImpl[Self.ACT_DT]:
         """The forward output of the named node — for diagnostics / reading an
         intermediate (e.g. `log_prob`). Comptime name → slot."""
         comptime slot = Self._slot_of[name]()
@@ -262,7 +275,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
 
     def grad_input[
         name: StaticString
-    ](mut self) raises -> ref[MutAnyOrigin] Tensor:
+    ](mut self) raises -> ref[MutAnyOrigin] TensorImpl[Self.ACT_DT]:
         """The accumulated gradient flowing back to the named input slot (read
         after `vjp`). Comptime name → grad-pool slot."""
         comptime slot = Self._slot_of[name]()
@@ -276,7 +289,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
         *EXT: Module,
     ](
         mut self,
-        mut out: Tensor,
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
         mut *externals: *EXT,
     ) raises:
@@ -300,28 +313,36 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                     # External slot — dispatch to the threaded module.
                     comptime ei = Self._ext_before[i]()
                     comptime AE = EXT[ei].ARITY
+                    comptime cei = EXT[ei].ACT_DT
                     var inrefs = InlineArray[
-                        Pointer[Tensor, MutAnyOrigin], AE
+                        Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], AE
                     ](uninitialized=True)
                     comptime for k in range(AE):
                         comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
                         inrefs[k] = Pointer(to=self.pool[sk])
+                    # pool buffers are stored at Self.ACT_DT; the external module
+                    # wants its own (==Self.ACT_DT) — rebind the pack + out slot.
                     externals[ei].forward[target, B, POLICY=POLICY](
-                        TensorRefs[AE, MutAnyOrigin](inrefs),
-                        self.pool[i],
+                        rebind[TensorRefs[AE, MutAnyOrigin, cei]](
+                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](inrefs)
+                        ),
+                        rebind[TensorImpl[cei]](self.pool[i]),
                         ctx,
                     )
                 else:
                     comptime A = Self.DECLS[i].ARITY
+                    comptime ci = Self.DECLS[i].ACT_DT
                     var inrefs = InlineArray[
-                        Pointer[Tensor, MutAnyOrigin], A
+                        Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], A
                     ](uninitialized=True)
                     comptime for k in range(A):
                         comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
                         inrefs[k] = Pointer(to=self.pool[sk])
                     self.children[i].forward[target, B, POLICY=POLICY](
-                        TensorRefs[A, MutAnyOrigin](inrefs),
-                        self.pool[i],
+                        rebind[TensorRefs[A, MutAnyOrigin, ci]](
+                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](inrefs)
+                        ),
+                        rebind[TensorImpl[ci]](self.pool[i]),
                         ctx,
                     )
         var dN = B * Self.OUT_DIM
@@ -335,10 +356,10 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             # Size-exact (`dN`) sub-buffer copy: the output node's pool buffer
             # may be larger than `dN` if this graph was previously driven at a
             # larger batch (monotone `ensure_gpu`), so copy only the logical dN.
-            var src_sub = self.pool[Self.N - 1].dev.value().create_sub_buffer[DT](
-                0, dN
-            )
-            var out_sub = out.dev.value().create_sub_buffer[DT](0, dN)
+            var src_sub = self.pool[Self.N - 1].dev.value().create_sub_buffer[
+                Self.ACT_DT
+            ](0, dN)
+            var out_sub = out.dev.value().create_sub_buffer[Self.ACT_DT](0, dN)
             c.enqueue_copy(out_sub, src_sub)
 
     def vjp[
@@ -348,7 +369,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
         *EXT: Module,
     ](
         mut self,
-        mut grad_out: Tensor,
+        mut grad_out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
         mut *externals: *EXT,
     ) raises:
@@ -362,7 +383,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                     self.gpool[k].data[q] = 0
             else:
                 self.gpool[k].ensure_gpu(ctx.value(), dk)
-                self.gpool[k].dev.value().enqueue_fill(Scalar[DT](0))
+                self.gpool[k].dev.value().enqueue_fill(Scalar[Self.ACT_DT](0))
         var dN = B * Self.OUT_DIM
         comptime if target == "cpu":
             for q in range(dN):
@@ -371,10 +392,12 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             # Size-exact (`dN`) seed copy (see `forward`): the output grad slot
             # may be larger than dN if the graph was driven at a larger batch.
             var c = ctx.value()
-            var go_sub = grad_out.dev.value().create_sub_buffer[DT](0, dN)
-            var gp_sub = self.gpool[Self.N - 1].dev.value().create_sub_buffer[DT](
+            var go_sub = grad_out.dev.value().create_sub_buffer[Self.ACT_DT](
                 0, dN
             )
+            var gp_sub = self.gpool[Self.N - 1].dev.value().create_sub_buffer[
+                Self.ACT_DT
+            ](0, dN)
             c.enqueue_copy(gp_sub, go_sub)
         # Reverse-topo: each node scatters grad_inputs into tmp; the graph
         # ACCUMULATES tmp into the fed slots' grad buffers (fan-out sum). Input
@@ -393,11 +416,12 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                 comptime if Self.DECLS[i].KIND == 2:
                     comptime ei = Self._ext_before[i]()
                     comptime AE = EXT[ei].ARITY
+                    comptime cei = EXT[ei].ACT_DT
                     var firefs = InlineArray[
-                        Pointer[Tensor, MutAnyOrigin], AE
+                        Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], AE
                     ](uninitialized=True)
                     var girefs = InlineArray[
-                        Pointer[Tensor, MutAnyOrigin], AE
+                        Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], AE
                     ](uninitialized=True)
                     comptime for k in range(AE):
                         comptime ak = B * Self.DECLS[i].IN_DIMS[k]
@@ -409,9 +433,13 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                         firefs[k] = Pointer(to=self.pool[sk])
                         girefs[k] = Pointer(to=self.tmp[k])
                     externals[ei].vjp[target, B, POLICY=POLICY](
-                        TensorRefs[AE, MutAnyOrigin](firefs),
-                        self.gpool[i],
-                        TensorRefs[AE, MutAnyOrigin](girefs),
+                        rebind[TensorRefs[AE, MutAnyOrigin, cei]](
+                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](firefs)
+                        ),
+                        rebind[TensorImpl[cei]](self.gpool[i]),
+                        rebind[TensorRefs[AE, MutAnyOrigin, cei]](
+                            TensorRefs[AE, MutAnyOrigin, Self.ACT_DT](girefs)
+                        ),
                         ctx,
                     )
                     Self._accumulate_grads[B, target, AE, i](
@@ -419,11 +447,12 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                     )
                 else:
                     comptime A = Self.DECLS[i].ARITY
+                    comptime ci = Self.DECLS[i].ACT_DT
                     var firefs = InlineArray[
-                        Pointer[Tensor, MutAnyOrigin], A
+                        Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], A
                     ](uninitialized=True)
                     var girefs = InlineArray[
-                        Pointer[Tensor, MutAnyOrigin], A
+                        Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], A
                     ](uninitialized=True)
                     comptime for k in range(A):
                         comptime ak = B * Self.DECLS[i].IN_DIMS[k]
@@ -435,9 +464,13 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                         firefs[k] = Pointer(to=self.pool[sk])
                         girefs[k] = Pointer(to=self.tmp[k])
                     self.children[i].vjp[target, B, POLICY=POLICY](
-                        TensorRefs[A, MutAnyOrigin](firefs),
-                        self.gpool[i],
-                        TensorRefs[A, MutAnyOrigin](girefs),
+                        rebind[TensorRefs[A, MutAnyOrigin, ci]](
+                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](firefs)
+                        ),
+                        rebind[TensorImpl[ci]](self.gpool[i]),
+                        rebind[TensorRefs[A, MutAnyOrigin, ci]](
+                            TensorRefs[A, MutAnyOrigin, Self.ACT_DT](girefs)
+                        ),
                         ctx,
                     )
                     Self._accumulate_grads[B, target, A, i](

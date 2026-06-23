@@ -5,18 +5,27 @@ container for ≥2-ary leaves (no §B0 origin-union constraint — these are
 independent storages, not origin-pinned views).
 """
 
-from .tensor import Tensor
+from mojo_rl.nn.constants import DT
+from .tensor import Tensor, TensorImpl
 
 
-struct TensorPack[N: Int](Defaultable & Movable & ImplicitlyDeletable):
-    var tensors: List[Tensor]
+struct TensorPack[N: Int, ADT: DType = DT](
+    Defaultable & Movable & ImplicitlyDeletable
+):
+    """`ADT` is the element (activation) dtype — `DT` (fp32) by default, so the
+    bare `TensorPack[N]` is unchanged; bf16-flow combinators use the child's
+    `ADT` for their inter-module buffer pools."""
+
+    var tensors: List[TensorImpl[Self.ADT]]
 
     def __init__(out self):
-        self.tensors = List[Tensor]()
+        self.tensors = List[TensorImpl[Self.ADT]]()
         comptime for i in range(Self.N):
-            self.tensors.append(Tensor())
+            self.tensors.append(TensorImpl[Self.ADT]())
 
-    def __getitem__(mut self, index: Int) raises -> ref [MutAnyOrigin] Tensor:
+    def __getitem__(
+        mut self, index: Int
+    ) raises -> ref [MutAnyOrigin] TensorImpl[Self.ADT]:
         # MUST be `MutAnyOrigin`, NOT `MutUntrackedOrigin`. The returned ref
         # points into `self.tensors`' heap buffer; the wildcard's lifetime-
         # PINNING is what keeps `self` (the pack) alive for as long as the ref

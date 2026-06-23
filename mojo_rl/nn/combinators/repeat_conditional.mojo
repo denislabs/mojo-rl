@@ -30,7 +30,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
 from ..core.initializer import Initializer
-from ..core.tensor import Tensor
+from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.tensor_pack import TensorPack
 from ..core.module import Module
@@ -40,15 +40,16 @@ from ..core.amp import AMPPolicy, NoAMP
 
 
 def _rc_accum_kernel[
-    N: Int
+    ADT: DType, N: Int
 ](
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
 ):
-    """dst[i] += src[i] — grad_c fan-out accumulation on device."""
+    """dst[i] += src[i] — grad_c fan-out accumulation on device (at the
+    activation dtype `ADT`)."""
     var i = Int(global_idx.x)
     if i < N:
-        dst[i] = rebind[Scalar[DT]](dst[i]) + rebind[Scalar[DT]](src[i])
+        dst[i] = rebind[Scalar[ADT]](dst[i]) + rebind[Scalar[ADT]](src[i])
 
 
 struct RepeatConditional[N: Int, Inner: Module](Module):
@@ -56,13 +57,16 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
     comptime D = Self.Inner.OUT_DIM
     comptime IN_DIMS = InlineArray[Int, 2](fill=Self.D)
     comptime OUT_DIM = Self.Inner.OUT_DIM
+    # Both stream `x` and conditioning `c` flow at the block's activation dtype;
+    # the pools (and the seeded x/c copies) are stored here.
+    comptime ACT_DT = Self.Inner.ACT_DT
 
     var children: List[Self.Inner]
     # Forward pool: slot 0 = x copy, slots 1..N-1 = block(0..N-2) outputs,
     # slot N = broadcast c copy. (§B0: each block reads two slots of ONE pool.)
-    var pool: TensorPack[Self.N + 1]
+    var pool: TensorPack[Self.N + 1, Self.ACT_DT]
     # Backward pool: slots 0..N-1 = per-block grad_x, slot N = grad_c temp.
-    var gpool: TensorPack[Self.N + 1]
+    var gpool: TensorPack[Self.N + 1, Self.ACT_DT]
 
     def __init__(out self):
         comptime assert Self.N >= 1, "RepeatConditional requires N >= 1"
@@ -74,8 +78,8 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
             and Self.Inner.IN_DIMS[1] == Self.Inner.OUT_DIM
         ), "RepeatConditional: Inner must be dim-preserving (IN0==IN1==OUT)"
         self.children = List[Self.Inner]()
-        self.pool = TensorPack[Self.N + 1]()
-        self.gpool = TensorPack[Self.N + 1]()
+        self.pool = TensorPack[Self.N + 1, Self.ACT_DT]()
+        self.gpool = TensorPack[Self.N + 1, Self.ACT_DT]()
 
     @staticmethod
     def make[
@@ -90,7 +94,8 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
     def _copy_into[
         target: StaticString
     ](
-        mut dst: Tensor, mut src: Tensor, n: Int,
+        mut dst: TensorImpl[Self.ACT_DT], mut src: TensorImpl[Self.ACT_DT],
+        n: Int,
         ctx: Optional[DeviceContext],
     ) raises:
         """dst[0:n] = src[0:n] (target-aware copy into a pool slot)."""
@@ -107,7 +112,7 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
     def _accum_into[
         target: StaticString, NN: Int
     ](
-        mut dst: Tensor, mut src: Tensor,
+        mut dst: TensorImpl[Self.ACT_DT], mut src: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext],
     ) raises:
         """dst[0:NN] += src[0:NN] (target-aware grad_c fan-out)."""
@@ -115,7 +120,7 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
             for q in range(NN):
                 dst.data[q] += src.data[q]
         else:
-            ctx.value().enqueue_function[_rc_accum_kernel[NN]](
+            ctx.value().enqueue_function[_rc_accum_kernel[Self.ACT_DT, NN]](
                 dst.lt["gpu", Layout.row_major(NN)](),
                 src.lt["gpu", Layout.row_major(NN)](),
                 grid_dim=(NN + TPB - 1) // TPB,
@@ -125,38 +130,56 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
     @staticmethod
     def _zero[
         target: StaticString
-    ](mut dst: Tensor, n: Int, ctx: Optional[DeviceContext]) raises:
+    ](
+        mut dst: TensorImpl[Self.ACT_DT], n: Int,
+        ctx: Optional[DeviceContext],
+    ) raises:
         comptime if target == "cpu":
             dst.ensure(n)
             for q in range(n):
-                dst.data[q] = Scalar[DT](0)
+                dst.data[q] = Scalar[Self.ACT_DT](0)
         else:
             dst.ensure_gpu(ctx.value(), n)
-            dst.dev.value().enqueue_fill(Scalar[DT](0))
+            dst.dev.value().enqueue_fill(Scalar[Self.ACT_DT](0))
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[2, o],
-        mut out: Tensor,
+        inputs: TensorRefs[2, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime n = B * Self.D
+        # Child-edge dtypes (== Self.ACT_DT / ARITY, asserted, but distinct to
+        # the checker). The 2-ary block input pack is built inline over two
+        # pool slots (both `MutAnyOrigin` via `TensorPack.__getitem__`, §B0) and
+        # `rebind`-ed to the child's `(cn, ci)`; the mut output buffer goes
+        # through `rebind[TensorImpl[ci]]`.
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
         # Seed pool: slot 0 = x copy, slot N = broadcast c copy.
         Self._copy_into[target](self.pool[0], inputs[0], n, ctx)
         Self._copy_into[target](self.pool[Self.N], inputs[1], n, ctx)
         comptime for i in range(Self.N):
             comptime if i == Self.N - 1:
                 self.children[i].forward[target, B, POLICY=POLICY](
-                    TensorRefs[Self.Inner.ARITY](self.pool[i], self.pool[Self.N]),
-                    out,
+                    rebind[TensorRefs[cn, MutAnyOrigin, ci]](
+                        TensorRefs[Self.Inner.ARITY, MutAnyOrigin, Self.ACT_DT](
+                            self.pool[i], self.pool[Self.N]
+                        )
+                    ),
+                    rebind[TensorImpl[ci]](out),
                     ctx,
                 )
             else:
                 self.children[i].forward[target, B, POLICY=POLICY](
-                    TensorRefs[Self.Inner.ARITY](self.pool[i], self.pool[Self.N]),
-                    self.pool[i + 1],
+                    rebind[TensorRefs[cn, MutAnyOrigin, ci]](
+                        TensorRefs[Self.Inner.ARITY, MutAnyOrigin, Self.ACT_DT](
+                            self.pool[i], self.pool[Self.N]
+                        )
+                    ),
+                    rebind[TensorImpl[ci]](self.pool[i + 1]),
                     ctx,
                 )
 
@@ -165,12 +188,17 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
         POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        forward_input: TensorRefs[2, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[2, ogi],
+        forward_input: TensorRefs[2, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[2, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime n = B * Self.D
+        # Child-edge dtypes (see forward): the 2-ary forward-input pack (pool)
+        # and grad_input scatter pack (gpool) are built inline + `rebind`-ed to
+        # `(cn, ci)`; mut grad buffers via `rebind[TensorImpl[ci]]`.
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
         # grad_c accumulator (caller slot) starts at zero; each block adds its
         # grad_c temp (gpool[N]) into it.
         Self._zero[target](grad_inputs[1], n, ctx)
@@ -181,23 +209,31 @@ struct RepeatConditional[N: Int, Inner: Module](Module):
             comptime i = Self.N - 1 - j
             comptime if i == Self.N - 1:
                 self.children[i].vjp[target, B, POLICY=POLICY](
-                    TensorRefs[Self.Inner.ARITY](
-                        self.pool[i], self.pool[Self.N]
+                    rebind[TensorRefs[cn, MutAnyOrigin, ci]](
+                        TensorRefs[Self.Inner.ARITY, MutAnyOrigin, Self.ACT_DT](
+                            self.pool[i], self.pool[Self.N]
+                        )
                     ),
-                    grad_output,
-                    TensorRefs[Self.Inner.ARITY](
-                        self.gpool[i], self.gpool[Self.N]
+                    rebind[TensorImpl[ci]](grad_output),
+                    rebind[TensorRefs[cn, MutAnyOrigin, ci]](
+                        TensorRefs[Self.Inner.ARITY, MutAnyOrigin, Self.ACT_DT](
+                            self.gpool[i], self.gpool[Self.N]
+                        )
                     ),
                     ctx,
                 )
             else:
                 self.children[i].vjp[target, B, POLICY=POLICY](
-                    TensorRefs[Self.Inner.ARITY](
-                        self.pool[i], self.pool[Self.N]
+                    rebind[TensorRefs[cn, MutAnyOrigin, ci]](
+                        TensorRefs[Self.Inner.ARITY, MutAnyOrigin, Self.ACT_DT](
+                            self.pool[i], self.pool[Self.N]
+                        )
                     ),
-                    self.gpool[i + 1],
-                    TensorRefs[Self.Inner.ARITY](
-                        self.gpool[i], self.gpool[Self.N]
+                    rebind[TensorImpl[ci]](self.gpool[i + 1]),
+                    rebind[TensorRefs[cn, MutAnyOrigin, ci]](
+                        TensorRefs[Self.Inner.ARITY, MutAnyOrigin, Self.ACT_DT](
+                            self.gpool[i], self.gpool[Self.N]
+                        )
                     ),
                     ctx,
                 )

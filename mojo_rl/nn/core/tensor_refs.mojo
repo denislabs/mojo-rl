@@ -20,24 +20,32 @@ constraint: they must come from one owner / pool).
 from std.memory import Pointer
 
 from mojo_rl.nn.constants import DT
-from .tensor import Tensor
+from .tensor import Tensor, TensorImpl
 
 
 @fieldwise_init
-struct TensorRefs[N: Int, o: MutOrigin](Copyable, Movable):
-    var ptrs: InlineArray[Pointer[Tensor, Self.o], Self.N]
+struct TensorRefs[N: Int, o: MutOrigin, ADT: DType = DT](
+    ImplicitlyCopyable, Movable
+):
+    """`ADT` is the element (activation) dtype — `DT` (fp32) by default, so the
+    bare `TensorRefs[N, o]` is unchanged. bf16-flow leaves/combinators carry the
+    activation dtype here so a packed ref points at `TensorImpl[bf16]` storages."""
 
-    def __init__(out self, ref[Self.o] tensor: Tensor) raises:
+    var ptrs: InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N]
+
+    def __init__(out self, ref[Self.o] tensor: TensorImpl[Self.ADT]) raises:
         comptime assert Self.N == 1, "of1 requires N == 1"
-        self.ptrs = InlineArray[Pointer[Tensor, Self.o], Self.N](
+        self.ptrs = InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
             fill=Pointer(to=tensor)
         )
 
     def __init__(
-        out self, ref[Self.o] t0: Tensor, ref[Self.o] t1: Tensor
+        out self,
+        ref[Self.o] t0: TensorImpl[Self.ADT],
+        ref[Self.o] t1: TensorImpl[Self.ADT],
     ) raises:
         comptime assert Self.N == 2, "of2 requires N == 2"
-        self.ptrs = InlineArray[Pointer[Tensor, Self.o], Self.N](
+        self.ptrs = InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
             uninitialized=True
         )
         self.ptrs[0] = Pointer(to=t0)
@@ -45,12 +53,12 @@ struct TensorRefs[N: Int, o: MutOrigin](Copyable, Movable):
 
     def __init__(
         out self,
-        ref[Self.o] t0: Tensor,
-        ref[Self.o] t1: Tensor,
-        ref[Self.o] t2: Tensor,
+        ref[Self.o] t0: TensorImpl[Self.ADT],
+        ref[Self.o] t1: TensorImpl[Self.ADT],
+        ref[Self.o] t2: TensorImpl[Self.ADT],
     ) raises:
         comptime assert Self.N == 3, "of3 requires N == 3"
-        self.ptrs = InlineArray[Pointer[Tensor, Self.o], Self.N](
+        self.ptrs = InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
             uninitialized=True
         )
         self.ptrs[0] = Pointer(to=t0)
@@ -59,13 +67,13 @@ struct TensorRefs[N: Int, o: MutOrigin](Copyable, Movable):
 
     def __init__(
         out self,
-        ref[Self.o] t0: Tensor,
-        ref[Self.o] t1: Tensor,
-        ref[Self.o] t2: Tensor,
-        ref[Self.o] t3: Tensor,
+        ref[Self.o] t0: TensorImpl[Self.ADT],
+        ref[Self.o] t1: TensorImpl[Self.ADT],
+        ref[Self.o] t2: TensorImpl[Self.ADT],
+        ref[Self.o] t3: TensorImpl[Self.ADT],
     ) raises:
         comptime assert Self.N == 4, "of4 requires N == 4"
-        self.ptrs = InlineArray[Pointer[Tensor, Self.o], Self.N](
+        self.ptrs = InlineArray[Pointer[TensorImpl[Self.ADT], Self.o], Self.N](
             uninitialized=True
         )
         self.ptrs[0] = Pointer(to=t0)
@@ -73,5 +81,22 @@ struct TensorRefs[N: Int, o: MutOrigin](Copyable, Movable):
         self.ptrs[2] = Pointer(to=t2)
         self.ptrs[3] = Pointer(to=t3)
 
-    def __getitem__(self, index: Int) -> ref[Self.o] Tensor:
+    def __getitem__(self, index: Int) -> ref[Self.o] TensorImpl[Self.ADT]:
         return self.ptrs[index][]
+
+
+def child_refs[
+    o: MutOrigin, SADT: DType, //, N: Int, CADT: DType
+](ref[o] t: TensorImpl[SADT]) raises -> TensorRefs[N, o, CADT]:
+    """Build a UNARY ref-pack over `t` and reinterpret it to a child's `(N, CADT)`
+    — the combinator child-edge bridge.
+
+    A combinator's inter-module buffers are typed at ITS `ACT_DT`, but a child's
+    `forward`/`vjp` expects the CHILD's `(ARITY, ACT_DT)` — and the compiler won't
+    unify the child's opaque `ARITY`/`ACT_DT` with the combinator's even though it
+    asserts them equal (`ARITY==1`, `ACT_DT==Self.ACT_DT`). Taking the tensor
+    DIRECTLY infers `o`/`SADT` from the arg (no default-`DT` capture that
+    `TensorRefs[1](t)` would hit); then we rebind the small `Copyable` pointer-pack
+    `[1, SADT] → [N, CADT]` (the `Tensor` never moves). Sound for unary children.
+    `N`/`CADT` are the explicit params. ≥2-ary children: build + `rebind` inline."""
+    return rebind[TensorRefs[N, o, CADT]](TensorRefs[1, o, SADT](t))

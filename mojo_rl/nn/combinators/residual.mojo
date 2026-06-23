@@ -15,8 +15,8 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
 from ..core.initializer import Initializer
-from ..core.tensor import Tensor
-from ..core.tensor_refs import TensorRefs
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs, child_refs
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
@@ -24,15 +24,17 @@ from ..core.amp import AMPPolicy, NoAMP
 
 
 def _resid_add_kernel[
-    N: Int
+    N: Int, ADT: DType = DT
 ](
-    a: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    b: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    a: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
+    b: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
 ):
+    # The skip ADD runs on the combinator's ACT_DT activation buffers; `ADT`
+    # defaults to DT so NoAMP-callers (passing the default) are unchanged.
     var i = Int(global_idx.x)
     if i < N:
-        dst[i] = rebind[Scalar[DT]](a[i]) + rebind[Scalar[DT]](b[i])
+        dst[i] = rebind[Scalar[ADT]](a[i]) + rebind[Scalar[ADT]](b[i])
 
 
 struct Residual[Inner: Module](Module):
@@ -40,16 +42,19 @@ struct Residual[Inner: Module](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.Inner.IN_DIMS[0])
     comptime OUT_DIM = Self.Inner.OUT_DIM
     comptime DIM = Self.Inner.OUT_DIM
+    # The skip path is element-wise — no dtype change — so the residual's
+    # activation dtype is just the wrapped module's.
+    comptime ACT_DT = Self.Inner.ACT_DT
 
     var inner: Self.Inner
-    var mid: Tensor  # inner's output (fwd) / inner's grad-input (bwd)
+    var mid: TensorImpl[Self.ACT_DT]  # inner's output (fwd) / inner's grad-input (bwd)
 
     def __init__(out self):
         comptime assert (
             Self.Inner.IN_DIMS[0] == Self.Inner.OUT_DIM
         ), "Residual requires Inner.IN_DIMS[0] == Inner.OUT_DIM"
         self.inner = Self.Inner()
-        self.mid = Tensor()
+        self.mid = TensorImpl[Self.ACT_DT]()
 
     @staticmethod
     def make[
@@ -63,13 +68,17 @@ struct Residual[Inner: Module](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[1, o],
-        mut out: Tensor,
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        # Buffers are typed at Self.ACT_DT; bridge to the inner child's
+        # (ARITY, ACT_DT) via `child_refs` (input pack) and `rebind` (mut output).
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
         ref in0 = inputs[0]
         self.inner.forward[target, B, POLICY=POLICY](
-            TensorRefs[Self.Inner.ARITY](in0), self.mid, ctx
+            child_refs[cn, ci](in0), rebind[TensorImpl[ci]](self.mid), ctx
         )
         comptime N = B * Self.DIM
         comptime if target == "cpu":
@@ -88,7 +97,7 @@ struct Residual[Inner: Module](Module):
         else:
             var c = ctx.value()
             out.ensure_gpu(c, N)
-            c.enqueue_function[_resid_add_kernel[N]](
+            c.enqueue_function[_resid_add_kernel[N, Self.ACT_DT]](
                 self.mid.lt["gpu", Layout.row_major(N)](),
                 in0.lt["gpu", Layout.row_major(N)](),
                 out.lt["gpu", Layout.row_major(N)](),
@@ -101,18 +110,20 @@ struct Residual[Inner: Module](Module):
         POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        forward_input: TensorRefs[1, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
         ref fin = forward_input[0]
         ref gin = grad_inputs[0]
         # mid := grad wrt inner's input; then grad_input = mid + grad_output.
         self.inner.vjp[target, B, POLICY=POLICY](
-            TensorRefs[Self.Inner.ARITY](fin),
-            grad_output,
-            TensorRefs[Self.Inner.ARITY](self.mid),
+            child_refs[cn, ci](fin),
+            rebind[TensorImpl[ci]](grad_output),
+            child_refs[cn, ci](self.mid),
             ctx,
         )
         comptime N = B * Self.DIM
@@ -132,7 +143,7 @@ struct Residual[Inner: Module](Module):
         else:
             var c = ctx.value()
             gin.ensure_gpu(c, N)
-            c.enqueue_function[_resid_add_kernel[N]](
+            c.enqueue_function[_resid_add_kernel[N, Self.ACT_DT]](
                 self.mid.lt["gpu", Layout.row_major(N)](),
                 grad_output.lt["gpu", Layout.row_major(N)](),
                 gin.lt["gpu", Layout.row_major(N)](),

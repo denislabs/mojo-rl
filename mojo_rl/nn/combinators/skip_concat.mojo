@@ -11,6 +11,10 @@ Forward:  out = [x | inner(x)]
 Backward: grad_input = grad_output[:, :IN] + inner.vjp(grad_output[:, IN:])
 (the input feeds both the passthrough column block and inner — its grads sum).
 Reuses Parallel's concat/split kernels + Residual's add kernel.
+
+The concat is a column move (no recast), so every activation buffer (inner_out,
+go_*, gi_inner, out, grads) is `TensorImpl[Self.ACT_DT]` and the shared kernels
+run at that dtype (`ADT` defaults to DT → NoAMP unchanged).
 """
 
 from std.gpu.host import DeviceContext
@@ -18,8 +22,8 @@ from layout import Layout
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
 from ..core.initializer import Initializer
-from ..core.tensor import Tensor
-from ..core.tensor_refs import TensorRefs
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs, child_refs
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
@@ -34,19 +38,22 @@ struct SkipConcat[Inner: Module](Module):
     comptime OINNER = Self.Inner.OUT_DIM
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.Inner.IN_DIMS[0])
     comptime OUT_DIM = Self.Inner.IN_DIMS[0] + Self.Inner.OUT_DIM
+    # The skip is a column concat (no dtype change) — activation dtype is just
+    # the wrapped module's.
+    comptime ACT_DT = Self.Inner.ACT_DT
 
     var inner: Self.Inner
-    var inner_out: Tensor
-    var go_pass: Tensor  # grad_output[:, :IN]   (bwd)
-    var go_inner: Tensor  # grad_output[:, IN:]   (bwd, fed to inner)
-    var gi_inner: Tensor  # inner's grad-input
+    var inner_out: TensorImpl[Self.ACT_DT]
+    var go_pass: TensorImpl[Self.ACT_DT]  # grad_output[:, :IN]   (bwd)
+    var go_inner: TensorImpl[Self.ACT_DT]  # grad_output[:, IN:]   (bwd, fed to inner)
+    var gi_inner: TensorImpl[Self.ACT_DT]  # inner's grad-input
 
     def __init__(out self):
         self.inner = Self.Inner()
-        self.inner_out = Tensor()
-        self.go_pass = Tensor()
-        self.go_inner = Tensor()
-        self.gi_inner = Tensor()
+        self.inner_out = TensorImpl[Self.ACT_DT]()
+        self.go_pass = TensorImpl[Self.ACT_DT]()
+        self.go_inner = TensorImpl[Self.ACT_DT]()
+        self.gi_inner = TensorImpl[Self.ACT_DT]()
 
     @staticmethod
     def make[
@@ -60,13 +67,19 @@ struct SkipConcat[Inner: Module](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[1, o],
-        mut out: Tensor,
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        # Buffers are typed at Self.ACT_DT; bridge to the inner child's
+        # (ARITY, ACT_DT) via `child_refs` (input pack) and `rebind` (mut output).
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
         ref in0 = inputs[0]
         self.inner.forward[target, B, POLICY=POLICY](
-            TensorRefs[Self.Inner.ARITY](in0), self.inner_out, ctx
+            child_refs[cn, ci](in0),
+            rebind[TensorImpl[ci]](self.inner_out),
+            ctx,
         )
         comptime if target == "cpu":
             out.ensure(B * Self.OUT_DIM)
@@ -81,7 +94,9 @@ struct SkipConcat[Inner: Module](Module):
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.OUT_DIM)
-            c.enqueue_function[_par_concat_kernel[B, Self.IN, Self.OINNER]](
+            c.enqueue_function[
+                _par_concat_kernel[B, Self.IN, Self.OINNER, Self.ACT_DT]
+            ](
                 in0.lt["gpu", Layout.row_major(B, Self.IN)](),
                 self.inner_out.lt["gpu", Layout.row_major(B, Self.OINNER)](),
                 out.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
@@ -94,11 +109,13 @@ struct SkipConcat[Inner: Module](Module):
         POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        forward_input: TensorRefs[1, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
         ref fin = forward_input[0]
         ref gin = grad_inputs[0]
         # split grad_output → go_pass [:IN], go_inner [IN:]
@@ -119,17 +136,21 @@ struct SkipConcat[Inner: Module](Module):
             var c = ctx.value()
             self.go_pass.ensure_gpu(c, B * Self.IN)
             self.go_inner.ensure_gpu(c, B * Self.OINNER)
-            c.enqueue_function[_par_split_kernel[B, Self.IN, Self.OINNER]](
+            c.enqueue_function[
+                _par_split_kernel[B, Self.IN, Self.OINNER, Self.ACT_DT]
+            ](
                 grad_output.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
                 self.go_pass.lt["gpu", Layout.row_major(B, Self.IN)](),
                 self.go_inner.lt["gpu", Layout.row_major(B, Self.OINNER)](),
                 grid_dim=(B * Self.OUT_DIM + TPB - 1) // TPB,
                 block_dim=TPB,
             )
+        # inner's vjp: gradient flows go_inner → gi_inner at the inner child's
+        # (ARITY, ACT_DT) — bridge fin/go_inner/gi_inner like forward.
         self.inner.vjp[target, B, POLICY=POLICY](
-            TensorRefs[Self.Inner.ARITY](fin),
-            self.go_inner,
-            TensorRefs[Self.Inner.ARITY](self.gi_inner),
+            child_refs[cn, ci](fin),
+            rebind[TensorImpl[ci]](self.go_inner),
+            child_refs[cn, ci](self.gi_inner),
             ctx,
         )
         # grad_input = go_pass + gi_inner
@@ -150,7 +171,7 @@ struct SkipConcat[Inner: Module](Module):
         else:
             var c = ctx.value()
             gin.ensure_gpu(c, NIN)
-            c.enqueue_function[_resid_add_kernel[NIN]](
+            c.enqueue_function[_resid_add_kernel[NIN, Self.ACT_DT]](
                 self.go_pass.lt["gpu", Layout.row_major(NIN)](),
                 self.gi_inner.lt["gpu", Layout.row_major(NIN)](),
                 gin.lt["gpu", Layout.row_major(NIN)](),

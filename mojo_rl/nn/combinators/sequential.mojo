@@ -11,8 +11,8 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer
-from ..core.tensor import Tensor
-from ..core.tensor_refs import TensorRefs
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs, child_refs
 from ..core.tensor_pack import TensorPack
 from ..core.module import Module
 from ..core.param import ParamVisitor
@@ -26,6 +26,10 @@ struct Sequential[*MODULES: Module](Module):
     comptime N = Self.MODULES.size
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.MODULES[0].IN_DIMS[0])
     comptime OUT_DIM = Self.MODULES[Self.N - 1].OUT_DIM
+    # All children share one activation dtype (asserted in __init__); the chain's
+    # ACT_DT is the last child's (= the chain output dtype). Inter-module buffers
+    # are stored at this dtype.
+    comptime ACT_DT = Self.MODULES[Self.N - 1].ACT_DT
 
     @staticmethod
     def display_label() -> String:
@@ -47,8 +51,8 @@ struct Sequential[*MODULES: Module](Module):
         return steps^
 
     var children: Tuple[*Self.MODULES]
-    var act: TensorPack[Self.N]
-    var grd: TensorPack[Self.N]
+    var act: TensorPack[Self.N, Self.ACT_DT]
+    var grd: TensorPack[Self.N, Self.ACT_DT]
 
     def __init__(out self):
         comptime assert Self.N >= 2, "Sequential slice requires N >= 2"
@@ -60,9 +64,13 @@ struct Sequential[*MODULES: Module](Module):
             comptime assert (
                 Self.MODULES[i].OUT_DIM == Self.MODULES[i + 1].IN_DIMS[0]
             ), "Sequential: adjacent child dims must match"
+        comptime for i in range(Self.N):
+            comptime assert (
+                Self.MODULES[i].ACT_DT == Self.ACT_DT
+            ), "Sequential chains children of ONE activation dtype (ACT_DT)"
         self.children = Tuple[*Self.MODULES]()
-        self.act = TensorPack[Self.N]()
-        self.grd = TensorPack[Self.N]()
+        self.act = TensorPack[Self.N, Self.ACT_DT]()
+        self.grd = TensorPack[Self.N, Self.ACT_DT]()
 
     @staticmethod
     def make[
@@ -77,29 +85,33 @@ struct Sequential[*MODULES: Module](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[1, o],
-        mut out: Tensor,
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        # Buffers are typed at Self.ACT_DT; each child's forward wants the CHILD's
+        # ACT_DT (== Self.ACT_DT, asserted, but distinct to the checker). Bridge:
+        # `child_refs[cn, ci]` for the input pack, `rebind[TensorImpl[ci]]` for the
+        # mut output buffer (sound — only pointers are reinterpreted).
         comptime for i in range(Self.N):
+            comptime ci = Self.MODULES[i].ACT_DT
+            comptime cn = Self.MODULES[i].ARITY
             comptime if i == 0:
-                self.children[0].forward[target, B, POLICY=POLICY](
-                    TensorRefs[Self.MODULES[0].ARITY](inputs[0]),
-                    self.act[0],
+                self.children[i].forward[target, B, POLICY=POLICY](
+                    child_refs[cn, ci](inputs[0]),
+                    rebind[TensorImpl[ci]](self.act[0]),
                     ctx,
                 )
             elif i == Self.N - 1:
-                self.children[Self.N - 1].forward[target, B, POLICY=POLICY](
-                    TensorRefs[Self.MODULES[Self.N - 1].ARITY](
-                        self.act[Self.N - 2]
-                    ),
-                    out,
+                self.children[i].forward[target, B, POLICY=POLICY](
+                    child_refs[cn, ci](self.act[Self.N - 2]),
+                    rebind[TensorImpl[ci]](out),
                     ctx,
                 )
             else:
                 self.children[i].forward[target, B, POLICY=POLICY](
-                    TensorRefs[Self.MODULES[i].ARITY](self.act[i - 1]),
-                    self.act[i],
+                    child_refs[cn, ci](self.act[i - 1]),
+                    rebind[TensorImpl[ci]](self.act[i]),
                     ctx,
                 )
 
@@ -108,36 +120,34 @@ struct Sequential[*MODULES: Module](Module):
         POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        forward_input: TensorRefs[1, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime for j in range(Self.N):
             comptime i = Self.N - 1 - j
+            comptime ci = Self.MODULES[i].ACT_DT
+            comptime cn = Self.MODULES[i].ARITY
             comptime if i == Self.N - 1:
-                self.children[Self.N - 1].vjp[target, B, POLICY=POLICY](
-                    TensorRefs[Self.MODULES[Self.N - 1].ARITY](
-                        self.act[Self.N - 2]
-                    ),
-                    grad_output,
-                    TensorRefs[Self.MODULES[Self.N - 1].ARITY](
-                        self.grd[Self.N - 2]
-                    ),
+                self.children[i].vjp[target, B, POLICY=POLICY](
+                    child_refs[cn, ci](self.act[Self.N - 2]),
+                    rebind[TensorImpl[ci]](grad_output),
+                    child_refs[cn, ci](self.grd[Self.N - 2]),
                     ctx,
                 )
             elif i == 0:
-                self.children[0].vjp[target, B, POLICY=POLICY](
-                    TensorRefs[Self.MODULES[0].ARITY](forward_input[0]),
-                    self.grd[0],
-                    TensorRefs[Self.MODULES[0].ARITY](grad_inputs[0]),
+                self.children[i].vjp[target, B, POLICY=POLICY](
+                    child_refs[cn, ci](forward_input[0]),
+                    rebind[TensorImpl[ci]](self.grd[0]),
+                    child_refs[cn, ci](grad_inputs[0]),
                     ctx,
                 )
             else:
                 self.children[i].vjp[target, B, POLICY=POLICY](
-                    TensorRefs[Self.MODULES[i].ARITY](self.act[i - 1]),
-                    self.grd[i],
-                    TensorRefs[Self.MODULES[i].ARITY](self.grd[i - 1]),
+                    child_refs[cn, ci](self.act[i - 1]),
+                    rebind[TensorImpl[ci]](self.grd[i]),
+                    child_refs[cn, ci](self.grd[i - 1]),
                     ctx,
                 )
 

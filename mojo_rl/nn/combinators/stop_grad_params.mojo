@@ -18,7 +18,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer
-from ..core.tensor import Tensor
+from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
@@ -67,6 +67,8 @@ struct StopGradParams[Inner: Module](Module):
     comptime ARITY = Self.Inner.ARITY
     comptime IN_DIMS = Self.Inner.IN_DIMS
     comptime OUT_DIM = Self.Inner.OUT_DIM
+    # Passthrough wrapper — activation dtype is the wrapped child's.
+    comptime ACT_DT = Self.Inner.ACT_DT
 
     var inner: Self.Inner
 
@@ -84,23 +86,38 @@ struct StopGradParams[Inner: Module](Module):
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
-        mut self, inputs: TensorRefs[Self.ARITY, o], mut out: Tensor,
+        mut self, inputs: TensorRefs[Self.ARITY, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        self.inner.forward[target, B, POLICY=POLICY](inputs, out, ctx)
+        # Self.ARITY/ACT_DT == Inner's (definitionally), but distinct to the
+        # checker — rebind the whole pack + the mut output to the child types.
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
+        self.inner.forward[target, B, POLICY=POLICY](
+            rebind[TensorRefs[cn, o, ci]](inputs),
+            rebind[TensorImpl[ci]](out),
+            ctx,
+        )
 
     def vjp[
         target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP
     ](
-        mut self, forward_input: TensorRefs[Self.ARITY, ofi],
-        mut grad_output: Tensor, grad_inputs: TensorRefs[Self.ARITY, ogi],
+        mut self, forward_input: TensorRefs[Self.ARITY, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[Self.ARITY, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
         var stash = _GradStash()
         self.inner.for_each_param[target](stash, ctx)  # snapshot
         self.inner.vjp[target, B, POLICY=POLICY](
-            forward_input, grad_output, grad_inputs, ctx
+            rebind[TensorRefs[cn, ofi, ci]](forward_input),
+            rebind[TensorImpl[ci]](grad_output),
+            rebind[TensorRefs[cn, ogi, ci]](grad_inputs),
+            ctx,
         )
         stash.restoring = True
         stash.idx = 0

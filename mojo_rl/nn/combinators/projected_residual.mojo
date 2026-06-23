@@ -17,8 +17,8 @@ from layout import Layout
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
 from ..core.initializer import Initializer
-from ..core.tensor import Tensor
-from ..core.tensor_refs import TensorRefs
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs, child_refs
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
@@ -31,13 +31,16 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.Inner.IN_DIMS[0])
     comptime OUT_DIM = Self.Inner.OUT_DIM
     comptime IN = Self.Inner.IN_DIMS[0]
+    # Both branches share one activation dtype (asserted in __init__); the sum is
+    # element-wise so it's the same dtype on output.
+    comptime ACT_DT = Self.Inner.ACT_DT
 
     var inner: Self.Inner
     var skip: Self.Skip
-    var inner_out: Tensor
-    var skip_out: Tensor
-    var gi_inner: Tensor
-    var gi_skip: Tensor
+    var inner_out: TensorImpl[Self.ACT_DT]
+    var skip_out: TensorImpl[Self.ACT_DT]
+    var gi_inner: TensorImpl[Self.ACT_DT]
+    var gi_skip: TensorImpl[Self.ACT_DT]
 
     def __init__(out self):
         comptime assert (
@@ -46,12 +49,15 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         comptime assert (
             Self.Inner.OUT_DIM == Self.Skip.OUT_DIM
         ), "ProjectedResidual requires Inner.OUT_DIM == Skip.OUT_DIM"
+        comptime assert (
+            Self.Skip.ACT_DT == Self.ACT_DT
+        ), "ProjectedResidual requires Inner.ACT_DT == Skip.ACT_DT"
         self.inner = Self.Inner()
         self.skip = Self.Skip()
-        self.inner_out = Tensor()
-        self.skip_out = Tensor()
-        self.gi_inner = Tensor()
-        self.gi_skip = Tensor()
+        self.inner_out = TensorImpl[Self.ACT_DT]()
+        self.skip_out = TensorImpl[Self.ACT_DT]()
+        self.gi_inner = TensorImpl[Self.ACT_DT]()
+        self.gi_skip = TensorImpl[Self.ACT_DT]()
 
     @staticmethod
     def make[
@@ -66,16 +72,22 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[1, o],
-        mut out: Tensor,
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        # Bridge each unary branch input via `child_refs`; the branch output
+        # buffers are typed at Self.ACT_DT, rebound to the child's (ci).
+        comptime ii = Self.Inner.ACT_DT
+        comptime in_ = Self.Inner.ARITY
+        comptime si = Self.Skip.ACT_DT
+        comptime sn = Self.Skip.ARITY
         ref in0 = inputs[0]
         self.inner.forward[target, B, POLICY=POLICY](
-            TensorRefs[Self.Inner.ARITY](in0), self.inner_out, ctx
+            child_refs[in_, ii](in0), rebind[TensorImpl[ii]](self.inner_out), ctx
         )
         self.skip.forward[target, B, POLICY=POLICY](
-            TensorRefs[Self.Skip.ARITY](in0), self.skip_out, ctx
+            child_refs[sn, si](in0), rebind[TensorImpl[si]](self.skip_out), ctx
         )
         comptime N = B * Self.OUT_DIM
         comptime if target == "cpu":
@@ -94,7 +106,7 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         else:
             var c = ctx.value()
             out.ensure_gpu(c, N)
-            c.enqueue_function[_resid_add_kernel[N]](
+            c.enqueue_function[_resid_add_kernel[N, Self.ACT_DT]](
                 self.inner_out.lt["gpu", Layout.row_major(N)](),
                 self.skip_out.lt["gpu", Layout.row_major(N)](),
                 out.lt["gpu", Layout.row_major(N)](),
@@ -107,23 +119,27 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        forward_input: TensorRefs[1, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        comptime ii = Self.Inner.ACT_DT
+        comptime in_ = Self.Inner.ARITY
+        comptime si = Self.Skip.ACT_DT
+        comptime sn = Self.Skip.ARITY
         ref fin = forward_input[0]
         ref gin = grad_inputs[0]
         self.inner.vjp[target, B, POLICY=POLICY](
-            TensorRefs[Self.Inner.ARITY](fin),
-            grad_output,
-            TensorRefs[Self.Inner.ARITY](self.gi_inner),
+            child_refs[in_, ii](fin),
+            rebind[TensorImpl[ii]](grad_output),
+            child_refs[in_, ii](self.gi_inner),
             ctx,
         )
         self.skip.vjp[target, B, POLICY=POLICY](
-            TensorRefs[Self.Skip.ARITY](fin),
-            grad_output,
-            TensorRefs[Self.Skip.ARITY](self.gi_skip),
+            child_refs[sn, si](fin),
+            rebind[TensorImpl[si]](grad_output),
+            child_refs[sn, si](self.gi_skip),
             ctx,
         )
         comptime NIN = B * Self.IN
@@ -143,7 +159,7 @@ struct ProjectedResidual[Inner: Module, Skip: Module](Module):
         else:
             var c = ctx.value()
             gin.ensure_gpu(c, NIN)
-            c.enqueue_function[_resid_add_kernel[NIN]](
+            c.enqueue_function[_resid_add_kernel[NIN, Self.ACT_DT]](
                 self.gi_inner.lt["gpu", Layout.row_major(NIN)](),
                 self.gi_skip.lt["gpu", Layout.row_major(NIN)](),
                 gin.lt["gpu", Layout.row_major(NIN)](),

@@ -50,7 +50,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from ..core.module import Module
-from ..core.tensor import Tensor
+from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.param import ParamVisitor
 from ..core.initializer import Initializer
@@ -128,6 +128,9 @@ struct InputSlot[slot_name: StaticString, DIM_: Int](GraphDecl):
     comptime IN_DIMS = InlineArray[Int, 0]()
     comptime IN_NAMES = InlineArray[StaticString, 0]()
     comptime OUT_DIM = Self.DIM_
+    # No wrapped op — the input slot carries no activation dtype of its own;
+    # default to DT. forward/vjp never run (KIND==0 is skipped).
+    comptime ACT_DT = DT
 
     @staticmethod
     def display_label_via() -> String:
@@ -153,8 +156,8 @@ struct InputSlot[slot_name: StaticString, DIM_: Int](GraphDecl):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        inputs: TensorRefs[Self.ARITY, o],
-        mut out: Tensor,
+        inputs: TensorRefs[Self.ARITY, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         raise Error(
@@ -170,9 +173,9 @@ struct InputSlot[slot_name: StaticString, DIM_: Int](GraphDecl):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[Self.ARITY, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        forward_input: TensorRefs[Self.ARITY, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[Self.ARITY, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         raise Error(
@@ -198,6 +201,8 @@ struct Node[
     comptime IN_DIMS = Self.Op.IN_DIMS
     comptime OUT_DIM = Self.Op.OUT_DIM
     comptime IN_NAMES = names_to_inline_array[Self.ARITY, *Self.in_names]()
+    # Activation dtype is the owned op's.
+    comptime ACT_DT = Self.Op.ACT_DT
 
     @staticmethod
     def display_label_via() -> String:
@@ -230,11 +235,19 @@ struct Node[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        inputs: TensorRefs[Self.ARITY, o],
-        mut out: Tensor,
+        inputs: TensorRefs[Self.ARITY, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        self.op.forward[target, B, o, POLICY=POLICY](inputs, out, ctx)
+        # Self.ARITY/ACT_DT == Op's (definitionally), distinct to the checker —
+        # rebind the whole pack + the mut output to the op's child types.
+        comptime ci = Self.Op.ACT_DT
+        comptime cn = Self.Op.ARITY
+        self.op.forward[target, B, o, POLICY=POLICY](
+            rebind[TensorRefs[cn, o, ci]](inputs),
+            rebind[TensorImpl[ci]](out),
+            ctx,
+        )
 
     def vjp[
         target: StaticString,
@@ -244,13 +257,18 @@ struct Node[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[Self.ARITY, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        forward_input: TensorRefs[Self.ARITY, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[Self.ARITY, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        comptime ci = Self.Op.ACT_DT
+        comptime cn = Self.Op.ARITY
         self.op.vjp[target, B, ofi, ogi, POLICY=POLICY](
-            forward_input, grad_output, grad_inputs, ctx
+            rebind[TensorRefs[cn, ofi, ci]](forward_input),
+            rebind[TensorImpl[ci]](grad_output),
+            rebind[TensorRefs[cn, ogi, ci]](grad_inputs),
+            ctx,
         )
 
     def for_each_param[
@@ -315,6 +333,9 @@ struct ExternalNode[
     comptime IN_DIMS = Self.M.IN_DIMS
     comptime OUT_DIM = Self.M.OUT_DIM
     comptime IN_NAMES = names_to_inline_array[Self.ARITY, *Self.in_names]()
+    # Activation dtype mirrors the threaded module's (for pool sizing / edge
+    # typing); forward/vjp raise — the graph dispatches to the external.
+    comptime ACT_DT = Self.M.ACT_DT
 
     @staticmethod
     def display_label_via() -> String:
@@ -342,8 +363,8 @@ struct ExternalNode[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        inputs: TensorRefs[Self.ARITY, o],
-        mut out: Tensor,
+        inputs: TensorRefs[Self.ARITY, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         raise Error(
@@ -359,9 +380,9 @@ struct ExternalNode[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[Self.ARITY, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        forward_input: TensorRefs[Self.ARITY, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[Self.ARITY, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         raise Error(

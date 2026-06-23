@@ -13,7 +13,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from .initializer import Initializer
-from .tensor import Tensor
+from .tensor import Tensor, TensorImpl
 from .tensor_refs import TensorRefs
 from .param import ParamVisitor
 from .walkers import for_each_param_auto, zero_grad_auto
@@ -26,6 +26,13 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
     comptime ARITY: Int
     comptime IN_DIMS: InlineArray[Int, Self.ARITY]
     comptime OUT_DIM: Int
+    # Activation-flow dtype. DEFAULTS to `DT` (fp32) so every existing leaf —
+    # which never declares it — is an fp32 module unchanged (`TensorImpl[DT]` IS
+    # `Tensor`, `TensorRefs[N,o,DT]` IS `TensorRefs[N,o]`). bf16-flow modules set
+    # `comptime ACT_DT = bfloat16`; combinators derive theirs from their children
+    # and type their inter-module buffers `TensorImpl[ACT_DT]` (activations STORED
+    # at the flow dtype — the AMP memory win). [[POLICY is being subsumed by this]]
+    comptime ACT_DT: DType = DT
 
     @staticmethod
     def make[
@@ -42,13 +49,15 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        inputs: TensorRefs[Self.ARITY, o],
-        mut out: Tensor,
+        inputs: TensorRefs[Self.ARITY, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        """`POLICY` (trailing, default NoAMP, specified by keyword at AMP call
-        sites) is the mixed-precision policy threaded Trainer→combinators→leaves;
-        matmul leaves comptime-branch on `POLICY.compute_dtype`."""
+        """Activations (`inputs`, `out`) are stored at `Self.ACT_DT` — fp32 by
+        default (then `TensorImpl[Self.ACT_DT]` IS `Tensor`, unchanged), bf16 for
+        a bf16-flow module. `POLICY` is the legacy mixed-precision policy (being
+        subsumed by `ACT_DT`); matmul leaves still comptime-branch on it for the
+        cast-around path until the per-leaf bf16-flow migration."""
         ...
 
     def vjp[
@@ -56,9 +65,9 @@ trait Module(Defaultable & Movable & ImplicitlyDeletable):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[Self.ARITY, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        forward_input: TensorRefs[Self.ARITY, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[Self.ARITY, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ...

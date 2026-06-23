@@ -15,8 +15,8 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer
-from ..core.tensor import Tensor
-from ..core.tensor_refs import TensorRefs
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs, child_refs
 from ..core.module import Module
 from ..core.param import ParamVisitor
 from ..core.walkers import join_name
@@ -29,6 +29,8 @@ struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
         fill=Self.SEQ_LEN * Self.Inner.IN_DIMS[0]
     )
     comptime OUT_DIM = Self.SEQ_LEN * Self.Inner.OUT_DIM
+    # Reshape-only wrapper — activation dtype is the wrapped child's.
+    comptime ACT_DT = Self.Inner.ACT_DT
 
     var inner: Self.Inner
 
@@ -48,12 +50,17 @@ struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[1, o],
-        mut out: Tensor,
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        # Buffers are typed at Self.ACT_DT (== Inner.ACT_DT, distinct to the
+        # checker); bridge the input pack with `child_refs` and the mut output
+        # with `rebind[TensorImpl[ci]]`.
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
         self.inner.forward[target, B * Self.SEQ_LEN, POLICY=POLICY](
-            TensorRefs[Self.Inner.ARITY](inputs[0]), out, ctx
+            child_refs[cn, ci](inputs[0]), rebind[TensorImpl[ci]](out), ctx
         )
 
     def vjp[
@@ -61,15 +68,17 @@ struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
         POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        forward_input: TensorRefs[1, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
         self.inner.vjp[target, B * Self.SEQ_LEN, POLICY=POLICY](
-            TensorRefs[Self.Inner.ARITY](forward_input[0]),
-            grad_output,
-            TensorRefs[Self.Inner.ARITY](grad_inputs[0]),
+            child_refs[cn, ci](forward_input[0]),
+            rebind[TensorImpl[ci]](grad_output),
+            child_refs[cn, ci](grad_inputs[0]),
             ctx,
         )
 
