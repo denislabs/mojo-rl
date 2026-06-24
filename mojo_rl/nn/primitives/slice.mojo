@@ -17,7 +17,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
-from ..core.tensor import Tensor
+from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
@@ -27,24 +27,24 @@ from ..core.amp import AMPPolicy, NoAMP
 
 # ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _slice_forward_kernel[
-    BATCH: Int, IN: Int, START: Int, OUT: Int,
+    BATCH: Int, IN: Int, START: Int, OUT: Int, ADT: DType = DT,
 ](
-    input: LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
+    input: LayoutTensor[ADT, Layout.row_major(BATCH, IN), MutAnyOrigin],
+    output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     var total = BATCH * OUT
     if idx < total:
         var b = idx // OUT
         var j = idx % OUT
-        output[b, j] = rebind[Scalar[DT]](input[b, START + j])
+        output[b, j] = rebind[Scalar[ADT]](input[b, START + j])
 
 
 def _slice_backward_kernel[
-    BATCH: Int, IN: Int, START: Int, OUT: Int,
+    BATCH: Int, IN: Int, START: Int, OUT: Int, ADT: DType = DT,
 ](
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin],
+    grad_output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
+    grad_input: LayoutTensor[ADT, Layout.row_major(BATCH, IN), MutAnyOrigin],
 ):
     # Zero the whole grad_input and scatter the slice in. One thread
     # per [b, k] over the FULL input shape — k in [START, START+OUT)
@@ -54,17 +54,21 @@ def _slice_backward_kernel[
     if idx < total:
         var b = idx // IN
         var k = idx % IN
-        var zero: Scalar[DT] = 0.0
+        var zero: Scalar[ADT] = 0.0
         if k >= START and k < START + OUT:
-            grad_input[b, k] = rebind[Scalar[DT]](grad_output[b, k - START])
+            grad_input[b, k] = rebind[Scalar[ADT]](grad_output[b, k - START])
         else:
             grad_input[b, k] = zero
 
 
-struct Slice[IN_: Int, START_: Int, END_: Int](Module):
+struct Slice[IN_: Int, START_: Int, END_: Int, ADT: DType = DT](Module):
     comptime ARITY: Int = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_)
     comptime OUT_DIM = Self.END_ - Self.START_
+    # Activation-flow dtype (AMP). Slice is dtype-TRANSPARENT — a pure copy +
+    # zero-fill with no math/cast — so it carries ACT_DT through unchanged.
+    # ACT_DT == DT (default) → byte-identical to the fp32 path.
+    comptime ACT_DT = Self.ADT
 
     @staticmethod
     def display_label() -> String:
@@ -88,8 +92,8 @@ struct Slice[IN_: Int, START_: Int, END_: Int](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[1, o],
-        mut out: Tensor,
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref in0 = inputs[0]
@@ -105,7 +109,9 @@ struct Slice[IN_: Int, START_: Int, END_: Int](Module):
             out.ensure_gpu(c, B * Self.OUT_DIM)
             comptime n_blocks = (B * Self.OUT_DIM + TPB - 1) // TPB
             c.enqueue_function[
-                _slice_forward_kernel[B, Self.IN_, Self.START_, Self.OUT_DIM]
+                _slice_forward_kernel[
+                    B, Self.IN_, Self.START_, Self.OUT_DIM, Self.ACT_DT
+                ]
             ](
                 in0.lt["gpu", Layout.row_major(B, Self.IN_)](),
                 out.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
@@ -121,9 +127,9 @@ struct Slice[IN_: Int, START_: Int, END_: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[1, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref gin = grad_inputs[0]
@@ -137,7 +143,7 @@ struct Slice[IN_: Int, START_: Int, END_: Int](Module):
             # leaves the rest at 0 so the scatter-add sums correctly.
             for b in range(B):
                 for k in range(Self.IN_):
-                    gi_t[b, k] = Scalar[DT](0.0)
+                    gi_t[b, k] = Scalar[Self.ACT_DT](0.0)
             for b in range(B):
                 for j in range(Self.OUT_DIM):
                     gi_t[b, Self.START_ + j] = go_t[b, j]
@@ -146,7 +152,9 @@ struct Slice[IN_: Int, START_: Int, END_: Int](Module):
             gin.ensure_gpu(c, B * Self.IN_)
             comptime n_blocks = (B * Self.IN_ + TPB - 1) // TPB
             c.enqueue_function[
-                _slice_backward_kernel[B, Self.IN_, Self.START_, Self.OUT_DIM]
+                _slice_backward_kernel[
+                    B, Self.IN_, Self.START_, Self.OUT_DIM, Self.ACT_DT
+                ]
             ](
                 grad_output.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
                 gin.lt["gpu", Layout.row_major(B, Self.IN_)](),

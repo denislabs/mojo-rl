@@ -21,7 +21,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from ..core.tensor import Tensor
+from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
@@ -53,39 +53,43 @@ def _build_in_dims[*DIMS: Int]() -> InlineArray[Int, DIMS.size]:
 
 # ── per-slab copy kernels (one launch per input; legacy-style) ──────────
 def _concat_copy_in_kernel[
-    BATCH: Int, SRC_DIM: Int, OUT_DIM: Int, DST_OFF: Int
+    BATCH: Int, SRC_DIM: Int, OUT_DIM: Int, DST_OFF: Int, ADT: DType = DT
 ](
-    src: LayoutTensor[DT, Layout.row_major(BATCH, SRC_DIM), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(BATCH, SRC_DIM), MutAnyOrigin],
+    output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     var total = BATCH * SRC_DIM
     if idx < total:
         var b = idx // SRC_DIM
         var d = idx % SRC_DIM
-        output[b, DST_OFF + d] = rebind[Scalar[DT]](src[b, d])
+        output[b, DST_OFF + d] = rebind[Scalar[ADT]](src[b, d])
 
 
 def _concat_copy_out_kernel[
-    BATCH: Int, DST_DIM: Int, OUT_DIM: Int, SRC_OFF: Int
+    BATCH: Int, DST_DIM: Int, OUT_DIM: Int, SRC_OFF: Int, ADT: DType = DT
 ](
     grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ADT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
     ],
-    grad_in: LayoutTensor[DT, Layout.row_major(BATCH, DST_DIM), MutAnyOrigin],
+    grad_in: LayoutTensor[ADT, Layout.row_major(BATCH, DST_DIM), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     var total = BATCH * DST_DIM
     if idx < total:
         var b = idx // DST_DIM
         var d = idx % DST_DIM
-        grad_in[b, d] = rebind[Scalar[DT]](grad_output[b, SRC_OFF + d])
+        grad_in[b, d] = rebind[Scalar[ADT]](grad_output[b, SRC_OFF + d])
 
 
-struct Concat[*DIMS: Int](Module):
+struct Concat[*DIMS: Int, ADT: DType = DT](Module):
     comptime ARITY = Self.DIMS.size
     comptime IN_DIMS = _build_in_dims[*Self.DIMS]()
     comptime OUT_DIM = _total_dim[*Self.DIMS]()
+    # Activation-flow dtype (AMP). Concat is dtype-TRANSPARENT (pure slab copy /
+    # slice-split grad) → carries ACT_DT through unchanged. ACT_DT == DT
+    # (default, keyword param after the variadic *DIMS) → byte-identical fp32.
+    comptime ACT_DT = Self.ADT
 
     @staticmethod
     def display_label() -> String:
@@ -104,8 +108,8 @@ struct Concat[*DIMS: Int](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[Self.ARITY, o],
-        mut out: Tensor,
+        inputs: TensorRefs[Self.ARITY, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime OUT = Self.OUT_DIM
@@ -127,7 +131,7 @@ struct Concat[*DIMS: Int](Module):
                 comptime nblk = (B * D + TPB - 1) // TPB
                 ref in_i = inputs[i]
                 c.enqueue_function[
-                    _concat_copy_in_kernel[B, D, OUT, OFF]
+                    _concat_copy_in_kernel[B, D, OUT, OFF, Self.ACT_DT]
                 ](
                     in_i.lt["gpu", Layout.row_major(B, D)](),
                     out.lt["gpu", Layout.row_major(B, OUT)](),
@@ -143,9 +147,9 @@ struct Concat[*DIMS: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[Self.ARITY, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        forward_input: TensorRefs[Self.ARITY, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[Self.ARITY, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime OUT = Self.OUT_DIM
@@ -167,7 +171,7 @@ struct Concat[*DIMS: Int](Module):
                 ref gi = grad_inputs[i]
                 gi.ensure_gpu(c, B * D)
                 c.enqueue_function[
-                    _concat_copy_out_kernel[B, D, OUT, OFF]
+                    _concat_copy_out_kernel[B, D, OUT, OFF, Self.ACT_DT]
                 ](
                     grad_output.lt["gpu", Layout.row_major(B, OUT)](),
                     gi.lt["gpu", Layout.row_major(B, D)](),

@@ -28,11 +28,11 @@ from ..core.amp import AMPPolicy, NoAMP
 
 
 def _add_fwd_kernel[
-    M: Int
+    M: Int, ADT: DType = DT
 ](
-    a: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-    b: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-    o: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
+    a: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
+    b: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
+    o: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
 ):
     var i = Int(global_idx.x)
     if i < M:
@@ -40,10 +40,10 @@ def _add_fwd_kernel[
 
 
 def _copy_kernel[
-    M: Int
+    M: Int, ADT: DType = DT
 ](
-    src: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(M), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
+    dst: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
 ):
     var i = Int(global_idx.x)
     if i < M:
@@ -51,10 +51,14 @@ def _copy_kernel[
 
 
 # ── Add (binary) ───────────────────────────────────────────────────────
-struct Add[DIM_: Int](Module):
+struct Add[DIM_: Int, ADT: DType = DT](Module):
     comptime ARITY = 2
     comptime IN_DIMS = InlineArray[Int, 2](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
+    # Activation-flow dtype (AMP). Add is dtype-TRANSPARENT (elementwise sum,
+    # grad = copy to both inputs) → carries ACT_DT through unchanged. ACT_DT ==
+    # DT (default) → byte-identical to the fp32 path.
+    comptime ACT_DT = Self.ADT
 
     def __init__(out self):
         pass
@@ -69,8 +73,8 @@ struct Add[DIM_: Int](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[2, o],
-        mut out: Tensor,
+        inputs: TensorRefs[2, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime M = B * Self.DIM_
@@ -89,7 +93,7 @@ struct Add[DIM_: Int](Module):
             var al = a0.lt["gpu", Layout.row_major(M)]()
             var bl = a1.lt["gpu", Layout.row_major(M)]()
             var ol = out.lt["gpu", Layout.row_major(M)]()
-            c.enqueue_function[_add_fwd_kernel[M]](
+            c.enqueue_function[_add_fwd_kernel[M, Self.ACT_DT]](
                 al, bl, ol, grid_dim=(M + 255) // 256, block_dim=256
             )
 
@@ -101,9 +105,9 @@ struct Add[DIM_: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[2, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[2, ogi],
+        forward_input: TensorRefs[2, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[2, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime M = B * Self.DIM_
@@ -126,10 +130,10 @@ struct Add[DIM_: Int](Module):
             var gi0l = g0.lt["gpu", Layout.row_major(M)]()
             var gi1l = g1.lt["gpu", Layout.row_major(M)]()
             comptime nblk = (M + 255) // 256
-            c.enqueue_function[_copy_kernel[M]](
+            c.enqueue_function[_copy_kernel[M, Self.ACT_DT]](
                 gol, gi0l, grid_dim=nblk, block_dim=256
             )
-            c.enqueue_function[_copy_kernel[M]](
+            c.enqueue_function[_copy_kernel[M, Self.ACT_DT]](
                 gol, gi1l, grid_dim=nblk, block_dim=256
             )
 
