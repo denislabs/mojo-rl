@@ -669,7 +669,8 @@ struct GumbelGPUMCTS[
         ctx.enqueue_function[run_scatter](
             rh_flat,
             hs_flat,
-            grid_dim=(Self.ENV_BLOCKS,),
+            # parallelized over env×LATENT (B1)
+            grid_dim=((Self.N_ENVS * Self.LATENT + TPB - 1) // TPB,),
             block_dim=(TPB,),
         )
 
@@ -1274,7 +1275,8 @@ struct GumbelGPUMCTS[
         ctx.enqueue_function[run_copy](
             pred_in_flat,
             dyn_out_flat,
-            grid_dim=(Self.ENV_BLOCKS,),
+            # parallelized over env×LATENT (B1)
+            grid_dim=((Self.N_ENVS * Self.LATENT + TPB - 1) // TPB,),
             block_dim=(TPB,),
         )
 
