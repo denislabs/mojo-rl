@@ -32,7 +32,9 @@ from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.muzero.nets_spatial import (
-    MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
+    MZRepNetC4Spatial,
+    MZDynNetC4Spatial,
+    MZPredNetC4Spatial,
 )
 from mojo_rl.deep_agents.muzero.selfplay_arena_gumbel_2p import (
     run_muzero_selfplay_arena_gumbel_2p,
@@ -48,7 +50,9 @@ from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
 
 def main() raises:
-    print("=== Gumbel MuZero on Connect Four — SPATIAL latent (deep_agents) ===")
+    print(
+        "=== Gumbel MuZero on Connect Four — SPATIAL latent (deep_agents) ==="
+    )
     print()
 
     var env_vars = load_dotenv()
@@ -68,12 +72,12 @@ def main() raises:
 
     comptime OBS = 126
     comptime ACT = 7
-    comptime CH = 64          # latent channels → LATENT = CH*6*7 = 2688
-    comptime NB = 3           # residual blocks per net (muzero-general `blocks`)
+    comptime CH = 64  # latent channels → LATENT = CH*6*7 = 2688
+    comptime NB = 3  # residual blocks per net (muzero-general `blocks`)
     comptime HH = 6
     comptime WW = 7
     comptime LATENT = CH * HH * WW
-    comptime BINS = 51        # categorical value/reward support over [-1, 1]
+    comptime BINS = 51  # categorical value/reward support over [-1, 1]
     # 64 sims/move. 128 was WORSE early (eval1 0.43 vs 0.75 at matched steps, 0
     # promotions): deep search over a still-imperfect learned model amplifies its
     # value/dynamics errors. The references' 200-500 sims assume a converged
@@ -81,7 +85,7 @@ def main() raises:
     # sims SCHEDULE (low early → high once the model is strong) if needed.
     comptime NUM_SIMS = 64
     comptime MAX_NODES = 256  # ≫ NUM_SIMS (≤1 node/sim); ample headroom.
-    comptime MAX_K = 4        # already maxed for C4 (power of two ≤ ACT=7)
+    comptime MAX_K = 4  # already maxed for C4 (power of two ≤ ACT=7)
     comptime CAP = 1_000_000
     comptime B = 128
     comptime K = 5
@@ -114,11 +118,24 @@ def main() raises:
     # early + more early exploration). No post-make zeroing pass needed.
 
     var res = run_muzero_selfplay_arena_gumbel_2p[
-        Env, Rep, Dyn, Pred, Aug,
+        Env,
+        Rep,
+        Dyn,
+        Pred,
+        Aug,
         N_ENVS=64,
-        OBS=OBS, ACT=ACT, LATENT=LATENT, BINS=BINS,
-        NUM_SIMS=NUM_SIMS, MAX_NODES=MAX_NODES, MAX_K=MAX_K,
-        CAP=CAP, B=B, K=K, N=N, MAX_PLIES=MAX_PLIES,
+        OBS=OBS,
+        ACT=ACT,
+        LATENT=LATENT,
+        BINS=BINS,
+        NUM_SIMS=NUM_SIMS,
+        MAX_NODES=MAX_NODES,
+        MAX_K=MAX_K,
+        CAP=CAP,
+        B=B,
+        K=K,
+        N=N,
+        MAX_PLIES=MAX_PLIES,
         OPP1=GPUMinimaxConnectFour[5],
         OPP2=RandomOpponent,
         L=RemoteLogger,
@@ -126,9 +143,12 @@ def main() raises:
         EVAL_GAMES=64,
         TEMP_MOVES=20,
         SCHEDULER=LinearWarmupSchedule[LR_WARMUP],
+        USE_TRAIN_CUDA_GRAPH=True,
     ](
         ctx,
-        rep, dyn, pred,
+        rep,
+        dyn,
+        pred,
         iterations=40_000,
         learning_starts=2_000,
         train_per_iter=4,
