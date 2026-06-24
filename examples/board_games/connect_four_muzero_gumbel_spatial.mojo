@@ -144,7 +144,12 @@ def main() raises:
         TEMP_MOVES=20,
         SCHEDULER=LinearWarmupSchedule[LR_WARMUP],
         USE_TRAIN_CUDA_GRAPH=True,
-        USE_MCTS_CUDA_GRAPH=True,
+        # USE_MCTS_CUDA_GRAPH stays OFF: the captured MCTS sim-loop replay
+        # produces FLAT search targets (target_max_prob ~0.3 vs ~0.55 eager →
+        # policy head stops learning). Bug is strictly in the sim-loop
+        # capture/replay (the eager refactored search is correct). Not worth
+        # chasing for this net: MCTS here is compute-bound (CH=64 conv), so the
+        # graph adds only ~6%. See docs/MUZERO_CUDA_GRAPH_PLAN.md.
     ](
         ctx,
         rep,

@@ -641,11 +641,14 @@ def run_muzero_selfplay_arena_gumbel_2p[
     # (`use_per=False`, which board games use); a no-op on Apple (compile-time).
     USE_TRAIN_CUDA_GRAPH: Bool = False,
     # CUDA-graph the Gumbel-MCTS Sequential-Halving sim loop for self-play +
-    # reanalyze search (the bulk of MuZero wall-clock). Default OFF. ON (NVIDIA):
-    # the per-move search runs eager root init (fresh Gumbel rng) → CAPTURED sim
-    # loop → eager extract, with a SEPARATE capture slot for self-play (BEST nets)
-    # vs reanalyze (TARGET nets) since the captured kernels bake the net buffers.
-    # A no-op on Apple (compile-time). Arena/eval search stays eager (periodic).
+    # reanalyze search. ⚠️ KNOWN-BUGGY — DO NOT ENABLE. On NVIDIA the captured
+    # sim-loop REPLAY produces FLAT search targets (target_max_prob ~0.3 vs ~0.55
+    # eager), which stalls policy-head learning (policy_entropy pinned at log·ACT).
+    # The eager path (refactored `search_gpu`) is correct — the bug is strictly in
+    # the sim-loop capture/replay and is NOT yet root-caused. Low priority: MCTS
+    # here is compute-bound (CH=64 conv) so the graph adds only ~6%. Kept behind
+    # this flag for a future eager-vs-captured parity-test investigation.
+    # See docs/MUZERO_CUDA_GRAPH_PLAN.md. (No-op on Apple.)
     USE_MCTS_CUDA_GRAPH: Bool = False,
 ](
     ctx: DeviceContext,
@@ -736,6 +739,17 @@ def run_muzero_selfplay_arena_gumbel_2p[
     # the two roles must NOT share a graph.
     var selfplay_mcts_graph: Optional[CUDAGraph] = None
     var reanalyze_mcts_graph: Optional[CUDAGraph] = None
+    # HARD GATE: refuse to run with the MCTS graph on. Its captured sim-loop
+    # replay produces flat search targets (policy stops learning) and is not
+    # root-caused; this raises so it can't be enabled by mistake. Remove only
+    # after an eager-vs-captured parity test proves the replay correct.
+    comptime if USE_MCTS_CUDA_GRAPH:
+        raise Error(
+            "USE_MCTS_CUDA_GRAPH is KNOWN-BUGGY and disabled: the captured"
+            " Gumbel-MCTS sim-loop replay produces FLAT search targets"
+            " (target_max_prob collapses → policy head stops learning). The"
+            " eager search path is correct. See docs/MUZERO_CUDA_GRAPH_PLAN.md."
+        )
     comptime if USE_TRAIN_CUDA_GRAPH:
         if use_per:
             raise Error(
