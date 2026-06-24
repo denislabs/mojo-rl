@@ -61,6 +61,7 @@ from ..muzero.blocks import (
     _mz_bcopy_k,
 )
 from ..zero.twohot_targets import mz_two_hot_target_batch
+from .nets_atari import EZRewardLSTMAtari
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -385,6 +386,296 @@ def ezv2_unroll_train_step_cpu[
         lp[1] = l_val * inv   # value
         lp[2] = l_rew * inv   # reward
         lp[3] = l_cons * inv  # consistency
+    return loss / Scalar[DT](B)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Value-prefix CPU path (EZ `value_prefix=True`). Separate function rather than
+# a comptime branch of the baseline: the data flow differs materially (z'-only
+# dynamics + a stateful LSTM reward head whose (h,c) is carried across the K
+# unroll steps and reset every HORIZON, and the reward consumes z_{k+1} not the
+# fused dyn output). `reward_tgt` is the cumulative value-prefix target ([K,B],
+# caller applies `value_prefix_from_rewards` first). The 0.5 recurrent half-grad
+# and the gscale/cscale conventions match the baseline exactly; the (h,c)
+# recurrent gradient is unscaled (EZ halves only the latent `states` hook).
+# ─────────────────────────────────────────────────────────────────────────
+def ezv2_unroll_train_step_cpu_vp[
+    REP: Module,
+    DYNZ: Module,
+    PRED: Module,
+    PROJM: Module,
+    PREDH: Module,
+    B: Int,
+    K: Int,
+    OBS: Int,
+    ACT: Int,
+    LATENT: Int,
+    BINS: Int,
+    HIDDEN: Int,
+    HORIZON: Int,
+](
+    mut rep: REP,
+    mut dynz: DYNZ,
+    mut rew: EZRewardLSTMAtari[BINS],
+    mut pred: PRED,
+    mut proj: PROJM,
+    mut predh: PREDH,
+    mut orep: Adam,
+    mut odynz: Adam,
+    mut orew: Adam,
+    mut opred: Adam,
+    mut oproj: Adam,
+    mut opredh: Adam,
+    obs_seq: List[Scalar[DT]],
+    actions: List[Scalar[DT]],
+    policy_tgt: List[Scalar[DT]],
+    value_tgt: List[Scalar[DT]],
+    reward_tgt: List[Scalar[DT]],   # cumulative value-prefix targets [K,B]
+    v_min: Scalar[DT],
+    v_max: Scalar[DT],
+    value_coef: Scalar[DT] = Scalar[DT](1.0),
+    consistency_coef: Scalar[DT] = Scalar[DT](2.0),
+    max_grad_norm: Float64 = 0.0,
+    cons_mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+) raises -> Scalar[DT]:
+    """One CPU EZv2 **value-prefix** unroll training step. Mirrors
+    `ezv2_unroll_train_step_cpu` but with the stateful LSTM reward head; see the
+    module-level comment above for the data-flow differences. Returns mean total
+    loss; mutates all six nets via their optimizers."""
+    comptime PRED_OUT = ACT + BINS
+    comptime DYN_IN = LATENT + ACT
+    comptime HH = B * HIDDEN
+
+    # ── scratch ──
+    var obs0_t = Tensor.alloc(B * OBS)
+    for i in range(B * OBS):
+        obs0_t.data[i] = obs_seq[i]
+    var zst = Tensor.alloc((K + 1) * B * LATENT)
+    var z_work = Tensor.alloc(B * LATENT)
+    var zk_work = Tensor.alloc(B * LATENT)
+    var din = Tensor.alloc(B * DYN_IN)
+    var dz = Tensor.alloc(B * LATENT)             # dyn_z output z_{k+1}
+    var pout = Tensor.alloc(B * PRED_OUT)
+    var gpout = Tensor.alloc(B * PRED_OUT)
+    var gz = Tensor.alloc(B * LATENT)             # carry grad wrt z_{k+1}
+    var gpin = Tensor.alloc(B * LATENT)
+    var gdin = Tensor.alloc(B * DYN_IN)
+    var gobs = Tensor.alloc(B * OBS)
+    var twv = Tensor.alloc(B * BINS)
+    var twr = Tensor.alloc(B * BINS)
+    # value-prefix (h,c) carry + reward bptt scratch
+    var h_store = Tensor.alloc((K + 1) * HH)
+    var c_store = Tensor.alloc((K + 1) * HH)
+    var hbuf = Tensor.alloc(2 * HH)               # slab0 prev, slab1 out
+    var cbuf = Tensor.alloc(2 * HH)
+    var cache = Tensor.alloc(B * EZRewardLSTMAtari[BINS].CACHE_SIZE)
+    var vp = Tensor.alloc(B * BINS)
+    var grad_vp = Tensor.alloc(B * BINS)
+    var grad_zp = Tensor.alloc(B * LATENT)
+    var dh_carry = Tensor.alloc(HH)
+    var dc_carry = Tensor.alloc(HH)
+    var dh_prev = Tensor.alloc(HH)
+    var dc_prev = Tensor.alloc(HH)
+    # consistency scratch
+    var obsk_t = Tensor.alloc(B * OBS)
+    comptime PROJ = PROJM.OUT_DIM
+    var tstore = Tensor.alloc(K * B * PROJ)
+    var ztmp = Tensor.alloc(B * LATENT)
+    var projo = Tensor.alloc(B * PROJ)
+    var pk = Tensor.alloc(B * PROJ)
+    var gpk = Tensor.alloc(B * PROJ)
+    var gproj = Tensor.alloc(B * PROJ)
+    var gzcons = Tensor.alloc(B * LATENT)
+    var pol_tgt_l = List[Scalar[DT]](length=B * ACT, fill=0)
+    var val_tgt_l = List[Scalar[DT]](length=B, fill=0)
+    var rew_tgt_l = List[Scalar[DT]](length=B, fill=0)
+    var cons_t_l = List[Scalar[DT]](length=B * PROJ, fill=0)
+
+    var gscale = Scalar[DT](1.0) / Scalar[DT]((K + 1) * B)
+    var cscale = consistency_coef / Scalar[DT](K * B)
+
+    # ── forward scan: rep, then K (dyn_z → reward LSTM) steps, store z + (h,c) ──
+    call_forward["cpu", B](rep, TensorRefs[REP.ARITY](obs0_t), z_work, None)
+    for i in range(B * LATENT):
+        zst.data[i] = z_work.data[i]
+    # h_store[0]/c_store[0] = 0 (Tensor.alloc zero-fills)
+    for k in range(K):
+        var zoff = k * B * LATENT
+        for b in range(B):
+            var dib = b * DYN_IN
+            for i in range(LATENT):
+                din.data[dib + i] = zst.data[zoff + b * LATENT + i]
+            for a in range(ACT):
+                din.data[dib + LATENT + a] = Scalar[DT](0.0)
+            din.data[dib + LATENT + Int(actions[k * B + b])] = Scalar[DT](1.0)
+        call_forward["cpu", B](dynz, TensorRefs[DYNZ.ARITY](din), dz, None)
+        var znoff = (k + 1) * B * LATENT
+        for i in range(B * LATENT):
+            zst.data[znoff + i] = dz.data[i]
+        # reward LSTM step: (h,c) prev = h_store[k] → out slab → h_store[k+1]
+        for i in range(HH):
+            hbuf.data[i] = h_store.data[k * HH + i]
+            cbuf.data[i] = c_store.data[k * HH + i]
+        rew.reward_step_forward["cpu", B](dz, hbuf, cbuf, cache, vp, None)
+        for i in range(HH):
+            h_store.data[(k + 1) * HH + i] = hbuf.data[HH + i]
+            c_store.data[(k + 1) * HH + i] = cbuf.data[HH + i]
+        # horizon reset: zero the state CARRIED into the next step
+        if (k + 1) % HORIZON == 0:
+            for i in range(HH):
+                h_store.data[(k + 1) * HH + i] = Scalar[DT](0.0)
+                c_store.data[(k + 1) * HH + i] = Scalar[DT](0.0)
+
+    # ── consistency target pre-pass: t_k = g_proj(h(obs_k)), k=1..K ──
+    for k in range(1, K + 1):
+        for i in range(B * OBS):
+            obsk_t.data[i] = obs_seq[k * B * OBS + i]
+        call_forward["cpu", B](rep, TensorRefs[REP.ARITY](obsk_t), ztmp, None)
+        call_forward["cpu", B](proj, TensorRefs[PROJM.ARITY](ztmp), projo, None)
+        for i in range(B * PROJ):
+            tstore.data[(k - 1) * B * PROJ + i] = projo.data[i]
+
+    # ── reverse scan ──
+    rep.zero_grad["cpu"](None)
+    dynz.zero_grad["cpu"](None)
+    rew.zero_grad["cpu"](None)
+    pred.zero_grad["cpu"](None)
+    proj.zero_grad["cpu"](None)
+    predh.zero_grad["cpu"](None)
+    # zero the recurrent (h,c) grad carry (no future at the last step)
+    for i in range(HH):
+        dh_carry.data[i] = Scalar[DT](0.0)
+        dc_carry.data[i] = Scalar[DT](0.0)
+
+    var loss = Scalar[DT](0.0)
+    var l_pol = Scalar[DT](0.0)
+    var l_val = Scalar[DT](0.0)
+    var l_rew = Scalar[DT](0.0)
+    var l_cons = Scalar[DT](0.0)
+    for rk in range(K + 1):
+        var k = K - rk
+        var zoff = k * B * LATENT
+        for i in range(B * LATENT):
+            zk_work.data[i] = zst.data[zoff + i]
+
+        # (a) prediction head on z_k
+        call_forward["cpu", B](pred, TensorRefs[PRED.ARITY](zk_work), pout, None)
+        for i in range(B * ACT):
+            pol_tgt_l[i] = policy_tgt[k * B * ACT + i]
+        var l_pol_k = soft_ce_slice_loss_and_grad[B, PRED_OUT, 0, ACT](
+            pout.data, pol_tgt_l, gscale, gpout.data)
+        loss += l_pol_k; l_pol += l_pol_k
+        for b in range(B):
+            val_tgt_l[b] = value_tgt[k * B + b]
+        mz_two_hot_target_batch[B, BINS](val_tgt_l, 0, v_min, v_max, twv.data, 0)
+        var l_val_k = value_coef * soft_ce_slice_loss_and_grad[
+            B, PRED_OUT, ACT, BINS](
+            pout.data, twv.data, gscale * value_coef, gpout.data)
+        loss += l_val_k; l_val += l_val_k
+        call_vjp["cpu", B](
+            pred, TensorRefs[PRED.ARITY](zk_work), gpout,
+            TensorRefs[PRED.ARITY](gpin), None)
+
+        # (b) consistency online branch (k >= 1)
+        if k >= 1:
+            call_forward["cpu", B](proj, TensorRefs[PROJM.ARITY](zk_work), projo, None)
+            call_forward["cpu", B](predh, TensorRefs[PREDH.ARITY](projo), pk, None)
+            for i in range(B * PROJ):
+                cons_t_l[i] = tstore.data[(k - 1) * B * PROJ + i]
+            var mk = Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]](None)
+            if cons_mask:
+                mk = cons_mask.value() + (k - 1) * B
+            var l_cons_k = consistency_loss_and_grad[B, PROJ](
+                pk.data, cons_t_l, cscale, gpk.data, mask=mk)
+            loss += l_cons_k; l_cons += l_cons_k
+            call_vjp["cpu", B](
+                predh, TensorRefs[PREDH.ARITY](projo), gpk,
+                TensorRefs[PREDH.ARITY](gproj), None)
+            call_vjp["cpu", B](
+                proj, TensorRefs[PROJM.ARITY](zk_work), gproj,
+                TensorRefs[PROJM.ARITY](gzcons), None)
+            for i in range(B * LATENT):
+                gpin.data[i] += gzcons.data[i]
+
+        # (c) reward (value-prefix) + dynamics for step k (produces z_{k+1})
+        if k < K:
+            var znoff = (k + 1) * B * LATENT
+            for i in range(B * LATENT):
+                dz.data[i] = zst.data[znoff + i]
+            # the reset broke the gradient path into S_{k+1} from step k+1
+            if (k + 1) % HORIZON == 0:
+                for i in range(HH):
+                    dh_carry.data[i] = Scalar[DT](0.0)
+                    dc_carry.data[i] = Scalar[DT](0.0)
+            # re-forward reward head at step k (repopulate stem/cell/head caches)
+            for i in range(HH):
+                hbuf.data[i] = h_store.data[k * HH + i]
+                cbuf.data[i] = c_store.data[k * HH + i]
+            rew.reward_step_forward["cpu", B](dz, hbuf, cbuf, cache, vp, None)
+            # value-prefix loss on vp_k
+            for b in range(B):
+                rew_tgt_l[b] = reward_tgt[k * B + b]
+            mz_two_hot_target_batch[B, BINS](rew_tgt_l, 0, v_min, v_max, twr.data, 0)
+            var l_rew_k = soft_ce_slice_loss_and_grad[B, BINS, 0, BINS](
+                vp.data, twr.data, gscale, grad_vp.data)
+            loss += l_rew_k; l_rew += l_rew_k
+            # reward BPTT → grad wrt z_{k+1} (grad_zp), grad wrt S_k/C_k (carry)
+            rew.reward_step_backward["cpu", B](
+                dz, grad_vp, hbuf, cbuf, cache, dh_carry, dc_carry,
+                grad_zp, dh_prev, dc_prev, None)
+            for i in range(B * LATENT):
+                gz.data[i] += grad_zp.data[i]
+            for i in range(HH):
+                dh_carry.data[i] = dh_prev.data[i]
+                dc_carry.data[i] = dc_prev.data[i]
+            # dynamics: carry full grad wrt z_{k+1} back through dyn_z, ½ on z_k
+            for b in range(B):
+                var dib = b * DYN_IN
+                for i in range(LATENT):
+                    din.data[dib + i] = zst.data[zoff + b * LATENT + i]
+                for a in range(ACT):
+                    din.data[dib + LATENT + a] = Scalar[DT](0.0)
+                din.data[dib + LATENT + Int(actions[k * B + b])] = Scalar[DT](1.0)
+            call_forward["cpu", B](dynz, TensorRefs[DYNZ.ARITY](din), dz, None)
+            call_vjp["cpu", B](
+                dynz, TensorRefs[DYNZ.ARITY](din), gz,
+                TensorRefs[DYNZ.ARITY](gdin), None)
+            for b in range(B):
+                for i in range(LATENT):
+                    gpin.data[b * LATENT + i] += (
+                        Scalar[DT](0.5) * gdin.data[b * DYN_IN + i])
+
+        for i in range(B * LATENT):
+            gz.data[i] = gpin.data[i]
+
+    # ── rep: re-forward obs0 then vjp ──
+    call_forward["cpu", B](rep, TensorRefs[REP.ARITY](obs0_t), z_work, None)
+    call_vjp["cpu", B](
+        rep, TensorRefs[REP.ARITY](obs0_t), gz, TensorRefs[REP.ARITY](gobs), None)
+
+    # ── clip + step all six nets ──
+    _ = clip_grad_norm["cpu", PRED](pred, Scalar[DT](max_grad_norm), None)
+    opred.begin_step(); pred.for_each_param["cpu"](opred, None)
+    _ = clip_grad_norm["cpu", EZRewardLSTMAtari[BINS]](
+        rew, Scalar[DT](max_grad_norm), None)
+    orew.begin_step(); rew.for_each_param["cpu"](orew, None)
+    _ = clip_grad_norm["cpu", DYNZ](dynz, Scalar[DT](max_grad_norm), None)
+    odynz.begin_step(); dynz.for_each_param["cpu"](odynz, None)
+    _ = clip_grad_norm["cpu", REP](rep, Scalar[DT](max_grad_norm), None)
+    orep.begin_step(); rep.for_each_param["cpu"](orep, None)
+    _ = clip_grad_norm["cpu", PROJM](proj, Scalar[DT](max_grad_norm), None)
+    oproj.begin_step(); proj.for_each_param["cpu"](oproj, None)
+    _ = clip_grad_norm["cpu", PREDH](predh, Scalar[DT](max_grad_norm), None)
+    opredh.begin_step(); predh.for_each_param["cpu"](opredh, None)
+
+    if loss_parts:
+        var lp = loss_parts.value()
+        var inv = Scalar[DT](1.0) / Scalar[DT](B)
+        lp[0] = l_pol * inv
+        lp[1] = l_val * inv
+        lp[2] = l_rew * inv
+        lp[3] = l_cons * inv
     return loss / Scalar[DT](B)
 
 
@@ -803,4 +1094,393 @@ def ezv2_unroll_train_step_gpu[
         lp[1] = l_val * inv
         lp[2] = l_rew * inv
         lp[3] = l_cons * inv
+    return (l_pol + l_val + l_rew + l_cons) * inv
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Value-prefix GPU path (EZ `value_prefix=True`). Device mirror of
+# `ezv2_unroll_train_step_cpu_vp` — same data flow (z'-only dynamics + stateful
+# LSTM reward head, (h,c) carried across K steps and reset every HORIZON). Uses
+# the reward head's GPU step API (`reward_step_forward/backward`, both targets
+# implemented). For clarity/self-containment this allocates its own device
+# buffers per call (the non-VP path reuses an EZV2UnrollScratch); folding these
+# into a persistent VP scratch is a perf follow-up (bench on NVIDIA).
+# ─────────────────────────────────────────────────────────────────────────
+def ezv2_unroll_train_step_gpu_vp[
+    REP: Module,
+    DYNZ: Module,
+    PRED: Module,
+    PROJM: Module,
+    PREDH: Module,
+    B: Int,
+    K: Int,
+    OBS: Int,
+    ACT: Int,
+    LATENT: Int,
+    BINS: Int,
+    HIDDEN: Int,
+    HORIZON: Int,
+](
+    ctx: DeviceContext,
+    mut rep: REP,
+    mut dynz: DYNZ,
+    mut rew: EZRewardLSTMAtari[BINS],
+    mut pred: PRED,
+    mut proj: PROJM,
+    mut predh: PREDH,
+    mut orep: Adam,
+    mut odynz: Adam,
+    mut orew: Adam,
+    mut opred: Adam,
+    mut oproj: Adam,
+    mut opredh: Adam,
+    obs_seq: List[Scalar[DT]],
+    actions: List[Scalar[DT]],
+    policy_tgt: List[Scalar[DT]],
+    value_tgt: List[Scalar[DT]],
+    reward_tgt: List[Scalar[DT]],   # cumulative value-prefix targets [K,B]
+    v_min: Scalar[DT],
+    v_max: Scalar[DT],
+    value_coef: Scalar[DT] = Scalar[DT](1.0),
+    consistency_coef: Scalar[DT] = Scalar[DT](2.0),
+    max_grad_norm: Float64 = 0.0,
+    cons_mask: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    obs_dev: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+) raises -> Scalar[DT]:
+    """GPU EZv2 **value-prefix** unroll training step — device mirror of
+    `ezv2_unroll_train_step_cpu_vp`. Returns mean total loss; mutates all six
+    nets via their optimizers.
+
+    PER (batched driver): `is_weights[B]` row-scales the pred / consistency /
+    value-prefix grads before vjp (the latent carry is already weighted);
+    `out_prio[B]` receives the root (k=0) value soft-CE for the priority
+    writeback. `obs_dev`, when set, is a device obs slab `[(K+1)·B·OBS]` (gathered
+    by the replay) used in place of the host `obs_seq` H2D (no copy)."""
+    comptime PRED_OUT = ACT + BINS
+    comptime DYN_IN = LATENT + ACT
+    comptime PROJ = PROJM.OUT_DIM
+    comptime HH = B * HIDDEN
+    var octx = Optional[DeviceContext](ctx)
+
+    # ── device buffers (owned, lazy) ──
+    # obs slab: owned; filled by a D2D copy from the replay's device gather
+    # (obs_dev / obs_on_device) or an H2D from the host obs_seq. (A non-owning
+    # view of obs_dev would skip the D2D, but that conditional-Tensor pattern
+    # ICEs the current toolchain; the D2D is device-bandwidth-only.)
+    var d_obs = Tensor.alloc_gpu(ctx, (K + 1) * B * OBS)
+    if obs_dev:
+        d_obs.copy_from_device(ctx, obs_dev.value(), (K + 1) * B * OBS)
+    else:
+        ctx.enqueue_copy(d_obs.dev.value(), obs_seq.unsafe_ptr())
+    var d_act = Tensor.alloc_gpu(ctx, K * B)
+    ctx.enqueue_copy(d_act.dev.value(), actions.unsafe_ptr())
+    var d_pol = Tensor.alloc_gpu(ctx, (K + 1) * B * ACT)
+    ctx.enqueue_copy(d_pol.dev.value(), policy_tgt.unsafe_ptr())
+    var d_val = Tensor.alloc_gpu(ctx, (K + 1) * B)
+    ctx.enqueue_copy(d_val.dev.value(), value_tgt.unsafe_ptr())
+    var d_rew = Tensor.alloc_gpu(ctx, K * B)
+    ctx.enqueue_copy(d_rew.dev.value(), reward_tgt.unsafe_ptr())
+    var d_cmask = Tensor.alloc_gpu(ctx, K * B)
+    if cons_mask:
+        ctx.enqueue_copy(d_cmask.dev.value(), cons_mask.value())
+    else:
+        d_cmask.dev.value().enqueue_fill(Scalar[DT](1.0))
+
+    var d_obs_work = Tensor.alloc_gpu(ctx, B * OBS)
+    var zst = Tensor.alloc_gpu(ctx, (K + 1) * B * LATENT)
+    var z_work = Tensor.alloc_gpu(ctx, B * LATENT)
+    var zk_work = Tensor.alloc_gpu(ctx, B * LATENT)
+    var din = Tensor.alloc_gpu(ctx, B * DYN_IN)
+    var dz = Tensor.alloc_gpu(ctx, B * LATENT)
+    var pout = Tensor.alloc_gpu(ctx, B * PRED_OUT)
+    var gpout = Tensor.alloc_gpu(ctx, B * PRED_OUT)
+    var gz = Tensor.alloc_gpu(ctx, B * LATENT)
+    var gpin = Tensor.alloc_gpu(ctx, B * LATENT)
+    var gdin = Tensor.alloc_gpu(ctx, B * DYN_IN)
+    var gobs = Tensor.alloc_gpu(ctx, B * OBS)
+    var twv = Tensor.alloc_gpu(ctx, B * BINS)
+    var twr = Tensor.alloc_gpu(ctx, B * BINS)
+    var vp = Tensor.alloc_gpu(ctx, B * BINS)
+    var grad_vp = Tensor.alloc_gpu(ctx, B * BINS)
+    var grad_zp = Tensor.alloc_gpu(ctx, B * LATENT)
+    var h_store = Tensor.alloc_gpu(ctx, (K + 1) * HH)
+    var c_store = Tensor.alloc_gpu(ctx, (K + 1) * HH)
+    var hbuf = Tensor.alloc_gpu(ctx, 2 * HH)
+    var cbuf = Tensor.alloc_gpu(ctx, 2 * HH)
+    var cache = Tensor.alloc_gpu(ctx, B * EZRewardLSTMAtari[BINS].CACHE_SIZE)
+    var dh_carry = Tensor.alloc_gpu(ctx, HH)
+    var dc_carry = Tensor.alloc_gpu(ctx, HH)
+    var dh_prev = Tensor.alloc_gpu(ctx, HH)
+    var dc_prev = Tensor.alloc_gpu(ctx, HH)
+    var tstore = Tensor.alloc_gpu(ctx, K * B * PROJ)
+    var ztmp = Tensor.alloc_gpu(ctx, B * LATENT)
+    var projo = Tensor.alloc_gpu(ctx, B * PROJ)
+    var pk = Tensor.alloc_gpu(ctx, B * PROJ)
+    var gpk = Tensor.alloc_gpu(ctx, B * PROJ)
+    var gproj = Tensor.alloc_gpu(ctx, B * PROJ)
+    var gzcons = Tensor.alloc_gpu(ctx, B * LATENT)
+    var loss_d = Tensor.alloc_gpu(ctx, 4 * B)
+    var h_loss = ctx.enqueue_create_host_buffer[DT](4 * B)
+    for i in range(4 * B):
+        h_loss.unsafe_ptr()[i] = Scalar[DT](0.0)
+    ctx.enqueue_copy(loss_d.dev.value(), h_loss)
+    # PER scratch (gated): IS weights H2D'd once; priority CE + D2H mirror.
+    var has_isw = Bool(is_weights)
+    var d_isw = Tensor.alloc_gpu(ctx, B)
+    if has_isw:
+        ctx.enqueue_copy(d_isw.dev.value(), is_weights.value())
+    var d_prio = Tensor.alloc_gpu(ctx, B)
+    var h_prio = ctx.enqueue_create_host_buffer[DT](B)
+
+    var gscale = Scalar[DT](1.0) / Scalar[DT]((K + 1) * B)
+    var cscale = consistency_coef / Scalar[DT](K * B)
+
+    comptime LB = Layout.row_major(B)
+    comptime LBOBS = Layout.row_major(B * OBS)
+    comptime LBL = Layout.row_major(B * LATENT)
+    comptime LBDI = Layout.row_major(B * DYN_IN)
+    comptime LBPO = Layout.row_major(B * PRED_OUT)
+    comptime LBBINS = Layout.row_major(B * BINS)
+    comptime LBPROJ = Layout.row_major(B * PROJ)
+    comptime nbDIN = (B * DYN_IN + TPB - 1) // TPB
+    comptime nbLAT = (B * LATENT + TPB - 1) // TPB
+    comptime nbOBS = (B * OBS + TPB - 1) // TPB
+    comptime nbPROJ = (B * PROJ + TPB - 1) // TPB
+    comptime nbB = (B + TPB - 1) // TPB
+    comptime kBuild = _mz_build_dyn_in_k[B, LATENT, ACT, DYN_IN]
+    comptime kPolCE = _mz_softce_slice_k[B, PRED_OUT, 0, ACT]
+    comptime kValCE = _mz_softce_slice_k[B, PRED_OUT, ACT, BINS]
+    comptime kRewVP = _mz_softce_slice_k[B, BINS, 0, BINS]
+    comptime kTwoHot = _mz_twohot_k[B, BINS]
+    comptime kHalf = _mz_accum_half_k[B, LATENT, DYN_IN]
+    comptime kBcopy = _mz_bcopy_k[B * LATENT]
+    comptime kBcopyOBS = _mz_bcopy_k[B * OBS]
+    comptime kBcopyPROJ = _mz_bcopy_k[B * PROJ]
+    comptime kCons = consistency_loss_grad_k[B, PROJ]
+    comptime kAccum = _ez_accum_latent_k[B * LATENT]
+    # PER row-scaling: pred head (whole), consistency (whole), value-prefix
+    # (whole BINS); + root value-error priority CE.
+    comptime kScalePred = _ez_scale_rows_k[B, PRED_OUT, 0, PRED_OUT]
+    comptime kScaleCons = _ez_scale_rows_k[B, PROJ, 0, PROJ]
+    comptime kScaleVP = _ez_scale_rows_k[B, BINS, 0, BINS]
+    comptime kPrioCE = _ez_priority_ce_k[B, PRED_OUT, ACT, BINS]
+
+    # ── forward scan: z0=h(obs0); z_{k+1}=g_z(z_k,a_k); (h,c) LSTM step ──
+    ctx.enqueue_function[kBcopyOBS](
+        d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
+        grid_dim=nbOBS, block_dim=TPB)
+    call_forward["gpu", B](rep, TensorRefs[REP.ARITY](d_obs_work), z_work, octx)
+    ctx.enqueue_function[kBcopy](
+        z_work.lt["gpu", LBL](), zst.lt_at["gpu", LBL](0),
+        grid_dim=nbLAT, block_dim=TPB)
+    # h_store[0]/c_store[0] = 0 (alloc_gpu zero-fills)
+    for k in range(K):
+        ctx.enqueue_function[kBuild](
+            din.lt["gpu", LBDI](), zst.lt_at["gpu", LBL](k * B * LATENT),
+            d_act.lt_at["gpu", LB](k * B), grid_dim=nbDIN, block_dim=TPB)
+        call_forward["gpu", B](dynz, TensorRefs[DYNZ.ARITY](din), dz, octx)
+        ctx.enqueue_function[kBcopy](
+            dz.lt["gpu", LBL](), zst.lt_at["gpu", LBL]((k + 1) * B * LATENT),
+            grid_dim=nbLAT, block_dim=TPB)
+        # (h,c) prev slab ← h_store[k]; step; h_store[k+1] ← out slab
+        ctx.enqueue_copy(
+            hbuf.dev.value().create_sub_buffer[DT](0, HH),
+            h_store.dev.value().create_sub_buffer[DT](k * HH, HH))
+        ctx.enqueue_copy(
+            cbuf.dev.value().create_sub_buffer[DT](0, HH),
+            c_store.dev.value().create_sub_buffer[DT](k * HH, HH))
+        rew.reward_step_forward["gpu", B](dz, hbuf, cbuf, cache, vp, octx)
+        ctx.enqueue_copy(
+            h_store.dev.value().create_sub_buffer[DT]((k + 1) * HH, HH),
+            hbuf.dev.value().create_sub_buffer[DT](HH, HH))
+        ctx.enqueue_copy(
+            c_store.dev.value().create_sub_buffer[DT]((k + 1) * HH, HH),
+            cbuf.dev.value().create_sub_buffer[DT](HH, HH))
+        if (k + 1) % HORIZON == 0:
+            h_store.dev.value().create_sub_buffer[DT]((k + 1) * HH, HH).enqueue_fill(
+                Scalar[DT](0.0))
+            c_store.dev.value().create_sub_buffer[DT]((k + 1) * HH, HH).enqueue_fill(
+                Scalar[DT](0.0))
+
+    # ── consistency target pre-pass: t_k = g_proj(h(obs_k)), k=1..K ──
+    for k in range(1, K + 1):
+        ctx.enqueue_function[kBcopyOBS](
+            d_obs.lt_at["gpu", LBOBS](k * B * OBS), d_obs_work.lt["gpu", LBOBS](),
+            grid_dim=nbOBS, block_dim=TPB)
+        call_forward["gpu", B](rep, TensorRefs[REP.ARITY](d_obs_work), ztmp, octx)
+        call_forward["gpu", B](proj, TensorRefs[PROJM.ARITY](ztmp), projo, octx)
+        ctx.enqueue_function[kBcopyPROJ](
+            projo.lt["gpu", LBPROJ](), tstore.lt_at["gpu", LBPROJ]((k - 1) * B * PROJ),
+            grid_dim=nbPROJ, block_dim=TPB)
+
+    # ── reverse scan ──
+    rep.zero_grad["gpu"](octx)
+    dynz.zero_grad["gpu"](octx)
+    rew.zero_grad["gpu"](octx)
+    pred.zero_grad["gpu"](octx)
+    proj.zero_grad["gpu"](octx)
+    predh.zero_grad["gpu"](octx)
+    dh_carry.dev.value().enqueue_fill(Scalar[DT](0.0))
+    dc_carry.dev.value().enqueue_fill(Scalar[DT](0.0))
+
+    for rk in range(K + 1):
+        var k = K - rk
+        ctx.enqueue_function[kBcopy](
+            zst.lt_at["gpu", LBL](k * B * LATENT), zk_work.lt["gpu", LBL](),
+            grid_dim=nbLAT, block_dim=TPB)
+
+        # (a) prediction head on z_k
+        call_forward["gpu", B](pred, TensorRefs[PRED.ARITY](zk_work), pout, octx)
+        ctx.enqueue_function[kPolCE](
+            pout.lt["gpu", LBPO](),
+            d_pol.lt_at["gpu", Layout.row_major(B * ACT)](k * B * ACT),
+            gpout.lt["gpu", LBPO](), loss_d.lt_at["gpu", LB](0),
+            gscale, Scalar[DT](1.0), grid_dim=nbB, block_dim=TPB)
+        ctx.enqueue_function[kTwoHot](
+            twv.lt["gpu", LBBINS](), d_val.lt_at["gpu", LB](k * B),
+            v_min, v_max, grid_dim=nbB, block_dim=TPB)
+        ctx.enqueue_function[kValCE](
+            pout.lt["gpu", LBPO](), twv.lt["gpu", LBBINS](),
+            gpout.lt["gpu", LBPO](), loss_d.lt_at["gpu", LB](B),
+            gscale * value_coef, value_coef, grid_dim=nbB, block_dim=TPB)
+        # PER: root (k=0) value-error priority, then IS-weight the pred grad.
+        if out_prio and k == 0:
+            ctx.enqueue_function[kPrioCE](
+                pout.lt["gpu", LBPO](), twv.lt["gpu", LBBINS](),
+                d_prio.lt["gpu", LB](), grid_dim=nbB, block_dim=TPB)
+        if has_isw:
+            ctx.enqueue_function[kScalePred](
+                gpout.lt["gpu", LBPO](), d_isw.lt["gpu", LB](),
+                grid_dim=nbB, block_dim=TPB)
+        call_vjp["gpu", B](
+            pred, TensorRefs[PRED.ARITY](zk_work), gpout,
+            TensorRefs[PRED.ARITY](gpin), octx)
+
+        # (b) consistency (k >= 1)
+        if k >= 1:
+            call_forward["gpu", B](proj, TensorRefs[PROJM.ARITY](zk_work), projo, octx)
+            call_forward["gpu", B](predh, TensorRefs[PREDH.ARITY](projo), pk, octx)
+            ctx.enqueue_function[kCons](
+                pk.lt["gpu", LBPROJ](),
+                tstore.lt_at["gpu", LBPROJ]((k - 1) * B * PROJ),
+                gpk.lt["gpu", LBPROJ](), loss_d.lt_at["gpu", LB](3 * B),
+                d_cmask.lt_at["gpu", LB]((k - 1) * B),
+                cscale, Scalar[DT](1.0), grid_dim=nbB, block_dim=TPB)
+            if has_isw:
+                ctx.enqueue_function[kScaleCons](
+                    gpk.lt["gpu", LBPROJ](), d_isw.lt["gpu", LB](),
+                    grid_dim=nbB, block_dim=TPB)
+            call_vjp["gpu", B](
+                predh, TensorRefs[PREDH.ARITY](projo), gpk,
+                TensorRefs[PREDH.ARITY](gproj), octx)
+            call_vjp["gpu", B](
+                proj, TensorRefs[PROJM.ARITY](zk_work), gproj,
+                TensorRefs[PROJM.ARITY](gzcons), octx)
+            ctx.enqueue_function[kAccum](
+                gpin.lt["gpu", LBL](), gzcons.lt["gpu", LBL](),
+                grid_dim=nbLAT, block_dim=TPB)
+
+        # (c) reward (value-prefix) + dynamics for step k (produces z_{k+1})
+        if k < K:
+            ctx.enqueue_function[kBcopy](
+                zst.lt_at["gpu", LBL]((k + 1) * B * LATENT), dz.lt["gpu", LBL](),
+                grid_dim=nbLAT, block_dim=TPB)
+            if (k + 1) % HORIZON == 0:
+                dh_carry.dev.value().enqueue_fill(Scalar[DT](0.0))
+                dc_carry.dev.value().enqueue_fill(Scalar[DT](0.0))
+            # re-forward reward head at step k (repopulate caches)
+            ctx.enqueue_copy(
+                hbuf.dev.value().create_sub_buffer[DT](0, HH),
+                h_store.dev.value().create_sub_buffer[DT](k * HH, HH))
+            ctx.enqueue_copy(
+                cbuf.dev.value().create_sub_buffer[DT](0, HH),
+                c_store.dev.value().create_sub_buffer[DT](k * HH, HH))
+            rew.reward_step_forward["gpu", B](dz, hbuf, cbuf, cache, vp, octx)
+            ctx.enqueue_function[kTwoHot](
+                twr.lt["gpu", LBBINS](), d_rew.lt_at["gpu", LB](k * B),
+                v_min, v_max, grid_dim=nbB, block_dim=TPB)
+            ctx.enqueue_function[kRewVP](
+                vp.lt["gpu", LBBINS](), twr.lt["gpu", LBBINS](),
+                grad_vp.lt["gpu", LBBINS](), loss_d.lt_at["gpu", LB](2 * B),
+                gscale, Scalar[DT](1.0), grid_dim=nbB, block_dim=TPB)
+            # PER: IS-weight the value-prefix grad (the latent carry gz is the
+            # already-weighted contribution from z_{k+1}).
+            if has_isw:
+                ctx.enqueue_function[kScaleVP](
+                    grad_vp.lt["gpu", LBBINS](), d_isw.lt["gpu", LB](),
+                    grid_dim=nbB, block_dim=TPB)
+            rew.reward_step_backward["gpu", B](
+                dz, grad_vp, hbuf, cbuf, cache, dh_carry, dc_carry,
+                grad_zp, dh_prev, dc_prev, octx)
+            ctx.enqueue_function[kAccum](
+                gz.lt["gpu", LBL](), grad_zp.lt["gpu", LBL](),
+                grid_dim=nbLAT, block_dim=TPB)
+            ctx.enqueue_copy(dh_carry.dev.value(), dh_prev.dev.value())
+            ctx.enqueue_copy(dc_carry.dev.value(), dc_prev.dev.value())
+            # dynamics: full grad wrt z_{k+1} back through dyn_z, ½ on z_k
+            ctx.enqueue_function[kBuild](
+                din.lt["gpu", LBDI](), zst.lt_at["gpu", LBL](k * B * LATENT),
+                d_act.lt_at["gpu", LB](k * B), grid_dim=nbDIN, block_dim=TPB)
+            call_forward["gpu", B](dynz, TensorRefs[DYNZ.ARITY](din), dz, octx)
+            call_vjp["gpu", B](
+                dynz, TensorRefs[DYNZ.ARITY](din), gz,
+                TensorRefs[DYNZ.ARITY](gdin), octx)
+            ctx.enqueue_function[kHalf](
+                gpin.lt["gpu", LBL](), gdin.lt["gpu", LBDI](),
+                grid_dim=nbLAT, block_dim=TPB)
+
+        ctx.enqueue_function[kBcopy](
+            gpin.lt["gpu", LBL](), gz.lt["gpu", LBL](),
+            grid_dim=nbLAT, block_dim=TPB)
+
+    # ── rep: re-forward obs0 then vjp ──
+    ctx.enqueue_function[kBcopyOBS](
+        d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
+        grid_dim=nbOBS, block_dim=TPB)
+    call_forward["gpu", B](rep, TensorRefs[REP.ARITY](d_obs_work), z_work, octx)
+    call_vjp["gpu", B](
+        rep, TensorRefs[REP.ARITY](d_obs_work), gz,
+        TensorRefs[REP.ARITY](gobs), octx)
+
+    # ── clip + step all six nets ──
+    _ = clip_grad_norm["gpu", PRED](pred, Scalar[DT](max_grad_norm), octx)
+    opred.begin_step(); pred.for_each_param["gpu"](opred, octx)
+    _ = clip_grad_norm["gpu", EZRewardLSTMAtari[BINS]](
+        rew, Scalar[DT](max_grad_norm), octx)
+    orew.begin_step(); rew.for_each_param["gpu"](orew, octx)
+    _ = clip_grad_norm["gpu", DYNZ](dynz, Scalar[DT](max_grad_norm), octx)
+    odynz.begin_step(); dynz.for_each_param["gpu"](odynz, octx)
+    _ = clip_grad_norm["gpu", REP](rep, Scalar[DT](max_grad_norm), octx)
+    orep.begin_step(); rep.for_each_param["gpu"](orep, octx)
+    _ = clip_grad_norm["gpu", PROJM](proj, Scalar[DT](max_grad_norm), octx)
+    oproj.begin_step(); proj.for_each_param["gpu"](oproj, octx)
+    _ = clip_grad_norm["gpu", PREDH](predh, Scalar[DT](max_grad_norm), octx)
+    opredh.begin_step(); predh.for_each_param["gpu"](opredh, octx)
+
+    # ── D2H loss (+ PER priorities), single sync ──
+    if out_prio:
+        ctx.enqueue_copy(h_prio, d_prio.dev.value())
+    ctx.enqueue_copy(h_loss, loss_d.dev.value())
+    ctx.synchronize()
+    if out_prio:
+        var op = out_prio.value()
+        var hpp = h_prio.unsafe_ptr()
+        for b in range(B):
+            op[b] = hpp[b]
+    var hp = h_loss.unsafe_ptr()
+    var l_pol = Scalar[DT](0.0)
+    var l_val = Scalar[DT](0.0)
+    var l_rew = Scalar[DT](0.0)
+    var l_cons = Scalar[DT](0.0)
+    for b in range(B):
+        l_pol += hp[b]; l_val += hp[B + b]
+        l_rew += hp[2 * B + b]; l_cons += hp[3 * B + b]
+    var inv = Scalar[DT](1.0) / Scalar[DT](B)
+    if loss_parts:
+        var lp = loss_parts.value()
+        lp[0] = l_pol * inv; lp[1] = l_val * inv
+        lp[2] = l_rew * inv; lp[3] = l_cons * inv
     return (l_pol + l_val + l_rew + l_cons) * inv

@@ -59,6 +59,9 @@ from mojo_rl.nn.primitives.concat import Concat
 from mojo_rl.nn.primitives.add import Add
 from mojo_rl.nn.primitives.broadcast_tokens import BroadcastTokens
 from mojo_rl.nn.primitives.layer_norm import LayerNorm
+from mojo_rl.nn.primitives.lstm_cell import LSTMCell
+from mojo_rl.nn.primitives.batch_norm_1d import BatchNorm1D
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.models.resnet import ResBlockConv2DBN
 from mojo_rl.deep_agents.dreamerv3.zero_init import (
     scale_output_module, scale_output_graph,
@@ -421,3 +424,523 @@ def ez_atari_init_zero_dyn[
     scale_output_graph[target](
         dyn.graph, "rew.5.weight", "rew.5.bias", scale, ctx
     )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# VALUE-PREFIX path (EZv2 `value_prefix=True`, Atari only).  Stage 3 — see
+# docs/EZV2_ATARI_PARITY.md. Reverses deliberate-deviation B1: the fused
+# stateless reward branch above is replaced by a stateful LSTM reward head
+# whose (h,c) is carried across the unroll and reset every LSTM_HORIZON
+# steps, predicting a cumulative *value prefix* instead of a per-step reward.
+#
+# This whole block is dormant unless a caller opts in (the planner's
+# `LSTM_HIDDEN` gate, the driver's value_prefix flag). The non-VP nets above
+# are untouched and remain the default.
+# ══════════════════════════════════════════════════════════════════════
+
+# atari.yaml: lstm_hidden_size=512, lstm_horizon_len=5.
+comptime EZ_LSTM_HIDDEN = 512
+comptime EZ_RHID = 2 * EZ_LSTM_HIDDEN   # packed [h | c] carry width = 1024
+comptime EZ_LSTM_HORIZON = 5
+
+
+# ──────────────────────────────────────────────────────────────────────
+# g (Atari, VP) — z'-ONLY dynamics graph: [z(2304) | onehot(ACT)] → z'(2304).
+# Identical to `EZDynAtariGraph` MINUS the fused reward branch (`rew`/`out`
+# nodes): the last node is `zp`, so storage infers OUT_DIM = EZ_LATENT. The
+# reward is produced separately by the stateful `EZRewardLSTMAtari`.
+# ──────────────────────────────────────────────────────────────────────
+comptime EZDynZGraph[ACT: Int] = ComputeGraph[
+    InputSlot["in", EZ_LATENT + ACT],
+    Node["z",    Slice[EZ_LATENT + ACT, 0, EZ_LATENT],            "in"],
+    Node["aoh",  Slice[EZ_LATENT + ACT, EZ_LATENT, EZ_LATENT + ACT], "in"],
+    Node["apl",  EZActionPlane[ACT],                              "aoh"],
+    Node["aemb", Sequential[
+                     Conv2D[1, EZ_REDC, 1, 1, 0, EZ_HW, EZ_HW],
+                     LayerNorm[EZ_EMB],
+                     ReLU[EZ_EMB],
+                 ],                                               "apl"],
+    Node["cat",  Concat[EZ_LATENT, EZ_EMB],                       "z", "aemb"],
+    Node["c1",   Sequential[
+                     Conv2D[EZ_C + EZ_REDC, EZ_C, 3, 1, 1, EZ_HW, EZ_HW],
+                     BatchNorm2D[EZ_C, EZ_HW, EZ_HW],
+                 ],                                               "cat"],
+    Node["res",  Add[EZ_LATENT],                                  "c1", "z"],
+    Node["rl",   ReLU[EZ_LATENT],                                 "res"],
+    Node["zp",   ResBlockConv2DBN[EZ_C, 3, 1, EZ_HW, EZ_HW],      "rl"],
+]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# EZDynZNetAtari — single-input Module wrapper over the z'-only graph.
+# Mirrors EZDynNetAtari but OUT_DIM = LATENT (no reward slot). Used by the
+# VP unroll (training) and folded into EZDynVPNetAtari (search).
+# ──────────────────────────────────────────────────────────────────────
+struct EZDynZNetAtari[ACT: Int](Module):
+    comptime ARITY: Int = 1
+    comptime LATENT = EZ_LATENT
+    comptime IN_DIM = Self.LATENT + Self.ACT
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_DIM)
+    comptime OUT_DIM = Self.LATENT
+    comptime Graph = EZDynZGraph[Self.ACT]
+
+    var graph: Self.Graph
+
+    def __init__(out self):
+        comptime assert Self.Graph.OUT_DIM == Self.OUT_DIM, (
+            "EZDynZNetAtari: graph OUT_DIM must equal LATENT"
+        )
+        self.graph = Self.Graph()
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        var s = Self()
+        s.graph = Self.Graph.make[target, INIT](ctx)
+        return s^
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.graph.set_input["in", B](inputs[0], ctx)
+        self.graph.forward[B, target, POLICY=POLICY](out, ctx)
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        self.graph.vjp[B, target, POLICY=POLICY](grad_output, ctx)
+        comptime N = B * Self.IN_DIM
+        comptime if target == "cpu":
+            ref gin = self.graph.grad_input["in"]()
+            ref dst = grad_inputs[0]
+            for i in range(N):
+                dst.data[i] = gin.data[i]
+        else:
+            var c = ctx.value()
+            comptime nb = (N + TPB - 1) // TPB
+            c.enqueue_function[_ezdyn_copy_kernel[N]](
+                grad_inputs[0].lt["gpu", Layout.row_major(N)](),
+                self.graph.grad_input["in"]().lt["gpu", Layout.row_major(N)](),
+                grid_dim=nb, block_dim=TPB,
+            )
+
+    def for_each_param[target: StaticString, V: ParamVisitor](
+        mut self, mut visitor: V, ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        self.graph.for_each_param[target, V](
+            visitor, ctx, join_name(prefix, String("graph"))
+        )
+
+    def for_each_state[target: StaticString, V: ParamVisitor](
+        mut self, mut visitor: V, ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        self.graph.for_each_state[target, V](
+            visitor, ctx, join_name(prefix, String("graph"))
+        )
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        self.graph.set_attr[ATTR](value)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# EZRewardLSTMAtari — stateful value-prefix reward head (`SupportLSTMNetwork`,
+# base_model.py:234). ARITY=2 conceptually (z', [h;c]) but it is RECURRENT, so
+# — like LSTMCell — the Module.forward/vjp stubs RAISE and callers use the
+# step API instead (reward_step_forward / reward_step_backward), owning the
+# (h,c) carry buffers. The conv stem + post-MLP are plain sub-Modules driven
+# per step (re-forward-in-reverse, matching blocks.mojo's dyn handling).
+#
+#   stem : Conv1×1(64→16)→BN→ReLU                 [LATENT 2304] → [EZ_EMB 576]
+#   cell : LSTMCell[576, 512]                      x576,(h,c) → (h',c')
+#   head : BN1D→ReLU→Linear[512,32]→ReLU→Linear[32,BINS]   h'512 → BINS
+#
+# Caller-owned step buffers (CPU): h,c each sized 2·B·HIDDEN (slab0=prev,
+# slab1=out); cache sized B·CACHE_SIZE.
+# ──────────────────────────────────────────────────────────────────────
+struct EZRewardLSTMAtari[BINS: Int](Module):
+    comptime ARITY: Int = 2
+    comptime LATENT = EZ_LATENT
+    comptime HIDDEN = EZ_LSTM_HIDDEN
+    comptime RHID = EZ_RHID
+    comptime IN_DIMS = Self._build_in_dims()
+    comptime OUT_DIM = Self.BINS + Self.RHID    # [vp_logits | h' | c']
+
+    @staticmethod
+    def _build_in_dims() -> InlineArray[Int, 2]:
+        var d = InlineArray[Int, 2](fill=0)
+        d[0] = Self.LATENT
+        d[1] = Self.RHID
+        return d
+
+    comptime Stem = Sequential[
+        Conv2D[EZ_C, EZ_REDC, 1, 1, 0, EZ_HW, EZ_HW],
+        BatchNorm2D[EZ_REDC, EZ_HW, EZ_HW],
+        ReLU[EZ_EMB],
+    ]
+    comptime Cell = LSTMCell[EZ_EMB, EZ_LSTM_HIDDEN]
+    comptime Head = Sequential[
+        BatchNorm1D[EZ_LSTM_HIDDEN],
+        ReLU[EZ_LSTM_HIDDEN],
+        Linear[EZ_LSTM_HIDDEN, 32],
+        ReLU[32],
+        Linear[32, Self.BINS],
+    ]
+    comptime CACHE_SIZE = Self.Cell.CACHE_SIZE
+
+    var stem: Self.Stem
+    var cell: Self.Cell
+    var head: Self.Head
+    # single-step scratch (lazy by B)
+    var stem_out: Tensor   # [B·EZ_EMB]  stem fwd output / cell x
+    var hin: Tensor        # [B·HIDDEN]  head input (= h_t)
+    var dhin: Tensor       # [B·HIDDEN]  grad wrt head input (= dh from head)
+    var dstem: Tensor      # [B·EZ_EMB]  grad wrt stem output (cell dx)
+
+    def __init__(out self):
+        self.stem = Self.Stem()
+        self.cell = Self.Cell()
+        self.head = Self.Head()
+        self.stem_out = Tensor()
+        self.hin = Tensor()
+        self.dhin = Tensor()
+        self.dstem = Tensor()
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        comptime assert target == "cpu" or target == "gpu", (
+            "EZRewardLSTMAtari: target must be 'cpu' or 'gpu'"
+        )
+        var s = Self()
+        s.stem = Self.Stem.make[target, INIT](ctx)
+        s.cell = Self.Cell.make[target, INIT](ctx)
+        s.head = Self.Head.make[target, INIT](ctx)
+        return s^
+
+    # ----- Module conformance: recurrent → use the step API (stubs raise) ---
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self, inputs: TensorRefs[Self.ARITY, o], mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        raise Error(
+            "EZRewardLSTMAtari is recurrent — use reward_step_forward /"
+            " reward_step_backward, not Module.forward"
+        )
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self, forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor, grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        raise Error(
+            "EZRewardLSTMAtari is recurrent — use reward_step_backward,"
+            " not Module.vjp"
+        )
+
+    # ----- reflection: recurse into the three sub-modules -------------------
+    def for_each_param[target: StaticString, V: ParamVisitor](
+        mut self, mut visitor: V, ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        self.stem.for_each_param[target, V](
+            visitor, ctx, join_name(prefix, String("stem")))
+        self.cell.for_each_param[target, V](
+            visitor, ctx, join_name(prefix, String("cell")))
+        self.head.for_each_param[target, V](
+            visitor, ctx, join_name(prefix, String("head")))
+
+    def for_each_state[target: StaticString, V: ParamVisitor](
+        mut self, mut visitor: V, ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        self.stem.for_each_state[target, V](
+            visitor, ctx, join_name(prefix, String("stem")))
+        self.cell.for_each_state[target, V](
+            visitor, ctx, join_name(prefix, String("cell")))
+        self.head.for_each_state[target, V](
+            visitor, ctx, join_name(prefix, String("head")))
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        # BN train/eval toggle propagates to the stem + head (cell has no BN).
+        self.stem.set_attr[ATTR](value)
+        self.head.set_attr[ATTR](value)
+
+    # ----- recurrent step API ---------------------------------------------
+    # h, c: caller-owned, sized 2·B·HIDDEN (slab0 = prev, slab1 = out).
+    # cache: caller-owned, sized B·CACHE_SIZE (repopulated each forward).
+    def reward_step_forward[target: StaticString, B: Int](
+        mut self,
+        mut zprime: Tensor,
+        mut h: Tensor,
+        mut c: Tensor,
+        mut cache: Tensor,
+        mut out_vp: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """One reward step: stem(z') → LSTM(·, h_prev, c_prev) → head(h_t) =
+        value-prefix logits. Reads h/c slab0, writes h/c slab1 + cache + out_vp."""
+        comptime H = Self.HIDDEN
+        self.stem_out.ensure[target](B * EZ_EMB, ctx)
+        self.hin.ensure[target](B * H, ctx)
+        out_vp.ensure[target](B * Self.BINS, ctx)
+        call_forward[target, B](
+            self.stem, TensorRefs[1](zprime), self.stem_out, ctx)
+        self.cell.step_forward[target, B](
+            self.stem_out, h, c, cache, ctx,
+            x_off=0, h_prev_off=0, c_prev_off=0,
+            h_t_off=B * H, c_t_off=B * H, cache_off=0,
+        )
+        # head input = h_t (slab1)
+        comptime if target == "cpu":
+            for i in range(B * H):
+                self.hin.data[i] = h.data[B * H + i]
+        else:
+            var dctx = ctx.value()
+            var h_sub = h.dev.value().create_sub_buffer[DT](B * H, B * H)
+            # hin may be over-sized from a prior larger-B call (the fused dyn's
+            # reward head is shared between B=1 search and B=N train) — copy into
+            # an exactly-B*H sub-view so enqueue_copy's src/dst sizes match.
+            var hin_sub = self.hin.dev.value().create_sub_buffer[DT](0, B * H)
+            dctx.enqueue_copy(hin_sub, h_sub)
+        call_forward[target, B](
+            self.head, TensorRefs[1](self.hin), out_vp, ctx)
+
+    def reward_step_backward[target: StaticString, B: Int](
+        mut self,
+        mut zprime: Tensor,        # re-forwarded stem input for this step
+        mut grad_out_vp: Tensor,   # [B·BINS] grad from the VP loss
+        mut h: Tensor,             # slab0=h_prev, slab1=h_t (re-forwarded)
+        mut c: Tensor,
+        mut cache: Tensor,         # re-forwarded
+        mut dh_carry: Tensor,      # [B·HIDDEN] grad wrt h_t from step k+1 (0 at end)
+        mut dc_carry: Tensor,      # [B·HIDDEN] grad wrt c_t from step k+1 (0 at end)
+        mut grad_zprime: Tensor,   # [B·LATENT] OUT grad wrt z'
+        mut dh_prev: Tensor,       # [B·HIDDEN] OUT grad wrt h_{k-1} (next carry)
+        mut dc_prev: Tensor,       # [B·HIDDEN] OUT grad wrt c_{k-1}
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        """BPTT one reward step. MUST be preceded by a reward_step_forward with
+        the SAME (h_prev, c_prev) to repopulate stem/head caches + cache buf."""
+        comptime H = Self.HIDDEN
+        self.dhin.ensure[target](B * H, ctx)
+        self.dstem.ensure[target](B * EZ_EMB, ctx)
+        grad_zprime.ensure[target](B * Self.LATENT, ctx)
+        # head: grad_out_vp → dhin (grad wrt h_t)
+        call_vjp[target, B](
+            self.head, TensorRefs[1](self.hin), grad_out_vp,
+            TensorRefs[1](self.dhin), ctx)
+        # combine with the recurrent carry: dh_total = dhin + dh_carry
+        comptime if target == "cpu":
+            for i in range(B * H):
+                self.dhin.data[i] += dh_carry.data[i]
+        else:
+            var dctx = ctx.value()
+            comptime nb = (B * H + TPB - 1) // TPB
+            dctx.enqueue_function[_ez_add_inplace_kernel[B * H]](
+                self.dhin.lt["gpu", Layout.row_major(B * H)](),
+                dh_carry.lt["gpu", Layout.row_major(B * H)](),
+                grid_dim=nb, block_dim=TPB,
+            )
+        # cell BPTT: dh=dhin(=dh_total), dc=dc_carry → dx(dstem), dh_prev, dc_prev
+        self.cell.step_backward[target, B](
+            self.dhin, dc_carry, self.stem_out, h, c, cache,
+            self.dstem, dh_prev, dc_prev, ctx,
+            dh_off=0, dc_off=0, x_off=0,
+            h_prev_off=0, c_prev_off=0, cache_off=0,
+            dx_off=0, dh_prev_off=0, dc_prev_off=0,
+        )
+        # stem: dstem → grad_zprime
+        call_vjp[target, B](
+            self.stem, TensorRefs[1](zprime), self.dstem,
+            TensorRefs[1](grad_zprime), ctx)
+
+
+def ez_atari_init_zero_reward[
+    target: StaticString, BINS: Int
+](
+    mut rew: EZRewardLSTMAtari[BINS],
+    ctx: Optional[DeviceContext] = None,
+    scale: Scalar[DT] = Scalar[DT](0.0),
+) raises:
+    """Zero (or `scale`) the value-prefix head's OUTPUT Linear (head child 4 →
+    `4.*`). scale=0.0 → neutral value-prefix at init (matches init_zero=True)."""
+    scale_output_module[target, EZRewardLSTMAtari[BINS].Head](
+        rew.head, "4.weight", "4.bias", scale, ctx
+    )
+
+
+# GPU elementwise a += b (reward-head carry combine).
+def _ez_add_inplace_kernel[N: Int](
+    a: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    b: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx < N:
+        a[idx] = rebind[Scalar[DT]](a[idx]) + rebind[Scalar[DT]](b[idx])
+
+
+# GPU pack [z'(LATENT) | vp(BINS)] per batch row → out[B·(LATENT+BINS)].
+def _ez_pack_zvp_kernel[B: Int, LATENT: Int, BINS: Int](
+    dst: LayoutTensor[DT, Layout.row_major(B * (LATENT + BINS)), MutAnyOrigin],
+    zp: LayoutTensor[DT, Layout.row_major(B * LATENT), MutAnyOrigin],
+    vp: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
+):
+    comptime OUT = LATENT + BINS
+    var gid = Int(global_idx.x)
+    if gid >= B * OUT:
+        return
+    var b = gid // OUT
+    var i = gid % OUT
+    if i < LATENT:
+        dst[gid] = rebind[Scalar[DT]](zp[b * LATENT + i])
+    else:
+        dst[gid] = rebind[Scalar[DT]](vp[b * BINS + (i - LATENT)])
+
+
+# ──────────────────────────────────────────────────────────────────────
+# EZDynVPNetAtari — FUSED value-prefix dynamics for SEARCH (decision B1.1).
+# A drop-in `[z|act] → [z'|vp_logits]` dynamics (IN=LATENT+ACT, OUT=LATENT+BINS,
+# identical contract to EZDynNetAtari) so it plugs into the EXISTING
+# GumbelGPUMCTS / MZ adapters / replay with NO orchestrator changes. It OWNS the
+# z'-only dynamics + the stateful LSTM reward head (so training drives the same
+# weights via the public `.dynz` / `.rew` fields and their step API). In SEARCH
+# the reward head runs with ZERO (h,c) per node (stateless ≡ horizon-1); the
+# search-side (h,c) carry + prefix-diff is the deferred parity fast-follow (see
+# docs/EZV2_ATARI_PARITY.md decision B1.1). `vjp` raises — search is forward-only
+# and training drives `dynz`/`rew` directly. Reflection/set_attr recurse both.
+# ──────────────────────────────────────────────────────────────────────
+struct EZDynVPNetAtari[ACT: Int, BINS: Int](Module):
+    comptime ARITY: Int = 1
+    comptime LATENT = EZ_LATENT
+    comptime IN_DIM = Self.LATENT + Self.ACT
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_DIM)
+    comptime OUT_DIM = Self.LATENT + Self.BINS
+    comptime HIDDEN = EZ_LSTM_HIDDEN
+
+    var dynz: EZDynZNetAtari[Self.ACT]
+    var rew: EZRewardLSTMAtari[Self.BINS]
+    # search scratch (lazy by B): z', zero (h,c) carry, cache, vp logits
+    var _zp: Tensor
+    var _h0: Tensor
+    var _c0: Tensor
+    var _cache: Tensor
+    var _vp: Tensor
+
+    def __init__(out self):
+        self.dynz = EZDynZNetAtari[Self.ACT]()
+        self.rew = EZRewardLSTMAtari[Self.BINS]()
+        self._zp = Tensor()
+        self._h0 = Tensor()
+        self._c0 = Tensor()
+        self._cache = Tensor()
+        self._vp = Tensor()
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        var s = Self()
+        s.dynz = EZDynZNetAtari[Self.ACT].make[target, INIT](ctx)
+        s.rew = EZRewardLSTMAtari[Self.BINS].make[target, INIT](ctx)
+        return s^
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        comptime H = Self.HIDDEN
+        comptime LAT = Self.LATENT
+        self._zp.ensure[target](B * LAT, ctx)
+        self._h0.ensure[target](2 * B * H, ctx)
+        self._c0.ensure[target](2 * B * H, ctx)
+        self._cache.ensure[target](B * EZRewardLSTMAtari[Self.BINS].CACHE_SIZE, ctx)
+        self._vp.ensure[target](B * Self.BINS, ctx)
+        out.ensure[target](B * Self.OUT_DIM, ctx)
+        # z' = g_z([z | act])
+        self.dynz.forward[target, B](inputs, self._zp, ctx)
+        # zero the (h,c) carry (stateless-in-search), then reward LSTM step
+        comptime if target == "cpu":
+            for i in range(2 * B * H):
+                self._h0.data[i] = Scalar[DT](0.0)
+                self._c0.data[i] = Scalar[DT](0.0)
+        else:
+            self._h0.dev.value().enqueue_fill(Scalar[DT](0.0))
+            self._c0.dev.value().enqueue_fill(Scalar[DT](0.0))
+        self.rew.reward_step_forward[target, B](
+            self._zp, self._h0, self._c0, self._cache, self._vp, ctx)
+        # pack [z' | vp_logits]
+        comptime if target == "cpu":
+            for b in range(B):
+                for i in range(LAT):
+                    out.data[b * Self.OUT_DIM + i] = self._zp.data[b * LAT + i]
+                for i in range(Self.BINS):
+                    out.data[b * Self.OUT_DIM + LAT + i] = self._vp.data[b * Self.BINS + i]
+        else:
+            var c = ctx.value()
+            comptime nb = (B * Self.OUT_DIM + TPB - 1) // TPB
+            c.enqueue_function[_ez_pack_zvp_kernel[B, LAT, Self.BINS]](
+                out.lt["gpu", Layout.row_major(B * Self.OUT_DIM)](),
+                self._zp.lt["gpu", Layout.row_major(B * LAT)](),
+                self._vp.lt["gpu", Layout.row_major(B * Self.BINS)](),
+                grid_dim=nb, block_dim=TPB,
+            )
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self, forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor, grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        raise Error(
+            "EZDynVPNetAtari.forward is search-only; training drives .dynz/.rew"
+            " via ezv2_unroll_train_step_*_vp"
+        )
+
+    def for_each_param[target: StaticString, V: ParamVisitor](
+        mut self, mut visitor: V, ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        self.dynz.for_each_param[target, V](
+            visitor, ctx, join_name(prefix, String("dynz")))
+        self.rew.for_each_param[target, V](
+            visitor, ctx, join_name(prefix, String("rew")))
+
+    def for_each_state[target: StaticString, V: ParamVisitor](
+        mut self, mut visitor: V, ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        self.dynz.for_each_state[target, V](
+            visitor, ctx, join_name(prefix, String("dynz")))
+        self.rew.for_each_state[target, V](
+            visitor, ctx, join_name(prefix, String("rew")))
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        self.dynz.set_attr[ATTR](value)
+        self.rew.set_attr[ATTR](value)

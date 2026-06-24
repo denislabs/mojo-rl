@@ -25,6 +25,8 @@ Defaults follow `references/EfficientZeroV2-main/ez/config/exp/atari.yaml`:
 from .nets import EZProjectorNet, EZPredictorNet
 from .nets_atari import (
     EZRepNetResNetAtari, EZDynNetAtari, EZPredNetAtari, EZ_C, EZ_LATENT,
+    EZDynZNetAtari, EZRewardLSTMAtari,
+    EZ_LSTM_HIDDEN, EZ_RHID, EZ_LSTM_HORIZON,
 )
 
 
@@ -50,3 +52,13 @@ struct EZV2AtariConfig[
     comptime Pred = EZPredNetAtari[Self.ACT, Self.BINS]
     comptime Proj = EZProjectorNet[Self.LATENT, Self.PROJ, Self.PROJ_HID]
     comptime Predh = EZPredictorNet[Self.PROJ, Self.BOTTLENECK]
+
+    # ── Value-prefix (EZ `value_prefix=True`, Atari) — Stage 3, opt-in ──
+    # The non-VP `Dyn` above (fused stateless reward) stays the default. When a
+    # caller enables value prefix it uses `DynZ` (z'-only dynamics) + `Reward`
+    # (stateful LSTM value-prefix head) instead; the LSTM dims follow atari.yaml.
+    comptime LSTM_HIDDEN = EZ_LSTM_HIDDEN       # 512
+    comptime RHID = EZ_RHID                     # 1024 = packed [h | c]
+    comptime LSTM_HORIZON = EZ_LSTM_HORIZON     # 5  (reward-hidden reset period)
+    comptime DynZ = EZDynZNetAtari[Self.ACT]
+    comptime Reward = EZRewardLSTMAtari[Self.BINS]
