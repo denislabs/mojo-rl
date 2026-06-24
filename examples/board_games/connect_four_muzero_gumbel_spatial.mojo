@@ -166,9 +166,9 @@ def main() raises:
         temperature_decay_steps=40_000,
         temp_min=1.0,
         eval_open_plies=4,
-        # DEBUG (regression hunt): reanalyze OFF to isolate the live-loop machinery
-        # the overfit test bypasses (was 4). Restore to 4 once diagnosed.
-        reanalyze_every=0,
+        # DEBUG (regression hunt): step B — reanalyze back ON (was 0), PER off
+        # below, to isolate reanalyze. Restore to 4 (with PER on) once diagnosed.
+        reanalyze_every=4,
         reanalyze_batch=128,
         target_sync_interval=200,
         # Rolling checkpoint of the best net every 2k moves → playable /
@@ -180,11 +180,11 @@ def main() raises:
         # priorities. Set False for plain uniform device sampling. PER focuses
         # training on the sharp tactical positions the sparse-terminal C4 reward
         # under-samples — the lever for the 64-sim plateau.
-        # DEBUG (regression hunt): both-off RESTORED learning, so the bug is in
-        # PER and/or reanalyze. Narrowing step A: PER back ON, reanalyze still OFF.
-        # If learning breaks again -> PER (IS-weights / priorities) is the bug.
-        # If it keeps learning   -> reanalyze is the bug (flip reanalyze_every->4).
-        use_per=True,
+        # DEBUG (regression hunt): step B — reanalyze ON (above), PER OFF here.
+        # PER mechanics tested healthy (IS-weights/priorities sane, code identical
+        # to the working b5effd6e), so this isolates reanalyze. If it now breaks
+        # (slow/no promotions) -> reanalyze is the (main) bug. Restore both later.
+        use_per=False,
         per_alpha=Scalar[DT](1.0),
         per_beta=Scalar[DT](1.0),
     )
