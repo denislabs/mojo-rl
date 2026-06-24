@@ -1,0 +1,478 @@
+"""Conv2D im2col / col2im kernel A/B — perf + correctness, in isolation.
+
+Self-contained A/B harness (one process) for the two gather/scatter kernels that
+flank the Conv2D GEMM in `mojo_rl/nn/primitives/conv2d.mojo`. Modeled on
+`bench_storage_transpose_gpu.mojo`. Tracker: `docs/CONV2D_KERNEL_OPTIMIZATION.md`.
+
+Each GPU variant is verified against the CPU reference (`_im2col_cpu` /
+`_col2im_cpu`, imported from conv2d.mojo — the source of truth) on an index-fill
+pattern, then timed. A variant ships to conv2d.mojo only at `mismatches=0` and a
+measured NVIDIA win.
+
+Variants:
+  im2col  v0 = baseline (current conv2d.mojo kernel, copied here)
+          v1 = O1 shape-static gather-index table (2 divmods + 1 cached lookup)
+  col2im  v0 = baseline (gather, [BS,COL] d_col — uncoalesced)
+          v1 = O2 transpose ([COL,BS] d_col → coalesced) + O3 comptime S==1
+
+Adding a variant: write `_im2col_vN` / `_col2im_vN`, add a `comptime if VARIANT`
+arm in the time/verify dispatch, register it in `main()`.
+
+Run (NVIDIA = perf truth):
+    pixi run -e nvidia mojo run -I . benchmarks/bench_conv2d_im2col_col2im_gpu.mojo
+Run (Apple = parity only):
+    pixi run -e apple  mojo run -I . benchmarks/bench_conv2d_im2col_col2im_gpu.mojo
+"""
+
+from std.gpu import global_idx, thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.time import perf_counter_ns
+from layout import Layout, LayoutTensor
+
+from mojo_rl.nn.primitives.conv2d import _im2col_cpu, _col2im_cpu
+
+comptime DT = DType.float32
+comptime IT = DType.int32
+comptime TPB = 128
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# im2col kernels
+# ══════════════════════════════════════════════════════════════════════════
+# v0 — baseline (verbatim from conv2d.mojo `_im2col_kernel`, fp32 only).
+def _im2col_v0[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+    col: LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= BS * COL:
+        return
+    var row = idx // COL
+    var ck = idx % COL
+    var b = row // SO
+    var s = row % SO
+    var oh = s // OW
+    var ow = s % OW
+    var ic = ck // (K * K)
+    var rem = ck % (K * K)
+    var kh = rem // K
+    var kw = rem % K
+    var ih = oh * S + kh - P
+    var iw = ow * S + kw - P
+    if ih < 0 or ih >= H or iw < 0 or iw >= W:
+        col[row, ck] = Scalar[DT](0)
+    else:
+        col[row, ck] = rebind[Scalar[DT]](input[b, ic * H * W + ih * W + iw])
+
+
+# v1 — O1 shape-static gather table. `gather[SO*COL]` holds the within-sample
+# input offset (`ic*H*W + ih*W + iw`) or -1 (padding), built once on the host.
+# Per thread: `b = idx // (SO*COL)`, `g = idx % (SO*COL)`, one table load, one
+# branchless select. col[BS,COL] and input[BATCH,IN_FLAT] are addressed flat
+# (element (row,ck) is at row*COL+ck == idx; offset is b*IN_FLAT + table value).
+def _im2col_v1[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH * IN_FLAT), MutAnyOrigin],
+    gather: LayoutTensor[IT, Layout.row_major(SO * COL), MutAnyOrigin],
+    col: LayoutTensor[DT, Layout.row_major(BS * COL), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= BS * COL:
+        return
+    var b = idx // (SO * COL)
+    var g = idx % (SO * COL)
+    var off = Int(rebind[Scalar[IT]](gather[g]))
+    if off < 0:
+        col[idx] = Scalar[DT](0)
+    else:
+        col[idx] = rebind[Scalar[DT]](input[b * IN_FLAT + off])
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# col2im kernels
+# ══════════════════════════════════════════════════════════════════════════
+# v0 — baseline (verbatim from conv2d.mojo `_dx_col2im_kernel`, fp32). Reads
+# d_col[BS,COL] with col_idx fixed across adjacent threads → stride-COL,
+# uncoalesced.
+def _col2im_v0[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int,
+](
+    d_col: LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= BATCH * IN_FLAT:
+        return
+    var b = idx // IN_FLAT
+    var in_pos = idx % IN_FLAT
+    var hw = H * W
+    var ic = in_pos // hw
+    var rem = in_pos % hw
+    var ih = rem // W
+    var iw = rem % W
+    var acc: Scalar[DT] = 0
+    for kh in range(K):
+        var oh_num = ih + P - kh
+        if oh_num < 0 or oh_num % S != 0:
+            continue
+        var oh = oh_num // S
+        if oh >= OH:
+            continue
+        for kw in range(K):
+            var ow_num = iw + P - kw
+            if ow_num < 0 or ow_num % S != 0:
+                continue
+            var ow = ow_num // S
+            if ow >= OW:
+                continue
+            var row = b * SO + oh * OW + ow
+            var col_idx = (ic * K + kh) * K + kw
+            acc += rebind[Scalar[DT]](d_col[row, col_idx])
+    grad_input[b, in_pos] = acc
+
+
+# v1 — O2 transpose ([COL,BS] d_col, so adjacent threads (row+1) read adjacent
+# addresses → coalesced) + O3 comptime S==1 fast path (drops `% S` / `// S`).
+def _col2im_v1[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int,
+](
+    d_colT: LayoutTensor[DT, Layout.row_major(COL, BS), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+):
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= BATCH * IN_FLAT:
+        return
+    var b = idx // IN_FLAT
+    var in_pos = idx % IN_FLAT
+    var hw = H * W
+    var ic = in_pos // hw
+    var rem = in_pos % hw
+    var ih = rem // W
+    var iw = rem % W
+    var acc: Scalar[DT] = 0
+    comptime if S == 1:
+        for kh in range(K):
+            var oh = ih + P - kh
+            if oh < 0 or oh >= OH:
+                continue
+            for kw in range(K):
+                var ow = iw + P - kw
+                if ow < 0 or ow >= OW:
+                    continue
+                var row = b * SO + oh * OW + ow
+                var col_idx = (ic * K + kh) * K + kw
+                acc += rebind[Scalar[DT]](d_colT[col_idx, row])
+    else:
+        for kh in range(K):
+            var oh_num = ih + P - kh
+            if oh_num < 0 or oh_num % S != 0:
+                continue
+            var oh = oh_num // S
+            if oh >= OH:
+                continue
+            for kw in range(K):
+                var ow_num = iw + P - kw
+                if ow_num < 0 or ow_num % S != 0:
+                    continue
+                var ow = ow_num // S
+                if ow >= OW:
+                    continue
+                var row = b * SO + oh * OW + ow
+                var col_idx = (ic * K + kh) * K + kw
+                acc += rebind[Scalar[DT]](d_colT[col_idx, row])
+    grad_input[b, in_pos] = acc
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# host helpers
+# ══════════════════════════════════════════════════════════════════════════
+def _build_gather[
+    IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OH: Int, OW: Int,
+    COL: Int, SO: Int
+](ctx: DeviceContext) raises -> DeviceBuffer[IT]:
+    """Shape-static O1 table: gather[s*COL+ck] = within-sample input offset, or
+    -1 for padding. Mirrors `_im2col_v0`'s decode but with no batch term."""
+    var g = ctx.enqueue_create_buffer[IT](SO * COL)
+    with g.map_to_host() as hg:
+        for s in range(SO):
+            var oh = s // OW
+            var ow = s % OW
+            for ck in range(COL):
+                var ic = ck // (K * K)
+                var rem = ck % (K * K)
+                var kh = rem // K
+                var kw = rem % K
+                var ih = oh * S + kh - P
+                var iw = ow * S + kw - P
+                var v: Int = -1
+                if ih >= 0 and ih < H and iw >= 0 and iw < W:
+                    v = ic * H * W + ih * W + iw
+                hg[s * COL + ck] = Scalar[IT](v)
+    return g
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# im2col: verify + time
+# ══════════════════════════════════════════════════════════════════════════
+def _im2col_verify[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int, VARIANT: Int,
+](ctx: DeviceContext) raises -> Int:
+    var inp = ctx.enqueue_create_buffer[DT](BATCH * IN_FLAT)
+    var col = ctx.enqueue_create_buffer[DT](BS * COL)
+    # index-fill input: distinct per (b, pos) so any wrong gather shows up
+    var in_host = List[Scalar[DT]](length=BATCH * IN_FLAT, fill=Scalar[DT](0))
+    with inp.map_to_host() as hi:
+        for i in range(BATCH * IN_FLAT):
+            var v = Scalar[DT](Float64((i % 997) + 1) * 0.5)
+            hi[i] = v
+            in_host[i] = v
+    _ = col.enqueue_fill(Scalar[DT](-123.0))
+    comptime nb = (BS * COL + TPB - 1) // TPB
+
+    comptime if VARIANT == 0:
+        var inl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](inp)
+        var cl = LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin](col)
+        ctx.enqueue_function[
+            _im2col_v0[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+        ](inl, cl, grid_dim=nb, block_dim=TPB)
+    else:
+        var g = _build_gather[IC, K, S, P, H, W, OH, OW, COL, SO](ctx)
+        var inl = LayoutTensor[DT, Layout.row_major(BATCH * IN_FLAT), MutAnyOrigin](inp)
+        var gl = LayoutTensor[IT, Layout.row_major(SO * COL), MutAnyOrigin](g)
+        var cl = LayoutTensor[DT, Layout.row_major(BS * COL), MutAnyOrigin](col)
+        ctx.enqueue_function[
+            _im2col_v1[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+        ](inl, gl, cl, grid_dim=nb, block_dim=TPB)
+    ctx.synchronize()
+
+    # CPU reference (per sample) into a full [BS, COL] expectation
+    var col_sample = List[Scalar[DT]](length=SO * COL, fill=Scalar[DT](0))
+    var bad = 0
+    with col.map_to_host() as hc:
+        for b in range(BATCH):
+            _im2col_cpu[IC, K, S, P, H, W, OH, OW](in_host, b * IN_FLAT, col_sample)
+            for j in range(SO * COL):
+                var got = hc[b * SO * COL + j]
+                if got != col_sample[j]:
+                    bad += 1
+    return bad
+
+
+def _im2col_time[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int, VARIANT: Int,
+    WARMUP: Int, ITERS: Int,
+](ctx: DeviceContext, label: StaticString) raises:
+    var inp = ctx.enqueue_create_buffer[DT](BATCH * IN_FLAT)
+    var col = ctx.enqueue_create_buffer[DT](BS * COL)
+    _ = inp.enqueue_fill(Scalar[DT](0.01))
+    _ = col.enqueue_fill(Scalar[DT](0.0))
+    comptime nb = (BS * COL + TPB - 1) // TPB
+    var us = Float64(0)
+
+    comptime if VARIANT == 0:
+        var inl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](inp)
+        var cl = LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin](col)
+        comptime for _ in range(WARMUP):
+            ctx.enqueue_function[
+                _im2col_v0[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+            ](inl, cl, grid_dim=nb, block_dim=TPB)
+        ctx.synchronize()
+        var t0 = perf_counter_ns()
+        comptime for _ in range(ITERS):
+            ctx.enqueue_function[
+                _im2col_v0[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+            ](inl, cl, grid_dim=nb, block_dim=TPB)
+        ctx.synchronize()
+        us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
+    else:
+        var g = _build_gather[IC, K, S, P, H, W, OH, OW, COL, SO](ctx)
+        var inl = LayoutTensor[DT, Layout.row_major(BATCH * IN_FLAT), MutAnyOrigin](inp)
+        var gl = LayoutTensor[IT, Layout.row_major(SO * COL), MutAnyOrigin](g)
+        var cl = LayoutTensor[DT, Layout.row_major(BS * COL), MutAnyOrigin](col)
+        comptime for _ in range(WARMUP):
+            ctx.enqueue_function[
+                _im2col_v1[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+            ](inl, gl, cl, grid_dim=nb, block_dim=TPB)
+        ctx.synchronize()
+        var t0 = perf_counter_ns()
+        comptime for _ in range(ITERS):
+            ctx.enqueue_function[
+                _im2col_v1[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+            ](inl, gl, cl, grid_dim=nb, block_dim=TPB)
+        ctx.synchronize()
+        us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
+
+    var gb = 2.0 * Float64(BS) * Float64(COL) * 4.0 / 1e9
+    print("  ", label, " | ", us, "us/iter ", gb / (us / 1e6) / 1e3, "TB/s")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# col2im: verify + time
+# ══════════════════════════════════════════════════════════════════════════
+def _col2im_verify[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int, VARIANT: Int,
+](ctx: DeviceContext) raises -> Int:
+    var dcol = ctx.enqueue_create_buffer[DT](BS * COL)
+    var gin = ctx.enqueue_create_buffer[DT](BATCH * IN_FLAT)
+    # logical d_col[b,s,ck] index-fill; lay out per variant ([BS,COL] vs [COL,BS])
+    var dcol_host = List[Scalar[DT]](length=BS * COL, fill=Scalar[DT](0))  # [BS,COL]
+    with dcol.map_to_host() as hd:
+        for b in range(BATCH):
+            for s in range(SO):
+                for ck in range(COL):
+                    var row = b * SO + s
+                    var v = Scalar[DT](Float64(((row * COL + ck) % 991) + 1) * 0.25)
+                    dcol_host[row * COL + ck] = v
+                    comptime if VARIANT == 0:
+                        hd[row * COL + ck] = v          # [BS, COL]
+                    else:
+                        hd[ck * BS + row] = v           # [COL, BS] transpose
+    _ = gin.enqueue_fill(Scalar[DT](0.0))
+    comptime nb = (BATCH * IN_FLAT + TPB - 1) // TPB
+
+    comptime if VARIANT == 0:
+        var dl = LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin](dcol)
+        var gl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](gin)
+        ctx.enqueue_function[
+            _col2im_v0[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+        ](dl, gl, grid_dim=nb, block_dim=TPB)
+    else:
+        var dl = LayoutTensor[DT, Layout.row_major(COL, BS), MutAnyOrigin](dcol)
+        var gl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](gin)
+        ctx.enqueue_function[
+            _col2im_v1[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+        ](dl, gl, grid_dim=nb, block_dim=TPB)
+    ctx.synchronize()
+
+    # CPU reference: scatter-add per sample into d_in
+    var d_in_ref = List[Scalar[DT]](length=BATCH * IN_FLAT, fill=Scalar[DT](0))
+    var dcol_sample = List[Scalar[DT]](length=SO * COL, fill=Scalar[DT](0))
+    for b in range(BATCH):
+        for j in range(SO * COL):
+            dcol_sample[j] = dcol_host[b * SO * COL + j]
+        _col2im_cpu[IC, K, S, P, H, W, OH, OW](dcol_sample, d_in_ref, b * IN_FLAT)
+
+    var bad = 0
+    with gin.map_to_host() as hg:
+        for i in range(BATCH * IN_FLAT):
+            # tolerance: fp32 sum order differs between GPU and CPU ref
+            var diff = Float64(hg[i] - d_in_ref[i])
+            if diff < 0:
+                diff = -diff
+            if diff > 1e-3:
+                bad += 1
+    return bad
+
+
+def _col2im_time[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int, VARIANT: Int,
+    WARMUP: Int, ITERS: Int,
+](ctx: DeviceContext, label: StaticString) raises:
+    var dcol = ctx.enqueue_create_buffer[DT](BS * COL)
+    var gin = ctx.enqueue_create_buffer[DT](BATCH * IN_FLAT)
+    _ = dcol.enqueue_fill(Scalar[DT](0.01))
+    _ = gin.enqueue_fill(Scalar[DT](0.0))
+    comptime nb = (BATCH * IN_FLAT + TPB - 1) // TPB
+    var us = Float64(0)
+
+    comptime if VARIANT == 0:
+        var dl = LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin](dcol)
+        var gl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](gin)
+        comptime for _ in range(WARMUP):
+            ctx.enqueue_function[
+                _col2im_v0[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+            ](dl, gl, grid_dim=nb, block_dim=TPB)
+        ctx.synchronize()
+        var t0 = perf_counter_ns()
+        comptime for _ in range(ITERS):
+            ctx.enqueue_function[
+                _col2im_v0[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+            ](dl, gl, grid_dim=nb, block_dim=TPB)
+        ctx.synchronize()
+        us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
+    else:
+        var dl = LayoutTensor[DT, Layout.row_major(COL, BS), MutAnyOrigin](dcol)
+        var gl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](gin)
+        comptime for _ in range(WARMUP):
+            ctx.enqueue_function[
+                _col2im_v1[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+            ](dl, gl, grid_dim=nb, block_dim=TPB)
+        ctx.synchronize()
+        var t0 = perf_counter_ns()
+        comptime for _ in range(ITERS):
+            ctx.enqueue_function[
+                _col2im_v1[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+            ](dl, gl, grid_dim=nb, block_dim=TPB)
+        ctx.synchronize()
+        us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
+
+    var gb = 2.0 * Float64(BS) * Float64(COL) * 4.0 / 1e9
+    print("  ", label, " | ", us, "us/iter ", gb / (us / 1e6) / 1e3, "TB/s")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# driver — one shape, all variants
+# ══════════════════════════════════════════════════════════════════════════
+def run_shape[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    WARMUP: Int, ITERS: Int,
+](ctx: DeviceContext, label: StaticString) raises:
+    comptime OH = (H + 2 * P - K) // S + 1
+    comptime OW = (W + 2 * P - K) // S + 1
+    comptime IN_FLAT = IC * H * W
+    comptime COL = IC * K * K
+    comptime SO = OH * OW
+    comptime BS = BATCH * SO
+    print(label, " IC=", IC, " K=", K, " S=", S, " P=", P, " ", H, "x", W,
+          " | BS=", BS, " COL=", COL)
+
+    var b0 = _im2col_verify[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 0](ctx)
+    var b1 = _im2col_verify[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 1](ctx)
+    print("  im2col verify: v0 mismatches=", b0, "  v1 mismatches=", b1)
+    _im2col_time[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 0, WARMUP, ITERS
+    ](ctx, "im2col v0 baseline    ")
+    _im2col_time[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 1, WARMUP, ITERS
+    ](ctx, "im2col v1 gather-table")
+
+    var c0 = _col2im_verify[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 0](ctx)
+    var c1 = _col2im_verify[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 1](ctx)
+    print("  col2im verify: v0 mismatches=", c0, "  v1 mismatches=", c1)
+    _col2im_time[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 0, WARMUP, ITERS
+    ](ctx, "col2im v0 baseline    ")
+    _col2im_time[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 1, WARMUP, ITERS
+    ](ctx, "col2im v1 transpose+S1")
+    print("-" * 70)
+
+
+def main() raises:
+    var ctx = DeviceContext()
+    print("Conv2D im2col/col2im A/B — perf + correctness [fp32]")
+    print("=" * 70)
+    # C4 residual tower (the hot shape): IC=64, 3x3 s1 p1, 6x7
+    run_shape[256, 64, 3, 1, 1, 6, 7, 5, 100](ctx, "C4 res")
+    # Atari/DQN mid: IC=32, 4x4 s2 p0, 20x20 (strided, S!=1 path)
+    run_shape[64, 32, 4, 2, 0, 20, 20, 5, 50](ctx, "Atari mid")
+    # Atari/DQN stem: IC=4, 8x8 s4 p0, 84x84 (large K)
+    run_shape[64, 4, 8, 4, 0, 84, 84, 5, 50](ctx, "Atari stem")
+    print("=" * 70)
+    print("All `mismatches=0` required before promoting a variant to conv2d.mojo.")
+    print("Perf truth = NVIDIA; Apple is parity-only.")
