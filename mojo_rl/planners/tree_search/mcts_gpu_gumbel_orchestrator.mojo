@@ -42,6 +42,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 
 comptime TPB = 256  # preserved from legacy nn.constants (nn.TPB == 128)
 
@@ -600,6 +601,38 @@ struct GumbelGPUMCTS[
         power of two by the driver.
         """
 
+        # Recomposed from three reusable steps (identical kernel sequence):
+        #   init (rep.encode + pred root + scatter + Gumbel-Top-k init_root) →
+        #   Sequential-Halving sim loop → extract policy + root value. The
+        #   capture variant `search_gpu_captured` reuses these, wrapping ONLY the
+        #   sim loop in a CUDA graph (init keeps the fresh rng eager).
+        var k_clipped = self._search_init_gpu[REP, PRED](
+            ctx, rep, pred, obs, apply_legal, k_actual, rng_seed
+        )
+        self._run_halving_sims_gpu[REP, DYN, PRED](
+            ctx, dyn, pred, k_clipped, apply_legal
+        )
+        self._search_extract_gpu(ctx, apply_legal)
+
+    def _search_init_gpu[
+        REP: RepresentationGPU,
+        PRED: PredictionGPU,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut rep: REP,
+        mut pred: PRED,
+        obs: LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS, REP.OBS_DIM), MutAnyOrigin
+        ],
+        apply_legal: Bool,
+        k_actual: Int,
+        rng_seed: UInt32,
+    ) raises -> Int:
+        """Root init for a Gumbel search (steps 0-4): reset tree, rep encode,
+        pred at root, scatter root hidden, Gumbel-Top-k `init_root`. Returns the
+        clipped power-of-two `k`. EAGER (never captured) — `init_root` consumes
+        the per-search Gumbel `rng_seed`, which must stay fresh each search."""
         # ── 0. Reset tree ────────────────────────────────────────────────
         self.state.zero_tree(ctx)
 
@@ -710,6 +743,50 @@ struct GumbelGPUMCTS[
             grid_dim=(Self.ENV_BLOCKS,),
             block_dim=(TPB,),
         )
+        return k_clipped
+
+    def _run_halving_sims_gpu[
+        REP: RepresentationGPU,
+        DYN: DynamicsGPU,
+        PRED: PredictionGPU,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut dyn: DYN,
+        mut pred: PRED,
+        k_clipped: Int,
+        apply_legal: Bool,
+    ) raises:
+        """Sequential-Halving sim loop (step 5): `NUM_SIMULATIONS` sims across
+        `log2(k)` phases (each sim select→dyn→pred→expand→backup via
+        `_run_one_sim_gpu`), a per-phase halve kernel, then leftover sims on the
+        size-1 survivor. PURE device kernels with a deterministic schedule (fixed
+        for given NUM_SIMS/MAX_K) → this is the body `search_gpu_captured` records
+        into a CUDA graph. Rebuilds the `self.state` views the halve kernel needs;
+        the host counters (`sims_used`/`active_size`) are LOCAL so every call —
+        including a capture settle run then record run — starts fresh."""
+        # state views needed by the per-phase halve kernel
+        var nl_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.node_logits)
+        var nv_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+        ](self.state.node_value)
+        var miq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.min_q
+        )
+        var mxq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.max_q
+        )
+        var rc_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_candidates)
+        var rg_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_gumbels)
+        var ra_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_active)
 
         # ── 5. Sequential Halving simulation loop ────────────────────────
         var num_phases = _ilog2(k_clipped)
@@ -786,6 +863,29 @@ struct GumbelGPUMCTS[
             )
             sims_used += 1
 
+    def _search_extract_gpu(
+        mut self,
+        ctx: DeviceContext,
+        apply_legal: Bool,
+    ) raises:
+        """Extract the improved policy + MCTS-improved root value (steps 6-7)
+        from the searched tree. EAGER. Rebuilds the `self.state` views it reads."""
+        var nl_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.node_logits)
+        var nv_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+        ](self.state.node_value)
+        var miq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.min_q
+        )
+        var mxq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.max_q
+        )
+        var lm_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.state.legal_mask)
+
         # ── 6. Extract improved policy ───────────────────────────────────
         var po_extract_t = LayoutTensor[
             dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
@@ -842,6 +942,44 @@ struct GumbelGPUMCTS[
             grid_dim=(Self.ENV_BLOCKS,),
             block_dim=(TPB,),
         )
+
+    def search_gpu_captured[
+        REP: RepresentationGPU,
+        DYN: DynamicsGPU,
+        PRED: PredictionGPU,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut rep: REP,
+        mut dyn: DYN,
+        mut pred: PRED,
+        obs: LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS, REP.OBS_DIM), MutAnyOrigin
+        ],
+        mut graph: Optional[CUDAGraph],
+        apply_legal: Bool = False,
+        k_actual: Int = Self.MAX_K,
+        rng_seed: UInt32 = UInt32(0),
+    ) raises:
+        """CUDA-graph variant of `search_gpu`: eager root init (fresh Gumbel
+        `rng_seed`) → CAPTURED Sequential-Halving sim loop → eager extract. ONLY
+        the sim loop is captured — capturing `init_root` would freeze its Gumbel
+        noise across replays. `graph` is the caller-owned capture slot (None until
+        first capture); it must be ONE PER net-role, since the captured sim
+        kernels bake the `dyn`/`pred` buffer pointers (self-play's BEST nets vs
+        reanalyze's TARGET nets need distinct graphs). NVIDIA-only effect — on
+        Apple the closure simply runs each call (identical to `search_gpu`)."""
+        var k_clipped = self._search_init_gpu[REP, PRED](
+            ctx, rep, pred, obs, apply_legal, k_actual, rng_seed
+        )
+
+        def _sims() capturing raises -> None:
+            self._run_halving_sims_gpu[REP, DYN, PRED](
+                ctx, dyn, pred, k_clipped, apply_legal
+            )
+
+        maybe_capture_replay[_sims](graph, ctx)
+        self._search_extract_gpu(ctx, apply_legal)
 
     def search_gpu_selfplay[
         REP: RepresentationGPU,

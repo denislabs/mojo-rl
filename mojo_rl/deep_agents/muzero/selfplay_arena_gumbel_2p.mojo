@@ -640,6 +640,13 @@ def run_muzero_selfplay_arena_gumbel_2p[
     # collapsing the per-kernel launch overhead. Requires uniform replay
     # (`use_per=False`, which board games use); a no-op on Apple (compile-time).
     USE_TRAIN_CUDA_GRAPH: Bool = False,
+    # CUDA-graph the Gumbel-MCTS Sequential-Halving sim loop for self-play +
+    # reanalyze search (the bulk of MuZero wall-clock). Default OFF. ON (NVIDIA):
+    # the per-move search runs eager root init (fresh Gumbel rng) → CAPTURED sim
+    # loop → eager extract, with a SEPARATE capture slot for self-play (BEST nets)
+    # vs reanalyze (TARGET nets) since the captured kernels bake the net buffers.
+    # A no-op on Apple (compile-time). Arena/eval search stays eager (periodic).
+    USE_MCTS_CUDA_GRAPH: Bool = False,
 ](
     ctx: DeviceContext,
     mut rep: REP,           # the BEST representation net (final weights on return)
@@ -724,6 +731,11 @@ def run_muzero_selfplay_arena_gumbel_2p[
     # and own the capture slot (None until first capture). Requires uniform
     # replay; board games use `use_per=False`.
     var train_graph: Optional[CUDAGraph] = None
+    # Separate MCTS capture slots — self-play searches the BEST nets, reanalyze
+    # the TARGET nets; the captured sim kernels bake the net buffer pointers, so
+    # the two roles must NOT share a graph.
+    var selfplay_mcts_graph: Optional[CUDAGraph] = None
+    var reanalyze_mcts_graph: Optional[CUDAGraph] = None
     comptime if USE_TRAIN_CUDA_GRAPH:
         if use_per:
             raise Error(
@@ -892,12 +904,20 @@ def run_muzero_selfplay_arena_gumbel_2p[
         var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin](
             obs_dev.unsafe_ptr().as_unsafe_any_origin()
         )
-        planner.search_gpu[
-            type_of(rep_a), type_of(dyn_a), type_of(pred_a),
-        ](
-            ctx, rep_a, dyn_a, pred_a, obs_t,
-            apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
-        )
+        comptime if USE_MCTS_CUDA_GRAPH:
+            planner.search_gpu_captured[
+                type_of(rep_a), type_of(dyn_a), type_of(pred_a),
+            ](
+                ctx, rep_a, dyn_a, pred_a, obs_t, selfplay_mcts_graph,
+                apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
+            )
+        else:
+            planner.search_gpu[
+                type_of(rep_a), type_of(dyn_a), type_of(pred_a),
+            ](
+                ctx, rep_a, dyn_a, pred_a, obs_t,
+                apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
+            )
         mcts_seed += UInt32(1)
 
         ctx.enqueue_copy(obs_h, obs_dev)
@@ -1259,12 +1279,21 @@ def run_muzero_selfplay_arena_gumbel_2p[
                 var reana_t = LayoutTensor[
                     DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
                 ](d_reana.unsafe_ptr().as_unsafe_any_origin())
-                planner.search_gpu[
-                    type_of(rep_ta), type_of(dyn_ta), type_of(pred_ta),
-                ](
-                    ctx, rep_ta, dyn_ta, pred_ta, reana_t,
-                    apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
-                )
+                comptime if USE_MCTS_CUDA_GRAPH:
+                    planner.search_gpu_captured[
+                        type_of(rep_ta), type_of(dyn_ta), type_of(pred_ta),
+                    ](
+                        ctx, rep_ta, dyn_ta, pred_ta, reana_t,
+                        reanalyze_mcts_graph,
+                        apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
+                    )
+                else:
+                    planner.search_gpu[
+                        type_of(rep_ta), type_of(dyn_ta), type_of(pred_ta),
+                    ](
+                        ctx, rep_ta, dyn_ta, pred_ta, reana_t,
+                        apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
+                    )
                 mcts_seed += UInt32(1)
                 ctx.enqueue_copy(pol_h, planner.policies_view())
                 ctx.enqueue_copy(val_h, planner.root_value_view())

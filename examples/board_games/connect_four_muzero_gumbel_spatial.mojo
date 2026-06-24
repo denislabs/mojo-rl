@@ -144,6 +144,7 @@ def main() raises:
         TEMP_MOVES=20,
         SCHEDULER=LinearWarmupSchedule[LR_WARMUP],
         USE_TRAIN_CUDA_GRAPH=True,
+        USE_MCTS_CUDA_GRAPH=True,
     ](
         ctx,
         rep,
