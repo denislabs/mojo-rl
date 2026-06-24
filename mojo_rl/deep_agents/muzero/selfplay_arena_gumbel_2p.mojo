@@ -1141,22 +1141,6 @@ def run_muzero_selfplay_arena_gumbel_2p[
             # D2H the root block into `t_obs0` so the diag re-forward sees it.
             ctx.enqueue_copy(t_obs0.unsafe_ptr(), scratch.d_obs0.dev.value())
             ctx.synchronize()
-            # [TEMP rew-diag] does the win-reward signal actually reach training?
-            # t_rew is the LAST train batch's reward targets [K, B].
-            var _rnz = 0
-            var _rmax = Scalar[DT](0)
-            var _rsum = Scalar[DT](0)
-            for _ri in range(K * B):
-                var _r = abs(t_rew[_ri])
-                if _r > Scalar[DT](1e-6):
-                    _rnz += 1
-                if _r > _rmax:
-                    _rmax = _r
-                _rsum += _r
-            print(
-                "  [rew-diag] move", it + 1, "| nonzero", _rnz, "/", K * B,
-                "| max|r|", _rmax, "| mean|r|", _rsum / Scalar[DT](K * B),
-            )
             _mz_emit_train_diag[REP, PRED, B, OBS, ACT, BINS, L](
                 ctx, l_rep, l_pred, d_diag_obs, d_diag_z, d_diag_pred,
                 h_diag_pred, t_obs0, t_pol, t_val, l_parts,
