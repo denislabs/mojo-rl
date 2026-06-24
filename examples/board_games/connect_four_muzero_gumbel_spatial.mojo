@@ -143,7 +143,7 @@ def main() raises:
         EVAL_GAMES=64,
         TEMP_MOVES=20,
         SCHEDULER=LinearWarmupSchedule[LR_WARMUP],
-        USE_TRAIN_CUDA_GRAPH=True,
+        USE_TRAIN_CUDA_GRAPH=False,
         # USE_MCTS_CUDA_GRAPH stays OFF: the captured MCTS sim-loop replay
         # produces FLAT search targets (target_max_prob ~0.3 vs ~0.55 eager →
         # policy head stops learning). Bug is strictly in the sim-loop
