@@ -15,7 +15,8 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from ..core.tensor import Tensor
+from ..core.tensor import Tensor, TensorImpl
+from .linear import _cast_f2b_kernel, _cast_b2f_kernel
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import Param, ParamVisitor
@@ -346,12 +347,17 @@ struct BatchNorm2D[
     W_: Int,
     MOMENTUM: Float64 = BN2D_DEFAULT_MOM,
     EPSILON: Float64 = BN2D_DEFAULT_EPS,
+    ADT: DType = DT,
 ](Module):
     comptime ARITY = 1
     comptime FLAT_DIM = Self.C_ * Self.H_ * Self.W_
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.FLAT_DIM)
     comptime OUT_DIM = Self.FLAT_DIM
     comptime SPATIAL = Self.H_ * Self.W_
+    # Activation-flow dtype (AMP §3 fp32-INTERNAL): BN accepts/emits ACT_DT but
+    # computes stats/normalize in fp32 internally. ACT_DT == DT (default) →
+    # the cast wrappers collapse and the fp32 path is byte-identical.
+    comptime ACT_DT = Self.ADT
 
     var gamma: Param["gamma", False, Self.C_]
     var beta: Param["beta", False, Self.C_]
@@ -436,11 +442,55 @@ struct BatchNorm2D[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[1, o],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        # AMP §3 fp32-internal: ACT_DT==DT → bit-identical fp32 path; else cast
+        # the bf16 activation in→fp32, run the fp32 BN, cast out→bf16.
+        comptime if Self.ACT_DT == DT:
+            ref in0d = rebind[Tensor](inputs[0])
+            ref outd = rebind[Tensor](out)
+            self._forward_f32[target, B](in0d, outd, ctx)
+        else:
+            comptime N = B * Self.FLAT_DIM
+            # LOCAL fp32 scratch (not self-fields → no mut-self aliasing).
+            var in_f32 = Tensor()
+            in_f32.ensure[target](N, ctx)
+            var out_f32 = Tensor()
+            out_f32.ensure[target](N, ctx)
+            out.ensure[target](N, ctx)
+            ref in0 = inputs[0]
+            comptime if target == "cpu":
+                for i in range(N):
+                    in_f32.data[i] = in0.data[i].cast[DT]()
+            else:
+                var c = ctx.value()
+                c.enqueue_function[_cast_b2f_kernel[N]](
+                    in0.lt["gpu", Layout.row_major(N)](),
+                    in_f32.lt["gpu", Layout.row_major(N)](),
+                    grid_dim=(N + 255) // 256,
+                    block_dim=256,
+                )
+            self._forward_f32[target, B](in_f32, out_f32, ctx)
+            comptime if target == "cpu":
+                for i in range(N):
+                    out.data[i] = out_f32.data[i].cast[Self.ACT_DT]()
+            else:
+                var c = ctx.value()
+                c.enqueue_function[_cast_f2b_kernel[N]](
+                    out_f32.lt["gpu", Layout.row_major(N)](),
+                    out.lt["gpu", Layout.row_major(N)](),
+                    grid_dim=(N + 255) // 256,
+                    block_dim=256,
+                )
+
+    def _forward_f32[target: StaticString, B: Int](
+        mut self,
+        mut in0: Tensor,
         mut out: Tensor,
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        ref in0 = inputs[0]
         var eps = Scalar[DT](Self.EPSILON)
         comptime if target == "cpu":
             out.ensure(B * Self.FLAT_DIM)
@@ -605,9 +655,9 @@ struct BatchNorm2D[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[1, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         if not self.cache_is_training:
@@ -615,7 +665,50 @@ struct BatchNorm2D[
                 "BatchNorm2D.vjp: training-mode cache not populated. Call"
                 " forward with training=True before vjp."
             )
-        ref gin = grad_inputs[0]
+        # AMP §3 fp32-internal (forward_input unused, as in the fp32 body).
+        comptime if Self.ACT_DT == DT:
+            ref god = rebind[Tensor](grad_output)
+            ref gind = rebind[Tensor](grad_inputs[0])
+            self._vjp_f32[target, B](god, gind, ctx)
+        else:
+            comptime N = B * Self.FLAT_DIM
+            # LOCAL fp32 scratch (not self-fields → no mut-self aliasing).
+            var go_f32 = Tensor()
+            go_f32.ensure[target](N, ctx)
+            var gin_f32 = Tensor()
+            gin_f32.ensure[target](N, ctx)
+            ref gin = grad_inputs[0]
+            gin.ensure[target](N, ctx)
+            comptime if target == "cpu":
+                for i in range(N):
+                    go_f32.data[i] = grad_output.data[i].cast[DT]()
+            else:
+                var c = ctx.value()
+                c.enqueue_function[_cast_b2f_kernel[N]](
+                    grad_output.lt["gpu", Layout.row_major(N)](),
+                    go_f32.lt["gpu", Layout.row_major(N)](),
+                    grid_dim=(N + 255) // 256,
+                    block_dim=256,
+                )
+            self._vjp_f32[target, B](go_f32, gin_f32, ctx)
+            comptime if target == "cpu":
+                for i in range(N):
+                    gin.data[i] = gin_f32.data[i].cast[Self.ACT_DT]()
+            else:
+                var c = ctx.value()
+                c.enqueue_function[_cast_f2b_kernel[N]](
+                    gin_f32.lt["gpu", Layout.row_major(N)](),
+                    gin.lt["gpu", Layout.row_major(N)](),
+                    grid_dim=(N + 255) // 256,
+                    block_dim=256,
+                )
+
+    def _vjp_f32[target: StaticString, B: Int](
+        mut self,
+        mut grad_output: Tensor,
+        mut gin: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
         comptime if target == "cpu":
             gin.ensure(B * Self.FLAT_DIM)
             var go_p = grad_output.data.unsafe_ptr()
