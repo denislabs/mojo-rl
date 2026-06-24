@@ -206,27 +206,23 @@ def _accum_kernel[
         dst[idx] = rebind[Scalar[DT]](dst[idx]) + rebind[Scalar[DT]](src[idx])
 
 
-def _go_pack_kernel[
-    BATCH: Int,
-    OC: Int,
-    SO: Int,
-    OUT_FLAT: Int,
-    BS: Int,
-    ADT: DType = DT,
+def _wT_transpose_kernel[
+    OC: Int, COL: Int, ADT: DType = DT
 ](
-    grad_output: LayoutTensor[
-        ADT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin
-    ],
-    go_packed: LayoutTensor[ADT, Layout.row_major(BS, OC), MutAnyOrigin],
+    w: LayoutTensor[ADT, Layout.row_major(OC, COL), MutAnyOrigin],
+    wT: LayoutTensor[ADT, Layout.row_major(COL, OC), MutAnyOrigin],
 ):
+    """O2: transpose weight `W[OC, COL]` → `Wᵀ[COL, OC]` so the input-grad GEMM
+    can compute `d_colᵀ[COL, BS] = Wᵀ[COL, OC] @ goᵀ[OC, BS]` (reusing the `goᵀ`
+    already built for dW — no `_go_pack` kernel, no `[BS,COL]` d_col). `W` is
+    small (`OC·COL`), so the transpose is cheap relative to the col2im it
+    coalesces. `max_matmul` rejects `transpose_a`, hence the explicit transpose."""
     var idx = Int(global_idx.x)
-    if idx >= BS * OC:
+    if idx >= OC * COL:
         return
-    var row = idx // OC
-    var oc = idx % OC
-    var b = row // SO
-    var s = row % SO
-    go_packed[row, oc] = rebind[Scalar[ADT]](grad_output[b, oc * SO + s])
+    var oc = idx // COL
+    var c = idx % COL
+    wT[c, oc] = rebind[Scalar[ADT]](w[oc, c])
 
 
 def _dx_col2im_kernel[
@@ -245,11 +241,20 @@ def _dx_col2im_kernel[
     BS: Int,
     ADT: DType = DT,
 ](
-    d_col: LayoutTensor[ADT, Layout.row_major(BS, COL), MutAnyOrigin],
+    d_col: LayoutTensor[ADT, Layout.row_major(COL, BS), MutAnyOrigin],
     grad_input: LayoutTensor[
         ADT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin
     ],
 ):
+    # O2: `d_col` is the TRANSPOSED layout `[COL, BS]` (vs the natural `[BS,COL]`
+    # GEMM output). Adjacent threads differ in `iw` → `row` (col2im is a gather:
+    # one input element ← up to K² d_col entries, each read exactly once, so no
+    # cross-thread reuse and shared-mem tiling buys nothing — coalescing is the
+    # only lever). In `[COL, BS]` the per-(kh,kw) read `d_col[col_idx, row]` has
+    # adjacent threads at adjacent `row` → CONTIGUOUS, coalesced. Measured 1.59×
+    # on the S=1 hot shape (NVIDIA); strided/`[BS,COL]` was stride-COL scattered.
+    # O3: the `S==1` branch (the whole MuZero/EZv2 residual tower) drops the
+    # `% S` / `// S` integer ops and a divergence source.
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     if idx >= BATCH * IN_FLAT:
         return
@@ -263,23 +268,36 @@ def _dx_col2im_kernel[
     # fp32 accumulator (the col2im sum) even on the bf16-flow path; only the
     # written grad_input is bf16 (activation dtype).
     var acc: Scalar[DT] = 0
-    for kh in range(K):
-        var oh_num = ih + P - kh
-        if oh_num < 0 or oh_num % S != 0:
-            continue
-        var oh = oh_num // S
-        if oh >= OH:
-            continue
-        for kw in range(K):
-            var ow_num = iw + P - kw
-            if ow_num < 0 or ow_num % S != 0:
+    comptime if S == 1:
+        for kh in range(K):
+            var oh = ih + P - kh
+            if oh < 0 or oh >= OH:
                 continue
-            var ow = ow_num // S
-            if ow >= OW:
+            for kw in range(K):
+                var ow = iw + P - kw
+                if ow < 0 or ow >= OW:
+                    continue
+                var row = b * SO + oh * OW + ow
+                var col_idx = (ic * K + kh) * K + kw
+                acc += rebind[Scalar[ADT]](d_col[col_idx, row]).cast[DT]()
+    else:
+        for kh in range(K):
+            var oh_num = ih + P - kh
+            if oh_num < 0 or oh_num % S != 0:
                 continue
-            var row = b * SO + oh * OW + ow
-            var col_idx = (ic * K + kh) * K + kw
-            acc += rebind[Scalar[ADT]](d_col[row, col_idx]).cast[DT]()
+            var oh = oh_num // S
+            if oh >= OH:
+                continue
+            for kw in range(K):
+                var ow_num = iw + P - kw
+                if ow_num < 0 or ow_num % S != 0:
+                    continue
+                var ow = ow_num // S
+                if ow >= OW:
+                    continue
+                var row = b * SO + oh * OW + ow
+                var col_idx = (ic * K + kh) * K + kw
+                acc += rebind[Scalar[ADT]](d_col[col_idx, row]).cast[DT]()
     grad_input[b, in_pos] = acc.cast[ADT]()
 
 
@@ -352,10 +370,11 @@ struct Conv2D[
     var bias: Param["bias", False, Self.B_SIZE]
     # GPU im2col + GEMM scratch (lazy, reused — capture-safe). fp32-path scratch
     # (`dW_tmp` is ALSO used by the bf16 path: the dW GEMM writes a FP32 output).
-    var col_t: Tensor  # [BS, COL]  (im2col / d_col)
-    var outp_t: Tensor  # [BS, OC]   (out_packed / go_packed)
-    var goT_t: Tensor  # [OC, BS]   (goᵀ for dW)
+    var col_t: Tensor  # [BS, COL] (im2col col) reused as [COL, BS] d_colᵀ (O2)
+    var outp_t: Tensor  # [BS, OC]   (out_packed; fwd only)
+    var goT_t: Tensor  # [OC, BS]   (goᵀ — for dW AND d_colᵀ, O2)
     var dW_tmp: Tensor  # [OC, COL]  (fp32 dW temp; bf16-in → fp32-out GEMM)
+    var wT_t: Tensor  # [COL, OC]  (O2: fp32 Wᵀ for the d_colᵀ GEMM)
     # bf16-flow compute scratch (lazy; used only when ACT_DT == bf16 and
     # target == "gpu"). `col_t_bf`/`outp_t_bf`/`goT_t_bf` are the bf16 activation
     # scratch (im2col col, out_packed/go_packed, goᵀ). `w_bf` is the CACHED bf16
@@ -367,6 +386,7 @@ struct Conv2D[
     var goT_t_bf: TensorImpl[Self.ADT]
     var w_bf: TensorImpl[Self.ADT]
     var b_a: TensorImpl[Self.ADT]
+    var wT_bf: TensorImpl[Self.ADT]  # [COL, OC] (O2: bf16 Wᵀ for d_colᵀ GEMM)
     var _w_cast_version: Int  # `weight.val.version` at last bf16 weight cast
     # Capture mode (set via `set_attr["capture_recast"]`): when True, the bf16
     # weight recast is UNCONDITIONAL so the cast kernel is always recorded into a
@@ -390,11 +410,13 @@ struct Conv2D[
         self.outp_t = Tensor()
         self.goT_t = Tensor()
         self.dW_tmp = Tensor()
+        self.wT_t = Tensor()
         self.col_t_bf = TensorImpl[Self.ADT]()
         self.outp_t_bf = TensorImpl[Self.ADT]()
         self.goT_t_bf = TensorImpl[Self.ADT]()
         self.w_bf = TensorImpl[Self.ADT]()
         self.b_a = TensorImpl[Self.ADT]()
+        self.wT_bf = TensorImpl[Self.ADT]()
         self._w_cast_version = -1  # < any real version → first forward casts
         self._force_recast = False
         self._col_src_ptr = 0
@@ -813,7 +835,6 @@ struct Conv2D[
             comptime BS = B * Self.SO
             gind.ensure_gpu(c, B * Self.IN_FLAT)
             self.col_t.ensure_gpu(c, BS * Self.COL)
-            self.outp_t.ensure_gpu(c, BS * Self.OC_)
             self.goT_t.ensure_gpu(c, Self.OC_ * BS)
             self.dW_tmp.ensure_gpu(c, Self.W_SIZE)
             # (1) col = im2col(x) — A2: REUSE the forward's col_t when this vjp's
@@ -895,32 +916,28 @@ struct Conv2D[
                 grid_dim=Self.OC_,
                 block_dim=CONV_DW_TPB,
             )
-            # (5) d_input: go_packed → d_col = go_packed @ W → col2im
-            comptime nb_gp = (BS * Self.OC_ + TPB - 1) // TPB
-            c.enqueue_function[
-                _go_pack_kernel[
-                    B,
-                    Self.OC_,
-                    Self.SO,
-                    Self.OUT_FLAT,
-                    BS,
-                ]
-            ](
-                god.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
-                self.outp_t.lt["gpu", Layout.row_major(BS, Self.OC_)](),
-                grid_dim=nb_gp,
+            # (5) d_input (O2): d_colᵀ[COL,BS] = Wᵀ[COL,OC] @ goᵀ[OC,BS] reusing
+            # the goᵀ from (2) — NO `_go_pack` kernel — then the coalesced col2im
+            # reading the transposed d_colᵀ. col_t (free after the dW GEMM) is
+            # reused as the [COL, BS] d_colᵀ buffer.
+            self.wT_t.ensure_gpu(c, Self.COL * Self.OC_)
+            comptime nb_wt = (Self.OC_ * Self.COL + TPB - 1) // TPB
+            c.enqueue_function[_wT_transpose_kernel[Self.OC_, Self.COL]](
+                self.weight.val.lt["gpu", Layout.row_major(Self.OC_, Self.COL)](),
+                self.wT_t.lt["gpu", Layout.row_major(Self.COL, Self.OC_)](),
+                grid_dim=nb_wt,
                 block_dim=TPB,
             )
-            var gopack_tt = TileTensor(
-                self.outp_t.dev.value(), row_major[BS, Self.OC_]()
+            var wT_tt = TileTensor(
+                self.wT_t.dev.value(), row_major[Self.COL, Self.OC_]()
             )
-            var w_tt = TileTensor(
-                self.weight.val.dev.value(), row_major[Self.OC_, Self.COL]()
+            var goT2_tt = TileTensor(
+                self.goT_t.dev.value(), row_major[Self.OC_, BS]()
             )
-            var dcol_tt = TileTensor(
-                self.col_t.dev.value(), row_major[BS, Self.COL]()
+            var dcolT_tt = TileTensor(
+                self.col_t.dev.value(), row_major[Self.COL, BS]()
             )
-            max_matmul[target="gpu"](dcol_tt, gopack_tt, w_tt, c)
+            max_matmul[target="gpu"](dcolT_tt, wT_tt, goT2_tt, c)
             comptime nb_dx = (B * Self.IN_FLAT + CONV_DW_TPB - 1) // CONV_DW_TPB
             c.enqueue_function[
                 _dx_col2im_kernel[
@@ -939,7 +956,7 @@ struct Conv2D[
                     BS,
                 ]
             ](
-                self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                self.col_t.lt["gpu", Layout.row_major(Self.COL, BS)](),
                 gind.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
                 grid_dim=nb_dx,
                 block_dim=CONV_DW_TPB,
@@ -951,7 +968,6 @@ struct Conv2D[
             comptime BS = B * Self.SO
             gin.ensure_gpu(c, B * Self.IN_FLAT)
             self.col_t_bf.ensure_gpu(c, BS * Self.COL)
-            self.outp_t_bf.ensure_gpu(c, BS * Self.OC_)
             self.goT_t_bf.ensure_gpu(c, Self.OC_ * BS)
             self.dW_tmp.ensure_gpu(c, Self.W_SIZE)  # fp32 dW temp
             self._ensure_w_bf(c)  # cached bf16 weight (reused from forward)
@@ -1038,34 +1054,30 @@ struct Conv2D[
                 grid_dim=Self.OC_,
                 block_dim=CONV_DW_TPB,
             )
-            # (5) d_input: go_packed → d_col = go_packed @ W_bf → col2im. All bf16
-            # (grad_input flows at bf16); W reuses the forward's cached bf16 cast.
-            comptime nb_gp = (BS * Self.OC_ + TPB - 1) // TPB
+            # (5) d_input (O2): d_colᵀ[COL,BS] = Wᵀ_bf[COL,OC] @ goᵀ[OC,BS]
+            # reusing goᵀ from (2) — NO `_go_pack` kernel. All bf16 (grad_input
+            # flows bf16); Wᵀ_bf transposes the forward's cached bf16 weight.
+            # col_t_bf (free after the dW GEMM) is reused as the [COL,BS] d_colᵀ.
+            self.wT_bf.ensure_gpu(c, Self.COL * Self.OC_)
+            comptime nb_wt = (Self.OC_ * Self.COL + TPB - 1) // TPB
             c.enqueue_function[
-                _go_pack_kernel[
-                    B,
-                    Self.OC_,
-                    Self.SO,
-                    Self.OUT_FLAT,
-                    BS,
-                    Self.ADT,
-                ]
+                _wT_transpose_kernel[Self.OC_, Self.COL, Self.ADT]
             ](
-                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
-                self.outp_t_bf.lt["gpu", Layout.row_major(BS, Self.OC_)](),
-                grid_dim=nb_gp,
+                self.w_bf.lt["gpu", Layout.row_major(Self.OC_, Self.COL)](),
+                self.wT_bf.lt["gpu", Layout.row_major(Self.COL, Self.OC_)](),
+                grid_dim=nb_wt,
                 block_dim=TPB,
             )
-            var gopack_tt = TileTensor(
-                self.outp_t_bf.dev.value(), row_major[BS, Self.OC_]()
+            var wbT_tt = TileTensor(
+                self.wT_bf.dev.value(), row_major[Self.COL, Self.OC_]()
             )
-            var wb_tt = TileTensor(
-                self.w_bf.dev.value(), row_major[Self.OC_, Self.COL]()
+            var goT2_tt = TileTensor(
+                self.goT_t_bf.dev.value(), row_major[Self.OC_, BS]()
             )
-            var dcol_tt = TileTensor(
-                self.col_t_bf.dev.value(), row_major[BS, Self.COL]()
+            var dcolT_tt = TileTensor(
+                self.col_t_bf.dev.value(), row_major[Self.COL, BS]()
             )
-            max_matmul[target="gpu"](dcol_tt, gopack_tt, wb_tt, c)
+            max_matmul[target="gpu"](dcolT_tt, wbT_tt, goT2_tt, c)
             comptime nb_dx = (B * Self.IN_FLAT + CONV_DW_TPB - 1) // CONV_DW_TPB
             c.enqueue_function[
                 _dx_col2im_kernel[
@@ -1085,7 +1097,7 @@ struct Conv2D[
                     Self.ADT,
                 ]
             ](
-                self.col_t_bf.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                self.col_t_bf.lt["gpu", Layout.row_major(Self.COL, BS)](),
                 gin.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
                 grid_dim=nb_dx,
                 block_dim=CONV_DW_TPB,
