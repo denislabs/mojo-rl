@@ -180,10 +180,11 @@ def main() raises:
         # priorities. Set False for plain uniform device sampling. PER focuses
         # training on the sharp tactical positions the sparse-terminal C4 reward
         # under-samples — the lever for the 64-sim plateau.
-        # DEBUG (regression hunt): PER OFF (was True) — its IS-weights scale the
-        # gradient; a degenerate IS-weight on NVIDIA would flatten learning while
-        # every component tests correct. Restore to True once diagnosed.
-        use_per=False,
+        # DEBUG (regression hunt): both-off RESTORED learning, so the bug is in
+        # PER and/or reanalyze. Narrowing step A: PER back ON, reanalyze still OFF.
+        # If learning breaks again -> PER (IS-weights / priorities) is the bug.
+        # If it keeps learning   -> reanalyze is the bug (flip reanalyze_every->4).
+        use_per=True,
         per_alpha=Scalar[DT](1.0),
         per_beta=Scalar[DT](1.0),
     )
