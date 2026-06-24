@@ -70,12 +70,13 @@ comptime GPT_MODEL = GPTDropTied[
     VOCAB, SEQ, EMBED, HEADS, LAYERS, FF_MULT, True, DROPOUT_P,
     UInt64(0xC0FFEE), USE_MAX_ATTN, BF16,
 ]
-# CUDA-graph capture of the per-step device compute — SPIKE for bf16-flow. The
-# cached-bf16 weight recast + the AMP boundary casts are device kernels that ride
-# the captured graph; the host version-bump not running on replay is harmless
-# (the captured recast reads the live fp32 master each replay). ⚠️ SPIKE: relies
-# on the recast being version-captured — the robust follow-up forces it
-# unconditional. No-op on non-NVIDIA (runs eagerly). Flip False to fall back.
+# CUDA-graph capture of the per-step device compute (bf16-flow). The AMP
+# boundary casts and the cached-bf16 weight recast are device kernels that ride
+# the captured graph; `fit` sets `set_attr["capture_recast"]` so every bf16 leaf
+# recasts its weight UNCONDITIONALLY → the cast is always recorded and reads the
+# live fp32 master on every replay (no silent stale-weight risk). Verified on
+# NVIDIA: captures cleanly, val curve matches the fp32 run. No-op on non-NVIDIA
+# (runs eagerly). Flip False to fall back to the eager path.
 comptime USE_CUDA_GRAPH = True
 comptime GPT_AR = AutoregressiveTrainer[
     GPT_MODEL, AdamW, VOCAB, SEQ, BATCH, target="gpu",
