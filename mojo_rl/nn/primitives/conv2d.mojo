@@ -724,39 +724,64 @@ struct Conv2D[
                         Int32(Self.COL),
                     )
                 else:
-                    var col_tt = TileTensor(col, row_major[Self.SO, Self.COL]())
                     var go_b = List[Scalar[DT]](
                         length=Self.OC_ * Self.SO, fill=Scalar[DT](0)
                     )
                     for i in range(Self.OC_ * Self.SO):
                         go_b[i] = god.data[go_base + i]
-                    var go_b_tt = TileTensor(
-                        go_b, row_major[Self.OC_, Self.SO]()
-                    )
-                    # dW += go_b[OC,SO] @ col[SO,COL]
-                    var dw_tmp = List[Scalar[DT]](
-                        length=Self.W_SIZE, fill=Scalar[DT](0)
-                    )
-                    var dw_tmp_tt = TileTensor(
-                        dw_tmp, row_major[Self.OC_, Self.COL]()
-                    )
-                    max_matmul[target="cpu"](dw_tmp_tt, go_b_tt, col_tt, None)
-                    for k in range(Self.W_SIZE):
-                        self.weight.grd.data[k] += dw_tmp[k]
-                    # d_col[SO,COL] = go_bᵀ[SO,OC] @ W[OC,COL]
-                    var go_b_T = List[Scalar[DT]](
-                        length=Self.SO * Self.OC_, fill=Scalar[DT](0)
-                    )
-                    for s in range(Self.SO):
+                    comptime if Self.COL == 1:
+                        # Degenerate N=COL=1 GEMM (a 1x1 conv with IC=1 — the
+                        # MuZero action-embedding). `max_matmul` aborts on N=1 on
+                        # the non-Apple path, so compute the two matrix-vector
+                        # products directly. col / d_col are [SO, 1] == [SO];
+                        # W is [OC, 1] == weight[oc].
+                        #   dW[oc]  += Σ_s go[oc,s]·col[s]
+                        #   d_col[s] = Σ_oc go[oc,s]·W[oc]
                         for oc in range(Self.OC_):
-                            go_b_T[s * Self.OC_ + oc] = go_b[oc * Self.SO + s]
-                    var go_b_T_tt = TileTensor(
-                        go_b_T, row_major[Self.SO, Self.OC_]()
-                    )
-                    var d_col_tt = TileTensor(
-                        d_col, row_major[Self.SO, Self.COL]()
-                    )
-                    max_matmul[target="cpu"](d_col_tt, go_b_T_tt, w_tt, None)
+                            var acc = Scalar[DT](0)
+                            for s in range(Self.SO):
+                                acc += go_b[oc * Self.SO + s] * col[s]
+                            self.weight.grd.data[oc] += acc
+                        for s in range(Self.SO):
+                            var acc = Scalar[DT](0)
+                            for oc in range(Self.OC_):
+                                acc += go_b[oc * Self.SO + s] * self.weight.val.data[oc]
+                            d_col[s] = acc
+                    else:
+                        var col_tt = TileTensor(
+                            col, row_major[Self.SO, Self.COL]()
+                        )
+                        var go_b_tt = TileTensor(
+                            go_b, row_major[Self.OC_, Self.SO]()
+                        )
+                        # dW += go_b[OC,SO] @ col[SO,COL]
+                        var dw_tmp = List[Scalar[DT]](
+                            length=Self.W_SIZE, fill=Scalar[DT](0)
+                        )
+                        var dw_tmp_tt = TileTensor(
+                            dw_tmp, row_major[Self.OC_, Self.COL]()
+                        )
+                        max_matmul[target="cpu"](dw_tmp_tt, go_b_tt, col_tt, None)
+                        for k in range(Self.W_SIZE):
+                            self.weight.grd.data[k] += dw_tmp[k]
+                        # d_col[SO,COL] = go_bᵀ[SO,OC] @ W[OC,COL]
+                        var go_b_T = List[Scalar[DT]](
+                            length=Self.SO * Self.OC_, fill=Scalar[DT](0)
+                        )
+                        for s in range(Self.SO):
+                            for oc in range(Self.OC_):
+                                go_b_T[s * Self.OC_ + oc] = go_b[
+                                    oc * Self.SO + s
+                                ]
+                        var go_b_T_tt = TileTensor(
+                            go_b_T, row_major[Self.SO, Self.OC_]()
+                        )
+                        var d_col_tt = TileTensor(
+                            d_col, row_major[Self.SO, Self.COL]()
+                        )
+                        max_matmul[target="cpu"](
+                            d_col_tt, go_b_T_tt, w_tt, None
+                        )
                 # col2im → grad_input_b (scatter-add)
                 _col2im_cpu[
                     Self.IC_,
