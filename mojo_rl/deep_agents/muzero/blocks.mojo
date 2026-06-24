@@ -564,7 +564,47 @@ def _mz_bcopy_k[N_: Int](
         dst[i] = rebind[Scalar[DT]](src[i])
 
 
-def mz_unroll_train_step_gpu[
+def _mz_train_prologue_gpu[
+    B: Int, K: Int, OBS: Int, ACT: Int, LATENT: Int, BINS: Int,
+    obs_on_device: Bool = False,
+](
+    ctx: DeviceContext,
+    mut scratch: MZScratch[B, K, OBS, ACT, LATENT, BINS],
+    obs0: List[Scalar[DT]],
+    actions: List[Scalar[DT]],
+    policy_tgt: List[Scalar[DT]],
+    value_tgt: List[Scalar[DT]],
+    reward_tgt: List[Scalar[DT]],
+    is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+) raises:
+    """EAGER prologue of the unroll step: H2D the host batch slabs into the
+    persistent device scratch + zero the loss accumulators. Host work + memcpy —
+    kept OUT of the CUDA-graph-captured region (a captured H2D would bake the
+    host source pointer). Run this each iteration before the captured compute;
+    the compute reads the freshly-overwritten ``scratch.d_*`` buffers."""
+    # ``obs_on_device``: the caller already filled ``scratch.d_obs0`` on-device
+    # so skip the obs H2D and ignore ``obs0``.
+    # `.unsafe_ptr()` here is the sanctioned H2D-staging boundary (host List →
+    # device buffer); the batch inputs are owned Lists everywhere else.
+    comptime if not obs_on_device:
+        ctx.enqueue_copy(scratch.d_obs0.dev.value(), obs0.unsafe_ptr())
+    ctx.enqueue_copy(scratch.d_act.dev.value(), actions.unsafe_ptr())
+    ctx.enqueue_copy(scratch.d_pol.dev.value(), policy_tgt.unsafe_ptr())
+    ctx.enqueue_copy(scratch.d_val.dev.value(), value_tgt.unsafe_ptr())
+    ctx.enqueue_copy(scratch.d_rew.dev.value(), reward_tgt.unsafe_ptr())
+
+    # ── PER (optional): copy IS weights to device; priorities written at k=0 ──
+    if is_weights:
+        ctx.enqueue_copy(scratch.d_isw.dev.value(), is_weights.value())
+
+    # zero the 3 loss-component accumulators (policy | value | reward)
+    var zloss = scratch.h_zloss.value()
+    for i in range(3 * B):
+        zloss[i] = Scalar[DT](0.0)
+    ctx.enqueue_copy(scratch.loss_d.dev.value(), zloss)
+
+
+def _mz_train_fwdrev_gpu[
     REP: Module,
     DYN: Module,
     PRED: Module,
@@ -574,49 +614,27 @@ def mz_unroll_train_step_gpu[
     ACT: Int,
     LATENT: Int,
     BINS: Int,
-    obs_on_device: Bool = False,
 ](
     ctx: DeviceContext,
     mut rep: REP,
     mut dyn: DYN,
     mut pred: PRED,
-    mut orep: Adam,
-    mut odyn: Adam,
-    mut opred: Adam,
     mut scratch: MZScratch[B, K, OBS, ACT, LATENT, BINS],
-    obs0: List[Scalar[DT]],
-    actions: List[Scalar[DT]],
-    policy_tgt: List[Scalar[DT]],
-    value_tgt: List[Scalar[DT]],
-    reward_tgt: List[Scalar[DT]],
     v_min: Scalar[DT],
     v_max: Scalar[DT],
-    value_coef: Scalar[DT] = Scalar[DT](1.0),
-    max_grad_norm: Float64 = 0.0,
-    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-    out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-) raises -> Scalar[DT]:
-    """GPU MuZero K-step unroll training step — device mirror of
-    `mz_unroll_train_step_cpu`.
-
-    PER (optional): when ``is_weights`` is given the per-sample importance
-    weights scale the whole prediction-head grad row + the reward slice of the
-    dyn grad before each vjp (the latent carry is already weighted, so it is
-    NOT re-scaled). When ``out_prio`` is given the root (k=0) value-head soft-CE
-    is written per row as the new priority signal. Both are no-ops when ``None``
-    → bit-identical to the uniform path.
-
-    Takes the same **host** time-major batch slabs (raw value/reward scalars;
-    `h` + two-hot applied on device), H2D-copies them once, runs the forward
-    scan (rep + K dynamics) and reverse scan (pred/dyn vjp with the ½ dynamics
-    gradient + 1/(K+1) loss weight) entirely on the device, and steps the three
-    Adam optimizers in place. Returns the mean total loss (same reduction as
-    the CPU path). Device + host scratch is supplied by a persistent
-    `MZScratch` (allocated once in `make`, reused every step) — this
-    function performs **no** `enqueue_create_buffer` of its own, which would
-    explode disk on NVIDIA when called in the per-step hot loop.
-    """
+    value_coef: Scalar[DT],
+    has_isw: Bool,
+    want_prio: Bool,
+) raises:
+    """PURE device-kernel forward + reverse scan of the K-step unroll. Reads the
+    device batch slabs (filled by the prologue), runs the forward scan (rep + K
+    dynamics) and reverse scan (pred/dyn vjp with the ½ dynamics gradient +
+    1/(K+1) loss weight), leaving grads in the three nets' Param grad slabs + the
+    loss accumulators + (optionally) the value-error priorities — all on-device.
+    NO H2D, NO optimizer step, NO sync ⇒ this is the body that drops into a
+    CUDA-graph capture. ``has_isw`` / ``want_prio`` are run-constant booleans
+    (fixed for a run) so the enqueued kernel sequence is identical on each
+    replay."""
     comptime PRED_OUT = ACT + BINS
     comptime DYN_IN = LATENT + ACT
     comptime DYN_OUT = LATENT + BINS
@@ -647,29 +665,6 @@ def mz_unroll_train_step_gpu[
     ref loss_d = scratch.loss_d
     ref d_isw = scratch.d_isw
     ref d_prio = scratch.d_prio
-
-    # ── H2D the host batch slabs (fully overwrites the cached buffers) ──
-    # ``obs_on_device``: the caller already filled ``scratch.d_obs0`` on-device
-    # so skip the obs H2D and ignore ``obs0``.
-    # `.unsafe_ptr()` here is the sanctioned H2D-staging boundary (host List →
-    # device buffer); the batch inputs are owned Lists everywhere else.
-    comptime if not obs_on_device:
-        ctx.enqueue_copy(d_obs0.dev.value(), obs0.unsafe_ptr())
-    ctx.enqueue_copy(d_act.dev.value(), actions.unsafe_ptr())
-    ctx.enqueue_copy(d_pol.dev.value(), policy_tgt.unsafe_ptr())
-    ctx.enqueue_copy(d_val.dev.value(), value_tgt.unsafe_ptr())
-    ctx.enqueue_copy(d_rew.dev.value(), reward_tgt.unsafe_ptr())
-
-    # ── PER (optional): copy IS weights to device; priorities written at k=0 ──
-    var has_isw = Bool(is_weights)
-    if has_isw:
-        ctx.enqueue_copy(d_isw.dev.value(), is_weights.value())
-
-    # zero the 3 loss-component accumulators (policy | value | reward)
-    var zloss = scratch.h_zloss.value()
-    for i in range(3 * B):
-        zloss[i] = Scalar[DT](0.0)
-    ctx.enqueue_copy(loss_d.dev.value(), zloss)
 
     # device-view layouts (built off the storage Tensors via `.lt` / `.lt_at`)
     comptime LB = Layout.row_major(B)
@@ -758,7 +753,7 @@ def mz_unroll_train_step_gpu[
         )
         # PER: value-error priority at the root (k=0), read from value logits +
         # value two-hot (both still intact — reads logits, not grads).
-        if out_prio and k == 0:
+        if want_prio and k == 0:
             ctx.enqueue_function[kPrioCE](
                 pout.lt["gpu", LBPO](), twv.lt["gpu", LBBINS](),
                 d_prio.lt["gpu", LB](), grid_dim=nbB, block_dim=TPB,
@@ -838,24 +833,56 @@ def mz_unroll_train_step_gpu[
         rep, TensorRefs[REP.ARITY](d_obs0), gz, TensorRefs[REP.ARITY](gobs), octx
     )
 
-    # Global grad-norm clip per net (max_grad_norm <= 0 ⇒ no-op), then step.
-    _ = clip_grad_norm["gpu", PRED](pred, Scalar[DT](max_grad_norm), octx)
-    opred.begin_step()
-    pred.for_each_param["gpu"](opred, octx)
-    _ = clip_grad_norm["gpu", DYN](dyn, Scalar[DT](max_grad_norm), octx)
-    odyn.begin_step()
-    dyn.for_each_param["gpu"](odyn, octx)
-    _ = clip_grad_norm["gpu", REP](rep, Scalar[DT](max_grad_norm), octx)
-    orep.begin_step()
-    rep.for_each_param["gpu"](orep, octx)
 
+def _mz_arena_opt_step_gpu[
+    REP: Module, DYN: Module, PRED: Module
+](
+    ctx: DeviceContext,
+    mut rep: REP,
+    mut dyn: DYN,
+    mut pred: PRED,
+    mut orep: Adam,
+    mut odyn: Adam,
+    mut opred: Adam,
+    max_grad_norm: Float64,
+) raises:
+    """CUDA-graph-safe optimizer step for the captured train loop. Per net:
+    capture-safe grad-norm clip (`clip_grads_device`, no D2H) → arena grouped
+    step (`step_captured`, advances device `β^t` + reads device LR). Requires the
+    three optimizers to be `adopt`-ed (arena mode); pure device kernels, no host
+    bookkeeping ⇒ replay-safe. Mirrors the per-param `clip_grad_norm` + step the
+    non-captured monolithic uses, but on the arena path."""
+    var octx = Optional[DeviceContext](ctx)
+    var mgn = Scalar[DT](max_grad_norm)
+    opred.clip_grads_device["gpu"](pred, mgn, octx)
+    opred.step_captured(ctx)
+    odyn.clip_grads_device["gpu"](dyn, mgn, octx)
+    odyn.step_captured(ctx)
+    orep.clip_grads_device["gpu"](rep, mgn, octx)
+    orep.step_captured(ctx)
+
+
+def _mz_train_epilogue_gpu[
+    B: Int, K: Int, OBS: Int, ACT: Int, LATENT: Int, BINS: Int,
+](
+    ctx: DeviceContext,
+    mut scratch: MZScratch[B, K, OBS, ACT, LATENT, BINS],
+    want_prio: Bool,
+    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+) raises -> Scalar[DT]:
+    """EAGER epilogue: sync, D2H the loss components (+ priorities) and reduce on
+    the host → returns the mean total loss (same reduction as the CPU path). Kept
+    OUT of the captured region (sync + D2H + host reduce). The loss/prio device
+    buffers were written by the captured/replayed compute, so this reads fresh
+    values every iteration."""
     # ── D2H PER priorities + loss with a single sync — 3 [B] blocks:
     #    policy | value | reward (loss); + [B] value-error priorities ──
     ctx.synchronize()
     var hloss = scratch.h_loss.value()
-    if out_prio:
-        ctx.enqueue_copy(scratch.h_prio.value(), d_prio.dev.value())
-    ctx.enqueue_copy(hloss, loss_d.dev.value())
+    if want_prio:
+        ctx.enqueue_copy(scratch.h_prio.value(), scratch.d_prio.dev.value())
+    ctx.enqueue_copy(hloss, scratch.loss_d.dev.value())
     ctx.synchronize()
     if out_prio:
         var op = out_prio.value()
@@ -876,3 +903,87 @@ def mz_unroll_train_step_gpu[
         lp[1] = l_val * inv
         lp[2] = l_rew * inv
     return (l_pol + l_val + l_rew) * inv
+
+
+def mz_unroll_train_step_gpu[
+    REP: Module,
+    DYN: Module,
+    PRED: Module,
+    B: Int,
+    K: Int,
+    OBS: Int,
+    ACT: Int,
+    LATENT: Int,
+    BINS: Int,
+    obs_on_device: Bool = False,
+](
+    ctx: DeviceContext,
+    mut rep: REP,
+    mut dyn: DYN,
+    mut pred: PRED,
+    mut orep: Adam,
+    mut odyn: Adam,
+    mut opred: Adam,
+    mut scratch: MZScratch[B, K, OBS, ACT, LATENT, BINS],
+    obs0: List[Scalar[DT]],
+    actions: List[Scalar[DT]],
+    policy_tgt: List[Scalar[DT]],
+    value_tgt: List[Scalar[DT]],
+    reward_tgt: List[Scalar[DT]],
+    v_min: Scalar[DT],
+    v_max: Scalar[DT],
+    value_coef: Scalar[DT] = Scalar[DT](1.0),
+    max_grad_norm: Float64 = 0.0,
+    loss_parts: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    is_weights: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+    out_prio: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
+) raises -> Scalar[DT]:
+    """GPU MuZero K-step unroll training step — device mirror of
+    `mz_unroll_train_step_cpu`.
+
+    PER (optional): when ``is_weights`` is given the per-sample importance
+    weights scale the whole prediction-head grad row + the reward slice of the
+    dyn grad before each vjp (the latent carry is already weighted, so it is
+    NOT re-scaled). When ``out_prio`` is given the root (k=0) value-head soft-CE
+    is written per row as the new priority signal. Both are no-ops when ``None``
+    → bit-identical to the uniform path.
+
+    Takes the same **host** time-major batch slabs (raw value/reward scalars;
+    `h` + two-hot applied on device), H2D-copies them once, runs the forward
+    scan (rep + K dynamics) and reverse scan (pred/dyn vjp with the ½ dynamics
+    gradient + 1/(K+1) loss weight) entirely on the device, and steps the three
+    Adam optimizers in place. Returns the mean total loss (same reduction as
+    the CPU path). Device + host scratch is supplied by a persistent
+    `MZScratch` (allocated once in `make`, reused every step) — this
+    function performs **no** `enqueue_create_buffer` of its own, which would
+    explode disk on NVIDIA when called in the per-step hot loop.
+    """
+    var has_isw = Bool(is_weights)
+    var want_prio = Bool(out_prio)
+    var octx = Optional[DeviceContext](ctx)
+
+    _mz_train_prologue_gpu[B, K, OBS, ACT, LATENT, BINS, obs_on_device](
+        ctx, scratch, obs0, actions, policy_tgt, value_tgt, reward_tgt,
+        is_weights,
+    )
+    _mz_train_fwdrev_gpu[REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS](
+        ctx, rep, dyn, pred, scratch, v_min, v_max, value_coef,
+        has_isw, want_prio,
+    )
+
+    # Global grad-norm clip per net (max_grad_norm <= 0 ⇒ no-op), then step.
+    # Per-param walk (the universal correctness path); the captured path uses
+    # `_mz_arena_opt_step_gpu` instead (arena, capture-safe).
+    _ = clip_grad_norm["gpu", PRED](pred, Scalar[DT](max_grad_norm), octx)
+    opred.begin_step()
+    pred.for_each_param["gpu"](opred, octx)
+    _ = clip_grad_norm["gpu", DYN](dyn, Scalar[DT](max_grad_norm), octx)
+    odyn.begin_step()
+    dyn.for_each_param["gpu"](odyn, octx)
+    _ = clip_grad_norm["gpu", REP](rep, Scalar[DT](max_grad_norm), octx)
+    orep.begin_step()
+    rep.for_each_param["gpu"](orep, octx)
+
+    return _mz_train_epilogue_gpu[B, K, OBS, ACT, LATENT, BINS](
+        ctx, scratch, want_prio, loss_parts, out_prio
+    )

@@ -62,7 +62,15 @@ from mojo_rl.planners.tree_search import (
     RepresentationGPU, DynamicsGPU, PredictionGPU,
 )
 
-from .blocks import mz_unroll_train_step_gpu, MZScratch
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
+from .blocks import (
+    mz_unroll_train_step_gpu,
+    _mz_train_prologue_gpu,
+    _mz_train_fwdrev_gpu,
+    _mz_arena_opt_step_gpu,
+    _mz_train_epilogue_gpu,
+    MZScratch,
+)
 from .selfplay_gpu_device import _mz_emit_train_diag
 from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
 from ..zero.prioritized_sequence_replay_mcts import (
@@ -624,6 +632,14 @@ def run_muzero_selfplay_arena_gumbel_2p[
     # LinearWarmupSchedule[N] to ramp 0→lr over the first N grad updates — tames
     # the early instability a wider/deeper net shows under the base LR.
     SCHEDULER: Scheduler = ConstantSchedule,
+    # CUDA-graph the per-step BPTT train compute (forward+reverse scan + arena
+    # optimizer step). Default OFF → the per-param non-captured path, bit-identical
+    # to before. ON (NVIDIA): adopts the three Adam optimizers into arena mode,
+    # routes the LR schedule through the device buffer (`push_lr_device`), and
+    # captures the device-kernel compute into one graph replayed per train step —
+    # collapsing the per-kernel launch overhead. Requires uniform replay
+    # (`use_per=False`, which board games use); a no-op on Apple (compile-time).
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](
     ctx: DeviceContext,
     mut rep: REP,           # the BEST representation net (final weights on return)
@@ -701,6 +717,22 @@ def run_muzero_selfplay_arena_gumbel_2p[
     var opred = Adam(lr=lr)
     # grad clip is applied inside the unroll via clip_grad_norm (max_grad_norm
     # threaded to the mz_unroll_train_step_gpu call below).
+
+    # CUDA-graph capture of the train step (opt-in). Adopt the three optimizers
+    # into ARENA mode so the captured step advances β^t / reads the LR from
+    # device buffers (the per-param path bakes them host-side → not replay-safe),
+    # and own the capture slot (None until first capture). Requires uniform
+    # replay; board games use `use_per=False`.
+    var train_graph: Optional[CUDAGraph] = None
+    comptime if USE_TRAIN_CUDA_GRAPH:
+        if use_per:
+            raise Error(
+                "USE_TRAIN_CUDA_GRAPH requires uniform replay (use_per=False);"
+                " PER's host-side priority path is not capture-safe."
+            )
+        orep.adopt["gpu"](l_rep, Optional(ctx))
+        odyn.adopt["gpu"](l_dyn, Optional(ctx))
+        opred.adopt["gpu"](l_pred, Optional(ctx))
 
     # ── Lagging TARGET net trio for reanalyze. Synced from the LEARNER every
     #    `target_sync_interval` grad steps (a delayed target that decouples
@@ -1060,15 +1092,24 @@ def run_muzero_selfplay_arena_gumbel_2p[
             l_pred.set_attr["training"](Scalar[DT](1.0))
             for _t in range(train_per_iter):
                 # LR schedule over optimizer steps (default constant → no code).
+                # Under capture, route the scheduled LR through the device buffer
+                # (`push_lr_device`, stable pointer) so the captured step reads the
+                # FRESH lr on each replay; the host `orep.lr = …` write would
+                # freeze at the capture-time value. Non-capture path is unchanged.
                 comptime if not SCHEDULER.IS_CONSTANT:
                     var _scl = Scalar[DT](
                         SCHEDULER.lr_scale_at(
                             train_steps, iterations * train_per_iter
                         )
                     )
-                    orep.lr = lr * _scl
-                    odyn.lr = lr * _scl
-                    opred.lr = lr * _scl
+                    comptime if USE_TRAIN_CUDA_GRAPH:
+                        orep.push_lr_device["gpu"](lr * _scl, Optional(ctx))
+                        odyn.push_lr_device["gpu"](lr * _scl, Optional(ctx))
+                        opred.push_lr_device["gpu"](lr * _scl, Optional(ctx))
+                    else:
+                        orep.lr = lr * _scl
+                        odyn.lr = lr * _scl
+                        opred.lr = lr * _scl
                 # Prioritized device sample: gathers the obs window into
                 # `d_obs_seq` and the n-step targets into the host slabs. With PER
                 # on, also writes the paper priority |ν − z| into `t_prio` (the
@@ -1102,19 +1143,47 @@ def run_muzero_selfplay_arena_gumbel_2p[
                     isw_opt = Optional[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
                     ](t_isw.unsafe_ptr().as_unsafe_any_origin())
-                last_loss = Float64(
-                    mz_unroll_train_step_gpu[
-                        REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS,
-                        obs_on_device=True,
-                    ](
-                        ctx, l_rep, l_dyn, l_pred, orep, odyn, opred,
-                        scratch,
-                        t_obs0, t_act, t_pol, t_val, t_rew,
-                        VMIN, VMAX, value_coef, Float64(max_grad_norm),
-                        loss_parts=l_parts,
-                        is_weights=isw_opt,
+                comptime if USE_TRAIN_CUDA_GRAPH:
+                    # Eager prologue (H2D) → captured device compute (forward +
+                    # reverse scan + arena optimizer step) → eager epilogue (sync
+                    # + D2H + reduce). `use_per` is False here (guarded at setup),
+                    # so no IS-weights and no priorities in the captured body.
+                    _mz_train_prologue_gpu[
+                        B, K, OBS, ACT, LATENT, BINS, obs_on_device=True
+                    ](ctx, scratch, t_obs0, t_act, t_pol, t_val, t_rew)
+
+                    def _mz_compute() capturing raises -> None:
+                        _mz_train_fwdrev_gpu[
+                            REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS
+                        ](
+                            ctx, l_rep, l_dyn, l_pred, scratch,
+                            VMIN, VMAX, value_coef, False, False,
+                        )
+                        _mz_arena_opt_step_gpu[REP, DYN, PRED](
+                            ctx, l_rep, l_dyn, l_pred, orep, odyn, opred,
+                            Float64(max_grad_norm),
+                        )
+
+                    maybe_capture_replay[_mz_compute](train_graph, ctx)
+                    last_loss = Float64(
+                        _mz_train_epilogue_gpu[B, K, OBS, ACT, LATENT, BINS](
+                            ctx, scratch, False, loss_parts=l_parts
+                        )
                     )
-                )
+                else:
+                    last_loss = Float64(
+                        mz_unroll_train_step_gpu[
+                            REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS,
+                            obs_on_device=True,
+                        ](
+                            ctx, l_rep, l_dyn, l_pred, orep, odyn, opred,
+                            scratch,
+                            t_obs0, t_act, t_pol, t_val, t_rew,
+                            VMIN, VMAX, value_coef, Float64(max_grad_norm),
+                            loss_parts=l_parts,
+                            is_weights=isw_opt,
+                        )
+                    )
                 if use_per:
                     rb.update_priorities(t_slots, t_prio, B)
                 train_steps += 1

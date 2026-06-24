@@ -400,6 +400,16 @@ struct Adam(Movable, ParamVisitor, Optimizer):
             block_dim=TPB,
         )
 
+    def step_captured(mut self, c: DeviceContext) raises:
+        """Capture-safe arena step for a CUDA-graph-captured train loop. Runs ONLY
+        the grouped device step (`_grouped_step`): it advances `β^t` on the device
+        `_pow_dev` and reads the device LR (`_lr_dev`, written eagerly by
+        `push_lr_device`), so the correction + schedule advance on every replay.
+        Unlike `step`, it does NO host work — no host `begin_step` counter bump and
+        no AMP `ParamVersionBump` walk (both host-side ⇒ not capturable). Requires
+        `adopt` (arena mode); a no-op if the arena is empty."""
+        self._grouped_step(c)
+
     def zero_grad[
         target: StaticString, M: Module
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:

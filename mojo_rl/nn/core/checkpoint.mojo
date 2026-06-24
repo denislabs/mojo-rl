@@ -204,8 +204,7 @@ def save_params_multi[
     the per-model sidecar layout (plain `save_params` is whole-file-per-model)."""
     var w = CheckpointWriter(save_moments)
 
-    @parameter
-    for i in range(models.__len__()):
+    comptime for i in range(models.__len__()):
         w.mode = 0
         models[i].for_each_param[target](w, ctx)
         w.mode = 1
@@ -235,8 +234,7 @@ def load_params_multi[
         body.append(lines[li])
     var r = CheckpointReader(body^)
 
-    @parameter
-    for i in range(models.__len__()):
+    comptime for i in range(models.__len__()):
         r.mode = 0
         models[i].for_each_param[target](r, ctx)
         r.mode = 1
