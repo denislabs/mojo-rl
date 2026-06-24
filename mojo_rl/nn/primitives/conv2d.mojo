@@ -373,6 +373,15 @@ struct Conv2D[
     # CUDA graph and reads the live fp32 master on every replay — the version
     # gate would skip it on replay and serve STALE weights. Off → version-gated.
     var _force_recast: Bool
+    # A2: device address of the input the forward last im2col'd into
+    # `col_t`/`col_t_bf`. The vjp REUSES that col (skips its redundant im2col)
+    # iff its `forward_input` is the SAME buffer; else it recomputes (safe
+    # fallback = today's behavior, never wrong). Valid under the framework's
+    # re-forward-before-vjp cache contract — the same one `BatchNorm2D.vjp`
+    # already relies on for `cache_xhat` (conv sits next to BN in every block,
+    # so wherever BN's single-field cache is valid at vjp, `col_t` is too).
+    # 0 = no forward has populated the col yet.
+    var _col_src_ptr: Int
 
     def __init__(out self):
         self.weight = Param["weight", True, Self.W_SIZE]()
@@ -388,6 +397,7 @@ struct Conv2D[
         self.b_a = TensorImpl[Self.ADT]()
         self._w_cast_version = -1  # < any real version → first forward casts
         self._force_recast = False
+        self._col_src_ptr = 0
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         comptime if ATTR == "capture_recast":
@@ -514,6 +524,9 @@ struct Conv2D[
                     grid_dim=nb_col,
                     block_dim=TPB,
                 )
+                # A2: record the input buffer so this forward's col_t can be
+                # reused by the matching vjp (skipping a redundant im2col).
+                self._col_src_ptr = Int(in0d.dev.value().unsafe_ptr())
                 # (2) out_packed[BS,OC] = col[BS,COL] @ W[OC,COL]ᵀ
                 var col_tt = TileTensor(
                     self.col_t.dev.value(), row_major[BS, Self.COL]()
@@ -587,6 +600,8 @@ struct Conv2D[
                 grid_dim=nb_col,
                 block_dim=TPB,
             )
+            # A2: record the input buffer for col_t_bf reuse in the matching vjp.
+            self._col_src_ptr = Int(in0.dev.value().unsafe_ptr())
             # (2) out_packed[BS,OC] = col[BS,COL] @ W[OC,COL]ᵀ — bf16-in →
             # bf16-out GEMM (fp32 accumulation is automatic).
             var col_tt = TileTensor(
@@ -801,30 +816,36 @@ struct Conv2D[
             self.outp_t.ensure_gpu(c, BS * Self.OC_)
             self.goT_t.ensure_gpu(c, Self.OC_ * BS)
             self.dW_tmp.ensure_gpu(c, Self.W_SIZE)
-            # (1) col = im2col(x)
-            comptime nb_col = (BS * Self.COL + TPB - 1) // TPB
-            c.enqueue_function[
-                _im2col_kernel[
-                    B,
-                    Self.IC_,
-                    Self.K_,
-                    Self.S_,
-                    Self.P_,
-                    Self.H_,
-                    Self.W_,
-                    Self.OH,
-                    Self.OW,
-                    Self.IN_FLAT,
-                    Self.COL,
-                    Self.SO,
-                    BS,
-                ]
-            ](
-                find.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
-                self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
-                grid_dim=nb_col,
-                block_dim=TPB,
-            )
+            # (1) col = im2col(x) — A2: REUSE the forward's col_t when this vjp's
+            # forward_input is the buffer the forward im2col'd; else recompute
+            # (safe fallback). See `_col_src_ptr`.
+            if (
+                self._col_src_ptr == 0
+                or Int(find.dev.value().unsafe_ptr()) != self._col_src_ptr
+            ):
+                comptime nb_col = (BS * Self.COL + TPB - 1) // TPB
+                c.enqueue_function[
+                    _im2col_kernel[
+                        B,
+                        Self.IC_,
+                        Self.K_,
+                        Self.S_,
+                        Self.P_,
+                        Self.H_,
+                        Self.W_,
+                        Self.OH,
+                        Self.OW,
+                        Self.IN_FLAT,
+                        Self.COL,
+                        Self.SO,
+                        BS,
+                    ]
+                ](
+                    find.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                    self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                    grid_dim=nb_col,
+                    block_dim=TPB,
+                )
             # (2) goᵀ[OC,BS] = transpose(grad_output)
             comptime nb_got = (Self.OC_ * BS + TPB - 1) // TPB
             c.enqueue_function[
@@ -934,31 +955,37 @@ struct Conv2D[
             self.goT_t_bf.ensure_gpu(c, Self.OC_ * BS)
             self.dW_tmp.ensure_gpu(c, Self.W_SIZE)  # fp32 dW temp
             self._ensure_w_bf(c)  # cached bf16 weight (reused from forward)
-            # (1) col = im2col(x): x (fin) ALREADY bf16 → bf16 col.
-            comptime nb_col = (BS * Self.COL + TPB - 1) // TPB
-            c.enqueue_function[
-                _im2col_kernel[
-                    B,
-                    Self.IC_,
-                    Self.K_,
-                    Self.S_,
-                    Self.P_,
-                    Self.H_,
-                    Self.W_,
-                    Self.OH,
-                    Self.OW,
-                    Self.IN_FLAT,
-                    Self.COL,
-                    Self.SO,
-                    BS,
-                    Self.ADT,
-                ]
-            ](
-                fin.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
-                self.col_t_bf.lt["gpu", Layout.row_major(BS, Self.COL)](),
-                grid_dim=nb_col,
-                block_dim=TPB,
-            )
+            # (1) col = im2col(x): x (fin) ALREADY bf16 → bf16 col. A2: REUSE the
+            # forward's col_t_bf when fin is the buffer the forward im2col'd; else
+            # recompute (safe fallback). See `_col_src_ptr`.
+            if (
+                self._col_src_ptr == 0
+                or Int(fin.dev.value().unsafe_ptr()) != self._col_src_ptr
+            ):
+                comptime nb_col = (BS * Self.COL + TPB - 1) // TPB
+                c.enqueue_function[
+                    _im2col_kernel[
+                        B,
+                        Self.IC_,
+                        Self.K_,
+                        Self.S_,
+                        Self.P_,
+                        Self.H_,
+                        Self.W_,
+                        Self.OH,
+                        Self.OW,
+                        Self.IN_FLAT,
+                        Self.COL,
+                        Self.SO,
+                        BS,
+                        Self.ADT,
+                    ]
+                ](
+                    fin.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                    self.col_t_bf.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                    grid_dim=nb_col,
+                    block_dim=TPB,
+                )
             # (2) goᵀ[OC,BS] = transpose(grad_output): bf16 go → bf16 goᵀ.
             comptime nb_got = (Self.OC_ * BS + TPB - 1) // TPB
             c.enqueue_function[
