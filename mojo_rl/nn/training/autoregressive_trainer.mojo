@@ -74,14 +74,12 @@ struct AutoregressiveTrainer[
     # logits, grad_output, grad_input) flow at MADT; the loss + master weights
     # stay fp32 (the SeqCE softmax needs fp32). `MADT == DT` ⇒ zero casts.
     comptime MADT = Self.NET.ACT_DT
-    # Capture covers fp32 AND bf16-flow. SPIKE (bf16): the cached-bf16 weight
-    # recast is a DEVICE kernel that already lands in the captured graph — the
-    # optimizer bumps `val.version` every step, so the capture-run forward
-    # re-casts (and that cast is recorded), and on replay it reads the live fp32
-    # master each time. The host-side `ParamVersionBump` not running on replay is
-    # harmless here. ⚠️ This relies on the cast being captured (version-gated);
-    # the ROBUST follow-up makes the recast UNCONDITIONAL under capture so it
-    # can't silently go stale.
+    # Capture covers fp32 AND bf16-flow. For bf16 the cached-bf16 weight recast
+    # is a DEVICE kernel that must ride the captured graph and read the live fp32
+    # master on every replay; `fit` sets `set_attr["capture_recast"]` so every
+    # bf16 leaf recasts UNCONDITIONALLY (not version-gated) → the cast is always
+    # recorded and never silently stale. The host-side `ParamVersionBump` not
+    # running on replay is harmless (the unconditional recast supersedes it).
     comptime CAPTURE = Self.USE_TRAIN_CUDA_GRAPH
 
     var net: Self.NET
@@ -529,6 +527,11 @@ struct AutoregressiveTrainer[
         # D2H) and drained as a window-mean at each eval boundary. Reset the
         # accumulator before the run; the eager path keeps reading per-step CE.
         comptime if Self.CAPTURE:
+            # Force every bf16 leaf to recast its bf16 weight UNCONDITIONALLY so
+            # the cast kernel is recorded into the graph and reads the live fp32
+            # master on every replay (no silent stale-weight risk). No-op for
+            # fp32 leaves. Set once here, after any model surgery (tie/scale).
+            self.net.set_attr["capture_recast"](Scalar[DT](1.0))
             self.loss.reset_accum["gpu"]()
         for it in range(self.total_iters):
             var tl: Float64 = 0.0

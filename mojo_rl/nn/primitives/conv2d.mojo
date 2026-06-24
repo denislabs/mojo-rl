@@ -368,6 +368,11 @@ struct Conv2D[
     var w_bf: TensorImpl[Self.ADT]
     var b_a: TensorImpl[Self.ADT]
     var _w_cast_version: Int  # `weight.val.version` at last bf16 weight cast
+    # Capture mode (set via `set_attr["capture_recast"]`): when True, the bf16
+    # weight recast is UNCONDITIONAL so the cast kernel is always recorded into a
+    # CUDA graph and reads the live fp32 master on every replay — the version
+    # gate would skip it on replay and serve STALE weights. Off → version-gated.
+    var _force_recast: Bool
 
     def __init__(out self):
         self.weight = Param["weight", True, Self.W_SIZE]()
@@ -382,6 +387,11 @@ struct Conv2D[
         self.w_bf = TensorImpl[Self.ADT]()
         self.b_a = TensorImpl[Self.ADT]()
         self._w_cast_version = -1  # < any real version → first forward casts
+        self._force_recast = False
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        comptime if ATTR == "capture_recast":
+            self._force_recast = value != Scalar[DT](0.0)
 
     def _ensure_w_bf(mut self, c: DeviceContext) raises:
         """Ensure the cached bf16 weight `w_bf` reflects the current fp32
@@ -390,7 +400,7 @@ struct Conv2D[
         Shared by forward (the cast) and vjp (which REUSES it — no optimizer step
         intervenes between a fwd and its bwd)."""
         self.w_bf.ensure_gpu(c, Self.W_SIZE)
-        if self.weight.val.version != self._w_cast_version:
+        if self._force_recast or self.weight.val.version != self._w_cast_version:
             c.enqueue_function[_cast_f2b_kernel[Self.W_SIZE]](
                 self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
                 self.w_bf.lt["gpu", Layout.row_major(Self.W_SIZE)](),
