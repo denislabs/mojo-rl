@@ -166,7 +166,9 @@ def main() raises:
         temperature_decay_steps=40_000,
         temp_min=1.0,
         eval_open_plies=4,
-        reanalyze_every=4,
+        # DEBUG (regression hunt): reanalyze OFF to isolate the live-loop machinery
+        # the overfit test bypasses (was 4). Restore to 4 once diagnosed.
+        reanalyze_every=0,
         reanalyze_batch=128,
         target_sync_interval=200,
         # Rolling checkpoint of the best net every 2k moves → playable /
@@ -178,7 +180,10 @@ def main() raises:
         # priorities. Set False for plain uniform device sampling. PER focuses
         # training on the sharp tactical positions the sparse-terminal C4 reward
         # under-samples — the lever for the 64-sim plateau.
-        use_per=True,
+        # DEBUG (regression hunt): PER OFF (was True) — its IS-weights scale the
+        # gradient; a degenerate IS-weight on NVIDIA would flatten learning while
+        # every component tests correct. Restore to True once diagnosed.
+        use_per=False,
         per_alpha=Scalar[DT](1.0),
         per_beta=Scalar[DT](1.0),
     )
