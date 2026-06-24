@@ -27,6 +27,7 @@ References:
 """
 
 from std.gpu import block_dim, block_idx, thread_idx
+from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
 from std.math import sqrt, log, exp
@@ -113,6 +114,10 @@ struct EZV2GPUMCTSState[
     var pred_input: DeviceBuffer[dtype]       # [N_ENVS × LATENT]
     var pred_output: DeviceBuffer[dtype]      # [N_ENVS × PRED_OUT]
 
+    # ─── Decoded scalars [N_ENVS] (B2: parallel categorical decode) ──────
+    var decoded_reward: DeviceBuffer[dtype]   # h⁻¹(reward expectation) per env
+    var decoded_value: DeviceBuffer[dtype]    # h⁻¹(value expectation) per env
+
     # ─── Final policy [N_ENVS × ACT] ─────────────────────────────────────
     var policies_out: DeviceBuffer[dtype]
 
@@ -174,6 +179,9 @@ struct EZV2GPUMCTSState[
             Self.N_ENVS * Self.PRED_OUT
         )
 
+        self.decoded_reward = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
+        self.decoded_value = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
+
         self.policies_out = ctx.enqueue_create_buffer[dtype](
             Self.N_ENVS * Self.ACT
         )
@@ -205,6 +213,8 @@ struct EZV2GPUMCTSState[
         self.dyn_output = take.dyn_output^
         self.pred_input = take.pred_input^
         self.pred_output = take.pred_output^
+        self.decoded_reward = take.decoded_reward^
+        self.decoded_value = take.decoded_value^
         self.policies_out = take.policies_out^
 
     def zero_tree(self, ctx: DeviceContext) raises:
@@ -762,6 +772,113 @@ def gz_copy_pred_input_kernel[
     pred_input[idx] = dyn_output[e * DYN_OUT + i]
 
 
+# Block-reduction width for gz_decode_kernel (one block per env; threads
+# cooperatively reduce the BINS categorical bins). 128 lanes over ~601 bins.
+comptime GZ_DECODE_TPB = 128
+
+
+@always_inline
+def _gz_inverse_h[dtype: DType](y: Scalar[dtype]) -> Scalar[dtype]:
+    """Inverse MuZero value/reward transform h⁻¹ (Pohlen, ε=0.001). Same form
+    inlined in gz_expand_kernel's serial decode — factored out for reuse by the
+    parallel gz_decode_kernel."""
+    var sgn = Scalar[dtype](1.0) if y >= Scalar[dtype](0.0) else Scalar[dtype](
+        -1.0
+    )
+    var abs_y = y if y >= Scalar[dtype](0.0) else -y
+    var eps = Scalar[dtype](0.001)
+    var inner = sqrt(
+        Scalar[dtype](1.0)
+        + Scalar[dtype](4.0) * eps * (abs_y + Scalar[dtype](1.0) + eps)
+    )
+    var f = (inner - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps)
+    return sgn * (f * f - Scalar[dtype](1.0))
+
+
+def gz_decode_kernel[
+    N_ENVS: Int,
+    LATENT: Int,
+    ACT: Int,
+    BINS: Int,
+    DYN_OUT: Int,
+    PRED_OUT: Int,
+    dtype: DType,
+](
+    dyn_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * DYN_OUT), MutAnyOrigin
+    ],
+    pred_output: LayoutTensor[
+        dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin
+    ],
+    decoded_reward: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    decoded_value: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    v_min: Scalar[dtype],
+    v_max: Scalar[dtype],
+) where dtype.is_floating_point():
+    """Parallel categorical reward + value decode (B2): ONE BLOCK PER ENV, the
+    BINS-wide softmax-expectation + h⁻¹ done as ``block.max``/``block.sum``
+    reductions instead of the serial ~3×BINS per-thread loops that dominated
+    gz_expand_kernel (the 663 µs kernel at one-thread-per-env). Reward bins live
+    at ``dyn_output[e·DYN_OUT + LATENT ..]``, value bins at
+    ``pred_output[e·PRED_OUT + ACT ..]``. Writes two scalars/env with PLAIN
+    unconditional stores by thread 0 — no conditional read-modify-write folded
+    into the reduction (safe from the NVIDIA reduction store-drop class). Launch:
+    ``grid_dim=(N_ENVS,), block_dim=(GZ_DECODE_TPB,)`` (every block has a valid
+    env, so all threads reach the reductions — no divergent barrier)."""
+    comptime TPB = GZ_DECODE_TPB
+    var e = Int(block_idx.x)
+    if e >= N_ENVS:
+        return
+    var t = Int(thread_idx.x)
+    var step = (v_max - v_min) / Scalar[dtype](BINS - 1)
+
+    # ── reward decode (dyn_output reward bins) ──
+    var r_base = e * DYN_OUT + LATENT
+    var r_lmax = Scalar[dtype](-1.0e30)
+    var ri = t
+    while ri < BINS:
+        var v = rebind[Scalar[dtype]](dyn_output[r_base + ri])
+        if v > r_lmax:
+            r_lmax = v
+        ri += TPB
+    var r_max = block.max[block_size=TPB, broadcast=True](r_lmax)
+    var r_lsum = Scalar[dtype](0.0)
+    var r_lexp = Scalar[dtype](0.0)
+    ri = t
+    while ri < BINS:
+        var p = exp(rebind[Scalar[dtype]](dyn_output[r_base + ri]) - r_max)
+        r_lsum += p
+        r_lexp += p * (v_min + Scalar[dtype](ri) * step)
+        ri += TPB
+    var r_sum = block.sum[block_size=TPB, broadcast=True](r_lsum)
+    var r_exp = block.sum[block_size=TPB, broadcast=True](r_lexp)
+    if t == 0:
+        decoded_reward[e] = _gz_inverse_h[dtype](r_exp / r_sum)
+
+    # ── value decode (pred_output value bins) ──
+    var v_base = e * PRED_OUT + ACT
+    var v_lmax = Scalar[dtype](-1.0e30)
+    var vi = t
+    while vi < BINS:
+        var v = rebind[Scalar[dtype]](pred_output[v_base + vi])
+        if v > v_lmax:
+            v_lmax = v
+        vi += TPB
+    var v_max_l = block.max[block_size=TPB, broadcast=True](v_lmax)
+    var v_lsum = Scalar[dtype](0.0)
+    var v_lexp = Scalar[dtype](0.0)
+    vi = t
+    while vi < BINS:
+        var p = exp(rebind[Scalar[dtype]](pred_output[v_base + vi]) - v_max_l)
+        v_lsum += p
+        v_lexp += p * (v_min + Scalar[dtype](vi) * step)
+        vi += TPB
+    var v_sum = block.sum[block_size=TPB, broadcast=True](v_lsum)
+    var v_exp = block.sum[block_size=TPB, broadcast=True](v_lexp)
+    if t == 0:
+        decoded_value[e] = _gz_inverse_h[dtype](v_exp / v_sum)
+
+
 def gz_expand_kernel[
     N_ENVS: Int,
     MAX_NODES: Int,
@@ -806,12 +923,15 @@ def gz_expand_kernel[
         dtype, Layout.row_major(N_ENVS * PRED_OUT), MutAnyOrigin
     ],
     leaf_values: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    decoded_reward: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
+    decoded_value: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
     v_min: Scalar[dtype],
     v_max: Scalar[dtype],
 ) where dtype.is_floating_point():
-    """Expand the leaf for each env: write hidden_state, decode reward,
-    populate child node_logits, decode child value into both `node_value`
-    and `leaf_values`."""
+    """Expand the leaf for each env: write hidden_state, set the edge reward +
+    child value (both precomputed by gz_decode_kernel, B2), and populate child
+    node_logits. Still one-thread-per-env for the tree bookkeeping; the heavy
+    BINS-wide softmax decodes were lifted into the parallel gz_decode_kernel."""
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
     if e >= N_ENVS:
         return
@@ -834,57 +954,10 @@ def gz_expand_kernel[
     for i in range(LATENT):
         hidden_states[child_h_off + i] = dyn_output[dyn_off + i]
 
-    # ── Reward decoding (categorical → scalar with h⁻¹) ─────────────────
-    comptime NUM_REW_BINS = DYN_OUT - LATENT
-    var rew_decoded: Scalar[dtype]
-    if NUM_REW_BINS == 1:
-        # Scalar reward path (rare here — MuZero typically uses categorical).
-        rew_decoded = rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT])
-    else:
-        var r_max = rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT])
-        for i in range(1, NUM_REW_BINS):
-            var v = rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i])
-            if v > r_max:
-                r_max = v
-        var r_sum = Scalar[dtype](0.0)
-        for i in range(NUM_REW_BINS):
-            r_sum += exp(
-                rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i]) - r_max
-            )
-        var r_step = (v_max - v_min) / Scalar[dtype](NUM_REW_BINS - 1)
-        var r_expected = Scalar[dtype](0.0)
-        for i in range(NUM_REW_BINS):
-            var p = (
-                exp(
-                    rebind[Scalar[dtype]](dyn_output[dyn_off + LATENT + i])
-                    - r_max
-                )
-                / r_sum
-            )
-            r_expected += p * (v_min + Scalar[dtype](i) * r_step)
-        # Inverse scalar transform
-        var sgn_r = (
-            Scalar[dtype](1.0)
-            if r_expected >= Scalar[dtype](0.0)
-            else Scalar[dtype](-1.0)
-        )
-        var abs_r = (
-            r_expected
-            if r_expected >= Scalar[dtype](0.0)
-            else -r_expected
-        )
-        var eps_r = Scalar[dtype](0.001)
-        var inner_r = sqrt(
-            Scalar[dtype](1.0)
-            + Scalar[dtype](4.0) * eps_r * (
-                abs_r + Scalar[dtype](1.0) + eps_r
-            )
-        )
-        var f_r = (inner_r - Scalar[dtype](1.0)) / (
-            Scalar[dtype](2.0) * eps_r
-        )
-        rew_decoded = sgn_r * (f_r * f_r - Scalar[dtype](1.0))
-    reward[tree_off + parent * ACT + action] = rew_decoded
+    # ── Edge reward: precomputed by gz_decode_kernel (B2) ───────────────
+    reward[tree_off + parent * ACT + action] = rebind[Scalar[dtype]](
+        decoded_reward[e]
+    )
 
     # ── Copy child policy logits + initialize per-action stats ──────────
     var child_na_base = tree_off + child * ACT
@@ -896,45 +969,8 @@ def gz_expand_kernel[
         child_idx[child_na_base + a] = Scalar[dtype](-1.0)
     total_visits[ns_off + child] = Scalar[dtype](0.0)
 
-    # ── Decode child value into node_value[child] + leaf_values[e] ──────
-    var v_max_logit = rebind[Scalar[dtype]](pred_output[pred_off + ACT])
-    for i in range(1, BINS):
-        var v = rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
-        if v > v_max_logit:
-            v_max_logit = v
-    var v_sum = Scalar[dtype](0.0)
-    for i in range(BINS):
-        v_sum += exp(
-            rebind[Scalar[dtype]](pred_output[pred_off + ACT + i]) - v_max_logit
-        )
-    var step_v = (v_max - v_min) / Scalar[dtype](BINS - 1)
-    var v_expected = Scalar[dtype](0.0)
-    for i in range(BINS):
-        var prob = (
-            exp(
-                rebind[Scalar[dtype]](pred_output[pred_off + ACT + i])
-                - v_max_logit
-            )
-            / v_sum
-        )
-        v_expected += prob * (v_min + Scalar[dtype](i) * step_v)
-    var sgn = (
-        Scalar[dtype](1.0)
-        if v_expected >= Scalar[dtype](0.0)
-        else Scalar[dtype](-1.0)
-    )
-    var abs_y = (
-        v_expected
-        if v_expected >= Scalar[dtype](0.0)
-        else -v_expected
-    )
-    var eps_h = Scalar[dtype](0.001)
-    var inner = sqrt(
-        Scalar[dtype](1.0)
-        + Scalar[dtype](4.0) * eps_h * (abs_y + Scalar[dtype](1.0) + eps_h)
-    )
-    var f = (inner - Scalar[dtype](1.0)) / (Scalar[dtype](2.0) * eps_h)
-    var v_decoded = sgn * (f * f - Scalar[dtype](1.0))
+    # ── Child value: precomputed by gz_decode_kernel (B2) ───────────────
+    var v_decoded = rebind[Scalar[dtype]](decoded_value[e])
     node_value[ns_off + child] = v_decoded
     leaf_values[e] = v_decoded
 
