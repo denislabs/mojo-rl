@@ -12,7 +12,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, CPU_SIMD_W, TPB
-from ..core.tensor import Tensor
+from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
@@ -21,20 +21,24 @@ from ..core.amp import AMPPolicy, NoAMP
 
 
 def _flatten_copy_kernel[
-    N: Int
+    N: Int, ADT: DType = DT
 ](
-    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     if idx < N:
-        dst[idx] = rebind[Scalar[DT]](src[idx])
+        dst[idx] = rebind[Scalar[ADT]](src[idx])
 
 
-struct Flatten[DIM_: Int](Module):
+struct Flatten[DIM_: Int, ADT: DType = DT](Module):
     comptime ARITY = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.DIM_
+    # Activation-flow dtype (AMP). Flatten is dtype-TRANSPARENT — a pure
+    # identity copy with no math/cast — so it carries ACT_DT through unchanged.
+    # ACT_DT == DT (default) → byte-identical to the fp32 path.
+    comptime ACT_DT = Self.ADT
 
     def __init__(out self):
         pass
@@ -49,8 +53,8 @@ struct Flatten[DIM_: Int](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[1, o],
-        mut out: Tensor,
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime N = B * Self.DIM_
@@ -70,7 +74,7 @@ struct Flatten[DIM_: Int](Module):
             var c = ctx.value()
             out.ensure_gpu(c, N)
             comptime nblk = (N + TPB - 1) // TPB
-            c.enqueue_function[_flatten_copy_kernel[N]](
+            c.enqueue_function[_flatten_copy_kernel[N, Self.ACT_DT]](
                 in0.lt["gpu", Layout.row_major(N)](),
                 out.lt["gpu", Layout.row_major(N)](),
                 grid_dim=nblk,
@@ -85,9 +89,9 @@ struct Flatten[DIM_: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[1, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime N = B * Self.DIM_
@@ -107,7 +111,7 @@ struct Flatten[DIM_: Int](Module):
             var c = ctx.value()
             gin.ensure_gpu(c, N)
             comptime nblk = (N + TPB - 1) // TPB
-            c.enqueue_function[_flatten_copy_kernel[N]](
+            c.enqueue_function[_flatten_copy_kernel[N, Self.ACT_DT]](
                 grad_output.lt["gpu", Layout.row_major(N)](),
                 gin.lt["gpu", Layout.row_major(N)](),
                 grid_dim=nblk,

@@ -21,7 +21,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
-from ..core.tensor import Tensor
+from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.initializer import Initializer
@@ -30,12 +30,14 @@ from ..core.amp import AMPPolicy, NoAMP
 
 def _avg_pool_2d_forward_kernel[
     BATCH: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
-    OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int, ADT: DType = DT,
 ](
-    input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
+    input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+    output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
     inv_kk: Scalar[DT],
 ):
+    # AMP §3 fp32-INTERNAL: I/O is the activation dtype (`ADT`) but the pooling
+    # sum accumulates in fp32 (`DT`). ADT == DT (default) → byte-identical.
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     var total = BATCH * OUT_FLAT
     if idx >= total:
@@ -58,22 +60,25 @@ def _avg_pool_2d_forward_kernel[
             var iw = ow * S + kw - P
             if iw < 0 or iw >= W:
                 continue
-            s += rebind[Scalar[DT]](input[b, in_c_off + ih * W + iw])
-    output[b, out_pos] = s * inv_kk
+            s += rebind[Scalar[ADT]](input[b, in_c_off + ih * W + iw]).cast[
+                DT
+            ]()
+    output[b, out_pos] = (s * inv_kk).cast[ADT]()
 
 
 def _avg_pool_2d_backward_kernel[
     BATCH: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
-    OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int, ADT: DType = DT,
 ](
     grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
+        ADT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
     ],
     grad_input: LayoutTensor[
-        DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin,
+        ADT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin,
     ],
     inv_kk: Scalar[DT],
 ):
+    # AMP §3 fp32-INTERNAL: I/O `ADT`, gradient distribution accumulated in fp32.
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     var total = BATCH * IN_FLAT
     if idx >= total:
@@ -90,7 +95,7 @@ def _avg_pool_2d_backward_kernel[
     var oh_max_raw = ih + P
     var ow_max_raw = iw + P
     if oh_max_raw < 0 or ow_max_raw < 0:
-        grad_input[b, in_pos] = Scalar[DT](0.0)
+        grad_input[b, in_pos] = Scalar[ADT](0.0)
         return
     var oh_top = oh_max_raw // S
     var ow_top = ow_max_raw // S
@@ -114,16 +119,17 @@ def _avg_pool_2d_backward_kernel[
     while oh <= oh_top:
         var ow = ow_bot
         while ow <= ow_top:
-            acc += rebind[Scalar[DT]](
+            acc += rebind[Scalar[ADT]](
                 grad_output[b, out_c_off + oh * OW + ow]
-            )
+            ).cast[DT]()
             ow += 1
         oh += 1
-    grad_input[b, in_pos] = acc * inv_kk
+    grad_input[b, in_pos] = (acc * inv_kk).cast[ADT]()
 
 
 struct AvgPool2D[
     C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    ADT: DType = DT,
 ](Module):
     comptime ARITY: Int = 1
     comptime OH: Int = (Self.H + 2 * Self.P - Self.K) // Self.S + 1
@@ -132,6 +138,10 @@ struct AvgPool2D[
     comptime OUT_FLAT: Int = Self.C * Self.OH * Self.OW
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_FLAT)
     comptime OUT_DIM = Self.OUT_FLAT
+    # Activation-flow dtype (AMP §3 fp32-INTERNAL): AvgPool accepts/emits ACT_DT
+    # but accumulates the pooling sum in fp32. ACT_DT == DT (default) →
+    # byte-identical to the fp32 path.
+    comptime ACT_DT = Self.ADT
 
     def __init__(out self):
         pass
@@ -155,8 +165,8 @@ struct AvgPool2D[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[1, o],
-        mut out: Tensor,
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref in0 = inputs[0]
@@ -171,6 +181,7 @@ struct AvgPool2D[
                     var out_c_base = out_base + c * Self.OH * Self.OW
                     for oh in range(Self.OH):
                         for ow in range(Self.OW):
+                            # fp32 accumulator (AMP §3 fp32-internal).
                             var s: Scalar[DT] = 0.0
                             for kh in range(Self.K):
                                 var ih = oh * Self.S + kh - Self.P
@@ -180,10 +191,12 @@ struct AvgPool2D[
                                     var iw = ow * Self.S + kw - Self.P
                                     if iw < 0 or iw >= Self.W:
                                         continue
-                                    s += in0.data[in_c_base + ih * Self.W + iw]
+                                    s += in0.data[
+                                        in_c_base + ih * Self.W + iw
+                                    ].cast[DT]()
                             out.data[out_c_base + oh * Self.OW + ow] = (
                                 s * inv_kk
-                            )
+                            ).cast[Self.ACT_DT]()
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.OUT_FLAT)
@@ -193,7 +206,7 @@ struct AvgPool2D[
                 _avg_pool_2d_forward_kernel[
                     B, Self.C, Self.K, Self.S, Self.P,
                     Self.H, Self.W, Self.OH, Self.OW,
-                    Self.IN_FLAT, Self.OUT_FLAT,
+                    Self.IN_FLAT, Self.OUT_FLAT, Self.ACT_DT,
                 ]
             ](
                 in0.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
@@ -210,17 +223,18 @@ struct AvgPool2D[
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[1, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref gin = grad_inputs[0]
         var inv_kk = Scalar[DT](1.0 / Float64(Self.K * Self.K))
         comptime if target == "cpu":
             gin.ensure(B * Self.IN_FLAT)
-            for k in range(B * Self.IN_FLAT):
-                gin.data[k] = Scalar[DT](0.0)
+            # fp32 scatter accumulator (AMP §3 fp32-internal); cast to ACT_DT
+            # at the end. ACT_DT == DT (default) → byte-identical.
+            var acc = List[Scalar[DT]](length=B * Self.IN_FLAT, fill=0.0)
             for b in range(B):
                 var in_base = b * Self.IN_FLAT
                 var out_base = b * Self.OUT_FLAT
@@ -230,7 +244,9 @@ struct AvgPool2D[
                     for oh in range(Self.OH):
                         for ow in range(Self.OW):
                             var go_val = (
-                                grad_output.data[out_c_base + oh * Self.OW + ow]
+                                grad_output.data[
+                                    out_c_base + oh * Self.OW + ow
+                                ].cast[DT]()
                                 * inv_kk
                             )
                             for kh in range(Self.K):
@@ -241,9 +257,11 @@ struct AvgPool2D[
                                     var iw = ow * Self.S + kw - Self.P
                                     if iw < 0 or iw >= Self.W:
                                         continue
-                                    gin.data[
+                                    acc[
                                         in_c_base + ih * Self.W + iw
                                     ] += go_val
+            for k in range(B * Self.IN_FLAT):
+                gin.data[k] = acc[k].cast[Self.ACT_DT]()
         else:
             var c = ctx.value()
             gin.ensure_gpu(c, B * Self.IN_FLAT)
@@ -253,7 +271,7 @@ struct AvgPool2D[
                 _avg_pool_2d_backward_kernel[
                     B, Self.C, Self.K, Self.S, Self.P,
                     Self.H, Self.W, Self.OH, Self.OW,
-                    Self.IN_FLAT, Self.OUT_FLAT,
+                    Self.IN_FLAT, Self.OUT_FLAT, Self.ACT_DT,
                 ]
             ](
                 grad_output.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
