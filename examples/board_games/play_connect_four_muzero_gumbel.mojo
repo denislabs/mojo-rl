@@ -32,7 +32,7 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.checkpoint import load_params
+from mojo_rl.nn.core.checkpoint import load_params_multi
 from mojo_rl.deep_agents.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
 )
@@ -73,12 +73,11 @@ def main() raises:
     var dyn = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
     var pred = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
 
-    # ── load the trio ── storage checkpoint is whole-file-per-model: the trio
-    # lives in three per-net files (`.rep` / `.dyn` / `.pred`), the layout the
-    # training run's end-of-run + rolling `checkpoint_every` saves write.
-    load_params["gpu", Rep](rep, ckpt + String(".rep"), Optional(ctx))
-    load_params["gpu", Dyn](dyn, ckpt + String(".dyn"), Optional(ctx))
-    load_params["gpu", Pred](pred, ckpt + String(".pred"), Optional(ctx))
+    # ── load the trio ── single-file checkpoint: rep/dyn/pred sections live in
+    # ONE file written by the training run's end-of-run + rolling
+    # `checkpoint_every` saves (`save_params_multi`); load them back in the same
+    # rep→dyn→pred order.
+    load_params_multi["gpu", Rep, Dyn, Pred](ckpt, Optional(ctx), rep, dyn, pred)
     rep.set_attr["training"](Scalar[DT](0.0))
     dyn.set_attr["training"](Scalar[DT](0.0))
     pred.set_attr["training"](Scalar[DT](0.0))

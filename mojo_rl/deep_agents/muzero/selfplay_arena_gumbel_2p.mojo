@@ -53,7 +53,7 @@ from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.optimizer.lr_scheduler import Scheduler, ConstantSchedule
 from mojo_rl.nn.core.hard_copy import hard_copy
-from mojo_rl.nn.core.checkpoint import save_params
+from mojo_rl.nn.core.checkpoint import save_params_multi
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -118,18 +118,13 @@ def _mz_save_trio[
     mut rep: REP, mut dyn: DYN, mut pred: PRED,
     path: String,
 ) raises:
-    """Write the rep/dyn/pred trio (weights only; optimizers are session-local).
-
-    FLAG (parent reconciliation needed): the legacy one-file nn-ckpt v2 envelope
-    appended rep/dyn/pred sections via `save_state_v2_body_gpu`. Storage
-    `save_params` is whole-file-per-model (no section-append), so this writes
-    three sidecar files for now. This must be reconciled with `MuZeroAgent.save`
-    / the play script's loader — agent.mojo (owned by the parent) faces the SAME
-    storage-envelope decision; whatever multi-section helper it adopts should be
-    used here too."""
-    save_params["gpu", REP](rep, path + String(".rep"), Optional(ctx))
-    save_params["gpu", DYN](dyn, path + String(".dyn"), Optional(ctx))
-    save_params["gpu", PRED](pred, path + String(".pred"), Optional(ctx))
+    """Write the rep/dyn/pred trio (weights only; optimizers are session-local)
+    into a SINGLE checkpoint file via `save_params_multi` (rep→dyn→pred sections
+    under one v2 header). The play script's loader (`load_params_multi`) walks the
+    trio in the same order."""
+    save_params_multi["gpu", REP, DYN, PRED](
+        path, Optional(ctx), False, rep, dyn, pred
+    )
 
 
 def _mz_should_promote(

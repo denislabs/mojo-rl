@@ -187,3 +187,57 @@ def load_params[
     model.for_each_param[target](r, ctx)
     r.mode = 1
     model.for_each_state[target](r, ctx)
+
+
+def save_params_multi[
+    target: StaticString, *Ms: Module
+](
+    path: String,
+    ctx: Optional[DeviceContext],
+    save_moments: Bool,
+    mut *models: *Ms,
+) raises:
+    """Write N models into ONE v2 checkpoint file: a single header, then each
+    model's Param + State sections, in pack order. `load_params_multi` walks the
+    same models in the same order, so each section's dotted name is validated
+    against its own model — duplicate names across models never collide. Replaces
+    the per-model sidecar layout (plain `save_params` is whole-file-per-model)."""
+    var w = CheckpointWriter(save_moments)
+
+    @parameter
+    for i in range(models.__len__()):
+        w.mode = 0
+        models[i].for_each_param[target](w, ctx)
+        w.mode = 1
+        models[i].for_each_state[target](w, ctx)
+    with open(path, "w") as f:
+        f.write(w.content)
+
+
+def load_params_multi[
+    target: StaticString, *Ms: Module
+](
+    path: String,
+    ctx: Optional[DeviceContext],
+    mut *models: *Ms,
+) raises:
+    """Load a single-file multi-model checkpoint written by `save_params_multi`,
+    walking the models in the same pack order and validating each one's
+    names/sizes against the file's sections."""
+    var content: String
+    with open(path, "r") as f:
+        content = String(f.read())
+    var lines = _split_lines(content)
+    var body = List[String]()
+    for li in range(len(lines)):
+        if lines[li].startswith("storage-ckpt"):
+            continue
+        body.append(lines[li])
+    var r = CheckpointReader(body^)
+
+    @parameter
+    for i in range(models.__len__()):
+        r.mode = 0
+        models[i].for_each_param[target](r, ctx)
+        r.mode = 1
+        models[i].for_each_state[target](r, ctx)

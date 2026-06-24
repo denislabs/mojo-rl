@@ -43,7 +43,7 @@ from mojo_rl.deep_agents.zero.evaluators import (
     RandomOpponent,
     GPUMinimaxConnectFour,
 )
-from mojo_rl.nn.core.checkpoint import save_params
+from mojo_rl.nn.core.checkpoint import save_params_multi
 from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
 
@@ -189,14 +189,14 @@ def main() raises:
 
     logger.close()
 
-    # Storage checkpoint: whole-file-per-model, so the trio goes to three
-    # per-net files (`.rep` / `.dyn` / `.pred`) — the same layout the driver's
-    # rolling `checkpoint_every` save uses, so `play_connect_four_muzero_gumbel`
-    # loads from these too.
+    # Storage checkpoint: the rep/dyn/pred trio goes into ONE file via
+    # `save_params_multi` — the same single-file layout the driver's rolling
+    # `checkpoint_every` save uses, so `play_connect_four_muzero_gumbel` loads
+    # from it too.
     var ckpt = String("connect_four_muzero_gumbel_spatial.ckpt")
-    save_params["gpu", Rep](rep, ckpt + String(".rep"), Optional(ctx), False)
-    save_params["gpu", Dyn](dyn, ckpt + String(".dyn"), Optional(ctx), False)
-    save_params["gpu", Pred](pred, ckpt + String(".pred"), Optional(ctx), False)
+    save_params_multi["gpu", Rep, Dyn, Pred](
+        ckpt, Optional(ctx), False, rep, dyn, pred
+    )
 
     print()
     print("last_loss:", res.last_loss, "| promotions:", res.promotions)
