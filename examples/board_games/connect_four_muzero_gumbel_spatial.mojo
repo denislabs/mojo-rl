@@ -166,8 +166,8 @@ def main() raises:
         temperature_decay_steps=40_000,
         temp_min=1.0,
         eval_open_plies=4,
-        # DEBUG (regression hunt): step B — reanalyze back ON (was 0), PER off
-        # below, to isolate reanalyze. Restore to 4 (with PER on) once diagnosed.
+        # Reanalyze: refresh stale (policy, value) targets on stored positions with
+        # the lagging target net. A clear win for C4 (faster, higher-ceiling).
         reanalyze_every=4,
         reanalyze_batch=128,
         target_sync_interval=200,
@@ -175,15 +175,13 @@ def main() raises:
         # recoverable mid-run (play it with play_connect_four_muzero_gumbel).
         checkpoint_every=2_000,
         checkpoint_path=String("connect_four_muzero_gumbel_spatial.ckpt"),
-        # Prioritized Experience Replay (device sum-tree): sample stored
-        # positions ∝ root value-error, IS-weight the grads, write back fresh
-        # priorities. Set False for plain uniform device sampling. PER focuses
-        # training on the sharp tactical positions the sparse-terminal C4 reward
-        # under-samples — the lever for the 64-sim plateau.
-        # DEBUG (regression hunt): step B — reanalyze ON (above), PER OFF here.
-        # PER mechanics tested healthy (IS-weights/priorities sane, code identical
-        # to the working b5effd6e), so this isolates reanalyze. If it now breaks
-        # (slow/no promotions) -> reanalyze is the (main) bug. Restore both later.
+        # Prioritized Experience Replay (device sum-tree). OFF for board games:
+        # the MuZero paper uses PER only for Atari and samples BOARD-GAME states
+        # UNIFORMLY ("For board games, states are sampled uniformly"). Empirically
+        # PER here drags learning (prioritizing by value-error skews the uniform
+        # board-game signal); use_per=False is both paper-correct and the best run.
+        # (The PER GPU path itself is verified non-corrupting — see
+        # tests/deep_agents/test_mz_unroll_overfit_isw_gpu.mojo.)
         use_per=False,
         per_alpha=Scalar[DT](1.0),
         per_beta=Scalar[DT](1.0),
