@@ -93,6 +93,60 @@ def _im2col_v1[
         col[idx] = rebind[Scalar[DT]](input[b * IN_FLAT + off])
 
 
+# v2 — O4 vectorize the baseline: each thread does 4 consecutive `ck` (same row)
+# → the col WRITE is a v4 store (col[row,ck..ck+3] contiguous). The input gather
+# stays scalar (4 reads — the input offsets aren't contiguous in general). Tests
+# whether vectorizing im2col's (already-coalesced) write side buys anything.
+def _im2col_v2[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+    col: LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin],
+):
+    var base = Int(global_idx.x) * 4
+    if base >= BS * COL:
+        return
+    var row = base // COL
+    var ck0 = base % COL
+    var b = row // SO
+    var s = row % SO
+    var oh = s // OW
+    var ow = s % OW
+    var cptr = col.ptr
+    var iptr = input.ptr
+    var in_base = b * IN_FLAT
+    if ck0 + 4 <= COL:
+        var v = SIMD[DT, 4](0)
+        for L in range(4):
+            var ck = ck0 + L
+            var ic = ck // (K * K)
+            var rem = ck % (K * K)
+            var kh = rem // K
+            var kw = rem % K
+            var ih = oh * S + kh - P
+            var iw = ow * S + kw - P
+            if ih >= 0 and ih < H and iw >= 0 and iw < W:
+                v[L] = iptr[in_base + ic * H * W + ih * W + iw]
+        cptr.store[alignment=4](base, v)
+    else:
+        for L in range(4):
+            var idx = base + L
+            if idx >= BS * COL:
+                break
+            var ck = idx % COL
+            var ic = ck // (K * K)
+            var rem = ck % (K * K)
+            var kh = rem // K
+            var kw = rem % K
+            var ih = oh * S + kh - P
+            var iw = ow * S + kw - P
+            if ih >= 0 and ih < H and iw >= 0 and iw < W:
+                cptr[idx] = iptr[in_base + ic * H * W + ih * W + iw]
+            else:
+                cptr[idx] = Scalar[DT](0)
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # col2im kernels
 # ══════════════════════════════════════════════════════════════════════════
@@ -190,6 +244,109 @@ def _col2im_v1[
     grad_input[b, in_pos] = acc
 
 
+# v2 — O2 transpose + O3 S==1 + O4 vectorize: each thread does 4 consecutive
+# in_pos (4 consecutive iw → 4 contiguous `row` in d_colT[COL,BS]) so each (kh,kw)
+# read is a v4 load and the write is a v4 store. Fast path when the 4 share
+# (b,ic,ih) and the 4-wide ow window is fully in-bounds; scalar fallback at the W
+# edge / tail. Same signature as v1 (uses `.ptr` for flat vectorized access), so
+# the dispatch only swaps the kernel + grid. (S!=1 → no vec, scalar per lane.)
+def _col2im_v2[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int,
+](
+    d_colT: LayoutTensor[DT, Layout.row_major(COL, BS), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+):
+    var hw = H * W
+    var base = Int(block_dim.x * block_idx.x + thread_idx.x) * 4
+    if base >= BATCH * IN_FLAT:
+        return
+    var b = base // IN_FLAT
+    var in_pos = base % IN_FLAT
+    var ic = in_pos // hw
+    var rem = in_pos % hw
+    var ih = rem // W
+    var iw = rem % W
+    var dptr = d_colT.ptr
+    var gptr = grad_input.ptr
+
+    comptime if S == 1:
+        if iw + 4 <= W and in_pos + 4 <= IN_FLAT:
+            # fast path: 4 lanes share (b, ic, ih); rows are contiguous → v4
+            var acc = SIMD[DT, 4](0)
+            for kh in range(K):
+                var oh = ih + P - kh
+                if oh < 0 or oh >= OH:
+                    continue
+                var base_row = b * SO + oh * OW
+                for kw in range(K):
+                    var col_idx = (ic * K + kh) * K + kw
+                    var ow0 = iw + P - kw
+                    if ow0 >= 0 and ow0 + 4 <= OW:
+                        acc += dptr.load[width=4, alignment=4](
+                            col_idx * BS + base_row + ow0
+                        )
+                    else:
+                        for L in range(4):
+                            var o = ow0 + L
+                            if o >= 0 and o < OW:
+                                acc[L] = acc[L] + dptr[
+                                    col_idx * BS + base_row + o
+                                ]
+            gptr.store[alignment=4](base, acc)
+        else:
+            # boundary group straddles a W-row / tail → scalar per lane
+            for L in range(4):
+                var idx = base + L
+                if idx >= BATCH * IN_FLAT:
+                    break
+                var ip = idx % IN_FLAT
+                var iww = ip % W
+                var ihh = (ip % hw) // W
+                var icc = ip // hw
+                var bb = idx // IN_FLAT
+                var a: Scalar[DT] = 0
+                for kh in range(K):
+                    var oh = ihh + P - kh
+                    if oh < 0 or oh >= OH:
+                        continue
+                    for kw in range(K):
+                        var ow = iww + P - kw
+                        if ow < 0 or ow >= OW:
+                            continue
+                        var ci = (icc * K + kh) * K + kw
+                        a += dptr[ci * BS + bb * SO + oh * OW + ow]
+                gptr[idx] = a
+    else:
+        for L in range(4):
+            var idx = base + L
+            if idx >= BATCH * IN_FLAT:
+                break
+            var ip = idx % IN_FLAT
+            var iww = ip % W
+            var ihh = (ip % hw) // W
+            var icc = ip // hw
+            var bb = idx // IN_FLAT
+            var a: Scalar[DT] = 0
+            for kh in range(K):
+                var oh_num = ihh + P - kh
+                if oh_num < 0 or oh_num % S != 0:
+                    continue
+                var oh = oh_num // S
+                if oh >= OH:
+                    continue
+                for kw in range(K):
+                    var ow_num = iww + P - kw
+                    if ow_num < 0 or ow_num % S != 0:
+                        continue
+                    var ow = ow_num // S
+                    if ow >= OW:
+                        continue
+                    var ci = (icc * K + kh) * K + kw
+                    a += dptr[ci * BS + bb * SO + oh * OW + ow]
+            gptr[idx] = a
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # host helpers
 # ══════════════════════════════════════════════════════════════════════════
@@ -243,7 +400,7 @@ def _im2col_verify[
         ctx.enqueue_function[
             _im2col_v0[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
         ](inl, cl, grid_dim=nb, block_dim=TPB)
-    else:
+    elif VARIANT == 1:
         var g = _build_gather[IC, K, S, P, H, W, OH, OW, COL, SO](ctx)
         var inl = LayoutTensor[DT, Layout.row_major(BATCH * IN_FLAT), MutAnyOrigin](inp)
         var gl = LayoutTensor[IT, Layout.row_major(SO * COL), MutAnyOrigin](g)
@@ -251,6 +408,13 @@ def _im2col_verify[
         ctx.enqueue_function[
             _im2col_v1[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
         ](inl, gl, cl, grid_dim=nb, block_dim=TPB)
+    else:
+        comptime nb2 = ((BS * COL + 3) // 4 + TPB - 1) // TPB
+        var inl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](inp)
+        var cl = LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin](col)
+        ctx.enqueue_function[
+            _im2col_v2[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+        ](inl, cl, grid_dim=nb2, block_dim=TPB)
     ctx.synchronize()
 
     # CPU reference (per sample) into a full [BS, COL] expectation
@@ -293,7 +457,7 @@ def _im2col_time[
             ](inl, cl, grid_dim=nb, block_dim=TPB)
         ctx.synchronize()
         us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
-    else:
+    elif VARIANT == 1:
         var g = _build_gather[IC, K, S, P, H, W, OH, OW, COL, SO](ctx)
         var inl = LayoutTensor[DT, Layout.row_major(BATCH * IN_FLAT), MutAnyOrigin](inp)
         var gl = LayoutTensor[IT, Layout.row_major(SO * COL), MutAnyOrigin](g)
@@ -308,6 +472,22 @@ def _im2col_time[
             ctx.enqueue_function[
                 _im2col_v1[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
             ](inl, gl, cl, grid_dim=nb, block_dim=TPB)
+        ctx.synchronize()
+        us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
+    else:
+        comptime nb2 = ((BS * COL + 3) // 4 + TPB - 1) // TPB
+        var inl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](inp)
+        var cl = LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin](col)
+        comptime for _ in range(WARMUP):
+            ctx.enqueue_function[
+                _im2col_v2[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+            ](inl, cl, grid_dim=nb2, block_dim=TPB)
+        ctx.synchronize()
+        var t0 = perf_counter_ns()
+        comptime for _ in range(ITERS):
+            ctx.enqueue_function[
+                _im2col_v2[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+            ](inl, cl, grid_dim=nb2, block_dim=TPB)
         ctx.synchronize()
         us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
 
@@ -346,12 +526,19 @@ def _col2im_verify[
         ctx.enqueue_function[
             _col2im_v0[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
         ](dl, gl, grid_dim=nb, block_dim=TPB)
-    else:
+    elif VARIANT == 1:
         var dl = LayoutTensor[DT, Layout.row_major(COL, BS), MutAnyOrigin](dcol)
         var gl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](gin)
         ctx.enqueue_function[
             _col2im_v1[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
         ](dl, gl, grid_dim=nb, block_dim=TPB)
+    else:
+        comptime nb2 = ((BATCH * IN_FLAT + 3) // 4 + TPB - 1) // TPB
+        var dl = LayoutTensor[DT, Layout.row_major(COL, BS), MutAnyOrigin](dcol)
+        var gl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](gin)
+        ctx.enqueue_function[
+            _col2im_v2[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+        ](dl, gl, grid_dim=nb2, block_dim=TPB)
     ctx.synchronize()
 
     # CPU reference: scatter-add per sample into d_in
@@ -401,7 +588,7 @@ def _col2im_time[
             ](dl, gl, grid_dim=nb, block_dim=TPB)
         ctx.synchronize()
         us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
-    else:
+    elif VARIANT == 1:
         var dl = LayoutTensor[DT, Layout.row_major(COL, BS), MutAnyOrigin](dcol)
         var gl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](gin)
         comptime for _ in range(WARMUP):
@@ -414,6 +601,22 @@ def _col2im_time[
             ctx.enqueue_function[
                 _col2im_v1[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
             ](dl, gl, grid_dim=nb, block_dim=TPB)
+        ctx.synchronize()
+        us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
+    else:
+        comptime nb2 = ((BATCH * IN_FLAT + 3) // 4 + TPB - 1) // TPB
+        var dl = LayoutTensor[DT, Layout.row_major(COL, BS), MutAnyOrigin](dcol)
+        var gl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](gin)
+        comptime for _ in range(WARMUP):
+            ctx.enqueue_function[
+                _col2im_v2[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+            ](dl, gl, grid_dim=nb2, block_dim=TPB)
+        ctx.synchronize()
+        var t0 = perf_counter_ns()
+        comptime for _ in range(ITERS):
+            ctx.enqueue_function[
+                _col2im_v2[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+            ](dl, gl, grid_dim=nb2, block_dim=TPB)
         ctx.synchronize()
         us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
 
@@ -441,25 +644,35 @@ def run_shape[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 0](ctx)
     var b1 = _im2col_verify[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 1](ctx)
-    print("  im2col verify: v0 mismatches=", b0, "  v1 mismatches=", b1)
+    var b2 = _im2col_verify[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 2](ctx)
+    print("  im2col verify: v0=", b0, " v1=", b1, " v2=", b2, " mismatches")
     _im2col_time[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 0, WARMUP, ITERS
     ](ctx, "im2col v0 baseline    ")
     _im2col_time[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 1, WARMUP, ITERS
     ](ctx, "im2col v1 gather-table")
+    _im2col_time[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 2, WARMUP, ITERS
+    ](ctx, "im2col v2 vec-store(O4)")
 
     var c0 = _col2im_verify[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 0](ctx)
     var c1 = _col2im_verify[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 1](ctx)
-    print("  col2im verify: v0 mismatches=", c0, "  v1 mismatches=", c1)
+    var c2 = _col2im_verify[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 2](ctx)
+    print("  col2im verify: v0=", c0, " v1=", c1, " v2=", c2, " mismatches")
     _col2im_time[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 0, WARMUP, ITERS
     ](ctx, "col2im v0 baseline    ")
     _col2im_time[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 1, WARMUP, ITERS
     ](ctx, "col2im v1 transpose+S1")
+    _col2im_time[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 2, WARMUP, ITERS
+    ](ctx, "col2im v2 +vec O4     ")
     print("-" * 70)
 
 
