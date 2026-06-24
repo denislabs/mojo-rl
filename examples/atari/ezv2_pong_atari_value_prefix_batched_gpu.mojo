@@ -109,15 +109,18 @@ def main() raises:
         ez_atari_init_zero_reward["gpu", BINS](dyn.rew, ctx)
         ctx.synchronize()
 
-        # SGD is the paper optimizer; Adam(0.2)+warmup mirrors the sibling
-        # example's placeholder (swap to nn SGD for a faithful run). 6 optimizers:
+        # Adam @ lr 1e-3 (the driver's `lr` arg below overrides this each train
+        # step via warmup→const). NOTE: the EZv2 paper uses SGD 0.2/mom0.9/wd1e-4;
+        # Adam@0.2 diverges (loss oscillated 20→289→72). Adam@1e-3 is the sane fix
+        # without making the EZv2 train steps Optimizer-generic (SGD = follow-up).
+        # Tune down (3e-4) if loss is unstable with consistency_coef=5. 6 opts:
         # odyn steps dyn.dynz, orew the LSTM value-prefix head dyn.rew.
-        var orep = Adam(lr=Scalar[DT](0.2))
-        var odyn = Adam(lr=Scalar[DT](0.2))
-        var orew = Adam(lr=Scalar[DT](0.2))
-        var opred = Adam(lr=Scalar[DT](0.2))
-        var oproj = Adam(lr=Scalar[DT](0.2))
-        var opredh = Adam(lr=Scalar[DT](0.2))
+        var orep = Adam(lr=Scalar[DT](1e-3))
+        var odyn = Adam(lr=Scalar[DT](1e-3))
+        var orew = Adam(lr=Scalar[DT](1e-3))
+        var opred = Adam(lr=Scalar[DT](1e-3))
+        var oproj = Adam(lr=Scalar[DT](1e-3))
+        var opredh = Adam(lr=Scalar[DT](1e-3))
 
         var env_vars = load_dotenv()
         var logger = RemoteLogger(
@@ -150,7 +153,7 @@ def main() raises:
             iterations=25000,               # × N_ENVS = 100k env transitions
             learning_starts=2000,           # start_transitions (stored steps)
             train_per_iter=N_ENVS,          # UTD 1:1
-            lr=Scalar[DT](0.2),
+            lr=Scalar[DT](1e-3),            # Adam (NOT 0.2 — that diverged)
             lr_warmup_iters=1000,
             gamma=Scalar[DT](0.997),
             v_min=Scalar[DT](-300.0),
