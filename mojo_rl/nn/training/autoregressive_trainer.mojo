@@ -74,9 +74,15 @@ struct AutoregressiveTrainer[
     # logits, grad_output, grad_input) flow at MADT; the loss + master weights
     # stay fp32 (the SeqCE softmax needs fp32). `MADT == DT` ⇒ zero casts.
     comptime MADT = Self.NET.ACT_DT
-    # Capture is fp32-only (the AMP step's cached-bf16 version bump is host-side,
-    # so it can't ride a captured graph). bf16-flow nets always run eager.
-    comptime CAPTURE = Self.USE_TRAIN_CUDA_GRAPH and (Self.MADT == DT)
+    # Capture covers fp32 AND bf16-flow. SPIKE (bf16): the cached-bf16 weight
+    # recast is a DEVICE kernel that already lands in the captured graph — the
+    # optimizer bumps `val.version` every step, so the capture-run forward
+    # re-casts (and that cast is recorded), and on replay it reads the live fp32
+    # master each time. The host-side `ParamVersionBump` not running on replay is
+    # harmless here. ⚠️ This relies on the cast being captured (version-gated);
+    # the ROBUST follow-up makes the recast UNCONDITIONAL under capture so it
+    # can't silently go stale.
+    comptime CAPTURE = Self.USE_TRAIN_CUDA_GRAPH
 
     var net: Self.NET
     var opt: Self.OPT
@@ -165,9 +171,6 @@ struct AutoregressiveTrainer[
         comptime assert (
             Self.target == "gpu"
         ), "AutoregressiveTrainer is GPU-only for now (eval/gen use device)"
-        comptime assert (
-            (not Self.USE_TRAIN_CUDA_GRAPH) or (Self.MADT == DT)
-        ), "USE_TRAIN_CUDA_GRAPH is fp32-only (the AMP step's bf16 version bump is host-side)"
         var loss = Self.LOSS.make_gpu(ctx)
         var s = Self(
             net^, opt^, loss^, ctx, tok^,
@@ -421,12 +424,16 @@ struct AutoregressiveTrainer[
         """The PURE-DEVICE compute captured into the graph: zero_grad → forward →
         SeqCE accumulate → SeqCE vjp → net.vjp → (device grad-clip) → opt.step.
 
-        fp32-only (reaching here ⇒ `CAPTURE` ⇒ `MADT == DT`), so the MADT
-        activation buffers rebind to `Tensor` and the loss runs on them directly
-        (no AMP casts). Reads the PERSISTENT `in_t`/`tgt_t` (refreshed eagerly
-        before each replay). The per-step train CE is folded into the loss's
-        DEVICE accumulator (drained at flush) — never read here, since a D2H
-        would break capture. Must enqueue the SAME kernel sequence every call."""
+        Reads the PERSISTENT `in_t`/`tgt_t` (refreshed eagerly before each
+        replay). The per-step train CE is folded into the loss's DEVICE
+        accumulator (drained at flush) — never read here, since a D2H would break
+        capture. Must enqueue the SAME kernel sequence every call.
+
+        fp32 (MADT == DT): the loss runs directly on the (rebound) MADT buffers.
+        bf16: the SeqCE boundary stays fp32 — cast logits→`logits_f32`,
+        accumulate + vjp there, cast grad_f32→`grad` (all DEVICE kernels, so they
+        ride the graph). The cached-bf16 weight recast inside `net.forward` is
+        also a captured device kernel (see the `CAPTURE` note)."""
         var ctxo = Optional(self.ctx)
         self.opt.zero_grad["gpu"](self.net, ctxo)
         self.net.forward["gpu", Self.BATCH](
@@ -434,10 +441,27 @@ struct AutoregressiveTrainer[
             self.logits,
             ctxo,
         )
-        ref logd = rebind[Tensor](self.logits)
-        ref grdd = rebind[Tensor](self.grad)
-        self.loss.forward_accumulate["gpu", Self.BATCH](logd, self.tgt_t, ctxo)
-        self.loss.vjp["gpu", Self.BATCH](logd, self.tgt_t, grdd, ctxo)
+        comptime if Self.MADT == DT:
+            ref logd = rebind[Tensor](self.logits)
+            ref grdd = rebind[Tensor](self.grad)
+            self.loss.forward_accumulate["gpu", Self.BATCH](
+                logd, self.tgt_t, ctxo
+            )
+            self.loss.vjp["gpu", Self.BATCH](logd, self.tgt_t, grdd, ctxo)
+        else:
+            # bf16: fp32 loss boundary (device casts ride the graph).
+            Self._cast_logits_to_f32[Self.BATCH](
+                self.logits, self.logits_f32, self.ctx
+            )
+            self.loss.forward_accumulate["gpu", Self.BATCH](
+                self.logits_f32, self.tgt_t, ctxo
+            )
+            self.loss.vjp["gpu", Self.BATCH](
+                self.logits_f32, self.tgt_t, self.grad_f32, ctxo
+            )
+            Self._cast_grad_to_madt[Self.BATCH](
+                self.grad, self.grad_f32, self.ctx
+            )
         self.net.vjp["gpu", Self.BATCH](
             child_refs[Self.NET.ARITY, Self.MADT](self.in_t),
             self.grad,
