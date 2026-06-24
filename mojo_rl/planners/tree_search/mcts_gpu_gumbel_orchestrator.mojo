@@ -59,8 +59,6 @@ from .mcts_gpu_gumbel import (
     gz_init_root_kernel,
     gz_select_kernel,
     gz_copy_pred_input_kernel,
-    gz_decode_kernel,
-    GZ_DECODE_TPB,
     gz_expand_kernel,
     gz_backup_kernel,
     gz_halve_active_kernel,
@@ -1293,31 +1291,13 @@ struct GumbelGPUMCTS[
         ](self.state.pred_output)
         pred.predict_gpu[Self.N_ENVS](ctx, pred_in_b, pred_out_b)
 
-        var po_full_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.PRED_OUT)
-        ](self.state.pred_output)
-
-        # ── Decode reward + value (B2: parallel block-per-env reduction) ──
-        var dr_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
-            self.state.decoded_reward
-        )
-        var dv_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
-            self.state.decoded_value
-        )
-        comptime run_decode = gz_decode_kernel[
-            Self.N_ENVS, Self.LATENT, Self.ACT, Self.BINS,
-            Self.DYN_OUT, Self.PRED_OUT, dtype,
-        ]
-        ctx.enqueue_function[run_decode](
-            dyn_out_flat, po_full_t, dr_t, dv_t,
-            Scalar[dtype](self.v_min), Scalar[dtype](self.v_max),
-            grid_dim=(Self.N_ENVS,), block_dim=(GZ_DECODE_TPB,),
-        )
-
         # Expand.
         var lv_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
             self.state.leaf_values
         )
+        var po_full_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.PRED_OUT)
+        ](self.state.pred_output)
         comptime run_expand = gz_expand_kernel[
             Self.N_ENVS,
             Self.MAX_NODES,
@@ -1343,8 +1323,6 @@ struct GumbelGPUMCTS[
             dyn_out_flat,
             po_full_t,
             lv_t,
-            dr_t,
-            dv_t,
             Scalar[dtype](self.v_min),
             Scalar[dtype](self.v_max),
             grid_dim=(Self.ENV_BLOCKS,),
