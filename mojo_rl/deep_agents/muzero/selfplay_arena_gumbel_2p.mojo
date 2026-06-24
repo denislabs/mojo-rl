@@ -1141,6 +1141,36 @@ def run_muzero_selfplay_arena_gumbel_2p[
             # D2H the root block into `t_obs0` so the diag re-forward sees it.
             ctx.enqueue_copy(t_obs0.unsafe_ptr(), scratch.d_obs0.dev.value())
             ctx.synchronize()
+            # [TEMP per-diag] IS-weight + priority degeneracy check. t_isw = last
+            # sample's IS weights, t_prio = last train step's priorities ([B]).
+            var _iwmin = Scalar[DT](1e30)
+            var _iwmax = Scalar[DT](-1e30)
+            var _iwsum = Scalar[DT](0)
+            var _iwlo = 0
+            var _prmin = Scalar[DT](1e30)
+            var _prmax = Scalar[DT](-1e30)
+            var _prsum = Scalar[DT](0)
+            for _b in range(B):
+                var _w = t_isw[_b]
+                if _w < _iwmin:
+                    _iwmin = _w
+                if _w > _iwmax:
+                    _iwmax = _w
+                _iwsum += _w
+                if _w < Scalar[DT](0.05):
+                    _iwlo += 1
+                var _p = t_prio[_b]
+                if _p < _prmin:
+                    _prmin = _p
+                if _p > _prmax:
+                    _prmax = _p
+                _prsum += _p
+            print(
+                "  [per-diag] move", it + 1,
+                "| isw min/mean/max", _iwmin, _iwsum / Scalar[DT](B), _iwmax,
+                "| isw<0.05:", _iwlo, "/", B,
+                "| prio min/mean/max", _prmin, _prsum / Scalar[DT](B), _prmax,
+            )
             _mz_emit_train_diag[REP, PRED, B, OBS, ACT, BINS, L](
                 ctx, l_rep, l_pred, d_diag_obs, d_diag_z, d_diag_pred,
                 h_diag_pred, t_obs0, t_pol, t_val, l_parts,
