@@ -855,19 +855,19 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](None)
                 if use_per:
-                    # Prioritized device sample (∝ value-errorᵅ) + IS weights.
-                    rb.sample_training_batch_per_dev[B, K, N](
-                        gamma, d_obs0_buf, t_act, t_pol, t_val, t_rew,
-                        t_isw, t_slots,
-                    )
-                    # Bridge the owned List PER scratch into the unroll's
-                    # Optional[UnsafePointer] loss-weight / out-priority params.
-                    isw_opt = Optional[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](t_isw.unsafe_ptr().as_unsafe_any_origin())
+                    # Prioritized device sample (∝ priorityᵅ) + IS weights. The
+                    # sample writes the paper priority |ν − z| into t_prio (it owns
+                    # both ν and z); update_priorities below applies (·+eps)^α.
                     prio_opt = Optional[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
                     ](t_prio.unsafe_ptr().as_unsafe_any_origin())
+                    rb.sample_training_batch_per_dev[B, K, N](
+                        gamma, d_obs0_buf, t_act, t_pol, t_val, t_rew,
+                        t_isw, t_slots, out_prio=prio_opt,
+                    )
+                    isw_opt = Optional[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](t_isw.unsafe_ptr().as_unsafe_any_origin())
                 else:
                     # Uniform device sample — the converged Pong path, untouched.
                     rb.sample_training_batch_dev[B, K, N](
@@ -884,7 +884,6 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                         v_min, v_max, value_coef,
                         loss_parts=l_parts,
                         is_weights=isw_opt,
-                        out_prio=prio_opt,
                     )
                 )
                 if use_per:

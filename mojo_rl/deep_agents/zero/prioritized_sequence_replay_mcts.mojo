@@ -315,6 +315,9 @@ struct PrioritizedMCTSSequenceReplay[
         cons_mask: Optional[
             UnsafePointer[Scalar[DT], MutAnyOrigin]
         ] = None,  # [K, B]
+        out_prio: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None,  # [B] raw PER priority |ν − z| per sampled root (paper formula)
     ) raises:
         """Prioritized window sample with **device-side obs gather**: each window
         start is drawn ∝ priorityᵅ (stratified over B equal-mass bins) with
@@ -423,6 +426,16 @@ struct PrioritizedMCTSSequenceReplay[
                     var pslot = (self.ep_start[e] + s + k) % Self.CAP
                     for a in range(Self.ACT):
                         policy_tgt[pbase + a] = self.pol[pslot * Self.ACT + a]
+            # PER priority = MuZero paper formula p_i = |ν_i − z_i|: |root search
+            # value − observed n-step return|. ν = w_val[0] (the stored MCTS root
+            # value, kept current by reanalyze); z = w_vt[0] (the n-step target).
+            # Caller applies (·+eps)^α via update_priorities. Replaces the old
+            # value-head soft-CE, which was not the paper's signal.
+            if out_prio:
+                var praw = w_val[0] - w_vt[0]
+                if praw < Scalar[DT](0.0):
+                    praw = -praw
+                out_prio.value()[b] = praw
             for k in range(K):
                 if s + k >= L:
                     actions[k * B + b] = Scalar[DT](0.0)

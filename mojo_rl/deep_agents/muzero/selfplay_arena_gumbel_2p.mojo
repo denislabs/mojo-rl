@@ -1075,10 +1075,21 @@ def run_muzero_selfplay_arena_gumbel_2p[
                     odyn.lr = lr * _scl
                     opred.lr = lr * _scl
                 # Prioritized device sample: gathers the obs window into
-                # `d_obs_seq` and the n-step targets into the host slabs.
+                # `d_obs_seq` and the n-step targets into the host slabs. With PER
+                # on, also writes the paper priority |ν − z| into `t_prio` (the
+                # sample owns this — it has both ν and z); board games leave it
+                # None → priorities stay uniform.
+                var samp_prio = Optional[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](None)
+                if use_per:
+                    samp_prio = Optional[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](t_prio.unsafe_ptr().as_unsafe_any_origin())
                 rb.sample_training_batch_seq_per_gpu[B, K, N](
                     ctx, gamma, d_obs_seq, d_seq_slots, h_seq_slots,
                     t_act, t_pol, t_val, t_rew, t_isw, t_slots,
+                    out_prio=samp_prio,
                 )
                 # MuZero consumes only the root (k=0) obs block → copy it into
                 # the train scratch (`obs_on_device=True` reads `scratch.d_obs0`).
@@ -1086,21 +1097,16 @@ def run_muzero_selfplay_arena_gumbel_2p[
                     scratch.d_obs0.dev.value(),
                     d_obs_seq.create_sub_buffer[DT](0, B * OBS),
                 )
-                # PER gates: pass IS weights + collect value-error priorities only
-                # when on. Off → unweighted, no priorities written (→ uniform).
+                # PER gate: IS-weight the grads only when on (priorities are
+                # written by the sample above, paper formula |ν − z|). Off →
+                # unweighted, priorities untouched (→ uniform sampling).
                 var isw_opt = Optional[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](None)
-                var prio_opt = Optional[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](None)
                 if use_per:
                     isw_opt = Optional[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
                     ](t_isw.unsafe_ptr().as_unsafe_any_origin())
-                    prio_opt = Optional[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](t_prio.unsafe_ptr().as_unsafe_any_origin())
                 last_loss = Float64(
                     mz_unroll_train_step_gpu[
                         REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS,
@@ -1112,7 +1118,6 @@ def run_muzero_selfplay_arena_gumbel_2p[
                         VMIN, VMAX, value_coef, Float64(max_grad_norm),
                         loss_parts=l_parts,
                         is_weights=isw_opt,
-                        out_prio=prio_opt,
                     )
                 )
                 if use_per:

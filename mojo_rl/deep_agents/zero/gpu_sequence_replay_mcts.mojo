@@ -461,6 +461,9 @@ struct GPUMCTSSequenceReplay[
         mut reward_tgt: List[Scalar[DT]], # [K, B]
         mut is_weights: List[Scalar[DT]], # [B] IS weights
         mut sample_slots: List[Int],      # [B] ring slots
+        out_prio: Optional[
+            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        ] = None,  # [B] raw PER priority |ν − z| per sampled root (paper formula)
     ) raises:
         """Prioritized device-obs twin of `sample_training_batch_dev`: window
         starts are drawn ∝ priorityᵅ (stratified over B equal-mass bins) with
@@ -559,6 +562,15 @@ struct GPUMCTSSequenceReplay[
                     var sl = self._slot(astart, s + k)
                     for a in range(Self.ACT):
                         policy_tgt[pbase + a] = self.pol[sl * Self.ACT + a]
+            # PER priority = MuZero paper p_i = |ν_i − z_i| (|root search value −
+            # n-step return|): ν = w_val[0] (stored MCTS root value, current via
+            # reanalyze), z = w_vt[0] (n-step target). update_priorities applies
+            # (·+eps)^α. Replaces the old value-head soft-CE (not the paper signal).
+            if out_prio:
+                var praw = w_val[0] - w_vt[0]
+                if praw < Scalar[DT](0.0):
+                    praw = -praw
+                out_prio.value()[b] = praw
             for k in range(K):
                 if s + k >= L:
                     actions[k * B + b] = Scalar[DT](0.0)
