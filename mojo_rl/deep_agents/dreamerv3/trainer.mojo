@@ -29,6 +29,9 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.checkpoint import (
+    CheckpointWriter, CheckpointReader, _split_lines,
+)
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
 from mojo_rl.nn.optimizer.schedules import LinearWarmupSchedule
@@ -303,6 +306,30 @@ struct DreamerV3Trainer[
     def dbg_feat_std(self) -> Scalar[DT]:
         return self.state.dbg_feat_std
 
+    def dbg_dyn_kl(self) -> Scalar[DT]:
+        return self.state.dbg_dyn_kl
+
+    def dbg_rep_kl(self) -> Scalar[DT]:
+        return self.state.dbg_rep_kl
+
+    def dbg_obs_loss(self) -> Scalar[DT]:
+        return self.state.dbg_obs_loss
+
+    def dbg_rew_loss(self) -> Scalar[DT]:
+        return self.state.dbg_rew_loss
+
+    def dbg_con_loss(self) -> Scalar[DT]:
+        return self.state.dbg_con_loss
+
+    def dbg_pol_loss(self) -> Scalar[DT]:
+        return self.state.dbg_pol_loss
+
+    def dbg_val_loss(self) -> Scalar[DT]:
+        return self.state.dbg_val_loss
+
+    def train_steps_done(self) -> Int:
+        return self.train_steps
+
     def train_step(mut self) raises -> Bool:
         if not self.can_train():
             return False
@@ -346,6 +373,68 @@ struct DreamerV3Trainer[
         )
         self.train_steps += 1
         return True
+
+    # ─── Checkpoint (ONE file: the whole world model + actor-critic) ───────
+    def save_state(mut self, path: String) raises:
+        """Write the full DreamerV3 network set into a SINGLE `nn-ckpt v2` file,
+        sections name-prefixed per module. `imagine` is NOT saved — it is a
+        read-only mirror of `core` re-synced every train_step (and unused by the
+        greedy/inference path). Optimizer moments are NOT persisted (resume
+        re-warms), matching the SAC checkpoint convention."""
+        var w = CheckpointWriter(save_moments=False)
+        w.mode = 0
+        self.enc.for_each_param[Self.train_target](w, self.ctx, "enc")
+        self.core.for_each_param[Self.train_target](w, self.ctx, "core")
+        self.dec.for_each_param[Self.train_target](w, self.ctx, "dec")
+        self.rew.for_each_param[Self.train_target](w, self.ctx, "rew")
+        self.con.for_each_param[Self.train_target](w, self.ctx, "con")
+        self.value.for_each_param[Self.train_target](w, self.ctx, "value")
+        self.slowvalue.for_each_param[Self.train_target](w, self.ctx, "slowvalue")
+        self.policy.for_each_param[Self.train_target](w, self.ctx, "policy")
+        w.mode = 1
+        self.enc.for_each_state[Self.train_target](w, self.ctx, "enc")
+        self.core.for_each_state[Self.train_target](w, self.ctx, "core")
+        self.dec.for_each_state[Self.train_target](w, self.ctx, "dec")
+        self.rew.for_each_state[Self.train_target](w, self.ctx, "rew")
+        self.con.for_each_state[Self.train_target](w, self.ctx, "con")
+        self.value.for_each_state[Self.train_target](w, self.ctx, "value")
+        self.slowvalue.for_each_state[Self.train_target](w, self.ctx, "slowvalue")
+        self.policy.for_each_state[Self.train_target](w, self.ctx, "policy")
+        with open(path, "w") as f:
+            f.write(w.content)
+
+    def load_state(mut self, path: String) raises:
+        """Restore the full network set from the single envelope (same walk
+        order as `save_state`). `imagine` is re-synced from `core` on the next
+        `train_step`."""
+        var content: String
+        with open(path, "r") as f:
+            content = String(f.read())
+        var lines = _split_lines(content)
+        var body = List[String]()
+        for li in range(len(lines)):
+            if lines[li].startswith("storage-ckpt"):
+                continue
+            body.append(lines[li])
+        var r = CheckpointReader(body^)
+        r.mode = 0
+        self.enc.for_each_param[Self.train_target](r, self.ctx, "enc")
+        self.core.for_each_param[Self.train_target](r, self.ctx, "core")
+        self.dec.for_each_param[Self.train_target](r, self.ctx, "dec")
+        self.rew.for_each_param[Self.train_target](r, self.ctx, "rew")
+        self.con.for_each_param[Self.train_target](r, self.ctx, "con")
+        self.value.for_each_param[Self.train_target](r, self.ctx, "value")
+        self.slowvalue.for_each_param[Self.train_target](r, self.ctx, "slowvalue")
+        self.policy.for_each_param[Self.train_target](r, self.ctx, "policy")
+        r.mode = 1
+        self.enc.for_each_state[Self.train_target](r, self.ctx, "enc")
+        self.core.for_each_state[Self.train_target](r, self.ctx, "core")
+        self.dec.for_each_state[Self.train_target](r, self.ctx, "dec")
+        self.rew.for_each_state[Self.train_target](r, self.ctx, "rew")
+        self.con.for_each_state[Self.train_target](r, self.ctx, "con")
+        self.value.for_each_state[Self.train_target](r, self.ctx, "value")
+        self.slowvalue.for_each_state[Self.train_target](r, self.ctx, "slowvalue")
+        self.policy.for_each_state[Self.train_target](r, self.ctx, "policy")
 
     def openloop_report(
         mut self,

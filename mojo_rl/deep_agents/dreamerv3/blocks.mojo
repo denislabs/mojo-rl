@@ -207,6 +207,15 @@ struct DreamerState[
     #    (no advantage signal); feat_std≈0 ⇒ the latent representation collapsed. ──
     var dbg_val_std: Scalar[DT]
     var dbg_feat_std: Scalar[DT]
+    # ── per-component WM loss (per-transition means) + AC split. Surfaced to
+    #    the monitoring tool under the World-Model-Losses / KL / Loss groups. ──
+    var dbg_dyn_kl: Scalar[DT]
+    var dbg_rep_kl: Scalar[DT]
+    var dbg_obs_loss: Scalar[DT]
+    var dbg_rew_loss: Scalar[DT]
+    var dbg_con_loss: Scalar[DT]
+    var dbg_pol_loss: Scalar[DT]
+    var dbg_val_loss: Scalar[DT]
     # ── GPU time-major device minibatch + carries. On CPU these stay empty
     #    (length-0) Tensors. ──
     var d_obs: Tensor    # [T*B*OBS]
@@ -244,6 +253,13 @@ struct DreamerState[
             dbg_con_min=Scalar[DT](0.0),
             dbg_val_std=Scalar[DT](0.0),
             dbg_feat_std=Scalar[DT](0.0),
+            dbg_dyn_kl=Scalar[DT](0.0),
+            dbg_rep_kl=Scalar[DT](0.0),
+            dbg_obs_loss=Scalar[DT](0.0),
+            dbg_rew_loss=Scalar[DT](0.0),
+            dbg_con_loss=Scalar[DT](0.0),
+            dbg_pol_loss=Scalar[DT](0.0),
+            dbg_val_loss=Scalar[DT](0.0),
             d_obs=Tensor(), d_act=Tensor(), d_rew=Tensor(), d_cont=Tensor(),
             d_cdeter=Tensor(), d_cstoch=Tensor(), d_toks=Tensor(),
         )
@@ -431,6 +447,12 @@ struct WMStep[
         for i in range(Self.B * SCl):
             st.cstoch.data[i] = 0.0
         var total: Scalar[DT] = 0.0
+        # per-component accumulators (per-transition means → metrics)
+        var acc_dyn: Scalar[DT] = 0.0
+        var acc_rep: Scalar[DT] = 0.0
+        var acc_obs: Scalar[DT] = 0.0
+        var acc_rew: Scalar[DT] = 0.0
+        var acc_con: Scalar[DT] = 0.0
         # forward scan
         for t in range(Self.T):
             var dbase = t * Self.B * D
@@ -462,6 +484,8 @@ struct WMStep[
                 for k in range(SCl):
                     st.cstoch.data[snbase + b * SCl + k] = self.outbuf.data[b * CARRYl + 2 + D + k]
                 total += DYN * self.outbuf.data[b * CARRYl + 0] + REP * self.outbuf.data[b * CARRYl + 1]
+                acc_dyn += self.outbuf.data[b * CARRYl + 0]
+                acc_rep += self.outbuf.data[b * CARRYl + 1]
             # head inputs (next carry) + targets
             for b in range(Self.B):
                 for k in range(D):
@@ -482,18 +506,21 @@ struct WMStep[
             dec.forward[Self.B, target](self.dl, None)
             for b in range(Self.B):
                 total += self.dl.data[b]
+                acc_obs += self.dl.data[b]
             rew.set_input["nd", Self.B](self.ndn, None)
             rew.set_input["stoch_new", Self.B](self.snn, None)
             rew.set_input["rtgt", Self.B](self.rwt, None)
             rew.forward[Self.B, target](self.dl, None)
             for b in range(Self.B):
                 total += self.dl.data[b]
+                acc_rew += self.dl.data[b]
             con.set_input["nd", Self.B](self.ndn, None)
             con.set_input["stoch_new", Self.B](self.snn, None)
             con.set_input["ctgt", Self.B](self.cnt, None)
             con.forward[Self.B, target](self.dl, None)
             for b in range(Self.B):
                 total += self.dl.data[b]
+                acc_con += self.dl.data[b]
 
         # zero grads. enc is a Module → opt.zero_grad over the module; the loss
         # graphs OWN their params (a ComputeGraph is not a Module) → zero them via
@@ -621,6 +648,12 @@ struct WMStep[
         rew.for_each_param[target](orew, None)
         ocon.begin_step()
         con.for_each_param[target](ocon, None)
+        var _nbt = Scalar[DT](Self.B * Self.T)
+        st.dbg_dyn_kl = acc_dyn / _nbt
+        st.dbg_rep_kl = acc_rep / _nbt
+        st.dbg_obs_loss = acc_obs / _nbt
+        st.dbg_rew_loss = acc_rew / _nbt
+        st.dbg_con_loss = acc_con / _nbt
         st.last_wm_loss = total
 
     def _wm_gpu[
@@ -678,6 +711,12 @@ struct WMStep[
             st.cstoch.data[i] = 0.0
 
         var total: Scalar[DT] = 0.0
+        # per-component accumulators (per-transition means → metrics)
+        var acc_dyn: Scalar[DT] = 0.0
+        var acc_rep: Scalar[DT] = 0.0
+        var acc_obs: Scalar[DT] = 0.0
+        var acc_rew: Scalar[DT] = 0.0
+        var acc_con: Scalar[DT] = 0.0
         # ── forward scan ──
         for t in range(Self.T):
             var dbase = t * Self.B * D
@@ -713,6 +752,8 @@ struct WMStep[
                 for k in range(SCl):
                     st.cstoch.data[snbase + b * SCl + k] = self.outbuf.data[b * CARRYl + 2 + D + k]
                 total += DYN * self.outbuf.data[b * CARRYl + 0] + REP * self.outbuf.data[b * CARRYl + 1]
+                acc_dyn += self.outbuf.data[b * CARRYl + 0]
+                acc_rep += self.outbuf.data[b * CARRYl + 1]
             # head inputs (next carry) + targets — fill host, upload.
             for b in range(Self.B):
                 for k in range(D):
@@ -739,6 +780,7 @@ struct WMStep[
             self.dl.download(ctx)
             for b in range(Self.B):
                 total += self.dl.data[b]
+                acc_obs += self.dl.data[b]
             rew.set_input["nd", Self.B](self.ndn, ctx)
             rew.set_input["stoch_new", Self.B](self.snn, ctx)
             rew.set_input["rtgt", Self.B](self.rwt, ctx)
@@ -746,6 +788,7 @@ struct WMStep[
             self.dl.download(ctx)
             for b in range(Self.B):
                 total += self.dl.data[b]
+                acc_rew += self.dl.data[b]
             con.set_input["nd", Self.B](self.ndn, ctx)
             con.set_input["stoch_new", Self.B](self.snn, ctx)
             con.set_input["ctgt", Self.B](self.cnt, ctx)
@@ -753,6 +796,7 @@ struct WMStep[
             self.dl.download(ctx)
             for b in range(Self.B):
                 total += self.dl.data[b]
+                acc_con += self.dl.data[b]
 
         # zero grads (enc Module via opt; loss graphs own their params).
         oe.zero_grad[target, M=Self.EncT](enc, ctx)
@@ -889,6 +933,12 @@ struct WMStep[
         ocon.begin_step()
         con.for_each_param[target](ocon, ctx)
         ctx.synchronize()
+        var _nbt = Scalar[DT](Self.B * Self.T)
+        st.dbg_dyn_kl = acc_dyn / _nbt
+        st.dbg_rep_kl = acc_rep / _nbt
+        st.dbg_obs_loss = acc_obs / _nbt
+        st.dbg_rew_loss = acc_rew / _nbt
+        st.dbg_con_loss = acc_con / _nbt
         st.last_wm_loss = total
 
 
@@ -1194,9 +1244,16 @@ struct ACStep[
             ret, self.slowtar,
         )
         var total: Scalar[DT] = 0.0
+        var pol_sum: Scalar[DT] = 0.0
+        var val_sum: Scalar[DT] = 0.0
         for i in range(NS * TM1):
             total += pol_loss[i] + val_loss[i]
-        total = total / Scalar[DT](NS * TM1)
+            pol_sum += pol_loss[i]
+            val_sum += val_loss[i]
+        var _inv_ac = Scalar[DT](1.0) / Scalar[DT](NS * TM1)
+        total = total * _inv_ac
+        st.dbg_pol_loss = pol_sum * _inv_ac
+        st.dbg_val_loss = val_sum * _inv_ac
         # ── diagnostics ──
         var pma: Scalar[DT] = 0.0
         for i in range(NS * TI * ACTD):
@@ -1475,9 +1532,16 @@ struct ACStep[
             ret, self.slowtar,
         )
         var total: Scalar[DT] = 0.0
+        var pol_sum: Scalar[DT] = 0.0
+        var val_sum: Scalar[DT] = 0.0
         for i in range(NS * TM1):
             total += pol_loss[i] + val_loss[i]
-        total = total / Scalar[DT](NS * TM1)
+            pol_sum += pol_loss[i]
+            val_sum += val_loss[i]
+        var _inv_ac = Scalar[DT](1.0) / Scalar[DT](NS * TM1)
+        total = total * _inv_ac
+        st.dbg_pol_loss = pol_sum * _inv_ac
+        st.dbg_val_loss = val_sum * _inv_ac
         # ── diagnostics ──
         var pma: Scalar[DT] = 0.0
         for i in range(NS * TI * ACTD):

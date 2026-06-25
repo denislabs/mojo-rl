@@ -33,9 +33,12 @@ train_step).
 """
 
 from std.math import tanh
+from std.memory import alloc
 from std.random import random_float64
 from std.gpu.host import DeviceContext
 
+from mojo_rl.core.env_traits import BoxDiscreteActionEnv
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
@@ -51,6 +54,18 @@ def _hp(mut t: Tensor) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     """Host-pointer view of a storage Tensor's CPU `data` — for the raw-pointer
     cat_sample/cat_argmax helpers (CPU only)."""
     return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](t.data.unsafe_ptr())
+
+
+@always_inline
+def _argmax_oh(a: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int) -> Int:
+    """Index of the max entry of a one-hot / logit vector (greedy discrete act)."""
+    var k = 0
+    var best = a[0]
+    for i in range(1, n):
+        if a[i] > best:
+            best = a[i]
+            k = i
+    return k
 
 
 @fieldwise_init
@@ -129,8 +144,186 @@ struct DreamerV3Agent[
         done=1) so the WM continue head can learn `latent(terminal)→0`."""
         self.trainer.record_terminal(obs)
 
+    def save(mut self, path: String) raises:
+        """Write the full world model + actor-critic to one `nn-ckpt v2` file."""
+        self.trainer.save_state(path)
+
+    def load(mut self, path: String) raises:
+        """Restore the full network set from a `save()` checkpoint."""
+        self.trainer.load_state(path)
+
     def train_step(mut self) raises -> Bool:
         return self.trainer.train_step()
+
+    # ─── Single-env training facade (discrete) ──────────────────────────────
+    def _greedy_eval[
+        E: BoxDiscreteActionEnv
+    ](
+        mut self,
+        mut env: E,
+        episodes: Int,
+        ep_len: Int,
+        obsbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        actbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises -> Scalar[DT]:
+        """Mean return over `episodes` greedy (argmax) episodes. Steps `env`
+        (caller resets it afterward for training continuation)."""
+        var total: Scalar[DT] = 0.0
+        for _e in range(episodes):
+            self.reset_belief()
+            var o = env.reset_obs_list()
+            for _s in range(ep_len):
+                for i in range(Self.OBS):
+                    obsbuf[i] = o[i].cast[DT]()
+                self.select_greedy_action(obsbuf, actbuf)
+                var r = env.step_obs(_argmax_oh(actbuf, Self.ACT))
+                total += r[1].cast[DT]()
+                o = r[0].copy()
+                if r[2]:
+                    break
+        return total / Scalar[DT](episodes)
+
+    def train_single[
+        E: BoxDiscreteActionEnv,
+        L: Logger = NoOpLogger,
+    ](
+        mut self,
+        mut env: E,
+        total_steps: Int,
+        *,
+        learn_start: Int = 1024,
+        train_every: Int = 4,
+        eval_every: Int = 2500,
+        eval_episodes: Int = 10,
+        ep_len: Int = 500,
+        print_every: Int = 2500,
+        verbose: Bool = True,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        checkpoint_path: String = String(""),
+        checkpoint_every: Int = 0,
+    ) raises -> Scalar[DT]:
+        """Own the whole DreamerV3 single-env training loop for a DISCRETE env
+        (warmup random one-hot actions → on-policy `select_action` → `record`
+        (+`record_terminal` on done) → `train_step` every `train_every`), with
+        periodic greedy eval, optional `RemoteLogger` metric streaming, and
+        optional one-file checkpointing. Returns the final greedy eval return.
+
+        Mirrors `SACAgent.train_single`: examples pass an env + a logger pointer
+        and write no loop of their own. Eval reuses `env` (reset before+after)."""
+        comptime assert Self.DISCRETE, (
+            "DreamerV3Agent.train_single is the DISCRETE-action facade; build the"
+            " agent with DISCRETE=True (continuous envs: use the bespoke loop)."
+        )
+        comptime OBSL = Self.OBS
+        comptime ACTL = Self.ACT
+        var obsbuf = alloc[Scalar[DT]](OBSL).as_unsafe_any_origin()
+        var actbuf = alloc[Scalar[DT]](ACTL).as_unsafe_any_origin()
+        var obs = env.reset_obs_list()
+        self.reset_belief()
+        var last_eval: Scalar[DT] = 0.0
+        var ep_ret: Scalar[DT] = 0.0      # current (training) episode return
+        var ep_acc: Scalar[DT] = 0.0      # Σ completed-episode returns since last log
+        var ep_n: Int = 0                 # #completed episodes since last log
+        var last_ep: Scalar[DT] = 0.0     # last completed episode return
+        var best_ret: Scalar[DT] = 0.0    # best episode return so far
+
+        for step in range(total_steps):
+            for i in range(OBSL):
+                obsbuf[i] = obs[i].cast[DT]()
+            var idx: Int
+            if step < learn_start:
+                idx = Int(random_float64() * Float64(ACTL))
+                if idx >= ACTL:
+                    idx = ACTL - 1
+                for a in range(ACTL):
+                    actbuf[a] = Scalar[DT](1.0) if a == idx else Scalar[DT](0.0)
+            else:
+                self.select_action(obsbuf, actbuf, explore=True)
+                idx = _argmax_oh(actbuf, ACTL)
+            var res = env.step_obs(idx)
+            ep_ret += res[1].cast[DT]()
+            self.record(
+                obsbuf, actbuf, res[1].cast[DT](),
+                Scalar[DT](1.0) if res[2] else Scalar[DT](0.0),
+            )
+            obs = res[0].copy()
+            if res[2]:
+                # store the terminal (fallen) obs so the WM cont head learns it
+                for i in range(OBSL):
+                    obsbuf[i] = res[0][i].cast[DT]()
+                self.record_terminal(obsbuf)
+                obs = env.reset_obs_list()
+                self.reset_belief()
+                last_ep = ep_ret
+                ep_acc += ep_ret
+                ep_n += 1
+                if ep_ret > best_ret:
+                    best_ret = ep_ret
+                ep_ret = Scalar[DT](0.0)
+            if step >= learn_start and step % train_every == 0:
+                _ = self.train_step()
+
+            if step > 0 and step % eval_every == 0:
+                var ev = self._greedy_eval[E](
+                    env, eval_episodes, ep_len, obsbuf, actbuf
+                )
+                last_eval = ev
+                var avg_ret = ep_acc / Scalar[DT](ep_n) if ep_n > 0 else last_ep
+                if verbose and step % print_every == 0:
+                    print(
+                        "  step", step, " eval_ret=", ev, " avg_ret=", avg_ret,
+                        " WM=", self.last_wm_loss(), " AC=", self.last_ac_loss(),
+                        " con_m=", self.dbg_con_mean(),
+                    )
+                # Metric names follow the monitoring tool's KNOWN_GROUPS so they
+                # land in the right panels (Episode Reward / Loss / World Model
+                # Losses / KL / Critic-Policy Loss / Imagined Returns / Progress).
+                comptime if L.ENABLED:
+                    if logger:
+                        var lg = logger.value()
+                        # Episode Reward
+                        lg[].log_scalar("avg_reward", Float64(avg_ret), step)
+                        lg[].log_scalar("episode_reward", Float64(last_ep), step)
+                        lg[].log_scalar("best_reward", Float64(best_ret), step)
+                        lg[].log_scalar("eval/mean_return", Float64(ev), step)
+                        # Loss + World Model Losses + KL Divergence
+                        lg[].log_scalar("wm_loss", Float64(self.last_wm_loss()), step)
+                        lg[].log_scalar("obs_loss", Float64(self.dbg_obs_loss()), step)
+                        lg[].log_scalar("reward_loss", Float64(self.dbg_rew_loss()), step)
+                        lg[].log_scalar("continue_loss", Float64(self.dbg_con_loss()), step)
+                        lg[].log_scalar("dyn_kl", Float64(self.dbg_dyn_kl()), step)
+                        lg[].log_scalar("rep_kl", Float64(self.dbg_rep_kl()), step)
+                        # Critic / Policy Loss
+                        lg[].log_scalar("value_loss", Float64(self.dbg_val_loss()), step)
+                        lg[].log_scalar("policy_loss", Float64(self.dbg_pol_loss()), step)
+                        # Imagined Returns + Policy Scale
+                        lg[].log_scalar(
+                            "imagined_reward_mean", Float64(self.dbg_rew_pred()), step
+                        )
+                        lg[].log_scalar("return_scale", Float64(self.dbg_rscale()), step)
+                        lg[].log_scalar("pi_scale", Float64(self.dbg_rscale()), step)
+                        # Training Progress
+                        lg[].log_scalar(
+                            "train_steps", Float64(self.train_steps_done()), step
+                        )
+                        lg[].flush()
+                ep_acc = Scalar[DT](0.0)
+                ep_n = 0
+                if checkpoint_every > 0 and checkpoint_path.byte_length() > 0 and (
+                    step % checkpoint_every == 0
+                ):
+                    self.save(checkpoint_path)
+                obs = env.reset_obs_list()
+                self.reset_belief()
+
+        if checkpoint_path.byte_length() > 0:
+            self.save(checkpoint_path)
+        var final_ev = self._greedy_eval[E](
+            env, eval_episodes, ep_len, obsbuf, actbuf
+        )
+        obsbuf.free()
+        actbuf.free()
+        return final_ev
 
     def can_train(self) -> Bool:
         return self.trainer.can_train()
@@ -173,6 +366,30 @@ struct DreamerV3Agent[
 
     def dbg_feat_std(self) -> Scalar[DT]:
         return self.trainer.dbg_feat_std()
+
+    def dbg_dyn_kl(self) -> Scalar[DT]:
+        return self.trainer.dbg_dyn_kl()
+
+    def dbg_rep_kl(self) -> Scalar[DT]:
+        return self.trainer.dbg_rep_kl()
+
+    def dbg_obs_loss(self) -> Scalar[DT]:
+        return self.trainer.dbg_obs_loss()
+
+    def dbg_rew_loss(self) -> Scalar[DT]:
+        return self.trainer.dbg_rew_loss()
+
+    def dbg_con_loss(self) -> Scalar[DT]:
+        return self.trainer.dbg_con_loss()
+
+    def dbg_pol_loss(self) -> Scalar[DT]:
+        return self.trainer.dbg_pol_loss()
+
+    def dbg_val_loss(self) -> Scalar[DT]:
+        return self.trainer.dbg_val_loss()
+
+    def train_steps_done(self) -> Int:
+        return self.trainer.train_steps_done()
 
     def dbg_rscale(self) -> Scalar[DT]:
         return self.trainer.dbg_rscale()
