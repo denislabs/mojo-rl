@@ -48,10 +48,10 @@ from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 # =============================================================================
 
 comptime FRAMES = 4
-comptime ACT = 3            # NOOP, UP, DOWN
+comptime ACT = 3  # NOOP, UP, DOWN
 comptime LATENT = 128
-comptime HIDDEN = 512       # Nature-CNN projection width
-comptime BINS = 51          # categorical reward/value support bins
+comptime HIDDEN = 512  # Nature-CNN projection width
+comptime BINS = 51  # categorical reward/value support bins
 
 # Parallel envs — the primary throughput knob. Each env owns a pixel
 # render/frame-stack workspace AND a root tree, so MuZero scales this lower than
@@ -61,7 +61,7 @@ comptime N_ENVS = 32
 # Gumbel search budget.
 comptime NUM_SIMS = 50
 comptime MAX_NODES = 128
-comptime MAX_K = 3          # Gumbel root candidates (= ACT for Pong)
+comptime MAX_K = 3  # Gumbel root candidates (= ACT for Pong)
 
 # Device replay (Phase 2): uint8 obs ring on the GPU → 28224 bytes/step, no
 # per-step obs D2H. Constraint: CAP must be a multiple of N_ENVS AND exceed
@@ -71,9 +71,9 @@ comptime CAP = 64_000
 comptime OBS_STORE_DT = DType.uint8
 
 # Unroll / training.
-comptime B = 256            # unroll batch (windows) — bigger batch, fewer steps
-comptime K = 5              # BPTT unroll length
-comptime N = 5              # n-step value bootstrap horizon
+comptime B = 256  # unroll batch (windows) — bigger batch, fewer steps
+comptime K = 5  # BPTT unroll length
+comptime N = 5  # n-step value bootstrap horizon
 # Gradient steps per iteration. UTD 1:1 (= N_ENVS) — one grad step per env step.
 # An earlier experiment at train_per_iter=4 (UTD 0.125) was faster but
 # UNDERTRAINED on Pong, so we keep the UTD-1:1 default; sample efficiency now
@@ -90,22 +90,35 @@ comptime GAMMA = Scalar[DT](0.997)
 
 # 5M env steps ≈ iterations · N_ENVS. iterations = 5_000_000 / 32 ≈ 156_250.
 comptime NUM_ITERS = 156_250
-comptime LEARNING_STARTS = 2_000   # stored steps before training
+comptime LEARNING_STARTS = 2_000  # stored steps before training
 # Bounded so CAP ≥ N_ENVS·MAX_EP_STEPS holds (device ring); long Pong games are
 # truncated (n-step bootstrap), which is fine for MuZero.
 comptime MAX_EP_STEPS = 2_000
 
 
 comptime Cfg = MuZeroCNNConfig[FRAMES, ACT, LATENT, HIDDEN, BINS]
-comptime OBS = Cfg.OBS   # 4*84*84 = 28224
+comptime OBS = Cfg.OBS  # 4*84*84 = 28224
 comptime PongPixelBatched = BatchedGpuDiscreteEnv[
     PongPixelEnv[DT], N_ENVS, OBS, 1
 ]
 comptime Agent = MuZeroBatchedAgent[
-    PongPixelBatched, Cfg.Rep, Cfg.Dyn, Cfg.Pred,
-    N_ENVS, OBS, ACT, LATENT, BINS,
-    NUM_SIMS, MAX_NODES, MAX_K, CAP, B, K, N,
-    OBS_STORE_DT = OBS_STORE_DT,
+    PongPixelBatched,
+    Cfg.Rep,
+    Cfg.Dyn,
+    Cfg.Pred,
+    N_ENVS,
+    OBS,
+    ACT,
+    LATENT,
+    BINS,
+    NUM_SIMS,
+    MAX_NODES,
+    MAX_K,
+    CAP,
+    B,
+    K,
+    N,
+    OBS_STORE_DT=OBS_STORE_DT,
 ]
 
 
@@ -122,7 +135,7 @@ def main() raises:
         gamma=GAMMA,
         v_min=V_MIN,
         v_max=V_MAX,
-        value_coef=Scalar[DT](0.25),   # paper recommendation (vs 1.0)
+        value_coef=Scalar[DT](0.25),  # paper recommendation (vs 1.0)
     )
 
     var env = PongPixelBatched(ctx)
@@ -133,15 +146,38 @@ def main() raises:
     print("  Observation: 4 × 84 × 84 =", OBS)
     print("  Actions:", ACT, "(NOOP, UP, DOWN)")
     print("  Rep: Nature-CNN → latent", LATENT, " H", HIDDEN, " BINS", BINS)
-    print("  Search: Gumbel sims", NUM_SIMS, "MAX_K", MAX_K,
-          "MAX_NODES", MAX_NODES)
+    print(
+        "  Search: Gumbel sims",
+        NUM_SIMS,
+        "MAX_K",
+        MAX_K,
+        "MAX_NODES",
+        MAX_NODES,
+    )
     print("  Value support [", V_MIN, ",", V_MAX, "] (h-space)  γ", GAMMA)
     print("  Replay CAP", CAP, "(device, uint8 obs ring)")
-    print("  Unroll B", B, "K", K, "N", N, " lr", LR,
-          " train/iter", TRAIN_PER_ITER, "(replay ratio",
-          Float64(TRAIN_PER_ITER) / Float64(N_ENVS), ")")
-    print("  Reanalyze every 1, batch", B, "(",
-          B // N_ENVS, "search chunks/iter, target-net sync 200)")
+    print(
+        "  Unroll B",
+        B,
+        "K",
+        K,
+        "N",
+        N,
+        " lr",
+        LR,
+        " train/iter",
+        TRAIN_PER_ITER,
+        "(replay ratio",
+        Float64(TRAIN_PER_ITER) / Float64(N_ENVS),
+        ")",
+    )
+    print(
+        "  Reanalyze every 1, batch",
+        B,
+        "(",
+        B // N_ENVS,
+        "search chunks/iter, target-net sync 200)",
+    )
     print("  Total env steps ≈", NUM_ITERS * N_ENVS)
     print()
 
@@ -175,10 +211,10 @@ def main() raises:
         max_ep_steps=MAX_EP_STEPS,
         temperature_decay_steps=NUM_ITERS,
         reanalyze_every=1,
-        reanalyze_batch=B,          # ≈ training batch: most targets stay fresh
-        target_sync_interval=200,   # target-net reanalyze (A/B-validated stabiliser)
-        eval_every=2000,
-        eval_episodes=10,           # mean of 10 complete greedy games
+        reanalyze_batch=B,  # ≈ training batch: most targets stay fresh
+        target_sync_interval=200,  # target-net reanalyze (A/B-validated stabiliser)
+        eval_every=10_000,
+        eval_episodes=10,  # mean of 10 complete greedy games
         eval_env=UnsafePointer(to=eval_env),
         diag_every=200,
         report_every=500,
@@ -190,7 +226,7 @@ def main() raises:
         # grads, write back priorities. False reproduces the converged uniform
         # baseline (the working Pong path); flip True to focus training on the
         # high-error frames. alpha/beta default to EZ Atari's 1.0/1.0.
-        use_per=False,
+        use_per=True,
     )
     var elapsed_s = Float64(perf_counter_ns() - start) / 1e9
     logger.close()
