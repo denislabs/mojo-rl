@@ -33,6 +33,7 @@ from mojo_rl.render import (
     black,
 )
 
+from mojo_rl.core import BoxDiscreteActionEnv
 from mojo_rl.physics2d import dtype
 from mojo_rl.physics2d.car import CarDynamicsMB, TileCollision
 from mojo_rl.physics2d.car.constants import (
@@ -58,14 +59,33 @@ from mojo_rl.physics2d.constants import (
 from .track import TrackGenerator
 from .constants import CRConstants
 from .car_racing_pixel import CarRacingPixel
+from .state import CarRacingState
+from .action import CarRacingAction
 
 
-struct CarRacingMB[DTYPE: DType](Copyable, Movable):
-    """CarRacing on multi-body physics (CPU, single env)."""
+struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False](
+    BoxDiscreteActionEnv, Copyable, Movable
+):
+    """CarRacing on multi-body physics (CPU, single env).
+
+    Conforms to `BoxDiscreteActionEnv` so it can be wrapped by
+    `BatchedCpuDiscreteEnv` for hybrid training (CPU env stepped on host +
+    GPU agent), guaranteeing CPU↔GPU transfer and faithful (non-cheatable)
+    closed-loop tracks. `PIXEL_OBS=True` exposes the 4x84x84 pixel observation
+    through the trait (for the CNN agent); `False` exposes the 13-D clean obs.
+    """
+
+    comptime dtype = Self.DTYPE  # BoxDiscreteActionEnv requirement
+    comptime StateType = CarRacingState[Self.DTYPE]
+    comptime ActionType = CarRacingAction[Self.DTYPE]
 
     # --- compile-time layout (within one env's state row) ----------------
-    comptime OBS_DIM: Int = 13
+    comptime OBS_DIM: Int = 13  # clean-obs layout (state prefix)
     comptime ACTION_DIM: Int = 3
+    comptime NUM_ACTIONS: Int = 5  # discrete: noop/left/right/gas/brake
+    # Observation dim exposed through the trait (pixel stack vs clean prefix).
+    comptime PIX_DIM: Int = CarRacingPixel[Self.DTYPE].OBS_DIM
+    comptime EFF_OBS_DIM: Int = Self.PIX_DIM if Self.PIXEL_OBS else Self.OBS_DIM
     comptime NB: Int = CarDynamicsMB.NUM_BODIES
     comptime NJ: Int = CarDynamicsMB.NUM_JOINTS
     comptime NW: Int = CarDynamicsMB.NUM_WHEELS
@@ -196,13 +216,16 @@ struct CarRacingMB[DTYPE: DType](Copyable, Movable):
 
     # --- API --------------------------------------------------------------
     def obs_dim(self) -> Int:
-        return Self.OBS_DIM
+        return Self.EFF_OBS_DIM  # pixel stack or clean prefix per PIXEL_OBS
 
     def action_dim(self) -> Int:
         return Self.ACTION_DIM
 
-    def reset(mut self) -> List[Scalar[Self.DTYPE]]:
-        """Generate a new track, place the car at the start, return obs."""
+    def reset(mut self) -> Self.StateType:
+        """Generate a new track, place the car at the start (Env trait).
+
+        Returns the StateType for trait conformance; obs consumers use
+        `reset_obs_list` (which calls this and discards the state)."""
         var seed = self.reset_seed + 1
         self.reset_seed = seed
         self.track.generate_random_track(UInt64(seed * 2654435761 + 42), False)
@@ -230,7 +253,7 @@ struct CarRacingMB[DTYPE: DType](Copyable, Movable):
         st[0, Self.CONTROLS_OFFSET + CTRL_BRAKE] = Scalar[dtype](0.0)
 
         self._write_obs()
-        return self._obs_list()
+        return Self.StateType()
 
     def step(
         mut self, steering: Float64, gas: Float64, brake: Float64
@@ -368,7 +391,9 @@ struct CarRacingMB[DTYPE: DType](Copyable, Movable):
     # re-derived) so a CNN trained on the GPU pixel env sees in-distribution
     # input. The track shape differs (faithful CPU vs simplified GPU track) but
     # the rendered road appearance is identical.
-    def _render_pixel_cpu(self, dx: Int, dy: Int) -> Scalar[Self.DTYPE]:
+    def _render_pixel_cpu(
+        self, dx: Int, dy: Int, vis: List[Int]
+    ) -> Scalar[Self.DTYPE]:
         comptime P = CarRacingPixel[Self.DTYPE]
         var zero = Scalar[dtype](0.0)
         var camx = (Scalar[dtype](dx) - Scalar[dtype](P.CX)) / Scalar[dtype](
@@ -392,8 +417,9 @@ struct CarRacingMB[DTYPE: DType](Copyable, Movable):
         var wx = car_x + camx * ca - camy * sa
         var wy = car_y + camx * sa + camy * ca
 
-        for i in range(self.track.track_length):
-            var t = self.track.track[i]
+        # Only the camera-culled visible tiles (computed once per frame).
+        for j in range(len(vis)):
+            var t = self.track.track[vis[j]]
             if TileCollision.point_in_quad(
                 wx, wy,
                 Scalar[dtype](t.v0_x), Scalar[dtype](t.v0_y),
@@ -406,11 +432,25 @@ struct CarRacingMB[DTYPE: DType](Copyable, Movable):
 
     def _push_pixel_frame(mut self):
         comptime P = CarRacingPixel[Self.DTYPE]
+        # Cull tiles to the camera view once per frame (~10x fewer point-in-quad
+        # tests), mirroring the GPU rasterizer.
+        var st = self._state()
+        var ho = Self.BODIES_OFFSET
+        var car_x = Float64(rebind[Scalar[dtype]](st[0, ho + IDX_X]))
+        var car_y = Float64(rebind[Scalar[dtype]](st[0, ho + IDX_Y]))
+        var vis = List[Int]()
+        for i in range(self.track.track_length):
+            var t = self.track.track[i]
+            var ddx = Float64(t.center_x) - car_x
+            var ddy = Float64(t.center_y) - car_y
+            if ddx * ddx + ddy * ddy < P.CULL_R2:
+                vis.append(i)
+
         var base = self._pixel_idx * P.FRAME_SIZE
         for dy in range(P.OBS_H):
             for dx in range(P.OBS_W):
                 self._pixel_stack[base + dy * P.OBS_W + dx] = (
-                    self._render_pixel_cpu(dx, dy)
+                    self._render_pixel_cpu(dx, dy, vis)
                 )
         self._pixel_idx = (self._pixel_idx + 1) % P.FRAME_STACK
 
@@ -442,6 +482,75 @@ struct CarRacingMB[DTYPE: DType](Copyable, Movable):
         var r = self.step_action(a)
         self._push_pixel_frame()
         return (self.get_pixel_obs(), r[1], r[2])
+
+    # --- BoxDiscreteActionEnv interface (for BatchedCpuDiscreteEnv / hybrid) -
+    # Obs is the pixel stack when PIXEL_OBS else the 13-D clean prefix.
+    def num_actions(self) -> Int:
+        return Self.NUM_ACTIONS
+
+    def was_terminated(self) -> Bool:
+        """True iff the last step ended by natural termination (off-playfield /
+        lap), NOT max-steps truncation — so the agent cuts the TD bootstrap."""
+        return self.done and not self.truncated
+
+    def reset_obs_list(mut self) -> List[Scalar[Self.dtype]]:
+        comptime if Self.PIXEL_OBS:
+            return self.reset_pixel()
+        else:
+            _ = self.reset()
+            return self._obs_list()
+
+    def step_obs(
+        mut self, action: Int
+    ) -> Tuple[List[Scalar[Self.dtype]], Scalar[Self.dtype], Bool]:
+        comptime if Self.PIXEL_OBS:
+            var r = self.step_action_pixel(action)
+            return (r[0].copy(), Scalar[Self.dtype](r[1]), r[2])
+        else:
+            var r = self.step_action(action)
+            return (r[0].copy(), Scalar[Self.dtype](r[1]), r[2])
+
+    def step_obs_into(
+        mut self,
+        action: Int,
+        obs_out: UnsafePointer[Scalar[Self.dtype], MutAnyOrigin],
+    ) -> Tuple[Scalar[Self.dtype], Bool]:
+        """Allocation-light step: write the observation straight into obs_out."""
+        comptime if Self.PIXEL_OBS:
+            var r = self.step_action_pixel(action)
+            for d in range(Self.PIX_DIM):
+                obs_out[d] = r[0][d]
+            return (Scalar[Self.dtype](r[1]), r[2])
+        else:
+            var r = self.step_action(action)
+            for d in range(Self.OBS_DIM):
+                obs_out[d] = r[0][d]
+            return (Scalar[Self.dtype](r[1]), r[2])
+
+    # --- remaining Env-trait surface (BatchedCpuDiscreteEnv uses the obs
+    # methods above; these satisfy conformance) --------------------------
+    def step(
+        mut self, action: Self.ActionType, verbose: Bool = False
+    ) -> Tuple[Self.StateType, Scalar[Self.dtype], Bool]:
+        var r = self.step(
+            Float64(action.steering), Float64(action.gas), Float64(action.brake)
+        )
+        return (Self.StateType(), Scalar[Self.dtype](r[1]), r[2])
+
+    def get_state(self) -> Self.StateType:
+        return Self.StateType()
+
+    def get_obs_list(self) -> List[Scalar[Self.dtype]]:
+        comptime if Self.PIXEL_OBS:
+            return self.get_pixel_obs()
+        else:
+            return self._obs_list()
+
+    def action_from_index(self, action_idx: Int) -> Self.ActionType:
+        return CarRacingAction[Self.DTYPE].from_discrete(action_idx)
+
+    def close(mut self):
+        pass
 
     # --- discrete action (decode matches CarRacingDiscrete) --------------
     def step_action(

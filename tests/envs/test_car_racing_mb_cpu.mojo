@@ -23,7 +23,7 @@ def main() raises:
     print("=== CarRacingMB CPU smoke test (multi-body) ===")
 
     var env = CarRacingMB[DType.float32](max_steps=1000)
-    var obs = env.reset()
+    var obs = env.reset_obs_list()
 
     # ---- 1. obs shape + normalization -----------------------------------
     print("obs_dim =", len(obs), " track_length =", env.track_length())

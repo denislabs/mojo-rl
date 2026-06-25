@@ -103,7 +103,7 @@ def main() raises:
         _ = env.init_renderer()
 
         var ep: Int = 0
-        var obs = env.reset()
+        var obs = env.reset_obs_list()
         var ep_return = Scalar[DT](0.0)
         var ep_steps: Int = 0
 
@@ -124,7 +124,7 @@ def main() raises:
                     "steps:", ep_steps,
                     "tiles:", env.tiles_visited, "/", env.track_length(),
                 )
-                obs = env.reset()
+                obs = env.reset_obs_list()
                 ep_return = Scalar[DT](0.0)
                 ep_steps = 0
 
