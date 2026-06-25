@@ -1273,9 +1273,14 @@ struct ACStep[
                     )
         value.forward[target, BT](TensorRefs[1](self.feat_bt), self.vlr, None)
         slowvalue.forward[target, BT](TensorRefs[1](self.feat_bt), self.svlr, None)
-        var d_rep = List[Scalar[DT]](length=Self.B * TM1, fill=Scalar[DT](0))
-        var inv_rep = self.repval_scale / Scalar[DT](Self.B * TM1)
-        for i in range(Self.B * TM1):
+        # repval runs over the REAL replay sequence (length Self.T), NOT the
+        # imagination horizon: repl_loss_backward[Self.B, Self.T] emits a
+        # cotangent shaped [Self.B, Self.T-1]. Size d_rep accordingly (TM1 above
+        # is the imagination TM1 = T_IMAG-1; reusing it overflows when T_IMAG≠T).
+        comptime TM1R = Self.T - 1
+        var d_rep = List[Scalar[DT]](length=Self.B * TM1R, fill=Scalar[DT](0))
+        var inv_rep = self.repval_scale / Scalar[DT](Self.B * TM1R)
+        for i in range(Self.B * TM1R):
             d_rep[i] = inv_rep
         repl_loss_backward[Self.B, Self.T, BINSl](
             _hp(st.mb_dne), term_bt, _hp(st.mb_rew),
@@ -1522,9 +1527,14 @@ struct ACStep[
         slowvalue.forward[target, BT](TensorRefs[1](self.feat_bt), self.svlr, ctx)
         self.vlr.download(ctx)
         self.svlr.download(ctx)
-        var d_rep = List[Scalar[DT]](length=Self.B * TM1, fill=Scalar[DT](0))
-        var inv_rep = self.repval_scale / Scalar[DT](Self.B * TM1)
-        for i in range(Self.B * TM1):
+        # repval runs over the REAL replay sequence (length Self.T), NOT the
+        # imagination horizon: repl_loss_backward[Self.B, Self.T] emits a
+        # cotangent shaped [Self.B, Self.T-1]. Size d_rep accordingly (TM1 above
+        # is the imagination TM1 = T_IMAG-1; reusing it overflows when T_IMAG≠T).
+        comptime TM1R = Self.T - 1
+        var d_rep = List[Scalar[DT]](length=Self.B * TM1R, fill=Scalar[DT](0))
+        var inv_rep = self.repval_scale / Scalar[DT](Self.B * TM1R)
+        for i in range(Self.B * TM1R):
             d_rep[i] = inv_rep
         repl_loss_backward[Self.B, Self.T, BINSl](
             _hp(st.mb_dne), term_bt, _hp(st.mb_rew),

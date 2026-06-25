@@ -83,8 +83,8 @@ def _greedy_eval(
     mut ag: Ag, mut env: CartPoleEnv[DT]
 ) raises -> Scalar[DT]:
     """Mean return over EVAL_EPISODES with the greedy (argmax) policy."""
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var actbuf = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     var total: Scalar[DT] = 0.0
     for _e in range(EVAL_EPISODES):
         ag.reset_belief()
@@ -134,8 +134,8 @@ def main() raises:
     )
 
     var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var actbuf = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
 
     for step in range(TOTAL_STEPS):
         for i in range(OBS):
