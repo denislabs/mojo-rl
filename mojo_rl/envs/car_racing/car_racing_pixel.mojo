@@ -53,10 +53,18 @@ struct CarRacingPixel[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
     comptime FRAME_SIZE: Int = Self.OBS_W * Self.OBS_H  # 7056
     comptime OBS_DIM: Int = Self.FRAME_STACK * Self.FRAME_SIZE  # 28224
 
-    # Per-env workspace: [4 frames | frame_idx].
+    # Per-env workspace: [4 frames | frame_idx | vis_count | vis_tile_indices].
+    # The visible-tile list is a per-env camera cull (filled once per step) so
+    # the per-pixel rasterizer tests ~VIS_MAX tiles instead of all ~300.
+    comptime VIS_MAX: Int = 64
+    comptime WS_IDX: Int = Self.FRAME_STACK * Self.FRAME_SIZE  # ring index
+    comptime WS_VIS_COUNT: Int = Self.WS_IDX + 1
+    comptime WS_VIS: Int = Self.WS_VIS_COUNT + 1  # start of vis index list
     comptime STEP_WS_SHARED: Int = 0
-    comptime STEP_WS_PER_ENV: Int = Self.FRAME_STACK * Self.FRAME_SIZE + 1
-    comptime WS_IDX: Int = Self.FRAME_STACK * Self.FRAME_SIZE  # idx slot in env_ws
+    comptime STEP_WS_PER_ENV: Int = Self.WS_VIS + Self.VIS_MAX
+    # Camera cull radius² (world units): farthest visible point from the car is
+    # ~sqrt((CY/ZOOM)² + (OBS_W/2/ZOOM)²) ≈ 51, + a tile half-extent. R = 62.
+    comptime CULL_R2: Float64 = 62.0 * 62.0
 
     # Camera: car drawn at (CX, CY), forward = screen up; ZOOM_PX px per world
     # unit. CY below center -> more road visible ahead. Tunable.
@@ -93,9 +101,10 @@ struct CarRacingPixel[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
         states: LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
         ],
+        vis_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        vis_count: Int,
         dx: Int,
         dy: Int,
-        num_tiles: Int,
     ) -> Scalar[dtype]:
         """Grayscale value [0,1] for output pixel (dx, dy).
 
@@ -125,7 +134,9 @@ struct CarRacingPixel[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
         var wx = car_x + camx * ca - camy * sa
         var wy = car_y + camx * sa + camy * ca
 
-        for i in range(num_tiles):
+        # Only test tiles the per-env cull found inside the camera view.
+        for j in range(vis_count):
+            var i = Int(rebind[Scalar[dtype]](vis_ptr[j]))
             var to = Self.D.TRACK_OFFSET + i * TILE_DATA_SIZE
             var v0x = rebind[Scalar[dtype]](states[env, to + 0])
             var v0y = rebind[Scalar[dtype]](states[env, to + 1])
@@ -243,6 +254,54 @@ struct CarRacingPixel[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
             st, ac, rw, dn, tm, grid_dim=(BLOCKS,), block_dim=(Self.TPB,)
         )
 
+        # ── Kernel A2: camera cull (1 thread / env) ──
+        # Build a per-env list of tile indices whose centers fall inside the
+        # camera view, so the per-pixel rasterizer tests ~VIS_MAX tiles instead
+        # of all ~300 (≈10x fewer point-in-quad tests).
+        @parameter
+        @always_inline
+        def cull_wrap(
+            st: LayoutTensor[dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin],
+            ws_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        ):
+            var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+            if env >= BATCH_SIZE:
+                return
+            var ho = Self.D.BODIES_OFFSET
+            var car_x = rebind[Scalar[dtype]](st[env, ho + IDX_X])
+            var car_y = rebind[Scalar[dtype]](st[env, ho + IDX_Y])
+            var n = Int(
+                rebind[Scalar[dtype]](
+                    st[env, Self.D.METADATA_OFFSET + Self.D.META_NUM_TILES]
+                )
+            )
+            var env_ws = ws_ptr + env * Self.STEP_WS_PER_ENV
+            var r2 = Scalar[dtype](Self.CULL_R2)
+            var half = Scalar[dtype](0.5)
+            var count = 0
+            for i in range(n):
+                if count >= Self.VIS_MAX:
+                    break
+                var to = Self.D.TRACK_OFFSET + i * TILE_DATA_SIZE
+                var cx = (
+                    rebind[Scalar[dtype]](st[env, to + 0])
+                    + rebind[Scalar[dtype]](st[env, to + 4])
+                ) * half
+                var cy = (
+                    rebind[Scalar[dtype]](st[env, to + 1])
+                    + rebind[Scalar[dtype]](st[env, to + 5])
+                ) * half
+                var ddx = cx - car_x
+                var ddy = cy - car_y
+                if ddx * ddx + ddy * ddy < r2:
+                    env_ws[Self.WS_VIS + count] = Scalar[dtype](i)
+                    count += 1
+            env_ws[Self.WS_VIS_COUNT] = Scalar[dtype](count)
+
+        ctx.enqueue_function[cull_wrap](
+            st, ws, grid_dim=(BLOCKS,), block_dim=(Self.TPB,)
+        )
+
         # ── Kernel B: render + frame-stack output (1 thread / (env, pixel)) ──
         comptime RT = BATCH_SIZE * Self.FRAME_SIZE
         comptime RTPB = 256
@@ -263,18 +322,13 @@ struct CarRacingPixel[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
             var dy = pix // Self.OBS_W
             var dx = pix % Self.OBS_W
 
-            var n = Int(
-                rebind[Scalar[dtype]](
-                    st[env, Self.D.METADATA_OFFSET + Self.D.META_NUM_TILES]
-                )
-            )
-            if n <= 0:
-                n = 1
+            var env_ws = ws_ptr + env * Self.STEP_WS_PER_ENV
+            var vis_count = Int(rebind[Scalar[dtype]](env_ws[Self.WS_VIS_COUNT]))
+            var vis_ptr = env_ws + Self.WS_VIS
             var gray = CarRacingPixel[Self.dtype]._render_pixel[BATCH_SIZE, STATE_SIZE](
-                env, st, dx, dy, n
+                env, st, vis_ptr, vis_count, dx, dy
             )
 
-            var env_ws = ws_ptr + env * Self.STEP_WS_PER_ENV
             var slot = Int(env_ws[Self.WS_IDX]) % Self.FRAME_STACK
             env_ws[slot * Self.FRAME_SIZE + pix] = gray
 
