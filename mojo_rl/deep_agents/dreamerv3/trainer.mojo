@@ -330,7 +330,7 @@ struct DreamerV3Trainer[
     def train_steps_done(self) -> Int:
         return self.train_steps
 
-    def train_step(mut self) raises -> Bool:
+    def train_step(mut self, want_diag: Bool = True) raises -> Bool:
         if not self.can_train():
             return False
         # reference LR warmup: ramp 0→lr over warmup_steps (all modules).
@@ -370,6 +370,7 @@ struct DreamerV3Trainer[
             rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self.bins.unsafe_ptr()
             ),
+            want_diag,
         )
         self.train_steps += 1
         return True

@@ -152,8 +152,8 @@ struct DreamerV3Agent[
         """Restore the full network set from a `save()` checkpoint."""
         self.trainer.load_state(path)
 
-    def train_step(mut self) raises -> Bool:
-        return self.trainer.train_step()
+    def train_step(mut self, want_diag: Bool = True) raises -> Bool:
+        return self.trainer.train_step(want_diag)
 
     # ─── Single-env training facade (discrete) ──────────────────────────────
     def _greedy_eval[
@@ -261,7 +261,12 @@ struct DreamerV3Agent[
                     best_ret = ep_ret
                 ep_ret = Scalar[DT](0.0)
             if step >= learn_start and step % train_every == 0:
-                _ = self.train_step()
+                # On the GPU device-resident path the per-train_step diagnostic
+                # readout (host downloads of the imagination histories) is the
+                # only remaining host cost — compute it ONLY on the train_step
+                # whose metrics get logged at the upcoming eval boundary
+                # (eval_every is a multiple of train_every in all examples).
+                _ = self.train_step(want_diag=(step % eval_every == 0))
 
             if step > 0 and step % eval_every == 0:
                 var ev = self._greedy_eval[E](
