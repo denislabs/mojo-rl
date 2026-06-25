@@ -398,18 +398,18 @@ comptime EZPredNetAtari[ACT: Int, BINS: Int, ADT: DType = DT] = Sequential[
 # hidden layers' gradient (see zero_init.mojo).
 # ──────────────────────────────────────────────────────────────────────
 def ez_atari_init_zero_pred[
-    target: StaticString, ACT: Int, BINS: Int
+    target: StaticString, ACT: Int, BINS: Int, ADT: DType = DT
 ](
-    mut pred: EZPredNetAtari[ACT, BINS],
+    mut pred: EZPredNetAtari[ACT, BINS, ADT=ADT],
     ctx: Optional[DeviceContext] = None,
     scale: Scalar[DT] = Scalar[DT](0.0),
 ) raises:
     """Zero (or `scale`) the policy + value head output Linears of the
     prediction net. scale=0.0 → uniform policy + neutral value at init."""
-    scale_output_module[target, EZPredNetAtari[ACT, BINS]](
+    scale_output_module[target, EZPredNetAtari[ACT, BINS, ADT=ADT]](
         pred, "1.0.5.weight", "1.0.5.bias", scale, ctx
     )
-    scale_output_module[target, EZPredNetAtari[ACT, BINS]](
+    scale_output_module[target, EZPredNetAtari[ACT, BINS, ADT=ADT]](
         pred, "1.1.5.weight", "1.1.5.bias", scale, ctx
     )
 
