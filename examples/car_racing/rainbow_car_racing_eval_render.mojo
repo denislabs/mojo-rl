@@ -120,9 +120,16 @@ def main() raises:
             if done or ep_steps >= MAX_STEPS:
                 ep += 1
                 print(
-                    "Race", ep, "return:", ep_return,
-                    "steps:", ep_steps,
-                    "tiles:", env.tiles_visited, "/", env.track_length(),
+                    "Race",
+                    ep,
+                    "return:",
+                    ep_return,
+                    "steps:",
+                    ep_steps,
+                    "tiles:",
+                    env.tiles_visited,
+                    "/",
+                    env.track_length(),
                 )
                 obs = env.reset_obs_list()
                 ep_return = Scalar[DT](0.0)
