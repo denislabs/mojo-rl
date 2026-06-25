@@ -1417,11 +1417,8 @@ struct ACStep[
         # `.dev`; the per-step connective math (tanh+std sample, twohot, sigmoid)
         # and the λ-return imag_loss / repl_loss run on HOST via download/upload
         # of the small scratch Tensors. Mirrors `_ac_cpu` exactly → CPU↔GPU
-        # parity. (DISCRETE GPU AC is unported — guarded below.)
-        comptime assert not Self.DISCRETE, (
-            "discrete (categorical) GPU AC not ported — use train_target='cpu' "
-            "for discrete-action envs; GPU discrete is a follow-up parity step."
-        )
+        # parity. Both discrete (unimix categorical) and continuous actors are
+        # supported (the host sampling/grad-scatter branch on `Self.DISCRETE`).
         comptime D = Self.DETER
         comptime SCl = Self.SC
         comptime FEATl = Self.FEAT
@@ -1469,16 +1466,32 @@ struct ACStep[
                     feats[(b * TI + t) * FEATl + k] = self.fb.data[b * FEATl + k]
             policy.forward[target, NS](TensorRefs[1](self.fb), self.pb, ctx)
             self.pb.download(ctx)
-            for b in range(NS):
-                for a in range(ACTD):
-                    var mr = self.pb.data[b * 2 * ACTD + a]
-                    var sr = self.pb.data[b * 2 * ACTD + ACTD + a]
-                    pmean[(b * TI + t) * ACTD + a] = mr
-                    pstd[(b * TI + t) * ACTD + a] = sr
-                    var z = st.noise.data[(t * NS + b) * ACTD + a]
-                    acts[(b * TI + t) * ACTD + a] = (
-                        tanh(mr) + bounded_std(sr, MINSTD, MAXSTD) * z
-                    )
+            # actor sampling on host (pb downloaded) — discrete = unimix
+            # categorical (cat_sample), continuous = bounded-normal tanh sample.
+            # Mirrors `_ac_cpu` so the CPU↔GPU parity test holds.
+            comptime if Self.DISCRETE:
+                for b in range(NS):
+                    for a in range(ACTD):
+                        pmean[(b * TI + t) * ACTD + a] = self.pb.data[b * ACTD + a]
+                        pstd[(b * TI + t) * ACTD + a] = 0.0
+                    var z0 = st.noise.data[(t * NS + b) * ACTD + 0]
+                    var u01 = (z0 + Scalar[DT](1.0)) * Scalar[DT](0.5)
+                    var k = cat_sample[ACTD](_hp(self.pb), b * ACTD, UNIMIX, u01)
+                    for a in range(ACTD):
+                        acts[(b * TI + t) * ACTD + a] = (
+                            Scalar[DT](1.0) if a == k else Scalar[DT](0.0)
+                        )
+            else:
+                for b in range(NS):
+                    for a in range(ACTD):
+                        var mr = self.pb.data[b * 2 * ACTD + a]
+                        var sr = self.pb.data[b * 2 * ACTD + ACTD + a]
+                        pmean[(b * TI + t) * ACTD + a] = mr
+                        pstd[(b * TI + t) * ACTD + a] = sr
+                        var z = st.noise.data[(t * NS + b) * ACTD + a]
+                        acts[(b * TI + t) * ACTD + a] = (
+                            tanh(mr) + bounded_std(sr, MINSTD, MAXSTD) * z
+                        )
             value.forward[target, NS](TensorRefs[1](self.fb), self.vb, ctx)
             slowvalue.forward[target, NS](TensorRefs[1](self.fb), self.svb, ctx)
             self.vb.download(ctx)
@@ -1636,10 +1649,15 @@ struct ACStep[
                 TensorRefs[1](self.ftt), self.gvt, TensorRefs[1](self.gfeat), ctx
             )
             policy.forward[target, NS](TensorRefs[1](self.ftt), self.pscr, ctx)
-            for b in range(NS):
-                for a in range(ACTD):
-                    self.polg.data[b * 2 * ACTD + a] = g_pmean[(b * TI + t) * ACTD + a]
-                    self.polg.data[b * 2 * ACTD + ACTD + a] = g_pstd[(b * TI + t) * ACTD + a]
+            comptime if Self.DISCRETE:
+                for b in range(NS):
+                    for a in range(ACTD):
+                        self.polg.data[b * ACTD + a] = g_pmean[(b * TI + t) * ACTD + a]
+            else:
+                for b in range(NS):
+                    for a in range(ACTD):
+                        self.polg.data[b * 2 * ACTD + a] = g_pmean[(b * TI + t) * ACTD + a]
+                        self.polg.data[b * 2 * ACTD + ACTD + a] = g_pstd[(b * TI + t) * ACTD + a]
             self.polg.upload(ctx)
             policy.vjp[target, NS](
                 TensorRefs[1](self.ftt), self.polg, TensorRefs[1](self.gfeat), ctx

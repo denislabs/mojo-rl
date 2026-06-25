@@ -447,9 +447,6 @@ struct DreamerV3Agent[
             comptime assert Self.train_target == "gpu", (
                 "select_action: train_target must be 'cpu' or 'gpu'"
             )
-            comptime assert not Self.DISCRETE, (
-                "discrete GPU select_action not ported — use train_target='cpu'"
-            )
             # GPU B=1 inference (hybrid): device enc/core/policy forwards reusing
             # the trainer's LIVE GPU modules (buffers grow-only, so B=1 shares
             # the B=B/NS training instances). H2D obs+belief, device forwards,
