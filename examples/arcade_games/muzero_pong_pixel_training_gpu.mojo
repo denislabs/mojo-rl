@@ -53,7 +53,7 @@ from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 # reanalyze only every 4th iter. Use True to A/B ideas in ~30 min, then flip
 # back to False for the real run. CAP/N_ENVS are unchanged (memory-only / not a
 # speed lever — see notes below).
-comptime FAST_VALIDATE = False
+comptime FAST_VALIDATE = True
 
 comptime FRAMES = 4
 comptime ACT = 3  # NOOP, UP, DOWN
