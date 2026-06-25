@@ -43,8 +43,9 @@ comptime NUM_ACTIONS = CarRacingDiscrete[DT].NUM_ACTIONS  # 5
 comptime HIDDEN_DIM = 256
 comptime NUM_ATOMS = 51
 comptime N_STEP = 3
-comptime V_MIN = Scalar[DT](-100.0)
-comptime V_MAX = Scalar[DT](100.0)
+# Must match the training script (checkpoint stores only the q-net).
+comptime V_MIN = Scalar[DT](-30.0)
+comptime V_MAX = Scalar[DT](30.0)
 
 comptime CKPT_PATH = "checkpoints/rainbow_car_racing.ckpt"
 

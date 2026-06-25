@@ -44,15 +44,23 @@ comptime BUFFER_CAPACITY = 1_000_000
 comptime BATCH_SIZE = 64
 comptime N_ENVS = 256  # parallel GPU environments
 
-# Distributional support. CarRacing rewards are larger than Pong's: +1000/N
-# (~+3.3) per tile, -0.1/frame, and a one-off -100 off-playfield. The
-# *discounted* Q for a competent on-track policy accumulates into the tens..low
-# hundreds, with the -100 floor on the downside. [-100, 100] (atom spacing 4)
-# brackets that as a starting point — this support + reward scale is the main
-# C51 convergence lever and is the first thing to tune (cf. the Pong run, which
-# needed ±2). Narrow it once you observe the realized discounted-return range.
-comptime V_MIN = Scalar[DT](-100.0)
-comptime V_MAX = Scalar[DT](100.0)
+# Distributional support — THE convergence lever for C51, and it must be sized
+# against the per-step reward, not just the return range. CarRacing's tile
+# reward is 1000/N ~= +3.4 per tile. With the old [-100, 100] / 51 atoms the
+# atom spacing was 4.0 — *larger than a tile reward* — so the projection could
+# not represent the reward for visiting a tile at all. The only reward big
+# enough to register was the -100 off-playfield penalty (~25 atoms), so the
+# agent learned the one lesson it could perceive ("off-field is catastrophic")
+# and its safest response was to NOT MOVE (a parked car never goes off-field).
+# That produced the degenerate "park and steer" policy with flat ~-45 eval.
+#
+# [-30, 30] / 51 atoms gives spacing 1.2, so a tile reward is ~2.8 atoms and is
+# clearly visible, while the -100 penalty harmlessly clamps to -30 (still the
+# worst outcome). If the agent learns to drive but plateaus (good policies'
+# discounted Q can reach ~+50), widen to e.g. [-60, 60] with NUM_ATOMS=121
+# (keep spacing ~1) — and update the eval script to match.
+comptime V_MIN = Scalar[DT](-30.0)
+comptime V_MAX = Scalar[DT](30.0)
 
 # Replay ratio: GRAD_STEPS / N_ENVS = 64/256 = 0.25 (CleanRL Atari freq 4).
 comptime GRAD_STEPS = 64
