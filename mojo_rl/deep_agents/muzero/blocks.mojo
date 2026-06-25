@@ -950,7 +950,10 @@ def mz_unroll_train_step_gpu[
     dyn grad before each vjp (the latent carry is already weighted, so it is
     NOT re-scaled). When ``out_prio`` is given the root (k=0) value-head soft-CE
     is written per row as the new priority signal. Both are no-ops when ``None``
-    → bit-identical to the uniform path.
+    → bit-identical to the uniform path. NOTE: the batched GPU self-play driver
+    does NOT pass ``out_prio`` here — it prioritizes on the MuZero paper signal
+    |ν − z| computed in the replay sampler (`sample_training_batch_per_dev`), so
+    this soft-CE path is currently exercised only by callers that opt into it.
 
     Takes the same **host** time-major batch slabs (raw value/reward scalars;
     `h` + two-hot applied on device), H2D-copies them once, runs the forward

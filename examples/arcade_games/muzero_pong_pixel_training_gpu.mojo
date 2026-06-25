@@ -47,6 +47,14 @@ from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 # Constants  (Phase 3 tunes these for convergence)
 # =============================================================================
 
+# Fast-validate switch. False = full convergence run (paper-faithful budget).
+# True = screening profile for quickly checking whether a config change lifts
+# the return curve (~1.6–2× faster iterations): fewer sims, lighter UTD, and
+# reanalyze only every 4th iter. Use True to A/B ideas in ~30 min, then flip
+# back to False for the real run. CAP/N_ENVS are unchanged (memory-only / not a
+# speed lever — see notes below).
+comptime FAST_VALIDATE = False
+
 comptime FRAMES = 4
 comptime ACT = 3  # NOOP, UP, DOWN
 comptime LATENT = 128
@@ -58,16 +66,19 @@ comptime BINS = 51  # categorical reward/value support bins
 # Rainbow's 64. Raise on large-VRAM cards.
 comptime N_ENVS = 32
 
-# Gumbel search budget.
-comptime NUM_SIMS = 50
+# Gumbel search budget. Fast-validate trims sims (still plenty for 3 actions).
+comptime NUM_SIMS = 32 if FAST_VALIDATE else 50
 comptime MAX_NODES = 128
 comptime MAX_K = 3  # Gumbel root candidates (= ACT for Pong)
 
 # Device replay (Phase 2): uint8 obs ring on the GPU → 28224 bytes/step, no
 # per-step obs D2H. Constraint: CAP must be a multiple of N_ENVS AND exceed
 # N_ENVS·MAX_EP_STEPS (else an in-flight episode self-overwrites). With N_ENVS=32
-# and MAX_EP_STEPS=2000 → CAP ≥ 64000; 64000·28224 B ≈ 1.8 GB device.
-comptime CAP = 64_000
+# and MAX_EP_STEPS=2000 → CAP ≥ 64000. CAP is memory-only (no per-iteration cost)
+# so we size it generously on a 32 GB card: 262144 = 8192·32 → 262144·28224 B ≈
+# 7.4 GB device, leaving ~24 GB free. Bigger ring = more target diversity and
+# steadier PER than the old 64000 (1.8 GB), which rode its cap and cycled fast.
+comptime CAP = 262_144
 comptime OBS_STORE_DT = DType.uint8
 
 # Unroll / training.
@@ -76,10 +87,16 @@ comptime K = 5  # BPTT unroll length
 comptime N = 5  # n-step value bootstrap horizon
 # Gradient steps per iteration. UTD 1:1 (= N_ENVS) — one grad step per env step.
 # An earlier experiment at train_per_iter=4 (UTD 0.125) was faster but
-# UNDERTRAINED on Pong, so we keep the UTD-1:1 default; sample efficiency now
-# comes from the reanalyze coverage + target-net stabiliser below, not from
-# trimming gradient steps.
-comptime TRAIN_PER_ITER = N_ENVS
+# UNDERTRAINED on Pong, so the convergence run keeps the UTD-1:1 default; sample
+# efficiency comes from the reanalyze coverage + target-net stabiliser below,
+# not from trimming gradient steps. Fast-validate halves UTD (16) purely to
+# screen configs faster — do NOT trust it for final convergence (see above).
+comptime TRAIN_PER_ITER = 16 if FAST_VALIDATE else N_ENVS
+
+# Reanalyze cadence: every iter (paper-faithful, max fresh targets) for the real
+# run; every 4th iter under fast-validate (reanalyze fires `reanalyze_batch //
+# N_ENVS` = 8 batched searches per trigger, so this is a large wall-clock lever).
+comptime REANALYZE_EVERY = 4 if FAST_VALIDATE else 1
 comptime LR = Scalar[DT](1e-4)
 
 # Value support in MuZero h-space — bracket the DISCOUNTED return (γ=0.997 over
@@ -125,6 +142,14 @@ comptime Agent = MuZeroBatchedAgent[
 def main() raises:
     print("=" * 70)
     print("MuZero batched GPU training on Pong — Pixel (deep_agents)")
+
+    comptime if FAST_VALIDATE:
+        print(
+            "  PROFILE: FAST-VALIDATE (screening; ~2× faster, do NOT trust for"
+            " final convergence)"
+        )
+    else:
+        print("  PROFILE: CONVERGE (full paper-faithful run)")
     print("=" * 70)
 
     var ctx = DeviceContext()
@@ -172,11 +197,13 @@ def main() raises:
         ")",
     )
     print(
-        "  Reanalyze every 1, batch",
+        "  Reanalyze every",
+        REANALYZE_EVERY,
+        "batch",
         B,
         "(",
         B // N_ENVS,
-        "search chunks/iter, target-net sync 200)",
+        "search chunks/trigger, target-net sync 200)",
     )
     print("  Total env steps ≈", NUM_ITERS * N_ENVS)
     print()
@@ -210,7 +237,7 @@ def main() raises:
         train_per_iter=TRAIN_PER_ITER,
         max_ep_steps=MAX_EP_STEPS,
         temperature_decay_steps=NUM_ITERS,
-        reanalyze_every=1,
+        reanalyze_every=REANALYZE_EVERY,
         reanalyze_batch=B,  # ≈ training batch: most targets stay fresh
         target_sync_interval=200,  # target-net reanalyze (A/B-validated stabiliser)
         eval_every=10_000,
