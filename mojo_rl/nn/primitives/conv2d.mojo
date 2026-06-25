@@ -48,6 +48,13 @@ from .linear import _cast_f2b_kernel, BF16
 
 comptime CONV_DW_TPB: Int = 128
 
+# A/B knob: block size for the flat thread-per-element im2col/scatter launches.
+# These are bandwidth-bound elementwise kernels over BS·COL / B·OUT_FLAT, so 128
+# vs 256 only changes occupancy granularity (both are warp multiples) — prediction
+# is ~0% on NVIDIA (cf. O1). Bumped to 256 to A/B against Modular's im2col block
+# size; revert to TPB (128) if no NVIDIA gain. Apple is parity-only here.
+comptime CONV_TPB: Int = 256
+
 
 # ── CPU im2col / col2im over List storage (no pointers, no origins) ──────
 def _im2col_cpu[
@@ -523,7 +530,7 @@ struct Conv2D[
                 self.col_t.ensure_gpu(c, BS * Self.COL)
                 self.outp_t.ensure_gpu(c, BS * Self.OC_)
                 # (1) im2col → col[BS, COL]
-                comptime nb_col = (BS * Self.COL + TPB - 1) // TPB
+                comptime nb_col = (BS * Self.COL + CONV_TPB - 1) // CONV_TPB
                 c.enqueue_function[
                     _im2col_kernel[
                         B,
@@ -544,7 +551,7 @@ struct Conv2D[
                     in0d.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
                     self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
                     grid_dim=nb_col,
-                    block_dim=TPB,
+                    block_dim=CONV_TPB,
                 )
                 # A2: record the input buffer so this forward's col_t can be
                 # reused by the matching vjp (skipping a redundant im2col).
@@ -563,7 +570,7 @@ struct Conv2D[
                     outp_tt, col_tt, w_tt, c
                 )
                 # (3) scatter → output[B, OC·SO] + bias
-                comptime nb_sc = (B * Self.OUT_FLAT + TPB - 1) // TPB
+                comptime nb_sc = (B * Self.OUT_FLAT + CONV_TPB - 1) // CONV_TPB
                 c.enqueue_function[
                     _scatter_bias_kernel[
                         B,
@@ -577,7 +584,7 @@ struct Conv2D[
                     self.bias.val.lt["gpu", Layout.row_major(Self.OC_)](),
                     outd.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
                     grid_dim=nb_sc,
-                    block_dim=TPB,
+                    block_dim=CONV_TPB,
                 )
         else:
             # ── bf16-flow path (GPU-only) ──
@@ -598,7 +605,7 @@ struct Conv2D[
                 block_dim=256,
             )
             # (1) im2col → col[BS, COL] (bf16-in → bf16-out)
-            comptime nb_col = (BS * Self.COL + TPB - 1) // TPB
+            comptime nb_col = (BS * Self.COL + CONV_TPB - 1) // CONV_TPB
             c.enqueue_function[
                 _im2col_kernel[
                     B,
@@ -620,7 +627,7 @@ struct Conv2D[
                 in0.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
                 self.col_t_bf.lt["gpu", Layout.row_major(BS, Self.COL)](),
                 grid_dim=nb_col,
-                block_dim=TPB,
+                block_dim=CONV_TPB,
             )
             # A2: record the input buffer for col_t_bf reuse in the matching vjp.
             self._col_src_ptr = Int(in0.dev.value().unsafe_ptr())
@@ -637,7 +644,7 @@ struct Conv2D[
             )
             max_matmul[transpose_b=True, target="gpu"](outp_tt, col_tt, w_tt, c)
             # (3) scatter → output[B, OC·SO] + bf16 bias
-            comptime nb_sc = (B * Self.OUT_FLAT + TPB - 1) // TPB
+            comptime nb_sc = (B * Self.OUT_FLAT + CONV_TPB - 1) // CONV_TPB
             c.enqueue_function[
                 _scatter_bias_kernel[
                     B,
@@ -652,7 +659,7 @@ struct Conv2D[
                 self.b_a.lt["gpu", Layout.row_major(Self.OC_)](),
                 out.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
                 grid_dim=nb_sc,
-                block_dim=TPB,
+                block_dim=CONV_TPB,
             )
 
     def vjp[
