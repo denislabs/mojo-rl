@@ -359,10 +359,10 @@ def mz_unroll_train_step_cpu[
 
 
 def _mz_build_dyn_in_k[
-    B_: Int, LATENT_: Int, ACT_: Int, DYN_IN_: Int,
+    B_: Int, LATENT_: Int, ACT_: Int, DYN_IN_: Int, ADT: DType = DT,
 ](
-    din: LayoutTensor[DT, Layout.row_major(B_ * DYN_IN_), MutAnyOrigin],
-    zk: LayoutTensor[DT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
+    din: LayoutTensor[ADT, Layout.row_major(B_ * DYN_IN_), MutAnyOrigin],
+    zk: LayoutTensor[ADT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
     act: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
 ):
     """Assemble the dynamics input row `[z_k | onehot(a_k)]` per sample.
@@ -372,34 +372,34 @@ def _mz_build_dyn_in_k[
         var b = idx // DYN_IN_
         var d = idx % DYN_IN_
         if d < LATENT_:
-            din[idx] = rebind[Scalar[DT]](zk[b * LATENT_ + d])
+            din[idx] = rebind[Scalar[ADT]](zk[b * LATENT_ + d])
         else:
             var sel = Int(rebind[Scalar[DT]](act[b]))
             din[idx] = (
-                Scalar[DT](1.0) if (d - LATENT_) == sel else Scalar[DT](0.0)
+                Scalar[ADT](1.0) if (d - LATENT_) == sel else Scalar[ADT](0.0)
             )
 
 
 def _mz_copy_latent_k[
-    B_: Int, LATENT_: Int, DYN_OUT_: Int,
+    B_: Int, LATENT_: Int, DYN_OUT_: Int, ADT: DType = DT,
 ](
-    znext: LayoutTensor[DT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
-    dout: LayoutTensor[DT, Layout.row_major(B_ * DYN_OUT_), MutAnyOrigin],
+    znext: LayoutTensor[ADT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
+    dout: LayoutTensor[ADT, Layout.row_major(B_ * DYN_OUT_), MutAnyOrigin],
 ):
     """Copy the latent half `dout[:, :LATENT]` → `znext` (the next z_{k+1})."""
     var idx = Int(global_idx.x)
     if idx < B_ * LATENT_:
         var b = idx // LATENT_
         var i = idx % LATENT_
-        znext[idx] = rebind[Scalar[DT]](dout[b * DYN_OUT_ + i])
+        znext[idx] = rebind[Scalar[ADT]](dout[b * DYN_OUT_ + i])
 
 
 def _mz_softce_slice_k[
-    B_: Int, ROW_: Int, OFF_: Int, NBINS_: Int,
+    B_: Int, ROW_: Int, OFF_: Int, NBINS_: Int, ADT: DType = DT,
 ](
-    logits: LayoutTensor[DT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
+    logits: LayoutTensor[ADT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
     target: LayoutTensor[DT, Layout.row_major(B_ * NBINS_), MutAnyOrigin],
-    grad_out: LayoutTensor[DT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
+    grad_out: LayoutTensor[ADT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
     loss_buf: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
     grad_scale: Scalar[DT],
     loss_coef: Scalar[DT],
@@ -412,23 +412,25 @@ def _mz_softce_slice_k[
     var b = Int(global_idx.x)
     if b < B_:
         var base = b * ROW_ + OFF_
-        var m = rebind[Scalar[DT]](logits[base])
+        var m = rebind[Scalar[ADT]](logits[base]).cast[DT]()
         for i in range(1, NBINS_):
-            var v = rebind[Scalar[DT]](logits[base + i])
+            var v = rebind[Scalar[ADT]](logits[base + i]).cast[DT]()
             if v > m:
                 m = v
         var s = Scalar[DT](0.0)
         for i in range(NBINS_):
-            s += exp(rebind[Scalar[DT]](logits[base + i]) - m)
+            s += exp(rebind[Scalar[ADT]](logits[base + i]).cast[DT]() - m)
         var log_s = log(s)
         var tb = b * NBINS_
         var row_loss = Scalar[DT](0.0)
         for i in range(NBINS_):
             var q = rebind[Scalar[DT]](target[tb + i])
-            var log_sm = (rebind[Scalar[DT]](logits[base + i]) - m) - log_s
+            var log_sm = (
+                rebind[Scalar[ADT]](logits[base + i]).cast[DT]() - m
+            ) - log_s
             row_loss += -q * log_sm
             var sm = exp(log_sm)
-            grad_out[base + i] = grad_scale * (sm - q)
+            grad_out[base + i] = (grad_scale * (sm - q)).cast[ADT]()
         loss_buf[b] = rebind[Scalar[DT]](loss_buf[b]) + loss_coef * row_loss
 
 
@@ -523,10 +525,10 @@ def _mz_twohot_k[
 
 
 def _mz_set_carry_latent_k[
-    B_: Int, LATENT_: Int, DYN_OUT_: Int,
+    B_: Int, LATENT_: Int, DYN_OUT_: Int, ADT: DType = DT,
 ](
-    gdout: LayoutTensor[DT, Layout.row_major(B_ * DYN_OUT_), MutAnyOrigin],
-    gz: LayoutTensor[DT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
+    gdout: LayoutTensor[ADT, Layout.row_major(B_ * DYN_OUT_), MutAnyOrigin],
+    gz: LayoutTensor[ADT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
 ):
     """Seed the latent half of the dynamics output-grad with the carry
     `∂L/∂z_{k+1}` (the reward kernel fills the `[LATENT, LATENT+BINS)` half)."""
@@ -534,14 +536,14 @@ def _mz_set_carry_latent_k[
     if idx < B_ * LATENT_:
         var b = idx // LATENT_
         var i = idx % LATENT_
-        gdout[b * DYN_OUT_ + i] = rebind[Scalar[DT]](gz[idx])
+        gdout[b * DYN_OUT_ + i] = rebind[Scalar[ADT]](gz[idx])
 
 
 def _mz_accum_half_k[
-    B_: Int, LATENT_: Int, DYN_IN_: Int,
+    B_: Int, LATENT_: Int, DYN_IN_: Int, ADT: DType = DT,
 ](
-    gpin: LayoutTensor[DT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
-    gdin: LayoutTensor[DT, Layout.row_major(B_ * DYN_IN_), MutAnyOrigin],
+    gpin: LayoutTensor[ADT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
+    gdin: LayoutTensor[ADT, Layout.row_major(B_ * DYN_IN_), MutAnyOrigin],
 ):
     """`∂L/∂z_k += ½·(grad into dyn's latent input)` — the MuZero ½ dynamics
     hidden-input gradient scaling (appendix)."""
@@ -549,19 +551,21 @@ def _mz_accum_half_k[
     if idx < B_ * LATENT_:
         var b = idx // LATENT_
         var i = idx % LATENT_
-        gpin[idx] = rebind[Scalar[DT]](gpin[idx]) + Scalar[DT](0.5) * rebind[
-            Scalar[DT]
-        ](gdin[b * DYN_IN_ + i])
+        gpin[idx] = (
+            rebind[Scalar[ADT]](gpin[idx]).cast[DT]()
+            + Scalar[DT](0.5)
+            * rebind[Scalar[ADT]](gdin[b * DYN_IN_ + i]).cast[DT]()
+        ).cast[ADT]()
 
 
-def _mz_bcopy_k[N_: Int](
-    src: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
+def _mz_bcopy_k[N_: Int, ADT: DType = DT](
+    src: LayoutTensor[ADT, Layout.row_major(N_), MutAnyOrigin],
+    dst: LayoutTensor[ADT, Layout.row_major(N_), MutAnyOrigin],
 ):
     """Contiguous device→device copy (carry gz ← gpin)."""
     var i = Int(global_idx.x)
     if i < N_:
-        dst[i] = rebind[Scalar[DT]](src[i])
+        dst[i] = rebind[Scalar[ADT]](src[i])
 
 
 def _mz_train_prologue_gpu[

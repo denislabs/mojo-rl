@@ -71,8 +71,8 @@ def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
 
 
 # ── PER kernels (6c-2) ──────────────────────────────────────────────────
-def _ez_scale_rows_k[B_: Int, ROW_: Int, OFF_: Int, LEN_: Int](
-    grad: LayoutTensor[DT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
+def _ez_scale_rows_k[B_: Int, ROW_: Int, OFF_: Int, LEN_: Int, ADT: DType = DT](
+    grad: LayoutTensor[ADT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
     w: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
 ):
     """Scale the ``[OFF_, OFF_+LEN_)`` column slice of grad row ``b`` by the
@@ -83,11 +83,15 @@ def _ez_scale_rows_k[B_: Int, ROW_: Int, OFF_: Int, LEN_: Int](
         var wb = rebind[Scalar[DT]](w[b])
         var base = b * ROW_ + OFF_
         for c in range(LEN_):
-            grad[base + c] = rebind[Scalar[DT]](grad[base + c]) * wb
+            grad[base + c] = (
+                rebind[Scalar[ADT]](grad[base + c]).cast[DT]() * wb
+            ).cast[ADT]()
 
 
-def _ez_priority_ce_k[B_: Int, ROW_: Int, OFF_: Int, NBINS_: Int](
-    logits: LayoutTensor[DT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
+def _ez_priority_ce_k[
+    B_: Int, ROW_: Int, OFF_: Int, NBINS_: Int, ADT: DType = DT
+](
+    logits: LayoutTensor[ADT, Layout.row_major(B_ * ROW_), MutAnyOrigin],
     target: LayoutTensor[DT, Layout.row_major(B_ * NBINS_), MutAnyOrigin],
     out_prio: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
 ):
@@ -98,20 +102,22 @@ def _ez_priority_ce_k[B_: Int, ROW_: Int, OFF_: Int, NBINS_: Int](
     var b = Int(global_idx.x)
     if b < B_:
         var base = b * ROW_ + OFF_
-        var m = rebind[Scalar[DT]](logits[base])
+        var m = rebind[Scalar[ADT]](logits[base]).cast[DT]()
         for i in range(1, NBINS_):
-            var v = rebind[Scalar[DT]](logits[base + i])
+            var v = rebind[Scalar[ADT]](logits[base + i]).cast[DT]()
             if v > m:
                 m = v
         var s = Scalar[DT](0.0)
         for i in range(NBINS_):
-            s += exp(rebind[Scalar[DT]](logits[base + i]) - m)
+            s += exp(rebind[Scalar[ADT]](logits[base + i]).cast[DT]() - m)
         var log_s = log(s)
         var tb = b * NBINS_
         var row_loss = Scalar[DT](0.0)
         for i in range(NBINS_):
             var q = rebind[Scalar[DT]](target[tb + i])
-            row_loss += -q * ((rebind[Scalar[DT]](logits[base + i]) - m) - log_s)
+            row_loss += -q * (
+                (rebind[Scalar[ADT]](logits[base + i]).cast[DT]() - m) - log_s
+            )
         out_prio[b] = row_loss
 
 
@@ -684,14 +690,17 @@ def ezv2_unroll_train_step_cpu_vp[
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def _ez_accum_latent_k[N_: Int](
-    dst: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
-    src: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
+def _ez_accum_latent_k[N_: Int, ADT: DType = DT](
+    dst: LayoutTensor[ADT, Layout.row_major(N_), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(N_), MutAnyOrigin],
 ):
     """`dst[i] += src[i]` — fold the consistency latent-grad into ``gpin``."""
     var i = Int(global_idx.x)
     if i < N_:
-        dst[i] = rebind[Scalar[DT]](dst[i]) + rebind[Scalar[DT]](src[i])
+        dst[i] = (
+            rebind[Scalar[ADT]](dst[i]).cast[DT]()
+            + rebind[Scalar[ADT]](src[i]).cast[DT]()
+        ).cast[ADT]()
 
 
 def ezv2_unroll_train_step_gpu[

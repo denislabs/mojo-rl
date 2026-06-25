@@ -88,11 +88,11 @@ def consistency_loss_and_grad[
 
 
 def consistency_loss_grad_k[
-    B_: Int, DIM_: Int,
+    B_: Int, DIM_: Int, ADT: DType = DT,
 ](
-    p: LayoutTensor[DT, Layout.row_major(B_ * DIM_), MutAnyOrigin],
-    t: LayoutTensor[DT, Layout.row_major(B_ * DIM_), MutAnyOrigin],
-    grad_p: LayoutTensor[DT, Layout.row_major(B_ * DIM_), MutAnyOrigin],
+    p: LayoutTensor[ADT, Layout.row_major(B_ * DIM_), MutAnyOrigin],
+    t: LayoutTensor[ADT, Layout.row_major(B_ * DIM_), MutAnyOrigin],
+    grad_p: LayoutTensor[ADT, Layout.row_major(B_ * DIM_), MutAnyOrigin],
     loss_buf: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
     mask: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
     grad_scale: Scalar[DT],
@@ -114,8 +114,8 @@ def consistency_loss_grad_k[
         var sum_tt = Scalar[DT](0.0)
         var dot = Scalar[DT](0.0)
         for i in range(DIM_):
-            var pi = rebind[Scalar[DT]](p[base + i])
-            var ti = rebind[Scalar[DT]](t[base + i])
+            var pi = rebind[Scalar[ADT]](p[base + i]).cast[DT]()
+            var ti = rebind[Scalar[ADT]](t[base + i]).cast[DT]()
             sum_pp += pi * pi
             sum_tt += ti * ti
             dot += pi * ti
@@ -126,8 +126,8 @@ def consistency_loss_grad_k[
         var inv_np2 = Scalar[DT](1.0) / (np * np)
         var inv_npnt = Scalar[DT](1.0) / (np * nt)
         for i in range(DIM_):
-            var pi = rebind[Scalar[DT]](p[base + i])
-            var ti = rebind[Scalar[DT]](t[base + i])
-            grad_p[base + i] = m * grad_scale * (
-                cos * pi * inv_np2 - ti * inv_npnt
-            )
+            var pi = rebind[Scalar[ADT]](p[base + i]).cast[DT]()
+            var ti = rebind[Scalar[ADT]](t[base + i]).cast[DT]()
+            grad_p[base + i] = (
+                m * grad_scale * (cos * pi * inv_np2 - ti * inv_npnt)
+            ).cast[ADT]()
