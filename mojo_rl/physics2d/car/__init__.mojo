@@ -62,8 +62,12 @@ from .wheel_friction import WheelFriction
 # Track tile collision for friction lookup
 from .tile_collision import TileCollision
 
-# Full car dynamics simulation
+# Full car dynamics simulation (legacy single-body explicit-Euler model)
 from .car_dynamics import CarDynamics
 
-# Fused GPU kernel
+# Box2D-faithful multi-body car dynamics (hull + 4 wheels + 4 revolute joints)
+from .car_multibody import CarDynamicsMB
+
+# Fused GPU kernels
 from .car_kernel import CarPhysicsKernel
+from .car_multibody_kernel import CarMBPhysicsKernel
