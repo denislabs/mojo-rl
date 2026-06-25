@@ -21,7 +21,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
-from ..core.tensor import Tensor
+from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.param import ParamVisitor
@@ -31,10 +31,10 @@ from ..core.amp import AMPPolicy, NoAMP
 
 # ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _bt_fwd_kernel[
-    BATCH: Int, N: Int, DIM: Int
+    BATCH: Int, N: Int, DIM: Int, ADT: DType = DT
 ](
-    src: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(BATCH, N * DIM), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    dst: LayoutTensor[ADT, Layout.row_major(BATCH, N * DIM), MutAnyOrigin],
 ):
     var gid = Int(global_idx.x)
     comptime total = BATCH * N * DIM
@@ -43,14 +43,14 @@ def _bt_fwd_kernel[
     var b = gid // (N * DIM)
     var rem = gid % (N * DIM)
     var d = rem % DIM
-    dst[b, rem] = rebind[Scalar[DT]](src[b, d])
+    dst[b, rem] = rebind[Scalar[ADT]](src[b, d])
 
 
 def _bt_bwd_kernel[
-    BATCH: Int, N: Int, DIM: Int
+    BATCH: Int, N: Int, DIM: Int, ADT: DType = DT
 ](
-    go: LayoutTensor[DT, Layout.row_major(BATCH, N * DIM), MutAnyOrigin],
-    gi: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    go: LayoutTensor[ADT, Layout.row_major(BATCH, N * DIM), MutAnyOrigin],
+    gi: LayoutTensor[ADT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
 ):
     var gid = Int(global_idx.x)
     comptime total = BATCH * DIM
@@ -58,14 +58,16 @@ def _bt_bwd_kernel[
         return
     var b = gid // DIM
     var d = gid % DIM
+    # fp32 accumulator (the token-sum); only the written gi is ADT.
     var acc: Scalar[DT] = 0.0
     for t in range(N):
-        acc += rebind[Scalar[DT]](go[b, t * DIM + d])
-    gi[b, d] = acc
+        acc += rebind[Scalar[ADT]](go[b, t * DIM + d]).cast[DT]()
+    gi[b, d] = acc.cast[ADT]()
 
 
-struct BroadcastTokens[N_: Int, DIM_: Int](Module):
+struct BroadcastTokens[N_: Int, DIM_: Int, ADT: DType = DT](Module):
     comptime ARITY: Int = 1
+    comptime ACT_DT = Self.ADT
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = Self.N_ * Self.DIM_
 
@@ -89,8 +91,8 @@ struct BroadcastTokens[N_: Int, DIM_: Int](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorRefs[1, o],
-        mut out: Tensor,
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref in0 = inputs[0]
@@ -107,7 +109,9 @@ struct BroadcastTokens[N_: Int, DIM_: Int](Module):
             out.ensure_gpu(c, B * Self.OUT_DIM)
             comptime total = B * Self.N_ * Self.DIM_
             comptime n_blocks = (total + TPB - 1) // TPB
-            c.enqueue_function[_bt_fwd_kernel[B, Self.N_, Self.DIM_]](
+            c.enqueue_function[
+                _bt_fwd_kernel[B, Self.N_, Self.DIM_, Self.ACT_DT]
+            ](
                 in0.lt["gpu", Layout.row_major(B, Self.DIM_)](),
                 out.lt["gpu", Layout.row_major(B, Self.N_ * Self.DIM_)](),
                 grid_dim=n_blocks,
@@ -122,9 +126,9 @@ struct BroadcastTokens[N_: Int, DIM_: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[1, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[1, ogi],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         ref gin = grad_inputs[0]
@@ -136,14 +140,16 @@ struct BroadcastTokens[N_: Int, DIM_: Int](Module):
                 for d in range(Self.DIM_):
                     var acc: Scalar[DT] = 0.0
                     for t in range(Self.N_):
-                        acc += go[b, t * Self.DIM_ + d]
-                    gi[b, d] = acc
+                        acc += go[b, t * Self.DIM_ + d].cast[DT]()
+                    gi[b, d] = acc.cast[Self.ACT_DT]()
         else:
             var c = ctx.value()
             gin.ensure_gpu(c, B * Self.DIM_)
             comptime total = B * Self.DIM_
             comptime n_blocks = (total + TPB - 1) // TPB
-            c.enqueue_function[_bt_bwd_kernel[B, Self.N_, Self.DIM_]](
+            c.enqueue_function[
+                _bt_bwd_kernel[B, Self.N_, Self.DIM_, Self.ACT_DT]
+            ](
                 grad_output.lt["gpu", Layout.row_major(B, Self.N_ * Self.DIM_)](),
                 gin.lt["gpu", Layout.row_major(B, Self.DIM_)](),
                 grid_dim=n_blocks,

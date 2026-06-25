@@ -39,7 +39,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.initializer import Initializer
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
@@ -84,22 +84,23 @@ from mojo_rl.deep_agents.dreamerv3.zero_init import (
 # Canonical K=3, P=1, S=2: both paths map H → (H-1)//2 + 1.
 comptime EZDownBlockNoBN[
     IC: Int, OC: Int, H: Int, W: Int,
+    ADT: DType = DT,
 ] = Sequential[
     ProjectedResidual[
         Sequential[
-            Conv2D[IC, OC, 3, 2, 1, H, W],
-            BatchNorm2D[OC, (H - 1) // 2 + 1, (W - 1) // 2 + 1],
-            ReLU[OC * ((H - 1) // 2 + 1) * ((W - 1) // 2 + 1)],
+            Conv2D[IC, OC, 3, 2, 1, H, W, ADT],
+            BatchNorm2D[OC, (H - 1) // 2 + 1, (W - 1) // 2 + 1, ADT=ADT],
+            ReLU[OC * ((H - 1) // 2 + 1) * ((W - 1) // 2 + 1), ADT],
             Conv2D[
                 OC, OC, 3, 1, 1,
-                (H - 1) // 2 + 1, (W - 1) // 2 + 1,
+                (H - 1) // 2 + 1, (W - 1) // 2 + 1, ADT,
             ],
-            BatchNorm2D[OC, (H - 1) // 2 + 1, (W - 1) // 2 + 1],
+            BatchNorm2D[OC, (H - 1) // 2 + 1, (W - 1) // 2 + 1, ADT=ADT],
         ],
         # skip: bare 3×3-stride-2 conv, no BN (reference `downsample=conv2`).
-        Conv2D[IC, OC, 3, 2, 1, H, W],
+        Conv2D[IC, OC, 3, 2, 1, H, W, ADT],
     ],
-    ReLU[OC * ((H - 1) // 2 + 1) * ((W - 1) // 2 + 1)],
+    ReLU[OC * ((H - 1) // 2 + 1) * ((W - 1) // 2 + 1), ADT],
 ]
 
 
@@ -118,26 +119,27 @@ comptime EZDownBlockNoBN[
 #   ⇒ [64, 6, 6] = 2304.
 comptime EZRepNetResNetAtari[
     IN_CH: Int, C: Int,
+    ADT: DType = DT,
 ] = Sequential[
     # ── DownSample ───────────────────────────────────────────────────
     # conv1: Conv(IN_CH→C/2, k3,s2,p1) → BN → ReLU      (96 → 48)
-    Conv2D[IN_CH, C // 2, 3, 2, 1, 96, 96],
-    BatchNorm2D[C // 2, 48, 48],
-    ReLU[(C // 2) * 48 * 48],
+    Conv2D[IN_CH, C // 2, 3, 2, 1, 96, 96, ADT],
+    BatchNorm2D[C // 2, 48, 48, ADT=ADT],
+    ReLU[(C // 2) * 48 * 48, ADT],
     # resblocks1: 1× identity ResBlock(C/2) at 48×48
-    ResBlockConv2DBN[C // 2, 3, 1, 48, 48],
+    ResBlockConv2DBN[C // 2, 3, 1, 48, 48, ADT=ADT],
     # downsample_block: ResBlock(C/2→C, s2) at 48 → 24 (no-BN skip)
-    EZDownBlockNoBN[C // 2, C, 48, 48],
+    EZDownBlockNoBN[C // 2, C, 48, 48, ADT],
     # resblocks2: 1× identity ResBlock(C) at 24×24
-    ResBlockConv2DBN[C, 3, 1, 24, 24],
+    ResBlockConv2DBN[C, 3, 1, 24, 24, ADT=ADT],
     # pooling1: AvgPool(k3,s2,p1) 24 → 12
-    AvgPool2D[C, 3, 2, 1, 24, 24],
+    AvgPool2D[C, 3, 2, 1, 24, 24, ADT=ADT],
     # resblocks3: 1× identity ResBlock(C) at 12×12
-    ResBlockConv2DBN[C, 3, 1, 12, 12],
+    ResBlockConv2DBN[C, 3, 1, 12, 12, ADT=ADT],
     # pooling2: AvgPool(k3,s2,p1) 12 → 6
-    AvgPool2D[C, 3, 2, 1, 12, 12],
+    AvgPool2D[C, 3, 2, 1, 12, 12, ADT=ADT],
     # ── RepresentationNetwork: num_blocks=1 identity ResBlock(C) at 6×6 ──
-    ResBlockConv2DBN[C, 3, 1, 6, 6],
+    ResBlockConv2DBN[C, 3, 1, 6, 6, ADT=ADT],
 ]
 
 
@@ -164,9 +166,9 @@ comptime EZ_CAT = (EZ_C + EZ_REDC) * EZ_HW * EZ_HW # 2880 = [80,6,6]
 # superset; the frozen-ramp init is a documented follow-up). The scalar is
 # then broadcast to the 36-cell plane by `BroadcastTokens`.
 # ──────────────────────────────────────────────────────────────────────
-comptime EZActionPlane[ACT: Int] = Sequential[
-    Linear[ACT, 1],
-    BroadcastTokens[EZ_PLANE, 1],          # scalar → [1,6,6] = 36
+comptime EZActionPlane[ACT: Int, ADT: DType = DT] = Sequential[
+    Linear[ACT, 1, ADT],
+    BroadcastTokens[EZ_PLANE, 1, ADT],     # scalar → [1,6,6] = 36
 ]
 
 
@@ -223,13 +225,13 @@ comptime EZDynAtariGraph[ACT: Int, BINS: Int] = ComputeGraph[
 
 # GPU LayoutTensor copy for the vjp input-grad copy-back (dst, src both real
 # graph-pool / grad-pool buffers).
-def _ezdyn_copy_kernel[N: Int](
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+def _ezdyn_copy_kernel[N: Int, ADT: DType = DT](
+    dst: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     if idx < N:
-        dst[idx] = rebind[Scalar[DT]](src[idx])
+        dst[idx] = rebind[Scalar[ADT]](src[idx])
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -351,27 +353,27 @@ struct EZDynNetAtari[ACT: Int, BINS: Int](Module):
 # Output packing `[policy(ACT) | value(BINS)]` matches `MZPredNet`, so the
 # planner's prediction adapter slices it unchanged.
 # ──────────────────────────────────────────────────────────────────────
-comptime EZPredNetAtari[ACT: Int, BINS: Int] = Sequential[
+comptime EZPredNetAtari[ACT: Int, BINS: Int, ADT: DType = DT] = Sequential[
     # shared num_blocks=1 ResBlock(64)
-    ResBlockConv2DBN[EZ_C, 3, 1, EZ_HW, EZ_HW],
+    ResBlockConv2DBN[EZ_C, 3, 1, EZ_HW, EZ_HW, ADT=ADT],
     Parallel[
         # policy head: Conv1×1(64→16)→BN→ReLU→MLP[32]→ACT
         Sequential[
-            Conv2D[EZ_C, EZ_REDC, 1, 1, 0, EZ_HW, EZ_HW],
-            BatchNorm2D[EZ_REDC, EZ_HW, EZ_HW],
-            ReLU[EZ_EMB],
-            Linear[EZ_EMB, 32],
-            ReLU[32],
-            Linear[32, ACT],
+            Conv2D[EZ_C, EZ_REDC, 1, 1, 0, EZ_HW, EZ_HW, ADT],
+            BatchNorm2D[EZ_REDC, EZ_HW, EZ_HW, ADT=ADT],
+            ReLU[EZ_EMB, ADT],
+            Linear[EZ_EMB, 32, ADT],
+            ReLU[32, ADT],
+            Linear[32, ACT, ADT],
         ],
         # value head: Conv1×1(64→16)→BN→ReLU→MLP[32]→BINS
         Sequential[
-            Conv2D[EZ_C, EZ_REDC, 1, 1, 0, EZ_HW, EZ_HW],
-            BatchNorm2D[EZ_REDC, EZ_HW, EZ_HW],
-            ReLU[EZ_EMB],
-            Linear[EZ_EMB, 32],
-            ReLU[32],
-            Linear[32, BINS],
+            Conv2D[EZ_C, EZ_REDC, 1, 1, 0, EZ_HW, EZ_HW, ADT],
+            BatchNorm2D[EZ_REDC, EZ_HW, EZ_HW, ADT=ADT],
+            ReLU[EZ_EMB, ADT],
+            Linear[EZ_EMB, 32, ADT],
+            ReLU[32, ADT],
+            Linear[32, BINS, ADT],
         ],
     ],
 ]
@@ -450,24 +452,24 @@ comptime EZ_LSTM_HORIZON = 5
 # nodes): the last node is `zp`, so storage infers OUT_DIM = EZ_LATENT. The
 # reward is produced separately by the stateful `EZRewardLSTMAtari`.
 # ──────────────────────────────────────────────────────────────────────
-comptime EZDynZGraph[ACT: Int] = ComputeGraph[
-    InputSlot["in", EZ_LATENT + ACT],
-    Node["z",    Slice[EZ_LATENT + ACT, 0, EZ_LATENT],            "in"],
-    Node["aoh",  Slice[EZ_LATENT + ACT, EZ_LATENT, EZ_LATENT + ACT], "in"],
-    Node["apl",  EZActionPlane[ACT],                              "aoh"],
+comptime EZDynZGraph[ACT: Int, ADT: DType = DT] = ComputeGraph[
+    InputSlot["in", EZ_LATENT + ACT, ADT=ADT],
+    Node["z",    Slice[EZ_LATENT + ACT, 0, EZ_LATENT, ADT],            "in"],
+    Node["aoh",  Slice[EZ_LATENT + ACT, EZ_LATENT, EZ_LATENT + ACT, ADT], "in"],
+    Node["apl",  EZActionPlane[ACT, ADT],                              "aoh"],
     Node["aemb", Sequential[
-                     Conv2D[1, EZ_REDC, 1, 1, 0, EZ_HW, EZ_HW],
-                     LayerNorm[EZ_EMB],
-                     ReLU[EZ_EMB],
+                     Conv2D[1, EZ_REDC, 1, 1, 0, EZ_HW, EZ_HW, ADT],
+                     LayerNorm[EZ_EMB, ADT],
+                     ReLU[EZ_EMB, ADT],
                  ],                                               "apl"],
-    Node["cat",  Concat[EZ_LATENT, EZ_EMB],                       "z", "aemb"],
+    Node["cat",  Concat[EZ_LATENT, EZ_EMB, ADT=ADT],                  "z", "aemb"],
     Node["c1",   Sequential[
-                     Conv2D[EZ_C + EZ_REDC, EZ_C, 3, 1, 1, EZ_HW, EZ_HW],
-                     BatchNorm2D[EZ_C, EZ_HW, EZ_HW],
+                     Conv2D[EZ_C + EZ_REDC, EZ_C, 3, 1, 1, EZ_HW, EZ_HW, ADT],
+                     BatchNorm2D[EZ_C, EZ_HW, EZ_HW, ADT=ADT],
                  ],                                               "cat"],
-    Node["res",  Add[EZ_LATENT],                                  "c1", "z"],
-    Node["rl",   ReLU[EZ_LATENT],                                 "res"],
-    Node["zp",   ResBlockConv2DBN[EZ_C, 3, 1, EZ_HW, EZ_HW],      "rl"],
+    Node["res",  Add[EZ_LATENT, ADT],                                 "c1", "z"],
+    Node["rl",   ReLU[EZ_LATENT, ADT],                                "res"],
+    Node["zp",   ResBlockConv2DBN[EZ_C, 3, 1, EZ_HW, EZ_HW, ADT=ADT],     "rl"],
 ]
 
 
@@ -476,13 +478,14 @@ comptime EZDynZGraph[ACT: Int] = ComputeGraph[
 # Mirrors EZDynNetAtari but OUT_DIM = LATENT (no reward slot). Used by the
 # VP unroll (training) and folded into EZDynVPNetAtari (search).
 # ──────────────────────────────────────────────────────────────────────
-struct EZDynZNetAtari[ACT: Int](Module):
+struct EZDynZNetAtari[ACT: Int, ADT: DType = DT](Module):
     comptime ARITY: Int = 1
+    comptime ACT_DT = Self.ADT
     comptime LATENT = EZ_LATENT
     comptime IN_DIM = Self.LATENT + Self.ACT
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_DIM)
     comptime OUT_DIM = Self.LATENT
-    comptime Graph = EZDynZGraph[Self.ACT]
+    comptime Graph = EZDynZGraph[Self.ACT, ADT=Self.ADT]
 
     var graph: Self.Graph
 
@@ -504,8 +507,8 @@ struct EZDynZNetAtari[ACT: Int](Module):
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        inputs: TensorRefs[Self.ARITY, o],
-        mut out: Tensor,
+        inputs: TensorRefs[Self.ARITY, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         self.graph.set_input["in", B](inputs[0], ctx)
@@ -516,9 +519,9 @@ struct EZDynZNetAtari[ACT: Int](Module):
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        forward_input: TensorRefs[Self.ARITY, ofi],
-        mut grad_output: Tensor,
-        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        forward_input: TensorRefs[Self.ARITY, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[Self.ARITY, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
         self.graph.vjp[B, target, POLICY=POLICY](grad_output, ctx)
@@ -531,7 +534,7 @@ struct EZDynZNetAtari[ACT: Int](Module):
         else:
             var c = ctx.value()
             comptime nb = (N + TPB - 1) // TPB
-            c.enqueue_function[_ezdyn_copy_kernel[N]](
+            c.enqueue_function[_ezdyn_copy_kernel[N, Self.ACT_DT]](
                 grad_inputs[0].lt["gpu", Layout.row_major(N)](),
                 self.graph.grad_input["in"]().lt["gpu", Layout.row_major(N)](),
                 grid_dim=nb, block_dim=TPB,

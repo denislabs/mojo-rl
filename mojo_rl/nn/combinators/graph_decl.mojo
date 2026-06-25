@@ -121,16 +121,20 @@ trait GraphDecl(Module):
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct InputSlot[slot_name: StaticString, DIM_: Int](GraphDecl):
+struct InputSlot[slot_name: StaticString, DIM_: Int, ADT: DType = DT](
+    GraphDecl
+):
     comptime NAME = Self.slot_name
     comptime KIND = 0
     comptime ARITY = 0
     comptime IN_DIMS = InlineArray[Int, 0]()
     comptime IN_NAMES = InlineArray[StaticString, 0]()
     comptime OUT_DIM = Self.DIM_
-    # No wrapped op — the input slot carries no activation dtype of its own;
-    # default to DT. forward/vjp never run (KIND==0 is skipped).
-    comptime ACT_DT = DT
+    # No wrapped op — the input slot carries no activation dtype of its own.
+    # ADT (default DT) lets a bf16 graph set the slot's flow dtype to match the
+    # nodes' ACT_DT (ComputeGraph asserts all decls share one ACT_DT). forward/
+    # vjp never run (KIND==0 is skipped).
+    comptime ACT_DT = Self.ADT
 
     @staticmethod
     def display_label_via() -> String:
