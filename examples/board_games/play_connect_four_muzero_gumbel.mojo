@@ -198,9 +198,7 @@ def main() raises:
                 DT, Layout.row_major(1, OBS), MutAnyOrigin
             ](d_obs)
             planner.search_gpu[
-                MZRepGPU[OBS, LATENT, Rep],
-                MZDynGPU[LATENT, ACT, BINS, Dyn],
-                MZPredGPU[LATENT, ACT, BINS, Pred],
+                type_of(rep_a), type_of(dyn_a), type_of(pred_a)
             ](
                 ctx, rep_a, dyn_a, pred_a, obs_t,
                 apply_legal=True, k_actual=MAX_K, rng_seed=mseed,
