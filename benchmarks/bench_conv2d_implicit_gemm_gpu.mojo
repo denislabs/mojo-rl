@@ -18,6 +18,15 @@ LOSES where max_matmul shines → conclusion informs whether O5 needs Modular's
 structured/`max` conv kernels rather than a hand-roll. Correctness is verified on
 a small shape vs a CPU im2col+matmul reference.
 
+O6 (MEC) — the productive variant. Instead of removing the lowering buffer, MEC
+SHRINKS it: lower a compact `L[B·Ow, Hp·K·IC]` (K-fold width dup, not K²) and run
+`Oh` overlapping-band GEMMs via `linalg.bmm.batched_matmul` (tensor-core, Modular-
+maintained — NOT a hand-roll). The bands are a STRIDED 3D `TileTensor` view over `L`
+(batch-stride `S·K·IC`), read in place. So MEC keeps the library GEMM (unlike O5) and
+cuts the dominant im2col traffic ~`Kh/s`× (3× on S=1, 1.5× on S=2). See
+`docs/CONV2D_KERNEL_OPTIMIZATION.md` §8. Δ vs CPU ref is ~1e-5 (fp32 GEMM reduction
+reorder, not bit-exact — promote on convergence parity, like O2).
+
 Run (NVIDIA = perf truth):
     pixi run -e nvidia mojo run -I . benchmarks/bench_conv2d_implicit_gemm_gpu.mojo
 Run (Apple = parity + signal):
@@ -28,8 +37,10 @@ from std.gpu import global_idx, thread_idx, block_idx, block_dim, barrier
 from std.gpu.memory import AddressSpace
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.time import perf_counter_ns
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor, TileTensor, row_major, Idx
+from layout.tile_layout import Layout as TileLayout
 from linalg.matmul import matmul as max_matmul
+from linalg.bmm import batched_matmul
 
 from mojo_rl.nn.primitives.conv2d import _im2col_cpu, _im2col_kernel
 
@@ -283,6 +294,219 @@ def _time_o5[
     return Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
 
 
+# ── MEC (O6): compact lowering + batched (strided-band) GEMM ───────────────
+# L[B·Ow, Hp·K·IC]  (K-fold dup in width, Hp=H+2P).  The band for output-row oh
+# is the contiguous column slice [oh·S·K·IC : +K·K·IC] of L — fed to
+# batched_matmul as a STRIDED 3D view (batch=Oh, no extra copy).  k-order within
+# a band = (kh,kw,ic), so the weight is repacked from im2col's (ic,kh,kw).
+def _mec_lower_kernel[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OW: Int,
+    IN_FLAT: Int, HP: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH * IN_FLAT), MutAnyOrigin],
+    lout: LayoutTensor[
+        DT, Layout.row_major(BATCH * OW * HP * K * IC), MutAnyOrigin
+    ],
+):
+    var idx = Int(global_idx.x)
+    comptime LW = HP * K * IC  # L row width
+    comptime LN = BATCH * OW * LW
+    if idx >= LN:
+        return
+    var r = idx // LW  # r = b*OW + ow
+    var j = idx % LW
+    var b = r // OW
+    var ow = r % OW
+    var hp = j // (K * IC)
+    var rem = j % (K * IC)
+    var kw = rem // IC
+    var ic = rem % IC
+    var ih = hp - P
+    var iw = ow * S + kw - P
+    var v: Scalar[DT] = 0
+    if ih >= 0 and ih < H and iw >= 0 and iw < W:
+        v = rebind[Scalar[DT]](input[b * IN_FLAT + ic * H * W + ih * W + iw])
+    lout[idx] = v
+
+
+# C[Oh, B·Ow, OC] → out[BS, OC] + bias.  bs = b*SO + oh*OW + ow ; r = b*OW + ow.
+def _mec_scatter_bias[
+    BATCH: Int, OC: Int, OH: Int, OW: Int, BS: Int,
+](
+    cmat: LayoutTensor[
+        DT, Layout.row_major(OH * BATCH * OW * OC), MutAnyOrigin
+    ],
+    bias: LayoutTensor[DT, Layout.row_major(OC), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(BS * OC), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= BS * OC:
+        return
+    comptime SO = OH * OW
+    comptime BOW = BATCH * OW
+    var oc = idx % OC
+    var bs = idx // OC
+    var b = bs // SO
+    var s = bs % SO
+    var oh = s // OW
+    var ow = s % OW
+    var r = b * OW + ow
+    var cidx = (oh * BOW + r) * OC + oc
+    output[idx] = rebind[Scalar[DT]](cmat[cidx]) + rebind[Scalar[DT]](bias[oc])
+
+
+# Strided 3D view over L for the batched_matmul A operand: A[oh, r, k] =
+# L[r·(HP·K·IC) + oh·(S·K·IC) + k].  shape (Oh, B·Ow, COL), strides
+# (S·K·IC, HP·K·IC, 1) — the overlapping bands, read in place (no copy).
+def _time_mec[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int, OC: Int,
+    WARMUP: Int, ITERS: Int,
+](ctx: DeviceContext) raises -> Float64:
+    comptime HP = H + 2 * P
+    comptime BOW = BATCH * OW
+    comptime LN = BOW * HP * K * IC
+    var inp = ctx.enqueue_create_buffer[DT](BATCH * IN_FLAT)
+    var lbuf = ctx.enqueue_create_buffer[DT](LN)
+    var wbuf = ctx.enqueue_create_buffer[DT](OH * OC * COL)  # replicated weight
+    var cbuf = ctx.enqueue_create_buffer[DT](OH * BOW * OC)
+    var bbuf = ctx.enqueue_create_buffer[DT](OC)
+    var obuf = ctx.enqueue_create_buffer[DT](BS * OC)
+    _ = inp.enqueue_fill(Scalar[DT](0.01))
+    _ = wbuf.enqueue_fill(Scalar[DT](0.01))
+    _ = bbuf.enqueue_fill(Scalar[DT](0.0))
+    var inl = LayoutTensor[
+        DT, Layout.row_major(BATCH * IN_FLAT), MutAnyOrigin
+    ](inp)
+    var ll = LayoutTensor[DT, Layout.row_major(LN), MutAnyOrigin](lbuf)
+    var bl = LayoutTensor[DT, Layout.row_major(OC), MutAnyOrigin](bbuf)
+    var ol = LayoutTensor[DT, Layout.row_major(BS * OC), MutAnyOrigin](obuf)
+    var a_lay = TileLayout(
+        (Idx[OH], Idx[BOW], Idx[COL]),
+        (Idx[S * K * IC], Idx[HP * K * IC], Idx[1]),
+    )
+    var a_tt = TileTensor(lbuf, a_lay)
+    var w_tt = TileTensor(wbuf, row_major[OH, OC, COL]())
+    var c_tt = TileTensor(cbuf, row_major[OH, BOW, OC]())
+    var cl = LayoutTensor[
+        DT, Layout.row_major(OH * BOW * OC), MutAnyOrigin
+    ](cbuf)
+    comptime nb_l = (LN + TPB - 1) // TPB
+    comptime nb_sc = (BS * OC + TPB - 1) // TPB
+
+    @parameter
+    def one() raises:
+        ctx.enqueue_function[
+            _mec_lower_kernel[BATCH, IC, K, S, P, H, W, OW, IN_FLAT, HP]
+        ](inl, ll, grid_dim=nb_l, block_dim=TPB)
+        batched_matmul[transpose_b=True, target="gpu"](
+            c_tt, a_tt, w_tt, context=ctx
+        )
+        ctx.enqueue_function[_mec_scatter_bias[BATCH, OC, OH, OW, BS]](
+            cl, bl, ol, grid_dim=nb_sc, block_dim=TPB
+        )
+
+    comptime for _ in range(WARMUP):
+        one()
+    ctx.synchronize()
+    var t0 = perf_counter_ns()
+    comptime for _ in range(ITERS):
+        one()
+    ctx.synchronize()
+    return Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
+
+
+def _verify_mec[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int, OC: Int,
+](ctx: DeviceContext) raises -> Float64:
+    comptime HP = H + 2 * P
+    comptime BOW = BATCH * OW
+    comptime LN = BOW * HP * K * IC
+    var inp = ctx.enqueue_create_buffer[DT](BATCH * IN_FLAT)
+    var lbuf = ctx.enqueue_create_buffer[DT](LN)
+    var wbuf = ctx.enqueue_create_buffer[DT](OH * OC * COL)
+    var cbuf = ctx.enqueue_create_buffer[DT](OH * BOW * OC)
+    var bbuf = ctx.enqueue_create_buffer[DT](OC)
+    var obuf = ctx.enqueue_create_buffer[DT](BS * OC)
+
+    var in_host = List[Scalar[DT]](length=BATCH * IN_FLAT, fill=Scalar[DT](0))
+    var w_host = List[Scalar[DT]](length=OC * COL, fill=Scalar[DT](0))  # im2col order
+    var b_host = List[Scalar[DT]](length=OC, fill=Scalar[DT](0))
+    with inp.map_to_host() as hi:
+        for i in range(BATCH * IN_FLAT):
+            var v = Scalar[DT](Float64((i % 97) - 48) * 0.05)
+            hi[i] = v
+            in_host[i] = v
+    # logical weight in im2col (ic,kh,kw) order
+    for i in range(OC * COL):
+        w_host[i] = Scalar[DT](Float64((i % 53) - 26) * 0.03)
+    with bbuf.map_to_host() as hb:
+        for i in range(OC):
+            var v = Scalar[DT](Float64(i) * 0.01)
+            hb[i] = v
+            b_host[i] = v
+    # repack → wbuf[oh, oc, k], k=(kh*K+kw)*IC+ic, replicated across Oh.
+    with wbuf.map_to_host() as hw:
+        for oc in range(OC):
+            for k in range(COL):
+                var kh = k // (K * IC)
+                var rem = k % (K * IC)
+                var kw = rem // IC
+                var ic = rem % IC
+                var ck = (ic * K + kh) * K + kw  # im2col index
+                var wv = w_host[oc * COL + ck]
+                for oh in range(OH):
+                    hw[(oh * OC + oc) * COL + k] = wv
+    _ = obuf.enqueue_fill(Scalar[DT](-999.0))
+
+    var inl = LayoutTensor[
+        DT, Layout.row_major(BATCH * IN_FLAT), MutAnyOrigin
+    ](inp)
+    var ll = LayoutTensor[DT, Layout.row_major(LN), MutAnyOrigin](lbuf)
+    var bl = LayoutTensor[DT, Layout.row_major(OC), MutAnyOrigin](bbuf)
+    var ol = LayoutTensor[DT, Layout.row_major(BS * OC), MutAnyOrigin](obuf)
+    var a_lay = TileLayout(
+        (Idx[OH], Idx[BOW], Idx[COL]),
+        (Idx[S * K * IC], Idx[HP * K * IC], Idx[1]),
+    )
+    var a_tt = TileTensor(lbuf, a_lay)
+    var w_tt = TileTensor(wbuf, row_major[OH, OC, COL]())
+    var c_tt = TileTensor(cbuf, row_major[OH, BOW, OC]())
+    var cl = LayoutTensor[
+        DT, Layout.row_major(OH * BOW * OC), MutAnyOrigin
+    ](cbuf)
+    comptime nb_l = (LN + TPB - 1) // TPB
+    comptime nb_sc = (BS * OC + TPB - 1) // TPB
+    ctx.enqueue_function[
+        _mec_lower_kernel[BATCH, IC, K, S, P, H, W, OW, IN_FLAT, HP]
+    ](inl, ll, grid_dim=nb_l, block_dim=TPB)
+    batched_matmul[transpose_b=True, target="gpu"](c_tt, a_tt, w_tt, context=ctx)
+    ctx.enqueue_function[_mec_scatter_bias[BATCH, OC, OH, OW, BS]](
+        cl, bl, ol, grid_dim=nb_sc, block_dim=TPB
+    )
+    ctx.synchronize()
+
+    var col_s = List[Scalar[DT]](length=SO * COL, fill=Scalar[DT](0))
+    var max_abs = Float64(0)
+    with obuf.map_to_host() as ho:
+        for b in range(BATCH):
+            _im2col_cpu[IC, K, S, P, H, W, OH, OW](in_host, b * IN_FLAT, col_s)
+            for s in range(SO):
+                for oc in range(OC):
+                    var acc = Scalar[DT](0)
+                    for ck in range(COL):
+                        acc += col_s[s * COL + ck] * w_host[oc * COL + ck]
+                    acc += b_host[oc]
+                    var got = ho[(b * SO + s) * OC + oc]
+                    var d = Float64(got - acc)
+                    if d < 0:
+                        d = -d
+                    if d > max_abs:
+                        max_abs = d
+    return max_abs
+
+
 def run_shape[
     BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OC: Int,
     WARMUP: Int, ITERS: Int,
@@ -299,10 +523,13 @@ def run_shape[
     var o5 = _time_o5[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, OC, WARMUP, ITERS
     ](ctx)
+    var mec = _time_mec[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, OC, WARMUP, ITERS
+    ](ctx)
     print(
         "  ", label, " BS=", BS, " OC=", OC, " COL=", COL,
-        " | baseline(im2col+mm+bias)=", base, "us  O5(fused)=", o5,
-        "us  speedup=", base / o5,
+        " | baseline=", base, "us  O5=", o5, "us  MEC(O6)=", mec,
+        "us  | O5×=", base / o5, " MEC×=", base / mec,
     )
 
 
@@ -312,7 +539,17 @@ def main() raises:
     print("=" * 70)
     # correctness on a small shape (B=2, IC=8, 3x3 s1 p1, 6x7, OC=16)
     var err = _verify[2, 8, 3, 1, 1, 6, 7, 6, 7, 8 * 6 * 7, 8 * 9, 42, 84, 16](ctx)
-    print("  correctness: max|Δ| vs CPU im2col+matmul =", err)
+    print("  O5  correctness: max|Δ| vs CPU im2col+matmul =", err)
+    # MEC correctness on the same small shape (validates the strided-band view).
+    var errm = _verify_mec[
+        2, 8, 3, 1, 1, 6, 7, 6, 7, 8 * 6 * 7, 8 * 9, 42, 84, 16
+    ](ctx)
+    print("  MEC correctness: max|Δ| vs CPU im2col+matmul =", errm)
+    # MEC on a strided (S=2) shape too — band stride = S·K·IC ≠ K·IC.
+    var errm2 = _verify_mec[
+        2, 8, 3, 2, 1, 12, 12, 6, 6, 8 * 12 * 12, 8 * 9, 36, 72, 16
+    ](ctx)
+    print("  MEC correctness (S=2): max|Δ| =", errm2)
     print("-" * 70)
     # C4 res tower (hot): IC=64, 3x3 s1 p1, 6x7, OC=64
     run_shape[256, 64, 3, 1, 1, 6, 7, 64, 5, 100](ctx, "C4 res    ")
@@ -320,7 +557,16 @@ def main() raises:
     run_shape[256, 64, 3, 1, 1, 6, 6, 64, 5, 100](ctx, "EZ deep6  ")
     # Atari mid: IC=32, 4x4 s2 p0, 20x20, OC=64
     run_shape[64, 32, 4, 2, 0, 20, 20, 64, 5, 50](ctx, "Atari mid ")
+    print("-" * 70)
+    print("  EZv2-Atari REP hot shapes (the §8.3 census 1ms+ im2col kernels):")
+    # resblocks1 (the BIGGEST im2col): Conv2D[32,32,3,1,1,48,48], S=1
+    run_shape[64, 32, 3, 1, 1, 48, 48, 32, 5, 20](ctx, "EZ rep48  ")
+    # down main2 / resblocks2: Conv2D[64,64,3,1,1,24,24], S=1
+    run_shape[64, 64, 3, 1, 1, 24, 24, 64, 5, 30](ctx, "EZ rep24  ")
+    # conv1 stem: Conv2D[12,32,3,2,1,96,96], S=2 (the 1.5× MEC case)
+    run_shape[32, 12, 3, 2, 1, 96, 96, 32, 5, 20](ctx, "EZ stem96 ")
     print("=" * 70)
-    print("speedup>1 → fused beats im2col+max_matmul (col-write + launch saved).")
-    print("speedup<1 → hand SIMT GEMM loses to max_matmul tensor-core path;")
-    print("            O5 then needs Modular structured/max conv, not a hand-roll.")
+    print("MEC(O6) = compact lowering + batched_matmul (tensor-core, strided band).")
+    print("  MEC×>1 → MEC beats im2col+max_matmul (3× less lowering on S=1).")
+    print("O5(fused) = hand SIMT GEMM; O5×<1 expected (loses to max_matmul).")
+    print("NVIDIA is the perf truth; Apple here is parity (Δ) + a directional signal.")
