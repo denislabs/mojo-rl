@@ -158,6 +158,12 @@ def main() raises:
         )
         obs = res[0].copy()
         if res[2]:
+            # store the terminal (fallen) obs as its own frame so the WM
+            # continue head can learn `latent(terminal)→0` (else imagination
+            # over-survives → value collapse → no actor signal).
+            for i in range(OBS):
+                obsbuf[i] = res[0][i]
+            ag.record_terminal(obsbuf)
             obs = env.reset_obs_list()
             ag.reset_belief()
         if step >= LEARN_START and step % TRAIN_EVERY == 0:
@@ -170,6 +176,9 @@ def main() raises:
                 "  step", step, " ret=", ev,
                 " real_rew=", ag.dbg_real_rew(), " rew_pred=", ag.dbg_rew_pred(),
                 " ret_m=", ag.dbg_ret_mean(), " ret_sd=", ag.dbg_ret_std(),
+                " val_m=", ag.dbg_val_mean(), " val_sd=", ag.dbg_val_std(),
+                " feat_sd=", ag.dbg_feat_std(),
+                " con_m=", ag.dbg_con_mean(), " con_min=", ag.dbg_con_min(),
                 " plogit_abs=", ag.dbg_pmean_abs(),
                 " WM=", ag.last_wm_loss(), " AC=", ag.last_ac_loss(),
             )

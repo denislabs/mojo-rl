@@ -251,6 +251,13 @@ struct DreamerV3Trainer[
     ):
         self.replay.record(obs, act, reward, done)
 
+    def record_terminal(
+        mut self, obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    ):
+        """Store a genuine terminal observation (call right after `record(done=1)`).
+        Lets the WM continue head learn `latent(terminal)→0`."""
+        self.replay.record_terminal(obs)
+
     def can_train(self) -> Bool:
         return self.replay.size >= Self.T + 1
 
@@ -284,6 +291,18 @@ struct DreamerV3Trainer[
     def dbg_rscale(self) -> Scalar[DT]:
         return self.state.dbg_rscale
 
+    def dbg_con_mean(self) -> Scalar[DT]:
+        return self.state.dbg_con_mean
+
+    def dbg_con_min(self) -> Scalar[DT]:
+        return self.state.dbg_con_min
+
+    def dbg_val_std(self) -> Scalar[DT]:
+        return self.state.dbg_val_std
+
+    def dbg_feat_std(self) -> Scalar[DT]:
+        return self.state.dbg_feat_std
+
     def train_step(mut self) raises -> Bool:
         if not self.can_train():
             return False
@@ -294,9 +313,10 @@ struct DreamerV3Trainer[
         self.opol.lr = clr
         # sample a length-T window into the shared state batch buffers (storage
         # Tensors; sample_batch takes raw host pointers → rebind .data ptr).
-        self.replay.sample_batch[Self.B, Self.T](
+        self.replay.sample_batch_fst[Self.B, Self.T](
             _hp(self.state.mb_obs), _hp(self.state.mb_act),
             _hp(self.state.mb_rew), _hp(self.state.mb_dne),
+            _hp(self.state.mb_fst),
         )
         var rr: Scalar[DT] = 0.0
         for i in range(Self.B * Self.T):
@@ -489,6 +509,148 @@ struct DreamerV3Trainer[
             ref trl = self.rew.node_output["rew"]()
             var tre = twohot_pred[BINSl](_hp(trl), 0, bins) - real_rew[idx]
             out_tf_rew[h] = tre if tre >= Scalar[DT](0.0) else -tre
+            for k in range(D):
+                tfd.data[k] = tnd_t.data[k]
+            for k in range(SCl):
+                tfs.data[k] = tsn_t.data[k]
+
+    def openloop_trace(
+        mut self,
+        real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
+        real_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT]
+        ctx_len: Int,
+        hor: Int,
+        out_ol_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] open-loop decoded obs (raw space)
+        out_tf_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] teacher-forced decoded obs (raw space)
+        out_ol_con: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] open-loop continue prob = sigmoid(con logit)
+        out_tf_con: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] teacher-forced continue prob
+    ) raises:
+        """Per-component open-loop WM trace (CartPole fidelity diagnostic).
+
+        Same belief/rollout machinery as `openloop_report`, but instead of an
+        aggregate obs MSE it writes the RAW decoded observation vectors (so the
+        caller can read individual components, e.g. CartPole's pole angle) plus
+        the CONTINUE-head probability along both the open-loop (prior, imagined)
+        and teacher-forced (posterior) rollouts. If the open-loop pole angle
+        stops tracking the real fall and `ol_con` stays ≈1, imagination does not
+        reproduce termination → the model-exploitation gap is a dynamics-fidelity
+        problem. CPU-only.
+        """
+        comptime assert Self.train_target == "cpu", (
+            "openloop_trace is CPU-only — run the diagnostic with a CPU agent"
+        )
+        comptime D = Self.DETER
+        comptime SCl = Self.SC
+        comptime TOK = Self.TOKEN
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+        comptime FEATl = Self.FEAT
+        comptime CARRY = 2 + D + SCl
+
+        var bd = Tensor.alloc(D)
+        var bs = Tensor.alloc(SCl)
+        var tok = Tensor.alloc(TOK)
+        var pa = Tensor.alloc(ACTD)
+        var obt = Tensor.alloc(OBSD)
+        var dummyO = Tensor.alloc(OBSD)
+        var dummy1 = Tensor.alloc(1)
+        var carry_t = Tensor.alloc(CARRY)
+        var feat_t = Tensor.alloc(FEATl)
+        var loss_t = Tensor.alloc(1)
+
+        # ── context: observe ctx_len real steps (prev-action convention) ──
+        for t in range(ctx_len):
+            if t == 0:
+                for k in range(ACTD):
+                    pa.data[k] = 0.0
+            else:
+                for k in range(ACTD):
+                    pa.data[k] = real_act[(t - 1) * ACTD + k]
+            for k in range(OBSD):
+                obt.data[k] = real_obs[t * OBSD + k]
+            self.enc.forward["cpu", 1](TensorRefs[1](obt), tok, None)
+            self.core.set_input["deter", 1](bd, None)
+            self.core.set_input["stoch", 1](bs, None)
+            self.core.set_input["action", 1](pa, None)
+            self.core.set_input["tokens", 1](tok, None)
+            self.core.forward[1, "cpu"](carry_t, None)
+            ref nd = self.core.node_output["nd"]()
+            ref sn = self.core.node_output["stoch_new"]()
+            for k in range(D):
+                bd.data[k] = nd.data[k]
+            for k in range(SCl):
+                bs.data[k] = sn.data[k]
+
+        var old = Tensor.alloc(D); var ols = Tensor.alloc(SCl)
+        var tfd = Tensor.alloc(D); var tfs = Tensor.alloc(SCl)
+        var ond_t = Tensor.alloc(D); var osn_t = Tensor.alloc(SCl)
+        var tnd_t = Tensor.alloc(D); var tsn_t = Tensor.alloc(SCl)
+        for k in range(D):
+            old.data[k] = bd.data[k]; tfd.data[k] = bd.data[k]
+        for k in range(SCl):
+            ols.data[k] = bs.data[k]; tfs.data[k] = bs.data[k]
+
+        for h in range(hor):
+            var idx = ctx_len - 1 + h
+            for k in range(ACTD):
+                pa.data[k] = real_act[idx * ACTD + k]
+            # ── open-loop: prior dynamics (imagine), no observation ──
+            self.imagine.set_input["deter", 1](old, None)
+            self.imagine.set_input["stoch", 1](ols, None)
+            self.imagine.set_input["action", 1](pa, None)
+            self.imagine.forward[1, "cpu"](feat_t, None)
+            ref ond = self.imagine.node_output["nd"]()
+            ref osn = self.imagine.node_output["stoch_new"]()
+            for k in range(D):
+                ond_t.data[k] = ond.data[k]
+            for k in range(SCl):
+                osn_t.data[k] = osn.data[k]
+            self.dec.set_input["stoch_new", 1](osn_t, None)
+            self.dec.set_input["nd", 1](ond_t, None)
+            self.dec.set_input["rtgt", 1](dummyO, None)
+            self.dec.forward[1, "cpu"](loss_t, None)
+            ref pred = self.dec.node_output["dec"]()
+            for k in range(OBSD):
+                out_ol_obs[h * OBSD + k] = _symexp(pred.data[k])
+            self.con.set_input["nd", 1](ond_t, None)
+            self.con.set_input["stoch_new", 1](osn_t, None)
+            self.con.set_input["ctgt", 1](dummy1, None)
+            self.con.forward[1, "cpu"](loss_t, None)
+            ref ocon = self.con.node_output["con"]()
+            out_ol_con[h] = Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-ocon.data[0]))
+            for k in range(D):
+                old.data[k] = ond_t.data[k]
+            for k in range(SCl):
+                ols.data[k] = osn_t.data[k]
+
+            # ── teacher-forced: re-observe the real obs (posterior path) ──
+            for k in range(OBSD):
+                obt.data[k] = real_obs[(idx + 1) * OBSD + k]
+            self.enc.forward["cpu", 1](TensorRefs[1](obt), tok, None)
+            self.core.set_input["deter", 1](tfd, None)
+            self.core.set_input["stoch", 1](tfs, None)
+            self.core.set_input["action", 1](pa, None)
+            self.core.set_input["tokens", 1](tok, None)
+            self.core.forward[1, "cpu"](carry_t, None)
+            ref tnd = self.core.node_output["nd"]()
+            ref tsn = self.core.node_output["stoch_new"]()
+            for k in range(D):
+                tnd_t.data[k] = tnd.data[k]
+            for k in range(SCl):
+                tsn_t.data[k] = tsn.data[k]
+            self.dec.set_input["stoch_new", 1](tsn_t, None)
+            self.dec.set_input["nd", 1](tnd_t, None)
+            self.dec.set_input["rtgt", 1](dummyO, None)
+            self.dec.forward[1, "cpu"](loss_t, None)
+            ref tpred = self.dec.node_output["dec"]()
+            for k in range(OBSD):
+                out_tf_obs[h * OBSD + k] = _symexp(tpred.data[k])
+            self.con.set_input["nd", 1](tnd_t, None)
+            self.con.set_input["stoch_new", 1](tsn_t, None)
+            self.con.set_input["ctgt", 1](dummy1, None)
+            self.con.forward[1, "cpu"](loss_t, None)
+            ref tcon = self.con.node_output["con"]()
+            out_tf_con[h] = Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-tcon.data[0]))
             for k in range(D):
                 tfd.data[k] = tnd_t.data[k]
             for k in range(SCl):

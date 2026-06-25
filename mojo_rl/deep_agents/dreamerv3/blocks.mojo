@@ -178,7 +178,8 @@ struct DreamerState[
     var mb_obs: Tensor   # [B,(T+1),OBS]
     var mb_act: Tensor   # [B,T,ACT]
     var mb_rew: Tensor   # [B,T]
-    var mb_dne: Tensor   # [B,T]
+    var mb_dne: Tensor   # [B,T]      transition is_terminal (cont target = 1-dne)
+    var mb_fst: Tensor   # [B,T+1]    per-frame is_first (carry-reset mask)
     # RSSM carries (posterior carry sequence).
     var cdeter: Tensor   # [(T+1)*B*DETER]
     var cstoch: Tensor   # [(T+1)*B*SC]
@@ -196,6 +197,16 @@ struct DreamerState[
     var dbg_val_mean: Scalar[DT]
     var dbg_pstd: Scalar[DT]
     var dbg_rscale: Scalar[DT]
+    # ── imagined continue-factor probe (conv = sigmoid(con_logit) over the
+    #    imagined rollout). If the cont head never predicts termination these
+    #    sit at ~disc (≈0.997) and the λ-return saturates → no actor signal. ──
+    var dbg_con_mean: Scalar[DT]
+    var dbg_con_min: Scalar[DT]
+    # ── collapse probes: spread of value + latent feat over imagined states.
+    #    val_std≈0 with healthy feat_std ⇒ value head collapsed to a constant
+    #    (no advantage signal); feat_std≈0 ⇒ the latent representation collapsed. ──
+    var dbg_val_std: Scalar[DT]
+    var dbg_feat_std: Scalar[DT]
     # ── GPU time-major device minibatch + carries. On CPU these stay empty
     #    (length-0) Tensors. ──
     var d_obs: Tensor    # [T*B*OBS]
@@ -214,6 +225,7 @@ struct DreamerState[
             mb_act=Tensor.make["cpu"](Self.B * Self.T * Self.ACT),
             mb_rew=Tensor.make["cpu"](Self.B * Self.T),
             mb_dne=Tensor.make["cpu"](Self.B * Self.T),
+            mb_fst=Tensor.make["cpu"](Self.B * (Self.T + 1)),
             cdeter=Tensor.make["cpu"]((Self.T + 1) * Self.B * Self.DETER),
             cstoch=Tensor.make["cpu"]((Self.T + 1) * Self.B * Self.SC),
             toks=Tensor.make["cpu"](Self.T * Self.B * Self.TOKEN),
@@ -228,6 +240,10 @@ struct DreamerState[
             dbg_val_mean=Scalar[DT](0.0),
             dbg_pstd=Scalar[DT](0.0),
             dbg_rscale=Scalar[DT](0.0),
+            dbg_con_mean=Scalar[DT](0.0),
+            dbg_con_min=Scalar[DT](0.0),
+            dbg_val_std=Scalar[DT](0.0),
+            dbg_feat_std=Scalar[DT](0.0),
             d_obs=Tensor(), d_act=Tensor(), d_rew=Tensor(), d_cont=Tensor(),
             d_cdeter=Tensor(), d_cstoch=Tensor(), d_toks=Tensor(),
         )
@@ -421,7 +437,7 @@ struct WMStep[
             var sbase = t * Self.B * SCl
             for b in range(Self.B):
                 var keep = (
-                    Scalar[DT](0.0) if st.mb_dne.data[b * Self.T + t] >= Scalar[DT](0.5)
+                    Scalar[DT](0.0) if st.mb_fst.data[b * (Self.T + 1) + t + 1] >= Scalar[DT](0.5)
                     else Scalar[DT](1.0)
                 )
                 for k in range(D):
@@ -502,7 +518,7 @@ struct WMStep[
             var snbase = (t + 1) * Self.B * SCl
             for b in range(Self.B):
                 var keep = (
-                    Scalar[DT](0.0) if st.mb_dne.data[b * Self.T + t] >= Scalar[DT](0.5)
+                    Scalar[DT](0.0) if st.mb_fst.data[b * (Self.T + 1) + t + 1] >= Scalar[DT](0.5)
                     else Scalar[DT](1.0)
                 )
                 for k in range(D):
@@ -575,7 +591,7 @@ struct WMStep[
             # Finding 3: cut the BPTT carry gradient at an episode boundary.
             for b in range(Self.B):
                 var keep = (
-                    Scalar[DT](0.0) if st.mb_dne.data[b * Self.T + t] >= Scalar[DT](0.5)
+                    Scalar[DT](0.0) if st.mb_fst.data[b * (Self.T + 1) + t + 1] >= Scalar[DT](0.5)
                     else Scalar[DT](1.0)
                 )
                 for k in range(D):
@@ -668,7 +684,7 @@ struct WMStep[
             var sbase = t * Self.B * SCl
             for b in range(Self.B):
                 var keep = (
-                    Scalar[DT](0.0) if st.mb_dne.data[b * Self.T + t] >= Scalar[DT](0.5)
+                    Scalar[DT](0.0) if st.mb_fst.data[b * (Self.T + 1) + t + 1] >= Scalar[DT](0.5)
                     else Scalar[DT](1.0)
                 )
                 for k in range(D):
@@ -760,7 +776,7 @@ struct WMStep[
             var snbase = (t + 1) * Self.B * SCl
             for b in range(Self.B):
                 var keep = (
-                    Scalar[DT](0.0) if st.mb_dne.data[b * Self.T + t] >= Scalar[DT](0.5)
+                    Scalar[DT](0.0) if st.mb_fst.data[b * (Self.T + 1) + t + 1] >= Scalar[DT](0.5)
                     else Scalar[DT](1.0)
                 )
                 for k in range(D):
@@ -842,7 +858,7 @@ struct WMStep[
             gst.download(ctx)
             for b in range(Self.B):
                 var keep = (
-                    Scalar[DT](0.0) if st.mb_dne.data[b * Self.T + t] >= Scalar[DT](0.5)
+                    Scalar[DT](0.0) if st.mb_fst.data[b * (Self.T + 1) + t + 1] >= Scalar[DT](0.5)
                     else Scalar[DT](1.0)
                 )
                 for k in range(D):
@@ -1190,6 +1206,16 @@ struct ACStep[
         for i in range(NS * TI):
             rp += rewv[i]
         st.dbg_rew_pred = rp / Scalar[DT](NS * TI)
+        # imagined continue-factor (conv): mean + min over the rollout. min≈0.997
+        # ⇒ the cont head never truncates → λ-return saturated → no actor signal.
+        var cm: Scalar[DT] = 0.0
+        var cmin: Scalar[DT] = conv[0]
+        for i in range(NS * TI):
+            cm += conv[i]
+            if conv[i] < cmin:
+                cmin = conv[i]
+        st.dbg_con_mean = cm / Scalar[DT](NS * TI)
+        st.dbg_con_min = cmin
         var rm: Scalar[DT] = 0.0
         for i in range(NS * TM1):
             rm += ret[i]
@@ -1211,7 +1237,25 @@ struct ACStep[
         for b in range(NS):
             for t in range(TI):
                 vm_acc += twohot_pred[BINSl](vlog.unsafe_ptr(), (b * TI + t) * BINSl, bins)
-        st.dbg_val_mean = vm_acc / Scalar[DT](NS * TI)
+        var vmean = vm_acc / Scalar[DT](NS * TI)
+        st.dbg_val_mean = vmean
+        # value spread over imagined states (val_std≈0 ⇒ value head collapsed)
+        var vv: Scalar[DT] = 0.0
+        for b in range(NS):
+            for t in range(TI):
+                var dv = twohot_pred[BINSl](vlog.unsafe_ptr(), (b * TI + t) * BINSl, bins) - vmean
+                vv += dv * dv
+        st.dbg_val_std = sqrt(vv / Scalar[DT](NS * TI))
+        # latent feat spread over imagined states (feat_std≈0 ⇒ latent collapsed)
+        var fm: Scalar[DT] = 0.0
+        for i in range(NS * TI * FEATl):
+            fm += feats[i]
+        fm = fm / Scalar[DT](NS * TI * FEATl)
+        var fv: Scalar[DT] = 0.0
+        for i in range(NS * TI * FEATl):
+            var df = feats[i] - fm
+            fv += df * df
+        st.dbg_feat_std = sqrt(fv / Scalar[DT](NS * TI * FEATl))
 
         var d_pol = List[Scalar[DT]](length=NS * TM1, fill=Scalar[DT](0))
         var d_val = List[Scalar[DT]](length=NS * TM1, fill=Scalar[DT](0))
@@ -1443,6 +1487,16 @@ struct ACStep[
         for i in range(NS * TI):
             rp += rewv[i]
         st.dbg_rew_pred = rp / Scalar[DT](NS * TI)
+        # imagined continue-factor (conv): mean + min over the rollout. min≈0.997
+        # ⇒ the cont head never truncates → λ-return saturated → no actor signal.
+        var cm: Scalar[DT] = 0.0
+        var cmin: Scalar[DT] = conv[0]
+        for i in range(NS * TI):
+            cm += conv[i]
+            if conv[i] < cmin:
+                cmin = conv[i]
+        st.dbg_con_mean = cm / Scalar[DT](NS * TI)
+        st.dbg_con_min = cmin
         var rm: Scalar[DT] = 0.0
         for i in range(NS * TM1):
             rm += ret[i]
@@ -1464,7 +1518,25 @@ struct ACStep[
         for b in range(NS):
             for t in range(TI):
                 vm_acc += twohot_pred[BINSl](vlog.unsafe_ptr(), (b * TI + t) * BINSl, bins)
-        st.dbg_val_mean = vm_acc / Scalar[DT](NS * TI)
+        var vmean = vm_acc / Scalar[DT](NS * TI)
+        st.dbg_val_mean = vmean
+        # value spread over imagined states (val_std≈0 ⇒ value head collapsed)
+        var vv: Scalar[DT] = 0.0
+        for b in range(NS):
+            for t in range(TI):
+                var dv = twohot_pred[BINSl](vlog.unsafe_ptr(), (b * TI + t) * BINSl, bins) - vmean
+                vv += dv * dv
+        st.dbg_val_std = sqrt(vv / Scalar[DT](NS * TI))
+        # latent feat spread over imagined states (feat_std≈0 ⇒ latent collapsed)
+        var fm: Scalar[DT] = 0.0
+        for i in range(NS * TI * FEATl):
+            fm += feats[i]
+        fm = fm / Scalar[DT](NS * TI * FEATl)
+        var fv: Scalar[DT] = 0.0
+        for i in range(NS * TI * FEATl):
+            var df = feats[i] - fm
+            fv += df * df
+        st.dbg_feat_std = sqrt(fv / Scalar[DT](NS * TI * FEATl))
 
         var d_pol = List[Scalar[DT]](length=NS * TM1, fill=Scalar[DT](0))
         var d_val = List[Scalar[DT]](length=NS * TM1, fill=Scalar[DT](0))
