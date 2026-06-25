@@ -691,17 +691,19 @@ def ezv2_unroll_train_step_cpu_vp[
 # ─────────────────────────────────────────────────────────────────────────
 
 
-def _ez_accum_latent_k[N_: Int, ADT: DType = DT](
-    dst: LayoutTensor[ADT, Layout.row_major(N_), MutAnyOrigin],
-    src: LayoutTensor[ADT, Layout.row_major(N_), MutAnyOrigin],
+def _ez_accum_latent_k[N_: Int, DDT: DType = DT, SDT: DType = DT](
+    dst: LayoutTensor[DDT, Layout.row_major(N_), MutAnyOrigin],
+    src: LayoutTensor[SDT, Layout.row_major(N_), MutAnyOrigin],
 ):
-    """`dst[i] += src[i]` — fold the consistency latent-grad into ``gpin``."""
+    """`dst[i] += src[i]` — fold the consistency latent-grad into ``gpin``.
+    Dual-dtype (fp32 accumulator dst, possibly-bf16 src) so the bf16 BPTT keeps
+    the grad CARRY in fp32 (`DDT=DT`) while folding a bf16 net-grad src."""
     var i = Int(global_idx.x)
     if i < N_:
         dst[i] = (
-            rebind[Scalar[ADT]](dst[i]).cast[DT]()
-            + rebind[Scalar[ADT]](src[i]).cast[DT]()
-        ).cast[ADT]()
+            rebind[Scalar[DDT]](dst[i]).cast[DT]()
+            + rebind[Scalar[SDT]](src[i]).cast[DT]()
+        ).cast[DDT]()
 
 
 def ezv2_unroll_train_step_gpu[
@@ -1217,8 +1219,13 @@ def ezv2_unroll_train_step_gpu_vp[
     var dz_f32 = Tensor.alloc_gpu(ctx, B * LATENT)   # fp32 reward-LSTM input
     var pout = TensorImpl[ADT].alloc_gpu(ctx, B * PRED_OUT)
     var gpout = TensorImpl[ADT].alloc_gpu(ctx, B * PRED_OUT)
-    var gz = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)
-    var gpin = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)
+    # BPTT grad CARRY in fp32 (bf16 accumulation across K steps loses too much
+    # precision → weak/unstable bf16 convergence). The per-net vjp stays bf16:
+    # `gz_b`/`gpin_b` bridge the carry to/from the bf16 nets.
+    var gz = Tensor.alloc_gpu(ctx, B * LATENT)
+    var gpin = Tensor.alloc_gpu(ctx, B * LATENT)
+    var gz_b = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)    # bf16 vjp grad_out
+    var gpin_b = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)  # bf16 pred grad_in
     var gdin = TensorImpl[ADT].alloc_gpu(ctx, B * DYN_IN)
     var gobs = TensorImpl[ADT].alloc_gpu(ctx, B * OBS)
     var twv = Tensor.alloc_gpu(ctx, B * BINS)
@@ -1226,7 +1233,6 @@ def ezv2_unroll_train_step_gpu_vp[
     var vp = Tensor.alloc_gpu(ctx, B * BINS)
     var grad_vp = Tensor.alloc_gpu(ctx, B * BINS)
     var grad_zp = Tensor.alloc_gpu(ctx, B * LATENT)   # fp32 reward-LSTM dz-grad
-    var grad_zp_adt = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)  # bf16 carry
     var h_store = Tensor.alloc_gpu(ctx, (K + 1) * HH)
     var c_store = Tensor.alloc_gpu(ctx, (K + 1) * HH)
     var hbuf = Tensor.alloc_gpu(ctx, 2 * HH)
@@ -1278,12 +1284,14 @@ def ezv2_unroll_train_step_gpu_vp[
     comptime kValCE = _mz_softce_slice_k[B, PRED_OUT, ACT, BINS, ADT]
     comptime kRewVP = _mz_softce_slice_k[B, BINS, 0, BINS]
     comptime kTwoHot = _mz_twohot_k[B, BINS]
-    comptime kHalf = _mz_accum_half_k[B, LATENT, DYN_IN, ADT]
+    comptime kHalf = _mz_accum_half_k[B, LATENT, DYN_IN, DT, ADT]  # fp32 gpin
     comptime kBcopy = _mz_bcopy_k[B * LATENT, ADT]
+    comptime kBcopyLf = _mz_bcopy_k[B * LATENT]   # fp32 carry copy (gpin→gz)
     comptime kBcopyOBS = _mz_bcopy_k[B * OBS]
     comptime kBcopyPROJ = _mz_bcopy_k[B * PROJ, ADT]
     comptime kCons = consistency_loss_grad_k[B, PROJ, ADT]
-    comptime kAccum = _ez_accum_latent_k[B * LATENT, ADT]
+    comptime kAccumGc = _ez_accum_latent_k[B * LATENT, DT, ADT]  # gpin+=gzcons
+    comptime kAccumGr = _ez_accum_latent_k[B * LATENT]           # gz+=grad_zp fp32
     # PER row-scaling: pred head (whole), consistency (whole), value-prefix
     # (whole BINS); + root value-error priority CE.
     comptime kScalePred = _ez_scale_rows_k[B, PRED_OUT, 0, PRED_OUT, ADT]
@@ -1398,9 +1406,19 @@ def ezv2_unroll_train_step_gpu_vp[
             ctx.enqueue_function[kScalePred](
                 gpout.lt["gpu", LBPO](), d_isw.lt["gpu", LB](),
                 grid_dim=nbB, block_dim=TPB)
-        call_vjp["gpu", B](
-            pred, child_refs[N=PRED.ARITY, CADT=ADT](zk_work), gpout,
-            child_refs[N=PRED.ARITY, CADT=ADT](gpin), octx)
+        # pred grad_input SEEDS the fp32 carry. fp32 path: vjp → gpin directly.
+        # bf16 path: vjp → gpin_b (bf16), cast up to the fp32 carry gpin.
+        comptime if ADT == DT:
+            call_vjp["gpu", B](
+                pred, child_refs[N=PRED.ARITY, CADT=ADT](zk_work), gpout,
+                child_refs[N=PRED.ARITY, CADT=ADT](gpin), octx)
+        else:
+            call_vjp["gpu", B](
+                pred, child_refs[N=PRED.ARITY, CADT=ADT](zk_work), gpout,
+                child_refs[N=PRED.ARITY, CADT=ADT](gpin_b), octx)
+            ctx.enqueue_function[_cast_b2f_kernel[B * LATENT]](
+                gpin_b.lt["gpu", LBL](), gpin.lt["gpu", LBL](),
+                grid_dim=nbLAT, block_dim=TPB)
 
         # (b) consistency (k >= 1)
         if k >= 1:
@@ -1422,7 +1440,7 @@ def ezv2_unroll_train_step_gpu_vp[
             call_vjp["gpu", B](
                 proj, child_refs[N=PROJM.ARITY, CADT=ADT](zk_work), gproj,
                 child_refs[N=PROJM.ARITY, CADT=ADT](gzcons), octx)
-            ctx.enqueue_function[kAccum](
+            ctx.enqueue_function[kAccumGc](
                 gpin.lt["gpu", LBL](), gzcons.lt["gpu", LBL](),
                 grid_dim=nbLAT, block_dim=TPB)
 
@@ -1469,24 +1487,18 @@ def ezv2_unroll_train_step_gpu_vp[
                     grid_dim=nbB, block_dim=TPB)
             comptime if ADT == DT:
                 ref dzd2 = rebind[Tensor](dz)
-                ref gzd = rebind[Tensor](gz)
                 rew.reward_step_backward["gpu", B](
                     dzd2, grad_vp, hbuf, cbuf, cache, dh_carry, dc_carry,
                     grad_zp, dh_prev, dc_prev, octx)
-                ctx.enqueue_function[kAccum](
-                    gzd.lt["gpu", LBL](), grad_zp.lt["gpu", LBL](),
-                    grid_dim=nbLAT, block_dim=TPB)
             else:
                 rew.reward_step_backward["gpu", B](
                     dz_f32, grad_vp, hbuf, cbuf, cache, dh_carry, dc_carry,
                     grad_zp, dh_prev, dc_prev, octx)
-                # grad_zp (fp32, reward head is fp32) → bf16 carry → accum into gz.
-                ctx.enqueue_function[_cast_f2b_kernel[B * LATENT]](
-                    grad_zp.lt["gpu", LBL](), grad_zp_adt.lt["gpu", LBL](),
-                    grid_dim=nbLAT, block_dim=TPB)
-                ctx.enqueue_function[kAccum](
-                    gz.lt["gpu", LBL](), grad_zp_adt.lt["gpu", LBL](),
-                    grid_dim=nbLAT, block_dim=TPB)
+            # gz (fp32) += grad_zp (fp32) — the carry stays fp32; the reward
+            # gradient never round-trips through bf16.
+            ctx.enqueue_function[kAccumGr](
+                gz.lt["gpu", LBL](), grad_zp.lt["gpu", LBL](),
+                grid_dim=nbLAT, block_dim=TPB)
             ctx.enqueue_copy(dh_carry.dev.value(), dh_prev.dev.value())
             ctx.enqueue_copy(dc_carry.dev.value(), dc_prev.dev.value())
             # dynamics: full grad wrt z_{k+1} back through dyn_z, ½ on z_k
@@ -1494,14 +1506,25 @@ def ezv2_unroll_train_step_gpu_vp[
                 din.lt["gpu", LBDI](), zst.lt_at["gpu", LBL](k * B * LATENT),
                 d_act.lt_at["gpu", LB](k * B), grid_dim=nbDIN, block_dim=TPB)
             call_forward["gpu", B](dynz, child_refs[N=DYNZ.ARITY, CADT=ADT](din), dz, octx)
-            call_vjp["gpu", B](
-                dynz, child_refs[N=DYNZ.ARITY, CADT=ADT](din), gz,
-                child_refs[N=DYNZ.ARITY, CADT=ADT](gdin), octx)
+            # dynz.vjp grad_output = the fp32 carry gz → cast to bf16 for the net.
+            comptime if ADT == DT:
+                ref gza = rebind[TensorImpl[ADT]](gz)
+                call_vjp["gpu", B](
+                    dynz, child_refs[N=DYNZ.ARITY, CADT=ADT](din), gza,
+                    child_refs[N=DYNZ.ARITY, CADT=ADT](gdin), octx)
+            else:
+                ctx.enqueue_function[_cast_f2b_kernel[B * LATENT]](
+                    gz.lt["gpu", LBL](), gz_b.lt["gpu", LBL](),
+                    grid_dim=nbLAT, block_dim=TPB)
+                call_vjp["gpu", B](
+                    dynz, child_refs[N=DYNZ.ARITY, CADT=ADT](din), gz_b,
+                    child_refs[N=DYNZ.ARITY, CADT=ADT](gdin), octx)
             ctx.enqueue_function[kHalf](
                 gpin.lt["gpu", LBL](), gdin.lt["gpu", LBDI](),
                 grid_dim=nbLAT, block_dim=TPB)
 
-        ctx.enqueue_function[kBcopy](
+        # carry: gz (fp32) ← gpin (fp32). Both fp32 → fp32 bcopy.
+        ctx.enqueue_function[kBcopyLf](
             gpin.lt["gpu", LBL](), gz.lt["gpu", LBL](),
             grid_dim=nbLAT, block_dim=TPB)
 
@@ -1515,9 +1538,19 @@ def ezv2_unroll_train_step_gpu_vp[
             d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
             grid_dim=nbOBS, block_dim=TPB)
     call_forward["gpu", B](rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), z_work, octx)
-    call_vjp["gpu", B](
-        rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), gz,
-        child_refs[N=REP.ARITY, CADT=ADT](gobs), octx)
+    # rep.vjp grad_output = the fp32 carry gz → cast to bf16 for the net.
+    comptime if ADT == DT:
+        ref gza = rebind[TensorImpl[ADT]](gz)
+        call_vjp["gpu", B](
+            rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), gza,
+            child_refs[N=REP.ARITY, CADT=ADT](gobs), octx)
+    else:
+        ctx.enqueue_function[_cast_f2b_kernel[B * LATENT]](
+            gz.lt["gpu", LBL](), gz_b.lt["gpu", LBL](),
+            grid_dim=nbLAT, block_dim=TPB)
+        call_vjp["gpu", B](
+            rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), gz_b,
+            child_refs[N=REP.ARITY, CADT=ADT](gobs), octx)
 
     # ── clip + step all six nets ──
     _ = clip_grad_norm["gpu", PRED](pred, Scalar[DT](max_grad_norm), octx)

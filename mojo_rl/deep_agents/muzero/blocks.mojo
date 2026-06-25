@@ -540,22 +540,24 @@ def _mz_set_carry_latent_k[
 
 
 def _mz_accum_half_k[
-    B_: Int, LATENT_: Int, DYN_IN_: Int, ADT: DType = DT,
+    B_: Int, LATENT_: Int, DYN_IN_: Int, DDT: DType = DT, SDT: DType = DT,
 ](
-    gpin: LayoutTensor[ADT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
-    gdin: LayoutTensor[ADT, Layout.row_major(B_ * DYN_IN_), MutAnyOrigin],
+    gpin: LayoutTensor[DDT, Layout.row_major(B_ * LATENT_), MutAnyOrigin],
+    gdin: LayoutTensor[SDT, Layout.row_major(B_ * DYN_IN_), MutAnyOrigin],
 ):
     """`∂L/∂z_k += ½·(grad into dyn's latent input)` — the MuZero ½ dynamics
-    hidden-input gradient scaling (appendix)."""
+    hidden-input gradient scaling (appendix). Dual-dtype: fp32 accumulator
+    (`gpin`, `DDT=DT`) folds a possibly-bf16 (`SDT`) `gdin` — keeps the bf16
+    BPTT grad carry in fp32."""
     var idx = Int(global_idx.x)
     if idx < B_ * LATENT_:
         var b = idx // LATENT_
         var i = idx % LATENT_
         gpin[idx] = (
-            rebind[Scalar[ADT]](gpin[idx]).cast[DT]()
+            rebind[Scalar[DDT]](gpin[idx]).cast[DT]()
             + Scalar[DT](0.5)
-            * rebind[Scalar[ADT]](gdin[b * DYN_IN_ + i]).cast[DT]()
-        ).cast[ADT]()
+            * rebind[Scalar[SDT]](gdin[b * DYN_IN_ + i]).cast[DT]()
+        ).cast[DDT]()
 
 
 def _mz_bcopy_k[N_: Int, ADT: DType = DT](
