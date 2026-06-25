@@ -658,6 +658,8 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     #                                  bit-identical.
     per_alpha: Scalar[DT] = Scalar[DT](1.0),
     per_beta: Scalar[DT] = Scalar[DT](1.0),
+    lr_decay_rate: Scalar[DT] = Scalar[DT](1.0),  # exp LR decay base; 1.0 = off
+    lr_decay_steps: Int = 0,                       # decay horizon (grad steps); 0 = off
 ) raises -> Float64:
     """Device-obs twin of `run_muzero_gumbel_selfplay_gpu_batched`: identical
     loop, but the obs ring lives on the GPU (`GPUMCTSSequenceReplay`) so the
@@ -719,6 +721,10 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     var dyn_ta = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn_t)
     var pred_ta = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred_t)
     var train_steps = 0
+    # Initial LR captured for the exponential schedule (muzero-general): each grad
+    # step sets lr = lr_init · lr_decay_rate^(train_steps / lr_decay_steps). All
+    # three optimizers were built with the same lr, so one snapshot suffices.
+    var lr_init = orep.lr
 
     var rb = GPUMCTSSequenceReplay[OBS, ACT, CAP, N_ENVS, OBS_STORE_DT](
         ctx, seed=seed ^ UInt64(0xABCDEF),
@@ -848,6 +854,16 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
         if trained:
             var d_obs0_buf = scratch.d_obs0.dev.value()
             for _ in range(train_per_iter):
+                # Exponential LR decay (muzero-general). No-op when
+                # lr_decay_steps == 0 (constant LR, bit-identical to before).
+                if lr_decay_steps > 0:
+                    var dlr = lr_init * (
+                        lr_decay_rate
+                        ** (Scalar[DT](train_steps) / Scalar[DT](lr_decay_steps))
+                    )
+                    orep.lr = dlr
+                    odyn.lr = dlr
+                    opred.lr = dlr
                 var isw_opt = Optional[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](None)

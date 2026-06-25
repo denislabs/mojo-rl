@@ -93,6 +93,17 @@ comptime N = 5  # n-step value bootstrap horizon
 # screen configs faster — do NOT trust it for final convergence (see above).
 comptime TRAIN_PER_ITER = 16 if FAST_VALIDATE else N_ENVS
 
+# Overfitting guards from the muzero-general Atari recipe (games/atari.py): an
+# unregularized model trained to its full update budget at constant LR overfits
+# late — greedy eval regresses while search-augmented behavior masks it. Both are
+# OFF by default in the agent; we turn them on here.
+#   * weight_decay 1e-4 — decoupled L2 on weight Params (biases/norms excluded).
+#   * exponential LR decay lr = lr_init·RATE^(grad_step/STEPS); reference uses
+#     0.1 over ~⅓ of the total grad-step budget (= NUM_ITERS·TRAIN_PER_ITER).
+comptime WEIGHT_DECAY = Scalar[DT](1e-4)
+comptime LR_DECAY_RATE = Scalar[DT](0.1)
+comptime LR_DECAY_STEPS = (NUM_ITERS * TRAIN_PER_ITER) // 3
+
 # Reanalyze cadence: every iter (paper-faithful, max fresh targets) for the real
 # run; every 4th iter under fast-validate (reanalyze fires `reanalyze_batch //
 # N_ENVS` = 8 batched searches per trigger, so this is a large wall-clock lever).
@@ -161,6 +172,7 @@ def main() raises:
         v_min=V_MIN,
         v_max=V_MAX,
         value_coef=Scalar[DT](0.25),  # paper recommendation (vs 1.0)
+        weight_decay=WEIGHT_DECAY,  # muzero-general Atari L2 (overfitting guard)
     )
 
     var env = PongPixelBatched(ctx)
@@ -254,6 +266,11 @@ def main() raises:
         # baseline (the working Pong path); flip True to focus training on the
         # high-error frames. alpha/beta default to EZ Atari's 1.0/1.0.
         use_per=True,
+        # Exponential LR decay (muzero-general): lr 1e-4 → ×0.1 per ⅓ of the
+        # grad-step budget. Pairs with weight_decay to curb the late-run
+        # overfitting that regressed greedy eval in the constant-LR runs.
+        lr_decay_rate=LR_DECAY_RATE,
+        lr_decay_steps=LR_DECAY_STEPS,
     )
     var elapsed_s = Float64(perf_counter_ns() - start) / 1e9
     logger.close()
