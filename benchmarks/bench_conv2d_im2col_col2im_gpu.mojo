@@ -10,13 +10,21 @@ pattern, then timed. A variant ships to conv2d.mojo only at `mismatches=0` and a
 measured NVIDIA win.
 
 Variants:
-  im2col  v0 = baseline (current conv2d.mojo kernel, copied here)
+  im2col  v0 = baseline (current conv2d.mojo kernel, copied here) — NCHW
           v1 = O1 shape-static gather-index table (2 divmods + 1 cached lookup)
+          v2 = O4 vectorized v4 col write
+          v3 = NHWC ceiling test (channels-last input, COL→(kh,kw,ic), ic
+               innermost → coalesced reads in bursts of IC vs v0's bursts of K).
+               v0→v3 isolates the NCHW→NHWC layout question for the forward
+               gather: if v3 ≈ v0 on NVIDIA, L2 already hides the strides and a
+               channels_last refactor is not worth it (same verdict O1 reached).
   col2im  v0 = baseline (gather, [BS,COL] d_col — uncoalesced)
           v1 = O2 transpose ([COL,BS] d_col → coalesced) + O3 comptime S==1
+          v2 = O2+O3+O4 vectorized
 
 Adding a variant: write `_im2col_vN` / `_col2im_vN`, add a `comptime if VARIANT`
-arm in the time/verify dispatch, register it in `main()`.
+arm in the time/verify dispatch, register it in `main()`. (v3 uses a dedicated
+`_im2col_nhwc_{verify,time}` pair since its NHWC layout needs its own reference.)
 
 Run (NVIDIA = perf truth):
     pixi run -e nvidia mojo run -I . benchmarks/bench_conv2d_im2col_col2im_gpu.mojo
@@ -145,6 +153,46 @@ def _im2col_v2[
                 cptr[idx] = iptr[in_base + ic * H * W + ih * W + iw]
             else:
                 cptr[idx] = Scalar[DT](0)
+
+
+# v3 — NHWC CEILING TEST (NCHW→NHWC layout question). Input is channels-LAST
+# `[BATCH, H, W, IC]` (flat IN_FLAT=H*W*IC) and COL is reordered to (kh, kw, ic)
+# so `ic` is the innermost gather dim — CONTIGUOUS in NHWC. Consecutive threads →
+# consecutive `ic` → coalesced reads in bursts of IC (=32/64) vs v0's NCHW bursts
+# of K (=3). The write side is identical to v0 (contiguous col). So v0→v3 isolates
+# *exactly* the input-layout coalescing effect — the upper bound on what a
+# framework-wide channels_last refactor could buy the forward gather. (Reordering
+# COL permutes the weight columns to match: GEMM-identical, free; the bench only
+# times the gather.) If v3 ≈ v0 on NVIDIA, L2 was already hiding the strides and
+# NHWC is not worth the refactor — same verdict O1 reached.
+def _im2col_v3[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+    col: LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= BS * COL:
+        return
+    var row = idx // COL
+    var ck = idx % COL
+    var b = row // SO
+    var s = row % SO
+    var oh = s // OW
+    var ow = s % OW
+    # COL order (kh, kw, ic) — ic innermost (contiguous in NHWC input).
+    var khkw = ck // IC
+    var ic = ck % IC
+    var kh = khkw // K
+    var kw = khkw % K
+    var ih = oh * S + kh - P
+    var iw = ow * S + kw - P
+    if ih < 0 or ih >= H or iw < 0 or iw >= W:
+        col[row, ck] = Scalar[DT](0)
+    else:
+        # NHWC: input[b, ih, iw, ic] = (ih*W + iw)*IC + ic  within sample.
+        col[row, ck] = rebind[Scalar[DT]](input[b, (ih * W + iw) * IC + ic])
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -495,6 +543,81 @@ def _im2col_time[
     print("  ", label, " | ", us, "us/iter ", gb / (us / 1e6) / 1e3, "TB/s")
 
 
+# ── NHWC im2col (v3): own channels-last reference + timer ──────────────────
+# Separate from the shared NCHW path because v3 uses an NHWC input layout AND a
+# (kh,kw,ic) COL order, so it can't be checked against `_im2col_cpu` (NCHW,
+# ic,kh,kw). The index-fill input is self-consistent: the GPU gather and the CPU
+# reference both decode the SAME NHWC buffer the same way.
+def _im2col_nhwc_verify[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int,
+](ctx: DeviceContext) raises -> Int:
+    var inp = ctx.enqueue_create_buffer[DT](BATCH * IN_FLAT)
+    var col = ctx.enqueue_create_buffer[DT](BS * COL)
+    var in_host = List[Scalar[DT]](length=BATCH * IN_FLAT, fill=Scalar[DT](0))
+    with inp.map_to_host() as hi:
+        for i in range(BATCH * IN_FLAT):
+            var v = Scalar[DT](Float64((i % 997) + 1) * 0.5)
+            hi[i] = v
+            in_host[i] = v
+    _ = col.enqueue_fill(Scalar[DT](-123.0))
+    comptime nb = (BS * COL + TPB - 1) // TPB
+    var inl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](inp)
+    var cl = LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin](col)
+    ctx.enqueue_function[
+        _im2col_v3[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+    ](inl, cl, grid_dim=nb, block_dim=TPB)
+    ctx.synchronize()
+
+    var bad = 0
+    with col.map_to_host() as hc:
+        for b in range(BATCH):
+            for s in range(SO):
+                var oh = s // OW
+                var ow = s % OW
+                for ck in range(COL):
+                    var khkw = ck // IC
+                    var ic = ck % IC
+                    var kh = khkw // K
+                    var kw = khkw % K
+                    var ih = oh * S + kh - P
+                    var iw = ow * S + kw - P
+                    var exp = Scalar[DT](0)
+                    if ih >= 0 and ih < H and iw >= 0 and iw < W:
+                        exp = in_host[b * IN_FLAT + (ih * W + iw) * IC + ic]
+                    if hc[(b * SO + s) * COL + ck] != exp:
+                        bad += 1
+    return bad
+
+
+def _im2col_nhwc_time[
+    BATCH: Int, IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    OH: Int, OW: Int, IN_FLAT: Int, COL: Int, SO: Int, BS: Int,
+    WARMUP: Int, ITERS: Int,
+](ctx: DeviceContext, label: StaticString) raises:
+    var inp = ctx.enqueue_create_buffer[DT](BATCH * IN_FLAT)
+    var col = ctx.enqueue_create_buffer[DT](BS * COL)
+    _ = inp.enqueue_fill(Scalar[DT](0.01))
+    _ = col.enqueue_fill(Scalar[DT](0.0))
+    comptime nb = (BS * COL + TPB - 1) // TPB
+    var inl = LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin](inp)
+    var cl = LayoutTensor[DT, Layout.row_major(BS, COL), MutAnyOrigin](col)
+    comptime for _ in range(WARMUP):
+        ctx.enqueue_function[
+            _im2col_v3[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+        ](inl, cl, grid_dim=nb, block_dim=TPB)
+    ctx.synchronize()
+    var t0 = perf_counter_ns()
+    comptime for _ in range(ITERS):
+        ctx.enqueue_function[
+            _im2col_v3[BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS]
+        ](inl, cl, grid_dim=nb, block_dim=TPB)
+    ctx.synchronize()
+    var us = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
+    var gb = 2.0 * Float64(BS) * Float64(COL) * 4.0 / 1e9
+    print("  ", label, " | ", us, "us/iter ", gb / (us / 1e6) / 1e3, "TB/s")
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # col2im: verify + time
 # ══════════════════════════════════════════════════════════════════════════
@@ -646,16 +769,22 @@ def run_shape[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 1](ctx)
     var b2 = _im2col_verify[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 2](ctx)
-    print("  im2col verify: v0=", b0, " v1=", b1, " v2=", b2, " mismatches")
+    var b3 = _im2col_nhwc_verify[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS](ctx)
+    print("  im2col verify: v0=", b0, " v1=", b1, " v2=", b2, " v3(NHWC)=", b3,
+          " mismatches")
     _im2col_time[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 0, WARMUP, ITERS
-    ](ctx, "im2col v0 baseline    ")
+    ](ctx, "im2col v0 baseline NCHW")
     _im2col_time[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 1, WARMUP, ITERS
     ](ctx, "im2col v1 gather-table")
     _im2col_time[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 2, WARMUP, ITERS
     ](ctx, "im2col v2 vec-store(O4)")
+    _im2col_nhwc_time[
+        BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, WARMUP, ITERS
+    ](ctx, "im2col v3 NHWC ceiling ")
 
     var c0 = _col2im_verify[
         BATCH, IC, K, S, P, H, W, OH, OW, IN_FLAT, COL, SO, BS, 0](ctx)
@@ -686,6 +815,10 @@ def main() raises:
     run_shape[64, 32, 4, 2, 0, 20, 20, 5, 50](ctx, "Atari mid")
     # Atari/DQN stem: IC=4, 8x8 s4 p0, 84x84 (large K)
     run_shape[64, 4, 8, 4, 0, 84, 84, 5, 50](ctx, "Atari stem")
+    # EZv2-Atari rep net hot shapes (the 1ms forward im2col from the profile) —
+    # this is where the NHWC v3 ceiling matters most: IC=32/64, large spatial.
+    run_shape[64, 32, 3, 1, 1, 48, 48, 5, 30](ctx, "EZv2 rep48")
+    run_shape[64, 64, 3, 1, 1, 24, 24, 5, 30](ctx, "EZv2 rep24")
     print("=" * 70)
     print("All `mismatches=0` required before promoting a variant to conv2d.mojo.")
     print("Perf truth = NVIDIA; Apple is parity-only.")
