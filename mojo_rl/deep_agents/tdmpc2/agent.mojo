@@ -22,6 +22,7 @@ Replay stays host; the steps upload/download internally via storage Tensors.
 
 from std.math import tanh
 from std.random import random_float64
+from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
@@ -37,7 +38,8 @@ from mojo_rl.nn.core.checkpoint import (
 
 from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
 from mojo_rl.planners.trajectory.mppi import MPPIGPUBatched
-from mojo_rl.core.logger import Logger
+from mojo_rl.core.logger import Logger, NoOpLogger
+from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from .callback import TDMPC2RolloutCallbackGPU
 from .metrics import TDMPC2Metrics
 
@@ -755,3 +757,218 @@ struct TDMPC2Agent[
         self._td_max_last = td_mx
         self._n_diag += 1
         return True
+
+    # ── one-call training / eval drivers (single-env facade) ───────────────
+    # TD-MPC2 acts single-env (the MPPI planner + world-model BPTT are
+    # per-env), so unlike SAC there is no batched driver — these methods
+    # internalize the collect → record → train_step loop (+ warmup, periodic
+    # eval, logging, checkpoint) so examples don't hand-roll it.
+
+    def evaluate[
+        E: BoxContinuousActionEnv,
+        USE_MPC: Bool = False,
+    ](
+        mut self,
+        mut env: E,
+        *,
+        episodes: Int = 2,
+        max_steps: Int = 1_000,
+    ) raises -> Scalar[DT]:
+        """Deterministic eval → mean episode return.
+
+        `USE_MPC=False` (default) acts greedily via `a = π(encode(obs))`;
+        `USE_MPC=True` plans with MPPI (`select_action_mpc`, GPU only — a
+        comptime assert in that path enforces `target == "gpu"`)."""
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+        var obs_l = List[Scalar[DT]](length=OBSD, fill=Scalar[DT](0.0))
+        var act_l = List[Scalar[DT]](length=ACTD, fill=Scalar[DT](0.0))
+        var total: Scalar[DT] = 0.0
+        for _ep in range(episodes):
+            var obs = env.reset_obs_list()
+            comptime if USE_MPC:
+                self.mpc_start_episode()
+            for _s in range(max_steps):
+                for d in range(OBSD):
+                    obs_l[d] = Scalar[DT](obs[d])
+                comptime if USE_MPC:
+                    self.select_action_mpc(obs_l, act_l, explore=False)
+                else:
+                    self.select_greedy_action(obs_l, act_l)
+                var env_action = List[Scalar[E.dtype]](capacity=ACTD)
+                for j in range(ACTD):
+                    env_action.append(Scalar[E.dtype](act_l[j]))
+                var r = env.step_continuous_vec[E.dtype](env_action)
+                total += Scalar[DT](r[1])
+                obs = r[0].copy()
+                if r[2]:
+                    break
+        return total / Scalar[DT](episodes if episodes > 0 else 1)
+
+    def train[
+        E: BoxContinuousActionEnv,
+        L: Logger = NoOpLogger,
+        EE: BoxContinuousActionEnv = E,
+        USE_MPC: Bool = False,
+    ](
+        mut self,
+        mut env: E,
+        total_timesteps: Int,
+        *,
+        train_every: Int = 1,
+        print_every: Int = 20_000,
+        verbose: Bool = True,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        diag_every: Int = 0,
+        checkpoint_path: String = "",
+        checkpoint_every: Int = 0,
+        eval_env: Optional[UnsafePointer[EE, MutAnyOrigin]] = None,
+        eval_every: Int = 0,
+        eval_episodes: Int = 2,
+        eval_max_steps: Int = 1_000,
+    ) raises -> Scalar[DT]:
+        """Single-env TD-MPC2 training driver → best eval return.
+
+        One env step + (after warmup) one `train_step` per iteration:
+          * `step < learning_starts` → uniform random actions in [-1, 1]
+            (the `learning_starts` passed at construction);
+          * else → `USE_MPC ? select_action_mpc : select_action` (explore).
+
+        Bootstrapping: records `done = was_terminated()` (NATURAL termination
+        only) so the value bootstrap continues across truncation and drops on
+        a real terminal — truncation-only envs (e.g. HalfCheetah with
+        `TERMINATE_ON_UNHEALTHY=False`) record `done = 0` throughout.
+
+        Optional streams (all off by default):
+          * `logger` + `diag_every > 0` → drain the full TD-MPC2 metric bundle
+            (consistency/reward/value/wm/policy losses, q/td stats) every
+            `diag_every` env-steps, plus an `avg_reward` training signal;
+          * `checkpoint_every > 0` + `checkpoint_path` → `save_state` cadence
+            (+ once at the end);
+          * `eval_env` (ISOLATED env ptr) + `eval_every > 0` → periodic
+            DETERMINISTIC eval logged as `eval/mean_return` (the deployable
+            signal; pass `USE_MPC=True` to eval the planner)."""
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+
+        var obs_l = List[Scalar[DT]](length=OBSD, fill=Scalar[DT](0.0))
+        var act_l = List[Scalar[DT]](length=ACTD, fill=Scalar[DT](0.0))
+        var obs = env.reset_obs_list()
+
+        # Ring buffer of the last 100 completed-episode returns (for the
+        # `avg_reward` stream + progress prints). Avoids List slicing/pop.
+        var window = List[Scalar[DT]](length=100, fill=Scalar[DT](0.0))
+        var w_idx = 0
+        var w_cnt = 0
+        var cur_ret: Scalar[DT] = 0.0
+        var best: Scalar[DT] = Scalar[DT](-1.0e30)
+        var t_start = perf_counter_ns()
+
+        comptime if USE_MPC:
+            self.mpc_start_episode()
+
+        for step in range(total_timesteps):
+            for d in range(OBSD):
+                obs_l[d] = Scalar[DT](obs[d])
+
+            if step < self.learning_starts:
+                for j in range(ACTD):
+                    act_l[j] = Scalar[DT](random_float64() * 2.0 - 1.0)
+            else:
+                comptime if USE_MPC:
+                    self.select_action_mpc(obs_l, act_l, explore=True)
+                else:
+                    self.select_action(obs_l, act_l, explore=True)
+
+            var env_action = List[Scalar[E.dtype]](capacity=ACTD)
+            for j in range(ACTD):
+                env_action.append(Scalar[E.dtype](act_l[j]))
+            var res = env.step_continuous_vec[E.dtype](env_action)
+            var reward = Scalar[DT](res[1])
+            var done = res[2]
+            # Replay stores NATURAL termination only (truncation keeps the
+            # bootstrap). `was_terminated()` returns terminated-not-truncated.
+            var term: Scalar[DT] = 1.0 if env.was_terminated() else 0.0
+            self.record(obs_l, act_l, reward, term)
+            cur_ret += reward
+            obs = res[0].copy()
+
+            if done:
+                obs = env.reset_obs_list()
+                window[w_idx] = cur_ret
+                w_idx = (w_idx + 1) % 100
+                if w_cnt < 100:
+                    w_cnt += 1
+                cur_ret = 0.0
+                comptime if USE_MPC:
+                    self.mpc_start_episode()
+
+            if step >= self.learning_starts and step % train_every == 0:
+                _ = self.train_step()
+
+            if diag_every > 0 and step > 0 and step % diag_every == 0:
+                self.flush_metrics_through_logger[L](logger, step)
+                if Bool(logger):
+                    var lg = logger.value()
+                    if w_cnt > 0:
+                        var s: Scalar[DT] = 0.0
+                        for k in range(w_cnt):
+                            s += window[k]
+                        lg[].log_scalar(
+                            "avg_reward",
+                            Float64(s / Scalar[DT](w_cnt)),
+                            step,
+                        )
+                    lg[].flush()
+
+            if (
+                checkpoint_every > 0
+                and step > 0
+                and step % checkpoint_every == 0
+                and checkpoint_path.byte_length() > 0
+            ):
+                self.save_state(checkpoint_path)
+
+            var do_eval = (
+                eval_every > 0 and step > 0 and step % eval_every == 0
+                and Bool(eval_env)
+            )
+            if do_eval:
+                var ep = eval_env.value()
+                var ret = self.evaluate[EE, USE_MPC](
+                    ep[], episodes=eval_episodes, max_steps=eval_max_steps
+                )
+                if ret > best:
+                    best = ret
+                if Bool(logger):
+                    var lg = logger.value()
+                    lg[].log_scalar("eval/mean_return", Float64(ret), step)
+                    lg[].log_scalar("eval/best_return", Float64(best), step)
+                if verbose:
+                    var elapsed = (
+                        Float64(perf_counter_ns() - t_start) / 1e9
+                    )
+                    print(
+                        "  step", step, " eval_return=", ret, " best=", best,
+                        " wm=", self.last_wm_loss(),
+                        " pi=", self.last_pi_loss(),
+                        " (", elapsed, "s )",
+                    )
+            elif verbose and print_every > 0 and step > 0 and (
+                step % print_every == 0
+            ):
+                var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
+                var mean_ret: Scalar[DT] = 0.0
+                if w_cnt > 0:
+                    for k in range(w_cnt):
+                        mean_ret += window[k]
+                    mean_ret /= Scalar[DT](w_cnt)
+                print(
+                    "  step", step, " mean_ret(100)=", mean_ret,
+                    " wm=", self.last_wm_loss(),
+                    " pi=", self.last_pi_loss(), " (", elapsed, "s )",
+                )
+
+        if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
+            self.save_state(checkpoint_path)
+        return best

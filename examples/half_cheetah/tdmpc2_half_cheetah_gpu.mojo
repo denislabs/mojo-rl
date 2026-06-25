@@ -1,45 +1,51 @@
-"""TD-MPC2 (deep_agents) — HalfCheetah training (GPU, MPC-off).
+"""TD-MPC2 (deep_agents) — HalfCheetah training (GPU) via the `agent.train` facade.
 
-The real-target harness for the deep_agents TD-MPC2 port. Built for the
-NVIDIA run (`pixi run -e nvidia`): on CUDA the GPU path is fast (low
-per-launch overhead + grouped multi-tensor Adam + big-matmul-dominated),
-whereas on Apple/Metal TD-MPC2 is kernel-launch-bound and CPU is faster
-(see tests/deep_agents/test_tdmpc2_perf.mojo). Acting is MPC-off
-(a = π(encode(obs))); MPPI planning is a later phase.
+Mirrors `examples/humanoid/sac_humanoid_training_gpu.mojo`: build the agent
+through the `TDMPC2[...]` preset (config.mojo, reference-tuned defaults), then
+run a SINGLE `agent.train[...](env, TOTAL, ...)` call. The driver internalizes
+the collect → record → train_step loop plus warmup, periodic deterministic eval
+(isolated env), logging, and checkpointing — no hand-rolled loop here.
+
+Built for the NVIDIA run (`pixi run -e nvidia`): on CUDA the GPU path is fast
+(low per-launch overhead + grouped multi-tensor Adam + big-matmul-dominated),
+whereas on Apple/Metal TD-MPC2 is kernel-launch-bound and CPU is faster (see
+tests/deep_agents/test_tdmpc2_perf.mojo). TD-MPC2 acts single-env (the MPPI
+planner + world-model BPTT are per-env), so there is no batched driver.
+
+Acting mode (comptime `USE_MPC`):
+  * False → `a = π(encode(obs))` (MPC-off, fast).
+  * True  → `a = MPPI plan` over the world model (`select_action_mpc`, GPU
+    only). Much heavier per env step; `MPC_*` set the planning budget
+    (reference TD-MPC2 is 512/24/64/6 — start lighter for a feasible run).
 
 HalfCheetah (Phyics3dEnv, MuJoCo-style):
   * 17D obs, 6D action (joint torques in [-1,1]).
-  * No early termination — truncates at the episode horizon, so we record
-    done=0 (the value bootstrap must continue across truncation).
+  * No early termination — truncates at the horizon, so the driver records
+    `done=0` throughout (the value bootstrap continues across truncation).
   * Reward ≈ forward velocity − control cost; good policies reach a few
     thousand return / 1000-step episode.
 
 Dims follow the reference (latent 512, mlp 512, enc 256, num_bins 101,
-num_q 5, horizon 3). Drop NUM_STEPS / dims for a quick smoke.
+num_q 5, horizon 3). Drop TOTAL / dims for a quick smoke.
 
 Run:
     pixi run -e nvidia mojo run -I . examples/half_cheetah/tdmpc2_half_cheetah_gpu.mojo
 """
 
-from std.memory import alloc
-from std.random import random_float64, seed
-from std.math import isfinite
+from std.random import seed
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent
 from mojo_rl.deep_agents.tdmpc2.config import TDMPC2
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
 # ── target: "gpu" for the NVIDIA run; "cpu" works too (slower at this scale).
 comptime TARGET = "gpu"
-# ── MPC: True → act via MPPI planning (select_action_mpc, GPU only). Much
-#    heavier per env step than MPC-off (a full plan per action). MPC_* set the
-#    planning budget; reference TD-MPC2 is 512/24/64/6 — start lighter for a
-#    feasible first run and bump once it's working.
+# ── MPC: True → act via MPPI planning (GPU only, heavy). MPC_* set the budget;
+#    reference TD-MPC2 is 512/24/64/6 — start lighter for a feasible first run.
 comptime USE_MPC = True
 comptime MPC_SAMPLES = 256
 comptime MPC_PI_TRAJS = 12
@@ -65,45 +71,15 @@ comptime LEARN_START = 5_000
 comptime TRAIN_EVERY = 1
 comptime TOTAL = 1_000_000
 comptime EVAL_EVERY = 20_000
-comptime DIAG_EVERY = 1_000   # flush_metrics → logger cadence
+comptime EVAL_EPS = 2
+comptime EP_LEN = 1_000
+comptime DIAG_EVERY = 1_000   # metric-bundle flush → logger cadence
+comptime PRINT_EVERY = 20_000
 comptime CHECKPOINT_EVERY = 50_000
 # Mode-specific path so an MPC run never overwrites an MPC-off checkpoint.
 comptime CHECKPOINT_PATH = "tdmpc2_half_cheetah_mpc.ckpt" if USE_MPC else "tdmpc2_half_cheetah_mpcoff.ckpt"
-comptime EVAL_EPS = 2
-comptime EP_LEN = 1_000
 
 comptime Env = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]
-comptime Ag = TDMPC2Agent[
-    TARGET, OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H, CAP,
-    MPC_SAMPLES, MPC_PI_TRAJS, MPC_ELITES, MPC_ITERS,
-]
-
-
-def _greedy_eval(mut ag: Ag, mut env: Env) raises -> Scalar[DT]:
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
-    var total: Scalar[DT] = 0.0
-    for _ep in range(EVAL_EPS):
-        var obs = env.reset_obs_list()
-        comptime if USE_MPC:
-            ag.mpc_start_episode()
-        for _s in range(EP_LEN):
-            for i in range(OBS):
-                obsbuf[i] = obs[i]
-            comptime if USE_MPC:
-                ag.select_action_mpc(obsbuf, actbuf, explore=False)
-            else:
-                ag.select_greedy_action(obsbuf, actbuf)
-            var al = List[Scalar[DT]]()
-            for j in range(ACT):
-                al.append(actbuf[j])
-            var r = env.step_continuous_vec[DT](al)
-            total += r[1]
-            obs = r[0].copy()
-            if r[2]:
-                break
-    obsbuf.free(); actbuf.free()
-    return total / Scalar[DT](EVAL_EPS)
 
 
 def main() raises:
@@ -115,11 +91,16 @@ def main() raises:
     print("=" * 70)
     seed(0)
     var ctx = DeviceContext()
+
+    # Two CPU-stepped HalfCheetah envs: one for collection, one isolated for
+    # deterministic eval (so eval resets never disturb the training rollout).
     var env = Env()
-    # Build through the Design-F preset (config.mojo): reads like a
-    # constructor, applies the reference-tuned defaults (gamma 0.99 / tau
-    # 0.01 / enc_lr_scale 0.3 / …), returns exactly `Ag`. Architecture dims
-    # + MPC budget are spelled out here to match the `Ag` alias above.
+    var eval_env = Env()
+    var eval_env_ptr = UnsafePointer(to=eval_env)
+
+    # Build through the Design-F preset (config.mojo): reads like a constructor,
+    # applies the reference-tuned defaults (gamma 0.99 / tau 0.01 /
+    # enc_lr_scale 0.3 / …), returns exactly the TDMPC2Agent we train below.
     var ag = TDMPC2[
         TARGET, OBS, ACT, B, CAP, ENC, LATENT, MLP, BINS, SN, VMIN, VMAX, H,
         MPC_SAMPLES, MPC_PI_TRAJS, MPC_ELITES, MPC_ITERS,
@@ -138,72 +119,39 @@ def main() raises:
     )
     logger.set_config("algorithm", "TD-MPC2")
     logger.set_config("env", "HalfCheetah")
-    var mpc_cfg = String("0")
-    comptime if USE_MPC:
-        mpc_cfg = String("1")
-    logger.set_config("mpc", mpc_cfg)
+    logger.set_config("mpc", String("1") if USE_MPC else String("0"))
     var logger_ptr = UnsafePointer(to=logger)
     if env_vars.get("RL_MONITOR_URL", "").byte_length() > 0:
         print("  logger: ENABLED → streaming to dashboard each", DIAG_EVERY, "steps")
     else:
         print("  logger: DISABLED — RL_MONITOR_URL not found in .env (no metrics sent)")
 
-    var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
-    var best: Scalar[DT] = -1.0e9
+    # ─── Single train() call — single-env TD-MPC2 driver ─────────────────
+    print("Starting training...")
+    print("-" * 70)
     var t_start = perf_counter_ns()
+    var best = ag.train[Env, RemoteLogger, Env, USE_MPC](
+        env,
+        TOTAL,
+        train_every=TRAIN_EVERY,
+        print_every=PRINT_EVERY,
+        verbose=True,
+        logger=logger_ptr,
+        diag_every=DIAG_EVERY,
+        checkpoint_path=CHECKPOINT_PATH,
+        checkpoint_every=CHECKPOINT_EVERY,
+        eval_env=eval_env_ptr,
+        eval_every=EVAL_EVERY,
+        eval_episodes=EVAL_EPS,
+        eval_max_steps=EP_LEN,
+    )
+    _ = eval_env  # lifetime extender for eval_env_ptr
+    var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
 
-    for step in range(TOTAL):
-        for i in range(OBS):
-            obsbuf[i] = obs[i]
-        if step < LEARN_START:
-            for j in range(ACT):
-                actbuf[j] = Scalar[DT](random_float64() * 2.0 - 1.0)
-        else:
-            comptime if USE_MPC:
-                ag.select_action_mpc(obsbuf, actbuf, explore=True)
-            else:
-                ag.select_action(obsbuf, actbuf, explore=True)
-        var al = List[Scalar[DT]]()
-        for j in range(ACT):
-            al.append(actbuf[j])
-        var res = env.step_continuous_vec[DT](al)
-        # Truncation-only → record done=0 (bootstrap continues).
-        ag.record(obsbuf, actbuf, res[1], Scalar[DT](0.0))
-        obs = res[0].copy()
-        if res[2]:
-            obs = env.reset_obs_list()
-            comptime if USE_MPC:
-                ag.mpc_start_episode()
-        if step >= LEARN_START and step % TRAIN_EVERY == 0:
-            _ = ag.train_step()
-        if step > 0 and step % DIAG_EVERY == 0:
-            ag.flush_metrics_through_logger[RemoteLogger](logger_ptr, step)
-            # Stream this diag batch now (buffer_size=200 would otherwise hold
-            # ~30 diag intervals before the first POST + run registration).
-            logger.flush()
-        if step > 0 and step % CHECKPOINT_EVERY == 0:
-            ag.save_state(CHECKPOINT_PATH)
-        if step > 0 and step % EVAL_EVERY == 0:
-            var ret = _greedy_eval(ag, env)
-            if ret > best:
-                best = ret
-            var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
-            logger.log_scalar("avg_reward", Float64(ret), step)
-            logger.log_scalar("best_reward", Float64(best), step)
-            print(
-                "  step", step, " eval_return=", ret, " best=", best,
-                " wm=", ag.last_wm_loss(), " pi=", ag.last_pi_loss(),
-                " (", elapsed, "s )",
-            )
-
-    ag.save_state(CHECKPOINT_PATH)
     logger.close()
     _ = logger  # lifetime extender for logger_ptr
     print("=" * 70)
-    print("  FINAL best eval return =", best)
+    print("  FINAL best eval return =", best, " (", elapsed, "s )")
     print("  ( HalfCheetah: >3000 good, >8000 strong )")
     print("  checkpoint:", CHECKPOINT_PATH)
     print("=" * 70)
-    obsbuf.free(); actbuf.free()

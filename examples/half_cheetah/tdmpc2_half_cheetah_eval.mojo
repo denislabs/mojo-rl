@@ -1,8 +1,9 @@
 """TD-MPC2 HalfCheetah — policy-vs-MPC eval on a loaded checkpoint (diagnostic).
 
-Loads a trained checkpoint and evaluates the SAME model two ways:
-  * policy:  a = π(encode(obs))                 (MPC-off acting)
-  * MPC:     a = MPPI plan over the world model  (select_action_mpc)
+Loads a trained checkpoint and evaluates the SAME model two ways via the
+`agent.evaluate[...]` facade:
+  * policy:  a = π(encode(obs))                 (USE_MPC=False)
+  * MPC:     a = MPPI plan over the world model  (USE_MPC=True)
 
 Decisively separates a planning bug from the collection feedback loop:
   - MPC_return ≳ policy_return  → planning works; MPC's training underperformance
@@ -17,11 +18,9 @@ strong MPC-off run. Bump MPC_* toward the 512/24/64/6 reference to test budget.
 Run: `pixi run -e nvidia mojo run -I . examples/half_cheetah/tdmpc2_half_cheetah_eval.mojo`
 """
 
-from std.memory import alloc
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.deep_agents.tdmpc2.agent import TDMPC2Agent
 from mojo_rl.deep_agents.tdmpc2.config import TDMPC2
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
 
@@ -50,37 +49,6 @@ comptime EP_LEN = 1_000
 comptime N_EPS = 5
 
 comptime Env = HalfCheetah[DT, TERMINATE_ON_UNHEALTHY=False]
-comptime Ag = TDMPC2Agent[
-    "gpu", OBS, ENC, ACT, LATENT, MLP, BINS, SN, VMIN, VMAX, B, H, CAP,
-    MPC_SAMPLES, MPC_PI_TRAJS, MPC_ELITES, MPC_ITERS,
-]
-
-
-def _eval(mut ag: Ag, mut env: Env, use_mpc: Bool) raises -> Scalar[DT]:
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
-    var total: Scalar[DT] = 0.0
-    for _ep in range(N_EPS):
-        var obs = env.reset_obs_list()
-        if use_mpc:
-            ag.mpc_start_episode()
-        for _s in range(EP_LEN):
-            for i in range(OBS):
-                obsbuf[i] = obs[i]
-            if use_mpc:
-                ag.select_action_mpc(obsbuf, actbuf, explore=False)
-            else:
-                ag.select_greedy_action(obsbuf, actbuf)
-            var al = List[Scalar[DT]]()
-            for j in range(ACT):
-                al.append(actbuf[j])
-            var r = env.step_continuous_vec[DT](al)
-            total += r[1]
-            obs = r[0].copy()
-            if r[2]:
-                break
-    obsbuf.free(); actbuf.free()
-    return total / Scalar[DT](N_EPS)
 
 
 def main() raises:
@@ -91,16 +59,20 @@ def main() raises:
     print("=" * 70)
     var ctx = DeviceContext()
     var env = Env()
-    # Build through the Design-F preset (config.mojo) — returns exactly `Ag`.
+    # Build through the Design-F preset (config.mojo) — returns the agent.
     var ag = TDMPC2[
         "gpu", OBS, ACT, B, CAP, ENC, LATENT, MLP, BINS, SN, VMIN, VMAX, H,
         MPC_SAMPLES, MPC_PI_TRAJS, MPC_ELITES, MPC_ITERS,
     ](ctx=ctx, action_scale=Scalar[DT](1.0), learning_starts=0)
     ag.load_state(CKPT)
 
-    var pol = _eval(ag, env, False)
+    var pol = ag.evaluate[Env, USE_MPC=False](
+        env, episodes=N_EPS, max_steps=EP_LEN
+    )
     print("  policy eval return =", pol)
-    var mpc = _eval(ag, env, True)
+    var mpc = ag.evaluate[Env, USE_MPC=True](
+        env, episodes=N_EPS, max_steps=EP_LEN
+    )
     print("  MPC    eval return =", mpc)
     print("=" * 70)
     if mpc >= pol:
