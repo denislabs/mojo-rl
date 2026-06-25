@@ -708,6 +708,153 @@ struct DreamerState[
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Device-resident WM-BPTT kernels (Stage 2: move the per-step reset masks /
+# carry threading / head-input assembly / loss accumulation off host). The
+# carry sequence (cdeter/cstoch), tokens and minibatch live on-device for the
+# whole scan; per-step net forwards/vjps queue on the same stream with these
+# kernels — ONE sync at the end. Each thread owns a disjoint batch row `b`
+# (no cross-thread RMW). Mirrors `_wm_cpu` so the CPU↔GPU parity gate holds.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _zero_k[N_: Int](buf: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin]):
+    var i = Int(global_idx.x)
+    if i < N_:
+        buf[i] = Scalar[DT](0.0)
+
+
+def _wm_slice_store_k[N_: Int, T_: Int](
+    src: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(T_ * N_), MutAnyOrigin],
+    t: Int,
+):
+    """Store the per-step buffer src[N] into the time-major dst[T,N] at step t."""
+    var i = Int(global_idx.x)
+    if i < N_:
+        dst[t * N_ + i] = rebind[Scalar[DT]](src[i])
+
+
+def _wm_carry_in_k[
+    B_: Int, D_: Int, SC_: Int, ACT_: Int, TOK_: Int, T_: Int
+](
+    cdeter: LayoutTensor[DT, Layout.row_major((T_ + 1) * B_ * D_), MutAnyOrigin],
+    cstoch: LayoutTensor[DT, Layout.row_major((T_ + 1) * B_ * SC_), MutAnyOrigin],
+    mbact: LayoutTensor[DT, Layout.row_major(B_ * T_ * ACT_), MutAnyOrigin],
+    toks: LayoutTensor[DT, Layout.row_major(T_ * B_ * TOK_), MutAnyOrigin],
+    mbfst: LayoutTensor[DT, Layout.row_major(B_ * (T_ + 1)), MutAnyOrigin],
+    cin_d: LayoutTensor[DT, Layout.row_major(B_ * D_), MutAnyOrigin],
+    cin_s: LayoutTensor[DT, Layout.row_major(B_ * SC_), MutAnyOrigin],
+    at: LayoutTensor[DT, Layout.row_major(B_ * ACT_), MutAnyOrigin],
+    tkscr: LayoutTensor[DT, Layout.row_major(B_ * TOK_), MutAnyOrigin],
+    t: Int,
+):
+    """Masked carry/action input + token window for core step t (keep = cut the
+    BPTT carry at an episode boundary, from mbfst[b,t+1])."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        var keep = (
+            Scalar[DT](0.0) if rebind[Scalar[DT]](mbfst[b * (T_ + 1) + t + 1]) >= Scalar[DT](0.5)
+            else Scalar[DT](1.0)
+        )
+        var dbase = t * B_ * D_
+        var sbase = t * B_ * SC_
+        for k in range(D_):
+            cin_d[b * D_ + k] = keep * rebind[Scalar[DT]](cdeter[dbase + b * D_ + k])
+        for k in range(SC_):
+            cin_s[b * SC_ + k] = keep * rebind[Scalar[DT]](cstoch[sbase + b * SC_ + k])
+        for k in range(ACT_):
+            at[b * ACT_ + k] = keep * rebind[Scalar[DT]](mbact[(b * T_ + t) * ACT_ + k])
+        for k in range(TOK_):
+            tkscr[b * TOK_ + k] = rebind[Scalar[DT]](toks[t * B_ * TOK_ + b * TOK_ + k])
+
+
+def _wm_carry_out_k[B_: Int, D_: Int, SC_: Int, CARRY_: Int, T_: Int](
+    outbuf: LayoutTensor[DT, Layout.row_major(B_ * CARRY_), MutAnyOrigin],
+    cdeter: LayoutTensor[DT, Layout.row_major((T_ + 1) * B_ * D_), MutAnyOrigin],
+    cstoch: LayoutTensor[DT, Layout.row_major((T_ + 1) * B_ * SC_), MutAnyOrigin],
+    klbuf: LayoutTensor[DT, Layout.row_major(T_ * B_ * 2), MutAnyOrigin],
+    t: Int,
+):
+    """Extract next carry (deter/stoch) + the (dyn_kl, rep_kl) losses from the
+    core output into the time-major carry sequence + klbuf[t]."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        var ndbase = (t + 1) * B_ * D_
+        var snbase = (t + 1) * B_ * SC_
+        for k in range(D_):
+            cdeter[ndbase + b * D_ + k] = rebind[Scalar[DT]](outbuf[b * CARRY_ + 2 + k])
+        for k in range(SC_):
+            cstoch[snbase + b * SC_ + k] = rebind[Scalar[DT]](outbuf[b * CARRY_ + 2 + D_ + k])
+        klbuf[(t * B_ + b) * 2 + 0] = rebind[Scalar[DT]](outbuf[b * CARRY_ + 0])
+        klbuf[(t * B_ + b) * 2 + 1] = rebind[Scalar[DT]](outbuf[b * CARRY_ + 1])
+
+
+def _wm_head_in_k[B_: Int, D_: Int, SC_: Int, OBS_: Int, T_: Int](
+    cdeter: LayoutTensor[DT, Layout.row_major((T_ + 1) * B_ * D_), MutAnyOrigin],
+    cstoch: LayoutTensor[DT, Layout.row_major((T_ + 1) * B_ * SC_), MutAnyOrigin],
+    mbobs: LayoutTensor[DT, Layout.row_major(B_ * (T_ + 1) * OBS_), MutAnyOrigin],
+    mbrew: LayoutTensor[DT, Layout.row_major(B_ * T_), MutAnyOrigin],
+    mbdne: LayoutTensor[DT, Layout.row_major(B_ * T_), MutAnyOrigin],
+    ndn: LayoutTensor[DT, Layout.row_major(B_ * D_), MutAnyOrigin],
+    snn: LayoutTensor[DT, Layout.row_major(B_ * SC_), MutAnyOrigin],
+    rtg: LayoutTensor[DT, Layout.row_major(B_ * OBS_), MutAnyOrigin],
+    rwt: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+    cnt: LayoutTensor[DT, Layout.row_major(B_), MutAnyOrigin],
+    horizon: Scalar[DT],
+    t: Int,
+):
+    """Head inputs (next carry) + decoder/reward/continue targets for step t."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        var ndbase = (t + 1) * B_ * D_
+        var snbase = (t + 1) * B_ * SC_
+        for k in range(D_):
+            ndn[b * D_ + k] = rebind[Scalar[DT]](cdeter[ndbase + b * D_ + k])
+        for k in range(SC_):
+            snn[b * SC_ + k] = rebind[Scalar[DT]](cstoch[snbase + b * SC_ + k])
+        for k in range(OBS_):
+            rtg[b * OBS_ + k] = rebind[Scalar[DT]](mbobs[(b * (T_ + 1) + t + 1) * OBS_ + k])
+        rwt[b] = rebind[Scalar[DT]](mbrew[b * T_ + t])
+        cnt[b] = (Scalar[DT](1.0) - rebind[Scalar[DT]](mbdne[b * T_ + t])) * (
+            Scalar[DT](1.0) - Scalar[DT](1.0) / horizon
+        )
+
+
+def _wm_enc_in_k[B_: Int, OBS_: Int, T_: Int](
+    mbobs: LayoutTensor[DT, Layout.row_major(B_ * (T_ + 1) * OBS_), MutAnyOrigin],
+    ob: LayoutTensor[DT, Layout.row_major(B_ * OBS_), MutAnyOrigin],
+    t: Int,
+):
+    """Encoder input window = obs frame t+1 (batch-major)."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        for k in range(OBS_):
+            ob[b * OBS_ + k] = rebind[Scalar[DT]](mbobs[(b * (T_ + 1) + t + 1) * OBS_ + k])
+
+
+def _wm_keep_mask_k[B_: Int, D_: Int, SC_: Int, T_: Int](
+    gdt: LayoutTensor[DT, Layout.row_major(B_ * D_), MutAnyOrigin],
+    gst: LayoutTensor[DT, Layout.row_major(B_ * SC_), MutAnyOrigin],
+    mbfst: LayoutTensor[DT, Layout.row_major(B_ * (T_ + 1)), MutAnyOrigin],
+    gcd: LayoutTensor[DT, Layout.row_major(B_ * D_), MutAnyOrigin],
+    gcs: LayoutTensor[DT, Layout.row_major(B_ * SC_), MutAnyOrigin],
+    t: Int,
+):
+    """Cut the BPTT carry gradient at an episode boundary: gcd/gcs = keep·core
+    grad_input (keep from mbfst[b,t+1])."""
+    var b = Int(global_idx.x)
+    if b < B_:
+        var keep = (
+            Scalar[DT](0.0) if rebind[Scalar[DT]](mbfst[b * (T_ + 1) + t + 1]) >= Scalar[DT](0.5)
+            else Scalar[DT](1.0)
+        )
+        for k in range(D_):
+            gcd[b * D_ + k] = keep * rebind[Scalar[DT]](gdt[b * D_ + k])
+        for k in range(SC_):
+            gcs[b * SC_ + k] = keep * rebind[Scalar[DT]](gst[b * SC_ + k])
+
+
+# ──────────────────────────────────────────────────────────────────────
 # WMStep — WM-BPTT over one sampled length-T window. Trains enc/core/dec/
 # rew/con; fills state.cdeter / cstoch with the posterior carry sequence.
 # ──────────────────────────────────────────────────────────────────────
@@ -753,6 +900,22 @@ struct WMStep[
     var tkscr: Tensor    # [B*TOKEN] enc recompute output
     var gtok: Tensor     # [B*TOKEN] token grad window
     var gobs: Tensor     # [B*OBS]   obs grad (discarded)
+    # ── device-resident WM-BPTT buffers (GPU only; empty Tensors on CPU). The
+    #    carry sequence / tokens / minibatch stay on-device for the whole scan;
+    #    klbuf/obsl/rewl/conl accumulate the per-(t,b) losses for ONE end-of-step
+    #    download (last_wm_loss + WM dbg). See `_wm_gpu`. ──
+    var mbobs_d: Tensor   # [B*(T+1)*OBS]
+    var mbact_d: Tensor   # [B*T*ACT]
+    var mbrew_d: Tensor   # [B*T]
+    var mbdne_d: Tensor   # [B*T]
+    var mbfst_d: Tensor   # [B*(T+1)]
+    var cdeter_d: Tensor  # [(T+1)*B*DETER]
+    var cstoch_d: Tensor  # [(T+1)*B*SC]
+    var toks_d: Tensor    # [T*B*TOKEN]
+    var klbuf_d: Tensor   # [T*B*2]  (dyn_kl, rep_kl) per (t,b)
+    var obsl_d: Tensor    # [T*B]
+    var rewl_d: Tensor    # [T*B]
+    var conl_d: Tensor    # [T*B]
 
     def __init__(out self):
         self.dyn_scale = Scalar[DT](0.5)
@@ -776,6 +939,18 @@ struct WMStep[
         self.tkscr = Tensor()
         self.gtok = Tensor()
         self.gobs = Tensor()
+        self.mbobs_d = Tensor()
+        self.mbact_d = Tensor()
+        self.mbrew_d = Tensor()
+        self.mbdne_d = Tensor()
+        self.mbfst_d = Tensor()
+        self.cdeter_d = Tensor()
+        self.cstoch_d = Tensor()
+        self.toks_d = Tensor()
+        self.klbuf_d = Tensor()
+        self.obsl_d = Tensor()
+        self.rewl_d = Tensor()
+        self.conl_d = Tensor()
 
     @staticmethod
     def make[target: StaticString](ctx: Optional[DeviceContext] = None) raises -> Self:
@@ -809,6 +984,21 @@ struct WMStep[
         s.tkscr = _mk[target](BV * TOK, ctx)
         s.gtok = _mk[target](BV * TOK, ctx)
         s.gobs = _mk[target](BV * OBSD, ctx)
+        # device-resident WM-BPTT buffers (GPU only).
+        comptime Tt = Self.T
+        comptime if target == "gpu":
+            s.mbobs_d = _mk[target](BV * (Tt + 1) * OBSD, ctx)
+            s.mbact_d = _mk[target](BV * Tt * ACTD, ctx)
+            s.mbrew_d = _mk[target](BV * Tt, ctx)
+            s.mbdne_d = _mk[target](BV * Tt, ctx)
+            s.mbfst_d = _mk[target](BV * (Tt + 1), ctx)
+            s.cdeter_d = _mk[target]((Tt + 1) * BV * D, ctx)
+            s.cstoch_d = _mk[target]((Tt + 1) * BV * SCl, ctx)
+            s.toks_d = _mk[target](Tt * BV * TOK, ctx)
+            s.klbuf_d = _mk[target](Tt * BV * 2, ctx)
+            s.obsl_d = _mk[target](Tt * BV, ctx)
+            s.rewl_d = _mk[target](Tt * BV, ctx)
+            s.conl_d = _mk[target](Tt * BV, ctx)
         return s^
 
     def step[
@@ -1104,183 +1294,183 @@ struct WMStep[
         mut orew: DreamerOpt,
         mut ocon: DreamerOpt,
     ) raises:
-        # GPU WM-BPTT scan — storage port of the legacy `_wm_gpu` (device nets/
-        # graphs run on `.dev`; the per-step reset masking, carry threading and
-        # head-loss accumulation marshal through host `.data` via upload/download
-        # of the SMALL scratch Tensors). Structurally mirrors `_wm_cpu` so the
-        # CPU↔GPU parity test holds; the only erasure is the GPU kernel ABI.
+        # GPU WM-BPTT scan — device-resident (Stage 2). The carry sequence
+        # (cdeter_d/cstoch_d), tokens (toks_d) and minibatch live on-device for
+        # the whole scan; per-step reset masks / carry threading / head-input
+        # assembly run as kernels and the head losses accumulate into device
+        # buffers (klbuf/obsl/rewl/conl) for ONE end-of-step download. Net
+        # forwards/vjps + kernels queue on the ctx stream → a single sync at the
+        # end. Mirrors `_wm_cpu` so the CPU↔GPU parity gate holds.
         comptime D = Self.DETER
         comptime SCl = Self.SC
         comptime TOK = Self.TOKEN
         comptime CARRYl = Self.CARRY
         comptime OBSD = Self.OBS
         comptime ACTD = Self.ACT
+        comptime Tt = Self.T
+        comptime CD = (Tt + 1) * Self.B * D
+        comptime CS = (Tt + 1) * Self.B * SCl
+        comptime TKD = Tt * Self.B * TOK
         var DYN = self.dyn_scale
         var REP = self.rep_scale
         var ctx = st.ctx.value()
+        comptime nbB = (Self.B + TPB - 1) // TPB
+        comptime nbTOK = (Self.B * TOK + TPB - 1) // TPB
 
-        # ── encode tokens: enc(obs frame t+1) → toks[t] (host-staged) ──
-        # `self.ob` is the encoder input window; fill on host then upload. The
-        # token sequence is staged in host `st.toks.data` (CPU-resident); the
-        # per-step window is re-uploaded into `self.tkscr` for the device core.
+        # ── one-time minibatch upload (batch-major device mirrors) ──
+        for i in range(Self.B * (Self.T + 1) * OBSD):
+            self.mbobs_d.data[i] = st.mb_obs.data[i]
+        for i in range(Self.B * Self.T * ACTD):
+            self.mbact_d.data[i] = st.mb_act.data[i]
+        for i in range(Self.B * Self.T):
+            self.mbrew_d.data[i] = st.mb_rew.data[i]
+            self.mbdne_d.data[i] = st.mb_dne.data[i]
+        for i in range(Self.B * (Self.T + 1)):
+            self.mbfst_d.data[i] = st.mb_fst.data[i]
+        self.mbobs_d.upload(ctx)
+        self.mbact_d.upload(ctx)
+        self.mbrew_d.upload(ctx)
+        self.mbdne_d.upload(ctx)
+        self.mbfst_d.upload(ctx)
+
+        # ── encode tokens: enc(obs frame t+1) → toks_d[t] (device-resident) ──
         for t in range(Self.T):
-            for b in range(Self.B):
-                for k in range(OBSD):
-                    self.ob.data[b * OBSD + k] = st.mb_obs.data[
-                        (b * (Self.T + 1) + t + 1) * OBSD + k
-                    ]
-            self.ob.upload(ctx)
+            ctx.enqueue_function[_wm_enc_in_k[Self.B, OBSD, Tt]](
+                self.mbobs_d.lt["gpu", Layout.row_major(Self.B * (Tt + 1) * OBSD)](),
+                self.ob.lt["gpu", Layout.row_major(Self.B * OBSD)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
             enc.forward[target, Self.B](TensorRefs[1](self.ob), self.tkscr, ctx)
-            self.tkscr.download(ctx)
-            var base = t * Self.B * TOK
-            for i in range(Self.B * TOK):
-                st.toks.data[base + i] = self.tkscr.data[i]
+            ctx.enqueue_function[_wm_slice_store_k[Self.B * TOK, Tt]](
+                self.tkscr.lt["gpu", Layout.row_major(Self.B * TOK)](),
+                self.toks_d.lt["gpu", Layout.row_major(TKD)](),
+                t, grid_dim=nbTOK, block_dim=TPB,
+            )
 
-        # zero carries (host `.data` is authoritative for the GPU path).
-        for i in range(Self.B * D):
-            st.cdeter.data[i] = 0.0
-        for i in range(Self.B * SCl):
-            st.cstoch.data[i] = 0.0
+        # zero the carry sequence (init carry at index 0 must be 0).
+        ctx.enqueue_function[_zero_k[CD]](
+            self.cdeter_d.lt["gpu", Layout.row_major(CD)](),
+            grid_dim=(CD + TPB - 1) // TPB, block_dim=TPB,
+        )
+        ctx.enqueue_function[_zero_k[CS]](
+            self.cstoch_d.lt["gpu", Layout.row_major(CS)](),
+            grid_dim=(CS + TPB - 1) // TPB, block_dim=TPB,
+        )
 
-        var total: Scalar[DT] = 0.0
-        # per-component accumulators (per-transition means → metrics)
-        var acc_dyn: Scalar[DT] = 0.0
-        var acc_rep: Scalar[DT] = 0.0
-        var acc_obs: Scalar[DT] = 0.0
-        var acc_rew: Scalar[DT] = 0.0
-        var acc_con: Scalar[DT] = 0.0
-        # ── forward scan ──
+        # ── forward scan (no per-step host sync) ──
         for t in range(Self.T):
-            var dbase = t * Self.B * D
-            var sbase = t * Self.B * SCl
-            for b in range(Self.B):
-                var keep = (
-                    Scalar[DT](0.0) if st.mb_fst.data[b * (Self.T + 1) + t + 1] >= Scalar[DT](0.5)
-                    else Scalar[DT](1.0)
-                )
-                for k in range(D):
-                    self.cin_d.data[b * D + k] = keep * st.cdeter.data[dbase + b * D + k]
-                for k in range(SCl):
-                    self.cin_s.data[b * SCl + k] = keep * st.cstoch.data[sbase + b * SCl + k]
-                for k in range(ACTD):
-                    self.at.data[b * ACTD + k] = keep * st.mb_act.data[(b * Self.T + t) * ACTD + k]
-            for i in range(Self.B * TOK):
-                self.tkscr.data[i] = st.toks.data[t * Self.B * TOK + i]
-            self.cin_d.upload(ctx)
-            self.cin_s.upload(ctx)
-            self.at.upload(ctx)
-            self.tkscr.upload(ctx)
+            ctx.enqueue_function[_wm_carry_in_k[Self.B, D, SCl, ACTD, TOK, Tt]](
+                self.cdeter_d.lt["gpu", Layout.row_major(CD)](),
+                self.cstoch_d.lt["gpu", Layout.row_major(CS)](),
+                self.mbact_d.lt["gpu", Layout.row_major(Self.B * Tt * ACTD)](),
+                self.toks_d.lt["gpu", Layout.row_major(TKD)](),
+                self.mbfst_d.lt["gpu", Layout.row_major(Self.B * (Tt + 1))](),
+                self.cin_d.lt["gpu", Layout.row_major(Self.B * D)](),
+                self.cin_s.lt["gpu", Layout.row_major(Self.B * SCl)](),
+                self.at.lt["gpu", Layout.row_major(Self.B * ACTD)](),
+                self.tkscr.lt["gpu", Layout.row_major(Self.B * TOK)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
             core.set_input["deter", Self.B](self.cin_d, ctx)
             core.set_input["stoch", Self.B](self.cin_s, ctx)
             core.set_input["action", Self.B](self.at, ctx)
             core.set_input["tokens", Self.B](self.tkscr, ctx)
             core.forward[Self.B, target](self.outbuf, ctx)
-            self.outbuf.download(ctx)
-            var ndbase = (t + 1) * Self.B * D
-            var snbase = (t + 1) * Self.B * SCl
-            for b in range(Self.B):
-                for k in range(D):
-                    st.cdeter.data[ndbase + b * D + k] = self.outbuf.data[b * CARRYl + 2 + k]
-                for k in range(SCl):
-                    st.cstoch.data[snbase + b * SCl + k] = self.outbuf.data[b * CARRYl + 2 + D + k]
-                total += DYN * self.outbuf.data[b * CARRYl + 0] + REP * self.outbuf.data[b * CARRYl + 1]
-                acc_dyn += self.outbuf.data[b * CARRYl + 0]
-                acc_rep += self.outbuf.data[b * CARRYl + 1]
-            # head inputs (next carry) + targets — fill host, upload.
-            for b in range(Self.B):
-                for k in range(D):
-                    self.ndn.data[b * D + k] = st.cdeter.data[ndbase + b * D + k]
-                for k in range(SCl):
-                    self.snn.data[b * SCl + k] = st.cstoch.data[snbase + b * SCl + k]
-                for k in range(OBSD):
-                    self.rtg.data[b * OBSD + k] = st.mb_obs.data[
-                        (b * (Self.T + 1) + t + 1) * OBSD + k
-                    ]
-                self.rwt.data[b] = st.mb_rew.data[b * Self.T + t]
-                self.cnt.data[b] = (Scalar[DT](1.0) - st.mb_dne.data[b * Self.T + t]) * (
-                    Scalar[DT](1.0) - Scalar[DT](1.0) / self.horizon
-                )
-            self.ndn.upload(ctx)
-            self.snn.upload(ctx)
-            self.rtg.upload(ctx)
-            self.rwt.upload(ctx)
-            self.cnt.upload(ctx)
+            ctx.enqueue_function[_wm_carry_out_k[Self.B, D, SCl, CARRYl, Tt]](
+                self.outbuf.lt["gpu", Layout.row_major(Self.B * CARRYl)](),
+                self.cdeter_d.lt["gpu", Layout.row_major(CD)](),
+                self.cstoch_d.lt["gpu", Layout.row_major(CS)](),
+                self.klbuf_d.lt["gpu", Layout.row_major(Tt * Self.B * 2)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
+            ctx.enqueue_function[_wm_head_in_k[Self.B, D, SCl, OBSD, Tt]](
+                self.cdeter_d.lt["gpu", Layout.row_major(CD)](),
+                self.cstoch_d.lt["gpu", Layout.row_major(CS)](),
+                self.mbobs_d.lt["gpu", Layout.row_major(Self.B * (Tt + 1) * OBSD)](),
+                self.mbrew_d.lt["gpu", Layout.row_major(Self.B * Tt)](),
+                self.mbdne_d.lt["gpu", Layout.row_major(Self.B * Tt)](),
+                self.ndn.lt["gpu", Layout.row_major(Self.B * D)](),
+                self.snn.lt["gpu", Layout.row_major(Self.B * SCl)](),
+                self.rtg.lt["gpu", Layout.row_major(Self.B * OBSD)](),
+                self.rwt.lt["gpu", Layout.row_major(Self.B)](),
+                self.cnt.lt["gpu", Layout.row_major(Self.B)](),
+                self.horizon, t, grid_dim=nbB, block_dim=TPB,
+            )
             dec.set_input["stoch_new", Self.B](self.snn, ctx)
             dec.set_input["nd", Self.B](self.ndn, ctx)
             dec.set_input["rtgt", Self.B](self.rtg, ctx)
             dec.forward[Self.B, target](self.dl, ctx)
-            self.dl.download(ctx)
-            for b in range(Self.B):
-                total += self.dl.data[b]
-                acc_obs += self.dl.data[b]
+            ctx.enqueue_function[_wm_slice_store_k[Self.B, Tt]](
+                self.dl.lt["gpu", Layout.row_major(Self.B)](),
+                self.obsl_d.lt["gpu", Layout.row_major(Tt * Self.B)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
             rew.set_input["nd", Self.B](self.ndn, ctx)
             rew.set_input["stoch_new", Self.B](self.snn, ctx)
             rew.set_input["rtgt", Self.B](self.rwt, ctx)
             rew.forward[Self.B, target](self.dl, ctx)
-            self.dl.download(ctx)
-            for b in range(Self.B):
-                total += self.dl.data[b]
-                acc_rew += self.dl.data[b]
+            ctx.enqueue_function[_wm_slice_store_k[Self.B, Tt]](
+                self.dl.lt["gpu", Layout.row_major(Self.B)](),
+                self.rewl_d.lt["gpu", Layout.row_major(Tt * Self.B)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
             con.set_input["nd", Self.B](self.ndn, ctx)
             con.set_input["stoch_new", Self.B](self.snn, ctx)
             con.set_input["ctgt", Self.B](self.cnt, ctx)
             con.forward[Self.B, target](self.dl, ctx)
-            self.dl.download(ctx)
-            for b in range(Self.B):
-                total += self.dl.data[b]
-                acc_con += self.dl.data[b]
+            ctx.enqueue_function[_wm_slice_store_k[Self.B, Tt]](
+                self.dl.lt["gpu", Layout.row_major(Self.B)](),
+                self.conl_d.lt["gpu", Layout.row_major(Tt * Self.B)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
 
-        # zero grads (enc Module via opt; loss graphs own their params).
+        # zero grads (enc Module via opt; loss graphs own their params) + the
+        # carry-grad accumulators; ones1 = the per-head loss cotangent.
         oe.zero_grad[target, M=Self.EncT](enc, ctx)
         core.zero_grad[target](ctx)
         dec.zero_grad[target](ctx)
         rew.zero_grad[target](ctx)
         con.zero_grad[target](ctx)
-        for i in range(Self.B * D):
-            self.gcd.data[i] = 0.0
-        for i in range(Self.B * SCl):
-            self.gcs.data[i] = 0.0
+        ctx.enqueue_function[_zero_k[Self.B * D]](
+            self.gcd.lt["gpu", Layout.row_major(Self.B * D)](),
+            grid_dim=(Self.B * D + TPB - 1) // TPB, block_dim=TPB,
+        )
+        ctx.enqueue_function[_zero_k[Self.B * SCl]](
+            self.gcs.lt["gpu", Layout.row_major(Self.B * SCl)](),
+            grid_dim=(Self.B * SCl + TPB - 1) // TPB, block_dim=TPB,
+        )
         for b in range(Self.B):
             self.ones1.data[b] = 1.0
         self.ones1.upload(ctx)
-        # ── backward scan ──
+        # ── backward scan (no per-step host sync) ──
         for rev in range(Self.T):
             var t = Self.T - 1 - rev
-            var dbase = t * Self.B * D
-            var sbase = t * Self.B * SCl
-            var ndbase = (t + 1) * Self.B * D
-            var snbase = (t + 1) * Self.B * SCl
-            for b in range(Self.B):
-                var keep = (
-                    Scalar[DT](0.0) if st.mb_fst.data[b * (Self.T + 1) + t + 1] >= Scalar[DT](0.5)
-                    else Scalar[DT](1.0)
-                )
-                for k in range(D):
-                    self.cin_d.data[b * D + k] = keep * st.cdeter.data[dbase + b * D + k]
-                for k in range(SCl):
-                    self.cin_s.data[b * SCl + k] = keep * st.cstoch.data[sbase + b * SCl + k]
-                for k in range(ACTD):
-                    self.at.data[b * ACTD + k] = keep * st.mb_act.data[(b * Self.T + t) * ACTD + k]
-                for k in range(D):
-                    self.ndn.data[b * D + k] = st.cdeter.data[ndbase + b * D + k]
-                for k in range(SCl):
-                    self.snn.data[b * SCl + k] = st.cstoch.data[snbase + b * SCl + k]
-                for k in range(OBSD):
-                    self.rtg.data[b * OBSD + k] = st.mb_obs.data[
-                        (b * (Self.T + 1) + t + 1) * OBSD + k
-                    ]
-                self.rwt.data[b] = st.mb_rew.data[b * Self.T + t]
-                self.cnt.data[b] = (Scalar[DT](1.0) - st.mb_dne.data[b * Self.T + t]) * (
-                    Scalar[DT](1.0) - Scalar[DT](1.0) / self.horizon
-                )
-            self.cin_d.upload(ctx)
-            self.cin_s.upload(ctx)
-            self.at.upload(ctx)
-            self.ndn.upload(ctx)
-            self.snn.upload(ctx)
-            self.rtg.upload(ctx)
-            self.rwt.upload(ctx)
-            self.cnt.upload(ctx)
+            # masked carry/action/tokens input + head inputs/targets (device).
+            ctx.enqueue_function[_wm_carry_in_k[Self.B, D, SCl, ACTD, TOK, Tt]](
+                self.cdeter_d.lt["gpu", Layout.row_major(CD)](),
+                self.cstoch_d.lt["gpu", Layout.row_major(CS)](),
+                self.mbact_d.lt["gpu", Layout.row_major(Self.B * Tt * ACTD)](),
+                self.toks_d.lt["gpu", Layout.row_major(TKD)](),
+                self.mbfst_d.lt["gpu", Layout.row_major(Self.B * (Tt + 1))](),
+                self.cin_d.lt["gpu", Layout.row_major(Self.B * D)](),
+                self.cin_s.lt["gpu", Layout.row_major(Self.B * SCl)](),
+                self.at.lt["gpu", Layout.row_major(Self.B * ACTD)](),
+                self.tkscr.lt["gpu", Layout.row_major(Self.B * TOK)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
+            ctx.enqueue_function[_wm_head_in_k[Self.B, D, SCl, OBSD, Tt]](
+                self.cdeter_d.lt["gpu", Layout.row_major(CD)](),
+                self.cstoch_d.lt["gpu", Layout.row_major(CS)](),
+                self.mbobs_d.lt["gpu", Layout.row_major(Self.B * (Tt + 1) * OBSD)](),
+                self.mbrew_d.lt["gpu", Layout.row_major(Self.B * Tt)](),
+                self.mbdne_d.lt["gpu", Layout.row_major(Self.B * Tt)](),
+                self.ndn.lt["gpu", Layout.row_major(Self.B * D)](),
+                self.snn.lt["gpu", Layout.row_major(Self.B * SCl)](),
+                self.rtg.lt["gpu", Layout.row_major(Self.B * OBSD)](),
+                self.rwt.lt["gpu", Layout.row_major(Self.B)](),
+                self.cnt.lt["gpu", Layout.row_major(Self.B)](),
+                self.horizon, t, grid_dim=nbB, block_dim=TPB,
+            )
             # dec
             dec.set_input["stoch_new", Self.B](self.snn, ctx)
             dec.set_input["nd", Self.B](self.ndn, ctx)
@@ -1301,9 +1491,6 @@ struct WMStep[
             con.vjp[Self.B, target](self.ones1, ctx)
             # assemble the core vjp seed on device via _seed_asm_k (reads the
             # head grad_inputs + carry-grad accumulators gcd/gcs, all device).
-            self.gcd.upload(ctx)
-            self.gcs.upload(ctx)
-            comptime nbB = (Self.B + TPB - 1) // TPB
             ctx.enqueue_function[_seed_asm_k[Self.B, CARRYl, D, SCl]](
                 self.seed.lt["gpu", Layout.row_major(Self.B * CARRYl)](),
                 self.gcd.lt["gpu", Layout.row_major(Self.B * D)](),
@@ -1316,10 +1503,6 @@ struct WMStep[
                 con.grad_input["stoch_new"]().lt["gpu", Layout.row_major(Self.B * SCl)](),
                 DYN, REP, grid_dim=nbB, block_dim=TPB,
             )
-            # tokens window for step t
-            for i in range(Self.B * TOK):
-                self.tkscr.data[i] = st.toks.data[t * Self.B * TOK + i]
-            self.tkscr.upload(ctx)
             core.set_input["deter", Self.B](self.cin_d, ctx)
             core.set_input["stoch", Self.B](self.cin_s, ctx)
             core.set_input["action", Self.B](self.at, ctx)
@@ -1327,29 +1510,23 @@ struct WMStep[
             core.forward[Self.B, target](self.outbuf, ctx)
             core.vjp[Self.B, target](self.seed, ctx)
             # Finding 3: cut the BPTT carry gradient at an episode boundary —
-            # row-scale the core grad_inputs by the keep mask into gcd/gcs.
-            ref gdt = core.grad_input["deter"]()
-            ref gst = core.grad_input["stoch"]()
-            gdt.download(ctx)
-            gst.download(ctx)
-            for b in range(Self.B):
-                var keep = (
-                    Scalar[DT](0.0) if st.mb_fst.data[b * (Self.T + 1) + t + 1] >= Scalar[DT](0.5)
-                    else Scalar[DT](1.0)
-                )
-                for k in range(D):
-                    self.gcd.data[b * D + k] = keep * gdt.data[b * D + k]
-                for k in range(SCl):
-                    self.gcs.data[b * SCl + k] = keep * gst.data[b * SCl + k]
+            # row-scale the core grad_inputs by the keep mask into gcd/gcs (device).
+            ctx.enqueue_function[_wm_keep_mask_k[Self.B, D, SCl, Tt]](
+                core.grad_input["deter"]().lt["gpu", Layout.row_major(Self.B * D)](),
+                core.grad_input["stoch"]().lt["gpu", Layout.row_major(Self.B * SCl)](),
+                self.mbfst_d.lt["gpu", Layout.row_major(Self.B * (Tt + 1))](),
+                self.gcd.lt["gpu", Layout.row_major(Self.B * D)](),
+                self.gcs.lt["gpu", Layout.row_major(Self.B * SCl)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
             # encoder backward — re-encode obs frame t+1, vjp the token grad.
             ref gtok = core.grad_input["tokens"]()
             ctx.enqueue_copy(self.gtok.dev.value(), gtok.dev.value())
-            for b in range(Self.B):
-                for k in range(OBSD):
-                    self.ob.data[b * OBSD + k] = st.mb_obs.data[
-                        (b * (Self.T + 1) + t + 1) * OBSD + k
-                    ]
-            self.ob.upload(ctx)
+            ctx.enqueue_function[_wm_enc_in_k[Self.B, OBSD, Tt]](
+                self.mbobs_d.lt["gpu", Layout.row_major(Self.B * (Tt + 1) * OBSD)](),
+                self.ob.lt["gpu", Layout.row_major(Self.B * OBSD)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
             enc.forward[target, Self.B](TensorRefs[1](self.ob), self.tkscr, ctx)
             enc.vjp[target, Self.B](
                 TensorRefs[1](self.ob), self.gtok, TensorRefs[1](self.gobs), ctx
@@ -1364,7 +1541,37 @@ struct WMStep[
         rew.for_each_param[target](orew, ctx)
         ocon.begin_step()
         con.for_each_param[target](ocon, ctx)
+        # ── end-of-step readout: carry → host (for the AC path) + per-(t,b)
+        #    losses → host (one download each), then sum. ──
+        self.cdeter_d.download(ctx)
+        self.cstoch_d.download(ctx)
+        self.klbuf_d.download(ctx)
+        self.obsl_d.download(ctx)
+        self.rewl_d.download(ctx)
+        self.conl_d.download(ctx)
         ctx.synchronize()
+        for i in range(CD):
+            st.cdeter.data[i] = self.cdeter_d.data[i]
+        for i in range(CS):
+            st.cstoch.data[i] = self.cstoch_d.data[i]
+        var total: Scalar[DT] = 0.0
+        var acc_dyn: Scalar[DT] = 0.0
+        var acc_rep: Scalar[DT] = 0.0
+        var acc_obs: Scalar[DT] = 0.0
+        var acc_rew: Scalar[DT] = 0.0
+        var acc_con: Scalar[DT] = 0.0
+        for i in range(Self.T * Self.B):
+            var dk = self.klbuf_d.data[i * 2 + 0]
+            var rk = self.klbuf_d.data[i * 2 + 1]
+            var ol = self.obsl_d.data[i]
+            var rl = self.rewl_d.data[i]
+            var cl = self.conl_d.data[i]
+            acc_dyn += dk
+            acc_rep += rk
+            acc_obs += ol
+            acc_rew += rl
+            acc_con += cl
+            total += DYN * dk + REP * rk + ol + rl + cl
         var _nbt = Scalar[DT](Self.B * Self.T)
         st.dbg_dyn_kl = acc_dyn / _nbt
         st.dbg_rep_kl = acc_rep / _nbt
