@@ -57,6 +57,7 @@ from mojo_rl.physics2d.constants import (
 
 from .track import TrackGenerator
 from .constants import CRConstants
+from .car_racing_pixel import CarRacingPixel
 
 
 struct CarRacingMB[DTYPE: DType](Copyable, Movable):
@@ -102,6 +103,12 @@ struct CarRacingMB[DTYPE: DType](Copyable, Movable):
     var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
     var _renderer_initialized: Bool
 
+    # CPU pixel-observation frame stack — lets a pixel-trained CNN agent be
+    # eval-rendered with the real SDL color scene (render_frame) while it acts
+    # on the SAME 84x84 grayscale view the GPU CarRacingPixel env produces.
+    var _pixel_stack: List[Scalar[Self.DTYPE]]
+    var _pixel_idx: Int
+
     def __init__(out self, max_steps: Int = CRConstants.MAX_STEPS):
         self.state_buffer = List[Scalar[dtype]](capacity=Self.STATE_SIZE)
         for _ in range(Self.STATE_SIZE):
@@ -121,6 +128,12 @@ struct CarRacingMB[DTYPE: DType](Copyable, Movable):
         self.reset_seed = 0
         self._renderer = None
         self._renderer_initialized = False
+        self._pixel_stack = List[Scalar[Self.DTYPE]](
+            capacity=CarRacingPixel[Self.DTYPE].OBS_DIM
+        )
+        for _ in range(CarRacingPixel[Self.DTYPE].OBS_DIM):
+            self._pixel_stack.append(Scalar[Self.DTYPE](0.0))
+        self._pixel_idx = 0
 
     def __init__(out self, *, copy: Self):
         self.state_buffer = copy.state_buffer.copy()
@@ -138,6 +151,8 @@ struct CarRacingMB[DTYPE: DType](Copyable, Movable):
         self.reset_seed = copy.reset_seed
         self._renderer = None  # do not copy renderer
         self._renderer_initialized = False
+        self._pixel_stack = copy._pixel_stack.copy()
+        self._pixel_idx = copy._pixel_idx
 
     def __init__(out self, *, deinit take: Self):
         self.state_buffer = take.state_buffer^
@@ -153,6 +168,8 @@ struct CarRacingMB[DTYPE: DType](Copyable, Movable):
         self.reset_seed = take.reset_seed
         self._renderer = take._renderer
         self._renderer_initialized = take._renderer_initialized
+        self._pixel_stack = take._pixel_stack^
+        self._pixel_idx = take._pixel_idx
 
     # --- internal tensor views -------------------------------------------
     def _state(self) -> LayoutTensor[
@@ -345,6 +362,86 @@ struct CarRacingMB[DTYPE: DType](Copyable, Movable):
 
     def track_length(self) -> Int:
         return self.track.track_length
+
+    # --- CPU pixel observation (matches the GPU CarRacingPixel rasterizer) -
+    # Same camera + colors as CarRacingPixel._render_pixel (referenced, not
+    # re-derived) so a CNN trained on the GPU pixel env sees in-distribution
+    # input. The track shape differs (faithful CPU vs simplified GPU track) but
+    # the rendered road appearance is identical.
+    def _render_pixel_cpu(self, dx: Int, dy: Int) -> Scalar[Self.DTYPE]:
+        comptime P = CarRacingPixel[Self.DTYPE]
+        var zero = Scalar[dtype](0.0)
+        var camx = (Scalar[dtype](dx) - Scalar[dtype](P.CX)) / Scalar[dtype](
+            P.ZOOM_PX
+        )
+        var camy = (Scalar[dtype](P.CY) - Scalar[dtype](dy)) / Scalar[dtype](
+            P.ZOOM_PX
+        )
+        var acx = camx if camx >= zero else -camx
+        var acy = camy if camy >= zero else -camy
+        if acx < Scalar[dtype](P.CAR_HW) and acy < Scalar[dtype](P.CAR_HL):
+            return Scalar[Self.DTYPE](P.C_CAR)
+
+        var st = self._state()
+        var ho = Self.BODIES_OFFSET
+        var car_x = rebind[Scalar[dtype]](st[0, ho + IDX_X])
+        var car_y = rebind[Scalar[dtype]](st[0, ho + IDX_Y])
+        var a = rebind[Scalar[dtype]](st[0, ho + IDX_ANGLE])
+        var ca = cos(a)
+        var sa = sin(a)
+        var wx = car_x + camx * ca - camy * sa
+        var wy = car_y + camx * sa + camy * ca
+
+        for i in range(self.track.track_length):
+            var t = self.track.track[i]
+            if TileCollision.point_in_quad(
+                wx, wy,
+                Scalar[dtype](t.v0_x), Scalar[dtype](t.v0_y),
+                Scalar[dtype](t.v1_x), Scalar[dtype](t.v1_y),
+                Scalar[dtype](t.v2_x), Scalar[dtype](t.v2_y),
+                Scalar[dtype](t.v3_x), Scalar[dtype](t.v3_y),
+            ):
+                return Scalar[Self.DTYPE](P.C_ROAD)
+        return Scalar[Self.DTYPE](P.C_GRASS)
+
+    def _push_pixel_frame(mut self):
+        comptime P = CarRacingPixel[Self.DTYPE]
+        var base = self._pixel_idx * P.FRAME_SIZE
+        for dy in range(P.OBS_H):
+            for dx in range(P.OBS_W):
+                self._pixel_stack[base + dy * P.OBS_W + dx] = (
+                    self._render_pixel_cpu(dx, dy)
+                )
+        self._pixel_idx = (self._pixel_idx + 1) % P.FRAME_STACK
+
+    def get_pixel_obs(self) -> List[Scalar[Self.DTYPE]]:
+        """Chronological (oldest→newest) 4×84×84 frame stack — matches the GPU
+        env's obs ordering."""
+        comptime P = CarRacingPixel[Self.DTYPE]
+        var out = List[Scalar[Self.DTYPE]](capacity=P.OBS_DIM)
+        for f in range(P.FRAME_STACK):
+            var rs = (self._pixel_idx + f) % P.FRAME_STACK
+            var base = rs * P.FRAME_SIZE
+            for i in range(P.FRAME_SIZE):
+                out.append(self._pixel_stack[base + i])
+        return out^
+
+    def reset_pixel(mut self) -> List[Scalar[Self.DTYPE]]:
+        """Reset + fill the frame stack with the initial view; return pixel obs.
+        """
+        _ = self.reset()
+        self._pixel_idx = 0
+        for _ in range(CarRacingPixel[Self.DTYPE].FRAME_STACK):
+            self._push_pixel_frame()
+        return self.get_pixel_obs()
+
+    def step_action_pixel(
+        mut self, a: Int
+    ) -> Tuple[List[Scalar[Self.DTYPE]], Float64, Bool]:
+        """Discrete step returning the PIXEL observation (for SDL color eval)."""
+        var r = self.step_action(a)
+        self._push_pixel_frame()
+        return (self.get_pixel_obs(), r[1], r[2])
 
     # --- discrete action (decode matches CarRacingDiscrete) --------------
     def step_action(
