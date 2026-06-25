@@ -196,7 +196,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                     gpool[sk].data[q] += tmp[k].data[q]
             else:
                 var c = ctx.value()
-                c.enqueue_function[_cg_accum_kernel[ak]](
+                c.enqueue_function[_cg_accum_kernel[ak, Self.ACT_DT]](
                     gpool[sk].lt["gpu", Layout.row_major(ak)](),
                     tmp[k].lt["gpu", Layout.row_major(ak)](),
                     grid_dim=(ak + TPB - 1) // TPB,

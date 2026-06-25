@@ -41,8 +41,9 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
+from mojo_rl.nn.primitives.linear import _cast_f2b_kernel, _cast_b2f_kernel
+from mojo_rl.nn.core.tensor_refs import TensorRefs, child_refs
 from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.optimizer.optimizer import Optimizer
@@ -1172,6 +1173,13 @@ def ezv2_unroll_train_step_gpu_vp[
     comptime DYN_IN = LATENT + ACT
     comptime PROJ = PROJM.OUT_DIM
     comptime HH = B * HIDDEN
+    # Activation-flow dtype (bf16 under AMP). rep/dynz/pred/proj/predh must agree;
+    # the reward head (EZRewardLSTMAtari) stays fp32 — bridged by dz↔dz_f32 casts.
+    comptime ADT = REP.ACT_DT
+    comptime assert (
+        REP.ACT_DT == DYNZ.ACT_DT and REP.ACT_DT == PRED.ACT_DT
+        and REP.ACT_DT == PROJM.ACT_DT and REP.ACT_DT == PREDH.ACT_DT
+    ), "EZv2 VP unroll: rep/dynz/pred/proj/predh must share ACT_DT"
     var octx = Optional[DeviceContext](ctx)
 
     # ── device buffers (owned, lazy) ──
@@ -1198,23 +1206,27 @@ def ezv2_unroll_train_step_gpu_vp[
     else:
         d_cmask.dev.value().enqueue_fill(Scalar[DT](1.0))
 
-    var d_obs_work = Tensor.alloc_gpu(ctx, B * OBS)
-    var zst = Tensor.alloc_gpu(ctx, (K + 1) * B * LATENT)
-    var z_work = Tensor.alloc_gpu(ctx, B * LATENT)
-    var zk_work = Tensor.alloc_gpu(ctx, B * LATENT)
-    var din = Tensor.alloc_gpu(ctx, B * DYN_IN)
-    var dz = Tensor.alloc_gpu(ctx, B * LATENT)
-    var pout = Tensor.alloc_gpu(ctx, B * PRED_OUT)
-    var gpout = Tensor.alloc_gpu(ctx, B * PRED_OUT)
-    var gz = Tensor.alloc_gpu(ctx, B * LATENT)
-    var gpin = Tensor.alloc_gpu(ctx, B * LATENT)
-    var gdin = Tensor.alloc_gpu(ctx, B * DYN_IN)
-    var gobs = Tensor.alloc_gpu(ctx, B * OBS)
+    # Activation/grad buffers flow at ADT (bf16 under AMP). At ADT=DT,
+    # TensorImpl[ADT] ≡ Tensor → byte-identical to the fp32 path.
+    var d_obs_work = TensorImpl[ADT].alloc_gpu(ctx, B * OBS)
+    var zst = TensorImpl[ADT].alloc_gpu(ctx, (K + 1) * B * LATENT)
+    var z_work = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)
+    var zk_work = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)
+    var din = TensorImpl[ADT].alloc_gpu(ctx, B * DYN_IN)
+    var dz = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)
+    var dz_f32 = Tensor.alloc_gpu(ctx, B * LATENT)   # fp32 reward-LSTM input
+    var pout = TensorImpl[ADT].alloc_gpu(ctx, B * PRED_OUT)
+    var gpout = TensorImpl[ADT].alloc_gpu(ctx, B * PRED_OUT)
+    var gz = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)
+    var gpin = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)
+    var gdin = TensorImpl[ADT].alloc_gpu(ctx, B * DYN_IN)
+    var gobs = TensorImpl[ADT].alloc_gpu(ctx, B * OBS)
     var twv = Tensor.alloc_gpu(ctx, B * BINS)
     var twr = Tensor.alloc_gpu(ctx, B * BINS)
     var vp = Tensor.alloc_gpu(ctx, B * BINS)
     var grad_vp = Tensor.alloc_gpu(ctx, B * BINS)
-    var grad_zp = Tensor.alloc_gpu(ctx, B * LATENT)
+    var grad_zp = Tensor.alloc_gpu(ctx, B * LATENT)   # fp32 reward-LSTM dz-grad
+    var grad_zp_adt = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)  # bf16 carry
     var h_store = Tensor.alloc_gpu(ctx, (K + 1) * HH)
     var c_store = Tensor.alloc_gpu(ctx, (K + 1) * HH)
     var hbuf = Tensor.alloc_gpu(ctx, 2 * HH)
@@ -1224,13 +1236,13 @@ def ezv2_unroll_train_step_gpu_vp[
     var dc_carry = Tensor.alloc_gpu(ctx, HH)
     var dh_prev = Tensor.alloc_gpu(ctx, HH)
     var dc_prev = Tensor.alloc_gpu(ctx, HH)
-    var tstore = Tensor.alloc_gpu(ctx, K * B * PROJ)
-    var ztmp = Tensor.alloc_gpu(ctx, B * LATENT)
-    var projo = Tensor.alloc_gpu(ctx, B * PROJ)
-    var pk = Tensor.alloc_gpu(ctx, B * PROJ)
-    var gpk = Tensor.alloc_gpu(ctx, B * PROJ)
-    var gproj = Tensor.alloc_gpu(ctx, B * PROJ)
-    var gzcons = Tensor.alloc_gpu(ctx, B * LATENT)
+    var tstore = TensorImpl[ADT].alloc_gpu(ctx, K * B * PROJ)
+    var ztmp = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)
+    var projo = TensorImpl[ADT].alloc_gpu(ctx, B * PROJ)
+    var pk = TensorImpl[ADT].alloc_gpu(ctx, B * PROJ)
+    var gpk = TensorImpl[ADT].alloc_gpu(ctx, B * PROJ)
+    var gproj = TensorImpl[ADT].alloc_gpu(ctx, B * PROJ)
+    var gzcons = TensorImpl[ADT].alloc_gpu(ctx, B * LATENT)
     var loss_d = Tensor.alloc_gpu(ctx, 4 * B)
     var h_loss = ctx.enqueue_create_host_buffer[DT](4 * B)
     for i in range(4 * B):
@@ -1259,29 +1271,37 @@ def ezv2_unroll_train_step_gpu_vp[
     comptime nbOBS = (B * OBS + TPB - 1) // TPB
     comptime nbPROJ = (B * PROJ + TPB - 1) // TPB
     comptime nbB = (B + TPB - 1) // TPB
-    comptime kBuild = _mz_build_dyn_in_k[B, LATENT, ACT, DYN_IN]
-    comptime kPolCE = _mz_softce_slice_k[B, PRED_OUT, 0, ACT]
-    comptime kValCE = _mz_softce_slice_k[B, PRED_OUT, ACT, BINS]
+    # Activation kernels carry ADT; kRewVP/kTwoHot/kBcopyOBS stay DT (they touch
+    # the fp32 reward-LSTM output / two-hot targets / fp32 obs source).
+    comptime kBuild = _mz_build_dyn_in_k[B, LATENT, ACT, DYN_IN, ADT]
+    comptime kPolCE = _mz_softce_slice_k[B, PRED_OUT, 0, ACT, ADT]
+    comptime kValCE = _mz_softce_slice_k[B, PRED_OUT, ACT, BINS, ADT]
     comptime kRewVP = _mz_softce_slice_k[B, BINS, 0, BINS]
     comptime kTwoHot = _mz_twohot_k[B, BINS]
-    comptime kHalf = _mz_accum_half_k[B, LATENT, DYN_IN]
-    comptime kBcopy = _mz_bcopy_k[B * LATENT]
+    comptime kHalf = _mz_accum_half_k[B, LATENT, DYN_IN, ADT]
+    comptime kBcopy = _mz_bcopy_k[B * LATENT, ADT]
     comptime kBcopyOBS = _mz_bcopy_k[B * OBS]
-    comptime kBcopyPROJ = _mz_bcopy_k[B * PROJ]
-    comptime kCons = consistency_loss_grad_k[B, PROJ]
-    comptime kAccum = _ez_accum_latent_k[B * LATENT]
+    comptime kBcopyPROJ = _mz_bcopy_k[B * PROJ, ADT]
+    comptime kCons = consistency_loss_grad_k[B, PROJ, ADT]
+    comptime kAccum = _ez_accum_latent_k[B * LATENT, ADT]
     # PER row-scaling: pred head (whole), consistency (whole), value-prefix
     # (whole BINS); + root value-error priority CE.
-    comptime kScalePred = _ez_scale_rows_k[B, PRED_OUT, 0, PRED_OUT]
-    comptime kScaleCons = _ez_scale_rows_k[B, PROJ, 0, PROJ]
+    comptime kScalePred = _ez_scale_rows_k[B, PRED_OUT, 0, PRED_OUT, ADT]
+    comptime kScaleCons = _ez_scale_rows_k[B, PROJ, 0, PROJ, ADT]
     comptime kScaleVP = _ez_scale_rows_k[B, BINS, 0, BINS]
-    comptime kPrioCE = _ez_priority_ce_k[B, PRED_OUT, ACT, BINS]
+    comptime kPrioCE = _ez_priority_ce_k[B, PRED_OUT, ACT, BINS, ADT]
 
     # ── forward scan: z0=h(obs0); z_{k+1}=g_z(z_k,a_k); (h,c) LSTM step ──
-    ctx.enqueue_function[kBcopyOBS](
-        d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
-        grid_dim=nbOBS, block_dim=TPB)
-    call_forward["gpu", B](rep, TensorRefs[REP.ARITY](d_obs_work), z_work, octx)
+    # obs→d_obs_work: plain copy at fp32; fp32→bf16 cast under AMP.
+    comptime if ADT == DT:
+        ctx.enqueue_function[kBcopyOBS](
+            d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
+            grid_dim=nbOBS, block_dim=TPB)
+    else:
+        ctx.enqueue_function[_cast_f2b_kernel[B * OBS]](
+            d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
+            grid_dim=nbOBS, block_dim=TPB)
+    call_forward["gpu", B](rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), z_work, octx)
     ctx.enqueue_function[kBcopy](
         z_work.lt["gpu", LBL](), zst.lt_at["gpu", LBL](0),
         grid_dim=nbLAT, block_dim=TPB)
@@ -1290,7 +1310,7 @@ def ezv2_unroll_train_step_gpu_vp[
         ctx.enqueue_function[kBuild](
             din.lt["gpu", LBDI](), zst.lt_at["gpu", LBL](k * B * LATENT),
             d_act.lt_at["gpu", LB](k * B), grid_dim=nbDIN, block_dim=TPB)
-        call_forward["gpu", B](dynz, TensorRefs[DYNZ.ARITY](din), dz, octx)
+        call_forward["gpu", B](dynz, child_refs[N=DYNZ.ARITY, CADT=ADT](din), dz, octx)
         ctx.enqueue_function[kBcopy](
             dz.lt["gpu", LBL](), zst.lt_at["gpu", LBL]((k + 1) * B * LATENT),
             grid_dim=nbLAT, block_dim=TPB)
@@ -1301,7 +1321,14 @@ def ezv2_unroll_train_step_gpu_vp[
         ctx.enqueue_copy(
             cbuf.dev.value().create_sub_buffer[DT](0, HH),
             c_store.dev.value().create_sub_buffer[DT](k * HH, HH))
-        rew.reward_step_forward["gpu", B](dz, hbuf, cbuf, cache, vp, octx)
+        comptime if ADT == DT:
+            ref dzf = rebind[Tensor](dz)
+            rew.reward_step_forward["gpu", B](dzf, hbuf, cbuf, cache, vp, octx)
+        else:
+            ctx.enqueue_function[_cast_b2f_kernel[B * LATENT]](
+                dz.lt["gpu", LBL](), dz_f32.lt["gpu", LBL](),
+                grid_dim=nbLAT, block_dim=TPB)
+            rew.reward_step_forward["gpu", B](dz_f32, hbuf, cbuf, cache, vp, octx)
         ctx.enqueue_copy(
             h_store.dev.value().create_sub_buffer[DT]((k + 1) * HH, HH),
             hbuf.dev.value().create_sub_buffer[DT](HH, HH))
@@ -1316,11 +1343,18 @@ def ezv2_unroll_train_step_gpu_vp[
 
     # ── consistency target pre-pass: t_k = g_proj(h(obs_k)), k=1..K ──
     for k in range(1, K + 1):
-        ctx.enqueue_function[kBcopyOBS](
-            d_obs.lt_at["gpu", LBOBS](k * B * OBS), d_obs_work.lt["gpu", LBOBS](),
-            grid_dim=nbOBS, block_dim=TPB)
-        call_forward["gpu", B](rep, TensorRefs[REP.ARITY](d_obs_work), ztmp, octx)
-        call_forward["gpu", B](proj, TensorRefs[PROJM.ARITY](ztmp), projo, octx)
+        comptime if ADT == DT:
+            ctx.enqueue_function[kBcopyOBS](
+                d_obs.lt_at["gpu", LBOBS](k * B * OBS),
+                d_obs_work.lt["gpu", LBOBS](),
+                grid_dim=nbOBS, block_dim=TPB)
+        else:
+            ctx.enqueue_function[_cast_f2b_kernel[B * OBS]](
+                d_obs.lt_at["gpu", LBOBS](k * B * OBS),
+                d_obs_work.lt["gpu", LBOBS](),
+                grid_dim=nbOBS, block_dim=TPB)
+        call_forward["gpu", B](rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), ztmp, octx)
+        call_forward["gpu", B](proj, child_refs[N=PROJM.ARITY, CADT=ADT](ztmp), projo, octx)
         ctx.enqueue_function[kBcopyPROJ](
             projo.lt["gpu", LBPROJ](), tstore.lt_at["gpu", LBPROJ]((k - 1) * B * PROJ),
             grid_dim=nbPROJ, block_dim=TPB)
@@ -1342,7 +1376,7 @@ def ezv2_unroll_train_step_gpu_vp[
             grid_dim=nbLAT, block_dim=TPB)
 
         # (a) prediction head on z_k
-        call_forward["gpu", B](pred, TensorRefs[PRED.ARITY](zk_work), pout, octx)
+        call_forward["gpu", B](pred, child_refs[N=PRED.ARITY, CADT=ADT](zk_work), pout, octx)
         ctx.enqueue_function[kPolCE](
             pout.lt["gpu", LBPO](),
             d_pol.lt_at["gpu", Layout.row_major(B * ACT)](k * B * ACT),
@@ -1365,13 +1399,13 @@ def ezv2_unroll_train_step_gpu_vp[
                 gpout.lt["gpu", LBPO](), d_isw.lt["gpu", LB](),
                 grid_dim=nbB, block_dim=TPB)
         call_vjp["gpu", B](
-            pred, TensorRefs[PRED.ARITY](zk_work), gpout,
-            TensorRefs[PRED.ARITY](gpin), octx)
+            pred, child_refs[N=PRED.ARITY, CADT=ADT](zk_work), gpout,
+            child_refs[N=PRED.ARITY, CADT=ADT](gpin), octx)
 
         # (b) consistency (k >= 1)
         if k >= 1:
-            call_forward["gpu", B](proj, TensorRefs[PROJM.ARITY](zk_work), projo, octx)
-            call_forward["gpu", B](predh, TensorRefs[PREDH.ARITY](projo), pk, octx)
+            call_forward["gpu", B](proj, child_refs[N=PROJM.ARITY, CADT=ADT](zk_work), projo, octx)
+            call_forward["gpu", B](predh, child_refs[N=PREDH.ARITY, CADT=ADT](projo), pk, octx)
             ctx.enqueue_function[kCons](
                 pk.lt["gpu", LBPROJ](),
                 tstore.lt_at["gpu", LBPROJ]((k - 1) * B * PROJ),
@@ -1383,11 +1417,11 @@ def ezv2_unroll_train_step_gpu_vp[
                     gpk.lt["gpu", LBPROJ](), d_isw.lt["gpu", LB](),
                     grid_dim=nbB, block_dim=TPB)
             call_vjp["gpu", B](
-                predh, TensorRefs[PREDH.ARITY](projo), gpk,
-                TensorRefs[PREDH.ARITY](gproj), octx)
+                predh, child_refs[N=PREDH.ARITY, CADT=ADT](projo), gpk,
+                child_refs[N=PREDH.ARITY, CADT=ADT](gproj), octx)
             call_vjp["gpu", B](
-                proj, TensorRefs[PROJM.ARITY](zk_work), gproj,
-                TensorRefs[PROJM.ARITY](gzcons), octx)
+                proj, child_refs[N=PROJM.ARITY, CADT=ADT](zk_work), gproj,
+                child_refs[N=PROJM.ARITY, CADT=ADT](gzcons), octx)
             ctx.enqueue_function[kAccum](
                 gpin.lt["gpu", LBL](), gzcons.lt["gpu", LBL](),
                 grid_dim=nbLAT, block_dim=TPB)
@@ -1407,7 +1441,19 @@ def ezv2_unroll_train_step_gpu_vp[
             ctx.enqueue_copy(
                 cbuf.dev.value().create_sub_buffer[DT](0, HH),
                 c_store.dev.value().create_sub_buffer[DT](k * HH, HH))
-            rew.reward_step_forward["gpu", B](dz, hbuf, cbuf, cache, vp, octx)
+            # reward head is fp32: at fp32 rebind the latent (ADT==DT → same
+            # type); under AMP cast bf16 z' → fp32 dz_f32 (reused by the backward
+            # below; dz unchanged in between).
+            comptime if ADT == DT:
+                ref dzd = rebind[Tensor](dz)
+                rew.reward_step_forward["gpu", B](
+                    dzd, hbuf, cbuf, cache, vp, octx)
+            else:
+                ctx.enqueue_function[_cast_b2f_kernel[B * LATENT]](
+                    dz.lt["gpu", LBL](), dz_f32.lt["gpu", LBL](),
+                    grid_dim=nbLAT, block_dim=TPB)
+                rew.reward_step_forward["gpu", B](
+                    dz_f32, hbuf, cbuf, cache, vp, octx)
             ctx.enqueue_function[kTwoHot](
                 twr.lt["gpu", LBBINS](), d_rew.lt_at["gpu", LB](k * B),
                 v_min, v_max, grid_dim=nbB, block_dim=TPB)
@@ -1421,22 +1467,36 @@ def ezv2_unroll_train_step_gpu_vp[
                 ctx.enqueue_function[kScaleVP](
                     grad_vp.lt["gpu", LBBINS](), d_isw.lt["gpu", LB](),
                     grid_dim=nbB, block_dim=TPB)
-            rew.reward_step_backward["gpu", B](
-                dz, grad_vp, hbuf, cbuf, cache, dh_carry, dc_carry,
-                grad_zp, dh_prev, dc_prev, octx)
-            ctx.enqueue_function[kAccum](
-                gz.lt["gpu", LBL](), grad_zp.lt["gpu", LBL](),
-                grid_dim=nbLAT, block_dim=TPB)
+            comptime if ADT == DT:
+                ref dzd2 = rebind[Tensor](dz)
+                ref gzd = rebind[Tensor](gz)
+                rew.reward_step_backward["gpu", B](
+                    dzd2, grad_vp, hbuf, cbuf, cache, dh_carry, dc_carry,
+                    grad_zp, dh_prev, dc_prev, octx)
+                ctx.enqueue_function[kAccum](
+                    gzd.lt["gpu", LBL](), grad_zp.lt["gpu", LBL](),
+                    grid_dim=nbLAT, block_dim=TPB)
+            else:
+                rew.reward_step_backward["gpu", B](
+                    dz_f32, grad_vp, hbuf, cbuf, cache, dh_carry, dc_carry,
+                    grad_zp, dh_prev, dc_prev, octx)
+                # grad_zp (fp32, reward head is fp32) → bf16 carry → accum into gz.
+                ctx.enqueue_function[_cast_f2b_kernel[B * LATENT]](
+                    grad_zp.lt["gpu", LBL](), grad_zp_adt.lt["gpu", LBL](),
+                    grid_dim=nbLAT, block_dim=TPB)
+                ctx.enqueue_function[kAccum](
+                    gz.lt["gpu", LBL](), grad_zp_adt.lt["gpu", LBL](),
+                    grid_dim=nbLAT, block_dim=TPB)
             ctx.enqueue_copy(dh_carry.dev.value(), dh_prev.dev.value())
             ctx.enqueue_copy(dc_carry.dev.value(), dc_prev.dev.value())
             # dynamics: full grad wrt z_{k+1} back through dyn_z, ½ on z_k
             ctx.enqueue_function[kBuild](
                 din.lt["gpu", LBDI](), zst.lt_at["gpu", LBL](k * B * LATENT),
                 d_act.lt_at["gpu", LB](k * B), grid_dim=nbDIN, block_dim=TPB)
-            call_forward["gpu", B](dynz, TensorRefs[DYNZ.ARITY](din), dz, octx)
+            call_forward["gpu", B](dynz, child_refs[N=DYNZ.ARITY, CADT=ADT](din), dz, octx)
             call_vjp["gpu", B](
-                dynz, TensorRefs[DYNZ.ARITY](din), gz,
-                TensorRefs[DYNZ.ARITY](gdin), octx)
+                dynz, child_refs[N=DYNZ.ARITY, CADT=ADT](din), gz,
+                child_refs[N=DYNZ.ARITY, CADT=ADT](gdin), octx)
             ctx.enqueue_function[kHalf](
                 gpin.lt["gpu", LBL](), gdin.lt["gpu", LBDI](),
                 grid_dim=nbLAT, block_dim=TPB)
@@ -1446,13 +1506,18 @@ def ezv2_unroll_train_step_gpu_vp[
             grid_dim=nbLAT, block_dim=TPB)
 
     # ── rep: re-forward obs0 then vjp ──
-    ctx.enqueue_function[kBcopyOBS](
-        d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
-        grid_dim=nbOBS, block_dim=TPB)
-    call_forward["gpu", B](rep, TensorRefs[REP.ARITY](d_obs_work), z_work, octx)
+    comptime if ADT == DT:
+        ctx.enqueue_function[kBcopyOBS](
+            d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
+            grid_dim=nbOBS, block_dim=TPB)
+    else:
+        ctx.enqueue_function[_cast_f2b_kernel[B * OBS]](
+            d_obs.lt_at["gpu", LBOBS](0), d_obs_work.lt["gpu", LBOBS](),
+            grid_dim=nbOBS, block_dim=TPB)
+    call_forward["gpu", B](rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), z_work, octx)
     call_vjp["gpu", B](
-        rep, TensorRefs[REP.ARITY](d_obs_work), gz,
-        TensorRefs[REP.ARITY](gobs), octx)
+        rep, child_refs[N=REP.ARITY, CADT=ADT](d_obs_work), gz,
+        child_refs[N=REP.ARITY, CADT=ADT](gobs), octx)
 
     # ── clip + step all six nets ──
     _ = clip_grad_norm["gpu", PRED](pred, Scalar[DT](max_grad_norm), octx)
