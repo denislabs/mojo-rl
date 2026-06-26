@@ -45,11 +45,11 @@ comptime OBS_DIM = CarRacingPixel[DType.float64].OBS_DIM  # 28224
 comptime NUM_ACTIONS = CarRacingPixel[DType.float64].NUM_ACTIONS  # 5
 comptime FRAMES = 4
 
-comptime NUM_ATOMS = 51
+comptime NUM_ATOMS = 101
 comptime HIDDEN = 512
 comptime N_STEP = 3
-comptime V_MIN = Scalar[DT](-30.0)
-comptime V_MAX = Scalar[DT](30.0)
+comptime V_MIN = Scalar[DT](-100.0)
+comptime V_MAX = Scalar[DT](200.0)
 
 comptime CKPT_PATH = "checkpoints/rainbow_car_racing_pixel_hybrid.ckpt"
 

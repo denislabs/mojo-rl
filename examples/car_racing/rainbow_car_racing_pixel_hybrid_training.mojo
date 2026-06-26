@@ -41,7 +41,7 @@ comptime OBS_DIM = CarRacingPx.EFF_OBS_DIM  # 4*84*84 = 28224
 comptime NUM_ACTIONS = CarRacingPx.NUM_ACTIONS  # 5
 comptime FRAMES = 4
 
-comptime NUM_ATOMS = 51
+comptime NUM_ATOMS = 101
 comptime HIDDEN = 512
 comptime N_STEP = 3
 
@@ -50,10 +50,14 @@ comptime OBS_STORE_DT = DType.uint8
 comptime BATCH_SIZE = 32
 comptime N_ENVS = 8  # CPU-stepped (render on host) → fewer envs than the GPU env
 
-# Same value-support fix as the GPU runs (tile reward ~+3.4 must exceed the atom
-# spacing; ±30 / 51 atoms → spacing 1.2). Widen later if it plateaus.
-comptime V_MIN = Scalar[DT](-30.0)
-comptime V_MAX = Scalar[DT](30.0)
+# Value support must BRACKET the discounted return, not the per-step reward.
+# Gymnasium reward (+1000/N ≈ +3.4/tile, -0.1/frame, -100 OOB) gives episode
+# returns ~400 and discounted Q well above 30 — the old ±30 support saturated
+# (mean_q pinned at ~28 = ceiling) and the policy collapsed periodically.
+# [-100, 200] / 101 atoms → spacing 3 (≈ one tile reward; two-hot handles
+# sub-spacing rewards). -100 covers the OOB penalty + accumulated time cost.
+comptime V_MIN = Scalar[DT](-100.0)
+comptime V_MAX = Scalar[DT](200.0)
 
 # Replay ratio = UPDATES_PER_STEP / N_ENVS.
 comptime UPDATES_PER_STEP = 2
