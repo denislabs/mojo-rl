@@ -146,7 +146,11 @@ def main() raises:
                 checkpoint_path=String(CKPT_PATH),
                 eval_env=UnsafePointer(to=eval_env),
                 eval_every=100_000,
-                eval_episodes=N_ENVS,
+                # 8 episodes is too few — a couple of -100 run-offs drag the
+                # mean by ~25 each (e.g. eval reported -47 at 600k while the
+                # train policy was at 452). 40 eps (~5 waves over N_ENVS) cuts
+                # the eval-mean noise >2x without touching training.
+                eval_episodes=40,
             )
 
             var elapsed_s = Float64(perf_counter_ns() - start_time) / 1e9
