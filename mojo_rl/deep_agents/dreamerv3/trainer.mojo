@@ -446,10 +446,13 @@ struct DreamerV3Trainer[
         # noise[(t*NS+b)*ACT+a] → CPU↔GPU bit-match.
         for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
             self.state.noise.data[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
-        # WM-BPTT → fills state.cdeter / cstoch + state.last_wm_loss
+        # WM-BPTT → fills the carry (device for discrete, host for continuous)
+        # + state.last_wm_loss/dbg (want_diag-gated; the optimizer steps run
+        # regardless, so non-diag steps still train — just no loss readout).
         self.wm_blk.step[Self.train_target, Self.T_IMAG](
             self.state, self.enc, self.core, self.dec, self.rew, self.con,
             self.oe, self.ocore, self.odec, self.orew, self.ocon,
+            want_diag=want_diag,
         )
         # core/prior → imagine mirror
         self.sync_blk.step[Self.train_target](

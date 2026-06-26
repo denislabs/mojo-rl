@@ -1200,6 +1200,7 @@ struct WMStep[
         mut odec: DreamerOpt,
         mut orew: DreamerOpt,
         mut ocon: DreamerOpt,
+        want_diag: Bool = True,
     ) raises:
         comptime if target == "cpu":
             self._wm_cpu[target, T_IMAG](
@@ -1207,7 +1208,8 @@ struct WMStep[
             )
         else:
             self._wm_gpu[target, T_IMAG](
-                st, enc, core, dec, rew, con, oe, ocore, odec, orew, ocon
+                st, enc, core, dec, rew, con, oe, ocore, odec, orew, ocon,
+                want_diag,
             )
 
     def _wm_cpu[
@@ -1477,6 +1479,7 @@ struct WMStep[
         mut odec: DreamerOpt,
         mut orew: DreamerOpt,
         mut ocon: DreamerOpt,
+        want_diag: Bool = True,
     ) raises:
         # GPU WM-BPTT scan — device-resident (Stage 2). The carry sequence
         # (cdeter_d/cstoch_d), tokens (toks_d) and minibatch live on-device for
@@ -1716,54 +1719,63 @@ struct WMStep[
         rew.for_each_param[target](orew, ctx)
         ocon.begin_step_gpu(ctx)
         con.for_each_param[target](ocon, ctx)
-        # ── end-of-step readout: carry → AC + per-(t,b) losses → host. ──
-        # Carry handoff (Stage 3 P3): the discrete AC is device-resident, so
-        # copy the scan carry straight into the shared DreamerState device
-        # buffers it reads (no D2H/H2D round-trip). The continuous AC reads the
-        # host carry, so its WM keeps the download + host copy.
+        # ── end-of-step readout (Stage 3 P3). ──
+        # Carry handoff: the discrete AC is device-resident, so copy the scan
+        # carry straight into the shared DreamerState device buffers it reads
+        # (no D2H/H2D round-trip, async). The continuous AC reads the host
+        # carry, so its WM downloads + copies it (always needs the sync).
         comptime if Self.DISCRETE:
             ctx.enqueue_copy(st.d_cdeter.dev.value(), self.cdeter_d.dev.value())
             ctx.enqueue_copy(st.d_cstoch.dev.value(), self.cstoch_d.dev.value())
         else:
             self.cdeter_d.download(ctx)
             self.cstoch_d.download(ctx)
-        # per-(t,b) losses → host (one download each), then sum (P3b will
-        # device-reduce + want_diag-gate these to drop the synchronize).
-        self.klbuf_d.download(ctx)
-        self.obsl_d.download(ctx)
-        self.rewl_d.download(ctx)
-        self.conl_d.download(ctx)
-        ctx.synchronize()
+        # WM loss + dbg readout is purely diagnostic (the optimizer steps above
+        # already applied the gradients) → gate it to `want_diag` (P3b). On the
+        # discrete non-diag path this skips the ONLY D2H + the `synchronize`,
+        # leaving the WM step fully async (CUDA-graph capturable). Continuous
+        # still syncs to copy the carry to host.
+        var need_sync = want_diag
+        comptime if not Self.DISCRETE:
+            need_sync = True
+        if want_diag:
+            self.klbuf_d.download(ctx)
+            self.obsl_d.download(ctx)
+            self.rewl_d.download(ctx)
+            self.conl_d.download(ctx)
+        if need_sync:
+            ctx.synchronize()
         comptime if not Self.DISCRETE:
             for i in range(CD):
                 st.cdeter.data[i] = self.cdeter_d.data[i]
             for i in range(CS):
                 st.cstoch.data[i] = self.cstoch_d.data[i]
-        var total: Scalar[DT] = 0.0
-        var acc_dyn: Scalar[DT] = 0.0
-        var acc_rep: Scalar[DT] = 0.0
-        var acc_obs: Scalar[DT] = 0.0
-        var acc_rew: Scalar[DT] = 0.0
-        var acc_con: Scalar[DT] = 0.0
-        for i in range(Self.T * Self.B):
-            var dk = self.klbuf_d.data[i * 2 + 0]
-            var rk = self.klbuf_d.data[i * 2 + 1]
-            var ol = self.obsl_d.data[i]
-            var rl = self.rewl_d.data[i]
-            var cl = self.conl_d.data[i]
-            acc_dyn += dk
-            acc_rep += rk
-            acc_obs += ol
-            acc_rew += rl
-            acc_con += cl
-            total += DYN * dk + REP * rk + ol + rl + cl
-        var _nbt = Scalar[DT](Self.B * Self.T)
-        st.dbg_dyn_kl = acc_dyn / _nbt
-        st.dbg_rep_kl = acc_rep / _nbt
-        st.dbg_obs_loss = acc_obs / _nbt
-        st.dbg_rew_loss = acc_rew / _nbt
-        st.dbg_con_loss = acc_con / _nbt
-        st.last_wm_loss = total
+        if want_diag:
+            var total: Scalar[DT] = 0.0
+            var acc_dyn: Scalar[DT] = 0.0
+            var acc_rep: Scalar[DT] = 0.0
+            var acc_obs: Scalar[DT] = 0.0
+            var acc_rew: Scalar[DT] = 0.0
+            var acc_con: Scalar[DT] = 0.0
+            for i in range(Self.T * Self.B):
+                var dk = self.klbuf_d.data[i * 2 + 0]
+                var rk = self.klbuf_d.data[i * 2 + 1]
+                var ol = self.obsl_d.data[i]
+                var rl = self.rewl_d.data[i]
+                var cl = self.conl_d.data[i]
+                acc_dyn += dk
+                acc_rep += rk
+                acc_obs += ol
+                acc_rew += rl
+                acc_con += cl
+                total += DYN * dk + REP * rk + ol + rl + cl
+            var _nbt = Scalar[DT](Self.B * Self.T)
+            st.dbg_dyn_kl = acc_dyn / _nbt
+            st.dbg_rep_kl = acc_rep / _nbt
+            st.dbg_obs_loss = acc_obs / _nbt
+            st.dbg_rew_loss = acc_rew / _nbt
+            st.dbg_con_loss = acc_con / _nbt
+            st.last_wm_loss = total
 
 
 # ──────────────────────────────────────────────────────────────────────
