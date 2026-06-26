@@ -113,6 +113,7 @@ struct DreamerV3Trainer[
     comptime WMBlk = WMStep[
         Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH, Self.CLASSES,
         Self.BLOCKS, Self.TOKEN, Self.DEC_U, Self.HU, Self.BINS, Self.B, Self.T,
+        Self.DISCRETE,
     ]
     comptime SyncBlk = ParamSyncStep[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT,

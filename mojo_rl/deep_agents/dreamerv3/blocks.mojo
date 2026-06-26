@@ -1041,7 +1041,13 @@ def _wm_keep_mask_k[B_: Int, D_: Int, SC_: Int, T_: Int](
 struct WMStep[
     OBS: Int, ACT: Int, DETER: Int, H: Int, STOCH: Int, CLASSES: Int,
     BLOCKS: Int, TOKEN: Int, DEC_U: Int, HU: Int, BINS: Int, B: Int, T: Int,
+    DISCRETE: Bool = False,
 ](Movable & ImplicitlyDeletable):
+    # `DISCRETE` selects the WM↔AC carry handoff (Stage 3 P3). The discrete AC
+    # (`_ac_gpu_disc`) is fully device-resident, so the GPU WM hands its scan
+    # carry straight to the shared `DreamerState` device buffers (no host
+    # round-trip). The continuous AC reads the host carry, so its WM keeps the
+    # download. Set from `DreamerV3Trainer.DISCRETE`.
     comptime SC = Self.STOCH * Self.CLASSES
     comptime CARRY = 2 + Self.DETER + Self.SC
     comptime EncT = DreamerEncoder[Self.OBS, Self.TOKEN, SwishOp]
@@ -1710,19 +1716,29 @@ struct WMStep[
         rew.for_each_param[target](orew, ctx)
         ocon.begin_step_gpu(ctx)
         con.for_each_param[target](ocon, ctx)
-        # ── end-of-step readout: carry → host (for the AC path) + per-(t,b)
-        #    losses → host (one download each), then sum. ──
-        self.cdeter_d.download(ctx)
-        self.cstoch_d.download(ctx)
+        # ── end-of-step readout: carry → AC + per-(t,b) losses → host. ──
+        # Carry handoff (Stage 3 P3): the discrete AC is device-resident, so
+        # copy the scan carry straight into the shared DreamerState device
+        # buffers it reads (no D2H/H2D round-trip). The continuous AC reads the
+        # host carry, so its WM keeps the download + host copy.
+        comptime if Self.DISCRETE:
+            ctx.enqueue_copy(st.d_cdeter.dev.value(), self.cdeter_d.dev.value())
+            ctx.enqueue_copy(st.d_cstoch.dev.value(), self.cstoch_d.dev.value())
+        else:
+            self.cdeter_d.download(ctx)
+            self.cstoch_d.download(ctx)
+        # per-(t,b) losses → host (one download each), then sum (P3b will
+        # device-reduce + want_diag-gate these to drop the synchronize).
         self.klbuf_d.download(ctx)
         self.obsl_d.download(ctx)
         self.rewl_d.download(ctx)
         self.conl_d.download(ctx)
         ctx.synchronize()
-        for i in range(CD):
-            st.cdeter.data[i] = self.cdeter_d.data[i]
-        for i in range(CS):
-            st.cstoch.data[i] = self.cstoch_d.data[i]
+        comptime if not Self.DISCRETE:
+            for i in range(CD):
+                st.cdeter.data[i] = self.cdeter_d.data[i]
+            for i in range(CS):
+                st.cstoch.data[i] = self.cstoch_d.data[i]
         var total: Scalar[DT] = 0.0
         var acc_dyn: Scalar[DT] = 0.0
         var acc_rep: Scalar[DT] = 0.0
@@ -2653,14 +2669,18 @@ struct ACStep[
         self.mbdne_d.upload(ctx)
         self.mbrew_d.upload(ctx)
 
-        # init rollout carry cd/cs from posterior carries 1..T (host `.data`
-        # authoritative — filled by _wm_gpu's download), then upload.
-        for i in range(NS * D):
-            self.cd.data[i] = st.cdeter.data[Self.B * D + i]
-        for i in range(NS * SCl):
-            self.cs.data[i] = st.cstoch.data[Self.B * SCl + i]
-        self.cd.upload(ctx)
-        self.cs.upload(ctx)
+        # init rollout carry cd/cs from posterior carries 1..T — device-direct
+        # from the WM (Stage 3 P3): `_wm_gpu` left the scan carry in the shared
+        # state device buffers, so copy the [1..T] slice (skip the index-0 init
+        # carry: offset B*D / B*SC, length NS*D / NS*SC) straight into cd/cs.
+        var sub_cd = st.d_cdeter.dev.value().create_sub_buffer[DT](
+            Self.B * D, NS * D
+        )
+        var sub_cs = st.d_cstoch.dev.value().create_sub_buffer[DT](
+            Self.B * SCl, NS * SCl
+        )
+        ctx.enqueue_copy(self.cd.dev.value(), sub_cd)
+        ctx.enqueue_copy(self.cs.dev.value(), sub_cs)
 
         # ── imagination rollout (fully on device) ──
         for t in range(TI):
