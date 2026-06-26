@@ -2668,10 +2668,10 @@ struct ACStep[
         comptime nbB1 = (Self.B + TPB - 1) // TPB
         var ctx = st.ctx.value()
 
-        # ── one-time host→device uploads (noise, bins) ──
-        for i in range(TI * NS * ACTD):
-            self.noise_d.data[i] = st.noise.data[i]
-        self.noise_d.upload(ctx)
+        # Imagination noise is already on device — uploaded in the trainer
+        # prologue (P4 `_run_minibatch`), out of this (future-captured) region.
+        # Only the constant bins grid is staged here (capture-safe: same value
+        # every step).
         for c in range(BINSl):
             self.bins_d.data[c] = bins[c]
         self.bins_d.upload(ctx)

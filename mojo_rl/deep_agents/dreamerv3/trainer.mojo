@@ -480,6 +480,15 @@ struct DreamerV3Trainer[
         # noise[(t*NS+b)*ACT+a] → CPU↔GPU bit-match.
         for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
             self.state.noise.data[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
+        # P4: hoist the imagination-noise H2D upload out of the discrete AC into
+        # this eager prologue, so the (future-captured) WM+AC region reads a
+        # pre-filled device buffer instead of doing a per-step host→device copy.
+        # Host-seeded → CPU↔GPU parity unaffected (both read identical noise).
+        comptime if Self.train_target == "gpu" and Self.DISCRETE:
+            var nctx = self.ctx.value()
+            for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
+                self.ac_blk.noise_d.data[i] = self.state.noise.data[i]
+            self.ac_blk.noise_d.upload(nctx)
         # WM-BPTT → fills the carry (device for discrete, host for continuous)
         # + state.last_wm_loss/dbg (want_diag-gated; the optimizer steps run
         # regardless, so non-diag steps still train — just no loss readout).
