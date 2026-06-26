@@ -20,17 +20,21 @@ from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn.constants import DT, TPB, LAYOUT_NCHW, LAYOUT_NHWC
 from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
 from ..core.initializer import Initializer
 from ..core.amp import AMPPolicy, NoAMP
 
+# Reuse the conv2d channels-first/last index helpers (one source of truth).
+from .conv2d import _in_off, _in_decode, _out_off, _out_decode
+
 
 def _avg_pool_2d_forward_kernel[
     BATCH: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
     OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int, ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
     output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
@@ -44,13 +48,10 @@ def _avg_pool_2d_forward_kernel[
         return
     var b = idx // OUT_FLAT
     var out_pos = idx % OUT_FLAT
-    var spatial_out = OH * OW
-    var c = out_pos // spatial_out
-    var rem = out_pos % spatial_out
-    var oh = rem // OW
-    var ow = rem % OW
+    var c, os = _out_decode[LAYOUT, C, OH * OW](out_pos)
+    var oh = os // OW
+    var ow = os % OW
 
-    var in_c_off = c * H * W
     var s: Scalar[DT] = 0.0
     for kh in range(K):
         var ih = oh * S + kh - P
@@ -60,15 +61,16 @@ def _avg_pool_2d_forward_kernel[
             var iw = ow * S + kw - P
             if iw < 0 or iw >= W:
                 continue
-            s += rebind[Scalar[ADT]](input[b, in_c_off + ih * W + iw]).cast[
-                DT
-            ]()
+            s += rebind[Scalar[ADT]](
+                input[b, _in_off[LAYOUT, C, H, W](c, ih, iw)]
+            ).cast[DT]()
     output[b, out_pos] = (s * inv_kk).cast[ADT]()
 
 
 def _avg_pool_2d_backward_kernel[
     BATCH: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
     OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int, ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     grad_output: LayoutTensor[
         ADT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
@@ -85,11 +87,7 @@ def _avg_pool_2d_backward_kernel[
         return
     var b = idx // IN_FLAT
     var in_pos = idx % IN_FLAT
-    var hw = H * W
-    var c = in_pos // hw
-    var rem = in_pos % hw
-    var ih = rem // W
-    var iw = rem % W
+    var c, ih, iw = _in_decode[LAYOUT, C, H, W](in_pos)
 
     # Output windows that contain input cell (ih, iw).
     var oh_max_raw = ih + P
@@ -112,15 +110,13 @@ def _avg_pool_2d_backward_kernel[
     if ow_top >= OW:
         ow_top = OW - 1
 
-    var spatial_out = OH * OW
-    var out_c_off = c * spatial_out
     var acc: Scalar[DT] = 0.0
     var oh = oh_bot
     while oh <= oh_top:
         var ow = ow_bot
         while ow <= ow_top:
             acc += rebind[Scalar[ADT]](
-                grad_output[b, out_c_off + oh * OW + ow]
+                grad_output[b, _out_off[LAYOUT, C, OH * OW](c, oh * OW + ow)]
             ).cast[DT]()
             ow += 1
         oh += 1
@@ -130,6 +126,7 @@ def _avg_pool_2d_backward_kernel[
 struct AvgPool2D[
     C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](Module):
     comptime ARITY: Int = 1
     comptime OH: Int = (Self.H + 2 * Self.P - Self.K) // Self.S + 1
@@ -177,8 +174,6 @@ struct AvgPool2D[
                 var in_base = b * Self.IN_FLAT
                 var out_base = b * Self.OUT_FLAT
                 for c in range(Self.C):
-                    var in_c_base = in_base + c * Self.H * Self.W
-                    var out_c_base = out_base + c * Self.OH * Self.OW
                     for oh in range(Self.OH):
                         for ow in range(Self.OW):
                             # fp32 accumulator (AMP §3 fp32-internal).
@@ -192,11 +187,17 @@ struct AvgPool2D[
                                     if iw < 0 or iw >= Self.W:
                                         continue
                                     s += in0.data[
-                                        in_c_base + ih * Self.W + iw
+                                        in_base
+                                        + _in_off[
+                                            Self.LAYOUT, Self.C, Self.H, Self.W
+                                        ](c, ih, iw)
                                     ].cast[DT]()
-                            out.data[out_c_base + oh * Self.OW + ow] = (
-                                s * inv_kk
-                            ).cast[Self.ACT_DT]()
+                            out.data[
+                                out_base
+                                + _out_off[
+                                    Self.LAYOUT, Self.C, Self.OH * Self.OW
+                                ](c, oh * Self.OW + ow)
+                            ] = (s * inv_kk).cast[Self.ACT_DT]()
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.OUT_FLAT)
@@ -206,7 +207,7 @@ struct AvgPool2D[
                 _avg_pool_2d_forward_kernel[
                     B, Self.C, Self.K, Self.S, Self.P,
                     Self.H, Self.W, Self.OH, Self.OW,
-                    Self.IN_FLAT, Self.OUT_FLAT, Self.ACT_DT,
+                    Self.IN_FLAT, Self.OUT_FLAT, Self.ACT_DT, Self.LAYOUT,
                 ]
             ](
                 in0.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
@@ -239,13 +240,14 @@ struct AvgPool2D[
                 var in_base = b * Self.IN_FLAT
                 var out_base = b * Self.OUT_FLAT
                 for c in range(Self.C):
-                    var in_c_base = in_base + c * Self.H * Self.W
-                    var out_c_base = out_base + c * Self.OH * Self.OW
                     for oh in range(Self.OH):
                         for ow in range(Self.OW):
                             var go_val = (
                                 grad_output.data[
-                                    out_c_base + oh * Self.OW + ow
+                                    out_base
+                                    + _out_off[
+                                        Self.LAYOUT, Self.C, Self.OH * Self.OW
+                                    ](c, oh * Self.OW + ow)
                                 ].cast[DT]()
                                 * inv_kk
                             )
@@ -258,7 +260,10 @@ struct AvgPool2D[
                                     if iw < 0 or iw >= Self.W:
                                         continue
                                     acc[
-                                        in_c_base + ih * Self.W + iw
+                                        in_base
+                                        + _in_off[
+                                            Self.LAYOUT, Self.C, Self.H, Self.W
+                                        ](c, ih, iw)
                                     ] += go_val
             for k in range(B * Self.IN_FLAT):
                 gin.data[k] = acc[k].cast[Self.ACT_DT]()
@@ -271,7 +276,7 @@ struct AvgPool2D[
                 _avg_pool_2d_backward_kernel[
                     B, Self.C, Self.K, Self.S, Self.P,
                     Self.H, Self.W, Self.OH, Self.OW,
-                    Self.IN_FLAT, Self.OUT_FLAT, Self.ACT_DT,
+                    Self.IN_FLAT, Self.OUT_FLAT, Self.ACT_DT, Self.LAYOUT,
                 ]
             ](
                 grad_output.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),

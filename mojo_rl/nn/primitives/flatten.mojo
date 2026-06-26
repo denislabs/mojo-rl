@@ -5,6 +5,14 @@ flatten is the identity: `[BATCH, DIM]` in == `[BATCH, DIM]` out (the shape
 change is purely in the caller's view layout). No params, no cache; backward is
 the same identity copy. Lets `Sequential[Conv2D, ReLU, …, Flatten, Linear, …]`
 compose without orchestrator glue.
+
+Channels-last (NHWC) note: Flatten is LAYOUT-AGNOSTIC — it carries no LAYOUT
+param. It's a pure identity copy, so an NHWC conv output flattens to an
+`[h,w,c]`-ordered vector and an NCHW output to `[c,h,w]`-ordered, with no
+reordering here. The downstream `Linear` simply learns its weights in whichever
+order it's fed; the only consequence is that a checkpoint trained under one
+layout has its first-dense weight columns permuted relative to the other (handled
+by the channels_last checkpoint migration, not by this Module).
 """
 
 from std.gpu import global_idx
