@@ -35,7 +35,7 @@ from linalg.matmul.cpu.apple_accelerate import (
     _CBLASTranspose,
 )
 
-from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn.constants import DT, TPB, LAYOUT_NCHW, LAYOUT_NHWC
 from ..core.tensor import Tensor, TensorImpl
 from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
@@ -56,58 +56,132 @@ comptime CONV_DW_TPB: Int = 128
 comptime CONV_TPB: Int = 256
 
 
+# ── Layout-2D index helpers (NCHW default / NHWC) ────────────────────────────
+# ONE source of truth for the channels-first vs channels-last index math, shared
+# by every CPU + GPU conv kernel. Pure integer arithmetic, @always_inline →
+# device-safe. NCHW reproduces the pre-LAYOUT formulas exactly (bit-identical).
+#   input  (ic, ih, iw): NCHW ic*H*W + ih*W + iw   | NHWC (ih*W+iw)*IC + ic
+#   COL    (ic, kh, kw): NCHW (ic*K+kh)*K + kw     | NHWC (kh*K+kw)*IC + ic
+#   output (oc, s)     : NCHW oc*SO + s            | NHWC s*OC + oc
+@always_inline
+def _in_off[
+    LAYOUT: Int, IC: Int, H: Int, W: Int
+](ic: Int, ih: Int, iw: Int) -> Int:
+    comptime if LAYOUT == LAYOUT_NHWC:
+        return (ih * W + iw) * IC + ic
+    else:
+        return ic * H * W + ih * W + iw
+
+
+@always_inline
+def _in_decode[
+    LAYOUT: Int, IC: Int, H: Int, W: Int
+](in_pos: Int) -> Tuple[Int, Int, Int]:
+    """Inverse of `_in_off`: flat within-sample offset → (ic, ih, iw)."""
+    comptime if LAYOUT == LAYOUT_NHWC:
+        var ic = in_pos % IC
+        var sp = in_pos // IC
+        return (ic, sp // W, sp % W)
+    else:
+        var hw = H * W
+        var rem = in_pos % hw
+        return (in_pos // hw, rem // W, rem % W)
+
+
+@always_inline
+def _col_off[LAYOUT: Int, IC: Int, K: Int](ic: Int, kh: Int, kw: Int) -> Int:
+    comptime if LAYOUT == LAYOUT_NHWC:
+        return (kh * K + kw) * IC + ic
+    else:
+        return (ic * K + kh) * K + kw
+
+
+@always_inline
+def _col_decode[
+    LAYOUT: Int, IC: Int, K: Int
+](ck: Int) -> Tuple[Int, Int, Int]:
+    """Inverse of `_col_off`: COL index → (ic, kh, kw)."""
+    comptime if LAYOUT == LAYOUT_NHWC:
+        var ic = ck % IC
+        var khkw = ck // IC
+        return (ic, khkw // K, khkw % K)
+    else:
+        var ic = ck // (K * K)
+        var rem = ck % (K * K)
+        return (ic, rem // K, rem % K)
+
+
+@always_inline
+def _out_off[LAYOUT: Int, OC: Int, SO: Int](oc: Int, s: Int) -> Int:
+    comptime if LAYOUT == LAYOUT_NHWC:
+        return s * OC + oc
+    else:
+        return oc * SO + s
+
+
+@always_inline
+def _out_decode[
+    LAYOUT: Int, OC: Int, SO: Int
+](out_pos: Int) -> Tuple[Int, Int]:
+    """Inverse of `_out_off`: flat within-sample offset → (oc, s)."""
+    comptime if LAYOUT == LAYOUT_NHWC:
+        return (out_pos % OC, out_pos // OC)
+    else:
+        return (out_pos // SO, out_pos % SO)
+
+
 # ── CPU im2col / col2im over List storage (no pointers, no origins) ──────
 def _im2col_cpu[
-    IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OH: Int, OW: Int
+    IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OH: Int, OW: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](ref in_list: List[Scalar[DT]], in_off: Int, mut col_list: List[Scalar[DT]]):
-    """x[IC·H·W] slab at `in_off` → col_list[OH·OW, IC·K·K] row-major."""
+    """x[IC·H·W] slab at `in_off` → col_list[OH·OW, COL] row-major. COL axis and
+    input slab follow LAYOUT (NCHW default)."""
     comptime CK = IC * K * K
     for oh in range(OH):
         for ow in range(OW):
             var row_off = (oh * OW + ow) * CK
             for ic in range(IC):
-                var in_c_base = in_off + ic * H * W
-                var col_ic_base = row_off + ic * K * K
                 for kh in range(K):
                     var ih = oh * S + kh - P
-                    var col_kh_base = col_ic_base + kh * K
                     for kw in range(K):
                         var iw = ow * S + kw - P
+                        var c_idx = row_off + _col_off[LAYOUT, IC, K](ic, kh, kw)
                         if ih < 0 or ih >= H or iw < 0 or iw >= W:
-                            col_list[col_kh_base + kw] = Scalar[DT](0)
+                            col_list[c_idx] = Scalar[DT](0)
                         else:
-                            col_list[col_kh_base + kw] = in_list[
-                                in_c_base + ih * W + iw
+                            col_list[c_idx] = in_list[
+                                in_off + _in_off[LAYOUT, IC, H, W](ic, ih, iw)
                             ]
 
 
 def _col2im_cpu[
-    IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OH: Int, OW: Int
+    IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OH: Int, OW: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     ref d_col_list: List[Scalar[DT]],
     mut d_in_list: List[Scalar[DT]],
     in_off: Int,
 ):
-    """Scatter-add d_col[OH·OW, IC·K·K] back into d_in_list[IC·H·W] at
-    `in_off` (must be pre-zeroed)."""
+    """Scatter-add d_col[OH·OW, COL] back into d_in_list[IC·H·W] at `in_off`
+    (must be pre-zeroed). COL axis and input slab follow LAYOUT (NCHW default)."""
     comptime CK = IC * K * K
     for oh in range(OH):
         for ow in range(OW):
             var row_off = (oh * OW + ow) * CK
             for ic in range(IC):
-                var in_c_base = in_off + ic * H * W
-                var col_ic_base = row_off + ic * K * K
                 for kh in range(K):
                     var ih = oh * S + kh - P
                     if ih < 0 or ih >= H:
                         continue
-                    var col_kh_base = col_ic_base + kh * K
                     for kw in range(K):
                         var iw = ow * S + kw - P
                         if iw < 0 or iw >= W:
                             continue
-                        d_in_list[in_c_base + ih * W + iw] += d_col_list[
-                            col_kh_base + kw
+                        d_in_list[
+                            in_off + _in_off[LAYOUT, IC, H, W](ic, ih, iw)
+                        ] += d_col_list[
+                            row_off + _col_off[LAYOUT, IC, K](ic, kh, kw)
                         ]
 
 
@@ -130,6 +204,7 @@ def _im2col_kernel[
     SO: Int,
     BS: Int,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
     col: LayoutTensor[ADT, Layout.row_major(BS, COL), MutAnyOrigin],
@@ -143,16 +218,15 @@ def _im2col_kernel[
     var s = row % SO
     var oh = s // OW
     var ow = s % OW
-    var ic = ck // (K * K)
-    var rem = ck % (K * K)
-    var kh = rem // K
-    var kw = rem % K
+    var ic, kh, kw = _col_decode[LAYOUT, IC, K](ck)
     var ih = oh * S + kh - P
     var iw = ow * S + kw - P
     if ih < 0 or ih >= H or iw < 0 or iw >= W:
         col[row, ck] = Scalar[ADT](0)
     else:
-        col[row, ck] = rebind[Scalar[ADT]](input[b, ic * H * W + ih * W + iw])
+        col[row, ck] = rebind[Scalar[ADT]](
+            input[b, _in_off[LAYOUT, IC, H, W](ic, ih, iw)]
+        )
 
 
 def _scatter_bias_kernel[
@@ -162,6 +236,7 @@ def _scatter_bias_kernel[
     OUT_FLAT: Int,
     BS: Int,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     out_packed: LayoutTensor[ADT, Layout.row_major(BS, OC), MutAnyOrigin],
     bias: LayoutTensor[ADT, Layout.row_major(OC), MutAnyOrigin],
@@ -172,8 +247,7 @@ def _scatter_bias_kernel[
         return
     var b = idx // OUT_FLAT
     var out_pos = idx % OUT_FLAT
-    var oc = out_pos // SO
-    var s = out_pos % SO
+    var oc, s = _out_decode[LAYOUT, OC, SO](out_pos)
     output[b, out_pos] = rebind[Scalar[ADT]](
         out_packed[b * SO + s, oc]
     ) + rebind[Scalar[ADT]](bias[oc])
@@ -186,6 +260,7 @@ def _go_transpose_kernel[
     OUT_FLAT: Int,
     BS: Int,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     grad_output: LayoutTensor[
         ADT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin
@@ -199,7 +274,9 @@ def _go_transpose_kernel[
     var col = idx % BS
     var b = col // SO
     var s = col % SO
-    go_T[oc, col] = rebind[Scalar[ADT]](grad_output[b, oc * SO + s])
+    go_T[oc, col] = rebind[Scalar[ADT]](
+        grad_output[b, _out_off[LAYOUT, OC, SO](oc, s)]
+    )
 
 
 def _accum_kernel[
@@ -247,6 +324,7 @@ def _dx_col2im_kernel[
     SO: Int,
     BS: Int,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     d_col: LayoutTensor[ADT, Layout.row_major(COL, BS), MutAnyOrigin],
     grad_input: LayoutTensor[
@@ -267,11 +345,7 @@ def _dx_col2im_kernel[
         return
     var b = idx // IN_FLAT
     var in_pos = idx % IN_FLAT
-    var hw = H * W
-    var ic = in_pos // hw
-    var rem = in_pos % hw
-    var ih = rem // W
-    var iw = rem % W
+    var ic, ih, iw = _in_decode[LAYOUT, IC, H, W](in_pos)
     # fp32 accumulator (the col2im sum) even on the bf16-flow path; only the
     # written grad_input is bf16 (activation dtype).
     var acc: Scalar[DT] = 0
@@ -285,7 +359,7 @@ def _dx_col2im_kernel[
                 if ow < 0 or ow >= OW:
                     continue
                 var row = b * SO + oh * OW + ow
-                var col_idx = (ic * K + kh) * K + kw
+                var col_idx = _col_off[LAYOUT, IC, K](ic, kh, kw)
                 acc += rebind[Scalar[ADT]](d_col[col_idx, row]).cast[DT]()
     else:
         for kh in range(K):
@@ -303,7 +377,7 @@ def _dx_col2im_kernel[
                 if ow >= OW:
                     continue
                 var row = b * SO + oh * OW + ow
-                var col_idx = (ic * K + kh) * K + kw
+                var col_idx = _col_off[LAYOUT, IC, K](ic, kh, kw)
                 acc += rebind[Scalar[ADT]](d_col[col_idx, row]).cast[DT]()
     grad_input[b, in_pos] = acc.cast[ADT]()
 
@@ -315,6 +389,7 @@ def _backward_db_kernel[
     OW: Int,
     OUT_FLAT: Int,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     grad_output: LayoutTensor[
         ADT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin
@@ -329,15 +404,14 @@ def _backward_db_kernel[
         return
     var so = OH * OW
     var n_eff = BATCH * so
-    var out_c_off = oc * so
     var my_acc: Scalar[DT] = 0
     var idx = t
     while idx < n_eff:
         var b = idx // so
         var s_pos = idx % so
-        my_acc += rebind[Scalar[ADT]](grad_output[b, out_c_off + s_pos]).cast[
-            DT
-        ]()
+        my_acc += rebind[Scalar[ADT]](
+            grad_output[b, _out_off[LAYOUT, OC, OH * OW](oc, s_pos)]
+        ).cast[DT]()
         idx += CONV_DW_TPB
     var total = block.sum[block_size=CONV_DW_TPB, broadcast=False](val=my_acc)
     if t == 0:
@@ -354,6 +428,7 @@ struct Conv2D[
     H_: Int,
     W_: Int,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](Module):
     comptime ARITY = 1
     comptime OH = (Self.H_ + 2 * Self.P_ - Self.K_) // Self.S_ + 1
@@ -506,6 +581,7 @@ struct Conv2D[
                         Self.W_,
                         Self.OH,
                         Self.OW,
+                        Self.LAYOUT,
                     ](in0d.data, b * Self.IN_FLAT, col)
                     var col_tt = TileTensor(col, row_major[Self.SO, Self.COL]())
                     var out_b_tt = TileTensor(
@@ -515,14 +591,17 @@ struct Conv2D[
                     max_matmul[transpose_b=True, target="cpu"](
                         out_b_tt, w_tt, col_tt, None
                     )
-                    # scatter + bias broadcast into out.data[b*OUT_FLAT:]
+                    # scatter + bias broadcast into out.data[b*OUT_FLAT:] (out_b
+                    # is the [OC,SO] GEMM result; the output offset follows LAYOUT)
                     var base = b * Self.OUT_FLAT
                     for oc in range(Self.OC_):
                         var bv = self.bias.val.data[oc]
                         for s in range(Self.SO):
-                            outd.data[base + oc * Self.SO + s] = (
-                                out_b[oc * Self.SO + s] + bv
-                            )
+                            outd.data[
+                                base + _out_off[Self.LAYOUT, Self.OC_, Self.SO](
+                                    oc, s
+                                )
+                            ] = (out_b[oc * Self.SO + s] + bv)
             else:
                 var c = ctx.value()
                 comptime BS = B * Self.SO
@@ -546,6 +625,8 @@ struct Conv2D[
                         Self.COL,
                         Self.SO,
                         BS,
+                        DT,
+                        Self.LAYOUT,
                     ]
                 ](
                     in0d.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
@@ -578,6 +659,8 @@ struct Conv2D[
                         Self.SO,
                         Self.OUT_FLAT,
                         BS,
+                        DT,
+                        Self.LAYOUT,
                     ]
                 ](
                     self.outp_t.lt["gpu", Layout.row_major(BS, Self.OC_)](),
@@ -622,6 +705,7 @@ struct Conv2D[
                     Self.SO,
                     BS,
                     Self.ADT,
+                    Self.LAYOUT,
                 ]
             ](
                 in0.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
@@ -653,6 +737,7 @@ struct Conv2D[
                     Self.OUT_FLAT,
                     BS,
                     Self.ADT,
+                    Self.LAYOUT,
                 ]
             ](
                 self.outp_t_bf.lt["gpu", Layout.row_major(BS, Self.OC_)](),
@@ -709,7 +794,10 @@ struct Conv2D[
                 for oc in range(Self.OC_):
                     var acc: Scalar[DT] = 0
                     for s in range(Self.SO):
-                        acc += god.data[go_base + oc * Self.SO + s]
+                        acc += god.data[
+                            go_base
+                            + _out_off[Self.LAYOUT, Self.OC_, Self.SO](oc, s)
+                        ]
                     self.bias.grd.data[oc] += acc
                 # rebuild col_b = im2col(x_b)
                 _im2col_cpu[
@@ -721,8 +809,12 @@ struct Conv2D[
                     Self.W_,
                     Self.OH,
                     Self.OW,
+                    Self.LAYOUT,
                 ](find.data, b * Self.IN_FLAT, col)
-                comptime if IS_APPLE_F32:
+                # The Apple-cblas fused path reinterprets grad_output memory as a
+                # contiguous [OC, SO] matrix — only valid for NCHW. NHWC falls back
+                # to the portable gather-into-[OC,SO] path below.
+                comptime if IS_APPLE_F32 and Self.LAYOUT == LAYOUT_NCHW:
                     var cblas = get_cblas_f32_function()
                     var go_b_p = god.data.unsafe_ptr() + go_base
                     # dW += go_b[OC,SO] @ col_b[SO,COL]  (beta=1, no temp)
@@ -768,11 +860,16 @@ struct Conv2D[
                         Int32(Self.COL),
                     )
                 else:
+                    # gather grad_output (LAYOUT-ordered) into packed [OC, SO]
                     var go_b = List[Scalar[DT]](
                         length=Self.OC_ * Self.SO, fill=Scalar[DT](0)
                     )
-                    for i in range(Self.OC_ * Self.SO):
-                        go_b[i] = god.data[go_base + i]
+                    for oc in range(Self.OC_):
+                        for s in range(Self.SO):
+                            go_b[oc * Self.SO + s] = god.data[
+                                go_base
+                                + _out_off[Self.LAYOUT, Self.OC_, Self.SO](oc, s)
+                            ]
                     comptime if Self.COL == 1:
                         # Degenerate N=COL=1 GEMM (a 1x1 conv with IC=1 — the
                         # MuZero action-embedding). `max_matmul` aborts on N=1 on
@@ -836,6 +933,7 @@ struct Conv2D[
                     Self.W_,
                     Self.OH,
                     Self.OW,
+                    Self.LAYOUT,
                 ](d_col, gind.data, b * Self.IN_FLAT)
           else:
             var c = ctx.value()
@@ -867,6 +965,8 @@ struct Conv2D[
                         Self.COL,
                         Self.SO,
                         BS,
+                        DT,
+                        Self.LAYOUT,
                     ]
                 ](
                     find.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
@@ -883,6 +983,8 @@ struct Conv2D[
                     Self.SO,
                     Self.OUT_FLAT,
                     BS,
+                    DT,
+                    Self.LAYOUT,
                 ]
             ](
                 god.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
@@ -916,6 +1018,8 @@ struct Conv2D[
                     Self.OH,
                     Self.OW,
                     Self.OUT_FLAT,
+                    DT,
+                    Self.LAYOUT,
                 ]
             ](
                 god.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
@@ -961,6 +1065,8 @@ struct Conv2D[
                     Self.COL,
                     Self.SO,
                     BS,
+                    DT,
+                    Self.LAYOUT,
                 ]
             ](
                 self.col_t.lt["gpu", Layout.row_major(Self.COL, BS)](),
@@ -1002,6 +1108,7 @@ struct Conv2D[
                         Self.SO,
                         BS,
                         Self.ADT,
+                        Self.LAYOUT,
                     ]
                 ](
                     fin.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
@@ -1019,6 +1126,7 @@ struct Conv2D[
                     Self.OUT_FLAT,
                     BS,
                     Self.ADT,
+                    Self.LAYOUT,
                 ]
             ](
                 grad_output.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
@@ -1054,6 +1162,7 @@ struct Conv2D[
                     Self.OW,
                     Self.OUT_FLAT,
                     Self.ADT,
+                    Self.LAYOUT,
                 ]
             ](
                 grad_output.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
@@ -1102,6 +1211,7 @@ struct Conv2D[
                     Self.SO,
                     BS,
                     Self.ADT,
+                    Self.LAYOUT,
                 ]
             ](
                 self.col_t_bf.lt["gpu", Layout.row_major(Self.COL, BS)](),
