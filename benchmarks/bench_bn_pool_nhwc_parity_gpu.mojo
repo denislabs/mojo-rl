@@ -43,7 +43,9 @@ from layout import Layout, LayoutTensor
 
 comptime DT = DType.float32
 comptime TPB = 128        # block-per-channel reduction width (NCHW) / flat launches
-comptime NCHUNK = 512     # NHWC partial-reduction row chunks (parallelism source)
+comptime NCHUNK = 1024    # NHWC partial-reduction row chunks (parallelism source).
+                          # 1024*BN2D_BLK(256) ≈ 262k threads → matches the real
+                          # NCHW G-grouped thread count (C*G*128) on the hot shapes.
 comptime BN2D_BLK = 256   # NHWC-2D reduction block (= ROWS_PER_BLK * C; ROWS = BLK/C)
 comptime EPS = 1e-5
 
