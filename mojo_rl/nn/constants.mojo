@@ -24,7 +24,7 @@ from std.sys import simd_width_of
 
 comptime DT = DType.float32
 comptime CPU_SIMD_W = simd_width_of[DT]()
-comptime TPB = 256
+comptime TPB = 128
 comptime TPB_REDUCE = 64
 
 # Spatial tensor memory layout for conv/BN/pool. NCHW (channels-first) is the
