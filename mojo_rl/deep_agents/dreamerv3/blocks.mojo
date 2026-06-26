@@ -422,6 +422,70 @@ def _imag_ret_k[NS_: Int, TI_: Int, BINS_: Int](
             t -= 1
 
 
+def _ret_perc_neigh_k[N_: Int](
+    ret: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
+    neigh: LayoutTensor[DT, Layout.row_major(4), MutAnyOrigin],
+    lo_floor: Int,
+    hi_floor: Int,
+):
+    """Device-resident percentile *neighbor* finder — replaces the host
+    `ret_d.download` + insertion-sort in `PercentileNormalize.update`. Each
+    thread `i` computes its STABLE rank in the sorted order (`x[j] < x[i]`, or
+    `==` with `j < i` — identical tie-break to `_insertion_sort`), so
+    `sorted[rank(i)] == x[i]`. The 4 order-statistics bracketing the lo/hi
+    percentiles (`sorted[lo_floor]`, `[lo_floor+1]`, `[hi_floor]`,
+    `[hi_floor+1]`) are written by the unique threads whose rank matches — no
+    race, no D2H. O(N²) but N = NS·(TI-1) is small and fully parallel. The host
+    pre-computes the (constant) floor/frac indices, so this is capture-safe."""
+    var i = Int(global_idx.x)
+    if i < N_:
+        var xi = rebind[Scalar[DT]](ret[i])
+        var rank = 0
+        for j in range(N_):
+            var xj = rebind[Scalar[DT]](ret[j])
+            if xj < xi or (xj == xi and j < i):
+                rank += 1
+        if rank == lo_floor:
+            neigh[0] = xi
+        if rank == lo_floor + 1:
+            neigh[1] = xi
+        if rank == hi_floor:
+            neigh[2] = xi
+        if rank == hi_floor + 1:
+            neigh[3] = xi
+
+
+def _ret_perc_ema_k(
+    neigh: LayoutTensor[DT, Layout.row_major(4), MutAnyOrigin],
+    state: LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin],
+    rscale: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    lo_frac: Scalar[DT],
+    hi_frac: Scalar[DT],
+    rate: Scalar[DT],
+    limit: Scalar[DT],
+):
+    """Single-thread linear-interp percentile + EMA + rscale, all on device —
+    the device twin of `PercentileNormalize.update`/`stats` for retnorm's
+    `perc`/`debias=False` config. `state=[lo,hi]` is the PERSISTENT EMA (never
+    reset); `rscale[0]=max(limit, hi-lo)` is read by `_imag_bwd_k`. Mirrors
+    `_percentile_linear` (linear interp) + the `keep·s + rate·p` EMA exactly →
+    parity-preserving."""
+    if Int(global_idx.x) == 0:
+        var plo = rebind[Scalar[DT]](neigh[0]) + lo_frac * (
+            rebind[Scalar[DT]](neigh[1]) - rebind[Scalar[DT]](neigh[0])
+        )
+        var phi = rebind[Scalar[DT]](neigh[2]) + hi_frac * (
+            rebind[Scalar[DT]](neigh[3]) - rebind[Scalar[DT]](neigh[2])
+        )
+        var keep = Scalar[DT](1.0) - rate
+        var lo = keep * rebind[Scalar[DT]](state[0]) + rate * plo
+        var hi = keep * rebind[Scalar[DT]](state[1]) + rate * phi
+        state[0] = lo
+        state[1] = hi
+        var span = hi - lo
+        rscale[0] = limit if limit > span else span
+
+
 def _imag_bwd_k[NS_: Int, TI_: Int, BINS_: Int, C_: Int](
     vlog: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * BINS_), MutAnyOrigin],
     svlog: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * BINS_), MutAnyOrigin],
@@ -434,7 +498,7 @@ def _imag_bwd_k[NS_: Int, TI_: Int, BINS_: Int, C_: Int](
     gpmean: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * C_), MutAnyOrigin],
     polloss: LayoutTensor[DT, Layout.row_major(NS_ * (TI_ - 1)), MutAnyOrigin],
     valloss: LayoutTensor[DT, Layout.row_major(NS_ * (TI_ - 1)), MutAnyOrigin],
-    rscale: Scalar[DT],
+    rscale_buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
     lam: Scalar[DT],
     actent: Scalar[DT],
     slowreg: Scalar[DT],
@@ -443,10 +507,13 @@ def _imag_bwd_k[NS_: Int, TI_: Int, BINS_: Int, C_: Int](
 ):
     """Per-start imag-loss forward (loss values) + backward (grads). Computes
     value-logit grads (twohot CE) and policy-logit grads (unimix categorical),
-    plus per-(b,t) policy/value losses. Mirrors `imag_loss_cpu`/`_backward`."""
+    plus per-(b,t) policy/value losses. Mirrors `imag_loss_cpu`/`_backward`.
+    `rscale` is read from a device buffer (written by `_ret_perc_ema_k`) so the
+    retnorm scale never round-trips through the host."""
     var b = Int(global_idx.x)
     if b < NS_:
         comptime TM1 = TI_ - 1
+        var rscale = rebind[Scalar[DT]](rscale_buf[0])
         # zero this start's grad slices for ALL TI steps (t=TM1.. stay 0).
         for t in range(TI_):
             for c in range(BINS_):
@@ -1685,6 +1752,9 @@ struct ACStep[
     var mbrew_d: Tensor  # [BT]         mb_rew on device
     var noise_d: Tensor  # [TI*NS*ACT]  imagination noise on device
     var bins_d: Tensor   # [BINS]       twohot grid on device
+    var retstate_d: Tensor  # [2]  PERSISTENT retnorm EMA [lo, hi] (never reset)
+    var neigh_d: Tensor  # [4]  per-step percentile neighbors (scratch)
+    var rscale_d: Tensor # [1]  retnorm scale (read by _imag_bwd_k on device)
 
     def __init__(out self):
         self.minstd = Scalar[DT](0.1)
@@ -1732,6 +1802,9 @@ struct ACStep[
         self.mbrew_d = Tensor()
         self.noise_d = Tensor()
         self.bins_d = Tensor()
+        self.retstate_d = Tensor()
+        self.neigh_d = Tensor()
+        self.rscale_d = Tensor()
 
     @staticmethod
     def make[target: StaticString](
@@ -1790,6 +1863,14 @@ struct ACStep[
             s.mbrew_d = _mk[target](BT, ctx)
             s.noise_d = _mk[target](TIl * NS * ACTD, ctx)
             s.bins_d = _mk[target](BINSl, ctx)
+            # device-resident retnorm: persistent EMA state zeroed once (matches
+            # PercentileNormalize.__init__ lo=hi=0); neigh/rscale are per-step.
+            s.retstate_d = _mk[target](2, ctx)
+            s.retstate_d.data[0] = Scalar[DT](0.0)
+            s.retstate_d.data[1] = Scalar[DT](0.0)
+            s.retstate_d.upload(ctx.value())
+            s.neigh_d = _mk[target](4, ctx)
+            s.rscale_d = _mk[target](1, ctx)
         return s^
 
     def step[target: StaticString](
@@ -2537,7 +2618,7 @@ struct ACStep[
             ctx.enqueue_copy(self.cd.dev.value(), nd.dev.value())
             ctx.enqueue_copy(self.cs.dev.value(), sn.dev.value())
 
-        # ── λ-return on device → ret_d; download for the percentile retnorm ──
+        # ── λ-return on device → ret_d ──
         ctx.enqueue_function[_imag_ret_k[NS, TI, BINSl]](
             self.vlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
             self.rewv_d.lt["gpu", Layout.row_major(NS * TI)](),
@@ -2546,13 +2627,28 @@ struct ACStep[
             self.ret_d.lt["gpu", Layout.row_major(NS * TM1)](),
             self.lam, grid_dim=nbB, block_dim=TPB,
         )
-        self.ret_d.download(ctx)
-        var ret_host = List[Scalar[DT]](length=NS * TM1, fill=Scalar[DT](0))
-        for i in range(NS * TM1):
-            ret_host[i] = self.ret_d.data[i]
-        retnorm.update(ret_host, NS * TM1)
-        var rscale = retnorm.stats()[1]
-        st.dbg_rscale = rscale
+        # ── device-resident percentile retnorm (NO D2H — capture-safe) ──
+        # Constant floor/frac indices (perclo/perchi over a fixed-size sample)
+        # computed host-side; the percentile + EMA + rscale run on-device into
+        # the persistent `retstate_d`, read by `_imag_bwd_k` via `rscale_d`.
+        comptime NRET = NS * TM1
+        comptime nbRET = (NRET + TPB - 1) // TPB
+        var idx_lo = (retnorm.perclo / Scalar[DT](100.0)) * Scalar[DT](NRET - 1)
+        var idx_hi = (retnorm.perchi / Scalar[DT](100.0)) * Scalar[DT](NRET - 1)
+        var lo_floor = Int(idx_lo)
+        var hi_floor = Int(idx_hi)
+        ctx.enqueue_function[_ret_perc_neigh_k[NRET]](
+            self.ret_d.lt["gpu", Layout.row_major(NRET)](),
+            self.neigh_d.lt["gpu", Layout.row_major(4)](),
+            lo_floor, hi_floor, grid_dim=nbRET, block_dim=TPB,
+        )
+        ctx.enqueue_function[_ret_perc_ema_k](
+            self.neigh_d.lt["gpu", Layout.row_major(4)](),
+            self.retstate_d.lt["gpu", Layout.row_major(2)](),
+            self.rscale_d.lt["gpu", Layout.row_major(1)](),
+            idx_lo - Scalar[DT](lo_floor), idx_hi - Scalar[DT](hi_floor),
+            retnorm.rate, retnorm.limit, grid_dim=1, block_dim=1,
+        )
 
         # ── imag-loss backward (grads + per-(b,t) losses) on device ──
         var inv_im = Scalar[DT](1.0) / Scalar[DT](NS * TM1)
@@ -2568,7 +2664,8 @@ struct ACStep[
             self.gpmean_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
             self.polloss_d.lt["gpu", Layout.row_major(NS * TM1)](),
             self.valloss_d.lt["gpu", Layout.row_major(NS * TM1)](),
-            rscale, self.lam, self.actent, self.slowreg, inv_im, UNIMIX,
+            self.rscale_d.lt["gpu", Layout.row_major(1)](),
+            self.lam, self.actent, self.slowreg, inv_im, UNIMIX,
             grid_dim=nbB, block_dim=TPB,
         )
 
@@ -2641,7 +2738,10 @@ struct ACStep[
             self.feats_d.download(ctx)
             self.polloss_d.download(ctx)
             self.valloss_d.download(ctx)
+            self.ret_d.download(ctx)      # for dbg_ret_mean/std (no longer D2H'd in the fast path)
+            self.rscale_d.download(ctx)   # for dbg_rscale (retnorm scale now lives on device)
             ctx.synchronize()
+            st.dbg_rscale = self.rscale_d.data[0]
             var sp: Scalar[DT] = 0.0
             var sv: Scalar[DT] = 0.0
             for i in range(NS * TM1):
