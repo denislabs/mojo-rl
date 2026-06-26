@@ -39,9 +39,10 @@ from std.math import tanh, exp, sqrt, log
 from std.random import random_float64
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
+from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
-from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
@@ -484,6 +485,116 @@ def _ret_perc_ema_k(
         state[1] = hi
         var span = hi - lo
         rscale[0] = limit if limit > span else span
+
+
+# ── device diagnostic reductions (want_diag log cadence) ───────────────────
+# The discrete AC metric readout used to D2H the full imagination histories
+# (feats_d 2.2 MB, vlog_d 0.8 MB, pmean_d, …) and sum them on host. Instead
+# each metric is reduced on-device (single block, `block.sum`/`block.min` —
+# mirrors `DeviceMeanAccum`/`MSELoss`) into a small `[DIAG_N]` buffer, so the
+# whole bundle leaves the device in ONE tiny D2H. No accumulation across steps
+# (the readout is already gated to log cadence); `want_diag` semantics + the
+# parity-gated per-step `last_*_loss` snapshot are preserved exactly.
+comptime DIAG_N = 16
+
+
+def _diag_sum_k[N_: Int](
+    data: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(DIAG_N), MutAnyOrigin],
+    slot: Int,
+):
+    var t = Int(global_idx.x)
+    var s: Scalar[DT] = 0.0
+    var k = t
+    while k < N_:
+        s += rebind[Scalar[DT]](data[k])
+        k += TPB_REDUCE
+    var tot = block.sum[block_size=TPB_REDUCE, broadcast=False](val=s)
+    if t == 0:
+        dst[slot] = tot[0]
+
+
+def _diag_sum_sq_k[N_: Int](
+    data: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(DIAG_N), MutAnyOrigin],
+    s_sum: Int,
+    s_sq: Int,
+):
+    """Σ data → dst[s_sum], Σ data² → dst[s_sq] (one pass; for mean+std)."""
+    var t = Int(global_idx.x)
+    var s: Scalar[DT] = 0.0
+    var q: Scalar[DT] = 0.0
+    var k = t
+    while k < N_:
+        var v = rebind[Scalar[DT]](data[k])
+        s += v
+        q += v * v
+        k += TPB_REDUCE
+    var ts = block.sum[block_size=TPB_REDUCE, broadcast=False](val=s)
+    var tq = block.sum[block_size=TPB_REDUCE, broadcast=False](val=q)
+    if t == 0:
+        dst[s_sum] = ts[0]
+        dst[s_sq] = tq[0]
+
+
+def _diag_abs_sum_k[N_: Int](
+    data: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(DIAG_N), MutAnyOrigin],
+    slot: Int,
+):
+    var t = Int(global_idx.x)
+    var s: Scalar[DT] = 0.0
+    var k = t
+    while k < N_:
+        var v = rebind[Scalar[DT]](data[k])
+        s += v if v >= Scalar[DT](0.0) else -v
+        k += TPB_REDUCE
+    var tot = block.sum[block_size=TPB_REDUCE, broadcast=False](val=s)
+    if t == 0:
+        dst[slot] = tot[0]
+
+
+def _diag_min_k[N_: Int](
+    data: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(DIAG_N), MutAnyOrigin],
+    slot: Int,
+):
+    var t = Int(global_idx.x)
+    var m: Scalar[DT] = Scalar[DT](1e30)
+    var k = t
+    while k < N_:
+        var v = rebind[Scalar[DT]](data[k])
+        if v < m:
+            m = v
+        k += TPB_REDUCE
+    var tot = block.min[block_size=TPB_REDUCE, broadcast=False](val=m)
+    if t == 0:
+        dst[slot] = tot[0]
+
+
+def _diag_twohot_sum_sq_k[NBT_: Int, BINS_: Int, NL_: Int, NB_: Int](
+    vlog: LayoutTensor[DT, Layout.row_major(NL_), MutAnyOrigin],
+    bins: LayoutTensor[DT, Layout.row_major(NB_), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(DIAG_N), MutAnyOrigin],
+    s_sum: Int,
+    s_sq: Int,
+):
+    """Σ twohot_pred(vlog[cell]) and Σ(·)² over the NBT cells → dst[s_sum/s_sq]
+    (device twin of the host val_mean/val_std reduction)."""
+    var t = Int(global_idx.x)
+    var s: Scalar[DT] = 0.0
+    var q: Scalar[DT] = 0.0
+    var c = t
+    while c < NBT_:
+        var v = _dev_twp[BINS_](vlog, c * BINS_, bins)
+        s += v
+        q += v * v
+        c += TPB_REDUCE
+    var ts = block.sum[block_size=TPB_REDUCE, broadcast=False](val=s)
+    var tq = block.sum[block_size=TPB_REDUCE, broadcast=False](val=q)
+    if t == 0:
+        dst[s_sum] = ts[0]
+        dst[s_sq] = tq[0]
 
 
 def _imag_bwd_k[NS_: Int, TI_: Int, BINS_: Int, C_: Int](
@@ -1755,6 +1866,7 @@ struct ACStep[
     var retstate_d: Tensor  # [2]  PERSISTENT retnorm EMA [lo, hi] (never reset)
     var neigh_d: Tensor  # [4]  per-step percentile neighbors (scratch)
     var rscale_d: Tensor # [1]  retnorm scale (read by _imag_bwd_k on device)
+    var diag_d: Tensor   # [DIAG_N]  device-reduced metric bundle (1 D2H/flush)
 
     def __init__(out self):
         self.minstd = Scalar[DT](0.1)
@@ -1805,6 +1917,7 @@ struct ACStep[
         self.retstate_d = Tensor()
         self.neigh_d = Tensor()
         self.rscale_d = Tensor()
+        self.diag_d = Tensor()
 
     @staticmethod
     def make[target: StaticString](
@@ -1871,6 +1984,7 @@ struct ACStep[
             s.retstate_d.upload(ctx.value())
             s.neigh_d = _mk[target](4, ctx)
             s.rscale_d = _mk[target](1, ctx)
+            s.diag_d = _mk[target](DIAG_N, ctx)
         return s^
 
     def step[target: StaticString](
@@ -2729,75 +2843,88 @@ struct ACStep[
         ctx.synchronize()
 
         # ── diagnostics + loss scalars (gated; log-cadence only) ──
+        # Reduce every metric on-device into `diag_d` (single-block kernels),
+        # then ONE tiny D2H of the whole bundle — no more full-history downloads
+        # (feats_d 2.2 MB / vlog_d 0.8 MB / …). Slots:
+        #   0 Σpolloss  1 Σvalloss  2 Σrewv  3 Σconv  4 min(conv)
+        #   5 Σret  6 Σret²  7 Σ|pmean|  8 Σval  9 Σval²  10 Σfeats  11 Σfeats²
         if want_diag:
-            self.acts_d.download(ctx)
-            self.pmean_d.download(ctx)
-            self.vlog_d.download(ctx)
-            self.rewv_d.download(ctx)
-            self.conv_d.download(ctx)
-            self.feats_d.download(ctx)
-            self.polloss_d.download(ctx)
-            self.valloss_d.download(ctx)
-            self.ret_d.download(ctx)      # for dbg_ret_mean/std (no longer D2H'd in the fast path)
-            self.rscale_d.download(ctx)   # for dbg_rscale (retnorm scale now lives on device)
+            comptime NTM = NS * TM1
+            comptime NTI = NS * TI
+            comptime NPM = NS * TI * ACTD
+            comptime NFT = NS * TI * FEATl
+            comptime r1 = 1  # single-block reductions
+            ctx.enqueue_function[_diag_sum_k[NTM]](
+                self.polloss_d.lt["gpu", Layout.row_major(NTM)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                0, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_sum_k[NTM]](
+                self.valloss_d.lt["gpu", Layout.row_major(NTM)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                1, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_sum_k[NTI]](
+                self.rewv_d.lt["gpu", Layout.row_major(NTI)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                2, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_sum_k[NTI]](
+                self.conv_d.lt["gpu", Layout.row_major(NTI)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                3, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_min_k[NTI]](
+                self.conv_d.lt["gpu", Layout.row_major(NTI)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                4, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_sum_sq_k[NTM]](
+                self.ret_d.lt["gpu", Layout.row_major(NTM)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                5, 6, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_abs_sum_k[NPM]](
+                self.pmean_d.lt["gpu", Layout.row_major(NPM)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                7, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[
+                _diag_twohot_sum_sq_k[NTI, BINSl, NS * TI * BINSl, BINSl]
+            ](
+                self.vlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
+                self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                8, 9, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_sum_sq_k[NFT]](
+                self.feats_d.lt["gpu", Layout.row_major(NFT)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                10, 11, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            self.diag_d.download(ctx)
+            self.rscale_d.download(ctx)
             ctx.synchronize()
             st.dbg_rscale = self.rscale_d.data[0]
-            var sp: Scalar[DT] = 0.0
-            var sv: Scalar[DT] = 0.0
-            for i in range(NS * TM1):
-                sp += self.polloss_d.data[i]
-                sv += self.valloss_d.data[i]
-            var inv_ac = Scalar[DT](1.0) / Scalar[DT](NS * TM1)
-            st.last_ac_loss = (sp + sv) * inv_ac
-            st.dbg_pol_loss = sp * inv_ac
-            st.dbg_val_loss = sv * inv_ac
-            var rp: Scalar[DT] = 0.0
-            for i in range(NS * TI):
-                rp += self.rewv_d.data[i]
-            st.dbg_rew_pred = rp / Scalar[DT](NS * TI)
-            var cm: Scalar[DT] = 0.0
-            var cmin: Scalar[DT] = self.conv_d.data[0]
-            for i in range(NS * TI):
-                cm += self.conv_d.data[i]
-                if self.conv_d.data[i] < cmin:
-                    cmin = self.conv_d.data[i]
-            st.dbg_con_mean = cm / Scalar[DT](NS * TI)
-            st.dbg_con_min = cmin
-            var rm: Scalar[DT] = 0.0
-            for i in range(NS * TM1):
-                rm += self.ret_d.data[i]
-            rm = rm / Scalar[DT](NS * TM1)
-            st.dbg_ret_mean = rm
-            var rv: Scalar[DT] = 0.0
-            for i in range(NS * TM1):
-                var dd = self.ret_d.data[i] - rm
-                rv += dd * dd
-            st.dbg_ret_std = sqrt(rv / Scalar[DT](NS * TM1))
-            var pma: Scalar[DT] = 0.0
-            for i in range(NS * TI * ACTD):
-                var v = self.pmean_d.data[i]
-                pma += v if v >= 0 else -v
-            st.dbg_pmean_abs = pma / Scalar[DT](NS * TI * ACTD)
+            var inv_ac = Scalar[DT](1.0) / Scalar[DT](NTM)
+            var d0 = self.diag_d.data[0]
+            var d1 = self.diag_d.data[1]
+            st.last_ac_loss = (d0 + d1) * inv_ac
+            st.dbg_pol_loss = d0 * inv_ac
+            st.dbg_val_loss = d1 * inv_ac
+            st.dbg_rew_pred = self.diag_d.data[2] / Scalar[DT](NTI)
+            st.dbg_con_mean = self.diag_d.data[3] / Scalar[DT](NTI)
+            st.dbg_con_min = self.diag_d.data[4]
+            var rmean = self.diag_d.data[5] / Scalar[DT](NTM)
+            st.dbg_ret_mean = rmean
+            var rvar = self.diag_d.data[6] / Scalar[DT](NTM) - rmean * rmean
+            st.dbg_ret_std = sqrt(rvar if rvar > Scalar[DT](0.0) else Scalar[DT](0.0))
+            st.dbg_pmean_abs = self.diag_d.data[7] / Scalar[DT](NPM)
             st.dbg_pstd = 0.0
-            var vlogp = _hp(self.vlog_d)
-            var vm_acc: Scalar[DT] = 0.0
-            for b in range(NS):
-                for t in range(TI):
-                    vm_acc += twohot_pred[BINSl](vlogp, (b * TI + t) * BINSl, bins)
-            var vmean = vm_acc / Scalar[DT](NS * TI)
+            var vmean = self.diag_d.data[8] / Scalar[DT](NTI)
             st.dbg_val_mean = vmean
-            var vv: Scalar[DT] = 0.0
-            for b in range(NS):
-                for t in range(TI):
-                    var dv = twohot_pred[BINSl](vlogp, (b * TI + t) * BINSl, bins) - vmean
-                    vv += dv * dv
-            st.dbg_val_std = sqrt(vv / Scalar[DT](NS * TI))
-            var fm: Scalar[DT] = 0.0
-            for i in range(NS * TI * FEATl):
-                fm += self.feats_d.data[i]
-            fm = fm / Scalar[DT](NS * TI * FEATl)
-            var fv: Scalar[DT] = 0.0
-            for i in range(NS * TI * FEATl):
-                var df = self.feats_d.data[i] - fm
-                fv += df * df
-            st.dbg_feat_std = sqrt(fv / Scalar[DT](NS * TI * FEATl))
+            var vvar = self.diag_d.data[9] / Scalar[DT](NTI) - vmean * vmean
+            st.dbg_val_std = sqrt(vvar if vvar > Scalar[DT](0.0) else Scalar[DT](0.0))
+            var fmean = self.diag_d.data[10] / Scalar[DT](NFT)
+            var fvar = self.diag_d.data[11] / Scalar[DT](NFT) - fmean * fmean
+            st.dbg_feat_std = sqrt(fvar if fvar > Scalar[DT](0.0) else Scalar[DT](0.0))
