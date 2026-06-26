@@ -222,6 +222,36 @@ def _seq_sample_kernel[
             out_dne[b, k] = buf_d[phys]
 
 
+def _seq_store_fst_kernel[CAP: Int](
+    stage_fst: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    buf_fst: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
+    pos: Int32,
+):
+    """Store the staged `is_first` flag into the ring at `pos` (1 thread)."""
+    if Int(block_dim.x * block_idx.x + thread_idx.x) != 0:
+        return
+    buf_fst[Int(pos)] = rebind[Scalar[DT]](stage_fst[0])
+
+
+def _seq_gather_fst_kernel[B: Int, T: Int, CAP: Int](
+    buf_fst: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
+    fst_out: LayoutTensor[DT, Layout.row_major(B, T + 1), MutAnyOrigin],
+    starts: LayoutTensor[DType.int32, Layout.row_major(B), MutAnyOrigin],
+    origin: Int32,
+):
+    """Per-(window × obs-frame) gather of the `is_first` flag — same window
+    starts + `phys = (origin + s_b + k) % CAP` as `_seq_sample_kernel`, so the
+    `[B, T+1]` fst frames align with the obs frames. Matches the CPU
+    `SequenceReplay.sample_batch_fst` index math."""
+    var t = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if t >= B * (T + 1):
+        return
+    var b = t // (T + 1)
+    var k = t % (T + 1)
+    var phys = (Int(origin) + Int(starts[b]) + k) % CAP
+    fst_out[b, k] = rebind[Scalar[DT]](buf_fst[phys])
+
+
 # ──────────────────────────────────────────────────────────────────────
 # GPUSequenceReplay struct.
 # ──────────────────────────────────────────────────────────────────────
@@ -241,12 +271,19 @@ struct GPUSequenceReplay[
     var act: DeviceBuffer[DT]
     var rew: DeviceBuffer[DT]
     var dne: DeviceBuffer[DT]
+    # Per-frame `is_first` ring [CAP] (device twin of `SequenceReplay.fst`):
+    # 1.0 if this slot's obs begins a new episode. Lets the WM key its carry
+    # reset on `fst` (frame t+1) instead of `dne`, and lets `record_terminal`
+    # store a genuine terminal obs while the post-terminal reset frame stays
+    # flagged first. Sampled by `sample_batch_fst_dev`.
+    var fst: DeviceBuffer[DT]
 
     # Single-transition device staging (used by `record`).
     var stage_obs: DeviceBuffer[DT]
     var stage_act: DeviceBuffer[DT]
     var stage_rew: DeviceBuffer[DT]
     var stage_dne: DeviceBuffer[DT]
+    var stage_fst: DeviceBuffer[DT]
 
     # Per-window start scratch for the element-parallel sample (sized to
     # `batch_capacity`, mirroring `GPUReplay.indices`). Written by
@@ -262,6 +299,7 @@ struct GPUSequenceReplay[
     # overload and race the single-slot reuse in `record`.
     var _h_rew: List[Scalar[DT]]
     var _h_dne: List[Scalar[DT]]
+    var _h_fst: List[Scalar[DT]]
 
     # Stored context — needed by the host `sample_batch` bridge (no ctx arg).
     var ctx: DeviceContext
@@ -269,6 +307,9 @@ struct GPUSequenceReplay[
     # CPU bookkeeping.
     var size: Int
     var pos: Int
+    # True ⇒ the next `record`ed frame begins a new episode (fst=1). Starts
+    # True; a done=1 `record` arms it; `record_terminal` leaves it armed.
+    var pending_first: Bool
     var rng_seed: UInt64
     # Slice 5 — device-resident Philox offset (was a host `UInt64`). The
     # sample kernel reads `_rng_offset_dev[0]`; `_increment_rng_offset_kernel`
@@ -285,15 +326,18 @@ struct GPUSequenceReplay[
         var a = ctx.enqueue_create_buffer[DT](Self.CAP * Self.ACT)
         var r = ctx.enqueue_create_buffer[DT](Self.CAP)
         var d = ctx.enqueue_create_buffer[DT](Self.CAP)
+        var f = ctx.enqueue_create_buffer[DT](Self.CAP)
         s.enqueue_fill(Scalar[Self.SDT](0))
         a.enqueue_fill(Scalar[DT](0.0))
         r.enqueue_fill(Scalar[DT](0.0))
         d.enqueue_fill(Scalar[DT](0.0))
+        f.enqueue_fill(Scalar[DT](0.0))
 
         var stage_s = ctx.enqueue_create_buffer[DT](Self.OBS)
         var stage_a = ctx.enqueue_create_buffer[DT](Self.ACT)
         var stage_r = ctx.enqueue_create_buffer[DT](1)
         var stage_d = ctx.enqueue_create_buffer[DT](1)
+        var stage_f = ctx.enqueue_create_buffer[DT](1)
 
         var starts = ctx.enqueue_create_buffer[DType.int32](batch_capacity)
         starts.enqueue_fill(Int32(0))
@@ -303,23 +347,28 @@ struct GPUSequenceReplay[
 
         var hr = List[Scalar[DT]](length=1, fill=Scalar[DT](0))
         var hd = List[Scalar[DT]](length=1, fill=Scalar[DT](0))
+        var hf = List[Scalar[DT]](length=1, fill=Scalar[DT](0))
 
         return Self(
             obs=s^,
             act=a^,
             rew=r^,
             dne=d^,
+            fst=f^,
             stage_obs=stage_s^,
             stage_act=stage_a^,
             stage_rew=stage_r^,
             stage_dne=stage_d^,
+            stage_fst=stage_f^,
             starts=starts^,
             batch_capacity=batch_capacity,
             _h_rew=hr^,
             _h_dne=hd^,
+            _h_fst=hf^,
             ctx=ctx,
             size=0,
             pos=0,
+            pending_first=True,
             rng_seed=UInt64(0xC0FFEE_DECADE_0042),
             _rng_offset_dev=rng_off^,
         )
@@ -358,10 +407,12 @@ struct GPUSequenceReplay[
         """Stage one host transition to device then store it at `pos`."""
         self._h_rew[0] = r
         self._h_dne[0] = d
+        self._h_fst[0] = Scalar[DT](1.0) if self.pending_first else Scalar[DT](0.0)
         self.ctx.enqueue_copy(self.stage_obs, s)
         self.ctx.enqueue_copy(self.stage_act, a)
         self.ctx.enqueue_copy(self.stage_rew, self._h_rew.unsafe_ptr())
         self.ctx.enqueue_copy(self.stage_dne, self._h_dne.unsafe_ptr())
+        self.ctx.enqueue_copy(self.stage_fst, self._h_fst.unsafe_ptr())
 
         var stage_s_lt = LayoutTensor[DT, Layout.row_major(Self.OBS)](
             self.stage_obs
@@ -396,6 +447,63 @@ struct GPUSequenceReplay[
             Int32(self.pos),
             grid_dim=1,
             block_dim=TPB_S,
+        )
+        # store the `is_first` flag into the ring at `pos`.
+        self.ctx.enqueue_function[_seq_store_fst_kernel[Self.CAP]](
+            LayoutTensor[DT, Layout.row_major(1)](self.stage_fst),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.fst),
+            Int32(self.pos),
+            grid_dim=1,
+            block_dim=1,
+        )
+        # a done frame ends the episode → the *next* recorded frame is first.
+        self.pending_first = d >= Scalar[DT](0.5)
+        self.pos = (self.pos + 1) % Self.CAP
+        if self.size < Self.CAP:
+            self.size += 1
+
+    def record_terminal(
+        mut self,
+        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Store a genuine TERMINAL observation as its own frame (act=0, rew=0,
+        dne=0, fst=0). Called right after a `record(done=1)` so the window's obs
+        frame *after* the terminal transition is the real terminal state (→ the
+        cont head learns `latent(terminal)→0`). `pending_first` is left armed (by
+        the preceding done=1 `record`) so the FOLLOWING reset frame — not this
+        terminal frame — is flagged `is_first`. Device twin of
+        `SequenceReplay.record_terminal`."""
+        self._h_rew[0] = Scalar[DT](0.0)
+        self._h_dne[0] = Scalar[DT](0.0)
+        self._h_fst[0] = Scalar[DT](0.0)
+        self.ctx.enqueue_copy(self.stage_obs, s)
+        self.ctx.enqueue_copy(self.stage_rew, self._h_rew.unsafe_ptr())
+        self.ctx.enqueue_copy(self.stage_dne, self._h_dne.unsafe_ptr())
+        self.ctx.enqueue_copy(self.stage_fst, self._h_fst.unsafe_ptr())
+        self.stage_act.enqueue_fill(Scalar[DT](0.0))  # terminal frame: act = 0
+
+        comptime TPB_S = Self.OBS if Self.OBS > Self.ACT else Self.ACT
+        self.ctx.enqueue_function[
+            _seq_store_one_kernel[Self.OBS, Self.ACT, Self.CAP, Self.SDT]
+        ](
+            LayoutTensor[DT, Layout.row_major(Self.OBS)](self.stage_obs),
+            LayoutTensor[DT, Layout.row_major(Self.ACT)](self.stage_act),
+            LayoutTensor[DT, Layout.row_major(1)](self.stage_rew),
+            LayoutTensor[DT, Layout.row_major(1)](self.stage_dne),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
+            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](self.act),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne),
+            Int32(self.pos),
+            grid_dim=1,
+            block_dim=TPB_S,
+        )
+        self.ctx.enqueue_function[_seq_store_fst_kernel[Self.CAP]](
+            LayoutTensor[DT, Layout.row_major(1)](self.stage_fst),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.fst),
+            Int32(self.pos),
+            grid_dim=1,
+            block_dim=1,
         )
         self.pos = (self.pos + 1) % Self.CAP
         if self.size < Self.CAP:
@@ -554,6 +662,40 @@ struct GPUSequenceReplay[
             off_lt,
             grid_dim=1,
             block_dim=1,
+        )
+
+    def sample_batch_fst_dev[
+        B: Int,
+        T: Int,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        obs_dev: DeviceBuffer[DT],
+        act_dev: DeviceBuffer[DT],
+        rew_dev: DeviceBuffer[DT],
+        dne_dev: DeviceBuffer[DT],
+        fst_dev: DeviceBuffer[DT],   # [B, T+1] per-obs-frame is_first
+    ) raises:
+        """`sample_batch_dev` + the per-obs-frame `is_first` flags into
+        `fst_dev` ([B, T+1]). Reuses the SAME drawn window starts so fst aligns
+        with the obs frames. Device twin of `SequenceReplay.sample_batch_fst`."""
+        self.sample_batch_dev[B, T](ctx, obs_dev, act_dev, rew_dev, dne_dev)
+        var origin = 0 if self.size < Self.CAP else self.pos
+        var starts_lt = LayoutTensor[DType.int32, Layout.row_major(B)](
+            self.starts
+        )
+        var buf_fst_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.fst)
+        var out_fst_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(B, T + 1), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(B, T + 1)](fst_dev))
+        comptime n_blocks_f = (B * (T + 1) + TPB - 1) // TPB
+        ctx.enqueue_function[_seq_gather_fst_kernel[B, T, Self.CAP]](
+            buf_fst_lt,
+            out_fst_lt,
+            starts_lt,
+            Int32(origin),
+            grid_dim=n_blocks_f,
+            block_dim=TPB,
         )
 
     def sample_batch[
