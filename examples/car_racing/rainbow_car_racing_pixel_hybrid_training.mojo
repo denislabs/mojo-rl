@@ -45,7 +45,11 @@ comptime NUM_ATOMS = 101
 comptime HIDDEN = 512
 comptime N_STEP = 3
 
-comptime BUFFER_CAPACITY = 48_000
+# uint8 obs storage → ~56.5 KB/transition (full 4-frame obs + next_obs, no
+# dedup). 250k ≈ 14 GB VRAM, fits a 32 GB card with room to spare. At 48k the
+# buffer fully recycled every ~6k grad-steps, evicting rare off-track/recovery
+# transitions before the agent could learn from them; 250k retains them.
+comptime BUFFER_CAPACITY = 250_000
 comptime OBS_STORE_DT = DType.uint8
 comptime BATCH_SIZE = 32
 comptime N_ENVS = 8  # CPU-stepped (render on host) → fewer envs than the GPU env
