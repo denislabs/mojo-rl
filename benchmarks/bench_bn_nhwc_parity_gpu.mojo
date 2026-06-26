@@ -1,40 +1,30 @@
-"""BatchNorm2D + MaxPool2D — NCHW vs NHWC parity (perf + correctness).
+"""BatchNorm2D — NCHW vs NHWC parity (perf + correctness). [BN-only split]
 
-De-risk spike for the channels_last (NHWC) conv-stack refactor. The forward
-im2col NHWC win (1.65× on EZv2 rep48, neutral elsewhere) is already proven in
-`bench_conv2d_im2col_col2im_gpu.mojo`; the OPEN question is whether the OTHER
-spatial ops hold NVIDIA parity once channels-last makes the channel the inner
-(contiguous) axis. The two that matter are BatchNorm2D (a per-channel reduction
-over N×H×W) and MaxPool2D (a per-window reduction). This bench answers GO/NO-GO.
+Split out of the former bench_bn_pool_nhwc_parity (BN + Pool in one module) to cut
+compile time + codegen pressure (the combined file's 4 BN variants × 3 shapes ×
+comptime-unrolled timing loops SIGILLed the Metal backend on the 2D kernel). Pool
+parity lives in bench_pool_nhwc_parity_gpu.mojo.
 
-Key access-pattern facts (why each layout coalesces when written correctly):
-  • BN reduction is over (N, spatial) PER CHANNEL.
-    - NCHW: spatial is contiguous within a channel → block-per-channel, threads
-      stride spatial → coalesced (the current conv2d/batch_norm_2d design).
-    - NHWC: channel is contiguous, spatial is strided → the reduction must be
-      TRANSPOSED: thread-per-channel, loop over rows; consecutive threads read
-      consecutive channels = one coalesced transaction per row. (cuDNN's NHWC BN
-      pattern.) A naive NCHW-style port (block-per-channel, stride-C reads) would
-      be uncoalesced — so we DON'T do that; we test the correct transpose.
-  • MaxPool is thread-per-output-element in both; map consecutive threads to the
-    contiguous output dim (W in NCHW, C in NHWC) → coalesced either way.
+BN reduction is over (N, spatial) PER CHANNEL:
+  • NCHW: spatial contiguous within a channel → block-per-channel coalesces. The
+    REAL BatchNorm2D is G-grouped (grid=C*G, ~2-4k blocks) → the honest baseline;
+    the strawman (grid=C, 32-64 blocks) is GPU-starved and inflates the NHWC ratio.
+  • NHWC: channel contiguous, spatial strided → TRANSPOSED reduction. 1-warp form
+    (block_dim=C) is thread-starved; the 2D form (block_dim=ROWS×C, per-rowgroup
+    partials + parallel block.sum finalize) is the occupancy fix.
 
-Both are MEMORY-BOUND (stream the activation once), so if both are written
-coalesced the layouts should land at ~parity. This bench measures whether that
-holds on real silicon.
-
-Verify: one logical tensor [N,C,H,W], laid out as NCHW and NHWC; check the two
-layouts agree (BN per-channel mean/inv_std + normalized output; pooled output).
-Forward only — backward shares the access structure, so forward parity implies it.
+Four BN variants timed per shape: NCHW-strawman, NCHW-real(G-grouped), NHWC-1warp,
+NHWC-2D. The 2D is NVIDIA-gated in this bench (its high-occupancy launch SIGILLs
+Metal *here*; in a minimal module it's Metal-safe — see bench_bn_nhwc_2d_isolated).
 
 Run (NVIDIA = perf truth):
-    pixi run -e nvidia mojo run -I . benchmarks/bench_bn_pool_nhwc_parity_gpu.mojo
-Run (Apple = parity only):
-    pixi run -e apple  mojo run -I . benchmarks/bench_bn_pool_nhwc_parity_gpu.mojo
+    pixi run -e nvidia mojo run -I . benchmarks/bench_bn_nhwc_parity_gpu.mojo
+Run (Apple = parity only; 2D skipped):
+    pixi run -e apple  mojo run -I . benchmarks/bench_bn_nhwc_parity_gpu.mojo
 """
 
 from std.math import sqrt
-from std.gpu import global_idx, thread_idx, block_idx, block_dim
+from std.gpu import global_idx, thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.sys.info import has_nvidia_gpu_accelerator
@@ -51,10 +41,8 @@ comptime EPS = 1e-5
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# BatchNorm2D — NCHW (current design): block per channel, threads stride spatial
+# BatchNorm2D — NCHW strawman (grid=C): block per channel, threads stride spatial
 # ══════════════════════════════════════════════════════════════════════════
-# stats: one block per channel reduces Σx, Σx² over (N, spatial) → mean, inv_std.
-# Reads input[b, c*SP + s] — spatial contiguous within a channel → coalesced.
 def _bn_stats_nchw[
     N: Int, C: Int, SP: Int, FLAT: Int,
 ](
@@ -89,11 +77,7 @@ def _bn_stats_nchw[
 
 
 # ── REAL NCHW design: G-grouped partial + finalize (matches batch_norm_2d.mojo) ─
-# The strawman `_bn_stats_nchw` above launches grid=C (32–64 blocks) → grossly
-# under-utilizes the GPU, making NHWC look 3–5× faster than it really is. The
-# PRODUCTION BatchNorm2D splits the batch into G groups → grid = C*G (≈2–4k
-# blocks), coalesced AND well-parallelized. THIS is the honest NCHW baseline to
-# compare NHWC against.
+# grid = C*G (≈2-4k blocks), coalesced AND well-parallelized → the honest baseline.
 def _bn_stats_nchw_grouped[
     N: Int, C: Int, SP: Int, FLAT: Int, G: Int,
 ](
@@ -154,7 +138,7 @@ def _bn_finalize_nchw_grouped[
     inv_std_out[c] = Scalar[DT](1.0) / sqrt(var_ + Scalar[DT](EPS))
 
 
-# normalize: block per channel, threads stride spatial → coalesced read+write.
+# normalize: strawman (grid=C) + G-grouped (grid=C*G).
 def _bn_norm_nchw[
     N: Int, C: Int, SP: Int, FLAT: Int,
 ](
@@ -183,7 +167,6 @@ def _bn_norm_nchw[
             s += TPB
 
 
-# G-grouped normalize (matches the real BN2D: grid=C*G, batch split into G groups).
 def _bn_norm_nchw_grouped[
     N: Int, C: Int, SP: Int, FLAT: Int, G: Int,
 ](
@@ -220,15 +203,10 @@ def _bn_norm_nchw_grouped[
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# BatchNorm2D — NHWC (channels-last): TRANSPOSED reduction — thread per channel
+# BatchNorm2D — NHWC (channels-last): TRANSPOSED reduction
 # ══════════════════════════════════════════════════════════════════════════
-# partial: grid = NCHUNK row-chunks, block_dim = C (one thread per channel). Row
-# r = (b*SP+s) is a contiguous C-vector at input[r*C ..]. Thread c accumulates its
-# channel over the chunk's rows; consecutive threads (c, c+1) → consecutive
-# addresses → one coalesced transaction per row (cuDNN NHWC-BN pattern). A
-# production version would tile multiple warps/rows per block for occupancy; this
-# 1-warp-per-block (C=32/64) form is the honest baseline — saturated at device
-# level by NCHUNK blocks.
+# 1-warp partial: grid=NCHUNK, block_dim=C (one thread per channel, coalesced but
+# thread-starved). The honest 1-warp baseline.
 def _bn_stats_nhwc_partial[
     C: Int, R: Int,
 ](
@@ -259,14 +237,10 @@ def _bn_stats_nhwc_partial[
     partial_sumsq[chunk * C + c] = my_sumsq
 
 
-# NHWC-2D: the OCCUPANCY fix. The 1-warp partial above is thread-starved
-# (block_dim=C=32 → ~16k threads vs the real NCHW's ~262k). Here block_dim =
-# BN2D_BLK = 256 = ROWS row-groups × C channels (lane = rg*C + c). Each row-group
-# strides its own subset of the chunk's rows → ROWS rows read in parallel, each a
-# coalesced C-vector. NO manual shared mem (Metal-incompatible): thread (rg,c)
-# writes its OWN partial at (chunk*ROWS + rg)*C + c → 8 warps/block (C=32) = full
-# occupancy. The cross-row-group reduction is deferred to the parallel finalize.
-# Partial buffer = CHUNKS*ROWS*C = CHUNKS*BN2D_BLK.
+# 2D partial: OCCUPANCY fix. block_dim = BN2D_BLK = ROWS row-groups × C channels.
+# Thread (rg,c) accumulates its channel over a strided row subset and writes its
+# OWN partial at (chunk*ROWS+rg)*C+c (no shared mem) → 8 warps/block (C=32) = full
+# occupancy. Cross-rowgroup reduction deferred to the parallel finalize.
 def _bn_stats_nhwc_2d[
     C: Int, R: Int, CHUNKS: Int,
 ](
@@ -301,8 +275,7 @@ def _bn_stats_nhwc_2d[
     partial_sumsq[pidx] = my_sq
 
 
-# Parallel finalize: grid=C, one block per channel reduces its P = CHUNKS*ROWS
-# partials (strided by C) via block.sum (portable — used by the NCHW kernels too).
+# Parallel finalize: grid=C, block reduces its P = CHUNKS*ROWS partials via block.sum.
 def _bn_finalize_nhwc_parallel[
     C: Int, RTOT: Int, P: Int,
 ](
@@ -334,7 +307,7 @@ def _bn_finalize_nhwc_parallel[
         inv_std_out[c] = Scalar[DT](1.0) / sqrt(var_ + Scalar[DT](EPS))
 
 
-# finalize: one thread per channel, sum the NCHUNK partials → mean, inv_std.
+# 1-warp finalize: one thread per channel, sum the NCHUNK partials.
 def _bn_finalize_nhwc[
     C: Int, RTOT: Int,
 ](
@@ -360,7 +333,7 @@ def _bn_finalize_nhwc[
     inv_std_out[c] = Scalar[DT](1.0) / sqrt(var_ + Scalar[DT](EPS))
 
 
-# normalize: flat thread per element (R*C); c = idx % C → coalesced read+write.
+# normalize: flat thread per element (R*C); c = idx % C → coalesced.
 def _bn_norm_nhwc[
     C: Int, RC: Int,
 ](
@@ -381,76 +354,7 @@ def _bn_norm_nhwc[
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# MaxPool2D — thread per output element (coalesced over the contiguous out dim)
-# ══════════════════════════════════════════════════════════════════════════
-# NCHW: out_pos = c*OSP + oh*OW + ow → consecutive threads = consecutive ow.
-def _maxpool_nchw[
-    N: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
-    OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int,
-](
-    input: LayoutTensor[DT, Layout.row_major(N, IN_FLAT), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(N, OUT_FLAT), MutAnyOrigin],
-):
-    var idx = Int(global_idx.x)
-    if idx >= N * OUT_FLAT:
-        return
-    var b = idx // OUT_FLAT
-    var out_pos = idx % OUT_FLAT
-    var osp = OH * OW
-    var c = out_pos // osp
-    var rem = out_pos % osp
-    var oh = rem // OW
-    var ow = rem % OW
-    var c_off = c * H * W
-    var best: Scalar[DT] = -3.0e38
-    for kh in range(K):
-        var ih = oh * S + kh - P
-        if ih < 0 or ih >= H:
-            continue
-        for kw in range(K):
-            var iw = ow * S + kw - P
-            if iw < 0 or iw >= W:
-                continue
-            var v = rebind[Scalar[DT]](input[b, c_off + ih * W + iw])
-            if v > best:
-                best = v
-    output[b, out_pos] = best
-
-
-# NHWC: out_pos = (oh*OW+ow)*C + c → consecutive threads = consecutive c.
-def _maxpool_nhwc[
-    N: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
-    OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int,
-](
-    input: LayoutTensor[DT, Layout.row_major(N, IN_FLAT), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(N, OUT_FLAT), MutAnyOrigin],
-):
-    var idx = Int(global_idx.x)
-    if idx >= N * OUT_FLAT:
-        return
-    var b = idx // OUT_FLAT
-    var out_pos = idx % OUT_FLAT
-    var c = out_pos % C
-    var sp = out_pos // C
-    var oh = sp // OW
-    var ow = sp % OW
-    var best: Scalar[DT] = -3.0e38
-    for kh in range(K):
-        var ih = oh * S + kh - P
-        if ih < 0 or ih >= H:
-            continue
-        for kw in range(K):
-            var iw = ow * S + kw - P
-            if iw < 0 or iw >= W:
-                continue
-            var v = rebind[Scalar[DT]](input[b, (ih * W + iw) * C + c])
-            if v > best:
-                best = v
-    output[b, out_pos] = best
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# host helpers — fill one logical tensor into NCHW + NHWC buffers
+# host helper — fill one logical tensor into NCHW + NHWC buffers
 # ══════════════════════════════════════════════════════════════════════════
 def _fill_layouts[
     N: Int, C: Int, H: Int, W: Int, FLAT: Int,
@@ -465,7 +369,6 @@ def _fill_layouts[
             for n in range(N):
                 for c in range(C):
                     for s in range(SP):
-                        # distinct, bounded value per logical (n,c,s)
                         var v = Scalar[DT](
                             Float64((((n * C + c) * SP + s) % 1009) + 1) * 0.03
                             - 15.0
@@ -475,7 +378,7 @@ def _fill_layouts[
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# BatchNorm: run both layouts, verify agreement, time each pipeline
+# BatchNorm: run all variants, verify, time
 # ══════════════════════════════════════════════════════════════════════════
 def run_bn[
     N: Int, C: Int, H: Int, W: Int, WARMUP: Int, ITERS: Int,
@@ -499,15 +402,12 @@ def run_bn[
     var istd_a = ctx.enqueue_create_buffer[DT](C)
     var mean_b = ctx.enqueue_create_buffer[DT](C)
     var istd_b = ctx.enqueue_create_buffer[DT](C)
-    # sized for the 2D partial (CHUNKS*ROWS*C = NCHUNK*BN2D_BLK); the 1-warp
-    # (NCHUNK*C) and grouped (C*G) partials are smaller → same buffer serves all.
     var ps = ctx.enqueue_create_buffer[DT](NCHUNK * BN2D_BLK)
     var psq = ctx.enqueue_create_buffer[DT](NCHUNK * BN2D_BLK)
 
     var gl = LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin](gamma)
     var bl = LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin](beta)
 
-    # ---- NCHW pipeline ----
     var xn = LayoutTensor[DT, Layout.row_major(N, FLAT), MutAnyOrigin](x_nchw)
     var on = LayoutTensor[DT, Layout.row_major(N, FLAT), MutAnyOrigin](out_nchw)
     var ma = LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin](mean_a)
@@ -517,14 +417,12 @@ def run_bn[
     ctx.enqueue_function[_bn_norm_nchw[N, C, SP, FLAT]](
         xn, on, gl, bl, ma, ia, grid_dim=C, block_dim=TPB)
 
-    # ---- NHWC pipeline ----
     var xh = LayoutTensor[DT, Layout.row_major(RC), MutAnyOrigin](x_nhwc)
     var oh = LayoutTensor[DT, Layout.row_major(RC), MutAnyOrigin](out_nhwc)
     var mb = LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin](mean_b)
     var ib = LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin](istd_b)
     var psl = LayoutTensor[DT, Layout.row_major(NCHUNK * C), MutAnyOrigin](ps)
     var pql = LayoutTensor[DT, Layout.row_major(NCHUNK * C), MutAnyOrigin](psq)
-    # 2D partial views (CHUNKS*ROWS*C = NCHUNK*BN2D_BLK) + its parallel-finalize P.
     comptime ROWS = BN2D_BLK // C
     comptime P2 = NCHUNK * ROWS
     var psl2 = LayoutTensor[
@@ -543,7 +441,7 @@ def run_bn[
         xh, oh, gl, bl, mb, ib, grid_dim=nb_norm, block_dim=TPB)
     ctx.synchronize()
 
-    # ---- verify: per-channel stats + normalized outputs agree ----
+    # ---- verify: stats + normalized outputs agree ----
     var stat_bad = 0
     with mean_a.map_to_host() as hma:
         with mean_b.map_to_host() as hmb:
@@ -566,9 +464,7 @@ def run_bn[
                             out_bad += 1
     print("  verify: stat_mismatch=", stat_bad, " out_mismatch=", out_bad)
 
-    # ---- verify NHWC-2D stats vs NCHW ref (overwrites mb/ib, re-timed below) ----
-    # NVIDIA-only: the 2D kernel's high-occupancy launch ICEs the Metal backend.
-    # Apple skips it (the 1-warp transposed kernel above is the Apple path).
+    # ---- verify NHWC-2D stats vs NCHW ref (NVIDIA-only; Metal ICEs it here) ----
     var stat_bad2 = 0
     comptime if has_nvidia_gpu_accelerator():
         ctx.enqueue_function[_bn_stats_nhwc_2d[C, R, NCHUNK]](
@@ -585,7 +481,7 @@ def run_bn[
     else:
         print("  verify NHWC-2D: skipped (NVIDIA-only — Metal ICEs the 2D kernel)")
 
-    # ---- time NCHW ----
+    # ---- time NCHW strawman ----
     comptime for _ in range(WARMUP):
         ctx.enqueue_function[_bn_stats_nchw[N, C, SP, FLAT]](
             xn, ma, ia, grid_dim=C, block_dim=TPB)
@@ -601,7 +497,7 @@ def run_bn[
     ctx.synchronize()
     var us_nchw = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
 
-    # ---- time NHWC ----
+    # ---- time NHWC 1-warp ----
     comptime for _ in range(WARMUP):
         ctx.enqueue_function[_bn_stats_nhwc_partial[C, R]](
             xhr, psl, pql, grid_dim=NCHUNK, block_dim=C)
@@ -621,7 +517,7 @@ def run_bn[
     ctx.synchronize()
     var us_nhwc = Float64(perf_counter_ns() - t1) / Float64(ITERS) / 1000.0
 
-    # ---- time NHWC-2D (occupancy fix: block_dim=BN2D_BLK = ROWS×C) — NVIDIA ----
+    # ---- time NHWC-2D (NVIDIA) ----
     var us_nhwc2 = us_nhwc   # default on Apple (2D skipped)
     comptime if has_nvidia_gpu_accelerator():
         comptime for _ in range(WARMUP):
@@ -643,10 +539,10 @@ def run_bn[
         ctx.synchronize()
         us_nhwc2 = Float64(perf_counter_ns() - t12) / Float64(ITERS) / 1000.0
 
-    # ---- time NCHW-grouped: the REAL BatchNorm2D design (grid=C*G) ----
+    # ---- time NCHW-grouped (the REAL BatchNorm2D design) ----
     comptime G = N if N < 64 else 64
     comptime lcg = Layout.row_major(C * G)
-    var psg = LayoutTensor[DT, lcg, MutAnyOrigin](ps)   # reuse ps/psq (C*G<=NCHUNK*C)
+    var psg = LayoutTensor[DT, lcg, MutAnyOrigin](ps)
     var pqg = LayoutTensor[DT, lcg, MutAnyOrigin](psq)
     comptime nb_fin = (C + TPB - 1) // TPB
     comptime for _ in range(WARMUP):
@@ -681,98 +577,13 @@ def run_bn[
           "x  | NHWC-2D/1warp =", us_nhwc2 / us_nhwc, "x")
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# MaxPool: run both layouts, verify agreement, time each
-# ══════════════════════════════════════════════════════════════════════════
-def run_pool[
-    N: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
-    WARMUP: Int, ITERS: Int,
-](ctx: DeviceContext, label: StaticString) raises:
-    comptime OH = (H + 2 * P - K) // S + 1
-    comptime OW = (W + 2 * P - K) // S + 1
-    comptime IN_FLAT = C * H * W
-    comptime OUT_FLAT = C * OH * OW
-    comptime TOT = N * OUT_FLAT
-    print(label, " POOL N=", N, " C=", C, " ", H, "x", W, " K=", K, " S=", S,
-          " -> ", OH, "x", OW)
-
-    var x_nchw = ctx.enqueue_create_buffer[DT](N * IN_FLAT)
-    var x_nhwc = ctx.enqueue_create_buffer[DT](N * IN_FLAT)
-    _fill_layouts[N, C, H, W, IN_FLAT](ctx, x_nchw, x_nhwc)
-    var o_nchw = ctx.enqueue_create_buffer[DT](N * OUT_FLAT)
-    var o_nhwc = ctx.enqueue_create_buffer[DT](N * OUT_FLAT)
-
-    var xn = LayoutTensor[DT, Layout.row_major(N, IN_FLAT), MutAnyOrigin](x_nchw)
-    var onn = LayoutTensor[DT, Layout.row_major(N, OUT_FLAT), MutAnyOrigin](o_nchw)
-    var xh = LayoutTensor[DT, Layout.row_major(N, IN_FLAT), MutAnyOrigin](x_nhwc)
-    var ohh = LayoutTensor[DT, Layout.row_major(N, OUT_FLAT), MutAnyOrigin](o_nhwc)
-    comptime nb = (TOT + TPB - 1) // TPB
-
-    ctx.enqueue_function[
-        _maxpool_nchw[N, C, K, S, P, H, W, OH, OW, IN_FLAT, OUT_FLAT]
-    ](xn, onn, grid_dim=nb, block_dim=TPB)
-    ctx.enqueue_function[
-        _maxpool_nhwc[N, C, K, S, P, H, W, OH, OW, IN_FLAT, OUT_FLAT]
-    ](xh, ohh, grid_dim=nb, block_dim=TPB)
-    ctx.synchronize()
-
-    # verify: pooled outputs agree per logical (n,c,oh,ow)
-    var osp = OH * OW
-    var bad = 0
-    with o_nchw.map_to_host() as hn:
-        with o_nhwc.map_to_host() as hh:
-            for n in range(N):
-                for c in range(C):
-                    for s in range(osp):
-                        var a = hn[n * OUT_FLAT + c * osp + s]
-                        var bb = hh[n * OUT_FLAT + s * C + c]
-                        if abs(Float64(a - bb)) > 1e-4:
-                            bad += 1
-    print("  verify: out_mismatch=", bad)
-
-    comptime for _ in range(WARMUP):
-        ctx.enqueue_function[
-            _maxpool_nchw[N, C, K, S, P, H, W, OH, OW, IN_FLAT, OUT_FLAT]
-        ](xn, onn, grid_dim=nb, block_dim=TPB)
-    ctx.synchronize()
-    var t0 = perf_counter_ns()
-    comptime for _ in range(ITERS):
-        ctx.enqueue_function[
-            _maxpool_nchw[N, C, K, S, P, H, W, OH, OW, IN_FLAT, OUT_FLAT]
-        ](xn, onn, grid_dim=nb, block_dim=TPB)
-    ctx.synchronize()
-    var us_n = Float64(perf_counter_ns() - t0) / Float64(ITERS) / 1000.0
-
-    comptime for _ in range(WARMUP):
-        ctx.enqueue_function[
-            _maxpool_nhwc[N, C, K, S, P, H, W, OH, OW, IN_FLAT, OUT_FLAT]
-        ](xh, ohh, grid_dim=nb, block_dim=TPB)
-    ctx.synchronize()
-    var t1 = perf_counter_ns()
-    comptime for _ in range(ITERS):
-        ctx.enqueue_function[
-            _maxpool_nhwc[N, C, K, S, P, H, W, OH, OW, IN_FLAT, OUT_FLAT]
-        ](xh, ohh, grid_dim=nb, block_dim=TPB)
-    ctx.synchronize()
-    var us_h = Float64(perf_counter_ns() - t1) / Float64(ITERS) / 1000.0
-
-    print("  POOL NCHW: ", us_n, "us   POOL NHWC: ", us_h,
-          "us   | NHWC/NCHW =", us_h / us_n, "x")
-
-
 def main() raises:
     var ctx = DeviceContext()
-    print("BN2D + MaxPool2D NCHW-vs-NHWC parity [fp32]")
+    print("BatchNorm2D NCHW-vs-NHWC parity [fp32]")
     print("=" * 70)
-    # EZv2-Atari rep-net hot shapes (where the conv NHWC win lives).
     run_bn[64, 32, 48, 48, 5, 50](ctx, "EZv2 rep48")
     run_bn[64, 64, 24, 24, 5, 50](ctx, "EZv2 rep24")
     run_bn[256, 64, 6, 7, 5, 50](ctx, "C4 res")
-    print("-" * 70)
-    # Pool: typical 2x2 s2 downsamples on Atari/DQN-scale maps.
-    run_pool[64, 32, 2, 2, 0, 48, 48, 5, 50](ctx, "rep48")
-    run_pool[64, 64, 2, 2, 0, 24, 24, 5, 50](ctx, "rep24")
-    run_pool[64, 32, 3, 2, 0, 84, 84, 5, 50](ctx, "atari84")
     print("=" * 70)
-    print("GO if: all mismatches=0 AND NHWC/NCHW ~<=1.2x on the hot shapes.")
-    print("Perf truth = NVIDIA; Apple is parity-only.")
+    print("GO if: mismatches=0 AND NHWC-2D/realNCHW ~<=1.2x on the hot shapes.")
+    print("Perf truth = NVIDIA; Apple is parity-only (2D skipped).")
