@@ -386,6 +386,22 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False](
     def track_length(self) -> Int:
         return self.track.track_length
 
+    def on_grass(self) -> Bool:
+        """True if the hull center is off all track tiles (on grass).
+
+        Debug/HUD helper — same hull-position tile test `step()` uses for
+        the reward, so it reflects the surface the car is actually on.
+        """
+        var hp = self.hull_pos()
+        var tiles = self._tiles()
+        var idx = TileCollision.check_tile_visited[Self.MAX_TILES](
+            Scalar[dtype](hp[0]),
+            Scalar[dtype](hp[1]),
+            tiles,
+            self.track.track_length,
+        )
+        return idx < 0
+
     # --- CPU pixel observation (matches the GPU CarRacingPixel rasterizer) -
     # Same camera + colors as CarRacingPixel._render_pixel (referenced, not
     # re-derived) so a CNN trained on the GPU pixel env sees in-distribution

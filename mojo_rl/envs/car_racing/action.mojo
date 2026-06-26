@@ -74,20 +74,26 @@ struct CarRacingAction[DTYPE: DType](
     def from_discrete(action_idx: Int) -> CarRacingAction[Self.DTYPE]:
         """Create action from discrete action index.
 
+        Decoded identically to `CarRacingMB.step_action` / `CarRacingDiscrete`
+        (the active training/eval path), which is Gymnasium-faithful: steering
+        is normalized [-1,1] (±1.0 = full lock = ±STEERING_LIMIT 0.4 rad, which
+        equals Gymnasium's discrete ±0.6 target saturating its ±0.4 joint), gas
+        0.2, brake 0.8.
+
         Discrete actions:
         0: Do nothing
-        1: Steer left
-        2: Steer right
-        3: Gas
-        4: Brake
+        1: Steer left  (steering -1.0)
+        2: Steer right (steering +1.0)
+        3: Gas         (gas 0.2)
+        4: Brake       (brake 0.8)
         """
         var action = CarRacingAction[Self.DTYPE]()
         if action_idx == 1:
-            action.steering = -0.6
+            action.steering = -1.0
         elif action_idx == 2:
-            action.steering = 0.6
+            action.steering = 1.0
         elif action_idx == 3:
-            action.gas = 0.5
+            action.gas = 0.2
         elif action_idx == 4:
             action.brake = 0.8
         return action^
