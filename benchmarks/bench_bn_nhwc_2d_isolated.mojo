@@ -20,7 +20,8 @@ from layout import Layout, LayoutTensor
 
 comptime DT = DType.float32
 comptime TPB = 128
-comptime NCHUNK = 1024
+comptime NCHUNK = 256     # finalize-bound: fewer chunks = cheaper grid=C finalize
+                          # (1024 > 512 > 256 in cost). Match the main BN bench tune.
 comptime BN2D_BLK = 256        # = ROWS * C
 comptime EPS = 1e-5
 

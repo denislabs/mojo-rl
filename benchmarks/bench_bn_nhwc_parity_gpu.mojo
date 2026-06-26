@@ -33,9 +33,11 @@ from layout import Layout, LayoutTensor
 
 comptime DT = DType.float32
 comptime TPB = 128        # block-per-channel reduction width (NCHW) / flat launches
-comptime NCHUNK = 1024    # NHWC partial-reduction row chunks (parallelism source).
-                          # 1024*BN2D_BLK(256) ≈ 262k threads → matches the real
-                          # NCHW G-grouped thread count (C*G*128) on the hot shapes.
+comptime NCHUNK = 256     # NHWC partial-reduction row chunks. 1024 was WORSE than
+                          # 512 (more chunks → more partials for the grid=C finalize
+                          # to reduce — the FINALIZE is the bottleneck, not the
+                          # partial). Testing 256: partial still 256*256≈65k threads
+                          # (plenty), finalize does half the work of 512.
 comptime BN2D_BLK = 256   # NHWC-2D reduction block (= ROWS_PER_BLK * C; ROWS = BLK/C)
 comptime EPS = 1e-5
 
