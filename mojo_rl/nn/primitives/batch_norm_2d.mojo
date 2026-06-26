@@ -14,7 +14,7 @@ from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
 from ..core.tensor import Tensor, TensorImpl
 from .linear import _cast_f2b_kernel, _cast_b2f_kernel
 from ..core.tensor_refs import TensorRefs
@@ -31,6 +31,25 @@ comptime BN2D_TPB: Int = 128
 comptime BN2D_RBLOCKS: Int = 64
 
 
+@always_inline
+def _bn_off[LAYOUT: Int, C: Int, SPATIAL: Int](c: Int, s: Int) -> Int:
+    """Within-sample flat offset of (channel c, spatial s). NCHW c*SPATIAL+s
+    (channel-outer, spatial contiguous) | NHWC s*C+c (channel-inner). The per-
+    channel stats (mean/var/γ/β/running) are indexed by `c` alone, so this single
+    offset is BN2D's ONLY layout-sensitive quantity. NCHW reproduces the prior
+    formula exactly (bit-identical).
+
+    NOTE (perf): the block-per-channel reduction/normalize kernels stay coalesced
+    for NCHW (spatial contiguous) but become stride-C *uncoalesced* for NHWC. This
+    offset-swap is correctness-first; the coalesced NHWC transposed reduction
+    (the 3–5× win — see bench_bn_pool_nhwc_parity_gpu.mojo) is a follow-up that
+    swaps only the NHWC reduction kernel, not this layout-agnostic structure."""
+    comptime if LAYOUT == LAYOUT_NHWC:
+        return s * C + c
+    else:
+        return c * SPATIAL + s
+
+
 # ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _bn2d_partial_stats_kernel[
     BATCH: Int,
@@ -38,6 +57,7 @@ def _bn2d_partial_stats_kernel[
     SPATIAL: Int,
     FLAT: Int,
     G: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     partial_sum: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
@@ -54,13 +74,12 @@ def _bn2d_partial_stats_kernel[
     var b1 = b0 + bpb
     if b1 > BATCH:
         b1 = BATCH
-    var c_off = c * SPATIAL
     var my_sum: input.element_type = 0.0
     var my_sumsq: input.element_type = 0.0
     for b in range(b0, b1):
         var s = t
         while s < SPATIAL:
-            var x = input[b, c_off + s]
+            var x = input[b, _bn_off[LAYOUT, C, SPATIAL](c, s)]
             my_sum += x
             my_sumsq += x * x
             s += BN2D_TPB
@@ -137,6 +156,7 @@ def _bn2d_normalize_kernel[
     SPATIAL: Int,
     FLAT: Int,
     G: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
@@ -157,7 +177,6 @@ def _bn2d_normalize_kernel[
     var b1 = b0 + bpb
     if b1 > BATCH:
         b1 = BATCH
-    var c_off = c * SPATIAL
     var mean = cache_mean[c]
     var inv_std = cache_inv_std[c]
     var gm = gamma[c]
@@ -165,7 +184,7 @@ def _bn2d_normalize_kernel[
     for b in range(b0, b1):
         var s = t
         while s < SPATIAL:
-            var off = c_off + s
+            var off = _bn_off[LAYOUT, C, SPATIAL](c, s)
             var xh = (input[b, off] - mean) * inv_std
             cache_xhat[b, off] = xh
             output[b, off] = gm * xh + bt
@@ -178,6 +197,7 @@ def _bn2d_forward_eval_kernel[
     SPATIAL: Int,
     FLAT: Int,
     EPSILON: Float64,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
@@ -196,11 +216,10 @@ def _bn2d_forward_eval_kernel[
     var inv_std: input.element_type = 1.0 / sqrt(rv + eps)
     var g = gamma[c]
     var bt = beta[c]
-    var c_off = c * SPATIAL
     for b in range(BATCH):
         var s = t
         while s < SPATIAL:
-            var off = c_off + s
+            var off = _bn_off[LAYOUT, C, SPATIAL](c, s)
             var x = input[b, off]
             output[b, off] = g * (x - rm) * inv_std + bt
             s += BN2D_TPB
@@ -212,6 +231,7 @@ def _bn2d_bwd_partial_kernel[
     SPATIAL: Int,
     FLAT: Int,
     G: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
@@ -233,7 +253,6 @@ def _bn2d_bwd_partial_kernel[
     if b1 > BATCH:
         b1 = BATCH
     var gm = gamma[c]
-    var c_off = c * SPATIAL
     var s_dxhat: grad_output.element_type = 0.0
     var s_dxx: grad_output.element_type = 0.0
     var s_dg: grad_output.element_type = 0.0
@@ -241,7 +260,7 @@ def _bn2d_bwd_partial_kernel[
     for b in range(b0, b1):
         var s = t
         while s < SPATIAL:
-            var off = c_off + s
+            var off = _bn_off[LAYOUT, C, SPATIAL](c, s)
             var dy = grad_output[b, off]
             var xh = cache_xhat[b, off]
             var dxhat = dy * gm
@@ -305,6 +324,7 @@ def _bn2d_bwd_scatter_kernel[
     SPATIAL: Int,
     FLAT: Int,
     G: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
@@ -329,11 +349,10 @@ def _bn2d_bwd_scatter_kernel[
     var inv_std = cache_inv_std[c]
     var mm1 = m1[c]
     var mm2 = m2[c]
-    var c_off = c * SPATIAL
     for b in range(b0, b1):
         var s = t
         while s < SPATIAL:
-            var off = c_off + s
+            var off = _bn_off[LAYOUT, C, SPATIAL](c, s)
             var dy = grad_output[b, off]
             var xh = cache_xhat[b, off]
             var dxhat = dy * gm
@@ -348,6 +367,7 @@ struct BatchNorm2D[
     MOMENTUM: Float64 = BN2D_DEFAULT_MOM,
     EPSILON: Float64 = BN2D_DEFAULT_EPS,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](Module):
     comptime ARITY = 1
     comptime FLAT_DIM = Self.C_ * Self.H_ * Self.W_
@@ -515,25 +535,38 @@ struct BatchNorm2D[
                     var bt = b_p[c]
                     var mean: Scalar[DT] = 0.0
                     for b in range(B):
-                        var base = b * Self.FLAT_DIM + c * Self.SPATIAL
+                        var bb = b * Self.FLAT_DIM
                         for s in range(Self.SPATIAL):
-                            mean += in_p[base + s]
+                            mean += in_p[
+                                bb + _bn_off[Self.LAYOUT, Self.C_, Self.SPATIAL](c, s)
+                            ]
                     mean *= inv_n
                     var var_: Scalar[DT] = 0.0
                     for b in range(B):
-                        var base = b * Self.FLAT_DIM + c * Self.SPATIAL
+                        var bb = b * Self.FLAT_DIM
                         for s in range(Self.SPATIAL):
-                            var d = in_p[base + s] - mean
+                            var d = (
+                                in_p[
+                                    bb
+                                    + _bn_off[Self.LAYOUT, Self.C_, Self.SPATIAL](
+                                        c, s
+                                    )
+                                ]
+                                - mean
+                            )
                             var_ += d * d
                     var_ *= inv_n
                     var inv_std = Scalar[DT](1.0) / sqrt(var_ + eps)
                     inv_v[c] = inv_std
                     for b in range(B):
-                        var base = b * Self.FLAT_DIM + c * Self.SPATIAL
+                        var bb = b * Self.FLAT_DIM
                         for s in range(Self.SPATIAL):
-                            var xh = (in_p[base + s] - mean) * inv_std
-                            xhat_p[base + s] = xh
-                            out_p[base + s] = g * xh + bt
+                            var off = bb + _bn_off[
+                                Self.LAYOUT, Self.C_, Self.SPATIAL
+                            ](c, s)
+                            var xh = (in_p[off] - mean) * inv_std
+                            xhat_p[off] = xh
+                            out_p[off] = g * xh + bt
                     rm_v[c] = one_m * rm_v[c] + mom * mean
                     rv_v[c] = one_m * rv_v[c] + mom * var_
                 self.cache_is_training = True
@@ -545,11 +578,12 @@ struct BatchNorm2D[
                     var g = g_p[c]
                     var bt = b_p[c]
                     for b in range(B):
-                        var base = b * Self.FLAT_DIM + c * Self.SPATIAL
+                        var bb = b * Self.FLAT_DIM
                         for s in range(Self.SPATIAL):
-                            out_p[base + s] = (
-                                g * (in_p[base + s] - rm) * inv_std + bt
-                            )
+                            var off = bb + _bn_off[
+                                Self.LAYOUT, Self.C_, Self.SPATIAL
+                            ](c, s)
+                            out_p[off] = g * (in_p[off] - rm) * inv_std + bt
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.FLAT_DIM)
@@ -567,6 +601,7 @@ struct BatchNorm2D[
                         Self.SPATIAL,
                         Self.FLAT_DIM,
                         G,
+                        Self.LAYOUT,
                     ]
                 ](
                     in0.lt["gpu", l2d](),
@@ -614,6 +649,7 @@ struct BatchNorm2D[
                         Self.SPATIAL,
                         Self.FLAT_DIM,
                         G,
+                        Self.LAYOUT,
                     ]
                 ](
                     in0.lt["gpu", l2d](),
@@ -635,6 +671,7 @@ struct BatchNorm2D[
                         Self.SPATIAL,
                         Self.FLAT_DIM,
                         Self.EPSILON,
+                        Self.LAYOUT,
                     ]
                 ](
                     in0.lt["gpu", l2d](),
@@ -729,10 +766,13 @@ struct BatchNorm2D[
                 var d_gamma: Scalar[DT] = 0.0
                 var d_beta: Scalar[DT] = 0.0
                 for b in range(B):
-                    var base = b * Self.FLAT_DIM + c * Self.SPATIAL
+                    var bb = b * Self.FLAT_DIM
                     for s in range(Self.SPATIAL):
-                        var dy = go_p[base + s]
-                        var xh = xhat_p[base + s]
+                        var off = bb + _bn_off[
+                            Self.LAYOUT, Self.C_, Self.SPATIAL
+                        ](c, s)
+                        var dy = go_p[off]
+                        var xh = xhat_p[off]
                         var dxhat = dy * g
                         sum_dxhat += dxhat
                         sum_dxhat_xhat += dxhat * xh
@@ -741,12 +781,15 @@ struct BatchNorm2D[
                 var m1 = sum_dxhat * inv_n
                 var m2 = sum_dxhat_xhat * inv_n
                 for b in range(B):
-                    var base = b * Self.FLAT_DIM + c * Self.SPATIAL
+                    var bb = b * Self.FLAT_DIM
                     for s in range(Self.SPATIAL):
-                        var dy = go_p[base + s]
-                        var xh = xhat_p[base + s]
+                        var off = bb + _bn_off[
+                            Self.LAYOUT, Self.C_, Self.SPATIAL
+                        ](c, s)
+                        var dy = go_p[off]
+                        var xh = xhat_p[off]
                         var dxhat = dy * g
-                        gi_p[base + s] = inv_std * (dxhat - m1 - xh * m2)
+                        gi_p[off] = inv_std * (dxhat - m1 - xh * m2)
                 dg_p[c] += d_gamma
                 db_p[c] += d_beta
         else:
@@ -764,6 +807,7 @@ struct BatchNorm2D[
                     Self.SPATIAL,
                     Self.FLAT_DIM,
                     G,
+                    Self.LAYOUT,
                 ]
             ](
                 grad_output.lt["gpu", l2d](),
@@ -805,6 +849,7 @@ struct BatchNorm2D[
                     Self.SPATIAL,
                     Self.FLAT_DIM,
                     G,
+                    Self.LAYOUT,
                 ]
             ](
                 grad_output.lt["gpu", l2d](),
