@@ -84,6 +84,72 @@ def _bn_stats_nchw[
         inv_std_out[c] = Scalar[DT](1.0) / sqrt(var_ + Scalar[DT](EPS))
 
 
+# ── REAL NCHW design: G-grouped partial + finalize (matches batch_norm_2d.mojo) ─
+# The strawman `_bn_stats_nchw` above launches grid=C (32–64 blocks) → grossly
+# under-utilizes the GPU, making NHWC look 3–5× faster than it really is. The
+# PRODUCTION BatchNorm2D splits the batch into G groups → grid = C*G (≈2–4k
+# blocks), coalesced AND well-parallelized. THIS is the honest NCHW baseline to
+# compare NHWC against.
+def _bn_stats_nchw_grouped[
+    N: Int, C: Int, SP: Int, FLAT: Int, G: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(N, FLAT), MutAnyOrigin],
+    partial_sum: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    partial_sumsq: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+):
+    var blk = Int(block_idx.x)
+    var c = blk // G
+    var g = blk % G
+    if c >= C:
+        return
+    var t = Int(thread_idx.x)
+    var bpb = (N + G - 1) // G
+    var b0 = g * bpb
+    var b1 = b0 + bpb
+    if b1 > N:
+        b1 = N
+    var c_off = c * SP
+    var my_sum: Scalar[DT] = 0.0
+    var my_sumsq: Scalar[DT] = 0.0
+    for b in range(b0, b1):
+        var s = t
+        while s < SP:
+            var x = rebind[Scalar[DT]](input[b, c_off + s])
+            my_sum += x
+            my_sumsq += x * x
+            s += TPB
+    var bsum = block.sum[block_size=TPB, broadcast=False](val=my_sum)
+    var bsq = block.sum[block_size=TPB, broadcast=False](val=my_sumsq)
+    if t == 0:
+        partial_sum[c * G + g] = bsum[0]
+        partial_sumsq[c * G + g] = bsq[0]
+
+
+def _bn_finalize_nchw_grouped[
+    C: Int, G: Int, RTOT: Int,
+](
+    partial_sum: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    partial_sumsq: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    mean_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    inv_std_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    var c = Int(global_idx.x)
+    if c >= C:
+        return
+    var s: Scalar[DT] = 0.0
+    var sq: Scalar[DT] = 0.0
+    for g in range(G):
+        s += rebind[Scalar[DT]](partial_sum[c * G + g])
+        sq += rebind[Scalar[DT]](partial_sumsq[c * G + g])
+    var inv_n = Scalar[DT](1.0) / Scalar[DT](Float32(RTOT))
+    var mean = s * inv_n
+    var var_ = sq * inv_n - mean * mean
+    if var_ < Scalar[DT](0.0):
+        var_ = Scalar[DT](0.0)
+    mean_out[c] = mean
+    inv_std_out[c] = Scalar[DT](1.0) / sqrt(var_ + Scalar[DT](EPS))
+
+
 # normalize: block per channel, threads stride spatial → coalesced read+write.
 def _bn_norm_nchw[
     N: Int, C: Int, SP: Int, FLAT: Int,
@@ -105,6 +171,42 @@ def _bn_norm_nchw[
     var gm = rebind[Scalar[DT]](gamma[c])
     var bt = rebind[Scalar[DT]](beta[c])
     for b in range(N):
+        var s = t
+        while s < SP:
+            var off = c_off + s
+            var xh = (rebind[Scalar[DT]](input[b, off]) - mean) * inv_std
+            output[b, off] = gm * xh + bt
+            s += TPB
+
+
+# G-grouped normalize (matches the real BN2D: grid=C*G, batch split into G groups).
+def _bn_norm_nchw_grouped[
+    N: Int, C: Int, SP: Int, FLAT: Int, G: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(N, FLAT), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(N, FLAT), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    beta: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    mean_in: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    inv_std_in: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    var blk = Int(block_idx.x)
+    var c = blk // G
+    var g = blk % G
+    if c >= C:
+        return
+    var t = Int(thread_idx.x)
+    var bpb = (N + G - 1) // G
+    var b0 = g * bpb
+    var b1 = b0 + bpb
+    if b1 > N:
+        b1 = N
+    var c_off = c * SP
+    var mean = rebind[Scalar[DT]](mean_in[c])
+    var inv_std = rebind[Scalar[DT]](inv_std_in[c])
+    var gm = rebind[Scalar[DT]](gamma[c])
+    var bt = rebind[Scalar[DT]](beta[c])
+    for b in range(b0, b1):
         var s = t
         while s < SP:
             var off = c_off + s
@@ -410,10 +512,40 @@ def run_bn[
     ctx.synchronize()
     var us_nhwc = Float64(perf_counter_ns() - t1) / Float64(ITERS) / 1000.0
 
+    # ---- time NCHW-grouped: the REAL BatchNorm2D design (grid=C*G) ----
+    comptime G = N if N < 64 else 64
+    comptime lcg = Layout.row_major(C * G)
+    var psg = LayoutTensor[DT, lcg, MutAnyOrigin](ps)   # reuse ps/psq (C*G<=NCHUNK*C)
+    var pqg = LayoutTensor[DT, lcg, MutAnyOrigin](psq)
+    comptime nb_fin = (C + TPB - 1) // TPB
+    comptime for _ in range(WARMUP):
+        ctx.enqueue_function[_bn_stats_nchw_grouped[N, C, SP, FLAT, G]](
+            xn, psg, pqg, grid_dim=C * G, block_dim=TPB)
+        ctx.enqueue_function[_bn_finalize_nchw_grouped[C, G, R]](
+            psg, pqg, ma, ia, grid_dim=nb_fin, block_dim=TPB)
+        ctx.enqueue_function[_bn_norm_nchw_grouped[N, C, SP, FLAT, G]](
+            xn, on, gl, bl, ma, ia, grid_dim=C * G, block_dim=TPB)
+    ctx.synchronize()
+    var t2 = perf_counter_ns()
+    comptime for _ in range(ITERS):
+        ctx.enqueue_function[_bn_stats_nchw_grouped[N, C, SP, FLAT, G]](
+            xn, psg, pqg, grid_dim=C * G, block_dim=TPB)
+        ctx.enqueue_function[_bn_finalize_nchw_grouped[C, G, R]](
+            psg, pqg, ma, ia, grid_dim=nb_fin, block_dim=TPB)
+        ctx.enqueue_function[_bn_norm_nchw_grouped[N, C, SP, FLAT, G]](
+            xn, on, gl, bl, ma, ia, grid_dim=C * G, block_dim=TPB)
+    ctx.synchronize()
+    var us_nchw_g = Float64(perf_counter_ns() - t2) / Float64(ITERS) / 1000.0
+
     var gb = 2.0 * Float64(RC) * 4.0 / 1e9   # stream in+out once (norm pass)
-    print("  BN NCHW: ", us_nchw, "us  ", gb / (us_nchw / 1e6) / 1e3, "TB/s")
-    print("  BN NHWC: ", us_nhwc, "us  ", gb / (us_nhwc / 1e6) / 1e3,
-          "TB/s   | NHWC/NCHW =", us_nhwc / us_nchw, "x")
+    print("  BN NCHW strawman(grid=C):", us_nchw, "us ",
+          gb / (us_nchw / 1e6) / 1e3, "TB/s")
+    print("  BN NCHW real(G-grouped): ", us_nchw_g, "us ",
+          gb / (us_nchw_g / 1e6) / 1e3, "TB/s  <- HONEST baseline")
+    print("  BN NHWC transposed:      ", us_nhwc, "us ",
+          gb / (us_nhwc / 1e6) / 1e3, "TB/s")
+    print("  >> NHWC/realNCHW =", us_nhwc / us_nchw_g,
+          "x  (NHWC/strawman =", us_nhwc / us_nchw, "x)")
 
 
 # ══════════════════════════════════════════════════════════════════════════
