@@ -2668,18 +2668,19 @@ struct ACStep[
         comptime nbB1 = (Self.B + TPB - 1) // TPB
         var ctx = st.ctx.value()
 
-        # ── one-time host→device uploads (noise, bins, mb_dne/mb_rew) ──
+        # ── one-time host→device uploads (noise, bins) ──
         for i in range(TI * NS * ACTD):
             self.noise_d.data[i] = st.noise.data[i]
         self.noise_d.upload(ctx)
         for c in range(BINSl):
             self.bins_d.data[c] = bins[c]
         self.bins_d.upload(ctx)
-        for i in range(BT):
-            self.mbdne_d.data[i] = st.mb_dne.data[i]
-            self.mbrew_d.data[i] = st.mb_rew.data[i]
-        self.mbdne_d.upload(ctx)
-        self.mbrew_d.upload(ctx)
+        # rew/dne come device-direct from the shared state buffers (Stage 3
+        # P3c): `_draw_minibatch`/`load_minibatch` left the sampled [B*T] reward
+        # window in st.d_rew and the done window in st.d_cont, so copy them
+        # straight into the AC buffers — no host round-trip (capture-safe).
+        ctx.enqueue_copy(self.mbrew_d.dev.value(), st.d_rew.dev.value())
+        ctx.enqueue_copy(self.mbdne_d.dev.value(), st.d_cont.dev.value())
 
         # init rollout carry cd/cs from posterior carries 1..T — device-direct
         # from the WM (Stage 3 P3): `_wm_gpu` left the scan carry in the shared

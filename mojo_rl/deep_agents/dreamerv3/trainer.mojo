@@ -347,11 +347,11 @@ struct DreamerV3Trainer[
         self.oe.lr = clr; self.ocore.lr = clr; self.odec.lr = clr
         self.orew.lr = clr; self.ocon.lr = clr; self.oval.lr = clr
         self.opol.lr = clr
-        self._draw_minibatch()
+        self._draw_minibatch(want_diag)
         self._run_minibatch(want_diag)
         return True
 
-    def _draw_minibatch(mut self) raises:
+    def _draw_minibatch(mut self, want_diag: Bool) raises:
         """Sample one length-T window into the minibatch buffers the WM/AC
         blocks consume.
 
@@ -359,13 +359,14 @@ struct DreamerV3Trainer[
         pointers).
 
         GPU: device `GPUSequenceReplay.sample_batch_fst_dev` straight into the
-        WM device buffers (`wm_blk.mb*_d`) — no host obs/act gather and no H2D
-        upload (the per-step host-sampling cost this migration removes; the
-        windows are drawn with the buffer's device Philox RNG). The tiny
-        `[B*T]` reward/done windows ARE pulled back to `state.mb_rew/mb_dne`
-        because the AC imagination root re-uploads them and `dbg_real_rew`
-        reads them (a P3 follow-up will let the AC read the device buffers
-        directly and drop this round-trip)."""
+        WM device buffers (`wm_blk.mb*_d`) — no host obs/act gather, no upload
+        (the windows are drawn with the buffer's device Philox RNG). rew/dne:
+          * discrete (device-resident AC, the capture target): copied
+            device→device into the shared `state.d_rew/d_cont`, which the AC
+            reads directly — no D2H/H2D round-trip. `dbg_real_rew` is then the
+            only host readout, and it's `want_diag`-gated → the non-diag draw is
+            host-free.
+          * continuous (host-side repval): pulled to `state.mb_rew/mb_dne`."""
         comptime if Self.train_target == "gpu":
             var sctx = self.ctx.value()
             self.replay.sample_batch_fst_dev[Self.B, Self.T](
@@ -376,21 +377,43 @@ struct DreamerV3Trainer[
                 self.wm_blk.mbdne_d.dev.value(),
                 self.wm_blk.mbfst_d.dev.value(),
             )
-            self.wm_blk.mbrew_d.download(sctx)
-            self.wm_blk.mbdne_d.download(sctx)
-            for i in range(Self.B * Self.T):
-                self.state.mb_rew.data[i] = self.wm_blk.mbrew_d.data[i]
-                self.state.mb_dne.data[i] = self.wm_blk.mbdne_d.data[i]
+            comptime if Self.DISCRETE:
+                # rew/dne stay on device (st.d_rew / st.d_cont carries dne) for
+                # the device-resident AC; only dbg pulls them, gated.
+                sctx.enqueue_copy(
+                    self.state.d_rew.dev.value(),
+                    self.wm_blk.mbrew_d.dev.value(),
+                )
+                sctx.enqueue_copy(
+                    self.state.d_cont.dev.value(),
+                    self.wm_blk.mbdne_d.dev.value(),
+                )
+                if want_diag:
+                    self.wm_blk.mbrew_d.download(sctx)
+                    var rr: Scalar[DT] = 0.0
+                    for i in range(Self.B * Self.T):
+                        rr += self.wm_blk.mbrew_d.data[i]
+                    self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
+            else:
+                self.wm_blk.mbrew_d.download(sctx)
+                self.wm_blk.mbdne_d.download(sctx)
+                for i in range(Self.B * Self.T):
+                    self.state.mb_rew.data[i] = self.wm_blk.mbrew_d.data[i]
+                    self.state.mb_dne.data[i] = self.wm_blk.mbdne_d.data[i]
+                var rr: Scalar[DT] = 0.0
+                for i in range(Self.B * Self.T):
+                    rr += self.state.mb_rew.data[i]
+                self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
         else:
             self.replay.sample_batch_fst[Self.B, Self.T](
                 _hp(self.state.mb_obs), _hp(self.state.mb_act),
                 _hp(self.state.mb_rew), _hp(self.state.mb_dne),
                 _hp(self.state.mb_fst),
             )
-        var rr: Scalar[DT] = 0.0
-        for i in range(Self.B * Self.T):
-            rr += self.state.mb_rew.data[i]
-        self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
+            var rr: Scalar[DT] = 0.0
+            for i in range(Self.B * Self.T):
+                rr += self.state.mb_rew.data[i]
+            self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
 
     def load_minibatch(
         mut self,
@@ -426,6 +449,17 @@ struct DreamerV3Trainer[
             self.wm_blk.mbrew_d.upload(sctx)
             self.wm_blk.mbdne_d.upload(sctx)
             self.wm_blk.mbfst_d.upload(sctx)
+            comptime if Self.DISCRETE:
+                # mirror _draw_minibatch: hand rew/dne to the device-resident AC
+                # via the shared state buffers (st.d_cont carries dne).
+                sctx.enqueue_copy(
+                    self.state.d_rew.dev.value(),
+                    self.wm_blk.mbrew_d.dev.value(),
+                )
+                sctx.enqueue_copy(
+                    self.state.d_cont.dev.value(),
+                    self.wm_blk.mbdne_d.dev.value(),
+                )
         else:
             for i in range(Self.B * (Self.T + 1) * OBSD):
                 self.state.mb_obs.data[i] = obs[i]
