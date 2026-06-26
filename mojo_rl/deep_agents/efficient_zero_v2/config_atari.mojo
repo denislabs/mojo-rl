@@ -23,9 +23,11 @@ Defaults follow `references/EfficientZeroV2-main/ez/config/exp/atari.yaml`:
 """
 
 from mojo_rl.nn.constants import LAYOUT_NCHW
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.to_nchw import ToNCHW
 from .nets import EZProjectorNet, EZPredictorNet
 from .nets_atari import (
-    EZRepNetResNetAtari, EZDynNetAtari, EZPredNetAtari, EZ_C, EZ_LATENT,
+    EZRepNetResNetAtari, EZDynNetAtari, EZPredNetAtari, EZ_C, EZ_HW, EZ_LATENT,
     EZDynZNetAtari, EZRewardLSTMAtari,
     EZ_LSTM_HIDDEN, EZ_RHID, EZ_LSTM_HORIZON,
 )
@@ -54,7 +56,16 @@ struct EZV2AtariConfig[
 
     comptime IN_CH = Self.FRAMES * 3            # stacked RGB
     comptime OBS = Self.IN_CH * 96 * 96         # rep IN_DIMS[0]
-    comptime Rep = EZRepNetResNetAtari[Self.IN_CH, EZ_C, LAYOUT=Self.LAYOUT]
+    # Rep tower (NHWC-capable) + a ToNCHW boundary adapter so the latent handed
+    # to Dyn/Pred/Proj/MCTS is ALWAYS canonical NCHW [64,6,6] regardless of the
+    # tower's internal layout. For LAYOUT=NCHW (default) ToNCHW is a value-
+    # identical identity copy → bit-identical to the pre-adapter config; for
+    # LAYOUT=NHWC it transposes [6,6,64]→[64,6,6] at the 6×6 latent boundary
+    # (negligible), so Dyn/Pred stay NCHW with zero changes.
+    comptime Rep = Sequential[
+        EZRepNetResNetAtari[Self.IN_CH, EZ_C, LAYOUT=Self.LAYOUT],
+        ToNCHW[EZ_C, EZ_HW, EZ_HW, Self.LAYOUT],
+    ]
     comptime Dyn = EZDynNetAtari[Self.ACT, Self.BINS]
     comptime Pred = EZPredNetAtari[Self.ACT, Self.BINS]
     comptime Proj = EZProjectorNet[Self.LATENT, Self.PROJ, Self.PROJ_HID]
