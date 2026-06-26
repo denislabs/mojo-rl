@@ -37,12 +37,14 @@ from std.math import sqrt
 from std.gpu import global_idx, thread_idx, block_idx, block_dim
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
+from std.sys.info import has_nvidia_gpu_accelerator
 from std.time import perf_counter_ns
 from layout import Layout, LayoutTensor
 
 comptime DT = DType.float32
 comptime TPB = 128        # block-per-channel reduction width (NCHW) / flat launches
 comptime NCHUNK = 512     # NHWC partial-reduction row chunks (parallelism source)
+comptime BN2D_BLK = 256   # NHWC-2D reduction block (= ROWS_PER_BLK * C; ROWS = BLK/C)
 comptime EPS = 1e-5
 
 
@@ -255,6 +257,81 @@ def _bn_stats_nhwc_partial[
     partial_sumsq[chunk * C + c] = my_sumsq
 
 
+# NHWC-2D: the OCCUPANCY fix. The 1-warp partial above is thread-starved
+# (block_dim=C=32 → ~16k threads vs the real NCHW's ~262k). Here block_dim =
+# BN2D_BLK = 256 = ROWS row-groups × C channels (lane = rg*C + c). Each row-group
+# strides its own subset of the chunk's rows → ROWS rows read in parallel, each a
+# coalesced C-vector. NO manual shared mem (Metal-incompatible): thread (rg,c)
+# writes its OWN partial at (chunk*ROWS + rg)*C + c → 8 warps/block (C=32) = full
+# occupancy. The cross-row-group reduction is deferred to the parallel finalize.
+# Partial buffer = CHUNKS*ROWS*C = CHUNKS*BN2D_BLK.
+def _bn_stats_nhwc_2d[
+    C: Int, R: Int, CHUNKS: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(R * C), MutAnyOrigin],
+    partial_sum: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_BLK), MutAnyOrigin
+    ],
+    partial_sumsq: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_BLK), MutAnyOrigin
+    ],
+):
+    comptime ROWS = BN2D_BLK // C
+    var chunk = Int(block_idx.x)
+    var lane = Int(thread_idx.x)
+    var c = lane % C
+    var rg = lane // C
+    comptime rpc = (R + CHUNKS - 1) // CHUNKS
+    var r0 = chunk * rpc
+    var r1 = r0 + rpc
+    if r1 > R:
+        r1 = R
+    var my_sum: Scalar[DT] = 0.0
+    var my_sq: Scalar[DT] = 0.0
+    var r = r0 + rg
+    while r < r1:
+        var x = rebind[Scalar[DT]](input[r * C + c])
+        my_sum += x
+        my_sq += x * x
+        r += ROWS
+    var pidx = (chunk * ROWS + rg) * C + c
+    partial_sum[pidx] = my_sum
+    partial_sumsq[pidx] = my_sq
+
+
+# Parallel finalize: grid=C, one block per channel reduces its P = CHUNKS*ROWS
+# partials (strided by C) via block.sum (portable — used by the NCHW kernels too).
+def _bn_finalize_nhwc_parallel[
+    C: Int, RTOT: Int, P: Int,
+](
+    partial_sum: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    partial_sumsq: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    mean_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    inv_std_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    var c = Int(block_idx.x)
+    if c >= C:
+        return
+    var t = Int(thread_idx.x)
+    var my_s: Scalar[DT] = 0.0
+    var my_sq: Scalar[DT] = 0.0
+    var k = t
+    while k < P:
+        my_s += rebind[Scalar[DT]](partial_sum[k * C + c])
+        my_sq += rebind[Scalar[DT]](partial_sumsq[k * C + c])
+        k += TPB
+    var bs = block.sum[block_size=TPB, broadcast=False](val=my_s)
+    var bsq = block.sum[block_size=TPB, broadcast=False](val=my_sq)
+    if t == 0:
+        var inv_n = Scalar[DT](1.0) / Scalar[DT](Float32(RTOT))
+        var mean = bs[0] * inv_n
+        var var_ = bsq[0] * inv_n - mean * mean
+        if var_ < Scalar[DT](0.0):
+            var_ = Scalar[DT](0.0)
+        mean_out[c] = mean
+        inv_std_out[c] = Scalar[DT](1.0) / sqrt(var_ + Scalar[DT](EPS))
+
+
 # finalize: one thread per channel, sum the NCHUNK partials → mean, inv_std.
 def _bn_finalize_nhwc[
     C: Int, RTOT: Int,
@@ -420,8 +497,10 @@ def run_bn[
     var istd_a = ctx.enqueue_create_buffer[DT](C)
     var mean_b = ctx.enqueue_create_buffer[DT](C)
     var istd_b = ctx.enqueue_create_buffer[DT](C)
-    var ps = ctx.enqueue_create_buffer[DT](NCHUNK * C)
-    var psq = ctx.enqueue_create_buffer[DT](NCHUNK * C)
+    # sized for the 2D partial (CHUNKS*ROWS*C = NCHUNK*BN2D_BLK); the 1-warp
+    # (NCHUNK*C) and grouped (C*G) partials are smaller → same buffer serves all.
+    var ps = ctx.enqueue_create_buffer[DT](NCHUNK * BN2D_BLK)
+    var psq = ctx.enqueue_create_buffer[DT](NCHUNK * BN2D_BLK)
 
     var gl = LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin](gamma)
     var bl = LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin](beta)
@@ -443,6 +522,15 @@ def run_bn[
     var ib = LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin](istd_b)
     var psl = LayoutTensor[DT, Layout.row_major(NCHUNK * C), MutAnyOrigin](ps)
     var pql = LayoutTensor[DT, Layout.row_major(NCHUNK * C), MutAnyOrigin](psq)
+    # 2D partial views (CHUNKS*ROWS*C = NCHUNK*BN2D_BLK) + its parallel-finalize P.
+    comptime ROWS = BN2D_BLK // C
+    comptime P2 = NCHUNK * ROWS
+    var psl2 = LayoutTensor[
+        DT, Layout.row_major(NCHUNK * BN2D_BLK), MutAnyOrigin
+    ](ps)
+    var pql2 = LayoutTensor[
+        DT, Layout.row_major(NCHUNK * BN2D_BLK), MutAnyOrigin
+    ](psq)
     var xhr = LayoutTensor[DT, Layout.row_major(R * C), MutAnyOrigin](x_nhwc)
     comptime nb_norm = (RC + TPB - 1) // TPB
     ctx.enqueue_function[_bn_stats_nhwc_partial[C, R]](
@@ -475,6 +563,25 @@ def run_bn[
                         if abs(Float64(a - bb)) > 1e-2:
                             out_bad += 1
     print("  verify: stat_mismatch=", stat_bad, " out_mismatch=", out_bad)
+
+    # ---- verify NHWC-2D stats vs NCHW ref (overwrites mb/ib, re-timed below) ----
+    # NVIDIA-only: the 2D kernel's high-occupancy launch ICEs the Metal backend.
+    # Apple skips it (the 1-warp transposed kernel above is the Apple path).
+    var stat_bad2 = 0
+    comptime if has_nvidia_gpu_accelerator():
+        ctx.enqueue_function[_bn_stats_nhwc_2d[C, R, NCHUNK]](
+            xhr, psl2, pql2, grid_dim=NCHUNK, block_dim=BN2D_BLK)
+        ctx.enqueue_function[_bn_finalize_nhwc_parallel[C, R, P2]](
+            psl2, pql2, mb, ib, grid_dim=C, block_dim=TPB)
+        ctx.synchronize()
+        with mean_a.map_to_host() as hma2:
+            with mean_b.map_to_host() as hmb2:
+                for c in range(C):
+                    if abs(Float64(hma2[c] - hmb2[c])) > 1e-2:
+                        stat_bad2 += 1
+        print("  verify NHWC-2D: stat_mismatch=", stat_bad2)
+    else:
+        print("  verify NHWC-2D: skipped (NVIDIA-only — Metal ICEs the 2D kernel)")
 
     # ---- time NCHW ----
     comptime for _ in range(WARMUP):
@@ -512,6 +619,28 @@ def run_bn[
     ctx.synchronize()
     var us_nhwc = Float64(perf_counter_ns() - t1) / Float64(ITERS) / 1000.0
 
+    # ---- time NHWC-2D (occupancy fix: block_dim=BN2D_BLK = ROWS×C) — NVIDIA ----
+    var us_nhwc2 = us_nhwc   # default on Apple (2D skipped)
+    comptime if has_nvidia_gpu_accelerator():
+        comptime for _ in range(WARMUP):
+            ctx.enqueue_function[_bn_stats_nhwc_2d[C, R, NCHUNK]](
+                xhr, psl2, pql2, grid_dim=NCHUNK, block_dim=BN2D_BLK)
+            ctx.enqueue_function[_bn_finalize_nhwc_parallel[C, R, P2]](
+                psl2, pql2, mb, ib, grid_dim=C, block_dim=TPB)
+            ctx.enqueue_function[_bn_norm_nhwc[C, RC]](
+                xh, oh, gl, bl, mb, ib, grid_dim=nb_norm, block_dim=TPB)
+        ctx.synchronize()
+        var t12 = perf_counter_ns()
+        comptime for _ in range(ITERS):
+            ctx.enqueue_function[_bn_stats_nhwc_2d[C, R, NCHUNK]](
+                xhr, psl2, pql2, grid_dim=NCHUNK, block_dim=BN2D_BLK)
+            ctx.enqueue_function[_bn_finalize_nhwc_parallel[C, R, P2]](
+                psl2, pql2, mb, ib, grid_dim=C, block_dim=TPB)
+            ctx.enqueue_function[_bn_norm_nhwc[C, RC]](
+                xh, oh, gl, bl, mb, ib, grid_dim=nb_norm, block_dim=TPB)
+        ctx.synchronize()
+        us_nhwc2 = Float64(perf_counter_ns() - t12) / Float64(ITERS) / 1000.0
+
     # ---- time NCHW-grouped: the REAL BatchNorm2D design (grid=C*G) ----
     comptime G = N if N < 64 else 64
     comptime lcg = Layout.row_major(C * G)
@@ -542,10 +671,12 @@ def run_bn[
           gb / (us_nchw / 1e6) / 1e3, "TB/s")
     print("  BN NCHW real(G-grouped): ", us_nchw_g, "us ",
           gb / (us_nchw_g / 1e6) / 1e3, "TB/s  <- HONEST baseline")
-    print("  BN NHWC transposed:      ", us_nhwc, "us ",
+    print("  BN NHWC transposed(1warp):", us_nhwc, "us ",
           gb / (us_nhwc / 1e6) / 1e3, "TB/s")
-    print("  >> NHWC/realNCHW =", us_nhwc / us_nchw_g,
-          "x  (NHWC/strawman =", us_nhwc / us_nchw, "x)")
+    print("  BN NHWC-2D (occupancy fix):", us_nhwc2, "us ",
+          gb / (us_nhwc2 / 1e6) / 1e3, "TB/s")
+    print("  >> NHWC-2D/realNCHW =", us_nhwc2 / us_nchw_g,
+          "x  | NHWC-2D/1warp =", us_nhwc2 / us_nhwc, "x")
 
 
 # ══════════════════════════════════════════════════════════════════════════
