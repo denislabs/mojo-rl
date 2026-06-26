@@ -26,6 +26,7 @@ Usage:
 
 from std.memory import alloc, memset
 from mojo_rl.core import State, Action, BoxDiscreteActionEnv
+from mojo_rl.nn.constants import LAYOUT_NCHW, LAYOUT_NHWC
 from .environment import AtariEnvironment, load_rom
 from .games.registry import AtariGame, game_signals
 from .cpu6502 import run_frame, run_frame_video
@@ -215,6 +216,7 @@ def _resize_plane_160x210_to_96x96(
 struct AtariEnv[
     OBS_MODE: Int = 0,
     DTYPE: DType = DType.float32,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](BoxDiscreteActionEnv, Movable):
     """Atari environment conforming to BoxDiscreteActionEnv.
 
@@ -483,24 +485,48 @@ struct AtariEnv[
         self, obs_out: UnsafePointer[Scalar[Self.dtype], o]
     ):
         """Write the 4-frame RGB stack (chronological, oldest first) as
-        normalized floats [12,96,96] into `obs_out`. Channel order within a
-        frame is R,G,B; the 12 channels are frame-major (f0RGB, f1RGB, …).
-        SIMD uint8→float /255, bit-exact vs the scalar conversion."""
-        comptime W = 16
-        comptime assert (
-            RGB_OBS_PLANE % W == 0
-        ), "RGB plane must be SIMD-divisible"
+        normalized floats into `obs_out`. The 12 logical channels are frame-major
+        (f0R,f0G,f0B, f1R,…, f3B), each from the source ring slot's [3,96,96]
+        planar frame. Channel placement follows `Self.LAYOUT` (channels_last
+        migration — see CHANNELS_LAST_NHWC_MIGRATION_PLAN.md), default NCHW so
+        every existing consumer (muzero/DQN/…) is byte-identical:
+          NCHW → [12,96,96] (channel-outer, contiguous per channel)
+          NHWC → [96,96,12] (channel-inner, interleaved per pixel)
+        Only OBS_MODE==2 (RGB-96) honors NHWC; the gray-84 / RAM writers are
+        NCHW-only (no NHWC consumer)."""
         var fs = self.frame_stack.value()
-        var out_off = 0
-        for i in range(4):
-            var slot = (self.frame_idx + i) % 4  # oldest first
-            var src = fs + slot * RGB_FRAME_SIZE
-            for j in range(0, RGB_FRAME_SIZE, W):
-                obs_out.store(
-                    out_off + j,
-                    src.load[width=W](j).cast[Self.dtype]() / 255.0,
-                )
-            out_off += RGB_FRAME_SIZE
+        comptime if Self.LAYOUT == LAYOUT_NHWC:
+            # Channel-inner scatter: obs[p*12 + ch]. The source frame is planar
+            # [3,96,96], so the contiguous-per-channel SIMD copy can't apply;
+            # gather each channel for pixel p. (CPU obs gen — emulation dominates.)
+            comptime CH = RGB_STACK_SIZE // RGB_OBS_PLANE  # 12
+            for i in range(4):
+                var slot = (self.frame_idx + i) % 4  # oldest first
+                var src = fs + slot * RGB_FRAME_SIZE
+                for c in range(3):
+                    var ch = i * 3 + c
+                    var src_c = src + c * RGB_OBS_PLANE
+                    for p in range(RGB_OBS_PLANE):
+                        obs_out[p * CH + ch] = (
+                            src_c[p].cast[Self.dtype]() / 255.0
+                        )
+        else:
+            # NCHW: contiguous per-channel → SIMD frame-block copy (bit-identical
+            # to the pre-LAYOUT path).
+            comptime W = 16
+            comptime assert (
+                RGB_OBS_PLANE % W == 0
+            ), "RGB plane must be SIMD-divisible"
+            var out_off = 0
+            for i in range(4):
+                var slot = (self.frame_idx + i) % 4  # oldest first
+                var src = fs + slot * RGB_FRAME_SIZE
+                for j in range(0, RGB_FRAME_SIZE, W):
+                    obs_out.store(
+                        out_off + j,
+                        src.load[width=W](j).cast[Self.dtype]() / 255.0,
+                    )
+                out_off += RGB_FRAME_SIZE
 
     # ========================================================================
     # Env trait (base)

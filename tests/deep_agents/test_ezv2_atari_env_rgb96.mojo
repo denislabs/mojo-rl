@@ -24,6 +24,7 @@ from std.testing import assert_true, assert_equal
 
 from mojo_rl.envs.atari import AtariEnv, load_rom
 from mojo_rl.envs.atari.games.registry import AtariGame
+from mojo_rl.nn.constants import LAYOUT_NHWC
 
 
 comptime DT = DType.float32
@@ -146,6 +147,39 @@ def test_gray84_still_compiles() raises:
     print("  ok")
 
 
+def test_rgb96_nhwc_parity() raises:
+    """channels_last: AtariEnv[...,LAYOUT_NHWC] must emit the SAME logical obs as
+    NCHW, reordered to [96,96,12]. Two envs stepped identically (deterministic
+    emulation) → exact equality nhwc[p*12+ch] == nchw[ch*PLANE+p]."""
+    print("test RGB-96 NHWC vs NCHW obs parity ...")
+    comptime CH = 12
+    var rn = load_rom("roms/pong.bin")
+    var en = AtariEnv[2, DT](AtariGame.PONG, rn.data.value(), rn.size)
+    var rh = load_rom("roms/pong.bin")
+    var eh = AtariEnv[2, DT, LAYOUT_NHWC](AtariGame.PONG, rh.data.value(), rh.size)
+
+    var bad = 0
+    var on = en.reset_obs_list()
+    var oh = eh.reset_obs_list()
+    for ch in range(CH):
+        for p in range(PLANE):
+            if abs(on[ch * PLANE + p] - oh[p * CH + ch]) > Scalar[DT](1e-9):
+                bad += 1
+    for t in range(5):
+        var sn = en.step_obs(1)[0].copy()
+        var sh = eh.step_obs(1)[0].copy()
+        for ch in range(CH):
+            for p in range(PLANE):
+                if abs(sn[ch * PLANE + p] - sh[p * CH + ch]) > Scalar[DT](1e-9):
+                    bad += 1
+    assert_true(bad == 0, "NHWC obs == NCHW obs reordered (exact)")
+    en.close()
+    eh.close()
+    _ = en^
+    _ = eh^
+    print("  ok (mismatches=", bad, ")")
+
+
 def main() raises:
     print("=" * 70)
     print("EZv2-Atari Stage-1 env parity: RGB-96 obs + flags (CPU)")
@@ -153,6 +187,7 @@ def main() raises:
     test_rgb96_obs_and_flags()
     test_defaults_minimal_actions()
     test_gray84_still_compiles()
+    test_rgb96_nhwc_parity()
     print("=" * 70)
     print("PASSED")
     print("=" * 70)
