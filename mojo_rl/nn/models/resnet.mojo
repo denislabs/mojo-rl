@@ -16,7 +16,7 @@ Spatial-shape convention (matches `Conv2D`):
         main path, 1×1-stride-2 BN projection skip).
 """
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, LAYOUT_NCHW
 from ..primitives.conv2d import Conv2D
 from ..primitives.batch_norm_2d import (
     BatchNorm2D, BN2D_DEFAULT_EPS, BN2D_DEFAULT_MOM,
@@ -34,14 +34,15 @@ comptime ResBlockConv2DBN[
     C: Int, K: Int, P: Int, H: Int, W: Int,
     EPS: Float64 = BN2D_DEFAULT_EPS,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ] = Sequential[
     Residual[
         Sequential[
-            Conv2D[C, C, K, 1, P, H, W, ADT],
-            BatchNorm2D[C, H, W, BN2D_DEFAULT_MOM, EPS, ADT=ADT],
+            Conv2D[C, C, K, 1, P, H, W, ADT, LAYOUT],
+            BatchNorm2D[C, H, W, BN2D_DEFAULT_MOM, EPS, ADT=ADT, LAYOUT=LAYOUT],
             ReLU[C * H * W, ADT],
-            Conv2D[C, C, K, 1, P, H, W, ADT],
-            BatchNorm2D[C, H, W, BN2D_DEFAULT_MOM, EPS, ADT=ADT],
+            Conv2D[C, C, K, 1, P, H, W, ADT, LAYOUT],
+            BatchNorm2D[C, H, W, BN2D_DEFAULT_MOM, EPS, ADT=ADT, LAYOUT=LAYOUT],
         ]
     ],
     ReLU[C * H * W, ADT],
@@ -54,13 +55,14 @@ comptime ResBlockConv2DBN[
 comptime ResBlockDownsampleBN[
     IC: Int, OC: Int, K: Int, P: Int, H: Int, W: Int,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ] = Sequential[
     ProjectedResidual[
         Sequential[
-            Conv2D[IC, OC, K, 2, P, H, W, ADT],
+            Conv2D[IC, OC, K, 2, P, H, W, ADT, LAYOUT],
             BatchNorm2D[
                 OC, (H + 2 * P - K) // 2 + 1, (W + 2 * P - K) // 2 + 1,
-                BN2D_DEFAULT_MOM, BN2D_DEFAULT_EPS, ADT=ADT,
+                BN2D_DEFAULT_MOM, BN2D_DEFAULT_EPS, ADT=ADT, LAYOUT=LAYOUT,
             ],
             ReLU[
                 OC
@@ -72,18 +74,18 @@ comptime ResBlockDownsampleBN[
                 OC, OC, K, 1, P,
                 (H + 2 * P - K) // 2 + 1,
                 (W + 2 * P - K) // 2 + 1,
-                ADT,
+                ADT, LAYOUT,
             ],
             BatchNorm2D[
                 OC, (H + 2 * P - K) // 2 + 1, (W + 2 * P - K) // 2 + 1,
-                BN2D_DEFAULT_MOM, BN2D_DEFAULT_EPS, ADT=ADT,
+                BN2D_DEFAULT_MOM, BN2D_DEFAULT_EPS, ADT=ADT, LAYOUT=LAYOUT,
             ],
         ],
         Sequential[
-            Conv2D[IC, OC, 1, 2, 0, H, W, ADT],
+            Conv2D[IC, OC, 1, 2, 0, H, W, ADT, LAYOUT],
             BatchNorm2D[
                 OC, (H - 1) // 2 + 1, (W - 1) // 2 + 1,
-                BN2D_DEFAULT_MOM, BN2D_DEFAULT_EPS, ADT=ADT,
+                BN2D_DEFAULT_MOM, BN2D_DEFAULT_EPS, ADT=ADT, LAYOUT=LAYOUT,
             ],
         ],
     ],

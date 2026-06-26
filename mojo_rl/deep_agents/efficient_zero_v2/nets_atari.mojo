@@ -36,7 +36,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn.constants import DT, TPB, LAYOUT_NCHW
 from mojo_rl.nn.core.initializer import Initializer
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor, TensorImpl
@@ -85,20 +85,25 @@ from mojo_rl.deep_agents.dreamerv3.zero_init import (
 comptime EZDownBlockNoBN[
     IC: Int, OC: Int, H: Int, W: Int,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ] = Sequential[
     ProjectedResidual[
         Sequential[
-            Conv2D[IC, OC, 3, 2, 1, H, W, ADT],
-            BatchNorm2D[OC, (H - 1) // 2 + 1, (W - 1) // 2 + 1, ADT=ADT],
+            Conv2D[IC, OC, 3, 2, 1, H, W, ADT, LAYOUT],
+            BatchNorm2D[
+                OC, (H - 1) // 2 + 1, (W - 1) // 2 + 1, ADT=ADT, LAYOUT=LAYOUT
+            ],
             ReLU[OC * ((H - 1) // 2 + 1) * ((W - 1) // 2 + 1), ADT],
             Conv2D[
                 OC, OC, 3, 1, 1,
-                (H - 1) // 2 + 1, (W - 1) // 2 + 1, ADT,
+                (H - 1) // 2 + 1, (W - 1) // 2 + 1, ADT, LAYOUT,
             ],
-            BatchNorm2D[OC, (H - 1) // 2 + 1, (W - 1) // 2 + 1, ADT=ADT],
+            BatchNorm2D[
+                OC, (H - 1) // 2 + 1, (W - 1) // 2 + 1, ADT=ADT, LAYOUT=LAYOUT
+            ],
         ],
         # skip: bare 3×3-stride-2 conv, no BN (reference `downsample=conv2`).
-        Conv2D[IC, OC, 3, 2, 1, H, W, ADT],
+        Conv2D[IC, OC, 3, 2, 1, H, W, ADT, LAYOUT],
     ],
     ReLU[OC * ((H - 1) // 2 + 1) * ((W - 1) // 2 + 1), ADT],
 ]
@@ -120,26 +125,27 @@ comptime EZDownBlockNoBN[
 comptime EZRepNetResNetAtari[
     IN_CH: Int, C: Int,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ] = Sequential[
     # ── DownSample ───────────────────────────────────────────────────
     # conv1: Conv(IN_CH→C/2, k3,s2,p1) → BN → ReLU      (96 → 48)
-    Conv2D[IN_CH, C // 2, 3, 2, 1, 96, 96, ADT],
-    BatchNorm2D[C // 2, 48, 48, ADT=ADT],
+    Conv2D[IN_CH, C // 2, 3, 2, 1, 96, 96, ADT, LAYOUT],
+    BatchNorm2D[C // 2, 48, 48, ADT=ADT, LAYOUT=LAYOUT],
     ReLU[(C // 2) * 48 * 48, ADT],
     # resblocks1: 1× identity ResBlock(C/2) at 48×48
-    ResBlockConv2DBN[C // 2, 3, 1, 48, 48, ADT=ADT],
+    ResBlockConv2DBN[C // 2, 3, 1, 48, 48, ADT=ADT, LAYOUT=LAYOUT],
     # downsample_block: ResBlock(C/2→C, s2) at 48 → 24 (no-BN skip)
-    EZDownBlockNoBN[C // 2, C, 48, 48, ADT],
+    EZDownBlockNoBN[C // 2, C, 48, 48, ADT, LAYOUT],
     # resblocks2: 1× identity ResBlock(C) at 24×24
-    ResBlockConv2DBN[C, 3, 1, 24, 24, ADT=ADT],
+    ResBlockConv2DBN[C, 3, 1, 24, 24, ADT=ADT, LAYOUT=LAYOUT],
     # pooling1: AvgPool(k3,s2,p1) 24 → 12
-    AvgPool2D[C, 3, 2, 1, 24, 24, ADT=ADT],
+    AvgPool2D[C, 3, 2, 1, 24, 24, ADT=ADT, LAYOUT=LAYOUT],
     # resblocks3: 1× identity ResBlock(C) at 12×12
-    ResBlockConv2DBN[C, 3, 1, 12, 12, ADT=ADT],
+    ResBlockConv2DBN[C, 3, 1, 12, 12, ADT=ADT, LAYOUT=LAYOUT],
     # pooling2: AvgPool(k3,s2,p1) 12 → 6
-    AvgPool2D[C, 3, 2, 1, 12, 12, ADT=ADT],
+    AvgPool2D[C, 3, 2, 1, 12, 12, ADT=ADT, LAYOUT=LAYOUT],
     # ── RepresentationNetwork: num_blocks=1 identity ResBlock(C) at 6×6 ──
-    ResBlockConv2DBN[C, 3, 1, 6, 6, ADT=ADT],
+    ResBlockConv2DBN[C, 3, 1, 6, 6, ADT=ADT, LAYOUT=LAYOUT],
 ]
 
 

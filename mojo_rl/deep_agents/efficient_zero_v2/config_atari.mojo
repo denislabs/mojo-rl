@@ -22,6 +22,7 @@ Defaults follow `references/EfficientZeroV2-main/ez/config/exp/atari.yaml`:
     ]
 """
 
+from mojo_rl.nn.constants import LAYOUT_NCHW
 from .nets import EZProjectorNet, EZPredictorNet
 from .nets_atari import (
     EZRepNetResNetAtari, EZDynNetAtari, EZPredNetAtari, EZ_C, EZ_LATENT,
@@ -38,6 +39,12 @@ struct EZV2AtariConfig[
     PROJ: Int = 1024,
     PROJ_HID: Int = 1024,
     BOTTLENECK: Int = 256,
+    # Spatial memory layout for the REPRESENTATION net (the conv tower where the
+    # 48×48 / 24×24 hot kernels live — see CHANNELS_LAST_NHWC_MIGRATION_PLAN.md).
+    # Default NCHW = bit-identical. NHWC flips only `Rep`; Dyn/Pred stay NCHW
+    # (their convs are 6×6/cheap and have a channel-concat that's awkward in NHWC),
+    # so the agent transposes Rep's NHWC latent → NCHW at the 6×6 latent boundary.
+    LAYOUT: Int = LAYOUT_NCHW,
 ]:
     """EZv2 Atari spatial model bundle (RGB 96×96 pixel obs).
 
@@ -47,7 +54,7 @@ struct EZV2AtariConfig[
 
     comptime IN_CH = Self.FRAMES * 3            # stacked RGB
     comptime OBS = Self.IN_CH * 96 * 96         # rep IN_DIMS[0]
-    comptime Rep = EZRepNetResNetAtari[Self.IN_CH, EZ_C]
+    comptime Rep = EZRepNetResNetAtari[Self.IN_CH, EZ_C, LAYOUT=Self.LAYOUT]
     comptime Dyn = EZDynNetAtari[Self.ACT, Self.BINS]
     comptime Pred = EZPredNetAtari[Self.ACT, Self.BINS]
     comptime Proj = EZProjectorNet[Self.LATENT, Self.PROJ, Self.PROJ_HID]
