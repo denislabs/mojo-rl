@@ -2864,7 +2864,13 @@ struct ACStep[
         oval.step[target, M=Self.ValT](value, ctx)
         opol.step[target, M=Self.PolT](policy, ctx)
         polyak_module[target, Self.ValT](value, slowvalue, self.slow_rate, ctx=st.ctx)
-        ctx.synchronize()
+        # End-of-step drain only matters when we read back below (the want_diag
+        # block re-syncs after its D2H, and `last_ac_loss` is written there).
+        # Gate it (Stage 3 P3d) → the discrete non-diag AC step issues no
+        # sync/D2H at all: it is fully async, CUDA-graph capturable. Stream
+        # ordering chains the next step's kernels after these enqueues.
+        if want_diag:
+            ctx.synchronize()
 
         # ── diagnostics + loss scalars (gated; log-cadence only) ──
         # Reduce every metric on-device into `diag_d` (single-block kernels),
