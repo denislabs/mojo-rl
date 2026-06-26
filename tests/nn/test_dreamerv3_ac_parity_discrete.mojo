@@ -1,12 +1,18 @@
 """DreamerV3 CPU↔GPU train-step parity — DISCRETE (categorical) actor.
 
-Discrete counterpart of `test_dreamerv3_ac_parity.mojo`. Same harness (two
-trainers, identical synthetic replay, identical pre-seeded imagination noise)
-but `DISCRETE=True` so the unimix-categorical actor path is exercised. This is
-the validation gate for the device-resident discrete `_ac_gpu` rewrite (the
-λ-return / imag-loss / sampling moved on-device): before the rewrite the
-host-marshalling GPU path matches CPU; after, the device-resident path must
-still match CPU within float32 tolerance.
+Discrete counterpart of `test_dreamerv3_ac_parity.mojo`. Both trainers are fed
+a BYTE-IDENTICAL fixed minibatch (via `load_minibatch`) and identical
+pre-seeded imagination noise, then run `_run_minibatch` per iter; we compare
+per-step WM + AC losses. `DISCRETE=True` so the unimix-categorical actor path
+is exercised. This is the validation gate for the device-resident discrete
+`_ac_gpu` rewrite (λ-return / imag-loss / sampling on-device).
+
+NOTE: the minibatch is loaded directly (not drawn from the replay). As of
+Stage 3 P2b the two backends use genuinely different samplers — the CPU host
+`SequenceReplay` vs the GPU device-Philox `GPUSequenceReplay` — so they no
+longer draw the same window from the same host seed. The replay backends are
+gated separately by `tests/nn/dreamerv3/test_gpu_sequence_replay.mojo`; this
+test isolates the WM/AC MATH parity by feeding identical inputs.
 
 Run: `pixi run -e apple mojo run -I . tests/nn/test_dreamerv3_ac_parity_discrete.mojo`
 """
@@ -36,7 +42,6 @@ comptime B = 2
 comptime T = 3
 comptime T_IMAG = 4
 comptime CAP = 256
-comptime NREC = 120
 comptime ITERS = 12
 comptime SEED = 1234
 
@@ -50,38 +55,11 @@ comptime GpuTr = DreamerV3Trainer[
 ]
 
 
-def _fill_replay_cpu(mut tr: CpuTr):
-    var s = UInt64(99887766)
-    var ob = alloc[Scalar[DT]](OBS)
-    var ac = alloc[Scalar[DT]](ACT)
-    for _t in range(NREC):
-        for k in range(OBS):
-            s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
-            ob[k] = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        for k in range(ACT):
-            s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
-            ac[k] = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
-        var r = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        tr.record(ob, ac, r, Scalar[DT](0.0))
-    ob.free(); ac.free()
-
-
-def _fill_replay_gpu(mut tr: GpuTr):
-    var s = UInt64(99887766)
-    var ob = alloc[Scalar[DT]](OBS)
-    var ac = alloc[Scalar[DT]](ACT)
-    for _t in range(NREC):
-        for k in range(OBS):
-            s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
-            ob[k] = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        for k in range(ACT):
-            s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
-            ac[k] = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
-        var r = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        tr.record(ob, ac, r, Scalar[DT](0.0))
-    ob.free(); ac.free()
+def _lcg(mut s: UInt64) -> Scalar[DT]:
+    """Deterministic [-1, 1) sample from a 64-bit LCG (host-only, no global
+    RNG dependence) so the synthetic minibatch is reproducible."""
+    s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
+    return Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
 
 
 def main() raises:
@@ -90,28 +68,49 @@ def main() raises:
     print("=" * 70)
     var ctx = DeviceContext()
 
+    # ── one fixed synthetic minibatch, shared by both backends ──
+    var mb_obs = alloc[Scalar[DT]](B * (T + 1) * OBS)
+    var mb_act = alloc[Scalar[DT]](B * T * ACT)
+    var mb_rew = alloc[Scalar[DT]](B * T)
+    var mb_dne = alloc[Scalar[DT]](B * T)
+    var mb_fst = alloc[Scalar[DT]](B * (T + 1))
+    var s = UInt64(99887766)
+    for i in range(B * (T + 1) * OBS):
+        mb_obs[i] = _lcg(s)
+    for i in range(B * T * ACT):
+        mb_act[i] = _lcg(s)
+    for i in range(B * T):
+        mb_rew[i] = _lcg(s)
+        mb_dne[i] = Scalar[DT](0.0)   # episodes don't terminate in-window
+    # each window starts a fresh episode (first obs frame is_first=1).
+    for b in range(B):
+        for t in range(T + 1):
+            mb_fst[b * (T + 1) + t] = Scalar[DT](1.0) if t == 0 else Scalar[DT](0.0)
+
     var wm_cpu = alloc[Scalar[DT]](ITERS)
     var ac_cpu = alloc[Scalar[DT]](ITERS)
     var wm_gpu = alloc[Scalar[DT]](ITERS)
     var ac_gpu = alloc[Scalar[DT]](ITERS)
 
-    # ── CPU run ──
+    # reseed before EACH make so both backends draw IDENTICAL initial weights.
     seed(SEED)
     var cpu = CpuTr.make(lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0)
-    _fill_replay_cpu(cpu)
-    seed(SEED)            # imagination-noise RNG, identical to GPU below
+    seed(SEED)
+    var gpu = GpuTr.make(
+        ctx=ctx, lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0
+    )
+
     for it in range(ITERS):
-        _ = cpu.train_step()
+        cpu.load_minibatch(mb_obs, mb_act, mb_rew, mb_dne, mb_fst)
+        gpu.load_minibatch(mb_obs, mb_act, mb_rew, mb_dne, mb_fst)
+        # identical imagination noise both sides (reseed per iter → the noise
+        # stream is the same for CPU and GPU on this step).
+        seed(SEED + it)
+        cpu._run_minibatch(True)
+        seed(SEED + it)
+        gpu._run_minibatch(True)
         wm_cpu[it] = cpu.last_wm_loss()
         ac_cpu[it] = cpu.last_ac_loss()
-
-    # ── GPU run ──
-    seed(SEED)
-    var gpu = GpuTr.make(ctx=ctx, lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0)
-    _fill_replay_gpu(gpu)
-    seed(SEED)
-    for it in range(ITERS):
-        _ = gpu.train_step()
         wm_gpu[it] = gpu.last_wm_loss()
         ac_gpu[it] = gpu.last_ac_loss()
 
@@ -135,4 +134,5 @@ def main() raises:
     print("=" * 70)
     print("PARITY PASSED — discrete _ac_gpu matches _ac_cpu")
     print("=" * 70)
+    mb_obs.free(); mb_act.free(); mb_rew.free(); mb_dne.free(); mb_fst.free()
     wm_cpu.free(); ac_cpu.free(); wm_gpu.free(); ac_gpu.free()

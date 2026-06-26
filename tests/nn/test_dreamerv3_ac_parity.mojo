@@ -1,14 +1,21 @@
-"""DreamerV3 CPU↔GPU train-step parity (Metal).
+"""DreamerV3 CPU↔GPU train-step parity (Metal) — CONTINUOUS (Gaussian) actor.
 
-Builds a CPU trainer and a GPU trainer with IDENTICAL config, fills both
-(host-resident) replays with the same deterministic synthetic transitions,
-seeds the imagination-noise RNG identically before each run, then runs N
-`train_step`s on each target and compares per-step WM + AC losses.
+Builds a CPU trainer and a GPU trainer with IDENTICAL config, feeds both a
+BYTE-IDENTICAL fixed minibatch (via `load_minibatch`) plus identical
+pre-seeded imagination noise, runs N `_run_minibatch`s on each target and
+compares per-step WM + AC losses.
 
 This is the validation gate for the `_ac_gpu`→`_ac_cpu` parity port (NS=T·B
-imagination starts, mean-normalized cotangents, repval value-loss). Both
-paths read the SAME pre-filled `state.noise[(t*NS+b)*ACT+a]`, so the only
-difference is CPU vs GPU kernel arithmetic → expect float32-level agreement.
+imagination starts, mean-normalized cotangents, repval value-loss). Both paths
+read the SAME pre-filled `state.noise[(t*NS+b)*ACT+a]`, so the only difference
+is CPU vs GPU kernel arithmetic → expect float32-level agreement.
+
+NOTE: the minibatch is loaded directly (not drawn from the replay). As of
+Stage 3 P2b the backends use genuinely different samplers (host `SequenceReplay`
+vs device-Philox `GPUSequenceReplay`), so they no longer draw the same window
+from the same host seed; the replays are gated separately by
+`tests/nn/dreamerv3/test_gpu_sequence_replay.mojo`. This test isolates the
+WM/AC MATH parity by feeding identical inputs.
 
 Run: `pixi run -e apple mojo run -I . tests/nn/test_dreamerv3_ac_parity.mojo`
 """
@@ -16,7 +23,6 @@ Run: `pixi run -e apple mojo run -I . tests/nn/test_dreamerv3_ac_parity.mojo`
 from std.memory import alloc
 from std.random import seed
 from std.testing import assert_true
-from std.math import sqrt
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
@@ -39,7 +45,6 @@ comptime B = 2
 comptime T = 3
 comptime T_IMAG = 4
 comptime CAP = 256
-comptime NREC = 120
 comptime ITERS = 12
 comptime SEED = 1234
 
@@ -53,68 +58,59 @@ comptime GpuTr = DreamerV3Trainer[
 ]
 
 
-def _fill_replay_cpu(mut tr: CpuTr):
-    var s = UInt64(99887766)
-    var ob = alloc[Scalar[DT]](OBS)
-    var ac = alloc[Scalar[DT]](ACT)
-    for _t in range(NREC):
-        for k in range(OBS):
-            s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
-            ob[k] = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        for k in range(ACT):
-            s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
-            ac[k] = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
-        var r = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        tr.record(ob, ac, r, Scalar[DT](0.0))
-    ob.free(); ac.free()
-
-
-def _fill_replay_gpu(mut tr: GpuTr):
-    var s = UInt64(99887766)
-    var ob = alloc[Scalar[DT]](OBS)
-    var ac = alloc[Scalar[DT]](ACT)
-    for _t in range(NREC):
-        for k in range(OBS):
-            s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
-            ob[k] = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        for k in range(ACT):
-            s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
-            ac[k] = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
-        var r = Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
-        tr.record(ob, ac, r, Scalar[DT](0.0))
-    ob.free(); ac.free()
+def _lcg(mut s: UInt64) -> Scalar[DT]:
+    """Deterministic [-1, 1) sample from a 64-bit LCG (host-only) so the
+    synthetic minibatch is reproducible."""
+    s = s * UInt64(6364136223846793005) + UInt64(1442695040888963407)
+    return Scalar[DT]((Float64((s >> 33)) / Float64(UInt64(1) << 31)) - 1.0)
 
 
 def main() raises:
     print("=" * 70)
-    print("DreamerV3 CPU↔GPU train-step parity")
+    print("DreamerV3 CPU↔GPU train-step parity — CONTINUOUS")
     print("=" * 70)
     var ctx = DeviceContext()
+
+    # ── one fixed synthetic minibatch, shared by both backends ──
+    var mb_obs = alloc[Scalar[DT]](B * (T + 1) * OBS)
+    var mb_act = alloc[Scalar[DT]](B * T * ACT)
+    var mb_rew = alloc[Scalar[DT]](B * T)
+    var mb_dne = alloc[Scalar[DT]](B * T)
+    var mb_fst = alloc[Scalar[DT]](B * (T + 1))
+    var s = UInt64(99887766)
+    for i in range(B * (T + 1) * OBS):
+        mb_obs[i] = _lcg(s)
+    for i in range(B * T * ACT):
+        mb_act[i] = _lcg(s)
+    for i in range(B * T):
+        mb_rew[i] = _lcg(s)
+        mb_dne[i] = Scalar[DT](0.0)   # episodes don't terminate in-window
+    for b in range(B):
+        for t in range(T + 1):
+            mb_fst[b * (T + 1) + t] = Scalar[DT](1.0) if t == 0 else Scalar[DT](0.0)
 
     var wm_cpu = alloc[Scalar[DT]](ITERS)
     var ac_cpu = alloc[Scalar[DT]](ITERS)
     var wm_gpu = alloc[Scalar[DT]](ITERS)
     var ac_gpu = alloc[Scalar[DT]](ITERS)
 
-    # ── CPU run ──
+    # reseed before EACH make so both backends draw IDENTICAL initial weights.
     seed(SEED)
     var cpu = CpuTr.make(lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0)
-    _fill_replay_cpu(cpu)
-    seed(SEED)            # imagination-noise RNG, identical to GPU below
+    seed(SEED)
+    var gpu = GpuTr.make(
+        ctx=ctx, lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0
+    )
+
     for it in range(ITERS):
-        _ = cpu.train_step()
+        cpu.load_minibatch(mb_obs, mb_act, mb_rew, mb_dne, mb_fst)
+        gpu.load_minibatch(mb_obs, mb_act, mb_rew, mb_dne, mb_fst)
+        seed(SEED + it)
+        cpu._run_minibatch(True)
+        seed(SEED + it)
+        gpu._run_minibatch(True)
         wm_cpu[it] = cpu.last_wm_loss()
         ac_cpu[it] = cpu.last_ac_loss()
-
-    # ── GPU run ──
-    seed(SEED)
-    var gpu = GpuTr.make(ctx=ctx, lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0)
-    _fill_replay_gpu(gpu)
-    seed(SEED)
-    for it in range(ITERS):
-        _ = gpu.train_step()
         wm_gpu[it] = gpu.last_wm_loss()
         ac_gpu[it] = gpu.last_ac_loss()
 
@@ -133,11 +129,10 @@ def main() raises:
             " AC cpu/gpu=", ac_cpu[it], "/", ac_gpu[it],
         )
     print("  max |ΔWM| =", max_wm, "  max |ΔAC| =", max_ac)
-    # float32 GPU/CPU kernel arithmetic + 12 steps of accumulation → use a
-    # relative-ish absolute tol scaled by the loss magnitudes (O(10-60)).
     assert_true(max_wm < Scalar[DT](1e-1), "WM CPU↔GPU parity")
     assert_true(max_ac < Scalar[DT](1e-1), "AC CPU↔GPU parity")
     print("=" * 70)
-    print("PARITY PASSED — _ac_gpu matches _ac_cpu (NS starts + repval)")
+    print("PARITY PASSED — _ac_gpu matches _ac_cpu")
     print("=" * 70)
+    mb_obs.free(); mb_act.free(); mb_rew.free(); mb_dne.free(); mb_fst.free()
     wm_cpu.free(); ac_cpu.free(); wm_gpu.free(); ac_gpu.free()

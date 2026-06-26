@@ -1495,21 +1495,12 @@ struct WMStep[
         comptime nbB = (Self.B + TPB - 1) // TPB
         comptime nbTOK = (Self.B * TOK + TPB - 1) // TPB
 
-        # ── one-time minibatch upload (batch-major device mirrors) ──
-        for i in range(Self.B * (Self.T + 1) * OBSD):
-            self.mbobs_d.data[i] = st.mb_obs.data[i]
-        for i in range(Self.B * Self.T * ACTD):
-            self.mbact_d.data[i] = st.mb_act.data[i]
-        for i in range(Self.B * Self.T):
-            self.mbrew_d.data[i] = st.mb_rew.data[i]
-            self.mbdne_d.data[i] = st.mb_dne.data[i]
-        for i in range(Self.B * (Self.T + 1)):
-            self.mbfst_d.data[i] = st.mb_fst.data[i]
-        self.mbobs_d.upload(ctx)
-        self.mbact_d.upload(ctx)
-        self.mbrew_d.upload(ctx)
-        self.mbdne_d.upload(ctx)
-        self.mbfst_d.upload(ctx)
+        # The batch-major device minibatch (mbobs_d/mbact_d/mbrew_d/mbdne_d/
+        # mbfst_d) is now filled directly by the trainer — `GPUSequenceReplay.
+        # sample_batch_fst_dev` samples straight into these buffers (Stage 3
+        # P2b), so the per-step host gather + H2D upload that used to live here
+        # is gone. The sample kernels queue on `ctx` ahead of this scan → the
+        # data is ready by the time the WM reads it (same-stream ordering).
 
         # ── encode tokens: enc(obs frame t+1) → toks_d[t] (device-resident) ──
         for t in range(Self.T):

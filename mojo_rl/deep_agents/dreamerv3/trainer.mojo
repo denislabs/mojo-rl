@@ -35,7 +35,7 @@ from mojo_rl.nn.core.checkpoint import (
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
 from mojo_rl.nn.optimizer.schedules import LinearWarmupSchedule
-from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
+from mojo_rl.deep_agents.data.any_sequence_replay import AnySequenceReplay
 from mojo_rl.deep_agents.dreamerv3.wm import (
     WMCoreGraph, WMImagineGraph, DecLossGraph, RewLossGraph, ConLossGraph,
 )
@@ -98,7 +98,14 @@ struct DreamerV3Trainer[
     comptime ImagT = WMImagineGraph[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT, SwishOp,
     ]
-    comptime RepT = SequenceReplay[Self.OBS, Self.ACT, Self.CAP]
+    # Sequence replay backend, selected by `train_target` via the carry-both
+    # `AnySequenceReplay` shim (Mojo has no type-ternary). GPU resolves to the
+    # device-resident `GPUSequenceReplay` (device circular storage + device
+    # Philox window draws → no per-step host B×T sampling, capture-safe); CPU
+    # to the host `SequenceReplay`.
+    comptime RepT = AnySequenceReplay[
+        Self.train_target, Self.OBS, Self.ACT, Self.CAP
+    ]
     comptime StateT = DreamerState[
         Self.OBS, Self.ACT, Self.DETER, Self.SC, Self.TOKEN, Self.B, Self.T,
         Self.T_IMAG,
@@ -233,9 +240,10 @@ struct DreamerV3Trainer[
             ac_blk=Self.ACBlk.make[Self.train_target](
                 ctx=ctx, actent=actent, slowtar=slowtar
             ),
-            # Replay stays host-resident on both targets; the GPU WMStep
-            # uploads the sampled batch per-step (so make["cpu"] always).
-            replay=Self.RepT.make["cpu"](ctx=ctx),
+            # GPU: device-resident GPUSequenceReplay (sampled straight into the
+            # WM device buffers); CPU: host SequenceReplay. The shim picks the
+            # backend off `train_target`; the GPU side requires `ctx`.
+            replay=Self.RepT.make(ctx=ctx),
             retnorm=retnorm^,
             bins=bins^,
             state=Self.StateT.make[Self.train_target](ctx=ctx),
@@ -251,18 +259,18 @@ struct DreamerV3Trainer[
         act: UnsafePointer[Scalar[DT], MutAnyOrigin],
         reward: Scalar[DT],
         done: Scalar[DT],
-    ):
+    ) raises:
         self.replay.record(obs, act, reward, done)
 
     def record_terminal(
         mut self, obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    ):
+    ) raises:
         """Store a genuine terminal observation (call right after `record(done=1)`).
         Lets the WM continue head learn `latent(terminal)→0`."""
         self.replay.record_terminal(obs)
 
     def can_train(self) -> Bool:
-        return self.replay.size >= Self.T + 1
+        return self.replay.count() >= Self.T + 1
 
     def last_wm_loss(self) -> Scalar[DT]:
         return self.state.last_wm_loss
@@ -338,17 +346,100 @@ struct DreamerV3Trainer[
         self.oe.lr = clr; self.ocore.lr = clr; self.odec.lr = clr
         self.orew.lr = clr; self.ocon.lr = clr; self.oval.lr = clr
         self.opol.lr = clr
-        # sample a length-T window into the shared state batch buffers (storage
-        # Tensors; sample_batch takes raw host pointers → rebind .data ptr).
-        self.replay.sample_batch_fst[Self.B, Self.T](
-            _hp(self.state.mb_obs), _hp(self.state.mb_act),
-            _hp(self.state.mb_rew), _hp(self.state.mb_dne),
-            _hp(self.state.mb_fst),
-        )
+        self._draw_minibatch()
+        self._run_minibatch(want_diag)
+        return True
+
+    def _draw_minibatch(mut self) raises:
+        """Sample one length-T window into the minibatch buffers the WM/AC
+        blocks consume.
+
+        CPU: host `SequenceReplay.sample_batch_fst` → `state.mb_*` (raw host
+        pointers).
+
+        GPU: device `GPUSequenceReplay.sample_batch_fst_dev` straight into the
+        WM device buffers (`wm_blk.mb*_d`) — no host obs/act gather and no H2D
+        upload (the per-step host-sampling cost this migration removes; the
+        windows are drawn with the buffer's device Philox RNG). The tiny
+        `[B*T]` reward/done windows ARE pulled back to `state.mb_rew/mb_dne`
+        because the AC imagination root re-uploads them and `dbg_real_rew`
+        reads them (a P3 follow-up will let the AC read the device buffers
+        directly and drop this round-trip)."""
+        comptime if Self.train_target == "gpu":
+            var sctx = self.ctx.value()
+            self.replay.sample_batch_fst_dev[Self.B, Self.T](
+                sctx,
+                self.wm_blk.mbobs_d.dev.value(),
+                self.wm_blk.mbact_d.dev.value(),
+                self.wm_blk.mbrew_d.dev.value(),
+                self.wm_blk.mbdne_d.dev.value(),
+                self.wm_blk.mbfst_d.dev.value(),
+            )
+            self.wm_blk.mbrew_d.download(sctx)
+            self.wm_blk.mbdne_d.download(sctx)
+            for i in range(Self.B * Self.T):
+                self.state.mb_rew.data[i] = self.wm_blk.mbrew_d.data[i]
+                self.state.mb_dne.data[i] = self.wm_blk.mbdne_d.data[i]
+        else:
+            self.replay.sample_batch_fst[Self.B, Self.T](
+                _hp(self.state.mb_obs), _hp(self.state.mb_act),
+                _hp(self.state.mb_rew), _hp(self.state.mb_dne),
+                _hp(self.state.mb_fst),
+            )
         var rr: Scalar[DT] = 0.0
         for i in range(Self.B * Self.T):
             rr += self.state.mb_rew.data[i]
         self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
+
+    def load_minibatch(
+        mut self,
+        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*(T+1)*OBS]
+        act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*T*ACT]
+        rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*T]
+        dne: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*T]
+        fst: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*(T+1)]
+    ) raises:
+        """Load a FIXED minibatch into the WM/AC buffers, bypassing the replay
+        draw. The CPU↔GPU parity gate uses this to feed both backends a
+        byte-identical window — their samplers now genuinely differ (host RNG
+        vs device Philox), so `train_step`'s own draw can no longer be compared
+        directly. Same buffer layout as `_draw_minibatch` fills."""
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+        for i in range(Self.B * Self.T):
+            self.state.mb_rew.data[i] = rew[i]
+            self.state.mb_dne.data[i] = dne[i]
+        comptime if Self.train_target == "gpu":
+            var sctx = self.ctx.value()
+            for i in range(Self.B * (Self.T + 1) * OBSD):
+                self.wm_blk.mbobs_d.data[i] = obs[i]
+            for i in range(Self.B * Self.T * ACTD):
+                self.wm_blk.mbact_d.data[i] = act[i]
+            for i in range(Self.B * Self.T):
+                self.wm_blk.mbrew_d.data[i] = rew[i]
+                self.wm_blk.mbdne_d.data[i] = dne[i]
+            for i in range(Self.B * (Self.T + 1)):
+                self.wm_blk.mbfst_d.data[i] = fst[i]
+            self.wm_blk.mbobs_d.upload(sctx)
+            self.wm_blk.mbact_d.upload(sctx)
+            self.wm_blk.mbrew_d.upload(sctx)
+            self.wm_blk.mbdne_d.upload(sctx)
+            self.wm_blk.mbfst_d.upload(sctx)
+        else:
+            for i in range(Self.B * (Self.T + 1) * OBSD):
+                self.state.mb_obs.data[i] = obs[i]
+            for i in range(Self.B * Self.T * ACTD):
+                self.state.mb_act.data[i] = act[i]
+            for i in range(Self.B * (Self.T + 1)):
+                self.state.mb_fst.data[i] = fst[i]
+        var rr: Scalar[DT] = 0.0
+        for i in range(Self.B * Self.T):
+            rr += self.state.mb_rew.data[i]
+        self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
+
+    def _run_minibatch(mut self, want_diag: Bool) raises:
+        """WM-BPTT → ParamSync → imagination AC over the CURRENTLY-LOADED
+        minibatch (filled by `_draw_minibatch` or `load_minibatch`)."""
         # imagination sampling noise: NS = T*B starts × T_IMAG steps × ACT.
         # Pre-filled here (both targets) so _ac_cpu and _ac_gpu read the SAME
         # noise[(t*NS+b)*ACT+a] → CPU↔GPU bit-match.
@@ -373,7 +464,6 @@ struct DreamerV3Trainer[
             want_diag,
         )
         self.train_steps += 1
-        return True
 
     # ─── Checkpoint (ONE file: the whole world model + actor-critic) ───────
     def save_state(mut self, path: String) raises:

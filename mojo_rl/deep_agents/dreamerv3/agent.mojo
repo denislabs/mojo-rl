@@ -134,12 +134,12 @@ struct DreamerV3Agent[
         act: UnsafePointer[Scalar[DT], MutAnyOrigin],
         reward: Scalar[DT],
         done: Scalar[DT],
-    ):
+    ) raises:
         self.trainer.record(obs, act, reward, done)
 
     def record_terminal(
         mut self, obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    ):
+    ) raises:
         """Store a genuine terminal observation (call right after `record` with
         done=1) so the WM continue head can learn `latent(terminal)→0`."""
         self.trainer.record_terminal(obs)
