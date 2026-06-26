@@ -1,4 +1,4 @@
-"""call_forward / call_vjp — invoke a GENERICALLY-typed Module without the AMP
+"""Call helpers : call_forward / call_vjp — invoke a GENERICALLY-typed Module without the AMP
 activation-dtype leaking into the caller.
 
 The Module trait's `forward`/`vjp` take activation buffers at the module's OWN
@@ -32,8 +32,14 @@ from .amp import AMPPolicy, NoAMP
 
 
 def call_forward[
-    M: Module, N: Int, o: MutOrigin, BDT: DType, //,
-    target: StaticString, B: Int, POLICY: AMPPolicy = NoAMP,
+    M: Module,
+    N: Int,
+    o: MutOrigin,
+    BDT: DType,
+    //,
+    target: StaticString,
+    B: Int,
+    POLICY: AMPPolicy = NoAMP,
 ](
     mut net: M,
     refs: TensorRefs[N, o, BDT],
@@ -50,8 +56,16 @@ def call_forward[
 
 
 def call_vjp[
-    M: Module, NF: Int, fi: MutOrigin, NG: Int, gi: MutOrigin, BDT: DType, //,
-    target: StaticString, B: Int, POLICY: AMPPolicy = NoAMP,
+    M: Module,
+    NF: Int,
+    fi: MutOrigin,
+    NG: Int,
+    gi: MutOrigin,
+    BDT: DType,
+    //,
+    target: StaticString,
+    B: Int,
+    POLICY: AMPPolicy = NoAMP,
 ](
     mut net: M,
     fin_refs: TensorRefs[NF, fi, BDT],

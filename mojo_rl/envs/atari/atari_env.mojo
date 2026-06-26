@@ -229,6 +229,7 @@ struct AtariEnv[
             floats), 2 = pixels RGB-96 (4×[3,96,96] = 110592 floats — the
             EfficientZero-V2 Atari preprocessing).
         DTYPE: Observation dtype (default float32).
+        LAYOUT: Observation layout (default NCHW).
 
     EfficientZero-V2 parity flags (all default off → existing behavior):
         clip_reward: emit sign(reward) ∈ {−1,0,1} (episode_reward stays RAW
@@ -481,9 +482,7 @@ struct AtariEnv[
 
     def _write_rgb_stack_obs_into[
         o: MutOrigin
-    ](
-        self, obs_out: UnsafePointer[Scalar[Self.dtype], o]
-    ):
+    ](self, obs_out: UnsafePointer[Scalar[Self.dtype], o]):
         """Write the 4-frame RGB stack (chronological, oldest first) as
         normalized floats into `obs_out`. The 12 logical channels are frame-major
         (f0R,f0G,f0B, f1R,…, f3B), each from the source ring slot's [3,96,96]
@@ -638,9 +637,7 @@ struct AtariEnv[
 
     def _write_stack_obs_into[
         o: MutOrigin
-    ](
-        self, obs_out: UnsafePointer[Scalar[Self.dtype], o]
-    ):
+    ](self, obs_out: UnsafePointer[Scalar[Self.dtype], o]):
         """Write the 4-frame stack (chronological order, oldest first) as
         normalized floats into `obs_out` (FRAME_STACK_SIZE scalars).
         SIMD uint8→float `/255` — bit-exact vs the per-element scalar
@@ -663,9 +660,7 @@ struct AtariEnv[
 
     def _write_ram_obs_into[
         o: MutOrigin
-    ](
-        self, obs_out: UnsafePointer[Scalar[Self.dtype], o]
-    ):
+    ](self, obs_out: UnsafePointer[Scalar[Self.dtype], o]):
         """Write the 128 RAM bytes as normalized floats into `obs_out`."""
         comptime W = 16
         comptime assert RAM_SIZE % W == 0, "RAM size must be SIMD-divisible"

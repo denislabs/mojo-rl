@@ -29,6 +29,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.planners.tree_search import Representation, Dynamics, Prediction
 
@@ -135,7 +136,7 @@ struct AZPredCPU[
                 Scalar[DT](obs_raw[i]) if i < len(obs_raw) else Scalar[DT](0.0)
             )
         var pred_t = Tensor.alloc(OUT)
-        self.net[].forward["cpu", 1](TensorRefs[Self.NET.ARITY](obs_t), pred_t, None)
+        call_forward["cpu", 1](self.net[], TensorRefs[Self.NET.ARITY](obs_t), pred_t, None)
 
         # Legal-masked softmax over the policy logits (illegal → 0, renormalize).
         var legal = self.env[].legal_action_mask()

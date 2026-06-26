@@ -29,6 +29,7 @@ from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import PredictionGPU, EnvStepGPU
 
@@ -105,8 +106,8 @@ struct AZPredGPU[OBS: Int, ACT: Int, NET: Module, o: Origin[mut=True]](
             hidden, sin, grid_dim=(B * LD + TPB - 1) // TPB, block_dim=TPB
         )
         # The net runs entirely on owned storage.
-        self.net[].forward["gpu", B](
-            TensorRefs[Self.NET.ARITY](self.sc_in), self.sc_out, Optional(ctx)
+        call_forward["gpu", B](
+            self.net[], TensorRefs[Self.NET.ARITY](self.sc_in), self.sc_out, Optional(ctx)
         )
         # Write the owned output scratch back to the planner's pred_out buffer.
         var sout = self.sc_out.lt["gpu", Layout.row_major(B, PD)]()

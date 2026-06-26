@@ -28,6 +28,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (
@@ -213,8 +214,8 @@ def eval_policy_vs_random_cpu[
                     obs_t.data[i] = Scalar[DT](obs_raw[i]) if i < len(
                         obs_raw
                     ) else Scalar[DT](0.0)
-                net.forward["cpu", 1](
-                    TensorRefs[NET.ARITY](obs_t), pred_t, None
+                call_forward["cpu", 1](
+                    net, TensorRefs[NET.ARITY](obs_t), pred_t, None
                 )
                 var best = -1
                 var bestv = Float64(-1e30)

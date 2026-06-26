@@ -26,6 +26,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 
 
 struct ActionSamplingBlock[
@@ -110,19 +111,19 @@ struct ActionSamplingBlock[
         for d in range(Self.OBS_DIM):
             self._ob1.data[d] = obs[d]
         comptime if target == "cpu":
-            actor.forward["cpu", 1](TensorRefs[Self.ACTOR.ARITY](self._ob1), self._actor_out)
-            sampler.forward["cpu", 1](
-                TensorRefs[SAMPLER.ARITY](self._actor_out), self._sampler_out
+            call_forward["cpu", 1](actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._actor_out)
+            call_forward["cpu", 1](
+                sampler, TensorRefs[SAMPLER.ARITY](self._actor_out), self._sampler_out
             )
             Self._clamp_into(self._sampler_out.data, action_out, action_scale)
         else:
             var c = self.ctx.value()
             self._ob1.upload(c)
-            actor.forward["gpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](self._ob1), self._actor_out, Optional(c)
+            call_forward["gpu", 1](
+                actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._actor_out, Optional(c)
             )
-            sampler.forward["gpu", 1](
-                TensorRefs[SAMPLER.ARITY](self._actor_out), self._sampler_out, Optional(c)
+            call_forward["gpu", 1](
+                sampler, TensorRefs[SAMPLER.ARITY](self._actor_out), self._sampler_out, Optional(c)
             )
             self._sampler_out.download(c)
             Self._clamp_into(self._sampler_out.data, action_out, action_scale)
@@ -149,13 +150,13 @@ struct ActionSamplingBlock[
         for d in range(Self.OBS_DIM):
             self._ob1.data[d] = obs[d]
         comptime if target == "cpu":
-            actor.forward["cpu", 1](TensorRefs[Self.ACTOR.ARITY](self._ob1), self._actor_out)
+            call_forward["cpu", 1](actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._actor_out)
             Self._clamp_into(self._actor_out.data, action_out, action_scale)
         else:
             var c = self.ctx.value()
             self._ob1.upload(c)
-            actor.forward["gpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](self._ob1), self._actor_out, Optional(c)
+            call_forward["gpu", 1](
+                actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._actor_out, Optional(c)
             )
             self._actor_out.download(c)
             Self._clamp_into(self._actor_out.data, action_out, action_scale)
@@ -183,12 +184,12 @@ struct ActionSamplingBlock[
         for d in range(Self.OBS_DIM):
             self._ob1.data[d] = obs[d]
         comptime if target == "cpu":
-            actor.forward["cpu", 1](TensorRefs[Self.ACTOR.ARITY](self._ob1), self._actor_out)
+            call_forward["cpu", 1](actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._actor_out)
         else:
             var c = self.ctx.value()
             self._ob1.upload(c)
-            actor.forward["gpu", 1](
-                TensorRefs[Self.ACTOR.ARITY](self._ob1), self._actor_out, Optional(c)
+            call_forward["gpu", 1](
+                actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._actor_out, Optional(c)
             )
             self._actor_out.download(c)
 
