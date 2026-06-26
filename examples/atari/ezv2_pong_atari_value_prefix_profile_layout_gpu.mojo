@@ -52,7 +52,9 @@ from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
 from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import (
-    EZDynVPNetAtari, ez_atari_init_zero_pred, ez_atari_init_zero_reward,
+    EZDynVPNetAtari,
+    ez_atari_init_zero_pred,
+    ez_atari_init_zero_reward,
     EZ_LSTM_HORIZON,
 )
 from mojo_rl.deep_agents.efficient_zero_v2.selfplay_gpu_batched_vp import (
@@ -66,7 +68,7 @@ from mojo_rl.envs.atari.games.registry import AtariGame
 # ═══════════════════════════════════════════════════════════════════════════
 # A/B TOGGLE — flip to True + rebuild for the channels-last (NHWC) capture.
 # ═══════════════════════════════════════════════════════════════════════════
-comptime USE_NHWC = False
+comptime USE_NHWC = True
 comptime LAYOUT = LAYOUT_NHWC if USE_NHWC else LAYOUT_NCHW
 
 
@@ -90,7 +92,7 @@ comptime OBS_STORE = DType.uint8
 comptime REANA_W = 64
 
 # ── profiling-only knobs (don't affect kernel shape) ──
-comptime CAP = 4096                  # small device ring → fast startup / low VRAM
+comptime CAP = 4096  # small device ring → fast startup / low VRAM
 
 
 # Env obs layout MUST match the rep-net layout (the rep consumes what the env
@@ -107,8 +109,11 @@ def _make_envs(
     for _ in range(N_ENVS):
         envs.append(
             AtariPong(
-                AtariGame.PONG, rom, rom_size,
-                clip_reward=True, full_action_set=True,
+                AtariGame.PONG,
+                rom,
+                rom_size,
+                clip_reward=True,
+                full_action_set=True,
             )
         )
     return envs^
@@ -138,23 +143,65 @@ def main() raises:
     var opredh = Adam(lr=Scalar[DT](1e-3))
 
     print("EZv2+VP Atari Pong — LAYOUT A/B profile (GPU, batched)")
-    print("  LAYOUT =", "NHWC (channels-last)" if USE_NHWC else "NCHW (default)")
-    print("  real dims: B", B, "K", K, "N", N, "sims", NUM_SIMS, "REANA_W",
-          REANA_W, "horizon", HORIZON,
-          "| profiling: CAP", CAP, "max_ep 10, train@~iter10")
+    print(
+        "  LAYOUT =", "NHWC (channels-last)" if USE_NHWC else "NCHW (default)"
+    )
+    print(
+        "  real dims: B",
+        B,
+        "K",
+        K,
+        "N",
+        N,
+        "sims",
+        NUM_SIMS,
+        "REANA_W",
+        REANA_W,
+        "horizon",
+        HORIZON,
+        "| profiling: CAP",
+        CAP,
+        "max_ep 10, train@~iter10",
+    )
 
     var loss = run_ezv2_gumbel_selfplay_gpu_batched_vp[
-        BatchedPong, Cfg.Rep, Cfg.Pred, Cfg.Proj, Cfg.Predh,
-        N_ENVS, OBS, ACT, LATENT, BINS, NUM_SIMS, MAX_NODES, MAX_K, CAP, B, K, N,
+        BatchedPong,
+        Cfg.Rep,
+        Cfg.Pred,
+        Cfg.Proj,
+        Cfg.Predh,
+        N_ENVS,
+        OBS,
+        ACT,
+        LATENT,
+        BINS,
+        NUM_SIMS,
+        MAX_NODES,
+        MAX_K,
+        CAP,
+        B,
+        K,
+        N,
         REANA_W=REANA_W,
         OBS_STORE_DT=OBS_STORE,
         HORIZON=HORIZON,
     ](
-        ctx, env, rep, dyn, pred, proj, predh,
-        orep, odyn, orew, opred, oproj, opredh,
-        iterations=60,                  # short training-dominated window
-        learning_starts=40,             # 4 envs × 10 steps → train @ ~iter 10
-        train_per_iter=N_ENVS,          # UTD 1:1 (real)
+        ctx,
+        env,
+        rep,
+        dyn,
+        pred,
+        proj,
+        predh,
+        orep,
+        odyn,
+        orew,
+        opred,
+        oproj,
+        opredh,
+        iterations=60,  # short training-dominated window
+        learning_starts=40,  # 4 envs × 10 steps → train @ ~iter 10
+        train_per_iter=N_ENVS,  # UTD 1:1 (real)
         lr=Scalar[DT](1e-3),
         lr_warmup_iters=50,
         gamma=Scalar[DT](0.997),
@@ -162,13 +209,13 @@ def main() raises:
         v_max=Scalar[DT](300.0),
         value_coef=Scalar[DT](0.5),
         consistency_coef=Scalar[DT](5.0),
-        max_ep_steps=10,                # truncate episodes → fast buffer fill
+        max_ep_steps=10,  # truncate episodes → fast buffer fill
         reanalyze_every=1,
-        reanalyze_batch=B,              # ratio 1.0 (real) → 4 wide searches/iter
-        eval_every=0,                   # eval off (no stall in the window)
+        reanalyze_batch=B,  # ratio 1.0 (real) → 4 wide searches/iter
+        eval_every=0,  # eval off (no stall in the window)
         seed=42,
-        verbose=True,                   # per-section [time s] every 100 iters
-        diag_sync=True,                 # accepted by the driver (no-op for VP train)
+        verbose=True,  # per-section [time s] every 100 iters
+        diag_sync=True,  # accepted by the driver (no-op for VP train)
     )
     _ = env^
     print("final loss:", loss)
