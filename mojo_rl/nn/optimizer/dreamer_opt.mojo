@@ -113,15 +113,19 @@ def _dreamer_update_kernel[
     beta1: Scalar[DT],
     beta2: Scalar[DT],
     eps: Scalar[DT],
-    bc1: Scalar[DT],
-    bc2: Scalar[DT],
+    powbuf: LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin],
 ):
     """rms → momentum → lr, with the AGC scale read from `scale_buf[0]`. One
-    thread per element. `bc1/bc2` host-baked (per-param path, not captured)."""
+    thread per element. `bc1/bc2 = 1 − β^t` are read from the device `powbuf`
+    (`[β₁ᵗ, β₂ᵗ]`, advanced by `_dreamer_advance_pow_kernel` once per step) so
+    the bias correction advances under CUDA-graph REPLAY — a host-baked `bc`
+    would freeze at the capture-time step. Mirrors storage Adam's `powbuf`."""
     var i = Int(global_idx.x)
     if i >= N:
         return
     var one: Scalar[DT] = 1.0
+    var bc1 = one - rebind[Scalar[DT]](powbuf[0])
+    var bc2 = one - rebind[Scalar[DT]](powbuf[1])
     var sc = rebind[Scalar[DT]](scale_buf[0])
     var g = rebind[Scalar[DT]](grad[i]) * sc
     var nu_new = beta2 * rebind[Scalar[DT]](v[i]) + (one - beta2) * g * g
@@ -132,6 +136,20 @@ def _dreamer_update_kernel[
     m[i] = mu_new
     var mu_hat = mu_new / bc1
     param[i] = rebind[Scalar[DT]](param[i]) - lr * mu_hat
+
+
+def _dreamer_advance_pow_kernel(
+    powbuf: LayoutTensor[DT, Layout.row_major(2), MutAnyOrigin],
+    beta1: Scalar[DT],
+    beta2: Scalar[DT],
+):
+    """Advance the device bias-correction powers `[β₁ᵗ, β₂ᵗ]` (1 thread, once
+    per step before the per-param walk). β^t lives on-device so it advances on
+    every CUDA-graph replay. Mirrors `_adam_advance_pow_kernel`."""
+    if Int(global_idx.x) != 0:
+        return
+    powbuf[0] = rebind[Scalar[DT]](powbuf[0]) * beta1
+    powbuf[1] = rebind[Scalar[DT]](powbuf[1]) * beta2
 
 
 struct DreamerOpt(Movable, ParamVisitor, Optimizer):
@@ -150,6 +168,11 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
     # (AGC kernel writes it, the update kernel reads it; ordered on the stream).
     # Allocated lazily on the first GPU visit. Empty on CPU.
     var _scale: Tensor
+    # Device-resident bias-correction powers `[β₁ᵗ, β₂ᵗ]` (GPU path only).
+    # Advanced on-device once per step by `begin_step_gpu` so the correction
+    # advances under CUDA-graph replay; the update kernel reads `bc = 1 − β^t`
+    # from it. CPU path uses the host `bc1/bc2`. Empty until the first GPU step.
+    var _pow_dev: Tensor
 
     def __init__(out self):
         """No-arg default (satisfies Defaultable for the generic Trainer)."""
@@ -176,6 +199,7 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
         self.bc1 = Scalar[DT](1.0)
         self.bc2 = Scalar[DT](1.0)
         self._scale = Tensor()
+        self._pow_dev = Tensor()
 
     def begin_step(mut self):
         """Bump the step counter + refresh bias corrections. Once per step,
@@ -186,11 +210,29 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
         self.bc1 = Scalar[DT](1.0) - self._b1_pow
         self.bc2 = Scalar[DT](1.0) - self._b2_pow
 
+    def begin_step_gpu(mut self, ctx: DeviceContext) raises:
+        """GPU twin of `begin_step`: advance the device powers `[β₁ᵗ, β₂ᵗ]`
+        on-device (capture-safe) once per step, BEFORE the per-param walk. Lazily
+        allocates `_pow_dev=[1,1]` on the first call (β⁰). The host `t` is still
+        bumped for diagnostics; host `bc1/bc2` are unused on GPU."""
+        self.t += 1
+        if not self._pow_dev.dev:
+            self._pow_dev = Tensor.alloc_gpu(ctx, 2)
+            self._pow_dev.dev.value().enqueue_fill(Scalar[DT](1.0))
+        ctx.enqueue_function[_dreamer_advance_pow_kernel](
+            self._pow_dev.lt["gpu", Layout.row_major(2)](),
+            self.beta1, self.beta2, grid_dim=1, block_dim=1,
+        )
+
     def step[
         target: StaticString, M: Module
     ](mut self, mut model: M, ctx: Optional[DeviceContext] = None) raises:
-        """Bump the step then update every Param (per-param walk, both targets)."""
-        self.begin_step()
+        """Bump the step then update every Param (per-param walk, both targets).
+        GPU advances the device `[β₁ᵗ, β₂ᵗ]` (capture-safe); CPU bumps host bc."""
+        comptime if target == "gpu":
+            self.begin_step_gpu(ctx.value())
+        else:
+            self.begin_step()
         model.for_each_param[target](self, ctx)
 
     def set_lr(mut self, lr: Scalar[DT]):
@@ -279,8 +321,7 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
                 self.beta1,
                 self.beta2,
                 self.eps,
-                self.bc1,
-                self.bc2,
+                self._pow_dev.lt["gpu", Layout.row_major(2)](),
                 grid_dim=nblk,
                 block_dim=TPB,
             )

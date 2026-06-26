@@ -1709,15 +1709,15 @@ struct WMStep[
             enc.vjp[target, Self.B](
                 TensorRefs[1](self.ob), self.gtok, TensorRefs[1](self.gobs), ctx
             )
-        # optimizer steps
+        # optimizer steps (device bias-correction advance — capture-safe)
         oe.step[target, M=Self.EncT](enc, ctx)
-        ocore.begin_step()
+        ocore.begin_step_gpu(ctx)
         core.for_each_param[target](ocore, ctx)
-        odec.begin_step()
+        odec.begin_step_gpu(ctx)
         dec.for_each_param[target](odec, ctx)
-        orew.begin_step()
+        orew.begin_step_gpu(ctx)
         rew.for_each_param[target](orew, ctx)
-        ocon.begin_step()
+        ocon.begin_step_gpu(ctx)
         con.for_each_param[target](ocon, ctx)
         # ── end-of-step readout: carry → host (for the AC path) + per-(t,b)
         #    losses → host (one download each), then sum. ──
