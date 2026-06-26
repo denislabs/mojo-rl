@@ -12,6 +12,7 @@ from std.math import sqrt
 from std.gpu import thread_idx, block_idx, global_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
+from std.sys.info import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
@@ -34,6 +35,17 @@ comptime BN2D_RBLOCKS: Int = 64
 # CHUNKS sets its parallelism. 256 keeps the device busy while the partial scratch
 # [C*CHUNKS] stays small.
 comptime BN2D_NHWC_CHUNKS: Int = 256
+# NHWC-2D occupancy fix (NVIDIA only). The 1-warp transposed reduction above is
+# block_dim=C (1 warp, ~16k threads) → thread-starved vs the NCHW G-grouped path's
+# ~262k. The 2D kernel uses block_dim = BN2D_NHWC_BLK = ROWS row-groups × C
+# channels, each (rg,c) thread writing its OWN partial → 8 warps/block (C=32) =
+# full occupancy, then a parallel block.sum finalize (grid=C). NVIDIA A/B (256
+# chunks, the tuned sweet spot): NHWC-2D is 1.6-2x faster than the 1-warp and
+# 0.98-1.50x vs the real NCHW BN (rep24/C4 at/under parity). Metal-gated OFF: the
+# 2D launch ICEs the Metal backend in a large module, and Apple keeps the proven
+# 1-warp kernel anyway — so the gate (has_nvidia_gpu_accelerator) means the 2D is
+# never codegen'd for Metal. Requires C | BN2D_NHWC_BLK (else falls back to 1-warp).
+comptime BN2D_NHWC_BLK: Int = 256
 
 
 @always_inline
@@ -431,6 +443,80 @@ def _bn2d_nhwc_finalize_stats[
     cache_inv_std[c] = Scalar[DT](1.0) / sqrt(var_ + Scalar[DT](EPSILON))
 
 
+# ── NHWC-2D forward stats (NVIDIA occupancy fix) — see BN2D_NHWC_BLK note ──────
+# block_dim = BN2D_NHWC_BLK = ROWS row-groups × C channels (lane = rg*C + c). Each
+# row-group strides its own row subset; thread (rg,c) writes its OWN partial at
+# (chunk*ROWS+rg)*C+c (no shared mem). Partial buffer = CHUNKS*ROWS*C =
+# CHUNKS*BN2D_NHWC_BLK. The cross-row-group reduction is the parallel finalize.
+def _bn2d_nhwc_partial_stats_2d[
+    C: Int, R: Int, CHUNKS: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(R * C), MutAnyOrigin],
+    partial_sum: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_NHWC_BLK), MutAnyOrigin
+    ],
+    partial_sumsq: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_NHWC_BLK), MutAnyOrigin
+    ],
+):
+    comptime ROWS = BN2D_NHWC_BLK // C
+    var chunk = Int(block_idx.x)
+    var lane = Int(thread_idx.x)
+    var c = lane % C
+    var rg = lane // C
+    comptime rpc = (R + CHUNKS - 1) // CHUNKS
+    var r0 = chunk * rpc
+    var r1 = r0 + rpc
+    if r1 > R:
+        r1 = R
+    var s: Scalar[DT] = 0.0
+    var sq: Scalar[DT] = 0.0
+    var r = r0 + rg
+    while r < r1:
+        var x = rebind[Scalar[DT]](input[r * C + c])
+        s += x
+        sq += x * x
+        r += ROWS
+    var pidx = (chunk * ROWS + rg) * C + c
+    partial_sum[pidx] = s
+    partial_sumsq[pidx] = sq
+
+
+# Parallel finalize: grid=C, one block per channel reduces its P = CHUNKS*ROWS
+# partials (strided by C) via block.sum. Writes the same mean/var/inv_std caches.
+def _bn2d_nhwc_finalize_stats_2d[
+    C: Int, RTOT: Int, P: Int, EPSILON: Float64,
+](
+    partial_sum: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    partial_sumsq: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    cache_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    var c = Int(block_idx.x)
+    if c >= C:
+        return
+    var t = Int(thread_idx.x)
+    var s: Scalar[DT] = 0.0
+    var sq: Scalar[DT] = 0.0
+    var k = t
+    while k < P:
+        s += rebind[Scalar[DT]](partial_sum[k * C + c])
+        sq += rebind[Scalar[DT]](partial_sumsq[k * C + c])
+        k += BN2D_TPB
+    var bs = block.sum[block_size=BN2D_TPB, broadcast=False](val=s)
+    var bsq = block.sum[block_size=BN2D_TPB, broadcast=False](val=sq)
+    if t == 0:
+        var inv_n = Scalar[DT](1.0) / Scalar[DT](Float32(RTOT))
+        var mean = bs[0] * inv_n
+        var var_ = bsq[0] * inv_n - mean * mean
+        if var_ < Scalar[DT](0.0):
+            var_ = Scalar[DT](0.0)
+        cache_mean[c] = mean
+        cache_var[c] = var_
+        cache_inv_std[c] = Scalar[DT](1.0) / sqrt(var_ + Scalar[DT](EPSILON))
+
+
 def _bn2d_nhwc_normalize[
     C: Int, RC: Int,
 ](
@@ -530,6 +616,103 @@ def _bn2d_nhwc_bwd_finalize[
         grad_beta[c] = rebind[Scalar[DT]](grad_beta[c]) + sd
 
 
+# ── NHWC-2D backward stats (NVIDIA occupancy fix), mirrors the forward 2D pair ──
+# block_dim = BN2D_NHWC_BLK = ROWS×C; thread (rg,c) reduces its strided row subset
+# of the 4 reductions (dxhat, dxhat·xhat, dgamma, dbeta) and writes per-(rg,c)
+# partials at (chunk*ROWS+rg)*C+c. Partial buffers = CHUNKS*BN2D_NHWC_BLK each.
+def _bn2d_nhwc_bwd_partial_2d[
+    C: Int, R: Int, CHUNKS: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(R * C), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(R * C), MutAnyOrigin],
+    p_dxhat: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_NHWC_BLK), MutAnyOrigin
+    ],
+    p_dxhat_xhat: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_NHWC_BLK), MutAnyOrigin
+    ],
+    p_dgamma: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_NHWC_BLK), MutAnyOrigin
+    ],
+    p_dbeta: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_NHWC_BLK), MutAnyOrigin
+    ],
+):
+    comptime ROWS = BN2D_NHWC_BLK // C
+    var chunk = Int(block_idx.x)
+    var lane = Int(thread_idx.x)
+    var c = lane % C
+    var rg = lane // C
+    comptime rpc = (R + CHUNKS - 1) // CHUNKS
+    var r0 = chunk * rpc
+    var r1 = r0 + rpc
+    if r1 > R:
+        r1 = R
+    var gm = rebind[Scalar[DT]](gamma[c])
+    var s_dxhat: Scalar[DT] = 0.0
+    var s_dxx: Scalar[DT] = 0.0
+    var s_dg: Scalar[DT] = 0.0
+    var s_db: Scalar[DT] = 0.0
+    var r = r0 + rg
+    while r < r1:
+        var dy = rebind[Scalar[DT]](grad_output[r * C + c])
+        var xh = rebind[Scalar[DT]](cache_xhat[r * C + c])
+        var dxhat = dy * gm
+        s_dxhat += dxhat
+        s_dxx += dxhat * xh
+        s_dg += dy * xh
+        s_db += dy
+        r += ROWS
+    var pidx = (chunk * ROWS + rg) * C + c
+    p_dxhat[pidx] = s_dxhat
+    p_dxhat_xhat[pidx] = s_dxx
+    p_dgamma[pidx] = s_dg
+    p_dbeta[pidx] = s_db
+
+
+# Parallel backward finalize: grid=C, block reduces its P = CHUNKS*ROWS partials
+# of all 4 sums via block.sum. Writes m1/m2; accumulates grad_γ/grad_β (mode=all).
+def _bn2d_nhwc_bwd_finalize_2d[
+    C: Int, RTOT: Int, P: Int, mode: StaticString,
+](
+    p_dxhat: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    p_dxhat_xhat: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    p_dgamma: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    p_dbeta: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    m1_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    m2_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_beta: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    var c = Int(block_idx.x)
+    if c >= C:
+        return
+    var t = Int(thread_idx.x)
+    var sa: Scalar[DT] = 0.0
+    var sb: Scalar[DT] = 0.0
+    var sg: Scalar[DT] = 0.0
+    var sd: Scalar[DT] = 0.0
+    var k = t
+    while k < P:
+        sa += rebind[Scalar[DT]](p_dxhat[k * C + c])
+        sb += rebind[Scalar[DT]](p_dxhat_xhat[k * C + c])
+        sg += rebind[Scalar[DT]](p_dgamma[k * C + c])
+        sd += rebind[Scalar[DT]](p_dbeta[k * C + c])
+        k += BN2D_TPB
+    var bsa = block.sum[block_size=BN2D_TPB, broadcast=False](val=sa)
+    var bsb = block.sum[block_size=BN2D_TPB, broadcast=False](val=sb)
+    var bsg = block.sum[block_size=BN2D_TPB, broadcast=False](val=sg)
+    var bsd = block.sum[block_size=BN2D_TPB, broadcast=False](val=sd)
+    if t == 0:
+        var inv_n = Scalar[DT](1.0) / Scalar[DT](Float32(RTOT))
+        m1_out[c] = bsa[0] * inv_n
+        m2_out[c] = bsb[0] * inv_n
+        comptime if mode == "all":
+            grad_gamma[c] = rebind[Scalar[DT]](grad_gamma[c]) + bsg[0]
+            grad_beta[c] = rebind[Scalar[DT]](grad_beta[c]) + bsd[0]
+
+
 def _bn2d_nhwc_bwd_scatter[
     C: Int, RC: Int,
 ](
@@ -567,6 +750,13 @@ struct BatchNorm2D[
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.FLAT_DIM)
     comptime OUT_DIM = Self.FLAT_DIM
     comptime SPATIAL = Self.H_ * Self.W_
+    # NHWC-2D occupancy path is on iff NVIDIA + channels-last + C divides the 2D
+    # block (else the 1-warp transposed kernel — the Apple/Metal path — is used).
+    comptime USE_2D_NHWC = (
+        Self.LAYOUT == LAYOUT_NHWC
+        and has_nvidia_gpu_accelerator()
+        and BN2D_NHWC_BLK % Self.C_ == 0
+    )
     # Activation-flow dtype (AMP §3 fp32-INTERNAL): BN accepts/emits ACT_DT but
     # computes stats/normalize in fp32 internally. ACT_DT == DT (default) →
     # the cast wrappers collapse and the fp32 path is byte-identical.
@@ -631,9 +821,16 @@ struct BatchNorm2D[
             # (channel-major, G batch-groups); NHWC partials are [C*CHUNKS]
             # (chunk-major, transposed reduction) — size to the larger so one
             # alloc serves both layouts.
-            comptime PR = Self.C_ * (
-                BN2D_NHWC_CHUNKS if Self.LAYOUT
-                == LAYOUT_NHWC else BN2D_RBLOCKS
+            # NHWC-2D partials are [CHUNKS*ROWS*C = CHUNKS*BN2D_NHWC_BLK] (per
+            # row-group); 1-warp NHWC are [C*CHUNKS]; NCHW are [C*RBLOCKS]. Size
+            # to whichever path is active so one alloc serves it (and the 4 bwd
+            # partial buffers reuse the same size).
+            comptime PR = (
+                BN2D_NHWC_CHUNKS * BN2D_NHWC_BLK if Self.USE_2D_NHWC
+                else Self.C_ * (
+                    BN2D_NHWC_CHUNKS if Self.LAYOUT
+                    == LAYOUT_NHWC else BN2D_RBLOCKS
+                )
             )
             bn.cache_inv_std.ensure_gpu(c, Self.C_)
             bn.cache_mean.ensure_gpu(c, Self.C_)
@@ -796,29 +993,58 @@ struct BatchNorm2D[
                     comptime R = B * Self.SPATIAL
                     comptime RC = B * Self.FLAT_DIM
                     comptime lrc = Layout.row_major(RC)
-                    comptime lprn = Layout.row_major(CH * Self.C_)
-                    c.enqueue_function[
-                        _bn2d_nhwc_partial_stats[Self.C_, R, CH]
-                    ](
-                        in0.lt["gpu", lrc](),
-                        self.bn_psum.lt["gpu", lprn](),
-                        self.bn_psumsq.lt["gpu", lprn](),
-                        grid_dim=CH,
-                        block_dim=Self.C_,
-                    )
-                    c.enqueue_function[
-                        _bn2d_nhwc_finalize_stats[
-                            Self.C_, R, CH, Self.EPSILON
-                        ]
-                    ](
-                        self.bn_psum.lt["gpu", lprn](),
-                        self.bn_psumsq.lt["gpu", lprn](),
-                        self.cache_mean.lt["gpu", lc](),
-                        self.cache_var.lt["gpu", lc](),
-                        self.cache_inv_std.lt["gpu", lc](),
-                        grid_dim=(Self.C_ + BN2D_TPB - 1) // BN2D_TPB,
-                        block_dim=BN2D_TPB,
-                    )
+                    comptime if Self.USE_2D_NHWC:
+                        # NVIDIA occupancy path: per-row-group partials + parallel
+                        # block.sum finalize (grid=C). See BN2D_NHWC_BLK note.
+                        comptime ROWS = BN2D_NHWC_BLK // Self.C_
+                        comptime P = CH * ROWS
+                        comptime lpr2 = Layout.row_major(CH * BN2D_NHWC_BLK)
+                        c.enqueue_function[
+                            _bn2d_nhwc_partial_stats_2d[Self.C_, R, CH]
+                        ](
+                            in0.lt["gpu", lrc](),
+                            self.bn_psum.lt["gpu", lpr2](),
+                            self.bn_psumsq.lt["gpu", lpr2](),
+                            grid_dim=CH,
+                            block_dim=BN2D_NHWC_BLK,
+                        )
+                        c.enqueue_function[
+                            _bn2d_nhwc_finalize_stats_2d[
+                                Self.C_, R, P, Self.EPSILON
+                            ]
+                        ](
+                            self.bn_psum.lt["gpu", lpr2](),
+                            self.bn_psumsq.lt["gpu", lpr2](),
+                            self.cache_mean.lt["gpu", lc](),
+                            self.cache_var.lt["gpu", lc](),
+                            self.cache_inv_std.lt["gpu", lc](),
+                            grid_dim=Self.C_,
+                            block_dim=BN2D_TPB,
+                        )
+                    else:
+                        comptime lprn = Layout.row_major(CH * Self.C_)
+                        c.enqueue_function[
+                            _bn2d_nhwc_partial_stats[Self.C_, R, CH]
+                        ](
+                            in0.lt["gpu", lrc](),
+                            self.bn_psum.lt["gpu", lprn](),
+                            self.bn_psumsq.lt["gpu", lprn](),
+                            grid_dim=CH,
+                            block_dim=Self.C_,
+                        )
+                        c.enqueue_function[
+                            _bn2d_nhwc_finalize_stats[
+                                Self.C_, R, CH, Self.EPSILON
+                            ]
+                        ](
+                            self.bn_psum.lt["gpu", lprn](),
+                            self.bn_psumsq.lt["gpu", lprn](),
+                            self.cache_mean.lt["gpu", lc](),
+                            self.cache_var.lt["gpu", lc](),
+                            self.cache_inv_std.lt["gpu", lc](),
+                            grid_dim=(Self.C_ + BN2D_TPB - 1) // BN2D_TPB,
+                            block_dim=BN2D_TPB,
+                        )
                     c.enqueue_function[
                         _bn2d_update_running_kernel[Self.C_, Self.MOMENTUM]
                     ](
@@ -1053,32 +1279,66 @@ struct BatchNorm2D[
                 comptime R = B * Self.SPATIAL
                 comptime RC = B * Self.FLAT_DIM
                 comptime lrc = Layout.row_major(RC)
-                comptime lprn = Layout.row_major(CH * Self.C_)
-                c.enqueue_function[_bn2d_nhwc_bwd_partial[Self.C_, R, CH]](
-                    grad_output.lt["gpu", lrc](),
-                    self.gamma.val.lt["gpu", lc](),
-                    self.cache_xhat.lt["gpu", lrc](),
-                    self.bn_psum.lt["gpu", lprn](),
-                    self.bn_psumsq.lt["gpu", lprn](),
-                    self.bn_pdg.lt["gpu", lprn](),
-                    self.bn_pdb.lt["gpu", lprn](),
-                    grid_dim=CH,
-                    block_dim=Self.C_,
-                )
-                c.enqueue_function[
-                    _bn2d_nhwc_bwd_finalize[Self.C_, R, CH, "all"]
-                ](
-                    self.bn_psum.lt["gpu", lprn](),
-                    self.bn_psumsq.lt["gpu", lprn](),
-                    self.bn_pdg.lt["gpu", lprn](),
-                    self.bn_pdb.lt["gpu", lprn](),
-                    self.bn_m1.lt["gpu", lc](),
-                    self.bn_m2.lt["gpu", lc](),
-                    self.gamma.grd.lt["gpu", lc](),
-                    self.beta.grd.lt["gpu", lc](),
-                    grid_dim=(Self.C_ + BN2D_TPB - 1) // BN2D_TPB,
-                    block_dim=BN2D_TPB,
-                )
+                comptime if Self.USE_2D_NHWC:
+                    comptime ROWS = BN2D_NHWC_BLK // Self.C_
+                    comptime P = CH * ROWS
+                    comptime lpr2 = Layout.row_major(CH * BN2D_NHWC_BLK)
+                    c.enqueue_function[
+                        _bn2d_nhwc_bwd_partial_2d[Self.C_, R, CH]
+                    ](
+                        grad_output.lt["gpu", lrc](),
+                        self.gamma.val.lt["gpu", lc](),
+                        self.cache_xhat.lt["gpu", lrc](),
+                        self.bn_psum.lt["gpu", lpr2](),
+                        self.bn_psumsq.lt["gpu", lpr2](),
+                        self.bn_pdg.lt["gpu", lpr2](),
+                        self.bn_pdb.lt["gpu", lpr2](),
+                        grid_dim=CH,
+                        block_dim=BN2D_NHWC_BLK,
+                    )
+                    c.enqueue_function[
+                        _bn2d_nhwc_bwd_finalize_2d[Self.C_, R, P, "all"]
+                    ](
+                        self.bn_psum.lt["gpu", lpr2](),
+                        self.bn_psumsq.lt["gpu", lpr2](),
+                        self.bn_pdg.lt["gpu", lpr2](),
+                        self.bn_pdb.lt["gpu", lpr2](),
+                        self.bn_m1.lt["gpu", lc](),
+                        self.bn_m2.lt["gpu", lc](),
+                        self.gamma.grd.lt["gpu", lc](),
+                        self.beta.grd.lt["gpu", lc](),
+                        grid_dim=Self.C_,
+                        block_dim=BN2D_TPB,
+                    )
+                else:
+                    comptime lprn = Layout.row_major(CH * Self.C_)
+                    c.enqueue_function[
+                        _bn2d_nhwc_bwd_partial[Self.C_, R, CH]
+                    ](
+                        grad_output.lt["gpu", lrc](),
+                        self.gamma.val.lt["gpu", lc](),
+                        self.cache_xhat.lt["gpu", lrc](),
+                        self.bn_psum.lt["gpu", lprn](),
+                        self.bn_psumsq.lt["gpu", lprn](),
+                        self.bn_pdg.lt["gpu", lprn](),
+                        self.bn_pdb.lt["gpu", lprn](),
+                        grid_dim=CH,
+                        block_dim=Self.C_,
+                    )
+                    c.enqueue_function[
+                        _bn2d_nhwc_bwd_finalize[Self.C_, R, CH, "all"]
+                    ](
+                        self.bn_psum.lt["gpu", lprn](),
+                        self.bn_psumsq.lt["gpu", lprn](),
+                        self.bn_pdg.lt["gpu", lprn](),
+                        self.bn_pdb.lt["gpu", lprn](),
+                        self.bn_m1.lt["gpu", lc](),
+                        self.bn_m2.lt["gpu", lc](),
+                        self.gamma.grd.lt["gpu", lc](),
+                        self.beta.grd.lt["gpu", lc](),
+                        grid_dim=(Self.C_ + BN2D_TPB - 1) // BN2D_TPB,
+                        block_dim=BN2D_TPB,
+                    )
                 c.enqueue_function[_bn2d_nhwc_bwd_scatter[Self.C_, RC]](
                     grad_output.lt["gpu", lrc](),
                     self.gamma.val.lt["gpu", lc](),
