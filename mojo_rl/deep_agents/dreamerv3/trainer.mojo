@@ -160,6 +160,11 @@ struct DreamerV3Trainer[
     # first capture). Moved into a disjoint local for the `maybe_capture_replay`
     # call (mbpo idiom) so the capture closure can borrow `self` mutably.
     var _train_graph: Optional[CUDAGraph]
+    # P4 follow-up: discrete-GPU imagination-noise source. True (default) →
+    # on-device Philox in the eager prologue (no host gen/upload). False →
+    # host-seeded gen + upload (the CPU↔GPU parity gate, so both targets read
+    # IDENTICAL noise — host RNG ≠ device Philox).
+    var device_noise: Bool
 
     @staticmethod
     def make(
@@ -170,6 +175,7 @@ struct DreamerV3Trainer[
         out_init_scale: Scalar[DT] = Scalar[DT](0.0),
         actent: Scalar[DT] = Scalar[DT](3e-4),
         slowtar: Bool = False,
+        device_noise: Bool = True,
     ) raises -> Self:
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
@@ -258,6 +264,7 @@ struct DreamerV3Trainer[
             train_steps=0,
             warmup=LinearWarmupSchedule.make(lr, warmup_steps),
             _train_graph=None,
+            device_noise=device_noise,
         )
         # One-time upload of the CONSTANT twohot bins grid into the discrete AC's
         # device buffer (Stage 3 P5). The grid never changes, so doing it here
@@ -504,21 +511,27 @@ struct DreamerV3Trainer[
 
     def _fill_noise(mut self) raises:
         """Imagination sampling noise (eager prologue): NS = T*B starts ×
-        T_IMAG steps × ACT. Host-filled so _ac_cpu and the discrete GPU AC read
-        the SAME noise[(t*NS+b)*ACT+a] → CPU↔GPU bit-match. On discrete GPU the
-        noise is uploaded to `ac_blk.noise_d` here (P4) so the captured AC reads
-        a pre-filled device buffer — out of the captured region."""
+        T_IMAG steps × ACT.
+
+        Discrete GPU + `device_noise` (default, production): generated ON-DEVICE
+        via Philox straight into `ac_blk.noise_d` — no host `random_float64` gen,
+        no H2D upload (Stage 3 P4 follow-up). `noise_d` is a fixed buffer the
+        captured AC reads, refreshed by this eager kernel each step.
+
+        Else (CPU `_ac_cpu`, GPU-continuous, and the discrete-GPU parity gate
+        with `device_noise=False`): host-filled so `_ac_cpu` and the uploaded GPU
+        noise read the SAME noise[(t*NS+b)*ACT+a] → CPU↔GPU bit-match; on discrete
+        GPU it's `upload_resident`-copied (stable pointer → capture-safe)."""
+        comptime if Self.train_target == "gpu" and Self.DISCRETE:
+            if self.device_noise:
+                self.ac_blk.gen_noise_device(self.ctx.value())
+                return
         for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
             self.state.noise.data[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
         comptime if Self.train_target == "gpu" and Self.DISCRETE:
             var nctx = self.ctx.value()
             for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
                 self.ac_blk.noise_d.data[i] = self.state.noise.data[i]
-            # `upload_resident` REUSES the device buffer (stable pointer) — a
-            # CUDA-graph that captured noise_d stays valid; only the CONTENTS
-            # change each step. `upload` would recreate the buffer (new pointer)
-            # → the captured AC would read a STALE capture-time noise buffer
-            # (Stage 3 P5; the per-step input-refresh-under-capture rule).
             self.ac_blk.noise_d.upload_resident(nctx)
 
     def _device_step(mut self, want_diag: Bool) raises:

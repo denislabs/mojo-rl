@@ -37,6 +37,7 @@ CPU↔GPU parity gates hold.
 from std.memory import alloc
 from std.math import tanh, exp, sqrt, log
 from std.random import random_float64
+from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
 from std.gpu.primitives import block
@@ -334,6 +335,35 @@ def _hist_load_k[W_: Int, TI_: Int, NS_: Int](
     if b < NS_:
         for k in range(W_):
             dst[b * W_ + k] = rebind[Scalar[DT]](hist[(b * TI_ + t) * W_ + k])
+
+
+def _noise_philox_k[N_: Int](
+    dst: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Device imagination noise: element i ← uniform[-1,1] via Philox(seed+i,
+    offset). Replaces the host `random_float64` gen + H2D upload (Stage 3 P4
+    follow-up) — pure device work, runs in the eager prologue each step. The
+    offset lives in `offset_buf` (advanced by `_noise_off_inc_k`) so successive
+    steps draw disjoint streams. Cast `step_uniform()[0]` straight to `Scalar[DT]`
+    (the proven dropout/replay GPU idiom — an intermediate `Float32(...)` over the
+    fp64 draw drags an fp64 op into the kernel, unsupported on Metal)."""
+    var i = Int(global_idx.x)
+    if i >= N_:
+        return
+    var off = rebind[UInt64](offset_buf[0])
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=off)
+    var u = Scalar[DT](philox.step_uniform()[0])
+    dst[i] = u * Scalar[DT](2.0) - Scalar[DT](1.0)
+
+
+def _noise_off_inc_k[STRIDE: Int](
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Advance the device noise offset by STRIDE (one thread)."""
+    if Int(global_idx.x) == 0:
+        offset_buf[0] = offset_buf[0] + UInt64(STRIDE)
 
 
 def _cat_sample_hist_k[C_: Int, TI_: Int, NS_: Int](
@@ -1893,6 +1923,11 @@ struct ACStep[
     var mbdne_d: Tensor  # [BT]         mb_dne on device (repval `last`)
     var mbrew_d: Tensor  # [BT]         mb_rew on device
     var noise_d: Tensor  # [TI*NS*ACT]  imagination noise on device
+    # Device-resident Philox offset for the production noise generator (P4
+    # follow-up). `None` until allocated (GPU+DISCRETE); advanced per step so
+    # each step draws a fresh stream. `noise_seed` is the fixed base seed.
+    var noise_off_d: Optional[DeviceBuffer[DType.uint64]]
+    var noise_seed: UInt64
     var bins_d: Tensor   # [BINS]       twohot grid on device
     var retstate_d: Tensor  # [2]  PERSISTENT retnorm EMA [lo, hi] (never reset)
     var neigh_d: Tensor  # [4]  per-step percentile neighbors (scratch)
@@ -1944,6 +1979,8 @@ struct ACStep[
         self.mbdne_d = Tensor()
         self.mbrew_d = Tensor()
         self.noise_d = Tensor()
+        self.noise_off_d = None
+        self.noise_seed = UInt64(0x5EED_D17E_A12C_0FFE)
         self.bins_d = Tensor()
         self.retstate_d = Tensor()
         self.neigh_d = Tensor()
@@ -2006,6 +2043,11 @@ struct ACStep[
             s.mbdne_d = _mk[target](BT, ctx)
             s.mbrew_d = _mk[target](BT, ctx)
             s.noise_d = _mk[target](TIl * NS * ACTD, ctx)
+            # device Philox offset for production noise (P4 follow-up): [1]
+            # uint64, 0. A stable buffer (never recreated) so it's capture-safe.
+            var noff = ctx.value().enqueue_create_buffer[DType.uint64](1)
+            noff.enqueue_fill(UInt64(0))
+            s.noise_off_d = noff^
             s.bins_d = _mk[target](BINSl, ctx)
             # device-resident retnorm: persistent EMA state zeroed once (matches
             # PercentileNormalize.__init__ lo=hi=0); neigh/rscale are per-step.
@@ -2017,6 +2059,27 @@ struct ACStep[
             s.rscale_d = _mk[target](1, ctx)
             s.diag_d = _mk[target](DIAG_N, ctx)
         return s^
+
+    def gen_noise_device(mut self, ctx: DeviceContext) raises:
+        """Generate the imagination noise on-device via Philox into `noise_d`
+        and advance the offset (Stage 3 P4 follow-up; GPU+DISCRETE only).
+        Replaces the host `random_float64` gen + H2D upload — pure device work.
+        Capture-safe: `noise_d` is a fixed buffer (never recreated) the captured
+        AC reads, and the offset is device-resident; run from the eager prologue
+        each step so successive steps draw disjoint streams."""
+        comptime NSC = Self.T_IMAG * Self.T * Self.B * Self.ACT
+        comptime nbN = (NSC + TPB - 1) // TPB
+        var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self.noise_off_d.value()
+        )
+        ctx.enqueue_function[_noise_philox_k[NSC]](
+            self.noise_d.lt["gpu", Layout.row_major(NSC)](),
+            self.noise_seed, off_lt,
+            grid_dim=nbN, block_dim=TPB,
+        )
+        ctx.enqueue_function[_noise_off_inc_k[NSC]](
+            off_lt, grid_dim=1, block_dim=1,
+        )
 
     def step[target: StaticString](
         mut self,

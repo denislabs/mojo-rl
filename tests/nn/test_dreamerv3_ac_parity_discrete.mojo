@@ -96,8 +96,12 @@ def main() raises:
     seed(SEED)
     var cpu = CpuTr.make(lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0)
     seed(SEED)
+    # device_noise=False → host-seeded noise (uploaded) so the GPU reads the
+    # SAME noise as the CPU (production uses on-device Philox; that path can't be
+    # bit-matched against host RNG and is gated by the capture-parity test).
     var gpu = GpuTr.make(
-        ctx=ctx, lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0
+        ctx=ctx, lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0,
+        device_noise=False,
     )
 
     for it in range(ITERS):
