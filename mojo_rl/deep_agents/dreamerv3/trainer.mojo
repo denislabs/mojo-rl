@@ -236,7 +236,7 @@ struct DreamerV3Trainer[
             Scalar[DT](95.0), Scalar[DT](1.0), False,
         )
 
-        return Self(
+        var s = Self(
             enc=enc^, core=core^, dec=dec^, rew=rew^, con=con^, value=value^,
             slowvalue=slowvalue^, policy=policy^, imagine=imagine^,
             oe=oe^, ocore=ocore^, odec=odec^, orew=orew^, ocon=ocon^,
@@ -259,6 +259,15 @@ struct DreamerV3Trainer[
             warmup=LinearWarmupSchedule.make(lr, warmup_steps),
             _train_graph=None,
         )
+        # One-time upload of the CONSTANT twohot bins grid into the discrete AC's
+        # device buffer (Stage 3 P5). The grid never changes, so doing it here
+        # (not per-step in `_ac_gpu_disc`) keeps the captured WM+AC region free
+        # of H2D copies — which are illegal inside a CUDA-graph capture.
+        comptime if Self.train_target == "gpu" and Self.DISCRETE:
+            for c in range(Self.BINS):
+                s.ac_blk.bins_d.data[c] = s.bins[c]
+            s.ac_blk.bins_d.upload(ctx.value())
+        return s^
 
     def record(
         mut self,

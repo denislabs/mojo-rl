@@ -115,3 +115,97 @@ def apply_graph_params[
     names with no match; uploads on GPU)."""
     var v = _NamedImportVisitor(snap.copy())
     dst.for_each_param[target](v, ctx)
+
+
+# ── Device-direct variant (Stage 3 P5; GPU capture path) ──────────────────
+#
+# The collect/apply above round-trip params through host (download → upload),
+# which is ILLEGAL inside a CUDA-graph capture (no H2D/D2H mid-capture). For
+# the captured discrete WM+AC step the sync must stay on-device: snapshot each
+# source param's DEVICE pointer by name (no download), then `copy_from_device`
+# it straight into the matching dst param's device buffer (no upload). Result
+# is bit-identical to the host path (same values, device→device) so the eager
+# train_step is unchanged.
+
+
+struct _DevSnapshotVisitor(Movable, ParamVisitor):
+    """name → source param DEVICE pointer (GPU-only; no host download)."""
+
+    var d: Dict[String, UnsafePointer[Scalar[DT], MutAnyOrigin]]
+
+    def __init__(out self):
+        self.d = Dict[String, UnsafePointer[Scalar[DT], MutAnyOrigin]]()
+
+    def take(deinit self) -> Dict[String, UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+        return self.d^
+
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "gpu":
+            self.d[name] = rebind[
+                UnsafePointer[Scalar[DT], MutAnyOrigin]
+            ](param.dev.value().unsafe_ptr())
+
+
+struct _DevImportVisitor(ParamVisitor):
+    """For each dst param whose name is in the snapshot, device→device copy the
+    source buffer in (no host upload). Names with no match are left as-is."""
+
+    var d: Dict[String, UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var ctx: DeviceContext
+
+    def __init__(
+        out self,
+        var d: Dict[String, UnsafePointer[Scalar[DT], MutAnyOrigin]],
+        ctx: DeviceContext,
+    ):
+        self.d = d^
+        self.ctx = ctx
+
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "gpu":
+            if name not in self.d:
+                return
+            param.copy_from_device(self.ctx, self.d[name], N)
+
+
+def collect_graph_params_device[
+    target: StaticString, *DECLS: GraphDecl
+](
+    mut src: ComputeGraph[*DECLS],
+    ctx: Optional[DeviceContext] = None,
+) raises -> Dict[String, UnsafePointer[Scalar[DT], MutAnyOrigin]]:
+    """Snapshot each `src` param's DEVICE pointer by name (GPU; no download)."""
+    var v = _DevSnapshotVisitor()
+    src.for_each_param[target](v, ctx)
+    return v^.take()
+
+
+def apply_graph_params_device[
+    target: StaticString, *DECLS: GraphDecl
+](
+    mut dst: ComputeGraph[*DECLS],
+    var snap: Dict[String, UnsafePointer[Scalar[DT], MutAnyOrigin]],
+    ctx: DeviceContext,
+) raises:
+    """Device→device copy each shared-name source buffer into `dst` (GPU; no
+    upload). Capture-safe core→imagine mirror."""
+    var v = _DevImportVisitor(snap^, ctx)
+    dst.for_each_param[target](v, Optional[DeviceContext](ctx))

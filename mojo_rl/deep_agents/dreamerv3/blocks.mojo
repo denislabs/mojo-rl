@@ -56,6 +56,7 @@ from mojo_rl.deep_agents.dreamerv3.imag_loss import (
 )
 from mojo_rl.deep_agents.dreamerv3.param_sync import (
     collect_graph_params, apply_graph_params,
+    collect_graph_params_device, apply_graph_params_device,
 )
 from mojo_rl.deep_agents.dreamerv3.polyak import polyak_module
 from mojo_rl.deep_agents.dreamerv3.wm import (
@@ -1183,6 +1184,12 @@ struct WMStep[
             s.obsl_d = _mk[target](Tt * BV, ctx)
             s.rewl_d = _mk[target](Tt * BV, ctx)
             s.conl_d = _mk[target](Tt * BV, ctx)
+            # ones1 is a CONSTANT loss cotangent (all 1.0) — upload it ONCE here
+            # so the per-step `_wm_gpu` doesn't H2D-copy it (an upload is illegal
+            # inside a CUDA-graph capture; Stage 3 P5).
+            for b in range(BV):
+                s.ones1.data[b] = Scalar[DT](1.0)
+            s.ones1.upload(ctx.value())
         return s^
 
     def step[
@@ -1617,9 +1624,8 @@ struct WMStep[
             self.gcs.lt["gpu", Layout.row_major(Self.B * SCl)](),
             grid_dim=(Self.B * SCl + TPB - 1) // TPB, block_dim=TPB,
         )
-        for b in range(Self.B):
-            self.ones1.data[b] = 1.0
-        self.ones1.upload(ctx)
+        # ones1 (constant loss cotangent) is uploaded ONCE in make — no per-step
+        # H2D here (illegal inside a CUDA-graph capture; Stage 3 P5).
         # ── backward scan (no per-step host sync) ──
         for rev in range(Self.T):
             var t = Self.T - 1 - rev
@@ -1804,8 +1810,14 @@ struct ParamSyncStep[
         mut self, mut core: Self.CoreT, mut imagine: Self.ImagT,
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        var snap = collect_graph_params[target](core, ctx)
-        apply_graph_params[target](imagine, snap, ctx=ctx)
+        # GPU: device-direct mirror (no host round-trip → capture-safe; Stage 3
+        # P5). CPU: the host snapshot/apply (a round-trip is fine eagerly).
+        comptime if target == "gpu":
+            var snap = collect_graph_params_device[target](core, ctx)
+            apply_graph_params_device[target](imagine, snap^, ctx.value())
+        else:
+            var snap = collect_graph_params[target](core, ctx)
+            apply_graph_params[target](imagine, snap, ctx=ctx)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -2668,13 +2680,10 @@ struct ACStep[
         comptime nbB1 = (Self.B + TPB - 1) // TPB
         var ctx = st.ctx.value()
 
-        # Imagination noise is already on device — uploaded in the trainer
-        # prologue (P4 `_run_minibatch`), out of this (future-captured) region.
-        # Only the constant bins grid is staged here (capture-safe: same value
-        # every step).
-        for c in range(BINSl):
-            self.bins_d.data[c] = bins[c]
-        self.bins_d.upload(ctx)
+        # Imagination noise + the constant bins grid are BOTH already on device,
+        # uploaded OUT of this (captured) region: noise in the trainer prologue
+        # (P4), bins once in DreamerV3Trainer.make (P5). An H2D upload is illegal
+        # inside a CUDA-graph capture, so neither can be staged here.
         # rew/dne come device-direct from the shared state buffers (Stage 3
         # P3c): `_draw_minibatch`/`load_minibatch` left the sampled [B*T] reward
         # window in st.d_rew and the done window in st.d_cont, so copy them
