@@ -470,11 +470,15 @@ struct DreamerV3Trainer[
                 self.wm_blk.mbdne_d.data[i] = dne[i]
             for i in range(Self.B * (Self.T + 1)):
                 self.wm_blk.mbfst_d.data[i] = fst[i]
-            self.wm_blk.mbobs_d.upload(sctx)
-            self.wm_blk.mbact_d.upload(sctx)
-            self.wm_blk.mbrew_d.upload(sctx)
-            self.wm_blk.mbdne_d.upload(sctx)
-            self.wm_blk.mbfst_d.upload(sctx)
+            # `upload_resident` (stable pointer) so a CUDA-graph that captured
+            # these WM input buffers stays valid across replays — only contents
+            # change. `upload` recreates the buffer (new pointer) → captured WM
+            # reads a stale capture-time minibatch (Stage 3 P5).
+            self.wm_blk.mbobs_d.upload_resident(sctx)
+            self.wm_blk.mbact_d.upload_resident(sctx)
+            self.wm_blk.mbrew_d.upload_resident(sctx)
+            self.wm_blk.mbdne_d.upload_resident(sctx)
+            self.wm_blk.mbfst_d.upload_resident(sctx)
             comptime if Self.DISCRETE:
                 # mirror _draw_minibatch: hand rew/dne to the device-resident AC
                 # via the shared state buffers (st.d_cont carries dne).
@@ -510,7 +514,12 @@ struct DreamerV3Trainer[
             var nctx = self.ctx.value()
             for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
                 self.ac_blk.noise_d.data[i] = self.state.noise.data[i]
-            self.ac_blk.noise_d.upload(nctx)
+            # `upload_resident` REUSES the device buffer (stable pointer) — a
+            # CUDA-graph that captured noise_d stays valid; only the CONTENTS
+            # change each step. `upload` would recreate the buffer (new pointer)
+            # → the captured AC would read a STALE capture-time noise buffer
+            # (Stage 3 P5; the per-step input-refresh-under-capture rule).
+            self.ac_blk.noise_d.upload_resident(nctx)
 
     def _device_step(mut self, want_diag: Bool) raises:
         """WM-BPTT → ParamSync → imagination AC over the CURRENTLY-LOADED
