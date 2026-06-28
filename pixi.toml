@@ -3,7 +3,10 @@ authors = ["Denis Laboureyras"]
 channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
 preview = ["pixi-build"]
 name = "mojo-rl"
-platforms = ["linux-64", "osx-arm64"]
+platforms = [
+    { platform = "linux-64", cuda = "12" },
+    { platform = "osx-arm64", macos = "15.0" },
+]
 version = "0.1.0"
 license = "MIT"
 license-file = "LICENSE"
@@ -12,7 +15,6 @@ repository = "https://github.com/denislabs/mojo-rl"
 
 
 [feature.nvidia]
-system-requirements = { cuda = "12" }
 channels = ["nvidia"]
 
 [feature.nvidia.target.linux-64.dependencies]
@@ -35,10 +37,8 @@ env = { MODULAR_NVPTX_COMPILER_PATH = "/usr/local/cuda/bin/ptxas", LD_PRELOAD = 
 scripts = ["scripts/build_cuda_intercept.sh"]
 
 [feature.amd]
-system-requirements = {}
 
 [feature.apple]
-system-requirements = { macos = "15.0" }
 
 [dependencies]
 mojo = ">=1.0.0b3.dev2026061606,<2"
