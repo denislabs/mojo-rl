@@ -55,7 +55,7 @@ comptime CKPT_PATH = "checkpoints/rainbow_car_racing_pixel_hybrid.ckpt"
 
 comptime EVAL_EPISODES = 5
 comptime FRAME_DELAY_MS = 20  # ~50 FPS
-comptime MAX_STEPS = 2_000
+comptime MAX_STEPS = 1_000  # Gymnasium CarRacing-v3 max_episode_steps
 
 comptime EVAL_CAP = 256
 comptime BATCH_SIZE = 32
