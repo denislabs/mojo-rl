@@ -18,9 +18,17 @@ What it times (global only, per the request — kernel-level detail comes from n
   1. FAST path: N × `train_step(want_diag=False)` — the real training-throughput
      path (WM-BPTT `_wm_gpu` + device-resident imagination AC `_ac_gpu_disc`,
      no host diagnostic readout). This is the window to nsys.
-  2. DIAG path: a few × `train_step(want_diag=True)` — adds the host download of
+  2. CAPTURED path: N × `train_step_captured(want_diag=False)` — the SAME work
+     replayed from a single captured CUDA graph (Stage 3 P5). The eager prologue
+     (device replay sample + noise) still runs per step; only the WM+AC
+     device-kernel sequence is one `cuGraphLaunch` instead of ~7700 launches.
+     `fast_ms / captured_ms` = the launch-bound speedup. On non-NVIDIA the
+     capture is a no-op (closure runs eagerly) → captured ≈ fast (transparency).
+  3. DIAG path: a few × `train_step(want_diag=True)` — adds the host download of
      the imagination histories (only done at log/eval cadence in the real run);
-     timed separately so you can see the readout's per-step host cost.
+     timed separately so you can see the readout's per-step host cost. Capture
+     does NOT apply here (want_diag steps stay eager — the readout can't be
+     captured).
 
 How to read it WITH nsys:
   • The printed `fast path: ... ms/train_step` = WALL per train_step.
@@ -75,6 +83,7 @@ comptime CAP = 8192            # tiny device replay ring → fast startup / low 
 comptime LEARN_START = 256     # buffer fills in ~LEARN_START env steps
 comptime WARMUP_ENV = 512      # env steps to record before timing (> LEARN_START)
 comptime FAST_STEPS = 300      # timed train_step(want_diag=False) calls (nsys this)
+comptime CAP_WARMUP = 5        # train_step_captured calls to settle+capture (untimed)
 comptime DIAG_STEPS = 30       # timed train_step(want_diag=True) calls
 
 comptime Ag = DreamerV3Agent[
@@ -101,7 +110,8 @@ def main() raises:
     print("  real dims: B", B, "T", T, "T_IMAG", T_IMAG, "DETER", DETER,
           "STOCH", STOCH, "CLASSES", CLASSES, "BINS", BINS)
     print("  profiling: CAP", CAP, "| LEARN_START", LEARN_START,
-          "| FAST_STEPS", FAST_STEPS, "| DIAG_STEPS", DIAG_STEPS)
+          "| FAST_STEPS", FAST_STEPS, "| CAP_WARMUP", CAP_WARMUP,
+          "| DIAG_STEPS", DIAG_STEPS)
     print("=" * 70)
 
     # bare ctx (not `with`) — avoids benign teardown crash-reporter noise.
@@ -151,6 +161,26 @@ def main() raises:
     print("  total", fast_s, "s  ->", fast_ms, "ms/train_step  (",
           Float64(FAST_STEPS) / fast_s, "steps/s )")
 
+    # ─── CAPTURED path (TIMED): train_step_captured — CUDA-graph replay ──────
+    # First CAP_WARMUP calls capture the WM+AC device-kernel sequence (settle +
+    # record, slower) — UNTIMED; the timed window is pure replay. On non-NVIDIA
+    # `maybe_capture_replay` runs the closure eagerly (no-op capture).
+    print("-" * 70)
+    print("Capture warmup:", CAP_WARMUP, "x train_step_captured (untimed)...")
+    for _i in range(CAP_WARMUP):
+        _ = ag.trainer.train_step_captured(want_diag=False)
+    ctx.synchronize()
+    print("CAPTURED path:", FAST_STEPS,
+          "x train_step_captured(want_diag=False) [replay] ...")
+    var tc = perf_counter_ns()
+    for _i in range(FAST_STEPS):
+        _ = ag.trainer.train_step_captured(want_diag=False)
+    ctx.synchronize()
+    var cap_s = Float64(perf_counter_ns() - tc) / 1e9
+    var cap_ms = cap_s * 1e3 / Float64(FAST_STEPS)
+    print("  total", cap_s, "s  ->", cap_ms, "ms/train_step  (",
+          Float64(FAST_STEPS) / cap_s, "steps/s )")
+
     # ─── DIAG path (TIMED): train_step(want_diag=True) — adds host readout ───
     print("-" * 70)
     print("DIAG path:", DIAG_STEPS, "x train_step(want_diag=True) ...")
@@ -167,10 +197,13 @@ def main() raises:
     print("-" * 70)
     print("=" * 70)
     print("Profile complete")
-    print("  fast  (want_diag=False) =", fast_ms, "ms/train_step")
-    print("  diag  (want_diag=True ) =", diag_ms, "ms/train_step")
-    print("  diag readout overhead   =", diag_ms - fast_ms, "ms/train_step")
-    print("  last WM / AC loss       =", ag.last_wm_loss(), "/", ag.last_ac_loss())
+    print("  fast      (eager,   want_diag=False) =", fast_ms, "ms/train_step")
+    print("  captured  (replay,  want_diag=False) =", cap_ms, "ms/train_step")
+    var speedup = fast_ms / cap_ms if cap_ms > 0.0 else 0.0
+    print("  capture speedup (fast/captured)      =", speedup, "x")
+    print("  diag      (eager,   want_diag=True ) =", diag_ms, "ms/train_step")
+    print("  diag readout overhead                =", diag_ms - fast_ms, "ms/train_step")
+    print("  last WM / AC loss                    =", ag.last_wm_loss(), "/", ag.last_ac_loss())
     print("=" * 70)
     obsbuf.free(); actbuf.free()
     _ = env^
