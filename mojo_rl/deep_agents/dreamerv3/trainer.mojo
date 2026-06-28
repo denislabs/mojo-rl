@@ -342,14 +342,25 @@ struct DreamerV3Trainer[
     def train_step(mut self, want_diag: Bool = True) raises -> Bool:
         if not self.can_train():
             return False
+        self.train_prologue(want_diag)
+        self._device_step(want_diag)
+        self.train_steps += 1
+        return True
+
+    def train_prologue(mut self, want_diag: Bool) raises:
+        """Eager per-step work that is NOT part of the captured device-kernel
+        sequence (Stage 3 P5): LR refresh + minibatch draw + imagination-noise
+        fill/upload. Must run before `_device_step` / `train_device_kernels`
+        each step so the (fixed) device input buffers — `wm_blk.mb*_d`,
+        `ac_blk.noise_d`, `state.d_*` — hold this step's fresh data before a
+        graph replay reads them."""
         # reference LR warmup: ramp 0→lr over warmup_steps (all modules).
         var clr = self.warmup.lr_at(self.train_steps)
         self.oe.lr = clr; self.ocore.lr = clr; self.odec.lr = clr
         self.orew.lr = clr; self.ocon.lr = clr; self.oval.lr = clr
         self.opol.lr = clr
         self._draw_minibatch(want_diag)
-        self._run_minibatch(want_diag)
-        return True
+        self._fill_noise()
 
     def _draw_minibatch(mut self, want_diag: Bool) raises:
         """Sample one length-T window into the minibatch buffers the WM/AC
@@ -472,23 +483,28 @@ struct DreamerV3Trainer[
             rr += self.state.mb_rew.data[i]
         self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
 
-    def _run_minibatch(mut self, want_diag: Bool) raises:
-        """WM-BPTT → ParamSync → imagination AC over the CURRENTLY-LOADED
-        minibatch (filled by `_draw_minibatch` or `load_minibatch`)."""
-        # imagination sampling noise: NS = T*B starts × T_IMAG steps × ACT.
-        # Pre-filled here (both targets) so _ac_cpu and _ac_gpu read the SAME
-        # noise[(t*NS+b)*ACT+a] → CPU↔GPU bit-match.
+    def _fill_noise(mut self) raises:
+        """Imagination sampling noise (eager prologue): NS = T*B starts ×
+        T_IMAG steps × ACT. Host-filled so _ac_cpu and the discrete GPU AC read
+        the SAME noise[(t*NS+b)*ACT+a] → CPU↔GPU bit-match. On discrete GPU the
+        noise is uploaded to `ac_blk.noise_d` here (P4) so the captured AC reads
+        a pre-filled device buffer — out of the captured region."""
         for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
             self.state.noise.data[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
-        # P4: hoist the imagination-noise H2D upload out of the discrete AC into
-        # this eager prologue, so the (future-captured) WM+AC region reads a
-        # pre-filled device buffer instead of doing a per-step host→device copy.
-        # Host-seeded → CPU↔GPU parity unaffected (both read identical noise).
         comptime if Self.train_target == "gpu" and Self.DISCRETE:
             var nctx = self.ctx.value()
             for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
                 self.ac_blk.noise_d.data[i] = self.state.noise.data[i]
             self.ac_blk.noise_d.upload(nctx)
+
+    def _device_step(mut self, want_diag: Bool) raises:
+        """WM-BPTT → ParamSync → imagination AC over the CURRENTLY-LOADED
+        minibatch + noise (filled by `train_prologue` / `load_minibatch`). This
+        is the pure compute sequence; on discrete GPU with `want_diag=False` it
+        is fully device-resident + sync-free (Stage 3 P1–P4) → the body the
+        CUDA-graph capture closure replays. Does NOT advance `train_steps` (the
+        caller does, once per logical update, via `train_step` /
+        `note_train_update`)."""
         # WM-BPTT → fills the carry (device for discrete, host for continuous)
         # + state.last_wm_loss/dbg (want_diag-gated; the optimizer steps run
         # regardless, so non-diag steps still train — just no loss readout).
@@ -510,7 +526,39 @@ struct DreamerV3Trainer[
             ),
             want_diag,
         )
+
+    def _run_minibatch(mut self, want_diag: Bool) raises:
+        """Noise fill + device step over an ALREADY-LOADED minibatch, advancing
+        the step counter. `train_step` uses `train_prologue` + `_device_step`
+        directly; this wrapper is the entry the CPU↔GPU parity gate drives after
+        `load_minibatch` (no draw, no LR refresh — just noise + compute)."""
+        self._fill_noise()
+        self._device_step(want_diag)
         self.train_steps += 1
+
+    # ─── CUDA-graph capture surface (Stage 3 P5) ───────────────────────────
+    #
+    # The discrete-GPU non-diag step is sync/D2H-free (P1–P4), so its WM+AC
+    # device-kernel sequence is capturable. `train_device_kernels` is that
+    # sequence with NO host work and NO counter advance — the body of the
+    # driver's capture closure. The eager prologue (sample + noise, which read
+    # host RNG / use host ring indices) is NOT captured: the caller runs
+    # `train_prologue` each step before replay so the fixed device input
+    # buffers are refreshed. Mirrors `SACAgent.train_device_kernels`.
+    def train_device_kernels(mut self) raises:
+        comptime assert Self.train_target == "gpu" and Self.DISCRETE, (
+            "train_device_kernels is the discrete-GPU CUDA-graph capture path"
+        )
+        self._device_step(want_diag=False)
+
+    def note_train_update(mut self):
+        """Advance one logical update's host counter under graph replay (the
+        device work is replayed by the captured graph; loss/dbg scalars are
+        only refreshed on the eager want_diag steps)."""
+        self.train_steps += 1
+
+    def learning_starts_count(self) -> Int:
+        return self.learning_starts
 
     # ─── Checkpoint (ONE file: the whole world model + actor-critic) ───────
     def save_state(mut self, path: String) raises:
