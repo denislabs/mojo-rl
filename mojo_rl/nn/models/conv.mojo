@@ -13,7 +13,7 @@ Spatial-shape convention (matches `Conv2D`):
   - `Conv2DBatchNormReLU[IC, OC, K, S, P, H, W]`  Conv → BN → ReLU
 """
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, LAYOUT_NCHW
 from ..primitives.conv2d import Conv2D
 from ..primitives.batch_norm_2d import (
     BatchNorm2D, BN2D_DEFAULT_EPS, BN2D_DEFAULT_MOM,
@@ -24,8 +24,9 @@ from ..combinators.sequential import Sequential
 
 comptime Conv2DReLU[
     IC: Int, OC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ] = Sequential[
-    Conv2D[IC, OC, K, S, P, H, W],
+    Conv2D[IC, OC, K, S, P, H, W, DT, LAYOUT],
     ReLU[OC * ((H + 2 * P - K) // S + 1) * ((W + 2 * P - K) // S + 1)],
 ]
 
@@ -34,11 +35,12 @@ comptime Conv2DBatchNormReLU[
     IC: Int, OC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
     EPS: Float64 = BN2D_DEFAULT_EPS,
     ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ] = Sequential[
-    Conv2D[IC, OC, K, S, P, H, W, ADT],
+    Conv2D[IC, OC, K, S, P, H, W, ADT, LAYOUT],
     BatchNorm2D[
         OC, (H + 2 * P - K) // S + 1, (W + 2 * P - K) // S + 1,
-        BN2D_DEFAULT_MOM, EPS, ADT=ADT,
+        BN2D_DEFAULT_MOM, EPS, ADT=ADT, LAYOUT=LAYOUT,
     ],
     ReLU[OC * ((H + 2 * P - K) // S + 1) * ((W + 2 * P - K) // S + 1), ADT],
 ]
