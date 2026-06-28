@@ -19,8 +19,10 @@ from mojo_rl.physics2d import dtype
 from mojo_rl.physics2d.constants import IDX_X, IDX_Y, IDX_ANGLE, IDX_VX, IDX_VY, IDX_OMEGA
 from mojo_rl.physics2d.car import CarDynamicsMB
 from mojo_rl.physics2d.car.constants import (
-    FRICTION_LIMIT, GRASS_FRICTION, CTRL_STEERING, CTRL_GAS, CTRL_BRAKE,
+    FRICTION_LIMIT, GRASS_FRICTION, STEERING_LIMIT,
+    CTRL_STEERING, CTRL_GAS, CTRL_BRAKE,
 )
+from mojo_rl.physics2d.constants import BODY_STATE_SIZE
 
 # Compact validation layout (one car).
 comptime BOFF = 0
@@ -71,6 +73,61 @@ def run_scenario(
     )
 
 
+def run_spin_check(nsteps: Int) raises -> Tuple[Float64, Float64]:
+    """Full gas + full lock: the car spins fast, so the (wrapped) hull angle
+    crosses +/-pi repeatedly. Returns (max |front-wheel steering angle|,
+    crossed-pi flag). The steering revolute joint must stay within
+    +/-STEERING_LIMIT despite the hull crossing +/-pi — the regression guard
+    for the angle-wrap-vs-joint-limit bug (a glitched relative angle let the
+    motor slam the wheel a full turn past its limit)."""
+    var sbuf = List[Scalar[dtype]](capacity=SSZ)
+    for _ in range(SSZ):
+        sbuf.append(Scalar[dtype](0.0))
+    var state = LayoutTensor[dtype, Layout.row_major(1, SSZ), MutAnyOrigin](
+        sbuf.unsafe_ptr()
+    )
+    CarDynamicsMB.init_env[1, SSZ, BOFF, FOFF, JOFF, ROFF](
+        0, state, Scalar[dtype](0.0), Scalar[dtype](0.0), Scalar[dtype](0.0)
+    )
+    state[0, COFF + CTRL_STEERING] = Scalar[dtype](1.0)  # full lock
+    state[0, COFF + CTRL_GAS] = Scalar[dtype](1.0)
+    state[0, COFF + CTRL_BRAKE] = Scalar[dtype](0.0)
+
+    var fric = Scalar[dtype](FRICTION_LIMIT) * Scalar[dtype](GRASS_FRICTION)
+    var pi_v = 3.141592653589793
+    var two_pi = 2.0 * pi_v
+    var bsz = Int(BODY_STATE_SIZE)
+    var max_rel = 0.0
+    var crossed = False
+    var prev_hull = 0.0
+    for _ in range(nsteps):
+        CarDynamicsMB.step_single_env[1, SSZ, BOFF, FOFF, JOFF, ROFF, COFF](
+            0, state, fric, DT
+        )
+        var hull = Float64(rebind[Scalar[dtype]](state[0, BOFF + IDX_ANGLE]))
+        # A >pi jump between consecutive steps == the hull wrapped past +/-pi.
+        var jump = prev_hull - hull
+        var ajump = jump if jump >= 0.0 else -jump
+        if ajump > pi_v:
+            crossed = True
+        prev_hull = hull
+        # Front wheels are bodies 1 and 2; steering angle = wheel - hull.
+        for wb in range(1, 3):
+            var wa = Float64(
+                rebind[Scalar[dtype]](state[0, BOFF + wb * bsz + IDX_ANGLE])
+            )
+            var rel = wa - hull
+            if rel > pi_v:
+                rel -= two_pi
+            elif rel < -pi_v:
+                rel += two_pi
+            var arel = rel if rel >= 0.0 else -rel
+            if arel > max_rel:
+                max_rel = arel
+    var crossed_f = 1.0 if crossed else 0.0
+    return (max_rel, crossed_f)
+
+
 def main() raises:
     print("=== CarDynamicsMB validation (vs Box2D ground truth) ===")
 
@@ -106,4 +163,25 @@ def main() raises:
     if bx_abs > 40.0 or by_abs > 40.0:
         fail("B", String("car flew off: (", bx, ",", by, ")"))
 
-    print("=== PASS: multi-body car matches Box2D (straight stays straight, donut bounded) ===")
+    # --- Scenario C: full-lock spin -> steering joint respects its limit ---
+    var c = run_spin_check(300)
+    var c_maxrel = c[0]
+    var c_crossed = c[1] > 0.5
+    print(
+        "C spin: max |steer angle|=", c_maxrel,
+        " (limit ", STEERING_LIMIT, ")  crossed +/-pi:", c_crossed,
+    )
+    if not c_crossed:
+        fail("C", "car never spun past +/-pi — spin precondition not met")
+    # With the wrap fix the steering joint holds near +/-0.4; the bug let it
+    # glitch toward ~2*pi. 0.8 cleanly separates the two.
+    if c_maxrel > 0.8:
+        fail(
+            "C",
+            String(
+                "steering joint escaped +/-", STEERING_LIMIT,
+                " (max |rel|=", c_maxrel, ") — angle-wrap vs joint-limit bug",
+            ),
+        )
+
+    print("=== PASS: multi-body car matches Box2D (straight, donut, spin-limit) ===")

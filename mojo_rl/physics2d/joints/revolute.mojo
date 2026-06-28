@@ -48,6 +48,8 @@ from ..constants import (
     JOINT_FLAG_LIMIT_ENABLED,
     JOINT_FLAG_MOTOR_ENABLED,
     JOINT_FLAG_SPRING_ENABLED,
+    PI,
+    TWO_PI,
 )
 
 
@@ -253,6 +255,13 @@ struct RevoluteJointSolver:
                     var relative_angle = (
                         current_angle_b - current_angle_a - lim_ref_angle
                     )
+                    # Body angles are wrapped to [-pi, pi], so this difference
+                    # jumps by 2*pi when a body crosses +/-pi. Wrap it back so
+                    # the limit sees the true relative angle (always small here).
+                    if relative_angle > Scalar[dtype](PI):
+                        relative_angle -= Scalar[dtype](TWO_PI)
+                    elif relative_angle < -Scalar[dtype](PI):
+                        relative_angle += Scalar[dtype](TWO_PI)
 
                     # Relative angular velocity
                     var rel_omega = current_wb - current_wa
@@ -459,6 +468,11 @@ struct RevoluteJointSolver:
                     var relative_angle = (
                         cur_angle_b - cur_angle_a - pos_ref_angle
                     )
+                    # Wrap the wrapped-body-angle difference back to [-pi, pi].
+                    if relative_angle > Scalar[dtype](PI):
+                        relative_angle -= Scalar[dtype](TWO_PI)
+                    elif relative_angle < -Scalar[dtype](PI):
+                        relative_angle += Scalar[dtype](TWO_PI)
 
                     # Effective inertia
                     var pos_eff_inertia = rebind[Scalar[dtype]](
@@ -671,6 +685,11 @@ struct RevoluteJointSolver:
                 var relative_angle = (
                     current_angle_b - current_angle_a - lim_ref_angle
                 )
+                # Wrap the wrapped-body-angle difference back to [-pi, pi].
+                if relative_angle > Scalar[dtype](PI):
+                    relative_angle -= Scalar[dtype](TWO_PI)
+                elif relative_angle < -Scalar[dtype](PI):
+                    relative_angle += Scalar[dtype](TWO_PI)
 
                 var rel_omega = current_wb - current_wa
                 var lim_eff_inertia = rebind[Scalar[dtype]](inv_ia) + rebind[
@@ -892,6 +911,11 @@ struct RevoluteJointSolver:
                     state[env, body_b_off + IDX_ANGLE]
                 )
                 var relative_angle = cur_angle_b - cur_angle_a - pos_ref_angle
+                # Wrap the wrapped-body-angle difference back to [-pi, pi].
+                if relative_angle > Scalar[dtype](PI):
+                    relative_angle -= Scalar[dtype](TWO_PI)
+                elif relative_angle < -Scalar[dtype](PI):
+                    relative_angle += Scalar[dtype](TWO_PI)
 
                 var pos_eff_inertia = rebind[Scalar[dtype]](inv_ia) + rebind[
                     Scalar[dtype]

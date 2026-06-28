@@ -71,6 +71,8 @@ from ..constants import (
     JOINT_REVOLUTE,
     JOINT_FLAG_LIMIT_ENABLED,
     JOINT_FLAG_MOTOR_ENABLED,
+    PI,
+    TWO_PI,
 )
 from ..integrators.euler import SemiImplicitEuler
 from ..joints.revolute import RevoluteJointSolver
@@ -399,6 +401,15 @@ struct CarDynamicsMB:
                     rebind[Scalar[dtype]](state[env, wbo + IDX_ANGLE])
                     - hull_angle
                 )
+                # The integrator wraps every body angle to [-pi, pi], so this
+                # difference jumps by 2*pi whenever the hull spins past +/-pi
+                # (it does under sustained full-lock steering). Wrap it back so
+                # the motor sees the true small steering angle instead of
+                # slamming the wheel a full turn toward a 2*pi-off target.
+                if rel_angle > Scalar[dtype](PI):
+                    rel_angle -= Scalar[dtype](TWO_PI)
+                elif rel_angle < -Scalar[dtype](PI):
+                    rel_angle += Scalar[dtype](TWO_PI)
                 var ms: Scalar[dtype]
                 if w < 2:  # front: toward steer_target
                     var diff = steer_target - rel_angle
