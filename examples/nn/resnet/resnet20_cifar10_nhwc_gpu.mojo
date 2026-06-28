@@ -27,7 +27,8 @@ from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.models.conv import Conv2DBatchNormReLU
 from mojo_rl.nn.models.resnet import (
-    ResBlockConv2DBN, ResBlockDownsampleBN,
+    ResBlockConv2DBN,
+    ResBlockDownsampleBN,
 )
 from mojo_rl.nn.primitives.avg_pool_2d import AvgPool2D
 from mojo_rl.nn.primitives.flatten import Flatten
@@ -36,13 +37,14 @@ from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.combinators.repeat import Repeat
 from mojo_rl.nn.training.trainer import Trainer
 from mojo_rl.nn.training.augmenter import (
-    CIFAR10CropFlipAugmenter, CIFAR10CropFlipAugmenterNHWC,
+    CIFAR10CropFlipAugmenter,
+    CIFAR10CropFlipAugmenterNHWC,
 )
 from mojo_rl.nn.optimizer.lr_scheduler import WarmupCosineSchedule
 
 
 # ── A/B toggle: True = channels-last (NHWC), False = channels-first (NCHW) ──
-comptime USE_NHWC = True
+comptime USE_NHWC = False
 comptime LAYOUT = LAYOUT_NHWC if USE_NHWC else LAYOUT_NCHW
 
 
@@ -66,7 +68,7 @@ def main() raises:
     comptime IN_DIM = 3 * 32 * 32
     comptime NC = 10
     comptime BATCH = 100
-    comptime N_EPOCHS = 50          # match the NCHW baseline recipe (~80%+)
+    comptime N_EPOCHS = 50  # match the NCHW baseline recipe (~80%+)
     comptime TARGET_ACC: Float64 = 0.80
 
     seed(42)
@@ -119,24 +121,40 @@ def main() raises:
         var train_x = _nchw_to_nhwc(ds.train_images, CIFAR10.N_TRAIN)
         var test_x = _nchw_to_nhwc(ds.test_images, CIFAR10.N_TEST)
         var result = trainer.train_gpu[
-            CIFAR10.N_TRAIN, CIFAR10.N_TEST,
-            CIFAR10CropFlipAugmenterNHWC, Sched,
+            CIFAR10.N_TRAIN,
+            CIFAR10.N_TEST,
+            CIFAR10CropFlipAugmenterNHWC,
+            Sched,
         ](
-            train_x, train_y, test_x, ds.test_labels, Optional(c),
-            epochs=N_EPOCHS, shuffle=True,
-            rng_seed=UInt64(42), aug_seed=UInt64(1000),
+            train_x,
+            train_y,
+            test_x,
+            ds.test_labels,
+            Optional(c),
+            epochs=N_EPOCHS,
+            shuffle=True,
+            rng_seed=UInt64(42),
+            aug_seed=UInt64(1000),
         )
         for a in result.epoch_test_top1:
             if a > best_acc:
                 best_acc = a
     else:
         var result = trainer.train_gpu[
-            CIFAR10.N_TRAIN, CIFAR10.N_TEST,
-            CIFAR10CropFlipAugmenter, Sched,
+            CIFAR10.N_TRAIN,
+            CIFAR10.N_TEST,
+            CIFAR10CropFlipAugmenter,
+            Sched,
         ](
-            ds.train_images, train_y, ds.test_images, ds.test_labels,
-            Optional(c), epochs=N_EPOCHS, shuffle=True,
-            rng_seed=UInt64(42), aug_seed=UInt64(1000),
+            ds.train_images,
+            train_y,
+            ds.test_images,
+            ds.test_labels,
+            Optional(c),
+            epochs=N_EPOCHS,
+            shuffle=True,
+            rng_seed=UInt64(42),
+            aug_seed=UInt64(1000),
         )
         for a in result.epoch_test_top1:
             if a > best_acc:
@@ -145,7 +163,10 @@ def main() raises:
     print("\nbest test accuracy: " + String(best_acc * 100.0) + "%")
     assert_true(
         best_acc >= TARGET_ACC,
-        "Expected best >= " + String(TARGET_ACC * 100.0) + "%, got "
-        + String(best_acc * 100.0) + "%",
+        "Expected best >= "
+        + String(TARGET_ACC * 100.0)
+        + "%, got "
+        + String(best_acc * 100.0)
+        + "%",
     )
     print("DONE")
