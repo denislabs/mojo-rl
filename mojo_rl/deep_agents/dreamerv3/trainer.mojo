@@ -36,6 +36,7 @@ from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
 from mojo_rl.nn.optimizer.schedules import LinearWarmupSchedule
 from mojo_rl.deep_agents.data.any_sequence_replay import AnySequenceReplay
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 from mojo_rl.deep_agents.dreamerv3.wm import (
     WMCoreGraph, WMImagineGraph, DecLossGraph, RewLossGraph, ConLossGraph,
 )
@@ -155,6 +156,10 @@ struct DreamerV3Trainer[
     var learning_starts: Int
     var train_steps: Int
     var warmup: LinearWarmupSchedule   # reference LR ramp 0→lr over warmup_steps
+    # Lazily-captured discrete-GPU train-step graph (Stage 3 P5; `None` until the
+    # first capture). Moved into a disjoint local for the `maybe_capture_replay`
+    # call (mbpo idiom) so the capture closure can borrow `self` mutably.
+    var _train_graph: Optional[CUDAGraph]
 
     @staticmethod
     def make(
@@ -252,6 +257,7 @@ struct DreamerV3Trainer[
             learning_starts=learning_starts,
             train_steps=0,
             warmup=LinearWarmupSchedule.make(lr, warmup_steps),
+            _train_graph=None,
         )
 
     def record(
@@ -559,6 +565,40 @@ struct DreamerV3Trainer[
 
     def learning_starts_count(self) -> Int:
         return self.learning_starts
+
+    def train_step_captured(mut self, want_diag: Bool = False) raises -> Bool:
+        """CUDA-graph train step for the discrete-GPU path. `want_diag` steps
+        take the eager `train_step` (the diagnostic readout — D2H + host sum —
+        can't be captured); non-diag steps run the eager prologue (sample +
+        noise → fixed device buffers) then capture-once / replay the WM+AC
+        device-kernel sequence (`train_device_kernels`). Host counter advances
+        via `note_train_update`. On non-NVIDIA `maybe_capture_replay` runs the
+        closure directly → identical to `train_step(want_diag=False)` (the
+        Apple transparency path; real capture/replay = NVIDIA).
+
+        The `_train_graph` field is moved into a disjoint local for the capture
+        call (mbpo idiom) so the closure can borrow `self` mutably without
+        overlapping a mut borrow of the field."""
+        comptime assert Self.train_target == "gpu" and Self.DISCRETE, (
+            "train_step_captured is the discrete-GPU CUDA-graph path"
+        )
+        if not self.can_train():
+            return False
+        if want_diag:
+            return self.train_step(want_diag=True)
+        var ctx = self.ctx.value()
+        # Eager prologue: refresh the FIXED device input buffers this step.
+        self.train_prologue(want_diag=False)
+        var g = self._train_graph^
+        self._train_graph = None
+
+        def _captured() capturing raises -> None:
+            self.train_device_kernels()
+
+        maybe_capture_replay[_captured](g, ctx)
+        self._train_graph = g^
+        self.note_train_update()
+        return True
 
     # ─── Checkpoint (ONE file: the whole world model + actor-critic) ───────
     def save_state(mut self, path: String) raises:

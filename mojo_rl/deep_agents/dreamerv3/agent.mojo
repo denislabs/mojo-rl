@@ -186,6 +186,7 @@ struct DreamerV3Agent[
     def train_single[
         E: BoxDiscreteActionEnv,
         L: Logger = NoOpLogger,
+        USE_TRAIN_CUDA_GRAPH: Bool = False,
     ](
         mut self,
         mut env: E,
@@ -266,7 +267,18 @@ struct DreamerV3Agent[
                 # only remaining host cost — compute it ONLY on the train_step
                 # whose metrics get logged at the upcoming eval boundary
                 # (eval_every is a multiple of train_every in all examples).
-                _ = self.train_step(want_diag=(step % eval_every == 0))
+                var wd = (step % eval_every == 0)
+                comptime if (
+                    USE_TRAIN_CUDA_GRAPH
+                    and Self.train_target == "gpu"
+                    and Self.DISCRETE
+                ):
+                    # Stage 3 P5: capture-once / replay the WM+AC device-kernel
+                    # sequence on non-diag steps (want_diag steps stay eager for
+                    # the metric readout). No-op capture on non-NVIDIA.
+                    _ = self.trainer.train_step_captured(want_diag=wd)
+                else:
+                    _ = self.train_step(want_diag=wd)
 
             if step > 0 and step % eval_every == 0:
                 var ev = self._greedy_eval[E](
