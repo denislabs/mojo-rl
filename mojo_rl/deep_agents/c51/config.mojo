@@ -568,6 +568,7 @@ def RainbowCNN[
     ACT: Int, BATCH: Int, CAP: Int,
     FRAMES: Int = 4, NA: Int = 51, HIDDEN: Int = 512, NSTEP: Int = 3,
     OBS_STORE_DT: DType = DType.uint8,
+    LAYOUT: Int = LAYOUT_NCHW,   # conv-tower layout (couple to the pixel env's obs)
 ](
     ctx: Optional[DeviceContext] = None,
     lr: Scalar[DT] = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_LR,
@@ -590,7 +591,7 @@ def RainbowCNN[
         AnyPerReplay[target, FRAMES * 84 * 84, 1, CAP, OBS_STORE_DT],
         BATCH,
     ],
-    RainbowCNNNet[FRAMES, ACT, NA, HIDDEN],
+    RainbowCNNNet[FRAMES, ACT, NA, HIDDEN, LAYOUT],
     NA, ACT, True,
 ]:
     """Pixel Rainbow — six-of-six over the Nature-CNN backbone for
@@ -599,7 +600,8 @@ def RainbowCNN[
     accumulator and the target-Y γ^n bootstrap stay aligned."""
     return agent_from_config[
         RainbowCNNConfig[
-            target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT
+            target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP,
+            OBS_STORE_DT, LAYOUT,
         ]
     ](
         ctx=ctx, lr=lr, gamma=gamma, tau=tau, epsilon=epsilon,

@@ -22,6 +22,7 @@ Usage:
 
 from std.random import random_float64
 from std.memory import alloc, memset
+from mojo_rl.nn.constants import LAYOUT_NCHW, LAYOUT_NHWC
 from mojo_rl.core import (
     State,
     Action,
@@ -221,6 +222,11 @@ struct PongPixelEnv[
     DTYPE: DType,
     HIT_REWARD: Float64 = 0.1,
     FRAME_SKIP: Int = 1,
+    # Frame-stack obs memory layout. NCHW (default) = [FRAME, 84, 84] (frame-
+    # outer, bit-identical to the original). NHWC = [84, 84, FRAME] (frame-inner)
+    # for channels-last conv training — couple this to the agent's conv LAYOUT
+    # (RainbowCNNConfig.LAYOUT). The flat OBS_DIM (28224) is identical either way.
+    LAYOUT: Int = LAYOUT_NCHW,
 ](BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv & Movable):
     """Native Pong with pixel observations for CNN-based training.
 
@@ -374,11 +380,21 @@ struct PongPixelEnv[
         """Return 4×84×84 pixel observations as chronological frame stack."""
         comptime FRAME_SIZE = OBS_W * OBS_H
         var obs = List[Scalar[Self.DTYPE]](capacity=PIXEL_OBS_DIM)
-        for f in range(FRAME_STACK):
-            var read_slot = (self._frame_idx + f) % FRAME_STACK  # oldest first
-            var read_base = read_slot * FRAME_SIZE
+        comptime if Self.LAYOUT == LAYOUT_NHWC:
+            # [84, 84, FRAME]: pixel-outer, frame-inner (channels-last).
             for i in range(FRAME_SIZE):
-                obs.append(self._frame_stack[read_base + i])
+                for f in range(FRAME_STACK):
+                    var read_slot = (self._frame_idx + f) % FRAME_STACK
+                    obs.append(self._frame_stack[read_slot * FRAME_SIZE + i])
+        else:
+            # [FRAME, 84, 84]: frame-outer (channels-first, original).
+            for f in range(FRAME_STACK):
+                var read_slot = (
+                    self._frame_idx + f
+                ) % FRAME_STACK  # oldest first
+                var read_base = read_slot * FRAME_SIZE
+                for i in range(FRAME_SIZE):
+                    obs.append(self._frame_stack[read_base + i])
         return obs^
 
     def reset_obs_list(mut self) -> List[Scalar[Self.DTYPE]]:
@@ -606,6 +622,7 @@ struct PongPixelEnv[
         comptime FRAME_SIZE = OBS_W * OBS_H  # 7056
         comptime RESIZE_TOTAL = BATCH_SIZE * FRAME_SIZE
         comptime RESIZE_TPB = 256
+        comptime OBS_LAYOUT = Self.LAYOUT  # frame-stack obs layout (NCHW/NHWC)
         comptime RESIZE_BLOCKS = (RESIZE_TOTAL + RESIZE_TPB - 1) // RESIZE_TPB
         var obs_ptr = obs_buf.unsafe_ptr()
 
@@ -653,14 +670,21 @@ struct PongPixelEnv[
                 Scalar[gpu_dtype](total // count) / 255.0
             )
 
-            # Output chronological frame stack for this pixel
+            # Output chronological frame stack for this pixel. NCHW =
+            # f*FRAME_SIZE+pixel (frame-outer); NHWC = pixel*FRAME_STACK+f
+            # (frame-inner, channels-last).
             var env_obs = obs_ptr + env_idx * PIXEL_OBS_DIM
             for f in range(FRAME_STACK):
                 var read_slot = (slot + 1 + f) % FRAME_STACK
                 var read_base = WS_FRAME_STACK + read_slot * FRAME_SIZE
-                env_obs[f * FRAME_SIZE + pixel_idx] = env_ws[
-                    read_base + pixel_idx
-                ]
+                comptime if OBS_LAYOUT == LAYOUT_NHWC:
+                    env_obs[pixel_idx * FRAME_STACK + f] = env_ws[
+                        read_base + pixel_idx
+                    ]
+                else:
+                    env_obs[f * FRAME_SIZE + pixel_idx] = env_ws[
+                        read_base + pixel_idx
+                    ]
 
         ctx.enqueue_function[resize_stack_wrapper](
             workspace_ptr.value(),

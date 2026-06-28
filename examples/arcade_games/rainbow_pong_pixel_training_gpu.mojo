@@ -36,7 +36,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
 
 from mojo_rl.deep_agents.c51.config import RainbowCNN
 from mojo_rl.deep_agents.training import BatchedGpuDiscreteEnv
@@ -51,6 +51,14 @@ from mojo_rl.envs.arcade_games.pong import PongPixelEnv
 comptime OBS_DIM = PongPixelEnv[DType.float64].OBS_DIM  # 28224
 comptime NUM_ACTIONS = PongPixelEnv[DType.float64].NUM_ACTIONS  # 3
 comptime FRAMES = 4
+
+# ── Channels-last A/B toggle: True = NHWC conv tower + NHWC pixel obs ──────────
+# The Nature-CNN's 84²→20²→9² convs coalesce channels-last (the EZv2/conv NHWC
+# win on large maps). Flip and run both — eval return should match (NHWC learns
+# identically; convergence-validated generically on ResNet-20 CIFAR). The pixel
+# env's frame-stack obs layout is COUPLED to this so they never mismatch.
+comptime USE_NHWC = False
+comptime LAYOUT = LAYOUT_NHWC if USE_NHWC else LAYOUT_NCHW
 
 comptime NUM_ATOMS = 51
 comptime HIDDEN = 512
@@ -97,7 +105,7 @@ comptime CKPT_PATH = "checkpoints/rainbow_pong_pixel.ckpt"
 
 
 comptime PongPixelBatched = BatchedGpuDiscreteEnv[
-    PongPixelEnv[DT, HIT_REWARD], N_ENVS, OBS_DIM, 1
+    PongPixelEnv[DT, HIT_REWARD, LAYOUT=LAYOUT], N_ENVS, OBS_DIM, 1
 ]
 
 
@@ -121,7 +129,7 @@ def main() raises:
         # value support deviates.
         var agent = RainbowCNN[
             "gpu", NUM_ACTIONS, BATCH_SIZE, BUFFER_CAPACITY,
-            FRAMES, NUM_ATOMS, HIDDEN, N_STEP, OBS_STORE_DT,
+            FRAMES, NUM_ATOMS, HIDDEN, N_STEP, OBS_STORE_DT, LAYOUT,
         ](
             ctx=ctx,
             lr=LR,
