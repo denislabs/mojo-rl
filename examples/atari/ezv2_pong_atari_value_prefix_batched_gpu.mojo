@@ -64,7 +64,7 @@ comptime N = 5                       # rl.td_steps
 comptime OBS_STORE = DType.uint8     # lossless k/255 pixel storage (4× capacity)
 comptime REANA_W = 64                # reanalyze search width (one wide search)
 
-comptime AtariPong = AtariEnv[2, DT]
+comptime AtariPong = AtariEnv[2, DT, Cfg.LAYOUT]
 comptime BatchedPong = BatchedCpuDiscreteEnv[AtariPong, N_ENVS, OBS]
 comptime VPDyn = EZDynVPNetAtari[ACT, BINS]
 

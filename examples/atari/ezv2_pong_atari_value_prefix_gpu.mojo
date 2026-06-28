@@ -81,7 +81,7 @@ def main() raises:
     print("ROM loaded:", rom.size, "bytes")
 
     with DeviceContext() as ctx:
-        var env = AtariEnv[2, DT](
+        var env = AtariEnv[2, DT, Cfg.LAYOUT](
             AtariGame.PONG, rom.data.value(), rom.size,
             clip_reward=True, full_action_set=True,
         )
@@ -131,7 +131,7 @@ def main() raises:
         print("  budget: 100k env transitions (single env)")
 
         var loss = run_ezv2_gumbel_selfplay_gpu_vp[
-            AtariEnv[2, DT], Cfg.Rep, Cfg.Pred, Cfg.Proj, Cfg.Predh,
+            AtariEnv[2, DT, Cfg.LAYOUT], Cfg.Rep, Cfg.Pred, Cfg.Proj, Cfg.Predh,
             OBS, ACT, LATENT, BINS, NUM_SIMS, MAX_NODES, MAX_K, CAP, B, K, N,
             HORIZON=HORIZON,
             L=RemoteLogger,

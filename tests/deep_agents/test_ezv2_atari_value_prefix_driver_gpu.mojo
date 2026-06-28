@@ -18,7 +18,7 @@ from std.math import isnan, isinf
 from std.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, LAYOUT_NCHW
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
@@ -37,7 +37,7 @@ def main() raises:
     comptime FRAMES = 4
     comptime ACT = 18
     comptime BINS = 601
-    comptime Cfg = EZV2AtariConfig[FRAMES, ACT]
+    comptime Cfg = EZV2AtariConfig[FRAMES, ACT, LAYOUT=LAYOUT_NCHW]
     comptime OBS = Cfg.OBS
     comptime LATENT = Cfg.LATENT
     comptime HORIZON = EZ_LSTM_HORIZON

@@ -12,7 +12,7 @@ from std.math import isnan, isinf
 from std.testing import assert_true, assert_equal
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, LAYOUT_NCHW
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.core.tensor import Tensor
@@ -22,7 +22,7 @@ from mojo_rl.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
 
 comptime FRAMES = 4
 comptime ACT = 18
-comptime Cfg = EZV2AtariConfig[FRAMES, ACT]
+comptime Cfg = EZV2AtariConfig[FRAMES, ACT, LAYOUT=LAYOUT_NCHW]
 comptime LATENT = Cfg.LATENT     # 2304
 comptime BINS = Cfg.BINS         # 601
 comptime PROJ = Cfg.PROJ         # 1024

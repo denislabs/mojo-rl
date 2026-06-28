@@ -78,7 +78,7 @@ comptime REANA_W = 64
 comptime CAP = 4096                  # small device ring → fast startup/low VRAM
 
 
-comptime AtariPong = AtariEnv[2, DT]
+comptime AtariPong = AtariEnv[2, DT, Cfg.LAYOUT]
 comptime BatchedPong = BatchedCpuDiscreteEnv[AtariPong, N_ENVS, OBS]
 
 

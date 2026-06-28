@@ -84,7 +84,7 @@ comptime REANA_W = 64                # reanalyze search width (roots/search): on
                                      # ≈ 75 MB device; raise toward B for fewer
                                      # searches if you have the VRAM.
 
-comptime AtariPong = AtariEnv[2, DT]
+comptime AtariPong = AtariEnv[2, DT, Cfg.LAYOUT]
 comptime BatchedPong = BatchedCpuDiscreteEnv[AtariPong, N_ENVS, OBS]
 
 
