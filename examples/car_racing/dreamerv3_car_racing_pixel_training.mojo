@@ -179,8 +179,17 @@ def main() raises:
         if step >= LEARN_START and step % PRINT_EVERY == 0:
             var dt = Float64(perf_counter_ns() - t_mark) / 1e9
             var rate = Float64(step - step_mark) / dt if dt > 0 else 0.0
-            print("  step", step, " WM=", ag.last_wm_loss(), " AC=",
-                  ag.last_ac_loss(), " (", rate, "steps/s)")
+            # WM/AC + policy-learning probes: real_rew vs rew_pred (reward head
+            # fit), ret_m/val_m (critic tracking the imagined return), pstd
+            # (actor exploration). If the policy is learning, rew_pred tracks
+            # real_rew and val_m tracks ret_m as training proceeds.
+            print(
+                "  step", step, " WM=", ag.last_wm_loss(), " AC=",
+                ag.last_ac_loss(), " | real_rew=", ag.dbg_real_rew(),
+                " rew_pred=", ag.dbg_rew_pred(), " ret_m=", ag.dbg_ret_mean(),
+                " val_m=", ag.dbg_val_mean(), " pstd=", ag.dbg_pstd(),
+                " (", rate, "steps/s)",
+            )
             t_mark = perf_counter_ns()
             step_mark = step
 
