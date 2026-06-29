@@ -352,6 +352,187 @@ struct DreamerV3Agent[
         actbuf.free()
         return final_ev
 
+    # ─── Single-env training facade (continuous) ────────────────────────────
+    def _reset_obs_dt[
+        E: BoxContinuousActionEnv
+    ](mut self, mut env: E) raises -> List[Scalar[DT]]:
+        """env.reset_obs_list() cast to List[Scalar[DT]] — the env `dtype` is
+        opaque vs DT in generic context, but the agent works in DT."""
+        var o = env.reset_obs_list()
+        var out = List[Scalar[DT]](capacity=len(o))
+        for i in range(len(o)):
+            out.append(o[i].cast[DT]())
+        return out^
+
+    def _greedy_eval_cont[
+        E: BoxContinuousActionEnv
+    ](
+        mut self,
+        mut env: E,
+        episodes: Int,
+        ep_len: Int,
+        obsbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        actbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises -> Scalar[DT]:
+        """Mean return over `episodes` greedy episodes (continuous actions scaled
+        by `action_scale` at env.step). Steps `env` (caller resets after)."""
+        var total: Scalar[DT] = 0.0
+        for _e in range(episodes):
+            self.reset_belief()
+            var o = self._reset_obs_dt[E](env)
+            for _s in range(ep_len):
+                for i in range(Self.OBS):
+                    obsbuf[i] = o[i].cast[DT]()
+                self.select_greedy_action(obsbuf, actbuf)
+                var al = List[Scalar[DT]]()
+                for a in range(Self.ACT):
+                    al.append(self.action_scale * actbuf[a])
+                var r = env.step_continuous_vec[DT](al)
+                total += r[1].cast[DT]()
+                o = r[0].copy()
+                if r[2]:
+                    break
+        return total / Scalar[DT](episodes)
+
+    def train_continuous[
+        E: BoxContinuousActionEnv,
+        L: Logger = NoOpLogger,
+    ](
+        mut self,
+        mut env: E,
+        total_steps: Int,
+        *,
+        learn_start: Int = 1024,
+        train_every: Int = 4,
+        eval_every: Int = 2500,
+        eval_episodes: Int = 10,
+        ep_len: Int = 500,
+        print_every: Int = 2500,
+        verbose: Bool = True,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+        checkpoint_path: String = String(""),
+        checkpoint_every: Int = 0,
+    ) raises -> Scalar[DT]:
+        """Own the whole DreamerV3 single-env training loop for a CONTINUOUS env
+        — the bounded-normal-actor counterpart of `train_single`: warmup random
+        [-1,1] actions → on-policy `select_action` → `env.step_continuous_vec`
+        (action scaled by the agent's `action_scale`) → `record` (the NORMALIZED
+        action, for WM grounding) + `record_terminal` on done → `train_step`
+        every `train_every`, with periodic greedy eval, the SAME KNOWN_GROUPS
+        metric logging as `train_single` (so curves overlay for parity checks),
+        and optional one-file checkpointing. Returns the final greedy eval.
+
+        Examples pass an env + a logger pointer and write no loop of their own;
+        the GPU AC runs device-resident (`_ac_gpu_cont`). (No USE_TRAIN_CUDA_GRAPH
+        param yet — continuous capture is a follow-up; the device-resident step
+        is already sync-free per imagination step.)"""
+        comptime assert not Self.DISCRETE, (
+            "train_continuous is the CONTINUOUS facade; build the agent with"
+            " DISCRETE=False (discrete envs: use train_single)."
+        )
+        comptime OBSL = Self.OBS
+        comptime ACTL = Self.ACT
+        var obsbuf = alloc[Scalar[DT]](OBSL).as_unsafe_any_origin()
+        var actbuf = alloc[Scalar[DT]](ACTL).as_unsafe_any_origin()
+        var obs = self._reset_obs_dt[E](env)
+        self.reset_belief()
+        var last_eval: Scalar[DT] = 0.0
+        var ep_ret: Scalar[DT] = 0.0
+        var ep_acc: Scalar[DT] = 0.0
+        var ep_n: Int = 0
+        var last_ep: Scalar[DT] = 0.0
+        var best_ret: Scalar[DT] = Scalar[DT](-1.0e30)
+
+        for step in range(total_steps):
+            for i in range(OBSL):
+                obsbuf[i] = obs[i].cast[DT]()
+            if step < learn_start:
+                for a in range(ACTL):
+                    actbuf[a] = Scalar[DT](random_float64() * 2.0 - 1.0)
+            else:
+                self.select_action(obsbuf, actbuf, explore=True)
+            var al = List[Scalar[DT]]()
+            for a in range(ACTL):
+                al.append(self.action_scale * actbuf[a])
+            var res = env.step_continuous_vec[DT](al)
+            ep_ret += res[1].cast[DT]()
+            self.record(
+                obsbuf, actbuf, res[1].cast[DT](),
+                Scalar[DT](1.0) if res[2] else Scalar[DT](0.0),
+            )
+            obs = res[0].copy()
+            if res[2]:
+                # store the terminal obs so the WM cont head learns it
+                for i in range(OBSL):
+                    obsbuf[i] = res[0][i].cast[DT]()
+                self.record_terminal(obsbuf)
+                obs = self._reset_obs_dt[E](env)
+                self.reset_belief()
+                last_ep = ep_ret
+                ep_acc += ep_ret
+                ep_n += 1
+                if ep_ret > best_ret:
+                    best_ret = ep_ret
+                ep_ret = Scalar[DT](0.0)
+            if step >= learn_start and step % train_every == 0:
+                var wd = (step % eval_every == 0)
+                _ = self.train_step(want_diag=wd)
+
+            if step > 0 and step % eval_every == 0:
+                var ev = self._greedy_eval_cont[E](
+                    env, eval_episodes, ep_len, obsbuf, actbuf
+                )
+                last_eval = ev
+                var avg_ret = ep_acc / Scalar[DT](ep_n) if ep_n > 0 else last_ep
+                if verbose and step % print_every == 0:
+                    print(
+                        "  step", step, " eval_ret=", ev, " avg_ret=", avg_ret,
+                        " WM=", self.last_wm_loss(), " AC=", self.last_ac_loss(),
+                        " rew_pred=", self.dbg_rew_pred(),
+                        " val_m=", self.dbg_val_mean(), " pstd=", self.dbg_pstd(),
+                    )
+                comptime if L.ENABLED:
+                    if logger:
+                        var lg = logger.value()
+                        lg[].log_scalar("avg_reward", Float64(avg_ret), step)
+                        lg[].log_scalar("episode_reward", Float64(last_ep), step)
+                        lg[].log_scalar("best_reward", Float64(best_ret), step)
+                        lg[].log_scalar("eval/mean_return", Float64(ev), step)
+                        lg[].log_scalar("wm_loss", Float64(self.last_wm_loss()), step)
+                        lg[].log_scalar("obs_loss", Float64(self.dbg_obs_loss()), step)
+                        lg[].log_scalar("reward_loss", Float64(self.dbg_rew_loss()), step)
+                        lg[].log_scalar("continue_loss", Float64(self.dbg_con_loss()), step)
+                        lg[].log_scalar("dyn_kl", Float64(self.dbg_dyn_kl()), step)
+                        lg[].log_scalar("rep_kl", Float64(self.dbg_rep_kl()), step)
+                        lg[].log_scalar("value_loss", Float64(self.dbg_val_loss()), step)
+                        lg[].log_scalar("policy_loss", Float64(self.dbg_pol_loss()), step)
+                        lg[].log_scalar(
+                            "imagined_reward_mean", Float64(self.dbg_rew_pred()), step
+                        )
+                        lg[].log_scalar("return_scale", Float64(self.dbg_rscale()), step)
+                        lg[].log_scalar("pi_scale", Float64(self.dbg_rscale()), step)
+                        lg[].log_scalar(
+                            "train_steps", Float64(self.train_steps_done()), step
+                        )
+                        lg[].flush()
+                ep_acc = Scalar[DT](0.0)
+                ep_n = 0
+                if checkpoint_every > 0 and checkpoint_path.byte_length() > 0 and (
+                    step % checkpoint_every == 0
+                ):
+                    self.save(checkpoint_path)
+                obs = self._reset_obs_dt[E](env)
+                self.reset_belief()
+
+        if checkpoint_path.byte_length() > 0:
+            self.save(checkpoint_path)
+        var final_ev = self._greedy_eval_cont[E](
+            env, eval_episodes, ep_len, obsbuf, actbuf
+        )
+        obsbuf.free()
+        actbuf.free()
+        return final_ev
+
     def train_continuous_batched[
         E: BoxContinuousActionEnv & Movable & ImplicitlyDeletable,
         L: Logger = NoOpLogger,

@@ -1,41 +1,37 @@
-"""DreamerV3 on CarRacing PIXEL observations — continuous control (P4).
+"""DreamerV3 on CarRacing PIXEL observations (GPU) via the `DreamerV3Agent`
+facade — continuous control.
 
-End-to-end DreamerV3 world-model + actor-critic training on the faithful
-multi-body `CarRacingMB` env with 96×96 pixel observations and CONTINUOUS
-actions, via the CNN encoder / transposed-conv decoder (nets_cnn.mojo).
+Continuous counterpart of `examples/cartpole/cartpole_dreamerv3_training_gpu.mojo`
+(which is discrete via `train_single`). The world model + actor-critic train
+on-device (`train_target="gpu"`, the device-resident continuous AC `_ac_gpu_cont`);
+the faithful multi-body `CarRacingMB` env steps on CPU (transfer-safe, non-
+cheatable closed-loop track) and obs are marshalled H2D inside `select_action`.
 
-Path: **hybrid CPU-env / GPU-agent** at a single env — the CarRacingMB env is
-stepped on the host (faithful closed-loop track → transfer-safe, non-cheatable),
-while the DreamerV3 agent (encoder/decoder/RSSM/AC) runs on the GPU and trains
-on B-sized minibatches drawn from the sequence replay. (#envs=1; a batched-CPU
-driver for more throughput is a follow-up — P4b.)
+Observation: 4×96×96 grayscale frame stack (OBS = 36864), values in [0,1], via
+the CNN encoder + transposed-conv decoder (nets_cnn.mojo). Action: 3-D
+[steering, gas, brake]; the agent acts in normalized [-1,1] and the env remaps
+gas/brake [-1,1]→[0,1] (Gymnasium), so `action_scale=1.0` (no driver scaling).
 
-Observation: 4×96×96 grayscale frame stack (OBS = 36864), values in [0,1].
-Action: 3-D [steering, gas, brake]; the agent acts in normalized [-1,1] and the
-env remaps gas/brake [-1,1]→[0,1] (Gymnasium convention) inside
-`step_continuous_vec`, so ACTION_SCALE = 1.0 (no driver scaling).
+The facade owns the whole loop (warmup → select_action → step → record
+(+record_terminal on done) → train_step → periodic greedy eval), and logs the
+SAME KNOWN_GROUPS metrics as the discrete `train_single` (wm/obs/reward/continue
+losses, dyn/rep KL, value/policy loss, imagined returns, episode rewards) so the
+curves overlay for parity checks across optimizations.
 
-⚠️ SCAFFOLD — convergence/tuning is P5 (open). Likely levers, in order:
-  - Reward/value support: CarRacing rewards (≈ +1000/N per tile, −0.1/frame,
-    −100 off-field) are larger/peakier than Pendulum; BINS / twohot grid and the
-    return normalizer may need tuning so tile rewards are representable.
-  - Pixel recon loss: currently SymlogMSE on [0,1] pixels (monotonic, works) —
-    a plain-MSE / [-0.5,0.5] pixel decoder is more standard (P5).
-  - Per-layer norm in the conv stack (DreamerV3 uses LayerNorm; v1 omits it).
-  - Replay memory: pixel obs are big — fp32 replay is CAP×36864×4 B. Keep CAP
-    modest or add a uint8 replay (follow-up). CAP below = GPU-affordable-ish.
-  - Use NVIDIA for real runs (Apple Metal is for smoke/iteration).
+⚠️ Convergence/tuning is P5 (open): reward/value support, pixel recon loss,
+conv norm, uint8 replay. Use NVIDIA for real runs.
 
-Run (NVIDIA):
-  pixi run -e nvidia mojo run -I . examples/car_racing/dreamerv3_car_racing_pixel_training.mojo
-Smoke (Apple): use tests/nn/test_dreamerv3_carracing_pixel_smoke.mojo
+Run:
+    pixi run -e apple  mojo run -I . examples/car_racing/dreamerv3_car_racing_pixel_training.mojo
+    pixi run -e nvidia mojo run -I . examples/car_racing/dreamerv3_car_racing_pixel_training.mojo
 """
 
-from std.memory import alloc
-from std.random import random_float64, seed
-from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
+from std.random import seed
+from std.time import perf_counter_ns
 
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
@@ -45,7 +41,9 @@ from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
 )
 from mojo_rl.envs.car_racing.car_racing_mb import CarRacingMB
 
-# ── config ──────────────────────────────────────────────────────────────
+# =============================================================================
+# Architecture
+# =============================================================================
 comptime C = 4            # 4-frame grayscale stack = conv input channels
 comptime IMG = 96         # 96×96 (16-divisible → conv minres 6)
 comptime BASE = 48        # conv base width (channels BASE·{1,2,4,8})
@@ -73,137 +71,86 @@ comptime DEC = DreamerDecoderCNN[FEATIN, C, IMG, IMG, BASE, SwishOp]
 
 comptime Ag = DreamerV3Agent[
     "gpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU, PU,
-    BINS, B, T, T_IMAG, CAP, False, ENC, DEC,
+    BINS, B, T, T_IMAG, CAP, False, ENC, DEC,  # DISCRETE=False (continuous)
 ]
-comptime Env = CarRacingMB[DT, True, IMG]
+comptime Env = CarRacingMB[DT, True, IMG]  # PIXEL_OBS=True, PIX_RES=96
 
-comptime TOTAL_STEPS = 1_000_000
+comptime NUM_STEPS = 1_000_000
 comptime LEARN_START = 1024
 comptime TRAIN_EVERY = 4
-comptime EVAL_EVERY = 5_000
-comptime PRINT_EVERY = 200       # frequent heartbeat (step, WM/AC, throughput)
-comptime WARMUP_PRINT = 200      # heartbeat during the no-train warmup phase
+comptime EVAL_EVERY = 5000
 comptime EVAL_EPISODES = 3
 comptime EP_LEN = 1000     # CarRacing max_steps
-comptime ACTION_SCALE = Scalar[DT](1.0)  # env remaps gas/brake internally
-
-
-def _greedy_eval(mut ag: Ag) raises -> Scalar[DT]:
-    var env = Env()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
-    var total: Scalar[DT] = 0.0
-    for _e in range(EVAL_EPISODES):
-        ag.reset_belief()
-        var o = env.reset_obs_list()
-        for _s in range(EP_LEN):
-            for i in range(OBS):
-                obsbuf[i] = o[i]
-            ag.select_greedy_action(obsbuf, actbuf)
-            var a = List[Scalar[DT]]()
-            for j in range(ACT):
-                a.append(ACTION_SCALE * actbuf[j])
-            var r = env.step_continuous_vec[DT](a)
-            total += r[1]
-            o = r[0].copy()
-            if r[2]:
-                break
-    obsbuf.free()
-    actbuf.free()
-    return total / Scalar[DT](EVAL_EPISODES)
+comptime CHECKPOINT_EVERY = 50_000
+comptime CHECKPOINT_PATH = "dreamerv3_carracing_pixel_gpu.ckpt"
 
 
 def main() raises:
-    print("=" * 70)
-    print("DreamerV3 CarRacing PIXEL (continuous) —", TOTAL_STEPS, "steps")
-    print("  OBS =", OBS, "(", C, "x", IMG, "x", IMG, ")  ACT =", ACT)
-    print("=" * 70)
     seed(42)
-    var ctx = DeviceContext()
-    var env = Env()
-    var ag = Ag.make(
-        ctx=ctx, lr=Scalar[DT](4e-5), learning_starts=LEARN_START,
-        action_scale=ACTION_SCALE, actent=Scalar[DT](3e-4), slowtar=True,
-    )
+    print("=" * 70)
+    print("DreamerV3 (facade) — CarRacing PIXEL GPU (continuous)")
+    print("=" * 70)
+    print("  OBS / ACT          =", OBS, "(", C, "x", IMG, "x", IMG, ") /", ACT)
+    print("  DETER/STOCH/CLASSES=", DETER, "/", STOCH, "/", CLASSES)
+    print("  BASE / T / T_IMAG  =", BASE, "/", T, "/", T_IMAG)
+    print("  NUM_STEPS          =", NUM_STEPS)
+    print("=" * 70)
 
-    var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
-
-    print("  warming up", LEARN_START, "steps (CPU render + GPU record, no",
-          "train) — heavy config, first train_steps are slow...")
-    var t_mark = perf_counter_ns()
-    var step_mark = 0
-    for step in range(TOTAL_STEPS):
-        for i in range(OBS):
-            obsbuf[i] = obs[i]
-        if step < LEARN_START:
-            for j in range(ACT):
-                actbuf[j] = Scalar[DT](random_float64() * 2.0 - 1.0)
-        else:
-            ag.select_action(obsbuf, actbuf, explore=True)
-        var a = List[Scalar[DT]]()
-        for j in range(ACT):
-            a.append(ACTION_SCALE * actbuf[j])
-        var res = env.step_continuous_vec[DT](a)
-        ag.record(
-            obsbuf, actbuf, res[1],
-            Scalar[DT](1.0) if res[2] else Scalar[DT](0.0),
+    with DeviceContext() as ctx:
+        # ─── Logger (remote; same KNOWN_GROUPS metrics as the discrete path) ──
+        var env_vars = load_dotenv()
+        var logger = RemoteLogger(
+            server_url=env_vars.get("RL_MONITOR_URL", ""),
+            run_name="DreamerV3 CarRacing PIXEL (GPU, continuous)",
+            buffer_size=200,
+            api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
         )
-        obs = res[0].copy()
-        if res[2]:
-            obs = env.reset_obs_list()
-            ag.reset_belief()
+        logger.set_config("algorithm", "DreamerV3")
+        logger.set_config("env", "CarRacingPixel")
+        logger.set_config("target", "gpu")
+        logger.set_config("t_imag", String(T_IMAG))
+        var logger_ptr = UnsafePointer(to=logger)
 
-        # heartbeat during the no-train warmup so it's visibly alive
-        if step < LEARN_START and step > 0 and step % WARMUP_PRINT == 0:
-            var dt = Float64(perf_counter_ns() - t_mark) / 1e9
-            var rate = Float64(step - step_mark) / dt if dt > 0 else 0.0
-            print("  [warmup]", step, "/", LEARN_START, " (", rate,
-                  "env-steps/s)")
-            t_mark = perf_counter_ns()
-            step_mark = step
-        if step == LEARN_START:
-            print("  warmup done — training starts (train_step every",
-                  TRAIN_EVERY, "steps); each is a", T, "-step CNN BPTT, slow.")
-            t_mark = perf_counter_ns()
-            step_mark = step
+        # ─── Agent (GPU) + env (CPU; obs marshalled H2D in select_action) ──
+        var agent = Ag.make(
+            ctx=ctx,
+            lr=Scalar[DT](4e-5),
+            learning_starts=LEARN_START,
+            warmup_steps=500,
+            action_scale=Scalar[DT](1.0),   # env remaps gas/brake internally
+            actent=Scalar[DT](3e-4),
+            slowtar=True,
+        )
+        var env = Env()
 
-        if step >= LEARN_START and step % TRAIN_EVERY == 0:
-            # diagnostics (WM/AC loss readout) only on heartbeat/eval steps —
-            # want_diag=True every step adds a per-step D2H sync (slower).
-            var wd = (step % PRINT_EVERY == 0) or (step % EVAL_EVERY == 0)
-            _ = ag.train_step(want_diag=wd)
+        # ─── Single train() call — auto-eval + auto-log + auto-checkpoint ──
+        print("Starting GPU training (heavy pixel config; warmup is slow)...")
+        print("-" * 70)
+        var t_start = perf_counter_ns()
+        var final_ret = agent.train_continuous[Env, L=RemoteLogger](
+            env,
+            NUM_STEPS,
+            learn_start=LEARN_START,
+            train_every=TRAIN_EVERY,
+            eval_every=EVAL_EVERY,
+            eval_episodes=EVAL_EPISODES,
+            ep_len=EP_LEN,
+            print_every=EVAL_EVERY,
+            verbose=True,
+            logger=logger_ptr,
+            checkpoint_path=CHECKPOINT_PATH,
+            checkpoint_every=CHECKPOINT_EVERY,
+        )
+        var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
+        logger.close()
+        _ = logger  # lifetime extender for logger_ptr
 
-        # frequent heartbeat: confirms progress + measures train throughput
-        if step >= LEARN_START and step % PRINT_EVERY == 0:
-            var dt = Float64(perf_counter_ns() - t_mark) / 1e9
-            var rate = Float64(step - step_mark) / dt if dt > 0 else 0.0
-            # WM/AC + policy-learning probes: real_rew vs rew_pred (reward head
-            # fit), ret_m/val_m (critic tracking the imagined return), pstd
-            # (actor exploration). If the policy is learning, rew_pred tracks
-            # real_rew and val_m tracks ret_m as training proceeds.
-            print(
-                "  step", step, " WM=", ag.last_wm_loss(), " AC=",
-                ag.last_ac_loss(), " | real_rew=", ag.dbg_real_rew(),
-                " rew_pred=", ag.dbg_rew_pred(), " ret_m=", ag.dbg_ret_mean(),
-                " val_m=", ag.dbg_val_mean(), " pstd=", ag.dbg_pstd(),
-                " (", rate, "steps/s)",
-            )
-            t_mark = perf_counter_ns()
-            step_mark = step
-
-        if step > 0 and step % EVAL_EVERY == 0:
-            var ret = _greedy_eval(ag)
-            print("  step", step, " eval_ret=", ret)
-            obs = env.reset_obs_list()
-            ag.reset_belief()
-            t_mark = perf_counter_ns()
-            step_mark = step
-
-    var fe = _greedy_eval(ag)
-    print("=" * 70)
-    print("FINAL mean_ret(", EVAL_EPISODES, ") =", fe)
-    print("=" * 70)
-    obsbuf.free()
-    actbuf.free()
+        # ─── Summary ─────────────────────────────────────────────────────
+        print("-" * 70)
+        print("=" * 70)
+        print("Training complete")
+        print("  total env_steps   =", NUM_STEPS)
+        print("  elapsed           =", elapsed_s, "s")
+        print("  FINAL mean_ret(", EVAL_EPISODES, ")  =", final_ret)
+        print("  remote points sent=", logger.total_logged())
+        print("=" * 70)
