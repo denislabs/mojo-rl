@@ -903,6 +903,101 @@ def _imag_bwd_continuous_k[NS_: Int, TI_: Int, BINS_: Int, C_: Int](
             )
 
 
+def _imag_bwd_continuous_pt_k[NS_: Int, TI_: Int, BINS_: Int, C_: Int](
+    vlog: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * BINS_), MutAnyOrigin],
+    svlog: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * BINS_), MutAnyOrigin],
+    pmean: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * C_), MutAnyOrigin],
+    pstd: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * C_), MutAnyOrigin],
+    acts: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * C_), MutAnyOrigin],
+    conv: LayoutTensor[DT, Layout.row_major(NS_ * TI_), MutAnyOrigin],
+    ret: LayoutTensor[DT, Layout.row_major(NS_ * (TI_ - 1)), MutAnyOrigin],
+    bins: LayoutTensor[DT, Layout.row_major(BINS_), MutAnyOrigin],
+    gvlog: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * BINS_), MutAnyOrigin],
+    gpmean: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * C_), MutAnyOrigin],
+    gpstd: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * C_), MutAnyOrigin],
+    polloss: LayoutTensor[DT, Layout.row_major(NS_ * (TI_ - 1)), MutAnyOrigin],
+    valloss: LayoutTensor[DT, Layout.row_major(NS_ * (TI_ - 1)), MutAnyOrigin],
+    rscale_buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    actent: Scalar[DT],
+    slowreg: Scalar[DT],
+    inv_im: Scalar[DT],
+    minstd: Scalar[DT],
+    maxstd: Scalar[DT],
+):
+    """Per-(start, t) parallel rewrite of `_imag_bwd_continuous_k`: ONE THREAD per
+    (start, imagination step) over NS*(TI-1) — full occupancy + SM spread instead
+    of NS=256 threads in one block each running the sequential TM1 scan. The only
+    cross-t dependency, the discount cumprod `w`, is recomputed per thread (<=TM1
+    mults, negligible vs the BINS twohot work). gvlog/gpmean/gpstd MUST be
+    pre-zeroed (gvlog accumulates; the t=TM1 slice stays 0). Math identical to the
+    scan kernel (parity-gated)."""
+    comptime TM1 = TI_ - 1
+    comptime LOG2PI = Scalar[DT](1.8378770664093453)
+    var i = Int(global_idx.x)
+    if i < NS_ * TM1:
+        var b = i // TM1
+        var t = i % TM1
+        var rscale = rebind[Scalar[DT]](rscale_buf[0])
+        # discount cumprod w = prod_{j=0..t} conv[b,j] (the sequential term)
+        var w = Scalar[DT](1.0)
+        for j in range(t + 1):
+            w *= rebind[Scalar[DT]](conv[b * TI_ + j])
+        var vbase = (b * TI_ + t) * BINS_
+        var val_t = _dev_twp[BINS_](vlog, vbase, bins)
+        var slowval_t = _dev_twp[BINS_](svlog, vbase, bins)
+        var ret_t = rebind[Scalar[DT]](ret[b * TM1 + t])
+        var adv = (ret_t - val_t) / rscale
+        var pbase = (b * TI_ + t) * C_
+        # ── forward: Σ_a logp / entropy (bounded normal) ──
+        var logpi = Scalar[DT](0.0)
+        var ent = Scalar[DT](0.0)
+        for a in range(C_):
+            var mr = rebind[Scalar[DT]](pmean[pbase + a])
+            var sr = rebind[Scalar[DT]](pstd[pbase + a])
+            var mean = tanh(mr)
+            var sg = Scalar[DT](1.0) / (
+                Scalar[DT](1.0) + exp(-(sr + Scalar[DT](2.0)))
+            )
+            var std = (maxstd - minstd) * sg + minstd
+            var zz = (rebind[Scalar[DT]](acts[pbase + a]) - mean) / std
+            logpi += (
+                -Scalar[DT](0.5) * zz * zz - log(std)
+                - Scalar[DT](0.5) * LOG2PI
+            )
+            ent += Scalar[DT](0.5) * LOG2PI + log(std) + Scalar[DT](0.5)
+        polloss[b * TM1 + t] = w * -(logpi * adv + actent * ent)
+        var l1 = _dev_twohot_ce[BINS_](vlog, vbase, bins, ret_t)
+        var l2 = _dev_twohot_ce[BINS_](vlog, vbase, bins, slowval_t)
+        valloss[b * TM1 + t] = w * (l1 + slowreg * l2)
+        # ── backward ──
+        var dpl_dlogp = inv_im * w * (-adv)
+        var dpl_dent = inv_im * w * (-actent)
+        for a in range(C_):
+            var idx = pbase + a
+            var mr = rebind[Scalar[DT]](pmean[idx])
+            var sr = rebind[Scalar[DT]](pstd[idx])
+            var mean = tanh(mr)
+            var sg = Scalar[DT](1.0) / (
+                Scalar[DT](1.0) + exp(-(sr + Scalar[DT](2.0)))
+            )
+            var std = (maxstd - minstd) * sg + minstd
+            var zz = (rebind[Scalar[DT]](acts[idx]) - mean) / std
+            var dlogp_dmean = zz / std
+            var dlogp_dstd = (zz * zz - Scalar[DT](1.0)) / std
+            var dent_dstd = Scalar[DT](1.0) / std
+            var dmean_draw = Scalar[DT](1.0) - mean * mean
+            var dstd_draw = (maxstd - minstd) * sg * (Scalar[DT](1.0) - sg)
+            gpmean[idx] = dpl_dlogp * dlogp_dmean * dmean_draw
+            gpstd[idx] = (
+                dpl_dlogp * dlogp_dstd + dpl_dent * dent_dstd
+            ) * dstd_draw
+        var up = inv_im * w
+        _dev_twohot_ce_bwd[BINS_](vlog, vbase, bins, ret_t, up, gvlog)
+        _dev_twohot_ce_bwd[BINS_](
+            vlog, vbase, bins, slowval_t, up * slowreg, gvlog
+        )
+
+
 def _box_muller_gaussian_k[N_: Int](
     dst: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
     seed: UInt64,
@@ -3464,7 +3559,26 @@ struct ACStep[
 
         # ── imag-loss backward (Gaussian) on device ──
         var inv_im = Scalar[DT](1.0) / Scalar[DT](NS * TM1)
-        ctx.enqueue_function[_imag_bwd_continuous_k[NS, TI, BINSl, ACTD]](
+        # Pre-zero the grad buffers: gvlog ACCUMULATES (two twohot-CE passes) and
+        # the t=TM1 slice of all three is never written by the backward → must be
+        # 0. Grid-strided, then the per-(start,t) kernel fills t<TM1.
+        comptime NTB = NS * TI * BINSl
+        comptime NTA = NS * TI * ACTD
+        ctx.enqueue_function[_zero_k[NTB]](
+            self.gvlog_d.lt["gpu", Layout.row_major(NTB)](),
+            grid_dim=(NTB + TPB - 1) // TPB, block_dim=TPB,
+        )
+        ctx.enqueue_function[_zero_k[NTA]](
+            self.gpmean_d.lt["gpu", Layout.row_major(NTA)](),
+            grid_dim=(NTA + TPB - 1) // TPB, block_dim=TPB,
+        )
+        ctx.enqueue_function[_zero_k[NTA]](
+            self.gpstd_d.lt["gpu", Layout.row_major(NTA)](),
+            grid_dim=(NTA + TPB - 1) // TPB, block_dim=TPB,
+        )
+        # one thread per (start, imagination step) over NS*(TI-1) — full occupancy
+        comptime nbPT = (NS * TM1 + TPB - 1) // TPB
+        ctx.enqueue_function[_imag_bwd_continuous_pt_k[NS, TI, BINSl, ACTD]](
             self.vlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
             self.svlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
             self.pmean_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
@@ -3480,7 +3594,7 @@ struct ACStep[
             self.valloss_d.lt["gpu", Layout.row_major(NS * TM1)](),
             self.rscale_d.lt["gpu", Layout.row_major(1)](),
             self.actent, self.slowreg, inv_im, MINSTD, MAXSTD,
-            grid_dim=nbBS, block_dim=BLKS,
+            grid_dim=nbPT, block_dim=TPB,
         )
 
         # ── per-step value/policy vjp (inputs gathered from device histories) ──
