@@ -48,7 +48,7 @@ mode in this port — the legacy per-param path was the default too.
 """
 
 from std.math import sqrt
-from std.gpu import global_idx, thread_idx
+from std.gpu import global_idx, thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
@@ -60,33 +60,59 @@ from ..core.module import Module
 from .optimizer import Optimizer
 
 
-comptime AGC_TPB: Int = 128  # single-block reduction width
+comptime AGC_TPB: Int = 128   # per-block reduction width
+comptime AGC_MAXB: Int = 256  # blocks for the multi-block grad/param-norm reduce
 
 
 # ── GPU kernels ─────────────────────────────────────────────────────────
-def _agc_scale_kernel[
+# AGC's per-leaf ‖grad‖²/‖param‖² used to be a SINGLE 128-thread block over the
+# whole param → latency-bound (no memory-level parallelism) and catastrophic for
+# big leaves (a ~14M-element Linear took ~16 ms). It is now a two-pass reduction:
+# `_agc_partials_kernel` (AGC_MAXB blocks across all SMs → AGC_MAXB partial sums)
+# then `_agc_finalize_kernel` (1 block reduces the partials → agc_scale).
+def _agc_partials_kernel[
     N: Int
 ](
     param: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     grad: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    scale_buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
-    agc_clip: Scalar[DT],
-    agc_pmin: Scalar[DT],
+    partials: LayoutTensor[DT, Layout.row_major(2 * AGC_MAXB), MutAnyOrigin],
 ):
-    """Single-block, AGC_TPB-thread tree reduction of ‖grad‖² and ‖param‖²,
-    then thread 0 folds the clip formula and writes `scale_buf[0]`."""
+    """Pass A: AGC_MAXB blocks each strided-sum a chunk of ‖grad‖²/‖param‖² →
+    partials[block] (g²) and partials[AGC_MAXB+block] (p²)."""
     var t = Int(thread_idx.x)
+    var b = Int(block_idx.x)
+    comptime STRIDE = AGC_MAXB * AGC_TPB
     var g_sum: Scalar[DT] = 0.0
     var p_sum: Scalar[DT] = 0.0
-    var k = t
+    var k = b * AGC_TPB + t
     while k < N:
         var g = rebind[Scalar[DT]](grad[k])
         var p = rebind[Scalar[DT]](param[k])
         g_sum += g * g
         p_sum += p * p
-        k += AGC_TPB
-    var g_total = block.sum[block_size=AGC_TPB, broadcast=False](val=g_sum)
-    var p_total = block.sum[block_size=AGC_TPB, broadcast=False](val=p_sum)
+        k += STRIDE
+    var gt = block.sum[block_size=AGC_TPB, broadcast=False](val=g_sum)
+    var pt = block.sum[block_size=AGC_TPB, broadcast=False](val=p_sum)
+    if t == 0:
+        partials[b] = gt[0]
+        partials[AGC_MAXB + b] = pt[0]
+
+
+def _agc_finalize_kernel(
+    partials: LayoutTensor[DT, Layout.row_major(2 * AGC_MAXB), MutAnyOrigin],
+    scale_buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    agc_clip: Scalar[DT],
+    agc_pmin: Scalar[DT],
+):
+    """Pass B: reduce the AGC_MAXB partials → ‖grad‖/‖param‖ → agc_scale (1
+    block, AGC_MAXB threads — one per partial)."""
+    var t = Int(thread_idx.x)
+    var g_total = block.sum[block_size=AGC_MAXB, broadcast=False](
+        val=rebind[Scalar[DT]](partials[t])
+    )
+    var p_total = block.sum[block_size=AGC_MAXB, broadcast=False](
+        val=rebind[Scalar[DT]](partials[AGC_MAXB + t])
+    )
     if t == 0:
         var scale: Scalar[DT] = 1.0
         if agc_clip > Scalar[DT](0.0):
@@ -173,6 +199,11 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
     # advances under CUDA-graph replay; the update kernel reads `bc = 1 − β^t`
     # from it. CPU path uses the host `bc1/bc2`. Empty until the first GPU step.
     var _pow_dev: Tensor
+    # [2*AGC_MAXB] device scratch for the multi-block AGC norm reduction
+    # (partial ‖grad‖²/‖param‖² sums). Reused across the sequential per-param
+    # walk (each leaf overwrites it, stream-ordered). Allocated lazily; empty on
+    # CPU.
+    var _agc_partials: Tensor
 
     def __init__(out self):
         """No-arg default (satisfies Defaultable for the generic Trainer)."""
@@ -200,6 +231,7 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
         self.bc2 = Scalar[DT](1.0)
         self._scale = Tensor()
         self._pow_dev = Tensor()
+        self._agc_partials = Tensor()
 
     def begin_step(mut self):
         """Bump the step counter + refresh bias corrections. Once per step,
@@ -297,16 +329,26 @@ struct DreamerOpt(Movable, ParamVisitor, Optimizer):
                 v.dev.value().enqueue_fill(Scalar[DT](0))
             if not self._scale.dev:
                 self._scale = Tensor.alloc_gpu(c, 1)
+            if not self._agc_partials.dev:
+                self._agc_partials = Tensor.alloc_gpu(c, 2 * AGC_MAXB)
             comptime layout = Layout.row_major(N)
-            # Pass A: per-leaf AGC scale → _scale[0] (single block).
-            c.enqueue_function[_agc_scale_kernel[N]](
+            comptime players = Layout.row_major(2 * AGC_MAXB)
+            # Pass A: multi-block partial ‖grad‖²/‖param‖² → _agc_partials.
+            c.enqueue_function[_agc_partials_kernel[N]](
                 param.lt["gpu", layout](),
                 grad.lt["gpu", layout](),
+                self._agc_partials.lt["gpu", players](),
+                grid_dim=AGC_MAXB,
+                block_dim=AGC_TPB,
+            )
+            # Pass A2: reduce partials → per-leaf AGC scale → _scale[0].
+            c.enqueue_function[_agc_finalize_kernel](
+                self._agc_partials.lt["gpu", players](),
                 self._scale.lt["gpu", Layout.row_major(1)](),
                 self.agc_clip,
                 self.agc_pmin,
                 grid_dim=1,
-                block_dim=AGC_TPB,
+                block_dim=AGC_MAXB,
             )
             # Pass B: rms → momentum → lr (grid over elements). Same stream →
             # ordered after Pass A, so _scale[0] is ready.
