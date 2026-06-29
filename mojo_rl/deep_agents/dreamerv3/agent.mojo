@@ -409,6 +409,7 @@ struct DreamerV3Agent[
         eval_episodes: Int = 10,
         ep_len: Int = 500,
         print_every: Int = 2500,
+        log_every: Int = 0,
         verbose: Bool = True,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         checkpoint_path: String = String(""),
@@ -419,9 +420,16 @@ struct DreamerV3Agent[
         [-1,1] actions → on-policy `select_action` → `env.step_continuous_vec`
         (action scaled by the agent's `action_scale`) → `record` (the NORMALIZED
         action, for WM grounding) + `record_terminal` on done → `train_step`
-        every `train_every`, with periodic greedy eval, the SAME KNOWN_GROUPS
-        metric logging as `train_single` (so curves overlay for parity checks),
-        and optional one-file checkpointing. Returns the final greedy eval.
+        every `train_every`, with greedy eval, the SAME KNOWN_GROUPS metric
+        logging as `train_single` (so curves overlay for parity checks), and
+        optional one-file checkpointing. Returns the final greedy eval.
+
+        Logging is split by cost: WM/AC component metrics (wm/obs/reward/continue
+        loss, KL, value/policy loss, imagined return) log every `log_every` steps
+        — cheap (just the gated diag readout), so loss curves get frequent early
+        points; `log_every<=0` ties them to `eval_every`. The expensive greedy
+        eval + episode-return metrics (eval/mean_return, avg/episode/best_reward)
+        run only every `eval_every`.
 
         Examples pass an env + a logger pointer and write no loop of their own;
         the GPU AC runs device-resident (`_ac_gpu_cont`). `USE_TRAIN_CUDA_GRAPH`
@@ -445,6 +453,10 @@ struct DreamerV3Agent[
         var ep_n: Int = 0
         var last_ep: Scalar[DT] = 0.0
         var best_ret: Scalar[DT] = Scalar[DT](-1.0e30)
+        # WM/AC metric logging cadence — decoupled from (and finer than) the
+        # expensive greedy eval so loss curves get frequent early points without
+        # paying the eval's greedy-rollout cost. `log_every<=0` → tie to eval.
+        var le = log_every if log_every > 0 else eval_every
 
         for step in range(total_steps):
             for i in range(OBSL):
@@ -478,7 +490,7 @@ struct DreamerV3Agent[
                     best_ret = ep_ret
                 ep_ret = Scalar[DT](0.0)
             if step >= learn_start and step % train_every == 0:
-                var wd = (step % eval_every == 0)
+                var wd = (step % le == 0)
                 comptime if (
                     USE_TRAIN_CUDA_GRAPH and Self.train_target == "gpu"
                 ):
@@ -489,26 +501,19 @@ struct DreamerV3Agent[
                 else:
                     _ = self.train_step(want_diag=wd)
 
-            if step > 0 and step % eval_every == 0:
-                var ev = self._greedy_eval_cont[E](
-                    env, eval_episodes, ep_len, obsbuf, actbuf
-                )
-                last_eval = ev
-                var avg_ret = ep_acc / Scalar[DT](ep_n) if ep_n > 0 else last_ep
+            # frequent WM/AC component metrics (fresh dbg; NO greedy eval) — early
+            # loss curves at the `le` cadence without paying the eval cost.
+            if step > 0 and step % le == 0:
                 if verbose and step % print_every == 0:
                     print(
-                        "  step", step, " eval_ret=", ev, " avg_ret=", avg_ret,
-                        " WM=", self.last_wm_loss(), " AC=", self.last_ac_loss(),
+                        "  step", step, " WM=", self.last_wm_loss(),
+                        " AC=", self.last_ac_loss(),
                         " rew_pred=", self.dbg_rew_pred(),
                         " val_m=", self.dbg_val_mean(), " pstd=", self.dbg_pstd(),
                     )
                 comptime if L.ENABLED:
                     if logger:
                         var lg = logger.value()
-                        lg[].log_scalar("avg_reward", Float64(avg_ret), step)
-                        lg[].log_scalar("episode_reward", Float64(last_ep), step)
-                        lg[].log_scalar("best_reward", Float64(best_ret), step)
-                        lg[].log_scalar("eval/mean_return", Float64(ev), step)
                         lg[].log_scalar("wm_loss", Float64(self.last_wm_loss()), step)
                         lg[].log_scalar("obs_loss", Float64(self.dbg_obs_loss()), step)
                         lg[].log_scalar("reward_loss", Float64(self.dbg_rew_loss()), step)
@@ -525,6 +530,28 @@ struct DreamerV3Agent[
                         lg[].log_scalar(
                             "train_steps", Float64(self.train_steps_done()), step
                         )
+                        if step % eval_every != 0:
+                            lg[].flush()
+
+            # periodic greedy eval + episode-return metrics (expensive: runs
+            # eval_episodes greedy rollouts) — coarser than the WM/AC log cadence.
+            if step > 0 and step % eval_every == 0:
+                var ev = self._greedy_eval_cont[E](
+                    env, eval_episodes, ep_len, obsbuf, actbuf
+                )
+                last_eval = ev
+                var avg_ret = ep_acc / Scalar[DT](ep_n) if ep_n > 0 else last_ep
+                if verbose:
+                    print(
+                        "  step", step, " eval_ret=", ev, " avg_ret=", avg_ret,
+                    )
+                comptime if L.ENABLED:
+                    if logger:
+                        var lg = logger.value()
+                        lg[].log_scalar("avg_reward", Float64(avg_ret), step)
+                        lg[].log_scalar("episode_reward", Float64(last_ep), step)
+                        lg[].log_scalar("best_reward", Float64(best_ret), step)
+                        lg[].log_scalar("eval/mean_return", Float64(ev), step)
                         lg[].flush()
                 ep_acc = Scalar[DT](0.0)
                 ep_n = 0

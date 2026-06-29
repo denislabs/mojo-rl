@@ -78,7 +78,9 @@ comptime Env = CarRacingMB[DT, True, IMG]  # PIXEL_OBS=True, PIX_RES=96
 comptime NUM_STEPS = 1_000_000
 comptime LEARN_START = 1024
 comptime TRAIN_EVERY = 4
-comptime EVAL_EVERY = 5000
+comptime LOG_EVERY = 250    # WM/AC loss curves (cheap; no greedy eval) — frequent
+                           # early data points (~every few min at this heavy cfg)
+comptime EVAL_EVERY = 5000  # greedy eval + episode returns (expensive)
 comptime EVAL_EPISODES = 3
 comptime EP_LEN = 1000     # CarRacing max_steps
 comptime CHECKPOINT_EVERY = 50_000
@@ -135,7 +137,8 @@ def main() raises:
             eval_every=EVAL_EVERY,
             eval_episodes=EVAL_EPISODES,
             ep_len=EP_LEN,
-            print_every=EVAL_EVERY,
+            print_every=LOG_EVERY,
+            log_every=LOG_EVERY,
             verbose=True,
             logger=logger_ptr,
             checkpoint_path=CHECKPOINT_PATH,
