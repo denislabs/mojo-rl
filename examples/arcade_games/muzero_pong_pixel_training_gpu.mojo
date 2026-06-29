@@ -35,7 +35,7 @@ from std.memory import UnsafePointer
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.muzero import MuZeroCNNConfig, MuZeroBatchedAgent
@@ -57,6 +57,13 @@ comptime FAST_VALIDATE = True
 
 comptime FRAMES = 4
 comptime ACT = 3  # NOOP, UP, DOWN
+
+# ── Channels-last A/B toggle: True = NHWC rep CNN + NHWC pixel obs ─────────────
+# Only the Nature-CNN representation is layout-sensitive (Dyn/Pred operate on the
+# flat LATENT vector). The pixel env's obs is COUPLED to this so they can't
+# mismatch. Flip and run both — eval return should match (NHWC learns identically).
+comptime USE_NHWC = False
+comptime LAYOUT = LAYOUT_NHWC if USE_NHWC else LAYOUT_NCHW
 comptime LATENT = 128
 comptime HIDDEN = 512  # Nature-CNN projection width
 comptime BINS = 51  # categorical reward/value support bins
@@ -124,10 +131,10 @@ comptime LEARNING_STARTS = 2_000  # stored steps before training
 comptime MAX_EP_STEPS = 2_000
 
 
-comptime Cfg = MuZeroCNNConfig[FRAMES, ACT, LATENT, HIDDEN, BINS]
+comptime Cfg = MuZeroCNNConfig[FRAMES, ACT, LATENT, HIDDEN, BINS, LAYOUT=LAYOUT]
 comptime OBS = Cfg.OBS  # 4*84*84 = 28224
 comptime PongPixelBatched = BatchedGpuDiscreteEnv[
-    PongPixelEnv[DT], N_ENVS, OBS, 1
+    PongPixelEnv[DT, LAYOUT=LAYOUT], N_ENVS, OBS, 1
 ]
 comptime Agent = MuZeroBatchedAgent[
     PongPixelBatched,
