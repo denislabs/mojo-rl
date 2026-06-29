@@ -57,7 +57,7 @@ comptime FRAMES = 4
 # win on large maps). Flip and run both — eval return should match (NHWC learns
 # identically; convergence-validated generically on ResNet-20 CIFAR). The pixel
 # env's frame-stack obs layout is COUPLED to this so they never mismatch.
-comptime USE_NHWC = False
+comptime USE_NHWC = True
 comptime LAYOUT = LAYOUT_NHWC if USE_NHWC else LAYOUT_NCHW
 
 comptime NUM_ATOMS = 51
@@ -128,8 +128,16 @@ def main() raises:
         # warmup 20k, PER α=0.5/β=0.4, nstep=N_STEP) apply; only the Pong
         # value support deviates.
         var agent = RainbowCNN[
-            "gpu", NUM_ACTIONS, BATCH_SIZE, BUFFER_CAPACITY,
-            FRAMES, NUM_ATOMS, HIDDEN, N_STEP, OBS_STORE_DT, LAYOUT,
+            "gpu",
+            NUM_ACTIONS,
+            BATCH_SIZE,
+            BUFFER_CAPACITY,
+            FRAMES,
+            NUM_ATOMS,
+            HIDDEN,
+            N_STEP,
+            OBS_STORE_DT,
+            LAYOUT,
         ](
             ctx=ctx,
             lr=LR,
