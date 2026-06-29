@@ -26,11 +26,12 @@ kernels here. No trainable params → inherit the no-op `for_each_param`/
 """
 
 from std.math import exp, log, log1p
-from std.gpu import global_idx
+from std.gpu import global_idx, block_idx, thread_idx
+from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.module import Module
@@ -77,15 +78,24 @@ def _symmse_fwd_kernel[B: Int, OBS: Int](
     tgt: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
     o: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
 ):
-    var b = Int(global_idx.x)
+    # ONE BLOCK per batch element; threads stride over the OBS pixels and the
+    # block reduces. (Was grid=(B/TPB) → only B threads active, each looping all
+    # OBS=C*H*W pixels serially — catastrophic for pixel obs. This parallelizes
+    # the per-b reduction across the whole block.)
+    var b = Int(block_idx.x)
     if b < B:
+        var t = Int(thread_idx.x)
         var s: Scalar[DT] = 0.0
-        for k in range(OBS):
+        var k = t
+        while k < OBS:
             var d = rebind[Scalar[DT]](pred[b * OBS + k]) - _symk(
                 rebind[Scalar[DT]](tgt[b * OBS + k])
             )
             s += d * d
-        o[b] = s
+            k += TPB_REDUCE
+        var tot = block.sum[block_size=TPB_REDUCE, broadcast=False](val=s)
+        if t == 0:
+            o[b] = tot[0]
 
 
 def _symmse_bwd_kernel[B: Int, OBS: Int](
@@ -95,15 +105,16 @@ def _symmse_bwd_kernel[B: Int, OBS: Int](
     gp: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
     gt: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
 ):
-    var b = Int(global_idx.x)
-    if b < B:
-        var up = rebind[Scalar[DT]](go[b])
-        for k in range(OBS):
-            var idx = b * OBS + k
-            gp[idx] = up * Scalar[DT](2.0) * (
-                rebind[Scalar[DT]](pred[idx]) - _symk(rebind[Scalar[DT]](tgt[idx]))
-            )
-            gt[idx] = 0.0
+    # Pure elementwise over ALL B*OBS — one thread per element (grid-strided),
+    # not one thread per batch row. (Was grid=(B/TPB) → B threads each looping
+    # OBS serially.)
+    var i = Int(global_idx.x)
+    if i < B * OBS:
+        var up = rebind[Scalar[DT]](go[i // OBS])
+        gp[i] = up * Scalar[DT](2.0) * (
+            rebind[Scalar[DT]](pred[i]) - _symk(rebind[Scalar[DT]](tgt[i]))
+        )
+        gt[i] = 0.0
 
 
 struct SymlogMSELoss[OBS: Int](Module):
@@ -147,12 +158,12 @@ struct SymlogMSELoss[OBS: Int](Module):
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B)
-            comptime nb = (B + TPB - 1) // TPB
+            # one block per batch element (block-reduce over OBS).
             c.enqueue_function[_symmse_fwd_kernel[B, Self.OBS]](
                 pred.lt["gpu", Layout.row_major(B * Self.OBS)](),
                 tgt.lt["gpu", Layout.row_major(B * Self.OBS)](),
                 out.lt["gpu", Layout.row_major(B)](),
-                grid_dim=nb, block_dim=TPB,
+                grid_dim=B, block_dim=TPB_REDUCE,
             )
 
     def vjp[
@@ -184,7 +195,8 @@ struct SymlogMSELoss[OBS: Int](Module):
             var c = ctx.value()
             gp.ensure_gpu(c, B * Self.OBS)
             gt.ensure_gpu(c, B * Self.OBS)
-            comptime nb = (B + TPB - 1) // TPB
+            # one thread per (b, pixel) element across all B*OBS.
+            comptime nb = (B * Self.OBS + TPB - 1) // TPB
             c.enqueue_function[_symmse_bwd_kernel[B, Self.OBS]](
                 grad_output.lt["gpu", Layout.row_major(B)](),
                 pred.lt["gpu", Layout.row_major(B * Self.OBS)](),

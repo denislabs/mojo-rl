@@ -1200,21 +1200,28 @@ def _wm_head_in_k[B_: Int, D_: Int, SC_: Int, OBS_: Int, T_: Int](
     horizon: Scalar[DT],
     t: Int,
 ):
-    """Head inputs (next carry) + decoder/reward/continue targets for step t."""
-    var b = Int(global_idx.x)
-    if b < B_:
-        var ndbase = (t + 1) * B_ * D_
-        var snbase = (t + 1) * B_ * SC_
-        for k in range(D_):
-            ndn[b * D_ + k] = rebind[Scalar[DT]](cdeter[ndbase + b * D_ + k])
-        for k in range(SC_):
-            snn[b * SC_ + k] = rebind[Scalar[DT]](cstoch[snbase + b * SC_ + k])
-        for k in range(OBS_):
-            rtg[b * OBS_ + k] = rebind[Scalar[DT]](mbobs[(b * (T_ + 1) + t + 1) * OBS_ + k])
-        rwt[b] = rebind[Scalar[DT]](mbrew[b * T_ + t])
-        cnt[b] = (Scalar[DT](1.0) - rebind[Scalar[DT]](mbdne[b * T_ + t])) * (
-            Scalar[DT](1.0) - Scalar[DT](1.0) / horizon
-        )
+    """Head inputs (next carry) + decoder/reward/continue targets for step t.
+    Parallelized over B*OBS (one thread per recon-target pixel) — the dominant
+    cost for pixel obs; the small per-b carry (D_/SC_) + reward/continue work is
+    done by the FIRST thread of each b's OBS block (k==0), which stays correct
+    even when OBS_<D_ (the vector/MLP case). (Was B-parallel with a serial
+    OBS-pixel loop → only B threads active.)"""
+    var i = Int(global_idx.x)
+    if i < B_ * OBS_:
+        var b = i // OBS_
+        var k = i % OBS_
+        rtg[i] = rebind[Scalar[DT]](mbobs[(b * (T_ + 1) + t + 1) * OBS_ + k])
+        if k == 0:
+            var ndbase = (t + 1) * B_ * D_
+            var snbase = (t + 1) * B_ * SC_
+            for kk in range(D_):
+                ndn[b * D_ + kk] = rebind[Scalar[DT]](cdeter[ndbase + b * D_ + kk])
+            for kk in range(SC_):
+                snn[b * SC_ + kk] = rebind[Scalar[DT]](cstoch[snbase + b * SC_ + kk])
+            rwt[b] = rebind[Scalar[DT]](mbrew[b * T_ + t])
+            cnt[b] = (Scalar[DT](1.0) - rebind[Scalar[DT]](mbdne[b * T_ + t])) * (
+                Scalar[DT](1.0) - Scalar[DT](1.0) / horizon
+            )
 
 
 def _wm_enc_in_k[B_: Int, OBS_: Int, T_: Int](
@@ -1222,11 +1229,13 @@ def _wm_enc_in_k[B_: Int, OBS_: Int, T_: Int](
     ob: LayoutTensor[DT, Layout.row_major(B_ * OBS_), MutAnyOrigin],
     t: Int,
 ):
-    """Encoder input window = obs frame t+1 (batch-major)."""
-    var b = Int(global_idx.x)
-    if b < B_:
-        for k in range(OBS_):
-            ob[b * OBS_ + k] = rebind[Scalar[DT]](mbobs[(b * (T_ + 1) + t + 1) * OBS_ + k])
+    """Encoder input window = obs frame t+1 (batch-major). One thread per pixel
+    over B*OBS (was B-parallel with a serial OBS loop → only B threads active)."""
+    var i = Int(global_idx.x)
+    if i < B_ * OBS_:
+        var b = i // OBS_
+        var k = i % OBS_
+        ob[i] = rebind[Scalar[DT]](mbobs[(b * (T_ + 1) + t + 1) * OBS_ + k])
 
 
 def _wm_keep_mask_k[B_: Int, D_: Int, SC_: Int, T_: Int](
@@ -1742,6 +1751,7 @@ struct WMStep[
         var REP = self.rep_scale
         var ctx = st.ctx.value()
         comptime nbB = (Self.B + TPB - 1) // TPB
+        comptime nbBO = (Self.B * OBSD + TPB - 1) // TPB  # one thread / pixel
         comptime nbTOK = (Self.B * TOK + TPB - 1) // TPB
 
         # The batch-major device minibatch (mbobs_d/mbact_d/mbrew_d/mbdne_d/
@@ -1756,7 +1766,7 @@ struct WMStep[
             ctx.enqueue_function[_wm_enc_in_k[Self.B, OBSD, Tt]](
                 self.mbobs_d.lt["gpu", Layout.row_major(Self.B * (Tt + 1) * OBSD)](),
                 self.ob.lt["gpu", Layout.row_major(Self.B * OBSD)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbBO, block_dim=TPB,
             )
             enc.forward[target, Self.B](
                 child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](self.ob),
@@ -1816,7 +1826,7 @@ struct WMStep[
                 self.rtg.lt["gpu", Layout.row_major(Self.B * OBSD)](),
                 self.rwt.lt["gpu", Layout.row_major(Self.B)](),
                 self.cnt.lt["gpu", Layout.row_major(Self.B)](),
-                self.horizon, t, grid_dim=nbB, block_dim=TPB,
+                self.horizon, t, grid_dim=nbBO, block_dim=TPB,
             )
             dec.set_input["stoch_new", Self.B](self.snn, ctx)
             dec.set_input["nd", Self.B](self.ndn, ctx)
@@ -1890,7 +1900,7 @@ struct WMStep[
                 self.rtg.lt["gpu", Layout.row_major(Self.B * OBSD)](),
                 self.rwt.lt["gpu", Layout.row_major(Self.B)](),
                 self.cnt.lt["gpu", Layout.row_major(Self.B)](),
-                self.horizon, t, grid_dim=nbB, block_dim=TPB,
+                self.horizon, t, grid_dim=nbBO, block_dim=TPB,
             )
             # dec
             dec.set_input["stoch_new", Self.B](self.snn, ctx)
@@ -1946,7 +1956,7 @@ struct WMStep[
             ctx.enqueue_function[_wm_enc_in_k[Self.B, OBSD, Tt]](
                 self.mbobs_d.lt["gpu", Layout.row_major(Self.B * (Tt + 1) * OBSD)](),
                 self.ob.lt["gpu", Layout.row_major(Self.B * OBSD)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbBO, block_dim=TPB,
             )
             enc.forward[target, Self.B](
                 child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](self.ob),
