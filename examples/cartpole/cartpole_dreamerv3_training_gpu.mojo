@@ -107,7 +107,14 @@ def main() raises:
         print("Starting GPU training...")
         print("-" * 70)
         var t_start = perf_counter_ns()
-        var final_ret = agent.train_single[EnvT, L=RemoteLogger](
+        # USE_TRAIN_CUDA_GRAPH=True: replay the WM+AC device-kernel sequence from
+        # a captured CUDA graph on non-diag steps (Stage 3 — ~2-3x train-step
+        # throughput, launch-bound). Bit-identical to eager (capture-parity gate
+        # `tests/nn/test_dreamerv3_capture_parity.mojo`, ΔWM=ΔAC=0.0) so
+        # convergence is unchanged; a no-op on non-NVIDIA (runs eagerly).
+        var final_ret = agent.train_single[
+            EnvT, L=RemoteLogger, USE_TRAIN_CUDA_GRAPH=True
+        ](
             env,
             NUM_STEPS,
             learn_start=LEARN_START,
