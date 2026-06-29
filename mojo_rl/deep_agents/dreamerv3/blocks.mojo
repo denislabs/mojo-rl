@@ -338,6 +338,26 @@ def _hist_load_k[W_: Int, TI_: Int, NS_: Int](
             dst[b * W_ + k] = rebind[Scalar[DT]](hist[(b * TI_ + t) * W_ + k])
 
 
+def _hist_load_pol2_k[ACT_: Int, TI_: Int, NS_: Int](
+    gpm: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * ACT_), MutAnyOrigin],
+    gps: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * ACT_), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(NS_ * 2 * ACT_), MutAnyOrigin],
+    t: Int,
+):
+    """Continuous policy cotangent: gather step-t gpmean → dst[:, 0:ACT] and
+    gpstd → dst[:, ACT:2ACT] (the [mean_raw | std_raw] layout the 2·ACT policy
+    head emits) for the per-step policy.vjp."""
+    var b = Int(global_idx.x)
+    if b < NS_:
+        for a in range(ACT_):
+            dst[b * 2 * ACT_ + a] = rebind[Scalar[DT]](
+                gpm[(b * TI_ + t) * ACT_ + a]
+            )
+            dst[b * 2 * ACT_ + ACT_ + a] = rebind[Scalar[DT]](
+                gps[(b * TI_ + t) * ACT_ + a]
+            )
+
+
 def _noise_philox_k[N_: Int](
     dst: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
     seed: UInt64,
@@ -2101,7 +2121,9 @@ struct ACStep[
     var conv_d: Tensor   # [NS*TI]
     var ret_d: Tensor    # [NS*TM1]     λ-return (downloaded for retnorm)
     var gvlog_d: Tensor  # [NS*TI*BINS] value-logit grads
-    var gpmean_d: Tensor # [NS*TI*ACT]  policy-logit grads
+    var gpmean_d: Tensor # [NS*TI*ACT]  policy mean-raw grads (logits, discrete)
+    var pstd_d: Tensor   # [NS*TI*ACT]  policy std-raw history (CONTINUOUS only)
+    var gpstd_d: Tensor  # [NS*TI*ACT]  policy std-raw grads   (CONTINUOUS only)
     var polloss_d: Tensor # [NS*TM1]
     var valloss_d: Tensor # [NS*TM1]
     var boot_d: Tensor   # [BT]         repval bootstrap (= ret[s,0])
@@ -2158,6 +2180,8 @@ struct ACStep[
         self.ret_d = Tensor()
         self.gvlog_d = Tensor()
         self.gpmean_d = Tensor()
+        self.pstd_d = Tensor()
+        self.gpstd_d = Tensor()
         self.polloss_d = Tensor()
         self.valloss_d = Tensor()
         self.boot_d = Tensor()
@@ -2208,12 +2232,15 @@ struct ACStep[
         s.svlr = _mk[target](BT * BINSl, ctx)
         s.g_vlr = _mk[target](BT * BINSl, ctx)
         s.grf = _mk[target](BT * FEATl, ctx)
-        # device-resident discrete-AC histories (GPU only; DISCRETE only).
+        # device-resident AC histories (GPU only). Allocated for BOTH discrete
+        # (`_ac_gpu_disc`) and continuous (`_ac_gpu_cont`) — pstd_d / gpstd_d are
+        # continuous-only (the bounded-normal std-raw history + its grad).
         comptime TM1 = Self.T_IMAG - 1
         comptime TIl = Self.T_IMAG
-        comptime if target == "gpu" and Self.DISCRETE:
+        comptime if target == "gpu":
             s.feats_d = _mk[target](NS * TIl * FEATl, ctx)
             s.pmean_d = _mk[target](NS * TIl * ACTD, ctx)
+            s.pstd_d = _mk[target](NS * TIl * ACTD, ctx)
             s.vlog_d = _mk[target](NS * TIl * BINSl, ctx)
             s.svlog_d = _mk[target](NS * TIl * BINSl, ctx)
             s.acts_d = _mk[target](NS * TIl * ACTD, ctx)
@@ -2222,6 +2249,7 @@ struct ACStep[
             s.ret_d = _mk[target](NS * TM1, ctx)
             s.gvlog_d = _mk[target](NS * TIl * BINSl, ctx)
             s.gpmean_d = _mk[target](NS * TIl * ACTD, ctx)
+            s.gpstd_d = _mk[target](NS * TIl * ACTD, ctx)
             s.polloss_d = _mk[target](NS * TM1, ctx)
             s.valloss_d = _mk[target](NS * TM1, ctx)
             s.boot_d = _mk[target](BT, ctx)
@@ -2290,10 +2318,16 @@ struct ACStep[
                 oval, opol, retnorm, bins,
             )
         else:
-            self._ac_gpu[target](
-                st, imagine, value, slowvalue, policy, rew, con,
-                oval, opol, retnorm, bins, want_diag,
-            )
+            comptime if Self.DISCRETE:
+                self._ac_gpu_disc[target](
+                    st, imagine, value, slowvalue, policy, rew, con,
+                    oval, opol, retnorm, bins, want_diag,
+                )
+            else:
+                self._ac_gpu_cont[target](
+                    st, imagine, value, slowvalue, policy, rew, con,
+                    oval, opol, retnorm, bins, want_diag,
+                )
 
     def _ac_cpu[target: StaticString](
         mut self,
@@ -3208,6 +3242,328 @@ struct ACStep[
             st.dbg_ret_std = sqrt(rvar if rvar > Scalar[DT](0.0) else Scalar[DT](0.0))
             st.dbg_pmean_abs = self.diag_d.data[7] / Scalar[DT](NPM)
             st.dbg_pstd = 0.0
+            var vmean = self.diag_d.data[8] / Scalar[DT](NTI)
+            st.dbg_val_mean = vmean
+            var vvar = self.diag_d.data[9] / Scalar[DT](NTI) - vmean * vmean
+            st.dbg_val_std = sqrt(vvar if vvar > Scalar[DT](0.0) else Scalar[DT](0.0))
+            var fmean = self.diag_d.data[10] / Scalar[DT](NFT)
+            var fvar = self.diag_d.data[11] / Scalar[DT](NFT) - fmean * fmean
+            st.dbg_feat_std = sqrt(fvar if fvar > Scalar[DT](0.0) else Scalar[DT](0.0))
+
+    def _ac_gpu_cont[target: StaticString](
+        mut self,
+        mut st: DreamerState[Self.OBS, Self.ACT, Self.DETER, Self.SC, Self.TOKEN, Self.B, Self.T, Self.T_IMAG],
+        mut imagine: Self.ImagT,
+        mut value: Self.ValT,
+        mut slowvalue: Self.ValT,
+        mut policy: Self.PolT,
+        mut rew: Self.RewT,
+        mut con: Self.ConT,
+        mut oval: DreamerOpt,
+        mut opol: DreamerOpt,
+        mut retnorm: PercentileNormalize,
+        bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        want_diag: Bool,
+    ) raises:
+        # Device-resident CONTINUOUS imagination-AC (the bounded-normal twin of
+        # `_ac_gpu_disc`): rollout + λ-return + imag/repl loss all run on-device
+        # through the kernels, eliminating the OLD `_ac_gpu`'s ~7 host round-trips
+        # per imagination step. Inputs are uploaded ONCE at the top (carries,
+        # uniform noise, replay rew/dne, twohot bins) — host-sourced like the old
+        # path (so NO trainer-gate changes), then the per-step compute is fully on
+        # device. Not CUDA-graph captured (the top uploads are eager); `want_diag`
+        # gates the host metric readout. Noise is uniform[-1,1] (matches `_ac_cpu`
+        # → CPU↔GPU parity); λ-return is slowtar=False on device (as discrete).
+        comptime D = Self.DETER
+        comptime SCl = Self.SC
+        comptime FEATl = Self.FEAT
+        comptime ACTD = Self.ACT
+        comptime BINSl = Self.BINS
+        comptime TI = Self.T_IMAG
+        comptime NS = Self.T * Self.B
+        comptime TM1 = TI - 1
+        comptime BT = Self.B * Self.T
+        comptime TM1R = Self.T - 1
+        comptime nbB = (NS + TPB - 1) // TPB
+        comptime nbBT = (BT + TPB - 1) // TPB
+        comptime nbB1 = (Self.B + TPB - 1) // TPB
+        var ctx = st.ctx.value()
+        var MINSTD = self.minstd
+        var MAXSTD = self.maxstd
+
+        # ── one-time host→device uploads (eager; not per imagination step) ──
+        for c in range(BINSl):
+            self.bins_d.data[c] = bins[c]
+        self.bins_d.upload(ctx)
+        for i in range(TI * NS * ACTD):
+            self.noise_d.data[i] = st.noise.data[i]
+        self.noise_d.upload(ctx)
+        for i in range(BT):
+            self.mbrew_d.data[i] = st.mb_rew.data[i]
+            self.mbdne_d.data[i] = st.mb_dne.data[i]
+        self.mbrew_d.upload(ctx)
+        self.mbdne_d.upload(ctx)
+        # rollout carry cd/cs from posterior carries 1..T (host st.cdeter/cstoch
+        # is authoritative — filled by `_wm_gpu`'s download); upload.
+        for i in range(NS * D):
+            self.cd.data[i] = st.cdeter.data[Self.B * D + i]
+        for i in range(NS * SCl):
+            self.cs.data[i] = st.cstoch.data[Self.B * SCl + i]
+        self.cd.upload(ctx)
+        self.cs.upload(ctx)
+
+        # ── imagination rollout (fully on device) ──
+        for t in range(TI):
+            ctx.enqueue_function[_feat_concat_k[NS, D, SCl]](
+                self.cd.lt["gpu", Layout.row_major(NS * D)](),
+                self.cs.lt["gpu", Layout.row_major(NS * SCl)](),
+                self.fb.lt["gpu", Layout.row_major(NS * FEATl)](),
+                grid_dim=nbB, block_dim=TPB,
+            )
+            ctx.enqueue_function[_hist_store_k[FEATl, TI, NS]](
+                self.fb.lt["gpu", Layout.row_major(NS * FEATl)](),
+                self.feats_d.lt["gpu", Layout.row_major(NS * TI * FEATl)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
+            policy.forward[target, NS](TensorRefs[1](self.fb), self.pb, ctx)
+            ctx.enqueue_function[_gaussian_sample_hist_k[ACTD, TI, NS]](
+                self.pb.lt["gpu", Layout.row_major(NS * 2 * ACTD)](),
+                self.noise_d.lt["gpu", Layout.row_major(TI * NS * ACTD)](),
+                self.at.lt["gpu", Layout.row_major(NS * ACTD)](),
+                self.pmean_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
+                self.pstd_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
+                self.acts_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
+                MINSTD, MAXSTD, t, grid_dim=nbB, block_dim=TPB,
+            )
+            value.forward[target, NS](TensorRefs[1](self.fb), self.vb, ctx)
+            slowvalue.forward[target, NS](TensorRefs[1](self.fb), self.svb, ctx)
+            ctx.enqueue_function[_hist_store_k[BINSl, TI, NS]](
+                self.vb.lt["gpu", Layout.row_major(NS * BINSl)](),
+                self.vlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
+            ctx.enqueue_function[_hist_store_k[BINSl, TI, NS]](
+                self.svb.lt["gpu", Layout.row_major(NS * BINSl)](),
+                self.svlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
+            rew.set_input["nd", NS](self.cd, ctx)
+            rew.set_input["stoch_new", NS](self.cs, ctx)
+            rew.set_input["rtgt", NS](self.dummy1, ctx)
+            rew.forward[NS, target](self.dummy1, ctx)
+            ref rew_logits = rew.node_output["rew"]()
+            con.set_input["nd", NS](self.cd, ctx)
+            con.set_input["stoch_new", NS](self.cs, ctx)
+            con.set_input["ctgt", NS](self.dummy1, ctx)
+            con.forward[NS, target](self.dummy1, ctx)
+            ref con_logit = con.node_output["con"]()
+            ctx.enqueue_function[_rewconv_hist_k[BINSl, TI, NS]](
+                rew_logits.lt["gpu", Layout.row_major(NS * BINSl)](),
+                con_logit.lt["gpu", Layout.row_major(NS)](),
+                self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
+                self.rewv_d.lt["gpu", Layout.row_major(NS * TI)](),
+                self.conv_d.lt["gpu", Layout.row_major(NS * TI)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
+            imagine.set_input["deter", NS](self.cd, ctx)
+            imagine.set_input["stoch", NS](self.cs, ctx)
+            imagine.set_input["action", NS](self.at, ctx)
+            imagine.forward[NS, target](self.fb, ctx)
+            ref nd = imagine.node_output["nd"]()
+            ref sn = imagine.node_output["stoch_new"]()
+            ctx.enqueue_copy(self.cd.dev.value(), nd.dev.value())
+            ctx.enqueue_copy(self.cs.dev.value(), sn.dev.value())
+
+        # ── λ-return on device → ret_d ──
+        ctx.enqueue_function[_imag_ret_k[NS, TI, BINSl]](
+            self.vlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
+            self.rewv_d.lt["gpu", Layout.row_major(NS * TI)](),
+            self.conv_d.lt["gpu", Layout.row_major(NS * TI)](),
+            self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
+            self.ret_d.lt["gpu", Layout.row_major(NS * TM1)](),
+            self.lam, grid_dim=nbB, block_dim=TPB,
+        )
+        # ── device-resident percentile retnorm (no D2H) ──
+        comptime NRET = NS * TM1
+        comptime nbRET = (NRET + TPB - 1) // TPB
+        var idx_lo = (retnorm.perclo / Scalar[DT](100.0)) * Scalar[DT](NRET - 1)
+        var idx_hi = (retnorm.perchi / Scalar[DT](100.0)) * Scalar[DT](NRET - 1)
+        var lo_floor = Int(idx_lo)
+        var hi_floor = Int(idx_hi)
+        ctx.enqueue_function[_ret_perc_neigh_k[NRET]](
+            self.ret_d.lt["gpu", Layout.row_major(NRET)](),
+            self.neigh_d.lt["gpu", Layout.row_major(4)](),
+            lo_floor, hi_floor, grid_dim=nbRET, block_dim=TPB,
+        )
+        ctx.enqueue_function[_ret_perc_ema_k](
+            self.neigh_d.lt["gpu", Layout.row_major(4)](),
+            self.retstate_d.lt["gpu", Layout.row_major(2)](),
+            self.rscale_d.lt["gpu", Layout.row_major(1)](),
+            idx_lo - Scalar[DT](lo_floor), idx_hi - Scalar[DT](hi_floor),
+            retnorm.rate, retnorm.limit, grid_dim=1, block_dim=1,
+        )
+
+        # ── imag-loss backward (Gaussian) on device ──
+        var inv_im = Scalar[DT](1.0) / Scalar[DT](NS * TM1)
+        ctx.enqueue_function[_imag_bwd_continuous_k[NS, TI, BINSl, ACTD]](
+            self.vlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
+            self.svlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
+            self.pmean_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
+            self.pstd_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
+            self.acts_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
+            self.conv_d.lt["gpu", Layout.row_major(NS * TI)](),
+            self.ret_d.lt["gpu", Layout.row_major(NS * TM1)](),
+            self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
+            self.gvlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
+            self.gpmean_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
+            self.gpstd_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
+            self.polloss_d.lt["gpu", Layout.row_major(NS * TM1)](),
+            self.valloss_d.lt["gpu", Layout.row_major(NS * TM1)](),
+            self.rscale_d.lt["gpu", Layout.row_major(1)](),
+            self.actent, self.slowreg, inv_im, MINSTD, MAXSTD,
+            grid_dim=nbB, block_dim=TPB,
+        )
+
+        # ── per-step value/policy vjp (inputs gathered from device histories) ──
+        oval.zero_grad[target, M=Self.ValT](value, ctx)
+        opol.zero_grad[target, M=Self.PolT](policy, ctx)
+        for t in range(TI):
+            ctx.enqueue_function[_hist_load_k[FEATl, TI, NS]](
+                self.feats_d.lt["gpu", Layout.row_major(NS * TI * FEATl)](),
+                self.ftt.lt["gpu", Layout.row_major(NS * FEATl)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
+            value.forward[target, NS](TensorRefs[1](self.ftt), self.vscr, ctx)
+            ctx.enqueue_function[_hist_load_k[BINSl, TI, NS]](
+                self.gvlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
+                self.gvt.lt["gpu", Layout.row_major(NS * BINSl)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
+            value.vjp[target, NS](
+                TensorRefs[1](self.ftt), self.gvt, TensorRefs[1](self.gfeat), ctx
+            )
+            policy.forward[target, NS](TensorRefs[1](self.ftt), self.pscr, ctx)
+            ctx.enqueue_function[_hist_load_pol2_k[ACTD, TI, NS]](
+                self.gpmean_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
+                self.gpstd_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
+                self.polg.lt["gpu", Layout.row_major(NS * 2 * ACTD)](),
+                t, grid_dim=nbB, block_dim=TPB,
+            )
+            policy.vjp[target, NS](
+                TensorRefs[1](self.ftt), self.polg, TensorRefs[1](self.gfeat), ctx
+            )
+
+        # ── repval: ground value on REAL replay transitions (device) ──
+        ctx.enqueue_function[_repval_setup_k[NS, TI, FEATl, Self.B, Self.T]](
+            self.ret_d.lt["gpu", Layout.row_major(NS * TM1)](),
+            self.feats_d.lt["gpu", Layout.row_major(NS * TI * FEATl)](),
+            self.boot_d.lt["gpu", Layout.row_major(BT)](),
+            self.feat_bt.lt["gpu", Layout.row_major(BT * FEATl)](),
+            grid_dim=nbBT, block_dim=TPB,
+        )
+        value.forward[target, BT](TensorRefs[1](self.feat_bt), self.vlr, ctx)
+        slowvalue.forward[target, BT](TensorRefs[1](self.feat_bt), self.svlr, ctx)
+        var inv_rep = self.repval_scale / Scalar[DT](Self.B * TM1R)
+        ctx.enqueue_function[_repl_bwd_k[Self.B, Self.T, BINSl]](
+            self.mbdne_d.lt["gpu", Layout.row_major(BT)](),
+            self.mbrew_d.lt["gpu", Layout.row_major(BT)](),
+            self.boot_d.lt["gpu", Layout.row_major(BT)](),
+            self.svlr.lt["gpu", Layout.row_major(BT * BINSl)](),
+            self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
+            self.g_vlr.lt["gpu", Layout.row_major(BT * BINSl)](),
+            self.vlr.lt["gpu", Layout.row_major(BT * BINSl)](),
+            self.horizon, self.lam, self.slowreg, inv_rep,
+            grid_dim=nbB1, block_dim=TPB,
+        )
+        value.vjp[target, BT](
+            TensorRefs[1](self.feat_bt), self.g_vlr, TensorRefs[1](self.grf), ctx
+        )
+
+        oval.step[target, M=Self.ValT](value, ctx)
+        opol.step[target, M=Self.PolT](policy, ctx)
+        polyak_module[target, Self.ValT](value, slowvalue, self.slow_rate, ctx=st.ctx)
+
+        # ── diagnostics + loss scalars (gated; log-cadence only) ──
+        if want_diag:
+            ctx.synchronize()
+            comptime NTM = NS * TM1
+            comptime NTI = NS * TI
+            comptime NPM = NS * TI * ACTD
+            comptime NFT = NS * TI * FEATl
+            comptime r1 = 1
+            ctx.enqueue_function[_diag_sum_k[NTM]](
+                self.polloss_d.lt["gpu", Layout.row_major(NTM)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                0, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_sum_k[NTM]](
+                self.valloss_d.lt["gpu", Layout.row_major(NTM)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                1, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_sum_k[NTI]](
+                self.rewv_d.lt["gpu", Layout.row_major(NTI)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                2, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_sum_k[NTI]](
+                self.conv_d.lt["gpu", Layout.row_major(NTI)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                3, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_min_k[NTI]](
+                self.conv_d.lt["gpu", Layout.row_major(NTI)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                4, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_sum_sq_k[NTM]](
+                self.ret_d.lt["gpu", Layout.row_major(NTM)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                5, 6, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_abs_sum_k[NPM]](
+                self.pmean_d.lt["gpu", Layout.row_major(NPM)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                7, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[
+                _diag_twohot_sum_sq_k[NTI, BINSl, NS * TI * BINSl, BINSl]
+            ](
+                self.vlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
+                self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                8, 9, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            ctx.enqueue_function[_diag_sum_sq_k[NFT]](
+                self.feats_d.lt["gpu", Layout.row_major(NFT)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                10, 11, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            # slot 12: Σ std_raw → dbg_pstd (raw; continuous-only diagnostic)
+            ctx.enqueue_function[_diag_sum_k[NPM]](
+                self.pstd_d.lt["gpu", Layout.row_major(NPM)](),
+                self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
+                12, grid_dim=r1, block_dim=TPB_REDUCE,
+            )
+            self.diag_d.download(ctx)
+            self.rscale_d.download(ctx)
+            ctx.synchronize()
+            st.dbg_rscale = self.rscale_d.data[0]
+            var inv_ac = Scalar[DT](1.0) / Scalar[DT](NTM)
+            var d0 = self.diag_d.data[0]
+            var d1 = self.diag_d.data[1]
+            st.last_ac_loss = (d0 + d1) * inv_ac
+            st.dbg_pol_loss = d0 * inv_ac
+            st.dbg_val_loss = d1 * inv_ac
+            st.dbg_rew_pred = self.diag_d.data[2] / Scalar[DT](NTI)
+            st.dbg_con_mean = self.diag_d.data[3] / Scalar[DT](NTI)
+            st.dbg_con_min = self.diag_d.data[4]
+            var rmean = self.diag_d.data[5] / Scalar[DT](NTM)
+            st.dbg_ret_mean = rmean
+            var rvar = self.diag_d.data[6] / Scalar[DT](NTM) - rmean * rmean
+            st.dbg_ret_std = sqrt(rvar if rvar > Scalar[DT](0.0) else Scalar[DT](0.0))
+            st.dbg_pmean_abs = self.diag_d.data[7] / Scalar[DT](NPM)
+            st.dbg_pstd = self.diag_d.data[12] / Scalar[DT](NPM)
             var vmean = self.diag_d.data[8] / Scalar[DT](NTI)
             st.dbg_val_mean = vmean
             var vvar = self.diag_d.data[9] / Scalar[DT](NTI) - vmean * vmean
