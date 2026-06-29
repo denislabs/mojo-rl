@@ -53,8 +53,25 @@ comptime T_IMAG = 15
 comptime CAP = 200_000
 
 comptime Ag = DreamerV3Agent[
-    "gpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU,
-    PU, BINS, B, T, T_IMAG, CAP, True,   # DISCRETE=True, train_target="gpu"
+    "gpu",
+    OBS,
+    ACT,
+    DETER,
+    H,
+    STOCH,
+    CLASSES,
+    BLOCKS,
+    TOKEN,
+    DEC_U,
+    HU,
+    VU,
+    PU,
+    BINS,
+    B,
+    T,
+    T_IMAG,
+    CAP,
+    True,  # DISCRETE=True, train_target="gpu"
 ]
 
 comptime NUM_STEPS = 150_000
@@ -98,8 +115,10 @@ def main() raises:
         # ─── Agent (GPU) + env (CPU; obs marshalled H2D in select_action) ──
         var agent = Ag.make(
             ctx=ctx,
-            lr=Scalar[DT](1.5e-4), learning_starts=LEARN_START,
-            warmup_steps=500, out_init_scale=Scalar[DT](1.0),
+            lr=Scalar[DT](1.5e-4),
+            learning_starts=LEARN_START,
+            warmup_steps=500,
+            out_init_scale=Scalar[DT](1.0),
         )
         var env = EnvT()
 
@@ -113,7 +132,7 @@ def main() raises:
         # `tests/nn/test_dreamerv3_capture_parity.mojo`, ΔWM=ΔAC=0.0) so
         # convergence is unchanged; a no-op on non-NVIDIA (runs eagerly).
         var final_ret = agent.train_single[
-            EnvT, L=RemoteLogger, USE_TRAIN_CUDA_GRAPH=True
+            EnvT, L=RemoteLogger, USE_TRAIN_CUDA_GRAPH=False
         ](
             env,
             NUM_STEPS,
