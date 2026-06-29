@@ -251,6 +251,62 @@ def test_gpu_fst(ctx: DeviceContext) raises:
     print("  OK  fst ring + sampled fst + record_terminal")
 
 
+def test_gpu_large_obs(ctx: DeviceContext) raises:
+    """Regression: OBS > 1024 must not break the single-transition store.
+    `record`/`record_terminal` previously launched the store kernel as ONE block
+    of `max(OBS,ACT)` threads → for pixel obs (OBS=36864 ≫ 1024) cuLaunchKernel
+    returned CUDA_ERROR_INVALID_VALUE. Now grid-strided (block=TPB, n blocks).
+    Pure replay (no CNN) so it compiles fast and pins the launch-config fix."""
+    print("--- GPU large-OBS store (block-dim cap regression) ---")
+    comptime OL = 4096  # > 1024 (and > a single threadgroup)
+    comptime AL = 3
+    comptime CL = 48
+    comptime BL = 4
+    comptime TL = 3
+    var buf = GPUSequenceReplay[OL, AL, CL].make["gpu"](ctx=ctx)
+    var o = alloc[Scalar[DT]](OL)
+    var a = alloc[Scalar[DT]](AL)
+    for i in range(CL):
+        for d in range(OL):
+            o[d] = Scalar[DT](i)
+        for j in range(AL):
+            a[j] = Scalar[DT](i)
+        buf.record(o, a, Scalar[DT](i), Scalar[DT](0.0))
+    ctx.synchronize()
+    assert_true(buf.can_sample[TL](), "can sample large-obs buffer")
+
+    var d_obs = ctx.enqueue_create_buffer[DT](BL * (TL + 1) * OL)
+    var d_act = ctx.enqueue_create_buffer[DT](BL * TL * AL)
+    var d_rew = ctx.enqueue_create_buffer[DT](BL * TL)
+    var d_dne = ctx.enqueue_create_buffer[DT](BL * TL)
+    var d_fst = ctx.enqueue_create_buffer[DT](BL * (TL + 1))
+    buf.sample_batch_fst_dev[BL, TL](ctx, d_obs, d_act, d_rew, d_dne, d_fst)
+    var obs_out = alloc[Scalar[DT]](BL * (TL + 1) * OL)
+    ctx.enqueue_copy(obs_out, d_obs)
+    ctx.synchronize()
+    # obs frame tags contiguous (+1 mod CL); check first AND last lane == tag
+    # (last lane = index OL-1 exercises a thread in a high block).
+    for b in range(BL):
+        var t0 = Int(obs_out[b * (TL + 1) * OL])
+        for k in range(TL + 1):
+            var tag = obs_out[b * (TL + 1) * OL + k * OL]
+            assert_equal(
+                obs_out[b * (TL + 1) * OL + k * OL + OL - 1], tag,
+                "large-obs: last lane != frame tag (high-block thread)",
+            )
+            assert_equal(
+                tag, Scalar[DT]((t0 + k) % CL),
+                "large-obs: window not contiguous",
+            )
+    # record_terminal shares the store kernel — exercise its large-OBS launch.
+    var buf2 = GPUSequenceReplay[OL, AL, CL].make["gpu"](ctx=ctx)
+    buf2.record(o, a, Scalar[DT](0.0), Scalar[DT](1.0))
+    buf2.record_terminal(o)
+    ctx.synchronize()
+    assert_equal(buf2.count(), 2, "large-obs record + record_terminal count")
+    print("  OK  OBS=", OL, " store+terminal+sample, windows contiguous")
+
+
 def main() raises:
     print("==============================================================")
     print("SequenceReplayBuffer trait — CPU + GPU sibling")
@@ -260,6 +316,7 @@ def main() raises:
     test_gpu(ctx)
     test_gpu_record_batch(ctx)
     test_gpu_fst(ctx)
+    test_gpu_large_obs(ctx)
     print("==============================================================")
     print("ALL PASSED")
     print("==============================================================")

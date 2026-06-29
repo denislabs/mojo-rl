@@ -72,10 +72,11 @@ def _seq_store_one_kernel[
     buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
     slot: Int32,
 ):
-    """Single-block store: thread d writes stage[d] → buf[slot, d] for obs
-    (OBS lanes) and act (ACT lanes); lane 0 writes the scalar rew / dne.
-    Launched grid=(1,), block=(max(OBS, ACT),)."""
-    var d = Int(thread_idx.x)
+    """Element-parallel store: thread d writes stage[d] → buf[slot, d] for obs
+    (OBS lanes) and act (ACT lanes); global thread 0 writes the scalar rew / dne.
+    Launched grid=(ceil(max(OBS,ACT)/TPB),), block=(TPB,) — grid-strided across
+    blocks so OBS may exceed the 1024-thread block cap (pixel obs)."""
+    var d = Int(block_dim.x * block_idx.x + thread_idx.x)
     var s = Int(slot)
     if d < OBS:
         buf_s[s, d] = _obs_quant[SDT](rebind[Scalar[DT]](stage_s[d]))
@@ -431,7 +432,9 @@ struct GPUSequenceReplay[
         var buf_r_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew)
         var buf_d_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne)
 
-        comptime TPB_S = Self.OBS if Self.OBS > Self.ACT else Self.ACT
+        # grid-strided: max(OBS,ACT) may exceed the 1024-thread block cap (pixels)
+        comptime MAXD_R = Self.OBS if Self.OBS > Self.ACT else Self.ACT
+        comptime n_blocks_r = (MAXD_R + TPB - 1) // TPB
         comptime kernel = _seq_store_one_kernel[
             Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
@@ -445,8 +448,8 @@ struct GPUSequenceReplay[
             buf_r_lt,
             buf_d_lt,
             Int32(self.pos),
-            grid_dim=1,
-            block_dim=TPB_S,
+            grid_dim=n_blocks_r,
+            block_dim=TPB,
         )
         # store the `is_first` flag into the ring at `pos`.
         self.ctx.enqueue_function[_seq_store_fst_kernel[Self.CAP]](
@@ -482,7 +485,8 @@ struct GPUSequenceReplay[
         self.ctx.enqueue_copy(self.stage_fst, self._h_fst.unsafe_ptr())
         self.stage_act.enqueue_fill(Scalar[DT](0.0))  # terminal frame: act = 0
 
-        comptime TPB_S = Self.OBS if Self.OBS > Self.ACT else Self.ACT
+        comptime MAXD_T = Self.OBS if Self.OBS > Self.ACT else Self.ACT
+        comptime n_blocks_t = (MAXD_T + TPB - 1) // TPB
         self.ctx.enqueue_function[
             _seq_store_one_kernel[Self.OBS, Self.ACT, Self.CAP, Self.SDT]
         ](
@@ -495,8 +499,8 @@ struct GPUSequenceReplay[
             LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),
             LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne),
             Int32(self.pos),
-            grid_dim=1,
-            block_dim=TPB_S,
+            grid_dim=n_blocks_t,
+            block_dim=TPB,
         )
         self.ctx.enqueue_function[_seq_store_fst_kernel[Self.CAP]](
             LayoutTensor[DT, Layout.row_major(1)](self.stage_fst),
