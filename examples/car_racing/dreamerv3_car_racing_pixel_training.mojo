@@ -33,6 +33,7 @@ Smoke (Apple): use tests/nn/test_dreamerv3_carracing_pixel_smoke.mojo
 
 from std.memory import alloc
 from std.random import random_float64, seed
+from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
@@ -79,7 +80,9 @@ comptime Env = CarRacingMB[DT, True, IMG]
 comptime TOTAL_STEPS = 1_000_000
 comptime LEARN_START = 1024
 comptime TRAIN_EVERY = 4
-comptime EVAL_EVERY = 10_000
+comptime EVAL_EVERY = 5_000
+comptime PRINT_EVERY = 200       # frequent heartbeat (step, WM/AC, throughput)
+comptime WARMUP_PRINT = 200      # heartbeat during the no-train warmup phase
 comptime EVAL_EPISODES = 3
 comptime EP_LEN = 1000     # CarRacing max_steps
 comptime ACTION_SCALE = Scalar[DT](1.0)  # env remaps gas/brake internally
@@ -127,6 +130,10 @@ def main() raises:
     var obsbuf = alloc[Scalar[DT]](OBS)
     var actbuf = alloc[Scalar[DT]](ACT)
 
+    print("  warming up", LEARN_START, "steps (CPU render + GPU record, no",
+          "train) — heavy config, first train_steps are slow...")
+    var t_mark = perf_counter_ns()
+    var step_mark = 0
     for step in range(TOTAL_STEPS):
         for i in range(OBS):
             obsbuf[i] = obs[i]
@@ -147,17 +154,43 @@ def main() raises:
         if res[2]:
             obs = env.reset_obs_list()
             ag.reset_belief()
+
+        # heartbeat during the no-train warmup so it's visibly alive
+        if step < LEARN_START and step > 0 and step % WARMUP_PRINT == 0:
+            var dt = Float64(perf_counter_ns() - t_mark) / 1e9
+            var rate = Float64(step - step_mark) / dt if dt > 0 else 0.0
+            print("  [warmup]", step, "/", LEARN_START, " (", rate,
+                  "env-steps/s)")
+            t_mark = perf_counter_ns()
+            step_mark = step
+        if step == LEARN_START:
+            print("  warmup done — training starts (train_step every",
+                  TRAIN_EVERY, "steps); each is a", T, "-step CNN BPTT, slow.")
+            t_mark = perf_counter_ns()
+            step_mark = step
+
         if step >= LEARN_START and step % TRAIN_EVERY == 0:
-            _ = ag.train_step()
+            # diagnostics (WM/AC loss readout) only on heartbeat/eval steps —
+            # want_diag=True every step adds a per-step D2H sync (slower).
+            var wd = (step % PRINT_EVERY == 0) or (step % EVAL_EVERY == 0)
+            _ = ag.train_step(want_diag=wd)
+
+        # frequent heartbeat: confirms progress + measures train throughput
+        if step >= LEARN_START and step % PRINT_EVERY == 0:
+            var dt = Float64(perf_counter_ns() - t_mark) / 1e9
+            var rate = Float64(step - step_mark) / dt if dt > 0 else 0.0
+            print("  step", step, " WM=", ag.last_wm_loss(), " AC=",
+                  ag.last_ac_loss(), " (", rate, "steps/s)")
+            t_mark = perf_counter_ns()
+            step_mark = step
 
         if step > 0 and step % EVAL_EVERY == 0:
             var ret = _greedy_eval(ag)
-            print(
-                "  step", step, " eval_ret=", ret,
-                " WM=", ag.last_wm_loss(), " AC=", ag.last_ac_loss(),
-            )
+            print("  step", step, " eval_ret=", ret)
             obs = env.reset_obs_list()
             ag.reset_belief()
+            t_mark = perf_counter_ns()
+            step_mark = step
 
     var fe = _greedy_eval(ag)
     print("=" * 70)
