@@ -35,7 +35,7 @@ CPU↔GPU parity gates hold.
 """
 
 from std.memory import alloc
-from std.math import tanh, exp, sqrt, log
+from std.math import tanh, exp, sqrt, log, cos
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor, TileTensor, row_major
@@ -762,6 +762,128 @@ def _imag_bwd_k[NS_: Int, TI_: Int, BINS_: Int, C_: Int](
             _dev_twohot_ce_bwd[BINS_](
                 vlog, vbase, bins, slowval_t, up * slowreg, gvlog
             )
+
+
+def _imag_bwd_continuous_k[NS_: Int, TI_: Int, BINS_: Int, C_: Int](
+    vlog: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * BINS_), MutAnyOrigin],
+    svlog: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * BINS_), MutAnyOrigin],
+    pmean: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * C_), MutAnyOrigin],
+    pstd: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * C_), MutAnyOrigin],
+    acts: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * C_), MutAnyOrigin],
+    conv: LayoutTensor[DT, Layout.row_major(NS_ * TI_), MutAnyOrigin],
+    ret: LayoutTensor[DT, Layout.row_major(NS_ * (TI_ - 1)), MutAnyOrigin],
+    bins: LayoutTensor[DT, Layout.row_major(BINS_), MutAnyOrigin],
+    gvlog: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * BINS_), MutAnyOrigin],
+    gpmean: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * C_), MutAnyOrigin],
+    gpstd: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * C_), MutAnyOrigin],
+    polloss: LayoutTensor[DT, Layout.row_major(NS_ * (TI_ - 1)), MutAnyOrigin],
+    valloss: LayoutTensor[DT, Layout.row_major(NS_ * (TI_ - 1)), MutAnyOrigin],
+    rscale_buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    actent: Scalar[DT],
+    slowreg: Scalar[DT],
+    inv_im: Scalar[DT],
+    minstd: Scalar[DT],
+    maxstd: Scalar[DT],
+):
+    """Continuous (bounded-normal) twin of `_imag_bwd_k`: per-start imag-loss
+    forward (polloss/valloss) + backward (gvlog twohot CE, gpmean/gpstd Gaussian
+    chain rule). The value path is IDENTICAL to the discrete kernel; only the
+    policy distribution differs. Mirrors `imag_loss_cpu` / `imag_loss_backward`
+    (DISCRETE=False) bit-for-bit. `ret` + `rscale` precomputed on device."""
+    var b = Int(global_idx.x)
+    if b < NS_:
+        comptime TM1 = TI_ - 1
+        comptime LOG2PI = Scalar[DT](1.8378770664093453)
+        var rscale = rebind[Scalar[DT]](rscale_buf[0])
+        for t in range(TI_):
+            for c in range(BINS_):
+                gvlog[(b * TI_ + t) * BINS_ + c] = Scalar[DT](0.0)
+            for a in range(C_):
+                gpmean[(b * TI_ + t) * C_ + a] = Scalar[DT](0.0)
+                gpstd[(b * TI_ + t) * C_ + a] = Scalar[DT](0.0)
+        var w_acc = Scalar[DT](1.0)
+        for t in range(TM1):
+            w_acc *= rebind[Scalar[DT]](conv[b * TI_ + t])
+            var w = w_acc
+            var vbase = (b * TI_ + t) * BINS_
+            var val_t = _dev_twp[BINS_](vlog, vbase, bins)
+            var slowval_t = _dev_twp[BINS_](svlog, vbase, bins)
+            var ret_t = rebind[Scalar[DT]](ret[b * TM1 + t])
+            var adv = (ret_t - val_t) / rscale
+            var pbase = (b * TI_ + t) * C_
+            # ── forward: Σ_a logp / entropy (bounded normal) ──
+            var logpi = Scalar[DT](0.0)
+            var ent = Scalar[DT](0.0)
+            for a in range(C_):
+                var mr = rebind[Scalar[DT]](pmean[pbase + a])
+                var sr = rebind[Scalar[DT]](pstd[pbase + a])
+                var mean = tanh(mr)
+                var sg = Scalar[DT](1.0) / (
+                    Scalar[DT](1.0) + exp(-(sr + Scalar[DT](2.0)))
+                )
+                var std = (maxstd - minstd) * sg + minstd
+                var zz = (rebind[Scalar[DT]](acts[pbase + a]) - mean) / std
+                logpi += (
+                    -Scalar[DT](0.5) * zz * zz - log(std)
+                    - Scalar[DT](0.5) * LOG2PI
+                )
+                ent += Scalar[DT](0.5) * LOG2PI + log(std) + Scalar[DT](0.5)
+            polloss[b * TM1 + t] = w * -(logpi * adv + actent * ent)
+            var l1 = _dev_twohot_ce[BINS_](vlog, vbase, bins, ret_t)
+            var l2 = _dev_twohot_ce[BINS_](vlog, vbase, bins, slowval_t)
+            valloss[b * TM1 + t] = w * (l1 + slowreg * l2)
+            # ── backward ──
+            var dpl_dlogp = inv_im * w * (-adv)
+            var dpl_dent = inv_im * w * (-actent)
+            for a in range(C_):
+                var idx = pbase + a
+                var mr = rebind[Scalar[DT]](pmean[idx])
+                var sr = rebind[Scalar[DT]](pstd[idx])
+                var mean = tanh(mr)
+                var sg = Scalar[DT](1.0) / (
+                    Scalar[DT](1.0) + exp(-(sr + Scalar[DT](2.0)))
+                )
+                var std = (maxstd - minstd) * sg + minstd
+                var zz = (rebind[Scalar[DT]](acts[idx]) - mean) / std
+                var dlogp_dmean = zz / std
+                var dlogp_dstd = (zz * zz - Scalar[DT](1.0)) / std
+                var dent_dstd = Scalar[DT](1.0) / std
+                var dmean_draw = Scalar[DT](1.0) - mean * mean
+                var dstd_draw = (maxstd - minstd) * sg * (Scalar[DT](1.0) - sg)
+                gpmean[idx] = dpl_dlogp * dlogp_dmean * dmean_draw
+                gpstd[idx] = (
+                    dpl_dlogp * dlogp_dstd + dpl_dent * dent_dstd
+                ) * dstd_draw
+            var up = inv_im * w
+            _dev_twohot_ce_bwd[BINS_](vlog, vbase, bins, ret_t, up, gvlog)
+            _dev_twohot_ce_bwd[BINS_](
+                vlog, vbase, bins, slowval_t, up * slowreg, gvlog
+            )
+
+
+def _box_muller_gaussian_k[N_: Int](
+    dst: LayoutTensor[DT, Layout.row_major(N_), MutAnyOrigin],
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Device N(0,1) imagination noise via Box-Muller — the Gaussian counterpart
+    of `_noise_philox_k` (which yields uniform[-1,1] for the discrete categorical
+    sample). Element i draws two uniforms from Philox(seed+i, offset) and maps
+    them z = sqrt(-2·ln u1)·cos(2π·u2). All Scalar[DT] (Metal-safe). The offset
+    (advanced by `_noise_off_inc_k`) gives disjoint streams per step. Used only
+    when `device_noise=True`; parity runs upload host noise so this is untested
+    by the CPU↔GPU gate (stats-checked separately)."""
+    var i = Int(global_idx.x)
+    if i >= N_:
+        return
+    var off = rebind[UInt64](offset_buf[0])
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=off)
+    var u1 = Scalar[DT](philox.step_uniform()[0])
+    var u2 = Scalar[DT](philox.step_uniform()[0])
+    if u1 < Scalar[DT](1e-7):
+        u1 = Scalar[DT](1e-7)
+    var r = sqrt(Scalar[DT](-2.0) * log(u1))
+    dst[i] = r * cos(Scalar[DT](6.283185307179586) * u2)
 
 
 def _repval_setup_k[
