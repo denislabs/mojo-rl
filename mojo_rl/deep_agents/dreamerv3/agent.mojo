@@ -37,7 +37,7 @@ from std.memory import alloc
 from std.random import random_float64
 from std.gpu.host import DeviceContext
 
-from mojo_rl.core.env_traits import BoxDiscreteActionEnv
+from mojo_rl.core.env_traits import BoxDiscreteActionEnv, BoxContinuousActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor, TensorImpl
@@ -351,6 +351,179 @@ struct DreamerV3Agent[
         obsbuf.free()
         actbuf.free()
         return final_ev
+
+    def train_continuous_batched[
+        E: BoxContinuousActionEnv & Movable & ImplicitlyDeletable,
+        L: Logger = NoOpLogger,
+    ](
+        mut self,
+        mut envs: List[E],
+        total_steps: Int,
+        *,
+        learn_start: Int = 1024,
+        train_every: Int = 4,
+        print_every: Int = 5000,
+        verbose: Bool = True,
+        logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
+    ) raises -> Scalar[DT]:
+        """Batched-CPU-env / (this agent's) GPU-or-CPU training for a CONTINUOUS
+        env: step `len(envs)` env instances in parallel on the host, train the
+        single shared agent on B-sized windows from the (single-stream) sequence
+        replay. Returns the average completed-episode return over the run.
+
+        Each iteration steps EVERY env once (total env interactions =
+        `total_steps · len(envs)`). To keep DreamerV3's length-T windows
+        contiguous on a single-stream replay, each env's transitions are buffered
+        and its COMPLETE episode is flushed to `record` (+`record_terminal`) in
+        one contiguous block on done — so windows never interleave across envs,
+        and cross-episode boundaries are handled by the replay's `fst` reset-mask
+        exactly as in the single-env loop. Each env carries its OWN belief
+        (deter/stoch/last_action), swapped in/out of the agent around its
+        `select_action`. The trainer / replay / `select_action` are unchanged.
+
+        ⚠️ Memory: the per-env episode buffers hold raw obs until flush —
+        `len(envs) · max_episode_len · OBS` floats. For large (pixel) obs keep
+        `len(envs)` modest / episodes short, or use a multi-stream replay
+        (follow-up). NOT wired into the example yet (single-env first).
+        """
+        comptime assert not Self.DISCRETE, (
+            "train_continuous_batched is the CONTINUOUS facade; build the agent"
+            " with DISCRETE=False (discrete envs: use train_single)."
+        )
+        comptime D = Self.DETER
+        comptime SCl = Self.SC
+        comptime A = Self.ACT
+        comptime O = Self.OBS
+        var n = len(envs)
+
+        var obsbuf = alloc[Scalar[DT]](O).as_unsafe_any_origin()
+        var actbuf = alloc[Scalar[DT]](A).as_unsafe_any_origin()
+
+        # Per-env belief carries (flat) + episode buffers + current obs.
+        var bel_d = List[Scalar[DT]](length=n * D, fill=Scalar[DT](0))
+        var bel_s = List[Scalar[DT]](length=n * SCl, fill=Scalar[DT](0))
+        var bel_a = List[Scalar[DT]](length=n * A, fill=Scalar[DT](0))
+        var ep_obs = List[List[Scalar[DT]]]()
+        var ep_act = List[List[Scalar[DT]]]()
+        var ep_rew = List[List[Scalar[DT]]]()
+        var ep_dne = List[List[Scalar[DT]]]()
+        var cur_obs = List[List[Scalar[DT]]]()
+        for e in range(n):
+            ep_obs.append(List[Scalar[DT]]())
+            ep_act.append(List[Scalar[DT]]())
+            ep_rew.append(List[Scalar[DT]]())
+            ep_dne.append(List[Scalar[DT]]())
+            var o0 = envs[e].reset_obs_list()
+            var c0 = List[Scalar[DT]](capacity=len(o0))
+            for i in range(len(o0)):
+                c0.append(o0[i].cast[DT]())
+            cur_obs.append(c0^)
+
+        var ep_ret = List[Scalar[DT]](length=n, fill=Scalar[DT](0))
+        var ret_acc: Scalar[DT] = 0.0
+        var ret_n: Int = 0
+        var last_ep: Scalar[DT] = 0.0
+
+        for step in range(total_steps):
+            for e in range(n):
+                for i in range(O):
+                    obsbuf[i] = cur_obs[e][i]
+                # swap this env's belief into the agent
+                for k in range(D):
+                    self.belief_deter.data[k] = bel_d[e * D + k]
+                for k in range(SCl):
+                    self.belief_stoch.data[k] = bel_s[e * SCl + k]
+                for k in range(A):
+                    self.last_action.data[k] = bel_a[e * A + k]
+
+                if step < learn_start:
+                    for a in range(A):
+                        actbuf[a] = Scalar[DT](random_float64() * 2.0 - 1.0)
+                else:
+                    self.select_action(obsbuf, actbuf, explore=True)
+
+                # swap the (updated) belief back out
+                for k in range(D):
+                    bel_d[e * D + k] = self.belief_deter.data[k]
+                for k in range(SCl):
+                    bel_s[e * SCl + k] = self.belief_stoch.data[k]
+                for k in range(A):
+                    bel_a[e * A + k] = self.last_action.data[k]
+
+                var av = List[Scalar[DT]]()
+                for a in range(A):
+                    av.append(actbuf[a])
+                var r = envs[e].step_continuous_vec[DT](av)
+                ep_ret[e] += r[1]
+                # buffer this transition for a contiguous flush on done
+                for i in range(O):
+                    ep_obs[e].append(cur_obs[e][i])
+                for a in range(A):
+                    ep_act[e].append(actbuf[a])
+                ep_rew[e].append(r[1])
+                ep_dne[e].append(Scalar[DT](1.0) if r[2] else Scalar[DT](0.0))
+                cur_obs[e] = r[0].copy()
+
+                if r[2]:
+                    # flush the complete episode contiguously, then the terminal
+                    # obs (DreamerV3 terminal-obs storage), matching train_single
+                    var cnt = len(ep_rew[e])
+                    for t in range(cnt):
+                        for i in range(O):
+                            obsbuf[i] = ep_obs[e][t * O + i]
+                        for a in range(A):
+                            actbuf[a] = ep_act[e][t * A + a]
+                        self.record(obsbuf, actbuf, ep_rew[e][t], ep_dne[e][t])
+                    for i in range(O):
+                        obsbuf[i] = cur_obs[e][i]
+                    self.record_terminal(obsbuf)
+                    ep_obs[e].clear()
+                    ep_act[e].clear()
+                    ep_rew[e].clear()
+                    ep_dne[e].clear()
+                    for k in range(D):
+                        bel_d[e * D + k] = Scalar[DT](0)
+                    for k in range(SCl):
+                        bel_s[e * SCl + k] = Scalar[DT](0)
+                    for k in range(A):
+                        bel_a[e * A + k] = Scalar[DT](0)
+                    var od = envs[e].reset_obs_list()
+                    var cd = List[Scalar[DT]](capacity=len(od))
+                    for i in range(len(od)):
+                        cd.append(od[i].cast[DT]())
+                    cur_obs[e] = cd^
+                    last_ep = ep_ret[e]
+                    ret_acc += ep_ret[e]
+                    ret_n += 1
+                    ep_ret[e] = Scalar[DT](0)
+
+            if step >= learn_start and step % train_every == 0:
+                _ = self.train_step()
+
+            if verbose and step > 0 and step % print_every == 0:
+                var avg = ret_acc / Scalar[DT](ret_n) if ret_n > 0 else last_ep
+                print(
+                    "  step", step, "(", step * n, "env-steps)  avg_ep_ret=",
+                    avg, " last_ep=", last_ep, " eps=", ret_n,
+                    " WM=", self.last_wm_loss(), " AC=", self.last_ac_loss(),
+                )
+                comptime if L.ENABLED:
+                    if logger:
+                        var lg = logger.value()
+                        lg[].log_scalar("avg_reward", Float64(avg), step)
+                        lg[].log_scalar("episode_reward", Float64(last_ep), step)
+                        lg[].log_scalar(
+                            "loss/world_model",
+                            Float64(self.last_wm_loss()), step,
+                        )
+                        lg[].log_scalar(
+                            "loss/actor_critic",
+                            Float64(self.last_ac_loss()), step,
+                        )
+
+        obsbuf.free()
+        actbuf.free()
+        return ret_acc / Scalar[DT](ret_n) if ret_n > 0 else last_ep
 
     def can_train(self) -> Bool:
         return self.trainer.can_train()
