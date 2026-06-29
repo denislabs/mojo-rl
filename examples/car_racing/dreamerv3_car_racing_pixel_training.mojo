@@ -44,18 +44,18 @@ from mojo_rl.envs.car_racing.car_racing_mb import CarRacingMB
 # =============================================================================
 # Architecture
 # =============================================================================
-comptime C = 4            # 4-frame grayscale stack = conv input channels
-comptime IMG = 96         # 96×96 (16-divisible → conv minres 6)
-comptime BASE = 48        # conv base width (channels BASE·{1,2,4,8})
+comptime C = 4  # 4-frame grayscale stack = conv input channels
+comptime IMG = 96  # 96×96 (16-divisible → conv minres 6)
+comptime BASE = 48  # conv base width (channels BASE·{1,2,4,8})
 comptime OBS = C * IMG * IMG  # 36864
-comptime ACT = 3          # steering, gas, brake
+comptime ACT = 3  # steering, gas, brake
 comptime DETER = 512
 comptime H = 256
 comptime STOCH = 32
 comptime CLASSES = 32
 comptime BLOCKS = 8
-comptime TOKEN = 1024     # encoder output (flattened conv → Linear → tokens)
-comptime DEC_U = 1024     # unused by the CNN decoder (BASE drives it)
+comptime TOKEN = 1024  # encoder output (flattened conv → Linear → tokens)
+comptime DEC_U = 1024  # unused by the CNN decoder (BASE drives it)
 comptime HU = 256
 comptime VU = 256
 comptime PU = 256
@@ -63,26 +63,45 @@ comptime BINS = 255
 comptime B = 16
 comptime T = 16
 comptime T_IMAG = 15
-comptime CAP = 50_000     # pixel replay: CAP×36864×4 B ≈ 7.4 GB — tune to HW
+comptime CAP = 50_000  # pixel replay: CAP×36864×4 B ≈ 7.4 GB — tune to HW
 
 comptime FEATIN = STOCH * CLASSES + DETER
 comptime ENC = DreamerEncoderCNN[C, IMG, IMG, BASE, TOKEN, SwishOp]
 comptime DEC = DreamerDecoderCNN[FEATIN, C, IMG, IMG, BASE, SwishOp]
 
 comptime Ag = DreamerV3Agent[
-    "gpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU, PU,
-    BINS, B, T, T_IMAG, CAP, False, ENC, DEC,  # DISCRETE=False (continuous)
+    "gpu",
+    OBS,
+    ACT,
+    DETER,
+    H,
+    STOCH,
+    CLASSES,
+    BLOCKS,
+    TOKEN,
+    DEC_U,
+    HU,
+    VU,
+    PU,
+    BINS,
+    B,
+    T,
+    T_IMAG,
+    CAP,
+    False,
+    ENC,
+    DEC,  # DISCRETE=False (continuous)
 ]
 comptime Env = CarRacingMB[DT, True, IMG]  # PIXEL_OBS=True, PIX_RES=96
 
 comptime NUM_STEPS = 1_000_000
 comptime LEARN_START = 1024
 comptime TRAIN_EVERY = 4
-comptime LOG_EVERY = 250    # WM/AC loss curves (cheap; no greedy eval) — frequent
-                           # early data points (~every few min at this heavy cfg)
+comptime LOG_EVERY = 250  # WM/AC loss curves (cheap; no greedy eval) — frequent
+# early data points (~every few min at this heavy cfg)
 comptime EVAL_EVERY = 5000  # greedy eval + episode returns (expensive)
 comptime EVAL_EPISODES = 3
-comptime EP_LEN = 1000     # CarRacing max_steps
+comptime EP_LEN = 1000  # CarRacing max_steps
 comptime CHECKPOINT_EVERY = 50_000
 comptime CHECKPOINT_PATH = "dreamerv3_carracing_pixel_gpu.ckpt"
 
@@ -119,7 +138,7 @@ def main() raises:
             lr=Scalar[DT](4e-5),
             learning_starts=LEARN_START,
             warmup_steps=500,
-            action_scale=Scalar[DT](1.0),   # env remaps gas/brake internally
+            action_scale=Scalar[DT](1.0),  # env remaps gas/brake internally
             actent=Scalar[DT](3e-4),
             slowtar=True,
         )
@@ -129,7 +148,9 @@ def main() raises:
         print("Starting GPU training (heavy pixel config; warmup is slow)...")
         print("-" * 70)
         var t_start = perf_counter_ns()
-        var final_ret = agent.train_continuous[Env, L=RemoteLogger](
+        var final_ret = agent.train_continuous[
+            Env, L=RemoteLogger, USE_TRAIN_CUDA_GRAPH=True
+        ](
             env,
             NUM_STEPS,
             learn_start=LEARN_START,
