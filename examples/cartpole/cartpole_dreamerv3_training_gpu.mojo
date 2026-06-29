@@ -132,7 +132,7 @@ def main() raises:
         # `tests/nn/test_dreamerv3_capture_parity.mojo`, ΔWM=ΔAC=0.0) so
         # convergence is unchanged; a no-op on non-NVIDIA (runs eagerly).
         var final_ret = agent.train_single[
-            EnvT, L=RemoteLogger, USE_TRAIN_CUDA_GRAPH=False
+            EnvT, L=RemoteLogger, USE_TRAIN_CUDA_GRAPH=True
         ](
             env,
             NUM_STEPS,
