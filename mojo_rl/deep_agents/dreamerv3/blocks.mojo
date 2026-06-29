@@ -144,14 +144,18 @@ def _feat_concat_k[B_: Int, D_: Int, SC_: Int](
     stoch: LayoutTensor[DT, Layout.row_major(B_ * SC_), MutAnyOrigin],
     feat: LayoutTensor[DT, Layout.row_major(B_ * (D_ + SC_)), MutAnyOrigin],
 ):
-    """feat[b] = concat(deter[b], stoch[b])  (FEAT = D + SC)."""
-    var b = Int(global_idx.x)
-    if b < B_:
-        var F = D_ + SC_
-        for k in range(D_):
-            feat[b * F + k] = rebind[Scalar[DT]](deter[b * D_ + k])
-        for k in range(SC_):
-            feat[b * F + D_ + k] = rebind[Scalar[DT]](stoch[b * SC_ + k])
+    """feat[b] = concat(deter[b], stoch[b])  (FEAT = D + SC). One thread per
+    output element over B*(D+SC) (was B-parallel with a serial FEAT loop → a
+    single block at NS=B=256)."""
+    var F = D_ + SC_
+    var i = Int(global_idx.x)
+    if i < B_ * F:
+        var b = i // F
+        var k = i % F
+        if k < D_:
+            feat[i] = rebind[Scalar[DT]](deter[b * D_ + k])
+        else:
+            feat[i] = rebind[Scalar[DT]](stoch[b * SC_ + (k - D_)])
 
 
 def _rowscale_k[B_: Int, W_: Int](
@@ -319,11 +323,13 @@ def _hist_store_k[W_: Int, TI_: Int, NS_: Int](
     hist: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * W_), MutAnyOrigin],
     t: Int,
 ):
-    """Scatter the per-step output src[NS,W] into hist[NS,TI,W] at step t."""
-    var b = Int(global_idx.x)
-    if b < NS_:
-        for k in range(W_):
-            hist[(b * TI_ + t) * W_ + k] = rebind[Scalar[DT]](src[b * W_ + k])
+    """Scatter the per-step output src[NS,W] into hist[NS,TI,W] at step t. One
+    thread per element over NS*W (was NS-parallel with a serial W loop)."""
+    var i = Int(global_idx.x)
+    if i < NS_ * W_:
+        var b = i // W_
+        var k = i % W_
+        hist[(b * TI_ + t) * W_ + k] = rebind[Scalar[DT]](src[i])
 
 
 def _hist_load_k[W_: Int, TI_: Int, NS_: Int](
@@ -331,11 +337,13 @@ def _hist_load_k[W_: Int, TI_: Int, NS_: Int](
     dst: LayoutTensor[DT, Layout.row_major(NS_ * W_), MutAnyOrigin],
     t: Int,
 ):
-    """Gather hist[NS,TI,W] step t into the contiguous dst[NS,W]."""
-    var b = Int(global_idx.x)
-    if b < NS_:
-        for k in range(W_):
-            dst[b * W_ + k] = rebind[Scalar[DT]](hist[(b * TI_ + t) * W_ + k])
+    """Gather hist[NS,TI,W] step t into the contiguous dst[NS,W]. One thread per
+    element over NS*W (was NS-parallel with a serial W loop)."""
+    var i = Int(global_idx.x)
+    if i < NS_ * W_:
+        var b = i // W_
+        var k = i % W_
+        dst[i] = rebind[Scalar[DT]](hist[(b * TI_ + t) * W_ + k])
 
 
 def _hist_load_pol2_k[ACT_: Int, TI_: Int, NS_: Int](
@@ -346,16 +354,16 @@ def _hist_load_pol2_k[ACT_: Int, TI_: Int, NS_: Int](
 ):
     """Continuous policy cotangent: gather step-t gpmean → dst[:, 0:ACT] and
     gpstd → dst[:, ACT:2ACT] (the [mean_raw | std_raw] layout the 2·ACT policy
-    head emits) for the per-step policy.vjp."""
-    var b = Int(global_idx.x)
-    if b < NS_:
-        for a in range(ACT_):
-            dst[b * 2 * ACT_ + a] = rebind[Scalar[DT]](
-                gpm[(b * TI_ + t) * ACT_ + a]
-            )
-            dst[b * 2 * ACT_ + ACT_ + a] = rebind[Scalar[DT]](
-                gps[(b * TI_ + t) * ACT_ + a]
-            )
+    head emits) for the per-step policy.vjp. One thread per element over
+    NS*2*ACT (was NS-parallel with a serial ACT loop)."""
+    var i = Int(global_idx.x)
+    if i < NS_ * 2 * ACT_:
+        var b = i // (2 * ACT_)
+        var j = i % (2 * ACT_)
+        if j < ACT_:
+            dst[i] = rebind[Scalar[DT]](gpm[(b * TI_ + t) * ACT_ + j])
+        else:
+            dst[i] = rebind[Scalar[DT]](gps[(b * TI_ + t) * ACT_ + (j - ACT_)])
 
 
 def _noise_philox_k[N_: Int](
@@ -2968,6 +2976,9 @@ struct ACStep[
         comptime BT = Self.B * Self.T
         comptime TM1R = Self.T - 1
         comptime nbB = (NS + TPB - 1) // TPB
+        comptime nbNF = (NS * FEATl + TPB - 1) // TPB  # one thread / hist element
+        comptime BLKS = 32  # one warp = 32 starts
+        comptime nbBS = (NS + BLKS - 1) // BLKS  # spread NS starts over SMs
         comptime nbBT = (BT + TPB - 1) // TPB
         comptime nbB1 = (Self.B + TPB - 1) // TPB
         var ctx = st.ctx.value()
@@ -3002,12 +3013,12 @@ struct ACStep[
                 self.cd.lt["gpu", Layout.row_major(NS * D)](),
                 self.cs.lt["gpu", Layout.row_major(NS * SCl)](),
                 self.fb.lt["gpu", Layout.row_major(NS * FEATl)](),
-                grid_dim=nbB, block_dim=TPB,
+                grid_dim=nbNF, block_dim=TPB,
             )
             ctx.enqueue_function[_hist_store_k[FEATl, TI, NS]](
                 self.fb.lt["gpu", Layout.row_major(NS * FEATl)](),
                 self.feats_d.lt["gpu", Layout.row_major(NS * TI * FEATl)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbNF, block_dim=TPB,
             )
             policy.forward[target, NS](TensorRefs[1](self.fb), self.pb, ctx)
             ctx.enqueue_function[_cat_sample_hist_k[ACTD, TI, NS]](
@@ -3023,12 +3034,12 @@ struct ACStep[
             ctx.enqueue_function[_hist_store_k[BINSl, TI, NS]](
                 self.vb.lt["gpu", Layout.row_major(NS * BINSl)](),
                 self.vlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbNF, block_dim=TPB,
             )
             ctx.enqueue_function[_hist_store_k[BINSl, TI, NS]](
                 self.svb.lt["gpu", Layout.row_major(NS * BINSl)](),
                 self.svlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbNF, block_dim=TPB,
             )
             rew.set_input["nd", NS](self.cd, ctx)
             rew.set_input["stoch_new", NS](self.cs, ctx)
@@ -3046,7 +3057,7 @@ struct ACStep[
                 self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
                 self.rewv_d.lt["gpu", Layout.row_major(NS * TI)](),
                 self.conv_d.lt["gpu", Layout.row_major(NS * TI)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbBS, block_dim=BLKS,
             )
             imagine.set_input["deter", NS](self.cd, ctx)
             imagine.set_input["stoch", NS](self.cs, ctx)
@@ -3065,7 +3076,7 @@ struct ACStep[
             self.conv_d.lt["gpu", Layout.row_major(NS * TI)](),
             self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
             self.ret_d.lt["gpu", Layout.row_major(NS * TM1)](),
-            self.lam, 1 if self.slowtar else 0, grid_dim=nbB, block_dim=TPB,
+            self.lam, 1 if self.slowtar else 0, grid_dim=nbBS, block_dim=BLKS,
         )
         # ── device-resident percentile retnorm (NO D2H — capture-safe) ──
         # Constant floor/frac indices (perclo/perchi over a fixed-size sample)
@@ -3106,7 +3117,7 @@ struct ACStep[
             self.valloss_d.lt["gpu", Layout.row_major(NS * TM1)](),
             self.rscale_d.lt["gpu", Layout.row_major(1)](),
             self.lam, self.actent, self.slowreg, inv_im, UNIMIX,
-            grid_dim=nbB, block_dim=TPB,
+            grid_dim=nbBS, block_dim=BLKS,
         )
 
         # ── per-step value/policy vjp (inputs gathered from device histories) ──
@@ -3116,13 +3127,13 @@ struct ACStep[
             ctx.enqueue_function[_hist_load_k[FEATl, TI, NS]](
                 self.feats_d.lt["gpu", Layout.row_major(NS * TI * FEATl)](),
                 self.ftt.lt["gpu", Layout.row_major(NS * FEATl)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbNF, block_dim=TPB,
             )
             value.forward[target, NS](TensorRefs[1](self.ftt), self.vscr, ctx)
             ctx.enqueue_function[_hist_load_k[BINSl, TI, NS]](
                 self.gvlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
                 self.gvt.lt["gpu", Layout.row_major(NS * BINSl)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbNF, block_dim=TPB,
             )
             value.vjp[target, NS](
                 TensorRefs[1](self.ftt), self.gvt, TensorRefs[1](self.gfeat), ctx
@@ -3131,7 +3142,7 @@ struct ACStep[
             ctx.enqueue_function[_hist_load_k[ACTD, TI, NS]](
                 self.gpmean_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
                 self.polg.lt["gpu", Layout.row_major(NS * ACTD)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbNF, block_dim=TPB,
             )
             policy.vjp[target, NS](
                 TensorRefs[1](self.ftt), self.polg, TensorRefs[1](self.gfeat), ctx
@@ -3296,6 +3307,9 @@ struct ACStep[
         comptime BT = Self.B * Self.T
         comptime TM1R = Self.T - 1
         comptime nbB = (NS + TPB - 1) // TPB
+        comptime nbNF = (NS * FEATl + TPB - 1) // TPB  # one thread / hist element
+        comptime BLKS = 32  # one warp = 32 starts
+        comptime nbBS = (NS + BLKS - 1) // BLKS  # spread NS starts over SMs
         comptime nbBT = (BT + TPB - 1) // TPB
         comptime nbB1 = (Self.B + TPB - 1) // TPB
         var ctx = st.ctx.value()
@@ -3330,12 +3344,12 @@ struct ACStep[
                 self.cd.lt["gpu", Layout.row_major(NS * D)](),
                 self.cs.lt["gpu", Layout.row_major(NS * SCl)](),
                 self.fb.lt["gpu", Layout.row_major(NS * FEATl)](),
-                grid_dim=nbB, block_dim=TPB,
+                grid_dim=nbNF, block_dim=TPB,
             )
             ctx.enqueue_function[_hist_store_k[FEATl, TI, NS]](
                 self.fb.lt["gpu", Layout.row_major(NS * FEATl)](),
                 self.feats_d.lt["gpu", Layout.row_major(NS * TI * FEATl)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbNF, block_dim=TPB,
             )
             policy.forward[target, NS](TensorRefs[1](self.fb), self.pb, ctx)
             ctx.enqueue_function[_gaussian_sample_hist_k[ACTD, TI, NS]](
@@ -3352,12 +3366,12 @@ struct ACStep[
             ctx.enqueue_function[_hist_store_k[BINSl, TI, NS]](
                 self.vb.lt["gpu", Layout.row_major(NS * BINSl)](),
                 self.vlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbNF, block_dim=TPB,
             )
             ctx.enqueue_function[_hist_store_k[BINSl, TI, NS]](
                 self.svb.lt["gpu", Layout.row_major(NS * BINSl)](),
                 self.svlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbNF, block_dim=TPB,
             )
             rew.set_input["nd", NS](self.cd, ctx)
             rew.set_input["stoch_new", NS](self.cs, ctx)
@@ -3375,7 +3389,7 @@ struct ACStep[
                 self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
                 self.rewv_d.lt["gpu", Layout.row_major(NS * TI)](),
                 self.conv_d.lt["gpu", Layout.row_major(NS * TI)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbBS, block_dim=BLKS,
             )
             imagine.set_input["deter", NS](self.cd, ctx)
             imagine.set_input["stoch", NS](self.cs, ctx)
@@ -3394,7 +3408,7 @@ struct ACStep[
             self.conv_d.lt["gpu", Layout.row_major(NS * TI)](),
             self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
             self.ret_d.lt["gpu", Layout.row_major(NS * TM1)](),
-            self.lam, 1 if self.slowtar else 0, grid_dim=nbB, block_dim=TPB,
+            self.lam, 1 if self.slowtar else 0, grid_dim=nbBS, block_dim=BLKS,
         )
         # ── device-resident percentile retnorm (no D2H) ──
         comptime NRET = NS * TM1
@@ -3434,7 +3448,7 @@ struct ACStep[
             self.valloss_d.lt["gpu", Layout.row_major(NS * TM1)](),
             self.rscale_d.lt["gpu", Layout.row_major(1)](),
             self.actent, self.slowreg, inv_im, MINSTD, MAXSTD,
-            grid_dim=nbB, block_dim=TPB,
+            grid_dim=nbBS, block_dim=BLKS,
         )
 
         # ── per-step value/policy vjp (inputs gathered from device histories) ──
@@ -3444,13 +3458,13 @@ struct ACStep[
             ctx.enqueue_function[_hist_load_k[FEATl, TI, NS]](
                 self.feats_d.lt["gpu", Layout.row_major(NS * TI * FEATl)](),
                 self.ftt.lt["gpu", Layout.row_major(NS * FEATl)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbNF, block_dim=TPB,
             )
             value.forward[target, NS](TensorRefs[1](self.ftt), self.vscr, ctx)
             ctx.enqueue_function[_hist_load_k[BINSl, TI, NS]](
                 self.gvlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
                 self.gvt.lt["gpu", Layout.row_major(NS * BINSl)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbNF, block_dim=TPB,
             )
             value.vjp[target, NS](
                 TensorRefs[1](self.ftt), self.gvt, TensorRefs[1](self.gfeat), ctx
@@ -3460,7 +3474,7 @@ struct ACStep[
                 self.gpmean_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
                 self.gpstd_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
                 self.polg.lt["gpu", Layout.row_major(NS * 2 * ACTD)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbNF, block_dim=TPB,
             )
             policy.vjp[target, NS](
                 TensorRefs[1](self.ftt), self.polg, TensorRefs[1](self.gfeat), ctx
