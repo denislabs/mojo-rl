@@ -275,11 +275,12 @@ struct DreamerV3Trainer[
             _train_graph=None,
             device_noise=device_noise,
         )
-        # One-time upload of the CONSTANT twohot bins grid into the discrete AC's
-        # device buffer (Stage 3 P5). The grid never changes, so doing it here
-        # (not per-step in `_ac_gpu_disc`) keeps the captured WM+AC region free
-        # of H2D copies — which are illegal inside a CUDA-graph capture.
-        comptime if Self.train_target == "gpu" and Self.DISCRETE:
+        # One-time upload of the CONSTANT twohot bins grid into the AC's device
+        # buffer (Stage 3 P5). The grid never changes, so doing it here (not
+        # per-step in `_ac_gpu_disc`/`_ac_gpu_cont`) keeps the captured WM+AC
+        # region free of H2D copies — which are illegal inside a CUDA-graph
+        # capture. Both discrete and continuous device-resident ACs read bins_d.
+        comptime if Self.train_target == "gpu":
             for c in range(Self.BINS):
                 s.ac_blk.bins_d.data[c] = s.bins[c]
             s.ac_blk.bins_d.upload(ctx.value())
@@ -402,13 +403,11 @@ struct DreamerV3Trainer[
 
         GPU: device `GPUSequenceReplay.sample_batch_fst_dev` straight into the
         WM device buffers (`wm_blk.mb*_d`) — no host obs/act gather, no upload
-        (the windows are drawn with the buffer's device Philox RNG). rew/dne:
-          * discrete (device-resident AC, the capture target): copied
-            device→device into the shared `state.d_rew/d_cont`, which the AC
-            reads directly — no D2H/H2D round-trip. `dbg_real_rew` is then the
-            only host readout, and it's `want_diag`-gated → the non-diag draw is
-            host-free.
-          * continuous (host-side repval): pulled to `state.mb_rew/mb_dne`."""
+        (the windows are drawn with the buffer's device Philox RNG). rew/dne are
+        copied device→device into the shared `state.d_rew/d_cont`, which BOTH the
+        discrete (`_ac_gpu_disc`) and continuous (`_ac_gpu_cont`) device-resident
+        ACs read directly — no D2H/H2D round-trip. `dbg_real_rew` is the only host
+        readout, `want_diag`-gated → the non-diag draw is host-free (capturable)."""
         comptime if Self.train_target == "gpu":
             var sctx = self.ctx.value()
             self.replay.sample_batch_fst_dev[Self.B, Self.T](
@@ -419,32 +418,24 @@ struct DreamerV3Trainer[
                 self.wm_blk.mbdne_d.dev.value(),
                 self.wm_blk.mbfst_d.dev.value(),
             )
-            comptime if Self.DISCRETE:
-                # rew/dne stay on device (st.d_rew / st.d_cont carries dne) for
-                # the device-resident AC; only dbg pulls them, gated.
-                sctx.enqueue_copy(
-                    self.state.d_rew.dev.value(),
-                    self.wm_blk.mbrew_d.dev.value(),
-                )
-                sctx.enqueue_copy(
-                    self.state.d_cont.dev.value(),
-                    self.wm_blk.mbdne_d.dev.value(),
-                )
-                if want_diag:
-                    self.wm_blk.mbrew_d.download(sctx)
-                    var rr: Scalar[DT] = 0.0
-                    for i in range(Self.B * Self.T):
-                        rr += self.wm_blk.mbrew_d.data[i]
-                    self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
-            else:
+            # rew/dne stay on device (st.d_rew / st.d_cont carries dne) for the
+            # device-resident AC — BOTH discrete (`_ac_gpu_disc`) and continuous
+            # (`_ac_gpu_cont`) read them device-direct, so no D2H/H2D round-trip.
+            # `dbg_real_rew` is the only host readout, and it's `want_diag`-gated
+            # → the non-diag draw is host-free (capture-safe).
+            sctx.enqueue_copy(
+                self.state.d_rew.dev.value(),
+                self.wm_blk.mbrew_d.dev.value(),
+            )
+            sctx.enqueue_copy(
+                self.state.d_cont.dev.value(),
+                self.wm_blk.mbdne_d.dev.value(),
+            )
+            if want_diag:
                 self.wm_blk.mbrew_d.download(sctx)
-                self.wm_blk.mbdne_d.download(sctx)
-                for i in range(Self.B * Self.T):
-                    self.state.mb_rew.data[i] = self.wm_blk.mbrew_d.data[i]
-                    self.state.mb_dne.data[i] = self.wm_blk.mbdne_d.data[i]
                 var rr: Scalar[DT] = 0.0
                 for i in range(Self.B * Self.T):
-                    rr += self.state.mb_rew.data[i]
+                    rr += self.wm_blk.mbrew_d.data[i]
                 self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
         else:
             self.replay.sample_batch_fst[Self.B, Self.T](
@@ -495,17 +486,17 @@ struct DreamerV3Trainer[
             self.wm_blk.mbrew_d.upload_resident(sctx)
             self.wm_blk.mbdne_d.upload_resident(sctx)
             self.wm_blk.mbfst_d.upload_resident(sctx)
-            comptime if Self.DISCRETE:
-                # mirror _draw_minibatch: hand rew/dne to the device-resident AC
-                # via the shared state buffers (st.d_cont carries dne).
-                sctx.enqueue_copy(
-                    self.state.d_rew.dev.value(),
-                    self.wm_blk.mbrew_d.dev.value(),
-                )
-                sctx.enqueue_copy(
-                    self.state.d_cont.dev.value(),
-                    self.wm_blk.mbdne_d.dev.value(),
-                )
+            # mirror _draw_minibatch: hand rew/dne to the device-resident AC via
+            # the shared state buffers (st.d_cont carries dne) — both discrete and
+            # continuous read them device-direct.
+            sctx.enqueue_copy(
+                self.state.d_rew.dev.value(),
+                self.wm_blk.mbrew_d.dev.value(),
+            )
+            sctx.enqueue_copy(
+                self.state.d_cont.dev.value(),
+                self.wm_blk.mbdne_d.dev.value(),
+            )
         else:
             for i in range(Self.B * (Self.T + 1) * OBSD):
                 self.state.mb_obs.data[i] = obs[i]
@@ -531,13 +522,13 @@ struct DreamerV3Trainer[
         with `device_noise=False`): host-filled so `_ac_cpu` and the uploaded GPU
         noise read the SAME noise[(t*NS+b)*ACT+a] → CPU↔GPU bit-match; on discrete
         GPU it's `upload_resident`-copied (stable pointer → capture-safe)."""
-        comptime if Self.train_target == "gpu" and Self.DISCRETE:
+        comptime if Self.train_target == "gpu":
             if self.device_noise:
                 self.ac_blk.gen_noise_device(self.ctx.value())
                 return
         for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
             self.state.noise.data[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
-        comptime if Self.train_target == "gpu" and Self.DISCRETE:
+        comptime if Self.train_target == "gpu":
             var nctx = self.ctx.value()
             for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
                 self.ac_blk.noise_d.data[i] = self.state.noise.data[i]
@@ -592,8 +583,10 @@ struct DreamerV3Trainer[
     # `train_prologue` each step before replay so the fixed device input
     # buffers are refreshed. Mirrors `SACAgent.train_device_kernels`.
     def train_device_kernels(mut self) raises:
-        comptime assert Self.train_target == "gpu" and Self.DISCRETE, (
-            "train_device_kernels is the discrete-GPU CUDA-graph capture path"
+        comptime assert Self.train_target == "gpu", (
+            "train_device_kernels is the GPU CUDA-graph capture path"
+            " (discrete `_ac_gpu_disc` + continuous `_ac_gpu_cont` both qualify —"
+            " the non-diag WM+AC step is sync/D2H-free for both)"
         )
         self._device_step(want_diag=False)
 
@@ -619,8 +612,8 @@ struct DreamerV3Trainer[
         The `_train_graph` field is moved into a disjoint local for the capture
         call (mbpo idiom) so the closure can borrow `self` mutably without
         overlapping a mut borrow of the field."""
-        comptime assert Self.train_target == "gpu" and Self.DISCRETE, (
-            "train_step_captured is the discrete-GPU CUDA-graph path"
+        comptime assert Self.train_target == "gpu", (
+            "train_step_captured is the GPU CUDA-graph path (discrete + continuous)"
         )
         if not self.can_train():
             return False

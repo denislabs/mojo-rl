@@ -397,6 +397,7 @@ struct DreamerV3Agent[
     def train_continuous[
         E: BoxContinuousActionEnv,
         L: Logger = NoOpLogger,
+        USE_TRAIN_CUDA_GRAPH: Bool = False,
     ](
         mut self,
         mut env: E,
@@ -423,9 +424,11 @@ struct DreamerV3Agent[
         and optional one-file checkpointing. Returns the final greedy eval.
 
         Examples pass an env + a logger pointer and write no loop of their own;
-        the GPU AC runs device-resident (`_ac_gpu_cont`). (No USE_TRAIN_CUDA_GRAPH
-        param yet — continuous capture is a follow-up; the device-resident step
-        is already sync-free per imagination step.)"""
+        the GPU AC runs device-resident (`_ac_gpu_cont`). `USE_TRAIN_CUDA_GRAPH`
+        (GPU only) capture-replays the WM+AC device-kernel sequence on non-diag
+        steps (Stage 3 — the continuous path is now sync/D2H-free, parity-gated by
+        `test_dreamerv3_capture_train_parity`); a no-op on non-NVIDIA, and stays
+        eager during the LR warmup (the lr is a captured host scalar)."""
         comptime assert not Self.DISCRETE, (
             "train_continuous is the CONTINUOUS facade; build the agent with"
             " DISCRETE=False (discrete envs: use train_single)."
@@ -476,7 +479,15 @@ struct DreamerV3Agent[
                 ep_ret = Scalar[DT](0.0)
             if step >= learn_start and step % train_every == 0:
                 var wd = (step % eval_every == 0)
-                _ = self.train_step(want_diag=wd)
+                comptime if (
+                    USE_TRAIN_CUDA_GRAPH and Self.train_target == "gpu"
+                ):
+                    # capture-once / replay the WM+AC device-kernel sequence on
+                    # non-diag steps (want_diag steps stay eager for the metric
+                    # readout). No-op capture on non-NVIDIA.
+                    _ = self.trainer.train_step_captured(want_diag=wd)
+                else:
+                    _ = self.train_step(want_diag=wd)
 
             if step > 0 and step % eval_every == 0:
                 var ev = self._greedy_eval_cont[E](

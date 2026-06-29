@@ -1970,24 +1970,20 @@ struct WMStep[
         ocon.begin_step_gpu(ctx)
         con.for_each_param[target](ocon, ctx)
         # ── end-of-step readout (Stage 3 P3). ──
-        # Carry handoff: the discrete AC is device-resident, so copy the scan
-        # carry straight into the shared DreamerState device buffers it reads
-        # (no D2H/H2D round-trip, async). The continuous AC reads the host
-        # carry, so its WM downloads + copies it (always needs the sync).
-        comptime if Self.DISCRETE:
-            ctx.enqueue_copy(st.d_cdeter.dev.value(), self.cdeter_d.dev.value())
-            ctx.enqueue_copy(st.d_cstoch.dev.value(), self.cstoch_d.dev.value())
-        else:
-            self.cdeter_d.download(ctx)
-            self.cstoch_d.download(ctx)
+        # Carry handoff: copy the scan carry straight into the shared DreamerState
+        # device buffers the device-resident AC reads — for BOTH discrete
+        # (`_ac_gpu_disc`) and continuous (`_ac_gpu_cont`); no D2H/H2D round-trip,
+        # async → the carry handoff is CUDA-graph capturable for both. (st.d_cdeter
+        # ← cdeter_d is exactly what the continuous AC used to read from host
+        # st.cdeter, which was itself a download of cdeter_d — so this is
+        # equivalent, just without the host round-trip.)
+        ctx.enqueue_copy(st.d_cdeter.dev.value(), self.cdeter_d.dev.value())
+        ctx.enqueue_copy(st.d_cstoch.dev.value(), self.cstoch_d.dev.value())
         # WM loss + dbg readout is purely diagnostic (the optimizer steps above
         # already applied the gradients) → gate it to `want_diag` (P3b). On the
-        # discrete non-diag path this skips the ONLY D2H + the `synchronize`,
-        # leaving the WM step fully async (CUDA-graph capturable). Continuous
-        # still syncs to copy the carry to host.
+        # non-diag path this skips the ONLY D2H + the `synchronize`, leaving the WM
+        # step fully async (CUDA-graph capturable) — for both discrete + continuous.
         var need_sync = want_diag
-        comptime if not Self.DISCRETE:
-            need_sync = True
         if want_diag:
             self.klbuf_d.download(ctx)
             self.obsl_d.download(ctx)
@@ -1995,11 +1991,6 @@ struct WMStep[
             self.conl_d.download(ctx)
         if need_sync:
             ctx.synchronize()
-        comptime if not Self.DISCRETE:
-            for i in range(CD):
-                st.cdeter.data[i] = self.cdeter_d.data[i]
-            for i in range(CS):
-                st.cstoch.data[i] = self.cstoch_d.data[i]
         if want_diag:
             var total: Scalar[DT] = 0.0
             var acc_dyn: Scalar[DT] = 0.0
@@ -3301,26 +3292,27 @@ struct ACStep[
         var MINSTD = self.minstd
         var MAXSTD = self.maxstd
 
-        # ── one-time host→device uploads (eager; not per imagination step) ──
-        for c in range(BINSl):
-            self.bins_d.data[c] = bins[c]
-        self.bins_d.upload(ctx)
-        for i in range(TI * NS * ACTD):
-            self.noise_d.data[i] = st.noise.data[i]
-        self.noise_d.upload(ctx)
-        for i in range(BT):
-            self.mbrew_d.data[i] = st.mb_rew.data[i]
-            self.mbdne_d.data[i] = st.mb_dne.data[i]
-        self.mbrew_d.upload(ctx)
-        self.mbdne_d.upload(ctx)
-        # rollout carry cd/cs from posterior carries 1..T (host st.cdeter/cstoch
-        # is authoritative — filled by `_wm_gpu`'s download); upload.
-        for i in range(NS * D):
-            self.cd.data[i] = st.cdeter.data[Self.B * D + i]
-        for i in range(NS * SCl):
-            self.cs.data[i] = st.cstoch.data[Self.B * SCl + i]
-        self.cd.upload(ctx)
-        self.cs.upload(ctx)
+        # ── device-direct inputs (capture-safe; NO H2D in this region) ──
+        # Mirrors `_ac_gpu_disc`: bins are uploaded once in DreamerV3Trainer.make,
+        # the uniform imagination noise by the trainer `_fill_noise` prologue, and
+        # rew/dne + carries come device-direct from the shared DreamerState buffers
+        # that `_draw_minibatch`/`load_minibatch` (rew/dne → d_rew/d_cont) and
+        # `_wm_gpu` (carry → d_cdeter/d_cstoch) left there. So this whole method is
+        # free of uploads/downloads/syncs (except the want_diag-gated diag) and can
+        # be replayed from a captured CUDA graph (Stage 3; parity-gated).
+        ctx.enqueue_copy(self.mbrew_d.dev.value(), st.d_rew.dev.value())
+        ctx.enqueue_copy(self.mbdne_d.dev.value(), st.d_cont.dev.value())
+        # init rollout carry cd/cs from posterior carries 1..T — device-direct
+        # from the WM scan (skip the index-0 init carry: offset B*D / B*SC,
+        # length NS*D / NS*SC) straight into cd/cs.
+        var sub_cd = st.d_cdeter.dev.value().create_sub_buffer[DT](
+            Self.B * D, NS * D
+        )
+        var sub_cs = st.d_cstoch.dev.value().create_sub_buffer[DT](
+            Self.B * SCl, NS * SCl
+        )
+        ctx.enqueue_copy(self.cd.dev.value(), sub_cd)
+        ctx.enqueue_copy(self.cs.dev.value(), sub_cs)
 
         # ── imagination rollout (fully on device) ──
         for t in range(TI):
