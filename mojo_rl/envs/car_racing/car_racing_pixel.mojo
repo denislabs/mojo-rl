@@ -35,8 +35,16 @@ from mojo_rl.physics2d.car.constants import TILE_DATA_SIZE
 from .car_racing_discrete import CarRacingDiscrete
 
 
-struct CarRacingPixel[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
-    """GPU-batched discrete CarRacing with 4x84x84 pixel observations."""
+struct CarRacingPixel[DTYPE: DType, PIX_RES: Int = 84](
+    GPUDiscreteEnv, Copyable, Movable
+):
+    """GPU-batched discrete CarRacing with 4×PIX_RES×PIX_RES pixel observations.
+
+    `PIX_RES` (default 84, Atari-style) sets the square frame resolution. The
+    camera scales with it (CX=PIX_RES/2, CY∝PIX_RES, ZOOM∝PIX_RES) to keep a
+    CONSTANT field of view — so all resolution-dependent constants reproduce the
+    84 values EXACTLY at PIX_RES=84 (existing 84 tests bit-unaffected). The
+    DreamerV3 CNN path uses PIX_RES=96 (16-divisible → conv minres 6)."""
 
     comptime dtype = Self.DTYPE
     comptime NAME: String = "CarRacingPixel"
@@ -46,12 +54,12 @@ struct CarRacingPixel[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
     comptime STATE_SIZE: Int = Self.D.STATE_SIZE
     comptime NUM_ACTIONS: Int = Self.D.NUM_ACTIONS  # 5
 
-    # Pixel observation geometry (Atari-style).
-    comptime OBS_W: Int = 84
-    comptime OBS_H: Int = 84
+    # Pixel observation geometry (square, resolution = PIX_RES).
+    comptime OBS_W: Int = Self.PIX_RES
+    comptime OBS_H: Int = Self.PIX_RES
     comptime FRAME_STACK: Int = 4
-    comptime FRAME_SIZE: Int = Self.OBS_W * Self.OBS_H  # 7056
-    comptime OBS_DIM: Int = Self.FRAME_STACK * Self.FRAME_SIZE  # 28224
+    comptime FRAME_SIZE: Int = Self.OBS_W * Self.OBS_H  # PIX_RES²
+    comptime OBS_DIM: Int = Self.FRAME_STACK * Self.FRAME_SIZE
 
     # Per-env workspace: [4 frames | frame_idx | vis_count | vis_tile_indices].
     # The visible-tile list is a per-env camera cull (filled once per step) so
@@ -67,10 +75,12 @@ struct CarRacingPixel[DTYPE: DType](GPUDiscreteEnv, Copyable, Movable):
     comptime CULL_R2: Float64 = 62.0 * 62.0
 
     # Camera: car drawn at (CX, CY), forward = screen up; ZOOM_PX px per world
-    # unit. CY below center -> more road visible ahead. Tunable.
-    comptime CX: Float64 = 42.0
-    comptime CY: Float64 = 52.0
-    comptime ZOOM_PX: Float64 = 1.3
+    # unit. CY below center -> more road visible ahead. All three scale with
+    # PIX_RES to hold the field of view constant (and reproduce 42/52/1.3 exactly
+    # at PIX_RES=84). CULL_R2 below stays valid since the FOV is invariant.
+    comptime CX: Float64 = Float64(Self.PIX_RES) / 2.0
+    comptime CY: Float64 = Float64(Self.PIX_RES) * (52.0 / 84.0)
+    comptime ZOOM_PX: Float64 = 1.3 * Float64(Self.PIX_RES) / 84.0
     comptime CAR_HW: Float64 = 1.4  # car half-width (world units)
     comptime CAR_HL: Float64 = 2.8  # car half-length
     # Grayscale surface values.

@@ -33,7 +33,7 @@ from mojo_rl.render import (
     black,
 )
 
-from mojo_rl.core import BoxDiscreteActionEnv
+from mojo_rl.core import BoxDiscreteActionEnv, BoxContinuousActionEnv
 from mojo_rl.physics2d import dtype
 from mojo_rl.physics2d.car import CarDynamicsMB, TileCollision
 from mojo_rl.physics2d.car.constants import (
@@ -63,17 +63,21 @@ from .state import CarRacingState
 from .action import CarRacingAction
 
 
-struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False](
-    BoxDiscreteActionEnv, Copyable, Movable
+struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
+    BoxDiscreteActionEnv, BoxContinuousActionEnv, Copyable, Movable
 ):
     """CarRacing on multi-body physics (CPU, single env).
 
-    Conforms to `BoxDiscreteActionEnv` so it can be wrapped by
-    `BatchedCpuDiscreteEnv` for hybrid training (CPU env stepped on host +
-    GPU agent), guaranteeing CPU↔GPU transfer and faithful (non-cheatable)
-    closed-loop tracks. `PIXEL_OBS=True` exposes the 4x84x84 pixel observation
+    Conforms to BOTH `BoxDiscreteActionEnv` (Rainbow / discrete hybrid) and
+    `BoxContinuousActionEnv` (DreamerV3 / SAC continuous) — the underlying
+    multi-body physics is continuous (steer/gas/brake floats); the discrete path
+    just decodes 5 actions onto it. Wrappable by `BatchedCpuDiscreteEnv` /
+    `BatchedCpuEnv` for hybrid training (CPU env stepped on host + GPU agent),
+    guaranteeing CPU↔GPU transfer and faithful (non-cheatable) closed-loop
+    tracks. `PIXEL_OBS=True` exposes the 4×PIX_RES×PIX_RES pixel observation
     through the trait (for the CNN agent); `False` exposes the 13-D clean obs.
-    """
+    `PIX_RES` (default 84) = the square pixel resolution; the DreamerV3 conv
+    path uses 96 (16-divisible)."""
 
     comptime dtype = Self.DTYPE  # BoxDiscreteActionEnv requirement
     comptime StateType = CarRacingState[Self.DTYPE]
@@ -84,7 +88,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False](
     comptime ACTION_DIM: Int = 3
     comptime NUM_ACTIONS: Int = 5  # discrete: noop/left/right/gas/brake
     # Observation dim exposed through the trait (pixel stack vs clean prefix).
-    comptime PIX_DIM: Int = CarRacingPixel[Self.DTYPE].OBS_DIM
+    comptime PIX_DIM: Int = CarRacingPixel[Self.DTYPE, Self.PIX_RES].OBS_DIM
     comptime EFF_OBS_DIM: Int = Self.PIX_DIM if Self.PIXEL_OBS else Self.OBS_DIM
     comptime NB: Int = CarDynamicsMB.NUM_BODIES
     comptime NJ: Int = CarDynamicsMB.NUM_JOINTS
@@ -149,9 +153,9 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False](
         self._renderer = None
         self._renderer_initialized = False
         self._pixel_stack = List[Scalar[Self.DTYPE]](
-            capacity=CarRacingPixel[Self.DTYPE].OBS_DIM
+            capacity=CarRacingPixel[Self.DTYPE, Self.PIX_RES].OBS_DIM
         )
-        for _ in range(CarRacingPixel[Self.DTYPE].OBS_DIM):
+        for _ in range(CarRacingPixel[Self.DTYPE, Self.PIX_RES].OBS_DIM):
             self._pixel_stack.append(Scalar[Self.DTYPE](0.0))
         self._pixel_idx = 0
 
@@ -220,6 +224,13 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False](
 
     def action_dim(self) -> Int:
         return Self.ACTION_DIM
+
+    # --- ContinuousActionEnv bounds (symmetric [-1, 1]) ------------------
+    def action_low(self) -> Scalar[Self.dtype]:
+        return Scalar[Self.dtype](-1.0)
+
+    def action_high(self) -> Scalar[Self.dtype]:
+        return Scalar[Self.dtype](1.0)
 
     def reset(mut self) -> Self.StateType:
         """Generate a new track, place the car at the start (Env trait).
@@ -410,7 +421,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False](
     def _render_pixel_cpu(
         self, dx: Int, dy: Int, vis: List[Int]
     ) -> Scalar[Self.DTYPE]:
-        comptime P = CarRacingPixel[Self.DTYPE]
+        comptime P = CarRacingPixel[Self.DTYPE, Self.PIX_RES]
         var zero = Scalar[dtype](0.0)
         var camx = (Scalar[dtype](dx) - Scalar[dtype](P.CX)) / Scalar[dtype](
             P.ZOOM_PX
@@ -447,7 +458,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False](
         return Scalar[Self.DTYPE](P.C_GRASS)
 
     def _push_pixel_frame(mut self):
-        comptime P = CarRacingPixel[Self.DTYPE]
+        comptime P = CarRacingPixel[Self.DTYPE, Self.PIX_RES]
         # Cull tiles to the camera view once per frame (~10x fewer point-in-quad
         # tests), mirroring the GPU rasterizer.
         var st = self._state()
@@ -473,7 +484,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False](
     def get_pixel_obs(self) -> List[Scalar[Self.DTYPE]]:
         """Chronological (oldest→newest) 4×84×84 frame stack — matches the GPU
         env's obs ordering."""
-        comptime P = CarRacingPixel[Self.DTYPE]
+        comptime P = CarRacingPixel[Self.DTYPE, Self.PIX_RES]
         var out = List[Scalar[Self.DTYPE]](capacity=P.OBS_DIM)
         for f in range(P.FRAME_STACK):
             var rs = (self._pixel_idx + f) % P.FRAME_STACK
@@ -487,7 +498,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False](
         """
         _ = self.reset()
         self._pixel_idx = 0
-        for _ in range(CarRacingPixel[Self.DTYPE].FRAME_STACK):
+        for _ in range(CarRacingPixel[Self.DTYPE, Self.PIX_RES].FRAME_STACK):
             self._push_pixel_frame()
         return self.get_pixel_obs()
 
@@ -587,6 +598,52 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False](
         elif a == 4:
             brake = 0.8
         return self.step(steer, gas, brake)
+
+    # --- BoxContinuousActionEnv: 3-D action [steer, gas, brake] ----------
+    # Gymnasium CarRacing-v3 continuous convention: steering in [-1,1]; gas and
+    # brake arrive in [-1,1] (Gaussian-policy range) and remap to [0,1] via
+    # (a+1)/2. Returns the EFF obs (pixel stack when PIXEL_OBS, else 13-D clean).
+    def _step_continuous_eff[
+        DTYPE_C: DType
+    ](
+        mut self, steer: Float64, gas_raw: Float64, brake_raw: Float64
+    ) -> Tuple[List[Scalar[DTYPE_C]], Scalar[DTYPE_C], Bool]:
+        var gas = (gas_raw + 1.0) * 0.5
+        var brake = (brake_raw + 1.0) * 0.5
+        var r = self.step(steer, gas, brake)  # clean obs, reward, done
+        comptime if Self.PIXEL_OBS:
+            self._push_pixel_frame()
+            var px = self.get_pixel_obs()
+            var obs = List[Scalar[DTYPE_C]](capacity=len(px))
+            for i in range(len(px)):
+                obs.append(Scalar[DTYPE_C](px[i]))
+            return (obs^, Scalar[DTYPE_C](r[1]), r[2])
+        else:
+            var obs = List[Scalar[DTYPE_C]](capacity=len(r[0]))
+            for i in range(len(r[0])):
+                obs.append(Scalar[DTYPE_C](r[0][i]))
+            return (obs^, Scalar[DTYPE_C](r[1]), r[2])
+
+    def step_continuous[
+        DTYPE_SC: DType
+    ](mut self, action: Scalar[DTYPE_SC]) -> Tuple[
+        List[Scalar[DTYPE_SC]], Scalar[DTYPE_SC], Bool
+    ]:
+        """1-D action → steering only (gas/brake off)."""
+        return self._step_continuous_eff[DTYPE_SC](
+            Float64(action), -1.0, -1.0
+        )
+
+    def step_continuous_vec[
+        DTYPE_VEC: DType
+    ](
+        mut self, action: List[Scalar[DTYPE_VEC]], verbose: Bool = False
+    ) -> Tuple[List[Scalar[DTYPE_VEC]], Scalar[DTYPE_VEC], Bool]:
+        """3-D action [steering, gas, brake] (gas/brake in [-1,1] → [0,1])."""
+        var steer = Float64(action[0]) if len(action) > 0 else 0.0
+        var gas_raw = Float64(action[1]) if len(action) > 1 else 0.0
+        var brake_raw = Float64(action[2]) if len(action) > 2 else 0.0
+        return self._step_continuous_eff[DTYPE_VEC](steer, gas_raw, brake_raw)
 
     # --- rendering (RenderableEnv) ---------------------------------------
     def init_renderer(mut self) raises -> Bool:
