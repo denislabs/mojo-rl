@@ -118,19 +118,24 @@ def _seed_asm_k[B_: Int, CARRY_: Int, D_: Int, SC_: Int](
     dyn: Scalar[DT],
     rep: Scalar[DT],
 ):
-    """Assemble the BPTT carry seed for one batch row."""
-    var b = Int(global_idx.x)
-    if b < B_:
-        seed[b * CARRY_] = dyn
-        seed[b * CARRY_ + 1] = rep
-        for k in range(D_):
+    """Assemble the BPTT carry seed for one batch row. One thread per element
+    over B*max(D,SC) (was B-parallel); the 2 (dyn,rep) scalars on k==0."""
+    comptime MW = D_ if D_ > SC_ else SC_
+    var i = Int(global_idx.x)
+    if i < B_ * MW:
+        var b = i // MW
+        var k = i % MW
+        if k == 0:
+            seed[b * CARRY_] = dyn
+            seed[b * CARRY_ + 1] = rep
+        if k < D_:
             seed[b * CARRY_ + 2 + k] = (
                 rebind[Scalar[DT]](gcd[b * D_ + k])
                 + rebind[Scalar[DT]](dnd[b * D_ + k])
                 + rebind[Scalar[DT]](rnd[b * D_ + k])
                 + rebind[Scalar[DT]](cnd[b * D_ + k])
             )
-        for k in range(SC_):
+        if k < SC_:
             seed[b * CARRY_ + 2 + D_ + k] = (
                 rebind[Scalar[DT]](gcs[b * SC_ + k])
                 + rebind[Scalar[DT]](dsn[b * SC_ + k])
@@ -1154,23 +1159,36 @@ def _wm_carry_in_k[
     t: Int,
 ):
     """Masked carry/action input + token window for core step t (keep = cut the
-    BPTT carry at an episode boundary, from mbfst[b,t+1])."""
-    var b = Int(global_idx.x)
-    if b < B_:
+    BPTT carry at an episode boundary, from mbfst[b,t+1]). One thread per element
+    over B*max(D,SC,TOK) (was B-parallel = a single 16-thread block at B=16, each
+    serially looping D+SC+ACT+TOK); each thread writes whichever of cin_d/cin_s/
+    at/tkscr its column index k falls within."""
+    comptime _MDS = D_ if D_ > SC_ else SC_
+    comptime MW = _MDS if _MDS > TOK_ else TOK_
+    var i = Int(global_idx.x)
+    if i < B_ * MW:
+        var b = i // MW
+        var k = i % MW
         var keep = (
             Scalar[DT](0.0) if rebind[Scalar[DT]](mbfst[b * (T_ + 1) + t + 1]) >= Scalar[DT](0.5)
             else Scalar[DT](1.0)
         )
-        var dbase = t * B_ * D_
-        var sbase = t * B_ * SC_
-        for k in range(D_):
-            cin_d[b * D_ + k] = keep * rebind[Scalar[DT]](cdeter[dbase + b * D_ + k])
-        for k in range(SC_):
-            cin_s[b * SC_ + k] = keep * rebind[Scalar[DT]](cstoch[sbase + b * SC_ + k])
-        for k in range(ACT_):
-            at[b * ACT_ + k] = keep * rebind[Scalar[DT]](mbact[(b * T_ + t) * ACT_ + k])
-        for k in range(TOK_):
-            tkscr[b * TOK_ + k] = rebind[Scalar[DT]](toks[t * B_ * TOK_ + b * TOK_ + k])
+        if k < D_:
+            cin_d[b * D_ + k] = keep * rebind[Scalar[DT]](
+                cdeter[t * B_ * D_ + b * D_ + k]
+            )
+        if k < SC_:
+            cin_s[b * SC_ + k] = keep * rebind[Scalar[DT]](
+                cstoch[t * B_ * SC_ + b * SC_ + k]
+            )
+        if k < ACT_:
+            at[b * ACT_ + k] = keep * rebind[Scalar[DT]](
+                mbact[(b * T_ + t) * ACT_ + k]
+            )
+        if k < TOK_:
+            tkscr[b * TOK_ + k] = rebind[Scalar[DT]](
+                toks[t * B_ * TOK_ + b * TOK_ + k]
+            )
 
 
 def _wm_carry_out_k[B_: Int, D_: Int, SC_: Int, CARRY_: Int, T_: Int](
@@ -1182,16 +1200,23 @@ def _wm_carry_out_k[B_: Int, D_: Int, SC_: Int, CARRY_: Int, T_: Int](
 ):
     """Extract next carry (deter/stoch) + the (dyn_kl, rep_kl) losses from the
     core output into the time-major carry sequence + klbuf[t]."""
-    var b = Int(global_idx.x)
-    if b < B_:
-        var ndbase = (t + 1) * B_ * D_
-        var snbase = (t + 1) * B_ * SC_
-        for k in range(D_):
-            cdeter[ndbase + b * D_ + k] = rebind[Scalar[DT]](outbuf[b * CARRY_ + 2 + k])
-        for k in range(SC_):
-            cstoch[snbase + b * SC_ + k] = rebind[Scalar[DT]](outbuf[b * CARRY_ + 2 + D_ + k])
-        klbuf[(t * B_ + b) * 2 + 0] = rebind[Scalar[DT]](outbuf[b * CARRY_ + 0])
-        klbuf[(t * B_ + b) * 2 + 1] = rebind[Scalar[DT]](outbuf[b * CARRY_ + 1])
+    # one thread per element over B*max(D,SC); the 2 kl scalars on k==0.
+    comptime MW = D_ if D_ > SC_ else SC_
+    var i = Int(global_idx.x)
+    if i < B_ * MW:
+        var b = i // MW
+        var k = i % MW
+        if k < D_:
+            cdeter[(t + 1) * B_ * D_ + b * D_ + k] = rebind[Scalar[DT]](
+                outbuf[b * CARRY_ + 2 + k]
+            )
+        if k < SC_:
+            cstoch[(t + 1) * B_ * SC_ + b * SC_ + k] = rebind[Scalar[DT]](
+                outbuf[b * CARRY_ + 2 + D_ + k]
+            )
+        if k == 0:
+            klbuf[(t * B_ + b) * 2 + 0] = rebind[Scalar[DT]](outbuf[b * CARRY_ + 0])
+            klbuf[(t * B_ + b) * 2 + 1] = rebind[Scalar[DT]](outbuf[b * CARRY_ + 1])
 
 
 def _wm_head_in_k[B_: Int, D_: Int, SC_: Int, OBS_: Int, T_: Int](
@@ -1255,16 +1280,20 @@ def _wm_keep_mask_k[B_: Int, D_: Int, SC_: Int, T_: Int](
     t: Int,
 ):
     """Cut the BPTT carry gradient at an episode boundary: gcd/gcs = keep·core
-    grad_input (keep from mbfst[b,t+1])."""
-    var b = Int(global_idx.x)
-    if b < B_:
+    grad_input (keep from mbfst[b,t+1]). One thread per element over B*max(D,SC)
+    (was B-parallel = a single 16-thread block at B=16)."""
+    comptime MW = D_ if D_ > SC_ else SC_
+    var i = Int(global_idx.x)
+    if i < B_ * MW:
+        var b = i // MW
+        var k = i % MW
         var keep = (
             Scalar[DT](0.0) if rebind[Scalar[DT]](mbfst[b * (T_ + 1) + t + 1]) >= Scalar[DT](0.5)
             else Scalar[DT](1.0)
         )
-        for k in range(D_):
+        if k < D_:
             gcd[b * D_ + k] = keep * rebind[Scalar[DT]](gdt[b * D_ + k])
-        for k in range(SC_):
+        if k < SC_:
             gcs[b * SC_ + k] = keep * rebind[Scalar[DT]](gst[b * SC_ + k])
 
 
@@ -1760,6 +1789,9 @@ struct WMStep[
         var ctx = st.ctx.value()
         comptime nbB = (Self.B + TPB - 1) // TPB
         comptime nbBO = (Self.B * OBSD + TPB - 1) // TPB  # one thread / pixel
+        comptime _MDS = D if D > SCl else SCl
+        comptime _MW = _MDS if _MDS > TOK else TOK
+        comptime nbBW = (Self.B * _MW + TPB - 1) // TPB  # B*max(D,SC,TOK)
         comptime nbTOK = (Self.B * TOK + TPB - 1) // TPB
 
         # The batch-major device minibatch (mbobs_d/mbact_d/mbrew_d/mbdne_d/
@@ -1809,7 +1841,7 @@ struct WMStep[
                 self.cin_s.lt["gpu", Layout.row_major(Self.B * SCl)](),
                 self.at.lt["gpu", Layout.row_major(Self.B * ACTD)](),
                 self.tkscr.lt["gpu", Layout.row_major(Self.B * TOK)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbBW, block_dim=TPB,
             )
             core.set_input["deter", Self.B](self.cin_d, ctx)
             core.set_input["stoch", Self.B](self.cin_s, ctx)
@@ -1821,7 +1853,7 @@ struct WMStep[
                 self.cdeter_d.lt["gpu", Layout.row_major(CD)](),
                 self.cstoch_d.lt["gpu", Layout.row_major(CS)](),
                 self.klbuf_d.lt["gpu", Layout.row_major(Tt * Self.B * 2)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbBW, block_dim=TPB,
             )
             ctx.enqueue_function[_wm_head_in_k[Self.B, D, SCl, OBSD, Tt]](
                 self.cdeter_d.lt["gpu", Layout.row_major(CD)](),
@@ -1895,7 +1927,7 @@ struct WMStep[
                 self.cin_s.lt["gpu", Layout.row_major(Self.B * SCl)](),
                 self.at.lt["gpu", Layout.row_major(Self.B * ACTD)](),
                 self.tkscr.lt["gpu", Layout.row_major(Self.B * TOK)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbBW, block_dim=TPB,
             )
             ctx.enqueue_function[_wm_head_in_k[Self.B, D, SCl, OBSD, Tt]](
                 self.cdeter_d.lt["gpu", Layout.row_major(CD)](),
@@ -1940,7 +1972,7 @@ struct WMStep[
                 dec.grad_input["stoch_new"]().lt["gpu", Layout.row_major(Self.B * SCl)](),
                 rew.grad_input["stoch_new"]().lt["gpu", Layout.row_major(Self.B * SCl)](),
                 con.grad_input["stoch_new"]().lt["gpu", Layout.row_major(Self.B * SCl)](),
-                DYN, REP, grid_dim=nbB, block_dim=TPB,
+                DYN, REP, grid_dim=nbBW, block_dim=TPB,
             )
             core.set_input["deter", Self.B](self.cin_d, ctx)
             core.set_input["stoch", Self.B](self.cin_s, ctx)
@@ -1956,7 +1988,7 @@ struct WMStep[
                 self.mbfst_d.lt["gpu", Layout.row_major(Self.B * (Tt + 1))](),
                 self.gcd.lt["gpu", Layout.row_major(Self.B * D)](),
                 self.gcs.lt["gpu", Layout.row_major(Self.B * SCl)](),
-                t, grid_dim=nbB, block_dim=TPB,
+                t, grid_dim=nbBW, block_dim=TPB,
             )
             # encoder backward — re-encode obs frame t+1, vjp the token grad.
             ref gtok = core.grad_input["tokens"]()
