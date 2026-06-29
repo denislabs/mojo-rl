@@ -57,7 +57,7 @@ comptime Tr = DreamerV3Trainer[
 ]
 
 
-def _fill_replay(mut tr: Tr):
+def _fill_replay(mut tr: Tr) raises:
     """Record NREC identical synthetic transitions (deterministic LCG) so both
     trainers' device replays hold the SAME data → identical sampled windows."""
     var s = UInt64(99887766)
