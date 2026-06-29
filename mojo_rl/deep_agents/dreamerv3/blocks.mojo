@@ -411,6 +411,42 @@ def _cat_sample_hist_k[C_: Int, TI_: Int, NS_: Int](
             at[b * C_ + a] = oh
 
 
+def _gaussian_sample_hist_k[ACT_: Int, TI_: Int, NS_: Int](
+    pb: LayoutTensor[DT, Layout.row_major(NS_ * 2 * ACT_), MutAnyOrigin],
+    noise: LayoutTensor[DT, Layout.row_major(TI_ * NS_ * ACT_), MutAnyOrigin],
+    at: LayoutTensor[DT, Layout.row_major(NS_ * ACT_), MutAnyOrigin],
+    pmean_h: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * ACT_), MutAnyOrigin],
+    pstd_h: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * ACT_), MutAnyOrigin],
+    acts_h: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * ACT_), MutAnyOrigin],
+    minstd: Scalar[DT],
+    maxstd: Scalar[DT],
+    t: Int,
+):
+    """Bounded-normal reparameterized sample (device) for the CONTINUOUS AC
+    imagination rollout — the Gaussian counterpart of `_cat_sample_hist_k`.
+    Per start b, per action dim a: mean_raw = pb[b, a], std_raw = pb[b, ACT+a];
+        std = (maxstd-minstd)·sigmoid(std_raw+2) + minstd
+        act = tanh(mean_raw) + std · noise[t, b, a]
+    writes mean_raw→pmean_h, std_raw→pstd_h, act→acts_h (all [NS,TI,ACT]) and the
+    action fed to imagine→at. Mirrors the `_ac_gpu`/`_ac_cpu` host sampling
+    bit-for-bit (bounded_std inlined; all Scalar[DT] so Metal-safe — no fp64)."""
+    var b = Int(global_idx.x)
+    if b < NS_:
+        for a in range(ACT_):
+            var mr = rebind[Scalar[DT]](pb[b * 2 * ACT_ + a])
+            var sr = rebind[Scalar[DT]](pb[b * 2 * ACT_ + ACT_ + a])
+            pmean_h[(b * TI_ + t) * ACT_ + a] = mr
+            pstd_h[(b * TI_ + t) * ACT_ + a] = sr
+            var z = rebind[Scalar[DT]](noise[(t * NS_ + b) * ACT_ + a])
+            var sig = Scalar[DT](1.0) / (
+                Scalar[DT](1.0) + exp(-(sr + Scalar[DT](2.0)))
+            )
+            var std = (maxstd - minstd) * sig + minstd
+            var smp = tanh(mr) + std * z
+            acts_h[(b * TI_ + t) * ACT_ + a] = smp
+            at[b * ACT_ + a] = smp
+
+
 def _rewconv_hist_k[BINS_: Int, TI_: Int, NS_: Int](
     rew_logits: LayoutTensor[DT, Layout.row_major(NS_ * BINS_), MutAnyOrigin],
     con_logit: LayoutTensor[DT, Layout.row_major(NS_), MutAnyOrigin],
