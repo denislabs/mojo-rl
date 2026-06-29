@@ -47,7 +47,7 @@ from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
 comptime C = 4
 comptime IMG = 96
 comptime BASE = 48
-comptime OBS = C * IMG * IMG     # 36864
+comptime OBS = C * IMG * IMG  # 36864
 comptime ACT = 3
 comptime DETER = 512
 comptime H = 256
@@ -63,38 +63,75 @@ comptime BINS = 255
 comptime B = 16
 comptime T = 16
 comptime T_IMAG = 15
-comptime CAP = 4096              # replay size irrelevant to kernel shapes
+comptime CAP = 4096  # replay size irrelevant to kernel shapes
 
 comptime FEATIN = STOCH * CLASSES + DETER
 comptime ENC = DreamerEncoderCNN[C, IMG, IMG, BASE, TOKEN, SwishOp]
 comptime DEC = DreamerDecoderCNN[FEATIN, C, IMG, IMG, BASE, SwishOp]
 
 comptime Tr = DreamerV3Trainer[
-    "gpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU, PU,
-    BINS, B, T, T_IMAG, CAP, False, ENC, DEC,  # DISCRETE=False (continuous)
+    "gpu",
+    OBS,
+    ACT,
+    DETER,
+    H,
+    STOCH,
+    CLASSES,
+    BLOCKS,
+    TOKEN,
+    DEC_U,
+    HU,
+    VU,
+    PU,
+    BINS,
+    B,
+    T,
+    T_IMAG,
+    CAP,
+    False,
+    ENC,
+    DEC,  # DISCRETE=False (continuous)
 ]
 
 # flip to True to profile the captured-graph path (vs per-kernel eager).
-comptime USE_TRAIN_CUDA_GRAPH = False
+comptime USE_TRAIN_CUDA_GRAPH = True
 
-comptime PREFILL = 1024          # synthetic transitions → replay sampleable
+comptime PREFILL = 1024  # synthetic transitions → replay sampleable
 comptime LEARN_START = 512
-comptime SKIP = 20               # warmup train steps BEFORE the timed region
-comptime PROFILE_STEPS = 200     # measured / profiled hot loop
+comptime SKIP = 20  # warmup train steps BEFORE the timed region
+comptime PROFILE_STEPS = 200  # measured / profiled hot loop
 
 
 def main() raises:
     print("=" * 70)
-    print("DreamerV3 pixel-CarRacing train-step PROFILE — OBS", OBS,
-          " B", B, " T", T, " T_IMAG", T_IMAG, " BASE", BASE)
-    print("  USE_TRAIN_CUDA_GRAPH =", USE_TRAIN_CUDA_GRAPH,
-          "  SKIP", SKIP, " PROFILE_STEPS", PROFILE_STEPS)
+    print(
+        "DreamerV3 pixel-CarRacing train-step PROFILE — OBS",
+        OBS,
+        " B",
+        B,
+        " T",
+        T,
+        " T_IMAG",
+        T_IMAG,
+        " BASE",
+        BASE,
+    )
+    print(
+        "  USE_TRAIN_CUDA_GRAPH =",
+        USE_TRAIN_CUDA_GRAPH,
+        "  SKIP",
+        SKIP,
+        " PROFILE_STEPS",
+        PROFILE_STEPS,
+    )
     print("=" * 70)
     seed(42)
     var ctx = DeviceContext()
     var tr = Tr.make(
-        ctx=ctx, lr=Scalar[DT](4e-5), learning_starts=LEARN_START,
-        warmup_steps=0,   # no LR warmup → capture engages from the first step
+        ctx=ctx,
+        lr=Scalar[DT](4e-5),
+        learning_starts=LEARN_START,
+        warmup_steps=0,  # no LR warmup → capture engages from the first step
     )
 
     # ── synthetic replay prefill (no env, no render) ──
@@ -136,7 +173,16 @@ def main() raises:
     obsbuf.free()
     actbuf.free()
     print("=" * 70)
-    print("  ", PROFILE_STEPS, "train steps in", dt, "s  →",
-          Float64(PROFILE_STEPS) / dt, "train_steps/s",
-          " (", dt / Float64(PROFILE_STEPS) * 1e3, "ms/step )")
+    print(
+        "  ",
+        PROFILE_STEPS,
+        "train steps in",
+        dt,
+        "s  →",
+        Float64(PROFILE_STEPS) / dt,
+        "train_steps/s",
+        " (",
+        dt / Float64(PROFILE_STEPS) * 1e3,
+        "ms/step )",
+    )
     print("=" * 70)
