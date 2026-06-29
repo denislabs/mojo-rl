@@ -485,22 +485,31 @@ def _rewconv_hist_k[BINS_: Int, TI_: Int, NS_: Int](
 
 def _imag_ret_k[NS_: Int, TI_: Int, BINS_: Int](
     vlog: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * BINS_), MutAnyOrigin],
+    svlog: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * BINS_), MutAnyOrigin],
     rewv: LayoutTensor[DT, Layout.row_major(NS_ * TI_), MutAnyOrigin],
     conv: LayoutTensor[DT, Layout.row_major(NS_ * TI_), MutAnyOrigin],
     bins: LayoutTensor[DT, Layout.row_major(BINS_), MutAnyOrigin],
     ret: LayoutTensor[DT, Layout.row_major(NS_ * (TI_ - 1)), MutAnyOrigin],
     lam: Scalar[DT],
+    slowtar: Int,  # 1 → bootstrap from svlog (EMA slowvalue); 0 → online vlog
 ):
-    """λ-return over the imagined rollout (slowtar=False, disc=1) → ret[NS,TM1].
-    Per-start sequential downward scan; matches `imag_loss_cpu`."""
+    """λ-return over the imagined rollout (disc=1) → ret[NS,TM1]. `slowtar`
+    bootstraps from the EMA slowvalue (svlog) instead of the online value (vlog)
+    — matches `imag_loss_cpu`'s slowtar branch. Per-start downward scan.
+    (`slowtar` is Int not Bool — Bool isn't a valid GPU kernel scalar arg.)"""
     var b = Int(global_idx.x)
     if b < NS_:
         comptime TM1 = TI_ - 1
-        var ret_next = _dev_twp[BINS_](vlog, (b * TI_ + (TI_ - 1)) * BINS_, bins)
+        var bootlog = svlog if slowtar != 0 else vlog
+        var ret_next = _dev_twp[BINS_](
+            bootlog, (b * TI_ + (TI_ - 1)) * BINS_, bins
+        )
         var t = TM1 - 1
         while t >= 0:
             var live = rebind[Scalar[DT]](conv[b * TI_ + t + 1])
-            var vboot = _dev_twp[BINS_](vlog, (b * TI_ + t + 1) * BINS_, bins)
+            var vboot = _dev_twp[BINS_](
+                bootlog, (b * TI_ + t + 1) * BINS_, bins
+            )
             var interm = (
                 rebind[Scalar[DT]](rewv[b * TI_ + t + 1])
                 + (Scalar[DT](1.0) - lam) * live * vboot
@@ -3050,11 +3059,12 @@ struct ACStep[
         # ── λ-return on device → ret_d ──
         ctx.enqueue_function[_imag_ret_k[NS, TI, BINSl]](
             self.vlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
+            self.svlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
             self.rewv_d.lt["gpu", Layout.row_major(NS * TI)](),
             self.conv_d.lt["gpu", Layout.row_major(NS * TI)](),
             self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
             self.ret_d.lt["gpu", Layout.row_major(NS * TM1)](),
-            self.lam, grid_dim=nbB, block_dim=TPB,
+            self.lam, 1 if self.slowtar else 0, grid_dim=nbB, block_dim=TPB,
         )
         # ── device-resident percentile retnorm (NO D2H — capture-safe) ──
         # Constant floor/frac indices (perclo/perchi over a fixed-size sample)
@@ -3377,11 +3387,12 @@ struct ACStep[
         # ── λ-return on device → ret_d ──
         ctx.enqueue_function[_imag_ret_k[NS, TI, BINSl]](
             self.vlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
+            self.svlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
             self.rewv_d.lt["gpu", Layout.row_major(NS * TI)](),
             self.conv_d.lt["gpu", Layout.row_major(NS * TI)](),
             self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
             self.ret_d.lt["gpu", Layout.row_major(NS * TM1)](),
-            self.lam, grid_dim=nbB, block_dim=TPB,
+            self.lam, 1 if self.slowtar else 0, grid_dim=nbB, block_dim=TPB,
         )
         # ── device-resident percentile retnorm (no D2H) ──
         comptime NRET = NS * TM1

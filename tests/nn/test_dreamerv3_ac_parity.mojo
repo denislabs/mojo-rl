@@ -94,49 +94,55 @@ def main() raises:
     var wm_gpu = alloc[Scalar[DT]](ITERS)
     var ac_gpu = alloc[Scalar[DT]](ITERS)
 
-    # reseed before EACH make so both backends draw IDENTICAL initial weights.
-    seed(SEED)
-    var cpu = CpuTr.make(lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0)
-    seed(SEED)
-    # device_noise=False → host-seeded noise (uploaded) so the GPU reads the
-    # SAME noise as the CPU (production uses on-device Philox; that path can't be
-    # bit-matched against host RNG and is gated by the capture-parity test).
-    var gpu = GpuTr.make(
-        ctx=ctx, lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0,
-        device_noise=False,
-    )
-
-    for it in range(ITERS):
-        cpu.load_minibatch(mb_obs, mb_act, mb_rew, mb_dne, mb_fst)
-        gpu.load_minibatch(mb_obs, mb_act, mb_rew, mb_dne, mb_fst)
-        seed(SEED + it)
-        cpu._run_minibatch(True)
-        seed(SEED + it)
-        gpu._run_minibatch(True)
-        wm_cpu[it] = cpu.last_wm_loss()
-        ac_cpu[it] = cpu.last_ac_loss()
-        wm_gpu[it] = gpu.last_wm_loss()
-        ac_gpu[it] = gpu.last_ac_loss()
-
-    # ── compare ──
-    var max_wm: Scalar[DT] = 0.0
-    var max_ac: Scalar[DT] = 0.0
-    for it in range(ITERS):
-        var dw = wm_cpu[it] - wm_gpu[it]
-        if dw < 0: dw = -dw
-        var da = ac_cpu[it] - ac_gpu[it]
-        if da < 0: da = -da
-        if dw > max_wm: max_wm = dw
-        if da > max_ac: max_ac = da
-        print(
-            "  it", it, " WM cpu/gpu=", wm_cpu[it], "/", wm_gpu[it],
-            " AC cpu/gpu=", ac_cpu[it], "/", ac_gpu[it],
+    # Run parity for BOTH slowtar=False (online-value bootstrap) and slowtar=True
+    # (EMA slowvalue bootstrap) — the device λ-return now honors slowtar (reads
+    # svlog when True), so both must match the CPU.
+    for slowtar_flag in [False, True]:
+        print("--- slowtar =", slowtar_flag, " ---")
+        # reseed before EACH make so both backends draw IDENTICAL initial weights.
+        seed(SEED)
+        var cpu = CpuTr.make(
+            lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0,
+            slowtar=slowtar_flag,
         )
-    print("  max |ΔWM| =", max_wm, "  max |ΔAC| =", max_ac)
-    assert_true(max_wm < Scalar[DT](1e-1), "WM CPU↔GPU parity")
-    assert_true(max_ac < Scalar[DT](1e-1), "AC CPU↔GPU parity")
+        seed(SEED)
+        # device_noise=False → host-seeded noise (uploaded) so the GPU reads the
+        # SAME noise as the CPU (production uses on-device Philox; that path can't
+        # be bit-matched against host RNG, gated by the capture-parity test).
+        var gpu = GpuTr.make(
+            ctx=ctx, lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0,
+            device_noise=False, slowtar=slowtar_flag,
+        )
+
+        for it in range(ITERS):
+            cpu.load_minibatch(mb_obs, mb_act, mb_rew, mb_dne, mb_fst)
+            gpu.load_minibatch(mb_obs, mb_act, mb_rew, mb_dne, mb_fst)
+            seed(SEED + it)
+            cpu._run_minibatch(True)
+            seed(SEED + it)
+            gpu._run_minibatch(True)
+            wm_cpu[it] = cpu.last_wm_loss()
+            ac_cpu[it] = cpu.last_ac_loss()
+            wm_gpu[it] = gpu.last_wm_loss()
+            ac_gpu[it] = gpu.last_ac_loss()
+
+        var max_wm: Scalar[DT] = 0.0
+        var max_ac: Scalar[DT] = 0.0
+        for it in range(ITERS):
+            var dw = wm_cpu[it] - wm_gpu[it]
+            if dw < 0: dw = -dw
+            var da = ac_cpu[it] - ac_gpu[it]
+            if da < 0: da = -da
+            if dw > max_wm: max_wm = dw
+            if da > max_ac: max_ac = da
+        print(
+            "  slowtar", slowtar_flag, " max |ΔWM| =", max_wm,
+            "  max |ΔAC| =", max_ac,
+        )
+        assert_true(max_wm < Scalar[DT](1e-1), "WM CPU↔GPU parity")
+        assert_true(max_ac < Scalar[DT](1e-1), "AC CPU↔GPU parity")
     print("=" * 70)
-    print("PARITY PASSED — _ac_gpu matches _ac_cpu")
+    print("PARITY PASSED — _ac_gpu matches _ac_cpu (slowtar False + True)")
     print("=" * 70)
     mb_obs.free(); mb_act.free(); mb_rew.free(); mb_dne.free(); mb_fst.free()
     wm_cpu.free(); ac_cpu.free(); wm_gpu.free(); ac_gpu.free()
