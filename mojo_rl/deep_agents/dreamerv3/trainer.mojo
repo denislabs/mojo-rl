@@ -617,6 +617,15 @@ struct DreamerV3Trainer[
             return False
         if want_diag:
             return self.train_step(want_diag=True)
+        # CRITICAL (Stage 3 P5): the DreamerOpt update kernel takes `lr` as a
+        # HOST scalar arg, so a captured graph FREEZES the lr at capture time.
+        # During the LR warmup the per-step lr ramps 0→target, so capturing
+        # mid-warmup would pin every replay at the near-zero capture-time lr →
+        # the WM/AC barely train → divergence (high WM loss, exploding return
+        # scale). Train EAGERLY until warmup completes (lr constant), then
+        # capture once the frozen lr == the steady-state lr.
+        if self.train_steps < self.warmup.warmup_steps:
+            return self.train_step(want_diag=False)
         var ctx = self.ctx.value()
         # Eager prologue: refresh the FIXED device input buffers this step.
         self.train_prologue(want_diag=False)

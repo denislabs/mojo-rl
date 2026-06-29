@@ -49,6 +49,10 @@ comptime CAP = 256
 comptime NREC = 200       # transitions recorded into BOTH replays (identical)
 comptime ITERS = 40       # train steps to compare over
 comptime DIAG_EVERY = 4
+comptime WARMUP = 8       # >0 → exercises the post-warmup capture gate: the
+                          # DreamerOpt lr is a HOST kernel arg, so capturing
+                          # mid-warmup would FREEZE the ramping lr and diverge.
+                          # train_step_captured must stay eager until warmup ends.
 comptime SEED = 1234
 
 comptime Tr = DreamerV3Trainer[
@@ -85,11 +89,11 @@ def main() raises:
     # Identical init weights (reseed before each make).
     seed(SEED)
     var eager = Tr.make(
-        ctx=ctx, lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0
+        ctx=ctx, lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=WARMUP
     )
     seed(SEED)
     var cap = Tr.make(
-        ctx=ctx, lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=0
+        ctx=ctx, lr=Scalar[DT](2e-3), learning_starts=0, warmup_steps=WARMUP
     )
     # Identical replay contents → identical sampled windows (same device RNG).
     _fill_replay(eager)
