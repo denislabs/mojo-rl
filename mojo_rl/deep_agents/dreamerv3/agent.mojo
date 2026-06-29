@@ -40,8 +40,11 @@ from std.gpu.host import DeviceContext
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
+from mojo_rl.nn.core.tensor_refs import TensorRefs, child_refs
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.primitives.ops.swish_op import SwishOp
+from mojo_rl.deep_agents.dreamerv3.nets import DreamerEncoder, DreamerDecoder
 from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
 from mojo_rl.deep_agents.dreamerv3.dists import bounded_std
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import (
@@ -74,6 +77,11 @@ struct DreamerV3Agent[
     OBS: Int, ACT: Int, DETER: Int, H: Int, STOCH: Int, CLASSES: Int,
     BLOCKS: Int, TOKEN: Int, DEC_U: Int, HU: Int, VU: Int, PU: Int,
     BINS: Int, B: Int, T: Int, T_IMAG: Int, CAP: Int, DISCRETE: Bool = False,
+    # Encoder / decoder Module types (default MLP). For pixel obs pass the CNN
+    # nets: ENC=DreamerEncoderCNN[C,H,W,BASE,TOKEN], DEC=DreamerDecoderCNN[
+    # SC+DETER,C,H,W,BASE], with OBS=C*H*W.
+    ENC: Module = DreamerEncoder[OBS, TOKEN, SwishOp],
+    DEC: Module = DreamerDecoder[STOCH * CLASSES + DETER, OBS, DEC_U, SwishOp],
 ](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
@@ -85,6 +93,7 @@ struct DreamerV3Agent[
         Self.train_target, Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH,
         Self.CLASSES, Self.BLOCKS, Self.TOKEN, Self.DEC_U, Self.HU, Self.VU,
         Self.PU, Self.BINS, Self.B, Self.T, Self.T_IMAG, Self.CAP, Self.DISCRETE,
+        Self.ENC, Self.DEC,
     ]
     comptime MINSTD = Scalar[DT](0.1)
     comptime MAXSTD = Scalar[DT](1.0)
@@ -437,7 +446,9 @@ struct DreamerV3Agent[
                 obt.data[k] = obs[k]
             var tok = Tensor.alloc(TOK)
             self.trainer.enc.forward[Self.train_target, 1](
-                TensorRefs[1](obt), tok, None
+                child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](obt),
+                rebind[TensorImpl[Self.ENC.ACT_DT]](tok),
+                None,
             )
             # 2. observe via the core graph (B=1) → nd + posterior stoch sample
             self.trainer.core.set_input["deter", 1](self.belief_deter, None)
@@ -503,7 +514,9 @@ struct DreamerV3Agent[
             la.upload(ctx)
             # 1. encode obs → token (B=1)
             self.trainer.enc.forward[Self.train_target, 1](
-                TensorRefs[1](obt), tok, self.trainer.ctx
+                child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](obt),
+                rebind[TensorImpl[Self.ENC.ACT_DT]](tok),
+                self.trainer.ctx,
             )
             # 2. observe via the core graph (B=1) → nd + posterior stoch sample
             self.trainer.core.set_input["deter", 1](bd, self.trainer.ctx)

@@ -45,8 +45,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 
 from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
+from mojo_rl.nn.core.tensor_refs import TensorRefs, child_refs
 from mojo_rl.deep_agents.dreamerv3.twohot import twohot_pred
 from mojo_rl.deep_agents.dreamerv3.dists import bounded_std
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_sample, UNIMIX
@@ -64,8 +64,9 @@ from mojo_rl.deep_agents.dreamerv3.wm import (
     WMCoreGraph, WMImagineGraph, DecLossGraph, RewLossGraph, ConLossGraph,
 )
 from mojo_rl.deep_agents.dreamerv3.nets import (
-    DreamerEncoder, DreamerValue, DreamerPolicyHead,
+    DreamerEncoder, DreamerDecoder, DreamerValue, DreamerPolicyHead,
 )
+from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
 
 
@@ -1073,6 +1074,10 @@ struct WMStep[
     OBS: Int, ACT: Int, DETER: Int, H: Int, STOCH: Int, CLASSES: Int,
     BLOCKS: Int, TOKEN: Int, DEC_U: Int, HU: Int, BINS: Int, B: Int, T: Int,
     DISCRETE: Bool = False,
+    # Encoder / decoder Module types (default MLP), threaded from the trainer so
+    # WMStep's enc/dec field TYPES match the modules the trainer owns + passes in.
+    ENC: Module = DreamerEncoder[OBS, TOKEN, SwishOp],
+    DEC: Module = DreamerDecoder[STOCH * CLASSES + DETER, OBS, DEC_U, SwishOp],
 ](Movable & ImplicitlyDeletable):
     # `DISCRETE` selects the WM↔AC carry handoff (Stage 3 P3). The discrete AC
     # (`_ac_gpu_disc`) is fully device-resident, so the GPU WM hands its scan
@@ -1081,12 +1086,14 @@ struct WMStep[
     # download. Set from `DreamerV3Trainer.DISCRETE`.
     comptime SC = Self.STOCH * Self.CLASSES
     comptime CARRY = 2 + Self.DETER + Self.SC
-    comptime EncT = DreamerEncoder[Self.OBS, Self.TOKEN, SwishOp]
+    comptime EncT = Self.ENC
     comptime CoreT = WMCoreGraph[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT,
         Self.TOKEN, SwishOp,
     ]
-    comptime DecT = DecLossGraph[Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp]
+    comptime DecT = DecLossGraph[
+        Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp, Self.DEC
+    ]
     comptime RewT = RewLossGraph[Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp]
     comptime ConT = ConLossGraph[Self.DETER, Self.SC, Self.HU, SwishOp]
     comptime StateT = DreamerState[
@@ -1282,7 +1289,9 @@ struct WMStep[
                         (b * (Self.T + 1) + t + 1) * OBSD + k
                     ]
             enc.forward[target, Self.B](
-                TensorRefs[1](self.ob), self.tkscr, None
+                child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](self.ob),
+                rebind[TensorImpl[Self.ENC.ACT_DT]](self.tkscr),
+                None,
             )
             var base = t * Self.B * TOK
             for i in range(Self.B * TOK):
@@ -1479,9 +1488,16 @@ struct WMStep[
                     self.ob.data[b * OBSD + k] = st.mb_obs.data[
                         (b * (Self.T + 1) + t + 1) * OBSD + k
                     ]
-            enc.forward[target, Self.B](TensorRefs[1](self.ob), self.tkscr, None)
+            enc.forward[target, Self.B](
+                child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](self.ob),
+                rebind[TensorImpl[Self.ENC.ACT_DT]](self.tkscr),
+                None,
+            )
             enc.vjp[target, Self.B](
-                TensorRefs[1](self.ob), self.gtok, TensorRefs[1](self.gobs), None
+                child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](self.ob),
+                rebind[TensorImpl[Self.ENC.ACT_DT]](self.gtok),
+                child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](self.gobs),
+                None,
             )
         # optimizer steps
         oe.step[target, M=Self.EncT](enc, None)
@@ -1555,7 +1571,11 @@ struct WMStep[
                 self.ob.lt["gpu", Layout.row_major(Self.B * OBSD)](),
                 t, grid_dim=nbB, block_dim=TPB,
             )
-            enc.forward[target, Self.B](TensorRefs[1](self.ob), self.tkscr, ctx)
+            enc.forward[target, Self.B](
+                child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](self.ob),
+                rebind[TensorImpl[Self.ENC.ACT_DT]](self.tkscr),
+                ctx,
+            )
             ctx.enqueue_function[_wm_slice_store_k[Self.B * TOK, Tt]](
                 self.tkscr.lt["gpu", Layout.row_major(Self.B * TOK)](),
                 self.toks_d.lt["gpu", Layout.row_major(TKD)](),
@@ -1741,9 +1761,16 @@ struct WMStep[
                 self.ob.lt["gpu", Layout.row_major(Self.B * OBSD)](),
                 t, grid_dim=nbB, block_dim=TPB,
             )
-            enc.forward[target, Self.B](TensorRefs[1](self.ob), self.tkscr, ctx)
+            enc.forward[target, Self.B](
+                child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](self.ob),
+                rebind[TensorImpl[Self.ENC.ACT_DT]](self.tkscr),
+                ctx,
+            )
             enc.vjp[target, Self.B](
-                TensorRefs[1](self.ob), self.gtok, TensorRefs[1](self.gobs), ctx
+                child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](self.ob),
+                rebind[TensorImpl[Self.ENC.ACT_DT]](self.gtok),
+                child_refs[Self.ENC.ARITY, Self.ENC.ACT_DT](self.gobs),
+                ctx,
             )
         # optimizer steps (device bias-correction advance — capture-safe)
         oe.step[target, M=Self.EncT](enc, ctx)

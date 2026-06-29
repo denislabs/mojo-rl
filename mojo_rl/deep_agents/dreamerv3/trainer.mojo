@@ -41,8 +41,9 @@ from mojo_rl.deep_agents.dreamerv3.wm import (
     WMCoreGraph, WMImagineGraph, DecLossGraph, RewLossGraph, ConLossGraph,
 )
 from mojo_rl.deep_agents.dreamerv3.nets import (
-    DreamerEncoder, DreamerValue, DreamerPolicyHead,
+    DreamerEncoder, DreamerDecoder, DreamerValue, DreamerPolicyHead,
 )
+from mojo_rl.nn.core.module import Module
 from mojo_rl.deep_agents.dreamerv3.twohot import (
     symexp_twohot_bins,
     twohot_pred,
@@ -79,16 +80,24 @@ struct DreamerV3Trainer[
     OBS: Int, ACT: Int, DETER: Int, H: Int, STOCH: Int, CLASSES: Int,
     BLOCKS: Int, TOKEN: Int, DEC_U: Int, HU: Int, VU: Int, PU: Int,
     BINS: Int, B: Int, T: Int, T_IMAG: Int, CAP: Int, DISCRETE: Bool = False,
+    # Encoder / decoder Module TYPES (default = MLP; pixel obs pass the CNN
+    # nets from nets_cnn.mojo). The decoder is threaded into DecLossGraph; the
+    # encoder is run standalone to produce `tokens[TOKEN]`. OBS stays the flat
+    # obs dim (C*H*W for images — the conv index math reads it as [C,H,W]).
+    ENC: Module = DreamerEncoder[OBS, TOKEN, SwishOp],
+    DEC: Module = DreamerDecoder[STOCH * CLASSES + DETER, OBS, DEC_U, SwishOp],
 ](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
 
-    comptime EncT = DreamerEncoder[Self.OBS, Self.TOKEN, SwishOp]
+    comptime EncT = Self.ENC
     comptime CoreT = WMCoreGraph[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT,
         Self.TOKEN, SwishOp,
     ]
-    comptime DecT = DecLossGraph[Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp]
+    comptime DecT = DecLossGraph[
+        Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp, Self.DEC
+    ]
     comptime RewT = RewLossGraph[Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp]
     comptime ConT = ConLossGraph[Self.DETER, Self.SC, Self.HU, SwishOp]
     comptime ValT = DreamerValue[Self.FEAT, Self.VU, Self.BINS, SwishOp]
@@ -114,7 +123,7 @@ struct DreamerV3Trainer[
     comptime WMBlk = WMStep[
         Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH, Self.CLASSES,
         Self.BLOCKS, Self.TOKEN, Self.DEC_U, Self.HU, Self.BINS, Self.B, Self.T,
-        Self.DISCRETE,
+        Self.DISCRETE, Self.ENC, Self.DEC,
     ]
     comptime SyncBlk = ParamSyncStep[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT,

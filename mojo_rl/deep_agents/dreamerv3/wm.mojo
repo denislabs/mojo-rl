@@ -38,6 +38,7 @@ from mojo_rl.nn.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.gelu_op import GELUOp
 from mojo_rl.nn.primitives.concat import Concat
 from mojo_rl.nn.core.element_op import ElementOp
+from mojo_rl.nn.core.module import Module
 from .rssm_ops import (
     ActionSquash, BlockGroupAssemble, GRUGate, StraightThroughSample,
 )
@@ -55,12 +56,18 @@ from .nets import DreamerDecoder, DreamerRewardMLP, DreamerContMLP
 # ──────────────────────────────────────────────────────────────────────
 
 
-comptime DecLossGraph[SC: Int, DETER: Int, OBS: Int, DEC_U: Int, A: ElementOp = GELUOp] = ComputeGraph[
+# `DEC` is the decoder Module TYPE (default = MLP `DreamerDecoder`). The pixel
+# path passes `DreamerDecoderCNN[SC+DETER, C, H, W, BASE, A]` (same IN=SC+DETER,
+# OUT=OBS=C*H*W) — a deconv reconstruction instead of an MLP, no other change.
+comptime DecLossGraph[
+    SC: Int, DETER: Int, OBS: Int, DEC_U: Int, A: ElementOp = GELUOp,
+    DEC: Module = DreamerDecoder[SC + DETER, OBS, DEC_U, A],
+] = ComputeGraph[
     InputSlot["stoch_new", SC],
     InputSlot["nd", DETER],
     InputSlot["rtgt", OBS],
     Node["decin", Concat[SC, DETER],                   "stoch_new", "nd"],
-    Node["dec",   DreamerDecoder[SC + DETER, OBS, DEC_U, A], "decin"],
+    Node["dec",   DEC,                                 "decin"],
     Node["recon", SymlogMSELoss[OBS],                  "dec", "rtgt"],
 ]
 
