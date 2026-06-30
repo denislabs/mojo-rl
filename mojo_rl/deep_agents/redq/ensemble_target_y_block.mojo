@@ -442,7 +442,7 @@ struct EnsembleTargetYBlock[
                     self._mb_lp,
                     self._subset_dev.lt["gpu", Layout.row_major(Self.N_MIN)](),
                     self.gamma,
-                    self._alpha_ptr.value(),
+                    self._alpha_ptr.value().as_unsafe_any_origin(),
                 )
             else:
                 # Upload subset_idxs (host List[Int] → device uint32) per step.

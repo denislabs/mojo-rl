@@ -410,8 +410,8 @@ struct PPODiscreteTrainer[
             "valid at N_ENVS=1"
         )
         _ = step_idx
-        var obs_p = self._obs1.value()
-        var act_p = self._act1.value()
+        var obs_p = self._obs1.value().as_unsafe_any_origin()
+        var act_p = self._act1.value().as_unsafe_any_origin()
         for d in range(Self.OBS_DIM):
             obs_p[d] = obs[d]
         self.act_step.step[
@@ -443,10 +443,10 @@ struct PPODiscreteTrainer[
         # action_idx is ignored (cached sample is authoritative — mirrors
         # the continuous trainer ignoring the env-ready action).
         _ = action_idx
-        var obs_p = self._obs1.value()
-        var nobs_p = self._nobs1.value()
-        var rew_p = self._rew1.value()
-        var done_p = self._done1.value()
+        var obs_p = self._obs1.value().as_unsafe_any_origin()
+        var nobs_p = self._nobs1.value().as_unsafe_any_origin()
+        var rew_p = self._rew1.value().as_unsafe_any_origin()
+        var done_p = self._done1.value().as_unsafe_any_origin()
         for d in range(Self.OBS_DIM):
             obs_p[d]  = obs[d]
             nobs_p[d] = next_obs[d]
@@ -502,7 +502,7 @@ struct PPODiscreteTrainer[
         self.record_step.step[
             Self.train_target, Self.MINIBATCH, Self.N_ENVS,
         ](self.state, obs_ptr, reward_ptr, next_obs_ptr, done_ptr)
-        var ep_ret_p = self._ep_returns.value()
+        var ep_ret_p = self._ep_returns.value().as_unsafe_any_origin()
         for e in range(Self.N_ENVS):
             ep_ret_p[e] += reward_ptr[e]
             if done_ptr[e] > Scalar[DT](0.5):

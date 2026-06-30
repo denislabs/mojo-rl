@@ -105,7 +105,7 @@ struct WindowSource[
         After this call `pix_ptr()` / `act_ptr()` are valid for one
         `train_step` / `eval_loss`."""
         self.buf.sample_batch_uint8(
-            Self.B, Self.T, self.pix_u8_host, self.act_host
+            Self.B, Self.T, self.pix_u8_host.as_unsafe_any_origin(), self.act_host.as_unsafe_any_origin()
         )
         comptime if Self.target == "cpu":
             comptime if Self.BUF.INPUT_LAYOUT_HWC:
@@ -137,7 +137,7 @@ struct WindowSource[
 
     def pix_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         comptime if Self.target == "cpu":
-            return self.pix_fp32_host
+            return self.pix_fp32_host.as_unsafe_any_origin()
         else:
             return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self.pix_fp32_dev.value().unsafe_ptr()
@@ -145,7 +145,7 @@ struct WindowSource[
 
     def act_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         comptime if Self.target == "cpu":
-            return self.act_host
+            return self.act_host.as_unsafe_any_origin()
         else:
             return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self.act_dev.value().unsafe_ptr()

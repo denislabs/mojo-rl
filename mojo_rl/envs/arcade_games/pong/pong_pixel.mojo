@@ -291,7 +291,7 @@ struct PongPixelEnv[
     def _render_to_buf(self):
         """Render current Pong state to internal grayscale buffer."""
         _render_pong_frame(
-            self._frame_buf,
+            self._frame_buf.as_unsafe_any_origin(),
             Int(self.inner.state[S_BALL_X]),
             Int(self.inner.state[S_BALL_Y]),
             Int(self.inner.state[S_PADDLE_Y]),

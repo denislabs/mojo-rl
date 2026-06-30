@@ -267,7 +267,7 @@ struct TargetYBlock[
                     self._min_q,
                     self.graph.node_output["logp"](),
                     self.gamma,
-                    self._alpha_ptr.value(),
+                    self._alpha_ptr.value().as_unsafe_any_origin(),
                     state.mb_y,
                     ctx,
                 )

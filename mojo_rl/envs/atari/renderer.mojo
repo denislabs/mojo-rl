@@ -384,7 +384,7 @@ struct AtariRenderer(Movable):
         Use with run_frame_video() which fills the buffer
         scanline-by-scanline during CPU execution.
         """
-        return self.pixel_buf
+        return self.pixel_buf.as_unsafe_any_origin()
 
     def display_buffer(mut self):
         """Upload the pixel buffer to screen (call after buffer is filled).
@@ -405,7 +405,7 @@ struct AtariRenderer(Movable):
             update_texture(self.texture.value(),
                 _null_ptr[Rect, ImmutAnyOrigin](),
                 rebind[Ptr[NoneType, ImmutAnyOrigin]](
-                    Ptr[UInt8, ImmutAnyOrigin](self.pixel_buf)
+                    rebind[Ptr[UInt8, ImmutAnyOrigin]](self.pixel_buf)
                 ),
                 c_int(FRAME_WIDTH * 4),  # pitch in bytes
             )

@@ -183,7 +183,7 @@ struct _DevImportVisitor(ParamVisitor):
         comptime if target == "gpu":
             if name not in self.d:
                 return
-            param.copy_from_device(self.ctx, self.d[name], N)
+            param.copy_from_device(self.ctx, self.d[name].as_unsafe_any_origin(), N)
 
 
 def collect_graph_params_device[

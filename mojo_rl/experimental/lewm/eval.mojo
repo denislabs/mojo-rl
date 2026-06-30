@@ -119,7 +119,7 @@ struct LeWMTFScorer[
 
     def _act_target_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         comptime if Self.target == "cpu":
-            return self.act_host
+            return self.act_host.as_unsafe_any_origin()
         else:
             return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self.act_dev.value().unsafe_ptr()

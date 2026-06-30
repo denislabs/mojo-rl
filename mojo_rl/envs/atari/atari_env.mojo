@@ -97,9 +97,11 @@ struct AtariAction(Action, Copyable, ImplicitlyCopyable, Movable):
 # ============================================================================
 
 
-def _resize_160x210_to_84x84(
-    src: UnsafePointer[UInt8, MutAnyOrigin],
-    dst: UnsafePointer[UInt8, MutAnyOrigin],
+def _resize_160x210_to_84x84[
+    so: MutOrigin, do: MutOrigin, //
+](
+    src: UnsafePointer[UInt8, so],
+    dst: UnsafePointer[UInt8, do],
 ):
     """Resize 160×210 grayscale to 84×84 using area (box-filter) interpolation.
 
@@ -148,10 +150,12 @@ def _resize_160x210_to_84x84(
             dst[oy * OBS_WIDTH + ox] = UInt8(total // ((sx1 - sx0) * cy))
 
 
-def _bgra_maxpool_to_rgb_planar(
-    a: UnsafePointer[UInt8, MutAnyOrigin],
-    b: UnsafePointer[UInt8, MutAnyOrigin],
-    dst: UnsafePointer[UInt8, MutAnyOrigin],
+def _bgra_maxpool_to_rgb_planar[
+    ao: MutOrigin, bo: MutOrigin, do: MutOrigin, //
+](
+    a: UnsafePointer[UInt8, ao],
+    b: UnsafePointer[UInt8, bo],
+    dst: UnsafePointer[UInt8, do],
 ):
     """Max-pool two BGRA frames (flicker handling, like the gray path) and
     write the result as three PLANAR channels R,G,B into `dst`
@@ -177,9 +181,11 @@ def _bgra_maxpool_to_rgb_planar(
         )
 
 
-def _resize_plane_160x210_to_96x96(
-    src: UnsafePointer[UInt8, MutAnyOrigin],
-    dst: UnsafePointer[UInt8, MutAnyOrigin],
+def _resize_plane_160x210_to_96x96[
+    so: MutOrigin, do: MutOrigin, //
+](
+    src: UnsafePointer[UInt8, so],
+    dst: UnsafePointer[UInt8, do],
 ):
     """Area (box-filter) resize one 160×210 plane to 96×96, the SAME
     integer-boundary box filter the 84×84 gray path uses (each output pixel
@@ -294,7 +300,7 @@ struct AtariEnv[
         var rom_data = load_rom(game.rom_file())
         self = Self(
             game,
-            rom_data.data.value(),
+            rom_data.data.value().as_unsafe_any_origin(),
             rom_data.size,
             frame_skip=frame_skip,
             max_frames=max_frames,
@@ -455,9 +461,9 @@ struct AtariEnv[
         """
         run_frame_video(
             self.env.state,
-            self.env.rom,
+            self.env.rom.as_unsafe_any_origin(),
             self.env.rom_size,
-            self.raw_frame_a.value(),
+            self.raw_frame_a.value().as_unsafe_any_origin(),
         )
 
     # ── RGB-96 pixel helpers (OBS_MODE==2) ──────────────────────────────
@@ -467,8 +473,8 @@ struct AtariEnv[
         channels into the frame_stack ring slot [3,96,96], advance the ring.
         """
         _bgra_maxpool_to_rgb_planar(
-            self.raw_frame_a.value(),
-            self.raw_frame_b.value(),
+            self.raw_frame_a.value().as_unsafe_any_origin(),
+            self.raw_frame_b.value().as_unsafe_any_origin(),
             self.rgb_buf.value(),
         )
         var slot = self.frame_stack.value() + self.frame_idx * RGB_FRAME_SIZE
@@ -560,9 +566,9 @@ struct AtariEnv[
             # Render initial frame into all 4 stack slots
             run_frame_video(
                 self.env.state,
-                self.env.rom,
+                self.env.rom.as_unsafe_any_origin(),
                 self.env.rom_size,
-                self.raw_frame_a.value(),
+                self.raw_frame_a.value().as_unsafe_any_origin(),
             )
             # Copy frame_a to frame_b for maxpool (both identical after reset)
             for i in range(FRAME_BGRA_SIZE):
@@ -576,9 +582,9 @@ struct AtariEnv[
             # Render initial frame into all 4 RGB stack slots
             run_frame_video(
                 self.env.state,
-                self.env.rom,
+                self.env.rom.as_unsafe_any_origin(),
                 self.env.rom_size,
-                self.raw_frame_a.value(),
+                self.raw_frame_a.value().as_unsafe_any_origin(),
             )
             for i in range(FRAME_BGRA_SIZE):
                 self.raw_frame_b.value()[i] = self.raw_frame_a.value()[i]
@@ -840,24 +846,24 @@ struct AtariEnv[
         # Frames 0 .. skip-3: run without rendering
         for _ in range(PIXEL_FRAME_SKIP - 2):
             set_action(self.env.state, ale_action)
-            run_frame(self.env.state, self.env.rom, self.env.rom_size)
+            run_frame(self.env.state, self.env.rom.as_unsafe_any_origin(), self.env.rom_size)
 
         # Frame skip-2: render into raw_frame_a
         set_action(self.env.state, ale_action)
         run_frame_video(
             self.env.state,
-            self.env.rom,
+            self.env.rom.as_unsafe_any_origin(),
             self.env.rom_size,
-            self.raw_frame_a.value(),
+            self.raw_frame_a.value().as_unsafe_any_origin(),
         )
 
         # Frame skip-1: render into raw_frame_b
         set_action(self.env.state, ale_action)
         run_frame_video(
             self.env.state,
-            self.env.rom,
+            self.env.rom.as_unsafe_any_origin(),
             self.env.rom_size,
-            self.raw_frame_b.value(),
+            self.raw_frame_b.value().as_unsafe_any_origin(),
         )
 
         # Extract RL signals from RAM (registry; includes per-game reward
@@ -912,21 +918,21 @@ struct AtariEnv[
 
         for _ in range(PIXEL_FRAME_SKIP - 2):
             set_action(self.env.state, ale_action)
-            run_frame(self.env.state, self.env.rom, self.env.rom_size)
+            run_frame(self.env.state, self.env.rom.as_unsafe_any_origin(), self.env.rom_size)
 
         set_action(self.env.state, ale_action)
         run_frame_video(
             self.env.state,
-            self.env.rom,
+            self.env.rom.as_unsafe_any_origin(),
             self.env.rom_size,
-            self.raw_frame_a.value(),
+            self.raw_frame_a.value().as_unsafe_any_origin(),
         )
         set_action(self.env.state, ale_action)
         run_frame_video(
             self.env.state,
-            self.env.rom,
+            self.env.rom.as_unsafe_any_origin(),
             self.env.rom_size,
-            self.raw_frame_b.value(),
+            self.raw_frame_b.value().as_unsafe_any_origin(),
         )
 
         var sig = game_signals(self.game, self.env.state, prev_score)

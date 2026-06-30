@@ -204,7 +204,7 @@ struct PushTOfflineSampler(Movable, OfflineBuffer):
                 clip_idx,
                 pixels_out + b * pix_per_sample,
                 actions_out + b * act_per_sample,
-                self.window.pixels_dense,
+                self.window.pixels_dense.as_unsafe_any_origin(),
             )
             if self.normalize_actions:
                 # z-score per RAW action dim (stored layout interleaves

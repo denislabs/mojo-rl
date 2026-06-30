@@ -429,7 +429,7 @@ struct LewmPushTExpert(Movable, Sized):
         # The HWC→CHW permute + uint8→fp32 normalize is deferred to a GPU
         # kernel (see `pixels_uint8_to_fp32_kernel`).
         self._dset_pixels.read_range[DType.uint8](
-            g_start, g_start + self.span, into.pixels_dense
+            g_start, g_start + self.span, into.pixels_dense.as_unsafe_any_origin()
         )
         var pix_per_frame = self.pixel_h * self.pixel_w * 3
         for k in range(self.num_steps):

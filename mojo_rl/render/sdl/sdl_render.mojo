@@ -710,9 +710,11 @@ def create_texture[o: MutOrigin, //](
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def create_texture_from_surface(
-    renderer: Ptr[Renderer, MutAnyOrigin],
-    surface: Ptr[Surface, MutAnyOrigin],
+def create_texture_from_surface[
+    ren_o: MutOrigin, surf_o: MutOrigin, //
+](
+    renderer: Ptr[Renderer, ren_o],
+    surface: Ptr[Surface, surf_o],
     out ret: Ptr[Texture, MutAnyOrigin],
 ) raises:
     """Create a texture from an existing surface.
@@ -748,7 +750,7 @@ def create_texture_from_surface(
             renderer: Ptr[Renderer, MutAnyOrigin],
             surface: Ptr[Surface, MutAnyOrigin],
         ) thin -> Ptr[Texture, MutAnyOrigin],
-    ]()(renderer, surface)
+    ]()(renderer.as_unsafe_any_origin(), surface.as_unsafe_any_origin())
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
