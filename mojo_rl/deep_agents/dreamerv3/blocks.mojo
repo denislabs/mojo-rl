@@ -1468,7 +1468,7 @@ struct WMStep[
     var conl_d: Tensor    # [T*B]
 
     def __init__(out self):
-        self.dyn_scale = Scalar[DT](0.5)
+        self.dyn_scale = Scalar[DT](1.0)
         self.rep_scale = Scalar[DT](0.1)
         self.horizon = Scalar[DT](333.0)
         self.ob = Tensor()
@@ -1512,8 +1512,10 @@ struct WMStep[
         comptime ACTD = Self.ACT
         comptime BV = Self.B
         var s = Self()
-        # Finding 2: loss_scales dyn=0.5, rep=0.1 (paper Eq. 2).
-        s.dyn_scale = Scalar[DT](0.5)
+        # loss_scales dyn=1.0, rep=0.1 — matches the DreamerV3 REFERENCE CODE
+        # (configs.yaml global default), which differs from the paper's Eq. 2
+        # (dyn=0.5). The reference uses dyn=1.0 for all tasks incl. proprio.
+        s.dyn_scale = Scalar[DT](1.0)
         s.rep_scale = Scalar[DT](0.1)
         s.horizon = Scalar[DT](333.0)
         s.ob = _mk[target](BV * OBSD, ctx)

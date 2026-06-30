@@ -23,9 +23,12 @@ HALVES an even spatial dim; each transposed conv DOUBLES it. So:
 `H` (== `W`) MUST be divisible by 16 (so every intermediate dim stays even).
 For CarRacing pick a 16-divisible resolution: 64 (→ minres 4) or 96 (→ minres 6).
 
-Norm: the reference inserts a LayerNorm after each conv. v1 omits it (Conv→act
-only) to keep the shape/gradient surface minimal; adding per-layer norm is a P5
-convergence lever, not a shape change.
+Norm: the reference (`rssm.py`) inserts a norm (default RMSNorm) after each conv,
+applied over the CHANNEL axis (per spatial location), then the activation
+(Conv→Norm→act). We match that with `ConvRMSNorm[C, HW]` (channel-wise RMSNorm
+for NCHW maps; γ size = channels) in every _ConvDown/_ConvUp and the decoder's
+initial projection. The encoder's final Linear (→tokens) and the decoder's
+output deconv stay raw, mirroring the reference's unnormalized output layers.
 
 Activation `A` defaults to `GELUOp` (matching `nets.mojo`); the training config
 passes `SwishOp` (SiLU). The final encoder Linear and final decoder deconv are
@@ -36,6 +39,7 @@ from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.conv2d import Conv2D
 from mojo_rl.nn.primitives.conv2d_transpose import Conv2DTranspose
 from mojo_rl.nn.primitives.linear import Linear
+from mojo_rl.nn.primitives.conv_rms_norm import ConvRMSNorm
 from mojo_rl.nn.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.gelu_op import GELUOp
 from mojo_rl.nn.core.element_op import ElementOp
@@ -43,11 +47,16 @@ from mojo_rl.nn.constants import DT, LAYOUT_NCHW
 
 
 # ── stride-2 building blocks (k=4, s=2, p=1) ──────────────────────────────────
+# Each conv is followed by channel-wise RMSNorm then activation (Conv→Norm→act),
+# matching the DreamerV3 reference (`rssm.py`: norm over the channel axis after
+# every conv). `ConvRMSNorm` assumes NCHW (γ size = out-channels) — keep LAYOUT
+# at NCHW for these blocks.
 # Down: even H,W → H/2, W/2.  OH = (H + 2 - 4)//2 + 1 = H//2 (even H).
 comptime _ConvDown[
     IC: Int, OC: Int, H: Int, W: Int, A: ElementOp, LAYOUT: Int
 ] = Sequential[
     Conv2D[IC, OC, 4, 2, 1, H, W, DT, LAYOUT],
+    ConvRMSNorm[OC, (H // 2) * (W // 2)],
     Elementwise[OC * (H // 2) * (W // 2), A],
 ]
 
@@ -56,6 +65,7 @@ comptime _ConvUp[
     IC: Int, OC: Int, H: Int, W: Int, A: ElementOp, LAYOUT: Int
 ] = Sequential[
     Conv2DTranspose[IC, OC, 4, 2, 1, H, W, 0, LAYOUT],
+    ConvRMSNorm[OC, (2 * H) * (2 * W)],
     Elementwise[OC * (2 * H) * (2 * W), A],
 ]
 
@@ -79,6 +89,7 @@ comptime DreamerDecoderCNN[
     A: ElementOp = GELUOp, LAYOUT: Int = LAYOUT_NCHW,
 ] = Sequential[
     Linear[FEATIN, 8 * BASE * (H // 16) * (W // 16)],
+    ConvRMSNorm[8 * BASE, (H // 16) * (W // 16)],
     Elementwise[8 * BASE * (H // 16) * (W // 16), A],
     _ConvUp[8 * BASE, 4 * BASE, H // 16, W // 16, A, LAYOUT],  # H/16 → H/8
     _ConvUp[4 * BASE, 2 * BASE, H // 8, W // 8, A, LAYOUT],    # H/8  → H/4
