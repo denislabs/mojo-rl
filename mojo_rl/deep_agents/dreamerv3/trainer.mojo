@@ -1028,3 +1028,173 @@ struct DreamerV3Trainer[
                 tfd.data[k] = tnd_t.data[k]
             for k in range(SCl):
                 tfs.data[k] = tsn_t.data[k]
+
+    def openloop_decode_gpu(
+        mut self,
+        real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
+        real_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT]
+        ctx_len: Int,
+        hor: Int,
+        out_ol_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] open-loop decoded obs (raw space)
+        out_tf_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] teacher-forced decoded obs (raw space)
+    ) raises:
+        """GPU twin of `openloop_trace`'s decode path (imagination-GIF probe).
+
+        Seeds the posterior belief from `ctx_len` real frames (encode→core), then
+        rolls `hor` steps two ways and writes the RAW decoded observation vectors:
+
+          * `out_ol_obs` — OPEN-LOOP: prior dynamics (`imagine`) fed the real
+            recorded actions but NO observations — what imagination actually
+            decodes to ("Dreamer's dream").
+          * `out_tf_obs` — TEACHER-FORCED: re-observes each real obs (posterior).
+            The decode upper bound (separates decoder fidelity from dynamics drift).
+
+        Unlike `openloop_trace` (CPU host reads) this runs the enc/core/imagine/dec
+        forwards on-device (reusing the LIVE training GPU graphs, B=1 — buffers are
+        grow-only so B=1 shares the B/NS training instances, exactly like
+        `select_action`), and D2Hs only the small per-step decoded frame into the
+        host out buffers. GPU-only; `select_action` marshalling idiom throughout.
+        """
+        comptime assert Self.train_target == "gpu", (
+            "openloop_decode_gpu is GPU-only — use openloop_trace on CPU"
+        )
+        comptime D = Self.DETER
+        comptime SCl = Self.SC
+        comptime TOK = Self.TOKEN
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+        comptime FEATl = Self.FEAT
+        comptime CARRY = 2 + D + SCl
+        var ctx = self.ctx.value()
+
+        # device staging tensors (B=1). `.ensure(n)` sizes the host `.data` List
+        # for the ones we fill host-side before upload; pure outputs skip it.
+        var bd = Tensor.make["gpu"](D, self.ctx); bd.ensure(D)
+        var bs = Tensor.make["gpu"](SCl, self.ctx); bs.ensure(SCl)
+        var pa = Tensor.make["gpu"](ACTD, self.ctx); pa.ensure(ACTD)
+        var obt = Tensor.make["gpu"](OBSD, self.ctx); obt.ensure(OBSD)
+        var dummyO = Tensor.make["gpu"](OBSD, self.ctx); dummyO.ensure(OBSD)
+        var tok = Tensor.make["gpu"](TOK, self.ctx)
+        var carry_t = Tensor.make["gpu"](CARRY, self.ctx)
+        var feat_t = Tensor.make["gpu"](FEATl, self.ctx)
+        var loss_t = Tensor.make["gpu"](1, self.ctx)
+
+        # rtgt is required by the dec loss graph but the "dec" node (prediction)
+        # does not depend on it — zero it once.
+        for k in range(OBSD):
+            dummyO.data[k] = 0.0
+        dummyO.upload(ctx)
+        for k in range(D):
+            bd.data[k] = 0.0
+        for k in range(SCl):
+            bs.data[k] = 0.0
+
+        # ── context: observe ctx_len real steps (prev-action convention) ──
+        for t in range(ctx_len):
+            if t == 0:
+                for k in range(ACTD):
+                    pa.data[k] = 0.0
+            else:
+                for k in range(ACTD):
+                    pa.data[k] = real_act[(t - 1) * ACTD + k]
+            for k in range(OBSD):
+                obt.data[k] = real_obs[t * OBSD + k]
+            obt.upload(ctx); bd.upload(ctx); bs.upload(ctx); pa.upload(ctx)
+            self.enc.forward["gpu", 1](
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                self.ctx,
+            )
+            self.core.set_input["deter", 1](bd, self.ctx)
+            self.core.set_input["stoch", 1](bs, self.ctx)
+            self.core.set_input["action", 1](pa, self.ctx)
+            self.core.set_input["tokens", 1](tok, self.ctx)
+            self.core.forward[1, "gpu"](carry_t, self.ctx)
+            ref nd = self.core.node_output["nd"]()
+            ref sn = self.core.node_output["stoch_new"]()
+            nd.download(ctx); sn.download(ctx)
+            for k in range(D):
+                bd.data[k] = nd.data[k]
+            for k in range(SCl):
+                bs.data[k] = sn.data[k]
+
+        var old = Tensor.make["gpu"](D, self.ctx); old.ensure(D)
+        var ols = Tensor.make["gpu"](SCl, self.ctx); ols.ensure(SCl)
+        var tfd = Tensor.make["gpu"](D, self.ctx); tfd.ensure(D)
+        var tfs = Tensor.make["gpu"](SCl, self.ctx); tfs.ensure(SCl)
+        var ond_t = Tensor.make["gpu"](D, self.ctx); ond_t.ensure(D)
+        var osn_t = Tensor.make["gpu"](SCl, self.ctx); osn_t.ensure(SCl)
+        var tnd_t = Tensor.make["gpu"](D, self.ctx); tnd_t.ensure(D)
+        var tsn_t = Tensor.make["gpu"](SCl, self.ctx); tsn_t.ensure(SCl)
+        for k in range(D):
+            old.data[k] = bd.data[k]; tfd.data[k] = bd.data[k]
+        for k in range(SCl):
+            ols.data[k] = bs.data[k]; tfs.data[k] = bs.data[k]
+
+        for h in range(hor):
+            var idx = ctx_len - 1 + h
+            for k in range(ACTD):
+                pa.data[k] = real_act[idx * ACTD + k]
+            pa.upload(ctx)
+            # ── open-loop: prior dynamics (imagine), no observation ──
+            old.upload(ctx); ols.upload(ctx)
+            self.imagine.set_input["deter", 1](old, self.ctx)
+            self.imagine.set_input["stoch", 1](ols, self.ctx)
+            self.imagine.set_input["action", 1](pa, self.ctx)
+            self.imagine.forward[1, "gpu"](feat_t, self.ctx)
+            ref ond = self.imagine.node_output["nd"]()
+            ref osn = self.imagine.node_output["stoch_new"]()
+            ond.download(ctx); osn.download(ctx)
+            for k in range(D):
+                ond_t.data[k] = ond.data[k]
+            for k in range(SCl):
+                osn_t.data[k] = osn.data[k]
+            ond_t.upload(ctx); osn_t.upload(ctx)
+            self.dec.set_input["stoch_new", 1](osn_t, self.ctx)
+            self.dec.set_input["nd", 1](ond_t, self.ctx)
+            self.dec.set_input["rtgt", 1](dummyO, self.ctx)
+            self.dec.forward[1, "gpu"](loss_t, self.ctx)
+            ref pred = self.dec.node_output["dec"]()
+            pred.download(ctx)
+            for k in range(OBSD):
+                out_ol_obs[h * OBSD + k] = _symexp(pred.data[k])
+            for k in range(D):
+                old.data[k] = ond_t.data[k]
+            for k in range(SCl):
+                ols.data[k] = osn_t.data[k]
+
+            # ── teacher-forced: re-observe the real obs (posterior path) ──
+            for k in range(OBSD):
+                obt.data[k] = real_obs[(idx + 1) * OBSD + k]
+            obt.upload(ctx)
+            self.enc.forward["gpu", 1](
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                self.ctx,
+            )
+            tfd.upload(ctx); tfs.upload(ctx)
+            self.core.set_input["deter", 1](tfd, self.ctx)
+            self.core.set_input["stoch", 1](tfs, self.ctx)
+            self.core.set_input["action", 1](pa, self.ctx)
+            self.core.set_input["tokens", 1](tok, self.ctx)
+            self.core.forward[1, "gpu"](carry_t, self.ctx)
+            ref tnd = self.core.node_output["nd"]()
+            ref tsn = self.core.node_output["stoch_new"]()
+            tnd.download(ctx); tsn.download(ctx)
+            for k in range(D):
+                tnd_t.data[k] = tnd.data[k]
+            for k in range(SCl):
+                tsn_t.data[k] = tsn.data[k]
+            tnd_t.upload(ctx); tsn_t.upload(ctx)
+            self.dec.set_input["stoch_new", 1](tsn_t, self.ctx)
+            self.dec.set_input["nd", 1](tnd_t, self.ctx)
+            self.dec.set_input["rtgt", 1](dummyO, self.ctx)
+            self.dec.forward[1, "gpu"](loss_t, self.ctx)
+            ref tpred = self.dec.node_output["dec"]()
+            tpred.download(ctx)
+            for k in range(OBSD):
+                out_tf_obs[h * OBSD + k] = _symexp(tpred.data[k])
+            for k in range(D):
+                tfd.data[k] = tnd_t.data[k]
+            for k in range(SCl):
+                tfs.data[k] = tsn_t.data[k]
