@@ -56,7 +56,12 @@ struct Dreamer4Encoder[
     comptime PROJ = Tokenwise[Self.NP, Linear[Self.DP, Self.D]]
     comptime MAE = MAEReplacer[Self.NP, Self.D, Self.P_MIN, Self.P_MAX, Self.SEED]
     comptime BODY = Sequential[
-        LearnedTokens[Self.L, Self.NP, Self.D, True],
+        # Input = NP masked patch tokens; PREPEND L latent register tokens so the
+        # sequence is [ L latents | NP patches ] (latents at positions [0, L), as
+        # the encoder modality mask and the bottleneck Slice below both assume).
+        # INIT_STD=0.02 matches the reference (`normal_(std=0.02)`); the default
+        # fan-in=1 Kaiming init gives std~1.4 which collapses the readout.
+        LearnedTokens[Self.NP, Self.L, Self.D, True, 0.02],
         SinusoidalPosAddBT[Self.T, Self.S, Self.D],
         Dreamer4Stack[
             Self.D, Self.NH, Self.T, Self.S, Self.L, Self.HID, Self.DEPTH,
