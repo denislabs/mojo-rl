@@ -85,7 +85,7 @@ struct DateFormat(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime DATE_FORMAT_YYYYMMDD = Self(0)
     """Year/Month/Day."""
@@ -117,7 +117,7 @@ struct TimeFormat(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime TIME_FORMAT_24HR = Self(0)
     """24 hour time."""

@@ -14,7 +14,7 @@ from ..types import Model, Data
 from ..constraints.constraint_data import ConstraintData
 
 
-trait ConstraintSolver(Movable & ImplicitlyCopyable):
+trait ConstraintSolver(ImplicitlyCopyable):
     """Trait for constraint-based contact solvers in GC engine.
 
     Solvers modify the acceleration vector in-place to satisfy contact

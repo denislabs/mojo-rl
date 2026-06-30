@@ -59,7 +59,7 @@ struct SACAgent[
     SAMPLE: SampleBlock,
     ACTOR: Module,
     CRITIC: Module,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Thin facade over `SACTrainer` + off-policy drivers.
 
     Comptime parameters mirror `SACTrainer` one-for-one. Dimensions
@@ -425,9 +425,9 @@ struct SACAgent[
     def save(mut self, path: String) raises:
         """Thin passthrough to `trainer.save_state(path)`. Writes ONE
         file (`nn-ckpt v2` envelope) with prefixed sections for
-        actor, critic1, critic2, actor_opt, critic1_opt, critic2_opt,
-        alpha_opt. Replay buffer and episode tracker are NOT
-        included — resume starts with a fresh replay. CPU-only."""
+        actor, critic1, critic2 (the online nets). Optimizer moments, α,
+        replay buffer and episode tracker are NOT included — resume
+        re-warms. CPU-only."""
         self.trainer.save_state(path)
 
     def load(mut self, path: String) raises:

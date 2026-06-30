@@ -36,7 +36,7 @@ from .target_tag import (
 
 
 @fieldwise_init
-struct TargetStorage(Movable & ImplicitlyDestructible):
+struct TargetStorage(Movable & ImplicitlyDeletable):
     """Bundles `target_tag` + `ctx` into one composable field. Every
     nn leaf retrofit owns exactly one of these.
 

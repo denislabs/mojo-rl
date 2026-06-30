@@ -223,7 +223,7 @@ struct HapticDirection(ImplicitlyCopyable, Movable):
 
     var type: UInt8
     """The type of encoding."""
-    var dir: ArrayHelper[Int32, 3, MutAnyOrigin]
+    var dir: ArrayHelper[Int32, 3, MutUntrackedOrigin]
     """The encoded direction."""
 
 
@@ -395,17 +395,17 @@ struct HapticCondition(ImplicitlyCopyable, Movable):
     var interval: UInt16
     """How soon it can be triggered again after button."""
 
-    var right_sat: ArrayHelper[UInt16, 3, MutAnyOrigin]
+    var right_sat: ArrayHelper[UInt16, 3, MutUntrackedOrigin]
     """Condition."""
-    var left_sat: ArrayHelper[UInt16, 3, MutAnyOrigin]
+    var left_sat: ArrayHelper[UInt16, 3, MutUntrackedOrigin]
     """Level when joystick is to the negative side; max 0xFFFF."""
-    var right_coeff: ArrayHelper[Int16, 3, MutAnyOrigin]
+    var right_coeff: ArrayHelper[Int16, 3, MutUntrackedOrigin]
     """How fast to increase the force towards the positive side."""
-    var left_coeff: ArrayHelper[Int16, 3, MutAnyOrigin]
+    var left_coeff: ArrayHelper[Int16, 3, MutUntrackedOrigin]
     """How fast to increase the force towards the negative side."""
-    var deadband: ArrayHelper[UInt16, 3, MutAnyOrigin]
+    var deadband: ArrayHelper[UInt16, 3, MutUntrackedOrigin]
     """Size of the dead zone; max 0xFFFF: whole axis-range when 0-centered."""
-    var center: ArrayHelper[Int16, 3, MutAnyOrigin]
+    var center: ArrayHelper[Int16, 3, MutUntrackedOrigin]
     """Position of the dead zone."""
 
 
@@ -515,7 +515,7 @@ struct HapticCustom(ImplicitlyCopyable, Movable):
     """Sample periods."""
     var samples: UInt16
     """Amount of samples."""
-    var data: Ptr[UInt16, MutAnyOrigin]
+    var data: Ptr[UInt16, MutUntrackedOrigin]
     """Should contain channels*samples items."""
 
     var attack_length: UInt16

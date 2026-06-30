@@ -86,7 +86,10 @@ struct CRConstants:
     # Episode Constants
     # =========================================================================
 
-    comptime MAX_STEPS: Int = 500
+    # Gymnasium CarRacing-v3 registers max_episode_steps=1000. 500 truncated
+    # episodes at ~half a lap (~140/295 tiles), halving training/eval returns
+    # vs the true near-full-lap policy (the eval-render at 2000 showed ~860).
+    comptime MAX_STEPS: Int = 1000
     comptime LAP_COMPLETE_PERCENT: Float64 = 0.95
 
     # =========================================================================

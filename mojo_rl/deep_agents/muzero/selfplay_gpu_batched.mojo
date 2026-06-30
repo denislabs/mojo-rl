@@ -34,16 +34,22 @@ Run (GPU env required):
 
 from std.math import exp, log
 from std.memory import alloc
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.core.map_params import hard_copy_params
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
+from mojo_rl.nn.core.hard_copy import hard_copy
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.logger import Logger, NoOpLogger
-from mojo_rl.planners.tree_search import GumbelGPUMCTS, SinglePlayer
+from mojo_rl.planners.tree_search import (
+    GumbelGPUMCTS, SinglePlayer,
+    RepresentationGPU, DynamicsGPU, PredictionGPU,
+)
 
 from ..training.batched_env import BatchedEnv
 from .blocks import mz_unroll_train_step_gpu, MZScratch
@@ -55,11 +61,13 @@ from ..zero.temperature import visit_temperature
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    """Raw scratch for optional unroll outputs (loss_parts) + diag host buffers
+    (the unroll's optional-output params are Optional[UnsafePointer])."""
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 def _aint(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
-    return alloc[Int](n)
+    return alloc[Int](n).as_unsafe_any_origin()
 
 
 def _avg_last_n(returns: List[Float64], n: Int) -> Float64:
@@ -86,8 +94,8 @@ def _mz_emit_batch_diag[
     d_z: DeviceBuffer[DT],
     d_pred: DeviceBuffer[DT],
     h_pred: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    t_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    t_val: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    t_pol: List[Scalar[DT]],
+    t_val: List[Scalar[DT]],
     l_parts: UnsafePointer[Scalar[DT], MutAnyOrigin],
     v_min: Scalar[DT],
     v_max: Scalar[DT],
@@ -101,13 +109,19 @@ def _mz_emit_batch_diag[
     diagnostics (`append_mz_train_diagnostics`). ``t_pol``/``t_val`` start at the
     root (position 0) block, which is what the diagnostics read."""
     comptime PRED_OUT = ACT + BINS
-    var z_t = TileTensor(mptr(d_z.unsafe_ptr()), row_major[B, LATENT]())
-    rep.forward["gpu", B](
-        TileTensor(mptr(d_obs0.unsafe_ptr()), row_major[B, OBS]()), output=z_t
-    )
-    var pred_t = TileTensor(mptr(d_pred.unsafe_ptr()), row_major[B, PRED_OUT]())
-    pred.forward["gpu", B](z_t, output=pred_t)
-    ctx.enqueue_copy(h_pred, d_pred)
+    # Storage forward on owned scratch Tensors; D2D the resident obs in, D2H pred
+    # out. Legacy d_z/d_pred device scratch unused.
+    _ = d_z; _ = d_pred
+    var obs_sc = Tensor()
+    obs_sc.ensure_gpu(ctx, B * OBS)
+    ctx.enqueue_copy(obs_sc.dev.value(), d_obs0)
+    var z_sc = Tensor()
+    z_sc.ensure_gpu(ctx, B * LATENT)
+    call_forward["gpu", B](rep, TensorRefs[REP.ARITY](obs_sc), z_sc, Optional(ctx))
+    var pred_sc = Tensor()
+    pred_sc.ensure_gpu(ctx, B * PRED_OUT)
+    call_forward["gpu", B](pred, TensorRefs[PRED.ARITY](z_sc), pred_sc, Optional(ctx))
+    ctx.enqueue_copy(h_pred, pred_sc.dev.value())
     ctx.synchronize()
     var dn = List[String]()
     var dv = List[Float64]()
@@ -252,12 +266,12 @@ def run_muzero_gumbel_selfplay_gpu_batched[
     # to the live weights right before each reanalyze trigger, so reanalyze is
     # bit-identical to the live-net path (params-only copy, like EZv2; the
     # Nature-CNN rep carries no BatchNorm running stats).
-    var rep_t = REP.make["gpu", INIT=Kaiming](ctx)
-    var dyn_t = DYN.make["gpu", INIT=Kaiming](ctx)
-    var pred_t = PRED.make["gpu", INIT=Kaiming](ctx)
-    hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
-    hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
-    hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
+    var rep_t = REP.make["gpu", Kaiming](Optional(ctx))
+    var dyn_t = DYN.make["gpu", Kaiming](Optional(ctx))
+    var pred_t = PRED.make["gpu", Kaiming](Optional(ctx))
+    hard_copy["gpu", M=REP](rep, rep_t, Optional(ctx))
+    hard_copy["gpu", M=DYN](dyn, dyn_t, Optional(ctx))
+    hard_copy["gpu", M=PRED](pred, pred_t, Optional(ctx))
     var rep_ta = MZRepGPU[OBS, LATENT, REP].make(rep_t)
     var dyn_ta = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn_t)
     var pred_ta = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred_t)
@@ -276,12 +290,13 @@ def run_muzero_gumbel_selfplay_gpu_batched[
     var h_done = _a(N_ENVS)
     var h_term = _a(N_ENVS)
 
-    # ── training batch slabs (time-major), allocated once ──
-    var t_obs0 = _a(B * OBS)
-    var t_act = _a(K * B)
-    var t_pol = _a((K + 1) * B * ACT)
-    var t_val = _a((K + 1) * B)
-    var t_rew = _a(K * B)
+    # ── training batch slabs (time-major) — owned Lists (RAII), passed to the
+    # List replay sample + List-input unroll + diag. ──
+    var t_obs0 = List[Scalar[DT]](length=B * OBS, fill=0)
+    var t_act = List[Scalar[DT]](length=K * B, fill=0)
+    var t_pol = List[Scalar[DT]](length=(K + 1) * B * ACT, fill=0)
+    var t_val = List[Scalar[DT]](length=(K + 1) * B, fill=0)
+    var t_rew = List[Scalar[DT]](length=K * B, fill=0)
     var l_parts = _a(3)
     var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
 
@@ -325,9 +340,9 @@ def run_muzero_gumbel_selfplay_gpu_batched[
             DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
         ](env.obs_ptr())
         planner.search_gpu[
-            MZRepGPU[OBS, LATENT, REP],
-            MZDynGPU[LATENT, ACT, BINS, DYN],
-            MZPredGPU[LATENT, ACT, BINS, PRED],
+            type_of(rep_a),
+            type_of(dyn_a),
+            type_of(pred_a),
         ](
             ctx, rep_a, dyn_a, pred_a, obs_t,
             apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed,
@@ -387,13 +402,13 @@ def run_muzero_gumbel_selfplay_gpu_batched[
             if done or ep_len[e] >= max_ep_steps:
                 # Time-limit cut (not terminated) is NOT a terminal → bootstrap.
                 rb.store_episode(
-                    mptr(e_obs[e].unsafe_ptr()),
-                    mptr(e_act[e].unsafe_ptr()),
-                    mptr(e_rew[e].unsafe_ptr()),
-                    mptr(e_pol[e].unsafe_ptr()),
-                    mptr(e_val[e].unsafe_ptr()),
-                    mptr(e_tp[e].unsafe_ptr()),
-                    mptr(e_legal[e].unsafe_ptr()),
+                    e_obs[e],
+                    e_act[e],
+                    e_rew[e],
+                    e_pol[e],
+                    e_val[e],
+                    e_tp[e],
+                    e_legal[e],
                     ep_len[e],
                     truncated=not terminated,
                 )
@@ -431,9 +446,9 @@ def run_muzero_gumbel_selfplay_gpu_batched[
                     target_sync_interval > 0
                     and train_steps % target_sync_interval == 0
                 ):
-                    hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
-                    hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
-                    hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
+                    hard_copy["gpu", M=REP](rep, rep_t, Optional(ctx))
+                    hard_copy["gpu", M=DYN](dyn, dyn_t, Optional(ctx))
+                    hard_copy["gpu", M=PRED](pred, pred_t, Optional(ctx))
 
         var trained = rb.num_steps() >= learning_starts and rb.num_episodes() > 0
 
@@ -467,9 +482,9 @@ def run_muzero_gumbel_selfplay_gpu_batched[
             # target_sync_interval == 0 ⇒ live-net reanalyze: refresh the target
             # to the current weights now (search through rep_ta then == rep_a).
             if target_sync_interval == 0:
-                hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
-                hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
-                hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
+                hard_copy["gpu", M=REP](rep, rep_t, Optional(ctx))
+                hard_copy["gpu", M=DYN](dyn, dyn_t, Optional(ctx))
+                hard_copy["gpu", M=PRED](pred, pred_t, Optional(ctx))
             var n_chunks = reanalyze_batch // N_ENVS
             if n_chunks < 1:
                 n_chunks = 1
@@ -480,19 +495,18 @@ def run_muzero_gumbel_selfplay_gpu_batched[
                     var rpos = rb.sample_position()
                     rpos_e.append(rpos[0])
                     rpos_o.append(rpos[1])
-                    var tmp = _a(OBS)
+                    var tmp = List[Scalar[DT]](length=OBS, fill=0)
                     rb.read_obs(rpos[0], rpos[1], tmp)
                     for j in range(OBS):
                         h_reana[e * OBS + j] = tmp[j]
-                    tmp.free()
                 ctx.enqueue_copy(d_reana, h_reana)
                 var reana_t = LayoutTensor[
                     DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
-                ](mptr(d_reana.unsafe_ptr()))
+                ](d_reana.unsafe_ptr().as_unsafe_any_origin())
                 planner.search_gpu[
-                    MZRepGPU[OBS, LATENT, REP],
-                    MZDynGPU[LATENT, ACT, BINS, DYN],
-                    MZPredGPU[LATENT, ACT, BINS, PRED],
+                    type_of(rep_ta),
+                    type_of(dyn_ta),
+                    type_of(pred_ta),
                 ](
                     ctx, rep_ta, dyn_ta, pred_ta, reana_t,
                     apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed,
@@ -502,10 +516,12 @@ def run_muzero_gumbel_selfplay_gpu_batched[
                 ctx.enqueue_copy(h_val, planner.root_value_view())
                 ctx.synchronize()
                 for e in range(N_ENVS):
-                    rb.update_targets(
-                        rpos_e[e], rpos_o[e],
-                        h_pol + (e * ACT), h_val[e],
-                    )
+                    # update_targets takes a List policy slice; copy this env's
+                    # row out of the raw D2H staging mirror h_pol.
+                    var pe = List[Scalar[DT]](length=ACT, fill=0)
+                    for a in range(ACT):
+                        pe[a] = h_pol[e * ACT + a]
+                    rb.update_targets(rpos_e[e], rpos_o[e], pe, h_val[e])
 
         # ── batched greedy eval (fixed horizon on a separate eval env) ──
         if eval_every > 0 and eval_env and (it + 1) % eval_every == 0:
@@ -573,7 +589,6 @@ def run_muzero_gumbel_selfplay_gpu_batched[
             rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     h_obs.free(); h_pol.free(); h_val.free(); h_act.free()
     h_rew.free(); h_done.free(); h_term.free(); h_reana.free(); l_parts.free()
     # keep the target nets (held only via UnsafePointer in the adapters) alive.
@@ -643,6 +658,8 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     #                                  bit-identical.
     per_alpha: Scalar[DT] = Scalar[DT](1.0),
     per_beta: Scalar[DT] = Scalar[DT](1.0),
+    lr_decay_rate: Scalar[DT] = Scalar[DT](1.0),  # exp LR decay base; 1.0 = off
+    lr_decay_steps: Int = 0,                       # decay horizon (grad steps); 0 = off
 ) raises -> Float64:
     """Device-obs twin of `run_muzero_gumbel_selfplay_gpu_batched`: identical
     loop, but the obs ring lives on the GPU (`GPUMCTSSequenceReplay`) so the
@@ -694,16 +711,20 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     #    through these; synced every `target_sync_interval` grad steps when > 0,
     #    else refreshed to live just before each trigger (bit-identical to the
     #    live-net path). Params-only copy (Nature-CNN rep has no BatchNorm). ──
-    var rep_t = REP.make["gpu", INIT=Kaiming](ctx)
-    var dyn_t = DYN.make["gpu", INIT=Kaiming](ctx)
-    var pred_t = PRED.make["gpu", INIT=Kaiming](ctx)
-    hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
-    hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
-    hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
+    var rep_t = REP.make["gpu", Kaiming](Optional(ctx))
+    var dyn_t = DYN.make["gpu", Kaiming](Optional(ctx))
+    var pred_t = PRED.make["gpu", Kaiming](Optional(ctx))
+    hard_copy["gpu", M=REP](rep, rep_t, Optional(ctx))
+    hard_copy["gpu", M=DYN](dyn, dyn_t, Optional(ctx))
+    hard_copy["gpu", M=PRED](pred, pred_t, Optional(ctx))
     var rep_ta = MZRepGPU[OBS, LATENT, REP].make(rep_t)
     var dyn_ta = MZDynGPU[LATENT, ACT, BINS, DYN].make(dyn_t)
     var pred_ta = MZPredGPU[LATENT, ACT, BINS, PRED].make(pred_t)
     var train_steps = 0
+    # Initial LR captured for the exponential schedule (muzero-general): each grad
+    # step sets lr = lr_init · lr_decay_rate^(train_steps / lr_decay_steps). All
+    # three optimizers were built with the same lr, so one snapshot suffices.
+    var lr_init = orep.lr
 
     var rb = GPUMCTSSequenceReplay[OBS, ACT, CAP, N_ENVS, OBS_STORE_DT](
         ctx, seed=seed ^ UInt64(0xABCDEF),
@@ -711,25 +732,28 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
     )
 
     # host mirrors (no full-obs D2H — only N_ENVS-wide scalar/policy traffic).
-    var h_pol = _a(N_ENVS * ACT)
-    var h_val = _a(N_ENVS)
-    var h_act = _a(N_ENVS)
-    var h_rew = _a(N_ENVS)
-    var h_done = _a(N_ENVS)
-    var h_term = _a(N_ENVS)
+    # Owned Lists (RAII): passed directly into the List-based device-replay API
+    # (record_obs_meta / record_outcome) and to the D2H/H2D staging copies via
+    # `.unsafe_ptr()`.
+    var h_pol = List[Scalar[DT]](length=N_ENVS * ACT, fill=0)
+    var h_val = List[Scalar[DT]](length=N_ENVS, fill=0)
+    var h_act = List[Scalar[DT]](length=N_ENVS, fill=0)
+    var h_rew = List[Scalar[DT]](length=N_ENVS, fill=0)
+    var h_done = List[Scalar[DT]](length=N_ENVS, fill=0)
+    var h_term = List[Scalar[DT]](length=N_ENVS, fill=0)
 
     # training metadata slabs (obs0 is gathered on-device into scratch.d_obs0).
-    var t_act = _a(K * B)
-    var t_pol = _a((K + 1) * B * ACT)
-    var t_val = _a((K + 1) * B)
-    var t_rew = _a(K * B)
-    var t_obs0_dummy = _a(1)   # ignored (obs_on_device=True)
+    var t_act = List[Scalar[DT]](length=K * B, fill=0)
+    var t_pol = List[Scalar[DT]](length=(K + 1) * B * ACT, fill=0)
+    var t_val = List[Scalar[DT]](length=(K + 1) * B, fill=0)
+    var t_rew = List[Scalar[DT]](length=K * B, fill=0)
+    var t_obs0_dummy = List[Scalar[DT]](length=1, fill=0)  # ignored (obs_on_device)
     var l_parts = _a(3)
     # PER scratch (only used when use_per): per-sample IS weights / new value-error
-    # priorities / sampled root ring slots.
-    var t_isw = _a(B)
-    var t_prio = _a(B)
-    var t_slots = _aint(B)
+    # priorities / sampled root ring slots — owned Lists (List replay API).
+    var t_isw = List[Scalar[DT]](length=B, fill=0)
+    var t_prio = List[Scalar[DT]](length=B, fill=0)
+    var t_slots = List[Int](length=B, fill=0)
     var scratch = MZScratch[B, K, OBS, ACT, LATENT, BINS].make(ctx)
 
     # diagnostics scratch (root re-forward on the last train batch's obs).
@@ -763,9 +787,9 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
         ](env.obs_ptr())
         planner.search_gpu[
-            MZRepGPU[OBS, LATENT, REP],
-            MZDynGPU[LATENT, ACT, BINS, DYN],
-            MZPredGPU[LATENT, ACT, BINS, PRED],
+            type_of(rep_a),
+            type_of(dyn_a),
+            type_of(pred_a),
         ](
             ctx, rep_a, dyn_a, pred_a, obs_t,
             apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed,
@@ -778,7 +802,12 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
         # ── 2. sample actions (host); record obs (device→device) + metadata ──
         var temp = visit_temperature(it, temperature_decay_steps)
         for e in range(N_ENVS):
-            h_act[e] = Scalar[DT](_sample_action(h_pol, e * ACT, ACT, temp, rng))
+            h_act[e] = Scalar[DT](
+                _sample_action(
+                    h_pol.unsafe_ptr().as_unsafe_any_origin(),
+                    e * ACT, ACT, temp, rng,
+                )
+            )
         # record_obs_meta enqueues the obs store kernel reading the ROOT obs
         # (env.obs_ptr()); stream order keeps it before the step kernel below.
         var obs_view = DeviceBuffer[DT](
@@ -823,8 +852,18 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
 
         # ── 5. train: gather obs0 device→device into scratch.d_obs0, unroll ──
         if trained:
-            var d_obs0_buf = scratch.d_obs0.value()
+            var d_obs0_buf = scratch.d_obs0.dev.value()
             for _ in range(train_per_iter):
+                # Exponential LR decay (muzero-general). No-op when
+                # lr_decay_steps == 0 (constant LR, bit-identical to before).
+                if lr_decay_steps > 0:
+                    var dlr = lr_init * (
+                        lr_decay_rate
+                        ** (Scalar[DT](train_steps) / Scalar[DT](lr_decay_steps))
+                    )
+                    orep.lr = dlr
+                    odyn.lr = dlr
+                    opred.lr = dlr
                 var isw_opt = Optional[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](None)
@@ -832,17 +871,19 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](None)
                 if use_per:
-                    # Prioritized device sample (∝ value-errorᵅ) + IS weights.
+                    # Prioritized device sample (∝ priorityᵅ) + IS weights. The
+                    # sample writes the paper priority |ν − z| into t_prio (it owns
+                    # both ν and z); update_priorities below applies (·+eps)^α.
+                    prio_opt = Optional[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](t_prio.unsafe_ptr().as_unsafe_any_origin())
                     rb.sample_training_batch_per_dev[B, K, N](
                         gamma, d_obs0_buf, t_act, t_pol, t_val, t_rew,
-                        t_isw, t_slots,
+                        t_isw, t_slots, out_prio=prio_opt,
                     )
                     isw_opt = Optional[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](t_isw)
-                    prio_opt = Optional[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](t_prio)
+                    ](t_isw.unsafe_ptr().as_unsafe_any_origin())
                 else:
                     # Uniform device sample — the converged Pong path, untouched.
                     rb.sample_training_batch_dev[B, K, N](
@@ -859,7 +900,6 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                         v_min, v_max, value_coef,
                         loss_parts=l_parts,
                         is_weights=isw_opt,
-                        out_prio=prio_opt,
                     )
                 )
                 if use_per:
@@ -869,9 +909,9 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                     target_sync_interval > 0
                     and train_steps % target_sync_interval == 0
                 ):
-                    hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
-                    hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
-                    hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
+                    hard_copy["gpu", M=REP](rep, rep_t, Optional(ctx))
+                    hard_copy["gpu", M=DYN](dyn, dyn_t, Optional(ctx))
+                    hard_copy["gpu", M=PRED](pred, pred_t, Optional(ctx))
 
         if (
             logger
@@ -880,7 +920,7 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             and (it + 1) % diag_every == 0
         ):
             _mz_emit_batch_diag[REP, PRED, B, OBS, ACT, LATENT, BINS, L](
-                ctx, rep, pred, scratch.d_obs0.value(), d_diag_z, d_diag_pred,
+                ctx, rep, pred, scratch.d_obs0.dev.value(), d_diag_z, d_diag_pred,
                 h_diag_pred, t_pol, t_val, l_parts,
                 v_min, v_max, last_loss, it + 1, logger.value(),
             )
@@ -901,9 +941,9 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             # target_sync_interval == 0 ⇒ live-net reanalyze: refresh the target
             # to the current weights now (search through rep_ta then == rep_a).
             if target_sync_interval == 0:
-                hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
-                hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
-                hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
+                hard_copy["gpu", M=REP](rep, rep_t, Optional(ctx))
+                hard_copy["gpu", M=DYN](dyn, dyn_t, Optional(ctx))
+                hard_copy["gpu", M=PRED](pred, pred_t, Optional(ctx))
             var n_chunks = reanalyze_batch // N_ENVS
             if n_chunks < 1:
                 n_chunks = 1
@@ -913,11 +953,11 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                 var rpos_o = rpos[1].copy()
                 var reana_t = LayoutTensor[
                     DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
-                ](mptr(d_reana.unsafe_ptr()))
+                ](d_reana.unsafe_ptr().as_unsafe_any_origin())
                 planner.search_gpu[
-                    MZRepGPU[OBS, LATENT, REP],
-                    MZDynGPU[LATENT, ACT, BINS, DYN],
-                    MZPredGPU[LATENT, ACT, BINS, PRED],
+                    type_of(rep_ta),
+                    type_of(dyn_ta),
+                    type_of(pred_ta),
                 ](
                     ctx, rep_ta, dyn_ta, pred_ta, reana_t,
                     apply_legal=False, k_actual=MAX_K, rng_seed=mcts_seed,
@@ -927,10 +967,12 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
                 ctx.enqueue_copy(h_val, planner.root_value_view())
                 ctx.synchronize()
                 for e in range(N_ENVS):
-                    rb.update_targets(
-                        rpos_e[e], rpos_o[e],
-                        h_pol + (e * ACT), h_val[e],
-                    )
+                    # update_targets takes a List policy slice; copy this env's
+                    # row out of the raw D2H staging mirror h_pol.
+                    var pe = List[Scalar[DT]](length=ACT, fill=0)
+                    for a in range(ACT):
+                        pe[a] = h_pol[e * ACT + a]
+                    rb.update_targets(rpos_e[e], rpos_o[e], pe, h_val[e])
 
         if eval_every > 0 and eval_env and (it + 1) % eval_every == 0:
             # `eval_horizon` (if set) is the per-eval step CAP; else a generous
@@ -973,10 +1015,9 @@ def run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    t_act.free(); t_pol.free(); t_val.free(); t_rew.free(); t_obs0_dummy.free()
-    t_isw.free(); t_prio.free(); t_slots.free()
-    h_pol.free(); h_val.free(); h_act.free()
-    h_rew.free(); h_done.free(); h_term.free(); l_parts.free()
+    # t_*/h_* metadata + PER scratch are owned Lists (RAII) — only the raw
+    # UnsafePointer scratch (unroll loss_parts + diag host buffer) needs freeing.
+    l_parts.free()
     h_diag_pred.free()
     # keep the target nets (held only via UnsafePointer in the adapters) alive.
     _ = rep_t^
@@ -998,15 +1039,18 @@ def _eval_greedy_batched[
     MAX_NODES: Int,
     MAX_K: Int,
     NUM_SIMS: Int,
+    RA: RepresentationGPU,
+    DA: DynamicsGPU,
+    PA: PredictionGPU,
 ](
     ctx: DeviceContext,
     eval_env: UnsafePointer[BENV, MutAnyOrigin],
     mut planner: GumbelGPUMCTS[
         N_ENVS, ACT, LATENT, BINS, MAX_NODES, MAX_K, NUM_SIMS, SinglePlayer
     ],
-    mut rep_a: MZRepGPU[OBS, LATENT, REP],
-    mut dyn_a: MZDynGPU[LATENT, ACT, BINS, DYN],
-    mut pred_a: MZPredGPU[LATENT, ACT, BINS, PRED],
+    mut rep_a: RA,
+    mut dyn_a: DA,
+    mut pred_a: PA,
     target_episodes: Int,
     max_steps: Int,
     rng_seed: UInt32,
@@ -1036,13 +1080,9 @@ def _eval_greedy_batched[
     while done_cnt < target_episodes and step_i < max_steps:
         step_i += 1
         var obs_t = LayoutTensor[
-            DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
+            DT, Layout.row_major(N_ENVS, RA.OBS_DIM), MutAnyOrigin
         ](eval_env[].obs_ptr())
-        planner.search_gpu[
-            MZRepGPU[OBS, LATENT, REP],
-            MZDynGPU[LATENT, ACT, BINS, DYN],
-            MZPredGPU[LATENT, ACT, BINS, PRED],
-        ](
+        planner.search_gpu[RA, DA, PA](
             ctx, rep_a, dyn_a, pred_a, obs_t,
             apply_legal=False, k_actual=MAX_K, rng_seed=seed_i,
         )

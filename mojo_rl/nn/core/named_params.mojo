@@ -1,114 +1,76 @@
-"""`named_params` — collect a model's parameter tree as a flat list.
+"""NamedParams / NamedStates — reify a module's param/state tree to a flat
+list of (dotted-name, size, decay) records.
 
-Thin wrapper over `Module.for_each_param`. Returns a list of
-`NamedParam` records — one per leaf parameter — for inspection,
-filtering, checkpoint serialization, or building parallel optimizer
-state outside of `Adam` / `AdamW`.
+The storage successor to legacy `named_params`. Legacy reified raw
+`UnsafePointer`s (param_ptr/grad_ptr) so an external polyak loop could copy
+through them; the storage design does soft-update via the recursive
+`Module.polyak_from` (no pointers), so this reification is POINTER-FREE — it
+carries only metadata, for structure-parity validation, named-checkpoint
+section headers, and introspection.
 
-Use cases:
-  - Print parameter names + sizes for debugging architecture changes.
-  - Save/load checkpoints by name (Phase 4+).
-  - Build a target-network soft-update walker (Phase 5).
-  - Inspect which params will get weight decay (cross-check vs AdamW
-    init).
-
-The returned record stores raw `UnsafePointer`s rather than `TileTensor`
-views, because the visitor's TileTensor goes out of scope once
-`visit()` returns. The pointers are valid as long as the model is
-alive. For row-major layouts the pointer + `n_elems` is sufficient to
-reconstruct a `TileTensor` view at the call site.
+Names are the dotted paths the `for_each_param` / `for_each_state` walkers
+compose from combinator child indices + field names (e.g. "0.weight",
+"1.running_mean").
 """
 
-from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from std.gpu.host import DeviceContext
 
-from ..constants import DT
-from .module import mptr
-from .param_visitor import ParamVisitor
+from .tensor import Tensor
+from .param import ParamVisitor
 from .module import Module
 
 
-@fieldwise_init
-struct NamedParam(Movable & ImplicitlyDestructible):
-    """One leaf parameter, dotted name + raw pointers + size + decay flag."""
-
+struct NamedParam(Copyable):
     var name: String
-    var param_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var grad_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var n_elems: Int
-    var apply_decay: Bool
+    var size: Int
+    var decay: Bool
+
+    def __init__(out self, name: String, size: Int, decay: Bool):
+        self.name = name
+        self.size = size
+        self.decay = decay
 
 
-@fieldwise_init
-struct _NamedParamCollector(ParamVisitor):
-    """Visitor that pushes each leaf into a caller-owned `items` list.
+struct _NamedCollector(ParamVisitor):
+    """Appends one `NamedParam` metadata record per visited param/state.
+    Touches neither the value/grad buffers nor the device, so it is
+    target-agnostic (no `ctx` needed)."""
 
-    Indirect pointer (rather than owning the list internally) sidesteps
-    Mojo's destructor analyzer rejection of `return collector.items^`.
-    Same pattern as Adam's offsets/m_flat visitor.
-    """
+    var items: List[NamedParam]
 
-    var items_ptr: UnsafePointer[List[NamedParam], MutAnyOrigin]
+    def __init__(out self):
+        self.items = List[NamedParam]()
 
-    def visit(
+    def visit[
+        target: StaticString, N: Int
+    ](
         mut self,
         name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
         apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
-        # Widen the pointers so they can be stored in our origin-erased
-        # NamedParam record.
-        var param_ptr = mptr(param.ptr)
-        var grad_ptr  = mptr(grad.ptr)
-        self.items_ptr[].append(
-            NamedParam(
-                name=name,
-                param_ptr=param_ptr,
-                grad_ptr=grad_ptr,
-                n_elems=n_elems,
-                apply_decay=apply_decay,
-            )
-        )
+        self.items.append(NamedParam(name, N, apply_decay))
 
 
 def named_params[
-    target: StaticString,
-    M: Module,
-](mut model: M) raises -> List[NamedParam]:
-    """Walk the model's parameter tree and return a flat list of leaves.
-
-    Visit order is determined by each Module's `for_each_param`. For
-    `Sequential[*MODULES]` that's child index 0..N-1, depth-first.
-    Names are dotted (`"0.weight"`, `"2.bias"`, `"trunk.1.weight"`,
-    etc.) following the `for_each_param` prefix convention.
-    """
-    var items = List[NamedParam]()
-    var collector = _NamedParamCollector(
-        items_ptr=UnsafePointer(to=items),
-    )
-    model.for_each_param[target, _NamedParamCollector](String(""), collector)
-    return items^
+    target: StaticString, M: Module
+](mut model: M, ctx: Optional[DeviceContext] = None) raises -> List[NamedParam]:
+    """Flat (name, size, decay) list of every trainable Param, in
+    `for_each_param` walk order with dotted names."""
+    var c = _NamedCollector()
+    model.for_each_param[target](c, ctx)
+    return c.items.copy()
 
 
 def named_states[
-    target: StaticString,
-    M: Module,
-](mut model: M) raises -> List[NamedParam]:
-    """Walk the model's `IsState` buffers (e.g. BatchNorm running stats)
-    and return a flat list of leaves — the `for_each_state` twin of
-    `named_params`. State has no grad buffer; `visit_with` passes the
-    value tile as both `param` and `grad`, so `grad_ptr == param_ptr`
-    in the returned records (callers must only use `param_ptr`).
-    Stateless models return an empty list."""
-    var items = List[NamedParam]()
-    var collector = _NamedParamCollector(
-        items_ptr=UnsafePointer(to=items),
-    )
-    model.for_each_state[target, _NamedParamCollector](String(""), collector)
-    return items^
+    target: StaticString, M: Module
+](mut model: M, ctx: Optional[DeviceContext] = None) raises -> List[NamedParam]:
+    """Flat (name, size, decay=False) list of every persisted State (e.g.
+    BatchNorm running stats), in `for_each_state` walk order."""
+    var c = _NamedCollector()
+    model.for_each_state[target](c, ctx)
+    return c.items.copy()

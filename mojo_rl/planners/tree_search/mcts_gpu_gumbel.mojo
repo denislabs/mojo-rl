@@ -245,17 +245,18 @@ def gz_scatter_root_hidden_kernel[
     ],
 ) where dtype.is_floating_point():
     """Scatter the contiguous rep-forward output `[N_ENVS × LATENT]` into
-    each env's slot-0 hidden state in the strided pool. One thread per env.
+    each env's slot-0 hidden state in the strided pool.
 
-    The rep forward writes a contiguous batch buffer; the tree storage
-    expects per-env stride `MAX_NODES * LATENT`."""
-    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if e >= N_ENVS:
+    The rep forward writes a contiguous batch buffer; the tree storage expects
+    per-env stride `MAX_NODES * LATENT`. Parallelized over ``env × LATENT`` (one
+    thread per element) so occupancy isn't capped at N_ENVS. Launch with grid
+    covering ``N_ENVS * LATENT``."""
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N_ENVS * LATENT:
         return
-    var src = e * LATENT
-    var dst = e * MAX_NODES * LATENT  # node 0 for env e
-    for i in range(LATENT):
-        hidden_states[dst + i] = root_hidden[src + i]
+    var e = idx // LATENT
+    var i = idx % LATENT
+    hidden_states[e * MAX_NODES * LATENT + i] = root_hidden[idx]
 
 
 def gz_init_root_kernel[
@@ -747,14 +748,18 @@ def gz_copy_pred_input_kernel[
 ) where dtype.is_floating_point():
     """Copy the LATENT prefix of dyn_output into pred_input. The dyn output
     is `[hidden ‖ reward_logits]`; we feed only the hidden part into the
-    prediction network."""
-    var e = Int(block_dim.x * block_idx.x + thread_idx.x)
-    if e >= N_ENVS:
+    prediction network.
+
+    Parallelized over ``env × LATENT`` (one thread per element) — at N_ENVS=4
+    that's 4·LATENT threads instead of 4, lifting occupancy off the floor
+    (mirrors ``gz_az_copy_root_state_kernel``). Launch with grid covering
+    ``N_ENVS * LATENT``."""
+    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if idx >= N_ENVS * LATENT:
         return
-    var src = e * DYN_OUT
-    var dst = e * LATENT
-    for i in range(LATENT):
-        pred_input[dst + i] = dyn_output[src + i]
+    var e = idx // LATENT
+    var i = idx % LATENT
+    pred_input[idx] = dyn_output[e * DYN_OUT + i]
 
 
 def gz_expand_kernel[

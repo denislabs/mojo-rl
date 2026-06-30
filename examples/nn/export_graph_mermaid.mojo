@@ -1,14 +1,16 @@
-"""Render a ComputeGraph to a Markdown file with an embedded mermaid
-diagram (GitHub renders ```mermaid fences natively).
+"""Render a storage `ComputeGraph` to a Markdown file with an embedded mermaid
+diagram (GitHub renders ```mermaid fences natively), and print a Text dump.
 
 Run:
     pixi run mojo run -I . examples/nn/export_graph_mermaid.mojo
 
-Writes `docs/WM_LOSS_GRAPH.md`. `describe` reads only the comptime
-topology, so the graph is default-constructed — no make / device context.
+Writes `docs/WM_LOSS_GRAPH.md`. `describe` reads only the comptime topology, so
+the graph is default-constructed — no make / device context. CPU-only.
 """
 
-from mojo_rl.nn.combinators import MermaidExporter
+from mojo_rl.nn.combinators.graph_export import (
+    TextExporter, MermaidExporter,
+)
 from mojo_rl.deep_agents.dreamerv3.wm import WMLossGraph
 
 
@@ -39,9 +41,15 @@ def main() raises:
     ]
     var g = WM()
 
-    var m = MermaidExporter()
-    g.describe(m, "WMLossGraph")
+    # Text dump (readable indented topology) — straight to stdout.
+    var tex = TextExporter()
+    g.describe("WMLossGraph", tex)
+    print(tex.out)
+
+    # Mermaid diagram → Markdown file.
+    var mer = MermaidExporter()
+    g.describe("WMLossGraph", mer)
 
     var out_path = String("docs/WM_LOSS_GRAPH.md")
-    write_md(out_path, "DreamerV3 WMLossGraph", m.out)
-    print("Wrote", out_path, "(", m.out.byte_length(), "bytes of mermaid )")
+    write_md(out_path, "DreamerV3 WMLossGraph", mer.out)
+    print("Wrote", out_path, "(", mer.out.byte_length(), "bytes of mermaid )")

@@ -39,7 +39,8 @@ comptime GAMMA = Scalar[DT](0.997)
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
+    # Raw scratch for the shared raw-pointer compute_nstep_value_targets.
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 def test_nstep_is_ez_atari_formula() raises:
@@ -82,7 +83,7 @@ def test_nstep_is_ez_atari_formula() raises:
 
 def test_support_601_roundtrip() raises:
     print("test 601-atom [-300,300] two-hot ...")
-    var probs = _a(BINS)
+    var probs = List[Scalar[DT]](length=BINS, fill=0)
     # bin_i = -300 + i  (601 integer atoms over [-300,300])
     var vals = _a(4)
     vals[0] = Scalar[DT](0.0)
@@ -91,7 +92,7 @@ def test_support_601_roundtrip() raises:
     vals[3] = Scalar[DT](21.0)
     for j in range(4):
         var raw = vals[j]
-        mz_two_hot_target_one[BINS](raw, V_MIN, V_MAX, probs)
+        mz_two_hot_target_one[BINS](raw, V_MIN, V_MAX, probs, 0)
         var s = Scalar[DT](0.0)
         var expect = Scalar[DT](0.0)
         for i in range(BINS):

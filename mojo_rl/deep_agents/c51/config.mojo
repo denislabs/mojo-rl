@@ -37,14 +37,14 @@ tuned defaults.
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, LAYOUT_NCHW
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.linear_relu import LinearReLU
 from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
 from mojo_rl.nn.primitives.dueling_head_c51 import DuelingHeadC51
 from mojo_rl.nn.primitives.conv2d import Conv2D
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.nn.primitives.flatten import Flatten
 from mojo_rl.nn.combinators.sequential import Sequential
 
@@ -83,11 +83,12 @@ projection emits (1 + ACT) · NA, split inside DuelingHeadC51 into a
 value stream V[NA] and an advantage stream A[ACT, NA]."""
 
 comptime RainbowCNNNet[
-    FRAMES: Int, ACT: Int, NA: Int, HIDDEN: Int = 512
+    FRAMES: Int, ACT: Int, NA: Int, HIDDEN: Int = 512,
+    LAYOUT: Int = LAYOUT_NCHW,
 ] = Sequential[
-    Conv2D[FRAMES, 32, 8, 4, 0, 84, 84], ReLU[32 * 20 * 20],
-    Conv2D[32, 64, 4, 2, 0, 20, 20], ReLU[64 * 9 * 9],
-    Conv2D[64, 64, 3, 1, 0, 9, 9], ReLU[64 * 7 * 7],
+    Conv2D[FRAMES, 32, 8, 4, 0, 84, 84, DT, LAYOUT], ReLU[32 * 20 * 20],
+    Conv2D[32, 64, 4, 2, 0, 20, 20, DT, LAYOUT], ReLU[64 * 9 * 9],
+    Conv2D[64, 64, 3, 1, 0, 9, 9, DT, LAYOUT], ReLU[64 * 7 * 7],
     Flatten[64 * 7 * 7],
     LinearReLU[64 * 7 * 7, HIDDEN],
     NoisyLinear[HIDDEN, (1 + ACT) * NA],
@@ -107,7 +108,7 @@ Used by `RainbowCNNConfig`."""
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait C51ConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait C51ConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a C51-family algorithm. Bundles the
     deployment target, the replay block, the Q-net, the distributional
     flags, and tuned scalar defaults. Conformers are zero-field comptime
@@ -256,6 +257,11 @@ struct RainbowCNNConfig[
     ACT: Int, BATCH: Int, CAP: Int,
     FRAMES: Int = 4, NA: Int = 51, HIDDEN: Int = 512, NSTEP: Int = 3,
     OBS_STORE_DT: DType = DType.uint8,
+    # Conv-tower memory layout (default NCHW = bit-identical). NHWC is the
+    # large-map perf win on the 84×84 Nature backbone (the conv im2col coalesces
+    # channels-last); flip via the example + a clean-Pong convergence A/B, then
+    # promote the default. Couple the pixel env's obs layout to this (Cfg.LAYOUT).
+    LAYOUT: Int = LAYOUT_NCHW,
 ](C51ConfigT):
     """Rainbow with the Nature-CNN backbone for `FRAMES`×84×84 pixel obs
     (`OBS = FRAMES·84·84`). Same six-of-six composition as
@@ -286,7 +292,7 @@ struct RainbowCNNConfig[
         Self.BATCH,
     ]
     comptime Q_NET = RainbowCNNNet[
-        Self.FRAMES, Self.ACT, Self.NA, Self.HIDDEN
+        Self.FRAMES, Self.ACT, Self.NA, Self.HIDDEN, LAYOUT=Self.LAYOUT
     ]
     comptime N_ATOMS = Self.NA
     comptime NUM_ACTIONS = Self.ACT
@@ -562,6 +568,7 @@ def RainbowCNN[
     ACT: Int, BATCH: Int, CAP: Int,
     FRAMES: Int = 4, NA: Int = 51, HIDDEN: Int = 512, NSTEP: Int = 3,
     OBS_STORE_DT: DType = DType.uint8,
+    LAYOUT: Int = LAYOUT_NCHW,   # conv-tower layout (couple to the pixel env's obs)
 ](
     ctx: Optional[DeviceContext] = None,
     lr: Scalar[DT] = RainbowCNNConfig[target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT].DEF_LR,
@@ -584,7 +591,7 @@ def RainbowCNN[
         AnyPerReplay[target, FRAMES * 84 * 84, 1, CAP, OBS_STORE_DT],
         BATCH,
     ],
-    RainbowCNNNet[FRAMES, ACT, NA, HIDDEN],
+    RainbowCNNNet[FRAMES, ACT, NA, HIDDEN, LAYOUT],
     NA, ACT, True,
 ]:
     """Pixel Rainbow — six-of-six over the Nature-CNN backbone for
@@ -593,7 +600,8 @@ def RainbowCNN[
     accumulator and the target-Y γ^n bootstrap stay aligned."""
     return agent_from_config[
         RainbowCNNConfig[
-            target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP, OBS_STORE_DT
+            target, ACT, BATCH, CAP, FRAMES, NA, HIDDEN, NSTEP,
+            OBS_STORE_DT, LAYOUT,
         ]
     ](
         ctx=ctx, lr=lr, gamma=gamma, tau=tau, epsilon=epsilon,

@@ -12,7 +12,7 @@ Run (Apple Metal):
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents.alphazero.selfplay_arena import (
     run_alphazero_selfplay_arena,
@@ -34,7 +34,7 @@ def main() raises:
     comptime MAX_PLIES = 9
 
     var ctx = DeviceContext()
-    var best = Net.make["gpu", INIT=Kaiming](ctx=ctx)
+    var best = Net.make["gpu", Kaiming](Optional(ctx))
 
     var before = eval_policy_vs_random[Env, Net, N_EVAL, RESULT_IDX, MAX_PLIES](
         ctx, best, agent_player=0, seed=12345

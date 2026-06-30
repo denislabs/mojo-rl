@@ -95,7 +95,7 @@ struct LogCategory(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime LOG_CATEGORY_APPLICATION = Self(0)
     comptime LOG_CATEGORY_ERROR = Self(1)
@@ -151,7 +151,7 @@ struct LogPriority(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime LOG_PRIORITY_INVALID = Self(0)
     comptime LOG_PRIORITY_TRACE = Self(1)
@@ -263,8 +263,8 @@ def set_log_priority_prefix(priority: LogPriority, var prefix: String) raises:
         lib,
         "SDL_SetLogPriorityPrefix",
         def(
-            priority: LogPriority,
-            prefix: Ptr[c_char, ImmutAnyOrigin],
+            LogPriority,
+            Ptr[c_char, ImmutOrigin(origin_of(prefix))],
         ) thin -> Bool,
     ]()(priority, prefix.as_c_string_slice().unsafe_ptr())
     if not ret:

@@ -1,100 +1,52 @@
-"""NoisyLinear[IN, OUT] — Factorized Gaussian Noisy Linear (Fortunato et al. 2018).
+"""NoisyLinear[IN, OUT] — Factorized Gaussian Noisy Linear (Fortunato 2018).
 
-Replaces `y = x @ W + b` with `y = x @ W_eff + b_eff` where:
+Transformed from legacy `nn.primitives.NoisyLinear` (surface-only change).
+4 Params (µ_W, σ_W decay=True; µ_b, σ_b decay=False); the factorized noise
+ε_in [IN] / ε_out [OUT] and the materialized W_eff / b_eff are leaf-owned
+`Tensor` scratch (sampled fresh each forward). `noise_scale` (1.0 train / 0.0
+eval-greedy) scales ε_out. The CPU host Box-Muller sampler + the GPU Philox path
+are carried over verbatim — and CLEANLY: the GPU path calls the shared
+`_box_muller_kernel_dev` (a LayoutTensor kernel) directly via `lt_gpu` views, so
+there is NO raw `dev_ptr`/`unsafe_ptr`/`rebind` (the box-muller raw-ptr wrapper
+is bypassed). The device Philox offset is a `TensorImpl[uint64]` (its `lt_gpu`
+yields the offset `LayoutTensor` the kernel wants).
 
-    W_eff[i, j] = μ_W[i, j] + σ_W[i, j] · f(ε_in[i]) · f(ε_out[j])
-    b_eff[j]    = μ_b[j]    + σ_b[j]    · f(ε_out[j])
-
-with `f(x) = sign(x) · sqrt(|x|)` and `ε_in[i], ε_out[j] ~ N(0, 1)`
-sampled fresh per forward call. The factorization means only IN + OUT
-noise samples are needed per forward (instead of IN × OUT), at the
-cost of correlations between W entries — but empirically matches the
-canonical Gaussian-noise NoisyDQN performance (Fortunato §3.2).
-
-**4 trainable params** (PARAM_SIZE = 2·IN·OUT + 2·OUT):
-  - μ_W  [IN × OUT]  — mean weights
-  - σ_W  [IN × OUT]  — std-multiplier weights
-  - μ_b  [OUT]       — mean biases
-  - σ_b  [OUT]       — std-multiplier biases
-
-**Init (Fortunato §3.2)**:
-  - μ ~ Uniform(−1/√IN, +1/√IN)
-  - σ = σ_0 / √IN   (σ_0 = 0.5)
-
-Backward:
-  Let n_W[i,j] = f(ε_in[i]) · f(ε_out[j]),  n_b[j] = f(ε_out[j])
-    ∂L/∂μ_W[i, j] = Σ_b x[b, i] · grad_out[b, j]
-    ∂L/∂σ_W[i, j] = ∂L/∂μ_W[i, j] · n_W[i, j]
-    ∂L/∂μ_b[j]    = Σ_b grad_out[b, j]
-    ∂L/∂σ_b[j]    = ∂L/∂μ_b[j] · n_b[j]
-    ∂L/∂x[b, i]   = Σ_j grad_out[b, j] · W_eff[i, j]
-
-CPU + GPU. GPU forward/vjp lift the CPU mathematical operations into
-kernels and reuse `box_muller_normal_gpu` (Philox) for on-device noise
-sampling — same sequence-determinism story as SAC's GPU action sampling.
-
-Use in Noisy DQN: replace the last `Linear[H, NA]` in the Q-net with
-`NoisyLinear[H, NA]`. Drop ε-greedy at the trainer level (set
-`epsilon=0`, `epsilon_min=0`).
+Backward: grad_µ_b = Σ_b go ; grad_σ_b = grad_µ_b · ε_out ; dW = xᵀ @ go ;
+    grad_µ_w += dW ; grad_σ_w += dW · ε_in · ε_out ; grad_x = go @ W_effᵀ.
 """
 
 from std.math import sqrt as fsqrt, log as flog, cos as fcos, pi
-from std.memory import alloc
 from std.random import random_float64
 from std.gpu import global_idx, thread_idx, block_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 from std.gpu.primitives import block
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 
-from ..constants import DT, TPB
-from ..core import (
-    Initializer,
-    AMPPolicy,
-    NoAMP,
-    Param,
-    ParamVisitor,
-    for_each_param_auto,
-    zero_grad_auto,
-)
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.scratch import Scratch
-from ..core.scratch_walkers import init_scratch_auto
-from ..core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
-    ensure_gpu_buffer,
-)
-from .linear import _transpose_kernel, _accum_kernel
-from ..random.box_muller import (
-    box_muller_normal_gpu,
-    box_muller_normal_gpu_dev,
+from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn.random.box_muller import (
+    _box_muller_kernel_dev,
     advance_rng_offset_kernel,
 )
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
+from ..core.polyak import polyak_tensor
+from .linear import _transpose_tiled_kernel, _accum_kernel, _T_TILE, _T_BR
 
 
-# ──────────────────────────────────────────────────────────────────────
-# CPU helpers — Gaussian via Box-Muller, factorized f(x) = sign(x)·√|x|.
-# Inlined into forward to avoid Mojo-nightly tuple-return ergonomics.
-# ──────────────────────────────────────────────────────────────────────
-
-
+# ── CPU host sampler: f(z) = sign(z)·√|z|, z ~ N(0,1) via Box-Muller ────
 def _fnoise(x: Scalar[DT]) -> Scalar[DT]:
-    """`f(x) = sign(x) · sqrt(|x|)`."""
     if x >= Scalar[DT](0.0):
         return fsqrt(x)
     return -fsqrt(-x)
 
 
-def _sample_factorized_noise(
-    ptr: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int,
-):
-    """Fill `ptr[0..n]` with `f(z)` where `z ~ N(0, 1)` via Box-Muller.
-    Each Box-Muller draw yields a pair (cos, sin) of independent normals;
-    we consume both before drawing fresh uniforms."""
+def _sample_factorized_noise(mut buf: List[Scalar[DT]], n: Int):
+    """Fill buf[0:n] with f(z), z ~ N(0,1) (Box-Muller, both branches)."""
     var k = 0
     while k + 1 < n:
         var u1 = random_float64()
@@ -105,8 +57,8 @@ def _sample_factorized_noise(
         var theta = Float64(2.0) * pi * u2
         var z0 = Scalar[DT](r * fcos(theta))
         var z1 = Scalar[DT](r * fcos(theta + 0.5 * pi))
-        ptr[k]     = _fnoise(z0)
-        ptr[k + 1] = _fnoise(z1)
+        buf[k] = _fnoise(z0)
+        buf[k + 1] = _fnoise(z1)
         k += 2
     if k < n:
         var u1 = random_float64()
@@ -116,18 +68,13 @@ def _sample_factorized_noise(
         var r = fsqrt(Float64(-2.0) * flog(u1))
         var theta = Float64(2.0) * pi * u2
         var z0 = Scalar[DT](r * fcos(theta))
-        ptr[k] = _fnoise(z0)
+        buf[k] = _fnoise(z0)
 
 
-# ──────────────────────────────────────────────────────────────────────
-# GPU kernels — module-level so enqueue_function can bind them.
-# ──────────────────────────────────────────────────────────────────────
-
-
-def _apply_f_noise_kernel[N: Int](
-    noise: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-):
-    """In-place `noise[k] = sign(noise[k]) · sqrt(|noise[k]|)`."""
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
+def _apply_f_noise_kernel[
+    N: Int
+](noise: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]):
     var idx = Int(global_idx.x)
     if idx < N:
         var x = rebind[Scalar[DT]](noise[idx])
@@ -137,79 +84,70 @@ def _apply_f_noise_kernel[N: Int](
             noise[idx] = -fsqrt(-x)
 
 
-def _scale_inplace_kernel[N: Int](
-    buf: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    s: Scalar[DT],
-):
-    """In-place `buf[k] *= s`. Used to scale the output noise vector by
-    `_noise_scale` (0.0 → deterministic mean weights for eval)."""
+def _scale_inplace_kernel[
+    N: Int
+](buf: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin], s: Scalar[DT]):
     var idx = Int(global_idx.x)
     if idx < N:
         buf[idx] = rebind[Scalar[DT]](buf[idx]) * s
 
 
-def _materialize_w_eff_kernel[IN: Int, OUT: Int](
+def _materialize_w_eff_kernel[
+    IN: Int, OUT: Int
+](
     mu_w: LayoutTensor[DT, Layout.row_major(IN, OUT), MutAnyOrigin],
     sigma_w: LayoutTensor[DT, Layout.row_major(IN, OUT), MutAnyOrigin],
     n_in: LayoutTensor[DT, Layout.row_major(IN), MutAnyOrigin],
     n_out: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
     w_eff: LayoutTensor[DT, Layout.row_major(IN, OUT), MutAnyOrigin],
 ):
-    """`w_eff[i, j] = mu_w[i, j] + sigma_w[i, j] · n_in[i] · n_out[j]`."""
     var idx = Int(global_idx.x)
-    var total = IN * OUT
-    if idx < total:
+    if idx < IN * OUT:
         var i = idx // OUT
         var j = idx % OUT
-        w_eff[i, j] = (
-            rebind[Scalar[DT]](mu_w[i, j])
-            + rebind[Scalar[DT]](sigma_w[i, j])
-            * rebind[Scalar[DT]](n_in[i])
-            * rebind[Scalar[DT]](n_out[j])
-        )
+        w_eff[i, j] = rebind[Scalar[DT]](mu_w[i, j]) + rebind[Scalar[DT]](
+            sigma_w[i, j]
+        ) * rebind[Scalar[DT]](n_in[i]) * rebind[Scalar[DT]](n_out[j])
 
 
-def _materialize_b_eff_kernel[OUT: Int](
+def _materialize_b_eff_kernel[
+    OUT: Int
+](
     mu_b: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
     sigma_b: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
     n_out: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
     b_eff: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
 ):
-    """`b_eff[j] = mu_b[j] + sigma_b[j] · n_out[j]`."""
     var j = Int(global_idx.x)
     if j < OUT:
-        b_eff[j] = (
-            rebind[Scalar[DT]](mu_b[j])
-            + rebind[Scalar[DT]](sigma_b[j]) * rebind[Scalar[DT]](n_out[j])
-        )
+        b_eff[j] = rebind[Scalar[DT]](mu_b[j]) + rebind[Scalar[DT]](
+            sigma_b[j]
+        ) * rebind[Scalar[DT]](n_out[j])
 
 
-def _noisy_bias_add_kernel[BATCH: Int, OUT: Int](
+def _noisy_bias_add_kernel[
+    BATCH: Int, OUT: Int
+](
     output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
     b_eff: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
 ):
-    """`output[b, j] += b_eff[j]`."""
     var idx = Int(global_idx.x)
-    var total = BATCH * OUT
-    if idx < total:
+    if idx < BATCH * OUT:
         var b = idx // OUT
         var j = idx % OUT
-        output[b, j] = rebind[Scalar[DT]](output[b, j]) + rebind[
-            Scalar[DT]
-        ](b_eff[j])
+        output[b, j] = rebind[Scalar[DT]](output[b, j]) + rebind[Scalar[DT]](
+            b_eff[j]
+        )
 
 
-def _grad_b_pair_reduce_kernel[BATCH: Int, OUT: Int](
+def _grad_b_pair_reduce_kernel[
+    BATCH: Int, OUT: Int
+](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
     n_out: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
     grad_mu_b: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
     grad_sigma_b: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
 ):
-    """`s = Σ_b grad_out[b, col]`; `grad_mu_b[col] += s`,
-    `grad_sigma_b[col] += s · n_out[col]`. ONE BLOCK per output column +
-    `block.sum` reduction → full occupancy (vs the old one-thread-per-column
-    serial-BATCH-loop). Both accumulate (Adam zero_grad clears at step start).
-    Launch: grid_dim=OUT, block_dim=TPB."""
     var col = Int(block_idx.x)
     var t = Int(thread_idx.x)
     if col >= OUT:
@@ -223,627 +161,375 @@ def _grad_b_pair_reduce_kernel[BATCH: Int, OUT: Int](
     if t == 0:
         var s = total[0]
         grad_mu_b[col] = rebind[Scalar[DT]](grad_mu_b[col]) + s
-        grad_sigma_b[col] = (
-            rebind[Scalar[DT]](grad_sigma_b[col])
-            + s * rebind[Scalar[DT]](n_out[col])
-        )
+        grad_sigma_b[col] = rebind[Scalar[DT]](grad_sigma_b[col]) + s * rebind[
+            Scalar[DT]
+        ](n_out[col])
 
 
-def _scaled_accum_factorized_kernel[IN: Int, OUT: Int](
+def _scaled_accum_factorized_kernel[
+    IN: Int, OUT: Int
+](
     dst: LayoutTensor[DT, Layout.row_major(IN, OUT), MutAnyOrigin],
     src: LayoutTensor[DT, Layout.row_major(IN, OUT), MutAnyOrigin],
     n_in: LayoutTensor[DT, Layout.row_major(IN), MutAnyOrigin],
     n_out: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
 ):
-    """`dst[i,j] += src[i,j] · n_in[i] · n_out[j]` (factorized-noise scale).
-    Accumulates grad_sigma_w from the shared dW = cacheᵀ @ grad_output (which
-    is grad_mu_w). One thread per (i, j) — full occupancy."""
     var idx = Int(global_idx.x)
     if idx < IN * OUT:
         var i = idx // OUT
         var j = idx % OUT
-        dst[i, j] = (
-            rebind[Scalar[DT]](dst[i, j])
-            + rebind[Scalar[DT]](src[i, j])
-            * rebind[Scalar[DT]](n_in[i])
-            * rebind[Scalar[DT]](n_out[j])
-        )
+        dst[i, j] = rebind[Scalar[DT]](dst[i, j]) + rebind[Scalar[DT]](
+            src[i, j]
+        ) * rebind[Scalar[DT]](n_in[i]) * rebind[Scalar[DT]](n_out[j])
 
 
-struct NoisyLinear[IN: Int, OUT: Int](Module):
-    comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN)
-    comptime OUT_DIM = Self.OUT
-
-    comptime W_SIZE = Self.IN * Self.OUT
-    comptime B_SIZE = Self.OUT
-    # Fortunato §3.2 factorized: σ_W = σ_b = σ_0 / √IN, σ_0 = 0.5.
+struct NoisyLinear[IN_: Int, OUT_: Int](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_)
+    comptime OUT_DIM = Self.OUT_
+    comptime W_SIZE = Self.IN_ * Self.OUT_
+    comptime B_SIZE = Self.OUT_
     comptime SIGMA0 = Scalar[DT](0.5)
 
-    var mu_w:     Param["mu_w",     True,  Self.W_SIZE]
-    var sigma_w:  Param["sigma_w",  True,  Self.W_SIZE]
-    var mu_b:     Param["mu_b",     False, Self.B_SIZE]
-    var sigma_b:  Param["sigma_b",  False, Self.B_SIZE]
-
-    var _noise_in:  Scratch["noise_in",  Self.IN]
-    var _noise_out: Scratch["noise_out", Self.OUT]
-    var _w_eff:     Scratch["w_eff",     Self.W_SIZE]
-    var _b_eff:     Scratch["b_eff",     Self.B_SIZE]
-
-    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-
-    # GPU Philox bookkeeping (unused on CPU path). `_noise_seed` is set
-    # at make() to a unique value per leaf. Slice 5: the per-forward
-    # Philox offset is device-resident (`_noise_offset_dev`, 1-elem
-    # uint64) and advanced by `advance_rng_offset_kernel` so the forward
-    # is CUDA-graph capturable — was a host `_noise_offset += ...`.
-    # GPU-only runtime state; not serialized (None on CPU).
-    var _noise_seed: UInt64
-    var _noise_offset_dev: Optional[DeviceBuffer[DType.uint64]]
-
-    # Noise magnitude multiplier (host scalar). 1.0 = normal factorized
-    # noise (training / noisy exploration); 0.0 = mean weights only
-    # (deterministic greedy — used for eval, since for ε=0 Noisy nets the
-    # acting policy is *already* the noisy argmax, so a meaningful eval must
-    # turn the noise off). Toggled via `set_attr["noise_scale"]`, which
-    # `Sequential` broadcasts to every child. Scaling the OUTPUT noise vector
-    # alone scales BOTH W-noise (σ·f(εᵢₙ)·f(εₒᵤₜ)) and b-noise (σ·f(εₒᵤₜ))
-    # linearly. `×1.0` is exact in IEEE float, so the default path is
-    # bit-identical to before.
-    var _noise_scale: Scalar[DT]
-
-    # Backward grad_w temporaries (GPU) — see Linear. cacheᵀ[IN, BATCH] (lazy,
-    # BATCH-sized) + dW_tmp[IN, OUT] (W_SIZE, fixed). dW = cacheᵀ @ grad_output
-    # (one tensor-core max_matmul) is grad_mu_w; grad_sigma_w is the same dW
-    # scaled by the factorized noise. Replaces the naive serial pair kernel.
-    var cacheT_dev: Optional[DeviceBuffer[DT]]
-    var cacheT_n: Int
-    var dW_tmp_dev: Optional[DeviceBuffer[DT]]
-
-    var ts: TargetStorage
+    var mu_w: Param["mu_w", True, Self.W_SIZE]
+    var sigma_w: Param["sigma_w", True, Self.W_SIZE]
+    var mu_b: Param["mu_b", False, Self.B_SIZE]
+    var sigma_b: Param["sigma_b", False, Self.B_SIZE]
+    var noise_in: Tensor  # [IN]  (f-transformed)
+    var noise_out: Tensor  # [OUT] (f-transformed, scaled)
+    var w_eff: Tensor  # [IN*OUT]
+    var b_eff: Tensor  # [OUT]
+    var noise_scale: Scalar[DT]
+    var noise_seed: UInt64
+    var noise_offset: TensorImpl[DType.uint64]  # GPU Philox offset (1 elem)
+    var cacheT: Tensor  # GPU grad_w: xᵀ [IN, BATCH] (lazy)
+    var dW_tmp: Tensor  # GPU grad_w: dW [IN, OUT]
 
     def __init__(out self):
-        self.mu_w    = Param["mu_w",    True,  Self.W_SIZE]()
-        self.sigma_w = Param["sigma_w", True,  Self.W_SIZE]()
-        self.mu_b    = Param["mu_b",    False, Self.B_SIZE]()
+        self.mu_w = Param["mu_w", True, Self.W_SIZE]()
+        self.sigma_w = Param["sigma_w", True, Self.W_SIZE]()
+        self.mu_b = Param["mu_b", False, Self.B_SIZE]()
         self.sigma_b = Param["sigma_b", False, Self.B_SIZE]()
-        self._noise_in  = Scratch["noise_in",  Self.IN]()
-        self._noise_out = Scratch["noise_out", Self.OUT]()
-        self._w_eff     = Scratch["w_eff",     Self.W_SIZE]()
-        self._b_eff     = Scratch["b_eff",     Self.B_SIZE]()
-        self._cached_input_ptr = None
-        self._noise_seed = UInt64(0)
-        self._noise_offset_dev = None
-        self._noise_scale = Scalar[DT](1.0)
-        self.cacheT_dev = None
-        self.cacheT_n = 0
-        self.dW_tmp_dev = None
-        self.ts = TargetStorage.make_uninit()
+        self.noise_in = Tensor()
+        self.noise_out = Tensor()
+        self.w_eff = Tensor()
+        self.b_eff = Tensor()
+        self.noise_scale = Scalar[DT](1.0)
+        self.noise_seed = UInt64(1)
+        self.noise_offset = TensorImpl[DType.uint64]()
+        self.cacheT = Tensor()
+        self.dW_tmp = Tensor()
+
+    @staticmethod
+    def _init_sigma(mut self):
+        # σ init is the NoisyNet factorized prescription σ0/√IN — algorithm-
+        # specified (NOT a general initializer), so it stays hardcoded. The µ
+        # (mean) weights/biases honor INIT in `make`; the old `(k%7-3)*0.1`
+        # placeholder that IGNORED INIT was the bug (`Deterministic` reproduces
+        # that exact pattern, so the parity gate is unchanged).
+        var sigma_init = Self.SIGMA0 / Scalar[DT](fsqrt(Float64(Self.IN_)))
+        for k in range(Self.W_SIZE):
+            self.sigma_w.val.data[k] = sigma_init
+        for k in range(Self.B_SIZE):
+            self.sigma_b.val.data[k] = sigma_init
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified factory.
-
-        Init scheme (matches the legacy `nn/model/noisy_linear.mojo`):
-          µ_W ← INIT.init_weight(...)         — Xavier/Kaiming/Lecun
-          µ_b ← 0
-          σ_W ← σ_0 / √IN                     — Fortunato §3.2 factorized
-          σ_b ← σ_0 / √IN
-
-        Empirically: using the framework-standard INIT for µ_W (vs
-        Fortunato's strict U(-1/√p, 1/√p)) lets the signal magnitude
-        dominate σ-noise at initialization, which is necessary for
-        small networks (e.g. CartPole 64-unit MLPs) to bootstrap. On
-        deep networks like Atari CNNs both inits work.
-
-        On GPU the host-side INIT is run into a host buffer then uploaded —
-        same pattern as `Linear.make[target='gpu']`. The Philox seed is
-        derived from `random_float64()` at make-time so two NoisyLinears
-        in the same Q-net get distinct streams; the trainer / test can
-        override via `set_noise_seed` for deterministic runs.
-        """
-        comptime assert (
-            target == "cpu" or target == "gpu"
-        ), "NoisyLinear: target must be 'cpu' or 'gpu'"
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var nl = Self()
-
-        # σ_W = σ_b = σ_0 / √IN (Fortunato §3.2 factorized).
-        var sigma_init = Self.SIGMA0 / Scalar[DT](
-            fsqrt(Float64(Self.IN))
+        nl.mu_w = Param["mu_w", True, Self.W_SIZE].make[target](ctx)
+        nl.sigma_w = Param["sigma_w", True, Self.W_SIZE].make[target](ctx)
+        nl.mu_b = Param["mu_b", False, Self.B_SIZE].make[target](ctx)
+        nl.sigma_b = Param["sigma_b", False, Self.B_SIZE].make[target](ctx)
+        # µ (mean) params honor INIT; σ stays the NoisyNet prescription.
+        INIT.init_weight[target](
+            nl.mu_w.val, Self.W_SIZE, Self.IN_, Self.OUT_, ctx
         )
-
+        INIT.init_bias[target](nl.mu_b.val, Self.B_SIZE, ctx)
+        Self._init_sigma(nl)
         comptime if target == "cpu":
-            nl.mu_w    = Param["mu_w",    True,  Self.W_SIZE].make_cpu()
-            nl.sigma_w = Param["sigma_w", True,  Self.W_SIZE].make_cpu()
-            nl.mu_b    = Param["mu_b",    False, Self.B_SIZE].make_cpu()
-            nl.sigma_b = Param["sigma_b", False, Self.B_SIZE].make_cpu()
-            INIT.init_weight(
-                nl.mu_w.value_unsafe_ptr_cpu(),
-                Self.W_SIZE, Self.IN, Self.OUT,
-            )
-            INIT.init_bias(nl.mu_b.value_unsafe_ptr_cpu(), Self.B_SIZE)
-            var sg_w_p = nl.sigma_w.value_unsafe_ptr_cpu()
-            for k in range(Self.W_SIZE):
-                sg_w_p[k] = sigma_init
-            var sg_b_p = nl.sigma_b.value_unsafe_ptr_cpu()
-            for k in range(Self.B_SIZE):
-                sg_b_p[k] = sigma_init
-            nl.ts = TargetStorage.make_cpu()
+            nl.noise_in = Tensor.alloc(Self.IN_)
+            nl.noise_out = Tensor.alloc(Self.OUT_)
+            nl.w_eff = Tensor.alloc(Self.W_SIZE)
+            nl.b_eff = Tensor.alloc(Self.B_SIZE)
         else:
-            var ctx_v = require_ctx["NoisyLinear.make[target='gpu']"](ctx)
-            nl.mu_w    = Param["mu_w",    True,  Self.W_SIZE].make_gpu(ctx_v)
-            nl.sigma_w = Param["sigma_w", True,  Self.W_SIZE].make_gpu(ctx_v)
-            nl.mu_b    = Param["mu_b",    False, Self.B_SIZE].make_gpu(ctx_v)
-            nl.sigma_b = Param["sigma_b", False, Self.B_SIZE].make_gpu(ctx_v)
-            # Init on host, then upload — mirrors Linear.make[gpu].
-            var muw_host = ctx_v.enqueue_create_host_buffer[DT](Self.W_SIZE)
-            var sgw_host = ctx_v.enqueue_create_host_buffer[DT](Self.W_SIZE)
-            var mub_host = ctx_v.enqueue_create_host_buffer[DT](Self.B_SIZE)
-            var sgb_host = ctx_v.enqueue_create_host_buffer[DT](Self.B_SIZE)
-            ctx_v.synchronize()
-            INIT.init_weight(
-                muw_host.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.OUT,
-            )
-            INIT.init_bias(mub_host.unsafe_ptr(), Self.B_SIZE)
-            for k in range(Self.W_SIZE):
-                sgw_host.unsafe_ptr()[k] = sigma_init
-            for k in range(Self.B_SIZE):
-                sgb_host.unsafe_ptr()[k] = sigma_init
-            ctx_v.enqueue_copy(nl.mu_w.val.dev.value(),    muw_host)
-            ctx_v.enqueue_copy(nl.sigma_w.val.dev.value(), sgw_host)
-            ctx_v.enqueue_copy(nl.mu_b.val.dev.value(),    mub_host)
-            ctx_v.enqueue_copy(nl.sigma_b.val.dev.value(), sgb_host)
-            ctx_v.synchronize()
-            nl.ts = TargetStorage.make_gpu(ctx_v)
-
-        # Seed Philox stream — keeps GPU forwards reproducible per seed()
-        # while distinct between layers (random_float64 advances the
-        # global RNG state used by other CPU draws too).
-        nl._noise_seed = UInt64(random_float64() * Float64(1 << 31))
-        comptime if target == "gpu":
-            var noff = ctx.value().enqueue_create_buffer[DType.uint64](1)
-            noff.enqueue_fill(UInt64(0))
-            nl._noise_offset_dev = noff^
-            # Fixed [IN, OUT] dW scratch for the max_matmul grad_w path; cacheT
-            # stays None (lazily sized to BATCH on first backward).
-            nl.dW_tmp_dev = ctx.value().enqueue_create_buffer[DT](Self.W_SIZE)
-
-        init_scratch_auto[Self, target=target](nl, ctx)
+            var dctx = ctx.value()
+            # mu_w/mu_b uploaded by init_weight/init_bias; σ set host-side here.
+            nl.sigma_w.val.upload(dctx)
+            nl.sigma_b.val.upload(dctx)
+            nl.noise_in.ensure_gpu(dctx, Self.IN_)
+            nl.noise_out.ensure_gpu(dctx, Self.OUT_)
+            nl.w_eff.ensure_gpu(dctx, Self.W_SIZE)
+            nl.b_eff.ensure_gpu(dctx, Self.B_SIZE)
+            nl.dW_tmp.ensure_gpu(dctx, Self.W_SIZE)
+            nl.noise_offset.ensure_gpu(dctx, 1)
+            nl.noise_offset.dev.value().enqueue_fill(UInt64(0))
         return nl^
 
     def set_noise_seed(mut self, seed: UInt64) raises:
-        """Deterministic-test hook. Resets the device offset to 0 too."""
-        self._noise_seed = seed
-        if self._noise_offset_dev:
-            self._noise_offset_dev.value().enqueue_fill(UInt64(0))
+        self.noise_seed = seed
+        if self.noise_offset.dev:
+            self.noise_offset.dev.value().enqueue_fill(UInt64(0))
 
-    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
-        """Catch the `noise_scale` broadcast (from `Sequential.set_attr`):
-        1.0 = normal noisy exploration, 0.0 = deterministic mean weights
-        (greedy eval). All other attrs are ignored (no-op), matching the
-        `Module` default for param-bearing leaves."""
-        comptime if ATTR == "noise_scale":
-            self._noise_scale = value
+    def set_noise_scale(mut self, v: Scalar[DT]):
+        self.noise_scale = v
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            target == "cpu" or target == "gpu"
-        ), "NoisyLinear: target must be 'cpu' or 'gpu'"
-        assert_tag_for["NoisyLinear", target](self.ts.target_tag)
-        var input_v = inputs.tile[0, BATCH, Self.IN]()
-        var output_v = typed_view_mut[BATCH, Self.OUT](output)
-        var in_p = input_v.ptr
-        var out_p = output_v.ptr
-        self._cached_input_ptr = in_p
-
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            # 1. Sample fresh factorized noise.
-            var ni_p = self._noise_in.cpu_ptr()
-            var no_p = self._noise_out.cpu_ptr()
-            _sample_factorized_noise(ni_p, Self.IN)
-            _sample_factorized_noise(no_p, Self.OUT)
-
-            # Scale the OUTPUT noise by `_noise_scale` (1.0 normal; 0.0 →
-            # deterministic mean weights for eval). Scaling n_out alone
-            # scales both W-noise and b-noise linearly. `×1.0` is exact.
-            for j in range(Self.OUT):
-                no_p[j] = no_p[j] * self._noise_scale
-
-            # 2. Materialize W_eff and b_eff.
-            var mu_w_p = self.mu_w.value_unsafe_ptr_cpu()
-            var sg_w_p = self.sigma_w.value_unsafe_ptr_cpu()
-            var mu_b_p = self.mu_b.value_unsafe_ptr_cpu()
-            var sg_b_p = self.sigma_b.value_unsafe_ptr_cpu()
-            var w_eff_p = self._w_eff.cpu_ptr()
-            var b_eff_p = self._b_eff.cpu_ptr()
-            for i in range(Self.IN):
-                var ni = ni_p[i]
-                for j in range(Self.OUT):
-                    var idx = i * Self.OUT + j
-                    w_eff_p[idx] = mu_w_p[idx] + sg_w_p[idx] * ni * no_p[j]
-            for j in range(Self.OUT):
-                b_eff_p[j] = mu_b_p[j] + sg_b_p[j] * no_p[j]
-
-            # 3. output = x @ W_eff + b_eff. The matmul runs through BLAS
-            #    (Apple Accelerate) like Linear's CPU path — previously a
-            #    naive BATCH·IN·OUT scalar loop, which was THE Rainbow CPU
-            #    bottleneck (SAC is fast on CPU because Linear was already
-            #    ported; NoisyLinear had been missed).
-            var w_eff_tt = TileTensor(w_eff_p, row_major[Self.IN, Self.OUT]())
-            max_matmul[target="cpu"](output_v, input_v, w_eff_tt, None)
-            for b in range(BATCH):
-                for j in range(Self.OUT):
-                    out_p[b * Self.OUT + j] = (
-                        out_p[b * Self.OUT + j] + b_eff_p[j]
+            out.ensure(B * Self.OUT_)
+            # 1. sample factorized noise; scale ε_out.
+            _sample_factorized_noise(self.noise_in.data, Self.IN_)
+            _sample_factorized_noise(self.noise_out.data, Self.OUT_)
+            for j in range(Self.OUT_):
+                self.noise_out.data[j] = (
+                    self.noise_out.data[j] * self.noise_scale
+                )
+            # 2. materialize W_eff, b_eff.
+            for i in range(Self.IN_):
+                var ni = self.noise_in.data[i]
+                for j in range(Self.OUT_):
+                    var idx = i * Self.OUT_ + j
+                    self.w_eff.data[idx] = (
+                        self.mu_w.val.data[idx]
+                        + self.sigma_w.val.data[idx]
+                        * ni
+                        * self.noise_out.data[j]
                     )
+            for j in range(Self.OUT_):
+                self.b_eff.data[j] = (
+                    self.mu_b.val.data[j]
+                    + self.sigma_b.val.data[j] * self.noise_out.data[j]
+                )
+            # 3. out = x @ W_eff + b_eff.
+            var x_v = TileTensor(in0.data, row_major[B, Self.IN_]())
+            var w_v = TileTensor(
+                self.w_eff.data, row_major[Self.IN_, Self.OUT_]()
+            )
+            var out_v = TileTensor(out.data, row_major[B, Self.OUT_]())
+            max_matmul[target="cpu"](out_v, x_v, w_v, None)
+            for b in range(B):
+                for j in range(Self.OUT_):
+                    out.data[b * Self.OUT_ + j] += self.b_eff.data[j]
         else:
-            var ctx = self.ts.ctx.value()
-            var ni_p = self._noise_in.dev_ptr()
-            var no_p = self._noise_out.dev_ptr()
-            var w_eff_p = self._w_eff.dev_ptr()
-            var b_eff_p = self._b_eff.dev_ptr()
-
-            # 1. Sample fresh N(0,1) noise via Philox/Box-Muller, reading
-            #    the Philox offset from the device buffer and advancing it
-            #    on-device (CUDA-graph capturable) — same offset sequence
-            #    the host `_noise_offset += ...` produced. Then apply
-            #    f(x) = sign(x)·sqrt(|x|) in place.
-            var off_lt = LayoutTensor[
-                DType.uint64, Layout.row_major(1), MutAnyOrigin,
-            ](self._noise_offset_dev.value().unsafe_ptr())
-            box_muller_normal_gpu_dev[Self.IN](
-                ctx, ni_p, self._noise_seed, off_lt,
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT_)
+            comptime lin = Layout.row_major(Self.IN_)
+            comptime lout = Layout.row_major(Self.OUT_)
+            comptime lw = Layout.row_major(Self.IN_, Self.OUT_)
+            comptime loff = Layout.row_major(1)
+            # 1. Philox box-muller into ε_in / ε_out via the shared LT kernel
+            #    (no raw ptr — lt_gpu views + the uint64 offset Tensor's lt_gpu).
+            comptime nb_in = (Self.IN_ + TPB - 1) // TPB
+            comptime nb_out = (Self.OUT_ + TPB - 1) // TPB
+            c.enqueue_function[_box_muller_kernel_dev[Self.IN_]](
+                self.noise_in.lt["gpu", lin](),
+                self.noise_seed,
+                self.noise_offset.lt["gpu", loff](),
+                grid_dim=nb_in,
+                block_dim=TPB,
             )
-            comptime adv_in = advance_rng_offset_kernel[
-                ((Self.IN + 1) // 2) * 2
-            ]
-            ctx.enqueue_function[adv_in](off_lt, grid_dim=1, block_dim=1)
-            box_muller_normal_gpu_dev[Self.OUT](
-                ctx, no_p, self._noise_seed, off_lt,
+            c.enqueue_function[
+                advance_rng_offset_kernel[((Self.IN_ + 1) // 2) * 2]
+            ](self.noise_offset.lt["gpu", loff](), grid_dim=1, block_dim=1)
+            c.enqueue_function[_box_muller_kernel_dev[Self.OUT_]](
+                self.noise_out.lt["gpu", lout](),
+                self.noise_seed,
+                self.noise_offset.lt["gpu", loff](),
+                grid_dim=nb_out,
+                block_dim=TPB,
             )
-            comptime adv_out = advance_rng_offset_kernel[
-                ((Self.OUT + 1) // 2) * 2
-            ]
-            ctx.enqueue_function[adv_out](off_lt, grid_dim=1, block_dim=1)
-            var ni_lt = LayoutTensor[
-                DT, Layout.row_major(Self.IN), MutAnyOrigin,
-            ](ni_p)
-            var no_lt = LayoutTensor[
-                DT, Layout.row_major(Self.OUT), MutAnyOrigin,
-            ](no_p)
-            comptime n_blocks_in = (Self.IN + TPB - 1) // TPB
-            comptime apply_in = _apply_f_noise_kernel[Self.IN]
-            ctx.enqueue_function[apply_in](
-                ni_lt, grid_dim=n_blocks_in, block_dim=TPB,
+            c.enqueue_function[
+                advance_rng_offset_kernel[((Self.OUT_ + 1) // 2) * 2]
+            ](self.noise_offset.lt["gpu", loff](), grid_dim=1, block_dim=1)
+            c.enqueue_function[_apply_f_noise_kernel[Self.IN_]](
+                self.noise_in.lt["gpu", lin](), grid_dim=nb_in, block_dim=TPB
             )
-            comptime n_blocks_out = (Self.OUT + TPB - 1) // TPB
-            comptime apply_out = _apply_f_noise_kernel[Self.OUT]
-            ctx.enqueue_function[apply_out](
-                no_lt, grid_dim=n_blocks_out, block_dim=TPB,
+            c.enqueue_function[_apply_f_noise_kernel[Self.OUT_]](
+                self.noise_out.lt["gpu", lout](), grid_dim=nb_out, block_dim=TPB
             )
-
-            # Scale the OUTPUT noise by `_noise_scale` (1.0 normal; 0.0 →
-            # deterministic mean weights for eval). Scaling n_out alone
-            # scales both W-noise and b-noise linearly. `×1.0` is exact.
-            comptime scale_out = _scale_inplace_kernel[Self.OUT]
-            ctx.enqueue_function[scale_out](
-                no_lt, self._noise_scale,
-                grid_dim=n_blocks_out, block_dim=TPB,
+            c.enqueue_function[_scale_inplace_kernel[Self.OUT_]](
+                self.noise_out.lt["gpu", lout](),
+                self.noise_scale,
+                grid_dim=nb_out,
+                block_dim=TPB,
             )
-
-            # 2. Materialize W_eff and b_eff on device.
-            var muw_lt = LayoutTensor[
-                DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
-            ](self.mu_w.val.dev.value().unsafe_ptr())
-            var sgw_lt = LayoutTensor[
-                DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
-            ](self.sigma_w.val.dev.value().unsafe_ptr())
-            var mub_lt = LayoutTensor[
-                DT, Layout.row_major(Self.OUT), MutAnyOrigin,
-            ](self.mu_b.val.dev.value().unsafe_ptr())
-            var sgb_lt = LayoutTensor[
-                DT, Layout.row_major(Self.OUT), MutAnyOrigin,
-            ](self.sigma_b.val.dev.value().unsafe_ptr())
-            var we_lt = LayoutTensor[
-                DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
-            ](w_eff_p)
-            var be_lt = LayoutTensor[
-                DT, Layout.row_major(Self.OUT), MutAnyOrigin,
-            ](b_eff_p)
-            comptime n_blocks_w = (Self.W_SIZE + TPB - 1) // TPB
-            comptime w_kernel = _materialize_w_eff_kernel[Self.IN, Self.OUT]
-            ctx.enqueue_function[w_kernel](
-                muw_lt, sgw_lt, ni_lt, no_lt, we_lt,
-                grid_dim=n_blocks_w, block_dim=TPB,
+            # 2. materialize W_eff, b_eff.
+            comptime nb_w = (Self.W_SIZE + TPB - 1) // TPB
+            c.enqueue_function[_materialize_w_eff_kernel[Self.IN_, Self.OUT_]](
+                self.mu_w.val.lt["gpu", lw](),
+                self.sigma_w.val.lt["gpu", lw](),
+                self.noise_in.lt["gpu", lin](),
+                self.noise_out.lt["gpu", lout](),
+                self.w_eff.lt["gpu", lw](),
+                grid_dim=nb_w,
+                block_dim=TPB,
             )
-            comptime n_blocks_be = (Self.OUT + TPB - 1) // TPB
-            comptime be_kernel = _materialize_b_eff_kernel[Self.OUT]
-            ctx.enqueue_function[be_kernel](
-                mub_lt, sgb_lt, no_lt, be_lt,
-                grid_dim=n_blocks_be, block_dim=TPB,
+            c.enqueue_function[_materialize_b_eff_kernel[Self.OUT_]](
+                self.mu_b.val.lt["gpu", lout](),
+                self.sigma_b.val.lt["gpu", lout](),
+                self.noise_out.lt["gpu", lout](),
+                self.b_eff.lt["gpu", lout](),
+                grid_dim=nb_out,
+                block_dim=TPB,
             )
-
-            # 3. output = input @ W_eff.
-            var w_eff_tt = TileTensor(
-                self._w_eff.dev.value(),
-                row_major[Self.IN, Self.OUT](),
+            # 3. out = x @ W_eff + b_eff.
+            var x_v = TileTensor(in0.dev.value(), row_major[B, Self.IN_]())
+            var w_v = TileTensor(
+                self.w_eff.dev.value(), row_major[Self.IN_, Self.OUT_]()
             )
-            max_matmul[target="gpu"](output_v, input_v, w_eff_tt, ctx)
-
-            # 4. Bias add b_eff.
-            var out_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.OUT), MutAnyOrigin,
-            ](out_p)
-            comptime n_blocks_ba = (BATCH * Self.OUT + TPB - 1) // TPB
-            comptime ba_kernel = _noisy_bias_add_kernel[BATCH, Self.OUT]
-            ctx.enqueue_function[ba_kernel](
-                out_lt, be_lt, grid_dim=n_blocks_ba, block_dim=TPB,
+            var out_v = TileTensor(out.dev.value(), row_major[B, Self.OUT_]())
+            max_matmul[target="gpu"](out_v, x_v, w_v, c)
+            comptime nb_ba = (B * Self.OUT_ + TPB - 1) // TPB
+            c.enqueue_function[_noisy_bias_add_kernel[B, Self.OUT_]](
+                out.lt["gpu", Layout.row_major(B, Self.OUT_)](),
+                self.b_eff.lt["gpu", lout](),
+                grid_dim=nb_ba,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        """Combined backward (S7) — the two phases in fixed order. Single
-        source of truth for direct callers; Sequential calls the phases
-        directly so the param-before-input order is the orchestrator's."""
-        comptime assert (
-            target == "cpu" or target == "gpu"
-        ), "NoisyLinear: target must be 'cpu' or 'gpu'"
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        self.vjp_param_grads[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output
-        )
-        self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output, grad_inputs
-        )
-
-    def vjp_param_grads[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-    ) raises:
-        """Phase 1 (S7): factorized μ/σ weight + bias grads (mode=all).
-        Reads the cached input (`_cached_input_ptr`); MUST run before
-        `vjp_grad_input` writes the slab the cache aliases (Sequential
-        reuses the same `mid` slab for this leaf's grad_input)."""
-        comptime assert (
-            target == "cpu" or target == "gpu"
-        ), "NoisyLinear: target must be 'cpu' or 'gpu'"
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        comptime if mode == "all":
-            assert_tag_for["NoisyLinear", target](self.ts.target_tag)
-            var grad_out_v = typed_view[BATCH, Self.OUT](grad_output)
-            var go_p = grad_out_v.ptr
-
-            comptime if target == "cpu":
-                var ni_p = self._noise_in.cpu_ptr()
-                var no_p = self._noise_out.cpu_ptr()
-                var x_p = self._cached_input_ptr.value()
-
-                # Param grads — reads x_p (the cached input).
-                #    grad_mu_b[j]    = Σ_b grad_out[b, j]
-                #    grad_sigma_b[j] = grad_mu_b[j] * f(ε_out[j])
-                #    grad_mu_w[i,j]  = Σ_b x[b, i] * grad_out[b, j]
-                #    grad_sigma_w[i,j] = grad_mu_w[i,j] * f(ε_in[i]) * f(ε_out[j])
-                var g_mu_w = self.mu_w.grad_unsafe_ptr_cpu()
-                var g_sg_w = self.sigma_w.grad_unsafe_ptr_cpu()
-                var g_mu_b = self.mu_b.grad_unsafe_ptr_cpu()
-                var g_sg_b = self.sigma_b.grad_unsafe_ptr_cpu()
-                # grad_b — cheap O(BATCH·OUT) reduction; keep scalar.
-                for j in range(Self.OUT):
-                    var sb: Scalar[DT] = 0.0
-                    for b in range(BATCH):
-                        sb = sb + go_p[b * Self.OUT + j]
-                    g_mu_b[j] = g_mu_b[j] + sb
-                    g_sg_b[j] = g_sg_b[j] + sb * no_p[j]
-                # grad_w: dW = xᵀ @ grad_output via BLAS (Apple Accelerate),
-                # mirroring Linear's CPU backward — was a naive BATCH·IN·OUT
-                # scalar loop. Transpose x into cT FIRST: that consumes the
-                # read of `x_p` before grad_x clobbers the aliased input slab
-                # (the leaf backward-order invariant). grad_mu_w += dW,
-                # grad_sigma_w += dW · f(ε_in[i]) · f(ε_out[j]).
-                var cT_buf = alloc[Scalar[DT]](BATCH * Self.IN)
-                var dW_buf = alloc[Scalar[DT]](Self.IN * Self.OUT)
-                for b in range(BATCH):
-                    for i in range(Self.IN):
-                        cT_buf[i * BATCH + b] = x_p[b * Self.IN + i]
-                var cT_tt = TileTensor(cT_buf, row_major[Self.IN, BATCH]())
-                var dW_tt = TileTensor(
-                    dW_buf, row_major[Self.IN, Self.OUT]()
-                )
-                max_matmul[target="cpu"](dW_tt, cT_tt, grad_out_v, None)
-                for i in range(Self.IN):
-                    var ni = ni_p[i]
-                    for j in range(Self.OUT):
-                        var idx = i * Self.OUT + j
-                        var dw = dW_buf[idx]
-                        g_mu_w[idx] = g_mu_w[idx] + dw
-                        g_sg_w[idx] = g_sg_w[idx] + dw * ni * no_p[j]
-                dW_buf.free()
-                cT_buf.free()
-
-            else:
-                var ctx = self.ts.ctx.value()
-                var ni_p = self._noise_in.dev_ptr()
-                var no_p = self._noise_out.dev_ptr()
-                var ni_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.IN), MutAnyOrigin,
-                ](ni_p)
-                var no_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.OUT), MutAnyOrigin,
-                ](no_p)
-
-                # Param grads — fused pairs (mu/sigma).
-                var go_lt = LayoutTensor[
-                    DT, Layout.row_major(BATCH, Self.OUT), MutAnyOrigin,
-                ](go_p)
-                var g_mu_b_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.OUT), MutAnyOrigin,
-                ](self.mu_b.grd.dev.value().unsafe_ptr())
-                var g_sg_b_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.OUT), MutAnyOrigin,
-                ](self.sigma_b.grd.dev.value().unsafe_ptr())
-                # grad_b pair — block-per-column reduction (full occupancy).
-                comptime gb_kernel = _grad_b_pair_reduce_kernel[
-                    BATCH, Self.OUT
-                ]
-                ctx.enqueue_function[gb_kernel](
-                    go_lt, no_lt, g_mu_b_lt, g_sg_b_lt,
-                    grid_dim=Self.OUT, block_dim=TPB,
-                )
-
-                # grad_w pair via transpose + max_matmul (tensor cores):
-                #   dW = cacheᵀ @ grad_output     → grad_mu_w increment
-                #   grad_mu_w    += dW
-                #   grad_sigma_w += dW · n_in[i] · n_out[j]
-                # Replaces the naive serial per-(i,j) pair kernel. The
-                # transpose CONSUMES the cached-input read before phase 2
-                # clobbers the aliased slab.
-                ensure_gpu_buffer(
-                    self.cacheT_dev, self.cacheT_n, BATCH * Self.IN, ctx,
-                )
-                var cache_lt = LayoutTensor[
-                    DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin,
-                ](self._cached_input_ptr.value())
-                var cacheT_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.IN, BATCH), MutAnyOrigin,
-                ](self.cacheT_dev.value())
-                comptime n_blocks_t = (BATCH * Self.IN + TPB - 1) // TPB
-                comptime t_kernel = _transpose_kernel[BATCH, Self.IN]
-                ctx.enqueue_function[t_kernel](
-                    cache_lt, cacheT_lt,
-                    grid_dim=n_blocks_t, block_dim=TPB,
-                )
-                var cacheT_tt = TileTensor(
-                    self.cacheT_dev.value(), row_major[Self.IN, BATCH](),
-                )
-                var dW_tmp_tt = TileTensor(
-                    self.dW_tmp_dev.value(), row_major[Self.IN, Self.OUT](),
-                )
-                max_matmul[target="gpu"](
-                    dW_tmp_tt, cacheT_tt, grad_out_v, ctx,
-                )
-                # grad_mu_w += dW_tmp  (flat accumulate)
-                comptime gw_flat = Layout.row_major(Self.W_SIZE)
-                var g_mu_w_flat = LayoutTensor[DT, gw_flat, MutAnyOrigin](
-                    self.mu_w.grd.dev.value().unsafe_ptr()
-                )
-                var dW_tmp_flat = LayoutTensor[DT, gw_flat, MutAnyOrigin](
-                    self.dW_tmp_dev.value()
-                )
-                comptime n_blocks_acc = (Self.W_SIZE + TPB - 1) // TPB
-                comptime acc_kernel = _accum_kernel[Self.W_SIZE]
-                ctx.enqueue_function[acc_kernel](
-                    g_mu_w_flat, dW_tmp_flat,
-                    grid_dim=n_blocks_acc, block_dim=TPB,
-                )
-                # grad_sigma_w += dW_tmp · n_in[i] · n_out[j]
-                var g_sg_w_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
-                ](self.sigma_w.grd.dev.value().unsafe_ptr())
-                var dW_tmp_2d = LayoutTensor[
-                    DT, Layout.row_major(Self.IN, Self.OUT), MutAnyOrigin,
-                ](self.dW_tmp_dev.value())
-                comptime sf_kernel = _scaled_accum_factorized_kernel[
-                    Self.IN, Self.OUT
-                ]
-                ctx.enqueue_function[sf_kernel](
-                    g_sg_w_lt, dW_tmp_2d, ni_lt, no_lt,
-                    grid_dim=n_blocks_acc, block_dim=TPB,
-                )
-
-    def vjp_grad_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
-    ) raises:
-        """Phase 2 (S7): grad_x = grad_output @ W_effᵀ. Writes
-        grad_inputs[0] (aliases the cached input — safe because phase 1
-        already read it). Runs in both modes."""
-        comptime assert (
-            target == "cpu" or target == "gpu"
-        ), "NoisyLinear: target must be 'cpu' or 'gpu'"
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["NoisyLinear", target](self.ts.target_tag)
-        var grad_out_v = typed_view[BATCH, Self.OUT](grad_output)
-        var grad_in_v = grad_inputs.tile[0, BATCH, Self.IN]()
+        ref fin = forward_input[0]
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            var w_eff_tt = TileTensor(
-                self._w_eff.cpu_ptr(), row_major[Self.IN, Self.OUT]()
+            gin.ensure(B * Self.IN_)
+            # grad_b
+            for j in range(Self.OUT_):
+                var sb: Scalar[DT] = 0.0
+                for b in range(B):
+                    sb += grad_output.data[b * Self.OUT_ + j]
+                self.mu_b.grd.data[j] += sb
+                self.sigma_b.grd.data[j] += sb * self.noise_out.data[j]
+            # grad_w: dW = xᵀ @ go ; grad_µ_w += dW ; grad_σ_w += dW·ε_in·ε_out
+            var cT = List[Scalar[DT]](length=Self.IN_ * B, fill=Scalar[DT](0))
+            var dW = List[Scalar[DT]](length=Self.W_SIZE, fill=Scalar[DT](0))
+            for b in range(B):
+                for i in range(Self.IN_):
+                    cT[i * B + b] = fin.data[b * Self.IN_ + i]
+            var cT_tt = TileTensor(cT, row_major[Self.IN_, B]())
+            var go_tt = TileTensor(grad_output.data, row_major[B, Self.OUT_]())
+            var dW_tt = TileTensor(dW, row_major[Self.IN_, Self.OUT_]())
+            max_matmul[target="cpu"](dW_tt, cT_tt, go_tt, None)
+            for i in range(Self.IN_):
+                var ni = self.noise_in.data[i]
+                for j in range(Self.OUT_):
+                    var idx = i * Self.OUT_ + j
+                    var dw = dW[idx]
+                    self.mu_w.grd.data[idx] += dw
+                    self.sigma_w.grd.data[idx] += (
+                        dw * ni * self.noise_out.data[j]
+                    )
+            # grad_x = go @ W_effᵀ
+            var gi_v = TileTensor(gin.data, row_major[B, Self.IN_]())
+            var go_v = TileTensor(grad_output.data, row_major[B, Self.OUT_]())
+            var w_v = TileTensor(
+                self.w_eff.data, row_major[Self.IN_, Self.OUT_]()
             )
-            max_matmul[transpose_b=True, target="cpu"](
-                grad_in_v, grad_out_v, w_eff_tt, None
-            )
+            max_matmul[transpose_b=True, target="cpu"](gi_v, go_v, w_v, None)
         else:
-            var ctx = self.ts.ctx.value()
-            var w_eff_tt = TileTensor(
-                self._w_eff.dev.value(),
-                row_major[Self.IN, Self.OUT](),
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.IN_)
+            self.cacheT.ensure_gpu(c, B * Self.IN_)
+            comptime lin = Layout.row_major(Self.IN_)
+            comptime lout = Layout.row_major(Self.OUT_)
+            comptime lw = Layout.row_major(Self.W_SIZE)
+            comptime lw2 = Layout.row_major(Self.IN_, Self.OUT_)
+            # grad_b pair.
+            c.enqueue_function[_grad_b_pair_reduce_kernel[B, Self.OUT_]](
+                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_)](),
+                self.noise_out.lt["gpu", lout](),
+                self.mu_b.grd.lt["gpu", lout](),
+                self.sigma_b.grd.lt["gpu", lout](),
+                grid_dim=Self.OUT_,
+                block_dim=TPB,
             )
-            max_matmul[transpose_b=True, target="gpu"](
-                grad_in_v, grad_out_v, w_eff_tt, ctx,
+            # grad_w: transpose x → cacheᵀ (B1' tiled), dW = cacheᵀ @ go.
+            c.enqueue_function[_transpose_tiled_kernel[B, Self.IN_]](
+                fin.lt["gpu", Layout.row_major(B, Self.IN_)](),
+                self.cacheT.lt["gpu", Layout.row_major(Self.IN_, B)](),
+                grid_dim=(
+                    (Self.IN_ + _T_TILE - 1) // _T_TILE,
+                    (B + _T_TILE - 1) // _T_TILE,
+                ),
+                block_dim=(_T_TILE, _T_BR),
             )
+            var cT_tt = TileTensor(
+                self.cacheT.dev.value(), row_major[Self.IN_, B]()
+            )
+            var go_tt = TileTensor(
+                grad_output.dev.value(), row_major[B, Self.OUT_]()
+            )
+            var dW_tt = TileTensor(
+                self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]()
+            )
+            max_matmul[target="gpu"](dW_tt, cT_tt, go_tt, c)
+            comptime nb_w = (Self.W_SIZE + TPB - 1) // TPB
+            c.enqueue_function[_accum_kernel[Self.W_SIZE]](
+                self.mu_w.grd.lt["gpu", lw](),
+                self.dW_tmp.lt["gpu", lw](),
+                grid_dim=nb_w,
+                block_dim=TPB,
+            )
+            c.enqueue_function[
+                _scaled_accum_factorized_kernel[Self.IN_, Self.OUT_]
+            ](
+                self.sigma_w.grd.lt["gpu", lw2](),
+                self.dW_tmp.lt["gpu", lw2](),
+                self.noise_in.lt["gpu", lin](),
+                self.noise_out.lt["gpu", lout](),
+                grid_dim=nb_w,
+                block_dim=TPB,
+            )
+            # grad_x = go @ W_effᵀ
+            var gi_v = TileTensor(gin.dev.value(), row_major[B, Self.IN_]())
+            var go_v = TileTensor(
+                grad_output.dev.value(), row_major[B, Self.OUT_]()
+            )
+            var w_v = TileTensor(
+                self.w_eff.dev.value(), row_major[Self.IN_, Self.OUT_]()
+            )
+            max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_v, c)
 
-    # ----- Param / grad walkers (reflection-derived) ----------------------
-    # CRITICAL: without these overrides, NoisyLinear inherits the default
-    # `zero_grad` no-op from the Module trait — and the trainer's opt.step
-    # ends up applying *accumulated* gradients (μ_W grad sums across train
-    # steps), poisoning Adam updates. Mirrors `Linear.for_each_param` /
-    # `Linear.zero_grad` at primitives/linear.mojo:595-607.
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self,
+        mut src: Self,
+        tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """Soft-update all four noise params toward `src` (target ← online).
+        Required for use as a target net (Rainbow/Noisy-DQN target nets are
+        NoisyLinear); the Module default is a no-op which would silently
+        freeze the target (see LinearReLU polyak bug, Stage-5)."""
+        polyak_tensor[target, Self.W_SIZE](self.mu_w.val, src.mu_w.val, tau, ctx)
+        polyak_tensor[target, Self.W_SIZE](
+            self.sigma_w.val, src.sigma_w.val, tau, ctx
+        )
+        polyak_tensor[target, Self.B_SIZE](self.mu_b.val, src.mu_b.val, tau, ctx)
+        polyak_tensor[target, Self.B_SIZE](
+            self.sigma_b.val, src.sigma_b.val, tau, ctx
+        )
 
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["NoisyLinear", target](self.ts.target_tag)
-        for_each_param_auto[Self, V, target](self, prefix, visitor)
-
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["NoisyLinear", target](self.ts.target_tag)
-        zero_grad_auto[Self, target](self)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the Param fields).

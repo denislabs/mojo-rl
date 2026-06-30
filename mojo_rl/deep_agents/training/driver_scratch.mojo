@@ -29,11 +29,11 @@ fanning the type out comptime).
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
+from mojo_rl.nn.core.ptr import mptr
 
 
 struct DriverScratch[NAME: StaticString, N_ENVS: Int, DIM: Int](
-    Movable & ImplicitlyDestructible
+    Movable & ImplicitlyDeletable
 ):
     comptime SIZE: Int = Self.N_ENVS * Self.DIM
 

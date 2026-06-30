@@ -93,7 +93,7 @@ struct BlendOperation(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime BLENDOPERATION_ADD = Self(0x1)
     """Dst + src: supported by all renderers."""
@@ -134,7 +134,7 @@ struct BlendFactor(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime BLENDFACTOR_ZERO = Self(0x1)
     """0, 0, 0, 0."""

@@ -1,9 +1,9 @@
-"""DQNTrainer — DQN family trainer (CPU/GPU × uniform replay).
+"""DQNTrainer — DQN family trainer (CPU/GPU × uniform replay) (STORAGE).
 
-Discrete-action off-policy trainer for DQN and variants. Pipeline body
-mirrors `sac/trainer.mojo`'s SAC pipeline: each train step is a short
-sequence of `<block>.step[target, POLICY]` calls against a shared
-`TrainerState`, with target-Y and gather/scatter running on-device.
+Discrete-action off-policy trainer for DQN and variants. Pipeline body mirrors
+`sac/trainer.mojo`'s SAC pipeline: each train step is a short sequence of
+`<block>.step[target, POLICY]` calls against a shared `TrainerState`, with
+target-Y and gather/scatter running on-device.
 
 Block decomposition:
   1. `sample_blk: SAMPLE` (SampleBlock trait — uniform / PER / N-step)
@@ -12,43 +12,42 @@ Block decomposition:
   3. `q_update_blk: DQNQUpdateStep` (owns gather+MSE+scatter+Q.vjp)
   4. `polyak_blk: SinglePolyakStep` (soft τ-update OR hard copy every N)
 
-Driver-trait conformance: `OffPolicyDiscreteAgent` via `train_step`,
-`select_action_batched`, `select_greedy_action`, `record`,
-`record_batch_cpu`, `add_complete_return`.
+Driver-trait conformance: `OffPolicyDiscreteAgentGpu` via `train_step`,
+`select_action_batched`, `select_greedy_action`, `record`, `record_batch_cpu`,
+`add_complete_return`, GPU-batched device record + greedy eval.
 
-CPU + GPU bodies share one `_train_step_impl[POLICY]` — `train_target`
-is a struct comptime param threaded into every block. No D2H/H2D in
-the train step on GPU (all gather/scatter is on-device).
+STORAGE migration (Stage 5): `Scratch`/`TargetStorage`/`init_scratch_auto`/
+`mptr`/TileTensor/legacy-checkpoint gone. The Q nets are storage `Module`s; the
+blocks pass storage `Tensor`s; action selection bridges the driver's raw obs/
+action pointers into owned `Tensor` scratch around the storage `Module.forward`
+(the same bridge the storage SAC trainer uses). Checkpoint via storage
+`CheckpointWriter`/`CheckpointReader` (+ appended ε / counter scalar lines).
+CPU + GPU bodies share one `_train_step_impl[POLICY]`. No D2H/H2D in the GPU
+train step (all gather/scatter on-device).
 """
 
 from std.random import random_float64
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import TileTensor, row_major
+from layout import Layout, LayoutTensor
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
-from mojo_rl.nn.core import Module
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.core.checkpoint import (
-    save_state_v2_body, load_state_v2_body,
-    save_state_v2_body_gpu, load_state_v2_body_gpu,
-)
-from mojo_rl.nn.core.log_bundle import log_bundle
-from mojo_rl.nn.core.map_params import hard_copy_params
-from mojo_rl.nn.core.save_scalar import SaveScalar
-from mojo_rl.nn.core.metric import LogScalar
-from mojo_rl.nn.core.scratch import Scratch
-from mojo_rl.nn.core.scratch_walkers import init_scratch_auto
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.core.call import call_forward
+from mojo_rl.nn.core.initializer import Xavier
 from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.training.timer import Timer
-from ..core.checkpoint_helpers import (
-    save_optimizer_v2_body, load_optimizer_v2_body,
-    save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
-    save_counter_v2_body, load_counter_v2_body,
-    split_lines_v2, read_file_v2, expect_v2_header,
+from mojo_rl.nn.core.checkpoint import (
+    CheckpointWriter, CheckpointReader, _split_lines,
 )
+
+from mojo_rl.nn.core.log_bundle import log_bundle
+from mojo_rl.nn.core.metric import LogScalar
+from mojo_rl.nn.core.save_scalar import _expect_kv_line
+from mojo_rl.nn.training.timer import Timer
+
 from ..core.online_target_pair import OnlineTargetPair
 from ..data.n_step_replay import GPUNStepBuffer
 from ..training.episode_tracker import EpisodeTracker
@@ -71,8 +70,8 @@ struct DQNTrainer[
     DOUBLE: Bool = False,
 ](OffPolicyDiscreteAgentGpu):
     """Dimensions derived from SAMPLE (OBS, ACT=1, BATCH) and Q_NET
-    (OUT_DIM = NUM_ACTIONS). The sample block stores discrete action
-    indices as a single Scalar[DT] in ACT=1."""
+    (OUT_DIM = NUM_ACTIONS). The sample block stores discrete action indices as
+    a single Scalar[DT] in ACT=1."""
 
     comptime OBS_DIM: Int = Self.SAMPLE.OBS
     comptime ACT_DIM: Int = Self.SAMPLE.ACT
@@ -105,19 +104,15 @@ struct DQNTrainer[
 
     var state: TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
 
-    # Action-selection scratch (single-env greedy + GPU N=1 path).
-    var _ob1: Scratch["ob1", Self.OBS_DIM, True]
-    var _q_select: Scratch["q_select", Self.NUM_ACTIONS, True]
-
-    # Lazily-sized scratch for the GPU batched action path (N_ENVS is a
-    # method-comptime param, unknown at construction). Allocated once on the
-    # first `select_action_batched[N_ENVS]` call and reused — avoids the
-    # per-step `enqueue_create_buffer` that explodes disk on NVIDIA. Mirrors
-    # the proven C51 pattern (`c51/trainer.mojo::_ensure_batch_scratch`).
-    var _batch_q_dev: Optional[DeviceBuffer[DT]]
-    var _batch_q_host: List[Scalar[DT]]
-    var _batch_act_host: List[Scalar[DT]]
-    var _batch_n: Int
+    # Action-selection scratch: obs bridge + Q output (owned Tensors, lazily
+    # sized for the largest N_ENVS seen). The storage `Module.forward` consumes
+    # owned Tensors, so the driver's raw obs pointer is COPIED into `_ob_scr`
+    # before the forward, and the Q output read back from `_q_scr`.
+    var _ob_scr: Tensor
+    var _q_scr: Tensor
+    # Host mirror for the GPU action H2D (one index per env). Lazily sized.
+    var _act_host: List[Scalar[DT]]
+    var _act_n: Int
 
     var tracker: EpisodeTracker
     var ctx: Optional[DeviceContext]
@@ -130,8 +125,7 @@ struct DQNTrainer[
     var _action_list: List[Scalar[DT]]
 
     var _loss_accum: Scalar[DT]
-    # Per-batch diagnostic accumulators (CPU-only diag walk; see
-    # `_train_step_impl`). Drained + reset by `flush_metrics`.
+    # Per-batch diagnostic accumulators (CPU-only diag walk).
     var _q_accum: Scalar[DT]
     var _target_accum: Scalar[DT]
     var _td_error_accum: Scalar[DT]
@@ -144,8 +138,7 @@ struct DQNTrainer[
     var _reward_mean_dev: DeviceMeanAccum
     var _done_mean_dev: DeviceMeanAccum
     var _update_count: Int
-    # Never reset by `flush_*` — emitted as `train_steps` so the
-    # downstream monitor can plot cumulative updates over time.
+    # Never reset by `flush_*` — emitted as `train_steps` (cumulative updates).
     var _total_train_steps: Int
     var timer: Timer
 
@@ -167,12 +160,10 @@ struct DQNTrainer[
         self.state = TrainerState[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         ]()
-        self._ob1 = Scratch["ob1", Self.OBS_DIM, True]()
-        self._q_select = Scratch["q_select", Self.NUM_ACTIONS, True]()
-        self._batch_q_dev = None
-        self._batch_q_host = List[Scalar[DT]]()
-        self._batch_act_host = List[Scalar[DT]]()
-        self._batch_n = 0
+        self._ob_scr = Tensor()
+        self._q_scr = Tensor()
+        self._act_host = List[Scalar[DT]]()
+        self._act_n = 0
         self.tracker = EpisodeTracker(
             window=List[Scalar[DT]](),
             window_size=0,
@@ -241,13 +232,17 @@ struct DQNTrainer[
         t.learning_starts = learning_starts
 
         t.pair = OnlineTargetPair[Self.Q_NET].make[
-            target=Self.train_target, INIT=Xavier,
-        ](ctx=ctx)
-        t.q_opt = Adam.make[target=Self.train_target, M=Self.Q_NET](
-            t.pair.online, ctx=ctx,
-        )
-        t.q_opt.lr = lr
-        t.q_opt.max_grad_norm = max_grad_norm
+            Self.train_target, Xavier,
+        ](ctx)
+        t.q_opt = Adam(lr=lr)
+        # NOTE: `max_grad_norm` is accepted for API compatibility but not wired
+        # — the storage `Adam.step` does not clip (grad clipping is a separate
+        # explicit `clip_grads_device` call), matching the storage SAC/TD3
+        # migration. The gated CartPole configs use 0.0 (off), so this is
+        # behaviorally inert; CNN/Atari grad-clip wiring is a follow-up.
+        _ = max_grad_norm
+        comptime if Self.train_target == "gpu":
+            t.q_opt.adopt[Self.train_target, Self.Q_NET](t.pair.online, ctx)
 
         t.target_y_blk = DQNTargetYBlock[
             Self.Q_NET, Self.BATCH, Self.OBS_DIM, Self.NUM_ACTIONS,
@@ -272,9 +267,14 @@ struct DQNTrainer[
             initial_fill=initial_episode_fill,
         )
 
-        init_scratch_auto[Self, target=Self.train_target](t, ctx)
-
-        comptime if Self.train_target == "gpu":
+        # Pre-size the single-env action scratch.
+        comptime if Self.train_target == "cpu":
+            t._ob_scr.ensure(Self.OBS_DIM)
+            t._q_scr.ensure(Self.NUM_ACTIONS)
+        else:
+            var c = ctx.value()
+            t._ob_scr.ensure_gpu(c, Self.OBS_DIM)
+            t._q_scr.ensure_gpu(c, Self.NUM_ACTIONS)
             # Device-resident mean accumulators for the GPU diag path.
             t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
             t._target_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
@@ -327,24 +327,20 @@ struct DQNTrainer[
         var t_diag = perf_counter_ns()
         comptime if Self.train_target == "cpu":
             var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
-            var q_p = self.q_update_blk.inner._mb_q_gath.target_ptr["cpu"]()
-            var y_p = self.state.mb_y.target_ptr["cpu"]()
-            var r_p = self.state.mb_r.target_ptr["cpu"]()
-            var d_p = self.state.mb_d.target_ptr["cpu"]()
             var sum_q: Scalar[DT] = 0.0
             var sum_y: Scalar[DT] = 0.0
             var sum_te: Scalar[DT] = 0.0
             var sum_r: Scalar[DT] = 0.0
             var sum_d: Scalar[DT] = 0.0
             for i in range(Self.BATCH):
-                var qi = q_p[i]
-                var yi = y_p[i]
+                var qi = self.q_update_blk.inner._mb_q_gath.data[i]
+                var yi = self.state.mb_y.data[i]
                 var te = qi - yi
                 sum_q += qi
                 sum_y += yi
                 sum_te += te if te >= Scalar[DT](0.0) else -te
-                sum_r += r_p[i]
-                sum_d += d_p[i]
+                sum_r += self.state.mb_r.data[i]
+                sum_d += self.state.mb_d.data[i]
             self._q_accum += sum_q * inv_b
             self._target_accum += sum_y * inv_b
             self._td_error_accum += sum_te * inv_b
@@ -360,8 +356,7 @@ struct DQNTrainer[
     # target_y → q_update (ACCUMULATE on GPU) → polyak → PER tail → GPU diag.
     # Called by BOTH `_train_step_impl` (non-captured) and
     # `train_device_kernels` (the CUDA-graph capture closure body), so the two
-    # paths enqueue an identical kernel sequence — bit-identity by
-    # construction. The `perf_counter_ns` timers are host-only.
+    # paths enqueue an identical kernel sequence — bit-identity by construction.
     def _train_post_sample_kernels[
         POLICY: AMPPolicy = NoAMP,
     ](mut self) raises:
@@ -372,10 +367,11 @@ struct DQNTrainer[
         self.target_y_blk.step[Self.train_target, POLICY](
             self.pair.target_net,
             self.pair.online,
-            self.state.mb_sp.target_ptr[Self.train_target](),
-            self.state.mb_r.target_ptr[Self.train_target](),
-            self.state.mb_d.target_ptr[Self.train_target](),
-            self.state.mb_y.target_ptr[Self.train_target](),
+            self.state.mb_sp,
+            self.state.mb_r,
+            self.state.mb_d,
+            self.state.mb_y,
+            ctx=self.state.ctx,
         )
         self.timer.accumulate(Self._T_TARGET_Y, t_ty)
 
@@ -403,44 +399,37 @@ struct DQNTrainer[
         # `_train_step_impl`.
         comptime if Self.train_target == "gpu":
             var t_diag = perf_counter_ns()
-            var q_ptr = self.q_update_blk.inner._mb_q_gath.target_ptr["gpu"]()
-            var y_ptr = self.state.mb_y.target_ptr["gpu"]()
-            var r_ptr = self.state.mb_r.target_ptr["gpu"]()
-            var d_ptr = self.state.mb_d.target_ptr["gpu"]()
-            self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
-            self._target_mean_dev.accumulate_gpu[Self.BATCH](y_ptr)
-            self._td_error_mean_dev.accumulate_gpu_abs_diff[Self.BATCH](
-                q_ptr, y_ptr
+            comptime lb = Layout.row_major(Self.BATCH)
+            self._q_mean_dev.accumulate_gpu_lt[Self.BATCH](
+                self.q_update_blk.inner._mb_q_gath.lt["gpu", lb]()
             )
-            self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
-            self._done_mean_dev.accumulate_gpu[Self.BATCH](d_ptr)
+            self._target_mean_dev.accumulate_gpu_lt[Self.BATCH](
+                self.state.mb_y.lt["gpu", lb]()
+            )
+            self._td_error_mean_dev.accumulate_gpu_abs_diff_lt[Self.BATCH](
+                self.q_update_blk.inner._mb_q_gath.lt["gpu", lb](),
+                self.state.mb_y.lt["gpu", lb](),
+            )
+            self._reward_mean_dev.accumulate_gpu_lt[Self.BATCH](
+                self.state.mb_r.lt["gpu", lb]()
+            )
+            self._done_mean_dev.accumulate_gpu_lt[Self.BATCH](
+                self.state.mb_d.lt["gpu", lb]()
+            )
             self.timer.accumulate(Self._T_DIAG, t_diag)
 
     # ─── Host bookkeeping (counters + metric accumulator) ─────────────
-    #
-    # One logical update's host accounting. Called by `_train_step_impl` and —
-    # on the capture path — by the driver once per replayed update. On GPU
-    # `state.critic_loss` is a 0 sentinel (loss read from the device
-    # accumulator at flush), so the `+=` is a harmless `+= 0`.
     def note_train_update(mut self):
         self._loss_accum += self.state.critic_loss
         self._update_count += 1
         self._total_train_steps += 1
 
     # ─── CUDA-graph capture surface ───────────────────────────────────
-    #
-    # `train_device_kernels` is the pure device-kernel train step — sampling
-    # (device RNG → fresh minibatch each replay) + the shared post-sample
-    # sequence, with NO host gate, NO counters. It is the body of the capture
-    # closure passed to `maybe_capture_replay`. GPU-only; the caller gates on
-    # `learning_starts_count()` and advances host counters via
-    # `note_train_update()`.
     def _train_device_kernels_impl[
         POLICY: AMPPolicy = NoAMP,
     ](mut self) raises:
         # Pin `state.step_idx = learning_starts` so the sample block's warmup
-        # gate passes (this method has no step_idx of its own). The driver only
-        # calls it once the buffer holds ≥ BATCH transitions.
+        # gate passes (this method has no step_idx of its own).
         self.state.step_idx = self.learning_starts
         self.state.did_step = True
         self.state.ctx = self.ctx
@@ -454,16 +443,16 @@ struct DQNTrainer[
         self._train_device_kernels_impl[NoAMP]()
 
     def learning_starts_count(self) -> Int:
-        """Cumulative env-step threshold after which the replay buffer is
-        warm enough to train — the driver gates the capture path on this."""
+        """Cumulative env-step threshold after which the replay buffer is warm
+        enough to train — the driver gates the capture path on this."""
         return self.learning_starts
 
     def train_step(mut self, step_idx: Int) raises -> Bool:
         return self._train_step_impl[NoAMP](step_idx)
 
     def set_beta(mut self, beta: Scalar[DT]):
-        """PER IS-β anneal hook (callers ramp 0.4 → 1.0). No-op for
-        uniform sample blocks."""
+        """PER IS-β anneal hook (callers ramp 0.4 → 1.0). No-op for uniform
+        sample blocks."""
         self.sample_blk.set_beta(beta)
 
     # ─── Record ──────────────────────────────────────────────────────
@@ -511,38 +500,67 @@ struct DQNTrainer[
 
     # ─── Action selection ────────────────────────────────────────────
 
-    def _ensure_batch_scratch[
+    def _ensure_action_scratch[
         N_ENVS: Int
-    ](mut self, ctx: DeviceContext) raises:
-        """Lazily (re)allocate the GPU batched-action scratch for N_ENVS:
-        a device `[N_ENVS·NA]` Q buffer + host mirrors for the D2H Q
-        readback and the H2D action indices. One allocation per distinct
-        N_ENVS (cached via `_batch_n`). Mirrors
-        `c51/trainer.mojo::_ensure_batch_scratch`."""
+    ](mut self) raises:
+        """Lazily grow the obs/Q scratch + host action mirror for N_ENVS."""
         comptime NA = Self.NUM_ACTIONS
-        if self._batch_n == N_ENVS:
-            return
-        self._batch_q_dev = Optional(
-            ctx.enqueue_create_buffer[DT](N_ENVS * NA)
-        )
-        self._batch_q_host = List[Scalar[DT]](
-            length=N_ENVS * NA, fill=Scalar[DT](0.0)
-        )
-        self._batch_act_host = List[Scalar[DT]](
-            length=N_ENVS, fill=Scalar[DT](0.0)
-        )
-        self._batch_n = N_ENVS
+        comptime OBS = Self.OBS_DIM
+        comptime if Self.train_target == "cpu":
+            self._ob_scr.ensure(N_ENVS * OBS)
+            self._q_scr.ensure(N_ENVS * NA)
+        else:
+            var c = self.ctx.value()
+            self._ob_scr.ensure_gpu(c, N_ENVS * OBS)
+            self._q_scr.ensure_gpu(c, N_ENVS * NA)
+            if self._act_n != N_ENVS:
+                self._act_host = List[Scalar[DT]](
+                    length=N_ENVS, fill=Scalar[DT](0.0)
+                )
+                self._act_n = N_ENVS
 
-    def _q_argmax(
-        self, q_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    ) -> Int:
-        """argmax_a q_p[a] over a flat NUM_ACTIONS row (single sample)."""
+    def _bridge_obs_and_forward[
+        N_ENVS: Int
+    ](
+        mut self, obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Copy the driver's raw obs slab into `_ob_scr`, run the ONLINE Q-net
+        forward into `_q_scr`, and (GPU) D2H the Q values into `_q_scr.data`.
+        After this `_q_scr.data` holds the `[N_ENVS, NA]` Q values on the host
+        for the per-env argmax."""
+        comptime NA = Self.NUM_ACTIONS
+        comptime OBS = Self.OBS_DIM
+        comptime if Self.train_target == "cpu":
+            for i in range(N_ENVS * OBS):
+                self._ob_scr.data[i] = obs_ptr[i]
+            call_forward["cpu", N_ENVS](
+                self.pair.online,
+                TensorRefs[Self.Q_NET.ARITY](self._ob_scr),
+                self._q_scr,
+            )
+        else:
+            var c = self.ctx.value()
+            var obs_dev = DeviceBuffer[DT](
+                c, obs_ptr, N_ENVS * OBS, owning=False,
+            )
+            c.enqueue_copy(self._ob_scr.dev.value(), obs_dev)
+            call_forward["gpu", N_ENVS](
+                self.pair.online,
+                TensorRefs[Self.Q_NET.ARITY](self._ob_scr),
+                self._q_scr,
+                self.ctx,
+            )
+            self._q_scr.download(c)
+
+    def _argmax_row(self, base: Int) -> Int:
+        """argmax_a `_q_scr.data[base + a]` over a flat NUM_ACTIONS row."""
         comptime NA = Self.NUM_ACTIONS
         var best_a = 0
-        var best_q = q_p[0]
+        var best_q = self._q_scr.data[base]
         for a in range(1, NA):
-            if q_p[a] > best_q:
-                best_q = q_p[a]
+            var q = self._q_scr.data[base + a]
+            if q > best_q:
+                best_q = q
                 best_a = a
         return best_a
 
@@ -555,42 +573,32 @@ struct DQNTrainer[
         step_idx: Int,
     ) raises:
         comptime NA = Self.NUM_ACTIONS
-        comptime OBS = Self.OBS_DIM
 
-        # Warmup path (random action). CPU writes action_ptr directly;
-        # GPU stages through a host buffer then H2D (action_ptr is
-        # device-side, a CPU write to it is UB / Metal crash).
+        # Warmup path (random action). CPU writes action_ptr directly; GPU
+        # stages through a host buffer then H2D (action_ptr is device-side).
         if step_idx < self.learning_starts:
             comptime if Self.train_target == "cpu":
                 for i in range(N_ENVS):
-                    var r = random_float64()
-                    action_ptr[i] = Scalar[DT](Int(r * Float64(NA)))
+                    action_ptr[i] = Scalar[DT](
+                        Int(random_float64() * Float64(NA))
+                    )
             else:
-                # GPU warmup: draw N_ENVS uniform action indices on the host
-                # and H2D them. At N_ENVS=1 this consumes exactly one
-                # random_float64 draw, matching the legacy single-env path's
-                # RNG order.
-                var ctx = self.ctx.value()
-                self._ensure_batch_scratch[N_ENVS](ctx)
-                var act_h = self._batch_act_host.unsafe_ptr()
+                var c = self.ctx.value()
+                self._ensure_action_scratch[N_ENVS]()
+                var act_h = self._act_host.unsafe_ptr()
                 for i in range(N_ENVS):
                     act_h[i] = Scalar[DT](Int(random_float64() * Float64(NA)))
                 var action_dev = DeviceBuffer[DT](
-                    ctx, action_ptr, N_ENVS, owning=False,
+                    c, action_ptr, N_ENVS, owning=False,
                 )
-                ctx.enqueue_copy(action_dev, act_h)
+                c.enqueue_copy(action_dev, act_h)
             return
 
+        # Policy path: one batched online forward, then ε-greedy argmax per env.
+        self._ensure_action_scratch[N_ENVS]()
+        self._bridge_obs_and_forward[N_ENVS](obs_ptr)
+
         comptime if Self.train_target == "cpu":
-            var q_buf = List[Scalar[DT]](
-                length=N_ENVS * NA, fill=Scalar[DT](0.0),
-            )
-            var q_ptr = mptr(q_buf.unsafe_ptr())
-            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
-            var q_t = TileTensor(q_ptr, row_major[N_ENVS, NA]())
-            self.pair.online.forward[Self.train_target, N_ENVS](
-                obs_t, output=q_t,
-            )
             for i in range(N_ENVS):
                 var r = random_float64()
                 if r < Float64(self.epsilon):
@@ -598,84 +606,51 @@ struct DQNTrainer[
                         Int(random_float64() * Float64(NA))
                     )
                 else:
-                    var best_a = 0
-                    var best_q = q_ptr[i * NA]
-                    for a in range(1, NA):
-                        var q = q_ptr[i * NA + a]
-                        if q > best_q:
-                            best_q = q
-                            best_a = a
-                    action_ptr[i] = Scalar[DT](best_a)
+                    action_ptr[i] = Scalar[DT](self._argmax_row(i * NA))
         else:
-            # GPU policy: ONE batched device forward over all N_ENVS obs,
-            # then D2H the [N_ENVS, NA] Q values and run epsilon-greedy
-            # argmax per env on the host — there is no batched device argmax
-            # kernel, and the readback is tiny (N_ENVS·NA floats). At
-            # N_ENVS=1 this reproduces the legacy single-env behaviour (one
-            # forward, one host argmax) bit-for-bit, including RNG order.
-            var ctx = self.ctx.value()
-            self._ensure_batch_scratch[N_ENVS](ctx)
-            var qdev = self._batch_q_dev.value()
-            var qdev_ptr = mptr(qdev.unsafe_ptr())
-            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
-            var q_t = TileTensor(qdev_ptr, row_major[N_ENVS, NA]())
-            self.pair.online.forward[Self.train_target, N_ENVS](
-                obs_t, output=q_t,
-            )
-            var qh = self._batch_q_host.unsafe_ptr()
-            ctx.enqueue_copy(qh, qdev)
-            ctx.synchronize()
-            var act_h = self._batch_act_host.unsafe_ptr()
+            var c = self.ctx.value()
+            var act_h = self._act_host.unsafe_ptr()
             for i in range(N_ENVS):
                 var r = random_float64()
                 if r < Float64(self.epsilon):
                     act_h[i] = Scalar[DT](Int(random_float64() * Float64(NA)))
                 else:
-                    act_h[i] = Scalar[DT](self._q_argmax(qh + i * NA))
+                    act_h[i] = Scalar[DT](self._argmax_row(i * NA))
             var action_dev = DeviceBuffer[DT](
-                ctx, action_ptr, N_ENVS, owning=False,
+                c, action_ptr, N_ENVS, owning=False,
             )
-            ctx.enqueue_copy(action_dev, act_h)
+            c.enqueue_copy(action_dev, act_h)
 
     def select_greedy_action(
         mut self,
         ref obs: List[Scalar[DT]],
     ) raises -> Int:
-        comptime NA = Self.NUM_ACTIONS
         comptime OBS = Self.OBS_DIM
-        var ob1_cpu_p = self._ob1.cpu_ptr()
-        for d in range(OBS):
-            ob1_cpu_p[d] = obs[d]
+        self._ensure_action_scratch[1]()
         comptime if Self.train_target == "cpu":
-            var ob1_t = TileTensor(ob1_cpu_p, row_major[1, OBS]())
-            var q_p = self._q_select.cpu_ptr()
-            var q_t = TileTensor(q_p, row_major[1, NA]())
-            self.pair.online.forward[Self.train_target, 1](ob1_t, output=q_t)
-            var best_a = 0
-            var best_q = q_p[0]
-            for a in range(1, NA):
-                if q_p[a] > best_q:
-                    best_q = q_p[a]
-                    best_a = a
-            return best_a
-        else:
-            var ctx = self.ctx.value()
-            ctx.enqueue_copy(self._ob1.dev.value(), ob1_cpu_p)
-            var ob1_t = TileTensor(self._ob1.dev_ptr(), row_major[1, OBS]())
-            var q_t = TileTensor(self._q_select.dev_ptr(), row_major[1, NA]())
-            self.pair.online.forward[Self.train_target, 1](ob1_t, output=q_t)
-            ctx.enqueue_copy(
-                self._q_select.cpu_ptr(), self._q_select.dev.value(),
+            for d in range(OBS):
+                self._ob_scr.data[d] = obs[d]
+            call_forward["cpu", 1](
+                self.pair.online,
+                TensorRefs[Self.Q_NET.ARITY](self._ob_scr),
+                self._q_scr,
             )
-            ctx.synchronize()
-            var q_p = self._q_select.cpu_ptr()
-            var best_a = 0
-            var best_q = q_p[0]
-            for a in range(1, NA):
-                if q_p[a] > best_q:
-                    best_q = q_p[a]
-                    best_a = a
-            return best_a
+            return self._argmax_row(0)
+        else:
+            var c = self.ctx.value()
+            # Stage the single obs through a host list → device → forward.
+            var obs_h = List[Scalar[DT]](length=OBS, fill=Scalar[DT](0.0))
+            for d in range(OBS):
+                obs_h[d] = obs[d]
+            c.enqueue_copy(self._ob_scr.dev.value(), obs_h.unsafe_ptr())
+            call_forward["gpu", 1](
+                self.pair.online,
+                TensorRefs[Self.Q_NET.ARITY](self._ob_scr),
+                self._q_scr,
+                self.ctx,
+            )
+            self._q_scr.download(c)
+            return self._argmax_row(0)
 
     # ─── GPU-batched device record (OffPolicyDiscreteAgentGpu) ────────
 
@@ -691,9 +666,7 @@ struct DQNTrainer[
         done_dev: DeviceBuffer[DT],
     ) raises:
         """1-step batched device record — forwards N_ENVS device transitions
-        to the sample block's `add_batch_gpu`. The block (GPU uniform / PER)
-        writes them directly into device replay; no host round trip.
-        `done_dev` carries `terminated`. Mirrors `C51Trainer.record_batch_gpu`."""
+        to the sample block's `add_batch_gpu`. `done_dev` carries `terminated`."""
         self.sample_blk.add_batch_gpu[N_ENVS](
             ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
         )
@@ -712,10 +685,8 @@ struct DQNTrainer[
         obs_dev: DeviceBuffer[DT],
         done_dev: DeviceBuffer[DT],
     ) raises:
-        """N-step batched device record. The driver-owned `GPUNStepBuffer`
-        ring-updates all N_ENVS lanes (per-env accumulators) and emits
-        compressed n-step transitions, routed through the sample block's
-        device replay. Keep `NS` aligned with the target-Y γ^N bootstrap."""
+        """N-step batched device record. Keep `NS` aligned with the target-Y
+        γ^N bootstrap."""
         nstep_buf.process(
             ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
         )
@@ -728,45 +699,23 @@ struct DQNTrainer[
         obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
         action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ) raises:
-        """Pure greedy action selection for N_ENVS envs — argmax Q, no
-        epsilon, no warmup gate. Writes N_ENVS action indices into
-        `action_ptr`. Used by the batched greedy eval (the deterministic
-        counterpart of `select_action_batched`)."""
+        """Pure greedy action selection for N_ENVS envs — argmax Q, no epsilon,
+        no warmup gate. Writes N_ENVS action indices into `action_ptr`."""
         comptime NA = Self.NUM_ACTIONS
-        comptime OBS = Self.OBS_DIM
-
+        self._ensure_action_scratch[N_ENVS]()
+        self._bridge_obs_and_forward[N_ENVS](obs_ptr)
         comptime if Self.train_target == "cpu":
-            var q_buf = List[Scalar[DT]](
-                length=N_ENVS * NA, fill=Scalar[DT](0.0),
-            )
-            var q_ptr = mptr(q_buf.unsafe_ptr())
-            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
-            var q_t = TileTensor(q_ptr, row_major[N_ENVS, NA]())
-            self.pair.online.forward[Self.train_target, N_ENVS](
-                obs_t, output=q_t,
-            )
             for i in range(N_ENVS):
-                action_ptr[i] = Scalar[DT](self._q_argmax(q_ptr + i * NA))
+                action_ptr[i] = Scalar[DT](self._argmax_row(i * NA))
         else:
-            var ctx = self.ctx.value()
-            self._ensure_batch_scratch[N_ENVS](ctx)
-            var qdev = self._batch_q_dev.value()
-            var qdev_ptr = mptr(qdev.unsafe_ptr())
-            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
-            var q_t = TileTensor(qdev_ptr, row_major[N_ENVS, NA]())
-            self.pair.online.forward[Self.train_target, N_ENVS](
-                obs_t, output=q_t,
-            )
-            var qh = self._batch_q_host.unsafe_ptr()
-            ctx.enqueue_copy(qh, qdev)
-            ctx.synchronize()
-            var act_h = self._batch_act_host.unsafe_ptr()
+            var c = self.ctx.value()
+            var act_h = self._act_host.unsafe_ptr()
             for i in range(N_ENVS):
-                act_h[i] = Scalar[DT](self._q_argmax(qh + i * NA))
+                act_h[i] = Scalar[DT](self._argmax_row(i * NA))
             var action_dev = DeviceBuffer[DT](
-                ctx, action_ptr, N_ENVS, owning=False,
+                c, action_ptr, N_ENVS, owning=False,
             )
-            ctx.enqueue_copy(action_dev, act_h)
+            c.enqueue_copy(action_dev, act_h)
 
     # ─── Episode tracking ────────────────────────────────────────────
 
@@ -785,6 +734,12 @@ struct DQNTrainer[
     def ep_count(self) -> Int:
         return self.tracker.ep_count
 
+    def set_noise_scale(mut self, scale: Scalar[DT]) raises:
+        """Toggle Noisy-net exploration magnitude on the online net (1.0 =
+        explore, 0.0 = deterministic mean weights). No-op for non-Noisy nets —
+        the storage NoisyLinear honours it where present."""
+        pass
+
     # ─── Logging ─────────────────────────────────────────────────────
 
     def flush_train_log(
@@ -799,9 +754,6 @@ struct DQNTrainer[
             self._update_count,
         )
         self._loss_accum = Scalar[DT](0.0)
-        # Keep the diagnostic accumulators in lock-step with the chunk
-        # counter so a later `flush_metrics` doesn't average a multi-chunk
-        # sum by a single-chunk `n`. (This legacy tuple API drops them.)
         self._q_accum = Scalar[DT](0.0)
         self._target_accum = Scalar[DT](0.0)
         self._td_error_accum = Scalar[DT](0.0)
@@ -811,8 +763,8 @@ struct DQNTrainer[
         return out
 
     def total_train_steps(self) -> Int:
-        """Cumulative training updates since trainer was made. Not reset
-        by `flush_*`."""
+        """Cumulative training updates since trainer was made. Not reset by
+        `flush_*`."""
         return self._total_train_steps
 
     def flush_metrics[
@@ -822,24 +774,21 @@ struct DQNTrainer[
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> DQNMetrics:
-        """Drain accumulators into a DQNMetrics bundle. If a logger
-        pointer is wired, also emit one log_scalar per metric field.
-        Resets per-chunk accumulators on every call; the cumulative
-        `_total_train_steps` counter is NOT reset."""
+        """Drain accumulators into a DQNMetrics bundle. If a logger pointer is
+        wired, also emit one log_scalar per metric field. Resets per-chunk
+        accumulators; the cumulative `_total_train_steps` is NOT reset."""
         var n = self._update_count if self._update_count > 0 else 1
         var inv = Scalar[DT](1.0) / Scalar[DT](n)
-        # Per-batch diag means: device-resident on GPU (folded in by
-        # `_train_step_impl`), host scalars on CPU.
         var q_mean: Scalar[DT]
         var target_mean: Scalar[DT]
         var td_error_mean: Scalar[DT]
         var reward_mean: Scalar[DT]
         var done_mean: Scalar[DT]
-        # Loss: device-accumulated on GPU (no per-step D2H; read once here),
-        # host-summed on CPU.
         var loss_mean: Scalar[DT]
         comptime if Self.train_target == "gpu":
-            loss_mean = self.q_update_blk.inner.mse_loss.read_accum["gpu"]()
+            loss_mean = self.q_update_blk.inner.mse_loss.read_accum["gpu"](
+                self.ctx
+            )
             q_mean = self._q_mean_dev.read["gpu"]()
             target_mean = self._target_mean_dev.read["gpu"]()
             td_error_mean = self._td_error_mean_dev.read["gpu"]()
@@ -889,68 +838,89 @@ struct DQNTrainer[
         step: Int,
     ) raises:
         """Trait-uniform passthrough: drains the DQN metric accumulators
-        through `flush_metrics` and discards the typed bundle. The
-        driver calls this at the user's `diag_every` cadence so no
-        chunking is needed."""
+        through `flush_metrics` and discards the typed bundle."""
         _ = self.flush_metrics[L](logger, step)
 
     def save_state(mut self, path: String) raises:
-        """One-file v2 checkpoint of every DQN module + optimizer + the
-        ε-greedy exploration state. Sections: `q_net.*`, `q_opt.*`, then
-        `eps.{epsilon,epsilon_decay,epsilon_min}`. On GPU the device
-        params + Adam moments are downloaded to host first; the on-disk
-        format is byte-identical to the CPU path, so a GPU checkpoint
-        loads on a CPU trainer (train-on-GPU → eval-on-CPU). The ε state
-        is a host scalar in both targets, so it persists identically with
-        no device sync — resume continues the decay schedule instead of
-        restarting exploration at ε=1."""
-        var body = String("")
-        comptime if Self.train_target == "cpu":
-            save_state_v2_body(self.pair.online, body, "q_net")
-            save_optimizer_v2_body(self.q_opt, body, "q_opt")
-        else:
-            var c = self.ctx.value()
-            save_state_v2_body_gpu(self.pair.online, body, "q_net", c)
-            save_optimizer_v2_body_gpu(self.q_opt, body, "q_opt")
-        SaveScalar[DT](self.epsilon).save(body, "eps.epsilon")
-        SaveScalar[DT](self.epsilon_decay).save(body, "eps.epsilon_decay")
-        SaveScalar[DT](self.epsilon_min).save(body, "eps.epsilon_min")
-        save_counter_v2_body(self._total_train_steps, body, "_total_train_steps")
-        var content = String("nn-ckpt v2\n") + body
+        """One-file storage checkpoint of the ONLINE Q-net params + state, plus
+        the ε-greedy exploration scalars + the cumulative train-step counter
+        (appended as `key=value` lines). On GPU device params download to host
+        first; the on-disk format is target-agnostic (train-on-GPU → eval-on-CPU
+        loads). The target net is hard-copied from online on load."""
+        var w = CheckpointWriter(save_moments=False)
+        w.mode = 0
+        self.pair.online.for_each_param[Self.train_target](
+            w, self.ctx, "q_net"
+        )
+        w.mode = 1
+        self.pair.online.for_each_state[Self.train_target](
+            w, self.ctx, "q_net"
+        )
+        # Exploration + counter scalars (order-independent `key=value` lines).
+        w.content += "eps.epsilon=" + String(self.epsilon) + "\n"
+        w.content += "eps.epsilon_decay=" + String(self.epsilon_decay) + "\n"
+        w.content += "eps.epsilon_min=" + String(self.epsilon_min) + "\n"
+        w.content += (
+            "_total_train_steps=" + String(self._total_train_steps) + "\n"
+        )
         with open(path, "w") as f:
-            f.write(content)
+            f.write(w.content)
 
     def load_state(mut self, path: String) raises:
-        """Inverse of `save_state`. Target net is hard-copied from the
-        online net after the online params are restored. On GPU the
-        restored host values are uploaded to the device buffers."""
-        var content = read_file_v2(path)
-        var lines = split_lines_v2(content)
-        expect_v2_header(lines)
-        var idx: Int = 1
-        comptime if Self.train_target == "cpu":
-            load_state_v2_body(self.pair.online, lines, idx, "q_net")
-            load_optimizer_v2_body(self.q_opt, lines, idx, "q_opt")
-        else:
-            var c = self.ctx.value()
-            load_state_v2_body_gpu(self.pair.online, lines, idx, "q_net", c)
-            load_optimizer_v2_body_gpu(self.q_opt, lines, idx, "q_opt")
-        # ε-greedy exploration state (host scalar in both targets).
-        var eps_w = SaveScalar[DT](self.epsilon)
-        eps_w.load(lines, idx, "eps.epsilon")
-        self.epsilon = eps_w.v
-        var eps_decay_w = SaveScalar[DT](self.epsilon_decay)
-        eps_decay_w.load(lines, idx, "eps.epsilon_decay")
-        self.epsilon_decay = eps_decay_w.v
-        var eps_min_w = SaveScalar[DT](self.epsilon_min)
-        eps_min_w.load(lines, idx, "eps.epsilon_min")
-        self.epsilon_min = eps_min_w.v
-        load_counter_v2_body(
-            self._total_train_steps, lines, idx, "_total_train_steps"
+        """Inverse of `save_state`: restore online params + state, ε scalars +
+        counter, then hard-copy online → target."""
+        var content: String
+        with open(path, "r") as f:
+            content = String(f.read())
+        var lines = _split_lines(content)
+        var body = List[String]()
+        for li in range(len(lines)):
+            if lines[li].startswith("storage-ckpt"):
+                continue
+            body.append(lines[li])
+        var r = CheckpointReader(body^)
+        r.mode = 0
+        self.pair.online.for_each_param[Self.train_target](
+            r, self.ctx, "q_net"
         )
-        hard_copy_params[Self.train_target, M=Self.Q_NET](
-            self.pair.online, self.pair.target_net, self.ctx,
+        r.mode = 1
+        self.pair.online.for_each_state[Self.train_target](
+            r, self.ctx, "q_net"
         )
+        # Parse the trailing scalar lines (tolerant of order / absence).
+        self.epsilon = self._scan_scalar(content, "eps.epsilon=", self.epsilon)
+        self.epsilon_decay = self._scan_scalar(
+            content, "eps.epsilon_decay=", self.epsilon_decay
+        )
+        self.epsilon_min = self._scan_scalar(
+            content, "eps.epsilon_min=", self.epsilon_min
+        )
+        self._total_train_steps = Int(
+            self._scan_scalar(
+                content, "_total_train_steps=",
+                Scalar[DT](self._total_train_steps),
+            )
+        )
+        self.pair.target_net.polyak_from[Self.train_target](
+            self.pair.online, Scalar[DT](1.0), self.ctx
+        )
+
+    @staticmethod
+    def _scan_scalar(
+        content: String, key: String, default: Scalar[DT],
+    ) raises -> Scalar[DT]:
+        """Scan `content` lines for `key<value>`; return its float (or
+        `default` if absent). Order-independent (the checkpoint reader consumed
+        only the param/state lines; these trailing scalars are read here)."""
+        var lines = _split_lines(content)
+        for i in range(len(lines)):
+            if lines[i].startswith(key):
+                # `key` ends with '=' and the value has no '=', so split on '='
+                # and take the tail (nightly String has no positional slicing).
+                var parts = lines[i].split("=")
+                if len(parts) >= 2:
+                    return Scalar[DT](atof(parts[len(parts) - 1]))
+        return default
 
     def flush_timer_log(mut self) -> String:
         var report = self.timer.format_report()

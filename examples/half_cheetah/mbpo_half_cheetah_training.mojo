@@ -50,7 +50,7 @@ from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.nn.primitives.layer_norm import LayerNorm
 from mojo_rl.nn.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
@@ -170,7 +170,7 @@ def main() raises:
     logger.set_config("ensemble", String(N_ENSEMBLE))
     logger.set_config("real_ratio_pct", String(REAL_RATIO_PCT))
 
-    var logger_ptr = UnsafePointer(to=logger)
+    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
     # ─── Agent + env ─────────────────────────────────────────────────────
     var agent = MBPOAgent[
@@ -188,6 +188,7 @@ def main() raises:
         REAL_RATIO_PCT,
         LOGVAR_MIN_F,
         LOGVAR_MAX_F,
+        USE_TRAIN_CUDA_GRAPH=True,
     ](
         actor_lr=3e-4,
         critic_lr=3e-4,

@@ -1,92 +1,77 @@
 """CPU MuZero adapters for the `planners.tree_search` GenericCPUMCTS surface.
 
-The CPU counterpart of `mcts_adapters_mz.mojo` (GPU). Where the AlphaZero CPU
-adapters (`mcts_adapters_cpu.mojo`) thread the env's serialized *state* as the
-latent (dynamics = true `env.step`), MuZero's latent is the **learned** hidden
-state and all three functions are networks — no env in the loop:
+The CPU counterpart of `mcts_adapters_mz.mojo` (GPU). MuZero's latent is the
+**learned** hidden state and all three functions are networks — no env in the
+loop:
 
   * `MZRepCPU`  — `Representation`: ``obs → z`` via the rep net (`forward["cpu",1]`).
-    The latent is already min-max scaled by the net's `MinMaxNorm` tail.
-  * `MZDynCPU`  — `Dynamics`: ``[z ⊕ onehot(a)] → (z', reward)`` via the dyn net;
-    splits the output, decodes the categorical reward head to a scalar.
-  * `MZPredCPU` — `Prediction`: ``z → (softmax policy, value)`` via the pred net;
-    decodes the categorical value head to a scalar.
+  * `MZDynCPU`  — `Dynamics`: ``[z ⊕ onehot(a)] → (z', reward)`` via the dyn net.
+  * `MZPredCPU` — `Prediction`: ``z → (softmax policy, value)`` via the pred net.
 
 Reward/value decode reuses the **same** `mz_decode_value_batch` (softmax · linear
-bins → ``h⁻¹``) the GPU MCTS kernel applies inline and the training targets use,
-so CPU search, GPU search, and training all share one numeric contract. Single-
-player: no legal mask (softmax over all actions). dtype bridge: planner Lists are
-``Float64``; nn forwards are ``DT`` (float32) — convert at the boundary.
+bins → ``h⁻¹``) the GPU MCTS kernel applies inline and the training targets use.
+Single-player: no legal mask. Storage surface: owned `Tensor` I/O (`.data`), no
+raw pointers; the non-owning net handle is the `feedback_mojo_set_external_lifetime`
+contract (constructed with `.as_unsafe_any_origin()` by the driver).
 """
 
 from std.math import exp
-from std.memory import alloc, UnsafePointer
-from layout import TileTensor, row_major
+from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.planners.tree_search import Representation, Dynamics, Prediction
 from .twohot_targets import mz_decode_value_batch
 
 
 def _mz_decode_one[BINS: Int](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    off: Int,
-    v_min: Scalar[DT],
-    v_max: Scalar[DT],
-) -> Float64:
-    """Decode one categorical head (``logits[off..off+BINS)``) to a raw scalar,
+    logits: List[Scalar[DT]], off: Int, v_min: Scalar[DT], v_max: Scalar[DT]
+) raises -> Float64:
+    """Decode one categorical head (``logits[off .. off+BINS)``) to a raw scalar
     via the shared `mz_decode_value_batch` (h-space linear bins → ``h⁻¹``)."""
-    var buf = mptr(alloc[Scalar[DT]](BINS))
-    for i in range(BINS):
-        buf[i] = logits[off + i]
-    var out = mptr(alloc[Scalar[DT]](1))
-    mz_decode_value_batch[1, BINS](buf, v_min, v_max, out)
-    var v = Float64(out[0])
-    buf.free()
-    out.free()
-    return v
+    var out = List[Scalar[DT]](length=1, fill=0)
+    mz_decode_value_batch[1, BINS](logits, off, v_min, v_max, out, 0)
+    return Float64(out[0])
 
 
 @fieldwise_init
 struct MZRepCPU[OBS: Int, LATENT: Int, NET: Module](
-    Movable, ImplicitlyDestructible, Representation
+    Movable, ImplicitlyDeletable, Representation
 ):
     """H: ``obs → z`` (latent min-max scaled by the net's tail)."""
 
     comptime OBS_DIM: Int = Self.OBS
     comptime LATENT_DIM: Int = Self.LATENT
 
-    var net: UnsafePointer[Self.NET, MutAnyOrigin]
+    var net: UnsafePointer[Self.NET, MutUntrackedOrigin]
 
     def encode_cpu(
         mut self, obs: List[Float64], mut hidden_out: List[Float64]
     ) raises:
         comptime IN = Self.NET.IN_DIMS[0]
         comptime OUT = Self.NET.OUT_DIM
-        var ib = mptr(alloc[Scalar[DT]](IN))
+        var ib = Tensor.alloc(IN)
         for i in range(IN):
-            ib[i] = Scalar[DT](obs[i]) if i < len(obs) else Scalar[DT](0.0)
-        var ob = mptr(alloc[Scalar[DT]](OUT))
-        var it = TileTensor(ib, row_major[1, IN]())
-        var ot = TileTensor(ob, row_major[1, OUT]())
-        self.net[].forward["cpu", 1](it, output=ot)
+            ib.data[i] = Scalar[DT](obs[i]) if i < len(obs) else Scalar[DT](0.0)
+        var ob = Tensor.alloc(OUT)
+        call_forward["cpu", 1](self.net[], TensorRefs[Self.NET.ARITY](ib), ob, None)
         for i in range(Self.LATENT):
-            hidden_out[i] = Float64(ob[i])
-        ib.free()
-        ob.free()
+            hidden_out[i] = Float64(ob.data[i])
 
 
 @fieldwise_init
 struct MZDynCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
-    Movable, ImplicitlyDestructible, Dynamics
+    Movable, ImplicitlyDeletable, Dynamics
 ):
     """G: ``[z ⊕ onehot(a)] → (z', reward)``; reward decoded from BINS bins."""
 
     comptime LATENT_DIM: Int = Self.LATENT
     comptime ACTION_DIM: Int = Self.ACT
 
-    var net: UnsafePointer[Self.NET, MutAnyOrigin]
+    var net: UnsafePointer[Self.NET, MutUntrackedOrigin]
     var v_min: Scalar[DT]
     var v_max: Scalar[DT]
 
@@ -98,29 +83,24 @@ struct MZDynCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
     ) raises -> Float64:
         comptime IN = Self.NET.IN_DIMS[0]     # LATENT + ACT
         comptime OUT = Self.NET.OUT_DIM       # LATENT + BINS
-        var ib = mptr(alloc[Scalar[DT]](IN))
+        var ib = Tensor.alloc(IN)
         for i in range(Self.LATENT):
-            ib[i] = Scalar[DT](hidden_in[i])
+            ib.data[i] = Scalar[DT](hidden_in[i])
         for a in range(Self.ACT):
-            ib[Self.LATENT + a] = Scalar[DT](0.0)
-        ib[Self.LATENT + action] = Scalar[DT](1.0)
-        var ob = mptr(alloc[Scalar[DT]](OUT))
-        var it = TileTensor(ib, row_major[1, IN]())
-        var ot = TileTensor(ob, row_major[1, OUT]())
-        self.net[].forward["cpu", 1](it, output=ot)
+            ib.data[Self.LATENT + a] = Scalar[DT](0.0)
+        ib.data[Self.LATENT + action] = Scalar[DT](1.0)
+        var ob = Tensor.alloc(OUT)
+        call_forward["cpu", 1](self.net[], TensorRefs[Self.NET.ARITY](ib), ob, None)
         for i in range(Self.LATENT):
-            hidden_out[i] = Float64(ob[i])
-        var reward = _mz_decode_one[Self.BINS](
-            ob, Self.LATENT, self.v_min, self.v_max
+            hidden_out[i] = Float64(ob.data[i])
+        return _mz_decode_one[Self.BINS](
+            ob.data, Self.LATENT, self.v_min, self.v_max
         )
-        ib.free()
-        ob.free()
-        return reward
 
 
 @fieldwise_init
 struct MZPredCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
-    Movable, ImplicitlyDestructible, Prediction
+    Movable, ImplicitlyDeletable, Prediction
 ):
     """F: ``z → (softmax policy, value)``; value decoded from BINS bins.
     Single-player — all actions legal, softmax over the full policy slice."""
@@ -128,7 +108,7 @@ struct MZPredCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
     comptime LATENT_DIM: Int = Self.LATENT
     comptime ACTION_DIM: Int = Self.ACT
 
-    var net: UnsafePointer[Self.NET, MutAnyOrigin]
+    var net: UnsafePointer[Self.NET, MutUntrackedOrigin]
     var v_min: Scalar[DT]
     var v_max: Scalar[DT]
 
@@ -137,30 +117,25 @@ struct MZPredCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
     ) raises -> Float64:
         comptime IN = Self.NET.IN_DIMS[0]     # LATENT
         comptime OUT = Self.NET.OUT_DIM       # ACT + BINS
-        var ib = mptr(alloc[Scalar[DT]](IN))
+        var ib = Tensor.alloc(IN)
         for i in range(Self.LATENT):
-            ib[i] = Scalar[DT](hidden[i])
-        var ob = mptr(alloc[Scalar[DT]](OUT))
-        var it = TileTensor(ib, row_major[1, IN]())
-        var ot = TileTensor(ob, row_major[1, OUT]())
-        self.net[].forward["cpu", 1](it, output=ot)
+            ib.data[i] = Scalar[DT](hidden[i])
+        var ob = Tensor.alloc(OUT)
+        call_forward["cpu", 1](self.net[], TensorRefs[Self.NET.ARITY](ib), ob, None)
 
         # softmax over the policy slice [0, ACT)
-        var max_l = Float64(ob[0])
+        var max_l = Float64(ob.data[0])
         for a in range(1, Self.ACT):
-            var lv = Float64(ob[a])
+            var lv = Float64(ob.data[a])
             if lv > max_l:
                 max_l = lv
         var s = 0.0
         for a in range(Self.ACT):
-            policy_out[a] = exp(Float64(ob[a]) - max_l)
+            policy_out[a] = exp(Float64(ob.data[a]) - max_l)
             s += policy_out[a]
         for a in range(Self.ACT):
             policy_out[a] /= s
 
-        var value = _mz_decode_one[Self.BINS](
-            ob, Self.ACT, self.v_min, self.v_max
+        return _mz_decode_one[Self.BINS](
+            ob.data, Self.ACT, self.v_min, self.v_max
         )
-        ib.free()
-        ob.free()
-        return value

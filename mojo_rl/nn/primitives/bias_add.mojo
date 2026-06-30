@@ -1,4 +1,8 @@
-"""BiasAdd[DIM] — learnable broadcast bias.
+"""BiasAdd[DIM] — learnable broadcast bias (storage surface).
+
+Transformed from legacy `nn.primitives.BiasAdd` (surface-only change). The CPU
+loops + the three GPU kernels (forward / grad-input copy / grad-bias reduce) are
+carried over verbatim.
 
     out[b, i] = in[b, i] + bias[i]
 
@@ -6,48 +10,54 @@ A single `DIM`-vector parameter added to every row. Used as a learnable
 (position) embedding in GPT/ViT: instantiated at the full sequence width
 (`seq_len*embed_dim`) so each position gets its own additive bias.
 
-Distinct from `Add` (binary, param-less elementwise sum). IN_DIM ==
-OUT_DIM == DIM. No cache: backward needs neither the input nor the
+IN_DIM == OUT_DIM == DIM. No cache: backward needs neither the input nor the
 output.
 
   * grad_in = grad_out (identity — bias add is +1 w.r.t. input)
   * grad_bias[i] += sum_b grad_out[b, i]   (reduce over batch)
 
 `bias` is weight-decay-exempt (biases shouldn't decay). Init: β=0
-(`Param.make_*` zero-fills; `INIT` accepted for trait conformance but
-ignored, matching LayerNorm's β handling).
+(`INIT.init_bias` zero-fills, matching the legacy β handling).
+
+bf16-FLOW (AMP "Step B"): `BiasAdd[DIM]` is fp32 (unchanged), while
+`BiasAdd[DIM, DType.bfloat16]` flows ACTIVATIONS at bf16 (`ACT_DT == bfloat16`).
+The owned `bias` Param stays fp32 (master); only a CACHED bf16 bias (`b_a`, cast
+each forward — the bias is small) is low-precision. Forward = bf16 in + (fp32
+bias→bf16) → bf16 out. Backward: grad_in = grad_out (bf16 identity); grad_bias +=
+colsum(grad_out) accumulates the bf16 grad into the FP32 master grad (each element
+cast to DT, fp32 accumulator). The fwd/dbias kernels are dtype-parametric (`ADT`).
+The fp32 (ACT_DT == DT) path is byte-for-byte the legacy NoAMP path; the bf16 path
+is GPU-only.
 """
 
 from std.gpu import global_idx, thread_idx, block_idx
 from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, CPU_SIMD_W, TPB
-from ..core import (
-    Initializer,
-    AMPPolicy,
-    NoAMP,
-    Param,
-    ParamVisitor,
-    for_each_param_auto,
-    zero_grad_auto,
-)
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
+from ..core.polyak import polyak_tensor
 
 
 comptime BA_TPB: Int = 128
+comptime BF16 = DType.bfloat16
 
 
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
+# `_bias_add_fwd_kernel` is dtype-parametric: the fp32 path runs at DT, the
+# bf16-flow path at bfloat16 (input/output/cached-bias all at ADT).
 def _bias_add_fwd_kernel[
-    BATCH: Int, DIM: Int
+    BATCH: Int, DIM: Int, ADT: DType = DT
 ](
-    input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-    bias: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    input: LayoutTensor[ADT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    bias: LayoutTensor[ADT, Layout.row_major(DIM), MutAnyOrigin],
+    output: LayoutTensor[ADT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
 ):
     var gid = Int(global_idx.x)
     comptime total = BATCH * DIM
@@ -55,26 +65,32 @@ def _bias_add_fwd_kernel[
         return
     var b = gid // DIM
     var i = gid % DIM
-    output[b, i] = rebind[Scalar[DT]](input[b, i]) + rebind[Scalar[DT]](
+    output[b, i] = rebind[Scalar[ADT]](input[b, i]) + rebind[Scalar[ADT]](
         bias[i]
     )
 
 
+# grad_in = grad_out: device→device flat copy. Dtype-parametric (`ADT`):
+# bf16-flow copies a bf16 grad straight through (identity).
 def _bias_add_copy_kernel[
-    N: Int
+    N: Int, ADT: DType = DT
 ](
-    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
 ):
     var gid = Int(global_idx.x)
     if gid < N:
-        dst[gid] = rebind[Scalar[DT]](src[gid])
+        dst[gid] = rebind[Scalar[ADT]](src[gid])
 
 
+# grad_bias[i] += sum_b grad_out[b, i]. Dtype-parametric on the grad_output
+# activation (`ADT`): the bf16 path reads a bf16 `grad_output` and accumulates
+# into the FP32 master `grad_bias` (each element cast to DT before summing — the
+# accumulator/reduction stays fp32).
 def _bias_add_dbias_kernel[
-    BATCH: Int, DIM: Int
+    BATCH: Int, DIM: Int, ADT: DType = DT
 ](
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    grad_output: LayoutTensor[ADT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
     grad_bias: LayoutTensor[DT, Layout.row_major(DIM), MutAnyOrigin],
 ):
     # One block per DIM column; threads reduce over the batch.
@@ -85,151 +101,211 @@ def _bias_add_dbias_kernel[
     var my_db: Scalar[DT] = 0.0
     var bi = t
     while bi < BATCH:
-        my_db += rebind[Scalar[DT]](grad_output[bi, col])
+        my_db += rebind[Scalar[ADT]](grad_output[bi, col]).cast[DT]()
         bi += BA_TPB
     var total_db = block.sum[block_size=BA_TPB, broadcast=False](val=my_db)
     if t == 0:
         grad_bias[col] = rebind[Scalar[DT]](grad_bias[col]) + total_db[0]
 
 
-struct BiasAdd[DIM: Int](Module):
-    comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
-    comptime OUT_DIM = Self.DIM
+def _cast_f2b_kernel[
+    N: Int
+](
+    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[BF16, Layout.row_major(N), MutAnyOrigin],
+):
+    var i = Int(global_idx.x)
+    if i < N:
+        dst[i] = src[i].cast[BF16]()
 
-    var bias: Param["bias", False, Self.DIM]
-    var ts: TargetStorage
+
+struct BiasAdd[DIM_: Int, ADT: DType = DT](Module):
+    comptime ARITY: Int = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime OUT_DIM = Self.DIM_
+    # Activation-flow dtype. `BiasAdd[DIM]` = fp32 (ACT_DT == DT, the legacy
+    # path); `BiasAdd[DIM, bfloat16]` flows activations at bf16.
+    comptime ACT_DT = Self.ADT
+
+    var bias: Param["bias", False, Self.DIM_]
+    # bf16-flow cached bias (lazy; ACT_DT == bf16 && target == "gpu" only). The
+    # master `bias` Param stays fp32; `b_a` is recast from `bias.val` each forward
+    # (the bias is small — a per-forward cast is fine, no version-gating needed).
+    var b_a: TensorImpl[Self.ADT]
 
     def __init__(out self):
-        self.bias = Param["bias", False, Self.DIM]()
-        self.ts = TargetStorage.make_uninit()
+        self.bias = Param["bias", False, Self.DIM_]()
+        self.b_a = TensorImpl[Self.ADT]()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "BiasAdd: target must be 'cpu' or 'gpu'"
-        )
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var ba = Self()
-        comptime if target == "cpu":
-            ba.bias = Param["bias", False, Self.DIM].make_cpu()
-            ba.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["BiasAdd.make[target='gpu']"](ctx)
-            ba.bias = Param["bias", False, Self.DIM].make_gpu(ctx_v)
-            ba.bias.val.dev.value().enqueue_fill(0.0)
-            ba.ts = TargetStorage.make_gpu(ctx_v)
+        ba.bias = Param["bias", False, Self.DIM_].make[target](ctx)
+        INIT.init_bias[target](ba.bias.val, Self.DIM_, ctx)
         return ba^
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["BiasAdd", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
-        comptime if target == "cpu":
-            var bias_v = TileTensor(self.bias.val.cpu, row_major[Self.DIM]())
-            for b in range(BATCH):
-                for i in range(Self.DIM):
-                    output_v[b, i] = input[b, i] + bias_v[i]
+        ref in0 = inputs[0]
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            # ACT_DT IS DT here, but the checker won't collapse the opaque
+            # `Self.ACT_DT` to `DT` — so rebind the activation refs (sound here).
+            ref in0d = rebind[Tensor](in0)
+            ref outd = rebind[Tensor](out)
+            comptime if target == "cpu":
+                outd.ensure(B * Self.DIM_)
+                var in_v = TileTensor(in0d.data, row_major[B, Self.DIM_]())
+                var out_v = TileTensor(outd.data, row_major[B, Self.DIM_]())
+                var bias_v = TileTensor(
+                    self.bias.val.data, row_major[Self.DIM_]()
+                )
+                for b in range(B):
+                    for i in range(Self.DIM_):
+                        out_v[b, i] = in_v[b, i] + bias_v[i]
+            else:
+                var c = ctx.value()
+                outd.ensure_gpu(c, B * Self.DIM_)
+                comptime l2d = Layout.row_major(B, Self.DIM_)
+                comptime ld = Layout.row_major(Self.DIM_)
+                comptime total = B * Self.DIM_
+                comptime n_blocks = (total + TPB - 1) // TPB
+                c.enqueue_function[_bias_add_fwd_kernel[B, Self.DIM_]](
+                    in0d.lt["gpu", l2d](),
+                    self.bias.val.lt["gpu", ld](),
+                    outd.lt["gpu", l2d](),
+                    grid_dim=n_blocks,
+                    block_dim=TPB,
+                )
         else:
-            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
-            comptime layout_d = Layout.row_major(Self.DIM)
-            var in_p = input.ptr
-            var out_p = output_v.ptr
-            var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p)
-            var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p)
-            var b_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.bias.val.dev.value()
-            )
-            comptime total = BATCH * Self.DIM
+            # ── bf16-flow path (GPU-only) ──
+            comptime assert (
+                target == "gpu"
+            ), "bf16-flow BiasAdd is GPU-only"
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.DIM_)
+            comptime l2d = Layout.row_major(B, Self.DIM_)
+            comptime ld = Layout.row_major(Self.DIM_)
+            comptime total = B * Self.DIM_
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _bias_add_fwd_kernel[BATCH, Self.DIM]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, b_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            # bias: cheap per-forward DT→bf16 cast (input ALREADY bf16).
+            self.b_a.ensure_gpu(c, Self.DIM_)
+            c.enqueue_function[_cast_f2b_kernel[Self.DIM_]](
+                self.bias.val.lt["gpu", ld](),
+                self.b_a.lt["gpu", ld](),
+                grid_dim=(Self.DIM_ + 255) // 256,
+                block_dim=256,
+            )
+            c.enqueue_function[_bias_add_fwd_kernel[B, Self.DIM_, Self.ADT]](
+                in0.lt["gpu", l2d](),
+                self.b_a.lt["gpu", ld](),
+                out.lt["gpu", l2d](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["BiasAdd", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
-        comptime if target == "cpu":
-            # grad_in = grad_out (identity).
-            for b in range(BATCH):
-                for i in range(Self.DIM):
-                    grad_input_v[b, i] = grad_output_v[b, i]
-            comptime if mode == "all":
-                var grad_bias_v = TileTensor(
-                    self.bias.grd.cpu, row_major[Self.DIM]()
+        ref gin = grad_inputs[0]
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            ref gind = rebind[Tensor](gin)
+            ref god = rebind[Tensor](grad_output)
+            comptime if target == "cpu":
+                gind.ensure(B * Self.DIM_)
+                var go_v = TileTensor(god.data, row_major[B, Self.DIM_]())
+                var gi_v = TileTensor(gind.data, row_major[B, Self.DIM_]())
+                # grad_in = grad_out (identity).
+                for b in range(B):
+                    for i in range(Self.DIM_):
+                        gi_v[b, i] = go_v[b, i]
+                # grad_bias[i] += sum_b grad_out[b, i]
+                var gb_v = TileTensor(
+                    self.bias.grd.data, row_major[Self.DIM_]()
                 )
-                for b in range(BATCH):
-                    for i in range(Self.DIM):
-                        grad_bias_v[i] += grad_output_v[b, i]
+                for b in range(B):
+                    for i in range(Self.DIM_):
+                        gb_v[i] += go_v[b, i]
+            else:
+                var c = ctx.value()
+                comptime l2d = Layout.row_major(B, Self.DIM_)
+                comptime ld = Layout.row_major(Self.DIM_)
+                comptime total = B * Self.DIM_
+                comptime lflat = Layout.row_major(total)
+                gind.ensure_gpu(c, B * Self.DIM_)
+                # grad_in = grad_out: device→device copy via flat kernel.
+                comptime n_blocks = (total + TPB - 1) // TPB
+                c.enqueue_function[_bias_add_copy_kernel[total]](
+                    god.lt["gpu", lflat](),
+                    gind.lt["gpu", lflat](),
+                    grid_dim=n_blocks,
+                    block_dim=TPB,
+                )
+                # grad_bias[i] += sum_b grad_out[b, i] (one block per column).
+                c.enqueue_function[_bias_add_dbias_kernel[B, Self.DIM_]](
+                    god.lt["gpu", l2d](),
+                    self.bias.grd.lt["gpu", ld](),
+                    grid_dim=Self.DIM_,
+                    block_dim=BA_TPB,
+                )
         else:
-            var ctx = self.ts.ctx.value()
-            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
-            comptime layout_d = Layout.row_major(Self.DIM)
-            comptime total = BATCH * Self.DIM
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
-            # grad_in = grad_out: device→device copy via flat kernel.
-            var go_flat = LayoutTensor[
-                DT, Layout.row_major(total), MutAnyOrigin
-            ](go_p)
-            var gi_flat = LayoutTensor[
-                DT, Layout.row_major(total), MutAnyOrigin
-            ](gi_p)
+            # ── bf16-flow path (GPU-only) ──
+            comptime assert (
+                target == "gpu"
+            ), "bf16-flow BiasAdd is GPU-only"
+            var c = ctx.value()
+            comptime l2d = Layout.row_major(B, Self.DIM_)
+            comptime ld = Layout.row_major(Self.DIM_)
+            comptime total = B * Self.DIM_
+            comptime lflat = Layout.row_major(total)
+            gin.ensure_gpu(c, B * Self.DIM_)
+            # grad_in = grad_out: bf16 identity copy (grad flows at bf16).
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime copy_kernel = _bias_add_copy_kernel[total]
-            ctx.enqueue_function[copy_kernel](
-                go_flat, gi_flat, grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[_bias_add_copy_kernel[total, Self.ADT]](
+                grad_output.lt["gpu", lflat](),
+                gin.lt["gpu", lflat](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
-            comptime if mode == "all":
-                var gb_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                    self.bias.grd.dev.value()
-                )
-                comptime db_kernel = _bias_add_dbias_kernel[BATCH, Self.DIM]
-                ctx.enqueue_function[db_kernel](
-                    go_lt, gb_lt, grid_dim=Self.DIM, block_dim=BA_TPB,
-                )
+            # grad_bias[i] += sum_b grad_out[b, i]: bf16 grad → fp32 master grad
+            # (each element cast to DT, fp32 accumulator).
+            c.enqueue_function[_bias_add_dbias_kernel[B, Self.DIM_, Self.ADT]](
+                grad_output.lt["gpu", l2d](),
+                self.bias.grd.lt["gpu", ld](),
+                grid_dim=Self.DIM_,
+                block_dim=BA_TPB,
+            )
 
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["BiasAdd", target](self.ts.target_tag)
-        for_each_param_auto[Self, V, target](self, prefix, visitor)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the `bias` Param).
 
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["BiasAdd", target](self.ts.target_tag)
-        zero_grad_auto[Self, target](self)
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self,
+        mut src: Self,
+        tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        polyak_tensor[target, Self.DIM_](
+            self.bias.val, src.bias.val, tau, ctx
+        )

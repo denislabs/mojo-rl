@@ -383,10 +383,8 @@ struct SemiImplicitEuler(Integrator):
             dt: Time step.
         """
         var state = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, STATE_SIZE),
-            MutAnyOrigin,
-        ](state_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, STATE_SIZE)
+        ](state_buf)  # mut=True view from `mut state_buf` (written in place)
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -434,10 +432,8 @@ struct SemiImplicitEuler(Integrator):
             dt: Time step.
         """
         var state = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, STATE_SIZE),
-            MutAnyOrigin,
-        ](state_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, STATE_SIZE)
+        ](state_buf)  # mut=True view from `mut state_buf` (written in place)
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 

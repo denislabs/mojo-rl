@@ -106,7 +106,7 @@ comptime SHEET_BYTES: Int = SHEET_WIDTH * SHEET_HEIGHT * SPRITE_BPP
 
 
 def _blit_sprite_to_sheet(
-    sheet: UnsafePointer[UInt8, MutAnyOrigin],
+    sheet: UnsafePointer[UInt8, MutUntrackedOrigin],
     slot_idx: Int,
     raw_bytes: PythonObject,
     src_w: Int,
@@ -129,7 +129,7 @@ def _blit_sprite_to_sheet(
 
 
 def _load_one(
-    sheet: UnsafePointer[UInt8, MutAnyOrigin],
+    sheet: UnsafePointer[UInt8, MutUntrackedOrigin],
     slot_idx: Int,
     asset_dir: String,
     filename: String,
@@ -145,7 +145,7 @@ def _load_one(
 
 
 def _load_blocks(
-    sheet: UnsafePointer[UInt8, MutAnyOrigin],
+    sheet: UnsafePointer[UInt8, MutUntrackedOrigin],
     asset_dir: String,
     pil: PythonObject,
 ) raises:
@@ -174,7 +174,7 @@ def _load_blocks(
 
 
 def _load_items_and_player(
-    sheet: UnsafePointer[UInt8, MutAnyOrigin],
+    sheet: UnsafePointer[UInt8, MutUntrackedOrigin],
     asset_dir: String,
     pil: PythonObject,
 ) raises:
@@ -201,7 +201,7 @@ def _load_items_and_player(
 
 
 def _load_mobs(
-    sheet: UnsafePointer[UInt8, MutAnyOrigin],
+    sheet: UnsafePointer[UInt8, MutUntrackedOrigin],
     asset_dir: String,
     pil: PythonObject,
 ) raises:
@@ -238,7 +238,7 @@ def _load_mobs(
 
 
 def _load_inventory(
-    sheet: UnsafePointer[UInt8, MutAnyOrigin],
+    sheet: UnsafePointer[UInt8, MutUntrackedOrigin],
     asset_dir: String,
     pil: PythonObject,
 ) raises:
@@ -288,7 +288,7 @@ def _load_inventory(
 
 
 def _load_intrinsic_icons(
-    sheet: UnsafePointer[UInt8, MutAnyOrigin],
+    sheet: UnsafePointer[UInt8, MutUntrackedOrigin],
     asset_dir: String,
     pil: PythonObject,
 ) raises:
@@ -303,7 +303,7 @@ def _load_intrinsic_icons(
 
 def build_sprite_sheet(
     asset_dir: String,
-) raises -> UnsafePointer[UInt8, MutAnyOrigin]:
+) raises -> UnsafePointer[UInt8, MutUntrackedOrigin]:
     """Allocate and populate the Craftax-Full sprite sheet.
 
     Returns a heap buffer the caller owns (must be freed via `.free()`).
@@ -351,7 +351,7 @@ def agent_atlas_size(block_pixel_size: Int) -> Int:
 
 
 def _blit_resized_to_atlas(
-    atlas: UnsafePointer[Float32, MutAnyOrigin],
+    atlas: UnsafePointer[Float32, MutUntrackedOrigin],
     slot_idx: Int,
     block_pixel_size: Int,
     raw_bytes: PythonObject,
@@ -370,7 +370,7 @@ def _blit_resized_to_atlas(
 
 
 def _load_one_resized(
-    atlas: UnsafePointer[Float32, MutAnyOrigin],
+    atlas: UnsafePointer[Float32, MutUntrackedOrigin],
     slot_idx: Int,
     block_pixel_size: Int,
     asset_dir: String,
@@ -388,7 +388,7 @@ def _load_one_resized(
 
 
 def _atlas_load_blocks(
-    atlas: UnsafePointer[Float32, MutAnyOrigin],
+    atlas: UnsafePointer[Float32, MutUntrackedOrigin],
     bps: Int,
     asset_dir: String,
     pil: PythonObject,
@@ -414,7 +414,7 @@ def _atlas_load_blocks(
 
 
 def _atlas_load_items_and_player(
-    atlas: UnsafePointer[Float32, MutAnyOrigin],
+    atlas: UnsafePointer[Float32, MutUntrackedOrigin],
     bps: Int,
     asset_dir: String,
     pil: PythonObject,
@@ -438,7 +438,7 @@ def _atlas_load_items_and_player(
 
 
 def _atlas_load_mobs(
-    atlas: UnsafePointer[Float32, MutAnyOrigin],
+    atlas: UnsafePointer[Float32, MutUntrackedOrigin],
     bps: Int,
     asset_dir: String,
     pil: PythonObject,
@@ -471,7 +471,7 @@ def _atlas_load_mobs(
 
 
 def _atlas_load_inventory(
-    atlas: UnsafePointer[Float32, MutAnyOrigin],
+    atlas: UnsafePointer[Float32, MutUntrackedOrigin],
     bps: Int,
     asset_dir: String,
     pil: PythonObject,
@@ -519,7 +519,7 @@ def _atlas_load_inventory(
 
 
 def _atlas_load_intrinsic_icons(
-    atlas: UnsafePointer[Float32, MutAnyOrigin],
+    atlas: UnsafePointer[Float32, MutUntrackedOrigin],
     bps: Int,
     asset_dir: String,
     pil: PythonObject,
@@ -535,7 +535,7 @@ def _atlas_load_intrinsic_icons(
 def build_agent_atlas(
     asset_dir: String,
     block_pixel_size: Int,
-) raises -> UnsafePointer[Float32, MutAnyOrigin]:
+) raises -> UnsafePointer[Float32, MutUntrackedOrigin]:
     """Build the float32 RGBA atlas at the agent's small block_pixel_size.
 
     Returns a heap buffer owned by caller (must be freed via `.free()`).

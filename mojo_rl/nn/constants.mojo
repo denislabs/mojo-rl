@@ -27,6 +27,14 @@ comptime CPU_SIMD_W = simd_width_of[DT]()
 comptime TPB = 128
 comptime TPB_REDUCE = 64
 
+# Spatial tensor memory layout for conv/BN/pool. NCHW (channels-first) is the
+# framework default and is bit-identical to the pre-LAYOUT code; NHWC
+# (channels-last) makes the channel the inner/contiguous axis (coalesces the
+# im2col gather + BN reduction — see docs/CHANNELS_LAST_NHWC_MIGRATION_PLAN.md).
+# Threaded through the spatial primitives like ADT; default NCHW everywhere.
+comptime LAYOUT_NCHW = 0
+comptime LAYOUT_NHWC = 1
+
 # A/B toggle for the grouped multi-tensor GPU optimizer (Adam step + zero_grad
 # + polyak). When True (default), NVIDIA collapses the per-tensor/per-leaf
 # launches into one grouped launch per optimizer/critic-pair; when False, the

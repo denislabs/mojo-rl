@@ -39,8 +39,9 @@ from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.linear_mish import LinearMish
 from mojo_rl.nn.primitives.min_max_norm import MinMaxNorm
 from mojo_rl.nn.primitives.conv2d import Conv2D
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.nn.primitives.flatten import Flatten
+from mojo_rl.nn.constants import LAYOUT_NCHW
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -68,10 +69,12 @@ comptime MZRepNet[OBS: Int, LATENT: Int, H: Int] = Sequential[
 # (`MZRepGPU`) and the unroll as a flat `FRAMES·84·84` vector — `OBS = FRAMES·84·84`,
 # `OUT_DIM = LATENT`, contract-identical to the MLP rep. Spatial dims are fixed at
 # 84×84 (the Nature-CNN arithmetic); change the kernel/stride tower to use others.
-comptime MZRepNetCNN[FRAMES: Int, LATENT: Int, H: Int] = Sequential[
-    Conv2D[FRAMES, 32, 8, 4, 0, 84, 84], ReLU[32 * 20 * 20],
-    Conv2D[32, 64, 4, 2, 0, 20, 20], ReLU[64 * 9 * 9],
-    Conv2D[64, 64, 3, 1, 0, 9, 9], ReLU[64 * 7 * 7],
+comptime MZRepNetCNN[
+    FRAMES: Int, LATENT: Int, H: Int, LAYOUT: Int = LAYOUT_NCHW
+] = Sequential[
+    Conv2D[FRAMES, 32, 8, 4, 0, 84, 84, LAYOUT=LAYOUT], ReLU[32 * 20 * 20],
+    Conv2D[32, 64, 4, 2, 0, 20, 20, LAYOUT=LAYOUT], ReLU[64 * 9 * 9],
+    Conv2D[64, 64, 3, 1, 0, 9, 9, LAYOUT=LAYOUT], ReLU[64 * 7 * 7],
     Flatten[64 * 7 * 7],
     LinearMish[64 * 7 * 7, H],
     Linear[H, LATENT],

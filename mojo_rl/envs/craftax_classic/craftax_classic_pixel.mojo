@@ -428,7 +428,7 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
     comptime STEP_WS_PER_ENV: Int = 0
 
     var inner: CraftaxClassicEnv[Self.DTYPE]
-    var _atlas: UnsafePointer[Float32, MutAnyOrigin]   # CPU-side atlas
+    var _atlas: UnsafePointer[Float32, MutUntrackedOrigin]   # CPU-side atlas
     var _atlas_loaded: Bool
 
     def __init__(out self):
@@ -465,7 +465,9 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
         comptime HW = OBS_PIX_H * OBS_PIX_W
         for h in range(OBS_PIX_H):
             for w in range(OBS_PIX_W):
-                var rgb = _render_pixel_rgb(state_ptr, atlas, h, w)
+                var rgb = _render_pixel_rgb(
+                    state_ptr, atlas.as_unsafe_any_origin(), h, w
+                )
                 obs[0 * HW + h * OBS_PIX_W + w] = Scalar[Self.DTYPE](rgb[0])
                 obs[1 * HW + h * OBS_PIX_W + w] = Scalar[Self.DTYPE](rgb[1])
                 obs[2 * HW + h * OBS_PIX_W + w] = Scalar[Self.DTYPE](rgb[2])
@@ -672,7 +674,7 @@ struct CraftaxClassicPixelEnv[DTYPE: DType = DType.float32](
         host.free()
 
         Self._render_kernel[BATCH_SIZE, STATE_SIZE](
-            ctx, states_buf, atlas_buf.unsafe_ptr(), obs_buf
+            ctx, states_buf, atlas_buf.unsafe_ptr().as_unsafe_any_origin(), obs_buf
         )
 
     @staticmethod

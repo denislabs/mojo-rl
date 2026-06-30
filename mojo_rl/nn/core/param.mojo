@@ -1,53 +1,56 @@
-"""Param[NAME, DECAY, SIZE] — single trainable tensor + its gradient.
+"""Param[NAME, DECAY, SIZE] + ParamVisitor — storage-native params.
 
-Bundles the (`value`, `grad`, `value_dev`, `grad_dev`) field cluster that
-every parameterised nn leaf currently declares as four separate fields
-into one composable field. Combined with `core/walkers.mojo`, eliminates
-the per-leaf `for_each_param` body.
+The user's idea: "make ParamO a Tensor." A param is just `Tensor`s, each carrying
+CPU + GPU storage — so params are STORAGES, unified with activations. The
+optimizer walks them via `ParamVisitor`, which receives the `Tensor`s + `target`
++ `ctx` and updates the active buffer (`.data` on CPU, `.dev` via a kernel on
+GPU). No separate CPU-only param type.
 
-A leaf that previously declared
-    var weight: List[Scalar[DT]]
-    var bias:   List[Scalar[DT]]
-    var grad_w: List[Scalar[DT]]
-    var grad_b: List[Scalar[DT]]
-    var weight_dev: Optional[DeviceBuffer[DT]]
-    var bias_dev:   Optional[DeviceBuffer[DT]]
-    var grad_w_dev: Optional[DeviceBuffer[DT]]
-    var grad_b_dev: Optional[DeviceBuffer[DT]]
-
-now declares
-    var weight: Param["weight", True,  Self.IN * Self.OUT]
-    var bias:   Param["bias",   False, Self.OUT]
-
-Reflection walks the leaf's fields, picks the `Param`-typed ones (filtered
-by `conforms_to(_, IsParam)`), and dispatches the visitor. Each
-`(NAME, DECAY, SIZE)` triple is a distinct type so reflection sees them
-distinctly.
-
-The wrapper handles CPU + GPU dual storage symmetrically; the leaf passes
-`target` through to `Param.visit_with` / `Param.zero_grad` etc., and each
-helper `comptime if target == "cpu"` branches.
+A Param owns FOUR Tensors: `val` + `grd` (always) plus `m` + `v` — the per-param
+optimizer moment state (Adam). `m`/`v` stay EMPTY (lazy, zero-cost) until a
+stateful optimizer's `visit` calls `ensure`/`ensure_gpu` on them on its first
+step; SGD ignores them. Co-locating moment state with the param (rather than a
+flat side-table in the optimizer) keeps the storage design stateless at the
+visitor and rides the param walk for checkpointing (Stage 4).
 """
 
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
+from std.gpu.host import DeviceContext
 
-from ..constants import DT
-from .param_visitor import ParamVisitor
-from .saveable import Saveable
+from mojo_rl.nn.constants import DT
 from .tensor import Tensor
 
 
+trait ParamVisitor(ImplicitlyDeletable):
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """`name` is the dotted path of this param/state in the module tree
+        (e.g. "0.weight"); composed by the walker from the combinator child
+        indices + the field's param_name/state_name. Empty when walked with the
+        default prefix. Optimizer visitors ignore it; checkpoint / named_params
+        visitors use it."""
+        ...
+
+
 # ──────────────────────────────────────────────────────────────────────
-# IsParam — marker trait so reflection can filter Param-typed fields.
-# The minimal surface is `visit_with`: every Param-aware helper goes
-# through `core/walkers.mojo` which dispatches via this trait.
+# IsParam — marker trait so reflection (core/walkers.mojo) can filter the
+# Param-typed fields of a leaf and dispatch the visitor / zero_grad. The
+# `Module.for_each_param` / `zero_grad` trait DEFAULTS reflection-walk
+# these, so a Param-bearing leaf no longer needs to hand-write the walk —
+# forgetting it can no longer silently skip params in the optimizer /
+# checkpoint walks (the S1 footgun fix on the storage ABI).
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait IsParam(Movable & ImplicitlyDestructible):
-    """Marker — a field-type that the param-walker should visit."""
+trait IsParam(Movable & ImplicitlyDeletable):
+    """Marker — a field-type the param-walker should visit."""
 
     def param_name(self) -> StaticString:
         ...
@@ -55,78 +58,47 @@ trait IsParam(Movable & ImplicitlyDestructible):
     def param_decay(self) -> Bool:
         ...
 
-    def visit_with[V: ParamVisitor, target: StaticString](
-        mut self, full_name: String, mut visitor: V,
+    def visit_with[target: StaticString, V: ParamVisitor](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        full_name: String = String(""),
     ) raises:
         ...
 
-    def zero_grad_with[target: StaticString](mut self) raises:
+    def zero_grad[target: StaticString](
+        mut self, ctx: Optional[DeviceContext]
+    ) raises:
         ...
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Param[NAME, APPLY_DECAY, SIZE] — flat 1D trainable tensor + gradient.
-#
-# Each (NAME, APPLY_DECAY, SIZE) triple is a distinct type. Holds CPU
-# storage (`List`) AND GPU storage (`Optional[DeviceBuffer]`) — only the
-# matching set is populated; selection is via the owning leaf's
-# `TargetStorage.target_tag`. The `Param` wrapper itself doesn't carry
-# a tag (kept stateless to keep field count low); helpers take
-# `[target]` from the call site.
-# ──────────────────────────────────────────────────────────────────────
-
-
-struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam, Saveable):
-    """Two `Tensor`s — value + grad — sharing the unified storage core (S5).
-    External surface (`val`/`grd` fields + the accessor methods below)
-    matches what leaves use: `p.val.dev` (device buffer), `p.val.cpu`
-    (host List), `value_unsafe_ptr_cpu()` / `grad_unsafe_ptr_cpu()`."""
-    var val: Tensor[Self.NAME, Self.SIZE]
-    var grd: Tensor[Self.NAME, Self.SIZE]
+struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam):
+    var val: Tensor
+    var grd: Tensor
+    var m: Tensor   # optimizer 1st-moment state (Adam) — lazy, empty for SGD
+    var v: Tensor   # optimizer 2nd-moment state (Adam) — lazy, empty for SGD
 
     def __init__(out self):
-        self.val = Tensor[Self.NAME, Self.SIZE]()
-        self.grd = Tensor[Self.NAME, Self.SIZE]()
-
-    # ----- Factories -------------------------------------------------------
-
-    @staticmethod
-    def make_cpu() raises -> Self:
-        """CPU param — allocate fp32 storage, zero-fill value + grad."""
-        var p = Self()
-        p.val = Tensor[Self.NAME, Self.SIZE].make_cpu()
-        p.grd = Tensor[Self.NAME, Self.SIZE].make_cpu()
-        return p^
+        self.val = Tensor()
+        self.grd = Tensor()
+        self.m = Tensor()
+        self.v = Tensor()
 
     @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        """GPU param — allocate device buffers, zero-fill grad."""
+    def make[
+        target: StaticString
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Allocate val/grd. `val` keeps a CPU list for host init; the owning
+        leaf's `INIT.init_weight[target]` fills it and (on GPU) uploads, which
+        allocates `val.dev`. On GPU `grd.dev` is allocated + zeroed here."""
         var p = Self()
-        p.val = Tensor[Self.NAME, Self.SIZE].make_gpu(ctx)
-        p.grd = Tensor[Self.NAME, Self.SIZE].make_gpu(ctx)
-        p.grd.dev.value().enqueue_fill(0.0)
+        p.val = Tensor.alloc(Self.SIZE)
+        p.grd = Tensor.alloc(Self.SIZE)
+        comptime if target == "gpu":
+            var c = ctx.value()
+            p.grd.ensure_gpu(c, Self.SIZE)
+            p.grd.dev.value().enqueue_fill(Scalar[DT](0))
         return p^
-
-    # ----- Pointer accessors (used by the owning leaf's INIT + kernels) ---
-
-    def value_unsafe_ptr_cpu(
-        ref self,
-    ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self.val.cpu_ptr()
-
-    def grad_unsafe_ptr_cpu(
-        ref self,
-    ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self.grd.cpu_ptr()
-
-    # NOTE: Shaped TileTensor accessors (e.g. `weight_tile[IN, OUT]()`)
-    # are intentionally not provided. Mojo nightly rejects typed-return
-    # signatures that compute `row_major[Self.SIZE]()` in the return-
-    # type position. The owning leaf builds TileTensors inline from
-    # `param.value` (CPU) or `param.value_dev.value()` (GPU); the
-    # leaf already knows the correct (IN, OUT) shape at its call site.
-
-    # ----- IsParam interface ----------------------------------------------
 
     def param_name(self) -> StaticString:
         return Self.NAME
@@ -134,78 +106,50 @@ struct Param[NAME: StaticString, APPLY_DECAY: Bool, SIZE: Int](IsParam, Saveable
     def param_decay(self) -> Bool:
         return Self.APPLY_DECAY
 
-    def visit_with[V: ParamVisitor, target: StaticString](
-        mut self, full_name: String, mut visitor: V,
+    def visit_with[target: StaticString, V: ParamVisitor](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        full_name: String = String(""),
     ) raises:
-        """Dispatch the visitor with 1D [SIZE] TileTensors over this
-        Param's storage. Mirrors the existing per-leaf
-        `visitor.visit(name, w_tile, gw_tile, n, decay)` shape."""
-        comptime if target == "cpu":
-            var v_tt = TileTensor(self.val.cpu, row_major[Self.SIZE]())
-            var g_tt = TileTensor(self.grd.cpu, row_major[Self.SIZE]())
-            visitor.visit(
-                full_name, v_tt, g_tt, Self.SIZE, Self.APPLY_DECAY,
-            )
-        else:
-            var v_tt = TileTensor(
-                self.val.dev.value(), row_major[Self.SIZE](),
-            )
-            var g_tt = TileTensor(
-                self.grd.dev.value(),  row_major[Self.SIZE](),
-            )
-            visitor.visit(
-                full_name, v_tt, g_tt, Self.SIZE, Self.APPLY_DECAY,
-            )
+        visitor.visit[target, Self.SIZE](
+            full_name, self.val, self.grd, self.m, self.v,
+            Self.APPLY_DECAY, ctx,
+        )
 
-    def zero_grad_with[target: StaticString](mut self) raises:
-        """Zero the gradient buffer on the active target."""
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
         comptime if target == "cpu":
             for k in range(Self.SIZE):
-                self.grd.cpu[k] = Scalar[DT](0.0)
+                self.grd.data[k] = Scalar[DT](0)
         else:
-            self.grd.dev.value().enqueue_fill(0.0)
+            self.grd.dev.value().enqueue_fill(Scalar[DT](0))
 
-    # ----- Saveable interface (CPU only) ---------------------------------
-    # Format: a section header line then SIZE value lines.
-    #     <prefix>#size=<SIZE>
-    #     v0
-    #     v1
-    #     ...
-    # The header lets `load` validate that the saved Param's size matches
-    # the in-memory Param's compile-time `SIZE` (catches topology drift
-    # between save and load).
-    #
-    # GPU Params: trainer is responsible for downloading device → host
-    # storage (into `self.value`) before calling `save`, and uploading
-    # back after `load`. Mirrors v1's CPU-only scope.
 
-    def save(self, mut out: String, prefix: String) raises:
-        out += prefix + "#size=" + String(Self.SIZE) + "\n"
-        for k in range(Self.SIZE):
-            out += String(self.val.cpu[k]) + "\n"
+# ──────────────────────────────────────────────────────────────────────
+# ParamVersionBump — a no-op ParamVisitor that bumps each param VALUE's
+# `version` (host-side, no kernel). The optimizer runs it once per `step`
+# (through the existing `for_each_param` walk, so it recurses through
+# combinators for free) to signal "weights changed this step". AMP leaves
+# read `weight.val.version` to invalidate their cached bf16 weight — recast
+# iff the version advanced. This is the bug the legacy AMP never closed: it
+# cached the bf16 weight but NO caller ever invalidated it (the net trained
+# against a frozen cast). Covers BOTH optimizer paths uniformly — the
+# per-param walk AND the arena grouped step (which bypasses `visit`).
+# ──────────────────────────────────────────────────────────────────────
+struct ParamVersionBump(ParamVisitor):
+    def __init__(out self):
+        pass
 
-    def load(
-        mut self, lines: List[String], mut idx: Int, prefix: String,
+    def visit[target: StaticString, N: Int](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
-        if idx >= len(lines):
-            raise Error(
-                "Param.load: out of input. Expected section header `"
-                + prefix + "#size=" + String(Self.SIZE)
-                + "` at idx " + String(idx)
-            )
-        var header = lines[idx]
-        var expected = prefix + "#size=" + String(Self.SIZE)
-        if header != expected:
-            raise Error(
-                "Param.load: section-header mismatch at idx " + String(idx)
-                + ". Expected `" + expected + "`, got `" + header + "`"
-            )
-        idx += 1
-        for k in range(Self.SIZE):
-            if idx >= len(lines):
-                raise Error(
-                    "Param.load: short read at element " + String(k)
-                    + " of " + String(Self.SIZE) + " for `" + prefix + "`"
-                )
-            self.val.cpu[k] = Scalar[DT](atof(lines[idx]))
-            idx += 1
+        param.version += 1

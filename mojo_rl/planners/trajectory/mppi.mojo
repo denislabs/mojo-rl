@@ -27,6 +27,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
+
 comptime TPB = 256  # preserved from legacy nn.constants (nn.TPB == 128)
 
 from .rollout_callback import RolloutCallbackCPU, RolloutCallbackGPU
@@ -99,7 +100,7 @@ struct MPPICPU[
     NUM_PI_TRAJS: Int,
     NUM_ITERATIONS: Int,
     NUM_ELITES: Int,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     """CPU MPPI planner — reference implementation + test path.
 
     All hyperparameters that affect storage layout
@@ -405,7 +406,7 @@ struct MPPIGPUBatched[
     NUM_ELITES: Int,
     NUM_ITERATIONS: Int,
     N_ENVS: Int,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     """GPU-batched MPPI planner — plans for all ``N_ENVS`` envs in one
     kernel grid per horizon step.
 
@@ -600,50 +601,43 @@ struct MPPIGPUBatched[
         var z_tensor = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH_TOTAL, Self.LATENT_DIM),
-            MutAnyOrigin,
-        ](self.z_buf.unsafe_ptr())
+        ](self.z_buf)
         var z_next_tensor = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH_TOTAL, Self.LATENT_DIM),
-            MutAnyOrigin,
-        ](self.z_next_buf.unsafe_ptr())
+        ](self.z_next_buf)
         var act_step_tensor = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH_TOTAL, Self.ACTION_DIM),
-            MutAnyOrigin,
-        ](self.act_step_buf.unsafe_ptr())
+        ](self.act_step_buf)
         var all_actions_tensor = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH_TOTAL * Self.HORIZON * Self.ACTION_DIM),
-            MutAnyOrigin,
-        ](self.all_actions_buf.unsafe_ptr())
+        ](self.all_actions_buf)
         var pol_action_tensor = LayoutTensor[
             dtype,
             Layout.row_major(Self.BATCH_TOTAL, Self.ACTION_DIM),
-            MutAnyOrigin,
-        ](self.pol_action_buf.unsafe_ptr())
+        ](self.pol_action_buf)
         var reward_step_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH_TOTAL), MutAnyOrigin
-        ](self.reward_step_buf.unsafe_ptr())
+            dtype, Layout.row_major(Self.BATCH_TOTAL)
+        ](self.reward_step_buf)
         var terminal_v_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH_TOTAL), MutAnyOrigin
-        ](self.terminal_v_buf.unsafe_ptr())
+            dtype, Layout.row_major(Self.BATCH_TOTAL)
+        ](self.terminal_v_buf)
         var returns_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH_TOTAL), MutAnyOrigin
-        ](self.returns_buf.unsafe_ptr())
+            dtype, Layout.row_major(Self.BATCH_TOTAL)
+        ](self.returns_buf)
         var mean_tensor = LayoutTensor[
             dtype,
             Layout.row_major(Self.MEAN_STD_TOTAL),
-            MutAnyOrigin,
-        ](self.mean_buf.unsafe_ptr())
+        ](self.mean_buf)
         var std_tensor = LayoutTensor[
             dtype,
             Layout.row_major(Self.MEAN_STD_TOTAL),
-            MutAnyOrigin,
-        ](self.std_buf.unsafe_ptr())
+        ](self.std_buf)
         var weights_tensor = LayoutTensor[
-            dtype, Layout.row_major(Self.BATCH_TOTAL), MutAnyOrigin
-        ](self.weights_buf.unsafe_ptr())
+            dtype, Layout.row_major(Self.BATCH_TOTAL)
+        ](self.weights_buf)
 
         # ── 3. Main MPPI iterations ──────────────────────────────
         var temp_scalar = Scalar[dtype](temperature)

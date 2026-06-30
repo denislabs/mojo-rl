@@ -58,7 +58,7 @@ struct HintPriority(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime HINT_DEFAULT = Self(0)
     comptime HINT_NORMAL = Self(1)
@@ -93,9 +93,9 @@ def set_hint_with_priority(
         lib,
         "SDL_SetHintWithPriority",
         def(
-            name: Ptr[c_char, ImmutAnyOrigin],
-            value: Ptr[c_char, ImmutAnyOrigin],
-            priority: HintPriority,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[c_char, ImmutOrigin(origin_of(value))],
+            HintPriority,
         ) thin -> Bool,
     ]()(
         name.as_c_string_slice().unsafe_ptr(),
@@ -131,8 +131,8 @@ def set_hint(var name: String, var value: String) raises:
         lib,
         "SDL_SetHint",
         def(
-            name: Ptr[c_char, ImmutAnyOrigin],
-            value: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[c_char, ImmutOrigin(origin_of(value))],
         ) thin -> Bool,
     ]()(
         name.as_c_string_slice().unsafe_ptr(),
@@ -163,7 +163,7 @@ def reset_hint(var name: String) raises:
     """
 
     ret = _get_dylib_function[
-        lib, "SDL_ResetHint", def(name: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool
+        lib, "SDL_ResetHint", def(Ptr[c_char, ImmutOrigin(origin_of(name))]) thin -> Bool
     ]()(name.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -208,7 +208,7 @@ def get_hint(var name: String) raises -> Ptr[c_char, ImmutAnyOrigin]:
     return _get_dylib_function[
         lib,
         "SDL_GetHint",
-        def(name: Ptr[c_char, ImmutAnyOrigin]) thin -> Ptr[c_char, ImmutAnyOrigin],
+        def(Ptr[c_char, ImmutOrigin(origin_of(name))]) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 
@@ -232,7 +232,7 @@ def get_hint_boolean(var name: String, default_value: Bool) raises -> Bool:
     return _get_dylib_function[
         lib,
         "SDL_GetHintBoolean",
-        def(name: Ptr[c_char, ImmutAnyOrigin], default_value: Bool) thin -> Bool,
+        def(Ptr[c_char, ImmutOrigin(origin_of(name))], Bool) thin -> Bool,
     ]()(name.as_c_string_slice().unsafe_ptr(), default_value)
 
 
@@ -292,9 +292,9 @@ def add_hint_callback(
         lib,
         "SDL_AddHintCallback",
         def(
-            name: Ptr[c_char, ImmutAnyOrigin],
-            callback: HintCallback,
-            userdata: Ptr[NoneType, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            HintCallback,
+            Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
     ]()(name.as_c_string_slice().unsafe_ptr(), callback, userdata)
     if not ret:
@@ -324,8 +324,8 @@ def remove_hint_callback(
         lib,
         "SDL_RemoveHintCallback",
         def(
-            name: Ptr[c_char, ImmutAnyOrigin],
-            callback: HintCallback,
-            userdata: Ptr[NoneType, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            HintCallback,
+            Ptr[NoneType, MutAnyOrigin],
         ) thin -> None,
     ]()(name.as_c_string_slice().unsafe_ptr(), callback, userdata)

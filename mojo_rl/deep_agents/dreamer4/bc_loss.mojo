@@ -11,7 +11,7 @@ symexp-twohot (`twohot`) loss.
 
 `bc_mtp_loss` runs both head forwards on h_t, accumulates the per-(frame,
 distance) NLL (normalised by the number of valid predictions), backpropagates
-through the heads (filling their param grads, mode="all") and SUMS the two
+through the heads (filling their param grads) and SUMS the two
 grad-wrt-h_t contributions into `grad_h` — which the caller then feeds to
 `Dreamer4Dynamics.set_grad_h` before `dyn.vjp` (alongside the continued
 shortcut-forcing video-prediction grad). CPU; the head logits are small so the
@@ -25,7 +25,9 @@ from std.memory import alloc
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
-from layout import TileTensor, row_major
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward, call_vjp
 
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_fwd, cat_bwd
 from mojo_rl.deep_agents.dreamerv3.twohot import twohot_loss, twohot_loss_backward
@@ -51,13 +53,20 @@ def bc_mtp_loss[
     NACT: Int,
     NBINS: Int,
     D_IN: Int,
+    actions_o: Origin[mut=True],
+    rewards_o: Origin[mut=True],
+    bins_o: Origin[mut=True],
 ](
     mut ph: PH,
     mut rh: RH,
+    # `h`/`plog`/`rlog`/`gpl`/`grl`/`grad_h`/`grad_h_tmp` are caller-owned raw
+    # scratch/IO buffers — the sanctioned raw-pointer boundary. They are bridged
+    # into boundary `Tensor`s around the storage head forward/vjp, and the
+    # cat/twohot host helpers read/write them directly, so they stay MutAnyOrigin.
     h: UnsafePointer[Scalar[DT], MutAnyOrigin],          # [B*T, D_IN] = h_t
-    actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [B*T] class ids (fp)
-    rewards: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [B*T]
-    bins: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [NBINS]
+    actions: UnsafePointer[Scalar[DT], actions_o],    # [B*T] class ids (fp)
+    rewards: UnsafePointer[Scalar[DT], rewards_o],    # [B*T]
+    bins: UnsafePointer[Scalar[DT], bins_o],       # [NBINS]
     # scratch (caller-owned)
     plog: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B*T, NMTP*NACT]
     rlog: UnsafePointer[Scalar[DT], MutAnyOrigin],       # [B*T, NMTP*NBINS]
@@ -78,11 +87,21 @@ def bc_mtp_loss[
     var inv = Scalar[DT](1.0) / Scalar[DT](n_valid)
 
     # ── head forwards on h_t ────────────────────────────────────────────
-    var ht = TileTensor(h, row_major[BT, DIN]())
-    var plt = TileTensor(plog, row_major[BT, PLOG]())
-    var rlt = TileTensor(rlog, row_major[BT, RLOG]())
-    ph.forward["cpu", BT](ht, output=plt)
-    rh.forward["cpu", BT](ht, output=rlt)
+    # Bridge the caller's raw `h` pointer into a boundary Tensor; run each head
+    # through the storage Module surface; copy the head logits back to the raw
+    # `plog`/`rlog` pointers so the cat/twohot host helpers (raw-pointer) work
+    # unchanged.
+    var h_t = Tensor.alloc(BT * DIN)
+    for i in range(BT * DIN):
+        h_t.data[i] = h[i]
+    var plog_t = Tensor.alloc(BT * PLOG)
+    var rlog_t = Tensor.alloc(BT * RLOG)
+    call_forward["cpu", BT](ph, TensorRefs[PH.ARITY](h_t), plog_t, None)
+    call_forward["cpu", BT](rh, TensorRefs[RH.ARITY](h_t), rlog_t, None)
+    for i in range(BT * PLOG):
+        plog[i] = plog_t.data[i]
+    for i in range(BT * RLOG):
+        rlog[i] = rlog_t.data[i]
 
     # ── accumulate NLL + logit grads ────────────────────────────────────
     for i in range(BT * PLOG):
@@ -123,12 +142,29 @@ def bc_mtp_loss[
     pp.free()
 
     # ── backprop through both heads, sum grad wrt h_t ───────────────────
-    var gph = TileTensor(gpl, row_major[BT, PLOG]())
-    var grh = TileTensor(grl, row_major[BT, RLOG]())
-    var ghv = TileTensor(grad_h, row_major[BT, DIN]())
-    var ght = TileTensor(grad_h_tmp, row_major[BT, DIN]())
-    ph.vjp["cpu", BT, mode="all"](gph, ghv)            # grad_h from policy
-    rh.vjp["cpu", BT, mode="all"](grh, ght)            # grad_h from reward
+    # The NLL loop filled the raw `gpl`/`grl` logit-grads; bridge those into
+    # boundary grad-output Tensors and run each head's vjp on the SAME `h_t`
+    # used for the forward (heads recompute their forward from it). Copy the
+    # resulting grad-wrt-h back to the raw `grad_h`/`grad_h_tmp` pointers.
+    var gpl_t = Tensor.alloc(BT * PLOG)
+    for i in range(BT * PLOG):
+        gpl_t.data[i] = gpl[i]
+    var grl_t = Tensor.alloc(BT * RLOG)
+    for i in range(BT * RLOG):
+        grl_t.data[i] = grl[i]
+    var grad_h_t = Tensor.alloc(BT * DIN)
+    var grad_h_tmp_t = Tensor.alloc(BT * DIN)
+    call_vjp["cpu", BT](
+        ph, TensorRefs[PH.ARITY](h_t), gpl_t, TensorRefs[PH.ARITY](grad_h_t), None
+    )  # grad_h from policy
+    call_vjp["cpu", BT](
+        rh, TensorRefs[RH.ARITY](h_t), grl_t, TensorRefs[RH.ARITY](grad_h_tmp_t),
+        None,
+    )  # grad_h from reward
+    for i in range(BT * DIN):
+        grad_h[i] = grad_h_t.data[i]
+    for i in range(BT * DIN):
+        grad_h_tmp[i] = grad_h_tmp_t.data[i]
     for i in range(BT * DIN):
         grad_h[i] = grad_h[i] + grad_h_tmp[i]
     return loss

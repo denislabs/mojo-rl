@@ -1,7 +1,8 @@
-"""Vision Transformer (ViT) composition for nn.
+"""Vision Transformer (ViT) composition for nn.storage.
 
-Compositional aliases over the shared transformer pieces in
-`models.transformer`. Provided:
+Storage-surface port of `nn/models/vit.mojo`. Compositional aliases over the
+shared transformer pieces in `models.transformer` + storage leaves. No structs,
+no kernels (imports are already the storage primitives/combinators).
   - `PatchEmbed[in_channels, img_h, img_w, patch_size, embed_dim, n_patches]`
   - `ViT[...]`  Vision Transformer encoder + classification head (non-causal)
 """

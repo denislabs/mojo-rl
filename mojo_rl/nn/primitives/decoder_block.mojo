@@ -1,4 +1,6 @@
-"""DecoderBlock[N, HID, FF] — one lightweight transformer-decoder layer.
+"""DecoderBlock[N, HID, FF] — one lightweight transformer-decoder layer
+(storage surface). Transformed from legacy `nn.primitives.decoder_block`
+(surface-only change; the math/topology carried VERBATIM).
 
 ARITY=2 Module: forward(x, c) over flattened token sequences x, c ∈
 (B, N·HID), interpreted as (B, N, HID). `x` is the query-token stream, `c`
@@ -15,44 +17,42 @@ attention key+value; with one KV token the softmax is over one element ⇒
 weight ≡ 1 ⇒ the attention output is `OutProj(ValueProj(global))`,
 **independent of the query**, broadcast to every query token. Composing
 value+out projections gives the single `Tokenwise[Linear[HID, HID]]` on the
-replicated global `c` above — so no attention kernel is needed (the query
-projection and its LayerNorm would be dead weights with zero gradient).
-The query tokens therefore interact only with the global, exactly as the
-paper specifies ("cross-attention layers with residual MLP blocks").
+replicated global `c` above — so no attention kernel is needed.
 
-Implementation: an internal `ComputeGraph` (the validated Module-wraps-graph
-pattern), identical in spirit to `ConditionalTransformerBlock`. Because
-IN0 == IN1 == OUT == N·HID, this block drops straight into
-`RepeatConditional[DEPTH, DecoderBlock[...]]` (the global `c` is broadcast to
-every layer; grad_c accumulates). CPU + GPU.
+Implementation: an internal `ComputeGraph[2, *NODES]` (the storage runtime-
+edges DAG). NUM_IN=2 external slots (x=0, c=1); three nodes:
+
+    node0 "inj" = Tokenwise[N, Linear[HID, HID]]          edges [1]   → slot 2
+    node1 "xa"  = Add[N·HID]                              edges [0,2] → slot 3
+    node2 "out" = Residual[Sequential[
+                    Tokenwise[N, LayerNorm[HID]],
+                    TransformerFFN[N, HID, FF]]]           edges [3]   → slot 4
+
+Because IN0 == IN1 == OUT == N·HID, this block drops straight into a
+`Repeat`/`RepeatConditional` of layers. The block OWNS the `ComputeGraph`
+(which owns the three node Modules), so for_each_param/zero_grad/for_each_state
+/polyak_from recurse into the graph. CPU + GPU.
 """
 
-from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
-from ..combinators import (
-    ComputeGraph, InputSlot, Node, Tokenwise, Residual, Sequential,
-)
+from mojo_rl.nn.constants import DT
+from ..core.initializer import Initializer
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
+from ..combinators.compute_graph import ComputeGraph
+from ..combinators.graph_decl import InputSlot, Node
+from ..combinators.tokenwise import Tokenwise
+from ..combinators.residual import Residual
+from ..combinators.sequential import Sequential
 from ..models.transformer import TransformerFFN
 from .linear import Linear
 from .layer_norm import LayerNorm
 from .add import Add
-
-
-def _db_copy_kernel[N: Int](
-    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-):
-    var i = Int(global_idx.x)
-    if i < N:
-        dst[i] = rebind[Scalar[DT]](src[i])
 
 
 struct DecoderBlock[N: Int, HID: Int, FF: Int](Module):
@@ -61,16 +61,11 @@ struct DecoderBlock[N: Int, HID: Int, FF: Int](Module):
     comptime IN_DIMS = InlineArray[Int, 2](fill=Self.SEQ_DIM)
     comptime OUT_DIM = Self.SEQ_DIM
 
-    @staticmethod
-    def display_label() -> String:
-        return String("DecoderBlock")
-
     comptime Graph = ComputeGraph[
-        Self.SEQ_DIM,
-        InputSlot["x", Self.SEQ_DIM],
-        InputSlot["c", Self.SEQ_DIM],
+        InputSlot["x", Self.SEQ_DIM],        # residual stream
+        InputSlot["c", Self.SEQ_DIM],        # injection source
         Node["inj", Tokenwise[Self.N, Linear[Self.HID, Self.HID]], "c"],
-        Node["xa", Add[Self.SEQ_DIM, 2], "x", "inj"],
+        Node["xa", Add[Self.SEQ_DIM], "x", "inj"],
         Node[
             "out",
             Residual[
@@ -84,11 +79,9 @@ struct DecoderBlock[N: Int, HID: Int, FF: Int](Module):
     ]
 
     var graph: Self.Graph
-    var ts: TargetStorage
 
     def __init__(out self):
         self.graph = Self.Graph()
-        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
@@ -98,82 +91,77 @@ struct DecoderBlock[N: Int, HID: Int, FF: Int](Module):
             "DecoderBlock: target must be 'cpu' or 'gpu'"
         )
         var b = Self()
-        b.graph = Self.Graph.make[target=target, INIT=INIT](ctx=ctx)
-        comptime if target == "cpu":
-            b.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("DecoderBlock.make[gpu]: ctx required")
-            b.ts = TargetStorage.make_gpu(ctx.value())
+        b.graph = Self.Graph.make[target, INIT](ctx)
         return b^
 
     def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["DecoderBlock", target](self.ts.target_tag)
-        var x = inputs.tile[0, BATCH, Self.SEQ_DIM]()
-        var c = inputs.tile[1, BATCH, Self.SEQ_DIM]()
-        var out = typed_view_mut[BATCH, Self.SEQ_DIM](output)
-        self.graph.set_input["x", BATCH](x)
-        self.graph.set_input["c", BATCH](c)
-        self.graph.forward[target, BATCH, POLICY=POLICY](out)
+        ref x = inputs[0]
+        ref c = inputs[1]
+        # Seed the named input slots (the graph copies into its own pool).
+        self.graph.set_input["x", B](x, ctx)
+        self.graph.set_input["c", B](c, ctx)
+        self.graph.forward[B, target, POLICY=POLICY](out, ctx)
 
     def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["DecoderBlock", target](self.ts.target_tag)
-        var go = typed_view[BATCH, Self.SEQ_DIM](grad_output)
-        var gx = grad_inputs.tile[0, BATCH, Self.SEQ_DIM]()
-        var gc = grad_inputs.tile[1, BATCH, Self.SEQ_DIM]()
-        self.graph.vjp[target, BATCH, POLICY=POLICY, mode=mode](go)
-        var gx_src = self.graph.grad_input_ptr["x"]()
-        var gc_src = self.graph.grad_input_ptr["c"]()
-        comptime total = BATCH * Self.SEQ_DIM
-
+        ref gx = grad_inputs[0]
+        ref gc = grad_inputs[1]
+        comptime DN = B * Self.SEQ_DIM
+        self.graph.vjp[B, target, POLICY=POLICY](grad_output, ctx)
+        # Copy the graph's named-input grads back into grad_inputs.
         comptime if target == "cpu":
-            var gx_p = gx.ptr
-            var gc_p = gc.ptr
-            for i in range(total):
-                gx_p[i] = gx_src[i]
-                gc_p[i] = gc_src[i]
+            gx.ensure(DN)
+            gc.ensure(DN)
+            for q in range(DN):
+                gx.data[q] = self.graph.grad_input["x"]().data[q]
+            for q in range(DN):
+                gc.data[q] = self.graph.grad_input["c"]().data[q]
         else:
-            var ctx = self.ts.ctx.value()
-            comptime lay = Layout.row_major(total)
-            comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kern = _db_copy_kernel[total]
-            ctx.enqueue_function[kern](
-                LayoutTensor[DT, lay, MutAnyOrigin](gx_src),
-                LayoutTensor[DT, lay, MutAnyOrigin](gx.ptr),
-                grid_dim=n_blocks, block_dim=TPB,
-            )
-            ctx.enqueue_function[kern](
-                LayoutTensor[DT, lay, MutAnyOrigin](gc_src),
-                LayoutTensor[DT, lay, MutAnyOrigin](gc.ptr),
-                grid_dim=n_blocks, block_dim=TPB,
-            )
+            var cc = ctx.value()
+            gx.ensure_gpu(cc, DN)
+            gc.ensure_gpu(cc, DN)
+            cc.enqueue_copy(gx.dev.value(), self.graph.grad_input["x"]().dev.value())
+            cc.enqueue_copy(gc.dev.value(), self.graph.grad_input["c"]().dev.value())
 
     def for_each_param[
-        target: StaticString, V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["DecoderBlock", target](self.ts.target_tag)
-        self.graph.for_each_param[target, V](prefix, visitor)
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.graph.for_each_param[target](
+            visitor, ctx, join_name(prefix, String("graph"))
+        )
 
     def for_each_state[
-        target: StaticString, V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        self.graph.for_each_state[target, V](prefix, visitor)
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.graph.for_each_state[target](
+            visitor, ctx, join_name(prefix, String("graph"))
+        )
+
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.graph.zero_grad[target](ctx)
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT], ctx: Optional[DeviceContext]
+    ) raises:
+        self.graph.polyak_from[target](src.graph, tau, ctx)

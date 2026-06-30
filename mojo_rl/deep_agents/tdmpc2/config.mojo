@@ -45,7 +45,7 @@ from .agent import TDMPC2Agent
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait TDMPC2ConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait TDMPC2ConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a TD-MPC2-family algorithm. Conformers
     are zero-field comptime tags — never instantiated at runtime; only
     their comptime members are read."""

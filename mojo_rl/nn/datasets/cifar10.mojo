@@ -16,6 +16,8 @@ we copy pixels as-is after normalizing to Float32 / 255.
 
 from std.python import Python, PythonObject
 
+from mojo_rl.nn.core.ptr import mptr
+
 
 comptime _CIFAR_URL = (
     "https://www.cs.toronto.edu/~kriz/cifar-10-binary.tar.gz"
@@ -177,8 +179,8 @@ struct CIFAR10(Movable):
             var path = extracted + "/" + _train_filename(i)
             _load_batch(
                 path,
-                train_images.unsafe_ptr(),
-                train_labels.unsafe_ptr(),
+                mptr(train_images.unsafe_ptr()),
+                mptr(train_labels.unsafe_ptr()),
                 i * _SAMPLES_PER_FILE,
             )
 
@@ -186,8 +188,8 @@ struct CIFAR10(Movable):
         var test_path = extracted + "/" + _TEST_FILE
         _load_batch(
             test_path,
-            test_images.unsafe_ptr(),
-            test_labels.unsafe_ptr(),
+            mptr(test_images.unsafe_ptr()),
+            mptr(test_labels.unsafe_ptr()),
             0,
         )
 

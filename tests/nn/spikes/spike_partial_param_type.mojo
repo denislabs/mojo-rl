@@ -159,7 +159,7 @@ def smoke_c() raises:
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait BinaryOp(Defaultable & Movable & ImplicitlyDestructible):
+trait BinaryOp(Defaultable & Movable & ImplicitlyDeletable):
     def forward(
         mut self,
         in0: TileTensor[address_space=AddressSpace.GENERIC, ...],

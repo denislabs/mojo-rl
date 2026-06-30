@@ -21,18 +21,34 @@ The ``EnvStepGPU`` board adapter is env-agnostic and reused from the legacy
 module; MuZero's representation/dynamics adapters land in Phase B.
 """
 
+from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT
+from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import PredictionGPU, EnvStepGPU
 
 
+def _copy2d_kernel[B: Int, D: Int](
+    src: LayoutTensor[DT, Layout.row_major(B, D), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(B, D), MutAnyOrigin],
+):
+    """Element copy between two device LayoutTensors (the planner-owned buffer
+    and an owned scratch). Both are real allocations, so a 2-operand copy kernel
+    is safe — unlike two non-owning `view_gpu` operands. No raw pointer."""
+    var i = Int(global_idx.x)
+    if i < B * D:
+        dst[i // D, i % D] = rebind[Scalar[DT]](src[i // D, i % D])
+
+
 @fieldwise_init
-struct AZPredGPU[OBS: Int, ACT: Int, NET: Module](
-    Movable, ImplicitlyDestructible, PredictionGPU
+struct AZPredGPU[OBS: Int, ACT: Int, NET: Module, o: Origin[mut=True]](
+    ImplicitlyDeletable, Movable, PredictionGPU
 ):
     """AlphaZero prediction adapter: ``obs → policy_logits ⊕ raw_value``.
 
@@ -45,19 +61,31 @@ struct AZPredGPU[OBS: Int, ACT: Int, NET: Module](
     Construct via ``AZPredGPU[...].make(net)`` while the net is live; the caller
     must keep the net alive for the adapter's lifetime (same contract as the
     TD-MPC2 callback — see ``feedback_mojo_set_external_lifetime``).
+
+    Storage bridge: the planner owns the ``hidden`` / ``pred_out`` device
+    buffers. ``copy_from_device`` stages ``hidden`` into an owned input scratch,
+    the net runs entirely on owned storage, then ``copy_to_device`` writes the
+    owned output scratch back to the planner's ``pred_out``. (Two non-owning
+    ``view_gpu`` operands of one kernel miscompile on Metal — so the boundary
+    copies, see ``Tensor.view_gpu``'s warning. The scratch Tensors are reused
+    across calls, lazily grown.)
     """
 
     comptime LATENT_DIM: Int = Self.OBS
     comptime ACTION_DIM: Int = Self.ACT
     comptime PRED_OUT_DIM: Int = Self.ACT + 1
 
-    var net: UnsafePointer[Self.NET, MutAnyOrigin]
+    var net: UnsafePointer[Self.NET, Self.o]
+    var sc_in: Tensor   # owned input scratch (reused across predict calls)
+    var sc_out: Tensor  # owned output scratch
 
     @staticmethod
-    def make(mut net: Self.NET) -> Self:
-        return Self(net=UnsafePointer(to=net))
+    def make(ref[Self.o] net: Self.NET) -> Self:
+        return Self(net=UnsafePointer(to=net), sc_in=Tensor(), sc_out=Tensor())
 
-    def predict_gpu[B: Int](
+    def predict_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         hidden: LayoutTensor[
@@ -67,13 +95,25 @@ struct AZPredGPU[OBS: Int, ACT: Int, NET: Module](
             DT, Layout.row_major(B, Self.PRED_OUT_DIM), MutAnyOrigin
         ],
     ) raises:
-        # Rebuild TileTensors against the net's own comptime dims so the
-        # forward template binding sees one consistent expression (LATENT_DIM
-        # == NET.IN_DIMS[0], PRED_OUT_DIM == NET.OUT_DIM by construction). Same
-        # trait-dim-binding trick the legacy adapter documents.
-        var in_t = TileTensor(hidden.ptr, row_major[B, Self.NET.IN_DIMS[0]]())
-        var out_t = TileTensor(pred_out.ptr, row_major[B, Self.NET.OUT_DIM]())
-        self.net[].forward["gpu", B](in_t, output=out_t)
+        comptime LD = Self.LATENT_DIM
+        comptime PD = Self.PRED_OUT_DIM
+        self.sc_in.ensure_gpu(ctx, B * LD)
+        self.sc_out.ensure_gpu(ctx, B * PD)
+        # Stage the planner's hidden buffer into the owned input scratch
+        # (LayoutTensor-space copy — no raw pointer).
+        var sin = self.sc_in.lt["gpu", Layout.row_major(B, LD)]()
+        ctx.enqueue_function[_copy2d_kernel[B, LD]](
+            hidden, sin, grid_dim=(B * LD + TPB - 1) // TPB, block_dim=TPB
+        )
+        # The net runs entirely on owned storage.
+        call_forward["gpu", B](
+            self.net[], TensorRefs[Self.NET.ARITY](self.sc_in), self.sc_out, Optional(ctx)
+        )
+        # Write the owned output scratch back to the planner's pred_out buffer.
+        var sout = self.sc_out.lt["gpu", Layout.row_major(B, PD)]()
+        ctx.enqueue_function[_copy2d_kernel[B, PD]](
+            sout, pred_out, grid_dim=(B * PD + TPB - 1) // TPB, block_dim=TPB
+        )
 
 
 @fieldwise_init
@@ -82,7 +122,7 @@ struct AZEnvGPU[
     STATE: Int,
     OBSD: Int,
     A: Int,
-](Movable, ImplicitlyDestructible, EnvStepGPU):
+](EnvStepGPU, ImplicitlyDeletable, Movable):
     """AlphaZero env-step adapter — true game rules as MCTS leaf expansion.
 
     Stateless wrapper over the env's static ``step_kernel_gpu``. The planner
@@ -97,7 +137,9 @@ struct AZEnvGPU[
     comptime OBS_DIM: Int = Self.OBSD
     comptime ACTION_DIM: Int = Self.A
 
-    def step_gpu[B: Int](
+    def step_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         mut states: DeviceBuffer[DT],

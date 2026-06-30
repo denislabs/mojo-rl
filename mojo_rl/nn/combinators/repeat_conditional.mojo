@@ -1,307 +1,276 @@
-"""RepeatConditional[N, Inner] — chain N copies of a 2-input conditional block.
+"""RepeatConditional[N, Inner] — chain N copies of a 2-input conditional block
+(storage surface).
 
 Stacks `Inner` (ARITY=2, `forward(x, c)`, dim-preserving) N times: the main
-stream `x` chains block→block, while the conditioning `c` is **broadcast** to
+stream `x` chains block→block while the conditioning `c` is **broadcast** to
 every block (same input). On backward, grad_x chains in reverse and grad_c is
-**accumulated** across all N blocks (c fans out to every layer, so its
-gradient is the sum of each layer's contribution).
+**accumulated** across all N blocks (c fans out to every layer, so its gradient
+is the sum of each layer's contribution):
 
     x_0 = x;  x_{i+1} = Inner_i(x_i, c);  out = x_N
-    grad_c = sum_i (∂Inner_i/∂c)·grad_{x_{i+1}}
+    grad_c = Σ_i (∂Inner_i/∂c)·grad_{x_{i+1}}
 
 The LeWM AR-predictor stack: `RepeatConditional[DEPTH,
-ConditionalTransformerBlock[...]]`. Each block has its own params
-(shared=False, like `Repeat`). Mirrors `Repeat`'s mid-slab reuse; adds a
-single grad_c scratch + accumulation.
+ConditionalTransformerBlock[...]]`. Each block owns its own params
+(shared=False, like `Repeat`).
+
+Storage wiring (§B0): a block's two inputs must share ONE origin, so they are
+read from a single owning pool — `pool` holds the x-copy (slot 0), the mid
+activations (slots 1..N-1) and the broadcast c-copy (slot N), all `MutAnyOrigin`
+via `TensorPack.__getitem__`. The backward grad pool `gpool` holds the per-block
+grad_x slots (0..N-1) + a reused grad_c temp (slot N); each block's grad_c temp
+is ACCUMULATED into the caller's grad_inputs[1] (elementwise, origin-free), and
+block 0's grad_x is copied out to grad_inputs[0]. Mirrors `Repeat`'s mid-slab
+reuse + `ComputeGraph`'s fan-out accumulation kernel.
 """
 
-from std.memory import alloc
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut, mptr
+from mojo_rl.nn.constants import DT, TPB
+from ..core.initializer import Initializer
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
 from ..core.tensor_pack import TensorPack
-from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
 
 
-def _rc_accum_kernel[NN: Int](
-    dst: LayoutTensor[DT, Layout.row_major(NN), MutAnyOrigin],
-    src: LayoutTensor[DT, Layout.row_major(NN), MutAnyOrigin],
+def _rc_accum_kernel[
+    ADT: DType, N: Int
+](
+    dst: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
 ):
+    """dst[i] += src[i] — grad_c fan-out accumulation on device (at the
+    activation dtype `ADT`)."""
     var i = Int(global_idx.x)
-    if i < NN:
-        dst[i] = rebind[Scalar[DT]](dst[i]) + rebind[Scalar[DT]](src[i])
-
-
-def _rc_zero_kernel[NN: Int](
-    dst: LayoutTensor[DT, Layout.row_major(NN), MutAnyOrigin],
-):
-    var i = Int(global_idx.x)
-    if i < NN:
-        dst[i] = Scalar[DT](0.0)
+    if i < N:
+        dst[i] = rebind[Scalar[ADT]](dst[i]) + rebind[Scalar[ADT]](src[i])
 
 
 struct RepeatConditional[N: Int, Inner: Module](Module):
-    comptime ARITY: Int = 2
+    comptime ARITY = 2
     comptime D = Self.Inner.OUT_DIM
     comptime IN_DIMS = InlineArray[Int, 2](fill=Self.D)
     comptime OUT_DIM = Self.Inner.OUT_DIM
-
-    @staticmethod
-    def display_label() -> String:
-        return String("RepeatConditional")
+    # Both stream `x` and conditioning `c` flow at the block's activation dtype;
+    # the pools (and the seeded x/c copies) are stored here.
+    comptime ACT_DT = Self.Inner.ACT_DT
 
     var children: List[Self.Inner]
-    var mid_cpu: List[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var mid_dev: List[DeviceBuffer[DT]]
-    var mid_caps: List[Int]
-    # grad_c scratch (one buffer reused across the reverse pass).
-    var gc_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var gc_dev: Optional[DeviceBuffer[DT]]
-    var gc_cap: Int
-    var ts: TargetStorage
+    # Forward pool: slot 0 = x copy, slots 1..N-1 = block(0..N-2) outputs,
+    # slot N = broadcast c copy. (§B0: each block reads two slots of ONE pool.)
+    var pool: TensorPack[Self.N + 1, Self.ACT_DT]
+    # Backward pool: slots 0..N-1 = per-block grad_x, slot N = grad_c temp.
+    var gpool: TensorPack[Self.N + 1, Self.ACT_DT]
 
     def __init__(out self):
         comptime assert Self.N >= 1, "RepeatConditional requires N >= 1"
-        comptime assert Self.Inner.ARITY == 2, (
-            "RepeatConditional: Inner must be ARITY=2 (forward(x, c))"
-        )
+        comptime assert (
+            Self.Inner.ARITY == 2
+        ), "RepeatConditional: Inner must be ARITY=2 (forward(x, c))"
         comptime assert (
             Self.Inner.IN_DIMS[0] == Self.Inner.OUT_DIM
             and Self.Inner.IN_DIMS[1] == Self.Inner.OUT_DIM
-        ), "RepeatConditional: Inner must be dim-preserving with IN0==IN1==OUT"
+        ), "RepeatConditional: Inner must be dim-preserving (IN0==IN1==OUT)"
         self.children = List[Self.Inner]()
-        self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
-        self.mid_dev = List[DeviceBuffer[DT]]()
-        self.mid_caps = List[Int]()
-        self.gc_cpu = alloc[Scalar[DT]](1)
-        self.gc_dev = None
-        self.gc_cap = 0
-        self.ts = TargetStorage.make_uninit()
+        self.pool = TensorPack[Self.N + 1, Self.ACT_DT]()
+        self.gpool = TensorPack[Self.N + 1, Self.ACT_DT]()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "RepeatConditional: target must be 'cpu' or 'gpu'"
-        )
         var r = Self()
-        comptime for _i in range(Self.N):
-            r.children.append(Self.Inner.make[target, INIT](ctx=ctx))
-        comptime if target == "cpu":
-            comptime if Self.N >= 2:
-                for _ in range(Self.N - 1):
-                    r.mid_cpu.append(alloc[Scalar[DT]](1))
-                    r.mid_caps.append(0)
-            r.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["RepeatConditional.make[target='gpu']"](ctx)
-            comptime if Self.N >= 2:
-                for _ in range(Self.N - 1):
-                    r.mid_dev.append(ctx_v.enqueue_create_buffer[DT](1))
-                    r.mid_caps.append(0)
-            r.gc_dev = ctx_v.enqueue_create_buffer[DT](1)
-            r.ts = TargetStorage.make_gpu(ctx_v)
+        for _ in range(Self.N):
+            r.children.append(Self.Inner.make[target, INIT](ctx))
         return r^
 
-    def __del__(deinit self):
-        for p in self.mid_cpu:
-            p.free()
-        self.gc_cpu.free()
+    @staticmethod
+    def _copy_into[
+        target: StaticString
+    ](
+        mut dst: TensorImpl[Self.ACT_DT], mut src: TensorImpl[Self.ACT_DT],
+        n: Int,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """dst[0:n] = src[0:n] (target-aware copy into a pool slot)."""
+        comptime if target == "cpu":
+            dst.ensure(n)
+            for q in range(n):
+                dst.data[q] = src.data[q]
+        else:
+            var c = ctx.value()
+            dst.ensure_gpu(c, n)
+            c.enqueue_copy(dst.dev.value(), src.dev.value())
 
-    def _ensure_mid_cpu[i: Int](mut self, needed: Int):
-        if self.mid_caps[i] < needed:
-            self.mid_cpu[i].free()
-            self.mid_cpu[i] = alloc[Scalar[DT]](needed)
-            self.mid_caps[i] = needed
-
-    def _ensure_mid_gpu[i: Int](mut self, needed: Int) raises:
-        if self.mid_caps[i] < needed:
-            self.mid_dev[i] = self.ts.ctx.value().enqueue_create_buffer[DT](
-                needed
+    @staticmethod
+    def _accum_into[
+        target: StaticString, NN: Int
+    ](
+        mut dst: TensorImpl[Self.ACT_DT], mut src: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """dst[0:NN] += src[0:NN] (target-aware grad_c fan-out)."""
+        comptime if target == "cpu":
+            for q in range(NN):
+                dst.data[q] += src.data[q]
+        else:
+            ctx.value().enqueue_function[_rc_accum_kernel[Self.ACT_DT, NN]](
+                dst.lt["gpu", Layout.row_major(NN)](),
+                src.lt["gpu", Layout.row_major(NN)](),
+                grid_dim=(NN + TPB - 1) // TPB,
+                block_dim=TPB,
             )
-            self.mid_caps[i] = needed
 
-    def _ensure_gc(mut self, needed: Int) raises:
-        if self.gc_cap < needed:
-            if self.ts.ctx:
-                self.gc_dev = self.ts.ctx.value().enqueue_create_buffer[DT](
-                    needed
+    @staticmethod
+    def _zero[
+        target: StaticString
+    ](
+        mut dst: TensorImpl[Self.ACT_DT], n: Int,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "cpu":
+            dst.ensure(n)
+            for q in range(n):
+                dst.data[q] = Scalar[Self.ACT_DT](0)
+        else:
+            dst.ensure_gpu(ctx.value(), n)
+            dst.dev.value().enqueue_fill(Scalar[Self.ACT_DT](0))
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
+    ](
+        mut self,
+        inputs: TensorRefs[2, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        comptime n = B * Self.D
+        # Child-edge dtypes (== Self.ACT_DT / ARITY, asserted, but distinct to
+        # the checker). The 2-ary block input pack is built inline over two
+        # pool slots (both `MutAnyOrigin` via `TensorPack.__getitem__`, §B0) and
+        # `rebind`-ed to the child's `(cn, ci)`; the mut output buffer goes
+        # through `rebind[TensorImpl[ci]]`.
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
+        # Seed pool: slot 0 = x copy, slot N = broadcast c copy.
+        Self._copy_into[target](self.pool[0], inputs[0], n, ctx)
+        Self._copy_into[target](self.pool[Self.N], inputs[1], n, ctx)
+        comptime for i in range(Self.N):
+            comptime if i == Self.N - 1:
+                self.children[i].forward[target, B, POLICY=POLICY](
+                    rebind[TensorRefs[cn, MutAnyOrigin, ci]](
+                        TensorRefs[Self.Inner.ARITY, MutAnyOrigin, Self.ACT_DT](
+                            self.pool[i], self.pool[Self.N]
+                        )
+                    ),
+                    rebind[TensorImpl[ci]](out),
+                    ctx,
                 )
             else:
-                self.gc_cpu.free()
-                self.gc_cpu = alloc[Scalar[DT]](needed)
-            self.gc_cap = needed
+                self.children[i].forward[target, B, POLICY=POLICY](
+                    rebind[TensorRefs[cn, MutAnyOrigin, ci]](
+                        TensorRefs[Self.Inner.ARITY, MutAnyOrigin, Self.ACT_DT](
+                            self.pool[i], self.pool[Self.N]
+                        )
+                    ),
+                    rebind[TensorImpl[ci]](self.pool[i + 1]),
+                    ctx,
+                )
 
-    # ----- Forward ---------------------------------------------------------
-    def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-    ) raises:
-        assert_tag_for["RepeatConditional", target](self.ts.target_tag)
-        comptime D = Self.D
-        var x = inputs.tile[0, BATCH, D]()
-        var c = inputs.tile[1, BATCH, D]()
-        var out = typed_view_mut[BATCH, D](output)
-
-        comptime if Self.N == 1:
-            self.children[0].forward[target, BATCH, POLICY=POLICY](
-            TensorPack[Self.Inner.ARITY].of(x, c), output=out,
-        )
-        else:
-            var midp = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
-            comptime for k in range(Self.N - 1):
-                comptime if target == "cpu":
-                    self._ensure_mid_cpu[k](BATCH * D)
-                    midp.append(self.mid_cpu[k])
-                else:
-                    self._ensure_mid_gpu[k](BATCH * D)
-                    midp.append(self.mid_dev[k].unsafe_ptr())
-
-            comptime for i in range(Self.N):
-                comptime if i == 0:
-                    var om = TileTensor(midp[0], row_major[BATCH, D]())
-                    self.children[0].forward[target, BATCH, POLICY=POLICY](
-            TensorPack[Self.Inner.ARITY].of(x, c), output=om,
-        )
-                elif i == Self.N - 1:
-                    var im = TileTensor(midp[Self.N - 2], row_major[BATCH, D]())
-                    self.children[i].forward[target, BATCH, POLICY=POLICY](
-            TensorPack[Self.Inner.ARITY].of(im, c), output=out,
-        )
-                else:
-                    var im = TileTensor(midp[i - 1], row_major[BATCH, D]())
-                    var om = TileTensor(midp[i], row_major[BATCH, D]())
-                    self.children[i].forward[target, BATCH, POLICY=POLICY](
-            TensorPack[Self.Inner.ARITY].of(im, c), output=om,
-        )
-
-    # ----- Backward --------------------------------------------------------
     def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[2, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[2, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["RepeatConditional", target](self.ts.target_tag)
-        comptime D = Self.D
-        var go = typed_view[BATCH, D](grad_output)
-        var gx = grad_inputs.tile[0, BATCH, D]()
-        var gc = grad_inputs.tile[1, BATCH, D]()
-
-        comptime if Self.N == 1:
-            self.children[0].vjp[target, BATCH, POLICY=POLICY, mode=mode](go, TensorPack[Self.Inner.ARITY].of(gx, gc))
-            return
-
-        # grad_c accumulator: zero it, then add each block's grad_c.
-        var gc_p = mptr(gc.ptr)
-        comptime total = BATCH * D
-        self._ensure_gc(total)
-        var gc_tmp = (
-            self.gc_dev.value().unsafe_ptr() if self.ts.ctx else self.gc_cpu
-        )
-        # Zero the grad_c accumulator (target-aware).
-        comptime if target == "cpu":
-            for i in range(total):
-                gc_p[i] = Scalar[DT](0.0)
-        else:
-            comptime zlay = Layout.row_major(total)
-            comptime zblocks = (total + TPB - 1) // TPB
-            self.ts.ctx.value().enqueue_function[_rc_zero_kernel[total]](
-                LayoutTensor[DT, zlay, MutAnyOrigin](gc_p),
-                grid_dim=zblocks, block_dim=TPB,
-            )
-
-        var midp = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
-        comptime for k in range(Self.N - 1):
-            comptime if target == "cpu":
-                self._ensure_mid_cpu[k](BATCH * D)
-                midp.append(self.mid_cpu[k])
-            else:
-                self._ensure_mid_gpu[k](BATCH * D)
-                midp.append(self.mid_dev[k].unsafe_ptr())
-
-        comptime for ri in range(Self.N):
-            comptime i = Self.N - 1 - ri
-            var gc_tmp_t = TileTensor(gc_tmp, row_major[BATCH, D]())
+        comptime n = B * Self.D
+        # Child-edge dtypes (see forward): the 2-ary forward-input pack (pool)
+        # and grad_input scatter pack (gpool) are built inline + `rebind`-ed to
+        # `(cn, ci)`; mut grad buffers via `rebind[TensorImpl[ci]]`.
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
+        # grad_c accumulator (caller slot) starts at zero; each block adds its
+        # grad_c temp (gpool[N]) into it.
+        Self._zero[target](grad_inputs[1], n, ctx)
+        # Reverse-topo: block i's output-grad is grad_output (last) or block
+        # i+1's already-computed grad_x (gpool[i+1]). Its grad_inputs scatter
+        # into (gpool[i], gpool[N]=grad_c temp) — both from gpool (§B0).
+        comptime for j in range(Self.N):
+            comptime i = Self.N - 1 - j
             comptime if i == Self.N - 1:
-                var gim = TileTensor(midp[Self.N - 2], row_major[BATCH, D]())
-                self.children[i].vjp[
-                    target, BATCH, POLICY=POLICY, mode=mode
-                ](go, TensorPack[Self.Inner.ARITY].of(gim, gc_tmp_t))
-            elif i == 0:
-                var gom = TileTensor(midp[0], row_major[BATCH, D]())
-                self.children[0].vjp[
-                    target, BATCH, POLICY=POLICY, mode=mode
-                ](gom, TensorPack[Self.Inner.ARITY].of(gx, gc_tmp_t))
+                self.children[i].vjp[target, B, POLICY=POLICY](
+                    rebind[TensorRefs[cn, MutAnyOrigin, ci]](
+                        TensorRefs[Self.Inner.ARITY, MutAnyOrigin, Self.ACT_DT](
+                            self.pool[i], self.pool[Self.N]
+                        )
+                    ),
+                    rebind[TensorImpl[ci]](grad_output),
+                    rebind[TensorRefs[cn, MutAnyOrigin, ci]](
+                        TensorRefs[Self.Inner.ARITY, MutAnyOrigin, Self.ACT_DT](
+                            self.gpool[i], self.gpool[Self.N]
+                        )
+                    ),
+                    ctx,
+                )
             else:
-                var gom = TileTensor(midp[i], row_major[BATCH, D]())
-                var gim = TileTensor(midp[i - 1], row_major[BATCH, D]())
-                self.children[i].vjp[
-                    target, BATCH, POLICY=POLICY, mode=mode
-                ](gom, TensorPack[Self.Inner.ARITY].of(gim, gc_tmp_t))
-            # grad_c += gc_tmp
-            self._accum[target, total](gc_p, gc_tmp)
-
-    def _accum[target: StaticString, NN: Int](
-        mut self,
-        dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        src: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    ) raises:
-        comptime if target == "cpu":
-            for i in range(NN):
-                dst[i] += src[i]
-        else:
-            comptime lay = Layout.row_major(NN)
-            comptime n_blocks = (NN + TPB - 1) // TPB
-            comptime kern = _rc_accum_kernel[NN]
-            self.ts.ctx.value().enqueue_function[kern](
-                LayoutTensor[DT, lay, MutAnyOrigin](dst),
-                LayoutTensor[DT, lay, MutAnyOrigin](src),
-                grid_dim=n_blocks, block_dim=TPB,
+                self.children[i].vjp[target, B, POLICY=POLICY](
+                    rebind[TensorRefs[cn, MutAnyOrigin, ci]](
+                        TensorRefs[Self.Inner.ARITY, MutAnyOrigin, Self.ACT_DT](
+                            self.pool[i], self.pool[Self.N]
+                        )
+                    ),
+                    rebind[TensorImpl[ci]](self.gpool[i + 1]),
+                    rebind[TensorRefs[cn, MutAnyOrigin, ci]](
+                        TensorRefs[Self.Inner.ARITY, MutAnyOrigin, Self.ACT_DT](
+                            self.gpool[i], self.gpool[Self.N]
+                        )
+                    ),
+                    ctx,
+                )
+            Self._accum_into[target, B * Self.D](
+                grad_inputs[1], self.gpool[Self.N], ctx
             )
+        # Block 0's grad_x (gpool[0]) is the gradient w.r.t. the x input.
+        Self._copy_into[target](grad_inputs[0], self.gpool[0], n, ctx)
 
-    # ----- Walkers ---------------------------------------------------------
     def for_each_param[
-        target: StaticString, V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["RepeatConditional", target](self.ts.target_tag)
-        var sep = "." if prefix.byte_length() > 0 else ""
-        comptime for i in range(Self.N):
-            self.children[i].for_each_param[target, V](
-                prefix + sep + String(i), visitor
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        for i in range(Self.N):
+            self.children[i].for_each_param[target](
+                visitor, ctx, join_name(prefix, String(i))
             )
 
     def for_each_state[
-        target: StaticString, V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["RepeatConditional", target](self.ts.target_tag)
-        var sep = "." if prefix.byte_length() > 0 else ""
-        comptime for i in range(Self.N):
-            self.children[i].for_each_state[target, V](
-                prefix + sep + String(i), visitor
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        for i in range(Self.N):
+            self.children[i].for_each_state[target](
+                visitor, ctx, join_name(prefix, String(i))
             )
 
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["RepeatConditional", target](self.ts.target_tag)
-        comptime for i in range(Self.N):
-            self.children[i].zero_grad[target]()
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        for i in range(Self.N):
+            self.children[i].zero_grad[target](ctx)
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT], ctx: Optional[DeviceContext]
+    ) raises:
+        for i in range(Self.N):
+            self.children[i].polyak_from[target](src.children[i], tau, ctx)

@@ -1,12 +1,13 @@
 """nn native-Mojo MLP inference baseline — the "why incorporate MAX?" comparison.
 
-Runs the SAME MLP shapes as `benchmark_interop.mojo` through nn's native GPU forward
-pass, so MAX's "MAX device compute" line can be compared directly against nn's on-device
-compute. Same device, same dims, same steady-state (input already on device) regime.
+Runs the SAME MLP shapes as `benchmark_interop.mojo` through the storage nn GPU
+forward pass, so MAX's "MAX device compute" line can be compared directly against
+nn's on-device compute. Same device, same dims, same steady-state (input already
+on device) regime.
 
 The honest framing for a Mojo caller:
   * MAX path  : compute + H2D + D2H + Python glue (+ ~0 interop floor)   [see interop bench]
-  * nn path  : compute only — data is already in Mojo GPU buffers, no Python, no transfer.
+  * nn path   : compute only — data is already in Mojo GPU buffers, no Python, no transfer.
 So nn's *delivered* latency to a Mojo caller is just the number below; MAX must overcome
 its transfer + Python-glue tax (~hundreds of us, see benchmark_interop.mojo) to win.
 
@@ -17,13 +18,14 @@ This file is pure nn (no Python / no max.engine), so plain `mojo run` is fine:
 
 from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.combinators import Sequential
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 
 
 def f2(x: Float64) -> String:
@@ -43,34 +45,30 @@ def bench_nn[
     IN: Int, H1: Int, H2: Int, OUT: Int, BATCH: Int
 ](ctx: DeviceContext, name: String, iters: Int) raises:
     # MLP: Linear+ReLU(IN->H1) -> Linear+ReLU(H1->H2) -> Linear(H2->OUT).
-    var net = Sequential(
-        Linear[IN, H1].make["gpu", INIT=Kaiming](ctx),
-        ReLU[H1].make["gpu", INIT=Kaiming](ctx),
-        Linear[H1, H2].make["gpu", INIT=Kaiming](ctx),
-        ReLU[H2].make["gpu", INIT=Kaiming](ctx),
-        Linear[H2, OUT].make["gpu", INIT=Kaiming](ctx),
-        ctx=ctx,
-    )
+    comptime MLP = Sequential[
+        Linear[IN, H1],
+        ReLU[H1],
+        Linear[H1, H2],
+        ReLU[H2],
+        Linear[H2, OUT],
+    ]
+    var net = MLP.make["gpu", Kaiming](Optional(ctx))
 
-    var x_dev = ctx.enqueue_create_buffer[DT](BATCH * IN)
-    var y_dev = ctx.enqueue_create_buffer[DT](BATCH * OUT)
-    x_dev.enqueue_fill(Scalar[DT](0.1))
-    y_dev.enqueue_fill(Scalar[DT](0.0))
-    ctx.synchronize()
-
-    var x_p: UnsafePointer[Scalar[DT], MutAnyOrigin] = x_dev.unsafe_ptr()
-    var y_p: UnsafePointer[Scalar[DT], MutAnyOrigin] = y_dev.unsafe_ptr()
-    var x_t = TileTensor(x_p, row_major[BATCH, IN]())
-    var y_t = TileTensor(y_p, row_major[BATCH, OUT]())
+    # Resident device input/output (steady-state: data already on device).
+    var x = Tensor.alloc(BATCH * IN)
+    for i in range(BATCH * IN):
+        x.data[i] = Scalar[DT](0.1)
+    x.upload(ctx)
+    var y = Tensor.alloc(BATCH * OUT)
 
     # warmup
     for _ in range(50):
-        net.forward["gpu", BATCH](x_t, output=y_t)
+        net.forward["gpu", BATCH](TensorRefs[1](x), y, Optional(ctx))
     ctx.synchronize()
 
     var t0 = perf_counter_ns()
     for _ in range(iters):
-        net.forward["gpu", BATCH](x_t, output=y_t)
+        net.forward["gpu", BATCH](TensorRefs[1](x), y, Optional(ctx))
     ctx.synchronize()
     var per = Float64(perf_counter_ns() - t0) / Float64(iters) / 1000.0  # us
 

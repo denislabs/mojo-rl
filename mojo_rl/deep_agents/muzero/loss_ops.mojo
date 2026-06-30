@@ -29,9 +29,9 @@ from mojo_rl.nn.constants import DT
 def softmax_row[
     NBINS: Int,
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    logits: List[Scalar[DT]],
     base: Int,
-    mut probs: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut probs: List[Scalar[DT]],
 ):
     """Numerically-stable softmax of ``logits[base .. base+NBINS)`` into
     ``probs[base .. base+NBINS)``."""
@@ -53,10 +53,10 @@ def softmax_row[
 def soft_ce_loss_and_grad[
     BATCH: Int, NBINS: Int,
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    target: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    logits: List[Scalar[DT]],
+    target: List[Scalar[DT]],
     grad_scale: Scalar[DT],
-    mut grad_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut grad_logits: List[Scalar[DT]],
 ) -> Scalar[DT]:
     """Soft cross-entropy over ``BATCH`` rows of ``NBINS`` logits vs soft
     targets. Returns the **summed** loss ``Σ_b −Σ_i q·log softmax(z)`` and writes
@@ -90,10 +90,10 @@ def soft_ce_loss_and_grad[
 def soft_ce_slice_loss_and_grad[
     BATCH: Int, ROW: Int, OFF: Int, NBINS: Int,
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    target: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    logits: List[Scalar[DT]],
+    target: List[Scalar[DT]],
     grad_scale: Scalar[DT],
-    mut grad_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut grad_out: List[Scalar[DT]],
 ) -> Scalar[DT]:
     """Soft-CE over the ``[OFF, OFF+NBINS)`` column slice of a ``[BATCH, ROW]``
     logit tile (the MuZero heads pack policy / value / reward as adjacent slices

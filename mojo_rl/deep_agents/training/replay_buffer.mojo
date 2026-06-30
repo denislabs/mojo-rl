@@ -29,7 +29,7 @@ from mojo_rl.nn.constants import DT
 from .trainer_block import TrainerState
 
 
-trait ReplayBuffer(Movable, ImplicitlyDestructible):
+trait ReplayBuffer(Movable, ImplicitlyDeletable):
     """Uniform surface over a transition replay buffer. `count` is named
     so as not to collide with conformers' `size` *field*."""
 

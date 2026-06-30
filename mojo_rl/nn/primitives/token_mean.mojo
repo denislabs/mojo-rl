@@ -1,12 +1,16 @@
-"""TokenMean[SEQ_LEN, DIM] — mean-pool over the sequence axis.
+"""TokenMean[SEQ_LEN, DIM] — mean-pool over the sequence axis (storage surface).
+
+Transformed from legacy `nn.primitives.TokenMean` (surface-only change). The CPU
+loops + the two GPU kernels (forward reduce / backward broadcast) are carried
+over verbatim.
 
 Each sample is `(SEQ_LEN, DIM)` laid out row-major (token-major); the op
 averages over the `SEQ_LEN` tokens to produce a single `DIM` vector:
 
     out[b, d] = (1/SEQ_LEN) * sum_t in[b, t*DIM + d]
 
-IN_DIM = SEQ_LEN*DIM, OUT_DIM = DIM; no params, no cache. Backward
-broadcasts the upstream gradient evenly across tokens:
+IN_DIM = SEQ_LEN*DIM, OUT_DIM = DIM; no params, no cache. Backward broadcasts
+the upstream gradient evenly across tokens:
 
     grad_in[b, t*DIM + d] = grad_out[b, d] / SEQ_LEN
 
@@ -16,16 +20,18 @@ classification head.
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _token_mean_fwd_kernel[
     BATCH: Int, SEQ: Int, DIM: Int
 ](
@@ -60,123 +66,101 @@ def _token_mean_bwd_kernel[
     gi[b, rem] = rebind[Scalar[DT]](go[b, d]) / Scalar[DT](Float32(SEQ))
 
 
-struct TokenMean[SEQ_LEN: Int, DIM: Int](Module):
+struct TokenMean[SEQ_LEN_: Int, DIM_: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_LEN * Self.DIM)
-    comptime OUT_DIM = Self.DIM
-
-    var ts: TargetStorage
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_LEN_ * Self.DIM_)
+    comptime OUT_DIM = Self.DIM_
 
     def __init__(out self):
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "TokenMean: target must be 'cpu' or 'gpu'"
-        )
-        comptime assert Self.SEQ_LEN > 0 and Self.DIM > 0, (
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Unified CPU/GPU factory. INIT accepted for `make[target, INIT]`
+        uniformity but ignored (no params)."""
+        comptime assert Self.SEQ_LEN_ > 0 and Self.DIM_ > 0, (
             "TokenMean: SEQ_LEN, DIM must be > 0"
         )
-        var t = Self()
-        comptime if target == "cpu":
-            t.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("TokenMean.make[target='gpu']: ctx required")
-            t.ts = TargetStorage.make_gpu(ctx.value())
-        return t^
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["TokenMean", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref in0 = inputs[0]
+        comptime SD = Self.SEQ_LEN_ * Self.DIM_
         comptime if target == "cpu":
-            var inv_seq: Scalar[DT] = 1.0 / Float32(Self.SEQ_LEN)
-            for b in range(BATCH):
-                for d in range(Self.DIM):
+            out.ensure(B * Self.DIM_)
+            var in_v = TileTensor(in0.data, row_major[B, SD]())
+            var out_v = TileTensor(out.data, row_major[B, Self.DIM_]())
+            var inv_seq: Scalar[DT] = 1.0 / Float32(Self.SEQ_LEN_)
+            for b in range(B):
+                for d in range(Self.DIM_):
                     var acc: Scalar[DT] = 0.0
-                    for t in range(Self.SEQ_LEN):
-                        acc += input[b, t * Self.DIM + d]
-                    output_v[b, d] = acc * inv_seq
+                    for t in range(Self.SEQ_LEN_):
+                        acc += in_v[b, t * Self.DIM_ + d]
+                    out_v[b, d] = acc * inv_seq
         else:
-            var in_p = input.ptr
-            var out_p = output_v.ptr
-            var in_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.SEQ_LEN * Self.DIM),
-                MutAnyOrigin,
-            ](in_p)
-            var out_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin,
-            ](out_p)
-            comptime total = BATCH * Self.DIM
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.DIM_)
+            comptime l_in = Layout.row_major(B, SD)
+            comptime l_out = Layout.row_major(B, Self.DIM_)
+            comptime total = B * Self.DIM_
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _token_mean_fwd_kernel[
-                BATCH, Self.SEQ_LEN, Self.DIM
-            ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[
+                _token_mean_fwd_kernel[B, Self.SEQ_LEN_, Self.DIM_]
+            ](
+                in0.lt["gpu", l_in](),
+                out.lt["gpu", l_out](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["TokenMean", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
+        ref gin = grad_inputs[0]
+        comptime SD = Self.SEQ_LEN_ * Self.DIM_
         comptime if target == "cpu":
-            var inv_seq: Scalar[DT] = 1.0 / Float32(Self.SEQ_LEN)
-            for b in range(BATCH):
-                for t in range(Self.SEQ_LEN):
-                    for d in range(Self.DIM):
-                        grad_input_v[b, t * Self.DIM + d] = (
-                            grad_output_v[b, d] * inv_seq
-                        )
+            gin.ensure(B * SD)
+            var go_v = TileTensor(grad_output.data, row_major[B, Self.DIM_]())
+            var gi_v = TileTensor(gin.data, row_major[B, SD]())
+            var inv_seq: Scalar[DT] = 1.0 / Float32(Self.SEQ_LEN_)
+            for b in range(B):
+                for t in range(Self.SEQ_LEN_):
+                    for d in range(Self.DIM_):
+                        gi_v[b, t * Self.DIM_ + d] = go_v[b, d] * inv_seq
         else:
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var go_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin,
-            ](go_p)
-            var gi_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.SEQ_LEN * Self.DIM),
-                MutAnyOrigin,
-            ](gi_p)
-            comptime total = BATCH * Self.SEQ_LEN * Self.DIM
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * SD)
+            comptime l_out = Layout.row_major(B, Self.DIM_)
+            comptime l_in = Layout.row_major(B, SD)
+            comptime total = B * SD
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _token_mean_bwd_kernel[
-                BATCH, Self.SEQ_LEN, Self.DIM
-            ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, gi_lt, grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[
+                _token_mean_bwd_kernel[B, Self.SEQ_LEN_, Self.DIM_]
+            ](
+                grad_output.lt["gpu", l_out](),
+                gin.lt["gpu", l_in](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).

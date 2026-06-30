@@ -1,39 +1,31 @@
-"""Linear[IN, OUT] — affine `y = x·W + b`. The lighthouse leaf.
+"""Linear — Module conformer (CPU + GPU). y = x @ W + b via max_matmul.
 
-State:
-  * `ts: TargetStorage` carries `target_tag` + (optional) `ctx`; the
-    method-level `assert_tag_for` polices misuse.
-  * `weight: Param["weight", True, IN*OUT]` + `bias: Param["bias", False, OUT]`
-    — `True`/`False` indicates whether AdamW weight-decay applies. The
-    `for_each_param` / `zero_grad` bodies are one call each into the
-    reflection-walked `_auto` helpers.
-  * `_cached_input_ptr` aliases the orchestrator's input slab (no copy).
-    Sequential / ComputeGraph guarantee that slab stays live until
-    backward completes.
-  * `amp: LinearAMPState[IN, OUT]` owns the bf16 scratch + cast helpers
-    when `POLICY.compute_dtype == bf16`. The bf16 weight is re-cast on
-    every fwd/bwd: a `w_dirty` flag was tried, but no caller flipped it
-    after Adam updates so the cache went stale at step 1. Re-casting
-    costs `IN*OUT` scalar ops vs `BATCH*IN*OUT` for the matmul itself —
-    negligible.
-  * `backward[mode]` collapses backward + backward_input; the
-    `mode="input_only"` shortcut skips param grads (used by SAC actor
-    loss propagating through the critic).
+Each forward/vjp branches `comptime if target == "cpu"` (tracked `TileTensor`
+over `.data`) `else` (device `LayoutTensor` via `lt_gpu` + a naive kernel).
+The storage surface (`ref/mut Tensor`, `TensorRefs`) is identical on both
+targets; the only GPU erasure is the kernel-arg `MutAnyOrigin`. Params are
+`Param` (two `Tensor`s, cpu+dev).
 
-**BACKWARD-ORDER INVARIANT (critical)**: param grads run BEFORE
-input grad. `_cached_input_ptr` aliases the orchestrator's input slab
-— the same slab that `grad_input` writes into. If `grad_input` ran
-first, it would clobber the cache before `grad_w` could read it. So
-the order is `grad_b → grad_w → grad_input`, and Sequential's
-backward walks children in the matching reverse-order.
+bf16-FLOW (AMP "Step B"): `Linear[IN, OUT]` is fp32 (unchanged), while
+`Linear[IN, OUT, DType.bfloat16]` is a bf16-flow linear whose ACTIVATIONS are
+STORED and FLOW at bf16 (`ACT_DT == bfloat16`) — there is NO per-call x/out cast
+(the legacy "cast-around" AMP tax is gone). Master weights/grads/bias STAY fp32
+(`Param` is always `DT`); only a CACHED bf16 weight copy (`w_bf`, version-gated)
+and a cached bf16 bias (`b_a`) are low-precision. The fp32 (ACT_DT == DT) path is
+byte-for-byte the legacy NoAMP path; the bf16 path is GPU-only (cblas/CPU matmul
+is fp32-only).
+
+LIFETIME NOTE: a pack subscript (`inputs[k]`) returns a TEMPORARY ref. Building
+a view from `inputs[k].data` directly and using it LATER dangles (the temporary
+dies at the end of the statement; a later op clobbers the stack). So each body
+first binds the element to a named `ref` (`ref in0 = inputs[0]`) that lives for
+the whole function, then builds views from that.
 """
 
-from std.math import ceildiv
 from std.sys import CompilationTarget
-from std.gpu import global_idx, thread_idx, block_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu import global_idx, thread_idx, block_idx, barrier
 from std.gpu.memory import AddressSpace
-from std.gpu.primitives import block
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 from linalg.matmul.cpu.apple_accelerate import (
@@ -42,93 +34,83 @@ from linalg.matmul.cpu.apple_accelerate import (
     _CBLASTranspose,
 )
 
-from ..constants import DT, CPU_SIMD_W, TPB
-from ..core import (
-    Initializer,
-    AMPPolicy,
-    NoAMP,
-    Param,
-    for_each_param_auto,
-    zero_grad_auto,
-    cast_fp32_to_bf16,
-    cast_bf16_to_fp32,
-    LinearAMPState,
-    ParamVisitor,
-)
-from ..core.module import Module, typed_view, typed_view_mut, mptr
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
-    ensure_gpu_buffer,
-)
+from mojo_rl.nn.constants import DT
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
+from ..core.polyak import polyak_tensor
 
 
-# ──────────────────────────────────────────────────────────────────────
-# GPU kernels — module-level so enqueue_function can bind them.
-# Lifted from v1; `_cache_input_kernel` removed (no input copy anymore).
-# ──────────────────────────────────────────────────────────────────────
-
-
+# ── kernels (non-GEMM ops; the three matmuls go through max_matmul) ──────
+# `_bias_add_kernel` is dtype-parametric: the fp32 path calls it with DT, the
+# bf16-flow path with bfloat16 (activation + cached bf16 bias both at ADT).
 def _bias_add_kernel[
-    BATCH: Int,
-    OUT: Int,
+    B: Int, OUT: Int, ADT: DType = DT
 ](
-    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
-    bias: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
+    o: LayoutTensor[ADT, Layout.row_major(B, OUT), MutAnyOrigin],
+    bias: LayoutTensor[ADT, Layout.row_major(OUT), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
-    var total = BATCH * OUT
-    if idx < total:
-        var b = idx // OUT
-        var j = idx % OUT
-        output[b, j] = rebind[Scalar[DT]](output[b, j]) + rebind[Scalar[DT]](
-            bias[j]
-        )
+    if idx < B * OUT:
+        o[idx // OUT, idx % OUT] += bias[idx % OUT]
 
 
-def _grad_bias_reduce_kernel[
-    BATCH: Int,
-    OUT: Int,
-](
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
-    grad_b: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
-):
-    """grad_b[col] += Σ_b grad_output[b, col]. ONE BLOCK per output column,
-    `TPB` threads striding over BATCH + a `block.sum` reduction → full
-    occupancy (OUT·TPB thread-slots) vs the old one-thread-per-column
-    serial-BATCH-loop kernel (only OUT threads). Mirrors LayerNorm's
-    grad_beta reduction. Launch: grid_dim=OUT, block_dim=TPB."""
-    var col = Int(block_idx.x)
-    var t = Int(thread_idx.x)
-    if col >= OUT:
-        return
-    var my_s: Scalar[DT] = 0.0
-    var bi = t
-    while bi < BATCH:
-        my_s += rebind[Scalar[DT]](grad_output[bi, col])
-        bi += TPB
-    var total = block.sum[block_size=TPB, broadcast=False](val=my_s)
-    if t == 0:
-        grad_b[col] = rebind[Scalar[DT]](grad_b[col]) + total[0]
-
-
+# Naive grad_w transpose (one thread/elem, strided read). Still used by
+# linear_relu / noisy_linear; linear + linear_act use the tiled B1' kernel below.
 def _transpose_kernel[
     ROWS: Int, COLS: Int
 ](
     src: LayoutTensor[DT, Layout.row_major(ROWS, COLS), MutAnyOrigin],
     dst: LayoutTensor[DT, Layout.row_major(COLS, ROWS), MutAnyOrigin],
 ):
-    """dst[c,r] = src[r,c]. One thread per source element. Used to materialize
-    cacheᵀ[IN,BATCH] so grad_w = cacheᵀ @ grad_output runs through `max_matmul`
-    (tensor cores) — `max_matmul` rejects `transpose_a`. Shared by Linear,
-    LinearAct, and NoisyLinear."""
     var idx = Int(global_idx.x)
     if idx < ROWS * COLS:
-        var r = idx // COLS
-        var c = idx % COLS
-        dst[c, r] = rebind[Scalar[DT]](src[r, c])
+        dst[idx % COLS, idx // COLS] = src[idx // COLS, idx % COLS]
+
+
+comptime _T_TILE = 32
+comptime _T_BR = 8        # 32x8 BLOCK_ROWS, 4 elems/thread (B1')
+
+
+# Tiled grad_w transpose: 32x8 BLOCK_ROWS shared-mem tile (B1'). Coalesces the
+# strided src read the naive kernel suffers; bench (RTX 5090) showed up to 1.65x
+# on skinny grad_w (large ROWS·COLS), neutral on square. Launch with
+# grid_dim=(ceildiv(COLS,32), ceildiv(ROWS,32)), block_dim=(32, 8).
+# Dtype-parametric (`ADT`): the fp32 path transposes a DT activation; the bf16
+# path transposes the bf16 forward-input directly (its source is already bf16).
+def _transpose_tiled_kernel[
+    ROWS: Int, COLS: Int, ADT: DType = DT
+](
+    src: LayoutTensor[ADT, Layout.row_major(ROWS, COLS), MutAnyOrigin],
+    dst: LayoutTensor[ADT, Layout.row_major(COLS, ROWS), MutAnyOrigin],
+):
+    var tile = LayoutTensor[
+        ADT,
+        Layout.row_major(_T_TILE, _T_TILE + 1),   # +1 pad → no bank conflicts
+        MutAnyOrigin,
+        address_space=AddressSpace.SHARED,
+    ].stack_allocation()
+
+    var cy = Int(block_idx.y) * _T_TILE       # tile origin in ROWS
+    var cx = Int(block_idx.x) * _T_TILE       # tile origin in COLS
+    var tx = Int(thread_idx.x)                # [0, _T_TILE)
+    var ty = Int(thread_idx.y)                # [0, _T_BR)
+
+    var c = cx + tx
+    comptime for r in range(0, _T_TILE, _T_BR):
+        var rr = cy + ty + r
+        if rr < ROWS and c < COLS:
+            tile[ty + r, tx] = rebind[Scalar[ADT]](src[rr, c])
+    barrier()
+
+    var r2 = cy + tx                          # dst col (coalesced, stride 1)
+    comptime for r in range(0, _T_TILE, _T_BR):
+        var c2 = cx + ty + r                  # dst row
+        if r2 < ROWS and c2 < COLS:
+            dst[c2, r2] = rebind[Scalar[ADT]](tile[tx, ty + r])
 
 
 def _accum_kernel[
@@ -137,742 +119,440 @@ def _accum_kernel[
     dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
 ):
-    """dst[i] += src[i]. Accumulates a `max_matmul` dW result into grad_w,
-    preserving the `vjp` accumulate contract."""
-    var idx = Int(global_idx.x)
-    if idx < N:
-        dst[idx] = rebind[Scalar[DT]](dst[idx]) + rebind[Scalar[DT]](src[idx])
+    var i = Int(global_idx.x)
+    if i < N:
+        dst[i] += src[i]
 
 
-def _transpose_to_bf16_kernel[
-    ROWS: Int, COLS: Int
+# grad_b += colsum(go). Dtype-parametric on the grad_output activation (`ADT`):
+# the bf16 path reads a bf16 `go` and accumulates into the FP32 `gb` (each
+# element cast to DT before summing — the accumulator stays fp32).
+def _lin_gb_kernel[
+    B: Int, OUT: Int, ADT: DType = DT
 ](
-    src: LayoutTensor[DT, Layout.row_major(ROWS, COLS), MutAnyOrigin],
-    dst: LayoutTensor[DType.bfloat16, Layout.row_major(COLS, ROWS), MutAnyOrigin],
+    go: LayoutTensor[ADT, Layout.row_major(B, OUT), MutAnyOrigin],
+    gb: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
 ):
-    """dst[c,r] = bf16(src[r,c]). Fuses the cacheᵀ transpose with the fp32→bf16
-    downcast for the grad_w bf16 GEMM (Fix 1) — same launch as the fp32
-    `_transpose_kernel`, so the bf16 cacheᵀ costs no extra kernel."""
-    var idx = Int(global_idx.x)
-    if idx < ROWS * COLS:
-        var r = idx // COLS
-        var c = idx % COLS
-        dst[c, r] = rebind[Scalar[DT]](src[r, c]).cast[DType.bfloat16]()
+    var j = Int(global_idx.x)
+    if j < OUT:
+        var s: Scalar[DT] = 0
+        for b in range(B):
+            s += rebind[Scalar[ADT]](go[b, j]).cast[DT]()
+        gb[j] += s
 
 
-def _accum_bf16_kernel[
+comptime BF16 = DType.bfloat16
+
+
+def _cast_f2b_kernel[
     N: Int
 ](
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    src: LayoutTensor[DType.bfloat16, Layout.row_major(N), MutAnyOrigin],
+    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[BF16, Layout.row_major(N), MutAnyOrigin],
 ):
-    """dst[i] += fp32(src[i]). Fuses the bf16→fp32 upcast into the grad_w
-    accumulate so the bf16 dW GEMM output lands in the fp32 weight grad with
-    no separate cast kernel (Fix 1). Master weights/grads stay fp32."""
-    var idx = Int(global_idx.x)
-    if idx < N:
-        dst[idx] = rebind[Scalar[DT]](dst[idx]) + rebind[
-            Scalar[DType.bfloat16]
-        ](src[idx]).cast[DT]()
+    var i = Int(global_idx.x)
+    if i < N:
+        dst[i] = src[i].cast[BF16]()
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Linear.
-# ──────────────────────────────────────────────────────────────────────
+def _cast_b2f_kernel[
+    N: Int
+](
+    src: LayoutTensor[BF16, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    var i = Int(global_idx.x)
+    if i < N:
+        dst[i] = src[i].cast[DT]()
 
 
-struct Linear[IN: Int, OUT: Int](Module):
-    comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN)
-    comptime OUT_DIM = Self.OUT
-    comptime W_SIZE = Self.IN * Self.OUT
-    comptime B_SIZE = Self.OUT
+# ── Linear ─────────────────────────────────────────────────────────────
+struct Linear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_)
+    comptime OUT_DIM = Self.OUT_
+    comptime W_SIZE = Self.IN_ * Self.OUT_
+    # Activation-flow dtype (satisfies the Module trait). `Linear[IN, OUT]` =
+    # fp32 (ACT_DT == DT, the legacy path); `Linear[IN, OUT, bfloat16]` flows
+    # activations at bf16 (the AMP "Step B" memory win).
+    comptime ACT_DT = Self.ADT
 
     @staticmethod
     def display_label() -> String:
         return String("Linear")
+    comptime B_SIZE = Self.OUT_
 
-    # Parameters — visible to reflection, walked by for_each_param_auto.
     var weight: Param["weight", True, Self.W_SIZE]
     var bias: Param["bias", False, Self.B_SIZE]
-
-    # Forward-time pointer alias of the orchestrator's input slab.
-    # Backward reads from this directly; no copy at forward time.
-    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-
-    # AMP scratch (lazy-allocated on first bf16 call).
-    var amp: LinearAMPState[Self.IN, Self.OUT]
-
-    # Backward grad_w temporaries (GPU) — mirror LinearAct. `cacheT_dev` holds
-    # cacheᵀ[IN, BATCH] (lazy, BATCH-sized); `dW_tmp_dev` holds [IN, OUT] = W_SIZE
-    # (fixed). Let grad_w run via transpose + max_matmul (tensor cores) instead
-    # of the old naive serial kernel. Lazy alloc is CUDA-graph-capture-safe
-    # (allocated on the pre-capture settle call, reused on every replay).
-    var cacheT_dev: Optional[DeviceBuffer[DT]]
-    var cacheT_n: Int
-    var dW_tmp_dev: Optional[DeviceBuffer[DT]]
-
-    var ts: TargetStorage
-
-    # ----- Defaultable -----------------------------------------------------
+    # grad_w scratch (lazy): cacheᵀ [IN, B] + dW_tmp [IN, OUT] for the
+    # transpose + max_matmul + accumulate path (max_matmul rejects transpose_a).
+    # Both STAY fp32 (master grad is fp32; the bf16 dW GEMM writes a fp32 output).
+    var cacheT: Tensor
+    var dW_tmp: Tensor
+    # bf16-flow compute scratch (lazy; used only when ACT_DT == bf16 and
+    # target == "gpu"). Master weights/grads/bias stay fp32 (`Param`); only these
+    # low-precision copies are bf16. `w_bf` is the CACHED bf16 weight: recast from
+    # `weight.val` only when the optimizer bumped `weight.val.version` since the
+    # last cast (tracked by `_w_cast_version`), so the W cast happens ONCE per
+    # optimizer step rather than every forward. `b_a` is the cached bf16 bias (the
+    # tiny per-forward bias cast). `cacheT_bf` is the transposed bf16 fwd-input
+    # (backward grad_w). No `x_bf`/`o_bf`/`go_bf`: activations ALREADY flow at bf16
+    # (no input/output/grad_output cast — the whole point of bf16-flow).
+    var w_bf: TensorImpl[Self.ADT]
+    var b_a: TensorImpl[Self.ADT]        # cached bf16 bias (forward bias-add)
+    var cacheT_bf: TensorImpl[Self.ADT]  # transposed-x bf16 (backward grad_w)
+    var _w_cast_version: Int  # `weight.val.version` at last bf16 weight cast
+    # Capture mode (set via `set_attr["capture_recast"]`): when True, the bf16
+    # weight recast in `_ensure_w_bf` is UNCONDITIONAL so the cast kernel is
+    # always recorded into a CUDA graph and reads the live fp32 master on every
+    # replay — the version gate would skip it on replay and serve STALE weights.
+    # Off → the version-gated fast path (one cast per optimizer step).
+    var _force_recast: Bool
 
     def __init__(out self):
         self.weight = Param["weight", True, Self.W_SIZE]()
         self.bias = Param["bias", False, Self.B_SIZE]()
-        self._cached_input_ptr = None
-        self.amp = LinearAMPState[Self.IN, Self.OUT].make()
-        self.cacheT_dev = None
-        self.cacheT_n = 0
-        self.dW_tmp_dev = None
-        self.ts = TargetStorage.make_uninit()
+        self.cacheT = Tensor()
+        self.dW_tmp = Tensor()
+        self.w_bf = TensorImpl[Self.ADT]()
+        self.b_a = TensorImpl[Self.ADT]()
+        self.cacheT_bf = TensorImpl[Self.ADT]()
+        self._w_cast_version = -1  # < any real version → first forward casts
+        self._force_recast = False
 
-    # ----- Factories -------------------------------------------------------
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        comptime if ATTR == "capture_recast":
+            self._force_recast = value != Scalar[DT](0.0)
+
+    def _ensure_w_bf(mut self, c: DeviceContext) raises:
+        """Ensure the cached bf16 weight `w_bf` reflects the current fp32
+        `weight.val`. Recasts ONLY when the optimizer bumped `val.version` since
+        the last cast (so the weight cast is ONCE per step, not per fwd/bwd).
+        Shared by forward (the cast) and vjp (which REUSES it — no optimizer step
+        intervenes between a fwd and its bwd, so the forward's cast is valid)."""
+        self.w_bf.ensure_gpu(c, Self.W_SIZE)
+        if self._force_recast or self.weight.val.version != self._w_cast_version:
+            c.enqueue_function[_cast_f2b_kernel[Self.W_SIZE]](
+                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                self.w_bf.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                grid_dim=(Self.W_SIZE + 255) // 256,
+                block_dim=256,
+            )
+            self._w_cast_version = self.weight.val.version
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert (
-            target == "cpu" or target == "gpu"
-        ), "Linear: target must be 'cpu' or 'gpu'"
-        var lin = Self()
-        comptime if target == "cpu":
-            lin.weight = Param["weight", True, Self.W_SIZE].make_cpu()
-            lin.bias = Param["bias", False, Self.B_SIZE].make_cpu()
-            INIT.init_weight(
-                lin.weight.value_unsafe_ptr_cpu(),
-                Self.W_SIZE,
-                Self.IN,
-                Self.OUT,
-            )
-            INIT.init_bias(lin.bias.value_unsafe_ptr_cpu(), Self.B_SIZE)
-            lin.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["Linear.make[target='gpu']"](ctx)
-            lin.weight = Param["weight", True, Self.W_SIZE].make_gpu(ctx_v)
-            lin.bias = Param["bias", False, Self.B_SIZE].make_gpu(ctx_v)
-            # Init weights/biases on host via INIT, then upload.
-            var w_host = ctx_v.enqueue_create_host_buffer[DT](Self.W_SIZE)
-            var b_host = ctx_v.enqueue_create_host_buffer[DT](Self.B_SIZE)
-            ctx_v.synchronize()
-            INIT.init_weight(
-                w_host.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.OUT
-            )
-            INIT.init_bias(b_host.unsafe_ptr(), Self.B_SIZE)
-            ctx_v.enqueue_copy(lin.weight.val.dev.value(), w_host)
-            ctx_v.enqueue_copy(lin.bias.val.dev.value(), b_host)
-            ctx_v.synchronize()
-            # Fixed [IN, OUT] dW scratch for the max_matmul grad_w path; cacheT
-            # stays None (lazily sized to BATCH on first backward).
-            lin.dW_tmp_dev = ctx_v.enqueue_create_buffer[DT](Self.W_SIZE)
-            lin.ts = TargetStorage.make_gpu(ctx_v)
-        return lin^
-
-    # ----- Forward ---------------------------------------------------------
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        var l = Self()
+        l.weight = Param["weight", True, Self.W_SIZE].make[target](ctx)
+        l.bias = Param["bias", False, Self.B_SIZE].make[target](ctx)
+        INIT.init_weight[target](
+            l.weight.val, Self.W_SIZE, Self.IN_, Self.OUT_, ctx
+        )
+        INIT.init_bias[target](l.bias.val, Self.B_SIZE, ctx)
+        return l^
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True,
-            dtype=DT,
-            address_space=AddressSpace.GENERIC,
-            element_size=1,
-            origin=MutAnyOrigin,
-            ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Linear", target](self.ts.target_tag)
-        var input_v = inputs.tile[0, BATCH, Self.IN]()
-        var output_v = typed_view_mut[BATCH, Self.OUT](output)
-
-        var in_p = input_v.ptr
-        var out_p = output_v.ptr
-
-        # Save pointer alias for backward — NO copy.
-        self._cached_input_ptr = in_p
-
-        comptime if target == "cpu":
-            comptime if POLICY.compute_dtype == DT:
-                var w_tt = TileTensor(
-                    self.weight.val.cpu,
-                    row_major[Self.IN, Self.OUT](),
+        ref in0 = inputs[0]
+        # y = x @ W (max_matmul), then += bias.
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            # ACT_DT IS DT in this branch, but the compiler doesn't collapse the
+            # opaque `Self.ACT_DT` parameter to `DT` for type-unification against
+            # the fp32 weight/bias views — so rebind the activation refs (sound:
+            # the dtypes are equal here). `TensorImpl[Self.ACT_DT]` ≡ `Tensor`.
+            ref in0d = rebind[Tensor](in0)
+            ref outd = rebind[Tensor](out)
+            comptime if target == "cpu":
+                outd.ensure(B * Self.OUT_)
+                var x_v = TileTensor(in0d.data, row_major[B, Self.IN_]())
+                var w_v = TileTensor(
+                    self.weight.val.data, row_major[Self.IN_, Self.OUT_]()
                 )
-                max_matmul[target="cpu"](output_v, input_v, w_tt, None)
+                var out_v = TileTensor(outd.data, row_major[B, Self.OUT_]())
+                max_matmul[target="cpu"](out_v, x_v, w_v, None)
+                var bt = TileTensor(self.bias.val.data, row_major[Self.OUT_]())
+                for b in range(B):
+                    for j in range(Self.OUT_):
+                        out_v[b, j] += bt[j]
             else:
-                comptime assert (
-                    POLICY.compute_dtype == DType.bfloat16
-                ), "Linear CPU supports only fp32 and bf16 compute_dtype"
-                self.amp.ensure_cpu(BATCH)
-
-                var w_bf16_p = mptr(self.amp.w_bf16_cpu.unsafe_ptr())
-                cast_fp32_to_bf16[target="cpu", N=Self.W_SIZE](
-                    self.weight.value_unsafe_ptr_cpu(),
-                    w_bf16_p,
-                )
-                var in_bf16_p = mptr(self.amp.in_bf16_cpu.unsafe_ptr())
-                cast_fp32_to_bf16[target="cpu", N=BATCH * Self.IN](
-                    in_p,
-                    in_bf16_p,
-                )
-                var in_bf16_tt = TileTensor(
-                    self.amp.in_bf16_cpu,
-                    row_major[BATCH, Self.IN](),
-                )
-                var w_bf16_tt = TileTensor(
-                    self.amp.w_bf16_cpu,
-                    row_major[Self.IN, Self.OUT](),
-                )
-                var ou_bf16_tt = TileTensor(
-                    self.amp.ou_bf16_cpu,
-                    row_major[BATCH, Self.OUT](),
-                )
-                max_matmul[target="cpu"](
-                    ou_bf16_tt,
-                    in_bf16_tt,
-                    w_bf16_tt,
-                    None,
-                )
-                var ou_bf16_p = mptr(self.amp.ou_bf16_cpu.unsafe_ptr())
-                cast_bf16_to_fp32[target="cpu", N=BATCH * Self.OUT](
-                    ou_bf16_p,
-                    out_p,
-                )
-
-            # Bias-add. fp32 regardless of POLICY.
-            var b_ptr = self.bias.value_unsafe_ptr_cpu()
-            for bi in range(BATCH):
-                var row_off = bi * Self.OUT
-                var ij = 0
-                while ij + CPU_SIMD_W <= Self.OUT:
-                    var ov = out_p.load[width=CPU_SIMD_W](row_off + ij)
-                    var bv = b_ptr.load[width=CPU_SIMD_W](ij)
-                    out_p.store(row_off + ij, ov + bv)
-                    ij += CPU_SIMD_W
-                while ij < Self.OUT:
-                    out_p[row_off + ij] = out_p[row_off + ij] + b_ptr[ij]
-                    ij += 1
-        else:
-            var ctx = self.ts.ctx.value()
-
-            comptime if POLICY.compute_dtype == DT:
-                var weight_tt = TileTensor(
+                var c = ctx.value()
+                outd.ensure_gpu(c, B * Self.OUT_)
+                var x_v = TileTensor(in0d.dev.value(), row_major[B, Self.IN_]())
+                var w_v = TileTensor(
                     self.weight.val.dev.value(),
-                    row_major[Self.IN, Self.OUT](),
+                    row_major[Self.IN_, Self.OUT_](),
                 )
-                max_matmul[target="gpu"](output_v, input_v, weight_tt, ctx)
-            else:
-                comptime assert (
-                    POLICY.compute_dtype == DType.bfloat16
-                ), "Linear supports only fp32 and bf16 compute_dtype"
-                self.amp.ensure_gpu(BATCH, ctx)
-
-                var w_bf16_p = mptr(self.amp.w_bf16_dev.value().unsafe_ptr())
-                cast_fp32_to_bf16[target="gpu", N=Self.W_SIZE](
-                    mptr(self.weight.val.dev.value().unsafe_ptr()),
-                    w_bf16_p,
-                    ctx,
+                var out_v = TileTensor(
+                    outd.dev.value(), row_major[B, Self.OUT_]()
                 )
-                # Fix 2: the weight is now cast for this step. The backward
-                # grad_input GEMM reuses `w_bf16_dev` instead of re-casting.
-                self.amp.w_step_valid = True
-
-                var in_bf16_p = mptr(self.amp.in_bf16_dev.value().unsafe_ptr())
-                cast_fp32_to_bf16[target="gpu", N=BATCH * Self.IN](
-                    in_p,
-                    in_bf16_p,
-                    ctx,
+                max_matmul[target="gpu"](out_v, x_v, w_v, c)
+                var ol = outd.lt["gpu", Layout.row_major(B, Self.OUT_)]()
+                var bl = self.bias.val.lt[
+                    "gpu", Layout.row_major(Self.OUT_)
+                ]()
+                c.enqueue_function[_bias_add_kernel[B, Self.OUT_]](
+                    ol, bl, grid_dim=(B * Self.OUT_ + 255) // 256, block_dim=256
                 )
-                var in_bf16_tt = TileTensor(
-                    self.amp.in_bf16_dev.value(),
-                    row_major[BATCH, Self.IN](),
-                )
-                var w_bf16_tt = TileTensor(
-                    self.amp.w_bf16_dev.value(),
-                    row_major[Self.IN, Self.OUT](),
-                )
-                var ou_bf16_tt = TileTensor(
-                    self.amp.ou_bf16_dev.value(),
-                    row_major[BATCH, Self.OUT](),
-                )
-                max_matmul[target="gpu"](
-                    ou_bf16_tt,
-                    in_bf16_tt,
-                    w_bf16_tt,
-                    ctx,
-                )
-                var ou_bf16_p = mptr(self.amp.ou_bf16_dev.value().unsafe_ptr())
-                cast_bf16_to_fp32[target="gpu", N=BATCH * Self.OUT](
-                    ou_bf16_p,
-                    out_p,
-                    ctx,
-                )
-
-            # Bias add (fp32, both branches).
-            comptime out_layout = Layout.row_major(BATCH, Self.OUT)
-            comptime bias_layout = Layout.row_major(Self.OUT)
-            var output_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](out_p)
-            var bias_lt = LayoutTensor[DT, bias_layout, MutAnyOrigin](
-                self.bias.val.dev.value()
+        else:
+            # ── bf16-flow path (GPU-only) ──
+            comptime assert (
+                target == "gpu"
+            ), "bf16-flow Linear is GPU-only"
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT_)
+            # x (in0) is ALREADY bf16 — no input cast. W: cached bf16 (recast
+            # only on a version bump). bias: cheap per-forward DT→bf16 cast.
+            self._ensure_w_bf(c)
+            self.b_a.ensure_gpu(c, Self.B_SIZE)
+            c.enqueue_function[_cast_f2b_kernel[Self.B_SIZE]](
+                self.bias.val.lt["gpu", Layout.row_major(Self.B_SIZE)](),
+                self.b_a.lt["gpu", Layout.row_major(Self.B_SIZE)](),
+                grid_dim=(Self.B_SIZE + 255) // 256,
+                block_dim=256,
             )
-            comptime n_blocks_ba = (BATCH * Self.OUT + TPB - 1) // TPB
-            comptime ba_kernel = _bias_add_kernel[BATCH, Self.OUT]
-            ctx.enqueue_function[ba_kernel](
-                output_lt,
-                bias_lt,
-                grid_dim=n_blocks_ba,
-                block_dim=TPB,
+            var x_v = TileTensor(in0.dev.value(), row_major[B, Self.IN_]())
+            var w_bf_v = TileTensor(
+                self.w_bf.dev.value(), row_major[Self.IN_, Self.OUT_]()
             )
-
-    # ----- Backward --------------------------------------------------------
+            var out_v = TileTensor(out.dev.value(), row_major[B, Self.OUT_]())
+            # bf16-in → bf16-out GEMM (fp32 accumulation is automatic).
+            max_matmul[target="gpu"](out_v, x_v, w_bf_v, c)
+            var ol = out.lt["gpu", Layout.row_major(B, Self.OUT_)]()
+            var bl = self.b_a.lt["gpu", Layout.row_major(Self.OUT_)]()
+            c.enqueue_function[_bias_add_kernel[B, Self.OUT_, Self.ADT]](
+                ol, bl, grid_dim=(B * Self.OUT_ + 255) // 256, block_dim=256
+            )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT,
-            address_space=AddressSpace.GENERIC,
-            element_size=1,
-            origin=MutAnyOrigin,
-            ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        """Combined backward — single source of truth that fixes the
-        param-before-input order by calling the two phases in sequence
-        (S7, 2026-06-07). Direct callers (ComputeGraph, non-Sequential
-        combinators, tests) keep using this; `Sequential` calls the two
-        phases directly so the order is enforced by the orchestrator."""
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        self.vjp_param_grads[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output
-        )
-        self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output, grad_inputs
-        )
-
-    def vjp_param_grads[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT,
-            address_space=AddressSpace.GENERIC,
-            element_size=1,
-            origin=MutAnyOrigin,
-            ...,
-        ],
-    ) raises:
-        """Phase 1 (S7): grad_b + grad_w. Reads grad_output + the cached
-        forward input (`_cached_input_ptr`); writes bias/weight grads.
-        Skipped entirely under `mode == "input_only"`. MUST run before
-        `vjp_grad_input` — grad_input may clobber the cache slab."""
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        comptime if mode == "all":
-            assert_tag_for["Linear", target](self.ts.target_tag)
-            var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
-            var go_p = grad_output_v.ptr
-
+        ref fin = forward_input[0]
+        ref gin = grad_inputs[0]
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            # ACT_DT IS DT here — rebind the activation refs (sound; see forward).
+            ref find = rebind[Tensor](fin)
+            ref gind = rebind[Tensor](gin)
+            ref god = rebind[Tensor](grad_output)
             comptime if target == "cpu":
-                # ── (1) grad_b += column-sum(grad_output) ───
-                var gb_ptr = self.bias.grad_unsafe_ptr_cpu()
-                for bi in range(BATCH):
-                    var row_off = bi * Self.OUT
-                    var gj = 0
-                    while gj + CPU_SIMD_W <= Self.OUT:
-                        var gbv = gb_ptr.load[width=CPU_SIMD_W](gj)
-                        var gov = go_p.load[width=CPU_SIMD_W](row_off + gj)
-                        gb_ptr.store(gj, gbv + gov)
-                        gj += CPU_SIMD_W
-                    while gj < Self.OUT:
-                        gb_ptr[gj] = gb_ptr[gj] + go_p[row_off + gj]
-                        gj += 1
-
-                # ── (2) grad_w += cache^T @ grad_output ─────
-                # Reads cache via _cached_input_ptr — MUST come before
-                # grad_input write since grad_input may alias the cache slab.
-                var gw_ptr = self.weight.grad_unsafe_ptr_cpu()
-                var cache_ptr = self._cached_input_ptr.value()
-                comptime if CompilationTarget.is_macos() and DT == DType.float32:
-                    # Apple Accelerate: dW += cache.T @ grad_output in one
-                    # cblas_sgemm call (transpose_a, beta=1). No temp alloc.
-                    var cblas_gemm = get_cblas_f32_function()
-                    cblas_gemm(
+                gind.ensure(B * Self.IN_)
+                self.cacheT.ensure(Self.IN_ * B)
+                self.dW_tmp.ensure(Self.W_SIZE)
+                var x_v = TileTensor(find.data, row_major[B, Self.IN_]())
+                var go_v = TileTensor(
+                    god.data, row_major[B, Self.OUT_]()
+                )
+                var gi_v = TileTensor(gind.data, row_major[B, Self.IN_]())
+                var w_v = TileTensor(
+                    self.weight.val.data, row_major[Self.IN_, Self.OUT_]()
+                )
+                var gw_v = TileTensor(
+                    self.weight.grd.data, row_major[Self.IN_, Self.OUT_]()
+                )
+                var gb_v = TileTensor(
+                    self.bias.grd.data, row_major[Self.OUT_]()
+                )
+                # grad_b += colsum(go)
+                for b in range(B):
+                    for j in range(Self.OUT_):
+                        gb_v[j] += go_v[b, j]
+                # grad_w += xᵀ @ go. Apple-fp32: ONE fused cblas_sgemm (TRANSPOSE
+                # A=x, beta=1 → no transpose buffer, no temp, no accumulate loop —
+                # matches legacy Linear). Else: transpose into cacheT + max_matmul
+                # + add.
+                comptime IS_APPLE_F32 = (
+                    CompilationTarget.is_macos() and DT == DType.float32
+                )
+                comptime if IS_APPLE_F32:
+                    var cblas = get_cblas_f32_function()
+                    cblas(
                         _CBLASOrder.ROW_MAJOR,
                         _CBLASTranspose.TRANSPOSE,
                         _CBLASTranspose.NO_TRANSPOSE,
-                        Int32(Self.IN),
-                        Int32(Self.OUT),
-                        Int32(BATCH),
+                        Int32(Self.IN_),
+                        Int32(Self.OUT_),
+                        Int32(B),
                         Float32(1.0),
                         rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                            cache_ptr
+                            find.data.unsafe_ptr()
                         ),
-                        Int32(Self.IN),
-                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](go_p),
-                        Int32(Self.OUT),
+                        Int32(Self.IN_),
+                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                            god.data.unsafe_ptr()
+                        ),
+                        Int32(Self.OUT_),
                         Float32(1.0),
-                        rebind[UnsafePointer[Float32, MutAnyOrigin]](gw_ptr),
-                        Int32(Self.OUT),
+                        rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                            self.weight.grd.data.unsafe_ptr()
+                        ),
+                        Int32(Self.OUT_),
                     )
                 else:
-                    comptime gw_n = Self.IN * Self.OUT
-                    # Non-Apple / non-fp32 portable fallback. Owning RAII
-                    # `List`s — accessed directly; a raw `.unsafe_ptr()` is
-                    # taken only where an API needs one (the TileTensor ctor
-                    # for max_matmul, and the SIMD `.load[width]` accumulate).
-                    var cT_list = List[Scalar[DT]](
-                        length=BATCH * Self.IN, fill=Scalar[DT](0)
+                    var cT_v = TileTensor(
+                        self.cacheT.data, row_major[Self.IN_, B]()
                     )
-                    var dW_tmp_list = List[Scalar[DT]](
-                        length=gw_n, fill=Scalar[DT](0)
+                    for b in range(B):
+                        for k in range(Self.IN_):
+                            cT_v[k, b] = x_v[b, k]
+                    var dW_v = TileTensor(
+                        self.dW_tmp.data, row_major[Self.IN_, Self.OUT_]()
                     )
-                    for bi in range(BATCH):
-                        for i in range(Self.IN):
-                            cT_list[i * BATCH + bi] = cache_ptr[
-                                bi * Self.IN + i
-                            ]
-                    var cT_tt = TileTensor(
-                        cT_list.unsafe_ptr(), row_major[Self.IN, BATCH](),
-                    )
-                    var dW_tmp_tt = TileTensor(
-                        dW_tmp_list.unsafe_ptr(),
-                        row_major[Self.IN, Self.OUT](),
-                    )
-                    max_matmul[target="cpu"](
-                        dW_tmp_tt, cT_tt, grad_output_v, None,
-                    )
-                    var dW_tmp_p = dW_tmp_list.unsafe_ptr()  # SIMD .load needs a ptr
-                    var dw_i = 0
-                    while dw_i + CPU_SIMD_W <= gw_n:
-                        var gw_v = gw_ptr.load[width=CPU_SIMD_W](dw_i)
-                        var dt_v = dW_tmp_p.load[width=CPU_SIMD_W](dw_i)
-                        gw_ptr.store(dw_i, gw_v + dt_v)
-                        dw_i += CPU_SIMD_W
-                    while dw_i < gw_n:
-                        gw_ptr[dw_i] = gw_ptr[dw_i] + dW_tmp_list[dw_i]
-                        dw_i += 1
-                    # Pin the lists past their last direct use: the TileTensors
-                    # / `dW_tmp_p` hold raw borrow-view ptrs with no origin
-                    # link back, so without this the lists could be destroyed
-                    # before max_matmul / the accumulate read them.
-                    _ = cT_list^
-                    _ = dW_tmp_list^
-            else:
-                var ctx = self.ts.ctx.value()
-
-                # ── (1) grad_b += column-sum(grad_output) — block-per-column
-                #        reduction (full occupancy), replaces the serial kernel.
-                comptime gb_layout = Layout.row_major(Self.OUT)
-                var go_lt = LayoutTensor[
-                    DT, Layout.row_major(BATCH, Self.OUT), MutAnyOrigin
-                ](go_p)
-                var gb_lt = LayoutTensor[DT, gb_layout, MutAnyOrigin](
-                    self.bias.grd.dev.value()
-                )
-                comptime gb_kernel = _grad_bias_reduce_kernel[BATCH, Self.OUT]
-                ctx.enqueue_function[gb_kernel](
-                    go_lt,
-                    gb_lt,
-                    grid_dim=Self.OUT,
-                    block_dim=TPB,
-                )
-
-                # ── (2) grad_w += cacheᵀ @ grad_output — transpose + max_matmul
-                #        (tensor cores) + accumulate, replaces the naive serial
-                #        kernel. Reads cache; must precede the grad_input matmul
-                #        (which may alias the cache slab).
-                comptime gw_layout = Layout.row_major(Self.W_SIZE)
-                var gw_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
-                    self.weight.grd.dev.value()
-                )
-                comptime n_blocks_t = (BATCH * Self.IN + TPB - 1) // TPB
-                comptime n_blocks_acc = (Self.W_SIZE + TPB - 1) // TPB
-                var cache_lt = LayoutTensor[
-                    DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin
-                ](self._cached_input_ptr.value())
-
-                comptime if POLICY.compute_dtype == DT:
-                    ensure_gpu_buffer(
-                        self.cacheT_dev,
-                        self.cacheT_n,
-                        BATCH * Self.IN,
-                        ctx,
-                    )
-                    var cacheT_lt = LayoutTensor[
-                        DT, Layout.row_major(Self.IN, BATCH), MutAnyOrigin
-                    ](self.cacheT_dev.value())
-                    comptime t_kernel = _transpose_kernel[BATCH, Self.IN]
-                    ctx.enqueue_function[t_kernel](
-                        cache_lt,
-                        cacheT_lt,
-                        grid_dim=n_blocks_t,
-                        block_dim=TPB,
-                    )
-                    var cacheT_tt = TileTensor(
-                        self.cacheT_dev.value(),
-                        row_major[Self.IN, BATCH](),
-                    )
-                    var dW_tmp_tt = TileTensor(
-                        self.dW_tmp_dev.value(),
-                        row_major[Self.IN, Self.OUT](),
-                    )
-                    max_matmul[target="gpu"](
-                        dW_tmp_tt,
-                        cacheT_tt,
-                        grad_output_v,
-                        ctx,
-                    )
-                    var dW_tmp_lt = LayoutTensor[DT, gw_layout, MutAnyOrigin](
-                        self.dW_tmp_dev.value()
-                    )
-                    comptime acc_kernel = _accum_kernel[Self.W_SIZE]
-                    ctx.enqueue_function[acc_kernel](
-                        gw_lt,
-                        dW_tmp_lt,
-                        grid_dim=n_blocks_acc,
-                        block_dim=TPB,
-                    )
-                else:
-                    # ── Fix 1: bf16 grad_w GEMM. cacheᵀ downcast is fused into
-                    #    the transpose (zero extra kernel); grad_output downcast
-                    #    reuses the `ou_bf16` scratch; the bf16 dW lands in the
-                    #    fp32 weight grad via the fused `_accum_bf16_kernel`.
-                    comptime assert (
-                        POLICY.compute_dtype == DType.bfloat16
-                    ), "Linear supports only fp32 and bf16 compute_dtype"
-                    self.amp.ensure_gpu(BATCH, ctx)
-
-                    var cacheT_bf16_lt = LayoutTensor[
-                        DType.bfloat16,
-                        Layout.row_major(Self.IN, BATCH),
-                        MutAnyOrigin,
-                    ](self.amp.cacheT_bf16_dev.value())
-                    comptime tb_kernel = _transpose_to_bf16_kernel[
-                        BATCH, Self.IN
-                    ]
-                    ctx.enqueue_function[tb_kernel](
-                        cache_lt,
-                        cacheT_bf16_lt,
-                        grid_dim=n_blocks_t,
-                        block_dim=TPB,
-                    )
-
-                    var go_bf16_p = mptr(
-                        self.amp.ou_bf16_dev.value().unsafe_ptr()
-                    )
-                    cast_fp32_to_bf16[target="gpu", N=BATCH * Self.OUT](
-                        go_p,
-                        go_bf16_p,
-                        ctx,
-                    )
-
-                    var cacheT_bf16_tt = TileTensor(
-                        self.amp.cacheT_bf16_dev.value(),
-                        row_major[Self.IN, BATCH](),
-                    )
-                    var go_bf16_tt = TileTensor(
-                        self.amp.ou_bf16_dev.value(),
-                        row_major[BATCH, Self.OUT](),
-                    )
-                    var dW_bf16_tt = TileTensor(
-                        self.amp.dW_bf16_dev.value(),
-                        row_major[Self.IN, Self.OUT](),
-                    )
-                    max_matmul[target="gpu"](
-                        dW_bf16_tt,
-                        cacheT_bf16_tt,
-                        go_bf16_tt,
-                        ctx,
-                    )
-                    var dW_bf16_lt = LayoutTensor[
-                        DType.bfloat16, gw_layout, MutAnyOrigin
-                    ](self.amp.dW_bf16_dev.value())
-                    comptime acc_bf16_kernel = _accum_bf16_kernel[Self.W_SIZE]
-                    ctx.enqueue_function[acc_bf16_kernel](
-                        gw_lt,
-                        dW_bf16_lt,
-                        grid_dim=n_blocks_acc,
-                        block_dim=TPB,
-                    )
-
-    def vjp_grad_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT,
-            address_space=AddressSpace.GENERIC,
-            element_size=1,
-            origin=MutAnyOrigin,
-            ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
-    ) raises:
-        """Phase 2 (S7): grad_input = grad_output @ Wᵀ. May alias the
-        cache slab — safe because the orchestrator (or `vjp`) ran
-        `vjp_param_grads` first. Runs regardless of `mode`."""
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Linear", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN]()
-
-        var go_p = grad_output_v.ptr
-        var gi_p = grad_input_v.ptr
-
-        comptime if target == "cpu":
-            # ── (3) grad_input = grad_output @ W^T (always) ────────────
-            comptime if POLICY.compute_dtype == DT:
-                var w_tt = TileTensor(
-                    self.weight.val.cpu,
-                    row_major[Self.IN, Self.OUT](),
-                )
+                    max_matmul[target="cpu"](dW_v, cT_v, go_v, None)
+                    for k in range(Self.IN_):
+                        for j in range(Self.OUT_):
+                            gw_v[k, j] += dW_v[k, j]
+                # grad_input = go @ Wᵀ
                 max_matmul[transpose_b=True, target="cpu"](
-                    grad_input_v,
-                    grad_output_v,
-                    w_tt,
-                    None,
+                    gi_v, go_v, w_v, None
                 )
             else:
-                comptime assert (
-                    POLICY.compute_dtype == DType.bfloat16
-                ), "Linear CPU supports only fp32 and bf16 compute_dtype"
-                self.amp.ensure_cpu(BATCH)
-
-                var w_bf16_p = mptr(self.amp.w_bf16_cpu.unsafe_ptr())
-                cast_fp32_to_bf16[target="cpu", N=Self.W_SIZE](
-                    self.weight.value_unsafe_ptr_cpu(),
-                    w_bf16_p,
+                var c = ctx.value()
+                gind.ensure_gpu(c, B * Self.IN_)
+                self.cacheT.ensure_gpu(c, Self.IN_ * B)
+                self.dW_tmp.ensure_gpu(c, Self.W_SIZE)
+                # grad_b += colsum(go)
+                var gol = god.lt[
+                    "gpu", Layout.row_major(B, Self.OUT_)
+                ]()
+                var gbl = self.bias.grd.lt[
+                    "gpu", Layout.row_major(Self.OUT_)
+                ]()
+                c.enqueue_function[_lin_gb_kernel[B, Self.OUT_]](
+                    gol, gbl, grid_dim=(Self.OUT_ + 255) // 256, block_dim=256
                 )
-
-                var go_bf16_p = mptr(self.amp.ou_bf16_cpu.unsafe_ptr())
-                cast_fp32_to_bf16[target="cpu", N=BATCH * Self.OUT](
-                    go_p,
-                    go_bf16_p,
+                # grad_w += cacheᵀ @ go: transpose x → cacheT (B1' tiled, fp32),
+                # then the two GEMMs (grad_w + grad_x), then the grad_w accumulate.
+                var xl = find.lt["gpu", Layout.row_major(B, Self.IN_)]()
+                var cTl = self.cacheT.lt[
+                    "gpu", Layout.row_major(Self.IN_, B)
+                ]()
+                c.enqueue_function[_transpose_tiled_kernel[B, Self.IN_]](
+                    xl,
+                    cTl,
+                    grid_dim=(
+                        (Self.IN_ + _T_TILE - 1) // _T_TILE,
+                        (B + _T_TILE - 1) // _T_TILE,
+                    ),
+                    block_dim=(_T_TILE, _T_BR),
                 )
-
-                var go_bf16_tt = TileTensor(
-                    self.amp.ou_bf16_cpu,
-                    row_major[BATCH, Self.OUT](),
+                var dW_v = TileTensor(
+                    self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]()
                 )
-                var w_bf16_tt = TileTensor(
-                    self.amp.w_bf16_cpu,
-                    row_major[Self.IN, Self.OUT](),
+                var gi_v = TileTensor(
+                    gind.dev.value(), row_major[B, Self.IN_]()
                 )
-                var gi_bf16_tt = TileTensor(
-                    self.amp.in_bf16_cpu,
-                    row_major[BATCH, Self.IN](),
+                var cT_v = TileTensor(
+                    self.cacheT.dev.value(), row_major[Self.IN_, B]()
                 )
-                max_matmul[transpose_b=True, target="cpu"](
-                    gi_bf16_tt,
-                    go_bf16_tt,
-                    w_bf16_tt,
-                    None,
+                var go_v = TileTensor(
+                    god.dev.value(), row_major[B, Self.OUT_]()
                 )
-
-                var gi_bf16_p = mptr(self.amp.in_bf16_cpu.unsafe_ptr())
-                cast_bf16_to_fp32[target="cpu", N=BATCH * Self.IN](
-                    gi_bf16_p,
-                    gi_p,
+                max_matmul[target="gpu"](dW_v, cT_v, go_v, c)
+                var w_v = TileTensor(
+                    self.weight.val.dev.value(),
+                    row_major[Self.IN_, Self.OUT_](),
+                )
+                max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_v, c)
+                # grad_w += dW (accumulate into the fp32 master grad)
+                var gwl = self.weight.grd.lt[
+                    "gpu", Layout.row_major(Self.W_SIZE)
+                ]()
+                var dWl = self.dW_tmp.lt[
+                    "gpu", Layout.row_major(Self.W_SIZE)
+                ]()
+                c.enqueue_function[_accum_kernel[Self.W_SIZE]](
+                    gwl, dWl, grid_dim=(Self.W_SIZE + 255) // 256, block_dim=256
                 )
         else:
-            var ctx = self.ts.ctx.value()
+            # ── bf16-flow path (GPU-only) ──
+            comptime assert (
+                target == "gpu"
+            ), "bf16-flow Linear is GPU-only"
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.IN_)
+            self.cacheT_bf.ensure_gpu(c, Self.IN_ * B)
+            self.dW_tmp.ensure_gpu(c, Self.W_SIZE)
+            # grad_b += colsum(go): bf16 go → fp32 master grad (fp32 accumulator).
+            var gol = grad_output.lt["gpu", Layout.row_major(B, Self.OUT_)]()
+            var gbl = self.bias.grd.lt["gpu", Layout.row_major(Self.OUT_)]()
+            c.enqueue_function[_lin_gb_kernel[B, Self.OUT_, Self.ADT]](
+                gol, gbl, grid_dim=(Self.OUT_ + 255) // 256, block_dim=256
+            )
+            # grad_w += cacheᵀ @ go. `fin`/`go` are ALREADY bf16 (no cast).
+            # Transpose the bf16 fwd-input directly → bf16 cacheT_bf, then a
+            # bf16-in → FP32-out GEMM into the fp32 dW_tmp, then accumulate into
+            # the fp32 master grad. W reuses the forward's cached cast.
+            self._ensure_w_bf(c)
+            var xl = fin.lt["gpu", Layout.row_major(B, Self.IN_)]()
+            var cTl = self.cacheT_bf.lt["gpu", Layout.row_major(Self.IN_, B)]()
+            c.enqueue_function[_transpose_tiled_kernel[B, Self.IN_, Self.ADT]](
+                xl,
+                cTl,
+                grid_dim=(
+                    (Self.IN_ + _T_TILE - 1) // _T_TILE,
+                    (B + _T_TILE - 1) // _T_TILE,
+                ),
+                block_dim=(_T_TILE, _T_BR),
+            )
+            var dW_v = TileTensor(
+                self.dW_tmp.dev.value(), row_major[Self.IN_, Self.OUT_]()
+            )
+            var gi_v = TileTensor(gin.dev.value(), row_major[B, Self.IN_]())
+            var cTb_v = TileTensor(
+                self.cacheT_bf.dev.value(), row_major[Self.IN_, B]()
+            )
+            var gob_v = TileTensor(
+                grad_output.dev.value(), row_major[B, Self.OUT_]()
+            )
+            var wb_v = TileTensor(
+                self.w_bf.dev.value(), row_major[Self.IN_, Self.OUT_]()
+            )
+            # grad_w = cacheT_bfᵀ-form @ go → fp32 dW (bf16-in, fp32-out).
+            max_matmul[target="gpu"](dW_v, cTb_v, gob_v, c)
+            # grad_x = go @ Wᵀ → bf16 gin (bf16-in, bf16-out — gin flows at bf16).
+            max_matmul[transpose_b=True, target="gpu"](gi_v, gob_v, wb_v, c)
+            # grad_w += dW (accumulate into the fp32 master grad)
+            var gwl = self.weight.grd.lt[
+                "gpu", Layout.row_major(Self.W_SIZE)
+            ]()
+            var dWl = self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)]()
+            c.enqueue_function[_accum_kernel[Self.W_SIZE]](
+                gwl, dWl, grid_dim=(Self.W_SIZE + 255) // 256, block_dim=256
+            )
 
-            # ── (3) grad_input = grad_output @ W^T ─────────────────────
-            comptime if POLICY.compute_dtype == DT:
-                var weight_tt = TileTensor(
-                    self.weight.val.dev.value(),
-                    row_major[Self.IN, Self.OUT](),
-                )
-                max_matmul[transpose_b=True, target="gpu"](
-                    grad_input_v,
-                    grad_output_v,
-                    weight_tt,
-                    ctx,
-                )
-            else:
-                comptime assert (
-                    POLICY.compute_dtype == DType.bfloat16
-                ), "Linear supports only fp32 and bf16 compute_dtype"
-                self.amp.ensure_gpu(BATCH, ctx)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the `weight` + `bias` Params).
 
-                # Fix 2: reuse the weight bf16 cast the forward already did
-                # this step instead of re-casting. Falls back to casting if no
-                # forward ran (e.g. a direct backward in a test), which leaves
-                # `w_step_valid` False from `make()`.
-                if not self.amp.w_step_valid:
-                    cast_fp32_to_bf16[target="gpu", N=Self.W_SIZE](
-                        mptr(self.weight.val.dev.value().unsafe_ptr()),
-                        mptr(self.amp.w_bf16_dev.value().unsafe_ptr()),
-                        ctx,
-                    )
-
-                var go_bf16_p = mptr(self.amp.ou_bf16_dev.value().unsafe_ptr())
-                cast_fp32_to_bf16[target="gpu", N=BATCH * Self.OUT](
-                    go_p,
-                    go_bf16_p,
-                    ctx,
-                )
-
-                var go_bf16_tt = TileTensor(
-                    self.amp.ou_bf16_dev.value(),
-                    row_major[BATCH, Self.OUT](),
-                )
-                var w_bf16_tt = TileTensor(
-                    self.amp.w_bf16_dev.value(),
-                    row_major[Self.IN, Self.OUT](),
-                )
-                var gi_bf16_tt = TileTensor(
-                    self.amp.in_bf16_dev.value(),
-                    row_major[BATCH, Self.IN](),
-                )
-                max_matmul[transpose_b=True, target="gpu"](
-                    gi_bf16_tt,
-                    go_bf16_tt,
-                    w_bf16_tt,
-                    ctx,
-                )
-
-                var gi_bf16_p = mptr(self.amp.in_bf16_dev.value().unsafe_ptr())
-                cast_bf16_to_fp32[target="gpu", N=BATCH * Self.IN](
-                    gi_bf16_p,
-                    gi_p,
-                    ctx,
-                )
-
-    # ----- Param / grad walkers (reflection-derived) ----------------------
-
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        """Auto-derived via reflection — finds every `Param[NAME, DECAY, SIZE]`
-        field and dispatches the visitor."""
-        assert_tag_for["Linear", target](self.ts.target_tag)
-        for_each_param_auto[Self, V, target](self, prefix, visitor)
-
-    def zero_grad[target: StaticString](mut self) raises:
-        """Auto-derived via reflection — clears every Param's grad."""
-        assert_tag_for["Linear", target](self.ts.target_tag)
-        zero_grad_auto[Self, target](self)
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self,
+        mut src: Self,
+        tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        polyak_tensor[target, Self.W_SIZE](
+            self.weight.val, src.weight.val, tau, ctx
+        )
+        polyak_tensor[target, Self.B_SIZE](
+            self.bias.val, src.bias.val, tau, ctx
+        )

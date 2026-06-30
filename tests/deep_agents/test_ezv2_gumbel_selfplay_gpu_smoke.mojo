@@ -16,7 +16,7 @@ from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, MZPredNet, EZProjectorNet, EZPredictorNet,
@@ -53,16 +53,16 @@ def main() raises:
 
     var ctx = DeviceContext()
     var env = CartPoleEnv[DType.float32]()
-    var rep = Rep.make["gpu", INIT=Kaiming](ctx)
-    var dyn = Dyn.make["gpu", INIT=Kaiming](ctx)
-    var pred = Pred.make["gpu", INIT=Kaiming](ctx)
-    var proj = Proj.make["gpu", INIT=Kaiming](ctx)
-    var predh = Predh.make["gpu", INIT=Kaiming](ctx)
-    var orep = Adam.make["gpu", M=Rep](rep, ctx)
-    var odyn = Adam.make["gpu", M=Dyn](dyn, ctx)
-    var opred = Adam.make["gpu", M=Pred](pred, ctx)
-    var oproj = Adam.make["gpu", M=Proj](proj, ctx)
-    var opredh = Adam.make["gpu", M=Predh](predh, ctx)
+    var rep = Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred = Pred.make["gpu", Kaiming](Optional(ctx))
+    var proj = Proj.make["gpu", Kaiming](Optional(ctx))
+    var predh = Predh.make["gpu", Kaiming](Optional(ctx))
+    var orep = Adam(lr=Scalar[DT](1e-3))
+    var odyn = Adam(lr=Scalar[DT](1e-3))
+    var opred = Adam(lr=Scalar[DT](1e-3))
+    var oproj = Adam(lr=Scalar[DT](1e-3))
+    var opredh = Adam(lr=Scalar[DT](1e-3))
     orep.lr = Scalar[DT](3e-4)
     odyn.lr = Scalar[DT](3e-4)
     opred.lr = Scalar[DT](3e-4)

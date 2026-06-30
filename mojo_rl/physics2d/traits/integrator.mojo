@@ -9,7 +9,7 @@ from layout import LayoutTensor, Layout
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 
-trait Integrator(Movable & ImplicitlyCopyable):
+trait Integrator(ImplicitlyCopyable):
     """Trait for velocity and position integration methods.
 
     Integrators are stateless - they describe the integration algorithm but

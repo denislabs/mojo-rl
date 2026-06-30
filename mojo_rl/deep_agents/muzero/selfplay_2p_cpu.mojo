@@ -27,11 +27,11 @@ TTT agent never loses (all draws vs minimax; wins + draws, no losses vs random).
 Returns the last training loss.
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from std.math import exp, log
-from std.memory import alloc
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
+from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.planners.tree_search import (
@@ -48,8 +48,6 @@ from ..zero.evaluators import CPUEvaluator, RandomOpponent
 from ..zero.temperature import visit_temperature
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
 
 
 @always_inline
@@ -62,7 +60,7 @@ def _xs(s: UInt64) -> UInt64:
 
 
 def run_muzero_selfplay_2p_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & ImplicitlyDeletable,
     REP: Module,
     DYN: Module,
     PRED: Module,
@@ -111,20 +109,24 @@ def run_muzero_selfplay_2p_cpu[
     ](gamma=Float64(gamma))
     var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
 
-    var rep_a = MZRepCPU[OBS, LATENT, REP](net=UnsafePointer(to=rep))
+    var rep_a = MZRepCPU[OBS, LATENT, REP](
+        net=untracked(UnsafePointer(to=rep))
+    )
     var dyn_a = MZDynCPU[LATENT, ACT, BINS, DYN](
-        net=UnsafePointer(to=dyn), v_min=v_min, v_max=v_max
+        net=untracked(UnsafePointer(to=dyn)), v_min=v_min, v_max=v_max
     )
     var pred_a = MZPredCPU[LATENT, ACT, BINS, PRED](
-        net=UnsafePointer(to=pred), v_min=v_min, v_max=v_max
+        net=untracked(UnsafePointer(to=pred)),
+        v_min=v_min, v_max=v_max
     )
 
-    # training batch slabs (time-major), allocated once
-    var t_obs0 = _a(B * OBS)
-    var t_act = _a(K * B)
-    var t_pol = _a((K + 1) * B * ACT)
-    var t_val = _a((K + 1) * B)
-    var t_rew = _a(K * B)
+    # training batch slabs (time-major) — owned Lists (RAII), filled by the
+    # replay's List API and read by the List-input unroll. No raw pointers.
+    var t_obs0 = List[Scalar[DT]](length=B * OBS, fill=0)
+    var t_act = List[Scalar[DT]](length=K * B, fill=0)
+    var t_pol = List[Scalar[DT]](length=(K + 1) * B * ACT, fill=0)
+    var t_val = List[Scalar[DT]](length=(K + 1) * B, fill=0)
+    var t_rew = List[Scalar[DT]](length=K * B, fill=0)
 
     # episode accumulation buffers
     var e_obs = List[Scalar[DT]]()
@@ -136,9 +138,9 @@ def run_muzero_selfplay_2p_cpu[
     var e_legal = List[Scalar[DT]]()    # [L, ACT] root legal mask (reanalyze)
     var ep_len = 0
 
-    # reanalyze scratch (refresh stale policy/value targets on old positions)
-    var re_obs = _a(OBS)
-    var re_pol = _a(ACT)
+    # reanalyze scratch (owned Lists; read_obs/update_targets take Lists)
+    var re_obs = List[Scalar[DT]](length=OBS, fill=0)
+    var re_pol = List[Scalar[DT]](length=ACT, fill=0)
 
     var rng = seed ^ UInt64(0x123456789)
     var last_loss = 0.0
@@ -211,13 +213,7 @@ def run_muzero_selfplay_2p_cpu[
             # Board games end with `done`; only the max_ep_steps loop cap is a
             # (theoretical) truncation — flag it so targets bootstrap past it.
             rb.store_episode(
-                mptr(e_obs.unsafe_ptr()),
-                mptr(e_act.unsafe_ptr()),
-                mptr(e_rew.unsafe_ptr()),
-                mptr(e_pol.unsafe_ptr()),
-                mptr(e_val.unsafe_ptr()),
-                mptr(e_tp.unsafe_ptr()),
-                mptr(e_legal.unsafe_ptr()),
+                e_obs, e_act, e_rew, e_pol, e_val, e_tp, e_legal,
                 ep_len,
                 truncated=not done,
             )
@@ -321,6 +317,4 @@ def run_muzero_selfplay_2p_cpu[
         if verbose and (it + 1) % 1000 == 0:
             print("step", it + 1, "loss", last_loss, "eps", rb.num_episodes())
 
-    t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
-    re_obs.free(); re_pol.free()
     return last_loss

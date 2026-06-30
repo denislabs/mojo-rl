@@ -8,19 +8,27 @@ Per-step entry point. Runs:
   5. Writes env-ready actions; caches per-env (sample, log_prob, value).
 
 Per-env caches (cached_action / cached_log_prob / cached_value) live as
-Scratches sized N_ENVS, consumed by the next `PPORecordStep.step`.
+storage Tensors sized N_ENVS, consumed by the next `PPORecordStep.step`.
 
 Greedy variant: deterministic — uses mu directly, no sampling, doesn't
 touch the cache. N=1 greedy path exposed via list-based wrapper for
 single-env eval.
+
+STORAGE migration: nets are storage `Module`s (`forward[target, B, POLICY](
+TensorRefs[1](ob1), ao1, ctx)`). The obs/output staging works on the storage
+tensors' host `.data` (sanctioned host loops). On GPU `ob1.upload(ctx)` stages
+H2D, the actor/critic forward runs on device, then `ao1.download`/`v1.download`
+read the result back on host for the sampling walk.
 """
 
 from std.math import exp as fexp
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.random.box_muller import box_muller_normal
 from ...training.onpolicy_state import OnPolicyState
 
@@ -44,7 +52,7 @@ struct PPOActStep[
     ACT_: Int,
     ACTOR: Module,
     CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
 
@@ -68,6 +76,7 @@ struct PPOActStep[
         ROLLOUT_LEN: Int,
         MINIBATCH: Int,
         N_ENVS: Int,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         mut state: OnPolicyState[
@@ -87,53 +96,48 @@ struct PPOActStep[
         Both pointers are host-side (rollout buffer is host-only on
         GPU train_target — see OnPolicyState docstring). On GPU,
         actor + critic forward run on device via H2D/D2H staging."""
-        var ob1_cpu_p  = state.ob1.cpu_ptr()
-        var ao1_cpu_p  = state.ao1.cpu_ptr()
-        var v1_cpu_p   = state.v1.cpu_ptr()
-        var z_cpu_p    = state.z.cpu_ptr()
-        var ca_cpu_p   = state.cached_action.cpu_ptr()
-        var clp_cpu_p  = state.cached_log_prob.cpu_ptr()
-        var cval_cpu_p = state.cached_value.cpu_ptr()
-
-        # Stage N_ENVS × OBS into host mirror of ob1.
+        # Stage N_ENVS × OBS into the host mirror of ob1 (index the storage
+        # tensor's `.data` List directly; obs_ptr is the driver trait ABI).
         for e in range(N_ENVS):
             for d in range(Self.OBS):
-                ob1_cpu_p[e * Self.OBS + d] = obs_ptr[e * Self.OBS + d]
+                state.ob1.data[e * Self.OBS + d] = obs_ptr[e * Self.OBS + d]
 
-        comptime if target == "cpu":
-            var ob1_t = TileTensor(ob1_cpu_p, row_major[N_ENVS, Self.OBS]())
-            var ao1_t = TileTensor(ao1_cpu_p, row_major[N_ENVS, 2 * Self.ACT]())
-            actor.forward[target, N_ENVS](ob1_t, output=ao1_t)
-            var v1_t = TileTensor(v1_cpu_p, row_major[N_ENVS, 1]())
-            critic.forward[target, N_ENVS](ob1_t, output=v1_t)
-        else:
+        comptime if target == "gpu":
             var ctx = state.ctx.value()
-            ctx.enqueue_copy(state.ob1.dev.value(), ob1_cpu_p)
-            var ob1_dev_t = TileTensor(
-                state.ob1.dev_ptr(), row_major[N_ENVS, Self.OBS](),
+            state.ob1.upload(ctx)
+            call_forward[target, N_ENVS, POLICY=POLICY](
+                actor, TensorRefs[Self.ACTOR.ARITY](state.ob1), state.ao1, state.ctx
             )
-            var ao1_dev_t = TileTensor(
-                state.ao1.dev_ptr(), row_major[N_ENVS, 2 * Self.ACT](),
+            call_forward[target, N_ENVS, POLICY=POLICY](
+                critic, TensorRefs[Self.CRITIC.ARITY](state.ob1), state.v1, state.ctx
             )
-            var v1_dev_t = TileTensor(
-                state.v1.dev_ptr(), row_major[N_ENVS, 1](),
+            state.ao1.download(ctx)
+            state.v1.download(ctx)
+        else:
+            call_forward[target, N_ENVS, POLICY=POLICY](
+                actor, TensorRefs[Self.ACTOR.ARITY](state.ob1), state.ao1, state.ctx
             )
-            actor.forward[target, N_ENVS](ob1_dev_t, output=ao1_dev_t)
-            critic.forward[target, N_ENVS](ob1_dev_t, output=v1_dev_t)
-            ctx.enqueue_copy(ao1_cpu_p, state.ao1.dev.value())
-            ctx.enqueue_copy(v1_cpu_p,  state.v1.dev.value())
-            ctx.synchronize()
+            call_forward[target, N_ENVS, POLICY=POLICY](
+                critic, TensorRefs[Self.CRITIC.ARITY](state.ob1), state.v1, state.ctx
+            )
 
-        box_muller_normal(z_cpu_p, N_ENVS * Self.ACT)
+        # Host RNG fill of the noise buffer (box_muller takes a raw pointer —
+        # a genuine pointer-API boundary, the one sanctioned unsafe here).
+        box_muller_normal(state.z.data.unsafe_ptr(), N_ENVS * Self.ACT)
+        # Sampling walk reads/writes the host `.data` Lists directly.
+        ref ao1 = state.ao1.data
+        ref v1 = state.v1.data
+        ref z = state.z.data
+        ref ca = state.cached_action.data
+        ref clp = state.cached_log_prob.data
+        ref cval = state.cached_value.data
         for e in range(N_ENVS):
             var lp_total: Scalar[DT] = 0.0
             for j in range(Self.ACT):
-                var mu = ao1_cpu_p[e * 2 * Self.ACT + j]
-                var ls = _clamp_log_std(
-                    ao1_cpu_p[e * 2 * Self.ACT + Self.ACT + j]
-                )
-                var sample = mu + fexp(ls) * z_cpu_p[e * Self.ACT + j]
-                ca_cpu_p[e * Self.ACT + j] = sample
+                var mu = ao1[e * 2 * Self.ACT + j]
+                var ls = _clamp_log_std(ao1[e * 2 * Self.ACT + Self.ACT + j])
+                var sample = mu + fexp(ls) * z[e * Self.ACT + j]
+                ca[e * Self.ACT + j] = sample
                 var env_a = sample
                 if env_a > action_scale:
                     env_a = action_scale
@@ -144,14 +148,15 @@ struct PPOActStep[
                 lp_total += Scalar[DT](-0.5) * (
                     LOG_2PI + Scalar[DT](2.0) * ls + zz * zz
                 )
-            clp_cpu_p[e]  = lp_total
-            cval_cpu_p[e] = v1_cpu_p[e]
+            clp[e] = lp_total
+            cval[e] = v1[e]
 
     def step_greedy_n1[
         target: StaticString,
         ROLLOUT_LEN: Int,
         MINIBATCH: Int,
         N_ENVS: Int,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
         mut state: OnPolicyState[
@@ -166,28 +171,22 @@ struct PPOActStep[
         directly. Does not touch the cache (eval bypasses the rollout
         buffer). Always BATCH=1 even when state was sized for N_ENVS>1
         (writes only the first OBS/ACT slot of ob1/ao1)."""
-        var ob1_cpu_p = state.ob1.cpu_ptr()
-        var ao1_cpu_p = state.ao1.cpu_ptr()
         for d in range(Self.OBS):
-            ob1_cpu_p[d] = obs[d]
-        comptime if target == "cpu":
-            var ob1_t = TileTensor(ob1_cpu_p, row_major[1, Self.OBS]())
-            var ao1_t = TileTensor(ao1_cpu_p, row_major[1, 2 * Self.ACT]())
-            actor.forward[target, 1](ob1_t, output=ao1_t)
-        else:
+            state.ob1.data[d] = obs[d]
+        comptime if target == "gpu":
             var ctx = state.ctx.value()
-            ctx.enqueue_copy(state.ob1.dev.value(), ob1_cpu_p)
-            var ob1_dev_t = TileTensor(
-                state.ob1.dev_ptr(), row_major[1, Self.OBS](),
+            state.ob1.upload(ctx)
+            call_forward[target, 1, POLICY=POLICY](
+                actor, TensorRefs[Self.ACTOR.ARITY](state.ob1), state.ao1, state.ctx
             )
-            var ao1_dev_t = TileTensor(
-                state.ao1.dev_ptr(), row_major[1, 2 * Self.ACT](),
+            state.ao1.download(ctx)
+        else:
+            call_forward[target, 1, POLICY=POLICY](
+                actor, TensorRefs[Self.ACTOR.ARITY](state.ob1), state.ao1, state.ctx
             )
-            actor.forward[target, 1](ob1_dev_t, output=ao1_dev_t)
-            ctx.enqueue_copy(ao1_cpu_p, state.ao1.dev.value())
-            ctx.synchronize()
+        ref ao1 = state.ao1.data
         for j in range(Self.ACT):
-            var env_a = ao1_cpu_p[j]
+            var env_a = ao1[j]
             if env_a > action_scale:
                 env_a = action_scale
             elif env_a < -action_scale:

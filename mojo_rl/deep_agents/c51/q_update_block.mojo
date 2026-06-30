@@ -1,65 +1,57 @@
-"""C51QUpdateBlock — distributional Q-net gradient step (cross-entropy).
+"""C51QUpdateBlock — distributional Q-net gradient step (cross-entropy) (STORAGE).
 
-Mirrors `dqn/q_update_block.mojo` but the loss is a cross-entropy
-against the per-batch target distribution `m [B, N_ATOMS]` computed
-by `C51TargetYBlock` instead of MSE against a scalar y.
+Mirrors `dqn/q_update_block.mojo` but the loss is a cross-entropy against the
+per-batch target distribution `m [B, N_ATOMS]` from `C51TargetYBlock` instead of
+MSE against a scalar y.
 
 Pipeline:
-  1. opt.zero_grad
+  1. q.zero_grad
   2. Q_online(s) → _logits_all                       [B, NA · N_ATOMS]
   3. GatherActionSlice(_logits_all, mb_a) → _logits_a [B, N_ATOMS]
   4. CrossEntropyLoss[N_ATOMS](_logits_a, m) → scalar loss
-     (computes softmax+log_softmax internally; numerically stable)
-  5. CE.vjp(m, grad_logits_a)  →  grad_logits_a = (softmax − m) / BATCH
+  5. CE.vjp(_logits_a, m, grad_logits_a) → (softmax(_logits_a) − m)/BATCH
   6. Scatter grad_logits_a into _grad_logits_all at slot `a_taken · N_ATOMS`
-     (block-owned kernel — mirrors DQNQUpdateBlock's scatter).
   7. Q_online.vjp(_grad_logits_all) → _grad_obs (discarded)
   8. opt.step
 
-PER plumbing: identical sentinel pattern as `DQNQUpdateBlock` —
-`weights_p` / `td_residuals_p` default null. PER scale: multiplies
-`grad_logits_a` per-row by `weights[i]` after CE.vjp; td_residual
-capture for C51 uses cross-entropy loss as the priority signal
-(common Rainbow practice: per-sample CE = -Σ_k m·log_softmax). For the
-first port we capture the per-sample CE before IS scaling; weights are
-applied AFTER capture so priorities reflect un-weighted error.
+PER: same sentinel pattern as `DQNQUpdateBlock`. PER signal = per-sample
+cross-entropy (captured before IS scaling); IS weights scale grad_logits_a
+per-row after capture.
 
-CPU + GPU. GPU branch lifts the host scatter / PER capture / PER
-scale loops into kernels.
+STORAGE migration (Stage 5): `Scratch`/`TargetStorage`/`init_scratch_auto`/
+TileTensor gone; scratch are owned `Tensor`s; the gather slice feeds from a
+block-owned `TensorPack[2]` (§B0); storage `CrossEntropyLoss` + `Adam`. CPU +
+GPU. PER weights/td_residuals are `Optional[LayoutTensor]` (mirror
+`CriticUpdateBlock`/`DQNQUpdateBlock`).
 """
 
 from std.math import exp as fexp, log as flog
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.tensor_pack import TensorPack
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.scratch import Scratch
-from mojo_rl.nn.core.scratch_walkers import init_scratch_auto
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
-from mojo_rl.nn.initializer import Zero
+from mojo_rl.nn.core.call import call_forward, call_vjp
+from mojo_rl.nn.core.initializer import Zero
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.loss.cross_entropy import CrossEntropyLoss
 from mojo_rl.nn.primitives.gather_action_slice import GatherActionSlice
 
 
 # ──────────────────────────────────────────────────────────────────────
-# GPU kernels — module-level (one thread per BATCH row except scatter
-# which is one thread per (b, c)).
+# GPU kernels — module-level.
 # ──────────────────────────────────────────────────────────────────────
 
 
 def _c51_per_residual_kernel[
     BATCH: Int, N_ATOMS: Int
 ](
-    logits_a: LayoutTensor[
-        DT,
-        Layout.row_major(BATCH, N_ATOMS),
-        MutAnyOrigin,
-    ],
+    logits_a: LayoutTensor[DT, Layout.row_major(BATCH, N_ATOMS), MutAnyOrigin],
     m: LayoutTensor[DT, Layout.row_major(BATCH, N_ATOMS), MutAnyOrigin],
     td_out: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
 ):
@@ -88,9 +80,7 @@ def _c51_per_scale_kernel[
     BATCH: Int, N_ATOMS: Int
 ](
     grad_logits_a: LayoutTensor[
-        DT,
-        Layout.row_major(BATCH, N_ATOMS),
-        MutAnyOrigin,
+        DT, Layout.row_major(BATCH, N_ATOMS), MutAnyOrigin,
     ],
     weights: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
 ):
@@ -109,15 +99,11 @@ def _c51_scatter_grad_kernel[
     BATCH: Int, NA: Int, N_ATOMS: Int
 ](
     grad_logits_a: LayoutTensor[
-        DT,
-        Layout.row_major(BATCH, N_ATOMS),
-        MutAnyOrigin,
+        DT, Layout.row_major(BATCH, N_ATOMS), MutAnyOrigin,
     ],
     mb_a: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     grad_logits_all: LayoutTensor[
-        DT,
-        Layout.row_major(BATCH, NA * N_ATOMS),
-        MutAnyOrigin,
+        DT, Layout.row_major(BATCH, NA * N_ATOMS), MutAnyOrigin,
     ],
 ):
     """`grad_logits_all[b, c] = 0`, then `grad_logits_all[b, a·N + i] =
@@ -143,42 +129,27 @@ struct C51QUpdateBlock[
     OBS: Int,
     NA: Int,
     N_ATOMS: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     var ce_loss: CrossEntropyLoss[Self.N_ATOMS]
     var gather_slice: GatherActionSlice[Self.NA, Self.N_ATOMS]
 
-    var _logits_all: Scratch["logits_all", Self.BATCH * Self.NA * Self.N_ATOMS]
-    var _logits_a: Scratch["logits_a", Self.BATCH * Self.N_ATOMS]
-    var _grad_logits_a: Scratch["grad_logits_a", Self.BATCH * Self.N_ATOMS]
-    var _grad_logits_all: Scratch[
-        "grad_logits_all",
-        Self.BATCH * Self.NA * Self.N_ATOMS,
-    ]
-    var _grad_obs: Scratch["grad_obs", Self.BATCH * Self.OBS]
+    # GatherActionSlice inputs share ONE origin (§B0): slot[0] = Q(s) logits
+    # [B, NA·N_ATOMS] (Q.forward writes here), slot[1] = an mb_a copy [B].
+    var _gather_in: TensorPack[2]
 
-    var ts: TargetStorage
+    var _logits_a: Tensor          # [B · N_ATOMS]
+    var _grad_logits_a: Tensor     # [B · N_ATOMS]
+    var _grad_logits_all: Tensor   # [B · NA · N_ATOMS]
+    var _grad_obs: Tensor          # [B · OBS]
 
     def __init__(out self):
         self.ce_loss = CrossEntropyLoss[Self.N_ATOMS]()
         self.gather_slice = GatherActionSlice[Self.NA, Self.N_ATOMS]()
-        self._logits_all = Scratch[
-            "logits_all",
-            Self.BATCH * Self.NA * Self.N_ATOMS,
-        ]()
-        self._logits_a = Scratch[
-            "logits_a",
-            Self.BATCH * Self.N_ATOMS,
-        ]()
-        self._grad_logits_a = Scratch[
-            "grad_logits_a",
-            Self.BATCH * Self.N_ATOMS,
-        ]()
-        self._grad_logits_all = Scratch[
-            "grad_logits_all",
-            Self.BATCH * Self.NA * Self.N_ATOMS,
-        ]()
-        self._grad_obs = Scratch["grad_obs", Self.BATCH * Self.OBS]()
-        self.ts = TargetStorage.make_uninit()
+        self._gather_in = TensorPack[2]()
+        self._logits_a = Tensor()
+        self._grad_logits_a = Tensor()
+        self._grad_logits_all = Tensor()
+        self._grad_obs = Tensor()
 
     @staticmethod
     def make[
@@ -194,13 +165,27 @@ struct C51QUpdateBlock[
             Self.Q_NET.OUT_DIM == Self.NA * Self.N_ATOMS
         ), "C51QUpdateBlock: Q_NET.OUT_DIM must equal NA · N_ATOMS"
         var b = Self()
-        b.ce_loss = CrossEntropyLoss[Self.N_ATOMS].make[target](ctx=ctx)
         b.gather_slice = GatherActionSlice[Self.NA, Self.N_ATOMS].make[
-            target,
-            INIT=Zero,
+            target, INIT=Zero,
         ](ctx=ctx)
-        b.ts = TargetStorage.make[target](ctx=ctx)
-        init_scratch_auto[Self, target=target](b, ctx)
+        comptime ROW = Self.NA * Self.N_ATOMS
+        comptime if target == "cpu":
+            b.ce_loss = CrossEntropyLoss[Self.N_ATOMS].make_cpu()
+            b._gather_in[0].ensure(Self.BATCH * ROW)
+            b._gather_in[1].ensure(Self.BATCH)
+            b._logits_a = Tensor.alloc(Self.BATCH * Self.N_ATOMS)
+            b._grad_logits_a = Tensor.alloc(Self.BATCH * Self.N_ATOMS)
+            b._grad_logits_all = Tensor.alloc(Self.BATCH * ROW)
+            b._grad_obs = Tensor.alloc(Self.BATCH * Self.OBS)
+        else:
+            var c = ctx.value()
+            b.ce_loss = CrossEntropyLoss[Self.N_ATOMS].make_gpu(c)
+            b._gather_in[0].ensure_gpu(c, Self.BATCH * ROW)
+            b._gather_in[1].ensure_gpu(c, Self.BATCH)
+            b._logits_a = Tensor.alloc_gpu(c, Self.BATCH * Self.N_ATOMS)
+            b._grad_logits_a = Tensor.alloc_gpu(c, Self.BATCH * Self.N_ATOMS)
+            b._grad_logits_all = Tensor.alloc_gpu(c, Self.BATCH * ROW)
+            b._grad_obs = Tensor.alloc_gpu(c, Self.BATCH * Self.OBS)
         return b^
 
     def step[
@@ -211,225 +196,157 @@ struct C51QUpdateBlock[
         mut self,
         mut q_online: Self.Q_NET,
         mut q_opt: Adam,
-        mb_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_m_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        weights_p: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]] = None,
-        td_residuals_p: Optional[
-            UnsafePointer[Scalar[DT], MutAnyOrigin]
+        mut mb_s: Tensor,
+        mut mb_a: Tensor,
+        mut mb_m: Tensor,
+        weights: Optional[
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
         ] = None,
+        td_residuals: Optional[
+            LayoutTensor[DT, Layout.row_major(Self.BATCH), MutAnyOrigin]
+        ] = None,
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Scalar[DT]:
-        """Zero_grad → Q.forward → gather slice → CE forward+vjp →
-        (PER hooks) → scatter → Q.vjp → opt.step. Returns scalar loss.
-
-        `ACCUMULATE` (GPU only): the cross-entropy reduction stays on device
-        (`ce_loss.forward_accumulate`, no per-step D2H) so this step is
-        CUDA-graph-capturable; the host reads the running loss at flush via
-        `ce_loss.read_accum`. Returns a 0 sentinel in that mode."""
-        assert_tag_for["C51QUpdateBlock", target](self.ts.target_tag)
+        """`zero_grad` → Q.forward → gather slice → CE forward(+accum) → CE.vjp →
+        [PER capture + IS scale] → scatter → Q.vjp → opt.step. Returns the
+        scalar loss (0 sentinel under GPU ACCUMULATE; read at flush)."""
         comptime ROW = Self.NA * Self.N_ATOMS
 
-        var logits_all_p = self._logits_all.target_ptr[target]()
-        var logits_a_p = self._logits_a.target_ptr[target]()
-        var grad_logits_a_p = self._grad_logits_a.target_ptr[target]()
-        var grad_logits_all_p = self._grad_logits_all.target_ptr[target]()
-        var grad_obs_p = self._grad_obs.target_ptr[target]()
-
         # 1. Zero grads.
-        q_opt.zero_grad[target, M=Self.Q_NET](q_online)
+        q_online.zero_grad[target](ctx)
 
-        # 2. Q_online(s) → logits_all.
-        var s_t = TileTensor(mb_s_ptr, row_major[Self.BATCH, Self.OBS]())
-        var la_t = TileTensor(logits_all_p, row_major[Self.BATCH, ROW]())
-        q_online.forward[target, Self.BATCH, POLICY](s_t, output=la_t)
-
-        # 3. Gather slice at a_taken → logits_a [B, N_ATOMS].
-        # Hetero-variadic: both carriers use row_major[BATCH, NA*N_ATOMS].
-        var la_carrier = TileTensor(
-            logits_all_p,
-            row_major[Self.BATCH, ROW](),
-        )
-        var mb_a_carrier = TileTensor(
-            mb_a_ptr,
-            row_major[Self.BATCH, ROW](),
-        )
-        var la_slice_t = TileTensor(
-            logits_a_p,
-            row_major[Self.BATCH, Self.N_ATOMS](),
-        )
-        self.gather_slice.forward[target, Self.BATCH, POLICY](
-            TensorPack[2].of(la_carrier, mb_a_carrier),
-            output=la_slice_t,
+        # 2. Q_online(s) → _gather_in[0] ([B, NA·N_ATOMS]).
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            q_online, TensorRefs[Self.Q_NET.ARITY](mb_s), self._gather_in[0], ctx
         )
 
-        # 4. CE(logits_a, m) → scalar loss. On GPU+ACCUMULATE the reduction
-        # stays on device (no D2H → capturable); host reads it at flush.
-        var m_t = TileTensor(mb_m_ptr, row_major[Self.BATCH, Self.N_ATOMS]())
+        # 3. Stage mb_a into the gather pool (§B0), gather slice at a_taken.
+        comptime if target == "cpu":
+            for k in range(Self.BATCH):
+                self._gather_in[1].data[k] = mb_a.data[k]
+        else:
+            ctx.value().enqueue_copy(
+                self._gather_in[1].dev.value(), mb_a.dev.value()
+            )
+        self.gather_slice.forward[target, Self.BATCH, POLICY=POLICY](
+            TensorRefs[2](self._gather_in[0], self._gather_in[1]),
+            self._logits_a,
+            ctx,
+        )
+
+        # 4. CE(logits_a, m) → scalar loss.
         var loss: Scalar[DT]
         comptime if target == "gpu" and ACCUMULATE:
-            self.ce_loss.forward_accumulate[target, Self.BATCH, POLICY](
-                la_slice_t,
-                m_t,
+            self.ce_loss.forward_accumulate[target, Self.BATCH](
+                self._logits_a, mb_m, ctx
             )
             loss = Scalar[DT](0.0)
         else:
-            loss = self.ce_loss.forward[target, Self.BATCH, POLICY](
-                la_slice_t,
-                m_t,
+            loss = self.ce_loss.forward[target, Self.BATCH](
+                self._logits_a, mb_m, ctx
             )
 
         # 5. CE.vjp → grad_logits_a = (softmax(logits_a) − m) / BATCH.
-        var grad_la_t = TileTensor(
-            grad_logits_a_p,
-            row_major[Self.BATCH, Self.N_ATOMS](),
+        self.ce_loss.vjp[target, Self.BATCH](
+            self._logits_a, mb_m, self._grad_logits_a, ctx
         )
-        self.ce_loss.vjp[target, Self.BATCH, POLICY](m_t, grad_la_t)
 
-        comptime if target == "cpu":
-            # 5a. PER residual capture — per-sample cross-entropy.
-            if td_residuals_p:
-                var td_p = td_residuals_p.value()
+        # 5a. PER residual capture (per-sample CE), BEFORE IS scaling.
+        if td_residuals:
+            var td = td_residuals.value()
+            comptime if target == "cpu":
                 for b in range(Self.BATCH):
                     var off = b * Self.N_ATOMS
-                    var mx = logits_a_p[off]
+                    var mx = self._logits_a.data[off]
                     for i in range(1, Self.N_ATOMS):
-                        if logits_a_p[off + i] > mx:
-                            mx = logits_a_p[off + i]
+                        if self._logits_a.data[off + i] > mx:
+                            mx = self._logits_a.data[off + i]
                     var s_exp: Scalar[DT] = 0.0
                     for i in range(Self.N_ATOMS):
-                        s_exp = s_exp + fexp(logits_a_p[off + i] - mx)
+                        s_exp = s_exp + fexp(self._logits_a.data[off + i] - mx)
                     var lse = mx + flog(s_exp)
                     var ce: Scalar[DT] = 0.0
                     for i in range(Self.N_ATOMS):
-                        var log_p = logits_a_p[off + i] - lse
+                        var log_p = self._logits_a.data[off + i] - lse
                         if log_p < Scalar[DT](-20.0):
                             log_p = Scalar[DT](-20.0)
-                        ce = ce - mb_m_ptr[off + i] * log_p
-                    td_p[b] = ce
+                        ce = ce - mb_m.data[off + i] * log_p
+                    td[b] = ce
+            else:
+                comptime n_blocks_pr = (Self.BATCH + TPB - 1) // TPB
+                ctx.value().enqueue_function[
+                    _c51_per_residual_kernel[Self.BATCH, Self.N_ATOMS]
+                ](
+                    self._logits_a.lt[
+                        "gpu", Layout.row_major(Self.BATCH, Self.N_ATOMS)
+                    ](),
+                    mb_m.lt["gpu", Layout.row_major(Self.BATCH, Self.N_ATOMS)](),
+                    td,
+                    grid_dim=n_blocks_pr, block_dim=TPB,
+                )
 
-            # 5b. PER IS-weight scaling on grad_logits_a (per-row scale).
-            if weights_p:
-                var w_p = weights_p.value()
+        # 5b. PER IS-weight scaling on grad_logits_a (per-row).
+        if weights:
+            var w = weights.value()
+            comptime if target == "cpu":
                 for b in range(Self.BATCH):
-                    var w = w_p[b]
                     for i in range(Self.N_ATOMS):
-                        grad_logits_a_p[b * Self.N_ATOMS + i] = (
-                            grad_logits_a_p[b * Self.N_ATOMS + i] * w
+                        self._grad_logits_a.data[b * Self.N_ATOMS + i] = (
+                            self._grad_logits_a.data[b * Self.N_ATOMS + i]
+                            * rebind[Scalar[DT]](w[b])
                         )
+            else:
+                comptime total_scl = Self.BATCH * Self.N_ATOMS
+                comptime n_blocks_ps = (total_scl + TPB - 1) // TPB
+                ctx.value().enqueue_function[
+                    _c51_per_scale_kernel[Self.BATCH, Self.N_ATOMS]
+                ](
+                    self._grad_logits_a.lt[
+                        "gpu", Layout.row_major(Self.BATCH, Self.N_ATOMS)
+                    ](),
+                    w,
+                    grid_dim=n_blocks_ps, block_dim=TPB,
+                )
 
-            # 6. Scatter grad_logits_a → grad_logits_all at a_taken slot.
+        # 6. Scatter grad_logits_a → grad_logits_all at the a_taken slot.
+        comptime if target == "cpu":
             for b in range(Self.BATCH):
-                var a = Int(mb_a_ptr[b])
+                var a = Int(mb_a.data[b])
                 var dst_base = b * ROW
                 for c in range(ROW):
-                    grad_logits_all_p[dst_base + c] = Scalar[DT](0.0)
+                    self._grad_logits_all.data[dst_base + c] = Scalar[DT](0.0)
                 var src_base = b * Self.N_ATOMS
                 var dst_slice = dst_base + a * Self.N_ATOMS
                 for i in range(Self.N_ATOMS):
-                    grad_logits_all_p[dst_slice + i] = grad_logits_a_p[
-                        src_base + i
-                    ]
+                    self._grad_logits_all.data[dst_slice + i] = (
+                        self._grad_logits_a.data[src_base + i]
+                    )
         else:
-            var ctx = self.ts.ctx.value()
-
-            # 5a. PER residual capture on device.
-            if td_residuals_p:
-                var logits_a_lt = LayoutTensor[
-                    DT,
-                    Layout.row_major(Self.BATCH, Self.N_ATOMS),
-                    MutAnyOrigin,
-                ](logits_a_p)
-                var m_lt = LayoutTensor[
-                    DT,
-                    Layout.row_major(Self.BATCH, Self.N_ATOMS),
-                    MutAnyOrigin,
-                ](mb_m_ptr)
-                var td_lt = LayoutTensor[
-                    DT,
-                    Layout.row_major(Self.BATCH),
-                    MutAnyOrigin,
-                ](td_residuals_p.value())
-                comptime per_res_kernel = _c51_per_residual_kernel[
-                    Self.BATCH,
-                    Self.N_ATOMS,
-                ]
-                comptime n_blocks_pr = (Self.BATCH + TPB - 1) // TPB
-                ctx.enqueue_function[per_res_kernel](
-                    logits_a_lt,
-                    m_lt,
-                    td_lt,
-                    grid_dim=n_blocks_pr,
-                    block_dim=TPB,
-                )
-
-            # 5b. PER IS-weight scaling on device.
-            if weights_p:
-                var grad_la_lt = LayoutTensor[
-                    DT,
-                    Layout.row_major(Self.BATCH, Self.N_ATOMS),
-                    MutAnyOrigin,
-                ](grad_logits_a_p)
-                var w_lt = LayoutTensor[
-                    DT,
-                    Layout.row_major(Self.BATCH),
-                    MutAnyOrigin,
-                ](weights_p.value())
-                comptime per_scl_kernel = _c51_per_scale_kernel[
-                    Self.BATCH,
-                    Self.N_ATOMS,
-                ]
-                comptime total_scl = Self.BATCH * Self.N_ATOMS
-                comptime n_blocks_ps = (total_scl + TPB - 1) // TPB
-                ctx.enqueue_function[per_scl_kernel](
-                    grad_la_lt,
-                    w_lt,
-                    grid_dim=n_blocks_ps,
-                    block_dim=TPB,
-                )
-
-            # 6. Scatter grad_logits_a → grad_logits_all at a_taken slot.
-            var grad_la_lt2 = LayoutTensor[
-                DT,
-                Layout.row_major(Self.BATCH, Self.N_ATOMS),
-                MutAnyOrigin,
-            ](grad_logits_a_p)
-            var mb_a_lt = LayoutTensor[
-                DT,
-                Layout.row_major(Self.BATCH),
-                MutAnyOrigin,
-            ](mb_a_ptr)
-            var grad_la_all_lt = LayoutTensor[
-                DT,
-                Layout.row_major(Self.BATCH, ROW),
-                MutAnyOrigin,
-            ](grad_logits_all_p)
-            comptime sc_kernel = _c51_scatter_grad_kernel[
-                Self.BATCH,
-                Self.NA,
-                Self.N_ATOMS,
-            ]
             comptime total_sc = Self.BATCH * ROW
             comptime n_blocks_sc = (total_sc + TPB - 1) // TPB
-            ctx.enqueue_function[sc_kernel](
-                grad_la_lt2,
-                mb_a_lt,
-                grad_la_all_lt,
-                grid_dim=n_blocks_sc,
-                block_dim=TPB,
+            ctx.value().enqueue_function[
+                _c51_scatter_grad_kernel[Self.BATCH, Self.NA, Self.N_ATOMS]
+            ](
+                self._grad_logits_a.lt[
+                    "gpu", Layout.row_major(Self.BATCH, Self.N_ATOMS)
+                ](),
+                mb_a.lt["gpu", Layout.row_major(Self.BATCH)](),
+                self._grad_logits_all.lt[
+                    "gpu", Layout.row_major(Self.BATCH, ROW)
+                ](),
+                grid_dim=n_blocks_sc, block_dim=TPB,
             )
 
         # 7. Q_online.vjp(grad_logits_all) → grad_obs (discarded).
-        var grad_la_all_t = TileTensor(
-            grad_logits_all_p,
-            row_major[Self.BATCH, ROW](),
+        call_vjp[target, Self.BATCH, POLICY=POLICY](
+            q_online,
+            TensorRefs[Self.Q_NET.ARITY](mb_s),
+            self._grad_logits_all,
+            TensorRefs[Self.Q_NET.ARITY](self._grad_obs),
+            ctx,
         )
-        var grad_obs_t = TileTensor(
-            grad_obs_p,
-            row_major[Self.BATCH, Self.OBS](),
-        )
-        q_online.vjp[target, Self.BATCH, POLICY](grad_la_all_t, grad_obs_t)
 
         # 8. opt.step.
-        q_opt.step[target, M=Self.Q_NET](q_online)
+        q_opt.step[target, M=Self.Q_NET](q_online, ctx)
 
         return loss

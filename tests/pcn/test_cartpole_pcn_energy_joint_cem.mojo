@@ -109,7 +109,7 @@ comptime ENC_PARAM_SIZE = ENC.PARAM_SIZE
 # V(μ_z) = W_val[HIDDEN] · μ_z + b_val   (scalar value prediction)
 # Value head trained jointly with the dynamics; value-loss gradient flows
 # back into BLOCK0 (dynamics) weights alongside the PC rule.
-comptime V_PARAM_SIZE = HIDDEN + 1   # W_val (HIDDEN) | b_val (1)
+comptime V_PARAM_SIZE = HIDDEN + 1  # W_val (HIDDEN) | b_val (1)
 comptime V_W_OFFSET = 0
 comptime V_B_OFFSET = HIDDEN
 comptime GAMMA: Float64 = 0.99
@@ -234,7 +234,9 @@ def main() raises:
     print("=" * 60)
     print("CartPole-Continuous — joint training (PCN dynamics + value head)")
     print("=" * 60)
-    print("  Arch       : same as PCN baseline (PCBlock × 2, PCTanh) + value head")
+    print(
+        "  Arch       : same as PCN baseline (PCBlock × 2, PCTanh) + value head"
+    )
     print("  PC params  :", NET.PARAM_SIZE)
     print("  V  params  :", V_PARAM_SIZE, " (HIDDEN+1)")
     print(
@@ -246,9 +248,18 @@ def main() raises:
         ENC_OUTPUT_DIM,
         "]",
     )
-    print("  Training   : PC weight rule on dynamics + value loss (λ=", LAMBDA_VAL, ")")
-    print("  V target   : MC discounted return (γ=", GAMMA, ", V_MAX=", V_MAX, ")")
-    print("  Eval       : encoder + MLP imagination + CEM (value head unused at eval)")
+    print(
+        "  Training   : PC weight rule on dynamics + value loss (λ=",
+        LAMBDA_VAL,
+        ")",
+    )
+    print(
+        "  V target   : MC discounted return (γ=", GAMMA, ", V_MAX=", V_MAX, ")"
+    )
+    print(
+        "  Eval       : encoder + MLP imagination + CEM (value head unused at"
+        " eval)"
+    )
     print(
         "  Pass       : survive ≥",
         PASS_STEPS,
@@ -270,33 +281,33 @@ def main() raises:
     memset(pc_opt_global_buf, 0, OPT_PC.GLOBAL_STATE_SIZE)
     var pc_params = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
-    ](pc_params_buf)
+    ](pc_params_buf.as_unsafe_any_origin())
     var pc_grads = LayoutTensor[
         dtype, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
-    ](pc_grads_buf)
+    ](pc_grads_buf.as_unsafe_any_origin())
     var pc_opt_state = LayoutTensor[
         dtype,
         Layout.row_major(NET.PARAM_SIZE, OPT_PC.STATE_PER_PARAM),
         MutAnyOrigin,
-    ](pc_opt_state_buf)
+    ](pc_opt_state_buf.as_unsafe_any_origin())
     var pc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_PC.GLOBAL_STATE_SIZE), MutAnyOrigin
-    ](pc_opt_global_buf)
+    ](pc_opt_global_buf.as_unsafe_any_origin())
     NET.pc_init_params[PCXavier, dtype](pc_params)
 
     comptime offset_b1 = NET._param_offset[1]()
     var params_b0 = LayoutTensor[
         dtype, Layout.row_major(BLOCK0.PARAM_SIZE), MutAnyOrigin
-    ](pc_params_buf)
+    ](pc_params_buf.as_unsafe_any_origin())
     var params_b1 = LayoutTensor[
         dtype, Layout.row_major(BLOCK1.PARAM_SIZE), MutAnyOrigin
-    ](pc_params_buf + offset_b1)
+    ](pc_params_buf.as_unsafe_any_origin() + offset_b1)
     var grads_b0 = LayoutTensor[
         dtype, Layout.row_major(BLOCK0.PARAM_SIZE), MutAnyOrigin
-    ](pc_grads_buf)
+    ](pc_grads_buf.as_unsafe_any_origin())
     var grads_b1 = LayoutTensor[
         dtype, Layout.row_major(BLOCK1.PARAM_SIZE), MutAnyOrigin
-    ](pc_grads_buf + offset_b1)
+    ](pc_grads_buf.as_unsafe_any_origin() + offset_b1)
 
     # ── Encoder params + Adam state ──────────────────────────────────────────
     var enc_params_buf = alloc[Scalar[dtype]](ENC_PARAM_SIZE)
@@ -311,18 +322,18 @@ def main() raises:
     memset(enc_opt_global_buf, 0, OPT_ENC.GLOBAL_STATE_SIZE)
     var enc_params = LayoutTensor[
         dtype, Layout.row_major(ENC_PARAM_SIZE), MutAnyOrigin
-    ](enc_params_buf)
+    ](enc_params_buf.as_unsafe_any_origin())
     var enc_grads = LayoutTensor[
         dtype, Layout.row_major(ENC_PARAM_SIZE), MutAnyOrigin
-    ](enc_grads_buf)
+    ](enc_grads_buf.as_unsafe_any_origin())
     var enc_opt_state = LayoutTensor[
         dtype,
         Layout.row_major(ENC_PARAM_SIZE, OPT_ENC.STATE_PER_PARAM),
         MutAnyOrigin,
-    ](enc_opt_state_buf)
+    ](enc_opt_state_buf.as_unsafe_any_origin())
     var enc_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_ENC.GLOBAL_STATE_SIZE), MutAnyOrigin
-    ](enc_opt_global_buf)
+    ](enc_opt_global_buf.as_unsafe_any_origin())
     ENC.xavier_init[dtype](enc_params, UInt64(123))
 
     # ── Value head params + Adam state ───────────────────────────────────────
@@ -346,31 +357,33 @@ def main() raises:
     v_params_buf[V_B_OFFSET] = Scalar[dtype](0.0)
     var v_params = LayoutTensor[
         dtype, Layout.row_major(V_PARAM_SIZE), MutAnyOrigin
-    ](v_params_buf)
+    ](v_params_buf.as_unsafe_any_origin())
     var v_grads = LayoutTensor[
         dtype, Layout.row_major(V_PARAM_SIZE), MutAnyOrigin
-    ](v_grads_buf)
+    ](v_grads_buf.as_unsafe_any_origin())
     var v_opt_state = LayoutTensor[
         dtype,
         Layout.row_major(V_PARAM_SIZE, OPT_VAL.STATE_PER_PARAM),
         MutAnyOrigin,
-    ](v_opt_state_buf)
+    ](v_opt_state_buf.as_unsafe_any_origin())
     var v_opt_global = LayoutTensor[
         dtype, Layout.row_major(OPT_VAL.GLOBAL_STATE_SIZE), MutAnyOrigin
-    ](v_opt_global_buf)
+    ](v_opt_global_buf.as_unsafe_any_origin())
 
     # Buffer for the value-loss contribution to block_0 dynamics grads.
     # weight_grad signature requires a LayoutTensor; allocate parallel to grads_b0.
     var grads_b0_val_buf = alloc[Scalar[dtype]](BLOCK0.PARAM_SIZE)
     var grads_b0_val = LayoutTensor[
         dtype, Layout.row_major(BLOCK0.PARAM_SIZE), MutAnyOrigin
-    ](grads_b0_val_buf)
+    ](grads_b0_val_buf.as_unsafe_any_origin())
     # Per-step value scratch.
     var eps_val_buf = alloc[Scalar[dtype]](BATCH * HIDDEN)
     var eps_val = LayoutTensor[
         dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
-    ](eps_val_buf)
-    var t_term_buf = alloc[Scalar[dtype]](BATCH)   # termination step per rollout, as float
+    ](eps_val_buf.as_unsafe_any_origin())
+    var t_term_buf = alloc[Scalar[dtype]](
+        BATCH
+    )  # termination step per rollout, as float
 
     # ── Per-step scratch ──────────────────────────────────────────────────────
     var x_aug_buf = alloc[Scalar[dtype]](BATCH * AUG_DIM)
@@ -387,37 +400,37 @@ def main() raises:
 
     var x_aug = LayoutTensor[
         dtype, Layout.row_major(BATCH, AUG_DIM), MutAnyOrigin
-    ](x_aug_buf)
+    ](x_aug_buf.as_unsafe_any_origin())
     var a_aug = LayoutTensor[
         dtype, Layout.row_major(BATCH, AUG_DIM), MutAnyOrigin
-    ](a_aug_buf)
+    ](a_aug_buf.as_unsafe_any_origin())
     var mu_z = LayoutTensor[
         dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
-    ](mu_z_buf)
+    ](mu_z_buf.as_unsafe_any_origin())
     var z_init = LayoutTensor[
         dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
-    ](z_init_buf)
+    ](z_init_buf.as_unsafe_any_origin())
     var a_z = LayoutTensor[
         dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
-    ](a_z_buf)
+    ](a_z_buf.as_unsafe_any_origin())
     var mu_obs = LayoutTensor[
         dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
-    ](mu_obs_buf)
+    ](mu_obs_buf.as_unsafe_any_origin())
     var y_obs = LayoutTensor[
         dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
-    ](y_obs_buf)
+    ](y_obs_buf.as_unsafe_any_origin())
     var eps_z = LayoutTensor[
         dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
-    ](eps_z_buf)
+    ](eps_z_buf.as_unsafe_any_origin())
     var eps_obs = LayoutTensor[
         dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
-    ](eps_obs_buf)
+    ](eps_obs_buf.as_unsafe_any_origin())
     var pull_back_out = LayoutTensor[
         dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
-    ](pull_back_buf)
+    ](pull_back_buf.as_unsafe_any_origin())
     var gated = LayoutTensor[
         dtype, Layout.row_major(BATCH, HIDDEN), MutAnyOrigin
-    ](gated_buf)
+    ](gated_buf.as_unsafe_any_origin())
 
     var enc_input_buf = alloc[Scalar[dtype]](BATCH * ENC_INPUT_DIM)
     var enc_hpre_buf = alloc[Scalar[dtype]](BATCH * ENC_HIDDEN_DIM)
@@ -426,32 +439,32 @@ def main() raises:
     var enc_dz_buf = alloc[Scalar[dtype]](BATCH * ENC_OUTPUT_DIM)
     var enc_input = LayoutTensor[
         dtype, Layout.row_major(BATCH, ENC_INPUT_DIM), MutAnyOrigin
-    ](enc_input_buf)
+    ](enc_input_buf.as_unsafe_any_origin())
     var enc_hpre = LayoutTensor[
         dtype, Layout.row_major(BATCH, ENC_HIDDEN_DIM), MutAnyOrigin
-    ](enc_hpre_buf)
+    ](enc_hpre_buf.as_unsafe_any_origin())
     var enc_hact = LayoutTensor[
         dtype, Layout.row_major(BATCH, ENC_HIDDEN_DIM), MutAnyOrigin
-    ](enc_hact_buf)
+    ](enc_hact_buf.as_unsafe_any_origin())
     var enc_output = LayoutTensor[
         dtype, Layout.row_major(BATCH, ENC_OUTPUT_DIM), MutAnyOrigin
-    ](enc_output_buf)
+    ](enc_output_buf.as_unsafe_any_origin())
     var enc_dz = LayoutTensor[
         dtype, Layout.row_major(BATCH, ENC_OUTPUT_DIM), MutAnyOrigin
-    ](enc_dz_buf)
+    ](enc_dz_buf.as_unsafe_any_origin())
 
     var enc_input_1 = LayoutTensor[
         dtype, Layout.row_major(1, ENC_INPUT_DIM), MutAnyOrigin
-    ](enc_input_buf)
+    ](enc_input_buf.as_unsafe_any_origin())
     var enc_hpre_1 = LayoutTensor[
         dtype, Layout.row_major(1, ENC_HIDDEN_DIM), MutAnyOrigin
-    ](enc_hpre_buf)
+    ](enc_hpre_buf.as_unsafe_any_origin())
     var enc_hact_1 = LayoutTensor[
         dtype, Layout.row_major(1, ENC_HIDDEN_DIM), MutAnyOrigin
-    ](enc_hact_buf)
+    ](enc_hact_buf.as_unsafe_any_origin())
     var enc_output_1 = LayoutTensor[
         dtype, Layout.row_major(1, ENC_OUTPUT_DIM), MutAnyOrigin
-    ](enc_output_buf)
+    ](enc_output_buf.as_unsafe_any_origin())
 
     var actions_buf = alloc[Scalar[dtype]](BATCH * SEQ_LEN)
     var obs_buf = alloc[Scalar[dtype]](BATCH * (SEQ_LEN + 1) * OBS_DIM)
@@ -474,8 +487,8 @@ def main() raises:
             for b in range(BATCH):
                 _gen_rollout_into[SEQ_LEN](
                     rng,
-                    actions_buf,
-                    obs_buf,
+                    actions_buf.as_unsafe_any_origin(),
+                    obs_buf.as_unsafe_any_origin(),
                     b * SEQ_LEN,
                     b * (SEQ_LEN + 1) * OBS_DIM,
                 )
@@ -486,12 +499,12 @@ def main() raises:
             for b in range(BATCH):
                 var t_term: Int = SEQ_LEN + 1
                 for t in range(SEQ_LEN + 1):
-                    var x_n = Float64(obs_buf[
-                        b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 0
-                    ])
-                    var th_n = Float64(obs_buf[
-                        b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 2
-                    ])
+                    var x_n = Float64(
+                        obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 0]
+                    )
+                    var th_n = Float64(
+                        obs_buf[b * (SEQ_LEN + 1) * OBS_DIM + t * OBS_DIM + 2]
+                    )
                     var x_a = x_n if x_n > 0.0 else -x_n
                     var th_a = th_n if th_n > 0.0 else -th_n
                     if x_a > 1.0 or th_a > 1.0:
@@ -561,15 +574,19 @@ def main() raises:
                     # V_pred
                     var v_pred: Float64 = Float64(v_params_buf[V_B_OFFSET])
                     for j in range(HIDDEN):
-                        v_pred += Float64(v_params_buf[V_W_OFFSET + j]) * Float64(
-                            mu_z_buf[b * HIDDEN + j]
-                        )
+                        v_pred += Float64(
+                            v_params_buf[V_W_OFFSET + j]
+                        ) * Float64(mu_z_buf[b * HIDDEN + j])
                     # V_target
                     var t_term_b = Int(Float64(t_term_buf[b]))
                     var v_tgt: Float64 = 0.0
                     if t < t_term_b:
                         var n_left = t_term_b - t
-                        v_tgt = (1.0 - GAMMA**Float64(n_left)) / (1.0 - GAMMA) / V_MAX
+                        v_tgt = (
+                            (1.0 - GAMMA ** Float64(n_left))
+                            / (1.0 - GAMMA)
+                            / V_MAX
+                        )
                     var dv = v_pred - v_tgt
                     v_loss_sum_sq += dv * dv
                     # ε_val[b, j] = −LAMBDA_VAL · dV[b] · W_val[j]
@@ -577,7 +594,8 @@ def main() raises:
                     # into grads (sign matches PC rule output, ready for Adam).
                     for j in range(HIDDEN):
                         eps_val_buf[b * HIDDEN + j] = Scalar[dtype](
-                            -LAMBDA_VAL * dv
+                            -LAMBDA_VAL
+                            * dv
                             * Float64(v_params_buf[V_W_OFFSET + j])
                         )
                     # Value head grads accumulated below.
@@ -590,14 +608,18 @@ def main() raises:
                 for b in range(BATCH):
                     var v_pred: Float64 = Float64(v_params_buf[V_B_OFFSET])
                     for j in range(HIDDEN):
-                        v_pred += Float64(v_params_buf[V_W_OFFSET + j]) * Float64(
-                            mu_z_buf[b * HIDDEN + j]
-                        )
+                        v_pred += Float64(
+                            v_params_buf[V_W_OFFSET + j]
+                        ) * Float64(mu_z_buf[b * HIDDEN + j])
                     var t_term_b = Int(Float64(t_term_buf[b]))
                     var v_tgt: Float64 = 0.0
                     if t < t_term_b:
                         var n_left = t_term_b - t
-                        v_tgt = (1.0 - GAMMA**Float64(n_left)) / (1.0 - GAMMA) / V_MAX
+                        v_tgt = (
+                            (1.0 - GAMMA ** Float64(n_left))
+                            / (1.0 - GAMMA)
+                            / V_MAX
+                        )
                     var dv = v_pred - v_tgt
                     for j in range(HIDDEN):
                         v_grads_buf[V_W_OFFSET + j] = Scalar[dtype](
@@ -700,21 +722,21 @@ def main() raises:
     var cem_a_s_buf = alloc[Scalar[dtype]](N_SAMPLES * HIDDEN)
     var cem_obs_pred_buf = alloc[Scalar[dtype]](N_SAMPLES * OBS_DIM)
     var cem_actions_buf = alloc[Scalar[dtype]](N_SAMPLES * PLAN_HORIZON)
-    var cem_x_in = LayoutTensor[
-        dtype, Layout.row_major(N_SAMPLES, AUG_DIM), MutAnyOrigin
-    ](cem_x_in_buf)
+    var cem_x_in = LayoutTensor[dtype, Layout.row_major(N_SAMPLES, AUG_DIM)](
+        cem_x_in_buf
+    )
     var cem_a_z = LayoutTensor[
         dtype, Layout.row_major(N_SAMPLES, AUG_DIM), MutAnyOrigin
-    ](cem_a_z_buf)
+    ](cem_a_z_buf.as_unsafe_any_origin())
     var cem_z_next = LayoutTensor[
         dtype, Layout.row_major(N_SAMPLES, HIDDEN), MutAnyOrigin
-    ](cem_z_next_buf)
+    ](cem_z_next_buf.as_unsafe_any_origin())
     var cem_a_s = LayoutTensor[
         dtype, Layout.row_major(N_SAMPLES, HIDDEN), MutAnyOrigin
-    ](cem_a_s_buf)
+    ](cem_a_s_buf.as_unsafe_any_origin())
     var cem_obs_pred = LayoutTensor[
         dtype, Layout.row_major(N_SAMPLES, OBS_DIM), MutAnyOrigin
-    ](cem_obs_pred_buf)
+    ](cem_obs_pred_buf.as_unsafe_any_origin())
 
     var cem_mu = List[Float64](capacity=PLAN_HORIZON)
     var cem_sigma = List[Float64](capacity=PLAN_HORIZON)

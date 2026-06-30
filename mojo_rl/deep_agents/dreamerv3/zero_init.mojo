@@ -28,79 +28,64 @@ Only the OUTPUT layer is scaled — scaling the whole head toward 0 would also
 shrink the downstream weight and choke the hidden layers' gradient.
 """
 
-from layout import TileTensor
 from std.gpu import global_idx
-from std.gpu.memory import AddressSpace
 from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.module import mptr
-from mojo_rl.nn.core import ParamVisitor, GraphNode, Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.combinators.compute_graph import ComputeGraph
+from mojo_rl.nn.combinators.graph_decl import GraphDecl
 
 
-def _scale_k(
-    dst: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int, scale: Scalar[DT]
-):
+def _scale_k[
+    N: Int
+](dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin], scale: Scalar[DT]):
     """Runtime-length device in-place scale (one param slab)."""
     var i = Int(global_idx.x)
-    if i < n:
-        dst[i] = scale * dst[i]
+    if i < N:
+        dst[i] = scale * rebind[Scalar[DT]](dst[i])
 
 
-@fieldwise_init
-struct _ScaleOutVisitorCPU(ParamVisitor):
-    """Scales the two named output-layer params (weight + bias) on the host."""
-
-    var wname: String
-    var bname: String
-    var scale: Scalar[DT]
-
-    def visit(
-        mut self,
-        name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int,
-        apply_decay: Bool,
-    ) raises:
-        if name == self.wname or name == self.bname:
-            var dp = mptr(param.ptr)
-            for k in range(n_elems):
-                dp[k] = self.scale * dp[k]
-
-
-@fieldwise_init
-struct _ScaleOutVisitorGPU(ParamVisitor):
-    """GPU mirror — enqueues a scale kernel for the matched output params."""
+struct _ScaleOutVisitor(ParamVisitor):
+    """Scales the two named output-layer params (weight + bias) in place;
+    branches on `target` internally (host loop on CPU, scale kernel on GPU)."""
 
     var wname: String
     var bname: String
     var scale: Scalar[DT]
-    var ctx: DeviceContext
 
-    def visit(
+    def __init__(out self, wname: String, bname: String, scale: Scalar[DT]):
+        self.wname = wname
+        self.bname = bname
+        self.scale = scale
+
+    def visit[target: StaticString, N: Int](
         mut self,
         name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
         apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
         if name == self.wname or name == self.bname:
-            var dp = mptr(param.ptr)
-            var nb = (n_elems + TPB - 1) // TPB
-            self.ctx.enqueue_function[_scale_k](
-                dp, n_elems, self.scale, grid_dim=nb, block_dim=TPB
-            )
+            comptime if target == "cpu":
+                for k in range(N):
+                    param.data[k] = self.scale * param.data[k]
+            else:
+                var c = ctx.value()
+                comptime layout = Layout.row_major(N)
+                comptime nblk = (N + TPB - 1) // TPB
+                c.enqueue_function[_scale_k[N]](
+                    param.lt["gpu", layout](),
+                    self.scale,
+                    grid_dim=nblk,
+                    block_dim=TPB,
+                )
 
 
 def scale_output_module[
@@ -114,28 +99,21 @@ def scale_output_module[
 ) raises:
     """Scale the output-layer params (`wname`/`bname`) of a Sequential head by
     `scale` (0.0 == exact zero-init)."""
-    comptime if target == "cpu":
-        var v = _ScaleOutVisitorCPU(wname, bname, scale)
-        m.for_each_param[target, _ScaleOutVisitorCPU](String(""), v)
-    else:
-        var v = _ScaleOutVisitorGPU(wname, bname, scale, ctx.value())
-        m.for_each_param[target, _ScaleOutVisitorGPU](String(""), v)
+    var v = _ScaleOutVisitor(wname, bname, scale)
+    m.for_each_param[target](v, ctx)
 
 
 def scale_output_graph[
-    target: StaticString, OUT: Int, *NODES: GraphNode
+    target: StaticString, *DECLS: GraphDecl
 ](
-    mut g: ComputeGraph[OUT, *NODES],
+    mut g: ComputeGraph[*DECLS],
     wname: String,
     bname: String,
     scale: Scalar[DT],
     ctx: Optional[DeviceContext],
 ) raises:
     """Scale the output-layer params of a head wrapped in a ComputeGraph by
-    `scale` (0.0 == exact zero-init)."""
-    comptime if target == "cpu":
-        var v = _ScaleOutVisitorCPU(wname, bname, scale)
-        g.for_each_param[target, _ScaleOutVisitorCPU](String(""), v)
-    else:
-        var v = _ScaleOutVisitorGPU(wname, bname, scale, ctx.value())
-        g.for_each_param[target, _ScaleOutVisitorGPU](String(""), v)
+    `scale` (0.0 == exact zero-init). Names are prefixed by the node name
+    (e.g. `rew.3.weight` / `rew.3.bias`)."""
+    var v = _ScaleOutVisitor(wname, bname, scale)
+    g.for_each_param[target](v, ctx)

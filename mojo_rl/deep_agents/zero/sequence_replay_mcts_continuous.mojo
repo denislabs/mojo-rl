@@ -21,25 +21,31 @@ the action is absorbing-zero.
 from std.memory import alloc
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
 from .nstep_targets import compute_nstep_value_targets
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    """Local per-window scratch (w_rew/w_done/…) feeding the shared
+    `compute_nstep_value_targets` (raw-pointer, used by every replay incl.
+    un-migrated GPU). Function-local: alloc'd + freed in one call."""
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
-    Movable, ImplicitlyDestructible
+    Movable, ImplicitlyDeletable
 ):
     """Ring of continuous MCTS-labelled steps + episode index. ``CAP`` = max
-    resident steps. Host-side (the GPU search feeds it via host copies)."""
+    resident steps. Host-side (the GPU search feeds it via host copies).
 
-    var obs: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP, OBS]
-    var act: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP, ACT_DIM] action vector
-    var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP]
-    var done: UnsafePointer[Scalar[DT], MutAnyOrigin]  # [CAP] terminal flag
-    var val: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [CAP] root value
+    Ring fields are owned ``List``s (RAII — no manual alloc/free); the public
+    API (store_episode / sample_training_batch_seq / read_obs / update_targets)
+    is ``List``-typed so callers hold no raw pointers."""
+
+    var obs: List[Scalar[DT]]   # [CAP, OBS]
+    var act: List[Scalar[DT]]   # [CAP, ACT_DIM] action vector
+    var rew: List[Scalar[DT]]   # [CAP]
+    var done: List[Scalar[DT]]  # [CAP] terminal flag
+    var val: List[Scalar[DT]]   # [CAP] root value
 
     var ep_start: List[Int]   # absolute start step of each resident episode
     var ep_len: List[Int]
@@ -48,20 +54,16 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
     var rng: UInt64
 
     def __init__(out self, seed: UInt64 = 0):
-        self.obs = _a(Self.CAP * Self.OBS)
-        self.act = _a(Self.CAP * Self.ACT_DIM)
-        self.rew = _a(Self.CAP)
-        self.done = _a(Self.CAP)
-        self.val = _a(Self.CAP)
+        self.obs = List[Scalar[DT]](length=Self.CAP * Self.OBS, fill=0)
+        self.act = List[Scalar[DT]](length=Self.CAP * Self.ACT_DIM, fill=0)
+        self.rew = List[Scalar[DT]](length=Self.CAP, fill=0)
+        self.done = List[Scalar[DT]](length=Self.CAP, fill=0)
+        self.val = List[Scalar[DT]](length=Self.CAP, fill=0)
         self.ep_start = List[Int]()
         self.ep_len = List[Int]()
         self.ep_trunc = List[Bool]()
         self.total = 0
         self.rng = seed ^ UInt64(0x9E3779B97F4A7C15)
-
-    def __del__(deinit self):
-        self.obs.free(); self.act.free(); self.rew.free()
-        self.done.free(); self.val.free()
 
     def _xorshift(mut self) -> UInt64:
         var x = self.rng
@@ -77,10 +79,10 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
 
     def store_episode(
         mut self,
-        ep_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L, OBS]
-        ep_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L, ACT_DIM]
-        ep_rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L]
-        ep_val: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [L]
+        ep_obs: List[Scalar[DT]],   # [L, OBS]
+        ep_act: List[Scalar[DT]],   # [L, ACT_DIM]
+        ep_rew: List[Scalar[DT]],   # [L]
+        ep_val: List[Scalar[DT]],   # [L]
         length: Int,
         truncated: Bool = False,
     ):
@@ -118,14 +120,14 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
 
     def _read1(
         self,
-        field: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        field: List[Scalar[DT]],
         ep_idx: Int,
         offset: Int,
         mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],
         out_base: Int,
     ):
         """Read one scalar ring cell at episode-relative ``offset`` (absorbing
-        zeros past the episode end)."""
+        zeros past the episode end). ``out`` is the local per-window scratch."""
         if offset >= self.ep_len[ep_idx]:
             out[out_base] = Scalar[DT](0.0)
             return
@@ -152,11 +154,11 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
     ](
         mut self,
         gamma: Scalar[DT],
-        mut obs_seq: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K+1, B, OBS]
-        mut actions: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [K, B, ACT_DIM]
-        mut policy_act_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K+1, B, ACT_DIM]
-        mut value_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [K+1, B]
-        mut reward_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin], # [K, B]
+        mut obs_seq: List[Scalar[DT]],    # [K+1, B, OBS]
+        mut actions: List[Scalar[DT]],    # [K, B, ACT_DIM]
+        mut policy_act_tgt: List[Scalar[DT]], # [K+1, B, ACT_DIM]
+        mut value_tgt: List[Scalar[DT]],  # [K+1, B]
+        mut reward_tgt: List[Scalar[DT]], # [K, B]
         cons_mask: Optional[
             UnsafePointer[Scalar[DT], MutAnyOrigin]
         ] = None,                                                # [K, B]
@@ -267,7 +269,7 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
         self,
         ep_idx: Int,
         offset: Int,
-        mut out: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [OBS]
+        mut out: List[Scalar[DT]],  # [OBS]
     ):
         """Copy the stored observation at ``(ep_idx, offset)`` into ``out`` — the
         root obs for a reanalyze search."""
@@ -279,7 +281,7 @@ struct MCTSContSequenceReplay[OBS: Int, ACT_DIM: Int, CAP: Int](
         mut self,
         ep_idx: Int,
         offset: Int,
-        new_action: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [ACT_DIM]
+        new_action: List[Scalar[DT]],  # [ACT_DIM]
         new_value: Scalar[DT],
     ):
         """Reanalyze hook: overwrite a stored step's chosen action **vector**

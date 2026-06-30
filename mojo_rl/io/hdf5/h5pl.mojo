@@ -21,5 +21,5 @@ def h5pl_prepend(var path: String) raises -> herr_t:
     return _get_dylib_function[
         lib,
         "H5PLprepend",
-        def(Ptr[c_char, ImmutAnyOrigin]) thin -> herr_t,
+        def(Ptr[c_char, ImmutOrigin(origin_of(path))]) thin -> herr_t,
     ]()(path.as_c_string_slice().unsafe_ptr())

@@ -240,7 +240,7 @@ struct AcrobotEnv[DTYPE: DType](
     var use_book_dynamics: Bool
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self, num_bins: Int = 6, use_book_dynamics: Bool = True):
@@ -1361,23 +1361,23 @@ struct AcrobotEnv[DTYPE: DType](
         from the post-step state.
         """
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var actions = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
-        ](actions_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](actions_buf)
         var rewards = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](rewards_buf)
         var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         var terminated_out = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated_buf)
         var obs = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
@@ -1452,8 +1452,8 @@ struct AcrobotEnv[DTYPE: DType](
     ) raises:
         """Launch reset kernel on GPU."""
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
@@ -1492,11 +1492,11 @@ struct AcrobotEnv[DTYPE: DType](
     ) raises:
         """Launch selective reset kernel on GPU - only resets done envs."""
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
@@ -1597,13 +1597,11 @@ struct AcrobotEnv[DTYPE: DType](
         var states_t = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, STATE_SIZE),
-            MutAnyOrigin,
-        ](states.unsafe_ptr())
+        ](states)
         var obs_t = LayoutTensor[
             gpu_dtype,
             Layout.row_major(BATCH_SIZE, OBS_DIM),
-            MutAnyOrigin,
-        ](obs.unsafe_ptr())
+        ](obs)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
@@ -1613,7 +1611,7 @@ struct AcrobotEnv[DTYPE: DType](
             s: LayoutTensor[
                 gpu_dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             o: LayoutTensor[
                 gpu_dtype,

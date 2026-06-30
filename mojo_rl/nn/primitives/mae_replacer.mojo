@@ -1,5 +1,9 @@
 """MAEReplacer[NP, D, P_MIN, P_MAX, SEED] — masked-autoencoding patch dropout.
 
+Transformed from legacy `nn.primitives.MAEReplacer` (surface-only change; the
+keep-decision RNG, the CPU loops, and the 3 GPU kernels are carried over
+verbatim).
+
 Dreamer 4 trains the tokenizer with masked autoencoding: a random fraction of
 the projected patch tokens is replaced by a learned `mask_token`, and the
 reconstruction loss is applied only on the replaced patches
@@ -23,25 +27,24 @@ The keep decision is computed in Float32 on BOTH CPU and GPU (Metal has no
 Float64), so the masks are bit-identical across targets. The backward
 RECOMPUTES the keep decision (no need to read the stored mask).
 
-`mae_mask_ptr()` returns the per-patch `keep` flags (1.0 kept / 0.0 dropped).
+`mae_keep()` returns the per-patch `keep` Tensor (1.0 kept / 0.0 dropped).
 CPU + GPU.
 """
 
 from std.gpu import global_idx, thread_idx, block_idx
 from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
-from ..core import (
-    Initializer, AMPPolicy, NoAMP, Param, Cache, ParamVisitor,
-    for_each_param_auto, zero_grad_auto,
-)
-from ..core.module import Module, typed_view, typed_view_mut, mptr
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
+from ..core.polyak import polyak_tensor
 
 
 comptime MAE_RTPB = 64
@@ -63,6 +66,7 @@ def _kept(
     return u < keep_prob
 
 
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _mae_fwd_kernel[
     BATCH: Int, NP: Int, D: Int, SEED: UInt64
 ](
@@ -140,19 +144,17 @@ struct MAEReplacer[
     comptime OUT_DIM = Self.NP * Self.D
 
     var mask_token: Param["mask_token", False, Self.D]
-    var keep: Cache["keep"]
+    var keep: Tensor  # [BATCH * NP] per-patch keep flags (1.0 kept / 0.0 drop)
     var rng_step: UInt64
     var p_min_rt: Float64
     var p_max_rt: Float64
-    var ts: TargetStorage
 
     def __init__(out self):
         self.mask_token = Param["mask_token", False, Self.D]()
-        self.keep = Cache["keep"]()
+        self.keep = Tensor()
         self.rng_step = 0
         self.p_min_rt = Self.P_MIN
         self.p_max_rt = Self.P_MAX
-        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
@@ -162,24 +164,9 @@ struct MAEReplacer[
             "MAEReplacer: target must be 'cpu' or 'gpu'"
         )
         var m = Self()
-        comptime if target == "cpu":
-            m.mask_token = Param["mask_token", False, Self.D].make_cpu()
-            INIT.init_bias(m.mask_token.value_unsafe_ptr_cpu(), Self.D)
-            m.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["MAEReplacer.make[gpu]"](ctx)
-            m.mask_token = Param["mask_token", False, Self.D].make_gpu(ctx_v)
-            var host = ctx_v.enqueue_create_host_buffer[DT](Self.D)
-            ctx_v.synchronize()
-            INIT.init_bias(host.unsafe_ptr(), Self.D)
-            ctx_v.enqueue_copy(m.mask_token.val.dev.value(), host)
-            ctx_v.synchronize()
-            m.ts = TargetStorage.make_gpu(ctx_v)
+        m.mask_token = Param["mask_token", False, Self.D].make[target](ctx)
+        INIT.init_bias[target](m.mask_token.val, Self.D, ctx)
         return m^
-
-    @staticmethod
-    def display_label() -> String:
-        return String("MAEReplacer")
 
     def set_p(mut self, p_min: Float64, p_max: Float64):
         self.p_min_rt = p_min
@@ -188,104 +175,103 @@ struct MAEReplacer[
     def advance_rng(mut self):
         self.rng_step += 1
 
-    def mae_mask_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        if self.keep.dev:
-            return mptr(self.keep.dev.value().unsafe_ptr())
-        return mptr(self.keep.cpu_ptr())
+    def mae_keep(ref self) -> ref [self.keep] Tensor:
+        return self.keep
 
-    def _ensure_keep_gpu(mut self, batch: Int) raises:
-        var ctx = self.ts.ctx.value()
-        self.keep.ensure_gpu(ctx, batch * Self.NP)
+    def mae_mask_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+        """Raw per-patch `keep` pointer for the masked-recon loss ABI — the
+        device ptr when the keep Tensor lives on GPU, else the host ptr.
+
+        Restores the legacy accessor that `Dreamer4Encoder` / `Dreamer4Tokenizer`
+        forward to: the storage rename of this method to `mae_keep` (returning
+        the `Tensor`) left that forwarding path uncompiled, since the recon-loss
+        kernels (`masked_recon_loss` / `masked_recon_grad_gpu`) consume a raw
+        target-resident pointer, not a `Tensor`."""
+        if self.keep.dev:
+            return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.keep.dev.value().unsafe_ptr()
+            )
+        return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.keep.data.unsafe_ptr()
+        )
+
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["MAEReplacer", target](self.ts.target_tag)
-        var inp = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
+        ref in0 = inputs[0]
+        comptime STRIDE = UInt64(B * (1 + Self.NP))
+        var base = self.rng_step * STRIDE
+        var pmin = Scalar[DT](self.p_min_rt)
+        var span = Scalar[DT](self.p_max_rt - self.p_min_rt)
         comptime if target == "cpu":
-            self.keep.ensure_cpu(BATCH * Self.NP)
-            var kp = self.keep.cpu_ptr()
-            var mt = self.mask_token.value_unsafe_ptr_cpu()
-            comptime STRIDE = UInt64(BATCH * (1 + Self.NP))
-            var base = self.rng_step * STRIDE
-            var pmin = Scalar[DT](self.p_min_rt)
-            var span = Scalar[DT](self.p_max_rt - self.p_min_rt)
-            for bt in range(BATCH):
+            out.ensure(B * Self.OUT_DIM)
+            self.keep.ensure(B * Self.NP)
+            var inp = TileTensor(in0.data, row_major[B, Self.OUT_DIM]())
+            var o_v = TileTensor(out.data, row_major[B, Self.OUT_DIM]())
+            var mt = TileTensor(self.mask_token.val.data, row_major[Self.D]())
+            for bt in range(B):
                 for i in range(Self.NP):
                     var kept = _kept(
-                        Self.SEED, base, BATCH, Self.NP, bt, i, pmin, span
+                        Self.SEED, base, B, Self.NP, bt, i, pmin, span
                     )
-                    kp[bt * Self.NP + i] = (
+                    self.keep.data[bt * Self.NP + i] = (
                         Scalar[DT](1.0) if kept else Scalar[DT](0.0)
                     )
                     for d in range(Self.D):
                         if kept:
-                            out[bt, i * Self.D + d] = inp[bt, i * Self.D + d]
+                            o_v[bt, i * Self.D + d] = inp[bt, i * Self.D + d]
                         else:
-                            out[bt, i * Self.D + d] = mt[d]
+                            o_v[bt, i * Self.D + d] = mt[d]
         else:
-            self._ensure_keep_gpu(BATCH)
-            comptime STRIDE = UInt64(BATCH * (1 + Self.NP))
-            var base = self.rng_step * STRIDE
-            var pmin = Scalar[DT](self.p_min_rt)
-            var span = Scalar[DT](self.p_max_rt - self.p_min_rt)
-            var in_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.NP * Self.D), MutAnyOrigin
-            ](inp.ptr)
-            var o_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.NP * Self.D), MutAnyOrigin
-            ](out.ptr)
-            var mt_lt = LayoutTensor[DT, Layout.row_major(Self.D), MutAnyOrigin](
-                self.mask_token.val.dev.value()
-            )
-            var k_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH * Self.NP), MutAnyOrigin
-            ](self.keep.dev.value())
-            comptime nb = (BATCH * Self.NP * Self.D + 127) // 128
-            comptime kern = _mae_fwd_kernel[BATCH, Self.NP, Self.D, Self.SEED]
-            self.ts.ctx.value().enqueue_function[kern](
-                in_lt, mt_lt, o_lt, k_lt, base, pmin, span,
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT_DIM)
+            self.keep.ensure_gpu(c, B * Self.NP)
+            comptime lbo = Layout.row_major(B, Self.NP * Self.D)
+            comptime ld = Layout.row_major(Self.D)
+            comptime lk = Layout.row_major(B * Self.NP)
+            comptime nb = (B * Self.NP * Self.D + 127) // 128
+            comptime kern = _mae_fwd_kernel[B, Self.NP, Self.D, Self.SEED]
+            c.enqueue_function[kern](
+                in0.lt["gpu", lbo](),
+                self.mask_token.val.lt["gpu", ld](),
+                out.lt["gpu", lbo](),
+                self.keep.lt["gpu", lk](),
+                base, pmin, span,
                 grid_dim=nb, block_dim=128,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["MAEReplacer", target](self.ts.target_tag)
-        var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        comptime STRIDE = UInt64(BATCH * (1 + Self.NP))
+        ref gin = grad_inputs[0]
+        comptime STRIDE = UInt64(B * (1 + Self.NP))
         var base = self.rng_step * STRIDE
         var pmin = Scalar[DT](self.p_min_rt)
         var span = Scalar[DT](self.p_max_rt - self.p_min_rt)
         comptime if target == "cpu":
-            var gmt = self.mask_token.grd.cpu.unsafe_ptr()
-            for bt in range(BATCH):
+            gin.ensure(B * Self.OUT_DIM)
+            var go = TileTensor(grad_output.data, row_major[B, Self.OUT_DIM]())
+            var gi = TileTensor(gin.data, row_major[B, Self.OUT_DIM]())
+            var gmt = TileTensor(self.mask_token.grd.data, row_major[Self.D]())
+            for bt in range(B):
                 for i in range(Self.NP):
                     var kept = _kept(
-                        Self.SEED, base, BATCH, Self.NP, bt, i, pmin, span
+                        Self.SEED, base, B, Self.NP, bt, i, pmin, span
                     )
                     for d in range(Self.D):
                         var g = go[bt, i * Self.D + d]
@@ -293,41 +279,40 @@ struct MAEReplacer[
                             gi[bt, i * Self.D + d] = g
                         else:
                             gi[bt, i * Self.D + d] = Scalar[DT](0.0)
-                            comptime if mode == "all":
-                                gmt[d] += g
+                            gmt[d] += g
         else:
-            var ctx = self.ts.ctx.value()
-            var go_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.NP * Self.D), MutAnyOrigin
-            ](go.ptr)
-            var gi_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.NP * Self.D), MutAnyOrigin
-            ](gi.ptr)
-            comptime nb = (BATCH * Self.NP * Self.D + 127) // 128
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.OUT_DIM)
+            comptime lbo = Layout.row_major(B, Self.NP * Self.D)
+            comptime ld = Layout.row_major(Self.D)
+            comptime nb = (B * Self.NP * Self.D + 127) // 128
             comptime gik = _mae_grad_input_kernel[
-                BATCH, Self.NP, Self.D, Self.SEED
+                B, Self.NP, Self.D, Self.SEED
             ]
-            ctx.enqueue_function[gik](
-                go_lt, gi_lt, base, pmin, span, grid_dim=nb, block_dim=128
+            c.enqueue_function[gik](
+                grad_output.lt["gpu", lbo](),
+                gin.lt["gpu", lbo](),
+                base, pmin, span, grid_dim=nb, block_dim=128,
             )
-            comptime if mode == "all":
-                var gt_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.D), MutAnyOrigin
-                ](self.mask_token.grd.dev.value())
-                comptime gtk = _mae_grad_token_kernel[
-                    BATCH, Self.NP, Self.D, Self.SEED
-                ]
-                ctx.enqueue_function[gtk](
-                    go_lt, gt_lt, base, pmin, span,
-                    grid_dim=Self.D, block_dim=MAE_RTPB,
-                )
+            comptime gtk = _mae_grad_token_kernel[
+                B, Self.NP, Self.D, Self.SEED
+            ]
+            c.enqueue_function[gtk](
+                grad_output.lt["gpu", lbo](),
+                self.mask_token.grd.lt["gpu", ld](),
+                base, pmin, span,
+                grid_dim=Self.D, block_dim=MAE_RTPB,
+            )
 
-    def for_each_param[
-        target: StaticString, V: ParamVisitor
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["MAEReplacer", target](self.ts.target_tag)
-        for_each_param_auto[Self, V, target](self, prefix, visitor)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the `mask_token` Param field).
 
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["MAEReplacer", target](self.ts.target_tag)
-        zero_grad_auto[Self, target](self)
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        polyak_tensor[target, Self.D](
+            self.mask_token.val, src.mask_token.val, tau, ctx
+        )

@@ -25,7 +25,9 @@ from layout import Layout, LayoutTensor
 from ..constants import DT, TPB
 
 
-def box_muller_normal(out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int):
+def box_muller_normal[
+    out_origin: Origin[mut=True]
+](out_ptr: UnsafePointer[Scalar[DT], out_origin], n: Int):
     """Fill out_ptr[0:n] with iid N(0, 1) samples via Box-Muller.
 
     Each lane is drawn independently — no batched-pair optimization (the

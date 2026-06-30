@@ -1,33 +1,33 @@
-"""Clamp[DIM] — element-wise hard clamp to [min_val, max_val].
+"""Clamp[DIM] — element-wise hard clamp to [min_val, max_val] (storage surface).
+
+Transformed from legacy `nn.primitives.Clamp` (surface-only change). The CPU SIMD
+loops and the two GPU kernels (forward / backward) are carried over verbatim.
 
 Forward:  out[b, d] = max(min_val, min(max_val, x[b, d]))
 Backward: grad_in[b, d] = grad_out[b, d] if min_val < x < max_val else 0
 
-`min_val` and `max_val` are runtime per-instance scalars (mirrors `Scale`).
-Caller sets them via `set_attr["min_val"](v)` / `set_attr["max_val"](v)`
-on either the bare struct or through `ComputeGraph.set_node_attr[NAME, ATTR]`.
+`min_val` / `max_val` are runtime per-instance scalars (mirror `Scale`); set via
+`set_min_max`. No cache — the backward re-reads `x` from `forward_input` (the
+orchestrator-owned input storage, kept live across the call by `TensorRefs`).
 
-No cache field — the backward kernel re-reads `x` through the orchestrator-
-owned input slab (input-alias pattern, mirrors ReLU/Mish in `Elementwise`).
-The orchestrator (Sequential / ComputeGraph) keeps the input slab live
-until backward completes.
-
-Phase 4.5 — used by `DDPGTargetYBlock` (1 instance, action clamp) and
-`TD3TargetYBlock` (2 instances: noise clip + smoothed-action clamp).
+Used by `DDPGTargetYBlock` (1 instance, action clamp) and `TD3TargetYBlock`
+(2 instances: noise clip + smoothed-action clamp).
 """
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, CPU_SIMD_W, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _clamp_forward_kernel[
     N: Int,
 ](
@@ -66,67 +66,56 @@ def _clamp_backward_kernel[
             grad_input[idx] = rebind[Scalar[DT]](grad_output[idx])
 
 
-struct Clamp[DIM: Int](Module):
-    comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
-    comptime OUT_DIM = Self.DIM
+struct Clamp[DIM_: Int](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime OUT_DIM = Self.DIM_
 
     var min_val: Scalar[DT]
     var max_val: Scalar[DT]
-    var ts: TargetStorage
-
-    # Input-alias cache: backward reads x back through this pointer (the
-    # orchestrator's input slab). Mirrors ReLU/Mish in `Elementwise`.
-    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
 
     def __init__(out self):
         self.min_val = Scalar[DT](-1.0)
         self.max_val = Scalar[DT](1.0)
-        self.ts = TargetStorage.make_uninit()
-        self._cached_input_ptr = None
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "Clamp: target must be 'cpu' or 'gpu'"
-        )
-        var c = Self()
-        comptime if target == "cpu":
-            c.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("Clamp.make[target='gpu']: ctx required")
-            c.ts = TargetStorage.make_gpu(ctx.value())
-        return c^
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Unified CPU/GPU factory. INIT accepted for `make[target, INIT]`
+        uniformity but ignored (no params)."""
+        var cl = Self()
+        return cl^
+
+    def set_min_max(mut self, min_val: Scalar[DT], max_val: Scalar[DT]):
+        self.min_val = min_val
+        self.max_val = max_val
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Named-attribute setter so a `ComputeGraph` can configure the bounds
+        via `set_node_attr["node", "min_val"/"max_val"]` (mirrors `Scale`).
+        Needed by the TD3 target-y graph (noise clip + action clamp)."""
+        comptime if ATTR == "min_val":
+            self.min_val = value
+        elif ATTR == "max_val":
+            self.max_val = value
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Clamp", target](self.ts.target_tag)
-        var input_v = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        comptime N = B * Self.DIM_
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            var in_p = input_v.ptr
-            var out_p = output_v.ptr
-            self._cached_input_ptr = in_p
+            out.ensure(N)
+            var in_p = in0.data.unsafe_ptr()
+            var out_p = out.data.unsafe_ptr()
             var min_v = SIMD[DT, CPU_SIMD_W](self.min_val)
             var max_v = SIMD[DT, CPU_SIMD_W](self.max_val)
-            comptime N = BATCH * Self.DIM
             var k = 0
             while k + CPU_SIMD_W <= N:
                 var v = in_p.load[width=CPU_SIMD_W](k)
@@ -144,51 +133,42 @@ struct Clamp[DIM: Int](Module):
                 out_p[k] = v
                 k += 1
         else:
-            var in_p = input_v.ptr
-            var out_p = output_v.ptr
-            self._cached_input_ptr = in_p
-            comptime N = BATCH * Self.DIM
-            var in_lt = LayoutTensor[
-                DT, Layout.row_major(N), MutAnyOrigin,
-            ](in_p)
-            var out_lt = LayoutTensor[
-                DT, Layout.row_major(N), MutAnyOrigin,
-            ](out_p)
+            var c = ctx.value()
+            out.ensure_gpu(c, N)
             comptime n_blocks = (N + TPB - 1) // TPB
-            comptime kernel = _clamp_forward_kernel[N]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, self.min_val, self.max_val,
-                grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[_clamp_forward_kernel[N]](
+                in0.lt["gpu", Layout.row_major(N)](),
+                out.lt["gpu", Layout.row_major(N)](),
+                self.min_val,
+                self.max_val,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Clamp", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
+        comptime N = B * Self.DIM_
+        ref fin = forward_input[0]
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var x_p = self._cached_input_ptr.value()
+            gin.ensure(N)
+            var go_p = grad_output.data.unsafe_ptr()
+            var gi_p = gin.data.unsafe_ptr()
+            var x_p = fin.data.unsafe_ptr()
             var min_v = SIMD[DT, CPU_SIMD_W](self.min_val)
             var max_v = SIMD[DT, CPU_SIMD_W](self.max_val)
             var zero = SIMD[DT, CPU_SIMD_W](0.0)
-            comptime N = BATCH * Self.DIM
             var k = 0
             while k + CPU_SIMD_W <= N:
                 var x = x_p.load[width=CPU_SIMD_W](k)
@@ -205,31 +185,18 @@ struct Clamp[DIM: Int](Module):
                     gi_p[k] = go_p[k]
                 k += 1
         else:
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var x_p = self._cached_input_ptr.value()
-            comptime N = BATCH * Self.DIM
-            var go_lt = LayoutTensor[
-                DT, Layout.row_major(N), MutAnyOrigin,
-            ](go_p)
-            var in_lt = LayoutTensor[
-                DT, Layout.row_major(N), MutAnyOrigin,
-            ](x_p)
-            var gi_lt = LayoutTensor[
-                DT, Layout.row_major(N), MutAnyOrigin,
-            ](gi_p)
+            var c = ctx.value()
+            gin.ensure_gpu(c, N)
             comptime n_blocks = (N + TPB - 1) // TPB
-            comptime kernel = _clamp_backward_kernel[N]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, in_lt, gi_lt, self.min_val, self.max_val,
-                grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[_clamp_backward_kernel[N]](
+                grad_output.lt["gpu", Layout.row_major(N)](),
+                fin.lt["gpu", Layout.row_major(N)](),
+                gin.lt["gpu", Layout.row_major(N)](),
+                self.min_val,
+                self.max_val,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
-    # Override of Module.set_attr — supports ATTR="min_val" / "max_val".
-    # Other ATTR strings are no-ops (Mojo nightly can't error on unknown
-    # ATTR from a comptime if without a constexpr-assert).
-    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
-        comptime if ATTR == "min_val":
-            self.min_val = value
-        comptime if ATTR == "max_val":
-            self.max_val = value
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).

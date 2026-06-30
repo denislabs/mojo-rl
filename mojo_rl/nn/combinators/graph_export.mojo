@@ -1,31 +1,22 @@
-"""Graph exporters — GraphVisitor sinks for `ComputeGraph.describe`.
+"""ComputeGraph exporters — `GraphVisitor` conformers that render a storage
+`ComputeGraph`'s topology (run via `graph.describe[Exporter](name, exporter)`).
 
-`describe` walks the graph's comptime topology and emits, per node, a
-`node` event (with the op's display label), zero or more `node_inner`
-events (container children — e.g. each layer of a `Sequential`), and one
-`edge` event per input slot. Each exporter here turns that event stream
-into a different representation, sharing the single traversal:
+  - `TextExporter`          — a readable indented table; container nodes
+    (a `Node` wrapping a `Sequential`) expand their children underneath.
+  - `MermaidExporter`       — a `graph TD` Mermaid diagram (InputSlots render as
+    stadiums; containers as subgraphs of their chained children).
+  - `FusionReportExporter`  — a static fusion census: classifies each node
+    (matmul / pointwise / memory / rng / loss / input / other) by display label,
+    computes fan-out, and finds maximal connected regions of pointwise nodes —
+    the chains a single fused element-wise kernel could collapse. Pure static
+    analysis off the comptime topology; no kernels, no timing.
 
-  * `TextExporter`    — aligned table for the terminal / CI logs, with
-        container children listed underneath their node. The debugging
-        default: no rendering dependency, prints straight out.
-  * `MermaidExporter` — `graph TD` source for docs (GitHub renders it
-        natively). Input slots are stadiums, leaves are boxes, and
-        container nodes become labelled `subgraph`s holding their chained
-        children. Edges are labelled with the feature width they carry.
-
-Both buffer events and render in `end()`, so neither depends on emission
-order. Adding a third exporter (DOT, a shape/param report, …) is a new
-struct conforming to `GraphVisitor` — it never touches `ComputeGraph` or
-the others.
+Transformed from the legacy `nn/combinators/graph_export.mojo`. Node labels come
+from `Module.display_label` (e.g. "Linear", "ReLU", "Concat") and container
+expansion from `Module.display_steps`; read `.out` for the rendered String.
 """
 
-from ..core import GraphVisitor
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Small formatting helpers (module-level — shared by both exporters).
-# ──────────────────────────────────────────────────────────────────────
+from ..core.graph_visitor import GraphVisitor
 
 
 def _pad(s: String, width: Int) -> String:
@@ -45,195 +36,9 @@ def _idx2(i: Int) -> String:
     return String(i)
 
 
-# ──────────────────────────────────────────────────────────────────────
-# TextExporter — buffer node rows + children, format a table in `end`.
-# ──────────────────────────────────────────────────────────────────────
-
-
-struct TextExporter(GraphVisitor):
-    var out: String
-    var gname: String
-    var names: List[String]
-    var labels: List[String]
-    var outs: List[Int]
-    var ins: List[String]          # accumulated "src1, src2, ..." per node
-    var subs: List[List[String]]   # container children ("label →out") per node
-
-    def __init__(out self):
-        self.out = String("")
-        self.gname = String("")
-        self.names = List[String]()
-        self.labels = List[String]()
-        self.outs = List[Int]()
-        self.ins = List[String]()
-        self.subs = List[List[String]]()
-
-    def begin(mut self, graph_name: String, n_nodes: Int) raises:
-        self.gname = graph_name
-
-    def node(
-        mut self, idx: Int, name: String, label: String, kind: Int,
-        out_dim: Int,
-    ) raises:
-        self.names.append(name)
-        self.labels.append(label)
-        self.outs.append(out_dim)
-        self.ins.append(String(""))
-        self.subs.append(List[String]())
-
-    def node_inner(
-        mut self, parent: String, step_idx: Int, label: String,
-        out_dim: Int,
-    ) raises:
-        self.subs[len(self.subs) - 1].append(label + " →" + String(out_dim))
-
-    def edge(
-        mut self, dst: String, src: String, slot: Int, in_dim: Int,
-    ) raises:
-        var last = len(self.ins) - 1
-        if self.ins[last].byte_length() > 0:
-            self.ins[last] = self.ins[last] + ", " + src
-        else:
-            self.ins[last] = src
-
-    def end(mut self) raises:
-        var maxname = 4
-        var maxlabel = 5
-        for i in range(len(self.names)):
-            if self.names[i].byte_length() > maxname:
-                maxname = self.names[i].byte_length()
-            if self.labels[i].byte_length() > maxlabel:
-                maxlabel = self.labels[i].byte_length()
-
-        var s = String("ComputeGraph")
-        if self.gname.byte_length() > 0:
-            s += ' "' + self.gname + '"'
-        s += "  (" + String(len(self.names)) + " nodes)\n"
-
-        for i in range(len(self.names)):
-            s += "  #" + _idx2(i) + "  " + _pad(self.names[i], maxname)
-            s += "  " + _pad(self.labels[i], maxlabel)
-            if self.ins[i].byte_length() > 0:
-                s += _pad("  <- " + self.ins[i], maxname + 28)
-            else:
-                s += _pad("", maxname + 28)
-            s += "  -> " + String(self.outs[i]) + "\n"
-            # Container children, indented under the node.
-            for j in range(len(self.subs[i])):
-                s += _pad("", maxname + 10) + "└ " + self.subs[i][j] + "\n"
-        self.out = s
-
-
-# ──────────────────────────────────────────────────────────────────────
-# MermaidExporter — buffer, then render `graph TD` with subgraphs.
-# ──────────────────────────────────────────────────────────────────────
-
-
-struct MermaidExporter(GraphVisitor):
-    var out: String
-    var gname: String
-    var names: List[String]
-    var labels: List[String]
-    var kinds: List[Int]
-    var outs: List[Int]
-    var subs: List[List[String]]   # container children ("label →out") per node
-    var esrc: List[String]
-    var edst: List[String]
-    var ein: List[Int]
-
-    def __init__(out self):
-        self.out = String("")
-        self.gname = String("")
-        self.names = List[String]()
-        self.labels = List[String]()
-        self.kinds = List[Int]()
-        self.outs = List[Int]()
-        self.subs = List[List[String]]()
-        self.esrc = List[String]()
-        self.edst = List[String]()
-        self.ein = List[Int]()
-
-    def begin(mut self, graph_name: String, n_nodes: Int) raises:
-        self.gname = graph_name
-
-    def node(
-        mut self, idx: Int, name: String, label: String, kind: Int,
-        out_dim: Int,
-    ) raises:
-        self.names.append(name)
-        self.labels.append(label)
-        self.kinds.append(kind)
-        self.outs.append(out_dim)
-        self.subs.append(List[String]())
-
-    def node_inner(
-        mut self, parent: String, step_idx: Int, label: String,
-        out_dim: Int,
-    ) raises:
-        self.subs[len(self.subs) - 1].append(label + " →" + String(out_dim))
-
-    def edge(
-        mut self, dst: String, src: String, slot: Int, in_dim: Int,
-    ) raises:
-        self.esrc.append(src)
-        self.edst.append(dst)
-        self.ein.append(in_dim)
-
-    def end(mut self) raises:
-        var s = String("")
-        if self.gname.byte_length() > 0:
-            s += "%% " + self.gname + "\n"
-        s += "graph TD\n"
-
-        for i in range(len(self.names)):
-            var name = self.names[i]
-            var label = self.labels[i]
-            var od = String(self.outs[i])
-            if self.kinds[i] == 0:
-                # External input — stadium.
-                s += "  " + name + '(["' + name + "<br/>in " + od + '"])\n'
-            elif len(self.subs[i]) > 0:
-                # Container — subgraph holding the chained children.
-                s += "  subgraph " + name + " [" + name + ": " + label + "]\n"
-                var nsub = len(self.subs[i])
-                for j in range(nsub):
-                    s += (
-                        "    " + name + "__" + String(j) + '["'
-                        + self.subs[i][j] + '"]\n'
-                    )
-                for j in range(nsub - 1):
-                    s += (
-                        "    " + name + "__" + String(j) + " --> "
-                        + name + "__" + String(j + 1) + "\n"
-                    )
-                s += "  end\n"
-            else:
-                # Leaf — box labelled with op name + output width.
-                s += "  " + name + '["' + name + "<br/>" + label + " &rarr; " + od + '"]\n'
-
-        for e in range(len(self.esrc)):
-            s += (
-                "  " + self.esrc[e] + " -->|" + String(self.ein[e]) + "| "
-                + self.edst[e] + "\n"
-            )
-        self.out = s
-
-
-# ──────────────────────────────────────────────────────────────────────
-# FusionReportExporter — static fusion census.
-#
-# Classifies each node, computes fan-out, and finds maximal connected
-# regions of pointwise (element-wise) nodes — the chains that a single
-# fused element-wise kernel could collapse. Reports launches eliminable
-# per region (= region size − 1) plus a separate count of memory-glue
-# (Concat / Slice) nodes that are eliminable by other means. Pure static
-# analysis off the comptime topology — no kernels, no timing.
-# ──────────────────────────────────────────────────────────────────────
-
-
 def _is_pointwise(label: String) -> Bool:
-    """Element-wise ops a single fused kernel can chain (same width in/out,
-    one scalar op per element, derivative known per-op)."""
+    """Element-wise ops a single fused kernel can chain (same width in/out, one
+    scalar op per element, derivative known per-op)."""
     var pw = [
         String("ReLU"), String("Tanh"), String("Sigmoid"), String("Mish"),
         String("GELU"), String("SiLU"), String("Symlog"), String("StopGrad"),
@@ -287,7 +92,182 @@ def _uf_union(mut parent: List[Int], a: Int, b: Int):
         parent[rb] = ra
 
 
+struct TextExporter(GraphVisitor):
+    """Buffers node rows + container children, formats an indented table in
+    `end()`. Read the result from `.out`."""
+
+    var out: String
+    var gname: String
+    var names: List[String]
+    var labels: List[String]
+    var outs: List[Int]
+    var ins: List[String]  # accumulated "src1, src2, ..." per node
+    var subs: List[List[String]]  # container children ("label →out") per node
+
+    def __init__(out self):
+        self.out = String("")
+        self.gname = String("")
+        self.names = List[String]()
+        self.labels = List[String]()
+        self.outs = List[Int]()
+        self.ins = List[String]()
+        self.subs = List[List[String]]()
+
+    def begin(mut self, graph_name: String, n_nodes: Int) raises:
+        self.gname = graph_name
+
+    def node(
+        mut self, idx: Int, name: String, label: String, kind: Int,
+        out_dim: Int,
+    ) raises:
+        self.names.append(name)
+        self.labels.append(label)
+        self.outs.append(out_dim)
+        self.ins.append(String(""))
+        self.subs.append(List[String]())
+
+    def node_inner(
+        mut self, parent: String, step_idx: Int, label: String, out_dim: Int
+    ) raises:
+        self.subs[len(self.subs) - 1].append(label + " →" + String(out_dim))
+
+    def edge(
+        mut self, dst: String, src: String, slot: Int, in_dim: Int
+    ) raises:
+        var last = len(self.ins) - 1
+        if self.ins[last].byte_length() > 0:
+            self.ins[last] = self.ins[last] + ", " + src
+        else:
+            self.ins[last] = src
+
+    def end(mut self) raises:
+        var maxname = 4
+        var maxlabel = 5
+        for i in range(len(self.names)):
+            if self.names[i].byte_length() > maxname:
+                maxname = self.names[i].byte_length()
+            if self.labels[i].byte_length() > maxlabel:
+                maxlabel = self.labels[i].byte_length()
+
+        var s = String("ComputeGraph")
+        if self.gname.byte_length() > 0:
+            s += ' "' + self.gname + '"'
+        s += "  (" + String(len(self.names)) + " nodes)\n"
+
+        for i in range(len(self.names)):
+            s += "  #" + _idx2(i) + "  " + _pad(self.names[i], maxname)
+            s += "  " + _pad(self.labels[i], maxlabel)
+            if self.ins[i].byte_length() > 0:
+                s += _pad("  <- " + self.ins[i], maxname + 28)
+            else:
+                s += _pad("", maxname + 28)
+            s += "  -> " + String(self.outs[i]) + "\n"
+            # Container children, indented under the node.
+            for j in range(len(self.subs[i])):
+                s += _pad("", maxname + 10) + "└ " + self.subs[i][j] + "\n"
+        self.out = s
+
+
+struct MermaidExporter(GraphVisitor):
+    """Buffers nodes + edges, renders a `graph TD` Mermaid diagram in `end()`.
+    Read the result from `.out`."""
+
+    var out: String
+    var gname: String
+    var names: List[String]
+    var labels: List[String]
+    var kinds: List[Int]
+    var outs: List[Int]
+    var subs: List[List[String]]  # container children ("label →out") per node
+    var esrc: List[String]
+    var edst: List[String]
+    var ein: List[Int]
+
+    def __init__(out self):
+        self.out = String("")
+        self.gname = String("")
+        self.names = List[String]()
+        self.labels = List[String]()
+        self.kinds = List[Int]()
+        self.outs = List[Int]()
+        self.subs = List[List[String]]()
+        self.esrc = List[String]()
+        self.edst = List[String]()
+        self.ein = List[Int]()
+
+    def begin(mut self, graph_name: String, n_nodes: Int) raises:
+        self.gname = graph_name
+
+    def node(
+        mut self, idx: Int, name: String, label: String, kind: Int,
+        out_dim: Int,
+    ) raises:
+        self.names.append(name)
+        self.labels.append(label)
+        self.kinds.append(kind)
+        self.outs.append(out_dim)
+        self.subs.append(List[String]())
+
+    def node_inner(
+        mut self, parent: String, step_idx: Int, label: String, out_dim: Int
+    ) raises:
+        self.subs[len(self.subs) - 1].append(label + " →" + String(out_dim))
+
+    def edge(
+        mut self, dst: String, src: String, slot: Int, in_dim: Int
+    ) raises:
+        self.esrc.append(src)
+        self.edst.append(dst)
+        self.ein.append(in_dim)
+
+    def end(mut self) raises:
+        var s = String("")
+        if self.gname.byte_length() > 0:
+            s += "%% " + self.gname + "\n"
+        s += "graph TD\n"
+
+        for i in range(len(self.names)):
+            var name = self.names[i]
+            var label = self.labels[i]
+            var od = String(self.outs[i])
+            if self.kinds[i] == 0:
+                # InputSlot — stadium.
+                s += "  " + name + '(["' + name + "<br/>in " + od + '"])\n'
+            elif len(self.subs[i]) > 0:
+                # Container — subgraph holding the chained children.
+                s += "  subgraph " + name + " [" + name + ": " + label + "]\n"
+                var nsub = len(self.subs[i])
+                for j in range(nsub):
+                    s += (
+                        "    " + name + "__" + String(j) + '["'
+                        + self.subs[i][j] + '"]\n'
+                    )
+                for j in range(nsub - 1):
+                    s += (
+                        "    " + name + "__" + String(j) + " --> "
+                        + name + "__" + String(j + 1) + "\n"
+                    )
+                s += "  end\n"
+            else:
+                # Leaf — box labelled op name + output width.
+                s += (
+                    "  " + name + '["' + name + "<br/>" + label
+                    + " &rarr; " + od + '"]\n'
+                )
+
+        for e in range(len(self.esrc)):
+            s += (
+                "  " + self.esrc[e] + " -->|" + String(self.ein[e]) + "| "
+                + self.edst[e] + "\n"
+            )
+        self.out = s
+
+
 struct FusionReportExporter(GraphVisitor):
+    """Static fusion census — node categories, fan-out, and maximal pointwise
+    regions (the chains a single fused element-wise kernel could collapse).
+    Read the result from `.out`."""
+
     var out: String
     var gname: String
     var names: List[String]
@@ -320,7 +300,7 @@ struct FusionReportExporter(GraphVisitor):
         self.outs.append(out_dim)
 
     def edge(
-        mut self, dst: String, src: String, slot: Int, in_dim: Int,
+        mut self, dst: String, src: String, slot: Int, in_dim: Int
     ) raises:
         self.esrc.append(src)
         self.edst.append(dst)
@@ -351,10 +331,10 @@ struct FusionReportExporter(GraphVisitor):
             parent.append(i)
         for e in range(len(self.esrc)):
             if self.esrc[e] in name2idx and self.edst[e] in name2idx:
-                var s = name2idx[self.esrc[e]]
-                var d = name2idx[self.edst[e]]
-                if pointwise[s] and pointwise[d]:
-                    _uf_union(parent, s, d)
+                var sidx = name2idx[self.esrc[e]]
+                var didx = name2idx[self.edst[e]]
+                if pointwise[sidx] and pointwise[didx]:
+                    _uf_union(parent, sidx, didx)
 
         # per-node table
         var s = String("FusionReport")
@@ -380,7 +360,7 @@ struct FusionReportExporter(GraphVisitor):
             String("matmul"), String("pointwise"), String("memory"),
             String("rng"), String("loss"), String("input"), String("other"),
         ]
-        s += "  ── categories ──\n"
+        s += "  -- categories --\n"
         for c in range(len(cat_order)):
             var cnt = 0
             for i in range(n):
@@ -393,7 +373,7 @@ struct FusionReportExporter(GraphVisitor):
         var seen = Dict[Int, Bool]()
         var total_saved = 0
         var n_regions = 0
-        s += "  ── fusable pointwise regions ──\n"
+        s += "  -- fusable pointwise regions --\n"
         for i in range(n):
             if not pointwise[i]:
                 continue
@@ -415,7 +395,7 @@ struct FusionReportExporter(GraphVisitor):
                 total_saved += size - 1
                 s += (
                     "    {" + members + "}  size=" + String(size)
-                    + " → 1 kernel (saves " + String(size - 1) + ")\n"
+                    + " -> 1 kernel (saves " + String(size - 1) + ")\n"
                 )
 
         # memory-glue eliminable count
@@ -424,7 +404,7 @@ struct FusionReportExporter(GraphVisitor):
             if cats[i] == String("memory"):
                 mem += 1
 
-        s += "  ── summary ──\n"
+        s += "  -- summary --\n"
         s += (
             "    pointwise-fusion: " + String(n_regions)
             + " region(s), " + String(total_saved)

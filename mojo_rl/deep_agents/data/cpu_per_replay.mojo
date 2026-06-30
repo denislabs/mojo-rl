@@ -185,11 +185,11 @@ struct CPUPrioritizedReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
 
     def sample[BATCH: Int](
         mut self,
-        mb_s: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_a: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_r: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_sp: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_d: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut mb_s: List[Scalar[DT]],
+        mut mb_a: List[Scalar[DT]],
+        mut mb_r: List[Scalar[DT]],
+        mut mb_sp: List[Scalar[DT]],
+        mut mb_d: List[Scalar[DT]],
     ) raises:
         """Stratified PER sample: partition `[0, total)` into BATCH
         equal segments, draw one uniform per segment, descend the sum-
@@ -262,7 +262,7 @@ struct CPUPrioritizedReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
 
     def update_priorities[BATCH: Int](
         mut self,
-        td_residuals_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref td_residuals_p: List[Scalar[DT]],
     ) raises:
         """Refresh priorities for the indices returned by the most
         recent `sample[BATCH]` call. Computes `p = (|TD| + ε)^α`,
@@ -320,15 +320,14 @@ struct CPUPrioritizedReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
         """Stratified PER sample into `state.mb_*`, copy normalised IS
         weights into `state.mb_w` (host), flip `state.has_per`."""
         self.sample[BATCH](
-            state.mb_s.cpu_ptr(),
-            state.mb_a.cpu_ptr(),
-            state.mb_r.cpu_ptr(),
-            state.mb_sp.cpu_ptr(),
-            state.mb_d.cpu_ptr(),
+            state.mb_s.data,
+            state.mb_a.data,
+            state.mb_r.data,
+            state.mb_sp.data,
+            state.mb_d.data,
         )
-        var w_dst = state.mb_w.cpu_ptr()
         for i in range(BATCH):
-            w_dst[i] = self._host_weights[i]
+            state.mb_w.data[i] = self._host_weights[i]
         state.has_per = True
 
     def update_priorities[BATCH: Int](
@@ -337,7 +336,7 @@ struct CPUPrioritizedReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     ) raises:
         """Trait-surface priority refresh: reads `state.td_residuals`
         (host) and updates the sum-tree."""
-        self.update_priorities[BATCH](state.td_residuals.cpu_ptr())
+        self.update_priorities[BATCH](state.td_residuals.data)
 
     def count(self) -> Int:
         return self.base.size

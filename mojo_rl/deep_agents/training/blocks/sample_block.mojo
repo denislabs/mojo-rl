@@ -38,7 +38,7 @@ from ...data.n_step_replay import GPUNStepBuffer
 from ..trainer_block import TrainerState
 
 
-trait SampleBlock(Defaultable, Movable, ImplicitlyDestructible):
+trait SampleBlock(Defaultable, ImplicitlyDeletable, Movable):
     comptime OBS: Int
     comptime ACT: Int
     comptime BATCH: Int
@@ -78,9 +78,9 @@ trait SampleBlock(Defaultable, Movable, ImplicitlyDestructible):
 
     def configure_per(
         mut self,
-        alpha: Scalar[DT] = Scalar[DT](0.6),
-        beta: Scalar[DT] = Scalar[DT](0.4),
-        epsilon: Scalar[DT] = Scalar[DT](1e-6),
+        alpha: Scalar[DT] = 0.6,
+        beta: Scalar[DT] = 0.4,
+        epsilon: Scalar[DT] = 1e-6,
     ):
         """Override PER hyperparameters before `setup()`. No-op for
         uniform blocks. Allows the unified trainer's `make()` to apply
@@ -98,7 +98,7 @@ trait SampleBlock(Defaultable, Movable, ImplicitlyDestructible):
     def configure_ere(
         mut self,
         enable: Bool = False,
-        eta: Scalar[DT] = Scalar[DT](0.996),
+        eta: Scalar[DT] = 0.996,
         c_min: Int = 1,
         k_max: Int = 1000,
     ) raises:
@@ -108,7 +108,9 @@ trait SampleBlock(Defaultable, Movable, ImplicitlyDestructible):
         was built with `use_ere=True`."""
         pass
 
-    def add_batch_gpu[N_ENVS: Int](
+    def add_batch_gpu[
+        N_ENVS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         prev_obs_dev: DeviceBuffer[DT],
@@ -123,7 +125,9 @@ trait SampleBlock(Defaultable, Movable, ImplicitlyDestructible):
         support this yet."""
         raise Error("add_batch_gpu not supported by this SampleBlock")
 
-    def store_via_block_gpu[N_ENVS: Int, NS: Int](
+    def store_via_block_gpu[
+        N_ENVS: Int, NS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         mut nstep_buf: GPUNStepBuffer[NS, Self.OBS, Self.ACT, N_ENVS],

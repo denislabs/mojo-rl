@@ -13,15 +13,15 @@ on the critic cadence → averaged by `n_critic_updates`):
   * `mean_target` — mean TD target y over the minibatch (`state.mb_y`)
   * `mean_reward` — mean reward of the minibatch (`state.mb_r`)
   * `mean_done`   — mean done flag of the minibatch (`state.mb_d`)
-On the (unreachable today) GPU train path the four diagnostics read
-0.0 — same convention as DQN/C51/PPO."""
+On the storage GPU train path these diagnostics are populated from
+device-resident accumulators (read once at flush), same as SAC — not 0.0."""
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.metric import LogScalar
 
 
 @fieldwise_init
-struct TD3Metrics(Copyable, Movable, ImplicitlyDestructible):
+struct TD3Metrics(Copyable, Movable, ImplicitlyDeletable):
     var actor_loss:  LogScalar[DT]
     var critic_loss: LogScalar[DT]
     var mean_q:      LogScalar[DT]

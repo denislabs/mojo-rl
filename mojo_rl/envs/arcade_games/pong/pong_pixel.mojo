@@ -21,7 +21,9 @@ Usage:
 """
 
 from std.random import random_float64
+from mojo_rl.nn.core.ptr import untracked
 from std.memory import alloc, memset
+from mojo_rl.nn.constants import LAYOUT_NCHW, LAYOUT_NHWC
 from mojo_rl.core import (
     State,
     Action,
@@ -221,6 +223,11 @@ struct PongPixelEnv[
     DTYPE: DType,
     HIT_REWARD: Float64 = 0.1,
     FRAME_SKIP: Int = 1,
+    # Frame-stack obs memory layout. NCHW (default) = [FRAME, 84, 84] (frame-
+    # outer, bit-identical to the original). NHWC = [84, 84, FRAME] (frame-inner)
+    # for channels-last conv training — couple this to the agent's conv LAYOUT
+    # (RainbowCNNConfig.LAYOUT). The flat OBS_DIM (28224) is identical either way.
+    LAYOUT: Int = LAYOUT_NCHW,
 ](BoxDiscreteActionEnv & GPUDiscreteEnv & RenderableEnv & Movable):
     """Native Pong with pixel observations for CNN-based training.
 
@@ -237,6 +244,7 @@ struct PongPixelEnv[
             With FRAME_SKIP=4, each action is repeated 4 times before
             rendering and observing. Rewards are summed across skipped frames.
             If the episode terminates mid-skip, remaining frames are skipped.
+        LAYOUT: Observation layout (default LAYOUT_NCHW).
 
     CPU: Renders to internal grayscale buffer for get_obs_list().
     GPU: Renders in-kernel, maintains per-env frame stacks in workspace.
@@ -257,14 +265,14 @@ struct PongPixelEnv[
     var inner: PongEnv[Self.DTYPE, Self.HIT_REWARD]
 
     # CPU pixel observation buffers
-    var _frame_buf: UnsafePointer[UInt8, MutAnyOrigin]  # 160×210 grayscale
-    var _frame_stack: UnsafePointer[Scalar[Self.DTYPE], MutAnyOrigin]  # 4×84×84
+    var _frame_buf: UnsafePointer[UInt8, MutUntrackedOrigin]  # 160×210 grayscale
+    var _frame_stack: UnsafePointer[Scalar[Self.DTYPE], MutUntrackedOrigin]  # 4×84×84
     var _frame_idx: Int
 
     def __init__(out self):
         self.inner = PongEnv[Self.DTYPE, Self.HIT_REWARD]()
-        self._frame_buf = alloc[UInt8](SCREEN_W * SCREEN_H)
-        self._frame_stack = alloc[Scalar[Self.DTYPE]](PIXEL_OBS_DIM)
+        self._frame_buf = untracked(alloc[UInt8](SCREEN_W * SCREEN_H))
+        self._frame_stack = untracked(alloc[Scalar[Self.DTYPE]](PIXEL_OBS_DIM))
         self._frame_idx = 0
         # Zero frame stack
         for i in range(PIXEL_OBS_DIM):
@@ -283,7 +291,7 @@ struct PongPixelEnv[
     def _render_to_buf(self):
         """Render current Pong state to internal grayscale buffer."""
         _render_pong_frame(
-            self._frame_buf,
+            self._frame_buf.as_unsafe_any_origin(),
             Int(self.inner.state[S_BALL_X]),
             Int(self.inner.state[S_BALL_Y]),
             Int(self.inner.state[S_PADDLE_Y]),
@@ -372,11 +380,21 @@ struct PongPixelEnv[
         """Return 4×84×84 pixel observations as chronological frame stack."""
         comptime FRAME_SIZE = OBS_W * OBS_H
         var obs = List[Scalar[Self.DTYPE]](capacity=PIXEL_OBS_DIM)
-        for f in range(FRAME_STACK):
-            var read_slot = (self._frame_idx + f) % FRAME_STACK  # oldest first
-            var read_base = read_slot * FRAME_SIZE
+        comptime if Self.LAYOUT == LAYOUT_NHWC:
+            # [84, 84, FRAME]: pixel-outer, frame-inner (channels-last).
             for i in range(FRAME_SIZE):
-                obs.append(self._frame_stack[read_base + i])
+                for f in range(FRAME_STACK):
+                    var read_slot = (self._frame_idx + f) % FRAME_STACK
+                    obs.append(self._frame_stack[read_slot * FRAME_SIZE + i])
+        else:
+            # [FRAME, 84, 84]: frame-outer (channels-first, original).
+            for f in range(FRAME_STACK):
+                var read_slot = (
+                    self._frame_idx + f
+                ) % FRAME_STACK  # oldest first
+                var read_base = read_slot * FRAME_SIZE
+                for i in range(FRAME_SIZE):
+                    obs.append(self._frame_stack[read_base + i])
         return obs^
 
     def reset_obs_list(mut self) -> List[Scalar[Self.DTYPE]]:
@@ -447,20 +465,20 @@ struct PongPixelEnv[
         ] = None,
     ) raises:
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
-        var actions = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
-        ](actions_buf.unsafe_ptr())
-        var rewards = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
-        var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
+        var actions = LayoutTensor[gpu_dtype, Layout.row_major(BATCH_SIZE)](
+            actions_buf
+        )
+        var rewards = LayoutTensor[gpu_dtype, Layout.row_major(BATCH_SIZE)](
+            rewards_buf
+        )
+        var dones = LayoutTensor[gpu_dtype, Layout.row_major(BATCH_SIZE)](
+            dones_buf
+        )
         var terminated_out = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
         var seed = Scalar[DType.uint64](rng_seed)
@@ -495,9 +513,7 @@ struct PongPixelEnv[
             # First physics step (action applied normally)
             PongEnv[DType.float32, Self.HIT_REWARD].step_kernel[
                 BATCH_SIZE, STATE_SIZE
-            ](
-                states, actions, rewards, dones, rng_seed
-            )
+            ](states, actions, rewards, dones, rng_seed)
 
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
             if idx >= BATCH_SIZE:
@@ -512,9 +528,7 @@ struct PongPixelEnv[
                     var prev_reward = rebind[Scalar[gpu_dtype]](rewards[idx])
                     PongEnv[DType.float32, Self.HIT_REWARD].step_kernel[
                         BATCH_SIZE, STATE_SIZE
-                    ](
-                        states, actions, rewards, dones, rng_seed
-                    )
+                    ](states, actions, rewards, dones, rng_seed)
                     # Accumulate reward
                     rewards[idx] = prev_reward + rebind[Scalar[gpu_dtype]](
                         rewards[idx]
@@ -604,6 +618,7 @@ struct PongPixelEnv[
         comptime FRAME_SIZE = OBS_W * OBS_H  # 7056
         comptime RESIZE_TOTAL = BATCH_SIZE * FRAME_SIZE
         comptime RESIZE_TPB = 256
+        comptime OBS_LAYOUT = Self.LAYOUT  # frame-stack obs layout (NCHW/NHWC)
         comptime RESIZE_BLOCKS = (RESIZE_TOTAL + RESIZE_TPB - 1) // RESIZE_TPB
         var obs_ptr = obs_buf.unsafe_ptr()
 
@@ -651,14 +666,21 @@ struct PongPixelEnv[
                 Scalar[gpu_dtype](total // count) / 255.0
             )
 
-            # Output chronological frame stack for this pixel
+            # Output chronological frame stack for this pixel. NCHW =
+            # f*FRAME_SIZE+pixel (frame-outer); NHWC = pixel*FRAME_STACK+f
+            # (frame-inner, channels-last).
             var env_obs = obs_ptr + env_idx * PIXEL_OBS_DIM
             for f in range(FRAME_STACK):
                 var read_slot = (slot + 1 + f) % FRAME_STACK
                 var read_base = WS_FRAME_STACK + read_slot * FRAME_SIZE
-                env_obs[f * FRAME_SIZE + pixel_idx] = env_ws[
-                    read_base + pixel_idx
-                ]
+                comptime if OBS_LAYOUT == LAYOUT_NHWC:
+                    env_obs[pixel_idx * FRAME_STACK + f] = env_ws[
+                        read_base + pixel_idx
+                    ]
+                else:
+                    env_obs[f * FRAME_SIZE + pixel_idx] = env_ws[
+                        read_base + pixel_idx
+                    ]
 
         ctx.enqueue_function[resize_stack_wrapper](
             workspace_ptr.value(),
@@ -702,8 +724,8 @@ struct PongPixelEnv[
         """Reset all environments. Frame stack is initialized in init_step_workspace_gpu.
         """
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
@@ -742,11 +764,11 @@ struct PongPixelEnv[
     ) raises:
         """Reset done environments and clear their frame stacks."""
         var states = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
-        var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
+        var dones = LayoutTensor[gpu_dtype, Layout.row_major(BATCH_SIZE)](
+            dones_buf
+        )
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 

@@ -15,15 +15,15 @@ from std.gpu.host import DeviceContext
 from std.math import isnan, isinf
 from std.random import seed
 from std.testing import assert_true
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.nn.primitives.activations import Tanh
 from mojo_rl.deep_agents.primitives.gaussian_head import GaussianHead
 from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.core.initializer import Xavier
+from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.deep_agents.ppo.actor_loss import PPOActorLoss
 
 
@@ -47,48 +47,41 @@ def _run_one_step[target: StaticString](
     so CPU and GPU runs are directly comparable."""
     seed(7)
     var actor = ActorNet.make[target, INIT=Xavier](ctx=ctx)
-    var actor_opt = Adam.make[target, M=ActorNet](actor, ctx=ctx)
-    actor_opt.lr = Scalar[DT](1e-3)
+    var actor_opt = Adam(lr=Scalar[DT](1e-3))
+    actor_opt.adopt[target, M=ActorNet](actor, ctx)
     var loss_blk = PPOActorLoss[ActorNet, BATCH].make[target](
         ctx=ctx,
         clip_eps=Scalar[DT](0.2),
         entropy_coef=Scalar[DT](0.01),
     )
 
-    # Build deterministic input batches on host, upload to device on GPU.
-    var s_host = List[Scalar[DT]](length=BATCH * OBS_DIM, fill=Scalar[DT](0.0))
-    var a_host = List[Scalar[DT]](length=BATCH * ACT_DIM, fill=Scalar[DT](0.0))
-    var olp_host = List[Scalar[DT]](length=BATCH, fill=Scalar[DT](0.0))
-    var adv_host = List[Scalar[DT]](length=BATCH, fill=Scalar[DT](0.0))
+    # Build deterministic input batches as storage Tensors (host-fill;
+    # upload to device on GPU).
+    var s_t = Tensor.alloc(BATCH * OBS_DIM)
+    var a_t = Tensor.alloc(BATCH * ACT_DIM)
+    var olp_t = Tensor.alloc(BATCH)
+    var adv_t = Tensor.alloc(BATCH)
     for b in range(BATCH):
         for d in range(OBS_DIM):
-            s_host[b * OBS_DIM + d] = Scalar[DT](0.1 * Float64(b + d))
+            s_t.data[b * OBS_DIM + d] = Scalar[DT](0.1 * Float64(b + d))
         for d in range(ACT_DIM):
-            a_host[b * ACT_DIM + d] = Scalar[DT](0.05 * Float64(b + d + 1))
-        olp_host[b] = Scalar[DT](-1.5 + 0.01 * Float64(b))
-        adv_host[b] = Scalar[DT](0.5 - 0.1 * Float64(b))
+            a_t.data[b * ACT_DIM + d] = Scalar[DT](0.05 * Float64(b + d + 1))
+        olp_t.data[b] = Scalar[DT](-1.5 + 0.01 * Float64(b))
+        adv_t.data[b] = Scalar[DT](0.5 - 0.1 * Float64(b))
 
     comptime if target == "cpu":
-        return loss_blk.forward_backward["cpu", Adam](
-            actor, actor_opt,
-            s_host.unsafe_ptr(), a_host.unsafe_ptr(),
-            olp_host.unsafe_ptr(), adv_host.unsafe_ptr(),
+        return loss_blk.forward_backward["cpu"](
+            actor, actor_opt, s_t, a_t, olp_t, adv_t
         )
     else:
         var c = ctx.value()
-        var s_dev = c.enqueue_create_buffer[DT](BATCH * OBS_DIM)
-        var a_dev = c.enqueue_create_buffer[DT](BATCH * ACT_DIM)
-        var olp_dev = c.enqueue_create_buffer[DT](BATCH)
-        var adv_dev = c.enqueue_create_buffer[DT](BATCH)
-        c.enqueue_copy(s_dev, s_host.unsafe_ptr())
-        c.enqueue_copy(a_dev, a_host.unsafe_ptr())
-        c.enqueue_copy(olp_dev, olp_host.unsafe_ptr())
-        c.enqueue_copy(adv_dev, adv_host.unsafe_ptr())
-        c.synchronize()
-        return loss_blk.forward_backward["gpu", Adam](
-            actor, actor_opt,
-            s_dev.unsafe_ptr(), a_dev.unsafe_ptr(),
-            olp_dev.unsafe_ptr(), adv_dev.unsafe_ptr(),
+        s_t.upload(c)
+        a_t.upload(c)
+        olp_t.upload(c)
+        adv_t.upload(c)
+        return loss_blk.forward_backward["gpu"](
+            actor, actor_opt, s_t, a_t, olp_t, adv_t,
+            Scalar[DT](0.0), ctx,
         )
 
 

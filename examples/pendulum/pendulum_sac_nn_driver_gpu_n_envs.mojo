@@ -1,9 +1,9 @@
-"""SAC training on Pendulum V2 via the nn N_ENVS GPU driver.
+"""SAC training on Pendulum V2 via the storage N_ENVS GPU off-policy driver.
 
-Phase B.5b — multi-env GPU vectorization. Uses `PendulumV2` (GPU env)
-and `run_offpolicy_train_gpu_n_envs` to train SAC with `N_ENVS=8`
-parallel envs. Default `updates_per_step=N_ENVS` keeps the effective
-UTD = 1 per transition (matches B.5's single-env convergence regime).
+Multi-env GPU vectorization: uses `PendulumV2` (GPU env) wrapped in a
+`BatchedGpuEnv` and trains SAC with `N_ENVS=8` parallel envs through
+`SACAgent.train[N_ENVS=8]` (⇒ `run_offpolicy_train_batched`). Default
+`updates_per_step=N_ENVS` keeps the effective UTD = 1 per transition.
 
 Run:
     pixi run -e apple mojo run -I . examples/pendulum/pendulum_sac_nn_driver_gpu_n_envs.mojo
@@ -16,12 +16,11 @@ from std.time import perf_counter_ns
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac.trainer import SACTrainer
+from mojo_rl.deep_agents.sac import SACAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
 from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
-from mojo_rl.deep_agents.training.driver_offpolicy import run_offpolicy_train_batched
 
 from mojo_rl.envs.pendulum.pendulum_v2 import PendulumV2
 
@@ -51,11 +50,13 @@ comptime CriticNet = Sequential[
     Linear[HIDDEN, 1],
 ]
 
+comptime BatchedEnvT = BatchedGpuEnv[PendulumV2[DT], N_ENVS, OBS_DIM, ACT_DIM]
+
 
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("nn SAC (Phase B.5b N_ENVS GPU driver) — Pendulum V2 (GPU)")
+    print("nn SAC (off-policy driver, N_ENVS GPU) — Pendulum V2 (GPU)")
     print(
         "  N_ENVS=",
         N_ENVS,
@@ -68,12 +69,12 @@ def main() raises:
     print("=" * 70)
 
     var ctx = DeviceContext()
-    var trainer = SACTrainer[
+    var agent = SACAgent[
         "gpu",
         UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
         ActorNet,
         CriticNet,
-    ].make(
+    ](
         ctx=ctx,
         actor_lr=Scalar[DT](3e-4),
         critic_lr=Scalar[DT](1e-3),
@@ -87,21 +88,13 @@ def main() raises:
         window_size=10,
         initial_episode_fill=Scalar[DT](-1250.0),
     )
-    var env = BatchedGpuEnv[PendulumV2[DT], N_ENVS, OBS_DIM, ACT_DIM](ctx)
+    var env = BatchedEnvT(ctx)
 
     var t_start = perf_counter_ns()
-    var _ep_returns = run_offpolicy_train_batched[
-        SACTrainer[
-            "gpu",
-            UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-            ActorNet,
-            CriticNet,
-        ],
-        BatchedGpuEnv[PendulumV2[DT], N_ENVS, OBS_DIM, ACT_DIM],
-        N_ENVS,
+    var _ep_returns = agent.train[
+        BatchedEnvT,
+        N_ENVS=N_ENVS,
     ](
-        ctx,
-        trainer,
         env,
         TOTAL_ENV_STEPS,
         rng_seed=UInt64(42),
@@ -112,9 +105,9 @@ def main() raises:
     var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
 
     print("=" * 70)
-    var final_mean = trainer.mean_return()
+    var final_mean = agent.mean_return()
     print("Final mean ep return (last 10): ", final_mean)
-    print("Episodes completed:             ", trainer.ep_count())
+    print("Episodes completed:             ", agent.ep_count())
     print("Wall time:                      ", elapsed, " s")
     if final_mean > -200.0:
         print("EXCELLENT — solved swing-up (>-200).")

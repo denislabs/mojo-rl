@@ -22,7 +22,7 @@ from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.optimizer.adam import Adam
 
 from mojo_rl.experimental.pcn.pc_block import PCBlock
 from mojo_rl.experimental.pcn.predictive_model import PCIdentity
@@ -73,8 +73,7 @@ def main() raises:
         PCBlock[H, OUT, PCIdentity],
     ]
     var net = Net.make_pcn[PCXavier]()
-    var opt = Adam.make["cpu", Net](net)
-    opt.lr = Scalar[DT](1e-2)
+    var opt = Adam(lr=Scalar[DT](1e-2))
 
     var loss_first = Float64(0.0)
     var loss_last = Float64(0.0)

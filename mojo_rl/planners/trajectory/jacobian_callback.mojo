@@ -50,7 +50,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT as dtype
 
 
-trait RolloutJacobianCallbackCPU(ImplicitlyDestructible):
+trait RolloutJacobianCallbackCPU(ImplicitlyDeletable):
     """CPU-side gradient-aware rollout contract for iLQR.
 
     All operations are scalar (B = 1) — the planner loops over horizon
@@ -110,7 +110,7 @@ trait RolloutJacobianCallbackCPU(ImplicitlyDestructible):
         ...
 
 
-trait RolloutJacobianCallbackGPU(ImplicitlyDestructible):
+trait RolloutJacobianCallbackGPU(ImplicitlyDeletable):
     """GPU-side gradient-aware rollout contract for iLQR.
 
     Operates on row-major ``LayoutTensor`` views with a method-level

@@ -10,11 +10,12 @@ Run (Apple Metal):
 
 from std.testing import assert_equal, assert_true
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.alphazero.nets import (
     AZMLPNet, AZTicTacToeCNN, AZTicTacToeResNet,
 )
@@ -23,41 +24,25 @@ from mojo_rl.deep_agents.alphazero.nets import (
 def _forward_finite[NET: Module, OBS: Int, W: Int, B: Int](
     ctx: DeviceContext, name: String
 ) raises:
-    var net = NET.make["gpu", INIT=Kaiming](ctx=ctx)
+    var net = NET.make["gpu", Kaiming](Optional(ctx))
     net.set_attr["training"](Scalar[DT](0.0))  # eval mode (BN running stats)
 
-    var obs = ctx.enqueue_create_buffer[DT](B * OBS)
-    var out = ctx.enqueue_create_buffer[DT](B * W)
-    var obs_h = ctx.enqueue_create_host_buffer[DT](B * OBS)
-    var out_h = ctx.enqueue_create_host_buffer[DT](B * W)
-    ctx.synchronize()
-
-    # A plausible canonical obs: a couple of one-hot planes set.
-    for i in range(B * OBS):
-        obs_h.unsafe_ptr()[i] = Scalar[DT](0.0)
+    # A plausible canonical obs: a couple of one-hot planes set (storage Tensor).
+    var obs_t = Tensor.alloc(B * OBS)
     for b in range(B):
-        obs_h.unsafe_ptr()[b * OBS + 0] = Scalar[DT](1.0)   # mine @ cell0
-        obs_h.unsafe_ptr()[b * OBS + 9 + 1] = Scalar[DT](1.0)  # opp @ cell1
+        obs_t.data[b * OBS + 0] = Scalar[DT](1.0)       # mine @ cell0
+        obs_t.data[b * OBS + 9 + 1] = Scalar[DT](1.0)   # opp @ cell1
         for c in range(2, 9):
-            obs_h.unsafe_ptr()[b * OBS + 18 + c] = Scalar[DT](1.0)  # empty
-    ctx.enqueue_copy(obs, obs_h)
-    ctx.synchronize()
+            obs_t.data[b * OBS + 18 + c] = Scalar[DT](1.0)  # empty
+    obs_t.upload(ctx)
 
-    var in_t = TileTensor(
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](obs.unsafe_ptr()),
-        row_major[B, OBS](),
-    )
-    var out_t = TileTensor(
-        rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](out.unsafe_ptr()),
-        row_major[B, W](),
-    )
-    net.forward["gpu", B](in_t, output=out_t)
-    ctx.enqueue_copy(out_h, out)
-    ctx.synchronize()
+    var out_t = Tensor.alloc_gpu(ctx, B * W)
+    net.forward["gpu", B](TensorRefs[NET.ARITY](obs_t), out_t, Optional(ctx))
+    out_t.download(ctx)
 
     var all_finite = True
     for i in range(B * W):
-        var v = Float64(out_h.unsafe_ptr()[i])
+        var v = Float64(out_t.data[i])
         if not (v == v) or v > 1e30 or v < -1e30:
             all_finite = False
     assert_true(all_finite, name + ": non-finite output")

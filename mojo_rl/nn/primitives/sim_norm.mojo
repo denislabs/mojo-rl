@@ -1,10 +1,9 @@
-"""SimNorm[DIM, GROUPS] — simplicial normalisation (per-group softmax).
+"""SimNorm[DIM, GROUPS] — simplicial normalisation / per-group softmax (storage).
 
-Phase 2 of `nn/PORTING_PLAN.md`. Mirrors the legacy `Mish[DIM]`-paired
-TDMPC2 head: reshape `[B, DIM]` into `[B, GROUPS, DIM/GROUPS]`, apply
-softmax over the last axis, reshape back. Used on dynamics/encoder
-heads to stabilise the latent space (replaces a LayerNorm in TDMPC2
-variants).
+Transformed from legacy `nn.primitives.SimNorm` (surface-only change). Param-less;
+the softmax output `y` is cached in a leaf-owned `Tensor` for backward. CPU loops
++ the two GPU kernels (one thread per (batch, group); group sizes ≤32 so no in-
+block reduction) are carried over verbatim. Used by TDMPC2 dynamics/encoder heads.
 
 Math, with `G = DIM/GROUPS` per group:
     sub_g(x) = x[g·G : (g+1)·G]
@@ -13,34 +12,26 @@ Math, with `G = DIM/GROUPS` per group:
 Backward (per group, standard softmax Jacobian):
     dot_g = Σ_k grad_y[g·G+k] · y[g·G+k]
     grad_x[g·G+k] = y[g·G+k] · (grad_y[g·G+k] - dot_g)
-
-Output-cache leaf (`y` lives in a leaf-owned buffer); backward order is
-grad_input only (no params). CPU + GPU paths. The GPU kernel runs one
-thread per `(batch, group)` — group sizes are small (≤32 in TDMPC2), so
-no in-block reduction is needed.
 """
 
 from std.math import exp
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP, Cache
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
-)
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 # ──────────────────────────────────────────────────────────────────────
-# GPU kernels — one thread per (batch, group). The serial inner loop
-# over GROUP_SIZE is the canonical TDMPC2 layout (GROUP_SIZE ≤ 32) so
-# no in-block reduction is required.
+# GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) —
+# one thread per (batch, group). The serial inner loop over GROUP_SIZE is
+# the canonical TDMPC2 layout (GROUP_SIZE ≤ 32) so no in-block reduction.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -58,23 +49,47 @@ def _sim_norm_forward_kernel[
     var g = idx % GROUPS
     var base = g * GROUP_SIZE
 
-    var max_val = rebind[Scalar[DT]](input[b, base])
-    for k in range(1, GROUP_SIZE):
-        var v = rebind[Scalar[DT]](input[b, base + k])
-        if v > max_val:
-            max_val = v
+    # Register-cache the group: read the input once, then reuse exp(x-max) for
+    # both the normaliser sum and the write (the legacy kernel read input 3×
+    # and recomputed exp twice). Capped so the local array stays in registers.
+    comptime if GROUP_SIZE <= 32:
+        var grp = InlineArray[Scalar[DT], GROUP_SIZE](fill=Scalar[DT](0))
+        var max_val = rebind[Scalar[DT]](input[b, base])
+        grp[0] = max_val
 
-    var sum_exp: Scalar[DT] = 0.0
-    for k in range(GROUP_SIZE):
-        var v = rebind[Scalar[DT]](input[b, base + k])
-        sum_exp += exp(v - max_val)
-    var inv_sum = Scalar[DT](1.0) / sum_exp
+        comptime for k in range(1, GROUP_SIZE):
+            var v = rebind[Scalar[DT]](input[b, base + k])
+            grp[k] = v
+            if v > max_val:
+                max_val = v
+        var sum_exp: Scalar[DT] = 0.0
 
-    for k in range(GROUP_SIZE):
-        var v = rebind[Scalar[DT]](input[b, base + k])
-        var y = exp(v - max_val) * inv_sum
-        output[b, base + k] = y
-        cache[b, base + k] = y
+        comptime for k in range(GROUP_SIZE):
+            var ek = exp(grp[k] - max_val)
+            grp[k] = ek
+            sum_exp += ek
+        var inv_sum = Scalar[DT](1.0) / sum_exp
+
+        comptime for k in range(GROUP_SIZE):
+            var y = grp[k] * inv_sum
+            output[b, base + k] = y
+            cache[b, base + k] = y
+    else:
+        var max_val = rebind[Scalar[DT]](input[b, base])
+        for k in range(1, GROUP_SIZE):
+            var v = rebind[Scalar[DT]](input[b, base + k])
+            if v > max_val:
+                max_val = v
+        var sum_exp: Scalar[DT] = 0.0
+        for k in range(GROUP_SIZE):
+            var v = rebind[Scalar[DT]](input[b, base + k])
+            sum_exp += exp(v - max_val)
+        var inv_sum = Scalar[DT](1.0) / sum_exp
+        for k in range(GROUP_SIZE):
+            var v = rebind[Scalar[DT]](input[b, base + k])
+            var y = exp(v - max_val) * inv_sum
+            output[b, base + k] = y
+            cache[b, base + k] = y
 
 
 def _sim_norm_backward_kernel[
@@ -103,156 +118,127 @@ def _sim_norm_backward_kernel[
         grad_input[b, base + k] = y * (dy - dot)
 
 
-struct SimNorm[DIM: Int, GROUPS: Int](Module):
-    comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
-    comptime OUT_DIM = Self.DIM
-    comptime GROUP_SIZE: Int = Self.DIM // Self.GROUPS
+struct SimNorm[DIM_: Int, GROUPS_: Int](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime OUT_DIM = Self.DIM_
+    comptime GROUP_SIZE: Int = Self.DIM_ // Self.GROUPS_
 
     # Cache holds softmax outputs `[BATCH, DIM]` for backward.
-    var cache_y: Cache["cache_y"]
-    var ts: TargetStorage
+    var cache_y: Tensor  # [BATCH, DIM]
 
     def __init__(out self):
-        self.cache_y = Cache["cache_y"]()
-        self.ts = TargetStorage.make_uninit()
+        self.cache_y = Tensor()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. INIT ignored (no params) but accepted
-        for `Sequential.make[target, INIT]` uniformity."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "SimNorm: target must be 'cpu' or 'gpu'"
-        )
-        comptime assert Self.GROUPS > 0, "SimNorm: GROUPS must be > 0"
-        comptime assert Self.DIM % Self.GROUPS == 0, (
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        comptime assert Self.GROUPS_ > 0, "SimNorm: GROUPS must be > 0"
+        comptime assert Self.DIM_ % Self.GROUPS_ == 0, (
             "SimNorm: DIM must be divisible by GROUPS"
         )
-        var s = Self()
-        comptime if target == "cpu":
-            s.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["SimNorm.make[target='gpu']"](ctx)
-            # Placeholder device buffer — real size set on first forward.
-            s.ts = TargetStorage.make_gpu(ctx_v)
-        return s^
+        return Self()
 
-    def _ensure_cache_gpu(mut self, batch: Int) raises:
-        var ctx = self.ts.ctx.value()
-        self.cache_y.ensure_gpu(ctx, batch * Self.DIM)
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["SimNorm", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            self.cache_y.ensure_cpu(BATCH * Self.DIM)
-            var cache_v = TileTensor(
-                self.cache_y.cpu, row_major[BATCH, Self.DIM](),
+            out.ensure(B * Self.DIM_)
+            self.cache_y.ensure(B * Self.DIM_)
+            var in_t = TileTensor(in0.data, row_major[B, Self.DIM_]())
+            var out_t = TileTensor(out.data, row_major[B, Self.DIM_]())
+            var cache_t = TileTensor(
+                self.cache_y.data, row_major[B, Self.DIM_]()
             )
-            for b in range(BATCH):
-                for g in range(Self.GROUPS):
+            for b in range(B):
+                for g in range(Self.GROUPS_):
                     var base = g * Self.GROUP_SIZE
-                    var max_val: Scalar[DT] = input[b, base]
+                    var max_val: Scalar[DT] = in_t[b, base]
                     for k in range(1, Self.GROUP_SIZE):
-                        var v = input[b, base + k]
+                        var v = in_t[b, base + k]
                         if v > max_val:
                             max_val = v
                     var sum_exp: Scalar[DT] = 0.0
                     for k in range(Self.GROUP_SIZE):
-                        sum_exp += exp(input[b, base + k] - max_val)
+                        sum_exp += exp(in_t[b, base + k] - max_val)
                     var inv_sum = Scalar[DT](1.0) / sum_exp
                     for k in range(Self.GROUP_SIZE):
-                        var y = exp(input[b, base + k] - max_val) * inv_sum
-                        output_v[b, base + k] = y
-                        cache_v[b, base + k] = y
+                        var y = exp(in_t[b, base + k] - max_val) * inv_sum
+                        out_t[b, base + k] = y
+                        cache_t[b, base + k] = y
         else:
-            self._ensure_cache_gpu(BATCH)
-            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
-            var in_p = input.ptr
-            var out_p = output_v.ptr
-            var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p)
-            var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p)
-            var cache_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_y.dev.value()
-            )
-            comptime total = BATCH * Self.GROUPS
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.DIM_)
+            self.cache_y.ensure_gpu(c, B * Self.DIM_)
+            comptime l2d = Layout.row_major(B, Self.DIM_)
+            comptime total = B * Self.GROUPS_
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _sim_norm_forward_kernel[
-                BATCH, Self.DIM, Self.GROUPS, Self.GROUP_SIZE,
-            ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, cache_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[
+                _sim_norm_forward_kernel[
+                    B, Self.DIM_, Self.GROUPS_, Self.GROUP_SIZE
+                ]
+            ](
+                in0.lt["gpu", l2d](),
+                out.lt["gpu", l2d](),
+                self.cache_y.lt["gpu", l2d](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["SimNorm", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            var cache_v = TileTensor(
-                self.cache_y.cpu, row_major[BATCH, Self.DIM](),
+            gin.ensure(B * Self.DIM_)
+            var cache_t = TileTensor(
+                self.cache_y.data, row_major[B, Self.DIM_]()
             )
-            for b in range(BATCH):
-                for g in range(Self.GROUPS):
+            var go_t = TileTensor(grad_output.data, row_major[B, Self.DIM_]())
+            var gi_t = TileTensor(gin.data, row_major[B, Self.DIM_]())
+            for b in range(B):
+                for g in range(Self.GROUPS_):
                     var base = g * Self.GROUP_SIZE
                     var dot: Scalar[DT] = 0.0
                     for k in range(Self.GROUP_SIZE):
-                        dot += grad_output_v[b, base + k] * cache_v[
-                            b, base + k
-                        ]
+                        dot += go_t[b, base + k] * cache_t[b, base + k]
                     for k in range(Self.GROUP_SIZE):
-                        var y = cache_v[b, base + k]
-                        grad_input_v[b, base + k] = (
-                            y * (grad_output_v[b, base + k] - dot)
-                        )
+                        var y = cache_t[b, base + k]
+                        gi_t[b, base + k] = y * (go_t[b, base + k] - dot)
         else:
-            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
-            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
-            var cache_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_y.dev.value()
-            )
-            comptime total = BATCH * Self.GROUPS
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.DIM_)
+            comptime l2d = Layout.row_major(B, Self.DIM_)
+            comptime total = B * Self.GROUPS_
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _sim_norm_backward_kernel[
-                BATCH, Self.DIM, Self.GROUPS, Self.GROUP_SIZE,
-            ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, cache_lt, gi_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[
+                _sim_norm_backward_kernel[
+                    B, Self.DIM_, Self.GROUPS_, Self.GROUP_SIZE
+                ]
+            ](
+                grad_output.lt["gpu", l2d](),
+                self.cache_y.lt["gpu", l2d](),
+                gin.lt["gpu", l2d](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
+
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (param-less leaf → no-op). No polyak_from (no Params).

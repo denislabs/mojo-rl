@@ -21,6 +21,7 @@ planner support — keep ``v_min``/``v_max`` in sync on the agent.
 """
 
 from .nets import MZRepNet, MZRepNetCNN, MZDynNet, MZPredNet
+from mojo_rl.nn.constants import LAYOUT_NCHW
 
 
 struct MuZeroMLPConfig[
@@ -47,6 +48,10 @@ struct MuZeroCNNConfig[
     LATENT: Int = 128,
     HIDDEN: Int = 512,
     BINS: Int = 51,
+    # Rep CNN memory layout (default NCHW = bit-identical). NHWC = the large-map
+    # channels-last conv win; only `Rep` is layout-sensitive (Dyn/Pred operate on
+    # the flat LATENT vector). Couple the pixel env's obs to this (Cfg.LAYOUT).
+    LAYOUT: Int = LAYOUT_NCHW,
 ]:
     """MuZero model bundle for ``FRAMES``×84×84 stacked-frame **pixel** obs.
 
@@ -67,6 +72,8 @@ struct MuZeroCNNConfig[
     """
 
     comptime OBS = Self.FRAMES * 84 * 84
-    comptime Rep = MZRepNetCNN[Self.FRAMES, Self.LATENT, Self.HIDDEN]
+    comptime Rep = MZRepNetCNN[
+        Self.FRAMES, Self.LATENT, Self.HIDDEN, LAYOUT=Self.LAYOUT
+    ]
     comptime Dyn = MZDynNet[Self.LATENT, Self.ACT, Self.BINS, Self.HIDDEN]
     comptime Pred = MZPredNet[Self.LATENT, Self.ACT, Self.BINS, Self.HIDDEN]

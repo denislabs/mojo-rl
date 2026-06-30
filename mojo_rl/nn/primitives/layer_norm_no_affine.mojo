@@ -1,50 +1,46 @@
-"""LayerNormNoAffine[DIM] — LayerNorm without learnable scale/bias.
+"""LayerNormNoAffine[DIM] — LayerNorm without learnable scale/bias (storage).
 
     y = (x - mean) / sqrt(var + eps)
 
-No γ/β params (PARAM-free). AdaLN-zero supplies the affine externally via
-a `Modulate` step, so the normalization itself must be affine-free. This
-is the nn port of the legacy `nn/.../layer_norm_no_affine.mojo`, reusing
-the LayerNorm GPU reduction kernels with the gamma/beta terms dropped.
+Transformed from legacy `nn.primitives.LayerNormNoAffine` (surface-only change).
+PARAM-free (AdaLN-zero supplies the affine externally via a `Modulate` step, so
+the normalization itself must be affine-free). Mirrors the storage `LayerNorm`
+template with the γ/β terms dropped. The CPU per-row reduction and the two GPU
+kernels (forward / backward, 1 block per row) are carried over verbatim.
 
 Cache (leaf-owned, output-caching — no input aliasing):
   * `cache_xhat`    [BATCH, DIM]  normalized x (= output)
   * `cache_inv_std` [BATCH]       1/sqrt(var+eps)
 
-Backward (no gamma): grad_in = inv_std·(g − mean(g) − x̂·mean(g·x̂)),
-with g = grad_out directly.
-
-AMP: always runs in DT (stats unstable in bf16). `INIT` accepted for
-trait conformance, ignored (no params).
+Backward (no gamma): grad_in = inv_std·(g − mean(g) − x̂·mean(g·x̂)), g = grad_out.
 """
 
 from std.math import sqrt
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
+from std.utils.numerics import get_accum_type
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
-from ..core import Initializer, AMPPolicy, NoAMP, Cache
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
-)
+from mojo_rl.nn.constants import DT
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 comptime LNNA_EPS: Scalar[DT] = 1e-6
 comptime LNNA_TPB: Int = 128
+# Single-pass register-cache (mirrors storage LayerNorm; γ/β dropped). Read the
+# thread's feature slice ONCE, raw-moments mean/var, normalize from registers
+# when ELEMS≤cap, else 2-read fallback. accum_type = f32 for bf16 (identity f32).
+comptime LNNA_ACC = get_accum_type[DT]()
+comptime LNNA_REG_CAP = 8
 
 
-# ──────────────────────────────────────────────────────────────────────
-# GPU kernels — LayerNorm reductions with gamma/beta dropped.
-# ──────────────────────────────────────────────────────────────────────
-
-
+# ── GPU kernels (single-pass register-cached; block-per-row) ────────────
 def _lnna_forward_kernel[
     BATCH: Int, DIM: Int,
 ](
@@ -57,38 +53,75 @@ def _lnna_forward_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
-    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
+    comptime ELEMS = (DIM + LNNA_TPB - 1) // LNNA_TPB
+    comptime REG_CACHE = ELEMS <= LNNA_REG_CAP
+    var inv_dim = Scalar[LNNA_ACC](1.0) / Scalar[LNNA_ACC](DIM)
+    var my_sum = Scalar[LNNA_ACC](0)
+    var my_sumsq = Scalar[LNNA_ACC](0)
 
-    var my_sum: Scalar[DT] = 0.0
-    var idx = t
-    while idx < DIM:
-        my_sum += rebind[Scalar[DT]](input[b, idx])
-        idx += LNNA_TPB
-    var mean_val = (
-        block.sum[block_size=LNNA_TPB, broadcast=True](val=my_sum) * inv_dim
-    )
+    comptime if REG_CACHE:
+        var slice = InlineArray[Scalar[LNNA_ACC], ELEMS](
+            fill=Scalar[LNNA_ACC](0)
+        )
 
-    var my_var: Scalar[DT] = 0.0
-    idx = t
-    while idx < DIM:
-        var diff = rebind[Scalar[DT]](input[b, idx]) - mean_val
-        my_var += diff * diff
-        idx += LNNA_TPB
-    var var_val = (
-        block.sum[block_size=LNNA_TPB, broadcast=True](val=my_var) * inv_dim
-    )
+        comptime for e in range(ELEMS):
+            var col = t + e * LNNA_TPB
+            if col < DIM:
+                var x = rebind[Scalar[DT]](input[b, col]).cast[LNNA_ACC]()
+                slice[e] = x
+                my_sum += x
+                my_sumsq += x * x
+        var mean_val = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_sum) * inv_dim
+        )
+        var ex2 = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_sumsq)
+            * inv_dim
+        )
+        var var_val = ex2 - mean_val * mean_val
+        if var_val < Scalar[LNNA_ACC](0):
+            var_val = Scalar[LNNA_ACC](0)
+        var inv_std = Scalar[LNNA_ACC](1.0) / sqrt(
+            var_val + LNNA_EPS.cast[LNNA_ACC]()
+        )
+        if t == 0:
+            cache_inv_std[b] = inv_std.cast[DT]()
 
-    var inv_std: Scalar[DT] = 1.0 / sqrt(var_val + LNNA_EPS)
-    if t == 0:
-        cache_inv_std[b] = inv_std
-
-    idx = t
-    while idx < DIM:
-        var x = rebind[Scalar[DT]](input[b, idx])
-        var x_hat = (x - mean_val) * inv_std
-        cache_xhat[b, idx] = x_hat
-        output[b, idx] = x_hat
-        idx += LNNA_TPB
+        comptime for e in range(ELEMS):
+            var col = t + e * LNNA_TPB
+            if col < DIM:
+                var x_hat = (slice[e] - mean_val) * inv_std
+                cache_xhat[b, col] = x_hat.cast[DT]()
+                output[b, col] = x_hat.cast[DT]()
+    else:
+        var idx = t
+        while idx < DIM:
+            var x = rebind[Scalar[DT]](input[b, idx]).cast[LNNA_ACC]()
+            my_sum += x
+            my_sumsq += x * x
+            idx += LNNA_TPB
+        var mean_val = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_sum) * inv_dim
+        )
+        var ex2 = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_sumsq)
+            * inv_dim
+        )
+        var var_val = ex2 - mean_val * mean_val
+        if var_val < Scalar[LNNA_ACC](0):
+            var_val = Scalar[LNNA_ACC](0)
+        var inv_std = Scalar[LNNA_ACC](1.0) / sqrt(
+            var_val + LNNA_EPS.cast[LNNA_ACC]()
+        )
+        if t == 0:
+            cache_inv_std[b] = inv_std.cast[DT]()
+        idx = t
+        while idx < DIM:
+            var x = rebind[Scalar[DT]](input[b, idx]).cast[LNNA_ACC]()
+            var x_hat = (x - mean_val) * inv_std
+            cache_xhat[b, idx] = x_hat.cast[DT]()
+            output[b, idx] = x_hat.cast[DT]()
+            idx += LNNA_TPB
 
 
 def _lnna_backward_kernel[
@@ -103,194 +136,189 @@ def _lnna_backward_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
-    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
-    var inv_std = rebind[Scalar[DT]](cache_inv_std[b])
+    comptime ELEMS = (DIM + LNNA_TPB - 1) // LNNA_TPB
+    comptime REG_CACHE = ELEMS <= LNNA_REG_CAP
+    var inv_dim = Scalar[LNNA_ACC](1.0) / Scalar[LNNA_ACC](DIM)
+    var inv_std = rebind[Scalar[DT]](cache_inv_std[b]).cast[LNNA_ACC]()
+    var my_g = Scalar[LNNA_ACC](0)
+    var my_g_xhat = Scalar[LNNA_ACC](0)
 
-    var my_g: Scalar[DT] = 0.0
-    var my_g_xhat: Scalar[DT] = 0.0
-    var idx = t
-    while idx < DIM:
-        var g = rebind[Scalar[DT]](grad_output[b, idx])
-        var xh = rebind[Scalar[DT]](cache_xhat[b, idx])
-        my_g += g
-        my_g_xhat += g * xh
-        idx += LNNA_TPB
-    var mean_g = (
-        block.sum[block_size=LNNA_TPB, broadcast=True](val=my_g) * inv_dim
-    )
-    var mean_g_xhat = (
-        block.sum[block_size=LNNA_TPB, broadcast=True](val=my_g_xhat) * inv_dim
-    )
+    comptime if REG_CACHE:
+        var g_s = InlineArray[Scalar[LNNA_ACC], ELEMS](fill=Scalar[LNNA_ACC](0))
+        var xh_s = InlineArray[Scalar[LNNA_ACC], ELEMS](
+            fill=Scalar[LNNA_ACC](0)
+        )
 
-    idx = t
-    while idx < DIM:
-        var g = rebind[Scalar[DT]](grad_output[b, idx])
-        var xh = rebind[Scalar[DT]](cache_xhat[b, idx])
-        grad_input[b, idx] = inv_std * (g - mean_g - xh * mean_g_xhat)
-        idx += LNNA_TPB
+        comptime for e in range(ELEMS):
+            var col = t + e * LNNA_TPB
+            if col < DIM:
+                var g = rebind[Scalar[DT]](grad_output[b, col]).cast[LNNA_ACC]()
+                var xh = rebind[Scalar[DT]](cache_xhat[b, col]).cast[LNNA_ACC]()
+                g_s[e] = g
+                xh_s[e] = xh
+                my_g += g
+                my_g_xhat += g * xh
+        var mean_g = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_g) * inv_dim
+        )
+        var mean_g_xhat = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_g_xhat)
+            * inv_dim
+        )
+
+        comptime for e in range(ELEMS):
+            var col = t + e * LNNA_TPB
+            if col < DIM:
+                grad_input[b, col] = (
+                    inv_std * (g_s[e] - mean_g - xh_s[e] * mean_g_xhat)
+                ).cast[DT]()
+    else:
+        var idx = t
+        while idx < DIM:
+            var g = rebind[Scalar[DT]](grad_output[b, idx]).cast[LNNA_ACC]()
+            var xh = rebind[Scalar[DT]](cache_xhat[b, idx]).cast[LNNA_ACC]()
+            my_g += g
+            my_g_xhat += g * xh
+            idx += LNNA_TPB
+        var mean_g = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_g) * inv_dim
+        )
+        var mean_g_xhat = (
+            block.sum[block_size=LNNA_TPB, broadcast=True](val=my_g_xhat)
+            * inv_dim
+        )
+        idx = t
+        while idx < DIM:
+            var g = rebind[Scalar[DT]](grad_output[b, idx]).cast[LNNA_ACC]()
+            var xh = rebind[Scalar[DT]](cache_xhat[b, idx]).cast[LNNA_ACC]()
+            grad_input[b, idx] = (
+                inv_std * (g - mean_g - xh * mean_g_xhat)
+            ).cast[DT]()
+            idx += LNNA_TPB
 
 
-# ──────────────────────────────────────────────────────────────────────
-# LayerNormNoAffine.
-# ──────────────────────────────────────────────────────────────────────
+struct LayerNormNoAffine[DIM_: Int](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime OUT_DIM = Self.DIM_
 
-
-struct LayerNormNoAffine[DIM: Int](Module):
-    comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
-    comptime OUT_DIM = Self.DIM
-
-    @staticmethod
-    def display_label() -> String:
-        return String("LayerNormNoAffine")
-
-    var cache_xhat: Cache["cache_xhat"]
-    var cache_inv_std: Cache["cache_inv_std"]
-    var ts: TargetStorage
+    var cache_xhat: Tensor  # [BATCH, DIM]
+    var cache_inv_std: Tensor  # [BATCH]
 
     def __init__(out self):
-        self.cache_xhat = Cache["cache_xhat"]()
-        self.cache_inv_std = Cache["cache_inv_std"]()
-        self.ts = TargetStorage.make_uninit()
+        self.cache_xhat = Tensor()
+        self.cache_inv_std = Tensor()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "LayerNormNoAffine: target must be 'cpu' or 'gpu'"
-        )
-        var ln = Self()
-        comptime if target == "cpu":
-            ln.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["LayerNormNoAffine.make[target='gpu']"](ctx)
-            ln.ts = TargetStorage.make_gpu(ctx_v)
-        return ln^
-
-    def _ensure_cache_gpu(mut self, batch: Int) raises:
-        var ctx = self.ts.ctx.value()
-        self.cache_xhat.ensure_gpu(ctx, batch * Self.DIM)
-        self.cache_inv_std.ensure_gpu(ctx, batch)
+        """Unified CPU/GPU factory. INIT accepted for `make[target, INIT]`
+        uniformity but ignored (no params)."""
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["LayerNormNoAffine", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            self.cache_xhat.ensure_cpu(BATCH * Self.DIM)
-            self.cache_inv_std.ensure_cpu(BATCH)
-            var xhat_v = TileTensor(
-                self.cache_xhat.cpu, row_major[BATCH, Self.DIM]()
+            out.ensure(B * Self.DIM_)
+            self.cache_xhat.ensure(B * Self.DIM_)
+            self.cache_inv_std.ensure(B)
+            var in_t = TileTensor(in0.data, row_major[B, Self.DIM_]())
+            var out_t = TileTensor(out.data, row_major[B, Self.DIM_]())
+            var xhat_t = TileTensor(
+                self.cache_xhat.data, row_major[B, Self.DIM_]()
             )
-            var inv_v = TileTensor(self.cache_inv_std.cpu, row_major[BATCH]())
-            var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
-            for b in range(BATCH):
+            var inv_v = TileTensor(self.cache_inv_std.data, row_major[B]())
+            var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM_)
+            for b in range(B):
                 var s: Scalar[DT] = 0.0
-                for d in range(Self.DIM):
-                    s += input[b, d]
+                for d in range(Self.DIM_):
+                    s += in_t[b, d]
                 var mean = s * inv_dim
                 var sv: Scalar[DT] = 0.0
-                for d in range(Self.DIM):
-                    var diff = input[b, d] - mean
+                for d in range(Self.DIM_):
+                    var diff = in_t[b, d] - mean
                     sv += diff * diff
                 var var_v = sv * inv_dim
                 var inv_std = Scalar[DT](1.0) / sqrt(var_v + LNNA_EPS)
                 inv_v[b] = inv_std
-                for d in range(Self.DIM):
-                    var xh = (input[b, d] - mean) * inv_std
-                    xhat_v[b, d] = xh
-                    output_v[b, d] = xh
+                for d in range(Self.DIM_):
+                    var xh = (in_t[b, d] - mean) * inv_std
+                    xhat_t[b, d] = xh
+                    out_t[b, d] = xh
         else:
-            self._ensure_cache_gpu(BATCH)
-            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
-            comptime layout_b = Layout.row_major(BATCH)
-            var in_p = input.ptr
-            var out_p = output_v.ptr
-            var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p)
-            var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p)
-            var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_xhat.dev.value()
-            )
-            var is_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](
-                self.cache_inv_std.dev.value()
-            )
-            comptime kernel = _lnna_forward_kernel[BATCH, Self.DIM]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, xh_lt, is_lt,
-                grid_dim=BATCH, block_dim=LNNA_TPB,
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.DIM_)
+            self.cache_xhat.ensure_gpu(c, B * Self.DIM_)
+            self.cache_inv_std.ensure_gpu(c, B)
+            comptime l2d = Layout.row_major(B, Self.DIM_)
+            comptime lb = Layout.row_major(B)
+            c.enqueue_function[_lnna_forward_kernel[B, Self.DIM_]](
+                in0.lt["gpu", l2d](),
+                out.lt["gpu", l2d](),
+                self.cache_xhat.lt["gpu", l2d](),
+                self.cache_inv_std.lt["gpu", lb](),
+                grid_dim=B,
+                block_dim=LNNA_TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["LayerNormNoAffine", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            var xhat_v = TileTensor(
-                self.cache_xhat.cpu, row_major[BATCH, Self.DIM]()
+            gin.ensure(B * Self.DIM_)
+            var xhat_t = TileTensor(
+                self.cache_xhat.data, row_major[B, Self.DIM_]()
             )
-            var inv_v = TileTensor(self.cache_inv_std.cpu, row_major[BATCH]())
-            var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
-            for b in range(BATCH):
+            var inv_v = TileTensor(self.cache_inv_std.data, row_major[B]())
+            var go_t = TileTensor(grad_output.data, row_major[B, Self.DIM_]())
+            var gi_t = TileTensor(gin.data, row_major[B, Self.DIM_]())
+            var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM_)
+            for b in range(B):
                 var inv_std = inv_v[b]
                 var sum_g: Scalar[DT] = 0.0
                 var sum_g_xhat: Scalar[DT] = 0.0
-                for d in range(Self.DIM):
-                    var g = grad_output_v[b, d]
+                for d in range(Self.DIM_):
+                    var g = go_t[b, d]
                     sum_g += g
-                    sum_g_xhat += g * xhat_v[b, d]
+                    sum_g_xhat += g * xhat_t[b, d]
                 var mean_g = sum_g * inv_dim
                 var mean_g_xhat = sum_g_xhat * inv_dim
-                for d in range(Self.DIM):
-                    var g = grad_output_v[b, d]
-                    var xh = xhat_v[b, d]
-                    grad_input_v[b, d] = (
-                        inv_std * (g - mean_g - xh * mean_g_xhat)
-                    )
+                for d in range(Self.DIM_):
+                    var g = go_t[b, d]
+                    var xh = xhat_t[b, d]
+                    gi_t[b, d] = inv_std * (g - mean_g - xh * mean_g_xhat)
         else:
-            var ctx = self.ts.ctx.value()
-            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
-            comptime layout_b = Layout.row_major(BATCH)
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
-            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
-            var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_xhat.dev.value()
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.DIM_)
+            comptime l2d = Layout.row_major(B, Self.DIM_)
+            comptime lb = Layout.row_major(B)
+            c.enqueue_function[_lnna_backward_kernel[B, Self.DIM_]](
+                grad_output.lt["gpu", l2d](),
+                self.cache_xhat.lt["gpu", l2d](),
+                self.cache_inv_std.lt["gpu", lb](),
+                gin.lt["gpu", l2d](),
+                grid_dim=B,
+                block_dim=LNNA_TPB,
             )
-            var is_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](
-                self.cache_inv_std.dev.value()
-            )
-            comptime kernel = _lnna_backward_kernel[BATCH, Self.DIM]
-            ctx.enqueue_function[kernel](
-                go_lt, xh_lt, is_lt, gi_lt,
-                grid_dim=BATCH, block_dim=LNNA_TPB,
-            )
+
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (param-less leaf → no-op). No polyak_from (no Params).

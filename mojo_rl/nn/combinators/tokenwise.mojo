@@ -1,163 +1,111 @@
 """Tokenwise[SEQ_LEN, Inner] — apply a shared-weight Module per token.
 
-A sequence sample is laid out `(SEQ_LEN, Inner.IN)` row-major (token-
-major). Tokenwise reinterprets the `(BATCH, SEQ_LEN*Inner.IN)` slab as
-`(BATCH*SEQ_LEN, Inner.IN)` and runs `Inner` once over that flattened
-batch, so the same weights are applied at every position. The reshape is
-pure pointer reinterpretation (row-major flat index is identical), so
-there is no mid-slab and no extra kernel: forward/vjp delegate straight
-to `Inner` at batch `BATCH*SEQ_LEN`.
+A sequence sample is laid out `(SEQ_LEN, Inner.IN)` row-major. Tokenwise
+reinterprets the `(BATCH, SEQ_LEN*Inner.IN)` slab as `(BATCH*SEQ_LEN, Inner.IN)`
+and runs `Inner` once over that flattened batch — same weights at every position.
+The reshape is pure index reinterpretation (row-major flat index is identical),
+so there's NO mid-slab and NO extra kernel: forward/vjp delegate straight to
+`Inner` at batch `BATCH*SEQ_LEN`.
 
   IN_DIM  = SEQ_LEN * Inner.IN_DIMS[0]
   OUT_DIM = SEQ_LEN * Inner.OUT_DIM
-
-`Inner` owns its own params (shared across positions — exactly the
-tokenwise contract) and its own cache (lazily sized to `BATCH*SEQ_LEN`
-rows on first forward). Walkers / set_attr / zero_grad delegate to Inner.
-
-Used throughout the transformer to wrap the per-token Q/K/V projection,
-output projection, FFN Linears, LayerNorm, and the token Embedding.
 """
 
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
 
-from ..constants import DT
-from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut, mptr
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT
+from ..core.initializer import Initializer
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs, child_refs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
 
 
 struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
-    comptime ARITY: Int = 1
-    comptime IN_INNER: Int = Self.Inner.IN_DIMS[0]
-    comptime OUT_INNER: Int = Self.Inner.OUT_DIM
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_LEN * Self.IN_INNER)
-    comptime OUT_DIM = Self.SEQ_LEN * Self.OUT_INNER
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](
+        fill=Self.SEQ_LEN * Self.Inner.IN_DIMS[0]
+    )
+    comptime OUT_DIM = Self.SEQ_LEN * Self.Inner.OUT_DIM
+    # Reshape-only wrapper — activation dtype is the wrapped child's.
+    comptime ACT_DT = Self.Inner.ACT_DT
 
     var inner: Self.Inner
-    var ts: TargetStorage
 
     def __init__(out self):
-        comptime assert Self.SEQ_LEN > 0, "Tokenwise: SEQ_LEN must be > 0"
+        comptime assert Self.SEQ_LEN >= 1, "Tokenwise requires SEQ_LEN >= 1"
         self.inner = Self.Inner()
-        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "Tokenwise: target must be 'cpu' or 'gpu'"
-        )
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var t = Self()
-        t.inner = Self.Inner.make[target, INIT](ctx=ctx)
-        comptime if target == "cpu":
-            t.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("Tokenwise.make[target='gpu']: ctx required")
-            t.ts = TargetStorage.make_gpu(ctx.value())
+        t.inner = Self.Inner.make[target, INIT](ctx)
         return t^
 
-    @staticmethod
-    def display_label() -> String:
-        return String("Tokenwise")
-
-    # ----- Forward ---------------------------------------------------------
-
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Tokenwise", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        var ip = mptr(input.ptr)
-        var op = mptr(output_v.ptr)
-        # Reinterpret (BATCH, SEQ_LEN*IN_INNER) → (BATCH*SEQ_LEN, IN_INNER).
-        var in_r = TileTensor(
-            ip, row_major[BATCH * Self.SEQ_LEN, Self.IN_INNER]()
+        # Buffers are typed at Self.ACT_DT (== Inner.ACT_DT, distinct to the
+        # checker); bridge the input pack with `child_refs` and the mut output
+        # with `rebind[TensorImpl[ci]]`.
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
+        self.inner.forward[target, B * Self.SEQ_LEN, POLICY=POLICY](
+            child_refs[cn, ci](inputs[0]), rebind[TensorImpl[ci]](out), ctx
         )
-        var out_r = TileTensor(
-            op, row_major[BATCH * Self.SEQ_LEN, Self.OUT_INNER]()
-        )
-        self.inner.forward[target, BATCH * Self.SEQ_LEN, POLICY=POLICY](
-            in_r, output=out_r
-        )
-
-    # ----- Backward --------------------------------------------------------
 
     def vjp[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Tokenwise", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var gop = mptr(grad_output_v.ptr)
-        var gip = mptr(grad_input_v.ptr)
-        var go_r = TileTensor(
-            gop, row_major[BATCH * Self.SEQ_LEN, Self.OUT_INNER]()
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
+        self.inner.vjp[target, B * Self.SEQ_LEN, POLICY=POLICY](
+            child_refs[cn, ci](forward_input[0]),
+            rebind[TensorImpl[ci]](grad_output),
+            child_refs[cn, ci](grad_inputs[0]),
+            ctx,
         )
-        var gi_r = TileTensor(
-            gip, row_major[BATCH * Self.SEQ_LEN, Self.IN_INNER]()
-        )
-        self.inner.vjp[
-            target, BATCH * Self.SEQ_LEN, POLICY=POLICY, mode=mode
-        ](go_r, gi_r)
-
-    # ----- Walkers / attrs (delegate to Inner) -----------------------------
 
     def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["Tokenwise", target](self.ts.target_tag)
-        var sep = "." if prefix.byte_length() > 0 else ""
-        self.inner.for_each_param[target, V](prefix + sep + "inner", visitor)
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.inner.for_each_param[target](
+            visitor, ctx, join_name(prefix, String(0))
+        )
 
     def for_each_state[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["Tokenwise", target](self.ts.target_tag)
-        var sep = "." if prefix.byte_length() > 0 else ""
-        self.inner.for_each_state[target, V](prefix + sep + "inner", visitor)
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.inner.for_each_state[target](
+            visitor, ctx, join_name(prefix, String(0))
+        )
 
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["Tokenwise", target](self.ts.target_tag)
-        self.inner.zero_grad[target]()
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.inner.zero_grad[target](ctx)
 
-    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
-        self.inner.set_attr[ATTR](value)
-
-    def set_attr_ptr[ATTR: StaticString](
-        mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    ):
-        self.inner.set_attr_ptr[ATTR](p)
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT], ctx: Optional[DeviceContext]
+    ) raises:
+        self.inner.polyak_from[target](src.inner, tau, ctx)

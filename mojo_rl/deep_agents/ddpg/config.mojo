@@ -37,7 +37,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.nn.primitives.activations import Tanh
 from mojo_rl.nn.combinators.sequential import Sequential
 
 from ..training.blocks import SampleBlock, ReplaySampleStep
@@ -75,7 +75,7 @@ comptime DDPGCriticNet[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait DDPGConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait DDPGConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a DDPG-family algorithm. Conformers are
     zero-field comptime tags — never instantiated at runtime; only their
     comptime members are read."""

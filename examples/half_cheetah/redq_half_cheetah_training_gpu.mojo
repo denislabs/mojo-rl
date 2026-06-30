@@ -52,6 +52,13 @@ comptime OBS_DIM = HalfCheetahConfig.OBS_DIM  # 17
 comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM  #  6
 comptime HIDDEN = 256
 
+# CUDA-graph capture of the UTD inner loop (NVIDIA only; no-op on Apple, where
+# the device-resident path runs eagerly — the parity/verification path). The
+# REDQ inner loop fires ~hundreds of tiny kernels/env-step (UTD=20 ×
+# target_y/critic/polyak/actor over N=10 critics); capture collapses each
+# env-step into one cuGraphLaunch.
+comptime USE_TRAIN_CUDA_GRAPH = True
+
 # Off-policy GPU training parameters.
 comptime BATCH = 256
 comptime REPLAY_CAPACITY = 1_000_000
@@ -111,14 +118,17 @@ def main() raises:
         logger.set_config("utd_ratio", "20")
         logger.set_config("policy_delay", "20")
 
-        var logger_ptr = UnsafePointer(to=logger)
+        var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
         # ─── Agent (GPU) + single CPU HalfCheetah env ────────────────────
         # GPU training: the DeviceContext MUST be threaded through the agent
         # (the trainer keeps it for H2D/D2H staging + all on-device kernels).
         # The `REDQ` preset bakes in N=10 / M=2 / UTD=20 / POLICY_DELAY=20;
         # only the scalar knobs below are overridden.
-        var agent = REDQ["gpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN](
+        var agent = REDQ[
+            "gpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN,
+            USE_TRAIN_CUDA_GRAPH,
+        ](
             ctx=ctx,
             actor_lr=3e-4,
             critic_lr=3e-4,

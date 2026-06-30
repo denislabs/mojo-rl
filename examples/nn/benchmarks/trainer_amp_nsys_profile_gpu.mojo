@@ -13,6 +13,11 @@ the cast kernels (`_fp32_to_bf16_kernel` / `_bf16_to_fp32_kernel`) appear ONLY
 in the bf16 trace, and the GEMM time is directly comparable across the two
 traces.
 
+Each step = one `train_epoch` over a dataset of exactly BATCH rows
+(N_TRAIN == BATCH → one batch per epoch); the storage Trainer keeps the dataset
+resident after the first epoch, so every measured step reuses the same device
+buffers.
+
 Usage (NVIDIA):
     # fp32 (NoAMP) trace
     pixi run -e nvidia nsys profile --stats=true -o /tmp/amp_fp32 \
@@ -52,16 +57,16 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import MNIST
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core import Module, AMPPolicy, NoAMP, Bf16Compute
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP, Bf16Compute
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.nn.primitives.conv2d import Conv2D
 from mojo_rl.nn.primitives.flatten import Flatten
-from mojo_rl.nn.combinators import Sequential
-from mojo_rl.nn.loss import CrossEntropyLoss
-from mojo_rl.nn.optimizer import Adam
-from mojo_rl.nn.training import Trainer
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.training.trainer import Trainer
 
 
 comptime IN_DIM = 784
@@ -94,27 +99,27 @@ def run_net[
     batch_y: List[Scalar[DT]],
     tag: String,
 ) raises:
-    """Build trainer (net + policy), load the fixed batch, warm up, then time
-    N_STEPS device steps. The whole region runs under nsys — read the kernel
-    breakdown afterward with `nsys stats --report gpukernsum`."""
+    """Build trainer (net + policy), load the fixed batch as a one-batch
+    resident dataset, warm up, then time N_STEPS device steps (each a one-batch
+    `train_epoch`). The whole region runs under nsys — read the kernel breakdown
+    afterward with `nsys stats --report gpukernsum`."""
     var trainer = Trainer[
         NET,
-        Adam,
-        CrossEntropyLoss[N_CLASSES],
+        N_CLASSES,
+        IN_DIM,
         BATCH,
         target="gpu",
         POLICY=POLICY,
-    ].make[INIT=Kaiming](ctx)
-    trainer.optim.lr = LR
-    trainer.load_fixed_batch(batch_x, batch_y)
+        OPT=Adam,
+    ].make[Kaiming](Optional(ctx), lr=LR)
 
     for _ in range(WARMUP):
-        trainer.train_step_device()
+        _ = trainer.train_epoch[BATCH](batch_x, batch_y, Optional(ctx))
     ctx.synchronize()
 
     var t0 = perf_counter_ns()
     for _ in range(N_STEPS):
-        trainer.train_step_device()
+        _ = trainer.train_epoch[BATCH](batch_x, batch_y, Optional(ctx))
     ctx.synchronize()
     var elapsed_s = Float64(perf_counter_ns() - t0) / 1e9
 

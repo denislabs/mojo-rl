@@ -15,6 +15,22 @@ comptime dtype = DType.float32
 comptime TILE: Int = 16  # Tile size for tiled operations
 comptime TPB: Int = 256  # Threads per block for elementwise ops
 
+
+@always_inline
+def erase_origin[
+    dt: DType, o: Origin
+](p: UnsafePointer[Scalar[dt], o]) -> UnsafePointer[Scalar[dt], MutAnyOrigin]:
+    """Explicitly rebind a device buffer's pointer origin to `MutAnyOrigin`.
+
+    The physics2d GPU kernels build `LayoutTensor[..., MutAnyOrigin]` views over
+    `DeviceBuffer` params; `buf.unsafe_ptr()` carries a concrete origin that was
+    previously *implicitly* widened to `MutAnyOrigin` (now deprecated). This is
+    the physics2d-local analog of `nn.core.module.mptr` — an explicit `rebind`,
+    not an implicit conversion, so it preserves behavior while clearing the
+    deprecation. (Kept here rather than importing nn to avoid a layer reversal.)
+    """
+    return rebind[UnsafePointer[Scalar[dt], MutAnyOrigin]](p)
+
 # =============================================================================
 # Body State Layout
 # =============================================================================

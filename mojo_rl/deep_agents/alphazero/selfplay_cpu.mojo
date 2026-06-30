@@ -10,23 +10,33 @@ the env. On a finished game the strict-alternation value target `z` is assigned
 flushed to the (host-resident) `MCTSExampleReplay`; once it holds ≥ BATCH samples
 the same nn AZ loss graph is trained on the CPU (`forward/vjp["cpu"]`).
 
-This is the reference / debuggable path; it shares the loss graph, replay, and
-value-target convention with the GPU driver, so a CPU-trained net is a faithful
-(if slower, lower-throughput) AlphaZero. Returns the last mean train loss.
+Storage surface: the loss graph runs on the storage ComputeGraph (net threaded
+as a forward/vjp external arg; `set_input` takes a `Tensor`; Adam via
+`begin_step` + `for_each_param`). The single-game trajectory + the example
+replay stay category-B raw host buffers (the env/replay interop boundary); the
+batch is bridged into storage Tensors by `sample_batch_tensors`.
 """
 
-from std.memory import alloc, UnsafePointer
-from layout import TileTensor, row_major
+from mojo_rl.nn.core.ptr import untracked
+from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.optimizer import Adam
-from mojo_rl.nn.initializer import Zero
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.core.initializer import Zero
 from mojo_rl.nn.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.combinators.graph_nodes import InputSlot, Node, ExternalNode
+from mojo_rl.nn.combinators.graph_decl import (
+    InputSlot,
+    Node,
+    ExternalNode,
+)
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.planners.tree_search import (
-    GenericCPUMCTS, AlphaGoPUCT, DirichletNoise, SelfPlay,
+    GenericCPUMCTS,
+    AlphaGoPUCT,
+    DirichletNoise,
+    SelfPlay,
 )
 
 from .loss_ops import AZLossOp
@@ -44,7 +54,7 @@ def _xs(s: UInt64) -> UInt64:
 
 
 def run_alphazero_selfplay_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NET: Module,
     NUM_SIMS: Int,
     MAX_NODES: Int,
@@ -61,15 +71,19 @@ def run_alphazero_selfplay_cpu[
 ) raises -> Float64:
     comptime OBS = NET.IN_DIMS[0]
     comptime ACT = NET.OUT_DIM - 1
-    comptime W = NET.OUT_DIM          # ACT + 1
+    comptime W = NET.OUT_DIM  # ACT + 1
     comptime LATENT = ENV.SAVE_SIZE
     comptime MCTS = GenericCPUMCTS[
-        ACT, LATENT, NUM_SIMS, MAX_NODES,
-        AlphaGoPUCT[1.0], DirichletNoise[0.25, 0.25], SelfPlay,
+        ACT,
+        LATENT,
+        NUM_SIMS,
+        MAX_NODES,
+        AlphaGoPUCT[1.0],
+        DirichletNoise[0.25, 0.25],
+        SelfPlay,
         NORMALIZE_Q=False,  # raw Q∈[-1,1] like legacy (MinMax over-explores)
     ]
     comptime Graph = ComputeGraph[
-        1,
         InputSlot["obs", OBS],
         ExternalNode["pred", NET, "obs"],
         InputSlot["tgt", W],
@@ -77,30 +91,24 @@ def run_alphazero_selfplay_cpu[
     ]
 
     var env = ENV()
-    var opt = Adam.make["cpu", M=NET](net)
-    opt.lr = lr
-    var graph = Graph.make["cpu", INIT=Zero]()
+    var opt = Adam(lr=lr)
+    var graph = Graph.make["cpu", Zero]()
     var replay = MCTSExampleReplay[OBS, W, CAP]()
 
-    # ── Host trajectory storage (single in-progress game) ──
-    # Slabs rebound to MutAnyOrigin so the replay/tile signatures accept them.
-    var traj_obs = mptr(alloc[Scalar[DT]](MAX_TRAJ * OBS))
-    var traj_pol = mptr(alloc[Scalar[DT]](MAX_TRAJ * ACT))
-    var tmp_tgt = alloc[Scalar[DT]](W)
-    var root_save = alloc[Scalar[DT]](LATENT)
+    # ── Host trajectory storage (single in-progress game) — owned Lists. ──
+    var traj_obs = List[Scalar[DT]](length=MAX_TRAJ * OBS, fill=0)
+    var traj_pol = List[Scalar[DT]](length=MAX_TRAJ * ACT, fill=0)
+    var tmp_tgt = List[Scalar[DT]](length=W, fill=0)
+    var root_save = List[Scalar[DT]](length=LATENT, fill=0)
     var traj_len = 0
 
-    # ── Train-batch host buffers + graph IO tiles ──
-    var tb_obs = mptr(alloc[Scalar[DT]](BATCH * OBS))
-    var tb_tgt = mptr(alloc[Scalar[DT]](BATCH * W))
-    var tb_loss = mptr(alloc[Scalar[DT]](BATCH))
-    var tb_grad = mptr(alloc[Scalar[DT]](BATCH))
+    # ── Train-batch storage Tensors (the nn surface) ──
+    var obs_t = Tensor.alloc(BATCH * OBS)
+    var tgt_t = Tensor.alloc(BATCH * W)
+    var loss_t = Tensor.alloc(BATCH)
+    var grad_t = Tensor.alloc(BATCH)
     for i in range(BATCH):
-        tb_grad[i] = Scalar[DT](1.0) / Scalar[DT](BATCH)
-    var tbo_t = TileTensor(tb_obs, row_major[BATCH, OBS]())
-    var tbt_t = TileTensor(tb_tgt, row_major[BATCH, W]())
-    var loss_t = TileTensor(tb_loss, row_major[BATCH, 1]())
-    var grad_t = TileTensor(tb_grad, row_major[BATCH, 1]())
+        grad_t.data[i] = Scalar[DT](1.0) / Scalar[DT](BATCH)
 
     _ = env.reset()
     var last_loss: Float64 = 0.0
@@ -109,20 +117,32 @@ def run_alphazero_selfplay_cpu[
     for it in range(iterations):
         # 1. MCTS search from the live env state (eval mode for any BatchNorm).
         net.set_attr["training"](Scalar[DT](0.0))
-        env.save_env_state(root_save)            # snapshot root (search trashes it)
+        env.save_env_state(root_save)  # snapshot root (search trashes it)
+        # TODO(unsafe-origin): rep/dyn/pred each hold a NON-OWNING mutable handle
+        # to the SAME `env` (the planner mutates it through them during search) —
+        # a deliberate 3-way mutable alias that `GenericCPUMCTS.search` takes all
+        # at once. A concrete `Pointer[E, o]` (TensorRefs-style, as `AZPredGPU`'s
+        # single-ptr `o: Origin` does) would trip exclusivity here, so the handles
+        # stay `MutAnyOrigin` and we discard the origin explicitly via
+        # `as_unsafe_any_origin()`. A clean fix needs the planner to take `env`
+        # ONCE (e.g. thread it through `search`) instead of embedding 3 aliases.
         var env_ptr = UnsafePointer(to=env)
-        var rep = AZRepCPU[ENV, OBS](env=env_ptr)
-        var dyn = AZDynCPU[ENV, ACT](env=env_ptr)
+        var net_ptr = UnsafePointer(to=net)
+        var rep = AZRepCPU[ENV, OBS](env=untracked(env_ptr))
+        var dyn = AZDynCPU[ENV, ACT](env=untracked(env_ptr))
         var pred = AZPredCPU[ENV, OBS, ACT, NET](
-            env=env_ptr, net=UnsafePointer(to=net)
+            env=untracked(env_ptr),
+            net=untracked(net_ptr),
         )
         var mcts = MCTS(gamma=1.0)
         var legal = env.legal_action_mask()
         var root_obs = List[Float64](length=OBS, fill=Float64(0.0))  # ignored
         var policy = mcts.search[
-            AZRepCPU[ENV, OBS], AZDynCPU[ENV, ACT], AZPredCPU[ENV, OBS, ACT, NET]
+            AZRepCPU[ENV, OBS],
+            AZDynCPU[ENV, ACT],
+            AZPredCPU[ENV, OBS, ACT, NET],
         ](rep, dyn, pred, root_obs, add_noise=True, legal_mask=legal)
-        env.load_env_state(root_save)            # restore env to root
+        env.load_env_state(root_save)  # restore env to root
 
         # 2. Record (canonical obs, visit policy) into the trajectory.
         if traj_len < MAX_TRAJ:
@@ -145,7 +165,7 @@ def run_alphazero_selfplay_cpu[
             if u <= cum and policy[a] > 0.0:
                 chosen = a
                 break
-        if chosen < 0:                            # numeric fallback: argmax legal
+        if chosen < 0:  # numeric fallback: argmax legal
             var bestv = Float64(-1.0)
             for a in range(ACT):
                 if policy[a] > bestv:
@@ -158,7 +178,7 @@ def run_alphazero_selfplay_cpu[
 
         # 4. On a finished game: assign z, flush to replay, reset.
         if done:
-            var gr = env.game_result()            # 1=P0 win, 2=P1 win, 3=draw
+            var gr = env.game_result()  # 1=P0 win, 2=P1 win, 3=draw
             for k in range(traj_len):
                 var z: Float64 = 0.0
                 if gr == 1:
@@ -169,7 +189,7 @@ def run_alphazero_selfplay_cpu[
                 for a in range(ACT):
                     tmp_tgt[a] = traj_pol[pb + a]
                 tmp_tgt[ACT] = Scalar[DT](z)
-                replay.record(traj_obs + k * OBS, tmp_tgt)
+                replay.record(traj_obs, k * OBS, tmp_tgt, 0)
             traj_len = 0
             _ = env.reset()
 
@@ -177,25 +197,17 @@ def run_alphazero_selfplay_cpu[
         if len(replay) >= BATCH and it >= learning_starts:
             net.set_attr["training"](Scalar[DT](1.0))
             for _t in range(train_per_iter):
-                replay.sample_batch[BATCH](tb_obs, tb_tgt)
-                opt.zero_grad["cpu", M=NET](net)
-                graph.set_external["pred", NET](net)
-                graph.set_input["obs", BATCH](tbo_t)
-                graph.set_input["tgt", BATCH](tbt_t)
-                graph.forward["cpu", BATCH](loss_t)
-                graph.vjp["cpu", BATCH](grad_t)
-                opt.step["cpu", M=NET](net)
+                replay.sample_batch_tensors[BATCH](obs_t, tgt_t)
+                net.zero_grad["cpu"](None)
+                graph.set_input["obs", BATCH](obs_t, None)
+                graph.set_input["tgt", BATCH](tgt_t, None)
+                graph.forward[BATCH, "cpu"](loss_t, None, net)
+                graph.vjp[BATCH, "cpu"](grad_t, None, net)
+                opt.begin_step()
+                net.for_each_param["cpu"](opt, None)
             var ml: Float64 = 0.0
             for b in range(BATCH):
-                ml += Float64(tb_loss[b])
+                ml += Float64(loss_t.data[b])
             last_loss = ml / Float64(BATCH)
 
-    traj_obs.free()
-    traj_pol.free()
-    tmp_tgt.free()
-    root_save.free()
-    tb_obs.free()
-    tb_tgt.free()
-    tb_loss.free()
-    tb_grad.free()
     return last_loss

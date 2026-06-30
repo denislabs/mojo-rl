@@ -180,7 +180,7 @@ struct BipedalWalker[
     var cached_state: BipedalWalkerState[Self.dtype]
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -1586,8 +1586,8 @@ struct BipedalWalker[
     ) raises:
         """GPU reset kernel."""
         var states = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -1632,11 +1632,11 @@ struct BipedalWalker[
     ) raises:
         """GPU selective reset kernel - resets only done environments."""
         var states = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var dones = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -1729,11 +1729,11 @@ struct BipedalWalker[
         """Extract observations from state buffer (trivial copy: obs = state[0:OBS_DIM]).
         """
         var states = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL)
+        ](states_buf)
         var obs = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL)
+        ](obs_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -1743,7 +1743,7 @@ struct BipedalWalker[
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             obs: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
@@ -2217,8 +2217,7 @@ struct BipedalWalker[
         var shapes = LayoutTensor[
             dtype,
             Layout.row_major(BWConstants.NUM_SHAPES * SHAPE_MAX_SIZE),
-            MutAnyOrigin,
-        ](shapes_buf.unsafe_ptr())
+        ](shapes_buf)
 
         @parameter
         @always_inline
@@ -2305,38 +2304,36 @@ struct BipedalWalker[
         comptime STATE_SIZE = BWConstants.STATE_SIZE_VAL
 
         var states = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var shapes = LayoutTensor[
             dtype,
             Layout.row_major(BWConstants.NUM_SHAPES, SHAPE_MAX_SIZE),
-            MutAnyOrigin,
-        ](shapes_buf.unsafe_ptr())
+        ](shapes_buf)
         var contacts = LayoutTensor[
             dtype,
             Layout.row_major(
                 BATCH_SIZE, BWConstants.MAX_CONTACTS, CONTACT_DATA_SIZE
             ),
-            MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
+        ](contacts_buf)
         var contact_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](contact_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](contact_counts_buf)
         var actions = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
-        ](actions_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM)
+        ](actions_buf)
         var rewards = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](rewards_buf)
         var dones = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         var terminated_out = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated_buf)
         var obs = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs_buf)
 
         @parameter
         @always_inline
@@ -2347,7 +2344,7 @@ struct BipedalWalker[
             shapes: LayoutTensor[
                 dtype,
                 Layout.row_major(BWConstants.NUM_SHAPES, SHAPE_MAX_SIZE),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             contacts: LayoutTensor[
                 dtype,
@@ -2360,7 +2357,7 @@ struct BipedalWalker[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
             ],
             actions: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+                dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
             ],
             rewards: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -2757,7 +2754,7 @@ struct BipedalWalker[
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ],
         actions: LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
         ],
     ):
         """Apply motor actions to joints."""

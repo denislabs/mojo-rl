@@ -1,7 +1,7 @@
-"""OFEAuxLossStep — auxiliary next-state prediction loss for REDQ-OFE.
+"""OFEAuxLossStep — auxiliary next-state prediction loss for REDQ-OFE (STORAGE).
 
-Phase O.2.a (CPU). Owns the scratch buffers + a `Concat[PHI_S_DIM, ACT]`
-glue module; takes refs (via `mut` args) to:
+Owns the scratch buffers + a `Concat[PHI_S_DIM, ACT]` glue module; takes
+refs (via `mut` args) to:
 
     state_branch, action_branch, predictor          # OFE networks
     sb_opt, ab_opt, pred_opt                        # their Adams
@@ -21,9 +21,8 @@ glue module; takes refs (via `mut` args) to:
     loss        = (1/(BATCH·OBS)) · Σ (pred − mb_sp)^2
     grad_pred   = 2·(pred − mb_sp) / (BATCH·OBS)
 
-    backward chain (mode="all" everywhere — aux IS the path that
-    trains OFE params)
-    -----------------------------------------------------------
+    backward chain (aux IS the path that trains OFE params)
+    -------------------------------------------------------
     predictor.vjp     → grad_φ(s,a)
     action_branch.vjp → grad_sa_in
     concat.vjp        → grad_φ(s), grad_action_dummy (discarded)
@@ -35,64 +34,54 @@ glue module; takes refs (via `mut` args) to:
     ab_opt.step(action_branch)
     sb_opt.step(state_branch)
 
-Returns the scalar MSE loss for diagnostics. The OFE param updates
-happen as a side effect of the three Adam `step` calls.
+Returns the scalar MSE loss for diagnostics.
 
 Design notes
 ============
-
 (a) Networks + Adams are NOT owned. They live on the trainer (since
     state_branch + action_branch are also consumed by actor / critic
-    forwards on the RL side — sharing is non-negotiable). OFEAuxLossStep
-    is the work unit that does the gradient bookkeeping for the aux path.
+    forwards on the RL side — sharing is non-negotiable).
+(b) The storage `Module.vjp` has NO `mode` param — it always computes
+    BOTH param + input grads. The aux loss is the ONLY backward pass
+    that should accumulate OFE param grads; the RL forwards SHARE the
+    same OFE params but never call `.vjp` on them (forward-only), so no
+    RL gradient ever reaches the OFE params. The aux step zero_grads the
+    three OFE nets before its own forward/vjp, so the discarded RL-path
+    forward caches are irrelevant (aux runs its own forward+vjp atomically).
+(c) Uses the variadic storage `Concat[PHI_S_DIM, ACT]` (the N=2 instance)
+    as the (φ(s), a) glue — a real consumer of the variadic primitive.
 
-(b) `mode="all"` on every vjp call. The OFE aux loss is the ONLY
-    backward pass that should accumulate OFE param grads — the RL
-    forward path will run state_branch / action_branch with
-    `mode="input_only"` (or via a `StopGradParams` wrapper, depending
-    on the trainer wiring chosen in O.2.b).
-
-(c) Indep minibatch vs RL minibatch — the legacy redq_ofe sampled a
-    fresh minibatch for the aux step (separate from the critic
-    minibatch). Phase O.2.a takes the trainer state as-is; the trainer
-    (O.2.b) gets to decide whether to re-sample before calling
-    `aux.step(...)` or share with the critic step. Either way the
-    block is reusable.
-
-(d) CPU only. The trainer integration (O.2.b) is where the GPU port
-    lands — the kernels.mojo file already documents the math, and the
-    nn building blocks (LayerNorm, SkipConcat, Linear, Concat) all
-    have GPU paths from prior phases.
+STORAGE migration (Stage 5): legacy `Scratch`/`TargetStorage`/`mptr`/
+TileTensor gone — scratch are owned `nn.storage.Tensor`s; all forwards/vjps
+use the storage Module surface over `TensorRefs`; the loss/grad use the
+storage `kernels.mojo` functions. CPU + GPU.
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor_pack import TensorPack
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.scratch import Scratch
-from mojo_rl.nn.core.scratch_walkers import init_scratch_auto
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
-from mojo_rl.nn.initializer import Zero
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.tensor_pack import TensorPack
+from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.primitives.concat import Concat
 
 from ..training.trainer_block import TrainerState
-from .kernels import (
-    aux_mse_grad_cpu, aux_mse_loss_cpu, aux_mse_grad_gpu,
-)
+from .kernels import aux_mse_grad_cpu, aux_mse_loss_cpu, aux_mse_grad_gpu
 
 
 struct OFEAuxLossStep[
-    SB: Module,        # OFE State Branch
-    AB: Module,        # OFE Action Branch
+    SB: Module,        # OFE State Branch  (IN=OBS, OUT=PHI_S_DIM)
+    AB: Module,        # OFE Action Branch (IN=PHI_S_DIM+ACT, OUT=PHI_SA_DIM)
     PRED: Module,      # OFE Predictor Head (Linear[PHI_SA_DIM, OBS])
     OBS_: Int,
     ACT_: Int,
     BATCH_: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
@@ -104,26 +93,25 @@ struct OFEAuxLossStep[
 
     var concat: Concat[Self.PHI_S_DIM, Self.ACT]
 
+    # ── Concat input / grad packs (ONE owner → ONE origin, satisfies the
+    # §B0 TensorRefs constraint that all variadic-pack inputs share an
+    # origin). `cat_in[0]` = φ(s) (state-branch output), `cat_in[1]` = a
+    # copy of mb_a; `cat_gin[0]` = grad_φ(s), `cat_gin[1]` = grad_action
+    # (discarded). ─────────────────────────────────────────────────────
+    var cat_in: TensorPack[2]
+    var cat_gin: TensorPack[2]
+
     # ── Forward-pass scratches ─────────────────────────────────────────
-    var phi_s: Scratch["ofe_phi_s",     Self.BATCH * Self.PHI_S_DIM]
-    var sa_in: Scratch["ofe_sa_in",     Self.BATCH * Self.SA_IN_DIM]
-    var phi_sa: Scratch["ofe_phi_sa",   Self.BATCH * Self.PHI_SA_DIM]
-    var pred: Scratch["ofe_pred",       Self.BATCH * Self.OBS]
+    var sa_in: Tensor    # [BATCH, SA_IN_DIM]
+    var phi_sa: Tensor   # [BATCH, PHI_SA_DIM]
+    var pred: Tensor     # [BATCH, OBS]
 
     # ── Backward-pass scratches ────────────────────────────────────────
-    var g_pred:    Scratch["ofe_g_pred",    Self.BATCH * Self.OBS]
-    var g_phi_sa:  Scratch["ofe_g_phi_sa",  Self.BATCH * Self.PHI_SA_DIM]
-    var g_sa_in:   Scratch["ofe_g_sa_in",   Self.BATCH * Self.SA_IN_DIM]
-    var g_phi_s:   Scratch["ofe_g_phi_s",   Self.BATCH * Self.PHI_S_DIM]
-    # Discarded: grads flowing into the action input of the concat
-    # (action came from the replay buffer — no upstream to send the
-    # gradient to) and into the obs input of the state branch.
-    var g_act_dummy: Scratch["ofe_g_act_dummy", Self.BATCH * Self.ACT]
-    var g_obs_dummy: Scratch["ofe_g_obs_dummy", Self.BATCH * Self.OBS]
-
-    var ts: TargetStorage
-
-    # ── Comptime validations ───────────────────────────────────────────
+    var g_pred: Tensor      # [BATCH, OBS]
+    var g_phi_sa: Tensor    # [BATCH, PHI_SA_DIM]
+    var g_sa_in: Tensor     # [BATCH, SA_IN_DIM]
+    # Discarded: grad into the state-branch obs input.
+    var g_obs_dummy: Tensor  # [BATCH, OBS]
 
     def __init__(out self):
         comptime assert Self.SB.IN_DIMS[0] == Self.OBS, (
@@ -139,27 +127,15 @@ struct OFEAuxLossStep[
             "OFEAuxLossStep: predictor OUT must equal OBS"
         )
         self.concat = Concat[Self.PHI_S_DIM, Self.ACT]()
-        self.phi_s = Scratch["ofe_phi_s", Self.BATCH * Self.PHI_S_DIM]()
-        self.sa_in = Scratch["ofe_sa_in", Self.BATCH * Self.SA_IN_DIM]()
-        self.phi_sa = Scratch["ofe_phi_sa", Self.BATCH * Self.PHI_SA_DIM]()
-        self.pred = Scratch["ofe_pred", Self.BATCH * Self.OBS]()
-        self.g_pred = Scratch["ofe_g_pred", Self.BATCH * Self.OBS]()
-        self.g_phi_sa = Scratch[
-            "ofe_g_phi_sa", Self.BATCH * Self.PHI_SA_DIM,
-        ]()
-        self.g_sa_in = Scratch[
-            "ofe_g_sa_in", Self.BATCH * Self.SA_IN_DIM,
-        ]()
-        self.g_phi_s = Scratch[
-            "ofe_g_phi_s", Self.BATCH * Self.PHI_S_DIM,
-        ]()
-        self.g_act_dummy = Scratch[
-            "ofe_g_act_dummy", Self.BATCH * Self.ACT,
-        ]()
-        self.g_obs_dummy = Scratch[
-            "ofe_g_obs_dummy", Self.BATCH * Self.OBS,
-        ]()
-        self.ts = TargetStorage.make_uninit()
+        self.cat_in = TensorPack[2]()
+        self.cat_gin = TensorPack[2]()
+        self.sa_in = Tensor()
+        self.phi_sa = Tensor()
+        self.pred = Tensor()
+        self.g_pred = Tensor()
+        self.g_phi_sa = Tensor()
+        self.g_sa_in = Tensor()
+        self.g_obs_dummy = Tensor()
 
     @staticmethod
     def make[target: StaticString](
@@ -170,19 +146,40 @@ struct OFEAuxLossStep[
         )
         comptime if target == "gpu":
             if not ctx:
-                raise Error(
-                    "OFEAuxLossStep.make[target='gpu']: ctx required"
-                )
+                raise Error("OFEAuxLossStep.make[target='gpu']: ctx required")
         var blk = Self()
-        blk.concat = Concat[Self.PHI_S_DIM, Self.ACT].make[
-            target, INIT=Zero,
-        ](ctx=ctx)
-        blk.ts = TargetStorage.make[target](ctx=ctx)
-        init_scratch_auto[Self, target](blk, ctx)
+        blk.concat = Concat[Self.PHI_S_DIM, Self.ACT].make[target, INIT=Zero](
+            ctx=ctx
+        )
+        comptime if target == "cpu":
+            blk.cat_in[0].ensure(Self.BATCH * Self.PHI_S_DIM)
+            blk.cat_in[1].ensure(Self.BATCH * Self.ACT)
+            blk.cat_gin[0].ensure(Self.BATCH * Self.PHI_S_DIM)
+            blk.cat_gin[1].ensure(Self.BATCH * Self.ACT)
+            blk.sa_in = Tensor.alloc(Self.BATCH * Self.SA_IN_DIM)
+            blk.phi_sa = Tensor.alloc(Self.BATCH * Self.PHI_SA_DIM)
+            blk.pred = Tensor.alloc(Self.BATCH * Self.OBS)
+            blk.g_pred = Tensor.alloc(Self.BATCH * Self.OBS)
+            blk.g_phi_sa = Tensor.alloc(Self.BATCH * Self.PHI_SA_DIM)
+            blk.g_sa_in = Tensor.alloc(Self.BATCH * Self.SA_IN_DIM)
+            blk.g_obs_dummy = Tensor.alloc(Self.BATCH * Self.OBS)
+        else:
+            var c = ctx.value()
+            blk.cat_in[0].ensure_gpu(c, Self.BATCH * Self.PHI_S_DIM)
+            blk.cat_in[1].ensure_gpu(c, Self.BATCH * Self.ACT)
+            blk.cat_gin[0].ensure_gpu(c, Self.BATCH * Self.PHI_S_DIM)
+            blk.cat_gin[1].ensure_gpu(c, Self.BATCH * Self.ACT)
+            blk.sa_in = Tensor.alloc_gpu(c, Self.BATCH * Self.SA_IN_DIM)
+            blk.phi_sa = Tensor.alloc_gpu(c, Self.BATCH * Self.PHI_SA_DIM)
+            blk.pred = Tensor.alloc_gpu(c, Self.BATCH * Self.OBS)
+            blk.g_pred = Tensor.alloc_gpu(c, Self.BATCH * Self.OBS)
+            blk.g_phi_sa = Tensor.alloc_gpu(c, Self.BATCH * Self.PHI_SA_DIM)
+            blk.g_sa_in = Tensor.alloc_gpu(c, Self.BATCH * Self.SA_IN_DIM)
+            blk.g_obs_dummy = Tensor.alloc_gpu(c, Self.BATCH * Self.OBS)
         return blk^
 
     # ──────────────────────────────────────────────────────────────────
-    # The aux step (CPU).
+    # The aux step.
     # ──────────────────────────────────────────────────────────────────
 
     def step[
@@ -199,142 +196,97 @@ struct OFEAuxLossStep[
         mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
     ) raises -> Scalar[DT]:
         """Run one full aux training step. Returns the MSE loss (host
-        scalar, diagnostics only). On GPU the loss is computed via
-        D2H of pred + target — REDQ-OFE doesn't capture under CUDA
-        graphs (host control flow), so the per-step D2H is fine."""
+        scalar, diagnostics only)."""
         comptime assert target == "cpu" or target == "gpu", (
             "OFEAuxLossStep.step: target must be 'cpu' or 'gpu'"
         )
-        assert_tag_for["OFEAuxLossStep", target](self.ts.target_tag)
+        var ctx = state.ctx
 
-        # ── Local raw pointers + TileTensor views ──────────────────────
-        var obs_p = state.mb_s.target_ptr[target]()
-        var act_p = state.mb_a.target_ptr[target]()
-        var nobs_p = state.mb_sp.target_ptr[target]()
+        # ── Zero grads on all three OFE networks BEFORE forward/vjp. ───
+        sb_opt.zero_grad[target, M=Self.SB](state_branch, ctx)
+        ab_opt.zero_grad[target, M=Self.AB](action_branch, ctx)
+        pred_opt.zero_grad[target, M=Self.PRED](predictor, ctx)
 
-        var phi_s_p = self.phi_s.target_ptr[target]()
-        var sa_in_p = self.sa_in.target_ptr[target]()
-        var phi_sa_p = self.phi_sa.target_ptr[target]()
-        var pred_p = self.pred.target_ptr[target]()
-        var g_pred_p = self.g_pred.target_ptr[target]()
-        var g_phi_sa_p = self.g_phi_sa.target_ptr[target]()
-        var g_sa_in_p = self.g_sa_in.target_ptr[target]()
-        var g_phi_s_p = self.g_phi_s.target_ptr[target]()
-        var g_act_dummy_p = self.g_act_dummy.target_ptr[target]()
-        var g_obs_dummy_p = self.g_obs_dummy.target_ptr[target]()
-
-        var obs_t = TileTensor(obs_p, row_major[Self.BATCH, Self.OBS]())
-        # Variadic-Concat hetero-shape workaround
-        # (feedback_mojo_variadic_hetero_shape_workaround.md): build both
-        # *inputs* TileTensors with the SAME comptime Layout
-        # (row_major[BATCH, PHI_S_DIM]) — leaf recovers the per-input
-        # shape via typed_view[BATCH, DIMS[i]]. Same for *grad_inputs* in
-        # the backward call (g_phi_s, g_act_dummy).
-        var act_t = TileTensor(act_p, row_major[Self.BATCH, Self.PHI_S_DIM]())
-        var phi_s_t = TileTensor(
-            phi_s_p, row_major[Self.BATCH, Self.PHI_S_DIM](),
-        )
-        var sa_in_t = TileTensor(
-            sa_in_p, row_major[Self.BATCH, Self.SA_IN_DIM](),
-        )
-        var phi_sa_t = TileTensor(
-            phi_sa_p, row_major[Self.BATCH, Self.PHI_SA_DIM](),
-        )
-        var pred_t = TileTensor(pred_p, row_major[Self.BATCH, Self.OBS]())
-        var g_pred_t = TileTensor(
-            g_pred_p, row_major[Self.BATCH, Self.OBS](),
-        )
-        var g_phi_sa_t = TileTensor(
-            g_phi_sa_p, row_major[Self.BATCH, Self.PHI_SA_DIM](),
-        )
-        var g_sa_in_t = TileTensor(
-            g_sa_in_p, row_major[Self.BATCH, Self.SA_IN_DIM](),
-        )
-        var g_phi_s_t = TileTensor(
-            g_phi_s_p, row_major[Self.BATCH, Self.PHI_S_DIM](),
-        )
-        # Hetero-shape workaround mirror for backward (see above).
-        var g_act_dummy_t = TileTensor(
-            g_act_dummy_p, row_major[Self.BATCH, Self.PHI_S_DIM](),
-        )
-        var g_obs_dummy_t = TileTensor(
-            g_obs_dummy_p, row_major[Self.BATCH, Self.OBS](),
-        )
+        # ── Stage mb_a into the concat-input pool (so both Concat inputs
+        # share ONE origin — the §B0 constraint). ──────────────────────
+        comptime AT = Self.BATCH * Self.ACT
+        comptime if target == "cpu":
+            for k in range(AT):
+                self.cat_in[1].data[k] = state.mb_a.data[k]
+        else:
+            var c = ctx.value()
+            c.enqueue_copy(self.cat_in[1].dev.value(), state.mb_a.dev.value())
 
         # ── Forward chain ──────────────────────────────────────────────
-        state_branch.forward[target, Self.BATCH, POLICY=POLICY](
-            obs_t, output=phi_s_t,
+        # φ(s) → cat_in[0]; concat(φ(s), mb_a copy) → sa_in.
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            state_branch, TensorRefs[Self.SB.ARITY](state.mb_s), self.cat_in[0], ctx
         )
-        self.concat.forward[target, Self.BATCH, POLICY=POLICY](
-            TensorPack[2].of(phi_s_t, act_t), output=sa_in_t,
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            self.concat,
+            TensorRefs[2](self.cat_in[0], self.cat_in[1]), self.sa_in, ctx
         )
-        action_branch.forward[target, Self.BATCH, POLICY=POLICY](
-            sa_in_t, output=phi_sa_t,
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            action_branch, TensorRefs[Self.AB.ARITY](self.sa_in), self.phi_sa, ctx
         )
-        predictor.forward[target, Self.BATCH, POLICY=POLICY](
-            phi_sa_t, output=pred_t,
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            predictor, TensorRefs[Self.PRED.ARITY](self.phi_sa), self.pred, ctx
         )
 
         # ── Loss + MSE gradient ────────────────────────────────────────
         var loss: Scalar[DT]
         comptime if target == "cpu":
-            loss = aux_mse_loss_cpu[Self.BATCH, Self.OBS](
-                pred_p, nobs_p,
-            )
+            loss = aux_mse_loss_cpu[Self.BATCH, Self.OBS](self.pred, state.mb_sp)
             aux_mse_grad_cpu[Self.BATCH, Self.OBS](
-                pred_p, nobs_p, g_pred_p,
+                self.pred, state.mb_sp, self.g_pred
             )
         else:
-            # Device grad kernel + D2H of pred + target for the
-            # host-side loss reduction (cheap; REDQ-OFE doesn't
-            # capture under CUDA graphs).
-            var ctx = self.ts.ctx.value()
+            var c = ctx.value()
             aux_mse_grad_gpu[Self.BATCH, Self.OBS](
-                ctx, pred_p, nobs_p, g_pred_p,
+                c, self.pred, state.mb_sp, self.g_pred
             )
-            var pred_host = ctx.enqueue_create_host_buffer[DT](
-                Self.BATCH * Self.OBS
-            )
-            var nobs_host = ctx.enqueue_create_host_buffer[DT](
-                Self.BATCH * Self.OBS
-            )
-            ctx.enqueue_copy(
-                pred_host, self.pred.dev.value(),
-            )
-            ctx.enqueue_copy(
-                nobs_host, state.mb_sp.dev.value(),
-            )
-            ctx.synchronize()
-            var pred_h_p = pred_host.unsafe_ptr()
-            var nobs_h_p = nobs_host.unsafe_ptr()
+            # D2H pred + target for the host-side diagnostic loss reduction.
+            self.pred.download(c)
+            state.mb_sp.download(c)
             loss = aux_mse_loss_cpu[Self.BATCH, Self.OBS](
-                pred_h_p, nobs_h_p,
+                self.pred, state.mb_sp
             )
 
-        # ── Zero grads on all three OFE networks ──────────────────────
-        sb_opt.zero_grad[target, M=Self.SB](state_branch)
-        ab_opt.zero_grad[target, M=Self.AB](action_branch)
-        pred_opt.zero_grad[target, M=Self.PRED](predictor)
-
-        # ── Backward chain (mode='all' — aux IS the path that trains
-        # the OFE params) ──────────────────────────────────────────────
-        predictor.vjp[target, Self.BATCH, POLICY=POLICY](
-            g_pred_t, g_phi_sa_t,
+        # ── Backward chain ─────────────────────────────────────────────
+        call_vjp[target, Self.BATCH, POLICY=POLICY](
+            predictor,
+            TensorRefs[Self.PRED.ARITY](self.phi_sa),
+            self.g_pred,
+            TensorRefs[Self.PRED.ARITY](self.g_phi_sa),
+            ctx,
         )
-        action_branch.vjp[target, Self.BATCH, POLICY=POLICY](
-            g_phi_sa_t, g_sa_in_t,
+        call_vjp[target, Self.BATCH, POLICY=POLICY](
+            action_branch,
+            TensorRefs[Self.AB.ARITY](self.sa_in),
+            self.g_phi_sa,
+            TensorRefs[Self.AB.ARITY](self.g_sa_in),
+            ctx,
         )
-        # Concat splits grad_sa_in into (grad_phi_s, grad_action).
-        # grad_action is discarded — the buffer-sampled action has no
-        # upstream that the OFE training can propagate to.
-        self.concat.vjp[target, Self.BATCH, POLICY=POLICY](g_sa_in_t, TensorPack[2].of(g_phi_s_t, g_act_dummy_t))
-        state_branch.vjp[target, Self.BATCH, POLICY=POLICY](
-            g_phi_s_t, g_obs_dummy_t,
+        # Concat splits grad_sa_in into (grad_phi_s, grad_action). grad_action
+        # (cat_gin[1]) is discarded — the buffer-sampled action has no upstream.
+        call_vjp[target, Self.BATCH, POLICY=POLICY](
+            self.concat,
+            TensorRefs[2](self.cat_in[0], self.cat_in[1]),
+            self.g_sa_in,
+            TensorRefs[2](self.cat_gin[0], self.cat_gin[1]),
+            ctx,
+        )
+        call_vjp[target, Self.BATCH, POLICY=POLICY](
+            state_branch,
+            TensorRefs[Self.SB.ARITY](state.mb_s),
+            self.cat_gin[0],
+            TensorRefs[Self.SB.ARITY](self.g_obs_dummy),
+            ctx,
         )
 
         # ── Adam steps ─────────────────────────────────────────────────
-        pred_opt.step[target, M=Self.PRED](predictor)
-        ab_opt.step[target, M=Self.AB](action_branch)
-        sb_opt.step[target, M=Self.SB](state_branch)
+        pred_opt.step[target, M=Self.PRED](predictor, ctx)
+        ab_opt.step[target, M=Self.AB](action_branch, ctx)
+        sb_opt.step[target, M=Self.SB](state_branch, ctx)
 
         return loss

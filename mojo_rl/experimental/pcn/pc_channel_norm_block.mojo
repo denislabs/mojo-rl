@@ -57,9 +57,9 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn init: per-channel γ = 1 (INIT unused — normalization scale)."""
+        """NN init: per-channel γ = 1 (INIT unused — normalization scale)."""
         for c in range(Self.channels):
-            params.ptr[c] = Scalar[dtype](1)
+            params[c] = Scalar[dtype](1)
 
     # =========================================================================
     # predict:  μ[c,s] = γ_c · x[c,s] / r_c ;  a_below cached = x (raw)
@@ -82,25 +82,24 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
     ):
-        var xp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](x_below.ptr)
-        var gp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](params.ptr)
-        var mp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](mu.ptr)
-        var ap = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](a_below.ptr)
-        for i in range(BATCH * Self.DIM):
-            ap[i] = xp[i]
+        for b in range(BATCH):
+            for col in range(Self.DIM):
+                a_below[b, col] = x_below[b, col]
         for b in range(BATCH):
             for c in range(Self.channels):
-                var off = b * Self.DIM + c * Self.spatial
+                var base = c * Self.spatial
                 var ss: Float64 = 0.0
                 for s in range(Self.spatial):
-                    var v = Float64(xp[off + s])
+                    var v = Float64(rebind[Scalar[dtype]](x_below[b, base + s]))
                     ss += v * v
                 var inv_r = Scalar[dtype](
                     1.0 / sqrt(ss / Float64(Self.spatial) + _RMS_EPS)
                 )
-                var g = gp[c]
+                var g = rebind[Scalar[dtype]](params[c])
                 for s in range(Self.spatial):
-                    mp[off + s] = g * xp[off + s] * inv_r
+                    mu[b, base + s] = (
+                        g * rebind[Scalar[dtype]](x_below[b, base + s]) * inv_r
+                    )
 
     # =========================================================================
     # eps_compute:  ε = x_above − μ
@@ -120,11 +119,9 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
     ):
-        var xp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](x_above.ptr)
-        var mp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](mu.ptr)
-        var ep = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](eps.ptr)
-        for i in range(BATCH * Self.DIM):
-            ep[i] = xp[i] - mp[i]
+        for b in range(BATCH):
+            for col in range(Self.DIM):
+                eps[b, col] = x_above[b, col] - mu[b, col]
 
     # =========================================================================
     # pull_back:  z[c,s] = ε[c,s] · γ_c
@@ -144,17 +141,14 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
     ):
-        var ep = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            eps_above.ptr
-        )
-        var gp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](params.ptr)
-        var zp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_below.ptr)
         for b in range(BATCH):
             for c in range(Self.channels):
-                var off = b * Self.DIM + c * Self.spatial
-                var g = gp[c]
+                var base = c * Self.spatial
+                var g = rebind[Scalar[dtype]](params[c])
                 for s in range(Self.spatial):
-                    zp[off + s] = ep[off + s] * g
+                    z_below[b, base + s] = (
+                        rebind[Scalar[dtype]](eps_above[b, base + s]) * g
+                    )
 
     # =========================================================================
     # act_derivative_mul:  per-channel RMSNorm Jacobian applied to z, using x:
@@ -175,25 +169,26 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
     ):
-        var xp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](x_below.ptr)
-        var zi = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_in.ptr)
-        var zo = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_out.ptr)
         for b in range(BATCH):
             for c in range(Self.channels):
-                var off = b * Self.DIM + c * Self.spatial
+                var base = c * Self.spatial
                 var ss: Float64 = 0.0
                 for s in range(Self.spatial):
-                    var v = Float64(xp[off + s])
+                    var v = Float64(rebind[Scalar[dtype]](x_below[b, base + s]))
                     ss += v * v
                 var inv_r = 1.0 / sqrt(ss / Float64(Self.spatial) + _RMS_EPS)
                 var dot: Float64 = 0.0
                 for s in range(Self.spatial):
-                    dot += Float64(zi[off + s]) * Float64(xp[off + s]) * inv_r
+                    dot += (
+                        Float64(rebind[Scalar[dtype]](z_in[b, base + s]))
+                        * Float64(rebind[Scalar[dtype]](x_below[b, base + s]))
+                        * inv_r
+                    )
                 var dot_over = dot / Float64(Self.spatial)
                 for s in range(Self.spatial):
-                    var n_s = Float64(xp[off + s]) * inv_r
-                    zo[off + s] = Scalar[dtype](
-                        inv_r * (Float64(zi[off + s]) - n_s * dot_over)
+                    var n_s = Float64(rebind[Scalar[dtype]](x_below[b, base + s])) * inv_r
+                    z_out[b, base + s] = Scalar[dtype](
+                        inv_r * (Float64(rebind[Scalar[dtype]](z_in[b, base + s])) - n_s * dot_over)
                     )
 
     # =========================================================================
@@ -214,25 +209,24 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        var ep = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            eps_above.ptr
-        )
-        var ap = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](a_below.ptr)
-        var gp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](grads.ptr)
         for c in range(Self.channels):
-            gp[c] = Scalar[dtype](0)
+            grads[c] = Scalar[dtype](0)
         for b in range(BATCH):
             for c in range(Self.channels):
-                var off = b * Self.DIM + c * Self.spatial
+                var base = c * Self.spatial
                 var ss: Float64 = 0.0
                 for s in range(Self.spatial):
-                    var v = Float64(ap[off + s])
+                    var v = Float64(rebind[Scalar[dtype]](a_below[b, base + s]))
                     ss += v * v
                 var inv_r = 1.0 / sqrt(ss / Float64(Self.spatial) + _RMS_EPS)
                 var acc: Float64 = 0.0
                 for s in range(Self.spatial):
-                    acc += Float64(ep[off + s]) * Float64(ap[off + s]) * inv_r
-                gp[c] = gp[c] - Scalar[dtype](acc)
+                    acc += (
+                        Float64(rebind[Scalar[dtype]](eps_above[b, base + s]))
+                        * Float64(rebind[Scalar[dtype]](a_below[b, base + s]))
+                        * inv_r
+                    )
+                grads[c] = rebind[Scalar[dtype]](grads[c]) - Scalar[dtype](acc)
 
     # =========================================================================
     # GPU kernels (one thread per (sample, channel) for reductions)
@@ -519,7 +513,7 @@ struct ChannelNormPCBlock[channels: Int, spatial: Int](PCBlockTrait):
         var inv_r_buf = ctx.enqueue_create_buffer[dtype](BATCH * Self.channels)
         var inv_r = LayoutTensor[
             dtype, Layout.row_major(BATCH * Self.channels), MutAnyOrigin
-        ](inv_r_buf.unsafe_ptr())
+        ](inv_r_buf)
         comptime kr = Self._inv_r_kernel[BATCH, dtype]
         var rthreads = BATCH * Self.channels
         var rblocks = (rthreads + TPB - 1) // TPB

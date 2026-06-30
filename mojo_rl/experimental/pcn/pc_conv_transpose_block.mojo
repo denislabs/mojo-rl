@@ -29,7 +29,6 @@ bidirectional generative path does not go through PCSequential).
 """
 
 from layout import Layout, LayoutTensor
-from std.memory import alloc
 from std.sys import CompilationTarget
 
 from .pc_initializer import PCInitializer
@@ -47,7 +46,7 @@ struct ConvTransposePCBlock[
     in_h: Int,
     in_w: Int,
     ACT: PCActivation = PCReLU,
-](Movable & ImplicitlyCopyable):
+](ImplicitlyCopyable):
     comptime out_h: Int = (
         (Self.in_h - 1) * Self.stride - 2 * Self.padding + Self.kernel_size
     )
@@ -87,7 +86,7 @@ struct ConvTransposePCBlock[
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn init: conv-transpose W via INIT.fill(fan_in/out); zero bias."""
+        """Init: conv-transpose W via INIT.fill(fan_in/out); zero bias."""
         var W_view = LayoutTensor[
             dtype, Layout.row_major(Self.W_SIZE), MutAnyOrigin
         ](params.ptr)
@@ -112,9 +111,8 @@ struct ConvTransposePCBlock[
         big: LayoutTensor[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
-        ecol: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+        mut ecol: List[Scalar[dtype]],
     ):
-        var bp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](big.ptr)
         for b in range(BATCH):
             for ih in range(Self.in_h):
                 for iw in range(Self.in_w):
@@ -140,12 +138,14 @@ struct ConvTransposePCBlock[
                                     and ow >= 0
                                     and ow < Self.out_w
                                 ):
-                                    ecol[ci] = bp[
-                                        b * Self.OUT_DIM
-                                        + oc * Self.big_spatial
-                                        + oh * Self.out_w
-                                        + ow
-                                    ]
+                                    ecol[ci] = rebind[Scalar[dtype]](
+                                        big[
+                                            b,
+                                            oc * Self.big_spatial
+                                            + oh * Self.out_w
+                                            + ow,
+                                        ]
+                                    )
                                 else:
                                     ecol[ci] = Scalar[dtype](0)
 
@@ -174,24 +174,31 @@ struct ConvTransposePCBlock[
         comptime use_apple = CompilationTarget.is_macos() and (
             dtype == DType.float32
         )
-        var mp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](mu.ptr)
-        var wp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](params.ptr)
-        var ap = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](a_below.ptr)
+        # Full param-slab view (no rebind): weight head W[0:W_SIZE] + bias tail
+        # W[W_SIZE + oc]. Matches the original whole-slab pointer `wp`.
+        var W = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ](params.ptr)
 
-        for i in range(BATCH * Self.OUT_DIM):
-            mp[i] = Scalar[dtype](0)
+        for b in range(BATCH):
+            for i in range(Self.OUT_DIM):
+                mu[b, i] = Scalar[dtype](0)
 
         comptime if use_apple:
             # Step 1: dcol[b, p_small·col_size + ocol] = Σ_ic a_below[ic,p_small]·W[ic,ocol]
-            #         (transpose_a GEMM: a_belowᵀ @ W per batch)
-            var dcol = alloc[Scalar[dtype]](BATCH * Self.CACHE)
+            #         (transpose_a GEMM: a_belowᵀ @ W per batch). dcol is an owned
+            #         List (no raw alloc); its pointer feeds the cblas FFI.
+            var dcol = List[Scalar[dtype]](
+                length=BATCH * Self.CACHE, fill=Scalar[dtype](0)
+            )
+            # cblas FFI boundary (Scalar→Float32 + origin), as nn.storage's Linear.
             var Wp = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](params.ptr)
             for b in range(BATCH):
                 var a_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
                     a_below.ptr + b * Self.IN_DIM
                 )
                 var dcol_b = rebind[UnsafePointer[Float32, MutAnyOrigin]](
-                    dcol + b * Self.CACHE
+                    dcol.unsafe_ptr() + b * Self.CACHE
                 )
                 try:
                     apple_sgemm_accum[transpose_a=True, transpose_b=False](
@@ -210,7 +217,6 @@ struct ConvTransposePCBlock[
                 except:
                     pass
             # Step 2: col2im scatter dcol → μ (accumulate over overlapping taps)
-            var dcp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](dcol)
             for b in range(BATCH):
                 for ih in range(Self.in_h):
                     for iw in range(Self.in_w):
@@ -237,27 +243,28 @@ struct ConvTransposePCBlock[
                                             + kh * Self.kernel_size
                                             + kw
                                         )
-                                        mp[
-                                            b * Self.OUT_DIM
-                                            + oc * Self.big_spatial
+                                        var mcol = (
+                                            oc * Self.big_spatial
                                             + oh * Self.out_w
                                             + ow
-                                        ] += dcp[
-                                            b * Self.CACHE
-                                            + p_small * Self.col_size
-                                            + ocol
-                                        ]
-            dcol.free()
+                                        )
+                                        mu[b, mcol] = (
+                                            mu[b, mcol]
+                                            + dcol[
+                                                b * Self.CACHE
+                                                + p_small * Self.col_size
+                                                + ocol
+                                            ]
+                                        )
+            _ = dcol^
         else:
             for b in range(BATCH):
                 for ih in range(Self.in_h):
                     for iw in range(Self.in_w):
                         for ic in range(Self.in_channels):
-                            var av = ap[
-                                b * Self.IN_DIM
-                                + ic * Self.small_spatial
-                                + ih * Self.in_w
-                                + iw
+                            var av = a_below[
+                                b,
+                                ic * Self.small_spatial + ih * Self.in_w + iw,
                             ]
                             for oc in range(Self.out_channels):
                                 for kh in range(Self.kernel_size):
@@ -282,20 +289,22 @@ struct ConvTransposePCBlock[
                                                 + kh * Self.kernel_size
                                                 + kw
                                             )
-                                            mp[
-                                                b * Self.OUT_DIM
-                                                + oc * Self.big_spatial
+                                            var mcol = (
+                                                oc * Self.big_spatial
                                                 + oh * Self.out_w
                                                 + ow
-                                            ] += (wp[widx] * av)
+                                            )
+                                            mu[b, mcol] = mu[b, mcol] + (
+                                                W[widx] * av
+                                            )
 
         # + bias per BIG output channel
         for b in range(BATCH):
             for oc in range(Self.out_channels):
-                var bias_val = wp[Self.W_SIZE + oc]
-                var off = b * Self.OUT_DIM + oc * Self.big_spatial
+                var bias_val = W[Self.W_SIZE + oc]
+                var off = oc * Self.big_spatial
                 for s in range(Self.big_spatial):
-                    mp[off + s] = mp[off + s] + bias_val
+                    mu[b, off + s] = mu[b, off + s] + bias_val
 
     # =========================================================================
     # eps_compute:  ε = x_above − μ   (elementwise)
@@ -315,11 +324,9 @@ struct ConvTransposePCBlock[
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
     ):
-        var xp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](x_above.ptr)
-        var mp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](mu.ptr)
-        var ep = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](eps.ptr)
-        for i in range(BATCH * Self.OUT_DIM):
-            ep[i] = xp[i] - mp[i]
+        for b in range(BATCH):
+            for j in range(Self.OUT_DIM):
+                eps[b, j] = x_above[b, j] - mu[b, j]
 
     # =========================================================================
     # pull_back:  z_below = Conv(ε; W)   (forward conv = adjoint of predict)
@@ -342,21 +349,23 @@ struct ConvTransposePCBlock[
         comptime use_apple = CompilationTarget.is_macos() and (
             dtype == DType.float32
         )
-        var zp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_below.ptr)
-        var wp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](params.ptr)
-        var ep = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            eps_above.ptr
-        )
+        # W sub-view over the param slab (no rebind).
+        var W = LayoutTensor[
+            dtype, Layout.row_major(Self.W_SIZE), MutAnyOrigin
+        ](params.ptr)
 
         comptime if use_apple:
             # im2col(ε_big) → ecol, then z_small[ic,p] = Σ_ocol W[ic,ocol]·ecol[p,ocol]
-            # (W @ ecolᵀ per batch).
-            var ecol = alloc[Scalar[dtype]](BATCH * Self.CACHE)
+            # (W @ ecolᵀ per batch). ecol is an owned List (no raw alloc).
+            var ecol = List[Scalar[dtype]](
+                length=BATCH * Self.CACHE, fill=Scalar[dtype](0)
+            )
             Self._im2col_big[BATCH, dtype](eps_above, ecol)
+            # cblas FFI boundary (Scalar→Float32 + origin), as nn.storage's Linear.
             var Wp = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](params.ptr)
             for b in range(BATCH):
                 var ecol_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                    ecol + b * Self.CACHE
+                    ecol.unsafe_ptr() + b * Self.CACHE
                 )
                 var z_b = rebind[UnsafePointer[Float32, MutAnyOrigin]](
                     z_below.ptr + b * Self.IN_DIM
@@ -377,15 +386,16 @@ struct ConvTransposePCBlock[
                     )
                 except:
                     pass
-            ecol.free()
+            _ = ecol^
         else:
-            for i in range(BATCH * Self.IN_DIM):
-                zp[i] = Scalar[dtype](0)
+            for b in range(BATCH):
+                for i in range(Self.IN_DIM):
+                    z_below[b, i] = Scalar[dtype](0)
             for b in range(BATCH):
                 for ih in range(Self.in_h):
                     for iw in range(Self.in_w):
                         for ic in range(Self.in_channels):
-                            var acc: Scalar[dtype] = 0
+                            var acc = eps_above[b, 0] - eps_above[b, 0]
                             for oc in range(Self.out_channels):
                                 for kh in range(Self.kernel_size):
                                     for kw in range(Self.kernel_size):
@@ -409,20 +419,18 @@ struct ConvTransposePCBlock[
                                                 + kh * Self.kernel_size
                                                 + kw
                                             )
-                                            acc += (
-                                                wp[widx]
-                                                * ep[
-                                                    b * Self.OUT_DIM
-                                                    + oc * Self.big_spatial
+                                            acc = acc + (
+                                                W[widx]
+                                                * eps_above[
+                                                    b,
+                                                    oc * Self.big_spatial
                                                     + oh * Self.out_w
-                                                    + ow
+                                                    + ow,
                                                 ]
                                             )
-                            zp[
-                                b * Self.IN_DIM
-                                + ic * Self.small_spatial
-                                + ih * Self.in_w
-                                + iw
+                            z_below[
+                                b,
+                                ic * Self.small_spatial + ih * Self.in_w + iw,
                             ] = acc
 
     # =========================================================================
@@ -468,26 +476,31 @@ struct ConvTransposePCBlock[
         comptime use_apple = CompilationTarget.is_macos() and (
             dtype == DType.float32
         )
-        var gp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](grads.ptr)
-        var ep = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            eps_above.ptr
-        )
-        var ap = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](a_below.ptr)
+        # Grad slab as a flat view + W head sub-view (no rebind).
+        var grads_flat = LayoutTensor[
+            dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
+        ](grads.ptr)
+        var W_grad = LayoutTensor[
+            dtype, Layout.row_major(Self.W_SIZE), MutAnyOrigin
+        ](grads.ptr)
         for i in range(Self.PARAM_SIZE):
-            gp[i] = Scalar[dtype](0)
+            grads_flat[i] = Scalar[dtype](0)
 
         comptime if use_apple:
             # ecol = im2col(ε_big); dW[ic,ocol] += (−1)·Σ_p a_below[ic,p]·ecol[p,ocol]
-            # (alpha=−1, beta=1 accumulate over batch).
-            var ecol = alloc[Scalar[dtype]](BATCH * Self.CACHE)
+            # (alpha=−1, beta=1 accumulate over batch). ecol = owned List.
+            var ecol = List[Scalar[dtype]](
+                length=BATCH * Self.CACHE, fill=Scalar[dtype](0)
+            )
             Self._im2col_big[BATCH, dtype](eps_above, ecol)
+            # cblas FFI boundary (Scalar→Float32 + origin), as nn.storage's Linear.
             var Cw = rebind[UnsafePointer[Float32, MutAnyOrigin]](grads.ptr)
             for b in range(BATCH):
                 var a_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
                     a_below.ptr + b * Self.IN_DIM
                 )
                 var ecol_b = rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                    ecol + b * Self.CACHE
+                    ecol.unsafe_ptr() + b * Self.CACHE
                 )
                 try:
                     apple_sgemm_accum[transpose_a=False, transpose_b=False](
@@ -505,7 +518,7 @@ struct ConvTransposePCBlock[
                     )
                 except:
                     pass
-            ecol.free()
+            _ = ecol^
         else:
             for b in range(BATCH):
                 for ih in range(Self.in_h):
@@ -513,11 +526,9 @@ struct ConvTransposePCBlock[
                         var p_small = ih * Self.in_w + iw
                         _ = p_small
                         for ic in range(Self.in_channels):
-                            var av = ap[
-                                b * Self.IN_DIM
-                                + ic * Self.small_spatial
-                                + ih * Self.in_w
-                                + iw
+                            var av = a_below[
+                                b,
+                                ic * Self.small_spatial + ih * Self.in_w + iw,
                             ]
                             for oc in range(Self.out_channels):
                                 for kh in range(Self.kernel_size):
@@ -542,21 +553,21 @@ struct ConvTransposePCBlock[
                                                 + kh * Self.kernel_size
                                                 + kw
                                             )
-                                            gp[widx] += (
+                                            W_grad[widx] = W_grad[widx] + (
                                                 -av
-                                                * ep[
-                                                    b * Self.OUT_DIM
-                                                    + oc * Self.big_spatial
+                                                * eps_above[
+                                                    b,
+                                                    oc * Self.big_spatial
                                                     + oh * Self.out_w
-                                                    + ow
+                                                    + ow,
                                                 ]
                                             )
 
-        # db[oc] = −Σ_{b, big spatial} ε
+        # db[oc] = −Σ_{b, big spatial} ε  (accumulate in the element type)
         for oc in range(Self.out_channels):
-            var acc: Scalar[dtype] = 0
+            var acc = eps_above[0, 0] - eps_above[0, 0]
             for b in range(BATCH):
-                var off = b * Self.OUT_DIM + oc * Self.big_spatial
+                var off = oc * Self.big_spatial
                 for s in range(Self.big_spatial):
-                    acc += ep[off + s]
-            gp[Self.W_SIZE + oc] = -acc
+                    acc = acc + eps_above[b, off + s]
+            grads_flat[Self.W_SIZE + oc] = -acc

@@ -17,7 +17,7 @@ from std.random import seed
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.nn.primitives.activations import Tanh
 from mojo_rl.deep_agents.primitives.gaussian_head import GaussianHead
 from mojo_rl.deep_agents.ppo import PPOAgent
 
@@ -69,9 +69,7 @@ def main() raises:
 
     # CleanRL-style log_std init — the trainer leaves this to the caller
     # because Mojo nightly can't reflect into Sequential's variadic children.
-    var ls_ptr = agent.trainer.actor.children[4].log_std.value_unsafe_ptr_cpu()
-    for k in range(ACT_DIM):
-        ls_ptr[k] = LOG_STD_INIT
+    agent.trainer.actor.children[4].set_log_std_init["cpu"](LOG_STD_INIT)
 
     var env = LunarLander[DT](seed=42)
     _ = agent.train_single(

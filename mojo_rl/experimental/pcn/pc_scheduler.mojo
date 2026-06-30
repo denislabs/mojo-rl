@@ -27,7 +27,7 @@ Usage:
 from std.math import cos, pi
 
 
-trait Scheduler(Movable & ImplicitlyCopyable):
+trait Scheduler(ImplicitlyCopyable):
     """Maps (epoch, total_epochs) to an LR multiplier."""
 
     @staticmethod

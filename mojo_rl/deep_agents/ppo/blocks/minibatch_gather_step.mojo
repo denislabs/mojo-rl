@@ -1,4 +1,4 @@
-"""PPOMinibatchGatherStep — Fisher-Yates shuffle + minibatch gather.
+"""PPOMinibatchGatherStep — Fisher-Yates shuffle + minibatch gather (STORAGE).
 
 Three methods:
   - `reset_indices[target]` — write [0..ROLLOUT_LEN) into state.indices
@@ -10,15 +10,17 @@ Three methods:
     mb_act / mb_olp / mb_adv / mb_ret, then mean/std normalise mb_adv
     (CleanRL per-minibatch normalisation).
 
-Indices are Int32 (not DT) so they live on the raw `state.indices`
-pointer rather than a Scratch.
+STORAGE migration: the rollout pool + the minibatch staging both index the
+storage tensors' host `.data` Lists directly. On GPU the populated mb_* host
+mirrors are `upload`ed so the actor/critic train steps read the device buffers.
+Indices stay an Int32 raw pointer on `state.indices` (Tensor is DT-only).
 """
 
 from std.gpu.host import DeviceContext
 from std.random import random_float64
+from std.math import sqrt as fsqrt
 
 from mojo_rl.nn.constants import DT
-from ...training.gae import normalize_in_place
 from ...training.onpolicy_state import OnPolicyState
 
 
@@ -27,7 +29,7 @@ struct PPOMinibatchGatherStep[
     ACT_: Int,
     ROLLOUT_LEN_: Int,
     MINIBATCH_: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime ROLLOUT_LEN = Self.ROLLOUT_LEN_
@@ -93,34 +95,50 @@ struct PPOMinibatchGatherStep[
 
         At N_ENVS=1 the flat index space equals the per-env time index,
         so the math reduces to the N=1 case bit-identically."""
-        var obs_p = state.obs_buf.cpu_ptr()
-        var act_p = state.act_buf.cpu_ptr()
-        var olp_p = state.olp_buf.cpu_ptr()
-        var adv_p = state.adv_buf.cpu_ptr()
-        var ret_p = state.ret_buf.cpu_ptr()
-        var mb_obs_p = state.mb_obs.cpu_ptr()
-        var mb_act_p = state.mb_act.cpu_ptr()
-        var mb_olp_p = state.mb_olp.cpu_ptr()
-        var mb_adv_p = state.mb_adv.cpu_ptr()
-        var mb_ret_p = state.mb_ret.cpu_ptr()
+        # Gather works on the rollout pool + minibatch staging host `.data`
+        # Lists directly (no raw pointers). `state.indices` is an Int32 array
+        # (Tensor is DT-only) so it stays a raw pointer.
+        ref obs = state.obs_buf.data
+        ref act = state.act_buf.data
+        ref olp = state.olp_buf.data
+        ref adv = state.adv_buf.data
+        ref ret = state.ret_buf.data
+        ref mb_obs = state.mb_obs.data
+        ref mb_act = state.mb_act.data
+        ref mb_olp = state.mb_olp.data
+        ref mb_adv = state.mb_adv.data
+        ref mb_ret = state.mb_ret.data
         var idx_p = state.indices.value()
         for k in range(Self.MINIBATCH):
             var src = Int(idx_p[mb_idx * Self.MINIBATCH + k])
             for d in range(Self.OBS):
-                mb_obs_p[k * Self.OBS + d] = obs_p[src * Self.OBS + d]
+                mb_obs[k * Self.OBS + d] = obs[src * Self.OBS + d]
             for j in range(Self.ACT):
-                mb_act_p[k * Self.ACT + j] = act_p[src * Self.ACT + j]
-            mb_olp_p[k] = olp_p[src]
-            mb_adv_p[k] = adv_p[src]
-            mb_ret_p[k] = ret_p[src]
-        normalize_in_place(Self.MINIBATCH, mb_adv_p)
+                mb_act[k * Self.ACT + j] = act[src * Self.ACT + j]
+            mb_olp[k] = olp[src]
+            mb_adv[k] = adv[src]
+            mb_ret[k] = ret[src]
+        # CleanRL per-minibatch advantage normalisation (subtract mean, divide
+        # by std + 1e-8) — inlined over the `mb_adv` List (was a pointer-taking
+        # `normalize_in_place` helper).
+        var s: Scalar[DT] = 0.0
+        for t in range(Self.MINIBATCH):
+            s += mb_adv[t]
+        var mean = s / Scalar[DT](Self.MINIBATCH)
+        var sq: Scalar[DT] = 0.0
+        for t in range(Self.MINIBATCH):
+            var d = mb_adv[t] - mean
+            sq += d * d
+        var std = fsqrt(sq / Scalar[DT](Self.MINIBATCH))
+        for t in range(Self.MINIBATCH):
+            mb_adv[t] = (mb_adv[t] - mean) / (std + Scalar[DT](1e-8))
 
         comptime if target == "gpu":
-            # H2D the populated minibatch so the train steps read
-            # device-side pointers via state.mb_*.target_ptr["gpu"]().
-            var ctx = state.ctx.value()
-            ctx.enqueue_copy(state.mb_obs.dev.value(), mb_obs_p)
-            ctx.enqueue_copy(state.mb_act.dev.value(), mb_act_p)
-            ctx.enqueue_copy(state.mb_olp.dev.value(), mb_olp_p)
-            ctx.enqueue_copy(state.mb_adv.dev.value(), mb_adv_p)
-            ctx.enqueue_copy(state.mb_ret.dev.value(), mb_ret_p)
+            # H2D the populated minibatch so the train steps read the device
+            # buffers (state.mb_*.lt["gpu", ...] / .dev.value()).
+            var c = state.ctx.value()
+            state.mb_obs.upload(c)
+            state.mb_act.upload(c)
+            state.mb_olp.upload(c)
+            state.mb_adv.upload(c)
+            state.mb_ret.upload(c)

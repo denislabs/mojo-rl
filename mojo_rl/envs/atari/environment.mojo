@@ -12,6 +12,7 @@ Usage:
 """
 
 from .atari_state import AtariState
+from mojo_rl.nn.core.ptr import untracked
 from .cpu6502 import cpu_reset, run_frame, mem_read
 from .cartridge import init_bank
 from .riot import set_action
@@ -39,7 +40,7 @@ struct AtariEnvironment(Movable):
     """
 
     var state: AtariState
-    var rom: UnsafePointer[UInt8, MutAnyOrigin]
+    var rom: UnsafePointer[UInt8, MutUntrackedOrigin]
     var rom_size: Int
     var frame_skip: Int
     var max_frames: Int  # Max frames per episode (0 = unlimited)
@@ -63,7 +64,7 @@ struct AtariEnvironment(Movable):
         paddles: Bool = False,
     ):
         self.state = AtariState()
-        self.rom = rom
+        self.rom = untracked(rom)
         self.rom_size = rom_size
         self.frame_skip = frame_skip
         self.max_frames = max_frames
@@ -92,13 +93,13 @@ struct AtariEnvironment(Movable):
         if self.paddles:
             self.state.sys_flags = self.state.sys_flags | FLAG_PADDLES
         init_bank(self.state, self.rom_size, self.mapper)
-        cpu_reset(self.state, self.rom, self.rom_size)
+        cpu_reset(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
 
         # Run a few frames to get past the title screen / initialization
         # (Most games need ~60 frames of NOOP to start)
         for _ in range(60):
             set_action(self.state, ACTION_NOOP)
-            run_frame(self.state, self.rom, self.rom_size)
+            run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
 
         # Hold the console RESET switch to actually start the game. A single
         # frame is too short for some games (e.g. Space Invaders), which then
@@ -107,12 +108,12 @@ struct AtariEnvironment(Movable):
         # button press and reliably starts gameplay.
         for _ in range(10):
             set_action(self.state, ACTION_RESET)
-            run_frame(self.state, self.rom, self.rom_size)
+            run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
 
         # A few more NOOP frames to let the game settle into play.
         for _ in range(10):
             set_action(self.state, ACTION_NOOP)
-            run_frame(self.state, self.rom, self.rom_size)
+            run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
 
         # Initialize RL state
         self.state.reward = 0
@@ -136,28 +137,28 @@ struct AtariEnvironment(Movable):
                 self.state.sys_flags = self.state.sys_flags | FLAG_CON_SELECT
                 for _ in range(su[2]):
                     set_action(self.state, ACTION_NOOP)
-                    run_frame(self.state, self.rom, self.rom_size)
+                    run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
                 self.state.sys_flags = self.state.sys_flags & ~FLAG_CON_SELECT
                 for _ in range(2):
                     set_action(self.state, ACTION_NOOP)
-                    run_frame(self.state, self.rom, self.rom_size)
+                    run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
                 guard += 1
             for _ in range(4):
                 set_action(self.state, ACTION_RESET)
-                run_frame(self.state, self.rom, self.rom_size)
+                run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
             for _ in range(4):
                 set_action(self.state, ACTION_NOOP)
-                run_frame(self.state, self.rom, self.rom_size)
+                run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
         var sa = game.starting_actions()
         for _ in range(sa[1]):
             set_action(self.state, sa[0])
-            run_frame(self.state, self.rom, self.rom_size)
+            run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
         for _ in range(sa[3]):
             set_action(self.state, sa[2])
-            run_frame(self.state, self.rom, self.rom_size)
+            run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
         for _ in range(sa[5]):
             set_action(self.state, sa[4])
-            run_frame(self.state, self.rom, self.rom_size)
+            run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
         # FIRE-mash start (Mario Bros): press FIRE until the byte latches.
         var fu = game.fire_until()
         if fu >= 0:
@@ -165,10 +166,10 @@ struct AtariEnvironment(Movable):
             while Int(self.state.ram[fu & 0x7F]) == 0 and tries < 30:
                 for _ in range(2):
                     set_action(self.state, ACTION_FIRE)
-                    run_frame(self.state, self.rom, self.rom_size)
+                    run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
                 for _ in range(28):
                     set_action(self.state, ACTION_NOOP)
-                    run_frame(self.state, self.rom, self.rom_size)
+                    run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
                 tries += 1
         # Sync the RL signals to the post-reset RAM, like ALE (settings step
         # during reset, rewards not exposed). Without this, games whose score
@@ -191,7 +192,7 @@ struct AtariEnvironment(Movable):
 
         for frame in range(self.frame_skip):
             set_action(self.state, action)
-            run_frame(self.state, self.rom, self.rom_size)
+            run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
 
         # Return score delta as reward (game-specific extraction happens externally)
         return total_reward
@@ -209,7 +210,7 @@ struct AtariEnvironment(Movable):
 
         for frame in range(self.frame_skip):
             set_action(self.state, ale_action)
-            run_frame(self.state, self.rom, self.rom_size)
+            run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
 
         # Extract RL signals from RAM
         var new_score = GAME.get_score(self.state.ram)
@@ -241,7 +242,7 @@ struct AtariEnvironment(Movable):
 
         for _ in range(self.frame_skip):
             set_action(self.state, ale_action)
-            run_frame(self.state, self.rom, self.rom_size)
+            run_frame(self.state, self.rom.as_unsafe_any_origin(), self.rom_size)
 
         var sig = game_signals(game, self.state, prev_score)
         self.state.score = Int32(sig.score)
@@ -313,7 +314,7 @@ trait GameDef:
 struct RomData(Movable):
     """Holds ROM data loaded from a file."""
 
-    var data: Optional[UnsafePointer[UInt8, MutAnyOrigin]]
+    var data: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]
     var size: Int
 
     def __init__(out self):

@@ -112,9 +112,9 @@ struct PongOfflineBuffer(Movable, OfflineBuffer):
 
     var capacity: Int
     var n_frames: Int
-    var frames: UnsafePointer[UInt8, MutAnyOrigin]
-    var actions: UnsafePointer[UInt8, MutAnyOrigin]
-    var dones: UnsafePointer[UInt8, MutAnyOrigin]
+    var frames: UnsafePointer[UInt8, MutUntrackedOrigin]
+    var actions: UnsafePointer[UInt8, MutUntrackedOrigin]
+    var dones: UnsafePointer[UInt8, MutUntrackedOrigin]
 
     def __init__(out self, capacity: Int):
         self.capacity = capacity

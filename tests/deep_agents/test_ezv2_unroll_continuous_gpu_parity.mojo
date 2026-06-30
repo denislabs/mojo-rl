@@ -18,21 +18,15 @@ Run (GPU env required):
         tests/deep_agents/test_ezv2_unroll_continuous_gpu_parity.mojo
 """
 
-from std.memory import alloc
 from std.random import seed
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.core.checkpoint import (
-    save_state_v2_body,
-    save_state_v2_body_gpu,
-    load_state_v2_body_gpu,
-)
-from mojo_rl.deep_agents.core.checkpoint_helpers import split_lines_v2
+from mojo_rl.nn.core.hard_copy import _CollectVisitor, _InjectVisitor
 from mojo_rl.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, EZProjectorNet, EZPredictorNet,
 )
@@ -65,9 +59,6 @@ comptime Proj = EZProjectorNet[LATENT, PROJ, PROJ_HID]
 comptime Predh = EZPredictorNet[PROJ, BOTTLENECK]
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
-
 
 def _abs(v: Scalar[DT]) -> Scalar[DT]:
     return v if v >= 0 else -v
@@ -76,31 +67,26 @@ def _abs(v: Scalar[DT]) -> Scalar[DT]:
 def _sync_cpu_to_gpu[M: Module](
     mut cpu: M, mut gpu: M, ctx: DeviceContext
 ) raises:
-    var body = String("")
-    save_state_v2_body(cpu, body, String(""))
-    var lines = split_lines_v2(body)
-    var idx = 0
-    load_state_v2_body_gpu(gpu, lines, idx, String(""), ctx)
+    var c = _CollectVisitor()
+    cpu.for_each_param["cpu"](c, None)
+    var inj = _InjectVisitor(c.names.copy(), c.vals.copy())
+    gpu.for_each_param["gpu"](inj, Optional(ctx))
 
 
 def _param_maxdiff[M: Module](
     mut cpu: M, mut gpu: M, ctx: DeviceContext
 ) raises -> Scalar[DT]:
-    var cbody = String("")
-    save_state_v2_body(cpu, cbody, String(""))
-    var gbody = String("")
-    save_state_v2_body_gpu(gpu, gbody, String(""), ctx)
-    var lc = split_lines_v2(cbody)
-    var lg = split_lines_v2(gbody)
-    assert_true(len(lc) == len(lg), "serialized param line count mismatch")
+    var cc = _CollectVisitor()
+    cpu.for_each_param["cpu"](cc, None)
+    var gc = _CollectVisitor()
+    gpu.for_each_param["gpu"](gc, Optional(ctx))
+    assert_true(len(cc.vals) == len(gc.vals), "param section count mismatch")
     var md = Scalar[DT](0.0)
-    for i in range(len(lc)):
-        if lc[i].find(String("#size=")) >= 0:
-            assert_true(lc[i] == lg[i], "param section header mismatch")
-            continue
-        var d = _abs(Scalar[DT](atof(lc[i])) - Scalar[DT](atof(lg[i])))
-        if d > md:
-            md = d
+    for s in range(len(cc.vals)):
+        for i in range(len(cc.vals[s])):
+            var d = _abs(cc.vals[s][i] - gc.vals[s][i])
+            if d > md:
+                md = d
     return md
 
 
@@ -109,16 +95,16 @@ def main() raises:
     seed(11)
     var ctx = DeviceContext()
 
-    var crep = Rep.make["cpu", INIT=Kaiming]()
-    var cdyn = Dyn.make["cpu", INIT=Kaiming]()
-    var cpred = Pred.make["cpu", INIT=Kaiming]()
-    var cproj = Proj.make["cpu", INIT=Kaiming]()
-    var cpredh = Predh.make["cpu", INIT=Kaiming]()
-    var grep = Rep.make["gpu", INIT=Kaiming](ctx)
-    var gdyn = Dyn.make["gpu", INIT=Kaiming](ctx)
-    var gpred = Pred.make["gpu", INIT=Kaiming](ctx)
-    var gproj = Proj.make["gpu", INIT=Kaiming](ctx)
-    var gpredh = Predh.make["gpu", INIT=Kaiming](ctx)
+    var crep = Rep.make["cpu", Kaiming]()
+    var cdyn = Dyn.make["cpu", Kaiming]()
+    var cpred = Pred.make["cpu", Kaiming]()
+    var cproj = Proj.make["cpu", Kaiming]()
+    var cpredh = Predh.make["cpu", Kaiming]()
+    var grep = Rep.make["gpu", Kaiming](Optional(ctx))
+    var gdyn = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var gpred = Pred.make["gpu", Kaiming](Optional(ctx))
+    var gproj = Proj.make["gpu", Kaiming](Optional(ctx))
+    var gpredh = Predh.make["gpu", Kaiming](Optional(ctx))
     _sync_cpu_to_gpu(crep, grep, ctx)
     _sync_cpu_to_gpu(cdyn, gdyn, ctx)
     _sync_cpu_to_gpu(cpred, gpred, ctx)
@@ -133,16 +119,16 @@ def main() raises:
     print("  pre-step max|param diff| =", pre)
     assert_true(pre < Scalar[DT](1e-6), "CPU→GPU param sync failed")
 
-    var corep = Adam.make["cpu", M=Rep](crep)
-    var codyn = Adam.make["cpu", M=Dyn](cdyn)
-    var copred = Adam.make["cpu", M=Pred](cpred)
-    var coproj = Adam.make["cpu", M=Proj](cproj)
-    var copredh = Adam.make["cpu", M=Predh](cpredh)
-    var gorep = Adam.make["gpu", M=Rep](grep, ctx)
-    var godyn = Adam.make["gpu", M=Dyn](gdyn, ctx)
-    var gopred = Adam.make["gpu", M=Pred](gpred, ctx)
-    var goproj = Adam.make["gpu", M=Proj](gproj, ctx)
-    var gopredh = Adam.make["gpu", M=Predh](gpredh, ctx)
+    var corep = Adam(lr=Scalar[DT](1e-3))
+    var codyn = Adam(lr=Scalar[DT](1e-3))
+    var copred = Adam(lr=Scalar[DT](1e-3))
+    var coproj = Adam(lr=Scalar[DT](1e-3))
+    var copredh = Adam(lr=Scalar[DT](1e-3))
+    var gorep = Adam(lr=Scalar[DT](1e-3))
+    var godyn = Adam(lr=Scalar[DT](1e-3))
+    var gopred = Adam(lr=Scalar[DT](1e-3))
+    var goproj = Adam(lr=Scalar[DT](1e-3))
+    var gopredh = Adam(lr=Scalar[DT](1e-3))
     corep.lr = Scalar[DT](3e-4); codyn.lr = Scalar[DT](3e-4)
     copred.lr = Scalar[DT](3e-4); coproj.lr = Scalar[DT](3e-4)
     copredh.lr = Scalar[DT](3e-4)
@@ -151,11 +137,11 @@ def main() raises:
     gopredh.lr = Scalar[DT](3e-4)
 
     # ── deterministic host batch (time-major) ──
-    var obs_seq = _a((K + 1) * B * OBS)
-    var actions = _a(K * B * ACT_DIM)
-    var policy_act_tgt = _a((K + 1) * B * ACT_DIM)
-    var value_tgt = _a((K + 1) * B)
-    var reward_tgt = _a(K * B)
+    var obs_seq = List[Scalar[DT]](length=(K + 1) * B * OBS, fill=0)
+    var actions = List[Scalar[DT]](length=K * B * ACT_DIM, fill=0)
+    var policy_act_tgt = List[Scalar[DT]](length=(K + 1) * B * ACT_DIM, fill=0)
+    var value_tgt = List[Scalar[DT]](length=(K + 1) * B, fill=0)
+    var reward_tgt = List[Scalar[DT]](length=K * B, fill=0)
     for i in range((K + 1) * B * OBS):
         obs_seq[i] = Scalar[DT](-0.4 + 0.13 * Float64(i % 7))
     # continuous actions in [-0.8, 0.8].
@@ -209,6 +195,4 @@ def main() raises:
     assert_true(dj < ATOL, "proj param parity failed")
     assert_true(dh < ATOL, "predh param parity failed")
 
-    obs_seq.free(); actions.free(); policy_act_tgt.free()
-    value_tgt.free(); reward_tgt.free()
     print("  ok — EZv2 continuous GPU unroll matches CPU within", ATOL)

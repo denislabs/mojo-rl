@@ -5,7 +5,7 @@ from std.random import seed
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.deep_agents.dqn import DQNAgent
 from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
 

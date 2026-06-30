@@ -17,7 +17,7 @@ that now lives in `net.weights` (a `Param`).
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.optimizer import Optimizer
+from mojo_rl.nn.optimizer.optimizer import Optimizer
 
 from .predictive_model import PCBlockTrait
 from .pc_sequential import PCSequential
@@ -51,10 +51,10 @@ def pc_module_train_one_batch[
     # Weight + grad views over the owned Param's CPU storage.
     var params = LayoutTensor[
         DT, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
-    ](net.weights.value_unsafe_ptr_cpu())
+    ](net.weights.val.data)
     var grads = LayoutTensor[
         DT, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
-    ](net.weights.grad_unsafe_ptr_cpu())
+    ](net.weights.grd.data)
 
     # Per-call working buffers (Phase B → Scratch/Cache on the holder).
     var latents_s = _zeroed(BATCH * NET.LATENT_DIM)
@@ -65,19 +65,19 @@ def pc_module_train_one_batch[
 
     var latents = LayoutTensor[
         DT, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin
-    ](latents_s.unsafe_ptr())
+    ](latents_s)
     var mu_eps = LayoutTensor[
         DT, Layout.row_major(BATCH, NET.SCRATCH_OUT_DIM), MutAnyOrigin
-    ](mu_eps_s.unsafe_ptr())
+    ](mu_eps_s)
     var a_below = LayoutTensor[
         DT, Layout.row_major(BATCH, NET.SCRATCH_IN_DIM), MutAnyOrigin
-    ](a_below_s.unsafe_ptr())
+    ](a_below_s)
     var z_below = LayoutTensor[
         DT, Layout.row_major(BATCH, NET.SCRATCH_IN_DIM), MutAnyOrigin
-    ](z_below_s.unsafe_ptr())
+    ](z_below_s)
     var dx = LayoutTensor[
         DT, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin
-    ](dx_s.unsafe_ptr())
+    ](dx_s)
 
     # 1. Settling loop fills `grads` (= net.weights.grd) with +∂E/∂W.
     var result = PCTrainer[*BLOCKS].compute_grads_only[BATCH](

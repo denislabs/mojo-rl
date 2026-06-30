@@ -11,14 +11,12 @@ arena's `hard_copy_params` over the graph. Asserts a finite loss.
 
 from std.gpu.host import DeviceContext
 
-from layout import TileTensor, row_major
-
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
-    mzc4_init_zero_pred, mzc4_init_zero_dyn,
 )
 from mojo_rl.deep_agents.muzero.selfplay_arena_gumbel_2p import (
     run_muzero_selfplay_arena_gumbel_2p,
@@ -44,31 +42,26 @@ def main() raises:
     comptime Aug = HFlipColumnAugmenter[ROWS=6, COLS=7, PLANES=3]
 
     var ctx = DeviceContext()
-    var rep = Rep.make["gpu", INIT=Kaiming](ctx=ctx)
-    var dyn = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
-    var pred = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
-    mzc4_init_zero_pred["gpu", CH, ACT, BINS, HH, WW](pred, ctx)
-    mzc4_init_zero_dyn["gpu", CH, ACT, BINS, HH, WW](dyn, ctx)
+    var rep = Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred = Pred.make["gpu", Kaiming](Optional(ctx))
 
-    # Verify zero-init actually matched the head param names (a wrong name is a
-    # SILENT no-op): forward pred on a zero latent — with the output Linear
-    # zeroed the value logits must be exactly 0 (else the names didn't match).
-    var d_z = ctx.enqueue_create_buffer[DT](LATENT)
-    var d_out = ctx.enqueue_create_buffer[DT](ACT + BINS)
-    var h_z = ctx.enqueue_create_host_buffer[DT](LATENT)
-    var h_out = ctx.enqueue_create_host_buffer[DT](ACT + BINS)
-    for i in range(LATENT):
-        h_z.unsafe_ptr()[i] = Scalar[DT](0.0)
-    ctx.enqueue_copy(d_z, h_z)
-    ctx.synchronize()
-    var z_t = TileTensor(mptr(d_z.unsafe_ptr()), row_major[1, LATENT]())
-    var out_t = TileTensor(mptr(d_out.unsafe_ptr()), row_major[1, ACT + BINS]())
-    pred.forward["gpu", 1](z_t, output=out_t)
-    ctx.enqueue_copy(h_out, d_out)
+    # Zero-init is now baked into the net definitions (`InitWith[Linear, Zero]`
+    # on each output head), so `make` already produced zeroed heads. Verify it
+    # took effect: forward pred on a zero latent — the value logits must be
+    # exactly 0 (a regression in the wrapper/naming would surface here, not
+    # silently like the old positional-path `scale_output_module`).
+    var z_in = Tensor.alloc(LATENT)          # host zeros
+    z_in.ensure_gpu(ctx, LATENT)
+    z_in.upload(ctx)                         # H2D zero latent
+    var out = Tensor()
+    out.ensure_gpu(ctx, ACT + BINS)
+    pred.forward["gpu", 1](TensorRefs[Pred.ARITY](z_in), out, Optional(ctx))
+    out.download(ctx)
     ctx.synchronize()
     var vmax = 0.0
     for i in range(ACT, ACT + BINS):
-        var v = abs(Float64(h_out.unsafe_ptr()[i]))
+        var v = abs(Float64(out.data[i]))
         if v > vmax:
             vmax = v
     print("zero-init check: value-logit max-abs =", vmax, "(expect 0.0)")

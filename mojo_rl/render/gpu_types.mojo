@@ -11,7 +11,7 @@ from mojo_rl.math3d import (
     Mat4 as Mat4Generic,
     Quat as QuatGeneric,
 )
-from .sdl import Ptr, AnyOrigin, GPUBuffer, GPUTexture, GPUSampler
+from .sdl import Ptr, AnyOrigin, GPUBuffer, GPUTexture, GPUSampler, untracked
 from .types import Color
 
 comptime Vec3 = Vec3Generic[DType.float64]
@@ -280,20 +280,22 @@ struct MeshHandle(Copyable, Movable):
     ``Optional[MeshHandle]`` and assign once a real mesh is uploaded.
     """
 
-    var vertex_buffer: Ptr[GPUBuffer, MutAnyOrigin]
-    var index_buffer: Ptr[GPUBuffer, MutAnyOrigin]
+    var vertex_buffer: Ptr[GPUBuffer, MutUntrackedOrigin]
+    var index_buffer: Ptr[GPUBuffer, MutUntrackedOrigin]
     var num_indices: UInt32
     var num_vertices: UInt32
 
-    def __init__(
+    def __init__[
+        vb_o: MutOrigin, ib_o: MutOrigin, //
+    ](
         out self,
-        vertex_buffer: Ptr[GPUBuffer, MutAnyOrigin],
-        index_buffer: Ptr[GPUBuffer, MutAnyOrigin],
+        vertex_buffer: Ptr[GPUBuffer, vb_o],
+        index_buffer: Ptr[GPUBuffer, ib_o],
         num_indices: UInt32,
         num_vertices: UInt32,
     ):
-        self.vertex_buffer = vertex_buffer
-        self.index_buffer = index_buffer
+        self.vertex_buffer = untracked(vertex_buffer)
+        self.index_buffer = untracked(index_buffer)
         self.num_indices = num_indices
         self.num_vertices = num_vertices
 
@@ -394,22 +396,24 @@ struct TextureCacheEntry(Copyable, Movable):
     """Cached GPU texture keyed by name string."""
 
     var name: String
-    var texture: Ptr[GPUTexture, MutAnyOrigin]
-    var sampler: Ptr[GPUSampler, MutAnyOrigin]
+    var texture: Ptr[GPUTexture, MutUntrackedOrigin]
+    var sampler: Ptr[GPUSampler, MutUntrackedOrigin]
     var width: UInt32
     var height: UInt32
 
-    def __init__(
+    def __init__[
+        tex_o: MutOrigin, samp_o: MutOrigin, //
+    ](
         out self,
         name: String,
-        texture: Ptr[GPUTexture, MutAnyOrigin],
-        sampler: Ptr[GPUSampler, MutAnyOrigin],
+        texture: Ptr[GPUTexture, tex_o],
+        sampler: Ptr[GPUSampler, samp_o],
         width: UInt32,
         height: UInt32,
     ):
         self.name = name
-        self.texture = texture
-        self.sampler = sampler
+        self.texture = untracked(texture)
+        self.sampler = untracked(sampler)
         self.width = width
         self.height = height
 

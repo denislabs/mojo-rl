@@ -17,27 +17,28 @@ architecture (docs/LEWM_PORT_PLAN.md §3) on nn.
 - `PredProj`     : per-token projector on the predictor output (Tokenwise).
 """
 
-from ...nn.combinators import Sequential, Repeat, Tokenwise, RepeatConditional
-from ...nn.models.vit import PatchEmbed
-from ...nn.models.transformer import TransformerBlock
-from ...nn.primitives.linear import Linear
-from ...nn.primitives.linear_swish import LinearSwish
-from ...nn.primitives.batch_norm_1d import BatchNorm1D
-from ...nn.primitives.gelu import GELU
-from ...nn.primitives.layer_norm import LayerNorm
-from ...nn.primitives.token_mean import TokenMean
-from ...nn.primitives.bias_add import BiasAdd
-from ...nn.primitives.conditional_transformer_block import (
+from mojo_rl.nn import (
+    Sequential,
+    Repeat,
+    RepeatConditional,
+    Linear,
+    LinearSwish,
+    BatchNorm1D,
+    GELU,
+    LayerNorm,
+    TokenMean,
+    BiasAdd,
     ConditionalTransformerBlock,
+    LearnedTokens,
+    Slice,
+    Tokenwise,
 )
-from ...nn.primitives.learned_tokens import LearnedTokens
-from ...nn.primitives.slice import Slice
+from mojo_rl.nn.models.vit import PatchEmbed
+from mojo_rl.nn.models.transformer import TransformerBlock
 
 
 # Projector MLP: (B, HIDDEN) → (B, EMB). BatchNorm1D matches the reference.
-comptime LeWMProjector[
-    HIDDEN: Int, PROJ_H: Int, EMB: Int
-] = Sequential[
+comptime LeWMProjector[HIDDEN: Int, PROJ_H: Int, EMB: Int] = Sequential[
     Linear[HIDDEN, PROJ_H],
     BatchNorm1D[PROJ_H],
     GELU[PROJ_H],
@@ -97,8 +98,8 @@ comptime LeWMEncoderCLS[
     FF_MULT: Int = 4,
 ] = Sequential[
     PatchEmbed[IN_CH, IMG, IMG, PATCH, HIDDEN, N_PATCHES],
-    LearnedTokens[N_PATCHES, 1, HIDDEN, True, 0.02],     # prepend [CLS] (ViT init)
-    BiasAdd[(N_PATCHES + 1) * HIDDEN],                   # pos embed incl CLS
+    LearnedTokens[N_PATCHES, 1, HIDDEN, True, 0.02],  # prepend [CLS] (ViT init)
+    BiasAdd[(N_PATCHES + 1) * HIDDEN],  # pos embed incl CLS
     Repeat[
         ENC_LAYERS,
         TransformerBlock[
@@ -106,7 +107,7 @@ comptime LeWMEncoderCLS[
         ],
     ],
     Tokenwise[N_PATCHES + 1, LayerNorm[HIDDEN]],
-    Slice[(N_PATCHES + 1) * HIDDEN, 0, HIDDEN],          # take [CLS] (token 0)
+    Slice[(N_PATCHES + 1) * HIDDEN, 0, HIDDEN],  # take [CLS] (token 0)
     LeWMProjector[HIDDEN, PROJ_H, EMB],
 ]
 
@@ -133,9 +134,7 @@ comptime ARPredictor[
 
 
 # Predictor output projector: per-token MLP (B, H·EMB) → (B, H·EMB).
-comptime PredProj[
-    H: Int, EMB: Int, PROJ_H: Int
-] = Tokenwise[
+comptime PredProj[H: Int, EMB: Int, PROJ_H: Int] = Tokenwise[
     H,
     Sequential[
         Linear[EMB, PROJ_H],

@@ -28,11 +28,13 @@ from mojo_rl.nn.datasets import CharTokenizer, load_text, train_val_split
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.lstm_seq import LSTMSeq
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.combinators import Sequential, Tokenwise
-from mojo_rl.nn.loss import SequenceCrossEntropyLoss
-from mojo_rl.nn.optimizer import Adam
-from mojo_rl.nn.training import Trainer, AutoregressiveTrainer
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.combinators.tokenwise import Tokenwise
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.training.autoregressive_trainer import (
+    AutoregressiveTrainer,
+)
+from mojo_rl.nn.core.initializer import Xavier
 
 
 comptime VOCAB = 65
@@ -52,8 +54,6 @@ comptime NET = Sequential[
     LSTMSeq[VOCAB, HIDDEN, SEQ],
     Tokenwise[SEQ, Linear[HIDDEN, VOCAB]],
 ]
-comptime LOSS = SequenceCrossEntropyLoss[SEQ, VOCAB]
-comptime TRAINER = Trainer[NET, Adam, LOSS, BATCH, target="gpu"]
 comptime AR = AutoregressiveTrainer[NET, Adam, VOCAB, SEQ, BATCH, target="gpu"]
 
 
@@ -80,19 +80,18 @@ def main() raises:
         + " val=" + String(len(split.val))
     )
 
-    # ── Build model + optimizer + the generic Trainer ──
+    # ── Build model + optimizer ──
     var ctx = DeviceContext()
     print("[init] building LSTM on GPU...")
-    var net = NET.make["gpu", INIT=Xavier](ctx)
-    var loss_fn = LOSS.make["gpu"](ctx)
-    var optim = Adam.make["gpu", M = type_of(net)](net, ctx)
-    optim.lr = LR
-    optim.max_grad_norm = CLIP_NORM  # per-net global grad-norm clip
-    var trainer = TRAINER.make_from(net^, optim^, loss_fn^, ctx)
+    var net = NET.make["gpu", INIT=Xavier](Optional(ctx))
+    var optim = Adam(lr=LR)
 
-    # ── Wrap in the autoregressive driver (owns corpus + sampling + LR) ──
+    # ── Wrap in the autoregressive driver (owns corpus + sampling + LR; engages
+    # the optimizer's arena via opt.adopt; CLIP_NORM = per-net global grad-norm
+    # clip applied each step by the driver) ──
     var artr = AR.make_from(
-        trainer^, tok^, split^, LR, WARMUP_ITERS, TOTAL_ITERS, MIN_LR_SCALE
+        net^, optim^, tok^, split^, ctx,
+        LR, WARMUP_ITERS, TOTAL_ITERS, MIN_LR_SCALE, CLIP_NORM,
     )
 
     var val_init = artr.val_loss(N_VAL_WINDOWS)

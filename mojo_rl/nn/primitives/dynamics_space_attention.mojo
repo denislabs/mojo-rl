@@ -1,5 +1,7 @@
 """DynamicsSpaceAttention[D, N_HEADS, NSP, NREG, NAGENT, MODE, USE_MAX] — the
-space-attention leaf for the Dreamer 4 *dynamics* transformer.
+space-attention leaf for the Dreamer 4 *dynamics* transformer (storage surface).
+Transformed from legacy `nn.primitives.dynamics_space_attention` (surface-only
+change; the per-frame modality-id layout + mask install carried VERBATIM).
 
 Like `ModalitySpaceAttention` it is a thin wrapper over `MaskedAttention` whose
 modality mask is fixed by comptime params, so it drops into a `Sequential`
@@ -16,19 +18,20 @@ the unconditional dynamics (where every token mixes freely). With `NAGENT > 0`
 the `wm_agent_bc` mask enforces the paper §3.3 isolation: agent tokens read the
 whole frame; nothing reads back the agent tokens.
 
-Param-free (attention has no params), so `for_each_param` / `zero_grad` inherit
-the no-op defaults.
+Param-free (attention has no params); owns one inner `MaskedAttention` Module
+field → forward/vjp delegate; param/state walkers recurse into it.
 """
 
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import TileTensor
 
-from ..constants import DT
-from ..core import Initializer, AMPPolicy, NoAMP
+from mojo_rl.nn.constants import DT
+from ..core.initializer import Initializer
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
 from ..core.module import Module
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
+from ..core.param import ParamVisitor
+from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
 from .masked_attention import MaskedAttention, build_modality_mask
 
 
@@ -56,13 +59,11 @@ struct DynamicsSpaceAttention[
     comptime OUT_DIM = Self.S * Self.D
 
     var inner: MaskedAttention[Self.D, Self.N_HEADS, Self.S, Self.USE_MAX]
-    var ts: TargetStorage
 
     def __init__(out self):
         self.inner = MaskedAttention[
             Self.D, Self.N_HEADS, Self.S, Self.USE_MAX
         ]()
-        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def _modality_ids() -> List[Int]:
@@ -88,57 +89,58 @@ struct DynamicsSpaceAttention[
         var m = Self()
         m.inner = MaskedAttention[
             Self.D, Self.N_HEADS, Self.S, Self.USE_MAX
-        ].make[target=target, INIT=INIT](ctx)
+        ].make[target, INIT](ctx)
         # Agent modality FIXED to DYN_MOD_AGENT (5): with NAGENT=0 no token has
         # this id → full mixing; with NAGENT>0 the isolation is enforced.
         m.inner.set_mask(
             build_modality_mask[Self.MODE](
                 Self._modality_ids(), 0, agent_mod_in=DYN_MOD_AGENT
-            )
+            ),
+            ctx,
         )
-        comptime if target == "cpu":
-            m.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("DynamicsSpaceAttention.make[gpu]: ctx required")
-            m.ts = TargetStorage.make_gpu(ctx.value())
         return m^
 
-    @staticmethod
-    def display_label() -> String:
-        return String("DynamicsSpaceAttention")
-
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["DynamicsSpaceAttention", target](self.ts.target_tag)
-        self.inner.forward[target, BATCH, POLICY=POLICY](
-            inputs, output=output
-        )
+        self.inner.forward[target, B, POLICY=POLICY](inputs, out, ctx)
 
     def vjp[
-        target: StaticString,
-        BATCH: Int,
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["DynamicsSpaceAttention", target](self.ts.target_tag)
-        self.inner.vjp[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output, grad_inputs
+        self.inner.vjp[target, B, POLICY=POLICY](
+            forward_input, grad_output, grad_inputs, ctx
         )
+
+    def for_each_param[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.inner.for_each_param[target](
+            visitor, ctx, join_name(prefix, String(0))
+        )
+
+    def for_each_state[
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.inner.for_each_state[target](
+            visitor, ctx, join_name(prefix, String(0))
+        )
+
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.inner.zero_grad[target](ctx)

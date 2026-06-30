@@ -16,7 +16,7 @@ from std.gpu.host import DeviceContext
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.deep_agents.muzero.config import MuZeroCNNConfig
 from mojo_rl.deep_agents.muzero.selfplay_gpu_batched import (
@@ -53,12 +53,12 @@ def main() raises:
     var ctx = DeviceContext()
     var env = BatchedEnvT(ctx)
 
-    var rep = Rep.make["gpu", INIT=Kaiming](ctx=ctx)
-    var dyn = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
-    var pred = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
-    var orep = Adam.make["gpu", M=Rep](rep, ctx)
-    var odyn = Adam.make["gpu", M=Dyn](dyn, ctx)
-    var opred = Adam.make["gpu", M=Pred](pred, ctx)
+    var rep = Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred = Pred.make["gpu", Kaiming](Optional(ctx))
+    var orep = Adam(lr=Scalar[DT](1e-3))
+    var odyn = Adam(lr=Scalar[DT](1e-3))
+    var opred = Adam(lr=Scalar[DT](1e-3))
     orep.lr = Scalar[DT](1e-4)
     odyn.lr = Scalar[DT](1e-4)
     opred.lr = Scalar[DT](1e-4)

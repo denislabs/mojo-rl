@@ -21,7 +21,7 @@ Concrete implementations:
 """
 
 
-trait OfflineBuffer(Movable, ImplicitlyDestructible):
+trait OfflineBuffer(Movable, ImplicitlyDeletable):
     """Minimal contract for a pixel-obs offline trajectory data source.
 
     A conformant type must fill ``pixels_out`` (uint8, layout per

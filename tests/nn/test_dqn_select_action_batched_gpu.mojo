@@ -22,7 +22,7 @@ from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.deep_agents.dqn.trainer import DQNTrainer
 from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep

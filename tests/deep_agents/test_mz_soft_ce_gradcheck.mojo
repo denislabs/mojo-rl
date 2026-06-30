@@ -10,43 +10,32 @@ Run:
     pixi run mojo run -I . tests/deep_agents/test_mz_soft_ce_gradcheck.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_true, assert_almost_equal
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.muzero.loss_ops import soft_ce_loss_and_grad
 
 
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
-
-
 def _loss_only[
     BATCH: Int, NBINS: Int,
-](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    target: UnsafePointer[Scalar[DT], MutAnyOrigin],
-) -> Scalar[DT]:
-    var junk = _alloc(BATCH * NBINS)
-    var l = soft_ce_loss_and_grad[BATCH, NBINS](
+](logits: List[Scalar[DT]], target: List[Scalar[DT]]) -> Scalar[DT]:
+    var junk = List[Scalar[DT]](length=BATCH * NBINS, fill=0)
+    return soft_ce_loss_and_grad[BATCH, NBINS](
         logits, target, Scalar[DT](1.0), junk
     )
-    junk.free()
-    return l
 
 
 def main() raises:
     comptime BATCH = 3
     comptime NBINS = 7
 
-    var logits = _alloc(BATCH * NBINS)
-    var target = _alloc(BATCH * NBINS)
+    var logits = List[Scalar[DT]](length=BATCH * NBINS, fill=0)
+    var target = List[Scalar[DT]](length=BATCH * NBINS, fill=0)
 
     # Arbitrary logits.
     for i in range(BATCH * NBINS):
         logits[i] = Scalar[DT](0.37) * Scalar[DT](i % 5) - Scalar[DT](0.8)
-    # Soft targets: a normalized positive distribution per row (not one-hot, to
-    # exercise the full soft-CE, whose loss floors at the target entropy).
+    # Soft targets: a normalized positive distribution per row.
     for b in range(BATCH):
         var s = Scalar[DT](0.0)
         for i in range(NBINS):
@@ -56,7 +45,7 @@ def main() raises:
         for i in range(NBINS):
             target[b * NBINS + i] = target[b * NBINS + i] / s
 
-    var grad = _alloc(BATCH * NBINS)
+    var grad = List[Scalar[DT]](length=BATCH * NBINS, fill=0)
     var l0 = soft_ce_loss_and_grad[BATCH, NBINS](
         logits, target, Scalar[DT](1.0), grad
     )
@@ -85,7 +74,7 @@ def main() raises:
     print("max |analytic - finite-diff| =", max_err)
 
     # grad_scale must scale the gradient linearly.
-    var grad2 = _alloc(BATCH * NBINS)
+    var grad2 = List[Scalar[DT]](length=BATCH * NBINS, fill=0)
     _ = soft_ce_loss_and_grad[BATCH, NBINS](
         logits, target, Scalar[DT](0.25), grad2
     )
@@ -96,5 +85,4 @@ def main() raises:
         )
     print("grad_scale linearity: OK")
 
-    logits.free(); target.free(); grad.free(); grad2.free()
     print("MuZero soft-CE gradcheck: OK")

@@ -1,69 +1,58 @@
-"""GPT compositions for nn — plain GPT, the nanoGPT dropout variants, the
-weight-tied GPT, and the GPT construction ops (init-time weight surgery +
+"""GPT compositions for nn.storage — plain GPT, the nanoGPT dropout variants,
+the weight-tied GPT, and the GPT construction ops (init-time weight surgery +
 the one-time weight-tie wiring).
 
-The forward-graph aliases (`GPT`, `GPTDrop`, `GPTDropTied`) build on the
-shared transformer pieces in `models.transformer`. The nanoGPT dropout
-variants (`MultiHeadAttentionDrop`, `TransformerFFNDrop`,
-`TransformerBlockDrop`) live here rather than in `transformer` because
-they are part of the GPT/nanoGPT recipe.
+Storage-surface port of `nn/models/gpt.mojo`. The forward-graph aliases (`GPT`,
+`GPTDrop`, `GPTDropTied`) are pure `comptime` compositions of storage leaves +
+combinators (only change vs legacy: `GELU` imported from
+`primitives/activations.mojo`). The two construction ops walk the child tree by
+position and are adapted to the storage surface:
 
-The construction ops (`gpt_scale_residual_proj`, `gpt_wire_tie`) live
-*outside* the forward graph — they touch specific weights by position in
-the child tree:
+  - **c_proj scaled init** (`gpt_scale_residual_proj`): divide each residual
+    *output* projection (attention-out + FFN-out) weight by 1/√(2L) after the
+    generic INIT (GPT-2 / nanoGPT). Legacy was GPU-only via `mptr(... .dev
+    .unsafe_ptr())`; here it takes a `target` and runs on CPU (host loop over
+    `.val.data`) OR GPU (one scale kernel over `.val.dev`, the DeviceBuffer
+    marshalled straight into the kernel — no `mptr`).
 
-  - **c_proj scaled init** (`gpt_scale_residual_proj`): divide each
-    residual *output* projection (attention-out + FFN-out) weight by
-    1/√(2L) after the generic INIT, bounding residual-stream variance as
-    depth grows (GPT-2 / nanoGPT). Call once, after `make`.
+  - **weight-tie wiring** (`gpt_wire_tie`): point the `TiedLinear` head at the
+    embedding's value + grad cells (nanoGPT's `lm_head.weight = wte.weight`).
+    Uses `TiedLinear.tie_to_ptr` with wildcard-`Pointer` VALUES built from the
+    embedding cells — these hold no tracked borrow of `net`, so building them
+    into locals releases the structural borrow before the mutable head wiring
+    (a `ref`-arg `tie_to` would trip exclusivity since owner + head are both
+    children of one `net`). Call ONCE after the model reaches its final home
+    (and after any load). After wiring, the standard `Trainer.train_*` loop
+    trains the tied model with NO per-step tying code: the shared weight gets
+    one gradient (embedding lookup-vjp + head matmul-vjp both `+=` into it) and
+    one optimizer update (reflection sees it only via the embedding; the head
+    owns no `Param`). See `primitives/tied_linear.mojo`.
 
-  - **weight-tie wiring** (`gpt_wire_tie`): point the `TiedLinear` head at
-    the embedding's value + grad buffers (nanoGPT's `lm_head.weight =
-    wte.weight`). Call ONCE after the model reaches its final home (e.g.
-    inside the `Trainer`) and after any model load — it captures raw
-    buffer pointers, which must be live and stationary. After wiring, the
-    standard `Trainer.train_*` loop trains the tied model with **no**
-    per-step tying code: the shared weight accumulates one gradient (both
-    the embedding's lookup-vjp and the head's matmul-vjp `+=` into it) and
-    the optimizer updates it once (reflection sees it only via the
-    embedding — the head owns no `Param`). Bias-less head ⇒ nothing to
-    freeze. See `primitives/tied_linear.mojo`.
-
-Both ops take the concrete `GPTDropTied[...]` model so the child-tree
-walk type-checks. Pass GPTDropTied's *full* param list explicitly — Mojo
-can neither reverse-infer a parametric alias's args from the expanded
-`Sequential` type (it won't solve `3*embed_dim = 1152`) nor fold the
-params' defaults into the dependent `net` argument type. A param that
-doesn't match the passed `net`'s type is a loud compile error.
-
-GPTDropTied child tree:
+GPTDropTied child tree (for the surgery walks):
     [0] Tokenwise[Embedding]      ← embedding W (the shared weight)
     [1] BiasAdd
     [2] Dropout
     [3] Repeat[TransformerBlockDrop]
-          .children[L] = block L:
-            [0] Residual(LN + MHADrop)
-                  .inner.children[1] = MHADrop =
-                    Seq[Tok[Lin d,3d], QKVToMajor, Attn,
-                        Tok[Lin d,d] (c_proj @ .children[3]), Dropout]
-            [1] Residual(LN + FFNDrop)
-                  .inner.children[1] = FFNDrop =
-                    Seq[Tok[Lin d,ff], GELU,
-                        Tok[Lin ff,d] (c_proj @ .children[2]), Dropout]
+          .children[L] = block L (Sequential):
+            [0] Residual(LN + MHADrop) ; .inner.children[1] = MHADrop =
+                  Seq[Tok[Lin d,3d], QKVToMajor, Attn, Tok[Lin d,d]@[3], Dropout]
+            [1] Residual(LN + FFNDrop) ; .inner.children[1] = FFNDrop =
+                  Seq[Tok[Lin d,ff], GELU, Tok[Lin ff,d]@[2], Dropout]
     [4] Tokenwise[LayerNorm]
     [5] Tokenwise[TiedLinear]     ← LM head (borrows [0]) ; = N-1
 """
 
 from std.math import sqrt
+from std.memory import Pointer
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
 
-from ..constants import DT, TPB
-from ..core.module import mptr
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor
 from ..primitives.linear import Linear
 from ..primitives.tied_linear import TiedLinear
 from ..primitives.layer_norm import LayerNorm
-from ..primitives.gelu import GELU
+from ..primitives.activations import GELU
 from ..primitives.embedding import Embedding
 from ..primitives.bias_add import BiasAdd
 from ..primitives.attention import ScaledDotProductAttention
@@ -82,8 +71,8 @@ from .transformer import TransformerBlock
 
 
 # GPT: token Embedding → learnable position BiasAdd → N×TransformerBlock
-#      (causal) → final LayerNorm → LM head. Input: seq_len one-hots of
-#      width vocab; output: seq_len * vocab logits.
+#      (causal) → final LayerNorm → LM head. Input: seq_len one-hots of width
+#      vocab; output: seq_len * vocab logits.
 comptime GPT[
     vocab: Int,
     seq_len: Int,
@@ -93,17 +82,19 @@ comptime GPT[
     ff_mult: Int = 4,
     causal: Bool = True,
     use_max: Bool = True,
+    ADT: DType = DT,
 ] = Sequential[
-    Tokenwise[seq_len, Embedding[vocab, embed_dim]],
-    BiasAdd[seq_len * embed_dim],
+    Tokenwise[seq_len, Embedding[vocab, embed_dim, ADT]],
+    BiasAdd[seq_len * embed_dim, ADT],
     Repeat[
         n_layers,
         TransformerBlock[
-            embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal, use_max
+            embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal, use_max,
+            ADT,
         ],
     ],
-    Tokenwise[seq_len, LayerNorm[embed_dim]],
-    Tokenwise[seq_len, Linear[embed_dim, vocab]],
+    Tokenwise[seq_len, LayerNorm[embed_dim, ADT]],
+    Tokenwise[seq_len, Linear[embed_dim, vocab, ADT]],
 ]
 
 
@@ -111,64 +102,55 @@ comptime GPT[
 # Transformer + Dropout variants (nanoGPT-style)
 # ──────────────────────────────────────────────────────────────────────
 #
-# Same shapes as the plain transformer aliases, with the three nanoGPT
-# dropout points: (1) after token+position embedding, (2) after MHA's output
-# projection, (3) after the FFN's output projection. nn `Dropout[DIM, p,
-# SEED]` carries a host-side per-forward counter so the mask refreshes each
-# step; toggle eval mode with `net.set_attr["training"](0.0)` (and back to
-# 1.0 for training) — propagates to every Dropout leaf, ignored elsewhere.
-#
-# Within a block MHA-dropout uses seed_base+1, FFN-dropout seed_base+2, input
-# dropout seed_base+0. Repeat reuses one TransformerBlockDrop type, so all
-# layers share these seeds (masks correlated across depth — same as gen-1;
-# the per-step counter still refreshes them each iteration). Defined as
-# separate aliases so the plain `GPT`/etc. callers are unaffected.
+# Three nanoGPT dropout points: (1) after token+position embedding, (2) after
+# MHA's output projection, (3) after the FFN's output projection. Within a
+# block MHA-dropout uses seed_base+1, FFN-dropout seed_base+2, input dropout
+# seed_base+0 (Repeat reuses one block type → seeds correlated across depth,
+# same as legacy; the per-forward counter still refreshes them each step).
 
 
-# MultiHeadAttentionDrop: MHA + output-projection dropout. QKVToMajor fixes the
-# token-major→qkv-major layout (see MultiHeadAttention note above for why).
 comptime MultiHeadAttentionDrop[
     dim: Int, n_heads: Int, seq_len: Int, causal: Bool,
-    dropout_p: Float64, seed: UInt64, use_max: Bool = True,
+    dropout_p: Float64, seed: UInt64, use_max: Bool = True, ADT: DType = DT,
 ] = Sequential[
-    Tokenwise[seq_len, Linear[dim, 3 * dim]],
-    QKVToMajor[seq_len, dim],
-    ScaledDotProductAttention[dim, n_heads, seq_len, causal, use_max],
-    Tokenwise[seq_len, Linear[dim, dim]],
-    Dropout[seq_len * dim, dropout_p, seed],
+    Tokenwise[seq_len, Linear[dim, 3 * dim, ADT]],
+    QKVToMajor[seq_len, dim, ADT],
+    ScaledDotProductAttention[dim, n_heads, seq_len, causal, use_max, ADT],
+    Tokenwise[seq_len, Linear[dim, dim, ADT]],
+    Dropout[seq_len * dim, dropout_p, seed, ADT],
 ]
 
 
-# TransformerFFNDrop: TransformerFFN + output dropout.
 comptime TransformerFFNDrop[
     seq_len: Int, dim: Int, ff_dim: Int, dropout_p: Float64, seed: UInt64,
+    ADT: DType = DT,
 ] = Sequential[
-    Tokenwise[seq_len, Linear[dim, ff_dim]],
-    GELU[seq_len * ff_dim],
-    Tokenwise[seq_len, Linear[ff_dim, dim]],
-    Dropout[seq_len * dim, dropout_p, seed],
+    Tokenwise[seq_len, Linear[dim, ff_dim, ADT]],
+    GELU[seq_len * ff_dim, ADT],
+    Tokenwise[seq_len, Linear[ff_dim, dim, ADT]],
+    Dropout[seq_len * dim, dropout_p, seed, ADT],
 ]
 
 
-# TransformerBlockDrop: pre-LN block with MHA + FFN sublayer dropout.
 comptime TransformerBlockDrop[
     dim: Int, n_heads: Int, seq_len: Int, ff_dim: Int, causal: Bool,
     dropout_p: Float64, seed_base: UInt64, use_max: Bool = True,
+    ADT: DType = DT,
 ] = Sequential[
     Residual[
         Sequential[
-            Tokenwise[seq_len, LayerNorm[dim]],
+            Tokenwise[seq_len, LayerNorm[dim, ADT]],
             MultiHeadAttentionDrop[
                 dim, n_heads, seq_len, causal, dropout_p,
-                seed_base + UInt64(1), use_max,
+                seed_base + UInt64(1), use_max, ADT,
             ],
         ]
     ],
     Residual[
         Sequential[
-            Tokenwise[seq_len, LayerNorm[dim]],
+            Tokenwise[seq_len, LayerNorm[dim, ADT]],
             TransformerFFNDrop[
-                seq_len, dim, ff_dim, dropout_p, seed_base + UInt64(2)
+                seq_len, dim, ff_dim, dropout_p, seed_base + UInt64(2), ADT
             ],
         ]
     ],
@@ -187,31 +169,29 @@ comptime GPTDrop[
     dropout_p: Float64 = 0.2,
     seed_base: UInt64 = UInt64(0xC0FFEE),
     use_max: Bool = True,
+    ADT: DType = DT,
 ] = Sequential[
-    Tokenwise[seq_len, Embedding[vocab, embed_dim]],
-    BiasAdd[seq_len * embed_dim],
-    Dropout[seq_len * embed_dim, dropout_p, seed_base],
+    Tokenwise[seq_len, Embedding[vocab, embed_dim, ADT]],
+    BiasAdd[seq_len * embed_dim, ADT],
+    Dropout[seq_len * embed_dim, dropout_p, seed_base, ADT],
     Repeat[
         n_layers,
         TransformerBlockDrop[
             embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal,
-            dropout_p, seed_base, use_max,
+            dropout_p, seed_base, use_max, ADT,
         ],
     ],
-    Tokenwise[seq_len, LayerNorm[embed_dim]],
-    Tokenwise[seq_len, Linear[embed_dim, vocab]],
+    Tokenwise[seq_len, LayerNorm[embed_dim, ADT]],
+    Tokenwise[seq_len, Linear[embed_dim, vocab, ADT]],
 ]
 
 
 # GPTDropTied: GPTDrop with the LM head WEIGHT-TIED to the token embedding
-# (nanoGPT's `lm_head.weight = wte.weight`). Identical to `GPTDrop` except
-# the final projection is a bias-less `TiedLinear` that borrows the
-# embedding's `[vocab, embed]` table (used transposed) instead of owning a
-# separate `Linear[embed, vocab]`. After `make`, call `gpt_wire_tie` (below)
-# once to point the head at the embedding's buffers; then the standard
-# `Trainer.train_*` loop trains it with no per-step tying code — the shared
-# weight gets one gradient (both leaves accumulate into it) and one optimizer
-# update (reflection sees it only via the embedding).
+# (nanoGPT's `lm_head.weight = wte.weight`). The final projection is a bias-less
+# `TiedLinear` that borrows the embedding's `[vocab, embed]` table (used
+# transposed) instead of owning a separate `Linear[embed, vocab]`. After `make`,
+# call `gpt_wire_tie` once; then the standard `Trainer.train_*` loop trains it
+# with no per-step tying code.
 comptime GPTDropTied[
     vocab: Int,
     seq_len: Int,
@@ -223,24 +203,27 @@ comptime GPTDropTied[
     dropout_p: Float64 = 0.2,
     seed_base: UInt64 = UInt64(0xC0FFEE),
     use_max: Bool = True,
+    ADT: DType = DT,
 ] = Sequential[
-    Tokenwise[seq_len, Embedding[vocab, embed_dim]],
-    BiasAdd[seq_len * embed_dim],
-    Dropout[seq_len * embed_dim, dropout_p, seed_base],
+    Tokenwise[seq_len, Embedding[vocab, embed_dim, ADT]],
+    BiasAdd[seq_len * embed_dim, ADT],
+    Dropout[seq_len * embed_dim, dropout_p, seed_base, ADT],
     Repeat[
         n_layers,
         TransformerBlockDrop[
             embed_dim, n_heads, seq_len, ff_mult * embed_dim, causal,
-            dropout_p, seed_base, use_max,
+            dropout_p, seed_base, use_max, ADT,
         ],
     ],
-    Tokenwise[seq_len, LayerNorm[embed_dim]],
-    Tokenwise[seq_len, TiedLinear[embed_dim, vocab]],
+    Tokenwise[seq_len, LayerNorm[embed_dim, ADT]],
+    Tokenwise[seq_len, TiedLinear[embed_dim, vocab, ADT]],
 ]
 
 
 # ──────────────────────────────────────────────────────────────────────
 # GPT construction ops — concrete `GPTDropTied[...]`, full param list explicit.
+# (Mojo can't reverse-infer a parametric alias's args from the expanded
+# Sequential type, so callers pass GPTDropTied's full param list.)
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -254,6 +237,7 @@ def _scale_kernel(
 
 
 def gpt_scale_residual_proj[
+    target: StaticString,
     vocab: Int,
     seq_len: Int,
     embed_dim: Int,
@@ -264,53 +248,48 @@ def gpt_scale_residual_proj[
     dropout_p: Float64,
     seed_base: UInt64,
     use_max: Bool,
+    ADT: DType = DT,
 ](
     mut net: GPTDropTied[
-        vocab,
-        seq_len,
-        embed_dim,
-        n_heads,
-        n_layers,
-        ff_mult,
-        causal,
-        dropout_p,
-        seed_base,
-        use_max,
+        vocab, seq_len, embed_dim, n_heads, n_layers,
+        ff_mult, causal, dropout_p, seed_base, use_max, ADT,
     ],
-    ctx: DeviceContext,
+    ctx: Optional[DeviceContext] = None,
 ) raises:
     """NanoGPT/GPT-2 scaled init: divide each residual output projection
-    (attention-out + FFN-out) weight by 1/√(2L). Call once after `make`."""
+    (attention-out + FFN-out) weight by 1/√(2L). Call once after `make`.
+    CPU (host loop) or GPU (scale kernel) per `target`."""
     var s = Scalar[DT](1.0 / sqrt(Float64(2 * n_layers)))
     comptime DD = embed_dim * embed_dim  # attn-out Linear[D, D]
     comptime FD = (ff_mult * embed_dim) * embed_dim  # FFN-out  Linear[F, D]
-    comptime db = (DD + TPB - 1) // TPB
-    comptime fb = (FD + TPB - 1) // TPB
     for L in range(n_layers):
-        var a = mptr(
-            net.children[3]
-            .children[L]
-            .children[0]
-            .inner.children[1]
-            .children[3]
-            .inner.weight.val.dev.value()
-            .unsafe_ptr()
+        # attn-out c_proj: block.children[0] (Residual) .inner.children[1]
+        # (MHADrop) .children[3] (Tok[Lin d,d]) .inner.weight
+        ref a_w = (
+            net.children[3].children[L].children[0]
+            .inner.children[1].children[3].inner.weight.val
         )
-        ctx.enqueue_function[_scale_kernel](
-            a, DD, s, grid_dim=db, block_dim=TPB
+        # FFN-out c_proj: block.children[1] (Residual) .inner.children[1]
+        # (FFNDrop) .children[2] (Tok[Lin ff,d]) .inner.weight
+        ref f_w = (
+            net.children[3].children[L].children[1]
+            .inner.children[1].children[2].inner.weight.val
         )
-        var f = mptr(
-            net.children[3]
-            .children[L]
-            .children[1]
-            .inner.children[1]
-            .children[2]
-            .inner.weight.val.dev.value()
-            .unsafe_ptr()
-        )
-        ctx.enqueue_function[_scale_kernel](
-            f, FD, s, grid_dim=fb, block_dim=TPB
-        )
+        comptime if target == "cpu":
+            for i in range(DD):
+                a_w.data[i] = a_w.data[i] * s
+            for i in range(FD):
+                f_w.data[i] = f_w.data[i] * s
+        else:
+            var c = ctx.value()
+            ctx.value().enqueue_function[_scale_kernel](
+                a_w.dev.value(), DD, s,
+                grid_dim=(DD + TPB - 1) // TPB, block_dim=TPB,
+            )
+            c.enqueue_function[_scale_kernel](
+                f_w.dev.value(), FD, s,
+                grid_dim=(FD + TPB - 1) // TPB, block_dim=TPB,
+            )
 
 
 def gpt_wire_tie[
@@ -325,47 +304,29 @@ def gpt_wire_tie[
     dropout_p: Float64,
     seed_base: UInt64,
     use_max: Bool,
+    ADT: DType = DT,
 ](
     mut net: GPTDropTied[
-        vocab,
-        seq_len,
-        embed_dim,
-        n_heads,
-        n_layers,
-        ff_mult,
-        causal,
-        dropout_p,
-        seed_base,
-        use_max,
+        vocab, seq_len, embed_dim, n_heads, n_layers,
+        ff_mult, causal, dropout_p, seed_base, use_max, ADT,
     ],
 ) raises:
-    """Point the `TiedLinear` LM head at the embedding's value + grad
-    buffers. Call ONCE after the model settles in its final home (and
-    after any load). Idempotent. `target` selects which storage (device
-    buffers on 'gpu', host lists on 'cpu')."""
+    """Point the `TiedLinear` LM head at the embedding's value + grad cells.
+    Call ONCE after the model settles in its final home (and after any load).
+    Idempotent. `target` is accepted for call-site symmetry with the rest of
+    the model API (the tie is target-agnostic — the borrowed `Tensor` cells
+    carry both CPU + device storage)."""
     comptime LM_IDX = GPTDropTied[
-        vocab,
-        seq_len,
-        embed_dim,
-        n_heads,
-        n_layers,
-        ff_mult,
-        causal,
-        dropout_p,
-        seed_base,
-        use_max,
+        vocab, seq_len, embed_dim, n_heads, n_layers,
+        ff_mult, causal, dropout_p, seed_base, use_max, ADT,
     ].N - 1
-    # Capture the embedding (child 0) buffer pointers as plain values first,
-    # releasing the borrow before mutating the head (child N-1).
-    comptime if target == "gpu":
-        var val_ptr = mptr(
-            net.children[0].inner.weight.val.dev.value().unsafe_ptr()
-        )
-        var grd_ptr = mptr(
-            net.children[0].inner.weight.grd.dev.value().unsafe_ptr()
-        )
-        net.children[LM_IDX].inner.tie_to(val_ptr, grd_ptr)
-    else:
-        var val_ptr = net.children[0].inner.weight.val.cpu_ptr()
-        var grd_ptr = net.children[0].inner.weight.grd.cpu_ptr()
-        net.children[LM_IDX].inner.tie_to(val_ptr, grd_ptr)
+    # Build wildcard Pointer VALUES to the embedding (child 0) val/grad cells;
+    # these hold no tracked borrow of `net`, so the structural borrow is
+    # released before the mutable head wiring below.
+    var val_p = rebind[Pointer[Tensor, MutAnyOrigin]](
+        Pointer(to=net.children[0].inner.weight.val)
+    )
+    var grd_p = rebind[Pointer[Tensor, MutAnyOrigin]](
+        Pointer(to=net.children[0].inner.weight.grd)
+    )
+    net.children[LM_IDX].inner.tie_to_ptr(val_p, grd_p)

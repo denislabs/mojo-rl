@@ -30,7 +30,7 @@ from mojo_rl.nn.core.metric import LogScalar
 
 
 @fieldwise_init
-struct MBPOMetrics(Copyable, Movable, ImplicitlyDestructible):
+struct MBPOMetrics(Copyable, Movable, ImplicitlyDeletable):
     var actor_loss:  LogScalar[DT]
     var critic_loss: LogScalar[DT]
     var alpha:       LogScalar[DT]

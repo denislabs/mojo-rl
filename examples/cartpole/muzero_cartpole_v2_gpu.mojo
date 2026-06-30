@@ -17,7 +17,7 @@ Run (GPU env required):
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents.muzero.selfplay_gpu_device import (
@@ -51,15 +51,12 @@ def main() raises:
     var rep = Rep.make["gpu", INIT=Kaiming](ctx)
     var dyn = Dyn.make["gpu", INIT=Kaiming](ctx)
     var pred = Pred.make["gpu", INIT=Kaiming](ctx)
-    var orep = Adam.make["gpu", M=Rep](rep, ctx)
-    var odyn = Adam.make["gpu", M=Dyn](dyn, ctx)
-    var opred = Adam.make["gpu", M=Pred](pred, ctx)
-    orep.lr = Scalar[DT](3e-4)
-    odyn.lr = Scalar[DT](3e-4)
-    opred.lr = Scalar[DT](3e-4)
-    orep.max_grad_norm = Scalar[DT](10.0)
-    odyn.max_grad_norm = Scalar[DT](10.0)
-    opred.max_grad_norm = Scalar[DT](10.0)
+    # Storage Adam: lr at construction; the global grad-norm clip (legacy "clip
+    # 10") is a driver-call argument (`max_grad_norm` below), not an optimizer
+    # field.
+    var orep = Adam(lr=Scalar[DT](3e-4))
+    var odyn = Adam(lr=Scalar[DT](3e-4))
+    var opred = Adam(lr=Scalar[DT](3e-4))
 
     print("MuZero CartPole convergence (v2, GPU — fully on-device search+train)")
     print("  LATENT", LATENT, "H", H, "BINS", BINS, "sims", NUM_SIMS,
@@ -80,6 +77,7 @@ def main() raises:
         v_min=Scalar[DT](-20.0),
         v_max=Scalar[DT](20.0),
         value_coef=Scalar[DT](1.0),
+        max_grad_norm=10.0,             # legacy "clip 10"
         temperature_decay_steps=60000,
         reanalyze_every=1,
         eval_every=2000,

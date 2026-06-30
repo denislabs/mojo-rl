@@ -20,20 +20,22 @@ from layout import Layout, LayoutTensor, TileTensor, row_major
 from mojo_rl.nn.constants import DT, TPB
 
 
-def _seed_inv_batch_kernel[N: Int](
-    buf: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+def seed_inv_batch_kernel[
+    N: Int
+](
+    grad_out: LayoutTensor[DT, Layout.row_major(N, 1), MutAnyOrigin],
     value: Scalar[DT],
 ):
     var idx = Int(global_idx.x)
     if idx < N:
-        buf[idx] = value
+        grad_out[idx, 0] = value
 
 
 def seed_grad_inv_batch[
     target: StaticString,
     BATCH: Int,
 ](
-    grad_out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    grad_out: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Fill `grad_out_ptr[0:BATCH]` with `1/BATCH`.
@@ -44,14 +46,15 @@ def seed_grad_inv_batch[
     var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](BATCH)
     comptime if target == "cpu":
         for b in range(BATCH):
-            grad_out_ptr[b] = inv_b
+            grad_out[b, 0] = inv_b
     else:
         var c = ctx.value()
-        var buf_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH), MutAnyOrigin,
-        ](grad_out_ptr)
+
         comptime n_blocks = (BATCH + TPB - 1) // TPB
-        comptime kernel = _seed_inv_batch_kernel[BATCH]
+        comptime kernel = seed_inv_batch_kernel[BATCH]
         c.enqueue_function[kernel](
-            buf_lt, inv_b, grid_dim=n_blocks, block_dim=TPB,
+            grad_out,
+            inv_b,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )

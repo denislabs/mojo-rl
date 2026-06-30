@@ -1,12 +1,11 @@
-"""GPU helper kernels for whole-dataset minibatch shuffling.
+"""GPU helper kernels for whole-dataset minibatch shuffling (storage surface).
 
-All state (permutation indices + RNG seed) lives in LayoutTensor over device
-memory, so the shuffle-gather-step sequence is CUDA-graph capturable.
-
-Ported from `mojo_rl/nn/training/trainer.mojo` (nn1) — same shapes, same
-PhiloxRandom-driven Fisher-Yates, same parallel gather. Kept in its own
-file because the kernels are pure helpers and nn's trainer.mojo is already
-large.
+Pure `LayoutTensor` kernels — permutation indices + RNG seed live in device
+memory, so the shuffle → gather → step sequence is CUDA-graph capturable. Ported
+verbatim from the legacy `nn/training/shuffle_kernels.mojo` (same shapes, same
+PhiloxRandom Fisher-Yates, same parallel gather); kept framework-agnostic so the
+storage `Trainer.train_gpu` drives them over `TensorImpl[int32]`/`[uint64]`
+shuffle scratch (no legacy import).
 """
 
 from layout import Layout, LayoutTensor
@@ -33,10 +32,9 @@ def fisher_yates_shuffle_kernel[
 ):
     """Serial Fisher-Yates shuffle on a single GPU thread.
 
-    N serial iterations on one thread is fast enough at ~once-per-epoch
-    cadence (a few ms at N=60k). Parallel shuffles (sort-by-random-key)
-    are faster but require a device sort, which this codebase does not
-    have.
+    N serial iterations on one thread is fast enough at ~once-per-epoch cadence
+    (a few ms at N=60k). Parallel shuffles (sort-by-random-key) are faster but
+    require a device sort, which this codebase does not have.
     """
     if Int(thread_idx.x) != 0 or Int(block_idx.x) != 0:
         return
@@ -75,10 +73,8 @@ def gather_rows_kernel[
     indices: LayoutTensor[DType.int32, Layout.row_major(N_TOTAL), MutAnyOrigin],
     offset: Int,
 ):
-    """Batch-out[b, d] = Full[indices[offset + b], d].
-
-    Parallel over BATCH * DIM threads.
-    """
+    """`batch_out[b, d]` = full[indices[offset + b], d]. Parallel over
+    BATCH * DIM threads."""
     var i = Int(block_dim.x * block_idx.x + thread_idx.x)
     if i >= BATCH * DIM:
         return

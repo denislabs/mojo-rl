@@ -46,7 +46,7 @@ from ..data.n_step_replay import GPUNStepBuffer
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait OffPolicyDiscreteAgent(ImplicitlyDestructible, Movable):
+trait OffPolicyDiscreteAgent(ImplicitlyDeletable, Movable):
     """Single-trait surface for the discrete off-policy drivers.
 
     Mirrors `OffPolicyAgent` (continuous) but adapted for discrete

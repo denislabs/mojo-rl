@@ -1,4 +1,4 @@
-"""PPORecordStep — push N_ENVS transitions into the rollout buffer.
+"""PPORecordStep — push N_ENVS transitions into the rollout buffer (STORAGE).
 
 Reads N_ENVS-wide (obs, reward, done, next_obs) from the driver + the
 per-step caches (cached_action / cached_log_prob / cached_value) filled
@@ -11,6 +11,11 @@ Layout: T-major. Slot at time t, env e:
   act_buf[ (t*N_ENVS + e) * ACT + j ] = cached_action_e[j]
   olp_buf[ t*N_ENVS + e ] = cached_log_prob_e
   ... etc
+
+STORAGE migration: rollout buffers live host-side only (the GPU train_target
+only uploads the gathered minibatch), so every access here indexes the storage
+tensors' host `.data` Lists directly (no raw pointers). The driver-supplied
+obs/reward/done/next_obs pointers are the (UnsafePointer) trait ABI.
 
 Driver contract:
   - `action_ptr` arg is the env-ready action vector — IGNORED (the
@@ -31,7 +36,7 @@ struct PPORecordStep[
     OBS_: Int,
     ACT_: Int,
     ROLLOUT_LEN_: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime ROLLOUT_LEN = Self.ROLLOUT_LEN_
@@ -68,31 +73,33 @@ struct PPORecordStep[
         if t >= Self.ROLLOUT_LEN:
             return
         # Rollout buffers always live host-side (GPU train_target only
-        # uploads the gathered minibatch).
-        var obs_p   = state.obs_buf.cpu_ptr()
-        var act_p   = state.act_buf.cpu_ptr()
-        var ca_p    = state.cached_action.cpu_ptr()
-        var olp_p   = state.olp_buf.cpu_ptr()
-        var val_p   = state.val_buf.cpu_ptr()
-        var rew_p   = state.rew_buf.cpu_ptr()
-        var done_p  = state.done_buf.cpu_ptr()
-        var boot_p  = state.bootstrap_obs.cpu_ptr()
-        var clp_p   = state.cached_log_prob.cpu_ptr()
-        var cval_p  = state.cached_value.cpu_ptr()
+        # uploads the gathered minibatch), so we index the storage tensors'
+        # host `.data` Lists directly — no raw pointers. The driver-supplied
+        # obs/reward/done pointers are the (UnsafePointer) trait ABI.
+        ref obs_buf = state.obs_buf.data
+        ref act_buf = state.act_buf.data
+        ref olp_buf = state.olp_buf.data
+        ref val_buf = state.val_buf.data
+        ref rew_buf = state.rew_buf.data
+        ref done_buf = state.done_buf.data
+        ref boot_buf = state.bootstrap_obs.data
+        ref ca = state.cached_action.data
+        ref clp = state.cached_log_prob.data
+        ref cval = state.cached_value.data
         # T-major layout: row `t` holds all N_ENVS rows back-to-back.
         var row_base = t * N_ENVS
         for e in range(N_ENVS):
             for d in range(Self.OBS):
-                obs_p[(row_base + e) * Self.OBS + d] = obs_ptr[e * Self.OBS + d]
+                obs_buf[(row_base + e) * Self.OBS + d] = obs_ptr[e * Self.OBS + d]
             for j in range(Self.ACT):
-                act_p[(row_base + e) * Self.ACT + j] = ca_p[e * Self.ACT + j]
-            olp_p[row_base + e]  = clp_p[e]
-            val_p[row_base + e]  = cval_p[e]
-            rew_p[row_base + e]  = reward_ptr[e]
-            done_p[row_base + e] = done_ptr[e]
+                act_buf[(row_base + e) * Self.ACT + j] = ca[e * Self.ACT + j]
+            olp_buf[row_base + e] = clp[e]
+            val_buf[row_base + e] = cval[e]
+            rew_buf[row_base + e] = reward_ptr[e]
+            done_buf[row_base + e] = done_ptr[e]
             # term_buf stays at 0 unless caller marks terminal explicitly.
             for d in range(Self.OBS):
-                boot_p[e * Self.OBS + d] = next_obs_ptr[e * Self.OBS + d]
+                boot_buf[e * Self.OBS + d] = next_obs_ptr[e * Self.OBS + d]
         state.rollout_idx += 1
 
     def mark_terminal[
@@ -109,9 +116,8 @@ struct PPORecordStep[
         """Mark the last-recorded transition for `env_idx` as a real
         terminal (V=0 bootstrap). No-op if the cursor is at 0."""
         if state.rollout_idx > 0:
-            var term_p = state.term_buf.cpu_ptr()
             var row = (state.rollout_idx - 1) * N_ENVS + env_idx
-            term_p[row] = Scalar[DT](1.0)
+            state.term_buf.data[row] = Scalar[DT](1.0)
 
     def reset_rollout[
         target: StaticString,
@@ -126,6 +132,6 @@ struct PPORecordStep[
         """Called by the trainer once the K-epoch update has fired —
         zeros the term buffer and resets the cursor."""
         state.rollout_idx = 0
-        var term_p = state.term_buf.cpu_ptr()
+        ref term = state.term_buf.data
         for k in range(Self.ROLLOUT_LEN * N_ENVS):
-            term_p[k] = Scalar[DT](0.0)
+            term[k] = Scalar[DT](0.0)

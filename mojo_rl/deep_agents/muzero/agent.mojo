@@ -27,25 +27,15 @@ The three nets share `LATENT` + `BINS`; reward (`dyn`) and value (`pred`) heads
 are categorical over `[v_min, v_max]` — keep those in sync with the config.
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from std.gpu.host import DeviceContext
-from std.memory import alloc
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.core.checkpoint import (
-    save_state_v2_body,
-    load_state_v2_body,
-    save_state_v2_body_gpu,
-    load_state_v2_body_gpu,
-)
-from mojo_rl.deep_agents.core.checkpoint_helpers import (
-    split_lines_v2,
-    read_file_v2,
-    expect_v2_header,
-)
+from mojo_rl.nn.core.checkpoint import save_params, load_params
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.planners.tree_search import (
     GenericCPUMCTS,
@@ -66,7 +56,7 @@ from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
 @fieldwise_init
 struct MuZeroAgent[
     TARGET: StaticString,
-    ENV: BoxDiscreteActionEnv & ImplicitlyDestructible,
+    ENV: BoxDiscreteActionEnv & ImplicitlyDeletable,
     REP: Module,
     DYN: Module,
     PRED: Module,
@@ -81,7 +71,7 @@ struct MuZeroAgent[
     K: Int,
     N: Int,
     MAX_K: Int = ACT,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     var ctx: Optional[DeviceContext]
     var rep: Self.REP
     var dyn: Self.DYN
@@ -104,9 +94,9 @@ struct MuZeroAgent[
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises:
         self.ctx = ctx
-        self.rep = Self.REP.make[Self.TARGET, INIT=Kaiming](ctx=ctx)
-        self.dyn = Self.DYN.make[Self.TARGET, INIT=Kaiming](ctx=ctx)
-        self.pred = Self.PRED.make[Self.TARGET, INIT=Kaiming](ctx=ctx)
+        self.rep = Self.REP.make[Self.TARGET, Kaiming](ctx)
+        self.dyn = Self.DYN.make[Self.TARGET, Kaiming](ctx)
+        self.pred = Self.PRED.make[Self.TARGET, Kaiming](ctx)
         self.lr = lr
         self.gamma = gamma
         self.v_min = v_min
@@ -146,15 +136,9 @@ struct MuZeroAgent[
         search — both were required for CartPole to reach sustained greedy 500
         (see the convergence example)."""
         comptime if Self.TARGET == "cpu":
-            var orep = Adam.make["cpu", M = Self.REP](self.rep)
-            var odyn = Adam.make["cpu", M = Self.DYN](self.dyn)
-            var opred = Adam.make["cpu", M = Self.PRED](self.pred)
-            orep.lr = self.lr
-            odyn.lr = self.lr
-            opred.lr = self.lr
-            orep.max_grad_norm = self.max_grad_norm
-            odyn.max_grad_norm = self.max_grad_norm
-            opred.max_grad_norm = self.max_grad_norm
+            var orep = Adam(lr=self.lr)
+            var odyn = Adam(lr=self.lr)
+            var opred = Adam(lr=self.lr)
             return run_muzero_selfplay_cpu[
                 Self.ENV, Self.REP, Self.DYN, Self.PRED,
                 Self.OBS, Self.ACT, Self.LATENT, Self.BINS,
@@ -172,6 +156,7 @@ struct MuZeroAgent[
                 seed=seed,
                 max_ep_steps=max_ep_steps,
                 value_coef=self.value_coef,
+                max_grad_norm=Float64(self.max_grad_norm),
                 temperature_decay_steps=temperature_decay_steps,
                 reanalyze_every=reanalyze_every,
                 eval_every=eval_every,
@@ -183,15 +168,9 @@ struct MuZeroAgent[
             )
         else:
             var c = self.ctx.value()
-            var orep = Adam.make["gpu", M = Self.REP](self.rep, c)
-            var odyn = Adam.make["gpu", M = Self.DYN](self.dyn, c)
-            var opred = Adam.make["gpu", M = Self.PRED](self.pred, c)
-            orep.lr = self.lr
-            odyn.lr = self.lr
-            opred.lr = self.lr
-            orep.max_grad_norm = self.max_grad_norm
-            odyn.max_grad_norm = self.max_grad_norm
-            opred.max_grad_norm = self.max_grad_norm
+            var orep = Adam(lr=self.lr)
+            var odyn = Adam(lr=self.lr)
+            var opred = Adam(lr=self.lr)
             # Fully on-device Gumbel MuZero — the validated GPU path (greedy
             # 500 by 4k on the CartPole lighthouse, vs the hybrid's mirror-sync
             # overhead and the vanilla device search's NoNoise eval anomaly).
@@ -212,6 +191,7 @@ struct MuZeroAgent[
                 seed=seed,
                 max_ep_steps=max_ep_steps,
                 value_coef=self.value_coef,
+                max_grad_norm=Float64(self.max_grad_norm),
                 temperature_decay_steps=temperature_decay_steps,
                 reanalyze_every=reanalyze_every,
                 eval_every=eval_every,
@@ -238,16 +218,16 @@ struct MuZeroAgent[
                 DirichletNoise[0.25, 0.25], SinglePlayer, 8, 3,
             ](gamma=Float64(self.gamma))
             var rep_a = MZRepCPU[Self.OBS, Self.LATENT, Self.REP](
-                net=UnsafePointer(to=self.rep)
+                net=untracked(UnsafePointer(to=self.rep))
             )
             var dyn_a = MZDynCPU[Self.LATENT, Self.ACT, Self.BINS, Self.DYN](
-                net=UnsafePointer(to=self.dyn),
+                net=untracked(UnsafePointer(to=self.dyn)),
                 v_min=self.v_min, v_max=self.v_max,
             )
             var pred_a = MZPredCPU[
                 Self.LATENT, Self.ACT, Self.BINS, Self.PRED
             ](
-                net=UnsafePointer(to=self.pred),
+                net=untracked(UnsafePointer(to=self.pred)),
                 v_min=self.v_min, v_max=self.v_max,
             )
             var total = 0.0
@@ -299,8 +279,8 @@ struct MuZeroAgent[
                 Self.LATENT, Self.ACT, Self.BINS, Self.PRED
             ].make(self.pred)
             var d_obs = c.enqueue_create_buffer[DT](Self.OBS)
-            var h_obs = mptr(alloc[Scalar[DT]](Self.OBS))
-            var h_pol = mptr(alloc[Scalar[DT]](Self.ACT))
+            var h_obs = List[Scalar[DT]](length=Self.OBS, fill=0)
+            var h_pol = List[Scalar[DT]](length=Self.ACT, fill=0)
             var mseed = UInt32(0)
             var total = 0.0
             for _ in range(episodes):
@@ -312,16 +292,16 @@ struct MuZeroAgent[
                 for _step in range(max_ep_steps):
                     for j in range(Self.OBS):
                         h_obs[j] = Scalar[DT](eo_f[j])
-                    c.enqueue_copy(d_obs, h_obs)
+                    c.enqueue_copy(d_obs, h_obs.unsafe_ptr())  # H2D (sanctioned)
                     var obs_t = LayoutTensor[
                         DT, Layout.row_major(1, Self.OBS), MutAnyOrigin
-                    ](mptr(d_obs.unsafe_ptr()))
+                    ](d_obs)
                     planner.search_gpu[
                         type_of(rep_a), type_of(dyn_a), type_of(pred_a)
                     ](c, rep_a, dyn_a, pred_a, obs_t,
                       apply_legal=False, k_actual=Self.MAX_K, rng_seed=mseed)
                     mseed += UInt32(1)
-                    c.enqueue_copy(h_pol, planner.policies_view())
+                    c.enqueue_copy(h_pol.unsafe_ptr(), planner.policies_view())
                     c.synchronize()
                     var best = 0
                     for a in range(1, Self.ACT):
@@ -335,8 +315,6 @@ struct MuZeroAgent[
                     if es[2]:
                         break
                 total += eret
-            h_obs.free()
-            h_pol.free()
             return total / Float64(episodes)
 
     def save(mut self, path: String) raises:
@@ -345,34 +323,22 @@ struct MuZeroAgent[
         surface shared by every agent facade. NOTE: optimizers are
         session-local — rebuilt per `train_*` call — so only weights
         persist; this is the inference / self-play artifact, not a
-        training-resume checkpoint. Byte-identical CPU vs GPU."""
-        var body = String("")
-        comptime if Self.TARGET == "cpu":
-            save_state_v2_body(self.rep, body, String("rep"))
-            save_state_v2_body(self.dyn, body, String("dyn"))
-            save_state_v2_body(self.pred, body, String("pred"))
-        else:
-            var c = self.ctx.value()
-            save_state_v2_body_gpu(self.rep, body, String("rep"), c)
-            save_state_v2_body_gpu(self.dyn, body, String("dyn"), c)
-            save_state_v2_body_gpu(self.pred, body, String("pred"), c)
-        var content = String("nn-ckpt v2\n") + body
-        with open(path, "w") as f:
-            f.write(content)
+        training-resume checkpoint. The three nets go to ``path`` + ``.rep`` /
+        ``.dyn`` / ``.pred`` via the storage checkpoint (walks for_each_param then
+        for_each_state, owns file I/O)."""
+        save_params[Self.TARGET, Self.REP](
+            self.rep, path + ".rep", self.ctx, save_moments=False
+        )
+        save_params[Self.TARGET, Self.DYN](
+            self.dyn, path + ".dyn", self.ctx, save_moments=False
+        )
+        save_params[Self.TARGET, Self.PRED](
+            self.pred, path + ".pred", self.ctx, save_moments=False
+        )
 
     def load(mut self, path: String) raises:
-        """Inverse of `save` — restores rep / dyn / pred weights. Optimizer
-        state is not checkpointed (session-local; see `save`)."""
-        var content = read_file_v2(path)
-        var lines = split_lines_v2(content)
-        expect_v2_header(lines)
-        var idx = 1
-        comptime if Self.TARGET == "cpu":
-            load_state_v2_body(self.rep, lines, idx, String("rep"))
-            load_state_v2_body(self.dyn, lines, idx, String("dyn"))
-            load_state_v2_body(self.pred, lines, idx, String("pred"))
-        else:
-            var c = self.ctx.value()
-            load_state_v2_body_gpu(self.rep, lines, idx, String("rep"), c)
-            load_state_v2_body_gpu(self.dyn, lines, idx, String("dyn"), c)
-            load_state_v2_body_gpu(self.pred, lines, idx, String("pred"), c)
+        """Inverse of `save` — restores rep / dyn / pred weights from the three
+        per-net checkpoints. Optimizer state is not checkpointed (see `save`)."""
+        load_params[Self.TARGET, Self.REP](self.rep, path + ".rep", self.ctx)
+        load_params[Self.TARGET, Self.DYN](self.dyn, path + ".dyn", self.ctx)
+        load_params[Self.TARGET, Self.PRED](self.pred, path + ".pred", self.ctx)

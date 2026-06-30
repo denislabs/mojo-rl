@@ -4,18 +4,14 @@ GPU successor of `sac_inverted_pendulum_training.mojo` and counterpart of the
 legacy `sac_inverted_pendulum_training_gpu.mojo`. Mirrors
 `examples/half_cheetah/sac_half_cheetah_training_gpu.mojo`:
 
-  * `SACAgent["gpu", ...]` — facade over the GPU `SACTrainer` + the batched
-    off-policy driver. All optimizers, the replay buffer, and the SAC
-    train-step pipeline run on-device.
+  * `SAC["gpu", ...]` preset — builds the `SACAgent` facade over the GPU
+    `SACTrainer` + the batched off-policy driver. All optimizers, the replay
+    buffer, and the SAC train-step pipeline run on-device.
   * `BatchedGpuEnv[InvertedPendulum[DT], N_ENVS, OBS, ACT]` — wraps the
     physics3d env (`GPUContinuousEnv`) into a `BatchedEnv`.
   * `RemoteLogger` — streams `env/mean_ret` and `env/ep_count`.
 
 `updates_per_step=N_ENVS` keeps the effective UTD = 1 per collected transition.
-
-NOTE on checkpointing: the facade's `save`/`load` are CPU-only and the batched
-`train` entry point has no inline checkpoint/diag cadence (those live on
-`train_single`). This GPU example trains + summarizes only.
 
 InvertedPendulum (Phyics3dEnv, MuJoCo-style):
   * 4D observation (qpos[0:2] + qvel[0:2])
@@ -35,12 +31,7 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleGpuStep
+from mojo_rl.deep_agents.sac import SAC
 from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
 from mojo_rl.envs.inverted_pendulum import InvertedPendulum
 
@@ -68,21 +59,10 @@ comptime PRINT_EVERY = 25_000
 
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
 
-comptime ActorNet = StochasticActor[
-    OBS_DIM,
-    ACT_DIM,
-    Linear[OBS_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
-]
-comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, 1],
-]
+# Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac),
+# which bundles the canonical fused-`LinearReLU` `SACActorNet` /
+# `SACCriticNet` (matmul+bias+ReLU in one kernel — halves the per-hidden-
+# layer launch count on the eager GPU path) plus SAC's tuned defaults.
 
 
 def main() raises:
@@ -121,24 +101,18 @@ def main() raises:
         logger.set_config("n_envs", String(N_ENVS))
         logger.set_config("buffer_capacity", String(REPLAY_CAPACITY))
 
-        var logger_ptr = UnsafePointer(to=logger)
+        var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
         # ─── Agent + batched GPU env ─────────────────────────────────────
-        var agent = SACAgent[
-            "gpu",
-            UniformSampleGpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-            ActorNet,
-            CriticNet,
+        # `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` reads like a
+        # constructor: it builds the SACAgent with the fused default nets
+        # and SAC's tuned scalar defaults (lr=3e-4, gamma=0.99, tau=0.005,
+        # init_alpha=0.2, target_entropy=-ACT, …). We override only the
+        # example-specific knobs below; everything else comes from the preset.
+        var agent = SAC[
+            "gpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN
         ](
             ctx=ctx,
-            actor_lr=3e-4,
-            critic_lr=3e-4,
-            alpha_lr=3e-4,
-            gamma=0.99,
-            tau=0.005,
-            action_scale=1.0,
-            init_alpha=0.2,
-            target_entropy=-Scalar[DT](ACT_DIM),  # SAC default heuristic
             learning_starts=WARMUP_STEPS,
             window_size=100,
             initial_episode_fill=0.0,

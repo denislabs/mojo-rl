@@ -1,9 +1,8 @@
-"""Modulate[DIM] — AdaLN-zero affine modulation (ARITY=3).
+"""Modulate[DIM] — AdaLN-zero affine modulation (ARITY=3, storage surface).
 
     y = x * (1 + scale) + shift
 
-Three separate inputs (nn graph passes one pointer per slot — no
-concatenation, unlike the legacy `nn` DiffOp):
+Three separate inputs (the graph passes one pointer per slot — no concatenation):
     inputs[0] = x      [BATCH, DIM]
     inputs[1] = scale  [BATCH, DIM]
     inputs[2] = shift  [BATCH, DIM]
@@ -13,25 +12,23 @@ Gradients:
     grad_scale[i] = grad_out[i] * x[i]
     grad_shift[i] = grad_out[i]
 
-Cache (leaf-owned): x and scale (needed by the x- and scale-grads).
-PARAM-free. Used inside LeWM's ConditionalTransformerBlock; see
-docs/LEWM_NN_PORT_PLAN.md §2.2.
+Transformed from legacy `nn.primitives.Modulate` (surface-only change). Cache
+(leaf-owned): x and scale (needed by the x- and scale-grads). PARAM-free. Used
+inside LeWM's ConditionalTransformerBlock. The CPU loop + the two GPU kernels
+are carried over verbatim.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP, Cache
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
-)
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 def _modulate_forward_kernel[
@@ -80,155 +77,121 @@ def _modulate_backward_kernel[
     grad_shift[b, i] = go
 
 
-struct Modulate[DIM: Int](Module):
-    comptime ARITY: Int = 3
-    comptime IN_DIMS = InlineArray[Int, 3](fill=Self.DIM)
-    comptime OUT_DIM = Self.DIM
+struct Modulate[DIM_: Int](Module):
+    comptime ARITY = 3
+    comptime IN_DIMS = InlineArray[Int, 3](fill=Self.DIM_)
+    comptime OUT_DIM = Self.DIM_
 
-    @staticmethod
-    def display_label() -> String:
-        return String("Modulate")
-
-    var cache_x: Cache["cache_x"]
-    var cache_scale: Cache["cache_scale"]
-    var ts: TargetStorage
+    var cache_x: Tensor  # [BATCH, DIM]
+    var cache_scale: Tensor  # [BATCH, DIM]
 
     def __init__(out self):
-        self.cache_x = Cache["cache_x"]()
-        self.cache_scale = Cache["cache_scale"]()
-        self.ts = TargetStorage.make_uninit()
+        self.cache_x = Tensor()
+        self.cache_scale = Tensor()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "Modulate: target must be 'cpu' or 'gpu'"
-        )
-        var m = Self()
-        comptime if target == "cpu":
-            m.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["Modulate.make[target='gpu']"](ctx)
-            m.ts = TargetStorage.make_gpu(ctx_v)
-        return m^
+        """Unified CPU/GPU factory. INIT accepted for `make[target, INIT]`
+        uniformity but ignored (no params)."""
+        return Self()
 
-    def _ensure_cache_gpu(mut self, batch: Int) raises:
-        var ctx = self.ts.ctx.value()
-        self.cache_x.ensure_gpu(ctx, batch * Self.DIM)
-        self.cache_scale.ensure_gpu(ctx, batch * Self.DIM)
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[3, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Modulate", target](self.ts.target_tag)
-        var x = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var scale = inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
-        var shift = inputs.tile[2, BATCH, Self.IN_DIMS[2]]()
-        var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref x = inputs[0]
+        ref scale = inputs[1]
+        ref shift = inputs[2]
         comptime if target == "cpu":
-            self.cache_x.ensure_cpu(BATCH * Self.DIM)
-            self.cache_scale.ensure_cpu(BATCH * Self.DIM)
-            var cx = TileTensor(self.cache_x.cpu, row_major[BATCH, Self.DIM]())
-            var cs = TileTensor(self.cache_scale.cpu, row_major[BATCH, Self.DIM]())
-            for b in range(BATCH):
-                for i in range(Self.DIM):
-                    var xv = x[b, i]
-                    var sv = scale[b, i]
+            out.ensure(B * Self.DIM_)
+            self.cache_x.ensure(B * Self.DIM_)
+            self.cache_scale.ensure(B * Self.DIM_)
+            var x_t = TileTensor(x.data, row_major[B, Self.DIM_]())
+            var s_t = TileTensor(scale.data, row_major[B, Self.DIM_]())
+            var sh_t = TileTensor(shift.data, row_major[B, Self.DIM_]())
+            var out_t = TileTensor(out.data, row_major[B, Self.DIM_]())
+            var cx = TileTensor(self.cache_x.data, row_major[B, Self.DIM_]())
+            var cs = TileTensor(self.cache_scale.data, row_major[B, Self.DIM_]())
+            for b in range(B):
+                for i in range(Self.DIM_):
+                    var xv = x_t[b, i]
+                    var sv = s_t[b, i]
                     cx[b, i] = xv
                     cs[b, i] = sv
-                    out[b, i] = xv * (Scalar[DT](1.0) + sv) + shift[b, i]
+                    out_t[b, i] = xv * (Scalar[DT](1.0) + sv) + sh_t[b, i]
         else:
-            self._ensure_cache_gpu(BATCH)
-            comptime lay = Layout.row_major(BATCH, Self.DIM)
-            var x_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                x.ptr
-            )
-            var s_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                scale.ptr
-            )
-            var sh_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                shift.ptr
-            )
-            var o_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                out.ptr
-            )
-            var cx_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                self.cache_x.dev.value()
-            )
-            var cs_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                self.cache_scale.dev.value()
-            )
-            comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
-            comptime kernel = _modulate_forward_kernel[BATCH, Self.DIM]
-            self.ts.ctx.value().enqueue_function[kernel](
-                x_lt, s_lt, sh_lt, o_lt, cx_lt, cs_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.DIM_)
+            self.cache_x.ensure_gpu(c, B * Self.DIM_)
+            self.cache_scale.ensure_gpu(c, B * Self.DIM_)
+            comptime lay = Layout.row_major(B, Self.DIM_)
+            comptime n_blocks = (B * Self.DIM_ + TPB - 1) // TPB
+            c.enqueue_function[_modulate_forward_kernel[B, Self.DIM_]](
+                x.lt["gpu", lay](),
+                scale.lt["gpu", lay](),
+                shift.lt["gpu", lay](),
+                out.lt["gpu", lay](),
+                self.cache_x.lt["gpu", lay](),
+                self.cache_scale.lt["gpu", lay](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[3, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[3, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Modulate", target](self.ts.target_tag)
-        var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gx = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var gs = grad_inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
-        var gsh = grad_inputs.tile[2, BATCH, Self.IN_DIMS[2]]()
-
+        ref gx = grad_inputs[0]
+        ref gs = grad_inputs[1]
+        ref gsh = grad_inputs[2]
         comptime if target == "cpu":
-            var cx = TileTensor(self.cache_x.cpu, row_major[BATCH, Self.DIM]())
-            var cs = TileTensor(self.cache_scale.cpu, row_major[BATCH, Self.DIM]())
-            for b in range(BATCH):
-                for i in range(Self.DIM):
-                    var g = go[b, i]
-                    gx[b, i] = g * (Scalar[DT](1.0) + cs[b, i])
-                    gs[b, i] = g * cx[b, i]
-                    gsh[b, i] = g
+            gx.ensure(B * Self.DIM_)
+            gs.ensure(B * Self.DIM_)
+            gsh.ensure(B * Self.DIM_)
+            var go_t = TileTensor(grad_output.data, row_major[B, Self.DIM_]())
+            var cx = TileTensor(self.cache_x.data, row_major[B, Self.DIM_]())
+            var cs = TileTensor(self.cache_scale.data, row_major[B, Self.DIM_]())
+            var gx_t = TileTensor(gx.data, row_major[B, Self.DIM_]())
+            var gs_t = TileTensor(gs.data, row_major[B, Self.DIM_]())
+            var gsh_t = TileTensor(gsh.data, row_major[B, Self.DIM_]())
+            for b in range(B):
+                for i in range(Self.DIM_):
+                    var g = go_t[b, i]
+                    gx_t[b, i] = g * (Scalar[DT](1.0) + cs[b, i])
+                    gs_t[b, i] = g * cx[b, i]
+                    gsh_t[b, i] = g
         else:
-            comptime lay = Layout.row_major(BATCH, Self.DIM)
-            var go_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                go.ptr
+            var c = ctx.value()
+            gx.ensure_gpu(c, B * Self.DIM_)
+            gs.ensure_gpu(c, B * Self.DIM_)
+            gsh.ensure_gpu(c, B * Self.DIM_)
+            comptime lay = Layout.row_major(B, Self.DIM_)
+            comptime n_blocks = (B * Self.DIM_ + TPB - 1) // TPB
+            c.enqueue_function[_modulate_backward_kernel[B, Self.DIM_]](
+                grad_output.lt["gpu", lay](),
+                self.cache_x.lt["gpu", lay](),
+                self.cache_scale.lt["gpu", lay](),
+                gx.lt["gpu", lay](),
+                gs.lt["gpu", lay](),
+                gsh.lt["gpu", lay](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
-            var gx_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                gx.ptr
-            )
-            var gs_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                gs.ptr
-            )
-            var gsh_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                gsh.ptr
-            )
-            var cx_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                self.cache_x.dev.value()
-            )
-            var cs_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                self.cache_scale.dev.value()
-            )
-            comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
-            comptime kernel = _modulate_backward_kernel[BATCH, Self.DIM]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, cx_lt, cs_lt, gx_lt, gs_lt, gsh_lt,
-                grid_dim=n_blocks, block_dim=TPB,
-            )
+
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (param-less leaf → no-op). No polyak_from (no Params).

@@ -35,7 +35,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT as dtype
 
 
-trait RepresentationGPU(ImplicitlyDestructible):
+trait RepresentationGPU(ImplicitlyDeletable):
     """Batched GPU encoder: obs → hidden state.
 
     Called once per ``search`` at the root, with ``B = N_ENVS``. The
@@ -68,7 +68,7 @@ trait RepresentationGPU(ImplicitlyDestructible):
         ...
 
 
-trait DynamicsGPU(ImplicitlyDestructible):
+trait DynamicsGPU(ImplicitlyDeletable):
     """Batched GPU dynamics forward: (hidden, one_hot_action) → (next_hidden, reward_logits).
 
     ``DYN_OUT_DIM = LATENT_DIM + REWARD_HEAD_DIM`` where the reward
@@ -109,7 +109,7 @@ trait DynamicsGPU(ImplicitlyDestructible):
         ...
 
 
-trait PredictionGPU(ImplicitlyDestructible):
+trait PredictionGPU(ImplicitlyDeletable):
     """Batched GPU prediction forward: hidden → (policy_logits, value_logits).
 
     ``PRED_OUT_DIM = ACTION_DIM + VALUE_HEAD_DIM`` where the value head
@@ -141,7 +141,7 @@ trait PredictionGPU(ImplicitlyDestructible):
         ...
 
 
-trait EnvStepGPU(ImplicitlyDestructible):
+trait EnvStepGPU(ImplicitlyDeletable):
     """Batched GPU env step: (state, action) → (next_state, reward, done,
     terminated, obs, legal_mask).
 

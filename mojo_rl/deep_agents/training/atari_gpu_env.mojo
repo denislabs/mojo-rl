@@ -25,7 +25,7 @@ from std.gpu import global_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
+from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.nn.core.target_storage import require_ctx
 from mojo_rl.deep_agents.training.batched_env import BatchedEnv
 
@@ -223,19 +223,19 @@ struct AtariGpuBatchedEnv[
 
     @always_inline
     def _states_p(self) -> UnsafePointer[AtariState, MutAnyOrigin]:
-        return self._states.unsafe_ptr().bitcast[AtariState]()
+        return self._states.unsafe_ptr().bitcast[AtariState]().as_unsafe_any_origin()
 
     @always_inline
     def _s0_p(self) -> UnsafePointer[AtariState, MutAnyOrigin]:
-        return self._s0.unsafe_ptr().bitcast[AtariState]()
+        return self._s0.unsafe_ptr().bitcast[AtariState]().as_unsafe_any_origin()
 
     @always_inline
     def _rom_p(self) -> UnsafePointer[UInt8, MutAnyOrigin]:
-        return self._rom.unsafe_ptr()
+        return self._rom.unsafe_ptr().as_unsafe_any_origin()
 
     @always_inline
     def _opt_p(self) -> UnsafePointer[OpcodeEntry, MutAnyOrigin]:
-        return self._optab.unsafe_ptr().bitcast[OpcodeEntry]()
+        return self._optab.unsafe_ptr().bitcast[OpcodeEntry]().as_unsafe_any_origin()
 
     def reset_batch[BATCH: Int](
         mut self, ctx: Optional[DeviceContext], rng_seed: UInt64

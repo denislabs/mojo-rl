@@ -128,7 +128,10 @@ def main() raises:
         var act_t = TileTensor(src.act_ptr(), row_major[B, ACTIN]())
         # frozen encoder forward → emb node (B, T·EMB) == (B·T, EMB) flat
         _ = wm.eval_loss(pix_t, act_t)
-        var emb_ptr = wm.graph.node_out_ptr["emb"]()
+        ref emb_tensor = wm.graph.node_output["emb"]()
+        var emb_ptr = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            emb_tensor.dev.value().unsafe_ptr()
+        )
         var emb_t = TileTensor(emb_ptr, row_major[DEC_BATCH, EMB]())
         # target patches from the same frames (CHW, normalized [0,1])
         patchify["gpu", DEC_BATCH, IN_CH, IMG, PATCH_D](

@@ -12,7 +12,6 @@ Run:
     pixi run mojo run -I . tests/deep_agents/test_ezv2_consistency_gradcheck.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_true, assert_almost_equal
 
 from mojo_rl.nn.constants import DT
@@ -21,30 +20,19 @@ from mojo_rl.deep_agents.efficient_zero_v2.loss_ops import (
 )
 
 
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
-
-
 def _loss_only[
     BATCH: Int, DIM: Int,
-](
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    t: UnsafePointer[Scalar[DT], MutAnyOrigin],
-) -> Scalar[DT]:
-    var junk = _alloc(BATCH * DIM)
-    var l = consistency_loss_and_grad[BATCH, DIM](
-        p, t, Scalar[DT](1.0), junk
-    )
-    junk.free()
-    return l
+](p: List[Scalar[DT]], t: List[Scalar[DT]]) -> Scalar[DT]:
+    var junk = List[Scalar[DT]](length=BATCH * DIM, fill=0)
+    return consistency_loss_and_grad[BATCH, DIM](p, t, Scalar[DT](1.0), junk)
 
 
 def main() raises:
     comptime BATCH = 3
     comptime DIM = 6
 
-    var p = _alloc(BATCH * DIM)
-    var t = _alloc(BATCH * DIM)
+    var p = List[Scalar[DT]](length=BATCH * DIM, fill=0)
+    var t = List[Scalar[DT]](length=BATCH * DIM, fill=0)
 
     # Arbitrary non-degenerate online + target vectors (different directions so
     # cos is strictly inside (−1, 1) and the gradient is well-conditioned).
@@ -56,7 +44,7 @@ def main() raises:
                 0.15
             ) * Scalar[DT](b)
 
-    var grad = _alloc(BATCH * DIM)
+    var grad = List[Scalar[DT]](length=BATCH * DIM, fill=0)
     var l0 = consistency_loss_and_grad[BATCH, DIM](
         p, t, Scalar[DT](1.0), grad
     )
@@ -91,7 +79,7 @@ def main() raises:
     print("max |analytic - finite-diff| =", max_err)
 
     # grad_scale must scale the gradient linearly.
-    var grad2 = _alloc(BATCH * DIM)
+    var grad2 = List[Scalar[DT]](length=BATCH * DIM, fill=0)
     _ = consistency_loss_and_grad[BATCH, DIM](
         p, t, Scalar[DT](0.25), grad2
     )
@@ -102,5 +90,4 @@ def main() raises:
         )
     print("grad_scale linearity: OK")
 
-    p.free(); t.free(); grad.free(); grad2.free()
     print("EZv2 consistency gradcheck: OK")

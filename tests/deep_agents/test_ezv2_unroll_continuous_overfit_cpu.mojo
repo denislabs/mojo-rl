@@ -14,11 +14,10 @@ Run:
     pixi run mojo run -I . tests/deep_agents/test_ezv2_unroll_continuous_overfit_cpu.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.deep_agents.efficient_zero_v2.nets import (
     MZRepNet, MZDynNet, EZProjectorNet, EZPredictorNet,
@@ -28,9 +27,6 @@ from mojo_rl.deep_agents.efficient_zero_v2.blocks_continuous import (
     ezv2_unroll_train_step_continuous_cpu,
 )
 
-
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 
 
 def main() raises:
@@ -53,16 +49,16 @@ def main() raises:
     comptime Proj = EZProjectorNet[LATENT, PROJ, PROJ_HID]
     comptime Predh = EZPredictorNet[PROJ, BOTTLENECK]
 
-    var rep = Rep.make["cpu", INIT=Kaiming]()
-    var dyn = Dyn.make["cpu", INIT=Kaiming]()
-    var pred = Pred.make["cpu", INIT=Kaiming]()
-    var proj = Proj.make["cpu", INIT=Kaiming]()
-    var predh = Predh.make["cpu", INIT=Kaiming]()
-    var orep = Adam.make["cpu", M=Rep](rep)
-    var odyn = Adam.make["cpu", M=Dyn](dyn)
-    var opred = Adam.make["cpu", M=Pred](pred)
-    var oproj = Adam.make["cpu", M=Proj](proj)
-    var opredh = Adam.make["cpu", M=Predh](predh)
+    var rep = Rep.make["cpu", Kaiming]()
+    var dyn = Dyn.make["cpu", Kaiming]()
+    var pred = Pred.make["cpu", Kaiming]()
+    var proj = Proj.make["cpu", Kaiming]()
+    var predh = Predh.make["cpu", Kaiming]()
+    var orep = Adam(lr=Scalar[DT](1e-3))
+    var odyn = Adam(lr=Scalar[DT](1e-3))
+    var opred = Adam(lr=Scalar[DT](1e-3))
+    var oproj = Adam(lr=Scalar[DT](1e-3))
+    var opredh = Adam(lr=Scalar[DT](1e-3))
     orep.lr = Scalar[DT](0.01)
     odyn.lr = Scalar[DT](0.01)
     opred.lr = Scalar[DT](0.01)
@@ -71,7 +67,7 @@ def main() raises:
 
     var xs = UInt64(0x9E3779B97F4A7C15)
 
-    var obs_seq = _a((K + 1) * B * OBS)
+    var obs_seq = List[Scalar[DT]](length=(K + 1) * B * OBS, fill=0)
     for i in range((K + 1) * B * OBS):
         xs = xs ^ (xs << 13); xs = xs ^ (xs >> 7); xs = xs ^ (xs << 17)
         obs_seq[i] = Scalar[DT](Int(xs % 200)) / Scalar[DT](100.0) - Scalar[DT](
@@ -79,28 +75,28 @@ def main() raises:
         )
 
     # continuous actions in [-0.8, 0.8].
-    var actions = _a(K * B * ACT_DIM)
+    var actions = List[Scalar[DT]](length=K * B * ACT_DIM, fill=0)
     for i in range(K * B * ACT_DIM):
         xs = xs ^ (xs << 13); xs = xs ^ (xs >> 7); xs = xs ^ (xs << 17)
         actions[i] = Scalar[DT](Int(xs % 160)) / Scalar[DT](100.0) - Scalar[DT](
             0.8
         )
     # policy targets at K+1 positions (independent draw).
-    var policy_act_tgt = _a((K + 1) * B * ACT_DIM)
+    var policy_act_tgt = List[Scalar[DT]](length=(K + 1) * B * ACT_DIM, fill=0)
     for i in range((K + 1) * B * ACT_DIM):
         xs = xs ^ (xs << 13); xs = xs ^ (xs >> 7); xs = xs ^ (xs << 17)
         policy_act_tgt[i] = Scalar[DT](Int(xs % 160)) / Scalar[DT](
             100.0
         ) - Scalar[DT](0.8)
 
-    var value_tgt = _a((K + 1) * B)
+    var value_tgt = List[Scalar[DT]](length=(K + 1) * B, fill=0)
     for i in range((K + 1) * B):
         xs = xs ^ (xs << 13); xs = xs ^ (xs >> 7); xs = xs ^ (xs << 17)
         value_tgt[i] = Scalar[DT](Int(xs % 200)) / Scalar[DT](100.0) - Scalar[
             DT
         ](1.0)
 
-    var reward_tgt = _a(K * B)
+    var reward_tgt = List[Scalar[DT]](length=K * B, fill=0)
     for i in range(K * B):
         xs = xs ^ (xs << 13); xs = xs ^ (xs >> 7); xs = xs ^ (xs << 17)
         reward_tgt[i] = Scalar[DT](Int(xs % 200)) / Scalar[DT](100.0) - Scalar[
@@ -128,6 +124,4 @@ def main() raises:
     assert_true(first == first and last == last, "loss became NaN")
     assert_true(last < first * Scalar[DT](0.3), "continuous unroll failed to overfit")
 
-    obs_seq.free(); actions.free(); policy_act_tgt.free()
-    value_tgt.free(); reward_tgt.free()
     print("EZv2 continuous unroll overfit (CPU): OK")

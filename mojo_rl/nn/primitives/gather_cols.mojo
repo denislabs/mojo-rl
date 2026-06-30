@@ -1,47 +1,38 @@
-"""GatherCols[NA] — per-row gather by integer index.
+"""GatherCols[NA] — per-row gather by integer index (storage surface).
 
-Two inputs: `values` ([B, NA]) and `idx` ([B, 1] holding integer column
-indices stored as `Scalar[DT]`). Output: `out[b, 0] = values[b,
-Int(idx[b, 0])]`. Used in:
+Transformed from legacy `nn.primitives.GatherCols` (surface-only change). The
+GPU forward + two zero-fill vjp kernels are carried over verbatim.
 
-  1. DQN's Q-update block to extract `Q(s, a_taken)` from `Q_online(s)`
-     without a CPU shim (replaces trainer.mojo:339-351's host gather).
-  2. Double-DQN target-Y graph to gather `Q_target(s', argmax_a Q_online)`.
+Two inputs: `values` ([B, NA]) and `idx` ([B, 1] holding integer column indices
+stored as `Scalar[DT]`). Output: `out[b, 0] = values[b, Int(idx[b, 0])]`.
 
-**Forward-only semantics** — vjp zero-fills both `grad_values` and
-`grad_idx`. Same pattern as `ReduceMax`: the trait requires `vjp` to
-exist, but gradient never flows through a gather-by-discrete-index in
-the DQN topology. For Q-update, the surrounding block owns a scatter
-kernel that builds `grad_q_all` from `grad_q_gath` + `mb_a` directly;
-for Double-DQN target-Y, the path is `MODE="input_only"` and vjp is a
-no-op anyway.
-
-Reasoning for not threading the indices through vjp: `Module.vjp`'s
-signature receives only `grad_output` + `grad_inputs` slabs. The
-original indices aren't accessible without either (a) caching them on
-the struct (lifetime risk for graph users that share buffers) or
-(b) overloading `grad_inputs[1]` as in/out (breaks when used through
-ComputeGraph, which auto-allocates fresh zero grad slabs). The simplest
-correct contract is forward-only with zero vjp, and put the actual
-scatter where the indices live — in the calling block.
-
-GPU forward kernel: 1 thread per BATCH row (mirrors `reduce.mojo:34-46`).
-GPU vjp kernels: 1 thread per BATCH·NA element (grad_values zero-fill)
-+ 1 thread per BATCH (grad_idx zero-fill).
+**Forward-only semantics** — vjp zero-fills both grad_values and grad_idx; the
+gradient never flows through a gather-by-discrete-index in the DQN topology (the
+surrounding block owns the scatter that builds grad_q_all). ARITY 2, no params,
+no cache.
 """
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
+def _dims2(d0: Int, d1: Int) -> InlineArray[Int, 2]:
+    var a = InlineArray[Int, 2](fill=0)
+    a[0] = d0
+    a[1] = d1
+    return a
+
+
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _gather_cols_forward_kernel[
     BATCH: Int, NA: Int,
 ](
@@ -78,131 +69,94 @@ def _gather_cols_zero_idx_grad_kernel[
         grad_idx[b, 0] = Scalar[DT](0.0)
 
 
-struct GatherCols[NA: Int](Module):
-    comptime ARITY: Int = 2
-    comptime IN_DIMS = Self._build_in_dims()
-    comptime IN0_DIM: Int = Self.NA
-    comptime OUT_DIM: Int = 1
-
-    @staticmethod
-    def _build_in_dims() -> InlineArray[Int, 2]:
-        var d = InlineArray[Int, 2](fill=0)
-        d[0] = Self.NA
-        d[1] = 1
-        return d
-
-    var ts: TargetStorage
+struct GatherCols[NA_: Int](Module):
+    comptime ARITY = 2
+    comptime IN_DIMS = _dims2(Self.NA_, 1)
+    comptime OUT_DIM = 1
 
     def __init__(out self):
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. INIT ignored (no params) but accepted
-        for Sequential.make[target, INIT] uniformity."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "GatherCols: target must be 'cpu' or 'gpu'"
-        )
-        comptime assert Self.NA > 0, "GatherCols: NA must be > 0"
-        var g = Self()
-        comptime if target == "cpu":
-            g.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("GatherCols.make[target='gpu']: ctx required")
-            g.ts = TargetStorage.make_gpu(ctx.value())
-        return g^
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Unified CPU/GPU factory. INIT accepted for `make[target, INIT]`
+        uniformity but ignored (no params)."""
+        comptime assert Self.NA_ > 0, "GatherCols: NA must be > 0"
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[2, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["GatherCols", target](self.ts.target_tag)
-        var values = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var idx = inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref values = inputs[0]
+        ref idx = inputs[1]
         comptime if target == "cpu":
-            for b in range(BATCH):
-                var a = Int(idx[b, 0])
-                output_v[b, 0] = values[b, a]
+            out.ensure(B)
+            var v_p = values.data.unsafe_ptr()
+            var i_p = idx.data.unsafe_ptr()
+            for b in range(B):
+                var a = Int(i_p[b])
+                out.data[b] = v_p[b * Self.NA_ + a]
         else:
-            var v_p = values.ptr
-            var i_p = idx.ptr
-            var o_p = output_v.ptr
-            var v_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.NA), MutAnyOrigin,
-            ](v_p)
-            var i_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](i_p)
-            var o_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](o_p)
-            comptime n_blocks = (BATCH + TPB - 1) // TPB
-            comptime kernel = _gather_cols_forward_kernel[BATCH, Self.NA]
-            self.ts.ctx.value().enqueue_function[kernel](
-                v_lt, i_lt, o_lt, grid_dim=n_blocks, block_dim=TPB,
+            var c = ctx.value()
+            out.ensure_gpu(c, B)
+            comptime n_blocks = (B + TPB - 1) // TPB
+            c.enqueue_function[_gather_cols_forward_kernel[B, Self.NA_]](
+                values.lt["gpu", Layout.row_major(B, Self.NA_)](),
+                idx.lt["gpu", Layout.row_major(B, 1)](),
+                out.lt["gpu", Layout.row_major(B, 1)](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[2, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[2, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        """Forward-only op: both grad_values and grad_idx zero-fill.
-        See module docstring for why."""
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["GatherCols", target](self.ts.target_tag)
-        var grad_values_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var grad_idx_v = grad_inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
-
+        """Forward-only op: both grad_values and grad_idx zero-fill."""
+        ref gv = grad_inputs[0]
+        ref gi = grad_inputs[1]
         comptime if target == "cpu":
-            for b in range(BATCH):
-                for k in range(Self.NA):
-                    grad_values_v[b, k] = Scalar[DT](0.0)
-                grad_idx_v[b, 0] = Scalar[DT](0.0)
+            gv.ensure(B * Self.NA_)
+            gi.ensure(B)
+            for b in range(B):
+                for k in range(Self.NA_):
+                    gv.data[b * Self.NA_ + k] = Scalar[DT](0.0)
+                gi.data[b] = Scalar[DT](0.0)
         else:
-            var gv_p = grad_values_v.ptr
-            var gi_p = grad_idx_v.ptr
-            var gv_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.NA), MutAnyOrigin,
-            ](gv_p)
-            var gi_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](gi_p)
-            comptime values_total = BATCH * Self.NA
+            var c = ctx.value()
+            gv.ensure_gpu(c, B * Self.NA_)
+            gi.ensure_gpu(c, B)
+            comptime values_total = B * Self.NA_
             comptime values_blocks = (values_total + TPB - 1) // TPB
-            comptime values_kernel = _gather_cols_zero_values_grad_kernel[
-                BATCH, Self.NA,
-            ]
-            self.ts.ctx.value().enqueue_function[values_kernel](
-                gv_lt, grid_dim=values_blocks, block_dim=TPB,
+            c.enqueue_function[
+                _gather_cols_zero_values_grad_kernel[B, Self.NA_]
+            ](
+                gv.lt["gpu", Layout.row_major(B, Self.NA_)](),
+                grid_dim=values_blocks,
+                block_dim=TPB,
             )
-            comptime idx_blocks = (BATCH + TPB - 1) // TPB
-            comptime idx_kernel = _gather_cols_zero_idx_grad_kernel[BATCH]
-            self.ts.ctx.value().enqueue_function[idx_kernel](
-                gi_lt, grid_dim=idx_blocks, block_dim=TPB,
+            comptime idx_blocks = (B + TPB - 1) // TPB
+            c.enqueue_function[_gather_cols_zero_idx_grad_kernel[B]](
+                gi.lt["gpu", Layout.row_major(B, 1)](),
+                grid_dim=idx_blocks,
+                block_dim=TPB,
             )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).

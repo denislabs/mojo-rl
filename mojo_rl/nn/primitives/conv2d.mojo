@@ -1,71 +1,32 @@
-"""Conv2D[IC, OC, K, S, P, H, W] — 2D convolution via im2col + `max_matmul`.
+"""Conv2D[IC, OC, K, S, P, H, W] — 2D convolution on the storage surface.
 
-Phase 5 of `nn/PORTING_PLAN.md`. Reduces convolution to BATCH per-batch
-matmuls (`out_b = weight @ im2col(input_b).T`), mirroring the legacy
-`mojo_rl/nn/autodiff/primitives/conv2d.mojo:281` Apple/non-Apple path.
-The matmul itself flows through `linalg.matmul`'s `max_matmul`, so on
-Apple it lands on the Accelerate cblas kernel; on NVIDIA / generic CPU
-it falls through to the platform-best implementation.
+The Conv2D de-risk for the storage migration (plan §2/§5: the ONE unproven
+kernel). Reduction is identical to legacy `nn.primitives.Conv2D` — im2col +
+`max_matmul` GEMM — but on the storage surface (`ref/mut Tensor`, `TensorRefs`,
+`lt_gpu`), and the legacy's two-phase vjp split collapses to ONE `vjp` because
+the storage surface passes `forward_input` (x) explicitly (invariant §3.1) — no
+`_cached_input_ptr`, no param-before-input ordering hazard.
 
-Layouts (per batch):
-    weight:  [OC, IC·K·K]                         row-major (canonical)
-    col:     [OH·OW, IC·K·K]                      row-major (im2col output)
-    out:     [OC,   OH·OW]                        row-major
-    out = weight @ col.T   (matmul `transpose_b=True`)
+Layouts (flat trait order):
+    input    [BATCH, IC·H·W]
+    weight   [OC, IC·K·K]            (col index = (ic·K + kh)·K + kw)
+    col      [BS, IC·K·K]            BS = BATCH·OH·OW   (im2col output)
+    out      [BATCH, OC·OH·OW]
 
-Why per-batch matmul instead of one big GEMM: keeps the convolution
-free of any explicit reshape between BLAS-friendly `[OC, BATCH·OH·OW]`
-and the trait-mandated `[BATCH, OC·OH·OW]` flat order. BATCH is
-typically small (≤256), so the per-batch GEMM overhead is dominated by
-the matmul itself. The legacy nn package has a batched-Apple variant
-that re-packs the im2col across the batch to do one big sgemm; we
-deliberately ship the per-batch path first and gate the Apple-batched
-optimisation on a real CNN consumer that benchmarks the difference.
+  forward:  col = im2col(x); out_packed[BS,OC] = col @ Wᵀ; scatter + bias.
+  vjp:      d_bias = colsum(go); col = im2col(x); dW += goᵀ @ col;
+            d_col = go_packed @ W; d_input = col2im(d_col).
 
-Backward (per batch):
-    d_bias[oc] += Σ_{oh,ow} d_out[oc, oh, ow]
-    d_weight   += d_out_b @ col_b     (`[OC, OH·OW] @ [OH·OW, IC·K·K]`,
-                                       accumulated across batches)
-    d_col_b     = d_out_b.T @ weight  (`max_matmul[transpose_a=True]`)
-    d_input_b   = col2im(d_col_b)     (scatter-add into input shape)
-
-Accumulation into `d_weight` uses Apple Accelerate's `cblas_sgemm` with
-`beta=1` (single call, no temp alloc) when running on macOS fp32 — same
-trick `linear.mojo` uses. On other targets we matmul into a temp slab
-and add elementwise. Both paths produce identical numerics modulo
-float32 rounding.
-
-GPU path: **im2col + `max_matmul` (tensor-core GEMM)** — the same
-reduction as the CPU path, but the im2col is a GPU kernel and the matmul
-flows through `max_matmul[target="gpu"]` (cuBLAS-class GEMM on NVIDIA,
-MPS on Apple), mirroring `Linear`'s GPU forward/backward. Replaces the
-earlier naive direct-convolution kernels (one thread per output element)
-which were compute-bound and 5-10× slower than the legacy fused conv on
-conv nets (AlphaZero ResNet, Atari CNN, Dreamer image) — see
-`feedback_nn2_gpu_conv_naive_slow`.
-
-  * forward:  `col = im2col(x)` ([BS, COL]) → `out = col @ Wᵀ` ([BS, OC])
-              → scatter-add bias into the [BATCH, OC·SO] trait layout.
-  * d_weight: rebuild `col`, transpose grad_output → `goᵀ` ([OC, BS]),
-              `dW += goᵀ @ col` ([OC, COL]).
-  * d_bias:   block-per-OC reduction over BATCH·OH·OW (`block.sum`).
-  * d_input:  one thread per input element gathering over (kh,kw,oc) —
-              kept as the direct gather kernel (no atomics, already
-              parallel; mirrors legacy `backward_dx_kernel_impl`).
-
-`BS = BATCH·OH·OW`. The `col`/`out_packed`/`goᵀ` device scratch is
-lazily sized to BATCH on first call and reused (CUDA-graph-capture-safe,
-same pattern as `Linear.cacheT_dev`); `dW_tmp` is fixed [OC, COL] and
-allocated at `make` time.
+CPU uses portable `max_matmul`-into-temp + accumulate (no Apple-cblas beta=1
+special-case — correctness first; gated to tolerance vs a direct-conv ref). GPU
+re-derives the legacy kernels here so `nn/storage` stays independent of the
+legacy package (which gets deleted at the end of the migration).
 """
 
-from std.math import ceildiv
-from std.memory import alloc
 from std.sys import CompilationTarget
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
 from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 from linalg.matmul.cpu.apple_accelerate import (
@@ -74,1136 +35,1209 @@ from linalg.matmul.cpu.apple_accelerate import (
     _CBLASTranspose,
 )
 
-from ..constants import DT, CPU_SIMD_W, TPB
+from mojo_rl.nn.constants import DT, TPB, LAYOUT_NCHW, LAYOUT_NHWC
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
+from ..core.polyak import polyak_tensor
+from .linear import _cast_f2b_kernel, BF16
 
 
 comptime CONV_DW_TPB: Int = 128
-from ..core import (
-    Initializer,
-    AMPPolicy,
-    NoAMP,
-    Param,
-    ParamVisitor,
-    for_each_param_auto,
-    zero_grad_auto,
-    cast_fp32_to_bf16,
-    cast_bf16_to_fp32,
-    Conv2DAMPState,
-)
-from ..core.module import Module, typed_view, typed_view_mut, mptr
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
-    ensure_gpu_buffer,
-)
+
+# A/B knob: block size for the flat thread-per-element im2col/scatter launches.
+# These are bandwidth-bound elementwise kernels over BS·COL / B·OUT_FLAT, so 128
+# vs 256 only changes occupancy granularity (both are warp multiples) — prediction
+# is ~0% on NVIDIA (cf. O1). Bumped to 256 to A/B against Modular's im2col block
+# size; revert to TPB (128) if no NVIDIA gain. Apple is parity-only here.
+comptime CONV_TPB: Int = 256
 
 
-# ──────────────────────────────────────────────────────────────────────
-# im2col / col2im helpers — both produce `[OH·OW, IC·K·K]` row-major
-# col matrices for one batch sample. Module-level so the Conv2D body
-# stays terse and the compiler doesn't have to re-instantiate them per
-# struct method.
-# ──────────────────────────────────────────────────────────────────────
+# ── Layout-2D index helpers (NCHW default / NHWC) ────────────────────────────
+# ONE source of truth for the channels-first vs channels-last index math, shared
+# by every CPU + GPU conv kernel. Pure integer arithmetic, @always_inline →
+# device-safe. NCHW reproduces the pre-LAYOUT formulas exactly (bit-identical).
+#   input  (ic, ih, iw): NCHW ic*H*W + ih*W + iw   | NHWC (ih*W+iw)*IC + ic
+#   COL    (ic, kh, kw): NCHW (ic*K+kh)*K + kw     | NHWC (kh*K+kw)*IC + ic
+#   output (oc, s)     : NCHW oc*SO + s            | NHWC s*OC + oc
+@always_inline
+def _in_off[
+    LAYOUT: Int, IC: Int, H: Int, W: Int
+](ic: Int, ih: Int, iw: Int) -> Int:
+    comptime if LAYOUT == LAYOUT_NHWC:
+        return (ih * W + iw) * IC + ic
+    else:
+        return ic * H * W + ih * W + iw
 
 
-def _im2col_one_batch[
+@always_inline
+def _in_decode[
+    LAYOUT: Int, IC: Int, H: Int, W: Int
+](in_pos: Int) -> Tuple[Int, Int, Int]:
+    """Inverse of `_in_off`: flat within-sample offset → (ic, ih, iw)."""
+    comptime if LAYOUT == LAYOUT_NHWC:
+        var ic = in_pos % IC
+        var sp = in_pos // IC
+        return (ic, sp // W, sp % W)
+    else:
+        var hw = H * W
+        var rem = in_pos % hw
+        return (in_pos // hw, rem // W, rem % W)
+
+
+@always_inline
+def _col_off[LAYOUT: Int, IC: Int, K: Int](ic: Int, kh: Int, kw: Int) -> Int:
+    comptime if LAYOUT == LAYOUT_NHWC:
+        return (kh * K + kw) * IC + ic
+    else:
+        return (ic * K + kh) * K + kw
+
+
+@always_inline
+def _col_decode[
+    LAYOUT: Int, IC: Int, K: Int
+](ck: Int) -> Tuple[Int, Int, Int]:
+    """Inverse of `_col_off`: COL index → (ic, kh, kw)."""
+    comptime if LAYOUT == LAYOUT_NHWC:
+        var ic = ck % IC
+        var khkw = ck // IC
+        return (ic, khkw // K, khkw % K)
+    else:
+        var ic = ck // (K * K)
+        var rem = ck % (K * K)
+        return (ic, rem // K, rem % K)
+
+
+@always_inline
+def _out_off[LAYOUT: Int, OC: Int, SO: Int](oc: Int, s: Int) -> Int:
+    comptime if LAYOUT == LAYOUT_NHWC:
+        return s * OC + oc
+    else:
+        return oc * SO + s
+
+
+@always_inline
+def _out_decode[
+    LAYOUT: Int, OC: Int, SO: Int
+](out_pos: Int) -> Tuple[Int, Int]:
+    """Inverse of `_out_off`: flat within-sample offset → (oc, s)."""
+    comptime if LAYOUT == LAYOUT_NHWC:
+        return (out_pos % OC, out_pos // OC)
+    else:
+        return (out_pos // SO, out_pos % SO)
+
+
+# ── CPU im2col / col2im over List storage (no pointers, no origins) ──────
+def _im2col_cpu[
     IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OH: Int, OW: Int,
-](
-    in_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    col_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-):
-    """Pack the IC·H·W input slab into an [OH·OW, IC·K·K] col matrix.
-
-    Row index = `oh·OW + ow` (one row per output spatial position).
-    Col index inside each row = `(ic·K + kh)·K + kw` (matches the
-    weight flat layout `[OC, IC·K·K]` directly, so the matmul lines
-    up with no further transpose). Padded receptive fields contribute
-    zero — we write 0 for OOB lanes."""
+    LAYOUT: Int = LAYOUT_NCHW,
+](ref in_list: List[Scalar[DT]], in_off: Int, mut col_list: List[Scalar[DT]]):
+    """x[IC·H·W] slab at `in_off` → col_list[OH·OW, COL] row-major. COL axis and
+    input slab follow LAYOUT (NCHW default)."""
     comptime CK = IC * K * K
     for oh in range(OH):
         for ow in range(OW):
             var row_off = (oh * OW + ow) * CK
             for ic in range(IC):
-                var in_c_base = ic * H * W
-                var col_ic_base = row_off + ic * K * K
                 for kh in range(K):
                     var ih = oh * S + kh - P
-                    var col_kh_base = col_ic_base + kh * K
                     for kw in range(K):
                         var iw = ow * S + kw - P
+                        var c_idx = row_off + _col_off[LAYOUT, IC, K](ic, kh, kw)
                         if ih < 0 or ih >= H or iw < 0 or iw >= W:
-                            col_p[col_kh_base + kw] = Scalar[DT](0.0)
+                            col_list[c_idx] = Scalar[DT](0)
                         else:
-                            col_p[col_kh_base + kw] = (
-                                in_p[in_c_base + ih * W + iw]
-                            )
+                            col_list[c_idx] = in_list[
+                                in_off + _in_off[LAYOUT, IC, H, W](ic, ih, iw)
+                            ]
 
 
-def _col2im_one_batch[
+def _col2im_cpu[
     IC: Int, K: Int, S: Int, P: Int, H: Int, W: Int, OH: Int, OW: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
-    d_col_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    d_in_p: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ref d_col_list: List[Scalar[DT]],
+    mut d_in_list: List[Scalar[DT]],
+    in_off: Int,
 ):
-    """Scatter-add an [OH·OW, IC·K·K] col matrix back into a [IC·H·W]
-    input gradient slab. Assumes `d_in_p` was zero-filled before the
-    first call (typically by the Conv2D vjp body). Padded lanes are
-    skipped — they never received a meaningful col entry."""
+    """Scatter-add d_col[OH·OW, COL] back into d_in_list[IC·H·W] at `in_off`
+    (must be pre-zeroed). COL axis and input slab follow LAYOUT (NCHW default)."""
     comptime CK = IC * K * K
     for oh in range(OH):
         for ow in range(OW):
             var row_off = (oh * OW + ow) * CK
             for ic in range(IC):
-                var in_c_base = ic * H * W
-                var col_ic_base = row_off + ic * K * K
                 for kh in range(K):
                     var ih = oh * S + kh - P
                     if ih < 0 or ih >= H:
                         continue
-                    var col_kh_base = col_ic_base + kh * K
                     for kw in range(K):
                         var iw = ow * S + kw - P
                         if iw < 0 or iw >= W:
                             continue
-                        d_in_p[in_c_base + ih * W + iw] += (
-                            d_col_p[col_kh_base + kw]
-                        )
+                        d_in_list[
+                            in_off + _in_off[LAYOUT, IC, H, W](ic, ih, iw)
+                        ] += d_col_list[
+                            row_off + _col_off[LAYOUT, IC, K](ic, kh, kw)
+                        ]
 
 
-# ──────────────────────────────────────────────────────────────────────
-# GPU kernels — im2col + GEMM (forward, d_weight) and direct gather/reduce
-# (d_input, d_bias).
-#
-#   im2col:     1 thread per (b·SO + s, ck) col element.
-#   scatter:    1 thread per output element — out_packed[BS,OC] → [B,OC·SO]
-#               + bias.
-#   go_transpose 1 thread per (oc, b·SO + s) — grad_output[B,OC·SO] → [OC,BS].
-#   backward_dx 1 thread per (b, ic, ih, iw).
-#   backward_db 1 thread per oc.               Sums over BATCH·OH·OW.
-#
-# No atomics — every kernel writes a unique destination slot, matching
-# the deep_agents / nn convention (`c51/target_y_block.mojo:48`).
-# ──────────────────────────────────────────────────────────────────────
-
-
-def _conv2d_im2col_kernel[
-    BATCH: Int, IC: Int, K: Int, S: Int, P: Int,
-    H: Int, W: Int, OH: Int, OW: Int,
-    IN_FLAT: Int, COL_SIZE: Int, SPATIAL_OUT: Int, BS: Int,
+# ── GPU kernels (re-derived; args MutAnyOrigin = the GPU ABI boundary) ──
+# The GEMM-flanking kernels are dtype-parametric on the ACTIVATION dtype (`ADT`):
+# the fp32 path calls them with DT, the bf16-flow path with bfloat16 (im2col,
+# scatter, col2im, transpose, pack are pure gather/copy — dtype-transparent).
+def _im2col_kernel[
+    BATCH: Int,
+    IC: Int,
+    K: Int,
+    S: Int,
+    P: Int,
+    H: Int,
+    W: Int,
+    OH: Int,
+    OW: Int,
+    IN_FLAT: Int,
+    COL: Int,
+    SO: Int,
+    BS: Int,
+    ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
-    input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
-    col: LayoutTensor[DT, Layout.row_major(BS, COL_SIZE), MutAnyOrigin],
+    input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+    col: LayoutTensor[ADT, Layout.row_major(BS, COL), MutAnyOrigin],
 ):
-    """im2col into a [BS, COL_SIZE] row-major matrix, row = `b·SO + s`,
-    col index = `(ic·K + kh)·K + kw` (matches the weight flat layout so
-    the matmul lines up). Padded receptive fields write 0. One thread per
-    col element."""
     var idx = Int(global_idx.x)
-    var total = BS * COL_SIZE
-    if idx >= total:
+    if idx >= BS * COL:
         return
-    var row = idx // COL_SIZE
-    var ck = idx % COL_SIZE
-    var b = row // SPATIAL_OUT
-    var s = row % SPATIAL_OUT
+    var row = idx // COL
+    var ck = idx % COL
+    var b = row // SO
+    var s = row % SO
     var oh = s // OW
     var ow = s % OW
-    var ic = ck // (K * K)
-    var rem = ck % (K * K)
-    var kh = rem // K
-    var kw = rem % K
+    var ic, kh, kw = _col_decode[LAYOUT, IC, K](ck)
     var ih = oh * S + kh - P
     var iw = ow * S + kw - P
     if ih < 0 or ih >= H or iw < 0 or iw >= W:
-        col[row, ck] = Scalar[DT](0.0)
+        col[row, ck] = Scalar[ADT](0)
     else:
-        col[row, ck] = rebind[Scalar[DT]](input[b, ic * H * W + ih * W + iw])
+        col[row, ck] = rebind[Scalar[ADT]](
+            input[b, _in_off[LAYOUT, IC, H, W](ic, ih, iw)]
+        )
 
 
-def _conv2d_scatter_bias_kernel[
-    BATCH: Int, OC: Int, SPATIAL_OUT: Int, OUT_FLAT: Int, BS: Int,
+def _scatter_bias_kernel[
+    BATCH: Int,
+    OC: Int,
+    SO: Int,
+    OUT_FLAT: Int,
+    BS: Int,
+    ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
-    out_packed: LayoutTensor[DT, Layout.row_major(BS, OC), MutAnyOrigin],
-    bias: LayoutTensor[DT, Layout.row_major(OC), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
+    out_packed: LayoutTensor[ADT, Layout.row_major(BS, OC), MutAnyOrigin],
+    bias: LayoutTensor[ADT, Layout.row_major(OC), MutAnyOrigin],
+    output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
 ):
-    """Scatter the GEMM result `out_packed[b·SO + s, oc]` into the
-    trait-mandated `[BATCH, OC·SO]` flat layout and add the per-channel
-    bias. One thread per output element."""
     var idx = Int(global_idx.x)
-    var total = BATCH * OUT_FLAT
-    if idx >= total:
+    if idx >= BATCH * OUT_FLAT:
         return
     var b = idx // OUT_FLAT
     var out_pos = idx % OUT_FLAT
-    var oc = out_pos // SPATIAL_OUT
-    var s = out_pos % SPATIAL_OUT
-    output[b, out_pos] = (
-        rebind[Scalar[DT]](out_packed[b * SPATIAL_OUT + s, oc])
-        + rebind[Scalar[DT]](bias[oc])
-    )
+    var oc, s = _out_decode[LAYOUT, OC, SO](out_pos)
+    output[b, out_pos] = rebind[Scalar[ADT]](
+        out_packed[b * SO + s, oc]
+    ) + rebind[Scalar[ADT]](bias[oc])
 
 
-def _conv2d_go_transpose_kernel[
-    BATCH: Int, OC: Int, SPATIAL_OUT: Int, OUT_FLAT: Int, BS: Int,
+def _go_transpose_kernel[
+    BATCH: Int,
+    OC: Int,
+    SO: Int,
+    OUT_FLAT: Int,
+    BS: Int,
+    ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
+        ADT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin
     ],
-    go_T: LayoutTensor[DT, Layout.row_major(OC, BS), MutAnyOrigin],
+    go_T: LayoutTensor[ADT, Layout.row_major(OC, BS), MutAnyOrigin],
 ):
-    """Repack grad_output `[BATCH, OC·SO]` → `goᵀ[OC, BS]` (BS = BATCH·SO,
-    column = `b·SO + s`) so `dW = goᵀ @ col` runs through `max_matmul`
-    (which rejects `transpose_a`). One thread per goᵀ element."""
     var idx = Int(global_idx.x)
-    var total = OC * BS
-    if idx >= total:
+    if idx >= OC * BS:
         return
     var oc = idx // BS
     var col = idx % BS
-    var b = col // SPATIAL_OUT
-    var s = col % SPATIAL_OUT
-    go_T[oc, col] = rebind[Scalar[DT]](grad_output[b, oc * SPATIAL_OUT + s])
+    var b = col // SO
+    var s = col % SO
+    go_T[oc, col] = rebind[Scalar[ADT]](
+        grad_output[b, _out_off[LAYOUT, OC, SO](oc, s)]
+    )
 
 
-def _conv2d_accum_kernel[
+def _accum_kernel[
     N: Int
 ](
     dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
     src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
 ):
-    """dst[i] += src[i]. Accumulates the `max_matmul` dW result into
-    grad_weight, preserving the vjp accumulate contract (mirrors
-    Linear's `_accum_kernel`)."""
     var idx = Int(global_idx.x)
     if idx < N:
         dst[idx] = rebind[Scalar[DT]](dst[idx]) + rebind[Scalar[DT]](src[idx])
 
 
-def _conv2d_backward_dx_kernel[
-    BATCH: Int, IC: Int, OC: Int, K: Int, S: Int, P: Int,
-    H: Int, W: Int, OH: Int, OW: Int,
-    IN_FLAT: Int, OUT_FLAT: Int,
+def _wT_transpose_kernel[
+    OC: Int, COL: Int, ADT: DType = DT
 ](
-    grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
-    ],
-    weight: LayoutTensor[
-        DT, Layout.row_major(OC * IC * K * K), MutAnyOrigin,
-    ],
-    grad_input: LayoutTensor[
-        DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin,
-    ],
+    w: LayoutTensor[ADT, Layout.row_major(OC, COL), MutAnyOrigin],
+    wT: LayoutTensor[ADT, Layout.row_major(COL, OC), MutAnyOrigin],
 ):
-    var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    var total = BATCH * IN_FLAT
-    if idx >= total:
-        return
-    var b = idx // IN_FLAT
-    var in_pos = idx % IN_FLAT
-    var hw = H * W
-    var ic = in_pos // hw
-    var rem = in_pos % hw
-    var ih = rem // W
-    var iw = rem % W
-
-    var acc: Scalar[DT] = 0.0
-    for kh in range(K):
-        var oh_num = ih + P - kh
-        if oh_num < 0 or oh_num % S != 0:
-            continue
-        var oh = oh_num // S
-        if oh >= OH:
-            continue
-        for kw in range(K):
-            var ow_num = iw + P - kw
-            if ow_num < 0 or ow_num % S != 0:
-                continue
-            var ow = ow_num // S
-            if ow >= OW:
-                continue
-            var out_pos_base = oh * OW + ow
-            for oc in range(OC):
-                var w_off = (
-                    ((oc * IC + ic) * K + kh) * K + kw
-                )
-                acc += (
-                    rebind[Scalar[DT]](weight[w_off])
-                    * rebind[Scalar[DT]](
-                        grad_output[b, oc * OH * OW + out_pos_base]
-                    )
-                )
-    grad_input[b, in_pos] = acc
-
-
-# ── GEMM-based dx (replaces the K·K·OC direct gather). Three steps mirror
-#    the CPU path + the forward: repack grad_output → go_packed[BS, OC], GEMM
-#    d_col = go_packed @ weight[OC, COL] (tensor-core, contracts OC), then a
-#    cheap K·K col2im-gather. The old direct gather did K·K·OC scattered reads
-#    per input element with no tensor cores — the conv backward analog of the
-#    naive-BatchNorm bug. ──
-def _conv2d_go_pack_kernel[
-    BATCH: Int, OC: Int, SPATIAL_OUT: Int, OUT_FLAT: Int, BS: Int,
-](
-    grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
-    ],
-    go_packed: LayoutTensor[DT, Layout.row_major(BS, OC), MutAnyOrigin],
-):
-    """Repack grad_output `[BATCH, OC·SO]` → `go_packed[BS, OC]` (row =
-    `b·SO + s`) so `d_col = go_packed @ weight` runs as an untransposed
-    `max_matmul`. One thread per go_packed element (coalesced write)."""
+    """O2: transpose weight `W[OC, COL]` → `Wᵀ[COL, OC]` so the input-grad GEMM
+    can compute `d_colᵀ[COL, BS] = Wᵀ[COL, OC] @ goᵀ[OC, BS]` (reusing the `goᵀ`
+    already built for dW — no `_go_pack` kernel, no `[BS,COL]` d_col). `W` is
+    small (`OC·COL`), so the transpose is cheap relative to the col2im it
+    coalesces. `max_matmul` rejects `transpose_a`, hence the explicit transpose."""
     var idx = Int(global_idx.x)
-    var total = BS * OC
-    if idx >= total:
+    if idx >= OC * COL:
         return
-    var row = idx // OC
-    var oc = idx % OC
-    var b = row // SPATIAL_OUT
-    var s = row % SPATIAL_OUT
-    go_packed[row, oc] = rebind[Scalar[DT]](
-        grad_output[b, oc * SPATIAL_OUT + s]
-    )
+    var oc = idx // COL
+    var c = idx % COL
+    wT[c, oc] = rebind[Scalar[ADT]](w[oc, c])
 
 
-def _conv2d_dx_col2im_kernel[
-    BATCH: Int, IC: Int, K: Int, S: Int, P: Int,
-    H: Int, W: Int, OH: Int, OW: Int,
-    IN_FLAT: Int, COL_SIZE: Int, SPATIAL_OUT: Int, BS: Int,
+def _dx_col2im_kernel[
+    BATCH: Int,
+    IC: Int,
+    K: Int,
+    S: Int,
+    P: Int,
+    H: Int,
+    W: Int,
+    OH: Int,
+    OW: Int,
+    IN_FLAT: Int,
+    COL: Int,
+    SO: Int,
+    BS: Int,
+    ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
-    d_col: LayoutTensor[DT, Layout.row_major(BS, COL_SIZE), MutAnyOrigin],
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
+    d_col: LayoutTensor[ADT, Layout.row_major(COL, BS), MutAnyOrigin],
+    grad_input: LayoutTensor[
+        ADT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin
+    ],
 ):
-    """col2im gather: `grad_input[b,ic,ih,iw] = Σ_{kh,kw} d_col[b·SO+s,
-    (ic·K+kh)·K+kw]` over the valid (oh,ow) that this input element feeds.
-    OC is already contracted in `d_col` (the GEMM), so this is K·K reads per
-    element (vs K·K·OC in the old direct gather). One thread per input
-    element; unique destination → no atomics."""
+    # O2: `d_col` is the TRANSPOSED layout `[COL, BS]` (vs the natural `[BS,COL]`
+    # GEMM output). Adjacent threads differ in `iw` → `row` (col2im is a gather:
+    # one input element ← up to K² d_col entries, each read exactly once, so no
+    # cross-thread reuse and shared-mem tiling buys nothing — coalescing is the
+    # only lever). In `[COL, BS]` the per-(kh,kw) read `d_col[col_idx, row]` has
+    # adjacent threads at adjacent `row` → CONTIGUOUS, coalesced. Measured 1.59×
+    # on the S=1 hot shape (NVIDIA); strided/`[BS,COL]` was stride-COL scattered.
+    # O3: the `S==1` branch (the whole MuZero/EZv2 residual tower) drops the
+    # `% S` / `// S` integer ops and a divergence source.
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
-    var total = BATCH * IN_FLAT
-    if idx >= total:
+    if idx >= BATCH * IN_FLAT:
         return
     var b = idx // IN_FLAT
     var in_pos = idx % IN_FLAT
-    var hw = H * W
-    var ic = in_pos // hw
-    var rem = in_pos % hw
-    var ih = rem // W
-    var iw = rem % W
-
-    var acc: Scalar[DT] = 0.0
-    for kh in range(K):
-        var oh_num = ih + P - kh
-        if oh_num < 0 or oh_num % S != 0:
-            continue
-        var oh = oh_num // S
-        if oh >= OH:
-            continue
-        for kw in range(K):
-            var ow_num = iw + P - kw
-            if ow_num < 0 or ow_num % S != 0:
+    var ic, ih, iw = _in_decode[LAYOUT, IC, H, W](in_pos)
+    # fp32 accumulator (the col2im sum) even on the bf16-flow path; only the
+    # written grad_input is bf16 (activation dtype).
+    var acc: Scalar[DT] = 0
+    comptime if S == 1:
+        for kh in range(K):
+            var oh = ih + P - kh
+            if oh < 0 or oh >= OH:
                 continue
-            var ow = ow_num // S
-            if ow >= OW:
+            for kw in range(K):
+                var ow = iw + P - kw
+                if ow < 0 or ow >= OW:
+                    continue
+                var row = b * SO + oh * OW + ow
+                var col_idx = _col_off[LAYOUT, IC, K](ic, kh, kw)
+                acc += rebind[Scalar[ADT]](d_col[col_idx, row]).cast[DT]()
+    else:
+        for kh in range(K):
+            var oh_num = ih + P - kh
+            if oh_num < 0 or oh_num % S != 0:
                 continue
-            var row = b * SPATIAL_OUT + oh * OW + ow
-            var col_idx = (ic * K + kh) * K + kw
-            acc += rebind[Scalar[DT]](d_col[row, col_idx])
-    grad_input[b, in_pos] = acc
+            var oh = oh_num // S
+            if oh >= OH:
+                continue
+            for kw in range(K):
+                var ow_num = iw + P - kw
+                if ow_num < 0 or ow_num % S != 0:
+                    continue
+                var ow = ow_num // S
+                if ow >= OW:
+                    continue
+                var row = b * SO + oh * OW + ow
+                var col_idx = _col_off[LAYOUT, IC, K](ic, kh, kw)
+                acc += rebind[Scalar[ADT]](d_col[col_idx, row]).cast[DT]()
+    grad_input[b, in_pos] = acc.cast[ADT]()
 
 
-def _conv2d_backward_db_kernel[
-    BATCH: Int, OC: Int, OH: Int, OW: Int, OUT_FLAT: Int,
+def _backward_db_kernel[
+    BATCH: Int,
+    OC: Int,
+    OH: Int,
+    OW: Int,
+    OUT_FLAT: Int,
+    ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
+        ADT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin
     ],
     grad_bias: LayoutTensor[DT, Layout.row_major(OC), MutAnyOrigin],
 ):
-    """dB reduction — one block per OC, CONV_DW_TPB threads stride over
-    BATCH·OH·OW and `block.sum` the partials. Same pattern as `dW`."""
+    # grad_output is the ACTIVATION dtype (`ADT`); grad_bias is the FP32 master
+    # grad. Each element casts to DT before the block-sum (fp32 accumulator).
     var oc = Int(block_idx.x)
     var t = Int(thread_idx.x)
     if oc >= OC:
         return
-    var spatial_out = OH * OW
-    var n_eff = BATCH * spatial_out
-    var out_c_off = oc * spatial_out
-
-    var my_acc: Scalar[DT] = 0.0
+    var so = OH * OW
+    var n_eff = BATCH * so
+    var my_acc: Scalar[DT] = 0
     var idx = t
     while idx < n_eff:
-        var b = idx // spatial_out
-        var s_pos = idx % spatial_out
-        my_acc += rebind[Scalar[DT]](grad_output[b, out_c_off + s_pos])
+        var b = idx // so
+        var s_pos = idx % so
+        my_acc += rebind[Scalar[ADT]](
+            grad_output[b, _out_off[LAYOUT, OC, OH * OW](oc, s_pos)]
+        ).cast[DT]()
         idx += CONV_DW_TPB
-    var total = block.sum[block_size=CONV_DW_TPB, broadcast=False](
-        val=my_acc
-    )
+    var total = block.sum[block_size=CONV_DW_TPB, broadcast=False](val=my_acc)
     if t == 0:
-        grad_bias[oc] = (
-            rebind[Scalar[DT]](grad_bias[oc]) + total[0]
-        )
+        grad_bias[oc] = rebind[Scalar[DT]](grad_bias[oc]) + total[0]
 
 
+# ── Conv2D ────────────────────────────────────────────────────────────────
 struct Conv2D[
-    IC: Int, OC: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    IC_: Int,
+    OC_: Int,
+    K_: Int,
+    S_: Int,
+    P_: Int,
+    H_: Int,
+    W_: Int,
+    ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](Module):
-    comptime ARITY: Int = 1
-    comptime OH: Int = (Self.H + 2 * Self.P - Self.K) // Self.S + 1
-    comptime OW: Int = (Self.W + 2 * Self.P - Self.K) // Self.S + 1
-    comptime IN_DIM_FLAT: Int = Self.IC * Self.H * Self.W
-    comptime OUT_DIM_FLAT: Int = Self.OC * Self.OH * Self.OW
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_DIM_FLAT)
-    comptime OUT_DIM = Self.OUT_DIM_FLAT
-    comptime W_SIZE: Int = Self.OC * Self.IC * Self.K * Self.K
-    comptime B_SIZE: Int = Self.OC
-    comptime COL_SIZE: Int = Self.IC * Self.K * Self.K
-    comptime SPATIAL_OUT: Int = Self.OH * Self.OW
+    comptime ARITY = 1
+    comptime OH = (Self.H_ + 2 * Self.P_ - Self.K_) // Self.S_ + 1
+    comptime OW = (Self.W_ + 2 * Self.P_ - Self.K_) // Self.S_ + 1
+    comptime IN_FLAT = Self.IC_ * Self.H_ * Self.W_
+    comptime OUT_FLAT = Self.OC_ * Self.OH * Self.OW
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_FLAT)
+    comptime OUT_DIM = Self.OUT_FLAT
+    comptime W_SIZE = Self.OC_ * Self.IC_ * Self.K_ * Self.K_
+    comptime B_SIZE = Self.OC_
+    comptime COL = Self.IC_ * Self.K_ * Self.K_
+    comptime SO = Self.OH * Self.OW
+    # Activation-flow dtype (satisfies the Module trait). `Conv2D[...]` = fp32
+    # (ACT_DT == DT, the legacy NoAMP path); `Conv2D[..., DType.bfloat16]` flows
+    # activations at bf16 (the AMP "Step B" memory win). Master weights/grads/
+    # bias STAY fp32 (`Param` is always `DT`); only the CACHED bf16 weight copy
+    # (`w_bf`, version-gated) and bf16 bias (`b_a`) are low-precision.
+    comptime ACT_DT = Self.ADT
 
-    var weight: Param["weight", True,  Self.W_SIZE]
-    var bias:   Param["bias",   False, Self.B_SIZE]
-    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    # GPU im2col + GEMM scratch. `col`/`out_packed`/`goᵀ` are lazily sized
-    # to BATCH·SPATIAL_OUT on first call and reused (capture-safe, mirrors
-    # Linear.cacheT_dev); `dW_tmp` is fixed [OC, COL] and made at make-time.
-    var col_dev: Optional[DeviceBuffer[DT]]
-    var col_n: Int
-    var outp_dev: Optional[DeviceBuffer[DT]]
-    var outp_n: Int
-    var goT_dev: Optional[DeviceBuffer[DT]]
-    var goT_n: Int
-    var dW_tmp_dev: Optional[DeviceBuffer[DT]]
-    # bf16 scratch for the two GPU GEMMs (forward col@Wᵀ + backward goᵀ@col)
-    # when POLICY.compute_dtype == bf16. Empty/None on the fp32 path.
-    var amp: Conv2DAMPState[Self.OC, Self.COL_SIZE]
-    var ts: TargetStorage
+    var weight: Param["weight", True, Self.W_SIZE]
+    var bias: Param["bias", False, Self.B_SIZE]
+    # GPU im2col + GEMM scratch (lazy, reused — capture-safe). fp32-path scratch
+    # (`dW_tmp` is ALSO used by the bf16 path: the dW GEMM writes a FP32 output).
+    var col_t: Tensor  # [BS, COL] (im2col col) reused as [COL, BS] d_colᵀ (O2)
+    var outp_t: Tensor  # [BS, OC]   (out_packed; fwd only)
+    var goT_t: Tensor  # [OC, BS]   (goᵀ — for dW AND d_colᵀ, O2)
+    var dW_tmp: Tensor  # [OC, COL]  (fp32 dW temp; bf16-in → fp32-out GEMM)
+    var wT_t: Tensor  # [COL, OC]  (O2: fp32 Wᵀ for the d_colᵀ GEMM)
+    # bf16-flow compute scratch (lazy; used only when ACT_DT == bf16 and
+    # target == "gpu"). `col_t_bf`/`outp_t_bf`/`goT_t_bf` are the bf16 activation
+    # scratch (im2col col, out_packed/go_packed, goᵀ). `w_bf` is the CACHED bf16
+    # weight: recast from `weight.val` only when the optimizer bumped its version
+    # since the last cast (`_w_cast_version`), so the W cast happens ONCE per
+    # optimizer step, not per forward. `b_a` is the cached bf16 bias.
+    var col_t_bf: TensorImpl[Self.ADT]
+    var outp_t_bf: TensorImpl[Self.ADT]
+    var goT_t_bf: TensorImpl[Self.ADT]
+    var w_bf: TensorImpl[Self.ADT]
+    var b_a: TensorImpl[Self.ADT]
+    var wT_bf: TensorImpl[Self.ADT]  # [COL, OC] (O2: bf16 Wᵀ for d_colᵀ GEMM)
+    var _w_cast_version: Int  # `weight.val.version` at last bf16 weight cast
+    # Capture mode (set via `set_attr["capture_recast"]`): when True, the bf16
+    # weight recast is UNCONDITIONAL so the cast kernel is always recorded into a
+    # CUDA graph and reads the live fp32 master on every replay — the version
+    # gate would skip it on replay and serve STALE weights. Off → version-gated.
+    var _force_recast: Bool
+    # A2: device address of the input the forward last im2col'd into
+    # `col_t`/`col_t_bf`. The vjp REUSES that col (skips its redundant im2col)
+    # iff its `forward_input` is the SAME buffer; else it recomputes (safe
+    # fallback = today's behavior, never wrong). Valid under the framework's
+    # re-forward-before-vjp cache contract — the same one `BatchNorm2D.vjp`
+    # already relies on for `cache_xhat` (conv sits next to BN in every block,
+    # so wherever BN's single-field cache is valid at vjp, `col_t` is too).
+    # 0 = no forward has populated the col yet.
+    var _col_src_ptr: Int
 
     def __init__(out self):
-        self.weight = Param["weight", True,  Self.W_SIZE]()
-        self.bias   = Param["bias",   False, Self.B_SIZE]()
-        self._cached_input_ptr = None
-        self.col_dev = None
-        self.col_n = 0
-        self.outp_dev = None
-        self.outp_n = 0
-        self.goT_dev = None
-        self.goT_n = 0
-        self.dW_tmp_dev = None
-        self.amp = Conv2DAMPState[Self.OC, Self.COL_SIZE].make()
-        self.ts = TargetStorage.make_uninit()
+        self.weight = Param["weight", True, Self.W_SIZE]()
+        self.bias = Param["bias", False, Self.B_SIZE]()
+        self.col_t = Tensor()
+        self.outp_t = Tensor()
+        self.goT_t = Tensor()
+        self.dW_tmp = Tensor()
+        self.wT_t = Tensor()
+        self.col_t_bf = TensorImpl[Self.ADT]()
+        self.outp_t_bf = TensorImpl[Self.ADT]()
+        self.goT_t_bf = TensorImpl[Self.ADT]()
+        self.w_bf = TensorImpl[Self.ADT]()
+        self.b_a = TensorImpl[Self.ADT]()
+        self.wT_bf = TensorImpl[Self.ADT]()
+        self._w_cast_version = -1  # < any real version → first forward casts
+        self._force_recast = False
+        self._col_src_ptr = 0
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        comptime if ATTR == "capture_recast":
+            self._force_recast = value != Scalar[DT](0.0)
+
+    def _ensure_w_bf(mut self, c: DeviceContext) raises:
+        """Ensure the cached bf16 weight `w_bf` reflects the current fp32
+        `weight.val`. Recasts ONLY when the optimizer bumped `val.version` since
+        the last cast (so the weight cast is ONCE per step, not per fwd/bwd).
+        Shared by forward (the cast) and vjp (which REUSES it — no optimizer step
+        intervenes between a fwd and its bwd)."""
+        self.w_bf.ensure_gpu(c, Self.W_SIZE)
+        if self._force_recast or self.weight.val.version != self._w_cast_version:
+            c.enqueue_function[_cast_f2b_kernel[Self.W_SIZE]](
+                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                self.w_bf.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                grid_dim=(Self.W_SIZE + 255) // 256,
+                block_dim=256,
+            )
+            self._w_cast_version = self.weight.val.version
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "Conv2D: target must be 'cpu' or 'gpu'"
-        )
-        comptime assert Self.K > 0 and Self.S > 0, (
-            "Conv2D: K and S must be positive"
-        )
-        comptime assert Self.OH > 0 and Self.OW > 0, (
-            "Conv2D: invalid spatial shape — check H/W/K/S/P"
-        )
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var c = Self()
-        comptime if target == "cpu":
-            c.weight = Param["weight", True,  Self.W_SIZE].make_cpu()
-            c.bias   = Param["bias",   False, Self.B_SIZE].make_cpu()
-            # fan_in = IC·K·K, fan_out = OC·K·K — the canonical Kaiming
-            # convention for conv weights.
-            INIT.init_weight(
-                c.weight.value_unsafe_ptr_cpu(),
-                Self.W_SIZE,
-                Self.IC * Self.K * Self.K,
-                Self.OC * Self.K * Self.K,
-            )
-            INIT.init_bias(c.bias.value_unsafe_ptr_cpu(), Self.B_SIZE)
-            c.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["Conv2D.make[target='gpu']"](ctx)
-            c.weight = Param["weight", True,  Self.W_SIZE].make_gpu(ctx_v)
-            c.bias   = Param["bias",   False, Self.B_SIZE].make_gpu(ctx_v)
-            # Initialise CPU storage with the chosen INIT, then enqueue
-            # a copy to the device buffer — same pattern Linear uses for
-            # Kaiming/Xavier weight init on GPU.
-            var w_host = List[Scalar[DT]](length=Self.W_SIZE, fill=0.0)
-            var b_host = List[Scalar[DT]](length=Self.B_SIZE, fill=0.0)
-            INIT.init_weight(
-                mptr(w_host.unsafe_ptr()),
-                Self.W_SIZE,
-                Self.IC * Self.K * Self.K,
-                Self.OC * Self.K * Self.K,
-            )
-            INIT.init_bias(
-                mptr(b_host.unsafe_ptr()),
-                Self.B_SIZE,
-            )
-            var w_hb = ctx_v.enqueue_create_host_buffer[DT](Self.W_SIZE)
-            var b_hb = ctx_v.enqueue_create_host_buffer[DT](Self.B_SIZE)
-            ctx_v.synchronize()
-            for k in range(Self.W_SIZE):
-                w_hb.unsafe_ptr()[k] = w_host[k]
-            for k in range(Self.B_SIZE):
-                b_hb.unsafe_ptr()[k] = b_host[k]
-            ctx_v.enqueue_copy(c.weight.val.dev.value(), w_hb)
-            ctx_v.enqueue_copy(c.bias.val.dev.value(),   b_hb)
-            ctx_v.synchronize()
-            # Fixed [OC, COL] dW scratch for the max_matmul grad_w path; the
-            # col / out_packed / goᵀ buffers stay None (lazily sized to
-            # BATCH·SPATIAL_OUT on the first forward / backward).
-            c.dW_tmp_dev = ctx_v.enqueue_create_buffer[DT](Self.W_SIZE)
-            c.ts = TargetStorage.make_gpu(ctx_v)
+        c.weight = Param["weight", True, Self.W_SIZE].make[target](ctx)
+        c.bias = Param["bias", False, Self.B_SIZE].make[target](ctx)
+        # Receptive-field-scaled fan_in/fan_out for a conv weight [OC, IC, K, K]
+        # so Kaiming/Xavier get the RIGHT bound. This previously called a fixed
+        # `(k%7-3)*0.1` placeholder that IGNORED `INIT` — a degenerate, non-random
+        # init that BatchNorm masked (CIFAR/ResNet) but BN-FREE conv nets (MuZero
+        # spatial h/g/f) could not recover from. `INIT=Deterministic` reproduces
+        # that exact pattern, so bit-parity gates are unchanged. `init_weight`/
+        # `init_bias` upload to device on GPU.
+        comptime fan_in = Self.IC_ * Self.K_ * Self.K_
+        comptime fan_out = Self.OC_ * Self.K_ * Self.K_
+        INIT.init_weight[target](c.weight.val, Self.W_SIZE, fan_in, fan_out, ctx)
+        INIT.init_bias[target](c.bias.val, Self.B_SIZE, ctx)
         return c^
 
-    # ----- Forward ---------------------------------------------------------
-
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Conv2D", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        var in_p = input.ptr
-        var out_p = output_v.ptr
-        self._cached_input_ptr = in_p
-
-        comptime if target == "cpu":
-            var w_p = self.weight.value_unsafe_ptr_cpu()
-            var b_p = self.bias.value_unsafe_ptr_cpu()
-            var col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-                Scalar[DT]
-            ](Self.SPATIAL_OUT * Self.COL_SIZE)
-            var w_tt = TileTensor(
-                self.weight.val.cpu, row_major[Self.OC, Self.COL_SIZE](),
-            )
-            for b in range(BATCH):
-                _im2col_one_batch[
-                    Self.IC, Self.K, Self.S, Self.P,
-                    Self.H, Self.W, Self.OH, Self.OW,
-                ](
-                    in_p + b * Self.IN_DIM_FLAT,
-                    col_buf,
+        ref in0 = inputs[0]
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            # ACT_DT IS DT in this branch, but the compiler doesn't collapse the
+            # opaque `Self.ACT_DT` param to `DT` for type-unification against the
+            # fp32 weight/bias views — so rebind the activation refs (sound: the
+            # dtypes are equal here). `TensorImpl[Self.ACT_DT]` ≡ `Tensor`.
+            ref in0d = rebind[Tensor](in0)
+            ref outd = rebind[Tensor](out)
+            comptime if target == "cpu":
+                outd.ensure(B * Self.OUT_FLAT)
+                var col = List[Scalar[DT]](
+                    length=Self.SO * Self.COL, fill=Scalar[DT](0)
                 )
-                var col_tt = TileTensor(
-                    col_buf,
-                    row_major[Self.SPATIAL_OUT, Self.COL_SIZE](),
+                var out_b = List[Scalar[DT]](
+                    length=Self.OC_ * Self.SO, fill=Scalar[DT](0)
                 )
-                var out_b_p = out_p + b * Self.OUT_DIM_FLAT
-                var out_tt = TileTensor(
-                    out_b_p,
-                    row_major[Self.OC, Self.SPATIAL_OUT](),
-                )
-                # out = W @ col.T  →  [OC, SPATIAL_OUT].
-                max_matmul[transpose_b=True, target="cpu"](
-                    out_tt, w_tt, col_tt, None,
-                )
-                # Bias broadcast across SPATIAL_OUT lanes.
-                for oc in range(Self.OC):
-                    var row = out_b_p + oc * Self.SPATIAL_OUT
-                    var bv = b_p[oc]
-                    var i = 0
-                    while i + CPU_SIMD_W <= Self.SPATIAL_OUT:
-                        var v = row.load[width=CPU_SIMD_W](i)
-                        row.store(
-                            i, v + SIMD[DT, CPU_SIMD_W](bv),
-                        )
-                        i += CPU_SIMD_W
-                    while i < Self.SPATIAL_OUT:
-                        row[i] = row[i] + bv
-                        i += 1
-            col_buf.free()
-        else:
-            # im2col + GEMM: col = im2col(x) [BS, COL]; out_packed = col @ Wᵀ
-            # [BS, OC]; scatter → output [BATCH, OC·SO] + bias. The GEMM runs
-            # through max_matmul (tensor cores), the same as Linear.
-            comptime BS = BATCH * Self.SPATIAL_OUT
-            var ctx = self.ts.ctx.value()
-            ensure_gpu_buffer(self.col_dev, self.col_n, BS * Self.COL_SIZE, ctx)
-            ensure_gpu_buffer(self.outp_dev, self.outp_n, BS * Self.OC, ctx)
-
-            comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
-            comptime out_layout = Layout.row_major(BATCH, Self.OUT_DIM_FLAT)
-            comptime col_layout = Layout.row_major(BS, Self.COL_SIZE)
-            comptime outp_layout = Layout.row_major(BS, Self.OC)
-            comptime b_layout = Layout.row_major(Self.B_SIZE)
-            var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](in_p)
-            var out_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](out_p)
-            var col_lt = LayoutTensor[DT, col_layout, MutAnyOrigin](
-                self.col_dev.value()
-            )
-            var b_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
-                self.bias.val.dev.value()
-            )
-
-            # ── (1) im2col → col[BS, COL] ──────────────────────────────
-            comptime n_blocks_col = (BS * Self.COL_SIZE + TPB - 1) // TPB
-            comptime im2col_kernel = _conv2d_im2col_kernel[
-                BATCH, Self.IC, Self.K, Self.S, Self.P,
-                Self.H, Self.W, Self.OH, Self.OW,
-                Self.IN_DIM_FLAT, Self.COL_SIZE, Self.SPATIAL_OUT, BS,
-            ]
-            ctx.enqueue_function[im2col_kernel](
-                in_lt, col_lt, grid_dim=n_blocks_col, block_dim=TPB,
-            )
-
-            # ── (2) out_packed = col @ Wᵀ  ([BS, COL] @ [OC, COL]ᵀ) ────
-            comptime if POLICY.compute_dtype == DT:
                 var w_tt = TileTensor(
-                    self.weight.val.dev.value(),
-                    row_major[Self.OC, Self.COL_SIZE](),
+                    self.weight.val.data, row_major[Self.OC_, Self.COL]()
                 )
+                for b in range(B):
+                    _im2col_cpu[
+                        Self.IC_,
+                        Self.K_,
+                        Self.S_,
+                        Self.P_,
+                        Self.H_,
+                        Self.W_,
+                        Self.OH,
+                        Self.OW,
+                        Self.LAYOUT,
+                    ](in0d.data, b * Self.IN_FLAT, col)
+                    var col_tt = TileTensor(col, row_major[Self.SO, Self.COL]())
+                    var out_b_tt = TileTensor(
+                        out_b, row_major[Self.OC_, Self.SO]()
+                    )
+                    # out_b[OC,SO] = W[OC,COL] @ col[SO,COL]ᵀ
+                    max_matmul[transpose_b=True, target="cpu"](
+                        out_b_tt, w_tt, col_tt, None
+                    )
+                    # scatter + bias broadcast into out.data[b*OUT_FLAT:] (out_b
+                    # is the [OC,SO] GEMM result; the output offset follows LAYOUT)
+                    var base = b * Self.OUT_FLAT
+                    for oc in range(Self.OC_):
+                        var bv = self.bias.val.data[oc]
+                        for s in range(Self.SO):
+                            outd.data[
+                                base + _out_off[Self.LAYOUT, Self.OC_, Self.SO](
+                                    oc, s
+                                )
+                            ] = (out_b[oc * Self.SO + s] + bv)
+            else:
+                var c = ctx.value()
+                comptime BS = B * Self.SO
+                outd.ensure_gpu(c, B * Self.OUT_FLAT)
+                self.col_t.ensure_gpu(c, BS * Self.COL)
+                self.outp_t.ensure_gpu(c, BS * Self.OC_)
+                # (1) im2col → col[BS, COL]
+                comptime nb_col = (BS * Self.COL + CONV_TPB - 1) // CONV_TPB
+                c.enqueue_function[
+                    _im2col_kernel[
+                        B,
+                        Self.IC_,
+                        Self.K_,
+                        Self.S_,
+                        Self.P_,
+                        Self.H_,
+                        Self.W_,
+                        Self.OH,
+                        Self.OW,
+                        Self.IN_FLAT,
+                        Self.COL,
+                        Self.SO,
+                        BS,
+                        DT,
+                        Self.LAYOUT,
+                    ]
+                ](
+                    in0d.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                    self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                    grid_dim=nb_col,
+                    block_dim=CONV_TPB,
+                )
+                # A2: record the input buffer so this forward's col_t can be
+                # reused by the matching vjp (skipping a redundant im2col).
+                self._col_src_ptr = Int(in0d.dev.value().unsafe_ptr())
+                # (2) out_packed[BS,OC] = col[BS,COL] @ W[OC,COL]ᵀ
                 var col_tt = TileTensor(
-                    self.col_dev.value(), row_major[BS, Self.COL_SIZE](),
+                    self.col_t.dev.value(), row_major[BS, Self.COL]()
+                )
+                var w_tt = TileTensor(
+                    self.weight.val.dev.value(), row_major[Self.OC_, Self.COL]()
                 )
                 var outp_tt = TileTensor(
-                    self.outp_dev.value(), row_major[BS, Self.OC](),
+                    self.outp_t.dev.value(), row_major[BS, Self.OC_]()
                 )
                 max_matmul[transpose_b=True, target="gpu"](
-                    outp_tt, col_tt, w_tt, ctx,
+                    outp_tt, col_tt, w_tt, c
                 )
-            else:
-                # AMP: cast W + col → bf16, bf16 GEMM, upcast out → fp32.
-                comptime assert POLICY.compute_dtype == DType.bfloat16, (
-                    "Conv2D GPU supports only fp32 and bf16 compute_dtype"
+                # (3) scatter → output[B, OC·SO] + bias
+                comptime nb_sc = (B * Self.OUT_FLAT + CONV_TPB - 1) // CONV_TPB
+                c.enqueue_function[
+                    _scatter_bias_kernel[
+                        B,
+                        Self.OC_,
+                        Self.SO,
+                        Self.OUT_FLAT,
+                        BS,
+                        DT,
+                        Self.LAYOUT,
+                    ]
+                ](
+                    self.outp_t.lt["gpu", Layout.row_major(BS, Self.OC_)](),
+                    self.bias.val.lt["gpu", Layout.row_major(Self.OC_)](),
+                    outd.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                    grid_dim=nb_sc,
+                    block_dim=CONV_TPB,
                 )
-                self.amp.ensure_gpu(BS, ctx)
-                cast_fp32_to_bf16[target="gpu", N = Self.W_SIZE](
-                    mptr(self.weight.val.dev.value().unsafe_ptr()),
-                    mptr(self.amp.w_bf16_dev.value().unsafe_ptr()),
-                    ctx,
-                )
-                cast_fp32_to_bf16[target="gpu", N = BS * Self.COL_SIZE](
-                    mptr(self.col_dev.value().unsafe_ptr()),
-                    mptr(self.amp.col_bf16_dev.value().unsafe_ptr()),
-                    ctx,
-                )
-                var w_bf16_tt = TileTensor(
-                    self.amp.w_bf16_dev.value(),
-                    row_major[Self.OC, Self.COL_SIZE](),
-                )
-                var col_bf16_tt = TileTensor(
-                    self.amp.col_bf16_dev.value(),
-                    row_major[BS, Self.COL_SIZE](),
-                )
-                var outp_bf16_tt = TileTensor(
-                    self.amp.outp_bf16_dev.value(), row_major[BS, Self.OC](),
-                )
-                max_matmul[transpose_b=True, target="gpu"](
-                    outp_bf16_tt, col_bf16_tt, w_bf16_tt, ctx,
-                )
-                cast_bf16_to_fp32[target="gpu", N = BS * Self.OC](
-                    mptr(self.amp.outp_bf16_dev.value().unsafe_ptr()),
-                    mptr(self.outp_dev.value().unsafe_ptr()),
-                    ctx,
-                )
-
-            # ── (3) scatter out_packed → output[B, OC·SO] + bias ───────
-            var outp_lt = LayoutTensor[DT, outp_layout, MutAnyOrigin](
-                self.outp_dev.value()
+        else:
+            # ── bf16-flow path (GPU-only) ──
+            comptime assert target == "gpu", "bf16-flow Conv2D is GPU-only"
+            var c = ctx.value()
+            comptime BS = B * Self.SO
+            out.ensure_gpu(c, B * Self.OUT_FLAT)
+            self.col_t_bf.ensure_gpu(c, BS * Self.COL)
+            self.outp_t_bf.ensure_gpu(c, BS * Self.OC_)
+            # x (in0) is ALREADY bf16 — no input cast. W: cached bf16 (recast
+            # only on a version bump). bias: cheap per-forward DT→bf16 cast.
+            self._ensure_w_bf(c)
+            self.b_a.ensure_gpu(c, Self.B_SIZE)
+            c.enqueue_function[_cast_f2b_kernel[Self.B_SIZE]](
+                self.bias.val.lt["gpu", Layout.row_major(Self.B_SIZE)](),
+                self.b_a.lt["gpu", Layout.row_major(Self.B_SIZE)](),
+                grid_dim=(Self.B_SIZE + 255) // 256,
+                block_dim=256,
             )
-            comptime n_blocks_sc = (BATCH * Self.OUT_DIM_FLAT + TPB - 1) // TPB
-            comptime scatter_kernel = _conv2d_scatter_bias_kernel[
-                BATCH, Self.OC, Self.SPATIAL_OUT, Self.OUT_DIM_FLAT, BS,
-            ]
-            ctx.enqueue_function[scatter_kernel](
-                outp_lt, b_lt, out_lt,
-                grid_dim=n_blocks_sc, block_dim=TPB,
+            # (1) im2col → col[BS, COL] (bf16-in → bf16-out)
+            comptime nb_col = (BS * Self.COL + CONV_TPB - 1) // CONV_TPB
+            c.enqueue_function[
+                _im2col_kernel[
+                    B,
+                    Self.IC_,
+                    Self.K_,
+                    Self.S_,
+                    Self.P_,
+                    Self.H_,
+                    Self.W_,
+                    Self.OH,
+                    Self.OW,
+                    Self.IN_FLAT,
+                    Self.COL,
+                    Self.SO,
+                    BS,
+                    Self.ADT,
+                    Self.LAYOUT,
+                ]
+            ](
+                in0.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                self.col_t_bf.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                grid_dim=nb_col,
+                block_dim=CONV_TPB,
             )
-
-    # ----- Backward --------------------------------------------------------
+            # A2: record the input buffer for col_t_bf reuse in the matching vjp.
+            self._col_src_ptr = Int(in0.dev.value().unsafe_ptr())
+            # (2) out_packed[BS,OC] = col[BS,COL] @ W[OC,COL]ᵀ — bf16-in →
+            # bf16-out GEMM (fp32 accumulation is automatic).
+            var col_tt = TileTensor(
+                self.col_t_bf.dev.value(), row_major[BS, Self.COL]()
+            )
+            var w_tt = TileTensor(
+                self.w_bf.dev.value(), row_major[Self.OC_, Self.COL]()
+            )
+            var outp_tt = TileTensor(
+                self.outp_t_bf.dev.value(), row_major[BS, Self.OC_]()
+            )
+            max_matmul[transpose_b=True, target="gpu"](outp_tt, col_tt, w_tt, c)
+            # (3) scatter → output[B, OC·SO] + bf16 bias
+            comptime nb_sc = (B * Self.OUT_FLAT + CONV_TPB - 1) // CONV_TPB
+            c.enqueue_function[
+                _scatter_bias_kernel[
+                    B,
+                    Self.OC_,
+                    Self.SO,
+                    Self.OUT_FLAT,
+                    BS,
+                    Self.ADT,
+                    Self.LAYOUT,
+                ]
+            ](
+                self.outp_t_bf.lt["gpu", Layout.row_major(BS, Self.OC_)](),
+                self.b_a.lt["gpu", Layout.row_major(Self.OC_)](),
+                out.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                grid_dim=nb_sc,
+                block_dim=CONV_TPB,
+            )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        """Combined backward (S7) — the two phases in fixed order. Single
-        source of truth for direct callers; Sequential calls the phases
-        directly so the param-before-input order is the orchestrator's."""
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        self.vjp_param_grads[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output
-        )
-        self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output, grad_inputs
-        )
-
-    def vjp_param_grads[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-    ) raises:
-        """Phase 1 (S7): d_bias + d_weight (mode=all). im2col reads the
-        cached forward input (`_cached_input_ptr`); MUST run before
-        `vjp_grad_input` writes the slab that input aliases under
-        Sequential. d_weight needs the rebuilt `col`; the grad_input
-        phase (d_col + col2im) does NOT, so im2col runs once, here."""
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        comptime if mode == "all":
-            assert_tag_for["Conv2D", target](self.ts.target_tag)
-            var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-
-            comptime if target == "cpu":
-                var go_p = grad_output_v.ptr
-                var x_p = self._cached_input_ptr.value()
-                var dw_p = self.weight.grad_unsafe_ptr_cpu()
-                var db_p = self.bias.grad_unsafe_ptr_cpu()
-
-                var col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-                    Scalar[DT]
-                ](Self.SPATIAL_OUT * Self.COL_SIZE)
-                var dw_tmp: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-                comptime if (
-                    CompilationTarget.is_macos() and DT == DType.float32
-                ):
-                    dw_tmp = None
-                else:
-                    dw_tmp = alloc[Scalar[DT]](Self.W_SIZE)
-
-                for b in range(BATCH):
-                    # ---- 1. Rebuild col_b for this batch (reads x) ----
-                    _im2col_one_batch[
-                        Self.IC, Self.K, Self.S, Self.P,
-                        Self.H, Self.W, Self.OH, Self.OW,
-                    ](
-                        x_p + b * Self.IN_DIM_FLAT,
-                        col_buf,
-                    )
-                    var col_tt = TileTensor(
-                        col_buf,
-                        row_major[Self.SPATIAL_OUT, Self.COL_SIZE](),
-                    )
-
-                    # ---- 2. d_out_b view + d_bias accumulate ----------
-                    var go_b_p = go_p + b * Self.OUT_DIM_FLAT
-                    var go_b_tt = TileTensor(
-                        go_b_p, row_major[Self.OC, Self.SPATIAL_OUT](),
-                    )
-                    for oc in range(Self.OC):
-                        var acc: Scalar[DT] = 0.0
-                        var row_off = oc * Self.SPATIAL_OUT
-                        for s in range(Self.SPATIAL_OUT):
-                            acc += go_b_p[row_off + s]
-                        db_p[oc] += acc
-
-                    # ---- 3. d_weight += d_out_b @ col_b ---------------
-                    #         d_out_b is [OC, SPATIAL_OUT],
-                    #         col_b   is [SPATIAL_OUT, COL_SIZE],
-                    #         result  is [OC, COL_SIZE] (= same flat as W).
-                    # On Apple fp32 we use one cblas_sgemm with beta=1 (no
-                    # temp). Elsewhere we matmul into dw_tmp and add.
-                    comptime if (
-                        CompilationTarget.is_macos()
-                        and DT == DType.float32
-                    ):
-                        var cblas = get_cblas_f32_function()
-                        cblas(
-                            _CBLASOrder.ROW_MAJOR,
-                            _CBLASTranspose.NO_TRANSPOSE,
-                            _CBLASTranspose.NO_TRANSPOSE,
-                            Int32(Self.OC),
-                            Int32(Self.COL_SIZE),
-                            Int32(Self.SPATIAL_OUT),
-                            Float32(1.0),
-                            rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                                go_b_p
-                            ),
-                            Int32(Self.SPATIAL_OUT),
-                            rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                                col_buf
-                            ),
-                            Int32(Self.COL_SIZE),
-                            Float32(1.0),
-                            rebind[UnsafePointer[Float32, MutAnyOrigin]](
-                                dw_p
-                            ),
-                            Int32(Self.COL_SIZE),
-                        )
-                    else:
-                        var dw_tmp_p = dw_tmp.value()
-                        var dw_tmp_tt = TileTensor(
-                            dw_tmp_p,
-                            row_major[Self.OC, Self.COL_SIZE](),
-                        )
-                        max_matmul[target="cpu"](
-                            dw_tmp_tt, go_b_tt, col_tt, None,
-                        )
-                        var i = 0
-                        while i + CPU_SIMD_W <= Self.W_SIZE:
-                            var dwv = dw_p.load[width=CPU_SIMD_W](i)
-                            var tv = dw_tmp_p.load[width=CPU_SIMD_W](i)
-                            dw_p.store(i, dwv + tv)
-                            i += CPU_SIMD_W
-                        while i < Self.W_SIZE:
-                            dw_p[i] = dw_p[i] + dw_tmp_p[i]
-                            i += 1
-
-                col_buf.free()
-                comptime if not (
-                    CompilationTarget.is_macos() and DT == DType.float32
-                ):
-                    dw_tmp.value().free()
-            else:
-                # im2col + GEMM dW: rebuild col[BS, COL] from the cached
-                # input, transpose grad_output → goᵀ[OC, BS], then
-                # dW_tmp = goᵀ @ col ([OC, BS] @ [BS, COL]) and accumulate
-                # into grad_weight. d_bias keeps the block-per-OC reduction.
-                # The im2col reads `in_lt` (the cached forward input) and is
-                # enqueued in THIS phase so it precedes dx (the grad_input
-                # phase), which clobbers the aliased slab — the original
-                # Conv2D dx-first bug
-                # (feedback_nn2_gpu_backward_order_aliased_slab) stays
-                # structurally impossible.
-                comptime BS = BATCH * Self.SPATIAL_OUT
-                var go_p = grad_output_v.ptr
-                var x_p = self._cached_input_ptr.value()
-                var ctx = self.ts.ctx.value()
-                ensure_gpu_buffer(
-                    self.col_dev, self.col_n, BS * Self.COL_SIZE, ctx
-                )
-                ensure_gpu_buffer(self.goT_dev, self.goT_n, Self.OC * BS, ctx)
-
-                comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
-                comptime out_layout = Layout.row_major(
-                    BATCH, Self.OUT_DIM_FLAT
-                )
-                comptime col_layout = Layout.row_major(BS, Self.COL_SIZE)
-                comptime goT_layout = Layout.row_major(Self.OC, BS)
-                comptime w_layout = Layout.row_major(Self.W_SIZE)
-                comptime b_layout = Layout.row_major(Self.B_SIZE)
-                var go_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](go_p)
-                var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](x_p)
-                var col_lt = LayoutTensor[DT, col_layout, MutAnyOrigin](
-                    self.col_dev.value()
-                )
-                var goT_lt = LayoutTensor[DT, goT_layout, MutAnyOrigin](
-                    self.goT_dev.value()
-                )
-
-                # ── (1) rebuild col[BS, COL] = im2col(x) ───────────────
-                comptime n_blocks_col = (
-                    BS * Self.COL_SIZE + TPB - 1
-                ) // TPB
-                comptime im2col_kernel = _conv2d_im2col_kernel[
-                    BATCH, Self.IC, Self.K, Self.S, Self.P,
-                    Self.H, Self.W, Self.OH, Self.OW,
-                    Self.IN_DIM_FLAT, Self.COL_SIZE, Self.SPATIAL_OUT, BS,
-                ]
-                ctx.enqueue_function[im2col_kernel](
-                    in_lt, col_lt, grid_dim=n_blocks_col, block_dim=TPB,
-                )
-
-                # ── (2) goᵀ[OC, BS] = transpose(grad_output) ───────────
-                comptime n_blocks_got = (Self.OC * BS + TPB - 1) // TPB
-                comptime got_kernel = _conv2d_go_transpose_kernel[
-                    BATCH, Self.OC, Self.SPATIAL_OUT, Self.OUT_DIM_FLAT, BS,
-                ]
-                ctx.enqueue_function[got_kernel](
-                    go_lt, goT_lt, grid_dim=n_blocks_got, block_dim=TPB,
-                )
-
-                # ── (3) dW_tmp = goᵀ @ col  → accumulate into grad_w ───
-                comptime if POLICY.compute_dtype == DT:
-                    var goT_tt = TileTensor(
-                        self.goT_dev.value(), row_major[Self.OC, BS](),
-                    )
-                    var col_tt = TileTensor(
-                        self.col_dev.value(), row_major[BS, Self.COL_SIZE](),
-                    )
-                    var dW_tmp_tt = TileTensor(
-                        self.dW_tmp_dev.value(),
-                        row_major[Self.OC, Self.COL_SIZE](),
-                    )
-                    max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, ctx)
-                else:
-                    # AMP: cast goᵀ + col → bf16, bf16 GEMM, upcast → fp32.
-                    comptime assert POLICY.compute_dtype == DType.bfloat16, (
-                        "Conv2D GPU supports only fp32 and bf16 compute_dtype"
-                    )
-                    self.amp.ensure_gpu(BS, ctx)
-                    cast_fp32_to_bf16[target="gpu", N = Self.OC * BS](
-                        mptr(self.goT_dev.value().unsafe_ptr()),
-                        mptr(self.amp.goT_bf16_dev.value().unsafe_ptr()),
-                        ctx,
-                    )
-                    cast_fp32_to_bf16[target="gpu", N = BS * Self.COL_SIZE](
-                        mptr(self.col_dev.value().unsafe_ptr()),
-                        mptr(self.amp.col_bf16_dev.value().unsafe_ptr()),
-                        ctx,
-                    )
-                    var goT_bf16_tt = TileTensor(
-                        self.amp.goT_bf16_dev.value(),
-                        row_major[Self.OC, BS](),
-                    )
-                    var col_bf16_tt = TileTensor(
-                        self.amp.col_bf16_dev.value(),
-                        row_major[BS, Self.COL_SIZE](),
-                    )
-                    var dW_bf16_tt = TileTensor(
-                        self.amp.dW_bf16_dev.value(),
-                        row_major[Self.OC, Self.COL_SIZE](),
-                    )
-                    max_matmul[target="gpu"](
-                        dW_bf16_tt, goT_bf16_tt, col_bf16_tt, ctx
-                    )
-                    cast_bf16_to_fp32[target="gpu", N = Self.W_SIZE](
-                        mptr(self.amp.dW_bf16_dev.value().unsafe_ptr()),
-                        mptr(self.dW_tmp_dev.value().unsafe_ptr()),
-                        ctx,
-                    )
-
-                var dw_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
-                    self.weight.grd.dev.value()
-                )
-                var dW_tmp_lt = LayoutTensor[DT, w_layout, MutAnyOrigin](
-                    self.dW_tmp_dev.value()
-                )
-                comptime n_blocks_acc = (Self.W_SIZE + TPB - 1) // TPB
-                comptime acc_kernel = _conv2d_accum_kernel[Self.W_SIZE]
-                ctx.enqueue_function[acc_kernel](
-                    dw_lt, dW_tmp_lt,
-                    grid_dim=n_blocks_acc, block_dim=TPB,
-                )
-
-                # ── (4) d_bias — 1 block per OC, block.sum over BS ─────
-                var db_lt = LayoutTensor[DT, b_layout, MutAnyOrigin](
-                    self.bias.grd.dev.value()
-                )
-                comptime db_kernel = _conv2d_backward_db_kernel[
-                    BATCH, Self.OC, Self.OH, Self.OW, Self.OUT_DIM_FLAT,
-                ]
-                ctx.enqueue_function[db_kernel](
-                    go_lt, db_lt,
-                    grid_dim=Self.OC, block_dim=CONV_DW_TPB,
-                )
-
-    def vjp_grad_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
-    ) raises:
-        """Phase 2 (S7): d_input = col2im(d_out.T @ weight). Reads only
-        grad_output + weight (NOT the cached input / col), so no im2col
-        here; writes grad_inputs[0] (aliases the cached input — safe
-        because phase 1 already consumed it). Runs in both modes."""
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Conv2D", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
-        comptime if target == "cpu":
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var w_p = self.weight.value_unsafe_ptr_cpu()
-
-            # Zero d_input — col2im is scatter-add.
-            for k in range(BATCH * Self.IN_DIM_FLAT):
-                gi_p[k] = Scalar[DT](0.0)
-
-            var d_col_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-                Scalar[DT]
-            ](Self.SPATIAL_OUT * Self.COL_SIZE)
-            var go_b_T_buf: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-            comptime if (
-                CompilationTarget.is_macos() and DT == DType.float32
-            ):
-                go_b_T_buf = None
-            else:
-                go_b_T_buf = alloc[Scalar[DT]](
-                    Self.SPATIAL_OUT * Self.OC
-                )
-
-            var w_tt = TileTensor(
-                self.weight.val.cpu, row_major[Self.OC, Self.COL_SIZE](),
+        ref fin = forward_input[0]
+        ref gin = grad_inputs[0]
+        comptime if Self.ACT_DT == DT:
+          # ── fp32 path (legacy NoAMP, byte-identical) ──
+          # ACT_DT IS DT here — rebind the activation refs (sound; see forward).
+          ref find = rebind[Tensor](fin)
+          ref gind = rebind[Tensor](gin)
+          ref god = rebind[Tensor](grad_output)
+          comptime if target == "cpu":
+            gind.ensure(B * Self.IN_FLAT)
+            for k in range(B * Self.IN_FLAT):
+                gind.data[k] = Scalar[DT](0)
+            var col = List[Scalar[DT]](
+                length=Self.SO * Self.COL, fill=Scalar[DT](0)
             )
-
-            for b in range(BATCH):
-                var go_b_p = go_p + b * Self.OUT_DIM_FLAT
-
-                # ---- 4. d_col_b = d_out_b.T @ weight ------------------
-                #         d_out_b.T is [SPATIAL_OUT, OC],
-                #         weight     is [OC, COL_SIZE],
-                #         result     is [SPATIAL_OUT, COL_SIZE].
-                # `max_matmul` does NOT support `transpose_a=True`, so on
-                # Apple fp32 we drop through to cblas (which does); on
-                # other targets we materialise the transpose explicitly
-                # into `go_b_T_buf` and call max_matmul untransposed.
-                comptime if (
-                    CompilationTarget.is_macos() and DT == DType.float32
-                ):
+            var d_col = List[Scalar[DT]](
+                length=Self.SO * Self.COL, fill=Scalar[DT](0)
+            )
+            var w_tt = TileTensor(
+                self.weight.val.data, row_major[Self.OC_, Self.COL]()
+            )
+            # Apple-fp32: fused cblas paths (beta=1 dW-accumulate + TRANSPOSE
+            # d_col), matching legacy Conv2D. Elsewhere: portable max_matmul
+            # into a temp + add (one extra W_SIZE pass) and an explicit
+            # transpose (max_matmul rejects transpose_a).
+            comptime IS_APPLE_F32 = (
+                CompilationTarget.is_macos() and DT == DType.float32
+            )
+            for b in range(B):
+                var go_base = b * Self.OUT_FLAT
+                # d_bias[oc] += Σ_s go[oc, s]
+                for oc in range(Self.OC_):
+                    var acc: Scalar[DT] = 0
+                    for s in range(Self.SO):
+                        acc += god.data[
+                            go_base
+                            + _out_off[Self.LAYOUT, Self.OC_, Self.SO](oc, s)
+                        ]
+                    self.bias.grd.data[oc] += acc
+                # rebuild col_b = im2col(x_b)
+                _im2col_cpu[
+                    Self.IC_,
+                    Self.K_,
+                    Self.S_,
+                    Self.P_,
+                    Self.H_,
+                    Self.W_,
+                    Self.OH,
+                    Self.OW,
+                    Self.LAYOUT,
+                ](find.data, b * Self.IN_FLAT, col)
+                # The Apple-cblas fused path reinterprets grad_output memory as a
+                # contiguous [OC, SO] matrix — only valid for NCHW. NHWC falls back
+                # to the portable gather-into-[OC,SO] path below.
+                comptime if IS_APPLE_F32 and Self.LAYOUT == LAYOUT_NCHW:
                     var cblas = get_cblas_f32_function()
+                    var go_b_p = god.data.unsafe_ptr() + go_base
+                    # dW += go_b[OC,SO] @ col_b[SO,COL]  (beta=1, no temp)
+                    cblas(
+                        _CBLASOrder.ROW_MAJOR,
+                        _CBLASTranspose.NO_TRANSPOSE,
+                        _CBLASTranspose.NO_TRANSPOSE,
+                        Int32(Self.OC_),
+                        Int32(Self.COL),
+                        Int32(Self.SO),
+                        Float32(1.0),
+                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](go_b_p),
+                        Int32(Self.SO),
+                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
+                            col.unsafe_ptr()
+                        ),
+                        Int32(Self.COL),
+                        Float32(1.0),
+                        rebind[UnsafePointer[Float32, MutAnyOrigin]](
+                            self.weight.grd.data.unsafe_ptr()
+                        ),
+                        Int32(Self.COL),
+                    )
+                    # d_col[SO,COL] = go_bᵀ[SO,OC] @ W[OC,COL]  (beta=0, A^T)
                     cblas(
                         _CBLASOrder.ROW_MAJOR,
                         _CBLASTranspose.TRANSPOSE,
                         _CBLASTranspose.NO_TRANSPOSE,
-                        Int32(Self.SPATIAL_OUT),
-                        Int32(Self.COL_SIZE),
-                        Int32(Self.OC),
+                        Int32(Self.SO),
+                        Int32(Self.COL),
+                        Int32(Self.OC_),
                         Float32(1.0),
+                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](go_b_p),
+                        Int32(Self.SO),
                         rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                            go_b_p
+                            self.weight.val.data.unsafe_ptr()
                         ),
-                        Int32(Self.SPATIAL_OUT),
-                        rebind[UnsafePointer[Float32, ImmutAnyOrigin]](
-                            w_p
-                        ),
-                        Int32(Self.COL_SIZE),
+                        Int32(Self.COL),
                         Float32(0.0),
                         rebind[UnsafePointer[Float32, MutAnyOrigin]](
-                            d_col_buf
+                            d_col.unsafe_ptr()
                         ),
-                        Int32(Self.COL_SIZE),
+                        Int32(Self.COL),
                     )
                 else:
-                    # Build d_out_b.T into go_b_T_buf, then untransposed
-                    # matmul. The temp is SPATIAL_OUT × OC.
-                    var go_b_T_buf_p = go_b_T_buf.value()
-                    for s in range(Self.SPATIAL_OUT):
-                        for oc in range(Self.OC):
-                            go_b_T_buf_p[s * Self.OC + oc] = go_b_p[
-                                oc * Self.SPATIAL_OUT + s
+                    # gather grad_output (LAYOUT-ordered) into packed [OC, SO]
+                    var go_b = List[Scalar[DT]](
+                        length=Self.OC_ * Self.SO, fill=Scalar[DT](0)
+                    )
+                    for oc in range(Self.OC_):
+                        for s in range(Self.SO):
+                            go_b[oc * Self.SO + s] = god.data[
+                                go_base
+                                + _out_off[Self.LAYOUT, Self.OC_, Self.SO](oc, s)
                             ]
-                    var go_b_T_tt = TileTensor(
-                        go_b_T_buf_p,
-                        row_major[Self.SPATIAL_OUT, Self.OC](),
-                    )
-                    var d_col_tt = TileTensor(
-                        d_col_buf,
-                        row_major[Self.SPATIAL_OUT, Self.COL_SIZE](),
-                    )
-                    max_matmul[target="cpu"](
-                        d_col_tt, go_b_T_tt, w_tt, None,
-                    )
-
-                # ---- 5. col2im → d_input_b ----------------------------
-                _col2im_one_batch[
-                    Self.IC, Self.K, Self.S, Self.P,
-                    Self.H, Self.W, Self.OH, Self.OW,
-                ](
-                    d_col_buf,
-                    gi_p + b * Self.IN_DIM_FLAT,
-                )
-
-            d_col_buf.free()
-            comptime if not (
-                CompilationTarget.is_macos() and DT == DType.float32
+                    comptime if Self.COL == 1:
+                        # Degenerate N=COL=1 GEMM (a 1x1 conv with IC=1 — the
+                        # MuZero action-embedding). `max_matmul` aborts on N=1 on
+                        # the non-Apple path, so compute the two matrix-vector
+                        # products directly. col / d_col are [SO, 1] == [SO];
+                        # W is [OC, 1] == weight[oc].
+                        #   dW[oc]  += Σ_s go[oc,s]·col[s]
+                        #   d_col[s] = Σ_oc go[oc,s]·W[oc]
+                        for oc in range(Self.OC_):
+                            var acc = Scalar[DT](0)
+                            for s in range(Self.SO):
+                                acc += go_b[oc * Self.SO + s] * col[s]
+                            self.weight.grd.data[oc] += acc
+                        for s in range(Self.SO):
+                            var acc = Scalar[DT](0)
+                            for oc in range(Self.OC_):
+                                acc += go_b[oc * Self.SO + s] * self.weight.val.data[oc]
+                            d_col[s] = acc
+                    else:
+                        var col_tt = TileTensor(
+                            col, row_major[Self.SO, Self.COL]()
+                        )
+                        var go_b_tt = TileTensor(
+                            go_b, row_major[Self.OC_, Self.SO]()
+                        )
+                        # dW += go_b[OC,SO] @ col[SO,COL]
+                        var dw_tmp = List[Scalar[DT]](
+                            length=Self.W_SIZE, fill=Scalar[DT](0)
+                        )
+                        var dw_tmp_tt = TileTensor(
+                            dw_tmp, row_major[Self.OC_, Self.COL]()
+                        )
+                        max_matmul[target="cpu"](dw_tmp_tt, go_b_tt, col_tt, None)
+                        for k in range(Self.W_SIZE):
+                            self.weight.grd.data[k] += dw_tmp[k]
+                        # d_col[SO,COL] = go_bᵀ[SO,OC] @ W[OC,COL]
+                        var go_b_T = List[Scalar[DT]](
+                            length=Self.SO * Self.OC_, fill=Scalar[DT](0)
+                        )
+                        for s in range(Self.SO):
+                            for oc in range(Self.OC_):
+                                go_b_T[s * Self.OC_ + oc] = go_b[
+                                    oc * Self.SO + s
+                                ]
+                        var go_b_T_tt = TileTensor(
+                            go_b_T, row_major[Self.SO, Self.OC_]()
+                        )
+                        var d_col_tt = TileTensor(
+                            d_col, row_major[Self.SO, Self.COL]()
+                        )
+                        max_matmul[target="cpu"](
+                            d_col_tt, go_b_T_tt, w_tt, None
+                        )
+                # col2im → grad_input_b (scatter-add)
+                _col2im_cpu[
+                    Self.IC_,
+                    Self.K_,
+                    Self.S_,
+                    Self.P_,
+                    Self.H_,
+                    Self.W_,
+                    Self.OH,
+                    Self.OW,
+                    Self.LAYOUT,
+                ](d_col, gind.data, b * Self.IN_FLAT)
+          else:
+            var c = ctx.value()
+            comptime BS = B * Self.SO
+            gind.ensure_gpu(c, B * Self.IN_FLAT)
+            self.col_t.ensure_gpu(c, BS * Self.COL)
+            self.goT_t.ensure_gpu(c, Self.OC_ * BS)
+            self.dW_tmp.ensure_gpu(c, Self.W_SIZE)
+            # (1) col = im2col(x) — A2: REUSE the forward's col_t when this vjp's
+            # forward_input is the buffer the forward im2col'd; else recompute
+            # (safe fallback). See `_col_src_ptr`.
+            if (
+                self._col_src_ptr == 0
+                or Int(find.dev.value().unsafe_ptr()) != self._col_src_ptr
             ):
-                go_b_T_buf.value().free()
+                comptime nb_col = (BS * Self.COL + TPB - 1) // TPB
+                c.enqueue_function[
+                    _im2col_kernel[
+                        B,
+                        Self.IC_,
+                        Self.K_,
+                        Self.S_,
+                        Self.P_,
+                        Self.H_,
+                        Self.W_,
+                        Self.OH,
+                        Self.OW,
+                        Self.IN_FLAT,
+                        Self.COL,
+                        Self.SO,
+                        BS,
+                        DT,
+                        Self.LAYOUT,
+                    ]
+                ](
+                    find.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                    self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                    grid_dim=nb_col,
+                    block_dim=TPB,
+                )
+            # (2) goᵀ[OC,BS] = transpose(grad_output)
+            comptime nb_got = (Self.OC_ * BS + TPB - 1) // TPB
+            c.enqueue_function[
+                _go_transpose_kernel[
+                    B,
+                    Self.OC_,
+                    Self.SO,
+                    Self.OUT_FLAT,
+                    BS,
+                    DT,
+                    Self.LAYOUT,
+                ]
+            ](
+                god.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                self.goT_t.lt["gpu", Layout.row_major(Self.OC_, BS)](),
+                grid_dim=nb_got,
+                block_dim=TPB,
+            )
+            # (3) dW_tmp = goᵀ @ col → accumulate into grad_w
+            var goT_tt = TileTensor(
+                self.goT_t.dev.value(), row_major[Self.OC_, BS]()
+            )
+            var col_tt = TileTensor(
+                self.col_t.dev.value(), row_major[BS, Self.COL]()
+            )
+            var dW_tmp_tt = TileTensor(
+                self.dW_tmp.dev.value(), row_major[Self.OC_, Self.COL]()
+            )
+            max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, c)
+            comptime nb_acc = (Self.W_SIZE + TPB - 1) // TPB
+            c.enqueue_function[_accum_kernel[Self.W_SIZE]](
+                self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                grid_dim=nb_acc,
+                block_dim=TPB,
+            )
+            # (4) d_bias — 1 block per OC
+            c.enqueue_function[
+                _backward_db_kernel[
+                    B,
+                    Self.OC_,
+                    Self.OH,
+                    Self.OW,
+                    Self.OUT_FLAT,
+                    DT,
+                    Self.LAYOUT,
+                ]
+            ](
+                god.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                self.bias.grd.lt["gpu", Layout.row_major(Self.OC_)](),
+                grid_dim=Self.OC_,
+                block_dim=CONV_DW_TPB,
+            )
+            # (5) d_input (O2): d_colᵀ[COL,BS] = Wᵀ[COL,OC] @ goᵀ[OC,BS] reusing
+            # the goᵀ from (2) — NO `_go_pack` kernel — then the coalesced col2im
+            # reading the transposed d_colᵀ. col_t (free after the dW GEMM) is
+            # reused as the [COL, BS] d_colᵀ buffer.
+            self.wT_t.ensure_gpu(c, Self.COL * Self.OC_)
+            comptime nb_wt = (Self.OC_ * Self.COL + TPB - 1) // TPB
+            c.enqueue_function[_wT_transpose_kernel[Self.OC_, Self.COL]](
+                self.weight.val.lt["gpu", Layout.row_major(Self.OC_, Self.COL)](),
+                self.wT_t.lt["gpu", Layout.row_major(Self.COL, Self.OC_)](),
+                grid_dim=nb_wt,
+                block_dim=TPB,
+            )
+            var wT_tt = TileTensor(
+                self.wT_t.dev.value(), row_major[Self.COL, Self.OC_]()
+            )
+            var goT2_tt = TileTensor(
+                self.goT_t.dev.value(), row_major[Self.OC_, BS]()
+            )
+            var dcolT_tt = TileTensor(
+                self.col_t.dev.value(), row_major[Self.COL, BS]()
+            )
+            max_matmul[target="gpu"](dcolT_tt, wT_tt, goT2_tt, c)
+            comptime nb_dx = (B * Self.IN_FLAT + CONV_DW_TPB - 1) // CONV_DW_TPB
+            c.enqueue_function[
+                _dx_col2im_kernel[
+                    B,
+                    Self.IC_,
+                    Self.K_,
+                    Self.S_,
+                    Self.P_,
+                    Self.H_,
+                    Self.W_,
+                    Self.OH,
+                    Self.OW,
+                    Self.IN_FLAT,
+                    Self.COL,
+                    Self.SO,
+                    BS,
+                    DT,
+                    Self.LAYOUT,
+                ]
+            ](
+                self.col_t.lt["gpu", Layout.row_major(Self.COL, BS)](),
+                gind.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                grid_dim=nb_dx,
+                block_dim=CONV_DW_TPB,
+            )
         else:
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
-            comptime out_layout = Layout.row_major(
-                BATCH, Self.OUT_DIM_FLAT
+            # ── bf16-flow path (GPU-only) ──
+            comptime assert target == "gpu", "bf16-flow Conv2D is GPU-only"
+            var c = ctx.value()
+            comptime BS = B * Self.SO
+            gin.ensure_gpu(c, B * Self.IN_FLAT)
+            self.col_t_bf.ensure_gpu(c, BS * Self.COL)
+            self.goT_t_bf.ensure_gpu(c, Self.OC_ * BS)
+            self.dW_tmp.ensure_gpu(c, Self.W_SIZE)  # fp32 dW temp
+            self._ensure_w_bf(c)  # cached bf16 weight (reused from forward)
+            # (1) col = im2col(x): x (fin) ALREADY bf16 → bf16 col. A2: REUSE the
+            # forward's col_t_bf when fin is the buffer the forward im2col'd; else
+            # recompute (safe fallback). See `_col_src_ptr`.
+            if (
+                self._col_src_ptr == 0
+                or Int(fin.dev.value().unsafe_ptr()) != self._col_src_ptr
+            ):
+                comptime nb_col = (BS * Self.COL + TPB - 1) // TPB
+                c.enqueue_function[
+                    _im2col_kernel[
+                        B,
+                        Self.IC_,
+                        Self.K_,
+                        Self.S_,
+                        Self.P_,
+                        Self.H_,
+                        Self.W_,
+                        Self.OH,
+                        Self.OW,
+                        Self.IN_FLAT,
+                        Self.COL,
+                        Self.SO,
+                        BS,
+                        Self.ADT,
+                        Self.LAYOUT,
+                    ]
+                ](
+                    fin.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                    self.col_t_bf.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                    grid_dim=nb_col,
+                    block_dim=TPB,
+                )
+            # (2) goᵀ[OC,BS] = transpose(grad_output): bf16 go → bf16 goᵀ.
+            comptime nb_got = (Self.OC_ * BS + TPB - 1) // TPB
+            c.enqueue_function[
+                _go_transpose_kernel[
+                    B,
+                    Self.OC_,
+                    Self.SO,
+                    Self.OUT_FLAT,
+                    BS,
+                    Self.ADT,
+                    Self.LAYOUT,
+                ]
+            ](
+                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                self.goT_t_bf.lt["gpu", Layout.row_major(Self.OC_, BS)](),
+                grid_dim=nb_got,
+                block_dim=TPB,
             )
-            comptime w_layout = Layout.row_major(Self.W_SIZE)
-            var go_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](go_p)
-            var gi_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](gi_p)
-            var ctx = self.ts.ctx.value()
-            comptime BS = BATCH * Self.SPATIAL_OUT
-
-            # dx via GEMM + col2im (mirrors the CPU path + forward), instead of
-            # the K·K·OC direct gather. Reuse col_dev as d_col[BS, COL] and
-            # outp_dev as go_packed[BS, OC] (both free in backward); ensure here
-            # since vjp_grad_input runs in input_only mode too (no phase-1 sizing).
-            ensure_gpu_buffer(self.outp_dev, self.outp_n, BS * Self.OC, ctx)
-            ensure_gpu_buffer(self.col_dev, self.col_n, BS * Self.COL_SIZE, ctx)
-
-            # ── (1) go_packed[BS, OC] = repack(grad_output) ───────────────
-            var gopack_lt = LayoutTensor[
-                DT, Layout.row_major(BS, Self.OC), MutAnyOrigin,
-            ](self.outp_dev.value())
-            comptime n_blocks_gp = (BS * Self.OC + TPB - 1) // TPB
-            comptime gopack_kernel = _conv2d_go_pack_kernel[
-                BATCH, Self.OC, Self.SPATIAL_OUT, Self.OUT_DIM_FLAT, BS,
-            ]
-            ctx.enqueue_function[gopack_kernel](
-                go_lt, gopack_lt, grid_dim=n_blocks_gp, block_dim=TPB,
+            # (3) dW_tmp = goᵀ @ col → bf16-in, FP32-out GEMM → accumulate into
+            # the fp32 master grad.
+            var goT_tt = TileTensor(
+                self.goT_t_bf.dev.value(), row_major[Self.OC_, BS]()
+            )
+            var col_tt = TileTensor(
+                self.col_t_bf.dev.value(), row_major[BS, Self.COL]()
+            )
+            var dW_tmp_tt = TileTensor(
+                self.dW_tmp.dev.value(), row_major[Self.OC_, Self.COL]()
+            )
+            max_matmul[target="gpu"](dW_tmp_tt, goT_tt, col_tt, c)
+            comptime nb_acc = (Self.W_SIZE + TPB - 1) // TPB
+            c.enqueue_function[_accum_kernel[Self.W_SIZE]](
+                self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                self.dW_tmp.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                grid_dim=nb_acc,
+                block_dim=TPB,
+            )
+            # (4) d_bias — bf16 go → FP32 master grad (fp32 accumulator).
+            c.enqueue_function[
+                _backward_db_kernel[
+                    B,
+                    Self.OC_,
+                    Self.OH,
+                    Self.OW,
+                    Self.OUT_FLAT,
+                    Self.ADT,
+                    Self.LAYOUT,
+                ]
+            ](
+                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                self.bias.grd.lt["gpu", Layout.row_major(Self.OC_)](),
+                grid_dim=Self.OC_,
+                block_dim=CONV_DW_TPB,
+            )
+            # (5) d_input (O2): d_colᵀ[COL,BS] = Wᵀ_bf[COL,OC] @ goᵀ[OC,BS]
+            # reusing goᵀ from (2) — NO `_go_pack` kernel. All bf16 (grad_input
+            # flows bf16); Wᵀ_bf transposes the forward's cached bf16 weight.
+            # col_t_bf (free after the dW GEMM) is reused as the [COL,BS] d_colᵀ.
+            self.wT_bf.ensure_gpu(c, Self.COL * Self.OC_)
+            comptime nb_wt = (Self.OC_ * Self.COL + TPB - 1) // TPB
+            c.enqueue_function[
+                _wT_transpose_kernel[Self.OC_, Self.COL, Self.ADT]
+            ](
+                self.w_bf.lt["gpu", Layout.row_major(Self.OC_, Self.COL)](),
+                self.wT_bf.lt["gpu", Layout.row_major(Self.COL, Self.OC_)](),
+                grid_dim=nb_wt,
+                block_dim=TPB,
+            )
+            var wbT_tt = TileTensor(
+                self.wT_bf.dev.value(), row_major[Self.COL, Self.OC_]()
+            )
+            var goT2_tt = TileTensor(
+                self.goT_t_bf.dev.value(), row_major[Self.OC_, BS]()
+            )
+            var dcolT_tt = TileTensor(
+                self.col_t_bf.dev.value(), row_major[Self.COL, BS]()
+            )
+            max_matmul[target="gpu"](dcolT_tt, wbT_tt, goT2_tt, c)
+            comptime nb_dx = (B * Self.IN_FLAT + CONV_DW_TPB - 1) // CONV_DW_TPB
+            c.enqueue_function[
+                _dx_col2im_kernel[
+                    B,
+                    Self.IC_,
+                    Self.K_,
+                    Self.S_,
+                    Self.P_,
+                    Self.H_,
+                    Self.W_,
+                    Self.OH,
+                    Self.OW,
+                    Self.IN_FLAT,
+                    Self.COL,
+                    Self.SO,
+                    BS,
+                    Self.ADT,
+                    Self.LAYOUT,
+                ]
+            ](
+                self.col_t_bf.lt["gpu", Layout.row_major(Self.COL, BS)](),
+                gin.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                grid_dim=nb_dx,
+                block_dim=CONV_DW_TPB,
             )
 
-            # ── (2) d_col[BS, COL] = go_packed[BS, OC] @ weight[OC, COL] ──
-            var gopack_tt = TileTensor(
-                self.outp_dev.value(), row_major[BS, Self.OC](),
-            )
-            var w_tt = TileTensor(
-                self.weight.val.dev.value(),
-                row_major[Self.OC, Self.COL_SIZE](),
-            )
-            var dcol_tt = TileTensor(
-                self.col_dev.value(), row_major[BS, Self.COL_SIZE](),
-            )
-            max_matmul[transpose_b=False, target="gpu"](
-                dcol_tt, gopack_tt, w_tt, ctx
-            )
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self,
+        mut src: Self,
+        tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """Soft-update weight + bias toward `src` (target ← online). Required
+        for use as a target net (pixel-obs critics use Conv2D); the Module
+        default is a no-op which would silently freeze the target (see
+        LinearReLU polyak bug, Stage-5)."""
+        polyak_tensor[target, Self.W_SIZE](
+            self.weight.val, src.weight.val, tau, ctx
+        )
+        polyak_tensor[target, Self.B_SIZE](
+            self.bias.val, src.bias.val, tau, ctx
+        )
 
-            # ── (3) col2im gather → grad_input ───────────────────────────
-            var dcol_lt = LayoutTensor[
-                DT, Layout.row_major(BS, Self.COL_SIZE), MutAnyOrigin,
-            ](self.col_dev.value())
-            comptime total_in = BATCH * Self.IN_DIM_FLAT
-            comptime n_blocks_in = (total_in + TPB - 1) // TPB
-            comptime col2im_kernel = _conv2d_dx_col2im_kernel[
-                BATCH, Self.IC, Self.K, Self.S, Self.P,
-                Self.H, Self.W, Self.OH, Self.OW,
-                Self.IN_DIM_FLAT, Self.COL_SIZE, Self.SPATIAL_OUT, BS,
-            ]
-            ctx.enqueue_function[col2im_kernel](
-                dcol_lt, gi_lt,
-                grid_dim=n_blocks_in, block_dim=TPB,
-            )
-
-    # ----- Walkers ---------------------------------------------------------
-
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["Conv2D", target](self.ts.target_tag)
-        for_each_param_auto[Self, V, target](self, prefix, visitor)
-
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["Conv2D", target](self.ts.target_tag)
-        zero_grad_auto[Self, target](self)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the Param fields).

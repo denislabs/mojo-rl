@@ -22,14 +22,17 @@ round-trip trivial. Returns the last loss.
 """
 
 from std.memory import alloc
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
+from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.core.map_params import hard_copy_params
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.hard_copy import hard_copy
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import SampledGumbelGPUMCTS, SinglePlayer
@@ -42,7 +45,7 @@ from ..zero.mz_diagnostics import append_value_diagnostics
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 def run_ezv2_sampled_selfplay_gpu[
@@ -136,12 +139,12 @@ def run_ezv2_sampled_selfplay_gpu[
 
     # ── lagging target nets (rep/dyn/pred only — proj/predh are consistency-
     #    only, never used in search) + their adapters, for stable reanalyze.
-    var rep_t = REP.make["gpu", INIT=Kaiming](ctx)
-    var dyn_t = DYN.make["gpu", INIT=Kaiming](ctx)
-    var pred_t = PRED.make["gpu", INIT=Kaiming](ctx)
-    hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
-    hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
-    hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
+    var rep_t = REP.make["gpu", Kaiming](Optional(ctx))
+    var dyn_t = DYN.make["gpu", Kaiming](Optional(ctx))
+    var pred_t = PRED.make["gpu", Kaiming](Optional(ctx))
+    hard_copy["gpu", M=REP](rep, rep_t, Optional(ctx))
+    hard_copy["gpu", M=DYN](dyn, dyn_t, Optional(ctx))
+    hard_copy["gpu", M=PRED](pred, pred_t, Optional(ctx))
     var rep_ta = MZRepGPU[OBS, LATENT, REP].make(rep_t)
     var dyn_ta = MZDynGPU[LATENT, ACT_DIM, BINS, DYN].make(dyn_t)
     var pred_ta = MZContPredGPU[LATENT, ACT_DIM, BINS, PRED].make(pred_t)
@@ -152,21 +155,21 @@ def run_ezv2_sampled_selfplay_gpu[
 
     # ── device obs buffer (single env) + host mirrors ──
     var d_obs = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
-    var h_obs = _a(N_ENVS * OBS)
-    var h_act = _a(N_ENVS * ACT_DIM)
-    var h_val = _a(N_ENVS)
+    var h_obs = List[Scalar[DT]](length=N_ENVS * OBS, fill=0)
+    var h_act = List[Scalar[DT]](length=N_ENVS * ACT_DIM, fill=0)
+    var h_val = List[Scalar[DT]](length=N_ENVS, fill=0)
     # reanalyze scratch (root obs read from replay → device → fresh target search)
-    var h_ra_obs = _a(N_ENVS * OBS)
-    var h_ra_act = _a(N_ENVS * ACT_DIM)
-    var h_ra_val = _a(N_ENVS)
+    var h_ra_obs = List[Scalar[DT]](length=N_ENVS * OBS, fill=0)
+    var h_ra_act = List[Scalar[DT]](length=N_ENVS * ACT_DIM, fill=0)
+    var h_ra_val = List[Scalar[DT]](length=N_ENVS, fill=0)
     var train_steps = 0
 
     # ── training batch slabs (time-major), obs is full [K+1, B, OBS] ──
-    var t_obs_seq = _a((K + 1) * B * OBS)
-    var t_act = _a(K * B * ACT_DIM)
-    var t_pol = _a((K + 1) * B * ACT_DIM)
-    var t_val = _a((K + 1) * B)
-    var t_rew = _a(K * B)
+    var t_obs_seq = List[Scalar[DT]](length=(K + 1) * B * OBS, fill=0)
+    var t_act = List[Scalar[DT]](length=K * B * ACT_DIM, fill=0)
+    var t_pol = List[Scalar[DT]](length=(K + 1) * B * ACT_DIM, fill=0)
+    var t_val = List[Scalar[DT]](length=(K + 1) * B, fill=0)
+    var t_rew = List[Scalar[DT]](length=K * B, fill=0)
     var t_cmask = _a(K * B)   # consistency episode-boundary mask
 
     # ── persistent GPU train-step scratch (allocated once, reused per step) ──
@@ -203,19 +206,19 @@ def run_ezv2_sampled_selfplay_gpu[
         # ── GPU sampled-Gumbel search over the current obs ──
         for j in range(OBS):
             h_obs[j] = Scalar[DT](cur_f[j])
-        ctx.enqueue_copy(d_obs, h_obs)
+        ctx.enqueue_copy(d_obs, h_obs.unsafe_ptr())
         var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS),
-            MutAnyOrigin](mptr(d_obs.unsafe_ptr()))
+            MutAnyOrigin](d_obs.unsafe_ptr().as_unsafe_any_origin())
         planner.search_gpu[
-            MZRepGPU[OBS, LATENT, REP],
-            MZDynGPU[LATENT, ACT_DIM, BINS, DYN],
-            MZContPredGPU[LATENT, ACT_DIM, BINS, PRED],
+            type_of(rep_a),
+            type_of(dyn_a),
+            type_of(pred_a),
         ](ctx, rep_a, dyn_a, pred_a, obs_t,
           deterministic=False, rng_seed=mcts_seed)
         mcts_seed += UInt32(1)
 
-        ctx.enqueue_copy(h_act, planner.chosen_actions_view())
-        ctx.enqueue_copy(h_val, planner.root_value_view())
+        ctx.enqueue_copy(h_act.unsafe_ptr(), planner.chosen_actions_view())
+        ctx.enqueue_copy(h_val.unsafe_ptr(), planner.root_value_view())
         ctx.synchronize()
 
         var root_v = Float64(h_val[0])
@@ -247,10 +250,10 @@ def run_ezv2_sampled_selfplay_gpu[
             # old terminal-0 label was an *optimistic* corruption near each
             # episode end (0 > any real all-negative-reward value).
             rb.store_episode(
-                mptr(e_obs.unsafe_ptr()),
-                mptr(e_act.unsafe_ptr()),
-                mptr(e_rew.unsafe_ptr()),
-                mptr(e_val.unsafe_ptr()),
+                e_obs,
+                e_act,
+                e_rew,
+                e_val,
                 ep_len,
                 truncated=not env.was_terminated(),
             )
@@ -289,9 +292,9 @@ def run_ezv2_sampled_selfplay_gpu[
 
                 # ── sync lagging target nets ──
                 if train_steps % target_sync_interval == 0:
-                    hard_copy_params["gpu", M=REP](rep, rep_t, ctx)
-                    hard_copy_params["gpu", M=DYN](dyn, dyn_t, ctx)
-                    hard_copy_params["gpu", M=PRED](pred, pred_t, ctx)
+                    hard_copy["gpu", M=REP](rep, rep_t, Optional(ctx))
+                    hard_copy["gpu", M=DYN](dyn, dyn_t, Optional(ctx))
+                    hard_copy["gpu", M=PRED](pred, pred_t, Optional(ctx))
 
                 # ── reanalyze: refresh stale (action, value) targets on old
                 #    positions with a fresh TARGET-net search (post-warmup). ──
@@ -303,21 +306,21 @@ def run_ezv2_sampled_selfplay_gpu[
                     for _ra in range(reanalyze_batch):
                         var pos = rb.sample_position()
                         rb.read_obs(pos[0], pos[1], h_ra_obs)
-                        ctx.enqueue_copy(d_obs, h_ra_obs)
+                        ctx.enqueue_copy(d_obs, h_ra_obs.unsafe_ptr())
                         var ra_obs_t = LayoutTensor[
                             DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
-                        ](mptr(d_obs.unsafe_ptr()))
+                        ](d_obs.unsafe_ptr().as_unsafe_any_origin())
                         planner.search_gpu[
-                            MZRepGPU[OBS, LATENT, REP],
-                            MZDynGPU[LATENT, ACT_DIM, BINS, DYN],
-                            MZContPredGPU[LATENT, ACT_DIM, BINS, PRED],
+                            type_of(rep_ta),
+                            type_of(dyn_ta),
+                            type_of(pred_ta),
                         ](ctx, rep_ta, dyn_ta, pred_ta, ra_obs_t,
                           deterministic=False, rng_seed=mcts_seed)
                         mcts_seed += UInt32(1)
                         ctx.enqueue_copy(
                             h_ra_act, planner.chosen_actions_view()
                         )
-                        ctx.enqueue_copy(h_ra_val, planner.root_value_view())
+                        ctx.enqueue_copy(h_ra_val.unsafe_ptr(), planner.root_value_view())
                         ctx.synchronize()
                         rb.update_targets(
                             pos[0], pos[1], h_ra_act, h_ra_val[0]
@@ -331,21 +334,19 @@ def run_ezv2_sampled_selfplay_gpu[
             and rb.num_episodes() > 0
             and (it + 1) % diag_every == 0
         ):
-            ctx.enqueue_copy(d_diag_obs, t_obs_seq)
-            var z_t = TileTensor(
-                mptr(d_diag_z.unsafe_ptr()), row_major[B, LATENT]()
+            # storage forward on owned scratch Tensors; D2H pred into h_diag_pred.
+            var obs_sc = Tensor()
+            obs_sc.ensure_gpu(ctx, B * OBS)
+            ctx.enqueue_copy(obs_sc.dev.value(), t_obs_seq.unsafe_ptr())
+            var z_sc = Tensor()
+            z_sc.ensure_gpu(ctx, B * LATENT)
+            call_forward["gpu", B](rep, TensorRefs[REP.ARITY](obs_sc), z_sc, Optional(ctx))
+            var pred_sc = Tensor()
+            pred_sc.ensure_gpu(ctx, B * CPRED_OUT)
+            call_forward["gpu", B](
+                pred, TensorRefs[PRED.ARITY](z_sc), pred_sc, Optional(ctx)
             )
-            rep.forward["gpu", B](
-                TileTensor(
-                    mptr(d_diag_obs.unsafe_ptr()), row_major[B, OBS]()
-                ),
-                output=z_t,
-            )
-            var pred_t = TileTensor(
-                mptr(d_diag_pred.unsafe_ptr()), row_major[B, CPRED_OUT]()
-            )
-            pred.forward["gpu", B](z_t, output=pred_t)
-            ctx.enqueue_copy(h_diag_pred, d_diag_pred)
+            ctx.enqueue_copy(h_diag_pred, pred_sc.dev.value())
             ctx.synchronize()
             var dn = List[String]()
             var dv = List[Float64]()
@@ -372,18 +373,18 @@ def run_ezv2_sampled_selfplay_gpu[
                 for _step in range(max_ep_steps):
                     for j in range(OBS):
                         h_obs[j] = Scalar[DT](eo_f[j])
-                    ctx.enqueue_copy(d_obs, h_obs)
+                    ctx.enqueue_copy(d_obs, h_obs.unsafe_ptr())
                     var eobs_t = LayoutTensor[DT,
                         Layout.row_major(N_ENVS, OBS), MutAnyOrigin](
-                            mptr(d_obs.unsafe_ptr()))
+                            d_obs.unsafe_ptr().as_unsafe_any_origin())
                     planner.search_gpu[
-                        MZRepGPU[OBS, LATENT, REP],
-                        MZDynGPU[LATENT, ACT_DIM, BINS, DYN],
-                        MZContPredGPU[LATENT, ACT_DIM, BINS, PRED],
+                        type_of(rep_a),
+                        type_of(dyn_a),
+                        type_of(pred_a),
                     ](ctx, rep_a, dyn_a, pred_a, eobs_t,
                       deterministic=True, rng_seed=mcts_seed)
                     mcts_seed += UInt32(1)
-                    ctx.enqueue_copy(h_act, planner.chosen_actions_view())
+                    ctx.enqueue_copy(h_act.unsafe_ptr(), planner.chosen_actions_view())
                     ctx.synchronize()
                     var ea = List[Scalar[DT]]()
                     for d in range(ACT_DIM):
@@ -450,10 +451,7 @@ def run_ezv2_sampled_selfplay_gpu[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    t_obs_seq.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     t_cmask.free()
-    h_obs.free(); h_act.free(); h_val.free()
-    h_ra_obs.free(); h_ra_act.free(); h_ra_val.free()
     l_parts.free(); h_diag_pred.free()
     # keep the target nets (held only via UnsafePointer in the adapters) alive
     # through the whole rollout — the analyzer can't see the indirection.

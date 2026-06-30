@@ -1,4 +1,8 @@
-"""SinusoidalPosAddBT[T, S, D, SCALE] — sinusoidal positions at the B·T layout.
+"""SinusoidalPosAddBT[T, S, D, SCALE] — sinusoidal positions at B·T layout (storage).
+
+Transformed from legacy `nn.primitives.SinusoidalPosAddBT` (surface-only change).
+The bias table (`build_sinusoid_bias`) and the two GPU kernels are carried over
+verbatim.
 
 `SinusoidalPosAdd` assumes nn-BATCH = B and a per-sample (T·S·D) grid. The
 Dreamer 4 encoder/decoder instead run at nn-BATCH = B·T (one frame per
@@ -7,23 +11,26 @@ with `t = batch_index % T`. This leaf adds it at that layout:
 
     out[bt, s*D + j] = in[bt, s*D + j] + bias[(bt % T)*S*D + s*D + j]
 
-where `bias` is the same precomputed `T*S*D` table as `SinusoidalPosAdd`
-(`build_sinusoid_bias`). Param-free; identity vjp (the bias is constant).
+where `bias` is the same precomputed `T*S*D` table as `SinusoidalPosAdd`,
+held in an owned `Tensor` (CPU data + device dev). Param-free; identity vjp
+(the bias is constant). Conforms to `Module`.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 from .sinusoidal_pos import build_sinusoid_bias
 
 
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _pos_bt_add_kernel[
     BATCH: Int, T: Int, SD: Int
 ](
@@ -51,20 +58,18 @@ def _pos_bt_copy_kernel[BATCH: Int, SD: Int](
         dst.ptr[idx] = rebind[Scalar[DT]](src.ptr[idx])
 
 
-struct SinusoidalPosAddBT[T: Int, S: Int, D: Int, SCALE: Bool = False](Module):
+struct SinusoidalPosAddBT[
+    T_: Int, S_: Int, D_: Int, SCALE_: Bool = False
+](Module):
     comptime ARITY: Int = 1
-    comptime SD: Int = Self.S * Self.D
+    comptime SD: Int = Self.S_ * Self.D_
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SD)
     comptime OUT_DIM = Self.SD
 
-    var bias: List[Scalar[DT]]            # [T*S*D]
-    var bias_dev: Optional[DeviceBuffer[DT]]
-    var ts: TargetStorage
+    var bias: Tensor  # [T*S*D] (CPU data + device dev)
 
     def __init__(out self):
-        self.bias = List[Scalar[DT]]()
-        self.bias_dev = None
-        self.ts = TargetStorage.make_uninit()
+        self.bias = Tensor()
 
     @staticmethod
     def make[
@@ -74,98 +79,76 @@ struct SinusoidalPosAddBT[T: Int, S: Int, D: Int, SCALE: Bool = False](Module):
             "SinusoidalPosAddBT: target must be 'cpu' or 'gpu'"
         )
         var m = Self()
-        m.bias = build_sinusoid_bias[Self.T, Self.S, Self.D, Self.SCALE]()
-        comptime if target == "cpu":
-            m.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["SinusoidalPosAddBT.make[gpu]"](ctx)
-            m.ts = TargetStorage.make_gpu(ctx_v)
-            comptime N = Self.T * Self.SD
-            var dev = ctx_v.enqueue_create_buffer[DT](N)
-            var host = ctx_v.enqueue_create_host_buffer[DT](N)
-            ctx_v.synchronize()
-            var hp = host.unsafe_ptr()
-            for i in range(N):
-                hp[i] = m.bias[i]
-            ctx_v.enqueue_copy(dev, host)
-            m.bias_dev = dev^
+        comptime N = Self.T_ * Self.SD
+        var b = build_sinusoid_bias[Self.T_, Self.S_, Self.D_, Self.SCALE_]()
+        m.bias = Tensor.alloc(N)
+        for i in range(N):
+            m.bias.data[i] = b[i]
+        comptime if target != "cpu":
+            m.bias.upload(ctx.value())
         return m^
 
-    @staticmethod
-    def display_label() -> String:
-        return String("SinusoidalPosAddBT")
-
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["SinusoidalPosAddBT", target](self.ts.target_tag)
-        var inp = inputs.tile[0, BATCH, Self.SD]()
-        var out = typed_view_mut[BATCH, Self.SD](output)
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            var bp = self.bias.unsafe_ptr()
-            for bt in range(BATCH):
-                var t = bt % Self.T
+            out.ensure(B * Self.SD)
+            var inp = TileTensor(in0.data, row_major[B, Self.SD]())
+            var out_t = TileTensor(out.data, row_major[B, Self.SD]())
+            var bp = self.bias.data.unsafe_ptr()
+            for bt in range(B):
+                var t = bt % Self.T_
                 for i in range(Self.SD):
-                    out[bt, i] = inp[bt, i] + bp[t * Self.SD + i]
+                    out_t[bt, i] = inp[bt, i] + bp[t * Self.SD + i]
         else:
-            comptime lay = Layout.row_major(BATCH, Self.SD)
-            var in_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                inp.ptr
-            )
-            var o_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                out.ptr
-            )
-            var b_lt = LayoutTensor[
-                DT, Layout.row_major(Self.T * Self.SD), MutAnyOrigin
-            ](self.bias_dev.value())
-            comptime n_blocks = (BATCH * Self.SD + TPB - 1) // TPB
-            comptime kernel = _pos_bt_add_kernel[BATCH, Self.T, Self.SD]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, b_lt, o_lt, grid_dim=n_blocks, block_dim=TPB
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.SD)
+            comptime n_blocks = (B * Self.SD + TPB - 1) // TPB
+            c.enqueue_function[_pos_bt_add_kernel[B, Self.T_, Self.SD]](
+                in0.lt["gpu", Layout.row_major(B, Self.SD)](),
+                self.bias.lt["gpu", Layout.row_major(Self.T_ * Self.SD)](),
+                out.lt["gpu", Layout.row_major(B, Self.SD)](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["SinusoidalPosAddBT", target](self.ts.target_tag)
-        var go = typed_view[BATCH, Self.SD](grad_output)
-        var gi = grad_inputs.tile[0, BATCH, Self.SD]()
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            for bt in range(BATCH):
+            gin.ensure(B * Self.SD)
+            var go = TileTensor(grad_output.data, row_major[B, Self.SD]())
+            var gi = TileTensor(gin.data, row_major[B, Self.SD]())
+            for bt in range(B):
                 for i in range(Self.SD):
                     gi[bt, i] = go[bt, i]
         else:
-            comptime lay = Layout.row_major(BATCH, Self.SD)
-            var go_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                go.ptr
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.SD)
+            comptime n_blocks = (B * Self.SD + TPB - 1) // TPB
+            c.enqueue_function[_pos_bt_copy_kernel[B, Self.SD]](
+                grad_output.lt["gpu", Layout.row_major(B, Self.SD)](),
+                gin.lt["gpu", Layout.row_major(B, Self.SD)](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
-            var gi_lt = LayoutTensor[DT, lay, MutAnyOrigin](
-                gi.ptr
-            )
-            comptime n_blocks = (BATCH * Self.SD + TPB - 1) // TPB
-            comptime kernel = _pos_bt_copy_kernel[BATCH, Self.SD]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, gi_lt, grid_dim=n_blocks, block_dim=TPB
-            )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields; `bias` is a plain Tensor).

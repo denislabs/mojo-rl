@@ -149,7 +149,7 @@ struct AudioFormat(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime AUDIO_UNKNOWN = Self(0x0000)
     """Unspecified audio format."""
@@ -2491,10 +2491,10 @@ def load_wav(
         lib,
         "SDL_LoadWAV",
         def(
-            path: Ptr[c_char, ImmutAnyOrigin],
-            spec: Ptr[AudioSpec, MutAnyOrigin],
-            audio_buf: Ptr[Ptr[UInt8, MutAnyOrigin], MutAnyOrigin],
-            audio_len: Ptr[UInt32, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[AudioSpec, MutAnyOrigin],
+            Ptr[Ptr[UInt8, MutAnyOrigin], MutAnyOrigin],
+            Ptr[UInt32, MutAnyOrigin],
         ) thin -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr(), spec, audio_buf, audio_len)
     if not ret:

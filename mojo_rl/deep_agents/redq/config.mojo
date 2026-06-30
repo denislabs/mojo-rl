@@ -90,7 +90,7 @@ comptime REDQCritic[OBS: Int, ACT: Int, HIDDEN: Int] = Sequential[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait REDQConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait REDQConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a REDQ-family algorithm. Conformers
     are zero-field comptime tags — never instantiated at runtime; only
     their comptime members are read."""
@@ -199,6 +199,7 @@ struct SmallREDQConfig[
 
 def agent_from_config[
     CONFIG: REDQConfigT,
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](
     ctx: Optional[DeviceContext] = None,
     actor_lr: Scalar[DT] = CONFIG.DEF_ACTOR_LR,
@@ -223,9 +224,11 @@ def agent_from_config[
     CONFIG.UTD,
     CONFIG.POLICY_DELAY,
     CONFIG.Q_MODE,
+    USE_TRAIN_CUDA_GRAPH,
 ]:
     """Build the primitive `REDQAgent` from any `REDQConfigT`. Every
-    scalar defaults to the config's tuned value but stays overridable."""
+    scalar defaults to the config's tuned value but stays overridable.
+    `USE_TRAIN_CUDA_GRAPH` (GPU + NVIDIA) captures the UTD inner loop."""
     return REDQAgent[
         CONFIG.TARGET,
         CONFIG.SAMPLE,
@@ -236,6 +239,7 @@ def agent_from_config[
         CONFIG.UTD,
         CONFIG.POLICY_DELAY,
         CONFIG.Q_MODE,
+        USE_TRAIN_CUDA_GRAPH,
     ](
         ctx=ctx,
         actor_lr=actor_lr,
@@ -262,6 +266,7 @@ def REDQ[
     target: StaticString,
     OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
     HIDDEN: Int = 256,
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](
     ctx: Optional[DeviceContext] = None,
     actor_lr: Scalar[DT] = REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_ACTOR_LR,
@@ -282,11 +287,14 @@ def REDQ[
     REDQActor[OBS, ACT, HIDDEN],
     REDQCritic[OBS, ACT, HIDDEN],
     10, 2, 20, 20, REDQ_TARGET_MIN,
+    USE_TRAIN_CUDA_GRAPH,
 ]:
     """Paper-faithful REDQ — N=10 critics, M=2 subset MIN, UTD=20,
-    policy_delay=20."""
+    policy_delay=20. `USE_TRAIN_CUDA_GRAPH` (GPU + NVIDIA) captures the UTD
+    inner loop into one graph/env-step (launch-overhead fix; no-op elsewhere)."""
     return agent_from_config[
-        REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN]
+        REDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN],
+        USE_TRAIN_CUDA_GRAPH,
     ](
         ctx=ctx,
         actor_lr=actor_lr, critic_lr=critic_lr, alpha_lr=alpha_lr,
@@ -304,6 +312,7 @@ def SmallREDQ[
     target: StaticString,
     OBS: Int, ACT: Int, BATCH: Int, CAP: Int,
     HIDDEN: Int = 64,
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](
     ctx: Optional[DeviceContext] = None,
     actor_lr: Scalar[DT] = SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN].DEF_ACTOR_LR,
@@ -324,12 +333,14 @@ def SmallREDQ[
     REDQActor[OBS, ACT, HIDDEN],
     REDQCritic[OBS, ACT, HIDDEN],
     2, 2, 1, 1, REDQ_TARGET_MIN,
+    USE_TRAIN_CUDA_GRAPH,
 ]:
     """SAC-shape REDQ — N=2/M=2/UTD=1/POLICY_DELAY=1. Cheapest REDQ
     regime; algorithmic difference vs SAC is the averaged-not-min'd
-    actor loss."""
+    actor loss. `USE_TRAIN_CUDA_GRAPH` (GPU + NVIDIA) captures the inner loop."""
     return agent_from_config[
-        SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN]
+        SmallREDQConfig[target, OBS, ACT, BATCH, CAP, HIDDEN],
+        USE_TRAIN_CUDA_GRAPH,
     ](
         ctx=ctx,
         actor_lr=actor_lr, critic_lr=critic_lr, alpha_lr=alpha_lr,

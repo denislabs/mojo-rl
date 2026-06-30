@@ -24,6 +24,7 @@ The trainer wraps `pix_ptr`/`act_ptr` in `TileTensor`s and calls train_step.
 """
 
 from std.memory import alloc
+from mojo_rl.nn.core.ptr import untracked
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ...nn.constants import DT
@@ -41,7 +42,7 @@ struct WindowSource[
     BUF: OfflineBuffer = PongOfflineBuffer,
     C: Int = 0,
     FRAME: Int = 0,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     # `C`/`FRAME` are the per-frame channel count + side length, required ONLY
     # when `BUF.INPUT_LAYOUT_HWC` (e.g. PushT 3×224×224): then conversion is
     # `u8_hwc_to_chw_norm` (permute HWC→CHW + ÷255). CHW buffers (Pong) leave
@@ -51,10 +52,10 @@ struct WindowSource[
 
     var buf: Self.BUF
     # Host staging (always): sampled uint8 pixels + fp32 one-hot actions.
-    var pix_u8_host: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]
-    var act_host: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var pix_u8_host: UnsafePointer[Scalar[DType.uint8], MutUntrackedOrigin]
+    var act_host: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
     # CPU output: converted fp32 pixels (host). GPU: device buffers below.
-    var pix_fp32_host: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var pix_fp32_host: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
     var pix_u8_dev: Optional[DeviceBuffer[DType.uint8]]
     var pix_fp32_dev: Optional[DeviceBuffer[DT]]
     var act_dev: Optional[DeviceBuffer[DT]]
@@ -70,9 +71,9 @@ struct WindowSource[
                 " params with C*FRAME*FRAME == IMG_DIM (e.g. C=3, FRAME=224)."
             )
         self.buf = buf^
-        self.pix_u8_host = alloc[Scalar[DType.uint8]](Self.NPIX)
-        self.act_host = alloc[Scalar[DT]](Self.NACT)
-        self.pix_fp32_host = alloc[Scalar[DT]](Self.NPIX)
+        self.pix_u8_host = untracked(alloc[Scalar[DType.uint8]](Self.NPIX))
+        self.act_host = untracked(alloc[Scalar[DT]](Self.NACT))
+        self.pix_fp32_host = untracked(alloc[Scalar[DT]](Self.NPIX))
         self.pix_u8_dev = None
         self.pix_fp32_dev = None
         self.act_dev = None
@@ -104,7 +105,7 @@ struct WindowSource[
         After this call `pix_ptr()` / `act_ptr()` are valid for one
         `train_step` / `eval_loss`."""
         self.buf.sample_batch_uint8(
-            Self.B, Self.T, self.pix_u8_host, self.act_host
+            Self.B, Self.T, self.pix_u8_host.as_unsafe_any_origin(), self.act_host.as_unsafe_any_origin()
         )
         comptime if Self.target == "cpu":
             comptime if Self.BUF.INPUT_LAYOUT_HWC:
@@ -136,7 +137,7 @@ struct WindowSource[
 
     def pix_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         comptime if Self.target == "cpu":
-            return self.pix_fp32_host
+            return self.pix_fp32_host.as_unsafe_any_origin()
         else:
             return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self.pix_fp32_dev.value().unsafe_ptr()
@@ -144,7 +145,7 @@ struct WindowSource[
 
     def act_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         comptime if Self.target == "cpu":
-            return self.act_host
+            return self.act_host.as_unsafe_any_origin()
         else:
             return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                 self.act_dev.value().unsafe_ptr()

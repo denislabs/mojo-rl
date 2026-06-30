@@ -15,9 +15,10 @@ host-side; reference does the same percentile on a small [batch] vector).
 from std.math import floor
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.tensor import Tensor
 
 
-struct RunningScale(Movable & ImplicitlyDestructible):
+struct RunningScale(Movable & ImplicitlyDeletable):
     var value: Scalar[DT]
     var tau: Scalar[DT]
 
@@ -45,16 +46,16 @@ struct RunningScale(Movable & ImplicitlyDestructible):
 
     def update_from(
         mut self,
-        x: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ref x: Tensor,
         n: Int,
     ):
-        """Update the running scale from `n` Q-values at `x` (e.g. the t=0
-        Q estimates over the batch)."""
+        """Update the running scale from the first `n` Q-values in `x` (e.g.
+        the t=0 Q estimates over the batch, downloaded host-side)."""
         if n <= 1:
             return
         var s = List[Scalar[DT]](length=n, fill=Scalar[DT](0.0))
         for i in range(n):
-            s[i] = x[i]
+            s[i] = x.data[i]
         # insertion sort (n = batch size, small).
         for i in range(1, n):
             var key = s[i]

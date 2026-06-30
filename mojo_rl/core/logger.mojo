@@ -77,7 +77,7 @@ struct MetricEntry(Copyable, Movable):
 # =============================================================================
 
 
-trait Logger(Copyable, ImplicitlyDestructible, Movable):
+trait Logger(Copyable, ImplicitlyDeletable, Movable):
     """Interface for training metrics loggers.
 
     All deep RL training loops and agent structs are parameterized on

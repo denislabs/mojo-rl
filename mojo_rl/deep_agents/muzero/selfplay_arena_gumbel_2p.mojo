@@ -47,17 +47,30 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.training.lr_scheduler import Scheduler, ConstantSchedule
-from mojo_rl.nn.core.map_params import hard_copy_params
-from mojo_rl.nn.core.checkpoint import save_state_v2_body_gpu
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.optimizer.lr_scheduler import Scheduler, ConstantSchedule
+from mojo_rl.nn.core.hard_copy import hard_copy
+from mojo_rl.nn.core.checkpoint import save_params_multi
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
-from mojo_rl.planners.tree_search import GumbelGPUMCTS, SelfPlay
+from mojo_rl.planners.tree_search import (
+    GumbelGPUMCTS, SelfPlay,
+    RepresentationGPU, DynamicsGPU, PredictionGPU,
+)
 
-from .blocks import mz_unroll_train_step_gpu, MZScratch
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
+from .blocks import (
+    mz_unroll_train_step_gpu,
+    _mz_train_prologue_gpu,
+    _mz_train_fwdrev_gpu,
+    _mz_arena_opt_step_gpu,
+    _mz_train_epilogue_gpu,
+    MZScratch,
+)
 from .selfplay_gpu_device import _mz_emit_train_diag
 from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZPredGPU
 from ..zero.prioritized_sequence_replay_mcts import (
@@ -69,15 +82,17 @@ from ..zero.temperature import visit_temperature
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    """Raw scratch for optional unroll outputs + diag/staging host buffers
+    (the unroll's optional-output params are Optional[UnsafePointer])."""
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 def _ai32(n: Int) -> UnsafePointer[Int32, MutAnyOrigin]:
-    return alloc[Int32](n)
+    return alloc[Int32](n).as_unsafe_any_origin()
 
 
 def _aint(n: Int) -> UnsafePointer[Int, MutAnyOrigin]:
-    return alloc[Int](n)
+    return alloc[Int](n).as_unsafe_any_origin()
 
 
 @always_inline
@@ -111,15 +126,13 @@ def _mz_save_trio[
     mut rep: REP, mut dyn: DYN, mut pred: PRED,
     path: String,
 ) raises:
-    """Write the rep/dyn/pred trio to ``path`` as a one-file nn-ckpt v2 envelope
-    (sections rep/dyn/pred) — the same format `MuZeroAgent.save` and the play
-    script load. Weights only (optimizers are session-local)."""
-    var body = String("")
-    save_state_v2_body_gpu(rep, body, String("rep"), ctx)
-    save_state_v2_body_gpu(dyn, body, String("dyn"), ctx)
-    save_state_v2_body_gpu(pred, body, String("pred"), ctx)
-    with open(path, "w") as f:
-        f.write(String("nn-ckpt v2\n") + body)
+    """Write the rep/dyn/pred trio (weights only; optimizers are session-local)
+    into a SINGLE checkpoint file via `save_params_multi` (rep→dyn→pred sections
+    under one v2 header). The play script's loader (`load_params_multi`) walks the
+    trio in the same order."""
+    save_params_multi["gpu", REP, DYN, PRED](
+        path, Optional(ctx), False, rep, dyn, pred
+    )
 
 
 def _mz_should_promote(
@@ -141,9 +154,6 @@ def _mz_should_promote(
 
 
 def _mz_search_argmax[
-    NREP: Module,
-    NDYN: Module,
-    NPRED: Module,
     N: Int,
     OBS: Int,
     ACT: Int,
@@ -152,14 +162,17 @@ def _mz_search_argmax[
     MAX_NODES: Int,
     MAX_K: Int,
     NUM_SIMS: Int,
+    RA: RepresentationGPU,
+    DA: DynamicsGPU,
+    PA: PredictionGPU,
 ](
     ctx: DeviceContext,
     mut planner: GumbelGPUMCTS[
         N, ACT, LATENT, BINS, MAX_NODES, MAX_K, NUM_SIMS, SelfPlay
     ],
-    mut rep_a: MZRepGPU[OBS, LATENT, NREP],
-    mut dyn_a: MZDynGPU[LATENT, ACT, BINS, NDYN],
-    mut pred_a: MZPredGPU[LATENT, ACT, BINS, NPRED],
+    mut rep_a: RA,
+    mut dyn_a: DA,
+    mut pred_a: PA,
     obs_dev: DeviceBuffer[DT],
     legal_dev: DeviceBuffer[DT],
     mut h_pol: UnsafePointer[Scalar[DT], MutAnyOrigin],
@@ -172,14 +185,10 @@ def _mz_search_argmax[
     env into `actions_h`. The planner's gumbel_scale governs determinism (set 0
     at the call site for eval/arena)."""
     ctx.enqueue_copy(planner.legal_mask_view(), legal_dev)
-    var obs_t = LayoutTensor[DT, Layout.row_major(N, OBS), MutAnyOrigin](
-        mptr(obs_dev.unsafe_ptr())
+    var obs_t = LayoutTensor[DT, Layout.row_major(N, RA.OBS_DIM), MutAnyOrigin](
+        obs_dev.unsafe_ptr().as_unsafe_any_origin()
     )
-    planner.search_gpu[
-        MZRepGPU[OBS, LATENT, NREP],
-        MZDynGPU[LATENT, ACT, BINS, NDYN],
-        MZPredGPU[LATENT, ACT, BINS, NPRED],
-    ](
+    planner.search_gpu[RA, DA, PA](
         ctx, rep_a, dyn_a, pred_a, obs_t,
         apply_legal=True, k_actual=MAX_K, rng_seed=rng_seed,
     )
@@ -290,7 +299,7 @@ def mz_arena_match[
             )
         elif a_turn:
             _mz_search_argmax[
-                REP, DYN, PRED, N_GAMES, OBS, ACT, LATENT, BINS,
+                N_GAMES, OBS, ACT, LATENT, BINS,
                 MAX_NODES, MAX_K, NUM_SIMS,
             ](
                 ctx, planner, ar, ad, ap, obs_dev, legal_dev,
@@ -299,7 +308,7 @@ def mz_arena_match[
             ctx.enqueue_copy(act_dev, act_h)
         else:
             _mz_search_argmax[
-                REP, DYN, PRED, N_GAMES, OBS, ACT, LATENT, BINS,
+                N_GAMES, OBS, ACT, LATENT, BINS,
                 MAX_NODES, MAX_K, NUM_SIMS,
             ](
                 ctx, planner, br, bd, bp, obs_dev, legal_dev,
@@ -476,7 +485,7 @@ def _mz_eval_one_color[
             # in the opening — we never force a random move on it, so it is never
             # handed a lost line. Eval measures pure agent skill.
             _mz_search_argmax[
-                REP, DYN, PRED, N_GAMES, OBS, ACT, LATENT, BINS,
+                N_GAMES, OBS, ACT, LATENT, BINS,
                 MAX_NODES, MAX_K, NUM_SIMS,
             ](
                 ctx, planner, rep_a, dyn_a, pred_a, obs_dev, legal_dev,
@@ -623,6 +632,24 @@ def run_muzero_selfplay_arena_gumbel_2p[
     # LinearWarmupSchedule[N] to ramp 0→lr over the first N grad updates — tames
     # the early instability a wider/deeper net shows under the base LR.
     SCHEDULER: Scheduler = ConstantSchedule,
+    # CUDA-graph the per-step BPTT train compute (forward+reverse scan + arena
+    # optimizer step). Default OFF → the per-param non-captured path, bit-identical
+    # to before. ON (NVIDIA): adopts the three Adam optimizers into arena mode,
+    # routes the LR schedule through the device buffer (`push_lr_device`), and
+    # captures the device-kernel compute into one graph replayed per train step —
+    # collapsing the per-kernel launch overhead. Requires uniform replay
+    # (`use_per=False`, which board games use); a no-op on Apple (compile-time).
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
+    # CUDA-graph the Gumbel-MCTS Sequential-Halving sim loop for self-play +
+    # reanalyze search. ⚠️ KNOWN-BUGGY — DO NOT ENABLE. On NVIDIA the captured
+    # sim-loop REPLAY produces FLAT search targets (target_max_prob ~0.3 vs ~0.55
+    # eager), which stalls policy-head learning (policy_entropy pinned at log·ACT).
+    # The eager path (refactored `search_gpu`) is correct — the bug is strictly in
+    # the sim-loop capture/replay and is NOT yet root-caused. Low priority: MCTS
+    # here is compute-bound (CH=64 conv) so the graph adds only ~6%. Kept behind
+    # this flag for a future eager-vs-captured parity-test investigation.
+    # See docs/MUZERO_CUDA_GRAPH_PLAN.md. (No-op on Apple.)
+    USE_MCTS_CUDA_GRAPH: Bool = False,
 ](
     ctx: DeviceContext,
     mut rep: REP,           # the BEST representation net (final weights on return)
@@ -688,20 +715,50 @@ def run_muzero_selfplay_arena_gumbel_2p[
     comptime VMAX = Scalar[DT](1.0)
 
     # ── Learner net trio (trains), initialised to the best weights ──
-    var l_rep = REP.make["gpu", INIT=Kaiming](ctx=ctx)
-    var l_dyn = DYN.make["gpu", INIT=Kaiming](ctx=ctx)
-    var l_pred = PRED.make["gpu", INIT=Kaiming](ctx=ctx)
-    hard_copy_params["gpu", M=REP](rep, l_rep, ctx)
-    hard_copy_params["gpu", M=DYN](dyn, l_dyn, ctx)
-    hard_copy_params["gpu", M=PRED](pred, l_pred, ctx)
+    var l_rep = REP.make["gpu", Kaiming](Optional(ctx))
+    var l_dyn = DYN.make["gpu", Kaiming](Optional(ctx))
+    var l_pred = PRED.make["gpu", Kaiming](Optional(ctx))
+    hard_copy["gpu", M=REP](rep, l_rep, Optional(ctx))
+    hard_copy["gpu", M=DYN](dyn, l_dyn, Optional(ctx))
+    hard_copy["gpu", M=PRED](pred, l_pred, Optional(ctx))
 
-    var orep = Adam.make["gpu", M=REP](l_rep, ctx)
-    var odyn = Adam.make["gpu", M=DYN](l_dyn, ctx)
-    var opred = Adam.make["gpu", M=PRED](l_pred, ctx)
-    orep.lr = lr; odyn.lr = lr; opred.lr = lr
-    orep.max_grad_norm = max_grad_norm
-    odyn.max_grad_norm = max_grad_norm
-    opred.max_grad_norm = max_grad_norm
+    var orep = Adam(lr=lr)
+    var odyn = Adam(lr=lr)
+    var opred = Adam(lr=lr)
+    # grad clip is applied inside the unroll via clip_grad_norm (max_grad_norm
+    # threaded to the mz_unroll_train_step_gpu call below).
+
+    # CUDA-graph capture of the train step (opt-in). Adopt the three optimizers
+    # into ARENA mode so the captured step advances β^t / reads the LR from
+    # device buffers (the per-param path bakes them host-side → not replay-safe),
+    # and own the capture slot (None until first capture). Requires uniform
+    # replay; board games use `use_per=False`.
+    var train_graph: Optional[CUDAGraph] = None
+    # Separate MCTS capture slots — self-play searches the BEST nets, reanalyze
+    # the TARGET nets; the captured sim kernels bake the net buffer pointers, so
+    # the two roles must NOT share a graph.
+    var selfplay_mcts_graph: Optional[CUDAGraph] = None
+    var reanalyze_mcts_graph: Optional[CUDAGraph] = None
+    # HARD GATE: refuse to run with the MCTS graph on. Its captured sim-loop
+    # replay produces flat search targets (policy stops learning) and is not
+    # root-caused; this raises so it can't be enabled by mistake. Remove only
+    # after an eager-vs-captured parity test proves the replay correct.
+    comptime if USE_MCTS_CUDA_GRAPH:
+        raise Error(
+            "USE_MCTS_CUDA_GRAPH is KNOWN-BUGGY and disabled: the captured"
+            " Gumbel-MCTS sim-loop replay produces FLAT search targets"
+            " (target_max_prob collapses → policy head stops learning). The"
+            " eager search path is correct. See docs/MUZERO_CUDA_GRAPH_PLAN.md."
+        )
+    comptime if USE_TRAIN_CUDA_GRAPH:
+        if use_per:
+            raise Error(
+                "USE_TRAIN_CUDA_GRAPH requires uniform replay (use_per=False);"
+                " PER's host-side priority path is not capture-safe."
+            )
+        orep.adopt["gpu"](l_rep, Optional(ctx))
+        odyn.adopt["gpu"](l_dyn, Optional(ctx))
+        opred.adopt["gpu"](l_pred, Optional(ctx))
 
     # ── Lagging TARGET net trio for reanalyze. Synced from the LEARNER every
     #    `target_sync_interval` grad steps (a delayed target that decouples
@@ -710,12 +767,12 @@ def run_muzero_selfplay_arena_gumbel_2p[
     #    before each trigger when 0 (live-learner reanalyze). Reanalyze ALWAYS
     #    searches through these adapters. Params-only copy (the h/g/f carry no
     #    BatchNorm running stats). Only allocated/used when reanalyze is on. ──
-    var rep_t = REP.make["gpu", INIT=Kaiming](ctx=ctx)
-    var dyn_t = DYN.make["gpu", INIT=Kaiming](ctx=ctx)
-    var pred_t = PRED.make["gpu", INIT=Kaiming](ctx=ctx)
-    hard_copy_params["gpu", M=REP](l_rep, rep_t, ctx)
-    hard_copy_params["gpu", M=DYN](l_dyn, dyn_t, ctx)
-    hard_copy_params["gpu", M=PRED](l_pred, pred_t, ctx)
+    var rep_t = REP.make["gpu", Kaiming](Optional(ctx))
+    var dyn_t = DYN.make["gpu", Kaiming](Optional(ctx))
+    var pred_t = PRED.make["gpu", Kaiming](Optional(ctx))
+    hard_copy["gpu", M=REP](l_rep, rep_t, Optional(ctx))
+    hard_copy["gpu", M=DYN](l_dyn, dyn_t, Optional(ctx))
+    hard_copy["gpu", M=PRED](l_pred, pred_t, Optional(ctx))
     rep_t.set_attr["training"](Scalar[DT](0.0))
     dyn_t.set_attr["training"](Scalar[DT](0.0))
     pred_t.set_attr["training"](Scalar[DT](0.0))
@@ -758,7 +815,7 @@ def run_muzero_selfplay_arena_gumbel_2p[
     var d_reana = ctx.enqueue_create_buffer[DT](N_ENVS * OBS)
     var d_reana_legal = ctx.enqueue_create_buffer[DT](N_ENVS * ACT)
     var d_reana_slots = ctx.enqueue_create_buffer[DType.int32](N_ENVS)
-    var h_reana_slots = _ai32(N_ENVS)
+    var h_reana_slots = List[Int32](length=N_ENVS, fill=0)
     var h_reana_legal = _a(N_ENVS * ACT)
 
     # ── Device buffers ──
@@ -781,12 +838,13 @@ def run_muzero_selfplay_arena_gumbel_2p[
     var rew_h = _a(N_ENVS)
     var act_h = _a(N_ENVS)
 
-    # ── Training slabs (host, time-major) ──
-    var t_obs0 = _a(B * OBS)         # unused on-device (obs gathered into scratch)
-    var t_act = _a(K * B)
-    var t_pol = _a((K + 1) * B * ACT)
-    var t_val = _a((K + 1) * B)
-    var t_rew = _a(K * B)
+    # ── Training slabs (host, time-major) — owned Lists (RAII), passed to the
+    # device-PER sample + List-input unroll. ──
+    var t_obs0 = List[Scalar[DT]](length=B * OBS, fill=0)  # unused on-device
+    var t_act = List[Scalar[DT]](length=K * B, fill=0)
+    var t_pol = List[Scalar[DT]](length=(K + 1) * B * ACT, fill=0)
+    var t_val = List[Scalar[DT]](length=(K + 1) * B, fill=0)
+    var t_rew = List[Scalar[DT]](length=K * B, fill=0)
     var l_parts = _a(3)
 
     # ── PER / on-device sampling scratch ──
@@ -797,18 +855,19 @@ def run_muzero_selfplay_arena_gumbel_2p[
     # priority write-back).
     var d_obs_seq = ctx.enqueue_create_buffer[DT]((K + 1) * B * OBS)
     var d_seq_slots = ctx.enqueue_create_buffer[DType.int32]((K + 1) * B)
-    var h_seq_slots = _ai32((K + 1) * B)
-    var t_isw = _a(B)
-    var t_prio = _a(B)
-    var t_slots = _aint(B)
+    var h_seq_slots = List[Int32](length=(K + 1) * B, fill=0)
+    var t_isw = List[Scalar[DT]](length=B, fill=0)
+    var t_prio = List[Scalar[DT]](length=B, fill=0)
+    var t_slots = List[Int](length=B, fill=0)
 
-    # ── Augmentation scratch (one game's worth, reused) ──
-    var aug_obs = _a(MAX_PLIES * OBS)
-    var aug_pol = _a(MAX_PLIES * ACT)
-    var aug_legal = _a(MAX_PLIES * ACT)
-    var aug_act = _a(MAX_PLIES)
-    var onehot = _a(ACT)
-    var onehot_out = _a(ACT)
+    # ── Augmentation scratch (one game's worth, reused) — owned Lists; the
+    # storage BoardAugmenter takes List src+offset and writes a List dst. ──
+    var aug_obs = List[Scalar[DT]](length=MAX_PLIES * OBS, fill=0)
+    var aug_pol = List[Scalar[DT]](length=MAX_PLIES * ACT, fill=0)
+    var aug_legal = List[Scalar[DT]](length=MAX_PLIES * ACT, fill=0)
+    var aug_act = List[Scalar[DT]](length=MAX_PLIES, fill=0)
+    var onehot = List[Scalar[DT]](length=ACT, fill=0)
+    var onehot_out = List[Scalar[DT]](length=ACT, fill=0)
 
     # ── Per-env in-progress episode accumulators ──
     var e_obs = List[List[Scalar[DT]]]()
@@ -857,16 +916,22 @@ def run_muzero_selfplay_arena_gumbel_2p[
         pred.set_attr["training"](Scalar[DT](0.0))
         ctx.enqueue_copy(planner.legal_mask_view(), legal_dev)
         var obs_t = LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin](
-            mptr(obs_dev.unsafe_ptr())
+            obs_dev.unsafe_ptr().as_unsafe_any_origin()
         )
-        planner.search_gpu[
-            MZRepGPU[OBS, LATENT, REP],
-            MZDynGPU[LATENT, ACT, BINS, DYN],
-            MZPredGPU[LATENT, ACT, BINS, PRED],
-        ](
-            ctx, rep_a, dyn_a, pred_a, obs_t,
-            apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
-        )
+        comptime if USE_MCTS_CUDA_GRAPH:
+            planner.search_gpu_captured[
+                type_of(rep_a), type_of(dyn_a), type_of(pred_a),
+            ](
+                ctx, rep_a, dyn_a, pred_a, obs_t, selfplay_mcts_graph,
+                apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
+            )
+        else:
+            planner.search_gpu[
+                type_of(rep_a), type_of(dyn_a), type_of(pred_a),
+            ](
+                ctx, rep_a, dyn_a, pred_a, obs_t,
+                apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
+            )
         mcts_seed += UInt32(1)
 
         ctx.enqueue_copy(obs_h, obs_dev)
@@ -989,35 +1054,39 @@ def run_muzero_selfplay_arena_gumbel_2p[
                 for s in range(NSYM):
                     if s == 0:
                         rb.store_episode(
-                            mptr(e_obs[e].unsafe_ptr()),
-                            mptr(e_act[e].unsafe_ptr()),
-                            mptr(e_rew[e].unsafe_ptr()),
-                            mptr(e_pol[e].unsafe_ptr()),
-                            mptr(e_val[e].unsafe_ptr()),
-                            mptr(e_tp[e].unsafe_ptr()),
-                            mptr(e_legal[e].unsafe_ptr()),
+                            e_obs[e],
+                            e_act[e],
+                            e_rew[e],
+                            e_pol[e],
+                            e_val[e],
+                            e_tp[e],
+                            e_legal[e],
                             Lg,
                             truncated=False,
                         )
                     else:
                         for k in range(Lg):
-                            # `mut out` needs a mutable lvalue — bind the offset
-                            # destinations to locals.
-                            var src_obs = mptr(e_obs[e].unsafe_ptr()) + k * OBS
-                            var dst_obs = aug_obs + k * OBS
-                            AUG.augment_obs[OBS](src_obs, s, dst_obs)
-                            var src_pol = mptr(e_pol[e].unsafe_ptr()) + k * ACT
-                            var dst_pol = aug_pol + k * ACT
-                            AUG.augment_policy[ACT](src_pol, s, dst_pol)
-                            var src_leg = mptr(e_legal[e].unsafe_ptr()) + k * ACT
-                            var dst_leg = aug_legal + k * ACT
-                            AUG.augment_policy[ACT](src_leg, s, dst_leg)
+                            # storage BoardAugmenter writes dst from index 0
+                            # (OBS/ACT-sized) → augment into a per-step temp List
+                            # then copy into this game's full augmented slab.
+                            var tmp_obs = List[Scalar[DT]](length=OBS, fill=0)
+                            AUG.augment_obs[OBS](e_obs[e], k * OBS, s, tmp_obs)
+                            for j in range(OBS):
+                                aug_obs[k * OBS + j] = tmp_obs[j]
+                            var tmp_pol = List[Scalar[DT]](length=ACT, fill=0)
+                            AUG.augment_policy[ACT](e_pol[e], k * ACT, s, tmp_pol)
+                            for a in range(ACT):
+                                aug_pol[k * ACT + a] = tmp_pol[a]
+                            var tmp_leg = List[Scalar[DT]](length=ACT, fill=0)
+                            AUG.augment_policy[ACT](e_legal[e], k * ACT, s, tmp_leg)
+                            for a in range(ACT):
+                                aug_legal[k * ACT + a] = tmp_leg[a]
                             # Permute the stored action through the same symmetry
                             # (one-hot → augment_policy → argmax).
                             for a in range(ACT):
                                 onehot[a] = Scalar[DT](0.0)
                             onehot[Int(e_act[e][k])] = Scalar[DT](1.0)
-                            AUG.augment_policy[ACT](onehot, s, onehot_out)
+                            AUG.augment_policy[ACT](onehot, 0, s, onehot_out)
                             var ba = 0
                             for a in range(1, ACT):
                                 if Float64(onehot_out[a]) > Float64(onehot_out[ba]):
@@ -1026,10 +1095,10 @@ def run_muzero_selfplay_arena_gumbel_2p[
                         rb.store_episode(
                             aug_obs,
                             aug_act,
-                            mptr(e_rew[e].unsafe_ptr()),
+                            e_rew[e],
                             aug_pol,
-                            mptr(e_val[e].unsafe_ptr()),
-                            mptr(e_tp[e].unsafe_ptr()),
+                            e_val[e],
+                            e_tp[e],
                             aug_legal,
                             Lg,
                             truncated=False,
@@ -1057,56 +1126,98 @@ def run_muzero_selfplay_arena_gumbel_2p[
             l_pred.set_attr["training"](Scalar[DT](1.0))
             for _t in range(train_per_iter):
                 # LR schedule over optimizer steps (default constant → no code).
+                # Under capture, route the scheduled LR through the device buffer
+                # (`push_lr_device`, stable pointer) so the captured step reads the
+                # FRESH lr on each replay; the host `orep.lr = …` write would
+                # freeze at the capture-time value. Non-capture path is unchanged.
                 comptime if not SCHEDULER.IS_CONSTANT:
                     var _scl = Scalar[DT](
                         SCHEDULER.lr_scale_at(
                             train_steps, iterations * train_per_iter
                         )
                     )
-                    orep.lr = lr * _scl
-                    odyn.lr = lr * _scl
-                    opred.lr = lr * _scl
+                    comptime if USE_TRAIN_CUDA_GRAPH:
+                        orep.push_lr_device["gpu"](lr * _scl, Optional(ctx))
+                        odyn.push_lr_device["gpu"](lr * _scl, Optional(ctx))
+                        opred.push_lr_device["gpu"](lr * _scl, Optional(ctx))
+                    else:
+                        orep.lr = lr * _scl
+                        odyn.lr = lr * _scl
+                        opred.lr = lr * _scl
                 # Prioritized device sample: gathers the obs window into
-                # `d_obs_seq` and the n-step targets into the host slabs.
+                # `d_obs_seq` and the n-step targets into the host slabs. With PER
+                # on, also writes the paper priority |ν − z| into `t_prio` (the
+                # sample owns this — it has both ν and z); board games leave it
+                # None → priorities stay uniform.
+                var samp_prio = Optional[
+                    UnsafePointer[Scalar[DT], MutAnyOrigin]
+                ](None)
+                if use_per:
+                    samp_prio = Optional[
+                        UnsafePointer[Scalar[DT], MutAnyOrigin]
+                    ](t_prio.unsafe_ptr().as_unsafe_any_origin())
                 rb.sample_training_batch_seq_per_gpu[B, K, N](
                     ctx, gamma, d_obs_seq, d_seq_slots, h_seq_slots,
                     t_act, t_pol, t_val, t_rew, t_isw, t_slots,
+                    out_prio=samp_prio,
                 )
                 # MuZero consumes only the root (k=0) obs block → copy it into
                 # the train scratch (`obs_on_device=True` reads `scratch.d_obs0`).
                 ctx.enqueue_copy(
-                    scratch.d_obs0.value(),
+                    scratch.d_obs0.dev.value(),
                     d_obs_seq.create_sub_buffer[DT](0, B * OBS),
                 )
-                # PER gates: pass IS weights + collect value-error priorities only
-                # when on. Off → unweighted, no priorities written (→ uniform).
+                # PER gate: IS-weight the grads only when on (priorities are
+                # written by the sample above, paper formula |ν − z|). Off →
+                # unweighted, priorities untouched (→ uniform sampling).
                 var isw_opt = Optional[
-                    UnsafePointer[Scalar[DT], MutAnyOrigin]
-                ](None)
-                var prio_opt = Optional[
                     UnsafePointer[Scalar[DT], MutAnyOrigin]
                 ](None)
                 if use_per:
                     isw_opt = Optional[
                         UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](t_isw)
-                    prio_opt = Optional[
-                        UnsafePointer[Scalar[DT], MutAnyOrigin]
-                    ](t_prio)
-                last_loss = Float64(
-                    mz_unroll_train_step_gpu[
-                        REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS,
-                        obs_on_device=True,
-                    ](
-                        ctx, l_rep, l_dyn, l_pred, orep, odyn, opred,
-                        scratch,
-                        t_obs0, t_act, t_pol, t_val, t_rew,
-                        VMIN, VMAX, value_coef,
-                        loss_parts=l_parts,
-                        is_weights=isw_opt,
-                        out_prio=prio_opt,
+                    ](t_isw.unsafe_ptr().as_unsafe_any_origin())
+                comptime if USE_TRAIN_CUDA_GRAPH:
+                    # Eager prologue (H2D) → captured device compute (forward +
+                    # reverse scan + arena optimizer step) → eager epilogue (sync
+                    # + D2H + reduce). `use_per` is False here (guarded at setup),
+                    # so no IS-weights and no priorities in the captured body.
+                    _mz_train_prologue_gpu[
+                        B, K, OBS, ACT, LATENT, BINS, obs_on_device=True
+                    ](ctx, scratch, t_obs0, t_act, t_pol, t_val, t_rew)
+
+                    def _mz_compute() capturing raises -> None:
+                        _mz_train_fwdrev_gpu[
+                            REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS
+                        ](
+                            ctx, l_rep, l_dyn, l_pred, scratch,
+                            VMIN, VMAX, value_coef, False, False,
+                        )
+                        _mz_arena_opt_step_gpu[REP, DYN, PRED](
+                            ctx, l_rep, l_dyn, l_pred, orep, odyn, opred,
+                            Float64(max_grad_norm),
+                        )
+
+                    maybe_capture_replay[_mz_compute](train_graph, ctx)
+                    last_loss = Float64(
+                        _mz_train_epilogue_gpu[B, K, OBS, ACT, LATENT, BINS](
+                            ctx, scratch, False, loss_parts=l_parts
+                        )
                     )
-                )
+                else:
+                    last_loss = Float64(
+                        mz_unroll_train_step_gpu[
+                            REP, DYN, PRED, B, K, OBS, ACT, LATENT, BINS,
+                            obs_on_device=True,
+                        ](
+                            ctx, l_rep, l_dyn, l_pred, orep, odyn, opred,
+                            scratch,
+                            t_obs0, t_act, t_pol, t_val, t_rew,
+                            VMIN, VMAX, value_coef, Float64(max_grad_norm),
+                            loss_parts=l_parts,
+                            is_weights=isw_opt,
+                        )
+                    )
                 if use_per:
                     rb.update_priorities(t_slots, t_prio, B)
                 train_steps += 1
@@ -1114,9 +1225,9 @@ def run_muzero_selfplay_arena_gumbel_2p[
                     target_sync_interval > 0
                     and train_steps % target_sync_interval == 0
                 ):
-                    hard_copy_params["gpu", M=REP](l_rep, rep_t, ctx)
-                    hard_copy_params["gpu", M=DYN](l_dyn, dyn_t, ctx)
-                    hard_copy_params["gpu", M=PRED](l_pred, pred_t, ctx)
+                    hard_copy["gpu", M=REP](l_rep, rep_t, Optional(ctx))
+                    hard_copy["gpu", M=DYN](l_dyn, dyn_t, Optional(ctx))
+                    hard_copy["gpu", M=PRED](l_pred, pred_t, Optional(ctx))
 
         # ── 6b. Per-batch diagnostics → logger. Re-forwards the LEARNER root
         #      prediction on the last train batch (`t_obs0`) and emits loss +
@@ -1131,7 +1242,7 @@ def run_muzero_selfplay_arena_gumbel_2p[
         ):
             # The obs now lives on-device (`scratch.d_obs0`, last train batch);
             # D2H the root block into `t_obs0` so the diag re-forward sees it.
-            ctx.enqueue_copy(t_obs0, scratch.d_obs0.value())
+            ctx.enqueue_copy(t_obs0.unsafe_ptr(), scratch.d_obs0.dev.value())
             ctx.synchronize()
             _mz_emit_train_diag[REP, PRED, B, OBS, ACT, BINS, L](
                 ctx, l_rep, l_pred, d_diag_obs, d_diag_z, d_diag_pred,
@@ -1155,9 +1266,9 @@ def run_muzero_selfplay_arena_gumbel_2p[
             # target_sync_interval == 0 ⇒ live-net reanalyze: refresh the target
             # to the current learner weights now (search through rep_ta == l_rep).
             if target_sync_interval == 0:
-                hard_copy_params["gpu", M=REP](l_rep, rep_t, ctx)
-                hard_copy_params["gpu", M=DYN](l_dyn, dyn_t, ctx)
-                hard_copy_params["gpu", M=PRED](l_pred, pred_t, ctx)
+                hard_copy["gpu", M=REP](l_rep, rep_t, Optional(ctx))
+                hard_copy["gpu", M=DYN](l_dyn, dyn_t, Optional(ctx))
+                hard_copy["gpu", M=PRED](l_pred, pred_t, Optional(ctx))
             var n_chunks = reanalyze_batch // N_ENVS
             if n_chunks < 1:
                 n_chunks = 1
@@ -1181,23 +1292,33 @@ def run_muzero_selfplay_arena_gumbel_2p[
                 ctx.enqueue_copy(planner.legal_mask_view(), d_reana_legal)
                 var reana_t = LayoutTensor[
                     DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin
-                ](mptr(d_reana.unsafe_ptr()))
-                planner.search_gpu[
-                    MZRepGPU[OBS, LATENT, REP],
-                    MZDynGPU[LATENT, ACT, BINS, DYN],
-                    MZPredGPU[LATENT, ACT, BINS, PRED],
-                ](
-                    ctx, rep_ta, dyn_ta, pred_ta, reana_t,
-                    apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
-                )
+                ](d_reana.unsafe_ptr().as_unsafe_any_origin())
+                comptime if USE_MCTS_CUDA_GRAPH:
+                    planner.search_gpu_captured[
+                        type_of(rep_ta), type_of(dyn_ta), type_of(pred_ta),
+                    ](
+                        ctx, rep_ta, dyn_ta, pred_ta, reana_t,
+                        reanalyze_mcts_graph,
+                        apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
+                    )
+                else:
+                    planner.search_gpu[
+                        type_of(rep_ta), type_of(dyn_ta), type_of(pred_ta),
+                    ](
+                        ctx, rep_ta, dyn_ta, pred_ta, reana_t,
+                        apply_legal=True, k_actual=MAX_K, rng_seed=mcts_seed,
+                    )
                 mcts_seed += UInt32(1)
                 ctx.enqueue_copy(pol_h, planner.policies_view())
                 ctx.enqueue_copy(val_h, planner.root_value_view())
                 ctx.synchronize()
                 for e in range(N_ENVS):
-                    rb.update_targets(
-                        rpos_e[e], rpos_o[e], pol_h + (e * ACT), val_h[e]
-                    )
+                    # update_targets takes a List policy slice; copy this env's
+                    # row out of the raw D2H staging mirror pol_h.
+                    var pe = List[Scalar[DT]](length=ACT, fill=0)
+                    for a in range(ACT):
+                        pe[a] = pol_h[e * ACT + a]
+                    rb.update_targets(rpos_e[e], rpos_o[e], pe, val_h[e])
 
         # ── 7. Arena gating: learner challenges best ──
         if (
@@ -1216,9 +1337,9 @@ def run_muzero_selfplay_arena_gumbel_2p[
                 rec, promote_threshold, min_decisive=ARENA_GAMES // 2
             )
             if accepted:
-                hard_copy_params["gpu", M=REP](l_rep, rep, ctx)
-                hard_copy_params["gpu", M=DYN](l_dyn, dyn, ctx)
-                hard_copy_params["gpu", M=PRED](l_pred, pred, ctx)
+                hard_copy["gpu", M=REP](l_rep, rep, Optional(ctx))
+                hard_copy["gpu", M=DYN](l_dyn, dyn, Optional(ctx))
+                hard_copy["gpu", M=PRED](l_pred, pred, Optional(ctx))
                 promotions += 1
             if verbose:
                 print(
@@ -1349,19 +1470,15 @@ def run_muzero_selfplay_arena_gumbel_2p[
     if _mz_should_promote(
         final_rec, promote_threshold, min_decisive=ARENA_GAMES // 2
     ):
-        hard_copy_params["gpu", M=REP](l_rep, rep, ctx)
-        hard_copy_params["gpu", M=DYN](l_dyn, dyn, ctx)
-        hard_copy_params["gpu", M=PRED](l_pred, pred, ctx)
+        hard_copy["gpu", M=REP](l_rep, rep, Optional(ctx))
+        hard_copy["gpu", M=DYN](l_dyn, dyn, Optional(ctx))
+        hard_copy["gpu", M=PRED](l_pred, pred, Optional(ctx))
         promotions += 1
 
-    t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
     l_parts.free(); h_diag_pred.free()
-    t_isw.free(); t_prio.free(); t_slots.free(); h_seq_slots.free()
     obs_h.free(); pol_h.free(); val_h.free(); legal_h.free()
     done_h.free(); rew_h.free(); act_h.free()
-    aug_obs.free(); aug_pol.free(); aug_legal.free(); aug_act.free()
-    onehot.free(); onehot_out.free()
-    h_reana_slots.free(); h_reana_legal.free()
+    h_reana_legal.free()
     # keep the learner + target nets alive past the adapters' borrowed pointers.
     _ = l_rep^
     _ = l_dyn^

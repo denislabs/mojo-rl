@@ -16,13 +16,15 @@ the root value stored is the search value (`mcts.root_value()`), the MuZero
 bootstrap target. Returns the last training loss.
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from std.math import exp, log
 from std.memory import alloc
 
-from layout import TileTensor, row_major
-
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -41,7 +43,9 @@ from ..zero.temperature import visit_temperature
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    """Category-B raw batch/episode scratch feeding the raw-pointer replay +
+    unroll-input boundary (not the nn surface)."""
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 def run_muzero_selfplay_cpu[
@@ -79,6 +83,7 @@ def run_muzero_selfplay_cpu[
     seed: UInt64 = 0,
     max_ep_steps: Int = 500,
     value_coef: Scalar[DT] = Scalar[DT](0.25),
+    max_grad_norm: Float64 = 0.0,
     temperature_decay_steps: Int = 0,
     reanalyze_every: Int = 0,
     eval_every: Int = 0,
@@ -100,28 +105,33 @@ def run_muzero_selfplay_cpu[
     ](gamma=Float64(gamma))
     var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
 
-    var rep_a = MZRepCPU[OBS, LATENT, REP](net=UnsafePointer(to=rep))
+    var rep_a = MZRepCPU[OBS, LATENT, REP](
+        net=untracked(UnsafePointer(to=rep))
+    )
     var dyn_a = MZDynCPU[LATENT, ACT, BINS, DYN](
-        net=UnsafePointer(to=dyn), v_min=v_min, v_max=v_max
+        net=untracked(UnsafePointer(to=dyn)), v_min=v_min, v_max=v_max
     )
     var pred_a = MZPredCPU[LATENT, ACT, BINS, PRED](
-        net=UnsafePointer(to=pred), v_min=v_min, v_max=v_max
+        net=untracked(UnsafePointer(to=pred)),
+        v_min=v_min, v_max=v_max
     )
 
-    # training batch slabs (time-major), allocated once
-    var t_obs0 = _a(B * OBS)
-    var t_act = _a(K * B)
-    var t_pol = _a((K + 1) * B * ACT)
-    var t_val = _a((K + 1) * B)
-    var t_rew = _a(K * B)
+    # training batch slabs (time-major) — owned Lists (RAII), filled by the
+    # replay's List API and read by the List-input unroll. No raw pointers.
+    var t_obs0 = List[Scalar[DT]](length=B * OBS, fill=0)
+    var t_act = List[Scalar[DT]](length=K * B, fill=0)
+    var t_pol = List[Scalar[DT]](length=(K + 1) * B * ACT, fill=0)
+    var t_val = List[Scalar[DT]](length=(K + 1) * B, fill=0)
+    var t_rew = List[Scalar[DT]](length=K * B, fill=0)
 
-    # reanalyze scratch
-    var r_obs = _a(OBS)
-    var r_pol = _a(ACT)
+    # reanalyze scratch (owned Lists; read_obs/update_targets take Lists)
+    var r_obs = List[Scalar[DT]](length=OBS, fill=0)
+    var r_pol = List[Scalar[DT]](length=ACT, fill=0)
 
-    # logger scratch: per-component loss split + root prediction probe
+    # logger scratch: per-component loss split (optional `loss_parts` output of
+    # the unroll, kept as a raw buffer — `Optional[List]` would copy on .value())
+    # + root-prediction probe buffer for the diagnostics helper.
     var l_parts = _a(3)            # [policy, value, reward] means
-    var d_z = _a(B * LATENT)
     var d_pred = _a(B * (ACT + BINS))
 
     # episode accumulation buffers
@@ -198,13 +208,7 @@ def run_muzero_selfplay_cpu[
             # Time-limit cut (env truncation or our max_ep_steps cap) is NOT a
             # terminal: the replay must bootstrap past it, not target value 0.
             rb.store_episode(
-                mptr(e_obs.unsafe_ptr()),
-                mptr(e_act.unsafe_ptr()),
-                mptr(e_rew.unsafe_ptr()),
-                mptr(e_pol.unsafe_ptr()),
-                mptr(e_val.unsafe_ptr()),
-                mptr(e_tp.unsafe_ptr()),
-                mptr(e_legal.unsafe_ptr()),
+                e_obs, e_act, e_rew, e_pol, e_val, e_tp, e_legal,
                 ep_len,
                 truncated=not env.was_terminated(),
             )
@@ -230,7 +234,7 @@ def run_muzero_selfplay_cpu[
                     ](
                         rep, dyn, pred, orep, odyn, opred,
                         t_obs0, t_act, t_pol, t_val, t_rew,
-                        v_min, v_max, value_coef,
+                        v_min, v_max, value_coef, max_grad_norm,
                         loss_parts=l_parts,
                     )
                 )
@@ -243,12 +247,18 @@ def run_muzero_selfplay_cpu[
             and rb.num_episodes() > 0
             and (it + 1) % diag_every == 0
         ):
-            var z_t = TileTensor(d_z, row_major[B, LATENT]())
-            rep.forward["cpu", B](
-                TileTensor(t_obs0, row_major[B, OBS]()), output=z_t
-            )
-            var pred_t = TileTensor(d_pred, row_major[B, ACT + BINS]())
-            pred.forward["cpu", B](z_t, output=pred_t)
+            # storage forward (h then f) for the root-pred probe: copy the raw
+            # batch obs into an owned Tensor, run, copy the pred output back into
+            # the raw diag buffer for `append_mz_train_diagnostics`.
+            var obs_t = Tensor.alloc(B * OBS)
+            for i in range(B * OBS):
+                obs_t.data[i] = t_obs0[i]
+            var z_t = Tensor.alloc(B * LATENT)
+            call_forward["cpu", B](rep, TensorRefs[REP.ARITY](obs_t), z_t, None)
+            var pred_t = Tensor.alloc(B * (ACT + BINS))
+            call_forward["cpu", B](pred, TensorRefs[PRED.ARITY](z_t), pred_t, None)
+            for i in range(B * (ACT + BINS)):
+                d_pred[i] = pred_t.data[i]
             var dn = List[String]()
             var dv = List[Float64]()
             dn.append(String("loss")); dv.append(last_loss)
@@ -369,7 +379,5 @@ def run_muzero_selfplay_cpu[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
-    r_obs.free(); r_pol.free()
-    l_parts.free(); d_z.free(); d_pred.free()
+    l_parts.free(); d_pred.free()
     return last_loss

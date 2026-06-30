@@ -1,48 +1,43 @@
-"""MaskedAttention[DIM, N_HEADS, SEQ_LEN] — attention with a static additive
-mask (Dreamer 4 modality-gated / block-causal attention).
+"""MaskedAttention[DIM, N_HEADS, SEQ_LEN, USE_MAX_KERNELS] — attention with a
+static additive mask (Dreamer 4 modality-gated / block-causal attention), on the
+STORAGE surface. Transformed from legacy `nn.primitives.masked_attention`
+(surface-only change; all kernels + host mask builders carried VERBATIM).
 
-PHASE 0 SPIKE (docs/DREAMER4_PORT_PLAN.md §4). CPU forward + 3-pass vjp only;
-GPU paths are stubbed (raise) until the spike's go/no-go is taken.
-
-Same qkv-major input layout and output-caching cache layout `[Q | K | V |
-scores]` as `ScaledDotProductAttention`, so it is EXEMPT from the
-param-grad-before-grad_input aliasing invariant (no params; backward reads
-only `self.cache` + `grad_output`). The ONLY behavioural difference vs the
-causal SDPA op is:
-
-  1. A per-(i,j) additive bias `mask[i*SEQ+j] ∈ {0.0, NEG}` is added to the
-     score before the softmax max-shift. A masked entry gets score ≈ NEG, so
-     its softmax weight is identically 0.
-  2. The key loop runs the full `j ∈ [0, SEQ)` range (no causal `j ≤ i`
-     loop-bound shortcut) — the mask alone decides visibility.
-
-This is the crux of the Dreamer 4 feasibility claim (§4.3): because a masked
-attention weight is exactly 0, it is a fixed point of the softmax gradient
-(`dV`, softmax-jvp, `dQ`, `dK` all vanish there), so the BACKWARD math is
-identical to plain attention — only the loop range changes. The mask needs
-zero backward special-casing.
+This is base scaled-dot-product attention + a mask term. The ONLY behavioural
+difference vs plain attention:
+  1. A per-(i,j) additive bias `mask[i*SEQ+j] ∈ {0.0, NEG}` is added to the score
+     before the softmax max-shift. A masked entry gets score ≈ NEG → weight 0.
+  2. Loops run the full [0, SEQ) range (no causal loop-bound) — the mask alone
+     gates visibility. The backward is byte-for-byte the CAUSAL=False attention
+     backward (masked weights are 0 in cache → contribute 0 to every gradient).
 
 The default mask built by `make` is all-zero (all-allow) → bit-identical to
 `ScaledDotProductAttention[..., CAUSAL=False]`. Install a real mask with
-`set_mask`. Causal SDPA is recoverable via `causal_mask` (so this op
-subsumes the causal one; the causal op is kept for its loop-bound speed).
+`set_mask`; `causal_mask`/`build_modality_mask` are host builders.
+
+Output-caching (backward reads only the cache + grad_output). No Params. The
+mask is an owned `Tensor` field (CPU `data` + optional GPU buffer); BMM scratch
+slabs are separate owned `Tensor`s (one buffer per slab), no `mptr`.
+
+The BMM fast path REUSES the base storage attention's mask-agnostic
+pack/unpack/transpose/jvp kernels verbatim; only the softmax adds the mask.
 """
 
 from std.math import exp, sqrt
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
-from std.gpu.memory import AddressSpace
 from linalg.bmm import batched_matmul
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP, Cache
-from ..core.module import Module, typed_view, typed_view_mut, mptr
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
-# The BMM fast path reuses attention.mojo's pack/unpack/transpose/jvp kernels
-# verbatim (they are mask-agnostic); only the softmax differs (adds the mask),
+# The BMM fast path reuses the storage attention's pack/unpack/transpose/jvp
+# kernels verbatim (mask-agnostic); only the softmax differs (adds the mask),
 # so MaskedAttention defines its own `_masked_softmax_kernel` below.
 from .attention import (
     _attn_pack_qkv_fwd_kernel,
@@ -59,23 +54,118 @@ comptime MASK_NEG: Float64 = -1.0e30
 
 
 # ──────────────────────────────────────────────────────────────────────
-# GPU kernels — custom per-(b,h) path, mirroring attention.mojo's custom
-# kernels with two differences: (1) the forward adds the additive mask to
-# each score; (2) all j/i loops run the full [0, SEQ) range (no causal
-# loop-bound). The backward kernels are otherwise byte-for-byte the
-# CAUSAL=False attention kernels — masked weights are 0 in cache, so they
-# contribute 0 to every gradient (plan §4.3). One block per (b,h); the
-# shared mask buffer is [SEQ*SEQ] (batch- and head-independent).
+# Host mask builders (data-independent; depend only on token layout). Carried
+# VERBATIM from the legacy leaf.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def causal_mask(seq_len: Int) -> List[Scalar[DT]]:
+    """Additive lower-triangular mask: position i may attend to j ≤ i."""
+    var m = List[Scalar[DT]]()
+    for i in range(seq_len):
+        for j in range(seq_len):
+            m.append(Scalar[DT](0.0) if j <= i else Scalar[DT](MASK_NEG))
+    return m^
+
+
+def all_allow_mask(seq_len: Int) -> List[Scalar[DT]]:
+    """Additive all-zero mask → unrestricted (bidirectional) attention."""
+    var m = List[Scalar[DT]]()
+    for _ in range(seq_len * seq_len):
+        m.append(Scalar[DT](0.0))
+    return m^
+
+
+def build_modality_mask[
+    mode: StaticString
+](
+    modality_ids: List[Int], n_latents: Int, agent_mod_in: Int = -1
+) -> List[Scalar[DT]]:
+    """Port of `model.py:SpaceSelfAttentionModality._build_allow` (Dreamer 4).
+
+    `modality_ids[k]` is the modality of token k; the first `n_latents` tokens
+    are latent register tokens. Returns the additive `SEQ*SEQ` mask:
+    allowed→0.0, disallowed→NEG.
+
+    Modes (the `wm_*` modes treat the highest modality id as the AGENT modality
+    and are only meaningful when agent tokens are present; they ignore
+    `n_latents`):
+      - "encoder": latents attend to all; non-latents only within own modality.
+      - "decoder": latents attend only to latents; non-latents attend to
+        latents + own modality.
+      - "wm_agent": full mixing — every token attends to every token.
+      - "wm_agent_isolated": non-agent queries attend to all NON-agent keys;
+        agent queries attend ONLY to agent keys.
+      - "wm_agent_bc": non-agent queries attend to all NON-agent keys; agent
+        queries attend to ALL keys (paper §3.3 imagination/BC mask).
+    """
+    comptime assert (
+        mode == "encoder"
+        or mode == "decoder"
+        or mode == "wm_agent"
+        or mode == "wm_agent_isolated"
+        or mode == "wm_agent_bc"
+    ), "build_modality_mask: unknown mode"
+
+    var S = len(modality_ids)
+    var agent_mod = agent_mod_in
+    if agent_mod < 0:
+        agent_mod = 0
+        for k in range(S):
+            if modality_ids[k] > agent_mod:
+                agent_mod = modality_ids[k]
+
+    var m = List[Scalar[DT]]()
+    for i in range(S):
+        var is_q_lat = i < n_latents
+        var q_is_agent = modality_ids[i] == agent_mod
+        for j in range(S):
+            var is_k_lat = j < n_latents
+            var k_is_agent = modality_ids[j] == agent_mod
+            var same_mod = modality_ids[i] == modality_ids[j]
+
+            var allow: Bool
+            comptime if mode == "encoder":
+                allow = True if is_q_lat else same_mod
+            elif mode == "decoder":
+                if is_q_lat:
+                    allow = is_k_lat
+                else:
+                    allow = is_k_lat or same_mod
+            elif mode == "wm_agent":
+                allow = True
+            elif mode == "wm_agent_isolated":
+                if q_is_agent:
+                    allow = k_is_agent
+                else:
+                    allow = not k_is_agent
+            else:
+                if q_is_agent:
+                    allow = True
+                else:
+                    allow = not k_is_agent
+
+            m.append(Scalar[DT](0.0) if allow else Scalar[DT](MASK_NEG))
+    return m^
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GPU kernels — custom per-(b,h) path, mirroring the base attention custom
+# kernels with two differences: (1) the forward adds the additive mask to each
+# score; (2) all j/i loops run the full [0, SEQ) range (no causal loop-bound).
+# The backward kernels are otherwise the CAUSAL=False attention kernels (masked
+# weights are 0 in cache). Carried VERBATIM. The shared mask buffer is [SEQ*SEQ]
+# (batch- and head-independent).
 # ──────────────────────────────────────────────────────────────────────
 
 
 def _masked_fwd_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
     IN_DIM: Int, OUT_DIM: Int, CACHE_SIZE: Int,
-    K_OFF: Int, V_OFF: Int, ATTN_OFF: Int,
+    K_OFF: Int, V_OFF: Int, ATTN_OFF: Int, ADT: DType = DT,
 ](
-    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-    input: LayoutTensor[DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
     cache: LayoutTensor[DT, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
     mask: LayoutTensor[DT, Layout.row_major(SEQ * SEQ), MutAnyOrigin],
 ):
@@ -95,15 +185,15 @@ def _masked_fwd_kernel[
     while idx0 < n_qkv:
         var i = idx0 // HEAD_DIM
         var d = idx0 % HEAD_DIM
-        cache.ptr[b * CACHE_SIZE + i * DIM + h_off + d] = rebind[Scalar[DT]](
+        cache.ptr[b * CACHE_SIZE + i * DIM + h_off + d] = rebind[Scalar[ADT]](
             input.ptr[b * IN_DIM + i * DIM + h_off + d]
-        )
+        ).cast[DT]()
         cache.ptr[b * CACHE_SIZE + K_OFF + i * DIM + h_off + d] = rebind[
-            Scalar[DT]
-        ](input.ptr[b * IN_DIM + K_OFF + i * DIM + h_off + d])
+            Scalar[ADT]
+        ](input.ptr[b * IN_DIM + K_OFF + i * DIM + h_off + d]).cast[DT]()
         cache.ptr[b * CACHE_SIZE + V_OFF + i * DIM + h_off + d] = rebind[
-            Scalar[DT]
-        ](input.ptr[b * IN_DIM + V_OFF + i * DIM + h_off + d])
+            Scalar[ADT]
+        ](input.ptr[b * IN_DIM + V_OFF + i * DIM + h_off + d]).cast[DT]()
         idx0 += bs
 
     # Step 2: per-row masked attention; threads stride over query rows i.
@@ -113,12 +203,12 @@ def _masked_fwd_kernel[
         for j in range(SEQ):
             var s = Scalar[DT](0)
             for d in range(HEAD_DIM):
-                var q = rebind[Scalar[DT]](
+                var q = rebind[Scalar[ADT]](
                     input.ptr[b * IN_DIM + i * DIM + h_off + d]
-                )
-                var k = rebind[Scalar[DT]](
+                ).cast[DT]()
+                var k = rebind[Scalar[ADT]](
                     input.ptr[b * IN_DIM + K_OFF + j * DIM + h_off + d]
-                )
+                ).cast[DT]()
                 s += q * k
             s = s * scale + rebind[Scalar[DT]](mask.ptr[i * SEQ + j])
             var aidx = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
@@ -142,30 +232,31 @@ def _masked_fwd_kernel[
             var acc = Scalar[DT](0)
             for j in range(SEQ):
                 var aidx = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
-                var v = rebind[Scalar[DT]](
+                var v = rebind[Scalar[ADT]](
                     input.ptr[b * IN_DIM + V_OFF + j * DIM + h_off + d]
-                )
+                ).cast[DT]()
                 acc += rebind[Scalar[DT]](cache.ptr[aidx]) * v
-            output.ptr[b * OUT_DIM + i * DIM + h_off + d] = acc
+            output.ptr[b * OUT_DIM + i * DIM + h_off + d] = acc.cast[ADT]()
         i += bs
 
 
 def _masked_zero_grad_kernel[
-    BATCH: Int, IN_DIM: Int
+    BATCH: Int, IN_DIM: Int, ADT: DType = DT
 ](
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     if idx < BATCH * IN_DIM:
-        grad_input.ptr[idx] = Scalar[DT](0)
+        grad_input.ptr[idx] = Scalar[ADT](0)
 
 
 def _masked_dV_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
     IN_DIM: Int, OUT_DIM: Int, CACHE_SIZE: Int, V_OFF: Int, ATTN_OFF: Int,
+    ADT: DType = DT,
 ](
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    grad_output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     cache: LayoutTensor[DT, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
 ):
     # dV[j] = Σ_i attn[i,j] * grad_out[i]. Full i-range (mask gates via attn=0).
@@ -185,22 +276,24 @@ def _masked_dV_kernel[
         var acc = Scalar[DT](0)
         for i in range(SEQ):
             var aidx = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
-            var go = rebind[Scalar[DT]](
+            var go = rebind[Scalar[ADT]](
                 grad_output.ptr[b * OUT_DIM + i * DIM + h_off + d]
-            )
+            ).cast[DT]()
             acc += rebind[Scalar[DT]](cache.ptr[aidx]) * go
         var dv_idx = b * IN_DIM + V_OFF + j * DIM + h_off + d
-        grad_input.ptr[dv_idx] = grad_input.ptr[dv_idx] + acc
+        grad_input.ptr[dv_idx] = (
+            rebind[Scalar[ADT]](grad_input.ptr[dv_idx]).cast[DT]() + acc
+        ).cast[ADT]()
         idx0 += bs
 
 
 def _masked_dscore_dQ_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
     IN_DIM: Int, OUT_DIM: Int, CACHE_SIZE: Int,
-    K_OFF: Int, V_OFF: Int, ATTN_OFF: Int,
+    K_OFF: Int, V_OFF: Int, ATTN_OFF: Int, ADT: DType = DT,
 ](
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    grad_output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     cache: LayoutTensor[DT, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
 ):
     # Per row i: dot_sum, then d_score (overwrites cache.attn), then dQ.
@@ -220,9 +313,9 @@ def _masked_dscore_dQ_kernel[
         for j in range(SEQ):
             var d_attn = Scalar[DT](0)
             for d in range(HEAD_DIM):
-                var go = rebind[Scalar[DT]](
+                var go = rebind[Scalar[ADT]](
                     grad_output.ptr[b * OUT_DIM + i * DIM + h_off + d]
-                )
+                ).cast[DT]()
                 var v = rebind[Scalar[DT]](
                     cache.ptr[b * CACHE_SIZE + V_OFF + j * DIM + h_off + d]
                 )
@@ -233,9 +326,9 @@ def _masked_dscore_dQ_kernel[
         for j in range(SEQ):
             var d_attn = Scalar[DT](0)
             for d in range(HEAD_DIM):
-                var go = rebind[Scalar[DT]](
+                var go = rebind[Scalar[ADT]](
                     grad_output.ptr[b * OUT_DIM + i * DIM + h_off + d]
-                )
+                ).cast[DT]()
                 var v = rebind[Scalar[DT]](
                     cache.ptr[b * CACHE_SIZE + V_OFF + j * DIM + h_off + d]
                 )
@@ -254,15 +347,17 @@ def _masked_dscore_dQ_kernel[
                 )
                 acc += d_score * k
             var dq_idx = b * IN_DIM + i * DIM + h_off + d
-            grad_input.ptr[dq_idx] = grad_input.ptr[dq_idx] + acc
+            grad_input.ptr[dq_idx] = (
+                rebind[Scalar[ADT]](grad_input.ptr[dq_idx]).cast[DT]() + acc
+            ).cast[ADT]()
         i += bs
 
 
 def _masked_dK_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
-    IN_DIM: Int, CACHE_SIZE: Int, K_OFF: Int, ATTN_OFF: Int,
+    IN_DIM: Int, CACHE_SIZE: Int, K_OFF: Int, ATTN_OFF: Int, ADT: DType = DT,
 ](
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
     cache: LayoutTensor[DT, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
 ):
     # dK[j] = Σ_i d_score[i,j] * Q[i]. Reads d_score from cache.attn. Full range.
@@ -286,13 +381,15 @@ def _masked_dK_kernel[
             var q = rebind[Scalar[DT]](cache.ptr[b * CACHE_SIZE + i * DIM + h_off + d])
             acc += d_score * q
         var dk_idx = b * IN_DIM + K_OFF + j * DIM + h_off + d
-        grad_input.ptr[dk_idx] = grad_input.ptr[dk_idx] + acc
+        grad_input.ptr[dk_idx] = (
+            rebind[Scalar[ADT]](grad_input.ptr[dk_idx]).cast[DT]() + acc
+        ).cast[ADT]()
         idx0 += bs
 
 
-# BMM fast path softmax — attention.mojo's `_attn_softmax_kernel` with the
-# causal zero-fill replaced by an additive mask before the max-shift. Full
-# range; masked entries get score ≈ NEG → softmax weight 0. 1 block per (b,h).
+# BMM fast path softmax — base attention's `_attn_softmax_kernel` with the causal
+# zero-fill replaced by an additive mask before the max-shift. Full range; masked
+# entries get score ≈ NEG → softmax weight 0. 1 block per (b,h). Carried VERBATIM.
 def _masked_softmax_kernel[
     BATCH: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
     CACHE_SIZE: Int, SCORES: Int, BH: Int,
@@ -338,128 +435,20 @@ def _masked_softmax_kernel[
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Host mask builders (data-independent; depend only on token layout).
-# ──────────────────────────────────────────────────────────────────────
-
-
-def causal_mask(seq_len: Int) -> List[Scalar[DT]]:
-    """Additive lower-triangular mask: position i may attend to j ≤ i."""
-    var m = List[Scalar[DT]]()
-    for i in range(seq_len):
-        for j in range(seq_len):
-            m.append(Scalar[DT](0.0) if j <= i else Scalar[DT](MASK_NEG))
-    return m^
-
-
-def all_allow_mask(seq_len: Int) -> List[Scalar[DT]]:
-    """Additive all-zero mask → unrestricted (bidirectional) attention."""
-    var m = List[Scalar[DT]]()
-    for _ in range(seq_len * seq_len):
-        m.append(Scalar[DT](0.0))
-    return m^
-
-
-def build_modality_mask[
-    mode: StaticString
-](
-    modality_ids: List[Int], n_latents: Int, agent_mod_in: Int = -1
-) -> List[Scalar[DT]]:
-    """Port of `model.py:SpaceSelfAttentionModality._build_allow` (Dreamer 4).
-
-    `modality_ids[k]` is the modality of token k; the first `n_latents` tokens
-    are latent register tokens. Returns the additive `SEQ*SEQ` mask:
-    allowed→0.0, disallowed→NEG.
-
-    Modes (the `wm_*` modes treat the highest modality id as the AGENT modality
-    and are only meaningful when agent tokens are present; they ignore
-    `n_latents`):
-      - "encoder": latents attend to all; non-latents only within own modality.
-      - "decoder": latents attend only to latents; non-latents attend to
-        latents + own modality.
-      - "wm_agent": full mixing — every token attends to every token
-        (model.py `wm_agent` returns all-ones).
-      - "wm_agent_isolated": non-agent queries attend to all NON-agent keys;
-        agent queries attend ONLY to agent keys (model.py `wm_agent_isolated`,
-        which keeps agent tokens inert during world-model pretraining).
-      - "wm_agent_bc": non-agent queries attend to all NON-agent keys; agent
-        queries attend to ALL keys (every modality + themselves). This is the
-        paper §3.3 imagination/BC mask: agent tokens read the full world state
-        to predict actions/rewards, while nothing attends back to them so the
-        world model cannot be contaminated by the task. (No reference code —
-        the public reference implements pretraining only; ported from the
-        paper.)
-    """
-    comptime assert (
-        mode == "encoder"
-        or mode == "decoder"
-        or mode == "wm_agent"
-        or mode == "wm_agent_isolated"
-        or mode == "wm_agent_bc"
-    ), "build_modality_mask: unknown mode"
-
-    var S = len(modality_ids)
-    # Agent modality. With `agent_mod_in >= 0` it is FIXED to that id (so a
-    # layout with zero agent tokens — no token carries the id — yields full
-    # mixing under the wm_* modes, since `k_is_agent`/`q_is_agent` are always
-    # False). With the default -1 it is inferred as the max id present (the
-    # agent tokens are the last modality inserted) — back-compat for callers
-    # that always have agent tokens.
-    var agent_mod = agent_mod_in
-    if agent_mod < 0:
-        agent_mod = 0
-        for k in range(S):
-            if modality_ids[k] > agent_mod:
-                agent_mod = modality_ids[k]
-
-    var m = List[Scalar[DT]]()
-    for i in range(S):
-        var is_q_lat = i < n_latents
-        var q_is_agent = modality_ids[i] == agent_mod
-        for j in range(S):
-            var is_k_lat = j < n_latents
-            var k_is_agent = modality_ids[j] == agent_mod
-            var same_mod = modality_ids[i] == modality_ids[j]
-
-            var allow: Bool
-            comptime if mode == "encoder":
-                # latents → all; non-latents → same modality.
-                allow = True if is_q_lat else same_mod
-            elif mode == "decoder":
-                # latents → latents; non-latents → latents + same modality.
-                if is_q_lat:
-                    allow = is_k_lat
-                else:
-                    allow = is_k_lat or same_mod
-            elif mode == "wm_agent":
-                # Full mixing (model.py: returns all-ones).
-                allow = True
-            elif mode == "wm_agent_isolated":
-                # Non-agent q → all non-agent keys; agent q → only agent keys
-                # (inert agent tokens during world-model pretraining).
-                if q_is_agent:
-                    allow = k_is_agent
-                else:
-                    allow = not k_is_agent
-            else:
-                # "wm_agent_bc" — paper §3.3: agent q → all keys; non-agent q →
-                # all non-agent keys (nothing attends back to agent tokens).
-                if q_is_agent:
-                    allow = True
-                else:
-                    allow = not k_is_agent
-
-            m.append(Scalar[DT](0.0) if allow else Scalar[DT](MASK_NEG))
-    return m^
-
-
-# ──────────────────────────────────────────────────────────────────────
 struct MaskedAttention[
     DIM: Int,
     N_HEADS: Int,
     SEQ_LEN: Int,
     USE_MAX_KERNELS: Bool = True,
+    ADT: DType = DT,
 ](Module):
     comptime ARITY: Int = 1
+    # Activation-flow dtype. `MaskedAttention[D, H, S]` = fp32 (ACT_DT == DT, the
+    # legacy path, byte-identical); `…[D, H, S, …, bfloat16]` flows its I/O
+    # activations at bf16 while computing fp32 INTERNALLY (cache + QKᵀ/softmax/
+    # attn·V + the additive mask all stay fp32; only the I/O-activation kernel
+    # operands cast at the bf16 boundary). bf16-flow is GPU-only.
+    comptime ACT_DT = Self.ADT
     comptime HEAD_DIM: Int = Self.DIM // Self.N_HEADS
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_LEN * Self.DIM * 3)
     comptime OUT_DIM = Self.SEQ_LEN * Self.DIM
@@ -470,28 +459,34 @@ struct MaskedAttention[
         3 * Self.SEQ_LEN * Self.DIM
         + Self.N_HEADS * Self.SEQ_LEN * Self.SEQ_LEN
     )
-    # Per-sample bmm scratch: 4 packed slabs (SEQ*DIM) + 2 scores slabs
-    # (N_HEADS*SEQ*SEQ). One reused device buffer, lazily sized to BATCH.
-    comptime SCRATCH_UNIT: Int = (
-        4 * Self.SEQ_LEN * Self.DIM
-        + 2 * Self.N_HEADS * Self.SEQ_LEN * Self.SEQ_LEN
-    )
+    comptime MASK_SIZE: Int = Self.SEQ_LEN * Self.SEQ_LEN
 
-    var cache: Cache["mattn_cache"]      # [BATCH, CACHE_SIZE] (lazy)
-    var mask: List[Scalar[DT]]           # [SEQ_LEN*SEQ_LEN] additive bias (CPU)
-    var mask_dev: Optional[DeviceBuffer[DT]]   # [SEQ_LEN*SEQ_LEN] (GPU)
-    var scratch: Cache["mattn_scratch"]  # device-only BMM scratch (lazy)
-    var ts: TargetStorage
+    # Cache (leaf-owned, output-caching) — [BATCH, CACHE_SIZE], lazy.
+    var cache: Tensor
+    # Mask [SEQ*SEQ] additive bias — owned Tensor (CPU data + optional GPU buf).
+    var mask: Tensor
+    # BMM scratch slabs (separate owned Tensors). Lazily sized.
+    var sp0: Tensor
+    var sp1: Tensor
+    var sp2: Tensor
+    var sp3: Tensor
+    var ss0: Tensor
+    var ss1: Tensor
+    var is_gpu: Bool
 
     def __init__(out self):
         comptime assert (
             Self.DIM % Self.N_HEADS == 0
         ), "MaskedAttention: DIM must be divisible by N_HEADS"
-        self.cache = Cache["mattn_cache"]()
-        self.mask = List[Scalar[DT]]()
-        self.mask_dev = None
-        self.scratch = Cache["mattn_scratch"]()
-        self.ts = TargetStorage.make_uninit()
+        self.cache = Tensor()
+        self.mask = Tensor()
+        self.sp0 = Tensor()
+        self.sp1 = Tensor()
+        self.sp2 = Tensor()
+        self.sp3 = Tensor()
+        self.ss0 = Tensor()
+        self.ss1 = Tensor()
+        self.is_gpu = False
 
     @staticmethod
     def make[
@@ -502,95 +497,200 @@ struct MaskedAttention[
         )
         var a = Self()
         # Default = all-allow (bidirectional), equals non-causal SDPA.
-        a.mask = all_allow_mask(Self.SEQ_LEN)
-        comptime if target == "cpu":
-            a.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["MaskedAttention.make[target='gpu']"](ctx)
-            a.ts = TargetStorage.make_gpu(ctx_v)
-            a._upload_mask_gpu()
+        a.mask = Tensor.alloc(Self.MASK_SIZE)  # zero-filled = all-allow
+        comptime if target != "cpu":
+            if not ctx:
+                raise Error(
+                    "MaskedAttention.make[target='gpu']: ctx required"
+                )
+            a.is_gpu = True
+            a.mask.upload(ctx.value())
         return a^
 
-    def _upload_mask_gpu(mut self) raises:
-        var ctx = self.ts.ctx.value()
-        comptime N = Self.SEQ_LEN * Self.SEQ_LEN
-        var dev = ctx.enqueue_create_buffer[DT](N)
-        var host = ctx.enqueue_create_host_buffer[DT](N)
-        ctx.synchronize()
-        var hp = host.unsafe_ptr()
-        for i in range(N):
-            hp[i] = self.mask[i]
-        ctx.enqueue_copy(dev, host)
-        self.mask_dev = dev^
-
-    def set_mask(mut self, var mask: List[Scalar[DT]]) raises:
-        if len(mask) != Self.SEQ_LEN * Self.SEQ_LEN:
+    def set_mask(mut self, var mask: List[Scalar[DT]], ctx: Optional[DeviceContext] = None) raises:
+        if len(mask) != Self.MASK_SIZE:
             raise Error("MaskedAttention.set_mask: expected SEQ_LEN*SEQ_LEN")
-        self.mask = mask^
-        if self.ts.ctx:
-            self._upload_mask_gpu()
+        self.mask.ensure(Self.MASK_SIZE)
+        for i in range(Self.MASK_SIZE):
+            self.mask.data[i] = mask[i]
+        self.mask.n = Self.MASK_SIZE
+        if self.is_gpu:
+            self.mask.upload(ctx.value())
+        _ = mask^
 
-    def _ensure_cache_gpu(mut self, batch: Int) raises:
-        self.cache.ensure_gpu(self.ts.ctx.value(), batch * Self.CACHE_SIZE)
-
-    def _ensure_scratch_gpu(mut self, batch: Int) raises:
-        self.scratch.ensure_gpu(self.ts.ctx.value(), batch * Self.SCRATCH_UNIT)
-
-    @staticmethod
-    def display_label() -> String:
-        return String("MaskedAttention")
+    def _ensure_scratch_gpu[BATCH: Int](mut self, c: DeviceContext) raises:
+        comptime PACKED = BATCH * Self.SEQ_LEN * Self.DIM
+        comptime SCORES = BATCH * Self.N_HEADS * Self.SEQ_LEN * Self.SEQ_LEN
+        self.sp0.ensure_gpu(c, PACKED)
+        self.sp1.ensure_gpu(c, PACKED)
+        self.sp2.ensure_gpu(c, PACKED)
+        self.sp3.ensure_gpu(c, PACKED)
+        self.ss0.ensure_gpu(c, SCORES)
+        self.ss1.ensure_gpu(c, SCORES)
 
     # ----- Forward ---------------------------------------------------------
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["MaskedAttention", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        comptime if target == "cpu":
-            self._forward_cpu[BATCH](input, output_v)
-        else:
-            self._ensure_cache_gpu(BATCH)
-            comptime if Self.USE_MAX_KERNELS:
-                self._forward_gpu_bmm[BATCH](input, output_v)
+        ref in0 = inputs[0]
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            # CPU helper is fp32-only (`Tensor`) → rebind (sound, ACT_DT IS DT);
+            # GPU helpers are ACT_DT-generic → pass activations directly.
+            comptime if target == "cpu":
+                ref in0d = rebind[Tensor](in0)
+                ref outd = rebind[Tensor](out)
+                self._forward_cpu[B](in0d, outd)
             else:
-                self._forward_gpu_custom[BATCH](input, output_v)
+                var c = ctx.value()
+                out.ensure_gpu(c, B * Self.OUT_DIM)
+                self.cache.ensure_gpu(c, B * Self.CACHE_SIZE)
+                comptime if Self.USE_MAX_KERNELS:
+                    self._forward_gpu_bmm[B](in0, out, c)
+                else:
+                    self._forward_gpu_custom[B](in0, out, c)
+        else:
+            # ── bf16-flow path (GPU-only). I/O activations cast at the boundary;
+            #    cache + the masked softmax/GEMMs stay fp32 (fp32-internal). ──
+            comptime assert (
+                target == "gpu"
+            ), "bf16-flow MaskedAttention is GPU-only"
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT_DIM)
+            self.cache.ensure_gpu(c, B * Self.CACHE_SIZE)
+            comptime if Self.USE_MAX_KERNELS:
+                self._forward_gpu_bmm[B](in0, out, c)
+            else:
+                self._forward_gpu_custom[B](in0, out, c)
 
-    def _forward_cpu[
-        BATCH: Int
+    def _forward_gpu_custom[
+        B: Int
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        output_v: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        mut in0: TensorImpl[Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        c: DeviceContext,
     ) raises:
-        self.cache.ensure_cpu(BATCH * Self.CACHE_SIZE)
-        var ip = input.ptr
-        var op = output_v.ptr
-        var cp = mptr(self.cache.cpu_ptr())
-        var mp = self.mask.unsafe_ptr()
+        comptime lay_in = Layout.row_major(B, Self.IN_DIMS[0])
+        comptime lay_out = Layout.row_major(B, Self.OUT_DIM)
+        comptime lay_c = Layout.row_major(B, Self.CACHE_SIZE)
+        comptime lay_m = Layout.row_major(Self.MASK_SIZE)
+        comptime kernel = _masked_fwd_kernel[
+            B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE,
+            Self.K_OFF, Self.V_OFF, Self.ATTN_OFF, Self.ADT,
+        ]
+        c.enqueue_function[kernel](
+            out.lt["gpu", lay_out](),
+            in0.lt["gpu", lay_in](),
+            self.cache.lt["gpu", lay_c](),
+            self.mask.lt["gpu", lay_m](),
+            grid_dim=B * Self.N_HEADS, block_dim=TPB,
+        )
+
+    def _forward_gpu_bmm[
+        B: Int
+    ](
+        mut self,
+        mut in0: TensorImpl[Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        c: DeviceContext,
+    ) raises:
+        comptime BH = B * Self.N_HEADS
+        comptime PACKED = B * Self.SEQ_LEN * Self.DIM
+        comptime SCORES = BH * Self.SEQ_LEN * Self.SEQ_LEN
+        self._ensure_scratch_gpu[B](c)
+
+        comptime lay_in = Layout.row_major(B, Self.IN_DIMS[0])
+        comptime lay_out = Layout.row_major(B, Self.OUT_DIM)
+        comptime lay_c = Layout.row_major(B, Self.CACHE_SIZE)
+        comptime lay_m = Layout.row_major(Self.MASK_SIZE)
+        comptime lay_p = Layout.row_major(PACKED)
+        comptime lay_s = Layout.row_major(SCORES)
+
+        # 1. pack QKV → (BH, SEQ, HEAD_DIM) + write cache.
+        comptime pelems = B * Self.SEQ_LEN * Self.DIM
+        comptime pblocks = (pelems + TPB - 1) // TPB
+        comptime pack_k = _attn_pack_qkv_fwd_kernel[
+            B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            Self.IN_DIMS[0], Self.CACHE_SIZE, PACKED, Self.ADT,
+        ]
+        c.enqueue_function[pack_k](
+            self.sp0.lt["gpu", lay_p](),
+            self.sp1.lt["gpu", lay_p](),
+            self.sp2.lt["gpu", lay_p](),
+            self.cache.lt["gpu", lay_c](),
+            in0.lt["gpu", lay_in](),
+            grid_dim=pblocks, block_dim=TPB,
+        )
+
+        # 2. scores = Q @ Kᵀ.
+        var scores_tt = TileTensor(
+            self.ss0.dev.value(), row_major[BH, Self.SEQ_LEN, Self.SEQ_LEN]()
+        )
+        var pq_tt = TileTensor(
+            self.sp0.dev.value(), row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+        )
+        var pk_tt = TileTensor(
+            self.sp1.dev.value(), row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+        )
+        batched_matmul[transpose_b=True, target="gpu"](
+            scores_tt, pq_tt, pk_tt, context=c
+        )
+
+        # 3. masked softmax in-place; mirror weights into cache.attn.
+        comptime sm_k = _masked_softmax_kernel[
+            B, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            Self.CACHE_SIZE, SCORES, BH,
+        ]
+        c.enqueue_function[sm_k](
+            self.ss0.lt["gpu", lay_s](),
+            self.cache.lt["gpu", lay_c](),
+            self.mask.lt["gpu", lay_m](),
+            grid_dim=BH, block_dim=TPB,
+        )
+
+        # 4. packed_out = attn @ V.
+        var pout_tt = TileTensor(
+            self.sp3.dev.value(), row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+        )
+        var pv_tt = TileTensor(
+            self.sp2.dev.value(), row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+        )
+        batched_matmul[target="gpu"](pout_tt, scores_tt, pv_tt, context=c)
+
+        # 5. unpack → output.
+        comptime up_k = _attn_unpack_out_kernel[
+            B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            Self.OUT_DIM, PACKED, Self.ADT,
+        ]
+        c.enqueue_function[up_k](
+            out.lt["gpu", lay_out](),
+            self.sp3.lt["gpu", lay_p](),
+            grid_dim=pblocks, block_dim=TPB,
+        )
+
+    def _forward_cpu[B: Int](mut self, mut in0: Tensor, mut out: Tensor) raises:
+        # Scalar Float64 per-(b,h) path (mirrors legacy MaskedAttention CPU).
+        out.ensure(B * Self.OUT_DIM)
+        self.cache.ensure(B * Self.CACHE_SIZE)
+        ref ip = in0.data
+        ref op = out.data
+        ref cp = self.cache.data
+        ref mp = self.mask.data
         comptime IN = Self.IN_DIMS[0]
         comptime OUT = Self.OUT_DIM
         comptime C = Self.CACHE_SIZE
         comptime SD = Self.SEQ_LEN * Self.DIM
         var scale = 1.0 / sqrt(Float64(Self.HEAD_DIM))
 
-        for b in range(BATCH):
+        for b in range(B):
             for i in range(SD):
                 cp[b * C + i] = ip[b * IN + i]
                 cp[b * C + Self.K_OFF + i] = ip[b * IN + Self.K_OFF + i]
@@ -599,7 +699,6 @@ struct MaskedAttention[
             for h in range(Self.N_HEADS):
                 var h_off = h * Self.HEAD_DIM
                 for i in range(Self.SEQ_LEN):
-                    # NOTE: full j-range — the mask, not a loop bound, gates.
                     var max_score: Float64 = -1e30
                     for j in range(Self.SEQ_LEN):
                         var score: Float64 = 0.0
@@ -609,7 +708,6 @@ struct MaskedAttention[
                                 ip[b * IN + Self.K_OFF + j * Self.DIM + h_off + d]
                             )
                             score += q * k
-                        # scale, then additive mask bias.
                         score = score * scale + Float64(mp[i * Self.SEQ_LEN + j])
                         var ai = (
                             b * C + Self.ATTN_OFF
@@ -655,360 +753,225 @@ struct MaskedAttention[
                         op[b * OUT + i * Self.DIM + h_off + d] = Scalar[DT](acc)
 
     # ----- Backward --------------------------------------------------------
-    # Identical math to ScaledDotProductAttention._vjp_cpu; only the j-loops
-    # run the full [0, SEQ) range. Masked positions carry attn weight 0 in
-    # `cache`, so they contribute 0 to every gradient — no special-casing.
 
     def vjp[
-        target: StaticString,
-        BATCH: Int,
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["MaskedAttention", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        comptime if target == "cpu":
-            self._vjp_cpu[BATCH](grad_output_v, grad_input_v)
-        else:
-            comptime if Self.USE_MAX_KERNELS:
-                self._vjp_gpu_bmm[BATCH](grad_output_v, grad_input_v)
+        # forward_input unused — output-caching (reads only cache + grad_output).
+        ref gin = grad_inputs[0]
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            # CPU helper is fp32-only (`Tensor`) → rebind (sound, ACT_DT IS DT);
+            # GPU helpers are ACT_DT-generic → pass activations directly.
+            comptime if target == "cpu":
+                ref god = rebind[Tensor](grad_output)
+                ref gind = rebind[Tensor](gin)
+                self._vjp_cpu[B](god, gind)
             else:
-                self._vjp_gpu_custom[BATCH](grad_output_v, grad_input_v)
-
-    def _forward_gpu_custom[
-        BATCH: Int
-    ](
-        mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        output_v: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-    ) raises:
-        comptime lay_in = Layout.row_major(BATCH, Self.IN_DIMS[0])
-        comptime lay_out = Layout.row_major(BATCH, Self.OUT_DIM)
-        comptime lay_c = Layout.row_major(BATCH, Self.CACHE_SIZE)
-        comptime lay_m = Layout.row_major(Self.SEQ_LEN * Self.SEQ_LEN)
-        var in_p = input.ptr
-        var out_p = output_v.ptr
-        var in_lt = LayoutTensor[DT, lay_in, MutAnyOrigin](in_p)
-        var out_lt = LayoutTensor[DT, lay_out, MutAnyOrigin](out_p)
-        var c_lt = LayoutTensor[DT, lay_c, MutAnyOrigin](self.cache.dev.value())
-        var m_lt = LayoutTensor[DT, lay_m, MutAnyOrigin](self.mask_dev.value())
-        comptime kernel = _masked_fwd_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
-            Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE,
-            Self.K_OFF, Self.V_OFF, Self.ATTN_OFF,
-        ]
-        self.ts.ctx.value().enqueue_function[kernel](
-            out_lt, in_lt, c_lt, m_lt,
-            grid_dim=BATCH * Self.N_HEADS, block_dim=TPB,
-        )
+                var c = ctx.value()
+                gin.ensure_gpu(c, B * Self.IN_DIMS[0])
+                comptime if Self.USE_MAX_KERNELS:
+                    self._vjp_gpu_bmm[B](grad_output, gin, c)
+                else:
+                    self._vjp_gpu_custom[B](grad_output, gin, c)
+        else:
+            # ── bf16-flow path (GPU-only). I/O activations cast at the boundary;
+            #    cache + grad math stay fp32 (fp32-internal). ──
+            comptime assert (
+                target == "gpu"
+            ), "bf16-flow MaskedAttention is GPU-only"
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.IN_DIMS[0])
+            comptime if Self.USE_MAX_KERNELS:
+                self._vjp_gpu_bmm[B](grad_output, gin, c)
+            else:
+                self._vjp_gpu_custom[B](grad_output, gin, c)
 
     def _vjp_gpu_custom[
-        BATCH: Int
+        B: Int
     ](
         mut self,
-        grad_output_v: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_input_v: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        mut gin: TensorImpl[Self.ACT_DT],
+        c: DeviceContext,
     ) raises:
-        var ctx = self.ts.ctx.value()
-        comptime lay_in = Layout.row_major(BATCH, Self.IN_DIMS[0])
-        comptime lay_out = Layout.row_major(BATCH, Self.OUT_DIM)
-        comptime lay_c = Layout.row_major(BATCH, Self.CACHE_SIZE)
-        var go_p = grad_output_v.ptr
-        var gi_p = grad_input_v.ptr
-        var go_lt = LayoutTensor[DT, lay_out, MutAnyOrigin](go_p)
-        var gi_lt = LayoutTensor[DT, lay_in, MutAnyOrigin](gi_p)
-        var c_lt = LayoutTensor[DT, lay_c, MutAnyOrigin](self.cache.dev.value())
-        comptime grid_bh = BATCH * Self.N_HEADS
-
+        comptime lay_in = Layout.row_major(B, Self.IN_DIMS[0])
+        comptime lay_out = Layout.row_major(B, Self.OUT_DIM)
+        comptime lay_c = Layout.row_major(B, Self.CACHE_SIZE)
+        comptime grid_bh = B * Self.N_HEADS
         # 1) zero grad_input.
-        comptime zk = _masked_zero_grad_kernel[BATCH, Self.IN_DIMS[0]]
-        comptime zn = (BATCH * Self.IN_DIMS[0] + TPB - 1) // TPB
-        ctx.enqueue_function[zk](gi_lt, grid_dim=zn, block_dim=TPB)
-        # 2) dV (reads attn weights — must precede dscore_dQ overwrite).
+        comptime zk = _masked_zero_grad_kernel[B, Self.IN_DIMS[0], Self.ADT]
+        comptime zn = (B * Self.IN_DIMS[0] + TPB - 1) // TPB
+        c.enqueue_function[zk](
+            gin.lt["gpu", lay_in](), grid_dim=zn, block_dim=TPB
+        )
+        # 2) dV.
         comptime dvk = _masked_dV_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
             Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE,
-            Self.V_OFF, Self.ATTN_OFF,
+            Self.V_OFF, Self.ATTN_OFF, Self.ADT,
         ]
-        ctx.enqueue_function[dvk](gi_lt, go_lt, c_lt, grid_dim=grid_bh, block_dim=TPB)
-        # 3) dscore + dQ (overwrites cache.attn with d_score).
+        c.enqueue_function[dvk](
+            gin.lt["gpu", lay_in](),
+            grad_output.lt["gpu", lay_out](),
+            self.cache.lt["gpu", lay_c](),
+            grid_dim=grid_bh, block_dim=TPB,
+        )
+        # 3) dscore + dQ.
         comptime dqk = _masked_dscore_dQ_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
             Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE,
-            Self.K_OFF, Self.V_OFF, Self.ATTN_OFF,
+            Self.K_OFF, Self.V_OFF, Self.ATTN_OFF, Self.ADT,
         ]
-        ctx.enqueue_function[dqk](gi_lt, go_lt, c_lt, grid_dim=grid_bh, block_dim=TPB)
-        # 4) dK (reads d_score from cache.attn).
+        c.enqueue_function[dqk](
+            gin.lt["gpu", lay_in](),
+            grad_output.lt["gpu", lay_out](),
+            self.cache.lt["gpu", lay_c](),
+            grid_dim=grid_bh, block_dim=TPB,
+        )
+        # 4) dK.
         comptime dkk = _masked_dK_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
-            Self.IN_DIMS[0], Self.CACHE_SIZE, Self.K_OFF, Self.ATTN_OFF,
+            B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            Self.IN_DIMS[0], Self.CACHE_SIZE, Self.K_OFF, Self.ATTN_OFF, Self.ADT,
         ]
-        ctx.enqueue_function[dkk](gi_lt, c_lt, grid_dim=grid_bh, block_dim=TPB)
-
-    # ----- GPU BMM fast path (batched-GEMM; reuses attention.mojo glue) -----
-
-    def _forward_gpu_bmm[
-        BATCH: Int
-    ](
-        mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        output_v: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-    ) raises:
-        comptime BH = BATCH * Self.N_HEADS
-        comptime PACKED = BATCH * Self.SEQ_LEN * Self.DIM
-        comptime SCORES = BH * Self.SEQ_LEN * Self.SEQ_LEN
-        var ctx = self.ts.ctx.value()
-        self._ensure_scratch_gpu(BATCH)
-
-        var sb = mptr(self.scratch.dev.value().unsafe_ptr())
-        var pq = sb + 0 * PACKED
-        var pk = sb + 1 * PACKED
-        var pv = sb + 2 * PACKED
-        var pout = sb + 3 * PACKED
-        var sc = sb + 4 * PACKED
-
-        var in_p = input.ptr
-        var out_p = output_v.ptr
-        var in_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.IN_DIMS[0]), MutAnyOrigin
-        ](in_p)
-        var c_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
-        ](self.cache.dev.value())
-        var m_lt = LayoutTensor[
-            DT, Layout.row_major(Self.SEQ_LEN * Self.SEQ_LEN), MutAnyOrigin
-        ](self.mask_dev.value())
-
-        # 1. pack QKV → (BH, SEQ, HEAD_DIM) + write cache.
-        comptime pelems = BATCH * Self.SEQ_LEN * Self.DIM
-        comptime pblocks = (pelems + TPB - 1) // TPB
-        var pq_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](pq)
-        var pk_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](pk)
-        var pv_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](pv)
-        comptime pack_k = _attn_pack_qkv_fwd_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
-            Self.IN_DIMS[0], Self.CACHE_SIZE, PACKED,
-        ]
-        ctx.enqueue_function[pack_k](
-            pq_lt, pk_lt, pv_lt, c_lt, in_lt, grid_dim=pblocks, block_dim=TPB
-        )
-
-        # 2. scores = Q @ Kᵀ.
-        var scores_tt = TileTensor(
-            sc, row_major[BH, Self.SEQ_LEN, Self.SEQ_LEN]()
-        )
-        var pq_tt = TileTensor(pq, row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]())
-        var pk_tt = TileTensor(pk, row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]())
-        batched_matmul[transpose_b=True, target="gpu"](
-            scores_tt, pq_tt, pk_tt, context=ctx
-        )
-
-        # 3. masked softmax in-place; mirror weights into cache.attn.
-        var sc_lt = LayoutTensor[DT, Layout.row_major(SCORES), MutAnyOrigin](sc)
-        comptime sm_k = _masked_softmax_kernel[
-            BATCH, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
-            Self.CACHE_SIZE, SCORES, BH,
-        ]
-        ctx.enqueue_function[sm_k](sc_lt, c_lt, m_lt, grid_dim=BH, block_dim=TPB)
-
-        # 4. packed_out = attn @ V.
-        var pout_tt = TileTensor(
-            pout, row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
-        )
-        var pv_tt = TileTensor(pv, row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]())
-        batched_matmul[target="gpu"](pout_tt, scores_tt, pv_tt, context=ctx)
-
-        # 5. unpack → output.
-        var out_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](out_p)
-        var pout_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](
-            pout
-        )
-        comptime up_k = _attn_unpack_out_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
-            Self.OUT_DIM, PACKED,
-        ]
-        ctx.enqueue_function[up_k](
-            out_lt, pout_lt, grid_dim=pblocks, block_dim=TPB
+        c.enqueue_function[dkk](
+            gin.lt["gpu", lay_in](),
+            self.cache.lt["gpu", lay_c](),
+            grid_dim=grid_bh, block_dim=TPB,
         )
 
     def _vjp_gpu_bmm[
-        BATCH: Int
+        B: Int
     ](
         mut self,
-        grad_output_v: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_input_v: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        mut gin: TensorImpl[Self.ACT_DT],
+        c: DeviceContext,
     ) raises:
-        comptime BH = BATCH * Self.N_HEADS
-        comptime PACKED = BATCH * Self.SEQ_LEN * Self.DIM
+        # Byte-for-byte the storage attention bmm backward (mask already baked
+        # into cache.attn weights → masked entries are 0).
+        comptime BH = B * Self.N_HEADS
+        comptime PACKED = B * Self.SEQ_LEN * Self.DIM
         comptime SCORES = BH * Self.SEQ_LEN * Self.SEQ_LEN
         comptime SL = Self.SEQ_LEN
         comptime HD = Self.HEAD_DIM
-        var ctx = self.ts.ctx.value()
-        self._ensure_scratch_gpu(BATCH)
+        self._ensure_scratch_gpu[B](c)
 
-        # Same slot-recycling aliasing map as attention.mojo's _vjp_gpu_bmm.
-        var sb = mptr(self.scratch.dev.value().unsafe_ptr())
-        var p0 = sb + 0 * PACKED
-        var p1 = sb + 1 * PACKED
-        var p2 = sb + 2 * PACKED
-        var p3 = sb + 3 * PACKED
-        var s0 = sb + 4 * PACKED
-        var s1 = sb + 4 * PACKED + SCORES
+        comptime lay_in = Layout.row_major(B, Self.IN_DIMS[0])
+        comptime lay_out = Layout.row_major(B, Self.OUT_DIM)
+        comptime lay_c = Layout.row_major(B, Self.CACHE_SIZE)
+        comptime lay_p = Layout.row_major(PACKED)
+        comptime lay_s = Layout.row_major(SCORES)
 
-        var go_p = grad_output_v.ptr
-        var gi_p = grad_input_v.ptr
-        var go_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](go_p)
-        var gi_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.IN_DIMS[0]), MutAnyOrigin
-        ](gi_p)
-        var c_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
-        ](self.cache.dev.value())
-
-        comptime pelems = BATCH * SL * Self.DIM
+        comptime pelems = B * SL * Self.DIM
         comptime pblocks = (pelems + TPB - 1) // TPB
         comptime sblocks = (SCORES + TPB - 1) // TPB
 
-        # 1. pack dout + cache Q/K/V → (BH, SEQ, HEAD_DIM).
-        var pdout_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p0)
-        var pq_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p1)
-        var pk_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p2)
-        var pv_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p3)
+        # 1. pack dout + cache Q/K/V.
         comptime pin_k = _attn_pack_in_bwd_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, SL, HD,
-            Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE, PACKED,
+            B, Self.DIM, Self.N_HEADS, SL, HD,
+            Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE, PACKED, Self.ADT,
         ]
-        ctx.enqueue_function[pin_k](
-            pdout_lt, pq_lt, pk_lt, pv_lt, go_lt, c_lt,
+        c.enqueue_function[pin_k](
+            self.sp0.lt["gpu", lay_p](),
+            self.sp1.lt["gpu", lay_p](),
+            self.sp2.lt["gpu", lay_p](),
+            self.sp3.lt["gpu", lay_p](),
+            grad_output.lt["gpu", lay_out](),
+            self.cache.lt["gpu", lay_c](),
             grid_dim=pblocks, block_dim=TPB,
         )
 
-        # 2. dattn(s0) = dout @ Vᵀ.
-        var pdout_tt = TileTensor(p0, row_major[BH, SL, HD]())
-        var pq_tt = TileTensor(p1, row_major[BH, SL, HD]())
-        var pk_tt = TileTensor(p2, row_major[BH, SL, HD]())
-        var pv_tt = TileTensor(p3, row_major[BH, SL, HD]())
-        var dattn_tt = TileTensor(s0, row_major[BH, SL, SL]())
+        # 2. dattn(ss0) = dout @ Vᵀ.
+        var pdout_tt = TileTensor(self.sp0.dev.value(), row_major[BH, SL, HD]())
+        var pq_tt = TileTensor(self.sp1.dev.value(), row_major[BH, SL, HD]())
+        var pk_tt = TileTensor(self.sp2.dev.value(), row_major[BH, SL, HD]())
+        var pv_tt = TileTensor(self.sp3.dev.value(), row_major[BH, SL, HD]())
+        var dattn_tt = TileTensor(self.ss0.dev.value(), row_major[BH, SL, SL]())
         batched_matmul[transpose_b=True, target="gpu"](
-            dattn_tt, pdout_tt, pv_tt, context=ctx
+            dattn_tt, pdout_tt, pv_tt, context=c
         )
 
-        # 3. softmax jvp → dscore(s1). Masked weights are 0 in cache.attn, so
-        #    dscore is 0 there automatically (same kernel as attention).
-        var dattn_lt = LayoutTensor[DT, Layout.row_major(SCORES), MutAnyOrigin](s0)
-        var dscore_lt = LayoutTensor[DT, Layout.row_major(SCORES), MutAnyOrigin](s1)
+        # 3. softmax jvp → dscore(ss1).
         comptime jvp_k = _attn_softmax_jvp_kernel[
-            BATCH, Self.N_HEADS, SL, HD, Self.CACHE_SIZE, SCORES, BH,
+            B, Self.N_HEADS, SL, HD, Self.CACHE_SIZE, SCORES, BH,
         ]
-        ctx.enqueue_function[jvp_k](
-            dscore_lt, dattn_lt, c_lt, grid_dim=BH, block_dim=TPB
+        c.enqueue_function[jvp_k](
+            self.ss1.lt["gpu", lay_s](),
+            self.ss0.lt["gpu", lay_s](),
+            self.cache.lt["gpu", lay_c](),
+            grid_dim=BH, block_dim=TPB,
         )
 
-        # 4. attn_T(s0) = transpose(cache.attn).
-        var attnT_lt = LayoutTensor[DT, Layout.row_major(SCORES), MutAnyOrigin](s0)
+        # 4. attn_T(ss0) = transpose(cache.attn).
         comptime tac_k = _attn_transpose_from_cache_kernel[
-            BATCH, Self.N_HEADS, SL, HD, Self.CACHE_SIZE, SCORES, BH,
+            B, Self.N_HEADS, SL, HD, Self.CACHE_SIZE, SCORES, BH,
         ]
-        ctx.enqueue_function[tac_k](
-            attnT_lt, c_lt, grid_dim=sblocks, block_dim=TPB
+        c.enqueue_function[tac_k](
+            self.ss0.lt["gpu", lay_s](),
+            self.cache.lt["gpu", lay_c](),
+            grid_dim=sblocks, block_dim=TPB,
         )
 
-        # 5. dV(p3) = attn_T(s0) @ dout(p0).
-        var attnT_tt = TileTensor(s0, row_major[BH, SL, SL]())
-        var dV_tt = TileTensor(p3, row_major[BH, SL, HD]())
-        batched_matmul[target="gpu"](dV_tt, attnT_tt, pdout_tt, context=ctx)
+        # 5. dV(sp3) = attn_T(ss0) @ dout(sp0).
+        var attnT_tt = TileTensor(self.ss0.dev.value(), row_major[BH, SL, SL]())
+        var dV_tt = TileTensor(self.sp3.dev.value(), row_major[BH, SL, HD]())
+        batched_matmul[target="gpu"](dV_tt, attnT_tt, pdout_tt, context=c)
 
-        # 6. dscore_T(s0) = transpose(dscore(s1)).
+        # 6. dscore_T(ss0) = transpose(dscore(ss1)).
         comptime ts_k = _attn_transpose_scores_kernel[SL, SCORES, BH]
-        ctx.enqueue_function[ts_k](
-            attnT_lt, dscore_lt, grid_dim=sblocks, block_dim=TPB
+        c.enqueue_function[ts_k](
+            self.ss0.lt["gpu", lay_s](),
+            self.ss1.lt["gpu", lay_s](),
+            grid_dim=sblocks, block_dim=TPB,
         )
 
-        # 7. dK(p0) = dscore_T(s0) @ Q(p1).
-        var dscoreT_tt = TileTensor(s0, row_major[BH, SL, SL]())
-        var dK_tt = TileTensor(p0, row_major[BH, SL, HD]())
-        batched_matmul[target="gpu"](dK_tt, dscoreT_tt, pq_tt, context=ctx)
+        # 7. dK(sp0) = dscore_T(ss0) @ Q(sp1).
+        var dscoreT_tt = TileTensor(self.ss0.dev.value(), row_major[BH, SL, SL]())
+        var dK_tt = TileTensor(self.sp0.dev.value(), row_major[BH, SL, HD]())
+        batched_matmul[target="gpu"](dK_tt, dscoreT_tt, pq_tt, context=c)
 
-        # 8. dQ(p1) = dscore(s1) @ K(p2).
-        var dscore_tt = TileTensor(s1, row_major[BH, SL, SL]())
-        var dQ_tt = TileTensor(p1, row_major[BH, SL, HD]())
-        batched_matmul[target="gpu"](dQ_tt, dscore_tt, pk_tt, context=ctx)
+        # 8. dQ(sp1) = dscore(ss1) @ K(sp2).
+        var dscore_tt = TileTensor(self.ss1.dev.value(), row_major[BH, SL, SL]())
+        var dQ_tt = TileTensor(self.sp1.dev.value(), row_major[BH, SL, HD]())
+        batched_matmul[target="gpu"](dQ_tt, dscore_tt, pk_tt, context=c)
 
-        # 9. unpack dQ(p1)/dK(p0)/dV(p3) → grad_input.
-        var dQ_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p1)
-        var dK_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p0)
-        var dV_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p3)
+        # 9. unpack dQ(sp1)/dK(sp0)/dV(sp3) → grad_input.
         comptime ug_k = _attn_unpack_grad_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, SL, HD, Self.IN_DIMS[0], PACKED,
+            B, Self.DIM, Self.N_HEADS, SL, HD, Self.IN_DIMS[0], PACKED, Self.ADT,
         ]
-        ctx.enqueue_function[ug_k](
-            gi_lt, dQ_lt, dK_lt, dV_lt, grid_dim=pblocks, block_dim=TPB
+        c.enqueue_function[ug_k](
+            gin.lt["gpu", lay_in](),
+            self.sp1.lt["gpu", lay_p](),
+            self.sp0.lt["gpu", lay_p](),
+            self.sp3.lt["gpu", lay_p](),
+            grid_dim=pblocks, block_dim=TPB,
         )
 
     def _vjp_cpu[
-        BATCH: Int
-    ](
-        mut self,
-        grad_output_v: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_input_v: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-    ) raises:
-        var gop = grad_output_v.ptr
-        var gip = grad_input_v.ptr
-        var cp = mptr(self.cache.cpu_ptr())
+        B: Int
+    ](mut self, mut grad_output: Tensor, mut gin: Tensor) raises:
+        # Scalar Float64 per-(b,h) path (mirrors legacy MaskedAttention CPU vjp).
+        gin.ensure(B * Self.IN_DIMS[0])
+        ref gop = grad_output.data
+        ref gip = gin.data
+        ref cp = self.cache.data
         comptime IN = Self.IN_DIMS[0]
         comptime OUT = Self.OUT_DIM
         comptime C = Self.CACHE_SIZE
         var scale = 1.0 / sqrt(Float64(Self.HEAD_DIM))
 
-        for i in range(BATCH * IN):
+        for i in range(B * IN):
             gip[i] = 0.0
 
-        for b in range(BATCH):
+        for b in range(B):
             for h in range(Self.N_HEADS):
                 var h_off = h * Self.HEAD_DIM
 
@@ -1078,3 +1041,6 @@ struct MaskedAttention[
                                 b * IN + Self.K_OFF + j * Self.DIM + h_off + d
                             )
                             gip[dk_idx] = gip[dk_idx] + Scalar[DT](d_score * q)
+
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (no Param fields → no-op).

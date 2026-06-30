@@ -1,242 +1,189 @@
-"""Concat[*DIMS] — variadic horizontal stack primitive.
+"""Concat[*DIMS] — variadic feature-axis concatenation (storage surface).
 
-Replaces the legacy `BinaryConcat[D0, D1]` + `TernaryConcat[D0, D1, D2]`
-with one variadic primitive. `ARITY = DIMS.size` (≥ 2),
-`OUT_DIM = Σ DIMS[i]`.
+  inputs (in0 [BATCH, DIMS[0]], in1 [BATCH, DIMS[1]], …)  →  [BATCH, ΣDIMS]
+  out[b, off_i : off_i+DIMS[i]] = in_i[b]      off_i = Σ_{j<i} DIMS[j]  (comptime)
 
-  output[b, off_i + d]   = inputs[i][b, d]        d ∈ [0, DIMS[i])
-  grad_inputs[i][b, d]   = grad_output[b, off_i + d]
+`ARITY = DIMS.size` (≥ 2), `OUT_DIM = Σ DIMS[i]`. Mirrors the legacy variadic
+`Concat[*DIMS]`; the storage `TensorRefs[ARITY]` input pack makes the N-ary form
+as clean as a binary one (the legacy framework only had `Concat2` here, which
+forced 3+-input concats to be expressed as a chain — this restores the variadic
+primitive). The SAC critic's `concat(state, action)` is just N=2 (`Concat2`,
+the parametric alias below); tdmpc2 / redq_ofe graphs use N=2…4.
 
-where `off_i = Σ_{j<i} DIMS[j]` is the cumulative offset (comptime).
+No params, no cache (backward is a pure slice-split of grad_output). GPU forward
+launches N small slab-copy kernels (one per input); backward symmetric.
 
-CPU + GPU. GPU forward launches N small slab-copy kernels (one per
-input); backward symmetric. Variadic inputs follow the same-Layout
-hetero-shape workaround (Phase 4.6c): callers construct every variadic
-TileTensor with the same `row_major[BATCH, DIMS[0]]()` Layout, and we
-rebuild typed views per-input via `typed_view[BATCH, DIMS[i]]`.
-
-Module conformance — note that `IN1_DIM` / `IN2_DIM` collapse to 0 when
-arity < that index (helper `_dim_at` gates the access at comptime).
+Backward: grad_in_i[b, :] = grad_output[b, off_i : off_i+DIMS[i]].
 """
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Comptime helpers — DIMS pack lookup with default-0, total, cumulative
-# offset.
-# ──────────────────────────────────────────────────────────────────────
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
-def _dim_at[index: Int, *DIMS: Int]() -> Int:
-    """Return DIMS[index], or 0 if index >= DIMS.size. Used so IN1_DIM /
-    IN2_DIM gracefully collapse to 0 for low-arity instantiations."""
-    var s: Int = 0
-    comptime for i in range(DIMS.size):
-        comptime if i == index:
-            s = DIMS[i]
-    return s
-
-
+# ── comptime variadic helpers (mirror Parallel / legacy concat) ─────────
 def _total_dim[*DIMS: Int]() -> Int:
-    var s: Int = 0
+    var s = 0
     comptime for i in range(DIMS.size):
         s += DIMS[i]
     return s
 
 
 def _cum_offset[index: Int, *DIMS: Int]() -> Int:
-    var s: Int = 0
+    var s = 0
     comptime for j in range(index):
         s += DIMS[j]
     return s
 
 
-# ──────────────────────────────────────────────────────────────────────
-# GPU kernels — one slab-copy per direction. Each launch handles a
-# single input/output slab; the comptime-for loop in forward/vjp emits
-# N launches.
-# ──────────────────────────────────────────────────────────────────────
+def _build_in_dims[*DIMS: Int]() -> InlineArray[Int, DIMS.size]:
+    var d = InlineArray[Int, DIMS.size](fill=0)
+    comptime for k in range(DIMS.size):
+        d[k] = DIMS[k]
+    return d
 
 
+# ── per-slab copy kernels (one launch per input; legacy-style) ──────────
 def _concat_copy_in_kernel[
-    BATCH: Int, SRC_DIM: Int, OUT_DIM: Int, DST_OFFSET: Int,
+    BATCH: Int, SRC_DIM: Int, OUT_DIM: Int, DST_OFF: Int, ADT: DType = DT
 ](
-    src: LayoutTensor[DT, Layout.row_major(BATCH, SRC_DIM), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(BATCH, SRC_DIM), MutAnyOrigin],
+    output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     var total = BATCH * SRC_DIM
     if idx < total:
         var b = idx // SRC_DIM
         var d = idx % SRC_DIM
-        output[b, DST_OFFSET + d] = rebind[Scalar[DT]](src[b, d])
+        output[b, DST_OFF + d] = rebind[Scalar[ADT]](src[b, d])
 
 
 def _concat_copy_out_kernel[
-    BATCH: Int, DST_DIM: Int, OUT_DIM: Int, SRC_OFFSET: Int,
+    BATCH: Int, DST_DIM: Int, OUT_DIM: Int, SRC_OFF: Int, ADT: DType = DT
 ](
     grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin,
+        ADT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
     ],
-    grad_in: LayoutTensor[DT, Layout.row_major(BATCH, DST_DIM), MutAnyOrigin],
+    grad_in: LayoutTensor[ADT, Layout.row_major(BATCH, DST_DIM), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     var total = BATCH * DST_DIM
     if idx < total:
         var b = idx // DST_DIM
         var d = idx % DST_DIM
-        grad_in[b, d] = rebind[Scalar[DT]](grad_output[b, SRC_OFFSET + d])
+        grad_in[b, d] = rebind[Scalar[ADT]](grad_output[b, SRC_OFF + d])
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Concat[*DIMS]
-# ──────────────────────────────────────────────────────────────────────
-
-
-struct Concat[*DIMS: Int](Module):
-    comptime ARITY: Int = Self.DIMS.size
-    comptime IN_DIMS = Self._build_in_dims()
-    comptime IN0_DIM: Int = _dim_at[0, *Self.DIMS]()
-    comptime OUT_DIM: Int = _total_dim[*Self.DIMS]()
+struct Concat[*DIMS: Int, ADT: DType = DT](Module):
+    comptime ARITY = Self.DIMS.size
+    comptime IN_DIMS = _build_in_dims[*Self.DIMS]()
+    comptime OUT_DIM = _total_dim[*Self.DIMS]()
+    # Activation-flow dtype (AMP). Concat is dtype-TRANSPARENT (pure slab copy /
+    # slice-split grad) → carries ACT_DT through unchanged. ACT_DT == DT
+    # (default, keyword param after the variadic *DIMS) → byte-identical fp32.
+    comptime ACT_DT = Self.ADT
 
     @staticmethod
     def display_label() -> String:
         return String("Concat")
 
-    @staticmethod
-    def _build_in_dims() -> InlineArray[Int, Self.DIMS.size]:
-        var d = InlineArray[Int, Self.DIMS.size](fill=0)
-        comptime for k in range(Self.DIMS.size):
-            d[k] = Self.DIMS[k]
-        return d
-
-    var ts: TargetStorage
-
     def __init__(out self):
-        comptime assert (
-            Self.DIMS.size >= 2
-        ), "Concat: needs at least 2 inputs"
-        self.ts = TargetStorage.make_uninit()
+        comptime assert Self.DIMS.size >= 2, "Concat: needs at least 2 inputs"
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "Concat: target must be 'cpu' or 'gpu'"
-        )
-        var c = Self()
-        comptime if target == "cpu":
-            c.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("Concat.make[target='gpu']: ctx required")
-            c.ts = TargetStorage.make_gpu(ctx.value())
-        return c^
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Concat", target](self.ts.target_tag)
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        comptime OUT = Self.OUT_DIM
         comptime if target == "cpu":
+            out.ensure(B * OUT)
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
-                var in_i = inputs.tile[i, BATCH, D]()
-                for b in range(BATCH):
+                ref in_i = inputs[i]
+                for b in range(B):
                     for d in range(D):
-                        output_v[b, OFF + d] = in_i[b, d]
+                        out.data[b * OUT + OFF + d] = in_i.data[b * D + d]
         else:
-            var o_p = output_v.ptr
-            var o_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
-            ](o_p)
+            var c = ctx.value()
+            out.ensure_gpu(c, B * OUT)
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
-                var in_i = inputs.tile[i, BATCH, D]()
-                var i_p = in_i.ptr
-                var i_lt = LayoutTensor[
-                    DT, Layout.row_major(BATCH, D), MutAnyOrigin,
-                ](i_p)
-                comptime total = BATCH * D
-                comptime n_blocks = (total + TPB - 1) // TPB
-                comptime kernel = _concat_copy_in_kernel[
-                    BATCH, D, Self.OUT_DIM, OFF,
-                ]
-                self.ts.ctx.value().enqueue_function[kernel](
-                    i_lt, o_lt, grid_dim=n_blocks, block_dim=TPB,
+                comptime nblk = (B * D + TPB - 1) // TPB
+                ref in_i = inputs[i]
+                c.enqueue_function[
+                    _concat_copy_in_kernel[B, D, OUT, OFF, Self.ACT_DT]
+                ](
+                    in_i.lt["gpu", Layout.row_major(B, D)](),
+                    out.lt["gpu", Layout.row_major(B, OUT)](),
+                    grid_dim=nblk,
+                    block_dim=TPB,
                 )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[Self.ARITY, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Concat", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-
+        comptime OUT = Self.OUT_DIM
         comptime if target == "cpu":
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
-                var gi = grad_inputs.tile[i, BATCH, D]()
-                for b in range(BATCH):
+                ref gi = grad_inputs[i]
+                gi.ensure(B * D)
+                for b in range(B):
                     for d in range(D):
-                        gi[b, d] = grad_output_v[b, OFF + d]
+                        gi.data[b * D + d] = grad_output.data[b * OUT + OFF + d]
         else:
-            var go_p = grad_output_v.ptr
-            var go_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
-            ](go_p)
+            var c = ctx.value()
             comptime for i in range(Self.DIMS.size):
                 comptime D = Self.DIMS[i]
                 comptime OFF = _cum_offset[i, *Self.DIMS]()
-                var gi_v = grad_inputs.tile[i, BATCH, D]()
-                var gi_p = gi_v.ptr
-                var gi_lt = LayoutTensor[
-                    DT, Layout.row_major(BATCH, D), MutAnyOrigin,
-                ](gi_p)
-                comptime total = BATCH * D
-                comptime n_blocks = (total + TPB - 1) // TPB
-                comptime kernel = _concat_copy_out_kernel[
-                    BATCH, D, Self.OUT_DIM, OFF,
-                ]
-                self.ts.ctx.value().enqueue_function[kernel](
-                    go_lt, gi_lt, grid_dim=n_blocks, block_dim=TPB,
+                comptime nblk = (B * D + TPB - 1) // TPB
+                ref gi = grad_inputs[i]
+                gi.ensure_gpu(c, B * D)
+                c.enqueue_function[
+                    _concat_copy_out_kernel[B, D, OUT, OFF, Self.ACT_DT]
+                ](
+                    grad_output.lt["gpu", Layout.row_major(B, OUT)](),
+                    gi.lt["gpu", Layout.row_major(B, D)](),
+                    grid_dim=nblk,
+                    block_dim=TPB,
                 )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).
+
+
+# ── Concat2[D0, D1] — parametric alias kept for call-site compatibility ──
+# The legacy storage surface exposed a fixed binary `Concat2`; it is now just
+# the N=2 instance of the variadic `Concat` (mirrors `BranchConcat = Parallel`).
+comptime Concat2[D0_: Int, D1_: Int] = Concat[D0_, D1_]

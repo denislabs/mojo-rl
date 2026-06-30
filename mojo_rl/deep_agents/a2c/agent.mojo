@@ -48,7 +48,7 @@ struct A2CDiscreteAgent[
     OBS_DIM: Int,
     N_ACTIONS: Int,
     ROLLOUT_LEN: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Discrete A2C = PPODiscreteAgent[N_EPOCHS=1, MINIBATCH=ROLLOUT_LEN]."""
 
     comptime Inner = PPODiscreteAgent[
@@ -180,7 +180,7 @@ struct A2CAgent[
     ACT_DIM: Int,
     ROLLOUT_LEN: Int,
     N_ENVS: Int = 1,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Continuous A2C = PPOAgent[N_EPOCHS=1, MINIBATCH=ROLLOUT_LEN·N_ENVS]."""
 
     comptime Inner = PPOAgent[

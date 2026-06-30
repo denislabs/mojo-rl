@@ -46,7 +46,6 @@ see gpu_replay.mojo).
 
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.memory import alloc
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
@@ -60,7 +59,9 @@ from .sequence_replay_buffer import SequenceReplayBuffer
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _seq_store_one_kernel[OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT](
+def _seq_store_one_kernel[
+    OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT
+](
     stage_s: LayoutTensor[DT, Layout.row_major(OBS), MutAnyOrigin],
     stage_a: LayoutTensor[DT, Layout.row_major(ACT), MutAnyOrigin],
     stage_r: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
@@ -71,10 +72,11 @@ def _seq_store_one_kernel[OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT](
     buf_d: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
     slot: Int32,
 ):
-    """Single-block store: thread d writes stage[d] → buf[slot, d] for obs
-    (OBS lanes) and act (ACT lanes); lane 0 writes the scalar rew / dne.
-    Launched grid=(1,), block=(max(OBS, ACT),)."""
-    var d = Int(thread_idx.x)
+    """Element-parallel store: thread d writes stage[d] → buf[slot, d] for obs
+    (OBS lanes) and act (ACT lanes); global thread 0 writes the scalar rew / dne.
+    Launched grid=(ceil(max(OBS,ACT)/TPB),), block=(TPB,) — grid-strided across
+    blocks so OBS may exceed the 1024-thread block cap (pixel obs)."""
+    var d = Int(block_dim.x * block_idx.x + thread_idx.x)
     var s = Int(slot)
     if d < OBS:
         buf_s[s, d] = _obs_quant[SDT](rebind[Scalar[DT]](stage_s[d]))
@@ -86,7 +88,11 @@ def _seq_store_one_kernel[OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT](
 
 
 def _seq_store_batch_kernel[
-    N_ENVS: Int, OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT,
+    N_ENVS: Int,
+    OBS: Int,
+    ACT: Int,
+    CAP: Int,
+    SDT: DType = DT,
 ](
     src_obs: LayoutTensor[DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin],
     src_act: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
@@ -123,9 +129,9 @@ def _seq_store_batch_kernel[
         buf_d[slot] = src_dne[e]
 
 
-def _increment_rng_offset_kernel[B: Int](
-    offset: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
-):
+def _increment_rng_offset_kernel[
+    B: Int
+](offset: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],):
     """Bump the device RNG offset by `2 * B` (the host stride). Launch
     grid=(1,), block=(1,); enqueued after the sample kernel so the
     offset sequence is bit-identical to the old host `_rng_offset += 2·B`
@@ -134,7 +140,9 @@ def _increment_rng_offset_kernel[B: Int](
         offset[0] = offset[0] + UInt64(B * 2)
 
 
-def _seq_draw_starts_kernel[B: Int](
+def _seq_draw_starts_kernel[
+    B: Int
+](
     starts: LayoutTensor[DType.int32, Layout.row_major(B), MutAnyOrigin],
     n_valid: Int32,
     seed: UInt64,
@@ -163,7 +171,12 @@ def _seq_draw_starts_kernel[B: Int](
 
 
 def _seq_sample_kernel[
-    B: Int, T: Int, OBS: Int, ACT: Int, CAP: Int, SDT: DType = DT,
+    B: Int,
+    T: Int,
+    OBS: Int,
+    ACT: Int,
+    CAP: Int,
+    SDT: DType = DT,
 ](
     buf_s: LayoutTensor[SDT, Layout.row_major(CAP, OBS), MutAnyOrigin],
     buf_a: LayoutTensor[DT, Layout.row_major(CAP, ACT), MutAnyOrigin],
@@ -210,6 +223,36 @@ def _seq_sample_kernel[
             out_dne[b, k] = buf_d[phys]
 
 
+def _seq_store_fst_kernel[CAP: Int](
+    stage_fst: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    buf_fst: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
+    pos: Int32,
+):
+    """Store the staged `is_first` flag into the ring at `pos` (1 thread)."""
+    if Int(block_dim.x * block_idx.x + thread_idx.x) != 0:
+        return
+    buf_fst[Int(pos)] = rebind[Scalar[DT]](stage_fst[0])
+
+
+def _seq_gather_fst_kernel[B: Int, T: Int, CAP: Int](
+    buf_fst: LayoutTensor[DT, Layout.row_major(CAP), MutAnyOrigin],
+    fst_out: LayoutTensor[DT, Layout.row_major(B, T + 1), MutAnyOrigin],
+    starts: LayoutTensor[DType.int32, Layout.row_major(B), MutAnyOrigin],
+    origin: Int32,
+):
+    """Per-(window × obs-frame) gather of the `is_first` flag — same window
+    starts + `phys = (origin + s_b + k) % CAP` as `_seq_sample_kernel`, so the
+    `[B, T+1]` fst frames align with the obs frames. Matches the CPU
+    `SequenceReplay.sample_batch_fst` index math."""
+    var t = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if t >= B * (T + 1):
+        return
+    var b = t // (T + 1)
+    var k = t % (T + 1)
+    var phys = (Int(origin) + Int(starts[b]) + k) % CAP
+    fst_out[b, k] = rebind[Scalar[DT]](buf_fst[phys])
+
+
 # ──────────────────────────────────────────────────────────────────────
 # GPUSequenceReplay struct.
 # ──────────────────────────────────────────────────────────────────────
@@ -229,12 +272,19 @@ struct GPUSequenceReplay[
     var act: DeviceBuffer[DT]
     var rew: DeviceBuffer[DT]
     var dne: DeviceBuffer[DT]
+    # Per-frame `is_first` ring [CAP] (device twin of `SequenceReplay.fst`):
+    # 1.0 if this slot's obs begins a new episode. Lets the WM key its carry
+    # reset on `fst` (frame t+1) instead of `dne`, and lets `record_terminal`
+    # store a genuine terminal obs while the post-terminal reset frame stays
+    # flagged first. Sampled by `sample_batch_fst_dev`.
+    var fst: DeviceBuffer[DT]
 
     # Single-transition device staging (used by `record`).
     var stage_obs: DeviceBuffer[DT]
     var stage_act: DeviceBuffer[DT]
     var stage_rew: DeviceBuffer[DT]
     var stage_dne: DeviceBuffer[DT]
+    var stage_fst: DeviceBuffer[DT]
 
     # Per-window start scratch for the element-parallel sample (sized to
     # `batch_capacity`, mirroring `GPUReplay.indices`). Written by
@@ -243,8 +293,14 @@ struct GPUSequenceReplay[
     var batch_capacity: Int
 
     # Host scratch for scalar staging so `record` issues uniform H2D copies.
-    var _h_rew: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var _h_dne: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    # Owning RAII `List` (was a raw `alloc`'d `MutAnyOrigin` pointer that was
+    # never freed — a leak). The `enqueue_copy` sites pass `.unsafe_ptr()` (a
+    # plain unpinned host pointer → the EAGER copy overload, capturing the
+    # value at enqueue time); a `HostBuffer` here would take the async-DMA
+    # overload and race the single-slot reuse in `record`.
+    var _h_rew: List[Scalar[DT]]
+    var _h_dne: List[Scalar[DT]]
+    var _h_fst: List[Scalar[DT]]
 
     # Stored context — needed by the host `sample_batch` bridge (no ctx arg).
     var ctx: DeviceContext
@@ -252,6 +308,9 @@ struct GPUSequenceReplay[
     # CPU bookkeeping.
     var size: Int
     var pos: Int
+    # True ⇒ the next `record`ed frame begins a new episode (fst=1). Starts
+    # True; a done=1 `record` arms it; `record_terminal` leaves it armed.
+    var pending_first: Bool
     var rng_seed: UInt64
     # Slice 5 — device-resident Philox offset (was a host `UInt64`). The
     # sample kernel reads `_rng_offset_dev[0]`; `_increment_rng_offset_kernel`
@@ -268,15 +327,18 @@ struct GPUSequenceReplay[
         var a = ctx.enqueue_create_buffer[DT](Self.CAP * Self.ACT)
         var r = ctx.enqueue_create_buffer[DT](Self.CAP)
         var d = ctx.enqueue_create_buffer[DT](Self.CAP)
+        var f = ctx.enqueue_create_buffer[DT](Self.CAP)
         s.enqueue_fill(Scalar[Self.SDT](0))
         a.enqueue_fill(Scalar[DT](0.0))
         r.enqueue_fill(Scalar[DT](0.0))
         d.enqueue_fill(Scalar[DT](0.0))
+        f.enqueue_fill(Scalar[DT](0.0))
 
         var stage_s = ctx.enqueue_create_buffer[DT](Self.OBS)
         var stage_a = ctx.enqueue_create_buffer[DT](Self.ACT)
         var stage_r = ctx.enqueue_create_buffer[DT](1)
         var stage_d = ctx.enqueue_create_buffer[DT](1)
+        var stage_f = ctx.enqueue_create_buffer[DT](1)
 
         var starts = ctx.enqueue_create_buffer[DType.int32](batch_capacity)
         starts.enqueue_fill(Int32(0))
@@ -284,20 +346,30 @@ struct GPUSequenceReplay[
         var rng_off = ctx.enqueue_create_buffer[DType.uint64](1)
         rng_off.enqueue_fill(UInt64(0))
 
-        var hr = alloc[Scalar[DT]](1)
-        var hd = alloc[Scalar[DT]](1)
-        hr[0] = Scalar[DT](0.0)
-        hd[0] = Scalar[DT](0.0)
+        var hr = List[Scalar[DT]](length=1, fill=Scalar[DT](0))
+        var hd = List[Scalar[DT]](length=1, fill=Scalar[DT](0))
+        var hf = List[Scalar[DT]](length=1, fill=Scalar[DT](0))
 
         return Self(
-            obs=s^, act=a^, rew=r^, dne=d^,
-            stage_obs=stage_s^, stage_act=stage_a^, stage_rew=stage_r^,
+            obs=s^,
+            act=a^,
+            rew=r^,
+            dne=d^,
+            fst=f^,
+            stage_obs=stage_s^,
+            stage_act=stage_a^,
+            stage_rew=stage_r^,
             stage_dne=stage_d^,
+            stage_fst=stage_f^,
             starts=starts^,
             batch_capacity=batch_capacity,
-            _h_rew=hr, _h_dne=hd,
+            _h_rew=hr^,
+            _h_dne=hd^,
+            _h_fst=hf^,
             ctx=ctx,
-            size=0, pos=0,
+            size=0,
+            pos=0,
+            pending_first=True,
             rng_seed=UInt64(0xC0FFEE_DECADE_0042),
             _rng_offset_dev=rng_off^,
         )
@@ -311,10 +383,12 @@ struct GPUSequenceReplay[
         """Trait factory. `ctx` required (device storage); raises if None."""
         comptime assert target == "gpu", (
             "GPUSequenceReplay is the GPU backend; use SequenceReplay for"
-            " target == \"cpu\""
+            ' target == "cpu"'
         )
         if not ctx:
-            raise Error("GPUSequenceReplay.make: ctx required for device storage")
+            raise Error(
+                "GPUSequenceReplay.make: ctx required for device storage"
+            )
         return Self.new(ctx.value())
 
     def count(self) -> Int:
@@ -334,51 +408,114 @@ struct GPUSequenceReplay[
         """Stage one host transition to device then store it at `pos`."""
         self._h_rew[0] = r
         self._h_dne[0] = d
+        self._h_fst[0] = Scalar[DT](1.0) if self.pending_first else Scalar[DT](0.0)
         self.ctx.enqueue_copy(self.stage_obs, s)
         self.ctx.enqueue_copy(self.stage_act, a)
-        self.ctx.enqueue_copy(self.stage_rew, self._h_rew)
-        self.ctx.enqueue_copy(self.stage_dne, self._h_dne)
+        self.ctx.enqueue_copy(self.stage_rew, self._h_rew.unsafe_ptr())
+        self.ctx.enqueue_copy(self.stage_dne, self._h_dne.unsafe_ptr())
+        self.ctx.enqueue_copy(self.stage_fst, self._h_fst.unsafe_ptr())
 
-        var stage_s_lt = LayoutTensor[
-            DT, Layout.row_major(Self.OBS), MutAnyOrigin
-        ](self.stage_obs.unsafe_ptr())
-        var stage_a_lt = LayoutTensor[
-            DT, Layout.row_major(Self.ACT), MutAnyOrigin
-        ](self.stage_act.unsafe_ptr())
-        var stage_r_lt = LayoutTensor[
-            DT, Layout.row_major(1), MutAnyOrigin
-        ](self.stage_rew.unsafe_ptr())
-        var stage_d_lt = LayoutTensor[
-            DT, Layout.row_major(1), MutAnyOrigin
-        ](self.stage_dne.unsafe_ptr())
+        var stage_s_lt = LayoutTensor[DT, Layout.row_major(Self.OBS)](
+            self.stage_obs
+        )
+        var stage_a_lt = LayoutTensor[DT, Layout.row_major(Self.ACT)](
+            self.stage_act
+        )
+        var stage_r_lt = LayoutTensor[DT, Layout.row_major(1)](self.stage_rew)
+        var stage_d_lt = LayoutTensor[DT, Layout.row_major(1)](self.stage_dne)
         var buf_s_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.obs.unsafe_ptr())
-        var buf_a_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
-        ](self.act.unsafe_ptr())
-        var buf_r_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.rew.unsafe_ptr())
-        var buf_d_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.dne.unsafe_ptr())
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS)
+        ](self.obs)
+        var buf_a_lt = LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](
+            self.act
+        )
+        var buf_r_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew)
+        var buf_d_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne)
 
-        comptime TPB_S = Self.OBS if Self.OBS > Self.ACT else Self.ACT
+        # grid-strided: max(OBS,ACT) may exceed the 1024-thread block cap (pixels)
+        comptime MAXD_R = Self.OBS if Self.OBS > Self.ACT else Self.ACT
+        comptime n_blocks_r = (MAXD_R + TPB - 1) // TPB
         comptime kernel = _seq_store_one_kernel[
             Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         self.ctx.enqueue_function[kernel](
-            stage_s_lt, stage_a_lt, stage_r_lt, stage_d_lt,
-            buf_s_lt, buf_a_lt, buf_r_lt, buf_d_lt,
+            stage_s_lt,
+            stage_a_lt,
+            stage_r_lt,
+            stage_d_lt,
+            buf_s_lt,
+            buf_a_lt,
+            buf_r_lt,
+            buf_d_lt,
             Int32(self.pos),
-            grid_dim=1, block_dim=TPB_S,
+            grid_dim=n_blocks_r,
+            block_dim=TPB,
+        )
+        # store the `is_first` flag into the ring at `pos`.
+        self.ctx.enqueue_function[_seq_store_fst_kernel[Self.CAP]](
+            LayoutTensor[DT, Layout.row_major(1)](self.stage_fst),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.fst),
+            Int32(self.pos),
+            grid_dim=1,
+            block_dim=1,
+        )
+        # a done frame ends the episode → the *next* recorded frame is first.
+        self.pending_first = d >= Scalar[DT](0.5)
+        self.pos = (self.pos + 1) % Self.CAP
+        if self.size < Self.CAP:
+            self.size += 1
+
+    def record_terminal(
+        mut self,
+        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ) raises:
+        """Store a genuine TERMINAL observation as its own frame (act=0, rew=0,
+        dne=0, fst=0). Called right after a `record(done=1)` so the window's obs
+        frame *after* the terminal transition is the real terminal state (→ the
+        cont head learns `latent(terminal)→0`). `pending_first` is left armed (by
+        the preceding done=1 `record`) so the FOLLOWING reset frame — not this
+        terminal frame — is flagged `is_first`. Device twin of
+        `SequenceReplay.record_terminal`."""
+        self._h_rew[0] = Scalar[DT](0.0)
+        self._h_dne[0] = Scalar[DT](0.0)
+        self._h_fst[0] = Scalar[DT](0.0)
+        self.ctx.enqueue_copy(self.stage_obs, s)
+        self.ctx.enqueue_copy(self.stage_rew, self._h_rew.unsafe_ptr())
+        self.ctx.enqueue_copy(self.stage_dne, self._h_dne.unsafe_ptr())
+        self.ctx.enqueue_copy(self.stage_fst, self._h_fst.unsafe_ptr())
+        self.stage_act.enqueue_fill(Scalar[DT](0.0))  # terminal frame: act = 0
+
+        comptime MAXD_T = Self.OBS if Self.OBS > Self.ACT else Self.ACT
+        comptime n_blocks_t = (MAXD_T + TPB - 1) // TPB
+        self.ctx.enqueue_function[
+            _seq_store_one_kernel[Self.OBS, Self.ACT, Self.CAP, Self.SDT]
+        ](
+            LayoutTensor[DT, Layout.row_major(Self.OBS)](self.stage_obs),
+            LayoutTensor[DT, Layout.row_major(Self.ACT)](self.stage_act),
+            LayoutTensor[DT, Layout.row_major(1)](self.stage_rew),
+            LayoutTensor[DT, Layout.row_major(1)](self.stage_dne),
+            LayoutTensor[Self.SDT, Layout.row_major(Self.CAP, Self.OBS)](self.obs),
+            LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](self.act),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne),
+            Int32(self.pos),
+            grid_dim=n_blocks_t,
+            block_dim=TPB,
+        )
+        self.ctx.enqueue_function[_seq_store_fst_kernel[Self.CAP]](
+            LayoutTensor[DT, Layout.row_major(1)](self.stage_fst),
+            LayoutTensor[DT, Layout.row_major(Self.CAP)](self.fst),
+            Int32(self.pos),
+            grid_dim=1,
+            block_dim=1,
         )
         self.pos = (self.pos + 1) % Self.CAP
         if self.size < Self.CAP:
             self.size += 1
 
-    def record_batch[N_ENVS: Int](
+    def record_batch[
+        N_ENVS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         src_obs: DeviceBuffer[DT],
@@ -389,30 +526,26 @@ struct GPUSequenceReplay[
         """Store `N_ENVS` device-resident transitions in one kernel launch
         (lockstep multi-env collection); slots `(pos + e) % CAP`."""
         comptime assert N_ENVS > 0, "N_ENVS must be > 0"
-        var src_obs_lt = LayoutTensor[
-            DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
-        ](src_obs.unsafe_ptr())
-        var src_act_lt = LayoutTensor[
-            DT, Layout.row_major(N_ENVS, Self.ACT), MutAnyOrigin
-        ](src_act.unsafe_ptr())
-        var src_rew_lt = LayoutTensor[
-            DT, Layout.row_major(N_ENVS), MutAnyOrigin
-        ](src_rew.unsafe_ptr())
-        var src_dne_lt = LayoutTensor[
-            DT, Layout.row_major(N_ENVS), MutAnyOrigin
-        ](src_dne.unsafe_ptr())
+        var src_obs_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS, Self.OBS)](src_obs))
+        var src_act_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS, Self.ACT), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS, Self.ACT)](src_act))
+        var src_rew_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS)](src_rew))
+        var src_dne_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(N_ENVS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(N_ENVS)](src_dne))
         var buf_s_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.obs.unsafe_ptr())
-        var buf_a_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
-        ](self.act.unsafe_ptr())
-        var buf_r_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.rew.unsafe_ptr())
-        var buf_d_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.dne.unsafe_ptr())
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS)
+        ](self.obs)
+        var buf_a_lt = LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](
+            self.act
+        )
+        var buf_r_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew)
+        var buf_d_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne)
 
         # Element-parallel: one thread per (env × OBS element).
         comptime n_blocks = (N_ENVS * Self.OBS + TPB - 1) // TPB
@@ -420,10 +553,17 @@ struct GPUSequenceReplay[
             N_ENVS, Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[kernel](
-            src_obs_lt, src_act_lt, src_rew_lt, src_dne_lt,
-            buf_s_lt, buf_a_lt, buf_r_lt, buf_d_lt,
+            src_obs_lt,
+            src_act_lt,
+            src_rew_lt,
+            src_dne_lt,
+            buf_s_lt,
+            buf_a_lt,
+            buf_r_lt,
+            buf_d_lt,
             Int32(self.pos),
-            grid_dim=n_blocks, block_dim=TPB,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
         self.pos = (self.pos + N_ENVS) % Self.CAP
         self.size += N_ENVS
@@ -431,7 +571,8 @@ struct GPUSequenceReplay[
             self.size = Self.CAP
 
     def sample_batch_dev[
-        B: Int, T: Int,
+        B: Int,
+        T: Int,
     ](
         mut self,
         ctx: DeviceContext,
@@ -449,52 +590,54 @@ struct GPUSequenceReplay[
             )
         if B > self.batch_capacity:
             raise Error(
-                "GPUSequenceReplay.sample_batch_dev[B=" + String(B)
-                + "] exceeds batch_capacity=" + String(self.batch_capacity)
+                "GPUSequenceReplay.sample_batch_dev[B="
+                + String(B)
+                + "] exceeds batch_capacity="
+                + String(self.batch_capacity)
             )
         var origin = 0 if self.size < Self.CAP else self.pos
         var n_valid = self.size - T
 
         var buf_s_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin
-        ](self.obs.unsafe_ptr())
-        var buf_a_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin
-        ](self.act.unsafe_ptr())
-        var buf_r_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.rew.unsafe_ptr())
-        var buf_d_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin
-        ](self.dne.unsafe_ptr())
-        var out_obs_lt = LayoutTensor[
-            DT, Layout.row_major(B, T + 1, Self.OBS), MutAnyOrigin
-        ](obs_dev.unsafe_ptr())
-        var out_act_lt = LayoutTensor[
-            DT, Layout.row_major(B, T, Self.ACT), MutAnyOrigin
-        ](act_dev.unsafe_ptr())
-        var out_rew_lt = LayoutTensor[
-            DT, Layout.row_major(B, T), MutAnyOrigin
-        ](rew_dev.unsafe_ptr())
-        var out_dne_lt = LayoutTensor[
-            DT, Layout.row_major(B, T), MutAnyOrigin
-        ](dne_dev.unsafe_ptr())
+            Self.SDT, Layout.row_major(Self.CAP, Self.OBS)
+        ](self.obs)
+        var buf_a_lt = LayoutTensor[DT, Layout.row_major(Self.CAP, Self.ACT)](
+            self.act
+        )
+        var buf_r_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.rew)
+        var buf_d_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.dne)
+        var out_obs_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(B, T + 1, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(B, T + 1, Self.OBS)](obs_dev))
+        var out_act_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(B, T, Self.ACT), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(B, T, Self.ACT)](act_dev))
+        var out_rew_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(B, T), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(B, T)](rew_dev))
+        var out_dne_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(B, T), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(B, T)](dne_dev))
 
-        var off_lt = LayoutTensor[
-            DType.uint64, Layout.row_major(1), MutAnyOrigin
-        ](self._rng_offset_dev.unsafe_ptr())
+        var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self._rng_offset_dev
+        )
 
         # 1) Draw one start per window (same Philox math the old fused
         #    kernel used per-thread, so the window distribution is
         #    unchanged) into the pre-sized `starts` scratch.
-        var starts_lt = LayoutTensor[
-            DType.int32, Layout.row_major(B), MutAnyOrigin
-        ](self.starts.unsafe_ptr())
+        var starts_lt = LayoutTensor[DType.int32, Layout.row_major(B)](
+            self.starts
+        )
         comptime n_blocks_draw = (B + TPB - 1) // TPB
         comptime draw_kernel = _seq_draw_starts_kernel[B]
         ctx.enqueue_function[draw_kernel](
-            starts_lt, Int32(n_valid), self.rng_seed, off_lt,
-            grid_dim=n_blocks_draw, block_dim=TPB,
+            starts_lt,
+            Int32(n_valid),
+            self.rng_seed,
+            off_lt,
+            grid_dim=n_blocks_draw,
+            block_dim=TPB,
         )
 
         # 2) Element-parallel gather: one thread per (window × frame ×
@@ -504,19 +647,64 @@ struct GPUSequenceReplay[
             B, T, Self.OBS, Self.ACT, Self.CAP, Self.SDT
         ]
         ctx.enqueue_function[kernel](
-            buf_s_lt, buf_a_lt, buf_r_lt, buf_d_lt,
-            out_obs_lt, out_act_lt, out_rew_lt, out_dne_lt,
-            starts_lt, Int32(origin),
-            grid_dim=n_blocks, block_dim=TPB,
+            buf_s_lt,
+            buf_a_lt,
+            buf_r_lt,
+            buf_d_lt,
+            out_obs_lt,
+            out_act_lt,
+            out_rew_lt,
+            out_dne_lt,
+            starts_lt,
+            Int32(origin),
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
         # Bump the offset on-device after the sample reads it.
         comptime inc_kernel = _increment_rng_offset_kernel[B]
         ctx.enqueue_function[inc_kernel](
-            off_lt, grid_dim=1, block_dim=1,
+            off_lt,
+            grid_dim=1,
+            block_dim=1,
+        )
+
+    def sample_batch_fst_dev[
+        B: Int,
+        T: Int,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        obs_dev: DeviceBuffer[DT],
+        act_dev: DeviceBuffer[DT],
+        rew_dev: DeviceBuffer[DT],
+        dne_dev: DeviceBuffer[DT],
+        fst_dev: DeviceBuffer[DT],   # [B, T+1] per-obs-frame is_first
+    ) raises:
+        """`sample_batch_dev` + the per-obs-frame `is_first` flags into
+        `fst_dev` ([B, T+1]). Reuses the SAME drawn window starts so fst aligns
+        with the obs frames. Device twin of `SequenceReplay.sample_batch_fst`."""
+        self.sample_batch_dev[B, T](ctx, obs_dev, act_dev, rew_dev, dne_dev)
+        var origin = 0 if self.size < Self.CAP else self.pos
+        var starts_lt = LayoutTensor[DType.int32, Layout.row_major(B)](
+            self.starts
+        )
+        var buf_fst_lt = LayoutTensor[DT, Layout.row_major(Self.CAP)](self.fst)
+        var out_fst_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(B, T + 1), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(B, T + 1)](fst_dev))
+        comptime n_blocks_f = (B * (T + 1) + TPB - 1) // TPB
+        ctx.enqueue_function[_seq_gather_fst_kernel[B, T, Self.CAP]](
+            buf_fst_lt,
+            out_fst_lt,
+            starts_lt,
+            Int32(origin),
+            grid_dim=n_blocks_f,
+            block_dim=TPB,
         )
 
     def sample_batch[
-        B: Int, T: Int,
+        B: Int,
+        T: Int,
     ](
         mut self,
         obs_out: UnsafePointer[Scalar[DT], MutAnyOrigin],

@@ -1,9 +1,7 @@
-"""EnsembleActorStep — TrainerState wrapper over EnsembleActorLoss.
+"""EnsembleActorStep — TrainerState wrapper over EnsembleActorLoss (STORAGE).
 
-Mirrors SAC's `SACActorStep` (`sac/blocks/actor_step.mojo`): reads
-`state.mb_s` / `state.alpha`, runs `forward_backward`, writes
-`state.actor_loss` + `state.log_prob_mean`. Trainer-facing surface
-for R.3.
+Mirrors SAC's `SACActorStep`: reads `state.mb_s` / `state.alpha`, runs
+`forward_backward`, writes `state.actor_loss` + `state.log_prob_mean`.
 """
 
 from std.gpu.host import DeviceContext
@@ -25,7 +23,7 @@ struct EnsembleActorStep[
     OBS_: Int,
     ACT_: Int,
     BATCH_: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime N = Self.N_
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
@@ -64,8 +62,9 @@ struct EnsembleActorStep[
             actor,
             actor_opt,
             ensemble,
-            state.mb_s.target_ptr[target](),
+            state.mb_s,
             state.alpha,
+            state.ctx,
         )
         state.actor_loss = res.loss
         state.log_prob_mean = res.log_prob_mean

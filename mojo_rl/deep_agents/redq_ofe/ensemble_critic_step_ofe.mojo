@@ -1,88 +1,74 @@
-"""EnsembleCriticStepOFE — N-critic gradient step against shared target y.
+"""EnsembleCriticStepOFE — N-critic gradient step against shared target y (STORAGE).
 
-Phase O.2.b.2 (CPU). Mirrors `EnsembleCriticStep` from `redq/`: loops
-over N online critics in `CriticEnsemble[CRITIC, N]` and runs one
-`CriticUpdateBlock.step` per critic. The OFE delta is the input:
+Mirrors `redq.blocks.EnsembleCriticStep`: loops over the N online critics in
+`CriticEnsemble[CRITIC, N]` and runs one storage `CriticUpdateBlock.step` per
+critic. The OFE delta is the input:
 
   - Non-OFE REDQ: critic takes `concat(mb_s, mb_a)` of dim OBS+ACT
-  - OFE REDQ:     critic takes `φ(s, a) = action_branch(concat(φ(s),
-                  mb_a))` of dim PHI_SA_DIM
+  - OFE REDQ:     critic takes `φ(s, a) = action_branch(concat(φ(s), mb_a))`
+                  of dim PHI_SA_DIM
 
-So this block runs the action-branch forward ONCE on
-`concat(phi_s, mb_a)` to produce `φ(s, a)` in `_mb_phi_sa`, then
-loops the N critic updates against that same `phi_sa` (every critic
-sees the same φ(s,a) — matches the legacy REDQ-OFE data flow).
-
-Like `EnsembleCriticStep` we hold ONE `CriticUpdateBlock` and reuse
-it across all N members; its scratches are overwritten between
-iterations but never read across them.
+So this block runs the action-branch forward ONCE on `concat(φ(s), mb_a)` to
+produce `φ(s, a)`, then loops the N critic updates against that same `φ(s, a)`
+(every critic sees the same φ(s,a) — matches the legacy REDQ-OFE data flow).
 
 Gradient policy
 ===============
-`CriticUpdateBlock.step` writes `grad_φ(s, a)` into its
-`_mb_grad_sa` scratch and stops there — it doesn't propagate back
-into `action_branch` or `state_branch`. That's correct: OFE params
-only train via the aux loss path (`OFEAuxLossStep`). The action-
-branch forward here populates its cache, but no `action_branch.vjp`
-ever follows it on the RL path.
+`CriticUpdateBlock.step` writes `grad_φ(s, a)` into its own scratch and stops
+there — it doesn't propagate back into `action_branch` or `state_branch`.
+That's correct: OFE params only train via the aux loss path. The action-branch
+forward here populates its cache, but no `action_branch.vjp` ever follows it on
+the RL path.
 
-R.2 is CPU-only for this slice; GPU lands alongside the full
-REDQOFETrainer GPU port. The `concat(phi_s, mb_a)` step is a plain
-CPU loop (same pattern as `EnsembleCriticStep`'s inline `concat_sa`
-helper); the GPU port will add a `concat_phi_sa_gpu` kernel.
+STORAGE migration (Stage 5): reuses the storage `CriticUpdateBlock` + the
+width-agnostic `concat_sa(_gpu)` glue (its "OBS" param is the first-input width
+— passing PHI_S_DIM there is correct). φ(s) comes in by `mut Tensor` ref.
 """
 
 from std.gpu.host import DeviceContext
-from layout import TileTensor, row_major
+from layout import Layout
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.scratch import Scratch
-from mojo_rl.nn.core.scratch_walkers import init_scratch_auto
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 
 from ..loss.critic_update_block import CriticUpdateBlock
-from ..redq.ensemble import CriticEnsemble
 from ..training.off_policy_critic import concat_sa, concat_sa_gpu
+from ..training.trainer_block import TrainerState
+from ..redq.ensemble import CriticEnsemble
 
 
 struct EnsembleCriticStepOFE[
     AB: Module,            # IN=PHI_S_DIM+ACT, OUT=PHI_SA_DIM
     CRITIC: Module,        # IN=PHI_SA_DIM, OUT=1
     N: Int,
-    BATCH_: Int,
+    OBS_: Int,
     PHI_S_DIM_: Int,
     ACT_: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
-    comptime BATCH = Self.BATCH_
+    BATCH_: Int,
+](Defaultable & Movable & ImplicitlyDeletable):
+    comptime OBS = Self.OBS_
     comptime PHI_S_DIM = Self.PHI_S_DIM_
     comptime ACT = Self.ACT_
+    comptime BATCH = Self.BATCH_
     comptime SA_IN_DIM = Self.PHI_S_DIM + Self.ACT
     comptime PHI_SA_DIM = Self.AB.OUT_DIM
 
     var member_step: CriticUpdateBlock[
         Self.CRITIC, Self.BATCH, Self.PHI_SA_DIM,
     ]
-    var _mb_sa_in: Scratch[
-        "ocstep_mb_sa_in", Self.BATCH * Self.SA_IN_DIM,
-    ]
-    var _mb_phi_sa: Scratch[
-        "ocstep_mb_phi_sa", Self.BATCH * Self.PHI_SA_DIM,
-    ]
-    var ts: TargetStorage
+    var _mb_sa_in: Tensor   # concat(φ(s), a) scratch  [BATCH, SA_IN_DIM]
+    var _mb_phi_sa: Tensor  # action_branch output     [BATCH, PHI_SA_DIM]
 
     def __init__(out self):
         self.member_step = CriticUpdateBlock[
             Self.CRITIC, Self.BATCH, Self.PHI_SA_DIM,
         ]()
-        self._mb_sa_in = Scratch[
-            "ocstep_mb_sa_in", Self.BATCH * Self.SA_IN_DIM,
-        ]()
-        self._mb_phi_sa = Scratch[
-            "ocstep_mb_phi_sa", Self.BATCH * Self.PHI_SA_DIM,
-        ]()
-        self.ts = TargetStorage.make_uninit()
+        self._mb_sa_in = Tensor()
+        self._mb_phi_sa = Tensor()
 
     @staticmethod
     def make[target: StaticString](
@@ -101,64 +87,72 @@ struct EnsembleCriticStepOFE[
         blk.member_step = CriticUpdateBlock[
             Self.CRITIC, Self.BATCH, Self.PHI_SA_DIM,
         ].make[target](ctx=ctx)
-        blk.ts = TargetStorage.make[target](ctx=ctx)
-        init_scratch_auto[Self, target](blk, ctx)
+        comptime if target == "cpu":
+            blk._mb_sa_in = Tensor.alloc(Self.BATCH * Self.SA_IN_DIM)
+            blk._mb_phi_sa = Tensor.alloc(Self.BATCH * Self.PHI_SA_DIM)
+        else:
+            var c = ctx.value()
+            blk._mb_sa_in = Tensor.alloc_gpu(c, Self.BATCH * Self.SA_IN_DIM)
+            blk._mb_phi_sa = Tensor.alloc_gpu(c, Self.BATCH * Self.PHI_SA_DIM)
         return blk^
 
     def step[
-        target: StaticString = "cpu",
+        target: StaticString,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
+        mut state: TrainerState[Self.OBS, Self.ACT, Self.BATCH],
         mut action_branch: Self.AB,
         mut ensemble: CriticEnsemble[Self.CRITIC, Self.N],
-        mb_phi_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_a_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mb_y_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut phi_s: Tensor,
     ) raises -> Scalar[DT]:
-        """One ensemble-wide critic gradient step. Reads φ(s) (from the
-        feature step), mb_a, and the shared target mb_y; returns the
-        sum of per-critic losses."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "EnsembleCriticStepOFE.step: target must be 'cpu' or 'gpu'"
-        )
-        assert_tag_for["EnsembleCriticStepOFE", target](self.ts.target_tag)
+        """One ensemble-wide critic gradient step. Reads φ(s) (= `phi_s`),
+        state.mb_a, and the shared target state.mb_y; returns Σᵢ loss_i."""
+        var ctx = state.ctx
 
         # 1. concat(φ(s), mb_a) → _mb_sa_in [BATCH, PHI_S_DIM + ACT].
-        # `concat_sa(_gpu)` takes the first-input width as `OBS` —
-        # passing PHI_S_DIM in that slot is correct (the helper
-        # is width-agnostic).
-        var sa_in_p = self._mb_sa_in.target_ptr[target]()
         comptime if target == "cpu":
             concat_sa[Self.PHI_S_DIM, Self.ACT, Self.BATCH](
-                mb_phi_s_ptr, mb_a_ptr, sa_in_p,
+                phi_s.lt[
+                    "cpu", Layout.row_major(Self.BATCH, Self.PHI_S_DIM)
+                ](),
+                state.mb_a.lt[
+                    "cpu", Layout.row_major(Self.BATCH, Self.ACT)
+                ](),
+                self._mb_sa_in.lt[
+                    "cpu", Layout.row_major(Self.BATCH, Self.SA_IN_DIM)
+                ](),
             )
         else:
             concat_sa_gpu[Self.PHI_S_DIM, Self.ACT, Self.BATCH](
-                self.ts.ctx.value(), mb_phi_s_ptr, mb_a_ptr, sa_in_p,
+                ctx.value(),
+                phi_s.lt[
+                    "gpu", Layout.row_major(Self.BATCH, Self.PHI_S_DIM)
+                ](),
+                state.mb_a.lt[
+                    "gpu", Layout.row_major(Self.BATCH, Self.ACT)
+                ](),
+                self._mb_sa_in.lt[
+                    "gpu", Layout.row_major(Self.BATCH, Self.SA_IN_DIM)
+                ](),
             )
 
         # 2. action_branch.forward(sa_in) → φ(s, a) [BATCH, PHI_SA_DIM].
-        var sa_in_t = TileTensor(
-            sa_in_p, row_major[Self.BATCH, Self.SA_IN_DIM](),
-        )
-        var phi_sa_p = self._mb_phi_sa.target_ptr[target]()
-        var phi_sa_t = TileTensor(
-            phi_sa_p, row_major[Self.BATCH, Self.PHI_SA_DIM](),
-        )
-        action_branch.forward[target, Self.BATCH, POLICY](
-            sa_in_t, output=phi_sa_t,
+        call_forward[target, Self.BATCH, POLICY=POLICY](
+            action_branch,
+            TensorRefs[Self.AB.ARITY](self._mb_sa_in), self._mb_phi_sa, ctx
         )
 
         # 3. Loop N online critics, each gets the same φ(s, a) → mb_y.
-        var mb_y_t = TileTensor(mb_y_ptr, row_major[Self.BATCH, 1]())
         var loss_sum: Scalar[DT] = Scalar[DT](0.0)
         for i in range(Self.N):
-            var loss = self.member_step.step[target, POLICY](
+            var loss = self.member_step.step[target, POLICY, ACCUMULATE=False](
                 ensemble.pairs[i].online,
                 ensemble.opts[i],
-                phi_sa_t,
-                mb_y_t,
+                self._mb_phi_sa,
+                state.mb_y,
+                ctx=ctx,
             )
             loss_sum += loss
+        state.critic_loss = loss_sum
         return loss_sum

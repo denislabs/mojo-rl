@@ -32,7 +32,7 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.logger import Logger, NoOpLogger
 
@@ -58,7 +58,7 @@ struct MuZeroBatchedAgent[
     K: Int,
     N: Int,
     OBS_STORE_DT: DType = DType.uint8,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     var ctx: DeviceContext
     var rep: Self.REP
     var dyn: Self.DYN
@@ -69,6 +69,7 @@ struct MuZeroBatchedAgent[
     var v_max: Scalar[DT]
     var value_coef: Scalar[DT]
     var max_grad_norm: Scalar[DT]
+    var weight_decay: Scalar[DT]
 
     def __init__(
         out self,
@@ -79,17 +80,22 @@ struct MuZeroBatchedAgent[
         v_max: Scalar[DT] = Scalar[DT](10.0),
         value_coef: Scalar[DT] = Scalar[DT](0.25),
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
+        weight_decay: Scalar[DT] = Scalar[DT](0.0),
     ) raises:
         self.ctx = ctx
-        self.rep = Self.REP.make["gpu", INIT=Kaiming](ctx=ctx)
-        self.dyn = Self.DYN.make["gpu", INIT=Kaiming](ctx=ctx)
-        self.pred = Self.PRED.make["gpu", INIT=Kaiming](ctx=ctx)
+        self.rep = Self.REP.make["gpu", Kaiming](Optional(ctx))
+        self.dyn = Self.DYN.make["gpu", Kaiming](Optional(ctx))
+        self.pred = Self.PRED.make["gpu", Kaiming](Optional(ctx))
         self.lr = lr
         self.gamma = gamma
         self.v_min = v_min
         self.v_max = v_max
         self.value_coef = value_coef
         self.max_grad_norm = max_grad_norm
+        # Decoupled (AdamW-style) L2 weight decay, applied to `APPLY_DECAY`
+        # weight Params only (biases/norms excluded). 0.0 = off. The muzero-general
+        # Atari recipe uses 1e-4 as an overfitting guard for long training runs.
+        self.weight_decay = weight_decay
 
     def train[
         L: Logger = NoOpLogger,
@@ -116,6 +122,8 @@ struct MuZeroBatchedAgent[
         use_per: Bool = False,
         per_alpha: Scalar[DT] = Scalar[DT](1.0),
         per_beta: Scalar[DT] = Scalar[DT](1.0),
+        lr_decay_rate: Scalar[DT] = Scalar[DT](1.0),
+        lr_decay_steps: Int = 0,
     ) raises -> Float64:
         """Batched device-replay self-play. ``learning_starts`` is in stored
         steps; each iteration advances ``N_ENVS`` env steps and runs
@@ -132,15 +140,21 @@ struct MuZeroBatchedAgent[
         through lagging copies refreshed every that-many grad steps — the
         standard target-net stabiliser, worth pairing with high
         ``reanalyze_batch`` (matches EZv2 / official MuZero's delayed reanalyze
-        model). Returns the last training loss; the nets keep their weights
+        model).
+
+        ``lr_decay_rate`` / ``lr_decay_steps`` apply muzero-general's exponential
+        LR schedule ``lr = lr_init · lr_decay_rate^(grad_step / lr_decay_steps)``
+        across all three optimizers (reference: rate 0.1 over ~⅓ of the grad-step
+        budget). Defaults (rate 1.0 / steps 0) = constant LR, bit-identical to
+        before. Returns the last training loss; the nets keep their weights
         across ``train`` calls."""
-        var orep = Adam.make["gpu", M = Self.REP](self.rep, self.ctx)
-        var odyn = Adam.make["gpu", M = Self.DYN](self.dyn, self.ctx)
-        var opred = Adam.make["gpu", M = Self.PRED](self.pred, self.ctx)
-        orep.lr = self.lr; odyn.lr = self.lr; opred.lr = self.lr
-        orep.max_grad_norm = self.max_grad_norm
-        odyn.max_grad_norm = self.max_grad_norm
-        opred.max_grad_norm = self.max_grad_norm
+        var orep = Adam(lr=self.lr, wd=self.weight_decay)
+        var odyn = Adam(lr=self.lr, wd=self.weight_decay)
+        var opred = Adam(lr=self.lr, wd=self.weight_decay)
+        # NOTE: legacy Adam.max_grad_norm clipping is dropped in the storage path
+        # (storage Adam has no such field; the migrated unroll does not clip).
+        # Re-add via clip_grad_norm in mz_unroll_train_step_* if convergence needs
+        # it (matches the AlphaZero storage driver pattern).
         return run_muzero_gumbel_selfplay_gpu_batched_devreplay[
             Self.BENV, Self.REP, Self.DYN, Self.PRED,
             Self.N_ENVS, Self.OBS, Self.ACT, Self.LATENT, Self.BINS,
@@ -174,4 +188,6 @@ struct MuZeroBatchedAgent[
             use_per=use_per,
             per_alpha=per_alpha,
             per_beta=per_beta,
+            lr_decay_rate=lr_decay_rate,
+            lr_decay_steps=lr_decay_steps,
         )

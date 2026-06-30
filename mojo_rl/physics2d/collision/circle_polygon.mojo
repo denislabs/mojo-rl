@@ -370,7 +370,7 @@ def detect_circle_vs_body_pair[
 # =============================================================================
 
 
-struct CirclePolygonCollision(Movable & ImplicitlyCopyable):
+struct CirclePolygonCollision(ImplicitlyCopyable):
     """Circle-vs-polygon (or circle-vs-compound) narrow phase for one specific
     (circle, polygon) body pair per environment.
 

@@ -21,7 +21,7 @@ from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.optimizer import Optimizer
+from mojo_rl.nn.optimizer.optimizer import Optimizer
 
 from .predictive_model import PCBlockTrait
 from .pc_sequential import PCSequential
@@ -83,26 +83,26 @@ def pc_module_train_one_batch_gpu[
 
     var params = LayoutTensor[
         DT, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
-    ](net.weights.val.dev.value().unsafe_ptr())
+    ](net.weights.val.dev.value())
     var grads = LayoutTensor[
         DT, Layout.row_major(NET.PARAM_SIZE), MutAnyOrigin
-    ](net.weights.grd.dev.value().unsafe_ptr())
+    ](net.weights.grd.dev.value())
 
     var latents = LayoutTensor[
         DT, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin
-    ](ws.latents_b.unsafe_ptr())
+    ](ws.latents_b)
     var mu_eps = LayoutTensor[
         DT, Layout.row_major(BATCH, NET.SCRATCH_OUT_DIM), MutAnyOrigin
-    ](ws.mu_eps_b.unsafe_ptr())
+    ](ws.mu_eps_b)
     var a_below = LayoutTensor[
         DT, Layout.row_major(BATCH, NET.SCRATCH_IN_DIM), MutAnyOrigin
-    ](ws.a_below_b.unsafe_ptr())
+    ](ws.a_below_b)
     var z_below = LayoutTensor[
         DT, Layout.row_major(BATCH, NET.SCRATCH_IN_DIM), MutAnyOrigin
-    ](ws.z_below_b.unsafe_ptr())
+    ](ws.z_below_b)
     var dx = LayoutTensor[
         DT, Layout.row_major(BATCH, NET.LATENT_DIM), MutAnyOrigin
-    ](ws.dx_b.unsafe_ptr())
+    ](ws.dx_b)
 
     # 1. GPU settling fills `grads` (= net.weights.grd) with +∂E/∂W.
     PCTrainer[*BLOCKS].compute_grads_only_gpu[BATCH](
@@ -121,7 +121,7 @@ def pc_module_train_one_batch_gpu[
     )
 
     # 2. nn optimizer consumes net.weights.grd, updates net.weights.val.
-    opt.step["gpu", PCModule[*BLOCKS]](net)
+    opt.step["gpu", PCModule[*BLOCKS]](net, ctx)
 
 
 def pc_module_train_one_batch_gpu[

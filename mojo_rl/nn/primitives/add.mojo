@@ -1,195 +1,141 @@
-"""Add[DIM, N] — variadic elementwise sum primitive.
+"""Add — binary (ARITY=2) elementwise Module conformer (CPU + GPU). z = a + b.
 
-Replaces the legacy `BinaryAdd[DIM]` (alias of `BinaryElementwise[DIM,
-BinaryAddOp]`) + `TernaryFusedAdd[DIM]` with one variadic primitive.
+Each forward/vjp branches `comptime if target == "cpu"` (tracked `TileTensor`
+over `.data`) `else` (device `LayoutTensor` via `lt_gpu` + a naive kernel).
+The storage surface (`ref/mut Tensor`, `TensorRefs`) is identical on both
+targets; the only GPU erasure is the kernel-arg `MutAnyOrigin`. Params are
+`Param` (two `Tensor`s, cpu+dev).
 
-  output[b, d]         = Σ_i inputs[i][b, d]
-  grad_inputs[i][b, d] = grad_output[b, d]    (∀ i ∈ [0, N))
-
-`ARITY = N`, all inputs share `DIM` (homogeneous; broadcasting is out of
-scope). CPU SIMD + GPU. GPU forward uses `init + (N-1) × accum` kernel
-launches; vjp launches N copy kernels.
-
-Variadic inputs follow the same-Layout hetero-shape workaround (Phase
-4.6c) — though for Add the shapes are already homogeneous, so the
-workaround is a no-op in practice.
+LIFETIME NOTE: a pack subscript (`inputs[k]`) returns a TEMPORARY ref. Building
+a view from `inputs[k].data` directly and using it LATER dangles (the temporary
+dies at the end of the statement; a later op clobbers the stack). So each body
+first binds the element to a named `ref` (`ref in0 = inputs[0]`) that lives for
+the whole function, then builds views from that.
 """
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
+from linalg.matmul import matmul as max_matmul
 
-from ..constants import DT, CPU_SIMD_W, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
-
-
-# ──────────────────────────────────────────────────────────────────────
-# GPU kernels — init (output = src) and accum (output += src). Forward
-# emits 1 init + (N-1) accum launches; vjp emits N init (copy) launches
-# (one per grad-input).
-# ──────────────────────────────────────────────────────────────────────
+from mojo_rl.nn.constants import DT
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
-def _add_init_kernel[N: Int](
-    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+def _add_fwd_kernel[
+    M: Int, ADT: DType = DT
+](
+    a: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
+    b: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
+    o: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
 ):
-    var idx = Int(global_idx.x)
-    if idx < N:
-        output[idx] = rebind[Scalar[DT]](src[idx])
+    var i = Int(global_idx.x)
+    if i < M:
+        o[i] = a[i] + b[i]
 
 
-def _add_accum_kernel[N: Int](
-    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+def _copy_kernel[
+    M: Int, ADT: DType = DT
+](
+    src: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
+    dst: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
 ):
-    var idx = Int(global_idx.x)
-    if idx < N:
-        output[idx] = output[idx] + rebind[Scalar[DT]](src[idx])
+    var i = Int(global_idx.x)
+    if i < M:
+        dst[i] = src[i]
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Add[DIM, N]
-# ──────────────────────────────────────────────────────────────────────
-
-
-struct Add[DIM_: Int, N_: Int](Module):
-    comptime ARITY: Int = Self.N_
-    comptime IN_DIMS = InlineArray[Int, Self.N_](fill=Self.DIM_)
-    comptime IN0_DIM: Int = Self.DIM_
-    comptime OUT_DIM: Int = Self.DIM_
-
-    var ts: TargetStorage
+# ── Add (binary) ───────────────────────────────────────────────────────
+struct Add[DIM_: Int, ADT: DType = DT](Module):
+    comptime ARITY = 2
+    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.DIM_)
+    comptime OUT_DIM = Self.DIM_
+    # Activation-flow dtype (AMP). Add is dtype-TRANSPARENT (elementwise sum,
+    # grad = copy to both inputs) → carries ACT_DT through unchanged. ACT_DT ==
+    # DT (default) → byte-identical to the fp32 path.
+    comptime ACT_DT = Self.ADT
 
     def __init__(out self):
-        comptime assert Self.N_ >= 2, "Add: needs at least 2 inputs"
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "Add: target must be 'cpu' or 'gpu'"
-        )
-        var a = Self()
-        comptime if target == "cpu":
-            a.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("Add.make[target='gpu']: ctx required")
-            a.ts = TargetStorage.make_gpu(ctx.value())
-        return a^
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[2, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Add", target](self.ts.target_tag)
-        comptime TOTAL = BATCH * Self.DIM_
-
+        comptime M = B * Self.DIM_
+        ref a0 = inputs[0]
+        ref a1 = inputs[1]
         comptime if target == "cpu":
-            var o_p = output.ptr
-            var i0_p = inputs.ptr[0]()
-            # Init: output = inputs[0]
-            var k = 0
-            while k + CPU_SIMD_W <= TOTAL:
-                o_p.store(k, i0_p.load[width=CPU_SIMD_W](k))
-                k += CPU_SIMD_W
-            while k < TOTAL:
-                o_p[k] = i0_p[k]
-                k += 1
-            # Accumulate inputs[1..N)
-            comptime for i in range(1, Self.N_):
-                var ii_p = inputs.ptr[i]()
-                var kk = 0
-                while kk + CPU_SIMD_W <= TOTAL:
-                    o_p.store(
-                        kk,
-                        o_p.load[width=CPU_SIMD_W](kk)
-                        + ii_p.load[width=CPU_SIMD_W](kk),
-                    )
-                    kk += CPU_SIMD_W
-                while kk < TOTAL:
-                    o_p[kk] = o_p[kk] + ii_p[kk]
-                    kk += 1
+            out.ensure(M)
+            var a = TileTensor(a0.data, row_major[M]())
+            var b = TileTensor(a1.data, row_major[M]())
+            var o = TileTensor(out.data, row_major[M]())
+            for i in range(M):
+                o[i] = a[i] + b[i]
         else:
-            comptime layout = Layout.row_major(TOTAL)
-            comptime n_blocks = (TOTAL + TPB - 1) // TPB
-            var o_p = output.ptr
-            var o_lt = LayoutTensor[DT, layout, MutAnyOrigin](o_p)
-
-            # Init from inputs[0].
-            var i0_p = inputs.ptr[0]()
-            var i0_lt = LayoutTensor[DT, layout, MutAnyOrigin](i0_p)
-            comptime init_kernel = _add_init_kernel[TOTAL]
-            self.ts.ctx.value().enqueue_function[init_kernel](
-                i0_lt, o_lt, grid_dim=n_blocks, block_dim=TPB,
+            var c = ctx.value()
+            out.ensure_gpu(c, M)
+            var al = a0.lt["gpu", Layout.row_major(M)]()
+            var bl = a1.lt["gpu", Layout.row_major(M)]()
+            var ol = out.lt["gpu", Layout.row_major(M)]()
+            c.enqueue_function[_add_fwd_kernel[M, Self.ACT_DT]](
+                al, bl, ol, grid_dim=(M + 255) // 256, block_dim=256
             )
-
-            # Accumulate inputs[1..N).
-            comptime for i in range(1, Self.N_):
-                var ii_p = inputs.ptr[i]()
-                var ii_lt = LayoutTensor[DT, layout, MutAnyOrigin](ii_p)
-                comptime accum_kernel = _add_accum_kernel[TOTAL]
-                self.ts.ctx.value().enqueue_function[accum_kernel](
-                    ii_lt, o_lt, grid_dim=n_blocks, block_dim=TPB,
-                )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[2, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[2, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Add", target](self.ts.target_tag)
-        comptime TOTAL = BATCH * Self.DIM_
-
+        comptime M = B * Self.DIM_
+        ref g0 = grad_inputs[0]
+        ref g1 = grad_inputs[1]
         comptime if target == "cpu":
-            var go_p = grad_output.ptr
-            comptime for i in range(Self.N_):
-                var gi_p = grad_inputs.ptr[i]()
-                var k = 0
-                while k + CPU_SIMD_W <= TOTAL:
-                    gi_p.store(k, go_p.load[width=CPU_SIMD_W](k))
-                    k += CPU_SIMD_W
-                while k < TOTAL:
-                    gi_p[k] = go_p[k]
-                    k += 1
+            g0.ensure(M)
+            g1.ensure(M)
+            var go = TileTensor(grad_output.data, row_major[M]())
+            var gi0 = TileTensor(g0.data, row_major[M]())
+            var gi1 = TileTensor(g1.data, row_major[M]())
+            for i in range(M):
+                gi0[i] = go[i]
+                gi1[i] = go[i]
         else:
-            comptime layout = Layout.row_major(TOTAL)
-            comptime n_blocks = (TOTAL + TPB - 1) // TPB
-            var go_p = grad_output.ptr
-            var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_p)
-            comptime for i in range(Self.N_):
-                var gi_p = grad_inputs.ptr[i]()
-                var gi_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi_p)
-                comptime copy_kernel = _add_init_kernel[TOTAL]
-                self.ts.ctx.value().enqueue_function[copy_kernel](
-                    go_lt, gi_lt, grid_dim=n_blocks, block_dim=TPB,
-                )
+            var c = ctx.value()
+            g0.ensure_gpu(c, M)
+            g1.ensure_gpu(c, M)
+            var gol = grad_output.lt["gpu", Layout.row_major(M)]()
+            var gi0l = g0.lt["gpu", Layout.row_major(M)]()
+            var gi1l = g1.lt["gpu", Layout.row_major(M)]()
+            comptime nblk = (M + 255) // 256
+            c.enqueue_function[_copy_kernel[M, Self.ACT_DT]](
+                gol, gi0l, grid_dim=nblk, block_dim=256
+            )
+            c.enqueue_function[_copy_kernel[M, Self.ACT_DT]](
+                gol, gi1l, grid_dim=nblk, block_dim=256
+            )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).

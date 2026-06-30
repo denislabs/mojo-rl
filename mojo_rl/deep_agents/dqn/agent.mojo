@@ -38,7 +38,7 @@ struct DQNAgent[
     SAMPLE: SampleBlock,
     Q_NET: Module,
     DOUBLE: Bool = False,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Thin facade over `DQNTrainer` + discrete off-policy drivers."""
 
     var trainer: DQNTrainer[

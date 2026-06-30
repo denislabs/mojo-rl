@@ -24,16 +24,21 @@ diverse positions; counts then reflect relative strength, not one game.
 decisive games).
 """
 
-from std.memory import alloc
+from mojo_rl.nn.core.ptr import untracked
+from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
+from mojo_rl.nn.core.module import Module
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (
-    GenericGPUMCTS, GenericCPUMCTS, AlphaGoPUCT, NoNoise, SelfPlay,
+    GenericGPUMCTS,
+    GenericCPUMCTS,
+    AlphaGoPUCT,
+    NoNoise,
+    SelfPlay,
 )
 from ..zero.evaluators import RandomOpponent
 from ..zero.mcts_adapters import AZPredGPU, AZEnvGPU
@@ -48,11 +53,6 @@ def _xs(s: UInt64) -> UInt64:
     x ^= x >> 7
     x ^= x << 17
     return x
-
-
-@always_inline
-def _mptr(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(b.unsafe_ptr())
 
 
 @always_inline
@@ -113,8 +113,8 @@ def arena_match[
     ENV.reset_kernel_gpu[N_GAMES, STATE](ctx, states)
     ctx.synchronize()
 
-    var obs_t = TileTensor(_mptr(obs_dev), row_major[N_GAMES, OBS]())
-    var pred_t = TileTensor(_mptr(pred_dev), row_major[N_GAMES, W]())
+    var pred_ad_a = AZPredGPU[OBS, ACT, NETA].make(a)
+    var pred_ad_b = AZPredGPU[OBS, ACT, NETB].make(b)
     var rng = seed | 1
 
     for ply in range(MAX_PLIES):
@@ -134,22 +134,28 @@ def arena_match[
             ctx.enqueue_copy(legal_h, legal_dev)
             ctx.synchronize()
             var a_turn = (ply % 2) == a_player
+            var obs_lt = LayoutTensor[
+                DT, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
+            ](obs_dev)
+            var pred_lt = LayoutTensor[
+                DT, Layout.row_major(N_GAMES, W), MutAnyOrigin
+            ](pred_dev)
             if a_turn:
-                a.forward["gpu", N_GAMES](obs_t, output=pred_t)
+                pred_ad_a.predict_gpu[N_GAMES](ctx, obs_lt, pred_lt)
             else:
-                b.forward["gpu", N_GAMES](obs_t, output=pred_t)
+                pred_ad_b.predict_gpu[N_GAMES](ctx, obs_lt, pred_lt)
             ctx.enqueue_copy(pred_h, pred_dev)
             ctx.synchronize()
             for e in range(N_GAMES):
                 var best = -1
                 var bestv = Float64(-1e30)
                 for act in range(ACT):
-                    if Float64(legal_h.unsafe_ptr()[e * ACT + act]) > 0.5:
-                        var v = Float64(pred_h.unsafe_ptr()[e * W + act])
+                    if Float64(legal_h[e * ACT + act]) > 0.5:
+                        var v = Float64(pred_h[e * W + act])
                         if v > bestv:
                             bestv = v
                             best = act
-                actions_h.unsafe_ptr()[e] = Scalar[DT](best if best >= 0 else 0)
+                actions_h[e] = Scalar[DT](best if best >= 0 else 0)
             ctx.enqueue_copy(actions_dev, actions_h)
             ctx.synchronize()
 
@@ -167,7 +173,7 @@ def arena_match[
     var draws = 0
     var losses = 0
     for e in range(N_GAMES):
-        var r = Int(Float64(states_h.unsafe_ptr()[e * STATE + RESULT_IDX]))
+        var r = Int(Float64(states_h[e * STATE + RESULT_IDX]))
         if r == a_win:
             wins += 1
         elif r == a_loss:
@@ -202,8 +208,17 @@ def arena_match_mcts[
     comptime ACT = NETA.OUT_DIM - 1
     comptime STATE = ENV.STATE_SIZE
     comptime ARENA_MCTS = GenericGPUMCTS[
-        N_GAMES, ACT, OBS, 1, MAX_NODES, NUM_SIMS, 1,
-        AlphaGoPUCT[1.0], NoNoise, SelfPlay, STATE_SIZE=STATE,
+        N_GAMES,
+        ACT,
+        OBS,
+        1,
+        MAX_NODES,
+        NUM_SIMS,
+        1,
+        AlphaGoPUCT[1.0],
+        NoNoise,
+        SelfPlay,
+        STATE_SIZE=STATE,
     ]
     comptime MAX_ARENA_MOVES = MAX_PLIES + ACT
 
@@ -232,7 +247,9 @@ def arena_match_mcts[
     ctx.synchronize()
 
     var eval_done = InlineArray[Bool, N_GAMES](fill=False)
-    var eval_result = InlineArray[Int, N_GAMES](fill=0)  # 1=A win 2=A loss 3=draw
+    var eval_result = InlineArray[Int, N_GAMES](
+        fill=0
+    )  # 1=A win 2=A loss 3=draw
     var all_done = False
     var move = 0
     var rng = seed | 1
@@ -248,28 +265,38 @@ def arena_match_mcts[
         elif a_turn:
             var pred = AZPredGPU[OBS, ACT, NETA].make(a)
             var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
-            var root_obs = LayoutTensor[
-                DT, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
-            ](obs_dev.unsafe_ptr())
-            var root_legal = LayoutTensor[
-                DT, Layout.row_major(N_GAMES * ACT), MutAnyOrigin
-            ](legal_dev.unsafe_ptr())
+            var root_obs = LayoutTensor[DT, Layout.row_major(N_GAMES, OBS)](
+                obs_dev
+            )
+            var root_legal = LayoutTensor[DT, Layout.row_major(N_GAMES * ACT)](
+                legal_dev
+            )
             mcts.search_gpu_alphazero[type_of(pred), type_of(env_ad)](
-                ctx, pred, env_ad, root_obs, states, root_legal,
+                ctx,
+                pred,
+                env_ad,
+                root_obs,
+                states,
+                root_legal,
                 rng_seed=seed + UInt64(move),
             )
             ctx.enqueue_copy(actions_dev, mcts.actions_out)
         else:
             var pred = AZPredGPU[OBS, ACT, NETB].make(b)
             var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
-            var root_obs = LayoutTensor[
-                DT, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
-            ](obs_dev.unsafe_ptr())
-            var root_legal = LayoutTensor[
-                DT, Layout.row_major(N_GAMES * ACT), MutAnyOrigin
-            ](legal_dev.unsafe_ptr())
+            var root_obs = LayoutTensor[DT, Layout.row_major(N_GAMES, OBS)](
+                obs_dev
+            )
+            var root_legal = LayoutTensor[DT, Layout.row_major(N_GAMES * ACT)](
+                legal_dev
+            )
             mcts.search_gpu_alphazero[type_of(pred), type_of(env_ad)](
-                ctx, pred, env_ad, root_obs, states, root_legal,
+                ctx,
+                pred,
+                env_ad,
+                root_obs,
+                states,
+                root_legal,
                 rng_seed=seed + UInt64(move) * 3 + 1,
             )
             ctx.enqueue_copy(actions_dev, mcts.actions_out)
@@ -284,9 +311,9 @@ def arena_match_mcts[
 
         all_done = True
         for e in range(N_GAMES):
-            if not eval_done[e] and Float64(done_h.unsafe_ptr()[e]) > 0.5:
+            if not eval_done[e] and Float64(done_h[e]) > 0.5:
                 eval_done[e] = True
-                var r = Float64(rew_h.unsafe_ptr()[e])
+                var r = Float64(rew_h[e])
                 if r > 0.5:
                     eval_result[e] = 1 if a_turn else 2
                 elif r < -0.5:
@@ -382,7 +409,7 @@ def candidate_winrate_mcts[
 
 
 def arena_match_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NETA: Module,
     NETB: Module,
     N_GAMES: Int,
@@ -406,7 +433,13 @@ def arena_match_cpu[
     comptime ACT = NETA.OUT_DIM - 1
     comptime LATENT = ENV.SAVE_SIZE
     comptime AMCTS = GenericCPUMCTS[
-        ACT, LATENT, NUM_SIMS, MAX_NODES, AlphaGoPUCT[1.0], NoNoise, SelfPlay,
+        ACT,
+        LATENT,
+        NUM_SIMS,
+        MAX_NODES,
+        AlphaGoPUCT[1.0],
+        NoNoise,
+        SelfPlay,
         NORMALIZE_Q=False,  # raw Q∈[-1,1] like legacy
     ]
     _ = ctx_unused
@@ -414,15 +447,19 @@ def arena_match_cpu[
     b.set_attr["training"](Scalar[DT](0.0))
 
     var env = ENV()
-    var root_save = alloc[Scalar[DT]](LATENT)
+    var root_save = List[Scalar[DT]](length=LATENT, fill=0)
     var env_ptr = UnsafePointer(to=env)
-    var rep = AZRepCPU[ENV, OBS](env=env_ptr)
-    var dyn = AZDynCPU[ENV, ACT](env=env_ptr)
+    var a_ptr = UnsafePointer(to=a)
+    var b_ptr = UnsafePointer(to=b)
+    var rep = AZRepCPU[ENV, OBS](env=untracked(env_ptr))
+    var dyn = AZDynCPU[ENV, ACT](env=untracked(env_ptr))
     var pred_a = AZPredCPU[ENV, OBS, ACT, NETA](
-        env=env_ptr, net=UnsafePointer(to=a)
+        env=untracked(env_ptr),
+        net=untracked(a_ptr),
     )
     var pred_b = AZPredCPU[ENV, OBS, ACT, NETB](
-        env=env_ptr, net=UnsafePointer(to=b)
+        env=untracked(env_ptr),
+        net=untracked(b_ptr),
     )
     var mcts = AMCTS(gamma=1.0)
 
@@ -435,7 +472,7 @@ def arena_match_cpu[
         _ = env.reset()
         var ply = 0
         while env.game_result() == 0 and ply < MAX_PLIES:
-            var act = 0
+            var act: Int
             var legal = env.legal_action_mask()
             if ply < open_plies:
                 rng = _xs(rng)
@@ -473,12 +510,11 @@ def arena_match_cpu[
         else:
             draws += 1
 
-    root_save.free()
     return EvalResult(wins=wins, draws=draws, losses=losses)
 
 
 def candidate_winrate_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     CAND: Module,
     BEST: Module,
     N_PER_COLOR: Int,

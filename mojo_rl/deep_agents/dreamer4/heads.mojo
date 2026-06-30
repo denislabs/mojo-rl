@@ -19,7 +19,7 @@ The vectorized-binary policy variant (paper alt for keyboard actions) is
 deferred; v1 uses the categorical head (e.g. for the discrete Pong lighthouse).
 """
 
-from mojo_rl.nn.combinators import Sequential
+from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.silu import SiLU
 

@@ -11,16 +11,20 @@ the periodic eval/print/flush, mirroring the GPU driver's telemetry.
 `net` is the *best* and holds the final weights on return.
 """
 
-from std.memory import alloc, UnsafePointer
+from mojo_rl.nn.core.ptr import untracked
+from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.optimizer import AdamW
-from mojo_rl.nn.initializer import Zero
-from mojo_rl.nn.core.map_params import hard_copy_params
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.optimizer.grad_clip import clip_grad_norm
+from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.core.hard_copy import hard_copy
 from mojo_rl.nn.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.combinators.graph_nodes import InputSlot, Node, ExternalNode
-from layout import TileTensor, row_major
+from mojo_rl.nn.combinators.graph_decl import (
+    InputSlot, Node, ExternalNode,
+)
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.planners.tree_search import (
@@ -47,7 +51,7 @@ def _xs(s: UInt64) -> UInt64:
 
 
 def _eval_both_colors_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NET: Module,
     OPP: CPUEvaluator,
     N_GAMES: Int,
@@ -69,7 +73,7 @@ def _eval_both_colors_cpu[
 
 
 def run_alphazero_selfplay_arena_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NET: Module,
     AUG: BoardAugmenter,
     NUM_SIMS: Int,
@@ -117,7 +121,6 @@ def run_alphazero_selfplay_arena_cpu[
         NORMALIZE_Q=False,  # raw Q∈[-1,1] like legacy (MinMax over-explores)
     ]
     comptime Graph = ComputeGraph[
-        1,
         InputSlot["obs", OBS],
         ExternalNode["pred", NET, "obs"],
         InputSlot["tgt", W],
@@ -125,39 +128,33 @@ def run_alphazero_selfplay_arena_cpu[
     ]
 
     # Learner net (trains) initialised to the best net's weights.
-    var learner = NET.make["cpu", INIT=Zero]()
-    hard_copy_params["cpu", M=NET](net, learner)
+    var learner = NET.make["cpu", Zero]()
+    hard_copy["cpu"](net, learner)
 
-    var opt = AdamW.make["cpu", M=NET](learner)
-    opt.lr = lr
-    # Decoupled weight decay + grad-norm clip (both 0 ⇒ AdamW ≡ plain Adam).
-    opt.weight_decay = Scalar[DT](weight_decay)
-    opt.max_grad_norm = Scalar[DT](max_grad_norm)
-    var graph = Graph.make["cpu", INIT=Zero]()
+    # Decoupled weight decay (AdamW) — `wd=0` ⇒ plain Adam. Grad-norm clip is
+    # applied separately each step via `clip_grad_norm` (max <= 0 ⇒ no-op).
+    var opt = Adam(lr=lr, wd=Scalar[DT](weight_decay))
+    var graph = Graph.make["cpu", Zero]()
     var replay = MCTSExampleReplay[OBS, W, CAP]()
 
     var env = ENV()
 
-    # ── Host trajectory storage + augmentation scratch (MutAnyOrigin) ──
-    var traj_obs = mptr(alloc[Scalar[DT]](MAX_TRAJ * OBS))
-    var traj_pol = mptr(alloc[Scalar[DT]](MAX_TRAJ * ACT))
-    var aug_obs = mptr(alloc[Scalar[DT]](OBS))
-    var aug_pol = mptr(alloc[Scalar[DT]](ACT))
-    var tmp_tgt = alloc[Scalar[DT]](W)
-    var root_save = alloc[Scalar[DT]](LATENT)
+    # ── Host trajectory storage + augmentation scratch — owned Lists. ──
+    var traj_obs = List[Scalar[DT]](length=MAX_TRAJ * OBS, fill=0)
+    var traj_pol = List[Scalar[DT]](length=MAX_TRAJ * ACT, fill=0)
+    var aug_obs = List[Scalar[DT]](length=OBS, fill=0)
+    var aug_pol = List[Scalar[DT]](length=ACT, fill=0)
+    var tmp_tgt = List[Scalar[DT]](length=W, fill=0)
+    var root_save = List[Scalar[DT]](length=LATENT, fill=0)
     var traj_len = 0
 
-    # ── Train-batch host buffers + graph IO tiles ──
-    var tb_obs = mptr(alloc[Scalar[DT]](BATCH * OBS))
-    var tb_tgt = mptr(alloc[Scalar[DT]](BATCH * W))
-    var tb_loss = mptr(alloc[Scalar[DT]](BATCH))
-    var tb_grad = mptr(alloc[Scalar[DT]](BATCH))
+    # ── Train-batch storage Tensors (host; the nn surface) ──
+    var obs_t = Tensor.alloc(BATCH * OBS)
+    var tgt_t = Tensor.alloc(BATCH * W)
+    var loss_t = Tensor.alloc(BATCH)
+    var grad_t = Tensor.alloc(BATCH)
     for i in range(BATCH):
-        tb_grad[i] = Scalar[DT](1.0) / Scalar[DT](BATCH)
-    var tbo_t = TileTensor(tb_obs, row_major[BATCH, OBS]())
-    var tbt_t = TileTensor(tb_tgt, row_major[BATCH, W]())
-    var loss_t = TileTensor(tb_loss, row_major[BATCH, 1]())
-    var grad_t = TileTensor(tb_grad, row_major[BATCH, 1]())
+        grad_t.data[i] = Scalar[DT](1.0) / Scalar[DT](BATCH)
 
     _ = env.reset()
     var last_loss: Float64 = 0.0
@@ -179,10 +176,12 @@ def run_alphazero_selfplay_arena_cpu[
         net.set_attr["training"](Scalar[DT](0.0))
         env.save_env_state(root_save)
         var env_ptr = UnsafePointer(to=env)
-        var s_rep = AZRepCPU[ENV, OBS](env=env_ptr)
-        var s_dyn = AZDynCPU[ENV, ACT](env=env_ptr)
+        var net_ptr = UnsafePointer(to=net)
+        var s_rep = AZRepCPU[ENV, OBS](env=untracked(env_ptr))
+        var s_dyn = AZDynCPU[ENV, ACT](env=untracked(env_ptr))
         var s_pred = AZPredCPU[ENV, OBS, ACT, NET](
-            env=env_ptr, net=UnsafePointer(to=net)
+            env=untracked(env_ptr),
+            net=untracked(net_ptr),
         )
         var mcts = MCTS(gamma=1.0)
         var legal = env.legal_action_mask()
@@ -260,12 +259,12 @@ def run_alphazero_selfplay_arena_cpu[
                 var ob = k * OBS
                 var pb = k * ACT
                 for s in range(NSYM):
-                    AUG.augment_obs[OBS](traj_obs + ob, s, aug_obs)
-                    AUG.augment_policy[ACT](traj_pol + pb, s, aug_pol)
+                    AUG.augment_obs[OBS](traj_obs, ob, s, aug_obs)
+                    AUG.augment_policy[ACT](traj_pol, pb, s, aug_pol)
                     for a in range(ACT):
                         tmp_tgt[a] = aug_pol[a]
                     tmp_tgt[ACT] = Scalar[DT](z)
-                    replay.record(aug_obs, tmp_tgt)
+                    replay.record(aug_obs, 0, tmp_tgt, 0)
             traj_len = 0
             _ = env.reset()
 
@@ -273,17 +272,20 @@ def run_alphazero_selfplay_arena_cpu[
         if len(replay) >= BATCH and it >= learning_starts:
             learner.set_attr["training"](Scalar[DT](1.0))
             for _t in range(train_per_iter):
-                replay.sample_batch[BATCH](tb_obs, tb_tgt)
-                opt.zero_grad["cpu", M=NET](learner)
-                graph.set_external["pred", NET](learner)
-                graph.set_input["obs", BATCH](tbo_t)
-                graph.set_input["tgt", BATCH](tbt_t)
-                graph.forward["cpu", BATCH](loss_t)
-                graph.vjp["cpu", BATCH](grad_t)
-                opt.step["cpu", M=NET](learner)
+                replay.sample_batch_tensors[BATCH](obs_t, tgt_t)
+                learner.zero_grad["cpu"](None)
+                graph.set_input["obs", BATCH](obs_t, None)
+                graph.set_input["tgt", BATCH](tgt_t, None)
+                graph.forward[BATCH, "cpu"](loss_t, None, learner)
+                graph.vjp[BATCH, "cpu"](grad_t, None, learner)
+                _ = clip_grad_norm["cpu", NET](
+                    learner, Scalar[DT](max_grad_norm), None
+                )
+                opt.begin_step()
+                learner.for_each_param["cpu"](opt, None)
             var ml: Float64 = 0.0
             for b in range(BATCH):
-                ml += Float64(tb_loss[b])
+                ml += Float64(loss_t.data[b])
             last_loss = ml / Float64(BATCH)
 
             # 5b. Dense per-batch training diagnostics (legacy parity), on the
@@ -295,13 +297,13 @@ def run_alphazero_selfplay_arena_cpu[
                 and diag_every > 0
                 and (it + 1) % diag_every == 0
             ):
-                var pred_p = graph.node_out_ptr["pred"]()
+                ref pred_node = graph.node_output["pred"]()
                 var dnames = List[String]()
                 var dvalues = List[Float64]()
                 dnames.append(String("loss"))
                 dvalues.append(last_loss)
                 append_az_train_diagnostics[ACT, BATCH](
-                    pred_p, tb_tgt, dnames, dvalues
+                    pred_node.data, tgt_t.data, dnames, dvalues
                 )
                 logger.value()[].log_scalars(dnames, dvalues, it + 1)
 
@@ -320,7 +322,7 @@ def run_alphazero_selfplay_arena_cpu[
                 rec, promote_threshold, min_decisive=ARENA_GAMES // 2
             )
             if accepted:
-                hard_copy_params["cpu", M=NET](learner, net)
+                hard_copy["cpu"](learner, net)
                 promotions += 1
             if verbose:
                 print(
@@ -400,17 +402,7 @@ def run_alphazero_selfplay_arena_cpu[
         ENV, NET, NET, ARENA_GAMES, NUM_SIMS, MAX_NODES, MAX_PLIES
     ](learner, net, seed=seed + 9991, open_plies=arena_open_plies)
     if should_promote(final_rec, promote_threshold, min_decisive=ARENA_GAMES // 2):
-        hard_copy_params["cpu", M=NET](learner, net)
+        hard_copy["cpu"](learner, net)
         promotions += 1
 
-    traj_obs.free()
-    traj_pol.free()
-    aug_obs.free()
-    aug_pol.free()
-    tmp_tgt.free()
-    root_save.free()
-    tb_obs.free()
-    tb_tgt.free()
-    tb_loss.free()
-    tb_grad.free()
     return ArenaRunResult(last_loss=last_loss, promotions=promotions)

@@ -14,7 +14,7 @@ from std.testing import assert_true
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents.zero.mcts_adapters import AZPredGPU
 
@@ -28,7 +28,7 @@ def main() raises:
     comptime PRED_OUT = ACT + 1
 
     var ctx = DeviceContext()
-    var net = Net.make["gpu", INIT=Kaiming](ctx=ctx)
+    var net = Net.make["gpu", Kaiming](Optional(ctx))
     var adapter = AZPredGPU[OBS, ACT, Net].make(net)
 
     # Input hidden = obs (B, OBS); fill with a constant on host, copy to device.
@@ -37,16 +37,17 @@ def main() raises:
     var h_host = ctx.enqueue_create_host_buffer[DT](B * OBS)
     ctx.synchronize()
     for i in range(B * OBS):
-        h_host.unsafe_ptr()[i] = Scalar[DT](0.1)
+        h_host[i] = Scalar[DT](0.1)
     ctx.enqueue_copy(hidden_dev, h_host)
     ctx.synchronize()
 
+    # The planner hands the adapter typed device views over its own buffers.
     var hidden_lt = LayoutTensor[
         DT, Layout.row_major(B, OBS), MutAnyOrigin
-    ](hidden_dev.unsafe_ptr())
+    ](hidden_dev)
     var pred_lt = LayoutTensor[
         DT, Layout.row_major(B, PRED_OUT), MutAnyOrigin
-    ](pred_dev.unsafe_ptr())
+    ](pred_dev)
 
     adapter.predict_gpu[B](ctx, hidden_lt, pred_lt)
 
@@ -56,7 +57,7 @@ def main() raises:
 
     var all_finite = True
     for i in range(B * PRED_OUT):
-        var v = Float64(p_host.unsafe_ptr()[i])
+        var v = Float64(p_host[i])
         if v != v:  # NaN
             all_finite = False
     assert_true(all_finite, "AZ prediction output contained NaN")

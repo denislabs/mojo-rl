@@ -9,7 +9,7 @@ from layout import LayoutTensor, Layout
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 
-trait ConstraintSolver(Movable & ImplicitlyCopyable):
+trait ConstraintSolver(ImplicitlyCopyable):
     """Trait for constraint solving algorithms.
 
     Constraint solvers resolve contacts by:

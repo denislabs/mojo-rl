@@ -45,7 +45,7 @@ struct DDPGAgent[
     SAMPLE: SampleBlock,
     ACTOR: Module,
     CRITIC: Module,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Thin facade over `DDPGTrainer` + off-policy drivers. Comptime
     parameters mirror `DDPGTrainer` one-for-one; dimensions derive from
     `SAMPLE`."""

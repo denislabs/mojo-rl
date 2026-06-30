@@ -1,4 +1,7 @@
-"""BroadcastTokens[N, DIM] — replicate one vector across N tokens.
+"""BroadcastTokens[N, DIM] — replicate one vector across N tokens (storage).
+
+Transformed from legacy `nn.primitives.BroadcastTokens` (surface-only change).
+The CPU loops + the two GPU kernels are carried over verbatim.
 
     out[b, t*DIM + d] = in[b, d]      (t ∈ [0, N))
 
@@ -8,30 +11,30 @@ per-token gradients back onto the source:
 
     grad_in[b, d] = sum_t grad_out[b, t*DIM + d]
 
-IN_DIM = DIM, OUT_DIM = N*DIM; no params, no cache. Used by the LeWM
-decoder to replicate the single global ([CLS]/pooled) representation to
-all `N` patch-query positions so it can be the per-token conditioning fed
-to `RepeatConditional` (which requires conditioning dim == stream dim).
-CPU + GPU.
+IN_DIM = DIM, OUT_DIM = N*DIM; no params, no cache. Used by the LeWM decoder
+(broadcast the global/pooled rep to all patch-query positions), EZv2 and
+muzero. Conforms to `Module`. CPU + GPU.
 """
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _bt_fwd_kernel[
-    BATCH: Int, N: Int, DIM: Int
+    BATCH: Int, N: Int, DIM: Int, ADT: DType = DT
 ](
-    src: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(BATCH, N * DIM), MutAnyOrigin],
+    src: LayoutTensor[ADT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    dst: LayoutTensor[ADT, Layout.row_major(BATCH, N * DIM), MutAnyOrigin],
 ):
     var gid = Int(global_idx.x)
     comptime total = BATCH * N * DIM
@@ -40,14 +43,14 @@ def _bt_fwd_kernel[
     var b = gid // (N * DIM)
     var rem = gid % (N * DIM)
     var d = rem % DIM
-    dst[b, rem] = rebind[Scalar[DT]](src[b, d])
+    dst[b, rem] = rebind[Scalar[ADT]](src[b, d])
 
 
 def _bt_bwd_kernel[
-    BATCH: Int, N: Int, DIM: Int
+    BATCH: Int, N: Int, DIM: Int, ADT: DType = DT
 ](
-    go: LayoutTensor[DT, Layout.row_major(BATCH, N * DIM), MutAnyOrigin],
-    gi: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    go: LayoutTensor[ADT, Layout.row_major(BATCH, N * DIM), MutAnyOrigin],
+    gi: LayoutTensor[ADT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
 ):
     var gid = Int(global_idx.x)
     comptime total = BATCH * DIM
@@ -55,119 +58,103 @@ def _bt_bwd_kernel[
         return
     var b = gid // DIM
     var d = gid % DIM
+    # fp32 accumulator (the token-sum); only the written gi is ADT.
     var acc: Scalar[DT] = 0.0
     for t in range(N):
-        acc += rebind[Scalar[DT]](go[b, t * DIM + d])
-    gi[b, d] = acc
+        acc += rebind[Scalar[ADT]](go[b, t * DIM + d]).cast[DT]()
+    gi[b, d] = acc.cast[ADT]()
 
 
-struct BroadcastTokens[N: Int, DIM: Int](Module):
+struct BroadcastTokens[N_: Int, DIM_: Int, ADT: DType = DT](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
-    comptime OUT_DIM = Self.N * Self.DIM
-
-    var ts: TargetStorage
+    comptime ACT_DT = Self.ADT
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime OUT_DIM = Self.N_ * Self.DIM_
 
     def __init__(out self):
-        comptime assert Self.N > 0 and Self.DIM > 0, (
+        comptime assert Self.N_ > 0 and Self.DIM_ > 0, (
             "BroadcastTokens: N, DIM must be > 0"
         )
-        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Unified CPU/GPU factory. INIT accepted for `make[target, INIT]`
+        uniformity but ignored (no params)."""
         comptime assert target == "cpu" or target == "gpu", (
             "BroadcastTokens: target must be 'cpu' or 'gpu'"
         )
-        var m = Self()
-        comptime if target == "cpu":
-            m.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("BroadcastTokens.make[target='gpu']: ctx required")
-            m.ts = TargetStorage.make_gpu(ctx.value())
-        return m^
-
-    @staticmethod
-    def display_label() -> String:
-        return String("BroadcastTokens")
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["BroadcastTokens", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.DIM]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            for b in range(BATCH):
-                for t in range(Self.N):
-                    for d in range(Self.DIM):
-                        output_v[b, t * Self.DIM + d] = input[b, d]
+            out.ensure(B * Self.OUT_DIM)
+            var input = TileTensor(in0.data, row_major[B, Self.DIM_]())
+            var output_v = TileTensor(out.data, row_major[B, Self.OUT_DIM]())
+            for b in range(B):
+                for t in range(Self.N_):
+                    for d in range(Self.DIM_):
+                        output_v[b, t * Self.DIM_ + d] = input[b, d]
         else:
-            var in_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin
-            ](input.ptr)
-            var out_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.N * Self.DIM), MutAnyOrigin
-            ](output_v.ptr)
-            comptime total = BATCH * Self.N * Self.DIM
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT_DIM)
+            comptime total = B * Self.N_ * Self.DIM_
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _bt_fwd_kernel[BATCH, Self.N, Self.DIM]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[
+                _bt_fwd_kernel[B, Self.N_, Self.DIM_, Self.ACT_DT]
+            ](
+                in0.lt["gpu", Layout.row_major(B, Self.DIM_)](),
+                out.lt["gpu", Layout.row_major(B, Self.N_ * Self.DIM_)](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["BroadcastTokens", target](self.ts.target_tag)
-        var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi = grad_inputs.tile[0, BATCH, Self.DIM]()
-
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            for b in range(BATCH):
-                for d in range(Self.DIM):
+            gin.ensure(B * Self.DIM_)
+            var go = TileTensor(grad_output.data, row_major[B, Self.OUT_DIM]())
+            var gi = TileTensor(gin.data, row_major[B, Self.DIM_]())
+            for b in range(B):
+                for d in range(Self.DIM_):
                     var acc: Scalar[DT] = 0.0
-                    for t in range(Self.N):
-                        acc += go[b, t * Self.DIM + d]
-                    gi[b, d] = acc
+                    for t in range(Self.N_):
+                        acc += go[b, t * Self.DIM_ + d].cast[DT]()
+                    gi[b, d] = acc.cast[Self.ACT_DT]()
         else:
-            var go_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.N * Self.DIM), MutAnyOrigin
-            ](go.ptr)
-            var gi_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.DIM), MutAnyOrigin
-            ](gi.ptr)
-            comptime total = BATCH * Self.DIM
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.DIM_)
+            comptime total = B * Self.DIM_
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _bt_bwd_kernel[BATCH, Self.N, Self.DIM]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, gi_lt, grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[
+                _bt_bwd_kernel[B, Self.N_, Self.DIM_, Self.ACT_DT]
+            ](
+                grad_output.lt["gpu", Layout.row_major(B, Self.N_ * Self.DIM_)](),
+                gin.lt["gpu", Layout.row_major(B, Self.DIM_)](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).

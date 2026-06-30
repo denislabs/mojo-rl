@@ -1,68 +1,64 @@
 """ScaledDotProductAttention[DIM, N_HEADS, SEQ_LEN, CAUSAL, USE_MAX_KERNELS].
 
-Multi-head scaled dot-product attention as a single nn leaf. Input is the
-per-token concatenated `[Q ‖ K ‖ V]` (each `DIM`-wide), laid out per sample
-as `[all-Q tokens | all-K tokens | all-V tokens]`:
+Multi-head scaled dot-product attention as a single nn leaf, on the STORAGE
+surface (transformed from legacy `nn.primitives.attention` — surface-only change;
+the QKᵀ/softmax/attn·V kernels + the bmm pack/softmax/unpack glue are carried
+over VERBATIM). Input is the per-token concatenated `[Q ‖ K ‖ V]` (each DIM-wide),
+laid out per sample as `[all-Q tokens | all-K tokens | all-V tokens]`:
 
     IN_DIM  = SEQ_LEN * DIM * 3        (offsets: Q@0, K@SEQ·DIM, V@2·SEQ·DIM)
     OUT_DIM = SEQ_LEN * DIM
 
-No params. Cache is leaf-owned (its own buffer, NOT the Sequential input
-slab), laid out `[Q | K | V | scores]`:
+No params. Caches are leaf-owned `Tensor` fields (output-caching — backward reads
+only the cache + grad_output, never the forward input slab; storage surface
+passes `forward_input` explicitly but this leaf doesn't need it). The cache holds
+[Q | K | V | scores] per sample:
 
     CACHE_SIZE = 3*SEQ_LEN*DIM + N_HEADS*SEQ_LEN*SEQ_LEN
 
-Because the op is **output-cached** (it copies Q/K/V into its own cache and
-materializes the softmaxed scores there), backward reads only `self.cache`
-and `grad_output` — never the forward input slab — so it is EXEMPT from the
-param-grad-before-grad_input aliasing invariant (and has no params anyway).
-A future fused rewrite must preserve that property or reintroduce the trap.
+`head_dim = DIM // N_HEADS`, `scale = 1/sqrt(head_dim)`. `CAUSAL=True` bounds each
+query i's key loop to j ≤ i. Softmax computed with the standard max-shift.
 
-`head_dim = DIM // N_HEADS`, `scale = 1/sqrt(head_dim)`. `causal=True` bounds
-each query i's key loop to j ≤ i. Softmax is computed in fp32 with the
-standard max-shift for stability (CPU accumulates in Float64).
-
-GPU path: `USE_MAX_KERNELS=True` (default) → batched-GEMM attention (Wave C
-6d, tensor cores); `False` → serial per-(b,h) custom kernels (6c). The two
-are bit-identical (see tests/nn/test_attention_bmm_parity.mojo); the flag
-only changes speed. CPU path (forward + 3-pass vjp, 6a/6b) ignores the flag.
-Docs: docs/NN_TRANSFORMER_PORT.md.
+GPU path: `USE_MAX_KERNELS=True` (default) → batched-GEMM attention (tensor
+cores); `False` → serial per-(b,h) custom kernels. Bit-identical (the flag only
+changes speed). CPU path mirrors the bmm forward/backward (BLAS GEMMs + scalar
+softmax). Unlike legacy, scratch slabs are separate owned `Tensor` fields (one
+buffer per slab) instead of a single pointer-sliced scratch — no `mptr`.
 """
 
 from std.math import exp, sqrt
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.bmm import batched_matmul
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP, Cache
-from ..core.module import Module, typed_view, typed_view_mut, mptr
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import (
-    TargetStorage,
-    assert_tag_for,
-)
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 # ──────────────────────────────────────────────────────────────────────
-# GPU kernels — custom per-(b,h) path (Wave C 6c). One block per (b,h);
-# threads stride over rows (fwd / dQ) or (j,d) pairs (dV / dK). Ported
-# from gen-1 nn/autodiff/primitives/attention.mojo. Float32 throughout
-# (Metal has no Float64). No intra-block barrier needed: the forward's
-# score/softmax/output for row i touch only cache.attn[h,i,·] (the thread
-# owning row i), and read Q/K/V from `input` directly, not from cache.
+# GPU kernels — custom per-(b,h) path. One block per (b,h); threads stride
+# over rows (fwd / dQ) or (j,d) pairs (dV / dK). Carried VERBATIM from the
+# legacy leaf. ALL math is fp32 (DT) — Metal has no Float64; the per-sample
+# cache stays fp32. bf16-FLOW (AMP "Step B"): the I/O ACTIVATION operands
+# (`input`/`output`/`grad_output`/`grad_input`) are parametrized by `ADT` — on
+# READ each bf16 element is cast→fp32 before computing; on WRITE the fp32 result
+# is cast→bf16. The cache and the QKᵀ/softmax/attn·V math are unchanged fp32.
+# The default `ADT = DT` reproduces the legacy fp32 leaf byte-for-byte.
 # ──────────────────────────────────────────────────────────────────────
 
 
 def _attn_fwd_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
     CAUSAL: Bool, IN_DIM: Int, OUT_DIM: Int, CACHE_SIZE: Int,
-    K_OFF: Int, V_OFF: Int, ATTN_OFF: Int,
+    K_OFF: Int, V_OFF: Int, ATTN_OFF: Int, ADT: DType = DT,
 ](
-    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
-    input: LayoutTensor[DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
     cache: LayoutTensor[DT, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
 ):
     var blk = Int(block_idx.x)
@@ -81,15 +77,15 @@ def _attn_fwd_kernel[
     while idx0 < n_qkv:
         var i = idx0 // HEAD_DIM
         var d = idx0 % HEAD_DIM
-        cache.ptr[b * CACHE_SIZE + i * DIM + h_off + d] = rebind[Scalar[DT]](
+        cache.ptr[b * CACHE_SIZE + i * DIM + h_off + d] = rebind[Scalar[ADT]](
             input.ptr[b * IN_DIM + i * DIM + h_off + d]
-        )
+        ).cast[DT]()
         cache.ptr[b * CACHE_SIZE + K_OFF + i * DIM + h_off + d] = rebind[
-            Scalar[DT]
-        ](input.ptr[b * IN_DIM + K_OFF + i * DIM + h_off + d])
+            Scalar[ADT]
+        ](input.ptr[b * IN_DIM + K_OFF + i * DIM + h_off + d]).cast[DT]()
         cache.ptr[b * CACHE_SIZE + V_OFF + i * DIM + h_off + d] = rebind[
-            Scalar[DT]
-        ](input.ptr[b * IN_DIM + V_OFF + i * DIM + h_off + d])
+            Scalar[ADT]
+        ](input.ptr[b * IN_DIM + V_OFF + i * DIM + h_off + d]).cast[DT]()
         idx0 += bs
 
     # Step 2: per-row attention; each thread strides over query rows i.
@@ -103,12 +99,12 @@ def _attn_fwd_kernel[
         for j in range(j_end):
             var s = Scalar[DT](0)
             for d in range(HEAD_DIM):
-                var q = rebind[Scalar[DT]](
+                var q = rebind[Scalar[ADT]](
                     input.ptr[b * IN_DIM + i * DIM + h_off + d]
-                )
-                var k = rebind[Scalar[DT]](
+                ).cast[DT]()
+                var k = rebind[Scalar[ADT]](
                     input.ptr[b * IN_DIM + K_OFF + j * DIM + h_off + d]
-                )
+                ).cast[DT]()
                 s += q * k
             s *= scale
             var aidx = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
@@ -134,32 +130,32 @@ def _attn_fwd_kernel[
                 var aidx = (
                     b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
                 )
-                var v = rebind[Scalar[DT]](
+                var v = rebind[Scalar[ADT]](
                     input.ptr[b * IN_DIM + V_OFF + j * DIM + h_off + d]
-                )
+                ).cast[DT]()
                 acc += rebind[Scalar[DT]](cache.ptr[aidx]) * v
-            output.ptr[b * OUT_DIM + i * DIM + h_off + d] = acc
+            output.ptr[b * OUT_DIM + i * DIM + h_off + d] = acc.cast[ADT]()
         i += bs
 
 
 def _attn_zero_grad_kernel[
-    BATCH: Int, IN_DIM: Int
+    BATCH: Int, IN_DIM: Int, ADT: DType = DT
 ](
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     if idx < BATCH * IN_DIM:
-        grad_input.ptr[idx] = Scalar[DT](0)
+        grad_input.ptr[idx] = Scalar[ADT](0)
 
 
 def _attn_dV_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
     CAUSAL: Bool, IN_DIM: Int, OUT_DIM: Int, CACHE_SIZE: Int,
-    V_OFF: Int, ATTN_OFF: Int,
+    V_OFF: Int, ATTN_OFF: Int, ADT: DType = DT,
 ](
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
     grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ADT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
     ],
     cache: LayoutTensor[DT, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
 ):
@@ -183,23 +179,25 @@ def _attn_dV_kernel[
         var acc = Scalar[DT](0)
         for i in range(i_start, SEQ):
             var aidx = b * CACHE_SIZE + ATTN_OFF + h * SEQ * SEQ + i * SEQ + j
-            var go = rebind[Scalar[DT]](
+            var go = rebind[Scalar[ADT]](
                 grad_output.ptr[b * OUT_DIM + i * DIM + h_off + d]
-            )
+            ).cast[DT]()
             acc += rebind[Scalar[DT]](cache.ptr[aidx]) * go
         var dv_idx = b * IN_DIM + V_OFF + j * DIM + h_off + d
-        grad_input.ptr[dv_idx] = grad_input.ptr[dv_idx] + acc
+        grad_input.ptr[dv_idx] = (
+            rebind[Scalar[ADT]](grad_input.ptr[dv_idx]).cast[DT]() + acc
+        ).cast[ADT]()
         idx0 += bs
 
 
 def _attn_dscore_dQ_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
     CAUSAL: Bool, IN_DIM: Int, OUT_DIM: Int, CACHE_SIZE: Int,
-    K_OFF: Int, V_OFF: Int, ATTN_OFF: Int,
+    K_OFF: Int, V_OFF: Int, ATTN_OFF: Int, ADT: DType = DT,
 ](
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
     grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
+        ADT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin
     ],
     cache: LayoutTensor[DT, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
 ):
@@ -224,9 +222,9 @@ def _attn_dscore_dQ_kernel[
         for j in range(j_end):
             var d_attn = Scalar[DT](0)
             for d in range(HEAD_DIM):
-                var go = rebind[Scalar[DT]](
+                var go = rebind[Scalar[ADT]](
                     grad_output.ptr[b * OUT_DIM + i * DIM + h_off + d]
-                )
+                ).cast[DT]()
                 var v = rebind[Scalar[DT]](
                     cache.ptr[b * CACHE_SIZE + V_OFF + j * DIM + h_off + d]
                 )
@@ -237,9 +235,9 @@ def _attn_dscore_dQ_kernel[
         for j in range(j_end):
             var d_attn = Scalar[DT](0)
             for d in range(HEAD_DIM):
-                var go = rebind[Scalar[DT]](
+                var go = rebind[Scalar[ADT]](
                     grad_output.ptr[b * OUT_DIM + i * DIM + h_off + d]
-                )
+                ).cast[DT]()
                 var v = rebind[Scalar[DT]](
                     cache.ptr[b * CACHE_SIZE + V_OFF + j * DIM + h_off + d]
                 )
@@ -260,15 +258,18 @@ def _attn_dscore_dQ_kernel[
                 )
                 acc += d_score * k
             var dq_idx = b * IN_DIM + i * DIM + h_off + d
-            grad_input.ptr[dq_idx] = grad_input.ptr[dq_idx] + acc
+            grad_input.ptr[dq_idx] = (
+                rebind[Scalar[ADT]](grad_input.ptr[dq_idx]).cast[DT]() + acc
+            ).cast[ADT]()
         i += bs
 
 
 def _attn_dK_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
     CAUSAL: Bool, IN_DIM: Int, CACHE_SIZE: Int, K_OFF: Int, ATTN_OFF: Int,
+    ADT: DType = DT,
 ](
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
     cache: LayoutTensor[DT, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
 ):
     # dK[j, h_off+d] = Σ_i d_score[i,j] * Q[i, h_off+d]. Reads d_score from
@@ -298,30 +299,29 @@ def _attn_dK_kernel[
             )
             acc += d_score * q
         var dk_idx = b * IN_DIM + K_OFF + j * DIM + h_off + d
-        grad_input.ptr[dk_idx] = grad_input.ptr[dk_idx] + acc
+        grad_input.ptr[dk_idx] = (
+            rebind[Scalar[ADT]](grad_input.ptr[dk_idx]).cast[DT]() + acc
+        ).cast[ADT]()
         idx0 += bs
 
 
 # ──────────────────────────────────────────────────────────────────────
-# BMM fast path (Wave C 6d) — batched-GEMM attention behind USE_MAX_KERNELS.
-# Replaces the serial per-(b,h) custom kernels with single-launch batched
-# matmuls (tensor cores) for QKᵀ and attn·V, plus pack/softmax/unpack glue.
-# Ported from gen-1 nn/autodiff/primitives/attention.mojo. Same cache layout
-# [Q|K|V|scores] as the custom path, so the two are interchangeable (the
-# regression test pins them bit-close). Packed layout: (BH, SEQ, HEAD_DIM);
-# scores layout: (BH, SEQ, SEQ).
+# BMM fast path — batched-GEMM attention behind USE_MAX_KERNELS. Single-
+# launch batched matmuls (tensor cores) for QKᵀ and attn·V, plus
+# pack/softmax/unpack glue. Carried VERBATIM. Packed layout: (BH, SEQ,
+# HEAD_DIM); scores layout: (BH, SEQ, SEQ).
 # ──────────────────────────────────────────────────────────────────────
 
 
 def _attn_pack_qkv_fwd_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
-    IN_DIM: Int, CACHE_SIZE: Int, PACKED: Int,
+    IN_DIM: Int, CACHE_SIZE: Int, PACKED: Int, ADT: DType = DT,
 ](
     packed_q: LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin],
     packed_k: LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin],
     packed_v: LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin],
     cache: LayoutTensor[DT, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
-    input: LayoutTensor[DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
 ):
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
     comptime pack_elems = BATCH * SEQ * DIM
@@ -338,9 +338,13 @@ def _attn_pack_qkv_fwd_kernel[
     var col = h * HEAD_DIM + d
     var bh = b * N_HEADS + h
     var pidx = bh * SEQ * HEAD_DIM + t * HEAD_DIM + d
-    var qv = rebind[Scalar[DT]](input.ptr[b * IN_DIM + t * DIM + col])
-    var kv = rebind[Scalar[DT]](input.ptr[b * IN_DIM + KOFF + t * DIM + col])
-    var vv = rebind[Scalar[DT]](input.ptr[b * IN_DIM + VOFF + t * DIM + col])
+    var qv = rebind[Scalar[ADT]](input.ptr[b * IN_DIM + t * DIM + col]).cast[DT]()
+    var kv = rebind[Scalar[ADT]](
+        input.ptr[b * IN_DIM + KOFF + t * DIM + col]
+    ).cast[DT]()
+    var vv = rebind[Scalar[ADT]](
+        input.ptr[b * IN_DIM + VOFF + t * DIM + col]
+    ).cast[DT]()
     cache.ptr[b * CACHE_SIZE + t * DIM + col] = qv
     cache.ptr[b * CACHE_SIZE + KOFF + t * DIM + col] = kv
     cache.ptr[b * CACHE_SIZE + VOFF + t * DIM + col] = vv
@@ -403,9 +407,9 @@ def _attn_softmax_kernel[
 
 def _attn_unpack_out_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
-    OUT_DIM: Int, PACKED: Int,
+    OUT_DIM: Int, PACKED: Int, ADT: DType = DT,
 ](
-    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     packed_out: LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin],
 ):
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -422,18 +426,18 @@ def _attn_unpack_out_kernel[
     var pidx = bh * SEQ * HEAD_DIM + t * HEAD_DIM + d
     output.ptr[b * OUT_DIM + t * DIM + h * HEAD_DIM + d] = rebind[Scalar[DT]](
         packed_out.ptr[pidx]
-    )
+    ).cast[ADT]()
 
 
 def _attn_pack_in_bwd_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
-    IN_DIM: Int, OUT_DIM: Int, CACHE_SIZE: Int, PACKED: Int,
+    IN_DIM: Int, OUT_DIM: Int, CACHE_SIZE: Int, PACKED: Int, ADT: DType = DT,
 ](
     packed_dout: LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin],
     packed_q: LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin],
     packed_k: LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin],
     packed_v: LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin],
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
+    grad_output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT_DIM), MutAnyOrigin],
     cache: LayoutTensor[DT, Layout.row_major(BATCH, CACHE_SIZE), MutAnyOrigin],
 ):
     var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
@@ -451,9 +455,9 @@ def _attn_pack_in_bwd_kernel[
     var col = h * HEAD_DIM + d
     var bh = b * N_HEADS + h
     var pidx = bh * SEQ * HEAD_DIM + t * HEAD_DIM + d
-    packed_dout.ptr[pidx] = rebind[Scalar[DT]](
+    packed_dout.ptr[pidx] = rebind[Scalar[ADT]](
         grad_output.ptr[b * OUT_DIM + t * DIM + col]
-    )
+    ).cast[DT]()
     packed_q.ptr[pidx] = rebind[Scalar[DT]](cache.ptr[b * CACHE_SIZE + t * DIM + col])
     packed_k.ptr[pidx] = rebind[Scalar[DT]](
         cache.ptr[b * CACHE_SIZE + KOFF + t * DIM + col]
@@ -545,9 +549,9 @@ def _attn_transpose_scores_kernel[
 
 def _attn_unpack_grad_kernel[
     BATCH: Int, DIM: Int, N_HEADS: Int, SEQ: Int, HEAD_DIM: Int,
-    IN_DIM: Int, PACKED: Int,
+    IN_DIM: Int, PACKED: Int, ADT: DType = DT,
 ](
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
+    grad_input: LayoutTensor[ADT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin],
     dQ: LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin],
     dK: LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin],
     dV: LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin],
@@ -567,13 +571,15 @@ def _attn_unpack_grad_kernel[
     var col = h * HEAD_DIM + d
     var bh = b * N_HEADS + h
     var pidx = bh * SEQ * HEAD_DIM + t * HEAD_DIM + d
-    grad_input.ptr[b * IN_DIM + t * DIM + col] = rebind[Scalar[DT]](dQ.ptr[pidx])
+    grad_input.ptr[b * IN_DIM + t * DIM + col] = rebind[Scalar[DT]](
+        dQ.ptr[pidx]
+    ).cast[ADT]()
     grad_input.ptr[b * IN_DIM + KOFF + t * DIM + col] = rebind[Scalar[DT]](
         dK.ptr[pidx]
-    )
+    ).cast[ADT]()
     grad_input.ptr[b * IN_DIM + VOFF + t * DIM + col] = rebind[Scalar[DT]](
         dV.ptr[pidx]
-    )
+    ).cast[ADT]()
 
 
 struct ScaledDotProductAttention[
@@ -582,8 +588,16 @@ struct ScaledDotProductAttention[
     SEQ_LEN: Int,
     CAUSAL: Bool = False,
     USE_MAX_KERNELS: Bool = True,
+    ADT: DType = DT,
 ](Module):
     comptime ARITY: Int = 1
+    # Activation-flow dtype (satisfies the Module trait). `ScaledDotProduct
+    # Attention[D, H, S]` = fp32 (ACT_DT == DT, the legacy path, byte-identical);
+    # `…[D, H, S, …, bfloat16]` flows its I/O activations at bf16 (the AMP "Step
+    # B" memory win) while computing fp32 INTERNALLY: the cache + QKᵀ/softmax/
+    # attn·V all stay fp32; only the I/O-activation kernel operands cast at the
+    # bf16 boundary (read→fp32, write→bf16). bf16-flow is GPU-only.
+    comptime ACT_DT = Self.ADT
     comptime HEAD_DIM: Int = Self.DIM // Self.N_HEADS
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_LEN * Self.DIM * 3)
     comptime OUT_DIM = Self.SEQ_LEN * Self.DIM
@@ -595,29 +609,31 @@ struct ScaledDotProductAttention[
         3 * Self.SEQ_LEN * Self.DIM
         + Self.N_HEADS * Self.SEQ_LEN * Self.SEQ_LEN
     )
-    # Per-sample bmm scratch unit: 4 packed slabs (SEQ*DIM each) + 2 scores
-    # slabs (N_HEADS*SEQ*SEQ each). One reused device buffer per instance,
-    # lazily sized to BATCH (see `_ensure_scratch_gpu` + the aliasing map in
-    # `_vjp_gpu_bmm`). Only allocated when USE_MAX_KERNELS and on GPU.
-    comptime SCRATCH_UNIT: Int = (
-        4 * Self.SEQ_LEN * Self.DIM
-        + 2 * Self.N_HEADS * Self.SEQ_LEN * Self.SEQ_LEN
-    )
 
-    # Cache (leaf-owned, output-caching).
-    var cache: Cache["attn_cache"]   # [BATCH, CACHE_SIZE] (lazy)
-    # BMM scratch (device-only, reused across steps; lazily sized to BATCH).
-    var scratch: Cache["attn_scratch"]
-
-    var ts: TargetStorage
+    # Cache (leaf-owned, output-caching) — [BATCH, CACHE_SIZE], lazy.
+    var cache: Tensor
+    # BMM scratch slabs (separate owned Tensors — one buffer per slab, vs the
+    # legacy single pointer-sliced scratch). Lazily sized; GPU-only in practice
+    # (CPU path uses local Lists). 4 packed slabs + 2 scores slabs (fwd uses 4
+    # packed + 1 scores; bwd recycles them, see _vjp_gpu_bmm aliasing comments).
+    var sp0: Tensor  # packed slot 0
+    var sp1: Tensor  # packed slot 1
+    var sp2: Tensor  # packed slot 2
+    var sp3: Tensor  # packed slot 3
+    var ss0: Tensor  # scores slot 0
+    var ss1: Tensor  # scores slot 1
 
     def __init__(out self):
         comptime assert (
             Self.DIM % Self.N_HEADS == 0
         ), "ScaledDotProductAttention: DIM must be divisible by N_HEADS"
-        self.cache = Cache["attn_cache"]()
-        self.scratch = Cache["attn_scratch"]()
-        self.ts = TargetStorage.make_uninit()
+        self.cache = Tensor()
+        self.sp0 = Tensor()
+        self.sp1 = Tensor()
+        self.sp2 = Tensor()
+        self.sp3 = Tensor()
+        self.ss0 = Tensor()
+        self.ss1 = Tensor()
 
     @staticmethod
     def make[
@@ -628,221 +644,200 @@ struct ScaledDotProductAttention[
         comptime assert target == "cpu" or target == "gpu", (
             "ScaledDotProductAttention: target must be 'cpu' or 'gpu'"
         )
-        var a = Self()
-        comptime if target == "cpu":
-            a.ts = TargetStorage.make_cpu()
-        else:
+        comptime if target != "cpu":
             if not ctx:
                 raise Error(
                     "ScaledDotProductAttention.make[target='gpu']: ctx required"
                 )
-            var ctx_v = ctx.value()
-            a.ts = TargetStorage.make_gpu(ctx_v)
-        return a^
+        return Self()
 
-    def _ensure_cache_gpu(mut self, batch: Int) raises:
-        self.cache.ensure_gpu(self.ts.ctx.value(), batch * Self.CACHE_SIZE)
-
-    def _ensure_scratch_gpu(mut self, batch: Int) raises:
-        self.scratch.ensure_gpu(self.ts.ctx.value(), batch * Self.SCRATCH_UNIT)
-
-    @staticmethod
-    def display_label() -> String:
-        return String("Attention")
+    def _ensure_scratch_gpu[BATCH: Int](mut self, c: DeviceContext) raises:
+        comptime PACKED = BATCH * Self.SEQ_LEN * Self.DIM
+        comptime SCORES = BATCH * Self.N_HEADS * Self.SEQ_LEN * Self.SEQ_LEN
+        self.sp0.ensure_gpu(c, PACKED)
+        self.sp1.ensure_gpu(c, PACKED)
+        self.sp2.ensure_gpu(c, PACKED)
+        self.sp3.ensure_gpu(c, PACKED)
+        self.ss0.ensure_gpu(c, SCORES)
+        self.ss1.ensure_gpu(c, SCORES)
 
     # ----- Forward ---------------------------------------------------------
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["ScaledDotProductAttention", target](
-            self.ts.target_tag
-        )
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
-        comptime if target == "cpu":
-            self._forward_cpu[BATCH](input, output_v)
-        else:
-            self._ensure_cache_gpu(BATCH)
-            comptime if Self.USE_MAX_KERNELS:
-                self._forward_gpu_bmm[BATCH](input, output_v)
+        ref in0 = inputs[0]
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            # The CPU helpers are fp32-only (`Tensor`) → rebind the activation
+            # refs (sound: ACT_DT IS DT here, the compiler just won't collapse
+            # the opaque param). The GPU helpers are ACT_DT-generic → pass the
+            # activations directly (no rebind).
+            comptime if target == "cpu":
+                ref in0d = rebind[Tensor](in0)
+                ref outd = rebind[Tensor](out)
+                self._forward_cpu[B](in0d, outd)
             else:
-                self._forward_gpu_custom[BATCH](input, output_v)
+                var c = ctx.value()
+                out.ensure_gpu(c, B * Self.OUT_DIM)
+                self.cache.ensure_gpu(c, B * Self.CACHE_SIZE)
+                comptime if Self.USE_MAX_KERNELS:
+                    self._forward_gpu_bmm[B](in0, out, c)
+                else:
+                    self._forward_gpu_custom[B](in0, out, c)
+        else:
+            # ── bf16-flow path (GPU-only). Activations cast at the I/O boundary;
+            #    cache + QKᵀ/softmax/attn·V stay fp32 (the leaf is fp32-internal).
+            comptime assert (
+                target == "gpu"
+            ), "bf16-flow ScaledDotProductAttention is GPU-only"
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT_DIM)
+            self.cache.ensure_gpu(c, B * Self.CACHE_SIZE)
+            comptime if Self.USE_MAX_KERNELS:
+                self._forward_gpu_bmm[B](in0, out, c)
+            else:
+                self._forward_gpu_custom[B](in0, out, c)
 
     def _forward_gpu_custom[
-        BATCH: Int
+        B: Int
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        output_v: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        mut in0: TensorImpl[Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        c: DeviceContext,
     ) raises:
-        comptime lay_in = Layout.row_major(BATCH, Self.IN_DIMS[0])
-        comptime lay_out = Layout.row_major(BATCH, Self.OUT_DIM)
-        comptime lay_c = Layout.row_major(BATCH, Self.CACHE_SIZE)
-        var in_p = input.ptr
-        var out_p = output_v.ptr
-        var in_lt = LayoutTensor[DT, lay_in, MutAnyOrigin](in_p)
-        var out_lt = LayoutTensor[DT, lay_out, MutAnyOrigin](out_p)
-        var c_lt = LayoutTensor[DT, lay_c, MutAnyOrigin](
-            self.cache.dev.value()
-        )
+        comptime lay_in = Layout.row_major(B, Self.IN_DIMS[0])
+        comptime lay_out = Layout.row_major(B, Self.OUT_DIM)
+        comptime lay_c = Layout.row_major(B, Self.CACHE_SIZE)
         comptime kernel = _attn_fwd_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
             Self.CAUSAL, Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE,
-            Self.K_OFF, Self.V_OFF, Self.ATTN_OFF,
+            Self.K_OFF, Self.V_OFF, Self.ATTN_OFF, Self.ADT,
         ]
-        self.ts.ctx.value().enqueue_function[kernel](
-            out_lt, in_lt, c_lt,
-            grid_dim=BATCH * Self.N_HEADS, block_dim=TPB,
+        c.enqueue_function[kernel](
+            out.lt["gpu", lay_out](),
+            in0.lt["gpu", lay_in](),
+            self.cache.lt["gpu", lay_c](),
+            grid_dim=B * Self.N_HEADS, block_dim=TPB,
         )
 
     def _forward_gpu_bmm[
-        BATCH: Int
+        B: Int
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        output_v: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        mut in0: TensorImpl[Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        c: DeviceContext,
     ) raises:
-        comptime BH = BATCH * Self.N_HEADS
-        comptime PACKED = BATCH * Self.SEQ_LEN * Self.DIM
+        comptime BH = B * Self.N_HEADS
+        comptime PACKED = B * Self.SEQ_LEN * Self.DIM
         comptime SCORES = BH * Self.SEQ_LEN * Self.SEQ_LEN
-        var ctx = self.ts.ctx.value()
-        self._ensure_scratch_gpu(BATCH)
+        self._ensure_scratch_gpu[B](c)
 
-        # Slice the reused scratch buffer: 4 packed slots [0..3] then 2 scores
-        # slots at 4*PACKED. Forward uses pq/pk/pv/pout + 1 scores.
-        var sb = mptr(self.scratch.dev.value().unsafe_ptr())
-        var pq = sb + 0 * PACKED
-        var pk = sb + 1 * PACKED
-        var pv = sb + 2 * PACKED
-        var pout = sb + 3 * PACKED
-        var sc = sb + 4 * PACKED
-
-        var in_p = input.ptr
-        var out_p = output_v.ptr
-        var in_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.IN_DIMS[0]), MutAnyOrigin
-        ](in_p)
-        var c_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin
-        ](self.cache.dev.value())
+        # Forward uses pq=sp0, pk=sp1, pv=sp2, pout=sp3, scores=ss0.
+        comptime lay_in = Layout.row_major(B, Self.IN_DIMS[0])
+        comptime lay_out = Layout.row_major(B, Self.OUT_DIM)
+        comptime lay_c = Layout.row_major(B, Self.CACHE_SIZE)
+        comptime lay_p = Layout.row_major(PACKED)
+        comptime lay_s = Layout.row_major(SCORES)
 
         # 1. pack QKV → (BH, SEQ, HEAD_DIM) + write cache.
-        comptime pelems = BATCH * Self.SEQ_LEN * Self.DIM
+        comptime pelems = B * Self.SEQ_LEN * Self.DIM
         comptime pblocks = (pelems + TPB - 1) // TPB
-        var pq_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](pq)
-        var pk_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](pk)
-        var pv_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](pv)
         comptime pack_k = _attn_pack_qkv_fwd_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
-            Self.IN_DIMS[0], Self.CACHE_SIZE, PACKED,
+            B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            Self.IN_DIMS[0], Self.CACHE_SIZE, PACKED, Self.ADT,
         ]
-        ctx.enqueue_function[pack_k](
-            pq_lt, pk_lt, pv_lt, c_lt, in_lt,
+        c.enqueue_function[pack_k](
+            self.sp0.lt["gpu", lay_p](),
+            self.sp1.lt["gpu", lay_p](),
+            self.sp2.lt["gpu", lay_p](),
+            self.cache.lt["gpu", lay_c](),
+            in0.lt["gpu", lay_in](),
             grid_dim=pblocks, block_dim=TPB,
         )
 
         # 2. scores = Q @ Kᵀ  (BH, SEQ, SEQ).
-        var scores_tt = TileTensor(sc, row_major[BH, Self.SEQ_LEN, Self.SEQ_LEN]())
-        var pq_tt = TileTensor(pq, row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]())
-        var pk_tt = TileTensor(pk, row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]())
+        var scores_tt = TileTensor(
+            self.ss0.dev.value(), row_major[BH, Self.SEQ_LEN, Self.SEQ_LEN]()
+        )
+        var pq_tt = TileTensor(
+            self.sp0.dev.value(), row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+        )
+        var pk_tt = TileTensor(
+            self.sp1.dev.value(), row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+        )
         batched_matmul[transpose_b=True, target="gpu"](
-            scores_tt, pq_tt, pk_tt, context=ctx
+            scores_tt, pq_tt, pk_tt, context=c
         )
 
         # 3. scale + stable softmax in-place; mirror into cache.attn.
-        var sc_lt = LayoutTensor[DT, Layout.row_major(SCORES), MutAnyOrigin](sc)
         comptime sm_k = _attn_softmax_kernel[
-            BATCH, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM, Self.CAUSAL,
+            B, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM, Self.CAUSAL,
             Self.CACHE_SIZE, SCORES, BH,
         ]
-        ctx.enqueue_function[sm_k](sc_lt, c_lt, grid_dim=BH, block_dim=TPB)
-
-        # 4. packed_out = attn @ V.
-        var pout_tt = TileTensor(pout, row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]())
-        var pv_tt = TileTensor(pv, row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]())
-        batched_matmul[target="gpu"](pout_tt, scores_tt, pv_tt, context=ctx)
-
-        # 5. unpack → output.
-        var out_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-        ](out_p)
-        var pout_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](pout)
-        comptime up_blocks = (pelems + TPB - 1) // TPB
-        comptime up_k = _attn_unpack_out_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
-            Self.OUT_DIM, PACKED,
-        ]
-        ctx.enqueue_function[up_k](
-            out_lt, pout_lt, grid_dim=up_blocks, block_dim=TPB
+        c.enqueue_function[sm_k](
+            self.ss0.lt["gpu", lay_s](),
+            self.cache.lt["gpu", lay_c](),
+            grid_dim=BH, block_dim=TPB,
         )
 
-    def _forward_cpu[
-        BATCH: Int
-    ](
-        mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        output_v: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-    ) raises:
-        # BLAS path: mirror the GPU bmm forward (pack → QKᵀ bmm → scalar
-        # softmax+mask → attn·V bmm → unpack) but with target="cpu"
-        # (Apple-Accelerate). The 2 GEMMs are BLAS; softmax + causal mask
-        # stay scalar. Cache layout [Q|K|V|scores] is identical to the GPU
-        # path, so backward reads it the same way.
-        self.cache.ensure_cpu(BATCH * Self.CACHE_SIZE)
-        var ip = input.ptr
-        var op = output_v.ptr
-        var cp = mptr(self.cache.cpu_ptr())
+        # 4. packed_out = attn @ V.
+        var pout_tt = TileTensor(
+            self.sp3.dev.value(), row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+        )
+        var pv_tt = TileTensor(
+            self.sp2.dev.value(), row_major[BH, Self.SEQ_LEN, Self.HEAD_DIM]()
+        )
+        batched_matmul[target="gpu"](pout_tt, scores_tt, pv_tt, context=c)
+
+        # 5. unpack → output.
+        comptime up_blocks = (pelems + TPB - 1) // TPB
+        comptime up_k = _attn_unpack_out_kernel[
+            B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            Self.OUT_DIM, PACKED, Self.ADT,
+        ]
+        c.enqueue_function[up_k](
+            out.lt["gpu", lay_out](),
+            self.sp3.lt["gpu", lay_p](),
+            grid_dim=up_blocks, block_dim=TPB,
+        )
+
+    def _forward_cpu[B: Int](mut self, mut in0: Tensor, mut out: Tensor) raises:
+        # Mirror the GPU bmm forward (pack → QKᵀ bmm → scalar softmax+mask →
+        # attn·V bmm → unpack) with target="cpu" (Apple-Accelerate). The 2
+        # GEMMs are BLAS; softmax + causal mask stay scalar. Cache layout
+        # [Q|K|V|scores] is identical to the GPU path.
+        out.ensure(B * Self.OUT_DIM)
+        self.cache.ensure(B * Self.CACHE_SIZE)
         comptime IN = Self.IN_DIMS[0]
         comptime OUT = Self.OUT_DIM
         comptime C = Self.CACHE_SIZE
         comptime SD = Self.SEQ_LEN * Self.DIM
-        comptime BH = BATCH * Self.N_HEADS
-        comptime PACKED = BATCH * Self.SEQ_LEN * Self.DIM
+        comptime BH = B * Self.N_HEADS
+        comptime PACKED = B * Self.SEQ_LEN * Self.DIM
         comptime SCORES = BH * Self.SEQ_LEN * Self.SEQ_LEN
         var scale = Scalar[DT](Float32(1.0) / sqrt(Float32(Self.HEAD_DIM)))
 
-        # Local scratch: pq | pk | pv | pout (PACKED each) + scores (SCORES).
-        var scratch = List[Scalar[DT]](
-            length=4 * PACKED + SCORES, fill=Scalar[DT](0)
-        )
-        var sb = mptr(scratch.unsafe_ptr())
-        var pq = sb + 0 * PACKED
-        var pk = sb + 1 * PACKED
-        var pv = sb + 2 * PACKED
-        var pout = sb + 3 * PACKED
-        var sc = sb + 4 * PACKED
+        ref ip = in0.data
+        ref op = out.data
+        ref cp = self.cache.data
+
+        # Local scratch (separate Lists, no pointer slicing).
+        var pq = List[Scalar[DT]](length=PACKED, fill=Scalar[DT](0))
+        var pk = List[Scalar[DT]](length=PACKED, fill=Scalar[DT](0))
+        var pv = List[Scalar[DT]](length=PACKED, fill=Scalar[DT](0))
+        var pout = List[Scalar[DT]](length=PACKED, fill=Scalar[DT](0))
+        var sc = List[Scalar[DT]](length=SCORES, fill=Scalar[DT](0))
 
         # 1. Cache Q/K/V and pack into (BH, SEQ, HEAD_DIM).
-        for b in range(BATCH):
+        for b in range(B):
             for i in range(SD):
                 cp[b * C + i] = ip[b * IN + i]
                 cp[b * C + Self.K_OFF + i] = ip[b * IN + Self.K_OFF + i]
@@ -870,7 +865,7 @@ struct ScaledDotProductAttention[
 
         # 3. scale + stable softmax (scalar); mirror weights into cache.attn
         #    and the `sc` scores buffer (zeroed in the causal upper triangle).
-        for b in range(BATCH):
+        for b in range(B):
             for h in range(Self.N_HEADS):
                 var bh = b * Self.N_HEADS + h
                 var sc_base = bh * Self.SEQ_LEN * Self.SEQ_LEN
@@ -912,7 +907,7 @@ struct ScaledDotProductAttention[
         batched_matmul[target="cpu"](pout_tt, scores_tt, pv_tt)
 
         # 5. unpack packed_out → output.
-        for b in range(BATCH):
+        for b in range(B):
             for h in range(Self.N_HEADS):
                 var bh = b * Self.N_HEADS + h
                 var h_off = h * Self.HEAD_DIM
@@ -920,269 +915,256 @@ struct ScaledDotProductAttention[
                     for d in range(Self.HEAD_DIM):
                         var pidx = bh * Self.SEQ_LEN * Self.HEAD_DIM + t * Self.HEAD_DIM + d
                         op[b * OUT + t * Self.DIM + h_off + d] = pout[pidx]
-        _ = scratch^
+        _ = pq^
+        _ = pk^
+        _ = pv^
+        _ = pout^
+        _ = sc^
 
     # ----- Backward --------------------------------------------------------
 
     def vjp[
-        target: StaticString,
-        BATCH: Int,
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["ScaledDotProductAttention", target](
-            self.ts.target_tag
-        )
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
-        comptime if target == "cpu":
-            self._vjp_cpu[BATCH](grad_output_v, grad_input_v)
-        else:
-            comptime if Self.USE_MAX_KERNELS:
-                self._vjp_gpu_bmm[BATCH](grad_output_v, grad_input_v)
+        # forward_input unused — this leaf is output-caching (reads only the
+        # cache + grad_output).
+        ref gin = grad_inputs[0]
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            # CPU helpers are fp32-only (`Tensor`) → rebind (sound, ACT_DT IS DT);
+            # GPU helpers are ACT_DT-generic → pass activations directly.
+            comptime if target == "cpu":
+                ref god = rebind[Tensor](grad_output)
+                ref gind = rebind[Tensor](gin)
+                self._vjp_cpu[B](god, gind)
             else:
-                self._vjp_gpu_custom[BATCH](grad_output_v, grad_input_v)
+                var c = ctx.value()
+                gin.ensure_gpu(c, B * Self.IN_DIMS[0])
+                comptime if Self.USE_MAX_KERNELS:
+                    self._vjp_gpu_bmm[B](grad_output, gin, c)
+                else:
+                    self._vjp_gpu_custom[B](grad_output, gin, c)
+        else:
+            # ── bf16-flow path (GPU-only). I/O activations cast at the boundary;
+            #    cache + grad math stay fp32 (fp32-internal). ──
+            comptime assert (
+                target == "gpu"
+            ), "bf16-flow ScaledDotProductAttention is GPU-only"
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.IN_DIMS[0])
+            comptime if Self.USE_MAX_KERNELS:
+                self._vjp_gpu_bmm[B](grad_output, gin, c)
+            else:
+                self._vjp_gpu_custom[B](grad_output, gin, c)
 
     def _vjp_gpu_custom[
-        BATCH: Int
+        B: Int
     ](
         mut self,
-        grad_output_v: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_input_v: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        mut gin: TensorImpl[Self.ACT_DT],
+        c: DeviceContext,
     ) raises:
-        var ctx = self.ts.ctx.value()
-        comptime lay_in = Layout.row_major(BATCH, Self.IN_DIMS[0])
-        comptime lay_out = Layout.row_major(BATCH, Self.OUT_DIM)
-        comptime lay_c = Layout.row_major(BATCH, Self.CACHE_SIZE)
-        var go_p = grad_output_v.ptr
-        var gi_p = grad_input_v.ptr
-        var go_lt = LayoutTensor[DT, lay_out, MutAnyOrigin](go_p)
-        var gi_lt = LayoutTensor[DT, lay_in, MutAnyOrigin](gi_p)
-        var c_lt = LayoutTensor[DT, lay_c, MutAnyOrigin](
-            self.cache.dev.value()
-        )
-        comptime grid_bh = BATCH * Self.N_HEADS
+        comptime lay_in = Layout.row_major(B, Self.IN_DIMS[0])
+        comptime lay_out = Layout.row_major(B, Self.OUT_DIM)
+        comptime lay_c = Layout.row_major(B, Self.CACHE_SIZE)
+        comptime grid_bh = B * Self.N_HEADS
         # 1) zero grad_input.
-        comptime zk = _attn_zero_grad_kernel[BATCH, Self.IN_DIMS[0]]
-        comptime zn = (BATCH * Self.IN_DIMS[0] + TPB - 1) // TPB
-        ctx.enqueue_function[zk](gi_lt, grid_dim=zn, block_dim=TPB)
+        comptime zk = _attn_zero_grad_kernel[B, Self.IN_DIMS[0], Self.ADT]
+        comptime zn = (B * Self.IN_DIMS[0] + TPB - 1) // TPB
+        c.enqueue_function[zk](
+            gin.lt["gpu", lay_in](), grid_dim=zn, block_dim=TPB
+        )
         # 2) dV (reads attn weights — must precede dscore_dQ overwrite).
         comptime dvk = _attn_dV_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
             Self.CAUSAL, Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE,
-            Self.V_OFF, Self.ATTN_OFF,
+            Self.V_OFF, Self.ATTN_OFF, Self.ADT,
         ]
-        ctx.enqueue_function[dvk](
-            gi_lt, go_lt, c_lt, grid_dim=grid_bh, block_dim=TPB
+        c.enqueue_function[dvk](
+            gin.lt["gpu", lay_in](),
+            grad_output.lt["gpu", lay_out](),
+            self.cache.lt["gpu", lay_c](),
+            grid_dim=grid_bh, block_dim=TPB,
         )
         # 3) dscore + dQ (overwrites cache.attn with d_score).
         comptime dqk = _attn_dscore_dQ_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
             Self.CAUSAL, Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE,
-            Self.K_OFF, Self.V_OFF, Self.ATTN_OFF,
+            Self.K_OFF, Self.V_OFF, Self.ATTN_OFF, Self.ADT,
         ]
-        ctx.enqueue_function[dqk](
-            gi_lt, go_lt, c_lt, grid_dim=grid_bh, block_dim=TPB
+        c.enqueue_function[dqk](
+            gin.lt["gpu", lay_in](),
+            grad_output.lt["gpu", lay_out](),
+            self.cache.lt["gpu", lay_c](),
+            grid_dim=grid_bh, block_dim=TPB,
         )
         # 4) dK (reads d_score from cache.attn).
         comptime dkk = _attn_dK_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
+            B, Self.DIM, Self.N_HEADS, Self.SEQ_LEN, Self.HEAD_DIM,
             Self.CAUSAL, Self.IN_DIMS[0], Self.CACHE_SIZE,
-            Self.K_OFF, Self.ATTN_OFF,
+            Self.K_OFF, Self.ATTN_OFF, Self.ADT,
         ]
-        ctx.enqueue_function[dkk](
-            gi_lt, c_lt, grid_dim=grid_bh, block_dim=TPB
+        c.enqueue_function[dkk](
+            gin.lt["gpu", lay_in](),
+            self.cache.lt["gpu", lay_c](),
+            grid_dim=grid_bh, block_dim=TPB,
         )
 
     def _vjp_gpu_bmm[
-        BATCH: Int
+        B: Int
     ](
         mut self,
-        grad_output_v: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_input_v: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        mut gin: TensorImpl[Self.ACT_DT],
+        c: DeviceContext,
     ) raises:
-        comptime BH = BATCH * Self.N_HEADS
-        comptime PACKED = BATCH * Self.SEQ_LEN * Self.DIM
+        comptime BH = B * Self.N_HEADS
+        comptime PACKED = B * Self.SEQ_LEN * Self.DIM
         comptime SCORES = BH * Self.SEQ_LEN * Self.SEQ_LEN
         comptime SL = Self.SEQ_LEN
         comptime HD = Self.HEAD_DIM
-        var ctx = self.ts.ctx.value()
-        self._ensure_scratch_gpu(BATCH)
+        self._ensure_scratch_gpu[B](c)
 
-        # Reused scratch, sliced into 4 packed + 2 scores slots. Slots are
-        # recycled once their producer's last read is enqueued — safe because
-        # kernels on the stream run in order. Aliasing map:
-        #   p0: pdout  → (step7) dK      p1: pq     → (step8) dQ
-        #   p2: pk                        p3: pv     → (step5) dV
-        #   s0: dattn  → (step4) attn_T → (step6) dscore_T
-        #   s1: dscore
-        var sb = mptr(self.scratch.dev.value().unsafe_ptr())
-        var p0 = sb + 0 * PACKED
-        var p1 = sb + 1 * PACKED
-        var p2 = sb + 2 * PACKED
-        var p3 = sb + 3 * PACKED
-        var s0 = sb + 4 * PACKED
-        var s1 = sb + 4 * PACKED + SCORES
+        # Scratch aliasing (slabs recycled once their producer's last read is
+        # enqueued — safe: kernels on the stream run in order). Map:
+        #   sp0: pdout  → (step7) dK      sp1: pq     → (step8) dQ
+        #   sp2: pk                        sp3: pv     → (step5) dV
+        #   ss0: dattn  → (step4) attn_T → (step6) dscore_T
+        #   ss1: dscore
+        comptime lay_in = Layout.row_major(B, Self.IN_DIMS[0])
+        comptime lay_out = Layout.row_major(B, Self.OUT_DIM)
+        comptime lay_c = Layout.row_major(B, Self.CACHE_SIZE)
+        comptime lay_p = Layout.row_major(PACKED)
+        comptime lay_s = Layout.row_major(SCORES)
 
-        var go_p = grad_output_v.ptr
-        var gi_p = grad_input_v.ptr
-        var go_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin](go_p)
-        var gi_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.IN_DIMS[0]), MutAnyOrigin](gi_p)
-        var c_lt = LayoutTensor[DT, Layout.row_major(BATCH, Self.CACHE_SIZE), MutAnyOrigin](
-            self.cache.dev.value()
-        )
-
-        comptime pelems = BATCH * SL * Self.DIM
+        comptime pelems = B * SL * Self.DIM
         comptime pblocks = (pelems + TPB - 1) // TPB
         comptime sblocks = (SCORES + TPB - 1) // TPB
 
         # 1. pack dout + cache Q/K/V → (BH, SEQ, HEAD_DIM).
-        var pdout_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p0)
-        var pq_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p1)
-        var pk_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p2)
-        var pv_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p3)
         comptime pin_k = _attn_pack_in_bwd_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, SL, HD,
-            Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE, PACKED,
+            B, Self.DIM, Self.N_HEADS, SL, HD,
+            Self.IN_DIMS[0], Self.OUT_DIM, Self.CACHE_SIZE, PACKED, Self.ADT,
         ]
-        ctx.enqueue_function[pin_k](
-            pdout_lt, pq_lt, pk_lt, pv_lt, go_lt, c_lt,
+        c.enqueue_function[pin_k](
+            self.sp0.lt["gpu", lay_p](),
+            self.sp1.lt["gpu", lay_p](),
+            self.sp2.lt["gpu", lay_p](),
+            self.sp3.lt["gpu", lay_p](),
+            grad_output.lt["gpu", lay_out](),
+            self.cache.lt["gpu", lay_c](),
             grid_dim=pblocks, block_dim=TPB,
         )
 
-        # 2. dattn(s0) = dout @ Vᵀ.
-        var pdout_tt = TileTensor(p0, row_major[BH, SL, HD]())
-        var pq_tt = TileTensor(p1, row_major[BH, SL, HD]())
-        var pk_tt = TileTensor(p2, row_major[BH, SL, HD]())
-        var pv_tt = TileTensor(p3, row_major[BH, SL, HD]())
-        var dattn_tt = TileTensor(s0, row_major[BH, SL, SL]())
+        # 2. dattn(ss0) = dout @ Vᵀ.
+        var pdout_tt = TileTensor(self.sp0.dev.value(), row_major[BH, SL, HD]())
+        var pq_tt = TileTensor(self.sp1.dev.value(), row_major[BH, SL, HD]())
+        var pk_tt = TileTensor(self.sp2.dev.value(), row_major[BH, SL, HD]())
+        var pv_tt = TileTensor(self.sp3.dev.value(), row_major[BH, SL, HD]())
+        var dattn_tt = TileTensor(self.ss0.dev.value(), row_major[BH, SL, SL]())
         batched_matmul[transpose_b=True, target="gpu"](
-            dattn_tt, pdout_tt, pv_tt, context=ctx
+            dattn_tt, pdout_tt, pv_tt, context=c
         )
 
-        # 3. softmax jvp → dscore(s1)  (reads dattn(s0)).
-        var dattn_lt = LayoutTensor[DT, Layout.row_major(SCORES), MutAnyOrigin](s0)
-        var dscore_lt = LayoutTensor[DT, Layout.row_major(SCORES), MutAnyOrigin](s1)
+        # 3. softmax jvp → dscore(ss1)  (reads dattn(ss0)).
         comptime jvp_k = _attn_softmax_jvp_kernel[
-            BATCH, Self.N_HEADS, SL, HD, Self.CACHE_SIZE, SCORES, BH,
+            B, Self.N_HEADS, SL, HD, Self.CACHE_SIZE, SCORES, BH,
         ]
-        ctx.enqueue_function[jvp_k](dscore_lt, dattn_lt, c_lt, grid_dim=BH, block_dim=TPB)
+        c.enqueue_function[jvp_k](
+            self.ss1.lt["gpu", lay_s](),
+            self.ss0.lt["gpu", lay_s](),
+            self.cache.lt["gpu", lay_c](),
+            grid_dim=BH, block_dim=TPB,
+        )
 
-        # 4. attn_T(s0) = transpose(cache.attn)  (s0 free — dattn consumed).
-        var attnT_lt = LayoutTensor[DT, Layout.row_major(SCORES), MutAnyOrigin](s0)
+        # 4. attn_T(ss0) = transpose(cache.attn)  (ss0 free — dattn consumed).
         comptime tac_k = _attn_transpose_from_cache_kernel[
-            BATCH, Self.N_HEADS, SL, HD, Self.CACHE_SIZE, SCORES, BH,
+            B, Self.N_HEADS, SL, HD, Self.CACHE_SIZE, SCORES, BH,
         ]
-        ctx.enqueue_function[tac_k](attnT_lt, c_lt, grid_dim=sblocks, block_dim=TPB)
+        c.enqueue_function[tac_k](
+            self.ss0.lt["gpu", lay_s](),
+            self.cache.lt["gpu", lay_c](),
+            grid_dim=sblocks, block_dim=TPB,
+        )
 
-        # 5. dV(p3) = attn_T(s0) @ dout(p0)  (p3 free — pv last read step 2).
-        var attnT_tt = TileTensor(s0, row_major[BH, SL, SL]())
-        var dV_tt = TileTensor(p3, row_major[BH, SL, HD]())
-        batched_matmul[target="gpu"](dV_tt, attnT_tt, pdout_tt, context=ctx)
+        # 5. dV(sp3) = attn_T(ss0) @ dout(sp0)  (sp3 free — pv last read step 2).
+        var attnT_tt = TileTensor(self.ss0.dev.value(), row_major[BH, SL, SL]())
+        var dV_tt = TileTensor(self.sp3.dev.value(), row_major[BH, SL, HD]())
+        batched_matmul[target="gpu"](dV_tt, attnT_tt, pdout_tt, context=c)
 
-        # 6. dscore_T(s0) = transpose(dscore(s1))  (s0 free — attn_T read step 5).
+        # 6. dscore_T(ss0) = transpose(dscore(ss1)) (ss0 free — attn_T read s5).
         comptime ts_k = _attn_transpose_scores_kernel[SL, SCORES, BH]
-        ctx.enqueue_function[ts_k](attnT_lt, dscore_lt, grid_dim=sblocks, block_dim=TPB)
+        c.enqueue_function[ts_k](
+            self.ss0.lt["gpu", lay_s](),
+            self.ss1.lt["gpu", lay_s](),
+            grid_dim=sblocks, block_dim=TPB,
+        )
 
-        # 7. dK(p0) = dscore_T(s0) @ Q(p1)  (p0 free — pdout last read step 5).
-        var dscoreT_tt = TileTensor(s0, row_major[BH, SL, SL]())
-        var dK_tt = TileTensor(p0, row_major[BH, SL, HD]())
-        batched_matmul[target="gpu"](dK_tt, dscoreT_tt, pq_tt, context=ctx)
+        # 7. dK(sp0) = dscore_T(ss0) @ Q(sp1)  (sp0 free — pdout last read s5).
+        var dscoreT_tt = TileTensor(self.ss0.dev.value(), row_major[BH, SL, SL]())
+        var dK_tt = TileTensor(self.sp0.dev.value(), row_major[BH, SL, HD]())
+        batched_matmul[target="gpu"](dK_tt, dscoreT_tt, pq_tt, context=c)
 
-        # 8. dQ(p1) = dscore(s1) @ K(p2)  (p1 free — pq last read step 7).
-        var dscore_tt = TileTensor(s1, row_major[BH, SL, SL]())
-        var dQ_tt = TileTensor(p1, row_major[BH, SL, HD]())
-        batched_matmul[target="gpu"](dQ_tt, dscore_tt, pk_tt, context=ctx)
+        # 8. dQ(sp1) = dscore(ss1) @ K(sp2)  (sp1 free — pq last read step 7).
+        var dscore_tt = TileTensor(self.ss1.dev.value(), row_major[BH, SL, SL]())
+        var dQ_tt = TileTensor(self.sp1.dev.value(), row_major[BH, SL, HD]())
+        batched_matmul[target="gpu"](dQ_tt, dscore_tt, pk_tt, context=c)
 
-        # 9. unpack dQ(p1)/dK(p0)/dV(p3) → grad_input.
-        var dQ_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p1)
-        var dK_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p0)
-        var dV_lt = LayoutTensor[DT, Layout.row_major(PACKED), MutAnyOrigin](p3)
+        # 9. unpack dQ(sp1)/dK(sp0)/dV(sp3) → grad_input.
         comptime ug_k = _attn_unpack_grad_kernel[
-            BATCH, Self.DIM, Self.N_HEADS, SL, HD, Self.IN_DIMS[0], PACKED,
+            B, Self.DIM, Self.N_HEADS, SL, HD, Self.IN_DIMS[0], PACKED, Self.ADT,
         ]
-        ctx.enqueue_function[ug_k](
-            gi_lt, dQ_lt, dK_lt, dV_lt, grid_dim=pblocks, block_dim=TPB
+        c.enqueue_function[ug_k](
+            gin.lt["gpu", lay_in](),
+            self.sp1.lt["gpu", lay_p](),
+            self.sp0.lt["gpu", lay_p](),
+            self.sp3.lt["gpu", lay_p](),
+            grid_dim=pblocks, block_dim=TPB,
         )
 
     def _vjp_cpu[
-        BATCH: Int
-    ](
-        mut self,
-        grad_output_v: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_input_v: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-    ) raises:
-        # BLAS path: mirror the GPU bmm backward (pack → dattn=dout·Vᵀ bmm →
-        # scalar softmax-JVP → transposes → dV/dK/dQ bmms → unpack) with
-        # target="cpu". The 4 GEMMs are BLAS; the softmax-JVP and causal mask
-        # stay scalar. grad_input is leaf-external (not the cache), so there is
-        # no param-grad-before-grad_input aliasing constraint; we still write
-        # grads only after all cache reads, matching the GPU ordering.
-        var gop = grad_output_v.ptr
-        var gip = grad_input_v.ptr
-        var cp = mptr(self.cache.cpu_ptr())
+        B: Int
+    ](mut self, mut grad_output: Tensor, mut gin: Tensor) raises:
+        # Mirror the GPU bmm backward (pack → dattn=dout·Vᵀ bmm → scalar
+        # softmax-JVP → transposes → dV/dK/dQ bmms → unpack) with target="cpu".
+        gin.ensure(B * Self.IN_DIMS[0])
         comptime IN = Self.IN_DIMS[0]
         comptime OUT = Self.OUT_DIM
         comptime C = Self.CACHE_SIZE
         comptime SL = Self.SEQ_LEN
         comptime HD = Self.HEAD_DIM
-        comptime BH = BATCH * Self.N_HEADS
-        comptime PACKED = BATCH * SL * Self.DIM
+        comptime BH = B * Self.N_HEADS
+        comptime PACKED = B * SL * Self.DIM
         comptime SCORES = BH * SL * SL
         var scale = Scalar[DT](Float32(1.0) / sqrt(Float32(Self.HEAD_DIM)))
 
-        # Local scratch:
-        #   pdout | pq | pk | pv  (PACKED each)
-        #   dattn | dscore | attn_T | dscore_T  (SCORES each)
-        #   dV | dK | dQ  (PACKED each)
-        var scratch = List[Scalar[DT]](
-            length=7 * PACKED + 4 * SCORES, fill=Scalar[DT](0)
-        )
-        var sb = mptr(scratch.unsafe_ptr())
-        var pdout = sb + 0 * PACKED
-        var pq = sb + 1 * PACKED
-        var pk = sb + 2 * PACKED
-        var pv = sb + 3 * PACKED
-        var dV = sb + 4 * PACKED
-        var dK = sb + 5 * PACKED
-        var dQ = sb + 6 * PACKED
-        var so = sb + 7 * PACKED
-        var dattn = so + 0 * SCORES
-        var dscore = so + 1 * SCORES
-        var attn_T = so + 2 * SCORES
-        var dscore_T = so + 3 * SCORES
+        ref gop = grad_output.data
+        ref gip = gin.data
+        ref cp = self.cache.data
+
+        # Local scratch (separate Lists, no pointer slicing).
+        var pdout = List[Scalar[DT]](length=PACKED, fill=Scalar[DT](0))
+        var pq = List[Scalar[DT]](length=PACKED, fill=Scalar[DT](0))
+        var pk = List[Scalar[DT]](length=PACKED, fill=Scalar[DT](0))
+        var pv = List[Scalar[DT]](length=PACKED, fill=Scalar[DT](0))
+        var dV = List[Scalar[DT]](length=PACKED, fill=Scalar[DT](0))
+        var dK = List[Scalar[DT]](length=PACKED, fill=Scalar[DT](0))
+        var dQ = List[Scalar[DT]](length=PACKED, fill=Scalar[DT](0))
+        var dattn = List[Scalar[DT]](length=SCORES, fill=Scalar[DT](0))
+        var dscore = List[Scalar[DT]](length=SCORES, fill=Scalar[DT](0))
+        var attn_T = List[Scalar[DT]](length=SCORES, fill=Scalar[DT](0))
+        var dscore_T = List[Scalar[DT]](length=SCORES, fill=Scalar[DT](0))
 
         # 1. pack dout + cache Q/K/V → (BH, SEQ, HEAD_DIM).
-        for b in range(BATCH):
+        for b in range(B):
             for h in range(Self.N_HEADS):
                 var bh = b * Self.N_HEADS + h
                 var h_off = h * HD
@@ -1205,9 +1187,8 @@ struct ScaledDotProductAttention[
 
         # 3. softmax jvp (scalar): dscore = scale*a*(dattn - Σ_k a_k*dattn_k).
         #    a is cache.attn (causal upper-triangle already zeroed) → dscore is
-        #    automatically zero where masked. Also build attn_T (transpose of
-        #    cache.attn) here for the dV gemm.
-        for b in range(BATCH):
+        #    automatically zero where masked. Also build attn_T / dscore_T.
+        for b in range(B):
             for h in range(Self.N_HEADS):
                 var bh = b * Self.N_HEADS + h
                 var sc_base = bh * SL * SL
@@ -1221,9 +1202,7 @@ struct ScaledDotProductAttention[
                     for j in range(SL):
                         var a = cp[crow + j]
                         dscore[row + j] = scale * a * (dattn[row + j] - s)
-                        # attn_T[j,i] = a[i,j].
                         attn_T[sc_base + j * SL + i] = a
-                        # dscore_T[j,i] = dscore[i,j].
                         dscore_T[sc_base + j * SL + i] = dscore[row + j]
 
         # 4. dV = attn_T @ dout.
@@ -1244,9 +1223,9 @@ struct ScaledDotProductAttention[
         batched_matmul[target="cpu"](dQ_tt, dscore_tt, pk_tt)
 
         # 7. unpack dQ/dK/dV → grad_input.
-        for i in range(BATCH * IN):
+        for i in range(B * IN):
             gip[i] = 0.0
-        for b in range(BATCH):
+        for b in range(B):
             for h in range(Self.N_HEADS):
                 var bh = b * Self.N_HEADS + h
                 var h_off = h * HD
@@ -1257,4 +1236,17 @@ struct ScaledDotProductAttention[
                         gip[b * IN + t * Self.DIM + col] = dQ[pidx]
                         gip[b * IN + Self.K_OFF + t * Self.DIM + col] = dK[pidx]
                         gip[b * IN + Self.V_OFF + t * Self.DIM + col] = dV[pidx]
-        _ = scratch^
+        _ = pdout^
+        _ = pq^
+        _ = pk^
+        _ = pv^
+        _ = dV^
+        _ = dK^
+        _ = dQ^
+        _ = dattn^
+        _ = dscore^
+        _ = attn_T^
+        _ = dscore_T^
+
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (no Param fields → no-op).

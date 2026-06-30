@@ -339,8 +339,10 @@ def resolve_operand_addr(
 
 
 @always_inline
-def _fetch_opcode_entry(
-    opcode_byte: UInt8, op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin]
+def _fetch_opcode_entry[
+    ot_o: MutOrigin
+](
+    opcode_byte: UInt8, op_table: UnsafePointer[OpcodeEntry, ot_o]
 ) -> OpcodeEntry:
     """Opcode-table lookup via a caller-provided table pointer.
 
@@ -357,11 +359,13 @@ def _fetch_opcode_entry(
 
 
 @no_inline
-def execute_one(
+def execute_one[
+    ot_o: MutOrigin
+](
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
-    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
+    op_table: UnsafePointer[OpcodeEntry, ot_o],
 ) -> UInt8:
     """Execute one instruction. Returns the number of CPU cycles consumed.
 
@@ -1234,12 +1238,14 @@ def _cycle_apply_reg(
 
 
 @always_inline
-def _cycle_pixel(
+def _cycle_pixel[
+    o: MutOrigin
+](
     mut state: AtariState,
     render_row: Int,
     pixel: Int,
     lit: UInt8,
-    buf: UnsafePointer[UInt8, MutAnyOrigin],
+    buf: UnsafePointer[UInt8, o],
     palette: InlineArray[UInt32, 256],
 ):
     """Latch per-clock collisions and render one pixel from the counter lit-mask
@@ -1412,12 +1418,14 @@ def _intim_wait_skip_cycles(state: AtariState, rom_size: Int) -> Int:
 def run_frame_cycle_accurate[
     RENDER: Bool = True,
     UNIFORM: Bool = False,
+    fb_o: MutOrigin = MutAnyOrigin,
+    ot_o: MutOrigin = MutAnyOrigin,
 ](
     mut state: AtariState,
     rom: UnsafePointer[UInt8, ImmutAnyOrigin],
     rom_size: Int,
-    frame_buf: UnsafePointer[UInt8, MutAnyOrigin],
-    op_table: UnsafePointer[OpcodeEntry, MutAnyOrigin],
+    frame_buf: UnsafePointer[UInt8, fb_o],
+    op_table: UnsafePointer[OpcodeEntry, ot_o],
 ):
     """Cycle-accurate frame: CPU and TIA in lockstep, per-color-clock collision.
 

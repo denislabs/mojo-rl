@@ -37,7 +37,7 @@ instability.
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.layer_norm import LayerNorm
-from mojo_rl.nn.primitives.mish import Mish
+from mojo_rl.nn.primitives.activations import Mish
 from mojo_rl.nn.primitives.sim_norm import SimNorm
 from mojo_rl.nn.primitives.dropout import Dropout
 

@@ -90,7 +90,7 @@ struct PropertyType(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime PROPERTY_TYPE_INVALID = Self(0)
     comptime PROPERTY_TYPE_POINTER = Self(1)
@@ -282,11 +282,11 @@ def set_pointer_property_with_cleanup(
         lib,
         "SDL_SetPointerPropertyWithCleanup",
         def(
-            props: PropertiesID,
-            name: Ptr[c_char, ImmutAnyOrigin],
-            value: Ptr[NoneType, MutAnyOrigin],
-            cleanup: CleanupPropertyCallback,
-            userdata: Ptr[NoneType, MutAnyOrigin],
+            PropertiesID,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[NoneType, MutAnyOrigin],
+            CleanupPropertyCallback,
+            Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value, cleanup, userdata)
     if not ret:
@@ -317,9 +317,9 @@ def set_pointer_property(
         lib,
         "SDL_SetPointerProperty",
         def(
-            props: PropertiesID,
-            name: Ptr[c_char, ImmutAnyOrigin],
-            value: Ptr[NoneType, MutAnyOrigin],
+            PropertiesID,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
     if not ret:
@@ -353,9 +353,9 @@ def set_string_property(
         lib,
         "SDL_SetStringProperty",
         def(
-            props: PropertiesID,
-            name: Ptr[c_char, ImmutAnyOrigin],
-            value: Ptr[c_char, ImmutAnyOrigin],
+            PropertiesID,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[c_char, ImmutOrigin(origin_of(value))],
         ) thin -> Bool,
     ]()(
         props,
@@ -390,9 +390,9 @@ def set_number_property(
         lib,
         "SDL_SetNumberProperty",
         def(
-            props: PropertiesID,
-            name: Ptr[c_char, ImmutAnyOrigin],
-            value: Int64,
+            PropertiesID,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Int64,
         ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
     if not ret:
@@ -423,9 +423,9 @@ def set_float_property(
         lib,
         "SDL_SetFloatProperty",
         def(
-            props: PropertiesID,
-            name: Ptr[c_char, ImmutAnyOrigin],
-            value: c_float,
+            PropertiesID,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            c_float,
         ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
     if not ret:
@@ -456,9 +456,9 @@ def set_boolean_property(
         lib,
         "SDL_SetBooleanProperty",
         def(
-            props: PropertiesID,
-            name: Ptr[c_char, ImmutAnyOrigin],
-            value: Bool,
+            PropertiesID,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Bool,
         ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), value)
     if not ret:
@@ -485,7 +485,7 @@ def has_property(props: PropertiesID, var name: String) raises -> Bool:
         lib,
         "SDL_HasProperty",
         def(
-            props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]
+            PropertiesID, Ptr[c_char, ImmutOrigin(origin_of(name))]
         ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr())
 
@@ -513,7 +513,7 @@ def get_property_type(
         lib,
         "SDL_GetPropertyType",
         def(
-            props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]
+            PropertiesID, Ptr[c_char, ImmutOrigin(origin_of(name))]
         ) thin -> PropertyType,
     ]()(props, name.as_c_string_slice().unsafe_ptr())
 
@@ -554,9 +554,9 @@ def get_pointer_property(
         lib,
         "SDL_GetPointerProperty",
         def(
-            props: PropertiesID,
-            name: Ptr[c_char, ImmutAnyOrigin],
-            default_value: Ptr[NoneType, MutAnyOrigin],
+            PropertiesID,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[NoneType, MutAnyOrigin],
         ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
@@ -590,9 +590,9 @@ def get_string_property(
         lib,
         "SDL_GetStringProperty",
         def(
-            props: PropertiesID,
-            name: Ptr[c_char, ImmutAnyOrigin],
-            default_value: Ptr[c_char, ImmutAnyOrigin],
+            PropertiesID,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Ptr[c_char, ImmutOrigin(origin_of(default_value))],
         ) thin -> Ptr[c_char, ImmutAnyOrigin],
     ]()(
         props,
@@ -628,9 +628,9 @@ def get_number_property(
         lib,
         "SDL_GetNumberProperty",
         def(
-            props: PropertiesID,
-            name: Ptr[c_char, ImmutAnyOrigin],
-            default_value: Int64,
+            PropertiesID,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Int64,
         ) thin -> Int64,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
@@ -662,9 +662,9 @@ def get_float_property(
         lib,
         "SDL_GetFloatProperty",
         def(
-            props: PropertiesID,
-            name: Ptr[c_char, ImmutAnyOrigin],
-            default_value: c_float,
+            PropertiesID,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            c_float,
         ) thin -> c_float,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
@@ -696,9 +696,9 @@ def get_boolean_property(
         lib,
         "SDL_GetBooleanProperty",
         def(
-            props: PropertiesID,
-            name: Ptr[c_char, ImmutAnyOrigin],
-            default_value: Bool,
+            PropertiesID,
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
+            Bool,
         ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr(), default_value)
 
@@ -724,7 +724,7 @@ def clear_property(props: PropertiesID, var name: String) raises:
         lib,
         "SDL_ClearProperty",
         def(
-            props: PropertiesID, name: Ptr[c_char, ImmutAnyOrigin]
+            PropertiesID, Ptr[c_char, ImmutOrigin(origin_of(name))]
         ) thin -> Bool,
     ]()(props, name.as_c_string_slice().unsafe_ptr())
     if not ret:

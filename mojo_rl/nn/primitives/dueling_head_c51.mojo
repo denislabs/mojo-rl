@@ -1,4 +1,5 @@
-"""DuelingHeadC51[NA, N_ATOMS] — Distributional Dueling DQN aggregation.
+"""DuelingHeadC51[NA, N_ATOMS] — Distributional Dueling DQN aggregation
+(storage surface).
 
 The Rainbow-style fusion of `DuelingHead` and `C51`. Input layout:
 
@@ -22,23 +23,27 @@ Backward:
     grad_in[b, A_a_k]   = grad_out[b, a, k] − (1/NA) · Σ_a grad_out[b, a, k]
 
 Use as: `Sequential[backbone..., Linear[H, (1 + NA)·N_ATOMS], DuelingHeadC51[NA, N_ATOMS]]`.
-Pure architectural swap — no trainer or block change.
+Pure architectural swap — no params, no cache. CPU + GPU.
 
-CPU + GPU.
+Transformed from legacy `nn.primitives.DuelingHeadC51` (surface-only change).
+The CPU aggregation loops and the two GPU kernels (combine / grad) are carried
+over verbatim.
 """
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _dueling_c51_combine_kernel[
     BATCH: Int, NA: Int, N_ATOMS: Int,
 ](
@@ -110,50 +115,39 @@ struct DuelingHeadC51[NA: Int, N_ATOMS: Int](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=(1 + Self.NA) * Self.N_ATOMS)
     comptime OUT_DIM: Int = Self.NA * Self.N_ATOMS
 
-    var ts: TargetStorage
-
     def __init__(out self):
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         comptime assert target == "cpu" or target == "gpu", (
             "DuelingHeadC51: target must be 'cpu' or 'gpu'"
         )
         comptime assert Self.NA > 0, "DuelingHeadC51: NA must be > 0"
         comptime assert Self.N_ATOMS > 0, "DuelingHeadC51: N_ATOMS must be > 0"
-        var h = Self()
-        comptime if target == "cpu":
-            h.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("DuelingHeadC51.make[target='gpu']: ctx required")
-            h.ts = TargetStorage.make_gpu(ctx.value())
-        return h^
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["DuelingHeadC51", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref in0 = inputs[0]
         comptime if target == "cpu":
+            out.ensure(B * Self.OUT_DIM)
+            var input = TileTensor(
+                in0.data, row_major[B, (1 + Self.NA) * Self.N_ATOMS]()
+            )
+            var output_v = TileTensor(
+                out.data, row_major[B, Self.NA * Self.N_ATOMS]()
+            )
             var inv = Scalar[DT](1.0) / Scalar[DT](Self.NA)
-            for b in range(BATCH):
+            for b in range(B):
                 for k in range(Self.N_ATOMS):
                     var v_k = input[b, k]
                     var sum_a: Scalar[DT] = 0.0
@@ -168,50 +162,48 @@ struct DuelingHeadC51[NA: Int, N_ATOMS: Int](Module):
                         ]
                         output_v[b, a * Self.N_ATOMS + k] = v_k + (adv - mean_a)
         else:
-            var in_p = input.ptr
-            var out_p = output_v.ptr
-            var in_lt = LayoutTensor[
-                DT,
-                Layout.row_major(BATCH, (1 + Self.NA) * Self.N_ATOMS),
-                MutAnyOrigin,
-            ](in_p)
-            var out_lt = LayoutTensor[
-                DT,
-                Layout.row_major(BATCH, Self.NA * Self.N_ATOMS),
-                MutAnyOrigin,
-            ](out_p)
-            comptime total = BATCH * Self.N_ATOMS
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT_DIM)
+            comptime total = B * Self.N_ATOMS
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime kernel = _dueling_c51_combine_kernel[
-                BATCH, Self.NA, Self.N_ATOMS,
+                B, Self.NA, Self.N_ATOMS,
             ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[kernel](
+                in0.lt[
+                    "gpu", Layout.row_major(B, (1 + Self.NA) * Self.N_ATOMS)
+                ](),
+                out.lt[
+                    "gpu", Layout.row_major(B, Self.NA * Self.N_ATOMS)
+                ](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["DuelingHeadC51", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
+            gin.ensure(B * (1 + Self.NA) * Self.N_ATOMS)
+            var grad_output_v = TileTensor(
+                grad_output.data, row_major[B, Self.NA * Self.N_ATOMS]()
+            )
+            var grad_input_v = TileTensor(
+                gin.data, row_major[B, (1 + Self.NA) * Self.N_ATOMS]()
+            )
             var inv = Scalar[DT](1.0) / Scalar[DT](Self.NA)
-            for b in range(BATCH):
+            for b in range(B):
                 for k in range(Self.N_ATOMS):
                     var sum_dq: Scalar[DT] = 0.0
                     for a in range(Self.NA):
@@ -227,23 +219,23 @@ struct DuelingHeadC51[NA: Int, N_ATOMS: Int](Module):
                             - inv * sum_dq
                         )
         else:
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var go_lt = LayoutTensor[
-                DT,
-                Layout.row_major(BATCH, Self.NA * Self.N_ATOMS),
-                MutAnyOrigin,
-            ](go_p)
-            var gi_lt = LayoutTensor[
-                DT,
-                Layout.row_major(BATCH, (1 + Self.NA) * Self.N_ATOMS),
-                MutAnyOrigin,
-            ](gi_p)
-            comptime total = BATCH * Self.N_ATOMS
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * (1 + Self.NA) * Self.N_ATOMS)
+            comptime total = B * Self.N_ATOMS
             comptime n_blocks = (total + TPB - 1) // TPB
             comptime kernel = _dueling_c51_grad_kernel[
-                BATCH, Self.NA, Self.N_ATOMS,
+                B, Self.NA, Self.N_ATOMS,
             ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, gi_lt, grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[kernel](
+                grad_output.lt[
+                    "gpu", Layout.row_major(B, Self.NA * Self.N_ATOMS)
+                ](),
+                gin.lt[
+                    "gpu", Layout.row_major(B, (1 + Self.NA) * Self.N_ATOMS)
+                ](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).

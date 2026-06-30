@@ -32,6 +32,7 @@ Actions: AlphaZero encoding = 4672 (64 squares × 73 move types).
 """
 
 from std.random import random_float64
+from mojo_rl.nn.core.ptr import untracked
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -461,9 +462,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     var done: Bool
 
     # Renderer
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
-    var _sprite_pixels: Optional[UnsafePointer[UInt8, MutAnyOrigin]]
+    var _sprite_pixels: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]
     var _has_sprites: Bool
 
     def __init__(out self):
@@ -1161,7 +1162,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         self._renderer_initialized = True
         # Create sprite pixel data
         if not self._has_sprites:
-            self._sprite_pixels = create_sprite_sheet()
+            self._sprite_pixels = untracked(create_sprite_sheet())
             self._has_sprites = True
         return True
 
@@ -2361,26 +2362,26 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var actions = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
-        ](actions_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](actions_buf)
         var rewards = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](rewards_buf)
         var dones = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         var terminated_out = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated_buf)
         var obs = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs_buf)
         var legal_masks = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, 4672), MutAnyOrigin
-        ](legal_masks_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, 4672)
+        ](legal_masks_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
@@ -2443,8 +2444,8 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         rng_seed: UInt64 = 0,
     ) raises:
         var states = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @parameter
@@ -2474,11 +2475,11 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var dones = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @parameter
@@ -2520,11 +2521,11 @@ struct ChessEnv[DTYPE: DType = DType.float64](
             )
         )
         var obs = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs_buf)
         var legal_masks = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, 4672), MutAnyOrigin
-        ](legal_masks_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, 4672)
+        ](legal_masks_buf)
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @parameter

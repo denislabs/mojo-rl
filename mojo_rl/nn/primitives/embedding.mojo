@@ -1,323 +1,361 @@
-"""Embedding[VOCAB, EMBED_DIM] — one-hot lookup table.
+"""Embedding[VOCAB, EMBED_DIM] — one-hot embedding lookup (storage surface).
 
-Input is a one-hot row of width `VOCAB`; output is the corresponding
-`EMBED_DIM` embedding row. Implemented as a dense one-hot @ table matmul
-so it composes with the rest of nn unchanged (the caller feeds one-hot
-rows; `Tokenwise[seq_len, Embedding]` looks up every token position):
+Transformed from legacy `nn.primitives.Embedding`. The input is a `[BATCH,
+VOCAB]` one-hot (DT); output `[BATCH, EMBED_DIM] = input @ weight`. One Param
+(`weight` [VOCAB, EMBED_DIM], decay=True) + a leaf-owned cache of the one-hot
+input. CPU uses the naive triple loops, GPU the 3 kernels (fwd / grad_in /
+grad_w), carried over verbatim.
 
-    out[b, j] = sum_v in[b, v] * W[v, j]      W laid out (VOCAB, EMBED_DIM)
+Backward: grad_in = grad_out @ Wᵀ ; grad_W += cache_inᵀ @ grad_out.
 
-Params: `weight` (VOCAB*EMBED_DIM, decay-enabled). Cache: the one-hot
-input `[BATCH, VOCAB]`, leaf-owned (its own buffer, NOT the Sequential
-input slab) so backward order is unconstrained.
-
-Backward:
-  * grad_in[b, v] = sum_j grad_out[b, j] * W[v, j]
-  * grad_W[v, j] += sum_b cache_in[b, v] * grad_out[b, j]
-
-Init: `INIT.init_weight` over the table (same path as Linear's weight);
-the composite caller picks the initializer (GPT typically Normal(0, 0.02)).
+bf16-FLOW (AMP "Step B"): `Embedding[VOCAB, EMBED_DIM]` is fp32 (unchanged),
+while `Embedding[VOCAB, EMBED_DIM, DType.bfloat16]` flows its ACTIVATIONS (the
+one-hot input + the embedded output + grad_output/grad_input) at bf16
+(`ACT_DT == bfloat16`). The master weight/grad STAY fp32 (`Param` is always
+`DT`); only a CACHED bf16 weight copy (`w_bf`, version-gated — the forward GEMM
+`out = input @ W` is the SAME `max_matmul` as Linear, so it needs a bf16 weight)
+is low-precision. Output is bf16, grad_W accumulates bf16→fp32 master. The fp32
+(ACT_DT == DT) path is byte-for-byte the legacy NoAMP path; the bf16 path is
+GPU-only.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
+from linalg.matmul import matmul as max_matmul
 
-from ..constants import DT, TPB
-from ..core import (
-    Initializer,
-    AMPPolicy,
-    NoAMP,
-    Cache,
-    Param,
-    ParamVisitor,
-    for_each_param_auto,
-    zero_grad_auto,
-)
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
+from .linear import (
+    _transpose_tiled_kernel, _T_TILE, _T_BR, _cast_f2b_kernel,
 )
 
 
-def _embedding_fwd_kernel[
-    BATCH: Int, VOCAB: Int, EMBED_DIM: Int
+# ── GPU kernels: the three matmuls go through max_matmul (mirrors Linear);
+#    only the input-transpose (for grad_w = inputᵀ@grad_out, since max_matmul
+#    rejects transpose_a) and the grad_weight accumulate remain hand-rolled.
+#    The input-transpose reuses Linear's B1' tiled transpose. ──
+# Dtype-parametric (`ADT`) on the grad_output activation: the bf16 path reads a
+# bf16 `gw_tmp` (the fp32-out GEMM writes DT) — gw_tmp is ALWAYS fp32 here, so
+# the accumulate stays DT regardless. (Kept ADT-free: only fp32 operands.)
+def _emb_accum_kernel[
+    N: Int
 ](
-    input: LayoutTensor[DT, Layout.row_major(BATCH, VOCAB), MutAnyOrigin],
-    weight: LayoutTensor[
-        DT, Layout.row_major(VOCAB, EMBED_DIM), MutAnyOrigin
-    ],
-    output: LayoutTensor[DT, Layout.row_major(BATCH, EMBED_DIM), MutAnyOrigin],
-    cache_in: LayoutTensor[DT, Layout.row_major(BATCH, VOCAB), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
 ):
-    var gid = Int(global_idx.x)
-    comptime total = BATCH * EMBED_DIM
-    if gid >= total:
-        return
-    var b = gid // EMBED_DIM
-    var j = gid % EMBED_DIM
-    var acc: Scalar[DT] = 0.0
-    for v in range(VOCAB):
-        var x = rebind[Scalar[DT]](input[b, v])
-        acc += x * rebind[Scalar[DT]](weight[v, j])
-        # Cache the one-hot input (column j==0 thread writes each row once).
-        if j == 0:
-            cache_in[b, v] = x
-    output[b, j] = acc
+    var i = Int(global_idx.x)
+    if i < N:
+        dst[i] += src[i]
 
 
-def _embedding_grad_in_kernel[
-    BATCH: Int, VOCAB: Int, EMBED_DIM: Int
-](
-    grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, EMBED_DIM), MutAnyOrigin
-    ],
-    weight: LayoutTensor[
-        DT, Layout.row_major(VOCAB, EMBED_DIM), MutAnyOrigin
-    ],
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, VOCAB), MutAnyOrigin],
-):
-    var gid = Int(global_idx.x)
-    comptime total = BATCH * VOCAB
-    if gid >= total:
-        return
-    var b = gid // VOCAB
-    var v = gid % VOCAB
-    var acc: Scalar[DT] = 0.0
-    for j in range(EMBED_DIM):
-        acc += rebind[Scalar[DT]](grad_output[b, j]) * rebind[Scalar[DT]](
-            weight[v, j]
-        )
-    grad_input[b, v] = acc
+struct Embedding[VOCAB_: Int, EMBED_DIM_: Int, ADT: DType = DT](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.VOCAB_)
+    comptime OUT_DIM = Self.EMBED_DIM_
+    comptime W_SIZE = Self.VOCAB_ * Self.EMBED_DIM_
+    # Activation-flow dtype (satisfies the Module trait). `Embedding[V, D]` =
+    # fp32 (ACT_DT == DT, the legacy path); `Embedding[V, D, bfloat16]` flows
+    # activations at bf16 (the AMP "Step B" memory win).
+    comptime ACT_DT = Self.ADT
 
-
-def _embedding_grad_w_kernel[
-    BATCH: Int, VOCAB: Int, EMBED_DIM: Int
-](
-    grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, EMBED_DIM), MutAnyOrigin
-    ],
-    cache_in: LayoutTensor[DT, Layout.row_major(BATCH, VOCAB), MutAnyOrigin],
-    grad_weight: LayoutTensor[
-        DT, Layout.row_major(VOCAB, EMBED_DIM), MutAnyOrigin
-    ],
-):
-    var gid = Int(global_idx.x)
-    comptime total = VOCAB * EMBED_DIM
-    if gid >= total:
-        return
-    var v = gid // EMBED_DIM
-    var j = gid % EMBED_DIM
-    var acc: Scalar[DT] = 0.0
-    for b in range(BATCH):
-        acc += rebind[Scalar[DT]](cache_in[b, v]) * rebind[Scalar[DT]](
-            grad_output[b, j]
-        )
-    grad_weight[v, j] = rebind[Scalar[DT]](grad_weight[v, j]) + acc
-
-
-struct Embedding[VOCAB: Int, EMBED_DIM: Int](Module):
-    comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.VOCAB)
-    comptime OUT_DIM = Self.EMBED_DIM
-
-    var weight: Param["weight", True, Self.VOCAB * Self.EMBED_DIM]
-
-    # Cache (leaf-owned): the one-hot input.
-    var cache_in: Cache["cache_in"]
-
-    var ts: TargetStorage
+    var weight: Param["weight", True, Self.W_SIZE]
+    var cache_in: Tensor  # [BATCH, VOCAB] one-hot (CPU grad_w)
+    # GPU grad_w scratch (lazy): cache_inᵀ [VOCAB, B] (transposed in forward) +
+    # gw_tmp [VOCAB, EMBED_DIM] (max_matmul output before accumulate). Both STAY
+    # fp32 (the bf16 grad_w GEMM writes a fp32 output → fp32 master grad).
+    var cache_inT: Tensor
+    var gw_tmp: Tensor
+    # bf16-flow compute scratch (lazy; used only when ACT_DT == bf16 and
+    # target == "gpu"). The master weight/grad stay fp32 (`Param`); only `w_bf`
+    # is bf16 — the CACHED bf16 weight for the forward GEMM `out = input @ W`,
+    # recast from `weight.val` only on a `weight.val.version` bump (tracked by
+    # `_w_cast_version`), so the W cast is ONCE per optimizer step. `cache_inT_bf`
+    # is the transposed bf16 fwd-input (backward grad_w). No input/output/grad
+    # cast — activations ALREADY flow at bf16.
+    var w_bf: TensorImpl[Self.ADT]
+    var cache_inT_bf: TensorImpl[Self.ADT]
+    var _w_cast_version: Int  # `weight.val.version` at last bf16 weight cast
+    # Capture mode (set via `set_attr["capture_recast"]`): when True, the bf16
+    # weight recast is UNCONDITIONAL so the cast kernel is always recorded into a
+    # CUDA graph and reads the live fp32 master on every replay — the version
+    # gate would skip it on replay and serve STALE weights. Off → version-gated.
+    var _force_recast: Bool
 
     def __init__(out self):
-        self.weight = Param["weight", True, Self.VOCAB * Self.EMBED_DIM]()
-        self.cache_in = Cache["cache_in"]()
-        self.ts = TargetStorage.make_uninit()
+        self.weight = Param["weight", True, Self.W_SIZE]()
+        self.cache_in = Tensor()
+        self.cache_inT = Tensor()
+        self.gw_tmp = Tensor()
+        self.w_bf = TensorImpl[Self.ADT]()
+        self.cache_inT_bf = TensorImpl[Self.ADT]()
+        self._w_cast_version = -1  # < any real version → first forward casts
+        self._force_recast = False
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        comptime if ATTR == "capture_recast":
+            self._force_recast = value != Scalar[DT](0.0)
+
+    def _ensure_w_bf(mut self, c: DeviceContext) raises:
+        """Ensure the cached bf16 weight `w_bf` reflects the current fp32
+        `weight.val`. Recasts ONLY on an optimizer version bump (cast once per
+        step, not per fwd/bwd). Shared by forward (the cast) and vjp (reuses it —
+        no optimizer step intervenes between a fwd and its bwd). Mirrors
+        `Linear._ensure_w_bf`."""
+        self.w_bf.ensure_gpu(c, Self.W_SIZE)
+        if self._force_recast or self.weight.val.version != self._w_cast_version:
+            c.enqueue_function[_cast_f2b_kernel[Self.W_SIZE]](
+                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                self.w_bf.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                grid_dim=(Self.W_SIZE + 255) // 256,
+                block_dim=256,
+            )
+            self._w_cast_version = self.weight.val.version
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "Embedding: target must be 'cpu' or 'gpu'"
-        )
-        comptime assert Self.VOCAB > 0 and Self.EMBED_DIM > 0, (
-            "Embedding: VOCAB, EMBED_DIM must be > 0"
-        )
-        comptime W_SIZE = Self.VOCAB * Self.EMBED_DIM
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var e = Self()
-        comptime if target == "cpu":
-            e.weight = Param["weight", True, W_SIZE].make_cpu()
-            INIT.init_weight(
-                e.weight.value_unsafe_ptr_cpu(),
-                W_SIZE, Self.VOCAB, Self.EMBED_DIM,
-            )
-            e.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["Embedding.make[target='gpu']"](ctx)
-            e.weight = Param["weight", True, W_SIZE].make_gpu(ctx_v)
-            var w_host = ctx_v.enqueue_create_host_buffer[DT](W_SIZE)
-            ctx_v.synchronize()
-            INIT.init_weight(
-                w_host.unsafe_ptr(), W_SIZE, Self.VOCAB, Self.EMBED_DIM
-            )
-            ctx_v.enqueue_copy(e.weight.val.dev.value(), w_host)
-            ctx_v.synchronize()
-            e.ts = TargetStorage.make_gpu(ctx_v)
+        e.weight = Param["weight", True, Self.W_SIZE].make[target](ctx)
+        # Honor INIT (was a fixed `(k%11-5)*0.07` placeholder that IGNORED it).
+        # Embedding tables are usually Normal-init; pass the [in,out] = [VOCAB,
+        # EMBED_DIM] convention so Kaiming/Xavier are well-defined too.
+        # init_weight uploads to device on GPU.
+        INIT.init_weight[target](
+            e.weight.val, Self.W_SIZE, Self.VOCAB_, Self.EMBED_DIM_, ctx
+        )
         return e^
 
-    def _ensure_cache_gpu(mut self, batch: Int) raises:
-        var ctx = self.ts.ctx.value()
-        self.cache_in.ensure_gpu(ctx, batch * Self.VOCAB)
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Embedding", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
-        comptime if target == "cpu":
-            self.cache_in.ensure_cpu(BATCH * Self.VOCAB)
-            var w_v = TileTensor(
-                self.weight.val.cpu, row_major[Self.VOCAB, Self.EMBED_DIM]()
-            )
-            var cin = TileTensor(
-                self.cache_in.cpu, row_major[BATCH, Self.VOCAB]()
-            )
-            for b in range(BATCH):
-                for v in range(Self.VOCAB):
-                    cin[b, v] = input[b, v]
-                for j in range(Self.EMBED_DIM):
-                    var acc: Scalar[DT] = 0.0
-                    for v in range(Self.VOCAB):
-                        acc += input[b, v] * w_v[v, j]
-                    output_v[b, j] = acc
+        ref in0 = inputs[0]
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            # ACT_DT IS DT here, but the compiler doesn't collapse the opaque
+            # `Self.ACT_DT` param to `DT` for unification against the fp32
+            # weight views — so rebind the activation refs (sound; equal here).
+            ref in0d = rebind[Tensor](in0)
+            ref outd = rebind[Tensor](out)
+            comptime if target == "cpu":
+                outd.ensure(B * Self.EMBED_DIM_)
+                self.cache_in.ensure(B * Self.VOCAB_)
+                var input = TileTensor(in0d.data, row_major[B, Self.VOCAB_]())
+                var output_v = TileTensor(
+                    outd.data, row_major[B, Self.EMBED_DIM_]()
+                )
+                var w_v = TileTensor(
+                    self.weight.val.data,
+                    row_major[Self.VOCAB_, Self.EMBED_DIM_](),
+                )
+                var cin = TileTensor(
+                    self.cache_in.data, row_major[B, Self.VOCAB_]()
+                )
+                for b in range(B):
+                    for v in range(Self.VOCAB_):
+                        cin[b, v] = input[b, v]
+                    for j in range(Self.EMBED_DIM_):
+                        var acc: Scalar[DT] = 0.0
+                        for v in range(Self.VOCAB_):
+                            acc += input[b, v] * w_v[v, j]
+                        output_v[b, j] = acc
+            else:
+                var c = ctx.value()
+                outd.ensure_gpu(c, B * Self.EMBED_DIM_)
+                self.cache_inT.ensure_gpu(c, Self.VOCAB_ * B)
+                comptime lbv = Layout.row_major(B, Self.VOCAB_)
+                comptime lvb = Layout.row_major(Self.VOCAB_, B)
+                # out[B, ED] = input[B, VOCAB] @ weight[VOCAB, ED]
+                var in_v = TileTensor(
+                    in0d.dev.value(), row_major[B, Self.VOCAB_]()
+                )
+                var w_v = TileTensor(
+                    self.weight.val.dev.value(),
+                    row_major[Self.VOCAB_, Self.EMBED_DIM_](),
+                )
+                var out_v = TileTensor(
+                    outd.dev.value(), row_major[B, Self.EMBED_DIM_]()
+                )
+                max_matmul[target="gpu"](out_v, in_v, w_v, c)
+                # cache_inᵀ[VOCAB, B] = input[B, VOCAB]ᵀ  (for grad_w in
+                # backward), via Linear's B1' tiled transpose.
+                c.enqueue_function[_transpose_tiled_kernel[B, Self.VOCAB_]](
+                    in0d.lt["gpu", lbv](),
+                    self.cache_inT.lt["gpu", lvb](),
+                    grid_dim=(
+                        (Self.VOCAB_ + _T_TILE - 1) // _T_TILE,
+                        (B + _T_TILE - 1) // _T_TILE,
+                    ),
+                    block_dim=(_T_TILE, _T_BR),
+                )
         else:
-            self._ensure_cache_gpu(BATCH)
-            comptime lay_bv = Layout.row_major(BATCH, Self.VOCAB)
-            comptime lay_be = Layout.row_major(BATCH, Self.EMBED_DIM)
-            comptime lay_w = Layout.row_major(Self.VOCAB, Self.EMBED_DIM)
-            var in_p = input.ptr
-            var out_p = output_v.ptr
-            var in_lt = LayoutTensor[DT, lay_bv, MutAnyOrigin](in_p)
-            var out_lt = LayoutTensor[DT, lay_be, MutAnyOrigin](out_p)
-            var w_lt = LayoutTensor[DT, lay_w, MutAnyOrigin](
-                self.weight.val.dev.value()
+            # ── bf16-flow path (GPU-only) ──
+            comptime assert (
+                target == "gpu"
+            ), "bf16-flow Embedding is GPU-only"
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.EMBED_DIM_)
+            self.cache_inT_bf.ensure_gpu(c, Self.VOCAB_ * B)
+            comptime lbv = Layout.row_major(B, Self.VOCAB_)
+            comptime lvb = Layout.row_major(Self.VOCAB_, B)
+            # input (in0) is ALREADY bf16 — no input cast. W: cached bf16 (recast
+            # only on a version bump). out[B, ED] = input[B, VOCAB] @ W[VOCAB, ED]
+            # bf16-in → bf16-out GEMM (fp32 accumulation is automatic).
+            self._ensure_w_bf(c)
+            var in_v = TileTensor(in0.dev.value(), row_major[B, Self.VOCAB_]())
+            var w_bf_v = TileTensor(
+                self.w_bf.dev.value(),
+                row_major[Self.VOCAB_, Self.EMBED_DIM_](),
             )
-            var cin_lt = LayoutTensor[DT, lay_bv, MutAnyOrigin](
-                self.cache_in.dev.value()
+            var out_v = TileTensor(
+                out.dev.value(), row_major[B, Self.EMBED_DIM_]()
             )
-            comptime total = BATCH * Self.EMBED_DIM
-            comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _embedding_fwd_kernel[
-                BATCH, Self.VOCAB, Self.EMBED_DIM
-            ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, w_lt, out_lt, cin_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+            max_matmul[target="gpu"](out_v, in_v, w_bf_v, c)
+            # cache_inᵀ[VOCAB, B] = input[B, VOCAB]ᵀ at bf16 (for grad_w), via
+            # Linear's dtype-parametric tiled transpose (bf16 in → bf16 out).
+            c.enqueue_function[_transpose_tiled_kernel[B, Self.VOCAB_, Self.ADT]](
+                in0.lt["gpu", lbv](),
+                self.cache_inT_bf.lt["gpu", lvb](),
+                grid_dim=(
+                    (Self.VOCAB_ + _T_TILE - 1) // _T_TILE,
+                    (B + _T_TILE - 1) // _T_TILE,
+                ),
+                block_dim=(_T_TILE, _T_BR),
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Embedding", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
-        comptime if target == "cpu":
-            var w_v = TileTensor(
-                self.weight.val.cpu, row_major[Self.VOCAB, Self.EMBED_DIM]()
-            )
-            for b in range(BATCH):
-                for v in range(Self.VOCAB):
-                    var acc: Scalar[DT] = 0.0
-                    for j in range(Self.EMBED_DIM):
-                        acc += grad_output_v[b, j] * w_v[v, j]
-                    grad_input_v[b, v] = acc
-            comptime if mode == "all":
+        ref gin = grad_inputs[0]
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            ref gind = rebind[Tensor](gin)
+            ref god = rebind[Tensor](grad_output)
+            comptime if target == "cpu":
+                gind.ensure(B * Self.VOCAB_)
+                var go_v = TileTensor(
+                    god.data, row_major[B, Self.EMBED_DIM_]()
+                )
+                var gi_v = TileTensor(gind.data, row_major[B, Self.VOCAB_]())
+                var w_v = TileTensor(
+                    self.weight.val.data,
+                    row_major[Self.VOCAB_, Self.EMBED_DIM_](),
+                )
+                for b in range(B):
+                    for v in range(Self.VOCAB_):
+                        var acc: Scalar[DT] = 0.0
+                        for j in range(Self.EMBED_DIM_):
+                            acc += go_v[b, j] * w_v[v, j]
+                        gi_v[b, v] = acc
                 var gw_v = TileTensor(
-                    self.weight.grd.cpu, row_major[Self.VOCAB, Self.EMBED_DIM]()
+                    self.weight.grd.data,
+                    row_major[Self.VOCAB_, Self.EMBED_DIM_](),
                 )
                 var cin = TileTensor(
-                    self.cache_in.cpu, row_major[BATCH, Self.VOCAB]()
+                    self.cache_in.data, row_major[B, Self.VOCAB_]()
                 )
-                for v in range(Self.VOCAB):
-                    for j in range(Self.EMBED_DIM):
+                for v in range(Self.VOCAB_):
+                    for j in range(Self.EMBED_DIM_):
                         var acc: Scalar[DT] = 0.0
-                        for b in range(BATCH):
-                            acc += cin[b, v] * grad_output_v[b, j]
+                        for b in range(B):
+                            acc += cin[b, v] * go_v[b, j]
                         gw_v[v, j] += acc
+            else:
+                var c = ctx.value()
+                gind.ensure_gpu(c, B * Self.VOCAB_)
+                self.gw_tmp.ensure_gpu(c, Self.W_SIZE)
+                comptime lw = Layout.row_major(Self.VOCAB_, Self.EMBED_DIM_)
+                comptime lwf = Layout.row_major(Self.W_SIZE)
+                # grad_in[B, VOCAB] = grad_out[B, ED] @ weight[VOCAB, ED]ᵀ
+                var go_v = TileTensor(
+                    god.dev.value(), row_major[B, Self.EMBED_DIM_]()
+                )
+                var w_v = TileTensor(
+                    self.weight.val.dev.value(),
+                    row_major[Self.VOCAB_, Self.EMBED_DIM_](),
+                )
+                var gi_v = TileTensor(
+                    gind.dev.value(), row_major[B, Self.VOCAB_]()
+                )
+                max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_v, c)
+                # gw_tmp[VOCAB, ED] = cache_inᵀ[VOCAB, B] @ grad_out[B, ED]
+                var cinT_v = TileTensor(
+                    self.cache_inT.dev.value(), row_major[Self.VOCAB_, B]()
+                )
+                var gwtmp_v = TileTensor(
+                    self.gw_tmp.dev.value(),
+                    row_major[Self.VOCAB_, Self.EMBED_DIM_](),
+                )
+                max_matmul[target="gpu"](gwtmp_v, cinT_v, go_v, c)
+                # weight.grad += gw_tmp  (accumulate, matches legacy semantics)
+                comptime gw_blk = (Self.W_SIZE + TPB - 1) // TPB
+                c.enqueue_function[_emb_accum_kernel[Self.W_SIZE]](
+                    self.weight.grd.lt["gpu", lwf](),
+                    self.gw_tmp.lt["gpu", lwf](),
+                    grid_dim=gw_blk,
+                    block_dim=TPB,
+                )
         else:
-            var ctx = self.ts.ctx.value()
-            comptime lay_bv = Layout.row_major(BATCH, Self.VOCAB)
-            comptime lay_be = Layout.row_major(BATCH, Self.EMBED_DIM)
-            comptime lay_w = Layout.row_major(Self.VOCAB, Self.EMBED_DIM)
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var go_lt = LayoutTensor[DT, lay_be, MutAnyOrigin](go_p)
-            var gi_lt = LayoutTensor[DT, lay_bv, MutAnyOrigin](gi_p)
-            var w_lt = LayoutTensor[DT, lay_w, MutAnyOrigin](
-                self.weight.val.dev.value()
+            # ── bf16-flow path (GPU-only) ──
+            comptime assert (
+                target == "gpu"
+            ), "bf16-flow Embedding is GPU-only"
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.VOCAB_)
+            self.gw_tmp.ensure_gpu(c, Self.W_SIZE)
+            comptime lwf = Layout.row_major(Self.W_SIZE)
+            # grad_output is ALREADY bf16 (no cast). W reuses the forward's cached
+            # bf16 cast. grad_in[B, VOCAB] = grad_out[B, ED] @ W[VOCAB, ED]ᵀ →
+            # bf16 gin (bf16-in, bf16-out — gin flows at bf16).
+            self._ensure_w_bf(c)
+            var go_v = TileTensor(
+                grad_output.dev.value(), row_major[B, Self.EMBED_DIM_]()
             )
-            comptime gi_total = BATCH * Self.VOCAB
-            comptime gi_blocks = (gi_total + TPB - 1) // TPB
-            comptime gi_kernel = _embedding_grad_in_kernel[
-                BATCH, Self.VOCAB, Self.EMBED_DIM
-            ]
-            ctx.enqueue_function[gi_kernel](
-                go_lt, w_lt, gi_lt, grid_dim=gi_blocks, block_dim=TPB,
+            var w_bf_v = TileTensor(
+                self.w_bf.dev.value(),
+                row_major[Self.VOCAB_, Self.EMBED_DIM_](),
             )
-            comptime if mode == "all":
-                var cin_lt = LayoutTensor[DT, lay_bv, MutAnyOrigin](
-                    self.cache_in.dev.value()
-                )
-                var gw_lt = LayoutTensor[DT, lay_w, MutAnyOrigin](
-                    self.weight.grd.dev.value()
-                )
-                comptime gw_total = Self.VOCAB * Self.EMBED_DIM
-                comptime gw_blocks = (gw_total + TPB - 1) // TPB
-                comptime gw_kernel = _embedding_grad_w_kernel[
-                    BATCH, Self.VOCAB, Self.EMBED_DIM
-                ]
-                ctx.enqueue_function[gw_kernel](
-                    go_lt, cin_lt, gw_lt,
-                    grid_dim=gw_blocks, block_dim=TPB,
-                )
+            var gi_v = TileTensor(gin.dev.value(), row_major[B, Self.VOCAB_]())
+            max_matmul[transpose_b=True, target="gpu"](gi_v, go_v, w_bf_v, c)
+            # gw_tmp[VOCAB, ED] = cache_inᵀ_bf[VOCAB, B] @ grad_out[B, ED]:
+            # bf16-in → FP32-out GEMM into the fp32 gw_tmp.
+            var cinT_v = TileTensor(
+                self.cache_inT_bf.dev.value(), row_major[Self.VOCAB_, B]()
+            )
+            var gwtmp_v = TileTensor(
+                self.gw_tmp.dev.value(),
+                row_major[Self.VOCAB_, Self.EMBED_DIM_](),
+            )
+            max_matmul[target="gpu"](gwtmp_v, cinT_v, go_v, c)
+            # weight.grad (fp32 master) += gw_tmp (fp32)
+            comptime gw_blk = (Self.W_SIZE + TPB - 1) // TPB
+            c.enqueue_function[_emb_accum_kernel[Self.W_SIZE]](
+                self.weight.grd.lt["gpu", lwf](),
+                self.gw_tmp.lt["gpu", lwf](),
+                grid_dim=gw_blk,
+                block_dim=TPB,
+            )
 
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["Embedding", target](self.ts.target_tag)
-        for_each_param_auto[Self, V, target](self, prefix, visitor)
-
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["Embedding", target](self.ts.target_tag)
-        zero_grad_auto[Self, target](self)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the Param fields).

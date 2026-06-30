@@ -31,12 +31,8 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.core.checkpoint import load_state_v2_body_gpu
-from mojo_rl.deep_agents.core.checkpoint_helpers import (
-    read_file_v2, split_lines_v2, expect_v2_header,
-)
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.core.checkpoint import load_params_multi
 from mojo_rl.deep_agents.muzero.nets_spatial import (
     MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
 )
@@ -77,14 +73,11 @@ def main() raises:
     var dyn = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
     var pred = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
 
-    # ── load the trio ──
-    var content = read_file_v2(ckpt)
-    var lines = split_lines_v2(content)
-    expect_v2_header(lines)
-    var idx = 1
-    load_state_v2_body_gpu(rep, lines, idx, String("rep"), ctx)
-    load_state_v2_body_gpu(dyn, lines, idx, String("dyn"), ctx)
-    load_state_v2_body_gpu(pred, lines, idx, String("pred"), ctx)
+    # ── load the trio ── single-file checkpoint: rep/dyn/pred sections live in
+    # ONE file written by the training run's end-of-run + rolling
+    # `checkpoint_every` saves (`save_params_multi`); load them back in the same
+    # rep→dyn→pred order.
+    load_params_multi["gpu", Rep, Dyn, Pred](ckpt, Optional(ctx), rep, dyn, pred)
     rep.set_attr["training"](Scalar[DT](0.0))
     dyn.set_attr["training"](Scalar[DT](0.0))
     pred.set_attr["training"](Scalar[DT](0.0))
@@ -203,11 +196,9 @@ def main() raises:
             ctx.enqueue_copy(planner.legal_mask_view(), h_legal)
             var obs_t = LayoutTensor[
                 DT, Layout.row_major(1, OBS), MutAnyOrigin
-            ](mptr(d_obs.unsafe_ptr()))
+            ](d_obs)
             planner.search_gpu[
-                MZRepGPU[OBS, LATENT, Rep],
-                MZDynGPU[LATENT, ACT, BINS, Dyn],
-                MZPredGPU[LATENT, ACT, BINS, Pred],
+                type_of(rep_a), type_of(dyn_a), type_of(pred_a)
             ](
                 ctx, rep_a, dyn_a, pred_a, obs_t,
                 apply_legal=True, k_actual=MAX_K, rng_seed=mseed,

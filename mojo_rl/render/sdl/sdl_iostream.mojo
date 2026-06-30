@@ -54,7 +54,7 @@ struct IOStatus(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime IO_STATUS_READY = Self(0)
     """Everything is ready (no errors and not EOF)."""
@@ -95,7 +95,7 @@ struct IOWhence(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime IO_SEEK_SET = Self(0)
     """Seek from the beginning of data."""
@@ -292,8 +292,8 @@ def io_from_file(
         lib,
         "SDL_IOFromFile",
         def(
-            file: Ptr[c_char, ImmutAnyOrigin],
-            mode: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(file))],
+            Ptr[c_char, ImmutOrigin(origin_of(mode))],
         ) thin -> Ptr[IOStream, MutAnyOrigin],
     ]()(
         file.as_c_string_slice().unsafe_ptr(),
@@ -854,8 +854,8 @@ def load_file(
         lib,
         "SDL_LoadFile",
         def(
-            file: Ptr[c_char, ImmutAnyOrigin],
-            datasize: Ptr[c_size_t, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(file))],
+            Ptr[c_size_t, MutAnyOrigin],
         ) thin -> Ptr[NoneType, MutAnyOrigin],
     ]()(file.as_c_string_slice().unsafe_ptr(), datasize)
     if Int(ret) == 0:
@@ -927,9 +927,9 @@ def save_file(
         lib,
         "SDL_SaveFile",
         def(
-            file: Ptr[c_char, ImmutAnyOrigin],
-            data: Ptr[NoneType, ImmutAnyOrigin],
-            datasize: c_size_t,
+            Ptr[c_char, ImmutOrigin(origin_of(file))],
+            Ptr[NoneType, ImmutAnyOrigin],
+            c_size_t,
         ) thin -> Bool,
     ]()(file.as_c_string_slice().unsafe_ptr(), data, datasize)
     if not ret:

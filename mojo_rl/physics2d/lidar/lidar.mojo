@@ -9,7 +9,7 @@ from layout import Layout, LayoutTensor
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext, DeviceBuffer
 
-from ..constants import dtype, TPB
+from ..constants import dtype, TPB, erase_origin
 
 
 struct Lidar:
@@ -319,11 +319,11 @@ struct Lidar:
         """
         var state = LayoutTensor[
             dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+        ](erase_origin(state_buf.unsafe_ptr()))
 
         var obs = LayoutTensor[
             dtype, Layout.row_major(BATCH, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+        ](erase_origin(obs_buf.unsafe_ptr()))
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 

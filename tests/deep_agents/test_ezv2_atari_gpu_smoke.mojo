@@ -14,12 +14,12 @@ Run:
 
 from std.math import abs, isnan, isinf
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
 from std.testing import assert_true, assert_equal
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import (
     EZRepNetResNetAtari, EZDynNetAtari, EZPredNetAtari,
     EZ_LATENT, EZ_C,
@@ -52,35 +52,26 @@ def main() raises:
     assert_equal(Pred.OUT_DIM, PRED_OUT, "pred out == ACT+BINS")
 
     with DeviceContext() as ctx:
-        var rep = Rep.make[target="gpu", INIT=Kaiming](ctx)
-        var dyn = Dyn.make[target="gpu", INIT=Kaiming](ctx)
-        var pred = Pred.make[target="gpu", INIT=Kaiming](ctx)
+        var rep = Rep.make["gpu", Kaiming](Optional(ctx))
+        var dyn = Dyn.make["gpu", Kaiming](Optional(ctx))
+        var pred = Pred.make["gpu", Kaiming](Optional(ctx))
         dyn.set_attr["training"](Scalar[DT](1.0))
 
         # ── input obs slab → rep → latent ──────────────────────────────
-        var obs = ctx.enqueue_create_buffer[DT](B * OBS)
-        var lat = ctx.enqueue_create_buffer[DT](B * EZ_LATENT)
-        var obs_h = ctx.enqueue_create_host_buffer[DT](B * OBS)
-        ctx.synchronize()
+        var obs = Tensor.alloc(B * OBS)
         for i in range(B * OBS):
-            obs_h.unsafe_ptr()[i] = Scalar[DT]((i % 255)) / Scalar[DT](255.0)
-        ctx.enqueue_copy(obs, obs_h)
-        ctx.synchronize()
+            obs.data[i] = Scalar[DT]((i % 255)) / Scalar[DT](255.0)
+        obs.ensure_gpu(ctx, B * OBS)
+        obs.upload(ctx)
+        var lat = Tensor()
+        lat.ensure_gpu(ctx, B * EZ_LATENT)
+        rep.forward["gpu", B](TensorRefs[Rep.ARITY](obs), lat, Optional(ctx))
 
-        var obs_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](obs.unsafe_ptr()),
-            row_major[B, OBS]())
-        var lat_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](lat.unsafe_ptr()),
-            row_major[B, EZ_LATENT]())
-        rep.forward["gpu", B](obs_t, output=lat_t)
-
-        var lat_h = ctx.enqueue_create_host_buffer[DT](B * EZ_LATENT)
-        ctx.enqueue_copy(lat_h, lat)
+        lat.download(ctx)
         ctx.synchronize()
         var lat_finite = True
         for i in range(B * EZ_LATENT):
-            var v = lat_h.unsafe_ptr()[i]
+            var v = lat.data[i]
             if isnan(v) or isinf(v):
                 lat_finite = False
         assert_true(lat_finite, "rep latent finite on GPU")
@@ -92,17 +83,14 @@ def main() raises:
         ctx.synchronize()
 
         # prediction: latent → [policy(18) | value(601)] — all zero post-init.
-        var pout = ctx.enqueue_create_buffer[DT](B * PRED_OUT)
-        var pout_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](pout.unsafe_ptr()),
-            row_major[B, PRED_OUT]())
-        pred.forward["gpu", B](lat_t, output=pout_t)
-        var pout_h = ctx.enqueue_create_host_buffer[DT](B * PRED_OUT)
-        ctx.enqueue_copy(pout_h, pout)
+        var pout = Tensor()
+        pout.ensure_gpu(ctx, B * PRED_OUT)
+        pred.forward["gpu", B](TensorRefs[Pred.ARITY](lat), pout, Optional(ctx))
+        pout.download(ctx)
         ctx.synchronize()
         var pmax = Scalar[DT](0.0)
         for i in range(B * PRED_OUT):
-            var a = abs(pout_h.unsafe_ptr()[i])
+            var a = abs(pout.data[i])
             if a > pmax:
                 pmax = a
         print("  pred max|logit| after init_zero =", pmax)
@@ -110,30 +98,22 @@ def main() raises:
                     "pred outputs exactly zero after init_zero (GPU)")
 
         # dynamics: [z|onehot] → [z'(2304) | reward(601)]; reward half zero.
-        var din = ctx.enqueue_create_buffer[DT](B * DYN_IN)
-        var din_h = ctx.enqueue_create_host_buffer[DT](B * DYN_IN)
-        ctx.synchronize()
+        var din = Tensor.alloc(B * DYN_IN)
         for i in range(B * DYN_IN):
-            din_h.unsafe_ptr()[i] = Scalar[DT]((i % 17)) / Scalar[DT](17.0)
-        ctx.enqueue_copy(din, din_h)
-        ctx.synchronize()
-        var din_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](din.unsafe_ptr()),
-            row_major[B, DYN_IN]())
-        var dout = ctx.enqueue_create_buffer[DT](B * DYN_OUT)
-        var dout_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](dout.unsafe_ptr()),
-            row_major[B, DYN_OUT]())
-        dyn.forward["gpu", B](din_t, output=dout_t)
-        var dout_h = ctx.enqueue_create_host_buffer[DT](B * DYN_OUT)
-        ctx.enqueue_copy(dout_h, dout)
+            din.data[i] = Scalar[DT]((i % 17)) / Scalar[DT](17.0)
+        din.ensure_gpu(ctx, B * DYN_IN)
+        din.upload(ctx)
+        var dout = Tensor()
+        dout.ensure_gpu(ctx, B * DYN_OUT)
+        dyn.forward["gpu", B](TensorRefs[Dyn.ARITY](din), dout, Optional(ctx))
+        dout.download(ctx)
         ctx.synchronize()
 
         var rew_max = Scalar[DT](0.0)
         var zp_finite = True
         for b in range(B):
             for j in range(DYN_OUT):
-                var v = dout_h.unsafe_ptr()[b * DYN_OUT + j]
+                var v = dout.data[b * DYN_OUT + j]
                 if j < EZ_LATENT:
                     if isnan(v) or isinf(v):
                         zp_finite = False

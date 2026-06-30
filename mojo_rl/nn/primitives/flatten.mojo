@@ -1,154 +1,130 @@
-"""Flatten[DIM] — identity passthrough Module.
+"""Flatten[DIM] — identity passthrough Module (storage surface).
 
-Phase 2 of `nn/PORTING_PLAN.md`. From the module's standpoint a
-flatten is the identity: a `[BATCH, DIM]` slab in == a `[BATCH, DIM]`
-slab out. The shape change is purely in the caller's view layout
-(e.g. a Conv2D producing `[BATCH, C·H·W]` flat output reinterpreted
-as `[BATCH, DIM]` with DIM = C·H·W). The Module trait carries
-`OUT_DIM = IN_DIM` and the kernel is a memcpy in both directions.
+Transformed from legacy `nn.primitives.Flatten`. From the Module's standpoint a
+flatten is the identity: `[BATCH, DIM]` in == `[BATCH, DIM]` out (the shape
+change is purely in the caller's view layout). No params, no cache; backward is
+the same identity copy. Lets `Sequential[Conv2D, ReLU, …, Flatten, Linear, …]`
+compose without orchestrator glue.
 
-Lives in nn ahead of Conv2D so Phase 5's `NatureDQN = Sequential[
-Conv2D, ReLU, Conv2D, ReLU, Conv2D, ReLU, Flatten, Linear, ReLU, Linear]`
-composition lands the moment Conv2D arrives — no glue change to
-`Sequential`.
-
-No params, no cache. backward is the same identity as forward.
+Channels-last (NHWC) note: Flatten is LAYOUT-AGNOSTIC — it carries no LAYOUT
+param. It's a pure identity copy, so an NHWC conv output flattens to an
+`[h,w,c]`-ordered vector and an NCHW output to `[c,h,w]`-ordered, with no
+reordering here. The downstream `Linear` simply learns its weights in whichever
+order it's fed; the only consequence is that a checkpoint trained under one
+layout has its first-dense weight columns permuted relative to the other (handled
+by the channels_last checkpoint migration, not by this Module).
 """
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor
 
-from ..constants import DT, CPU_SIMD_W, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, CPU_SIMD_W, TPB
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
-def _flatten_copy_kernel[N: Int](
-    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+def _flatten_copy_kernel[
+    N: Int, ADT: DType = DT
+](
+    src: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[ADT, Layout.row_major(N), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     if idx < N:
-        dst[idx] = rebind[Scalar[DT]](src[idx])
+        dst[idx] = rebind[Scalar[ADT]](src[idx])
 
 
-struct Flatten[DIM: Int](Module):
-    comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
-    comptime OUT_DIM = Self.DIM
-
-    var ts: TargetStorage
+struct Flatten[DIM_: Int, ADT: DType = DT](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime OUT_DIM = Self.DIM_
+    # Activation-flow dtype (AMP). Flatten is dtype-TRANSPARENT — a pure
+    # identity copy with no math/cast — so it carries ACT_DT through unchanged.
+    # ACT_DT == DT (default) → byte-identical to the fp32 path.
+    comptime ACT_DT = Self.ADT
 
     def __init__(out self):
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. INIT ignored (no params) but accepted
-        for `Sequential.make[target, INIT]` uniformity."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "Flatten: target must be 'cpu' or 'gpu'"
-        )
-        comptime assert Self.DIM > 0, "Flatten: DIM must be > 0"
-        var f = Self()
-        comptime if target == "cpu":
-            f.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("Flatten.make[target='gpu']: ctx required")
-            f.ts = TargetStorage.make_gpu(ctx.value())
-        return f^
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Flatten", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        var in_p = input.ptr
-        var out_p = output_v.ptr
-        comptime N = BATCH * Self.DIM
-
+        comptime N = B * Self.DIM_
+        ref in0 = inputs[0]
         comptime if target == "cpu":
+            out.ensure(N)
+            var sp = in0.data.unsafe_ptr()
+            var dp = out.data.unsafe_ptr()
             var k = 0
             while k + CPU_SIMD_W <= N:
-                var v = in_p.load[width=CPU_SIMD_W](k)
-                out_p.store(k, v)
+                dp.store(k, sp.load[width=CPU_SIMD_W](k))
                 k += CPU_SIMD_W
             while k < N:
-                out_p[k] = in_p[k]
+                dp[k] = sp[k]
                 k += 1
         else:
-            var in_lt = LayoutTensor[
-                DT, Layout.row_major(N), MutAnyOrigin,
-            ](in_p)
-            var out_lt = LayoutTensor[
-                DT, Layout.row_major(N), MutAnyOrigin,
-            ](out_p)
-            comptime n_blocks = (N + TPB - 1) // TPB
-            comptime kernel = _flatten_copy_kernel[N]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            var c = ctx.value()
+            out.ensure_gpu(c, N)
+            comptime nblk = (N + TPB - 1) // TPB
+            c.enqueue_function[_flatten_copy_kernel[N, Self.ACT_DT]](
+                in0.lt["gpu", Layout.row_major(N)](),
+                out.lt["gpu", Layout.row_major(N)](),
+                grid_dim=nblk,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Flatten", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var go_p = grad_output_v.ptr
-        var gi_p = grad_input_v.ptr
-        comptime N = BATCH * Self.DIM
-
+        comptime N = B * Self.DIM_
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
+            gin.ensure(N)
+            var sp = grad_output.data.unsafe_ptr()
+            var dp = gin.data.unsafe_ptr()
             var k = 0
             while k + CPU_SIMD_W <= N:
-                var v = go_p.load[width=CPU_SIMD_W](k)
-                gi_p.store(k, v)
+                dp.store(k, sp.load[width=CPU_SIMD_W](k))
                 k += CPU_SIMD_W
             while k < N:
-                gi_p[k] = go_p[k]
+                dp[k] = sp[k]
                 k += 1
         else:
-            var go_lt = LayoutTensor[
-                DT, Layout.row_major(N), MutAnyOrigin,
-            ](go_p)
-            var gi_lt = LayoutTensor[
-                DT, Layout.row_major(N), MutAnyOrigin,
-            ](gi_p)
-            comptime n_blocks = (N + TPB - 1) // TPB
-            comptime kernel = _flatten_copy_kernel[N]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, gi_lt, grid_dim=n_blocks, block_dim=TPB,
+            var c = ctx.value()
+            gin.ensure_gpu(c, N)
+            comptime nblk = (N + TPB - 1) // TPB
+            c.enqueue_function[_flatten_copy_kernel[N, Self.ACT_DT]](
+                grad_output.lt["gpu", Layout.row_major(N)](),
+                gin.lt["gpu", Layout.row_major(N)](),
+                grid_dim=nblk,
+                block_dim=TPB,
             )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).

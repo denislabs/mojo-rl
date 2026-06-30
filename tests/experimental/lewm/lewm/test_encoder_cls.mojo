@@ -1,21 +1,17 @@
-"""LeWMEncoderCLS — CLS-token encoder variant composes + runs (toy).
+"""LeWMEncoderCLS — CLS-token encoder variant composes + runs (toy, storage).
 
 Validates the [CLS]-token encoder (prepend LearnedTokens → transformer over
 N_PATCHES+1 → Slice token 0 → projector): image (B, IN_CH·IMG·IMG) → (B, EMB),
-forward + vjp finite, on CPU and GPU. De-risks the novel piece of the
-CLS-retrain prep; the full retrain is the NVIDIA run.
+forward + vjp finite, on CPU and GPU.
 
-Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/test_encoder_cls.mojo
+Run:  pixi run -e apple mojo run -I . tests/experimental/lewm/lewm/test_encoder_cls.mojo
 """
 
-from std.memory import alloc
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext
 from std.testing import assert_true
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn import Tensor, TensorRefs, Kaiming
 from mojo_rl.experimental.lewm.encoder import LeWMEncoderCLS
 
 
@@ -38,14 +34,6 @@ comptime Enc = LeWMEncoderCLS[
 ]
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
-
-
-def _p(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](b.unsafe_ptr())
-
-
 def _det(i: Int) -> Scalar[DT]:
     return Scalar[DT]((Float64((i * 2654435761) % 1000) / 500.0) - 1.0)
 
@@ -57,31 +45,28 @@ def _finite(x: Scalar[DT]) -> Bool:
 def test_cpu() raises:
     print("encoder_cls cpu ...")
     comptime assert Enc.OUT_DIM == EMB, "CLS encoder OUT_DIM must be EMB"
-    var enc = Enc.make[target="cpu", INIT=Kaiming]()
-    var x = _a(B * IMG_DIM); var y = _a(B * EMB)
+    var enc = Enc.make["cpu", Kaiming]()
+    var x = Tensor.alloc(B * IMG_DIM)
     for k in range(B * IMG_DIM):
-        x[k] = _det(k + 1)
-    var x_t = TileTensor(x, row_major[B, IMG_DIM]())
-    var y_t = TileTensor(y, row_major[B, EMB]())
-    enc.forward["cpu", B](TensorPack[1].of(x_t), output=y_t)
+        x.data[k] = _det(k + 1)
+    var y = Tensor.alloc(B * EMB)
+    enc.forward["cpu", B](TensorRefs[1](x), y, None)
     var fin = True
     for k in range(B * EMB):
-        if not _finite(y[k]):
+        if not _finite(y.data[k]):
             fin = False
     assert_true(fin, "forward finite (cpu)")
 
-    var w = _a(B * EMB); var gx = _a(B * IMG_DIM)
+    var w = Tensor.alloc(B * EMB)
     for k in range(B * EMB):
-        w[k] = _det(k + 5)
-    var w_t = TileTensor(w, row_major[B, EMB]())
-    var gx_t = TileTensor(gx, row_major[B, IMG_DIM]())
-    enc.vjp["cpu", B](w_t, TensorPack[1].of(gx_t))
+        w.data[k] = _det(k + 5)
+    var gx = Tensor.alloc(B * IMG_DIM)
+    enc.vjp["cpu", B](TensorRefs[1](x), w, TensorRefs[1](gx), None)
     var gfin = True
     for k in range(B * IMG_DIM):
-        if not _finite(gx[k]):
+        if not _finite(gx.data[k]):
             gfin = False
     assert_true(gfin, "vjp grad finite (cpu)")
-    x.free(); y.free(); w.free(); gx.free()
     _ = enc^
     print("  ok")
 
@@ -89,22 +74,17 @@ def test_cpu() raises:
 def test_gpu() raises:
     print("encoder_cls gpu ...")
     var ctx = DeviceContext()
-    var enc = Enc.make[target="gpu", INIT=Kaiming](ctx)
-    var xd = ctx.enqueue_create_buffer[DT](B * IMG_DIM)
-    var yd = ctx.enqueue_create_buffer[DT](B * EMB)
-    var xh = ctx.enqueue_create_host_buffer[DT](B * IMG_DIM)
-    var yh = ctx.enqueue_create_host_buffer[DT](B * EMB)
-    ctx.synchronize()
+    var enc = Enc.make["gpu", Kaiming](Optional(ctx))
+    var x = Tensor.alloc(B * IMG_DIM)
     for k in range(B * IMG_DIM):
-        xh.unsafe_ptr()[k] = _det(k + 1)
-    ctx.enqueue_copy(xd, xh); ctx.synchronize()
-    var x_t = TileTensor(_p(xd), row_major[B, IMG_DIM]())
-    var y_t = TileTensor(_p(yd), row_major[B, EMB]())
-    enc.forward["gpu", B](TensorPack[1].of(x_t), output=y_t)
-    ctx.enqueue_copy(yh, yd); ctx.synchronize()
+        x.data[k] = _det(k + 1)
+    x.upload(ctx)
+    var y = Tensor.alloc_gpu(ctx, B * EMB)
+    enc.forward["gpu", B](TensorRefs[1](x), y, Optional(ctx))
+    y.download(ctx)
     var fin = True
     for k in range(B * EMB):
-        if not _finite(yh.unsafe_ptr()[k]):
+        if not _finite(y.data[k]):
             fin = False
     assert_true(fin, "forward finite (gpu)")
     _ = enc^
@@ -113,7 +93,7 @@ def test_gpu() raises:
 
 def main() raises:
     print("=" * 70)
-    print("LeWMEncoderCLS — CLS-token encoder variant")
+    print("LeWMEncoderCLS — CLS-token encoder variant (storage)")
     print("=" * 70)
     test_cpu()
     test_gpu()

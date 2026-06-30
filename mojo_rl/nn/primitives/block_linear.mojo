@@ -1,6 +1,7 @@
-"""BlockLinear[IN, OUT, BLOCKS] — block-diagonal linear layer.
+"""BlockLinear[IN, OUT, BLOCKS] — block-diagonal linear layer (storage surface).
 
-Matches the DreamerV3 reference `embodied/jax/nets.py:BlockLinear`:
+Storage twin of legacy `nn.primitives.block_linear.BlockLinear`. Matches the
+DreamerV3 reference `embodied/jax/nets.py:BlockLinear`:
 
     kernel shape  = [BLOCKS, IN/BLOCKS, OUT/BLOCKS]
     x  reshaped   = [B, BLOCKS, IN/BLOCKS]
@@ -8,62 +9,52 @@ Matches the DreamerV3 reference `embodied/jax/nets.py:BlockLinear`:
 
 i.e. block `k` maps input columns `[k·IPB : (k+1)·IPB]` to output columns
 `[k·OPB : (k+1)·OPB]` (IPB = IN/BLOCKS, OPB = OUT/BLOCKS) — a block-diagonal
-weight. Used by the RSSM `_core` (dynhid / dyngru) and the Decoder space
-head. `BLOCKS=1` reduces to a dense linear (`out = x·kernel + bias`).
+weight. `BLOCKS=1` reduces to a dense linear (`out = x·kernel + bias`).
 
 Storage:
   * `weight: Param["weight", True,  BLOCKS·IPB·OPB]` — `kernel[k,i,o]` at
-    flat offset `k·IPB·OPB + i·OPB + o` (row-major, matches the reference
-    ravel + the jax fixture).
+    flat offset `k·IPB·OPB + i·OPB + o` (row-major).
   * `bias:   Param["bias", False, OUT]`.
 
-Backward (same `_cached_input_ptr` input-alias as Linear; param grads
-computed BEFORE grad_input is written, since the input slab aliases the
-grad_input slab under Sequential):
+Backward (full grads; reads `forward_input[0]` for x):
 
     grad_weight[k,i,o] += Σ_b x[b,k·IPB+i]·go[b,k·OPB+o]
     grad_bias[j]       += Σ_b go[b,j]
     grad_x[b,k·IPB+i]   = Σ_o go[b,k·OPB+o]·kernel[k,i,o]
 
-CPU nested loops + GPU one-thread-per-element kernels. DreamerV3-exact
-weight init (trunc_normal scaled) is deferred to the consumer PR; `make`
-forwards the supplied `INIT` (treated like a dense layer of fan IN→OUT).
+CPU: gather strided blocks into contiguous tiles + BLAS (Apple Accelerate)
+per-block matmul (carried verbatim from legacy). GPU: one-thread-per-element
+kernels (carried verbatim, transformed to LayoutTensor args).
 """
 
-from std.memory import alloc
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 from linalg.matmul import matmul as max_matmul
 
-from ..constants import DT, TPB
-from ..core import (
-    Initializer,
-    AMPPolicy,
-    NoAMP,
-    Param,
-    ParamVisitor,
-    for_each_param_auto,
-    zero_grad_auto,
-)
-from ..core.module import Module, typed_view, typed_view_mut, mptr
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
+from ..core.polyak import polyak_tensor
 
 
 # ──────────────────────────────────────────────────────────────────────
-# GPU kernels.
+# GPU kernels (carried verbatim from legacy; raw-pointer args replaced by
+# flat-1D LayoutTensor args to match the storage `lt` view surface).
 # ──────────────────────────────────────────────────────────────────────
 
 
 def _bl_forward_kernel[
     BATCH: Int, IN: Int, OUT: Int, BLK: Int
 ](
-    x: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    weight: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    bias: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    x: LayoutTensor[DT, Layout.row_major(BATCH * IN), MutAnyOrigin],
+    weight: LayoutTensor[DT, Layout.row_major(BLK * (IN // BLK) * (OUT // BLK)), MutAnyOrigin],
+    bias: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
+    out_buf: LayoutTensor[DT, Layout.row_major(BATCH * OUT), MutAnyOrigin],
 ):
     comptime IPB = IN // BLK
     comptime OPB = OUT // BLK
@@ -74,20 +65,22 @@ def _bl_forward_kernel[
     var j = idx % OUT
     var k = j // OPB
     var o = j % OPB
-    var acc = bias[j]
+    var acc = rebind[Scalar[DT]](bias[j])
     var w_base = k * IPB * OPB + o
     var x_base = b * IN + k * IPB
     for i in range(IPB):
-        acc += x[x_base + i] * weight[w_base + i * OPB]
+        acc += rebind[Scalar[DT]](x[x_base + i]) * rebind[Scalar[DT]](
+            weight[w_base + i * OPB]
+        )
     out_buf[idx] = acc
 
 
 def _bl_dweight_kernel[
     BATCH: Int, IN: Int, OUT: Int, BLK: Int
 ](
-    x: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    go: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    grad_w: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    x: LayoutTensor[DT, Layout.row_major(BATCH * IN), MutAnyOrigin],
+    go: LayoutTensor[DT, Layout.row_major(BATCH * OUT), MutAnyOrigin],
+    grad_w: LayoutTensor[DT, Layout.row_major(BLK * (IN // BLK) * (OUT // BLK)), MutAnyOrigin],
 ):
     comptime IPB = IN // BLK
     comptime OPB = OUT // BLK
@@ -102,31 +95,33 @@ def _bl_dweight_kernel[
     var out_col = k * OPB + o
     var acc: Scalar[DT] = 0.0
     for b in range(BATCH):
-        acc += x[b * IN + in_col] * go[b * OUT + out_col]
-    grad_w[idx] = grad_w[idx] + acc
+        acc += rebind[Scalar[DT]](x[b * IN + in_col]) * rebind[Scalar[DT]](
+            go[b * OUT + out_col]
+        )
+    grad_w[idx] = rebind[Scalar[DT]](grad_w[idx]) + acc
 
 
 def _bl_dbias_kernel[
     BATCH: Int, OUT: Int
 ](
-    go: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    grad_b: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    go: LayoutTensor[DT, Layout.row_major(BATCH * OUT), MutAnyOrigin],
+    grad_b: LayoutTensor[DT, Layout.row_major(OUT), MutAnyOrigin],
 ):
     var j = Int(global_idx.x)
     if j >= OUT:
         return
     var acc: Scalar[DT] = 0.0
     for b in range(BATCH):
-        acc += go[b * OUT + j]
-    grad_b[j] = grad_b[j] + acc
+        acc += rebind[Scalar[DT]](go[b * OUT + j])
+    grad_b[j] = rebind[Scalar[DT]](grad_b[j]) + acc
 
 
 def _bl_dx_kernel[
     BATCH: Int, IN: Int, OUT: Int, BLK: Int
 ](
-    go: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    weight: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    grad_x: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    go: LayoutTensor[DT, Layout.row_major(BATCH * OUT), MutAnyOrigin],
+    weight: LayoutTensor[DT, Layout.row_major(BLK * (IN // BLK) * (OUT // BLK)), MutAnyOrigin],
+    grad_x: LayoutTensor[DT, Layout.row_major(BATCH * IN), MutAnyOrigin],
 ):
     comptime IPB = IN // BLK
     comptime OPB = OUT // BLK
@@ -141,7 +136,9 @@ def _bl_dx_kernel[
     var go_base = b * OUT + k * OPB
     var acc: Scalar[DT] = 0.0
     for o in range(OPB):
-        acc += go[go_base + o] * weight[w_base + o]
+        acc += rebind[Scalar[DT]](go[go_base + o]) * rebind[Scalar[DT]](
+            weight[w_base + o]
+        )
     grad_x[idx] = acc
 
 
@@ -159,32 +156,17 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
     comptime W_SIZE = Self.BLOCKS * Self.IPB * Self.OPB
     comptime B_SIZE = Self.OUT
 
-    @staticmethod
-    def display_label() -> String:
-        return String("BlockLinear")
-
     var weight: Param["weight", True, Self.W_SIZE]
     var bias: Param["bias", False, Self.B_SIZE]
-
-    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-
-    var ts: TargetStorage
 
     def __init__(out self):
         self.weight = Param["weight", True, Self.W_SIZE]()
         self.bias = Param["bias", False, Self.B_SIZE]()
-        self._cached_input_ptr = None
-        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "BlockLinear: target must be 'cpu' or 'gpu'"
-        )
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         comptime assert Self.IN % Self.BLOCKS == 0, (
             "BlockLinear: IN must be divisible by BLOCKS"
         )
@@ -192,337 +174,271 @@ struct BlockLinear[IN: Int, OUT: Int, BLOCKS: Int](Module):
             "BlockLinear: OUT must be divisible by BLOCKS"
         )
         var bl = Self()
-        comptime if target == "cpu":
-            bl.weight = Param["weight", True, Self.W_SIZE].make_cpu()
-            bl.bias = Param["bias", False, Self.B_SIZE].make_cpu()
-            INIT.init_weight(
-                bl.weight.value_unsafe_ptr_cpu(),
-                Self.W_SIZE, Self.IN, Self.OUT,
-            )
-            INIT.init_bias(bl.bias.value_unsafe_ptr_cpu(), Self.B_SIZE)
-            bl.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["BlockLinear.make[target='gpu']"](ctx)
-            bl.weight = Param["weight", True, Self.W_SIZE].make_gpu(ctx_v)
-            bl.bias = Param["bias", False, Self.B_SIZE].make_gpu(ctx_v)
-            var w_host = ctx_v.enqueue_create_host_buffer[DT](Self.W_SIZE)
-            var b_host = ctx_v.enqueue_create_host_buffer[DT](Self.B_SIZE)
-            ctx_v.synchronize()
-            INIT.init_weight(w_host.unsafe_ptr(), Self.W_SIZE, Self.IN, Self.OUT)
-            INIT.init_bias(b_host.unsafe_ptr(), Self.B_SIZE)
-            ctx_v.enqueue_copy(bl.weight.val.dev.value(), w_host)
-            ctx_v.enqueue_copy(bl.bias.val.dev.value(), b_host)
-            ctx_v.synchronize()
-            bl.ts = TargetStorage.make_gpu(ctx_v)
+        bl.weight = Param["weight", True, Self.W_SIZE].make[target](ctx)
+        bl.bias = Param["bias", False, Self.B_SIZE].make[target](ctx)
+        INIT.init_weight[target](
+            bl.weight.val, Self.W_SIZE, Self.IN, Self.OUT, ctx
+        )
+        INIT.init_bias[target](bl.bias.val, Self.B_SIZE, ctx)
         return bl^
 
     # ----- Forward ---------------------------------------------------------
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["BlockLinear", target](self.ts.target_tag)
-        var input_v = inputs.tile[0, BATCH, Self.IN]()
-        var output_v = typed_view_mut[BATCH, Self.OUT](output)
-        var in_p = input_v.ptr
-        var out_p = output_v.ptr
-        self._cached_input_ptr = in_p
-
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            var w_p = self.weight.value_unsafe_ptr_cpu()
-            var b_p = self.bias.value_unsafe_ptr_cpu()
+            out.ensure(B * Self.OUT)
+            var in_p = in0.data.unsafe_ptr()
+            var out_p = out.data.unsafe_ptr()
+            var w_p = self.weight.val.data.unsafe_ptr()
+            var b_p = self.bias.val.data.unsafe_ptr()
             comptime if Self.BLOCKS == 1:
                 # Plain dense matmul — input/output blocks ARE the full
-                # contiguous [BATCH, IN]/[BATCH, OUT] tiles, no gather needed.
+                # contiguous [B, IN]/[B, OUT] tiles, no gather needed.
+                var input_v = TileTensor(in0.data, row_major[B, Self.IN]())
+                var output_v = TileTensor(out.data, row_major[B, Self.OUT]())
                 var w_tt = TileTensor(
-                    self.weight.val.cpu, row_major[Self.IN, Self.OUT](),
+                    self.weight.val.data, row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[target="cpu"](output_v, input_v, w_tt, None)
-                for b in range(BATCH):
+                for b in range(B):
                     var out_base = b * Self.OUT
-                    for o in range(Self.OUT):
-                        out_p[out_base + o] = out_p[out_base + o] + b_p[o]
+                    for o2 in range(Self.OUT):
+                        out_p[out_base + o2] = out_p[out_base + o2] + b_p[o2]
             else:
                 # BLOCKS independent matmuls. The block's input/output columns
-                # are STRIDED slices of [BATCH, IN]/[BATCH, OUT], so gather each
-                # x_block into a contiguous [BATCH, IPB] tile, run BLAS (Apple
-                # Accelerate) `xblk @ kernel[k]`, then scatter + add bias.
-                # kernel[k] = w_p[w_blk + i*OPB + o] is already a row-major
-                # [IPB, OPB] tile at offset w_blk. Scratch reused per block.
-                var xblk_buf = alloc[Scalar[DT]](BATCH * Self.IPB)
-                var oblk_buf = alloc[Scalar[DT]](BATCH * Self.OPB)
+                # are STRIDED slices of [B, IN]/[B, OUT], so gather each
+                # x_block into a contiguous [B, IPB] tile, run BLAS
+                # `xblk @ kernel[k]`, then scatter + add bias.
+                var xblk_list = List[Scalar[DT]](
+                    length=B * Self.IPB, fill=Scalar[DT](0)
+                )
+                var oblk_list = List[Scalar[DT]](
+                    length=B * Self.OPB, fill=Scalar[DT](0)
+                )
                 for k in range(Self.BLOCKS):
                     var in_col0 = k * Self.IPB
-                    for b in range(BATCH):
+                    for b in range(B):
                         var xb_base = b * Self.IPB
                         var src_base = b * Self.IN + in_col0
                         for i in range(Self.IPB):
-                            xblk_buf[xb_base + i] = in_p[src_base + i]
+                            xblk_list[xb_base + i] = in_p[src_base + i]
                     var w_blk = k * Self.IPB * Self.OPB
                     var xblk_tt = TileTensor(
-                        xblk_buf, row_major[BATCH, Self.IPB](),
+                        xblk_list, row_major[B, Self.IPB](),
                     )
                     var kernel_k_tt = TileTensor(
                         w_p + w_blk, row_major[Self.IPB, Self.OPB](),
                     )
                     var oblk_tt = TileTensor(
-                        oblk_buf, row_major[BATCH, Self.OPB](),
+                        oblk_list, row_major[B, Self.OPB](),
                     )
                     max_matmul[target="cpu"](oblk_tt, xblk_tt, kernel_k_tt, None)
                     var out_col0 = k * Self.OPB
-                    for b in range(BATCH):
+                    for b in range(B):
                         var ob_base = b * Self.OPB
                         var dst_base = b * Self.OUT + out_col0
-                        for o in range(Self.OPB):
-                            out_p[dst_base + o] = (
-                                oblk_buf[ob_base + o] + b_p[out_col0 + o]
+                        for o2 in range(Self.OPB):
+                            out_p[dst_base + o2] = (
+                                oblk_list[ob_base + o2] + b_p[out_col0 + o2]
                             )
-                oblk_buf.free()
-                xblk_buf.free()
         else:
-            var ctx = self.ts.ctx.value()
-            var w_p = mptr(self.weight.val.dev.value().unsafe_ptr())
-            var b_p = mptr(self.bias.val.dev.value().unsafe_ptr())
-            comptime n_blk = (BATCH * Self.OUT + TPB - 1) // TPB
-            comptime k_fwd = _bl_forward_kernel[
-                BATCH, Self.IN, Self.OUT, Self.BLOCKS
-            ]
-            ctx.enqueue_function[k_fwd](
-                in_p, w_p, b_p, out_p, grid_dim=n_blk, block_dim=TPB,
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT)
+            comptime n_blk = (B * Self.OUT + TPB - 1) // TPB
+            comptime k_fwd = _bl_forward_kernel[B, Self.IN, Self.OUT, Self.BLOCKS]
+            c.enqueue_function[k_fwd](
+                in0.lt["gpu", Layout.row_major(B * Self.IN)](),
+                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                self.bias.val.lt["gpu", Layout.row_major(Self.OUT)](),
+                out.lt["gpu", Layout.row_major(B * Self.OUT)](),
+                grid_dim=n_blk,
+                block_dim=TPB,
             )
 
     # ----- Backward --------------------------------------------------------
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        """Combined backward (S7) — the two phases in fixed order. Single
-        source of truth for direct callers; Sequential calls the phases
-        directly so the param-before-input order is the orchestrator's."""
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        self.vjp_param_grads[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output
-        )
-        self.vjp_grad_input[target, BATCH, POLICY=POLICY, mode=mode](
-            grad_output, grad_inputs
-        )
+        ref fin = forward_input[0]
+        ref gin = grad_inputs[0]
+        comptime if target == "cpu":
+            gin.ensure(B * Self.IN)
+            var go_p = grad_output.data.unsafe_ptr()
+            var gw_p = self.weight.grd.data.unsafe_ptr()
+            var gb_p = self.bias.grd.data.unsafe_ptr()
+            var x_p = fin.data.unsafe_ptr()
+            var w_p = self.weight.val.data.unsafe_ptr()
+            var gi_p = gin.data.unsafe_ptr()
+            var grad_output_v = TileTensor(
+                grad_output.data, row_major[B, Self.OUT]()
+            )
 
-    def vjp_param_grads[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-    ) raises:
-        """Phase 1 (S7) — was LOOP 1. grad_weight/grad_bias (mode=all),
-        which read `_cached_input_ptr` (the cached input x). MUST precede
-        `vjp_grad_input` since x aliases the slab grad_input clobbers."""
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        comptime if mode == "all":
-            assert_tag_for["BlockLinear", target](self.ts.target_tag)
-            var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
-            var go_p = grad_output_v.ptr
+            # grad_bias[j] += Σ_b go[b,j]
+            for j in range(Self.OUT):
+                var accb: Scalar[DT] = 0.0
+                for b in range(B):
+                    accb += go_p[b * Self.OUT + j]
+                gb_p[j] += accb
 
-            comptime if target == "cpu":
-                var gw_p = self.weight.grad_unsafe_ptr_cpu()
-                var gb_p = self.bias.grad_unsafe_ptr_cpu()
-                var x_p = self._cached_input_ptr.value()
-                # grad_bias[j] += Σ_b go[b,j] — cheap, keep scalar.
-                for j in range(Self.OUT):
-                    var accb: Scalar[DT] = 0.0
-                    for b in range(BATCH):
-                        accb += go_p[b * Self.OUT + j]
-                    gb_p[j] += accb
-                # grad_weight[k] += x_block^T @ go_block, via BLAS (Apple
-                # Accelerate). x_block/go_block are strided column-slices →
-                # gather x_blockᵀ [IPB, BATCH] (transpose during gather) and
-                # go_block [BATCH, OPB], matmul into a [IPB, OPB] temp, then
-                # ADD into grad_weight[k] at offset w_blk. Scratch reused.
-                comptime if Self.BLOCKS == 1:
-                    # Dense: x is already contiguous [BATCH, IN]; transpose
-                    # into cT [IN, BATCH] and matmul straight into the temp.
-                    var cT_buf = alloc[Scalar[DT]](BATCH * Self.IN)
-                    var dW_buf = alloc[Scalar[DT]](Self.IN * Self.OUT)
-                    for b in range(BATCH):
-                        for i in range(Self.IN):
-                            cT_buf[i * BATCH + b] = x_p[b * Self.IN + i]
-                    var cT_tt = TileTensor(
-                        cT_buf, row_major[Self.IN, BATCH](),
+            # grad_weight[k] += x_blockᵀ @ go_block, via BLAS.
+            comptime if Self.BLOCKS == 1:
+                var cT_list = List[Scalar[DT]](
+                    length=B * Self.IN, fill=Scalar[DT](0)
+                )
+                var dW_list = List[Scalar[DT]](
+                    length=Self.IN * Self.OUT, fill=Scalar[DT](0)
+                )
+                for b in range(B):
+                    for i in range(Self.IN):
+                        cT_list[i * B + b] = x_p[b * Self.IN + i]
+                var cT_tt = TileTensor(cT_list, row_major[Self.IN, B]())
+                var dW_tt = TileTensor(
+                    dW_list, row_major[Self.IN, Self.OUT](),
+                )
+                max_matmul[target="cpu"](dW_tt, cT_tt, grad_output_v, None)
+                for idx in range(Self.IN * Self.OUT):
+                    gw_p[idx] = gw_p[idx] + dW_list[idx]
+            else:
+                var xT_list = List[Scalar[DT]](
+                    length=Self.IPB * B, fill=Scalar[DT](0)
+                )
+                var gob_list = List[Scalar[DT]](
+                    length=B * Self.OPB, fill=Scalar[DT](0)
+                )
+                var dW_list = List[Scalar[DT]](
+                    length=Self.IPB * Self.OPB, fill=Scalar[DT](0)
+                )
+                for k in range(Self.BLOCKS):
+                    var in_col0 = k * Self.IPB
+                    var out_col0 = k * Self.OPB
+                    for b in range(B):
+                        var x_src = b * Self.IN + in_col0
+                        for i in range(Self.IPB):
+                            xT_list[i * B + b] = x_p[x_src + i]
+                        var go_src = b * Self.OUT + out_col0
+                        var gob_dst = b * Self.OPB
+                        for o2 in range(Self.OPB):
+                            gob_list[gob_dst + o2] = go_p[go_src + o2]
+                    var xT_tt = TileTensor(xT_list, row_major[Self.IPB, B]())
+                    var gob_tt = TileTensor(
+                        gob_list, row_major[B, Self.OPB](),
                     )
                     var dW_tt = TileTensor(
-                        dW_buf, row_major[Self.IN, Self.OUT](),
+                        dW_list, row_major[Self.IPB, Self.OPB](),
                     )
-                    max_matmul[target="cpu"](dW_tt, cT_tt, grad_output_v, None)
-                    for idx in range(Self.IN * Self.OUT):
-                        gw_p[idx] = gw_p[idx] + dW_buf[idx]
-                    dW_buf.free()
-                    cT_buf.free()
-                else:
-                    var xT_buf = alloc[Scalar[DT]](Self.IPB * BATCH)
-                    var gob_buf = alloc[Scalar[DT]](BATCH * Self.OPB)
-                    var dW_buf = alloc[Scalar[DT]](Self.IPB * Self.OPB)
-                    for k in range(Self.BLOCKS):
-                        var in_col0 = k * Self.IPB
-                        var out_col0 = k * Self.OPB
-                        # Gather x_blockᵀ [IPB, BATCH] and go_block [BATCH, OPB].
-                        for b in range(BATCH):
-                            var x_src = b * Self.IN + in_col0
-                            for i in range(Self.IPB):
-                                xT_buf[i * BATCH + b] = x_p[x_src + i]
-                            var go_src = b * Self.OUT + out_col0
-                            var gob_dst = b * Self.OPB
-                            for o in range(Self.OPB):
-                                gob_buf[gob_dst + o] = go_p[go_src + o]
-                        var xT_tt = TileTensor(
-                            xT_buf, row_major[Self.IPB, BATCH](),
-                        )
-                        var gob_tt = TileTensor(
-                            gob_buf, row_major[BATCH, Self.OPB](),
-                        )
-                        var dW_tt = TileTensor(
-                            dW_buf, row_major[Self.IPB, Self.OPB](),
-                        )
-                        max_matmul[target="cpu"](dW_tt, xT_tt, gob_tt, None)
-                        var w_blk = k * Self.IPB * Self.OPB
-                        for idx in range(Self.IPB * Self.OPB):
-                            gw_p[w_blk + idx] = gw_p[w_blk + idx] + dW_buf[idx]
-                    dW_buf.free()
-                    gob_buf.free()
-                    xT_buf.free()
-            else:
-                var ctx = self.ts.ctx.value()
-                var gw_p = mptr(self.weight.grd.dev.value().unsafe_ptr())
-                var gb_p = mptr(self.bias.grd.dev.value().unsafe_ptr())
-                var x_p = self._cached_input_ptr.value()
-                comptime n_w = (Self.W_SIZE + TPB - 1) // TPB
-                comptime k_dw = _bl_dweight_kernel[
-                    BATCH, Self.IN, Self.OUT, Self.BLOCKS
-                ]
-                ctx.enqueue_function[k_dw](
-                    x_p, go_p, gw_p, grid_dim=n_w, block_dim=TPB,
-                )
-                comptime n_b = (Self.OUT + TPB - 1) // TPB
-                comptime k_db = _bl_dbias_kernel[BATCH, Self.OUT]
-                ctx.enqueue_function[k_db](
-                    go_p, gb_p, grid_dim=n_b, block_dim=TPB,
-                )
+                    max_matmul[target="cpu"](dW_tt, xT_tt, gob_tt, None)
+                    var w_blk = k * Self.IPB * Self.OPB
+                    for idx in range(Self.IPB * Self.OPB):
+                        gw_p[w_blk + idx] = gw_p[w_blk + idx] + dW_list[idx]
 
-    def vjp_grad_input[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
-    ) raises:
-        """Phase 2 (S7) — was LOOP 2. grad_x (clobbers the aliased input
-        slab — safe because phase 1 already read it). Runs in both modes."""
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["BlockLinear", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN]()
-        var go_p = grad_output_v.ptr
-        var gi_p = grad_input_v.ptr
-
-        comptime if target == "cpu":
-            # grad_x_block = go_block @ kernel[k]ᵀ, [BATCH,OPB]@[OPB,IPB], via
-            # transpose_b BLAS. kernel[k] is row-major [IPB, OPB] at w_blk, so
-            # transpose_b gives go_block @ kernelᵀ → [BATCH, IPB]. Gather
-            # go_block contiguous, matmul into a temp, scatter into grad_x.
-            var w_p = self.weight.value_unsafe_ptr_cpu()
+            # grad_x_block = go_block @ kernel[k]ᵀ
             comptime if Self.BLOCKS == 1:
+                var grad_input_v = TileTensor(gin.data, row_major[B, Self.IN]())
                 var w_tt = TileTensor(
-                    self.weight.val.cpu, row_major[Self.IN, Self.OUT](),
+                    self.weight.val.data, row_major[Self.IN, Self.OUT](),
                 )
                 max_matmul[transpose_b=True, target="cpu"](
                     grad_input_v, grad_output_v, w_tt, None,
                 )
             else:
-                var gob_buf2 = alloc[Scalar[DT]](BATCH * Self.OPB)
-                var gxb_buf = alloc[Scalar[DT]](BATCH * Self.IPB)
+                var gob_list2 = List[Scalar[DT]](
+                    length=B * Self.OPB, fill=Scalar[DT](0)
+                )
+                var gxb_list = List[Scalar[DT]](
+                    length=B * Self.IPB, fill=Scalar[DT](0)
+                )
                 for k in range(Self.BLOCKS):
                     var out_col0 = k * Self.OPB
-                    for b in range(BATCH):
+                    for b in range(B):
                         var go_src = b * Self.OUT + out_col0
                         var gob_dst = b * Self.OPB
-                        for o in range(Self.OPB):
-                            gob_buf2[gob_dst + o] = go_p[go_src + o]
+                        for o2 in range(Self.OPB):
+                            gob_list2[gob_dst + o2] = go_p[go_src + o2]
                     var w_blk = k * Self.IPB * Self.OPB
                     var gob_tt = TileTensor(
-                        gob_buf2, row_major[BATCH, Self.OPB](),
+                        gob_list2, row_major[B, Self.OPB](),
                     )
                     var kernel_k_tt = TileTensor(
                         w_p + w_blk, row_major[Self.IPB, Self.OPB](),
                     )
                     var gxb_tt = TileTensor(
-                        gxb_buf, row_major[BATCH, Self.IPB](),
+                        gxb_list, row_major[B, Self.IPB](),
                     )
                     max_matmul[transpose_b=True, target="cpu"](
                         gxb_tt, gob_tt, kernel_k_tt, None,
                     )
                     var in_col0 = k * Self.IPB
-                    for b in range(BATCH):
+                    for b in range(B):
                         var gxb_src = b * Self.IPB
                         var dst = b * Self.IN + in_col0
                         for i in range(Self.IPB):
-                            gi_p[dst + i] = gxb_buf[gxb_src + i]
-                gxb_buf.free()
-                gob_buf2.free()
+                            gi_p[dst + i] = gxb_list[gxb_src + i]
         else:
-            var ctx = self.ts.ctx.value()
-            var w_p = mptr(self.weight.val.dev.value().unsafe_ptr())
-            comptime n_x = (BATCH * Self.IN + TPB - 1) // TPB
-            comptime k_dx = _bl_dx_kernel[
-                BATCH, Self.IN, Self.OUT, Self.BLOCKS
-            ]
-            ctx.enqueue_function[k_dx](
-                go_p, w_p, gi_p, grid_dim=n_x, block_dim=TPB,
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.IN)
+            # grad_weight
+            comptime n_w = (Self.W_SIZE + TPB - 1) // TPB
+            comptime k_dw = _bl_dweight_kernel[B, Self.IN, Self.OUT, Self.BLOCKS]
+            c.enqueue_function[k_dw](
+                fin.lt["gpu", Layout.row_major(B * Self.IN)](),
+                grad_output.lt["gpu", Layout.row_major(B * Self.OUT)](),
+                self.weight.grd.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                grid_dim=n_w,
+                block_dim=TPB,
+            )
+            # grad_bias
+            comptime n_b = (Self.OUT + TPB - 1) // TPB
+            comptime k_db = _bl_dbias_kernel[B, Self.OUT]
+            c.enqueue_function[k_db](
+                grad_output.lt["gpu", Layout.row_major(B * Self.OUT)](),
+                self.bias.grd.lt["gpu", Layout.row_major(Self.OUT)](),
+                grid_dim=n_b,
+                block_dim=TPB,
+            )
+            # grad_x
+            comptime n_x = (B * Self.IN + TPB - 1) // TPB
+            comptime k_dx = _bl_dx_kernel[B, Self.IN, Self.OUT, Self.BLOCKS]
+            c.enqueue_function[k_dx](
+                grad_output.lt["gpu", Layout.row_major(B * Self.OUT)](),
+                self.weight.val.lt["gpu", Layout.row_major(Self.W_SIZE)](),
+                gin.lt["gpu", Layout.row_major(B * Self.IN)](),
+                grid_dim=n_x,
+                block_dim=TPB,
             )
 
-    # ----- Walkers ---------------------------------------------------------
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the `weight` + `bias` Params).
 
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["BlockLinear", target](self.ts.target_tag)
-        for_each_param_auto[Self, V, target](self, prefix, visitor)
-
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["BlockLinear", target](self.ts.target_tag)
-        zero_grad_auto[Self, target](self)
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self,
+        mut src: Self,
+        tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        polyak_tensor[target, Self.W_SIZE](
+            self.weight.val, src.weight.val, tau, ctx
+        )
+        polyak_tensor[target, Self.B_SIZE](
+            self.bias.val, src.bias.val, tau, ctx
+        )

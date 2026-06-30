@@ -13,7 +13,7 @@ Run (GPU env required):
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.logger import CsvLogger
 from mojo_rl.deep_agents.efficient_zero_v2.nets import (
@@ -50,21 +50,16 @@ def main() raises:
 
     var ctx = DeviceContext()
     var env = CartPoleEnv[DType.float32]()
-    var rep = Rep.make["gpu", INIT=Kaiming](ctx)
-    var dyn = Dyn.make["gpu", INIT=Kaiming](ctx)
-    var pred = Pred.make["gpu", INIT=Kaiming](ctx)
-    var proj = Proj.make["gpu", INIT=Kaiming](ctx)
-    var predh = Predh.make["gpu", INIT=Kaiming](ctx)
-    var orep = Adam.make["gpu", M=Rep](rep, ctx)
-    var odyn = Adam.make["gpu", M=Dyn](dyn, ctx)
-    var opred = Adam.make["gpu", M=Pred](pred, ctx)
-    var oproj = Adam.make["gpu", M=Proj](proj, ctx)
-    var opredh = Adam.make["gpu", M=Predh](predh, ctx)
-    orep.lr = Scalar[DT](3e-4)
-    odyn.lr = Scalar[DT](3e-4)
-    opred.lr = Scalar[DT](3e-4)
-    oproj.lr = Scalar[DT](3e-4)
-    opredh.lr = Scalar[DT](3e-4)
+    var rep = Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn = Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred = Pred.make["gpu", Kaiming](Optional(ctx))
+    var proj = Proj.make["gpu", Kaiming](Optional(ctx))
+    var predh = Predh.make["gpu", Kaiming](Optional(ctx))
+    var orep = Adam(lr=Scalar[DT](3e-4))
+    var odyn = Adam(lr=Scalar[DT](3e-4))
+    var opred = Adam(lr=Scalar[DT](3e-4))
+    var oproj = Adam(lr=Scalar[DT](3e-4))
+    var opredh = Adam(lr=Scalar[DT](3e-4))
 
     var logger = CsvLogger("/tmp/ezv2_cartpole_metrics_gpu.csv", buffer_size=64)
     logger.set_config("algo", "ezv2")
@@ -92,7 +87,7 @@ def main() raises:
         eval_episodes=3,
         diag_every=200,
         report_every=200,
-        logger=UnsafePointer(to=logger),
+        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
         verbose=True,
     )
     logger.close()

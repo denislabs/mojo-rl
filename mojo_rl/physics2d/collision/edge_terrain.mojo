@@ -450,7 +450,7 @@ struct EdgeTerrainCollision(CollisionSystem):
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), ImmutAnyOrigin
         ],
         contacts: LayoutTensor[
             dtype,
@@ -653,7 +653,7 @@ struct EdgeTerrainCollision(CollisionSystem):
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), ImmutAnyOrigin
         ],
         n_edges: Int,
         contacts: LayoutTensor[
@@ -876,7 +876,7 @@ struct EdgeTerrainCollision(CollisionSystem):
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), ImmutAnyOrigin
         ],
         n_edges: Int,
         contacts: LayoutTensor[
@@ -1094,9 +1094,9 @@ struct EdgeTerrainCollision(CollisionSystem):
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), ImmutAnyOrigin
         ],
-        edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), ImmutAnyOrigin],
         contacts: LayoutTensor[
             dtype,
             Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
@@ -1135,30 +1135,30 @@ struct EdgeTerrainCollision(CollisionSystem):
         EDGES_OFFSET: Int,
     ](
         ctx: DeviceContext,
-        state_buf: DeviceBuffer[dtype],
+        mut state_buf: DeviceBuffer[dtype],
         shapes_buf: DeviceBuffer[dtype],
         edge_counts_buf: DeviceBuffer[dtype],
         mut contacts_buf: DeviceBuffer[dtype],
         mut contact_counts_buf: DeviceBuffer[dtype],
     ) raises:
         """Launch strided collision detection kernel on GPU."""
+        # state/shapes/edge_counts read-only (mut=False views -> ImmutAnyOrigin
+        # kernel params); contacts/contact_counts written (mut=True).
         var state = LayoutTensor[
-            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, STATE_SIZE)
+        ](state_buf)
         var shapes = LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ](shapes_buf.unsafe_ptr())
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE)
+        ](shapes_buf)
         var edge_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](edge_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](edge_counts_buf)
         var contacts = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE)
+        ](contacts_buf)
         var contact_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](contact_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](contact_counts_buf)
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -1171,10 +1171,10 @@ struct EdgeTerrainCollision(CollisionSystem):
             shapes: LayoutTensor[
                 dtype,
                 Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             edge_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
+                dtype, Layout.row_major(BATCH), ImmutAnyOrigin
             ],
             contacts: LayoutTensor[
                 dtype,
@@ -1204,364 +1204,4 @@ struct EdgeTerrainCollision(CollisionSystem):
             contact_counts,
             grid_dim=(BLOCKS,),
             block_dim=(TPB,),
-        )
-
-    # =========================================================================
-    # Parallel Collision Detection (parallelized over env × body)
-    # =========================================================================
-
-    @always_inline
-    @staticmethod
-    def detect_parallel_kernel[
-        BATCH: Int,
-        NUM_BODIES: Int,
-        NUM_SHAPES: Int,
-        MAX_CONTACTS_PER_BODY: Int,
-        MAX_EDGES: Int,
-        STATE_SIZE: Int,
-        BODIES_OFFSET: Int,
-        EDGES_OFFSET: Int,
-    ](
-        state: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, STATE_SIZE),
-            MutAnyOrigin,
-        ],
-        shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ],
-        edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        contacts: LayoutTensor[
-            dtype,
-            Layout.row_major(
-                BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE
-            ),
-            MutAnyOrigin,
-        ],
-        body_contact_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES), MutAnyOrigin
-        ],
-    ):
-        """Parallel GPU kernel for collision detection using 2D grid.
-
-        Grid dimensions: (BATCH, NUM_BODIES)
-        - X dimension: environment index
-        - Y dimension: body index
-
-        Each thread processes one (env, body) pair.
-        Each body writes to its own pre-allocated contact slots.
-        """
-        # 2D thread indexing: X = env, Y = body
-        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-        var body_idx = Int(block_dim.y * block_idx.y + thread_idx.y)
-
-        if env >= BATCH or body_idx >= NUM_BODIES:
-            return
-
-        var n_edges = Int(edge_counts[env])
-
-        EdgeTerrainCollision.detect_single_body[
-            BATCH,
-            NUM_BODIES,
-            NUM_SHAPES,
-            MAX_CONTACTS_PER_BODY,
-            MAX_EDGES,
-            STATE_SIZE,
-            BODIES_OFFSET,
-            EDGES_OFFSET,
-        ](env, body_idx, state, shapes, n_edges, contacts, body_contact_counts)
-
-    @staticmethod
-    def detect_parallel_gpu[
-        BATCH: Int,
-        NUM_BODIES: Int,
-        NUM_SHAPES: Int,
-        MAX_CONTACTS_PER_BODY: Int,
-        MAX_EDGES: Int,
-        STATE_SIZE: Int,
-        BODIES_OFFSET: Int,
-        EDGES_OFFSET: Int,
-    ](
-        ctx: DeviceContext,
-        state_buf: DeviceBuffer[dtype],
-        shapes_buf: DeviceBuffer[dtype],
-        edge_counts_buf: DeviceBuffer[dtype],
-        mut contacts_buf: DeviceBuffer[dtype],
-        mut body_contact_counts_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch parallel collision detection kernel.
-
-        Parallelizes over (env × body) = BATCH × NUM_BODIES threads.
-        Each body writes to its own pre-allocated contact slots.
-
-        Contact layout: [BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE]
-        Body contact counts: [BATCH, NUM_BODIES]
-
-        Args:
-            ctx: GPU device context.
-            state_buf: State buffer [BATCH, STATE_SIZE].
-            shapes_buf: Shape definitions [NUM_SHAPES, SHAPE_MAX_SIZE].
-            edge_counts_buf: Terrain edge counts [BATCH].
-            contacts_buf: Contact output [BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE].
-            body_contact_counts_buf: Per-body contact counts [BATCH, NUM_BODIES].
-        """
-        var state = LayoutTensor[
-            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
-        var shapes = LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ](shapes_buf.unsafe_ptr())
-        var edge_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](edge_counts_buf.unsafe_ptr())
-        var contacts = LayoutTensor[
-            dtype,
-            Layout.row_major(
-                BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE
-            ),
-            MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
-        var body_contact_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH, NUM_BODIES), MutAnyOrigin
-        ](body_contact_counts_buf.unsafe_ptr())
-
-        # 2D grid: X covers envs, Y covers bodies
-        # Block size: use smaller blocks since we're 2D
-        comptime BLOCK_X = 32  # Threads per block in X (env dimension)
-        comptime BLOCK_Y = NUM_BODIES  # Threads per block in Y (body dimension)
-        comptime GRID_X = (BATCH + BLOCK_X - 1) // BLOCK_X
-        comptime GRID_Y = 1  # All bodies fit in one block in Y
-
-        @parameter
-        @always_inline
-        def kernel_wrapper(
-            state: LayoutTensor[
-                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-            ],
-            shapes: LayoutTensor[
-                dtype,
-                Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE),
-                MutAnyOrigin,
-            ],
-            edge_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
-            ],
-            contacts: LayoutTensor[
-                dtype,
-                Layout.row_major(
-                    BATCH, NUM_BODIES * MAX_CONTACTS_PER_BODY, CONTACT_DATA_SIZE
-                ),
-                MutAnyOrigin,
-            ],
-            body_contact_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH, NUM_BODIES), MutAnyOrigin
-            ],
-        ):
-            EdgeTerrainCollision.detect_parallel_kernel[
-                BATCH,
-                NUM_BODIES,
-                NUM_SHAPES,
-                MAX_CONTACTS_PER_BODY,
-                MAX_EDGES,
-                STATE_SIZE,
-                BODIES_OFFSET,
-                EDGES_OFFSET,
-            ](state, shapes, edge_counts, contacts, body_contact_counts)
-
-        ctx.enqueue_function[kernel_wrapper](
-            state,
-            shapes,
-            edge_counts,
-            contacts,
-            body_contact_counts,
-            grid_dim=(GRID_X, GRID_Y),
-            block_dim=(BLOCK_X, BLOCK_Y),
-        )
-
-    # =========================================================================
-    # Fully Parallel Collision Detection (parallelized over env × body × edge)
-    # =========================================================================
-
-    @always_inline
-    @staticmethod
-    def detect_body_edge_kernel[
-        BATCH: Int,
-        NUM_BODIES: Int,
-        NUM_SHAPES: Int,
-        MAX_CONTACTS_PER_BODY_EDGE: Int,
-        MAX_EDGES: Int,
-        STATE_SIZE: Int,
-        BODIES_OFFSET: Int,
-        EDGES_OFFSET: Int,
-    ](
-        state: LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, STATE_SIZE),
-            MutAnyOrigin,
-        ],
-        shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ],
-        edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
-        contacts: LayoutTensor[
-            dtype,
-            Layout.row_major(
-                BATCH,
-                NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE,
-                CONTACT_DATA_SIZE,
-            ),
-            MutAnyOrigin,
-        ],
-        contact_flags: LayoutTensor[
-            dtype,
-            Layout.row_major(
-                BATCH, NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE
-            ),
-            MutAnyOrigin,
-        ],
-    ):
-        """Fully parallel GPU kernel for collision detection using 3D indexing.
-
-        Thread indexing:
-        - X dimension: environment index
-        - Y dimension: body index
-        - Z dimension: edge index
-
-        Each thread processes one (env, body, edge) triplet.
-        """
-        var env = Int(block_dim.x * block_idx.x + thread_idx.x)
-        var body_idx = Int(block_dim.y * block_idx.y + thread_idx.y)
-        var edge_idx = Int(block_dim.z * block_idx.z + thread_idx.z)
-
-        if env >= BATCH or body_idx >= NUM_BODIES or edge_idx >= MAX_EDGES:
-            return
-
-        # Skip if this edge doesn't exist for this env
-        var n_edges = Int(edge_counts[env])
-        if edge_idx >= n_edges:
-            # Mark slots as invalid
-            var slot_base = (
-                body_idx * MAX_EDGES + edge_idx
-            ) * MAX_CONTACTS_PER_BODY_EDGE
-            for i in range(MAX_CONTACTS_PER_BODY_EDGE):
-                contact_flags[env, slot_base + i] = Scalar[dtype](0)
-            return
-
-        EdgeTerrainCollision.detect_single_body_edge[
-            BATCH,
-            NUM_BODIES,
-            NUM_SHAPES,
-            MAX_CONTACTS_PER_BODY_EDGE,
-            MAX_EDGES,
-            STATE_SIZE,
-            BODIES_OFFSET,
-            EDGES_OFFSET,
-        ](env, body_idx, edge_idx, state, shapes, contacts, contact_flags)
-
-    @staticmethod
-    def detect_body_edge_gpu[
-        BATCH: Int,
-        NUM_BODIES: Int,
-        NUM_SHAPES: Int,
-        MAX_CONTACTS_PER_BODY_EDGE: Int,
-        MAX_EDGES: Int,
-        STATE_SIZE: Int,
-        BODIES_OFFSET: Int,
-        EDGES_OFFSET: Int,
-    ](
-        ctx: DeviceContext,
-        state_buf: DeviceBuffer[dtype],
-        shapes_buf: DeviceBuffer[dtype],
-        edge_counts_buf: DeviceBuffer[dtype],
-        mut contacts_buf: DeviceBuffer[dtype],
-        mut contact_flags_buf: DeviceBuffer[dtype],
-    ) raises:
-        """Launch fully parallel collision detection over (env × body × edge).
-
-        Total threads: BATCH × NUM_BODIES × MAX_EDGES
-        Each thread handles one (body, edge) pair for one environment.
-
-        Contact layout: [BATCH, NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE, CONTACT_DATA_SIZE]
-        Contact flags:  [BATCH, NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE] (1=valid, 0=invalid)
-
-        Args:
-            ctx: GPU device context.
-            state_buf: State buffer [BATCH, STATE_SIZE].
-            shapes_buf: Shape definitions [NUM_SHAPES, SHAPE_MAX_SIZE].
-            edge_counts_buf: Terrain edge counts [BATCH].
-            contacts_buf: Contact output.
-            contact_flags_buf: Validity flags for each contact slot.
-        """
-        comptime TOTAL_CONTACTS = NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE
-
-        var state = LayoutTensor[
-            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
-        var shapes = LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ](shapes_buf.unsafe_ptr())
-        var edge_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](edge_counts_buf.unsafe_ptr())
-        var contacts = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, TOTAL_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
-        var contact_flags = LayoutTensor[
-            dtype, Layout.row_major(BATCH, TOTAL_CONTACTS), MutAnyOrigin
-        ](contact_flags_buf.unsafe_ptr())
-
-        # 3D grid: X=envs, Y=bodies, Z=edges
-        # Choose block sizes to fit hardware limits (typically 1024 threads/block max)
-        comptime BLOCK_X = 8  # Envs per block
-        comptime BLOCK_Y = NUM_BODIES  # All bodies in one block dimension
-        comptime BLOCK_Z = 8  # Edges per block (adjust based on MAX_EDGES)
-
-        comptime GRID_X = (BATCH + BLOCK_X - 1) // BLOCK_X
-        comptime GRID_Y = 1  # All bodies fit in block
-        comptime GRID_Z = (MAX_EDGES + BLOCK_Z - 1) // BLOCK_Z
-
-        @parameter
-        @always_inline
-        def kernel_wrapper(
-            state: LayoutTensor[
-                dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-            ],
-            shapes: LayoutTensor[
-                dtype,
-                Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE),
-                MutAnyOrigin,
-            ],
-            edge_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
-            ],
-            contacts: LayoutTensor[
-                dtype,
-                Layout.row_major(BATCH, TOTAL_CONTACTS, CONTACT_DATA_SIZE),
-                MutAnyOrigin,
-            ],
-            contact_flags: LayoutTensor[
-                dtype, Layout.row_major(BATCH, TOTAL_CONTACTS), MutAnyOrigin
-            ],
-        ):
-            EdgeTerrainCollision.detect_body_edge_kernel[
-                BATCH,
-                NUM_BODIES,
-                NUM_SHAPES,
-                MAX_CONTACTS_PER_BODY_EDGE,
-                MAX_EDGES,
-                STATE_SIZE,
-                BODIES_OFFSET,
-                EDGES_OFFSET,
-            ](state, shapes, edge_counts, contacts, contact_flags)
-
-        ctx.enqueue_function[kernel_wrapper](
-            state,
-            shapes,
-            edge_counts,
-            contacts,
-            contact_flags,
-            grid_dim=(GRID_X, GRID_Y, GRID_Z),
-            block_dim=(BLOCK_X, BLOCK_Y, BLOCK_Z),
         )

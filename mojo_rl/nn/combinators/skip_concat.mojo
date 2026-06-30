@@ -1,385 +1,208 @@
-"""SkipConcat[Inner] — `y = concat(x, inner(x))`.
+"""SkipConcat[Inner] — y = concat(x, inner(x)) (storage surface, CPU + GPU).
 
-DenseNet-style skip-concat: the output is the input column-stacked with
-the inner module's output. Mirrors `Residual` structurally (one child,
-one scratch slab for the inner output, lazy-grown to `BATCH × OUT_INNER`),
-but the merge op is concat instead of add.
+DenseNet/U-Net-style skip-concat: the output is the input column-stacked with the
+inner module's output. Mirrors `Residual` structurally (one child) but the merge
+is concat instead of add.
 
-Dimensions
-    IN_DIMS[0] = Inner.IN_DIMS[0]                    (passthrough)
-    OUT_DIM    = Inner.IN_DIMS[0] + Inner.OUT_DIM    (input + inner output)
+  IN_DIMS[0] = Inner.IN_DIMS[0]                  (passthrough)
+  OUT_DIM    = Inner.IN_DIMS[0] + Inner.OUT_DIM  (input ++ inner output)
 
-Forward
-    inner_out = inner(input)                    # scratch [BATCH, OUT_INNER]
-    output[:, 0:IN]                = input
-    output[:, IN:IN+OUT_INNER]     = inner_out
+Forward:  out = [x | inner(x)]
+Backward: grad_input = grad_output[:, :IN] + inner.vjp(grad_output[:, IN:])
+(the input feeds both the passthrough column block and inner — its grads sum).
+Reuses Parallel's concat/split kernels + Residual's add kernel.
 
-Backward
-    grad_inner_out = grad_output[:, IN:IN+OUT_INNER]    # scratch
-    grad_input     = inner.vjp(grad_inner_out)          # overwrite
-    grad_input    += grad_output[:, 0:IN]               # add skip path
-
-Used by OFE-style DenseBlocks, where `Inner = Sequential[Linear,
-LayerNorm, SiLU]` grows the feature width by `per_unit` each block.
-`mode` flows directly into `inner.vjp[mode]` (input_only skips param
-grad accumulation in the inner subtree).
+The concat is a column move (no recast), so every activation buffer (inner_out,
+go_*, gi_inner, out, grads) is `TensorImpl[Self.ACT_DT]` and the shared kernels
+run at that dtype (`ADT` defaults to DT → NoAMP unchanged).
 """
 
-from std.memory import alloc
-from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from std.gpu.host import DeviceContext
+from layout import Layout
 
-from ..constants import DT, CPU_SIMD_W, TPB
-from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut, mptr
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
-
-
-# ──────────────────────────────────────────────────────────────────────
-# GPU kernels.
-# ──────────────────────────────────────────────────────────────────────
-
-
-def _skip_concat_forward_kernel[
-    BATCH: Int, IN_DIM: Int, OUT_INNER: Int,
-](
-    input: LayoutTensor[
-        DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin,
-    ],
-    inner_out: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_INNER), MutAnyOrigin,
-    ],
-    output: LayoutTensor[
-        DT, Layout.row_major(BATCH, IN_DIM + OUT_INNER), MutAnyOrigin,
-    ],
-):
-    var idx = Int(global_idx.x)
-    comptime OUT = IN_DIM + OUT_INNER
-    var total = BATCH * OUT
-    if idx >= total:
-        return
-    var b = idx // OUT
-    var c = idx % OUT
-    if c < IN_DIM:
-        output[b, c] = rebind[Scalar[DT]](input[b, c])
-    else:
-        output[b, c] = rebind[Scalar[DT]](inner_out[b, c - IN_DIM])
-
-
-def _skip_concat_extract_inner_grad_kernel[
-    BATCH: Int, IN_DIM: Int, OUT_INNER: Int,
-](
-    grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, IN_DIM + OUT_INNER), MutAnyOrigin,
-    ],
-    grad_inner_out: LayoutTensor[
-        DT, Layout.row_major(BATCH, OUT_INNER), MutAnyOrigin,
-    ],
-):
-    var idx = Int(global_idx.x)
-    var total = BATCH * OUT_INNER
-    if idx >= total:
-        return
-    var b = idx // OUT_INNER
-    var d = idx % OUT_INNER
-    grad_inner_out[b, d] = rebind[Scalar[DT]](grad_output[b, IN_DIM + d])
-
-
-def _skip_concat_add_skip_grad_kernel[
-    BATCH: Int, IN_DIM: Int, OUT_INNER: Int,
-](
-    grad_output: LayoutTensor[
-        DT, Layout.row_major(BATCH, IN_DIM + OUT_INNER), MutAnyOrigin,
-    ],
-    grad_input: LayoutTensor[
-        DT, Layout.row_major(BATCH, IN_DIM), MutAnyOrigin,
-    ],
-):
-    var idx = Int(global_idx.x)
-    var total = BATCH * IN_DIM
-    if idx >= total:
-        return
-    var b = idx // IN_DIM
-    var d = idx % IN_DIM
-    grad_input[b, d] = (
-        rebind[Scalar[DT]](grad_input[b, d])
-        + rebind[Scalar[DT]](grad_output[b, d])
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# SkipConcat
-# ──────────────────────────────────────────────────────────────────────
+from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
+from ..core.initializer import Initializer
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs, child_refs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
+from .parallel import _par_concat_kernel, _par_split_kernel
+from .residual import _resid_add_kernel
 
 
 struct SkipConcat[Inner: Module](Module):
-    comptime ARITY: Int = 1
+    comptime ARITY = 1
+    comptime IN = Self.Inner.IN_DIMS[0]
+    comptime OINNER = Self.Inner.OUT_DIM
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.Inner.IN_DIMS[0])
     comptime OUT_DIM = Self.Inner.IN_DIMS[0] + Self.Inner.OUT_DIM
+    # The skip is a column concat (no dtype change) — activation dtype is just
+    # the wrapped module's.
+    comptime ACT_DT = Self.Inner.ACT_DT
 
     var inner: Self.Inner
-
-    # Scratch [BATCH, Inner.OUT_DIM]: forward stores inner's output here
-    # (then we concat-copy into the caller-supplied output); backward
-    # extracts the inner-portion of grad_output into here, then feeds it
-    # to inner.vjp(...).
-    var inner_buf_cpu: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var inner_buf_dev: Optional[DeviceBuffer[DT]]
-    var inner_buf_cap: Int
-
-    var ts: TargetStorage
-
-    # ----- Defaultable -----------------------------------------------------
+    var inner_out: TensorImpl[Self.ACT_DT]
+    var go_pass: TensorImpl[Self.ACT_DT]  # grad_output[:, :IN]   (bwd)
+    var go_inner: TensorImpl[Self.ACT_DT]  # grad_output[:, IN:]   (bwd, fed to inner)
+    var gi_inner: TensorImpl[Self.ACT_DT]  # inner's grad-input
 
     def __init__(out self):
         self.inner = Self.Inner()
-        self.inner_buf_cpu = alloc[Scalar[DT]](1)
-        self.inner_buf_dev = None
-        self.inner_buf_cap = 0
-        self.ts = TargetStorage.make_uninit()
+        self.inner_out = TensorImpl[Self.ACT_DT]()
+        self.go_pass = TensorImpl[Self.ACT_DT]()
+        self.go_inner = TensorImpl[Self.ACT_DT]()
+        self.gi_inner = TensorImpl[Self.ACT_DT]()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "SkipConcat: target must be 'cpu' or 'gpu'"
-        )
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var s = Self()
-        s.inner = Self.Inner.make[target, INIT](ctx=ctx)
-        comptime if target == "cpu":
-            s.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["SkipConcat.make[target='gpu']"](ctx)
-            s.inner_buf_dev = ctx_v.enqueue_create_buffer[DT](1)
-            s.ts = TargetStorage.make_gpu(ctx_v)
+        s.inner = Self.Inner.make[target, INIT](ctx)
         return s^
 
-    def __del__(deinit self):
-        self.inner_buf_cpu.free()
-
-    def _ensure_inner_buf_cpu(mut self, needed: Int):
-        if self.inner_buf_cap < needed:
-            self.inner_buf_cpu.free()
-            self.inner_buf_cpu = alloc[Scalar[DT]](needed)
-            self.inner_buf_cap = needed
-
-    def _ensure_inner_buf_gpu(mut self, needed: Int) raises:
-        if self.inner_buf_cap < needed:
-            self.inner_buf_dev = self.ts.ctx.value().enqueue_create_buffer[DT](
-                needed
-            )
-            self.inner_buf_cap = needed
-
-    # ----- Forward ---------------------------------------------------------
-
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["SkipConcat", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
-        comptime IN = Self.IN_DIMS[0]
-        comptime OUT_INNER = Self.Inner.OUT_DIM
-
+        # Buffers are typed at Self.ACT_DT; bridge to the inner child's
+        # (ARITY, ACT_DT) via `child_refs` (input pack) and `rebind` (mut output).
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
+        ref in0 = inputs[0]
+        self.inner.forward[target, B, POLICY=POLICY](
+            child_refs[cn, ci](in0),
+            rebind[TensorImpl[ci]](self.inner_out),
+            ctx,
+        )
         comptime if target == "cpu":
-            self._ensure_inner_buf_cpu(BATCH * OUT_INNER)
-            var inner_tt = TileTensor(
-                self.inner_buf_cpu, row_major[BATCH, OUT_INNER](),
-            )
-            self.inner.forward[target, BATCH, POLICY=POLICY](
-                input, output=inner_tt,
-            )
-            var ip = mptr(input.ptr)
-            var op = mptr(output_v.ptr)
-            var sp = self.inner_buf_cpu
-            for b in range(BATCH):
-                var row_out = op + b * (IN + OUT_INNER)
-                var row_in = ip + b * IN
-                var row_sc = sp + b * OUT_INNER
-                # input → first IN columns
-                var k = 0
-                while k + CPU_SIMD_W <= IN:
-                    row_out.store(k, row_in.load[width=CPU_SIMD_W](k))
-                    k += CPU_SIMD_W
-                while k < IN:
-                    row_out[k] = row_in[k]
-                    k += 1
-                # inner output → next OUT_INNER columns
-                k = 0
-                var dst = row_out + IN
-                while k + CPU_SIMD_W <= OUT_INNER:
-                    dst.store(k, row_sc.load[width=CPU_SIMD_W](k))
-                    k += CPU_SIMD_W
-                while k < OUT_INNER:
-                    dst[k] = row_sc[k]
-                    k += 1
+            out.ensure(B * Self.OUT_DIM)
+            for b in range(B):
+                var ob = b * Self.OUT_DIM
+                for j in range(Self.IN):
+                    out.data[ob + j] = in0.data[b * Self.IN + j]
+                for j in range(Self.OINNER):
+                    out.data[ob + Self.IN + j] = self.inner_out.data[
+                        b * Self.OINNER + j
+                    ]
         else:
-            self._ensure_inner_buf_gpu(BATCH * OUT_INNER)
-            var in_p_w = mptr(input.ptr)
-            var out_p_w = mptr(output_v.ptr)
-            var sp: UnsafePointer[Scalar[DT], MutAnyOrigin] = (
-                self.inner_buf_dev.value().unsafe_ptr()
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT_DIM)
+            c.enqueue_function[
+                _par_concat_kernel[B, Self.IN, Self.OINNER, Self.ACT_DT]
+            ](
+                in0.lt["gpu", Layout.row_major(B, Self.IN)](),
+                self.inner_out.lt["gpu", Layout.row_major(B, Self.OINNER)](),
+                out.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
+                grid_dim=(B * Self.OUT_DIM + TPB - 1) // TPB,
+                block_dim=TPB,
             )
-            var inner_tt = TileTensor(sp, row_major[BATCH, OUT_INNER]())
-            self.inner.forward[target, BATCH, POLICY=POLICY](
-                input, output=inner_tt,
-            )
-            comptime in_layout = Layout.row_major(BATCH, IN)
-            comptime inner_layout = Layout.row_major(BATCH, OUT_INNER)
-            comptime out_layout = Layout.row_major(BATCH, IN + OUT_INNER)
-            var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](in_p_w)
-            var inner_lt = LayoutTensor[DT, inner_layout, MutAnyOrigin](
-                self.inner_buf_dev.value()
-            )
-            var out_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](out_p_w)
-            comptime n_blocks = (BATCH * (IN + OUT_INNER) + TPB - 1) // TPB
-            comptime kernel = _skip_concat_forward_kernel[
-                BATCH, IN, OUT_INNER,
-            ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, inner_lt, out_lt,
-                grid_dim=n_blocks, block_dim=TPB,
-            )
-
-    # ----- Backward --------------------------------------------------------
 
     def vjp[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["SkipConcat", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
-        comptime IN = Self.IN_DIMS[0]
-        comptime OUT_INNER = Self.Inner.OUT_DIM
-
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
+        ref fin = forward_input[0]
+        ref gin = grad_inputs[0]
+        # split grad_output → go_pass [:IN], go_inner [IN:]
         comptime if target == "cpu":
-            self._ensure_inner_buf_cpu(BATCH * OUT_INNER)
-            var gop = mptr(grad_output_v.ptr)
-            var sp = self.inner_buf_cpu
-            # 1. Extract inner-portion grad: grad_output[:, IN:IN+OUT_INNER]
-            for b in range(BATCH):
-                var row_go = gop + b * (IN + OUT_INNER) + IN
-                var row_sc = sp + b * OUT_INNER
-                var k = 0
-                while k + CPU_SIMD_W <= OUT_INNER:
-                    row_sc.store(k, row_go.load[width=CPU_SIMD_W](k))
-                    k += CPU_SIMD_W
-                while k < OUT_INNER:
-                    row_sc[k] = row_go[k]
-                    k += 1
-            # 2. inner.vjp(scratch, grad_input)  ← overwrites grad_input
-            var inner_tt = TileTensor(sp, row_major[BATCH, OUT_INNER]())
-            self.inner.vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
-            ](inner_tt, grad_input_v)
-            # 3. grad_input += grad_output[:, 0:IN]
-            var gip = mptr(grad_input_v.ptr)
-            for b in range(BATCH):
-                var row_gi = gip + b * IN
-                var row_go = gop + b * (IN + OUT_INNER)
-                var k = 0
-                while k + CPU_SIMD_W <= IN:
-                    row_gi.store(
-                        k,
-                        row_gi.load[width=CPU_SIMD_W](k)
-                        + row_go.load[width=CPU_SIMD_W](k),
-                    )
-                    k += CPU_SIMD_W
-                while k < IN:
-                    row_gi[k] = row_gi[k] + row_go[k]
-                    k += 1
+            self.go_pass.ensure(B * Self.IN)
+            self.go_inner.ensure(B * Self.OINNER)
+            for b in range(B):
+                var gb = b * Self.OUT_DIM
+                for j in range(Self.IN):
+                    self.go_pass.data[b * Self.IN + j] = grad_output.data[
+                        gb + j
+                    ]
+                for j in range(Self.OINNER):
+                    self.go_inner.data[b * Self.OINNER + j] = grad_output.data[
+                        gb + Self.IN + j
+                    ]
         else:
-            self._ensure_inner_buf_gpu(BATCH * OUT_INNER)
-            var go_p_w = mptr(grad_output_v.ptr)
-            var gi_p_w = mptr(grad_input_v.ptr)
-            comptime go_layout = Layout.row_major(BATCH, IN + OUT_INNER)
-            comptime inner_layout = Layout.row_major(BATCH, OUT_INNER)
-            comptime gi_layout = Layout.row_major(BATCH, IN)
-            var go_lt = LayoutTensor[DT, go_layout, MutAnyOrigin](go_p_w)
-            var inner_lt = LayoutTensor[DT, inner_layout, MutAnyOrigin](
-                self.inner_buf_dev.value()
+            var c = ctx.value()
+            self.go_pass.ensure_gpu(c, B * Self.IN)
+            self.go_inner.ensure_gpu(c, B * Self.OINNER)
+            c.enqueue_function[
+                _par_split_kernel[B, Self.IN, Self.OINNER, Self.ACT_DT]
+            ](
+                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
+                self.go_pass.lt["gpu", Layout.row_major(B, Self.IN)](),
+                self.go_inner.lt["gpu", Layout.row_major(B, Self.OINNER)](),
+                grid_dim=(B * Self.OUT_DIM + TPB - 1) // TPB,
+                block_dim=TPB,
             )
-            var gi_lt = LayoutTensor[DT, gi_layout, MutAnyOrigin](gi_p_w)
-            # 1. Extract inner-portion grad into device scratch.
-            comptime n_extract = (BATCH * OUT_INNER + TPB - 1) // TPB
-            comptime extract_kernel = _skip_concat_extract_inner_grad_kernel[
-                BATCH, IN, OUT_INNER,
-            ]
-            self.ts.ctx.value().enqueue_function[extract_kernel](
-                go_lt, inner_lt,
-                grid_dim=n_extract, block_dim=TPB,
+        # inner's vjp: gradient flows go_inner → gi_inner at the inner child's
+        # (ARITY, ACT_DT) — bridge fin/go_inner/gi_inner like forward.
+        self.inner.vjp[target, B, POLICY=POLICY](
+            child_refs[cn, ci](fin),
+            rebind[TensorImpl[ci]](self.go_inner),
+            child_refs[cn, ci](self.gi_inner),
+            ctx,
+        )
+        # grad_input = go_pass + gi_inner
+        comptime NIN = B * Self.IN
+        comptime if target == "cpu":
+            gin.ensure(NIN)
+            var gp = gin.data.unsafe_ptr()
+            var pp = self.go_pass.data.unsafe_ptr()
+            var ip = self.gi_inner.data.unsafe_ptr()
+            comptime W = CPU_SIMD_W
+            var k = 0
+            while k + W <= NIN:
+                gp.store(k, pp.load[width=W](k) + ip.load[width=W](k))
+                k += W
+            while k < NIN:
+                gp[k] = pp[k] + ip[k]
+                k += 1
+        else:
+            var c = ctx.value()
+            gin.ensure_gpu(c, NIN)
+            c.enqueue_function[_resid_add_kernel[NIN, Self.ACT_DT]](
+                self.go_pass.lt["gpu", Layout.row_major(NIN)](),
+                self.gi_inner.lt["gpu", Layout.row_major(NIN)](),
+                gin.lt["gpu", Layout.row_major(NIN)](),
+                grid_dim=(NIN + TPB - 1) // TPB,
+                block_dim=TPB,
             )
-            # 2. inner.vjp(scratch, grad_input) — overwrites grad_input.
-            var inner_tt = TileTensor(
-                self.inner_buf_dev.value().unsafe_ptr(),
-                row_major[BATCH, OUT_INNER](),
-            )
-            self.inner.vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
-            ](inner_tt, grad_input_v)
-            # 3. grad_input += grad_output[:, 0:IN]
-            comptime n_add = (BATCH * IN + TPB - 1) // TPB
-            comptime add_kernel = _skip_concat_add_skip_grad_kernel[
-                BATCH, IN, OUT_INNER,
-            ]
-            self.ts.ctx.value().enqueue_function[add_kernel](
-                go_lt, gi_lt,
-                grid_dim=n_add, block_dim=TPB,
-            )
-
-    # ----- Walkers ---------------------------------------------------------
 
     def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["SkipConcat", target](self.ts.target_tag)
-        var sep = "." if prefix.byte_length() > 0 else ""
-        self.inner.for_each_param[target, V](
-            prefix + sep + "inner", visitor,
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.inner.for_each_param[target](
+            visitor, ctx, join_name(prefix, String(0))
         )
 
     def for_each_state[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["SkipConcat", target](self.ts.target_tag)
-        var sep = "." if prefix.byte_length() > 0 else ""
-        self.inner.for_each_state[target, V](
-            prefix + sep + "inner", visitor,
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        self.inner.for_each_state[target](
+            visitor, ctx, join_name(prefix, String(0))
         )
 
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["SkipConcat", target](self.ts.target_tag)
-        self.inner.zero_grad[target]()
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        self.inner.zero_grad[target](ctx)
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT], ctx: Optional[DeviceContext]
+    ) raises:
+        self.inner.polyak_from[target](src.inner, tau, ctx)

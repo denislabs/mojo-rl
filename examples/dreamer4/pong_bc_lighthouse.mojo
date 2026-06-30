@@ -32,15 +32,15 @@ low-eps (mostly-scripted) buffer is expected to clear the gate; the
 no-observation prior is reported so the gap is explicit. Pure CPU.
 """
 
-from std.memory import alloc
 from std.math import sqrt, log, cos
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Xavier
+from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.experimental.lewm.pong_data import WindowSource
 from mojo_rl.envs.arcade_games.pong.offline_buffer import PongOfflineBuffer
-from layout import TileTensor, row_major
 
 from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
 from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
@@ -48,12 +48,9 @@ from mojo_rl.deep_agents.dreamer4.recon_loss import (
     masked_recon_loss, full_recon_psnr,
 )
 from mojo_rl.deep_agents.dreamer4.patchify import downscale_box, temporal_patchify
+from mojo_rl.deep_agents.dreamer4.shortcut_loss import _mao
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import cat_argmax
 from mojo_rl.deep_agents.dreamerv3.twohot import symexp_twohot_bins
-
-
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 
 
 # tiny deterministic RNG (xorshift64* + Box-Muller), as in the dynamics lighthouse
@@ -188,38 +185,34 @@ def main() raises:
 
     var tok = Dreamer4Tokenizer[
         DP, D, NH, T, L, NP, D_BOT, HID, DEPTH, DROP, DROP, 7
-    ].make[target="cpu", INIT=Xavier]()
-    var topt = Adam.make["cpu", M=type_of(tok)](tok)
-    topt.lr = LR_TOK
+    ].make["cpu", Xavier](None)
+    var topt = Adam(lr=LR_TOK)
 
-    var agent = Agent.make[target="cpu", INIT=Xavier]()
-    var aopt = Adam.make["cpu", M=Agent](agent)
-    aopt.lr = LR_AGENT
+    var agent = Agent.make["cpu", Xavier](None)
+    var aopt = Adam(lr=LR_AGENT)
 
-    var frames = _alloc(FRAME_N)
-    var patches = _alloc(PATCH_N)
-    var pred = _alloc(PATCH_N)
-    var gpred = _alloc(PATCH_N)
-    var gin = _alloc(PATCH_N)
-    var z1 = _alloc(ZN)
-    var z0n = _alloc(ZN)
-    var sigma = _alloc(BATCH)
-    var sig_idx = _alloc(BATCH)
-    var step_idx = _alloc(BATCH)
-    var task_ids = _alloc(B)
-    var act_idx = _alloc(BATCH)        # dataset action class per frame
-    var rewards = _alloc(BATCH)        # no rewards in buffer → zeros
-    var bins = _alloc(NBINS)
-    symexp_twohot_bins[NBINS](bins, lo=Scalar[DT](-9.0))
+    # Storage scratch. Buffers fed to forward/vjp are `Tensor`s; loss / agent
+    # helpers read their underlying host `data` via `_mao(...)`.
+    var frames = Tensor.alloc(FRAME_N)
+    var patches = Tensor.alloc(PATCH_N)
+    var pred = Tensor.alloc(PATCH_N)
+    var gpred = Tensor.alloc(PATCH_N)
+    var gin = Tensor.alloc(PATCH_N)
+    var z1 = Tensor.alloc(ZN)
+    var z0n = Tensor.alloc(ZN)
+    var sigma = Tensor.alloc(BATCH)
+    var sig_idx = Tensor.alloc(BATCH)
+    var step_idx = Tensor.alloc(BATCH)
+    var task_ids = Tensor.alloc(B)
+    var act_idx = Tensor.alloc(BATCH)        # dataset action class per frame
+    var rewards = Tensor.alloc(BATCH)        # no rewards in buffer → zeros
+    var bins = Tensor.alloc(NBINS)
+    symexp_twohot_bins[NBINS](_mao(bins.data.unsafe_ptr()), lo=Scalar[DT](-9.0))
     for b in range(B):
-        task_ids[b] = Scalar[DT](0.0)  # single Pong task
+        task_ids.data[b] = Scalar[DT](0.0)  # single Pong task
     for i in range(BATCH):
-        rewards[i] = Scalar[DT](0.0)
+        rewards.data[i] = Scalar[DT](0.0)
 
-    var pt = TileTensor(patches, row_major[BATCH, NP * DP]())
-    var prt = TileTensor(pred, row_major[BATCH, NP * DP]())
-    var git = TileTensor(gin, row_major[BATCH, NP * DP]())
-    var z1_t = TileTensor(z1, row_major[BATCH, ND]())
     var rng = Rng(20260607)
 
     # ── Phase A: tokenizer ──────────────────────────────────────────────
@@ -227,21 +220,30 @@ def main() raises:
     for step in range(STEPS_TOK):
         src.next_batch()
         _window_to_patches[B, T, IMG, IMG_DIM, TGT, PATCH](
-            src.pix_ptr(), frames, patches
+            src.pix_ptr(),
+            _mao(frames.data.unsafe_ptr()),
+            _mao(patches.data.unsafe_ptr()),
         )
-        topt.zero_grad["cpu"](tok)
-        tok.forward["cpu", BATCH](pt, output=prt)
+        topt.zero_grad["cpu"](tok, None)
+        tok.forward["cpu", BATCH](TensorRefs[1](patches), pred, None)
         var mask = tok.mae_mask_ptr()
-        var loss = masked_recon_loss[NP, DP, BATCH](pred, patches, mask, gpred)
-        var got = TileTensor(gpred, row_major[BATCH, NP * DP]())
-        tok.vjp["cpu", BATCH](got, git)
-        topt.step["cpu"](tok)
+        var loss = masked_recon_loss[NP, DP, BATCH](
+            _mao(pred.data.unsafe_ptr()),
+            _mao(patches.data.unsafe_ptr()),
+            mask,
+            _mao(gpred.data.unsafe_ptr()),
+        )
+        tok.vjp["cpu", BATCH](TensorRefs[1](patches), gpred, TensorRefs[1](gin), None)
+        topt.step["cpu"](tok, None)
         tok.advance_rng()
         if step % 50 == 0:
             tok.set_mae_p(0.0, 0.0)
-            tok.forward["cpu", BATCH](pt, output=prt)
+            tok.forward["cpu", BATCH](TensorRefs[1](patches), pred, None)
             print("   tok step", step, " recon PSNR =",
-                  full_recon_psnr[NP, DP, BATCH](pred, patches), "dB")
+                  full_recon_psnr[NP, DP, BATCH](
+                      _mao(pred.data.unsafe_ptr()),
+                      _mao(patches.data.unsafe_ptr())
+                  ), "dB")
             tok.set_mae_p(DROP, DROP)
     tok.set_mae_p(0.0, 0.0)            # FREEZE
 
@@ -252,10 +254,14 @@ def main() raises:
     for step in range(STEPS_BC):
         src.next_batch()
         _window_to_patches[B, T, IMG, IMG_DIM, TGT, PATCH](
-            src.pix_ptr(), frames, patches
+            src.pix_ptr(),
+            _mao(frames.data.unsafe_ptr()),
+            _mao(patches.data.unsafe_ptr()),
         )
-        _actions_to_idx[BATCH, ACT](src.act_ptr(), act_idx)
-        tok.enc.forward["cpu", BATCH](pt, output=z1_t)   # clean latents
+        _actions_to_idx[BATCH, ACT](
+            src.act_ptr(), _mao(act_idx.data.unsafe_ptr())
+        )
+        tok.enc.forward["cpu", BATCH](TensorRefs[1](patches), z1, None)  # clean latents
 
         # per-(b,t) shortcut sampling + noise
         for b in range(B):
@@ -270,19 +276,27 @@ def main() raises:
                 if j >= K:
                     j = K - 1
                 var scale = KMAX // K
-                sigma[bt] = Scalar[DT](Float64(j) / Float64(K))
-                sig_idx[bt] = Scalar[DT](Float64(j * scale))
-                step_idx[bt] = Scalar[DT](Float64(stp))
+                sigma.data[bt] = Scalar[DT](Float64(j) / Float64(K))
+                sig_idx.data[bt] = Scalar[DT](Float64(j * scale))
+                step_idx.data[bt] = Scalar[DT](Float64(stp))
         for i in range(ZN):
-            z0n[i] = Scalar[DT](rng.gauss())
+            z0n.data[i] = Scalar[DT](rng.gauss())
 
-        aopt.zero_grad["cpu"](agent)
+        aopt.zero_grad["cpu"](agent, None)
         var losses = agent.bc_train_step(
-            z1, z0n, sigma, sig_idx, step_idx, step >= 30,
-            task_ids, act_idx, rewards, bins,
+            _mao(z1.data.unsafe_ptr()),
+            _mao(z0n.data.unsafe_ptr()),
+            _mao(sigma.data.unsafe_ptr()),
+            _mao(sig_idx.data.unsafe_ptr()),
+            _mao(step_idx.data.unsafe_ptr()),
+            step >= 30,
+            _mao(task_ids.data.unsafe_ptr()),
+            _mao(act_idx.data.unsafe_ptr()),
+            _mao(rewards.data.unsafe_ptr()),
+            _mao(bins.data.unsafe_ptr()),
             policy_weight=Scalar[DT](1.0), reward_weight=Scalar[DT](0.0),
         )
-        aopt.step["cpu"](agent)
+        aopt.step["cpu"](agent, None)
         if step == 0:
             first_bc = losses[1]
         last_bc = losses[1]
@@ -298,28 +312,40 @@ def main() raises:
     for _ in range(EVAL_BATCHES):
         src.next_batch()
         _window_to_patches[B, T, IMG, IMG_DIM, TGT, PATCH](
-            src.pix_ptr(), frames, patches
+            src.pix_ptr(),
+            _mao(frames.data.unsafe_ptr()),
+            _mao(patches.data.unsafe_ptr()),
         )
-        _actions_to_idx[BATCH, ACT](src.act_ptr(), act_idx)
-        tok.enc.forward["cpu", BATCH](pt, output=z1_t)
+        _actions_to_idx[BATCH, ACT](
+            src.act_ptr(), _mao(act_idx.data.unsafe_ptr())
+        )
+        tok.enc.forward["cpu", BATCH](TensorRefs[1](patches), z1, None)
         # refresh logits with current params (clean σ≈0 not needed; use the
         # same noised forward the policy trained under)
         for b in range(B):
             for t in range(T):
                 var bt = b * T + t
-                sigma[bt] = Scalar[DT](0.5)
-                sig_idx[bt] = Scalar[DT](2.0)
-                step_idx[bt] = Scalar[DT](1.0)
+                sigma.data[bt] = Scalar[DT](0.5)
+                sig_idx.data[bt] = Scalar[DT](2.0)
+                step_idx.data[bt] = Scalar[DT](1.0)
         for i in range(ZN):
-            z0n[i] = Scalar[DT](rng.gauss())
+            z0n.data[i] = Scalar[DT](rng.gauss())
         var _losses = agent.bc_train_step(
-            z1, z0n, sigma, sig_idx, step_idx, False,
-            task_ids, act_idx, rewards, bins,
+            _mao(z1.data.unsafe_ptr()),
+            _mao(z0n.data.unsafe_ptr()),
+            _mao(sigma.data.unsafe_ptr()),
+            _mao(sig_idx.data.unsafe_ptr()),
+            _mao(step_idx.data.unsafe_ptr()),
+            False,
+            _mao(task_ids.data.unsafe_ptr()),
+            _mao(act_idx.data.unsafe_ptr()),
+            _mao(rewards.data.unsafe_ptr()),
+            _mao(bins.data.unsafe_ptr()),
             policy_weight=Scalar[DT](1.0), reward_weight=Scalar[DT](0.0),
         )
         var plog = agent.policy_logits_ptr()
         for bt in range(BATCH):
-            var k = Int(Float64(act_idx[bt]) + 0.5)
+            var k = Int(Float64(act_idx.data[bt]) + 0.5)
             class_count[k] += 1
             if cat_argmax[ACT](plog, bt * PLOG) == k:   # distance-0 block
                 n_correct += 1

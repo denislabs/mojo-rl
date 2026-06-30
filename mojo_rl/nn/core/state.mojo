@@ -1,135 +1,102 @@
-"""State — checkpoint-only persistent buffer role (S5 Stage 3).
+"""State[NAME, SIZE] + IsState — checkpoint-only persistent buffer role.
 
-`State[NAME, SIZE, dtype]` wraps one `Tensor` and conforms `IsState`. It
-is the third role on the unified storage core (alongside `Param` = 2×
-Tensor and `Scratch`/`Cache` = 1× Tensor):
+`State` wraps one `Tensor` and conforms `IsState`. It is the third storage
+role alongside `Param` (val + grd + m + v) and a leaf's plain scratch `Tensor`s:
 
-  | Role    | optimizer-walk (`for_each_param`) | checkpoint-walk (`for_each_param` + `for_each_state`) |
-  |---------|-----------------------------------|------------------------------------------------------|
-  | Param   | yes                               | yes                                                  |
-  | State   | NO                                | yes                                                  |
-  | Scratch | no                                | no                                                   |
+  | Role    | for_each_param (optimizer) | for_each_state (checkpoint) |
+  |---------|----------------------------|-----------------------------|
+  | Param   | yes                        | (rides for_each_param)      |
+  | State   | NO                         | yes                         |
+  | scratch | no                         | no                          |
 
-`State` is visited by `for_each_state` (the checkpoint path runs it right
-after `for_each_param`) but NOT by `for_each_param` (the optimizer path).
-So a `State` field rides the v2 checkpoint envelope yet is never seen by
-Adam — retiring the M1 "decay-exempt `Param` with a dead grad buffer"
-hack for BatchNorm running stats.
+A `State` field (e.g. BatchNorm running mean/var) is visited by `for_each_state`
+— which the checkpoint path runs right after `for_each_param` — yet is NEVER
+seen by the optimizer's `for_each_param` walk. So running stats persist across a
+checkpoint without the optimizer ever touching them (no decay-exempt-Param hack).
 
-`visit_with` reuses the existing `ParamVisitor` interface by passing the
-value tile as BOTH the `param` and `grad` arguments — the checkpoint
-save/load visitors only touch `param`, so the duplicate `grad` is inert
-(and no optimizer visitor ever reaches a State).
+`visit_with` reuses the `ParamVisitor` interface by passing the value tile as
+`param` and three inert empty `Tensor`s as `grad`/`m`/`v` — the checkpoint
+visitors (CheckpointWriter/Reader) only touch `param`, and no optimizer visitor
+ever reaches a State.
 """
 
 from std.gpu.host import DeviceContext
 from std.reflection import reflect
-from layout import TileTensor, row_major
 
-from ..constants import DT
-from .module import mptr
 from .tensor import Tensor
-from .param_visitor import ParamVisitor
+from .param import ParamVisitor
+from .walkers import join_name
 
 
-# ──────────────────────────────────────────────────────────────────────
-# IsState — checkpoint-only role marker the `for_each_state` walker
-# filters on. Distinct nominal trait from `IsParam` → the two walks stay
-# cleanly separated (optimizer = IsParam, checkpoint = IsParam ∪ IsState).
-# ──────────────────────────────────────────────────────────────────────
-
-
-trait IsState(Movable & ImplicitlyDestructible):
-    """Marker — a non-trainable but persisted field (e.g. BatchNorm
-    running stats). Visited by `for_each_state` (checkpoint), never by
+trait IsState(Movable & ImplicitlyDeletable):
+    """Marker — a non-trainable but persisted field (e.g. BatchNorm running
+    stats). Visited by `for_each_state` (checkpoint), never by
     `for_each_param` (optimizer)."""
 
     def state_name(self) -> StaticString:
         ...
 
-    def init_with[
-        target: StaticString
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        ...
-
-    def visit_with[V: ParamVisitor, target: StaticString](
-        mut self, full_name: String, mut visitor: V,
+    def visit_with[target: StaticString, V: ParamVisitor](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        full_name: String = String(""),
     ) raises:
         ...
 
 
-# ──────────────────────────────────────────────────────────────────────
-# State[NAME, SIZE, dtype] — one Tensor + the IsState role.
-# ──────────────────────────────────────────────────────────────────────
-
-
-struct State[NAME: StaticString, SIZE: Int, dtype: DType = DT](IsState):
-    var t: Tensor[Self.NAME, Self.SIZE, Self.dtype]
+struct State[NAME: StaticString, SIZE: Int](IsState):
+    var t: Tensor
 
     def __init__(out self):
-        self.t = Tensor[Self.NAME, Self.SIZE, Self.dtype]()
+        self.t = Tensor()
 
     @staticmethod
-    def make_cpu() raises -> Self:
-        var s = Self()
-        s.t = Tensor[Self.NAME, Self.SIZE, Self.dtype].make_cpu()
-        return s^
-
-    @staticmethod
-    def make_gpu(ctx: DeviceContext) raises -> Self:
-        var s = Self()
-        s.t = Tensor[Self.NAME, Self.SIZE, Self.dtype].make_gpu(ctx)
-        return s^
-
-    def init_with[
+    def make[
         target: StaticString
-    ](mut self, ctx: Optional[DeviceContext]) raises:
-        self.t.init_with[target](ctx)
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Allocate the CPU slab (zero-filled). On GPU also reserve the device
+        buffer; the owning leaf fills `t.data` and uploads (so init values land
+        on device), mirroring how `Param.make` defers the value fill to the
+        leaf's INIT."""
+        var s = Self()
+        s.t = Tensor.alloc(Self.SIZE)
+        comptime if target == "gpu":
+            s.t.ensure_gpu(ctx.value(), Self.SIZE)
+        return s^
 
     def state_name(self) -> StaticString:
         return Self.NAME
 
-    def value_unsafe_ptr_cpu(
-        ref self,
-    ) -> UnsafePointer[Scalar[Self.dtype], MutAnyOrigin]:
-        return self.t.cpu_ptr()
-
-    def visit_with[V: ParamVisitor, target: StaticString](
-        mut self, full_name: String, mut visitor: V,
+    def visit_with[target: StaticString, V: ParamVisitor](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        full_name: String = String(""),
     ) raises:
-        """Dispatch the visitor with the value tile passed as both `param`
-        and `grad` (checkpoint visitors read/write `param` only). The
-        `ParamVisitor` interface is `DT`-typed, so State checkpointing is
-        DT-only (RNG-counter / bf16 States, if ever needed, would use a
-        separate path)."""
-        comptime assert Self.dtype == DT, (
-            "State.visit_with: checkpoint walk supports dtype=DT only"
+        var g = Tensor()
+        var m = Tensor()
+        var v = Tensor()
+        visitor.visit[target, Self.SIZE](
+            full_name, self.t, g, m, v, False, ctx
         )
-        var p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-        comptime if target == "cpu":
-            p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self.t.cpu_ptr())
-        else:
-            p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](self.t.dev_ptr())
-        var v_tt = TileTensor(p, row_major[Self.SIZE]())
-        var g_tt = TileTensor(p, row_major[Self.SIZE]())
-        visitor.visit(full_name, v_tt, g_tt, Self.SIZE, False)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# for_each_state_auto — reflection walk over IsState fields. Mirrors
-# `for_each_param_auto` (walkers.mojo). Used by the `Module.for_each_state`
-# default body; combinators override `for_each_state` to recurse children.
-# ──────────────────────────────────────────────────────────────────────
 
 
 def for_each_state_auto[
-    T: AnyType, V: ParamVisitor, target: StaticString,
-](mut t: T, prefix: String, mut visitor: V) raises:
+    T: AnyType, V: ParamVisitor, target: StaticString
+](
+    mut t: T, mut visitor: V, ctx: Optional[DeviceContext],
+    prefix: String = String(""),
+) raises:
+    """Walk every `IsState`-typed field of `t` and dispatch the visitor.
+    Mirrors `for_each_param_auto` (walkers.mojo); backs the
+    `Module.for_each_state` trait default. Combinators override
+    `for_each_state` to recurse into their children."""
     comptime field_types = reflect[T].field_types()
-    var sep = "." if prefix.byte_length() > 0 else ""
     comptime for idx in range(reflect[T].field_count()):
         comptime ft = field_types[idx]
         comptime if conforms_to(ft, IsState):
             ref s = reflect[T].field_ref[idx](t)
-            visitor_name = prefix + sep + String(s.state_name())
-            s.visit_with[V, target](visitor_name, visitor)
+            s.visit_with[target, V](
+                visitor, ctx, join_name(prefix, String(s.state_name()))
+            )

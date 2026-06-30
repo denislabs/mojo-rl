@@ -1,63 +1,44 @@
-"""MaxPool2D[C, K, S, P, H, W] — 2D max-pooling with zero padding.
+"""MaxPool2D[C, K, S, P, H, W] — 2D max-pooling on the storage surface.
 
-Phase 5 of `nn/PORTING_PLAN.md`.
+Storage-surface port of legacy `nn.primitives.MaxPool2D` (kernels + SIMD math
+carried VERBATIM — only the surface changed). `[B, C·H·W]` in, `[B, C·OH·OW]`
+out where `OH = (H + 2P - K)//S + 1`, `OW = (W + 2P - K)//S + 1`.
 
-Comptime shape: `[BATCH, C, H, W]` flattened to `[BATCH, C·H·W]`;
-output `[BATCH, C, OH, OW]` flattened to `[BATCH, C·OH·OW]`.
-    OH = (H + 2P - K) // S + 1
-    OW = (W + 2P - K) // S + 1
+No params, no leaf-owned cache: backward re-scans each pooling window through the
+input slab to re-find the argmax. The storage surface passes `forward_input`
+explicitly into `vjp` (invariant §3.1), so the legacy `_cached_input_ptr` /
+two-phase machinery dissolves — `forward_input[0]` IS the input slab.
 
-No params. No leaf-owned cache: backward re-scans each pooling window
-through the orchestrator's input slab (input-alias pattern, mirrors
-Clamp / ReLU). Re-finding argmax costs K·K extra ops per output
-position — negligible relative to the windowed sum-of-products in the
-forward, and avoids a `cache[OUT_DIM]` int-as-float storage.
-
-Tie-break: first lane in row-major (kh, kw) iteration order wins,
-matching the PyTorch convention.
-
-Backward: only the argmax lane in each window receives the gradient.
-Padded (OOB) lanes contribute `-inf` to the comparison so they never
-win, and never receive gradient.
-
-GPU backward is **input-indexed** (one thread per input position) —
-mirrors the no-atomics convention nn / deep_agents use elsewhere
-(see `c51/target_y_block.mojo:48`). Each thread loops over the output
-windows that contain its input cell, recomputes argmax for each, and
-accumulates `grad_y` only when its own (ih, iw) is the window's
-argmax. Pure single-writer per output cell — no race even with
-overlapping pools.
+Tie-break: first lane in row-major (kh, kw) iteration order wins (PyTorch
+convention). Padded (OOB) lanes contribute `-inf` so they never win nor receive
+gradient. GPU backward is input-indexed (one thread per input cell, recomputing
+argmax for each covering window) — pure single-writer per output cell, no race
+even with overlapping pools.
 """
 
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB, LAYOUT_NCHW, LAYOUT_NHWC
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
+
+# Reuse the conv2d channels-first/last index helpers (generic Int params; the
+# C/OSP shapes map onto IC/OC/SO). One source of truth, already gated.
+from .conv2d import _in_off, _in_decode, _out_off, _out_decode
 
 
 comptime MP_NEG_INF: Scalar[DT] = -1.0e30
 
 
-# ──────────────────────────────────────────────────────────────────────
-# GPU kernels.
-#   Forward:  1 thread per output position (b, c, oh, ow). Scans the
-#             K·K window and writes the max. -inf sentinel for OOB.
-#   Backward: 1 thread per input position (b, c, ih, iw). Loops over
-#             the (typically 1) output window(s) that contain it,
-#             recomputes argmax, and accumulates `grad_y` if this lane
-#             is the argmax.
-# ──────────────────────────────────────────────────────────────────────
-
-
 def _max_pool_2d_forward_kernel[
     BATCH: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
     OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, IN_FLAT), MutAnyOrigin],
     output: LayoutTensor[DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin],
@@ -68,13 +49,10 @@ def _max_pool_2d_forward_kernel[
         return
     var b = idx // OUT_FLAT
     var out_pos = idx % OUT_FLAT
-    var spatial_out = OH * OW
-    var c = out_pos // spatial_out
-    var rem = out_pos % spatial_out
-    var oh = rem // OW
-    var ow = rem % OW
+    var c, os = _out_decode[LAYOUT, C, OH * OW](out_pos)
+    var oh = os // OW
+    var ow = os % OW
 
-    var in_c_off = c * H * W
     var best: Scalar[DT] = MP_NEG_INF
     for kh in range(K):
         var ih = oh * S + kh - P
@@ -84,7 +62,9 @@ def _max_pool_2d_forward_kernel[
             var iw = ow * S + kw - P
             if iw < 0 or iw >= W:
                 continue
-            var v = rebind[Scalar[DT]](input[b, in_c_off + ih * W + iw])
+            var v = rebind[Scalar[DT]](
+                input[b, _in_off[LAYOUT, C, H, W](c, ih, iw)]
+            )
             if v > best:
                 best = v
     output[b, out_pos] = best
@@ -93,6 +73,7 @@ def _max_pool_2d_forward_kernel[
 def _max_pool_2d_backward_kernel[
     BATCH: Int, C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
     OH: Int, OW: Int, IN_FLAT: Int, OUT_FLAT: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     grad_output: LayoutTensor[
         DT, Layout.row_major(BATCH, OUT_FLAT), MutAnyOrigin,
@@ -108,11 +89,7 @@ def _max_pool_2d_backward_kernel[
         return
     var b = idx // IN_FLAT
     var in_pos = idx % IN_FLAT
-    var hw = H * W
-    var c = in_pos // hw
-    var rem = in_pos % hw
-    var ih = rem // W
-    var iw = rem % W
+    var c, ih, iw = _in_decode[LAYOUT, C, H, W](in_pos)
 
     # Output positions whose receptive field covers (ih, iw):
     #     oh ∈ [ceil((ih + P - K + 1) / S), floor((ih + P) / S)] ∩ [0, OH-1]
@@ -137,9 +114,6 @@ def _max_pool_2d_backward_kernel[
     if ow_top >= OW:
         ow_top = OW - 1
 
-    var in_c_off = c * hw
-    var spatial_out = OH * OW
-    var out_c_off = c * spatial_out
     var acc: Scalar[DT] = 0.0
     var oh = oh_bot
     while oh <= oh_top:
@@ -158,7 +132,7 @@ def _max_pool_2d_backward_kernel[
                     if win_iw < 0 or win_iw >= W:
                         continue
                     var v = rebind[Scalar[DT]](
-                        input[b, in_c_off + win_ih * W + win_iw]
+                        input[b, _in_off[LAYOUT, C, H, W](c, win_ih, win_iw)]
                     )
                     if v > best:
                         best = v
@@ -166,7 +140,9 @@ def _max_pool_2d_backward_kernel[
                         best_iw = win_iw
             if best_ih == ih and best_iw == iw:
                 acc += rebind[Scalar[DT]](
-                    grad_output[b, out_c_off + oh * OW + ow]
+                    grad_output[
+                        b, _out_off[LAYOUT, C, OH * OW](c, oh * OW + ow)
+                    ]
                 )
             ow += 1
         oh += 1
@@ -175,28 +151,23 @@ def _max_pool_2d_backward_kernel[
 
 struct MaxPool2D[
     C: Int, K: Int, S: Int, P: Int, H: Int, W: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](Module):
     comptime ARITY: Int = 1
     comptime OH: Int = (Self.H + 2 * Self.P - Self.K) // Self.S + 1
     comptime OW: Int = (Self.W + 2 * Self.P - Self.K) // Self.S + 1
-    comptime IN_DIM_FLAT: Int = Self.C * Self.H * Self.W
-    comptime OUT_DIM_FLAT: Int = Self.C * Self.OH * Self.OW
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_DIM_FLAT)
-    comptime OUT_DIM = Self.OUT_DIM_FLAT
-
-    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var ts: TargetStorage
+    comptime IN_FLAT: Int = Self.C * Self.H * Self.W
+    comptime OUT_FLAT: Int = Self.C * Self.OH * Self.OW
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_FLAT)
+    comptime OUT_DIM = Self.OUT_FLAT
 
     def __init__(out self):
-        self._cached_input_ptr = None
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         comptime assert target == "cpu" or target == "gpu", (
             "MaxPool2D: target must be 'cpu' or 'gpu'"
         )
@@ -206,41 +177,23 @@ struct MaxPool2D[
         comptime assert Self.OH > 0 and Self.OW > 0, (
             "MaxPool2D: invalid spatial shape — check H/W/K/S/P"
         )
-        var m = Self()
-        comptime if target == "cpu":
-            m.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("MaxPool2D.make[target='gpu']: ctx required")
-            m.ts = TargetStorage.make_gpu(ctx.value())
-        return m^
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["MaxPool2D", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-        var in_p = input.ptr
-        var out_p = output_v.ptr
-        self._cached_input_ptr = in_p
-
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            for b in range(BATCH):
-                var in_base = b * Self.IN_DIM_FLAT
-                var out_base = b * Self.OUT_DIM_FLAT
+            out.ensure(B * Self.OUT_FLAT)
+            for b in range(B):
+                var in_base = b * Self.IN_FLAT
+                var out_base = b * Self.OUT_FLAT
                 for c in range(Self.C):
-                    var in_c_base = in_base + c * Self.H * Self.W
-                    var out_c_base = out_base + c * Self.OH * Self.OW
                     for oh in range(Self.OH):
                         for ow in range(Self.OW):
                             var best: Scalar[DT] = MP_NEG_INF
@@ -252,62 +205,61 @@ struct MaxPool2D[
                                     var iw = ow * Self.S + kw - Self.P
                                     if iw < 0 or iw >= Self.W:
                                         continue
-                                    var v = in_p[
-                                        in_c_base + ih * Self.W + iw
+                                    var v = in0.data[
+                                        in_base
+                                        + _in_off[
+                                            Self.LAYOUT, Self.C, Self.H, Self.W
+                                        ](c, ih, iw)
                                     ]
                                     if v > best:
                                         best = v
-                            out_p[out_c_base + oh * Self.OW + ow] = best
+                            out.data[
+                                out_base
+                                + _out_off[
+                                    Self.LAYOUT, Self.C, Self.OH * Self.OW
+                                ](c, oh * Self.OW + ow)
+                            ] = best
         else:
-            comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
-            comptime out_layout = Layout.row_major(BATCH, Self.OUT_DIM_FLAT)
-            var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](in_p)
-            var out_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](out_p)
-            comptime total = BATCH * Self.OUT_DIM_FLAT
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT_FLAT)
+            comptime total = B * Self.OUT_FLAT
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _max_pool_2d_forward_kernel[
-                BATCH, Self.C, Self.K, Self.S, Self.P,
-                Self.H, Self.W, Self.OH, Self.OW,
-                Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
-            ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt,
+            c.enqueue_function[
+                _max_pool_2d_forward_kernel[
+                    B, Self.C, Self.K, Self.S, Self.P,
+                    Self.H, Self.W, Self.OH, Self.OW,
+                    Self.IN_FLAT, Self.OUT_FLAT, Self.LAYOUT,
+                ]
+            ](
+                in0.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                out.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
                 grid_dim=n_blocks, block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["MaxPool2D", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
+        ref fin = forward_input[0]
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var x_p = self._cached_input_ptr.value()
+            gin.ensure(B * Self.IN_FLAT)
             # Zero-fill grad_input — we scatter argmax-only.
-            for k in range(BATCH * Self.IN_DIM_FLAT):
-                gi_p[k] = Scalar[DT](0.0)
-            for b in range(BATCH):
-                var in_base = b * Self.IN_DIM_FLAT
-                var out_base = b * Self.OUT_DIM_FLAT
+            for k in range(B * Self.IN_FLAT):
+                gin.data[k] = Scalar[DT](0.0)
+            for b in range(B):
+                var in_base = b * Self.IN_FLAT
+                var out_base = b * Self.OUT_FLAT
                 for c in range(Self.C):
-                    var in_c_base = in_base + c * Self.H * Self.W
-                    var out_c_base = out_base + c * Self.OH * Self.OW
                     for oh in range(Self.OH):
                         for ow in range(Self.OW):
                             var best: Scalar[DT] = MP_NEG_INF
@@ -320,32 +272,37 @@ struct MaxPool2D[
                                     var iw = ow * Self.S + kw - Self.P
                                     if iw < 0 or iw >= Self.W:
                                         continue
-                                    var idx = in_c_base + ih * Self.W + iw
-                                    var v = x_p[idx]
+                                    var idx = in_base + _in_off[
+                                        Self.LAYOUT, Self.C, Self.H, Self.W
+                                    ](c, ih, iw)
+                                    var v = fin.data[idx]
                                     if v > best:
                                         best = v
                                         best_idx = idx
                             if best_idx >= 0:
-                                gi_p[best_idx] += go_p[
-                                    out_c_base + oh * Self.OW + ow
+                                gin.data[best_idx] += grad_output.data[
+                                    out_base
+                                    + _out_off[
+                                        Self.LAYOUT, Self.C, Self.OH * Self.OW
+                                    ](c, oh * Self.OW + ow)
                                 ]
         else:
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var x_p = self._cached_input_ptr.value()
-            comptime in_layout = Layout.row_major(BATCH, Self.IN_DIM_FLAT)
-            comptime out_layout = Layout.row_major(BATCH, Self.OUT_DIM_FLAT)
-            var go_lt = LayoutTensor[DT, out_layout, MutAnyOrigin](go_p)
-            var in_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](x_p)
-            var gi_lt = LayoutTensor[DT, in_layout, MutAnyOrigin](gi_p)
-            comptime total = BATCH * Self.IN_DIM_FLAT
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.IN_FLAT)
+            comptime total = B * Self.IN_FLAT
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _max_pool_2d_backward_kernel[
-                BATCH, Self.C, Self.K, Self.S, Self.P,
-                Self.H, Self.W, Self.OH, Self.OW,
-                Self.IN_DIM_FLAT, Self.OUT_DIM_FLAT,
-            ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, in_lt, gi_lt,
+            c.enqueue_function[
+                _max_pool_2d_backward_kernel[
+                    B, Self.C, Self.K, Self.S, Self.P,
+                    Self.H, Self.W, Self.OH, Self.OW,
+                    Self.IN_FLAT, Self.OUT_FLAT, Self.LAYOUT,
+                ]
+            ](
+                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                fin.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
+                gin.lt["gpu", Layout.row_major(B, Self.IN_FLAT)](),
                 grid_dim=n_blocks, block_dim=TPB,
             )
+
+    # for_each_param / zero_grad / polyak_from inherit the Module defaults
+    # (param-less → no-op).

@@ -55,7 +55,7 @@ comptime NUM_ITERATIONS: Int = 12
 
 @fieldwise_init
 struct GoalReachRolloutCallback(
-    Movable, ImplicitlyDestructible, RolloutCallbackCPU
+    Movable, ImplicitlyDeletable, RolloutCallbackCPU
 ):
     """Per-step ``z' = z + a`` with step reward ``-‖z' - goal‖²``.
 

@@ -20,20 +20,23 @@ from mojo_rl.envs.pusht.render import render_pusht_rgb_at
 
 
 def sim_frame_chw_norm[
-    OUT: Int
+    OUT: Int,
+    do: MutOrigin = MutAnyOrigin,
 ](
     block_cx: Scalar[DT],
     block_cy: Scalar[DT],
     block_angle: Scalar[DT],
     agent_cx: Scalar[DT],
     agent_cy: Scalar[DT],
-    dst_chw: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    dst_chw: UnsafePointer[Scalar[DT], do],
 ) raises:
     """Render one PushT state at OUT×OUT and write CHW [0,1] (3·OUT·OUT) to
     `dst_chw` — the LeWM encoder's per-frame input layout."""
     comptime HW = OUT * OUT
     var tmp = alloc[Scalar[DT]](HW * 3)   # HWC [0,255]
-    var pix = LayoutTensor[DT, Layout.row_major(OUT, OUT, 3), MutAnyOrigin](tmp)
+    var pix = LayoutTensor[DT, Layout.row_major(OUT, OUT, 3), MutAnyOrigin](
+        tmp.as_unsafe_any_origin()
+    )
     render_pusht_rgb_at[OUT](
         block_cx, block_cy, block_angle, agent_cx, agent_cy, pix
     )

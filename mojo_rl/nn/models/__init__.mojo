@@ -1,21 +1,26 @@
-"""Pre-built model / block compositions for nn.
+"""Models — pre-built architectures composed from storage leaves.
 
-Each model here is a *compositional* alias — it expands to a `Sequential`
-/ `Residual` / `ProjectedResidual` of existing primitives, so it gets
-correct forward / vjp / walkers / `set_attr` propagation for free and
-needs no bespoke kernels.
-
-Navigation (import from the specific submodule, e.g.
-`from mojo_rl.nn.models.gpt import GPT`):
-
-  - `conv`        — `Conv2DReLU`, `Conv2DBatchNormReLU`
-  - `resnet`      — `ResBlockConv2DBN`, `ResBlockDownsampleBN`
-  - `transformer` — `MultiHeadAttentionXL`, `MultiHeadAttention`,
-                    `TransformerFFN`, `TransformerBlock` (shared pieces)
-  - `gpt`         — `GPT`, the nanoGPT dropout variants
-                    (`MultiHeadAttentionDrop`, `TransformerFFNDrop`,
-                    `TransformerBlockDrop`, `GPTDrop`, `GPTDropTied`) and
-                    the GPT construction ops (`gpt_scale_residual_proj`,
-                    `gpt_wire_tie`)
-  - `vit`         — `PatchEmbed`, `ViT`
+Storage-surface port of `nn/models/`. The transformer/ViT/ResNet/Conv pieces are
+pure `comptime` compositions (no structs/kernels). GPT adds two weight-surgery
+construction ops (`gpt_scale_residual_proj`, `gpt_wire_tie`).
 """
+
+from .transformer import (
+    MultiHeadAttention,
+    MultiHeadAttentionXL,
+    TransformerFFN,
+    TransformerBlock,
+)
+from .conv import Conv2DReLU, Conv2DBatchNormReLU
+from .resnet import ResBlockConv2DBN, ResBlockDownsampleBN
+from .vit import PatchEmbed, ViT
+from .gpt import (
+    GPT,
+    GPTDrop,
+    GPTDropTied,
+    MultiHeadAttentionDrop,
+    TransformerFFNDrop,
+    TransformerBlockDrop,
+    gpt_scale_residual_proj,
+    gpt_wire_tie,
+)

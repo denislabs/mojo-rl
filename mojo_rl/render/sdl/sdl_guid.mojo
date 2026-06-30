@@ -49,7 +49,7 @@ struct GUID(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GUID.
     """
 
-    var data: ArrayHelper[UInt8, 16, MutAnyOrigin]
+    var data: ArrayHelper[UInt8, 16, MutUntrackedOrigin]
 
 
 def guid_to_string(
@@ -99,5 +99,5 @@ def string_to_guid(var pch_guid: String) raises -> GUID:
     return _get_dylib_function[
         lib,
         "SDL_StringToGUID",
-        def(pch_guid: Ptr[c_char, ImmutAnyOrigin]) thin -> GUID,
+        def(Ptr[c_char, ImmutOrigin(origin_of(pch_guid))]) thin -> GUID,
     ]()(pch_guid.as_c_string_slice().unsafe_ptr())

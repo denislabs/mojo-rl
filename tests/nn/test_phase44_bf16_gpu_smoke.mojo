@@ -22,8 +22,7 @@ from std.testing import assert_true
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.nn.primitives.activations import ReLU, Tanh
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.ddpg.trainer import DDPGTrainer
 from mojo_rl.deep_agents.td3.trainer import TD3Trainer

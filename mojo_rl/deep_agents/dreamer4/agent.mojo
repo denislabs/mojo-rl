@@ -31,14 +31,16 @@ prediction (ADIM>0, already built) layers in for the real-env lighthouse.
 """
 
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward, call_vjp
+from mojo_rl.nn.core.walkers import join_name
 
 from .dynamics import Dreamer4Dynamics
 from .task_embedder import TaskEmbedder
@@ -46,7 +48,7 @@ from .heads import (
     Dreamer4PolicyHead, Dreamer4RewardHead, Dreamer4ValueHead,
     Dreamer4ContinueHead,
 )
-from .shortcut_loss import dynamics_pretrain_loss
+from .shortcut_loss import dynamics_pretrain_loss, _mao
 from .bc_loss import bc_mtp_loss
 from .imag_rollout import imagine_rollout
 from .imag_rl_loss import (
@@ -119,6 +121,7 @@ struct Dreamer4Agent[
     var agent_in: List[Scalar[DT]]      # [BF, AGD]
     var grad_zhat: List[Scalar[DT]]     # [BF, ND]
     var zhat: List[Scalar[DT]]          # [BF, ND]
+    var ztil: List[Scalar[DT]]          # [BF, ND] main-pass input (= vjp fwd_in)
     var grad_zt: List[Scalar[DT]]       # [BF, ND] (grad wrt z̃; discarded)
     var grad_h: List[Scalar[DT]]        # [BF, AGD]
     var grad_h_tmp: List[Scalar[DT]]    # [BF, AGD]
@@ -158,7 +161,6 @@ struct Dreamer4Agent[
     var im_gplog: List[Scalar[DT]]      # [BF, PLOG]  full policy-logit grad
     var im_clog: List[Scalar[DT]]       # [BF]        continue logits (use_continue)
     var im_chat: List[Scalar[DT]]       # [BF]        continue preds ĉ
-    var ts: TargetStorage
 
     def __init__(out self):
         self.dyn = Self.DYN()
@@ -190,6 +192,7 @@ struct Dreamer4Agent[
         self.agent_in = List[Scalar[DT]]()
         self.grad_zhat = List[Scalar[DT]]()
         self.zhat = List[Scalar[DT]]()
+        self.ztil = List[Scalar[DT]]()
         self.grad_zt = List[Scalar[DT]]()
         self.grad_h = List[Scalar[DT]]()
         self.grad_h_tmp = List[Scalar[DT]]()
@@ -204,7 +207,6 @@ struct Dreamer4Agent[
         self.ac_tok = List[Scalar[DT]]()
         self.ac_mask = List[Scalar[DT]]()
         self.rew_shift = List[Scalar[DT]]()
-        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
@@ -253,6 +255,7 @@ struct Dreamer4Agent[
         m.agent_in.resize(Self.BF * Self.AGD, Scalar[DT](0.0))
         m.grad_zhat.resize(Self.BF * Self.ND, Scalar[DT](0.0))
         m.zhat.resize(Self.BF * Self.ND, Scalar[DT](0.0))
+        m.ztil.resize(Self.BF * Self.ND, Scalar[DT](0.0))
         m.grad_zt.resize(Self.BF * Self.ND, Scalar[DT](0.0))
         m.grad_h.resize(Self.BF * Self.AGD, Scalar[DT](0.0))
         m.grad_h_tmp.resize(Self.BF * Self.AGD, Scalar[DT](0.0))
@@ -267,7 +270,6 @@ struct Dreamer4Agent[
         m.ac_tok.resize(Self.BF * Self.ADIM, Scalar[DT](0.0))
         m.ac_mask.resize(Self.ADIM, Scalar[DT](1.0))
         m.rew_shift.resize(Self.BF, Scalar[DT](0.0))
-        m.ts = TargetStorage.make_cpu()
         return m^
 
     @staticmethod
@@ -276,60 +278,131 @@ struct Dreamer4Agent[
 
     # ── Module conformance: forward/vjp unused (entry point is bc_train_step) ─
     def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
+        target: StaticString, BATCH: Int, o: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut output: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         raise Error("Dreamer4Agent.forward is unused; call bc_train_step")
 
     def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString, BATCH: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         raise Error("Dreamer4Agent.vjp is unused; call bc_train_step")
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
-    ](mut self, prefix: String, mut visitor: V) raises:
+    ](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
         comptime assert Self.DYN_TARGET == "cpu", (
             "whole-agent for_each_param spans one target; with DYN_TARGET=\"gpu\""
             " the dynamics is on device — optimize submodules separately"
             " (agent.dyn on GPU, agent.ph/agent.vh on CPU)."
         )
-        assert_tag_for["Dreamer4Agent", target](self.ts.target_tag)
-        self.dyn.for_each_param[target, V](prefix + ".dyn", visitor)
-        self.te.for_each_param[target, V](prefix + ".te", visitor)
-        self.ph.for_each_param[target, V](prefix + ".ph", visitor)
-        self.rh.for_each_param[target, V](prefix + ".rh", visitor)
-        self.vh.for_each_param[target, V](prefix + ".vh", visitor)
-        self.ch.for_each_param[target, V](prefix + ".ch", visitor)
+        self.dyn.for_each_param[target, V](visitor, ctx, join_name(prefix, "dyn"))
+        self.te.for_each_param[target, V](visitor, ctx, join_name(prefix, "te"))
+        self.ph.for_each_param[target, V](visitor, ctx, join_name(prefix, "ph"))
+        self.rh.for_each_param[target, V](visitor, ctx, join_name(prefix, "rh"))
+        self.vh.for_each_param[target, V](visitor, ctx, join_name(prefix, "vh"))
+        self.ch.for_each_param[target, V](visitor, ctx, join_name(prefix, "ch"))
         # NOTE: `ph_prior` is the FROZEN behavioral prior — never optimized, so
         # it is deliberately excluded from the param walk.
 
-    def zero_grad[target: StaticString](mut self) raises:
+    def zero_grad[target: StaticString](
+        mut self, ctx: Optional[DeviceContext]
+    ) raises:
         comptime assert Self.DYN_TARGET == "cpu", (
             "whole-agent zero_grad spans one target; with DYN_TARGET=\"gpu\""
             " zero submodule grads separately."
         )
-        assert_tag_for["Dreamer4Agent", target](self.ts.target_tag)
-        self.dyn.zero_grad[target]()
-        self.te.zero_grad[target]()
-        self.ph.zero_grad[target]()
-        self.rh.zero_grad[target]()
-        self.vh.zero_grad[target]()
-        self.ch.zero_grad[target]()
+        self.dyn.zero_grad[target](ctx)
+        self.te.zero_grad[target](ctx)
+        self.ph.zero_grad[target](ctx)
+        self.rh.zero_grad[target](ctx)
+        self.vh.zero_grad[target](ctx)
+        self.ch.zero_grad[target](ctx)
+
+    # ── storage-module call bridges (List host scratch ↔ boundary Tensor) ──
+    # @staticmethod so the caller can pass three DISTINCT fields of `self`
+    # (the module + an input List + an output List) without a `mut self`
+    # whole-struct borrow aliasing them. CPU-only host world-model path.
+    @staticmethod
+    def _head_fwd[M: Module, NB: Int](
+        mut m: M, read inp: List[Scalar[DT]], mut out: List[Scalar[DT]]
+    ) raises:
+        comptime IN = M.IN_DIMS[0]
+        comptime OUT = M.OUT_DIM
+        var in_t = Tensor.alloc(NB * IN)
+        for i in range(NB * IN):
+            in_t.data[i] = inp[i]
+        var out_t = Tensor.alloc(NB * OUT)
+        call_forward["cpu", NB](m, TensorRefs[M.ARITY](in_t), out_t, None)
+        for i in range(NB * OUT):
+            out[i] = out_t.data[i]
+
+    @staticmethod
+    def _head_vjp[M: Module, NB: Int](
+        mut m: M, read fin: List[Scalar[DT]], read go: List[Scalar[DT]]
+    ) raises:
+        # grad wrt input discarded (heads-only imagination training).
+        comptime IN = M.IN_DIMS[0]
+        comptime OUT = M.OUT_DIM
+        var fin_t = Tensor.alloc(NB * IN)
+        for i in range(NB * IN):
+            fin_t.data[i] = fin[i]
+        var go_t = Tensor.alloc(NB * OUT)
+        for i in range(NB * OUT):
+            go_t.data[i] = go[i]
+        var gi_t = Tensor.alloc(NB * IN)
+        call_vjp["cpu", NB](
+            m, TensorRefs[M.ARITY](fin_t), go_t, TensorRefs[M.ARITY](gi_t), None
+        )
+
+    @staticmethod
+    def _dyn_fwd[NB: Int](
+        mut dyn: Self.DYN, read inp: List[Scalar[DT]], mut out: List[Scalar[DT]]
+    ) raises:
+        comptime ND = Self.ND
+        var in_t = Tensor.alloc(NB * ND)
+        for i in range(NB * ND):
+            in_t.data[i] = inp[i]
+        var out_t = Tensor.alloc(NB * ND)
+        dyn.forward["cpu", NB](TensorRefs[1](in_t), out_t, None)
+        for i in range(NB * ND):
+            out[i] = out_t.data[i]
+
+    @staticmethod
+    def _dyn_vjp[NB: Int](
+        mut dyn: Self.DYN, read fin: List[Scalar[DT]], read go: List[Scalar[DT]]
+    ) raises:
+        # forward_input = `fin` (the input of the preceding dyn forward, so the
+        # spatial-proj grad recomputes correctly); dyn reuses the grid/tf_out/
+        # cache_sig it cached during that forward. grad wrt input discarded.
+        comptime ND = Self.ND
+        var fin_t = Tensor.alloc(NB * ND)
+        for i in range(NB * ND):
+            fin_t.data[i] = fin[i]
+        var go_t = Tensor.alloc(NB * ND)
+        for i in range(NB * ND):
+            go_t.data[i] = go[i]
+        var gi_t = Tensor.alloc(NB * ND)
+        dyn.vjp["cpu", NB](
+            TensorRefs[1](fin_t), go_t, TensorRefs[1](gi_t), None
+        )
 
     # ── eval accessors ──────────────────────────────────────────────────
     def agent_out_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
@@ -340,7 +413,7 @@ struct Dreamer4Agent[
         """Return the [BF, NMTP·NACT] policy logits from the last bc_train_step
         (distance n at columns [n·NACT, (n+1)·NACT)) — greedy action = argmax of
         the distance-0 block."""
-        return mptr(self.plog.unsafe_ptr())
+        return _mao(self.plog.unsafe_ptr())
 
     def _run_bc_loss(
         mut self,
@@ -357,12 +430,12 @@ struct Dreamer4Agent[
             Self.NBINS, Self.AGD,
         ](
             self.ph, self.rh, ht, actions, rewards, bins,
-            mptr(self.plog.unsafe_ptr()),
-            mptr(self.rlog.unsafe_ptr()),
-            mptr(self.gpl.unsafe_ptr()),
-            mptr(self.grl.unsafe_ptr()),
-            mptr(self.grad_h.unsafe_ptr()),
-            mptr(self.grad_h_tmp.unsafe_ptr()),
+            _mao(self.plog.unsafe_ptr()),
+            _mao(self.rlog.unsafe_ptr()),
+            _mao(self.gpl.unsafe_ptr()),
+            _mao(self.grl.unsafe_ptr()),
+            _mao(self.grad_h.unsafe_ptr()),
+            _mao(self.grad_h_tmp.unsafe_ptr()),
             policy_weight=policy_weight,
             reward_weight=reward_weight,
         )
@@ -400,17 +473,13 @@ struct Dreamer4Agent[
             " agent trains the dynamics via dynamics_pretrain_loss[FWD=\"gpu\"]"
             " directly (see the imagination lighthouse stage 1)."
         )
-        var agp = mptr(self.agent_in.unsafe_ptr())
-        var gzh = mptr(self.grad_zhat.unsafe_ptr())
-        var zh = mptr(self.zhat.unsafe_ptr())
-        var ghp = mptr(self.grad_h.unsafe_ptr())
-        var gzt_t = TileTensor(
-            mptr(self.grad_zt.unsafe_ptr()),
-            row_major[Self.BF, Self.ND](),
-        )
+        var agp = _mao(self.agent_in.unsafe_ptr())
+        var gzh = _mao(self.grad_zhat.unsafe_ptr())
+        var zh = _mao(self.zhat.unsafe_ptr())
+        var ghp = _mao(self.grad_h.unsafe_ptr())
 
         # 1. task embeddings → agent token input for every (b,t)
-        self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp)
+        self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp, None)
 
         # 2. shortcut-forcing video-prediction loss (injects agent tokens into
         #    every pass; the MAIN pass leaves h_t in dyn.agent_out)
@@ -422,6 +491,16 @@ struct Dreamer4Agent[
             agent_in=agp,
         )
 
+        # main-pass input z̃ = (1−σ)·z0 + σ·z1 (the storage dyn.vjp recomputes
+        # the spatial-proj forward from it; identical to the loss's internal z̃).
+        for bt in range(Self.BF):
+            var s = Float64(sigma[bt])
+            for i in range(Self.ND):
+                var idx = bt * Self.ND + i
+                self.ztil[idx] = Scalar[DT](
+                    (1.0 - s) * Float64(z0[idx]) + s * Float64(z1[idx])
+                )
+
         var loss_bc: Float64 = 0.0
         if not clean_bc:
             # COUPLED: BC reads the noised main-pass h_t; one combined vjp.
@@ -430,10 +509,9 @@ struct Dreamer4Agent[
                 policy_weight, reward_weight,
             )
             self.dyn.set_grad_h(ghp, Self.BF)
-            var gzh_t = TileTensor(gzh, row_major[Self.BF, Self.ND]())
-            self.dyn.vjp["cpu", Self.BF](gzh_t, gzt_t)
+            Self._dyn_vjp[Self.BF](self.dyn, self.ztil, self.grad_zhat)
             self.te.accumulate_grad["cpu", Self.B, Self.T](
-                self.dyn.grad_agent_in_ptr_cpu()
+                self.dyn.grad_agent_in_ptr_cpu(), None
             )
             return Tuple(loss_v, loss_bc)
 
@@ -442,13 +520,12 @@ struct Dreamer4Agent[
         for i in range(Self.BF * Self.AGD):
             self.grad_h[i] = Scalar[DT](0.0)
         self.dyn.set_grad_h(ghp, Self.BF)
-        var gzh_t = TileTensor(gzh, row_major[Self.BF, Self.ND]())
-        self.dyn.vjp["cpu", Self.BF](gzh_t, gzt_t)
+        Self._dyn_vjp[Self.BF](self.dyn, self.ztil, self.grad_zhat)
 
         # 4. dedicated CLEAN forward on z1 (σ=1) → un-noised h_t.
         self.dyn.set_indices(
-            mptr(self.clean_sig.unsafe_ptr()),
-            mptr(self.clean_step.unsafe_ptr()),
+            _mao(self.clean_sig.unsafe_ptr()),
+            _mao(self.clean_step.unsafe_ptr()),
             Self.BF,
         )
         self.dyn.set_agent_in(agp, Self.BF)
@@ -458,12 +535,7 @@ struct Dreamer4Agent[
             self.bc_in[i] = Scalar[DT](
                 sig_bc * Float64(z1[i]) + (1.0 - sig_bc) * Float64(z0[i])
             )
-        var z1_t = TileTensor(
-            mptr(self.bc_in.unsafe_ptr()),
-            row_major[Self.BF, Self.ND](),
-        )
-        var zh_t = TileTensor(zh, row_major[Self.BF, Self.ND]())
-        self.dyn.forward["cpu", Self.BF](z1_t, output=zh_t)
+        Self._dyn_fwd[Self.BF](self.dyn, self.bc_in, self.zhat)
 
         # 5. BC loss on the clean h_t → grad_h + head grads
         loss_bc = self._run_bc_loss(
@@ -474,13 +546,9 @@ struct Dreamer4Agent[
         # 6. BC vjp through the clean forward (zero flow grad), accumulating
         #    into the dynamics params; then the task-embedder grad.
         self.dyn.set_grad_h(ghp, Self.BF)
-        var gzero_t = TileTensor(
-            mptr(self.gzero.unsafe_ptr()),
-            row_major[Self.BF, Self.ND](),
-        )
-        self.dyn.vjp["cpu", Self.BF](gzero_t, gzt_t)
+        Self._dyn_vjp[Self.BF](self.dyn, self.bc_in, self.gzero)
         self.te.accumulate_grad["cpu", Self.B, Self.T](
-            self.dyn.grad_agent_in_ptr_cpu()
+            self.dyn.grad_agent_in_ptr_cpu(), None
         )
 
         return Tuple(loss_v, loss_bc)
@@ -524,33 +592,13 @@ struct Dreamer4Agent[
         comptime assert Self.ADIM == Self.NACT, (
             "acwm_train_step needs ADIM = NACT (one-hot action conditioning)"
         )
-        var agp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.agent_in.unsafe_ptr()
-        )
-        var gzh = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.grad_zhat.unsafe_ptr()
-        )
-        var zh = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.zhat.unsafe_ptr()
-        )
-        var ghp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.grad_h.unsafe_ptr()
-        )
-        var atk = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.ac_tok.unsafe_ptr()
-        )
-        var amk = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.ac_mask.unsafe_ptr()
-        )
-        var rsh = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-            self.rew_shift.unsafe_ptr()
-        )
-        var gzt_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.grad_zt.unsafe_ptr()
-            ),
-            row_major[Self.BF, Self.ND](),
-        )
+        var agp = _mao(self.agent_in.unsafe_ptr())
+        var gzh = _mao(self.grad_zhat.unsafe_ptr())
+        var zh = _mao(self.zhat.unsafe_ptr())
+        var ghp = _mao(self.grad_h.unsafe_ptr())
+        var atk = _mao(self.ac_tok.unsafe_ptr())
+        var amk = _mao(self.ac_mask.unsafe_ptr())
+        var rsh = _mao(self.rew_shift.unsafe_ptr())
 
         # 0. build the SHIFTED action tokens + transition rewards (frame f ← f−1;
         #    frame 0 = no preceding in-window action ⇒ zeros / 0 reward).
@@ -566,7 +614,7 @@ struct Dreamer4Agent[
                 self.rew_shift[b * Self.T + f] = rewards[b * Self.T + f - 1]
 
         # 1. task embeddings → agent token input
-        self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp)
+        self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp, None)
 
         # 2. ACTION-CONDITIONED shortcut-forcing video loss (ADIM=NACT): the
         #    action token moves the predicted transition. MAIN pass leaves h_t.
@@ -578,23 +626,28 @@ struct Dreamer4Agent[
             actions=atk, act_mask=amk, agent_in=agp,
         )
 
+        # main-pass input z̃ (= the storage dyn.vjp forward_input for the video
+        # vjp). The dyn cached its grid/tf_out/cache_sig from this same z̃.
+        for bt in range(Self.BF):
+            var s = Float64(sigma[bt])
+            for i in range(Self.ND):
+                var idx = bt * Self.ND + i
+                self.ztil[idx] = Scalar[DT](
+                    (1.0 - s) * Float64(z0[idx]) + s * Float64(z1[idx])
+                )
+
         # 3. video vjp ONLY (zero the agent-token grad) using the video caches;
         #    accumulates the action-MLP + transition param grads.
         for i in range(Self.BF * Self.AGD):
             self.grad_h[i] = Scalar[DT](0.0)
         self.dyn.set_grad_h(ghp, Self.BF)
-        var gzh_t = TileTensor(gzh, row_major[Self.BF, Self.ND]())
-        self.dyn.vjp["cpu", Self.BF](gzh_t, gzt_t)
+        Self._dyn_vjp[Self.BF](self.dyn, self.ztil, self.grad_zhat)
 
         # 4. dedicated near-clean forward (σ_bc) WITH the action tokens → an
         #    action-conditioned, un-noised h_t for the heads.
         self.dyn.set_indices(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.clean_sig.unsafe_ptr()
-            ),
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.clean_step.unsafe_ptr()
-            ),
+            _mao(self.clean_sig.unsafe_ptr()),
+            _mao(self.clean_step.unsafe_ptr()),
             Self.BF,
         )
         self.dyn.set_actions(atk, amk, Self.BF)
@@ -604,14 +657,7 @@ struct Dreamer4Agent[
             self.bc_in[i] = Scalar[DT](
                 sig_bc * Float64(z1[i]) + (1.0 - sig_bc) * Float64(z0[i])
             )
-        var z1_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.bc_in.unsafe_ptr()
-            ),
-            row_major[Self.BF, Self.ND](),
-        )
-        var zh_t = TileTensor(zh, row_major[Self.BF, Self.ND]())
-        self.dyn.forward["cpu", Self.BF](z1_t, output=zh_t)
+        Self._dyn_fwd[Self.BF](self.dyn, self.bc_in, self.zhat)
 
         # 5. BC loss on the clean h_t: policy clones SAME-frame actions; reward
         #    head fits the SHIFTED (transition-into) reward.
@@ -623,15 +669,9 @@ struct Dreamer4Agent[
         # 6. BC vjp through the clean forward (zero flow grad) → dyn + act-MLP
         #    grads; then the task-embedder grad.
         self.dyn.set_grad_h(ghp, Self.BF)
-        var gzero_t = TileTensor(
-            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
-                self.gzero.unsafe_ptr()
-            ),
-            row_major[Self.BF, Self.ND](),
-        )
-        self.dyn.vjp["cpu", Self.BF](gzero_t, gzt_t)
+        Self._dyn_vjp[Self.BF](self.dyn, self.bc_in, self.gzero)
         self.te.accumulate_grad["cpu", Self.B, Self.T](
-            self.dyn.grad_agent_in_ptr_cpu()
+            self.dyn.grad_agent_in_ptr_cpu(), None
         )
 
         return Tuple(loss_v, loss_bc)
@@ -645,7 +685,7 @@ struct Dreamer4Agent[
     def imag_policy_logits_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         """Per-state policy logits [BF, PLOG] from the last `imag_train_step`
         (greedy action = argmax of the dist-0 block)."""
-        return mptr(self.im_plog.unsafe_ptr())
+        return _mao(self.im_plog.unsafe_ptr())
 
     def imag_train_step(
         mut self,
@@ -675,16 +715,16 @@ struct Dreamer4Agent[
             "imag_train_step needs ADIM = NACT (one-hot action conditioning)"
         )
         comptime assert Self.NMTP >= 1, "need at least the dist-0 MTP block"
-        var agp = mptr(self.agent_in.unsafe_ptr())
-        var im_h_p = mptr(self.im_h.unsafe_ptr())
-        var im_act_p = mptr(self.im_act.unsafe_ptr())
-        var im_rew_p = mptr(self.im_rew.unsafe_ptr())
-        var im_val_p = mptr(self.im_val.unsafe_ptr())
-        var im_con_p = mptr(self.im_con.unsafe_ptr())
-        var im_ret_p = mptr(self.im_ret.unsafe_ptr())
+        var agp = _mao(self.agent_in.unsafe_ptr())
+        var im_h_p = _mao(self.im_h.unsafe_ptr())
+        var im_act_p = _mao(self.im_act.unsafe_ptr())
+        var im_rew_p = _mao(self.im_rew.unsafe_ptr())
+        var im_val_p = _mao(self.im_val.unsafe_ptr())
+        var im_con_p = _mao(self.im_con.unsafe_ptr())
+        var im_ret_p = _mao(self.im_ret.unsafe_ptr())
 
         # 1. task embeddings → agent tokens
-        self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp)
+        self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp, None)
 
         # 2. imagined rollout (frozen transformer + heads, forward-only). The
         #    dynamics forward runs on DYN_TARGET (GPU = the heavy compute); the
@@ -713,11 +753,9 @@ struct Dreamer4Agent[
         #    (frozen) continue head's sigmoid read off the rollout's h_t, so the
         #    λ-return truncates at predicted terminal states. Then λ-returns.
         if use_continue:
-            var imh_t = TileTensor(im_h_p, row_major[Self.BF, Self.AGD]())
-            var clog_p = mptr(self.im_clog.unsafe_ptr())
-            var clog_t = TileTensor(clog_p, row_major[Self.BF, 1]())
-            self.ch.forward["cpu", Self.BF](imh_t, output=clog_t)
-            var chat_p = mptr(self.im_chat.unsafe_ptr())
+            Self._head_fwd[Self.CH, Self.BF](self.ch, self.im_h, self.im_clog)
+            var clog_p = _mao(self.im_clog.unsafe_ptr())
+            var chat_p = _mao(self.im_chat.unsafe_ptr())
             continue_pred[Self.BF](clog_p, chat_p)
             for i in range(Self.BF):
                 self.im_con[i] = gamma * self.im_chat[i]
@@ -739,13 +777,10 @@ struct Dreamer4Agent[
             for t in range(Self.TM1):
                 self.im_actbt[b * Self.T + t] = self.im_act[b * Self.TM1 + t]
 
-        var im_h_t = TileTensor(im_h_p, row_major[Self.BF, Self.AGD]())
-
         # 5. value loss + backward → vh param grads
-        var vlog_p = mptr(self.im_vlog.unsafe_ptr())
-        var vlog_t = TileTensor(vlog_p, row_major[Self.BF, Self.NBINS]())
-        self.vh.forward["cpu", Self.BF](im_h_t, output=vlog_t)
-        var vloss_p = mptr(self.im_vloss.unsafe_ptr())
+        Self._head_fwd[Self.VH, Self.BF](self.vh, self.im_h, self.im_vlog)
+        var vlog_p = _mao(self.im_vlog.unsafe_ptr())
+        var vloss_p = _mao(self.im_vloss.unsafe_ptr())
         value_td_loss_cpu[Self.B, Self.T, Self.NBINS](
             vlog_p, bins, im_ret_p, vloss_p
         )
@@ -755,24 +790,18 @@ struct Dreamer4Agent[
         # d_loss = value_weight (reuse the loss buffer as the cotangent)
         for i in range(Self.B * Self.TM1):
             self.im_vloss[i] = value_weight
-        var gvlog_p = mptr(self.im_gvlog.unsafe_ptr())
+        var gvlog_p = _mao(self.im_gvlog.unsafe_ptr())
         value_td_loss_backward[Self.B, Self.T, Self.NBINS](
             vlog_p, bins, im_ret_p, vloss_p, gvlog_p
         )
-        var gvlog_t = TileTensor(gvlog_p, row_major[Self.BF, Self.NBINS]())
-        var vgi_t = TileTensor(
-            mptr(self.grad_h.unsafe_ptr()),
-            row_major[Self.BF, Self.AGD](),
-        )
-        self.vh.vjp["cpu", Self.BF, mode="all"](gvlog_t, vgi_t)
+        # vh backward (grad wrt h discarded — heads-only training)
+        Self._head_vjp[Self.VH, Self.BF](self.vh, self.im_h, self.im_gvlog)
 
         # 6. policy: current + frozen-prior logits → PMPO (dist-0 block)
-        var plog_p = mptr(self.im_plog.unsafe_ptr())
-        var prior_p = mptr(self.im_prior.unsafe_ptr())
-        var plog_t = TileTensor(plog_p, row_major[Self.BF, Self.PLOG]())
-        var prior_t = TileTensor(prior_p, row_major[Self.BF, Self.PLOG]())
-        self.ph.forward["cpu", Self.BF](im_h_t, output=plog_t)
-        self.ph_prior.forward["cpu", Self.BF](im_h_t, output=prior_t)
+        Self._head_fwd[Self.PH, Self.BF](self.ph, self.im_h, self.im_plog)
+        Self._head_fwd[Self.PH, Self.BF](self.ph_prior, self.im_h, self.im_prior)
+        var plog_p = _mao(self.im_plog.unsafe_ptr())
+        var prior_p = _mao(self.im_prior.unsafe_ptr())
         # extract dist-0 logits [BF, NACT]
         for s in range(Self.BF):
             for a in range(Self.NACT):
@@ -780,14 +809,14 @@ struct Dreamer4Agent[
                 self.im_prior0[s * Self.NACT + a] = self.im_prior[
                     s * Self.PLOG + a
                 ]
-        var plog0_p = mptr(self.im_plog0.unsafe_ptr())
-        var prior0_p = mptr(self.im_prior0.unsafe_ptr())
-        var actbt_p = mptr(self.im_actbt.unsafe_ptr())
-        var adv_p = mptr(self.im_adv.unsafe_ptr())
+        var plog0_p = _mao(self.im_plog0.unsafe_ptr())
+        var prior0_p = _mao(self.im_prior0.unsafe_ptr())
+        var actbt_p = _mao(self.im_actbt.unsafe_ptr())
+        var adv_p = _mao(self.im_adv.unsafe_ptr())
         var ploss = pmpo_policy_loss_cpu[Self.B, Self.T, Self.NACT](
             plog0_p, prior0_p, actbt_p, adv_p, alpha, beta
         )
-        var gplog0_p = mptr(self.im_gplog0.unsafe_ptr())
+        var gplog0_p = _mao(self.im_gplog0.unsafe_ptr())
         pmpo_policy_loss_backward[Self.B, Self.T, Self.NACT](
             plog0_p, prior0_p, actbt_p, adv_p, alpha, beta, policy_weight,
             gplog0_p,
@@ -800,14 +829,7 @@ struct Dreamer4Agent[
                 self.im_gplog[s * Self.PLOG + a] = self.im_gplog0[
                     s * Self.NACT + a
                 ]
-        var gplog_t = TileTensor(
-            mptr(self.im_gplog.unsafe_ptr()),
-            row_major[Self.BF, Self.PLOG](),
-        )
-        var pgi_t = TileTensor(
-            mptr(self.grad_h_tmp.unsafe_ptr()),
-            row_major[Self.BF, Self.AGD](),
-        )
-        self.ph.vjp["cpu", Self.BF, mode="all"](gplog_t, pgi_t)
+        # ph backward (grad wrt h discarded — heads-only training)
+        Self._head_vjp[Self.PH, Self.BF](self.ph, self.im_h, self.im_gplog)
 
         return Tuple(vloss, ploss)

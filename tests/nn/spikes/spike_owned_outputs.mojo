@@ -47,7 +47,7 @@ from mojo_rl.nn.constants import DT
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct OwnedLinear[IN: Int, OUT: Int](Movable & ImplicitlyDestructible):
+struct OwnedLinear[IN: Int, OUT: Int](Movable & ImplicitlyDeletable):
     """Tiny linear-bias layer: y[b, j] = sum_k input[b, k] * W[k, j] + b[j].
     Owns its weight + bias + output buffer (List). out_view() returns a
     TileTensor view into the owned buffer."""

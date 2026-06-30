@@ -1,14 +1,14 @@
-"""SIGReg[DIM, SEQ_LEN, NUM_PROJ, KNOTS] — Sketch Isotropic Gaussian Regularizer.
+"""SIGReg[DIM, SEQ_LEN, NUM_PROJ, KNOTS] — Sketch Isotropic Gaussian Regularizer
+(storage surface).
 
-nn port of the legacy `nn/.../sigreg.mojo` DiffOp. Epps-Pulley Gaussianity
-statistic via random projections (Maes, Le Lidec et al., LeWM 2026): enforces
-projected embeddings to look like N(0, I) samples in characteristic-function
-space — no EMAs, pretrained encoders, or auxiliary supervision. The
-load-bearing anti-collapse term in the LeWM JEPA loss.
+Transformed from legacy `nn.primitives.SIGReg` (surface-only change). Epps-Pulley
+Gaussianity statistic via random projections (Maes, Le Lidec et al., LeWM 2026):
+enforces projected embeddings to look like N(0, I) samples in characteristic-
+function space. The load-bearing anti-collapse term in the LeWM JEPA loss.
 
-ARITY=1, PARAM-free. Input (BATCH, SEQ_LEN*DIM) interpreted as (B, T, D);
-output (BATCH, 1) — the scalar `stat` replicated to every row so a 1/B grad
-seed gives chain-rule effective seed 1 (matches the reference `.mean()`).
+ARITY=1, PARAM-free. Input (BATCH, SEQ_LEN*DIM) interpreted as (B, T, D); output
+(BATCH, 1) — the scalar `stat` replicated to every row so a 1/B grad seed gives
+chain-rule effective seed 1 (matches the reference `.mean()`).
 
     A ~ N(0,I_D)^{D×P}, columns L2-normalized          (random projection)
     z[b,t,p]   = sum_d input[b,t*D+d] · A[d,p]
@@ -18,38 +18,39 @@ with t_k = k·3/(K−1), φ_k = exp(−t_k²/2), w_k = trap_k·φ_k.
 
 Leaf-owned state (stable across forward→vjp within a step):
   * cache_z [BATCH, T·P]  — the projected z, reused by backward.
-  * workspace             — A / cm / sm / partials / scalar / dLdz, allocated
-    ONCE per batch-size and reused (no per-step enqueue_create_buffer — the
-    NVIDIA disk-blowup / stream-capture footgun).
-PRNG: A is regenerated each call. Base seed = `Int(cache_z.ptr)` (stable
-across fwd/bwd, so backward sees forward's A). With `resample` enabled
-(set_attr["resample"], reference parity) each FORWARD additionally mixes a
-step counter into the seed — fresh projections every training step, like
-the reference's per-forward `torch.randn`; the matching vjp reuses the
-stored forward seed. Default off (fixed A): required by fd-gradcheck and
-keeps existing runs bit-identical.
+  * GPU workspace slabs (ws_a / ws_cm / ws_sm / ws_partials / ws_scalar /
+    ws_dLdz) — separate owned `Tensor` fields (one buffer per slab), vs the
+    legacy single pointer-sliced scratch. No `mptr`.
+PRNG: A is regenerated each call. Base seed = the cache_z buffer address
+(stable across fwd/bwd within a step, so backward sees forward's A). With
+`resample` enabled each FORWARD additionally mixes a step counter into the seed
+— fresh projections every training step, like the reference's per-forward
+`torch.randn`; the matching vjp reuses the stored forward seed. Default off
+(fixed A): required by fd-gradcheck and keeps existing runs bit-identical.
 
 Numeric: GPU accumulates in DT (fp32); CPU uses Float64 reductions. Expect
-~1e-3 relative agreement, not bit-exact.
+~1e-3 relative agreement, not bit-exact, across CPU/GPU.
+
+The CPU SIMD-free reduction loops and the GPU kernels (block.sum reductions, no
+atomics) are carried over VERBATIM from the legacy op; the only kernel-signature
+change is partials/stat/g raw pointers → 1-D LayoutTensor views (storage surface
+never passes raw device pointers to kernels). The kernel BODY math is identical.
 """
 
 from std.gpu import thread_idx, block_idx, block_dim, global_idx
 from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 from std.math import sin, cos, sqrt, log, exp, pi
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor, TileTensor, row_major
+from linalg.matmul import matmul as max_matmul
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP, Cache
-from ..core.module import Module, typed_view, typed_view_mut, mptr
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
-)
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
@@ -57,41 +58,37 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.SEQ_LEN * Self.DIM)
     comptime OUT_DIM = 1
 
-    @staticmethod
-    def display_label() -> String:
-        return String("SIGReg")
-
     # cache_z [BATCH, T*P] — leaf-owned, reused by backward.
-    var cache_z: Cache["cache_z"]
-    # workspace (GPU) — A/cm/sm/partials/scalar/dLdz, allocated once per batch.
-    var ws: Cache["sig_ws"]
-    # Per-forward projection RESAMPLING (reference parity): the LeWM
-    # reference draws a fresh random A every forward (`torch.randn` in
-    # SIGReg.forward); a FIXED A lets training game the sketch by hiding
-    # non-Gaussianity in the null directions. When `resample` is on
-    # (set_attr["resample"](1.0)), each forward mixes a step counter into
-    # the base seed; vjp reuses the forward's seed (backward must see the
-    # same A — the reference gets this for free from autograd). Default
-    # OFF: the fd-gradcheck needs a deterministic f across forward calls,
-    # and every existing run stays bit-identical.
+    var cache_z: Tensor
+    # GPU workspace slabs — separate owned Tensors (one buffer per slab), vs the
+    # legacy single pointer-sliced scratch. GPU-only in practice (CPU uses local
+    # InlineArrays). Lazily sized per batch.
+    var ws_a: Tensor  # [DIM, NUM_PROJ]
+    var ws_cm: Tensor  # [SEQ_LEN, NUM_PROJ*KNOTS]
+    var ws_sm: Tensor  # [SEQ_LEN, NUM_PROJ*KNOTS]
+    var ws_partials: Tensor  # [N_PARTIALS]
+    var ws_scalar: Tensor  # [1] (forward stat / backward G)
+    var ws_dLdz: Tensor  # [BATCH, SEQ_LEN*NUM_PROJ]
+    # Per-forward projection RESAMPLING (reference parity). Default OFF: the
+    # fd-gradcheck needs a deterministic f across forward calls, and every
+    # existing run stays bit-identical.
     var resample: Bool
     var _step_ctr: UInt64
     var _cur_seed: UInt64
     var _seed_valid: Bool
-    var ts: TargetStorage
 
     def __init__(out self):
-        self.cache_z = Cache["cache_z"]()
-        self.ws = Cache["sig_ws"]()
+        self.cache_z = Tensor()
+        self.ws_a = Tensor()
+        self.ws_cm = Tensor()
+        self.ws_sm = Tensor()
+        self.ws_partials = Tensor()
+        self.ws_scalar = Tensor()
+        self.ws_dLdz = Tensor()
         self.resample = False
         self._step_ctr = 0
         self._cur_seed = 0
         self._seed_valid = False
-        self.ts = TargetStorage.make_uninit()
-
-    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
-        comptime if ATTR == "resample":
-            self.resample = value > Scalar[DT](0.5)
 
     def _forward_seed(mut self, base: UInt64) -> UInt64:
         """Seed for THIS forward; stored so the matching vjp reuses it."""
@@ -133,46 +130,11 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
         var trap = dt if (k == 0 or k == Self.KNOTS - 1) else 2.0 * dt
         return trap * Self._phi_k(k)
 
-    # ── workspace layout (elements) ───────────────────────────────────
+    # ── workspace sizing (elements) ───────────────────────────────────
     @always_inline
     @staticmethod
     def _n_partials() -> Int:
         return (Self.SEQ_LEN * Self.NUM_PROJ * Self.KNOTS + TPB - 1) // TPB
-
-    @always_inline
-    @staticmethod
-    def _ws_off_a() -> Int:
-        return 0
-
-    @always_inline
-    @staticmethod
-    def _ws_off_cm() -> Int:
-        return Self.DIM * Self.NUM_PROJ
-
-    @always_inline
-    @staticmethod
-    def _ws_off_sm() -> Int:
-        return Self._ws_off_cm() + Self.SEQ_LEN * Self.NUM_PROJ * Self.KNOTS
-
-    @always_inline
-    @staticmethod
-    def _ws_off_partials() -> Int:
-        return Self._ws_off_sm() + Self.SEQ_LEN * Self.NUM_PROJ * Self.KNOTS
-
-    @always_inline
-    @staticmethod
-    def _ws_off_scalar() -> Int:
-        return Self._ws_off_partials() + Self._n_partials()
-
-    @always_inline
-    @staticmethod
-    def _ws_off_dLdz() -> Int:
-        return Self._ws_off_scalar() + 1
-
-    @always_inline
-    @staticmethod
-    def workspace_size_for[BATCH: Int]() -> Int:
-        return Self._ws_off_dLdz() + BATCH * Self.SEQ_LEN * Self.NUM_PROJ
 
     # ── random projection (deterministic from seed) ───────────────────
     @staticmethod
@@ -209,51 +171,57 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             "SIGReg: target must be 'cpu' or 'gpu'"
         )
         comptime assert Self.KNOTS >= 2, "SIGReg: KNOTS must be >= 2"
-        var m = Self()
-        comptime if target == "cpu":
-            m.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["SIGReg.make[target='gpu']"](ctx)
-            m.ts = TargetStorage.make_gpu(ctx_v)
-        return m^
+        comptime if target != "cpu":
+            if not ctx:
+                raise Error("SIGReg.make[target='gpu']: ctx required")
+        return Self()
 
-    def _ensure_gpu(mut self, batch: Int) raises:
-        var ctx = self.ts.ctx.value()
-        self.cache_z.ensure_gpu(ctx, batch * Self.SEQ_LEN * Self.NUM_PROJ)
-        var ws_size = (
-            Self._ws_off_dLdz() + batch * Self.SEQ_LEN * Self.NUM_PROJ
-        )
-        self.ws.ensure_gpu(ctx, ws_size)
-
-    # ── forward ───────────────────────────────────────────────────────
-    def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-    ](
-        mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-    ) raises:
-        assert_tag_for["SIGReg", target](self.ts.target_tag)
+    def _ensure_gpu(mut self, c: DeviceContext, batch: Int) raises:
         comptime D = Self.DIM
         comptime T = Self.SEQ_LEN
         comptime P = Self.NUM_PROJ
         comptime K = Self.KNOTS
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, 1](output)
+        self.cache_z.ensure_gpu(c, batch * T * P)
+        self.ws_a.ensure_gpu(c, D * P)
+        self.ws_cm.ensure_gpu(c, T * P * K)
+        self.ws_sm.ensure_gpu(c, T * P * K)
+        self.ws_partials.ensure_gpu(c, Self._n_partials())
+        self.ws_scalar.ensure_gpu(c, 1)
+        self.ws_dLdz.ensure_gpu(c, batch * T * P)
+
+    # ── forward ───────────────────────────────────────────────────────
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
+    ](
+        mut self,
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ref in0 = inputs[0]
+        comptime D = Self.DIM
+        comptime T = Self.SEQ_LEN
+        comptime P = Self.NUM_PROJ
+        comptime K = Self.KNOTS
 
         comptime if target == "cpu":
-            self.cache_z.ensure_cpu(BATCH * T * P)
-            var cache = TileTensor(self.cache_z.cpu, row_major[BATCH, T * P]())
-            var seed = self._forward_seed(UInt64(Int(self.cache_z.cpu_ptr())))
+            out.ensure(B * 1)
+            self.cache_z.ensure(B * T * P)
+            var cache = TileTensor(self.cache_z.data, row_major[B, T * P]())
+            var input = TileTensor(in0.data, row_major[B, T * D]())
+            var output_v = TileTensor(out.data, row_major[B, 1]())
+            var seed = self._forward_seed(
+                UInt64(Int(self.cache_z.data.unsafe_ptr()))
+            )
             var a = InlineArray[Scalar[DT], D * P](uninitialized=True)
-            Self._generate_a_cpu(seed, a.unsafe_ptr())
+            Self._generate_a_cpu(
+                seed,
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    a.unsafe_ptr()
+                ),
+            )
 
-            for b in range(BATCH):
+            for b in range(B):
                 for t in range(T):
                     for p in range(P):
                         var z = Scalar[DT](0)
@@ -267,8 +235,8 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             for i in range(NTPK):
                 cm[i] = Scalar[DT](0)
                 sm[i] = Scalar[DT](0)
-            var inv_b = Scalar[DT](1.0 / Float64(BATCH))
-            for b in range(BATCH):
+            var inv_b = Scalar[DT](1.0 / Float64(B))
+            for b in range(B):
                 for t in range(T):
                     for p in range(P):
                         var z = cache[b, t * P + p]
@@ -279,7 +247,7 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
                             cm[idx] += cos(arg) * inv_b
                             sm[idx] += sin(arg) * inv_b
 
-            var prefactor = Scalar[DT](Float64(BATCH) / Float64(T * P))
+            var prefactor = Scalar[DT](Float64(B) / Float64(T * P))
             var stat = Scalar[DT](0)
             for t in range(T):
                 for p in range(P):
@@ -290,90 +258,101 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
                         var diff = cm[idx] - phi
                         stat += wk * (diff * diff + sm[idx] * sm[idx])
             stat *= prefactor
-            for b in range(BATCH):
+            for b in range(B):
                 output_v[b, 0] = stat
         else:
-            self._ensure_gpu(BATCH)
-            var ctx = self.ts.ctx.value()
+            var c = ctx.value()
+            out.ensure_gpu(c, B * 1)
+            self._ensure_gpu(c, B)
             comptime N_PARTIALS = Self._n_partials()
-            var ws = mptr(self.ws.dev.value().unsafe_ptr())
-            var cache_p = mptr(self.cache_z.dev.value().unsafe_ptr())
-            var a_t = LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin](
-                ws + Self._ws_off_a()
+            comptime lay_a = Layout.row_major(D, P)
+            comptime lay_cmsm = Layout.row_major(T, P * K)
+            comptime lay_in = Layout.row_major(B, T * D)
+            comptime lay_cache = Layout.row_major(B, T * P)
+            comptime lay_out = Layout.row_major(B, 1)
+            comptime lay_part = Layout.row_major(N_PARTIALS)
+            comptime lay_one = Layout.row_major(1)
+            var seed = self._forward_seed(
+                UInt64(Int(self.cache_z.dev.value().unsafe_ptr()))
             )
-            var cm_t = LayoutTensor[
-                DT, Layout.row_major(T, P * K), MutAnyOrigin
-            ](ws + Self._ws_off_cm())
-            var sm_t = LayoutTensor[
-                DT, Layout.row_major(T, P * K), MutAnyOrigin
-            ](ws + Self._ws_off_sm())
-            var partials_ptr = ws + Self._ws_off_partials()
-            var stat_ptr = ws + Self._ws_off_scalar()
-            var in_t = LayoutTensor[
-                DT, Layout.row_major(BATCH, T * D), MutAnyOrigin
-            ](input.ptr)
-            var cache_t = LayoutTensor[
-                DT, Layout.row_major(BATCH, T * P), MutAnyOrigin
-            ](cache_p)
-            var out_t = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ](output_v.ptr)
-            var seed = self._forward_seed(UInt64(Int(cache_p)))
 
-            ctx.enqueue_function[_sr_gen_a_unnorm[D, P]](
-                a_t, seed, grid_dim=((D * P + TPB - 1) // TPB,), block_dim=(TPB,)
+            c.enqueue_function[_sr_gen_a_unnorm[D, P]](
+                self.ws_a.lt["gpu", lay_a](),
+                seed,
+                grid_dim=((D * P + TPB - 1) // TPB,),
+                block_dim=(TPB,),
             )
-            ctx.enqueue_function[_sr_norm_a[D, P]](
-                a_t, grid_dim=((P + TPB - 1) // TPB,), block_dim=(TPB,)
+            c.enqueue_function[_sr_norm_a[D, P]](
+                self.ws_a.lt["gpu", lay_a](),
+                grid_dim=((P + TPB - 1) // TPB,),
+                block_dim=(TPB,),
             )
-            ctx.enqueue_function[_sr_project[BATCH, T, D, P]](
-                in_t, a_t, cache_t,
-                grid_dim=((BATCH * T * P + TPB - 1) // TPB,), block_dim=(TPB,),
+            # cache_z[B*T, P] = X @ A — kept hand-rolled (faster at M=B·T=96, the
+            # real LeWM regime; see _sr_project note + bench). max_matmul only
+            # wins forward at M≥~1.5k, which no LeWM config hits.
+            c.enqueue_function[_sr_project[B, T, D, P]](
+                in0.lt["gpu", lay_in](),
+                self.ws_a.lt["gpu", lay_a](),
+                self.cache_z.lt["gpu", lay_cache](),
+                grid_dim=((B * T * P + TPB - 1) // TPB,),
+                block_dim=(TPB,),
             )
-            ctx.enqueue_function[_sr_cm_sm[BATCH, T, P, K, True]](
-                cache_t, cm_t, sm_t, partials_ptr,
-                grid_dim=(N_PARTIALS,), block_dim=(TPB,),
+            c.enqueue_function[_sr_cm_sm[B, T, P, K, N_PARTIALS, True]](
+                self.cache_z.lt["gpu", lay_cache](),
+                self.ws_cm.lt["gpu", lay_cmsm](),
+                self.ws_sm.lt["gpu", lay_cmsm](),
+                self.ws_partials.lt["gpu", lay_part](),
+                grid_dim=(N_PARTIALS,),
+                block_dim=(TPB,),
             )
-            ctx.enqueue_function[_sr_final_reduce[N_PARTIALS]](
-                partials_ptr, stat_ptr, grid_dim=(1,), block_dim=(TPB,),
+            c.enqueue_function[_sr_final_reduce[N_PARTIALS]](
+                self.ws_partials.lt["gpu", lay_part](),
+                self.ws_scalar.lt["gpu", lay_one](),
+                grid_dim=(1,),
+                block_dim=(TPB,),
             )
-            ctx.enqueue_function[_sr_broadcast_stat[BATCH, T, P]](
-                stat_ptr, out_t,
-                grid_dim=((BATCH + TPB - 1) // TPB,), block_dim=(TPB,),
+            c.enqueue_function[_sr_broadcast_stat[B, T, P]](
+                self.ws_scalar.lt["gpu", lay_one](),
+                out.lt["gpu", lay_out](),
+                grid_dim=((B + TPB - 1) // TPB,),
+                block_dim=(TPB,),
             )
 
     # ── backward ──────────────────────────────────────────────────────
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["SIGReg", target](self.ts.target_tag)
+        ref gin = grad_inputs[0]
         comptime D = Self.DIM
         comptime T = Self.SEQ_LEN
         comptime P = Self.NUM_PROJ
         comptime K = Self.KNOTS
-        var go = typed_view[BATCH, 1](grad_output)
-        var gi = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
 
         comptime if target == "cpu":
-            var cache = TileTensor(self.cache_z.cpu, row_major[BATCH, T * P]())
+            gin.ensure(B * T * D)
+            var cache = TileTensor(self.cache_z.data, row_major[B, T * P]())
+            var go = TileTensor(grad_output.data, row_major[B, 1]())
+            var gi = TileTensor(gin.data, row_major[B, T * D]())
             var seed = self._backward_seed(
-                UInt64(Int(self.cache_z.cpu_ptr()))
+                UInt64(Int(self.cache_z.data.unsafe_ptr()))
             )
             var a = InlineArray[Scalar[DT], D * P](uninitialized=True)
-            Self._generate_a_cpu(seed, a.unsafe_ptr())
+            Self._generate_a_cpu(
+                seed,
+                rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                    a.unsafe_ptr()
+                ),
+            )
 
             comptime NTPK = T * P * K
             var cm = InlineArray[Scalar[DT], NTPK](uninitialized=True)
@@ -381,8 +360,8 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
             for i in range(NTPK):
                 cm[i] = Scalar[DT](0)
                 sm[i] = Scalar[DT](0)
-            var inv_b = Scalar[DT](1.0 / Float64(BATCH))
-            for b in range(BATCH):
+            var inv_b = Scalar[DT](1.0 / Float64(B))
+            for b in range(B):
                 for t in range(T):
                     for p in range(P):
                         var z = cache[b, t * P + p]
@@ -394,11 +373,11 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
                             sm[idx] += sin(arg) * inv_b
 
             var G = Scalar[DT](0)
-            for b in range(BATCH):
+            for b in range(B):
                 G += go[b, 0]
             var coef = G * Scalar[DT](2.0 / Float64(T * P))
 
-            for b in range(BATCH):
+            for b in range(B):
                 for t in range(T):
                     var dLdz = InlineArray[Scalar[DT], P](uninitialized=True)
                     for p in range(P):
@@ -421,62 +400,75 @@ struct SIGReg[DIM: Int, SEQ_LEN: Int, NUM_PROJ: Int, KNOTS: Int](Module):
                             g += a[d * P + p] * dLdz[p]
                         gi[b, t * D + d] = g
         else:
-            self._ensure_gpu(BATCH)
-            var ctx = self.ts.ctx.value()
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * T * D)
+            self._ensure_gpu(c, B)
             comptime N_PARTIALS = Self._n_partials()
-            var ws = mptr(self.ws.dev.value().unsafe_ptr())
-            var cache_p = mptr(self.cache_z.dev.value().unsafe_ptr())
-            var a_t = LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin](
-                ws + Self._ws_off_a()
+            comptime lay_a = Layout.row_major(D, P)
+            comptime lay_cmsm = Layout.row_major(T, P * K)
+            comptime lay_cache = Layout.row_major(B, T * P)
+            comptime lay_go = Layout.row_major(B, 1)
+            comptime lay_dLdz = Layout.row_major(B, T * P)
+            comptime lay_one = Layout.row_major(1)
+            var seed = self._backward_seed(
+                UInt64(Int(self.cache_z.dev.value().unsafe_ptr()))
             )
-            var cm_t = LayoutTensor[
-                DT, Layout.row_major(T, P * K), MutAnyOrigin
-            ](ws + Self._ws_off_cm())
-            var sm_t = LayoutTensor[
-                DT, Layout.row_major(T, P * K), MutAnyOrigin
-            ](ws + Self._ws_off_sm())
-            var partials_ptr = ws + Self._ws_off_partials()
-            var g_ptr = ws + Self._ws_off_scalar()
-            var dLdz_t = LayoutTensor[
-                DT, Layout.row_major(BATCH, T * P), MutAnyOrigin
-            ](ws + Self._ws_off_dLdz())
-            var cache_t = LayoutTensor[
-                DT, Layout.row_major(BATCH, T * P), MutAnyOrigin
-            ](cache_p)
-            var go_t = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin
-            ](go.ptr)
-            var gi_t = LayoutTensor[
-                DT, Layout.row_major(BATCH, T * D), MutAnyOrigin
-            ](gi.ptr)
-            var seed = self._backward_seed(UInt64(Int(cache_p)))
 
-            ctx.enqueue_function[_sr_gen_a_unnorm[D, P]](
-                a_t, seed, grid_dim=((D * P + TPB - 1) // TPB,), block_dim=(TPB,)
+            c.enqueue_function[_sr_gen_a_unnorm[D, P]](
+                self.ws_a.lt["gpu", lay_a](),
+                seed,
+                grid_dim=((D * P + TPB - 1) // TPB,),
+                block_dim=(TPB,),
             )
-            ctx.enqueue_function[_sr_norm_a[D, P]](
-                a_t, grid_dim=((P + TPB - 1) // TPB,), block_dim=(TPB,)
+            c.enqueue_function[_sr_norm_a[D, P]](
+                self.ws_a.lt["gpu", lay_a](),
+                grid_dim=((P + TPB - 1) // TPB,),
+                block_dim=(TPB,),
             )
-            ctx.enqueue_function[_sr_cm_sm[BATCH, T, P, K, False]](
-                cache_t, cm_t, sm_t, partials_ptr,
-                grid_dim=(N_PARTIALS,), block_dim=(TPB,),
+            c.enqueue_function[_sr_cm_sm[B, T, P, K, N_PARTIALS, False]](
+                self.cache_z.lt["gpu", lay_cache](),
+                self.ws_cm.lt["gpu", lay_cmsm](),
+                self.ws_sm.lt["gpu", lay_cmsm](),
+                self.ws_partials.lt["gpu", Layout.row_major(N_PARTIALS)](),
+                grid_dim=(N_PARTIALS,),
+                block_dim=(TPB,),
             )
-            ctx.enqueue_function[_sr_reduce_g[BATCH]](
-                go_t, g_ptr, grid_dim=(1,), block_dim=(TPB,),
+            c.enqueue_function[_sr_reduce_g[B]](
+                grad_output.lt["gpu", lay_go](),
+                self.ws_scalar.lt["gpu", lay_one](),
+                grid_dim=(1,),
+                block_dim=(TPB,),
             )
-            ctx.enqueue_function[_sr_dLdz[BATCH, T, P, K]](
-                cache_t, cm_t, sm_t, dLdz_t, g_ptr,
-                grid_dim=((BATCH * T * P + TPB - 1) // TPB,), block_dim=(TPB,),
+            c.enqueue_function[_sr_dLdz[B, T, P, K]](
+                self.cache_z.lt["gpu", lay_cache](),
+                self.ws_cm.lt["gpu", lay_cmsm](),
+                self.ws_sm.lt["gpu", lay_cmsm](),
+                self.ws_dLdz.lt["gpu", lay_dLdz](),
+                self.ws_scalar.lt["gpu", lay_one](),
+                grid_dim=((B * T * P + TPB - 1) // TPB,),
+                block_dim=(TPB,),
             )
-            ctx.enqueue_function[_sr_matmul_a[BATCH, T, D, P]](
-                dLdz_t, a_t, gi_t,
-                grid_dim=((BATCH * T * D + TPB - 1) // TPB,), block_dim=(TPB,),
+            # grad_input[B*T, D] = dLdz[B*T, P] @ A[D, P]ᵀ  (contract over P;
+            # A consumed transpose_b, no physical transpose — mirrors Linear's
+            # grad_in = grad_out @ Wᵀ).
+            var ga_dl_v = TileTensor(
+                self.ws_dLdz.dev.value(), row_major[B * T, P]()
             )
+            var ga_a_v = TileTensor(self.ws_a.dev.value(), row_major[D, P]())
+            var ga_gi_v = TileTensor(gin.dev.value(), row_major[B * T, D]())
+            max_matmul[transpose_b=True, target="gpu"](
+                ga_gi_v, ga_dl_v, ga_a_v, c
+            )
+
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (SIGReg is param-free → they reflect to a no-op).
 
 
 # ============================================================================
-# Module-level GPU kernels — ported verbatim from nn/.../sigreg.mojo (already
-# NVIDIA-validated). block.sum reductions (no atomics). Generic over DT.
+# Module-level GPU kernels — ported VERBATIM from legacy sigreg.mojo (already
+# NVIDIA-validated). block.sum reductions (no atomics). Generic over DT. The
+# only signature change is partials/stat/g raw pointers → 1-D LayoutTensor views
+# (storage surface never passes raw device pointers to kernels); BODY identical.
 # ============================================================================
 
 
@@ -514,6 +506,14 @@ def _sr_norm_a[D: Int, P: Int](
         a_t[d, p_idx] = v * inv_norm
 
 
+# Forward projection `Z = X @ A` keeps this hand-rolled scalar GEMM: at the real
+# LeWM shapes M=B·T is tiny (16·6=96), so the grid (B·T·P ≈ 98k threads, short
+# K=D loop) is already saturated and BEATS a tensor-core GEMM that underutilizes
+# at M=96 (NVIDIA: naive 6.8/3.9µs vs max_matmul 7.9/7.9µs at pusht/pong; the GEMM
+# only wins at M≥~1.5k). The backward `grad_in = dLdz @ Aᵀ` DID move to max_matmul
+# (its naive grid is only B·T·D threads each with a long uncoalesced K=P loop →
+# 4.4× win at P=1024, wash at P=256, never worse). See vjp() + the A/B microbench
+# benchmarks/bench_storage_sigreg_gemm_gpu.mojo.
 def _sr_project[BATCH: Int, T: Int, D: Int, P: Int](
     input_t: LayoutTensor[DT, Layout.row_major(BATCH, T * D), MutAnyOrigin],
     a_t: LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin],
@@ -534,12 +534,12 @@ def _sr_project[BATCH: Int, T: Int, D: Int, P: Int](
 
 
 def _sr_cm_sm[
-    BATCH: Int, T: Int, P: Int, K: Int, INCLUDE_STAT: Bool
+    BATCH: Int, T: Int, P: Int, K: Int, N_PARTIALS: Int, INCLUDE_STAT: Bool
 ](
     cache_t: LayoutTensor[DT, Layout.row_major(BATCH, T * P), MutAnyOrigin],
     cm_t: LayoutTensor[DT, Layout.row_major(T, P * K), MutAnyOrigin],
     sm_t: LayoutTensor[DT, Layout.row_major(T, P * K), MutAnyOrigin],
-    partials_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    partials_t: LayoutTensor[DT, Layout.row_major(N_PARTIALS), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     var dt = Scalar[DT](3.0 / Float64(K - 1))
@@ -575,38 +575,40 @@ def _sr_cm_sm[
             val=SIMD[DT, 1](contrib)
         )
         if thread_idx.x == 0:
-            partials_ptr[Int(block_idx.x)] = partial[0]
+            partials_t[Int(block_idx.x)] = partial[0]
 
 
 def _sr_final_reduce[N_PARTIALS: Int](
-    partials_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    out_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    partials_t: LayoutTensor[
+        DT, Layout.row_major(N_PARTIALS), MutAnyOrigin
+    ],
+    out_t: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
 ):
     var tid = Int(thread_idx.x)
     var v = Scalar[DT](0)
     var i = tid
     while i < N_PARTIALS:
-        v += partials_ptr[i]
+        v += rebind[Scalar[DT]](partials_t[i])
         i += TPB
     var total = block.sum[block_size=TPB, broadcast=False](val=SIMD[DT, 1](v))
     if tid == 0:
-        out_ptr[0] = total[0]
+        out_t[0] = total[0]
 
 
 def _sr_broadcast_stat[BATCH: Int, T: Int, P: Int](
-    stat_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    stat_t: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
     output_t: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
 ):
     var b = Int(global_idx.x)
     if b >= BATCH:
         return
     var prefactor = Scalar[DT](Float64(BATCH) / Float64(T * P))
-    output_t[b, 0] = stat_ptr[0] * prefactor
+    output_t[b, 0] = rebind[Scalar[DT]](stat_t[0]) * prefactor
 
 
 def _sr_reduce_g[BATCH: Int](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, 1), MutAnyOrigin],
-    g_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    g_t: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
 ):
     var b = Int(thread_idx.x)
     var v = Scalar[DT](0)
@@ -614,7 +616,7 @@ def _sr_reduce_g[BATCH: Int](
         v = rebind[Scalar[DT]](grad_output[b, 0])
     var total = block.sum[block_size=TPB, broadcast=False](val=SIMD[DT, 1](v))
     if b == 0:
-        g_ptr[0] = total[0]
+        g_t[0] = total[0]
 
 
 def _sr_dLdz[BATCH: Int, T: Int, P: Int, K: Int](
@@ -622,7 +624,7 @@ def _sr_dLdz[BATCH: Int, T: Int, P: Int, K: Int](
     cm_t: LayoutTensor[DT, Layout.row_major(T, P * K), MutAnyOrigin],
     sm_t: LayoutTensor[DT, Layout.row_major(T, P * K), MutAnyOrigin],
     dLdz_t: LayoutTensor[DT, Layout.row_major(BATCH, T * P), MutAnyOrigin],
-    g_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    g_t: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     if idx >= BATCH * T * P:
@@ -643,25 +645,6 @@ def _sr_dLdz[BATCH: Int, T: Int, P: Int, K: Int](
         var arg = z * tk
         var bracket = -(cm - phi) * sin(arg) + sm * cos(arg)
         acc += wk * tk * bracket
-    var G = g_ptr[0]
+    var G = rebind[Scalar[DT]](g_t[0])
     var coef = G * Scalar[DT](2.0 / Float64(T * P))
     dLdz_t[b, t_idx * P + p_idx] = coef * acc
-
-
-def _sr_matmul_a[BATCH: Int, T: Int, D: Int, P: Int](
-    dLdz_t: LayoutTensor[DT, Layout.row_major(BATCH, T * P), MutAnyOrigin],
-    a_t: LayoutTensor[DT, Layout.row_major(D, P), MutAnyOrigin],
-    grad_input_t: LayoutTensor[DT, Layout.row_major(BATCH, T * D), MutAnyOrigin],
-):
-    var idx = Int(global_idx.x)
-    if idx >= BATCH * T * D:
-        return
-    var d_idx = idx % D
-    var t_idx = (idx // D) % T
-    var b = idx // (T * D)
-    var acc = Scalar[DT](0)
-    for p in range(P):
-        var dL = rebind[Scalar[DT]](dLdz_t[b, t_idx * P + p])
-        var aval = rebind[Scalar[DT]](a_t[d_idx, p])
-        acc += aval * dL
-    grad_input_t[b, t_idx * D + d_idx] = acc

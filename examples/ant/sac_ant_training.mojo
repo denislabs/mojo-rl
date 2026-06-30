@@ -1,25 +1,25 @@
-"""SAC training on Ant (CPU) via the new `SACAgent` facade.
+"""SAC training on Ant (CPU) via the `SAC[...]` storage facade.
 
-Ant counterpart of `examples/half_cheetah/sac_half_cheetah_training.mojo`.
-Uses the new `deep_agents/` surface:
+Ant counterpart of `examples/walker2d/sac_walker2d_training.mojo`. Uses the
+storage `deep_agents/` surface:
 
-  * `SACAgent[...]` — facade over `SACTrainer` + the single-env off-policy
-    driver.
-  * `RemoteLogger` — streams metrics at every chunk boundary AND at the
-    driver's `print_every` cadence.
-  * Single-file checkpointing — `agent.save(CHECKPOINT_PATH)` writes ONE
-    `.ckpt` file (overwritten each chunk) under a single `nn-ckpt v2`
-    envelope.
+  * `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` — preset facade that builds the
+    canonical fused-`LinearReLU` SAC actor/twin-critic nets with SAC's tuned
+    defaults (lr=3e-4, gamma=0.99, tau=0.005, init_alpha=0.2,
+    target_entropy=-ACT, …) over the single-env off-policy driver.
+  * `RemoteLogger` — streams metrics at every chunk boundary AND at the driver's
+    `print_every` cadence.
+  * Single-file checkpointing — `agent.save(CHECKPOINT_PATH)` writes ONE `.ckpt`
+    file (overwritten each chunk) under a single `storage-ckpt` envelope.
 
-After training, the final checkpoint is reloaded into the same agent and a
-greedy probe confirms the action reproduces to `|diff| < 1e-5`.
+After training, the final checkpoint is reloaded into the same agent and a greedy
+probe confirms the action reproduces to `|diff| < 1e-5`.
 
-Ant (Phyics3dEnv, MuJoCo-style):
+Ant (Physics3dEnv, MuJoCo-style):
   * 27D observation (qpos[2:] + qvel)
   * 8D continuous action (joint torques)
-  * Reward ≈ forward velocity + healthy bonus − control/contact costs;
-    episode ends when the torso leaves a healthy z-range
-    (`TERMINATE_ON_UNHEALTHY=True`).
+  * Reward ≈ forward velocity + healthy bonus − control/contact costs; episode
+    ends when the torso leaves a healthy z-range (`TERMINATE_ON_UNHEALTHY=True`).
 
 Run:
     pixi run mojo run -I . examples/ant/sac_ant_training.mojo
@@ -31,12 +31,7 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
-from mojo_rl.deep_agents.sac import SACAgent
-from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
+from mojo_rl.deep_agents.sac import SAC
 from mojo_rl.envs.ant import Ant
 
 
@@ -59,22 +54,9 @@ comptime CHECKPOINT_EVERY = 50_000
 
 comptime CHECKPOINT_PATH = "sac_ant_nn.ckpt"
 
-
-comptime ActorNet = StochasticActor[
-    OBS_DIM,
-    ACT_DIM,
-    Linear[OBS_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
-]
-comptime CriticNet = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, 1],
-]
+# Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac):
+# the canonical fused-`LinearReLU` `SACActorNet` / `SACCriticNet`. Using the
+# preset keeps the CPU checkpoint layout identical to the GPU trainer's.
 
 
 def main() raises:
@@ -110,28 +92,17 @@ def main() raises:
     logger.set_config("hidden", String(HIDDEN))
     logger.set_config("batch", String(BATCH))
 
-    var logger_ptr = UnsafePointer(to=logger)
+    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
     # ─── Agent + env ─────────────────────────────────────────────────────
-    var agent = SACAgent[
-        "cpu",
-        UniformSampleCpuStep[OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY],
-        ActorNet,
-        CriticNet,
+    # `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` builds the SACAgent with the
+    # fused default nets + SAC's tuned defaults. Override only the
+    # example-specific knobs; the rest come from the preset.
+    var agent = SAC[
+        "cpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN
     ](
-        actor_lr=3e-4,
-        critic_lr=3e-4,
-        alpha_lr=3e-4,
-        gamma=0.99,
-        tau=0.005,
-        action_scale=1.0,
-        init_alpha=0.2,
-        target_entropy=-Scalar[DT](ACT_DIM),  # SAC default heuristic
-        learning_starts=1_000,
         window_size=100,
         initial_episode_fill=0.0,
-        use_ere=False,
-        ere_eta=0.996,
     )
     var env = EnvT()
 

@@ -43,6 +43,16 @@ from .sdl_video import *
 comptime Ptr = UnsafePointer
 
 
+@always_inline
+def untracked[
+    T: AnyType, o: Origin
+](p: UnsafePointer[T, o]) -> UnsafePointer[T, MutUntrackedOrigin]:
+    """Re-key a pointer's origin to `MutUntrackedOrigin` for storage in an FFI
+    struct field (AnyOrigin is banned in fields as of Mojo 1.0; SDL owns the
+    pointee, lifetime is managed explicitly across the C ABI)."""
+    return rebind[UnsafePointer[T, MutUntrackedOrigin]](p)
+
+
 from std.sys import CompilationTarget, is_little_endian, is_big_endian
 from std.ffi import (
     _Global,
@@ -100,5 +110,5 @@ def _null_ptr[T: AnyType, O: Origin]() -> UnsafePointer[T, O]:
 
 
 comptime ArrayHelper[
-    type: ImplicitlyCopyable & Movable, size: Int, origin: Origin
+    type: ImplicitlyCopyable, size: Int, origin: Origin
 ] = Ptr[InlineArray[type, size], origin]

@@ -142,7 +142,7 @@ struct PendulumV2[DTYPE: DType](
     var rng_counter: UInt64
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -288,30 +288,31 @@ struct PendulumV2[DTYPE: DType](
             workspace_ptr: Optional workspace pointer (unused for Pendulum).
             rng_counter_ptr: Optional GPU counter pointer for deterministic RNG sequencing.
         """
-        # Create tensor views
+        # Create tensor views (concrete-origin, direct-from-buffer; widen into
+        # the MutAnyOrigin/ImmutAnyOrigin kernel params below).
         var states_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states)
 
         var actions_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
-        ](actions.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM)
+        ](actions)
 
         var rewards_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](rewards)
 
         var dones_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](dones)
 
         var terminated_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated)
 
         var obs_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -322,7 +323,7 @@ struct PendulumV2[DTYPE: DType](
                 dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
             ],
             actions: LayoutTensor[
-                dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+                dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
             ],
             rewards: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
@@ -379,8 +380,8 @@ struct PendulumV2[DTYPE: DType](
                      values across calls for varied initial states.
         """
         var states_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -437,12 +438,12 @@ struct PendulumV2[DTYPE: DType](
                      seed from GPU memory instead of rng_seed parameter.
         """
         var states_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states)
 
         var dones_tensor = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE)
+        ](dones)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -535,11 +536,11 @@ struct PendulumV2[DTYPE: DType](
         """Extract observations from state buffer (trivial copy: obs = state[0:OBS_DIM]).
         """
         var states = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL)
+        ](states_buf)
         var obs = LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL)
+        ](obs_buf)
 
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
 
@@ -549,7 +550,7 @@ struct PendulumV2[DTYPE: DType](
             states: LayoutTensor[
                 dtype,
                 Layout.row_major(BATCH_SIZE, STATE_SIZE_VAL),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             obs: LayoutTensor[
                 dtype, Layout.row_major(BATCH_SIZE, OBS_DIM_VAL), MutAnyOrigin
@@ -600,7 +601,7 @@ struct PendulumV2[DTYPE: DType](
             dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
         ],
         actions: LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), MutAnyOrigin
+            dtype, Layout.row_major(BATCH_SIZE, ACTION_DIM), ImmutAnyOrigin
         ],
         rewards: LayoutTensor[
             dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin

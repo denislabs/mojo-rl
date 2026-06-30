@@ -28,28 +28,31 @@ from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.deep_agents.muzero.nets_spatial import (
-    MZRepNetC4Spatial, MZDynNetC4Spatial, MZPredNetC4Spatial,
-    mzc4_init_zero_pred, mzc4_init_zero_dyn,
+    MZRepNetC4Spatial,
+    MZDynNetC4Spatial,
+    MZPredNetC4Spatial,
 )
 from mojo_rl.deep_agents.muzero.selfplay_arena_gumbel_2p import (
     run_muzero_selfplay_arena_gumbel_2p,
 )
-from mojo_rl.nn.training.lr_scheduler import LinearWarmupSchedule
+from mojo_rl.nn.optimizer.lr_scheduler import LinearWarmupSchedule
 from mojo_rl.deep_agents.zero.symmetries import HFlipColumnAugmenter
 from mojo_rl.deep_agents.zero.evaluators import (
     RandomOpponent,
     GPUMinimaxConnectFour,
 )
-from mojo_rl.nn.core.checkpoint import save_state_v2_body_gpu
+from mojo_rl.nn.core.checkpoint import save_params_multi
 from mojo_rl.envs.board_games.connect_four.connect_four import ConnectFourEnv
 
 
 def main() raises:
-    print("=== Gumbel MuZero on Connect Four — SPATIAL latent (deep_agents) ===")
+    print(
+        "=== Gumbel MuZero on Connect Four — SPATIAL latent (deep_agents) ==="
+    )
     print()
 
     var env_vars = load_dotenv()
@@ -69,12 +72,12 @@ def main() raises:
 
     comptime OBS = 126
     comptime ACT = 7
-    comptime CH = 64          # latent channels → LATENT = CH*6*7 = 2688
-    comptime NB = 3           # residual blocks per net (muzero-general `blocks`)
+    comptime CH = 64  # latent channels → LATENT = CH*6*7 = 2688
+    comptime NB = 3  # residual blocks per net (muzero-general `blocks`)
     comptime HH = 6
     comptime WW = 7
     comptime LATENT = CH * HH * WW
-    comptime BINS = 51        # categorical value/reward support over [-1, 1]
+    comptime BINS = 51  # categorical value/reward support over [-1, 1]
     # 64 sims/move. 128 was WORSE early (eval1 0.43 vs 0.75 at matched steps, 0
     # promotions): deep search over a still-imperfect learned model amplifies its
     # value/dynamics errors. The references' 200-500 sims assume a converged
@@ -82,7 +85,7 @@ def main() raises:
     # sims SCHEDULE (low early → high once the model is strong) if needed.
     comptime NUM_SIMS = 64
     comptime MAX_NODES = 256  # ≫ NUM_SIMS (≤1 node/sim); ample headroom.
-    comptime MAX_K = 4        # already maxed for C4 (power of two ≤ ACT=7)
+    comptime MAX_K = 4  # already maxed for C4 (power of two ≤ ACT=7)
     comptime CAP = 1_000_000
     comptime B = 128
     comptime K = 5
@@ -109,18 +112,30 @@ def main() raises:
     var rep = Rep.make["gpu", INIT=Kaiming](ctx=ctx)
     var dyn = Dyn.make["gpu", INIT=Kaiming](ctx=ctx)
     var pred = Pred.make["gpu", INIT=Kaiming](ctx=ctx)
-    # init_zero (EZv2): zero the policy/value/reward head output Linears so the
-    # model starts with a uniform policy prior + neutral value/reward — stable
-    # MCTS targets early and more early exploration (composes with temp_min).
-    mzc4_init_zero_pred["gpu", CH, ACT, BINS, HH, WW, NB](pred, ctx)
-    mzc4_init_zero_dyn["gpu", CH, ACT, BINS, HH, WW, NB](dyn, ctx)
+    # init_zero (EZv2) is baked into the net definitions: the policy/value/reward
+    # head output Linears are `InitWith[Linear[...], Zero]`, so `make` already
+    # produced a uniform policy prior + neutral value/reward (stable MCTS targets
+    # early + more early exploration). No post-make zeroing pass needed.
 
     var res = run_muzero_selfplay_arena_gumbel_2p[
-        Env, Rep, Dyn, Pred, Aug,
+        Env,
+        Rep,
+        Dyn,
+        Pred,
+        Aug,
         N_ENVS=64,
-        OBS=OBS, ACT=ACT, LATENT=LATENT, BINS=BINS,
-        NUM_SIMS=NUM_SIMS, MAX_NODES=MAX_NODES, MAX_K=MAX_K,
-        CAP=CAP, B=B, K=K, N=N, MAX_PLIES=MAX_PLIES,
+        OBS=OBS,
+        ACT=ACT,
+        LATENT=LATENT,
+        BINS=BINS,
+        NUM_SIMS=NUM_SIMS,
+        MAX_NODES=MAX_NODES,
+        MAX_K=MAX_K,
+        CAP=CAP,
+        B=B,
+        K=K,
+        N=N,
+        MAX_PLIES=MAX_PLIES,
         OPP1=GPUMinimaxConnectFour[5],
         OPP2=RandomOpponent,
         L=RemoteLogger,
@@ -128,9 +143,18 @@ def main() raises:
         EVAL_GAMES=64,
         TEMP_MOVES=20,
         SCHEDULER=LinearWarmupSchedule[LR_WARMUP],
+        USE_TRAIN_CUDA_GRAPH=False,
+        # USE_MCTS_CUDA_GRAPH stays OFF: the captured MCTS sim-loop replay
+        # produces FLAT search targets (target_max_prob ~0.3 vs ~0.55 eager →
+        # policy head stops learning). Bug is strictly in the sim-loop
+        # capture/replay (the eager refactored search is correct). Not worth
+        # chasing for this net: MCTS here is compute-bound (CH=64 conv), so the
+        # graph adds only ~6%. See docs/MUZERO_CUDA_GRAPH_PLAN.md.
     ](
         ctx,
-        rep, dyn, pred,
+        rep,
+        dyn,
+        pred,
         iterations=40_000,
         learning_starts=2_000,
         train_per_iter=4,
@@ -150,7 +174,7 @@ def main() raises:
         do_eval=True,
         do_eval2=True,
         verbose=True,
-        logger=UnsafePointer(to=logger),
+        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
         # Anti-sharpening / sustained exploration: never go greedy in self-play
         # (temp_min=1.0 → sample ∝ visits the whole game, the muzero-general
         # temp=1-always recipe) + 6 random opening plies, paired with the
@@ -168,6 +192,8 @@ def main() raises:
         temperature_decay_steps=40_000,
         temp_min=1.0,
         eval_open_plies=4,
+        # Reanalyze: refresh stale (policy, value) targets on stored positions with
+        # the lagging target net. A clear win for C4 (faster, higher-ceiling).
         reanalyze_every=4,
         reanalyze_batch=128,
         target_sync_interval=200,
@@ -175,24 +201,28 @@ def main() raises:
         # recoverable mid-run (play it with play_connect_four_muzero_gumbel).
         checkpoint_every=2_000,
         checkpoint_path=String("connect_four_muzero_gumbel_spatial.ckpt"),
-        # Prioritized Experience Replay (device sum-tree): sample stored
-        # positions ∝ root value-error, IS-weight the grads, write back fresh
-        # priorities. Set False for plain uniform device sampling. PER focuses
-        # training on the sharp tactical positions the sparse-terminal C4 reward
-        # under-samples — the lever for the 64-sim plateau.
-        use_per=True,
+        # Prioritized Experience Replay (device sum-tree). OFF for board games:
+        # the MuZero paper uses PER only for Atari and samples BOARD-GAME states
+        # UNIFORMLY ("For board games, states are sampled uniformly"). Empirically
+        # PER here drags learning (prioritizing by value-error skews the uniform
+        # board-game signal); use_per=False is both paper-correct and the best run.
+        # (The PER GPU path itself is verified non-corrupting — see
+        # tests/deep_agents/test_mz_unroll_overfit_isw_gpu.mojo.)
+        use_per=False,
         per_alpha=Scalar[DT](1.0),
         per_beta=Scalar[DT](1.0),
     )
 
     logger.close()
 
-    var body = String("")
-    save_state_v2_body_gpu(rep, body, String("rep"), ctx)
-    save_state_v2_body_gpu(dyn, body, String("dyn"), ctx)
-    save_state_v2_body_gpu(pred, body, String("pred"), ctx)
-    with open("connect_four_muzero_gumbel_spatial.ckpt", "w") as f:
-        f.write(String("nn-ckpt v2\n") + body)
+    # Storage checkpoint: the rep/dyn/pred trio goes into ONE file via
+    # `save_params_multi` — the same single-file layout the driver's rolling
+    # `checkpoint_every` save uses, so `play_connect_four_muzero_gumbel` loads
+    # from it too.
+    var ckpt = String("connect_four_muzero_gumbel_spatial.ckpt")
+    save_params_multi["gpu", Rep, Dyn, Pred](
+        ckpt, Optional(ctx), False, rep, dyn, pred
+    )
 
     print()
     print("last_loss:", res.last_loss, "| promotions:", res.promotions)

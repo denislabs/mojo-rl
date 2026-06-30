@@ -10,7 +10,7 @@ from mojo_rl.nn.constants import DT
 
 
 @fieldwise_init
-struct TDMPC2Metrics(Copyable & Movable):
+struct TDMPC2Metrics(Copyable):
     var consistency_loss: Scalar[DT]
     var reward_loss: Scalar[DT]
     var value_loss: Scalar[DT]

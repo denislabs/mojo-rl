@@ -14,3 +14,6 @@ from .state import CarRacingState
 from .action import CarRacingAction
 from .track import TrackTile, TrackGenerator
 from .car_racing import CarRacing
+from .car_racing_mb import CarRacingMB
+from .car_racing_discrete import CarRacingDiscrete
+from .car_racing_pixel import CarRacingPixel

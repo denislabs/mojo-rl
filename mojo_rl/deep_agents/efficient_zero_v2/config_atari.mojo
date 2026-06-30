@@ -22,9 +22,14 @@ Defaults follow `references/EfficientZeroV2-main/ez/config/exp/atari.yaml`:
     ]
 """
 
+from mojo_rl.nn.constants import LAYOUT_NCHW, LAYOUT_NHWC
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.primitives.to_nchw import ToNCHW
 from .nets import EZProjectorNet, EZPredictorNet
 from .nets_atari import (
-    EZRepNetResNetAtari, EZDynNetAtari, EZPredNetAtari, EZ_C, EZ_LATENT,
+    EZRepNetResNetAtari, EZDynNetAtari, EZPredNetAtari, EZ_C, EZ_HW, EZ_LATENT,
+    EZDynZNetAtari, EZRewardLSTMAtari,
+    EZ_LSTM_HIDDEN, EZ_RHID, EZ_LSTM_HORIZON,
 )
 
 
@@ -36,6 +41,17 @@ struct EZV2AtariConfig[
     PROJ: Int = 1024,
     PROJ_HID: Int = 1024,
     BOTTLENECK: Int = 256,
+    # Spatial memory layout for the REPRESENTATION net (the conv tower where the
+    # 48×48 / 24×24 hot kernels live — see CHANNELS_LAST_NHWC_MIGRATION_PLAN.md).
+    # DEFAULT NHWC (channels-last): the proven perf win on these large-map pixel
+    # towers (−7.4% end-to-end GPU, zero BN tax — bench/profile validated) and
+    # convergence-validated (ResNet-20 CIFAR NHWC == NCHW). NHWC flips only `Rep`;
+    # Dyn/Pred stay NCHW (their convs are 6×6/cheap with a channel-concat awkward
+    # in NHWC), so the agent transposes Rep's NHWC latent → NCHW at the 6×6 latent
+    # boundary. Pass LAYOUT=LAYOUT_NCHW to restore the old channels-first tower
+    # (e.g. to load a pre-NHWC checkpoint — the flatten order differs, so NHWC
+    # needs a retrain). Couple the env's obs layout to this via `Cfg.LAYOUT`.
+    LAYOUT: Int = LAYOUT_NHWC,
 ]:
     """EZv2 Atari spatial model bundle (RGB 96×96 pixel obs).
 
@@ -45,8 +61,27 @@ struct EZV2AtariConfig[
 
     comptime IN_CH = Self.FRAMES * 3            # stacked RGB
     comptime OBS = Self.IN_CH * 96 * 96         # rep IN_DIMS[0]
-    comptime Rep = EZRepNetResNetAtari[Self.IN_CH, EZ_C]
+    # Rep tower (NHWC-capable) + a ToNCHW boundary adapter so the latent handed
+    # to Dyn/Pred/Proj/MCTS is ALWAYS canonical NCHW [64,6,6] regardless of the
+    # tower's internal layout. For LAYOUT=NCHW (default) ToNCHW is a value-
+    # identical identity copy → bit-identical to the pre-adapter config; for
+    # LAYOUT=NHWC it transposes [6,6,64]→[64,6,6] at the 6×6 latent boundary
+    # (negligible), so Dyn/Pred stay NCHW with zero changes.
+    comptime Rep = Sequential[
+        EZRepNetResNetAtari[Self.IN_CH, EZ_C, LAYOUT=Self.LAYOUT],
+        ToNCHW[EZ_C, EZ_HW, EZ_HW, Self.LAYOUT],
+    ]
     comptime Dyn = EZDynNetAtari[Self.ACT, Self.BINS]
     comptime Pred = EZPredNetAtari[Self.ACT, Self.BINS]
     comptime Proj = EZProjectorNet[Self.LATENT, Self.PROJ, Self.PROJ_HID]
     comptime Predh = EZPredictorNet[Self.PROJ, Self.BOTTLENECK]
+
+    # ── Value-prefix (EZ `value_prefix=True`, Atari) — Stage 3, opt-in ──
+    # The non-VP `Dyn` above (fused stateless reward) stays the default. When a
+    # caller enables value prefix it uses `DynZ` (z'-only dynamics) + `Reward`
+    # (stateful LSTM value-prefix head) instead; the LSTM dims follow atari.yaml.
+    comptime LSTM_HIDDEN = EZ_LSTM_HIDDEN       # 512
+    comptime RHID = EZ_RHID                     # 1024 = packed [h | c]
+    comptime LSTM_HORIZON = EZ_LSTM_HORIZON     # 5  (reward-hidden reset period)
+    comptime DynZ = EZDynZNetAtari[Self.ACT]
+    comptime Reward = EZRewardLSTMAtari[Self.BINS]

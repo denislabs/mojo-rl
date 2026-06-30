@@ -22,7 +22,7 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.optimizer import Adam
+from mojo_rl.nn.optimizer.adam import Adam
 
 from mojo_rl.experimental.pcn.pc_block import PCBlock
 from mojo_rl.experimental.pcn.predictive_model import PCIdentity
@@ -84,14 +84,12 @@ def main() raises:
     var cpu_net = Net.make_pcn[PCXavier]()
     var gpu_net = Net.make_pcn_gpu[PCXavier](ctx)
     ctx.enqueue_copy(
-        gpu_net.weights.val.dev.value(), cpu_net.weights.value_unsafe_ptr_cpu()
+        gpu_net.weights.val.dev.value(), cpu_net.weights.val.data.unsafe_ptr()
     )
     ctx.synchronize()
 
-    var cpu_opt = Adam.make["cpu", Net](cpu_net)
-    cpu_opt.lr = Scalar[DT](1e-2)
-    var gpu_opt = Adam.make["gpu", Net](gpu_net, ctx)
-    gpu_opt.lr = Scalar[DT](1e-2)
+    var cpu_opt = Adam(lr=Scalar[DT](1e-2))
+    var gpu_opt = Adam(lr=Scalar[DT](1e-2))
 
     # Upload data to device.
     var x_dev_b = ctx.enqueue_create_buffer[DT](BATCH * IN)
@@ -128,7 +126,7 @@ def main() raises:
 
     var max_diff = Float64(0.0)
     for k in range(PSIZE):
-        var d = abs(Float64(cpu_net.weights.val.cpu[k]) - Float64(gpu_host[k]))
+        var d = abs(Float64(cpu_net.weights.val.data[k]) - Float64(gpu_host[k]))
         if d > max_diff:
             max_diff = d
     print("max |W_cpu - W_gpu| after", N_STEPS, "steps =", max_diff)

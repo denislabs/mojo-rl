@@ -1,132 +1,87 @@
-"""REDQOFETrainer — minimal Phase O.2.b.3 (CPU) orchestrator.
+"""REDQOFETrainer — storage-framework REDQ-OFE trainer (CPU gate; GPU stretch).
 
-Composes all of the O.2.x blocks into one train_step. **Replay / driver
-/ checkpoint plumbing is deliberately out of scope** — those land in
-O.2.b.4 (driver wiring, Pendulum smoke) and O.2.b.5 (one-file v2
-checkpoint over actor + N critics + SB + AB + PRED + opts). What this
-file gates is the orchestration shape: that all five OFE blocks chain
-correctly with the reused REDQ polyak + SAC α update, that the
-critic / aux / actor losses descend on a synthetic fixed minibatch,
-and that the gradient gating contract (RL path → input_only on SB +
-AB + critics; aux path → all-mode on SB + AB + PRED) holds end-to-end.
+REDQ + an Online Feature Extractor (OFENet). DenseNet branches compute φ(s) and
+φ(s,a); the RL ensemble (actor/critic) operates on those features, and an
+auxiliary next-state-prediction loss trains the feature nets. Mirrors the
+storage `REDQTrainer` shape with the OFE blocks inserted.
 
-Architectural notes
-===================
+Per `train_step` (paper-faithful cadence):
 
-(a) Shared OFE networks. `state_branch`, `action_branch`, `predictor`
-    are OWNED by the trainer (not by individual blocks). They are
-    referenced by `feat_blk`, `target_y_blk`, `critic_blk`,
-    `actor_blk`, and `aux_blk` — sharing is non-negotiable since all
-    five paths must operate on the same OFE params.
+    train_step(step_idx):                  # outer = 1 env step
+        sample (gates warmup)
+        inner tick 1                        # _one_inner_tick
+        for _ in 0..UTD-1: sample; inner tick
+        ONE aux step on the LAST minibatch  # _run_aux_step
 
-(b) Cache aliasing safety. Forward calls on SB / AB during the RL
-    pipeline (`feat_blk`, `target_y_blk`, `critic_blk`, `actor_blk`)
-    populate their caches, which get clobbered by subsequent
-    forwards. The RL path NEVER calls SB.vjp or AB.vjp, so the
-    clobber is harmless. The aux step (`aux_blk`) runs SB+AB+PRED
-    forward+vjp atomically at the END of train_step, so its caches
-    are valid for vjp.
+    _one_inner_tick:
+        feature pre-pass (φ(s), φ(s'))      # OFEFeatureStep
+        resample subset
+        target-y  on φ(s')                  # EnsembleTargetYBlockOFE
+        critic    on φ(s)                   # EnsembleCriticStepOFE
+        polyak    (every inner tick)        # EnsemblePolyakStep (reused)
+        if inner % POLICY_DELAY == 0:
+            actor on φ(s)                    # EnsembleActorStepOFE
+            alpha (host ScalarAdam)          # AlphaUpdateStep (reused)
 
-(c) Aux cadence. Legacy redq_ofe.mojo runs aux on its own fresh
-    minibatch every critic step. For this minimal trainer the aux
-    step runs ONCE per train_step (per env step), on the same
-    minibatch the RL UTD loop consumed. This is the simplest cadence
-    that gates the orchestration; revisit before Pendulum smoke if
-    convergence stalls.
+The three OFE nets (state_branch / action_branch / predictor) are owned by the
+trainer and threaded into all OFE blocks; they train ONLY via the aux step.
 
-(d) Reused blocks.
-      * `EnsemblePolyakStep[CRITIC, N, OBS, ACT, BATCH]` — REDQ's
-        polyak is OFE-agnostic (just polyaks N target critics).
-      * `AlphaUpdateStep[OBS, ACT, BATCH]` — reads
-        `state.log_prob_mean` (host scalar); OFE-agnostic.
-    Both come in unchanged from `redq/` / `sac/`.
-
-(e) State.mb_s/mb_a/mb_r/mb_sp/mb_d. These remain the raw replay-
-    sampled obs / act / reward / next-obs / done. The OFE blocks
-    populate their own φ-scratches; the trainer does NOT extend
-    TrainerState. This keeps replay / sample / driver code
-    compatible with what REDQ already uses.
+STORAGE migration (Stage 5): own scratch as `nn.storage.Tensor`s; `Adam.adopt`
+on GPU; storage `CheckpointWriter`/`CheckpointReader`; α is a HOST scalar on
+both targets; CUDA-graph capture DEFERRED (host control flow). Dimensions
+(OBS / ACT / BATCH) derive from `SAMPLE`; PHI_S_DIM from SB; PHI_SA_DIM from AB.
 """
 
-from std.math import exp as fexp, tanh as ftanh
+from std.math import exp as fexp, log as flog, tanh as ftanh
 from std.random import random_float64
-from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from std.random.philox import Random as PhiloxRandom
+from layout import Layout, LayoutTensor
 
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
+
+from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
-from mojo_rl.nn.core.checkpoint import (
-    save_state_v2_body,
-    load_state_v2_body,
-    save_state_v2_body_gpu,
-    load_state_v2_body_gpu,
-)
-from mojo_rl.nn.core.map_params import hard_copy_params
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.core.scratch import Scratch
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
+from mojo_rl.nn.core.initializer import Xavier, Zero
+from mojo_rl.nn.primitives.rsample import RSample
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.optimizer.scalar_adam import ScalarAdam
-from mojo_rl.nn.training.timer import Timer
-
-from ..redq.trainer import (
-    _redq_warmup_uniform_kernel,
-    _redq_action_clamp_kernel,
+from mojo_rl.nn.core.checkpoint import (
+    CheckpointWriter, CheckpointReader, _split_lines,
 )
 
-from ..core.checkpoint_helpers import (
-    save_optimizer_v2_body,
-    load_optimizer_v2_body,
-    save_optimizer_v2_body_gpu,
-    load_optimizer_v2_body_gpu,
-    save_scalar_adam_v2_body,
-    load_scalar_adam_v2_body,
-    save_counter_v2_body,
-    load_counter_v2_body,
-    split_lines_v2,
-    read_file_v2,
-    expect_v2_header,
-)
+from mojo_rl.nn.core.log_bundle import log_bundle
+from mojo_rl.nn.core.metric import LogScalar
 
-from ..training.trainer_block import TrainerState
+from ..data.n_step_replay import GPUNStepBuffer
 from ..training.episode_tracker import EpisodeTracker
-from ..training.blocks.sample_block import SampleBlock
-from ..training.driver_offpolicy import OffPolicyAgent
-from mojo_rl.core.logger import Logger
+from ..training.trainer_block import TrainerState
+from ..training.driver_offpolicy import OffPolicyAgentGpu
+from ..training.blocks import SampleBlock
 from ..sac.blocks.alpha_update_step import AlphaUpdateStep
+
 from ..redq.ensemble import CriticEnsemble
 from ..redq.blocks.ensemble_polyak_step import EnsemblePolyakStep
-from ..redq.kernels import REDQ_TARGET_MIN, REDQ_TARGET_AVE
 
 from .feature_step import OFEFeatureStep
+from .aux_loss_step import OFEAuxLossStep
 from .ensemble_target_y_block_ofe import EnsembleTargetYBlockOFE
 from .ensemble_critic_step_ofe import EnsembleCriticStepOFE
 from .ensemble_actor_step_ofe import EnsembleActorStepOFE
-from .aux_loss_step import OFEAuxLossStep
 from .metrics import REDQOFEMetrics
 
 
-# ────────────────────────────────────────────────────────────────────
-# Helper: log(α) — same role as redq/trainer.mojo's `fexp_to_log`.
-# ────────────────────────────────────────────────────────────────────
-
-
-def _log_alpha(alpha: Scalar[DT]) -> Scalar[DT]:
-    from std.math import log as _flog
-
-    return _flog(alpha)
-
-
-# ────────────────────────────────────────────────────────────────────
-# Result struct — returned by train_step_inner so the test (and
-# future driver) can inspect per-step losses without scraping
-# trainer state.
-# ────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# Result struct for the fixed-batch overfit path / introspection.
+# ──────────────────────────────────────────────────────────────────────
 
 
 @fieldwise_init
-struct REDQOFEStepResult(Movable & ImplicitlyDestructible):
+struct REDQOFEStepResult(Movable & ImplicitlyDeletable):
     var critic_loss: Scalar[DT]
     var actor_loss: Scalar[DT]
     var log_prob_mean: Scalar[DT]
@@ -135,48 +90,86 @@ struct REDQOFEStepResult(Movable & ImplicitlyDestructible):
     var did_actor_step: Bool
 
 
-# ────────────────────────────────────────────────────────────────────
-# REDQOFETrainer
-# ────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────
+# GPU select_action_batched kernels (mirror REDQ's warmup + copy + clamp).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _redq_warmup_uniform_kernel[
+    N_ENVS: Int, ACT: Int
+](
+    action_dest: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
+    action_scale: Scalar[DT],
+    seed: UInt64,
+    offset_base: UInt64,
+):
+    var i = Int(global_idx.x)
+    var total = N_ENVS * ACT
+    if i >= total:
+        return
+    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
+    var u = Float32(philox.step_uniform()[0])
+    var s = Scalar[DT](2.0) * Scalar[DT](u) - Scalar[DT](1.0)
+    action_dest[i // ACT, i % ACT] = s * action_scale
+
+
+def _redq_copy2d_kernel[
+    N_ENVS: Int, D: Int
+](
+    src: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
+):
+    var i = Int(global_idx.x)
+    var total = N_ENVS * D
+    if i < total:
+        dst[i // D, i % D] = rebind[Scalar[DT]](src[i // D, i % D])
+
+
+def _redq_clamp_action_kernel[
+    N_ENVS: Int, ACT: Int, ALP: Int
+](
+    alp: LayoutTensor[DT, Layout.row_major(N_ENVS, ALP), MutAnyOrigin],
+    action: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
+    scale: Scalar[DT],
+):
+    var i = Int(global_idx.x)
+    var total = N_ENVS * ACT
+    if i < total:
+        var e = i // ACT
+        var j = i % ACT
+        var a = rebind[Scalar[DT]](alp[e, j])
+        if a > scale:
+            a = scale
+        elif a < -scale:
+            a = -scale
+        action[e, j] = a
 
 
 struct REDQOFETrainer[
-    train_target: StaticString,  # "cpu" or "gpu"
-    SAMPLE: SampleBlock,  # owns replay buffer; provides setup/add/step
-    ACTOR: Module,  # IN=PHI_S_DIM, OUT=2·ACT
+    train_target: StaticString,
+    SAMPLE: SampleBlock,
+    ACTOR: Module,   # IN=PHI_S_DIM,  OUT=2·ACT
     CRITIC: Module,  # IN=PHI_SA_DIM, OUT=1
-    SB: Module,  # IN=OBS, OUT=PHI_S_DIM
-    AB: Module,  # IN=PHI_S_DIM+ACT, OUT=PHI_SA_DIM
-    PRED: Module,  # IN=PHI_SA_DIM, OUT=OBS
+    SB: Module,      # IN=OBS,            OUT=PHI_S_DIM
+    AB: Module,      # IN=PHI_S_DIM+ACT,  OUT=PHI_SA_DIM
+    PRED: Module,    # IN=PHI_SA_DIM,     OUT=OBS
     N: Int,
     N_MIN: Int,
     UTD: Int,
     POLICY_DELAY: Int,
     Q_MODE: Int,
-](OffPolicyAgent):
-    # Dims derived from the sample block — caller specifies them ONCE
-    # on the SAMPLE type, the trainer threads them everywhere.
-    comptime OBS = Self.SAMPLE.OBS
-    comptime ACT = Self.SAMPLE.ACT
-    comptime BATCH = Self.SAMPLE.BATCH
-    comptime PHI_S_DIM = Self.SB.OUT_DIM
+](OffPolicyAgentGpu):
+    """Storage-framework REDQ-OFE trainer."""
 
-    # OffPolicyAgent trait aliases.
+    comptime OBS_DIM: Int = Self.SAMPLE.OBS
+    comptime ACT_DIM: Int = Self.SAMPLE.ACT
+    comptime BATCH: Int = Self.SAMPLE.BATCH
+    comptime PHI_S_DIM: Int = Self.SB.OUT_DIM
+    comptime PHI_SA_DIM: Int = Self.AB.OUT_DIM
+
+    comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
+    comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
     comptime AGENT_TRAIN_TARGET: StaticString = Self.train_target
-    comptime AGENT_OBS_DIM: Int = Self.OBS
-    comptime AGENT_ACT_DIM: Int = Self.ACT
-    comptime PHI_SA_DIM = Self.AB.OUT_DIM
-
-    # Timer section indices. Order matches the `add_section` calls in
-    # `__init__`. (REDQ-OFE adds `feature` + `aux` over the REDQ set.)
-    comptime _T_SAMPLE = 0
-    comptime _T_FEATURE = 1
-    comptime _T_TARGET_Y = 2
-    comptime _T_CRITIC = 3
-    comptime _T_POLYAK = 4
-    comptime _T_ACTOR = 5
-    comptime _T_ALPHA = 6
-    comptime _T_AUX = 7
 
     # ── Owned networks ────────────────────────────────────────────────
     var actor: Self.ACTOR
@@ -190,102 +183,54 @@ struct REDQOFETrainer[
     var sb_opt: Adam
     var ab_opt: Adam
     var pred_opt: Adam
-    var alpha_opt: ScalarAdam  # holds log_α
+    var alpha_opt: ScalarAdam
 
     # ── Owned blocks ──────────────────────────────────────────────────
-    var feat_blk: OFEFeatureStep[Self.SB, Self.OBS, Self.ACT, Self.BATCH]
+    var feat_blk: OFEFeatureStep[Self.SB, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var target_y_blk: EnsembleTargetYBlockOFE[
-        Self.ACTOR,
-        Self.AB,
-        Self.CRITIC,
-        Self.N,
-        Self.BATCH,
-        Self.PHI_S_DIM,
-        Self.ACT,
-        Self.N_MIN,
-        Self.Q_MODE,
+        Self.ACTOR, Self.AB, Self.CRITIC, Self.N, Self.BATCH,
+        Self.OBS_DIM, Self.PHI_S_DIM, Self.ACT_DIM, Self.N_MIN, Self.Q_MODE,
     ]
     var critic_blk: EnsembleCriticStepOFE[
-        Self.AB,
-        Self.CRITIC,
-        Self.N,
-        Self.BATCH,
-        Self.PHI_S_DIM,
-        Self.ACT,
+        Self.AB, Self.CRITIC, Self.N, Self.OBS_DIM, Self.PHI_S_DIM,
+        Self.ACT_DIM, Self.BATCH,
     ]
     var actor_blk: EnsembleActorStepOFE[
-        Self.ACTOR,
-        Self.AB,
-        Self.CRITIC,
-        Self.N,
-        Self.BATCH,
-        Self.PHI_S_DIM,
-        Self.ACT,
+        Self.ACTOR, Self.AB, Self.CRITIC, Self.N, Self.BATCH,
+        Self.PHI_S_DIM, Self.ACT_DIM,
     ]
     var aux_blk: OFEAuxLossStep[
-        Self.SB,
-        Self.AB,
-        Self.PRED,
-        Self.OBS,
-        Self.ACT,
-        Self.BATCH,
+        Self.SB, Self.AB, Self.PRED, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
     ]
-    # Reused as-is from REDQ / SAC (OFE-agnostic).
     var polyak_blk: EnsemblePolyakStep[
-        Self.CRITIC,
-        Self.N,
-        Self.OBS,
-        Self.ACT,
-        Self.BATCH,
+        Self.CRITIC, Self.N, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
     ]
-    var alpha_blk: AlphaUpdateStep[Self.OBS, Self.ACT, Self.BATCH]
+    var alpha_blk: AlphaUpdateStep[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var sample_blk: Self.SAMPLE
 
-    # ── Trainer state ─────────────────────────────────────────────────
-    var state: TrainerState[Self.OBS, Self.ACT, Self.BATCH]
-    var tracker: EpisodeTracker
-    var timer: Timer
+    # select-action rsample (separate from the loss graphs' own rsamples).
+    var sel: RSample[Self.ACT_DIM]
 
-    # DeviceContext: None on CPU, Some(ctx) on GPU. The ctx threads
-    # through every block call so per-leaf DeviceContext() creation
-    # doesn't exhaust Apple Metal's queue pool
-    # (feedback_apple_metal_devicecontext_per_call).
+    var state: TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
+    var tracker: EpisodeTracker
     var ctx: Optional[DeviceContext]
 
-    # ── Single-env action-selection scratches ────────────────────────
-    var _ob1: Scratch["ob1", Self.OBS, True]
-    var _phi_s1: Scratch["phi_s1", Self.PHI_S_DIM, True]
-    var _ao1: Scratch["ao1", 2 * Self.ACT, True]
-    var _alp1: Scratch["alp1", Self.ACT + 1, True]
+    # Owned action-selection scratch Tensors (lazily `.ensure`d per call).
+    var _ob_scr: Tensor    # N_ENVS * OBS
+    var _phi_scr: Tensor   # N_ENVS * PHI_S_DIM
+    var _ao_scr: Tensor    # N_ENVS * 2*ACT
+    var _alp_scr: Tensor   # N_ENVS * (ACT + 1)
 
-    # Lazy-grown φ(s) scratch for the batched action surface.
-    # Sized to `last_seen_N_ENVS * PHI_S_DIM`. Initially empty; first
-    # `select_action_batched` call grows it. Used only on the
-    # warmup-passed branch (the warmup branch never runs the OFE
-    # forward, so no allocation is needed during warmup).
-    var _phi_s_batched_cpu: List[Scalar[DT]]
-    var _phi_s_batched_cap: Int
+    var action_scale: Scalar[DT]
+    var learning_starts: Int
 
-    # GPU mirror — lazy-grown DeviceBuffer for the batched φ(s)
-    # scratch on the GPU action-selection path. None on CPU.
-    var _phi_s_batched_dev: Optional[DeviceBuffer[DT]]
-    var _phi_s_batched_dev_cap: Int
-
-    # Philox warmup counters — advanced by `select_action_batched`
-    # on each warmup call.
     var _warmup_rng_seed: UInt64
     var _warmup_rng_offset: UInt64
 
-    # ── Hyperparams (kept as fields so the test can inspect them) ─────
-    var action_scale: Scalar[DT]
-    var tau: Scalar[DT]
-    var gamma: Scalar[DT]
-    var target_entropy: Scalar[DT]
-    var learning_starts: Int
     var _inner_count: Int
     var _total_train_steps: Int
 
-    # ── Per-flush-window accumulators ─────────────────────────────────
+    # ── Per-flush-window accumulators (host) ──────────────────────────
     var _acc_critic_loss: Scalar[DT]
     var _acc_actor_loss: Scalar[DT]
     var _acc_alpha: Scalar[DT]
@@ -294,84 +239,44 @@ struct REDQOFETrainer[
     var _acc_n_updates: Int
     var _acc_n_actor_updates: Int
 
-    # ── Defaultable ───────────────────────────────────────────────────
-
     def __init__(out self):
         self.actor = Self.ACTOR()
         self.state_branch = Self.SB()
         self.action_branch = Self.AB()
         self.predictor = Self.PRED()
         self.ensemble = CriticEnsemble[Self.CRITIC, Self.N]()
-        self.actor_opt = Adam()
-        self.sb_opt = Adam()
-        self.ab_opt = Adam()
-        self.pred_opt = Adam()
-        self.alpha_opt = ScalarAdam(
-            value=0.0,
-            m=0.0,
-            v=0.0,
-            t=0,
-            lr=0.0003,
-            beta1=0.9,
-            beta2=0.999,
-            eps=1e-8,
-        )
+        self.actor_opt = Adam(lr=Scalar[DT](3e-4))
+        self.sb_opt = Adam(lr=Scalar[DT](3e-4))
+        self.ab_opt = Adam(lr=Scalar[DT](3e-4))
+        self.pred_opt = Adam(lr=Scalar[DT](3e-4))
+        self.alpha_opt = ScalarAdam.new(flog(Scalar[DT](0.2)), Scalar[DT](3e-4))
         self.feat_blk = OFEFeatureStep[
-            Self.SB,
-            Self.OBS,
-            Self.ACT,
-            Self.BATCH,
+            Self.SB, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
         ]()
         self.target_y_blk = EnsembleTargetYBlockOFE[
-            Self.ACTOR,
-            Self.AB,
-            Self.CRITIC,
-            Self.N,
-            Self.BATCH,
-            Self.PHI_S_DIM,
-            Self.ACT,
-            Self.N_MIN,
-            Self.Q_MODE,
+            Self.ACTOR, Self.AB, Self.CRITIC, Self.N, Self.BATCH,
+            Self.OBS_DIM, Self.PHI_S_DIM, Self.ACT_DIM, Self.N_MIN, Self.Q_MODE,
         ]()
         self.critic_blk = EnsembleCriticStepOFE[
-            Self.AB,
-            Self.CRITIC,
-            Self.N,
-            Self.BATCH,
-            Self.PHI_S_DIM,
-            Self.ACT,
+            Self.AB, Self.CRITIC, Self.N, Self.OBS_DIM, Self.PHI_S_DIM,
+            Self.ACT_DIM, Self.BATCH,
         ]()
         self.actor_blk = EnsembleActorStepOFE[
-            Self.ACTOR,
-            Self.AB,
-            Self.CRITIC,
-            Self.N,
-            Self.BATCH,
-            Self.PHI_S_DIM,
-            Self.ACT,
+            Self.ACTOR, Self.AB, Self.CRITIC, Self.N, Self.BATCH,
+            Self.PHI_S_DIM, Self.ACT_DIM,
         ]()
         self.aux_blk = OFEAuxLossStep[
-            Self.SB,
-            Self.AB,
-            Self.PRED,
-            Self.OBS,
-            Self.ACT,
-            Self.BATCH,
+            Self.SB, Self.AB, Self.PRED, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         ]()
         self.polyak_blk = EnsemblePolyakStep[
-            Self.CRITIC,
-            Self.N,
-            Self.OBS,
-            Self.ACT,
-            Self.BATCH,
+            Self.CRITIC, Self.N, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         ]()
         self.alpha_blk = AlphaUpdateStep[
-            Self.OBS,
-            Self.ACT,
-            Self.BATCH,
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
         ]()
         self.sample_blk = Self.SAMPLE()
-        self.state = TrainerState[Self.OBS, Self.ACT, Self.BATCH]()
+        self.sel = RSample[Self.ACT_DIM]()
+        self.state = TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]()
         self.tracker = EpisodeTracker(
             window=List[Scalar[DT]](),
             window_size=0,
@@ -380,31 +285,14 @@ struct REDQOFETrainer[
             ep_count=0,
         )
         self.ctx = None
-        self.timer = Timer.new()
-        # Order must match the `_T_*` aliases.
-        self.timer.add_section("sample")
-        self.timer.add_section("feature")
-        self.timer.add_section("target_y")
-        self.timer.add_section("critic")
-        self.timer.add_section("polyak")
-        self.timer.add_section("actor")
-        self.timer.add_section("alpha")
-        self.timer.add_section("aux")
-        self._ob1 = Scratch["ob1", Self.OBS, True]()
-        self._phi_s1 = Scratch["phi_s1", Self.PHI_S_DIM, True]()
-        self._ao1 = Scratch["ao1", 2 * Self.ACT, True]()
-        self._alp1 = Scratch["alp1", Self.ACT + 1, True]()
-        self._phi_s_batched_cpu = List[Scalar[DT]]()
-        self._phi_s_batched_cap = 0
-        self._phi_s_batched_dev = None
-        self._phi_s_batched_dev_cap = 0
+        self._ob_scr = Tensor()
+        self._phi_scr = Tensor()
+        self._ao_scr = Tensor()
+        self._alp_scr = Tensor()
+        self.action_scale = Scalar[DT](1.0)
+        self.learning_starts = 1_000
         self._warmup_rng_seed = UInt64(0xC0FFEE_C0DE)
         self._warmup_rng_offset = UInt64(0)
-        self.action_scale = Scalar[DT](1.0)
-        self.tau = Scalar[DT](0.005)
-        self.gamma = Scalar[DT](0.99)
-        self.target_entropy = -Scalar[DT](Self.ACT)
-        self.learning_starts = 1_000
         self._inner_count = 0
         self._total_train_steps = 0
         self._acc_critic_loss = Scalar[DT](0.0)
@@ -414,8 +302,6 @@ struct REDQOFETrainer[
         self._acc_aux_loss = Scalar[DT](0.0)
         self._acc_n_updates = 0
         self._acc_n_actor_updates = 0
-
-    # ── Factory ───────────────────────────────────────────────────────
 
     @staticmethod
     def make(
@@ -432,416 +318,175 @@ struct REDQOFETrainer[
         learning_starts: Int = 1_000,
         window_size: Int = 10,
         initial_episode_fill: Scalar[DT] = Scalar[DT](-1250.0),
+        max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
     ) raises -> Self:
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
-        ), "REDQ-OFE: train_target must be 'cpu' or 'gpu'"
+        ), "REDQOFETrainer: train_target must be 'cpu' or 'gpu'"
         comptime if Self.train_target == "gpu":
             if not ctx:
                 raise Error(
                     "REDQOFETrainer.make[train_target='gpu']: ctx required"
                 )
         comptime assert Self.N >= 2, "REDQ-OFE: N must be ≥ 2"
-        comptime assert Self.N_MIN >= 1, "REDQ-OFE: N_MIN ≥ 1"
-        comptime assert Self.N_MIN <= Self.N, "REDQ-OFE: N_MIN ≤ N"
-        comptime assert Self.UTD >= 1, "REDQ-OFE: UTD ≥ 1"
+        comptime assert Self.N_MIN >= 1, "REDQ-OFE: N_MIN must be ≥ 1"
+        comptime assert Self.N_MIN <= Self.N, "REDQ-OFE: N_MIN must be ≤ N"
+        comptime assert Self.UTD >= 1, "REDQ-OFE: UTD must be ≥ 1"
         comptime assert Self.POLICY_DELAY >= 1, "REDQ-OFE: POLICY_DELAY ≥ 1"
-        comptime assert (
-            Self.Q_MODE == REDQ_TARGET_MIN or Self.Q_MODE == REDQ_TARGET_AVE
-        ), "REDQ-OFE: Q_MODE must be MIN (0) or AVE (1)"
-        comptime assert (
-            Self.PRED.OUT_DIM == Self.OBS
-        ), "REDQ-OFE: predictor OUT must equal OBS"
+        comptime assert Self.PRED.OUT_DIM == Self.OBS_DIM, (
+            "REDQ-OFE: predictor OUT must equal OBS"
+        )
 
         var t = Self()
         t.ctx = ctx
 
-        # Networks.
-        t.actor = Self.ACTOR.make[Self.train_target, Xavier](ctx=ctx)
-        t.state_branch = Self.SB.make[Self.train_target, Xavier](ctx=ctx)
-        t.action_branch = Self.AB.make[Self.train_target, Xavier](ctx=ctx)
-        t.predictor = Self.PRED.make[Self.train_target, Xavier](ctx=ctx)
+        t.actor = Self.ACTOR.make[Self.train_target, Xavier](ctx)
+        t.state_branch = Self.SB.make[Self.train_target, Xavier](ctx)
+        t.action_branch = Self.AB.make[Self.train_target, Xavier](ctx)
+        t.predictor = Self.PRED.make[Self.train_target, Xavier](ctx)
         t.ensemble = CriticEnsemble[Self.CRITIC, Self.N].make[
-            Self.train_target,
-            Xavier,
+            Self.train_target, Xavier
         ](ctx=ctx)
 
-        # Optimizers.
-        t.actor_opt = Adam.make[Self.train_target, M=Self.ACTOR](
-            t.actor, ctx=ctx,
-        )
-        t.sb_opt = Adam.make[Self.train_target, M=Self.SB](
-            t.state_branch, ctx=ctx,
-        )
-        t.ab_opt = Adam.make[Self.train_target, M=Self.AB](
-            t.action_branch, ctx=ctx,
-        )
-        t.pred_opt = Adam.make[Self.train_target, M=Self.PRED](
-            t.predictor, ctx=ctx,
-        )
-        t.actor_opt.lr = actor_lr
-        t.sb_opt.lr = ofe_lr
-        t.ab_opt.lr = ofe_lr
-        t.pred_opt.lr = ofe_lr
+        t.actor_opt = Adam(lr=actor_lr)
+        t.sb_opt = Adam(lr=ofe_lr)
+        t.ab_opt = Adam(lr=ofe_lr)
+        t.pred_opt = Adam(lr=ofe_lr)
+        comptime if Self.train_target == "gpu":
+            t.actor_opt.adopt[Self.train_target, Self.ACTOR](t.actor, ctx)
+            t.sb_opt.adopt[Self.train_target, Self.SB](t.state_branch, ctx)
+            t.ab_opt.adopt[Self.train_target, Self.AB](t.action_branch, ctx)
+            t.pred_opt.adopt[Self.train_target, Self.PRED](t.predictor, ctx)
         for i in range(Self.N):
             t.ensemble.opts[i].lr = critic_lr
-        t.alpha_opt = ScalarAdam.new(_log_alpha(init_alpha), alpha_lr)
 
-        # Blocks.
+        t.alpha_opt = ScalarAdam.new(flog(init_alpha), alpha_lr)
+
         t.feat_blk = OFEFeatureStep[
-            Self.SB,
-            Self.OBS,
-            Self.ACT,
-            Self.BATCH,
+            Self.SB, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
         ].make[Self.train_target](ctx=ctx)
         t.target_y_blk = EnsembleTargetYBlockOFE[
-            Self.ACTOR,
-            Self.AB,
-            Self.CRITIC,
-            Self.N,
-            Self.BATCH,
-            Self.PHI_S_DIM,
-            Self.ACT,
-            Self.N_MIN,
-            Self.Q_MODE,
+            Self.ACTOR, Self.AB, Self.CRITIC, Self.N, Self.BATCH,
+            Self.OBS_DIM, Self.PHI_S_DIM, Self.ACT_DIM, Self.N_MIN, Self.Q_MODE,
         ].make[Self.train_target](
-            action_scale=action_scale,
-            gamma=gamma,
-            ctx=ctx,
+            action_scale=action_scale, gamma=gamma, ctx=ctx
         )
         t.critic_blk = EnsembleCriticStepOFE[
-            Self.AB,
-            Self.CRITIC,
-            Self.N,
-            Self.BATCH,
-            Self.PHI_S_DIM,
-            Self.ACT,
+            Self.AB, Self.CRITIC, Self.N, Self.OBS_DIM, Self.PHI_S_DIM,
+            Self.ACT_DIM, Self.BATCH,
         ].make[Self.train_target](ctx=ctx)
         t.actor_blk = EnsembleActorStepOFE[
-            Self.ACTOR,
-            Self.AB,
-            Self.CRITIC,
-            Self.N,
-            Self.BATCH,
-            Self.PHI_S_DIM,
-            Self.ACT,
-        ].make[Self.train_target](
-            action_scale=action_scale, ctx=ctx,
-        )
+            Self.ACTOR, Self.AB, Self.CRITIC, Self.N, Self.BATCH,
+            Self.PHI_S_DIM, Self.ACT_DIM,
+        ].make[Self.train_target](action_scale=action_scale, ctx=ctx)
         t.aux_blk = OFEAuxLossStep[
-            Self.SB,
-            Self.AB,
-            Self.PRED,
-            Self.OBS,
-            Self.ACT,
-            Self.BATCH,
+            Self.SB, Self.AB, Self.PRED, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         ].make[Self.train_target](ctx=ctx)
         t.polyak_blk = EnsemblePolyakStep[
-            Self.CRITIC,
-            Self.N,
-            Self.OBS,
-            Self.ACT,
-            Self.BATCH,
+            Self.CRITIC, Self.N, Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
         ].make(tau=tau)
         t.alpha_blk = AlphaUpdateStep[
-            Self.OBS,
-            Self.ACT,
-            Self.BATCH,
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
         ].make(target_entropy=target_entropy)
-        t.sample_blk = Self.SAMPLE()
+
+        t.sel = RSample[Self.ACT_DIM].make[Self.train_target, Zero](ctx)
+        t.sel.action_scale = action_scale
+
+        t.state = TrainerState[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
+        ].make[Self.train_target](ctx=ctx)
+
+        t.tracker = EpisodeTracker.new(
+            window_size=window_size, initial_fill=initial_episode_fill
+        )
+
+        t.action_scale = action_scale
+        t.learning_starts = learning_starts
+
         t.sample_blk.setup(learning_starts, ctx=ctx)
 
-        # State + tracker.
-        t.state = TrainerState[
-            Self.OBS,
-            Self.ACT,
-            Self.BATCH,
-        ].make[Self.train_target](ctx=ctx)
-        t.tracker = EpisodeTracker.new(window_size, initial_episode_fill)
-
-        # Action-selection scratches — STAGING=True so host mirrors
-        # exist on both CPU and GPU (the action-selection helpers
-        # H2D the obs, run the device forward, then D2H the action).
         comptime if Self.train_target == "cpu":
-            t._ob1 = Scratch["ob1", Self.OBS, True].make_cpu()
-            t._phi_s1 = Scratch[
-                "phi_s1", Self.PHI_S_DIM, True,
-            ].make_cpu()
-            t._ao1 = Scratch["ao1", 2 * Self.ACT, True].make_cpu()
-            t._alp1 = Scratch["alp1", Self.ACT + 1, True].make_cpu()
-        else:
-            var c = ctx.value()
-            t._ob1 = Scratch["ob1", Self.OBS, True].make_gpu(c)
-            t._phi_s1 = Scratch[
-                "phi_s1", Self.PHI_S_DIM, True,
-            ].make_gpu(c)
-            t._ao1 = Scratch["ao1", 2 * Self.ACT, True].make_gpu(c)
-            t._alp1 = Scratch["alp1", Self.ACT + 1, True].make_gpu(c)
-        t._phi_s_batched_cpu = List[Scalar[DT]]()
-        t._phi_s_batched_cap = 0
-        t._phi_s_batched_dev = None
-        t._phi_s_batched_dev_cap = 0
-        t._warmup_rng_seed = UInt64(0xC0FFEE_C0DE)
-        t._warmup_rng_offset = UInt64(0)
-
-        # Hyperparam fields.
-        t.action_scale = action_scale
-        t.tau = tau
-        t.gamma = gamma
-        t.target_entropy = target_entropy
-        t.learning_starts = learning_starts
-        t._inner_count = 0
-        t._total_train_steps = 0
-        t._acc_critic_loss = Scalar[DT](0.0)
-        t._acc_actor_loss = Scalar[DT](0.0)
-        t._acc_alpha = Scalar[DT](0.0)
-        t._acc_lp_mean = Scalar[DT](0.0)
-        t._acc_aux_loss = Scalar[DT](0.0)
-        t._acc_n_updates = 0
-        t._acc_n_actor_updates = 0
-
+            t._ob_scr.ensure(Self.OBS_DIM)
+            t._phi_scr.ensure(Self.PHI_S_DIM)
+            t._ao_scr.ensure(2 * Self.ACT_DIM)
+            t._alp_scr.ensure(Self.ACT_DIM + 1)
         return t^
 
-    # ── Direct state-write helpers (used by tests / drivers in
-    # downstream slices). The driver wiring slice will replace these
-    # with a SampleBlock-driven path. ───────────────────────────────
+    def set_beta(mut self, beta: Scalar[DT]):
+        self.sample_blk.set_beta(beta)
 
-    def write_minibatch_cpu(
+    # ─── Inner tick — one (feat + target_y + critic + polyak + maybe actor). ──
+    def _one_inner_tick(
         mut self,
-        obs: List[Scalar[DT]],
-        act: List[Scalar[DT]],
-        rew: List[Scalar[DT]],
-        next_obs: List[Scalar[DT]],
-        done: List[Scalar[DT]],
-    ) raises:
-        """Fill `state.mb_*` from caller-provided host lists. Lengths
-        must match BATCH·{OBS, ACT, 1, OBS, 1}."""
-        if len(obs) != Self.BATCH * Self.OBS:
-            raise Error("write_minibatch_cpu: obs length mismatch")
-        if len(act) != Self.BATCH * Self.ACT:
-            raise Error("write_minibatch_cpu: act length mismatch")
-        if len(rew) != Self.BATCH:
-            raise Error("write_minibatch_cpu: rew length mismatch")
-        if len(next_obs) != Self.BATCH * Self.OBS:
-            raise Error("write_minibatch_cpu: next_obs length mismatch")
-        if len(done) != Self.BATCH:
-            raise Error("write_minibatch_cpu: done length mismatch")
-        var mb_s_p = self.state.mb_s.cpu_ptr()
-        var mb_a_p = self.state.mb_a.cpu_ptr()
-        var mb_r_p = self.state.mb_r.cpu_ptr()
-        var mb_sp_p = self.state.mb_sp.cpu_ptr()
-        var mb_d_p = self.state.mb_d.cpu_ptr()
-        for i in range(Self.BATCH * Self.OBS):
-            mb_s_p[i] = obs[i]
-            mb_sp_p[i] = next_obs[i]
-        for i in range(Self.BATCH * Self.ACT):
-            mb_a_p[i] = act[i]
-        for b in range(Self.BATCH):
-            mb_r_p[b] = rew[b]
-            mb_d_p[b] = done[b]
-
-    # ──────────────────────────────────────────────────────────────────
-    # The orchestration. Three entry points:
-    #   `_one_inner_tick`  → ONE RL tick on the current `state.mb_*`
-    #   `train_step_inner` → UTD ticks on a SHARED minibatch + aux.
-    #                        Used by the fixed-batch overfit gate
-    #                        (test_redq_ofe_trainer_cpu) so the
-    #                        existing test contract is preserved.
-    #   `train_step`       → PRODUCTION path. Samples per inner tick
-    #                        (REDQ paper-faithful cadence) + aux at
-    #                        the end.
-    # ──────────────────────────────────────────────────────────────────
-
-    def _one_inner_tick[
-        POLICY: AMPPolicy = NoAMP
-    ](mut self,) raises -> Tuple[Scalar[DT], Bool, Scalar[DT], Scalar[DT]]:
-        """Run ONE inner critic tick on the CURRENT `state.mb_*`:
-        feature pre-pass → target_y → critic update → polyak → (if
-        cadence fires) actor + α. Increments `_inner_count`. Returns
-        `(critic_loss, did_actor_step, actor_loss, lp_mean)`. Caller
-        is responsible for sampling into `state.mb_*` before the
-        call."""
+    ) raises -> Tuple[Scalar[DT], Bool, Scalar[DT], Scalar[DT]]:
         self._inner_count += 1
-        self.target_y_blk.resample_subset_idxs()
+
         var alpha_val = fexp(self.alpha_opt.value)
         self.state.alpha = alpha_val
 
-        var mb_a_p = self.state.mb_a.target_ptr[Self.train_target]()
-        var mb_r_p = self.state.mb_r.target_ptr[Self.train_target]()
-        var mb_d_p = self.state.mb_d.target_ptr[Self.train_target]()
-        var mb_y_p = self.state.mb_y.target_ptr[Self.train_target]()
+        # (1) Feature pre-pass — φ(s), φ(s').
+        self.feat_blk.step[Self.train_target](self.state_branch, self.state)
 
-        # (1) Feature pre-pass.
-        var t_feat = perf_counter_ns()
-        self.feat_blk.step[Self.train_target](
-            self.state_branch, self.state,
-        )
-        self.timer.accumulate(Self._T_FEATURE, t_feat)
-        var phi_s_p = self.feat_blk.phi_s_ptr[Self.train_target]()
-        var phi_sp_p = self.feat_blk.phi_sp_ptr[Self.train_target]()
-
-        # (2) Target y.
-        var t_ty = perf_counter_ns()
+        # (2) Target y — on φ(s').
+        self.target_y_blk.resample_subset_idxs()
         self.target_y_blk.step[Self.train_target](
-            self.actor,
-            self.action_branch,
-            self.ensemble,
-            phi_sp_p,
-            mb_r_p,
-            mb_d_p,
-            alpha_val,
-            mb_y_p,
+            self.state, self.actor, self.action_branch, self.ensemble,
+            self.feat_blk.phi_sp, alpha_val,
         )
-        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
 
-        # (3) Critic update.
-        var t_crit = perf_counter_ns()
+        # (3) Critic update — on φ(s).
         var cl = self.critic_blk.step[Self.train_target](
-            self.action_branch,
-            self.ensemble,
-            phi_s_p,
-            mb_a_p,
-            mb_y_p,
+            self.state, self.action_branch, self.ensemble, self.feat_blk.phi_s,
         )
-        self.timer.accumulate(Self._T_CRITIC, t_crit)
 
         # (4) Polyak every inner tick (paper-faithful).
-        var t_pol = perf_counter_ns()
-        self.polyak_blk.step[Self.train_target](
-            self.state, self.ensemble,
-        )
-        self.timer.accumulate(Self._T_POLYAK, t_pol)
+        self.polyak_blk.step[Self.train_target](self.state, self.ensemble)
 
         # (5) Actor + α every POLICY_DELAY.
         var did_actor: Bool = False
         var actor_loss: Scalar[DT] = Scalar[DT](0.0)
         var lp_mean: Scalar[DT] = Scalar[DT](0.0)
         if self._inner_count % Self.POLICY_DELAY == 0:
-            var t_act = perf_counter_ns()
             var res = self.actor_blk.forward_backward[Self.train_target](
-                self.actor,
-                self.actor_opt,
-                self.action_branch,
-                self.ensemble,
-                phi_s_p,
-                alpha_val,
+                self.actor, self.actor_opt, self.action_branch, self.ensemble,
+                self.feat_blk.phi_s, alpha_val, self.state.ctx,
             )
             self.state.actor_loss = res.loss
             self.state.log_prob_mean = res.log_prob_mean
             actor_loss = res.loss
             lp_mean = res.log_prob_mean
             did_actor = True
-            self.timer.accumulate(Self._T_ACTOR, t_act)
-            # α stays a host scalar — `state.log_prob_mean` is host-
-            # populated by the actor-step's host-side reduction on
-            # both CPU and GPU.
-            var t_alp = perf_counter_ns()
             self.alpha_blk.step["cpu"](self.state, self.alpha_opt)
-            self.timer.accumulate(Self._T_ALPHA, t_alp)
 
         return (cl, did_actor, actor_loss, lp_mean)
 
-    def _run_aux_step[
-        POLICY: AMPPolicy = NoAMP
-    ](mut self,) raises -> Scalar[DT]:
-        """One aux loss step on the CURRENT `state.mb_*`. Forward+vjp
-        on SB+AB+PRED is atomic so prior RL forwards clobbering caches
-        is harmless. Returns the MSE loss."""
-        var t_aux = perf_counter_ns()
-        var aux_loss = self.aux_blk.step[Self.train_target](
-            self.state_branch,
-            self.action_branch,
-            self.predictor,
-            self.sb_opt,
-            self.ab_opt,
-            self.pred_opt,
-            self.state,
-        )
-        self.timer.accumulate(Self._T_AUX, t_aux)
-        return aux_loss
-
-    def train_step_inner[
-        POLICY: AMPPolicy = NoAMP
-    ](mut self,) raises -> REDQOFEStepResult:
-        """UTD inner ticks on a SHARED `state.mb_*` + ONE aux step.
-        Used by the fixed-batch overfit gate (the caller fills
-        `state.mb_*` once via `write_minibatch_cpu` before calling).
-        Production code should use `train_step` instead, which
-        re-samples per inner tick (paper-faithful)."""
-        var critic_loss_acc: Scalar[DT] = Scalar[DT](0.0)
-        var actor_loss_last: Scalar[DT] = Scalar[DT](0.0)
-        var lp_mean_last: Scalar[DT] = Scalar[DT](0.0)
-        var did_actor_step: Bool = False
-        for _ in range(Self.UTD):
-            var tick = self._one_inner_tick[POLICY]()
-            critic_loss_acc += tick[0]
-            if tick[1]:
-                did_actor_step = True
-                actor_loss_last = tick[2]
-                lp_mean_last = tick[3]
-        var aux_loss = self._run_aux_step[POLICY]()
-        return REDQOFEStepResult(
-            critic_loss=critic_loss_acc,
-            actor_loss=actor_loss_last,
-            log_prob_mean=lp_mean_last,
-            alpha=fexp(self.alpha_opt.value),
-            aux_loss=aux_loss,
-            did_actor_step=did_actor_step,
+    def _run_aux_step(mut self) raises -> Scalar[DT]:
+        """One aux loss step on the CURRENT `state.mb_*`. forward+vjp on
+        SB+AB+PRED is atomic (zero_grad → forward → vjp → step), so prior RL
+        forwards clobbering caches is harmless. Returns the MSE loss."""
+        return self.aux_blk.step[Self.train_target](
+            self.state_branch, self.action_branch, self.predictor,
+            self.sb_opt, self.ab_opt, self.pred_opt, self.state,
         )
 
-    # ── Read-only accessors used by tests / drivers ─────────────────
-
-    def alpha_value(self) -> Scalar[DT]:
-        return fexp(self.alpha_opt.value)
-
-    def inner_count(self) -> Int:
-        return self._inner_count
-
-    def total_train_steps(self) -> Int:
-        return self._total_train_steps
-
-    # ──────────────────────────────────────────────────────────────────
-    # Outer train_step — drives the env loop. Calls sample_blk.step to
-    # populate state.mb_* from the replay buffer (gates warmup +
-    # buffer-readiness), then runs the OFE pipeline.
-    # ──────────────────────────────────────────────────────────────────
-
+    # ─── train_step — outer (one env step). Runs UTD inner ticks + 1 aux. ───
     def train_step(mut self, step_idx: Int) raises -> Bool:
-        """Outer train step — paper-faithful cadence. Sample → inner
-        tick → (sample → inner tick) × UTD-1 → ONE aux step.
-
-        Each inner critic tick uses a FRESH minibatch — matches REDQ's
-        reference schedule from Chen et al. 2021 (and the legacy
-        `redq/trainer.mojo` cadence). The aux step at the end runs on
-        whichever minibatch the LAST inner tick used; the OFE
-        feature pre-pass is hoisted INTO each inner tick (it has to
-        be — φ(s) feeds the target_y + critic + actor blocks).
-
-        Returns True if any inner update ran (False during warmup /
-        when buffer < BATCH). `_total_train_steps` increments by the
-        number of inner ticks that actually fired (could be < UTD if
-        the buffer drains mid-loop — single-env: never)."""
         self.state.step_idx = step_idx
         self.state.did_step = True
-        # Thread the trainer's ctx into state so blocks that need it
-        # (polyak GPU, sample_blk GPU, etc.) can read it through.
-        self.state.ctx = self.ctx
+        comptime if Self.train_target == "gpu":
+            self.state.ctx = self.ctx
 
-        # First sample gates warmup + buffer readiness.
-        var t_s0 = perf_counter_ns()
         self.sample_blk.step(self.state)
-        self.timer.accumulate(Self._T_SAMPLE, t_s0)
         if not self.state.did_step:
             return False
 
-        # Tick 1 on the first sample.
         var critic_loss_acc: Scalar[DT] = Scalar[DT](0.0)
         var actor_loss_last: Scalar[DT] = Scalar[DT](0.0)
         var lp_mean_last: Scalar[DT] = Scalar[DT](0.0)
         var did_actor_step: Bool = False
         var ticks_fired = 0
 
-        var tick0 = self._one_inner_tick[NoAMP]()
+        var tick0 = self._one_inner_tick()
         critic_loss_acc += tick0[0]
         if tick0[1]:
             did_actor_step = True
@@ -849,15 +494,12 @@ struct REDQOFETrainer[
             lp_mean_last = tick0[3]
         ticks_fired += 1
 
-        # Inner ticks 2..UTD — fresh sample per tick.
         for _ in range(Self.UTD - 1):
             self.state.did_step = True
-            var t_s = perf_counter_ns()
             self.sample_blk.step(self.state)
-            self.timer.accumulate(Self._T_SAMPLE, t_s)
             if not self.state.did_step:
-                break  # buffer drained mid-iter (single-env: never)
-            var tick = self._one_inner_tick[NoAMP]()
+                break
+            var tick = self._one_inner_tick()
             critic_loss_acc += tick[0]
             if tick[1]:
                 did_actor_step = True
@@ -865,13 +507,11 @@ struct REDQOFETrainer[
                 lp_mean_last = tick[3]
             ticks_fired += 1
 
-        # Aux loss step — runs ONCE per outer call, on the LAST
-        # sampled minibatch.
-        var aux_loss = self._run_aux_step[NoAMP]()
+        # Aux loss step — ONCE per outer call, on the LAST sampled minibatch.
+        var aux_loss = self._run_aux_step()
 
         self._total_train_steps += ticks_fired
 
-        # Drain into accumulators (consumed by the next flush_metrics).
         self._acc_critic_loss += critic_loss_acc
         self._acc_alpha += fexp(self.alpha_opt.value)
         self._acc_aux_loss += aux_loss
@@ -883,9 +523,187 @@ struct REDQOFETrainer[
 
         return True
 
-    # ──────────────────────────────────────────────────────────────────
-    # Action-selection surface (single-env CPU).
-    # ──────────────────────────────────────────────────────────────────
+    def total_train_steps(self) -> Int:
+        return self._total_train_steps
+
+    def inner_count(self) -> Int:
+        return self._inner_count
+
+    def alpha_value(self) -> Scalar[DT]:
+        return fexp(self.alpha_opt.value)
+
+    # ─── CUDA-graph capture surface (DEFERRED — trait-default no-ops) ───────
+    def learning_starts_count(self) -> Int:
+        return self.learning_starts
+
+    # ─── Action selection ──────────────────────────────────────────────────
+    def select_action_batched[
+        N_ENVS: Int
+    ](
+        mut self,
+        obs: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_OBS_DIM), MutAnyOrigin
+        ],
+        action: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        ao_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, 2 * Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        alp_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM + 1), MutAnyOrigin
+        ],
+        step_idx: Int,
+    ) raises:
+        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
+        comptime ACT = Self.ACT_DIM
+        comptime OBS = Self.OBS_DIM
+        comptime PHI = Self.PHI_S_DIM
+
+        if step_idx < self.learning_starts:
+            comptime if Self.train_target == "cpu":
+                for env in range(N_ENVS):
+                    for j in range(ACT):
+                        var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                        action[env, j] = u * self.action_scale
+                return
+            else:
+                var c = self.ctx.value()
+                comptime tot = N_ENVS * ACT
+                c.enqueue_function[_redq_warmup_uniform_kernel[N_ENVS, ACT]](
+                    action,
+                    self.action_scale,
+                    self._warmup_rng_seed,
+                    self._warmup_rng_offset,
+                    grid_dim=(tot + TPB - 1) // TPB,
+                    block_dim=TPB,
+                )
+                self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
+                return
+
+        comptime if Self.train_target == "cpu":
+            self._ob_scr.ensure(N_ENVS * OBS)
+            for env in range(N_ENVS):
+                for d in range(OBS):
+                    self._ob_scr.data[env * OBS + d] = rebind[Scalar[DT]](
+                        obs[env, d]
+                    )
+            self._phi_scr.ensure(N_ENVS * PHI)
+            self._ao_scr.ensure(N_ENVS * 2 * ACT)
+            self._alp_scr.ensure(N_ENVS * (ACT + 1))
+            # state_branch(obs) → φ(s) → actor(φ) → ao → rsample → alp.
+            call_forward["cpu", N_ENVS](
+                self.state_branch,
+                TensorRefs[Self.SB.ARITY](self._ob_scr), self._phi_scr
+            )
+            call_forward["cpu", N_ENVS](
+                self.actor,
+                TensorRefs[Self.ACTOR.ARITY](self._phi_scr), self._ao_scr
+            )
+            self.sel.forward["cpu", N_ENVS](
+                TensorRefs[1](self._ao_scr), self._alp_scr
+            )
+            for env in range(N_ENVS):
+                for j in range(ACT):
+                    var a = self._alp_scr.data[env * (ACT + 1) + j]
+                    if a > self.action_scale:
+                        a = self.action_scale
+                    elif a < -self.action_scale:
+                        a = -self.action_scale
+                    action[env, j] = a
+            _ = ao_scratch
+            _ = alp_scratch
+        else:
+            var c = self.ctx.value()
+            self._ob_scr.ensure_gpu(c, N_ENVS * OBS)
+            self._phi_scr.ensure_gpu(c, N_ENVS * PHI)
+            self._ao_scr.ensure_gpu(c, N_ENVS * 2 * ACT)
+            self._alp_scr.ensure_gpu(c, N_ENVS * (ACT + 1))
+            comptime tot_obs = N_ENVS * OBS
+            c.enqueue_function[_redq_copy2d_kernel[N_ENVS, OBS]](
+                obs,
+                self._ob_scr.lt["gpu", Layout.row_major(N_ENVS, OBS)](),
+                grid_dim=(tot_obs + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
+            call_forward["gpu", N_ENVS](
+                self.state_branch,
+                TensorRefs[Self.SB.ARITY](self._ob_scr), self._phi_scr, self.ctx
+            )
+            call_forward["gpu", N_ENVS](
+                self.actor,
+                TensorRefs[Self.ACTOR.ARITY](self._phi_scr), self._ao_scr,
+                self.ctx,
+            )
+            self.sel.forward["gpu", N_ENVS](
+                TensorRefs[1](self._ao_scr), self._alp_scr, self.ctx
+            )
+            comptime tot_act = N_ENVS * ACT
+            c.enqueue_function[
+                _redq_clamp_action_kernel[N_ENVS, ACT, ACT + 1]
+            ](
+                self._alp_scr.lt["gpu", Layout.row_major(N_ENVS, ACT + 1)](),
+                action,
+                self.action_scale,
+                grid_dim=(tot_act + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
+            _ = ao_scratch
+            _ = alp_scratch
+
+    def select_greedy_action(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
+    ) raises:
+        comptime ACT = Self.ACT_DIM
+        comptime OBS = Self.OBS_DIM
+        comptime PHI = Self.PHI_S_DIM
+        comptime if Self.train_target == "cpu":
+            self._ob_scr.ensure(OBS)
+            self._phi_scr.ensure(PHI)
+            self._ao_scr.ensure(2 * ACT)
+            for d in range(OBS):
+                self._ob_scr.data[d] = obs[d]
+            call_forward["cpu", 1](
+                self.state_branch,
+                TensorRefs[Self.SB.ARITY](self._ob_scr), self._phi_scr
+            )
+            call_forward["cpu", 1](
+                self.actor,
+                TensorRefs[Self.ACTOR.ARITY](self._phi_scr), self._ao_scr
+            )
+            for j in range(ACT):
+                var a = ftanh(self._ao_scr.data[j]) * self.action_scale
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                action_out[j] = a
+        else:
+            var c = self.ctx.value()
+            var ob = Tensor.alloc(OBS)
+            for d in range(OBS):
+                ob.data[d] = obs[d]
+            ob.upload(c)
+            var phi = Tensor.alloc_gpu(c, PHI)
+            var ao = Tensor.alloc_gpu(c, 2 * ACT)
+            call_forward["gpu", 1](
+                self.state_branch,
+                TensorRefs[Self.SB.ARITY](ob), phi, self.ctx
+            )
+            call_forward["gpu", 1](
+                self.actor,
+                TensorRefs[Self.ACTOR.ARITY](phi), ao, self.ctx
+            )
+            ao.download(c)
+            for j in range(ACT):
+                var a = ftanh(ao.data[j]) * self.action_scale
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                action_out[j] = a
 
     def select_action(
         mut self,
@@ -893,116 +711,67 @@ struct REDQOFETrainer[
         mut action_out: List[Scalar[DT]],
         step_idx: Int,
     ) raises:
-        """Stochastic single-env action selection. Warmup (step <
-        learning_starts) → uniform random in [-action_scale, +scale].
-        Otherwise → state_branch(obs) → φ(s); actor(φ(s)) → ao;
-        rsample(ao) → action; clamp."""
-
+        comptime ACT = Self.ACT_DIM
+        comptime OBS = Self.OBS_DIM
+        comptime PHI = Self.PHI_S_DIM
         if step_idx < self.learning_starts:
-            for j in range(Self.ACT):
+            for j in range(ACT):
                 var u = Scalar[DT](2.0 * random_float64() - 1.0)
                 action_out[j] = u * self.action_scale
             return
-
-        # Stage obs into _ob1 host mirror.
-        var ob1_cpu_p = self._ob1.cpu_ptr()
-        for d in range(Self.OBS):
-            ob1_cpu_p[d] = obs[d]
-        comptime if Self.train_target == "gpu":
-            self.ctx.value().enqueue_copy(
-                self._ob1.dev.value(), ob1_cpu_p,
+        comptime if Self.train_target == "cpu":
+            self._ob_scr.ensure(OBS)
+            self._phi_scr.ensure(PHI)
+            self._ao_scr.ensure(2 * ACT)
+            self._alp_scr.ensure(ACT + 1)
+            for d in range(OBS):
+                self._ob_scr.data[d] = obs[d]
+            call_forward["cpu", 1](
+                self.state_branch,
+                TensorRefs[Self.SB.ARITY](self._ob_scr), self._phi_scr
             )
-
-        # Device/host TileTensor views using `target_ptr`.
-        var ob1_p = self._ob1.target_ptr[Self.train_target]()
-        var phi_s1_p = self._phi_s1.target_ptr[Self.train_target]()
-        var ao1_p = self._ao1.target_ptr[Self.train_target]()
-        var alp1_p = self._alp1.target_ptr[Self.train_target]()
-
-        var ob1_t = TileTensor(ob1_p, row_major[1, Self.OBS]())
-        var phi_s1_t = TileTensor(
-            phi_s1_p, row_major[1, Self.PHI_S_DIM](),
-        )
-        var ao1_t = TileTensor(ao1_p, row_major[1, 2 * Self.ACT]())
-        var alp1_t = TileTensor(alp1_p, row_major[1, Self.ACT + 1]())
-
-        # φ(s) = state_branch.forward(obs).
-        self.state_branch.forward[Self.train_target, 1](
-            ob1_t, output=phi_s1_t,
-        )
-        # actor.forward(φ(s)) → ao.
-        self.actor.forward[Self.train_target, 1](
-            phi_s1_t, output=ao1_t,
-        )
-        # rsample(ao) via the actor_blk's rsample primitive.
-        self.actor_blk.rsample.forward[Self.train_target, 1](
-            ao1_t, output=alp1_t,
-        )
-
-        # D2H alp1 on GPU; read host-side for clamp + emit.
-        comptime if Self.train_target == "gpu":
-            var ctx = self.ctx.value()
-            ctx.enqueue_copy(self._alp1.cpu_ptr(), self._alp1.dev.value())
-            ctx.synchronize()
-        var alp1_cpu_p = self._alp1.cpu_ptr()
-        for j in range(Self.ACT):
-            var a = alp1_cpu_p[j]
-            if a > self.action_scale:
-                a = self.action_scale
-            elif a < -self.action_scale:
-                a = -self.action_scale
-            action_out[j] = a
-
-    def select_greedy_action(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-    ) raises:
-        """Deterministic eval: tanh(actor.mean) · action_scale, clamped.
-        Skips the rsample noise — uses the actor's mean head only."""
-        var ob1_cpu_p = self._ob1.cpu_ptr()
-        for d in range(Self.OBS):
-            ob1_cpu_p[d] = obs[d]
-        comptime if Self.train_target == "gpu":
-            self.ctx.value().enqueue_copy(
-                self._ob1.dev.value(), ob1_cpu_p,
+            call_forward["cpu", 1](
+                self.actor,
+                TensorRefs[Self.ACTOR.ARITY](self._phi_scr), self._ao_scr
             )
+            self.sel.forward["cpu", 1](
+                TensorRefs[1](self._ao_scr), self._alp_scr
+            )
+            for j in range(ACT):
+                var a = self._alp_scr.data[j]
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                action_out[j] = a
+        else:
+            var c = self.ctx.value()
+            var ob = Tensor.alloc(OBS)
+            for d in range(OBS):
+                ob.data[d] = obs[d]
+            ob.upload(c)
+            var phi = Tensor.alloc_gpu(c, PHI)
+            var ao = Tensor.alloc_gpu(c, 2 * ACT)
+            var alp = Tensor.alloc_gpu(c, ACT + 1)
+            call_forward["gpu", 1](
+                self.state_branch,
+                TensorRefs[Self.SB.ARITY](ob), phi, self.ctx
+            )
+            call_forward["gpu", 1](
+                self.actor,
+                TensorRefs[Self.ACTOR.ARITY](phi), ao, self.ctx
+            )
+            self.sel.forward["gpu", 1](TensorRefs[1](ao), alp, self.ctx)
+            alp.download(c)
+            for j in range(ACT):
+                var a = alp.data[j]
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                action_out[j] = a
 
-        var ob1_p = self._ob1.target_ptr[Self.train_target]()
-        var phi_s1_p = self._phi_s1.target_ptr[Self.train_target]()
-        var ao1_p = self._ao1.target_ptr[Self.train_target]()
-
-        var ob1_t = TileTensor(ob1_p, row_major[1, Self.OBS]())
-        var phi_s1_t = TileTensor(
-            phi_s1_p, row_major[1, Self.PHI_S_DIM](),
-        )
-        var ao1_t = TileTensor(ao1_p, row_major[1, 2 * Self.ACT]())
-
-        self.state_branch.forward[Self.train_target, 1](
-            ob1_t, output=phi_s1_t,
-        )
-        self.actor.forward[Self.train_target, 1](
-            phi_s1_t, output=ao1_t,
-        )
-
-        comptime if Self.train_target == "gpu":
-            var ctx = self.ctx.value()
-            ctx.enqueue_copy(self._ao1.cpu_ptr(), self._ao1.dev.value())
-            ctx.synchronize()
-        var ao1_cpu_p = self._ao1.cpu_ptr()
-        for j in range(Self.ACT):
-            var mean = ao1_cpu_p[j]
-            var a = ftanh(mean) * self.action_scale
-            if a > self.action_scale:
-                a = self.action_scale
-            elif a < -self.action_scale:
-                a = -self.action_scale
-            action_out[j] = a
-
-    # ──────────────────────────────────────────────────────────────────
-    # Replay-push + episode-tracker surface.
-    # ──────────────────────────────────────────────────────────────────
-
+    # ─── Record ──────────────────────────────────────────────────────────
     def record(
         mut self,
         ref obs: List[Scalar[DT]],
@@ -1012,29 +781,61 @@ struct REDQOFETrainer[
         done: Scalar[DT],
     ) raises:
         self.tracker.add_reward(reward)
-        self.sample_blk.add(
-            obs,
-            action,
-            reward,
-            next_obs,
-            done,
-            ctx=self.ctx,
-        )
+        self.sample_blk.add(obs, action, reward, next_obs, done, ctx=self.ctx)
 
-    # `end_episode` / `mean_return` / `ep_count` / `add_complete_return`
-    # are OffPolicyAgent trait defaults (S6) over this single accessor.
+    def _replay_add(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        ref action: List[Scalar[DT]],
+        reward: Scalar[DT],
+        ref next_obs: List[Scalar[DT]],
+        done: Scalar[DT],
+    ) raises:
+        self.sample_blk.add(obs, action, reward, next_obs, done, ctx=self.ctx)
+
     def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
         return rebind[UnsafePointer[EpisodeTracker, MutAnyOrigin]](
             UnsafePointer(to=self.tracker)
         )
 
+    def record_batch_gpu[
+        N_ENVS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        self.sample_blk.add_batch_gpu[N_ENVS](
+            ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
+        )
+
+    def record_batch_gpu_nstep[
+        N_ENVS: Int, NS: Int
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut nstep_buf: GPUNStepBuffer[
+            NS, Self.AGENT_OBS_DIM, Self.AGENT_ACT_DIM, N_ENVS,
+        ],
+        prev_obs_dev: DeviceBuffer[DT],
+        action_dev: DeviceBuffer[DT],
+        reward_dev: DeviceBuffer[DT],
+        obs_dev: DeviceBuffer[DT],
+        done_dev: DeviceBuffer[DT],
+    ) raises:
+        raise Error(
+            "REDQOFETrainer.record_batch_gpu_nstep: n-step replay not supported"
+            " (uniform 1-step replay only)"
+        )
+
+    # ─── Metrics / logging ─────────────────────────────────────────────────
     def flush_metrics(mut self) -> REDQOFEMetrics:
         """Drain per-flush-window accumulators into a `REDQOFEMetrics`
-        snapshot and reset. Means use sum/count (0.0 sentinel if no
-        updates fired this window — no NaN poisoning).
-
-        Bundle fields are documented on `REDQOFEMetrics`. The driver
-        / agent typically calls this on a `diag_every` cadence."""
+        snapshot and reset. Means use sum/count (0.0 sentinel if no updates)."""
         var inv_n: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](
             self._acc_n_updates
         ) if self._acc_n_updates > 0 else Scalar[DT](0.0)
@@ -1059,18 +860,13 @@ struct REDQOFETrainer[
         self._acc_n_actor_updates = 0
         return m^
 
-    def flush_metrics_through_logger[L: Logger](
+    def flush_metrics_through_logger[
+        L: Logger
+    ](
         mut self,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
-        """Trait-uniform cadence hook (overrides the no-op default) so the
-        off-policy driver streams REDQ-OFE metrics at its `diag_every`
-        cadence. `REDQOFEMetrics` holds plain host scalars (not `LogScalar`),
-        so the fields are emitted explicitly rather than via `log_bundle`.
-        Values are correct on both CPU and GPU — the accumulators are filled
-        unconditionally in `train_step` (REDQ-OFE runs host control flow,
-        no CUDA-graph capture)."""
         var m = self.flush_metrics()
         if Bool(logger):
             var lg = logger.value()
@@ -1080,309 +876,89 @@ struct REDQOFETrainer[
             lg[].log_scalar("log_prob_mean", Float64(m.log_prob_mean), step)
             lg[].log_scalar("aux_loss", Float64(m.aux_loss), step)
             lg[].log_scalar("n_updates", Float64(m.n_updates), step)
-            lg[].log_scalar(
-                "n_actor_updates", Float64(m.n_actor_updates), step
-            )
+            lg[].log_scalar("n_actor_updates", Float64(m.n_actor_updates), step)
 
     def flush_timer_log(mut self) -> String:
-        """Per-section wall-time report (sample / feature / target_y /
-        critic / polyak / actor / alpha / aux) and reset the
-        accumulators. Matches the `redq/trainer.mojo` convention."""
-        var report = self.timer.format_report()
-        self.timer.reset()
-        return report
+        return String("")
 
-    # ──────────────────────────────────────────────────────────────────
-    # OffPolicyAgent trait methods — batched action surface + per-lane
-    # replay push. The single-env helpers (`select_action`, `record`)
-    # above stay available for non-driver callers.
-    # ──────────────────────────────────────────────────────────────────
-
-    def select_action_batched[
-        N_ENVS: Int,
-    ](
-        mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        alp_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        step_idx: Int,
-    ) raises:
-        """Single batched entry for the off-policy driver.
-        Caller supplies obs / ao / alp / action buffers sized for
-        `N_ENVS`. The internal `_phi_s_batched_*` scratch is grown
-        lazily to `N_ENVS · PHI_S_DIM` on first call (host List on
-        CPU, DeviceBuffer on GPU). CPU + GPU paths share the same
-        forward pipeline (state_branch → actor → rsample → clamp);
-        only warmup random + final clamp use different mechanisms
-        per target."""
-        comptime assert N_ENVS > 0, "N_ENVS must be > 0"
-
-        # Warmup → uniform random in [-action_scale, +action_scale].
-        if step_idx < self.learning_starts:
-            comptime if Self.train_target == "cpu":
-                for i in range(N_ENVS * Self.ACT):
-                    var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                    action_ptr[i] = u * self.action_scale
-            else:
-                # GPU warmup: Philox kernel. Advance the host offset
-                # by 2·N·A each call (step_uniform consumes 2 raw
-                # uint32 lanes).
-                var action_lt = LayoutTensor[
-                    DT, Layout.row_major(N_ENVS, Self.ACT),
-                    MutAnyOrigin,
-                ](action_ptr)
-                comptime total_w = N_ENVS * Self.ACT
-                comptime n_blocks_w = (total_w + TPB - 1) // TPB
-                comptime warmup_kernel = _redq_warmup_uniform_kernel[
-                    N_ENVS, Self.ACT,
-                ]
-                var ctx = self.ctx.value()
-                ctx.enqueue_function[warmup_kernel](
-                    action_lt,
-                    self.action_scale,
-                    self._warmup_rng_seed,
-                    self._warmup_rng_offset,
-                    grid_dim=n_blocks_w, block_dim=TPB,
-                )
-                self._warmup_rng_offset += UInt64(N_ENVS * Self.ACT * 2)
-            return
-
-        # Lazy-grow φ(s) scratch on the appropriate target.
-        var needed = N_ENVS * Self.PHI_S_DIM
-        var phi_s_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-        comptime if Self.train_target == "cpu":
-            if self._phi_s_batched_cap < needed:
-                self._phi_s_batched_cpu = List[Scalar[DT]](
-                    length=needed, fill=Scalar[DT](0.0),
-                )
-                self._phi_s_batched_cap = needed
-            phi_s_p = mptr(self._phi_s_batched_cpu.unsafe_ptr())
-        else:
-            if self._phi_s_batched_dev_cap < needed:
-                self._phi_s_batched_dev = (
-                    self.ctx.value().enqueue_create_buffer[DT](needed)
-                )
-                self._phi_s_batched_dev_cap = needed
-            phi_s_p = self._phi_s_batched_dev.value().unsafe_ptr()
-
-        # (1) state_branch(obs_ptr) → phi_s_p.
-        var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, Self.OBS]())
-        var phi_s_t = TileTensor(
-            phi_s_p, row_major[N_ENVS, Self.PHI_S_DIM](),
-        )
-        self.state_branch.forward[Self.train_target, N_ENVS](
-            obs_t, output=phi_s_t,
-        )
-
-        # (2) actor(phi_s) → ao.
-        var ao_t = TileTensor(
-            ao_scratch_ptr,
-            row_major[N_ENVS, 2 * Self.ACT](),
-        )
-        self.actor.forward[Self.train_target, N_ENVS](
-            phi_s_t, output=ao_t,
-        )
-
-        # (3) rsample(ao) → alp = (action | log_prob).
-        var alp_t = TileTensor(
-            alp_scratch_ptr,
-            row_major[N_ENVS, Self.ACT + 1](),
-        )
-        self.actor_blk.rsample.forward[Self.train_target, N_ENVS](
-            ao_t, output=alp_t,
-        )
-
-        # (4) Clamp into action_ptr (drop the log_prob slot).
-        comptime if Self.train_target == "cpu":
-            for env_idx in range(N_ENVS):
-                var src = alp_scratch_ptr + env_idx * (Self.ACT + 1)
-                var dst = action_ptr + env_idx * Self.ACT
-                for j in range(Self.ACT):
-                    var a = src[j]
-                    if a > self.action_scale:
-                        a = self.action_scale
-                    elif a < -self.action_scale:
-                        a = -self.action_scale
-                    dst[j] = a
-        else:
-            var alp_lt = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, Self.ACT + 1),
-                MutAnyOrigin,
-            ](alp_scratch_ptr)
-            var action_lt = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, Self.ACT),
-                MutAnyOrigin,
-            ](action_ptr)
-            comptime total_c = N_ENVS * Self.ACT
-            comptime n_blocks_c = (total_c + TPB - 1) // TPB
-            comptime clamp_kernel = _redq_action_clamp_kernel[
-                N_ENVS, Self.ACT,
-            ]
-            self.ctx.value().enqueue_function[clamp_kernel](
-                alp_lt, action_lt, self.action_scale,
-                grid_dim=n_blocks_c, block_dim=TPB,
-            )
-
-    def _replay_add(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        ref action: List[Scalar[DT]],
-        reward: Scalar[DT],
-        ref next_obs: List[Scalar[DT]],
-        done: Scalar[DT],
-    ) raises:
-        # `record_batch_cpu`'s staging loop is the OffPolicyAgent trait
-        # default (S6 follow-on); this hook is the one trainer-specific line.
-        # Per-lane replay push WITHOUT touching the episode tracker (the
-        # driver manages per-env returns via `add_complete_return`).
-        self.sample_blk.add(
-            obs, action, reward, next_obs, done, ctx=self.ctx,
-        )
-
-    # ──────────────────────────────────────────────────────────────────
-    # One-file `nn-ckpt v2` checkpoint.
-    #
-    # Section order:
-    #   actor / critic{0..N-1} / state_branch / action_branch /
-    #     predictor / actor_opt / critic{0..N-1}_opt / sb_opt /
-    #     ab_opt / pred_opt / alpha_opt
-    #
-    # Target critics are NOT serialized — hard-copied from their just-
-    # restored online twins inside `load_state` (matches REDQ's
-    # convention). Replay buffer + episode tracker NOT serialized
-    # (matches SAC + REDQ).
-    # ──────────────────────────────────────────────────────────────────
-
+    # ─── Checkpoint (ONE file: actor + N critics + SB + AB + PRED) ─────────
     def save_state(mut self, path: String) raises:
-        var body = String("")
-        comptime if Self.train_target == "cpu":
-            save_state_v2_body(self.actor, body, "actor")
-            for i in range(Self.N):
-                save_state_v2_body(
-                    self.ensemble.pairs[i].online,
-                    body, "critic" + String(i),
-                )
-            save_state_v2_body(self.state_branch, body, "state_branch")
-            save_state_v2_body(self.action_branch, body, "action_branch")
-            save_state_v2_body(self.predictor, body, "predictor")
-            save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
-            for i in range(Self.N):
-                save_optimizer_v2_body(
-                    self.ensemble.opts[i],
-                    body, "critic" + String(i) + "_opt",
-                )
-            save_optimizer_v2_body(self.sb_opt, body, "sb_opt")
-            save_optimizer_v2_body(self.ab_opt, body, "ab_opt")
-            save_optimizer_v2_body(self.pred_opt, body, "pred_opt")
-        else:
-            var c = self.ctx.value()
-            save_state_v2_body_gpu(self.actor, body, "actor", c)
-            for i in range(Self.N):
-                save_state_v2_body_gpu(
-                    self.ensemble.pairs[i].online,
-                    body, "critic" + String(i), c,
-                )
-            save_state_v2_body_gpu(
-                self.state_branch, body, "state_branch", c,
+        var w = CheckpointWriter(save_moments=False)
+        w.mode = 0
+        self.actor.for_each_param[Self.train_target](w, self.ctx, "actor")
+        for i in range(Self.N):
+            self.ensemble.pairs[i].online.for_each_param[Self.train_target](
+                w, self.ctx, "critic" + String(i)
             )
-            save_state_v2_body_gpu(
-                self.action_branch, body, "action_branch", c,
+        self.state_branch.for_each_param[Self.train_target](
+            w, self.ctx, "state_branch"
+        )
+        self.action_branch.for_each_param[Self.train_target](
+            w, self.ctx, "action_branch"
+        )
+        self.predictor.for_each_param[Self.train_target](
+            w, self.ctx, "predictor"
+        )
+        w.mode = 1
+        self.actor.for_each_state[Self.train_target](w, self.ctx, "actor")
+        for i in range(Self.N):
+            self.ensemble.pairs[i].online.for_each_state[Self.train_target](
+                w, self.ctx, "critic" + String(i)
             )
-            save_state_v2_body_gpu(self.predictor, body, "predictor", c)
-            save_optimizer_v2_body_gpu(self.actor_opt, body, "actor_opt")
-            for i in range(Self.N):
-                save_optimizer_v2_body_gpu(
-                    self.ensemble.opts[i],
-                    body, "critic" + String(i) + "_opt",
-                )
-            save_optimizer_v2_body_gpu(self.sb_opt, body, "sb_opt")
-            save_optimizer_v2_body_gpu(self.ab_opt, body, "ab_opt")
-            save_optimizer_v2_body_gpu(self.pred_opt, body, "pred_opt")
-        # ScalarAdam: REDQ-OFE uses ScalarAdam.new (host-only), so
-        # the CPU serializer applies regardless of train_target.
-        save_scalar_adam_v2_body(self.alpha_opt, body, "alpha_opt")
-        save_counter_v2_body(self._total_train_steps, body, "_total_train_steps")
-        var content = String("nn-ckpt v2\n") + body
+        self.state_branch.for_each_state[Self.train_target](
+            w, self.ctx, "state_branch"
+        )
+        self.action_branch.for_each_state[Self.train_target](
+            w, self.ctx, "action_branch"
+        )
+        self.predictor.for_each_state[Self.train_target](
+            w, self.ctx, "predictor"
+        )
         with open(path, "w") as f:
-            f.write(content)
+            f.write(w.content)
 
     def load_state(mut self, path: String) raises:
-        var content = read_file_v2(path)
-        var lines = split_lines_v2(content)
-        expect_v2_header(lines)
-        var idx: Int = 1
-        comptime if Self.train_target == "cpu":
-            load_state_v2_body(self.actor, lines, idx, "actor")
-            for i in range(Self.N):
-                load_state_v2_body(
-                    self.ensemble.pairs[i].online,
-                    lines, idx, "critic" + String(i),
-                )
-            load_state_v2_body(
-                self.state_branch, lines, idx, "state_branch",
-            )
-            load_state_v2_body(
-                self.action_branch, lines, idx, "action_branch",
-            )
-            load_state_v2_body(self.predictor, lines, idx, "predictor")
-            load_optimizer_v2_body(
-                self.actor_opt, lines, idx, "actor_opt",
-            )
-            for i in range(Self.N):
-                load_optimizer_v2_body(
-                    self.ensemble.opts[i],
-                    lines, idx, "critic" + String(i) + "_opt",
-                )
-            load_optimizer_v2_body(self.sb_opt, lines, idx, "sb_opt")
-            load_optimizer_v2_body(self.ab_opt, lines, idx, "ab_opt")
-            load_optimizer_v2_body(
-                self.pred_opt, lines, idx, "pred_opt",
-            )
-        else:
-            var c = self.ctx.value()
-            load_state_v2_body_gpu(self.actor, lines, idx, "actor", c)
-            for i in range(Self.N):
-                load_state_v2_body_gpu(
-                    self.ensemble.pairs[i].online,
-                    lines, idx, "critic" + String(i), c,
-                )
-            load_state_v2_body_gpu(
-                self.state_branch, lines, idx, "state_branch", c,
-            )
-            load_state_v2_body_gpu(
-                self.action_branch, lines, idx, "action_branch", c,
-            )
-            load_state_v2_body_gpu(
-                self.predictor, lines, idx, "predictor", c,
-            )
-            load_optimizer_v2_body_gpu(
-                self.actor_opt, lines, idx, "actor_opt",
-            )
-            for i in range(Self.N):
-                load_optimizer_v2_body_gpu(
-                    self.ensemble.opts[i],
-                    lines, idx, "critic" + String(i) + "_opt",
-                )
-            load_optimizer_v2_body_gpu(
-                self.sb_opt, lines, idx, "sb_opt",
-            )
-            load_optimizer_v2_body_gpu(
-                self.ab_opt, lines, idx, "ab_opt",
-            )
-            load_optimizer_v2_body_gpu(
-                self.pred_opt, lines, idx, "pred_opt",
-            )
-        load_scalar_adam_v2_body(
-            self.alpha_opt, lines, idx, "alpha_opt",
-        )
-        load_counter_v2_body(
-            self._total_train_steps, lines, idx, "_total_train_steps"
-        )
-        # Re-sync every target net from its just-restored online twin.
+        var content: String
+        with open(path, "r") as f:
+            content = String(f.read())
+        var lines = _split_lines(content)
+        var body = List[String]()
+        for li in range(len(lines)):
+            if lines[li].startswith("storage-ckpt"):
+                continue
+            body.append(lines[li])
+        var r = CheckpointReader(body^)
+        r.mode = 0
+        self.actor.for_each_param[Self.train_target](r, self.ctx, "actor")
         for i in range(Self.N):
-            hard_copy_params[target=Self.train_target, M=Self.CRITIC](
-                self.ensemble.pairs[i].online,
-                self.ensemble.pairs[i].target_net,
-                self.ctx,
+            self.ensemble.pairs[i].online.for_each_param[Self.train_target](
+                r, self.ctx, "critic" + String(i)
+            )
+        self.state_branch.for_each_param[Self.train_target](
+            r, self.ctx, "state_branch"
+        )
+        self.action_branch.for_each_param[Self.train_target](
+            r, self.ctx, "action_branch"
+        )
+        self.predictor.for_each_param[Self.train_target](
+            r, self.ctx, "predictor"
+        )
+        r.mode = 1
+        self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")
+        for i in range(Self.N):
+            self.ensemble.pairs[i].online.for_each_state[Self.train_target](
+                r, self.ctx, "critic" + String(i)
+            )
+        self.state_branch.for_each_state[Self.train_target](
+            r, self.ctx, "state_branch"
+        )
+        self.action_branch.for_each_state[Self.train_target](
+            r, self.ctx, "action_branch"
+        )
+        self.predictor.for_each_state[Self.train_target](
+            r, self.ctx, "predictor"
+        )
+        for i in range(Self.N):
+            self.ensemble.pairs[i].target_net.polyak_from[Self.train_target](
+                self.ensemble.pairs[i].online, Scalar[DT](1.0), self.ctx
             )

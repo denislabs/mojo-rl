@@ -22,24 +22,28 @@ action lives on `DreamerV3Agent`); imagination from the final posterior carry.
 """
 
 from std.random import random_float64
-from std.memory import alloc
 from std.math import exp
 from std.gpu.host import DeviceContext
-from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
+from mojo_rl.nn.core.tensor_refs import TensorRefs, child_refs
+from mojo_rl.nn.core.checkpoint import (
+    CheckpointWriter, CheckpointReader, _split_lines,
+)
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
 from mojo_rl.nn.optimizer.schedules import LinearWarmupSchedule
-from mojo_rl.deep_agents.data.sequence_replay import SequenceReplay
+from mojo_rl.deep_agents.data.any_sequence_replay import AnySequenceReplay
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 from mojo_rl.deep_agents.dreamerv3.wm import (
     WMCoreGraph, WMImagineGraph, DecLossGraph, RewLossGraph, ConLossGraph,
 )
 from mojo_rl.deep_agents.dreamerv3.nets import (
-    DreamerEncoder, DreamerValue, DreamerPolicyHead,
+    DreamerEncoder, DreamerDecoder, DreamerValue, DreamerPolicyHead,
 )
+from mojo_rl.nn.core.module import Module
 from mojo_rl.deep_agents.dreamerv3.twohot import (
     symexp_twohot_bins,
     twohot_pred,
@@ -55,8 +59,10 @@ from mojo_rl.deep_agents.dreamerv3.blocks import (
 
 
 @always_inline
-def _ol_alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
+def _hp(mut t: Tensor) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    """Sanctioned host-pointer view of a storage Tensor's CPU `data` — for the
+    raw-pointer helpers (`twohot_pred`, sample_batch). CPU only."""
+    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](t.data.unsafe_ptr())
 
 
 @always_inline
@@ -68,22 +74,45 @@ def _symexp(x: Scalar[DT]) -> Scalar[DT]:
     return s * (exp(a) - Scalar[DT](1.0))
 
 
+@always_inline
+def _recon_decode[SIGMOID: Bool](x: Scalar[DT]) -> Scalar[DT]:
+    """Map a raw decoder output back to observation space. Must match the recon
+    loss: sigmoid (bounded [0,1] pixels) when RECON_SIGMOID, else symexp."""
+    comptime if SIGMOID:
+        return Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-x))
+    else:
+        return _symexp(x)
+
+
 @fieldwise_init
 struct DreamerV3Trainer[
     train_target: StaticString,
     OBS: Int, ACT: Int, DETER: Int, H: Int, STOCH: Int, CLASSES: Int,
     BLOCKS: Int, TOKEN: Int, DEC_U: Int, HU: Int, VU: Int, PU: Int,
     BINS: Int, B: Int, T: Int, T_IMAG: Int, CAP: Int, DISCRETE: Bool = False,
-](Movable & ImplicitlyDestructible):
+    # Encoder / decoder Module TYPES (default = MLP; pixel obs pass the CNN
+    # nets from nets_cnn.mojo). The decoder is threaded into DecLossGraph; the
+    # encoder is run standalone to produce `tokens[TOKEN]`. OBS stays the flat
+    # obs dim (C*H*W for images — the conv index math reads it as [C,H,W]).
+    ENC: Module = DreamerEncoder[OBS, TOKEN, SwishOp],
+    DEC: Module = DreamerDecoder[STOCH * CLASSES + DETER, OBS, DEC_U, SwishOp],
+    # RECON_SIGMOID=True → reference pixel recon: decoder logits -> sigmoid,
+    # plain MSE vs raw [0,1] obs (decode = sigmoid). False (default) keeps the
+    # symlog recon, correct for unbounded vector obs (CartPole/Pendulum).
+    RECON_SIGMOID: Bool = False,
+](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
 
-    comptime EncT = DreamerEncoder[Self.OBS, Self.TOKEN, SwishOp]
+    comptime EncT = Self.ENC
     comptime CoreT = WMCoreGraph[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT,
         Self.TOKEN, SwishOp,
     ]
-    comptime DecT = DecLossGraph[Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp]
+    comptime DecT = DecLossGraph[
+        Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp, Self.DEC,
+        Self.RECON_SIGMOID,
+    ]
     comptime RewT = RewLossGraph[Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp]
     comptime ConT = ConLossGraph[Self.DETER, Self.SC, Self.HU, SwishOp]
     comptime ValT = DreamerValue[Self.FEAT, Self.VU, Self.BINS, SwishOp]
@@ -94,7 +123,14 @@ struct DreamerV3Trainer[
     comptime ImagT = WMImagineGraph[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT, SwishOp,
     ]
-    comptime RepT = SequenceReplay[Self.OBS, Self.ACT, Self.CAP]
+    # Sequence replay backend, selected by `train_target` via the carry-both
+    # `AnySequenceReplay` shim (Mojo has no type-ternary). GPU resolves to the
+    # device-resident `GPUSequenceReplay` (device circular storage + device
+    # Philox window draws → no per-step host B×T sampling, capture-safe); CPU
+    # to the host `SequenceReplay`.
+    comptime RepT = AnySequenceReplay[
+        Self.train_target, Self.OBS, Self.ACT, Self.CAP
+    ]
     comptime StateT = DreamerState[
         Self.OBS, Self.ACT, Self.DETER, Self.SC, Self.TOKEN, Self.B, Self.T,
         Self.T_IMAG,
@@ -102,6 +138,7 @@ struct DreamerV3Trainer[
     comptime WMBlk = WMStep[
         Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH, Self.CLASSES,
         Self.BLOCKS, Self.TOKEN, Self.DEC_U, Self.HU, Self.BINS, Self.B, Self.T,
+        Self.DISCRETE, Self.ENC, Self.DEC, Self.RECON_SIGMOID,
     ]
     comptime SyncBlk = ParamSyncStep[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT,
@@ -143,6 +180,15 @@ struct DreamerV3Trainer[
     var learning_starts: Int
     var train_steps: Int
     var warmup: LinearWarmupSchedule   # reference LR ramp 0→lr over warmup_steps
+    # Lazily-captured discrete-GPU train-step graph (Stage 3 P5; `None` until the
+    # first capture). Moved into a disjoint local for the `maybe_capture_replay`
+    # call (mbpo idiom) so the capture closure can borrow `self` mutably.
+    var _train_graph: Optional[CUDAGraph]
+    # P4 follow-up: discrete-GPU imagination-noise source. True (default) →
+    # on-device Philox in the eager prologue (no host gen/upload). False →
+    # host-seeded gen + upload (the CPU↔GPU parity gate, so both targets read
+    # IDENTICAL noise — host RNG ≠ device Philox).
+    var device_noise: Bool
 
     @staticmethod
     def make(
@@ -153,6 +199,7 @@ struct DreamerV3Trainer[
         out_init_scale: Scalar[DT] = Scalar[DT](0.0),
         actent: Scalar[DT] = Scalar[DT](3e-4),
         slowtar: Bool = False,
+        device_noise: Bool = True,
     ) raises -> Self:
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
@@ -189,15 +236,15 @@ struct DreamerV3Trainer[
             slowvalue, String("3.weight"), String("3.bias"), out_init_scale, ctx
         )
 
-        var oe = DreamerOpt.make[Self.train_target, Self.EncT](enc, ctx=ctx)
-        var ocore = DreamerOpt.make_graph[Self.train_target](core, ctx=ctx)
-        var odec = DreamerOpt.make_graph[Self.train_target](dec, ctx=ctx)
-        var orew = DreamerOpt.make_graph[Self.train_target](rew, ctx=ctx)
-        var ocon = DreamerOpt.make_graph[Self.train_target](con, ctx=ctx)
-        var oval = DreamerOpt.make[Self.train_target, Self.ValT](value, ctx=ctx)
-        var opol = DreamerOpt.make[Self.train_target, Self.PolT](policy, ctx=ctx)
-        oe.lr = lr; ocore.lr = lr; odec.lr = lr; orew.lr = lr
-        ocon.lr = lr; oval.lr = lr; opol.lr = lr
+        # Storage DreamerOpt is driven INSIDE the blocks (graph.for_each_param /
+        # opt.step[target, M]); the trainer just constructs them with the lr.
+        var oe = DreamerOpt(lr=lr)
+        var ocore = DreamerOpt(lr=lr)
+        var odec = DreamerOpt(lr=lr)
+        var orew = DreamerOpt(lr=lr)
+        var ocon = DreamerOpt(lr=lr)
+        var oval = DreamerOpt(lr=lr)
+        var opol = DreamerOpt(lr=lr)
 
         var bins = List[Scalar[DT]](length=Self.BINS, fill=Scalar[DT](0.0))
         # Reward/value twohot bins, narrowed (max bin ≈ 8102 vs the reference's
@@ -211,7 +258,7 @@ struct DreamerV3Trainer[
         # a past -9-vs-(-20)-default split decoded reward ~5× small, starving
         # imagined returns.
         symexp_twohot_bins[Self.BINS](
-            mptr(bins.unsafe_ptr()),
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](bins.unsafe_ptr()),
             lo=Scalar[DT](DREAMER_REWARD_GRID_LO),
         )
         var retnorm = PercentileNormalize.make(
@@ -219,7 +266,7 @@ struct DreamerV3Trainer[
             Scalar[DT](95.0), Scalar[DT](1.0), False,
         )
 
-        return Self(
+        var s = Self(
             enc=enc^, core=core^, dec=dec^, rew=rew^, con=con^, value=value^,
             slowvalue=slowvalue^, policy=policy^, imagine=imagine^,
             oe=oe^, ocore=ocore^, odec=odec^, orew=orew^, ocon=ocon^,
@@ -229,9 +276,10 @@ struct DreamerV3Trainer[
             ac_blk=Self.ACBlk.make[Self.train_target](
                 ctx=ctx, actent=actent, slowtar=slowtar
             ),
-            # Replay stays host-resident on both targets; the GPU WMStep
-            # uploads the sampled batch per-step (so make["cpu"] always).
-            replay=Self.RepT.make["cpu"](ctx=ctx),
+            # GPU: device-resident GPUSequenceReplay (sampled straight into the
+            # WM device buffers); CPU: host SequenceReplay. The shim picks the
+            # backend off `train_target`; the GPU side requires `ctx`.
+            replay=Self.RepT.make(ctx=ctx),
             retnorm=retnorm^,
             bins=bins^,
             state=Self.StateT.make[Self.train_target](ctx=ctx),
@@ -239,7 +287,19 @@ struct DreamerV3Trainer[
             learning_starts=learning_starts,
             train_steps=0,
             warmup=LinearWarmupSchedule.make(lr, warmup_steps),
+            _train_graph=None,
+            device_noise=device_noise,
         )
+        # One-time upload of the CONSTANT twohot bins grid into the AC's device
+        # buffer (Stage 3 P5). The grid never changes, so doing it here (not
+        # per-step in `_ac_gpu_disc`/`_ac_gpu_cont`) keeps the captured WM+AC
+        # region free of H2D copies — which are illegal inside a CUDA-graph
+        # capture. Both discrete and continuous device-resident ACs read bins_d.
+        comptime if Self.train_target == "gpu":
+            for c in range(Self.BINS):
+                s.ac_blk.bins_d.data[c] = s.bins[c]
+            s.ac_blk.bins_d.upload(ctx.value())
+        return s^
 
     def record(
         mut self,
@@ -247,11 +307,18 @@ struct DreamerV3Trainer[
         act: UnsafePointer[Scalar[DT], MutAnyOrigin],
         reward: Scalar[DT],
         done: Scalar[DT],
-    ):
+    ) raises:
         self.replay.record(obs, act, reward, done)
 
+    def record_terminal(
+        mut self, obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    ) raises:
+        """Store a genuine terminal observation (call right after `record(done=1)`).
+        Lets the WM continue head learn `latent(terminal)→0`."""
+        self.replay.record_terminal(obs)
+
     def can_train(self) -> Bool:
-        return self.replay.size >= Self.T + 1
+        return self.replay.count() >= Self.T + 1
 
     def last_wm_loss(self) -> Scalar[DT]:
         return self.state.last_wm_loss
@@ -283,32 +350,220 @@ struct DreamerV3Trainer[
     def dbg_rscale(self) -> Scalar[DT]:
         return self.state.dbg_rscale
 
-    def train_step(mut self) raises -> Bool:
+    def dbg_con_mean(self) -> Scalar[DT]:
+        return self.state.dbg_con_mean
+
+    def dbg_con_min(self) -> Scalar[DT]:
+        return self.state.dbg_con_min
+
+    def dbg_val_std(self) -> Scalar[DT]:
+        return self.state.dbg_val_std
+
+    def dbg_feat_std(self) -> Scalar[DT]:
+        return self.state.dbg_feat_std
+
+    def dbg_dyn_kl(self) -> Scalar[DT]:
+        return self.state.dbg_dyn_kl
+
+    def dbg_rep_kl(self) -> Scalar[DT]:
+        return self.state.dbg_rep_kl
+
+    def dbg_obs_loss(self) -> Scalar[DT]:
+        return self.state.dbg_obs_loss
+
+    def dbg_rew_loss(self) -> Scalar[DT]:
+        return self.state.dbg_rew_loss
+
+    def dbg_con_loss(self) -> Scalar[DT]:
+        return self.state.dbg_con_loss
+
+    def dbg_pol_loss(self) -> Scalar[DT]:
+        return self.state.dbg_pol_loss
+
+    def dbg_val_loss(self) -> Scalar[DT]:
+        return self.state.dbg_val_loss
+
+    def train_steps_done(self) -> Int:
+        return self.train_steps
+
+    def train_step(mut self, want_diag: Bool = True) raises -> Bool:
         if not self.can_train():
             return False
+        self.train_prologue(want_diag)
+        self._device_step(want_diag)
+        self.train_steps += 1
+        return True
+
+    def train_prologue(mut self, want_diag: Bool) raises:
+        """Eager per-step work that is NOT part of the captured device-kernel
+        sequence (Stage 3 P5): LR refresh + minibatch draw + imagination-noise
+        fill/upload. Must run before `_device_step` / `train_device_kernels`
+        each step so the (fixed) device input buffers — `wm_blk.mb*_d`,
+        `ac_blk.noise_d`, `state.d_*` — hold this step's fresh data before a
+        graph replay reads them."""
         # reference LR warmup: ramp 0→lr over warmup_steps (all modules).
         var clr = self.warmup.lr_at(self.train_steps)
         self.oe.lr = clr; self.ocore.lr = clr; self.odec.lr = clr
         self.orew.lr = clr; self.ocon.lr = clr; self.oval.lr = clr
         self.opol.lr = clr
-        # sample a length-T window into the shared state batch buffers
-        self.replay.sample_batch[Self.B, Self.T](
-            self.state.mb_obs, self.state.mb_act, self.state.mb_rew,
-            self.state.mb_dne,
-        )
+        self._draw_minibatch(want_diag)
+        self._fill_noise()
+
+    def _draw_minibatch(mut self, want_diag: Bool) raises:
+        """Sample one length-T window into the minibatch buffers the WM/AC
+        blocks consume.
+
+        CPU: host `SequenceReplay.sample_batch_fst` → `state.mb_*` (raw host
+        pointers).
+
+        GPU: device `GPUSequenceReplay.sample_batch_fst_dev` straight into the
+        WM device buffers (`wm_blk.mb*_d`) — no host obs/act gather, no upload
+        (the windows are drawn with the buffer's device Philox RNG). rew/dne are
+        copied device→device into the shared `state.d_rew/d_cont`, which BOTH the
+        discrete (`_ac_gpu_disc`) and continuous (`_ac_gpu_cont`) device-resident
+        ACs read directly — no D2H/H2D round-trip. `dbg_real_rew` is the only host
+        readout, `want_diag`-gated → the non-diag draw is host-free (capturable)."""
+        comptime if Self.train_target == "gpu":
+            var sctx = self.ctx.value()
+            self.replay.sample_batch_fst_dev[Self.B, Self.T](
+                sctx,
+                self.wm_blk.mbobs_d.dev.value(),
+                self.wm_blk.mbact_d.dev.value(),
+                self.wm_blk.mbrew_d.dev.value(),
+                self.wm_blk.mbdne_d.dev.value(),
+                self.wm_blk.mbfst_d.dev.value(),
+            )
+            # rew/dne stay on device (st.d_rew / st.d_cont carries dne) for the
+            # device-resident AC — BOTH discrete (`_ac_gpu_disc`) and continuous
+            # (`_ac_gpu_cont`) read them device-direct, so no D2H/H2D round-trip.
+            # `dbg_real_rew` is the only host readout, and it's `want_diag`-gated
+            # → the non-diag draw is host-free (capture-safe).
+            sctx.enqueue_copy(
+                self.state.d_rew.dev.value(),
+                self.wm_blk.mbrew_d.dev.value(),
+            )
+            sctx.enqueue_copy(
+                self.state.d_cont.dev.value(),
+                self.wm_blk.mbdne_d.dev.value(),
+            )
+            if want_diag:
+                self.wm_blk.mbrew_d.download(sctx)
+                var rr: Scalar[DT] = 0.0
+                for i in range(Self.B * Self.T):
+                    rr += self.wm_blk.mbrew_d.data[i]
+                self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
+        else:
+            self.replay.sample_batch_fst[Self.B, Self.T](
+                _hp(self.state.mb_obs), _hp(self.state.mb_act),
+                _hp(self.state.mb_rew), _hp(self.state.mb_dne),
+                _hp(self.state.mb_fst),
+            )
+            var rr: Scalar[DT] = 0.0
+            for i in range(Self.B * Self.T):
+                rr += self.state.mb_rew.data[i]
+            self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
+
+    def load_minibatch(
+        mut self,
+        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*(T+1)*OBS]
+        act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*T*ACT]
+        rew: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*T]
+        dne: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*T]
+        fst: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [B*(T+1)]
+    ) raises:
+        """Load a FIXED minibatch into the WM/AC buffers, bypassing the replay
+        draw. The CPU↔GPU parity gate uses this to feed both backends a
+        byte-identical window — their samplers now genuinely differ (host RNG
+        vs device Philox), so `train_step`'s own draw can no longer be compared
+        directly. Same buffer layout as `_draw_minibatch` fills."""
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+        for i in range(Self.B * Self.T):
+            self.state.mb_rew.data[i] = rew[i]
+            self.state.mb_dne.data[i] = dne[i]
+        comptime if Self.train_target == "gpu":
+            var sctx = self.ctx.value()
+            for i in range(Self.B * (Self.T + 1) * OBSD):
+                self.wm_blk.mbobs_d.data[i] = obs[i]
+            for i in range(Self.B * Self.T * ACTD):
+                self.wm_blk.mbact_d.data[i] = act[i]
+            for i in range(Self.B * Self.T):
+                self.wm_blk.mbrew_d.data[i] = rew[i]
+                self.wm_blk.mbdne_d.data[i] = dne[i]
+            for i in range(Self.B * (Self.T + 1)):
+                self.wm_blk.mbfst_d.data[i] = fst[i]
+            # `upload_resident` (stable pointer) so a CUDA-graph that captured
+            # these WM input buffers stays valid across replays — only contents
+            # change. `upload` recreates the buffer (new pointer) → captured WM
+            # reads a stale capture-time minibatch (Stage 3 P5).
+            self.wm_blk.mbobs_d.upload_resident(sctx)
+            self.wm_blk.mbact_d.upload_resident(sctx)
+            self.wm_blk.mbrew_d.upload_resident(sctx)
+            self.wm_blk.mbdne_d.upload_resident(sctx)
+            self.wm_blk.mbfst_d.upload_resident(sctx)
+            # mirror _draw_minibatch: hand rew/dne to the device-resident AC via
+            # the shared state buffers (st.d_cont carries dne) — both discrete and
+            # continuous read them device-direct.
+            sctx.enqueue_copy(
+                self.state.d_rew.dev.value(),
+                self.wm_blk.mbrew_d.dev.value(),
+            )
+            sctx.enqueue_copy(
+                self.state.d_cont.dev.value(),
+                self.wm_blk.mbdne_d.dev.value(),
+            )
+        else:
+            for i in range(Self.B * (Self.T + 1) * OBSD):
+                self.state.mb_obs.data[i] = obs[i]
+            for i in range(Self.B * Self.T * ACTD):
+                self.state.mb_act.data[i] = act[i]
+            for i in range(Self.B * (Self.T + 1)):
+                self.state.mb_fst.data[i] = fst[i]
         var rr: Scalar[DT] = 0.0
         for i in range(Self.B * Self.T):
-            rr += self.state.mb_rew[i]
+            rr += self.state.mb_rew.data[i]
         self.state.dbg_real_rew = rr / Scalar[DT](Self.B * Self.T)
-        # imagination sampling noise: NS = T*B starts × T_IMAG steps × ACT.
-        # Pre-filled here (both targets) so _ac_cpu and _ac_gpu read the SAME
-        # noise[(t*NS+b)*ACT+a] → CPU↔GPU bit-match.
+
+    def _fill_noise(mut self) raises:
+        """Imagination sampling noise (eager prologue): NS = T*B starts ×
+        T_IMAG steps × ACT.
+
+        Discrete GPU + `device_noise` (default, production): generated ON-DEVICE
+        via Philox straight into `ac_blk.noise_d` — no host `random_float64` gen,
+        no H2D upload (Stage 3 P4 follow-up). `noise_d` is a fixed buffer the
+        captured AC reads, refreshed by this eager kernel each step.
+
+        Else (CPU `_ac_cpu`, GPU-continuous, and the discrete-GPU parity gate
+        with `device_noise=False`): host-filled so `_ac_cpu` and the uploaded GPU
+        noise read the SAME noise[(t*NS+b)*ACT+a] → CPU↔GPU bit-match; on discrete
+        GPU it's `upload_resident`-copied (stable pointer → capture-safe)."""
+        comptime if Self.train_target == "gpu":
+            if self.device_noise:
+                self.ac_blk.gen_noise_device(self.ctx.value())
+                return
         for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
-            self.state.noise[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
-        # WM-BPTT → fills state.cdeter / cstoch + state.last_wm_loss
+            self.state.noise.data[i] = Scalar[DT](random_float64() * 2.0 - 1.0)
+        comptime if Self.train_target == "gpu":
+            var nctx = self.ctx.value()
+            for i in range(Self.T_IMAG * Self.T * Self.B * Self.ACT):
+                self.ac_blk.noise_d.data[i] = self.state.noise.data[i]
+            self.ac_blk.noise_d.upload_resident(nctx)
+
+    def _device_step(mut self, want_diag: Bool) raises:
+        """WM-BPTT → ParamSync → imagination AC over the CURRENTLY-LOADED
+        minibatch + noise (filled by `train_prologue` / `load_minibatch`). This
+        is the pure compute sequence; on discrete GPU with `want_diag=False` it
+        is fully device-resident + sync-free (Stage 3 P1–P4) → the body the
+        CUDA-graph capture closure replays. Does NOT advance `train_steps` (the
+        caller does, once per logical update, via `train_step` /
+        `note_train_update`)."""
+        # WM-BPTT → fills the carry (device for discrete, host for continuous)
+        # + state.last_wm_loss/dbg (want_diag-gated; the optimizer steps run
+        # regardless, so non-diag steps still train — just no loss readout).
         self.wm_blk.step[Self.train_target, Self.T_IMAG](
             self.state, self.enc, self.core, self.dec, self.rew, self.con,
             self.oe, self.ocore, self.odec, self.orew, self.ocon,
+            want_diag=want_diag,
         )
         # core/prior → imagine mirror
         self.sync_blk.step[Self.train_target](
@@ -318,10 +573,151 @@ struct DreamerV3Trainer[
         self.ac_blk.step[Self.train_target](
             self.state, self.imagine, self.value, self.slowvalue, self.policy,
             self.rew, self.con, self.oval, self.opol, self.retnorm,
-            mptr(self.bins.unsafe_ptr()),
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.bins.unsafe_ptr()
+            ),
+            want_diag,
         )
+
+    def _run_minibatch(mut self, want_diag: Bool) raises:
+        """Noise fill + device step over an ALREADY-LOADED minibatch, advancing
+        the step counter. `train_step` uses `train_prologue` + `_device_step`
+        directly; this wrapper is the entry the CPU↔GPU parity gate drives after
+        `load_minibatch` (no draw, no LR refresh — just noise + compute)."""
+        self._fill_noise()
+        self._device_step(want_diag)
         self.train_steps += 1
+
+    # ─── CUDA-graph capture surface (Stage 3 P5) ───────────────────────────
+    #
+    # The discrete-GPU non-diag step is sync/D2H-free (P1–P4), so its WM+AC
+    # device-kernel sequence is capturable. `train_device_kernels` is that
+    # sequence with NO host work and NO counter advance — the body of the
+    # driver's capture closure. The eager prologue (sample + noise, which read
+    # host RNG / use host ring indices) is NOT captured: the caller runs
+    # `train_prologue` each step before replay so the fixed device input
+    # buffers are refreshed. Mirrors `SACAgent.train_device_kernels`.
+    def train_device_kernels(mut self) raises:
+        comptime assert Self.train_target == "gpu", (
+            "train_device_kernels is the GPU CUDA-graph capture path"
+            " (discrete `_ac_gpu_disc` + continuous `_ac_gpu_cont` both qualify —"
+            " the non-diag WM+AC step is sync/D2H-free for both)"
+        )
+        self._device_step(want_diag=False)
+
+    def note_train_update(mut self):
+        """Advance one logical update's host counter under graph replay (the
+        device work is replayed by the captured graph; loss/dbg scalars are
+        only refreshed on the eager want_diag steps)."""
+        self.train_steps += 1
+
+    def learning_starts_count(self) -> Int:
+        return self.learning_starts
+
+    def train_step_captured(mut self, want_diag: Bool = False) raises -> Bool:
+        """CUDA-graph train step for the discrete-GPU path. `want_diag` steps
+        take the eager `train_step` (the diagnostic readout — D2H + host sum —
+        can't be captured); non-diag steps run the eager prologue (sample +
+        noise → fixed device buffers) then capture-once / replay the WM+AC
+        device-kernel sequence (`train_device_kernels`). Host counter advances
+        via `note_train_update`. On non-NVIDIA `maybe_capture_replay` runs the
+        closure directly → identical to `train_step(want_diag=False)` (the
+        Apple transparency path; real capture/replay = NVIDIA).
+
+        The `_train_graph` field is moved into a disjoint local for the capture
+        call (mbpo idiom) so the closure can borrow `self` mutably without
+        overlapping a mut borrow of the field."""
+        comptime assert Self.train_target == "gpu", (
+            "train_step_captured is the GPU CUDA-graph path (discrete + continuous)"
+        )
+        if not self.can_train():
+            return False
+        if want_diag:
+            return self.train_step(want_diag=True)
+        # CRITICAL (Stage 3 P5): the DreamerOpt update kernel takes `lr` as a
+        # HOST scalar arg, so a captured graph FREEZES the lr at capture time.
+        # During the LR warmup the per-step lr ramps 0→target, so capturing
+        # mid-warmup would pin every replay at the near-zero capture-time lr →
+        # the WM/AC barely train → divergence (high WM loss, exploding return
+        # scale). Train EAGERLY until warmup completes (lr constant), then
+        # capture once the frozen lr == the steady-state lr.
+        if self.train_steps < self.warmup.warmup_steps:
+            return self.train_step(want_diag=False)
+        var ctx = self.ctx.value()
+        # Eager prologue: refresh the FIXED device input buffers this step.
+        self.train_prologue(want_diag=False)
+        var g = self._train_graph^
+        self._train_graph = None
+
+        def _captured() capturing raises -> None:
+            self.train_device_kernels()
+
+        maybe_capture_replay[_captured](g, ctx)
+        self._train_graph = g^
+        self.note_train_update()
         return True
+
+    # ─── Checkpoint (ONE file: the whole world model + actor-critic) ───────
+    def save_state(mut self, path: String) raises:
+        """Write the full DreamerV3 network set into a SINGLE `nn-ckpt v2` file,
+        sections name-prefixed per module. `imagine` is NOT saved — it is a
+        read-only mirror of `core` re-synced every train_step (and unused by the
+        greedy/inference path). Optimizer moments are NOT persisted (resume
+        re-warms), matching the SAC checkpoint convention."""
+        var w = CheckpointWriter(save_moments=False)
+        w.mode = 0
+        self.enc.for_each_param[Self.train_target](w, self.ctx, "enc")
+        self.core.for_each_param[Self.train_target](w, self.ctx, "core")
+        self.dec.for_each_param[Self.train_target](w, self.ctx, "dec")
+        self.rew.for_each_param[Self.train_target](w, self.ctx, "rew")
+        self.con.for_each_param[Self.train_target](w, self.ctx, "con")
+        self.value.for_each_param[Self.train_target](w, self.ctx, "value")
+        self.slowvalue.for_each_param[Self.train_target](w, self.ctx, "slowvalue")
+        self.policy.for_each_param[Self.train_target](w, self.ctx, "policy")
+        w.mode = 1
+        self.enc.for_each_state[Self.train_target](w, self.ctx, "enc")
+        self.core.for_each_state[Self.train_target](w, self.ctx, "core")
+        self.dec.for_each_state[Self.train_target](w, self.ctx, "dec")
+        self.rew.for_each_state[Self.train_target](w, self.ctx, "rew")
+        self.con.for_each_state[Self.train_target](w, self.ctx, "con")
+        self.value.for_each_state[Self.train_target](w, self.ctx, "value")
+        self.slowvalue.for_each_state[Self.train_target](w, self.ctx, "slowvalue")
+        self.policy.for_each_state[Self.train_target](w, self.ctx, "policy")
+        with open(path, "w") as f:
+            f.write(w.content)
+
+    def load_state(mut self, path: String) raises:
+        """Restore the full network set from the single envelope (same walk
+        order as `save_state`). `imagine` is re-synced from `core` on the next
+        `train_step`."""
+        var content: String
+        with open(path, "r") as f:
+            content = String(f.read())
+        var lines = _split_lines(content)
+        var body = List[String]()
+        for li in range(len(lines)):
+            if lines[li].startswith("storage-ckpt"):
+                continue
+            body.append(lines[li])
+        var r = CheckpointReader(body^)
+        r.mode = 0
+        self.enc.for_each_param[Self.train_target](r, self.ctx, "enc")
+        self.core.for_each_param[Self.train_target](r, self.ctx, "core")
+        self.dec.for_each_param[Self.train_target](r, self.ctx, "dec")
+        self.rew.for_each_param[Self.train_target](r, self.ctx, "rew")
+        self.con.for_each_param[Self.train_target](r, self.ctx, "con")
+        self.value.for_each_param[Self.train_target](r, self.ctx, "value")
+        self.slowvalue.for_each_param[Self.train_target](r, self.ctx, "slowvalue")
+        self.policy.for_each_param[Self.train_target](r, self.ctx, "policy")
+        r.mode = 1
+        self.enc.for_each_state[Self.train_target](r, self.ctx, "enc")
+        self.core.for_each_state[Self.train_target](r, self.ctx, "core")
+        self.dec.for_each_state[Self.train_target](r, self.ctx, "dec")
+        self.rew.for_each_state[Self.train_target](r, self.ctx, "rew")
+        self.con.for_each_state[Self.train_target](r, self.ctx, "con")
+        self.value.for_each_state[Self.train_target](r, self.ctx, "value")
+        self.slowvalue.for_each_state[Self.train_target](r, self.ctx, "slowvalue")
+        self.policy.for_each_state[Self.train_target](r, self.ctx, "policy")
 
     def openloop_report(
         mut self,
@@ -363,127 +759,457 @@ struct DreamerV3Trainer[
         comptime FEATl = Self.FEAT
         comptime BINSl = Self.BINS
         comptime CARRY = 2 + D + SCl
-        var bins = mptr(self.bins.unsafe_ptr())
+        var bins = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.bins.unsafe_ptr()
+        )
 
-        var bd = _ol_alloc(D)
-        var bs = _ol_alloc(SCl)
-        for i in range(D):
-            bd[i] = 0.0
-        for i in range(SCl):
-            bs[i] = 0.0
-        var tok = _ol_alloc(TOK)
-        var pa = _ol_alloc(ACTD)
-        var cscr = _ol_alloc(CARRY)
-        var dummyO = _ol_alloc(OBSD)
-        var dummy1 = _ol_alloc(1)
-        var featbuf = _ol_alloc(FEATl)
-        # reusable mutable output tiles (forward's `output` must be mutable).
-        var tok_t = TileTensor(tok, row_major[1, TOK]())
-        var carry_t = TileTensor(cscr, row_major[1, CARRY]())
-        var feat_t = TileTensor(featbuf, row_major[1, FEATl]())
-        var loss_t = TileTensor(dummy1, row_major[1, 1]())
+        # Belief carry (host Tensors, reused as set_input sources).
+        var bd = Tensor.alloc(D)
+        var bs = Tensor.alloc(SCl)
+        var tok = Tensor.alloc(TOK)
+        var pa = Tensor.alloc(ACTD)
+        var obt = Tensor.alloc(OBSD)       # obs frame staging (enc input)
+        var dummyO = Tensor.alloc(OBSD)    # recon target (unused)
+        var dummy1 = Tensor.alloc(1)       # reward target (unused)
+        # reusable mutable output Tensors (forward writes the loss/feat slot).
+        var carry_t = Tensor.alloc(CARRY)
+        var feat_t = Tensor.alloc(FEATl)
+        var loss_t = Tensor.alloc(1)
 
         # ── context: observe ctx_len real steps (prev-action convention) ──
         for t in range(ctx_len):
             if t == 0:
                 for k in range(ACTD):
-                    pa[k] = 0.0
+                    pa.data[k] = 0.0
             else:
                 for k in range(ACTD):
-                    pa[k] = real_act[(t - 1) * ACTD + k]
+                    pa.data[k] = real_act[(t - 1) * ACTD + k]
+            for k in range(OBSD):
+                obt.data[k] = real_obs[t * OBSD + k]
             self.enc.forward["cpu", 1](
-                TileTensor(real_obs + t * OBSD, row_major[1, OBSD]()),
-                output=tok_t,
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                None,
             )
-            self.core.set_input["deter", 1](TileTensor(bd, row_major[1, D]()))
-            self.core.set_input["stoch", 1](TileTensor(bs, row_major[1, SCl]()))
-            self.core.set_input["action", 1](TileTensor(pa, row_major[1, ACTD]()))
-            self.core.set_input["tokens", 1](TileTensor(tok, row_major[1, TOK]()))
-            self.core.forward["cpu", 1](carry_t)
-            var nd = self.core.node_out_ptr["nd"]()
-            var sn = self.core.node_out_ptr["stoch_new"]()
+            self.core.set_input["deter", 1](bd, None)
+            self.core.set_input["stoch", 1](bs, None)
+            self.core.set_input["action", 1](pa, None)
+            self.core.set_input["tokens", 1](tok, None)
+            self.core.forward[1, "cpu"](carry_t, None)
+            ref nd = self.core.node_output["nd"]()
+            ref sn = self.core.node_output["stoch_new"]()
             for k in range(D):
-                bd[k] = nd[k]
+                bd.data[k] = nd.data[k]
             for k in range(SCl):
-                bs[k] = sn[k]
+                bs.data[k] = sn.data[k]
 
         # open-loop + teacher-forced belief chains, both seeded from `bd/bs`.
-        var old = _ol_alloc(D); var ols = _ol_alloc(SCl)
-        var tfd = _ol_alloc(D); var tfs = _ol_alloc(SCl)
+        var old = Tensor.alloc(D); var ols = Tensor.alloc(SCl)
+        var tfd = Tensor.alloc(D); var tfs = Tensor.alloc(SCl)
+        # staging Tensors for the per-step posterior carry fed back into graphs.
+        var ond_t = Tensor.alloc(D); var osn_t = Tensor.alloc(SCl)
+        var tnd_t = Tensor.alloc(D); var tsn_t = Tensor.alloc(SCl)
         for k in range(D):
-            old[k] = bd[k]; tfd[k] = bd[k]
+            old.data[k] = bd.data[k]; tfd.data[k] = bd.data[k]
         for k in range(SCl):
-            ols[k] = bs[k]; tfs[k] = bs[k]
+            ols.data[k] = bs.data[k]; tfs.data[k] = bs.data[k]
 
         for h in range(hor):
             var idx = ctx_len - 1 + h
             for k in range(ACTD):
-                pa[k] = real_act[idx * ACTD + k]
+                pa.data[k] = real_act[idx * ACTD + k]
             # ── open-loop: prior dynamics (imagine), no observation ──
-            self.imagine.set_input["deter", 1](TileTensor(old, row_major[1, D]()))
-            self.imagine.set_input["stoch", 1](TileTensor(ols, row_major[1, SCl]()))
-            self.imagine.set_input["action", 1](TileTensor(pa, row_major[1, ACTD]()))
-            self.imagine.forward["cpu", 1](feat_t)
-            var ond = self.imagine.node_out_ptr["nd"]()
-            var osn = self.imagine.node_out_ptr["stoch_new"]()
-            self.dec.set_input["stoch_new", 1](TileTensor(osn, row_major[1, SCl]()))
-            self.dec.set_input["nd", 1](TileTensor(ond, row_major[1, D]()))
-            self.dec.set_input["rtgt", 1](TileTensor(dummyO, row_major[1, OBSD]()))
-            self.dec.forward["cpu", 1](loss_t)
-            var pred = self.dec.node_out_ptr["dec"]()
+            self.imagine.set_input["deter", 1](old, None)
+            self.imagine.set_input["stoch", 1](ols, None)
+            self.imagine.set_input["action", 1](pa, None)
+            self.imagine.forward[1, "cpu"](feat_t, None)
+            ref ond = self.imagine.node_output["nd"]()
+            ref osn = self.imagine.node_output["stoch_new"]()
+            for k in range(D):
+                ond_t.data[k] = ond.data[k]
+            for k in range(SCl):
+                osn_t.data[k] = osn.data[k]
+            self.dec.set_input["stoch_new", 1](osn_t, None)
+            self.dec.set_input["nd", 1](ond_t, None)
+            self.dec.set_input["rtgt", 1](dummyO, None)
+            self.dec.forward[1, "cpu"](loss_t, None)
+            ref pred = self.dec.node_output["dec"]()
             var ms: Scalar[DT] = 0.0
             for k in range(OBSD):
-                var dv = _symexp(pred[k]) - real_obs[(idx + 1) * OBSD + k]
+                var dv = _recon_decode[Self.RECON_SIGMOID](pred.data[k]) - real_obs[(idx + 1) * OBSD + k]
                 ms += dv * dv
             out_ol_obs[h] = ms / Scalar[DT](OBSD)
-            self.rew.set_input["nd", 1](TileTensor(ond, row_major[1, D]()))
-            self.rew.set_input["stoch_new", 1](TileTensor(osn, row_major[1, SCl]()))
-            self.rew.set_input["rtgt", 1](TileTensor(dummy1, row_major[1, 1]()))
-            self.rew.forward["cpu", 1](loss_t)
-            var rl = self.rew.node_out_ptr["rew"]()
-            var re = twohot_pred[BINSl](rl, 0, bins) - real_rew[idx]
+            self.rew.set_input["nd", 1](ond_t, None)
+            self.rew.set_input["stoch_new", 1](osn_t, None)
+            self.rew.set_input["rtgt", 1](dummy1, None)
+            self.rew.forward[1, "cpu"](loss_t, None)
+            ref rl = self.rew.node_output["rew"]()
+            var re = twohot_pred[BINSl](_hp(rl), 0, bins) - real_rew[idx]
             out_ol_rew[h] = re if re >= Scalar[DT](0.0) else -re
             for k in range(D):
-                old[k] = ond[k]
+                old.data[k] = ond_t.data[k]
             for k in range(SCl):
-                ols[k] = osn[k]
+                ols.data[k] = osn_t.data[k]
 
             # ── teacher-forced: re-observe the real obs (posterior path) ──
+            for k in range(OBSD):
+                obt.data[k] = real_obs[(idx + 1) * OBSD + k]
             self.enc.forward["cpu", 1](
-                TileTensor(real_obs + (idx + 1) * OBSD, row_major[1, OBSD]()),
-                output=tok_t,
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                None,
             )
-            self.core.set_input["deter", 1](TileTensor(tfd, row_major[1, D]()))
-            self.core.set_input["stoch", 1](TileTensor(tfs, row_major[1, SCl]()))
-            self.core.set_input["action", 1](TileTensor(pa, row_major[1, ACTD]()))
-            self.core.set_input["tokens", 1](TileTensor(tok, row_major[1, TOK]()))
-            self.core.forward["cpu", 1](carry_t)
-            var tnd = self.core.node_out_ptr["nd"]()
-            var tsn = self.core.node_out_ptr["stoch_new"]()
-            self.dec.set_input["stoch_new", 1](TileTensor(tsn, row_major[1, SCl]()))
-            self.dec.set_input["nd", 1](TileTensor(tnd, row_major[1, D]()))
-            self.dec.set_input["rtgt", 1](TileTensor(dummyO, row_major[1, OBSD]()))
-            self.dec.forward["cpu", 1](loss_t)
-            var tpred = self.dec.node_out_ptr["dec"]()
+            self.core.set_input["deter", 1](tfd, None)
+            self.core.set_input["stoch", 1](tfs, None)
+            self.core.set_input["action", 1](pa, None)
+            self.core.set_input["tokens", 1](tok, None)
+            self.core.forward[1, "cpu"](carry_t, None)
+            ref tnd = self.core.node_output["nd"]()
+            ref tsn = self.core.node_output["stoch_new"]()
+            for k in range(D):
+                tnd_t.data[k] = tnd.data[k]
+            for k in range(SCl):
+                tsn_t.data[k] = tsn.data[k]
+            self.dec.set_input["stoch_new", 1](tsn_t, None)
+            self.dec.set_input["nd", 1](tnd_t, None)
+            self.dec.set_input["rtgt", 1](dummyO, None)
+            self.dec.forward[1, "cpu"](loss_t, None)
+            ref tpred = self.dec.node_output["dec"]()
             var tms: Scalar[DT] = 0.0
             for k in range(OBSD):
-                var dv = _symexp(tpred[k]) - real_obs[(idx + 1) * OBSD + k]
+                var dv = _recon_decode[Self.RECON_SIGMOID](tpred.data[k]) - real_obs[(idx + 1) * OBSD + k]
                 tms += dv * dv
             out_tf_obs[h] = tms / Scalar[DT](OBSD)
             # teacher-forced reward: head prediction on the REAL posterior state
             # vs real reward — isolates head calibration from dynamics drift.
-            self.rew.set_input["nd", 1](TileTensor(tnd, row_major[1, D]()))
-            self.rew.set_input["stoch_new", 1](TileTensor(tsn, row_major[1, SCl]()))
-            self.rew.set_input["rtgt", 1](TileTensor(dummy1, row_major[1, 1]()))
-            self.rew.forward["cpu", 1](loss_t)
-            var trl = self.rew.node_out_ptr["rew"]()
-            var tre = twohot_pred[BINSl](trl, 0, bins) - real_rew[idx]
+            self.rew.set_input["nd", 1](tnd_t, None)
+            self.rew.set_input["stoch_new", 1](tsn_t, None)
+            self.rew.set_input["rtgt", 1](dummy1, None)
+            self.rew.forward[1, "cpu"](loss_t, None)
+            ref trl = self.rew.node_output["rew"]()
+            var tre = twohot_pred[BINSl](_hp(trl), 0, bins) - real_rew[idx]
             out_tf_rew[h] = tre if tre >= Scalar[DT](0.0) else -tre
             for k in range(D):
-                tfd[k] = tnd[k]
+                tfd.data[k] = tnd_t.data[k]
             for k in range(SCl):
-                tfs[k] = tsn[k]
+                tfs.data[k] = tsn_t.data[k]
 
-        bd.free(); bs.free(); tok.free(); pa.free(); cscr.free()
-        dummyO.free(); dummy1.free(); featbuf.free()
-        old.free(); ols.free(); tfd.free(); tfs.free()
+    def openloop_trace(
+        mut self,
+        real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
+        real_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT]
+        ctx_len: Int,
+        hor: Int,
+        out_ol_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] open-loop decoded obs (raw space)
+        out_tf_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] teacher-forced decoded obs (raw space)
+        out_ol_con: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] open-loop continue prob = sigmoid(con logit)
+        out_tf_con: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor] teacher-forced continue prob
+    ) raises:
+        """Per-component open-loop WM trace (CartPole fidelity diagnostic).
+
+        Same belief/rollout machinery as `openloop_report`, but instead of an
+        aggregate obs MSE it writes the RAW decoded observation vectors (so the
+        caller can read individual components, e.g. CartPole's pole angle) plus
+        the CONTINUE-head probability along both the open-loop (prior, imagined)
+        and teacher-forced (posterior) rollouts. If the open-loop pole angle
+        stops tracking the real fall and `ol_con` stays ≈1, imagination does not
+        reproduce termination → the model-exploitation gap is a dynamics-fidelity
+        problem. CPU-only.
+        """
+        comptime assert Self.train_target == "cpu", (
+            "openloop_trace is CPU-only — run the diagnostic with a CPU agent"
+        )
+        comptime D = Self.DETER
+        comptime SCl = Self.SC
+        comptime TOK = Self.TOKEN
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+        comptime FEATl = Self.FEAT
+        comptime CARRY = 2 + D + SCl
+
+        var bd = Tensor.alloc(D)
+        var bs = Tensor.alloc(SCl)
+        var tok = Tensor.alloc(TOK)
+        var pa = Tensor.alloc(ACTD)
+        var obt = Tensor.alloc(OBSD)
+        var dummyO = Tensor.alloc(OBSD)
+        var dummy1 = Tensor.alloc(1)
+        var carry_t = Tensor.alloc(CARRY)
+        var feat_t = Tensor.alloc(FEATl)
+        var loss_t = Tensor.alloc(1)
+
+        # ── context: observe ctx_len real steps (prev-action convention) ──
+        for t in range(ctx_len):
+            if t == 0:
+                for k in range(ACTD):
+                    pa.data[k] = 0.0
+            else:
+                for k in range(ACTD):
+                    pa.data[k] = real_act[(t - 1) * ACTD + k]
+            for k in range(OBSD):
+                obt.data[k] = real_obs[t * OBSD + k]
+            self.enc.forward["cpu", 1](
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                None,
+            )
+            self.core.set_input["deter", 1](bd, None)
+            self.core.set_input["stoch", 1](bs, None)
+            self.core.set_input["action", 1](pa, None)
+            self.core.set_input["tokens", 1](tok, None)
+            self.core.forward[1, "cpu"](carry_t, None)
+            ref nd = self.core.node_output["nd"]()
+            ref sn = self.core.node_output["stoch_new"]()
+            for k in range(D):
+                bd.data[k] = nd.data[k]
+            for k in range(SCl):
+                bs.data[k] = sn.data[k]
+
+        var old = Tensor.alloc(D); var ols = Tensor.alloc(SCl)
+        var tfd = Tensor.alloc(D); var tfs = Tensor.alloc(SCl)
+        var ond_t = Tensor.alloc(D); var osn_t = Tensor.alloc(SCl)
+        var tnd_t = Tensor.alloc(D); var tsn_t = Tensor.alloc(SCl)
+        for k in range(D):
+            old.data[k] = bd.data[k]; tfd.data[k] = bd.data[k]
+        for k in range(SCl):
+            ols.data[k] = bs.data[k]; tfs.data[k] = bs.data[k]
+
+        for h in range(hor):
+            var idx = ctx_len - 1 + h
+            for k in range(ACTD):
+                pa.data[k] = real_act[idx * ACTD + k]
+            # ── open-loop: prior dynamics (imagine), no observation ──
+            self.imagine.set_input["deter", 1](old, None)
+            self.imagine.set_input["stoch", 1](ols, None)
+            self.imagine.set_input["action", 1](pa, None)
+            self.imagine.forward[1, "cpu"](feat_t, None)
+            ref ond = self.imagine.node_output["nd"]()
+            ref osn = self.imagine.node_output["stoch_new"]()
+            for k in range(D):
+                ond_t.data[k] = ond.data[k]
+            for k in range(SCl):
+                osn_t.data[k] = osn.data[k]
+            self.dec.set_input["stoch_new", 1](osn_t, None)
+            self.dec.set_input["nd", 1](ond_t, None)
+            self.dec.set_input["rtgt", 1](dummyO, None)
+            self.dec.forward[1, "cpu"](loss_t, None)
+            ref pred = self.dec.node_output["dec"]()
+            for k in range(OBSD):
+                out_ol_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](pred.data[k])
+            self.con.set_input["nd", 1](ond_t, None)
+            self.con.set_input["stoch_new", 1](osn_t, None)
+            self.con.set_input["ctgt", 1](dummy1, None)
+            self.con.forward[1, "cpu"](loss_t, None)
+            ref ocon = self.con.node_output["con"]()
+            out_ol_con[h] = Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-ocon.data[0]))
+            for k in range(D):
+                old.data[k] = ond_t.data[k]
+            for k in range(SCl):
+                ols.data[k] = osn_t.data[k]
+
+            # ── teacher-forced: re-observe the real obs (posterior path) ──
+            for k in range(OBSD):
+                obt.data[k] = real_obs[(idx + 1) * OBSD + k]
+            self.enc.forward["cpu", 1](
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                None,
+            )
+            self.core.set_input["deter", 1](tfd, None)
+            self.core.set_input["stoch", 1](tfs, None)
+            self.core.set_input["action", 1](pa, None)
+            self.core.set_input["tokens", 1](tok, None)
+            self.core.forward[1, "cpu"](carry_t, None)
+            ref tnd = self.core.node_output["nd"]()
+            ref tsn = self.core.node_output["stoch_new"]()
+            for k in range(D):
+                tnd_t.data[k] = tnd.data[k]
+            for k in range(SCl):
+                tsn_t.data[k] = tsn.data[k]
+            self.dec.set_input["stoch_new", 1](tsn_t, None)
+            self.dec.set_input["nd", 1](tnd_t, None)
+            self.dec.set_input["rtgt", 1](dummyO, None)
+            self.dec.forward[1, "cpu"](loss_t, None)
+            ref tpred = self.dec.node_output["dec"]()
+            for k in range(OBSD):
+                out_tf_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](tpred.data[k])
+            self.con.set_input["nd", 1](tnd_t, None)
+            self.con.set_input["stoch_new", 1](tsn_t, None)
+            self.con.set_input["ctgt", 1](dummy1, None)
+            self.con.forward[1, "cpu"](loss_t, None)
+            ref tcon = self.con.node_output["con"]()
+            out_tf_con[h] = Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-tcon.data[0]))
+            for k in range(D):
+                tfd.data[k] = tnd_t.data[k]
+            for k in range(SCl):
+                tfs.data[k] = tsn_t.data[k]
+
+    def openloop_decode_gpu(
+        mut self,
+        real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
+        real_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT]
+        ctx_len: Int,
+        hor: Int,
+        out_ol_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] open-loop decoded obs (raw space)
+        out_tf_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [hor*OBS] teacher-forced decoded obs (raw space)
+    ) raises:
+        """GPU twin of `openloop_trace`'s decode path (imagination-GIF probe).
+
+        Seeds the posterior belief from `ctx_len` real frames (encode→core), then
+        rolls `hor` steps two ways and writes the RAW decoded observation vectors:
+
+          * `out_ol_obs` — OPEN-LOOP: prior dynamics (`imagine`) fed the real
+            recorded actions but NO observations — what imagination actually
+            decodes to ("Dreamer's dream").
+          * `out_tf_obs` — TEACHER-FORCED: re-observes each real obs (posterior).
+            The decode upper bound (separates decoder fidelity from dynamics drift).
+
+        Unlike `openloop_trace` (CPU host reads) this runs the enc/core/imagine/dec
+        forwards on-device (reusing the LIVE training GPU graphs, B=1 — buffers are
+        grow-only so B=1 shares the B/NS training instances, exactly like
+        `select_action`), and D2Hs only the small per-step decoded frame into the
+        host out buffers. GPU-only; `select_action` marshalling idiom throughout.
+        """
+        comptime assert Self.train_target == "gpu", (
+            "openloop_decode_gpu is GPU-only — use openloop_trace on CPU"
+        )
+        comptime D = Self.DETER
+        comptime SCl = Self.SC
+        comptime TOK = Self.TOKEN
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+        comptime FEATl = Self.FEAT
+        comptime CARRY = 2 + D + SCl
+        var ctx = self.ctx.value()
+
+        # device staging tensors (B=1). `.ensure(n)` sizes the host `.data` List
+        # for the ones we fill host-side before upload; pure outputs skip it.
+        var bd = Tensor.make["gpu"](D, self.ctx); bd.ensure(D)
+        var bs = Tensor.make["gpu"](SCl, self.ctx); bs.ensure(SCl)
+        var pa = Tensor.make["gpu"](ACTD, self.ctx); pa.ensure(ACTD)
+        var obt = Tensor.make["gpu"](OBSD, self.ctx); obt.ensure(OBSD)
+        var dummyO = Tensor.make["gpu"](OBSD, self.ctx); dummyO.ensure(OBSD)
+        var tok = Tensor.make["gpu"](TOK, self.ctx)
+        var carry_t = Tensor.make["gpu"](CARRY, self.ctx)
+        var feat_t = Tensor.make["gpu"](FEATl, self.ctx)
+        var loss_t = Tensor.make["gpu"](1, self.ctx)
+
+        # rtgt is required by the dec loss graph but the "dec" node (prediction)
+        # does not depend on it — zero it once.
+        for k in range(OBSD):
+            dummyO.data[k] = 0.0
+        dummyO.upload(ctx)
+        for k in range(D):
+            bd.data[k] = 0.0
+        for k in range(SCl):
+            bs.data[k] = 0.0
+
+        # ── context: observe ctx_len real steps (prev-action convention) ──
+        for t in range(ctx_len):
+            if t == 0:
+                for k in range(ACTD):
+                    pa.data[k] = 0.0
+            else:
+                for k in range(ACTD):
+                    pa.data[k] = real_act[(t - 1) * ACTD + k]
+            for k in range(OBSD):
+                obt.data[k] = real_obs[t * OBSD + k]
+            obt.upload(ctx); bd.upload(ctx); bs.upload(ctx); pa.upload(ctx)
+            self.enc.forward["gpu", 1](
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                self.ctx,
+            )
+            self.core.set_input["deter", 1](bd, self.ctx)
+            self.core.set_input["stoch", 1](bs, self.ctx)
+            self.core.set_input["action", 1](pa, self.ctx)
+            self.core.set_input["tokens", 1](tok, self.ctx)
+            self.core.forward[1, "gpu"](carry_t, self.ctx)
+            ref nd = self.core.node_output["nd"]()
+            ref sn = self.core.node_output["stoch_new"]()
+            nd.download(ctx); sn.download(ctx)
+            for k in range(D):
+                bd.data[k] = nd.data[k]
+            for k in range(SCl):
+                bs.data[k] = sn.data[k]
+
+        var old = Tensor.make["gpu"](D, self.ctx); old.ensure(D)
+        var ols = Tensor.make["gpu"](SCl, self.ctx); ols.ensure(SCl)
+        var tfd = Tensor.make["gpu"](D, self.ctx); tfd.ensure(D)
+        var tfs = Tensor.make["gpu"](SCl, self.ctx); tfs.ensure(SCl)
+        var ond_t = Tensor.make["gpu"](D, self.ctx); ond_t.ensure(D)
+        var osn_t = Tensor.make["gpu"](SCl, self.ctx); osn_t.ensure(SCl)
+        var tnd_t = Tensor.make["gpu"](D, self.ctx); tnd_t.ensure(D)
+        var tsn_t = Tensor.make["gpu"](SCl, self.ctx); tsn_t.ensure(SCl)
+        for k in range(D):
+            old.data[k] = bd.data[k]; tfd.data[k] = bd.data[k]
+        for k in range(SCl):
+            ols.data[k] = bs.data[k]; tfs.data[k] = bs.data[k]
+
+        for h in range(hor):
+            var idx = ctx_len - 1 + h
+            for k in range(ACTD):
+                pa.data[k] = real_act[idx * ACTD + k]
+            pa.upload(ctx)
+            # ── open-loop: prior dynamics (imagine), no observation ──
+            old.upload(ctx); ols.upload(ctx)
+            self.imagine.set_input["deter", 1](old, self.ctx)
+            self.imagine.set_input["stoch", 1](ols, self.ctx)
+            self.imagine.set_input["action", 1](pa, self.ctx)
+            self.imagine.forward[1, "gpu"](feat_t, self.ctx)
+            ref ond = self.imagine.node_output["nd"]()
+            ref osn = self.imagine.node_output["stoch_new"]()
+            ond.download(ctx); osn.download(ctx)
+            for k in range(D):
+                ond_t.data[k] = ond.data[k]
+            for k in range(SCl):
+                osn_t.data[k] = osn.data[k]
+            ond_t.upload(ctx); osn_t.upload(ctx)
+            self.dec.set_input["stoch_new", 1](osn_t, self.ctx)
+            self.dec.set_input["nd", 1](ond_t, self.ctx)
+            self.dec.set_input["rtgt", 1](dummyO, self.ctx)
+            self.dec.forward[1, "gpu"](loss_t, self.ctx)
+            ref pred = self.dec.node_output["dec"]()
+            pred.download(ctx)
+            for k in range(OBSD):
+                out_ol_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](pred.data[k])
+            for k in range(D):
+                old.data[k] = ond_t.data[k]
+            for k in range(SCl):
+                ols.data[k] = osn_t.data[k]
+
+            # ── teacher-forced: re-observe the real obs (posterior path) ──
+            for k in range(OBSD):
+                obt.data[k] = real_obs[(idx + 1) * OBSD + k]
+            obt.upload(ctx)
+            self.enc.forward["gpu", 1](
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                self.ctx,
+            )
+            tfd.upload(ctx); tfs.upload(ctx)
+            self.core.set_input["deter", 1](tfd, self.ctx)
+            self.core.set_input["stoch", 1](tfs, self.ctx)
+            self.core.set_input["action", 1](pa, self.ctx)
+            self.core.set_input["tokens", 1](tok, self.ctx)
+            self.core.forward[1, "gpu"](carry_t, self.ctx)
+            ref tnd = self.core.node_output["nd"]()
+            ref tsn = self.core.node_output["stoch_new"]()
+            tnd.download(ctx); tsn.download(ctx)
+            for k in range(D):
+                tnd_t.data[k] = tnd.data[k]
+            for k in range(SCl):
+                tsn_t.data[k] = tsn.data[k]
+            tnd_t.upload(ctx); tsn_t.upload(ctx)
+            self.dec.set_input["stoch_new", 1](tsn_t, self.ctx)
+            self.dec.set_input["nd", 1](tnd_t, self.ctx)
+            self.dec.set_input["rtgt", 1](dummyO, self.ctx)
+            self.dec.forward[1, "gpu"](loss_t, self.ctx)
+            ref tpred = self.dec.node_output["dec"]()
+            tpred.download(ctx)
+            for k in range(OBSD):
+                out_tf_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](tpred.data[k])
+            for k in range(D):
+                tfd.data[k] = tnd_t.data[k]
+            for k in range(SCl):
+                tfs.data[k] = tsn_t.data[k]

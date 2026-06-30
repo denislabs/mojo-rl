@@ -77,11 +77,13 @@ struct PhysicsStepKernel:
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), ImmutAnyOrigin
         ],
-        edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        edge_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH), ImmutAnyOrigin
+        ],
         joint_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
+            dtype, Layout.row_major(BATCH), ImmutAnyOrigin
         ],
         contacts: LayoutTensor[
             dtype,
@@ -99,7 +101,12 @@ struct PhysicsStepKernel:
         baumgarte: Scalar[dtype],
         slop: Scalar[dtype],
     ):
-        """GPU kernel that runs the ENTIRE physics step in one kernel."""
+        """GPU kernel that runs the ENTIRE physics step in one kernel.
+
+        `shapes`/`edge_counts`/`joint_counts` are read-only inputs, declared
+        `ImmutAnyOrigin` so `step_gpu` can build their views from non-`mut`
+        buffers without the deprecated UnsafePointer->MutAnyOrigin laundering.
+        """
         var env = Int(block_dim.x * block_idx.x + thread_idx.x)
         if env >= BATCH:
             return
@@ -236,26 +243,29 @@ struct PhysicsStepKernel:
             baumgarte: Position correction factor.
             slop: Penetration allowance.
         """
+        # Direct-from-buffer construction: origin inferred from each binding
+        # (no `.unsafe_ptr()`, no MutAnyOrigin escape hatch). The non-`mut`
+        # buffers (shapes/edge_counts/joint_counts) yield mut=False views that
+        # match the ImmutAnyOrigin kernel params; the `mut` buffers yield
+        # mut=True views matching the MutAnyOrigin params.
         var state = LayoutTensor[
-            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, STATE_SIZE)
+        ](state_buf)
         var shapes = LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ](shapes_buf.unsafe_ptr())
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE)
+        ](shapes_buf)
         var edge_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](edge_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](edge_counts_buf)
         var joint_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](joint_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](joint_counts_buf)
         var contacts = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, MAX_CONTACTS, CONTACT_DATA_SIZE)
+        ](contacts_buf)
         var contact_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](contact_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](contact_counts_buf)
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -268,13 +278,13 @@ struct PhysicsStepKernel:
             shapes: LayoutTensor[
                 dtype,
                 Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             edge_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
+                dtype, Layout.row_major(BATCH), ImmutAnyOrigin
             ],
             joint_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
+                dtype, Layout.row_major(BATCH), ImmutAnyOrigin
             ],
             contacts: LayoutTensor[
                 dtype,
@@ -375,11 +385,13 @@ struct PhysicsStepKernelParallel:
             MutAnyOrigin,
         ],
         shapes: LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), ImmutAnyOrigin
         ],
-        edge_counts: LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin],
+        edge_counts: LayoutTensor[
+            dtype, Layout.row_major(BATCH), ImmutAnyOrigin
+        ],
         joint_counts: LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
+            dtype, Layout.row_major(BATCH), ImmutAnyOrigin
         ],
         contacts: LayoutTensor[
             dtype,
@@ -525,26 +537,27 @@ struct PhysicsStepKernelParallel:
         """
         comptime TOTAL_CONTACT_SLOTS = NUM_BODIES * MAX_EDGES * MAX_CONTACTS_PER_BODY_EDGE
 
+        # Direct-from-buffer construction: no `.unsafe_ptr()`, no MutAnyOrigin
+        # hatch. Read-only buffers (shapes/edge_counts/joint_counts) yield
+        # mut=False views matching the ImmutAnyOrigin kernel params.
         var state = LayoutTensor[
-            dtype, Layout.row_major(BATCH, STATE_SIZE), MutAnyOrigin
-        ](state_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, STATE_SIZE)
+        ](state_buf)
         var shapes = LayoutTensor[
-            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE), MutAnyOrigin
-        ](shapes_buf.unsafe_ptr())
+            dtype, Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE)
+        ](shapes_buf)
         var edge_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](edge_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](edge_counts_buf)
         var joint_counts = LayoutTensor[
-            dtype, Layout.row_major(BATCH), MutAnyOrigin
-        ](joint_counts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH)
+        ](joint_counts_buf)
         var contacts = LayoutTensor[
-            dtype,
-            Layout.row_major(BATCH, TOTAL_CONTACT_SLOTS, CONTACT_DATA_SIZE),
-            MutAnyOrigin,
-        ](contacts_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, TOTAL_CONTACT_SLOTS, CONTACT_DATA_SIZE)
+        ](contacts_buf)
         var contact_flags = LayoutTensor[
-            dtype, Layout.row_major(BATCH, TOTAL_CONTACT_SLOTS), MutAnyOrigin
-        ](contact_flags_buf.unsafe_ptr())
+            dtype, Layout.row_major(BATCH, TOTAL_CONTACT_SLOTS)
+        ](contact_flags_buf)
 
         comptime BLOCKS = (BATCH + TPB - 1) // TPB
 
@@ -557,13 +570,13 @@ struct PhysicsStepKernelParallel:
             shapes: LayoutTensor[
                 dtype,
                 Layout.row_major(NUM_SHAPES, SHAPE_MAX_SIZE),
-                MutAnyOrigin,
+                ImmutAnyOrigin,
             ],
             edge_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
+                dtype, Layout.row_major(BATCH), ImmutAnyOrigin
             ],
             joint_counts: LayoutTensor[
-                dtype, Layout.row_major(BATCH), MutAnyOrigin
+                dtype, Layout.row_major(BATCH), ImmutAnyOrigin
             ],
             contacts: LayoutTensor[
                 dtype,

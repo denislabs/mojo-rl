@@ -19,34 +19,37 @@ loss is the constant `free_nats` and the whole row's gradient is zero.
 Both are WRITTEN (`=`), not accumulated — the caller (RSSM loss graph)
 owns any cross-path accumulation.
 
-Inputs/outputs are flat row-major pointers: logits `[BATCH·STOCH·CLASSES]`
-(group `(b,s)` spans `CLASSES` contiguous lanes), `dyn`/`rep`/`d_dyn`/
-`d_rep` `[BATCH]`.
-
-CPU-only at landing — Pendulum v1 trains the world model on CPU. A GPU
-port is gated on GPU world-model training (same rationale as the GRUCell
-GPU stub).
+STORAGE migration: `OneHotKLLoss` is now a plain storage `Module` (forward
+over `TensorRefs[2]` → `Tensor`, vjp recomputed from `forward_input`, no
+cached pointers). The op is ARITY-2 with OUT_DIM=2 — output `[B,2]` =
+`[dyn, rep]`. The asymmetric stop-gradient lives in `vjp`: the `[B,2]`
+`grad_output` carries the dyn cotangent in channel 0 (→ grad_prior) and the
+rep cotangent in channel 1 (→ grad_post); both softmaxes are RECOMPUTED
+from `forward_input` (the same logits the forward saw). The GPU kernels
+carry the same math (just `def`, with storage `Tensor.lt` plumbing). The
+standalone pointer-based `OneHotKL` struct is kept for the PR-2 fixture
+test (`test_dreamer_pr2.mojo`).
 """
 
 from std.math import exp, log
-from std.memory import alloc
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module, typed_view, typed_view_mut, mptr
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 
 
 @always_inline
-def _dlt[N: Int](
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
-    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
+def _mptr[
+    o: Origin
+](p: UnsafePointer[Scalar[DT], o]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    """Erase a CPU pointer's origin (used only by the standalone `OneHotKL`)."""
+    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](p)
 
 
 # ── OneHotKLLoss GPU kernels. NG=B·STOCH groups of CLASSES lanes; NN=B·SC.
@@ -157,7 +160,7 @@ def _kl_bwd_kernel[NG: Int, C: Int, STOCH: Int](
             g_post[base + j] = wr * (one_m_u * rebind[Scalar[DT]](smpo[base + j]) * (lr_diff - W))
 
 
-struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDestructible):
+struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDeletable):
     comptime GROUP = Self.STOCH * Self.CLASSES
 
     var unimix: Scalar[DT]
@@ -209,12 +212,16 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDestructible):
             self.cache_n = batch
 
     @staticmethod
-    def _softmax_mix(
-        z: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    def _softmax_mix[
+        z_o: Origin[mut=True],
+        sm_out_o: Origin[mut=True],
+        p_out_o: Origin[mut=True],
+    ](
+        z: UnsafePointer[Scalar[DT], z_o],
         base: Int,
         u: Scalar[DT],
-        mut sm_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mut p_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut sm_out: UnsafePointer[Scalar[DT], sm_out_o],
+        mut p_out: UnsafePointer[Scalar[DT], p_out_o],
     ):
         """softmax + unimix mix for one (b,s) group of CLASSES lanes."""
         var zmax = z[base]
@@ -235,19 +242,23 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDestructible):
             p_out[base + c] = one_m_u * sm + uni
 
     def forward[
-        BATCH: Int
+        BATCH: Int,
+        post_logits_o: Origin[mut=True],
+        prior_logits_o: Origin[mut=True],
+        dyn_out_o: Origin[mut=True],
+        rep_out_o: Origin[mut=True],
     ](
         mut self,
-        post_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        prior_logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mut dyn_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mut rep_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        post_logits: UnsafePointer[Scalar[DT], post_logits_o],
+        prior_logits: UnsafePointer[Scalar[DT], prior_logits_o],
+        mut dyn_out: UnsafePointer[Scalar[DT], dyn_out_o],
+        mut rep_out: UnsafePointer[Scalar[DT], rep_out_o],
     ) raises:
         self._ensure_cache(BATCH)
-        var smpo = mptr(self.sm_post.unsafe_ptr())
-        var smpr = mptr(self.sm_prior.unsafe_ptr())
-        var ppo = mptr(self.p_post.unsafe_ptr())
-        var ppr = mptr(self.p_prior.unsafe_ptr())
+        var smpo = _mptr(self.sm_post.unsafe_ptr())
+        var smpr = _mptr(self.sm_prior.unsafe_ptr())
+        var ppo = _mptr(self.p_post.unsafe_ptr())
+        var ppr = _mptr(self.p_prior.unsafe_ptr())
         for b in range(BATCH):
             var kl_sum: Scalar[DT] = 0.0
             for s in range(Self.STOCH):
@@ -265,18 +276,22 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDestructible):
             )
 
     def backward[
-        BATCH: Int
+        BATCH: Int,
+        d_dyn_o: Origin[mut=True],
+        d_rep_o: Origin[mut=True],
+        grad_post_o: Origin[mut=True],
+        grad_prior_o: Origin[mut=True],
     ](
         mut self,
-        d_dyn: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        d_rep: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mut grad_post: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        mut grad_prior: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        d_dyn: UnsafePointer[Scalar[DT], d_dyn_o],
+        d_rep: UnsafePointer[Scalar[DT], d_rep_o],
+        mut grad_post: UnsafePointer[Scalar[DT], grad_post_o],
+        mut grad_prior: UnsafePointer[Scalar[DT], grad_prior_o],
     ) raises:
-        var smpo = mptr(self.sm_post.unsafe_ptr())
-        var smpr = mptr(self.sm_prior.unsafe_ptr())
-        var ppo = mptr(self.p_post.unsafe_ptr())
-        var ppr = mptr(self.p_prior.unsafe_ptr())
+        var smpo = _mptr(self.sm_post.unsafe_ptr())
+        var smpr = _mptr(self.sm_prior.unsafe_ptr())
+        var ppo = _mptr(self.p_post.unsafe_ptr())
+        var ppr = _mptr(self.p_prior.unsafe_ptr())
         var one_m_u = Scalar[DT](1.0) - self.unimix
         for b in range(BATCH):
             var act = self.active[b]
@@ -308,11 +323,14 @@ struct OneHotKL[STOCH: Int, CLASSES: Int](Movable & ImplicitlyDestructible):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# OneHotKLLoss — OneHotKL wrapped as an nn graph Module (ARITY=2).
+# OneHotKLLoss — OneHotKL wrapped as a storage graph Module (ARITY=2).
 #   inputs: post[B, S·C], prior[B, S·C]   output: [B, 2] = [dyn, rep]
 # The asymmetric sg (dyn→prior, rep→post) lives INSIDE the op's vjp; the
 # ComputeGraph just routes the two output cotangents back to the two inputs
 # and accumulates them with everything else (e.g. at the shared new_deter).
+# Storage migration: no cached pointers — vjp RECOMPUTES both softmaxes from
+# `forward_input` (the same logits the forward saw). The free-bits clamp is
+# also recomputed (its `active` gate is re-derived from the recomputed KL).
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -326,27 +344,12 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
     def display_label() -> String:
         return String("OneHotKL")
 
-    var kl: OneHotKL[Self.STOCH, Self.CLASSES]
-    # GPU caches: softmax/mixed probs [B·SC], active [B], per-group KL [B·STOCH]
-    var _smpo: Optional[DeviceBuffer[DT]]
-    var _smpr: Optional[DeviceBuffer[DT]]
-    var _ppo: Optional[DeviceBuffer[DT]]
-    var _ppr: Optional[DeviceBuffer[DT]]
-    var _act: Optional[DeviceBuffer[DT]]
-    var _klpart: Optional[DeviceBuffer[DT]]
-    var _dev_n: Int
-    var ts: TargetStorage
+    var unimix: Scalar[DT]
+    var free_nats: Scalar[DT]
 
     def __init__(out self):
-        self.kl = OneHotKL[Self.STOCH, Self.CLASSES]()
-        self._smpo = None
-        self._smpr = None
-        self._ppo = None
-        self._ppr = None
-        self._act = None
-        self._klpart = None
-        self._dev_n = 0
-        self.ts = TargetStorage.make_uninit()
+        self.unimix = Scalar[DT](0.01)
+        self.free_nats = Scalar[DT](1.0)
 
     @staticmethod
     def make[
@@ -356,114 +359,205 @@ struct OneHotKLLoss[STOCH: Int, CLASSES: Int](Module):
             "OneHotKLLoss: target must be 'cpu' or 'gpu'"
         )
         var m = Self()
-        m.kl = OneHotKL[Self.STOCH, Self.CLASSES].make(
-            Scalar[DT](0.01), Scalar[DT](1.0)
-        )
-        comptime if target == "cpu":
-            m.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("OneHotKLLoss.make[gpu]: ctx required")
-            m.ts = TargetStorage.make_gpu(ctx.value())
+        m.unimix = Scalar[DT](0.01)
+        m.free_nats = Scalar[DT](1.0)
         return m^
 
-    def _ensure_dev(mut self, nn: Int, ng: Int, b: Int) raises:
-        if self._dev_n < nn:
-            var ctx = self.ts.ctx.value()
-            self._smpo = ctx.enqueue_create_buffer[DT](nn)
-            self._smpr = ctx.enqueue_create_buffer[DT](nn)
-            self._ppo = ctx.enqueue_create_buffer[DT](nn)
-            self._ppr = ctx.enqueue_create_buffer[DT](nn)
-            self._act = ctx.enqueue_create_buffer[DT](b)
-            self._klpart = ctx.enqueue_create_buffer[DT](ng)
-            self._dev_n = nn
+    # ── shared CPU softmax+unimix mix for one (b,s) group of CLASSES lanes ──
+    @always_inline
+    def _softmax_mix_cpu(
+        self,
+        z: List[Scalar[DT]],
+        base: Int,
+        mut sm_out: List[Scalar[DT]],
+        mut p_out: List[Scalar[DT]],
+    ):
+        var u = self.unimix
+        var zmax = z[base]
+        for c in range(1, Self.CLASSES):
+            if z[base + c] > zmax:
+                zmax = z[base + c]
+        var ssum: Scalar[DT] = 0.0
+        for c in range(Self.CLASSES):
+            var e = exp(z[base + c] - zmax)
+            sm_out[base + c] = e
+            ssum += e
+        var inv = Scalar[DT](1.0) / ssum
+        var uni = u / Scalar[DT](Self.CLASSES)
+        var one_m_u = Scalar[DT](1.0) - u
+        for c in range(Self.CLASSES):
+            var sm = sm_out[base + c] * inv
+            sm_out[base + c] = sm
+            p_out[base + c] = one_m_u * sm + uni
 
     def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["OneHotKLLoss", target](self.ts.target_tag)
-        var post = mptr(inputs.tile[0, BATCH, Self.SC]().ptr)
-        var prior = mptr(inputs.tile[1, BATCH, Self.SC]().ptr)
-        var o = typed_view_mut[BATCH, 2](output).ptr
+        ref post = inputs[0]
+        ref prior = inputs[1]
         comptime if target == "cpu":
-            var dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
-            var rep: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
-            self.kl.forward[BATCH](post, prior, dyn, rep)
-            for b in range(BATCH):
-                o[b * 2] = dyn[b]
-                o[b * 2 + 1] = rep[b]
-            dyn.free(); rep.free()
+            out.ensure(B * 2)
+            # scratch softmaxes for one group reused across (b,s) groups
+            var smpo = List[Scalar[DT]](length=B * Self.SC, fill=Scalar[DT](0))
+            var ppo = List[Scalar[DT]](length=B * Self.SC, fill=Scalar[DT](0))
+            var smpr = List[Scalar[DT]](length=B * Self.SC, fill=Scalar[DT](0))
+            var ppr = List[Scalar[DT]](length=B * Self.SC, fill=Scalar[DT](0))
+            for b in range(B):
+                var kl_sum: Scalar[DT] = 0.0
+                for s in range(Self.STOCH):
+                    var base = (b * Self.STOCH + s) * Self.CLASSES
+                    self._softmax_mix_cpu(post.data, base, smpo, ppo)
+                    self._softmax_mix_cpu(prior.data, base, smpr, ppr)
+                    for c in range(Self.CLASSES):
+                        var pp = ppo[base + c]
+                        kl_sum += pp * (log(pp) - log(ppr[base + c]))
+                var clamped = (
+                    kl_sum if kl_sum > self.free_nats else self.free_nats
+                )
+                out.data[b * 2] = clamped
+                out.data[b * 2 + 1] = clamped
         else:
-            comptime NN = BATCH * Self.SC
-            comptime NG = BATCH * Self.STOCH
-            self._ensure_dev(NN, NG, BATCH)
-            var ctx = self.ts.ctx.value()
-            var smpo = mptr(self._smpo.value().unsafe_ptr())
-            var smpr = mptr(self._smpr.value().unsafe_ptr())
-            var ppo = mptr(self._ppo.value().unsafe_ptr())
-            var ppr = mptr(self._ppr.value().unsafe_ptr())
-            var actp = mptr(self._act.value().unsafe_ptr())
-            var klp = mptr(self._klpart.value().unsafe_ptr())
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
+            var c = ctx.value()
+            comptime NN = B * Self.SC
+            comptime NG = B * Self.STOCH
+            out.ensure_gpu(c, B * 2)
+            # transient device scratch (recomputed again in vjp, so not cached)
+            var smpo = Tensor.alloc_gpu(c, NN)
+            var ppo = Tensor.alloc_gpu(c, NN)
+            var smpr = Tensor.alloc_gpu(c, NN)
+            var ppr = Tensor.alloc_gpu(c, NN)
+            var klp = Tensor.alloc_gpu(c, NG)
+            var act = Tensor.alloc_gpu(c, B)
             comptime nb1 = (NG + TPB - 1) // TPB
-            comptime k1 = _kl_fwd1_kernel[NG, Self.CLASSES]
-            ctx.enqueue_function[k1](
-                _dlt[NN](post), _dlt[NN](prior), _dlt[NN](smpo), _dlt[NN](ppo),
-                _dlt[NN](smpr), _dlt[NN](ppr), _dlt[NG](klp), self.kl.unimix,
+            c.enqueue_function[_kl_fwd1_kernel[NG, Self.CLASSES]](
+                post.lt["gpu", Layout.row_major(NN)](),
+                prior.lt["gpu", Layout.row_major(NN)](),
+                smpo.lt["gpu", Layout.row_major(NN)](),
+                ppo.lt["gpu", Layout.row_major(NN)](),
+                smpr.lt["gpu", Layout.row_major(NN)](),
+                ppr.lt["gpu", Layout.row_major(NN)](),
+                klp.lt["gpu", Layout.row_major(NG)](),
+                self.unimix,
                 grid_dim=nb1, block_dim=TPB,
             )
-            comptime nb2 = (BATCH + TPB - 1) // TPB
-            comptime k2 = _kl_fwd2_kernel[BATCH, Self.STOCH]
-            ctx.enqueue_function[k2](
-                _dlt[NG](klp), _dlt[BATCH * 2](op), _dlt[BATCH](actp),
-                self.kl.free_nats, grid_dim=nb2, block_dim=TPB,
+            comptime nb2 = (B + TPB - 1) // TPB
+            c.enqueue_function[_kl_fwd2_kernel[B, Self.STOCH]](
+                klp.lt["gpu", Layout.row_major(NG)](),
+                out.lt["gpu", Layout.row_major(B * 2)](),
+                act.lt["gpu", Layout.row_major(B)](),
+                self.free_nats,
+                grid_dim=nb2, block_dim=TPB,
             )
 
     def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        var go = typed_view[BATCH, 2](grad_output).ptr
-        var g_post = mptr(grad_inputs.tile[0, BATCH, Self.SC]().ptr)
-        var g_prior = mptr(grad_inputs.tile[1, BATCH, Self.SC]().ptr)
+        ref post = forward_input[0]
+        ref prior = forward_input[1]
+        ref g_post = grad_inputs[0]
+        ref g_prior = grad_inputs[1]
+        var one_m_u = Scalar[DT](1.0) - self.unimix
         comptime if target == "cpu":
-            var d_dyn: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
-            var d_rep: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](BATCH)
-            for b in range(BATCH):
-                d_dyn[b] = go[b * 2]
-                d_rep[b] = go[b * 2 + 1]
-            self.kl.backward[BATCH](d_dyn, d_rep, g_post, g_prior)
-            d_dyn.free(); d_rep.free()
+            g_post.ensure(B * Self.SC)
+            g_prior.ensure(B * Self.SC)
+            # RECOMPUTE both softmaxes from forward_input (identical to fwd).
+            var smpo = List[Scalar[DT]](length=B * Self.SC, fill=Scalar[DT](0))
+            var ppo = List[Scalar[DT]](length=B * Self.SC, fill=Scalar[DT](0))
+            var smpr = List[Scalar[DT]](length=B * Self.SC, fill=Scalar[DT](0))
+            var ppr = List[Scalar[DT]](length=B * Self.SC, fill=Scalar[DT](0))
+            for b in range(B):
+                # re-derive the free-bits gate: active = (Σ_s KL > free_nats).
+                var kl_sum: Scalar[DT] = 0.0
+                for s in range(Self.STOCH):
+                    var base = (b * Self.STOCH + s) * Self.CLASSES
+                    self._softmax_mix_cpu(post.data, base, smpo, ppo)
+                    self._softmax_mix_cpu(prior.data, base, smpr, ppr)
+                    for c in range(Self.CLASSES):
+                        var pp = ppo[base + c]
+                        kl_sum += pp * (log(pp) - log(ppr[base + c]))
+                var act = (
+                    Scalar[DT](1.0) if kl_sum > self.free_nats
+                    else Scalar[DT](0.0)
+                )
+                # dyn cotangent (channel 0) → grad_prior; rep (channel 1) → post
+                var wd = grad_output.data[b * 2] * act
+                var wr = grad_output.data[b * 2 + 1] * act
+                for s in range(Self.STOCH):
+                    var base = (b * Self.STOCH + s) * Self.CLASSES
+                    # S = Σ_c (p_post[c]/p_prior[c])·sm_prior[c]   (dyn → prior)
+                    var S: Scalar[DT] = 0.0
+                    for c in range(Self.CLASSES):
+                        S += (ppo[base + c] / ppr[base + c]) * smpr[base + c]
+                    # W = Σ_c sm_post[c]·(log p_post[c]−log p_prior[c]) (rep→post)
+                    var W: Scalar[DT] = 0.0
+                    for c in range(Self.CLASSES):
+                        W += smpo[base + c] * (
+                            log(ppo[base + c]) - log(ppr[base + c])
+                        )
+                    for j in range(Self.CLASSES):
+                        var a_over_p = ppo[base + j] / ppr[base + j]
+                        var gpr = -one_m_u * smpr[base + j] * (a_over_p - S)
+                        g_prior.data[base + j] = wd * gpr
+                        var lr_diff = log(ppo[base + j]) - log(ppr[base + j])
+                        var gpo = one_m_u * smpo[base + j] * (lr_diff - W)
+                        g_post.data[base + j] = wr * gpo
         else:
-            comptime NN = BATCH * Self.SC
-            comptime NG = BATCH * Self.STOCH
-            var ctx = self.ts.ctx.value()
-            var smpo = mptr(self._smpo.value().unsafe_ptr())
-            var smpr = mptr(self._smpr.value().unsafe_ptr())
-            var ppo = mptr(self._ppo.value().unsafe_ptr())
-            var ppr = mptr(self._ppr.value().unsafe_ptr())
-            var actp = mptr(self._act.value().unsafe_ptr())
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
-            var one_m_u = Scalar[DT](1.0) - self.kl.unimix
+            var c = ctx.value()
+            comptime NN = B * Self.SC
+            comptime NG = B * Self.STOCH
+            g_post.ensure_gpu(c, NN)
+            g_prior.ensure_gpu(c, NN)
+            # recompute softmaxes + active (forward scratch was transient).
+            var smpo = Tensor.alloc_gpu(c, NN)
+            var ppo = Tensor.alloc_gpu(c, NN)
+            var smpr = Tensor.alloc_gpu(c, NN)
+            var ppr = Tensor.alloc_gpu(c, NN)
+            var klp = Tensor.alloc_gpu(c, NG)
+            var act = Tensor.alloc_gpu(c, B)
+            comptime nb1 = (NG + TPB - 1) // TPB
+            c.enqueue_function[_kl_fwd1_kernel[NG, Self.CLASSES]](
+                post.lt["gpu", Layout.row_major(NN)](),
+                prior.lt["gpu", Layout.row_major(NN)](),
+                smpo.lt["gpu", Layout.row_major(NN)](),
+                ppo.lt["gpu", Layout.row_major(NN)](),
+                smpr.lt["gpu", Layout.row_major(NN)](),
+                ppr.lt["gpu", Layout.row_major(NN)](),
+                klp.lt["gpu", Layout.row_major(NG)](),
+                self.unimix,
+                grid_dim=nb1, block_dim=TPB,
+            )
+            # dummy out for the clamp kernel — we only need `act`.
+            var dout = Tensor.alloc_gpu(c, B * 2)
+            comptime nb2 = (B + TPB - 1) // TPB
+            c.enqueue_function[_kl_fwd2_kernel[B, Self.STOCH]](
+                klp.lt["gpu", Layout.row_major(NG)](),
+                dout.lt["gpu", Layout.row_major(B * 2)](),
+                act.lt["gpu", Layout.row_major(B)](),
+                self.free_nats,
+                grid_dim=nb2, block_dim=TPB,
+            )
             comptime nb = (NG + TPB - 1) // TPB
-            comptime kb = _kl_bwd_kernel[NG, Self.CLASSES, Self.STOCH]
-            ctx.enqueue_function[kb](
-                _dlt[BATCH * 2](gop), _dlt[BATCH](actp),
-                _dlt[NN](smpo), _dlt[NN](ppo), _dlt[NN](smpr), _dlt[NN](ppr),
-                _dlt[NN](g_post), _dlt[NN](g_prior), one_m_u,
+            c.enqueue_function[_kl_bwd_kernel[NG, Self.CLASSES, Self.STOCH]](
+                grad_output.lt["gpu", Layout.row_major(B * 2)](),
+                act.lt["gpu", Layout.row_major(B)](),
+                smpo.lt["gpu", Layout.row_major(NN)](),
+                ppo.lt["gpu", Layout.row_major(NN)](),
+                smpr.lt["gpu", Layout.row_major(NN)](),
+                ppr.lt["gpu", Layout.row_major(NN)](),
+                g_post.lt["gpu", Layout.row_major(NN)](),
+                g_prior.lt["gpu", Layout.row_major(NN)](),
+                one_m_u,
                 grid_dim=nb, block_dim=TPB,
             )

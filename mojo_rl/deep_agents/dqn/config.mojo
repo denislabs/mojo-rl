@@ -47,7 +47,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.linear_relu import LinearReLU
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.nn.primitives.noisy_linear import NoisyLinear
 from mojo_rl.nn.primitives.dueling_head import DuelingHead
 from mojo_rl.nn.primitives.conv2d import Conv2D
@@ -131,7 +131,7 @@ PPO did on the on-policy side. Used by `DQNCNNConfig`."""
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait DQNConfigT(Copyable, Movable, ImplicitlyDestructible):
+trait DQNConfigT(Copyable, Movable, ImplicitlyDeletable):
     """Compile-time descriptor of a DQN-family algorithm. Bundles the
     deployment target, the replay block, the Q-net, the Double flag, and
     tuned scalar defaults. Conformers are zero-field comptime tags — never

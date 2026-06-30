@@ -11,10 +11,18 @@ smooth convergence — and which measurably HURT on CPU (the CPU example keeps
 a conservative regime; see its comments).
 
 Carries the same convergence fixes as the CPU path:
-  * Critic LayerNorm (REDQ/SR-SAC stability) — bounds Q under high UTD.
+  * Plain MLP critic (reference MBPO / rlkit SAC). An earlier LayerNorm critic
+    suppressed value growth (Q stuck ~26, return plateaued ~250); dropping it
+    let the return climb to ~3600 @ 80k with no divergence.
   * Dynamics input normalization (per-DYN_IN z-score, refit each model-train
     round) — essential for HalfCheetah's unbounded obs.
-  * Elite ranking (holdout-scored members) after each dynamics-train round.
+  * Elite ranking + holdout early-stop scored on plain MSE of the MEAN head
+    (reference `inc_var_loss=False`), NOT the full NLL — NLL rewards over-
+    confidence (shrinking variance), which makes synthetic rollouts near-
+    deterministic and biased. Early-stop uses a 1%-RELATIVE improvement test.
+  * `target_entropy=-6` (reference 'auto' = -ACT_DIM) and `sac_updates=20`
+    (reference n_train_repeat). `REPLAY_CAPACITY >= NUM_STEPS` so the dynamics
+    holdout split never leaks (see the constant's comment).
 
 DynNet output layout: `2 * (1 + OBS_DIM)` = `[r_mean, r_logvar,
 Δobs_mean[OBS_DIM], Δobs_logvar[OBS_DIM]]`. Logvar clamped to
@@ -41,8 +49,7 @@ from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
+from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.nn.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
@@ -59,7 +66,13 @@ comptime ACT_DIM = HalfCheetahConfig.ACTION_DIM  #  6
 comptime HIDDEN = 256
 comptime DYN_HIDDEN = 200
 comptime BATCH = 128  # legacy MBPO batch size
-comptime REPLAY_CAPACITY = 200_000  # capped (vs legacy 1M) for cheap scaler D2H
+# MUST be >= NUM_STEPS: the dynamics train/holdout split uses fixed physical
+# slot ranges ([0,n_train) train, [n_train,n_data) holdout), which only stay
+# disjoint while the real ring buffer has NOT wrapped. If it wraps, holdout
+# leaks into training and elite/early-stop run on a contaminated signal. The
+# scaler D2H copies the whole real buffer each model-train round, so this is
+# the cost ceiling (300k×17 floats ≈ 20 MB — still cheap).
+comptime REPLAY_CAPACITY = 300_000
 comptime SYNTH_CAPACITY = 400_000
 comptime N_ENSEMBLE = 7
 comptime NUM_ELITES = 5
@@ -78,6 +91,13 @@ comptime LOGVAR_MIN_F = -10.0
 # rollouts noisier. The faithful fix is LEARNABLE bounds + L2 penalty, not a
 # looser fixed ceiling.
 comptime LOGVAR_MAX_F = -5.0
+
+# CUDA-graph capture of the SAC sub-update loop + per-member dynamics-train
+# step (NVIDIA only; NoAMP + uniform replay). Profiling showed the GPU run is
+# launch-bound (cuLaunchKernelEx ~64% of wall) — capture collapses the SAC
+# loop to one cuGraphLaunch/env-step (~2.5× wall in the profile). Set False if
+# enabling bf16/PER.
+comptime USE_TRAIN_CUDA_GRAPH = True
 
 comptime NUM_STEPS = 300_000  # MBPO needs ~10× fewer real steps than SAC
 comptime PRINT_EVERY = 10_000
@@ -102,9 +122,7 @@ comptime FIXED_ALPHA: Scalar[DT] = 0.12  # legacy's stable equilibrium
 comptime INIT_ALPHA: Scalar[DT] = FIXED_ALPHA if FIX_ALPHA else 0.2
 comptime ALPHA_LR: Scalar[DT] = 0.0 if FIX_ALPHA else 3e-4
 comptime RUN_NAME = (
-    "MBPO HalfCheetah NN (GPU) — early-stop+elite, fixed alpha=0.12"
-    if FIX_ALPHA
-    else "MBPO HalfCheetah NN (GPU) — AdamW wd=5e-5 + learnable logvar bounds"
+    "MBPO HalfCheetah NN (GPU) — early-stop+elite, fixed alpha=0.12" if FIX_ALPHA else "MBPO HalfCheetah NN (GPU) — MSE-elite/holdout + target_entropy=-6, UTD=20"
 )
 
 
@@ -116,16 +134,14 @@ comptime ActorNet = StochasticActor[
     Linear[HIDDEN, HIDDEN],
     ReLU[HIDDEN],
 ]
-# Critic with pre-activation LayerNorm (REDQ/SR-SAC stability fix; mirrors
-# the legacy MBPO critic). Pattern: Linear → LayerNorm → ReLU, repeated.
-# Bounds the critic's feature magnitudes so Q can't diverge under high-UTD
-# synthetic-batch pressure (the Q-explosion we diagnosed on this surface).
+# Plain MLP critic — matches reference MBPO (rlkit SAC). An earlier LayerNorm
+# critic (Q-explosion guard) suppressed value growth: Q saturated low (~26)
+# and the return plateaued at ~250. Dropping it let the return climb cleanly
+# (~3600 @ 80k env-steps) with no sign of divergence.
 comptime CriticNet = Sequential[
     Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    LayerNorm[HIDDEN],
     ReLU[HIDDEN],
     Linear[HIDDEN, HIDDEN],
-    LayerNorm[HIDDEN],
     ReLU[HIDDEN],
     Linear[HIDDEN, 1],
 ]
@@ -184,7 +200,7 @@ def main() raises:
         logger.set_config("ensemble", String(N_ENSEMBLE))
         logger.set_config("real_ratio_pct", String(REAL_RATIO_PCT))
 
-        var logger_ptr = UnsafePointer(to=logger)
+        var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
         # ─── Agent + env ─────────────────────────────────────────────────
         var agent = MBPOAgent[
@@ -202,6 +218,7 @@ def main() raises:
             REAL_RATIO_PCT,
             LOGVAR_MIN_F,
             LOGVAR_MAX_F,
+            USE_TRAIN_CUDA_GRAPH,
         ](
             ctx=ctx,
             actor_lr=3e-4,
@@ -212,18 +229,17 @@ def main() raises:
             tau=0.005,
             action_scale=1.0,
             init_alpha=INIT_ALPHA,  # A/B: 0.12 (arm B) vs 0.2 (arm A)
-            target_entropy=-3.0,  # legacy MBPO value
+            target_entropy=-6.0,  # reference MBPO: 'auto' = -ACT_DIM = -6
             learning_starts=5_000,  # legacy warmup
             window_size=100,
             initial_episode_fill=0.0,
             # Legacy GPU cadences — affordable on-device; the large fresh
-            # synthetic buffer is what keeps the high-UTD critic stable
-            # (together with the LayerNorm critic above).
+            # synthetic buffer is what keeps the high-UTD critic stable.
             model_train_freq=250,
             dyn_epochs_per_round=4,
             rollout_length=1,
             num_rollouts_per_step=100_000,
-            sac_updates_per_step=40,
+            sac_updates_per_step=20,  # reference n_train_repeat (was 40)
             dyn_batch_size=256,
             # Ceiling on dyn-train epochs/round; early-stop on holdout NLL
             # governs in practice (matches legacy's 150 cap).

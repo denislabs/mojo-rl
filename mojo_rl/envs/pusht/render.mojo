@@ -277,19 +277,18 @@ def render_pixel_obs_kernel_gpu[
 ](
     ctx: DeviceContext,
     states: DeviceBuffer[dtype],
-    pixels: DeviceBuffer[dtype],
+    mut pixels: DeviceBuffer[dtype],
 ) raises:
     """Launch one thread per (env, pixel) and write `[BATCH, H, W, 3]`.
     `pixels` must have `BATCH * H * W * 3` floats allocated.
     """
     var state_t = LayoutTensor[
-        dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-    ](states.unsafe_ptr())
+        dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+    ](states)
     var pix_t = LayoutTensor[
         dtype,
         Layout.row_major(BATCH_SIZE, IMG_H, IMG_W, IMG_C),
-        MutAnyOrigin,
-    ](pixels.unsafe_ptr())
+    ](pixels)
     # Grid: (BATCH, H), block: (W,). Each thread handles one pixel.
     comptime BLOCKS_X = (IMG_W + TPB - 1) // TPB
 
@@ -297,7 +296,7 @@ def render_pixel_obs_kernel_gpu[
     @always_inline
     def render_wrapper(
         st: LayoutTensor[
-            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
+            dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), ImmutAnyOrigin
         ],
         px: LayoutTensor[
             dtype,

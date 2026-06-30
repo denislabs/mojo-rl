@@ -19,20 +19,16 @@ a different transform and must not be used here), and the planner's
 ``v_min/v_max`` constructor args must equal the ones passed here. Getting any of
 these inconsistent silently corrupts training.
 
-Wraps the validated nn primitives (`compute_bins`, `two_hot_encode`,
-`decode_value_batch_linear_ptr`); only the ``h``/``h⁻¹`` transform is new (ported
-verbatim from legacy ``deep_agents/muzero/utils.mojo`` onto ``DT``).
+Wraps the validated storage two-hot primitives (`compute_bins`,
+`two_hot_encode` from `nn.storage.loss.two_hot`); the decode is inlined here
+(softmax·linear-bins expectation, no pointer primitive) and the ``h``/``h⁻¹``
+scalar transform is local. List-based (no raw pointers).
 """
 
-from std.math import sqrt
+from std.math import sqrt, exp
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
-from mojo_rl.nn.loss.two_hot import (
-    compute_bins,
-    two_hot_encode,
-    decode_value_batch_linear_ptr,
-)
+from mojo_rl.nn.loss.two_hot import compute_bins, two_hot_encode
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -75,26 +71,28 @@ def mz_inverse_scalar_transform(
 def mz_two_hot_target_batch[
     BATCH: Int, NUM_BINS: Int,
 ](
-    values: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    values: List[Scalar[DT]],
+    val_off: Int,
     v_min: Scalar[DT],
     v_max: Scalar[DT],
-    mut targets: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut targets: List[Scalar[DT]],
+    tgt_off: Int,
 ):
-    """Encode ``BATCH`` raw scalars into two-hot categorical targets.
+    """Encode ``BATCH`` raw scalars (``values[val_off ..]``) into two-hot
+    categorical targets written at ``targets[tgt_off + b·NUM_BINS ..]``.
 
-    For each ``values[b]``: apply ``h(x)``, then two-hot over ``NUM_BINS``
-    evenly-spaced bins in ``[v_min, v_max]`` (h-space support). Writes
-    ``targets[b·NUM_BINS .. (b+1)·NUM_BINS)`` (sums to 1 per row). Used for both
+    For each scalar: apply ``h(x)``, then two-hot over ``NUM_BINS`` evenly-spaced
+    bins in ``[v_min, v_max]`` (h-space support; sums to 1 per row). Used for both
     value and reward targets (same machinery, different scalar streams).
     """
     var bins = compute_bins[NUM_BINS](v_min, v_max)
     for b in range(BATCH):
-        var ht = mz_scalar_transform(values[b])
+        var ht = mz_scalar_transform(values[val_off + b])
         var tgt = InlineArray[Scalar[DT], NUM_BINS](fill=0)
         two_hot_encode[NUM_BINS](ht, bins, tgt)
         var base = b * NUM_BINS
         for i in range(NUM_BINS):
-            targets[base + i] = tgt[i]
+            targets[tgt_off + base + i] = tgt[i]
 
 
 def mz_two_hot_target_one[
@@ -103,15 +101,17 @@ def mz_two_hot_target_one[
     value: Scalar[DT],
     v_min: Scalar[DT],
     v_max: Scalar[DT],
-    mut target: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut target: List[Scalar[DT]],
+    tgt_off: Int,
 ):
-    """Single-sample `mz_two_hot_target_batch`; writes ``target[0..NUM_BINS)``."""
+    """Single-sample `mz_two_hot_target_batch`; writes
+    ``target[tgt_off .. tgt_off+NUM_BINS)``."""
     var bins = compute_bins[NUM_BINS](v_min, v_max)
     var ht = mz_scalar_transform(value)
     var tgt = InlineArray[Scalar[DT], NUM_BINS](fill=0)
     two_hot_encode[NUM_BINS](ht, bins, tgt)
     for i in range(NUM_BINS):
-        target[i] = tgt[i]
+        target[tgt_off + i] = tgt[i]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -122,21 +122,38 @@ def mz_two_hot_target_one[
 def mz_decode_value_batch[
     BATCH: Int, NUM_BINS: Int,
 ](
-    logits: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    logits: List[Scalar[DT]],
+    log_off: Int,
     v_min: Scalar[DT],
     v_max: Scalar[DT],
-    mut values: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut values: List[Scalar[DT]],
+    val_off: Int,
 ):
-    """Decode ``BATCH`` categorical logits back to raw scalars — the inverse of
+    """Decode ``BATCH`` categorical logits (``logits[log_off + b·NUM_BINS ..]``)
+    back to raw scalars written at ``values[val_off + b]`` — the inverse of
     `mz_two_hot_target_batch`, matching the GPU MCTS kernel's inline decode.
 
     softmax(logits) · (linear bins in [v_min, v_max]) recovers ``h(x)``; then
-    ``h⁻¹`` recovers ``x``. Used by reanalyze / host-side sanity decoding.
+    ``h⁻¹`` recovers ``x``. Used by reanalyze / host-side sanity decoding. The
+    softmax·linear-bins expectation is inlined here (no pointer primitive) and
+    must stay bit-identical to the GPU MCTS kernel's h-space decode.
     """
     var bins = compute_bins[NUM_BINS](v_min, v_max)
-    var bins_ptr = mptr(bins.unsafe_ptr())
-    # decode_value_batch_linear_ptr writes the h-space expectation in-place.
-    decode_value_batch_linear_ptr[BATCH, NUM_BINS](logits, bins_ptr, values)
     for b in range(BATCH):
-        values[b] = mz_inverse_scalar_transform(values[b])
+        var base = log_off + b * NUM_BINS
+        # numerically-stable softmax over the row.
+        var m = logits[base]
+        for i in range(1, NUM_BINS):
+            var v = logits[base + i]
+            if v > m:
+                m = v
+        var s = Scalar[DT](0.0)
+        for i in range(NUM_BINS):
+            s += exp(logits[base + i] - m)
+        var inv = Scalar[DT](1.0) / s
+        # h-space expectation Σ softmax_i · bins[i].
+        var ev = Scalar[DT](0.0)
+        for i in range(NUM_BINS):
+            ev += (exp(logits[base + i] - m) * inv) * bins[i]
+        values[val_off + b] = mz_inverse_scalar_transform(ev)
     _ = bins^

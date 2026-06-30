@@ -1,58 +1,68 @@
-"""Trainer[NET, OPT, LOSS, BATCH, target] — owns IO buffers and runs the
-standard supervised forward / backward / step loop.
+"""Trainer — minimal supervised classification trainer (storage surface).
 
-`target` is a comptime struct param: a trainer's identity is tied to
-one device for its lifetime. Internally, Trainer threads `Self.target`
-to each method call on net / optim / loss.
+Holds a `MODEL` (Module producing logits [BATCH, NC]), an `Adam`, and a
+`CrossEntropyLoss[NC]`. `train_epoch` runs the batch loop (forward → CE loss
+accumulate → CE vjp → model.vjp → opt.step) over a flat dataset; `eval_top1`
+runs forward + argmax accuracy.
 
-Two API surfaces:
+Data path (matches legacy "resident dataset + slice", no per-batch transfer):
+- GPU: the whole dataset is uploaded to device ONCE (lazily, on first use), then
+  each batch input is a zero-copy `create_sub_buffer` VIEW into that resident
+  buffer (no per-batch H2D). The owned `batch_x/batch_y` just carry the view.
+- CPU: the host `List` is already resident; each batch is a cheap `memcpy` slice
+  (a zero-copy view would need an offset threaded through `forward`, not worth it
+  — the copy is a few % of CPU wall time).
 
-  - **Per-step** (`train_step` / `predict`): caller supplies per-batch
-    host pointers each iteration. Useful for small/interactive
-    workloads, RL-style training, etc. Trainer handles upload internally.
-
-  - **Whole-dataset** (`train_gpu`, GPU only): caller uploads the entire
-    training + test sets to device once, Trainer slices by pointer offset
-    per batch internally. No host copies in the inner loop.
-
-Construction:
-
-  - `Trainer[NET, OPT, LOSS, BATCH, target].make[INIT](ctx?)` is the
-    one-call factory. Builds net + optim + loss internally via
-    `NET.make[target, INIT]`, `LOSS.make[target]`, `OPT.make[target]`.
-    No `type_of`, no `^` at the user level.
-
-  - `Trainer[...].make_from(net, optim, loss_fn, ctx?)` accepts
-    pre-built components — for cases where the user wants custom weight
-    init or special construction.
+Flat-dataset convention (the example builds these): `train_x` = [N·IN] row-major
+images, `train_y` = [N·NC] one-hot labels; `test_x` = [N·IN], `test_labels` =
+[N] integer class ids. Topology must match what was trained.
 """
 
-from std.memory import alloc
+from std.gpu.host import DeviceContext
+from std.gpu import global_idx
+from std.memory import memcpy
 from std.time import perf_counter_ns
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 
-from ..constants import DT, TPB
-from ..core.module import mptr
-from ..core import Module, Optimizer, Loss, Initializer, AMPPolicy, NoAMP
-from .augmenter import Augmenter, IdentityAugmenter
-from .lr_scheduler import Scheduler, ConstantSchedule
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs, child_refs
+from ..core.module import Module
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
+from ..optimizer.adam import Adam
+from ..optimizer.optimizer import Optimizer
+from ..loss.cross_entropy import CrossEntropyLoss
 from .shuffle_kernels import (
     init_identity_indices_kernel,
     fisher_yates_shuffle_kernel,
     increment_seed_kernel,
     gather_rows_kernel,
 )
+from .augmenter import Augmenter, IdentityAugmenter
+from ..optimizer.lr_scheduler import Scheduler, ConstantSchedule
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 
 
-# ──────────────────────────────────────────────────────────────────────────
-# TrainResult — per-epoch metrics
-# ──────────────────────────────────────────────────────────────────────────
+# ── AMP boundary cast kernels (fp32 ↔ MADT) ─────────────────────────────
+# Used ONLY on the bf16-flow path (MADT != DT). The fp32 path never casts.
+# Parametrized by the source/destination dtypes + length so one pair handles
+# fp32→MADT (input/grad downcast) and MADT→fp32 (logits upcast for the loss).
+def _cast_kernel[
+    SRC: DType, DST: DType, N: Int
+](
+    src: LayoutTensor[SRC, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[DST, Layout.row_major(N), MutAnyOrigin],
+):
+    var i = Int(global_idx.x)
+    if i < N:
+        dst[i] = rebind[Scalar[SRC]](src[i]).cast[DST]()
 
 
 @fieldwise_init
-struct TrainResult(Movable & ImplicitlyDestructible):
+struct TrainResult(Movable & ImplicitlyDeletable):
+    """Per-epoch training history returned by `Trainer.train_gpu`."""
+
     var epoch_train_loss: List[Float64]
     var epoch_test_top1: List[Float64]
     var epoch_train_s: List[Float64]
@@ -68,725 +78,479 @@ struct TrainResult(Movable & ImplicitlyDestructible):
         )
 
 
-@fieldwise_init
 struct Trainer[
-    NET: Module,
-    OPT: Optimizer,
-    LOSS: Loss,
-    BATCH: Int,
-    target: StaticString = "cpu",
+    MODEL: Module, NC: Int, IN: Int, BATCH: Int, target: StaticString,
     POLICY: AMPPolicy = NoAMP,
-](Movable & ImplicitlyDestructible):
-    comptime IN_DIM = Self.NET.IN_DIMS[0]
-    comptime OUT_DIM = Self.NET.OUT_DIM
+    OPT: Optimizer = Adam,
+    # Opt-in CUDA-graph capture of the per-batch DEVICE compute (zero_grad →
+    # forward → CE accumulate → vjp → opt.step). The batch-build (the
+    # contiguous-slice D2D copy into FIXED owned `batch_x`/`batch_y`) stays
+    # eager; the captured graph reads those fixed buffers and replays. fp32-only
+    # + contiguous-sweep only (no shuffle/aug under capture in this pass).
+    # Default OFF — on NVIDIA the nn GEMM (`linalg.matmul`) allocates a split-K
+    # workspace per call, illegal under stream capture; enable only once that's
+    # resolved. No-op on non-NVIDIA (runs eagerly, bit-identical).
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
+](Movable & ImplicitlyDeletable):
+    # Model activation-flow dtype: `DT` for an fp32 model, `bfloat16` for a
+    # bf16-flow model (`Sequential[Linear[..,bf16], …]`). The CASTS only happen
+    # at boundaries; the fp32 case (MADT == DT) is the EXISTING code path with
+    # no casts and no extra buffers (bit-identical).
+    comptime MADT = Self.MODEL.ACT_DT
+    # Capture is GPU + fp32 only (the AMP step's cached-bf16 version bump is
+    # host-side, so it can't ride a captured graph).
+    comptime CAPTURE = (
+        Self.USE_TRAIN_CUDA_GRAPH
+        and (Self.target == "gpu")
+        and (Self.MADT == DT)
+    )
 
-    var net: Self.NET
-    var optim: Self.OPT
-    var loss_fn: Self.LOSS
+    var model: Self.MODEL
+    var opt: Self.OPT
+    var loss: CrossEntropyLoss[Self.NC]
+    # Activation buffers that touch the MODEL flow at MADT. For an fp32 model
+    # `TensorImpl[MADT]` IS `Tensor`, so these are unchanged.
+    var batch_x: TensorImpl[Self.MADT]
+    var batch_y: Tensor  # fp32 labels (consumed by the fp32 loss)
+    var logits: TensorImpl[Self.MADT]  # model output (MADT)
+    var grad: TensorImpl[Self.MADT]  # grad_output fed to model.vjp (MADT)
+    var gi: TensorImpl[Self.MADT]  # model grad_input (MADT)
+    # fp32 loss-boundary scratch (used ONLY when MADT != DT). The loss runs in
+    # fp32: `logits` (MADT) is cast → `logits_f32`, and `grad_f32` (fp32, from
+    # the loss vjp) is cast → `grad` (MADT). For MADT == DT these stay empty and
+    # are never referenced (the fp32 path uses `logits`/`grad` directly).
+    var logits_f32: Tensor
+    var grad_f32: Tensor
+    # fp32 input staging (used ONLY when MADT != DT). The resident dataset is
+    # fp32, so a bf16 batch can't be a zero-copy fp32 sub-buffer view — the fp32
+    # batch slice lands here (sub-buffer view / memcpy / gather) and is then cast
+    # into the owned bf16 `batch_x`. For MADT == DT this stays empty and unused:
+    # the fp32 path stages directly into `batch_x` (zero-copy, unchanged).
+    var batch_xf: Tensor
+    # GPU-resident dataset (uploaded once; batches are sub-buffer views). fp32.
+    var ds_x: Tensor
+    var ds_y: Tensor
+    var ds_tx: Tensor
+    var _up_train: Bool
+    var _up_test: Bool
+    # Lazily-captured per-batch compute graph (None until first capture). Only
+    # touched on the `CAPTURE` path; a no-op slot otherwise.
+    var _train_graph: Optional[CUDAGraph]
 
-    # CPU side (used when target=="cpu" — length-1 stubs otherwise).
-    var input_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var target_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var output_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var grad_out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var grad_in_buf: UnsafePointer[Scalar[DT], MutAnyOrigin]
-
-    # GPU side (Some when target=="gpu", None when "cpu").
-    var input_dev: Optional[DeviceBuffer[DT]]
-    var target_dev: Optional[DeviceBuffer[DT]]
-    var output_dev: Optional[DeviceBuffer[DT]]
-    var grad_out_dev: Optional[DeviceBuffer[DT]]
-    var grad_in_dev: Optional[DeviceBuffer[DT]]
-    var input_host: Optional[HostBuffer[DT]]
-    var target_host: Optional[HostBuffer[DT]]
-    var output_host: Optional[HostBuffer[DT]]
-    var ctx: Optional[DeviceContext]
-
-    # ------------------------------------------------------------------
-    # Factories — `make[INIT]` builds net/optim/loss internally. The
-    # `make_from(...)` overload accepts pre-built components.
-    # ------------------------------------------------------------------
+    def __init__(out self):
+        self.model = Self.MODEL()
+        self.opt = Self.OPT()
+        self.loss = CrossEntropyLoss[Self.NC]()
+        self.batch_x = TensorImpl[Self.MADT]()
+        self.batch_y = Tensor()
+        self.logits = TensorImpl[Self.MADT]()
+        self.grad = TensorImpl[Self.MADT]()
+        self.gi = TensorImpl[Self.MADT]()
+        self.logits_f32 = Tensor()
+        self.grad_f32 = Tensor()
+        self.batch_xf = Tensor()
+        self.ds_x = Tensor()
+        self.ds_y = Tensor()
+        self.ds_tx = Tensor()
+        self._up_train = False
+        self._up_test = False
+        self._train_graph = None
 
     @staticmethod
     def make[
         INIT: Initializer
-    ](ctx: Optional[DeviceContext] = None,) raises -> Self:
-        """Unified one-call factory (matches the nn `make[...](ctx:
-        Optional[DeviceContext]=None)` convention). Builds net + optim +
-        loss internally. `ctx=None` on CPU; required on GPU."""
-        comptime if Self.target == "cpu":
-            var net = Self.NET.make[Self.target, INIT]()
-            var loss = Self.LOSS.make[Self.target]()
-            var optim = Self.OPT.make[Self.target](net)
-            return Self.make_from(net^, optim^, loss^)
-        else:
-            if not ctx:
-                raise Error("Trainer.make[INIT](): target='gpu' requires a ctx")
-            var ctx_v = ctx.value()
-            var net = Self.NET.make[Self.target, INIT](ctx_v)
-            var loss = Self.LOSS.make[Self.target](ctx_v)
-            var optim = Self.OPT.make[Self.target](net, ctx_v)
-            return Self.make_from(net^, optim^, loss^, ctx_v)
-
-    @staticmethod
-    def make_from(
-        var net: Self.NET,
-        var optim: Self.OPT,
-        var loss_fn: Self.LOSS,
+    ](
+        ctx: Optional[DeviceContext] = None, lr: Scalar[DT] = 1e-3
     ) raises -> Self:
-        """CPU factory from pre-built components."""
-        comptime assert (
-            Self.target == "cpu"
-        ), "Trainer.make_from(net, optim, loss_fn) is CPU-only"
-        comptime assert (
-            Self.LOSS.OUT_DIM == Self.NET.OUT_DIM
-        ), "Trainer: loss N_CLASSES must equal net OUT_DIM"
-        var in_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-            Self.BATCH * Self.IN_DIM
-        )
-        var tg_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-            Self.BATCH * Self.OUT_DIM
-        )
-        var out_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-            Scalar[DT]
-        ](Self.BATCH * Self.OUT_DIM)
-        var go_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-            Self.BATCH * Self.OUT_DIM
-        )
-        var gi_buf: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[Scalar[DT]](
-            Self.BATCH * Self.IN_DIM
-        )
-        return Self(
-            net=net^,
-            optim=optim^,
-            loss_fn=loss_fn^,
-            input_buf=in_buf,
-            target_buf=tg_buf,
-            output_buf=out_buf,
-            grad_out_buf=go_buf,
-            grad_in_buf=gi_buf,
-            input_dev=None,
-            target_dev=None,
-            output_dev=None,
-            grad_out_dev=None,
-            grad_in_dev=None,
-            input_host=None,
-            target_host=None,
-            output_host=None,
-            ctx=None,
-        )
+        """`ctx` required on GPU (the caller owns it and reuses it for
+        train/eval so all device buffers share one context)."""
+        var t = Self()
+        # One factory: allocates + initializes the model with INIT at construction.
+        t.model = Self.MODEL.make[Self.target, INIT](ctx)
+        comptime if Self.target == "cpu":
+            t.loss = CrossEntropyLoss[Self.NC].make_cpu()
+            # CPU is fp32-only (bf16-flow leaves are GPU-only) → MADT == DT here,
+            # so `TensorImpl[MADT]` IS `Tensor`; allocate the MADT slab directly.
+            t.batch_x = TensorImpl[Self.MADT].alloc(Self.BATCH * Self.IN)
+            t.batch_y = Tensor.alloc(Self.BATCH * Self.NC)
+        else:
+            t.loss = CrossEntropyLoss[Self.NC].make_gpu(ctx.value())
+            # batch_x/batch_y carry sub-buffer views on GPU — no owned slab.
+            # EXCEPT under capture: the graph must read STABLE buffers, so
+            # allocate fixed owned slabs and D2D-copy each batch's slice into
+            # them (a sub-buffer view repoints the pointer per batch → would
+            # invalidate the captured graph).
+            comptime if Self.CAPTURE:
+                t.batch_x = TensorImpl[Self.MADT].alloc_gpu(
+                    ctx.value(), Self.BATCH * Self.IN
+                )
+                t.batch_y = Tensor.alloc_gpu(ctx.value(), Self.BATCH * Self.NC)
+        t.opt = Self.OPT()
+        t.opt.set_lr(lr)
+        # Engage the optimizer's contiguous-arena mode (GPU single-kernel step);
+        # a NO-OP on CPU. Must come AFTER the model is made + initialized — it
+        # rebinds the model's param buffers to arena slices.
+        t.opt.adopt[Self.target](t.model, ctx)
+        return t^
 
     @staticmethod
-    def make_from(
-        var net: Self.NET,
-        var optim: Self.OPT,
-        var loss_fn: Self.LOSS,
+    def _upload_dataset(
+        mut dst: Tensor, ref src: List[Scalar[DT]], n: Int, ctx: DeviceContext
+    ) raises:
+        """Host List → resident device buffer (one-time, no per-batch H2D)."""
+        dst.dev = ctx.enqueue_create_buffer[DT](n)
+        var hb = ctx.enqueue_create_host_buffer[DT](n)
+        ctx.synchronize()
+        memcpy(dest=hb.unsafe_ptr(), src=src.unsafe_ptr(), count=n)
+        ctx.enqueue_copy(dst.dev.value(), hb)
+        ctx.synchronize()
+        dst.n = n
+
+    def _slice_train(mut self, x0: Int, y0: Int) raises:
+        """Point the batch input/labels at GPU sub-buffer views of the resident
+        set. fp32: `batch_x` IS the fp32 view (zero-copy, unchanged). bf16: the
+        fp32 view lands in `batch_xf` (cast → `batch_x` happens in the step)."""
+        comptime if Self.MADT == DT:
+            ref bx = rebind[Tensor](self.batch_x)
+            bx.dev = Optional(
+                self.ds_x.dev.value().create_sub_buffer[DT](
+                    x0, Self.BATCH * Self.IN
+                )
+            )
+            bx.n = Self.BATCH * Self.IN
+        else:
+            self.batch_xf.dev = Optional(
+                self.ds_x.dev.value().create_sub_buffer[DT](
+                    x0, Self.BATCH * Self.IN
+                )
+            )
+            self.batch_xf.n = Self.BATCH * Self.IN
+        self.batch_y.dev = Optional(
+            self.ds_y.dev.value().create_sub_buffer[DT](
+                y0, Self.BATCH * Self.NC
+            )
+        )
+        self.batch_y.n = Self.BATCH * Self.NC
+
+    # ── AMP boundary-cast train step (factored across the 3 train-step sites) ──
+    @staticmethod
+    def _amp_train_step[
+        B: Int
+    ](
+        mut model: Self.MODEL,
+        mut opt: Self.OPT,
+        mut loss: CrossEntropyLoss[Self.NC],
+        mut model_in: TensorImpl[Self.MADT],
+        mut dy: Tensor,
+        mut logits: TensorImpl[Self.MADT],
+        mut grad: TensorImpl[Self.MADT],
+        mut gi: TensorImpl[Self.MADT],
+        mut logits_f32: Tensor,
+        mut grad_f32: Tensor,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        """forward → CE loss (fp32 boundary) → model.vjp → opt.step. `model_in`
+        is the model input ALREADY at MADT (the caller casts/views it). zero_grad
+        is the caller's responsibility (kept at the sites, unchanged).
+
+        fp32 (MADT == DT): the EXISTING path verbatim — loss runs directly on
+        `logits`/`grad`, no casts, `logits_f32`/`grad_f32` untouched. bf16: cast
+        `logits`→`logits_f32` for the (fp32) loss, then `grad_f32`→`grad`."""
+        comptime if Self.MADT == DT:
+            # ── fp32 path (legacy, byte-identical) ──
+            model.forward[Self.target, B, POLICY = Self.POLICY](
+                child_refs[Self.MODEL.ARITY, Self.MADT](model_in), logits, ctx
+            )
+            # MADT IS DT here, but the opaque param doesn't collapse → rebind the
+            # MADT activation buffers to `Tensor` for the fp32 loss (a no-op cast).
+            ref logd = rebind[Tensor](logits)
+            ref grdd = rebind[Tensor](grad)
+            loss.forward_accumulate[Self.target, B](logd, dy, ctx)
+            loss.vjp[Self.target, B](logd, dy, grdd, ctx)
+            model.vjp[Self.target, B, POLICY = Self.POLICY](
+                child_refs[Self.MODEL.ARITY, Self.MADT](model_in),
+                grad,
+                child_refs[Self.MODEL.ARITY, Self.MADT](gi),
+                ctx,
+            )
+            opt.step[Self.target](model, ctx)
+        else:
+            # ── bf16-flow path (GPU-only) ──
+            comptime assert (
+                Self.target == "gpu"
+            ), "AMP bf16-flow Trainer is GPU-only"
+            comptime LOGN = B * Self.NC
+            var c = ctx.value()
+            model.forward["gpu", B, POLICY = Self.POLICY](
+                child_refs[Self.MODEL.ARITY, Self.MADT](model_in), logits, ctx
+            )
+            # LOSS (fp32): cast logits (MADT) → logits_f32.
+            logits_f32.ensure_gpu(c, LOGN)
+            c.enqueue_function[
+                _cast_kernel[Self.MADT, DT, LOGN]
+            ](
+                logits.lt["gpu", Layout.row_major(LOGN)](),
+                logits_f32.lt["gpu", Layout.row_major(LOGN)](),
+                grid_dim=(LOGN + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
+            loss.forward_accumulate["gpu", B](logits_f32, dy, ctx)
+            loss.vjp["gpu", B](logits_f32, dy, grad_f32, ctx)
+            # BACKWARD: cast grad_f32 (fp32) → grad (MADT).
+            grad.ensure_gpu(c, LOGN)
+            c.enqueue_function[
+                _cast_kernel[DT, Self.MADT, LOGN]
+            ](
+                grad_f32.lt["gpu", Layout.row_major(LOGN)](),
+                grad.lt["gpu", Layout.row_major(LOGN)](),
+                grid_dim=(LOGN + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
+            model.vjp["gpu", B, POLICY = Self.POLICY](
+                child_refs[Self.MODEL.ARITY, Self.MADT](model_in),
+                grad,
+                child_refs[Self.MODEL.ARITY, Self.MADT](gi),
+                ctx,
+            )
+            opt.step["gpu"](model, ctx)
+
+    @staticmethod
+    def _cast_input_to_madt(
+        mut batch_xf: Tensor,
+        mut model_in: TensorImpl[Self.MADT],
         ctx: DeviceContext,
-    ) raises -> Self:
-        """GPU factory from pre-built components."""
-        comptime assert (
-            Self.target == "gpu"
-        ), "Trainer.make_from(net, optim, loss_fn, ctx) requires target='gpu'"
-        comptime assert (
-            Self.LOSS.OUT_DIM == Self.NET.OUT_DIM
-        ), "Trainer: loss N_CLASSES must equal net OUT_DIM"
-        var in_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.IN_DIM)
-        var tg_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
-        var out_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
-        var go_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
-        var gi_dev = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.IN_DIM)
-        var in_host = ctx.enqueue_create_host_buffer[DT](
-            Self.BATCH * Self.IN_DIM
-        )
-        var tg_host = ctx.enqueue_create_host_buffer[DT](
-            Self.BATCH * Self.OUT_DIM
-        )
-        var out_host = ctx.enqueue_create_host_buffer[DT](
-            Self.BATCH * Self.OUT_DIM
-        )
-        ctx.synchronize()
-        var stub_in: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-            Scalar[DT]
-        ](1)
-        var stub_tg: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-            Scalar[DT]
-        ](1)
-        var stub_out: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-            Scalar[DT]
-        ](1)
-        var stub_go: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-            Scalar[DT]
-        ](1)
-        var stub_gi: UnsafePointer[Scalar[DT], MutAnyOrigin] = alloc[
-            Scalar[DT]
-        ](1)
-        return Self(
-            net=net^,
-            optim=optim^,
-            loss_fn=loss_fn^,
-            input_buf=stub_in,
-            target_buf=stub_tg,
-            output_buf=stub_out,
-            grad_out_buf=stub_go,
-            grad_in_buf=stub_gi,
-            input_dev=in_dev^,
-            target_dev=tg_dev^,
-            output_dev=out_dev^,
-            grad_out_dev=go_dev^,
-            grad_in_dev=gi_dev^,
-            input_host=in_host^,
-            target_host=tg_host^,
-            output_host=out_host^,
-            ctx=ctx,
+    ) raises:
+        """bf16-flow only: cast the fp32 staging `batch_xf` → `model_in` (MADT).
+        @staticmethod (explicit refs) so it doesn't alias `self` at the call
+        sites (where both `batch_xf` and `batch_x` are `self` fields)."""
+        comptime NX = Self.BATCH * Self.IN
+        model_in.ensure_gpu(ctx, NX)
+        ctx.enqueue_function[_cast_kernel[DT, Self.MADT, NX]](
+            batch_xf.lt["gpu", Layout.row_major(NX)](),
+            model_in.lt["gpu", Layout.row_major(NX)](),
+            grid_dim=(NX + TPB - 1) // TPB,
+            block_dim=TPB,
         )
 
-    def __del__(deinit self):
-        self.input_buf.free()
-        self.target_buf.free()
-        self.output_buf.free()
-        self.grad_out_buf.free()
-        self.grad_in_buf.free()
+    # ── CUDA-graph capture path (compute-only, fp32, contiguous sweep) ──────
 
-    # ------------------------------------------------------------------
-    # Pipeline core — called by every train_step variant.
-    # ------------------------------------------------------------------
+    def _compute_step_device(
+        mut self, ctx: Optional[DeviceContext]
+    ) raises:
+        """The PURE-DEVICE per-batch compute captured into the graph: zero_grad →
+        forward → CE accumulate → CE vjp → model.vjp → opt.step, reading the
+        FIXED owned `batch_x`/`batch_y` (the caller D2D-copies each batch's slice
+        into them eagerly before the replay). fp32-only (reaching here ⇒
+        `CAPTURE` ⇒ `MADT == DT`); the CE loss folds into the device accumulator,
+        drained at epoch end via `read_accum`. Must enqueue the SAME kernel
+        sequence every call (the captured graph stays valid on replay)."""
+        self.opt.zero_grad["gpu"](self.model, ctx)
+        Self._amp_train_step[Self.BATCH](
+            self.model,
+            self.opt,
+            self.loss,
+            self.batch_x,
+            self.batch_y,
+            self.logits,
+            self.grad,
+            self.gi,
+            self.logits_f32,
+            self.grad_f32,
+            ctx,
+        )
 
-    def _train_step_views[
-        CAPTURE: Bool = False,
+    def _epoch_captured[
+        N_TRAIN: Int
+    ](mut self, c: DeviceContext) raises:
+        """One contiguous-sweep epoch on the capture path. Each batch's slice is
+        D2D-copied (eager) from the resident `ds_x`/`ds_y` into the FIXED owned
+        `batch_x`/`batch_y`, then the device compute is captured on the first
+        batch and replayed on the rest. No shuffle / no aug (guarded in
+        `train_gpu`)."""
+        comptime n_batches = N_TRAIN // Self.BATCH
+        for nb in range(n_batches):
+            var x0 = nb * Self.BATCH * Self.IN
+            var y0 = nb * Self.BATCH * Self.NC
+            # Eager D2D copy: resident-set sub-view (source) → fixed batch slab.
+            var sx = self.ds_x.dev.value().create_sub_buffer[DT](
+                x0, Self.BATCH * Self.IN
+            )
+            c.enqueue_copy(rebind[Tensor](self.batch_x).dev.value(), sx)
+            var sy = self.ds_y.dev.value().create_sub_buffer[DT](
+                y0, Self.BATCH * Self.NC
+            )
+            c.enqueue_copy(self.batch_y.dev.value(), sy)
+            # Capture-once / replay the device compute. Move the slot into a
+            # disjoint local (`take` leaves it None) so the closure can borrow
+            # `self` without overlapping the slot's mut borrow.
+            var g = Optional[CUDAGraph](None)
+            if self._train_graph:
+                g = Optional[CUDAGraph](self._train_graph.take())
+
+            def _cap() capturing raises -> None:
+                self._compute_step_device(Optional(c))
+
+            maybe_capture_replay[_cap](g, c)
+            self._train_graph = g^
+
+    def train_epoch[
+        N_TRAIN: Int
     ](
         mut self,
-        input: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        targets: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
+        ref train_x: List[Scalar[DT]],
+        ref train_y: List[Scalar[DT]],
+        ctx: Optional[DeviceContext],
     ) raises -> Scalar[DT]:
-        # CAPTURE (GPU only): take the loss's no-sync `forward_capture` path
-        # instead of `forward`, so the whole step is one pure-device kernel
-        # sequence with no host↔device sync — capturable by a CUDA graph. The
-        # scalar loss is not produced (returns 0.0); `train_step_device` /
-        # the benchmark example drive this. CAPTURE=False is the normal path,
-        # bit-identical to before.
-        comptime assert input.flat_rank == 2, "input must be rank-2"
-        comptime assert targets.flat_rank == 2, "targets must be rank-2"
-        comptime if Self.target == "cpu":
-            # MutAnyOrigin laundering: trait variadics on the unified
-            # Module require origin=MutAnyOrigin. `*_buf` fields are
-            # already `UnsafePointer[Scalar[DT], MutAnyOrigin]` (see
-            # struct decl); only `input` needs rebinding.
-            var input_p = mptr(input.ptr)
-            var input_my = TileTensor(
-                input_p, row_major[Self.BATCH, Self.IN_DIM]()
-            )
-            var output = TileTensor(
-                self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
-            )
-            var grad_out = TileTensor(
-                self.grad_out_buf, row_major[Self.BATCH, Self.OUT_DIM]()
-            )
-            var grad_in = TileTensor(
-                self.grad_in_buf, row_major[Self.BATCH, Self.IN_DIM]()
-            )
-            self.optim.zero_grad[Self.target](self.net)
-            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                input_my, output=output
-            )
-            var L = self.loss_fn.forward[
-                Self.target, Self.BATCH, POLICY=Self.POLICY
-            ](output, targets)
-            self.loss_fn.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                targets, grad_out
-            )
-            self.net.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                grad_out, grad_in
-            )
-            self.optim.step[Self.target](self.net)
-            return L
-        else:
-            # MutAnyOrigin laundering — see train_step's else-branch comment.
-            var out_ptr: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.output_dev.value().unsafe_ptr()
-            var go_ptr: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.grad_out_dev.value().unsafe_ptr()
-            var gi_ptr: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.grad_in_dev.value().unsafe_ptr()
-            var in_ptr_my = mptr(input.ptr)
-            var input_my = TileTensor(
-                in_ptr_my, row_major[Self.BATCH, Self.IN_DIM]()
-            )
-            var output = TileTensor(
-                out_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
-            )
-            var grad_out = TileTensor(
-                go_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
-            )
-            var grad_in = TileTensor(
-                gi_ptr, row_major[Self.BATCH, Self.IN_DIM]()
-            )
-            self.optim.zero_grad[Self.target](self.net)
-            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                input_my, output=output
-            )
-            var L: Scalar[DT] = 0.0
-            comptime if CAPTURE:
-                self.loss_fn.forward_capture[
-                    Self.target, Self.BATCH, POLICY=Self.POLICY
-                ](output, targets)
+        comptime n_batches = N_TRAIN // Self.BATCH
+        comptime if Self.target == "gpu":
+            if not self._up_train:
+                Self._upload_dataset(
+                    self.ds_x, train_x, N_TRAIN * Self.IN, ctx.value()
+                )
+                Self._upload_dataset(
+                    self.ds_y, train_y, N_TRAIN * Self.NC, ctx.value()
+                )
+                self._up_train = True
+        self.loss.reset_accum[Self.target]()
+        for nb in range(n_batches):
+            var x0 = nb * Self.BATCH * Self.IN
+            var y0 = nb * Self.BATCH * Self.NC
+            comptime if Self.target == "cpu":
+                # CPU is fp32-only → MADT == DT; rebind batch_x to the fp32 slab.
+                ref bx = rebind[Tensor](self.batch_x)
+                memcpy(
+                    dest=bx.data.unsafe_ptr(),
+                    src=train_x.unsafe_ptr() + x0,
+                    count=Self.BATCH * Self.IN,
+                )
+                memcpy(
+                    dest=self.batch_y.data.unsafe_ptr(),
+                    src=train_y.unsafe_ptr() + y0,
+                    count=Self.BATCH * Self.NC,
+                )
             else:
-                L = self.loss_fn.forward[
-                    Self.target, Self.BATCH, POLICY=Self.POLICY
-                ](output, targets)
-            self.loss_fn.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                targets, grad_out
+                self._slice_train(x0, y0)
+                # bf16: cast the fp32 staging (batch_xf) → batch_x (MADT).
+                comptime if Self.MADT != DT:
+                    Self._cast_input_to_madt(
+                        self.batch_xf, self.batch_x, ctx.value()
+                    )
+            self.opt.zero_grad[Self.target](self.model, ctx)
+            Self._amp_train_step[Self.BATCH](
+                self.model,
+                self.opt,
+                self.loss,
+                self.batch_x,
+                self.batch_y,
+                self.logits,
+                self.grad,
+                self.gi,
+                self.logits_f32,
+                self.grad_f32,
+                ctx,
             )
-            self.net.vjp[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                grad_out, grad_in
-            )
-            self.optim.step[Self.target](self.net)
-            return L
+        return self.loss.read_accum[Self.target](ctx)
 
-    # ------------------------------------------------------------------
-    # CUDA-graph benchmark surface (GPU only).
-    #
-    # `load_fixed_batch` fills the trainer's own `input_dev` / `target_dev`
-    # buffers once; `train_step_device` then runs a full forward / loss /
-    # backward / optimizer step reading those FIXED buffers with NO host
-    # work — the exact pure-device kernel sequence `maybe_capture_replay`
-    # captures once and replays. The per-batch offset never changes (the
-    # buffers are fixed), so the captured graph stays valid across replays.
-    # On Apple / non-NVIDIA the capture is a no-op and the step just runs
-    # eagerly (bit-identical), so this path is portable.
-    # ------------------------------------------------------------------
-
-    def load_fixed_batch(
-        mut self,
-        input: List[Scalar[DT]],
-        targets: List[Scalar[DT]],
-    ) raises:
-        """Upload one fixed mini-batch into the trainer's device buffers
-        (`input_dev` / `target_dev`). Call once before a `train_step_device`
-        loop. `input` is flat `[BATCH, IN_DIM]`, `targets` flat one-hot
-        `[BATCH, OUT_DIM]`."""
-        comptime assert (
-            Self.target == "gpu"
-        ), "Trainer.load_fixed_batch requires target='gpu'"
-        var ctx = self.ctx.value()
-        var in_host_buf: HostBuffer[DT] = self.input_host.value()
-        var tg_host_buf: HostBuffer[DT] = self.target_host.value()
-        for k in range(Self.BATCH * Self.IN_DIM):
-            in_host_buf[k] = input[k]
-        for k in range(Self.BATCH * Self.OUT_DIM):
-            tg_host_buf[k] = targets[k]
-        ctx.enqueue_copy(self.input_dev.value(), in_host_buf)
-        ctx.enqueue_copy(self.target_dev.value(), tg_host_buf)
-        ctx.synchronize()
-
-    def train_step_device(mut self) raises:
-        """GPU-only pure-device train step over the FIXED `input_dev` /
-        `target_dev` buffers (filled by `load_fixed_batch`). No host sync,
-        no loss readback — a single capturable kernel sequence suitable for
-        `maybe_capture_replay`. Enqueues on the Mojo stream; the caller
-        syncs once around the loop to time it."""
-        comptime assert (
-            Self.target == "gpu"
-        ), "Trainer.train_step_device requires target='gpu'"
-        var in_ptr: UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ] = self.input_dev.value().unsafe_ptr()
-        var tg_ptr: UnsafePointer[
-            Scalar[DT], MutAnyOrigin
-        ] = self.target_dev.value().unsafe_ptr()
-        var input = TileTensor(in_ptr, row_major[Self.BATCH, Self.IN_DIM]())
-        var targets = TileTensor(tg_ptr, row_major[Self.BATCH, Self.OUT_DIM]())
-        _ = self._train_step_views[CAPTURE=True](input, targets)
-
-    # ------------------------------------------------------------------
-    # Per-step API.
-    # ------------------------------------------------------------------
-
-    def train_step(
-        mut self,
-        input: List[Scalar[DT]],
-        targets: List[Scalar[DT]],
-    ) raises -> Scalar[DT]:
-        comptime if Self.target == "cpu":
-            for k in range(Self.BATCH * Self.IN_DIM):
-                self.input_buf[k] = input[k]
-            for k in range(Self.BATCH * Self.OUT_DIM):
-                self.target_buf[k] = targets[k]
-            var input = TileTensor(
-                self.input_buf, row_major[Self.BATCH, Self.IN_DIM]()
-            )
-            var targets = TileTensor(
-                self.target_buf, row_major[Self.BATCH, Self.OUT_DIM]()
-            )
-            return self._train_step_views(input, targets)
-        else:
-            var ctx = self.ctx.value()
-            var in_host_buf: HostBuffer[DT] = self.input_host.value()
-            var tg_host_buf: HostBuffer[DT] = self.target_host.value()
-            for k in range(Self.BATCH * Self.IN_DIM):
-                in_host_buf[k] = input[k]
-            for k in range(Self.BATCH * Self.OUT_DIM):
-                tg_host_buf[k] = targets[k]
-            ctx.enqueue_copy(self.input_dev.value(), in_host_buf)
-            ctx.enqueue_copy(self.target_dev.value(), tg_host_buf)
-            # Launder pointers through MutAnyOrigin so Mojo's aliasing
-            # analyzer doesn't see `self.input_dev` and `self.target_dev`
-            # (different fields, different buffers) as overlapping `self.*`.
-            var in_ptr: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.input_dev.value().unsafe_ptr()
-            var tg_ptr: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.target_dev.value().unsafe_ptr()
-            var input = TileTensor(in_ptr, row_major[Self.BATCH, Self.IN_DIM]())
-            var targets = TileTensor(
-                tg_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
-            )
-            return self._train_step_views(input, targets)
-
-    def predict(
-        mut self,
-        input: List[Scalar[DT]],
-        mut result: List[Scalar[DT]],
-    ) raises:
-        comptime if Self.target == "cpu":
-            for k in range(Self.BATCH * Self.IN_DIM):
-                self.input_buf[k] = input[k]
-            var input = TileTensor(
-                self.input_buf, row_major[Self.BATCH, Self.IN_DIM]()
-            )
-            var output = TileTensor(
-                self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
-            )
-            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                input, output=output
-            )
-            # Flat read from the slab: indexing the 2-D `output` view with a
-            # single int selects row `k` (column 0), not the flat element.
-            for k in range(Self.BATCH * Self.OUT_DIM):
-                result[k] = self.output_buf[k]
-        else:
-            var ctx = self.ctx.value()
-            var in_host_buf: HostBuffer[DT] = self.input_host.value()
-            var out_host_buf: HostBuffer[DT] = self.output_host.value()
-            for k in range(Self.BATCH * Self.IN_DIM):
-                in_host_buf[k] = input[k]
-            ctx.enqueue_copy(self.input_dev.value(), in_host_buf)
-            var in_ptr: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.input_dev.value().unsafe_ptr()
-            var out_ptr: UnsafePointer[
-                Scalar[DT], MutAnyOrigin
-            ] = self.output_dev.value().unsafe_ptr()
-            var input = TileTensor(in_ptr, row_major[Self.BATCH, Self.IN_DIM]())
-            var output = TileTensor(
-                out_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
-            )
-            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                input, output=output
-            )
-            ctx.enqueue_copy(out_host_buf, self.output_dev.value())
-            ctx.synchronize()
-            for k in range(Self.BATCH * Self.OUT_DIM):
-                result[k] = out_host_buf[k]
-
-    # ------------------------------------------------------------------
-    # Whole-dataset CPU training (mirrors `train_gpu`).
-    #
-    # Caller supplies the full train + test sets as flat row-major `List`s
-    # once; the trainer slices each mini-batch by pointer offset and runs
-    # the same forward/backward/step pipeline as the per-step API. Keeps the
-    # CPU example as terse as the GPU one (no hand-rolled epoch loop).
-    # ------------------------------------------------------------------
-
-    def train_cpu[
-        N_TRAIN: Int,
-        N_TEST: Int,
+    def eval_top1[
+        N_TEST: Int
     ](
         mut self,
-        train_x: List[Scalar[DT]],
-        train_y: List[Scalar[DT]],
-        test_x: List[Scalar[DT]],
-        test_y_labels: List[Int32],
-        epochs: Int = 1,
-        print_progress: Bool = True,
-    ) raises -> TrainResult:
-        """Whole-dataset CPU training with per-epoch top-1 eval.
-
-        `train_x` is flat row-major `[N_TRAIN, IN_DIM]`, `train_y` is flat
-        one-hot `[N_TRAIN, OUT_DIM]`, `test_x` is `[N_TEST, IN_DIM]`. Batches
-        are taken in order (no shuffle); the loss/step path is identical to
-        `train_step`. Returns per-epoch `TrainResult` metrics.
-        """
-        comptime assert (
-            Self.target == "cpu"
-        ), "Trainer.train_cpu requires target='cpu'"
-        comptime assert (
-            N_TRAIN % Self.BATCH == 0
-        ), "Trainer.train_cpu: N_TRAIN must be divisible by BATCH"
-        comptime assert (
-            N_TEST % Self.BATCH == 0
-        ), "Trainer.train_cpu: N_TEST must be divisible by BATCH"
-        comptime N_BATCHES_TRAIN = N_TRAIN // Self.BATCH
-
-        var result = TrainResult.empty()
-        var x_base = mptr(train_x.unsafe_ptr())
-        var y_base = mptr(train_y.unsafe_ptr())
-
-        for epoch in range(epochs):
-            var t0 = perf_counter_ns()
-            var epoch_loss: Scalar[DT] = 0.0
-            for b in range(N_BATCHES_TRAIN):
-                var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
-                var y_ptr = y_base + b * Self.BATCH * Self.OUT_DIM
-                var input = TileTensor(
-                    x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
-                )
-                var targets = TileTensor(
-                    y_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
-                )
-                epoch_loss += self._train_step_views(input, targets)
-            var t1 = perf_counter_ns()
-            var train_s = Float64(t1 - t0) / 1e9
-
-            var top1 = self.eval_top1_cpu[N_TEST](test_x, test_y_labels)
-            var t2 = perf_counter_ns()
-            var eval_s = Float64(t2 - t1) / 1e9
-
-            var avg = Float64(epoch_loss / Scalar[DT](N_BATCHES_TRAIN))
-            result.epoch_train_loss.append(avg)
-            result.epoch_test_top1.append(top1)
-            result.epoch_train_s.append(train_s)
-            result.epoch_eval_s.append(eval_s)
-            if print_progress:
-                print(
-                    "epoch "
-                    + String(epoch)
-                    + " | train_loss="
-                    + String(avg)
-                    + " | test_top1="
-                    + String(top1 * 100.0)
-                    + "%"
-                    + " | train="
-                    + String(train_s)
-                    + "s"
-                    + " | eval="
-                    + String(eval_s)
-                    + "s"
-                )
-        return result^
-
-    def eval_top1_cpu[
-        N_TEST: Int,
-    ](
-        mut self,
-        test_x: List[Scalar[DT]],
-        test_y_labels: List[Int32],
+        ref test_x: List[Scalar[DT]],
+        ref test_labels: List[Int32],
+        ctx: Optional[DeviceContext],
     ) raises -> Float64:
-        comptime assert (
-            Self.target == "cpu"
-        ), "Trainer.eval_top1_cpu requires target='cpu'"
-        comptime assert (
-            N_TEST % Self.BATCH == 0
-        ), "Trainer.eval_top1_cpu: N_TEST must be divisible by BATCH"
-        comptime N_BATCHES = N_TEST // Self.BATCH
-
-        var x_base = mptr(test_x.unsafe_ptr())
-        var n_correct: Int = 0
-        for b in range(N_BATCHES):
-            var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
-            var input = TileTensor(
-                x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
-            )
-            var output = TileTensor(
-                self.output_buf, row_major[Self.BATCH, Self.OUT_DIM]()
-            )
-            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                input, output=output
-            )
-            # Flat read from the slab (see `predict`): single-int indexing of
-            # the 2-D view selects a row, not the flat element.
-            for k in range(Self.BATCH):
-                var best_c: Int = 0
-                var best_v: Scalar[DT] = self.output_buf[k * Self.OUT_DIM + 0]
-                for c in range(1, Self.OUT_DIM):
-                    var v = self.output_buf[k * Self.OUT_DIM + c]
-                    if v > best_v:
-                        best_v = v
-                        best_c = c
-                if best_c == Int(test_y_labels[b * Self.BATCH + k]):
-                    n_correct += 1
-        return Float64(n_correct) / Float64(N_TEST)
-
-    # ------------------------------------------------------------------
-    # Whole-dataset GPU training.
-    # ------------------------------------------------------------------
-
-    def train_gpu[
-        N_TRAIN: Int,
-    ](
-        mut self,
-        train_x: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        train_y: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        epochs: Int = 1,
-        print_progress: Bool = True,
-        shuffle: Bool = False,
-        rng_seed: UInt64 = 42,
-    ) raises -> TrainResult:
-        comptime assert (
-            Self.target == "gpu"
-        ), "Trainer.train_gpu requires target='gpu'"
-        comptime assert (
-            N_TRAIN % Self.BATCH == 0
-        ), "Trainer.train_gpu: N_TRAIN must be divisible by BATCH"
-        comptime N_BATCHES = N_TRAIN // Self.BATCH
-        comptime BLOCKS_INIT = (N_TRAIN + TPB - 1) // TPB
-        comptime BLOCKS_GATHER_X = (Self.BATCH * Self.IN_DIM + TPB - 1) // TPB
-        comptime BLOCKS_GATHER_Y = (Self.BATCH * Self.OUT_DIM + TPB - 1) // TPB
-
-        var result = TrainResult.empty()
-        var ctx = self.ctx.value()
-        var x_base = mptr(train_x.ptr)
-        var y_base = mptr(train_y.ptr)
-
-        # Shuffle scratch (device-only; allocated once, reused across epochs).
-        var indices_dev: Optional[DeviceBuffer[DType.int32]] = None
-        var seed_dev: Optional[DeviceBuffer[DType.uint64]] = None
-        var shuf_x_dev: Optional[DeviceBuffer[DT]] = None
-        var shuf_y_dev: Optional[DeviceBuffer[DT]] = None
-        if shuffle:
-            var idx = ctx.enqueue_create_buffer[DType.int32](N_TRAIN)
-            var seed = ctx.enqueue_create_buffer[DType.uint64](1)
-            var sx = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.IN_DIM)
-            var sy = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
-            var seed_host = ctx.enqueue_create_host_buffer[DType.uint64](1)
-            seed_host.unsafe_ptr()[0] = rng_seed
-            ctx.enqueue_copy(seed, seed_host)
-            ctx.synchronize()
-            var idx_t = LayoutTensor[
-                DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
-            ](idx.unsafe_ptr())
-            ctx.enqueue_function[init_identity_indices_kernel[N_TRAIN]](
-                idx_t,
-                grid_dim=(BLOCKS_INIT,),
-                block_dim=(TPB,),
-            )
-            indices_dev = idx^
-            seed_dev = seed^
-            shuf_x_dev = sx^
-            shuf_y_dev = sy^
-
-        for epoch in range(epochs):
-            var t0 = perf_counter_ns()
-            var epoch_loss: Scalar[DT] = 0.0
-            if shuffle:
-                var idx_t = LayoutTensor[
-                    DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
-                ](indices_dev.value().unsafe_ptr())
-                var seed_t = LayoutTensor[
-                    DType.uint64, Layout.row_major(1), MutAnyOrigin
-                ](seed_dev.value().unsafe_ptr())
-                ctx.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
-                    idx_t, seed_t, grid_dim=(1,), block_dim=(1,)
+        comptime n_batches = N_TEST // Self.BATCH
+        comptime if Self.target == "gpu":
+            if not self._up_test:
+                Self._upload_dataset(
+                    self.ds_tx, test_x, N_TEST * Self.IN, ctx.value()
                 )
-                ctx.enqueue_function[increment_seed_kernel](
-                    seed_t, grid_dim=(1,), block_dim=(1,)
+                self._up_test = True
+        var correct = 0
+        comptime LOGN = Self.BATCH * Self.NC
+        for nb in range(n_batches):
+            var x0 = nb * Self.BATCH * Self.IN
+            comptime if Self.target == "cpu":
+                # CPU is fp32-only → MADT == DT; rebind batch_x to the fp32 slab.
+                ref bx = rebind[Tensor](self.batch_x)
+                memcpy(
+                    dest=bx.data.unsafe_ptr(),
+                    src=test_x.unsafe_ptr() + x0,
+                    count=Self.BATCH * Self.IN,
                 )
-            for b in range(N_BATCHES):
-                if shuffle:
-                    var full_x_t = LayoutTensor[
-                        DT,
-                        Layout.row_major(N_TRAIN, Self.IN_DIM),
-                        MutAnyOrigin,
-                    ](x_base)
-                    var full_y_t = LayoutTensor[
-                        DT,
-                        Layout.row_major(N_TRAIN, Self.OUT_DIM),
-                        MutAnyOrigin,
-                    ](y_base)
-                    var idx_t = LayoutTensor[
-                        DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
-                    ](indices_dev.value().unsafe_ptr())
-                    var sx_p = shuf_x_dev.value().unsafe_ptr()
-                    var sy_p = shuf_y_dev.value().unsafe_ptr()
-                    var shuf_x_t = LayoutTensor[
-                        DT,
-                        Layout.row_major(Self.BATCH, Self.IN_DIM),
-                        MutAnyOrigin,
-                    ](sx_p)
-                    var shuf_y_t = LayoutTensor[
-                        DT,
-                        Layout.row_major(Self.BATCH, Self.OUT_DIM),
-                        MutAnyOrigin,
-                    ](sy_p)
-                    var offset = b * Self.BATCH
-                    ctx.enqueue_function[
-                        gather_rows_kernel[N_TRAIN, Self.BATCH, Self.IN_DIM, DT]
-                    ](
-                        shuf_x_t,
-                        full_x_t,
-                        idx_t,
-                        offset,
-                        grid_dim=(BLOCKS_GATHER_X,),
-                        block_dim=(TPB,),
-                    )
-                    ctx.enqueue_function[
-                        gather_rows_kernel[
-                            N_TRAIN, Self.BATCH, Self.OUT_DIM, DT
-                        ]
-                    ](
-                        shuf_y_t,
-                        full_y_t,
-                        idx_t,
-                        offset,
-                        grid_dim=(BLOCKS_GATHER_Y,),
-                        block_dim=(TPB,),
-                    )
-                    var input = TileTensor(
-                        sx_p, row_major[Self.BATCH, Self.IN_DIM]()
-                    )
-                    var targets = TileTensor(
-                        sy_p, row_major[Self.BATCH, Self.OUT_DIM]()
-                    )
-                    epoch_loss += self._train_step_views(input, targets)
+            else:
+                comptime if Self.MADT == DT:
+                    ref bx = rebind[Tensor](self.batch_x)
+                    comptime if Self.CAPTURE:
+                        # `batch_x` is a FIXED owned buffer on the capture path —
+                        # D2D-copy the test slice INTO it (repointing would
+                        # replace the owned buffer with a view, corrupting both
+                        # the captured-train invariant AND `ds_tx` on the next
+                        # epoch's train copy into `batch_x`).
+                        var sx = self.ds_tx.dev.value().create_sub_buffer[DT](
+                            x0, Self.BATCH * Self.IN
+                        )
+                        ctx.value().enqueue_copy(bx.dev.value(), sx)
+                    else:
+                        bx.dev = Optional(
+                            self.ds_tx.dev.value().create_sub_buffer[DT](
+                                x0, Self.BATCH * Self.IN
+                            )
+                        )
+                        bx.n = Self.BATCH * Self.IN
                 else:
-                    var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
-                    var y_ptr = y_base + b * Self.BATCH * Self.OUT_DIM
-                    var input = TileTensor(
-                        x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
+                    # bf16: fp32 view → batch_xf, then cast → batch_x (MADT).
+                    self.batch_xf.dev = Optional(
+                        self.ds_tx.dev.value().create_sub_buffer[DT](
+                            x0, Self.BATCH * Self.IN
+                        )
                     )
-                    var targets = TileTensor(
-                        y_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
+                    self.batch_xf.n = Self.BATCH * Self.IN
+                    Self._cast_input_to_madt(
+                        self.batch_xf, self.batch_x, ctx.value()
                     )
-                    epoch_loss += self._train_step_views(input, targets)
-            ctx.synchronize()
-            var t1 = perf_counter_ns()
-            var train_s = Float64(t1 - t0) / 1e9
-            var avg = Float64(epoch_loss / Scalar[DT](N_BATCHES))
-            result.epoch_train_loss.append(avg)
-            result.epoch_train_s.append(train_s)
-            result.epoch_eval_s.append(0.0)
-            if print_progress:
-                print(
-                    "epoch "
-                    + String(epoch)
-                    + " | train_loss="
-                    + String(avg)
-                    + " | train="
-                    + String(train_s)
-                    + "s"
+            self.model.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
+                child_refs[Self.MODEL.ARITY, Self.MADT](self.batch_x),
+                self.logits,
+                ctx,
+            )
+            comptime if Self.MADT == DT:
+                # fp32 path (unchanged): download logits, argmax on fp32 `data`.
+                ref logd = rebind[Tensor](self.logits)
+                comptime if Self.target == "gpu":
+                    logd.download(ctx.value())
+                for b in range(Self.BATCH):
+                    var best = 0
+                    var bestv = logd.data[b * Self.NC]
+                    for c in range(1, Self.NC):
+                        var v = logd.data[b * Self.NC + c]
+                        if v > bestv:
+                            bestv = v
+                            best = c
+                    if best == Int(test_labels[nb * Self.BATCH + b]):
+                        correct += 1
+            else:
+                # bf16: cast MADT logits → fp32 logits_f32, download, argmax.
+                var c = ctx.value()
+                self.logits_f32.ensure_gpu(c, LOGN)
+                c.enqueue_function[_cast_kernel[Self.MADT, DT, LOGN]](
+                    self.logits.lt["gpu", Layout.row_major(LOGN)](),
+                    self.logits_f32.lt["gpu", Layout.row_major(LOGN)](),
+                    grid_dim=(LOGN + TPB - 1) // TPB,
+                    block_dim=TPB,
                 )
-        return result^
+                self.logits_f32.download(c)
+                for b in range(Self.BATCH):
+                    var best = 0
+                    var bestv = self.logits_f32.data[b * Self.NC]
+                    for cc in range(1, Self.NC):
+                        var v = self.logits_f32.data[b * Self.NC + cc]
+                        if v > bestv:
+                            bestv = v
+                            best = cc
+                    if best == Int(test_labels[nb * Self.BATCH + b]):
+                        correct += 1
+        return Float64(correct) / Float64(n_batches * Self.BATCH)
 
     def train_gpu[
         N_TRAIN: Int,
@@ -795,276 +559,310 @@ struct Trainer[
         SCHEDULER: Scheduler = ConstantSchedule,
     ](
         mut self,
-        train_x: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        train_y: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        test_x: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        test_y_labels: List[Int32],
+        ref train_x: List[Scalar[DT]],
+        ref train_y: List[Scalar[DT]],
+        ref test_x: List[Scalar[DT]],
+        ref test_labels: List[Int32],
+        ctx: Optional[DeviceContext],
         epochs: Int = 1,
         print_progress: Bool = True,
         shuffle: Bool = False,
         rng_seed: UInt64 = 42,
         aug_seed: UInt64 = 1000,
     ) raises -> TrainResult:
-        """Whole-dataset GPU training with per-epoch eval.
+        """Whole-dataset GPU training run with per-epoch top-1 eval — the
+        one-call convenience over `train_epoch`/`eval_top1`. Uploads train+test
+        ONCE (resident), then each epoch trains over all batches and evaluates.
 
-        BatchNorm is toggled to train mode before each epoch and eval mode
-        before the per-epoch test pass via `net.set_attr["training"]`
-        (no-op for nets without BN). When `AUGMENTER` is not the identity,
-        an augmentation buffer is allocated once and `AUGMENTER.augment`
-        re-fills it from `train_x` each epoch before the mini-batch loop;
-        training then reads the augmented buffer. When `SCHEDULER` is not
-        constant, the optimizer LR is set to `base_lr * SCHEDULER.lr_scale_at
-        (epoch, epochs)` each epoch (base_lr = the LR set on `optim` before
-        the call); the constant default leaves the LR untouched.
-        """
+        `shuffle=True` runs an on-device Fisher-Yates permutation of the train
+        set each epoch (device-resident indices/seed, gather into owned batch
+        buffers — capture-friendly, no host involvement); `shuffle=False` slices
+        contiguous sub-buffer views (zero-copy).
+
+        `AUGMENTER` (default identity): when not a no-op, an augmentation buffer
+        is allocated once and `AUGMENTER.augment` FULLY rewrites it from the raw
+        resident train set each epoch; training then reads the augmented buffer
+        (the labels are never augmented). `SCHEDULER` (default constant): when not
+        constant, the optimizer LR is set to `base_lr * lr_scale_at(epoch,
+        epochs)` each epoch (base_lr = the LR on the optimizer before the call).
+
+        BatchNorm is toggled to train mode before each epoch and eval mode before
+        the test pass via `set_attr["training"]` (no-op for nets without BN)."""
         comptime assert (
             Self.target == "gpu"
         ), "Trainer.train_gpu requires target='gpu'"
         comptime assert (
             N_TRAIN % Self.BATCH == 0
-        ), "Trainer.train_gpu: N_TRAIN must be divisible by BATCH"
+        ), "train_gpu: N_TRAIN must be divisible by BATCH"
         comptime assert (
             N_TEST % Self.BATCH == 0
-        ), "Trainer.train_gpu: N_TEST must be divisible by BATCH"
-        comptime N_BATCHES_TRAIN = N_TRAIN // Self.BATCH
-        comptime BLOCKS_INIT = (N_TRAIN + TPB - 1) // TPB
-        comptime BLOCKS_GATHER_X = (Self.BATCH * Self.IN_DIM + TPB - 1) // TPB
-        comptime BLOCKS_GATHER_Y = (Self.BATCH * Self.OUT_DIM + TPB - 1) // TPB
-
-        var result = TrainResult.empty()
-        var ctx = self.ctx.value()
-        var raw_x = mptr(train_x.ptr)
-        var y_base = mptr(train_y.ptr)
-
-        # Augmentation buffer (allocated once, refilled per epoch). Identity
-        # → skip it and train on `train_x` directly. A real augmenter fully
-        # rewrites this buffer from `train_x` each epoch (no pre-copy).
+        ), "train_gpu: N_TEST must be divisible by BATCH"
+        comptime n_batches = N_TRAIN // Self.BATCH
+        comptime blocks_init = (N_TRAIN + TPB - 1) // TPB
+        comptime blocks_gx = (Self.BATCH * Self.IN + TPB - 1) // TPB
+        comptime blocks_gy = (Self.BATCH * Self.NC + TPB - 1) // TPB
         comptime USE_AUG = not AUGMENTER.IS_NOOP
-        var aug_dev: Optional[DeviceBuffer[DT]] = None
-        var x_base = raw_x
-        comptime if USE_AUG:
-            aug_dev = ctx.enqueue_create_buffer[DT](N_TRAIN * Self.IN_DIM)
-            x_base = aug_dev.value().unsafe_ptr()
-
-        # LR schedule: capture the caller-set base LR; per epoch the LR is
-        # set to base_lr * SCHEDULER.lr_scale_at(epoch, epochs). Skipped
-        # entirely for the constant schedule (LR left exactly as set).
         comptime USE_SCHED = not SCHEDULER.IS_CONSTANT
-        var base_lr: Scalar[DT] = 0.0
-        comptime if USE_SCHED:
-            base_lr = self.optim.get_lr()
+        comptime assert (
+            (not Self.CAPTURE) or (not USE_AUG)
+        ), "CUDA-graph capture does not support AUGMENTER yet (contiguous sweep only)"
+        # Capture supports the contiguous sweep only in this pass (shuffle gathers
+        # vary the on-device offset per batch → a separate concern).
+        comptime if Self.CAPTURE:
+            if shuffle:
+                raise Error(
+                    "train_gpu: USE_TRAIN_CUDA_GRAPH supports the contiguous"
+                    " sweep only (shuffle=False) in this pass"
+                )
+        var c = ctx.value()
+        var result = TrainResult.empty()
 
-        # Shuffle scratch (device-only; allocated once, reused across epochs).
-        var indices_dev: Optional[DeviceBuffer[DType.int32]] = None
-        var seed_dev: Optional[DeviceBuffer[DType.uint64]] = None
-        var shuf_x_dev: Optional[DeviceBuffer[DT]] = None
-        var shuf_y_dev: Optional[DeviceBuffer[DT]] = None
+        # Resident train set (once). Test is uploaded lazily by eval_top1.
+        if not self._up_train:
+            Self._upload_dataset(self.ds_x, train_x, N_TRAIN * Self.IN, c)
+            Self._upload_dataset(self.ds_y, train_y, N_TRAIN * Self.NC, c)
+            self._up_train = True
+
+        # Augmentation working buffer (X only; rewritten from raw ds_x each
+        # epoch). Labels (ds_y) are never augmented.
+        var aug = Tensor()
+        comptime if USE_AUG:
+            aug = Tensor.alloc_gpu(c, N_TRAIN * Self.IN)
+
+        # LR schedule: capture the caller-set base LR; per-epoch LR is set to
+        # base_lr * scale. Constant default leaves the LR exactly as set.
+        var base_lr = self.opt.get_lr()
+
+        # Shuffle scratch (device-resident; allocated once, reused per epoch).
+        # Owned gather targets `gx`/`gy` — NOT self.batch_x (which eval_top1
+        # repoints at a test sub-buffer, so reusing it as a gather target would
+        # corrupt the test set).
+        var indices = TensorImpl[DType.int32]()
+        var seed = TensorImpl[DType.uint64]()
+        var gx = Tensor()  # fp32 gather target (X)
+        var gy = Tensor()  # fp32 gather target (labels — always fp32 for loss)
+        # bf16: owned MADT model-input (gx is cast into it). Unused for fp32.
+        var gxm = TensorImpl[Self.MADT]()
         if shuffle:
-            var idx = ctx.enqueue_create_buffer[DType.int32](N_TRAIN)
-            var seed = ctx.enqueue_create_buffer[DType.uint64](1)
-            var sx = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.IN_DIM)
-            var sy = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
-            var seed_host = ctx.enqueue_create_host_buffer[DType.uint64](1)
-            seed_host.unsafe_ptr()[0] = rng_seed
-            ctx.enqueue_copy(seed, seed_host)
-            ctx.synchronize()
-            var idx_t = LayoutTensor[
-                DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
-            ](idx.unsafe_ptr())
-            ctx.enqueue_function[init_identity_indices_kernel[N_TRAIN]](
-                idx_t,
-                grid_dim=(BLOCKS_INIT,),
-                block_dim=(TPB,),
+            indices = TensorImpl[DType.int32].alloc_gpu(c, N_TRAIN)
+            c.enqueue_function[init_identity_indices_kernel[N_TRAIN]](
+                indices.lt["gpu", Layout.row_major(N_TRAIN)](),
+                grid_dim=blocks_init,
+                block_dim=TPB,
             )
-            indices_dev = idx^
-            seed_dev = seed^
-            shuf_x_dev = sx^
-            shuf_y_dev = sy^
+            seed.ensure(1)
+            seed.data[0] = rng_seed
+            seed.n = 1
+            seed.upload(c)
+            gx = Tensor.alloc_gpu(c, Self.BATCH * Self.IN)
+            gy = Tensor.alloc_gpu(c, Self.BATCH * Self.NC)
+            comptime if Self.MADT != DT:
+                gxm = TensorImpl[Self.MADT].alloc_gpu(c, Self.BATCH * Self.IN)
 
         for epoch in range(epochs):
             var t0 = perf_counter_ns()
-            var epoch_loss: Scalar[DT] = 0.0
-            if shuffle:
-                var idx_t = LayoutTensor[
-                    DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
-                ](indices_dev.value().unsafe_ptr())
-                var seed_t = LayoutTensor[
-                    DType.uint64, Layout.row_major(1), MutAnyOrigin
-                ](seed_dev.value().unsafe_ptr())
-                ctx.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
-                    idx_t, seed_t, grid_dim=(1,), block_dim=(1,)
-                )
-                ctx.enqueue_function[increment_seed_kernel](
-                    seed_t, grid_dim=(1,), block_dim=(1,)
-                )
-            # LR schedule for this epoch.
-            comptime if USE_SCHED:
-                self.optim.set_lr(
-                    base_lr * Scalar[DT](SCHEDULER.lr_scale_at(epoch, epochs))
-                )
-            # BN → train mode; (re)build the augmented training set.
-            self.net.set_attr["training"](Scalar[DT](1.0))
-            comptime if USE_AUG:
-                var raw_lt = LayoutTensor[
-                    DT, Layout.row_major(N_TRAIN, Self.IN_DIM), MutAnyOrigin
-                ](raw_x)
-                var aug_lt = LayoutTensor[
-                    DT, Layout.row_major(N_TRAIN, Self.IN_DIM), MutAnyOrigin
-                ](aug_dev.value().unsafe_ptr())
-                AUGMENTER.augment[N_TRAIN, Self.IN_DIM, DT](
-                    ctx, aug_lt, raw_lt, epoch, aug_seed
-                )
-            for b in range(N_BATCHES_TRAIN):
+            comptime if Self.CAPTURE:
+                # LR onto the device so the captured `opt.step` reads the FRESH
+                # per-epoch LR on each replay (a host-baked `lr` would freeze at
+                # the capture-time value).
+                var eplr = base_lr
+                comptime if USE_SCHED:
+                    eplr = base_lr * Scalar[DT](
+                        SCHEDULER.lr_scale_at(epoch, epochs)
+                    )
+                self.opt.push_lr_device["gpu"](eplr, Optional(c))
+            else:
+                comptime if USE_SCHED:
+                    self.opt.set_lr(
+                        base_lr
+                        * Scalar[DT](SCHEDULER.lr_scale_at(epoch, epochs))
+                    )
+            self.loss.reset_accum["gpu"]()
+            self.model.set_attr["training"](Scalar[DT](1.0))
+            comptime if Self.CAPTURE:
+                # Contiguous-sweep capture: each batch's slice is D2D-copied into
+                # the FIXED owned `batch_x`/`batch_y` (eager), then the device
+                # compute is captured (first batch) / replayed (rest).
+                self._epoch_captured[N_TRAIN](c)
+            else:
+                # (Re)build the augmented training set from the raw resident set.
+                comptime if USE_AUG:
+                    AUGMENTER.augment[N_TRAIN, Self.IN, DT](
+                        c,
+                        aug.lt["gpu", Layout.row_major(N_TRAIN, Self.IN)](),
+                        self.ds_x.lt[
+                            "gpu", Layout.row_major(N_TRAIN, Self.IN)
+                        ](),
+                        epoch,
+                        aug_seed,
+                    )
                 if shuffle:
-                    var full_x_t = LayoutTensor[
-                        DT,
-                        Layout.row_major(N_TRAIN, Self.IN_DIM),
-                        MutAnyOrigin,
-                    ](x_base)
-                    var full_y_t = LayoutTensor[
-                        DT,
-                        Layout.row_major(N_TRAIN, Self.OUT_DIM),
-                        MutAnyOrigin,
-                    ](y_base)
-                    var idx_t = LayoutTensor[
-                        DType.int32, Layout.row_major(N_TRAIN), MutAnyOrigin
-                    ](indices_dev.value().unsafe_ptr())
-                    var sx_p = shuf_x_dev.value().unsafe_ptr()
-                    var sy_p = shuf_y_dev.value().unsafe_ptr()
-                    var shuf_x_t = LayoutTensor[
-                        DT,
-                        Layout.row_major(Self.BATCH, Self.IN_DIM),
-                        MutAnyOrigin,
-                    ](sx_p)
-                    var shuf_y_t = LayoutTensor[
-                        DT,
-                        Layout.row_major(Self.BATCH, Self.OUT_DIM),
-                        MutAnyOrigin,
-                    ](sy_p)
-                    var offset = b * Self.BATCH
-                    ctx.enqueue_function[
-                        gather_rows_kernel[N_TRAIN, Self.BATCH, Self.IN_DIM, DT]
-                    ](
-                        shuf_x_t,
-                        full_x_t,
-                        idx_t,
-                        offset,
-                        grid_dim=(BLOCKS_GATHER_X,),
-                        block_dim=(TPB,),
+                    c.enqueue_function[fisher_yates_shuffle_kernel[N_TRAIN]](
+                        indices.lt["gpu", Layout.row_major(N_TRAIN)](),
+                        seed.lt["gpu", Layout.row_major(1)](),
+                        grid_dim=1,
+                        block_dim=1,
                     )
-                    ctx.enqueue_function[
-                        gather_rows_kernel[
-                            N_TRAIN, Self.BATCH, Self.OUT_DIM, DT
-                        ]
-                    ](
-                        shuf_y_t,
-                        full_y_t,
-                        idx_t,
-                        offset,
-                        grid_dim=(BLOCKS_GATHER_Y,),
-                        block_dim=(TPB,),
+                    c.enqueue_function[increment_seed_kernel](
+                        seed.lt["gpu", Layout.row_major(1)](),
+                        grid_dim=1,
+                        block_dim=1,
                     )
-                    var input = TileTensor(
-                        sx_p, row_major[Self.BATCH, Self.IN_DIM]()
-                    )
-                    var targets = TileTensor(
-                        sy_p, row_major[Self.BATCH, Self.OUT_DIM]()
-                    )
-                    epoch_loss += self._train_step_views(input, targets)
-                else:
-                    var x_ptr = x_base + b * Self.BATCH * Self.IN_DIM
-                    var y_ptr = y_base + b * Self.BATCH * Self.OUT_DIM
-                    var input = TileTensor(
-                        x_ptr, row_major[Self.BATCH, Self.IN_DIM]()
-                    )
-                    var targets = TileTensor(
-                        y_ptr, row_major[Self.BATCH, Self.OUT_DIM]()
-                    )
-                    epoch_loss += self._train_step_views(input, targets)
-            ctx.synchronize()
+                for nb in range(n_batches):
+                    if shuffle:
+                        var off = nb * Self.BATCH
+                        # Gather X from the augmented set (if any) else raw ds_x.
+                        comptime if USE_AUG:
+                            c.enqueue_function[
+                                gather_rows_kernel[
+                                    N_TRAIN, Self.BATCH, Self.IN, DT
+                                ]
+                            ](
+                                gx.lt[
+                                    "gpu", Layout.row_major(Self.BATCH, Self.IN)
+                                ](),
+                                aug.lt[
+                                    "gpu", Layout.row_major(N_TRAIN, Self.IN)
+                                ](),
+                                indices.lt[
+                                    "gpu", Layout.row_major(N_TRAIN)
+                                ](),
+                                off,
+                                grid_dim=blocks_gx,
+                                block_dim=TPB,
+                            )
+                        else:
+                            c.enqueue_function[
+                                gather_rows_kernel[
+                                    N_TRAIN, Self.BATCH, Self.IN, DT
+                                ]
+                            ](
+                                gx.lt[
+                                    "gpu", Layout.row_major(Self.BATCH, Self.IN)
+                                ](),
+                                self.ds_x.lt[
+                                    "gpu", Layout.row_major(N_TRAIN, Self.IN)
+                                ](),
+                                indices.lt[
+                                    "gpu", Layout.row_major(N_TRAIN)
+                                ](),
+                                off,
+                                grid_dim=blocks_gx,
+                                block_dim=TPB,
+                            )
+                        c.enqueue_function[
+                            gather_rows_kernel[N_TRAIN, Self.BATCH, Self.NC, DT]
+                        ](
+                            gy.lt[
+                                "gpu", Layout.row_major(Self.BATCH, Self.NC)
+                            ](),
+                            self.ds_y.lt[
+                                "gpu", Layout.row_major(N_TRAIN, Self.NC)
+                            ](),
+                            indices.lt["gpu", Layout.row_major(N_TRAIN)](),
+                            off,
+                            grid_dim=blocks_gy,
+                            block_dim=TPB,
+                        )
+                        self.opt.zero_grad["gpu"](self.model, ctx)
+                        # fp32: gx IS the model input. bf16: cast gx → gxm (MADT).
+                        comptime if Self.MADT == DT:
+                            ref mi = rebind[TensorImpl[Self.MADT]](gx)
+                            Self._amp_train_step[Self.BATCH](
+                                self.model, self.opt, self.loss,
+                                mi, gy, self.logits, self.grad, self.gi,
+                                self.logits_f32, self.grad_f32, ctx,
+                            )
+                        else:
+                            gxm.ensure_gpu(c, Self.BATCH * Self.IN)
+                            c.enqueue_function[
+                                _cast_kernel[
+                                    DT, Self.MADT, Self.BATCH * Self.IN
+                                ]
+                            ](
+                                gx.lt[
+                                    "gpu",
+                                    Layout.row_major(Self.BATCH * Self.IN),
+                                ](),
+                                gxm.lt[
+                                    "gpu",
+                                    Layout.row_major(Self.BATCH * Self.IN),
+                                ](),
+                                grid_dim=blocks_gx,
+                                block_dim=TPB,
+                            )
+                            Self._amp_train_step[Self.BATCH](
+                                self.model, self.opt, self.loss,
+                                gxm, gy, self.logits, self.grad, self.gi,
+                                self.logits_f32, self.grad_f32, ctx,
+                            )
+                    else:
+                        var x0 = nb * Self.BATCH * Self.IN
+                        var y0 = nb * Self.BATCH * Self.NC
+                        # Sub-buffer view of X from the augmented set else raw
+                        # ds_x. fp32: the view lands in batch_x (zero-copy).
+                        # bf16: it lands in the fp32 staging batch_xf (cast →
+                        # batch_x below).
+                        comptime if Self.MADT == DT:
+                            ref bx = rebind[Tensor](self.batch_x)
+                            comptime if USE_AUG:
+                                bx.dev = Optional(
+                                    aug.dev.value().create_sub_buffer[DT](
+                                        x0, Self.BATCH * Self.IN
+                                    )
+                                )
+                            else:
+                                bx.dev = Optional(
+                                    self.ds_x.dev.value().create_sub_buffer[DT](
+                                        x0, Self.BATCH * Self.IN
+                                    )
+                                )
+                            bx.n = Self.BATCH * Self.IN
+                        else:
+                            comptime if USE_AUG:
+                                self.batch_xf.dev = Optional(
+                                    aug.dev.value().create_sub_buffer[DT](
+                                        x0, Self.BATCH * Self.IN
+                                    )
+                                )
+                            else:
+                                self.batch_xf.dev = Optional(
+                                    self.ds_x.dev.value().create_sub_buffer[DT](
+                                        x0, Self.BATCH * Self.IN
+                                    )
+                                )
+                            self.batch_xf.n = Self.BATCH * Self.IN
+                            Self._cast_input_to_madt(
+                                self.batch_xf, self.batch_x, c
+                            )
+                        self.batch_y.dev = Optional(
+                            self.ds_y.dev.value().create_sub_buffer[DT](
+                                y0, Self.BATCH * Self.NC
+                            )
+                        )
+                        self.batch_y.n = Self.BATCH * Self.NC
+                        self.opt.zero_grad["gpu"](self.model, ctx)
+                        Self._amp_train_step[Self.BATCH](
+                            self.model, self.opt, self.loss,
+                            self.batch_x, self.batch_y, self.logits, self.grad,
+                            self.gi, self.logits_f32, self.grad_f32, ctx,
+                        )
+            var avg = Float64(self.loss.read_accum["gpu"](ctx))
+            c.synchronize()
             var t1 = perf_counter_ns()
-            var train_s = Float64(t1 - t0) / 1e9
-
-            self.net.set_attr["training"](Scalar[DT](0.0))  # BN → eval mode
-            var top1 = self.eval_top1_gpu[N_TEST](test_x, test_y_labels)
+            self.model.set_attr["training"](Scalar[DT](0.0))
+            var top1 = self.eval_top1[N_TEST](test_x, test_labels, ctx)
             var t2 = perf_counter_ns()
-            var eval_s = Float64(t2 - t1) / 1e9
-
-            var avg = Float64(epoch_loss / Scalar[DT](N_BATCHES_TRAIN))
             result.epoch_train_loss.append(avg)
             result.epoch_test_top1.append(top1)
-            result.epoch_train_s.append(train_s)
-            result.epoch_eval_s.append(eval_s)
+            result.epoch_train_s.append(Float64(t1 - t0) / 1e9)
+            result.epoch_eval_s.append(Float64(t2 - t1) / 1e9)
             if print_progress:
                 print(
-                    "epoch "
-                    + String(epoch)
-                    + " | train_loss="
-                    + String(avg)
-                    + " | test_top1="
-                    + String(top1 * 100.0)
-                    + "%"
-                    + " | train="
-                    + String(train_s)
-                    + "s"
-                    + " | eval="
-                    + String(eval_s)
-                    + "s"
+                    "epoch " + String(epoch)
+                    + " | train_loss=" + String(avg)
+                    + " | test_top1=" + String(top1 * 100.0) + "%"
+                    + " | train=" + String(Float64(t1 - t0) / 1e9) + "s"
+                    + " | eval=" + String(Float64(t2 - t1) / 1e9) + "s"
                 )
         return result^
-
-    def eval_top1_gpu[
-        N_TEST: Int,
-    ](
-        mut self,
-        test_x: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        test_y_labels: List[Int32],
-    ) raises -> Float64:
-        comptime assert (
-            Self.target == "gpu"
-        ), "Trainer.eval_top1_gpu requires target='gpu'"
-        comptime assert (
-            N_TEST % Self.BATCH == 0
-        ), "Trainer.eval_top1_gpu: N_TEST must be divisible by BATCH"
-        comptime N_BATCHES = N_TEST // Self.BATCH
-
-        var ctx = self.ctx.value()
-        var out_host: HostBuffer[DT] = self.output_host.value()
-        var x_base = test_x.ptr
-        var n_correct: Int = 0
-        for b in range(N_BATCHES):
-            var x_ptr_my = mptr(x_base + b * Self.BATCH * Self.IN_DIM)
-            var out_ptr_my = mptr(self.output_dev.value().unsafe_ptr())
-            var input = TileTensor(
-                x_ptr_my, row_major[Self.BATCH, Self.IN_DIM]()
-            )
-            var output = TileTensor(
-                out_ptr_my,
-                row_major[Self.BATCH, Self.OUT_DIM](),
-            )
-            self.net.forward[Self.target, Self.BATCH, POLICY=Self.POLICY](
-                input, output=output
-            )
-            ctx.enqueue_copy(out_host, self.output_dev.value())
-            ctx.synchronize()
-            for k in range(Self.BATCH):
-                var best_c: Int = 0
-                var best_v: Scalar[DT] = out_host.unsafe_ptr()[
-                    k * Self.OUT_DIM + 0
-                ]
-                for c in range(1, Self.OUT_DIM):
-                    var v = out_host.unsafe_ptr()[k * Self.OUT_DIM + c]
-                    if v > best_v:
-                        best_v = v
-                        best_c = c
-                if best_c == Int(test_y_labels[b * Self.BATCH + k]):
-                    n_correct += 1
-        return Float64(n_correct) / Float64(N_TEST)

@@ -51,7 +51,8 @@ struct MBPOAgent[
     REAL_RATIO_PCT: Int = 5,
     LOGVAR_MIN: Float64 = -10.0,
     LOGVAR_MAX: Float64 = -2.0,
-](Movable & ImplicitlyDestructible):
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
+](Movable & ImplicitlyDeletable):
     """Thin facade over `MBPOTrainer` + off-policy drivers."""
 
     comptime TrainerT = MBPOTrainer[
@@ -60,6 +61,7 @@ struct MBPOAgent[
         Self.REPLAY_CAPACITY, Self.SYNTH_CAPACITY,
         Self.N_ENSEMBLE, Self.NUM_ELITES,
         Self.REAL_RATIO_PCT, Self.LOGVAR_MIN, Self.LOGVAR_MAX,
+        Self.USE_TRAIN_CUDA_GRAPH,
     ]
 
     var trainer: Self.TrainerT
@@ -92,7 +94,10 @@ struct MBPOAgent[
     ) raises:
         """Construct an MBPOAgent. Forwards every kwarg to `MBPOTrainer.make`.
         `ctx` is required for `train_target='gpu'`; `use_bf16` (GPU) enables
-        mixed-precision on the SAC sub-update."""
+        mixed-precision on the SAC sub-update. CUDA-graph capture of the SAC
+        sub-update loop + per-member dynamics-train step is the comptime
+        `USE_TRAIN_CUDA_GRAPH` agent parameter (GPU + NoAMP; NVIDIA only,
+        no-op elsewhere)."""
         self.trainer = Self.TrainerT.make(
             ctx=ctx,
             actor_lr=actor_lr,
@@ -126,7 +131,6 @@ struct MBPOAgent[
         N_ENVS: Int = 1,
         NS: Int = 1,
         L: Logger = NoOpLogger,
-        USE_TRAIN_CUDA_GRAPH: Bool = False,
         USE_ENV_CUDA_GRAPH: Bool = False,
     ](
         mut self,
@@ -155,7 +159,7 @@ struct MBPOAgent[
         var ctx = self.trainer.ctx
         return run_offpolicy_train_batched[
             Self.TrainerT, E, N_ENVS, NS, L,
-            USE_TRAIN_CUDA_GRAPH, USE_ENV_CUDA_GRAPH,
+            Self.USE_TRAIN_CUDA_GRAPH, USE_ENV_CUDA_GRAPH,
         ](
             ctx,
             self.trainer,

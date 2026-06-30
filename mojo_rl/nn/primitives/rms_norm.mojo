@@ -1,61 +1,40 @@
-"""RMSNorm[DIM] — root-mean-square layer normalization (no mean, no β).
+"""RMSNorm[DIM] — root-mean-square normalization (storage surface).
 
-Matches the DreamerV3 reference `embodied/jax/nets.py:Norm` with
-`impl='rms'` (the default `norm: rms` across RSSM / Encoder / Decoder):
+Transformed from legacy `nn.primitives.RMSNorm` (surface-only change). No mean
+subtraction, no β — one `Param` (γ, decay=False, init 1). The x·inv_rms + inv_rms
+cache is leaf-owned. CPU SIMD feature-axis loops + 3 GPU kernels (forward /
+backward-dx 1-block-per-row / backward-dgamma 1-block-per-col) carried verbatim.
 
-    mean2 = mean_d(x²)                      # per row, last axis
-    y     = x · (rsqrt(mean2 + eps) · γ)    # γ per-feature, eps = 1e-4
-
-Structurally a LayerNorm with the mean subtraction and the β shift
-removed. One Param (`gamma`, decay=False, init 1).
-
-Cache (leaf-owned, output-style): `cache_norm` = x·inv_rms  [BATCH, DIM]
-and `cache_inv_rms` [BATCH]. Backward:
-
-    R          = Σ_d go[b,d]·γ[d]·n[b,d]            (per row)
-    grad_x[b,e]= inv_rms[b]·( go[b,e]·γ[e] − n[b,e]·R/DIM )
-    grad_γ[d] += Σ_b go[b,d]·n[b,d]
-
-eps = 1e-4 (reference `Norm.eps` default for the plain `rms` impl).
-Stats run in DT (force_fp32-style) — bf16 RMS is unstable.
+Backward (cache):  R = Σ_d go·γ·n ; dx = inv_rms·(go·γ - n·R/DIM) ; dγ += Σ_b go·n
 """
 
 from std.math import sqrt
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
+from std.utils.numerics import get_accum_type
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, CPU_SIMD_W
-from ..core import (
-    Initializer,
-    AMPPolicy,
-    NoAMP,
-    Param,
-    Cache,
-    ParamVisitor,
-    for_each_param_auto,
-    zero_grad_auto,
-)
-from ..core.module import Module, typed_view, typed_view_mut, mptr
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
-)
+from mojo_rl.nn.constants import DT, CPU_SIMD_W
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 comptime RMS_EPS: Scalar[DT] = 1e-4
 comptime RMS_TPB: Int = 128
+# Reductions run in the accumulation dtype (f32 for bf16 inputs; identity for
+# DT=f32). ELEMS = per-thread feature slice; each thread reads its slice ONCE
+# into registers, computes Σx² in that single read, then normalizes from
+# registers — vs the legacy 2× input re-read.
+comptime RMS_ACC = get_accum_type[DT]()
+comptime RMS_REG_CAP = 8  # max per-thread slice (≈ DIM≤1024) to register-cache
 
 
-# ──────────────────────────────────────────────────────────────────────
-# GPU kernels.
-# ──────────────────────────────────────────────────────────────────────
-
-
+# ── GPU kernels (single-pass register-cached forward; block-per-row) ────
 def _rms_norm_forward_kernel[
     BATCH: Int,
     DIM: Int,
@@ -70,28 +49,63 @@ def _rms_norm_forward_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
+    comptime ELEMS = (DIM + RMS_TPB - 1) // RMS_TPB
+    # Register-cache the thread's feature slice only when small enough to stay
+    # in registers (≤ RMS_REG_CAP); else 2-read fallback (still beats the
+    # legacy 2 reads only marginally — kept for the no-spill guarantee).
+    comptime REG_CACHE = ELEMS <= RMS_REG_CAP
+    var inv_dim = Scalar[RMS_ACC](1.0) / Scalar[RMS_ACC](DIM)
+    var my_sumsq = Scalar[RMS_ACC](0)
 
-    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
-    var my_sumsq: Scalar[DT] = 0.0
-    var idx = t
-    while idx < DIM:
-        var x = rebind[Scalar[DT]](input[b, idx])
-        my_sumsq += x * x
-        idx += RMS_TPB
-    var mean2 = (
-        block.sum[block_size=RMS_TPB, broadcast=True](val=my_sumsq) * inv_dim
-    )
-    var inv_rms: Scalar[DT] = 1.0 / sqrt(mean2 + RMS_EPS)
-    if t == 0:
-        cache_inv_rms[b] = inv_rms
+    comptime if REG_CACHE:
+        var slice = InlineArray[Scalar[RMS_ACC], ELEMS](fill=Scalar[RMS_ACC](0))
 
-    idx = t
-    while idx < DIM:
-        var x = rebind[Scalar[DT]](input[b, idx])
-        var n = x * inv_rms
-        cache_norm[b, idx] = n
-        output[b, idx] = n * rebind[Scalar[DT]](gamma[idx])
-        idx += RMS_TPB
+        comptime for e in range(ELEMS):
+            var col = t + e * RMS_TPB
+            if col < DIM:
+                var x = rebind[Scalar[DT]](input[b, col]).cast[RMS_ACC]()
+                slice[e] = x
+                my_sumsq += x * x
+        var mean2 = (
+            block.sum[block_size=RMS_TPB, broadcast=True](val=my_sumsq)
+            * inv_dim
+        )
+        var inv_rms = Scalar[RMS_ACC](1.0) / sqrt(
+            mean2 + RMS_EPS.cast[RMS_ACC]()
+        )
+        if t == 0:
+            cache_inv_rms[b] = inv_rms.cast[DT]()
+
+        comptime for e in range(ELEMS):
+            var col = t + e * RMS_TPB
+            if col < DIM:
+                var n = slice[e] * inv_rms
+                cache_norm[b, col] = n.cast[DT]()
+                var g = rebind[Scalar[DT]](gamma[col]).cast[RMS_ACC]()
+                output[b, col] = (n * g).cast[DT]()
+    else:
+        var idx = t
+        while idx < DIM:
+            var x = rebind[Scalar[DT]](input[b, idx]).cast[RMS_ACC]()
+            my_sumsq += x * x
+            idx += RMS_TPB
+        var mean2 = (
+            block.sum[block_size=RMS_TPB, broadcast=True](val=my_sumsq)
+            * inv_dim
+        )
+        var inv_rms = Scalar[RMS_ACC](1.0) / sqrt(
+            mean2 + RMS_EPS.cast[RMS_ACC]()
+        )
+        if t == 0:
+            cache_inv_rms[b] = inv_rms.cast[DT]()
+        idx = t
+        while idx < DIM:
+            var x = rebind[Scalar[DT]](input[b, idx]).cast[RMS_ACC]()
+            var n = x * inv_rms
+            cache_norm[b, idx] = n.cast[DT]()
+            var g = rebind[Scalar[DT]](gamma[idx]).cast[RMS_ACC]()
+            output[b, idx] = (n * g).cast[DT]()
+            idx += RMS_TPB
 
 
 def _rms_norm_backward_dx_kernel[
@@ -108,27 +122,53 @@ def _rms_norm_backward_dx_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
+    comptime ELEMS = (DIM + RMS_TPB - 1) // RMS_TPB
+    comptime REG_CACHE = ELEMS <= RMS_REG_CAP
+    var inv_dim = Scalar[RMS_ACC](1.0) / Scalar[RMS_ACC](DIM)
+    var inv_rms = rebind[Scalar[DT]](cache_inv_rms[b]).cast[RMS_ACC]()
+    var my_r = Scalar[RMS_ACC](0)
 
-    var inv_dim: Scalar[DT] = 1.0 / Float32(DIM)
-    var inv_rms = rebind[Scalar[DT]](cache_inv_rms[b])
+    comptime if REG_CACHE:
+        # Cache gg=go·γ and n once; the write pass reads no global memory.
+        var gg_s = InlineArray[Scalar[RMS_ACC], ELEMS](fill=Scalar[RMS_ACC](0))
+        var n_s = InlineArray[Scalar[RMS_ACC], ELEMS](fill=Scalar[RMS_ACC](0))
 
-    var my_r: Scalar[DT] = 0.0
-    var idx = t
-    while idx < DIM:
-        var go = rebind[Scalar[DT]](grad_output[b, idx])
-        var gm = rebind[Scalar[DT]](gamma[idx])
-        var n = rebind[Scalar[DT]](cache_norm[b, idx])
-        my_r += go * gm * n
-        idx += RMS_TPB
-    var R = block.sum[block_size=RMS_TPB, broadcast=True](val=my_r)
+        comptime for e in range(ELEMS):
+            var col = t + e * RMS_TPB
+            if col < DIM:
+                var go = rebind[Scalar[DT]](grad_output[b, col]).cast[RMS_ACC]()
+                var gm = rebind[Scalar[DT]](gamma[col]).cast[RMS_ACC]()
+                var n = rebind[Scalar[DT]](cache_norm[b, col]).cast[RMS_ACC]()
+                var gg = go * gm
+                gg_s[e] = gg
+                n_s[e] = n
+                my_r += gg * n
+        var R = block.sum[block_size=RMS_TPB, broadcast=True](val=my_r)
 
-    idx = t
-    while idx < DIM:
-        var go = rebind[Scalar[DT]](grad_output[b, idx])
-        var gm = rebind[Scalar[DT]](gamma[idx])
-        var n = rebind[Scalar[DT]](cache_norm[b, idx])
-        grad_input[b, idx] = inv_rms * (go * gm - n * R * inv_dim)
-        idx += RMS_TPB
+        comptime for e in range(ELEMS):
+            var col = t + e * RMS_TPB
+            if col < DIM:
+                grad_input[b, col] = (
+                    inv_rms * (gg_s[e] - n_s[e] * R * inv_dim)
+                ).cast[DT]()
+    else:
+        var idx = t
+        while idx < DIM:
+            var go = rebind[Scalar[DT]](grad_output[b, idx]).cast[RMS_ACC]()
+            var gm = rebind[Scalar[DT]](gamma[idx]).cast[RMS_ACC]()
+            var n = rebind[Scalar[DT]](cache_norm[b, idx]).cast[RMS_ACC]()
+            my_r += go * gm * n
+            idx += RMS_TPB
+        var R = block.sum[block_size=RMS_TPB, broadcast=True](val=my_r)
+        idx = t
+        while idx < DIM:
+            var go = rebind[Scalar[DT]](grad_output[b, idx]).cast[RMS_ACC]()
+            var gm = rebind[Scalar[DT]](gamma[idx]).cast[RMS_ACC]()
+            var n = rebind[Scalar[DT]](cache_norm[b, idx]).cast[RMS_ACC]()
+            grad_input[b, idx] = (
+                inv_rms * (go * gm - n * R * inv_dim)
+            ).cast[DT]()
+            idx += RMS_TPB
 
 
 def _rms_norm_backward_dgamma_kernel[
@@ -143,7 +183,6 @@ def _rms_norm_backward_dgamma_kernel[
     var t = Int(thread_idx.x)
     if col >= DIM:
         return
-
     var my_dg: Scalar[DT] = 0.0
     var bi = t
     while bi < BATCH:
@@ -156,187 +195,128 @@ def _rms_norm_backward_dgamma_kernel[
         grad_gamma[col] = rebind[Scalar[DT]](grad_gamma[col]) + total_dg[0]
 
 
-# ──────────────────────────────────────────────────────────────────────
-# RMSNorm.
-# ──────────────────────────────────────────────────────────────────────
+struct RMSNorm[DIM_: Int](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime OUT_DIM = Self.DIM_
 
-
-struct RMSNorm[DIM: Int](Module):
-    comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
-    comptime OUT_DIM = Self.DIM
-
-    @staticmethod
-    def display_label() -> String:
-        return String("RMSNorm")
-
-    var gamma: Param["gamma", False, Self.DIM]
-
-    var cache_norm: Cache["cache_norm"]
-    var cache_inv_rms: Cache["cache_inv_rms"]
-
-    var ts: TargetStorage
+    var gamma: Param["gamma", False, Self.DIM_]
+    var cache_norm: Tensor  # [BATCH, DIM]
+    var cache_inv_rms: Tensor  # [BATCH]
 
     def __init__(out self):
-        self.gamma = Param["gamma", False, Self.DIM]()
-        self.cache_norm = Cache["cache_norm"]()
-        self.cache_inv_rms = Cache["cache_inv_rms"]()
-        self.ts = TargetStorage.make_uninit()
+        self.gamma = Param["gamma", False, Self.DIM_]()
+        self.cache_norm = Tensor()
+        self.cache_inv_rms = Tensor()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU.
-        γ initialised to 1 (reference scale init); INIT accepted for
-        trait conformance but ignored."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "RMSNorm: target must be 'cpu' or 'gpu'"
-        )
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var rn = Self()
-        comptime if target == "cpu":
-            rn.gamma = Param["gamma", False, Self.DIM].make_cpu()
-            var g_ptr = rn.gamma.value_unsafe_ptr_cpu()
-            for k in range(Self.DIM):
-                g_ptr[k] = Scalar[DT](1.0)
-            rn.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["RMSNorm.make[target='gpu']"](ctx)
-            rn.gamma = Param["gamma", False, Self.DIM].make_gpu(ctx_v)
-            rn.gamma.val.dev.value().enqueue_fill(1.0)
-            rn.ts = TargetStorage.make_gpu(ctx_v)
+        rn.gamma = Param["gamma", False, Self.DIM_].make[target](ctx)
+        for k in range(Self.DIM_):
+            rn.gamma.val.data[k] = Scalar[DT](1.0)
+        comptime if target != "cpu":
+            rn.gamma.val.upload(ctx.value())
         return rn^
 
-    def _ensure_cache_gpu(mut self, batch: Int) raises:
-        var ctx = self.ts.ctx.value()
-        self.cache_norm.ensure_gpu(ctx, batch * Self.DIM)
-        self.cache_inv_rms.ensure_gpu(ctx, batch)
-
-    # ----- Forward ---------------------------------------------------------
-
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["RMSNorm", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            self.cache_norm.ensure_cpu(BATCH * Self.DIM)
-            self.cache_inv_rms.ensure_cpu(BATCH)
-            var inv_v = TileTensor(self.cache_inv_rms.cpu, row_major[BATCH]())
-            # SIMD-vectorized over the feature axis (C3).
-            var in_p  = input.ptr
-            var out_p = output_v.ptr
-            var g_p   = self.gamma.value_unsafe_ptr_cpu()
-            var nm_p  = mptr(self.cache_norm.cpu.unsafe_ptr())
+            out.ensure(B * Self.DIM_)
+            self.cache_norm.ensure(B * Self.DIM_)
+            self.cache_inv_rms.ensure(B)
+            var inv_v = TileTensor(self.cache_inv_rms.data, row_major[B]())
+            var in_p = in0.data.unsafe_ptr()
+            var out_p = out.data.unsafe_ptr()
+            var g_p = self.gamma.val.data.unsafe_ptr()
+            var nm_p = self.cache_norm.data.unsafe_ptr()
             comptime W = CPU_SIMD_W
-            var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
-            for b in range(BATCH):
-                var row = b * Self.DIM
-                # mean2 = Σ x² / DIM
+            var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM_)
+            for b in range(B):
+                var row = b * Self.DIM_
                 var acc = SIMD[DT, W](0)
                 var d = 0
-                while d + W <= Self.DIM:
+                while d + W <= Self.DIM_:
                     var x = in_p.load[width=W](row + d)
                     acc += x * x
                     d += W
                 var sumsq = acc.reduce_add()
-                while d < Self.DIM:
+                while d < Self.DIM_:
                     var x = in_p[row + d]
                     sumsq += x * x
                     d += 1
                 var mean2 = sumsq * inv_dim
                 var inv_rms = Scalar[DT](1.0) / sqrt(mean2 + RMS_EPS)
                 inv_v[b] = inv_rms
-                # n = x·inv_rms ; out = n·γ
                 var irv = SIMD[DT, W](inv_rms)
                 d = 0
-                while d + W <= Self.DIM:
+                while d + W <= Self.DIM_:
                     var n = in_p.load[width=W](row + d) * irv
                     nm_p.store(row + d, n)
                     out_p.store(row + d, n * g_p.load[width=W](d))
                     d += W
-                while d < Self.DIM:
+                while d < Self.DIM_:
                     var n = in_p[row + d] * inv_rms
                     nm_p[row + d] = n
                     out_p[row + d] = n * g_p[d]
                     d += 1
         else:
-            self._ensure_cache_gpu(BATCH)
-            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
-            comptime layout_b = Layout.row_major(BATCH)
-            comptime layout_d = Layout.row_major(Self.DIM)
-            var in_p_w = input.ptr
-            var out_p_w = output_v.ptr
-            var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p_w)
-            var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p_w)
-            var g_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.gamma.val.dev.value()
-            )
-            var nm_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_norm.dev.value()
-            )
-            var ir_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](
-                self.cache_inv_rms.dev.value()
-            )
-            comptime kernel = _rms_norm_forward_kernel[BATCH, Self.DIM]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, g_lt, nm_lt, ir_lt,
-                grid_dim=BATCH,
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.DIM_)
+            self.cache_norm.ensure_gpu(c, B * Self.DIM_)
+            self.cache_inv_rms.ensure_gpu(c, B)
+            comptime l2d = Layout.row_major(B, Self.DIM_)
+            comptime lb = Layout.row_major(B)
+            comptime ld = Layout.row_major(Self.DIM_)
+            c.enqueue_function[_rms_norm_forward_kernel[B, Self.DIM_]](
+                in0.lt["gpu", l2d](),
+                out.lt["gpu", l2d](),
+                self.gamma.val.lt["gpu", ld](),
+                self.cache_norm.lt["gpu", l2d](),
+                self.cache_inv_rms.lt["gpu", lb](),
+                grid_dim=B,
                 block_dim=RMS_TPB,
             )
 
-    # ----- Backward --------------------------------------------------------
-
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["RMSNorm", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            var inv_v = TileTensor(self.cache_inv_rms.cpu, row_major[BATCH]())
-            # SIMD-vectorized over the feature axis (C3).
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var g_p  = self.gamma.value_unsafe_ptr_cpu()
-            var gg_p = self.gamma.grad_unsafe_ptr_cpu()
-            var nm_p = mptr(self.cache_norm.cpu.unsafe_ptr())
+            gin.ensure(B * Self.DIM_)
+            var inv_v = TileTensor(self.cache_inv_rms.data, row_major[B]())
+            var go_p = grad_output.data.unsafe_ptr()
+            var gi_p = gin.data.unsafe_ptr()
+            var g_p = self.gamma.val.data.unsafe_ptr()
+            var gg_p = self.gamma.grd.data.unsafe_ptr()
+            var nm_p = self.cache_norm.data.unsafe_ptr()
             comptime W = CPU_SIMD_W
-            var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM)
-            for b in range(BATCH):
-                var row = b * Self.DIM
+            var inv_dim: Scalar[DT] = 1.0 / Float32(Self.DIM_)
+            for b in range(B):
+                var row = b * Self.DIM_
                 var inv_rms = inv_v[b]
-                # R = Σ go·γ·n
                 var acc = SIMD[DT, W](0)
                 var d = 0
-                while d + W <= Self.DIM:
+                while d + W <= Self.DIM_:
                     acc += (
                         go_p.load[width=W](row + d)
                         * g_p.load[width=W](d)
@@ -344,87 +324,60 @@ struct RMSNorm[DIM: Int](Module):
                     )
                     d += W
                 var R = acc.reduce_add()
-                while d < Self.DIM:
+                while d < Self.DIM_:
                     R += go_p[row + d] * g_p[d] * nm_p[row + d]
                     d += 1
-                # grad_input = inv_rms·(go·γ - n·R/DIM)
                 var irv = SIMD[DT, W](inv_rms)
                 var rscaled = SIMD[DT, W](R * inv_dim)
                 d = 0
-                while d + W <= Self.DIM:
+                while d + W <= Self.DIM_:
                     var go = go_p.load[width=W](row + d)
-                    var n  = nm_p.load[width=W](row + d)
+                    var n = nm_p.load[width=W](row + d)
                     gi_p.store(
-                        row + d,
-                        irv * (go * g_p.load[width=W](d) - n * rscaled),
+                        row + d, irv * (go * g_p.load[width=W](d) - n * rscaled)
                     )
                     d += W
-                while d < Self.DIM:
+                while d < Self.DIM_:
                     var go = go_p[row + d]
                     gi_p[row + d] = inv_rms * (
                         go * g_p[d] - nm_p[row + d] * R * inv_dim
                     )
                     d += 1
-                comptime if mode == "all":
-                    # dγ += go·n  (accumulated across the batch)
-                    d = 0
-                    while d + W <= Self.DIM:
-                        gg_p.store(
-                            d,
-                            gg_p.load[width=W](d)
-                            + go_p.load[width=W](row + d)
-                            * nm_p.load[width=W](row + d),
-                        )
-                        d += W
-                    while d < Self.DIM:
-                        gg_p[d] = gg_p[d] + go_p[row + d] * nm_p[row + d]
-                        d += 1
+                # dγ += go·n  (accumulated across the batch)
+                d = 0
+                while d + W <= Self.DIM_:
+                    gg_p.store(
+                        d,
+                        gg_p.load[width=W](d)
+                        + go_p.load[width=W](row + d)
+                        * nm_p.load[width=W](row + d),
+                    )
+                    d += W
+                while d < Self.DIM_:
+                    gg_p[d] = gg_p[d] + go_p[row + d] * nm_p[row + d]
+                    d += 1
         else:
-            var ctx = self.ts.ctx.value()
-            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
-            comptime layout_b = Layout.row_major(BATCH)
-            comptime layout_d = Layout.row_major(Self.DIM)
-            var go_p_w = grad_output_v.ptr
-            var gi_p_w = grad_input_v.ptr
-            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p_w)
-            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p_w)
-            var g_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                self.gamma.val.dev.value()
-            )
-            var nm_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_norm.dev.value()
-            )
-            var ir_lt = LayoutTensor[DT, layout_b, MutAnyOrigin](
-                self.cache_inv_rms.dev.value()
-            )
-            comptime dx_kernel = _rms_norm_backward_dx_kernel[BATCH, Self.DIM]
-            ctx.enqueue_function[dx_kernel](
-                go_lt, g_lt, nm_lt, ir_lt, gi_lt,
-                grid_dim=BATCH,
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.DIM_)
+            comptime l2d = Layout.row_major(B, Self.DIM_)
+            comptime lb = Layout.row_major(B)
+            comptime ld = Layout.row_major(Self.DIM_)
+            c.enqueue_function[_rms_norm_backward_dx_kernel[B, Self.DIM_]](
+                grad_output.lt["gpu", l2d](),
+                self.gamma.val.lt["gpu", ld](),
+                self.cache_norm.lt["gpu", l2d](),
+                self.cache_inv_rms.lt["gpu", lb](),
+                gin.lt["gpu", l2d](),
+                grid_dim=B,
                 block_dim=RMS_TPB,
             )
-            comptime if mode == "all":
-                var gg_lt = LayoutTensor[DT, layout_d, MutAnyOrigin](
-                    self.gamma.grd.dev.value()
-                )
-                comptime dg_kernel = _rms_norm_backward_dgamma_kernel[
-                    BATCH, Self.DIM
-                ]
-                ctx.enqueue_function[dg_kernel](
-                    go_lt, nm_lt, gg_lt,
-                    grid_dim=Self.DIM,
-                    block_dim=RMS_TPB,
-                )
+            c.enqueue_function[_rms_norm_backward_dgamma_kernel[B, Self.DIM_]](
+                grad_output.lt["gpu", l2d](),
+                self.cache_norm.lt["gpu", l2d](),
+                self.gamma.grd.lt["gpu", ld](),
+                grid_dim=Self.DIM_,
+                block_dim=RMS_TPB,
+            )
 
-    # ----- Walkers ---------------------------------------------------------
-
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["RMSNorm", target](self.ts.target_tag)
-        for_each_param_auto[Self, V, target](self, prefix, visitor)
-
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["RMSNorm", target](self.ts.target_tag)
-        zero_grad_auto[Self, target](self)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the Param fields).

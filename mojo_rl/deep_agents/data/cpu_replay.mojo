@@ -18,7 +18,6 @@ that pre-date the trait. `ctx` args are ignored (CPU-only).
 `CPUReplay[3, 1, 50000]` for Pendulum.
 """
 
-from std.memory import alloc
 from std.random import random_float64
 from std.gpu.host import DeviceContext
 
@@ -26,28 +25,39 @@ from mojo_rl.nn.constants import DT
 from ..training.replay_buffer import ReplayBuffer
 from ..training.trainer_block import TrainerState
 
+
 @fieldwise_init
 struct CPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime CAP = Self.CAP_
 
-    var obs: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var act: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var rew: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var nxt: UnsafePointer[Scalar[DT], MutAnyOrigin]
-    var dne: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    # Owning RAII `List` rings (host-indexed only). Replaces the raw `alloc`'d
+    # `MutUntrackedOrigin` pointers, which — with no `__del__` and a trait that
+    # is `ImplicitlyDeletable` — were never freed (a genuine leak). `List`
+    # destruction frees them automatically.
+    var obs: List[Scalar[DT]]
+    var act: List[Scalar[DT]]
+    var rew: List[Scalar[DT]]
+    var nxt: List[Scalar[DT]]
+    var dne: List[Scalar[DT]]
     var size: Int
     var pos: Int
 
     @staticmethod
     def new() -> Self:
         return Self(
-            obs=alloc[Scalar[DT]](Self.CAP * Self.OBS),
-            act=alloc[Scalar[DT]](Self.CAP * Self.ACT),
-            rew=alloc[Scalar[DT]](Self.CAP),
-            nxt=alloc[Scalar[DT]](Self.CAP * Self.OBS),
-            dne=alloc[Scalar[DT]](Self.CAP),
+            obs=List[Scalar[DT]](
+                length=Self.CAP * Self.OBS, fill=Scalar[DT](0)
+            ),
+            act=List[Scalar[DT]](
+                length=Self.CAP * Self.ACT, fill=Scalar[DT](0)
+            ),
+            rew=List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0)),
+            nxt=List[Scalar[DT]](
+                length=Self.CAP * Self.OBS, fill=Scalar[DT](0)
+            ),
+            dne=List[Scalar[DT]](length=Self.CAP, fill=Scalar[DT](0)),
             size=0,
             pos=0,
         )
@@ -85,38 +95,45 @@ struct CPUReplay[OBS_: Int, ACT_: Int, CAP_: Int](ReplayBuffer):
     def sample(
         mut self,
         n: Int,
-        s_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        a_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        r_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        sp_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        d_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut s_out: List[Scalar[DT]],
+        mut a_out: List[Scalar[DT]],
+        mut r_out: List[Scalar[DT]],
+        mut sp_out: List[Scalar[DT]],
+        mut d_out: List[Scalar[DT]],
+        row_offset: Int = 0,
     ):
-        """Uniform random sampling with replacement, n items."""
+        """Uniform random sampling with replacement, n items.
+
+        `row_offset` writes the n drawn rows starting at logical row
+        `row_offset` of the output lists, so a dual real+synth buffer can
+        stack both partitions into one minibatch without pointer
+        arithmetic (real with `row_offset=0`, synth with
+        `row_offset=REAL_BS`). Default 0 == fill from the top."""
         for k in range(n):
             var idx = Int(random_float64() * Float64(self.size))
             if idx >= self.size:
                 idx = self.size - 1
+            var row = row_offset + k
             for i in range(Self.OBS):
-                s_out[k * Self.OBS + i] = self.obs[idx * Self.OBS + i]
-                sp_out[k * Self.OBS + i] = self.nxt[idx * Self.OBS + i]
+                s_out[row * Self.OBS + i] = self.obs[idx * Self.OBS + i]
+                sp_out[row * Self.OBS + i] = self.nxt[idx * Self.OBS + i]
             for j in range(Self.ACT):
-                a_out[k * Self.ACT + j] = self.act[idx * Self.ACT + j]
-            r_out[k] = self.rew[idx]
-            d_out[k] = self.dne[idx]
+                a_out[row * Self.ACT + j] = self.act[idx * Self.ACT + j]
+            r_out[row] = self.rew[idx]
+            d_out[row] = self.dne[idx]
 
-    def sample_into[BATCH: Int](
-        mut self,
-        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
-    ) raises:
+    def sample_into[
+        BATCH: Int
+    ](mut self, mut state: TrainerState[Self.OBS, Self.ACT, BATCH],) raises:
         """Trait-surface sampling: write a uniform minibatch into the
-        host mirrors of `state.mb_*`."""
+        host `data` lists of `state.mb_*`."""
         self.sample(
             BATCH,
-            state.mb_s.cpu_ptr(),
-            state.mb_a.cpu_ptr(),
-            state.mb_r.cpu_ptr(),
-            state.mb_sp.cpu_ptr(),
-            state.mb_d.cpu_ptr(),
+            state.mb_s.data,
+            state.mb_a.data,
+            state.mb_r.data,
+            state.mb_sp.data,
+            state.mb_d.data,
         )
 
     def count(self) -> Int:

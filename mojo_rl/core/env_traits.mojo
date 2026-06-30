@@ -40,7 +40,13 @@ Algorithms specify requirements:
 from .env import Env
 from layout import LayoutTensor, Layout
 from mojo_rl.nn.constants import DT as dtype
-from std.gpu import DeviceContext, DeviceBuffer, block_dim, block_idx, thread_idx
+from std.gpu import (
+    DeviceContext,
+    DeviceBuffer,
+    block_dim,
+    block_idx,
+    thread_idx,
+)
 from std.memory import UnsafePointer
 
 
@@ -432,8 +438,12 @@ trait GPUDiscreteEnv:
         mut terminated: DeviceBuffer[dtype],
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
-        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Perform one environment step and extract observations.
 
@@ -484,8 +494,12 @@ trait GPUDiscreteEnv:
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
-        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Reset only done environments to random initial values.
 
@@ -561,13 +575,11 @@ trait GPUDiscreteEnv:
         var states_t = LayoutTensor[
             dtype,
             Layout.row_major(BATCH_SIZE * STATE_SIZE),
-            MutAnyOrigin,
-        ](states.unsafe_ptr())
+        ](states)
         var obs_t = LayoutTensor[
             dtype,
             Layout.row_major(BATCH_SIZE * OBS_DIM),
-            MutAnyOrigin,
-        ](obs.unsafe_ptr())
+        ](obs)
 
         comptime TPB = 256
         comptime BLOCKS = (BATCH_SIZE + TPB - 1) // TPB
@@ -637,8 +649,12 @@ trait GPUContinuousEnv:
         mut obs: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
         curriculum_values: List[Scalar[dtype]] = [],
-        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Perform one environment step with continuous actions.
 
@@ -691,8 +707,12 @@ trait GPUContinuousEnv:
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
-        workspace_ptr: Optional[UnsafePointer[Scalar[dtype], MutAnyOrigin]] = None,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        workspace_ptr: Optional[
+            UnsafePointer[Scalar[dtype], MutAnyOrigin]
+        ] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Reset only done environments to random initial values.
 
@@ -935,7 +955,9 @@ trait GPUTwoPlayerDiscreteEnv:
         mut obs: DeviceBuffer[dtype],
         mut legal_masks: DeviceBuffer[dtype],
         rng_seed: UInt64 = 0,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Perform one environment step for all games in batch.
 
@@ -980,7 +1002,9 @@ trait GPUTwoPlayerDiscreteEnv:
         mut states: DeviceBuffer[dtype],
         mut dones: DeviceBuffer[dtype],
         rng_seed: UInt64,
-        rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
+        rng_counter_ptr: Optional[
+            UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]
+        ] = None,
     ) raises:
         """Reset only finished games.
 
@@ -1035,16 +1059,11 @@ trait Saveable:
     comptime SAVE_SIZE: Int
     """Size of the state array to save/restore."""
 
-    def save_env_state(
-        self,
-        dst: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    ):
-        """Copy current state to output buffer [SAVE_SIZE]."""
+    def save_env_state(self, mut dst: List[Scalar[dtype]]):
+        """Copy current state into `dst[0:SAVE_SIZE]` (caller pre-sizes `dst`
+        to >= SAVE_SIZE). Owned `List` — no raw pointer, no manual free."""
         ...
 
-    def load_env_state(
-        mut self,
-        data: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    ):
-        """Restore state from buffer [SAVE_SIZE]."""
+    def load_env_state(mut self, src: List[Scalar[dtype]]):
+        """Restore state from `src[0:SAVE_SIZE]`."""
         ...

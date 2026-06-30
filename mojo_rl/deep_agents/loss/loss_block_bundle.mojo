@@ -1,59 +1,36 @@
 """LossBlockBundle[*BLOCKS: LossBlock] — variadic container (Block E-3).
 
-Parallel to `OptimizerBundle` for loss blocks. Trainers with multiple
-loss blocks collapse N parallel fields + N parallel makes into one
-bundle field.
+Trainers with multiple loss blocks collapse N parallel fields + N parallel
+makes into one bundle field. The bundle does NOT dispatch `step` (signatures
+vary per block) — it exists for storage consolidation + lifecycle uniformity.
 
-Usage (DreamerV3 example, illustrative):
-
-    comptime Blocks = LossBlockBundle[
-        WorldModelLoss[...],
-        RewardHeadLoss[...],
-        DoneHeadLoss[...],
-        ActorLoss[...],
-        CriticLoss[...],
-    ]
-    var blocks = Blocks.make_default["cpu"]()
-    blocks.items[0] = WorldModelLoss[...].make["cpu"](...)
-    blocks.items[1] = RewardHeadLoss[...].make["cpu"](...)
-    # ...
-    # Domain-specific step calls at the trainer level:
-    blocks.items[0].step["cpu", OPT=Adam](world_model, ws_opt, mb_seq, ...)
-
-The bundle does not dispatch `step` itself (signatures vary per block).
-It exists for storage consolidation + lifecycle uniformity.
+STORAGE migration (Stage 5): the legacy `TargetStorage` tag/ctx is dropped — in
+the storage design `target` is a comptime parameter everywhere and each loss
+block carries its own device state, so the bundle is a plain owning `Tuple`.
+`make_default[target]` (CPU) / `make_default[target](ctx)` (GPU) kept for call-
+site parity; the caller assigns real per-instance blocks into `items[i]`.
 """
 
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
 from .loss_block import LossBlock
 
 
 struct LossBlockBundle[*BLOCKS: LossBlock](
-    Defaultable & Movable & ImplicitlyDestructible
+    Defaultable & Movable & ImplicitlyDeletable
 ):
     comptime N = Self.BLOCKS.size
 
     var items: Tuple[*Self.BLOCKS]
-    var ts: TargetStorage
 
     def __init__(out self):
         comptime assert Self.N >= 1, "LossBlockBundle: at least one block"
         self.items = Tuple[*Self.BLOCKS]()
-        self.ts = TargetStorage.make_uninit()
 
     def __init__(out self, var *blocks: *Self.BLOCKS):
-        """Variadic consume — accepts pre-built loss blocks (CPU)."""
+        """Variadic consume — accepts pre-built loss blocks."""
         comptime assert Self.N >= 1, "LossBlockBundle: at least one block"
         self.items = Tuple(*blocks^)
-        self.ts = TargetStorage.make_cpu()
-
-    def __init__(out self, ctx: DeviceContext, var *blocks: *Self.BLOCKS) raises:
-        """GPU constructor — bundle tag set to gpu + ctx stored."""
-        comptime assert Self.N >= 1, "LossBlockBundle: at least one block"
-        self.items = Tuple(*blocks^)
-        self.ts = TargetStorage.make_gpu(ctx)
 
     @staticmethod
     def make_default[target: StaticString]() raises -> Self:
@@ -62,16 +39,13 @@ struct LossBlockBundle[*BLOCKS: LossBlock](
         comptime assert target == "cpu", (
             "LossBlockBundle.make_default[target='gpu'] requires a DeviceContext"
         )
-        var b = Self()
-        b.ts = TargetStorage.make_cpu()
-        return b^
+        return Self()
 
     @staticmethod
     def make_default[target: StaticString](ctx: DeviceContext) raises -> Self:
-        """GPU factory: default-init each block + record ctx."""
+        """GPU factory: default-init each block. `ctx` unused (each block owns
+        its device state via its own make[gpu]); kept for call-site parity."""
         comptime assert target == "gpu", (
             "LossBlockBundle.make_default[target='cpu'](ctx) — drop ctx for CPU"
         )
-        var b = Self()
-        b.ts = TargetStorage.make_gpu(ctx)
-        return b^
+        return Self()

@@ -677,7 +677,7 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
     comptime TPB: Int = 256
 
     var inner: CraftaxFullEnv[Self.DTYPE]
-    var _atlas: UnsafePointer[Float32, MutAnyOrigin]
+    var _atlas: UnsafePointer[Float32, MutUntrackedOrigin]
     var _atlas_loaded: Bool
 
     def __init__(out self):
@@ -723,7 +723,15 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
         for h in range(OBS_PIX_H):
             for w in range(OBS_PIX_W):
                 var rgb = _render_pixel_rgb(
-                    state_ptr, atlas, floor, py, px, bossv, ladder, h, w,
+                    state_ptr,
+                    atlas.as_unsafe_any_origin(),
+                    floor,
+                    py,
+                    px,
+                    bossv,
+                    ladder,
+                    h,
+                    w,
                 )
                 obs[0 * HW + h * OBS_PIX_W + w] = Scalar[Self.DTYPE](rgb[0])
                 obs[1 * HW + h * OBS_PIX_W + w] = Scalar[Self.DTYPE](rgb[1])
@@ -960,7 +968,7 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
         host.free()
 
         Self._render_kernel[BATCH_SIZE, STATE_SIZE](
-            ctx, states_buf, atlas_buf.unsafe_ptr(), obs_buf,
+            ctx, states_buf, atlas_buf.unsafe_ptr().as_unsafe_any_origin(), obs_buf,
         )
 
     @staticmethod
@@ -1049,5 +1057,5 @@ struct CraftaxFullPixelEnv[DTYPE: DType = DType.float32](
             ctx.synchronize()
             host.free()
             Self._render_kernel[BATCH_SIZE, STATE_SIZE](
-                ctx, states_buf, atlas_buf.unsafe_ptr(), obs_buf,
+                ctx, states_buf, atlas_buf.unsafe_ptr().as_unsafe_any_origin(), obs_buf,
             )

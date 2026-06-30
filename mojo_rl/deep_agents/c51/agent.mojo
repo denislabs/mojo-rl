@@ -47,7 +47,7 @@ struct C51Agent[
     N_ATOMS: Int = 51,
     NUM_ACTIONS: Int = 2,
     DOUBLE: Bool = False,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Thin facade over `C51Trainer` + discrete off-policy drivers."""
 
     var trainer: C51Trainer[
@@ -176,7 +176,7 @@ struct C51Agent[
         N_ENVS: Int,
         NS: Int = 1,
         L: Logger = NoOpLogger,
-        USE_TRAIN_CUDA_GRAPH: Bool = True,
+        USE_TRAIN_CUDA_GRAPH: Bool = False,
     ](
         mut self,
         mut env: E,

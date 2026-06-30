@@ -43,7 +43,7 @@ from ..core.online_target_pair import OnlineTargetPair
 
 
 struct CriticEnsemble[CRITIC: Module, N: Int](
-    Movable & ImplicitlyDestructible,
+    Movable & ImplicitlyDeletable,
 ):
     var pairs: List[OnlineTargetPair[Self.CRITIC]]
     var opts: List[Adam]
@@ -77,7 +77,11 @@ struct CriticEnsemble[CRITIC: Module, N: Int](
         var e = Self()
         for _ in range(Self.N):
             var pair = OnlineTargetPair[Self.CRITIC].make[target, INIT](ctx)
-            var opt = Adam.make[target, M=Self.CRITIC](pair.online, ctx=ctx)
+            # Storage Adam: `Adam(lr)` + `adopt[target, M]` (no-op on CPU, arena
+            # mode on GPU). Mirrors how SAC/DDPG build their critic opts.
+            var opt = Adam(lr=Scalar[DT](1e-3))
+            comptime if target == "gpu":
+                opt.adopt[target, M=Self.CRITIC](pair.online, ctx)
             e.pairs.append(pair^)
             e.opts.append(opt^)
         return e^

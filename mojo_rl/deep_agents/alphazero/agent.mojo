@@ -23,16 +23,8 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.core.checkpoint import (
-    save_state_v2_body_gpu,
-    load_state_v2_body_gpu,
-)
-from mojo_rl.deep_agents.core.checkpoint_helpers import (
-    split_lines_v2,
-    read_file_v2,
-    expect_v2_header,
-)
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.core.checkpoint import save_params, load_params
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.core.logger import Logger, NoOpLogger
@@ -57,7 +49,7 @@ from .eval import (
 @fieldwise_init
 struct AlphaZeroAgent[
     TARGET: StaticString,
-    ENV: GPUTwoPlayerDiscreteEnv & TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: GPUTwoPlayerDiscreteEnv & TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NET: Module,
     N_ENVS: Int,
     NUM_SIMS: Int,
@@ -65,7 +57,7 @@ struct AlphaZeroAgent[
     BATCH: Int,
     CAP: Int,
     MAX_TRAJ: Int,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     var ctx: Optional[DeviceContext]
     var net: Self.NET
     var lr: Scalar[DT]
@@ -76,7 +68,7 @@ struct AlphaZeroAgent[
         lr: Scalar[DT] = Scalar[DT](0.01),
     ) raises:
         self.ctx = ctx
-        self.net = Self.NET.make[Self.TARGET, INIT=Kaiming](ctx=ctx)
+        self.net = Self.NET.make[Self.TARGET, Kaiming](ctx)
         self.lr = lr
 
     def train_gumbel[
@@ -430,19 +422,14 @@ struct AlphaZeroAgent[
         optimizer state to checkpoint; this is the inference / self-play
         artifact, not a training-resume checkpoint. Self-play buffers are
         not included."""
-        var body = String("")
-        save_state_v2_body_gpu(self.net, body, String("net"), self.ctx.value())
-        var content = String("nn-ckpt v2\n") + body
-        with open(path, "w") as f:
-            f.write(content)
+        # Weights-only (no optimizer moments) via the storage checkpoint, which
+        # walks `for_each_param` then `for_each_state` (so BatchNorm running
+        # stats persist) and owns the file I/O.
+        save_params[Self.TARGET, Self.NET](
+            self.net, path, self.ctx, save_moments=False
+        )
 
     def load(mut self, path: String) raises:
         """Inverse of `save` — restores the net weights. See `save` for why
         optimizer state is not part of the checkpoint."""
-        var content = read_file_v2(path)
-        var lines = split_lines_v2(content)
-        expect_v2_header(lines)
-        var idx = 1
-        load_state_v2_body_gpu(
-            self.net, lines, idx, String("net"), self.ctx.value()
-        )
+        load_params[Self.TARGET, Self.NET](self.net, path, self.ctx)

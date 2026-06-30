@@ -53,9 +53,7 @@ from ..training.replay_buffer import ReplayBuffer
 
 
 @fieldwise_init
-struct NStepTransition[OBS: Int, ACT: Int](
-    Movable & ImplicitlyDestructible
-):
+struct NStepTransition[OBS: Int, ACT: Int](Movable & ImplicitlyDeletable):
     """Compressed n-step transition returned by `NStepBuffer.add`.
 
     `valid=False` means the buffer accumulated but didn't emit (ring
@@ -93,9 +91,7 @@ struct NStepTransition[OBS: Int, ACT: Int](
 
 
 @fieldwise_init
-struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
-    Movable & ImplicitlyDestructible
-):
+struct NStepBuffer[N: Int, OBS: Int, ACT: Int](Movable & ImplicitlyDeletable):
     """CPU streaming n-step buffer for a single env.
 
     Accumulates up to `N` transitions; on emit (ring full or `done`),
@@ -108,7 +104,7 @@ struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
     `count` tracks current ring fill (0..N).
     """
 
-    var obs: List[Scalar[DT]]      # [N * OBS]
+    var obs: List[Scalar[DT]]  # [N * OBS]
     var actions: List[Scalar[DT]]  # [N * ACT]
     var rewards: List[Scalar[DT]]  # [N]
     var gamma: Scalar[DT]
@@ -118,13 +114,16 @@ struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
     def new(gamma: Scalar[DT] = Scalar[DT](0.99)) -> Self:
         return Self(
             obs=List[Scalar[DT]](
-                length=Self.N * Self.OBS, fill=Scalar[DT](0.0),
+                length=Self.N * Self.OBS,
+                fill=Scalar[DT](0.0),
             ),
             actions=List[Scalar[DT]](
-                length=Self.N * Self.ACT, fill=Scalar[DT](0.0),
+                length=Self.N * Self.ACT,
+                fill=Scalar[DT](0.0),
             ),
             rewards=List[Scalar[DT]](
-                length=Self.N, fill=Scalar[DT](0.0),
+                length=Self.N,
+                fill=Scalar[DT](0.0),
             ),
             gamma=gamma,
             count=0,
@@ -141,13 +140,11 @@ struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
         """Drop the oldest slot, shift everything left by one."""
         for i in range(Self.N - 1):
             for d in range(Self.OBS):
-                self.obs[i * Self.OBS + d] = (
-                    self.obs[(i + 1) * Self.OBS + d]
-                )
+                self.obs[i * Self.OBS + d] = self.obs[(i + 1) * Self.OBS + d]
             for j in range(Self.ACT):
-                self.actions[i * Self.ACT + j] = (
-                    self.actions[(i + 1) * Self.ACT + j]
-                )
+                self.actions[i * Self.ACT + j] = self.actions[
+                    (i + 1) * Self.ACT + j
+                ]
             self.rewards[i] = self.rewards[i + 1]
 
     def add(
@@ -179,19 +176,13 @@ struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
 
         if done or c == Self.N:
             var r_n = self._compute_return(c)
-            var s0 = List[Scalar[DT]](
-                length=Self.OBS, fill=Scalar[DT](0.0)
-            )
-            var a0 = List[Scalar[DT]](
-                length=Self.ACT, fill=Scalar[DT](0.0)
-            )
+            var s0 = List[Scalar[DT]](length=Self.OBS, fill=Scalar[DT](0.0))
+            var a0 = List[Scalar[DT]](length=Self.ACT, fill=Scalar[DT](0.0))
             for d in range(Self.OBS):
                 s0[d] = self.obs[d]
             for j in range(Self.ACT):
                 a0[j] = self.actions[j]
-            var sn = List[Scalar[DT]](
-                length=Self.OBS, fill=Scalar[DT](0.0)
-            )
+            var sn = List[Scalar[DT]](length=Self.OBS, fill=Scalar[DT](0.0))
             for d in range(Self.OBS):
                 sn[d] = next_obs_p[d]
 
@@ -203,8 +194,11 @@ struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
 
             return NStepTransition[Self.OBS, Self.ACT](
                 valid=True,
-                obs=s0^, action=a0^, reward=r_n,
-                next_obs=sn^, done=done,
+                obs=s0^,
+                action=a0^,
+                reward=r_n,
+                next_obs=sn^,
+                done=done,
             )
         return NStepTransition[Self.OBS, Self.ACT].empty()
 
@@ -221,31 +215,48 @@ struct NStepBuffer[N: Int, OBS: Int, ACT: Int](
 
 
 def _nstep_decide_kernel[
-    N_ENVS: Int, N: Int,
+    N_ENVS: Int,
+    N: Int,
 ](
     in_rew: LayoutTensor[
-        DT, Layout.row_major(N_ENVS), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS),
+        MutAnyOrigin,
     ],
     in_done: LayoutTensor[
-        DT, Layout.row_major(N_ENVS), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS),
+        MutAnyOrigin,
     ],
     ring_rew: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, N), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, N),
+        MutAnyOrigin,
     ],
     counts: LayoutTensor[
-        DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin,
+        DType.int32,
+        Layout.row_major(N_ENVS),
+        MutAnyOrigin,
     ],
     out_rew: LayoutTensor[
-        DT, Layout.row_major(N_ENVS), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS),
+        MutAnyOrigin,
     ],
     out_done: LayoutTensor[
-        DT, Layout.row_major(N_ENVS), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS),
+        MutAnyOrigin,
     ],
     out_valid: LayoutTensor[
-        DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin,
+        DType.int32,
+        Layout.row_major(N_ENVS),
+        MutAnyOrigin,
     ],
     proc_slot: LayoutTensor[
-        DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin,
+        DType.int32,
+        Layout.row_major(N_ENVS),
+        MutAnyOrigin,
     ],
     gamma: Scalar[DT],
 ):
@@ -277,9 +288,7 @@ def _nstep_decide_kernel[
         for i in range(newc - 1, -1, -1):
             r_n = r_n * gamma + rebind[Scalar[DT]](ring_rew[e, i])
         out_rew[e] = r_n
-        out_done[e] = (
-            Scalar[DT](1.0) if is_done else Scalar[DT](0.0)
-        )
+        out_done[e] = Scalar[DT](1.0) if is_done else Scalar[DT](0.0)
         out_valid[e] = Int32(1)
 
         if is_done:
@@ -294,37 +303,60 @@ def _nstep_decide_kernel[
 
 
 def _nstep_copy_kernel[
-    N_ENVS: Int, N: Int, OBS: Int, ACT: Int,
+    N_ENVS: Int,
+    N: Int,
+    OBS: Int,
+    ACT: Int,
 ](
     in_obs: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, OBS),
+        MutAnyOrigin,
     ],
     in_act: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, ACT),
+        MutAnyOrigin,
     ],
     in_nobs: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, OBS),
+        MutAnyOrigin,
     ],
     in_done: LayoutTensor[
-        DT, Layout.row_major(N_ENVS), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS),
+        MutAnyOrigin,
     ],
     ring_obs: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, N * OBS), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, N * OBS),
+        MutAnyOrigin,
     ],
     ring_act: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, N * ACT), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, N * ACT),
+        MutAnyOrigin,
     ],
     out_obs: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, OBS),
+        MutAnyOrigin,
     ],
     out_act: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, ACT),
+        MutAnyOrigin,
     ],
     out_nobs: LayoutTensor[
-        DT, Layout.row_major(N_ENVS, OBS), MutAnyOrigin,
+        DT,
+        Layout.row_major(N_ENVS, OBS),
+        MutAnyOrigin,
     ],
     proc_slot: LayoutTensor[
-        DType.int32, Layout.row_major(N_ENVS), MutAnyOrigin,
+        DType.int32,
+        Layout.row_major(N_ENVS),
+        MutAnyOrigin,
     ],
 ):
     """Phase 2 of the n-step process split — element-parallel over
@@ -367,18 +399,18 @@ def _nstep_copy_kernel[
 
         if not is_done:
             for i in range(N - 1):
-                ring_obs[e, i * OBS + d] = (
-                    rebind[Scalar[DT]](ring_obs[e, (i + 1) * OBS + d])
+                ring_obs[e, i * OBS + d] = rebind[Scalar[DT]](
+                    ring_obs[e, (i + 1) * OBS + d]
                 )
                 if d < ACT:
-                    ring_act[e, i * ACT + d] = (
-                        rebind[Scalar[DT]](ring_act[e, (i + 1) * ACT + d])
+                    ring_act[e, i * ACT + d] = rebind[Scalar[DT]](
+                        ring_act[e, (i + 1) * ACT + d]
                     )
 
 
 @fieldwise_init
 struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
-    Movable & ImplicitlyDestructible
+    Movable & ImplicitlyDeletable
 ):
     """GPU per-env streaming n-step buffer for `N_ENVS` parallel envs.
 
@@ -441,16 +473,10 @@ struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
         counts.enqueue_fill(Int32(0))
         proc_slot.enqueue_fill(Int32(0))
 
-        var out_obs = ctx.enqueue_create_buffer[DT](
-            Self.N_ENVS * Self.OBS
-        )
-        var out_act = ctx.enqueue_create_buffer[DT](
-            Self.N_ENVS * Self.ACT
-        )
+        var out_obs = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.OBS)
+        var out_act = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.ACT)
         var out_rew = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
-        var out_nobs = ctx.enqueue_create_buffer[DT](
-            Self.N_ENVS * Self.OBS
-        )
+        var out_nobs = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.OBS)
         var out_done = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
         var out_valid = ctx.enqueue_create_buffer[DType.int32](Self.N_ENVS)
         out_obs.enqueue_fill(Scalar[DT](0.0))
@@ -461,10 +487,17 @@ struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
         out_valid.enqueue_fill(Int32(0))
 
         return Self(
-            ring_obs=ring_obs^, ring_act=ring_act^, ring_rew=ring_rew^,
-            counts=counts^, proc_slot=proc_slot^,
-            out_obs=out_obs^, out_act=out_act^, out_rew=out_rew^,
-            out_nobs=out_nobs^, out_done=out_done^, out_valid=out_valid^,
+            ring_obs=ring_obs^,
+            ring_act=ring_act^,
+            ring_rew=ring_rew^,
+            counts=counts^,
+            proc_slot=proc_slot^,
+            out_obs=out_obs^,
+            out_act=out_act^,
+            out_rew=out_rew^,
+            out_nobs=out_nobs^,
+            out_done=out_done^,
+            out_valid=out_valid^,
             gamma=gamma,
         )
 
@@ -480,60 +513,112 @@ struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
         """One kernel: ring update + emit decision for all N_ENVS envs.
         Outputs land in the internal `out_*` device buffers;
         `out_valid[e]` is 1 if env `e` emitted this call."""
-        var in_obs_lt = LayoutTensor[
-            DT, Layout.row_major(Self.N_ENVS, Self.OBS), MutAnyOrigin,
-        ](obs.unsafe_ptr())
-        var in_act_lt = LayoutTensor[
-            DT, Layout.row_major(Self.N_ENVS, Self.ACT), MutAnyOrigin,
-        ](act.unsafe_ptr())
-        var in_rew_lt = LayoutTensor[
-            DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin,
-        ](rew.unsafe_ptr())
-        var in_nobs_lt = LayoutTensor[
-            DT, Layout.row_major(Self.N_ENVS, Self.OBS), MutAnyOrigin,
-        ](nobs.unsafe_ptr())
-        var in_done_lt = LayoutTensor[
-            DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin,
-        ](done.unsafe_ptr())
+        var in_obs_lt = rebind[
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.OBS),
+                MutAnyOrigin,
+            ]
+        ](
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.OBS),
+            ](obs)
+        )
+        var in_act_lt = rebind[
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.ACT),
+                MutAnyOrigin,
+            ]
+        ](
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.ACT),
+            ](act)
+        )
+        var in_rew_lt = rebind[
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS),
+                MutAnyOrigin,
+            ]
+        ](
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS),
+            ](rew)
+        )
+        var in_nobs_lt = rebind[
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.OBS),
+                MutAnyOrigin,
+            ]
+        ](
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS, Self.OBS),
+            ](nobs)
+        )
+        var in_done_lt = rebind[
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS),
+                MutAnyOrigin,
+            ]
+        ](
+            LayoutTensor[
+                DT,
+                Layout.row_major(Self.N_ENVS),
+            ](done)
+        )
 
         var ring_obs_lt = LayoutTensor[
             DT,
             Layout.row_major(Self.N_ENVS, Self.N * Self.OBS),
-            MutAnyOrigin,
-        ](self.ring_obs.unsafe_ptr())
+        ](self.ring_obs)
         var ring_act_lt = LayoutTensor[
             DT,
             Layout.row_major(Self.N_ENVS, Self.N * Self.ACT),
-            MutAnyOrigin,
-        ](self.ring_act.unsafe_ptr())
+        ](self.ring_act)
         var ring_rew_lt = LayoutTensor[
-            DT, Layout.row_major(Self.N_ENVS, Self.N), MutAnyOrigin,
-        ](self.ring_rew.unsafe_ptr())
+            DT,
+            Layout.row_major(Self.N_ENVS, Self.N),
+        ](self.ring_rew)
         var counts_lt = LayoutTensor[
-            DType.int32, Layout.row_major(Self.N_ENVS), MutAnyOrigin,
-        ](self.counts.unsafe_ptr())
+            DType.int32,
+            Layout.row_major(Self.N_ENVS),
+        ](self.counts)
 
         var out_obs_lt = LayoutTensor[
-            DT, Layout.row_major(Self.N_ENVS, Self.OBS), MutAnyOrigin,
-        ](self.out_obs.unsafe_ptr())
+            DT,
+            Layout.row_major(Self.N_ENVS, Self.OBS),
+        ](self.out_obs)
         var out_act_lt = LayoutTensor[
-            DT, Layout.row_major(Self.N_ENVS, Self.ACT), MutAnyOrigin,
-        ](self.out_act.unsafe_ptr())
+            DT,
+            Layout.row_major(Self.N_ENVS, Self.ACT),
+        ](self.out_act)
         var out_rew_lt = LayoutTensor[
-            DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin,
-        ](self.out_rew.unsafe_ptr())
+            DT,
+            Layout.row_major(Self.N_ENVS),
+        ](self.out_rew)
         var out_nobs_lt = LayoutTensor[
-            DT, Layout.row_major(Self.N_ENVS, Self.OBS), MutAnyOrigin,
-        ](self.out_nobs.unsafe_ptr())
+            DT,
+            Layout.row_major(Self.N_ENVS, Self.OBS),
+        ](self.out_nobs)
         var out_done_lt = LayoutTensor[
-            DT, Layout.row_major(Self.N_ENVS), MutAnyOrigin,
-        ](self.out_done.unsafe_ptr())
+            DT,
+            Layout.row_major(Self.N_ENVS),
+        ](self.out_done)
         var out_valid_lt = LayoutTensor[
-            DType.int32, Layout.row_major(Self.N_ENVS), MutAnyOrigin,
-        ](self.out_valid.unsafe_ptr())
+            DType.int32,
+            Layout.row_major(Self.N_ENVS),
+        ](self.out_valid)
         var proc_slot_lt = LayoutTensor[
-            DType.int32, Layout.row_major(Self.N_ENVS), MutAnyOrigin,
-        ](self.proc_slot.unsafe_ptr())
+            DType.int32,
+            Layout.row_major(Self.N_ENVS),
+        ](self.proc_slot)
 
         # Phase 1 — decide (one thread per env): rew ring + emit decision +
         # counts, publishing the append slot into proc_slot. Must precede
@@ -541,33 +626,47 @@ struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
         comptime n_blocks_decide = (Self.N_ENVS + TPB - 1) // TPB
         comptime decide_kernel = _nstep_decide_kernel[Self.N_ENVS, Self.N]
         ctx.enqueue_function[decide_kernel](
-            in_rew_lt, in_done_lt, ring_rew_lt, counts_lt,
-            out_rew_lt, out_done_lt, out_valid_lt, proc_slot_lt,
+            in_rew_lt,
+            in_done_lt,
+            ring_rew_lt,
+            counts_lt,
+            out_rew_lt,
+            out_done_lt,
+            out_valid_lt,
+            proc_slot_lt,
             self.gamma,
-            grid_dim=n_blocks_decide, block_dim=TPB,
+            grid_dim=n_blocks_decide,
+            block_dim=TPB,
         )
 
         # Phase 2 — copy (element-parallel over N_ENVS × OBS): obs/act ring
         # append + emit copies + in-place shift, each (e, d) thread owning
         # its ring column.
-        comptime n_blocks_copy = (
-            Self.N_ENVS * Self.OBS + TPB - 1
-        ) // TPB
+        comptime n_blocks_copy = (Self.N_ENVS * Self.OBS + TPB - 1) // TPB
         comptime copy_kernel = _nstep_copy_kernel[
-            Self.N_ENVS, Self.N, Self.OBS, Self.ACT,
+            Self.N_ENVS,
+            Self.N,
+            Self.OBS,
+            Self.ACT,
         ]
         ctx.enqueue_function[copy_kernel](
-            in_obs_lt, in_act_lt, in_nobs_lt, in_done_lt,
-            ring_obs_lt, ring_act_lt,
-            out_obs_lt, out_act_lt, out_nobs_lt, proc_slot_lt,
-            grid_dim=n_blocks_copy, block_dim=TPB,
+            in_obs_lt,
+            in_act_lt,
+            in_nobs_lt,
+            in_done_lt,
+            ring_obs_lt,
+            ring_act_lt,
+            out_obs_lt,
+            out_act_lt,
+            out_nobs_lt,
+            proc_slot_lt,
+            grid_dim=n_blocks_copy,
+            block_dim=TPB,
         )
 
-    def store_into[S: ReplayBuffer](
-        self,
-        ctx: DeviceContext,
-        mut buf: S,
-    ) raises:
+    def store_into[
+        S: ReplayBuffer
+    ](self, ctx: DeviceContext, mut buf: S,) raises:
         """Blind-store all N_ENVS slots into any device-backed
         `ReplayBuffer` via its `add_batch[N_ENVS]`. Invalid slots
         (`out_valid[e] == 0`) contain zero-padded data and get
@@ -586,8 +685,11 @@ struct GPUNStepBuffer[N: Int, OBS: Int, ACT: Int, N_ENVS: Int](
         ), "store_into: buffer OBS/ACT must match the n-step buffer's"
         buf.add_batch[Self.N_ENVS](
             ctx,
-            self.out_obs, self.out_act, self.out_rew,
-            self.out_nobs, self.out_done,
+            self.out_obs,
+            self.out_act,
+            self.out_rew,
+            self.out_nobs,
+            self.out_done,
         )
 
     def reset(mut self, ctx: DeviceContext) raises:

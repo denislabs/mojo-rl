@@ -524,3 +524,222 @@ def save_vector_comparison(
         "Vector comparison saved: " + path + " (" + String(n)
         + " pairs, dim=" + String(dim) + ")"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# save_frame_sequence_gif — animated GIF89a from a grayscale frame sequence
+#
+# Pure Mojo, zero dependencies (no Python imageio, no SDL). GIF is palette-
+# indexed; grayscale frames map 1:1 onto a fixed 256-entry gray global palette
+# so there is NO color quantization — only LZW compression. Useful for
+# visualizing world-model imagination rollouts, reconstruction sequences, or any
+# grayscale frame animation. Compose multi-panel frames (e.g. real|recon|imag)
+# host-side into one wide grayscale image per step, then pass the sequence here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _put_u16_le(mut buf: List[UInt8], v: Int):
+    buf.append(UInt8(v & 0xFF))
+    buf.append(UInt8((v >> 8) & 0xFF))
+
+
+struct _GifBitWriter(Movable):
+    """LSB-first variable-width bit packer for GIF LZW code streams."""
+
+    var out: List[UInt8]
+    var bitbuf: Int
+    var bitcnt: Int
+
+    def __init__(out self):
+        self.out = List[UInt8]()
+        self.bitbuf = 0
+        self.bitcnt = 0
+
+    def write(mut self, code: Int, size: Int):
+        self.bitbuf |= code << self.bitcnt
+        self.bitcnt += size
+        while self.bitcnt >= 8:
+            self.out.append(UInt8(self.bitbuf & 0xFF))
+            self.bitbuf >>= 8
+            self.bitcnt -= 8
+
+    def flush(mut self):
+        if self.bitcnt > 0:
+            self.out.append(UInt8(self.bitbuf & 0xFF))
+            self.bitbuf = 0
+            self.bitcnt = 0
+
+    def take(deinit self) -> List[UInt8]:
+        return self.out^
+
+
+def _lzw_encode_gif(indices: List[UInt8], min_code_size: Int) -> List[UInt8]:
+    """GIF-variant LZW. Returns the raw code stream (pre sub-block packing).
+
+    Dictionary keyed by (prefix_code << 8 | next_byte) → code. Codes 0..2^k-1 are
+    the literal bytes; `clear = 2^k`, `end = clear + 1`. Width grows from k+1 up
+    to 12 bits, resetting (clear code) when the table fills (4096 entries).
+    """
+    var clear = 1 << min_code_size
+    var end = clear + 1
+    var code_size = min_code_size + 1
+    var next_code = end + 1
+    var dict = Dict[Int, Int]()
+
+    var bw = _GifBitWriter()
+    bw.write(clear, code_size)
+    if len(indices) == 0:
+        bw.write(end, code_size)
+        bw.flush()
+        return bw^.take()
+
+    var prev = Int(indices[0])
+    for i in range(1, len(indices)):
+        var c = Int(indices[i])
+        var key = (prev << 8) | c
+        var found = dict.get(key)
+        if found:
+            prev = found.value()
+        else:
+            bw.write(prev, code_size)
+            if next_code < 4096:
+                dict[key] = next_code
+                next_code += 1
+                # GIF LZW: the decoder adds its first table entry one code later
+                # than the encoder (its first data code only outputs), so it lags
+                # by one entry → bump the code width at 2^code_size + 1, not
+                # 2^code_size, or the widths desync ("broken data stream").
+                if next_code == (1 << code_size) + 1 and code_size < 12:
+                    code_size += 1
+            else:
+                # table full → emit clear, reset to the literal table
+                bw.write(clear, code_size)
+                dict = Dict[Int, Int]()
+                code_size = min_code_size + 1
+                next_code = end + 1
+            prev = c
+    bw.write(prev, code_size)
+    bw.write(end, code_size)
+    bw.flush()
+    return bw^.take()
+
+
+def _append_subblocks(mut buf: List[UInt8], data: List[UInt8]):
+    """Write `data` as GIF sub-blocks (≤255 bytes each), terminated by 0x00."""
+    var off = 0
+    var n = len(data)
+    while off < n:
+        var chunk = min(255, n - off)
+        buf.append(UInt8(chunk))
+        for i in range(chunk):
+            buf.append(data[off + i])
+        off += chunk
+    buf.append(UInt8(0))  # block terminator
+
+
+def save_frame_sequence_gif(
+    path: String,
+    frames: UnsafePointer[Scalar[DType.float32], _],
+    n_frames: Int,
+    height: Int,
+    width: Int,
+    channels: Int = 1,
+    fps: Int = 10,
+    loop: Bool = True,
+    vmin: Float32 = 0.0,
+    vmax: Float32 = 1.0,
+) raises:
+    """Write a grayscale float frame sequence as an animated GIF89a.
+
+    Args:
+        path: Output path (should end in .gif).
+        frames: [n_frames, H, W] float32, row-major (one grayscale image per
+            frame, contiguous). Values mapped through [vmin, vmax] → [0, 255].
+        n_frames: Number of frames.
+        height: Per-frame height.
+        width: Per-frame width.
+        channels: Must be 1 (grayscale). RGB GIF needs color quantization and is
+            not supported here — composite/convert to grayscale first.
+        fps: Playback speed (frames per second). Delay = round(100/fps) cs.
+        loop: True → loop forever (NETSCAPE2.0 ext); False → play once.
+        vmin: Value mapped to palette index 0.
+        vmax: Value mapped to palette index 255.
+    """
+    if channels != 1:
+        raise Error(
+            "save_frame_sequence_gif is grayscale-only (channels=1), got "
+            + String(channels)
+        )
+    var hw = height * width
+    var scale = 255.0 / max(vmax - vmin, Float32(1e-8))
+    var delay_cs = 100 // fps
+    if delay_cs < 1:
+        delay_cs = 1
+
+    var buf = List[UInt8]()
+    # ── Header ──
+    var sig = String("GIF89a").as_bytes()
+    for i in range(len(sig)):
+        buf.append(sig[i])
+    # ── Logical Screen Descriptor ──
+    _put_u16_le(buf, width)
+    _put_u16_le(buf, height)
+    buf.append(UInt8(0xF7))  # GCT present, color res 8b, GCT size 256 (2^(7+1))
+    buf.append(UInt8(0))     # background color index
+    buf.append(UInt8(0))     # pixel aspect ratio
+    # ── Global Color Table: 256 grayscale entries (i,i,i) ──
+    for i in range(256):
+        buf.append(UInt8(i))
+        buf.append(UInt8(i))
+        buf.append(UInt8(i))
+    # ── NETSCAPE2.0 looping extension ──
+    if loop:
+        buf.append(UInt8(0x21))
+        buf.append(UInt8(0xFF))
+        buf.append(UInt8(0x0B))
+        var ns = String("NETSCAPE2.0").as_bytes()
+        for i in range(len(ns)):
+            buf.append(ns[i])
+        buf.append(UInt8(0x03))
+        buf.append(UInt8(0x01))
+        _put_u16_le(buf, 0)  # loop count 0 = forever
+        buf.append(UInt8(0))
+
+    # ── per-frame: GCE + image descriptor + LZW data ──
+    var indices = List[UInt8](capacity=hw)
+    for f in range(n_frames):
+        # Graphic Control Extension (per-frame delay; disposal = leave in place)
+        buf.append(UInt8(0x21))
+        buf.append(UInt8(0xF9))
+        buf.append(UInt8(0x04))
+        buf.append(UInt8(0x04))  # packed: disposal method 1, no transparency
+        _put_u16_le(buf, delay_cs)
+        buf.append(UInt8(0))     # transparent color index (unused)
+        buf.append(UInt8(0))     # block terminator
+        # Image Descriptor (full frame, no local color table)
+        buf.append(UInt8(0x2C))
+        _put_u16_le(buf, 0)
+        _put_u16_le(buf, 0)
+        _put_u16_le(buf, width)
+        _put_u16_le(buf, height)
+        buf.append(UInt8(0))
+        # float → grayscale index
+        indices.clear()
+        var base = f * hw
+        for p in range(hw):
+            var v = Float32((frames + base + p)[])
+            var idx = min(max((v - vmin) * scale, Float32(0.0)), Float32(255.0))
+            indices.append(UInt8(idx))
+        # LZW image data: min code size byte + packed sub-blocks
+        buf.append(UInt8(8))  # LZW minimum code size (8-bit indices)
+        var codes = _lzw_encode_gif(indices, 8)
+        _append_subblocks(buf, codes)
+
+    buf.append(UInt8(0x3B))  # trailer
+
+    with open(path, "w") as f:
+        f.write_bytes(buf)
+    print(
+        "Animated GIF saved: " + path + " (" + String(n_frames) + " frames, "
+        + String(width) + "x" + String(height) + " @ " + String(fps) + " fps)"
+    )

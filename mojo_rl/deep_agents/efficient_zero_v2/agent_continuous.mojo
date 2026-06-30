@@ -24,23 +24,14 @@ policy NLL).
     (sections `rep` / `dyn` / `pred` / `proj` / `predh`), GPU body visitors.
 """
 
-from std.memory import alloc
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.core.checkpoint import (
-    save_state_v2_body_gpu,
-    load_state_v2_body_gpu,
-)
-from mojo_rl.deep_agents.core.checkpoint_helpers import (
-    split_lines_v2,
-    read_file_v2,
-    expect_v2_header,
-)
+from mojo_rl.nn.core.checkpoint import save_params, load_params
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from mojo_rl.planners.tree_search import SampledGumbelGPUMCTS, SinglePlayer
 
@@ -51,7 +42,7 @@ from ..zero.mcts_adapters_mz import MZRepGPU, MZDynGPU, MZContPredGPU
 
 @fieldwise_init
 struct EZv2ContinuousAgent[
-    ENV: BoxContinuousActionEnv & ImplicitlyDestructible,
+    ENV: BoxContinuousActionEnv & ImplicitlyDeletable,
     REP: Module,
     DYN: Module,
     PRED: Module,
@@ -69,7 +60,7 @@ struct EZv2ContinuousAgent[
     B: Int,
     K: Int,
     N: Int,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     var rep: Self.REP
     var dyn: Self.DYN
     var pred: Self.PRED
@@ -112,11 +103,11 @@ struct EZv2ContinuousAgent[
         c_scale: Scalar[DT] = Scalar[DT](0.1),
     ) raises:
         self.ctx = ctx
-        self.rep = Self.REP.make["gpu", INIT=Kaiming](ctx)
-        self.dyn = Self.DYN.make["gpu", INIT=Kaiming](ctx)
-        self.pred = Self.PRED.make["gpu", INIT=Kaiming](ctx)
-        self.proj = Self.PROJM.make["gpu", INIT=Kaiming](ctx)
-        self.predh = Self.PREDH.make["gpu", INIT=Kaiming](ctx)
+        self.rep = Self.REP.make["gpu", Kaiming](Optional(ctx))
+        self.dyn = Self.DYN.make["gpu", Kaiming](Optional(ctx))
+        self.pred = Self.PRED.make["gpu", Kaiming](Optional(ctx))
+        self.proj = Self.PROJM.make["gpu", Kaiming](Optional(ctx))
+        self.predh = Self.PREDH.make["gpu", Kaiming](Optional(ctx))
         self.lr = lr
         self.gamma = gamma
         self.v_min = v_min
@@ -157,16 +148,11 @@ struct EZv2ContinuousAgent[
         """GPU sampled-Gumbel self-play training (MuZero BPTT + SimSiam
         consistency + squashed-Gaussian policy NLL). Returns the last training
         loss. Optimizers recreated here; nets persist."""
-        var orep = Adam.make["gpu", M = Self.REP](self.rep, self.ctx)
-        var odyn = Adam.make["gpu", M = Self.DYN](self.dyn, self.ctx)
-        var opred = Adam.make["gpu", M = Self.PRED](self.pred, self.ctx)
-        var oproj = Adam.make["gpu", M = Self.PROJM](self.proj, self.ctx)
-        var opredh = Adam.make["gpu", M = Self.PREDH](self.predh, self.ctx)
-        orep.lr = self.lr
-        odyn.lr = self.lr
-        opred.lr = self.lr
-        oproj.lr = self.lr
-        opredh.lr = self.lr
+        var orep = Adam(lr=self.lr)
+        var odyn = Adam(lr=self.lr)
+        var opred = Adam(lr=self.lr)
+        var oproj = Adam(lr=self.lr)
+        var opredh = Adam(lr=self.lr)
         return run_ezv2_sampled_selfplay_gpu[
             Self.ENV, Self.REP, Self.DYN, Self.PRED, Self.PROJM, Self.PREDH,
             Self.OBS, Self.ACT_DIM, Self.LATENT, Self.BINS,
@@ -244,8 +230,8 @@ struct EZv2ContinuousAgent[
         ].make(self.pred)
 
         var d_obs = self.ctx.enqueue_create_buffer[DT](N_ENVS * Self.OBS)
-        var h_obs = mptr(alloc[Scalar[DT]](N_ENVS * Self.OBS))
-        var h_act = mptr(alloc[Scalar[DT]](N_ENVS * Self.ACT_DIM))
+        var h_obs = List[Scalar[DT]](length=N_ENVS * Self.OBS, fill=0)
+        var h_act = List[Scalar[DT]](length=N_ENVS * Self.ACT_DIM, fill=0)
         var mcts_seed = UInt32(0)
         var total = 0.0
         for _ in range(episodes):
@@ -257,20 +243,18 @@ struct EZv2ContinuousAgent[
             for _step in range(max_ep_steps):
                 for j in range(Self.OBS):
                     h_obs[j] = Scalar[DT](eo_f[j])
-                self.ctx.enqueue_copy(d_obs, h_obs)
+                self.ctx.enqueue_copy(d_obs, h_obs.unsafe_ptr())
                 var obs_t = LayoutTensor[
                     DT, Layout.row_major(N_ENVS, Self.OBS), MutAnyOrigin
-                ](mptr(d_obs.unsafe_ptr()))
+                ](d_obs)
                 planner.search_gpu[
-                    MZRepGPU[Self.OBS, Self.LATENT, Self.REP],
-                    MZDynGPU[Self.LATENT, Self.ACT_DIM, Self.BINS, Self.DYN],
-                    MZContPredGPU[
-                        Self.LATENT, Self.ACT_DIM, Self.BINS, Self.PRED
-                    ],
+                    type_of(rep_a), type_of(dyn_a), type_of(pred_a),
                 ](self.ctx, rep_a, dyn_a, pred_a, obs_t,
                   deterministic=True, rng_seed=mcts_seed)
                 mcts_seed += UInt32(1)
-                self.ctx.enqueue_copy(h_act, planner.chosen_actions_view())
+                self.ctx.enqueue_copy(
+                    h_act.unsafe_ptr(), planner.chosen_actions_view()
+                )
                 self.ctx.synchronize()
                 var ea = List[Scalar[DT]]()
                 for d in range(Self.ACT_DIM):
@@ -283,29 +267,20 @@ struct EZv2ContinuousAgent[
                 if es[2]:
                     break
             total += eret
-        h_obs.free(); h_act.free()
         return total / Float64(episodes)
 
     def save(mut self, path: String) raises:
-        var body = String("")
-        save_state_v2_body_gpu(self.rep, body, String("rep"), self.ctx)
-        save_state_v2_body_gpu(self.dyn, body, String("dyn"), self.ctx)
-        save_state_v2_body_gpu(self.pred, body, String("pred"), self.ctx)
-        save_state_v2_body_gpu(self.proj, body, String("proj"), self.ctx)
-        save_state_v2_body_gpu(self.predh, body, String("predh"), self.ctx)
-        var content = String("nn-ckpt v2\n") + body
-        with open(path, "w") as f:
-            f.write(content)
+        var c = Optional(self.ctx)
+        save_params["gpu", Self.REP](self.rep, path + ".rep", c, save_moments=False)
+        save_params["gpu", Self.DYN](self.dyn, path + ".dyn", c, save_moments=False)
+        save_params["gpu", Self.PRED](self.pred, path + ".pred", c, save_moments=False)
+        save_params["gpu", Self.PROJM](self.proj, path + ".proj", c, save_moments=False)
+        save_params["gpu", Self.PREDH](self.predh, path + ".predh", c, save_moments=False)
 
     def load(mut self, path: String) raises:
-        var content = read_file_v2(path)
-        var lines = split_lines_v2(content)
-        expect_v2_header(lines)
-        var idx = 1
-        load_state_v2_body_gpu(self.rep, lines, idx, String("rep"), self.ctx)
-        load_state_v2_body_gpu(self.dyn, lines, idx, String("dyn"), self.ctx)
-        load_state_v2_body_gpu(self.pred, lines, idx, String("pred"), self.ctx)
-        load_state_v2_body_gpu(self.proj, lines, idx, String("proj"), self.ctx)
-        load_state_v2_body_gpu(
-            self.predh, lines, idx, String("predh"), self.ctx
-        )
+        var c = Optional(self.ctx)
+        load_params["gpu", Self.REP](self.rep, path + ".rep", c)
+        load_params["gpu", Self.DYN](self.dyn, path + ".dyn", c)
+        load_params["gpu", Self.PRED](self.pred, path + ".pred", c)
+        load_params["gpu", Self.PROJM](self.proj, path + ".proj", c)
+        load_params["gpu", Self.PREDH](self.predh, path + ".predh", c)

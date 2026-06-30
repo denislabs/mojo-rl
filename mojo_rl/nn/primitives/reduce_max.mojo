@@ -1,37 +1,34 @@
-"""ReduceMax[NA] — per-row max reduction `[B, NA] → [B, 1]`.
+"""ReduceMax[NA] — per-row max reduction `[B, NA] → [B, 1]` (storage surface).
 
-Forward-only primitive (target-Y path for DQN — gradient never flows
-through max_a Q_target(s', a)). The `Module` trait still requires a
-`vjp` implementation; we zero-fill `grad_input`, matching the
-`StopGrad` pattern. Callers that need a gradient through max should
-use a different op.
+Transformed from legacy `nn.primitives.reduce_max` (surface-only change). The CPU
+loops + the two GPU kernels are carried over verbatim.
 
-Non-linear reduction — doesn't fit the `Reduce[DIM, OP: ReduceOp]`
-template (which only covers linear reductions, see
-`core/reduce_op.mojo` lines 14-18). Lives as its own `Module`.
+**Forward-only primitive** (target-Y path for DQN — gradient never flows through
+`max_a Q_target(s', a)`). The `Module` trait still requires a `vjp`; we zero-fill
+`grad_input` (mirrors the `gather_cols` / `StopGrad` pattern). Callers that need a
+gradient through max should use a different op.
+
+Non-linear reduction — doesn't fit the `Reduce[DIM, OP]` template (linear only).
+ARITY 1, no params, no cache.
 
 Forward:  `out[b, 0] = max_a input[b, a]`
 Backward: `grad_input[b, a] = 0` for all (b, a)
-
-GPU kernels:
-  - forward: 1 thread per BATCH row, scalar inner loop over NA
-    (same shape as `reduce.mojo:34-46`).
-  - backward: 1 thread per BATCH·NA element, writes zero
-    (same shape as `reduce.mojo:48-62`).
 """
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _reduce_max_forward_kernel[
     BATCH: Int, NA: Int,
 ](
@@ -61,110 +58,85 @@ def _reduce_max_zero_grad_kernel[
         grad_input[b, a] = Scalar[DT](0.0)
 
 
-struct ReduceMax[NA: Int](Module):
+struct ReduceMax[NA_: Int](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.NA)
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.NA_)
     comptime OUT_DIM: Int = 1
 
-    var ts: TargetStorage
-
     def __init__(out self):
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. INIT ignored (no params) but accepted
-        for Sequential.make[target, INIT] uniformity."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "ReduceMax: target must be 'cpu' or 'gpu'"
-        )
-        comptime assert Self.NA > 0, "ReduceMax: NA must be > 0"
-        var r = Self()
-        comptime if target == "cpu":
-            r.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("ReduceMax.make[target='gpu']: ctx required")
-            r.ts = TargetStorage.make_gpu(ctx.value())
-        return r^
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Unified CPU/GPU factory. INIT accepted for `make[target, INIT]`
+        uniformity but ignored (no params)."""
+        comptime assert Self.NA_ > 0, "ReduceMax: NA must be > 0"
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["ReduceMax", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            for b in range(BATCH):
-                var best: Scalar[DT] = input[b, 0]
-                for a in range(1, Self.NA):
-                    var v = input[b, a]
+            out.ensure(B)
+            var in_t = TileTensor(in0.data, row_major[B, Self.NA_]())
+            var out_t = TileTensor(out.data, row_major[B, 1]())
+            for b in range(B):
+                var best: Scalar[DT] = in_t[b, 0]
+                for a in range(1, Self.NA_):
+                    var v: Scalar[DT] = in_t[b, a]
                     if v > best:
                         best = v
-                output_v[b, 0] = best
+                out_t[b, 0] = best
         else:
-            var in_p = input.ptr
-            var out_p = output_v.ptr
-            var in_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.NA), MutAnyOrigin,
-            ](in_p)
-            var out_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](out_p)
-            comptime n_blocks = (BATCH + TPB - 1) // TPB
-            comptime kernel = _reduce_max_forward_kernel[BATCH, Self.NA]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            var c = ctx.value()
+            out.ensure_gpu(c, B)
+            comptime n_blocks = (B + TPB - 1) // TPB
+            c.enqueue_function[_reduce_max_forward_kernel[B, Self.NA_]](
+                in0.lt["gpu", Layout.row_major(B, Self.NA_)](),
+                out.lt["gpu", Layout.row_major(B, 1)](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["ReduceMax", target](self.ts.target_tag)
-        # Forward-only op: zero-fill grad_input regardless of grad_output.
-        # Matches StopGrad pattern — the target-Y path is MODE="input_only"
-        # so this branch is never actually invoked, but the trait requires
-        # the method to exist.
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
+        """Forward-only op: zero-fill grad_input regardless of grad_output."""
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            for b in range(BATCH):
-                for a in range(Self.NA):
-                    grad_input_v[b, a] = Scalar[DT](0.0)
+            gin.ensure(B * Self.NA_)
+            var gi_t = TileTensor(gin.data, row_major[B, Self.NA_]())
+            for b in range(B):
+                for a in range(Self.NA_):
+                    gi_t[b, a] = Scalar[DT](0.0)
         else:
-            var gi_p = grad_input_v.ptr
-            var gi_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.NA), MutAnyOrigin,
-            ](gi_p)
-            comptime total = BATCH * Self.NA
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.NA_)
+            comptime total = B * Self.NA_
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _reduce_max_zero_grad_kernel[BATCH, Self.NA]
-            self.ts.ctx.value().enqueue_function[kernel](
-                gi_lt, grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[_reduce_max_zero_grad_kernel[B, Self.NA_]](
+                gin.lt["gpu", Layout.row_major(B, Self.NA_)](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).

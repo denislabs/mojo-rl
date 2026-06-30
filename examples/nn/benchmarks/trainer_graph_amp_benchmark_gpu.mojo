@@ -1,25 +1,31 @@
 """Trainer benchmark: AMP (fp32 vs bf16) across model sizes, + CUDA-graph hook.
 
-Measures per-step train throughput of the nn `Trainer` and how the AMP
-policy (`NoAMP` = all fp32 vs `Bf16Compute` = bf16 matmul compute, fp32
-master weights / accumulators — `mojo_rl/nn/core/amp.mojo`) pays off as the
+Measures per-step train throughput of the storage `nn` `Trainer` and how the AMP
+policy (`NoAMP` = all fp32 vs `Bf16Compute` = bf16 matmul compute, fp32 master
+weights / accumulators — `mojo_rl/nn/storage/core/amp.mojo`) pays off as the
 matmuls grow.
 
-Two sweeps, all on one fixed MNIST mini-batch (loaded into the trainer's
-device buffers once — isolates train-step cost from data movement):
+Two sweeps, all on one fixed MNIST mini-batch (uploaded into the trainer's
+device buffers once — the storage Trainer keeps the dataset resident on first
+`train_epoch`, so repeated single-batch epochs isolate train-step cost from data
+movement):
 
   1. **MLP width sweep** — 784→H→H/2→10 for H in {256, 1024, 4096}. bf16 is a
      net LOSS on the smallest net (the per-layer fp32→bf16 / bf16→fp32 cast
      kernels cost more than the tiny GEMM saves) and should overtake fp32 as H
      grows and the GEMMs get tensor-core-bound. This sweep finds the crossover.
 
-  2. **LeNet conv** — Conv(1→16,5,s2)→Conv(16→32,5,s2)→Flatten→Linear. nn
-     `Conv2D` now has a GPU bf16 path (its forward `col@Wᵀ` and backward
+  2. **LeNet conv** — Conv(1→16,5,s2)→Conv(16→32,5,s2)→Flatten→Linear. The
+     storage `Conv2D` has a GPU bf16 path (its forward `col@Wᵀ` and backward
      `goᵀ@col` GEMMs run in bf16; the dx gather + CPU path stay fp32), so AMP
      accelerates the whole conv stack — bf16 should win once the conv GEMMs are
      tensor-core-bound (more channels / larger spatial / batch).
 
 Larger BATCH also enlarges the GEMM M dim (more AMP benefit); BATCH=512 here.
+
+Single train step = one `train_epoch` over a dataset of exactly BATCH rows
+(N_TRAIN == BATCH → one batch per epoch); the resident-once upload means every
+step after the first reuses the same device buffers.
 
 Run (NVIDIA CUDA):
     pixi run -e nvidia mojo run -I . \
@@ -35,16 +41,16 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.datasets import MNIST
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core import Module, AMPPolicy, NoAMP, Bf16Compute
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP, Bf16Compute
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.nn.primitives.conv2d import Conv2D
 from mojo_rl.nn.primitives.flatten import Flatten
-from mojo_rl.nn.combinators import Sequential
-from mojo_rl.nn.loss import CrossEntropyLoss
-from mojo_rl.nn.optimizer import Adam
-from mojo_rl.nn.training import Trainer
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.combinators.sequential import Sequential
+from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.training.trainer import Trainer
 from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 
 
@@ -94,27 +100,29 @@ def bench_net[
     batch_x: List[Scalar[DT]],
     batch_y: List[Scalar[DT]],
 ) raises -> Float64:
-    """Build a trainer (given net + AMP policy), load the fixed batch, time
-    N_STEPS eager device steps, and return elapsed seconds. When
-    USE_CUDA_GRAPH is on, also captures+replays the step and prints a graph
-    line (see top-of-file note on why it's off by default)."""
+    """Build a trainer (given net + AMP policy), load the fixed batch as a
+    one-batch resident dataset, time N_STEPS eager device steps (each a
+    one-batch `train_epoch`), and return elapsed seconds. When USE_CUDA_GRAPH is
+    on, also captures+replays the step and prints a graph line (see top-of-file
+    note on why it's off by default)."""
     var trainer = Trainer[
         NET,
-        Adam,
-        CrossEntropyLoss[N_CLASSES],
+        N_CLASSES,
+        IN_DIM,
         BATCH,
         target="gpu",
         POLICY=POLICY,
-    ].make[INIT=Kaiming](ctx)
-    trainer.optim.lr = LR
-    trainer.load_fixed_batch(batch_x, batch_y)
+        OPT=Adam,
+    ].make[Kaiming](Optional(ctx), lr=LR)
 
+    # Warm up: the first epoch uploads the fixed batch to a resident device
+    # buffer; every later epoch reuses it (no per-step H2D).
     for _ in range(WARMUP):
-        trainer.train_step_device()
+        _ = trainer.train_epoch[BATCH](batch_x, batch_y, Optional(ctx))
     ctx.synchronize()
     var t0 = perf_counter_ns()
     for _ in range(N_STEPS):
-        trainer.train_step_device()
+        _ = trainer.train_epoch[BATCH](batch_x, batch_y, Optional(ctx))
     ctx.synchronize()
     var eager_s = Float64(perf_counter_ns() - t0) / 1e9
 
@@ -122,7 +130,7 @@ def bench_net[
         var graph: Optional[CUDAGraph] = None
 
         def _step() capturing raises -> None:
-            trainer.train_step_device()
+            _ = trainer.train_epoch[BATCH](batch_x, batch_y, Optional(ctx))
 
         for _ in range(WARMUP):
             maybe_capture_replay[_step](graph, ctx)
@@ -220,11 +228,11 @@ def main() raises:
 # Conv2D's dx step is a gather kernel (not a GEMM) and its CPU path stay fp32.
 #
 # CUDA-graph capture (USE_CUDA_GRAPH): the Trainer step is capturable (Adam
-# keeps its step counter/bias-correction on-device, `forward_capture` drops the
-# loss host readback, fixed device buffers). The blocker is the GEMM:
-# `linalg.matmul` picks a split-K path for some shapes and allocs+frees a
+# keeps its step counter/bias-correction on-device, fixed resident device
+# buffers, no per-step host readback in the train loop). The blocker is the
+# GEMM: `linalg.matmul` picks a split-K path for some shapes and allocs+frees a
 # workspace DeviceBuffer per call — a cudaFree inside the captured stream,
 # which aborts. To enable: make the capture-path matmul allocation-free
-# (force num_k_partitions=1, or route Linear/Conv2D through the alloc-free
-# in-repo `mojo_rl/nn/gpu/matmul.mojo::gpu_matmul`), then set USE_CUDA_GRAPH=True.
+# (force num_k_partitions=1, or route Linear/Conv2D through an alloc-free
+# in-repo matmul), then set USE_CUDA_GRAPH=True.
 # ──────────────────────────────────────────────────────────────────────────

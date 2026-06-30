@@ -1,46 +1,45 @@
-"""TD-MPC2 MPPI rollout callback (CPU) — bridges the nn world model into
-the shared `mojo_rl.planners.trajectory.MPPICPU` planner.
+"""TD-MPC2 MPPI rollout callbacks (storage framework) — bridge the nn world
+model into the shared `mojo_rl.planners.trajectory` MPPI planners.
 
-Implements `RolloutCallbackCPU` (B=1, List[Float64] views — the planner
-loops over samples/timesteps). The three trait methods map to the world
-model's forward passes:
+`TDMPC2RolloutCallbackCPU` (B=1, List[Float64] views) and
+`TDMPC2RolloutCallbackGPU` (row-major LayoutTensor views, batched) hold raw
+pointers to the trainer-owned storage modules (dynamics / reward / policy /
+target-Q ensemble) + an owned TwoHotDecode. The three trait methods map to
+the world model's forward passes:
 
-  * policy_action_cpu(z) → tanh(mean) of π(z)  — normalized [-1,1] seed for
-    the planner's policy-trajectory warm-start.
-  * rollout_step_cpu(z, a) → (z' = dynamics(z, a·scale),
-    reward = two-hot-decode(reward(z, a·scale)))  — actions are scaled to
-    the range the world model was trained on (replay stored a·action_scale);
-    the planner samples/refits in normalized [-1,1] and applies action_scale
-    to its returned action.
-  * terminal_value_cpu(z) → avg of 2 (random) target-Q heads at π(z),
-    two-hot-decoded (reference `Q(z, π(z), return_type='avg', target=True)`).
+  * policy_action(z) → tanh(mean) of π(z)  — normalized [-1,1] seed.
+  * rollout_step(z, a) → (z' = dynamics(z, a·scale),
+    reward = two-hot-decode(reward(z, a·scale))).
+  * terminal_value(z) → avg of 2 (random) target-Q heads at π(z), decoded.
 
-Holds raw pointers to the trainer-owned modules (dynamics / reward / policy
-/ target-Q ensemble) + an owned TwoHotDecode. CPU-only (eval / single-env
-acting path); the batched GPU planner callback is a later phase.
+Storage migration: net `forward` takes `TensorRefs[1](Tensor)`. The CPU path
+stages List[Float64] into owned scratch Tensors; the GPU path bridges the
+planner's device LayoutTensor views into owned scratch Tensors via copy
+kernels (the storage forward consumes owned Tensors). The GPU Q ensemble is
+threaded as distinct fields q0..q4 with a comptime-guarded dispatch (two `mut`
+List subscripts can't alias in one call).
+
+Used only by `select_action_mpc` (GPU MPC planning); the default acting path
+is MPC-off (`select_action`).
 """
 
-from std.memory import alloc
 from std.math import tanh
 from std.random.philox import Random as PhiloxRandom
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, row_major, TileTensor
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.module import mptr
-from mojo_rl.nn.initializer import Zero
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Zero
 from mojo_rl.planners.trajectory.rollout_callback import (
     RolloutCallbackCPU, RolloutCallbackGPU,
 )
 
 from .nets import TDMPC2Dynamics, TDMPC2Reward, TDMPC2QNet, TDMPC2Policy
 from .losses import TwoHotDecode
-
-
-@always_inline
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
+from .wm_graph import NQ
 
 
 @fieldwise_init
@@ -62,10 +61,10 @@ struct TDMPC2RolloutCallbackCPU[
     comptime PolicyT = TDMPC2Policy[Self.LATENT, Self.ACT, Self.MLP]
     comptime ZA = Self.LATENT + Self.ACT
 
-    var dyn: UnsafePointer[Self.DynT, MutAnyOrigin]
-    var rew: UnsafePointer[Self.RewT, MutAnyOrigin]
-    var pol: UnsafePointer[Self.PolicyT, MutAnyOrigin]
-    var qt: UnsafePointer[List[Self.QNetT], MutAnyOrigin]
+    var dyn: UnsafePointer[Self.DynT, MutUntrackedOrigin]
+    var rew: UnsafePointer[Self.RewT, MutUntrackedOrigin]
+    var pol: UnsafePointer[Self.PolicyT, MutUntrackedOrigin]
+    var qt: UnsafePointer[List[Self.QNetT], MutUntrackedOrigin]
     var decode: TwoHotDecode[Self.BINS, Self.VMIN, Self.VMAX]
     var action_scale: Float64
     var qi: Int
@@ -82,10 +81,10 @@ struct TDMPC2RolloutCallbackCPU[
         qj: Int,
     ) raises -> Self:
         return Self(
-            dyn=UnsafePointer(to=dyn),
-            rew=UnsafePointer(to=rew),
-            pol=UnsafePointer(to=pol),
-            qt=UnsafePointer(to=qt),
+            dyn=rebind[UnsafePointer[Self.DynT, MutUntrackedOrigin]](UnsafePointer(to=dyn)),
+            rew=rebind[UnsafePointer[Self.RewT, MutUntrackedOrigin]](UnsafePointer(to=rew)),
+            pol=rebind[UnsafePointer[Self.PolicyT, MutUntrackedOrigin]](UnsafePointer(to=pol)),
+            qt=rebind[UnsafePointer[List[Self.QNetT], MutUntrackedOrigin]](UnsafePointer(to=qt)),
             decode=TwoHotDecode[
                 Self.BINS, Self.VMIN, Self.VMAX
             ].make["cpu", INIT=Zero](),
@@ -94,36 +93,26 @@ struct TDMPC2RolloutCallbackCPU[
             qj=qj,
         )
 
-    @always_inline
-    def _z_buf(self, z: List[Float64]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        var p = _a(Self.LATENT)
-        for i in range(Self.LATENT):
-            p[i] = Scalar[DT](z[i])
-        return p
-
     def policy_action_cpu(
         mut self, z: List[Float64], mut action_out: List[Float64],
     ) raises:
-        var zb = self._z_buf(z)
-        var pio = _a(2 * Self.ACT)
-        var pio_t = TileTensor(pio, row_major[1, 2 * Self.ACT]())
-        self.pol[].forward["cpu", 1](
-            TileTensor(zb, row_major[1, Self.LATENT]()), output=pio_t,
-        )
-        for j in range(Self.ACT):
-            action_out[j] = Float64(tanh(pio[j]))   # normalized [-1,1] mean
-        zb.free(); pio.free()
-
-    @always_inline
-    def _za_buf(
-        self, z: List[Float64], a: List[Float64]
-    ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        var p = _a(Self.ZA)
+        var zt = Tensor.alloc(Self.LATENT)
         for i in range(Self.LATENT):
-            p[i] = Scalar[DT](z[i])
+            zt.data[i] = Scalar[DT](z[i])
+        var pio = Tensor.alloc(2 * Self.ACT)
+        self.pol[].forward["cpu", 1](TensorRefs[1](zt), pio)
         for j in range(Self.ACT):
-            p[Self.LATENT + j] = Scalar[DT](a[j] * self.action_scale)
-        return p
+            action_out[j] = Float64(tanh(pio.data[j]))   # normalized [-1,1] mean
+
+    def _za_tensor(
+        self, z: List[Float64], a: List[Float64]
+    ) raises -> Tensor:
+        var p = Tensor.alloc(Self.ZA)
+        for i in range(Self.LATENT):
+            p.data[i] = Scalar[DT](z[i])
+        for j in range(Self.ACT):
+            p.data[Self.LATENT + j] = Scalar[DT](a[j] * self.action_scale)
+        return p^
 
     def rollout_step_cpu(
         mut self,
@@ -131,42 +120,32 @@ struct TDMPC2RolloutCallbackCPU[
         a: List[Float64],
         mut z_next_out: List[Float64],
     ) raises -> Float64:
-        var za = self._za_buf(z, a)
-        var za_t = TileTensor(za, row_major[1, Self.ZA]())
+        var za = self._za_tensor(z, a)
         # dynamics → z'
-        var zn = _a(Self.LATENT)
-        var zn_t = TileTensor(zn, row_major[1, Self.LATENT]())
-        self.dyn[].forward["cpu", 1](za_t, output=zn_t)
+        var zn = Tensor.alloc(Self.LATENT)
+        self.dyn[].forward["cpu", 1](TensorRefs[1](za), zn)
         for i in range(Self.LATENT):
-            z_next_out[i] = Float64(zn[i])
+            z_next_out[i] = Float64(zn.data[i])
         # reward → two-hot decode → scalar
-        var rl = _a(Self.BINS)
-        var rl_t = TileTensor(rl, row_major[1, Self.BINS]())
-        self.rew[].forward["cpu", 1](za_t, output=rl_t)
-        var rs = _a(1)
-        var rs_t = TileTensor(rs, row_major[1, 1]())
-        self.decode.forward["cpu", 1](rl_t, output=rs_t)
-        var reward = Float64(rs[0])
-        za.free(); zn.free(); rl.free(); rs.free()
-        return reward
+        var rl = Tensor.alloc(Self.BINS)
+        self.rew[].forward["cpu", 1](TensorRefs[1](za), rl)
+        var rs = Tensor.alloc(1)
+        self.decode.forward["cpu", 1](TensorRefs[1](rl), rs)
+        return Float64(rs.data[0])
 
     def terminal_value_cpu(mut self, z: List[Float64]) raises -> Float64:
         # action = tanh(mean) of π(z), then za = [z, action·scale]
         var act = List[Float64](length=Self.ACT, fill=0.0)
         self.policy_action_cpu(z, act)
-        var za = self._za_buf(z, act)
-        var za_t = TileTensor(za, row_major[1, Self.ZA]())
-        var ql = _a(Self.BINS)
-        var ql_t = TileTensor(ql, row_major[1, Self.BINS]())
-        var qs = _a(1)
-        var qs_t = TileTensor(qs, row_major[1, 1]())
-        self.qt[][self.qi].forward["cpu", 1](za_t, output=ql_t)
-        self.decode.forward["cpu", 1](ql_t, output=qs_t)
-        var qa = Float64(qs[0])
-        self.qt[][self.qj].forward["cpu", 1](za_t, output=ql_t)
-        self.decode.forward["cpu", 1](ql_t, output=qs_t)
-        var qb = Float64(qs[0])
-        za.free(); ql.free(); qs.free()
+        var za = self._za_tensor(z, act)
+        var ql = Tensor.alloc(Self.BINS)
+        var qs = Tensor.alloc(1)
+        self.qt[][self.qi].forward["cpu", 1](TensorRefs[1](za), ql)
+        self.decode.forward["cpu", 1](TensorRefs[1](ql), qs)
+        var qa = Float64(qs.data[0])
+        self.qt[][self.qj].forward["cpu", 1](TensorRefs[1](za), ql)
+        self.decode.forward["cpu", 1](TensorRefs[1](ql), qs)
+        var qb = Float64(qs.data[0])
         return (qa + qb) * 0.5
 
 
@@ -176,16 +155,13 @@ struct TDMPC2RolloutCallbackCPU[
 # ──────────────────────────────────────────────────────────────────────
 
 
-@always_inline
-def _dpg(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(b.unsafe_ptr())
-
-
-@always_inline
-def _ltg[N: Int](
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
-    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
+def _copy_in_k[N: Int](
+    src: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin],
+):
+    var i = Int(global_idx.x)
+    if i < N:
+        dst[i] = rebind[Scalar[DT]](src[i])
 
 
 def _extract_tanh_mean_k[B_: Int, ACT_: Int, POL_: Int](
@@ -229,6 +205,19 @@ def _avg2_k[B_: Int](
         )
 
 
+def _flat[
+    N: Int, src_layout: Layout
+](
+    t: LayoutTensor[DT, src_layout, MutAnyOrigin]
+) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
+    """Flat 1D view over a contiguous LayoutTensor — the kernel-ABI bridge for
+    the planner's 2D `(B, DIM)` views into the 1D-indexed callback kernels
+    below. Origin is the incoming MutAnyOrigin (explicit, NOT inferred) so GPU
+    codegen stays correct — this restores the pre-storage-migration `_ltg`
+    flatten that the 1D kernels still require."""
+    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](t.ptr)
+
+
 @fieldwise_init
 struct TDMPC2RolloutCallbackGPU[
     ACT: Int,
@@ -251,49 +240,70 @@ struct TDMPC2RolloutCallbackGPU[
     comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.QP]
     comptime PolicyT = TDMPC2Policy[Self.LATENT, Self.ACT, Self.MLP]
 
-    var dyn: UnsafePointer[Self.DynT, MutAnyOrigin]
-    var rew: UnsafePointer[Self.RewT, MutAnyOrigin]
-    var pol: UnsafePointer[Self.PolicyT, MutAnyOrigin]
-    var qt: UnsafePointer[List[Self.QNetT], MutAnyOrigin]
+    var dyn: UnsafePointer[Self.DynT, MutUntrackedOrigin]
+    var rew: UnsafePointer[Self.RewT, MutUntrackedOrigin]
+    var pol: UnsafePointer[Self.PolicyT, MutUntrackedOrigin]
+    # 5 DISTINCT target-Q head pointers (NUM_Q fixed = 5; a List pointer can't
+    # be split into two non-aliasing `mut` borrows, and storage Modules aren't
+    # Copyable so a temporary List can't be built either).
+    var qt0: UnsafePointer[Self.QNetT, MutUntrackedOrigin]
+    var qt1: UnsafePointer[Self.QNetT, MutUntrackedOrigin]
+    var qt2: UnsafePointer[Self.QNetT, MutUntrackedOrigin]
+    var qt3: UnsafePointer[Self.QNetT, MutUntrackedOrigin]
+    var qt4: UnsafePointer[Self.QNetT, MutUntrackedOrigin]
     var decode: TwoHotDecode[Self.BINS, Self.VMIN, Self.VMAX]
     var action_scale: Scalar[DT]
-    # device scratch (sized BT)
-    var pio: DeviceBuffer[DT]
-    var action: DeviceBuffer[DT]
-    var za: DeviceBuffer[DT]
-    var rlog: DeviceBuffer[DT]
-    var qlog: DeviceBuffer[DT]
-    var qa: DeviceBuffer[DT]
-    var qb: DeviceBuffer[DT]
+    # device scratch Tensors (sized BT)
+    var zin: Tensor
+    var pio: Tensor
+    var action: Tensor
+    var za: Tensor
+    var zout: Tensor
+    var rlog: Tensor
+    var qlog: Tensor
+    var qa: Tensor
+    var qb: Tensor
 
     @staticmethod
     def make(
         mut dyn: Self.DynT,
         mut rew: Self.RewT,
         mut pol: Self.PolicyT,
-        mut qt: List[Self.QNetT],
+        mut qt0: Self.QNetT,
+        mut qt1: Self.QNetT,
+        mut qt2: Self.QNetT,
+        mut qt3: Self.QNetT,
+        mut qt4: Self.QNetT,
         action_scale: Scalar[DT],
         ctx: DeviceContext,
     ) raises -> Self:
         return Self(
-            dyn=UnsafePointer(to=dyn),
-            rew=UnsafePointer(to=rew),
-            pol=UnsafePointer(to=pol),
-            qt=UnsafePointer(to=qt),
+            dyn=rebind[UnsafePointer[Self.DynT, MutUntrackedOrigin]](UnsafePointer(to=dyn)),
+            rew=rebind[UnsafePointer[Self.RewT, MutUntrackedOrigin]](UnsafePointer(to=rew)),
+            pol=rebind[UnsafePointer[Self.PolicyT, MutUntrackedOrigin]](UnsafePointer(to=pol)),
+            qt0=rebind[UnsafePointer[Self.QNetT, MutUntrackedOrigin]](UnsafePointer(to=qt0)),
+            qt1=rebind[UnsafePointer[Self.QNetT, MutUntrackedOrigin]](UnsafePointer(to=qt1)),
+            qt2=rebind[UnsafePointer[Self.QNetT, MutUntrackedOrigin]](UnsafePointer(to=qt2)),
+            qt3=rebind[UnsafePointer[Self.QNetT, MutUntrackedOrigin]](UnsafePointer(to=qt3)),
+            qt4=rebind[UnsafePointer[Self.QNetT, MutUntrackedOrigin]](UnsafePointer(to=qt4)),
             decode=TwoHotDecode[
                 Self.BINS, Self.VMIN, Self.VMAX
             ].make["gpu", INIT=Zero](ctx=ctx),
             action_scale=action_scale,
-            pio=ctx.enqueue_create_buffer[DT](Self.BT * Self.POL),
-            action=ctx.enqueue_create_buffer[DT](Self.BT * Self.ACT),
-            za=ctx.enqueue_create_buffer[DT](Self.BT * Self.ZA),
-            rlog=ctx.enqueue_create_buffer[DT](Self.BT * Self.BINS),
-            qlog=ctx.enqueue_create_buffer[DT](Self.BT * Self.BINS),
-            qa=ctx.enqueue_create_buffer[DT](Self.BT),
-            qb=ctx.enqueue_create_buffer[DT](Self.BT),
+            zin=Tensor.alloc_gpu(ctx, Self.BT * Self.LATENT),
+            pio=Tensor.alloc_gpu(ctx, Self.BT * Self.POL),
+            action=Tensor.alloc_gpu(ctx, Self.BT * Self.ACT),
+            za=Tensor.alloc_gpu(ctx, Self.BT * Self.ZA),
+            zout=Tensor.alloc_gpu(ctx, Self.BT * Self.LATENT),
+            rlog=Tensor.alloc_gpu(ctx, Self.BT * Self.BINS),
+            qlog=Tensor.alloc_gpu(ctx, Self.BT * Self.BINS),
+            qa=Tensor.alloc_gpu(ctx, Self.BT),
+            qb=Tensor.alloc_gpu(ctx, Self.BT),
         )
 
-    def policy_action_gpu[B: Int](
+    def policy_action_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         z: LayoutTensor[
@@ -304,20 +314,26 @@ struct TDMPC2RolloutCallbackGPU[
         ],
     ) raises:
         comptime assert B == Self.BT, "callback B must equal BT"
-        var zp = mptr(z.ptr)
-        var ap = mptr(action_out.ptr)
-        var pio_t = TileTensor(_dpg(self.pio), row_major[B, Self.POL]())
+        comptime nbc = (B * Self.LATENT + TPB - 1) // TPB
+        ctx.enqueue_function[_copy_in_k[B * Self.LATENT]](
+            _flat[B * Self.LATENT](z),
+            self.zin.lt["gpu", Layout.row_major(B * Self.LATENT)](),
+            grid_dim=nbc, block_dim=TPB,
+        )
         self.pol[].forward["gpu", B](
-            TileTensor(zp, row_major[B, Self.LATENT]()), output=pio_t
+            TensorRefs[1](self.zin), self.pio, Optional(ctx)
         )
         comptime k = _extract_tanh_mean_k[B, Self.ACT, Self.POL]
         comptime nb = (B * Self.ACT + TPB - 1) // TPB
         ctx.enqueue_function[k](
-            _ltg[B * Self.POL](_dpg(self.pio)), _ltg[B * Self.ACT](ap),
+            self.pio.lt["gpu", Layout.row_major(B * Self.POL)](),
+            _flat[B * Self.ACT](action_out),
             grid_dim=nb, block_dim=TPB,
         )
 
-    def rollout_step_gpu[B: Int](
+    def rollout_step_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         z: LayoutTensor[
@@ -332,26 +348,39 @@ struct TDMPC2RolloutCallbackGPU[
         r_out: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
     ) raises:
         comptime assert B == Self.BT, "callback B must equal BT"
-        var zp = mptr(z.ptr)
-        var ap = mptr(a.ptr)
-        var znp = mptr(z_next_out.ptr)
-        var rp = mptr(r_out.ptr)
+        # za = [z | a·scale] — read the planner views directly.
         comptime bza = _build_za_scaled_k[B, Self.LATENT, Self.ACT, Self.ZA]
         comptime nbz = (B * Self.ZA + TPB - 1) // TPB
         ctx.enqueue_function[bza](
-            _ltg[B * Self.LATENT](zp), _ltg[B * Self.ACT](ap),
-            _ltg[B * Self.ZA](_dpg(self.za)), self.action_scale,
-            grid_dim=nbz, block_dim=TPB,
+            _flat[B * Self.LATENT](z), _flat[B * Self.ACT](a),
+            self.za.lt["gpu", Layout.row_major(B * Self.ZA)](),
+            self.action_scale, grid_dim=nbz, block_dim=TPB,
         )
-        var za_t = TileTensor(_dpg(self.za), row_major[B, Self.ZA]())
-        var zn_t = TileTensor(znp, row_major[B, Self.LATENT]())
-        self.dyn[].forward["gpu", B](za_t, output=zn_t)
-        var rl_t = TileTensor(_dpg(self.rlog), row_major[B, Self.BINS]())
-        self.rew[].forward["gpu", B](za_t, output=rl_t)
-        var r_t = TileTensor(rp, row_major[B, 1]())
-        self.decode.forward["gpu", B](rl_t, output=r_t)
+        # dynamics → zout, copy into the planner's z_next_out
+        self.dyn[].forward["gpu", B](
+            TensorRefs[1](self.za), self.zout, Optional(ctx)
+        )
+        comptime nbl = (B * Self.LATENT + TPB - 1) // TPB
+        ctx.enqueue_function[_copy_in_k[B * Self.LATENT]](
+            self.zout.lt["gpu", Layout.row_major(B * Self.LATENT)](),
+            _flat[B * Self.LATENT](z_next_out), grid_dim=nbl, block_dim=TPB,
+        )
+        # reward → two-hot decode → r_out (build a Tensor view of r_out target)
+        self.rew[].forward["gpu", B](
+            TensorRefs[1](self.za), self.rlog, Optional(ctx)
+        )
+        self.decode.forward["gpu", B](
+            TensorRefs[1](self.rlog), self.qa, Optional(ctx)
+        )
+        comptime nbb = (B + TPB - 1) // TPB
+        ctx.enqueue_function[_copy_in_k[B]](
+            self.qa.lt["gpu", Layout.row_major(B)](),
+            r_out, grid_dim=nbb, block_dim=TPB,
+        )
 
-    def terminal_value_gpu[B: Int](
+    def terminal_value_gpu[
+        B: Int
+    ](
         mut self,
         ctx: DeviceContext,
         z: LayoutTensor[
@@ -370,40 +399,76 @@ struct TDMPC2RolloutCallbackGPU[
             % (Self.NUM_Q - 1)
         ) % Self.NUM_Q
 
-        var zp = mptr(z.ptr)
-        var vp = mptr(v_out.ptr)
         # action = tanh(mean) of π(z)
-        var pio_t = TileTensor(_dpg(self.pio), row_major[B, Self.POL]())
+        comptime nbc = (B * Self.LATENT + TPB - 1) // TPB
+        ctx.enqueue_function[_copy_in_k[B * Self.LATENT]](
+            _flat[B * Self.LATENT](z),
+            self.zin.lt["gpu", Layout.row_major(B * Self.LATENT)](),
+            grid_dim=nbc, block_dim=TPB,
+        )
         self.pol[].forward["gpu", B](
-            TileTensor(zp, row_major[B, Self.LATENT]()), output=pio_t
+            TensorRefs[1](self.zin), self.pio, Optional(ctx)
         )
         comptime ek = _extract_tanh_mean_k[B, Self.ACT, Self.POL]
         comptime nba = (B * Self.ACT + TPB - 1) // TPB
         ctx.enqueue_function[ek](
-            _ltg[B * Self.POL](_dpg(self.pio)),
-            _ltg[B * Self.ACT](_dpg(self.action)),
+            self.pio.lt["gpu", Layout.row_major(B * Self.POL)](),
+            self.action.lt["gpu", Layout.row_major(B * Self.ACT)](),
             grid_dim=nba, block_dim=TPB,
         )
         # za = [z, action·scale]
         comptime bza = _build_za_scaled_k[B, Self.LATENT, Self.ACT, Self.ZA]
         comptime nbz = (B * Self.ZA + TPB - 1) // TPB
         ctx.enqueue_function[bza](
-            _ltg[B * Self.LATENT](zp), _ltg[B * Self.ACT](_dpg(self.action)),
-            _ltg[B * Self.ZA](_dpg(self.za)), self.action_scale,
-            grid_dim=nbz, block_dim=TPB,
+            _flat[B * Self.LATENT](z),
+            self.action.lt["gpu", Layout.row_major(B * Self.ACT)](),
+            self.za.lt["gpu", Layout.row_major(B * Self.ZA)](),
+            self.action_scale, grid_dim=nbz, block_dim=TPB,
         )
-        var za_t = TileTensor(_dpg(self.za), row_major[B, Self.ZA]())
-        # avg of 2 (random) target-Q, two-hot decoded
-        var ql_t = TileTensor(_dpg(self.qlog), row_major[B, Self.BINS]())
-        var qa_t = TileTensor(_dpg(self.qa), row_major[B, 1]())
-        var qb_t = TileTensor(_dpg(self.qb), row_major[B, 1]())
-        self.qt[][qi].forward["gpu", B](za_t, output=ql_t)
-        self.decode.forward["gpu", B](ql_t, output=qa_t)
-        self.qt[][qj].forward["gpu", B](za_t, output=ql_t)
-        self.decode.forward["gpu", B](ql_t, output=qb_t)
+        # avg of 2 (random) target-Q, two-hot decoded. Comptime-guarded
+        # dispatch picks two DISTINCT head fields (qi, qj are runtime; unrolled
+        # NQ instantiations select the matching head).
+        self._q_decode_into[target_qa=True](qi, ctx)
+        self._q_decode_into[target_qa=False](qj, ctx)
         comptime ak = _avg2_k[B]
         comptime nbb = (B + TPB - 1) // TPB
         ctx.enqueue_function[ak](
-            _ltg[B](_dpg(self.qa)), _ltg[B](_dpg(self.qb)), _ltg[B](vp),
-            grid_dim=nbb, block_dim=TPB,
+            self.qa.lt["gpu", Layout.row_major(B)](),
+            self.qb.lt["gpu", Layout.row_major(B)](),
+            v_out, grid_dim=nbb, block_dim=TPB,
         )
+
+    def _q_decode_into[target_qa: Bool](
+        mut self, head: Int, ctx: DeviceContext
+    ) raises:
+        """forward the `head`-th target-Q (distinct field) on self.za, decode
+        into self.qa/qb. Runtime `head` → comptime-unrolled field select."""
+        # forward the matching distinct head into self.qlog.
+        if head == 0:
+            self.qt0[].forward["gpu", Self.BT](
+                TensorRefs[1](self.za), self.qlog, Optional(ctx)
+            )
+        elif head == 1:
+            self.qt1[].forward["gpu", Self.BT](
+                TensorRefs[1](self.za), self.qlog, Optional(ctx)
+            )
+        elif head == 2:
+            self.qt2[].forward["gpu", Self.BT](
+                TensorRefs[1](self.za), self.qlog, Optional(ctx)
+            )
+        elif head == 3:
+            self.qt3[].forward["gpu", Self.BT](
+                TensorRefs[1](self.za), self.qlog, Optional(ctx)
+            )
+        else:
+            self.qt4[].forward["gpu", Self.BT](
+                TensorRefs[1](self.za), self.qlog, Optional(ctx)
+            )
+        comptime if target_qa:
+            self.decode.forward["gpu", Self.BT](
+                TensorRefs[1](self.qlog), self.qa, Optional(ctx)
+            )
+        else:
+            self.decode.forward["gpu", Self.BT](
+                TensorRefs[1](self.qlog), self.qb, Optional(ctx)
+            )

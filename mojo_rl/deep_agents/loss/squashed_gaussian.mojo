@@ -63,19 +63,19 @@ def _clamp_log_std(ls: Scalar[DT]) -> Scalar[DT]:
 
 def squashed_gaussian_forward[ACT: Int, BATCH: Int](
     actor_output: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC, ...
     ],
     z: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC, ...
     ],
     action_scale: Scalar[DT],
     mut action: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        ...,
     ],
     mut log_prob: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        ...,
     ],
 ) raises:
     """Compute (action, log_prob) from (mu, log_std, z).
@@ -94,10 +94,12 @@ def squashed_gaussian_forward[ACT: Int, BATCH: Int](
     for b in range(BATCH):
         var lp: Scalar[DT] = 0.0
         for j in range(ACT):
-            var mu = actor_output[b, j]
-            var ls = _clamp_log_std(actor_output[b, ACT + j])
+            var mu = rebind[Scalar[DT]](actor_output[b, j])
+            var ls = _clamp_log_std(
+                rebind[Scalar[DT]](actor_output[b, ACT + j])
+            )
             var std = exp(ls)
-            var zj = z[b, j]
+            var zj = rebind[Scalar[DT]](z[b, j])
             var pre = mu + std * zj
             var y = ftanh(pre)
             action[b, j] = action_scale * y
@@ -113,21 +115,21 @@ def squashed_gaussian_forward[ACT: Int, BATCH: Int](
 
 def squashed_gaussian_backward[ACT: Int, BATCH: Int](
     actor_output: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC, ...
     ],
     z: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC, ...
     ],
     grad_action: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC, ...
     ],
     grad_log_prob: TileTensor[
-        dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
+        dtype=DT, address_space=AddressSpace.GENERIC, ...
     ],
     action_scale: Scalar[DT],
     mut grad_actor_output: TileTensor[
         mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, ...,
+        ...,
     ],
 ) raises:
     """Chain (grad_action, grad_log_prob) back to grad_[mu | log_std].
@@ -148,15 +150,15 @@ def squashed_gaussian_backward[ACT: Int, BATCH: Int](
     comptime assert ACT >= 1, "ACT >= 1"
 
     for b in range(BATCH):
-        var glp = grad_log_prob[b]
+        var glp = rebind[Scalar[DT]](grad_log_prob[b])
         for j in range(ACT):
-            var mu = actor_output[b, j]
-            var ls_raw = actor_output[b, ACT + j]
+            var mu = rebind[Scalar[DT]](actor_output[b, j])
+            var ls_raw = rebind[Scalar[DT]](actor_output[b, ACT + j])
             var ls = _clamp_log_std(ls_raw)
             var ls_clamped = (ls_raw < LOG_STD_MIN) or (ls_raw > LOG_STD_MAX)
 
             var std = exp(ls)
-            var zj = z[b, j]
+            var zj = rebind[Scalar[DT]](z[b, j])
             var pre = mu + std * zj
             var y = ftanh(pre)
             var one_minus_y2 = Scalar[DT](1.0) - y * y
@@ -170,7 +172,7 @@ def squashed_gaussian_backward[ACT: Int, BATCH: Int](
                 Scalar[DT](-1.0) + (Scalar[DT](2.0) * y * c_om * zj * std) / corr
             )
 
-            var ga = grad_action[b, j]
+            var ga = rebind[Scalar[DT]](grad_action[b, j])
             var gmu = ga * da_dmu + glp * dlp_dmu
             var gls = ga * da_dls + glp * dlp_dls
 

@@ -31,16 +31,23 @@ Sampling (σ, step indices, z0 noise) is the CALLER's job and is passed in as
 host buffers — this keeps the loss pure/deterministic so it can be checked
 against a PyTorch fixture to ≈1e-5.
 
-PHASE 2.3: CPU. GPU follows in Phase 2.4.
+STORAGE: the dynamics forward goes through the storage `Module` surface
+(`dyn.forward[target, BATCH](TensorRefs[1](in_t), out_t, ctx)`). `_run_fwd` bridges
+the loss's host-scratch buffers to two boundary `Tensor`s — on GPU it uploads
+the input + downloads the output (the transformer's heavy compute runs on
+device, the element-wise loss arithmetic stays on host, bit-identical to CPU).
 """
 
 from std.memory import alloc
 from std.math import max
-from layout import TileTensor, row_major
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.call import call_forward, call_vjp
 
 
 def _ilog2(n: Int) -> Int:
@@ -52,12 +59,59 @@ def _ilog2(n: Int) -> Int:
     return k
 
 
-trait ShortcutDynamics(Module):
+# Erase a host-scratch pointer's origin to MutAnyOrigin. The dynamics control
+# inputs (`set_indices`/`set_actions`/`set_agent_in`) take `MutAnyOrigin` host
+# pointers by contract (a deliberate raw-pointer boundary for host control I/O);
+# the loss's small index/host buffers are passed through here. This is the local
+# replacement for the legacy `nn.core.module.mptr` — no legacy-framework import.
+def _mao[
+    dt: DType, o: Origin
+](p: UnsafePointer[Scalar[dt], o]) -> UnsafePointer[Scalar[dt], MutAnyOrigin]:
+    return rebind[UnsafePointer[Scalar[dt], MutAnyOrigin]](p)
+
+
+trait ShortcutDynamics(Defaultable & Movable & ImplicitlyDeletable):
     """A dynamics module whose per-sample signal/step indices are pushed via
     `set_indices` before each forward (Dreamer4Dynamics). Optionally also
     accepts per-sample actions via `set_actions` for conditioned (labeled)
     dynamics pretrain — modules without action conditioning inherit the no-op
-    default."""
+    default.
+
+    NOTE (Mojo 1.0): this trait deliberately does NOT inherit `Module`. A trait
+    that refines `Module` (whose `IN_DIMS` is `InlineArray[Int, Self.ARITY]`)
+    crashes the compiler with "trait composition has conflicting types for
+    IN_DIMS" when used as a generic bound (`[M: ShortcutDynamics]`). Instead it
+    re-declares the slice of the `Module` surface the dynamics loops actually
+    call (`ARITY`/`OUT_DIM`/`ACT_DT` + `forward`/`vjp`); the concrete
+    `Dreamer4Dynamics` conforms to `Module` independently. Mirrors the same fix
+    applied to `nn.combinators.GraphDecl`."""
+
+    comptime ARITY: Int
+    comptime OUT_DIM: Int
+    comptime ACT_DT: DType = DT
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        inputs: TensorRefs[Self.ARITY, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ...
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[Self.ARITY, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[Self.ARITY, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ...
 
     def set_indices(
         mut self,
@@ -91,10 +145,9 @@ trait ShortcutDynamics(Module):
 
 trait AgentDynamics(ShortcutDynamics):
     """A `ShortcutDynamics` that also exposes the agent task-output embeddings
-    h_t after a CPU forward (Dreamer4Dynamics). Used by the imagination rollout
+    h_t after a forward (Dreamer4Dynamics). Used by the imagination rollout
     (`imag_rollout.mojo`), which reads h_t per state to drive the policy /
-    value / reward heads. (The affine fixture stub stays ShortcutDynamics-only;
-    only the real dynamics conforms here.)."""
+    value / reward heads."""
 
     def agent_out_ptr_cpu(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         ...
@@ -104,7 +157,26 @@ trait AgentDynamics(ShortcutDynamics):
 
 
 def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    return _mao(alloc[Scalar[DT]](n))
+
+
+def _dyn_fwd[
+    M: ShortcutDynamics, N: Int, o: MutOrigin, BDT: DType, //,
+    target: StaticString, B: Int,
+](
+    mut dyn: M,
+    refs: TensorRefs[N, o, BDT],
+    mut out: TensorImpl[BDT],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """`call_forward` restricted to `ShortcutDynamics` (which no longer refines
+    `Module` — see the trait note). Rebinds the (BDT) input pack + output to the
+    dynamics' `M.ACT_DT`, then calls `dyn.forward`. Mirrors `nn.core.call`."""
+    dyn.forward[target, B](
+        rebind[TensorRefs[M.ARITY, o, M.ACT_DT]](refs),
+        rebind[TensorImpl[M.ACT_DT]](out),
+        ctx,
+    )
 
 
 def _run_fwd[
@@ -114,41 +186,30 @@ def _run_fwd[
     in_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
     out_host: UnsafePointer[Scalar[DT], MutAnyOrigin],
     ctx: Optional[DeviceContext],
-    dev_in: Optional[DeviceBuffer[DT]],
-    dev_out: Optional[DeviceBuffer[DT]],
-    h_in: Optional[HostBuffer[DT]],
-    h_out: Optional[HostBuffer[DT]],
 ) raises:
-    """Run one dynamics forward. FWD="cpu": host tiles in place. FWD="gpu":
-    upload in_host→device, forward on GPU, download→out_host. The loss's
-    element-wise arithmetic stays on host either way (tiny latent buffers);
-    only the transformer forward (the heavy compute) runs on device."""
+    """Run one dynamics forward through the storage Module surface. Copies the
+    host input into a boundary `Tensor`, runs `dyn.forward[FWD, BATCH]`, and
+    copies the output `Tensor` back to `out_host`. FWD="cpu": the forward fills
+    `out_t.data` directly. FWD="gpu": upload input → device forward → download
+    output. Either way the loss's element-wise arithmetic stays on host (tiny
+    latent buffers), so the GPU path is bit-identical to CPU."""
+    comptime N = BATCH * ND
+    var in_t = Tensor.alloc(N)
+    for i in range(N):
+        in_t.data[i] = in_host[i]
     comptime if FWD == "cpu":
-        var it = TileTensor(in_host, row_major[BATCH, ND]())
-        var ot = TileTensor(out_host, row_major[BATCH, ND]())
-        dyn.forward["cpu", BATCH](it, output=ot)
+        var out_t = Tensor.alloc(N)
+        _dyn_fwd["cpu", BATCH](dyn, TensorRefs[M.ARITY](in_t), out_t, None)
+        for i in range(N):
+            out_host[i] = out_t.data[i]
     else:
         var c = ctx.value()
-        var hi = h_in.value()
-        var ho = h_out.value()
-        var di = dev_in.value()
-        var do_out = dev_out.value()
-        for i in range(BATCH * ND):
-            hi.unsafe_ptr()[i] = in_host[i]
-        c.enqueue_copy(di, hi)
-        var it = TileTensor(
-            mptr(di.unsafe_ptr()),
-            row_major[BATCH, ND](),
-        )
-        var ot = TileTensor(
-            mptr(do_out.unsafe_ptr()),
-            row_major[BATCH, ND](),
-        )
-        dyn.forward["gpu", BATCH](it, output=ot)
-        c.enqueue_copy(ho, do_out)
-        c.synchronize()
-        for i in range(BATCH * ND):
-            out_host[i] = ho.unsafe_ptr()[i]
+        in_t.upload(c)
+        var out_t = Tensor.alloc_gpu(c, N)
+        _dyn_fwd["gpu", BATCH](dyn, TensorRefs[M.ARITY](in_t), out_t, ctx)
+        out_t.download(c)
+        for i in range(N):
+            out_host[i] = out_t.data[i]
 
 
 def dynamics_pretrain_loss[
@@ -173,10 +234,6 @@ def dynamics_pretrain_loss[
     grad_zhat: UnsafePointer[Scalar[DT], MutAnyOrigin],  # OUT [BF, ND]  dL/dẑ
     zhat: UnsafePointer[Scalar[DT], MutAnyOrigin],  # OUT [BF, ND] main pred
     ctx: Optional[DeviceContext] = None,  # FWD="gpu" only
-    dev_in: Optional[DeviceBuffer[DT]] = None,  # device scratch [BF*ND]
-    dev_out: Optional[DeviceBuffer[DT]] = None,
-    h_in: Optional[HostBuffer[DT]] = None,  # host staging [BF*ND]
-    h_out: Optional[HostBuffer[DT]] = None,
     actions: Optional[
         UnsafePointer[Scalar[DT], MutAnyOrigin]
     ] = None,  # [BF,ADIM]
@@ -188,9 +245,9 @@ def dynamics_pretrain_loss[
     ] = None,  # [BF,AGDIM]
 ) raises -> Float64:
     """Shortcut-forcing loss. FWD="cpu" (default): all on host. FWD="gpu": the
-    dynamics forwards run on device (caller provides ctx + [BF*ND]-sized
-    dev_in/dev_out/h_in/h_out scratch); the element-wise loss arithmetic stays
-    on host (tiny latent buffers), so the GPU path is bit-identical to CPU.
+    dynamics forwards run on device (caller provides `ctx`); the element-wise
+    loss arithmetic stays on host (tiny latent buffers), so the GPU path is
+    bit-identical to CPU.
 
     CONDITIONED pretrain: with `ADIM>0` and `actions` (+`act_mask`) provided,
     each forward is preceded by `dyn.set_actions(...)` — the two half passes
@@ -259,16 +316,16 @@ def dynamics_pretrain_loss[
         comptime if COND:
             if actions:
                 dyn.set_actions(
-                    actions.value() + (B_EMP * T) * ADIM,
+                    _mao(actions.value() + (B_EMP * T) * ADIM),
                     act_mask.value(),
                     BS,
                 )
         comptime if AGCOND:
             if agent_in:
-                dyn.set_agent_in(agent_in.value() + (B_EMP * T) * AGDIM, BS)
-        _run_fwd[M, FWD, BS, ND](
-            dyn, zts, zh1, ctx, dev_in, dev_out, h_in, h_out
-        )
+                dyn.set_agent_in(
+                    _mao(agent_in.value() + (B_EMP * T) * AGDIM), BS
+                )
+        _run_fwd[M, FWD, BS, ND](dyn, zts, zh1, ctx)
         for j in range(BS):
             var denom = max(1.0 - sig_self_val[j], 1e-6)
             for i in range(ND):
@@ -282,16 +339,16 @@ def dynamics_pretrain_loss[
         comptime if COND:
             if actions:
                 dyn.set_actions(
-                    actions.value() + (B_EMP * T) * ADIM,
+                    _mao(actions.value() + (B_EMP * T) * ADIM),
                     act_mask.value(),
                     BS,
                 )
         comptime if AGCOND:
             if agent_in:
-                dyn.set_agent_in(agent_in.value() + (B_EMP * T) * AGDIM, BS)
-        _run_fwd[M, FWD, BS, ND](
-            dyn, zprime, zh2, ctx, dev_in, dev_out, h_in, h_out
-        )
+                dyn.set_agent_in(
+                    _mao(agent_in.value() + (B_EMP * T) * AGDIM), BS
+                )
+        _run_fwd[M, FWD, BS, ND](dyn, zprime, zh2, ctx)
         for j in range(BS):
             var denom = max(1.0 - sig_plus_val[j], 1e-6)
             for i in range(ND):
@@ -314,7 +371,7 @@ def dynamics_pretrain_loss[
     comptime if AGCOND:
         if agent_in:
             dyn.set_agent_in(agent_in.value(), BF)
-    _run_fwd[M, FWD, BF, ND](dyn, ztil, zhat, ctx, dev_in, dev_out, h_in, h_out)
+    _run_fwd[M, FWD, BF, ND](dyn, ztil, zhat, ctx)
 
     # ── losses + grad_zhat (= dL/dẑ for the main pass) ──────────────────
     # Both terms share a 1/(B*T) prefactor after the (B_emp/B)·(1/(B_emp·T))

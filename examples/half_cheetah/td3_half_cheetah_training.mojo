@@ -40,8 +40,8 @@ from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.primitives.tanh import Tanh
+from mojo_rl.nn.primitives.activations import ReLU
+from mojo_rl.nn.primitives.activations import Tanh
 from mojo_rl.deep_agents.td3 import TD3Agent
 from mojo_rl.deep_agents.training.blocks import UniformSampleCpuStep
 from mojo_rl.envs.half_cheetah import HalfCheetah, HalfCheetahConfig
@@ -119,7 +119,7 @@ def main() raises:
     logger.set_config("batch", String(BATCH))
     logger.set_config("policy_delay", "2")
 
-    var logger_ptr = UnsafePointer(to=logger)
+    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
     # ─── Agent + env ─────────────────────────────────────────────────────
     var agent = TD3Agent[

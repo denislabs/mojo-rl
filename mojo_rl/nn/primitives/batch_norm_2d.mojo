@@ -1,88 +1,85 @@
 """BatchNorm2D[C, H, W, MOMENTUM, EPSILON] — per-channel BN for spatial inputs.
 
-Phase 5 of `nn/PORTING_PLAN.md`. Mirrors `batch_norm_1d.mojo`'s
-surface — γ/β as `Param`s with `decay=False`, running_mean/var as
-decay-exempt zero-grad `Param`s too (M1 — they ride the `for_each_param`
-walk into the v2 checkpoint envelope; the optimizer visits them but BN
-backward never writes their grad, so they stay BIT-EXACT and evolve only
-via the forward EMA), per-instance `training: Bool`, `cache_is_training`
-flag.
-
-The only structural difference vs BN1D is the reduction axis: stats
-are reduced over batch *and* spatial position (H·W), giving
-`N_eff = BATCH · H · W` samples per channel. Forward and backward are
-otherwise the standard BN formulas, applied per channel.
-
-Comptime shape: input `[BATCH, C, H, W]` flattened to `[BATCH, C·H·W]`;
-output is the same shape. Used after every `Conv2D` in a CNN trunk
-(NatureDQN doesn't use it, but ResNet-style trunks do).
-
-GPU layout: one block per channel, threads stride over BATCH·SPATIAL
-samples and reduce via `block.sum[block_size=BN2D_TPB]`.
+Transformed from legacy `nn.primitives.BatchNorm2D` (surface-only change). The
+per-channel reduction over batch×spatial, the multi-block GPU reduction
+(partial → finalize → scatter, the Σx/Σx² one-pass variance form), the finite-
+guarded EMA, and the train/eval split are all carried over verbatim. Same State
+treatment as BatchNorm1D: γ/β are Param (optimized); running_mean/var are
+owned `Tensor`s evolved only by the forward EMA (not optimized).
 """
 
 from std.math import sqrt
-from std.gpu import thread_idx, block_idx
+from std.gpu import thread_idx, block_idx, global_idx
 from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
+from std.sys.info import has_nvidia_gpu_accelerator
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
-from ..core import (
-    Initializer,
-    AMPPolicy,
-    NoAMP,
-    Param,
-    State,
-    ParamVisitor,
-    for_each_param_auto,
-    zero_grad_auto,
-)
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
-    ensure_cpu_buffer,
-)
+from mojo_rl.nn.constants import DT, LAYOUT_NCHW, LAYOUT_NHWC
+from ..core.tensor import Tensor, TensorImpl
+from .linear import _cast_f2b_kernel, _cast_b2f_kernel
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.state import State
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 comptime BN2D_DEFAULT_EPS: Float64 = 1e-5
 comptime BN2D_DEFAULT_MOM: Float64 = 0.1
 comptime BN2D_TPB: Int = 128
-# Reduction blocks per channel (batch-shards). The training stats/grad
-# reductions split each channel's BATCH·SPATIAL reduction across up to this
-# many blocks (one per contiguous batch-row shard) → grid = C·G blocks instead
-# of C, fixing the one-block-per-channel occupancy collapse on large C/spatial.
 comptime BN2D_RBLOCKS: Int = 64
+# NHWC coalesced reduction: row-chunk count (= partial-buffer rows). The NHWC
+# reduction is transposed (thread-per-channel, coalesced over the inner C axis);
+# CHUNKS sets its parallelism. 256 keeps the device busy while the partial scratch
+# [C*CHUNKS] stays small.
+comptime BN2D_NHWC_CHUNKS: Int = 256
+# NHWC-2D occupancy fix (NVIDIA only). The 1-warp transposed reduction above is
+# block_dim=C (1 warp, ~16k threads) → thread-starved vs the NCHW G-grouped path's
+# ~262k. The 2D kernel uses block_dim = BN2D_NHWC_BLK = ROWS row-groups × C
+# channels, each (rg,c) thread writing its OWN partial → 8 warps/block (C=32) =
+# full occupancy, then a parallel block.sum finalize (grid=C). NVIDIA A/B (256
+# chunks, the tuned sweet spot): NHWC-2D is 1.6-2x faster than the 1-warp and
+# 0.98-1.50x vs the real NCHW BN (rep24/C4 at/under parity). Metal-gated OFF: the
+# 2D launch ICEs the Metal backend in a large module, and Apple keeps the proven
+# 1-warp kernel anyway — so the gate (has_nvidia_gpu_accelerator) means the 2D is
+# never codegen'd for Metal. Requires C | BN2D_NHWC_BLK (else falls back to 1-warp).
+comptime BN2D_NHWC_BLK: Int = 256
 
 
-# ──────────────────────────────────────────────────────────────────────
-# GPU kernels — one block per channel, threads stride over the joint
-# (batch, spatial) sample axis. Flat storage layout `[BATCH, C, SPATIAL]`
-# is consumed via explicit address arithmetic so the LayoutTensor stays
-# at a single 1-D shape we can index directly.
-# ──────────────────────────────────────────────────────────────────────
+@always_inline
+def _bn_off[LAYOUT: Int, C: Int, SPATIAL: Int](c: Int, s: Int) -> Int:
+    """Within-sample flat offset of (channel c, spatial s). NCHW c*SPATIAL+s
+    (channel-outer, spatial contiguous) | NHWC s*C+c (channel-inner). The per-
+    channel stats (mean/var/γ/β/running) are indexed by `c` alone, so this single
+    offset is BN2D's ONLY layout-sensitive quantity. NCHW reproduces the prior
+    formula exactly (bit-identical).
+
+    NOTE (perf): the block-per-channel reduction/normalize kernels stay coalesced
+    for NCHW (spatial contiguous) but become stride-C *uncoalesced* for NHWC. This
+    offset-swap is correctness-first; the coalesced NHWC transposed reduction
+    (the 3–5× win — see bench_bn_pool_nhwc_parity_gpu.mojo) is a follow-up that
+    swaps only the NHWC reduction kernel, not this layout-agnostic structure."""
+    comptime if LAYOUT == LAYOUT_NHWC:
+        return s * C + c
+    else:
+        return c * SPATIAL + s
 
 
-# ── Multi-block training forward: partial → finalize → normalize. ──
-# Splits each channel's BATCH·SPATIAL reduction across G batch-shards
-# (G = min(BATCH, BN2D_RBLOCKS)) so the grid is C·G blocks, not C. Stats use
-# the Σx / Σx² one-pass form (var = E[x²] − E[x]², clamped ≥ 0) — one read of
-# the input for stats, one for normalize (was 3 reads in the old single-block
-# kernel). Not bit-identical to the CPU two-pass reference (reduction order +
-# E[x²]−E[x]² differ), but matches within ~1e-3 (see test_batch_norm_2d_multiblock).
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _bn2d_partial_stats_kernel[
-    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int, G: Int,
+    BATCH: Int,
+    C: Int,
+    SPATIAL: Int,
+    FLAT: Int,
+    G: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
-    partial_sum:   LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    partial_sum: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
     partial_sumsq: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
 ):
-    """Pass 1: block (c, g) reduces channel c's batch rows [g·bpb, (g+1)·bpb)
-    over all SPATIAL → Σx, Σx² into partial_{sum,sumsq}[c·G+g]. grid=(C·G,)."""
     var blk = Int(block_idx.x)
     var c = blk // G
     var g = blk % G
@@ -94,13 +91,12 @@ def _bn2d_partial_stats_kernel[
     var b1 = b0 + bpb
     if b1 > BATCH:
         b1 = BATCH
-    var c_off = c * SPATIAL
-    var my_sum: Scalar[DT] = 0.0
-    var my_sumsq: Scalar[DT] = 0.0
+    var my_sum: input.element_type = 0.0
+    var my_sumsq: input.element_type = 0.0
     for b in range(b0, b1):
         var s = t
         while s < SPATIAL:
-            var x = rebind[Scalar[DT]](input[b, c_off + s])
+            var x = input[b, _bn_off[LAYOUT, C, SPATIAL](c, s)]
             my_sum += x
             my_sumsq += x * x
             s += BN2D_TPB
@@ -112,64 +108,81 @@ def _bn2d_partial_stats_kernel[
 
 
 def _bn2d_finalize_stats_kernel[
-    BATCH: Int, C: Int, SPATIAL: Int, G: Int,
-    EPSILON: Float64, MOMENTUM: Float64,
+    BATCH: Int,
+    C: Int,
+    SPATIAL: Int,
+    G: Int,
+    EPSILON: Float64,
 ](
-    partial_sum:   LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    partial_sum: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
     partial_sumsq: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
-    running_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
-    running_var:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
-    cache_mean:    LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
 ):
-    """Pass 2: one block per channel sums its G partials → mean, var
-    (E[x²]−E[x]², clamped ≥0), inv_std; folds the finite-guarded running-stat
-    EMA. grid=(C,), block=(1,)."""
     var c = Int(block_idx.x)
     if c >= C:
         return
     if Int(thread_idx.x) != 0:
         return
-    var s: Scalar[DT] = 0.0
-    var sq: Scalar[DT] = 0.0
+    var s: partial_sum.element_type = 0.0
+    var sq: partial_sumsq.element_type = 0.0
     for g in range(G):
-        s += rebind[Scalar[DT]](partial_sum[c * G + g])
-        sq += rebind[Scalar[DT]](partial_sumsq[c * G + g])
+        s += partial_sum[c * G + g]
+        sq += partial_sumsq[c * G + g]
     var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(BATCH * SPATIAL))
     var mean = s * inv_n
     var var_ = sq * inv_n - mean * mean
     if var_ < Scalar[DT](0.0):
         var_ = Scalar[DT](0.0)
-    var inv_std: Scalar[DT] = 1.0 / sqrt(var_ + Scalar[DT](EPSILON))
+    var eps: partial_sum.element_type = Scalar[DT](EPSILON)
+    var inv_std: partial_sum.element_type = 1.0 / sqrt(var_ + eps)
     cache_mean[c] = mean
+    cache_var[c] = var_
     cache_inv_std[c] = inv_std
-    # finite-guarded EMA (see the old single-block kernel's note): a float32
-    # blow-up makes batch stats non-finite → folding them pins running_* at ±inf
-    # → eval BN = inf·0 = NaN forever. Skip non-finite updates (`x-x==0` ⇔ finite).
-    if (mean - mean == Scalar[DT](0.0)) and (var_ - var_ == Scalar[DT](0.0)):
-        var mom = Scalar[DT](MOMENTUM)
-        var one_m = Scalar[DT](1.0) - mom
-        running_mean[c] = (
-            one_m * rebind[Scalar[DT]](running_mean[c]) + mom * mean
-        )
-        running_var[c] = (
-            one_m * rebind[Scalar[DT]](running_var[c]) + mom * var_
-        )
+
+
+def _bn2d_update_running_kernel[
+    C: Int,
+    MOMENTUM: Float64,
+](
+    cache_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    """Running-stat EMA, in its OWN kernel (one thread / channel). Split out of
+    `_bn2d_finalize_stats_kernel`: when that kernel ran the EMA inside its
+    reduction body, the running_mean/running_var read-modify-write STORES were
+    dropped by the NVIDIA backend at the B>64 (G=64) instantiation — running
+    stats stayed pinned at init (0/1), so eval (running-stat) accuracy collapsed
+    while train (batch-stat) accuracy was fine. As the kernel's sole job the
+    stores survive. Unconditional (matches the CPU path; no NaN guard)."""
+    var c = Int(block_idx.x)
+    if c >= C:
+        return
+    var mom = Scalar[DT](MOMENTUM)
+    var one_m = Scalar[DT](1.0) - mom
+    running_mean[c] = one_m * running_mean[c] + mom * cache_mean[c]
+    running_var[c] = one_m * running_var[c] + mom * cache_var[c]
 
 
 def _bn2d_normalize_kernel[
-    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int, G: Int,
+    BATCH: Int,
+    C: Int,
+    SPATIAL: Int,
+    FLAT: Int,
+    G: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
-    beta:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
-    cache_mean:    LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    beta: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
 ):
-    """Pass 3: block (c, g) over batch rows [g·bpb,…) writes x̂ = (x−μ)·inv_std
-    into cache + output = γ·x̂ + β. grid=(C·G,)."""
     var blk = Int(block_idx.x)
     var c = blk // G
     var g = blk % G
@@ -181,65 +194,70 @@ def _bn2d_normalize_kernel[
     var b1 = b0 + bpb
     if b1 > BATCH:
         b1 = BATCH
-    var c_off = c * SPATIAL
-    var mean = rebind[Scalar[DT]](cache_mean[c])
-    var inv_std = rebind[Scalar[DT]](cache_inv_std[c])
-    var gm = rebind[Scalar[DT]](gamma[c])
-    var bt = rebind[Scalar[DT]](beta[c])
+    var mean = cache_mean[c]
+    var inv_std = cache_inv_std[c]
+    var gm = gamma[c]
+    var bt = beta[c]
     for b in range(b0, b1):
         var s = t
         while s < SPATIAL:
-            var off = c_off + s
-            var xh = (rebind[Scalar[DT]](input[b, off]) - mean) * inv_std
+            var off = _bn_off[LAYOUT, C, SPATIAL](c, s)
+            var xh = (input[b, off] - mean) * inv_std
             cache_xhat[b, off] = xh
             output[b, off] = gm * xh + bt
             s += BN2D_TPB
 
 
 def _bn2d_forward_eval_kernel[
-    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int, EPSILON: Float64,
+    BATCH: Int,
+    C: Int,
+    SPATIAL: Int,
+    FLAT: Int,
+    EPSILON: Float64,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
-    beta:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    beta: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     running_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
-    running_var:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
 ):
     var c = Int(block_idx.x)
     var t = Int(thread_idx.x)
     if c >= C:
         return
     var eps = Scalar[DT](EPSILON)
-    var rm = rebind[Scalar[DT]](running_mean[c])
-    var rv = rebind[Scalar[DT]](running_var[c])
-    var inv_std: Scalar[DT] = 1.0 / sqrt(rv + eps)
-    var g = rebind[Scalar[DT]](gamma[c])
-    var bt = rebind[Scalar[DT]](beta[c])
-    var c_off = c * SPATIAL
+    var rm = running_mean[c]
+    var rv = running_var[c]
+    var inv_std: input.element_type = 1.0 / sqrt(rv + eps)
+    var g = gamma[c]
+    var bt = beta[c]
     for b in range(BATCH):
         var s = t
         while s < SPATIAL:
-            var off = c_off + s
-            var x = rebind[Scalar[DT]](input[b, off])
+            var off = _bn_off[LAYOUT, C, SPATIAL](c, s)
+            var x = input[b, off]
             output[b, off] = g * (x - rm) * inv_std + bt
             s += BN2D_TPB
 
 
-# ── Multi-block backward: partial → finalize → scatter (mirrors forward). ──
 def _bn2d_bwd_partial_kernel[
-    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int, G: Int,
+    BATCH: Int,
+    C: Int,
+    SPATIAL: Int,
+    FLAT: Int,
+    G: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     cache_xhat: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
-    p_dxhat:     LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    p_dxhat: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
     p_dxhat_xhat: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
-    p_dgamma:    LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
-    p_dbeta:     LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    p_dgamma: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    p_dbeta: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
 ):
-    """Pass 1: block (c, g) reduces its batch-shard → Σdx̂, Σdx̂·x̂, Σdγ, Σdβ
-    into the four partial[c·G+g] buffers. grid=(C·G,)."""
     var blk = Int(block_idx.x)
     var c = blk // G
     var g = blk % G
@@ -251,18 +269,17 @@ def _bn2d_bwd_partial_kernel[
     var b1 = b0 + bpb
     if b1 > BATCH:
         b1 = BATCH
-    var gm = rebind[Scalar[DT]](gamma[c])
-    var c_off = c * SPATIAL
-    var s_dxhat: Scalar[DT] = 0.0
-    var s_dxx: Scalar[DT] = 0.0
-    var s_dg: Scalar[DT] = 0.0
-    var s_db: Scalar[DT] = 0.0
+    var gm = gamma[c]
+    var s_dxhat: grad_output.element_type = 0.0
+    var s_dxx: grad_output.element_type = 0.0
+    var s_dg: grad_output.element_type = 0.0
+    var s_db: grad_output.element_type = 0.0
     for b in range(b0, b1):
         var s = t
         while s < SPATIAL:
-            var off = c_off + s
-            var dy = rebind[Scalar[DT]](grad_output[b, off])
-            var xh = rebind[Scalar[DT]](cache_xhat[b, off])
+            var off = _bn_off[LAYOUT, C, SPATIAL](c, s)
+            var dy = grad_output[b, off]
+            var xh = cache_xhat[b, off]
             var dxhat = dy * gm
             s_dxhat += dxhat
             s_dxx += dxhat * xh
@@ -281,43 +298,50 @@ def _bn2d_bwd_partial_kernel[
 
 
 def _bn2d_bwd_finalize_kernel[
-    BATCH: Int, C: Int, SPATIAL: Int, G: Int, mode: StaticString,
+    BATCH: Int,
+    C: Int,
+    SPATIAL: Int,
+    G: Int,
+    mode: StaticString,
 ](
-    p_dxhat:     LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    p_dxhat: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
     p_dxhat_xhat: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
-    p_dgamma:    LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
-    p_dbeta:     LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    p_dgamma: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
+    p_dbeta: LayoutTensor[DT, Layout.row_major(C * G), MutAnyOrigin],
     m1_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     m2_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     grad_gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
-    grad_beta:  LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_beta: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
 ):
-    """Pass 2: one block per channel sums its G partials → m1 = Σdx̂/N,
-    m2 = Σdx̂·x̂/N; accumulates grad_gamma/beta when mode=="all". grid=(C,)."""
     var c = Int(block_idx.x)
     if c >= C:
         return
     if Int(thread_idx.x) != 0:
         return
-    var sa: Scalar[DT] = 0.0
-    var sb: Scalar[DT] = 0.0
-    var sg: Scalar[DT] = 0.0
-    var sd: Scalar[DT] = 0.0
+    var sa: p_dxhat.element_type = 0.0
+    var sb: p_dxhat_xhat.element_type = 0.0
+    var sg: p_dgamma.element_type = 0.0
+    var sd: p_dbeta.element_type = 0.0
     for g in range(G):
-        sa += rebind[Scalar[DT]](p_dxhat[c * G + g])
-        sb += rebind[Scalar[DT]](p_dxhat_xhat[c * G + g])
-        sg += rebind[Scalar[DT]](p_dgamma[c * G + g])
-        sd += rebind[Scalar[DT]](p_dbeta[c * G + g])
-    var inv_n: Scalar[DT] = 1.0 / Scalar[DT](Float32(BATCH * SPATIAL))
+        sa += p_dxhat[c * G + g]
+        sb += p_dxhat_xhat[c * G + g]
+        sg += p_dgamma[c * G + g]
+        sd += p_dbeta[c * G + g]
+    var inv_n: Scalar[DT] = 1.0 / Scalar[DT](BATCH * SPATIAL)
     m1_out[c] = sa * inv_n
     m2_out[c] = sb * inv_n
     comptime if mode == "all":
-        grad_gamma[c] = rebind[Scalar[DT]](grad_gamma[c]) + sg
-        grad_beta[c] = rebind[Scalar[DT]](grad_beta[c]) + sd
+        grad_gamma[c] += sg
+        grad_beta[c] += sd
 
 
 def _bn2d_bwd_scatter_kernel[
-    BATCH: Int, C: Int, SPATIAL: Int, FLAT: Int, G: Int,
+    BATCH: Int,
+    C: Int,
+    SPATIAL: Int,
+    FLAT: Int,
+    G: Int,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](
     grad_output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
     gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
@@ -327,8 +351,6 @@ def _bn2d_bwd_scatter_kernel[
     m2: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
     grad_input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
 ):
-    """Pass 3: block (c, g) writes grad_input = inv_std·(dx̂ − m1 − x̂·m2)
-    over its batch-shard. grid=(C·G,)."""
     var blk = Int(block_idx.x)
     var c = blk // G
     var g = blk % G
@@ -340,465 +362,1060 @@ def _bn2d_bwd_scatter_kernel[
     var b1 = b0 + bpb
     if b1 > BATCH:
         b1 = BATCH
-    var gm = rebind[Scalar[DT]](gamma[c])
-    var inv_std = rebind[Scalar[DT]](cache_inv_std[c])
-    var mm1 = rebind[Scalar[DT]](m1[c])
-    var mm2 = rebind[Scalar[DT]](m2[c])
-    var c_off = c * SPATIAL
+    var gm = gamma[c]
+    var inv_std = cache_inv_std[c]
+    var mm1 = m1[c]
+    var mm2 = m2[c]
     for b in range(b0, b1):
         var s = t
         while s < SPATIAL:
-            var off = c_off + s
-            var dy = rebind[Scalar[DT]](grad_output[b, off])
-            var xh = rebind[Scalar[DT]](cache_xhat[b, off])
+            var off = _bn_off[LAYOUT, C, SPATIAL](c, s)
+            var dy = grad_output[b, off]
+            var xh = cache_xhat[b, off]
             var dxhat = dy * gm
             grad_input[b, off] = inv_std * (dxhat - mm1 - xh * mm2)
             s += BN2D_TPB
 
 
+# ── NHWC coalesced kernels (channels-last; the perf path for LAYOUT=NHWC) ────
+# The block-per-channel NCHW kernels above coalesce on NCHW (spatial contiguous)
+# but are stride-C UNCOALESCED on NHWC. These transpose the reduction: a "row"
+# r=(b*SP+s) is a contiguous C-vector at flat[r*C..], so thread-per-channel /
+# loop-rows makes consecutive threads read consecutive channels = coalesced
+# (cuDNN NHWC-BN pattern). Forward/backward stats reduce over CHUNKS row-chunks
+# then finalize per channel; normalize/scatter are flat thread-per-element. The
+# per-channel caches (mean/var/inv_std/γ/β/running) are layout-agnostic, so the
+# EMA kernel (_bn2d_update_running_kernel) is reused unchanged.
+def _bn2d_nhwc_partial_stats[
+    C: Int, R: Int, CHUNKS: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(R * C), MutAnyOrigin],
+    partial_sum: LayoutTensor[DT, Layout.row_major(CHUNKS * C), MutAnyOrigin],
+    partial_sumsq: LayoutTensor[DT, Layout.row_major(CHUNKS * C), MutAnyOrigin],
+):
+    var chunk = Int(block_idx.x)
+    var c = Int(thread_idx.x)
+    if c >= C:
+        return
+    comptime rpc = (R + CHUNKS - 1) // CHUNKS
+    var r0 = chunk * rpc
+    if r0 >= R:
+        partial_sum[chunk * C + c] = Scalar[DT](0.0)
+        partial_sumsq[chunk * C + c] = Scalar[DT](0.0)
+        return
+    var r1 = r0 + rpc
+    if r1 > R:
+        r1 = R
+    var s: Scalar[DT] = 0.0
+    var sq: Scalar[DT] = 0.0
+    for r in range(r0, r1):
+        var x = rebind[Scalar[DT]](input[r * C + c])
+        s += x
+        sq += x * x
+    partial_sum[chunk * C + c] = s
+    partial_sumsq[chunk * C + c] = sq
+
+
+def _bn2d_nhwc_finalize_stats[
+    C: Int, RTOT: Int, CHUNKS: Int, EPSILON: Float64,
+](
+    partial_sum: LayoutTensor[DT, Layout.row_major(CHUNKS * C), MutAnyOrigin],
+    partial_sumsq: LayoutTensor[DT, Layout.row_major(CHUNKS * C), MutAnyOrigin],
+    cache_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    var c = Int(global_idx.x)
+    if c >= C:
+        return
+    var s: Scalar[DT] = 0.0
+    var sq: Scalar[DT] = 0.0
+    for k in range(CHUNKS):
+        s += rebind[Scalar[DT]](partial_sum[k * C + c])
+        sq += rebind[Scalar[DT]](partial_sumsq[k * C + c])
+    var inv_n = Scalar[DT](1.0) / Scalar[DT](Float32(RTOT))
+    var mean = s * inv_n
+    var var_ = sq * inv_n - mean * mean
+    if var_ < Scalar[DT](0.0):
+        var_ = Scalar[DT](0.0)
+    cache_mean[c] = mean
+    cache_var[c] = var_
+    cache_inv_std[c] = Scalar[DT](1.0) / sqrt(var_ + Scalar[DT](EPSILON))
+
+
+# ── NHWC-2D forward stats (NVIDIA occupancy fix) — see BN2D_NHWC_BLK note ──────
+# block_dim = BN2D_NHWC_BLK = ROWS row-groups × C channels (lane = rg*C + c). Each
+# row-group strides its own row subset; thread (rg,c) writes its OWN partial at
+# (chunk*ROWS+rg)*C+c (no shared mem). Partial buffer = CHUNKS*ROWS*C =
+# CHUNKS*BN2D_NHWC_BLK. The cross-row-group reduction is the parallel finalize.
+def _bn2d_nhwc_partial_stats_2d[
+    C: Int, R: Int, CHUNKS: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(R * C), MutAnyOrigin],
+    partial_sum: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_NHWC_BLK), MutAnyOrigin
+    ],
+    partial_sumsq: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_NHWC_BLK), MutAnyOrigin
+    ],
+):
+    comptime ROWS = BN2D_NHWC_BLK // C
+    var chunk = Int(block_idx.x)
+    var lane = Int(thread_idx.x)
+    var c = lane % C
+    var rg = lane // C
+    comptime rpc = (R + CHUNKS - 1) // CHUNKS
+    var r0 = chunk * rpc
+    var r1 = r0 + rpc
+    if r1 > R:
+        r1 = R
+    var s: Scalar[DT] = 0.0
+    var sq: Scalar[DT] = 0.0
+    var r = r0 + rg
+    while r < r1:
+        var x = rebind[Scalar[DT]](input[r * C + c])
+        s += x
+        sq += x * x
+        r += ROWS
+    var pidx = (chunk * ROWS + rg) * C + c
+    partial_sum[pidx] = s
+    partial_sumsq[pidx] = sq
+
+
+# Parallel finalize: grid=C, one block per channel reduces its P = CHUNKS*ROWS
+# partials (strided by C) via block.sum. Writes the same mean/var/inv_std caches.
+def _bn2d_nhwc_finalize_stats_2d[
+    C: Int, RTOT: Int, P: Int, EPSILON: Float64,
+](
+    partial_sum: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    partial_sumsq: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    cache_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    var c = Int(block_idx.x)
+    if c >= C:
+        return
+    var t = Int(thread_idx.x)
+    var s: Scalar[DT] = 0.0
+    var sq: Scalar[DT] = 0.0
+    var k = t
+    while k < P:
+        s += rebind[Scalar[DT]](partial_sum[k * C + c])
+        sq += rebind[Scalar[DT]](partial_sumsq[k * C + c])
+        k += BN2D_TPB
+    var bs = block.sum[block_size=BN2D_TPB, broadcast=False](val=s)
+    var bsq = block.sum[block_size=BN2D_TPB, broadcast=False](val=sq)
+    if t == 0:
+        var inv_n = Scalar[DT](1.0) / Scalar[DT](Float32(RTOT))
+        var mean = bs[0] * inv_n
+        var var_ = bsq[0] * inv_n - mean * mean
+        if var_ < Scalar[DT](0.0):
+            var_ = Scalar[DT](0.0)
+        cache_mean[c] = mean
+        cache_var[c] = var_
+        cache_inv_std[c] = Scalar[DT](1.0) / sqrt(var_ + Scalar[DT](EPSILON))
+
+
+def _bn2d_nhwc_normalize[
+    C: Int, RC: Int,
+](
+    input: LayoutTensor[DT, Layout.row_major(RC), MutAnyOrigin],
+    output: LayoutTensor[DT, Layout.row_major(RC), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    beta: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_mean: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(RC), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= RC:
+        return
+    var c = idx % C
+    var xh = (
+        rebind[Scalar[DT]](input[idx]) - rebind[Scalar[DT]](cache_mean[c])
+    ) * rebind[Scalar[DT]](cache_inv_std[c])
+    cache_xhat[idx] = xh
+    output[idx] = rebind[Scalar[DT]](gamma[c]) * xh + rebind[Scalar[DT]](beta[c])
+
+
+def _bn2d_nhwc_bwd_partial[
+    C: Int, R: Int, CHUNKS: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(R * C), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(R * C), MutAnyOrigin],
+    p_dxhat: LayoutTensor[DT, Layout.row_major(CHUNKS * C), MutAnyOrigin],
+    p_dxhat_xhat: LayoutTensor[DT, Layout.row_major(CHUNKS * C), MutAnyOrigin],
+    p_dgamma: LayoutTensor[DT, Layout.row_major(CHUNKS * C), MutAnyOrigin],
+    p_dbeta: LayoutTensor[DT, Layout.row_major(CHUNKS * C), MutAnyOrigin],
+):
+    var chunk = Int(block_idx.x)
+    var c = Int(thread_idx.x)
+    if c >= C:
+        return
+    comptime rpc = (R + CHUNKS - 1) // CHUNKS
+    var r0 = chunk * rpc
+    if r0 >= R:
+        p_dxhat[chunk * C + c] = Scalar[DT](0.0)
+        p_dxhat_xhat[chunk * C + c] = Scalar[DT](0.0)
+        p_dgamma[chunk * C + c] = Scalar[DT](0.0)
+        p_dbeta[chunk * C + c] = Scalar[DT](0.0)
+        return
+    var r1 = r0 + rpc
+    if r1 > R:
+        r1 = R
+    var gm = rebind[Scalar[DT]](gamma[c])
+    var s_dxhat: Scalar[DT] = 0.0
+    var s_dxx: Scalar[DT] = 0.0
+    var s_dg: Scalar[DT] = 0.0
+    var s_db: Scalar[DT] = 0.0
+    for r in range(r0, r1):
+        var dy = rebind[Scalar[DT]](grad_output[r * C + c])
+        var xh = rebind[Scalar[DT]](cache_xhat[r * C + c])
+        var dxhat = dy * gm
+        s_dxhat += dxhat
+        s_dxx += dxhat * xh
+        s_dg += dy * xh
+        s_db += dy
+    p_dxhat[chunk * C + c] = s_dxhat
+    p_dxhat_xhat[chunk * C + c] = s_dxx
+    p_dgamma[chunk * C + c] = s_dg
+    p_dbeta[chunk * C + c] = s_db
+
+
+def _bn2d_nhwc_bwd_finalize[
+    C: Int, RTOT: Int, CHUNKS: Int, mode: StaticString,
+](
+    p_dxhat: LayoutTensor[DT, Layout.row_major(CHUNKS * C), MutAnyOrigin],
+    p_dxhat_xhat: LayoutTensor[DT, Layout.row_major(CHUNKS * C), MutAnyOrigin],
+    p_dgamma: LayoutTensor[DT, Layout.row_major(CHUNKS * C), MutAnyOrigin],
+    p_dbeta: LayoutTensor[DT, Layout.row_major(CHUNKS * C), MutAnyOrigin],
+    m1_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    m2_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_beta: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    var c = Int(global_idx.x)
+    if c >= C:
+        return
+    var sa: Scalar[DT] = 0.0
+    var sb: Scalar[DT] = 0.0
+    var sg: Scalar[DT] = 0.0
+    var sd: Scalar[DT] = 0.0
+    for k in range(CHUNKS):
+        sa += rebind[Scalar[DT]](p_dxhat[k * C + c])
+        sb += rebind[Scalar[DT]](p_dxhat_xhat[k * C + c])
+        sg += rebind[Scalar[DT]](p_dgamma[k * C + c])
+        sd += rebind[Scalar[DT]](p_dbeta[k * C + c])
+    var inv_n = Scalar[DT](1.0) / Scalar[DT](Float32(RTOT))
+    m1_out[c] = sa * inv_n
+    m2_out[c] = sb * inv_n
+    comptime if mode == "all":
+        grad_gamma[c] = rebind[Scalar[DT]](grad_gamma[c]) + sg
+        grad_beta[c] = rebind[Scalar[DT]](grad_beta[c]) + sd
+
+
+# ── NHWC-2D backward stats (NVIDIA occupancy fix), mirrors the forward 2D pair ──
+# block_dim = BN2D_NHWC_BLK = ROWS×C; thread (rg,c) reduces its strided row subset
+# of the 4 reductions (dxhat, dxhat·xhat, dgamma, dbeta) and writes per-(rg,c)
+# partials at (chunk*ROWS+rg)*C+c. Partial buffers = CHUNKS*BN2D_NHWC_BLK each.
+def _bn2d_nhwc_bwd_partial_2d[
+    C: Int, R: Int, CHUNKS: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(R * C), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(R * C), MutAnyOrigin],
+    p_dxhat: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_NHWC_BLK), MutAnyOrigin
+    ],
+    p_dxhat_xhat: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_NHWC_BLK), MutAnyOrigin
+    ],
+    p_dgamma: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_NHWC_BLK), MutAnyOrigin
+    ],
+    p_dbeta: LayoutTensor[
+        DT, Layout.row_major(CHUNKS * BN2D_NHWC_BLK), MutAnyOrigin
+    ],
+):
+    comptime ROWS = BN2D_NHWC_BLK // C
+    var chunk = Int(block_idx.x)
+    var lane = Int(thread_idx.x)
+    var c = lane % C
+    var rg = lane // C
+    comptime rpc = (R + CHUNKS - 1) // CHUNKS
+    var r0 = chunk * rpc
+    var r1 = r0 + rpc
+    if r1 > R:
+        r1 = R
+    var gm = rebind[Scalar[DT]](gamma[c])
+    var s_dxhat: Scalar[DT] = 0.0
+    var s_dxx: Scalar[DT] = 0.0
+    var s_dg: Scalar[DT] = 0.0
+    var s_db: Scalar[DT] = 0.0
+    var r = r0 + rg
+    while r < r1:
+        var dy = rebind[Scalar[DT]](grad_output[r * C + c])
+        var xh = rebind[Scalar[DT]](cache_xhat[r * C + c])
+        var dxhat = dy * gm
+        s_dxhat += dxhat
+        s_dxx += dxhat * xh
+        s_dg += dy * xh
+        s_db += dy
+        r += ROWS
+    var pidx = (chunk * ROWS + rg) * C + c
+    p_dxhat[pidx] = s_dxhat
+    p_dxhat_xhat[pidx] = s_dxx
+    p_dgamma[pidx] = s_dg
+    p_dbeta[pidx] = s_db
+
+
+# Parallel backward finalize: grid=C, block reduces its P = CHUNKS*ROWS partials
+# of all 4 sums via block.sum. Writes m1/m2; accumulates grad_γ/grad_β (mode=all).
+def _bn2d_nhwc_bwd_finalize_2d[
+    C: Int, RTOT: Int, P: Int, mode: StaticString,
+](
+    p_dxhat: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    p_dxhat_xhat: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    p_dgamma: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    p_dbeta: LayoutTensor[DT, Layout.row_major(P * C), MutAnyOrigin],
+    m1_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    m2_out: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_beta: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+):
+    var c = Int(block_idx.x)
+    if c >= C:
+        return
+    var t = Int(thread_idx.x)
+    var sa: Scalar[DT] = 0.0
+    var sb: Scalar[DT] = 0.0
+    var sg: Scalar[DT] = 0.0
+    var sd: Scalar[DT] = 0.0
+    var k = t
+    while k < P:
+        sa += rebind[Scalar[DT]](p_dxhat[k * C + c])
+        sb += rebind[Scalar[DT]](p_dxhat_xhat[k * C + c])
+        sg += rebind[Scalar[DT]](p_dgamma[k * C + c])
+        sd += rebind[Scalar[DT]](p_dbeta[k * C + c])
+        k += BN2D_TPB
+    var bsa = block.sum[block_size=BN2D_TPB, broadcast=False](val=sa)
+    var bsb = block.sum[block_size=BN2D_TPB, broadcast=False](val=sb)
+    var bsg = block.sum[block_size=BN2D_TPB, broadcast=False](val=sg)
+    var bsd = block.sum[block_size=BN2D_TPB, broadcast=False](val=sd)
+    if t == 0:
+        var inv_n = Scalar[DT](1.0) / Scalar[DT](Float32(RTOT))
+        m1_out[c] = bsa[0] * inv_n
+        m2_out[c] = bsb[0] * inv_n
+        comptime if mode == "all":
+            grad_gamma[c] = rebind[Scalar[DT]](grad_gamma[c]) + bsg[0]
+            grad_beta[c] = rebind[Scalar[DT]](grad_beta[c]) + bsd[0]
+
+
+def _bn2d_nhwc_bwd_scatter[
+    C: Int, RC: Int,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(RC), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    cache_xhat: LayoutTensor[DT, Layout.row_major(RC), MutAnyOrigin],
+    cache_inv_std: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    m1: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    m2: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(RC), MutAnyOrigin],
+):
+    var idx = Int(global_idx.x)
+    if idx >= RC:
+        return
+    var c = idx % C
+    var dy = rebind[Scalar[DT]](grad_output[idx])
+    var xh = rebind[Scalar[DT]](cache_xhat[idx])
+    var dxhat = dy * rebind[Scalar[DT]](gamma[c])
+    grad_input[idx] = rebind[Scalar[DT]](cache_inv_std[c]) * (
+        dxhat - rebind[Scalar[DT]](m1[c]) - xh * rebind[Scalar[DT]](m2[c])
+    )
+
+
 struct BatchNorm2D[
-    C: Int, H: Int, W: Int,
+    C_: Int,
+    H_: Int,
+    W_: Int,
     MOMENTUM: Float64 = BN2D_DEFAULT_MOM,
     EPSILON: Float64 = BN2D_DEFAULT_EPS,
+    ADT: DType = DT,
+    LAYOUT: Int = LAYOUT_NCHW,
 ](Module):
-    comptime ARITY: Int = 1
-    comptime FLAT_DIM: Int = Self.C * Self.H * Self.W
+    comptime ARITY = 1
+    comptime FLAT_DIM = Self.C_ * Self.H_ * Self.W_
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.FLAT_DIM)
     comptime OUT_DIM = Self.FLAT_DIM
-    comptime SPATIAL: Int = Self.H * Self.W
+    comptime SPATIAL = Self.H_ * Self.W_
+    # NHWC-2D occupancy path is on iff NVIDIA + channels-last + C divides the 2D
+    # block (else the 1-warp transposed kernel — the Apple/Metal path — is used).
+    comptime USE_2D_NHWC = (
+        Self.LAYOUT == LAYOUT_NHWC
+        and has_nvidia_gpu_accelerator()
+        and BN2D_NHWC_BLK % Self.C_ == 0
+    )
+    # Activation-flow dtype (AMP §3 fp32-INTERNAL): BN accepts/emits ACT_DT but
+    # computes stats/normalize in fp32 internally. ACT_DT == DT (default) →
+    # the cast wrappers collapse and the fp32 path is byte-identical.
+    comptime ACT_DT = Self.ADT
 
-    var gamma: Param["gamma", False, Self.C]
-    var beta:  Param["beta",  False, Self.C]
-    # Running stats — decay-exempt, zero-grad Params (M1); walked by
-    # for_each_param into the v2 checkpoint, never moved by the optimizer.
-    var running_mean: State["running_mean", Self.C]
-    var running_var:  State["running_var", Self.C]
-    var cache_xhat: List[Scalar[DT]]     # [BATCH, C, H, W] flat
-    var cache_inv_std: List[Scalar[DT]]  # [C]
-    var cache_xhat_dev: Optional[DeviceBuffer[DT]]
-    var cache_inv_std_dev: Optional[DeviceBuffer[DT]]
-    var cache_mean_dev: Optional[DeviceBuffer[DT]]   # [C] — multi-block forward
-    # Multi-block reduction scratch (all [C·BN2D_RBLOCKS] or [C]; G≤RBLOCKS used).
-    # Forward partials reuse psum/psumsq; backward adds dgamma/dbeta partials +
-    # m1/m2 channel buffers.
-    var bn_psum_dev:   Optional[DeviceBuffer[DT]]    # [C·RBLOCKS] Σx / Σdx̂
-    var bn_psumsq_dev: Optional[DeviceBuffer[DT]]    # [C·RBLOCKS] Σx² / Σdx̂·x̂
-    var bn_pdg_dev:    Optional[DeviceBuffer[DT]]    # [C·RBLOCKS] Σdγ
-    var bn_pdb_dev:    Optional[DeviceBuffer[DT]]    # [C·RBLOCKS] Σdβ
-    var bn_m1_dev:     Optional[DeviceBuffer[DT]]    # [C] backward m1
-    var bn_m2_dev:     Optional[DeviceBuffer[DT]]    # [C] backward m2
-    var cache_n_batch: Int
+    var gamma: Param["gamma", False, Self.C_]
+    var beta: Param["beta", False, Self.C_]
+    var running_mean: State["running_mean", Self.C_]  # [C] State
+    var running_var: State["running_var", Self.C_]  # [C] State
+    var cache_xhat: Tensor  # [BATCH, FLAT]
+    var cache_inv_std: Tensor  # [C]
+    var cache_mean: Tensor  # [C] (GPU multiblock normalize)
+    var cache_var: Tensor  # [C] (GPU: batch var, fed to the running-stat EMA)
+    # Multi-block reduction scratch ([C·RBLOCKS] or [C]).
+    var bn_psum: Tensor
+    var bn_psumsq: Tensor
+    var bn_pdg: Tensor
+    var bn_pdb: Tensor
+    var bn_m1: Tensor
+    var bn_m2: Tensor
     var cache_is_training: Bool
     var training: Bool
-    var ts: TargetStorage
 
     def __init__(out self):
-        self.gamma = Param["gamma", False, Self.C]()
-        self.beta  = Param["beta",  False, Self.C]()
-        self.running_mean = State["running_mean", Self.C]()
-        self.running_var  = State["running_var", Self.C]()
-        self.cache_xhat = List[Scalar[DT]]()
-        self.cache_inv_std = List[Scalar[DT]]()
-        self.cache_xhat_dev = None
-        self.cache_inv_std_dev = None
-        self.cache_mean_dev = None
-        self.bn_psum_dev = None
-        self.bn_psumsq_dev = None
-        self.bn_pdg_dev = None
-        self.bn_pdb_dev = None
-        self.bn_m1_dev = None
-        self.bn_m2_dev = None
-        self.cache_n_batch = 0
+        self.gamma = Param["gamma", False, Self.C_]()
+        self.beta = Param["beta", False, Self.C_]()
+        self.running_mean = State["running_mean", Self.C_]()
+        self.running_var = State["running_var", Self.C_]()
+        self.cache_xhat = Tensor()
+        self.cache_inv_std = Tensor()
+        self.cache_mean = Tensor()
+        self.cache_var = Tensor()
+        self.bn_psum = Tensor()
+        self.bn_psumsq = Tensor()
+        self.bn_pdg = Tensor()
+        self.bn_pdb = Tensor()
+        self.bn_m1 = Tensor()
+        self.bn_m2 = Tensor()
         self.cache_is_training = False
         self.training = True
-        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "BatchNorm2D: target must be 'cpu' or 'gpu'"
-        )
-        comptime assert Self.C > 0 and Self.H > 0 and Self.W > 0, (
-            "BatchNorm2D: C, H, W must all be > 0"
-        )
-        comptime assert Self.MOMENTUM > 0.0 and Self.MOMENTUM <= 1.0, (
-            "BatchNorm2D: MOMENTUM must be in (0, 1]"
-        )
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var bn = Self()
-        comptime if target == "cpu":
-            bn.gamma = Param["gamma", False, Self.C].make_cpu()
-            bn.beta  = Param["beta",  False, Self.C].make_cpu()
-            var g_ptr = bn.gamma.value_unsafe_ptr_cpu()
-            for k in range(Self.C):
-                g_ptr[k] = Scalar[DT](1.0)
-            bn.running_mean = State["running_mean", Self.C].make_cpu()
-            bn.running_var  = State["running_var", Self.C].make_cpu()
-            # make_cpu zero-fills value → running_mean already 0; set var←1.
-            var rv_ptr = bn.running_var.value_unsafe_ptr_cpu()
-            for k in range(Self.C):
-                rv_ptr[k] = Scalar[DT](1.0)
-            bn.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["BatchNorm2D.make[target='gpu']"](ctx)
-            bn.gamma = Param["gamma", False, Self.C].make_gpu(ctx_v)
-            bn.beta  = Param["beta",  False, Self.C].make_gpu(ctx_v)
-            bn.gamma.val.dev.value().enqueue_fill(1.0)
-            bn.beta.val.dev.value().enqueue_fill(0.0)
-            bn.running_mean = State["running_mean", Self.C].make_gpu(
-                ctx_v
+        bn.gamma = Param["gamma", False, Self.C_].make[target](ctx)
+        bn.beta = Param["beta", False, Self.C_].make[target](ctx)
+        for k in range(Self.C_):
+            bn.gamma.val.data[k] = Scalar[DT](1.0)
+        bn.running_mean = State["running_mean", Self.C_].make[target](ctx)
+        bn.running_var = State["running_var", Self.C_].make[target](ctx)
+        for k in range(Self.C_):
+            bn.running_var.t.data[k] = Scalar[DT](1.0)
+        comptime if target != "cpu":
+            var c = ctx.value()
+            bn.gamma.val.upload(c)
+            bn.beta.val.upload(c)
+            bn.running_mean.t.upload(c)
+            bn.running_var.t.upload(c)
+            # Multi-block scratch + channel caches. NCHW partials are [C*RBLOCKS]
+            # (channel-major, G batch-groups); NHWC partials are [C*CHUNKS]
+            # (chunk-major, transposed reduction) — size to the larger so one
+            # alloc serves both layouts.
+            # NHWC-2D partials are [CHUNKS*ROWS*C = CHUNKS*BN2D_NHWC_BLK] (per
+            # row-group); 1-warp NHWC are [C*CHUNKS]; NCHW are [C*RBLOCKS]. Size
+            # to whichever path is active so one alloc serves it (and the 4 bwd
+            # partial buffers reuse the same size).
+            comptime PR = (
+                BN2D_NHWC_CHUNKS * BN2D_NHWC_BLK if Self.USE_2D_NHWC
+                else Self.C_ * (
+                    BN2D_NHWC_CHUNKS if Self.LAYOUT
+                    == LAYOUT_NHWC else BN2D_RBLOCKS
+                )
             )
-            bn.running_var = State["running_var", Self.C].make_gpu(
-                ctx_v
-            )
-            bn.running_mean.t.dev.value().enqueue_fill(0.0)
-            bn.running_var.t.dev.value().enqueue_fill(1.0)
-            bn.cache_xhat_dev    = ctx_v.enqueue_create_buffer[DT](1)
-            bn.cache_inv_std_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
-            bn.cache_mean_dev    = ctx_v.enqueue_create_buffer[DT](Self.C)
-            comptime PR = Self.C * BN2D_RBLOCKS
-            bn.bn_psum_dev   = ctx_v.enqueue_create_buffer[DT](PR)
-            bn.bn_psumsq_dev = ctx_v.enqueue_create_buffer[DT](PR)
-            bn.bn_pdg_dev    = ctx_v.enqueue_create_buffer[DT](PR)
-            bn.bn_pdb_dev    = ctx_v.enqueue_create_buffer[DT](PR)
-            bn.bn_m1_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
-            bn.bn_m2_dev = ctx_v.enqueue_create_buffer[DT](Self.C)
-            bn.cache_n_batch = 0
-            bn.ts = TargetStorage.make_gpu(ctx_v)
+            bn.cache_inv_std.ensure_gpu(c, Self.C_)
+            bn.cache_mean.ensure_gpu(c, Self.C_)
+            bn.cache_var.ensure_gpu(c, Self.C_)
+            bn.bn_psum.ensure_gpu(c, PR)
+            bn.bn_psumsq.ensure_gpu(c, PR)
+            bn.bn_pdg.ensure_gpu(c, PR)
+            bn.bn_pdb.ensure_gpu(c, PR)
+            bn.bn_m1.ensure_gpu(c, Self.C_)
+            bn.bn_m2.ensure_gpu(c, Self.C_)
         return bn^
 
-    def _ensure_cache_gpu(mut self, batch: Int) raises:
-        if self.cache_n_batch < batch:
-            var ctx = self.ts.ctx.value()
-            self.cache_xhat_dev = ctx.enqueue_create_buffer[DT](
-                batch * Self.FLAT_DIM
-            )
-            self.cache_n_batch = batch
+    def set_training(mut self, v: Bool):
+        self.training = v
 
-    # ----- Forward ---------------------------------------------------------
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Named-attr hook so a parent `Sequential`/`Repeat`/… can toggle BN
+        train/eval via `net.set_attr["training"](1.0/0.0)` (the AZ CNN/ResNet
+        drivers' BN switch). `value != 0` → training (batch stats + running-stat
+        updates); else eval (running stats)."""
+        comptime if ATTR == "training":
+            self.training = value != Scalar[DT](0.0)
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["BatchNorm2D", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
-        comptime if target == "cpu":
-            var in_p = input.ptr
-            var out_p = output_v.ptr
-            var g_p = self.gamma.value_unsafe_ptr_cpu()
-            var b_p = self.bias_unsafe_ptr_cpu()
-            var rm_v = TileTensor(self.running_mean.t.cpu, row_major[Self.C]())
-            var rv_v = TileTensor(self.running_var.t.cpu,  row_major[Self.C]())
-            var eps = Scalar[DT](Self.EPSILON)
-            var n_eff = Scalar[DT](Float64(BATCH * Self.SPATIAL))
-            var inv_n = Scalar[DT](1.0) / n_eff
-            if self.training:
-                ensure_cpu_buffer(
-                    self.cache_xhat, BATCH * Self.FLAT_DIM,
+        # AMP §3 fp32-internal: ACT_DT==DT → bit-identical fp32 path; else cast
+        # the bf16 activation in→fp32, run the fp32 BN, cast out→bf16.
+        comptime if Self.ACT_DT == DT:
+            ref in0d = rebind[Tensor](inputs[0])
+            ref outd = rebind[Tensor](out)
+            self._forward_f32[target, B](in0d, outd, ctx)
+        else:
+            comptime N = B * Self.FLAT_DIM
+            # LOCAL fp32 scratch (not self-fields → no mut-self aliasing).
+            var in_f32 = Tensor()
+            in_f32.ensure[target](N, ctx)
+            var out_f32 = Tensor()
+            out_f32.ensure[target](N, ctx)
+            out.ensure[target](N, ctx)
+            ref in0 = inputs[0]
+            comptime if target == "cpu":
+                for i in range(N):
+                    in_f32.data[i] = in0.data[i].cast[DT]()
+            else:
+                var c = ctx.value()
+                c.enqueue_function[_cast_b2f_kernel[N]](
+                    in0.lt["gpu", Layout.row_major(N)](),
+                    in_f32.lt["gpu", Layout.row_major(N)](),
+                    grid_dim=(N + 255) // 256,
+                    block_dim=256,
                 )
-                ensure_cpu_buffer(self.cache_inv_std, Self.C)
-                var xhat_p = self.cache_xhat.unsafe_ptr()
+            self._forward_f32[target, B](in_f32, out_f32, ctx)
+            comptime if target == "cpu":
+                for i in range(N):
+                    out.data[i] = out_f32.data[i].cast[Self.ACT_DT]()
+            else:
+                var c = ctx.value()
+                c.enqueue_function[_cast_f2b_kernel[N]](
+                    out_f32.lt["gpu", Layout.row_major(N)](),
+                    out.lt["gpu", Layout.row_major(N)](),
+                    grid_dim=(N + 255) // 256,
+                    block_dim=256,
+                )
+
+    def _forward_f32[target: StaticString, B: Int](
+        mut self,
+        mut in0: Tensor,
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        var eps = Scalar[DT](Self.EPSILON)
+        comptime if target == "cpu":
+            out.ensure(B * Self.FLAT_DIM)
+            var in_p = in0.data.unsafe_ptr()
+            var out_p = out.data.unsafe_ptr()
+            var g_p = self.gamma.val.data.unsafe_ptr()
+            var b_p = self.beta.val.data.unsafe_ptr()
+            var rm_v = TileTensor(self.running_mean.t.data, row_major[Self.C_]())
+            var rv_v = TileTensor(self.running_var.t.data, row_major[Self.C_]())
+            var inv_n = Scalar[DT](1.0) / Scalar[DT](Float64(B * Self.SPATIAL))
+            if self.training:
+                self.cache_xhat.ensure(B * Self.FLAT_DIM)
+                self.cache_inv_std.ensure(Self.C_)
+                var xhat_p = self.cache_xhat.data.unsafe_ptr()
                 var inv_v = TileTensor(
-                    self.cache_inv_std, row_major[Self.C](),
+                    self.cache_inv_std.data, row_major[Self.C_]()
                 )
                 var mom = Scalar[DT](Self.MOMENTUM)
                 var one_m = Scalar[DT](1.0) - mom
-                for c in range(Self.C):
+                for c in range(Self.C_):
                     var g = g_p[c]
                     var bt = b_p[c]
                     var mean: Scalar[DT] = 0.0
-                    for b in range(BATCH):
-                        var base = (
-                            b * Self.FLAT_DIM + c * Self.SPATIAL
-                        )
+                    for b in range(B):
+                        var bb = b * Self.FLAT_DIM
                         for s in range(Self.SPATIAL):
-                            mean += in_p[base + s]
+                            mean += in_p[
+                                bb + _bn_off[Self.LAYOUT, Self.C_, Self.SPATIAL](c, s)
+                            ]
                     mean *= inv_n
                     var var_: Scalar[DT] = 0.0
-                    for b in range(BATCH):
-                        var base = (
-                            b * Self.FLAT_DIM + c * Self.SPATIAL
-                        )
+                    for b in range(B):
+                        var bb = b * Self.FLAT_DIM
                         for s in range(Self.SPATIAL):
-                            var d = in_p[base + s] - mean
+                            var d = (
+                                in_p[
+                                    bb
+                                    + _bn_off[Self.LAYOUT, Self.C_, Self.SPATIAL](
+                                        c, s
+                                    )
+                                ]
+                                - mean
+                            )
                             var_ += d * d
                     var_ *= inv_n
                     var inv_std = Scalar[DT](1.0) / sqrt(var_ + eps)
                     inv_v[c] = inv_std
-                    for b in range(BATCH):
-                        var base = (
-                            b * Self.FLAT_DIM + c * Self.SPATIAL
-                        )
+                    for b in range(B):
+                        var bb = b * Self.FLAT_DIM
                         for s in range(Self.SPATIAL):
-                            var xh = (in_p[base + s] - mean) * inv_std
-                            xhat_p[base + s] = xh
-                            out_p[base + s] = g * xh + bt
+                            var off = bb + _bn_off[
+                                Self.LAYOUT, Self.C_, Self.SPATIAL
+                            ](c, s)
+                            var xh = (in_p[off] - mean) * inv_std
+                            xhat_p[off] = xh
+                            out_p[off] = g * xh + bt
                     rm_v[c] = one_m * rm_v[c] + mom * mean
                     rv_v[c] = one_m * rv_v[c] + mom * var_
                 self.cache_is_training = True
             else:
-                for c in range(Self.C):
+                for c in range(Self.C_):
                     var rm = rm_v[c]
                     var rv = rv_v[c]
                     var inv_std = Scalar[DT](1.0) / sqrt(rv + eps)
                     var g = g_p[c]
                     var bt = b_p[c]
-                    for b in range(BATCH):
-                        var base = (
-                            b * Self.FLAT_DIM + c * Self.SPATIAL
-                        )
+                    for b in range(B):
+                        var bb = b * Self.FLAT_DIM
                         for s in range(Self.SPATIAL):
-                            out_p[base + s] = (
-                                g * (in_p[base + s] - rm) * inv_std + bt
-                            )
+                            var off = bb + _bn_off[
+                                Self.LAYOUT, Self.C_, Self.SPATIAL
+                            ](c, s)
+                            out_p[off] = g * (in_p[off] - rm) * inv_std + bt
         else:
-            comptime layout_2d = Layout.row_major(BATCH, Self.FLAT_DIM)
-            comptime layout_c  = Layout.row_major(Self.C)
-            var in_p_w  = input.ptr
-            var out_p_w = output_v.ptr
-            var in_lt  = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p_w)
-            var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p_w)
-            var g_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.gamma.val.dev.value()
-            )
-            var b_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.beta.val.dev.value()
-            )
-            var rm_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.running_mean.t.dev.value()
-            )
-            var rv_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.running_var.t.dev.value()
-            )
-            var ctx = self.ts.ctx.value()
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.FLAT_DIM)
+            comptime l2d = Layout.row_major(B, Self.FLAT_DIM)
+            comptime lc = Layout.row_major(Self.C_)
             if self.training:
-                self._ensure_cache_gpu(BATCH)
-                var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                    self.cache_xhat_dev.value()
-                )
-                var is_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                    self.cache_inv_std_dev.value()
-                )
-                var mean_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                    self.cache_mean_dev.value()
-                )
-                # G batch-shards per channel (≤ BATCH and ≤ BN2D_RBLOCKS).
-                comptime G = BATCH if BATCH < BN2D_RBLOCKS else BN2D_RBLOCKS
-                comptime layout_pr = Layout.row_major(Self.C * G)
-                var psum_lt = LayoutTensor[DT, layout_pr, MutAnyOrigin](
-                    self.bn_psum_dev.value()
-                )
-                var psumsq_lt = LayoutTensor[DT, layout_pr, MutAnyOrigin](
-                    self.bn_psumsq_dev.value()
-                )
-                # Pass 1: C·G blocks → partial Σx, Σx².
-                comptime pk = _bn2d_partial_stats_kernel[
-                    BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM, G,
-                ]
-                ctx.enqueue_function[pk](
-                    in_lt, psum_lt, psumsq_lt,
-                    grid_dim=Self.C * G, block_dim=BN2D_TPB,
-                )
-                # Pass 2: C blocks → mean/var/inv_std + running-stat EMA.
-                comptime ck = _bn2d_finalize_stats_kernel[
-                    BATCH, Self.C, Self.SPATIAL, G,
-                    Self.EPSILON, Self.MOMENTUM,
-                ]
-                ctx.enqueue_function[ck](
-                    psum_lt, psumsq_lt, rm_lt, rv_lt, mean_lt, is_lt,
-                    grid_dim=Self.C, block_dim=1,
-                )
-                # Pass 3: C·G blocks → normalize + cache x̂.
-                comptime nk = _bn2d_normalize_kernel[
-                    BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM, G,
-                ]
-                ctx.enqueue_function[nk](
-                    in_lt, out_lt, g_lt, b_lt, mean_lt, is_lt, xh_lt,
-                    grid_dim=Self.C * G, block_dim=BN2D_TPB,
-                )
+                self.cache_xhat.ensure_gpu(c, B * Self.FLAT_DIM)
+                comptime if Self.LAYOUT == LAYOUT_NHWC:
+                    # Coalesced transposed reduction (channels-last perf path).
+                    comptime CH = BN2D_NHWC_CHUNKS
+                    comptime R = B * Self.SPATIAL
+                    comptime RC = B * Self.FLAT_DIM
+                    comptime lrc = Layout.row_major(RC)
+                    comptime if Self.USE_2D_NHWC:
+                        # NVIDIA occupancy path: per-row-group partials + parallel
+                        # block.sum finalize (grid=C). See BN2D_NHWC_BLK note.
+                        comptime ROWS = BN2D_NHWC_BLK // Self.C_
+                        comptime P = CH * ROWS
+                        comptime lpr2 = Layout.row_major(CH * BN2D_NHWC_BLK)
+                        c.enqueue_function[
+                            _bn2d_nhwc_partial_stats_2d[Self.C_, R, CH]
+                        ](
+                            in0.lt["gpu", lrc](),
+                            self.bn_psum.lt["gpu", lpr2](),
+                            self.bn_psumsq.lt["gpu", lpr2](),
+                            grid_dim=CH,
+                            block_dim=BN2D_NHWC_BLK,
+                        )
+                        c.enqueue_function[
+                            _bn2d_nhwc_finalize_stats_2d[
+                                Self.C_, R, P, Self.EPSILON
+                            ]
+                        ](
+                            self.bn_psum.lt["gpu", lpr2](),
+                            self.bn_psumsq.lt["gpu", lpr2](),
+                            self.cache_mean.lt["gpu", lc](),
+                            self.cache_var.lt["gpu", lc](),
+                            self.cache_inv_std.lt["gpu", lc](),
+                            grid_dim=Self.C_,
+                            block_dim=BN2D_TPB,
+                        )
+                    else:
+                        comptime lprn = Layout.row_major(CH * Self.C_)
+                        c.enqueue_function[
+                            _bn2d_nhwc_partial_stats[Self.C_, R, CH]
+                        ](
+                            in0.lt["gpu", lrc](),
+                            self.bn_psum.lt["gpu", lprn](),
+                            self.bn_psumsq.lt["gpu", lprn](),
+                            grid_dim=CH,
+                            block_dim=Self.C_,
+                        )
+                        c.enqueue_function[
+                            _bn2d_nhwc_finalize_stats[
+                                Self.C_, R, CH, Self.EPSILON
+                            ]
+                        ](
+                            self.bn_psum.lt["gpu", lprn](),
+                            self.bn_psumsq.lt["gpu", lprn](),
+                            self.cache_mean.lt["gpu", lc](),
+                            self.cache_var.lt["gpu", lc](),
+                            self.cache_inv_std.lt["gpu", lc](),
+                            grid_dim=(Self.C_ + BN2D_TPB - 1) // BN2D_TPB,
+                            block_dim=BN2D_TPB,
+                        )
+                    c.enqueue_function[
+                        _bn2d_update_running_kernel[Self.C_, Self.MOMENTUM]
+                    ](
+                        self.cache_mean.lt["gpu", lc](),
+                        self.cache_var.lt["gpu", lc](),
+                        self.running_mean.t.lt["gpu", lc](),
+                        self.running_var.t.lt["gpu", lc](),
+                        grid_dim=Self.C_,
+                        block_dim=1,
+                    )
+                    c.enqueue_function[_bn2d_nhwc_normalize[Self.C_, RC]](
+                        in0.lt["gpu", lrc](),
+                        out.lt["gpu", lrc](),
+                        self.gamma.val.lt["gpu", lc](),
+                        self.beta.val.lt["gpu", lc](),
+                        self.cache_mean.lt["gpu", lc](),
+                        self.cache_inv_std.lt["gpu", lc](),
+                        self.cache_xhat.lt["gpu", lrc](),
+                        grid_dim=(RC + BN2D_TPB - 1) // BN2D_TPB,
+                        block_dim=BN2D_TPB,
+                    )
+                else:
+                    comptime G = B if B < BN2D_RBLOCKS else BN2D_RBLOCKS
+                    comptime lpr = Layout.row_major(Self.C_ * G)
+                    # Pass 1: partial Σx, Σx².
+                    c.enqueue_function[
+                        _bn2d_partial_stats_kernel[
+                            B,
+                            Self.C_,
+                            Self.SPATIAL,
+                            Self.FLAT_DIM,
+                            G,
+                            Self.LAYOUT,
+                        ]
+                    ](
+                        in0.lt["gpu", l2d](),
+                        self.bn_psum.lt["gpu", lpr](),
+                        self.bn_psumsq.lt["gpu", lpr](),
+                        grid_dim=Self.C_ * G,
+                        block_dim=BN2D_TPB,
+                    )
+                    # Pass 2: mean/var/inv_std (caches only — NO running write).
+                    c.enqueue_function[
+                        _bn2d_finalize_stats_kernel[
+                            B,
+                            Self.C_,
+                            Self.SPATIAL,
+                            G,
+                            Self.EPSILON,
+                        ]
+                    ](
+                        self.bn_psum.lt["gpu", lpr](),
+                        self.bn_psumsq.lt["gpu", lpr](),
+                        self.cache_mean.lt["gpu", lc](),
+                        self.cache_var.lt["gpu", lc](),
+                        self.cache_inv_std.lt["gpu", lc](),
+                        grid_dim=Self.C_,
+                        block_dim=1,
+                    )
+                    # Pass 2b: running-stat EMA in a DEDICATED kernel (see kernel
+                    # docstring — folding it into pass 2 dropped the stores on
+                    # NVIDIA at B>64, pinning running stats at init).
+                    c.enqueue_function[
+                        _bn2d_update_running_kernel[Self.C_, Self.MOMENTUM]
+                    ](
+                        self.cache_mean.lt["gpu", lc](),
+                        self.cache_var.lt["gpu", lc](),
+                        self.running_mean.t.lt["gpu", lc](),
+                        self.running_var.t.lt["gpu", lc](),
+                        grid_dim=Self.C_,
+                        block_dim=1,
+                    )
+                    # Pass 3: normalize + cache x̂.
+                    c.enqueue_function[
+                        _bn2d_normalize_kernel[
+                            B,
+                            Self.C_,
+                            Self.SPATIAL,
+                            Self.FLAT_DIM,
+                            G,
+                            Self.LAYOUT,
+                        ]
+                    ](
+                        in0.lt["gpu", l2d](),
+                        out.lt["gpu", l2d](),
+                        self.gamma.val.lt["gpu", lc](),
+                        self.beta.val.lt["gpu", lc](),
+                        self.cache_mean.lt["gpu", lc](),
+                        self.cache_inv_std.lt["gpu", lc](),
+                        self.cache_xhat.lt["gpu", l2d](),
+                        grid_dim=Self.C_ * G,
+                        block_dim=BN2D_TPB,
+                    )
                 self.cache_is_training = True
             else:
-                comptime ekernel = _bn2d_forward_eval_kernel[
-                    BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM,
-                    Self.EPSILON,
-                ]
-                ctx.enqueue_function[ekernel](
-                    in_lt, out_lt, g_lt, b_lt, rm_lt, rv_lt,
-                    grid_dim=Self.C, block_dim=BN2D_TPB,
+                c.enqueue_function[
+                    _bn2d_forward_eval_kernel[
+                        B,
+                        Self.C_,
+                        Self.SPATIAL,
+                        Self.FLAT_DIM,
+                        Self.EPSILON,
+                        Self.LAYOUT,
+                    ]
+                ](
+                    in0.lt["gpu", l2d](),
+                    out.lt["gpu", l2d](),
+                    self.gamma.val.lt["gpu", lc](),
+                    self.beta.val.lt["gpu", lc](),
+                    self.running_mean.t.lt["gpu", lc](),
+                    self.running_var.t.lt["gpu", lc](),
+                    grid_dim=Self.C_,
+                    block_dim=BN2D_TPB,
                 )
-
-    # ----- Backward --------------------------------------------------------
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["BatchNorm2D", target](self.ts.target_tag)
         if not self.cache_is_training:
             raise Error(
-                "BatchNorm2D.vjp: training-mode cache not populated."
-                " Call forward(training=True) before vjp."
+                "BatchNorm2D.vjp: training-mode cache not populated. Call"
+                " forward with training=True before vjp."
             )
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
+        # AMP §3 fp32-internal (forward_input unused, as in the fp32 body).
+        comptime if Self.ACT_DT == DT:
+            ref god = rebind[Tensor](grad_output)
+            ref gind = rebind[Tensor](grad_inputs[0])
+            self._vjp_f32[target, B](god, gind, ctx)
+        else:
+            comptime N = B * Self.FLAT_DIM
+            # LOCAL fp32 scratch (not self-fields → no mut-self aliasing).
+            var go_f32 = Tensor()
+            go_f32.ensure[target](N, ctx)
+            var gin_f32 = Tensor()
+            gin_f32.ensure[target](N, ctx)
+            ref gin = grad_inputs[0]
+            gin.ensure[target](N, ctx)
+            comptime if target == "cpu":
+                for i in range(N):
+                    go_f32.data[i] = grad_output.data[i].cast[DT]()
+            else:
+                var c = ctx.value()
+                c.enqueue_function[_cast_b2f_kernel[N]](
+                    grad_output.lt["gpu", Layout.row_major(N)](),
+                    go_f32.lt["gpu", Layout.row_major(N)](),
+                    grid_dim=(N + 255) // 256,
+                    block_dim=256,
+                )
+            self._vjp_f32[target, B](go_f32, gin_f32, ctx)
+            comptime if target == "cpu":
+                for i in range(N):
+                    gin.data[i] = gin_f32.data[i].cast[Self.ACT_DT]()
+            else:
+                var c = ctx.value()
+                c.enqueue_function[_cast_f2b_kernel[N]](
+                    gin_f32.lt["gpu", Layout.row_major(N)](),
+                    gin.lt["gpu", Layout.row_major(N)](),
+                    grid_dim=(N + 255) // 256,
+                    block_dim=256,
+                )
 
+    def _vjp_f32[target: StaticString, B: Int](
+        mut self,
+        mut grad_output: Tensor,
+        mut gin: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
         comptime if target == "cpu":
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var g_p = self.gamma.value_unsafe_ptr_cpu()
-            var dg_p = self.gamma.grad_unsafe_ptr_cpu()
-            var db_p = self.beta.grad_unsafe_ptr_cpu()
-            var xhat_p = self.cache_xhat.unsafe_ptr()
+            gin.ensure(B * Self.FLAT_DIM)
+            var go_p = grad_output.data.unsafe_ptr()
+            var gi_p = gin.data.unsafe_ptr()
+            var g_p = self.gamma.val.data.unsafe_ptr()
+            var dg_p = self.gamma.grd.data.unsafe_ptr()
+            var db_p = self.beta.grd.data.unsafe_ptr()
+            var xhat_p = self.cache_xhat.data.unsafe_ptr()
             var inv_v = TileTensor(
-                self.cache_inv_std, row_major[Self.C](),
+                self.cache_inv_std.data, row_major[Self.C_]()
             )
-            var n_eff = Scalar[DT](Float64(BATCH * Self.SPATIAL))
-            var inv_n = Scalar[DT](1.0) / n_eff
-            for c in range(Self.C):
+            var inv_n = Scalar[DT](1.0) / Scalar[DT](Float64(B * Self.SPATIAL))
+            for c in range(Self.C_):
                 var g = g_p[c]
                 var inv_std = inv_v[c]
                 var sum_dxhat: Scalar[DT] = 0.0
                 var sum_dxhat_xhat: Scalar[DT] = 0.0
                 var d_gamma: Scalar[DT] = 0.0
-                var d_beta:  Scalar[DT] = 0.0
-                for b in range(BATCH):
-                    var base = b * Self.FLAT_DIM + c * Self.SPATIAL
+                var d_beta: Scalar[DT] = 0.0
+                for b in range(B):
+                    var bb = b * Self.FLAT_DIM
                     for s in range(Self.SPATIAL):
-                        var dy = go_p[base + s]
-                        var xh = xhat_p[base + s]
+                        var off = bb + _bn_off[
+                            Self.LAYOUT, Self.C_, Self.SPATIAL
+                        ](c, s)
+                        var dy = go_p[off]
+                        var xh = xhat_p[off]
                         var dxhat = dy * g
                         sum_dxhat += dxhat
                         sum_dxhat_xhat += dxhat * xh
                         d_gamma += dy * xh
-                        d_beta  += dy
+                        d_beta += dy
                 var m1 = sum_dxhat * inv_n
                 var m2 = sum_dxhat_xhat * inv_n
-                for b in range(BATCH):
-                    var base = b * Self.FLAT_DIM + c * Self.SPATIAL
+                for b in range(B):
+                    var bb = b * Self.FLAT_DIM
                     for s in range(Self.SPATIAL):
-                        var dy = go_p[base + s]
-                        var xh = xhat_p[base + s]
+                        var off = bb + _bn_off[
+                            Self.LAYOUT, Self.C_, Self.SPATIAL
+                        ](c, s)
+                        var dy = go_p[off]
+                        var xh = xhat_p[off]
                         var dxhat = dy * g
-                        gi_p[base + s] = inv_std * (
-                            dxhat - m1 - xh * m2
-                        )
-                comptime if mode == "all":
-                    dg_p[c] += d_gamma
-                    db_p[c] += d_beta
+                        gi_p[off] = inv_std * (dxhat - m1 - xh * m2)
+                dg_p[c] += d_gamma
+                db_p[c] += d_beta
         else:
-            comptime layout_2d = Layout.row_major(BATCH, Self.FLAT_DIM)
-            comptime layout_c  = Layout.row_major(Self.C)
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
-            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
-            var g_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.gamma.val.dev.value()
-            )
-            var xh_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_xhat_dev.value()
-            )
-            var is_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.cache_inv_std_dev.value()
-            )
-            var dg_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.gamma.grd.dev.value()
-            )
-            var db_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.beta.grd.dev.value()
-            )
-            var ctx = self.ts.ctx.value()
-            comptime G = BATCH if BATCH < BN2D_RBLOCKS else BN2D_RBLOCKS
-            comptime layout_pr = Layout.row_major(Self.C * G)
-            var pa_lt = LayoutTensor[DT, layout_pr, MutAnyOrigin](
-                self.bn_psum_dev.value()        # reuse: Σdx̂
-            )
-            var pb_lt = LayoutTensor[DT, layout_pr, MutAnyOrigin](
-                self.bn_psumsq_dev.value()      # reuse: Σdx̂·x̂
-            )
-            var pdg_lt = LayoutTensor[DT, layout_pr, MutAnyOrigin](
-                self.bn_pdg_dev.value()
-            )
-            var pdb_lt = LayoutTensor[DT, layout_pr, MutAnyOrigin](
-                self.bn_pdb_dev.value()
-            )
-            var m1_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.bn_m1_dev.value()
-            )
-            var m2_lt = LayoutTensor[DT, layout_c, MutAnyOrigin](
-                self.bn_m2_dev.value()
-            )
-            # Pass 1: C·G blocks → partial Σdx̂, Σdx̂·x̂, Σdγ, Σdβ.
-            comptime bpk = _bn2d_bwd_partial_kernel[
-                BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM, G,
-            ]
-            ctx.enqueue_function[bpk](
-                go_lt, g_lt, xh_lt, pa_lt, pb_lt, pdg_lt, pdb_lt,
-                grid_dim=Self.C * G, block_dim=BN2D_TPB,
-            )
-            # Pass 2: C blocks → m1, m2 + accumulate grad_gamma/beta (mode).
-            comptime bfk = _bn2d_bwd_finalize_kernel[
-                BATCH, Self.C, Self.SPATIAL, G, mode,
-            ]
-            ctx.enqueue_function[bfk](
-                pa_lt, pb_lt, pdg_lt, pdb_lt, m1_lt, m2_lt, dg_lt, db_lt,
-                grid_dim=Self.C, block_dim=1,
-            )
-            # Pass 3: C·G blocks → grad_input scatter.
-            comptime bsk = _bn2d_bwd_scatter_kernel[
-                BATCH, Self.C, Self.SPATIAL, Self.FLAT_DIM, G,
-            ]
-            ctx.enqueue_function[bsk](
-                go_lt, g_lt, xh_lt, is_lt, m1_lt, m2_lt, gi_lt,
-                grid_dim=Self.C * G, block_dim=BN2D_TPB,
-            )
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.FLAT_DIM)
+            comptime l2d = Layout.row_major(B, Self.FLAT_DIM)
+            comptime lc = Layout.row_major(Self.C_)
+            comptime if Self.LAYOUT == LAYOUT_NHWC:
+                # Coalesced transposed backward (channels-last perf path).
+                comptime CH = BN2D_NHWC_CHUNKS
+                comptime R = B * Self.SPATIAL
+                comptime RC = B * Self.FLAT_DIM
+                comptime lrc = Layout.row_major(RC)
+                comptime if Self.USE_2D_NHWC:
+                    comptime ROWS = BN2D_NHWC_BLK // Self.C_
+                    comptime P = CH * ROWS
+                    comptime lpr2 = Layout.row_major(CH * BN2D_NHWC_BLK)
+                    c.enqueue_function[
+                        _bn2d_nhwc_bwd_partial_2d[Self.C_, R, CH]
+                    ](
+                        grad_output.lt["gpu", lrc](),
+                        self.gamma.val.lt["gpu", lc](),
+                        self.cache_xhat.lt["gpu", lrc](),
+                        self.bn_psum.lt["gpu", lpr2](),
+                        self.bn_psumsq.lt["gpu", lpr2](),
+                        self.bn_pdg.lt["gpu", lpr2](),
+                        self.bn_pdb.lt["gpu", lpr2](),
+                        grid_dim=CH,
+                        block_dim=BN2D_NHWC_BLK,
+                    )
+                    c.enqueue_function[
+                        _bn2d_nhwc_bwd_finalize_2d[Self.C_, R, P, "all"]
+                    ](
+                        self.bn_psum.lt["gpu", lpr2](),
+                        self.bn_psumsq.lt["gpu", lpr2](),
+                        self.bn_pdg.lt["gpu", lpr2](),
+                        self.bn_pdb.lt["gpu", lpr2](),
+                        self.bn_m1.lt["gpu", lc](),
+                        self.bn_m2.lt["gpu", lc](),
+                        self.gamma.grd.lt["gpu", lc](),
+                        self.beta.grd.lt["gpu", lc](),
+                        grid_dim=Self.C_,
+                        block_dim=BN2D_TPB,
+                    )
+                else:
+                    comptime lprn = Layout.row_major(CH * Self.C_)
+                    c.enqueue_function[
+                        _bn2d_nhwc_bwd_partial[Self.C_, R, CH]
+                    ](
+                        grad_output.lt["gpu", lrc](),
+                        self.gamma.val.lt["gpu", lc](),
+                        self.cache_xhat.lt["gpu", lrc](),
+                        self.bn_psum.lt["gpu", lprn](),
+                        self.bn_psumsq.lt["gpu", lprn](),
+                        self.bn_pdg.lt["gpu", lprn](),
+                        self.bn_pdb.lt["gpu", lprn](),
+                        grid_dim=CH,
+                        block_dim=Self.C_,
+                    )
+                    c.enqueue_function[
+                        _bn2d_nhwc_bwd_finalize[Self.C_, R, CH, "all"]
+                    ](
+                        self.bn_psum.lt["gpu", lprn](),
+                        self.bn_psumsq.lt["gpu", lprn](),
+                        self.bn_pdg.lt["gpu", lprn](),
+                        self.bn_pdb.lt["gpu", lprn](),
+                        self.bn_m1.lt["gpu", lc](),
+                        self.bn_m2.lt["gpu", lc](),
+                        self.gamma.grd.lt["gpu", lc](),
+                        self.beta.grd.lt["gpu", lc](),
+                        grid_dim=(Self.C_ + BN2D_TPB - 1) // BN2D_TPB,
+                        block_dim=BN2D_TPB,
+                    )
+                c.enqueue_function[_bn2d_nhwc_bwd_scatter[Self.C_, RC]](
+                    grad_output.lt["gpu", lrc](),
+                    self.gamma.val.lt["gpu", lc](),
+                    self.cache_xhat.lt["gpu", lrc](),
+                    self.cache_inv_std.lt["gpu", lc](),
+                    self.bn_m1.lt["gpu", lc](),
+                    self.bn_m2.lt["gpu", lc](),
+                    gin.lt["gpu", lrc](),
+                    grid_dim=(RC + BN2D_TPB - 1) // BN2D_TPB,
+                    block_dim=BN2D_TPB,
+                )
+            else:
+                comptime G = B if B < BN2D_RBLOCKS else BN2D_RBLOCKS
+                comptime lpr = Layout.row_major(Self.C_ * G)
+                # Pass 1: partial Σdx̂, Σdx̂·x̂, Σdγ, Σdβ (reuse psum/psumsq).
+                c.enqueue_function[
+                    _bn2d_bwd_partial_kernel[
+                        B,
+                        Self.C_,
+                        Self.SPATIAL,
+                        Self.FLAT_DIM,
+                        G,
+                        Self.LAYOUT,
+                    ]
+                ](
+                    grad_output.lt["gpu", l2d](),
+                    self.gamma.val.lt["gpu", lc](),
+                    self.cache_xhat.lt["gpu", l2d](),
+                    self.bn_psum.lt["gpu", lpr](),
+                    self.bn_psumsq.lt["gpu", lpr](),
+                    self.bn_pdg.lt["gpu", lpr](),
+                    self.bn_pdb.lt["gpu", lpr](),
+                    grid_dim=Self.C_ * G,
+                    block_dim=BN2D_TPB,
+                )
+                # Pass 2: m1, m2 + accumulate grad_gamma/beta (mode=all).
+                c.enqueue_function[
+                    _bn2d_bwd_finalize_kernel[
+                        B,
+                        Self.C_,
+                        Self.SPATIAL,
+                        G,
+                        "all",
+                    ]
+                ](
+                    self.bn_psum.lt["gpu", lpr](),
+                    self.bn_psumsq.lt["gpu", lpr](),
+                    self.bn_pdg.lt["gpu", lpr](),
+                    self.bn_pdb.lt["gpu", lpr](),
+                    self.bn_m1.lt["gpu", lc](),
+                    self.bn_m2.lt["gpu", lc](),
+                    self.gamma.grd.lt["gpu", lc](),
+                    self.beta.grd.lt["gpu", lc](),
+                    grid_dim=Self.C_,
+                    block_dim=1,
+                )
+                # Pass 3: grad_input scatter.
+                c.enqueue_function[
+                    _bn2d_bwd_scatter_kernel[
+                        B,
+                        Self.C_,
+                        Self.SPATIAL,
+                        Self.FLAT_DIM,
+                        G,
+                        Self.LAYOUT,
+                    ]
+                ](
+                    grad_output.lt["gpu", l2d](),
+                    self.gamma.val.lt["gpu", lc](),
+                    self.cache_xhat.lt["gpu", l2d](),
+                    self.cache_inv_std.lt["gpu", lc](),
+                    self.bn_m1.lt["gpu", lc](),
+                    self.bn_m2.lt["gpu", lc](),
+                    gin.lt["gpu", l2d](),
+                    grid_dim=Self.C_ * G,
+                    block_dim=BN2D_TPB,
+                )
 
-    # Inline helper so we don't read `beta.value` through `value_unsafe_ptr_cpu`
-    # twice (one less symbol to update if Param's API shifts).
-    def bias_unsafe_ptr_cpu(
-        mut self,
-    ) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        return self.beta.value_unsafe_ptr_cpu()
-
-    # ----- Walkers ---------------------------------------------------------
-
-    def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["BatchNorm2D", target](self.ts.target_tag)
-        for_each_param_auto[Self, V, target](self, prefix, visitor)
-
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["BatchNorm2D", target](self.ts.target_tag)
-        zero_grad_auto[Self, target](self)
-
-    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
-        comptime if ATTR == "training":
-            self.training = value > Scalar[DT](0.5)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the Param fields).

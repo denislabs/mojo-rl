@@ -57,7 +57,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT as dtype
 
 
-trait RolloutCallbackCPU(ImplicitlyDestructible):
+trait RolloutCallbackCPU(ImplicitlyDeletable):
     """CPU-side per-step rollout contract.
 
     All operations are scalar (B = 1) — the planner loops over samples
@@ -108,7 +108,7 @@ trait RolloutCallbackCPU(ImplicitlyDestructible):
         ...
 
 
-trait RolloutCallbackGPU(ImplicitlyDestructible):
+trait RolloutCallbackGPU(ImplicitlyDeletable):
     """GPU-side per-step rollout contract.
 
     Operates on row-major ``LayoutTensor`` views with a method-level

@@ -93,7 +93,7 @@ struct ScaleMode(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime SCALEMODE_INVALID = Self(-1)
     comptime SCALEMODE_NEAREST = Self(0)
@@ -124,7 +124,7 @@ struct FlipMode(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime FLIP_NONE = Self(0)
     """Do not flip."""
@@ -171,13 +171,13 @@ struct Surface(ImplicitlyCopyable, Movable):
     """The height of the surface, read-only."""
     var pitch: c_int
     """The distance in bytes between rows of pixels, read-only."""
-    var pixels: Ptr[NoneType, MutAnyOrigin]
+    var pixels: Ptr[NoneType, MutUntrackedOrigin]
     """A pointer to the pixels of the surface, the pixels are writeable if non-NULL."""
 
     var refcount: c_int
     """Application reference count, used when freeing surface."""
 
-    var reserved: Ptr[NoneType, MutAnyOrigin]
+    var reserved: Ptr[NoneType, MutUntrackedOrigin]
     """Reserved for internal use."""
 
 
@@ -741,7 +741,7 @@ def load_bmp(var file: String, out ret: Ptr[Surface, MutAnyOrigin]) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_LoadBMP",
-        def(file: Ptr[c_char, ImmutAnyOrigin]) thin -> Ptr[Surface, MutAnyOrigin],
+        def(Ptr[c_char, ImmutOrigin(origin_of(file))]) thin -> Ptr[Surface, MutAnyOrigin],
     ]()(file.as_c_string_slice().unsafe_ptr())
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -816,8 +816,8 @@ def save_bmp(surface: Ptr[Surface, MutAnyOrigin], var file: String) raises:
         lib,
         "SDL_SaveBMP",
         def(
-            surface: Ptr[Surface, MutAnyOrigin],
-            file: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[Surface, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(file))],
         ) thin -> Bool,
     ]()(surface, file.as_c_string_slice().unsafe_ptr())
     if not ret:

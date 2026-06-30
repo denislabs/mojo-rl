@@ -1,46 +1,50 @@
-"""World-model loss ops — graph-Module wrappers (ARITY=2) for the WM heads.
+"""World-model loss ops — storage ComputeGraph nodes (Module ABI).
 
-The full WM-loss `ComputeGraph` (PR5c Step 1) needs the recon / reward /
-cont losses to attach as graph nodes so the framework routes their
-gradient to the upstream logits/preds automatically (the same role
-`OneHotKLLoss` plays for dyn/rep). Each op:
+The WM-loss `ComputeGraph` needs the recon / reward / cont losses to attach
+as graph nodes so the framework routes their gradient to the upstream
+logits/preds automatically (the same role `OneHotKLLoss` plays for dyn/rep).
+Each op:
 
   * `SymlogMSELoss[OBS]`  (recon) — inputs (pred, target) → [B,1];
         loss = Σ_o (pred − symlog(target))² ; grad = 2·(pred − symlog(t))
         to `pred` only (target detached).
   * `TwoHotLoss[BINS]`    (reward) — inputs (logits, target) → [B,1];
-        twohot cross-entropy; grad via `twohot_loss_backward`
-        (= softmax − twohot(target)); bins owned by the op.
+        twohot cross-entropy against symexp-twohot bins (value space, so the
+        raw target is bracketed directly — NO symlog). Delegates to the
+        reusable bin-agnostic two-hot CE in `nn.storage.loss.two_hot`
+        (shared with TD-MPC2), called with `SYMLOG=False`; bins owned by the
+        op (symexp grid from `make`).
   * `BinaryLoss`          (cont)  — inputs (logit[1], target[1]) → [B,1];
         loss = softplus(x) − t·x ; grad = sigmoid(x) − target.
 
-All three: no trainable params (inherit the no-op `for_each_param`/
-`zero_grad`); cache the two input pointers in `forward`; write BOTH
-grad_inputs in `vjp` (target grad = 0). The math is identical to the
-manually-seeded cotangents validated in `spike_dreamer_nets.mojo` /
-PR5b; here the op produces the cotangent and `Sequential.vjp` does the
-rest. CPU-only at landing (GPU is PR5c Step 5, mirrors the other custom
-ops' straightforward port).
+STORAGE migration: the legacy `TensorPack`/`TileTensor`/`mptr`/`TargetStorage`
+ABI is gone — these are plain storage `Module`s (forward over `TensorRefs` →
+`Tensor`, vjp recomputed from `forward_input`, no cached pointers). The two-hot
+math now lives once in `loss/two_hot.mojo`; only SymlogMSE / Binary keep private
+kernels here. No trainable params → inherit the no-op `for_each_param`/
+`zero_grad`.
 """
 
 from std.math import exp, log, log1p
-from std.gpu.host import DeviceContext
-from std.gpu import global_idx
+from std.gpu import global_idx, block_idx, thread_idx
+from std.gpu.primitives import block
 from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor
 
-from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module, typed_view, typed_view_mut, mptr
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.target_storage import require_ctx, TargetStorage, assert_tag_for
-from .twohot import (
-    twohot_loss,
-    twohot_loss_backward,
-    symexp_twohot_bins,
-    DREAMER_REWARD_GRID_LO,
+from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+
+from mojo_rl.nn.loss.two_hot import (
+    two_hot_ce_loss_batch,
+    two_hot_ce_backward_batch,
+    two_hot_ce_fwd_kernel,
+    two_hot_ce_bwd_kernel,
 )
+from .twohot import symexp_twohot_bins, DREAMER_REWARD_GRID_LO
 
 
 @always_inline
@@ -51,57 +55,294 @@ def _symlog(x: Scalar[DT]) -> Scalar[DT]:
 
 
 @always_inline
-def _sigmoid(x: Scalar[DT]) -> Scalar[DT]:
-    return Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-x))
-
-
-@always_inline
-def _dlt[N: Int](
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
-    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
-
-
-@always_inline
 def _symk(x: Scalar[DT]) -> Scalar[DT]:
     var s = Scalar[DT](1.0) if x >= Scalar[DT](0.0) else Scalar[DT](-1.0)
     var a = x if x >= Scalar[DT](0.0) else -x
     return s * log(Scalar[DT](1.0) + a)
 
 
-# ── GPU loss-op kernels (one thread per batch row). ────────────────────
-def _symmse_fwd_kernel[B: Int, OBS: Int](
+@always_inline
+def _sigmoid(x: Scalar[DT]) -> Scalar[DT]:
+    return Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-x))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# SymlogMSELoss[OBS] — recon head. inputs (pred[B,OBS], target[B,OBS]).
+# loss[b] = Σ_k (pred − symlog(tgt))² ; grad_pred = 2·(pred − symlog(tgt))·go ;
+# grad_tgt = 0 (target detached).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _symmse_fwd_kernel[B: Int, OBS: Int, SIGMOID: Bool](
     pred: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
     tgt: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
     o: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
 ):
-    var b = Int(global_idx.x)
+    # ONE BLOCK per batch element; threads stride over the OBS pixels and the
+    # block reduces. (Was grid=(B/TPB) → only B threads active, each looping all
+    # OBS=C*H*W pixels serially — catastrophic for pixel obs. This parallelizes
+    # the per-b reduction across the whole block.)
+    # SIGMOID=True → reference recon: loss = (sigmoid(pred) − tgt)², tgt raw
+    # [0,1]. False → symlog recon: loss = (pred − symlog(tgt))².
+    var b = Int(block_idx.x)
     if b < B:
+        var t = Int(thread_idx.x)
         var s: Scalar[DT] = 0.0
-        for k in range(OBS):
-            var d = rebind[Scalar[DT]](pred[b * OBS + k]) - _symk(
-                rebind[Scalar[DT]](tgt[b * OBS + k])
-            )
+        var k = t
+        while k < OBS:
+            var p = rebind[Scalar[DT]](pred[b * OBS + k])
+            var tg = rebind[Scalar[DT]](tgt[b * OBS + k])
+            var d: Scalar[DT]
+            comptime if SIGMOID:
+                d = _sigmoid(p) - tg
+            else:
+                d = p - _symk(tg)
             s += d * d
-        o[b] = s
+            k += TPB_REDUCE
+        var tot = block.sum[block_size=TPB_REDUCE, broadcast=False](val=s)
+        if t == 0:
+            o[b] = tot[0]
 
 
-def _symmse_bwd_kernel[B: Int, OBS: Int](
+def _symmse_bwd_kernel[B: Int, OBS: Int, SIGMOID: Bool](
     go: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
     pred: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
     tgt: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
     gp: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
     gt: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
 ):
-    var b = Int(global_idx.x)
-    if b < B:
-        var up = rebind[Scalar[DT]](go[b])
-        for k in range(OBS):
-            var idx = b * OBS + k
-            gp[idx] = up * Scalar[DT](2.0) * (
-                rebind[Scalar[DT]](pred[idx]) - _symk(rebind[Scalar[DT]](tgt[idx]))
+    # Pure elementwise over ALL B*OBS — one thread per element (grid-strided),
+    # not one thread per batch row. (Was grid=(B/TPB) → B threads each looping
+    # OBS serially.)
+    var i = Int(global_idx.x)
+    if i < B * OBS:
+        var up = rebind[Scalar[DT]](go[i // OBS])
+        var p = rebind[Scalar[DT]](pred[i])
+        var tg = rebind[Scalar[DT]](tgt[i])
+        comptime if SIGMOID:
+            var sg = _sigmoid(p)
+            gp[i] = up * Scalar[DT](2.0) * (sg - tg) * sg * (Scalar[DT](1.0) - sg)
+        else:
+            gp[i] = up * Scalar[DT](2.0) * (p - _symk(tg))
+        gt[i] = 0.0
+
+
+struct SymlogMSELoss[OBS: Int, SIGMOID: Bool = False](Module):
+    # SIGMOID=False (default): symlog recon — loss = (pred − symlog(tgt))² (the
+    # right choice for unbounded vector obs). SIGMOID=True: reference pixel recon
+    # — loss = (sigmoid(pred) − tgt)², tgt raw [0,1] (decode = sigmoid(pred)).
+    comptime ARITY: Int = 2
+    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.OBS)
+    comptime OUT_DIM = 1
+
+    @staticmethod
+    def display_label() -> String:
+        return String("SigmoidMSE") if Self.SIGMOID else String("SymlogMSE")
+
+    def __init__(out self):
+        pass
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        return Self()
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
+    ](
+        mut self,
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ref pred = inputs[0]
+        ref tgt = inputs[1]
+        comptime if target == "cpu":
+            out.ensure(B)
+            for b in range(B):
+                var s: Scalar[DT] = 0.0
+                for k in range(Self.OBS):
+                    var p = pred.data[b * Self.OBS + k]
+                    var tg = tgt.data[b * Self.OBS + k]
+                    var d: Scalar[DT]
+                    comptime if Self.SIGMOID:
+                        d = _sigmoid(p) - tg
+                    else:
+                        d = p - _symlog(tg)
+                    s += d * d
+                out.data[b] = s
+        else:
+            var c = ctx.value()
+            out.ensure_gpu(c, B)
+            # one block per batch element (block-reduce over OBS).
+            c.enqueue_function[_symmse_fwd_kernel[B, Self.OBS, Self.SIGMOID]](
+                pred.lt["gpu", Layout.row_major(B * Self.OBS)](),
+                tgt.lt["gpu", Layout.row_major(B * Self.OBS)](),
+                out.lt["gpu", Layout.row_major(B)](),
+                grid_dim=B, block_dim=TPB_REDUCE,
             )
-            gt[idx] = 0.0
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ref pred = forward_input[0]
+        ref tgt = forward_input[1]
+        ref gp = grad_inputs[0]
+        ref gt = grad_inputs[1]
+        comptime if target == "cpu":
+            gp.ensure(B * Self.OBS)
+            gt.ensure(B * Self.OBS)
+            for b in range(B):
+                var up = grad_output.data[b]
+                for k in range(Self.OBS):
+                    var idx = b * Self.OBS + k
+                    var p = pred.data[idx]
+                    var tg = tgt.data[idx]
+                    comptime if Self.SIGMOID:
+                        var sg = _sigmoid(p)
+                        gp.data[idx] = up * Scalar[DT](2.0) * (sg - tg) * sg * (
+                            Scalar[DT](1.0) - sg
+                        )
+                    else:
+                        gp.data[idx] = up * Scalar[DT](2.0) * (p - _symlog(tg))
+                    gt.data[idx] = 0.0
+        else:
+            var c = ctx.value()
+            gp.ensure_gpu(c, B * Self.OBS)
+            gt.ensure_gpu(c, B * Self.OBS)
+            # one thread per (b, pixel) element across all B*OBS.
+            comptime nb = (B * Self.OBS + TPB - 1) // TPB
+            c.enqueue_function[_symmse_bwd_kernel[B, Self.OBS, Self.SIGMOID]](
+                grad_output.lt["gpu", Layout.row_major(B)](),
+                pred.lt["gpu", Layout.row_major(B * Self.OBS)](),
+                tgt.lt["gpu", Layout.row_major(B * Self.OBS)](),
+                gp.lt["gpu", Layout.row_major(B * Self.OBS)](),
+                gt.lt["gpu", Layout.row_major(B * Self.OBS)](),
+                grid_dim=nb, block_dim=TPB,
+            )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# TwoHotLoss[BINS] — reward head. inputs (logits[B,BINS], target[B,1]).
+# Bins owned by the op (symexp_twohot grid; value space). The two-hot CE math
+# is delegated to the reusable `two_hot_ce_*` helpers with SYMLOG=False (the
+# bins already live in value space, so the raw target is bracketed directly —
+# matching the legacy `twohot_loss`/`twohot_loss_backward`).
+# ──────────────────────────────────────────────────────────────────────
+
+
+struct TwoHotLoss[BINS: Int](Module):
+    comptime ARITY: Int = 2
+    comptime IN_DIMS = Self._mk_in_dims()
+    comptime OUT_DIM = 1
+
+    @staticmethod
+    def display_label() -> String:
+        return String("TwoHot")
+
+    @staticmethod
+    def _mk_in_dims() -> InlineArray[Int, 2]:
+        var d = InlineArray[Int, 2](fill=1)
+        d[0] = Self.BINS
+        return d
+
+    var bins: Tensor  # [BINS] symexp_twohot grid; host + device
+
+    def __init__(out self):
+        self.bins = Tensor()
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        comptime assert target == "cpu" or target == "gpu", (
+            "TwoHotLoss: target must be 'cpu' or 'gpu'"
+        )
+        var m = Self()
+        m.bins = Tensor.alloc(Self.BINS)
+        # This grid MUST match the grid the reward is read back on in
+        # imagination / imag_loss (DreamerV3Trainer.bins). Both now read the
+        # SAME `DREAMER_REWARD_GRID_LO` constant (S4) so they can't diverge — a
+        # past -9-vs-(-20)-default split made the head learn the right bin INDEX
+        # but decode it on the wrong value grid → predictions ~5× off, poisoning
+        # imagined returns. The narrow grid also keeps bin values bounded
+        # (≈8102) so `Σ softmax·bins` stays CPU↔GPU bit-stable.
+        symexp_twohot_bins[Self.BINS](
+            m.bins.data.unsafe_ptr(),
+            lo=Scalar[DT](DREAMER_REWARD_GRID_LO),
+        )
+        comptime if target == "gpu":
+            if not ctx:
+                raise Error("TwoHotLoss.make[gpu]: ctx required")
+            m.bins.upload(ctx.value())
+        return m^
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
+    ](
+        mut self,
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        comptime if target == "cpu":
+            two_hot_ce_loss_batch[B, Self.BINS, False](inputs, self.bins, out)
+        else:
+            var c = ctx.value()
+            out.ensure_gpu(c, B)
+            comptime nb = (B + TPB - 1) // TPB
+            c.enqueue_function[two_hot_ce_fwd_kernel[B, Self.BINS, False]](
+                inputs[0].lt["gpu", Layout.row_major(B * Self.BINS)](),
+                inputs[1].lt["gpu", Layout.row_major(B)](),
+                self.bins.lt["gpu", Layout.row_major(Self.BINS)](),
+                out.lt["gpu", Layout.row_major(B)](),
+                grid_dim=nb, block_dim=TPB,
+            )
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        comptime if target == "cpu":
+            two_hot_ce_backward_batch[B, Self.BINS, False](
+                forward_input, self.bins, grad_output, grad_inputs
+            )
+        else:
+            var c = ctx.value()
+            ref g_lg = grad_inputs[0]
+            ref g_tgt = grad_inputs[1]
+            g_lg.ensure_gpu(c, B * Self.BINS)
+            g_tgt.ensure_gpu(c, B)
+            g_tgt.dev.value().enqueue_fill(Scalar[DT](0))
+            comptime nb = (B + TPB - 1) // TPB
+            c.enqueue_function[two_hot_ce_bwd_kernel[B, Self.BINS, False]](
+                grad_output.lt["gpu", Layout.row_major(B)](),
+                forward_input[0].lt["gpu", Layout.row_major(B * Self.BINS)](),
+                forward_input[1].lt["gpu", Layout.row_major(B)](),
+                self.bins.lt["gpu", Layout.row_major(Self.BINS)](),
+                g_lg.lt["gpu", Layout.row_major(B * Self.BINS)](),
+                grid_dim=nb, block_dim=TPB,
+            )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BinaryLoss — cont head. inputs (logit[B,1], target[B,1]).
+# loss = softplus(x) − t·x ; grad = sigmoid(x) − target.
+# ──────────────────────────────────────────────────────────────────────
 
 
 def _binary_fwd_kernel[B: Int](
@@ -134,374 +375,6 @@ def _binary_bwd_kernel[B: Int](
         gt[b] = 0.0
 
 
-# twohot: place target between its 2 nearest bins (inv-distance weights),
-# CE against log_softmax(logits). One thread per row over BINS.
-def _twohot_fwd_kernel[B: Int, BINS: Int](
-    lg: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
-    tg: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
-    bins: LayoutTensor[DT, Layout.row_major(BINS), MutAnyOrigin],
-    o: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
-):
-    var b = Int(global_idx.x)
-    if b < B:
-        var base = b * BINS
-        var target = rebind[Scalar[DT]](tg[b])
-        var n_le = 0
-        for c in range(BINS):
-            if rebind[Scalar[DT]](bins[c]) <= target:
-                n_le += 1
-        var below = n_le - 1
-        var above = n_le
-        if below < 0:
-            below = 0
-        if below > BINS - 1:
-            below = BINS - 1
-        if above < 0:
-            above = 0
-        if above > BINS - 1:
-            above = BINS - 1
-        var w_below: Scalar[DT]
-        var w_above: Scalar[DT]
-        if below == above:
-            w_below = Scalar[DT](0.5)
-            w_above = Scalar[DT](0.5)
-        else:
-            var db = rebind[Scalar[DT]](bins[below]) - target
-            var da = rebind[Scalar[DT]](bins[above]) - target
-            db = db if db >= Scalar[DT](0.0) else -db
-            da = da if da >= Scalar[DT](0.0) else -da
-            var tot = db + da
-            w_below = da / tot
-            w_above = db / tot
-        var zmax = rebind[Scalar[DT]](lg[base])
-        for c in range(1, BINS):
-            var v = rebind[Scalar[DT]](lg[base + c])
-            if v > zmax:
-                zmax = v
-        var ssum: Scalar[DT] = 0.0
-        for c in range(BINS):
-            ssum += exp(rebind[Scalar[DT]](lg[base + c]) - zmax)
-        var lse = zmax + log(ssum)
-        var lp_b = rebind[Scalar[DT]](lg[base + below]) - lse
-        var lp_a = rebind[Scalar[DT]](lg[base + above]) - lse
-        o[b] = -(w_below * lp_b + w_above * lp_a)
-
-
-def _twohot_bwd_kernel[B: Int, BINS: Int](
-    go: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
-    lg: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
-    tg: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
-    bins: LayoutTensor[DT, Layout.row_major(BINS), MutAnyOrigin],
-    glg: LayoutTensor[DT, Layout.row_major(B * BINS), MutAnyOrigin],
-    gt: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
-):
-    var b = Int(global_idx.x)
-    if b < B:
-        var base = b * BINS
-        var target = rebind[Scalar[DT]](tg[b])
-        var up = rebind[Scalar[DT]](go[b])
-        var n_le = 0
-        for c in range(BINS):
-            if rebind[Scalar[DT]](bins[c]) <= target:
-                n_le += 1
-        var below = n_le - 1
-        var above = n_le
-        if below < 0:
-            below = 0
-        if below > BINS - 1:
-            below = BINS - 1
-        if above < 0:
-            above = 0
-        if above > BINS - 1:
-            above = BINS - 1
-        var w_below: Scalar[DT]
-        var w_above: Scalar[DT]
-        if below == above:
-            w_below = Scalar[DT](0.5)
-            w_above = Scalar[DT](0.5)
-        else:
-            var db = rebind[Scalar[DT]](bins[below]) - target
-            var da = rebind[Scalar[DT]](bins[above]) - target
-            db = db if db >= Scalar[DT](0.0) else -db
-            da = da if da >= Scalar[DT](0.0) else -da
-            var tot = db + da
-            w_below = da / tot
-            w_above = db / tot
-        var zmax = rebind[Scalar[DT]](lg[base])
-        for c in range(1, BINS):
-            var v = rebind[Scalar[DT]](lg[base + c])
-            if v > zmax:
-                zmax = v
-        var ssum: Scalar[DT] = 0.0
-        for c in range(BINS):
-            ssum += exp(rebind[Scalar[DT]](lg[base + c]) - zmax)
-        var inv = Scalar[DT](1.0) / ssum
-        for c in range(BINS):
-            glg[base + c] = up * (exp(rebind[Scalar[DT]](lg[base + c]) - zmax) * inv)
-        glg[base + below] = rebind[Scalar[DT]](glg[base + below]) - up * w_below
-        glg[base + above] = rebind[Scalar[DT]](glg[base + above]) - up * w_above
-        gt[b] = 0.0
-
-
-# ──────────────────────────────────────────────────────────────────────
-# SymlogMSELoss[OBS] — recon head. inputs (pred[B,OBS], target[B,OBS]).
-# ──────────────────────────────────────────────────────────────────────
-
-
-struct SymlogMSELoss[OBS: Int](Module):
-    comptime ARITY: Int = 2
-    comptime IN_DIMS = InlineArray[Int, 2](fill=Self.OBS)
-    comptime OUT_DIM = 1
-
-    @staticmethod
-    def display_label() -> String:
-        return String("SymlogMSE")
-
-    var _pred_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _target_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var ts: TargetStorage
-
-    def __init__(out self):
-        self._pred_ptr = None
-        self._target_ptr = None
-        self.ts = TargetStorage.make_uninit()
-
-    @staticmethod
-    def make[
-        target: StaticString, INIT: Initializer
-    ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "SymlogMSELoss: target must be 'cpu' or 'gpu'"
-        )
-        var s = Self()
-        comptime if target == "cpu":
-            s.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("SymlogMSELoss.make[gpu]: ctx required")
-            s.ts = TargetStorage.make_gpu(ctx.value())
-        return s^
-
-    def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
-    ](
-        mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-    ) raises:
-        assert_tag_for["SymlogMSELoss", target](self.ts.target_tag)
-        var pred = mptr(inputs.tile[0, BATCH, Self.OBS]().ptr)
-        var tgt = mptr(inputs.tile[1, BATCH, Self.OBS]().ptr)
-        self._pred_ptr = pred
-        self._target_ptr = tgt
-        var o = typed_view_mut[BATCH, 1](output).ptr
-        comptime if target == "cpu":
-            for b in range(BATCH):
-                var s: Scalar[DT] = 0.0
-                for k in range(Self.OBS):
-                    var d = pred[b * Self.OBS + k] - _symlog(tgt[b * Self.OBS + k])
-                    s += d * d
-                o[b] = s
-        else:
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
-            comptime nb = (BATCH + TPB - 1) // TPB
-            comptime kf = _symmse_fwd_kernel[BATCH, Self.OBS]
-            self.ts.ctx.value().enqueue_function[kf](
-                _dlt[BATCH * Self.OBS](pred), _dlt[BATCH * Self.OBS](tgt),
-                _dlt[BATCH](op), grid_dim=nb, block_dim=TPB,
-            )
-
-    def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
-    ) raises:
-        var go = typed_view[BATCH, 1](grad_output).ptr
-        var g_pred = grad_inputs.tile[0, BATCH, Self.OBS]().ptr
-        var g_tgt = grad_inputs.tile[1, BATCH, Self.OBS]().ptr
-        var pred = self._pred_ptr.value()
-        var tgt = self._target_ptr.value()
-        comptime if target == "cpu":
-            for b in range(BATCH):
-                var up = go[b]
-                for k in range(Self.OBS):
-                    var idx = b * Self.OBS + k
-                    g_pred[idx] = up * Scalar[DT](2.0) * (
-                        pred[idx] - _symlog(tgt[idx])
-                    )
-                    g_tgt[idx] = 0.0
-        else:
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
-            var gpp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_pred)
-            var gtp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_tgt)
-            comptime nb = (BATCH + TPB - 1) // TPB
-            comptime kb = _symmse_bwd_kernel[BATCH, Self.OBS]
-            self.ts.ctx.value().enqueue_function[kb](
-                _dlt[BATCH](gop), _dlt[BATCH * Self.OBS](pred),
-                _dlt[BATCH * Self.OBS](tgt), _dlt[BATCH * Self.OBS](gpp),
-                _dlt[BATCH * Self.OBS](gtp), grid_dim=nb, block_dim=TPB,
-            )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# TwoHotLoss[BINS] — reward head. inputs (logits[B,BINS], target[B,1]).
-# Bins owned by the op (symexp_twohot by default; overridable in tests).
-# ──────────────────────────────────────────────────────────────────────
-
-
-struct TwoHotLoss[BINS: Int](Module):
-    comptime ARITY: Int = 2
-    comptime IN_DIMS = Self._mk_in_dims()
-    comptime OUT_DIM = 1
-
-    @staticmethod
-    def display_label() -> String:
-        return String("TwoHot")
-
-    @staticmethod
-    def _mk_in_dims() -> InlineArray[Int, 2]:
-        var d = InlineArray[Int, 2](fill=1)
-        d[0] = Self.BINS
-        return d
-
-    var bins: List[Scalar[DT]]
-    var _bins_dev: Optional[DeviceBuffer[DT]]
-    var _logits_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _target_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var ts: TargetStorage
-
-    def __init__(out self):
-        self.bins = List[Scalar[DT]]()
-        self._bins_dev = None
-        self._logits_ptr = None
-        self._target_ptr = None
-        self.ts = TargetStorage.make_uninit()
-
-    @staticmethod
-    def make[
-        target: StaticString, INIT: Initializer
-    ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "TwoHotLoss: target must be 'cpu' or 'gpu'"
-        )
-        var m = Self()
-        m.bins = List[Scalar[DT]](length=Self.BINS, fill=Scalar[DT](0.0))
-        # This grid MUST match the grid the reward is read back on in
-        # imagination / imag_loss (DreamerV3Trainer.bins). Both now read the
-        # SAME `DREAMER_REWARD_GRID_LO` constant (S4) so they can't diverge — a
-        # past -9-vs-(-20)-default split made the head learn the right bin INDEX
-        # but decode it on the wrong value grid → predictions ~5× off, poisoning
-        # imagined returns. The narrow grid also keeps bin values bounded
-        # (≈8102) so `Σ softmax·bins` stays CPU↔GPU bit-stable.
-        symexp_twohot_bins[Self.BINS](
-            mptr(m.bins.unsafe_ptr()),
-            lo=Scalar[DT](DREAMER_REWARD_GRID_LO),
-        )
-        comptime if target == "cpu":
-            m.ts = TargetStorage.make_cpu()
-        else:
-            var c = require_ctx["TwoHotLoss.make[gpu]"](ctx)
-            var bd = c.enqueue_create_buffer[DT](Self.BINS)
-            var hb = c.enqueue_create_host_buffer[DT](Self.BINS)
-            c.synchronize()
-            for i in range(Self.BINS):
-                hb.unsafe_ptr()[i] = m.bins[i]
-            c.enqueue_copy(bd, hb)
-            c.synchronize()
-            m._bins_dev = bd^
-            m.ts = TargetStorage.make_gpu(c)
-        return m^
-
-    def bins_unsafe_ptr(mut self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-        """Mutable handle to the bin grid (tests overwrite with the
-        fixture's bins; production uses the symexp grid from `make`)."""
-        return mptr(self.bins.unsafe_ptr())
-
-    def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
-    ](
-        mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-    ) raises:
-        assert_tag_for["TwoHotLoss", target](self.ts.target_tag)
-        var lg = mptr(inputs.tile[0, BATCH, Self.BINS]().ptr)
-        var tgt = mptr(inputs.tile[1, BATCH, 1]().ptr)
-        self._logits_ptr = lg
-        self._target_ptr = tgt
-        var o = typed_view_mut[BATCH, 1](output).ptr
-        comptime if target == "cpu":
-            var bins = self.bins_unsafe_ptr()
-            for b in range(BATCH):
-                o[b] = twohot_loss[Self.BINS](lg, b * Self.BINS, bins, tgt[b])
-        else:
-            var binsd = mptr(self._bins_dev.value().unsafe_ptr())
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
-            comptime nb = (BATCH + TPB - 1) // TPB
-            comptime kf = _twohot_fwd_kernel[BATCH, Self.BINS]
-            self.ts.ctx.value().enqueue_function[kf](
-                _dlt[BATCH * Self.BINS](lg), _dlt[BATCH](tgt),
-                _dlt[Self.BINS](binsd), _dlt[BATCH](op),
-                grid_dim=nb, block_dim=TPB,
-            )
-
-    def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
-    ](
-        mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
-    ) raises:
-        var go = typed_view[BATCH, 1](grad_output).ptr
-        var g_lg = grad_inputs.tile[0, BATCH, Self.BINS]().ptr
-        var g_tgt = grad_inputs.tile[1, BATCH, 1]().ptr
-        var lg = self._logits_ptr.value()
-        var tgt = self._target_ptr.value()
-        comptime if target == "cpu":
-            var bins = self.bins_unsafe_ptr()
-            for i in range(BATCH * Self.BINS):
-                g_lg[i] = 0.0
-            for b in range(BATCH):
-                twohot_loss_backward[Self.BINS](
-                    lg, b * Self.BINS, bins, tgt[b], go[b], g_lg
-                )
-                g_tgt[b] = 0.0
-        else:
-            var binsd = mptr(self._bins_dev.value().unsafe_ptr())
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
-            var glp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_lg)
-            var gtp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_tgt)
-            comptime nb = (BATCH + TPB - 1) // TPB
-            comptime kb = _twohot_bwd_kernel[BATCH, Self.BINS]
-            self.ts.ctx.value().enqueue_function[kb](
-                _dlt[BATCH](gop), _dlt[BATCH * Self.BINS](lg), _dlt[BATCH](tgt),
-                _dlt[Self.BINS](binsd), _dlt[BATCH * Self.BINS](glp),
-                _dlt[BATCH](gtp), grid_dim=nb, block_dim=TPB,
-            )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# BinaryLoss — cont head. inputs (logit[B,1], target[B,1]).
-# loss = softplus(x) − t·x ; grad = sigmoid(x) − target.
-# ──────────────────────────────────────────────────────────────────────
-
-
 struct BinaryLoss(Module):
     comptime ARITY: Int = 2
     comptime IN_DIMS = InlineArray[Int, 2](fill=1)
@@ -511,92 +384,78 @@ struct BinaryLoss(Module):
     def display_label() -> String:
         return String("Binary")
 
-    var _logit_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _target_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var ts: TargetStorage
-
     def __init__(out self):
-        self._logit_ptr = None
-        self._target_ptr = None
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "BinaryLoss: target must be 'cpu' or 'gpu'"
-        )
-        var s = Self()
-        comptime if target == "cpu":
-            s.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("BinaryLoss.make[gpu]: ctx required")
-            s.ts = TargetStorage.make_gpu(ctx.value())
-        return s^
+        return Self()
 
     def forward[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["BinaryLoss", target](self.ts.target_tag)
-        var lo = mptr(inputs.tile[0, BATCH, 1]().ptr)
-        var tgt = mptr(inputs.tile[1, BATCH, 1]().ptr)
-        self._logit_ptr = lo
-        self._target_ptr = tgt
-        var o = typed_view_mut[BATCH, 1](output).ptr
+        ref lo = inputs[0]
+        ref tgt = inputs[1]
         comptime if target == "cpu":
-            for b in range(BATCH):
-                var x = lo[b]
+            out.ensure(B)
+            for b in range(B):
+                var x = lo.data[b]
                 # softplus stable: max(x,0) + log(1+exp(-|x|))
                 var ax = x if x >= Scalar[DT](0.0) else -x
                 var sp = (x if x >= Scalar[DT](0.0) else Scalar[DT](0.0)) + log(
                     Scalar[DT](1.0) + exp(-ax)
                 )
-                o[b] = sp - tgt[b] * x
+                out.data[b] = sp - tgt.data[b] * x
         else:
-            var op = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](o)
-            comptime nb = (BATCH + TPB - 1) // TPB
-            comptime kf = _binary_fwd_kernel[BATCH]
-            self.ts.ctx.value().enqueue_function[kf](
-                _dlt[BATCH](lo), _dlt[BATCH](tgt), _dlt[BATCH](op),
+            var c = ctx.value()
+            out.ensure_gpu(c, B)
+            comptime nb = (B + TPB - 1) // TPB
+            c.enqueue_function[_binary_fwd_kernel[B]](
+                lo.lt["gpu", Layout.row_major(B)](),
+                tgt.lt["gpu", Layout.row_major(B)](),
+                out.lt["gpu", Layout.row_major(B)](),
                 grid_dim=nb, block_dim=TPB,
             )
 
     def vjp[
-        target: StaticString, BATCH: Int, POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        var go = typed_view[BATCH, 1](grad_output).ptr
-        var g_lo = grad_inputs.tile[0, BATCH, 1]().ptr
-        var g_tgt = grad_inputs.tile[1, BATCH, 1]().ptr
-        var lo = self._logit_ptr.value()
-        var tgt = self._target_ptr.value()
+        ref lo = forward_input[0]
+        ref tgt = forward_input[1]
+        ref gl = grad_inputs[0]
+        ref gt = grad_inputs[1]
         comptime if target == "cpu":
-            for b in range(BATCH):
-                g_lo[b] = go[b] * (_sigmoid(lo[b]) - tgt[b])
-                g_tgt[b] = 0.0
+            gl.ensure(B)
+            gt.ensure(B)
+            for b in range(B):
+                gl.data[b] = grad_output.data[b] * (
+                    _sigmoid(lo.data[b]) - tgt.data[b]
+                )
+                gt.data[b] = 0.0
         else:
-            var gop = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](go)
-            var glp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_lo)
-            var gtp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](g_tgt)
-            comptime nb = (BATCH + TPB - 1) // TPB
-            comptime kb = _binary_bwd_kernel[BATCH]
-            self.ts.ctx.value().enqueue_function[kb](
-                _dlt[BATCH](gop), _dlt[BATCH](lo), _dlt[BATCH](tgt),
-                _dlt[BATCH](glp), _dlt[BATCH](gtp), grid_dim=nb, block_dim=TPB,
+            var c = ctx.value()
+            gl.ensure_gpu(c, B)
+            gt.ensure_gpu(c, B)
+            comptime nb = (B + TPB - 1) // TPB
+            c.enqueue_function[_binary_bwd_kernel[B]](
+                grad_output.lt["gpu", Layout.row_major(B)](),
+                lo.lt["gpu", Layout.row_major(B)](),
+                tgt.lt["gpu", Layout.row_major(B)](),
+                gl.lt["gpu", Layout.row_major(B)](),
+                gt.lt["gpu", Layout.row_major(B)](),
+                grid_dim=nb, block_dim=TPB,
             )

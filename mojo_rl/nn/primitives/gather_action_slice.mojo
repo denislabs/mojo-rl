@@ -1,4 +1,7 @@
-"""GatherActionSlice[NA, K] — per-row gather of a K-wide contiguous slice.
+"""GatherActionSlice[NA, K] — per-row gather of a K-wide slice (storage surface).
+
+Transformed from legacy `nn.primitives.GatherActionSlice` (surface-only change).
+The GPU forward + two zero-fill vjp kernels are carried over verbatim.
 
 Generalization of `GatherCols[NA]` for distributional Q-learning. Given:
   - `values [B, NA·K]` — Q-net output (e.g. K = N_ATOMS for C51)
@@ -6,28 +9,32 @@ Generalization of `GatherCols[NA]` for distributional Q-learning. Given:
 output:
   - `out[b, k] = values[b, Int(idx[b, 0]) · K + k]`  for k ∈ [0, K)
 
-Used by C51's Q-update block to extract per-action atom logits from the
-flat [B, NA·K] Q-net output without a CPU shim.
-
-**Forward-only semantics** — vjp zero-fills both `grad_values` and
-`grad_idx`. Same rationale as `GatherCols`: the surrounding block owns
-the scatter kernel that builds `grad_values` from the gathered
-`grad_slice` + the original `mb_a` (avoiding the awkward "vjp reads
-indices from grad_inputs[1]" trick that would break ComputeGraph use).
+**Forward-only semantics** — vjp zero-fills both grad_values and grad_idx; the
+surrounding block owns the scatter that rebuilds grad_values from the gathered
+grad_slice + the original action indices. ARITY 2, no params, no cache.
 """
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
+def _dims2(d0: Int, d1: Int) -> InlineArray[Int, 2]:
+    var a = InlineArray[Int, 2](fill=0)
+    a[0] = d0
+    a[1] = d1
+    return a
+
+
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _gather_action_slice_forward_kernel[
     BATCH: Int, NA: Int, K: Int,
 ](
@@ -71,137 +78,105 @@ def _gather_action_slice_zero_idx_grad_kernel[
         grad_idx[b, 0] = Scalar[DT](0.0)
 
 
-struct GatherActionSlice[NA: Int, K: Int](Module):
-    comptime ARITY: Int = 2
-    comptime IN_DIMS = Self._build_in_dims()
-    comptime IN0_DIM: Int = Self.NA * Self.K
-    comptime OUT_DIM: Int = Self.K
-
-    @staticmethod
-    def _build_in_dims() -> InlineArray[Int, 2]:
-        var d = InlineArray[Int, 2](fill=0)
-        d[0] = Self.NA * Self.K
-        d[1] = 1
-        return d
-
-    var ts: TargetStorage
+struct GatherActionSlice[NA_: Int, K_: Int](Module):
+    comptime ARITY = 2
+    comptime IN_DIMS = _dims2(Self.NA_ * Self.K_, 1)
+    comptime OUT_DIM = Self.K_
 
     def __init__(out self):
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. INIT ignored (no params) but accepted
-        for Sequential.make[target, INIT] uniformity."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "GatherActionSlice: target must be 'cpu' or 'gpu'"
-        )
-        comptime assert Self.NA > 0, "GatherActionSlice: NA must be > 0"
-        comptime assert Self.K > 0, "GatherActionSlice: K must be > 0"
-        var g = Self()
-        comptime if target == "cpu":
-            g.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("GatherActionSlice.make[target='gpu']: ctx required")
-            g.ts = TargetStorage.make_gpu(ctx.value())
-        return g^
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Unified CPU/GPU factory. INIT accepted for `make[target, INIT]`
+        uniformity but ignored (no params)."""
+        comptime assert Self.NA_ > 0, "GatherActionSlice: NA must be > 0"
+        comptime assert Self.K_ > 0, "GatherActionSlice: K must be > 0"
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[2, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["GatherActionSlice", target](self.ts.target_tag)
-        var values = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var idx = inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref values = inputs[0]
+        ref idx = inputs[1]
         comptime if target == "cpu":
-            for b in range(BATCH):
-                var a = Int(idx[b, 0])
-                var base = a * Self.K
-                for k in range(Self.K):
-                    output_v[b, k] = values[b, base + k]
+            out.ensure(B * Self.K_)
+            var v_p = values.data.unsafe_ptr()
+            var i_p = idx.data.unsafe_ptr()
+            for b in range(B):
+                var a = Int(i_p[b])
+                var base = a * Self.K_
+                for k in range(Self.K_):
+                    out.data[b * Self.K_ + k] = v_p[b * Self.NA_ * Self.K_ + base + k]
         else:
-            var v_p = values.ptr
-            var i_p = idx.ptr
-            var o_p = output_v.ptr
-            var v_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.NA * Self.K), MutAnyOrigin,
-            ](v_p)
-            var i_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](i_p)
-            var o_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.K), MutAnyOrigin,
-            ](o_p)
-            comptime total = BATCH * Self.K
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.K_)
+            comptime total = B * Self.K_
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _gather_action_slice_forward_kernel[
-                BATCH, Self.NA, Self.K,
-            ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                v_lt, i_lt, o_lt, grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[
+                _gather_action_slice_forward_kernel[B, Self.NA_, Self.K_]
+            ](
+                values.lt["gpu", Layout.row_major(B, Self.NA_ * Self.K_)](),
+                idx.lt["gpu", Layout.row_major(B, 1)](),
+                out.lt["gpu", Layout.row_major(B, Self.K_)](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[2, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[2, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         """Forward-only op: both grad_values and grad_idx zero-fill.
         The calling block re-runs the scatter using the original indices."""
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["GatherActionSlice", target](self.ts.target_tag)
-        var grad_values_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var grad_idx_v = grad_inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
-
+        ref gv = grad_inputs[0]
+        ref gi = grad_inputs[1]
         comptime if target == "cpu":
-            for b in range(BATCH):
-                for c in range(Self.NA * Self.K):
-                    grad_values_v[b, c] = Scalar[DT](0.0)
-                grad_idx_v[b, 0] = Scalar[DT](0.0)
+            gv.ensure(B * Self.NA_ * Self.K_)
+            gi.ensure(B)
+            for b in range(B):
+                for c in range(Self.NA_ * Self.K_):
+                    gv.data[b * Self.NA_ * Self.K_ + c] = Scalar[DT](0.0)
+                gi.data[b] = Scalar[DT](0.0)
         else:
-            var gv_p = grad_values_v.ptr
-            var gi_p = grad_idx_v.ptr
-            var gv_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.NA * Self.K), MutAnyOrigin,
-            ](gv_p)
-            var gi_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](gi_p)
-            comptime values_total = BATCH * Self.NA * Self.K
+            var c = ctx.value()
+            gv.ensure_gpu(c, B * Self.NA_ * Self.K_)
+            gi.ensure_gpu(c, B)
+            comptime values_total = B * Self.NA_ * Self.K_
             comptime values_blocks = (values_total + TPB - 1) // TPB
-            comptime values_kernel = _gather_action_slice_zero_values_grad_kernel[
-                BATCH, Self.NA, Self.K,
-            ]
-            self.ts.ctx.value().enqueue_function[values_kernel](
-                gv_lt, grid_dim=values_blocks, block_dim=TPB,
+            c.enqueue_function[
+                _gather_action_slice_zero_values_grad_kernel[
+                    B, Self.NA_, Self.K_
+                ]
+            ](
+                gv.lt["gpu", Layout.row_major(B, Self.NA_ * Self.K_)](),
+                grid_dim=values_blocks,
+                block_dim=TPB,
             )
-            comptime idx_blocks = (BATCH + TPB - 1) // TPB
-            comptime idx_kernel = _gather_action_slice_zero_idx_grad_kernel[BATCH]
-            self.ts.ctx.value().enqueue_function[idx_kernel](
-                gi_lt, grid_dim=idx_blocks, block_dim=TPB,
+            comptime idx_blocks = (B + TPB - 1) // TPB
+            c.enqueue_function[
+                _gather_action_slice_zero_idx_grad_kernel[B]
+            ](
+                gi.lt["gpu", Layout.row_major(B, 1)](),
+                grid_dim=idx_blocks,
+                block_dim=TPB,
             )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).

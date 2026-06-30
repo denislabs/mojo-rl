@@ -20,16 +20,24 @@ Both helpers put the net in eval mode (`set_attr["training"](0)`) up front so
 BatchNorm-bearing torsos (CNN / ResNet) use running stats — a no-op for the MLP.
 """
 
-from std.memory import alloc
+from mojo_rl.nn.core.ptr import untracked
+from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.core import TwoPlayerDiscreteEnv, Saveable
 from mojo_rl.core.env_traits import GPUTwoPlayerDiscreteEnv
 from mojo_rl.planners.tree_search import (
-    GenericGPUMCTS, GenericCPUMCTS, AlphaGoPUCT, NoNoise, SelfPlay,
+    GenericGPUMCTS,
+    GenericCPUMCTS,
+    AlphaGoPUCT,
+    NoNoise,
+    SelfPlay,
 )
 from ..zero.evaluators import GPUEvaluator, CPUEvaluator, RandomOpponent
 from ..zero.mcts_adapters import AZPredGPU, AZEnvGPU
@@ -43,15 +51,6 @@ def _xs(s: UInt64) -> UInt64:
     x ^= x >> 7
     x ^= x << 17
     return x
-
-
-@always_inline
-def _mptr(
-    b: DeviceBuffer[DT]
-) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    """Origin-erase a device buffer pointer so `Module.forward` (which pins
-    `origin=MutAnyOrigin` on its output) accepts the tile."""
-    return mptr(b.unsafe_ptr())
 
 
 @fieldwise_init
@@ -100,8 +99,7 @@ def eval_policy_vs_random[
     ENV.reset_kernel_gpu[N_GAMES, STATE](ctx, states)
     ctx.synchronize()
 
-    var obs_t = TileTensor(_mptr(obs_dev), row_major[N_GAMES, OBS]())
-    var pred_t = TileTensor(_mptr(pred_dev), row_major[N_GAMES, W]())
+    var pred_ad = AZPredGPU[OBS, ACT, NET].make(net)
     var rng = seed | 1
 
     for ply in range(MAX_PLIES):
@@ -113,39 +111,45 @@ def eval_policy_vs_random[
 
         var agent_turn = (ply % 2) == agent_player
         if agent_turn:
-            net.forward["gpu", N_GAMES](obs_t, output=pred_t)
+            var obs_lt = LayoutTensor[
+                DT, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
+            ](obs_dev)
+            var pred_lt = LayoutTensor[
+                DT, Layout.row_major(N_GAMES, W), MutAnyOrigin
+            ](pred_dev)
+            pred_ad.predict_gpu[N_GAMES](ctx, obs_lt, pred_lt)
             ctx.enqueue_copy(pred_h, pred_dev)
             ctx.synchronize()
             for e in range(N_GAMES):
                 var best = -1
                 var bestv = Float64(-1e30)
                 for a in range(ACT):
-                    if Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5:
-                        var v = Float64(pred_h.unsafe_ptr()[e * W + a])
+                    if legal_h[e * ACT + a] > 0.5:
+                        var v = Float64(pred_h[e * W + a])
                         if v > bestv:
                             bestv = v
                             best = a
-                actions_h.unsafe_ptr()[e] = Scalar[DT](best if best >= 0 else 0)
+                actions_h[e] = Scalar[DT](best if best >= 0 else 0)
         else:
             for e in range(N_GAMES):
                 var cnt = 0
                 for a in range(ACT):
-                    if Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5:
+                    if legal_h[e * ACT + a] > 0.5:
                         cnt += 1
                 if cnt == 0:
-                    actions_h.unsafe_ptr()[e] = Scalar[DT](0)
+                    actions_h[e] = Scalar[DT](0)
                 else:
                     rng = _xs(rng)
                     var pick = Int(rng % UInt64(cnt))
                     var chosen = 0
                     var seen = 0
                     for a in range(ACT):
-                        if Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5:
+                        if legal_h[e * ACT + a] > 0.5:
                             if seen == pick:
                                 chosen = a
                                 break
                             seen += 1
-                    actions_h.unsafe_ptr()[e] = Scalar[DT](chosen)
+                    actions_h[e] = Scalar[DT](chosen)
 
         ctx.enqueue_copy(actions_dev, actions_h)
         ctx.synchronize()
@@ -163,7 +167,7 @@ def eval_policy_vs_random[
     var draws = 0
     var losses = 0
     for e in range(N_GAMES):
-        var r = Int(Float64(states_h.unsafe_ptr()[e * STATE + RESULT_IDX]))
+        var r = Int(states_h[e * STATE + RESULT_IDX])
         if r == agent_win:
             wins += 1
         elif r == agent_loss:
@@ -174,15 +178,11 @@ def eval_policy_vs_random[
 
 
 def eval_policy_vs_random_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NET: Module,
     N_GAMES: Int,
     MAX_PLIES: Int,
-](
-    mut net: NET,
-    agent_player: Int = 0,
-    seed: UInt64 = 1,
-) raises -> EvalResult:
+](mut net: NET, agent_player: Int = 0, seed: UInt64 = 1,) raises -> EvalResult:
     """CPU counterpart to `eval_policy_vs_random`: play `N_GAMES` games on a
     single CPU env where the agent picks ``argmax`` of its (CPU) policy head over
     legal moves and the opponent plays a uniform random legal move. Pure-policy
@@ -194,10 +194,8 @@ def eval_policy_vs_random_cpu[
     net.set_attr["training"](Scalar[DT](0.0))
 
     var env = ENV()
-    var obs_buf = mptr(alloc[Scalar[DT]](IN))
-    var pred_buf = mptr(alloc[Scalar[DT]](OUT))
-    var obs_t = TileTensor(obs_buf, row_major[1, IN]())
-    var pred_t = TileTensor(pred_buf, row_major[1, OUT]())
+    var obs_t = Tensor.alloc(IN)
+    var pred_t = Tensor.alloc(OUT)
 
     var wins = 0
     var draws = 0
@@ -214,15 +212,17 @@ def eval_policy_vs_random_cpu[
             if env.current_player() == agent_player:
                 var obs_raw = env.get_obs_list()
                 for i in range(IN):
-                    obs_buf[i] = Scalar[DT](obs_raw[i]) if i < len(
+                    obs_t.data[i] = Scalar[DT](obs_raw[i]) if i < len(
                         obs_raw
                     ) else Scalar[DT](0.0)
-                net.forward["cpu", 1](obs_t, output=pred_t)
+                call_forward["cpu", 1](
+                    net, TensorRefs[NET.ARITY](obs_t), pred_t, None
+                )
                 var best = -1
                 var bestv = Float64(-1e30)
                 for a in range(ACT):
                     if a < len(legal) and legal[a]:
-                        var v = Float64(pred_buf[a])
+                        var v = Float64(pred_t.data[a])
                         if v > bestv:
                             bestv = v
                             best = a
@@ -254,24 +254,18 @@ def eval_policy_vs_random_cpu[
         else:
             draws += 1
 
-    obs_buf.free()
-    pred_buf.free()
     return EvalResult(wins=wins, draws=draws, losses=losses)
 
 
 def eval_mcts_vs_opponent_cpu[
-    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDestructible,
+    ENV: TwoPlayerDiscreteEnv & Saveable & Defaultable & ImplicitlyDeletable,
     NET: Module,
     OPP: CPUEvaluator,
     N_GAMES: Int,
     NUM_SIMS: Int,
     MAX_NODES: Int,
     MAX_PLIES: Int,
-](
-    mut net: NET,
-    agent_player: Int = 0,
-    seed: UInt64 = 1,
-) raises -> EvalResult:
+](mut net: NET, agent_player: Int = 0, seed: UInt64 = 1,) raises -> EvalResult:
     """CPU full-strength eval: the agent plays via `GenericCPUMCTS` (temp=0,
     NoNoise, argmax-visit), the opponent via its `CPUEvaluator`. The CPU twin of
     `eval_mcts_vs_opponent`; plays `N_GAMES` games sequentially on one env."""
@@ -279,19 +273,27 @@ def eval_mcts_vs_opponent_cpu[
     comptime ACT = NET.OUT_DIM - 1
     comptime LATENT = ENV.SAVE_SIZE
     comptime EVAL_MCTS = GenericCPUMCTS[
-        ACT, LATENT, NUM_SIMS, MAX_NODES, AlphaGoPUCT[1.0], NoNoise, SelfPlay,
+        ACT,
+        LATENT,
+        NUM_SIMS,
+        MAX_NODES,
+        AlphaGoPUCT[1.0],
+        NoNoise,
+        SelfPlay,
         NORMALIZE_Q=False,  # raw Q∈[-1,1] like legacy
     ]
 
     net.set_attr["training"](Scalar[DT](0.0))
 
     var env = ENV()
-    var root_save = alloc[Scalar[DT]](LATENT)
+    var root_save = List[Scalar[DT]](length=LATENT, fill=0)
     var env_ptr = UnsafePointer(to=env)
-    var rep = AZRepCPU[ENV, OBS](env=env_ptr)
-    var dyn = AZDynCPU[ENV, ACT](env=env_ptr)
+    var net_ptr = UnsafePointer(to=net)
+    var rep = AZRepCPU[ENV, OBS](env=untracked(env_ptr))
+    var dyn = AZDynCPU[ENV, ACT](env=untracked(env_ptr))
     var pred = AZPredCPU[ENV, OBS, ACT, NET](
-        env=env_ptr, net=UnsafePointer(to=net)
+        env=untracked(env_ptr),
+        net=untracked(net_ptr),
     )
     var mcts = EVAL_MCTS(gamma=1.0)
 
@@ -304,7 +306,7 @@ def eval_mcts_vs_opponent_cpu[
         _ = env.reset()
         var ply = 0
         while env.game_result() == 0 and ply < MAX_PLIES:
-            var act = 0
+            var act: Int
             if env.current_player() == agent_player:
                 env.save_env_state(root_save)
                 var legal = env.legal_action_mask()
@@ -338,7 +340,6 @@ def eval_mcts_vs_opponent_cpu[
         else:
             draws += 1
 
-    root_save.free()
     return EvalResult(wins=wins, draws=draws, losses=losses)
 
 
@@ -380,8 +381,17 @@ def eval_mcts_vs_opponent[
     comptime ACT = NET.OUT_DIM - 1
     comptime STATE = ENV.STATE_SIZE
     comptime EVAL_MCTS = GenericGPUMCTS[
-        N_GAMES, ACT, OBS, 1, MAX_NODES, NUM_SIMS, 1,
-        AlphaGoPUCT[1.0], NoNoise, SelfPlay, STATE_SIZE=STATE,
+        N_GAMES,
+        ACT,
+        OBS,
+        1,
+        MAX_NODES,
+        NUM_SIMS,
+        1,
+        AlphaGoPUCT[1.0],
+        NoNoise,
+        SelfPlay,
+        STATE_SIZE=STATE,
     ]
     # Resets let early-finishing games stop interfering; +ACT slack covers any
     # desync between fast and slow games before all first-games complete.
@@ -422,26 +432,37 @@ def eval_mcts_vs_opponent[
             # for the first `open_plies` plies, splitting the lockstep batch
             # into distinct games (see docstring).
             RandomOpponent.select_action_gpu[N_GAMES, ACT, STATE](
-                ctx, actions_dev, legal_dev, states,
+                ctx,
+                actions_dev,
+                legal_dev,
+                states,
                 seed + UInt64(move) * 131 + 17,
             )
         elif agent_turn:
             var pred = AZPredGPU[OBS, ACT, NET].make(net)
             var env_ad = AZEnvGPU[ENV, STATE, OBS, ACT]()
-            var root_obs = LayoutTensor[
-                DT, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
-            ](obs_dev.unsafe_ptr())
-            var root_legal = LayoutTensor[
-                DT, Layout.row_major(N_GAMES * ACT), MutAnyOrigin
-            ](legal_dev.unsafe_ptr())
+            var root_obs = LayoutTensor[DT, Layout.row_major(N_GAMES, OBS)](
+                obs_dev
+            )
+            var root_legal = LayoutTensor[DT, Layout.row_major(N_GAMES * ACT)](
+                legal_dev
+            )
             mcts.search_gpu_alphazero[type_of(pred), type_of(env_ad)](
-                ctx, pred, env_ad, root_obs, states, root_legal,
+                ctx,
+                pred,
+                env_ad,
+                root_obs,
+                states,
+                root_legal,
                 rng_seed=seed + UInt64(move),
             )
             ctx.enqueue_copy(actions_dev, mcts.actions_out)
         else:
             OPP.select_action_gpu[N_GAMES, ACT, STATE](
-                ctx, actions_dev, legal_dev, states,
+                ctx,
+                actions_dev,
+                legal_dev,
+                states,
                 seed + UInt64(move) * 31 + 7,
             )
         ctx.synchronize()
@@ -455,9 +476,9 @@ def eval_mcts_vs_opponent[
 
         all_done = True
         for e in range(N_GAMES):
-            if not eval_done[e] and Float64(done_h.unsafe_ptr()[e]) > 0.5:
+            if not eval_done[e] and done_h[e] > 0.5:
                 eval_done[e] = True
-                var r = Float64(rew_h.unsafe_ptr()[e])
+                var r = Float64(rew_h[e])
                 # Reward accrues to the player who just moved.
                 if r > 0.5:
                     eval_result[e] = 1 if agent_turn else 2
@@ -544,8 +565,7 @@ def eval_policy_vs_opponent[
     ENV.reset_kernel_gpu[N_GAMES, STATE](ctx, states)
     ctx.synchronize()
 
-    var obs_t = TileTensor(_mptr(obs_dev), row_major[N_GAMES, OBS]())
-    var pred_t = TileTensor(_mptr(pred_dev), row_major[N_GAMES, W]())
+    var pred_ad = AZPredGPU[OBS, ACT, NET].make(net)
     var rng = seed | 1
 
     for ply in range(MAX_PLIES):
@@ -566,19 +586,25 @@ def eval_policy_vs_opponent[
             # Greedy net policy: argmax over legal columns (CPU readback).
             ctx.enqueue_copy(legal_h, legal_dev)
             ctx.synchronize()
-            net.forward["gpu", N_GAMES](obs_t, output=pred_t)
+            var obs_lt = LayoutTensor[
+                DT, Layout.row_major(N_GAMES, OBS), MutAnyOrigin
+            ](obs_dev)
+            var pred_lt = LayoutTensor[
+                DT, Layout.row_major(N_GAMES, W), MutAnyOrigin
+            ](pred_dev)
+            pred_ad.predict_gpu[N_GAMES](ctx, obs_lt, pred_lt)
             ctx.enqueue_copy(pred_h, pred_dev)
             ctx.synchronize()
             for e in range(N_GAMES):
                 var best = -1
                 var bestv = Float64(-1e30)
                 for a in range(ACT):
-                    if Float64(legal_h.unsafe_ptr()[e * ACT + a]) > 0.5:
-                        var v = Float64(pred_h.unsafe_ptr()[e * W + a])
+                    if Float64(legal_h[e * ACT + a]) > 0.5:
+                        var v = Float64(pred_h[e * W + a])
                         if v > bestv:
                             bestv = v
                             best = a
-                actions_h.unsafe_ptr()[e] = Scalar[DT](best if best >= 0 else 0)
+                actions_h[e] = Scalar[DT](best if best >= 0 else 0)
             ctx.enqueue_copy(actions_dev, actions_h)
             ctx.synchronize()
         else:
@@ -603,7 +629,7 @@ def eval_policy_vs_opponent[
     var draws = 0
     var losses = 0
     for e in range(N_GAMES):
-        var r = Int(Float64(states_h.unsafe_ptr()[e * STATE + RESULT_IDX]))
+        var r = Int(Float64(states_h[e * STATE + RESULT_IDX]))
         if r == agent_win:
             wins += 1
         elif r == agent_loss:

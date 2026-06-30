@@ -34,9 +34,10 @@ The discrete EZv2 reuses ``MZRepNet`` / ``MZDynNet`` / ``MZPredNet`` directly
 prediction head — see ``nets_continuous.mojo``.
 """
 
+from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.nn.primitives.batch_norm_1d import BatchNorm1D
 
 # Re-export the MuZero learned model — discrete EZv2 uses it unchanged.
@@ -50,15 +51,16 @@ from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 
 comptime EZProjectorNet[
     HIDDEN: Int, PROJ: Int, PROJ_HID: Int,
+    ADT: DType = DT,
 ] = Sequential[
-    Linear[HIDDEN, PROJ_HID],
-    BatchNorm1D[PROJ_HID],
-    ReLU[PROJ_HID],
-    Linear[PROJ_HID, PROJ_HID],
-    BatchNorm1D[PROJ_HID],
-    ReLU[PROJ_HID],
-    Linear[PROJ_HID, PROJ],
-    BatchNorm1D[PROJ],
+    Linear[HIDDEN, PROJ_HID, ADT],
+    BatchNorm1D[PROJ_HID, ADT=ADT],
+    ReLU[PROJ_HID, ADT],
+    Linear[PROJ_HID, PROJ_HID, ADT],
+    BatchNorm1D[PROJ_HID, ADT=ADT],
+    ReLU[PROJ_HID, ADT],
+    Linear[PROJ_HID, PROJ, ADT],
+    BatchNorm1D[PROJ, ADT=ADT],
 ]
 
 
@@ -69,9 +71,10 @@ comptime EZProjectorNet[
 
 comptime EZPredictorNet[
     PROJ: Int, BOTTLENECK: Int,
+    ADT: DType = DT,
 ] = Sequential[
-    Linear[PROJ, BOTTLENECK],
-    BatchNorm1D[BOTTLENECK],
-    ReLU[BOTTLENECK],
-    Linear[BOTTLENECK, PROJ],
+    Linear[PROJ, BOTTLENECK, ADT],
+    BatchNorm1D[BOTTLENECK, ADT=ADT],
+    ReLU[BOTTLENECK, ADT],
+    Linear[BOTTLENECK, PROJ, ADT],
 ]

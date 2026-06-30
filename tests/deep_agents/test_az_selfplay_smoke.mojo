@@ -11,7 +11,7 @@ Run (Apple Metal):
 from std.testing import assert_true
 from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.alphazero.nets import AZMLPNet
 from mojo_rl.deep_agents.alphazero.selfplay import run_alphazero_selfplay
 from mojo_rl.envs.board_games.tic_tac_toe.tic_tac_toe import TicTacToeEnv
@@ -25,7 +25,7 @@ def main() raises:
     comptime Env = TicTacToeEnv[DType.float64]
 
     var ctx = DeviceContext()
-    var net = Net.make["gpu", INIT=Kaiming](ctx=ctx)
+    var net = Net.make["gpu", Kaiming](Optional(ctx))
 
     var last_loss = run_alphazero_selfplay[
         Env, Net,

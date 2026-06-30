@@ -24,7 +24,7 @@ def h5f_open(
     return _get_dylib_function[
         lib,
         "H5Fopen",
-        def(Ptr[c_char, ImmutAnyOrigin], c_uint, hid_t) thin -> hid_t,
+        def(Ptr[c_char, ImmutOrigin(origin_of(path))], c_uint, hid_t) thin -> hid_t,
     ]()(path.as_c_string_slice().unsafe_ptr(), flags, fapl_id)
 
 

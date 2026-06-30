@@ -1,66 +1,66 @@
-"""TD3Trainer — unified TD3 trainer: CPU/GPU × uniform/PER replay.
+"""TD3Trainer — storage-framework TD3 trainer (CPU gate; GPU stretch).
 
-Phase 4.2 migration to the SAC-style signature
-`TD3Trainer[train_target, SAMPLE, ACTOR, CRITIC]` (dims derived from
-SAMPLE). Replaces the prior CPU-only
-`TD3Trainer[ACTOR, CRITIC, OBS, ACT, BATCH, REPLAY]`.
+Assembles the migrated `mojo_rl.nn` TD3 blocks into a single
+driver-conforming `TD3Trainer` that conforms `OffPolicyAgentGpu` so both the
+CPU single-env driver (`run_offpolicy_train`) and the batched drivers
+type-check. Structural sibling of the storage `DDPGTrainer` with the TD3
+additions:
 
-Pipeline (4 blocks):
-  Sample → TD3TargetY [twin-critic min + target-policy smoothing] →
-  TwinCritic [shared with SAC] → TD3DelayedActorPolyak
+  * TWIN critics (`pair1`, `pair2` + the shared `TwinCriticStep`, also used by
+    SAC) — the target value takes min(Q1',Q2').
+  * `TD3TargetYBlock` — target-policy smoothing (clipped Gaussian noise on the
+    target action) + twin-critic min.
+  * `TD3DelayedActorPolyakStep` — the actor update (DPG on critic1, reusing
+    storage `DDPGActorLoss`) + ALL THREE polyaks (actor + both critics), gated
+    by an internal `policy_delay` counter.
 
-`TD3DelayedActorPolyakStep` bundles actor update (DPG on critic1, reusing
-`DDPGActorLoss`) + all 3 polyaks (actor + both critics), gated by an
-internal `policy_delay` counter. `policy_head` (`ActionSamplingBlock`) is
-the env-interaction head; it already carries a GPU path, so the host-list
-selects work for both targets.
+Pipeline (per train step):
+  state.step_idx = step
+  sample_blk.step(state)                                          # fills mb_*
+  target_y_blk.step(state, actor_t, critic1_t, critic2_t)         # writes mb_y
+  twin_critic_blk.step[ACCUMULATE=(gpu)](state, c1, c1_opt, c2, c2_opt)
+  actor_polyak_blk.step(state, actor_opt, actor_pair, pair1, pair2)  # delayed
+  diagnostics
 
-CPU is bit-identical to the prior TD3Trainer (validated by the TD3 smoke +
-metrics tests). GPU mirrors DDPG/SAC: twin-critic loss + DPG actor loss
-accumulated on-device (no per-step D2H), drained at flush; target-policy
-smoothing noise sampled on-device (Philox). CUDA-graph capture deferred to
-Phase 4.4 (trait defaults, never reached with USE_TRAIN_CUDA_GRAPH=False).
+Deterministic action selection with additive Gaussian exploration noise (NO
+rsample); the Tanh-bounded actor output is fed raw to the env (clamped to
+±action_scale), exactly like the storage DDPG trainer.
 
-Conforms to `OffPolicyAgentGpu`.
+CUDA-graph capture (`train_device_kernels` / `note_train_update` /
+`learning_starts_count`) is DEFERRED — the `OffPolicyAgentGpu` trait defaults
+raise, never reached with `USE_TRAIN_CUDA_GRAPH=False`.
 """
 
 from std.random import random_float64
-from std.time import perf_counter_ns
-from std.gpu import block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
 from std.random.philox import Random as PhiloxRandom
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from layout import Layout, LayoutTensor
+
+from std.gpu import global_idx
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core import Module
+from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP, Bf16Compute
-from mojo_rl.nn.core.checkpoint import (
-    save_state_v2_body, load_state_v2_body,
-    save_state_v2_body_gpu, load_state_v2_body_gpu,
-)
-from mojo_rl.nn.core.log_bundle import log_bundle
-from mojo_rl.nn.core.map_params import hard_copy_params
-from mojo_rl.nn.core.metric import LogScalar
-from ..core.checkpoint_helpers import (
-    save_optimizer_v2_body, load_optimizer_v2_body,
-    save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
-    save_counter_v2_body, load_counter_v2_body,
-    split_lines_v2, read_file_v2, expect_v2_header,
-)
-from ..core.online_target_pair import OnlineTargetPair
-from mojo_rl.nn.core.scratch import Scratch
-from mojo_rl.nn.core.scratch_walkers import init_scratch_auto
-from ..data.n_step_replay import GPUNStepBuffer
-from mojo_rl.nn.initializer import Xavier
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward
+from mojo_rl.nn.core.initializer import Xavier
 from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.core.checkpoint import (
+    CheckpointWriter, CheckpointReader, _split_lines,
+)
 from mojo_rl.nn.random.box_muller import box_muller_normal, box_muller_normal_gpu
-from mojo_rl.nn.training.timer import Timer
-from ..training.action_sampling_block import ActionSamplingBlock
-from ..training.driver_offpolicy import OffPolicyAgentGpu
+
+from mojo_rl.nn.core.log_bundle import log_bundle
+from mojo_rl.nn.core.metric import LogScalar
+
+from ..data.n_step_replay import GPUNStepBuffer
+from ..core.online_target_pair import OnlineTargetPair
 from ..training.episode_tracker import EpisodeTracker
 from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.trainer_block import TrainerState
+from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.blocks import SampleBlock, TwinCriticStep
 from .target_y_block import TD3TargetYBlock
 from .blocks.delayed_actor_polyak_step import TD3DelayedActorPolyakStep
@@ -68,8 +68,9 @@ from .metrics import TD3Metrics
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Batched GPU action kernels (deterministic actor + Gaussian exploration;
-# per-trainer copies, same convention as SAC/DDPG).
+# GPU device kernels for the batched action-selection path (mirror the
+# storage DDPG trainer's body: Philox warmup + obs copy + noise+clamp,
+# deterministic actor + additive Gaussian, no rsample).
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -82,16 +83,28 @@ def _td3_warmup_uniform_kernel[
     offset_base: UInt64,
 ):
     """Per-lane Philox uniform → [N_ENVS, ACT] of Uniform(-scale, +scale)."""
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var i = Int(global_idx.x)
     var total = N_ENVS * ACT
     if i >= total:
         return
     var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
     var u = Float32(philox.step_uniform()[0])
     var s = Scalar[DT](2.0) * Scalar[DT](u) - Scalar[DT](1.0)
-    var env = i // ACT
-    var j = i % ACT
-    action_dest[env, j] = s * action_scale
+    action_dest[i // ACT, i % ACT] = s * action_scale
+
+
+def _td3_copy2d_kernel[
+    N_ENVS: Int, D: Int
+](
+    src: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
+    dst: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
+):
+    """dst[e,d] = src[e,d] — bridge the driver's obs view into the trainer's
+    owned device scratch the storage actor.forward consumes."""
+    var i = Int(global_idx.x)
+    var total = N_ENVS * D
+    if i < total:
+        dst[i // D, i % D] = rebind[Scalar[DT]](src[i // D, i % D])
 
 
 def _td3_noise_clamp_kernel[
@@ -104,18 +117,18 @@ def _td3_noise_clamp_kernel[
     action_scale: Scalar[DT],
 ):
     """`action_out = clamp(ao + noise·sigma, ±scale)` per lane."""
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
+    var i = Int(global_idx.x)
     var total = N_ENVS * ACT
     if i >= total:
         return
-    var env = i // ACT
+    var e = i // ACT
     var j = i % ACT
-    var a = ao[env, j] + noise[env, j] * sigma
+    var a = rebind[Scalar[DT]](ao[e, j]) + rebind[Scalar[DT]](noise[e, j]) * sigma
     if a > action_scale:
         a = action_scale
     elif a < -action_scale:
         a = -action_scale
-    action_out[env, j] = a
+    action_out[e, j] = a
 
 
 struct TD3Trainer[
@@ -124,7 +137,8 @@ struct TD3Trainer[
     ACTOR: Module,
     CRITIC: Module,
 ](OffPolicyAgentGpu):
-    """Dimensions (OBS / ACT / BATCH) derived from SAMPLE (mirrors SAC)."""
+    """Storage-framework TD3 trainer. Dimensions (OBS / ACT / BATCH) are
+    derived from SAMPLE (mirrors SAC/DDPG)."""
 
     comptime OBS_DIM: Int = Self.SAMPLE.OBS
     comptime ACT_DIM: Int = Self.SAMPLE.ACT
@@ -133,13 +147,6 @@ struct TD3Trainer[
     comptime AGENT_OBS_DIM: Int = Self.OBS_DIM
     comptime AGENT_ACT_DIM: Int = Self.ACT_DIM
     comptime AGENT_TRAIN_TARGET: StaticString = Self.train_target
-
-    # Timer section indices — order matches `add_section` calls in `make`.
-    comptime _T_SAMPLE = 0
-    comptime _T_TARGET_Y = 1
-    comptime _T_CRITIC = 2
-    comptime _T_ACTOR_POLYAK = 3
-    comptime _T_DIAG = 4
 
     var actor_pair: OnlineTargetPair[Self.ACTOR]
     var pair1: OnlineTargetPair[Self.CRITIC]
@@ -159,52 +166,50 @@ struct TD3Trainer[
         Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
     ]
 
-    var policy_head: ActionSamplingBlock[
-        Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM
-    ]
-
     var state: TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]
     var tracker: EpisodeTracker
     var ctx: Optional[DeviceContext]
 
+    # Owned action-selection scratch Tensors (lazily `.ensure`d per call).
+    var _ob_scr: Tensor     # N_ENVS * OBS
+    var _ao_scr: Tensor     # N_ENVS * ACT (deterministic actor output)
+    var _noise_scr: Tensor  # N_ENVS * ACT (box-muller fill)
+
     var action_scale: Scalar[DT]
     var exploration_noise: Scalar[DT]
     var learning_starts: Int
-    var _use_bf16: Bool
+
     # Philox state for batched warmup + exploration noise (gpu path only).
     var _warmup_rng_seed: UInt64
     var _warmup_rng_offset: UInt64
     var _noise_rng_seed: UInt64
     var _noise_rng_offset: UInt64
 
+    # Host metric accumulators (CPU path).
     var _actor_L_accum: Scalar[DT]
     var _critic_L_accum: Scalar[DT]
     var _actor_updates: Int
     var _critic_updates: Int
-    # Never reset by `flush_*` — emitted as `train_steps`.
     var _total_train_steps: Int
-
-    # Per-batch diagnostic accumulators (CPU-only diag walk; GPU leaves 0).
-    # Accumulated on the critic cadence → averaged by `_critic_updates`.
+    # Diagnostic accumulators (CPU path): batch means drained at flush.
     var _q_accum: Scalar[DT]
     var _target_accum: Scalar[DT]
     var _reward_accum: Scalar[DT]
     var _done_accum: Scalar[DT]
-    # GPU device-resident mirrors (CPU keeps the host scalars above).
+    # Diagnostic accumulators (GPU path): device-resident running means.
     var _q_mean_dev: DeviceMeanAccum
     var _target_mean_dev: DeviceMeanAccum
     var _reward_mean_dev: DeviceMeanAccum
     var _done_mean_dev: DeviceMeanAccum
-
-    var timer: Timer
+    var _use_bf16: Bool
 
     def __init__(out self):
         self.actor_pair = OnlineTargetPair[Self.ACTOR]()
         self.pair1 = OnlineTargetPair[Self.CRITIC]()
         self.pair2 = OnlineTargetPair[Self.CRITIC]()
-        self.actor_opt = Adam()
-        self.critic1_opt = Adam()
-        self.critic2_opt = Adam()
+        self.actor_opt = Adam(lr=Scalar[DT](3e-4))
+        self.critic1_opt = Adam(lr=Scalar[DT](3e-4))
+        self.critic2_opt = Adam(lr=Scalar[DT](3e-4))
         self.sample_blk = Self.SAMPLE()
         self.target_y_blk = TD3TargetYBlock[
             Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
@@ -215,12 +220,7 @@ struct TD3Trainer[
         self.actor_polyak_blk = TD3DelayedActorPolyakStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.BATCH, Self.ACTOR, Self.CRITIC,
         ]()
-        self.policy_head = ActionSamplingBlock[
-            Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM,
-        ]()
-        self.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-        ]()
+        self.state = TrainerState[Self.OBS_DIM, Self.ACT_DIM, Self.BATCH]()
         self.tracker = EpisodeTracker(
             window=List[Scalar[DT]](),
             window_size=0,
@@ -229,10 +229,12 @@ struct TD3Trainer[
             ep_count=0,
         )
         self.ctx = None
+        self._ob_scr = Tensor()
+        self._ao_scr = Tensor()
+        self._noise_scr = Tensor()
         self.action_scale = Scalar[DT](1.0)
         self.exploration_noise = Scalar[DT](0.1)
         self.learning_starts = 1_000
-        self._use_bf16 = False
         self._warmup_rng_seed = UInt64(0xC0FFEE_C0DE)
         self._warmup_rng_offset = UInt64(0)
         self._noise_rng_seed = UInt64(0xD15EA5E_D00D)
@@ -250,7 +252,7 @@ struct TD3Trainer[
         self._target_mean_dev = DeviceMeanAccum()
         self._reward_mean_dev = DeviceMeanAccum()
         self._done_mean_dev = DeviceMeanAccum()
-        self.timer = Timer.new()
+        self._use_bf16 = False
 
     @staticmethod
     def make(
@@ -270,8 +272,9 @@ struct TD3Trainer[
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
         use_bf16: Bool = False,
     ) raises -> Self:
-        """Unified factory. `ctx` is required for `train_target='gpu'`.
-        `use_bf16=True` (GPU only) runs the train step under `Bf16Compute`."""
+        """Unified factory. `ctx` required for train_target='gpu'.
+        `max_grad_norm` / `use_bf16` accepted for signature parity with the
+        agent facade (storage Adam clips internally; bf16 is a GPU stretch)."""
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
         ), "TD3Trainer: target must be 'cpu' or 'gpu'"
@@ -283,29 +286,28 @@ struct TD3Trainer[
         t.ctx = ctx
 
         t.actor_pair = OnlineTargetPair[Self.ACTOR].make[
-            target=Self.train_target, INIT=Xavier
-        ](ctx=ctx)
+            Self.train_target, Xavier
+        ](ctx)
         t.pair1 = OnlineTargetPair[Self.CRITIC].make[
-            target=Self.train_target, INIT=Xavier
-        ](ctx=ctx)
+            Self.train_target, Xavier
+        ](ctx)
         t.pair2 = OnlineTargetPair[Self.CRITIC].make[
-            target=Self.train_target, INIT=Xavier
-        ](ctx=ctx)
-        t.actor_opt = Adam.make[target=Self.train_target, M=Self.ACTOR](
-            t.actor_pair.online, ctx=ctx,
-        )
-        t.actor_opt.lr = actor_lr
-        t.actor_opt.max_grad_norm = max_grad_norm
-        t.critic1_opt = Adam.make[target=Self.train_target, M=Self.CRITIC](
-            t.pair1.online, ctx=ctx,
-        )
-        t.critic1_opt.lr = critic_lr
-        t.critic1_opt.max_grad_norm = max_grad_norm
-        t.critic2_opt = Adam.make[target=Self.train_target, M=Self.CRITIC](
-            t.pair2.online, ctx=ctx,
-        )
-        t.critic2_opt.lr = critic_lr
-        t.critic2_opt.max_grad_norm = max_grad_norm
+            Self.train_target, Xavier
+        ](ctx)
+
+        t.actor_opt = Adam(lr=actor_lr)
+        t.critic1_opt = Adam(lr=critic_lr)
+        t.critic2_opt = Adam(lr=critic_lr)
+        comptime if Self.train_target == "gpu":
+            t.actor_opt.adopt[Self.train_target, Self.ACTOR](
+                t.actor_pair.online, ctx
+            )
+            t.critic1_opt.adopt[Self.train_target, Self.CRITIC](
+                t.pair1.online, ctx
+            )
+            t.critic2_opt.adopt[Self.train_target, Self.CRITIC](
+                t.pair2.online, ctx
+            )
 
         t.target_y_blk = TD3TargetYBlock[
             Self.ACTOR, Self.CRITIC, Self.BATCH, Self.OBS_DIM, Self.ACT_DIM,
@@ -322,25 +324,14 @@ struct TD3Trainer[
         ].make[Self.train_target](
             policy_delay=policy_delay, tau=tau, ctx=ctx,
         )
-        t.policy_head = ActionSamplingBlock[
-            Self.ACTOR, Self.OBS_DIM, Self.ACT_DIM, Self.ACT_DIM,
+
+        t.state = TrainerState[
+            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH
         ].make[Self.train_target](ctx=ctx)
 
         t.tracker = EpisodeTracker.new(
             window_size=window_size, initial_fill=initial_episode_fill
         )
-        t.state = TrainerState[
-            Self.OBS_DIM, Self.ACT_DIM, Self.BATCH,
-        ].make[Self.train_target](ctx=ctx)
-
-        init_scratch_auto[Self, target=Self.train_target](t, ctx)
-
-        comptime if Self.train_target == "gpu":
-            # Device-resident mean accumulators for the GPU diag path.
-            t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
-            t._target_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
-            t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
-            t._done_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
 
         t.action_scale = action_scale
         t.exploration_noise = exploration_noise
@@ -349,67 +340,22 @@ struct TD3Trainer[
 
         t.sample_blk.setup(learning_starts, ctx=ctx)
 
-        # Timer sections — index order MUST match the `_T_*` constants.
-        t.timer.add_section("sample")
-        t.timer.add_section("target_y")
-        t.timer.add_section("critic")
-        t.timer.add_section("actor_polyak")
-        t.timer.add_section("diag")
+        comptime if Self.train_target == "cpu":
+            t._ob_scr.ensure(Self.OBS_DIM)
+            t._ao_scr.ensure(Self.ACT_DIM)
+            t._noise_scr.ensure(Self.ACT_DIM)
+        else:
+            t._q_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._target_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._reward_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
+            t._done_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
         return t^
 
-    # ─── Direct-callable (host-list) surface ─────────────────────────
+    def set_beta(mut self, beta: Scalar[DT]):
+        """PER IS-β anneal hook. No-op for uniform sample blocks."""
+        self.sample_blk.set_beta(beta)
 
-    def select_action(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-        step_idx: Int,
-    ) raises:
-        self.policy_head.select_deterministic_with_noise[Self.train_target](
-            self.actor_pair.online,
-            obs,
-            action_out,
-            step_idx=step_idx,
-            learning_starts=self.learning_starts,
-            action_scale=self.action_scale,
-            noise_scale=self.exploration_noise,
-        )
-
-    def select_greedy_action(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-    ) raises:
-        self.policy_head.select_deterministic_with_noise[Self.train_target](
-            self.actor_pair.online,
-            obs,
-            action_out,
-            step_idx=self.learning_starts,
-            learning_starts=self.learning_starts,
-            action_scale=self.action_scale,
-            noise_scale=Scalar[DT](0.0),
-        )
-
-    def record(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        ref action: List[Scalar[DT]],
-        reward: Scalar[DT],
-        ref next_obs: List[Scalar[DT]],
-        done: Scalar[DT],
-    ) raises:
-        self.tracker.add_reward(reward)
-        self.sample_blk.add(obs, action, reward, next_obs, done, ctx=self.ctx)
-
-    # `end_episode` / `mean_return` / `ep_count` / `add_complete_return`
-    # are OffPolicyAgent trait defaults (S6) over this single accessor.
-    def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
-        return rebind[UnsafePointer[EpisodeTracker, MutAnyOrigin]](
-            UnsafePointer(to=self.tracker)
-        )
-
-    # ─── train_step ───────────────────────────────────────────────────
-
+    # ─── train_step ────────────────────────────────────────────────────
     def train_step(mut self, step_idx: Int) raises -> Bool:
         comptime if Self.train_target == "cpu":
             return self._train_step_impl[NoAMP](step_idx)
@@ -426,23 +372,18 @@ struct TD3Trainer[
         comptime if Self.train_target == "gpu":
             self.state.ctx = self.ctx
 
-        var t_sample = perf_counter_ns()
         self.sample_blk.step(self.state)
         if not self.state.did_step:
             return False
-        self.timer.accumulate(Self._T_SAMPLE, t_sample)
 
-        var t_ty = perf_counter_ns()
         self.target_y_blk.step[Self.train_target, POLICY](
             self.state,
             self.actor_pair.target_net,
             self.pair1.target_net,
             self.pair2.target_net,
         )
-        self.timer.accumulate(Self._T_TARGET_Y, t_ty)
-
-        var t_crit = perf_counter_ns()
-        # GPU: accumulate both critics' loss on-device (no per-step D2H).
+        # ACCUMULATE on GPU: the per-batch twin-critic loss is reduced on-device
+        # into the critics' accumulators (read at flush) — NO per-step D2H.
         self.twin_critic_blk.step[
             Self.train_target, POLICY, ACCUMULATE = Self.train_target == "gpu"
         ](
@@ -452,48 +393,45 @@ struct TD3Trainer[
             self.pair2.online,
             self.critic2_opt,
         )
-        self.timer.accumulate(Self._T_CRITIC, t_crit)
         self._critic_L_accum += self.state.critic_loss
         self._critic_updates += 1
 
         # Per-batch diagnostics — `mean_q` reads twin_critic c1's Q1(s, a);
         # target/reward/done read the minibatch scratches. Fires every step
-        # (critic cadence). CPU sums the host scratches; GPU folds the same
-        # `[BATCH]` device buffers into device-resident running means.
-        var t_diag = perf_counter_ns()
+        # (critic cadence).
+        comptime B = Self.BATCH
         comptime if Self.train_target == "cpu":
-            var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
-            var q_p = self.twin_critic_blk.inner.c1._mb_q.target_ptr["cpu"]()
-            var y_p = self.state.mb_y.target_ptr["cpu"]()
-            var r_p = self.state.mb_r.target_ptr["cpu"]()
-            var d_p = self.state.mb_d.target_ptr["cpu"]()
-            var sum_q: Scalar[DT] = 0.0
-            var sum_y: Scalar[DT] = 0.0
-            var sum_r: Scalar[DT] = 0.0
-            var sum_d: Scalar[DT] = 0.0
-            for i in range(Self.BATCH):
-                sum_q += q_p[i]
-                sum_y += y_p[i]
-                sum_r += r_p[i]
-                sum_d += d_p[i]
-            self._q_accum += sum_q * inv_b
-            self._target_accum += sum_y * inv_b
-            self._reward_accum += sum_r * inv_b
-            self._done_accum += sum_d * inv_b
+            var inv_b = Scalar[DT](1.0) / Scalar[DT](B)
+            var sq: Scalar[DT] = 0.0
+            var sy: Scalar[DT] = 0.0
+            var sr: Scalar[DT] = 0.0
+            var sd: Scalar[DT] = 0.0
+            for b in range(B):
+                sq += self.twin_critic_blk.inner.c1._mb_q.data[b]
+                sy += self.state.mb_y.data[b]
+                sr += self.state.mb_r.data[b]
+                sd += self.state.mb_d.data[b]
+            self._q_accum += sq * inv_b
+            self._target_accum += sy * inv_b
+            self._reward_accum += sr * inv_b
+            self._done_accum += sd * inv_b
         else:
-            var q_ptr = self.twin_critic_blk.inner.c1._mb_q.target_ptr["gpu"]()
-            var y_ptr = self.state.mb_y.target_ptr["gpu"]()
-            var r_ptr = self.state.mb_r.target_ptr["gpu"]()
-            var d_ptr = self.state.mb_d.target_ptr["gpu"]()
-            self._q_mean_dev.accumulate_gpu[Self.BATCH](q_ptr)
-            self._target_mean_dev.accumulate_gpu[Self.BATCH](y_ptr)
-            self._reward_mean_dev.accumulate_gpu[Self.BATCH](r_ptr)
-            self._done_mean_dev.accumulate_gpu[Self.BATCH](d_ptr)
-        self.timer.accumulate(Self._T_DIAG, t_diag)
+            comptime lb = Layout.row_major(B)
+            self._q_mean_dev.accumulate_gpu_lt[B](
+                self.twin_critic_blk.inner.c1._mb_q.lt["gpu", lb]()
+            )
+            self._target_mean_dev.accumulate_gpu_lt[B](
+                self.state.mb_y.lt["gpu", lb]()
+            )
+            self._reward_mean_dev.accumulate_gpu_lt[B](
+                self.state.mb_r.lt["gpu", lb]()
+            )
+            self._done_mean_dev.accumulate_gpu_lt[B](
+                self.state.mb_d.lt["gpu", lb]()
+            )
 
         # TD3 actor + 3-pair polyak (gated by internal counter). Block reads
         # actor via actor_pair.online + critic1 via pair1.online internally.
-        var t_act = perf_counter_ns()
         self.actor_polyak_blk.step[Self.train_target, POLICY](
             self.state,
             self.actor_opt,
@@ -501,94 +439,247 @@ struct TD3Trainer[
             self.pair1,
             self.pair2,
         )
-        self.timer.accumulate(Self._T_ACTOR_POLYAK, t_act)
         # Block resets _counter to 0 when it fires; the actor loss is valid
         # (CPU) / accumulated on-device (GPU) only then.
         if self.actor_polyak_blk._counter == 0:
             self._actor_L_accum += self.state.actor_loss
             self._actor_updates += 1
+
+        # PER tail (no-op for uniform blocks).
+        self.sample_blk.update_priorities(self.state)
+
         self._total_train_steps += 1
         return True
 
-    # ─── OffPolicyAgentGpu surface (drivers) ──────────────────────────
+    def total_train_steps(self) -> Int:
+        return self._total_train_steps
 
+    # ─── Action selection ──────────────────────────────────────────────
     def select_action_batched[
         N_ENVS: Int
     ](
         mut self,
-        obs_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        action_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ao_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        alp_scratch_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        obs: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_OBS_DIM), MutAnyOrigin
+        ],
+        action: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        ao_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, 2 * Self.AGENT_ACT_DIM), MutAnyOrigin
+        ],
+        alp_scratch: LayoutTensor[
+            DT, Layout.row_major(N_ENVS, Self.AGENT_ACT_DIM + 1), MutAnyOrigin
+        ],
         step_idx: Int,
     ) raises:
         comptime assert N_ENVS > 0, "N_ENVS must be > 0"
-        comptime OBS = Self.OBS_DIM
         comptime ACT = Self.ACT_DIM
+        comptime OBS = Self.OBS_DIM
 
+        # ── Warmup: uniform random action in [-action_scale, +scale].
         if step_idx < self.learning_starts:
             comptime if Self.train_target == "cpu":
-                for i in range(N_ENVS * ACT):
-                    var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                    action_ptr[i] = u * self.action_scale
+                for env in range(N_ENVS):
+                    for j in range(ACT):
+                        var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                        action[env, j] = u * self.action_scale
+                return
             else:
-                var action_lt = LayoutTensor[
-                    DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
-                ](action_ptr)
-                comptime total = N_ENVS * ACT
-                comptime n_blocks = (total + TPB - 1) // TPB
-                comptime warmup_kernel = _td3_warmup_uniform_kernel[N_ENVS, ACT]
-                var ctx = self.ctx.value()
-                ctx.enqueue_function[warmup_kernel](
-                    action_lt,
+                var c = self.ctx.value()
+                comptime tot = N_ENVS * ACT
+                c.enqueue_function[_td3_warmup_uniform_kernel[N_ENVS, ACT]](
+                    action,
                     self.action_scale,
                     self._warmup_rng_seed,
                     self._warmup_rng_offset,
-                    grid_dim=n_blocks,
+                    grid_dim=(tot + TPB - 1) // TPB,
                     block_dim=TPB,
                 )
                 self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
-            return
+                return
 
+        # ── Policy: deterministic actor (Tanh-bounded) + Gaussian noise +
+        # clamp. The actor output is fed raw (NOT scaled by action_scale —
+        # legacy parity); action_scale only bounds the clamp.
         var sigma = self.exploration_noise * self.action_scale
         comptime if Self.train_target == "cpu":
-            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
-            var ao_t = TileTensor(ao_scratch_ptr, row_major[N_ENVS, ACT]())
-            self.actor_pair.online.forward["cpu", N_ENVS](obs_t, output=ao_t)
-            box_muller_normal(alp_scratch_ptr, N_ENVS * ACT)
-            for i in range(N_ENVS * ACT):
-                var a = ao_scratch_ptr[i] + alp_scratch_ptr[i] * sigma
+            self._ob_scr.ensure(N_ENVS * OBS)
+            for env in range(N_ENVS):
+                for d in range(OBS):
+                    self._ob_scr.data[env * OBS + d] = rebind[Scalar[DT]](
+                        obs[env, d]
+                    )
+            self._ao_scr.ensure(N_ENVS * ACT)
+            self._noise_scr.ensure(N_ENVS * ACT)
+            call_forward["cpu", N_ENVS](
+                self.actor_pair.online,
+                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
+            )
+            box_muller_normal(self._noise_scr.data.unsafe_ptr(), N_ENVS * ACT)
+            for env in range(N_ENVS):
+                for j in range(ACT):
+                    var a = (
+                        self._ao_scr.data[env * ACT + j]
+                        + self._noise_scr.data[env * ACT + j] * sigma
+                    )
+                    if a > self.action_scale:
+                        a = self.action_scale
+                    elif a < -self.action_scale:
+                        a = -self.action_scale
+                    action[env, j] = a
+            _ = ao_scratch
+            _ = alp_scratch
+        else:
+            var c = self.ctx.value()
+            self._ob_scr.ensure_gpu(c, N_ENVS * OBS)
+            self._ao_scr.ensure_gpu(c, N_ENVS * ACT)
+            self._noise_scr.ensure_gpu(c, N_ENVS * ACT)
+            comptime tot_obs = N_ENVS * OBS
+            c.enqueue_function[_td3_copy2d_kernel[N_ENVS, OBS]](
+                obs,
+                self._ob_scr.lt["gpu", Layout.row_major(N_ENVS, OBS)](),
+                grid_dim=(tot_obs + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
+            call_forward["gpu", N_ENVS](
+                self.actor_pair.online,
+                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
+                self.ctx,
+            )
+            comptime tot_act = N_ENVS * ACT
+            var noise_flat = self._noise_scr.lt[
+                "gpu", Layout.row_major(tot_act)
+            ]()
+            box_muller_normal_gpu[tot_act](
+                c, noise_flat.ptr,
+                self._noise_rng_seed, self._noise_rng_offset,
+            )
+            self._noise_rng_offset += UInt64(((tot_act + 1) // 2) * 2)
+            c.enqueue_function[_td3_noise_clamp_kernel[N_ENVS, ACT]](
+                self._ao_scr.lt["gpu", Layout.row_major(N_ENVS, ACT)](),
+                self._noise_scr.lt["gpu", Layout.row_major(N_ENVS, ACT)](),
+                action,
+                sigma,
+                self.action_scale,
+                grid_dim=(tot_act + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
+            _ = ao_scratch
+            _ = alp_scratch
+
+    def select_greedy_action(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
+    ) raises:
+        """Greedy = deterministic actor output (Tanh-bounded), clamped to
+        ±action_scale. No exploration noise (the actor already ends in Tanh)."""
+        comptime ACT = Self.ACT_DIM
+        comptime OBS = Self.OBS_DIM
+        comptime if Self.train_target == "cpu":
+            self._ob_scr.ensure(OBS)
+            self._ao_scr.ensure(ACT)
+            for d in range(OBS):
+                self._ob_scr.data[d] = obs[d]
+            call_forward["cpu", 1](
+                self.actor_pair.online,
+                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
+            )
+            for j in range(ACT):
+                var a = self._ao_scr.data[j]
                 if a > self.action_scale:
                     a = self.action_scale
                 elif a < -self.action_scale:
                     a = -self.action_scale
-                action_ptr[i] = a
+                action_out[j] = a
         else:
-            var ctx = self.ctx.value()
-            var obs_t = TileTensor(obs_ptr, row_major[N_ENVS, OBS]())
-            var ao_t = TileTensor(ao_scratch_ptr, row_major[N_ENVS, ACT]())
-            self.actor_pair.online.forward["gpu", N_ENVS](obs_t, output=ao_t)
-            comptime total = N_ENVS * ACT
-            box_muller_normal_gpu[total](
-                ctx, alp_scratch_ptr,
-                self._noise_rng_seed, self._noise_rng_offset,
+            var c = self.ctx.value()
+            var ob = Tensor.alloc(OBS)
+            for d in range(OBS):
+                ob.data[d] = obs[d]
+            ob.upload(c)
+            var ao = Tensor.alloc_gpu(c, ACT)
+            call_forward["gpu", 1](
+                self.actor_pair.online, TensorRefs[Self.ACTOR.ARITY](ob), ao,
+                self.ctx,
             )
-            self._noise_rng_offset += UInt64(((total + 1) // 2) * 2)
-            var ao_lt = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
-            ](ao_scratch_ptr)
-            var noise_lt = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
-            ](alp_scratch_ptr)
-            var action_lt = LayoutTensor[
-                DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin,
-            ](action_ptr)
-            comptime n_blocks = (total + TPB - 1) // TPB
-            comptime nc_kernel = _td3_noise_clamp_kernel[N_ENVS, ACT]
-            ctx.enqueue_function[nc_kernel](
-                ao_lt, noise_lt, action_lt, sigma, self.action_scale,
-                grid_dim=n_blocks, block_dim=TPB,
+            ao.download(c)
+            for j in range(ACT):
+                var a = ao.data[j]
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                action_out[j] = a
+
+    def select_action(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
+        step_idx: Int,
+    ) raises:
+        """Host-list deterministic action + Gaussian exploration noise —
+        user-facing entry for smoke tests / the single-env driver."""
+        comptime ACT = Self.ACT_DIM
+        comptime OBS = Self.OBS_DIM
+        if step_idx < self.learning_starts:
+            for j in range(ACT):
+                var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                action_out[j] = u * self.action_scale
+            return
+        var sigma = self.exploration_noise * self.action_scale
+        comptime if Self.train_target == "cpu":
+            self._ob_scr.ensure(OBS)
+            self._ao_scr.ensure(ACT)
+            self._noise_scr.ensure(ACT)
+            for d in range(OBS):
+                self._ob_scr.data[d] = obs[d]
+            call_forward["cpu", 1](
+                self.actor_pair.online,
+                TensorRefs[Self.ACTOR.ARITY](self._ob_scr), self._ao_scr,
             )
+            box_muller_normal(self._noise_scr.data.unsafe_ptr(), ACT)
+            for j in range(ACT):
+                var a = self._ao_scr.data[j] + self._noise_scr.data[j] * sigma
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                action_out[j] = a
+        else:
+            var c = self.ctx.value()
+            var ob = Tensor.alloc(OBS)
+            for d in range(OBS):
+                ob.data[d] = obs[d]
+            ob.upload(c)
+            var ao = Tensor.alloc_gpu(c, ACT)
+            call_forward["gpu", 1](
+                self.actor_pair.online, TensorRefs[Self.ACTOR.ARITY](ob), ao,
+                self.ctx,
+            )
+            ao.download(c)
+            var noise = List[Scalar[DT]](length=ACT, fill=Scalar[DT](0.0))
+            box_muller_normal(noise.unsafe_ptr(), ACT)
+            for j in range(ACT):
+                var a = ao.data[j] + noise[j] * sigma
+                if a > self.action_scale:
+                    a = self.action_scale
+                elif a < -self.action_scale:
+                    a = -self.action_scale
+                action_out[j] = a
+
+    # ─── Record ────────────────────────────────────────────────────────
+    def record(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        ref action: List[Scalar[DT]],
+        reward: Scalar[DT],
+        ref next_obs: List[Scalar[DT]],
+        done: Scalar[DT],
+    ) raises:
+        self.tracker.add_reward(reward)
+        self.sample_blk.add(obs, action, reward, next_obs, done, ctx=self.ctx)
 
     def _replay_add(
         mut self,
@@ -598,12 +689,14 @@ struct TD3Trainer[
         ref next_obs: List[Scalar[DT]],
         done: Scalar[DT],
     ) raises:
-        # `record_batch_cpu`'s staging loop is the OffPolicyAgent trait
-        # default (S6 follow-on); this hook is the one trainer-specific line.
-        self.sample_blk.add(
-            obs, action, reward, next_obs, done, ctx=self.ctx,
+        self.sample_blk.add(obs, action, reward, next_obs, done, ctx=self.ctx)
+
+    def _tracker_ptr(self) -> UnsafePointer[EpisodeTracker, MutAnyOrigin]:
+        return rebind[UnsafePointer[EpisodeTracker, MutAnyOrigin]](
+            UnsafePointer(to=self.tracker)
         )
 
+    # ─── GPU-batched record surface ────────────────────────────────────
     def record_batch_gpu[
         N_ENVS: Int
     ](
@@ -615,7 +708,6 @@ struct TD3Trainer[
         obs_dev: DeviceBuffer[DT],
         done_dev: DeviceBuffer[DT],
     ) raises:
-        """Delegates to the sample block's add_batch_gpu (GPU blocks)."""
         self.sample_blk.add_batch_gpu[N_ENVS](
             ctx, prev_obs_dev, action_dev, reward_dev, obs_dev, done_dev,
         )
@@ -639,39 +731,7 @@ struct TD3Trainer[
         )
         self.sample_blk.store_via_block_gpu[N_ENVS, NS](ctx, nstep_buf)
 
-    # ─── Logging surface (parity with SACTrainer) ────────────────────────
-
-    def flush_train_log(
-        mut self,
-    ) -> Tuple[Scalar[DT], Scalar[DT], Int, Int]:
-        """Return (mean_actor_loss, mean_critic_loss, n_actor_updates,
-        n_critic_updates) since last flush. Resets accumulators. CPU
-        host-scalar path; for GPU use `flush_metrics`."""
-        var na = self._actor_updates if self._actor_updates > 0 else 1
-        var nc = self._critic_updates if self._critic_updates > 0 else 1
-        var inv_a = Scalar[DT](1.0) / Scalar[DT](na)
-        var inv_c = Scalar[DT](1.0) / Scalar[DT](nc)
-        var out = (
-            self._actor_L_accum * inv_a,
-            self._critic_L_accum * inv_c,
-            self._actor_updates,
-            self._critic_updates,
-        )
-        self._actor_L_accum = Scalar[DT](0.0)
-        self._critic_L_accum = Scalar[DT](0.0)
-        self._actor_updates = 0
-        self._critic_updates = 0
-        self._q_accum = Scalar[DT](0.0)
-        self._target_accum = Scalar[DT](0.0)
-        self._reward_accum = Scalar[DT](0.0)
-        self._done_accum = Scalar[DT](0.0)
-        return out
-
-    def total_train_steps(self) -> Int:
-        """Cumulative training updates since trainer was made. Not reset
-        by `flush_*`."""
-        return self._total_train_steps
-
+    # ─── Metrics / logging ─────────────────────────────────────────────
     def flush_metrics[
         L: Logger = NoOpLogger
     ](
@@ -679,10 +739,10 @@ struct TD3Trainer[
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         step: Int = 0,
     ) raises -> TD3Metrics:
-        """Drain accumulators into a TD3Metrics bundle. On GPU the actor +
-        critic losses are read from the on-device accumulators (no per-step
-        D2H); per-batch diag means are device-resident on GPU (Q / target /
-        reward / done reductions folded in each critic update)."""
+        """Drain accumulators into a TD3Metrics bundle. The per-batch
+        diagnostics are real on BOTH targets: CPU reads the host accumulators
+        (averaged over the critic-update window); GPU reads the device-resident
+        `DeviceMeanAccum`s with ONE D2H each at this flush."""
         var na = self._actor_updates if self._actor_updates > 0 else 1
         var nc = self._critic_updates if self._critic_updates > 0 else 1
         var inv_a = Scalar[DT](1.0) / Scalar[DT](na)
@@ -694,9 +754,13 @@ struct TD3Trainer[
         var reward_mean: Scalar[DT]
         var done_mean: Scalar[DT]
         comptime if Self.train_target == "gpu":
-            actor_mean = self.actor_polyak_blk.read_loss_accum()
-            var cl1 = self.twin_critic_blk.inner.c1.mse_loss.read_accum["gpu"]()
-            var cl2 = self.twin_critic_blk.inner.c2.mse_loss.read_accum["gpu"]()
+            actor_mean = self.actor_polyak_blk.read_loss_accum(self.ctx.value())
+            var cl1 = self.twin_critic_blk.inner.c1.mse_loss.read_accum["gpu"](
+                self.ctx
+            )
+            var cl2 = self.twin_critic_blk.inner.c2.mse_loss.read_accum["gpu"](
+                self.ctx
+            )
             critic_mean = cl1 + cl2
             q_mean = self._q_mean_dev.read["gpu"]()
             target_mean = self._target_mean_dev.read["gpu"]()
@@ -740,87 +804,111 @@ struct TD3Trainer[
             log_bundle(logger.value()[], bundle, step)
         return bundle^
 
-    # ─── Trait-uniform cadence hooks (consumed by the driver) ─────────
-
-    def flush_metrics_through_logger[L: Logger](
+    def flush_metrics_through_logger[
+        L: Logger
+    ](
         mut self,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]],
         step: Int,
     ) raises:
         _ = self.flush_metrics[L](logger, step)
 
+    def flush_train_log(
+        mut self,
+    ) -> Tuple[Scalar[DT], Scalar[DT], Int, Int]:
+        """(mean_actor_loss, mean_critic_loss, n_actor_updates,
+        n_critic_updates) over the window. CPU host-scalar path."""
+        var na = self._actor_updates if self._actor_updates > 0 else 1
+        var nc = self._critic_updates if self._critic_updates > 0 else 1
+        var inv_a = Scalar[DT](1.0) / Scalar[DT](na)
+        var inv_c = Scalar[DT](1.0) / Scalar[DT](nc)
+        var out = (
+            self._actor_L_accum * inv_a,
+            self._critic_L_accum * inv_c,
+            self._actor_updates,
+            self._critic_updates,
+        )
+        self._actor_L_accum = Scalar[DT](0.0)
+        self._critic_L_accum = Scalar[DT](0.0)
+        self._actor_updates = 0
+        self._critic_updates = 0
+        self._q_accum = Scalar[DT](0.0)
+        self._target_accum = Scalar[DT](0.0)
+        self._reward_accum = Scalar[DT](0.0)
+        self._done_accum = Scalar[DT](0.0)
+        return out
+
+    # ─── Checkpoint (ONE file: actor + critic1 + critic2 v2 envelope) ───
     def save_state(mut self, path: String) raises:
-        """One-file v2 checkpoint of every TD3 module + optimizer.
-        Sections: `actor.*`, `critic1.*`, `critic2.*`, `actor_opt.*`,
-        `critic1_opt.*`, `critic2_opt.*`."""
-        var body = String("")
-        comptime if Self.train_target == "gpu":
-            var c = self.ctx.value()
-            save_state_v2_body_gpu(self.actor_pair.online, body, "actor", c)
-            save_state_v2_body_gpu(self.pair1.online, body, "critic1", c)
-            save_state_v2_body_gpu(self.pair2.online, body, "critic2", c)
-            save_optimizer_v2_body_gpu(self.actor_opt, body, "actor_opt")
-            save_optimizer_v2_body_gpu(self.critic1_opt, body, "critic1_opt")
-            save_optimizer_v2_body_gpu(self.critic2_opt, body, "critic2_opt")
-        else:
-            save_state_v2_body(self.actor_pair.online, body, "actor")
-            save_state_v2_body(self.pair1.online, body, "critic1")
-            save_state_v2_body(self.pair2.online, body, "critic2")
-            save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
-            save_optimizer_v2_body(self.critic1_opt, body, "critic1_opt")
-            save_optimizer_v2_body(self.critic2_opt, body, "critic2_opt")
-        save_counter_v2_body(self._total_train_steps, body, "_total_train_steps")
-        var content = String("nn-ckpt v2\n") + body
+        """Write the ONLINE actor + both critics into a SINGLE `storage-ckpt`
+        file, sections name-prefixed `actor.` / `critic1.` / `critic2.`.
+        Optimizer moments NOT persisted (resume re-warms)."""
+        var w = CheckpointWriter(save_moments=False)
+        w.mode = 0
+        self.actor_pair.online.for_each_param[Self.train_target](
+            w, self.ctx, "actor"
+        )
+        self.pair1.online.for_each_param[Self.train_target](
+            w, self.ctx, "critic1"
+        )
+        self.pair2.online.for_each_param[Self.train_target](
+            w, self.ctx, "critic2"
+        )
+        w.mode = 1
+        self.actor_pair.online.for_each_state[Self.train_target](
+            w, self.ctx, "actor"
+        )
+        self.pair1.online.for_each_state[Self.train_target](
+            w, self.ctx, "critic1"
+        )
+        self.pair2.online.for_each_state[Self.train_target](
+            w, self.ctx, "critic2"
+        )
         with open(path, "w") as f:
-            f.write(content)
+            f.write(w.content)
 
     def load_state(mut self, path: String) raises:
-        """Inverse of `save_state`. Target nets are hard-copied from their
-        online twins after the online params are restored."""
-        var content = read_file_v2(path)
-        var lines = split_lines_v2(content)
-        expect_v2_header(lines)
-        var idx: Int = 1
-        comptime if Self.train_target == "gpu":
-            var c = self.ctx.value()
-            load_state_v2_body_gpu(self.actor_pair.online, lines, idx, "actor", c)
-            load_state_v2_body_gpu(self.pair1.online, lines, idx, "critic1", c)
-            load_state_v2_body_gpu(self.pair2.online, lines, idx, "critic2", c)
-            load_optimizer_v2_body_gpu(self.actor_opt, lines, idx, "actor_opt")
-            load_optimizer_v2_body_gpu(self.critic1_opt, lines, idx, "critic1_opt")
-            load_optimizer_v2_body_gpu(self.critic2_opt, lines, idx, "critic2_opt")
-            hard_copy_params["gpu", M=Self.ACTOR](
-                self.actor_pair.online, self.actor_pair.target_net, self.ctx,
-            )
-            hard_copy_params["gpu", M=Self.CRITIC](
-                self.pair1.online, self.pair1.target_net, self.ctx,
-            )
-            hard_copy_params["gpu", M=Self.CRITIC](
-                self.pair2.online, self.pair2.target_net, self.ctx,
-            )
-        else:
-            load_state_v2_body(self.actor_pair.online, lines, idx, "actor")
-            load_state_v2_body(self.pair1.online, lines, idx, "critic1")
-            load_state_v2_body(self.pair2.online, lines, idx, "critic2")
-            load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
-            load_optimizer_v2_body(self.critic1_opt, lines, idx, "critic1_opt")
-            load_optimizer_v2_body(self.critic2_opt, lines, idx, "critic2_opt")
-            hard_copy_params["cpu", M=Self.ACTOR](
-                self.actor_pair.online, self.actor_pair.target_net, None,
-            )
-            hard_copy_params["cpu", M=Self.CRITIC](
-                self.pair1.online, self.pair1.target_net, None,
-            )
-            hard_copy_params["cpu", M=Self.CRITIC](
-                self.pair2.online, self.pair2.target_net, None,
-            )
-        load_counter_v2_body(
-            self._total_train_steps, lines, idx, "_total_train_steps"
+        """Restore the online actor + both critics from the single envelope,
+        then hard-copy online → target for all three pairs."""
+        var content: String
+        with open(path, "r") as f:
+            content = String(f.read())
+        var lines = _split_lines(content)
+        var body = List[String]()
+        for li in range(len(lines)):
+            if lines[li].startswith("storage-ckpt"):
+                continue
+            body.append(lines[li])
+        var r = CheckpointReader(body^)
+        r.mode = 0
+        self.actor_pair.online.for_each_param[Self.train_target](
+            r, self.ctx, "actor"
+        )
+        self.pair1.online.for_each_param[Self.train_target](
+            r, self.ctx, "critic1"
+        )
+        self.pair2.online.for_each_param[Self.train_target](
+            r, self.ctx, "critic2"
+        )
+        r.mode = 1
+        self.actor_pair.online.for_each_state[Self.train_target](
+            r, self.ctx, "actor"
+        )
+        self.pair1.online.for_each_state[Self.train_target](
+            r, self.ctx, "critic1"
+        )
+        self.pair2.online.for_each_state[Self.train_target](
+            r, self.ctx, "critic2"
+        )
+        self.actor_pair.target_net.polyak_from[Self.train_target](
+            self.actor_pair.online, Scalar[DT](1.0), self.ctx
+        )
+        self.pair1.target_net.polyak_from[Self.train_target](
+            self.pair1.online, Scalar[DT](1.0), self.ctx
+        )
+        self.pair2.target_net.polyak_from[Self.train_target](
+            self.pair2.online, Scalar[DT](1.0), self.ctx
         )
 
     def flush_timer_log(mut self) -> String:
-        """Per-section wall-time report (sample / target_y / critic /
-        actor_polyak / diag) and reset the accumulators."""
-        var report = self.timer.format_report()
-        self.timer.reset()
-        return report
+        return String("")

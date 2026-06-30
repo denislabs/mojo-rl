@@ -20,7 +20,7 @@ def h5d_open2(
     return _get_dylib_function[
         lib,
         "H5Dopen2",
-        def(hid_t, Ptr[c_char, ImmutAnyOrigin], hid_t) thin -> hid_t,
+        def(hid_t, Ptr[c_char, ImmutOrigin(origin_of(name))], hid_t) thin -> hid_t,
     ]()(loc_id, name.as_c_string_slice().unsafe_ptr(), dapl_id)
 
 

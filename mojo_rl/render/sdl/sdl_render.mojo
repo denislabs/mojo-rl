@@ -86,7 +86,7 @@ struct TextureAccess(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime TEXTUREACCESS_STATIC = Self(0)
     """Changes rarely, not lockable."""
@@ -118,7 +118,7 @@ struct RendererLogicalPresentation(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime LOGICAL_PRESENTATION_DISABLED = Self(0)
     """There is no logical size in effect."""
@@ -248,12 +248,12 @@ def create_window_and_renderer(
         lib,
         "SDL_CreateWindowAndRenderer",
         def(
-            title: Ptr[c_char, ImmutAnyOrigin],
-            width: c_int,
-            height: c_int,
-            window_flags: WindowFlags,
-            window: Ptr[Ptr[Window, MutAnyOrigin], MutAnyOrigin],
-            renderer: Ptr[Ptr[Renderer, MutAnyOrigin], MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(title))],
+            c_int,
+            c_int,
+            WindowFlags,
+            Ptr[Ptr[Window, MutAnyOrigin], MutAnyOrigin],
+            Ptr[Ptr[Renderer, MutAnyOrigin], MutAnyOrigin],
         ) thin -> Bool,
     ]()(
         title.as_c_string_slice().unsafe_ptr(),
@@ -267,8 +267,8 @@ def create_window_and_renderer(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def create_renderer(
-    window: Ptr[Window, MutAnyOrigin], var name: String
+def create_renderer[win_o: MutOrigin, //](
+    window: Ptr[Window, win_o], var name: String
 ) raises -> Ptr[Renderer, MutAnyOrigin]:
     """Create a 2D rendering context for a window.
 
@@ -304,10 +304,10 @@ def create_renderer(
         lib,
         "SDL_CreateRenderer",
         def(
-            window: Ptr[Window, MutAnyOrigin],
-            name: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[Window, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(name))],
         ) thin -> Ptr[Renderer, MutAnyOrigin],
-    ]()(window, name.as_c_string_slice().unsafe_ptr())
+    ]()(window.as_unsafe_any_origin(), name.as_c_string_slice().unsafe_ptr())
 
 
 def create_renderer_with_properties(
@@ -666,8 +666,8 @@ def get_current_render_output_size(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def create_texture(
-    renderer: Ptr[Renderer, MutAnyOrigin],
+def create_texture[o: MutOrigin, //](
+    renderer: Ptr[Renderer, o],
     format: PixelFormat,
     access: TextureAccess,
     w: c_int,
@@ -705,14 +705,16 @@ def create_texture(
             w: c_int,
             h: c_int,
         ) thin -> Ptr[Texture, MutAnyOrigin],
-    ]()(renderer, format, access, w, h)
+    ]()(renderer.as_unsafe_any_origin(), format, access, w, h)
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def create_texture_from_surface(
-    renderer: Ptr[Renderer, MutAnyOrigin],
-    surface: Ptr[Surface, MutAnyOrigin],
+def create_texture_from_surface[
+    ren_o: MutOrigin, surf_o: MutOrigin, //
+](
+    renderer: Ptr[Renderer, ren_o],
+    surface: Ptr[Surface, surf_o],
     out ret: Ptr[Texture, MutAnyOrigin],
 ) raises:
     """Create a texture from an existing surface.
@@ -748,7 +750,7 @@ def create_texture_from_surface(
             renderer: Ptr[Renderer, MutAnyOrigin],
             surface: Ptr[Surface, MutAnyOrigin],
         ) thin -> Ptr[Texture, MutAnyOrigin],
-    ]()(renderer, surface)
+    ]()(renderer.as_unsafe_any_origin(), surface.as_unsafe_any_origin())
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1396,8 +1398,8 @@ def get_texture_blend_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def set_texture_scale_mode(
-    texture: Ptr[Texture, MutAnyOrigin], scale_mode: ScaleMode
+def set_texture_scale_mode[o: MutOrigin, //](
+    texture: Ptr[Texture, o], scale_mode: ScaleMode
 ) raises:
     """Set the scale mode used for texture scale operations.
 
@@ -1423,7 +1425,7 @@ def set_texture_scale_mode(
         lib,
         "SDL_SetTextureScaleMode",
         def(texture: Ptr[Texture, MutAnyOrigin], scale_mode: ScaleMode) thin -> Bool,
-    ]()(texture, scale_mode)
+    ]()(texture.as_unsafe_any_origin(), scale_mode)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -1460,8 +1462,8 @@ def get_texture_scale_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def update_texture(
-    texture: Ptr[Texture, MutAnyOrigin],
+def update_texture[o: MutOrigin, //](
+    texture: Ptr[Texture, o],
     rect: Ptr[Rect, ImmutAnyOrigin],
     pixels: Ptr[NoneType, ImmutAnyOrigin],
     pitch: c_int,
@@ -1506,7 +1508,7 @@ def update_texture(
             pixels: Ptr[NoneType, ImmutAnyOrigin],
             pitch: c_int,
         ) thin -> Bool,
-    ]()(texture, rect, pixels, pitch)
+    ]()(texture.as_unsafe_any_origin(), rect, pixels, pitch)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2451,8 +2453,8 @@ def get_render_scale(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def set_render_draw_color(
-    renderer: Ptr[Renderer, MutAnyOrigin],
+def set_render_draw_color[o: MutOrigin, //](
+    renderer: Ptr[Renderer, o],
     r: UInt8,
     g: UInt8,
     b: UInt8,
@@ -2492,7 +2494,7 @@ def set_render_draw_color(
             b: UInt8,
             a: UInt8,
         ) thin -> Bool,
-    ]()(renderer, r, g, b, a)
+    ]()(renderer.as_unsafe_any_origin(), r, g, b, a)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2765,7 +2767,7 @@ def get_render_draw_blend_mode(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def render_clear(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
+def render_clear[o: MutOrigin, //](renderer: Ptr[Renderer, o]) raises:
     """Clear the current rendering target with the drawing color.
 
     This function clears the entire rendering target, ignoring the viewport and
@@ -2790,13 +2792,13 @@ def render_clear(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
         lib,
         "SDL_RenderClear",
         def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> Bool,
-    ]()(renderer)
+    ]()(renderer.as_unsafe_any_origin())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def render_point(
-    renderer: Ptr[Renderer, MutAnyOrigin], x: c_float, y: c_float
+def render_point[o: MutOrigin, //](
+    renderer: Ptr[Renderer, o], x: c_float, y: c_float
 ) raises:
     """Draw a point on the current rendering target at subpixel precision.
 
@@ -2821,7 +2823,7 @@ def render_point(
         def(
             renderer: Ptr[Renderer, MutAnyOrigin], x: c_float, y: c_float
         ) thin -> Bool,
-    ]()(renderer, x, y)
+    ]()(renderer.as_unsafe_any_origin(), x, y)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2861,8 +2863,8 @@ def render_points(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def render_line(
-    renderer: Ptr[Renderer, MutAnyOrigin],
+def render_line[o: MutOrigin, //](
+    renderer: Ptr[Renderer, o],
     x1: c_float,
     y1: c_float,
     x2: c_float,
@@ -2897,7 +2899,7 @@ def render_line(
             x2: c_float,
             y2: c_float,
         ) thin -> Bool,
-    ]()(renderer, x1, y1, x2, y2)
+    ]()(renderer.as_unsafe_any_origin(), x1, y1, x2, y2)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -2938,8 +2940,8 @@ def render_lines(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def render_rect(
-    renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[FRect, ImmutAnyOrigin]
+def render_rect[o: MutOrigin, //](
+    renderer: Ptr[Renderer, o], rect: Ptr[FRect, ImmutAnyOrigin]
 ) raises:
     """Draw a rectangle on the current rendering target at subpixel precision.
 
@@ -2965,7 +2967,7 @@ def render_rect(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[FRect, ImmutAnyOrigin],
         ) thin -> Bool,
-    ]()(renderer, rect)
+    ]()(renderer.as_unsafe_any_origin(), rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3006,8 +3008,8 @@ def render_rects(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def render_fill_rect(
-    renderer: Ptr[Renderer, MutAnyOrigin], rect: Ptr[FRect, ImmutAnyOrigin]
+def render_fill_rect[o: MutOrigin, //](
+    renderer: Ptr[Renderer, o], rect: Ptr[FRect, ImmutAnyOrigin]
 ) raises:
     """Fill a rectangle on the current rendering target with the drawing color at
     subpixel precision.
@@ -3034,7 +3036,7 @@ def render_fill_rect(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[FRect, ImmutAnyOrigin],
         ) thin -> Bool,
-    ]()(renderer, rect)
+    ]()(renderer.as_unsafe_any_origin(), rect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3075,9 +3077,9 @@ def render_fill_rects(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def render_texture(
-    renderer: Ptr[Renderer, MutAnyOrigin],
-    texture: Ptr[Texture, MutAnyOrigin],
+def render_texture[ro: MutOrigin, to: MutOrigin, //](
+    renderer: Ptr[Renderer, ro],
+    texture: Ptr[Texture, to],
     srcrect: Ptr[FRect, ImmutAnyOrigin],
     dstrect: Ptr[FRect, ImmutAnyOrigin],
 ) raises:
@@ -3111,7 +3113,7 @@ def render_texture(
             srcrect: Ptr[FRect, ImmutAnyOrigin],
             dstrect: Ptr[FRect, ImmutAnyOrigin],
         ) thin -> Bool,
-    ]()(renderer, texture, srcrect, dstrect)
+    ]()(renderer.as_unsafe_any_origin(), texture.as_unsafe_any_origin(), srcrect, dstrect)
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
@@ -3471,8 +3473,8 @@ def render_geometry_raw(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def render_read_pixels(
-    renderer: Ptr[Renderer, MutAnyOrigin],
+def render_read_pixels[o: MutOrigin, //](
+    renderer: Ptr[Renderer, o],
     rect: Ptr[Rect, ImmutAnyOrigin],
     out ret: Ptr[Surface, MutAnyOrigin],
 ) raises:
@@ -3512,12 +3514,12 @@ def render_read_pixels(
             renderer: Ptr[Renderer, MutAnyOrigin],
             rect: Ptr[Rect, ImmutAnyOrigin],
         ) thin -> Ptr[Surface, MutAnyOrigin],
-    ]()(renderer, rect)
+    ]()(renderer.as_unsafe_any_origin(), rect)
     if Int(ret) == 0:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def render_present(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
+def render_present[o: MutOrigin, //](renderer: Ptr[Renderer, o]) raises:
     """Update the screen with any rendering performed since the previous call.
 
     SDL's rendering functions operate on a backbuffer; that is, calling a
@@ -3561,12 +3563,12 @@ def render_present(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
         lib,
         "SDL_RenderPresent",
         def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> Bool,
-    ]()(renderer)
+    ]()(renderer.as_unsafe_any_origin())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def destroy_texture(texture: Ptr[Texture, MutAnyOrigin]) raises -> None:
+def destroy_texture[o: MutOrigin, //](texture: Ptr[Texture, o]) raises -> None:
     """Destroy the specified texture.
 
     Passing NULL or an otherwise invalid texture will set the SDL error message
@@ -3585,10 +3587,10 @@ def destroy_texture(texture: Ptr[Texture, MutAnyOrigin]) raises -> None:
         lib,
         "SDL_DestroyTexture",
         def(texture: Ptr[Texture, MutAnyOrigin]) thin -> None,
-    ]()(texture)
+    ]()(texture.as_unsafe_any_origin())
 
 
-def destroy_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> None:
+def destroy_renderer[o: MutOrigin, //](renderer: Ptr[Renderer, o]) raises -> None:
     """Destroy the rendering context for a window and free all associated
     textures.
 
@@ -3607,7 +3609,7 @@ def destroy_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises -> None:
         lib,
         "SDL_DestroyRenderer",
         def(renderer: Ptr[Renderer, MutAnyOrigin]) thin -> None,
-    ]()(renderer)
+    ]()(renderer.as_unsafe_any_origin())
 
 
 def flush_renderer(renderer: Ptr[Renderer, MutAnyOrigin]) raises:
@@ -3841,8 +3843,8 @@ def get_render_vsync(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def render_debug_text(
-    renderer: Ptr[Renderer, MutAnyOrigin],
+def render_debug_text[o: MutOrigin, //](
+    renderer: Ptr[Renderer, o],
     x: c_float,
     y: c_float,
     var str: String,
@@ -3891,11 +3893,11 @@ def render_debug_text(
         lib,
         "SDL_RenderDebugText",
         def(
-            renderer: Ptr[Renderer, MutAnyOrigin],
-            x: c_float,
-            y: c_float,
-            str: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[Renderer, MutAnyOrigin],
+            c_float,
+            c_float,
+            Ptr[c_char, ImmutOrigin(origin_of(str))],
         ) thin -> Bool,
-    ]()(renderer, x, y, str.as_c_string_slice().unsafe_ptr())
+    ]()(renderer.as_unsafe_any_origin(), x, y, str.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))

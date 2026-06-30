@@ -12,18 +12,13 @@ Run:
     pixi run mojo run -I . tests/deep_agents/test_mz_unroll_overfit_cpu.mojo
 """
 
-from std.memory import alloc
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents.muzero.blocks import mz_unroll_train_step_cpu
-
-
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](alloc[Scalar[DT]](n))
 
 
 def main() raises:
@@ -41,30 +36,27 @@ def main() raises:
     comptime Dyn = MZDynNet[LATENT, ACT, BINS, H]
     comptime Pred = MZPredNet[LATENT, ACT, BINS, H]
 
-    var rep = Rep.make["cpu", INIT=Kaiming]()
-    var dyn = Dyn.make["cpu", INIT=Kaiming]()
-    var pred = Pred.make["cpu", INIT=Kaiming]()
-    var orep = Adam.make["cpu", M=Rep](rep)
-    var odyn = Adam.make["cpu", M=Dyn](dyn)
-    var opred = Adam.make["cpu", M=Pred](pred)
-    orep.lr = Scalar[DT](0.01)
-    odyn.lr = Scalar[DT](0.01)
-    opred.lr = Scalar[DT](0.01)
+    var rep = Rep.make["cpu", Kaiming]()
+    var dyn = Dyn.make["cpu", Kaiming]()
+    var pred = Pred.make["cpu", Kaiming]()
+    var orep = Adam(lr=Scalar[DT](0.01))
+    var odyn = Adam(lr=Scalar[DT](0.01))
+    var opred = Adam(lr=Scalar[DT](0.01))
 
-    # ── one fixed batch (time-major) ──
-    var obs0 = _a(B * OBS)
+    # ── one fixed batch (time-major) — owned Lists (List-input unroll) ──
+    var obs0 = List[Scalar[DT]](length=B * OBS, fill=0)
     var xs = UInt64(0x9E3779B97F4A7C15)
     for i in range(B * OBS):
         xs = xs ^ (xs << 13); xs = xs ^ (xs >> 7); xs = xs ^ (xs << 17)
         obs0[i] = Scalar[DT](Int(xs % 200)) / Scalar[DT](100.0) - Scalar[DT](1.0)
 
-    var actions = _a(K * B)
+    var actions = List[Scalar[DT]](length=K * B, fill=0)
     for i in range(K * B):
         xs = xs ^ (xs << 13); xs = xs ^ (xs >> 7); xs = xs ^ (xs << 17)
         actions[i] = Scalar[DT](Int(xs % ACT))
 
     # one-hot policy targets per (k,b) → policy CE floors at 0
-    var policy_tgt = _a((K + 1) * B * ACT)
+    var policy_tgt = List[Scalar[DT]](length=(K + 1) * B * ACT, fill=0)
     for i in range((K + 1) * B * ACT):
         policy_tgt[i] = Scalar[DT](0.0)
     for k in range(K + 1):
@@ -73,12 +65,12 @@ def main() raises:
             var a = Int(xs % ACT)
             policy_tgt[k * B * ACT + b * ACT + a] = Scalar[DT](1.0)
 
-    var value_tgt = _a((K + 1) * B)
+    var value_tgt = List[Scalar[DT]](length=(K + 1) * B, fill=0)
     for i in range((K + 1) * B):
         xs = xs ^ (xs << 13); xs = xs ^ (xs >> 7); xs = xs ^ (xs << 17)
         value_tgt[i] = Scalar[DT](Int(xs % 200)) / Scalar[DT](100.0) - Scalar[DT](1.0)
 
-    var reward_tgt = _a(K * B)
+    var reward_tgt = List[Scalar[DT]](length=K * B, fill=0)
     for i in range(K * B):
         xs = xs ^ (xs << 13); xs = xs ^ (xs >> 7); xs = xs ^ (xs << 17)
         reward_tgt[i] = Scalar[DT](Int(xs % 200)) / Scalar[DT](100.0) - Scalar[DT](1.0)
@@ -107,6 +99,4 @@ def main() raises:
     # large reduction toward that floor (≥5×).
     assert_true(last < first * Scalar[DT](0.2), "unroll failed to overfit (≥5×)")
 
-    obs0.free(); actions.free(); policy_tgt.free()
-    value_tgt.free(); reward_tgt.free()
     print("MuZero unroll BPTT overfit (CPU): OK")

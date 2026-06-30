@@ -104,7 +104,6 @@ struct PendulumEnv[DTYPE: DType](
     & DiscreteEnv
     & BoxContinuousActionEnv
     & Copyable
-    & Movable
     & RenderableEnv
 ):
     """Native Mojo Pendulum environment with integrated SDL2 rendering.
@@ -153,7 +152,7 @@ struct PendulumEnv[DTYPE: DType](
     var num_bins_velocity: Int
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self, *, copy: Self):

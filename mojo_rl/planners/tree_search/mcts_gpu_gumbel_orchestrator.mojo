@@ -42,6 +42,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT as dtype
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
+
 comptime TPB = 256  # preserved from legacy nn.constants (nn.TPB == 128)
 
 from .model_traits_gpu import (
@@ -105,7 +107,10 @@ def _largest_power_of_two_le(n: Int) -> Int:
 
 
 def gz_extract_root_value_kernel[
-    N_ENVS: Int, MAX_NODES: Int, ACT: Int, dtype: DType,
+    N_ENVS: Int,
+    MAX_NODES: Int,
+    ACT: Int,
+    dtype: DType,
 ](
     visit_count: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES * ACT), MutAnyOrigin
@@ -116,9 +121,7 @@ def gz_extract_root_value_kernel[
     node_value: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * MAX_NODES), MutAnyOrigin
     ],
-    root_value_out: LayoutTensor[
-        dtype, Layout.row_major(N_ENVS), MutAnyOrigin
-    ],
+    root_value_out: LayoutTensor[dtype, Layout.row_major(N_ENVS), MutAnyOrigin],
 ):
     """MCTS-improved root value: ``Σ_a total_value[root,a] / Σ_a N[root,a]``.
 
@@ -132,9 +135,9 @@ def gz_extract_root_value_kernel[
 
     Falls back to ``node_value[root]`` when total_visits = 0 (e.g. if a
     search was skipped). One thread per env."""
-    comptime assert dtype.is_floating_point(), (
-        "gz_extract_root_value_kernel: dtype must be floating-point"
-    )
+    comptime assert (
+        dtype.is_floating_point()
+    ), "gz_extract_root_value_kernel: dtype must be floating-point"
     var e = Int(block_dim.x * block_idx.x + thread_idx.x)
     if e >= N_ENVS:
         return
@@ -156,7 +159,9 @@ def gz_extract_root_value_kernel[
 
 
 def gz_extract_actions_gumbel_kernel[
-    N_ENVS: Int, ACT: Int, dtype: DType,
+    N_ENVS: Int,
+    ACT: Int,
+    dtype: DType,
 ](
     policies_out: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
@@ -194,9 +199,7 @@ def gz_extract_actions_gumbel_kernel[
     var p_off = e * ACT
 
     var philox = PhiloxRandom(
-        seed=(
-            UInt64(rng_seed) * UInt64(0x9E3779B97F4A7C15)
-        )
+        seed=(UInt64(rng_seed) * UInt64(0x9E3779B97F4A7C15))
         + UInt64(e * 2654435761 + 1442695040888963407),
         offset=0,
     )
@@ -235,7 +238,9 @@ def gz_extract_actions_gumbel_kernel[
 
 
 def gz_extract_actions_temp_kernel[
-    N_ENVS: Int, ACT: Int, dtype: DType,
+    N_ENVS: Int,
+    ACT: Int,
+    dtype: DType,
 ](
     policies_out: LayoutTensor[
         dtype, Layout.row_major(N_ENVS * ACT), MutAnyOrigin
@@ -300,9 +305,7 @@ def gz_extract_actions_temp_kernel[
     if move_count < temp_threshold:
         # Sample ∝ policies_out (legal-masked).
         var philox = PhiloxRandom(
-            seed=(
-                UInt64(rng_seed) * UInt64(0x9E3779B97F4A7C15)
-            )
+            seed=(UInt64(rng_seed) * UInt64(0x9E3779B97F4A7C15))
             + UInt64(e * 2654435761 + 1442695040888963407),
             offset=0,
         )
@@ -326,9 +329,7 @@ def gz_extract_actions_temp_kernel[
                 probs[a] = exp(inv_temp * log(probs[a]))
                 sharp_total += probs[a]
         var philox = PhiloxRandom(
-            seed=(
-                UInt64(rng_seed) * UInt64(0x9E3779B97F4A7C15)
-            )
+            seed=(UInt64(rng_seed) * UInt64(0x9E3779B97F4A7C15))
             + UInt64(e * 2654435761 + 1442695040888963407),
             offset=0,
         )
@@ -365,7 +366,7 @@ struct GumbelGPUMCTS[
     # nodes carry true game-state payloads and expansion is `env.step_gpu`
     # instead of the dynamics net. 0 (default) allocates no AZ buffers.
     STATE_SIZE: Int = 0,
-](Movable, ImplicitlyDestructible):
+](ImplicitlyDeletable, Movable):
     """GPU Gumbel-MCTS orchestrator (shared across EZv2 + MuZero).
 
     Comptime params:
@@ -398,7 +399,12 @@ struct GumbelGPUMCTS[
     comptime ENV_BLOCKS: Int = (Self.N_ENVS + TPB - 1) // TPB
 
     var state: EZV2GPUMCTSState[
-        Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.LATENT, Self.BINS, Self.MAX_K,
+        Self.N_ENVS,
+        Self.MAX_NODES,
+        Self.ACT,
+        Self.LATENT,
+        Self.BINS,
+        Self.MAX_K,
     ]
     """Per-env trees + scratch (legal mask, root candidates, search
     paths, network I/O staging, ``policies_out``). See
@@ -417,8 +423,8 @@ struct GumbelGPUMCTS[
 
     # ── Gumbel AlphaZero buffers (size 1 when STATE_SIZE == 0) ──────────
     comptime AZ_GS_SIZE: Int = (
-        Self.N_ENVS * Self.MAX_NODES * Self.STATE_SIZE
-        if Self.STATE_SIZE > 0 else 1
+        Self.N_ENVS * Self.MAX_NODES * Self.STATE_SIZE if Self.STATE_SIZE
+        > 0 else 1
     )
     comptime AZ_EXP_SIZE: Int = (
         Self.N_ENVS * Self.STATE_SIZE if Self.STATE_SIZE > 0 else 1
@@ -474,7 +480,11 @@ struct GumbelGPUMCTS[
         if Self.MAX_K < 1:
             raise Error("GumbelGPUMCTS: MAX_K must be >= 1")
         self.state = EZV2GPUMCTSState[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.LATENT, Self.BINS,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            Self.LATENT,
+            Self.BINS,
             Self.MAX_K,
         ](ctx)
         # Default legal_mask = all ones so callers that don't populate
@@ -484,24 +494,18 @@ struct GumbelGPUMCTS[
         self.state.legal_mask.enqueue_fill(Scalar[dtype](1.0))
         self.root_value_out = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
         self.actions_out = ctx.enqueue_create_buffer[dtype](Self.N_ENVS)
-        self.az_game_states = ctx.enqueue_create_buffer[dtype](
-            Self.AZ_GS_SIZE
-        )
+        self.az_game_states = ctx.enqueue_create_buffer[dtype](Self.AZ_GS_SIZE)
         self.az_expansion_states = ctx.enqueue_create_buffer[dtype](
             Self.AZ_EXP_SIZE
         )
         self.az_step_rewards = ctx.enqueue_create_buffer[dtype](
             Self.AZ_ENV_SIZE
         )
-        self.az_step_dones = ctx.enqueue_create_buffer[dtype](
-            Self.AZ_ENV_SIZE
-        )
+        self.az_step_dones = ctx.enqueue_create_buffer[dtype](Self.AZ_ENV_SIZE)
         self.az_step_terminated = ctx.enqueue_create_buffer[dtype](
             Self.AZ_ENV_SIZE
         )
-        self.az_exp_legal = ctx.enqueue_create_buffer[dtype](
-            Self.AZ_LEGAL_SIZE
-        )
+        self.az_exp_legal = ctx.enqueue_create_buffer[dtype](Self.AZ_LEGAL_SIZE)
         self.gamma = gamma
         self.v_min = v_min
         self.v_max = v_max
@@ -597,76 +601,110 @@ struct GumbelGPUMCTS[
         power of two by the driver.
         """
 
+        # Recomposed from three reusable steps (identical kernel sequence):
+        #   init (rep.encode + pred root + scatter + Gumbel-Top-k init_root) →
+        #   Sequential-Halving sim loop → extract policy + root value. The
+        #   capture variant `search_gpu_captured` reuses these, wrapping ONLY the
+        #   sim loop in a CUDA graph (init keeps the fresh rng eager).
+        var k_clipped = self._search_init_gpu[REP, PRED](
+            ctx, rep, pred, obs, apply_legal, k_actual, rng_seed
+        )
+        self._run_halving_sims_gpu[REP, DYN, PRED](
+            ctx, dyn, pred, k_clipped, apply_legal
+        )
+        self._search_extract_gpu(ctx, apply_legal)
+
+    def _search_init_gpu[
+        REP: RepresentationGPU,
+        PRED: PredictionGPU,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut rep: REP,
+        mut pred: PRED,
+        obs: LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS, REP.OBS_DIM), MutAnyOrigin
+        ],
+        apply_legal: Bool,
+        k_actual: Int,
+        rng_seed: UInt32,
+    ) raises -> Int:
+        """Root init for a Gumbel search (steps 0-4): reset tree, rep encode,
+        pred at root, scatter root hidden, Gumbel-Top-k `init_root`. Returns the
+        clipped power-of-two `k`. EAGER (never captured) — `init_root` consumes
+        the per-search Gumbel `rng_seed`, which must stay fresh each search."""
         # ── 0. Reset tree ────────────────────────────────────────────────
         self.state.zero_tree(ctx)
 
         # ── 1. Rep forward ───────────────────────────────────────────────
         var root_hidden_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS, REP.LATENT_DIM), MutAnyOrigin,
-        ](self.state.root_hidden.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS, REP.LATENT_DIM), MutAnyOrigin
+        ](self.state.root_hidden)
         rep.encode_gpu[Self.N_ENVS](ctx, obs, root_hidden_t)
 
         # ── 2. Pred forward at the root ──────────────────────────────────
         var pred_root_in = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS, PRED.LATENT_DIM), MutAnyOrigin,
-        ](self.state.root_hidden.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS, PRED.LATENT_DIM)
+        ](self.state.root_hidden)
         var pred_root_out = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS, PRED.PRED_OUT_DIM), MutAnyOrigin,
-        ](self.state.pred_output.unsafe_ptr())
+            dtype,
+            Layout.row_major(Self.N_ENVS, PRED.PRED_OUT_DIM),
+            MutAnyOrigin,
+        ](self.state.pred_output)
         pred.predict_gpu[Self.N_ENVS](ctx, pred_root_in, pred_root_out)
 
         # ── 3. Scatter root_hidden → hidden_states[e][0] ─────────────────
         var rh_flat = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.LATENT), MutAnyOrigin
-        ](self.state.root_hidden.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.LATENT)
+        ](self.state.root_hidden)
         var hs_flat = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.LATENT),
-            MutAnyOrigin,
-        ](self.state.hidden_states.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.LATENT)
+        ](self.state.hidden_states)
         comptime run_scatter = gz_scatter_root_hidden_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.LATENT, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.LATENT,
+            dtype,
         ]
         ctx.enqueue_function[run_scatter](
             rh_flat,
             hs_flat,
-            grid_dim=(Self.ENV_BLOCKS,),
+            # parallelized over env×LATENT (B1)
+            grid_dim=((Self.N_ENVS * Self.LATENT + TPB - 1) // TPB,),
             block_dim=(TPB,),
         )
 
         # ── 4. Init root ─────────────────────────────────────────────────
         var nl_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.node_logits.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.node_logits)
         var nv_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES), MutAnyOrigin
-        ](self.state.node_value.unsafe_ptr())
-        var nc_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.node_count.unsafe_ptr())
-        var miq_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.min_q.unsafe_ptr())
-        var mxq_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.max_q.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+        ](self.state.node_value)
+        var nc_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.node_count
+        )
+        var miq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.min_q
+        )
+        var mxq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.max_q
+        )
         var lm_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
-        ](self.state.legal_mask.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.state.legal_mask)
         var rc_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K), MutAnyOrigin
-        ](self.state.root_candidates.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_candidates)
         var rg_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K), MutAnyOrigin
-        ](self.state.root_gumbels.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_gumbels)
         var ra_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K), MutAnyOrigin
-        ](self.state.root_active.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_active)
         var po_full_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.PRED_OUT), MutAnyOrigin
-        ](self.state.pred_output.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.PRED_OUT)
+        ](self.state.pred_output)
 
         var k_clipped = k_actual
         if k_clipped > Self.MAX_K:
@@ -678,8 +716,13 @@ struct GumbelGPUMCTS[
             k_clipped = 1
 
         comptime run_init = gz_init_root_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.BINS, Self.MAX_K,
-            Self.PRED_OUT, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            Self.BINS,
+            Self.MAX_K,
+            Self.PRED_OUT,
+            dtype,
         ]
         ctx.enqueue_function[run_init](
             nl_t,
@@ -701,6 +744,50 @@ struct GumbelGPUMCTS[
             grid_dim=(Self.ENV_BLOCKS,),
             block_dim=(TPB,),
         )
+        return k_clipped
+
+    def _run_halving_sims_gpu[
+        REP: RepresentationGPU,
+        DYN: DynamicsGPU,
+        PRED: PredictionGPU,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut dyn: DYN,
+        mut pred: PRED,
+        k_clipped: Int,
+        apply_legal: Bool,
+    ) raises:
+        """Sequential-Halving sim loop (step 5): `NUM_SIMULATIONS` sims across
+        `log2(k)` phases (each sim select→dyn→pred→expand→backup via
+        `_run_one_sim_gpu`), a per-phase halve kernel, then leftover sims on the
+        size-1 survivor. PURE device kernels with a deterministic schedule (fixed
+        for given NUM_SIMS/MAX_K) → this is the body `search_gpu_captured` records
+        into a CUDA graph. Rebuilds the `self.state` views the halve kernel needs;
+        the host counters (`sims_used`/`active_size`) are LOCAL so every call —
+        including a capture settle run then record run — starts fresh."""
+        # state views needed by the per-phase halve kernel
+        var nl_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.node_logits)
+        var nv_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+        ](self.state.node_value)
+        var miq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.min_q
+        )
+        var mxq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.max_q
+        )
+        var rc_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_candidates)
+        var rg_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_gumbels)
+        var ra_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_active)
 
         # ── 5. Sequential Halving simulation loop ────────────────────────
         var num_phases = _ilog2(k_clipped)
@@ -732,23 +819,23 @@ struct GumbelGPUMCTS[
                 if keep < 1:
                     keep = 1
                 comptime run_halve = gz_halve_active_kernel[
-                    Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.MAX_K, dtype,
+                    Self.N_ENVS,
+                    Self.MAX_NODES,
+                    Self.ACT,
+                    Self.MAX_K,
+                    dtype,
                 ]
                 var vc_t = LayoutTensor[
                     dtype,
                     Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-                    MutAnyOrigin,
-                ](self.state.visit_count.unsafe_ptr())
+                ](self.state.visit_count)
                 var tv_t = LayoutTensor[
                     dtype,
                     Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-                    MutAnyOrigin,
-                ](self.state.total_value.unsafe_ptr())
+                ](self.state.total_value)
                 var tvis_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.N_ENVS * Self.MAX_NODES),
-                    MutAnyOrigin,
-                ](self.state.total_visits.unsafe_ptr())
+                    dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+                ](self.state.total_visits)
                 ctx.enqueue_function[run_halve](
                     vc_t,
                     tv_t,
@@ -777,25 +864,47 @@ struct GumbelGPUMCTS[
             )
             sims_used += 1
 
+    def _search_extract_gpu(
+        mut self,
+        ctx: DeviceContext,
+        apply_legal: Bool,
+    ) raises:
+        """Extract the improved policy + MCTS-improved root value (steps 6-7)
+        from the searched tree. EAGER. Rebuilds the `self.state` views it reads."""
+        var nl_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.node_logits)
+        var nv_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+        ](self.state.node_value)
+        var miq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.min_q
+        )
+        var mxq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.max_q
+        )
+        var lm_t = LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.state.legal_mask)
+
         # ── 6. Extract improved policy ───────────────────────────────────
         var po_extract_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
-        ](self.state.policies_out.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.state.policies_out)
         var vc_t2 = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.visit_count.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.visit_count)
         var tv_t2 = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.total_value.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.total_value)
         var tvis_t2 = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES), MutAnyOrigin
-        ](self.state.total_visits.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+        ](self.state.total_visits)
         comptime run_extract = gz_extract_policy_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            dtype,
         ]
         ctx.enqueue_function[run_extract](
             vc_t2,
@@ -817,11 +926,14 @@ struct GumbelGPUMCTS[
 
         # ── 7. Extract root scalar value (MCTS-improved, not the raw
         #       network prediction) ──────────────────────────────────────
-        var rv_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.root_value_out.unsafe_ptr())
+        var rv_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.root_value_out
+        )
         comptime run_root_value = gz_extract_root_value_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            dtype,
         ]
         ctx.enqueue_function[run_root_value](
             vc_t2,
@@ -831,6 +943,44 @@ struct GumbelGPUMCTS[
             grid_dim=(Self.ENV_BLOCKS,),
             block_dim=(TPB,),
         )
+
+    def search_gpu_captured[
+        REP: RepresentationGPU,
+        DYN: DynamicsGPU,
+        PRED: PredictionGPU,
+    ](
+        mut self,
+        ctx: DeviceContext,
+        mut rep: REP,
+        mut dyn: DYN,
+        mut pred: PRED,
+        obs: LayoutTensor[
+            dtype, Layout.row_major(Self.N_ENVS, REP.OBS_DIM), MutAnyOrigin
+        ],
+        mut graph: Optional[CUDAGraph],
+        apply_legal: Bool = False,
+        k_actual: Int = Self.MAX_K,
+        rng_seed: UInt32 = UInt32(0),
+    ) raises:
+        """CUDA-graph variant of `search_gpu`: eager root init (fresh Gumbel
+        `rng_seed`) → CAPTURED Sequential-Halving sim loop → eager extract. ONLY
+        the sim loop is captured — capturing `init_root` would freeze its Gumbel
+        noise across replays. `graph` is the caller-owned capture slot (None until
+        first capture); it must be ONE PER net-role, since the captured sim
+        kernels bake the `dyn`/`pred` buffer pointers (self-play's BEST nets vs
+        reanalyze's TARGET nets need distinct graphs). NVIDIA-only effect — on
+        Apple the closure simply runs each call (identical to `search_gpu`)."""
+        var k_clipped = self._search_init_gpu[REP, PRED](
+            ctx, rep, pred, obs, apply_legal, k_actual, rng_seed
+        )
+
+        def _sims() capturing raises -> None:
+            self._run_halving_sims_gpu[REP, DYN, PRED](
+                ctx, dyn, pred, k_clipped, apply_legal
+            )
+
+        maybe_capture_replay[_sims](graph, ctx)
+        self._search_extract_gpu(ctx, apply_legal)
 
     def search_gpu_selfplay[
         REP: RepresentationGPU,
@@ -871,7 +1021,11 @@ struct GumbelGPUMCTS[
         # ``apply_legal=True`` is the only behavioral difference at the
         # orchestrator level, the negation lives in the kernel choice.
         self.search_gpu[REP, DYN, PRED](
-            ctx, rep, dyn, pred, obs,
+            ctx,
+            rep,
+            dyn,
+            pred,
+            obs,
             apply_legal=True,
             k_actual=k_actual,
             rng_seed=rng_seed,
@@ -888,9 +1042,7 @@ struct GumbelGPUMCTS[
         For eval / arena, where Gumbel noise is disabled. Equivalent to
         ``extract_actions_gumbel(gumbel_scale=0.0)`` — argmax over
         ``log(policies_out)`` ignoring noise."""
-        self.extract_actions_gumbel(
-            ctx, rng_seed=UInt32(0), gumbel_scale=0.0
-        )
+        self.extract_actions_gumbel(ctx, rng_seed=UInt32(0), gumbel_scale=0.0)
 
     def extract_actions_gumbel(
         mut self,
@@ -910,19 +1062,23 @@ struct GumbelGPUMCTS[
         Pass ``gumbel_scale=0.0`` at eval / arena for deterministic
         argmax over the improved policy."""
         var lm_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
-        ](self.state.legal_mask.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.state.legal_mask)
         var po_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
-        ](self.state.policies_out.unsafe_ptr())
-        var act_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.actions_out.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.state.policies_out)
+        var act_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.actions_out
+        )
         comptime run_extract = gz_extract_actions_gumbel_kernel[
-            Self.N_ENVS, Self.ACT, dtype,
+            Self.N_ENVS,
+            Self.ACT,
+            dtype,
         ]
         ctx.enqueue_function[run_extract](
-            po_t, lm_t, act_t,
+            po_t,
+            lm_t,
+            act_t,
             rng_seed,
             Scalar[dtype](gumbel_scale),
             grid_dim=(Self.ENV_BLOCKS,),
@@ -947,19 +1103,24 @@ struct GumbelGPUMCTS[
         raw visit counts. The policy target stored in replay stays the
         improved policy — this method only writes ``actions_out``."""
         var lm_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
-        ](self.state.legal_mask.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.state.legal_mask)
         var po_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
-        ](self.state.policies_out.unsafe_ptr())
-        var act_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.actions_out.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.state.policies_out)
+        var act_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.actions_out
+        )
         comptime run_extract = gz_extract_actions_temp_kernel[
-            Self.N_ENVS, Self.ACT, dtype,
+            Self.N_ENVS,
+            Self.ACT,
+            dtype,
         ]
         ctx.enqueue_function[run_extract](
-            po_t, lm_t, ep_steps, act_t,
+            po_t,
+            lm_t,
+            ep_steps,
+            act_t,
             TEMP_THRESHOLD,
             rng_seed,
             Scalar[dtype](temp_min),
@@ -991,82 +1152,75 @@ struct GumbelGPUMCTS[
         sync, so the same slot index is valid for every env).
         """
         var vc_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.visit_count.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.visit_count)
         var tv_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.total_value.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.total_value)
         var nl_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.node_logits.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.node_logits)
         var rw_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.reward.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.reward)
         var ci_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.child_idx.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.child_idx)
         var tvis_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES), MutAnyOrigin
-        ](self.state.total_visits.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+        ](self.state.total_visits)
         var nv_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES), MutAnyOrigin
-        ](self.state.node_value.unsafe_ptr())
-        var nc_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.node_count.unsafe_ptr())
-        var miq_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.min_q.unsafe_ptr())
-        var mxq_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.max_q.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+        ](self.state.node_value)
+        var nc_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.node_count
+        )
+        var miq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.min_q
+        )
+        var mxq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.max_q
+        )
         var lm_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
-        ](self.state.legal_mask.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.state.legal_mask)
         var rc_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K), MutAnyOrigin
-        ](self.state.root_candidates.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_candidates)
         var ra_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K), MutAnyOrigin
-        ](self.state.root_active.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_active)
         var hs_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.LATENT),
-            MutAnyOrigin,
-        ](self.state.hidden_states.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.LATENT)
+        ](self.state.hidden_states)
         var di_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.DYN_IN), MutAnyOrigin
-        ](self.state.dyn_input.unsafe_ptr())
-        var pp_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.pending_parent.unsafe_ptr())
-        var pa_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.pending_action.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.DYN_IN)
+        ](self.state.dyn_input)
+        var pp_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.pending_parent
+        )
+        var pa_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.pending_action
+        )
         var sp_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * MAX_DEPTH), MutAnyOrigin
-        ](self.state.search_paths.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * MAX_DEPTH)
+        ](self.state.search_paths)
         var ap_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * MAX_DEPTH), MutAnyOrigin
-        ](self.state.action_paths.unsafe_ptr())
-        var pl_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.path_lengths.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * MAX_DEPTH)
+        ](self.state.action_paths)
+        var pl_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.path_lengths
+        )
 
         # Selection.
         comptime run_select = gz_select_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.MAX_K, Self.LATENT,
-            Self.DYN_IN, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            Self.MAX_K,
+            Self.LATENT,
+            Self.DYN_IN,
+            dtype,
         ]
         ctx.enqueue_function[run_select](
             vc_t,
@@ -1098,57 +1252,61 @@ struct GumbelGPUMCTS[
 
         # Dynamics forward (via trait adapter).
         var dyn_in_b = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS, DYN.DYN_IN_DIM),
-            MutAnyOrigin,
-        ](self.state.dyn_input.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS, DYN.DYN_IN_DIM)
+        ](self.state.dyn_input)
         var dyn_out_b = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS, DYN.DYN_OUT_DIM),
-            MutAnyOrigin,
-        ](self.state.dyn_output.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS, DYN.DYN_OUT_DIM), MutAnyOrigin
+        ](self.state.dyn_output)
         dyn.step_gpu[Self.N_ENVS](ctx, dyn_in_b, dyn_out_b)
 
         # Copy dyn_output's hidden prefix into pred_input.
         comptime run_copy = gz_copy_pred_input_kernel[
-            Self.N_ENVS, Self.LATENT, Self.DYN_OUT, dtype,
+            Self.N_ENVS,
+            Self.LATENT,
+            Self.DYN_OUT,
+            dtype,
         ]
         var pred_in_flat = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.LATENT), MutAnyOrigin
-        ](self.state.pred_input.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.LATENT)
+        ](self.state.pred_input)
         var dyn_out_flat = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.DYN_OUT), MutAnyOrigin
-        ](self.state.dyn_output.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.DYN_OUT)
+        ](self.state.dyn_output)
         ctx.enqueue_function[run_copy](
             pred_in_flat,
             dyn_out_flat,
-            grid_dim=(Self.ENV_BLOCKS,),
+            # parallelized over env×LATENT (B1)
+            grid_dim=((Self.N_ENVS * Self.LATENT + TPB - 1) // TPB,),
             block_dim=(TPB,),
         )
 
         # Prediction forward.
         var pred_in_b = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS, PRED.LATENT_DIM),
-            MutAnyOrigin,
-        ](self.state.pred_input.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS, PRED.LATENT_DIM)
+        ](self.state.pred_input)
         var pred_out_b = LayoutTensor[
             dtype,
             Layout.row_major(Self.N_ENVS, PRED.PRED_OUT_DIM),
             MutAnyOrigin,
-        ](self.state.pred_output.unsafe_ptr())
+        ](self.state.pred_output)
         pred.predict_gpu[Self.N_ENVS](ctx, pred_in_b, pred_out_b)
 
         # Expand.
-        var lv_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.leaf_values.unsafe_ptr())
+        var lv_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.leaf_values
+        )
         var po_full_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.PRED_OUT), MutAnyOrigin
-        ](self.state.pred_output.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.PRED_OUT)
+        ](self.state.pred_output)
         comptime run_expand = gz_expand_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.LATENT, Self.BINS,
-            Self.PRED_OUT, Self.DYN_OUT, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            Self.LATENT,
+            Self.BINS,
+            Self.PRED_OUT,
+            Self.DYN_OUT,
+            dtype,
         ]
         ctx.enqueue_function[run_expand](
             vc_t,
@@ -1175,7 +1333,10 @@ struct GumbelGPUMCTS[
         # SelfPlay flips perspective at every ply; SinglePlayer uses the
         # standard ``reward + gamma · value`` recurrence.
         comptime run_backup = gz_backup_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            dtype,
             Self.PLAYER.NEGATE_BACKUP,
         ]
         ctx.enqueue_function[run_backup](
@@ -1229,12 +1390,12 @@ struct GumbelGPUMCTS[
         games). Results land in ``policies_view()`` (improved policy) and
         ``root_value_view()``. Serial sims — no virtual loss, no frozen-tree
         duplicate problem by construction."""
-        comptime assert Self.STATE_SIZE > 0, (
-            "search_gpu_alphazero needs STATE_SIZE > 0 (game-state payloads)"
-        )
-        comptime assert Self.BINS == 1, (
-            "Gumbel AlphaZero uses a scalar value head (BINS == 1, tanh)"
-        )
+        comptime assert (
+            Self.STATE_SIZE > 0
+        ), "search_gpu_alphazero needs STATE_SIZE > 0 (game-state payloads)"
+        comptime assert (
+            Self.BINS == 1
+        ), "Gumbel AlphaZero uses a scalar value head (BINS == 1, tanh)"
 
         # ── 1. Reset tree + root legality ────────────────────────────────
         self.state.zero_tree(ctx)
@@ -1245,42 +1406,40 @@ struct GumbelGPUMCTS[
             dtype,
             Layout.row_major(Self.N_ENVS, PRED.PRED_OUT_DIM),
             MutAnyOrigin,
-        ](self.state.pred_output.unsafe_ptr())
+        ](self.state.pred_output)
         pred.predict_gpu[Self.N_ENVS](ctx, root_obs, pred_out_b)
 
         # ── 3. Init root: masked logits + tanh value + Gumbel-Top-k ──────
         var nl_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.node_logits.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.node_logits)
         var nv_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES), MutAnyOrigin
-        ](self.state.node_value.unsafe_ptr())
-        var nc_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.node_count.unsafe_ptr())
-        var miq_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.min_q.unsafe_ptr())
-        var mxq_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.max_q.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+        ](self.state.node_value)
+        var nc_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.node_count
+        )
+        var miq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.min_q
+        )
+        var mxq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.max_q
+        )
         var lm_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
-        ](self.state.legal_mask.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.state.legal_mask)
         var rc_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K), MutAnyOrigin
-        ](self.state.root_candidates.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_candidates)
         var rg_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K), MutAnyOrigin
-        ](self.state.root_gumbels.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_gumbels)
         var ra_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K), MutAnyOrigin
-        ](self.state.root_active.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_active)
         var po_full_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.PRED_OUT), MutAnyOrigin
-        ](self.state.pred_output.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.PRED_OUT)
+        ](self.state.pred_output)
 
         var k_clipped = k_actual
         if k_clipped > Self.MAX_K:
@@ -1292,8 +1451,13 @@ struct GumbelGPUMCTS[
             k_clipped = 1
 
         comptime run_init = gz_init_root_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.BINS, Self.MAX_K,
-            Self.PRED_OUT, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            Self.BINS,
+            Self.MAX_K,
+            Self.PRED_OUT,
+            dtype,
         ]
         ctx.enqueue_function[run_init](
             nl_t,
@@ -1317,24 +1481,33 @@ struct GumbelGPUMCTS[
         )
 
         # ── 4. Root game state → node 0 ──────────────────────────────────
-        comptime AZ_BLOCKS = (
-            Self.N_ENVS * Self.STATE_SIZE + TPB - 1
-        ) // TPB
+        comptime AZ_BLOCKS = (Self.N_ENVS * Self.STATE_SIZE + TPB - 1) // TPB
         var gs_t = LayoutTensor[
             dtype,
             Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.STATE_SIZE),
-            MutAnyOrigin,
-        ](self.az_game_states.unsafe_ptr())
-        var rs_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.STATE_SIZE),
-            MutAnyOrigin,
-        ](root_states.unsafe_ptr())
+        ](self.az_game_states)
+        var rs_t = rebind[
+            LayoutTensor[
+                dtype,
+                Layout.row_major(Self.N_ENVS * Self.STATE_SIZE),
+                MutAnyOrigin,
+            ]
+        ](
+            LayoutTensor[
+                dtype, Layout.row_major(Self.N_ENVS * Self.STATE_SIZE)
+            ](root_states)
+        )
         comptime run_copy_root = gz_az_copy_root_state_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.STATE_SIZE, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.STATE_SIZE,
+            dtype,
         ]
         ctx.enqueue_function[run_copy_root](
-            gs_t, rs_t, grid_dim=(AZ_BLOCKS,), block_dim=(TPB,),
+            gs_t,
+            rs_t,
+            grid_dim=(AZ_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # ── 5. Sequential Halving simulation loop ────────────────────────
@@ -1357,9 +1530,11 @@ struct GumbelGPUMCTS[
                     if sims_used >= Self.NUM_SIMULATIONS:
                         break
                     self._run_one_sim_az_gpu[PRED, ENV](
-                        ctx, pred, env, slot,
-                        UInt64(rng_seed) * UInt64(1000003)
-                        + UInt64(sims_used),
+                        ctx,
+                        pred,
+                        env,
+                        slot,
+                        UInt64(rng_seed) * UInt64(1000003) + UInt64(sims_used),
                     )
                     sims_used += 1
 
@@ -1368,23 +1543,23 @@ struct GumbelGPUMCTS[
                 if keep < 1:
                     keep = 1
                 comptime run_halve = gz_halve_active_kernel[
-                    Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.MAX_K, dtype,
+                    Self.N_ENVS,
+                    Self.MAX_NODES,
+                    Self.ACT,
+                    Self.MAX_K,
+                    dtype,
                 ]
                 var vc_t = LayoutTensor[
                     dtype,
                     Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-                    MutAnyOrigin,
-                ](self.state.visit_count.unsafe_ptr())
+                ](self.state.visit_count)
                 var tv_t = LayoutTensor[
                     dtype,
                     Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-                    MutAnyOrigin,
-                ](self.state.total_value.unsafe_ptr())
+                ](self.state.total_value)
                 var tvis_t = LayoutTensor[
-                    dtype,
-                    Layout.row_major(Self.N_ENVS * Self.MAX_NODES),
-                    MutAnyOrigin,
-                ](self.state.total_visits.unsafe_ptr())
+                    dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+                ](self.state.total_visits)
                 ctx.enqueue_function[run_halve](
                     vc_t,
                     tv_t,
@@ -1408,30 +1583,32 @@ struct GumbelGPUMCTS[
 
         while sims_used < Self.NUM_SIMULATIONS:
             self._run_one_sim_az_gpu[PRED, ENV](
-                ctx, pred, env, 0,
+                ctx,
+                pred,
+                env,
+                0,
                 UInt64(rng_seed) * UInt64(1000003) + UInt64(sims_used),
             )
             sims_used += 1
 
         # ── 6. Extract improved policy (legal-masked) + root value ───────
         var po_extract_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
-        ](self.state.policies_out.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.state.policies_out)
         var vc_t2 = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.visit_count.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.visit_count)
         var tv_t2 = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.total_value.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.total_value)
         var tvis_t2 = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES), MutAnyOrigin
-        ](self.state.total_visits.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+        ](self.state.total_visits)
         comptime run_extract = gz_extract_policy_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            dtype,
         ]
         ctx.enqueue_function[run_extract](
             vc_t2,
@@ -1451,11 +1628,14 @@ struct GumbelGPUMCTS[
             block_dim=(TPB,),
         )
 
-        var rv_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.root_value_out.unsafe_ptr())
+        var rv_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.root_value_out
+        )
         comptime run_root_value = gz_extract_root_value_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            dtype,
         ]
         ctx.enqueue_function[run_root_value](
             vc_t2,
@@ -1480,84 +1660,77 @@ struct GumbelGPUMCTS[
         """One AZ sim across all envs: select → stage state → env.step →
         pred → expand (masked, tanh leaf) → negated backup."""
         var vc_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.visit_count.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.visit_count)
         var tv_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.total_value.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.total_value)
         var nl_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.node_logits.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.node_logits)
         var rw_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.reward.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.reward)
         var ci_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT),
-            MutAnyOrigin,
-        ](self.state.child_idx.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.ACT)
+        ](self.state.child_idx)
         var tvis_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES), MutAnyOrigin
-        ](self.state.total_visits.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+        ](self.state.total_visits)
         var nv_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES), MutAnyOrigin
-        ](self.state.node_value.unsafe_ptr())
-        var nc_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.node_count.unsafe_ptr())
-        var miq_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.min_q.unsafe_ptr())
-        var mxq_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.max_q.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES)
+        ](self.state.node_value)
+        var nc_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.node_count
+        )
+        var miq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.min_q
+        )
+        var mxq_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.max_q
+        )
         var lm_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
-        ](self.state.legal_mask.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.state.legal_mask)
         var rc_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K), MutAnyOrigin
-        ](self.state.root_candidates.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_candidates)
         var ra_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K), MutAnyOrigin
-        ](self.state.root_active.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_K)
+        ](self.state.root_active)
         var hs_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.LATENT),
-            MutAnyOrigin,
-        ](self.state.hidden_states.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.LATENT)
+        ](self.state.hidden_states)
         var di_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.DYN_IN), MutAnyOrigin
-        ](self.state.dyn_input.unsafe_ptr())
-        var pp_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.pending_parent.unsafe_ptr())
-        var pa_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.pending_action.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.DYN_IN)
+        ](self.state.dyn_input)
+        var pp_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.pending_parent
+        )
+        var pa_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.pending_action
+        )
         var sp_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * MAX_DEPTH), MutAnyOrigin
-        ](self.state.search_paths.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * MAX_DEPTH)
+        ](self.state.search_paths)
         var ap_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * MAX_DEPTH), MutAnyOrigin
-        ](self.state.action_paths.unsafe_ptr())
-        var pl_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.path_lengths.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * MAX_DEPTH)
+        ](self.state.action_paths)
+        var pl_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.path_lengths
+        )
 
         # Selection — the shared Gumbel visit-balance kernel. It also builds
         # a dynamics input from the (unused, uninitialized) hidden pool; that
         # write is dead on the AZ path and harmless.
         comptime run_select = gz_select_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.MAX_K, Self.LATENT,
-            Self.DYN_IN, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            Self.MAX_K,
+            Self.LATENT,
+            Self.DYN_IN,
+            dtype,
         ]
         ctx.enqueue_function[run_select](
             vc_t,
@@ -1588,24 +1761,26 @@ struct GumbelGPUMCTS[
         )
 
         # Stage the leaf-parent's game state for expansion.
-        comptime AZ_BLOCKS = (
-            Self.N_ENVS * Self.STATE_SIZE + TPB - 1
-        ) // TPB
+        comptime AZ_BLOCKS = (Self.N_ENVS * Self.STATE_SIZE + TPB - 1) // TPB
         var gs_t = LayoutTensor[
             dtype,
             Layout.row_major(Self.N_ENVS * Self.MAX_NODES * Self.STATE_SIZE),
-            MutAnyOrigin,
-        ](self.az_game_states.unsafe_ptr())
+        ](self.az_game_states)
         var es_t = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS * Self.STATE_SIZE),
-            MutAnyOrigin,
-        ](self.az_expansion_states.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.STATE_SIZE)
+        ](self.az_expansion_states)
         comptime run_stage = gz_az_stage_state_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.STATE_SIZE, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.STATE_SIZE,
+            dtype,
         ]
         ctx.enqueue_function[run_stage](
-            es_t, gs_t, pp_t, grid_dim=(AZ_BLOCKS,), block_dim=(TPB,),
+            es_t,
+            gs_t,
+            pp_t,
+            grid_dim=(AZ_BLOCKS,),
+            block_dim=(TPB,),
         )
 
         # True-rules expansion: env.step on the staged states. Post-step obs
@@ -1624,36 +1799,38 @@ struct GumbelGPUMCTS[
 
         # Prediction on the post-step obs.
         var pred_in_b = LayoutTensor[
-            dtype,
-            Layout.row_major(Self.N_ENVS, PRED.LATENT_DIM),
-            MutAnyOrigin,
-        ](self.state.pred_input.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS, PRED.LATENT_DIM)
+        ](self.state.pred_input)
         var pred_out_b = LayoutTensor[
             dtype,
             Layout.row_major(Self.N_ENVS, PRED.PRED_OUT_DIM),
             MutAnyOrigin,
-        ](self.state.pred_output.unsafe_ptr())
+        ](self.state.pred_output)
         pred.predict_gpu[Self.N_ENVS](ctx, pred_in_b, pred_out_b)
 
         # Expand (masked child logits, tanh/terminal leaf value).
-        var lv_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.state.leaf_values.unsafe_ptr())
+        var lv_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.state.leaf_values
+        )
         var el_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.ACT), MutAnyOrigin
-        ](self.az_exp_legal.unsafe_ptr())
-        var sr_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.az_step_rewards.unsafe_ptr())
-        var sd_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS), MutAnyOrigin
-        ](self.az_step_dones.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.ACT)
+        ](self.az_exp_legal)
+        var sr_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.az_step_rewards
+        )
+        var sd_t = LayoutTensor[dtype, Layout.row_major(Self.N_ENVS)](
+            self.az_step_dones
+        )
         var po_full_t = LayoutTensor[
-            dtype, Layout.row_major(Self.N_ENVS * Self.PRED_OUT), MutAnyOrigin
-        ](self.state.pred_output.unsafe_ptr())
+            dtype, Layout.row_major(Self.N_ENVS * Self.PRED_OUT)
+        ](self.state.pred_output)
         comptime run_expand = gz_az_expand_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, Self.STATE_SIZE,
-            Self.PRED_OUT, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            Self.STATE_SIZE,
+            Self.PRED_OUT,
+            dtype,
         ]
         ctx.enqueue_function[run_expand](
             vc_t,
@@ -1679,7 +1856,10 @@ struct GumbelGPUMCTS[
 
         # Backup — negated per ply for SelfPlay (from the PLAYER trait).
         comptime run_backup = gz_backup_kernel[
-            Self.N_ENVS, Self.MAX_NODES, Self.ACT, dtype,
+            Self.N_ENVS,
+            Self.MAX_NODES,
+            Self.ACT,
+            dtype,
             Self.PLAYER.NEGATE_BACKUP,
         ]
         ctx.enqueue_function[run_backup](

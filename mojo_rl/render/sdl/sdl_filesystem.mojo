@@ -148,8 +148,8 @@ def get_pref_path(
         lib,
         "SDL_GetPrefPath",
         def(
-            org: Ptr[c_char, ImmutAnyOrigin],
-            app: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(org))],
+            Ptr[c_char, ImmutOrigin(origin_of(app))],
         ) thin -> Ptr[c_char, MutAnyOrigin],
     ]()(
         org.as_c_string_slice().unsafe_ptr(),
@@ -201,7 +201,7 @@ struct Folder(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime FOLDER_HOME = Self(0x0)
     """The folder which contains all of the current user's data, preferences, and documents. It usually contains most of the other folders. If a requested folder does not exist, the home folder can be considered a safe fallback to store a user's documents."""
@@ -289,7 +289,7 @@ struct PathType(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime PATHTYPE_NONE = Self(0x0)
     """Path does not exist."""
@@ -364,7 +364,7 @@ def create_directory(var path: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_CreateDirectory",
-        def(path: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool,
+        def(Ptr[c_char, ImmutOrigin(origin_of(path))]) thin -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -392,7 +392,7 @@ struct EnumerationResult(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime ENUM_CONTINUE = Self(0x0)
     """Value that requests that enumeration continue."""
@@ -466,9 +466,9 @@ def enumerate_directory(
         lib,
         "SDL_EnumerateDirectory",
         def(
-            path: Ptr[c_char, ImmutAnyOrigin],
-            callback: EnumerateDirectoryCallback,
-            userdata: Ptr[NoneType, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            EnumerateDirectoryCallback,
+            Ptr[NoneType, MutAnyOrigin],
         ) thin -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr(), callback, userdata)
     if not ret:
@@ -494,7 +494,7 @@ def remove_path(var path: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_RemovePath",
-        def(path: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool,
+        def(Ptr[c_char, ImmutOrigin(origin_of(path))]) thin -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -529,8 +529,8 @@ def rename_path(var oldpath: String, var newpath: String) raises:
         lib,
         "SDL_RenamePath",
         def(
-            oldpath: Ptr[c_char, ImmutAnyOrigin],
-            newpath: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(oldpath))],
+            Ptr[c_char, ImmutOrigin(origin_of(newpath))],
         ) thin -> Bool,
     ]()(
         oldpath.as_c_string_slice().unsafe_ptr(),
@@ -586,8 +586,8 @@ def copy_file(var oldpath: String, var newpath: String) raises:
         lib,
         "SDL_CopyFile",
         def(
-            oldpath: Ptr[c_char, ImmutAnyOrigin],
-            newpath: Ptr[c_char, ImmutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(oldpath))],
+            Ptr[c_char, ImmutOrigin(origin_of(newpath))],
         ) thin -> Bool,
     ]()(
         oldpath.as_c_string_slice().unsafe_ptr(),
@@ -616,8 +616,8 @@ def get_path_info(var path: String, info: Ptr[PathInfo, MutAnyOrigin]) raises:
         lib,
         "SDL_GetPathInfo",
         def(
-            path: Ptr[c_char, ImmutAnyOrigin],
-            info: Ptr[PathInfo, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[PathInfo, MutAnyOrigin],
         ) thin -> Bool,
     ]()(path.as_c_string_slice().unsafe_ptr(), info)
     if not ret:
@@ -670,10 +670,10 @@ def glob_directory(
         lib,
         "SDL_GlobDirectory",
         def(
-            path: Ptr[c_char, ImmutAnyOrigin],
-            pattern: Ptr[c_char, ImmutAnyOrigin],
-            flags: GlobFlags,
-            count: Ptr[c_int, MutAnyOrigin],
+            Ptr[c_char, ImmutOrigin(origin_of(path))],
+            Ptr[c_char, ImmutOrigin(origin_of(pattern))],
+            GlobFlags,
+            Ptr[c_int, MutAnyOrigin],
         ) thin -> Ptr[Ptr[c_char, MutAnyOrigin], MutAnyOrigin],
     ]()(
         path.as_c_string_slice().unsafe_ptr(),

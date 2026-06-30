@@ -69,7 +69,7 @@ comptime PONG_DT = DType.float32
 # ============================================================================
 
 
-trait PongActionPolicy(Movable & ImplicitlyDestructible):
+trait PongActionPolicy(Movable & ImplicitlyDeletable):
     """Maps the current env to a discrete action in {0=NOOP, 1=UP, 2=DOWN}.
 
     Implementations may read ``env.inner.state`` (scripted) or

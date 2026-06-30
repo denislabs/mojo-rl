@@ -8,29 +8,25 @@ Run:
     pixi run -e apple mojo run -I . tests/deep_agents/test_ezv2_atari_config_smoke.mojo
 """
 
-from std.memory import alloc
 from std.math import isnan, isinf
-from std.gpu.memory import AddressSpace
 from std.testing import assert_true, assert_equal
-from layout import TileTensor, row_major
+from std.gpu.host import DeviceContext
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.core import ParamVisitor
+from mojo_rl.nn.constants import DT, LAYOUT_NCHW
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
 
 
 comptime FRAMES = 4
 comptime ACT = 18
-comptime Cfg = EZV2AtariConfig[FRAMES, ACT]
+comptime Cfg = EZV2AtariConfig[FRAMES, ACT, LAYOUT=LAYOUT_NCHW]
 comptime LATENT = Cfg.LATENT     # 2304
 comptime BINS = Cfg.BINS         # 601
 comptime PROJ = Cfg.PROJ         # 1024
 comptime B = 2
-
-
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
 
 
 def _det(i: Int, scale: Float64) -> Scalar[DT]:
@@ -38,7 +34,7 @@ def _det(i: Int, scale: Float64) -> Scalar[DT]:
     return Scalar[DT](v * scale)
 
 
-def _finite(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int) -> Bool:
+def _finite(p: List[Scalar[DT]], n: Int) -> Bool:
     for i in range(n):
         if isnan(p[i]) or isinf(p[i]):
             return False
@@ -53,20 +49,14 @@ struct GradStats(ParamVisitor):
         self.n_params = 0
         self.n_nonzero = 0
 
-    def visit(
-        mut self, name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int, apply_decay: Bool,
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
         self.n_params += 1
-        var g = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
-        for i in range(n_elems):
-            if g[i] != Scalar[DT](0.0):
+        for i in range(N):
+            if grad.data[i] != Scalar[DT](0.0):
                 self.n_nonzero += 1
                 return
 
@@ -95,28 +85,28 @@ def main() raises:
     # ── prediction head forward + grad ──────────────────────────────
     comptime PIN = LATENT
     comptime POUT = ACT + BINS
-    var m = Cfg.Pred.make[target="cpu", INIT=Kaiming]()
+    var m = Cfg.Pred.make["cpu", Kaiming]()
     m.set_attr["training"](Scalar[DT](1.0))
 
-    var x = _a(B * PIN); var y = _a(B * POUT)
-    var go = _a(B * POUT); var gx = _a(B * PIN)
+    var x = Tensor.alloc(B * PIN)
+    var y = Tensor.alloc(B * POUT)
+    var go = Tensor.alloc(B * POUT)
+    var gx = Tensor.alloc(B * PIN)
     for k in range(B * PIN):
-        x[k] = _det(k + 1, 0.3)
+        x.data[k] = _det(k + 1, 0.3)
     for k in range(B * POUT):
-        go[k] = _det(k + 3, 1.0)
+        go.data[k] = _det(k + 3, 1.0)
 
-    var x_t = TileTensor(x, row_major[B, PIN]())
-    var y_t = TileTensor(y, row_major[B, POUT]())
-    m.forward["cpu", B](x_t, output=y_t)
-    assert_true(_finite(y, B * POUT), "pred output finite")
+    m.forward["cpu", B](TensorRefs[Cfg.Pred.ARITY](x), y, None)
+    assert_true(_finite(y.data, B * POUT), "pred output finite")
 
-    var go_t = TileTensor(go, row_major[B, POUT]())
-    var gx_t = TileTensor(gx, row_major[B, PIN]())
-    m.vjp["cpu", B](go_t, gx_t)
-    assert_true(_finite(gx, B * PIN), "pred grad_input finite")
+    m.vjp["cpu", B](
+        TensorRefs[Cfg.Pred.ARITY](x), go, TensorRefs[Cfg.Pred.ARITY](gx), None
+    )
+    assert_true(_finite(gx.data, B * PIN), "pred grad_input finite")
 
     var gs = GradStats()
-    m.for_each_param["cpu", GradStats]("pred", gs)
+    m.for_each_param["cpu"](gs, None)
     print("   pred params=", gs.n_params, " nonzero-grad=", gs.n_nonzero)
     assert_true(gs.n_nonzero * 10 >= gs.n_params * 8,
                 "≥80% of pred params receive grad")

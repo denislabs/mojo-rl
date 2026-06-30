@@ -36,7 +36,7 @@ from .driver_scratch import DriverScratch
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait OnPolicyDiscreteAgent(Movable, ImplicitlyDestructible):
+trait OnPolicyDiscreteAgent(Movable, ImplicitlyDeletable):
     """Single-env host-list surface for the discrete on-policy driver.
 
     Mirrors `OnPolicyAgent` (continuous PPO) but adapted for discrete

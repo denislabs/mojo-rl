@@ -45,7 +45,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from mojo_rl.nn.constants import DT
 
 
-trait SequenceReplayBuffer(ImplicitlyDestructible, Movable):
+trait SequenceReplayBuffer(ImplicitlyDeletable, Movable):
     """Uniform surface over a sequence (window) replay buffer. `count` is
     named so as not to collide with conformers' `size` *field*."""
 

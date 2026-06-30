@@ -32,10 +32,9 @@ from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core import (
-    Initializer, Param, ParamVisitor, for_each_param_auto, zero_grad_auto,
-)
-from mojo_rl.nn.core.target_storage import require_ctx, TargetStorage, assert_tag_for
+from mojo_rl.nn.core.param import Param, ParamVisitor
+from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.walkers import for_each_param_auto, zero_grad_auto
 
 
 # ── GPU kernels ─────────────────────────────────────────────────────────
@@ -123,7 +122,6 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
     var ids_dev: Optional[DeviceBuffer[DT]]     # [B] uploaded ids (gpu)
     var ids_hbuf: Optional[HostBuffer[DT]]      # host staging for ids
     var scratch_b: Int
-    var ts: TargetStorage
 
     def __init__(out self):
         self.task_table = Param["task_table", True, Self.NTASK * Self.D]()
@@ -132,7 +130,6 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
         self.ids_dev = None
         self.ids_hbuf = None
         self.scratch_b = 0
-        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
@@ -143,29 +140,15 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
         )
         comptime NT = Self.NTASK * Self.D
         var m = Self()
-        comptime if target == "cpu":
-            m.task_table = Param["task_table", True, NT].make_cpu()
-            m.agent_base = Param["agent_base", False, Self.D].make_cpu()
-            INIT.init_weight(
-                m.task_table.value_unsafe_ptr_cpu(), NT, Self.NTASK, Self.D
-            )
-            INIT.init_weight(
-                m.agent_base.value_unsafe_ptr_cpu(), Self.D, 1, Self.D
-            )
-            m.ts = TargetStorage.make_cpu()
-        else:
-            var c = require_ctx["TaskEmbedder.make[gpu]"](ctx)
-            m.task_table = Param["task_table", True, NT].make_gpu(c)
-            m.agent_base = Param["agent_base", False, Self.D].make_gpu(c)
-            var th = c.enqueue_create_host_buffer[DT](NT)
-            var bh = c.enqueue_create_host_buffer[DT](Self.D)
-            c.synchronize()
-            INIT.init_weight(th.unsafe_ptr(), NT, Self.NTASK, Self.D)
-            INIT.init_weight(bh.unsafe_ptr(), Self.D, 1, Self.D)
-            c.enqueue_copy(m.task_table.val.dev.value(), th)
-            c.enqueue_copy(m.agent_base.val.dev.value(), bh)
-            c.synchronize()
-            m.ts = TargetStorage.make_gpu(c)
+        m.task_table = Param["task_table", True, NT].make[target](ctx)
+        m.agent_base = Param["agent_base", False, Self.D].make[target](ctx)
+        # storage `init_weight` does the host-fill AND (on GPU) the upload.
+        INIT.init_weight[target](
+            m.task_table.val, NT, Self.NTASK, Self.D, ctx
+        )
+        INIT.init_weight[target](
+            m.agent_base.val, Self.D, 1, Self.D, ctx
+        )
         return m^
 
     @staticmethod
@@ -178,9 +161,9 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
         for b in range(B):
             self.cache_ids[b] = Int(Float64(task_ids[b]) + 0.5)
 
-    def _ensure_ids_gpu(mut self, B: Int) raises:
+    def _ensure_ids_gpu(mut self, B: Int, ctx: Optional[DeviceContext]) raises:
         if self.scratch_b < B:
-            var c = self.ts.ctx.value()
+            var c = ctx.value()
             self.ids_dev = c.enqueue_create_buffer[DT](B)
             self.ids_hbuf = c.enqueue_create_host_buffer[DT](B)
             c.synchronize()
@@ -192,18 +175,18 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
         mut self,
         task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],
         dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         """Fill `dst` [B·T, NAGENT·D] (CPU host ptr / GPU device ptr) with the
         broadcast task embeddings. `task_ids` is a host [B] fp buffer of exact
         task ids."""
-        assert_tag_for["TaskEmbedder", target](self.ts.target_tag)
         self._cache_ids(task_ids, B)
         comptime AG = Self.AG_DIM
         comptime if target == "cpu":
             var tab = TileTensor(
-                self.task_table.val.cpu, row_major[Self.NTASK * Self.D]()
+                self.task_table.val.data, row_major[Self.NTASK * Self.D]()
             )
-            var base = TileTensor(self.agent_base.val.cpu, row_major[Self.D]())
+            var base = TileTensor(self.agent_base.val.data, row_major[Self.D]())
             for b in range(B):
                 var idb = self.cache_ids[b]
                 for t in range(T):
@@ -214,8 +197,8 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
                                 tab[idb * Self.D + d] + base[d]
                             )
         else:
-            var c = self.ts.ctx.value()
-            self._ensure_ids_gpu(B)
+            var c = ctx.value()
+            self._ensure_ids_gpu(B, ctx)
             var ih = self.ids_hbuf.value()
             for b in range(B):
                 ih.unsafe_ptr()[b] = Scalar[DT](Float64(self.cache_ids[b]))
@@ -223,12 +206,12 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
             var ids_lt = LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin](
                 self.ids_dev.value()
             )
-            var tab_lt = LayoutTensor[
-                DT, Layout.row_major(Self.NTASK * Self.D), MutAnyOrigin
-            ](self.task_table.val.dev.value())
-            var base_lt = LayoutTensor[
-                DT, Layout.row_major(Self.D), MutAnyOrigin
-            ](self.agent_base.val.dev.value())
+            var tab_lt = self.task_table.val.lt[
+                "gpu", Layout.row_major(Self.NTASK * Self.D)
+            ]()
+            var base_lt = self.agent_base.val.lt[
+                "gpu", Layout.row_major(Self.D)
+            ]()
             var out_lt = LayoutTensor[
                 DT, Layout.row_major(B * T * AG), MutAnyOrigin
             ](dst)
@@ -243,17 +226,17 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
     ](
         mut self,
         grad_in: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
         """Accumulate the grad of the broadcast agent input (`grad_in`
         [B·T, NAGENT·D], = `dyn.grad_agent_in_*`) into the params. Uses the
         task ids cached by the preceding `embed_into`."""
-        assert_tag_for["TaskEmbedder", target](self.ts.target_tag)
         comptime AG = Self.AG_DIM
         comptime if target == "cpu":
             var gtab = TileTensor(
-                self.task_table.grd.cpu, row_major[Self.NTASK * Self.D]()
+                self.task_table.grd.data, row_major[Self.NTASK * Self.D]()
             )
-            var gbase = TileTensor(self.agent_base.grd.cpu, row_major[Self.D]())
+            var gbase = TileTensor(self.agent_base.grd.data, row_major[Self.D]())
             for b in range(B):
                 var idb = self.cache_ids[b]
                 for d in range(Self.D):
@@ -265,19 +248,19 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
                     gbase[d] += ge
                     gtab[idb * Self.D + d] += ge
         else:
-            var c = self.ts.ctx.value()
+            var c = ctx.value()
             var gin_lt = LayoutTensor[
                 DT, Layout.row_major(B * T * AG), MutAnyOrigin
             ](grad_in)
             var ids_lt = LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin](
                 self.ids_dev.value()
             )
-            var gbase_lt = LayoutTensor[
-                DT, Layout.row_major(Self.D), MutAnyOrigin
-            ](self.agent_base.grd.dev.value())
-            var gtab_lt = LayoutTensor[
-                DT, Layout.row_major(Self.NTASK * Self.D), MutAnyOrigin
-            ](self.task_table.grd.dev.value())
+            var gbase_lt = self.agent_base.grd.lt[
+                "gpu", Layout.row_major(Self.D)
+            ]()
+            var gtab_lt = self.task_table.grd.lt[
+                "gpu", Layout.row_major(Self.NTASK * Self.D)
+            ]()
             comptime bk = _te_grad_base_kernel[B, T, Self.NAGENT, Self.D]
             c.enqueue_function[bk](
                 gin_lt, gbase_lt,
@@ -293,10 +276,15 @@ struct TaskEmbedder[D: Int, NTASK: Int, NAGENT: Int](Movable):
 
     def for_each_param[
         target: StaticString, V: ParamVisitor
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["TaskEmbedder", target](self.ts.target_tag)
-        for_each_param_auto[Self, V, target](self, prefix, visitor)
+    ](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        for_each_param_auto[Self, V, target](self, visitor, ctx, prefix)
 
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["TaskEmbedder", target](self.ts.target_tag)
-        zero_grad_auto[Self, target](self)
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        zero_grad_auto[Self, target](self, ctx)

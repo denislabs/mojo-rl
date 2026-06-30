@@ -161,9 +161,9 @@ def test_repl_loss_backward() raises:
     var lines = _split_lines(content)
     var bins = _buf(_read_flat(lines, "bins"))
     var last = _buf(_read_flat(lines, "rl.last"))
-    var term = _buf(_read_flat(lines, "rl.term"))
+    var term = _read_flat(lines, "rl.term")  # List param (storage-style)
     var rew = _buf(_read_flat(lines, "rl.rew"))
-    var boot = _buf(_read_flat(lines, "rl.boot"))
+    var boot = _read_flat(lines, "rl.boot")  # List param (storage-style)
     var vlogits = _buf(_read_flat(lines, "rl.vlogits"))
     var svlogits = _buf(_read_flat(lines, "rl.svlogits"))
     var horizon = _get_scalar(lines, "cfg.horizon")
@@ -171,7 +171,7 @@ def test_repl_loss_backward() raises:
     var slowreg = _get_scalar(lines, "cfg.slowreg")
 
     var g_vlogits = alloc[Scalar[DT]](BK * T * BINS)
-    var d_repval = _ones(BK * TM1)
+    var d_repval = List[Scalar[DT]](length=BK * TM1, fill=Scalar[DT](1.0))
     repl_loss_backward[BK, T, BINS](
         last, term, rew, boot, vlogits, svlogits, bins,
         horizon, lam, slowreg, d_repval, g_vlogits,

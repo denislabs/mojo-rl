@@ -9,48 +9,27 @@ Reference `_td_target` + the `encode(obs[1:])` in `_update`
     td[t] = reward[t] + γ·(1 − done[t])·Q
 
 Forward-only (no autograd): calls the encoder, policy, RSample, the two
-target-Q heads, and TwoHotDecode directly. The two target-Q heads are the
-random pair the trainer selects each step (reference resamples per call);
-this block receives them by ref. Output `td [H, B]` feeds `WMStep` as the
-stop-grad `td` input.
+target-Q heads, and TwoHotDecode directly. Storage migration: inputs are
+`Tensor`s; the two target-Q heads are passed as DISTINCT `mut q_a, mut q_b`
+fields (the agent's comptime dispatch picks the random pair). Output `td`
+[H, B] feeds `WMStep` as the stop-grad `td` input.
 
-Termination/episodic is deferred (port plan); `done` here is the
-truncation/terminal mask used only to drop the bootstrap, matching the
-non-episodic HalfCheetah setting.
-
-CPU only (P4 = GPU).
+CPU + GPU.
 """
 
-from std.memory import alloc
 from std.math import min
-from layout import Layout, LayoutTensor, TileTensor, row_major
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.module import mptr
-from mojo_rl.nn.initializer import Zero
-from mojo_rl.deep_agents.primitives.rsample import RSample
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.primitives.rsample import RSample
 
 from .nets import TDMPC2Encoder, TDMPC2Policy, TDMPC2QNet
 from .losses import TwoHotDecode
-
-
-@always_inline
-def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
-
-
-@always_inline
-def _dp(b: DeviceBuffer[DT]) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(b.unsafe_ptr())
-
-
-@always_inline
-def _lt[N: Int](
-    p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-) -> LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin]:
-    return LayoutTensor[DT, Layout.row_major(N), MutAnyOrigin](p)
 
 
 def _build_za_k[B_: Int, LAT_: Int, A_: Int, ALP_: Int](
@@ -102,7 +81,7 @@ struct TDTargetStep[
     B: Int,
     H: Int,
     QP: Float64 = 0.0,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime EncT = TDMPC2Encoder[Self.OBS, Self.ENC, Self.LATENT, Self.SN]
     comptime PolicyT = TDMPC2Policy[Self.LATENT, Self.ACT, Self.MLP]
     comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.QP]
@@ -110,34 +89,29 @@ struct TDTargetStep[
     var rsample: RSample[Self.ACT]
     var decode: TwoHotDecode[Self.BINS, Self.VMIN, Self.VMAX]
 
-    # Persistent GPU scratch (allocated once in `make`, reused every step —
-    # per-step `enqueue_create_buffer` explodes disk on NVIDIA).
-    var d_obs: Optional[DeviceBuffer[DT]]
-    var d_rew: Optional[DeviceBuffer[DT]]
-    var d_done: Optional[DeviceBuffer[DT]]
-    var d_td: Optional[DeviceBuffer[DT]]
-    var d_nz: Optional[DeviceBuffer[DT]]
-    var d_pio: Optional[DeviceBuffer[DT]]
-    var d_alp: Optional[DeviceBuffer[DT]]
-    var d_za: Optional[DeviceBuffer[DT]]
-    var d_q1: Optional[DeviceBuffer[DT]]
-    var d_q2: Optional[DeviceBuffer[DT]]
-    var d_qa: Optional[DeviceBuffer[DT]]
-    var d_qb: Optional[DeviceBuffer[DT]]
-    var h_obs: Optional[HostBuffer[DT]]
-    var h_rew: Optional[HostBuffer[DT]]
-    var h_done: Optional[HostBuffer[DT]]
-    var h_td: Optional[HostBuffer[DT]]
+    # Persistent scratch Tensors (allocated once in make, reused every step).
+    var nz: Tensor
+    var pio: Tensor
+    var alp: Tensor
+    var za: Tensor
+    var qlog1: Tensor
+    var qlog2: Tensor
+    var qa: Tensor
+    var qb: Tensor
+    var obs_step: Tensor  # [B*OBS] encoder input window
 
     def __init__(out self):
         self.rsample = RSample[Self.ACT]()
         self.decode = TwoHotDecode[Self.BINS, Self.VMIN, Self.VMAX]()
-        self.d_obs = None; self.d_rew = None; self.d_done = None
-        self.d_td = None; self.d_nz = None; self.d_pio = None
-        self.d_alp = None; self.d_za = None; self.d_q1 = None
-        self.d_q2 = None; self.d_qa = None; self.d_qb = None
-        self.h_obs = None; self.h_rew = None; self.h_done = None
-        self.h_td = None
+        self.nz = Tensor()
+        self.pio = Tensor()
+        self.alp = Tensor()
+        self.za = Tensor()
+        self.qlog1 = Tensor()
+        self.qlog2 = Tensor()
+        self.qa = Tensor()
+        self.qb = Tensor()
+        self.obs_step = Tensor()
 
     @staticmethod
     def make[target: StaticString](
@@ -146,219 +120,135 @@ struct TDTargetStep[
         comptime assert target == "cpu" or target == "gpu", (
             "TDTargetStep: target must be 'cpu' or 'gpu'"
         )
+        comptime LAT = Self.LATENT
+        comptime A = Self.ACT
+        comptime ZA = LAT + A
+        comptime BB = Self.B
         var s = Self()
         s.rsample = RSample[Self.ACT].make[target, INIT=Zero](ctx=ctx)
         s.decode = TwoHotDecode[
             Self.BINS, Self.VMIN, Self.VMAX
         ].make[target, INIT=Zero](ctx=ctx)
-        comptime if target == "gpu":
-            var c = ctx.value()
-            comptime LAT = Self.LATENT
-            comptime A = Self.ACT
-            comptime ZA = LAT + A
-            comptime ALP = A + 1
-            comptime BB = Self.B
-            s.d_obs = c.enqueue_create_buffer[DT]((Self.H + 1) * BB * Self.OBS)
-            s.d_rew = c.enqueue_create_buffer[DT](Self.H * BB)
-            s.d_done = c.enqueue_create_buffer[DT](Self.H * BB)
-            s.d_td = c.enqueue_create_buffer[DT](Self.H * BB)
-            s.d_nz = c.enqueue_create_buffer[DT](BB * LAT)
-            s.d_pio = c.enqueue_create_buffer[DT](BB * 2 * A)
-            s.d_alp = c.enqueue_create_buffer[DT](BB * ALP)
-            s.d_za = c.enqueue_create_buffer[DT](BB * ZA)
-            s.d_q1 = c.enqueue_create_buffer[DT](BB * Self.BINS)
-            s.d_q2 = c.enqueue_create_buffer[DT](BB * Self.BINS)
-            s.d_qa = c.enqueue_create_buffer[DT](BB)
-            s.d_qb = c.enqueue_create_buffer[DT](BB)
-            s.h_obs = c.enqueue_create_host_buffer[DT](
-                (Self.H + 1) * BB * Self.OBS
-            )
-            s.h_rew = c.enqueue_create_host_buffer[DT](Self.H * BB)
-            s.h_done = c.enqueue_create_host_buffer[DT](Self.H * BB)
-            s.h_td = c.enqueue_create_host_buffer[DT](Self.H * BB)
-            c.synchronize()
+        s.nz = Tensor.make[target](BB * LAT, ctx)
+        s.pio = Tensor.make[target](BB * 2 * A, ctx)
+        s.alp = Tensor.make[target](BB * (A + 1), ctx)
+        s.za = Tensor.make[target](BB * ZA, ctx)
+        s.qlog1 = Tensor.make[target](BB * Self.BINS, ctx)
+        s.qlog2 = Tensor.make[target](BB * Self.BINS, ctx)
+        s.qa = Tensor.make[target](BB, ctx)
+        s.qb = Tensor.make[target](BB, ctx)
+        s.obs_step = Tensor.make[target](BB * Self.OBS, ctx)
         return s^
 
     def step[target: StaticString](
         mut self,
         mut enc: Self.EncT,
         mut policy: Self.PolicyT,
-        mut qt: List[Self.QNetT],
-        qi: Int,
-        qj: Int,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [(H+1),B,OBS]
-        reward: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [H,B]
-        done: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B]
-        td_out: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [H,B]
+        mut q_a: Self.QNetT,
+        mut q_b: Self.QNetT,
+        mut obs: Tensor,     # [(H+1),B,OBS]
+        mut reward: Tensor,  # [H,B]
+        mut done: Tensor,    # [H,B]
+        mut td_out: Tensor,  # [H,B] (written)
         gamma: Scalar[DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime if target == "cpu":
-            self._td_cpu[target](
-                enc, policy, qt, qi, qj, obs, reward, done, td_out, gamma
-            )
-        else:
-            self._td_gpu[target](
-                enc, policy, qt, qi, qj, obs, reward, done, td_out, gamma,
-                ctx.value(),
-            )
-
-    def _td_cpu[target: StaticString](
-        mut self,
-        mut enc: Self.EncT,
-        mut policy: Self.PolicyT,
-        mut qt: List[Self.QNetT],
-        qi: Int,
-        qj: Int,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [(H+1),B,OBS]
-        reward: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [H,B]
-        done: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [H,B]
-        td_out: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [H,B]
-        gamma: Scalar[DT],
-    ) raises:
         comptime LAT = Self.LATENT
         comptime A = Self.ACT
         comptime ZA = LAT + A
-
-        var nz = _alloc(Self.B * LAT)
-        var pio = _alloc(Self.B * 2 * A)
-        var alp = _alloc(Self.B * (A + 1))
-        var za = _alloc(Self.B * ZA)
-        var qlog1 = _alloc(Self.B * Self.BINS)
-        var qlog2 = _alloc(Self.B * Self.BINS)
-        var qa = _alloc(Self.B)
-        var qb = _alloc(Self.B)
+        comptime BB = Self.B
 
         for t in range(Self.H):
             # next_z = encode(obs[t+1])  (stop-grad)
-            var nz_t = TileTensor(nz, row_major[Self.B, LAT]())
-            enc.forward[target, Self.B](
-                TileTensor(
-                    obs + (t + 1) * Self.B * Self.OBS,
-                    row_major[Self.B, Self.OBS](),
-                ),
-                output=nz_t,
+            Self._copy_window[target](
+                obs, (t + 1) * BB * Self.OBS, self.obs_step, BB * Self.OBS, ctx
             )
+            enc.forward[target, BB](TensorRefs[1](self.obs_step), self.nz, ctx)
             # a ~ π(next_z)
-            var pio_t = TileTensor(pio, row_major[Self.B, 2 * A]())
-            policy.forward[target, Self.B](nz_t, output=pio_t)
-            var alp_t = TileTensor(alp, row_major[Self.B, A + 1]())
-            self.rsample.forward[target, Self.B](pio_t, output=alp_t)
+            policy.forward[target, BB](TensorRefs[1](self.nz), self.pio, ctx)
+            self.rsample.forward[target, BB](
+                TensorRefs[1](self.pio), self.alp, ctx
+            )
             # za = [next_z | action]
-            for b in range(Self.B):
-                for k in range(LAT):
-                    za[b * ZA + k] = nz[b * LAT + k]
-                for k in range(A):
-                    za[b * ZA + LAT + k] = alp[b * (A + 1) + k]
-            var za_t = TileTensor(za, row_major[Self.B, ZA]())
+            self._build_za[target](ctx)
             # Q = min of 2 target heads, two-hot decoded.
-            var ql1_t = TileTensor(qlog1, row_major[Self.B, Self.BINS]())
-            var qa_t = TileTensor(qa, row_major[Self.B, 1]())
-            qt[qi].forward[target, Self.B](za_t, output=ql1_t)
-            self.decode.forward[target, Self.B](ql1_t, output=qa_t)
-            var ql2_t = TileTensor(qlog2, row_major[Self.B, Self.BINS]())
-            var qb_t = TileTensor(qb, row_major[Self.B, 1]())
-            qt[qj].forward[target, Self.B](za_t, output=ql2_t)
-            self.decode.forward[target, Self.B](ql2_t, output=qb_t)
-            for b in range(Self.B):
-                var qmin = min(qa[b], qb[b])
-                var d = done[t * Self.B + b]
-                td_out[t * Self.B + b] = reward[t * Self.B + b] + gamma * (
-                    Scalar[DT](1.0) - d
-                ) * qmin
+            q_a.forward[target, BB](TensorRefs[1](self.za), self.qlog1, ctx)
+            self.decode.forward[target, BB](
+                TensorRefs[1](self.qlog1), self.qa, ctx
+            )
+            q_b.forward[target, BB](TensorRefs[1](self.za), self.qlog2, ctx)
+            self.decode.forward[target, BB](
+                TensorRefs[1](self.qlog2), self.qb, ctx
+            )
+            self._td_combine[target](reward, done, td_out, t, gamma, ctx)
 
-        nz.free(); pio.free(); alp.free(); za.free()
-        qlog1.free(); qlog2.free(); qa.free(); qb.free()
+    @staticmethod
+    def _copy_window[target: StaticString](
+        mut src: Tensor,
+        off: Int,
+        mut dst: Tensor,
+        n: Int,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "cpu":
+            for i in range(n):
+                dst.data[i] = src.data[off + i]
+        else:
+            var c = ctx.value()
+            var sub = src.dev.value().create_sub_buffer[DT](off, n)
+            c.enqueue_copy(dst.dev.value(), sub)
 
-    def _td_gpu[target: StaticString](
-        mut self,
-        mut enc: Self.EncT,
-        mut policy: Self.PolicyT,
-        mut qt: List[Self.QNetT],
-        qi: Int,
-        qj: Int,
-        obs: UnsafePointer[Scalar[DT], MutAnyOrigin],     # host [(H+1),B,OBS]
-        reward: UnsafePointer[Scalar[DT], MutAnyOrigin],  # host [H,B]
-        done: UnsafePointer[Scalar[DT], MutAnyOrigin],    # host [H,B]
-        td_out: UnsafePointer[Scalar[DT], MutAnyOrigin],  # host [H,B] (written)
-        gamma: Scalar[DT],
-        ctx: DeviceContext,
+    def _build_za[target: StaticString](
+        mut self, ctx: Optional[DeviceContext]
     ) raises:
         comptime LAT = Self.LATENT
         comptime A = Self.ACT
         comptime ZA = LAT + A
-        comptime ALP = A + 1
         comptime BB = Self.B
-
-        # Reuse persistent scratch (allocated once in `make`). Upload the
-        # host inputs through the cached pinned host buffers.
-        var d_obs = self.d_obs.value()
-        var d_rew = self.d_rew.value()
-        var d_done = self.d_done.value()
-        var d_td = self.d_td.value()
-        var d_nz = self.d_nz.value()
-        var d_pio = self.d_pio.value()
-        var d_alp = self.d_alp.value()
-        var d_za = self.d_za.value()
-        var d_q1 = self.d_q1.value()
-        var d_q2 = self.d_q2.value()
-        var d_qa = self.d_qa.value()
-        var d_qb = self.d_qb.value()
-        var h_obs = self.h_obs.value()
-        var h_rew = self.h_rew.value()
-        var h_done = self.h_done.value()
-
-        var n_obs = (Self.H + 1) * BB * Self.OBS
-        for i in range(n_obs):
-            h_obs.unsafe_ptr()[i] = obs[i]
-        for i in range(Self.H * BB):
-            h_rew.unsafe_ptr()[i] = reward[i]
-            h_done.unsafe_ptr()[i] = done[i]
-        ctx.enqueue_copy(d_obs, h_obs)
-        ctx.enqueue_copy(d_rew, h_rew)
-        ctx.enqueue_copy(d_done, h_done)
-
-        comptime nb_za = (BB * ZA + TPB - 1) // TPB
-        comptime nb_b = (BB + TPB - 1) // TPB
-        comptime za_k = _build_za_k[BB, LAT, A, ALP]
-        comptime td_k = _td_combine_k[BB]
-
-        for t in range(Self.H):
-            var nz_t = TileTensor(_dp(d_nz), row_major[BB, LAT]())
-            enc.forward[target, BB](
-                TileTensor(
-                    _dp(d_obs) + (t + 1) * BB * Self.OBS,
-                    row_major[BB, Self.OBS](),
-                ),
-                output=nz_t,
-            )
-            var pio_t = TileTensor(_dp(d_pio), row_major[BB, 2 * A]())
-            policy.forward[target, BB](nz_t, output=pio_t)
-            var alp_t = TileTensor(_dp(d_alp), row_major[BB, ALP]())
-            self.rsample.forward[target, BB](pio_t, output=alp_t)
-            ctx.enqueue_function[za_k](
-                _lt[BB * LAT](_dp(d_nz)), _lt[BB * ALP](_dp(d_alp)),
-                _lt[BB * ZA](_dp(d_za)), grid_dim=nb_za, block_dim=TPB,
-            )
-            var za_t = TileTensor(_dp(d_za), row_major[BB, ZA]())
-            var q1_t = TileTensor(_dp(d_q1), row_major[BB, Self.BINS]())
-            var qa_t = TileTensor(_dp(d_qa), row_major[BB, 1]())
-            qt[qi].forward[target, BB](za_t, output=q1_t)
-            self.decode.forward[target, BB](q1_t, output=qa_t)
-            var q2_t = TileTensor(_dp(d_q2), row_major[BB, Self.BINS]())
-            var qb_t = TileTensor(_dp(d_qb), row_major[BB, 1]())
-            qt[qj].forward[target, BB](za_t, output=q2_t)
-            self.decode.forward[target, BB](q2_t, output=qb_t)
-            ctx.enqueue_function[td_k](
-                _lt[BB](_dp(d_rew) + t * BB),
-                _lt[BB](_dp(d_done) + t * BB),
-                _lt[BB](_dp(d_qa)), _lt[BB](_dp(d_qb)),
-                _lt[BB](_dp(d_td) + t * BB),
-                gamma, grid_dim=nb_b, block_dim=TPB,
+        comptime if target == "cpu":
+            for b in range(BB):
+                for k in range(LAT):
+                    self.za.data[b * ZA + k] = self.nz.data[b * LAT + k]
+                for k in range(A):
+                    self.za.data[b * ZA + LAT + k] = self.alp.data[b * (A + 1) + k]
+        else:
+            var c = ctx.value()
+            comptime nb = (BB * ZA + TPB - 1) // TPB
+            c.enqueue_function[_build_za_k[BB, LAT, A, A + 1]](
+                self.nz.lt["gpu", Layout.row_major(BB * LAT)](),
+                self.alp.lt["gpu", Layout.row_major(BB * (A + 1))](),
+                self.za.lt["gpu", Layout.row_major(BB * ZA)](),
+                grid_dim=nb, block_dim=TPB,
             )
 
-        var h_td = self.h_td.value()
-        ctx.enqueue_copy(h_td, d_td)
-        ctx.synchronize()
-        for i in range(Self.H * BB):
-            td_out[i] = h_td.unsafe_ptr()[i]
+    def _td_combine[target: StaticString](
+        mut self,
+        mut reward: Tensor,
+        mut done: Tensor,
+        mut td_out: Tensor,
+        t: Int,
+        gamma: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime BB = Self.B
+        comptime if target == "cpu":
+            for b in range(BB):
+                var qmin = min(self.qa.data[b], self.qb.data[b])
+                var d = done.data[t * BB + b]
+                td_out.data[t * BB + b] = reward.data[t * BB + b] + gamma * (
+                    Scalar[DT](1.0) - d
+                ) * qmin
+        else:
+            var c = ctx.value()
+            comptime nb = (BB + TPB - 1) // TPB
+            var rew_sub = reward.dev.value().create_sub_buffer[DT](t * BB, BB)
+            var done_sub = done.dev.value().create_sub_buffer[DT](t * BB, BB)
+            var td_sub = td_out.dev.value().create_sub_buffer[DT](t * BB, BB)
+            c.enqueue_function[_td_combine_k[BB]](
+                LayoutTensor[DT, Layout.row_major(BB), MutAnyOrigin](rew_sub),
+                LayoutTensor[DT, Layout.row_major(BB), MutAnyOrigin](done_sub),
+                self.qa.lt["gpu", Layout.row_major(BB)](),
+                self.qb.lt["gpu", Layout.row_major(BB)](),
+                LayoutTensor[DT, Layout.row_major(BB), MutAnyOrigin](td_sub),
+                gamma, grid_dim=nb, block_dim=TPB,
+            )

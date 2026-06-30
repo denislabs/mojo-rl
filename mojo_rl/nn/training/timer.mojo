@@ -1,8 +1,7 @@
-"""Timer — per-section wall-time accumulator for trainers.
+"""Timer — per-section wall-time accumulator for trainers (storage surface).
 
-Lightweight introspection helper: each trainer attaches a Timer and
-accumulates wall-time into N labeled sections. Caller drives the
-mark → accumulate cadence:
+Lightweight introspection helper: each trainer attaches a Timer and accumulates
+wall-time into N labeled sections. Caller drives the mark → accumulate cadence:
 
     var timer = Timer.new()
     timer.add_section("target_y")
@@ -18,23 +17,27 @@ mark → accumulate cadence:
     timer.accumulate(1, t1)
     # ...
 
-Hot-path overhead is one `perf_counter_ns()` + one List index + one
-UInt subtraction per timed section per call — roughly 30 ns on Apple
-Silicon. For sub-steps taking >30 μs (every realistic training block),
-overhead is well under 0.1 %.
+Hot-path overhead is one `perf_counter_ns()` + one List index + one UInt
+subtraction per timed section per call — roughly 30 ns on Apple Silicon. For
+sub-steps taking >30 μs (every realistic training block), overhead is well under
+0.1 %.
 
-Use `format_report()` to render a multi-line readable summary, or the
-per-section accessors `total_seconds(idx)` / `mean_ms(idx)` /
-`call_count(idx)` to feed external logging.
+Use `format_report()` to render a multi-line readable summary, or the per-section
+accessors `total_seconds(idx)` / `mean_ms(idx)` / `call_count(idx)` to feed
+external logging.
+
+Framework-agnostic (pure `perf_counter_ns` + the shared `DT` scalar alias) —
+moved verbatim from the legacy `nn/training/timer.mojo` so the storage-migrated
+deep_agents trainers no longer import the legacy training package.
 """
 
 from std.time import perf_counter_ns
 
-from ..constants import DT
+from mojo_rl.nn.constants import DT
 
 
 @fieldwise_init
-struct Timer(Movable & ImplicitlyDestructible):
+struct Timer(Movable & ImplicitlyDeletable):
     """Section-indexed wall-time accumulator. Labels are declared via
     `add_section`; index order matches declaration order."""
 

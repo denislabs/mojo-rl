@@ -1,6 +1,6 @@
 """OnPolicyState — shared per-step flow object for on-policy block trainers.
 
-Analog to `trainer_block.mojo`'s `TrainerState` (off-policy). Carries:
+Analog to the off-policy `TrainerState`. Carries:
   - the full rollout buffers (obs/act/olp/rew/val/done/term/adv/ret)
     sized [ROLLOUT_LEN, N_ENVS], written by record_step + gae_step,
     read by minibatch_gather_step
@@ -10,23 +10,28 @@ Analog to `trainer_block.mojo`'s `TrainerState` (off-policy). Carries:
     actor + critic forward calls during action selection
   - the minibatch BATCH=MINIBATCH scratches (mb_obs/mb_act/mb_olp/mb_adv/
     mb_ret/mb_v/mb_gv/mb_gi) written by gather, consumed by actor/critic
-    train steps. Minibatch is gathered from the [ROLLOUT_LEN, N_ENVS]
-    flat pool (size ROLLOUT_LEN * N_ENVS), so MINIBATCH layout is
-    unchanged from the N_ENVS=1 case.
+    train steps
   - rollout cursor (single Int — all envs advance synchronously) + ctx
-  - Int32 indices for the Fisher-Yates shuffle, sized
-    ROLLOUT_LEN * N_ENVS (flat index into the rollout pool)
+  - Int32 indices for the Fisher-Yates shuffle, sized ROLLOUT_LEN * N_ENVS
+
+STORAGE migration: each buffer is a storage `Tensor` (host `.data` List + an
+optional GPU `DeviceBuffer`), allocated via the `_mk[target]` helper which
+ALWAYS allocates the host list and (on GPU) also a device buffer. The hybrid
+pattern is unchanged: rollout / per-step / gather work on the host `.data`; the
+per-step obs (`ob1`) is `upload`ed and the actor/critic outputs (`ao1`/`v1`)
+`download`ed inside PPOActStep; the minibatch tensors are `upload`ed before the
+actor/critic train steps. Blocks read raw host pointers via `.data.unsafe_ptr()`
+and build device views via `.lt["gpu", layout]()`.
 
 N_ENVS defaults to 1 for single-env callers (host-list driver path);
-N_ENVS > 1 is reached via the BatchedEnv driver
-(`run_onpolicy_train_batched` in `driver_onpolicy.mojo`).
+N_ENVS > 1 is reached via the BatchedEnv driver.
 """
 
 from std.memory import alloc
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.scratch import Scratch
+from mojo_rl.nn.core.tensor import Tensor
 
 
 struct OnPolicyState[
@@ -35,125 +40,131 @@ struct OnPolicyState[
     ROLLOUT_LEN: Int,
     MINIBATCH: Int,
     N_ENVS: Int = 1,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     # ── Rollout buffers (ROLLOUT_LEN × N_ENVS, T-major) ─────────────
-    var obs_buf:  Scratch["ros_obs",  Self.ROLLOUT_LEN * Self.N_ENVS * Self.OBS, True]
-    var act_buf:  Scratch["ros_act",  Self.ROLLOUT_LEN * Self.N_ENVS * Self.ACT, True]
-    var olp_buf:  Scratch["ros_olp",  Self.ROLLOUT_LEN * Self.N_ENVS, True]
-    var rew_buf:  Scratch["ros_rew",  Self.ROLLOUT_LEN * Self.N_ENVS, True]
-    var val_buf:  Scratch["ros_val",  Self.ROLLOUT_LEN * Self.N_ENVS, True]
-    var done_buf: Scratch["ros_done", Self.ROLLOUT_LEN * Self.N_ENVS, True]
-    var term_buf: Scratch["ros_term", Self.ROLLOUT_LEN * Self.N_ENVS, True]
-    var adv_buf:  Scratch["ros_adv",  Self.ROLLOUT_LEN * Self.N_ENVS, True]
-    var ret_buf:  Scratch["ros_ret",  Self.ROLLOUT_LEN * Self.N_ENVS, True]
+    var obs_buf: Tensor
+    var act_buf: Tensor
+    var olp_buf: Tensor
+    var rew_buf: Tensor
+    var val_buf: Tensor
+    var done_buf: Tensor
+    var term_buf: Tensor
+    var adv_buf: Tensor
+    var ret_buf: Tensor
 
-    # Bootstrap obs per env (the obs after the last rollout step →
-    # critic forward for V(s_T)).
-    var bootstrap_obs: Scratch["bootstrap_obs", Self.N_ENVS * Self.OBS, True]
+    # Bootstrap obs per env (obs after the last rollout step → V(s_T)).
+    var bootstrap_obs: Tensor
 
     # ── Per-step caches per env (filled by act, drained by record) ──
-    var cached_action: Scratch["cached_action", Self.N_ENVS * Self.ACT, True]
-    var cached_log_prob: Scratch["cached_log_prob", Self.N_ENVS, True]
-    var cached_value:    Scratch["cached_value",    Self.N_ENVS, True]
+    var cached_action: Tensor
+    var cached_log_prob: Tensor
+    var cached_value: Tensor
 
     # ── Per-step BATCH=N_ENVS scratches ─────────────────────────────
-    var ob1: Scratch["ob1", Self.N_ENVS * Self.OBS, True]
-    var ao1: Scratch["ao1", Self.N_ENVS * 2 * Self.ACT, True]
-    var v1:  Scratch["v1",  Self.N_ENVS, True]
-    var z:   Scratch["z",   Self.N_ENVS * Self.ACT, True]
+    var ob1: Tensor
+    var ao1: Tensor
+    var v1: Tensor
+    var z: Tensor
 
     # ── Minibatch (BATCH=MINIBATCH) scratches ───────────────────────
-    var mb_obs: Scratch["mb_obs", Self.MINIBATCH * Self.OBS, True]
-    var mb_act: Scratch["mb_act", Self.MINIBATCH * Self.ACT, True]
-    var mb_olp: Scratch["mb_olp", Self.MINIBATCH, True]
-    var mb_adv: Scratch["mb_adv", Self.MINIBATCH, True]
-    var mb_ret: Scratch["mb_ret", Self.MINIBATCH * 1, True]
-    var mb_v:   Scratch["mb_v",   Self.MINIBATCH * 1, True]
-    var mb_gv:  Scratch["mb_gv",  Self.MINIBATCH * 1, True]
-    var mb_gi:  Scratch["mb_gi",  Self.MINIBATCH * Self.OBS, True]
+    var mb_obs: Tensor
+    var mb_act: Tensor
+    var mb_olp: Tensor
+    var mb_adv: Tensor
+    var mb_ret: Tensor
+    var mb_v: Tensor
+    var mb_gv: Tensor
+    var mb_gi: Tensor
 
-    # Int32 shuffle/gather index array (Scratch is DT-only, so raw ptr).
-    # None until `make` allocates via `alloc[Int32](ROLLOUT_LEN * N_ENVS)`.
-    var indices: Optional[UnsafePointer[Int32, MutAnyOrigin]]
+    # Int32 shuffle/gather index array (Tensor is DT-only, so raw ptr).
+    var indices: Optional[UnsafePointer[Int32, MutUntrackedOrigin]]
 
     # Rollout cursor.
     var rollout_idx: Int
 
-    # Step bookkeeping (mirrors TrainerState's ctx field).
+    # Step bookkeeping.
     var ctx: Optional[DeviceContext]
 
     def __init__(out self):
-        self.obs_buf  = Scratch["ros_obs",  Self.ROLLOUT_LEN * Self.N_ENVS * Self.OBS, True]()
-        self.act_buf  = Scratch["ros_act",  Self.ROLLOUT_LEN * Self.N_ENVS * Self.ACT, True]()
-        self.olp_buf  = Scratch["ros_olp",  Self.ROLLOUT_LEN * Self.N_ENVS, True]()
-        self.rew_buf  = Scratch["ros_rew",  Self.ROLLOUT_LEN * Self.N_ENVS, True]()
-        self.val_buf  = Scratch["ros_val",  Self.ROLLOUT_LEN * Self.N_ENVS, True]()
-        self.done_buf = Scratch["ros_done", Self.ROLLOUT_LEN * Self.N_ENVS, True]()
-        self.term_buf = Scratch["ros_term", Self.ROLLOUT_LEN * Self.N_ENVS, True]()
-        self.adv_buf  = Scratch["ros_adv",  Self.ROLLOUT_LEN * Self.N_ENVS, True]()
-        self.ret_buf  = Scratch["ros_ret",  Self.ROLLOUT_LEN * Self.N_ENVS, True]()
-        self.bootstrap_obs = Scratch["bootstrap_obs", Self.N_ENVS * Self.OBS, True]()
-        self.cached_action = Scratch["cached_action", Self.N_ENVS * Self.ACT, True]()
-        self.cached_log_prob = Scratch["cached_log_prob", Self.N_ENVS, True]()
-        self.cached_value    = Scratch["cached_value",    Self.N_ENVS, True]()
-        self.ob1 = Scratch["ob1", Self.N_ENVS * Self.OBS, True]()
-        self.ao1 = Scratch["ao1", Self.N_ENVS * 2 * Self.ACT, True]()
-        self.v1  = Scratch["v1",  Self.N_ENVS, True]()
-        self.z   = Scratch["z",   Self.N_ENVS * Self.ACT, True]()
-        self.mb_obs = Scratch["mb_obs", Self.MINIBATCH * Self.OBS, True]()
-        self.mb_act = Scratch["mb_act", Self.MINIBATCH * Self.ACT, True]()
-        self.mb_olp = Scratch["mb_olp", Self.MINIBATCH, True]()
-        self.mb_adv = Scratch["mb_adv", Self.MINIBATCH, True]()
-        self.mb_ret = Scratch["mb_ret", Self.MINIBATCH * 1, True]()
-        self.mb_v   = Scratch["mb_v",   Self.MINIBATCH * 1, True]()
-        self.mb_gv  = Scratch["mb_gv",  Self.MINIBATCH * 1, True]()
-        self.mb_gi  = Scratch["mb_gi",  Self.MINIBATCH * Self.OBS, True]()
+        self.obs_buf = Tensor()
+        self.act_buf = Tensor()
+        self.olp_buf = Tensor()
+        self.rew_buf = Tensor()
+        self.val_buf = Tensor()
+        self.done_buf = Tensor()
+        self.term_buf = Tensor()
+        self.adv_buf = Tensor()
+        self.ret_buf = Tensor()
+        self.bootstrap_obs = Tensor()
+        self.cached_action = Tensor()
+        self.cached_log_prob = Tensor()
+        self.cached_value = Tensor()
+        self.ob1 = Tensor()
+        self.ao1 = Tensor()
+        self.v1 = Tensor()
+        self.z = Tensor()
+        self.mb_obs = Tensor()
+        self.mb_act = Tensor()
+        self.mb_olp = Tensor()
+        self.mb_adv = Tensor()
+        self.mb_ret = Tensor()
+        self.mb_v = Tensor()
+        self.mb_gv = Tensor()
+        self.mb_gi = Tensor()
         self.indices = None
         self.rollout_idx = 0
         self.ctx = None
 
     @staticmethod
+    def _mk[
+        target: StaticString
+    ](n: Int, ctx: Optional[DeviceContext]) raises -> Tensor:
+        """Allocate a buffer with a host `.data` list ALWAYS and (on GPU) a
+        device buffer too — so blocks can use `.data` (host work) and
+        `.lt["gpu"]` / `upload` / `download` (device work) on any field."""
+        var t = Tensor.alloc(n)
+        comptime if target == "gpu":
+            t.ensure_gpu(ctx.value(), n)
+        return t^
+
+    @staticmethod
     def make[target: StaticString](
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU.
-
-        All Scratches are STAGING=True, so on GPU both the host mirror
-        and device buffer are allocated. The hybrid pattern is: rollout
-        / per-step scratches read and write on the host mirror; the
-        minibatch is H2D-uploaded before actor/critic train steps."""
+        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
         comptime assert target == "cpu" or target == "gpu", (
             "OnPolicyState: target must be 'cpu' or 'gpu'"
         )
         comptime if target == "gpu":
             if not ctx:
                 raise Error("OnPolicyState.make[target='gpu']: ctx required")
+        comptime RN = Self.ROLLOUT_LEN * Self.N_ENVS
         var s = Self()
-        s.obs_buf.init_with[target](ctx)
-        s.act_buf.init_with[target](ctx)
-        s.olp_buf.init_with[target](ctx)
-        s.rew_buf.init_with[target](ctx)
-        s.val_buf.init_with[target](ctx)
-        s.done_buf.init_with[target](ctx)
-        s.term_buf.init_with[target](ctx)
-        s.adv_buf.init_with[target](ctx)
-        s.ret_buf.init_with[target](ctx)
-        s.bootstrap_obs.init_with[target](ctx)
-        s.cached_action.init_with[target](ctx)
-        s.cached_log_prob.init_with[target](ctx)
-        s.cached_value.init_with[target](ctx)
-        s.ob1.init_with[target](ctx)
-        s.ao1.init_with[target](ctx)
-        s.v1.init_with[target](ctx)
-        s.z.init_with[target](ctx)
-        s.mb_obs.init_with[target](ctx)
-        s.mb_act.init_with[target](ctx)
-        s.mb_olp.init_with[target](ctx)
-        s.mb_adv.init_with[target](ctx)
-        s.mb_ret.init_with[target](ctx)
-        s.mb_v.init_with[target](ctx)
-        s.mb_gv.init_with[target](ctx)
-        s.mb_gi.init_with[target](ctx)
-        s.indices = alloc[Int32](Self.ROLLOUT_LEN * Self.N_ENVS)
+        s.obs_buf = Self._mk[target](RN * Self.OBS, ctx)
+        s.act_buf = Self._mk[target](RN * Self.ACT, ctx)
+        s.olp_buf = Self._mk[target](RN, ctx)
+        s.rew_buf = Self._mk[target](RN, ctx)
+        s.val_buf = Self._mk[target](RN, ctx)
+        s.done_buf = Self._mk[target](RN, ctx)
+        s.term_buf = Self._mk[target](RN, ctx)
+        s.adv_buf = Self._mk[target](RN, ctx)
+        s.ret_buf = Self._mk[target](RN, ctx)
+        s.bootstrap_obs = Self._mk[target](Self.N_ENVS * Self.OBS, ctx)
+        s.cached_action = Self._mk[target](Self.N_ENVS * Self.ACT, ctx)
+        s.cached_log_prob = Self._mk[target](Self.N_ENVS, ctx)
+        s.cached_value = Self._mk[target](Self.N_ENVS, ctx)
+        s.ob1 = Self._mk[target](Self.N_ENVS * Self.OBS, ctx)
+        s.ao1 = Self._mk[target](Self.N_ENVS * 2 * Self.ACT, ctx)
+        s.v1 = Self._mk[target](Self.N_ENVS, ctx)
+        s.z = Self._mk[target](Self.N_ENVS * Self.ACT, ctx)
+        s.mb_obs = Self._mk[target](Self.MINIBATCH * Self.OBS, ctx)
+        s.mb_act = Self._mk[target](Self.MINIBATCH * Self.ACT, ctx)
+        s.mb_olp = Self._mk[target](Self.MINIBATCH, ctx)
+        s.mb_adv = Self._mk[target](Self.MINIBATCH, ctx)
+        s.mb_ret = Self._mk[target](Self.MINIBATCH * 1, ctx)
+        s.mb_v = Self._mk[target](Self.MINIBATCH * 1, ctx)
+        s.mb_gv = Self._mk[target](Self.MINIBATCH * 1, ctx)
+        s.mb_gi = Self._mk[target](Self.MINIBATCH * Self.OBS, ctx)
+        s.indices = alloc[Int32](RN)
         s.ctx = ctx
         return s^

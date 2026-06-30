@@ -44,7 +44,7 @@ comptime LATENT: Int = 1  # one-element "hidden" — bandits are stateless
 
 
 @fieldwise_init
-struct BanditRepresentation(Movable, ImplicitlyDestructible, Representation):
+struct BanditRepresentation(Movable, ImplicitlyDeletable, Representation):
     """Identity-ish encoder. ``obs`` is a one-element [0.0] vector; we
     just write the same zero into the latent slot. The bandit's state
     never changes, so anything we put here would be ignored downstream.
@@ -62,7 +62,7 @@ struct BanditRepresentation(Movable, ImplicitlyDestructible, Representation):
 
 
 @fieldwise_init
-struct BanditDynamics(Movable, ImplicitlyDestructible, Dynamics):
+struct BanditDynamics(Movable, ImplicitlyDeletable, Dynamics):
     """``step_cpu`` returns expected_reward(action) and a stay-put hidden."""
 
     comptime LATENT_DIM: Int = LATENT
@@ -81,7 +81,7 @@ struct BanditDynamics(Movable, ImplicitlyDestructible, Dynamics):
 
 
 @fieldwise_init
-struct BanditPrediction(Movable, ImplicitlyDestructible, Prediction):
+struct BanditPrediction(Movable, ImplicitlyDeletable, Prediction):
     """Uniform prior + zero value. The test isolates PUCT + backup;
     deliberately no policy signal here so visit counts come from Q only.
     """

@@ -1,18 +1,18 @@
 """TD-MPC2 multi-task world-model per-step ComputeGraph (item C, §14.3).
 
 Clone of `wm_graph.mojo` with one extra input slot `task_emb [TASK_EMB]` and a
-3-way `za = Concat[LATENT, ACT, TASK_EMB]("z","a","task_emb")` so the dynamics /
+3-way `za = Concat[LATENT, MAX_ACT, TASK_EMB]("z","a","task_emb")` so the dynamics /
 reward / Q / termination externals are conditioned on the task embedding. The
 external module types are the `*MT` variants (first-layer fan-in widened by
 TASK_EMB). Loss-column layout, `NLOSS`, `TERM_COL`, and `OUT_DIM = 8 + LATENT`
 are unchanged — the embedding only routes gradient back to its slot (read via
-`grad_input_ptr["task_emb"]`), it never appears in the output.
+`grad_input["task_emb"]`), it never appears in the output.
 
 See `wm_graph.mojo` for the full column documentation.
 """
 
 from mojo_rl.nn.combinators.compute_graph import ComputeGraph
-from mojo_rl.nn.combinators.graph_nodes import InputSlot, Node, ExternalNode
+from mojo_rl.nn.combinators.graph_decl import InputSlot, Node, ExternalNode
 from mojo_rl.nn.primitives.concat import Concat
 
 from .nets_mt import (
@@ -33,7 +33,6 @@ comptime TDMPC2WMGraphMT[
     TASK_EMB: Int,
     QP: Float64 = 0.0,
 ] = ComputeGraph[
-    8 + LATENT,
     InputSlot["z", LATENT],
     InputSlot["a", MAX_ACT],
     InputSlot["task_emb", TASK_EMB],

@@ -10,7 +10,6 @@ Run (Apple): `pixi run -e apple mojo run -I . examples/multitask/tdmpc2_pendulum
 Run (NVIDIA): `pixi run -e nvidia mojo run -I . examples/multitask/tdmpc2_pendulum_invpendulum_gpu.mojo`
 """
 
-from std.memory import alloc
 from std.random import random_float64, seed
 from std.gpu.host import DeviceContext
 
@@ -46,8 +45,8 @@ comptime TDMPC2MultiTaskAgentT = TDMPC2MultiTaskAgent[
 
 
 def _greedy_eval(mut ag: TDMPC2MultiTaskAgentT, mut env: MultiTaskEnv) raises:
-    var obsbuf = alloc[Scalar[DT]](MAX_OBS)
-    var actbuf = alloc[Scalar[DT]](MAX_ACT)
+    var obsbuf = List[Scalar[DT]](length=MAX_OBS, fill=0)
+    var actbuf = List[Scalar[DT]](length=MAX_ACT, fill=0)
     var ret0: Scalar[DT] = 0.0
     var ret1: Scalar[DT] = 0.0
     for _ep in range(EVAL_EPS_PER_TASK * NUM_TASKS):
@@ -72,7 +71,6 @@ def _greedy_eval(mut ag: TDMPC2MultiTaskAgentT, mut env: MultiTaskEnv) raises:
             ret1 += ep_ret
     var inv = Scalar[DT](1.0) / Scalar[DT](EVAL_EPS_PER_TASK)
     print("    eval  pendulum=", ret0 * inv, " inverted_pendulum=", ret1 * inv)
-    obsbuf.free(); actbuf.free()
 
 
 def main() raises:
@@ -91,8 +89,8 @@ def main() raises:
 
     var obs = env.reset()
     ag.set_task(env.task_id())
-    var obsbuf = alloc[Scalar[DT]](MAX_OBS)
-    var actbuf = alloc[Scalar[DT]](MAX_ACT)
+    var obsbuf = List[Scalar[DT]](length=MAX_OBS, fill=0)
+    var actbuf = List[Scalar[DT]](length=MAX_ACT, fill=0)
     var ep_step = 0
 
     for step in range(TOTAL):
@@ -126,4 +124,3 @@ def main() raises:
     print("  FINAL")
     _greedy_eval(ag, env)
     print("=" * 70)
-    obsbuf.free(); actbuf.free()

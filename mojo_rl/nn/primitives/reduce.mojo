@@ -1,10 +1,12 @@
 """Reduction Modules — `Reduce[DIM, OP: ReduceOp]` + `Sum` / `Mean` aliases.
 
-Phase 2.5.C migration: pre-Phase-2.5 this file held two near-identical
-135-LOC structs (`Sum[DIM]` and `Mean[DIM]`) differing only in a `1/DIM`
-scale factor. Post-migration both are one-line aliases over
-`Reduce[DIM, OP]`, with the per-op math factored into `SumOp` /
-`MeanOp` (`ReduceOp` trait).
+Transformed from legacy `nn.primitives.reduce` (surface-only change). The CPU
+loops + the two GPU kernels are carried over verbatim. `Sum` / `Mean` collapse
+to one-line aliases over `Reduce[DIM, OP]`, with the per-op math factored into
+`SumOp` / `MeanOp` (`ReduceOp` trait). The legacy split the `ReduceOp` trait
+and the two op impls into `core/reduce_op.mojo` + `primitives/ops/{sum,mean}_op`;
+here they're inlined into this single file (the storage surface has no `ops/`
+subpackage) — the `scale_factor` math is identical.
 
 Forward:  `out[b, 0] = OP.scale_factor[DIM]() · Σ_d input[b, d]`
 Backward: `grad_in[b, d] = OP.scale_factor[DIM]() · grad_out[b, 0]`
@@ -12,17 +14,43 @@ Backward: `grad_in[b, d] = OP.scale_factor[DIM]() · grad_out[b, 0]`
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.reduce_op import ReduceOp
-from ..core.target_storage import TargetStorage, assert_tag_for
-from .ops.sum_op import SumOp
-from .ops.mean_op import MeanOp
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
+
+
+# ──────────────────────────────────────────────────────────────────────
+# ReduceOp trait + SumOp / MeanOp impls (verbatim math from legacy
+# core/reduce_op.mojo + primitives/ops/{sum,mean}_op.mojo, inlined).
+# ──────────────────────────────────────────────────────────────────────
+trait ReduceOp(Movable & ImplicitlyDeletable):
+    """Marker trait — linear-reduction op providing a comptime scale factor."""
+
+    @staticmethod
+    def scale_factor[DIM: Int]() -> Scalar[DT]:
+        ...
+
+
+struct SumOp(ReduceOp):
+    """Sum reduction: `out = Σ x`, `grad_in[d] = grad_out`."""
+
+    @staticmethod
+    def scale_factor[DIM: Int]() -> Scalar[DT]:
+        return Scalar[DT](1.0)
+
+
+struct MeanOp(ReduceOp):
+    """Mean reduction: `out = (1/DIM)·Σ x`, `grad_in[d] = grad_out / DIM`."""
+
+    @staticmethod
+    def scale_factor[DIM: Int]() -> Scalar[DT]:
+        return Scalar[DT](1.0) / Scalar[DT](DIM)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -63,122 +91,101 @@ def _reduce_broadcast_kernel[
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Reduce[DIM, OP] — shared body for every linear reduction. Two leaf
-# aliases (`Sum` / `Mean`) cover all current consumers; new ones (e.g.
-# weighted means with a comptime per-element weight) plug in by adding
-# a new `ReduceOp` impl.
+# Reduce[DIM, OP] — shared body for every linear reduction.
 # ──────────────────────────────────────────────────────────────────────
 
 
-struct Reduce[DIM: Int, OP: ReduceOp](Module):
+struct Reduce[DIM_: Int, OP: ReduceOp](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
     comptime OUT_DIM = 1
 
-    var ts: TargetStorage
-
     def __init__(out self):
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. INIT ignored (no parameters) but
-        accepted for Sequential.make[target, INIT] uniformity."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "Reduce: target must be 'cpu' or 'gpu'"
-        )
-        var r = Self()
-        comptime if target == "cpu":
-            r.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("Reduce.make[target='gpu']: ctx required")
-            r.ts = TargetStorage.make_gpu(ctx.value())
-        return r^
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Unified CPU/GPU factory. INIT accepted for `make[target, INIT]`
+        uniformity but ignored (no params)."""
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Reduce", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            var scale = Self.OP.scale_factor[Self.DIM]()
-            for b in range(BATCH):
+            out.ensure(B)
+            var in_t = TileTensor(in0.data, row_major[B, Self.DIM_]())
+            var out_t = TileTensor(out.data, row_major[B, 1]())
+            var scale = Self.OP.scale_factor[Self.DIM_]()
+            for b in range(B):
                 var acc: Scalar[DT] = 0.0
-                for d in range(Self.DIM):
-                    acc += input[b, d]
-                output_v[b, 0] = acc * scale
+                for d in range(Self.DIM_):
+                    acc += in_t[b, d]
+                out_t[b, 0] = acc * scale
         else:
-            comptime layout_in = Layout.row_major(BATCH, Self.DIM)
-            comptime layout_out = Layout.row_major(BATCH, 1)
-            var in_p = input.ptr
-            var out_p = output_v.ptr
-            var in_lt = LayoutTensor[DT, layout_in, MutAnyOrigin](in_p)
-            var out_lt = LayoutTensor[DT, layout_out, MutAnyOrigin](out_p)
-            comptime n_blocks = (BATCH + TPB - 1) // TPB
-            comptime kernel = _reduce_forward_kernel[BATCH, Self.DIM, Self.OP]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            var c = ctx.value()
+            out.ensure_gpu(c, B)
+            comptime n_blocks = (B + TPB - 1) // TPB
+            c.enqueue_function[
+                _reduce_forward_kernel[B, Self.DIM_, Self.OP]
+            ](
+                in0.lt["gpu", Layout.row_major(B, Self.DIM_)](),
+                out.lt["gpu", Layout.row_major(B, 1)](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Reduce", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            var scale = Self.OP.scale_factor[Self.DIM]()
-            for b in range(BATCH):
-                var go_scaled = grad_output_v[b, 0] * scale
-                for d in range(Self.DIM):
-                    grad_input_v[b, d] = go_scaled
+            gin.ensure(B * Self.DIM_)
+            var go_t = TileTensor(grad_output.data, row_major[B, 1]())
+            var gi_t = TileTensor(gin.data, row_major[B, Self.DIM_]())
+            var scale = Self.OP.scale_factor[Self.DIM_]()
+            for b in range(B):
+                var go_scaled = go_t[b, 0] * scale
+                for d in range(Self.DIM_):
+                    gi_t[b, d] = go_scaled
         else:
-            comptime layout_go = Layout.row_major(BATCH, 1)
-            comptime layout_gi = Layout.row_major(BATCH, Self.DIM)
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var go_lt = LayoutTensor[DT, layout_go, MutAnyOrigin](go_p)
-            var gi_lt = LayoutTensor[DT, layout_gi, MutAnyOrigin](gi_p)
-            comptime total = BATCH * Self.DIM
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.DIM_)
+            comptime total = B * Self.DIM_
             comptime n_blocks = (total + TPB - 1) // TPB
-            comptime kernel = _reduce_broadcast_kernel[BATCH, Self.DIM, Self.OP]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, gi_lt, grid_dim=n_blocks, block_dim=TPB,
+            c.enqueue_function[
+                _reduce_broadcast_kernel[B, Self.DIM_, Self.OP]
+            ](
+                grad_output.lt["gpu", Layout.row_major(B, 1)](),
+                gin.lt["gpu", Layout.row_major(B, Self.DIM_)](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Leaf aliases — pre-Phase-2.5 these were 135-LOC structs each.
+# Leaf aliases.
 # ──────────────────────────────────────────────────────────────────────
 
 

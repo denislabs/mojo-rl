@@ -1,241 +1,177 @@
-"""Repeat[N, Inner, shared=False] — chain N independent copies of `Inner`.
+"""Repeat[N, Inner] — chain N independent copies of `Inner` (storage surface).
 
-`y = Inner_{N-1}(… Inner_1(Inner_0(x)) …)`, each copy with its OWN
-parameters (shared=False). Sugar for writing the same dim-preserving
-block N times in a `Sequential`; makes deep stacks (e.g. ResNet stages)
-read as `Repeat[3, ResBlockConv2DBN[16, 3, 1, 32, 32], shared=False]`.
-
-Requires `Inner.IN_DIMS[0] == Inner.OUT_DIM` (the block is chained into
-itself). Internally this is exactly `Sequential` over N homogeneous
-children, so it inherits the same mid-slab reuse + backward-order safety
-(each child reads its own cache; the inter-child slab carries forward
-activations on the way down and gradients on the way back).
-
-`shared=True` (one weight set reused N times) is NOT supported: it would
-need per-application caches or a forward recompute in backward. Pass
-`shared=False` (the default). The `shared` parameter exists so call sites
-read the same as the legacy `mojo_rl.nn` Repeat.
+`y = Inner_{N-1}(… Inner_1(Inner_0(x)) …)`, each copy with its OWN params. This
+is exactly `Sequential` over N homogeneous children — same `TensorPack` mid-slab
+wiring (whose `__getitem__` MutAnyOrigin pin lets adjacent slabs alias safely),
+just stored in a `List[Inner]` indexed by the comptime stage. Requires
+`Inner.IN_DIMS[0] == Inner.OUT_DIM`. `shared=True` is not supported (would need
+per-application caches); pass the default `shared=False` (independent copies).
 """
 
-from std.memory import alloc
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor, row_major
+from std.gpu.host import DeviceContext
 
-from ..constants import DT
-from ..core import Initializer, AMPPolicy, NoAMP, ParamVisitor
-from ..core.module import Module, typed_view, typed_view_mut
+from mojo_rl.nn.constants import DT
+from ..core.initializer import Initializer
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs, child_refs
 from ..core.tensor_pack import TensorPack
-from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.walkers import join_name
+from ..core.amp import AMPPolicy, NoAMP
 
 
 struct Repeat[N: Int, Inner: Module, shared: Bool = False](Module):
-    comptime ARITY: Int = 1
+    comptime ARITY = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.Inner.IN_DIMS[0])
     comptime OUT_DIM = Self.Inner.OUT_DIM
-    comptime D = Self.Inner.OUT_DIM  # per-boundary slab width
+    # The chain's activation dtype IS the repeated child's (all N copies share
+    # one dtype). Inter-stage buffers are stored here.
+    comptime ACT_DT = Self.Inner.ACT_DT
 
     var children: List[Self.Inner]
-    var mid_cpu: List[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var mid_dev: List[DeviceBuffer[DT]]
-    var mid_caps: List[Int]
-    var ts: TargetStorage
+    var act: TensorPack[Self.N, Self.ACT_DT]
+    var grd: TensorPack[Self.N, Self.ACT_DT]
 
     def __init__(out self):
         comptime assert Self.N >= 1, "Repeat requires N >= 1"
-        comptime assert not Self.shared, (
-            "Repeat: shared=True (shared weights) not supported in nn —"
-            " use shared=False (independent copies)"
-        )
+        comptime assert (
+            not Self.shared
+        ), "Repeat: shared=True not supported — use shared=False"
         comptime assert (
             Self.Inner.IN_DIMS[0] == Self.Inner.OUT_DIM
         ), "Repeat requires Inner.IN_DIMS[0] == Inner.OUT_DIM"
         self.children = List[Self.Inner]()
-        self.mid_cpu = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
-        self.mid_dev = List[DeviceBuffer[DT]]()
-        self.mid_caps = List[Int]()
-        self.ts = TargetStorage.make_uninit()
+        self.act = TensorPack[Self.N, Self.ACT_DT]()
+        self.grd = TensorPack[Self.N, Self.ACT_DT]()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory — builds N independent `Inner` copies."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "Repeat: target must be 'cpu' or 'gpu'"
-        )
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         var r = Self()
-        comptime for _i in range(Self.N):
-            r.children.append(Self.Inner.make[target, INIT](ctx=ctx))
-        comptime if target == "cpu":
-            comptime if Self.N >= 2:
-                for _ in range(Self.N - 1):
-                    r.mid_cpu.append(alloc[Scalar[DT]](1))
-                    r.mid_caps.append(0)
-            r.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["Repeat.make[target='gpu']"](ctx)
-            comptime if Self.N >= 2:
-                for _ in range(Self.N - 1):
-                    r.mid_dev.append(ctx_v.enqueue_create_buffer[DT](1))
-                    r.mid_caps.append(0)
-            r.ts = TargetStorage.make_gpu(ctx_v)
+        for _ in range(Self.N):
+            r.children.append(Self.Inner.make[target, INIT](ctx))
         return r^
 
-    def __del__(deinit self):
-        for p in self.mid_cpu:
-            p.free()
-
-    def _ensure_mid_cpu[i: Int](mut self, needed: Int):
-        if self.mid_caps[i] < needed:
-            self.mid_cpu[i].free()
-            self.mid_cpu[i] = alloc[Scalar[DT]](needed)
-            self.mid_caps[i] = needed
-
-    def _ensure_mid_gpu[i: Int](mut self, needed: Int) raises:
-        if self.mid_caps[i] < needed:
-            self.mid_dev[i] = self.ts.ctx.value().enqueue_create_buffer[DT](needed)
-            self.mid_caps[i] = needed
-
-    # ----- Forward ---------------------------------------------------------
-
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Repeat", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        # Buffers are typed at Self.ACT_DT; the child wants Inner's ACT_DT (==
+        # Self.ACT_DT, but distinct to the checker). Bridge via `child_refs[cn,
+        # ci]` for the input pack and `rebind[TensorImpl[ci]]` for the mut output.
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
         comptime if Self.N == 1:
-            self.children[0].forward[target, BATCH, POLICY=POLICY](
-                input, output=output_v
+            self.children[0].forward[target, B, POLICY=POLICY](
+                child_refs[cn, ci](inputs[0]),
+                rebind[TensorImpl[ci]](out),
+                ctx,
             )
         else:
-            comptime D = Self.D
-            # Resolve a MutAnyOrigin pointer per mid slab (CPU or GPU).
-            var midp = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
-            comptime for k in range(Self.N - 1):
-                comptime if target == "cpu":
-                    self._ensure_mid_cpu[k](BATCH * D)
-                    midp.append(self.mid_cpu[k])
-                else:
-                    self._ensure_mid_gpu[k](BATCH * D)
-                    midp.append(self.mid_dev[k].unsafe_ptr())
-
             comptime for i in range(Self.N):
                 comptime if i == 0:
-                    var om = TileTensor(midp[0], row_major[BATCH, D]())
-                    self.children[0].forward[target, BATCH, POLICY=POLICY](
-                        input, output=om
+                    self.children[0].forward[target, B, POLICY=POLICY](
+                        child_refs[cn, ci](inputs[0]),
+                        rebind[TensorImpl[ci]](self.act[0]),
+                        ctx,
                     )
                 elif i == Self.N - 1:
-                    var im = TileTensor(midp[Self.N - 2], row_major[BATCH, D]())
-                    self.children[i].forward[target, BATCH, POLICY=POLICY](
-                        im, output=output_v
+                    self.children[Self.N - 1].forward[target, B, POLICY=POLICY](
+                        child_refs[cn, ci](self.act[Self.N - 2]),
+                        rebind[TensorImpl[ci]](out),
+                        ctx,
                     )
                 else:
-                    var im = TileTensor(midp[i - 1], row_major[BATCH, D]())
-                    var om = TileTensor(midp[i], row_major[BATCH, D]())
-                    self.children[i].forward[target, BATCH, POLICY=POLICY](
-                        im, output=om
+                    self.children[i].forward[target, B, POLICY=POLICY](
+                        child_refs[cn, ci](self.act[i - 1]),
+                        rebind[TensorImpl[ci]](self.act[i]),
+                        ctx,
                     )
-
-    # ----- Backward --------------------------------------------------------
 
     def vjp[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Repeat", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
+        # Same child-edge bridge as forward: `child_refs[cn, ci]` for input/grad
+        # packs, `rebind[TensorImpl[ci]]` for the mut grad buffers.
+        comptime ci = Self.Inner.ACT_DT
+        comptime cn = Self.Inner.ARITY
         comptime if Self.N == 1:
-            self.children[0].vjp[
-                target, BATCH, POLICY=POLICY, mode=mode,
-            ](grad_output_v, grad_input_v)
+            self.children[0].vjp[target, B, POLICY=POLICY](
+                child_refs[cn, ci](forward_input[0]),
+                rebind[TensorImpl[ci]](grad_output),
+                child_refs[cn, ci](grad_inputs[0]),
+                ctx,
+            )
         else:
-            comptime D = Self.D
-            var midp = List[UnsafePointer[Scalar[DT], MutAnyOrigin]]()
-            comptime for k in range(Self.N - 1):
-                comptime if target == "cpu":
-                    self._ensure_mid_cpu[k](BATCH * D)
-                    midp.append(self.mid_cpu[k])
-                else:
-                    self._ensure_mid_gpu[k](BATCH * D)
-                    midp.append(self.mid_dev[k].unsafe_ptr())
-
-            comptime for ri in range(Self.N):
-                comptime i = Self.N - 1 - ri
+            comptime for j in range(Self.N):
+                comptime i = Self.N - 1 - j
                 comptime if i == Self.N - 1:
-                    var gim = TileTensor(midp[Self.N - 2], row_major[BATCH, D]())
-                    self.children[i].vjp[
-                        target, BATCH, POLICY=POLICY, mode=mode,
-                    ](grad_output_v, gim)
+                    self.children[Self.N - 1].vjp[target, B, POLICY=POLICY](
+                        child_refs[cn, ci](self.act[Self.N - 2]),
+                        rebind[TensorImpl[ci]](grad_output),
+                        child_refs[cn, ci](self.grd[Self.N - 2]),
+                        ctx,
+                    )
                 elif i == 0:
-                    var gom = TileTensor(midp[0], row_major[BATCH, D]())
-                    self.children[0].vjp[
-                        target, BATCH, POLICY=POLICY, mode=mode,
-                    ](gom, grad_input_v)
+                    self.children[0].vjp[target, B, POLICY=POLICY](
+                        child_refs[cn, ci](forward_input[0]),
+                        rebind[TensorImpl[ci]](self.grd[0]),
+                        child_refs[cn, ci](grad_inputs[0]),
+                        ctx,
+                    )
                 else:
-                    var gom = TileTensor(midp[i], row_major[BATCH, D]())
-                    var gim = TileTensor(midp[i - 1], row_major[BATCH, D]())
-                    self.children[i].vjp[
-                        target, BATCH, POLICY=POLICY, mode=mode,
-                    ](gom, gim)
-
-    # ----- Walkers ---------------------------------------------------------
+                    self.children[i].vjp[target, B, POLICY=POLICY](
+                        child_refs[cn, ci](self.act[i - 1]),
+                        rebind[TensorImpl[ci]](self.grd[i]),
+                        child_refs[cn, ci](self.grd[i - 1]),
+                        ctx,
+                    )
 
     def for_each_param[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["Repeat", target](self.ts.target_tag)
-        var sep = "." if prefix.byte_length() > 0 else ""
-        comptime for i in range(Self.N):
-            self.children[i].for_each_param[target, V](
-                prefix + sep + String(i), visitor
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        for i in range(Self.N):
+            self.children[i].for_each_param[target](
+                visitor, ctx, join_name(prefix, String(i))
             )
 
     def for_each_state[
-        target: StaticString,
-        V: ParamVisitor,
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["Repeat", target](self.ts.target_tag)
-        var sep = "." if prefix.byte_length() > 0 else ""
-        comptime for i in range(Self.N):
-            self.children[i].for_each_state[target, V](
-                prefix + sep + String(i), visitor
+        target: StaticString, V: ParamVisitor
+    ](mut self, mut visitor: V, ctx: Optional[DeviceContext],
+      prefix: String = String("")) raises:
+        for i in range(Self.N):
+            self.children[i].for_each_state[target](
+                visitor, ctx, join_name(prefix, String(i))
             )
 
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["Repeat", target](self.ts.target_tag)
-        comptime for i in range(Self.N):
-            self.children[i].zero_grad[target]()
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        for i in range(Self.N):
+            self.children[i].zero_grad[target](ctx)
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT], ctx: Optional[DeviceContext]
+    ) raises:
+        for i in range(Self.N):
+            self.children[i].polyak_from[target](src.children[i], tau, ctx)
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
-        comptime for i in range(Self.N):
+        for i in range(Self.N):
             self.children[i].set_attr[ATTR](value)

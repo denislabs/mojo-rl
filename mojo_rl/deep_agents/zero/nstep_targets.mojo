@@ -111,3 +111,26 @@ def extract_reward_targets[
     """
     for k in range(K):
         reward_targets[k] = rewards[k]
+
+
+def value_prefix_from_rewards[
+    K: Int, HORIZON: Int,
+](mut reward_tgt: List[Scalar[DT]], B: Int):
+    """In-place convert a ``[K, B]`` per-step reward-target buffer into EZv2
+    **value-prefix** targets: a running cumulative reward sum that RESETS at the
+    start of every ``HORIZON``-length window (EZ `value_prefix=True`,
+    `batch_worker.py:381-395`). The LSTM reward head's `(h,c)` is reset on the
+    same boundary, so the prefix is the within-window return the head must
+    predict. With the shipping Atari config ``K == HORIZON`` the reset lands only
+    at the window start, so the prefix accumulates all ``K`` rewards.
+
+    Layout matches the replays' `reward_tgt[k * B + b]` (time-major). Only used
+    when value_prefix is enabled; the per-step targets are otherwise unchanged.
+    """
+    for b in range(B):
+        var vp = Scalar[DT](0.0)
+        for k in range(K):
+            if k % HORIZON == 0:
+                vp = Scalar[DT](0.0)
+            vp += reward_tgt[k * B + b]
+            reward_tgt[k * B + b] = vp

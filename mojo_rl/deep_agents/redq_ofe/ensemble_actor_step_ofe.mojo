@@ -1,65 +1,58 @@
-"""EnsembleActorStepOFE — REDQ-OFE actor loss + gradient step.
+"""EnsembleActorStepOFE — REDQ-OFE actor loss + gradient step (STORAGE).
 
-Phase O.2.b.2 (CPU). Port of `redq.EnsembleActorLoss` with the OFE
-data path inserted between the concat step and the N critic forwards
-on the forward side, and between the critic backwards and the
-rsample backward on the backward side.
+Port of `redq.EnsembleActorLoss.forward_backward` with the OFE data path
+inserted between the concat step and the N critic forwards on the forward side,
+and between the critic backwards and the rsample backward on the backward side.
 
 Forward chain (φ-aware delta tagged ▌):
-  0.   actor_opt.zero_grad(actor)
+  0.   actor.zero_grad
   1.   actor.forward(φ(s)) → ao [B, 2·ACT]                  ▌ φ in
   2.   rsample.forward(ao) → alp [B, ACT+1] = (a | logπ)
   3.   sa_in = concat(φ(s), a), extract lp[b] = alp[b, ACT] ▌ wider
   4. ▌ action_branch.forward(sa_in) → φ(s, a) [B, PHI_SA]    ▌ NEW
   5.   for i in 0..N: q_i = critic_i(φ(s, a)); q_sum += q_i
-  6.   loss = mean_b(α · lp[b] − q_sum[b] / N)
-       lp_mean = mean_b(lp[b])
+  6.   loss = mean_b(α · lp[b] − q_sum[b] / N); lp_mean = mean_b(lp[b])
 
 Backward chain:
   7.   for i in 0..N:
-         grad_q_i[b] = −1 / (N · B)           (constant fill)
-         critic_i.vjp[input_only](grad_q_i) → grad_φ(s, a)_i
+         grad_q_i[b] = −1 / (N · B)
+         critic_i.forward(φ(s,a))  (refresh cache); critic_i.vjp → grad_φ(s,a)_i
          grad_φ(s, a)_sum += grad_φ(s, a)_i
-  8. ▌ action_branch.vjp[input_only](grad_φ(s, a)_sum)       ▌ NEW
-       → grad_sa_in [B, PHI_S+ACT]
-  9.   grad_alp[b, :ACT] = grad_sa_in[b, PHI_S:PHI_S+ACT]
-       grad_alp[b, ACT]  = α / B
-       (grad_sa_in[b, :PHI_S] is DISCARDED — no backprop through SB)
+  8. ▌ action_branch.vjp(grad_φ(s, a)_sum) → grad_sa_in [B, PHI_S+ACT]  ▌ NEW
+  9.   grad_alp[b, :ACT] = grad_sa_in[b, PHI_S:]; grad_alp[b, ACT] = α / B
   10.  rsample.vjp(grad_alp) → grad_ao
-  11.  actor.vjp(grad_ao) → grad_φ(s) dummy  (DISCARDED)
+  11.  actor.vjp(grad_ao) → grad_φ(s) (discarded); accumulates actor params
   12.  actor_opt.step(actor)
-
-Returns `EnsembleActorLossResult { loss, log_prob_mean }`.
 
 Gradient policy
 ===============
-  - actor (mode='all'): trained on this path
-  - action_branch (mode='input_only'): stop-grad — trained only via
-    the aux path (`OFEAuxLossStep`). The grad flowing back through
-    AB feeds the rsample backward correctly even with input_only,
-    because input_only only stops PARAM accumulation, the input
-    gradient is still computed.
-  - critics (mode='input_only'): stop-grad — they're trained on the
-    REDQ critic-loss path. The actor loss must not perturb them.
-  - state_branch: NEVER touched here — we discard grad_φ(s) from both
-    the concat split AND from actor.vjp.
+  - actor: trained on this path (zero_grad → vjp → opt.step).
+  - action_branch + critics: their PARAM grads ARE written by `.vjp` (storage
+    Module.vjp has no `mode`), but they are DISCARDED — the action_branch grads
+    get zeroed by the aux step before `ab_opt.step`, and the critic grads get
+    zeroed by the next `EnsembleCriticStepOFE` before its own update. Only the
+    actor is stepped here. (Same contract as `redq.EnsembleActorLoss`.)
+  - state_branch: NEVER touched here — grad_φ(s) is discarded from both the
+    concat split and from actor.vjp; φ(s) is consumed read-only.
 
-CPU-only for O.2.b.2; the GPU port lands alongside the REDQOFETrainer.
+STORAGE migration (Stage 5): scratch are owned `nn.storage.Tensor`s; all
+forwards/vjps use the storage Module surface over `TensorRefs`; the small
+elementwise helper kernels reuse REDQ's actor-loss kernels.
 """
 
-from layout import Layout, LayoutTensor, TileTensor, row_major
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
+from std.gpu.host import DeviceContext
+from layout import Layout
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.scratch import Scratch
-from mojo_rl.nn.core.scratch_walkers import init_scratch_auto
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
-from mojo_rl.nn.initializer import Zero
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.initializer import Zero
+from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.optimizer.adam import Adam
+from mojo_rl.nn.primitives.rsample import RSample
 
-from ..primitives.rsample import RSample
 from ..redq.ensemble import CriticEnsemble
 from ..redq.ensemble_actor_loss import (
     EnsembleActorLossResult,
@@ -72,14 +65,14 @@ from ..redq.ensemble_actor_loss import (
 
 
 struct EnsembleActorStepOFE[
-    ACTOR: Module,           # IN=PHI_S_DIM, OUT=2·ACT
-    AB: Module,              # IN=PHI_S_DIM+ACT, OUT=PHI_SA_DIM
-    CRITIC: Module,          # IN=PHI_SA_DIM, OUT=1
+    ACTOR: Module,   # IN=PHI_S_DIM, OUT=2·ACT
+    AB: Module,      # IN=PHI_S_DIM+ACT, OUT=PHI_SA_DIM
+    CRITIC: Module,  # IN=PHI_SA_DIM, OUT=1
     N_: Int,
     BATCH_: Int,
     PHI_S_DIM_: Int,
     ACT_: Int,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     comptime N = Self.N_
     comptime BATCH = Self.BATCH_
     comptime PHI_S_DIM = Self.PHI_S_DIM_
@@ -90,86 +83,43 @@ struct EnsembleActorStepOFE[
 
     var rsample: RSample[Self.ACT]
 
-    # Forward scratches.
-    var _mb_ao: Scratch["oas_mb_ao", Self.BATCH * (2 * Self.ACT)]
-    var _mb_alp: Scratch["oas_mb_alp", Self.BATCH * (Self.ACT + 1)]
-    var _mb_sa_in: Scratch["oas_mb_sa_in", Self.BATCH * Self.SA_IN_DIM]
-    var _mb_phi_sa: Scratch["oas_mb_phi_sa", Self.BATCH * Self.PHI_SA_DIM]
-    var _mb_q_i: Scratch["oas_mb_q_i", Self.BATCH]
-    var _mb_q_sum: Scratch["oas_mb_q_sum", Self.BATCH]
+    # Forward scratch.
+    var _mb_ao: Tensor          # [BATCH, 2*ACT]
+    var _mb_alp: Tensor         # [BATCH, ACT+1]
+    var _mb_sa_in: Tensor       # [BATCH, SA_IN_DIM]
+    var _mb_phi_sa: Tensor      # [BATCH, PHI_SA_DIM]
+    var _mb_q_i: Tensor         # [BATCH]
+    var _mb_q_sum: Tensor       # [BATCH]
+    var _mb_lp: Tensor          # [BATCH] (GPU lp scratch)
 
-    # Backward scratches.
-    var _mb_grad_q_i: Scratch["oas_mb_grad_q_i", Self.BATCH]
-    var _mb_grad_phi_sa_i: Scratch[
-        "oas_mb_grad_phi_sa_i", Self.BATCH * Self.PHI_SA_DIM,
-    ]
-    var _mb_grad_phi_sa_sum: Scratch[
-        "oas_mb_grad_phi_sa_sum", Self.BATCH * Self.PHI_SA_DIM,
-    ]
-    var _mb_grad_sa_in: Scratch[
-        "oas_mb_grad_sa_in", Self.BATCH * Self.SA_IN_DIM,
-    ]
-    var _mb_grad_alp: Scratch[
-        "oas_mb_grad_alp", Self.BATCH * (Self.ACT + 1),
-    ]
-    var _mb_grad_ao: Scratch[
-        "oas_mb_grad_ao", Self.BATCH * (2 * Self.ACT),
-    ]
-    # actor.vjp writes grad_φ(s) which we discard (no SB backprop on
-    # RL path) — the slab still has to exist for the vjp call.
-    var _mb_grad_phi_s_dummy: Scratch[
-        "oas_mb_grad_phi_s_dummy", Self.BATCH * Self.PHI_S_DIM,
-    ]
+    # Backward scratch.
+    var _mb_grad_q_i: Tensor        # [BATCH]
+    var _mb_grad_phi_sa_i: Tensor   # [BATCH, PHI_SA_DIM]
+    var _mb_grad_phi_sa_sum: Tensor # [BATCH, PHI_SA_DIM]
+    var _mb_grad_sa_in: Tensor      # [BATCH, SA_IN_DIM]
+    var _mb_grad_alp: Tensor        # [BATCH, ACT+1]
+    var _mb_grad_ao: Tensor         # [BATCH, 2*ACT]
+    var _mb_grad_phi_s: Tensor      # [BATCH, PHI_S_DIM] (discarded)
 
-    # GPU-only auxiliary buffers. `_mb_lp_dev` is a device-side lp
-    # slab written by the concat+lp kernel; the two host buffers
-    # mirror it + q_sum for the host-side loss reduction (REDQ-OFE
-    # doesn't capture under CUDA graphs, so D2H is cheap).
-    var _mb_lp_dev: Optional[DeviceBuffer[DT]]
-    var _mb_q_sum_host: Optional[HostBuffer[DT]]
-    var _mb_lp_host: Optional[HostBuffer[DT]]
-
-    var ts: TargetStorage
+    var ctx: Optional[DeviceContext]
 
     def __init__(out self):
         self.rsample = RSample[Self.ACT]()
-        self._mb_ao = Scratch[
-            "oas_mb_ao", Self.BATCH * (2 * Self.ACT),
-        ]()
-        self._mb_alp = Scratch[
-            "oas_mb_alp", Self.BATCH * (Self.ACT + 1),
-        ]()
-        self._mb_sa_in = Scratch[
-            "oas_mb_sa_in", Self.BATCH * Self.SA_IN_DIM,
-        ]()
-        self._mb_phi_sa = Scratch[
-            "oas_mb_phi_sa", Self.BATCH * Self.PHI_SA_DIM,
-        ]()
-        self._mb_q_i = Scratch["oas_mb_q_i", Self.BATCH]()
-        self._mb_q_sum = Scratch["oas_mb_q_sum", Self.BATCH]()
-        self._mb_grad_q_i = Scratch["oas_mb_grad_q_i", Self.BATCH]()
-        self._mb_grad_phi_sa_i = Scratch[
-            "oas_mb_grad_phi_sa_i", Self.BATCH * Self.PHI_SA_DIM,
-        ]()
-        self._mb_grad_phi_sa_sum = Scratch[
-            "oas_mb_grad_phi_sa_sum", Self.BATCH * Self.PHI_SA_DIM,
-        ]()
-        self._mb_grad_sa_in = Scratch[
-            "oas_mb_grad_sa_in", Self.BATCH * Self.SA_IN_DIM,
-        ]()
-        self._mb_grad_alp = Scratch[
-            "oas_mb_grad_alp", Self.BATCH * (Self.ACT + 1),
-        ]()
-        self._mb_grad_ao = Scratch[
-            "oas_mb_grad_ao", Self.BATCH * (2 * Self.ACT),
-        ]()
-        self._mb_grad_phi_s_dummy = Scratch[
-            "oas_mb_grad_phi_s_dummy", Self.BATCH * Self.PHI_S_DIM,
-        ]()
-        self._mb_lp_dev = None
-        self._mb_q_sum_host = None
-        self._mb_lp_host = None
-        self.ts = TargetStorage.make_uninit()
+        self._mb_ao = Tensor()
+        self._mb_alp = Tensor()
+        self._mb_sa_in = Tensor()
+        self._mb_phi_sa = Tensor()
+        self._mb_q_i = Tensor()
+        self._mb_q_sum = Tensor()
+        self._mb_lp = Tensor()
+        self._mb_grad_q_i = Tensor()
+        self._mb_grad_phi_sa_i = Tensor()
+        self._mb_grad_phi_sa_sum = Tensor()
+        self._mb_grad_sa_in = Tensor()
+        self._mb_grad_alp = Tensor()
+        self._mb_grad_ao = Tensor()
+        self._mb_grad_phi_s = Tensor()
+        self.ctx = None
 
     @staticmethod
     def make[target: StaticString](
@@ -202,19 +152,44 @@ struct EnsembleActorStepOFE[
         var b = Self()
         b.rsample = RSample[Self.ACT].make[target, Zero](ctx=ctx)
         b.rsample.action_scale = action_scale
-        b.ts = TargetStorage.make[target](ctx=ctx)
-        init_scratch_auto[Self, target](b, ctx)
-        comptime if target == "gpu":
+        b.ctx = ctx
+        comptime if target == "cpu":
+            b._mb_ao = Tensor.alloc(Self.BATCH * (2 * Self.ACT))
+            b._mb_alp = Tensor.alloc(Self.BATCH * Self.ALP_DIM)
+            b._mb_sa_in = Tensor.alloc(Self.BATCH * Self.SA_IN_DIM)
+            b._mb_phi_sa = Tensor.alloc(Self.BATCH * Self.PHI_SA_DIM)
+            b._mb_q_i = Tensor.alloc(Self.BATCH)
+            b._mb_q_sum = Tensor.alloc(Self.BATCH)
+            b._mb_lp = Tensor.alloc(Self.BATCH)
+            b._mb_grad_q_i = Tensor.alloc(Self.BATCH)
+            b._mb_grad_phi_sa_i = Tensor.alloc(Self.BATCH * Self.PHI_SA_DIM)
+            b._mb_grad_phi_sa_sum = Tensor.alloc(Self.BATCH * Self.PHI_SA_DIM)
+            b._mb_grad_sa_in = Tensor.alloc(Self.BATCH * Self.SA_IN_DIM)
+            b._mb_grad_alp = Tensor.alloc(Self.BATCH * Self.ALP_DIM)
+            b._mb_grad_ao = Tensor.alloc(Self.BATCH * (2 * Self.ACT))
+            b._mb_grad_phi_s = Tensor.alloc(Self.BATCH * Self.PHI_S_DIM)
+        else:
             var c = ctx.value()
-            b._mb_lp_dev = c.enqueue_create_buffer[DT](Self.BATCH)
-            b._mb_q_sum_host = c.enqueue_create_host_buffer[DT](
-                Self.BATCH
+            b._mb_ao = Tensor.alloc_gpu(c, Self.BATCH * (2 * Self.ACT))
+            b._mb_alp = Tensor.alloc_gpu(c, Self.BATCH * Self.ALP_DIM)
+            b._mb_sa_in = Tensor.alloc_gpu(c, Self.BATCH * Self.SA_IN_DIM)
+            b._mb_phi_sa = Tensor.alloc_gpu(c, Self.BATCH * Self.PHI_SA_DIM)
+            b._mb_q_i = Tensor.alloc_gpu(c, Self.BATCH)
+            b._mb_q_sum = Tensor.alloc_gpu(c, Self.BATCH)
+            b._mb_lp = Tensor.alloc_gpu(c, Self.BATCH)
+            b._mb_grad_q_i = Tensor.alloc_gpu(c, Self.BATCH)
+            b._mb_grad_phi_sa_i = Tensor.alloc_gpu(c, Self.BATCH * Self.PHI_SA_DIM)
+            b._mb_grad_phi_sa_sum = Tensor.alloc_gpu(
+                c, Self.BATCH * Self.PHI_SA_DIM
             )
-            b._mb_lp_host = c.enqueue_create_host_buffer[DT](Self.BATCH)
+            b._mb_grad_sa_in = Tensor.alloc_gpu(c, Self.BATCH * Self.SA_IN_DIM)
+            b._mb_grad_alp = Tensor.alloc_gpu(c, Self.BATCH * Self.ALP_DIM)
+            b._mb_grad_ao = Tensor.alloc_gpu(c, Self.BATCH * (2 * Self.ACT))
+            b._mb_grad_phi_s = Tensor.alloc_gpu(c, Self.BATCH * Self.PHI_S_DIM)
         return b^
 
     def forward_backward[
-        target: StaticString = "cpu",
+        target: StaticString,
         POLICY: AMPPolicy = NoAMP,
     ](
         mut self,
@@ -222,302 +197,224 @@ struct EnsembleActorStepOFE[
         mut actor_opt: Adam,
         mut action_branch: Self.AB,
         mut ensemble: CriticEnsemble[Self.CRITIC, Self.N],
-        mb_phi_s_ptr: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        mut phi_s: Tensor,
         alpha: Scalar[DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises -> EnsembleActorLossResult:
-        """Forward + backward + actor_opt.step. Returns (loss,
-        log_prob_mean). The N online critics + the action branch are
-        all touched in `mode='input_only'` — their param grads are
-        NOT modified."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "EnsembleActorStepOFE: target must be 'cpu' or 'gpu'"
-        )
-        assert_tag_for["EnsembleActorStepOFE", target](self.ts.target_tag)
-
+        """One actor gradient step over φ(s). Returns (loss, log_prob_mean).
+        The N critics' + action_branch's param grads are discarded."""
+        comptime BB = Self.BATCH
         var inv_n: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.N)
-        var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](Self.BATCH)
+        var inv_b: Scalar[DT] = Scalar[DT](1.0) / Scalar[DT](BB)
         var grad_q_val: Scalar[DT] = -inv_n * inv_b
         var grad_lp_val: Scalar[DT] = alpha * inv_b
 
         # ── Step 0 — zero actor grad slab.
-        actor_opt.zero_grad[target, M=Self.ACTOR](actor)
+        actor.zero_grad[target](ctx)
 
         # ── Step 1 — actor.forward(φ(s)) → _mb_ao [B, 2·ACT].
-        var ao_p = self._mb_ao.target_ptr[target]()
-        var phi_s_t = TileTensor(
-            mb_phi_s_ptr, row_major[Self.BATCH, Self.PHI_S_DIM](),
+        call_forward[target, BB, POLICY=POLICY](
+            actor, TensorRefs[Self.ACTOR.ARITY](phi_s), self._mb_ao, ctx
         )
-        var ao_t = TileTensor(
-            ao_p, row_major[Self.BATCH, 2 * Self.ACT](),
-        )
-        actor.forward[target, Self.BATCH, POLICY](phi_s_t, output=ao_t)
 
         # ── Step 2 — rsample.forward(ao) → _mb_alp [B, ACT+1].
-        var alp_p = self._mb_alp.target_ptr[target]()
-        var alp_t = TileTensor(
-            alp_p, row_major[Self.BATCH, Self.ALP_DIM](),
-        )
-        self.rsample.forward[target, Self.BATCH, POLICY](
-            ao_t, output=alp_t,
+        call_forward[target, BB, POLICY=POLICY](
+            self.rsample, TensorRefs[1](self._mb_ao), self._mb_alp, ctx
         )
 
-        # ── Step 3 — sa_in = concat(φ(s), a) (action portion of alp).
-        # Also extract lp[b] = alp[b, ACT] into _mb_lp_dev on GPU (the
-        # CPU host-side reduction reads it directly from alp_p).
-        var sa_in_p = self._mb_sa_in.target_ptr[target]()
+        # ── Step 3 — sa_in = concat(φ(s), a) + extract lp[b] = alp[b, ACT].
         comptime if target == "cpu":
-            for b in range(Self.BATCH):
+            for b in range(BB):
                 for d in range(Self.PHI_S_DIM):
-                    sa_in_p[b * Self.SA_IN_DIM + d] = mb_phi_s_ptr[
-                        b * Self.PHI_S_DIM + d
-                    ]
+                    self._mb_sa_in.data[b * Self.SA_IN_DIM + d] = (
+                        phi_s.data[b * Self.PHI_S_DIM + d]
+                    )
                 for j in range(Self.ACT):
-                    sa_in_p[b * Self.SA_IN_DIM + Self.PHI_S_DIM + j] = (
-                        alp_p[b * Self.ALP_DIM + j]
+                    self._mb_sa_in.data[b * Self.SA_IN_DIM + Self.PHI_S_DIM + j] = (
+                        self._mb_alp.data[b * Self.ALP_DIM + j]
                     )
         else:
-            # Reuse REDQ's _eal_concat_sa_extract_lp_kernel with
-            # PHI_S_DIM in the first-input width slot. The kernel
-            # writes both sa_in AND _mb_lp_dev[b] = alp[b, ACT].
-            var ctx = self.ts.ctx.value()
-            var phi_s_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.PHI_S_DIM),
-                MutAnyOrigin,
-            ](mb_phi_s_ptr)
-            var alp_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.ALP_DIM),
-                MutAnyOrigin,
-            ](alp_p)
-            var sa_in_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.SA_IN_DIM),
-                MutAnyOrigin,
-            ](sa_in_p)
-            var lp_dev = self._mb_lp_dev.value()
-            var lp_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-            ](lp_dev.unsafe_ptr())
-            comptime total_sa = Self.BATCH * Self.SA_IN_DIM
-            comptime n_blocks_csa = (total_sa + TPB - 1) // TPB
-            comptime concat_kernel = _eal_concat_sa_extract_lp_kernel[
-                Self.PHI_S_DIM, Self.ACT, Self.BATCH,
-                Self.SA_IN_DIM, Self.ALP_DIM,
+            var c = ctx.value()
+            comptime total_sa = BB * Self.SA_IN_DIM
+            comptime n_blocks = (total_sa + TPB - 1) // TPB
+            comptime kernel = _eal_concat_sa_extract_lp_kernel[
+                Self.PHI_S_DIM, Self.ACT, BB, Self.SA_IN_DIM, Self.ALP_DIM,
             ]
-            ctx.enqueue_function[concat_kernel](
-                phi_s_lt, alp_lt, sa_in_lt, lp_lt,
-                grid_dim=n_blocks_csa, block_dim=TPB,
+            c.enqueue_function[kernel](
+                phi_s.lt["gpu", Layout.row_major(BB, Self.PHI_S_DIM)](),
+                self._mb_alp.lt["gpu", Layout.row_major(BB, Self.ALP_DIM)](),
+                self._mb_sa_in.lt["gpu", Layout.row_major(BB, Self.SA_IN_DIM)](),
+                self._mb_lp.lt["gpu", Layout.row_major(BB)](),
+                grid_dim=n_blocks, block_dim=TPB,
             )
 
         # ── Step 4 — action_branch.forward(sa_in) → φ(s, a).
-        var sa_in_t = TileTensor(
-            sa_in_p, row_major[Self.BATCH, Self.SA_IN_DIM](),
-        )
-        var phi_sa_p = self._mb_phi_sa.target_ptr[target]()
-        var phi_sa_t = TileTensor(
-            phi_sa_p, row_major[Self.BATCH, Self.PHI_SA_DIM](),
-        )
-        action_branch.forward[target, Self.BATCH, POLICY](
-            sa_in_t, output=phi_sa_t,
+        call_forward[target, BB, POLICY=POLICY](
+            action_branch,
+            TensorRefs[Self.AB.ARITY](self._mb_sa_in), self._mb_phi_sa, ctx
         )
 
-        # ── Step 5 — loop N online critic forwards; accumulate q_sum.
-        var q_sum_p = self._mb_q_sum.target_ptr[target]()
-        var q_i_p = self._mb_q_i.target_ptr[target]()
+        # ── Step 5 — loop N online critic forwards; accumulate Σᵢ Qᵢ.
         comptime if target == "cpu":
-            for b in range(Self.BATCH):
-                q_sum_p[b] = Scalar[DT](0.0)
+            for b in range(BB):
+                self._mb_q_sum.data[b] = Scalar[DT](0.0)
         else:
-            var ctx = self.ts.ctx.value()
-            var q_sum_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-            ](q_sum_p)
-            comptime n_blocks_zb = (Self.BATCH + TPB - 1) // TPB
-            comptime zero_b = _eal_zero_kernel[Self.BATCH]
-            ctx.enqueue_function[zero_b](
-                q_sum_lt,
-                grid_dim=n_blocks_zb, block_dim=TPB,
+            var c = ctx.value()
+            comptime nbb = (BB + TPB - 1) // TPB
+            c.enqueue_function[_eal_zero_kernel[BB]](
+                self._mb_q_sum.lt["gpu", Layout.row_major(BB)](),
+                grid_dim=nbb, block_dim=TPB,
             )
-
         for i in range(Self.N):
-            var q_i_t = TileTensor(q_i_p, row_major[Self.BATCH, 1]())
-            ensemble.pairs[i].online.forward[
-                target, Self.BATCH, POLICY,
-            ](phi_sa_t, output=q_i_t)
+            call_forward[target, BB, POLICY=POLICY](
+                ensemble.pairs[i].online,
+                TensorRefs[Self.CRITIC.ARITY](self._mb_phi_sa), self._mb_q_i, ctx
+            )
             comptime if target == "cpu":
-                for b in range(Self.BATCH):
-                    q_sum_p[b] += q_i_p[b]
+                for b in range(BB):
+                    self._mb_q_sum.data[b] += self._mb_q_i.data[b]
             else:
-                var ctx = self.ts.ctx.value()
-                var q_sum_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-                ](q_sum_p)
-                var q_i_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-                ](q_i_p)
-                comptime n_blocks_ab = (Self.BATCH + TPB - 1) // TPB
-                comptime add_b = _eal_add_into_kernel[Self.BATCH]
-                ctx.enqueue_function[add_b](
-                    q_sum_lt, q_i_lt,
-                    grid_dim=n_blocks_ab, block_dim=TPB,
+                var c = ctx.value()
+                comptime nbb = (BB + TPB - 1) // TPB
+                c.enqueue_function[_eal_add_into_kernel[BB]](
+                    self._mb_q_sum.lt["gpu", Layout.row_major(BB)](),
+                    self._mb_q_i.lt["gpu", Layout.row_major(BB)](),
+                    grid_dim=nbb, block_dim=TPB,
                 )
 
         # ── Step 6 — host-side scalar reduction: loss + log_prob_mean.
         var loss: Scalar[DT] = Scalar[DT](0.0)
         var lp_sum: Scalar[DT] = Scalar[DT](0.0)
         comptime if target == "cpu":
-            for b in range(Self.BATCH):
-                var combined = q_sum_p[b] * inv_n
-                var lp = alp_p[b * Self.ALP_DIM + Self.ACT]
+            for b in range(BB):
+                var combined = self._mb_q_sum.data[b] * inv_n
+                var lp = self._mb_alp.data[b * Self.ALP_DIM + Self.ACT]
                 loss += alpha * lp - combined
                 lp_sum += lp
         else:
-            var ctx = self.ts.ctx.value()
-            var q_sum_host = self._mb_q_sum_host.value()
-            var lp_host = self._mb_lp_host.value()
-            ctx.enqueue_copy(q_sum_host, self._mb_q_sum.dev.value())
-            ctx.enqueue_copy(lp_host, self._mb_lp_dev.value())
-            ctx.synchronize()
-            var q_hp = q_sum_host.unsafe_ptr()
-            var lp_hp = lp_host.unsafe_ptr()
-            for b in range(Self.BATCH):
-                var combined = q_hp[b] * inv_n
-                var lp = lp_hp[b]
+            var c = ctx.value()
+            self._mb_q_sum.download(c)
+            self._mb_lp.download(c)
+            for b in range(BB):
+                var combined = self._mb_q_sum.data[b] * inv_n
+                var lp = self._mb_lp.data[b]
                 loss += alpha * lp - combined
                 lp_sum += lp
-        loss = loss * inv_b
-        var lp_mean = lp_sum * inv_b
+        loss *= inv_b
+        var log_prob_mean = lp_sum * inv_b
 
-        # ── Step 7 — backward through N critics into grad_φ(s, a)_sum.
-        var grad_q_i_p = self._mb_grad_q_i.target_ptr[target]()
-        var grad_phi_sa_i_p = self._mb_grad_phi_sa_i.target_ptr[target]()
-        var grad_phi_sa_sum_p = (
-            self._mb_grad_phi_sa_sum.target_ptr[target]()
-        )
-        comptime PSA_TOTAL = Self.BATCH * Self.PHI_SA_DIM
+        # ── Step 7 — backward seed grad_qᵢ + zero grad_φ(s,a)_sum.
         comptime if target == "cpu":
-            for b in range(Self.BATCH):
-                grad_q_i_p[b] = grad_q_val
-            for k in range(PSA_TOTAL):
-                grad_phi_sa_sum_p[k] = Scalar[DT](0.0)
+            for b in range(BB):
+                self._mb_grad_q_i.data[b] = grad_q_val
         else:
-            var ctx = self.ts.ctx.value()
-            # grad_q_i_p fill = grad_q_val constant.
-            var grad_q_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH), MutAnyOrigin,
-            ](grad_q_i_p)
-            comptime n_blocks_qf = (Self.BATCH + TPB - 1) // TPB
-            comptime fill_b = _eal_fill_const_kernel[Self.BATCH]
-            ctx.enqueue_function[fill_b](
-                grad_q_lt, grad_q_val,
-                grid_dim=n_blocks_qf, block_dim=TPB,
+            var c = ctx.value()
+            comptime nbb = (BB + TPB - 1) // TPB
+            c.enqueue_function[_eal_fill_const_kernel[BB]](
+                self._mb_grad_q_i.lt["gpu", Layout.row_major(BB)](),
+                grad_q_val,
+                grid_dim=nbb, block_dim=TPB,
             )
-            # Zero grad_phi_sa_sum.
-            var grad_psa_sum_lt = LayoutTensor[
-                DT, Layout.row_major(PSA_TOTAL), MutAnyOrigin,
-            ](grad_phi_sa_sum_p)
-            comptime n_blocks_zps = (PSA_TOTAL + TPB - 1) // TPB
-            comptime zero_psa = _eal_zero_kernel[PSA_TOTAL]
-            ctx.enqueue_function[zero_psa](
-                grad_psa_sum_lt,
-                grid_dim=n_blocks_zps, block_dim=TPB,
+        comptime PSA_TOTAL = BB * Self.PHI_SA_DIM
+        comptime if target == "cpu":
+            for k in range(PSA_TOTAL):
+                self._mb_grad_phi_sa_sum.data[k] = Scalar[DT](0.0)
+        else:
+            var c = ctx.value()
+            comptime n_blocks_z = (PSA_TOTAL + TPB - 1) // TPB
+            c.enqueue_function[_eal_zero_kernel[PSA_TOTAL]](
+                self._mb_grad_phi_sa_sum.lt[
+                    "gpu", Layout.row_major(PSA_TOTAL)
+                ](),
+                grid_dim=n_blocks_z, block_dim=TPB,
             )
-        var grad_q_i_t = TileTensor(
-            grad_q_i_p, row_major[Self.BATCH, 1](),
-        )
-        var grad_phi_sa_i_t = TileTensor(
-            grad_phi_sa_i_p, row_major[Self.BATCH, Self.PHI_SA_DIM](),
-        )
         for i in range(Self.N):
-            ensemble.pairs[i].online.vjp[
-                target, Self.BATCH, POLICY, mode="input_only",
-            ](grad_q_i_t, grad_phi_sa_i_t)
+            # Re-forward the SAME φ(s,a) to refresh this critic's vjp cache,
+            # then vjp. The critic's param grads accumulate but are DISCARDED.
+            call_forward[target, BB, POLICY=POLICY](
+                ensemble.pairs[i].online,
+                TensorRefs[Self.CRITIC.ARITY](self._mb_phi_sa), self._mb_q_i, ctx
+            )
+            call_vjp[target, BB, POLICY=POLICY](
+                ensemble.pairs[i].online,
+                TensorRefs[Self.CRITIC.ARITY](self._mb_phi_sa),
+                self._mb_grad_q_i,
+                TensorRefs[Self.CRITIC.ARITY](self._mb_grad_phi_sa_i),
+                ctx,
+            )
             comptime if target == "cpu":
                 for k in range(PSA_TOTAL):
-                    grad_phi_sa_sum_p[k] += grad_phi_sa_i_p[k]
+                    self._mb_grad_phi_sa_sum.data[k] += (
+                        self._mb_grad_phi_sa_i.data[k]
+                    )
             else:
-                var ctx = self.ts.ctx.value()
-                var grad_psa_sum_lt = LayoutTensor[
-                    DT, Layout.row_major(PSA_TOTAL), MutAnyOrigin,
-                ](grad_phi_sa_sum_p)
-                var grad_psa_i_lt = LayoutTensor[
-                    DT, Layout.row_major(PSA_TOTAL), MutAnyOrigin,
-                ](grad_phi_sa_i_p)
-                comptime n_blocks_ips = (PSA_TOTAL + TPB - 1) // TPB
-                comptime add_psa = _eal_add_into_kernel[PSA_TOTAL]
-                ctx.enqueue_function[add_psa](
-                    grad_psa_sum_lt, grad_psa_i_lt,
-                    grid_dim=n_blocks_ips, block_dim=TPB,
+                var c = ctx.value()
+                comptime n_blocks_a = (PSA_TOTAL + TPB - 1) // TPB
+                c.enqueue_function[_eal_add_into_kernel[PSA_TOTAL]](
+                    self._mb_grad_phi_sa_sum.lt[
+                        "gpu", Layout.row_major(PSA_TOTAL)
+                    ](),
+                    self._mb_grad_phi_sa_i.lt[
+                        "gpu", Layout.row_major(PSA_TOTAL)
+                    ](),
+                    grid_dim=n_blocks_a, block_dim=TPB,
                 )
 
-        # ── Step 8 — action_branch.vjp[input_only] → grad_sa_in.
-        var grad_phi_sa_sum_t = TileTensor(
-            grad_phi_sa_sum_p,
-            row_major[Self.BATCH, Self.PHI_SA_DIM](),
+        # ── Step 8 — action_branch.vjp → grad_sa_in (param grads discarded).
+        call_vjp[target, BB, POLICY=POLICY](
+            action_branch,
+            TensorRefs[Self.AB.ARITY](self._mb_sa_in),
+            self._mb_grad_phi_sa_sum,
+            TensorRefs[Self.AB.ARITY](self._mb_grad_sa_in),
+            ctx,
         )
-        var grad_sa_in_p = self._mb_grad_sa_in.target_ptr[target]()
-        var grad_sa_in_t = TileTensor(
-            grad_sa_in_p, row_major[Self.BATCH, Self.SA_IN_DIM](),
-        )
-        action_branch.vjp[
-            target, Self.BATCH, POLICY, mode="input_only",
-        ](grad_phi_sa_sum_t, grad_sa_in_t)
 
-        # ── Step 9 — build grad_alp from grad_sa_in[:, PHI_S:] + α/B.
-        var grad_alp_p = self._mb_grad_alp.target_ptr[target]()
+        # ── Step 9 — assemble grad_alp [B, ACT+1].
         comptime if target == "cpu":
-            for b in range(Self.BATCH):
+            for b in range(BB):
                 for j in range(Self.ACT):
-                    grad_alp_p[b * Self.ALP_DIM + j] = grad_sa_in_p[
-                        b * Self.SA_IN_DIM + Self.PHI_S_DIM + j
-                    ]
-                grad_alp_p[b * Self.ALP_DIM + Self.ACT] = grad_lp_val
+                    self._mb_grad_alp.data[b * Self.ALP_DIM + j] = (
+                        self._mb_grad_sa_in.data[
+                            b * Self.SA_IN_DIM + Self.PHI_S_DIM + j
+                        ]
+                    )
+                self._mb_grad_alp.data[b * Self.ALP_DIM + Self.ACT] = grad_lp_val
         else:
-            # Reuse REDQ's `_eal_build_grad_alp_kernel`. Pass
-            # PHI_S_DIM in the first-input width slot.
-            var ctx = self.ts.ctx.value()
-            var grad_sa_in_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.SA_IN_DIM),
-                MutAnyOrigin,
-            ](grad_sa_in_p)
-            var grad_alp_lt = LayoutTensor[
-                DT, Layout.row_major(Self.BATCH, Self.ALP_DIM),
-                MutAnyOrigin,
-            ](grad_alp_p)
-            comptime total_galp = Self.BATCH * Self.ALP_DIM
+            var c = ctx.value()
+            comptime total_galp = BB * Self.ALP_DIM
             comptime n_blocks_g = (total_galp + TPB - 1) // TPB
             comptime build_galp = _eal_build_grad_alp_kernel[
-                Self.BATCH, Self.PHI_S_DIM, Self.ACT,
-                Self.SA_IN_DIM, Self.ALP_DIM,
+                BB, Self.PHI_S_DIM, Self.ACT, Self.SA_IN_DIM, Self.ALP_DIM,
             ]
-            ctx.enqueue_function[build_galp](
-                grad_sa_in_lt, grad_alp_lt, grad_lp_val,
+            c.enqueue_function[build_galp](
+                self._mb_grad_sa_in.lt[
+                    "gpu", Layout.row_major(BB, Self.SA_IN_DIM)
+                ](),
+                self._mb_grad_alp.lt["gpu", Layout.row_major(BB, Self.ALP_DIM)](),
+                grad_lp_val,
                 grid_dim=n_blocks_g, block_dim=TPB,
             )
 
         # ── Step 10 — rsample.vjp(grad_alp) → grad_ao.
-        var grad_alp_t = TileTensor(
-            grad_alp_p, row_major[Self.BATCH, Self.ALP_DIM](),
-        )
-        var grad_ao_p = self._mb_grad_ao.target_ptr[target]()
-        var grad_ao_t = TileTensor(
-            grad_ao_p, row_major[Self.BATCH, 2 * Self.ACT](),
-        )
-        self.rsample.vjp[target, Self.BATCH, POLICY](
-            grad_alp_t, grad_ao_t,
+        call_vjp[target, BB, POLICY=POLICY](
+            self.rsample,
+            TensorRefs[1](self._mb_ao),
+            self._mb_grad_alp,
+            TensorRefs[1](self._mb_grad_ao),
+            ctx,
         )
 
-        # ── Step 11 — actor.vjp(grad_ao) → grad_φ(s) dummy.
-        var grad_phi_s_dummy_p = (
-            self._mb_grad_phi_s_dummy.target_ptr[target]()
-        )
-        var grad_phi_s_dummy_t = TileTensor(
-            grad_phi_s_dummy_p,
-            row_major[Self.BATCH, Self.PHI_S_DIM](),
-        )
-        actor.vjp[target, Self.BATCH, POLICY](
-            grad_ao_t, grad_phi_s_dummy_t,
+        # ── Step 11 — actor.vjp(grad_ao) → grad_φ(s) (discarded); accumulates
+        # actor param grads.
+        call_vjp[target, BB, POLICY=POLICY](
+            actor,
+            TensorRefs[Self.ACTOR.ARITY](phi_s),
+            self._mb_grad_ao,
+            TensorRefs[Self.ACTOR.ARITY](self._mb_grad_phi_s),
+            ctx,
         )
 
         # ── Step 12 — actor_opt.step.
-        actor_opt.step[target, M=Self.ACTOR](actor)
+        actor_opt.step[target, M=Self.ACTOR](actor, ctx)
 
-        return EnsembleActorLossResult(loss=loss, log_prob_mean=lp_mean)
+        return EnsembleActorLossResult(loss=loss, log_prob_mean=log_prob_mean)

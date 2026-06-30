@@ -14,7 +14,7 @@ Run (no GPU):
 """
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.logger import CsvLogger
 from mojo_rl.deep_agents.efficient_zero_v2.nets import (
@@ -49,21 +49,16 @@ def main() raises:
     comptime Predh = EZPredictorNet[PROJ, BOTTLENECK]
 
     var env = CartPoleEnv[DType.float64]()
-    var rep = Rep.make["cpu", INIT=Kaiming]()
-    var dyn = Dyn.make["cpu", INIT=Kaiming]()
-    var pred = Pred.make["cpu", INIT=Kaiming]()
-    var proj = Proj.make["cpu", INIT=Kaiming]()
-    var predh = Predh.make["cpu", INIT=Kaiming]()
-    var orep = Adam.make["cpu", M=Rep](rep)
-    var odyn = Adam.make["cpu", M=Dyn](dyn)
-    var opred = Adam.make["cpu", M=Pred](pred)
-    var oproj = Adam.make["cpu", M=Proj](proj)
-    var opredh = Adam.make["cpu", M=Predh](predh)
-    orep.lr = Scalar[DT](3e-4)
-    odyn.lr = Scalar[DT](3e-4)
-    opred.lr = Scalar[DT](3e-4)
-    oproj.lr = Scalar[DT](3e-4)
-    opredh.lr = Scalar[DT](3e-4)
+    var rep = Rep.make["cpu", Kaiming]()
+    var dyn = Dyn.make["cpu", Kaiming]()
+    var pred = Pred.make["cpu", Kaiming]()
+    var proj = Proj.make["cpu", Kaiming]()
+    var predh = Predh.make["cpu", Kaiming]()
+    var orep = Adam(lr=Scalar[DT](3e-4))
+    var odyn = Adam(lr=Scalar[DT](3e-4))
+    var opred = Adam(lr=Scalar[DT](3e-4))
+    var oproj = Adam(lr=Scalar[DT](3e-4))
+    var opredh = Adam(lr=Scalar[DT](3e-4))
 
     var logger = CsvLogger("/tmp/ezv2_cartpole_metrics.csv", buffer_size=64)
     logger.set_config("algo", "ezv2")
@@ -91,7 +86,7 @@ def main() raises:
         eval_episodes=3,
         diag_every=200,
         report_every=200,
-        logger=UnsafePointer(to=logger),
+        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
         verbose=True,
     )
     logger.close()

@@ -22,7 +22,7 @@ struct DualSampleCpuStep[
     SYNTH_CAP: Int,
     REAL_BS: Int,
     SYNTH_BS: Int,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
@@ -93,23 +93,22 @@ struct DualSampleCpuStep[
             state.did_step = False
             return
 
-        var mb_s_p = state.mb_s.cpu_ptr()
-        var mb_a_p = state.mb_a.cpu_ptr()
-        var mb_r_p = state.mb_r.cpu_ptr()
-        var mb_sp_p = state.mb_sp.cpu_ptr()
-        var mb_d_p = state.mb_d.cpu_ptr()
-
         # Real partition: rows [0, REAL_BS).
         self.real_buf.value().sample(
             Self.REAL_BS,
-            mb_s_p, mb_a_p, mb_r_p, mb_sp_p, mb_d_p,
+            state.mb_s.data,
+            state.mb_a.data,
+            state.mb_r.data,
+            state.mb_sp.data,
+            state.mb_d.data,
         )
-        # Synth partition: rows [REAL_BS, BATCH).
+        # Synth partition: rows [REAL_BS, BATCH) via `row_offset`.
         self.synth_buf.value().sample(
             Self.SYNTH_BS,
-            mb_s_p + Self.REAL_BS * Self.OBS,
-            mb_a_p + Self.REAL_BS * Self.ACT,
-            mb_r_p + Self.REAL_BS,
-            mb_sp_p + Self.REAL_BS * Self.OBS,
-            mb_d_p + Self.REAL_BS,
+            state.mb_s.data,
+            state.mb_a.data,
+            state.mb_r.data,
+            state.mb_sp.data,
+            state.mb_d.data,
+            row_offset=Self.REAL_BS,
         )

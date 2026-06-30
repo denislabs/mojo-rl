@@ -19,7 +19,7 @@ from std.math import sqrt
 from std.random import random_float64
 
 
-trait PCInitializer(Copyable & Movable & ImplicitlyCopyable):
+trait PCInitializer(ImplicitlyCopyable):
     """Buffer-fill initializer for a flat [SIZE] parameter view.
 
     Mirrors the legacy `nn.initializer.Initializer` surface so PCN block

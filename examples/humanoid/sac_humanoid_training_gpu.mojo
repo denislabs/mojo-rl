@@ -51,13 +51,7 @@ from std.time import perf_counter_ns
 from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
-from mojo_rl.nn.primitives.layer_norm import LayerNorm
-from mojo_rl.deep_agents.sac import SACAgent, SACActorNet
-from mojo_rl.deep_agents.training.blocks import ReplaySampleStep
-from mojo_rl.deep_agents.data.any_replay import AnyReplay
+from mojo_rl.deep_agents.sac import SAC
 from mojo_rl.deep_agents.training.batched_env import BatchedGpuEnv
 from mojo_rl.envs.humanoid import Humanoid
 
@@ -69,7 +63,7 @@ from mojo_rl.envs.humanoid import Humanoid
 comptime EnvT = Humanoid[DT, TERMINATE_ON_UNHEALTHY=True]
 comptime OBS_DIM = EnvT.OBS_DIM  # 45
 comptime ACT_DIM = EnvT.ACTION_DIM  # 17
-comptime HIDDEN = 256
+comptime HIDDEN = 512
 
 # Off-policy GPU training parameters (mirror the legacy GPU script).
 # 256 matches the validated LayerNorm+H256 run (greedy ~5715). Bump to 512 only
@@ -109,27 +103,9 @@ comptime EVAL_EPISODES = 16  # <= EVAL_ENVS → completes in one eval window
 comptime BatchedEnvT = BatchedGpuEnv[EnvT, N_ENVS, OBS_DIM, ACT_DIM]
 comptime EvalEnvT = BatchedGpuEnv[EnvT, EVAL_ENVS, OBS_DIM, ACT_DIM]
 
-# ─── Nets ────────────────────────────────────────────────────────────────
-# Actor: the preset's canonical fused-`LinearReLU` `SACActorNet` (unchanged).
-# Critic: pre-activation LayerNorm MLP (`Linear → LayerNorm → ReLU`, repeated) —
-# the REDQ/SR-SAC stability fix proven on the MBPO/SAC HalfCheetah harnesses.
-# This is the VALIDATED config (HIDDEN=256, greedy ~5715): it keeps the critic
-# loss bounded (~40–160) where the plain critic explodes (~3800 @1.45M) and ERE
-# blows the Q-values up entirely. It is the ONLY change vs the 6006 baseline.
-comptime ActorNet = SACActorNet[OBS_DIM, ACT_DIM, HIDDEN]
-comptime CriticNetLN = Sequential[
-    Linear[OBS_DIM + ACT_DIM, HIDDEN],
-    LayerNorm[HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, HIDDEN],
-    LayerNorm[HIDDEN],
-    ReLU[HIDDEN],
-    Linear[HIDDEN, 1],
-]
-# Same uniform 1-step replay as the `SAC[...]` preset (target-generic block).
-comptime SampleT = ReplaySampleStep[
-    AnyReplay["gpu", OBS_DIM, ACT_DIM, REPLAY_CAPACITY], BATCH
-]
+# Actor + twin critics come from the `SAC[...]` preset (deep_agents.sac),
+# which bundles the canonical fused-`LinearReLU` `SACActorNet` /
+# `SACCriticNet` plus SAC's tuned defaults.
 
 
 def main() raises:
@@ -168,25 +144,20 @@ def main() raises:
         logger.set_config("n_envs", String(N_ENVS))
         logger.set_config("buffer_capacity", String(REPLAY_CAPACITY))
 
-        var logger_ptr = UnsafePointer(to=logger)
+        var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
         # ─── Agent + batched GPU env ─────────────────────────────────────
-        # Built from the `SACAgent[...]` primitive (not the `SAC[...]` preset)
-        # so we can inject the LayerNorm critic. All scalars below are the
-        # preset's tuned defaults (lr=3e-4, gamma=0.99, tau=0.005,
-        # init_alpha=0.2, target_entropy=-ACT) so the critic architecture is
-        # the ONLY difference vs the 6006-reward baseline. Humanoid keeps
-        # action_scale=0.4 + the example-specific warmup/window knobs.
-        var agent = SACAgent["gpu", SampleT, ActorNet, CriticNetLN](
+        # `SAC[target, OBS, ACT, BATCH, CAP, HIDDEN]` reads like a
+        # constructor: it builds the SACAgent with the fused default nets
+        # and SAC's tuned scalar defaults (lr=3e-4, gamma=0.99, tau=0.005,
+        # init_alpha=0.2, target_entropy=-ACT, …). We override only the
+        # example-specific knobs below; everything else comes from the preset.
+        # Humanoid keeps action_scale=0.4 + the example-specific warmup/window.
+        var agent = SAC[
+            "gpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN
+        ](
             ctx=ctx,
-            actor_lr=3e-4,
-            critic_lr=3e-4,
-            alpha_lr=3e-4,
-            gamma=0.99,
-            tau=0.005,
             action_scale=0.4,  # match legacy Humanoid SAC runs
-            init_alpha=0.2,
-            target_entropy=Scalar[DT](-Float64(ACT_DIM)),
             learning_starts=WARMUP_STEPS,
             window_size=100,
             initial_episode_fill=0.0,

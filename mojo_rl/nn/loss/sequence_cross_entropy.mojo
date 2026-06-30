@@ -1,205 +1,191 @@
-"""SequenceCrossEntropyLoss[SEQ_LEN, VOCAB] — per-token softmax + CE.
+"""SequenceCrossEntropyLoss[SEQ_LEN, VOCAB] — per-token softmax + CE (storage).
 
-For language-model / sequence heads whose output is `SEQ_LEN * VOCAB`
-logits per sample (e.g. nn `GPT`). The plain `CrossEntropyLoss[OUT_DIM]`
-would softmax over the *whole* flattened `SEQ_LEN*VOCAB` row jointly,
-which is wrong; this loss treats the `(BATCH, SEQ_LEN*VOCAB)` slab as
-`(BATCH*SEQ_LEN, VOCAB)` and applies an independent softmax + cross-
-entropy at each token position (the same row-reshape trick as
-`Tokenwise`), averaging over all `BATCH*SEQ_LEN` positions.
+Transformed from legacy `nn.loss.SequenceCrossEntropyLoss`. For LM/sequence
+heads whose output is `SEQ_LEN * VOCAB` logits per sample (e.g. nn `GPT`):
+treats the `(BATCH, SEQ_LEN*VOCAB)` slab as `(BATCH*SEQ_LEN, VOCAB)` and
+applies an independent softmax + cross-entropy at each token position,
+averaging over all `BATCH*SEQ_LEN` positions.
 
-  OUT_DIM = SEQ_LEN * VOCAB  (so Trainer's `LOSS.OUT_DIM == NET.OUT_DIM`
-                              holds against a `GPT[...]` whose OUT_DIM is
-                              SEQ_LEN * VOCAB).
+Reuses the storage `CrossEntropyLoss` kernels (`_ce_fwd_kernel`,
+`_ce_reduce_kernel`, `_ce_bwd_kernel`) with effective batch `BT=BATCH*SEQ_LEN`.
+Like CrossEntropyLoss, `vjp` RECOMPUTES the softmax from `logits` (passed
+explicitly) — no softmax cache. Mirrors the device-resident accumulator
+(forward_accumulate/read_accum/reset_accum).
 
-Targets are per-token one-hots laid out the same as logits. Loss is the
-mean per-token CE; grad_logits[t] = (softmax[t] - target[t]) / (B*SEQ).
-Numerically stable (log-sum-exp), fp32. Reuses the `CrossEntropyLoss`
-kernels with effective batch `BATCH*SEQ_LEN`.
+  forward:  loss = (1/BT)·Σ_r Σ_c -target[r,c]·(logit[r,c] - lse[r])
+  backward: grad[r,c] = (softmax[r,c] - target[r,c]) / BT
 """
 
+from std.gpu.host import DeviceContext
+from layout import Layout
+
+from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
 from std.math import exp, log
-from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor, row_major
-
-from ..constants import DT, TPB, TPB_REDUCE
-from ..core.module import mptr
-from ..core import Loss, AMPPolicy, NoAMP
-from ..core.target_storage import TargetStorage, assert_tag_for
-from .cross_entropy import _ce_forward_kernel, _ce_backward_kernel
+from ..core.tensor import Tensor
+from .cross_entropy import _ce_fwd_kernel, _ce_reduce_kernel, _ce_bwd_kernel
 
 
-struct SequenceCrossEntropyLoss[SEQ_LEN: Int, VOCAB: Int](Loss):
-    comptime OUT_DIM = Self.SEQ_LEN * Self.VOCAB
-
-    # CPU
-    var softmax: List[Scalar[DT]]
-    # GPU
-    var softmax_dev: Optional[DeviceBuffer[DT]]
-    var softmax_dev_n: Int
-    var partial_loss_dev: Optional[DeviceBuffer[DT]]
-    var partial_loss_host: Optional[HostBuffer[DT]]
-    var partial_loss_n: Int
-
-    var ts: TargetStorage
+struct SequenceCrossEntropyLoss[SEQ_LEN: Int, VOCAB: Int](
+    Movable & ImplicitlyDeletable
+):
+    var partial: Tensor  # GPU [BT] per-row losses (lazy)
+    var loss_acc: Tensor  # GPU [2] = [sum_of_means, count]
+    var _acc_sum: Scalar[DT]
+    var _acc_n: Int
 
     def __init__(out self):
-        self.softmax = List[Scalar[DT]]()
-        self.softmax_dev = None
-        self.softmax_dev_n = 0
-        self.partial_loss_dev = None
-        self.partial_loss_host = None
-        self.partial_loss_n = 0
-        self.ts = TargetStorage.make_uninit()
+        self.partial = Tensor()
+        self.loss_acc = Tensor()
+        self._acc_sum = Scalar[DT](0.0)
+        self._acc_n = 0
 
     @staticmethod
-    def make[target: StaticString](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        comptime assert target == "cpu" or target == "gpu", (
-            "SequenceCrossEntropyLoss: target must be 'cpu' or 'gpu'"
-        )
-        var loss = Self()
-        loss.ts = TargetStorage.make[target](ctx=ctx)
-        comptime if target == "gpu":
-            if not ctx:
-                raise Error(
-                    "SequenceCrossEntropyLoss.make[target='gpu']: ctx required"
-                )
-            var ctx_v = ctx.value()
-            loss.softmax_dev = ctx_v.enqueue_create_buffer[DT](1)
-            loss.partial_loss_dev = ctx_v.enqueue_create_buffer[DT](1)
-            loss.partial_loss_host = ctx_v.enqueue_create_host_buffer[DT](1)
-        return loss^
+    def make_cpu() raises -> Self:
+        return Self()
 
-    def _ensure_cache_cpu(mut self, bt: Int):
-        var needed = bt * Self.VOCAB
-        if len(self.softmax) < needed:
-            self.softmax.resize(needed, 0.0)
+    @staticmethod
+    def make_gpu(ctx: DeviceContext) raises -> Self:
+        var l = Self()
+        l.loss_acc.ensure_gpu(ctx, 2)
+        l.loss_acc.dev.value().enqueue_fill(Scalar[DT](0))
+        return l^
 
-    def _ensure_buffers_gpu(mut self, bt: Int) raises:
-        var ctx = self.ts.ctx.value()
-        var sm_needed = bt * Self.VOCAB
-        if self.softmax_dev_n < sm_needed:
-            self.softmax_dev = ctx.enqueue_create_buffer[DT](sm_needed)
-            self.softmax_dev_n = sm_needed
-        if self.partial_loss_n < bt:
-            self.partial_loss_dev = ctx.enqueue_create_buffer[DT](bt)
-            self.partial_loss_host = ctx.enqueue_create_host_buffer[DT](bt)
-            self.partial_loss_n = bt
+    def _mean_loss_cpu[
+        BT: Int
+    ](self, ref logits: Tensor, ref targets: Tensor) -> Scalar[DT]:
+        var s: Scalar[DT] = 0.0
+        for r in range(BT):
+            var base = r * Self.VOCAB
+            var m = logits.data[base]
+            for c in range(1, Self.VOCAB):
+                var v = logits.data[base + c]
+                if v > m:
+                    m = v
+            var sum_exp: Scalar[DT] = 0.0
+            for c in range(Self.VOCAB):
+                sum_exp += exp(logits.data[base + c] - m)
+            var lse = m + log(sum_exp)
+            for c in range(Self.VOCAB):
+                s += -targets.data[base + c] * (logits.data[base + c] - lse)
+        return s / Scalar[DT](BT)
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int
     ](
         mut self,
-        logits: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        targets: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
+        mut logits: Tensor,
+        mut targets: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises -> Scalar[DT]:
-        comptime assert logits.flat_rank == 2, "logits must be rank-2"
-        comptime assert targets.flat_rank == 2, "targets must be rank-2"
-        assert_tag_for["SequenceCrossEntropyLoss", target](self.ts.target_tag)
-        comptime BT = BATCH * Self.SEQ_LEN
-
+        comptime BT = B * Self.SEQ_LEN
         comptime if target == "cpu":
-            self._ensure_cache_cpu(BT)
-            var lp = mptr(logits.ptr)
-            var tp = mptr(targets.ptr)
-            var sm = TileTensor(self.softmax, row_major[BT, Self.VOCAB]())
-            var total: Scalar[DT] = 0.0
-            for r in range(BT):
-                var base = r * Self.VOCAB
-                var m = lp[base]
-                for c in range(1, Self.VOCAB):
-                    if lp[base + c] > m:
-                        m = lp[base + c]
-                var sum_exp: Scalar[DT] = 0.0
-                for c in range(Self.VOCAB):
-                    sum_exp += exp(lp[base + c] - m)
-                var lse = m + log(sum_exp)
-                for c in range(Self.VOCAB):
-                    sm[r, c] = exp(lp[base + c] - lse)
-                    total += -tp[base + c] * (lp[base + c] - lse)
-            return total / Scalar[DT](BT)
+            return self._mean_loss_cpu[BT](logits, targets)
         else:
-            self._ensure_buffers_gpu(BT)
-            var ctx = self.ts.ctx.value()
-            comptime mat = Layout.row_major(BT, Self.VOCAB)
-            comptime rowl = Layout.row_major(BT)
-            var lp_w = mptr(logits.ptr)
-            var tp_w = mptr(targets.ptr)
-            var logits_lt = LayoutTensor[DT, mat, MutAnyOrigin](lp_w)
-            var targets_lt = LayoutTensor[DT, mat, MutAnyOrigin](tp_w)
-            var softmax_lt = LayoutTensor[DT, mat, MutAnyOrigin](
-                self.softmax_dev.value()
+            var c = ctx.value()
+            self.partial.ensure_gpu(c, BT)
+            comptime nblk = (BT + TPB_REDUCE - 1) // TPB_REDUCE
+            c.enqueue_function[_ce_fwd_kernel[BT, Self.VOCAB]](
+                logits.lt["gpu", Layout.row_major(BT, Self.VOCAB)](),
+                targets.lt["gpu", Layout.row_major(BT, Self.VOCAB)](),
+                self.partial.lt["gpu", Layout.row_major(BT)](),
+                grid_dim=nblk,
+                block_dim=TPB_REDUCE,
             )
-            var partial_lt = LayoutTensor[DT, rowl, MutAnyOrigin](
-                self.partial_loss_dev.value()
-            )
-            comptime RTPB = TPB_REDUCE
-            comptime n_blocks = (BT + RTPB - 1) // RTPB
-            comptime kernel = _ce_forward_kernel[BT, Self.VOCAB]
-            ctx.enqueue_function[kernel](
-                logits_lt, targets_lt, softmax_lt, partial_lt,
-                grid_dim=n_blocks, block_dim=RTPB,
-            )
-            ctx.enqueue_copy(
-                self.partial_loss_host.value(), self.partial_loss_dev.value()
-            )
-            ctx.synchronize()
-            var total: Scalar[DT] = 0.0
-            var host_ptr = self.partial_loss_host.value().unsafe_ptr()
+            self.partial.download(c)
+            var s: Scalar[DT] = 0.0
             for r in range(BT):
-                total += host_ptr[r]
-            return total / Scalar[DT](BT)
+                s += self.partial.data[r]
+            return s / Scalar[DT](BT)
+
+    def forward_accumulate[
+        target: StaticString, B: Int
+    ](
+        mut self,
+        mut logits: Tensor,
+        mut targets: Tensor,
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        comptime BT = B * Self.SEQ_LEN
+        comptime if target == "cpu":
+            self._acc_sum += self._mean_loss_cpu[BT](logits, targets)
+            self._acc_n += 1
+        else:
+            var c = ctx.value()
+            self.partial.ensure_gpu(c, BT)
+            comptime nblk = (BT + TPB_REDUCE - 1) // TPB_REDUCE
+            c.enqueue_function[_ce_fwd_kernel[BT, Self.VOCAB]](
+                logits.lt["gpu", Layout.row_major(BT, Self.VOCAB)](),
+                targets.lt["gpu", Layout.row_major(BT, Self.VOCAB)](),
+                self.partial.lt["gpu", Layout.row_major(BT)](),
+                grid_dim=nblk,
+                block_dim=TPB_REDUCE,
+            )
+            c.enqueue_function[_ce_reduce_kernel[BT]](
+                self.partial.lt["gpu", Layout.row_major(BT)](),
+                self.loss_acc.lt["gpu", Layout.row_major(2)](),
+                grid_dim=1,
+                block_dim=TPB_REDUCE,
+            )
+
+    def reset_accum[target: StaticString](mut self) raises:
+        comptime if target == "cpu":
+            self._acc_sum = Scalar[DT](0.0)
+            self._acc_n = 0
+        else:
+            self.loss_acc.dev.value().enqueue_fill(Scalar[DT](0))
+
+    def read_accum[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext] = None) raises -> Scalar[DT]:
+        comptime if target == "cpu":
+            if self._acc_n == 0:
+                return Scalar[DT](0.0)
+            return self._acc_sum / Scalar[DT](self._acc_n)
+        else:
+            self.loss_acc.download(ctx.value())
+            var s = self.loss_acc.data[0]
+            var n = self.loss_acc.data[1]
+            if n == Scalar[DT](0.0):
+                return Scalar[DT](0.0)
+            return s / n
 
     def vjp[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int
     ](
         mut self,
-        targets: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        mut grad_logits: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, ...,
-        ],
+        mut logits: Tensor,
+        mut targets: Tensor,
+        mut grad: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert targets.flat_rank == 2, "targets must be rank-2"
-        comptime assert grad_logits.flat_rank == 2, "grad_logits must be rank-2"
-        assert_tag_for["SequenceCrossEntropyLoss", target](self.ts.target_tag)
-        comptime BT = BATCH * Self.SEQ_LEN
-
+        comptime BT = B * Self.SEQ_LEN
+        comptime M = BT * Self.VOCAB
         comptime if target == "cpu":
-            var tp = mptr(targets.ptr)
-            var gp = mptr(grad_logits.ptr)
-            var sm = TileTensor(self.softmax, row_major[BT, Self.VOCAB]())
-            var inv: Scalar[DT] = 1.0 / Scalar[DT](BT)
+            grad.ensure(M)
             for r in range(BT):
                 var base = r * Self.VOCAB
+                var m = logits.data[base]
+                for c in range(1, Self.VOCAB):
+                    var v = logits.data[base + c]
+                    if v > m:
+                        m = v
+                var sum_exp: Scalar[DT] = 0.0
                 for c in range(Self.VOCAB):
-                    gp[base + c] = (sm[r, c] - tp[base + c]) * inv
+                    sum_exp += exp(logits.data[base + c] - m)
+                var lse = m + log(sum_exp)
+                for c in range(Self.VOCAB):
+                    var sm = exp(logits.data[base + c] - lse)
+                    grad.data[base + c] = (
+                        sm - targets.data[base + c]
+                    ) / Scalar[DT](BT)
         else:
-            var ctx = self.ts.ctx.value()
-            comptime mat = Layout.row_major(BT, Self.VOCAB)
-            var tp_w = mptr(targets.ptr)
-            var gp_w = mptr(grad_logits.ptr)
-            var softmax_lt = LayoutTensor[DT, mat, MutAnyOrigin](
-                self.softmax_dev.value()
-            )
-            var targets_lt = LayoutTensor[DT, mat, MutAnyOrigin](tp_w)
-            var grad_lt = LayoutTensor[DT, mat, MutAnyOrigin](gp_w)
-            comptime n_blocks = (BT * Self.VOCAB + TPB - 1) // TPB
-            comptime kernel = _ce_backward_kernel[BT, Self.VOCAB]
-            ctx.enqueue_function[kernel](
-                softmax_lt, targets_lt, grad_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+            var c = ctx.value()
+            grad.ensure_gpu(c, M)
+            comptime nblk = (BT + TPB_REDUCE - 1) // TPB_REDUCE
+            c.enqueue_function[_ce_bwd_kernel[BT, Self.VOCAB]](
+                logits.lt["gpu", Layout.row_major(BT, Self.VOCAB)](),
+                targets.lt["gpu", Layout.row_major(BT, Self.VOCAB)](),
+                grad.lt["gpu", Layout.row_major(BT, Self.VOCAB)](),
+                grid_dim=nblk,
+                block_dim=TPB_REDUCE,
             )

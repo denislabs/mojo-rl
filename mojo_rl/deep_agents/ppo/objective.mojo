@@ -1,71 +1,45 @@
 """PPOObjective[ACT_] — quaternary Module for the PPO clipped-surrogate loss.
 
-Phase I.2.5. Upgraded from binary (actor_out, packed_aux) to quaternary
-(actor_out, action, old_log_prob, advantage) — the natural shape of
-the PPO loss. The earlier aux-packing workaround was a leak in the
-FullGraph thesis at I.2 landing time; I.2.5's GraphNode N-ary refactor
-makes it possible to declare each of the four inputs as a distinct
-InputSlot in `PPOActorLoss` without packing.
-
 Inputs (ARITY=4):
-
-  - actor_output     [BATCH, 2*ACT]   from GaussianHead: [mu | log_std].
-  - action           [BATCH, ACT]     unbounded sample stored at rollout time.
-  - old_log_prob     [BATCH, 1]       log p_θ_old(action | s) at rollout.
-  - advantage        [BATCH, 1]       GAE advantage, normalised per minibatch.
+  - actor_output  [BATCH, 2*ACT]  from GaussianHead: [mu | log_std].
+  - action        [BATCH, ACT]    unbounded sample stored at rollout time.
+  - old_log_prob  [BATCH, 1]      log p_θ_old(action | s) at rollout.
+  - advantage     [BATCH, 1]      GAE advantage, normalised per minibatch.
 
 Output:
+  - loss_per_b    [BATCH, 1]      per-sample (un-averaged) PPO loss.
 
-  - loss_per_b       [BATCH, 1]       per-sample (un-averaged) PPO loss.
-
-The 1/BATCH mean factor lives in the seed gradient
-(`seed_grad_inv_batch`), not inside this kernel.
+The 1/BATCH mean factor lives in the seed gradient, not inside this kernel.
 
 Math (per sample b):
     new_log_prob = Σ_j  -0.5 * (LOG_2PI + 2·ls_j + ((a_j-mu_j)/std_j)²)
     diff         = clamp(new_log_prob - old_log_prob, ±20)
     ratio        = exp(diff)
-    unclipped    = ratio * adv
-    clipped      = clip(ratio, 1-ε, 1+ε) * adv
+    unclipped    = ratio * adv ;  clipped = clip(ratio, 1±ε) * adv
     entropy      = Σ_j  0.5 * (LOG_2PI + 1 + 2·ls_j)
     loss_per_b   = -min(unclipped, clipped) - entropy_coef * entropy
 
-Backward (per sample b, with go = grad_loss_per_b[b]):
-    is_clipped = clipped < unclipped
-    If clipped (entropy still flows on log_std):
-        grad_mu_j  = 0
-        grad_ls_j  = -entropy_coef * go
-    Else:
-        d_lp_d_mu_j = z_j / std_j
-        d_lp_d_ls_j = z_j² - 1
-        grad_mu_j   = -adv * ratio * d_lp_d_mu_j * go            (clip ±10)
-        grad_ls_j   = (-adv * ratio * d_lp_d_ls_j - entropy_coef) * go  (clip ±10)
+grad_action / grad_old_log_prob / grad_advantage are identically zero
+(non-differentiable rollout-time inputs); per-element grad clip ±10.
 
-Per-element grad clip ±10. grad_action / grad_old_log_prob / grad_advantage
-are all identically zero (non-differentiable rollout-time inputs).
-
-Forward caches the four input pointers (no copy — graph keeps the buffers
-live across forward + vjp), `vjp` reads them. Mirrors MSELoss's
-`cache_logits` pattern.
-
-GPU forward / vjp are one-thread-per-batch-row kernels (per-row math
-is purely local; no cross-batch reductions). Cached input pointers
-stamped by forward are device-side tile pointers; the graph keeps
-those buffers live across forward + vjp, so vjp's kernel reads from
-the same device addresses without an extra cache copy.
+STORAGE migration: standalone arity-4 leaf (NOT in a ComputeGraph — the graph
+dispatch tops out at arity 3). `vjp` reads the four inputs from `forward_input`
+(no cached pointers). The CPU loops + the two GPU kernels are unchanged from the
+legacy leaf; only the storage surface (`TensorRefs[4, o]` + owned `Tensor` out +
+`.lt` views) differs.
 """
 
 from std.math import exp
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core import Initializer, AMPPolicy, NoAMP
-from mojo_rl.nn.core.module import Module, typed_view, typed_view_mut, mptr
-from mojo_rl.nn.core.tensor_pack import TensorPack
-from mojo_rl.nn.core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Initializer
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 
 
 comptime LOG_STD_MIN: Scalar[DT] = -5.0
@@ -77,8 +51,7 @@ comptime LOG_2PI: Scalar[DT] = 1.8378770664093453
 
 
 # ──────────────────────────────────────────────────────────────────────
-# GPU kernels — one thread per batch row. Per-row math is purely local
-# (no cross-batch reductions), so this maps 1:1 to a `BATCH`-wide grid.
+# GPU kernels — one thread per batch row (per-row math is purely local).
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -106,12 +79,8 @@ def _ppo_forward_kernel[ACT: Int, BATCH: Int](
         var std = exp(ls)
         var a = rebind[Scalar[DT]](act[b, j])
         var z = (a - mu) / (std + EPS_STD)
-        new_log_prob += Scalar[DT](-0.5) * (
-            LOG_2PI + Scalar[DT](2.0) * ls + z * z
-        )
-        entropy += Scalar[DT](0.5) * (
-            LOG_2PI + Scalar[DT](1.0) + Scalar[DT](2.0) * ls
-        )
+        new_log_prob += Scalar[DT](-0.5) * (LOG_2PI + Scalar[DT](2.0) * ls + z * z)
+        entropy += Scalar[DT](0.5) * (LOG_2PI + Scalar[DT](1.0) + Scalar[DT](2.0) * ls)
     var olp_b = rebind[Scalar[DT]](olp[b, 0])
     var adv_b = rebind[Scalar[DT]](adv[b, 0])
     var diff = new_log_prob - olp_b
@@ -149,12 +118,10 @@ def _ppo_vjp_kernel[ACT: Int, BATCH: Int](
     var b = Int(global_idx.x)
     if b >= BATCH:
         return
-    # Non-differentiable rollout inputs — zero their grad slots.
     for j in range(ACT):
         gi1[b, j] = Scalar[DT](0.0)
     gi2[b, 0] = Scalar[DT](0.0)
     gi3[b, 0] = Scalar[DT](0.0)
-    # Re-derive ratio + is_clipped (same math as forward).
     var new_log_prob: Scalar[DT] = 0.0
     for j in range(ACT):
         var mu = rebind[Scalar[DT]](ao[b, j])
@@ -166,9 +133,7 @@ def _ppo_vjp_kernel[ACT: Int, BATCH: Int](
         var std = exp(ls)
         var a = rebind[Scalar[DT]](act[b, j])
         var z = (a - mu) / (std + EPS_STD)
-        new_log_prob += Scalar[DT](-0.5) * (
-            LOG_2PI + Scalar[DT](2.0) * ls + z * z
-        )
+        new_log_prob += Scalar[DT](-0.5) * (LOG_2PI + Scalar[DT](2.0) * ls + z * z)
     var olp_b = rebind[Scalar[DT]](olp[b, 0])
     var adv_b = rebind[Scalar[DT]](adv[b, 0])
     var diff = new_log_prob - olp_b
@@ -203,9 +168,7 @@ def _ppo_vjp_kernel[ACT: Int, BATCH: Int](
             var d_lp_d_mu = z / (std + EPS_STD)
             var d_lp_d_ls = z * z - Scalar[DT](1.0)
             var gmu = -adv_b * ratio * d_lp_d_mu * go_b
-            var gls = (
-                -adv_b * ratio * d_lp_d_ls - entropy_coef
-            ) * go_b
+            var gls = (-adv_b * ratio * d_lp_d_ls - entropy_coef) * go_b
             if gmu > GRAD_CLIP:
                 gmu = GRAD_CLIP
             elif gmu < -GRAD_CLIP:
@@ -222,56 +185,31 @@ struct PPOObjective[ACT_: Int](Module):
     """PPO clipped-surrogate + entropy bonus as a quaternary Module."""
 
     comptime ARITY: Int = 4
-    # [actor_output (2*ACT) | action (ACT) | old_log_prob (1) | advantage (1)].
     comptime IN_DIMS = Self._build_in_dims()
-    comptime OUT_DIM: Int = 1                  # per-sample loss
+    comptime OUT_DIM: Int = 1
 
     @staticmethod
     def _build_in_dims() -> InlineArray[Int, 4]:
         var d = InlineArray[Int, 4](fill=1)
         d[0] = 2 * Self.ACT_
         d[1] = Self.ACT_
-        # d[2] = 1, d[3] = 1 already from fill=1
         return d
 
     var clip_eps: Scalar[DT]
     var entropy_coef: Scalar[DT]
 
-    # Input-pointer cache populated by forward, consumed by vjp.
-    var _cache_ao_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _cache_act_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _cache_olp_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _cache_adv_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-
-    var ts: TargetStorage
-
     def __init__(out self):
         self.clip_eps = Scalar[DT](0.2)
         self.entropy_coef = Scalar[DT](0.0)
-        self._cache_ao_ptr = None
-        self._cache_act_ptr = None
-        self._cache_olp_ptr = None
-        self._cache_adv_ptr = None
-        self.ts = TargetStorage.make_uninit()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
         comptime assert target == "cpu" or target == "gpu", (
             "PPOObjective: target must be 'cpu' or 'gpu'"
         )
-        comptime if target == "gpu":
-            if not ctx:
-                raise Error(
-                    "PPOObjective.make[target='gpu']: ctx required"
-                )
-        var op = Self()
-        op.ts = TargetStorage.make[target](ctx=ctx)
-        return op^
+        return Self()
 
     def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
         comptime if ATTR == "clip_eps":
@@ -280,45 +218,37 @@ struct PPOObjective[ACT_: Int](Module):
             self.entropy_coef = value
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[Self.ARITY, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["PPOObjective", target](self.ts.target_tag)
         comptime ACT = Self.ACT_
-
-        var ao = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var act = inputs.tile[1, BATCH, Self.IN_DIMS[1]]()
-        var olp = inputs.tile[2, BATCH, Self.IN_DIMS[2]]()
-        var adv = inputs.tile[3, BATCH, Self.IN_DIMS[3]]()
-        var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
-        # Cache input pointers for vjp.
-        self._cache_ao_ptr = mptr(ao.ptr)
-        self._cache_act_ptr = mptr(act.ptr)
-        self._cache_olp_ptr = mptr(olp.ptr)
-        self._cache_adv_ptr = mptr(adv.ptr)
-
+        ref ao = inputs[0]
+        ref act = inputs[1]
+        ref olp = inputs[2]
+        ref adv = inputs[3]
         comptime if target == "cpu":
-            for b in range(BATCH):
+            out.ensure(B * 1)
+            var ao_v = TileTensor(ao.data, row_major[B, 2 * ACT]())
+            var act_v = TileTensor(act.data, row_major[B, ACT]())
+            var olp_v = TileTensor(olp.data, row_major[B, 1]())
+            var adv_v = TileTensor(adv.data, row_major[B, 1]())
+            var out_v = TileTensor(out.data, row_major[B, 1]())
+            for b in range(B):
                 var new_log_prob: Scalar[DT] = 0.0
                 var entropy: Scalar[DT] = 0.0
                 for j in range(ACT):
-                    var mu = ao[b, j]
-                    var ls = ao[b, ACT + j]
+                    var mu = ao_v[b, j]
+                    var ls = ao_v[b, ACT + j]
                     if ls < LOG_STD_MIN:
                         ls = LOG_STD_MIN
                     elif ls > LOG_STD_MAX:
                         ls = LOG_STD_MAX
                     var std = exp(ls)
-                    var a = act[b, j]
+                    var a = act_v[b, j]
                     var z = (a - mu) / (std + EPS_STD)
                     new_log_prob += Scalar[DT](-0.5) * (
                         LOG_2PI + Scalar[DT](2.0) * ls + z * z
@@ -326,8 +256,8 @@ struct PPOObjective[ACT_: Int](Module):
                     entropy += Scalar[DT](0.5) * (
                         LOG_2PI + Scalar[DT](1.0) + Scalar[DT](2.0) * ls
                     )
-                var olp_b = olp[b, 0]
-                var adv_b = adv[b, 0]
+                var olp_b = olp_v[b, 0]
+                var adv_b = adv_v[b, 0]
                 var diff = new_log_prob - olp_b
                 if diff > LOG_PROB_DIFF_MAX:
                     diff = LOG_PROB_DIFF_MAX
@@ -344,93 +274,78 @@ struct PPOObjective[ACT_: Int](Module):
                 var min_obj: Scalar[DT] = unclipped_obj
                 if clipped_obj < unclipped_obj:
                     min_obj = clipped_obj
-                out[b, 0] = -min_obj - self.entropy_coef * entropy
+                out_v[b, 0] = -min_obj - self.entropy_coef * entropy
         else:
-            # GPU: reconstruct LayoutTensors over the typed-view raw
-            # pointers and dispatch one thread per batch row.
-            var ao_p = mptr(ao.ptr)
-            var act_p = mptr(act.ptr)
-            var olp_p = mptr(olp.ptr)
-            var adv_p = mptr(adv.ptr)
-            var out_p = mptr(out.ptr)
-            var ao_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
-            ](ao_p)
-            var act_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, ACT), MutAnyOrigin,
-            ](act_p)
-            var olp_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](olp_p)
-            var adv_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](adv_p)
-            var out_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](out_p)
-            comptime n_blocks = (BATCH + TPB - 1) // TPB
-            comptime fwd_kernel = _ppo_forward_kernel[ACT, BATCH]
-            var ctx = self.ts.ctx.value()
-            ctx.enqueue_function[fwd_kernel](
-                ao_lt, act_lt, olp_lt, adv_lt, out_lt,
+            var c = ctx.value()
+            out.ensure_gpu(c, B * 1)
+            comptime n_blocks = (B + TPB - 1) // TPB
+            c.enqueue_function[_ppo_forward_kernel[ACT, B]](
+                ao.lt["gpu", Layout.row_major(B, 2 * ACT)](),
+                act.lt["gpu", Layout.row_major(B, ACT)](),
+                olp.lt["gpu", Layout.row_major(B, 1)](),
+                adv.lt["gpu", Layout.row_major(B, 1)](),
+                out.lt["gpu", Layout.row_major(B, 1)](),
                 self.clip_eps, self.entropy_coef,
                 grid_dim=n_blocks, block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[Self.ARITY, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[Self.ARITY, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["PPOObjective", target](self.ts.target_tag)
         comptime ACT = Self.ACT_
-
-        var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi0 = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()    # grad_actor_output
-        var gi1 = grad_inputs.tile[1, BATCH, Self.IN_DIMS[1]]()   # grad_action
-        var gi2 = grad_inputs.tile[2, BATCH, Self.IN_DIMS[2]]()   # grad_old_log_prob
-        var gi3 = grad_inputs.tile[3, BATCH, Self.IN_DIMS[3]]()   # grad_advantage
-
+        ref ao = forward_input[0]
+        ref act = forward_input[1]
+        ref olp = forward_input[2]
+        ref adv = forward_input[3]
+        ref gi0 = grad_inputs[0]
+        ref gi1 = grad_inputs[1]
+        ref gi2 = grad_inputs[2]
+        ref gi3 = grad_inputs[3]
         comptime if target == "cpu":
-            # Non-differentiable rollout inputs — zero their grad slots
-            # so ComputeGraph's scatter-add is a no-op.
-            for b in range(BATCH):
+            gi0.ensure(B * 2 * ACT)
+            gi1.ensure(B * ACT)
+            gi2.ensure(B * 1)
+            gi3.ensure(B * 1)
+            var ao_v = TileTensor(ao.data, row_major[B, 2 * ACT]())
+            var act_v = TileTensor(act.data, row_major[B, ACT]())
+            var olp_v = TileTensor(olp.data, row_major[B, 1]())
+            var adv_v = TileTensor(adv.data, row_major[B, 1]())
+            var go_v = TileTensor(grad_output.data, row_major[B, 1]())
+            var gi0_v = TileTensor(gi0.data, row_major[B, 2 * ACT]())
+            var gi1_v = TileTensor(gi1.data, row_major[B, ACT]())
+            var gi2_v = TileTensor(gi2.data, row_major[B, 1]())
+            var gi3_v = TileTensor(gi3.data, row_major[B, 1]())
+            for b in range(B):
                 for j in range(ACT):
-                    gi1[b, j] = Scalar[DT](0.0)
-                gi2[b, 0] = Scalar[DT](0.0)
-                gi3[b, 0] = Scalar[DT](0.0)
-            var ao_p = self._cache_ao_ptr.value()
-            var act_p = self._cache_act_ptr.value()
-            var olp_p = self._cache_olp_ptr.value()
-            var adv_p = self._cache_adv_ptr.value()
-            for b in range(BATCH):
+                    gi1_v[b, j] = Scalar[DT](0.0)
+                gi2_v[b, 0] = Scalar[DT](0.0)
+                gi3_v[b, 0] = Scalar[DT](0.0)
                 var new_log_prob: Scalar[DT] = 0.0
                 for j in range(ACT):
-                    var mu = ao_p[b * Self.IN_DIMS[0] + j]
-                    var ls = ao_p[b * Self.IN_DIMS[0] + ACT + j]
+                    var mu = ao_v[b, j]
+                    var ls = ao_v[b, ACT + j]
                     if ls < LOG_STD_MIN:
                         ls = LOG_STD_MIN
                     elif ls > LOG_STD_MAX:
                         ls = LOG_STD_MAX
                     var std = exp(ls)
-                    var a = act_p[b * Self.IN_DIMS[1] + j]
+                    var a = act_v[b, j]
                     var z = (a - mu) / (std + EPS_STD)
                     new_log_prob += Scalar[DT](-0.5) * (
                         LOG_2PI + Scalar[DT](2.0) * ls + z * z
                     )
-                var olp_b = olp_p[b]
-                var adv_b = adv_p[b]
+                var olp_b = olp_v[b, 0]
+                var adv_b = adv_v[b, 0]
                 var diff = new_log_prob - olp_b
                 if diff > LOG_PROB_DIFF_MAX:
                     diff = LOG_PROB_DIFF_MAX
@@ -445,31 +360,26 @@ struct PPOObjective[ACT_: Int](Module):
                 var unclipped_obj = ratio * adv_b
                 var clipped_obj = clipped_ratio * adv_b
                 var is_clipped = clipped_obj < unclipped_obj
-
-                var go_b = go[b, 0]
-
+                var go_b = go_v[b, 0]
                 for j in range(ACT):
                     if is_clipped:
-                        gi0[b, j] = Scalar[DT](0.0)
-                        gi0[b, ACT + j] = (
-                            -self.entropy_coef * Scalar[DT](1.0) * go_b
-                        )
+                        gi0_v[b, j] = Scalar[DT](0.0)
+                        gi0_v[b, ACT + j] = -self.entropy_coef * Scalar[DT](1.0) * go_b
                     else:
-                        var mu = ao_p[b * Self.IN_DIMS[0] + j]
-                        var ls = ao_p[b * Self.IN_DIMS[0] + ACT + j]
+                        var mu = ao_v[b, j]
+                        var ls = ao_v[b, ACT + j]
                         if ls < LOG_STD_MIN:
                             ls = LOG_STD_MIN
                         elif ls > LOG_STD_MAX:
                             ls = LOG_STD_MAX
                         var std = exp(ls)
-                        var a = act_p[b * Self.IN_DIMS[1] + j]
+                        var a = act_v[b, j]
                         var z = (a - mu) / (std + EPS_STD)
                         var d_lp_d_mu = z / (std + EPS_STD)
                         var d_lp_d_ls = z * z - Scalar[DT](1.0)
                         var gmu = -adv_b * ratio * d_lp_d_mu * go_b
                         var gls = (
-                            -adv_b * ratio * d_lp_d_ls
-                            - self.entropy_coef
+                            -adv_b * ratio * d_lp_d_ls - self.entropy_coef
                         ) * go_b
                         if gmu > GRAD_CLIP:
                             gmu = GRAD_CLIP
@@ -479,50 +389,25 @@ struct PPOObjective[ACT_: Int](Module):
                             gls = GRAD_CLIP
                         elif gls < -GRAD_CLIP:
                             gls = -GRAD_CLIP
-                        gi0[b, j] = gmu
-                        gi0[b, ACT + j] = gls
+                        gi0_v[b, j] = gmu
+                        gi0_v[b, ACT + j] = gls
         else:
-            # GPU: kernel zeros gi1/gi2/gi3 and computes gi0 in one pass.
-            # Cached input pointers are the device tile pointers stamped
-            # by forward (graph buffers stay live across forward+vjp).
-            var ao_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
-            ](self._cache_ao_ptr.value())
-            var act_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, ACT), MutAnyOrigin,
-            ](self._cache_act_ptr.value())
-            var olp_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](self._cache_olp_ptr.value())
-            var adv_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](self._cache_adv_ptr.value())
-            var go_p = mptr(go.ptr)
-            var gi0_p = mptr(gi0.ptr)
-            var gi1_p = mptr(gi1.ptr)
-            var gi2_p = mptr(gi2.ptr)
-            var gi3_p = mptr(gi3.ptr)
-            var go_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](go_p)
-            var gi0_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 2 * ACT), MutAnyOrigin,
-            ](gi0_p)
-            var gi1_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, ACT), MutAnyOrigin,
-            ](gi1_p)
-            var gi2_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](gi2_p)
-            var gi3_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, 1), MutAnyOrigin,
-            ](gi3_p)
-            comptime n_blocks = (BATCH + TPB - 1) // TPB
-            comptime vjp_kernel = _ppo_vjp_kernel[ACT, BATCH]
-            var ctx = self.ts.ctx.value()
-            ctx.enqueue_function[vjp_kernel](
-                ao_lt, act_lt, olp_lt, adv_lt, go_lt,
-                gi0_lt, gi1_lt, gi2_lt, gi3_lt,
+            var c = ctx.value()
+            gi0.ensure_gpu(c, B * 2 * ACT)
+            gi1.ensure_gpu(c, B * ACT)
+            gi2.ensure_gpu(c, B * 1)
+            gi3.ensure_gpu(c, B * 1)
+            comptime n_blocks = (B + TPB - 1) // TPB
+            c.enqueue_function[_ppo_vjp_kernel[ACT, B]](
+                ao.lt["gpu", Layout.row_major(B, 2 * ACT)](),
+                act.lt["gpu", Layout.row_major(B, ACT)](),
+                olp.lt["gpu", Layout.row_major(B, 1)](),
+                adv.lt["gpu", Layout.row_major(B, 1)](),
+                grad_output.lt["gpu", Layout.row_major(B, 1)](),
+                gi0.lt["gpu", Layout.row_major(B, 2 * ACT)](),
+                gi1.lt["gpu", Layout.row_major(B, ACT)](),
+                gi2.lt["gpu", Layout.row_major(B, 1)](),
+                gi3.lt["gpu", Layout.row_major(B, 1)](),
                 self.clip_eps, self.entropy_coef,
                 grid_dim=n_blocks, block_dim=TPB,
             )

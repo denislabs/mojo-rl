@@ -43,7 +43,7 @@ struct TD3Agent[
     SAMPLE: SampleBlock,
     ACTOR: Module,
     CRITIC: Module,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Thin facade over `TD3Trainer` + off-policy drivers. Dimensions
     (OBS / ACT / BATCH) derive from `SAMPLE`."""
 

@@ -53,7 +53,9 @@ comptime PU = 32
 comptime BINS = 51
 comptime B = 16
 comptime T = 16
-comptime T_IMAG = 10
+comptime T_IMAG = 15      # horizon 15 (was 10): the actor must SEE the slow cart
+                          # drift that ends episodes; 10 was too short to credit it
+                          # → a stability ceiling at ~100. See header note.
 comptime CAP = 200_000
 
 comptime Ag = DreamerV3Agent[
@@ -83,8 +85,8 @@ def _greedy_eval(
     mut ag: Ag, mut env: CartPoleEnv[DT]
 ) raises -> Scalar[DT]:
     """Mean return over EVAL_EPISODES with the greedy (argmax) policy."""
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var actbuf = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
     var total: Scalar[DT] = 0.0
     for _e in range(EVAL_EPISODES):
         ag.reset_belief()
@@ -108,34 +110,31 @@ def main() raises:
     print("=" * 70)
     seed(42)
     var env = CartPoleEnv[DT]()
-    # out_init_scale: scale of the (Kaiming) reward/critic OUTPUT init.
-    #   0.0 = paper zero-init (best for negative-reward tasks; Pendulum uses it).
-    #   small nonzero keeps some Kaiming optimism — empirically helps this
-    #   POSITIVE-reward task explore / hold the solve (zero-init regressed it to
-    #   an unstable oscillation). Try 0.1 → up toward 1.0 (full Kaiming = the
-    #   original fast-solve behavior) if it still collapses; down toward 0 if it
-    #   over-explores.
-    # CartPole (discrete, POSITIVE reward) wants the opposite of Pendulum:
-    #   * out_init_scale=1.0 → full Kaiming reward/critic init = the original
-    #     optimistic init that solved at 20k. The optimism drives early
-    #     exploration; zero-init (0.0) regressed it, 0.1 reached 441 but didn't
-    #     hold. (Finding-4 zero-init is only needed for NEGATIVE-reward tasks.)
-    #   * actent=3e-4 (default) → discrete already explores via the unimix
-    #     categorical; extra entropy only added noise and made it WORSE (1e-3
-    #     → FINAL 56). Keep entropy low.
-    # NOTE: CartPole's deeper failure is a model-exploitation gap — the WM
-    # imagines the pole never falls (ret_m≈332≈1/(1-γ)) while real ret≈50, so
-    # the actor gets no improvement signal. Optimistic init is the best lever
-    # for the solve; if it still won't hold, the open-loop diagnostic on the
-    # cont/termination path is the next investigation.
+    # SOLVES (mean_ret(10)=500, sustained from ~35k). Two findings got it here:
+    #   1. TERMINATION DATA (the real fix): the driver now stores the fallen obs
+    #      via `record_terminal` so the WM continue head learns `latent(fall)→0`.
+    #      Before, the fallen obs was overwritten by the reset → the cont head
+    #      never fired → imagination over-survived → value collapsed to a constant
+    #      → zero actor advantage → stuck ~25-43. (Localized with the open-loop
+    #      diagnostic; see examples/cartpole/cartpole_dreamerv3_openloop_diag.mojo.)
+    #   2. STABILITY (the secondary plateau): with termination fixed it learned but
+    #      plateaued ~100 — a stability ceiling. lr=3e-4 + T_IMAG=10 sit on a
+    #      stability boundary (T_IMAG=10 is too short to credit the slow cart drift
+    #      that ends episodes; raising it at lr=3e-4 makes the value run away). The
+    #      reference recipe — longer horizon (T_IMAG=15) + lower lr (1.5e-4) — is
+    #      stable AND sees the drift → full solve.
+    #   out_init_scale=1.0 (full Kaiming reward/critic init): the early optimism
+    #   drives exploration on this dense POSITIVE-reward task; zero-init (good for
+    #   negative-reward Pendulum) over-damps it. actent stays at the 3e-4 default
+    #   (the unimix categorical already explores).
     var ag = Ag.make(
-        lr=Scalar[DT](3e-4), learning_starts=LEARN_START, warmup_steps=500,
+        lr=Scalar[DT](1.5e-4), learning_starts=LEARN_START, warmup_steps=500,
         out_init_scale=Scalar[DT](1.0),
     )
 
     var obs = env.reset_obs_list()
-    var obsbuf = alloc[Scalar[DT]](OBS)
-    var actbuf = alloc[Scalar[DT]](ACT)
+    var obsbuf = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
+    var actbuf = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
 
     for step in range(TOTAL_STEPS):
         for i in range(OBS):
@@ -158,6 +157,12 @@ def main() raises:
         )
         obs = res[0].copy()
         if res[2]:
+            # store the terminal (fallen) obs as its own frame so the WM
+            # continue head can learn `latent(terminal)→0` (else imagination
+            # over-survives → value collapse → no actor signal).
+            for i in range(OBS):
+                obsbuf[i] = res[0][i]
+            ag.record_terminal(obsbuf)
             obs = env.reset_obs_list()
             ag.reset_belief()
         if step >= LEARN_START and step % TRAIN_EVERY == 0:
@@ -170,6 +175,9 @@ def main() raises:
                 "  step", step, " ret=", ev,
                 " real_rew=", ag.dbg_real_rew(), " rew_pred=", ag.dbg_rew_pred(),
                 " ret_m=", ag.dbg_ret_mean(), " ret_sd=", ag.dbg_ret_std(),
+                " val_m=", ag.dbg_val_mean(), " val_sd=", ag.dbg_val_std(),
+                " feat_sd=", ag.dbg_feat_std(),
+                " con_m=", ag.dbg_con_mean(), " con_min=", ag.dbg_con_min(),
                 " plogit_abs=", ag.dbg_pmean_abs(),
                 " WM=", ag.last_wm_loss(), " AC=", ag.last_ac_loss(),
             )

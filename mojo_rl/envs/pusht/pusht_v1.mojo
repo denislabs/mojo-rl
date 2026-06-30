@@ -147,7 +147,7 @@ struct PushTEnv[DTYPE: DType](
     var last_target_y: Scalar[dtype]
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================
@@ -217,8 +217,7 @@ struct PushTEnv[DTYPE: DType](
         return LayoutTensor[
             dtype,
             Layout.row_major(1, PushTLayout.STATE_SIZE),
-            MutAnyOrigin,
-        ](self.state_data.unsafe_ptr())
+        ](Span(self.state_data))
 
     @always_inline
     def _shapes_view(
@@ -235,7 +234,7 @@ struct PushTEnv[DTYPE: DType](
             dtype,
             Layout.row_major(PushTShapeBuf.NUM_SHAPES, SHAPE_MAX_SIZE),
             MutAnyOrigin,
-        ](self.shapes_data.unsafe_ptr().bitcast[Scalar[dtype]]())
+        ](self.shapes_data.unsafe_ptr().bitcast[Scalar[dtype]]().as_unsafe_any_origin())
 
     @always_inline
     def _contacts_view(
@@ -250,8 +249,7 @@ struct PushTEnv[DTYPE: DType](
             Layout.row_major(
                 1, PushTLayout.MAX_CONTACTS, CONTACT_DATA_SIZE
             ),
-            MutAnyOrigin,
-        ](self.contacts_data.unsafe_ptr())
+        ](Span(self.contacts_data))
 
     # =========================================================================
     # Initialization helpers

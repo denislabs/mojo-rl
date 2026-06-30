@@ -1,9 +1,10 @@
-"""MinMaxNorm[DIM] — per-sample (x - min) / (max - min) scaling.
+"""MinMaxNorm[DIM] — per-sample (x - min) / (max - min) scaling (storage surface).
 
-Phase 2 of `nn/PORTING_PLAN.md`. Used by MuZero (paper appendix
-Training, see muzero-general models.py:138-145) and EZ-V2 to keep the
-representation network's output bounded, with gradient flowing through
-the rescaling so the rep network learns to produce well-spread outputs.
+Transformed from legacy `nn.primitives.MinMaxNorm` (surface-only change). Param-
+less; the per-sample copy of the input row is leaf-owned in a `Tensor` cache so
+backward can re-derive min/max/argmin/argmax without indexing the orchestrator's
+input slab. CPU loops + the two GPU kernels (one block per sample, threads stride
+over DIM, block reductions for min/max/argmin/argmax/G/Gy) are carried verbatim.
 
 Math (per sample of dim N):
     m = min(x), M = max(x), s = clamp(M - m, ≥ ε)
@@ -16,41 +17,34 @@ Backward (given grad_y, compute grad_x):
     grad_x[argmin] = (Gy + grad_y[argmin] - G) / s
     grad_x[i ∉ {argmin, argmax}] = grad_y[i] / s
     grad_x = 0 in the degenerate (M - m < ε) case.
-
-Sum-zero invariant: Σ grad_x = 0 (gradient is shift-invariant, since
-y is shift-invariant in x).
-
-Cache: leaf-owned copy of the input row, so backward can re-derive
-min/max/argmin/argmax without indexing the orchestrator's input slab.
-CPU + GPU paths. GPU layout: one block per sample, threads parallelise
-DIM. Block reductions handle min / max / argmin / argmax / G / Gy.
 """
 
 from std.gpu import thread_idx, block_idx
 from std.gpu.primitives import block
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
+from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT
-from ..core import Initializer, AMPPolicy, NoAMP, Cache
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
-)
+from mojo_rl.nn.constants import DT
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
 comptime MMN_EPS: Scalar[DT] = 1e-5
 comptime MMN_TPB: Int = 128
+# Forward register-caches the thread's feature slice (read once → min/max →
+# normalize from registers) when ELEMS≤cap; else the legacy 2-read path.
+comptime MMN_REG_CAP = 8
 
 
 # ──────────────────────────────────────────────────────────────────────
-# GPU kernels — one block per sample, threads stride over DIM.
-# Block reductions: min, max for stats; min over argmin/argmax sentinels
-# for index resolution; sum for G = Σ grad_y and Gy = Σ grad_y · y.
+# GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) —
+# one block per sample, threads stride over DIM. Block reductions:
+# min, max for stats; min over argmin/argmax sentinels for index
+# resolution; sum for G = Σ grad_y and Gy = Σ grad_y · y.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -65,34 +59,59 @@ def _min_max_norm_forward_kernel[
     var t = Int(thread_idx.x)
     if b >= BATCH:
         return
+    comptime ELEMS = (DIM + MMN_TPB - 1) // MMN_TPB
+    comptime REG_CACHE = ELEMS <= MMN_REG_CAP
 
     var pos_inf = Scalar[DT](1e30)
     var neg_inf = Scalar[DT](-1e30)
     var my_min = pos_inf
     var my_max = neg_inf
-    var idx = t
-    while idx < DIM:
-        var v = rebind[Scalar[DT]](input[b, idx])
-        if v < my_min:
-            my_min = v
-        if v > my_max:
-            my_max = v
-        idx += MMN_TPB
 
-    var min_val = block.min[block_size=MMN_TPB, broadcast=True](val=my_min)
-    var max_val = block.max[block_size=MMN_TPB, broadcast=True](val=my_max)
+    comptime if REG_CACHE:
+        var slice = InlineArray[Scalar[DT], ELEMS](fill=Scalar[DT](0))
 
-    var s = max_val - min_val
-    if s < MMN_EPS:
-        s = MMN_EPS
-    var inv_s = Scalar[DT](1.0) / s
+        comptime for e in range(ELEMS):
+            var col = t + e * MMN_TPB
+            if col < DIM:
+                var v = rebind[Scalar[DT]](input[b, col])
+                slice[e] = v
+                if v < my_min:
+                    my_min = v
+                if v > my_max:
+                    my_max = v
+        var min_val = block.min[block_size=MMN_TPB, broadcast=True](val=my_min)
+        var max_val = block.max[block_size=MMN_TPB, broadcast=True](val=my_max)
+        var s = max_val - min_val
+        if s < MMN_EPS:
+            s = MMN_EPS
+        var inv_s = Scalar[DT](1.0) / s
 
-    idx = t
-    while idx < DIM:
-        var x = rebind[Scalar[DT]](input[b, idx])
-        cache[b, idx] = x
-        output[b, idx] = (x - min_val) * inv_s
-        idx += MMN_TPB
+        comptime for e in range(ELEMS):
+            var col = t + e * MMN_TPB
+            if col < DIM:
+                cache[b, col] = slice[e]
+                output[b, col] = (slice[e] - min_val) * inv_s
+    else:
+        var idx = t
+        while idx < DIM:
+            var v = rebind[Scalar[DT]](input[b, idx])
+            if v < my_min:
+                my_min = v
+            if v > my_max:
+                my_max = v
+            idx += MMN_TPB
+        var min_val = block.min[block_size=MMN_TPB, broadcast=True](val=my_min)
+        var max_val = block.max[block_size=MMN_TPB, broadcast=True](val=my_max)
+        var s = max_val - min_val
+        if s < MMN_EPS:
+            s = MMN_EPS
+        var inv_s = Scalar[DT](1.0) / s
+        idx = t
+        while idx < DIM:
+            var x = rebind[Scalar[DT]](input[b, idx])
+            cache[b, idx] = x
+            output[b, idx] = (x - min_val) * inv_s
+            idx += MMN_TPB
 
 
 def _min_max_norm_backward_kernel[
@@ -184,71 +203,50 @@ def _min_max_norm_backward_kernel[
         idx += MMN_TPB
 
 
-struct MinMaxNorm[DIM: Int](Module):
-    comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
-    comptime OUT_DIM = Self.DIM
+struct MinMaxNorm[DIM_: Int](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime OUT_DIM = Self.DIM_
 
-    # Cache: per-sample copy of x, re-scanned for min/max/argmin/argmax
-    # in vjp. Cheaper than caching indices (no int-as-float fragility).
-    var cache_x: Cache["cache_x"]
-    var ts: TargetStorage
+    # Cache: per-sample copy of x, re-scanned for min/max/argmin/argmax in
+    # vjp. Cheaper than caching indices (no int-as-float fragility).
+    var cache_x: Tensor  # [BATCH, DIM]
 
     def __init__(out self):
-        self.cache_x = Cache["cache_x"]()
-        self.ts = TargetStorage.make_uninit()
+        self.cache_x = Tensor()
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. INIT ignored (no params)."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "MinMaxNorm: target must be 'cpu' or 'gpu'"
-        )
-        comptime assert Self.DIM > 1, "MinMaxNorm: DIM must be > 1"
-        var n = Self()
-        comptime if target == "cpu":
-            n.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["MinMaxNorm.make[target='gpu']"](ctx)
-            n.ts = TargetStorage.make_gpu(ctx_v)
-        return n^
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        comptime assert Self.DIM_ > 1, "MinMaxNorm: DIM must be > 1"
+        return Self()
 
-    def _ensure_cache_gpu(mut self, batch: Int) raises:
-        var ctx = self.ts.ctx.value()
-        self.cache_x.ensure_gpu(ctx, batch * Self.DIM)
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["MinMaxNorm", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            self.cache_x.ensure_cpu(BATCH * Self.DIM)
-            var cache_v = TileTensor(
-                self.cache_x.cpu, row_major[BATCH, Self.DIM](),
+            out.ensure(B * Self.DIM_)
+            self.cache_x.ensure(B * Self.DIM_)
+            var in_t = TileTensor(in0.data, row_major[B, Self.DIM_]())
+            var out_t = TileTensor(out.data, row_major[B, Self.DIM_]())
+            var cache_t = TileTensor(
+                self.cache_x.data, row_major[B, Self.DIM_]()
             )
-            for b in range(BATCH):
-                var x0: Scalar[DT] = input[b, 0]
+            for b in range(B):
+                var x0: Scalar[DT] = in_t[b, 0]
                 var min_val = x0
                 var max_val = x0
-                cache_v[b, 0] = x0
-                for i in range(1, Self.DIM):
-                    var v: Scalar[DT] = input[b, i]
-                    cache_v[b, i] = v
+                cache_t[b, 0] = x0
+                for i in range(1, Self.DIM_):
+                    var v: Scalar[DT] = in_t[b, i]
+                    cache_t[b, i] = v
                     if v < min_val:
                         min_val = v
                     if v > max_val:
@@ -257,56 +255,50 @@ struct MinMaxNorm[DIM: Int](Module):
                 if s < MMN_EPS:
                     s = MMN_EPS
                 var inv_s = Scalar[DT](1.0) / s
-                for i in range(Self.DIM):
-                    output_v[b, i] = (cache_v[b, i] - min_val) * inv_s
+                for i in range(Self.DIM_):
+                    out_t[b, i] = (cache_t[b, i] - min_val) * inv_s
         else:
-            self._ensure_cache_gpu(BATCH)
-            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
-            var in_p = input.ptr
-            var out_p = output_v.ptr
-            var in_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](in_p)
-            var out_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](out_p)
-            var cache_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_x.dev.value()
-            )
-            comptime kernel = _min_max_norm_forward_kernel[BATCH, Self.DIM]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, cache_lt,
-                grid_dim=BATCH, block_dim=MMN_TPB,
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.DIM_)
+            self.cache_x.ensure_gpu(c, B * Self.DIM_)
+            comptime l2d = Layout.row_major(B, Self.DIM_)
+            c.enqueue_function[_min_max_norm_forward_kernel[B, Self.DIM_]](
+                in0.lt["gpu", l2d](),
+                out.lt["gpu", l2d](),
+                self.cache_x.lt["gpu", l2d](),
+                grid_dim=B,
+                block_dim=MMN_TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["MinMaxNorm", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
-            var cache_v = TileTensor(
-                self.cache_x.cpu, row_major[BATCH, Self.DIM](),
+            gin.ensure(B * Self.DIM_)
+            var cache_t = TileTensor(
+                self.cache_x.data, row_major[B, Self.DIM_]()
             )
-            for b in range(BATCH):
-                var x0: Scalar[DT] = cache_v[b, 0]
+            var go_t = TileTensor(grad_output.data, row_major[B, Self.DIM_]())
+            var gi_t = TileTensor(gin.data, row_major[B, Self.DIM_]())
+            for b in range(B):
+                var x0: Scalar[DT] = cache_t[b, 0]
                 var min_val = x0
                 var max_val = x0
                 var argmin = 0
                 var argmax = 0
-                for i in range(1, Self.DIM):
-                    var v: Scalar[DT] = cache_v[b, i]
+                for i in range(1, Self.DIM_):
+                    var v: Scalar[DT] = cache_t[b, i]
                     if v < min_val:
                         min_val = v
                         argmin = i
@@ -316,21 +308,21 @@ struct MinMaxNorm[DIM: Int](Module):
                 var raw_s = max_val - min_val
                 var degenerate = raw_s < MMN_EPS
                 if degenerate:
-                    for i in range(Self.DIM):
-                        grad_input_v[b, i] = Scalar[DT](0.0)
+                    for i in range(Self.DIM_):
+                        gi_t[b, i] = Scalar[DT](0.0)
                     continue
                 var inv_s = Scalar[DT](1.0) / raw_s
                 var g_sum: Scalar[DT] = 0.0
                 var gy_sum: Scalar[DT] = 0.0
-                for i in range(Self.DIM):
-                    var y = (cache_v[b, i] - min_val) * inv_s
-                    var dy: Scalar[DT] = grad_output_v[b, i]
+                for i in range(Self.DIM_):
+                    var y = (cache_t[b, i] - min_val) * inv_s
+                    var dy: Scalar[DT] = go_t[b, i]
                     g_sum += dy
                     gy_sum += dy * y
-                var dy_argmin: Scalar[DT] = grad_output_v[b, argmin]
-                var dy_argmax: Scalar[DT] = grad_output_v[b, argmax]
-                for i in range(Self.DIM):
-                    var dy: Scalar[DT] = grad_output_v[b, i]
+                var dy_argmin: Scalar[DT] = go_t[b, argmin]
+                var dy_argmax: Scalar[DT] = go_t[b, argmax]
+                for i in range(Self.DIM_):
+                    var dy: Scalar[DT] = go_t[b, i]
                     var dx: Scalar[DT]
                     if i == argmin and i == argmax:
                         dx = Scalar[DT](0.0)
@@ -340,18 +332,18 @@ struct MinMaxNorm[DIM: Int](Module):
                         dx = (dy_argmax - gy_sum) * inv_s
                     else:
                         dx = dy * inv_s
-                    grad_input_v[b, i] = dx
+                    gi_t[b, i] = dx
         else:
-            comptime layout_2d = Layout.row_major(BATCH, Self.DIM)
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var go_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](go_p)
-            var gi_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](gi_p)
-            var cache_lt = LayoutTensor[DT, layout_2d, MutAnyOrigin](
-                self.cache_x.dev.value()
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.DIM_)
+            comptime l2d = Layout.row_major(B, Self.DIM_)
+            c.enqueue_function[_min_max_norm_backward_kernel[B, Self.DIM_]](
+                grad_output.lt["gpu", l2d](),
+                self.cache_x.lt["gpu", l2d](),
+                gin.lt["gpu", l2d](),
+                grid_dim=B,
+                block_dim=MMN_TPB,
             )
-            comptime kernel = _min_max_norm_backward_kernel[BATCH, Self.DIM]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, cache_lt, gi_lt,
-                grid_dim=BATCH, block_dim=MMN_TPB,
-            )
+
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (param-less leaf → no-op). No polyak_from (no Params).

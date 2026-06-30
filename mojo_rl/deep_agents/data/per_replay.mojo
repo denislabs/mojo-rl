@@ -61,15 +61,13 @@ is a future C.3b chunk; this commit ships the primitive.
 """
 
 from std.gpu import barrier, block_dim, block_idx, thread_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
+from std.gpu.host import DeviceContext, DeviceBuffer, HostBuffer
 from std.math import pow as fpow
-from std.memory import alloc
 from std.random import random_float64
 from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
-from mojo_rl.nn.core.module import mptr
 from ..training.replay_buffer import ReplayBuffer
 from ..training.trainer_block import TrainerState
 from .gpu_replay import (
@@ -88,11 +86,11 @@ from .gpu_replay import (
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _per_leafset_td_kernel[BATCH: Int, CAP: Int](
+def _per_leafset_td_kernel[
+    BATCH: Int, CAP: Int
+](
     tree: LayoutTensor[DT, Layout.row_major(2 * CAP - 1), MutAnyOrigin],
-    indices: LayoutTensor[
-        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
-    ],
+    indices: LayoutTensor[DType.int32, Layout.row_major(BATCH), MutAnyOrigin],
     td: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     alpha: Scalar[DT],
     epsilon: Scalar[DT],
@@ -119,7 +117,9 @@ def _per_leafset_td_kernel[BATCH: Int, CAP: Int](
     tree[CAP - 1 + leaf] = fpow(raw, alpha)
 
 
-def _per_max_priority_kernel[BATCH: Int](
+def _per_max_priority_kernel[
+    BATCH: Int
+](
     max_p: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
     td: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     epsilon: Scalar[DT],
@@ -139,7 +139,9 @@ def _per_max_priority_kernel[BATCH: Int](
     max_p[0] = m
 
 
-def _per_leafset_new_kernel[N: Int, CAP: Int](
+def _per_leafset_new_kernel[
+    N: Int, CAP: Int
+](
     tree: LayoutTensor[DT, Layout.row_major(2 * CAP - 1), MutAnyOrigin],
     max_p: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
     start_pos: Int32,
@@ -157,9 +159,9 @@ def _per_leafset_new_kernel[N: Int, CAP: Int](
     tree[CAP - 1 + leaf] = p
 
 
-def _per_tree_propagate_kernel[CAP: Int](
-    tree: LayoutTensor[DT, Layout.row_major(2 * CAP - 1), MutAnyOrigin],
-):
+def _per_tree_propagate_kernel[
+    CAP: Int
+](tree: LayoutTensor[DT, Layout.row_major(2 * CAP - 1), MutAnyOrigin],):
     """Rebuild ALL internal nodes bottom-up, level by level, in ONE
     single-block launch: threads stride over each level's nodes
     (`tree[n] = tree[2n+1] + tree[2n+2]`), `barrier()` between levels.
@@ -183,21 +185,20 @@ def _per_tree_propagate_kernel[CAP: Int](
             hi = CAP - 2
         var node = lo + tid
         while node <= hi:
-            tree[node] = (
-                rebind[Scalar[DT]](tree[2 * node + 1])
-                + rebind[Scalar[DT]](tree[2 * node + 2])
-            )
+            tree[node] = rebind[Scalar[DT]](tree[2 * node + 1]) + rebind[
+                Scalar[DT]
+            ](tree[2 * node + 2])
             node += tpb
         barrier()
         l -= 1
 
 
-def _per_sample_kernel[BATCH: Int, CAP: Int](
+def _per_sample_kernel[
+    BATCH: Int, CAP: Int
+](
     tree: LayoutTensor[DT, Layout.row_major(2 * CAP - 1), MutAnyOrigin],
     size_buf: LayoutTensor[DType.int32, Layout.row_major(1), MutAnyOrigin],
-    out_idx: LayoutTensor[
-        DType.int32, Layout.row_major(BATCH), MutAnyOrigin
-    ],
+    out_idx: LayoutTensor[DType.int32, Layout.row_major(BATCH), MutAnyOrigin],
     out_w: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     beta: Scalar[DT],
     seed: UInt64,
@@ -255,9 +256,9 @@ def _per_sample_kernel[BATCH: Int, CAP: Int](
     out_w[i] = fpow(Scalar[DT](size) * prob, -beta)
 
 
-def _per_normalize_weights_kernel[BATCH: Int](
-    w: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
-):
+def _per_normalize_weights_kernel[
+    BATCH: Int
+](w: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],):
     """Normalize IS weights so the max sampled weight is 1.0 (host
     two-pass normalize, `per_replay` host path). Single-thread —
     deterministic and cheap at BATCH scale."""
@@ -274,7 +275,9 @@ def _per_normalize_weights_kernel[BATCH: Int](
         w[i] = rebind[Scalar[DT]](w[i]) / max_w
 
 
-def _per_copy_weights_kernel[BATCH: Int](
+def _per_copy_weights_kernel[
+    BATCH: Int
+](
     dst: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
     src: LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin],
 ):
@@ -293,7 +296,9 @@ def _per_copy_weights_kernel[BATCH: Int](
 
 @fieldwise_init
 struct GPUPrioritizedReplay[
-    OBS_: Int, ACT_: Int, CAP_: Int,
+    OBS_: Int,
+    ACT_: Int,
+    CAP_: Int,
     OBS_STORE_DT_: DType = DT,
     DEVICE_TREE_: Bool = True,
 ](ReplayBuffer):
@@ -351,10 +356,12 @@ struct GPUPrioritizedReplay[
 
     # Host scratch for sample-time bookkeeping. Sized to
     # `batch_capacity` so multiple `sample[BATCH]` calls with
-    # different BATCH ≤ batch_capacity reuse the same buffers.
-    var _host_indices: List[Int32]
-    var _host_weights: List[Scalar[DT]]
-    var _host_td: List[Scalar[DT]]
+    # different BATCH ≤ batch_capacity reuse the same buffers. Pinned
+    # `HostBuffer`s — direct `[i]` access AND passed straight to
+    # `enqueue_copy` (no `.unsafe_ptr()`), pinned for faster H2D/D2H.
+    var _host_indices: HostBuffer[DType.int32]
+    var _host_weights: HostBuffer[DT]
+    var _host_td: HostBuffer[DT]
 
     # Last sample's BATCH (set by `sample`, consumed by
     # `update_priorities`).
@@ -380,7 +387,8 @@ struct GPUPrioritizedReplay[
             Self.OBS, Self.ACT, Self.CAP, Self.OBS_STORE_DT_
         ].new(ctx, batch_capacity=batch_capacity)
         var tree = List[Scalar[DT]](
-            length=2 * Self.CAP - 1, fill=Scalar[DT](0.0),
+            length=2 * Self.CAP - 1,
+            fill=Scalar[DT](0.0),
         )
         var tree_dev = ctx.enqueue_create_buffer[DT](2 * Self.CAP - 1)
         tree_dev.enqueue_fill(Scalar[DT](0.0))
@@ -388,15 +396,18 @@ struct GPUPrioritizedReplay[
         max_priority_dev.enqueue_fill(Scalar[DT](1.0))
         var weights = ctx.enqueue_create_buffer[DT](batch_capacity)
         weights.enqueue_fill(Scalar[DT](1.0))
-        var host_indices = List[Int32](
-            length=batch_capacity, fill=Int32(0),
+        # Pinned host scratch (overwritten before read each sample; the fills
+        # below just match the prior List-init for determinism).
+        var host_indices = ctx.enqueue_create_host_buffer[DType.int32](
+            batch_capacity
         )
-        var host_weights = List[Scalar[DT]](
-            length=batch_capacity, fill=Scalar[DT](1.0),
-        )
-        var host_td = List[Scalar[DT]](
-            length=batch_capacity, fill=Scalar[DT](0.0),
-        )
+        var host_weights = ctx.enqueue_create_host_buffer[DT](batch_capacity)
+        var host_td = ctx.enqueue_create_host_buffer[DT](batch_capacity)
+        ctx.synchronize()
+        for i in range(batch_capacity):
+            host_indices[i] = Int32(0)
+            host_weights[i] = Scalar[DT](1.0)
+            host_td[i] = Scalar[DT](0.0)
         return Self(
             base=base^,
             tree=tree^,
@@ -434,12 +445,10 @@ struct GPUPrioritizedReplay[
         device path D2H-copies the tree and synchronizes, exactly the
         round-trip the hot path exists to avoid)."""
         comptime if Self.DEVICE_TREE_:
-            var h = alloc[Scalar[DT]](2 * Self.CAP - 1)
+            var h = ctx.enqueue_create_host_buffer[DT](2 * Self.CAP - 1)
             ctx.enqueue_copy(h, self.tree_dev)
             ctx.synchronize()
-            var total = h[0]
-            h.free()
-            return total
+            return h[0]
         else:
             return self.tree[0]
 
@@ -476,37 +485,40 @@ struct GPUPrioritizedReplay[
 
     def _tree_dev_lt(
         self,
-    ) -> LayoutTensor[
-        DT, Layout.row_major(2 * Self.CAP - 1), MutAnyOrigin
-    ]:
-        return LayoutTensor[
-            DT, Layout.row_major(2 * Self.CAP - 1), MutAnyOrigin
-        ](self.tree_dev.unsafe_ptr())
+    ) -> LayoutTensor[DT, Layout.row_major(2 * Self.CAP - 1), MutAnyOrigin]:
+        return rebind[
+            LayoutTensor[DT, Layout.row_major(2 * Self.CAP - 1), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(2 * Self.CAP - 1)](self.tree_dev))
 
     def _max_p_lt(
         self,
     ) -> LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin]:
-        return LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin](
-            self.max_priority_dev.unsafe_ptr()
+        return rebind[LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin]](
+            LayoutTensor[DT, Layout.row_major(1)](self.max_priority_dev)
         )
 
     def _device_propagate(self, ctx: DeviceContext) raises:
         """Rebuild all internal tree nodes from the (already-written)
         leaves — one single-block barrier kernel."""
         ctx.enqueue_function[_per_tree_propagate_kernel[Self.CAP]](
-            self._tree_dev_lt(), grid_dim=1, block_dim=TPB,
+            self._tree_dev_lt(),
+            grid_dim=1,
+            block_dim=TPB,
         )
 
-    def _device_leafset_new[N: Int](
-        self, ctx: DeviceContext, start_pos: Int,
-    ) raises:
+    def _device_leafset_new[
+        N: Int
+    ](self, ctx: DeviceContext, start_pos: Int,) raises:
         """Init `N` new leaves at `(start_pos + e) % CAP` to
         `max_priority^α`, then propagate."""
         comptime n_blocks = (N + TPB - 1) // TPB
         ctx.enqueue_function[_per_leafset_new_kernel[N, Self.CAP]](
-            self._tree_dev_lt(), self._max_p_lt(),
-            Int32(start_pos), self.alpha,
-            grid_dim=n_blocks, block_dim=TPB,
+            self._tree_dev_lt(),
+            self._max_p_lt(),
+            Int32(start_pos),
+            self.alpha,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
         self._device_propagate(ctx)
 
@@ -514,13 +526,17 @@ struct GPUPrioritizedReplay[
     # Add — mirrors GPUReplay surface, plus tree leaf update.
     # ──────────────────────────────────────────────────────────────
 
-    def add(
+    def add[
+        s_o: Origin[mut=False],
+        a_o: Origin[mut=False],
+        sp_o: Origin[mut=False],
+    ](
         mut self,
         ctx: DeviceContext,
-        s: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        a: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        s: UnsafePointer[Scalar[DT], s_o],
+        a: UnsafePointer[Scalar[DT], a_o],
         r: Scalar[DT],
-        sp: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        sp: UnsafePointer[Scalar[DT], sp_o],
         d: Scalar[DT],
     ) raises:
         """Single-transition add. The base GPUReplay writes the slot
@@ -538,7 +554,9 @@ struct GPUPrioritizedReplay[
             )
             self._tree_update_leaf(leaf_idx, p)
 
-    def add_batch[N_ENVS: Int](
+    def add_batch[
+        N_ENVS: Int
+    ](
         mut self,
         ctx: DeviceContext,
         src_obs: DeviceBuffer[DT],
@@ -553,7 +571,12 @@ struct GPUPrioritizedReplay[
         comptime assert N_ENVS > 0, "N_ENVS must be > 0"
         var start_pos = self.base.pos
         self.base.add_batch[N_ENVS](
-            ctx, src_obs, src_act, src_rew, src_nxt, src_dne,
+            ctx,
+            src_obs,
+            src_act,
+            src_rew,
+            src_nxt,
+            src_dne,
         )
         comptime if Self.DEVICE_TREE_:
             self._device_leafset_new[N_ENVS](ctx, start_pos)
@@ -569,7 +592,9 @@ struct GPUPrioritizedReplay[
     # Sample (stratified PER sampling + gather kernel).
     # ──────────────────────────────────────────────────────────────
 
-    def sample[BATCH: Int](
+    def sample[
+        BATCH: Int
+    ](
         mut self,
         ctx: DeviceContext,
         mb_s: DeviceBuffer[DT],
@@ -592,15 +617,19 @@ struct GPUPrioritizedReplay[
         comptime assert BATCH > 0, "BATCH must be > 0"
         if BATCH > self.batch_capacity:
             raise Error(
-                "GPUPrioritizedReplay.sample[BATCH=" + String(BATCH)
+                "GPUPrioritizedReplay.sample[BATCH="
+                + String(BATCH)
                 + "] exceeds batch_capacity="
                 + String(self.batch_capacity)
             )
         if self.base.size < BATCH:
             raise Error(
-                "GPUPrioritizedReplay.sample[BATCH=" + String(BATCH)
+                "GPUPrioritizedReplay.sample[BATCH="
+                + String(BATCH)
                 + "] called before buffer holds BATCH transitions ("
-                + "size=" + String(self.base.size) + ")"
+                + "size="
+                + String(self.base.size)
+                + ")"
             )
 
         comptime if Self.DEVICE_TREE_:
@@ -608,28 +637,42 @@ struct GPUPrioritizedReplay[
             # kernel writing `base.indices` + raw weights, then the
             # single-thread normalize. Zero H2D, zero host tree walk.
             var idx_lt_s = LayoutTensor[
-                DType.int32, Layout.row_major(BATCH), MutAnyOrigin,
-            ](self.base.indices.unsafe_ptr())
+                DType.int32,
+                Layout.row_major(BATCH),
+            ](self.base.indices)
             var w_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH), MutAnyOrigin,
-            ](self.weights.unsafe_ptr())
+                DT,
+                Layout.row_major(BATCH),
+            ](self.weights)
             var size_lt = LayoutTensor[
-                DType.int32, Layout.row_major(1), MutAnyOrigin,
-            ](self.base._size_dev.unsafe_ptr())
+                DType.int32,
+                Layout.row_major(1),
+            ](self.base._size_dev)
             var off_lt = LayoutTensor[
-                DType.uint64, Layout.row_major(1), MutAnyOrigin,
-            ](self.base._rng_offset_dev.unsafe_ptr())
+                DType.uint64,
+                Layout.row_major(1),
+            ](self.base._rng_offset_dev)
             comptime n_blocks_s = (BATCH + TPB - 1) // TPB
             ctx.enqueue_function[_per_sample_kernel[BATCH, Self.CAP]](
-                self._tree_dev_lt(), size_lt, idx_lt_s, w_lt,
-                self.beta, self.base.rng_seed, off_lt,
-                grid_dim=n_blocks_s, block_dim=TPB,
+                self._tree_dev_lt(),
+                size_lt,
+                idx_lt_s,
+                w_lt,
+                self.beta,
+                self.base.rng_seed,
+                off_lt,
+                grid_dim=n_blocks_s,
+                block_dim=TPB,
             )
             ctx.enqueue_function[_increment_rng_offset_kernel[BATCH]](
-                off_lt, grid_dim=1, block_dim=1,
+                off_lt,
+                grid_dim=1,
+                block_dim=1,
             )
             ctx.enqueue_function[_per_normalize_weights_kernel[BATCH]](
-                w_lt, grid_dim=1, block_dim=1,
+                w_lt,
+                grid_dim=1,
+                block_dim=1,
             )
         else:
             var total = self._tree_total()
@@ -675,69 +718,84 @@ struct GPUPrioritizedReplay[
                 self._host_weights[i] = self._host_weights[i] / max_w_inv
 
             # Upload indices + weights to device.
-            ctx.enqueue_copy(
-                self.base.indices, self._host_indices.unsafe_ptr()
-            )
-            ctx.enqueue_copy(self.weights, self._host_weights.unsafe_ptr())
+            ctx.enqueue_copy(self.base.indices, self._host_indices)
+            ctx.enqueue_copy(self.weights, self._host_weights)
         self._last_batch = BATCH
 
         # Gather kernel — reuses `_gather_batch_kernel` from
         # `gpu_replay.mojo` over `(self.base.{obs,act,rew,nxt,dne},
         # self.base.indices)`.
         var idx_lt = LayoutTensor[
-            DType.int32, Layout.row_major(BATCH), MutAnyOrigin,
-        ](self.base.indices.unsafe_ptr())
-        var mb_s_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin,
-        ](mb_s.unsafe_ptr())
-        var mb_a_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.ACT), MutAnyOrigin,
-        ](mb_a.unsafe_ptr())
-        var mb_r_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH), MutAnyOrigin,
-        ](mb_r.unsafe_ptr())
-        var mb_sp_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin,
-        ](mb_sp.unsafe_ptr())
-        var mb_d_lt = LayoutTensor[
-            DT, Layout.row_major(BATCH), MutAnyOrigin,
-        ](mb_d.unsafe_ptr())
+            DType.int32,
+            Layout.row_major(BATCH),
+        ](self.base.indices)
+        var mb_s_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS)](mb_s))
+        var mb_a_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH, Self.ACT), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH, Self.ACT)](mb_a))
+        var mb_r_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH)](mb_r))
+        var mb_sp_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH, Self.OBS)](mb_sp))
+        var mb_d_lt = rebind[
+            LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin]
+        ](LayoutTensor[DT, Layout.row_major(BATCH)](mb_d))
         var buf_s_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin,
-        ](self.base.obs.unsafe_ptr())
+            Self.SDT,
+            Layout.row_major(Self.CAP, Self.OBS),
+        ](self.base.obs)
         var buf_a_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP, Self.ACT), MutAnyOrigin,
-        ](self.base.act.unsafe_ptr())
+            DT,
+            Layout.row_major(Self.CAP, Self.ACT),
+        ](self.base.act)
         var buf_r_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin,
-        ](self.base.rew.unsafe_ptr())
+            DT,
+            Layout.row_major(Self.CAP),
+        ](self.base.rew)
         var buf_sp_lt = LayoutTensor[
-            Self.SDT, Layout.row_major(Self.CAP, Self.OBS), MutAnyOrigin,
-        ](self.base.nxt.unsafe_ptr())
+            Self.SDT,
+            Layout.row_major(Self.CAP, Self.OBS),
+        ](self.base.nxt)
         var buf_d_lt = LayoutTensor[
-            DT, Layout.row_major(Self.CAP), MutAnyOrigin,
-        ](self.base.dne.unsafe_ptr())
+            DT,
+            Layout.row_major(Self.CAP),
+        ](self.base.dne)
 
         comptime n_blocks = (BATCH * Self.OBS + TPB - 1) // TPB
         comptime gather_kernel = _gather_batch_kernel[
-            BATCH, Self.OBS, Self.ACT, Self.CAP, Self.SDT,
+            BATCH,
+            Self.OBS,
+            Self.ACT,
+            Self.CAP,
+            Self.SDT,
         ]
         ctx.enqueue_function[gather_kernel](
-            mb_s_lt, mb_a_lt, mb_r_lt, mb_sp_lt, mb_d_lt,
-            buf_s_lt, buf_a_lt, buf_r_lt, buf_sp_lt, buf_d_lt,
+            mb_s_lt,
+            mb_a_lt,
+            mb_r_lt,
+            mb_sp_lt,
+            mb_d_lt,
+            buf_s_lt,
+            buf_a_lt,
+            buf_r_lt,
+            buf_sp_lt,
+            buf_d_lt,
             idx_lt,
-            grid_dim=n_blocks, block_dim=TPB,
+            grid_dim=n_blocks,
+            block_dim=TPB,
         )
 
     # ──────────────────────────────────────────────────────────────
     # Priority update — D2H td_errors, refresh tree leaves.
     # ──────────────────────────────────────────────────────────────
 
-    def update_priorities[BATCH: Int](
-        mut self,
-        ctx: DeviceContext,
-        td_errors_dev: DeviceBuffer[DT],
-    ) raises:
+    def update_priorities[
+        BATCH: Int
+    ](mut self, ctx: DeviceContext, td_errors_dev: DeviceBuffer[DT],) raises:
         """Refresh priorities for the indices returned by the most
         recent `sample[BATCH]` call. Reads `td_errors_dev` device-
         side, computes `p = (|TD| + ε)^α`, updates the sum-tree, and
@@ -753,29 +811,39 @@ struct GPUPrioritizedReplay[
                 "GPUPrioritizedReplay.update_priorities[BATCH="
                 + String(BATCH)
                 + "] called with a different BATCH than the last "
-                + "sample (last=" + String(self._last_batch) + ")"
+                + "sample (last="
+                + String(self._last_batch)
+                + ")"
             )
 
         comptime if Self.DEVICE_TREE_:
-            var td_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH), MutAnyOrigin,
-            ](td_errors_dev.unsafe_ptr())
+            var td_lt = rebind[
+                LayoutTensor[DT, Layout.row_major(BATCH), MutAnyOrigin]
+            ](LayoutTensor[DT, Layout.row_major(BATCH)](td_errors_dev))
             var idx_lt = LayoutTensor[
-                DType.int32, Layout.row_major(BATCH), MutAnyOrigin,
-            ](self.base.indices.unsafe_ptr())
+                DType.int32,
+                Layout.row_major(BATCH),
+            ](self.base.indices)
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             ctx.enqueue_function[_per_leafset_td_kernel[BATCH, Self.CAP]](
-                self._tree_dev_lt(), idx_lt, td_lt,
-                self.alpha, self.epsilon,
-                grid_dim=n_blocks, block_dim=TPB,
+                self._tree_dev_lt(),
+                idx_lt,
+                td_lt,
+                self.alpha,
+                self.epsilon,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
             ctx.enqueue_function[_per_max_priority_kernel[BATCH]](
-                self._max_p_lt(), td_lt, self.epsilon,
-                grid_dim=1, block_dim=1,
+                self._max_p_lt(),
+                td_lt,
+                self.epsilon,
+                grid_dim=1,
+                block_dim=1,
             )
             self._device_propagate(ctx)
         else:
-            ctx.enqueue_copy(self._host_td.unsafe_ptr(), td_errors_dev)
+            ctx.enqueue_copy(self._host_td, td_errors_dev)
             ctx.synchronize()
 
             var new_max = self.max_priority
@@ -785,9 +853,7 @@ struct GPUPrioritizedReplay[
                 var raw = td_abs + self.epsilon
                 if raw > new_max:
                     new_max = raw
-                var p = Scalar[DT](
-                    fpow(Float64(raw), Float64(self.alpha))
-                )
+                var p = Scalar[DT](fpow(Float64(raw), Float64(self.alpha)))
                 var leaf = Int(self._host_indices[i])
                 self._tree_update_leaf(leaf, p)
             self.max_priority = new_max
@@ -831,15 +897,16 @@ struct GPUPrioritizedReplay[
         pointer-based `add`. `ctx` required (raises if None)."""
         if not ctx:
             raise Error("GPUPrioritizedReplay.add: ctx required")
-        var s_p = mptr(s.unsafe_ptr())
-        var a_p = mptr(a.unsafe_ptr())
-        var sp_p = mptr(sp.unsafe_ptr())
-        self.add(ctx.value(), s_p, a_p, r, sp_p, d)
+        # Pass each List's own (concrete) origin straight through — the
+        # origin-parametric pointer `add` preserves exclusivity tracking
+        # instead of erasing to MutAnyOrigin via `mptr`.
+        self.add(
+            ctx.value(), s.unsafe_ptr(), a.unsafe_ptr(), r, sp.unsafe_ptr(), d
+        )
 
-    def sample_into[BATCH: Int](
-        mut self,
-        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
-    ) raises:
+    def sample_into[
+        BATCH: Int
+    ](mut self, mut state: TrainerState[Self.OBS, Self.ACT, BATCH],) raises:
         """Device PER sample into `state.mb_*`, IS weights into
         `state.mb_w` (D2D copy kernel on the device-tree path, H2D on
         the host-tree path), flip `state.has_per`."""
@@ -854,25 +921,27 @@ struct GPUPrioritizedReplay[
         )
         comptime if Self.DEVICE_TREE_:
             var src_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH), MutAnyOrigin,
-            ](self.weights.unsafe_ptr())
+                DT,
+                Layout.row_major(BATCH),
+            ](self.weights)
             var dst_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH), MutAnyOrigin,
-            ](state.mb_w.dev.value().unsafe_ptr())
+                DT,
+                Layout.row_major(BATCH),
+            ](state.mb_w.dev.value())
             comptime n_blocks = (BATCH + TPB - 1) // TPB
             ctx.enqueue_function[_per_copy_weights_kernel[BATCH]](
-                dst_lt, src_lt, grid_dim=n_blocks, block_dim=TPB,
+                dst_lt,
+                src_lt,
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
         else:
-            ctx.enqueue_copy(
-                state.mb_w.dev.value(), self._host_weights.unsafe_ptr()
-            )
+            ctx.enqueue_copy(state.mb_w.dev.value(), self._host_weights)
         state.has_per = True
 
-    def update_priorities[BATCH: Int](
-        mut self,
-        mut state: TrainerState[Self.OBS, Self.ACT, BATCH],
-    ) raises:
+    def update_priorities[
+        BATCH: Int
+    ](mut self, mut state: TrainerState[Self.OBS, Self.ACT, BATCH],) raises:
         """Trait-surface priority refresh: reads `state.td_residuals`
         (device) and updates the sum-tree."""
         self.update_priorities[BATCH](

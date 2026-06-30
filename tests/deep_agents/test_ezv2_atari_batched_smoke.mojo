@@ -18,9 +18,9 @@ from std.math import isnan, isinf
 from std.gpu.host import DeviceContext
 from std.testing import assert_true
 
-from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.optimizer.sgd import SGD
+from mojo_rl.nn.constants import DT, LAYOUT_NCHW
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.deep_agents.efficient_zero_v2.config_atari import EZV2AtariConfig
 from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import (
     ez_atari_init_zero_pred, ez_atari_init_zero_dyn,
@@ -36,7 +36,7 @@ from mojo_rl.envs.atari.games.registry import AtariGame
 comptime FRAMES = 4
 comptime ACT = 18
 comptime BINS = 601
-comptime Cfg = EZV2AtariConfig[FRAMES, ACT]
+comptime Cfg = EZV2AtariConfig[FRAMES, ACT, LAYOUT=LAYOUT_NCHW]
 comptime OBS = Cfg.OBS
 comptime LATENT = Cfg.LATENT
 
@@ -76,29 +76,21 @@ def main() raises:
     var rom = load_rom("roms/pong.bin")
     var env = BatchedPong(_make_envs(rom.data.value(), rom.size), noop_max=4)
 
-    var rep = Cfg.Rep.make["gpu", INIT=Kaiming](ctx)
-    var dyn = Cfg.Dyn.make["gpu", INIT=Kaiming](ctx)
-    var pred = Cfg.Pred.make["gpu", INIT=Kaiming](ctx)
-    var proj = Cfg.Proj.make["gpu", INIT=Kaiming](ctx)
-    var predh = Cfg.Predh.make["gpu", INIT=Kaiming](ctx)
+    var rep = Cfg.Rep.make["gpu", Kaiming](Optional(ctx))
+    var dyn = Cfg.Dyn.make["gpu", Kaiming](Optional(ctx))
+    var pred = Cfg.Pred.make["gpu", Kaiming](Optional(ctx))
+    var proj = Cfg.Proj.make["gpu", Kaiming](Optional(ctx))
+    var predh = Cfg.Predh.make["gpu", Kaiming](Optional(ctx))
 
     ez_atari_init_zero_pred["gpu", ACT, BINS](pred, ctx)
     ez_atari_init_zero_dyn["gpu", ACT, BINS](dyn, ctx)
     ctx.synchronize()
 
-    var orep = SGD.make["gpu", M = Cfg.Rep](rep, ctx)
-    var odyn = SGD.make["gpu", M = Cfg.Dyn](dyn, ctx)
-    var opred = SGD.make["gpu", M = Cfg.Pred](pred, ctx)
-    var oproj = SGD.make["gpu", M = Cfg.Proj](proj, ctx)
-    var opredh = SGD.make["gpu", M = Cfg.Predh](predh, ctx)
-    orep.momentum = Scalar[DT](0.9); orep.weight_decay = Scalar[DT](1e-4)
-    odyn.momentum = Scalar[DT](0.9); odyn.weight_decay = Scalar[DT](1e-4)
-    opred.momentum = Scalar[DT](0.9); opred.weight_decay = Scalar[DT](1e-4)
-    oproj.momentum = Scalar[DT](0.9); oproj.weight_decay = Scalar[DT](1e-4)
-    opredh.momentum = Scalar[DT](0.9); opredh.weight_decay = Scalar[DT](1e-4)
-    orep.max_grad_norm = Scalar[DT](5.0); odyn.max_grad_norm = Scalar[DT](5.0)
-    opred.max_grad_norm = Scalar[DT](5.0); oproj.max_grad_norm = Scalar[DT](5.0)
-    opredh.max_grad_norm = Scalar[DT](5.0)
+    var orep = Adam(lr=Scalar[DT](0.1))
+    var odyn = Adam(lr=Scalar[DT](0.1))
+    var opred = Adam(lr=Scalar[DT](0.1))
+    var oproj = Adam(lr=Scalar[DT](0.1))
+    var opredh = Adam(lr=Scalar[DT](0.1))
 
     var loss = run_ezv2_gumbel_selfplay_gpu_batched[
         BatchedPong, Cfg.Rep, Cfg.Dyn, Cfg.Pred, Cfg.Proj, Cfg.Predh,

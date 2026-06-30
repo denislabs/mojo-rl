@@ -13,7 +13,7 @@ Run (no GPU):
 from std.testing import assert_true
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
 from mojo_rl.deep_agents.zero.mcts_adapters_mz_cpu import (
     MZRepCPU, MZDynCPU, MZPredCPU,
@@ -41,9 +41,9 @@ def main() raises:
     comptime Dyn = MZDynNet[LATENT, ACT, BINS, H]
     comptime Pred = MZPredNet[LATENT, ACT, BINS, H]
 
-    var rep_net = Rep.make["cpu", INIT=Kaiming]()
-    var dyn_net = Dyn.make["cpu", INIT=Kaiming]()
-    var pred_net = Pred.make["cpu", INIT=Kaiming]()
+    var rep_net = Rep.make["cpu", Kaiming]()
+    var dyn_net = Dyn.make["cpu", Kaiming]()
+    var pred_net = Pred.make["cpu", Kaiming]()
     var rep = MZRepCPU[OBS, LATENT, Rep](net=UnsafePointer(to=rep_net))
     var dyn = MZDynCPU[LATENT, ACT, BINS, Dyn](
         net=UnsafePointer(to=dyn_net), v_min=v_min, v_max=v_max

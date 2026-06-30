@@ -105,6 +105,7 @@ def main() raises:
             BatchedEnvT,
             N_ENVS=N_ENVS,
             USE_TRAIN_CUDA_GRAPH=USE_TRAIN_CUDA_GRAPH,
+            USE_ENV_CUDA_GRAPH=True,
         ](
             env,
             NUM_STEPS,

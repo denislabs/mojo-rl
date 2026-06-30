@@ -25,7 +25,7 @@ from mojo_rl.planners.trajectory import (
 
 @fieldwise_init
 struct ZeroRolloutCallback(
-    Movable, ImplicitlyDestructible, RolloutCallbackGPU
+    Movable, ImplicitlyDeletable, RolloutCallbackGPU
 ):
     """Trivial GPU callback that writes zeros everywhere — exists
     only to validate that the trait surface is implementable.

@@ -49,7 +49,7 @@ struct PPODiscreteAgent[
     MINIBATCH: Int,
     N_EPOCHS: Int,
     N_ENVS: Int = 1,
-](Movable & ImplicitlyDestructible):
+](Movable & ImplicitlyDeletable):
     """Thin facade over `PPODiscreteTrainer` + the discrete on-policy
     driver."""
 

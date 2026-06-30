@@ -18,19 +18,12 @@ MCTS). The GPU Gumbel path is a separate build.
     (sections `rep` / `dyn` / `pred` / `proj` / `predh`).
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.core.checkpoint import (
-    save_state_v2_body,
-    load_state_v2_body,
-)
-from mojo_rl.deep_agents.core.checkpoint_helpers import (
-    split_lines_v2,
-    read_file_v2,
-    expect_v2_header,
-)
+from mojo_rl.nn.core.checkpoint import save_params, load_params
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.planners.tree_search import (
     GenericCPUMCTS,
@@ -46,7 +39,7 @@ from ..zero.mcts_adapters_mz_cpu import MZRepCPU, MZDynCPU, MZPredCPU
 
 @fieldwise_init
 struct EZv2DiscreteAgent[
-    ENV: BoxDiscreteActionEnv & ImplicitlyDestructible,
+    ENV: BoxDiscreteActionEnv & ImplicitlyDeletable,
     REP: Module,
     DYN: Module,
     PRED: Module,
@@ -62,7 +55,7 @@ struct EZv2DiscreteAgent[
     B: Int,
     K: Int,
     N: Int,
-](ImplicitlyDestructible, Movable):
+](ImplicitlyDeletable, Movable):
     var rep: Self.REP
     var dyn: Self.DYN
     var pred: Self.PRED
@@ -84,11 +77,11 @@ struct EZv2DiscreteAgent[
         value_coef: Scalar[DT] = Scalar[DT](0.25),
         consistency_coef: Scalar[DT] = Scalar[DT](2.0),
     ) raises:
-        self.rep = Self.REP.make["cpu", INIT=Kaiming]()
-        self.dyn = Self.DYN.make["cpu", INIT=Kaiming]()
-        self.pred = Self.PRED.make["cpu", INIT=Kaiming]()
-        self.proj = Self.PROJM.make["cpu", INIT=Kaiming]()
-        self.predh = Self.PREDH.make["cpu", INIT=Kaiming]()
+        self.rep = Self.REP.make["cpu", Kaiming]()
+        self.dyn = Self.DYN.make["cpu", Kaiming]()
+        self.pred = Self.PRED.make["cpu", Kaiming]()
+        self.proj = Self.PROJM.make["cpu", Kaiming]()
+        self.predh = Self.PREDH.make["cpu", Kaiming]()
         self.lr = lr
         self.gamma = gamma
         self.v_min = v_min
@@ -117,16 +110,11 @@ struct EZv2DiscreteAgent[
     ) raises -> Float64:
         """Single-player self-play training (MuZero BPTT + SimSiam consistency).
         Returns the last training loss. Optimizers recreated here; nets persist."""
-        var orep = Adam.make["cpu", M = Self.REP](self.rep)
-        var odyn = Adam.make["cpu", M = Self.DYN](self.dyn)
-        var opred = Adam.make["cpu", M = Self.PRED](self.pred)
-        var oproj = Adam.make["cpu", M = Self.PROJM](self.proj)
-        var opredh = Adam.make["cpu", M = Self.PREDH](self.predh)
-        orep.lr = self.lr
-        odyn.lr = self.lr
-        opred.lr = self.lr
-        oproj.lr = self.lr
-        opredh.lr = self.lr
+        var orep = Adam(lr=self.lr)
+        var odyn = Adam(lr=self.lr)
+        var opred = Adam(lr=self.lr)
+        var oproj = Adam(lr=self.lr)
+        var opredh = Adam(lr=self.lr)
         return run_ezv2_selfplay_cpu[
             Self.ENV, Self.REP, Self.DYN, Self.PRED, Self.PROJM, Self.PREDH,
             Self.OBS, Self.ACT, Self.LATENT, Self.BINS,
@@ -170,16 +158,16 @@ struct EZv2DiscreteAgent[
             DirichletNoise[0.25, 0.25], SinglePlayer, 8, 3,
         ](gamma=Float64(self.gamma))
         var rep_a = MZRepCPU[Self.OBS, Self.LATENT, Self.REP](
-            net=UnsafePointer(to=self.rep)
+            net=untracked(UnsafePointer(to=self.rep)),
         )
         var dyn_a = MZDynCPU[Self.LATENT, Self.ACT, Self.BINS, Self.DYN](
-            net=UnsafePointer(to=self.dyn),
+            net=untracked(UnsafePointer(to=self.dyn)),
             v_min=self.v_min, v_max=self.v_max,
         )
         var pred_a = MZPredCPU[
             Self.LATENT, Self.ACT, Self.BINS, Self.PRED
         ](
-            net=UnsafePointer(to=self.pred),
+            net=untracked(UnsafePointer(to=self.pred)),
             v_min=self.v_min, v_max=self.v_max,
         )
         var total = 0.0
@@ -213,26 +201,19 @@ struct EZv2DiscreteAgent[
         surface shared by every agent facade. NOTE: optimizers are
         session-local — rebuilt per `train_*` call — so only weights
         persist; this is the inference / self-play artifact, not a
-        training-resume checkpoint."""
-        var body = String("")
-        save_state_v2_body(self.rep, body, String("rep"))
-        save_state_v2_body(self.dyn, body, String("dyn"))
-        save_state_v2_body(self.pred, body, String("pred"))
-        save_state_v2_body(self.proj, body, String("proj"))
-        save_state_v2_body(self.predh, body, String("predh"))
-        var content = String("nn-ckpt v2\n") + body
-        with open(path, "w") as f:
-            f.write(content)
+        training-resume checkpoint. The five nets go to ``path`` + .rep/.dyn/
+        .pred/.proj/.predh via the storage checkpoint (per-net file)."""
+        save_params["cpu", Self.REP](self.rep, path + ".rep", None, save_moments=False)
+        save_params["cpu", Self.DYN](self.dyn, path + ".dyn", None, save_moments=False)
+        save_params["cpu", Self.PRED](self.pred, path + ".pred", None, save_moments=False)
+        save_params["cpu", Self.PROJM](self.proj, path + ".proj", None, save_moments=False)
+        save_params["cpu", Self.PREDH](self.predh, path + ".predh", None, save_moments=False)
 
     def load(mut self, path: String) raises:
-        """Inverse of `save` — restores all five net weights. Optimizer
-        state is not checkpointed (session-local; see `save`)."""
-        var content = read_file_v2(path)
-        var lines = split_lines_v2(content)
-        expect_v2_header(lines)
-        var idx = 1
-        load_state_v2_body(self.rep, lines, idx, String("rep"))
-        load_state_v2_body(self.dyn, lines, idx, String("dyn"))
-        load_state_v2_body(self.pred, lines, idx, String("pred"))
-        load_state_v2_body(self.proj, lines, idx, String("proj"))
-        load_state_v2_body(self.predh, lines, idx, String("predh"))
+        """Inverse of `save` — restores all five net weights from the per-net
+        sidecars. Optimizer state is not checkpointed (session-local)."""
+        load_params["cpu", Self.REP](self.rep, path + ".rep", None)
+        load_params["cpu", Self.DYN](self.dyn, path + ".dyn", None)
+        load_params["cpu", Self.PRED](self.pred, path + ".pred", None)
+        load_params["cpu", Self.PROJM](self.proj, path + ".proj", None)
+        load_params["cpu", Self.PREDH](self.predh, path + ".predh", None)

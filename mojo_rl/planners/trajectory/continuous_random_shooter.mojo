@@ -18,7 +18,7 @@ from .continuous_cem import _gauss
 
 
 struct ContinuousRandomShooter[BATCH: Int, ACT_DIM: Int](
-    ImplicitlyDestructible,
+    ImplicitlyDeletable,
     Movable,
 ):
     var horizon: Int

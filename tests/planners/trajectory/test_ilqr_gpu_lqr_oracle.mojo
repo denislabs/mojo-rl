@@ -162,7 +162,7 @@ def lq_terminal_kernel[
 
 @fieldwise_init
 struct LQ1DGPUCallback(
-    Copyable, Movable, ImplicitlyDestructible, RolloutJacobianCallbackGPU
+    Copyable, Movable, ImplicitlyDeletable, RolloutJacobianCallbackGPU
 ):
     """Hand-rolled GPU adapter for 1-D LQ + iLQR oracle test."""
 

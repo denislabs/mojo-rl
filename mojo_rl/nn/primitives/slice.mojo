@@ -1,45 +1,50 @@
-"""Slice[IN, START, END] — extracts column range `[START, END)` from input.
+"""Slice[IN, START, END] — extracts column range `[START, END)` (storage surface).
 
-Zero-fills the rest of grad_input on backward so that ComputeGraph's
-scatter-add into a shared predecessor `_grad_out_buf` interleaves
-correctly with parallel slicers (e.g. the q1/q2/log_prob unpack in
-`SACActorLoss`).
+Transformed from legacy `nn.primitives.Slice` (surface-only change). The CPU
+loops + the two GPU kernels are carried over verbatim.
 
-No params. Conforms to `Module`. Orchestrator owns slabs;
-`backward[mode]` accepted, has no effect (no params to skip).
+Forward:  out[b, j] = in[b, START + j]   for j in [0, OUT)
+Backward: grad_in[b, k] = grad_out[b, k - START] for k in [START, START+OUT),
+          0 elsewhere — zero-fills the rest so ComputeGraph's scatter-add into a
+          shared predecessor `_grad_out_buf` interleaves correctly with parallel
+          slicers (e.g. the q1/q2/log_prob unpack in `SACActorLoss`).
+
+No params, no cache. Conforms to `Module`.
 """
 
 from std.gpu import global_idx
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import Initializer, AMPPolicy, NoAMP
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB, CPU_SIMD_W
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _slice_forward_kernel[
-    BATCH: Int, IN: Int, START: Int, OUT: Int,
+    BATCH: Int, IN: Int, START: Int, OUT: Int, ADT: DType = DT,
 ](
-    input: LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
+    input: LayoutTensor[ADT, Layout.row_major(BATCH, IN), MutAnyOrigin],
+    output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
 ):
     var idx = Int(global_idx.x)
     var total = BATCH * OUT
     if idx < total:
         var b = idx // OUT
         var j = idx % OUT
-        output[b, j] = rebind[Scalar[DT]](input[b, START + j])
+        output[b, j] = rebind[Scalar[ADT]](input[b, START + j])
 
 
 def _slice_backward_kernel[
-    BATCH: Int, IN: Int, START: Int, OUT: Int,
+    BATCH: Int, IN: Int, START: Int, OUT: Int, ADT: DType = DT,
 ](
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, IN), MutAnyOrigin],
+    grad_output: LayoutTensor[ADT, Layout.row_major(BATCH, OUT), MutAnyOrigin],
+    grad_input: LayoutTensor[ADT, Layout.row_major(BATCH, IN), MutAnyOrigin],
 ):
     # Zero the whole grad_input and scatter the slice in. One thread
     # per [b, k] over the FULL input shape — k in [START, START+OUT)
@@ -49,130 +54,113 @@ def _slice_backward_kernel[
     if idx < total:
         var b = idx // IN
         var k = idx % IN
-        var zero: Scalar[DT] = 0.0
+        var zero: Scalar[ADT] = 0.0
         if k >= START and k < START + OUT:
-            grad_input[b, k] = rebind[Scalar[DT]](grad_output[b, k - START])
+            grad_input[b, k] = rebind[Scalar[ADT]](grad_output[b, k - START])
         else:
             grad_input[b, k] = zero
 
 
-struct Slice[IN: Int, START: Int, END: Int](Module):
+struct Slice[IN_: Int, START_: Int, END_: Int, ADT: DType = DT](Module):
     comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN)
-    comptime OUT_DIM = Self.END - Self.START
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IN_)
+    comptime OUT_DIM = Self.END_ - Self.START_
+    # Activation-flow dtype (AMP). Slice is dtype-TRANSPARENT — a pure copy +
+    # zero-fill with no math/cast — so it carries ACT_DT through unchanged.
+    # ACT_DT == DT (default) → byte-identical to the fp32 path.
+    comptime ACT_DT = Self.ADT
 
     @staticmethod
     def display_label() -> String:
         return String("Slice")
 
-    var ts: TargetStorage
-
     def __init__(out self):
-        self.ts = TargetStorage.make_uninit()
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. `ctx=None` on CPU; required on GPU."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "Slice: target must be 'cpu' or 'gpu'"
-        )
-        comptime assert Self.START >= 0, "Slice.START must be >= 0"
-        comptime assert Self.END > Self.START, "Slice.END must be > START"
-        comptime assert Self.END <= Self.IN, "Slice.END must be <= IN_DIM"
-        var s = Self()
-        comptime if target == "cpu":
-            s.ts = TargetStorage.make_cpu()
-        else:
-            if not ctx:
-                raise Error("Slice.make[target='gpu']: ctx required")
-            s.ts = TargetStorage.make_gpu(ctx.value())
-        return s^
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Unified CPU/GPU factory. INIT accepted for `make[target, INIT]`
+        uniformity but ignored (no params)."""
+        comptime assert Self.START_ >= 0, "Slice.START must be >= 0"
+        comptime assert Self.END_ > Self.START_, "Slice.END must be > START"
+        comptime assert Self.END_ <= Self.IN_, "Slice.END must be <= IN_DIM"
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["Slice", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
+        ref in0 = inputs[0]
         comptime if target == "cpu":
-            for b in range(BATCH):
+            out.ensure(B * Self.OUT_DIM)
+            var in_t = TileTensor(in0.data, row_major[B, Self.IN_]())
+            var out_t = TileTensor(out.data, row_major[B, Self.OUT_DIM]())
+            for b in range(B):
                 for j in range(Self.OUT_DIM):
-                    output_v[b, j] = input[b, Self.START + j]
+                    out_t[b, j] = in_t[b, Self.START_ + j]
         else:
-            var in_p = input.ptr
-            var out_p = output_v.ptr
-            var in_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin,
-            ](in_p)
-            var out_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
-            ](out_p)
-            comptime n_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
-            comptime kernel = _slice_forward_kernel[
-                BATCH, Self.IN, Self.START, Self.OUT_DIM,
-            ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                in_lt, out_lt, grid_dim=n_blocks, block_dim=TPB,
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT_DIM)
+            comptime n_blocks = (B * Self.OUT_DIM + TPB - 1) // TPB
+            c.enqueue_function[
+                _slice_forward_kernel[
+                    B, Self.IN_, Self.START_, Self.OUT_DIM, Self.ACT_DT
+                ]
+            ](
+                in0.lt["gpu", Layout.row_major(B, Self.IN_)](),
+                out.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Slice", target](self.ts.target_tag)
-        var grad_output_v = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var grad_input_v = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
+        ref gin = grad_inputs[0]
         comptime if target == "cpu":
+            gin.ensure(B * Self.IN_)
+            var go_t = TileTensor(grad_output.data, row_major[B, Self.OUT_DIM]())
+            var gi_t = TileTensor(gin.data, row_major[B, Self.IN_]())
             # Zero whole grad_input first; scatter the slice in afterward.
             # Zeros required for ComputeGraph scatter-add: when multiple
             # slicers share a predecessor, each writes its slice range and
             # leaves the rest at 0 so the scatter-add sums correctly.
-            for b in range(BATCH):
-                for k in range(Self.IN_DIMS[0]):
-                    grad_input_v[b, k] = Scalar[DT](0.0)
-            for b in range(BATCH):
+            for b in range(B):
+                for k in range(Self.IN_):
+                    gi_t[b, k] = Scalar[Self.ACT_DT](0.0)
+            for b in range(B):
                 for j in range(Self.OUT_DIM):
-                    grad_input_v[b, Self.START + j] = grad_output_v[b, j]
+                    gi_t[b, Self.START_ + j] = go_t[b, j]
         else:
-            var go_p = grad_output_v.ptr
-            var gi_p = grad_input_v.ptr
-            var go_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin,
-            ](go_p)
-            var gi_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.IN), MutAnyOrigin,
-            ](gi_p)
-            comptime n_blocks = (BATCH * Self.IN + TPB - 1) // TPB
-            comptime kernel = _slice_backward_kernel[
-                BATCH, Self.IN, Self.START, Self.OUT_DIM,
-            ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, gi_lt, grid_dim=n_blocks, block_dim=TPB,
+            var c = ctx.value()
+            gin.ensure_gpu(c, B * Self.IN_)
+            comptime n_blocks = (B * Self.IN_ + TPB - 1) // TPB
+            c.enqueue_function[
+                _slice_backward_kernel[
+                    B, Self.IN_, Self.START_, Self.OUT_DIM, Self.ACT_DT
+                ]
+            ](
+                grad_output.lt["gpu", Layout.row_major(B, Self.OUT_DIM)](),
+                gin.lt["gpu", Layout.row_major(B, Self.IN_)](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).

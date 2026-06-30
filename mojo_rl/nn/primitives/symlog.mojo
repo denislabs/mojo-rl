@@ -1,18 +1,14 @@
-"""Symlog[DIM] — Elementwise activation aliased through `SymlogOp`.
+"""Symlog[DIM] — storage-surface symlog activation, aliased through `SymlogOp`.
 
-Phase 2 Track A migration: the 220-LOC hand-written struct is gone;
-everything lives in `Elementwise[DIM, SymlogOp]` now. The alias keeps
-existing import sites (`from mojo_rl.nn.primitives.symlog import
-Symlog`) green and preserves `Symlog[DIM].make[target, INIT]()` shape.
-
-The pre-Phase-2 Symlog was input-caching (`owns_cache=False`) — forward
-aliased the input pointer, backward read `x` back to compute
-`gi = go / (1 + |x|)`. `SymlogOp` encodes the same contract; parity
-verified by `tests/nn/test_elementwise_symlog_parity.mojo`.
+The storage twin of legacy `nn.primitives.symlog.Symlog`: just
+`Elementwise[DIM, SymlogOp]` over the SHARED `SymlogOp` (`y = sign(x)·log(1+|x|)`,
+`dy/dx = 1/(1+|x|)`), so the per-lane math is bit-identical to legacy. Keeps
+DreamerV3's encoder import (`Symlog[OBS]` as the first stage of the encoder
+chain) one swap away from the storage `nets`.
 """
 
 from .elementwise import Elementwise
-from .ops.symlog_op import SymlogOp
+from mojo_rl.nn.primitives.ops.symlog_op import SymlogOp
 
 
 comptime Symlog[DIM: Int] = Elementwise[DIM, SymlogOp]

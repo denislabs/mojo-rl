@@ -10,10 +10,11 @@ Run (GPU env required):
     pixi run -e apple mojo run -I . examples/cartpole/muzero_cartpole_hybrid_logged_gpu.mojo
 """
 
+from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.logger import CsvLogger
 from mojo_rl.deep_agents.muzero.nets import MZRepNet, MZDynNet, MZPredNet
@@ -43,12 +44,11 @@ def main() raises:
     var rep = Rep.make["gpu", INIT=Kaiming](ctx)
     var dyn = Dyn.make["gpu", INIT=Kaiming](ctx)
     var pred = Pred.make["gpu", INIT=Kaiming](ctx)
-    var orep = Adam.make["gpu", M=Rep](rep, ctx)
-    var odyn = Adam.make["gpu", M=Dyn](dyn, ctx)
-    var opred = Adam.make["gpu", M=Pred](pred, ctx)
-    orep.lr = Scalar[DT](3e-4)
-    odyn.lr = Scalar[DT](3e-4)
-    opred.lr = Scalar[DT](3e-4)
+    # Storage Adam: lr at construction (the GPU arena is engaged internally by
+    # the driver via `adopt`).
+    var orep = Adam(lr=Scalar[DT](3e-4))
+    var odyn = Adam(lr=Scalar[DT](3e-4))
+    var opred = Adam(lr=Scalar[DT](3e-4))
 
     var logger = CsvLogger(
         "/tmp/muzero_cartpole_metrics_hybrid.csv", buffer_size=64
@@ -75,7 +75,7 @@ def main() raises:
         eval_episodes=3,
         diag_every=200,
         report_every=200,
-        logger=UnsafePointer(to=logger),
+        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
         verbose=True,
     )
     logger.close()

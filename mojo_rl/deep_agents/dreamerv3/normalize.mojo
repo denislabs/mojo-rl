@@ -21,7 +21,6 @@ interpolation matching `jnp.percentile` (method='linear').
 from std.math import sqrt
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
 
 
 @always_inline
@@ -51,7 +50,7 @@ def _insertion_sort(buf: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int):
         buf[j + 1] = key
 
 
-struct PercentileNormalize(Movable & ImplicitlyDestructible):
+struct PercentileNormalize(Movable & ImplicitlyDeletable):
     # impl: "none" | "perc" | "meanstd"
     var impl: String
     var rate: Scalar[DT]
@@ -98,9 +97,7 @@ struct PercentileNormalize(Movable & ImplicitlyDestructible):
         p.debias = debias
         return p^
 
-    def update(
-        mut self, x: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int
-    ) raises:
+    def update(mut self, x: List[Scalar[DT]], n: Int) raises:
         """EMA-update the running statistics from a flat sample `x[0:n]`."""
         var keep = Scalar[DT](1.0) - self.rate
         if self.impl == "none":
@@ -108,7 +105,9 @@ struct PercentileNormalize(Movable & ImplicitlyDestructible):
         if self.impl == "perc":
             # Sort a scratch copy for percentile reads.
             var tmp = List[Scalar[DT]](length=n, fill=Scalar[DT](0.0))
-            var tp = mptr(tmp.unsafe_ptr())
+            var tp = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                tmp.unsafe_ptr()
+            )
             for i in range(n):
                 tp[i] = x[i]
             _insertion_sort(tp, n)

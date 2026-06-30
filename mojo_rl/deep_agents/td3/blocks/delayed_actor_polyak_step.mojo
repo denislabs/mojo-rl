@@ -1,12 +1,17 @@
-"""TD3DelayedActorPolyakStep — TD3 actor update + 3-pair polyak, gated.
+"""TD3DelayedActorPolyakStep — TD3 actor update + 3-pair polyak, gated (storage).
 
 TD3's actor update and ALL THREE polyaks (actor + critic1 + critic2) fire
-together every `policy_delay` critic steps. The counter is internal — no
-state pollution. When the counter hasn't reached threshold, `step` is a
-no-op (does NOT touch state.did_step because Sample+TargetY+Critic still
-ran).
+together every `policy_delay` critic steps. The counter is internal — no state
+pollution. When the counter hasn't reached threshold, `step` is a no-op (does
+NOT touch state.did_step because Sample+TargetY+Critic still ran).
 
-Owns the inner DDPGActorLoss (TD3 uses DPG on critic1 for the actor).
+Owns the inner storage `DDPGActorLoss` (TD3 uses DPG on critic1 for the actor —
+identical math to DDPG's actor loss).
+
+STORAGE migration: mirrors `DDPGActorStep` (over `DDPGActorLoss.forward_backward`)
+plus the legacy TD3 gating + 3 polyaks. The actor loss is returned on CPU /
+accumulated on-device on GPU; `read_loss_accum(ctx)` / `reset_loss_accum()`
+passthroughs drain it at flush.
 """
 
 from std.gpu.host import DeviceContext
@@ -14,15 +19,15 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.module import Module
-from ...core.online_target_pair import OnlineTargetPair
 from mojo_rl.nn.optimizer.adam import Adam
+from ...core.online_target_pair import OnlineTargetPair
 from ...ddpg.actor_loss import DDPGActorLoss
 from ...training.trainer_block import TrainerState
 
 
 struct TD3DelayedActorPolyakStep[
     OBS_: Int, ACT_: Int, BATCH_: Int, ACTOR: Module, CRITIC: Module,
-](Defaultable & Movable & ImplicitlyDestructible):
+](Defaultable & Movable & ImplicitlyDeletable):
     comptime OBS = Self.OBS_
     comptime ACT = Self.ACT_
     comptime BATCH = Self.BATCH_
@@ -62,8 +67,8 @@ struct TD3DelayedActorPolyakStep[
     def reset_loss_accum(mut self) raises:
         self.inner.reset_loss_accum()
 
-    def read_loss_accum(mut self) raises -> Scalar[DT]:
-        return self.inner.read_loss_accum()
+    def read_loss_accum(mut self, ctx: DeviceContext) raises -> Scalar[DT]:
+        return self.inner.read_loss_accum(ctx)
 
     def step[target: StaticString, POLICY: AMPPolicy = NoAMP](
         mut self,
@@ -81,19 +86,19 @@ struct TD3DelayedActorPolyakStep[
             return  # no-op this train_step
         self._counter = 0
 
-        # Actor update against critic1 (DDPG-style DPG on pair1.online).
-        var loss = self.inner.forward_backward[target, OPT=Adam, POLICY=POLICY](
-            actor_pair.online, actor_opt, pair1.online,
-            state.mb_s.target_ptr[target](),
+        # Actor update against critic1 (DDPG-style DPG on pair1.online). On GPU
+        # `loss` is a 0 sentinel — the real metric is drained from the inner
+        # device accumulator at flush (read_loss_accum).
+        var loss = self.inner.forward_backward[target, POLICY](
+            actor_pair.online,
+            actor_opt,
+            pair1.online,
+            state.mb_s,
+            state.ctx,
         )
         state.actor_loss = loss
 
         # 3 polyaks: actor + critic1 + critic2.
-        comptime if target == "cpu":
-            actor_pair.polyak_step["cpu"](self.tau)
-            pair1.polyak_step["cpu"](self.tau)
-            pair2.polyak_step["cpu"](self.tau)
-        else:
-            actor_pair.polyak_step["gpu"](self.tau, state.ctx)
-            pair1.polyak_step["gpu"](self.tau, state.ctx)
-            pair2.polyak_step["gpu"](self.tau, state.ctx)
+        actor_pair.polyak_step[target](self.tau, state.ctx)
+        pair1.polyak_step[target](self.tau, state.ctx)
+        pair2.polyak_step[target](self.tau, state.ctx)

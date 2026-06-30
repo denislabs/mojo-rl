@@ -336,7 +336,7 @@ def set_scancode_name(scancode: Scancode, var name: String) raises:
     ret = _get_dylib_function[
         lib,
         "SDL_SetScancodeName",
-        def(scancode: Scancode, name: Ptr[c_char, ImmutAnyOrigin]) thin -> Bool,
+        def(Scancode, Ptr[c_char, ImmutOrigin(origin_of(name))]) thin -> Bool,
     ]()(scancode, name.as_c_string_slice().unsafe_ptr())
     if not ret:
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
@@ -395,7 +395,7 @@ def get_scancode_from_name(var name: String) raises -> Scancode:
     return _get_dylib_function[
         lib,
         "SDL_GetScancodeFromName",
-        def(name: Ptr[c_char, ImmutAnyOrigin]) thin -> Scancode,
+        def(Ptr[c_char, ImmutOrigin(origin_of(name))]) thin -> Scancode,
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 
@@ -442,7 +442,7 @@ def get_key_from_name(var name: String) raises -> Keycode:
     return _get_dylib_function[
         lib,
         "SDL_GetKeyFromName",
-        def(name: Ptr[c_char, ImmutAnyOrigin]) thin -> Keycode,
+        def(Ptr[c_char, ImmutOrigin(origin_of(name))]) thin -> Keycode,
     ]()(name.as_c_string_slice().unsafe_ptr())
 
 
@@ -507,7 +507,7 @@ struct TextInputType(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime TEXTINPUT_TYPE_TEXT = Self(0)
     """The input is text."""
@@ -555,7 +555,7 @@ struct Capitalization(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime CAPITALIZE_NONE = Self(0)
     """No auto-capitalization will be done."""

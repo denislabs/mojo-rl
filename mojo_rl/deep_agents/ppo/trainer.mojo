@@ -1,4 +1,4 @@
-"""PPOTrainer — block-composed PPO continuous trainer (CleanRL-style).
+"""PPOTrainer — block-composed PPO continuous trainer (CleanRL-style) (STORAGE).
 
 Composes 6 ref-based step blocks via `OnPolicyState`:
 
@@ -21,6 +21,13 @@ GPU train_target is a hybrid: per-step actor/critic forwards run on
 device (H2D obs + D2H ao/v inside PPOActStep); rollout buffers live
 host-only; the K-epoch minibatch is H2D-uploaded into device-side
 mb_* scratches before each PPOActorTrainStep / PPOCriticTrainStep.
+
+STORAGE migration: nets are storage `Module`s, optimizers are storage `Adam`
+(arena-adopted on GPU), every block passes storage `Tensor`s. Checkpoint uses
+the storage `CheckpointWriter`/`CheckpointReader` + an appended counter line.
+The GPU diag forward writes into an owned device `Tensor` scratch (`_diag_ao`);
+the per-sample / EV kernels read/write owned `Tensor`s via `.lt["gpu", layout]()`
+views (no raw pointers).
 """
 
 from std.gpu import global_idx, thread_idx
@@ -29,29 +36,25 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from std.math import exp as fexp
 from std.memory import alloc
 from std.time import perf_counter_ns
-from layout import TileTensor, row_major
 
 from mojo_rl.core.logger import Logger, NoOpLogger
 from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
-from mojo_rl.nn.core.module import mptr
-from ..training.device_mean_accum import DeviceMeanAccum
-from mojo_rl.nn.core import Module
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.call import call_forward, call_vjp
+from layout import Layout, LayoutTensor
+from mojo_rl.nn.core.initializer import Xavier
+from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.core.checkpoint import (
-    save_state_v2_body, load_state_v2_body,
-    save_state_v2_body_gpu, load_state_v2_body_gpu,
+    CheckpointWriter, CheckpointReader, _split_lines,
 )
+
 from mojo_rl.nn.core.log_bundle import log_bundle
 from mojo_rl.nn.core.metric import LogScalar
-from mojo_rl.nn.combinators.sequential import Sequential
-from mojo_rl.nn.initializer import Xavier
-from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.nn.training.timer import Timer
-from ..core.checkpoint_helpers import (
-    save_optimizer_v2_body, load_optimizer_v2_body,
-    save_optimizer_v2_body_gpu, load_optimizer_v2_body_gpu,
-    save_counter_v2_body, load_counter_v2_body,
-    split_lines_v2, read_file_v2, expect_v2_header,
-)
+
+from ..training.device_mean_accum import DeviceMeanAccum
 from ..training.episode_tracker import EpisodeTracker
 from ..training.onpolicy_state import OnPolicyState
 from ..training.driver_onpolicy import OnPolicyAgent, OnPolicyAgentBatched
@@ -93,13 +96,13 @@ comptime _DIAG_LOG_2PI = LOG_2PI
 # clip-indicator into three `[MB]` buffers (reduced to means by the trainer).
 # ──────────────────────────────────────────────────────────────────────────
 def _ppo_diag_per_sample_kernel[MB: Int, ACT: Int](
-    ao: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    act: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    olp: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ao: LayoutTensor[DT, Layout.row_major(MB, 2 * ACT), MutAnyOrigin],
+    act: LayoutTensor[DT, Layout.row_major(MB, ACT), MutAnyOrigin],
+    olp: LayoutTensor[DT, Layout.row_major(MB), MutAnyOrigin],
     clip_eps: Scalar[DT],
-    ent_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    kl_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    clip_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ent_out: LayoutTensor[DT, Layout.row_major(MB), MutAnyOrigin],
+    kl_out: LayoutTensor[DT, Layout.row_major(MB), MutAnyOrigin],
+    clip_out: LayoutTensor[DT, Layout.row_major(MB), MutAnyOrigin],
 ):
     var b = Int(global_idx.x)
     if b >= MB:
@@ -107,14 +110,14 @@ def _ppo_diag_per_sample_kernel[MB: Int, ACT: Int](
     var nlp: Scalar[DT] = 0.0
     var ent: Scalar[DT] = 0.0
     for j in range(ACT):
-        var mu = ao[b * 2 * ACT + j]
-        var ls = ao[b * 2 * ACT + ACT + j]
+        var mu = rebind[Scalar[DT]](ao[b, j])
+        var ls = rebind[Scalar[DT]](ao[b, ACT + j])
         if ls < _DIAG_LOG_STD_MIN:
             ls = _DIAG_LOG_STD_MIN
         elif ls > _DIAG_LOG_STD_MAX:
             ls = _DIAG_LOG_STD_MAX
         var std = fexp(ls)
-        var a = act[b * ACT + j]
+        var a = rebind[Scalar[DT]](act[b, j])
         var zz = (a - mu) / (std + _DIAG_EPS_STD)
         nlp += Scalar[DT](-0.5) * (
             _DIAG_LOG_2PI + Scalar[DT](2.0) * ls + zz * zz
@@ -122,7 +125,7 @@ def _ppo_diag_per_sample_kernel[MB: Int, ACT: Int](
         ent += Scalar[DT](0.5) * (
             _DIAG_LOG_2PI + Scalar[DT](1.0) + Scalar[DT](2.0) * ls
         )
-    var diff = nlp - olp[b]
+    var diff = nlp - rebind[Scalar[DT]](olp[b])
     if diff > _DIAG_LOG_PROB_DIFF_MAX:
         diff = _DIAG_LOG_PROB_DIFF_MAX
     elif diff < -_DIAG_LOG_PROB_DIFF_MAX:
@@ -141,17 +144,17 @@ def _ppo_diag_per_sample_kernel[MB: Int, ACT: Int](
 # Var(ret) is ~0. Writes the scalar into `ev_out[0]`. Launch grid_dim=1,
 # block_dim=TPB_REDUCE.
 def _ppo_ev_kernel[MB: Int](
-    ret: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    v: UnsafePointer[Scalar[DT], MutAnyOrigin],
-    ev_out: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    ret: LayoutTensor[DT, Layout.row_major(MB), MutAnyOrigin],
+    v: LayoutTensor[DT, Layout.row_major(MB), MutAnyOrigin],
+    ev_out: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
 ):
     var t = Int(thread_idx.x)
     var s_ret: Scalar[DT] = 0.0
     var s_res: Scalar[DT] = 0.0
     var k = t
     while k < MB:
-        s_ret += ret[k]
-        s_res += ret[k] - v[k]
+        s_ret += rebind[Scalar[DT]](ret[k])
+        s_res += rebind[Scalar[DT]](ret[k]) - rebind[Scalar[DT]](v[k])
         k += TPB_REDUCE
     var tot_ret = block.sum[block_size=TPB_REDUCE, broadcast=True](val=s_ret)
     var tot_res = block.sum[block_size=TPB_REDUCE, broadcast=True](val=s_res)
@@ -161,8 +164,8 @@ def _ppo_ev_kernel[MB: Int](
     var vs: Scalar[DT] = 0.0
     k = t
     while k < MB:
-        var dr = ret[k] - mean_ret
-        var rr = (ret[k] - v[k]) - mean_res
+        var dr = rebind[Scalar[DT]](ret[k]) - mean_ret
+        var rr = (rebind[Scalar[DT]](ret[k]) - rebind[Scalar[DT]](v[k])) - mean_res
         vr += dr * dr
         vs += rr * rr
         k += TPB_REDUCE
@@ -200,9 +203,6 @@ struct PPOTrainer[
     comptime N_MINIBATCHES = (Self.ROLLOUT_LEN * Self.N_ENVS) // Self.MINIBATCH
 
     # Timer section indices — order matches `add_section` calls in `make`.
-    # PPO's train_step body is dominated by the K-epoch SGD loop (single
-    # section: `update`). GAE bootstrap + per-env backward is its own
-    # `gae` section. Sample / target_y / polyak don't apply to on-policy.
     comptime _T_GAE = 0
     comptime _T_UPDATE = 1
     comptime _T_DIAG = 2
@@ -235,11 +235,11 @@ struct PPOTrainer[
 
     # Host-side staging for the N=1 host-list wrapper paths (so they
     # don't allocate per call). None until `make` allocates real buffers.
-    var _obs1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _act1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _rew1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _done1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _nobs1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _obs1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _act1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _rew1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _done1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _nobs1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
 
     # ── Hyperparameters ──────────────────────────────────────────────
     var gamma: Scalar[DT]
@@ -247,10 +247,11 @@ struct PPOTrainer[
     var clip_eps: Scalar[DT]
     var entropy_coef: Scalar[DT]
     var action_scale: Scalar[DT]
+    var max_grad_norm: Scalar[DT]
 
     # ── Episode tracker (per-env running-return + completed-return window) ─
     var tracker: EpisodeTracker
-    var _ep_returns: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]  # N_ENVS
+    var _ep_returns: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]  # N_ENVS
 
     # ── Train-step accumulators (summed across all minibatch updates) ────
     var _actor_L_accum: Scalar[DT]
@@ -260,20 +261,19 @@ struct PPOTrainer[
     var _kl_accum: Scalar[DT]
     var _clip_accum: Scalar[DT]
     var _ev_accum: Scalar[DT]
-    # Host scratch for the diag actor forward (MINIBATCH * 2 * ACT_DIM).
-    var _diag_ao: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    # GPU diag: device-resident mirrors + the device scratch the diag
-    # kernels read/write. The per-minibatch entropy / KL / clip means and the
-    # explained-variance scalar are reduced into these accumulators on GPU.
+    # Diag actor forward scratch (MINIBATCH * 2 * ACT_DIM) — host on CPU,
+    # device-resident on GPU (the diag kernels read its `.dev` buffer).
+    var _diag_ao: Tensor
+    # GPU diag: device-resident mean accumulators + the [MB]/[1] kernel-output
+    # scratches the diag kernels write.
     var _entropy_mean_dev: DeviceMeanAccum
     var _kl_mean_dev: DeviceMeanAccum
     var _clip_mean_dev: DeviceMeanAccum
     var _ev_mean_dev: DeviceMeanAccum
-    var _diag_ao_dev: Optional[DeviceBuffer[DT]]
-    var _diag_ent_dev: Optional[DeviceBuffer[DT]]
-    var _diag_kl_dev: Optional[DeviceBuffer[DT]]
-    var _diag_clip_dev: Optional[DeviceBuffer[DT]]
-    var _diag_ev_dev: Optional[DeviceBuffer[DT]]
+    var _diag_ent: Tensor
+    var _diag_kl: Tensor
+    var _diag_clip: Tensor
+    var _diag_ev: Tensor
     var _update_count: Int
     # Never reset by `flush_*` — emitted as `train_steps` so the
     # downstream monitor can plot cumulative minibatch updates.
@@ -341,6 +341,7 @@ struct PPOTrainer[
         self.clip_eps = Scalar[DT](0.2)
         self.entropy_coef = Scalar[DT](0.0)
         self.action_scale = Scalar[DT](1.0)
+        self.max_grad_norm = Scalar[DT](0.0)
         self.tracker = EpisodeTracker.new(
             window_size=10, initial_fill=Scalar[DT](-1600.0),
         )
@@ -351,16 +352,15 @@ struct PPOTrainer[
         self._kl_accum = Scalar[DT](0.0)
         self._clip_accum = Scalar[DT](0.0)
         self._ev_accum = Scalar[DT](0.0)
-        self._diag_ao = None
+        self._diag_ao = Tensor()
         self._entropy_mean_dev = DeviceMeanAccum()
         self._kl_mean_dev = DeviceMeanAccum()
         self._clip_mean_dev = DeviceMeanAccum()
         self._ev_mean_dev = DeviceMeanAccum()
-        self._diag_ao_dev = None
-        self._diag_ent_dev = None
-        self._diag_kl_dev = None
-        self._diag_clip_dev = None
-        self._diag_ev_dev = None
+        self._diag_ent = Tensor()
+        self._diag_kl = Tensor()
+        self._diag_clip = Tensor()
+        self._diag_ev = Tensor()
         self._update_count = 0
         self._total_train_steps = 0
         self.timer = Timer.new()
@@ -381,8 +381,9 @@ struct PPOTrainer[
         # Canonical PPO uses max_grad_norm=0.5 (Schulman 2017 + most
         # implementations). Default 0 keeps bit-identity for callers
         # that previously trained unclipped. Wired to both optimizers
-        # below — separate from `clip_eps`, which is the policy-ratio
-        # surrogate clip, not the gradient-norm clip.
+        # below via the explicit `clip_grads` call in the train steps —
+        # separate from `clip_eps`, which is the policy-ratio surrogate
+        # clip, not the gradient-norm clip.
         max_grad_norm: Scalar[DT] = Scalar[DT](0.0),
         ctx: Optional[DeviceContext] = None,
     ) raises -> Self:
@@ -402,16 +403,10 @@ struct PPOTrainer[
         t.critic = Self.CRITIC.make[target=Self.train_target, INIT=Xavier](
             ctx=ctx
         )
-        t.actor_opt = Adam.make[target=Self.train_target, M=Self.ACTOR](
-            t.actor, ctx=ctx,
-        )
-        t.actor_opt.lr = actor_lr
-        t.actor_opt.max_grad_norm = max_grad_norm
-        t.critic_opt = Adam.make[target=Self.train_target, M=Self.CRITIC](
-            t.critic, ctx=ctx,
-        )
-        t.critic_opt.lr = critic_lr
-        t.critic_opt.max_grad_norm = max_grad_norm
+        t.actor_opt = Adam(lr=actor_lr)
+        t.actor_opt.adopt[Self.train_target, M=Self.ACTOR](t.actor, ctx)
+        t.critic_opt = Adam(lr=critic_lr)
+        t.critic_opt.adopt[Self.train_target, M=Self.CRITIC](t.critic, ctx)
         t.act_step = PPOActStep[
             Self.OBS_DIM, Self.ACT_DIM, Self.ACTOR, Self.CRITIC,
         ].make[Self.train_target](ctx=ctx)
@@ -445,20 +440,23 @@ struct PPOTrainer[
         for e in range(Self.N_ENVS):
             ep_returns_p[e] = Scalar[DT](0.0)
         t._ep_returns = ep_returns_p
-        t._diag_ao = alloc[Scalar[DT]](Self.MINIBATCH * 2 * Self.ACT_DIM)
+
+        # Diag actor-output scratch (MINIBATCH * 2 * ACT_DIM) on the train
+        # target; the GPU diag kernels read its device buffer.
+        t._diag_ao = Tensor.make[Self.train_target](
+            Self.MINIBATCH * 2 * Self.ACT_DIM, ctx
+        )
 
         comptime if Self.train_target == "gpu":
-            # Device diag scratch + mean accumulators. `_diag_ao_dev` holds the
-            # recomputed post-update actor output; the per-sample kernel writes
-            # ent/kl/clip; the EV kernel writes a [1] scalar.
+            # Device diag scratch (per-sample ent/kl/clip + EV scalar) + mean
+            # accumulators. `_diag_ao` (above) holds the recomputed post-update
+            # actor output; the per-sample kernel writes ent/kl/clip; the EV
+            # kernel writes a [1] scalar.
             var c = ctx.value()
-            t._diag_ao_dev = c.enqueue_create_buffer[DT](
-                Self.MINIBATCH * 2 * Self.ACT_DIM
-            )
-            t._diag_ent_dev = c.enqueue_create_buffer[DT](Self.MINIBATCH)
-            t._diag_kl_dev = c.enqueue_create_buffer[DT](Self.MINIBATCH)
-            t._diag_clip_dev = c.enqueue_create_buffer[DT](Self.MINIBATCH)
-            t._diag_ev_dev = c.enqueue_create_buffer[DT](1)
+            t._diag_ent = Tensor.alloc_gpu(c, Self.MINIBATCH)
+            t._diag_kl = Tensor.alloc_gpu(c, Self.MINIBATCH)
+            t._diag_clip = Tensor.alloc_gpu(c, Self.MINIBATCH)
+            t._diag_ev = Tensor.alloc_gpu(c, 1)
             t._entropy_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
             t._kl_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
             t._clip_mean_dev = DeviceMeanAccum.make["gpu"](ctx=ctx)
@@ -469,6 +467,7 @@ struct PPOTrainer[
         t.clip_eps = clip_eps
         t.entropy_coef = entropy_coef
         t.action_scale = action_scale
+        t.max_grad_norm = max_grad_norm
         # log_std_init is the caller's responsibility (reaching into the
         # actor's GaussianHead.log_std vector — see the example for the
         # idiom). Kept here for forward-compat / docs.
@@ -501,8 +500,8 @@ struct PPOTrainer[
             "PPOTrainer.select_action: host-list wrapper only valid "
             "at N_ENVS=1; use select_action_batched for N_ENVS>1"
         )
-        var obs_p = self._obs1.value()
-        var act_p = self._act1.value()
+        var obs_p = self._obs1.value().as_unsafe_any_origin()
+        var act_p = self._act1.value().as_unsafe_any_origin()
         for d in range(Self.OBS_DIM):
             obs_p[d] = obs[d]
         self.select_action_batched(obs_p, act_p, step_idx)
@@ -554,10 +553,10 @@ struct PPOTrainer[
             "valid at N_ENVS=1; use record_batch_cpu for N_ENVS>1"
         )
         _ = action  # env-ready action ignored (cached unbounded used)
-        var obs_p = self._obs1.value()
-        var nobs_p = self._nobs1.value()
-        var rew_p = self._rew1.value()
-        var done_p = self._done1.value()
+        var obs_p = self._obs1.value().as_unsafe_any_origin()
+        var nobs_p = self._nobs1.value().as_unsafe_any_origin()
+        var rew_p = self._rew1.value().as_unsafe_any_origin()
+        var done_p = self._done1.value().as_unsafe_any_origin()
         for d in range(Self.OBS_DIM):
             obs_p[d]  = obs[d]
             nobs_p[d] = next_obs[d]
@@ -584,7 +583,7 @@ struct PPOTrainer[
         self.record_step.step[
             Self.train_target, Self.MINIBATCH, Self.N_ENVS,
         ](self.state, obs_ptr, reward_ptr, next_obs_ptr, done_ptr)
-        var ep_ret_p = self._ep_returns.value()
+        var ep_ret_p = self._ep_returns.value().as_unsafe_any_origin()
         for e in range(Self.N_ENVS):
             ep_ret_p[e] += reward_ptr[e]
             if done_ptr[e] > Scalar[DT](0.5):
@@ -639,11 +638,11 @@ struct PPOTrainer[
                 )
                 var aL = self.actor_train.step[
                     Self.train_target, Self.ROLLOUT_LEN, Self.N_ENVS,
-                ](self.state, self.actor, self.actor_opt)
+                ](self.state, self.actor, self.actor_opt, self.max_grad_norm)
                 var cL = self.critic_train.step[
                     Self.train_target, Self.ACT_DIM, Self.ROLLOUT_LEN,
                     Self.N_ENVS,
-                ](self.state, self.critic, self.critic_opt)
+                ](self.state, self.critic, self.critic_opt, self.max_grad_norm)
                 self._actor_L_accum += aL
                 self._critic_L_accum += cL
                 self._update_count += 1
@@ -671,16 +670,18 @@ struct PPOTrainer[
         (same denominator as the loss accumulators)."""
         comptime ACT = Self.ACT_DIM
         comptime MB = Self.MINIBATCH
-        var act_p = self.state.mb_act.target_ptr["cpu"]()
-        var olp_p = self.state.mb_olp.target_ptr["cpu"]()
-        var v_p   = self.state.mb_v.target_ptr["cpu"]()
-        var ret_p = self.state.mb_ret.target_ptr["cpu"]()
-        var obs_p = self.state.mb_obs.target_ptr["cpu"]()
 
-        var obs_t = TileTensor(obs_p, row_major[MB, Self.OBS_DIM]())
-        var ao = self._diag_ao.value()
-        var ao_t = TileTensor(ao, row_major[MB, 2 * ACT]())
-        self.actor.forward["cpu", MB](obs_t, output=ao_t)
+        # Re-run the (post-update) actor on the gathered minibatch obs (host)
+        # into the diag scratch Tensor.
+        call_forward["cpu", MB](
+            self.actor, TensorRefs[Self.ACTOR.ARITY](self.state.mb_obs), self._diag_ao, self.ctx
+        )
+
+        ref ao = self._diag_ao.data
+        ref act = self.state.mb_act.data
+        ref olp = self.state.mb_olp.data
+        ref v = self.state.mb_v.data
+        ref ret = self.state.mb_ret.data
 
         var ent_sum = Scalar[DT](0.0)
         var kl_sum = Scalar[DT](0.0)
@@ -696,7 +697,7 @@ struct PPOTrainer[
                 elif ls > _DIAG_LOG_STD_MAX:
                     ls = _DIAG_LOG_STD_MAX
                 var std = fexp(ls)
-                var a = act_p[b * ACT + j]
+                var a = act[b * ACT + j]
                 var zz = (a - mu) / (std + _DIAG_EPS_STD)
                 nlp += Scalar[DT](-0.5) * (
                     _DIAG_LOG_2PI + Scalar[DT](2.0) * ls + zz * zz
@@ -704,7 +705,7 @@ struct PPOTrainer[
                 ent += Scalar[DT](0.5) * (
                     _DIAG_LOG_2PI + Scalar[DT](1.0) + Scalar[DT](2.0) * ls
                 )
-            var diff = nlp - olp_p[b]
+            var diff = nlp - olp[b]
             if diff > _DIAG_LOG_PROB_DIFF_MAX:
                 diff = _DIAG_LOG_PROB_DIFF_MAX
             elif diff < -_DIAG_LOG_PROB_DIFF_MAX:
@@ -730,15 +731,15 @@ struct PPOTrainer[
         var mean_ret = Scalar[DT](0.0)
         var mean_res = Scalar[DT](0.0)
         for b in range(MB):
-            mean_ret += ret_p[b]
-            mean_res += ret_p[b] - v_p[b]
+            mean_ret += ret[b]
+            mean_res += ret[b] - v[b]
         mean_ret *= inv_mb
         mean_res *= inv_mb
         var var_ret = Scalar[DT](0.0)
         var var_res = Scalar[DT](0.0)
         for b in range(MB):
-            var dr = ret_p[b] - mean_ret
-            var rr = (ret_p[b] - v_p[b]) - mean_res
+            var dr = ret[b] - mean_ret
+            var rr = (ret[b] - v[b]) - mean_res
             var_ret += dr * dr
             var_res += rr * rr
         var ev = Scalar[DT](0.0)
@@ -755,39 +756,46 @@ struct PPOTrainer[
         comptime MB = Self.MINIBATCH
         var ctx = self.ctx.value()
 
-        # Recompute the actor output on the gathered minibatch obs (device).
-        var obs_p = self.state.mb_obs.target_ptr["gpu"]()
-        var obs_t = TileTensor(obs_p, row_major[MB, Self.OBS_DIM]())
-        var ao_p = mptr(self._diag_ao_dev.value().unsafe_ptr())
-        var ao_t = TileTensor(ao_p, row_major[MB, 2 * ACT]())
-        self.actor.forward["gpu", MB](obs_t, output=ao_t)
+        # Recompute the actor output on the gathered minibatch obs (device),
+        # into the device-resident `_diag_ao` Tensor.
+        call_forward["gpu", MB](
+            self.actor, TensorRefs[Self.ACTOR.ARITY](self.state.mb_obs), self._diag_ao, self.ctx
+        )
 
-        var act_p = self.state.mb_act.target_ptr["gpu"]()
-        var olp_p = self.state.mb_olp.target_ptr["gpu"]()
-        var v_p = self.state.mb_v.target_ptr["gpu"]()
-        var ret_p = self.state.mb_ret.target_ptr["gpu"]()
-        var ent_p = self._diag_ent_dev.value().unsafe_ptr()
-        var kl_p = self._diag_kl_dev.value().unsafe_ptr()
-        var clip_p = self._diag_clip_dev.value().unsafe_ptr()
-        var ev_p = self._diag_ev_dev.value().unsafe_ptr()
-
+        # Device views (`.lt`) for the diag kernels — no raw pointers.
         comptime n_blocks = (MB + TPB - 1) // TPB
         comptime per_k = _ppo_diag_per_sample_kernel[MB, ACT]
         ctx.enqueue_function[per_k](
-            ao_p, act_p, olp_p, self.clip_eps,
-            ent_p, kl_p, clip_p,
+            self._diag_ao.lt["gpu", Layout.row_major(MB, 2 * ACT)](),
+            self.state.mb_act.lt["gpu", Layout.row_major(MB, ACT)](),
+            self.state.mb_olp.lt["gpu", Layout.row_major(MB)](),
+            self.clip_eps,
+            self._diag_ent.lt["gpu", Layout.row_major(MB)](),
+            self._diag_kl.lt["gpu", Layout.row_major(MB)](),
+            self._diag_clip.lt["gpu", Layout.row_major(MB)](),
             grid_dim=n_blocks, block_dim=TPB,
         )
-        self._entropy_mean_dev.accumulate_gpu[MB](ent_p)
-        self._kl_mean_dev.accumulate_gpu[MB](kl_p)
-        self._clip_mean_dev.accumulate_gpu[MB](clip_p)
+        self._entropy_mean_dev.accumulate_gpu_lt[MB](
+            self._diag_ent.lt["gpu", Layout.row_major(MB)]()
+        )
+        self._kl_mean_dev.accumulate_gpu_lt[MB](
+            self._diag_kl.lt["gpu", Layout.row_major(MB)]()
+        )
+        self._clip_mean_dev.accumulate_gpu_lt[MB](
+            self._diag_clip.lt["gpu", Layout.row_major(MB)]()
+        )
 
         comptime ev_k = _ppo_ev_kernel[MB]
         ctx.enqueue_function[ev_k](
-            ret_p, v_p, ev_p, grid_dim=1, block_dim=TPB_REDUCE,
+            self.state.mb_ret.lt["gpu", Layout.row_major(MB)](),
+            self.state.mb_v.lt["gpu", Layout.row_major(MB)](),
+            self._diag_ev.lt["gpu", Layout.row_major(1)](),
+            grid_dim=1, block_dim=TPB_REDUCE,
         )
         # The EV scalar lives in a [1] buffer; reducing it folds (ev, +1).
-        self._ev_mean_dev.accumulate_gpu[1](ev_p)
+        self._ev_mean_dev.accumulate_gpu_lt[1](
+            self._diag_ev.lt["gpu", Layout.row_major(1)]()
+        )
 
     def mean_return(self) -> Scalar[DT]:
         return self.tracker.mean_return()
@@ -896,53 +904,70 @@ struct PPOTrainer[
         _ = self.flush_metrics[L](logger, step)
 
     def save_state(mut self, path: String) raises:
-        """One-file v2 checkpoint of every PPO module + optimizer.
-        Sections: `actor.*`, `critic.*`, `actor_opt.*`, `critic_opt.*`.
-        Overwrites `path`. CPU-only; GPU save/load would need device→host
-        sync first."""
-        var body = String("")
-        comptime if Self.train_target == "cpu":
-            save_state_v2_body(self.actor, body, "actor")
-            save_state_v2_body(self.critic, body, "critic")
-            save_optimizer_v2_body(self.actor_opt, body, "actor_opt")
-            save_optimizer_v2_body(self.critic_opt, body, "critic_opt")
-        else:
-            var c = self.ctx.value()
-            save_state_v2_body_gpu(self.actor, body, "actor", c)
-            save_state_v2_body_gpu(self.critic, body, "critic", c)
-            save_optimizer_v2_body_gpu(self.actor_opt, body, "actor_opt")
-            save_optimizer_v2_body_gpu(self.critic_opt, body, "critic_opt")
-        save_counter_v2_body(self._total_train_steps, body, "_total_train_steps")
-        var content = String("nn-ckpt v2\n") + body
+        """One-file storage checkpoint of the actor + critic params + state,
+        plus the cumulative train-step counter (appended as a `key=value`
+        line). Sections name-prefixed `actor.` / `critic.`. On GPU device
+        params download to host first; the on-disk format is target-agnostic.
+        Optimizer moments are NOT persisted (on-policy resume re-rolls)."""
+        var w = CheckpointWriter(save_moments=False)
+        w.mode = 0
+        self.actor.for_each_param[Self.train_target](w, self.ctx, "actor")
+        self.critic.for_each_param[Self.train_target](w, self.ctx, "critic")
+        w.mode = 1
+        self.actor.for_each_state[Self.train_target](w, self.ctx, "actor")
+        self.critic.for_each_state[Self.train_target](w, self.ctx, "critic")
+        w.content += (
+            "_total_train_steps=" + String(self._total_train_steps) + "\n"
+        )
         with open(path, "w") as f:
-            f.write(content)
+            f.write(w.content)
 
     def load_state(mut self, path: String) raises:
         """Inverse of `save_state`. PPO has no target nets, so no
-        hard-copy step is needed. On GPU the device params + Adam moments
-        are restored via host staging (byte-identical on-disk format)."""
-        var content = read_file_v2(path)
-        var lines = split_lines_v2(content)
-        expect_v2_header(lines)
-        var idx: Int = 1
-        comptime if Self.train_target == "cpu":
-            load_state_v2_body(self.actor, lines, idx, "actor")
-            load_state_v2_body(self.critic, lines, idx, "critic")
-            load_optimizer_v2_body(self.actor_opt, lines, idx, "actor_opt")
-            load_optimizer_v2_body(self.critic_opt, lines, idx, "critic_opt")
-        else:
-            var c = self.ctx.value()
-            load_state_v2_body_gpu(self.actor, lines, idx, "actor", c)
-            load_state_v2_body_gpu(self.critic, lines, idx, "critic", c)
-            load_optimizer_v2_body_gpu(self.actor_opt, lines, idx, "actor_opt")
-            load_optimizer_v2_body_gpu(self.critic_opt, lines, idx, "critic_opt")
-        load_counter_v2_body(
-            self._total_train_steps, lines, idx, "_total_train_steps"
+        hard-copy step is needed. On GPU the device params are restored via
+        host staging (byte-identical on-disk format)."""
+        var content: String
+        with open(path, "r") as f:
+            content = String(f.read())
+        var lines = _split_lines(content)
+        var body = List[String]()
+        for li in range(len(lines)):
+            if lines[li].startswith("storage-ckpt"):
+                continue
+            body.append(lines[li])
+        var r = CheckpointReader(body^)
+        r.mode = 0
+        self.actor.for_each_param[Self.train_target](r, self.ctx, "actor")
+        self.critic.for_each_param[Self.train_target](r, self.ctx, "critic")
+        r.mode = 1
+        self.actor.for_each_state[Self.train_target](r, self.ctx, "actor")
+        self.critic.for_each_state[Self.train_target](r, self.ctx, "critic")
+        self._total_train_steps = Int(
+            self._scan_scalar(
+                content, "_total_train_steps=",
+                Scalar[DT](self._total_train_steps),
+            )
         )
+
+    @staticmethod
+    def _scan_scalar(
+        content: String, key: String, default: Scalar[DT],
+    ) raises -> Scalar[DT]:
+        """Scan `content` lines for `key<value>`; return its float (or
+        `default` if absent). The `key` ends with '=' and the value has no
+        '=', so split on '=' and take the tail (nightly String has no
+        positional slicing)."""
+        var lines = _split_lines(content)
+        for i in range(len(lines)):
+            if lines[i].startswith(key):
+                var parts = lines[i].split("=")
+                if len(parts) >= 2:
+                    return Scalar[DT](atof(parts[len(parts) - 1]))
+        return default
 
     def flush_timer_log(mut self) -> String:
         """Per-section wall-time report (one line per sub-step:
-        gae / update) and reset the accumulators. PPO's train_step only
+        gae / update / diag) and reset the accumulators. PPO's train_step only
         fires at rollout-length boundaries, so per-section costs are
         amortised across many env steps."""
         var report = self.timer.format_report()

@@ -1,5 +1,8 @@
 """LearnedQueries[IGNORE_DIM, N, D] — a learned constant token sequence.
 
+Transformed from legacy `nn.primitives.LearnedQueries` (surface-only change; the
+CPU loops and the 3 GPU kernels are carried over verbatim).
+
 A `N·D` parameter, the same for every row of the batch — `N` learned query
 tokens of width `D`. The (only) input is read for its BATCH count *and
 nothing else*; its values are ignored and its gradient is zero:
@@ -23,22 +26,22 @@ symmetry). CPU + GPU.
 from std.gpu import global_idx, thread_idx, block_idx
 from std.gpu.primitives import block
 from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor, TileTensor, row_major
 
-from ..constants import DT, TPB
-from ..core import (
-    Initializer, AMPPolicy, NoAMP, Param, ParamVisitor,
-    for_each_param_auto, zero_grad_auto,
-)
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import require_ctx, TargetStorage, assert_tag_for
+from mojo_rl.nn.constants import DT, TPB
+from ..core.tensor import Tensor
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import Param, ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
+from ..core.polyak import polyak_tensor
 
 
 comptime LQ_RTPB = 64  # reduction block size for the param-grad batch sum
 
 
+# ── GPU kernels (verbatim from legacy; args MutAnyOrigin = GPU ABI) ─────
 def _lq_forward_kernel[
     BATCH: Int, OUT_DIM: Int
 ](
@@ -87,16 +90,15 @@ struct LearnedQueries[IGNORE_DIM: Int, N: Int, D: Int](Module):
     comptime ARITY: Int = 1
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.IGNORE_DIM)
     comptime OUT_DIM = Self.N * Self.D
+    comptime Q_SIZE = Self.N * Self.D
 
-    var queries: Param["queries", False, Self.N * Self.D]
-    var ts: TargetStorage
+    var queries: Param["queries", False, Self.Q_SIZE]
 
     def __init__(out self):
         comptime assert Self.N > 0 and Self.D > 0, (
             "LearnedQueries: N, D must be > 0"
         )
-        self.queries = Param["queries", False, Self.N * Self.D]()
-        self.ts = TargetStorage.make_uninit()
+        self.queries = Param["queries", False, Self.Q_SIZE]()
 
     @staticmethod
     def make[
@@ -106,119 +108,94 @@ struct LearnedQueries[IGNORE_DIM: Int, N: Int, D: Int](Module):
             "LearnedQueries: target must be 'cpu' or 'gpu'"
         )
         var m = Self()
-        comptime SZ = Self.N * Self.D
-        comptime if target == "cpu":
-            m.queries = Param["queries", False, SZ].make_cpu()
-            INIT.init_weight(
-                m.queries.value_unsafe_ptr_cpu(), SZ, Self.D, Self.D
-            )
-            m.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["LearnedQueries.make[gpu]"](ctx)
-            m.queries = Param["queries", False, SZ].make_gpu(ctx_v)
-            var host = ctx_v.enqueue_create_host_buffer[DT](SZ)
-            ctx_v.synchronize()
-            INIT.init_weight(host.unsafe_ptr(), SZ, Self.D, Self.D)
-            ctx_v.enqueue_copy(m.queries.val.dev.value(), host)
-            ctx_v.synchronize()
-            m.ts = TargetStorage.make_gpu(ctx_v)
+        m.queries = Param["queries", False, Self.Q_SIZE].make[target](ctx)
+        INIT.init_weight[target](
+            m.queries.val, Self.Q_SIZE, Self.D, Self.D, ctx
+        )
         return m^
 
-    @staticmethod
-    def display_label() -> String:
-        return String("LearnedQueries")
-
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o],
+        mut out: Tensor,
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        assert_tag_for["LearnedQueries", target](self.ts.target_tag)
-        var out = typed_view_mut[BATCH, Self.OUT_DIM](output)
         comptime if target == "cpu":
-            var q = TileTensor(self.queries.val.cpu, row_major[Self.OUT_DIM]())
-            for b in range(BATCH):
+            out.ensure(B * Self.OUT_DIM)
+            var o_v = TileTensor(out.data, row_major[B, Self.OUT_DIM]())
+            var q = TileTensor(self.queries.val.data, row_major[Self.OUT_DIM]())
+            for b in range(B):
                 for i in range(Self.OUT_DIM):
-                    out[b, i] = q[i]
+                    o_v[b, i] = q[i]
         else:
-            var p_lt = LayoutTensor[
-                DT, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
-            ](self.queries.val.dev.value())
-            var o_lt = LayoutTensor[
-                DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-            ](out.ptr)
-            comptime n_blocks = (BATCH * Self.OUT_DIM + TPB - 1) // TPB
-            comptime kernel = _lq_forward_kernel[BATCH, Self.OUT_DIM]
-            self.ts.ctx.value().enqueue_function[kernel](
-                p_lt, o_lt, grid_dim=n_blocks, block_dim=TPB
+            var c = ctx.value()
+            out.ensure_gpu(c, B * Self.OUT_DIM)
+            comptime lp = Layout.row_major(Self.OUT_DIM)
+            comptime lbo = Layout.row_major(B, Self.OUT_DIM)
+            comptime n_blocks = (B * Self.OUT_DIM + TPB - 1) // TPB
+            comptime kernel = _lq_forward_kernel[B, Self.OUT_DIM]
+            c.enqueue_function[kernel](
+                self.queries.val.lt["gpu", lp](),
+                out.lt["gpu", lbo](),
+                grid_dim=n_blocks,
+                block_dim=TPB,
             )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi],
+        mut grad_output: Tensor,
+        grad_inputs: TensorRefs[1, ogi],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["LearnedQueries", target](self.ts.target_tag)
-        var go = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi = grad_inputs.tile[0, BATCH, Self.IGNORE_DIM]()
-        comptime gi_total = BATCH * Self.IGNORE_DIM
-
+        ref gin = grad_inputs[0]
+        comptime gi_total = B * Self.IGNORE_DIM
         comptime if target == "cpu":
+            gin.ensure(gi_total)
             # grad_input = 0 (queries don't depend on the carrier input).
             for k in range(gi_total):
-                gi.ptr[k] = Scalar[DT](0.0)
-            comptime if mode == "all":
-                var gq = TileTensor(
-                    self.queries.grd.cpu, row_major[Self.OUT_DIM]()
-                )
-                for b in range(BATCH):
-                    for i in range(Self.OUT_DIM):
-                        gq[i] += go[b, i]
+                gin.data[k] = Scalar[DT](0.0)
+            var go = TileTensor(grad_output.data, row_major[B, Self.OUT_DIM]())
+            var gq = TileTensor(self.queries.grd.data, row_major[Self.OUT_DIM]())
+            for b in range(B):
+                for i in range(Self.OUT_DIM):
+                    gq[i] += go[b, i]
         else:
-            var ctx = self.ts.ctx.value()
-            var gi_lt = LayoutTensor[
-                DT, Layout.row_major(gi_total), MutAnyOrigin
-            ](gi.ptr)
+            var c = ctx.value()
+            gin.ensure_gpu(c, gi_total)
             comptime zblocks = (gi_total + TPB - 1) // TPB
-            ctx.enqueue_function[_lq_grad_input_zero_kernel[gi_total]](
-                gi_lt, grid_dim=zblocks, block_dim=TPB
+            c.enqueue_function[_lq_grad_input_zero_kernel[gi_total]](
+                gin.lt["gpu", Layout.row_major(gi_total)](),
+                grid_dim=zblocks,
+                block_dim=TPB,
             )
-            comptime if mode == "all":
-                var go_lt = LayoutTensor[
-                    DT, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
-                ](go.ptr)
-                var gp_lt = LayoutTensor[
-                    DT, Layout.row_major(Self.OUT_DIM), MutAnyOrigin
-                ](self.queries.grd.dev.value())
-                comptime gpk = _lq_grad_param_kernel[BATCH, Self.OUT_DIM]
-                ctx.enqueue_function[gpk](
-                    go_lt, gp_lt, grid_dim=Self.OUT_DIM, block_dim=LQ_RTPB
-                )
+            comptime lbo = Layout.row_major(B, Self.OUT_DIM)
+            comptime lp = Layout.row_major(Self.OUT_DIM)
+            comptime gpk = _lq_grad_param_kernel[B, Self.OUT_DIM]
+            c.enqueue_function[gpk](
+                grad_output.lt["gpu", lbo](),
+                self.queries.grd.lt["gpu", lp](),
+                grid_dim=Self.OUT_DIM,
+                block_dim=LQ_RTPB,
+            )
 
-    def for_each_param[
-        target: StaticString, V: ParamVisitor
-    ](mut self, prefix: String, mut visitor: V) raises:
-        assert_tag_for["LearnedQueries", target](self.ts.target_tag)
-        for_each_param_auto[Self, V, target](self, prefix, visitor)
+    # for_each_param / zero_grad inherit the Module reflection defaults
+    # (core/walkers.mojo auto-discovers the `queries` Param field).
 
-    def zero_grad[target: StaticString](mut self) raises:
-        assert_tag_for["LearnedQueries", target](self.ts.target_tag)
-        zero_grad_auto[Self, target](self)
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        polyak_tensor[target, Self.Q_SIZE](
+            self.queries.val, src.queries.val, tau, ctx
+        )

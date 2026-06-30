@@ -51,7 +51,7 @@ from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.combinators.sequential import Sequential
 from mojo_rl.nn.primitives.linear import Linear
-from mojo_rl.nn.primitives.relu import ReLU
+from mojo_rl.nn.primitives.activations import ReLU
 from mojo_rl.nn.primitives.linear_relu import LinearReLU
 from mojo_rl.deep_agents.primitives.stochastic_actor import StochasticActor
 from mojo_rl.deep_agents.sac import SACAgent
@@ -133,7 +133,7 @@ def main() raises:
         logger.set_config("n_envs", String(N_ENVS))
         logger.set_config("buffer_capacity", String(REPLAY_CAPACITY))
 
-        var logger_ptr = UnsafePointer(to=logger)
+        var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
         # ─── Agent + batched GPU env ─────────────────────────────────────
         # GPU training: the DeviceContext MUST be threaded through the agent
@@ -171,6 +171,7 @@ def main() raises:
             BatchedEnvT,
             N_ENVS=N_ENVS,
             USE_TRAIN_CUDA_GRAPH=True,
+            USE_ENV_CUDA_GRAPH=True,
             L=RemoteLogger,
         ](
             env,

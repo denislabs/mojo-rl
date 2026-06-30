@@ -1,304 +1,261 @@
-"""Elementwise[DIM, OP: ElementOp] — single template for all elementwise activations.
+"""Elementwise[DIM, OP] — generic elementwise activation on the storage surface.
 
-Phase 1.3. Replaces the per-leaf duplication (`relu.mojo`, `tanh.mojo`,
-`sigmoid.mojo`, `mish.mojo`, `symlog.mojo`, `scale.mojo`, …) with one
-Module body that takes the per-lane math via a comptime `OP: ElementOp`
-parameter. Each leaf collapses to a one-line type alias:
+The storage-surface twin of legacy `nn.primitives.Elementwise[DIM, OP]`. Reuses
+the legacy `ElementOp` trait + `ops/` structs VERBATIM (they depend only on
+`DT`), so the per-lane math is bit-identical. Every concrete activation is a
+one-line alias:
 
-    alias Tanh[DIM: Int] = Elementwise[DIM, TanhOp]
-    alias ReLU[DIM: Int] = Elementwise[DIM, ReLUOp]
-    alias Sigmoid[DIM: Int] = Elementwise[DIM, SigmoidOp]
+    comptime ReLU    = Elementwise[DIM, ReLUOp]      # see activations.mojo
+    comptime Tanh    = Elementwise[DIM, TanhOp]
+    comptime Sigmoid = Elementwise[DIM, SigmoidOp]
 
-Cache strategy is chosen by `Self.OP.owns_cache`:
+KEY simplification vs legacy: the storage `vjp` receives `forward_input` (x)
+explicitly (invariant §3.1), so there is NO cache field and NO
+`_cached_input_ptr` alias. For output-cache ops (`owns_cache=True`, e.g. Tanh)
+backward recomputes `y = OP.forward(x)` then `OP.backward(y, go)` — bit-
+identical to having cached `y`, because `y` is a pure function of `x`. For
+input-cache ops (`owns_cache=False`, e.g. ReLU) backward is `OP.backward(x, go)`.
 
-  - `Self.OP.owns_cache = True`  (Tanh / Sigmoid / …):
-        forward writes `y = OP.forward(x)` to an OWNED cache buffer
-        (`cache` CPU `List` + `cache_dev` GPU `DeviceBuffer`). Backward
-        reads `y` from the cache. Mirrors `Tanh[DIM]`'s pre-1.3 layout.
-  - `Self.OP.owns_cache = False` (ReLU / Mish / Symlog / Scale / …):
-        forward aliases the input pointer into `_cached_input_ptr`
-        (no copy). Backward reads `x` back through that alias. The
-        orchestrator (Sequential / ComputeGraph) owns the input slab
-        and guarantees it survives until backward completes.
+CPU uses the SIMD ops over a tracked `.data.unsafe_ptr()` (origin = the list,
+NOT the wildcard); GPU uses one kernel per direction parameterised on `OP`.
 
-Both CPU paths use SIMD via `Self.OP.forward_simd[W]` / `Self.OP.backward_simd[W]`
-with `CPU_SIMD_W = 8` (project-wide constant). GPU paths use one
-shared kernel per direction, parameterised on `OP` via comptime.
-
-BACKWARD-ORDER INVARIANT: this leaf has no params, so `mode="all"` and
-`mode="input_only"` are identical. The invariant doesn't apply.
+bf16-FLOW (AMP "Step B"): `Elementwise[DIM, OP]` is fp32 (ACT_DT == DT, the
+legacy NoAMP path, byte-identical); `Elementwise[DIM, OP, DType.bfloat16]` is
+fp32-INTERNAL but flows its I/O activations at bf16. The `ElementOp` math is
+fp32-only (its API takes `Scalar[DT]`), so the GPU kernels cast each bf16
+activation element UP to fp32 (`forward_input`/`grad_output` on read), call
+`OP.forward_scalar`/`OP.backward_scalar`, then cast the result DOWN to bf16 on
+write (`o`/`gi`) — elementwise activations (ReLU/Tanh/GELU/…) are numerically
+fine across that round-trip (mirrors `LinearAct`). bf16-flow is GPU-only. The
+default `ADT = DT` reproduces the legacy fp32 kernels byte-for-byte.
 """
 
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
-from layout import Layout, LayoutTensor, TileTensor
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
 
-from ..constants import DT, CPU_SIMD_W, TPB
-from ..core import Initializer, AMPPolicy, NoAMP, Cache
-from ..core.element_op import ElementOp
-from ..core.module import Module, typed_view, typed_view_mut
-from ..core.tensor_pack import TensorPack
-from ..core.target_storage import (
-    require_ctx,
-    TargetStorage,
-    assert_tag_for,
-)
+from mojo_rl.nn.constants import DT, CPU_SIMD_W, TPB
+from mojo_rl.nn.core.element_op import ElementOp
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import TensorRefs
+from ..core.module import Module
+from ..core.param import ParamVisitor
+from ..core.initializer import Initializer
+from ..core.amp import AMPPolicy, NoAMP
 
 
-# ──────────────────────────────────────────────────────────────────────
-# GPU kernels — OP supplies the scalar math via `Self.OP.forward_scalar` /
-# `Self.OP.backward_scalar`. The cache write is comptime-branched on
-# `Self.OP.owns_cache`: owned-cache stores `y`, input-alias stores `x`.
-# ──────────────────────────────────────────────────────────────────────
-
-
-def _elementwise_forward_kernel[
-    BATCH: Int, DIM: Int, OP: ElementOp,
+# ── GPU kernels (OP supplies the math via comptime) ─────────────────────
+# Dtype-parametric on the ACTIVATION dtype (`ADT`): the fp32 path runs at DT
+# (default `ADT = DT` → byte-identical legacy kernels); the bf16-flow path holds
+# the I/O activations at bfloat16, casting UP to fp32 for the (fp32-only) OP math
+# and back DOWN to bf16 on store.
+def _ew_fwd_kernel[
+    M: Int, OP: ElementOp, ADT: DType = DT
 ](
-    input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-    output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-    cache: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    x: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
+    o: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
 ):
-    var idx = Int(global_idx.x)
-    var total = BATCH * DIM
-    if idx < total:
-        var b = idx // DIM
-        var d = idx % DIM
-        var x = rebind[Scalar[DT]](input[b, d])
-        var y = OP.forward_scalar(x)
-        output[b, d] = y
-        comptime if OP.owns_cache:
-            cache[b, d] = y
+    var i = Int(global_idx.x)
+    if i < M:
+        comptime if ADT == DT:
+            o[i] = rebind[Scalar[ADT]](
+                OP.forward_scalar(rebind[Scalar[DT]](x[i]))
+            )
         else:
-            cache[b, d] = x
+            # bf16-flow: lift to fp32 for the activation math, store back at bf16.
+            var xv = rebind[Scalar[ADT]](x[i]).cast[DT]()
+            o[i] = OP.forward_scalar(xv).cast[ADT]()
 
 
-def _elementwise_backward_kernel[
-    BATCH: Int, DIM: Int, OP: ElementOp,
+def _ew_bwd_kernel[
+    M: Int, OP: ElementOp, ADT: DType = DT
 ](
-    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-    cache: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
-    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, DIM), MutAnyOrigin],
+    x: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
+    go: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
+    gi: LayoutTensor[ADT, Layout.row_major(M), MutAnyOrigin],
 ):
-    var idx = Int(global_idx.x)
-    var total = BATCH * DIM
-    if idx < total:
-        var b = idx // DIM
-        var d = idx % DIM
-        var c = rebind[Scalar[DT]](cache[b, d])
-        var go = rebind[Scalar[DT]](grad_output[b, d])
-        grad_input[b, d] = OP.backward_scalar(c, go)
+    var i = Int(global_idx.x)
+    if i < M:
+        comptime if ADT == DT:
+            var xv = rebind[Scalar[DT]](x[i])
+            var gov = rebind[Scalar[DT]](go[i])
+            comptime if OP.owns_cache:
+                # output-cache op: recompute y = f(x), then gi = f'(y)·go.
+                gi[i] = rebind[Scalar[ADT]](
+                    OP.backward_scalar(OP.forward_scalar(xv), gov)
+                )
+            else:
+                gi[i] = rebind[Scalar[ADT]](OP.backward_scalar(xv, gov))
+        else:
+            # bf16-flow: cast x + go UP to fp32 for the (fp32-only) OP math, then
+            # cast the gated grad DOWN to bf16 on store.
+            var xv = rebind[Scalar[ADT]](x[i]).cast[DT]()
+            var gov = rebind[Scalar[ADT]](go[i]).cast[DT]()
+            comptime if OP.owns_cache:
+                gi[i] = OP.backward_scalar(OP.forward_scalar(xv), gov).cast[ADT]()
+            else:
+                gi[i] = OP.backward_scalar(xv, gov).cast[ADT]()
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Elementwise[DIM, OP] — owns: TargetStorage + cache (for owns_cache=True)
-# OR _cached_input_ptr (for owns_cache=False). Both field clusters are
-# always present; only the matching one is populated (same pattern as
-# CPU/GPU dual storage).
-# ──────────────────────────────────────────────────────────────────────
-
-
-struct Elementwise[DIM: Int, OP: ElementOp](Module):
-    comptime ARITY: Int = 1
-    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM)
-    comptime OUT_DIM = Self.DIM
+struct Elementwise[DIM_: Int, OP: ElementOp, ADT: DType = DT](Module):
+    comptime ARITY = 1
+    comptime IN_DIMS = InlineArray[Int, 1](fill=Self.DIM_)
+    comptime OUT_DIM = Self.DIM_
+    # Activation-flow dtype. `Elementwise[DIM, OP]` = fp32 (ACT_DT == DT, the
+    # legacy NoAMP path, byte-identical); `Elementwise[DIM, OP, bfloat16]` flows
+    # its I/O activations at bf16 while computing the activation math fp32
+    # INTERNALLY (the OP math is fp32-only — cast UP/DOWN at the boundary).
+    # bf16-flow is GPU-only.
+    comptime ACT_DT = Self.ADT
 
     @staticmethod
     def display_label() -> String:
         return Self.OP.display_label()
 
-    var ts: TargetStorage
-
-    # owns_cache=True path: own cache (S5 dynamic Cache role, lazy-grown).
-    var cache: Cache["elem_cache"]
-
-    # owns_cache=False path: alias the orchestrator's input slab (borrow,
-    # not owned storage — stays a raw pointer, excluded from the Tensor core).
-    var _cached_input_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-
     def __init__(out self):
-        self.ts = TargetStorage.make_uninit()
-        self.cache = Cache["elem_cache"]()
-        self._cached_input_ptr = None
+        pass
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
-    ](
-        ctx: Optional[DeviceContext] = None,
-    ) raises -> Self:
-        """Unified CPU/GPU factory. INIT ignored (Elementwise is
-        parameterless) but accepted for uniformity so
-        Sequential.make[target, INIT] can recurse."""
-        comptime assert target == "cpu" or target == "gpu", (
-            "Elementwise: target must be 'cpu' or 'gpu'"
-        )
-        var e = Self()
-        comptime if target == "cpu":
-            e.ts = TargetStorage.make_cpu()
-        else:
-            var ctx_v = require_ctx["Elementwise.make[target='gpu']"](ctx)
-            e.ts = TargetStorage.make_gpu(ctx_v)
-            # cache is lazy (S5 Cache) — grown at forward via ensure_gpu.
-        return e^
-
-    # ------------------------------------------------------------------
-    # Forward — SIMD CPU loop or one GPU kernel launch. Cache write is
-    # comptime-branched on Self.OP.owns_cache.
-    # ------------------------------------------------------------------
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        return Self()
 
     def forward[
-        target: StaticString,
-        BATCH: Int,
-        POLICY: AMPPolicy = NoAMP,
+        target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
     ](
         mut self,
-        inputs: TensorPack[Self.ARITY],
-        mut output: TileTensor[
-            mut=True, dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
+        inputs: TensorRefs[1, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        # POLICY accepted for trait conformance; Elementwise stays in DT.
-        assert_tag_for["Elementwise", target](self.ts.target_tag)
-        var input = inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-        var output_v = typed_view_mut[BATCH, Self.OUT_DIM](output)
-
-        comptime if target == "cpu":
-            comptime N = BATCH * Self.DIM
-            var in_p = input.ptr
-            var out_p = output_v.ptr
-
-            comptime if Self.OP.owns_cache:
-                # Own cache: write y to both output and cache.
-                self.cache.ensure_cpu(N)
-                var cache_p = self.cache.cpu_ptr()
+        comptime M = B * Self.DIM_
+        ref in0 = inputs[0]
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            # ACT_DT IS DT here — rebind the activation refs (sound; the dtypes
+            # are equal, the checker just won't collapse the opaque `Self.ACT_DT`
+            # for the CPU `.data.unsafe_ptr()` SIMD path). `TensorImpl[ACT_DT]` ≡
+            # `Tensor`.
+            ref in0d = rebind[Tensor](in0)
+            ref outd = rebind[Tensor](out)
+            comptime if target == "cpu":
+                outd.ensure(M)
+                var xp = in0d.data.unsafe_ptr()
+                var op = outd.data.unsafe_ptr()
                 var k = 0
-                while k + CPU_SIMD_W <= N:
-                    var v = in_p.load[width=CPU_SIMD_W](k)
-                    var y = Self.OP.forward_simd[CPU_SIMD_W](v)
-                    cache_p.store(k, y)
-                    out_p.store(k, y)
+                while k + CPU_SIMD_W <= M:
+                    op.store(
+                        k,
+                        Self.OP.forward_simd[CPU_SIMD_W](
+                            xp.load[width=CPU_SIMD_W](k)
+                        ),
+                    )
                     k += CPU_SIMD_W
-                while k < N:
-                    var y = Self.OP.forward_scalar(in_p[k])
-                    cache_p[k] = y
-                    out_p[k] = y
+                while k < M:
+                    op[k] = Self.OP.forward_scalar(xp[k])
                     k += 1
             else:
-                # Input-alias: record the input pointer; write only y to
-                # output. Orchestrator keeps input slab live.
-                self._cached_input_ptr = in_p
-                var k = 0
-                while k + CPU_SIMD_W <= N:
-                    var v = in_p.load[width=CPU_SIMD_W](k)
-                    out_p.store(k, Self.OP.forward_simd[CPU_SIMD_W](v))
-                    k += CPU_SIMD_W
-                while k < N:
-                    out_p[k] = Self.OP.forward_scalar(in_p[k])
-                    k += 1
+                var c = ctx.value()
+                outd.ensure_gpu(c, M)
+                comptime nblk = (M + TPB - 1) // TPB
+                c.enqueue_function[_ew_fwd_kernel[M, Self.OP, Self.ADT]](
+                    in0d.lt["gpu", Layout.row_major(M)](),
+                    outd.lt["gpu", Layout.row_major(M)](),
+                    grid_dim=nblk,
+                    block_dim=TPB,
+                )
         else:
-            comptime layout = Layout.row_major(BATCH, Self.DIM)
-            var in_ptr = input.ptr
-            var out_ptr = output_v.ptr
-            var input_lt = LayoutTensor[DT, layout, MutAnyOrigin](in_ptr)
-            var output_lt = LayoutTensor[DT, layout, MutAnyOrigin](out_ptr)
-
-            comptime if Self.OP.owns_cache:
-                self.cache.ensure_gpu(self.ts.ctx.value(), BATCH * Self.DIM)
-                var cache_lt = LayoutTensor[DT, layout, MutAnyOrigin](
-                    self.cache.dev.value()
-                )
-                comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
-                comptime kernel = _elementwise_forward_kernel[
-                    BATCH, Self.DIM, Self.OP,
-                ]
-                self.ts.ctx.value().enqueue_function[kernel](
-                    input_lt, output_lt, cache_lt,
-                    grid_dim=n_blocks, block_dim=TPB,
-                )
-            else:
-                # Input-alias: cache the input device pointer; the GPU
-                # backward kernel reads it back. No kernel-side cache
-                # write needed — but `_elementwise_forward_kernel` always
-                # takes a cache LT; we pass `input_lt` itself, which is
-                # harmless because `Self.OP.owns_cache == False` makes the
-                # kernel write `cache[b, d] = x` to the same buffer it
-                # just read from (idempotent).
-                self._cached_input_ptr = in_ptr
-                comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
-                comptime kernel = _elementwise_forward_kernel[
-                    BATCH, Self.DIM, Self.OP,
-                ]
-                self.ts.ctx.value().enqueue_function[kernel](
-                    input_lt, output_lt, input_lt,
-                    grid_dim=n_blocks, block_dim=TPB,
-                )
-
-    # ------------------------------------------------------------------
-    # Backward — read cached `c` (= y or x), compute gi = OP.backward(c, go).
-    # `mode` is a no-op (no params).
-    # ------------------------------------------------------------------
+            # ── bf16-flow path (GPU-only). Activations cast at the I/O boundary;
+            #    the OP math runs fp32 internally (fp32-internal leaf). ──
+            comptime assert (
+                target == "gpu"
+            ), "bf16-flow Elementwise is GPU-only"
+            var c = ctx.value()
+            out.ensure_gpu(c, M)
+            comptime nblk = (M + TPB - 1) // TPB
+            c.enqueue_function[_ew_fwd_kernel[M, Self.OP, Self.ADT]](
+                in0.lt["gpu", Layout.row_major(M)](),
+                out.lt["gpu", Layout.row_major(M)](),
+                grid_dim=nblk,
+                block_dim=TPB,
+            )
 
     def vjp[
         target: StaticString,
-        BATCH: Int,
+        B: Int,
+        ofi: MutOrigin,
+        ogi: MutOrigin,
         POLICY: AMPPolicy = NoAMP,
-        mode: StaticString = "all",
     ](
         mut self,
-        grad_output: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC,
-            element_size=1, origin=MutAnyOrigin, ...,
-        ],
-        grad_inputs: TensorPack[Self.ARITY],
+        forward_input: TensorRefs[1, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
     ) raises:
-        comptime assert (
-            mode == "all" or mode == "input_only"
-        ), "mode must be 'all' or 'input_only'"
-        assert_tag_for["Elementwise", target](self.ts.target_tag)
-        var go_view = typed_view[BATCH, Self.OUT_DIM](grad_output)
-        var gi_view = grad_inputs.tile[0, BATCH, Self.IN_DIMS[0]]()
-
-        comptime if target == "cpu":
-            var go_p = go_view.ptr
-            var gi_p = gi_view.ptr
-            var c_p: UnsafePointer[Scalar[DT], MutAnyOrigin]
-            comptime if Self.OP.owns_cache:
-                c_p = self.cache.cpu_ptr()
+        comptime M = B * Self.DIM_
+        ref fin = forward_input[0]
+        ref gin = grad_inputs[0]
+        comptime if Self.ACT_DT == DT:
+            # ── fp32 path (legacy NoAMP, byte-identical) ──
+            ref find = rebind[Tensor](fin)
+            ref gind = rebind[Tensor](gin)
+            ref god = rebind[Tensor](grad_output)
+            comptime if target == "cpu":
+                gind.ensure(M)
+                var xp = find.data.unsafe_ptr()
+                var gp = god.data.unsafe_ptr()
+                var ip = gind.data.unsafe_ptr()
+                var k = 0
+                while k + CPU_SIMD_W <= M:
+                    var xv = xp.load[width=CPU_SIMD_W](k)
+                    var gv = gp.load[width=CPU_SIMD_W](k)
+                    comptime if Self.OP.owns_cache:
+                        ip.store(
+                            k,
+                            Self.OP.backward_simd[CPU_SIMD_W](
+                                Self.OP.forward_simd[CPU_SIMD_W](xv), gv
+                            ),
+                        )
+                    else:
+                        ip.store(k, Self.OP.backward_simd[CPU_SIMD_W](xv, gv))
+                    k += CPU_SIMD_W
+                while k < M:
+                    comptime if Self.OP.owns_cache:
+                        ip[k] = Self.OP.backward_scalar(
+                            Self.OP.forward_scalar(xp[k]), gp[k]
+                        )
+                    else:
+                        ip[k] = Self.OP.backward_scalar(xp[k], gp[k])
+                    k += 1
             else:
-                c_p = self._cached_input_ptr.value()
-            comptime N = BATCH * Self.DIM
-            var k = 0
-            while k + CPU_SIMD_W <= N:
-                var c = c_p.load[width=CPU_SIMD_W](k)
-                var g = go_p.load[width=CPU_SIMD_W](k)
-                gi_p.store(k, Self.OP.backward_simd[CPU_SIMD_W](c, g))
-                k += CPU_SIMD_W
-            while k < N:
-                gi_p[k] = Self.OP.backward_scalar(c_p[k], go_p[k])
-                k += 1
+                var c = ctx.value()
+                gind.ensure_gpu(c, M)
+                comptime nblk = (M + TPB - 1) // TPB
+                c.enqueue_function[_ew_bwd_kernel[M, Self.OP, Self.ADT]](
+                    find.lt["gpu", Layout.row_major(M)](),
+                    god.lt["gpu", Layout.row_major(M)](),
+                    gind.lt["gpu", Layout.row_major(M)](),
+                    grid_dim=nblk,
+                    block_dim=TPB,
+                )
         else:
-            comptime layout = Layout.row_major(BATCH, Self.DIM)
-            var go_ptr = go_view.ptr
-            var gi_ptr = gi_view.ptr
-            var go_lt = LayoutTensor[DT, layout, MutAnyOrigin](go_ptr)
-            var gi_lt = LayoutTensor[DT, layout, MutAnyOrigin](gi_ptr)
-            var cache_lt: LayoutTensor[DT, layout, MutAnyOrigin]
-            comptime if Self.OP.owns_cache:
-                cache_lt = LayoutTensor[DT, layout, MutAnyOrigin](
-                    self.cache.dev.value()
-                )
-            else:
-                cache_lt = LayoutTensor[DT, layout, MutAnyOrigin](
-                    self._cached_input_ptr.value()
-                )
-            comptime n_blocks = (BATCH * Self.DIM + TPB - 1) // TPB
-            comptime kernel = _elementwise_backward_kernel[
-                BATCH, Self.DIM, Self.OP,
-            ]
-            self.ts.ctx.value().enqueue_function[kernel](
-                go_lt, cache_lt, gi_lt,
-                grid_dim=n_blocks, block_dim=TPB,
+            # ── bf16-flow path (GPU-only). I/O activations cast at the boundary;
+            #    the OP math runs fp32 internally (fp32-internal leaf). ──
+            comptime assert (
+                target == "gpu"
+            ), "bf16-flow Elementwise is GPU-only"
+            var c = ctx.value()
+            gin.ensure_gpu(c, M)
+            comptime nblk = (M + TPB - 1) // TPB
+            c.enqueue_function[_ew_bwd_kernel[M, Self.OP, Self.ADT]](
+                fin.lt["gpu", Layout.row_major(M)](),
+                grad_output.lt["gpu", Layout.row_major(M)](),
+                gin.lt["gpu", Layout.row_major(M)](),
+                grid_dim=nblk,
+                block_dim=TPB,
             )
+
+    # for_each_param / zero_grad inherit the Module reflection no-op defaults
+    # (param-less: reflection finds no IsParam fields).

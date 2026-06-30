@@ -60,10 +60,10 @@ def _atanh(x: Scalar[DT]) -> Scalar[DT]:
 def continuous_policy_loss_and_grad[
     BATCH: Int, ACT_DIM: Int,
 ](
-    musig: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [BATCH, 2*ACT_DIM]
-    target_act: UnsafePointer[Scalar[DT], MutAnyOrigin],# [BATCH, ACT_DIM]
+    musig: List[Scalar[DT]],     # [BATCH, 2*ACT_DIM]
+    target_act: List[Scalar[DT]],# [BATCH, ACT_DIM]
     grad_scale: Scalar[DT],
-    mut grad_musig: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [BATCH, 2*ACT_DIM]
+    mut grad_musig: List[Scalar[DT]],  # [BATCH, 2*ACT_DIM]
     max_action: Scalar[DT] = Scalar[DT](1.0),
     min_std: Scalar[DT] = Scalar[DT](0.1),
     soft_clamp: Scalar[DT] = Scalar[DT](5.0),

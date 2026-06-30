@@ -57,7 +57,7 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ) raises:
-        """nn init: γ = 1 (INIT unused — RMSNorm scale, not a weight)."""
+        """Init: γ = 1 (INIT unused — RMSNorm scale, not a weight)."""
         for i in range(Self.dim):
             params.ptr[i] = Scalar[dtype](1)
 
@@ -82,22 +82,19 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
     ):
-        var xp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](x_below.ptr)
-        var gp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](params.ptr)
-        var mp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](mu.ptr)
-        var ap = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](a_below.ptr)
-        for i in range(BATCH * Self.dim):
-            ap[i] = xp[i]
+        # a_below cached = x_below (raw); direct LayoutTensor element indexing.
         for b in range(BATCH):
-            var off = b * Self.dim
+            for i in range(Self.dim):
+                a_below[b, i] = x_below[b, i]
+        for b in range(BATCH):
             var ss: Float64 = 0.0
             for i in range(Self.dim):
-                var v = Float64(xp[off + i])
+                var v = Float64(rebind[Scalar[dtype]](x_below[b, i]))
                 ss += v * v
             var r = sqrt(ss / Float64(Self.dim) + _RMS_EPS)
             var inv_r = Scalar[dtype](1.0 / r)
             for i in range(Self.dim):
-                mp[off + i] = gp[i] * xp[off + i] * inv_r
+                mu[b, i] = params[i] * x_below[b, i] * inv_r
 
     # =========================================================================
     # eps_compute:  ε = x_above − μ
@@ -117,11 +114,10 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
             dtype, Layout.row_major(BATCH, Self.OUT_DIM), MutAnyOrigin
         ],
     ):
-        var xp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](x_above.ptr)
-        var mp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](mu.ptr)
-        var ep = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](eps.ptr)
-        for i in range(BATCH * Self.dim):
-            ep[i] = xp[i] - mp[i]
+        # ε = x_above − μ (elementwise; scalar LayoutTensor indexing).
+        for b in range(BATCH):
+            for i in range(Self.dim):
+                eps[b, i] = x_above[b, i] - mu[b, i]
 
     # =========================================================================
     # pull_back:  z = ε ⊙ γ   (per-feature scale; RMSNorm Jacobian deferred to
@@ -142,15 +138,10 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
     ):
-        var ep = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            eps_above.ptr
-        )
-        var gp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](params.ptr)
-        var zp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_below.ptr)
+        # z = ε ⊙ γ (per-feature scale; direct element indexing).
         for b in range(BATCH):
-            var off = b * Self.dim
             for i in range(Self.dim):
-                zp[off + i] = ep[off + i] * gp[i]
+                z_below[b, i] = eps_above[b, i] * params[i]
 
     # =========================================================================
     # act_derivative_mul:  apply the RMSNorm Jacobian to z (=ε⊙γ) using x_below:
@@ -171,26 +162,32 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
             dtype, Layout.row_major(BATCH, Self.IN_DIM), MutAnyOrigin
         ],
     ):
-        var xp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](x_below.ptr)
-        var zi = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_in.ptr)
-        var zo = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](z_out.ptr)
+        # Apply the RMSNorm Jacobian to z using x_below (direct element indexing;
+        # Float64 reductions preserved bit-for-bit).
         for b in range(BATCH):
-            var off = b * Self.dim
             var ss: Float64 = 0.0
             for i in range(Self.dim):
-                var v = Float64(xp[off + i])
+                var v = Float64(rebind[Scalar[dtype]](x_below[b, i]))
                 ss += v * v
             var r = sqrt(ss / Float64(Self.dim) + _RMS_EPS)
             var inv_r = 1.0 / r
             # s = Σ_k z_in_k · n_k  with n_k = x_k / r
             var s: Float64 = 0.0
             for i in range(Self.dim):
-                s += Float64(zi[off + i]) * Float64(xp[off + i]) * inv_r
+                s += (
+                    Float64(rebind[Scalar[dtype]](z_in[b, i]))
+                    * Float64(rebind[Scalar[dtype]](x_below[b, i]))
+                    * inv_r
+                )
             var s_over_d = s / Float64(Self.dim)
             for i in range(Self.dim):
-                var n_i = Float64(xp[off + i]) * inv_r
-                zo[off + i] = Scalar[dtype](
-                    inv_r * (Float64(zi[off + i]) - n_i * s_over_d)
+                var n_i = Float64(rebind[Scalar[dtype]](x_below[b, i])) * inv_r
+                z_out[b, i] = Scalar[dtype](
+                    inv_r
+                    * (
+                        Float64(rebind[Scalar[dtype]](z_in[b, i]))
+                        - n_i * s_over_d
+                    )
                 )
 
     # =========================================================================
@@ -211,23 +208,21 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
             dtype, Layout.row_major(Self.PARAM_SIZE), MutAnyOrigin
         ],
     ):
-        var ep = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](
-            eps_above.ptr
-        )
-        var ap = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](a_below.ptr)
-        var gp = rebind[UnsafePointer[Scalar[dtype], MutAnyOrigin]](grads.ptr)
+        # dγ_i = −Σ_b ε[b,i]·n[b,i] (direct element indexing; same accumulation
+        # order as before → bit-identical; −sign baked in).
         for i in range(Self.dim):
-            gp[i] = Scalar[dtype](0)
+            grads[i] = Scalar[dtype](0)
         for b in range(BATCH):
-            var off = b * Self.dim
             var ss: Float64 = 0.0
             for i in range(Self.dim):
-                var v = Float64(ap[off + i])
+                var v = Float64(rebind[Scalar[dtype]](a_below[b, i]))
                 ss += v * v
             var inv_r = 1.0 / sqrt(ss / Float64(Self.dim) + _RMS_EPS)
             for i in range(Self.dim):
-                var n_i = Float64(ap[off + i]) * inv_r
-                gp[i] = gp[i] - Scalar[dtype](Float64(ep[off + i]) * n_i)
+                var n_i = Float64(rebind[Scalar[dtype]](a_below[b, i])) * inv_r
+                grads[i] = grads[i] - Scalar[dtype](
+                    Float64(rebind[Scalar[dtype]](eps_above[b, i])) * n_i
+                )
 
     # =========================================================================
     # GPU kernels (per-row reductions; one thread per sample row)
@@ -487,7 +482,7 @@ struct NormPCBlock[dim: Int](PCBlockTrait):
     ) raises:
         var inv_r_buf = ctx.enqueue_create_buffer[dtype](BATCH)
         var inv_r = LayoutTensor[dtype, Layout.row_major(BATCH), MutAnyOrigin](
-            inv_r_buf.unsafe_ptr()
+            inv_r_buf
         )
         comptime kr = Self._rms_per_row_kernel[BATCH, dtype]
         var rblocks = (BATCH + TPB - 1) // TPB

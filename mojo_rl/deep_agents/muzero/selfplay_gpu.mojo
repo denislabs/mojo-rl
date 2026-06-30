@@ -21,18 +21,15 @@ once per iteration. `learning_starts` warmup needs no sync — the mirror is syn
 once before the loop so it matches the device nets from step 0.
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from std.math import exp, log
 from std.memory import alloc
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import Module, mptr
-from mojo_rl.nn.initializer import Kaiming
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.optimizer.adam import Adam
-from mojo_rl.nn.core.checkpoint import (
-    save_state_v2_body_gpu,
-    load_state_v2_body,
-)
-from mojo_rl.deep_agents.core.checkpoint_helpers import split_lines_v2
+from mojo_rl.nn.core.hard_copy import _CollectVisitor, _InjectVisitor
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.planners.tree_search import (
     GenericCPUMCTS,
@@ -51,21 +48,22 @@ from ..zero.temperature import visit_temperature
 
 
 def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return mptr(alloc[Scalar[DT]](n))
+    """Category-B raw batch scratch feeding the raw-pointer replay + unroll
+    inputs (not the nn surface)."""
+    return alloc[Scalar[DT]](n).as_unsafe_any_origin()
 
 
 def mz_sync_gpu_to_cpu[M: Module](
     mut gpu: M, mut cpu: M, ctx: DeviceContext
 ) raises:
-    """Download device params into a CPU mirror in place (one v2-string
-    round-trip). The CPU net's param buffers are overwritten, so any MCTS
-    adapter holding `UnsafePointer(to=cpu_net)` sees the updated weights with no
-    rebind. Byte-identical format to the CPU saver, so the mirror is exact."""
-    var body = String("")
-    save_state_v2_body_gpu(gpu, body, String(""), ctx)
-    var lines = split_lines_v2(body)
-    var idx = 0
-    load_state_v2_body(cpu, lines, idx, String(""))
+    """Download device params into a CPU mirror in place via the storage
+    hard_copy collect/inject visitors (exact, no checkpoint text round-trip).
+    The CPU net's param buffers are overwritten, so any MCTS adapter holding
+    `UnsafePointer(to=cpu_net)` sees the updated weights with no rebind."""
+    var c = _CollectVisitor()
+    gpu.for_each_param["gpu"](c, Optional(ctx))
+    var inj = _InjectVisitor(c.names.copy(), c.vals.copy())
+    cpu.for_each_param["cpu"](inj, None)
 
 
 def run_muzero_selfplay_gpu[
@@ -104,6 +102,7 @@ def run_muzero_selfplay_gpu[
     seed: UInt64 = 0,
     max_ep_steps: Int = 500,
     value_coef: Scalar[DT] = Scalar[DT](0.25),
+    max_grad_norm: Float64 = 0.0,
     temperature_decay_steps: Int = 0,
     reanalyze_every: Int = 0,
     eval_every: Int = 0,
@@ -122,27 +121,32 @@ def run_muzero_selfplay_gpu[
 
     # CPU mirror of the device nets — the search reads these; synced from GPU
     # once now (so the mirror matches the device init) and after every train.
-    var rep_c = REP.make["cpu", INIT=Kaiming]()
-    var dyn_c = DYN.make["cpu", INIT=Kaiming]()
-    var pred_c = PRED.make["cpu", INIT=Kaiming]()
+    var rep_c = REP.make["cpu", Kaiming]()
+    var dyn_c = DYN.make["cpu", Kaiming]()
+    var pred_c = PRED.make["cpu", Kaiming]()
     mz_sync_gpu_to_cpu(rep, rep_c, ctx)
     mz_sync_gpu_to_cpu(dyn, dyn_c, ctx)
     mz_sync_gpu_to_cpu(pred, pred_c, ctx)
 
-    var rep_a = MZRepCPU[OBS, LATENT, REP](net=UnsafePointer(to=rep_c))
+    var rep_a = MZRepCPU[OBS, LATENT, REP](
+        net=untracked(UnsafePointer(to=rep_c))
+    )
     var dyn_a = MZDynCPU[LATENT, ACT, BINS, DYN](
-        net=UnsafePointer(to=dyn_c), v_min=v_min, v_max=v_max
+        net=untracked(UnsafePointer(to=dyn_c)),
+        v_min=v_min, v_max=v_max
     )
     var pred_a = MZPredCPU[LATENT, ACT, BINS, PRED](
-        net=UnsafePointer(to=pred_c), v_min=v_min, v_max=v_max
+        net=untracked(UnsafePointer(to=pred_c)),
+        v_min=v_min, v_max=v_max
     )
 
-    # training batch slabs (time-major), allocated once
-    var t_obs0 = _a(B * OBS)
-    var t_act = _a(K * B)
-    var t_pol = _a((K + 1) * B * ACT)
-    var t_val = _a((K + 1) * B)
-    var t_rew = _a(K * B)
+    # training batch slabs (time-major) — owned Lists (RAII). Filled by the
+    # replay's List API; the GPU unroll H2Ds them (list.unsafe_ptr() inside).
+    var t_obs0 = List[Scalar[DT]](length=B * OBS, fill=0)
+    var t_act = List[Scalar[DT]](length=K * B, fill=0)
+    var t_pol = List[Scalar[DT]](length=(K + 1) * B * ACT, fill=0)
+    var t_val = List[Scalar[DT]](length=(K + 1) * B, fill=0)
+    var t_rew = List[Scalar[DT]](length=K * B, fill=0)
 
     # persistent GPU unroll scratch — allocated once, reused every train step
     # (per-step `enqueue_create_buffer` in the hot loop explodes disk on NVIDIA)
@@ -155,9 +159,9 @@ def run_muzero_selfplay_gpu[
     var d_diag_pred = ctx.enqueue_create_buffer[DT](B * (ACT + BINS))
     var h_diag_pred = _a(B * (ACT + BINS))
 
-    # reanalyze scratch
-    var r_obs = _a(OBS)
-    var r_pol = _a(ACT)
+    # reanalyze scratch (owned Lists; read_obs/update_targets take Lists)
+    var r_obs = List[Scalar[DT]](length=OBS, fill=0)
+    var r_pol = List[Scalar[DT]](length=ACT, fill=0)
 
     # episode accumulation buffers
     var e_obs = List[Scalar[DT]]()
@@ -233,13 +237,7 @@ def run_muzero_selfplay_gpu[
             # Time-limit cut (env truncation or our max_ep_steps cap) is NOT a
             # terminal: the replay must bootstrap past it, not target value 0.
             rb.store_episode(
-                mptr(e_obs.unsafe_ptr()),
-                mptr(e_act.unsafe_ptr()),
-                mptr(e_rew.unsafe_ptr()),
-                mptr(e_pol.unsafe_ptr()),
-                mptr(e_val.unsafe_ptr()),
-                mptr(e_tp.unsafe_ptr()),
-                mptr(e_legal.unsafe_ptr()),
+                e_obs, e_act, e_rew, e_pol, e_val, e_tp, e_legal,
                 ep_len,
                 truncated=not env.was_terminated(),
             )
@@ -266,7 +264,7 @@ def run_muzero_selfplay_gpu[
                         ctx, rep, dyn, pred, orep, odyn, opred,
                         scratch,
                         t_obs0, t_act, t_pol, t_val, t_rew,
-                        v_min, v_max, value_coef,
+                        v_min, v_max, value_coef, max_grad_norm,
                         loss_parts=l_parts,
                     )
                 )
@@ -395,8 +393,6 @@ def run_muzero_selfplay_gpu[
             rn.append(String("replay_size")); rv.append(Float64(rb.num_steps()))
             logger.value()[].log_scalars(rn, rv, it + 1)
 
-    t_obs0.free(); t_act.free(); t_pol.free(); t_val.free(); t_rew.free()
-    r_obs.free(); r_pol.free()
     l_parts.free(); h_diag_pred.free()
     # keep the CPU mirrors alive past the loop — the MCTS adapters hold
     # `UnsafePointer(to=rep_c)`, which the lifetime analyzer can't see.

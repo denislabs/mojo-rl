@@ -1,47 +1,54 @@
 """AutoregressiveTrainer — a task-specialized driver for next-token LM
-training, on top of the generic per-step `Trainer`.
+training on the **storage** surface (CPU `List` / GPU `DeviceBuffer` `Tensor`s,
+`TensorRefs` input packs).
 
-The generic `Trainer` packages the *step* (forward → loss → vjp → clip →
-optimizer). `Trainer.train_gpu` packages a whole *run* — but only for the
-fixed-dataset / epoch / argmax-classification regime (the MLP case). An
-autoregressive LM has a different regime: streaming random windows over a
-token corpus, a cosine LR schedule, per-token cross-entropy eval, and text
-generation. This driver packages *that* regime so the example collapses to
+The storage `Trainer` (`trainer.mojo`) is classification-specialized
+(`CrossEntropyLoss[NC]` + `train_epoch`/`eval_top1` over a flat resident
+dataset), so — unlike the legacy `AutoregressiveTrainer`, which *wrapped* a
+generic per-step `Trainer` — this driver is **self-contained**: it owns the
+`net` / `opt` / `SequenceCrossEntropyLoss` / scratch `Tensor`s and runs its own
+per-step loop (forward → SeqCE loss → vjp → grad-clip → optimizer step) over
+streaming random windows, with a cosine-with-warmup LR schedule, per-token CE
+eval, and text generation. The example collapses to
 
     var artr = AutoregressiveTrainer[NET, OPT, VOCAB, SEQ, BATCH].make_from(
-        trainer^, tok^, split^, base_lr, warmup_iters, total_iters,
+        net^, opt^, tok^, split^, ctx, base_lr, warmup_iters, total_iters,
+        grad_clip=1.0,
     )
-    # (model-construction surgery on artr.trainer.net here, if any)
+    # model-construction surgery on artr.net here (scaled-init / tie wiring)
     artr.fit(eval_every=250, n_val_windows=256)
     print(artr.generate("ROMEO:", 200, temperature=0.8))
 
-It wraps the regime, not the model: the model / optimizer / loss live in the
-inner `Trainer`, and `fit()` delegates each step to `Trainer.train_step`.
-Any causal sequence model using the one-hot `[SEQ·VOCAB]` in / logits
-`[SEQ·VOCAB]` out convention works (char- or BPE-token, weight-tied or not).
-Model-specific init surgery (e.g. the GPT's c_proj scaling / weight-tie
-wiring) stays at the call site — this driver doesn't know about it.
+It wraps the *regime*, not the model: the model / optimizer / loss live as
+fields, and `make_from` engages the optimizer's contiguous arena (`opt.adopt`)
+once `net` is in its final home. Any causal sequence model using the one-hot
+`[SEQ·VOCAB]` in / logits `[SEQ·VOCAB]` out convention works (char- or BPE-
+token, weight-tied or not). Model-specific init surgery (e.g. the GPT's c_proj
+scaling / weight-tie wiring) stays at the call site — this driver doesn't know
+about it.
 
 GPU-only for now (eval + generation use device buffers). A recurrent model
 (LSTM) can't use it until its recurrence is wrapped behind `Module.forward`/
-`vjp` — `train_step` drives those, which `LSTMCell` (step-API) doesn't
-implement.
+`vjp` — the per-step loop drives those.
 """
 
 from std.math import exp, cos
 from std.random import random_float64
-from std.gpu.host import DeviceContext, DeviceBuffer
-from layout import TileTensor, row_major
+from std.gpu.host import DeviceContext
+from layout import Layout
 
-from ..constants import DT
-from ..core import Module, Optimizer
-from ..core.module import mptr
-from ..loss import SequenceCrossEntropyLoss
-from ..datasets import CharTokenizer, DatasetSplit, make_batch
-from .trainer import Trainer
+from mojo_rl.nn.constants import DT, TPB
+from ..core.module import Module
+from ..core.tensor import Tensor, TensorImpl
+from ..core.tensor_refs import child_refs
+from ..optimizer.optimizer import Optimizer
+from ..optimizer.adam import Adam
+from ..loss.sequence_cross_entropy import SequenceCrossEntropyLoss
+from .trainer import _cast_kernel  # AMP boundary cast (fp32 ↔ MADT)
+from mojo_rl.nn.datasets import CharTokenizer, DatasetSplit, make_batch
+from mojo_rl.cuda import CUDAGraph, maybe_capture_replay
 
 
-@fieldwise_init
 struct AutoregressiveTrainer[
     NET: Module,
     OPT: Optimizer,
@@ -49,15 +56,46 @@ struct AutoregressiveTrainer[
     SEQ: Int,
     BATCH: Int,
     target: StaticString = "gpu",
+    # Opt-in CUDA-graph capture of the per-step DEVICE compute (forward → SeqCE
+    # accumulate → vjp → grad-clip → opt.step). The batch-build (host sampling +
+    # one-hot + upload into the PERSISTENT `in_t`/`tgt_t` buffers) stays eager;
+    # the captured graph reads those fixed buffers and replays. fp32-only (the
+    # AMP step has a host-side version bump). Default OFF — on NVIDIA the nn
+    # GEMM (`linalg.matmul`) allocates a split-K workspace per call, illegal
+    # under stream capture; enable only once that's resolved. No-op on
+    # non-NVIDIA (runs eagerly, bit-identical).
+    USE_TRAIN_CUDA_GRAPH: Bool = False,
 ](Movable):
     comptime IN_DIM = Self.SEQ * Self.VOCAB
     comptime OUT_DIM = Self.SEQ * Self.VOCAB
     comptime LOSS = SequenceCrossEntropyLoss[Self.SEQ, Self.VOCAB]
-    comptime TRAINER = Trainer[
-        Self.NET, Self.OPT, Self.LOSS, Self.BATCH, target = Self.target
-    ]
+    # AMP: the net's activation dtype. `DT` for an fp32 net, `bfloat16` for a
+    # bf16-flow net (e.g. GPT with all-bf16 leaves). Activations (input one-hot,
+    # logits, grad_output, grad_input) flow at MADT; the loss + master weights
+    # stay fp32 (the SeqCE softmax needs fp32). `MADT == DT` ⇒ zero casts.
+    comptime MADT = Self.NET.ACT_DT
+    # Capture covers fp32 AND bf16-flow. For bf16 the cached-bf16 weight recast
+    # is a DEVICE kernel that must ride the captured graph and read the live fp32
+    # master on every replay; `fit` sets `set_attr["capture_recast"]` so every
+    # bf16 leaf recasts UNCONDITIONALLY (not version-gated) → the cast is always
+    # recorded and never silently stale. The host-side `ParamVersionBump` not
+    # running on replay is harmless (the unconditional recast supersedes it).
+    comptime CAPTURE = Self.USE_TRAIN_CUDA_GRAPH
 
-    var trainer: Self.TRAINER
+    var net: Self.NET
+    var opt: Self.OPT
+    var loss: Self.LOSS
+    var ctx: DeviceContext
+    # Reused per-step staging. Net-facing activations flow at MADT; `tgt_t` is
+    # the loss target (fp32). `logits_f32`/`grad_f32` are the fp32 loss-boundary
+    # scratch used ONLY on the bf16 path (untouched when MADT == DT).
+    var in_t: TensorImpl[Self.MADT]
+    var tgt_t: Tensor
+    var logits: TensorImpl[Self.MADT]
+    var grad: TensorImpl[Self.MADT]
+    var gi: TensorImpl[Self.MADT]
+    var logits_f32: Tensor
+    var grad_f32: Tensor
     var tok: CharTokenizer
     var train_ids: List[Int]
     var val_ids: List[Int]
@@ -66,30 +104,83 @@ struct AutoregressiveTrainer[
     var warmup_iters: Int
     var total_iters: Int
     var min_lr_scale: Float64
+    var grad_clip: Scalar[DT]
+    # Lazily-captured per-step compute graph (None until the first capture). Only
+    # touched on the `CAPTURE` path; a no-op slot otherwise.
+    var _train_graph: Optional[CUDAGraph]
+
+    def __init__(
+        out self,
+        var net: Self.NET,
+        var opt: Self.OPT,
+        var loss: Self.LOSS,
+        ctx: DeviceContext,
+        var tok: CharTokenizer,
+        var train_ids: List[Int],
+        var val_ids: List[Int],
+        base_lr: Scalar[DT],
+        warmup_iters: Int,
+        total_iters: Int,
+        min_lr_scale: Float64,
+        grad_clip: Scalar[DT],
+    ):
+        self.net = net^
+        self.opt = opt^
+        self.loss = loss^
+        self.ctx = ctx
+        self.in_t = TensorImpl[Self.MADT]()
+        self.tgt_t = Tensor()
+        self.logits = TensorImpl[Self.MADT]()
+        self.grad = TensorImpl[Self.MADT]()
+        self.gi = TensorImpl[Self.MADT]()
+        self.logits_f32 = Tensor()
+        self.grad_f32 = Tensor()
+        self.tok = tok^
+        self.train_ids = train_ids^
+        self.val_ids = val_ids^
+        self.base_lr = base_lr
+        self.warmup_iters = warmup_iters
+        self.total_iters = total_iters
+        self.min_lr_scale = min_lr_scale
+        self.grad_clip = grad_clip
+        self._train_graph = None
 
     # ----- Factory --------------------------------------------------------
 
     @staticmethod
     def make_from(
-        var trainer: Self.TRAINER,
+        var net: Self.NET,
+        var opt: Self.OPT,
         var tok: CharTokenizer,
         var split: DatasetSplit,
+        ctx: DeviceContext,
         base_lr: Scalar[DT],
         warmup_iters: Int,
         total_iters: Int,
         min_lr_scale: Float64 = 0.1,
+        grad_clip: Scalar[DT] = 0.0,
     ) raises -> Self:
-        """Wrap a built `Trainer` + corpus + LR schedule. The model is
-        expected to already be in its final home inside `trainer`; do any
-        model-construction surgery (tie wiring, scaled init) on
-        `result.trainer.net` AFTER this call (the net won't move again)."""
+        """Wrap a built `net` + `opt` + corpus + LR schedule. The model is
+        expected to already be in its final home; do any model-construction
+        surgery (tie wiring, scaled init) on `result.net` AFTER this call (the
+        net won't move again). Engages the optimizer's contiguous arena
+        (`opt.adopt`) here so the GPU step is a single grouped kernel and
+        `clip_grads` runs on the arena (capture-safe, no per-param D2H)."""
         comptime assert (
             Self.target == "gpu"
         ), "AutoregressiveTrainer is GPU-only for now (eval/gen use device)"
-        return Self(
-            trainer^, tok^, split.train.copy(), split.val.copy(),
-            base_lr, warmup_iters, total_iters, min_lr_scale,
+        var loss = Self.LOSS.make_gpu(ctx)
+        var s = Self(
+            net^, opt^, loss^, ctx, tok^,
+            split.train.copy(), split.val.copy(),
+            base_lr, warmup_iters, total_iters, min_lr_scale, grad_clip,
         )
+        # Arena adopt AFTER net is in its final home (self.net): rebinds the
+        # model's param buffers to arena slices in place, so any subsequent
+        # tie-wiring (which points the head at the embedding `Tensor` cells)
+        # and scaled-init surgery operate on the arena-backed buffers.
+        s.opt.adopt[Self.target](s.net, Optional(s.ctx))
+        return s^
 
     # ----- Schedule + one-hot helpers ------------------------------------
 
@@ -108,153 +199,306 @@ struct AutoregressiveTrainer[
             self.min_lr_scale + (1.0 - self.min_lr_scale) * c
         )
 
-    def _one_hot_into(
-        self,
-        dst: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        ids: List[Int],
-        n_rows: Int,
-    ):
-        """Flat one-hot `[n_rows, SEQ·VOCAB]` from token ids `[n_rows·SEQ]`."""
-        for i in range(n_rows * Self.IN_DIM):
-            dst[i] = 0.0
-        for r in range(n_rows):
-            for t in range(Self.SEQ):
-                var tid = ids[r * Self.SEQ + t]
-                if tid >= 0 and tid < Self.VOCAB:
-                    dst[r * Self.IN_DIM + t * Self.VOCAB + tid] = 1.0
-
-    # ----- Eval (per-token CE over device-resident val windows) ----------
-
-    def _eval_loss(
-        mut self,
-        val_in: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        val_tgt: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        out_d: DeviceBuffer[DT],
-        n_batches: Int,
-    ) raises -> Float64:
-        self.trainer.net.set_attr["training"](Scalar[DT](0.0))  # dropout off
-        var total: Float64 = 0.0
-        for vb in range(n_batches):
-            var in_tt = TileTensor(
-                val_in + vb * Self.BATCH * Self.IN_DIM,
-                row_major[Self.BATCH, Self.IN_DIM](),
-            )
-            var out_tt = TileTensor(
-                mptr(out_d.unsafe_ptr()),
-                row_major[Self.BATCH, Self.OUT_DIM](),
-            )
-            self.trainer.net.forward[Self.target, Self.BATCH](
-                in_tt, output=out_tt
-            )
-            var tgt_tt = TileTensor(
-                val_tgt + vb * Self.BATCH * Self.OUT_DIM,
-                row_major[Self.BATCH, Self.OUT_DIM](),
-            )
-            total += Float64(
-                self.trainer.loss_fn.forward[Self.target, Self.BATCH](
-                    out_tt, tgt_tt
-                )
-            )
-        self.trainer.net.set_attr["training"](Scalar[DT](1.0))
-        return total / Float64(n_batches)
-
-    def _upload_windows(
-        self,
-        ids: List[Int],
-        n_windows: Int,
-        mut in_d: DeviceBuffer[DT],
-        mut tgt_d: DeviceBuffer[DT],
-        mut tgt_ids: List[Int],
+    @staticmethod
+    def _upload_onehot[
+        ADT: DType
+    ](
+        ctx: DeviceContext, mut t: TensorImpl[ADT], ids: List[Int], n_rows: Int
     ) raises:
-        """Sample `n_windows` windows from `ids`, one-hot input+target on the
-        host, upload into the caller's `in_d`/`tgt_d` buffers (reassigned to
-        correctly-sized allocations). Also returns the raw target ids in
-        `tgt_ids` (for top-1)."""
-        var ctx = self.trainer.ctx.value()
-        var mb = make_batch(ids, n_windows, Self.SEQ)
-        var in_h = ctx.enqueue_create_host_buffer[DT](n_windows * Self.IN_DIM)
-        var tgt_h = ctx.enqueue_create_host_buffer[DT](
-            n_windows * Self.OUT_DIM
-        )
-        ctx.synchronize()
-        self._one_hot_into(mptr(in_h.unsafe_ptr()), mb.inputs, n_windows)
-        self._one_hot_into(mptr(tgt_h.unsafe_ptr()), mb.targets, n_windows)
-        var ind = ctx.enqueue_create_buffer[DT](n_windows * Self.IN_DIM)
-        var tgd = ctx.enqueue_create_buffer[DT](n_windows * Self.OUT_DIM)
-        ctx.enqueue_copy(ind, in_h)
-        ctx.enqueue_copy(tgd, tgt_h)
-        ctx.synchronize()
-        in_d = ind^
-        tgt_d = tgd^
-        tgt_ids = mb.targets.copy()
+        """Host one-hot `[n_rows, SEQ·VOCAB]` from token ids `[n_rows·SEQ]`,
+        then H2D upload into `t` (device buffer reallocated to fit). Generic over
+        the dtype `ADT`: the net input flows at MADT (built directly at bf16 —
+        0/1 are exact), the loss target at fp32. Static (takes `ctx` by value) so
+        call sites can pass `self.in_t`/`self.tgt_t` as `mut t` without aliasing
+        the whole `self`."""
+        var total = n_rows * Self.IN_DIM
+        t.ensure(total)
+        for i in range(total):
+            t.data[i] = Scalar[ADT](0)
+        for r in range(n_rows):
+            for tt in range(Self.SEQ):
+                var tid = ids[r * Self.SEQ + tt]
+                if tid >= 0 and tid < Self.VOCAB:
+                    t.data[r * Self.IN_DIM + tt * Self.VOCAB + tid] = (
+                        Scalar[ADT](1)
+                    )
+        t.n = total
+        # Resident refresh (reuse the device buffer; no realloc) — bit-identical
+        # to `upload` but keeps the buffer pointer stable so the captured compute
+        # graph reads the SAME `in_t`/`tgt_t` each replay (the host rebuilds the
+        # one-hot in place every step before the replay).
+        t.upload_resident(ctx)
+
+    # ----- Eval (per-token CE / top-1 over freshly sampled val windows) ---
+
+    def _eval_loss_ids(
+        mut self, in_ids: List[Int], tgt_ids: List[Int], n_batches: Int
+    ) raises -> Float64:
+        """Mean per-token CE (nats) over `n_batches` batches of pre-sampled
+        window ids (`[n_batches·BATCH·SEQ]` flat)."""
+        self.net.set_attr["training"](Scalar[DT](0.0))  # dropout off
+        var total: Float64 = 0.0
+        var stride = Self.BATCH * Self.SEQ
+        for vb in range(n_batches):
+            var bi = List[Int](capacity=stride)
+            var bt = List[Int](capacity=stride)
+            for k in range(stride):
+                bi.append(in_ids[vb * stride + k])
+                bt.append(tgt_ids[vb * stride + k])
+            Self._upload_onehot[Self.MADT](self.ctx, self.in_t, bi, Self.BATCH)
+            Self._upload_onehot[DT](self.ctx, self.tgt_t, bt, Self.BATCH)
+            self.net.forward[Self.target, Self.BATCH](
+                child_refs[Self.NET.ARITY, Self.MADT](self.in_t),
+                self.logits,
+                Optional(self.ctx),
+            )
+            total += self._loss_fwd[Self.BATCH]()
+        self.net.set_attr["training"](Scalar[DT](1.0))
+        return total / Float64(n_batches)
 
     def val_loss(mut self, n_windows: Int) raises -> Float64:
         """Mean per-token val CE (nats) over `n_windows` freshly sampled
         windows. `n_windows` must be a multiple of BATCH."""
         if n_windows % Self.BATCH != 0:
             raise Error("val_loss: n_windows must be a multiple of BATCH")
-        var ctx = self.trainer.ctx.value()
-        var in_d = ctx.enqueue_create_buffer[DT](1)
-        var tgt_d = ctx.enqueue_create_buffer[DT](1)
-        var tgt_ids = List[Int]()
-        self._upload_windows(self.val_ids, n_windows, in_d, tgt_d, tgt_ids)
-        var out_d = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
-        return self._eval_loss(
-            mptr(in_d.unsafe_ptr()), mptr(tgt_d.unsafe_ptr()),
-            out_d, n_windows // Self.BATCH,
+        var mb = make_batch(self.val_ids, n_windows, Self.SEQ)
+        return self._eval_loss_ids(
+            mb.inputs, mb.targets, n_windows // Self.BATCH
         )
 
     def val_top1(mut self, n_windows: Int) raises -> Float64:
-        """Per-token top-1 argmax accuracy over `n_windows` val windows —
-        a diagnostic that the loss is consistent with good next-token
-        prediction (not artifactually low)."""
+        """Per-token top-1 argmax accuracy over `n_windows` val windows — a
+        diagnostic that the loss is consistent with good next-token prediction
+        (not artifactually low)."""
         if n_windows % Self.BATCH != 0:
             raise Error("val_top1: n_windows must be a multiple of BATCH")
-        var ctx = self.trainer.ctx.value()
-        var in_d = ctx.enqueue_create_buffer[DT](1)
-        var tgt_d = ctx.enqueue_create_buffer[DT](1)
-        var tgt_ids = List[Int]()
-        self._upload_windows(self.val_ids, n_windows, in_d, tgt_d, tgt_ids)
-        var in_p = mptr(in_d.unsafe_ptr())
-        var out_d = ctx.enqueue_create_buffer[DT](Self.BATCH * Self.OUT_DIM)
-        var out_h = ctx.enqueue_create_host_buffer[DT](
-            Self.BATCH * Self.OUT_DIM
-        )
-        self.trainer.net.set_attr["training"](Scalar[DT](0.0))
+        var mb = make_batch(self.val_ids, n_windows, Self.SEQ)
+        self.net.set_attr["training"](Scalar[DT](0.0))
         var correct: Int = 0
         var count: Int = 0
-        var oh = out_h.unsafe_ptr()
+        var stride = Self.BATCH * Self.SEQ
         var n_batches = n_windows // Self.BATCH
         for vb in range(n_batches):
-            var in_tt = TileTensor(
-                in_p + vb * Self.BATCH * Self.IN_DIM,
-                row_major[Self.BATCH, Self.IN_DIM](),
+            var bi = List[Int](capacity=stride)
+            for k in range(stride):
+                bi.append(mb.inputs[vb * stride + k])
+            Self._upload_onehot[Self.MADT](self.ctx, self.in_t, bi, Self.BATCH)
+            self.net.forward[Self.target, Self.BATCH](
+                child_refs[Self.NET.ARITY, Self.MADT](self.in_t),
+                self.logits,
+                Optional(self.ctx),
             )
-            var out_tt = TileTensor(
-                mptr(out_d.unsafe_ptr()),
-                row_major[Self.BATCH, Self.OUT_DIM](),
-            )
-            self.trainer.net.forward[Self.target, Self.BATCH](
-                in_tt, output=out_tt
-            )
-            ctx.enqueue_copy(out_h, out_d)
-            ctx.synchronize()
+            self.logits.download(self.ctx)
             for b in range(Self.BATCH):
                 for t in range(Self.SEQ):
                     var row = b * Self.OUT_DIM + t * Self.VOCAB
-                    var best_v = Float64(oh[row])
+                    var best_v = Float64(self.logits.data[row])
                     var best_i = 0
                     for v in range(1, Self.VOCAB):
-                        var x = Float64(oh[row + v])
+                        var x = Float64(self.logits.data[row + v])
                         if x > best_v:
                             best_v = x
                             best_i = v
-                    if best_i == tgt_ids[vb * Self.BATCH * Self.SEQ
-                                         + b * Self.SEQ + t]:
+                    if best_i == mb.targets[vb * stride + b * Self.SEQ + t]:
                         correct += 1
                     count += 1
-        self.trainer.net.set_attr["training"](Scalar[DT](1.0))
+        self.net.set_attr["training"](Scalar[DT](1.0))
         return Float64(correct) / Float64(count)
+
+    # ----- AMP loss boundary (fp32 SeqCE; casts ONLY on the bf16 path) ----
+
+    @staticmethod
+    def _cast_logits_to_f32[
+        B: Int
+    ](
+        mut logits: TensorImpl[Self.MADT],
+        mut logits_f32: Tensor,
+        ctx: DeviceContext,
+    ) raises:
+        """bf16-flow only: cast the MADT logits → fp32 `logits_f32` for SeqCE.
+        @staticmethod (explicit refs) to avoid aliasing the whole `self`."""
+        comptime LOGN = B * Self.OUT_DIM
+        logits_f32.ensure_gpu(ctx, LOGN)
+        ctx.enqueue_function[_cast_kernel[Self.MADT, DT, LOGN]](
+            logits.lt["gpu", Layout.row_major(LOGN)](),
+            logits_f32.lt["gpu", Layout.row_major(LOGN)](),
+            grid_dim=(LOGN + TPB - 1) // TPB,
+            block_dim=TPB,
+        )
+
+    @staticmethod
+    def _cast_grad_to_madt[
+        B: Int
+    ](
+        mut grad: TensorImpl[Self.MADT],
+        mut grad_f32: Tensor,
+        ctx: DeviceContext,
+    ) raises:
+        """bf16-flow only: cast the fp32 loss grad `grad_f32` → MADT `grad`."""
+        comptime LOGN = B * Self.OUT_DIM
+        grad.ensure_gpu(ctx, LOGN)
+        ctx.enqueue_function[_cast_kernel[DT, Self.MADT, LOGN]](
+            grad_f32.lt["gpu", Layout.row_major(LOGN)](),
+            grad.lt["gpu", Layout.row_major(LOGN)](),
+            grid_dim=(LOGN + TPB - 1) // TPB,
+            block_dim=TPB,
+        )
+
+    def _loss_fwd[B: Int](mut self) raises -> Float64:
+        """SeqCE forward through the fp32 boundary → mean batch loss. fp32 (MADT
+        == DT): directly on `logits` (rebind, no-op). bf16: cast `logits` →
+        `logits_f32` first (the loss/softmax stay fp32)."""
+        comptime if Self.MADT == DT:
+            ref logd = rebind[Tensor](self.logits)
+            return Float64(
+                self.loss.forward[Self.target, B](
+                    logd, self.tgt_t, Optional(self.ctx)
+                )
+            )
+        else:
+            Self._cast_logits_to_f32[B](
+                self.logits, self.logits_f32, self.ctx
+            )
+            return Float64(
+                self.loss.forward[Self.target, B](
+                    self.logits_f32, self.tgt_t, Optional(self.ctx)
+                )
+            )
+
+    def _loss_bwd[B: Int](mut self) raises:
+        """SeqCE vjp → `grad` (MADT). fp32: directly. bf16: vjp into `grad_f32`
+        then cast → `grad`. Requires `_loss_fwd[B]` ran first (logits_f32 set)."""
+        comptime if Self.MADT == DT:
+            ref logd = rebind[Tensor](self.logits)
+            ref grdd = rebind[Tensor](self.grad)
+            self.loss.vjp[Self.target, B](
+                logd, self.tgt_t, grdd, Optional(self.ctx)
+            )
+        else:
+            self.loss.vjp[Self.target, B](
+                self.logits_f32, self.tgt_t, self.grad_f32, Optional(self.ctx)
+            )
+            Self._cast_grad_to_madt[B](
+                self.grad, self.grad_f32, self.ctx
+            )
+
+    # ----- One packaged training step ------------------------------------
+
+    def _train_step(mut self, it: Int) raises -> Float64:
+        """Sample a fresh random window batch, apply the cosine-warmup LR, and
+        run one forward → SeqCE → vjp → grad-clip → optimizer step. Returns the
+        (pre-step) train CE for this batch."""
+        self.opt.set_lr(self.base_lr * self._lr_scale(it))
+        var mb = make_batch(self.train_ids, Self.BATCH, Self.SEQ)
+        Self._upload_onehot[Self.MADT](
+            self.ctx, self.in_t, mb.inputs, Self.BATCH
+        )
+        Self._upload_onehot[DT](self.ctx, self.tgt_t, mb.targets, Self.BATCH)
+        self.opt.zero_grad[Self.target](self.net, Optional(self.ctx))
+        self.net.forward[Self.target, Self.BATCH](
+            child_refs[Self.NET.ARITY, Self.MADT](self.in_t),
+            self.logits,
+            Optional(self.ctx),
+        )
+        # SeqCE runs at fp32 (cast only on the bf16 path), grad cast back to MADT.
+        var tl = self._loss_fwd[Self.BATCH]()
+        self._loss_bwd[Self.BATCH]()
+        self.net.vjp[Self.target, Self.BATCH](
+            child_refs[Self.NET.ARITY, Self.MADT](self.in_t),
+            self.grad,
+            child_refs[Self.NET.ARITY, Self.MADT](self.gi),
+            Optional(self.ctx),
+        )
+        if self.grad_clip > Scalar[DT](0.0):
+            _ = self.opt.clip_grads[Self.target](
+                self.net, self.grad_clip, Optional(self.ctx)
+            )
+        self.opt.step[Self.target](self.net, Optional(self.ctx))
+        return tl
+
+    # ----- CUDA-graph capture path (compute-only) ------------------------
+
+    def _compute_step_device(mut self) raises:
+        """The PURE-DEVICE compute captured into the graph: zero_grad → forward →
+        SeqCE accumulate → SeqCE vjp → net.vjp → (device grad-clip) → opt.step.
+
+        Reads the PERSISTENT `in_t`/`tgt_t` (refreshed eagerly before each
+        replay). The per-step train CE is folded into the loss's DEVICE
+        accumulator (drained at flush) — never read here, since a D2H would break
+        capture. Must enqueue the SAME kernel sequence every call.
+
+        fp32 (MADT == DT): the loss runs directly on the (rebound) MADT buffers.
+        bf16: the SeqCE boundary stays fp32 — cast logits→`logits_f32`,
+        accumulate + vjp there, cast grad_f32→`grad` (all DEVICE kernels, so they
+        ride the graph). The cached-bf16 weight recast inside `net.forward` is
+        also a captured device kernel (see the `CAPTURE` note)."""
+        var ctxo = Optional(self.ctx)
+        self.opt.zero_grad["gpu"](self.net, ctxo)
+        self.net.forward["gpu", Self.BATCH](
+            child_refs[Self.NET.ARITY, Self.MADT](self.in_t),
+            self.logits,
+            ctxo,
+        )
+        comptime if Self.MADT == DT:
+            ref logd = rebind[Tensor](self.logits)
+            ref grdd = rebind[Tensor](self.grad)
+            self.loss.forward_accumulate["gpu", Self.BATCH](
+                logd, self.tgt_t, ctxo
+            )
+            self.loss.vjp["gpu", Self.BATCH](logd, self.tgt_t, grdd, ctxo)
+        else:
+            # bf16: fp32 loss boundary (device casts ride the graph).
+            Self._cast_logits_to_f32[Self.BATCH](
+                self.logits, self.logits_f32, self.ctx
+            )
+            self.loss.forward_accumulate["gpu", Self.BATCH](
+                self.logits_f32, self.tgt_t, ctxo
+            )
+            self.loss.vjp["gpu", Self.BATCH](
+                self.logits_f32, self.tgt_t, self.grad_f32, ctxo
+            )
+            Self._cast_grad_to_madt[Self.BATCH](
+                self.grad, self.grad_f32, self.ctx
+            )
+        self.net.vjp["gpu", Self.BATCH](
+            child_refs[Self.NET.ARITY, Self.MADT](self.in_t),
+            self.grad,
+            child_refs[Self.NET.ARITY, Self.MADT](self.gi),
+            ctxo,
+        )
+        if self.grad_clip > Scalar[DT](0.0):
+            self.opt.clip_grads_device["gpu"](
+                self.net, self.grad_clip, ctxo
+            )
+        self.opt.step["gpu"](self.net, ctxo)
+
+    def _train_step_captured(mut self, it: Int) raises:
+        """One captured/replayed train step. The batch-build (host window sample
+        + one-hot + RESIDENT upload into the persistent `in_t`/`tgt_t`) and the
+        LR push run EAGERLY; the device compute is captured on the first call and
+        replayed thereafter. The LR is pushed onto the device (`push_lr_device`)
+        so the captured `opt.step` reads the FRESH cosine LR each replay instead
+        of a host-baked capture-time value."""
+        self.opt.push_lr_device["gpu"](
+            self.base_lr * self._lr_scale(it), Optional(self.ctx)
+        )
+        var mb = make_batch(self.train_ids, Self.BATCH, Self.SEQ)
+        Self._upload_onehot[Self.MADT](
+            self.ctx, self.in_t, mb.inputs, Self.BATCH
+        )
+        Self._upload_onehot[DT](self.ctx, self.tgt_t, mb.targets, Self.BATCH)
+        # Move the slot into a disjoint local for the capture call (`take` leaves
+        # it None) so the closure can borrow `self` without overlapping the
+        # slot's mut borrow (mirrors the MBPO dynamics-graph pattern).
+        var g = Optional[CUDAGraph](None)
+        if self._train_graph:
+            g = Optional[CUDAGraph](self._train_graph.take())
+
+        def _captured() capturing raises -> None:
+            self._compute_step_device()
+
+        maybe_capture_replay[_captured](g, self.ctx)
+        self._train_graph = g^
 
     # ----- The packaged training run -------------------------------------
 
@@ -264,57 +508,50 @@ struct AutoregressiveTrainer[
         n_val_windows: Int = 0,
         print_progress: Bool = True,
     ) raises -> Float64:
-        """Run `total_iters` of next-token training: each iter samples a
-        fresh random window batch, applies the cosine-warmup LR, and runs
-        one packaged `train_step`. When `eval_every > 0` and `n_val_windows
-        > 0`, reports per-token val CE on a fixed pre-sampled window set every
-        `eval_every` iters. Returns the final val loss (or the last train
-        loss if eval is off)."""
-        var ctx = self.trainer.ctx.value()
+        """Run `total_iters` of next-token training. When `eval_every > 0` and
+        `n_val_windows > 0`, reports per-token val CE on a fixed pre-sampled
+        window set every `eval_every` iters. Returns the final val loss (or the
+        last train loss if eval is off)."""
         var do_eval = eval_every > 0 and n_val_windows > 0
         if do_eval and n_val_windows % Self.BATCH != 0:
             raise Error("fit: n_val_windows must be a multiple of BATCH")
-
-        # Pre-sample the val windows ONCE so the val curve is comparable
-        # across iters.
-        var val_in_d = ctx.enqueue_create_buffer[DT](1)
-        var val_tgt_d = ctx.enqueue_create_buffer[DT](1)
-        var val_tgt_ids = List[Int]()
-        var n_val_batches = 0
-        if do_eval:
-            self._upload_windows(
-                self.val_ids, n_val_windows, val_in_d, val_tgt_d, val_tgt_ids
-            )
-            n_val_batches = n_val_windows // Self.BATCH
-        var eval_out_d = ctx.enqueue_create_buffer[DT](
-            Self.BATCH * Self.OUT_DIM
+        # Pre-sample the val windows ONCE so the val curve is comparable across
+        # iters.
+        var val_mb = make_batch(
+            self.val_ids, n_val_windows if do_eval else Self.BATCH, Self.SEQ
         )
-        var val_in_p = mptr(val_in_d.unsafe_ptr())
-        var val_tgt_p = mptr(val_tgt_d.unsafe_ptr())
-
-        # Reused train staging (host one-hot Lists; train_step owns the H2D).
-        var in_list = List[Scalar[DT]](
-            length=Self.BATCH * Self.IN_DIM, fill=0.0
-        )
-        var tgt_list = List[Scalar[DT]](
-            length=Self.BATCH * Self.OUT_DIM, fill=0.0
-        )
-        var in_lp = mptr(in_list.unsafe_ptr())
-        var tgt_lp = mptr(tgt_list.unsafe_ptr())
+        var n_val_batches = n_val_windows // Self.BATCH
 
         var last: Float64 = 0.0
+        # CAPTURE: the per-step train CE is accumulated on-device (no per-step
+        # D2H) and drained as a window-mean at each eval boundary. Reset the
+        # accumulator before the run; the eager path keeps reading per-step CE.
+        comptime if Self.CAPTURE:
+            # Force every bf16 leaf to recast its bf16 weight UNCONDITIONALLY so
+            # the cast kernel is recorded into the graph and reads the live fp32
+            # master on every replay (no silent stale-weight risk). No-op for
+            # fp32 leaves. Set once here, after any model surgery (tie/scale).
+            self.net.set_attr["capture_recast"](Scalar[DT](1.0))
+            self.loss.reset_accum["gpu"]()
         for it in range(self.total_iters):
-            self.trainer.optim.set_lr(self.base_lr * self._lr_scale(it))
-            var mb = make_batch(self.train_ids, Self.BATCH, Self.SEQ)
-            self._one_hot_into(in_lp, mb.inputs, Self.BATCH)
-            self._one_hot_into(tgt_lp, mb.targets, Self.BATCH)
-            var tl = Float64(self.trainer.train_step(in_list, tgt_list))
-            last = tl
+            var tl: Float64 = 0.0
+            comptime if Self.CAPTURE:
+                self._train_step_captured(it)
+            else:
+                tl = self._train_step(it)
+                last = tl
             if do_eval and (
                 (it + 1) % eval_every == 0 or (it + 1) == self.total_iters
             ):
-                var v = self._eval_loss(
-                    val_in_p, val_tgt_p, eval_out_d, n_val_batches
+                comptime if Self.CAPTURE:
+                    # Window-mean train CE from the device accumulator, then
+                    # reset for the next window.
+                    tl = Float64(
+                        self.loss.read_accum["gpu"](Optional(self.ctx))
+                    )
+                    self.loss.reset_accum["gpu"]()
+                var v = self._eval_loss_ids(
+                    val_mb.inputs, val_mb.targets, n_val_batches
                 )
                 last = v
                 if print_progress:
@@ -329,25 +566,27 @@ struct AutoregressiveTrainer[
 
     # ----- Sampling / generation -----------------------------------------
 
-    def _sample_token(
-        self,
-        row: UnsafePointer[Scalar[DT], MutAnyOrigin],
-        temperature: Float64,
-        top_k: Int,
+    @staticmethod
+    def _sample_token[
+        ADT: DType
+    ](
+        ref logits: TensorImpl[ADT], base: Int, temperature: Float64, top_k: Int
     ) -> Int:
-        """nanoGPT-style: greedy if `temperature <= 0`, else top-k softmax."""
+        """nanoGPT-style: greedy if `temperature <= 0`, else top-k softmax over
+        `logits.data[base : base+VOCAB]`. Generic over `ADT` — all reads go
+        through `Float64(...)`, so a bf16-flow logits buffer works directly."""
         if temperature <= 0.0:
-            var bv = Float64(row[0])
+            var bv = Float64(logits.data[base])
             var bi = 0
             for v in range(1, Self.VOCAB):
-                if Float64(row[v]) > bv:
-                    bv = Float64(row[v])
+                if Float64(logits.data[base + v]) > bv:
+                    bv = Float64(logits.data[base + v])
                     bi = v
             return bi
         var inv_t = 1.0 / temperature
         var scaled = List[Float64](capacity=Self.VOCAB)
         for v in range(Self.VOCAB):
-            scaled.append(Float64(row[v]) * inv_t)
+            scaled.append(Float64(logits.data[base + v]) * inv_t)
         var keep = List[Bool](capacity=Self.VOCAB)
         if top_k > 0 and top_k < Self.VOCAB:
             for _ in range(Self.VOCAB):
@@ -397,50 +636,43 @@ struct AutoregressiveTrainer[
         pad_id: Int = 0,
     ) raises -> String:
         """Autoregressively continue `prompt` for `n_tokens`. Front-anchored
-        window: the last min(n_have, SEQ) ids sit at positions 0.., logits
-        read at `n_eff - 1` (causal → the tail pad is invisible). Greedy when
+        window: the last min(n_have, SEQ) ids sit at positions 0.., logits read
+        at `n_eff - 1` (causal → the tail pad is invisible). Greedy when
         `temperature <= 0`, else top-k softmax sampling."""
-        var ctx = self.trainer.ctx.value()
-        self.trainer.net.set_attr["training"](Scalar[DT](0.0))  # eval mode
+        self.net.set_attr["training"](Scalar[DT](0.0))  # eval mode
         var all_ids = self.tok.encode(prompt)
         var prompt_len = len(all_ids)
         if prompt_len == 0:
             raise Error("generate: empty prompt")
 
-        var inp_h = ctx.enqueue_create_host_buffer[DT](Self.IN_DIM)
-        var inp_d = ctx.enqueue_create_buffer[DT](Self.IN_DIM)
-        var out_d = ctx.enqueue_create_buffer[DT](Self.OUT_DIM)
-        var out_h = ctx.enqueue_create_host_buffer[DT](Self.OUT_DIM)
-        ctx.synchronize()
-
+        # Dedicated B=1 scratch — the reused `self.in_t`/`self.logits` carry
+        # BATCH-sized device buffers from training; a B=1 forward would leave a
+        # stale length vs the reallocated buffer (Metal copy overflow).
+        var gen_in = TensorImpl[Self.MADT]()
+        var gen_out = TensorImpl[Self.MADT]()
         for _gen in range(n_tokens):
-            for i in range(Self.IN_DIM):
-                inp_h.unsafe_ptr()[i] = 0.0
             var n_have = len(all_ids)
             var n_eff = n_have if n_have <= Self.SEQ else Self.SEQ
             var first = 0 if n_have <= Self.SEQ else n_have - Self.SEQ
+            var win = List[Int](capacity=Self.SEQ)
             for t in range(Self.SEQ):
-                var tid = all_ids[first + t] if t < n_eff else pad_id
-                if tid >= 0 and tid < Self.VOCAB:
-                    inp_h.unsafe_ptr()[t * Self.VOCAB + tid] = 1.0
-            ctx.enqueue_copy(inp_d, inp_h)
-
-            var inp_t = TileTensor(
-                mptr(inp_d.unsafe_ptr()), row_major[1, Self.IN_DIM]()
+                win.append(all_ids[first + t] if t < n_eff else pad_id)
+            Self._upload_onehot[Self.MADT](self.ctx, gen_in, win, 1)
+            self.net.forward[Self.target, 1](
+                child_refs[Self.NET.ARITY, Self.MADT](gen_in),
+                gen_out,
+                Optional(self.ctx),
             )
-            var out_t = TileTensor(
-                mptr(out_d.unsafe_ptr()), row_major[1, Self.OUT_DIM]()
-            )
-            self.trainer.net.forward[Self.target, 1](inp_t, output=out_t)
-            ctx.enqueue_copy(out_h, out_d)
-            ctx.synchronize()
-
+            gen_out.download(self.ctx)
             var read_pos = n_eff - 1
-            var row_ptr = mptr(out_h.unsafe_ptr()) + read_pos * Self.VOCAB
-            all_ids.append(self._sample_token(row_ptr, temperature, top_k))
+            all_ids.append(
+                Self._sample_token[Self.MADT](
+                    gen_out, read_pos * Self.VOCAB, temperature, top_k
+                )
+            )
 
         var gen = List[Int](capacity=n_tokens)
         for i in range(prompt_len, len(all_ids)):
             gen.append(all_ids[i])
-        self.trainer.net.set_attr["training"](Scalar[DT](1.0))
+        self.net.set_attr["training"](Scalar[DT](1.0))
         return self.tok.decode(gen)

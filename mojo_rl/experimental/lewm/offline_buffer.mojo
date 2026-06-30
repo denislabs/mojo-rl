@@ -8,31 +8,29 @@ synthetic fill; the sampling protocol (random traj_id, start_t → slice T
 frames) is the same.
 """
 
-from std.memory import alloc
-
 from ...nn.constants import DT
 from .pixel_convert import u8_hwc_to_chw_norm
 
 
 struct OfflineWindowBuffer[IMG_DIM: Int, ACT: Int, T: Int](
-    Movable & ImplicitlyDestructible
+    Movable & ImplicitlyDeletable
 ):
     var n_traj: Int
     var traj_len: Int
-    var frames: UnsafePointer[Scalar[DT], MutAnyOrigin]   # [N, L, IMG_DIM]
-    var actions: UnsafePointer[Scalar[DT], MutAnyOrigin]  # [N, L, ACT]
+    var frames: List[Scalar[DT]]   # [N, L, IMG_DIM]
+    var actions: List[Scalar[DT]]  # [N, L, ACT]
     var rng: UInt64
 
     def __init__(out self, n_traj: Int, traj_len: Int, seed: UInt64 = 12345):
         self.n_traj = n_traj
         self.traj_len = traj_len
-        self.frames = alloc[Scalar[DT]](n_traj * traj_len * Self.IMG_DIM)
-        self.actions = alloc[Scalar[DT]](n_traj * traj_len * Self.ACT)
+        self.frames = List[Scalar[DT]](
+            length=n_traj * traj_len * Self.IMG_DIM, fill=Scalar[DT](0)
+        )
+        self.actions = List[Scalar[DT]](
+            length=n_traj * traj_len * Self.ACT, fill=Scalar[DT](0)
+        )
         self.rng = seed
-
-    def __del__(deinit self):
-        self.frames.free()
-        self.actions.free()
 
     @staticmethod
     def _det(i: Int, scale: Float64) -> Scalar[DT]:
@@ -69,7 +67,9 @@ struct OfflineWindowBuffer[IMG_DIM: Int, ACT: Int, T: Int](
         comptime assert C * FH * FW == Self.IMG_DIM, (
             "set_frame_u8_hwc: C·FH·FW must equal IMG_DIM"
         )
-        var dst = self.frames + (traj * self.traj_len + t) * Self.IMG_DIM
+        var dst = self.frames.unsafe_ptr() + (
+            traj * self.traj_len + t
+        ) * Self.IMG_DIM
         u8_hwc_to_chw_norm["cpu", C, FH, FW, 1](hwc, dst)
 
     def _next(mut self) -> UInt64:

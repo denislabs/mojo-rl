@@ -9,15 +9,15 @@ Run:
     pixi run -e apple mojo run -I . tests/deep_agents/test_ezv2_atari_rep_smoke.mojo
 """
 
-from std.memory import alloc
 from std.math import isnan, isinf
-from std.gpu.memory import AddressSpace
 from std.testing import assert_true, assert_equal
-from layout import TileTensor, row_major
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.initializer import Kaiming
-from mojo_rl.nn.core import ParamVisitor
+from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.core.param import ParamVisitor
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.deep_agents.efficient_zero_v2.nets_atari import EZRepNetResNetAtari
 
 
@@ -31,16 +31,12 @@ comptime IN = IN_CH * IMG * IMG     # 110592
 comptime OUT = C * 6 * 6            # 2304
 
 
-def _a(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
-    return alloc[Scalar[DT]](n)
-
-
 def _det(i: Int, scale: Float64) -> Scalar[DT]:
     var v = (Float64((i * 2654435761) % 1000) / 500.0) - 1.0
     return Scalar[DT](v * scale)
 
 
-def _finite(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int) -> Bool:
+def _finite(p: List[Scalar[DT]], n: Int) -> Bool:
     for i in range(n):
         if isnan(p[i]) or isinf(p[i]):
             return False
@@ -55,21 +51,15 @@ struct GradStats(ParamVisitor):
         self.n_params = 0
         self.n_nonzero = 0
 
-    def visit(
-        mut self, name: String,
-        param: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        grad: TileTensor[
-            dtype=DT, address_space=AddressSpace.GENERIC, element_size=1, ...
-        ],
-        n_elems: Int, apply_decay: Bool,
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
     ) raises:
         self.n_params += 1
-        var g = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](grad.ptr)
         var any: Bool = False
-        for i in range(n_elems):
-            if g[i] != Scalar[DT](0.0):
+        for i in range(N):
+            if grad.data[i] != Scalar[DT](0.0):
                 any = True
                 break
         if any:
@@ -87,29 +77,29 @@ def main() raises:
     assert_equal(Rep.IN_DIMS[0], IN, "rep input dim = 12*96*96")
     assert_equal(Rep.OUT_DIM, OUT, "rep latent dim = 64*6*6 = 2304")
 
-    var m = Rep.make[target="cpu", INIT=Kaiming]()
+    var m = Rep.make["cpu", Kaiming]()
     # BatchNorm train mode (EZ toggles eval around MCTS, train around update).
     m.set_attr["training"](Scalar[DT](1.0))
 
-    var x = _a(B * IN); var y = _a(B * OUT)
-    var go = _a(B * OUT); var gx = _a(B * IN)
+    var x = Tensor.alloc(B * IN)
+    var y = Tensor.alloc(B * OUT)
+    var go = Tensor.alloc(B * OUT)
+    var gx = Tensor.alloc(B * IN)
     for k in range(B * IN):
-        x[k] = _det(k + 1, 1.0)
+        x.data[k] = _det(k + 1, 1.0)
     for k in range(B * OUT):
-        go[k] = _det(k + 3, 1.0)
+        go.data[k] = _det(k + 3, 1.0)
 
-    var x_t = TileTensor(x, row_major[B, IN]())
-    var y_t = TileTensor(y, row_major[B, OUT]())
-    m.forward["cpu", B](x_t, output=y_t)
-    assert_true(_finite(y, B * OUT), "rep output finite")
+    m.forward["cpu", B](TensorRefs[Rep.ARITY](x), y, None)
+    assert_true(_finite(y.data, B * OUT), "rep output finite")
 
-    var go_t = TileTensor(go, row_major[B, OUT]())
-    var gx_t = TileTensor(gx, row_major[B, IN]())
-    m.vjp["cpu", B](go_t, gx_t)
-    assert_true(_finite(gx, B * IN), "rep grad_input finite")
+    m.vjp["cpu", B](
+        TensorRefs[Rep.ARITY](x), go, TensorRefs[Rep.ARITY](gx), None
+    )
+    assert_true(_finite(gx.data, B * IN), "rep grad_input finite")
 
     var gs = GradStats()
-    m.for_each_param["cpu", GradStats]("rep", gs)
+    m.for_each_param["cpu"](gs, None)
     print("   params=", gs.n_params, " nonzero-grad=", gs.n_nonzero)
     assert_true(gs.n_params > 0, "rep has params")
     assert_true(gs.n_nonzero * 10 >= gs.n_params * 9,

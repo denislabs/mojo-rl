@@ -92,7 +92,7 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     var done: Bool
 
     # Renderer
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self):
@@ -210,21 +210,15 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
     # Saveable
     # ========================================================================
 
-    def save_env_state(
-        self,
-        dst: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-    ):
+    def save_env_state(self, mut dst: List[Scalar[nn_dtype]]):
         for i in range(46):
             dst[i] = Scalar[nn_dtype](Float64(self.state[i]))
         dst[46] = Scalar[nn_dtype](1.0) if self.done else Scalar[nn_dtype](0.0)
 
-    def load_env_state(
-        mut self,
-        data: UnsafePointer[Scalar[nn_dtype], MutAnyOrigin],
-    ):
+    def load_env_state(mut self, src: List[Scalar[nn_dtype]]):
         for i in range(46):
-            self.state[i] = Scalar[Self.dtype](Float64(data[i]))
-        self.done = Float64(data[46]) > 0.5
+            self.state[i] = Scalar[Self.dtype](Float64(src[i]))
+        self.done = Float64(src[46]) > 0.5
 
     # ========================================================================
     # Env trait methods
@@ -774,26 +768,26 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var actions = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), ImmutAnyOrigin
-        ](actions_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](actions_buf)
         var rewards = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](rewards_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](rewards_buf)
         var dones = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         var terminated_out = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](terminated_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](terminated_buf)
         var obs = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs_buf)
         var legal_masks = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, 7), MutAnyOrigin
-        ](legal_masks_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, 7)
+        ](legal_masks_buf)
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
@@ -870,8 +864,8 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         rng_seed: UInt64 = 0,
     ) raises:
         var states = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @parameter
@@ -903,11 +897,11 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         rng_counter_ptr: Optional[UnsafePointer[Scalar[DType.uint64], MutAnyOrigin]] = None,
     ) raises:
         var states = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ](states_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
+        ](states_buf)
         var dones = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE), MutAnyOrigin
-        ](dones_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE)
+        ](dones_buf)
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @parameter
@@ -947,14 +941,13 @@ struct ConnectFourEnv[DTYPE: DType = DType.float64](
         var states = LayoutTensor[
             board_dtype,
             Layout.row_major(BATCH_SIZE, STATE_SIZE),
-            ImmutAnyOrigin,
-        ](states_buf.unsafe_ptr())
+        ](states_buf)
         var obs = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ](obs_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, OBS_DIM)
+        ](obs_buf)
         var legal_masks = LayoutTensor[
-            board_dtype, Layout.row_major(BATCH_SIZE, 7), MutAnyOrigin
-        ](legal_masks_buf.unsafe_ptr())
+            board_dtype, Layout.row_major(BATCH_SIZE, 7)
+        ](legal_masks_buf)
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
         @parameter

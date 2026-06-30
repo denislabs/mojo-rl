@@ -46,7 +46,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.module import mptr
+from mojo_rl.nn.core.ptr import mptr
 from mojo_rl.core.env_traits import (
     BoxContinuousActionEnv,
     BoxDiscreteActionEnv,
@@ -74,7 +74,7 @@ def _increment_env_rng_kernel(
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait BatchedEnv(Movable & ImplicitlyDestructible):
+trait BatchedEnv(Movable & ImplicitlyDeletable):
     """Uniform N_ENVS-batched env surface. Env owns its
     obs/action/reward/done buffers internally; driver reads/writes via
     pointer accessors. Method comptime is `BATCH` (not `N_ENVS`) so
@@ -85,29 +85,23 @@ trait BatchedEnv(Movable & ImplicitlyDestructible):
     comptime OBS_DIM: Int
     comptime ACT_DIM: Int
 
-    def reset_batch[BATCH: Int](
-        mut self,
-        ctx: Optional[DeviceContext],
-        rng_seed: UInt64,
-    ) raises:
+    def reset_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
         """Initial reset for all N envs. Writes the env's internal
         obs buffer; subsequent `obs_ptr()` reads see the new obs."""
         ...
 
-    def step_batch[BATCH: Int](
-        mut self,
-        ctx: Optional[DeviceContext],
-        rng_seed: UInt64,
-    ) raises:
+    def step_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
         """Step all N envs. Reads the env's `action_ptr()`; overwrites
         `obs_ptr()`, `reward_ptr()`, `done_ptr()` in place."""
         ...
 
-    def selective_reset_batch[BATCH: Int](
-        mut self,
-        ctx: Optional[DeviceContext],
-        rng_seed: UInt64,
-    ) raises:
+    def selective_reset_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
         """Reset only envs where the last `step_batch` wrote
         `done > 0.5`; obs for reset envs gets refreshed. Reads
         `done_ptr()`."""
@@ -151,7 +145,7 @@ trait BatchedEnv(Movable & ImplicitlyDestructible):
 
 
 struct BatchedCpuEnv[
-    E: BoxContinuousActionEnv & Copyable & Movable,
+    E: BoxContinuousActionEnv & Copyable & ImplicitlyDeletable,
     N_ENVS: Int,
     OBS_DIM_: Int,
     ACT_DIM_: Int,
@@ -192,19 +186,24 @@ struct BatchedCpuEnv[
     def __init__(out self, template: Self.E):
         self.envs = InlineArray[Self.E, Self.N_ENVS](fill=template)
         self._obs = List[Scalar[DT]](
-            length=Self.N_ENVS * Self.OBS_DIM, fill=Scalar[DT](0.0),
+            length=Self.N_ENVS * Self.OBS_DIM,
+            fill=Scalar[DT](0.0),
         )
         self._action = List[Scalar[DT]](
-            length=Self.N_ENVS * Self.ACT_DIM, fill=Scalar[DT](0.0),
+            length=Self.N_ENVS * Self.ACT_DIM,
+            fill=Scalar[DT](0.0),
         )
         self._reward = List[Scalar[DT]](
-            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+            length=Self.N_ENVS,
+            fill=Scalar[DT](0.0),
         )
         self._done = List[Scalar[DT]](
-            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+            length=Self.N_ENVS,
+            fill=Scalar[DT](0.0),
         )
         self._terminated = List[Scalar[DT]](
-            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+            length=Self.N_ENVS,
+            fill=Scalar[DT](0.0),
         )
         self._action_scratch = List[Scalar[Self.E.dtype]](
             capacity=Self.ACT_DIM,
@@ -212,27 +211,25 @@ struct BatchedCpuEnv[
         for _ in range(Self.ACT_DIM):
             self._action_scratch.append(Scalar[Self.E.dtype](0.0))
 
-    def reset_batch[BATCH: Int](
-        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
-    ) raises:
-        comptime assert BATCH == Self.N_ENVS, (
-            "BatchedCpuEnv: reset_batch BATCH must match struct param"
-        )
+    def reset_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
+        comptime assert (
+            BATCH == Self.N_ENVS
+        ), "BatchedCpuEnv: reset_batch BATCH must match struct param"
         _ = ctx
         _ = rng_seed
         for env_idx in range(Self.N_ENVS):
             var obs_list = self.envs[env_idx].reset_obs_list()
             for d in range(Self.OBS_DIM):
-                self._obs[env_idx * Self.OBS_DIM + d] = Scalar[DT](
-                    obs_list[d]
-                )
+                self._obs[env_idx * Self.OBS_DIM + d] = Scalar[DT](obs_list[d])
 
-    def step_batch[BATCH: Int](
-        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
-    ) raises:
-        comptime assert BATCH == Self.N_ENVS, (
-            "BatchedCpuEnv: step_batch BATCH must match struct param"
-        )
+    def step_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
+        comptime assert (
+            BATCH == Self.N_ENVS
+        ), "BatchedCpuEnv: step_batch BATCH must match struct param"
         _ = ctx
         _ = rng_seed
         for env_idx in range(Self.N_ENVS):
@@ -241,29 +238,26 @@ struct BatchedCpuEnv[
                 self._action_scratch[j] = Scalar[Self.E.dtype](
                     self._action[env_idx * Self.ACT_DIM + j]
                 )
-            var step_res = self.envs[env_idx].step_continuous_vec[
-                Self.E.dtype
-            ](self._action_scratch)
+            var step_res = self.envs[env_idx].step_continuous_vec[Self.E.dtype](
+                self._action_scratch
+            )
             var nxt = step_res[0].copy()
             var reward = step_res[1]
             var done = step_res[2]
             for d in range(Self.OBS_DIM):
                 self._obs[env_idx * Self.OBS_DIM + d] = Scalar[DT](nxt[d])
             self._reward[env_idx] = Scalar[DT](reward)
-            self._done[env_idx] = (
-                Scalar[DT](1.0) if done else Scalar[DT](0.0)
-            )
-            self._terminated[env_idx] = (
-                Scalar[DT](1.0) if self.envs[env_idx].was_terminated()
-                else Scalar[DT](0.0)
-            )
+            self._done[env_idx] = Scalar[DT](1.0) if done else Scalar[DT](0.0)
+            self._terminated[env_idx] = Scalar[DT](1.0) if self.envs[
+                env_idx
+            ].was_terminated() else Scalar[DT](0.0)
 
-    def selective_reset_batch[BATCH: Int](
-        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
-    ) raises:
-        comptime assert BATCH == Self.N_ENVS, (
-            "BatchedCpuEnv: selective_reset_batch BATCH must match struct param"
-        )
+    def selective_reset_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
+        comptime assert (
+            BATCH == Self.N_ENVS
+        ), "BatchedCpuEnv: selective_reset_batch BATCH must match struct param"
         _ = ctx
         _ = rng_seed
         for env_idx in range(Self.N_ENVS):
@@ -305,7 +299,7 @@ def _splitmix64(x: UInt64) -> UInt64:
 
 
 struct BatchedCpuDiscreteEnv[
-    E: BoxDiscreteActionEnv & Movable,
+    E: BoxDiscreteActionEnv & Movable & ImplicitlyDeletable,
     N_ENVS: Int,
     OBS_DIM_: Int,
 ](BatchedEnv):
@@ -383,19 +377,24 @@ struct BatchedCpuDiscreteEnv[
         self.noop_max = noop_max
         self.noop_action = noop_action
         self._obs = List[Scalar[DT]](
-            length=Self.N_ENVS * Self.OBS_DIM, fill=Scalar[DT](0.0),
+            length=Self.N_ENVS * Self.OBS_DIM,
+            fill=Scalar[DT](0.0),
         )
         self._action = List[Scalar[DT]](
-            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+            length=Self.N_ENVS,
+            fill=Scalar[DT](0.0),
         )
         self._reward = List[Scalar[DT]](
-            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+            length=Self.N_ENVS,
+            fill=Scalar[DT](0.0),
         )
         self._done = List[Scalar[DT]](
-            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+            length=Self.N_ENVS,
+            fill=Scalar[DT](0.0),
         )
         self._terminated = List[Scalar[DT]](
-            length=Self.N_ENVS, fill=Scalar[DT](0.0),
+            length=Self.N_ENVS,
+            fill=Scalar[DT](0.0),
         )
         self._reset_count = List[Int](length=Self.N_ENVS, fill=0)
 
@@ -437,21 +436,21 @@ struct BatchedCpuDiscreteEnv[
 
         parallelize[reset_one](Self.N_ENVS)
 
-    def reset_batch[BATCH: Int](
-        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
-    ) raises:
-        comptime assert BATCH == Self.N_ENVS, (
-            "BatchedCpuDiscreteEnv: reset_batch BATCH must match struct param"
-        )
+    def reset_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
+        comptime assert (
+            BATCH == Self.N_ENVS
+        ), "BatchedCpuDiscreteEnv: reset_batch BATCH must match struct param"
         _ = ctx
         self._reset_lanes(rng_seed, only_done=False)
 
-    def step_batch[BATCH: Int](
-        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
-    ) raises:
-        comptime assert BATCH == Self.N_ENVS, (
-            "BatchedCpuDiscreteEnv: step_batch BATCH must match struct param"
-        )
+    def step_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
+        comptime assert (
+            BATCH == Self.N_ENVS
+        ), "BatchedCpuDiscreteEnv: step_batch BATCH must match struct param"
         _ = ctx
         _ = rng_seed
         var envs_ptr = self.envs.unsafe_ptr()
@@ -469,37 +468,32 @@ struct BatchedCpuDiscreteEnv[
                 # 28K-element List the `step_obs` path materializes).
                 var res = envs_ptr[env_idx].step_obs_into(
                     Int(action_ptr[env_idx]),
-                    rebind[
-                        UnsafePointer[Scalar[Self.E.dtype], MutAnyOrigin]
-                    ](obs_ptr + env_idx * Self.OBS_DIM),
+                    rebind[UnsafePointer[Scalar[Self.E.dtype], MutAnyOrigin]](
+                        obs_ptr + env_idx * Self.OBS_DIM
+                    ),
                 )
                 reward_ptr[env_idx] = rebind[Scalar[DT]](res[0])
-                done_ptr[env_idx] = (
-                    Scalar[DT](1.0) if res[1] else Scalar[DT](0.0)
+                done_ptr[env_idx] = Scalar[DT](1.0) if res[1] else Scalar[DT](
+                    0.0
                 )
             else:
                 # Dtype-converting fallback (E.dtype != DT).
-                var res = envs_ptr[env_idx].step_obs(
-                    Int(action_ptr[env_idx])
-                )
+                var res = envs_ptr[env_idx].step_obs(Int(action_ptr[env_idx]))
                 for d in range(Self.OBS_DIM):
-                    obs_ptr[env_idx * Self.OBS_DIM + d] = Scalar[DT](
-                        res[0][d]
-                    )
+                    obs_ptr[env_idx * Self.OBS_DIM + d] = Scalar[DT](res[0][d])
                 reward_ptr[env_idx] = Scalar[DT](res[1])
-                done_ptr[env_idx] = (
-                    Scalar[DT](1.0) if res[2] else Scalar[DT](0.0)
+                done_ptr[env_idx] = Scalar[DT](1.0) if res[2] else Scalar[DT](
+                    0.0
                 )
-            term_ptr[env_idx] = (
-                Scalar[DT](1.0) if envs_ptr[env_idx].was_terminated()
-                else Scalar[DT](0.0)
-            )
+            term_ptr[env_idx] = Scalar[DT](1.0) if envs_ptr[
+                env_idx
+            ].was_terminated() else Scalar[DT](0.0)
 
         parallelize[step_one](Self.N_ENVS)
 
-    def selective_reset_batch[BATCH: Int](
-        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
-    ) raises:
+    def selective_reset_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
         comptime assert BATCH == Self.N_ENVS, (
             "BatchedCpuDiscreteEnv: selective_reset_batch BATCH must match"
             " struct param"
@@ -598,12 +592,8 @@ struct BatchedGpuEnv[
         self._states = ctx.enqueue_create_buffer[DT](
             Self.N_ENVS * Self.STATE_SIZE
         )
-        self._obs = ctx.enqueue_create_buffer[DT](
-            Self.N_ENVS * Self.OBS_DIM
-        )
-        self._action = ctx.enqueue_create_buffer[DT](
-            Self.N_ENVS * Self.ACT_DIM
-        )
+        self._obs = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.OBS_DIM)
+        self._action = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.ACT_DIM)
         self._reward = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
         self._done = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
         self._terminated = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
@@ -627,26 +617,28 @@ struct BatchedGpuEnv[
         self._env_rng_counter = ctx.enqueue_create_buffer[DType.uint64](1)
         self._env_rng_counter.enqueue_fill(UInt64(42))
 
-    def reset_batch[BATCH: Int](
-        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
-    ) raises:
-        comptime assert BATCH == Self.N_ENVS, (
-            "BatchedGpuEnv: reset_batch BATCH must match struct param"
-        )
+    def reset_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
+        comptime assert (
+            BATCH == Self.N_ENVS
+        ), "BatchedGpuEnv: reset_batch BATCH must match struct param"
         var c = require_ctx["BatchedGpuEnv.reset_batch"](ctx)
         Self.E.reset_kernel_gpu[Self.N_ENVS, Self.STATE_SIZE](
-            c, self._states, rng_seed=rng_seed,
+            c,
+            self._states,
+            rng_seed=rng_seed,
         )
         Self.E.extract_obs_kernel_gpu[
             Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM
         ](c, self._states, self._obs)
 
-    def step_batch[BATCH: Int](
-        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
-    ) raises:
-        comptime assert BATCH == Self.N_ENVS, (
-            "BatchedGpuEnv: step_batch BATCH must match struct param"
-        )
+    def step_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
+        comptime assert (
+            BATCH == Self.N_ENVS
+        ), "BatchedGpuEnv: step_batch BATCH must match struct param"
         var c = require_ctx["BatchedGpuEnv.step_batch"](ctx)
         # Pass the PERSISTENT workspace so `step_kernel_gpu` neither
         # re-allocates nor re-uploads the model per step, and — critically —
@@ -667,12 +659,12 @@ struct BatchedGpuEnv[
             workspace_ptr=mptr(self._workspace.unsafe_ptr()),
         )
 
-    def selective_reset_batch[BATCH: Int](
-        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
-    ) raises:
-        comptime assert BATCH == Self.N_ENVS, (
-            "BatchedGpuEnv: selective_reset_batch BATCH must match struct param"
-        )
+    def selective_reset_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
+        comptime assert (
+            BATCH == Self.N_ENVS
+        ), "BatchedGpuEnv: selective_reset_batch BATCH must match struct param"
         var c = require_ctx["BatchedGpuEnv.selective_reset_batch"](ctx)
         # `rng_seed` is retained for trait/CPU compatibility but the GPU reset
         # is driven by the DEVICE counter (capture-safe): bump it, then pass it
@@ -680,15 +672,13 @@ struct BatchedGpuEnv[
         # seed. The bump is enqueued on the same stream and is captured into the
         # env-reset graph, so every replay advances the seed.
         _ = rng_seed
-        var cnt_t = LayoutTensor[
-            DType.uint64, Layout.row_major(1), MutAnyOrigin
-        ](self._env_rng_counter.unsafe_ptr())
+        var cnt_t = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self._env_rng_counter
+        )
         c.enqueue_function[_increment_env_rng_kernel](
             cnt_t, grid_dim=(1,), block_dim=(1,)
         )
-        Self.E.selective_reset_kernel_gpu[
-            Self.N_ENVS, Self.STATE_SIZE
-        ](
+        Self.E.selective_reset_kernel_gpu[Self.N_ENVS, Self.STATE_SIZE](
             c,
             self._states,
             self._done,
@@ -795,12 +785,8 @@ struct BatchedGpuDiscreteEnv[
         self._states = ctx.enqueue_create_buffer[DT](
             Self.N_ENVS * Self.STATE_SIZE
         )
-        self._obs = ctx.enqueue_create_buffer[DT](
-            Self.N_ENVS * Self.OBS_DIM
-        )
-        self._action = ctx.enqueue_create_buffer[DT](
-            Self.N_ENVS * Self.ACT_DIM
-        )
+        self._obs = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.OBS_DIM)
+        self._action = ctx.enqueue_create_buffer[DT](Self.N_ENVS * Self.ACT_DIM)
         self._reward = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
         self._done = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
         self._terminated = ctx.enqueue_create_buffer[DT](Self.N_ENVS)
@@ -831,31 +817,31 @@ struct BatchedGpuDiscreteEnv[
         else:
             c.enqueue_memset(self._obs, 0)
 
-    def reset_batch[BATCH: Int](
-        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
-    ) raises:
-        comptime assert BATCH == Self.N_ENVS, (
-            "BatchedGpuDiscreteEnv: reset_batch BATCH must match struct param"
-        )
+    def reset_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
+        comptime assert (
+            BATCH == Self.N_ENVS
+        ), "BatchedGpuDiscreteEnv: reset_batch BATCH must match struct param"
         var c = require_ctx["BatchedGpuDiscreteEnv.reset_batch"](ctx)
         Self.E.reset_kernel_gpu[Self.N_ENVS, Self.STATE_SIZE](
-            c, self._states, rng_seed=rng_seed,
+            c,
+            self._states,
+            rng_seed=rng_seed,
         )
         self._seed_obs(c)
 
-    def step_batch[BATCH: Int](
-        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
-    ) raises:
-        comptime assert BATCH == Self.N_ENVS, (
-            "BatchedGpuDiscreteEnv: step_batch BATCH must match struct param"
-        )
+    def step_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
+        comptime assert (
+            BATCH == Self.N_ENVS
+        ), "BatchedGpuDiscreteEnv: step_batch BATCH must match struct param"
         var c = require_ctx["BatchedGpuDiscreteEnv.step_batch"](ctx)
         # Discrete `step_kernel_gpu`: THREE comptime params (no ACTION_DIM).
         # Reads `_action` as [N_ENVS] integer indices; writes obs/reward/
         # done/terminated in place.
-        Self.E.step_kernel_gpu[
-            Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM
-        ](
+        Self.E.step_kernel_gpu[Self.N_ENVS, Self.STATE_SIZE, Self.OBS_DIM](
             c,
             self._states,
             self._action,
@@ -867,9 +853,9 @@ struct BatchedGpuDiscreteEnv[
             workspace_ptr=mptr(self._workspace.unsafe_ptr()),
         )
 
-    def selective_reset_batch[BATCH: Int](
-        mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,
-    ) raises:
+    def selective_reset_batch[
+        BATCH: Int
+    ](mut self, ctx: Optional[DeviceContext], rng_seed: UInt64,) raises:
         comptime assert BATCH == Self.N_ENVS, (
             "BatchedGpuDiscreteEnv: selective_reset_batch BATCH must match"
             " struct param"
@@ -880,15 +866,13 @@ struct BatchedGpuDiscreteEnv[
             )
         var c = ctx.value()
         _ = rng_seed
-        var cnt_t = LayoutTensor[
-            DType.uint64, Layout.row_major(1), MutAnyOrigin
-        ](self._env_rng_counter.unsafe_ptr())
+        var cnt_t = LayoutTensor[DType.uint64, Layout.row_major(1)](
+            self._env_rng_counter
+        )
         c.enqueue_function[_increment_env_rng_kernel](
             cnt_t, grid_dim=(1,), block_dim=(1,)
         )
-        Self.E.selective_reset_kernel_gpu[
-            Self.N_ENVS, Self.STATE_SIZE
-        ](
+        Self.E.selective_reset_kernel_gpu[Self.N_ENVS, Self.STATE_SIZE](
             c,
             self._states,
             self._done,

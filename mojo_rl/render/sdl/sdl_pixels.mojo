@@ -101,7 +101,7 @@ struct PixelType(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime PIXELTYPE_UNKNOWN = Self(0)
     comptime PIXELTYPE_INDEX1 = Self(1)
@@ -141,7 +141,7 @@ struct BitmapOrder(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime BITMAPORDER_NONE = Self(0)
     comptime BITMAPORDER_4321 = Self(1)
@@ -170,7 +170,7 @@ struct PackedOrder(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime PACKEDORDER_NONE = Self(0)
     comptime PACKEDORDER_XRGB = Self(1)
@@ -205,7 +205,7 @@ struct ArrayOrder(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime ARRAYORDER_NONE = Self(0)
     comptime ARRAYORDER_RGB = Self(1)
@@ -238,7 +238,7 @@ struct PackedLayout(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime PACKEDLAYOUT_NONE = Self(0)
     comptime PACKEDLAYOUT_332 = Self(1)
@@ -305,7 +305,7 @@ struct PixelFormat(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime PIXELFORMAT_UNKNOWN = Self(0)
     comptime PIXELFORMAT_INDEX1LSB = Self(0x11100100)
@@ -482,7 +482,7 @@ struct ColorType(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime COLOR_TYPE_UNKNOWN = Self(0)
     comptime COLOR_TYPE_RGB = Self(1)
@@ -512,7 +512,7 @@ struct ColorRange(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime COLOR_RANGE_UNKNOWN = Self(0)
     comptime COLOR_RANGE_LIMITED = Self(1)
@@ -544,7 +544,7 @@ struct ColorPrimaries(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime COLOR_PRIMARIES_UNKNOWN = Self(0)
     comptime COLOR_PRIMARIES_BT709 = Self(1)
@@ -597,7 +597,7 @@ struct TransferCharacteristics(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime TRANSFER_CHARACTERISTICS_UNKNOWN = Self(0)
     comptime TRANSFER_CHARACTERISTICS_BT709 = Self(1)
@@ -657,7 +657,7 @@ struct MatrixCoefficients(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime MATRIX_COEFFICIENTS_IDENTITY = Self(0)
     comptime MATRIX_COEFFICIENTS_BT709 = Self(1)
@@ -707,7 +707,7 @@ struct ChromaLocation(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime CHROMA_LOCATION_NONE = Self(0)
     """RGB, no chroma sampling."""
@@ -745,7 +745,7 @@ struct Colorspace(Indexer, Intable, TrivialRegisterPassable):
 
     @always_inline("nodebug")
     def __mlir_index__(self) -> __mlir_type.index:
-        return Int(self)._mlir_value
+        return Int(self).__mlir_index__()
 
     comptime COLORSPACE_UNKNOWN = Self(0)
 
@@ -889,7 +889,7 @@ struct Palette(ImplicitlyCopyable, Movable):
 
     var ncolors: c_int
     """Number of elements in `colors`."""
-    var colors: Ptr[Color, MutAnyOrigin]
+    var colors: Ptr[Color, MutUntrackedOrigin]
     """An array of colors, `ncolors` long."""
     var version: UInt32
     """Internal use only, do not touch."""
@@ -907,7 +907,7 @@ struct PixelFormatDetails(ImplicitlyCopyable, Movable):
     var format: PixelFormat
     var bits_per_pixel: UInt8
     var bytes_per_pixel: UInt8
-    var padding: ArrayHelper[UInt8, 2, MutAnyOrigin]
+    var padding: ArrayHelper[UInt8, 2, MutUntrackedOrigin]
     var rmask: UInt32
     var gmask: UInt32
     var bmask: UInt32
