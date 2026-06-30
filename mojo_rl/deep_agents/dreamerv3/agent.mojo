@@ -349,7 +349,7 @@ struct DreamerV3Agent[
         if checkpoint_path.byte_length() > 0:
             self.save(checkpoint_path)
         var final_ev = self._greedy_eval[E](
-            env, eval_episodes, ep_len, obsbuf, actbuf
+            env, eval_episodes, ep_len, obsbuf, actbuf, frame_repeat
         )
         obsbuf.free()
         actbuf.free()
@@ -376,9 +376,12 @@ struct DreamerV3Agent[
         ep_len: Int,
         obsbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
         actbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        frame_repeat: Int = 1,
     ) raises -> Scalar[DT]:
         """Mean return over `episodes` greedy episodes (continuous actions scaled
-        by `action_scale` at env.step). Steps `env` (caller resets after)."""
+        by `action_scale` at env.step). Each agent decision is held for
+        `frame_repeat` env steps (rewards summed) — must match training. Steps
+        `env` (caller resets after)."""
         var total: Scalar[DT] = 0.0
         for _e in range(episodes):
             self.reset_belief()
@@ -390,10 +393,15 @@ struct DreamerV3Agent[
                 var al = List[Scalar[DT]]()
                 for a in range(Self.ACT):
                     al.append(self.action_scale * actbuf[a])
-                var r = env.step_continuous_vec[DT](al)
-                total += r[1].cast[DT]()
-                o = r[0].copy()
-                if r[2]:
+                var done = False
+                for _r in range(frame_repeat):
+                    var r = env.step_continuous_vec[DT](al)
+                    total += r[1].cast[DT]()
+                    o = r[0].copy()
+                    if r[2]:
+                        done = True
+                        break
+                if done:
                     break
         return total / Scalar[DT](episodes)
 
@@ -417,6 +425,7 @@ struct DreamerV3Agent[
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         checkpoint_path: String = String(""),
         checkpoint_every: Int = 0,
+        frame_repeat: Int = 1,
     ) raises -> Scalar[DT]:
         """Own the whole DreamerV3 single-env training loop for a CONTINUOUS env
         — the bounded-normal-actor counterpart of `train_single`: warmup random
@@ -472,17 +481,29 @@ struct DreamerV3Agent[
             var al = List[Scalar[DT]]()
             for a in range(ACTL):
                 al.append(self.action_scale * actbuf[a])
-            var res = env.step_continuous_vec[DT](al)
-            ep_ret += res[1].cast[DT]()
+            # action repeat: hold the decision for `frame_repeat` env steps,
+            # summing reward (the DreamerV3 reference ActionRepeat wrapper). One
+            # recorded transition per agent decision (obs_t, action, summed reward,
+            # done) so the WM models the repeat-augmented MDP — imagination's
+            # T_IMAG steps then span frame_repeat× the real time.
+            var rew_sum: Scalar[DT] = 0.0
+            var done = False
+            for _r in range(frame_repeat):
+                var res = env.step_continuous_vec[DT](al)
+                rew_sum += res[1].cast[DT]()
+                obs = res[0].copy()
+                if res[2]:
+                    done = True
+                    break
+            ep_ret += rew_sum
             self.record(
-                obsbuf, actbuf, res[1].cast[DT](),
-                Scalar[DT](1.0) if res[2] else Scalar[DT](0.0),
+                obsbuf, actbuf, rew_sum,
+                Scalar[DT](1.0) if done else Scalar[DT](0.0),
             )
-            obs = res[0].copy()
-            if res[2]:
+            if done:
                 # store the terminal obs so the WM cont head learns it
                 for i in range(OBSL):
-                    obsbuf[i] = res[0][i].cast[DT]()
+                    obsbuf[i] = obs[i].cast[DT]()
                 self.record_terminal(obsbuf)
                 obs = self._reset_obs_dt[E](env)
                 self.reset_belief()
@@ -568,7 +589,7 @@ struct DreamerV3Agent[
         if checkpoint_path.byte_length() > 0:
             self.save(checkpoint_path)
         var final_ev = self._greedy_eval_cont[E](
-            env, eval_episodes, ep_len, obsbuf, actbuf
+            env, eval_episodes, ep_len, obsbuf, actbuf, frame_repeat
         )
         obsbuf.free()
         actbuf.free()

@@ -98,6 +98,13 @@ comptime Env = CarRacingMB[DT, True, IMG]  # PIXEL_OBS=True, PIX_RES=96
 comptime NUM_STEPS = 1_000_000
 comptime LEARN_START = 1024
 comptime TRAIN_EVERY = 4
+# Action repeat: hold each agent decision for FRAME_REPEAT env frames (reward
+# summed) — the DreamerV3 reference ActionRepeat wrapper (4 for all its pixel
+# suites: atari/atari100k/dmlab). For CarRacing this 2-4× extends imagination's
+# real-time reach + steadies steering through turns. 2 = finer steering control;
+# bump to 4 to match the reference pixel value. NUM_STEPS counts AGENT decisions
+# (each = FRAME_REPEAT env frames).
+comptime FRAME_REPEAT = 2
 comptime LOG_EVERY = 1000  # WM/AC loss curves (cheap; no greedy eval) — frequent
 # early data points (~every few min at this heavy cfg)
 comptime EVAL_EVERY = 5000  # greedy eval + episode returns (expensive)
@@ -165,6 +172,7 @@ def main() raises:
             logger=logger_ptr,
             checkpoint_path=CHECKPOINT_PATH,
             checkpoint_every=CHECKPOINT_EVERY,
+            frame_repeat=FRAME_REPEAT,
         )
         var elapsed_s = Float64(perf_counter_ns() - t_start) / 1e9
         logger.close()
