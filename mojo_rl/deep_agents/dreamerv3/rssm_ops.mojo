@@ -21,7 +21,8 @@ inherits the no-op `for_each_param`/`zero_grad`.
 
 from std.math import tanh, exp
 from std.gpu import global_idx
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
+from std.random.philox import Random as PhiloxRandom
 from layout import Layout, LayoutTensor
 
 from mojo_rl.nn.constants import DT, TPB
@@ -193,25 +194,69 @@ def _bga_bwd_x_kernel[
         gx2[i] = s2
 
 
-# ── StraightThroughSample: per (b,s) group of C lanes — softmax + one-hot
-#    argmax (fwd); grad_z = (1-u)·sm·(go − Σ go·sm) (bwd). The bwd RECOMPUTES
-#    softmax(z) from `forward_input[0]` (z) — no cached `sm` field. ───────
-def _st_fwd_kernel[NG: Int, C: Int](
+# ── StraightThroughSample: per (b,s) group of C lanes — softmax + unimix +
+#    PHILOX categorical sample (fwd, inverse-CDF); grad_z = (1-u)·sm·(go − Σ go·sm)
+#    (bwd). The bwd RECOMPUTES softmax(z) from `forward_input[0]` (z) — no cached
+#    `sm` field, and is INDEPENDENT of which class was sampled (straight-through),
+#    so fwd sampling needs no special bwd handling.
+#
+#    The sample is the DreamerV3 stochastic latent (paper's discrete repr) — NOT
+#    the deterministic mode. Randomness is device-resident Philox keyed by
+#    `seed + group` with a per-call `offset` (advanced by `_st_off_inc_k` after
+#    every forward) so successive timesteps/steps draw disjoint streams. Philox is
+#    pure uint32→float32 → BIT-IDENTICAL on CPU and GPU for the same (seed,offset),
+#    which is what keeps the CPU↔GPU parity gates exact (sampling is discontinuous;
+#    a 1-ULP uniform diff would flip the class). The CPU forward mirrors this with
+#    a host `off_h` counter advanced in lockstep. Capture-safe: `offset_buf` is a
+#    stable device buffer (created in `make`, never recreated) and is read/advanced
+#    purely device-side — the proven imagination-noise pattern.
+def _st_sample_kernel[NG: Int, C: Int](
     z: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
     o: LayoutTensor[DT, Layout.row_major(NG * C), MutAnyOrigin],
+    seed: UInt64,
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+    unimix: Scalar[DT],
 ):
     var gg = Int(global_idx.x)
     if gg < NG:
         var base = gg * C
+        # numerically-stable softmax(z[base:base+C]).
         var zmax = rebind[Scalar[DT]](z[base])
-        var amax = 0
         for c in range(1, C):
             var zc = rebind[Scalar[DT]](z[base + c])
             if zc > zmax:
                 zmax = zc
-                amax = c
+        var ssum = Scalar[DT](0.0)
         for c in range(C):
-            o[base + c] = Scalar[DT](1.0) if c == amax else Scalar[DT](0.0)
+            ssum += exp(rebind[Scalar[DT]](z[base + c]) - zmax)
+        var inv = Scalar[DT](1.0) / ssum
+        var one_m_u = Scalar[DT](1.0) - unimix
+        var uc = unimix / Scalar[DT](C)
+        # Philox uniform in [0,1): per-group stream (seed+gg), per-call offset.
+        var off = rebind[UInt64](offset_buf[0])
+        var philox = PhiloxRandom(seed=seed + UInt64(gg), offset=off)
+        var u01 = Scalar[DT](philox.step_uniform()[0])
+        # inverse-CDF over the unimix-mixed probs → sampled class.
+        var acc = Scalar[DT](0.0)
+        var ksel = C - 1
+        for c in range(C):
+            var sm_c = exp(rebind[Scalar[DT]](z[base + c]) - zmax) * inv
+            var p_c = one_m_u * sm_c + uc
+            acc += p_c
+            if u01 < acc:
+                ksel = c
+                break
+        for c in range(C):
+            o[base + c] = Scalar[DT](1.0) if c == ksel else Scalar[DT](0.0)
+
+
+def _st_off_inc_k[STRIDE: Int](
+    offset_buf: LayoutTensor[DType.uint64, Layout.row_major(1), MutAnyOrigin],
+):
+    """Advance the device stoch-sample Philox offset by STRIDE (one thread).
+    Capture-safe: pure device read-modify-write, no host sync."""
+    if Int(global_idx.x) == 0:
+        offset_buf[0] = offset_buf[0] + UInt64(STRIDE)
 
 
 def _st_bwd_kernel[NG: Int, C: Int](
@@ -651,15 +696,29 @@ struct StraightThroughSample[STOCH: Int, CLASSES: Int](Module):
         return String("STSample")
 
     var unimix: Scalar[DT]   # real hyperparam (unimix prob), NOT cache
+    # Philox stochastic-sample state (fixed base seed; per-call offset).
+    var seed: UInt64
+    var off_h: UInt64                                   # host offset (CPU path)
+    var off_d: Optional[DeviceBuffer[DType.uint64]]     # device offset (GPU path)
 
     def __init__(out self):
         self.unimix = Scalar[DT](0.01)
+        self.seed = UInt64(0x57BE_AC10_5A33_71E5)
+        self.off_h = UInt64(0)
+        self.off_d = None
 
     @staticmethod
     def make[
         target: StaticString, INIT: Initializer
     ](ctx: Optional[DeviceContext] = None) raises -> Self:
-        return Self()
+        var s = Self()
+        # Create the device offset buffer at graph-build time (capture-safe: a
+        # stable buffer never recreated, advanced device-side per forward).
+        comptime if target == "gpu":
+            var b = ctx.value().enqueue_create_buffer[DType.uint64](1)
+            b.enqueue_fill(UInt64(0))
+            s.off_d = b^
+        return s^
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
@@ -670,33 +729,69 @@ struct StraightThroughSample[STOCH: Int, CLASSES: Int](Module):
         ctx: Optional[DeviceContext] = None,
     ) raises:
         comptime C = Self.CLASSES
+        comptime NG = B * Self.STOCH       # group count = offset STRIDE
         ref z = inputs[0]
+        var one_m_u = Scalar[DT](1.0) - self.unimix
+        var uc = self.unimix / Scalar[DT](C)
         comptime if target == "cpu":
             out.ensure(B * Self.SC)
             for b in range(B):
                 for s in range(Self.STOCH):
-                    var base = (b * Self.STOCH + s) * C
+                    var gg = b * Self.STOCH + s
+                    var base = gg * C
+                    # numerically-stable softmax(z[base:base+C]).
                     var zmax = z.data[base]
-                    var amax = 0
                     for c in range(1, C):
                         if z.data[base + c] > zmax:
                             zmax = z.data[base + c]
-                            amax = c
+                    var ssum = Scalar[DT](0.0)
+                    for c in range(C):
+                        ssum += exp(z.data[base + c] - zmax)
+                    var inv = Scalar[DT](1.0) / ssum
+                    # Philox uniform: SAME (seed+gg, offset) as the GPU kernel →
+                    # bit-identical sample (CPU↔GPU parity).
+                    var philox = PhiloxRandom(
+                        seed=self.seed + UInt64(gg), offset=self.off_h
+                    )
+                    var u01 = Scalar[DT](philox.step_uniform()[0])
+                    var acc = Scalar[DT](0.0)
+                    var ksel = C - 1
+                    for c in range(C):
+                        var sm_c = exp(z.data[base + c] - zmax) * inv
+                        var p_c = one_m_u * sm_c + uc
+                        acc += p_c
+                        if u01 < acc:
+                            ksel = c
+                            break
                     for c in range(C):
                         out.data[base + c] = (
-                            Scalar[DT](1.0) if c == amax else Scalar[DT](0.0)
+                            Scalar[DT](1.0) if c == ksel else Scalar[DT](0.0)
                         )
+            self.off_h = self.off_h + UInt64(NG)
         else:
             var c = ctx.value()
             comptime NN = B * Self.SC
-            comptime NG = B * Self.STOCH
             out.ensure_gpu(c, NN)
             comptime nb = (NG + TPB - 1) // TPB
-            c.enqueue_function[_st_fwd_kernel[NG, C]](
+            # Lazy-create the offset buffer for direct-constructed instances
+            # (unit tests). Production builds create it in `make` BEFORE any
+            # capture, so this branch never runs inside a captured region.
+            if not self.off_d:
+                var ob = c.enqueue_create_buffer[DType.uint64](1)
+                ob.enqueue_fill(UInt64(0))
+                self.off_d = ob^
+            var off_lt = LayoutTensor[DType.uint64, Layout.row_major(1)](
+                self.off_d.value()
+            )
+            c.enqueue_function[_st_sample_kernel[NG, C]](
                 z.lt["gpu", Layout.row_major(NN)](),
                 out.lt["gpu", Layout.row_major(NN)](),
+                self.seed, off_lt, self.unimix,
                 grid_dim=nb,
                 block_dim=TPB,
+            )
+            c.enqueue_function[_st_off_inc_k[NG]](
+                off_lt, grid_dim=1, block_dim=1,
             )
 
     def vjp[
