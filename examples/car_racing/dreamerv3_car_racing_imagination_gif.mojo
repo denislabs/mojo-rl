@@ -69,17 +69,36 @@ comptime ENC = DreamerEncoderCNN[C, IMG, IMG, BASE, TOKEN, SwishOp]
 comptime DEC = DreamerDecoderCNN[FEATIN, C, IMG, IMG, BASE, SwishOp]
 
 comptime Ag = DreamerV3Agent[
-    "gpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU,
-    PU, BINS, B, T, T_IMAG, CAP, False, ENC, DEC,  # DISCRETE=False (continuous)
-    True,  # RECON_SIGMOID — must match the training config (decode = sigmoid)
+    "gpu",
+    OBS,
+    ACT,
+    DETER,
+    H,
+    STOCH,
+    CLASSES,
+    BLOCKS,
+    TOKEN,
+    DEC_U,
+    HU,
+    VU,
+    PU,
+    BINS,
+    B,
+    T,
+    T_IMAG,
+    CAP,
+    False,
+    ENC,
+    DEC,  # DISCRETE=False (continuous)
+    RECON_SIGMOID=True,  # RECON_SIGMOID — must match the training config (decode = sigmoid)
 ]
 comptime Env = CarRacingMB[DT, True, IMG]  # PIXEL_OBS=True, PIX_RES=96
 
 comptime CHECKPOINT_PATH = "dreamerv3_carracing_pixel_gpu.ckpt"
 comptime GIF_PATH = "dreamerv3_carracing_imagination.gif"
 
-comptime CTX = 5    # real context frames to seed the belief
-comptime HOR = 45   # imagination horizon (max GIF frames)
+comptime CTX = 5  # real context frames to seed the belief
+comptime HOR = 45  # imagination horizon (max GIF frames)
 comptime NEWCH = (C - 1) * IMG * IMG  # newest-frame channel offset within OBS
 
 # triptych layout
@@ -91,7 +110,9 @@ comptime HC = IMG
 def main() raises:
     print("=" * 70)
     print("DreamerV3 pixel-CarRacing — imagination GIF (GPU decode)")
-    print("  CTX", CTX, " HOR", HOR, " OBS", OBS, "(", C, "x", IMG, "x", IMG, ")")
+    print(
+        "  CTX", CTX, " HOR", HOR, " OBS", OBS, "(", C, "x", IMG, "x", IMG, ")"
+    )
     print("=" * 70)
     seed(42)
 
@@ -102,7 +123,9 @@ def main() raises:
 
         # ── collect one greedy episode (closed-loop) ──
         var env = Env()
-        var robs = alloc[Scalar[DT]]((CTX + HOR + 1) * OBS).as_unsafe_any_origin()
+        var robs = alloc[Scalar[DT]](
+            (CTX + HOR + 1) * OBS
+        ).as_unsafe_any_origin()
         var ract = alloc[Scalar[DT]]((CTX + HOR) * ACT).as_unsafe_any_origin()
         var ob = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
         var ac = alloc[Scalar[DT]](ACT).as_unsafe_any_origin()
@@ -135,7 +158,8 @@ def main() raises:
         if eff_hor < 1:
             raise Error(
                 "episode too short to trace (collected "
-                + String(collected) + " < CTX+1)"
+                + String(collected)
+                + " < CTX+1)"
             )
         print("  collected", collected, "steps → eff_hor", eff_hor)
 
@@ -162,12 +186,25 @@ def main() raises:
                     comp[row + 2 * IMG + 2 * SEP + x] = Float32(ol[ob_ + x])
 
         save_frame_sequence_gif(
-            GIF_PATH, comp, eff_hor, HC, WC, channels=1, fps=10, loop=True,
-            vmin=0.0, vmax=1.0,
+            GIF_PATH,
+            comp,
+            eff_hor,
+            HC,
+            WC,
+            channels=1,
+            fps=10,
+            loop=True,
+            vmin=0.0,
+            vmax=1.0,
         )
 
-        ob.free(); ac.free(); robs.free(); ract.free()
-        ol.free(); tf.free(); comp.free()
+        ob.free()
+        ac.free()
+        robs.free()
+        ract.free()
+        ol.free()
+        tf.free()
+        comp.free()
         print("=" * 70)
         print("DONE — open ", GIF_PATH)
         print("  panels: [ REAL | RECON | IMAGINED ]  (newest stack frame)")
