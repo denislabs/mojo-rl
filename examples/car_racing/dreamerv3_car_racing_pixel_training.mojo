@@ -130,7 +130,7 @@ def main() raises:
         logger.set_config("env", "CarRacingPixel")
         logger.set_config("target", "gpu")
         logger.set_config("t_imag", String(T_IMAG))
-        var logger_ptr = UnsafePointer(to=logger)
+        var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
         # ─── Agent (GPU) + env (CPU; obs marshalled H2D in select_action) ──
         var agent = Ag.make(

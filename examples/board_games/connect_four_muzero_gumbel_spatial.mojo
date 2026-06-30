@@ -174,7 +174,7 @@ def main() raises:
         do_eval=True,
         do_eval2=True,
         verbose=True,
-        logger=UnsafePointer(to=logger),
+        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
         # Anti-sharpening / sustained exploration: never go greedy in self-play
         # (temp_min=1.0 → sample ∝ visits the whole game, the muzero-general
         # temp=1-always recipe) + 6 random opening plies, paired with the

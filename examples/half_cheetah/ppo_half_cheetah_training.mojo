@@ -118,7 +118,7 @@ def main() raises:
     logger.set_config("minibatch", String(MINIBATCH))
     logger.set_config("n_epochs", String(N_EPOCHS))
 
-    var logger_ptr = UnsafePointer(to=logger)
+    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
     # ─── Agent + env ─────────────────────────────────────────────────────
     var agent = PPOAgent[

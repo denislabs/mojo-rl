@@ -119,7 +119,7 @@ def main() raises:
     logger.set_config("batch", String(BATCH))
     logger.set_config("policy_delay", "2")
 
-    var logger_ptr = UnsafePointer(to=logger)
+    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
     # ─── Agent + env ─────────────────────────────────────────────────────
     var agent = TD3Agent[

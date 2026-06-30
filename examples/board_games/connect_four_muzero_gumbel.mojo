@@ -147,7 +147,7 @@ def main() raises:
         do_eval=True,
         do_eval2=True,
         verbose=True,
-        logger=UnsafePointer(to=logger),
+        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
         # Diversity levers against the self-play collapse seen without these:
         # more random opening plies + a temperature floor so play stays
         # stochastic past the opening (AlphaZero.jl uses temp≈0.3 throughout)

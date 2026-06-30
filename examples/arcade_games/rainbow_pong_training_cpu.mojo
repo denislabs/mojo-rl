@@ -165,7 +165,7 @@ def main() raises:
             NUM_STEPS,
             print_every=20_000,
             verbose=True,
-            logger=UnsafePointer(to=logger),
+            logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
             diag_every=5_000,
             eval_env=UnsafePointer(to=eval_env),
             eval_every=50_000,

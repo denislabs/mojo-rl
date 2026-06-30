@@ -264,7 +264,7 @@ def main() raises:
         eval_env=UnsafePointer(to=eval_env),
         diag_every=200,
         report_every=500,
-        logger=UnsafePointer(to=logger),
+        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
         seed=42,
         verbose=True,
         # Prioritized Experience Replay (device sum-tree over the strided obs

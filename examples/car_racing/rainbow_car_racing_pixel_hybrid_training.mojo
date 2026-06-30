@@ -140,7 +140,7 @@ def main() raises:
                 print_every=20_000,
                 verbose=True,
                 nstep_gamma=Scalar[DT](0.99),
-                logger=UnsafePointer(to=logger),
+                logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
                 diag_every=5_000,
                 checkpoint_every=CKPT_EVERY,
                 checkpoint_path=String(CKPT_PATH),

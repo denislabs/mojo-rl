@@ -113,7 +113,7 @@ def main() raises:
     )
     logger.set_config("algorithm", "TD-MPC2")
     logger.set_config("env", "Hopper")
-    var logger_ptr = UnsafePointer(to=logger)
+    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
     if env_vars.get("RL_MONITOR_URL", "").byte_length() > 0:
         print("  logger: ENABLED → streaming each", DIAG_EVERY, "steps")
     else:

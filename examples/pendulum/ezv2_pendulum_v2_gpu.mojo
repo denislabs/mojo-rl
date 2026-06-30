@@ -121,7 +121,7 @@ def main() raises:
         eval_episodes=5,
         diag_every=200,
         report_every=500,
-        logger=UnsafePointer(to=logger),
+        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
         seed=42,
         verbose=True,
     )

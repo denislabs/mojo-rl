@@ -127,7 +127,7 @@ def main() raises:
         eval_env=UnsafePointer(to=eval_env),
         diag_every=100,
         report_every=200,
-        logger=UnsafePointer(to=logger),
+        logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
         seed=42,
         verbose=True,
     )

@@ -96,7 +96,7 @@ def main() raises:
     logger.set_config("algorithm", "DreamerV3")
     logger.set_config("env", "CartPole")
     logger.set_config("t_imag", String(T_IMAG))
-    var logger_ptr = UnsafePointer(to=logger)
+    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
     # ─── Agent + env ─────────────────────────────────────────────────────
     var agent = Ag.make(

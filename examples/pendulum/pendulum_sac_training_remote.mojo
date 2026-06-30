@@ -72,7 +72,7 @@ def main() raises:
     logger.set_config("env", "Pendulum-v1")
     logger.set_config("seed", "42")
 
-    var logger_ptr = UnsafePointer(to=logger)
+    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
 
     # 2. Build the agent + env.
     var agent = _make_agent()

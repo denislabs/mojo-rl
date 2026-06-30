@@ -120,7 +120,7 @@ def main() raises:
     logger.set_config("algorithm", "TD-MPC2")
     logger.set_config("env", "HalfCheetah")
     logger.set_config("mpc", String("1") if USE_MPC else String("0"))
-    var logger_ptr = UnsafePointer(to=logger)
+    var logger_ptr = UnsafePointer(to=logger).as_unsafe_any_origin()
     if env_vars.get("RL_MONITOR_URL", "").byte_length() > 0:
         print("  logger: ENABLED → streaming to dashboard each", DIAG_EVERY, "steps")
     else:
