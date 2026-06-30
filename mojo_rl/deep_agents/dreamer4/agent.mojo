@@ -30,7 +30,7 @@ v1 uses an UNCONDITIONAL dynamics (ADIM=0) — the action-conditioned video
 prediction (ADIM>0, already built) layers in for the real-env lighthouse.
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, HostBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
@@ -50,7 +50,8 @@ from .heads import (
 )
 from .shortcut_loss import dynamics_pretrain_loss, _mao
 from .bc_loss import bc_mtp_loss
-from .imag_rollout import imagine_rollout
+from .imag_rollout import imagine_rollout, _fwd_window
+from ..dreamerv3.dists_discrete import cat_sample, UNIMIX
 from .imag_rl_loss import (
     lambda_returns,
     value_td_loss_cpu,
@@ -414,6 +415,106 @@ struct Dreamer4Agent[
         (distance n at columns [n·NACT, (n+1)·NACT)) — greedy action = argmax of
         the distance-0 block."""
         return _mao(self.plog.unsafe_ptr())
+
+    # ── online acting (single-step inference) ────────────────────────────
+    def act_from_latents(
+        mut self,
+        z_window: UnsafePointer[Scalar[DT], MutAnyOrigin],     # [n_ctx * ND]
+        n_ctx: Int,
+        action_hist: UnsafePointer[Scalar[DT], MutAnyOrigin],  # [T * ADIM]
+        task_id: Int,
+        explore: Bool,
+        u01: Float64,
+        dctx: Optional[DeviceContext] = None,   # required when DYN_TARGET="gpu"
+    ) raises -> Int:
+        """Pick an action from a window of recent CLEAN world-model latents.
+
+        Places the `n_ctx` latents into frames [0, n_ctx-1] of a [B=1, T] window
+        (clean: σ=KMAX-1, step=EMAX; later frames zero — causal time attention
+        means they cannot affect the read), sets the action tokens from
+        `action_hist` (the one-hots leading INTO frames 1..n_ctx-1, the
+        `imagine_rollout` convention), runs ONE frozen-dynamics forward, reads
+        the agent token h at the current frame `n_ctx-1`, runs the policy head,
+        and returns the action class in [0, NACT) from the dist-0 block —
+        `explore=True` → categorical sample with `u01`; else argmax.
+
+        Allocates act-LOCAL scratch (B=1 ⇒ BF=T); does not touch the training
+        scratch. FWD path follows `DYN_TARGET` exactly like `imagine_rollout`."""
+        comptime assert Self.ADIM == Self.NACT, (
+            "act_from_latents needs ADIM = NACT (one-hot discrete actions)"
+        )
+        comptime T = Self.T
+        comptime ND = Self.ND
+        comptime AGD = Self.AGD
+        comptime ADIM = Self.ADIM
+        comptime PLOG = Self.PLOG
+        comptime BF = Self.T               # B = 1
+
+        var nc = n_ctx
+        if nc < 1:
+            nc = 1
+        if nc > T:
+            nc = T
+        var cur = nc - 1                    # current state / acting frame
+
+        # act-local scratch (B=1)
+        var sig = List[Scalar[DT]](length=BF, fill=Scalar[DT](0.0))
+        var step = List[Scalar[DT]](length=BF, fill=Scalar[DT](0.0))
+        var act_oh = List[Scalar[DT]](length=BF * ADIM, fill=Scalar[DT](0.0))
+        var act_mask = List[Scalar[DT]](length=BF * ADIM, fill=Scalar[DT](1.0))
+        var packed = List[Scalar[DT]](length=BF * ND, fill=Scalar[DT](0.0))
+        var zhat = List[Scalar[DT]](length=BF * ND, fill=Scalar[DT](0.0))
+        var h_host = List[Scalar[DT]](length=BF * AGD, fill=Scalar[DT](0.0))
+        var agp_l = List[Scalar[DT]](length=BF * AGD, fill=Scalar[DT](0.0))
+        var task_l = List[Scalar[DT]](length=1, fill=Scalar[DT](Float64(task_id)))
+
+        for f in range(nc):
+            sig[f] = Scalar[DT](Float64(Self.KMAX - 1))
+            step[f] = Scalar[DT](Float64(Self.EMAX))
+            for i in range(ND):
+                packed[f * ND + i] = z_window[f * ND + i]
+        for i in range(BF * ADIM):
+            act_oh[i] = action_hist[i]
+
+        # task embedding → agent tokens [B=1, T]
+        self.te.embed_into["cpu", 1, T](
+            _mao(task_l.unsafe_ptr()), _mao(agp_l.unsafe_ptr()), None
+        )
+
+        # boundary tensors + (GPU) agent-token D2H staging
+        var in_t = Tensor.make[Self.DYN_TARGET](BF * ND, dctx)
+        var out_t = Tensor.make[Self.DYN_TARGET](BF * ND, dctx)
+        var h_ag = Optional[HostBuffer[DT]](None)
+        comptime if Self.DYN_TARGET == "gpu":
+            h_ag = dctx.value().enqueue_create_host_buffer[DT](BF * AGD)
+
+        # one frozen-dynamics forward → h_host [BF, AGD]
+        _fwd_window[Self.DYN, Self.DYN_TARGET, BF, ND, AGD](
+            self.dyn,
+            _mao(sig.unsafe_ptr()), _mao(step.unsafe_ptr()),
+            _mao(act_oh.unsafe_ptr()), _mao(act_mask.unsafe_ptr()),
+            _mao(agp_l.unsafe_ptr()),
+            _mao(packed.unsafe_ptr()), _mao(zhat.unsafe_ptr()),
+            _mao(h_host.unsafe_ptr()),
+            in_t, out_t, dctx, h_ag,
+        )
+
+        # policy head on every frame's h → [BF, PLOG]; act on frame `cur`
+        var plog = List[Scalar[DT]](length=BF * PLOG, fill=Scalar[DT](0.0))
+        Self._head_fwd[Self.PH, BF](self.ph, h_host, plog)
+
+        if explore:
+            return cat_sample[Self.NACT](
+                _mao(plog.unsafe_ptr()), cur * PLOG, UNIMIX, Scalar[DT](u01)
+            )
+        var best = 0
+        var best_v = Float64(plog[cur * PLOG + 0])
+        for a in range(1, Self.NACT):
+            var v = Float64(plog[cur * PLOG + a])
+            if v > best_v:
+                best_v = v
+                best = a
+        return best
 
     def _run_bc_loss(
         mut self,
