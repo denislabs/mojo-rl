@@ -967,10 +967,21 @@ struct BatchNorm2D[
                     rv_v[c] = one_m * rv_v[c] + mom * var_
                 self.cache_is_training = True
             else:
+                # Eval: normalize with running stats (constants). Cache xhat +
+                # inv_std so an eval-mode backward can run without batch
+                # reductions (gi = g·inv_std·dy) — used by the frozen-backbone
+                # perceptual loss, which backprops through BN in eval mode.
+                self.cache_xhat.ensure(B * Self.FLAT_DIM)
+                self.cache_inv_std.ensure(Self.C_)
+                var xhat_e = self.cache_xhat.data.unsafe_ptr()
+                var inv_e = TileTensor(
+                    self.cache_inv_std.data, row_major[Self.C_]()
+                )
                 for c in range(Self.C_):
                     var rm = rm_v[c]
                     var rv = rv_v[c]
                     var inv_std = Scalar[DT](1.0) / sqrt(rv + eps)
+                    inv_e[c] = inv_std
                     var g = g_p[c]
                     var bt = b_p[c]
                     for b in range(B):
@@ -979,7 +990,10 @@ struct BatchNorm2D[
                             var off = bb + _bn_off[
                                 Self.LAYOUT, Self.C_, Self.SPATIAL
                             ](c, s)
-                            out_p[off] = g * (in_p[off] - rm) * inv_std + bt
+                            var xh = (in_p[off] - rm) * inv_std
+                            xhat_e[off] = xh
+                            out_p[off] = g * xh + bt
+                self.cache_is_training = False
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B * Self.FLAT_DIM)
@@ -1173,11 +1187,14 @@ struct BatchNorm2D[
         grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        if not self.cache_is_training:
-            raise Error(
-                "BatchNorm2D.vjp: training-mode cache not populated. Call"
-                " forward with training=True before vjp."
-            )
+        # Eval-mode (running-stat) backward is implemented on CPU only; on GPU
+        # a training-mode forward is still required.
+        comptime if target != "cpu":
+            if not self.cache_is_training:
+                raise Error(
+                    "BatchNorm2D.vjp: eval-mode (running-stat) backward is"
+                    " CPU-only; GPU requires a training=True forward."
+                )
         # AMP §3 fp32-internal (forward_input unused, as in the fp32 body).
         comptime if Self.ACT_DT == DT:
             ref god = rebind[Tensor](grad_output)
@@ -1233,6 +1250,29 @@ struct BatchNorm2D[
             var inv_v = TileTensor(
                 self.cache_inv_std.data, row_major[Self.C_]()
             )
+            if not self.cache_is_training:
+                # Eval-mode backward: running mean/var are constants, so there is
+                # no batch coupling — gi = g·inv_std·dy (cf. the batch-stat path
+                # below which subtracts the m1/m2 batch reductions). γ/β grads are
+                # still accumulated (harmless for a frozen backbone).
+                for c in range(Self.C_):
+                    var g_e = g_p[c]
+                    var inv_e = inv_v[c]
+                    var dg_e: Scalar[DT] = 0.0
+                    var db_e: Scalar[DT] = 0.0
+                    for b in range(B):
+                        var bb = b * Self.FLAT_DIM
+                        for s in range(Self.SPATIAL):
+                            var off = bb + _bn_off[
+                                Self.LAYOUT, Self.C_, Self.SPATIAL
+                            ](c, s)
+                            var dy = go_p[off]
+                            gi_p[off] = inv_e * dy * g_e
+                            dg_e += dy * xhat_p[off]
+                            db_e += dy
+                    dg_p[c] += dg_e
+                    db_p[c] += db_e
+                return
             var inv_n = Scalar[DT](1.0) / Scalar[DT](Float64(B * Self.SPATIAL))
             for c in range(Self.C_):
                 var g = g_p[c]
