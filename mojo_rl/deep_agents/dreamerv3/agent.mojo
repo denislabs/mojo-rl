@@ -378,10 +378,17 @@ struct DreamerV3Agent[
         actbuf: UnsafePointer[Scalar[DT], MutAnyOrigin],
         frame_repeat: Int = 1,
     ) raises -> Scalar[DT]:
-        """Mean return over `episodes` greedy episodes (continuous actions scaled
+        """Mean return over `episodes` eval episodes (continuous actions scaled
         by `action_scale` at env.step). Each agent decision is held for
         `frame_repeat` env steps (rewards summed) — must match training. Steps
-        `env` (caller resets after)."""
+        `env` (caller resets after).
+
+        Acts by SAMPLING the policy (`explore=True`), NOT the deterministic mode:
+        the DreamerV3 reference evaluates by sampling the actor. Early in training
+        the policy mean is biased and the mode degenerates (e.g. constant hard
+        steer → spin); the sampling jitter reflects the policy's true on-policy
+        behavior, so this tracks the training `episode_reward` instead of badly
+        understating it."""
         var total: Scalar[DT] = 0.0
         for _e in range(episodes):
             self.reset_belief()
@@ -389,7 +396,7 @@ struct DreamerV3Agent[
             for _s in range(ep_len):
                 for i in range(Self.OBS):
                     obsbuf[i] = o[i].cast[DT]()
-                self.select_greedy_action(obsbuf, actbuf)
+                self.select_action(obsbuf, actbuf, explore=True)
                 var al = List[Scalar[DT]]()
                 for a in range(Self.ACT):
                     al.append(self.action_scale * actbuf[a])

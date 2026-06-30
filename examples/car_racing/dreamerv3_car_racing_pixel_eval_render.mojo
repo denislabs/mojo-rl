@@ -8,7 +8,10 @@ to [0,1] internally (Gymnasium), so we pass the action straight through.
 
 DreamerV3 is a closed-loop policy: each step the encoder+RSSM update a posterior
 belief from the real frame, then the actor acts on it. So we `reset_belief()` at
-the start of every episode and let `select_greedy_action` advance the belief.
+the start of every episode and let `select_action` advance the belief. We act by
+SAMPLING the policy (`explore=True`), matching how the DreamerV3 reference evals
+— the deterministic mode degenerates early in training (constant hard steer →
+spin); sampling reflects true on-policy behavior.
 
 The agent identity below MUST match the training script (arch + DETER). For eval
 RECON_SIGMOID is irrelevant — eval never decodes pixels (no recon, no
@@ -105,7 +108,11 @@ def main() raises:
             # training); render every sub-frame so the scene stays smooth.
             for i in range(OBS):
                 ob[i] = obs[i]
-            agent.select_greedy_action(ob, ac)  # normalized [-1,1], advances belief
+            # SAMPLE the policy (explore=True), NOT the deterministic mode — the
+            # DreamerV3 reference evaluates by sampling the actor. Early on the
+            # mode degenerates (constant hard steer → spin); sampling reflects
+            # the true on-policy behavior and tracks training episode_reward.
+            agent.select_action(ob, ac, explore=True)  # normalized [-1,1], advances belief
             var act_list = List[Scalar[DT]](capacity=ACT)
             for a in range(ACT):
                 act_list.append(ac[a])
