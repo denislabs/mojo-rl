@@ -27,8 +27,8 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Kaiming
-from mojo_rl.nn.core.tensor import Tensor
-from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
+from mojo_rl.nn.core.tensor_refs import TensorRefs, child_refs
 from mojo_rl.nn.core.checkpoint import (
     CheckpointWriter, CheckpointReader, _split_lines,
 )
@@ -771,7 +771,11 @@ struct DreamerV3Trainer[
                     pa.data[k] = real_act[(t - 1) * ACTD + k]
             for k in range(OBSD):
                 obt.data[k] = real_obs[t * OBSD + k]
-            self.enc.forward["cpu", 1](TensorRefs[1](obt), tok, None)
+            self.enc.forward["cpu", 1](
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                None,
+            )
             self.core.set_input["deter", 1](bd, None)
             self.core.set_input["stoch", 1](bs, None)
             self.core.set_input["action", 1](pa, None)
@@ -835,7 +839,11 @@ struct DreamerV3Trainer[
             # ── teacher-forced: re-observe the real obs (posterior path) ──
             for k in range(OBSD):
                 obt.data[k] = real_obs[(idx + 1) * OBSD + k]
-            self.enc.forward["cpu", 1](TensorRefs[1](obt), tok, None)
+            self.enc.forward["cpu", 1](
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                None,
+            )
             self.core.set_input["deter", 1](tfd, None)
             self.core.set_input["stoch", 1](tfs, None)
             self.core.set_input["action", 1](pa, None)
@@ -925,7 +933,11 @@ struct DreamerV3Trainer[
                     pa.data[k] = real_act[(t - 1) * ACTD + k]
             for k in range(OBSD):
                 obt.data[k] = real_obs[t * OBSD + k]
-            self.enc.forward["cpu", 1](TensorRefs[1](obt), tok, None)
+            self.enc.forward["cpu", 1](
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                None,
+            )
             self.core.set_input["deter", 1](bd, None)
             self.core.set_input["stoch", 1](bs, None)
             self.core.set_input["action", 1](pa, None)
@@ -983,7 +995,11 @@ struct DreamerV3Trainer[
             # ── teacher-forced: re-observe the real obs (posterior path) ──
             for k in range(OBSD):
                 obt.data[k] = real_obs[(idx + 1) * OBSD + k]
-            self.enc.forward["cpu", 1](TensorRefs[1](obt), tok, None)
+            self.enc.forward["cpu", 1](
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                None,
+            )
             self.core.set_input["deter", 1](tfd, None)
             self.core.set_input["stoch", 1](tfs, None)
             self.core.set_input["action", 1](pa, None)
