@@ -27,6 +27,7 @@ from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.models.cifar_feature_net import CifarBackbone
 from .patchify import temporal_patchify, temporal_unpatchify
+from .recon_loss import masked_recon_loss
 from .shortcut_loss import _mao
 
 
@@ -127,3 +128,37 @@ def perceptual_feature_loss[
         _mao(grad_img.data.unsafe_ptr()), grad_pred_patches
     )
     return loss
+
+
+def masked_recon_plus_perceptual_loss[
+    BT: Int, C_IMG: Int, H: Int, W: Int, PATCH: Int
+](
+    pred_patches: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    target_patches: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    keep: UnsafePointer[Scalar[DT], MutAnyOrigin],
+    mut backbone: CifarBackbone[H, W],
+    perc_weight: Float64,
+    grad_pred_patches: UnsafePointer[Scalar[DT], MutAnyOrigin],  # OUT (combined)
+    grad_perc_scratch: UnsafePointer[Scalar[DT], MutAnyOrigin],  # scratch [BT*NP*DP]
+) raises -> Tuple[Float64, Float64]:
+    """Dreamer 4 tokenizer recon objective `L = L_MSE + w·L_perceptual` (paper
+    eq. 5, w=0.2). Writes the COMBINED patch-space gradient into
+    `grad_pred_patches` (= grad_MSE + w·grad_perceptual) for the tokenizer vjp,
+    and returns `(mse, perceptual)` separately for logging. `keep` is the MAE
+    per-patch flag (masked-MSE is over dropped patches only); the perceptual term
+    is over the full reconstructed image. With `perc_weight == 0` this reduces to
+    `masked_recon_loss` exactly."""
+    comptime NP = (H // PATCH) * (W // PATCH)
+    comptime DP = C_IMG * PATCH * PATCH
+    var mse = masked_recon_loss[NP, DP, BT](
+        pred_patches, target_patches, keep, grad_pred_patches
+    )
+    if perc_weight == 0.0:
+        return (mse, 0.0)
+    var perc = perceptual_feature_loss[BT, C_IMG, H, W, PATCH](
+        pred_patches, target_patches, backbone, grad_perc_scratch
+    )
+    var w = Scalar[DT](perc_weight)
+    for i in range(BT * NP * DP):
+        grad_pred_patches[i] = grad_pred_patches[i] + w * grad_perc_scratch[i]
+    return (mse, perc)
