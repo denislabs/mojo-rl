@@ -62,13 +62,14 @@ from .nets import DreamerDecoder, DreamerRewardMLP, DreamerContMLP
 comptime DecLossGraph[
     SC: Int, DETER: Int, OBS: Int, DEC_U: Int, A: ElementOp = GELUOp,
     DEC: Module = DreamerDecoder[SC + DETER, OBS, DEC_U, A],
+    SIGMOID: Bool = False,  # True → sigmoid+MSE recon (bounded [0,1] pixels)
 ] = ComputeGraph[
     InputSlot["stoch_new", SC],
     InputSlot["nd", DETER],
     InputSlot["rtgt", OBS],
     Node["decin", Concat[SC, DETER],                   "stoch_new", "nd"],
     Node["dec",   DEC,                                 "decin"],
-    Node["recon", SymlogMSELoss[OBS],                  "dec", "rtgt"],
+    Node["recon", SymlogMSELoss[OBS, SIGMOID],         "dec", "rtgt"],
 ]
 
 

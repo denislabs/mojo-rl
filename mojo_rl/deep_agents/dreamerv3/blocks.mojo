@@ -1406,6 +1406,7 @@ struct WMStep[
     # WMStep's enc/dec field TYPES match the modules the trainer owns + passes in.
     ENC: Module = DreamerEncoder[OBS, TOKEN, SwishOp],
     DEC: Module = DreamerDecoder[STOCH * CLASSES + DETER, OBS, DEC_U, SwishOp],
+    RECON_SIGMOID: Bool = False,  # True → sigmoid+MSE recon (pixel [0,1])
 ](Movable & ImplicitlyDeletable):
     # `DISCRETE` selects the WM↔AC carry handoff (Stage 3 P3). The discrete AC
     # (`_ac_gpu_disc`) is fully device-resident, so the GPU WM hands its scan
@@ -1420,7 +1421,8 @@ struct WMStep[
         Self.TOKEN, SwishOp,
     ]
     comptime DecT = DecLossGraph[
-        Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp, Self.DEC
+        Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp, Self.DEC,
+        Self.RECON_SIGMOID,
     ]
     comptime RewT = RewLossGraph[Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp]
     comptime ConT = ConLossGraph[Self.DETER, Self.SC, Self.HU, SwishOp]

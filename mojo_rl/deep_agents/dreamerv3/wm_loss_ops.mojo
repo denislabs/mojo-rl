@@ -73,7 +73,7 @@ def _sigmoid(x: Scalar[DT]) -> Scalar[DT]:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _symmse_fwd_kernel[B: Int, OBS: Int](
+def _symmse_fwd_kernel[B: Int, OBS: Int, SIGMOID: Bool](
     pred: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
     tgt: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
     o: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
@@ -82,15 +82,21 @@ def _symmse_fwd_kernel[B: Int, OBS: Int](
     # block reduces. (Was grid=(B/TPB) → only B threads active, each looping all
     # OBS=C*H*W pixels serially — catastrophic for pixel obs. This parallelizes
     # the per-b reduction across the whole block.)
+    # SIGMOID=True → reference recon: loss = (sigmoid(pred) − tgt)², tgt raw
+    # [0,1]. False → symlog recon: loss = (pred − symlog(tgt))².
     var b = Int(block_idx.x)
     if b < B:
         var t = Int(thread_idx.x)
         var s: Scalar[DT] = 0.0
         var k = t
         while k < OBS:
-            var d = rebind[Scalar[DT]](pred[b * OBS + k]) - _symk(
-                rebind[Scalar[DT]](tgt[b * OBS + k])
-            )
+            var p = rebind[Scalar[DT]](pred[b * OBS + k])
+            var tg = rebind[Scalar[DT]](tgt[b * OBS + k])
+            var d: Scalar[DT]
+            comptime if SIGMOID:
+                d = _sigmoid(p) - tg
+            else:
+                d = p - _symk(tg)
             s += d * d
             k += TPB_REDUCE
         var tot = block.sum[block_size=TPB_REDUCE, broadcast=False](val=s)
@@ -98,7 +104,7 @@ def _symmse_fwd_kernel[B: Int, OBS: Int](
             o[b] = tot[0]
 
 
-def _symmse_bwd_kernel[B: Int, OBS: Int](
+def _symmse_bwd_kernel[B: Int, OBS: Int, SIGMOID: Bool](
     go: LayoutTensor[DT, Layout.row_major(B), MutAnyOrigin],
     pred: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
     tgt: LayoutTensor[DT, Layout.row_major(B * OBS), MutAnyOrigin],
@@ -111,20 +117,27 @@ def _symmse_bwd_kernel[B: Int, OBS: Int](
     var i = Int(global_idx.x)
     if i < B * OBS:
         var up = rebind[Scalar[DT]](go[i // OBS])
-        gp[i] = up * Scalar[DT](2.0) * (
-            rebind[Scalar[DT]](pred[i]) - _symk(rebind[Scalar[DT]](tgt[i]))
-        )
+        var p = rebind[Scalar[DT]](pred[i])
+        var tg = rebind[Scalar[DT]](tgt[i])
+        comptime if SIGMOID:
+            var sg = _sigmoid(p)
+            gp[i] = up * Scalar[DT](2.0) * (sg - tg) * sg * (Scalar[DT](1.0) - sg)
+        else:
+            gp[i] = up * Scalar[DT](2.0) * (p - _symk(tg))
         gt[i] = 0.0
 
 
-struct SymlogMSELoss[OBS: Int](Module):
+struct SymlogMSELoss[OBS: Int, SIGMOID: Bool = False](Module):
+    # SIGMOID=False (default): symlog recon — loss = (pred − symlog(tgt))² (the
+    # right choice for unbounded vector obs). SIGMOID=True: reference pixel recon
+    # — loss = (sigmoid(pred) − tgt)², tgt raw [0,1] (decode = sigmoid(pred)).
     comptime ARITY: Int = 2
     comptime IN_DIMS = InlineArray[Int, 2](fill=Self.OBS)
     comptime OUT_DIM = 1
 
     @staticmethod
     def display_label() -> String:
-        return String("SymlogMSE")
+        return String("SigmoidMSE") if Self.SIGMOID else String("SymlogMSE")
 
     def __init__(out self):
         pass
@@ -150,16 +163,20 @@ struct SymlogMSELoss[OBS: Int](Module):
             for b in range(B):
                 var s: Scalar[DT] = 0.0
                 for k in range(Self.OBS):
-                    var d = pred.data[b * Self.OBS + k] - _symlog(
-                        tgt.data[b * Self.OBS + k]
-                    )
+                    var p = pred.data[b * Self.OBS + k]
+                    var tg = tgt.data[b * Self.OBS + k]
+                    var d: Scalar[DT]
+                    comptime if Self.SIGMOID:
+                        d = _sigmoid(p) - tg
+                    else:
+                        d = p - _symlog(tg)
                     s += d * d
                 out.data[b] = s
         else:
             var c = ctx.value()
             out.ensure_gpu(c, B)
             # one block per batch element (block-reduce over OBS).
-            c.enqueue_function[_symmse_fwd_kernel[B, Self.OBS]](
+            c.enqueue_function[_symmse_fwd_kernel[B, Self.OBS, Self.SIGMOID]](
                 pred.lt["gpu", Layout.row_major(B * Self.OBS)](),
                 tgt.lt["gpu", Layout.row_major(B * Self.OBS)](),
                 out.lt["gpu", Layout.row_major(B)](),
@@ -187,9 +204,15 @@ struct SymlogMSELoss[OBS: Int](Module):
                 var up = grad_output.data[b]
                 for k in range(Self.OBS):
                     var idx = b * Self.OBS + k
-                    gp.data[idx] = up * Scalar[DT](2.0) * (
-                        pred.data[idx] - _symlog(tgt.data[idx])
-                    )
+                    var p = pred.data[idx]
+                    var tg = tgt.data[idx]
+                    comptime if Self.SIGMOID:
+                        var sg = _sigmoid(p)
+                        gp.data[idx] = up * Scalar[DT](2.0) * (sg - tg) * sg * (
+                            Scalar[DT](1.0) - sg
+                        )
+                    else:
+                        gp.data[idx] = up * Scalar[DT](2.0) * (p - _symlog(tg))
                     gt.data[idx] = 0.0
         else:
             var c = ctx.value()
@@ -197,7 +220,7 @@ struct SymlogMSELoss[OBS: Int](Module):
             gt.ensure_gpu(c, B * Self.OBS)
             # one thread per (b, pixel) element across all B*OBS.
             comptime nb = (B * Self.OBS + TPB - 1) // TPB
-            c.enqueue_function[_symmse_bwd_kernel[B, Self.OBS]](
+            c.enqueue_function[_symmse_bwd_kernel[B, Self.OBS, Self.SIGMOID]](
                 grad_output.lt["gpu", Layout.row_major(B)](),
                 pred.lt["gpu", Layout.row_major(B * Self.OBS)](),
                 tgt.lt["gpu", Layout.row_major(B * Self.OBS)](),

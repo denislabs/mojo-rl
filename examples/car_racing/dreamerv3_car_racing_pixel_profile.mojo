@@ -91,6 +91,7 @@ comptime Tr = DreamerV3Trainer[
     False,
     ENC,
     DEC,  # DISCRETE=False (continuous)
+    True,  # RECON_SIGMOID — reference pixel recon (sigmoid + plain MSE on [0,1])
 ]
 
 # flip to True to profile the captured-graph path (vs per-kernel eager).

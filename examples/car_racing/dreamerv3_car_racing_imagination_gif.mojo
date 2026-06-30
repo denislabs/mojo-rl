@@ -71,6 +71,7 @@ comptime DEC = DreamerDecoderCNN[FEATIN, C, IMG, IMG, BASE, SwishOp]
 comptime Ag = DreamerV3Agent[
     "gpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU,
     PU, BINS, B, T, T_IMAG, CAP, False, ENC, DEC,  # DISCRETE=False (continuous)
+    True,  # RECON_SIGMOID — must match the training config (decode = sigmoid)
 ]
 comptime Env = CarRacingMB[DT, True, IMG]  # PIXEL_OBS=True, PIX_RES=96
 

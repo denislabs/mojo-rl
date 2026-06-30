@@ -74,6 +74,16 @@ def _symexp(x: Scalar[DT]) -> Scalar[DT]:
     return s * (exp(a) - Scalar[DT](1.0))
 
 
+@always_inline
+def _recon_decode[SIGMOID: Bool](x: Scalar[DT]) -> Scalar[DT]:
+    """Map a raw decoder output back to observation space. Must match the recon
+    loss: sigmoid (bounded [0,1] pixels) when RECON_SIGMOID, else symexp."""
+    comptime if SIGMOID:
+        return Scalar[DT](1.0) / (Scalar[DT](1.0) + exp(-x))
+    else:
+        return _symexp(x)
+
+
 @fieldwise_init
 struct DreamerV3Trainer[
     train_target: StaticString,
@@ -86,6 +96,10 @@ struct DreamerV3Trainer[
     # obs dim (C*H*W for images — the conv index math reads it as [C,H,W]).
     ENC: Module = DreamerEncoder[OBS, TOKEN, SwishOp],
     DEC: Module = DreamerDecoder[STOCH * CLASSES + DETER, OBS, DEC_U, SwishOp],
+    # RECON_SIGMOID=True → reference pixel recon: decoder logits -> sigmoid,
+    # plain MSE vs raw [0,1] obs (decode = sigmoid). False (default) keeps the
+    # symlog recon, correct for unbounded vector obs (CartPole/Pendulum).
+    RECON_SIGMOID: Bool = False,
 ](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
@@ -96,7 +110,8 @@ struct DreamerV3Trainer[
         Self.TOKEN, SwishOp,
     ]
     comptime DecT = DecLossGraph[
-        Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp, Self.DEC
+        Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp, Self.DEC,
+        Self.RECON_SIGMOID,
     ]
     comptime RewT = RewLossGraph[Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp]
     comptime ConT = ConLossGraph[Self.DETER, Self.SC, Self.HU, SwishOp]
@@ -123,7 +138,7 @@ struct DreamerV3Trainer[
     comptime WMBlk = WMStep[
         Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH, Self.CLASSES,
         Self.BLOCKS, Self.TOKEN, Self.DEC_U, Self.HU, Self.BINS, Self.B, Self.T,
-        Self.DISCRETE, Self.ENC, Self.DEC,
+        Self.DISCRETE, Self.ENC, Self.DEC, Self.RECON_SIGMOID,
     ]
     comptime SyncBlk = ParamSyncStep[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT,
@@ -821,7 +836,7 @@ struct DreamerV3Trainer[
             ref pred = self.dec.node_output["dec"]()
             var ms: Scalar[DT] = 0.0
             for k in range(OBSD):
-                var dv = _symexp(pred.data[k]) - real_obs[(idx + 1) * OBSD + k]
+                var dv = _recon_decode[Self.RECON_SIGMOID](pred.data[k]) - real_obs[(idx + 1) * OBSD + k]
                 ms += dv * dv
             out_ol_obs[h] = ms / Scalar[DT](OBSD)
             self.rew.set_input["nd", 1](ond_t, None)
@@ -862,7 +877,7 @@ struct DreamerV3Trainer[
             ref tpred = self.dec.node_output["dec"]()
             var tms: Scalar[DT] = 0.0
             for k in range(OBSD):
-                var dv = _symexp(tpred.data[k]) - real_obs[(idx + 1) * OBSD + k]
+                var dv = _recon_decode[Self.RECON_SIGMOID](tpred.data[k]) - real_obs[(idx + 1) * OBSD + k]
                 tms += dv * dv
             out_tf_obs[h] = tms / Scalar[DT](OBSD)
             # teacher-forced reward: head prediction on the REAL posterior state
@@ -980,7 +995,7 @@ struct DreamerV3Trainer[
             self.dec.forward[1, "cpu"](loss_t, None)
             ref pred = self.dec.node_output["dec"]()
             for k in range(OBSD):
-                out_ol_obs[h * OBSD + k] = _symexp(pred.data[k])
+                out_ol_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](pred.data[k])
             self.con.set_input["nd", 1](ond_t, None)
             self.con.set_input["stoch_new", 1](osn_t, None)
             self.con.set_input["ctgt", 1](dummy1, None)
@@ -1017,7 +1032,7 @@ struct DreamerV3Trainer[
             self.dec.forward[1, "cpu"](loss_t, None)
             ref tpred = self.dec.node_output["dec"]()
             for k in range(OBSD):
-                out_tf_obs[h * OBSD + k] = _symexp(tpred.data[k])
+                out_tf_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](tpred.data[k])
             self.con.set_input["nd", 1](tnd_t, None)
             self.con.set_input["stoch_new", 1](tsn_t, None)
             self.con.set_input["ctgt", 1](dummy1, None)
@@ -1157,7 +1172,7 @@ struct DreamerV3Trainer[
             ref pred = self.dec.node_output["dec"]()
             pred.download(ctx)
             for k in range(OBSD):
-                out_ol_obs[h * OBSD + k] = _symexp(pred.data[k])
+                out_ol_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](pred.data[k])
             for k in range(D):
                 old.data[k] = ond_t.data[k]
             for k in range(SCl):
@@ -1193,7 +1208,7 @@ struct DreamerV3Trainer[
             ref tpred = self.dec.node_output["dec"]()
             tpred.download(ctx)
             for k in range(OBSD):
-                out_tf_obs[h * OBSD + k] = _symexp(tpred.data[k])
+                out_tf_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](tpred.data[k])
             for k in range(D):
                 tfd.data[k] = tnd_t.data[k]
             for k in range(SCl):

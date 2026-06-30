@@ -82,6 +82,9 @@ struct DreamerV3Agent[
     # SC+DETER,C,H,W,BASE], with OBS=C*H*W.
     ENC: Module = DreamerEncoder[OBS, TOKEN, SwishOp],
     DEC: Module = DreamerDecoder[STOCH * CLASSES + DETER, OBS, DEC_U, SwishOp],
+    # RECON_SIGMOID=True → reference pixel recon (sigmoid + plain MSE on [0,1]).
+    # Default False keeps symlog recon for unbounded vector obs.
+    RECON_SIGMOID: Bool = False,
 ](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
@@ -93,7 +96,7 @@ struct DreamerV3Agent[
         Self.train_target, Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH,
         Self.CLASSES, Self.BLOCKS, Self.TOKEN, Self.DEC_U, Self.HU, Self.VU,
         Self.PU, Self.BINS, Self.B, Self.T, Self.T_IMAG, Self.CAP, Self.DISCRETE,
-        Self.ENC, Self.DEC,
+        Self.ENC, Self.DEC, Self.RECON_SIGMOID,
     ]
     comptime MINSTD = Scalar[DT](0.1)
     comptime MAXSTD = Scalar[DT](1.0)

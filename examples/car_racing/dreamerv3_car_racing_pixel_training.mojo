@@ -91,6 +91,7 @@ comptime Ag = DreamerV3Agent[
     False,
     ENC,
     DEC,  # DISCRETE=False (continuous)
+    True,  # RECON_SIGMOID — reference pixel recon (sigmoid + plain MSE on [0,1])
 ]
 comptime Env = CarRacingMB[DT, True, IMG]  # PIXEL_OBS=True, PIX_RES=96
 
