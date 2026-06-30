@@ -243,6 +243,7 @@ struct PongPixelEnv[
             With FRAME_SKIP=4, each action is repeated 4 times before
             rendering and observing. Rewards are summed across skipped frames.
             If the episode terminates mid-skip, remaining frames are skipped.
+        LAYOUT: Observation layout (default LAYOUT_NCHW).
 
     CPU: Renders to internal grayscale buffer for get_obs_list().
     GPU: Renders in-kernel, maintains per-env frame stacks in workspace.
@@ -269,7 +270,9 @@ struct PongPixelEnv[
 
     def __init__(out self):
         self.inner = PongEnv[Self.DTYPE, Self.HIT_REWARD]()
-        self._frame_buf = alloc[UInt8](SCREEN_W * SCREEN_H).as_unsafe_any_origin()
+        self._frame_buf = alloc[UInt8](
+            SCREEN_W * SCREEN_H
+        ).as_unsafe_any_origin()
         self._frame_stack = alloc[Scalar[Self.DTYPE]](
             PIXEL_OBS_DIM
         ).as_unsafe_any_origin()
@@ -467,15 +470,15 @@ struct PongPixelEnv[
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
         ](states_buf)
-        var actions = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE)
-        ](actions_buf)
-        var rewards = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE)
-        ](rewards_buf)
-        var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE)
-        ](dones_buf)
+        var actions = LayoutTensor[gpu_dtype, Layout.row_major(BATCH_SIZE)](
+            actions_buf
+        )
+        var rewards = LayoutTensor[gpu_dtype, Layout.row_major(BATCH_SIZE)](
+            rewards_buf
+        )
+        var dones = LayoutTensor[gpu_dtype, Layout.row_major(BATCH_SIZE)](
+            dones_buf
+        )
         var terminated_out = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE)
         ](terminated_buf)
@@ -513,9 +516,7 @@ struct PongPixelEnv[
             # First physics step (action applied normally)
             PongEnv[DType.float32, Self.HIT_REWARD].step_kernel[
                 BATCH_SIZE, STATE_SIZE
-            ](
-                states, actions, rewards, dones, rng_seed
-            )
+            ](states, actions, rewards, dones, rng_seed)
 
             var idx = Int(block_dim.x * block_idx.x + thread_idx.x)
             if idx >= BATCH_SIZE:
@@ -530,9 +531,7 @@ struct PongPixelEnv[
                     var prev_reward = rebind[Scalar[gpu_dtype]](rewards[idx])
                     PongEnv[DType.float32, Self.HIT_REWARD].step_kernel[
                         BATCH_SIZE, STATE_SIZE
-                    ](
-                        states, actions, rewards, dones, rng_seed
-                    )
+                    ](states, actions, rewards, dones, rng_seed)
                     # Accumulate reward
                     rewards[idx] = prev_reward + rebind[Scalar[gpu_dtype]](
                         rewards[idx]
@@ -770,9 +769,9 @@ struct PongPixelEnv[
         var states = LayoutTensor[
             gpu_dtype, Layout.row_major(BATCH_SIZE, STATE_SIZE)
         ](states_buf)
-        var dones = LayoutTensor[
-            gpu_dtype, Layout.row_major(BATCH_SIZE)
-        ](dones_buf)
+        var dones = LayoutTensor[gpu_dtype, Layout.row_major(BATCH_SIZE)](
+            dones_buf
+        )
 
         comptime BLOCKS = (BATCH_SIZE + Self.TPB - 1) // Self.TPB
 
