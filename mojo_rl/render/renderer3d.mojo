@@ -2825,8 +2825,8 @@ struct Renderer3D(Movable):
         draw: SolidDrawCommand,
     ) raises:
         """Select mesh buffers for a draw command, bind, and draw."""
-        var vb: Ptr[GPUBuffer, MutAnyOrigin]
-        var ib: Ptr[GPUBuffer, MutAnyOrigin]
+        var vb: Ptr[GPUBuffer, MutUntrackedOrigin]
+        var ib: Ptr[GPUBuffer, MutUntrackedOrigin]
         var n_idx: UInt32
 
         if draw.is_capsule:

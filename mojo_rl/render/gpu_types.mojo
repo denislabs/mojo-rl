@@ -285,10 +285,12 @@ struct MeshHandle(Copyable, Movable):
     var num_indices: UInt32
     var num_vertices: UInt32
 
-    def __init__(
+    def __init__[
+        vb_o: MutOrigin, ib_o: MutOrigin, //
+    ](
         out self,
-        vertex_buffer: Ptr[GPUBuffer, MutAnyOrigin],
-        index_buffer: Ptr[GPUBuffer, MutAnyOrigin],
+        vertex_buffer: Ptr[GPUBuffer, vb_o],
+        index_buffer: Ptr[GPUBuffer, ib_o],
         num_indices: UInt32,
         num_vertices: UInt32,
     ):
@@ -399,11 +401,13 @@ struct TextureCacheEntry(Copyable, Movable):
     var width: UInt32
     var height: UInt32
 
-    def __init__(
+    def __init__[
+        tex_o: MutOrigin, samp_o: MutOrigin, //
+    ](
         out self,
         name: String,
-        texture: Ptr[GPUTexture, MutAnyOrigin],
-        sampler: Ptr[GPUSampler, MutAnyOrigin],
+        texture: Ptr[GPUTexture, tex_o],
+        sampler: Ptr[GPUSampler, samp_o],
         width: UInt32,
         height: UInt32,
     ):

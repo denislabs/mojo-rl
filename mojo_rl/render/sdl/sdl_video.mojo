@@ -3901,7 +3901,7 @@ def flash_window(
         raise Error(String(unsafe_from_utf8_ptr=get_error()))
 
 
-def destroy_window(window: Ptr[Window, MutAnyOrigin]) raises -> None:
+def destroy_window[o: MutOrigin, //](window: Ptr[Window, o]) raises -> None:
     """Destroy a window.
 
     Any child windows owned by the window will be recursively destroyed as
@@ -3924,7 +3924,7 @@ def destroy_window(window: Ptr[Window, MutAnyOrigin]) raises -> None:
         lib,
         "SDL_DestroyWindow",
         def(window: Ptr[Window, MutAnyOrigin]) thin -> None,
-    ]()(window)
+    ]()(window.as_unsafe_any_origin())
 
 
 def screen_saver_enabled() raises -> Bool:
