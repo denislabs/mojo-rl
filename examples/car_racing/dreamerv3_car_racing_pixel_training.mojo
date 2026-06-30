@@ -99,12 +99,12 @@ comptime NUM_STEPS = 1_000_000
 comptime LEARN_START = 1024
 comptime TRAIN_EVERY = 4
 # Action repeat: hold each agent decision for FRAME_REPEAT env frames (reward
-# summed) — the DreamerV3 reference ActionRepeat wrapper (4 for all its pixel
-# suites: atari/atari100k/dmlab). For CarRacing this 2-4× extends imagination's
-# real-time reach + steadies steering through turns. 2 = finer steering control;
-# bump to 4 to match the reference pixel value. NUM_STEPS counts AGENT decisions
-# (each = FRAME_REPEAT env frames).
-comptime FRAME_REPEAT = 2
+# summed) — the DreamerV3 reference ActionRepeat wrapper, which uses 4 for ALL
+# its pixel suites (atari/atari100k/dmlab). This 4× extends imagination's
+# real-time reach (T_IMAG=15 → ~60 env frames) and steadies steering through
+# turns. NUM_STEPS counts AGENT decisions (each = FRAME_REPEAT env frames), so
+# 1M decisions = 4M env frames. The eval script's ACTION_REPEAT MUST match.
+comptime FRAME_REPEAT = 4
 comptime LOG_EVERY = 1000  # WM/AC loss curves (cheap; no greedy eval) — frequent
 # early data points (~every few min at this heavy cfg)
 comptime EVAL_EVERY = 5000  # greedy eval + episode returns (expensive)
