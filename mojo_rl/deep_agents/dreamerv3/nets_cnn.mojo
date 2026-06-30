@@ -42,6 +42,7 @@ from mojo_rl.nn.primitives.linear import Linear
 from mojo_rl.nn.primitives.conv_rms_norm import ConvRMSNorm
 from mojo_rl.nn.primitives.elementwise import Elementwise
 from mojo_rl.nn.primitives.ops.gelu_op import GELUOp
+from mojo_rl.nn.primitives.ops.center_half_op import CenterHalfOp
 from mojo_rl.nn.core.element_op import ElementOp
 from mojo_rl.nn.constants import DT, LAYOUT_NCHW
 
@@ -71,10 +72,15 @@ comptime _ConvUp[
 
 
 # ── Encoder: image[C·H·W] → 4× stride-2 conv → Linear → tokens[TOKEN] ─────────
+# The leading `Elementwise[..., CenterHalfOp]` centers the [0,1] obs to
+# [-0.5, 0.5] before the first conv — the DreamerV3 reference's `imgs/255 - 0.5`
+# (our envs already emit [0,1], so it reduces to `- 0.5`). The decoder target
+# stays in [0,1] (the reference centers only the encoder input).
 comptime DreamerEncoderCNN[
     C: Int, H: Int, W: Int, BASE: Int, TOKEN: Int,
     A: ElementOp = GELUOp, LAYOUT: Int = LAYOUT_NCHW,
 ] = Sequential[
+    Elementwise[C * H * W, CenterHalfOp],                      # [0,1] → [-0.5,0.5]
     _ConvDown[C, BASE, H, W, A, LAYOUT],                       # H   → H/2
     _ConvDown[BASE, 2 * BASE, H // 2, W // 2, A, LAYOUT],      # H/2 → H/4
     _ConvDown[2 * BASE, 4 * BASE, H // 4, W // 4, A, LAYOUT],  # H/4 → H/8
