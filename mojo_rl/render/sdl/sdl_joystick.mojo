@@ -493,7 +493,7 @@ struct VirtualJoystickTouchpadDesc(ImplicitlyCopyable, Movable):
 
     var nfingers: UInt16
     """The number of simultaneous fingers on this touchpad."""
-    var padding: ArrayHelper[UInt16, 3, MutAnyOrigin]
+    var padding: ArrayHelper[UInt16, 3, MutUntrackedOrigin]
 
 
 @fieldwise_init
@@ -541,7 +541,7 @@ struct VirtualJoystickDesc(ImplicitlyCopyable, Movable):
     """The number of touchpads on this joystick, requires `touchpads` to point at valid descriptions."""
     var nsensors: UInt16
     """The number of sensors on this joystick, requires `sensors` to point at valid descriptions."""
-    var padding2: ArrayHelper[UInt16, 2, MutAnyOrigin]
+    var padding2: ArrayHelper[UInt16, 2, MutUntrackedOrigin]
     """Unused."""
     var button_mask: UInt32
     """A mask of which buttons are valid for this controller
@@ -549,14 +549,14 @@ struct VirtualJoystickDesc(ImplicitlyCopyable, Movable):
     var axis_mask: UInt32
     """A mask of which axes are valid for this controller
                                  e.g. (1 << SDL_GAMEPAD_AXIS_LEFTX)."""
-    var name: Ptr[c_char, ImmutAnyOrigin]
+    var name: Ptr[c_char, ImmutUntrackedOrigin]
     """The name of the joystick."""
-    var touchpads: Ptr[VirtualJoystickTouchpadDesc, ImmutAnyOrigin]
+    var touchpads: Ptr[VirtualJoystickTouchpadDesc, ImmutUntrackedOrigin]
     """A pointer to an array of touchpad descriptions, required if `ntouchpads` is > 0."""
-    var sensors: Ptr[VirtualJoystickSensorDesc, ImmutAnyOrigin]
+    var sensors: Ptr[VirtualJoystickSensorDesc, ImmutUntrackedOrigin]
     """A pointer to an array of sensor descriptions, required if `nsensors` is > 0."""
 
-    var userdata: Ptr[NoneType, MutAnyOrigin]
+    var userdata: Ptr[NoneType, MutUntrackedOrigin]
     """User data pointer passed to callbacks."""
     var update: def(userdata: Ptr[NoneType, MutAnyOrigin]) thin -> None
     """Called when the joystick state should be updated."""

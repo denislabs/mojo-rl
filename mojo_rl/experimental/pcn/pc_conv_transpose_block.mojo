@@ -46,7 +46,7 @@ struct ConvTransposePCBlock[
     in_h: Int,
     in_w: Int,
     ACT: PCActivation = PCReLU,
-](Movable & ImplicitlyCopyable):
+](ImplicitlyCopyable):
     comptime out_h: Int = (
         (Self.in_h - 1) * Self.stride - 2 * Self.padding + Self.kernel_size
     )

@@ -21,6 +21,7 @@ Surface:
 """
 
 from std.gpu.host import DeviceContext
+from mojo_rl.nn.core.ptr import untracked
 from std.gpu import global_idx
 from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import DT, TPB
@@ -186,7 +187,7 @@ struct TargetYBlock[
     var _min_q: Tensor  # graph output
     # Optional on-device alpha source (SAC GPU device-alpha path). When set,
     # target-y reads alpha from this device buffer instead of `state.alpha`.
-    var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
 
     def __init__(out self):
         self.graph = Self.Graph()
@@ -198,7 +199,7 @@ struct TargetYBlock[
     def set_alpha_ptr(mut self, p: UnsafePointer[Scalar[DT], MutAnyOrigin]):
         """Wire SAC's on-device alpha buffer into target-y (GPU device-alpha
         path). After this, `step` on GPU reads alpha from the device buffer."""
-        self._alpha_ptr = p
+        self._alpha_ptr = untracked(p)
 
     @staticmethod
     def make[

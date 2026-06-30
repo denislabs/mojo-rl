@@ -27,6 +27,7 @@ The three nets share `LATENT` + `BINS`; reward (`dyn`) and value (`pred`) heads
 are categorical over `[v_min, v_max]` — keep those in sync with the config.
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
@@ -217,16 +218,16 @@ struct MuZeroAgent[
                 DirichletNoise[0.25, 0.25], SinglePlayer, 8, 3,
             ](gamma=Float64(self.gamma))
             var rep_a = MZRepCPU[Self.OBS, Self.LATENT, Self.REP](
-                net=UnsafePointer(to=self.rep).as_unsafe_any_origin()
+                net=untracked(UnsafePointer(to=self.rep))
             )
             var dyn_a = MZDynCPU[Self.LATENT, Self.ACT, Self.BINS, Self.DYN](
-                net=UnsafePointer(to=self.dyn).as_unsafe_any_origin(),
+                net=untracked(UnsafePointer(to=self.dyn)),
                 v_min=self.v_min, v_max=self.v_max,
             )
             var pred_a = MZPredCPU[
                 Self.LATENT, Self.ACT, Self.BINS, Self.PRED
             ](
-                net=UnsafePointer(to=self.pred).as_unsafe_any_origin(),
+                net=untracked(UnsafePointer(to=self.pred)),
                 v_min=self.v_min, v_max=self.v_max,
             )
             var total = 0.0

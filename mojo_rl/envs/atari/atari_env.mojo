@@ -261,19 +261,19 @@ struct AtariEnv[
     var _life_lost: Bool  # last step lost a life (bootstrap-terminal, no reset)
 
     # Pixel-mode buffers (allocated only when OBS_MODE>=1)
-    var frame_stack: Optional[UnsafePointer[UInt8, MutAnyOrigin]]  # stack ring
+    var frame_stack: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]  # stack ring
     var frame_idx: Int  # ring buffer index
     var raw_frame_a: Optional[
-        UnsafePointer[UInt8, MutAnyOrigin]
+        UnsafePointer[UInt8, MutUntrackedOrigin]
     ]  # 160*210*4 BGRA
     var raw_frame_b: Optional[
-        UnsafePointer[UInt8, MutAnyOrigin]
+        UnsafePointer[UInt8, MutUntrackedOrigin]
     ]  # 160*210*4 BGRA
     var gray_buf: Optional[
-        UnsafePointer[UInt8, MutAnyOrigin]
+        UnsafePointer[UInt8, MutUntrackedOrigin]
     ]  # 160*210 grayscale
     var rgb_buf: Optional[
-        UnsafePointer[UInt8, MutAnyOrigin]
+        UnsafePointer[UInt8, MutUntrackedOrigin]
     ]  # 3*160*210 planar RGB
 
     def __init__(

@@ -228,7 +228,7 @@ struct CraftaxClassicEnv[DTYPE: DType = DType.float32](
     var _rng_counter: UInt64
 
     # Renderer (allocated lazily by init_renderer)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
     var _sprite_pixels: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]
     var _has_sprites: Bool

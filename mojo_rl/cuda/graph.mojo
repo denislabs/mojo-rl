@@ -24,7 +24,7 @@ from std.memory import alloc
 from std.gpu.host import DeviceContext
 
 
-comptime _CUptr = UnsafePointer[NoneType, MutAnyOrigin]
+comptime _CUptr = UnsafePointer[NoneType, MutUntrackedOrigin]
 
 
 @always_inline

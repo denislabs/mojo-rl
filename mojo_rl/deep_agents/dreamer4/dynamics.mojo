@@ -324,7 +324,7 @@ struct Dreamer4Dynamics[
     ADIM: Int = 0,   # action dim (0 ⇒ unconditional: learned base token only)
     AHID: Int = 0,   # action-MLP hidden (0 ⇒ derive 2·D, matching the reference)
     NAGENT: Int = 0, # agent tokens (0 ⇒ no agent modality; Phase 3 BC uses >0)
-](AgentDynamics):
+](Module, AgentDynamics):
     comptime ARITY: Int = 1
     # tokens per frame: [action|signal|step|spatial×NSP|register×NREG|agent×NAGENT]
     comptime S: Int = 3 + Self.NSP + Self.NREG + Self.NAGENT
@@ -336,6 +336,8 @@ struct Dreamer4Dynamics[
     comptime AGENT_OFF: Int = (3 + Self.NSP + Self.NREG) * Self.D  # agent col start
     comptime IN_DIMS = InlineArray[Int, 1](fill=Self.NSP * Self.DSP)
     comptime OUT_DIM = Self.NSP * Self.DSP
+    # `Module` and `ShortcutDynamics` both default ACT_DT=DT → resolve manually.
+    comptime ACT_DT = DT
 
     # Agent conditioning (model.py §3.3 + paper eq. 9). AGENT gates the whole
     # agent-token path; when off (NAGENT=0) the token layout has no agent

@@ -21,6 +21,7 @@ Usage:
 """
 
 from std.random import random_float64
+from mojo_rl.nn.core.ptr import untracked
 from std.memory import alloc, memset
 from mojo_rl.nn.constants import LAYOUT_NCHW, LAYOUT_NHWC
 from mojo_rl.core import (
@@ -264,18 +265,14 @@ struct PongPixelEnv[
     var inner: PongEnv[Self.DTYPE, Self.HIT_REWARD]
 
     # CPU pixel observation buffers
-    var _frame_buf: UnsafePointer[UInt8, MutAnyOrigin]  # 160×210 grayscale
-    var _frame_stack: UnsafePointer[Scalar[Self.DTYPE], MutAnyOrigin]  # 4×84×84
+    var _frame_buf: UnsafePointer[UInt8, MutUntrackedOrigin]  # 160×210 grayscale
+    var _frame_stack: UnsafePointer[Scalar[Self.DTYPE], MutUntrackedOrigin]  # 4×84×84
     var _frame_idx: Int
 
     def __init__(out self):
         self.inner = PongEnv[Self.DTYPE, Self.HIT_REWARD]()
-        self._frame_buf = alloc[UInt8](
-            SCREEN_W * SCREEN_H
-        ).as_unsafe_any_origin()
-        self._frame_stack = alloc[Scalar[Self.DTYPE]](
-            PIXEL_OBS_DIM
-        ).as_unsafe_any_origin()
+        self._frame_buf = untracked(alloc[UInt8](SCREEN_W * SCREEN_H))
+        self._frame_stack = untracked(alloc[Scalar[Self.DTYPE]](PIXEL_OBS_DIM))
         self._frame_idx = 0
         # Zero frame stack
         for i in range(PIXEL_OBS_DIM):

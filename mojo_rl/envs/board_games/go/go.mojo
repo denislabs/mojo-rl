@@ -88,7 +88,7 @@ struct GoEnv[SIZE: Int, DTYPE: DType = DType.float64](
     var _visited: List[Bool]
 
     # Renderer
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self):

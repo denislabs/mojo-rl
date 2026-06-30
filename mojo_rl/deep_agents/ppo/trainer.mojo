@@ -235,11 +235,11 @@ struct PPOTrainer[
 
     # Host-side staging for the N=1 host-list wrapper paths (so they
     # don't allocate per call). None until `make` allocates real buffers.
-    var _obs1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _act1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _rew1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _done1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _nobs1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _obs1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _act1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _rew1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _done1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _nobs1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
 
     # ── Hyperparameters ──────────────────────────────────────────────
     var gamma: Scalar[DT]
@@ -251,7 +251,7 @@ struct PPOTrainer[
 
     # ── Episode tracker (per-env running-return + completed-return window) ─
     var tracker: EpisodeTracker
-    var _ep_returns: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]  # N_ENVS
+    var _ep_returns: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]  # N_ENVS
 
     # ── Train-step accumulators (summed across all minibatch updates) ────
     var _actor_L_accum: Scalar[DT]

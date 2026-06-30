@@ -41,9 +41,13 @@ activation/grad slab lives in the graph's owning `TensorPack` pool (the storage
     load-bearing GPU fix (a stored wildcard pointer disables arg-exclusivity and
     miscompiles the delegated matmul — see external_ref.mojo).
 
-All three conform to `GraphDecl(Module)`, so the graph treats its children
-uniformly as `Module`s (same forward/vjp/walker dispatch as before) and only
-branches on `KIND` to skip inputs / route externals.
+All three conform to BOTH `Module` (so `ComputeGraph` calls forward/vjp/walkers
+on the concrete `children[i]`) and the standalone `GraphDecl` bound (graph
+identity + length-erased `IN_DIMS_L`/`IN_NAMES_L`). `GraphDecl` no longer
+inherits `Module` — under Mojo 1.0 a `*DECLS: GraphDecl` pack with heterogeneous
+arities cannot merge `Module`'s `InlineArray[Int, Self.ARITY]` `IN_DIMS`
+("conflicting types"); the `_L` `List` members are length-erased so the pack
+unifies. The graph branches on `KIND` to skip inputs / route externals.
 """
 
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -87,17 +91,129 @@ def names_to_inline_array[
     return d
 
 
-trait GraphDecl(Module):
-    """A `ComputeGraph` node declaration: a `Module` plus its graph identity.
+def names_to_list[N: Int, *ITEMS: StaticString]() -> List[StaticString]:
+    """`*ITEMS` → `List[StaticString]`. The uniform-typed `IN_NAMES_L` the
+    `GraphDecl` bound exposes (a `List`'s type does NOT encode its length, so
+    a heterogeneous-arity `*DECLS: GraphDecl` pack unifies cleanly — unlike an
+    `InlineArray[..., Self.ARITY]`, which Mojo 1.0 refuses to merge across the
+    pack with "conflicting types")."""
+    var d = List[StaticString]()
+    comptime for k in range(N):
+        d.append(ITEMS[k])
+    return d^
+
+
+def in_dims_to_list[ARITY: Int](arr: InlineArray[Int, ARITY]) -> List[Int]:
+    """`InlineArray[Int, ARITY]` (an op's `Module.IN_DIMS`) → `List[Int]` — the
+    uniform-typed `IN_DIMS_L` the `GraphDecl` bound exposes (see
+    `names_to_list`)."""
+    var d = List[Int]()
+    comptime for k in range(ARITY):
+        d.append(arr[k])
+    return d^
+
+
+trait GraphDecl(Defaultable & Movable & ImplicitlyDeletable):
+    """A `ComputeGraph` node declaration's graph-identity surface.
 
     `NAME` is unique within the graph; `KIND` is 0 (input) / 1 (owned) / 2
-    (external); `IN_NAMES[k]` names the predecessor feeding input slot `k`
-    (sized at `Self.ARITY`, empty for inputs). Everything else (ARITY, IN_DIMS,
-    OUT_DIM, forward/vjp/walkers) is the inherited `Module` surface."""
+    (external); `IN_NAMES_L[k]` names the predecessor feeding input slot `k`.
+
+    NOTE (Mojo 1.0): this trait deliberately does NOT inherit `Module`, and it
+    exposes the per-input metadata as length-erased `List`s (`IN_DIMS_L`,
+    `IN_NAMES_L`) rather than `InlineArray[..., Self.ARITY]`. A variadic
+    `*DECLS: GraphDecl` pack with heterogeneous arities would otherwise fail to
+    merge the `Self.ARITY`-typed associated constants ("trait composition has
+    conflicting types for IN_DIMS"). The concrete decls still conform to
+    `Module` independently (so `ComputeGraph` calls forward/vjp/walkers on the
+    concrete `children[i]`); the graph only reaches this trait's surface
+    type-level (`Self.DECLS[i].<member>`)."""
 
     comptime NAME: StaticString
     comptime KIND: Int
-    comptime IN_NAMES: InlineArray[StaticString, Self.ARITY]
+    comptime ARITY: Int
+    comptime OUT_DIM: Int
+    comptime ACT_DT: DType = DT
+    comptime IN_DIMS_L: List[Int]
+    comptime IN_NAMES_L: List[StaticString]
+
+    @staticmethod
+    def make[
+        target: StaticString, INIT: Initializer
+    ](ctx: Optional[DeviceContext] = None) raises -> Self:
+        """Construct + initialize the decl (delegates to the wrapped op's
+        `Module.make` for `Node`; trivial for input/external slots)."""
+        ...
+
+    # ── Module method surface ────────────────────────────────────────────
+    # GraphDecl no longer inherits `Module` (the parametric `IN_DIMS` field
+    # breaks heterogeneous-arity pack merging — see the trait docstring), but
+    # `ComputeGraph` still calls these on the concrete `children[i]` through the
+    # `*DECLS: GraphDecl` bound. They mirror `Module`'s signatures exactly (none
+    # reference the conflicting `InlineArray[Int, Self.ARITY]` — only `Self.ARITY`
+    # as a plain `Int` and `Self.ACT_DT`); the concrete decls satisfy them via
+    # their independent `Module` conformance.
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        inputs: TensorRefs[Self.ARITY, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ...
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[Self.ARITY, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[Self.ARITY, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ...
+
+    # Walker / attr surface — DEFAULT no-ops (GraphDecl is standalone, so it
+    # supplies these defaults that `Module` used to provide). Param/state-less
+    # decls (`InputSlot`, `ExternalNode`) inherit the no-op; `Node` overrides
+    # all of them to recurse into its wrapped owned op.
+    def for_each_param[target: StaticString, V: ParamVisitor](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        pass
+
+    def zero_grad[
+        target: StaticString
+    ](mut self, ctx: Optional[DeviceContext]) raises:
+        pass
+
+    def for_each_state[target: StaticString, V: ParamVisitor](
+        mut self,
+        mut visitor: V,
+        ctx: Optional[DeviceContext],
+        prefix: String = String(""),
+    ) raises:
+        pass
+
+    def polyak_from[
+        target: StaticString
+    ](
+        mut self, mut src: Self, tau: Scalar[DT],
+        ctx: Optional[DeviceContext],
+    ) raises:
+        pass
+
+    def set_attr_buf[ATTR: StaticString](mut self, buf: DeviceBuffer[DT]):
+        pass
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        pass
 
     @staticmethod
     def display_label_via() -> String:
@@ -129,6 +245,8 @@ struct InputSlot[slot_name: StaticString, DIM_: Int, ADT: DType = DT](
     comptime ARITY = 0
     comptime IN_DIMS = InlineArray[Int, 0]()
     comptime IN_NAMES = InlineArray[StaticString, 0]()
+    comptime IN_DIMS_L = List[Int]()
+    comptime IN_NAMES_L = List[StaticString]()
     comptime OUT_DIM = Self.DIM_
     # No wrapped op — the input slot carries no activation dtype of its own.
     # ADT (default DT) lets a bf16 graph set the slot's flow dtype to match the
@@ -205,6 +323,8 @@ struct Node[
     comptime IN_DIMS = Self.Op.IN_DIMS
     comptime OUT_DIM = Self.Op.OUT_DIM
     comptime IN_NAMES = names_to_inline_array[Self.ARITY, *Self.in_names]()
+    comptime IN_DIMS_L = in_dims_to_list[Self.Op.ARITY](Self.Op.IN_DIMS)
+    comptime IN_NAMES_L = names_to_list[Self.ARITY, *Self.in_names]()
     # Activation dtype is the owned op's.
     comptime ACT_DT = Self.Op.ACT_DT
 
@@ -337,6 +457,8 @@ struct ExternalNode[
     comptime IN_DIMS = Self.M.IN_DIMS
     comptime OUT_DIM = Self.M.OUT_DIM
     comptime IN_NAMES = names_to_inline_array[Self.ARITY, *Self.in_names]()
+    comptime IN_DIMS_L = in_dims_to_list[Self.M.ARITY](Self.M.IN_DIMS)
+    comptime IN_NAMES_L = names_to_list[Self.ARITY, *Self.in_names]()
     # Activation dtype mirrors the threaded module's (for pool sizing / edge
     # typing); forward/vjp raise — the graph dispatches to the external.
     comptime ACT_DT = Self.M.ACT_DT

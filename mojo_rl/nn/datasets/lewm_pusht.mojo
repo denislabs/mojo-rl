@@ -56,7 +56,7 @@ from mojo_rl.io.hdf5 import (
     H5T_SGN_2,
     hsize_t,
 )
-from mojo_rl.nn.core.ptr import mptr
+from mojo_rl.nn.core.ptr import mptr, untracked
 
 
 comptime _HF_REPO = "quentinll/lewm-pusht"
@@ -135,20 +135,20 @@ struct LewmPushTWindow(Movable):
     var proprio_dim: Int
     var state_dim: Int
 
-    var pixels: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]
+    var pixels: UnsafePointer[Scalar[DType.uint8], MutUntrackedOrigin]
     """``[num_steps, H, W, 3]`` — native HDF5 layout; HWC."""
-    var pixels_dense: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]
+    var pixels_dense: UnsafePointer[Scalar[DType.uint8], MutUntrackedOrigin]
     """``[num_steps * frameskip, H, W, 3]`` — scratch buffer for one
     dense HDF5 read. ``H5Sselect_hyperslab`` with ``stride>1`` is
     pathologically slow (~15× a contiguous read of the same chunk),
     so ``sample_window`` reads the dense span into this buffer and
     memcpys every ``frameskip``-th frame into ``pixels``.
     """
-    var action: UnsafePointer[Scalar[DType.float32], MutAnyOrigin]
+    var action: UnsafePointer[Scalar[DType.float32], MutUntrackedOrigin]
     """``[num_steps, frameskip * action_dim]`` — dense actions, reshaped."""
-    var proprio: UnsafePointer[Scalar[DType.float32], MutAnyOrigin]
+    var proprio: UnsafePointer[Scalar[DType.float32], MutUntrackedOrigin]
     """``[num_steps, proprio_dim]`` — subsampled by frameskip."""
-    var state: UnsafePointer[Scalar[DType.float32], MutAnyOrigin]
+    var state: UnsafePointer[Scalar[DType.float32], MutUntrackedOrigin]
     """``[num_steps, state_dim]`` — subsampled by frameskip."""
 
     def __init__(
@@ -171,16 +171,16 @@ struct LewmPushTWindow(Movable):
         self.state_dim = state_dim
 
         var n_pixels = num_steps * 3 * pixel_h * pixel_w
-        self.pixels = mptr(alloc[Scalar[DType.uint8]](n_pixels))
+        self.pixels = untracked(alloc[Scalar[DType.uint8]](n_pixels))
         var n_pixels_dense = num_steps * frameskip * 3 * pixel_h * pixel_w
-        self.pixels_dense = mptr(alloc[Scalar[DType.uint8]](n_pixels_dense))
-        self.action = mptr(alloc[Scalar[DType.float32]](
+        self.pixels_dense = untracked(alloc[Scalar[DType.uint8]](n_pixels_dense))
+        self.action = untracked(alloc[Scalar[DType.float32]](
             num_steps * frameskip * action_dim
         ))
-        self.proprio = mptr(alloc[Scalar[DType.float32]](
+        self.proprio = untracked(alloc[Scalar[DType.float32]](
             num_steps * proprio_dim
         ))
-        self.state = mptr(alloc[Scalar[DType.float32]](num_steps * state_dim))
+        self.state = untracked(alloc[Scalar[DType.float32]](num_steps * state_dim))
 
     def __del__(deinit self):
         self.pixels.free()

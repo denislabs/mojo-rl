@@ -145,7 +145,7 @@ trait BatchedEnv(Movable & ImplicitlyDeletable):
 
 
 struct BatchedCpuEnv[
-    E: BoxContinuousActionEnv & Copyable & Movable,
+    E: BoxContinuousActionEnv & Copyable & ImplicitlyDeletable,
     N_ENVS: Int,
     OBS_DIM_: Int,
     ACT_DIM_: Int,

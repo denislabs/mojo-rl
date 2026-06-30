@@ -157,10 +157,11 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
             for s in range(len(steps)):
                 visitor.node_inner(name, s, steps[s].label, steps[s].out_dim)
             comptime for k in range(Self.DECLS[i].ARITY):
-                comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
+                comptime nm_k = Self.DECLS[i].IN_NAMES_L[k]
+                comptime sk = Self._slot_of[nm_k]()
                 visitor.edge(
                     name,
-                    String(Self.DECLS[i].IN_NAMES[k]),
+                    String(nm_k),
                     k,
                     Self.DECLS[sk].OUT_DIM,
                 )
@@ -189,8 +190,8 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
         slots' grad buffers (`gpool[sk] += tmp[k]`). Shared by the owned /
         external vjp branches; `NA` is the branch-appropriate arity."""
         comptime for k in range(NA):
-            comptime ak = B * Self.DECLS[i].IN_DIMS[k]
-            comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
+            comptime ak = B * Self.DECLS[i].IN_DIMS_L[k]
+            comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES_L[k]]()
             comptime if target == "cpu":
                 for q in range(ak):
                     gpool[sk].data[q] += tmp[k].data[q]
@@ -318,7 +319,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                         Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], AE
                     ](uninitialized=True)
                     comptime for k in range(AE):
-                        comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
+                        comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES_L[k]]()
                         inrefs[k] = Pointer(to=self.pool[sk])
                     # pool buffers are stored at Self.ACT_DT; the external module
                     # wants its own (==Self.ACT_DT) — rebind the pack + out slot.
@@ -336,7 +337,7 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                         Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], A
                     ](uninitialized=True)
                     comptime for k in range(A):
-                        comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
+                        comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES_L[k]]()
                         inrefs[k] = Pointer(to=self.pool[sk])
                     self.children[i].forward[target, B, POLICY=POLICY](
                         rebind[TensorRefs[A, MutAnyOrigin, ci]](
@@ -424,8 +425,8 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                         Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], AE
                     ](uninitialized=True)
                     comptime for k in range(AE):
-                        comptime ak = B * Self.DECLS[i].IN_DIMS[k]
-                        comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
+                        comptime ak = B * Self.DECLS[i].IN_DIMS_L[k]
+                        comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES_L[k]]()
                         comptime if target == "cpu":
                             self.tmp[k].ensure(ak)
                         else:
@@ -455,8 +456,8 @@ struct ComputeGraph[*DECLS: GraphDecl](Movable & ImplicitlyDeletable):
                         Pointer[TensorImpl[Self.ACT_DT], MutAnyOrigin], A
                     ](uninitialized=True)
                     comptime for k in range(A):
-                        comptime ak = B * Self.DECLS[i].IN_DIMS[k]
-                        comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES[k]]()
+                        comptime ak = B * Self.DECLS[i].IN_DIMS_L[k]
+                        comptime sk = Self._slot_of[Self.DECLS[i].IN_NAMES_L[k]]()
                         comptime if target == "cpu":
                             self.tmp[k].ensure(ak)
                         else:

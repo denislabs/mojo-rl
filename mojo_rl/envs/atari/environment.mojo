@@ -12,6 +12,7 @@ Usage:
 """
 
 from .atari_state import AtariState
+from mojo_rl.nn.core.ptr import untracked
 from .cpu6502 import cpu_reset, run_frame, mem_read
 from .cartridge import init_bank
 from .riot import set_action
@@ -39,7 +40,7 @@ struct AtariEnvironment(Movable):
     """
 
     var state: AtariState
-    var rom: UnsafePointer[UInt8, MutAnyOrigin]
+    var rom: UnsafePointer[UInt8, MutUntrackedOrigin]
     var rom_size: Int
     var frame_skip: Int
     var max_frames: Int  # Max frames per episode (0 = unlimited)
@@ -63,7 +64,7 @@ struct AtariEnvironment(Movable):
         paddles: Bool = False,
     ):
         self.state = AtariState()
-        self.rom = rom
+        self.rom = untracked(rom)
         self.rom_size = rom_size
         self.frame_skip = frame_skip
         self.max_frames = max_frames
@@ -313,7 +314,7 @@ trait GameDef:
 struct RomData(Movable):
     """Holds ROM data loaded from a file."""
 
-    var data: Optional[UnsafePointer[UInt8, MutAnyOrigin]]
+    var data: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]
     var size: Int
 
     def __init__(out self):

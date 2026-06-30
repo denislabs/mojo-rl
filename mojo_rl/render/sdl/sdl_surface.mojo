@@ -171,13 +171,13 @@ struct Surface(ImplicitlyCopyable, Movable):
     """The height of the surface, read-only."""
     var pitch: c_int
     """The distance in bytes between rows of pixels, read-only."""
-    var pixels: Ptr[NoneType, MutAnyOrigin]
+    var pixels: Ptr[NoneType, MutUntrackedOrigin]
     """A pointer to the pixels of the surface, the pixels are writeable if non-NULL."""
 
     var refcount: c_int
     """Application reference count, used when freeing surface."""
 
-    var reserved: Ptr[NoneType, MutAnyOrigin]
+    var reserved: Ptr[NoneType, MutUntrackedOrigin]
     """Reserved for internal use."""
 
 

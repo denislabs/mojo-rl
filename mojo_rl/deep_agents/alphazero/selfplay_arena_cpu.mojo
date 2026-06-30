@@ -11,6 +11,7 @@ the periodic eval/print/flush, mirroring the GPU driver's telemetry.
 `net` is the *best* and holds the final weights on return.
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import DT
@@ -176,11 +177,11 @@ def run_alphazero_selfplay_arena_cpu[
         env.save_env_state(root_save)
         var env_ptr = UnsafePointer(to=env)
         var net_ptr = UnsafePointer(to=net)
-        var s_rep = AZRepCPU[ENV, OBS](env=env_ptr.as_unsafe_any_origin())
-        var s_dyn = AZDynCPU[ENV, ACT](env=env_ptr.as_unsafe_any_origin())
+        var s_rep = AZRepCPU[ENV, OBS](env=untracked(env_ptr))
+        var s_dyn = AZDynCPU[ENV, ACT](env=untracked(env_ptr))
         var s_pred = AZPredCPU[ENV, OBS, ACT, NET](
-            env=env_ptr.as_unsafe_any_origin(),
-            net=net_ptr.as_unsafe_any_origin(),
+            env=untracked(env_ptr),
+            net=untracked(net_ptr),
         )
         var mcts = MCTS(gamma=1.0)
         var legal = env.legal_action_mask()

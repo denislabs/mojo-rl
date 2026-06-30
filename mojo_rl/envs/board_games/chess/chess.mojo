@@ -32,6 +32,7 @@ Actions: AlphaZero encoding = 4672 (64 squares × 73 move types).
 """
 
 from std.random import random_float64
+from mojo_rl.nn.core.ptr import untracked
 from layout import LayoutTensor, Layout
 from std.gpu import block_dim, block_idx, thread_idx
 from std.gpu.host import DeviceContext, DeviceBuffer
@@ -461,9 +462,9 @@ struct ChessEnv[DTYPE: DType = DType.float64](
     var done: Bool
 
     # Renderer
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
-    var _sprite_pixels: Optional[UnsafePointer[UInt8, MutAnyOrigin]]
+    var _sprite_pixels: Optional[UnsafePointer[UInt8, MutUntrackedOrigin]]
     var _has_sprites: Bool
 
     def __init__(out self):
@@ -1161,7 +1162,7 @@ struct ChessEnv[DTYPE: DType = DType.float64](
         self._renderer_initialized = True
         # Create sprite pixel data
         if not self._has_sprites:
-            self._sprite_pixels = create_sprite_sheet()
+            self._sprite_pixels = untracked(create_sprite_sheet())
             self._has_sprites = True
         return True
 

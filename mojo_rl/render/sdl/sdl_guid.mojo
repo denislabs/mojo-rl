@@ -49,7 +49,7 @@ struct GUID(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GUID.
     """
 
-    var data: ArrayHelper[UInt8, 16, MutAnyOrigin]
+    var data: ArrayHelper[UInt8, 16, MutUntrackedOrigin]
 
 
 def guid_to_string(

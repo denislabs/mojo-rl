@@ -1768,7 +1768,7 @@ struct GPUTextureTransferInfo(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUTextureTransferInfo.
     """
 
-    var transfer_buffer: Ptr[GPUTransferBuffer, MutAnyOrigin]
+    var transfer_buffer: Ptr[GPUTransferBuffer, MutUntrackedOrigin]
     """The transfer buffer used in the transfer operation."""
     var offset: UInt32
     """The starting byte of the image data in the transfer buffer."""
@@ -1787,7 +1787,7 @@ struct GPUTransferBufferLocation(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUTransferBufferLocation.
     """
 
-    var transfer_buffer: Ptr[GPUTransferBuffer, MutAnyOrigin]
+    var transfer_buffer: Ptr[GPUTransferBuffer, MutUntrackedOrigin]
     """The transfer buffer used in the transfer operation."""
     var offset: UInt32
     """The starting byte of the buffer data in the transfer buffer."""
@@ -1802,7 +1802,7 @@ struct GPUTextureLocation(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUTextureLocation.
     """
 
-    var texture: Ptr[GPUTexture, MutAnyOrigin]
+    var texture: Ptr[GPUTexture, MutUntrackedOrigin]
     """The texture used in the copy operation."""
     var mip_level: UInt32
     """The mip level index of the location."""
@@ -1825,7 +1825,7 @@ struct GPUTextureRegion(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUTextureRegion.
     """
 
-    var texture: Ptr[GPUTexture, MutAnyOrigin]
+    var texture: Ptr[GPUTexture, MutUntrackedOrigin]
     """The texture used in the copy operation."""
     var mip_level: UInt32
     """The mip level index to transfer."""
@@ -1852,7 +1852,7 @@ struct GPUBlitRegion(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUBlitRegion.
     """
 
-    var texture: Ptr[GPUTexture, MutAnyOrigin]
+    var texture: Ptr[GPUTexture, MutUntrackedOrigin]
     """The texture."""
     var mip_level: UInt32
     """The mip level index of the region."""
@@ -1877,7 +1877,7 @@ struct GPUBufferLocation(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUBufferLocation.
     """
 
-    var buffer: Ptr[GPUBuffer, MutAnyOrigin]
+    var buffer: Ptr[GPUBuffer, MutUntrackedOrigin]
     """The buffer."""
     var offset: UInt32
     """The starting byte within the buffer."""
@@ -1892,7 +1892,7 @@ struct GPUBufferRegion(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUBufferRegion.
     """
 
-    var buffer: Ptr[GPUBuffer, MutAnyOrigin]
+    var buffer: Ptr[GPUBuffer, MutUntrackedOrigin]
     """The buffer."""
     var offset: UInt32
     """The starting byte within the buffer."""
@@ -2358,9 +2358,9 @@ struct GPUGraphicsPipelineCreateInfo[
     Docs: https://wiki.libsdl.org/SDL3/GPUGraphicsPipelineCreateInfo.
     """
 
-    var vertex_shader: Ptr[GPUShader, MutAnyOrigin]
+    var vertex_shader: Ptr[GPUShader, MutUntrackedOrigin]
     """The vertex shader used by the graphics pipeline."""
-    var fragment_shader: Ptr[GPUShader, MutAnyOrigin]
+    var fragment_shader: Ptr[GPUShader, MutUntrackedOrigin]
     """The fragment shader used by the graphics pipeline."""
     var vertex_input_state: GPUVertexInputState[Self.vbd_origin, Self.va_origin]
     """The vertex layout of the graphics pipeline."""
@@ -2388,9 +2388,9 @@ struct GPUComputePipelineCreateInfo(ImplicitlyCopyable, Movable):
 
     var code_size: c_size_t
     """The size in bytes of the compute shader code pointed to."""
-    var code: Ptr[UInt8, ImmutAnyOrigin]
+    var code: Ptr[UInt8, ImmutUntrackedOrigin]
     """A pointer to compute shader code."""
-    var entrypoint: Ptr[c_char, ImmutAnyOrigin]
+    var entrypoint: Ptr[c_char, ImmutUntrackedOrigin]
     """A pointer to a null-terminated UTF-8 string specifying the entry point function name for the shader."""
     var format: GPUShaderFormat
     """The format of the compute shader code."""
@@ -2452,7 +2452,7 @@ struct GPUColorTargetInfo(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUColorTargetInfo.
     """
 
-    var texture: Ptr[GPUTexture, MutAnyOrigin]
+    var texture: Ptr[GPUTexture, MutUntrackedOrigin]
     """The texture that will be used as a color target by a render pass."""
     var mip_level: UInt32
     """The mip level to use as a color target."""
@@ -2464,7 +2464,7 @@ struct GPUColorTargetInfo(ImplicitlyCopyable, Movable):
     """What is done with the contents of the color target at the beginning of the render pass."""
     var store_op: GPUStoreOp
     """What is done with the results of the render pass."""
-    var resolve_texture: Ptr[GPUTexture, MutAnyOrigin]
+    var resolve_texture: Ptr[GPUTexture, MutUntrackedOrigin]
     """The texture that will receive the results of a multisample resolve operation. Ignored if a RESOLVE* store_op is not used."""
     var resolve_mip_level: UInt32
     """The mip level of the resolve texture to use for the resolve operation. Ignored if a RESOLVE* store_op is not used."""
@@ -2522,7 +2522,7 @@ struct GPUDepthStencilTargetInfo(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUDepthStencilTargetInfo.
     """
 
-    var texture: Ptr[GPUTexture, MutAnyOrigin]
+    var texture: Ptr[GPUTexture, MutUntrackedOrigin]
     """The texture that will be used as the depth stencil target by the render pass."""
     var clear_depth: c_float
     """The value to clear the depth component to at the beginning of the render pass. Ignored if SDL_GPU_LOADOP_CLEAR is not used."""
@@ -2575,7 +2575,7 @@ struct GPUBufferBinding(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUBufferBinding.
     """
 
-    var buffer: Ptr[GPUBuffer, MutAnyOrigin]
+    var buffer: Ptr[GPUBuffer, MutUntrackedOrigin]
     """The buffer to bind. Must have been created with SDL_GPU_BUFFERUSAGE_VERTEX for SDL_BindGPUVertexBuffers, or SDL_GPU_BUFFERUSAGE_INDEX for SDL_BindGPUIndexBuffer."""
     var offset: UInt32
     """The starting byte of the data to bind in the buffer."""
@@ -2588,9 +2588,9 @@ struct GPUTextureSamplerBinding(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUTextureSamplerBinding.
     """
 
-    var texture: Ptr[GPUTexture, MutAnyOrigin]
+    var texture: Ptr[GPUTexture, MutUntrackedOrigin]
     """The texture to bind. Must have been created with SDL_GPU_TEXTUREUSAGE_SAMPLER."""
-    var sampler: Ptr[GPUSampler, MutAnyOrigin]
+    var sampler: Ptr[GPUSampler, MutUntrackedOrigin]
     """The sampler to bind."""
 
 
@@ -2602,7 +2602,7 @@ struct GPUStorageBufferReadWriteBinding(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUStorageBufferReadWriteBinding.
     """
 
-    var buffer: Ptr[GPUBuffer, MutAnyOrigin]
+    var buffer: Ptr[GPUBuffer, MutUntrackedOrigin]
     """The buffer to bind. Must have been created with SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE."""
     var cycle: Bool
     """True cycles the buffer if it is already bound."""
@@ -2619,7 +2619,7 @@ struct GPUStorageTextureReadWriteBinding(ImplicitlyCopyable, Movable):
     Docs: https://wiki.libsdl.org/SDL3/GPUStorageTextureReadWriteBinding.
     """
 
-    var texture: Ptr[GPUTexture, MutAnyOrigin]
+    var texture: Ptr[GPUTexture, MutUntrackedOrigin]
     """The texture to bind. Must have been created with SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE or SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE."""
     var mip_level: UInt32
     """The mip level index to bind."""

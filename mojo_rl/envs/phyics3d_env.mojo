@@ -171,7 +171,7 @@ struct Phyics3dEnv[
 
     # Renderer (optional)
     var _renderer: Optional[
-        UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutAnyOrigin]
+        UnsafePointer[ModelRenderer[Self.MODEL_DEF], MutUntrackedOrigin]
     ]
     var _renderer_initialized: Bool
 

@@ -41,7 +41,7 @@ from .pc_initializer import PCInitializer
 # =============================================================================
 
 
-trait PCActivation(Movable & ImplicitlyCopyable):
+trait PCActivation(ImplicitlyCopyable):
     """Activation function used inside a PCBlock.
 
     Provides CPU + GPU variants of:
@@ -577,7 +577,7 @@ struct PCSwish(PCActivation):
 # =============================================================================
 
 
-trait PCBlockTrait(Movable & ImplicitlyCopyable):
+trait PCBlockTrait(ImplicitlyCopyable):
     """One PCN level (Bogacz canonical, bottom-up direction).
 
     A PCBlock owns a weight matrix W, a bias vector b, and a bundled

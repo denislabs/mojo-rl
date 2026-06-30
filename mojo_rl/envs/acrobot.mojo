@@ -240,7 +240,7 @@ struct AcrobotEnv[DTYPE: DType](
     var use_book_dynamics: Bool
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self, num_bins: Int = 6, use_book_dynamics: Bool = True):

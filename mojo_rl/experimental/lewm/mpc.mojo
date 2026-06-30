@@ -243,11 +243,11 @@ def lewm_mpc_eval[
     ],
     pix_t: TileTensor[
         dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, origin=MutAnyOrigin, ...,
+        origin=MutAnyOrigin, ...,
     ],
     act_t: TileTensor[
         dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, origin=MutAnyOrigin, ...,
+        origin=MutAnyOrigin, ...,
     ],
     expert_act_host: UnsafePointer[Scalar[DT], MutAnyOrigin],   # (B, T·ACT)
     num_random: Int = 16,

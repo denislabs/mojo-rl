@@ -44,8 +44,9 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.call import call_forward, call_vjp
 
 
@@ -69,12 +70,48 @@ def _mao[
     return rebind[UnsafePointer[Scalar[dt], MutAnyOrigin]](p)
 
 
-trait ShortcutDynamics(Module):
+trait ShortcutDynamics(Defaultable & Movable & ImplicitlyDeletable):
     """A dynamics module whose per-sample signal/step indices are pushed via
     `set_indices` before each forward (Dreamer4Dynamics). Optionally also
     accepts per-sample actions via `set_actions` for conditioned (labeled)
     dynamics pretrain — modules without action conditioning inherit the no-op
-    default."""
+    default.
+
+    NOTE (Mojo 1.0): this trait deliberately does NOT inherit `Module`. A trait
+    that refines `Module` (whose `IN_DIMS` is `InlineArray[Int, Self.ARITY]`)
+    crashes the compiler with "trait composition has conflicting types for
+    IN_DIMS" when used as a generic bound (`[M: ShortcutDynamics]`). Instead it
+    re-declares the slice of the `Module` surface the dynamics loops actually
+    call (`ARITY`/`OUT_DIM`/`ACT_DT` + `forward`/`vjp`); the concrete
+    `Dreamer4Dynamics` conforms to `Module` independently. Mirrors the same fix
+    applied to `nn.combinators.GraphDecl`."""
+
+    comptime ARITY: Int
+    comptime OUT_DIM: Int
+    comptime ACT_DT: DType = DT
+
+    def forward[
+        target: StaticString, B: Int, o: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        inputs: TensorRefs[Self.ARITY, o, Self.ACT_DT],
+        mut out: TensorImpl[Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ...
+
+    def vjp[
+        target: StaticString, B: Int, ofi: MutOrigin, ogi: MutOrigin,
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        forward_input: TensorRefs[Self.ARITY, ofi, Self.ACT_DT],
+        mut grad_output: TensorImpl[Self.ACT_DT],
+        grad_inputs: TensorRefs[Self.ARITY, ogi, Self.ACT_DT],
+        ctx: Optional[DeviceContext] = None,
+    ) raises:
+        ...
 
     def set_indices(
         mut self,
@@ -123,6 +160,25 @@ def _alloc(n: Int) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
     return _mao(alloc[Scalar[DT]](n))
 
 
+def _dyn_fwd[
+    M: ShortcutDynamics, N: Int, o: MutOrigin, BDT: DType, //,
+    target: StaticString, B: Int,
+](
+    mut dyn: M,
+    refs: TensorRefs[N, o, BDT],
+    mut out: TensorImpl[BDT],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """`call_forward` restricted to `ShortcutDynamics` (which no longer refines
+    `Module` — see the trait note). Rebinds the (BDT) input pack + output to the
+    dynamics' `M.ACT_DT`, then calls `dyn.forward`. Mirrors `nn.core.call`."""
+    dyn.forward[target, B](
+        rebind[TensorRefs[M.ARITY, o, M.ACT_DT]](refs),
+        rebind[TensorImpl[M.ACT_DT]](out),
+        ctx,
+    )
+
+
 def _run_fwd[
     M: ShortcutDynamics, FWD: StaticString, BATCH: Int, ND: Int
 ](
@@ -143,14 +199,14 @@ def _run_fwd[
         in_t.data[i] = in_host[i]
     comptime if FWD == "cpu":
         var out_t = Tensor.alloc(N)
-        call_forward["cpu", BATCH](dyn, TensorRefs[M.ARITY](in_t), out_t, None)
+        _dyn_fwd["cpu", BATCH](dyn, TensorRefs[M.ARITY](in_t), out_t, None)
         for i in range(N):
             out_host[i] = out_t.data[i]
     else:
         var c = ctx.value()
         in_t.upload(c)
         var out_t = Tensor.alloc_gpu(c, N)
-        call_forward["gpu", BATCH](dyn, TensorRefs[M.ARITY](in_t), out_t, ctx)
+        _dyn_fwd["gpu", BATCH](dyn, TensorRefs[M.ARITY](in_t), out_t, ctx)
         out_t.download(c)
         for i in range(N):
             out_host[i] = out_t.data[i]

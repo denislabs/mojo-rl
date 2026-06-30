@@ -20,7 +20,7 @@ from .param import ParamVisitor
 from .module import Module
 
 
-struct DescribeRow(Copyable & Movable):
+struct DescribeRow(Copyable):
     """One visited param/state: its dotted name and comptime size."""
 
     var name: String

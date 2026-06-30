@@ -186,7 +186,7 @@ struct LeWMPredictor[
         src: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],
@@ -212,14 +212,14 @@ struct LeWMPredictor[
         latent_ctx: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],
         actions: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],
@@ -227,7 +227,7 @@ struct LeWMPredictor[
             mut=True,
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             ...,
         ],
     ) raises:

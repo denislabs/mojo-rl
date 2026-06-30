@@ -21,6 +21,7 @@ Usage:
 """
 
 from std.ffi import c_float, c_int
+from mojo_rl.nn.core.ptr import untracked
 from std.memory import alloc
 
 from mojo_rl.render.sdl import (
@@ -107,12 +108,12 @@ struct AtariRenderer(Movable):
     """
 
     # SDL handles
-    var window: Optional[Ptr[Window, MutAnyOrigin]]
-    var sdl_renderer: Optional[Ptr[SDLRenderer, MutAnyOrigin]]
-    var texture: Optional[Ptr[Texture, MutAnyOrigin]]
+    var window: Optional[Ptr[Window, MutUntrackedOrigin]]
+    var sdl_renderer: Optional[Ptr[SDLRenderer, MutUntrackedOrigin]]
+    var texture: Optional[Ptr[Texture, MutUntrackedOrigin]]
 
     # Pixel buffer (BGRA, 160×210)
-    var pixel_buf: UnsafePointer[UInt8, MutAnyOrigin]
+    var pixel_buf: UnsafePointer[UInt8, MutUntrackedOrigin]
 
     # Display settings
     var screen_width: Int
@@ -148,7 +149,7 @@ struct AtariRenderer(Movable):
         self.window = None
         self.sdl_renderer = None
         self.texture = None
-        self.pixel_buf = alloc[UInt8](FRAME_BUF_SIZE).as_unsafe_any_origin()
+        self.pixel_buf = untracked(alloc[UInt8](FRAME_BUF_SIZE))
 
         self.screen_width = width
         self.screen_height = height
@@ -208,15 +209,15 @@ struct AtariRenderer(Movable):
             init(InitFlags.INIT_VIDEO)
 
             var title = String("Atari 2600")
-            self.window = create_window(
+            self.window = untracked(create_window(
                 title,
                 c_int(self.screen_width),
                 c_int(self.screen_height),
                 WindowFlags(0),
-            )
+            ))
 
             var name = String("")
-            self.sdl_renderer = create_renderer(self.window.value(), name)
+            self.sdl_renderer = untracked(create_renderer(self.window.value(), name))
 
             # Create streaming texture at native Atari resolution.
             # The frame buffer is written as memory bytes [B, G, R, A] (see
@@ -224,12 +225,12 @@ struct AtariRenderer(Movable):
             # BGRA32 alias (== ARGB8888 on little-endian). Using the packed
             # BGRA8888 enum here misreads the channels (green → purple, alpha
             # shifted), so use the endianness-safe *32 alias.
-            self.texture = create_texture(self.sdl_renderer.value(),
+            self.texture = untracked(create_texture(self.sdl_renderer.value(),
                 PixelFormat.PIXELFORMAT_BGRA32,
                 TextureAccess.TEXTUREACCESS_STREAMING,
                 c_int(FRAME_WIDTH),
                 c_int(FRAME_HEIGHT),
-            )
+            ))
 
             # Use nearest-neighbor scaling for crisp pixels
             set_texture_scale_mode(self.texture.value(), ScaleMode.SCALEMODE_NEAREST)

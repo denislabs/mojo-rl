@@ -488,7 +488,7 @@ struct TextEditingEvent(ImplicitlyCopyable, Movable):
     """In nanoseconds, populated using SDL_GetTicksNS()."""
     var window_id: WindowID
     """The window with keyboard focus, if any."""
-    var text: Ptr[c_char, ImmutAnyOrigin]
+    var text: Ptr[c_char, ImmutUntrackedOrigin]
     """The editing text."""
     var start: Int32
     """The start cursor of selected editing text, or -1 if not set."""
@@ -510,7 +510,7 @@ struct TextEditingCandidatesEvent(ImplicitlyCopyable, Movable):
     """In nanoseconds, populated using SDL_GetTicksNS()."""
     var window_id: WindowID
     """The window with keyboard focus, if any."""
-    var candidates: Ptr[c_char, ImmutAnyOrigin]
+    var candidates: Ptr[c_char, ImmutUntrackedOrigin]
     """The list of candidates, or NULL if there are no candidates available."""
     var num_candidates: Int32
     """The number of strings in `candidates`."""
@@ -540,7 +540,7 @@ struct TextInputEvent(ImplicitlyCopyable, Movable):
     """In nanoseconds, populated using SDL_GetTicksNS()."""
     var window_id: WindowID
     """The window with keyboard focus, if any."""
-    var text: Ptr[c_char, ImmutAnyOrigin]
+    var text: Ptr[c_char, ImmutUntrackedOrigin]
     """The input text, UTF-8 encoded."""
 
 
@@ -897,7 +897,7 @@ struct GamepadSensorEvent(ImplicitlyCopyable, Movable):
     """The joystick instance id."""
     var sensor: Int32
     """The type of the sensor, one of the values of SDL_SensorType."""
-    var data: ArrayHelper[c_float, 3, MutAnyOrigin]
+    var data: ArrayHelper[c_float, 3, MutUntrackedOrigin]
     """Up to 3 values from the sensor, as defined in SDL_sensor.h."""
     var sensor_timestamp: UInt64
     """The timestamp of the sensor reading in nanoseconds, not necessarily synchronized with the system clock."""
@@ -1169,9 +1169,9 @@ struct DropEvent(ImplicitlyCopyable, Movable):
     """X coordinate, relative to window (not on begin)."""
     var y: c_float
     """Y coordinate, relative to window (not on begin)."""
-    var source: Ptr[c_char, ImmutAnyOrigin]
+    var source: Ptr[c_char, ImmutUntrackedOrigin]
     """The source app that sent this drop event, or NULL if that isn't available."""
-    var data: Ptr[c_char, ImmutAnyOrigin]
+    var data: Ptr[c_char, ImmutUntrackedOrigin]
     """The text for SDL_EVENT_DROP_TEXT and the file name for SDL_EVENT_DROP_FILE, NULL for other events."""
 
 
@@ -1192,7 +1192,7 @@ struct ClipboardEvent(ImplicitlyCopyable, Movable):
     """Are we owning the clipboard (internal update)."""
     var num_mime_types: Int32
     """Number of mime types."""
-    var mime_types: Ptr[Ptr[c_char, ImmutAnyOrigin], ImmutAnyOrigin]
+    var mime_types: Ptr[Ptr[c_char, ImmutUntrackedOrigin], ImmutUntrackedOrigin]
     """Current mime types."""
 
 
@@ -1210,7 +1210,7 @@ struct SensorEvent(ImplicitlyCopyable, Movable):
     """In nanoseconds, populated using SDL_GetTicksNS()."""
     var which: SensorID
     """The instance ID of the sensor."""
-    var data: ArrayHelper[c_float, 6, MutAnyOrigin]
+    var data: ArrayHelper[c_float, 6, MutUntrackedOrigin]
     """Up to 6 values from the sensor - additional values can be queried using SDL_GetSensorData()."""
     var sensor_timestamp: UInt64
     """The timestamp of the sensor reading in nanoseconds, not necessarily synchronized with the system clock."""
@@ -1252,9 +1252,9 @@ struct UserEvent(ImplicitlyCopyable, Movable):
     """The associated window if any."""
     var code: Int32
     """User defined event code."""
-    var data1: Ptr[NoneType, MutAnyOrigin]
+    var data1: Ptr[NoneType, MutUntrackedOrigin]
     """User defined data pointer."""
-    var data2: Ptr[NoneType, MutAnyOrigin]
+    var data2: Ptr[NoneType, MutUntrackedOrigin]
     """User defined data pointer."""
 
 

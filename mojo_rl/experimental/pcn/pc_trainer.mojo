@@ -32,7 +32,7 @@ from .predictive_model import PCBlockTrait
 
 
 @fieldwise_init
-struct PCTrainResult(Movable & ImplicitlyCopyable):
+struct PCTrainResult(ImplicitlyCopyable):
     """Diagnostics returned from `train_one_batch`."""
 
     var energy_initial: Float64

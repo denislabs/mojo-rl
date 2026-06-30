@@ -11,7 +11,7 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from ..types import Model, Data, ConeType
 
 
-trait Integrator(Movable & ImplicitlyCopyable):
+trait Integrator(ImplicitlyCopyable):
     """Trait for Generalized Coordinates integrators.
 
     Integrators implement a complete physics step pipeline for joint-space dynamics:

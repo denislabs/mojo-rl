@@ -139,8 +139,8 @@ struct TiedLinear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
     # weight). `tie_to` points these at the source weight's val/grad cells.
     # SAFE `Pointer` (not raw `UnsafePointer`); wildcard origin so the struct
     # stays origin-free (see module docstring).
-    var src_val: Optional[Pointer[Tensor, MutAnyOrigin]]
-    var src_grd: Optional[Pointer[Tensor, MutAnyOrigin]]
+    var src_val: Optional[Pointer[Tensor, MutUntrackedOrigin]]
+    var src_grd: Optional[Pointer[Tensor, MutUntrackedOrigin]]
     # bf16-flow compute scratch (lazy; used only when ACT_DT == bf16 and
     # target == "gpu"). `w_bf` [OUT, IN] is the bf16 copy of the BORROWED source
     # weight. Unlike Linear, this is NOT version-gated: the tied weight changes
@@ -177,8 +177,8 @@ struct TiedLinear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
         captured origin is the wildcard `MutAnyOrigin` (see module docstring),
         so the POINTER-STABILITY RULE applies: the owner must outlive this head.
         """
-        self.src_val = rebind[Pointer[Tensor, MutAnyOrigin]](Pointer(to=val))
-        self.src_grd = rebind[Pointer[Tensor, MutAnyOrigin]](Pointer(to=grd))
+        self.src_val = rebind[Pointer[Tensor, MutUntrackedOrigin]](Pointer(to=val))
+        self.src_grd = rebind[Pointer[Tensor, MutUntrackedOrigin]](Pointer(to=grd))
 
     def tie_to_ptr(
         mut self,
@@ -195,8 +195,8 @@ struct TiedLinear[IN_: Int, OUT_: Int, ADT: DType = DT](Module):
         owner.weight.val))` into a local) — releasing the structural borrow —
         then call this. Same POINTER-STABILITY RULE applies (owner outlives
         head). Idempotent."""
-        self.src_val = val
-        self.src_grd = grd
+        self.src_val = rebind[Pointer[Tensor, MutUntrackedOrigin]](val)
+        self.src_grd = rebind[Pointer[Tensor, MutUntrackedOrigin]](grd)
 
     def _val(self) raises -> Pointer[Tensor, MutAnyOrigin]:
         if not self.src_val:

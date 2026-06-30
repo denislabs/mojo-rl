@@ -77,7 +77,7 @@ struct OnPolicyState[
     var mb_gi: Tensor
 
     # Int32 shuffle/gather index array (Tensor is DT-only, so raw ptr).
-    var indices: Optional[UnsafePointer[Int32, MutAnyOrigin]]
+    var indices: Optional[UnsafePointer[Int32, MutUntrackedOrigin]]
 
     # Rollout cursor.
     var rollout_idx: Int

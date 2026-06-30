@@ -21,6 +21,7 @@ latents in latent space) is the remaining Phase F piece (see plan §2.5).
 """
 
 from std.memory import alloc
+from mojo_rl.nn.core.ptr import untracked
 from std.gpu.host import DeviceContext, DeviceBuffer
 from std.gpu.memory import AddressSpace
 from layout import TileTensor, TensorLayout, row_major
@@ -79,10 +80,10 @@ struct LeWMTFScorer[
     comptime HE = Self.H * Self.EMB
     comptime NPRED = Self.BATCH * Self.HE
 
-    var trainer: UnsafePointer[Self.TR, MutAnyOrigin]
-    var pix: UnsafePointer[Scalar[DT], MutAnyOrigin]    # target-resident, fixed
+    var trainer: UnsafePointer[Self.TR, MutUntrackedOrigin]
+    var pix: UnsafePointer[Scalar[DT], MutUntrackedOrigin]    # target-resident, fixed
     var ctx: Optional[DeviceContext]
-    var act_host: UnsafePointer[Scalar[DT], MutAnyOrigin]   # (B, T·ACT)
+    var act_host: UnsafePointer[Scalar[DT], MutUntrackedOrigin]   # (B, T·ACT)
     var act_dev: Optional[DeviceBuffer[DT]]
     var pred_host: List[Scalar[DT]]  # (B, H·EMB)
     var goal_host: List[Scalar[DT]]  # (B, H·EMB) fixed
@@ -94,12 +95,10 @@ struct LeWMTFScorer[
         pix: UnsafePointer[Scalar[DT], MutAnyOrigin],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        self.trainer = trainer
-        self.pix = pix
+        self.trainer = untracked(trainer)
+        self.pix = untracked(pix)
         self.ctx = ctx
-        self.act_host = alloc[Scalar[DT]](
-            Self.BATCH * Self.ACTIN
-        ).as_unsafe_any_origin()
+        self.act_host = untracked(alloc[Scalar[DT]](Self.BATCH * Self.ACTIN))
         self.pred_host = List[Scalar[DT]](
             length=Self.NPRED, fill=Scalar[DT](0)
         )
@@ -201,7 +200,7 @@ def lewm_shuffled_eval[
     ],
     pix_t: TileTensor[
         dtype=DT, address_space=AddressSpace.GENERIC,
-        element_size=1, origin=MutAnyOrigin, ...,
+        origin=MutAnyOrigin, ...,
     ],
     expert_act_host: UnsafePointer[Scalar[DT], MutAnyOrigin],   # (B, T·ACT)
     n_shuffles: Int = 0,

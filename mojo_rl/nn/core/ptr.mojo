@@ -32,11 +32,21 @@ def mptr[
 
 
 @always_inline
+def untracked[
+    T: AnyType, o: Origin
+](p: UnsafePointer[T, o]) -> UnsafePointer[T, MutUntrackedOrigin]:
+    """Re-key a pointer's origin to `MutUntrackedOrigin` for storage in a
+    struct field (AnyOrigin is banned in fields as of Mojo 1.0; the field owner
+    manages the lifetime explicitly). Generic over the pointee `T` so it covers
+    both `Scalar` data pointers and borrowed-Module / `env` pointers."""
+    return rebind[UnsafePointer[T, MutUntrackedOrigin]](p)
+
+
+@always_inline
 def mptr(
     t: TileTensor[
         dtype=DT,
         address_space=AddressSpace.GENERIC,
-        element_size=1,
         origin=MutAnyOrigin,
         ...,
     ],

@@ -153,7 +153,7 @@ struct CarRacing[DTYPE: DType](
     var cached_state: CarRacingState[Self.dtype]
 
     # Renderer (RenderableEnv)
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     # =========================================================================

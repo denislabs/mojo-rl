@@ -16,6 +16,7 @@ the root value stored is the search value (`mcts.root_value()`), the MuZero
 bootstrap target. Returns the last training loss.
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from std.math import exp, log
 from std.memory import alloc
 
@@ -105,13 +106,13 @@ def run_muzero_selfplay_cpu[
     var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
 
     var rep_a = MZRepCPU[OBS, LATENT, REP](
-        net=UnsafePointer(to=rep).as_unsafe_any_origin()
+        net=untracked(UnsafePointer(to=rep))
     )
     var dyn_a = MZDynCPU[LATENT, ACT, BINS, DYN](
-        net=UnsafePointer(to=dyn).as_unsafe_any_origin(), v_min=v_min, v_max=v_max
+        net=untracked(UnsafePointer(to=dyn)), v_min=v_min, v_max=v_max
     )
     var pred_a = MZPredCPU[LATENT, ACT, BINS, PRED](
-        net=UnsafePointer(to=pred).as_unsafe_any_origin(),
+        net=untracked(UnsafePointer(to=pred)),
         v_min=v_min, v_max=v_max
     )
 

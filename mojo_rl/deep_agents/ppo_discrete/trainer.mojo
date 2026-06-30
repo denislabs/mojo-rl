@@ -133,7 +133,7 @@ struct PPODiscreteTrainer[
     MINIBATCH: Int,
     N_EPOCHS: Int,
     N_ENVS: Int = 1,
-](OnPolicyDiscreteAgent & OnPolicyDiscreteAgentBatched):
+](OnPolicyDiscreteAgentBatched):
     """CleanRL-style categorical PPO trainer. Exposes both the single-env
     (host-list) surface and the N_ENVS-wide batched pointer surface;
     `N_ENVS` sizes the per-step scratches (defaults to 1). The GAE +
@@ -180,11 +180,11 @@ struct PPODiscreteTrainer[
     ]
 
     # Host-side staging for the N=1 host-list wrapper paths.
-    var _obs1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _act1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _rew1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _done1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
-    var _nobs1: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _obs1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _act1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _rew1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _done1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
+    var _nobs1: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
 
     # ── Hyperparameters ──────────────────────────────────────────────
     var gamma: Scalar[DT]
@@ -195,7 +195,7 @@ struct PPODiscreteTrainer[
 
     # ── Episode tracker ──────────────────────────────────────────────
     var tracker: EpisodeTracker
-    var _ep_returns: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]  # N_ENVS
+    var _ep_returns: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]  # N_ENVS
 
     # ── Train-step accumulators ──────────────────────────────────────
     var _actor_L_accum: Scalar[DT]

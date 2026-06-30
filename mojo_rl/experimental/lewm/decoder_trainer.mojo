@@ -167,7 +167,7 @@ struct LeWMDecoderTrainer[
         src: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],
@@ -193,14 +193,14 @@ struct LeWMDecoderTrainer[
         emb: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],
         tgt: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],
@@ -241,7 +241,7 @@ struct LeWMDecoderTrainer[
         emb: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],

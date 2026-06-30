@@ -17,6 +17,7 @@ replay stay category-B raw host buffers (the env/replay interop boundary); the
 batch is bridged into storage Tensors by `sample_batch_tensors`.
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from std.memory import UnsafePointer
 
 from mojo_rl.nn.constants import DT
@@ -127,11 +128,11 @@ def run_alphazero_selfplay_cpu[
         # ONCE (e.g. thread it through `search`) instead of embedding 3 aliases.
         var env_ptr = UnsafePointer(to=env)
         var net_ptr = UnsafePointer(to=net)
-        var rep = AZRepCPU[ENV, OBS](env=env_ptr.as_unsafe_any_origin())
-        var dyn = AZDynCPU[ENV, ACT](env=env_ptr.as_unsafe_any_origin())
+        var rep = AZRepCPU[ENV, OBS](env=untracked(env_ptr))
+        var dyn = AZDynCPU[ENV, ACT](env=untracked(env_ptr))
         var pred = AZPredCPU[ENV, OBS, ACT, NET](
-            env=env_ptr.as_unsafe_any_origin(),
-            net=net_ptr.as_unsafe_any_origin(),
+            env=untracked(env_ptr),
+            net=untracked(net_ptr),
         )
         var mcts = MCTS(gamma=1.0)
         var legal = env.legal_action_mask()

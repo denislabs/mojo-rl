@@ -30,6 +30,7 @@ Returns `EnsembleActorLossResult { loss, log_prob_mean }`. The trainer reads
 """
 
 from std.gpu import global_idx
+from mojo_rl.nn.core.ptr import untracked
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
@@ -218,7 +219,7 @@ struct EnsembleActorLoss[
     # `_alpha_ptr` is set, the GPU forward_backward reads α on-device, reduces
     # loss/log_prob on-device (no D2H), and returns 0 sentinels — the trainer
     # drains `_loss_acc` at flush and the device ScalarAdam reads `_lp_mean`.
-    var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
     var _mb_loss_out: Tensor    # [BATCH] per-b loss (device reduction source)
     var _lp_mean: Tensor        # [1] mean(log_prob) — entropy grad for α
     var _loss_acc: Tensor       # [2] (Σmean, count) actor-loss accumulator
@@ -315,7 +316,7 @@ struct EnsembleActorLoss[
         """Wire REDQ's on-device alpha buffer into the actor loss. After this,
         the GPU `forward_backward` reads α on-device and reduces loss/log_prob
         on-device (no per-step D2H / host α)."""
-        self._alpha_ptr = p
+        self._alpha_ptr = untracked(p)
 
     def lp_mean_dev(mut self) -> DeviceBuffer[DT]:
         """The device `_lp_mean` [1] buffer — the device ScalarAdam reads it as

@@ -54,7 +54,7 @@ from mojo_rl.nn.core.module import Module
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.call import call_forward, call_vjp
-from .shortcut_loss import ShortcutDynamics, AgentDynamics, _ilog2, _mao
+from .shortcut_loss import _dyn_fwd, ShortcutDynamics, AgentDynamics, _ilog2, _mao
 from ..dreamerv3.dists_discrete import cat_sample, UNIMIX
 from ..dreamerv3.twohot import twohot_pred
 
@@ -91,7 +91,7 @@ def _fwd_window[
     for i in range(BF * ND):
         in_t.data[i] = packed_p[i]
     comptime if FWD == "cpu":
-        call_forward["cpu", BF](dyn, TensorRefs[M.ARITY](in_t), out_t, None)
+        _dyn_fwd["cpu", BF](dyn, TensorRefs[M.ARITY](in_t), out_t, None)
         for i in range(BF * ND):
             zhat_p[i] = out_t.data[i]
         var ao = dyn.agent_out_ptr_cpu()
@@ -100,7 +100,7 @@ def _fwd_window[
     else:
         var c = ctx.value()
         in_t.upload(c)
-        call_forward["gpu", BF](dyn, TensorRefs[M.ARITY](in_t), out_t, ctx)
+        _dyn_fwd["gpu", BF](dyn, TensorRefs[M.ARITY](in_t), out_t, ctx)
         out_t.download(c)
         for i in range(BF * ND):
             zhat_p[i] = out_t.data[i]

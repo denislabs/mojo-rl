@@ -165,7 +165,7 @@ struct DisplayMode(ImplicitlyCopyable, Movable):
     var refresh_rate_denominator: c_int
     """Precise refresh rate denominator."""
 
-    var internal: Ptr[DisplayModeData, MutAnyOrigin]
+    var internal: Ptr[DisplayModeData, MutUntrackedOrigin]
     """Private."""
 
 

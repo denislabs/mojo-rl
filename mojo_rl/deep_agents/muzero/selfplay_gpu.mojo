@@ -21,6 +21,7 @@ once per iteration. `learning_starts` warmup needs no sync — the mirror is syn
 once before the loop so it matches the device nets from step 0.
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from std.math import exp, log
 from std.memory import alloc
 
@@ -128,14 +129,14 @@ def run_muzero_selfplay_gpu[
     mz_sync_gpu_to_cpu(pred, pred_c, ctx)
 
     var rep_a = MZRepCPU[OBS, LATENT, REP](
-        net=UnsafePointer(to=rep_c).as_unsafe_any_origin()
+        net=untracked(UnsafePointer(to=rep_c))
     )
     var dyn_a = MZDynCPU[LATENT, ACT, BINS, DYN](
-        net=UnsafePointer(to=dyn_c).as_unsafe_any_origin(),
+        net=untracked(UnsafePointer(to=dyn_c)),
         v_min=v_min, v_max=v_max
     )
     var pred_a = MZPredCPU[LATENT, ACT, BINS, PRED](
-        net=UnsafePointer(to=pred_c).as_unsafe_any_origin(),
+        net=untracked(UnsafePointer(to=pred_c)),
         v_min=v_min, v_max=v_max
     )
 

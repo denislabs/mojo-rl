@@ -20,7 +20,7 @@ from .param import ParamVisitor
 from .module import Module
 
 
-struct NamedParam(Copyable & Movable):
+struct NamedParam(Copyable):
     var name: String
     var size: Int
     var decay: Bool

@@ -46,7 +46,7 @@ struct MZRepCPU[OBS: Int, LATENT: Int, NET: Module](
     comptime OBS_DIM: Int = Self.OBS
     comptime LATENT_DIM: Int = Self.LATENT
 
-    var net: UnsafePointer[Self.NET, MutAnyOrigin]
+    var net: UnsafePointer[Self.NET, MutUntrackedOrigin]
 
     def encode_cpu(
         mut self, obs: List[Float64], mut hidden_out: List[Float64]
@@ -71,7 +71,7 @@ struct MZDynCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
     comptime LATENT_DIM: Int = Self.LATENT
     comptime ACTION_DIM: Int = Self.ACT
 
-    var net: UnsafePointer[Self.NET, MutAnyOrigin]
+    var net: UnsafePointer[Self.NET, MutUntrackedOrigin]
     var v_min: Scalar[DT]
     var v_max: Scalar[DT]
 
@@ -108,7 +108,7 @@ struct MZPredCPU[LATENT: Int, ACT: Int, BINS: Int, NET: Module](
     comptime LATENT_DIM: Int = Self.LATENT
     comptime ACTION_DIM: Int = Self.ACT
 
-    var net: UnsafePointer[Self.NET, MutAnyOrigin]
+    var net: UnsafePointer[Self.NET, MutUntrackedOrigin]
     var v_min: Scalar[DT]
     var v_max: Scalar[DT]
 

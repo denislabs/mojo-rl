@@ -42,7 +42,7 @@ from .wm_graph import TDMPC2WMGraph, NQ, NLOSS, TERM_COL
 
 
 @fieldwise_init
-struct WMLossOut(Copyable & Movable):
+struct WMLossOut(Copyable):
     """Per-component world-model losses (already coef·ρ^t/norm weighted).
     `termination` is the BCE head loss (item B); 0 unless bce_coef > 0."""
     var consistency: Scalar[DT]

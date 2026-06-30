@@ -20,6 +20,7 @@ Both helpers put the net in eval mode (`set_attr["training"](0)`) up front so
 BatchNorm-bearing torsos (CNN / ResNet) use running stats — a no-op for the MLP.
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
@@ -288,11 +289,11 @@ def eval_mcts_vs_opponent_cpu[
     var root_save = List[Scalar[DT]](length=LATENT, fill=0)
     var env_ptr = UnsafePointer(to=env)
     var net_ptr = UnsafePointer(to=net)
-    var rep = AZRepCPU[ENV, OBS](env=env_ptr.as_unsafe_any_origin())
-    var dyn = AZDynCPU[ENV, ACT](env=env_ptr.as_unsafe_any_origin())
+    var rep = AZRepCPU[ENV, OBS](env=untracked(env_ptr))
+    var dyn = AZDynCPU[ENV, ACT](env=untracked(env_ptr))
     var pred = AZPredCPU[ENV, OBS, ACT, NET](
-        env=env_ptr.as_unsafe_any_origin(),
-        net=net_ptr.as_unsafe_any_origin(),
+        env=untracked(env_ptr),
+        net=untracked(net_ptr),
     )
     var mcts = EVAL_MCTS(gamma=1.0)
 

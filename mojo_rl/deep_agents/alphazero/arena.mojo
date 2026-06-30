@@ -24,6 +24,7 @@ diverse positions; counts then reflect relative strength, not one game.
 decisive games).
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from std.memory import UnsafePointer
 from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
@@ -450,15 +451,15 @@ def arena_match_cpu[
     var env_ptr = UnsafePointer(to=env)
     var a_ptr = UnsafePointer(to=a)
     var b_ptr = UnsafePointer(to=b)
-    var rep = AZRepCPU[ENV, OBS](env=env_ptr.as_unsafe_any_origin())
-    var dyn = AZDynCPU[ENV, ACT](env=env_ptr.as_unsafe_any_origin())
+    var rep = AZRepCPU[ENV, OBS](env=untracked(env_ptr))
+    var dyn = AZDynCPU[ENV, ACT](env=untracked(env_ptr))
     var pred_a = AZPredCPU[ENV, OBS, ACT, NETA](
-        env=env_ptr.as_unsafe_any_origin(),
-        net=a_ptr.as_unsafe_any_origin(),
+        env=untracked(env_ptr),
+        net=untracked(a_ptr),
     )
     var pred_b = AZPredCPU[ENV, OBS, ACT, NETB](
-        env=env_ptr.as_unsafe_any_origin(),
-        net=b_ptr.as_unsafe_any_origin(),
+        env=untracked(env_ptr),
+        net=untracked(b_ptr),
     )
     var mcts = AMCTS(gamma=1.0)
 

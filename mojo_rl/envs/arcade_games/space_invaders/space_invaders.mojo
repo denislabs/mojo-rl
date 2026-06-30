@@ -115,7 +115,7 @@ struct SpaceInvadersEnv[DTYPE: DType](
     var done: Bool
     var _rng_counter: UInt32
 
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     def __init__(out self):

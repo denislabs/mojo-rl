@@ -889,7 +889,7 @@ struct Palette(ImplicitlyCopyable, Movable):
 
     var ncolors: c_int
     """Number of elements in `colors`."""
-    var colors: Ptr[Color, MutAnyOrigin]
+    var colors: Ptr[Color, MutUntrackedOrigin]
     """An array of colors, `ncolors` long."""
     var version: UInt32
     """Internal use only, do not touch."""
@@ -907,7 +907,7 @@ struct PixelFormatDetails(ImplicitlyCopyable, Movable):
     var format: PixelFormat
     var bits_per_pixel: UInt8
     var bytes_per_pixel: UInt8
-    var padding: ArrayHelper[UInt8, 2, MutAnyOrigin]
+    var padding: ArrayHelper[UInt8, 2, MutUntrackedOrigin]
     var rmask: UInt32
     var gmask: UInt32
     var bmask: UInt32

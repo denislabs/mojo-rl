@@ -35,7 +35,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.call import call_forward, call_vjp
-from .shortcut_loss import ShortcutDynamics, _ilog2, _mao
+from .shortcut_loss import _dyn_fwd, ShortcutDynamics, _ilog2, _mao
 
 
 def sample_one_timestep[
@@ -97,7 +97,7 @@ def sample_one_timestep[
         dyn.set_indices(_mao(sig_idx.unsafe_ptr()), _mao(step_idx.unsafe_ptr()), BF)
         for j in range(BF * ND):
             in_t.data[j] = packed[j]
-        call_forward["cpu", BF](dyn, TensorRefs[M.ARITY](in_t), out_t, None)
+        _dyn_fwd["cpu", BF](dyn, TensorRefs[M.ARITY](in_t), out_t, None)
         for j in range(BF * ND):
             zhat[j] = out_t.data[j]
         var denom = max(1e-4, 1.0 - tau)

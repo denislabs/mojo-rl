@@ -425,7 +425,7 @@ struct LeWMTrainer[
         src: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],
@@ -452,14 +452,14 @@ struct LeWMTrainer[
         pix: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],
         act: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],
@@ -514,14 +514,14 @@ struct LeWMTrainer[
         pix: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],
         act: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],
@@ -553,14 +553,14 @@ struct LeWMTrainer[
         pix: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],
         act: TileTensor[
             dtype=DT,
             address_space=AddressSpace.GENERIC,
-            element_size=1,
+            
             origin=MutAnyOrigin,
             ...,
         ],

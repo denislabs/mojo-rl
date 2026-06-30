@@ -47,7 +47,7 @@ struct AZRepCPU[
     comptime OBS_DIM: Int = Self.OBS
     comptime LATENT_DIM: Int = Self.E.SAVE_SIZE
 
-    var env: UnsafePointer[Self.E, MutAnyOrigin]
+    var env: UnsafePointer[Self.E, MutUntrackedOrigin]
 
     def encode_cpu(
         mut self, obs: List[Float64], mut hidden_out: List[Float64]
@@ -70,7 +70,7 @@ struct AZDynCPU[
     comptime LATENT_DIM: Int = Self.E.SAVE_SIZE
     comptime ACTION_DIM: Int = Self.ACT
 
-    var env: UnsafePointer[Self.E, MutAnyOrigin]
+    var env: UnsafePointer[Self.E, MutUntrackedOrigin]
 
     def step_cpu(
         mut self,
@@ -106,8 +106,8 @@ struct AZPredCPU[
     comptime LATENT_DIM: Int = Self.E.SAVE_SIZE
     comptime ACTION_DIM: Int = Self.ACT
 
-    var env: UnsafePointer[Self.E, MutAnyOrigin]
-    var net: UnsafePointer[Self.NET, MutAnyOrigin]
+    var env: UnsafePointer[Self.E, MutUntrackedOrigin]
+    var net: UnsafePointer[Self.NET, MutUntrackedOrigin]
 
     def predict_cpu(
         mut self, hidden: List[Float64], mut policy_out: List[Float64]

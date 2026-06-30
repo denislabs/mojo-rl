@@ -13,6 +13,7 @@ from .transform import Vec2, Transform2D, Camera, RotatingCamera
 
 from .sdl import (
     _null_ptr,
+    untracked,
     init,
     quit as sdl_quit,
     InitFlags,
@@ -58,8 +59,8 @@ struct Renderer2D(Movable):
 
     # SDL3 handles (Optional because they are populated lazily in
     # init_display() — Mojo nightly's UnsafePointer is non-nullable).
-    var window: Optional[Ptr[Window, MutAnyOrigin]]
-    var sdl_renderer: Optional[Ptr[SDLRenderer, MutAnyOrigin]]
+    var window: Optional[Ptr[Window, MutUntrackedOrigin]]
+    var sdl_renderer: Optional[Ptr[SDLRenderer, MutUntrackedOrigin]]
 
     # Display settings
     var screen_width: Int
@@ -184,16 +185,20 @@ struct Renderer2D(Movable):
 
             # Create window
             var window_title = self.title
-            self.window = create_window(
-                window_title,
-                c_int(self.screen_width),
-                c_int(self.screen_height),
-                WindowFlags(0),
+            self.window = untracked(
+                create_window(
+                    window_title,
+                    c_int(self.screen_width),
+                    c_int(self.screen_height),
+                    WindowFlags(0),
+                )
             )
 
             # Create renderer
             var name = String("")
-            self.sdl_renderer = create_renderer(self.window.value(), name)
+            self.sdl_renderer = untracked(
+                create_renderer(self.window.value(), name)
+            )
 
             self.initialized = True
             self.last_frame_time = get_ticks()

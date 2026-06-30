@@ -14,6 +14,7 @@ BatchNorm but are consistency-only (never used at MCTS inference), so no BN
 train/eval toggle is needed here. Returns the last training loss.
 """
 
+from mojo_rl.nn.core.ptr import untracked
 from std.math import exp, log, sqrt
 from std.memory import alloc
 
@@ -170,12 +171,12 @@ def run_ezv2_selfplay_cpu[
     ](gamma=Float64(gamma))
     var rb = MCTSSequenceReplay[OBS, ACT, CAP](seed=seed ^ UInt64(0xABCDEF))
 
-    var rep_a = MZRepCPU[OBS, LATENT, REP](net=UnsafePointer(to=rep).as_unsafe_any_origin())
+    var rep_a = MZRepCPU[OBS, LATENT, REP](net=untracked(UnsafePointer(to=rep)))
     var dyn_a = MZDynCPU[LATENT, ACT, BINS, DYN](
-        net=UnsafePointer(to=dyn).as_unsafe_any_origin(), v_min=v_min, v_max=v_max
+        net=untracked(UnsafePointer(to=dyn)), v_min=v_min, v_max=v_max
     )
     var pred_a = MZPredCPU[LATENT, ACT, BINS, PRED](
-        net=UnsafePointer(to=pred).as_unsafe_any_origin(), v_min=v_min, v_max=v_max
+        net=untracked(UnsafePointer(to=pred)), v_min=v_min, v_max=v_max
     )
 
     # training batch slabs (time-major) — owned Lists (RAII), fed to the List

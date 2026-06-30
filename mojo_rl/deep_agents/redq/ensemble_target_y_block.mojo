@@ -30,6 +30,7 @@ actor + the ensemble, mirroring the SAC storage `TargetYBlock.step`.
 """
 
 from std.gpu import global_idx
+from mojo_rl.nn.core.ptr import untracked
 from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 from std.random import random_float64
@@ -176,7 +177,7 @@ struct EnsembleTargetYBlock[
     var _device_resample: Bool
     var _subset_offset: TensorImpl[DType.uint64]  # device Philox offset [1]
     var subset_seed: UInt64
-    var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutAnyOrigin]]
+    var _alpha_ptr: Optional[UnsafePointer[Scalar[DT], MutUntrackedOrigin]]
 
     var action_scale: Scalar[DT]
     var gamma: Scalar[DT]
@@ -266,7 +267,7 @@ struct EnsembleTargetYBlock[
         """Wire REDQ's on-device alpha buffer into the combine (GPU device-alpha
         path). After this, `step` on GPU reads alpha from the device buffer
         instead of the `alpha` arg — CUDA-graph capturable."""
-        self._alpha_ptr = p
+        self._alpha_ptr = untracked(p)
 
     def enable_device_resample(mut self, seed: UInt64 = UInt64(0x5EED_F00D)):
         """Switch the GPU subset draw to the on-device Philox kernel (no host

@@ -24,6 +24,7 @@ The trainer wraps `pix_ptr`/`act_ptr` in `TileTensor`s and calls train_step.
 """
 
 from std.memory import alloc
+from mojo_rl.nn.core.ptr import untracked
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 from ...nn.constants import DT
@@ -51,10 +52,10 @@ struct WindowSource[
 
     var buf: Self.BUF
     # Host staging (always): sampled uint8 pixels + fp32 one-hot actions.
-    var pix_u8_host: UnsafePointer[Scalar[DType.uint8], MutAnyOrigin]
-    var act_host: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var pix_u8_host: UnsafePointer[Scalar[DType.uint8], MutUntrackedOrigin]
+    var act_host: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
     # CPU output: converted fp32 pixels (host). GPU: device buffers below.
-    var pix_fp32_host: UnsafePointer[Scalar[DT], MutAnyOrigin]
+    var pix_fp32_host: UnsafePointer[Scalar[DT], MutUntrackedOrigin]
     var pix_u8_dev: Optional[DeviceBuffer[DType.uint8]]
     var pix_fp32_dev: Optional[DeviceBuffer[DT]]
     var act_dev: Optional[DeviceBuffer[DT]]
@@ -70,11 +71,9 @@ struct WindowSource[
                 " params with C*FRAME*FRAME == IMG_DIM (e.g. C=3, FRAME=224)."
             )
         self.buf = buf^
-        self.pix_u8_host = alloc[Scalar[DType.uint8]](
-            Self.NPIX
-        ).as_unsafe_any_origin()
-        self.act_host = alloc[Scalar[DT]](Self.NACT).as_unsafe_any_origin()
-        self.pix_fp32_host = alloc[Scalar[DT]](Self.NPIX).as_unsafe_any_origin()
+        self.pix_u8_host = untracked(alloc[Scalar[DType.uint8]](Self.NPIX))
+        self.act_host = untracked(alloc[Scalar[DT]](Self.NACT))
+        self.pix_fp32_host = untracked(alloc[Scalar[DT]](Self.NPIX))
         self.pix_u8_dev = None
         self.pix_fp32_dev = None
         self.act_dev = None

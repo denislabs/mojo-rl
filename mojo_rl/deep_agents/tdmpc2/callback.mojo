@@ -61,10 +61,10 @@ struct TDMPC2RolloutCallbackCPU[
     comptime PolicyT = TDMPC2Policy[Self.LATENT, Self.ACT, Self.MLP]
     comptime ZA = Self.LATENT + Self.ACT
 
-    var dyn: UnsafePointer[Self.DynT, MutAnyOrigin]
-    var rew: UnsafePointer[Self.RewT, MutAnyOrigin]
-    var pol: UnsafePointer[Self.PolicyT, MutAnyOrigin]
-    var qt: UnsafePointer[List[Self.QNetT], MutAnyOrigin]
+    var dyn: UnsafePointer[Self.DynT, MutUntrackedOrigin]
+    var rew: UnsafePointer[Self.RewT, MutUntrackedOrigin]
+    var pol: UnsafePointer[Self.PolicyT, MutUntrackedOrigin]
+    var qt: UnsafePointer[List[Self.QNetT], MutUntrackedOrigin]
     var decode: TwoHotDecode[Self.BINS, Self.VMIN, Self.VMAX]
     var action_scale: Float64
     var qi: Int
@@ -81,10 +81,10 @@ struct TDMPC2RolloutCallbackCPU[
         qj: Int,
     ) raises -> Self:
         return Self(
-            dyn=UnsafePointer(to=dyn).as_unsafe_any_origin(),
-            rew=UnsafePointer(to=rew).as_unsafe_any_origin(),
-            pol=UnsafePointer(to=pol).as_unsafe_any_origin(),
-            qt=UnsafePointer(to=qt).as_unsafe_any_origin(),
+            dyn=rebind[UnsafePointer[Self.DynT, MutUntrackedOrigin]](UnsafePointer(to=dyn)),
+            rew=rebind[UnsafePointer[Self.RewT, MutUntrackedOrigin]](UnsafePointer(to=rew)),
+            pol=rebind[UnsafePointer[Self.PolicyT, MutUntrackedOrigin]](UnsafePointer(to=pol)),
+            qt=rebind[UnsafePointer[List[Self.QNetT], MutUntrackedOrigin]](UnsafePointer(to=qt)),
             decode=TwoHotDecode[
                 Self.BINS, Self.VMIN, Self.VMAX
             ].make["cpu", INIT=Zero](),
@@ -240,17 +240,17 @@ struct TDMPC2RolloutCallbackGPU[
     comptime QNetT = TDMPC2QNet[Self.LATENT, Self.ACT, Self.MLP, Self.BINS, Self.QP]
     comptime PolicyT = TDMPC2Policy[Self.LATENT, Self.ACT, Self.MLP]
 
-    var dyn: UnsafePointer[Self.DynT, MutAnyOrigin]
-    var rew: UnsafePointer[Self.RewT, MutAnyOrigin]
-    var pol: UnsafePointer[Self.PolicyT, MutAnyOrigin]
+    var dyn: UnsafePointer[Self.DynT, MutUntrackedOrigin]
+    var rew: UnsafePointer[Self.RewT, MutUntrackedOrigin]
+    var pol: UnsafePointer[Self.PolicyT, MutUntrackedOrigin]
     # 5 DISTINCT target-Q head pointers (NUM_Q fixed = 5; a List pointer can't
     # be split into two non-aliasing `mut` borrows, and storage Modules aren't
     # Copyable so a temporary List can't be built either).
-    var qt0: UnsafePointer[Self.QNetT, MutAnyOrigin]
-    var qt1: UnsafePointer[Self.QNetT, MutAnyOrigin]
-    var qt2: UnsafePointer[Self.QNetT, MutAnyOrigin]
-    var qt3: UnsafePointer[Self.QNetT, MutAnyOrigin]
-    var qt4: UnsafePointer[Self.QNetT, MutAnyOrigin]
+    var qt0: UnsafePointer[Self.QNetT, MutUntrackedOrigin]
+    var qt1: UnsafePointer[Self.QNetT, MutUntrackedOrigin]
+    var qt2: UnsafePointer[Self.QNetT, MutUntrackedOrigin]
+    var qt3: UnsafePointer[Self.QNetT, MutUntrackedOrigin]
+    var qt4: UnsafePointer[Self.QNetT, MutUntrackedOrigin]
     var decode: TwoHotDecode[Self.BINS, Self.VMIN, Self.VMAX]
     var action_scale: Scalar[DT]
     # device scratch Tensors (sized BT)
@@ -278,14 +278,14 @@ struct TDMPC2RolloutCallbackGPU[
         ctx: DeviceContext,
     ) raises -> Self:
         return Self(
-            dyn=UnsafePointer(to=dyn).as_unsafe_any_origin(),
-            rew=UnsafePointer(to=rew).as_unsafe_any_origin(),
-            pol=UnsafePointer(to=pol).as_unsafe_any_origin(),
-            qt0=UnsafePointer(to=qt0).as_unsafe_any_origin(),
-            qt1=UnsafePointer(to=qt1).as_unsafe_any_origin(),
-            qt2=UnsafePointer(to=qt2).as_unsafe_any_origin(),
-            qt3=UnsafePointer(to=qt3).as_unsafe_any_origin(),
-            qt4=UnsafePointer(to=qt4).as_unsafe_any_origin(),
+            dyn=rebind[UnsafePointer[Self.DynT, MutUntrackedOrigin]](UnsafePointer(to=dyn)),
+            rew=rebind[UnsafePointer[Self.RewT, MutUntrackedOrigin]](UnsafePointer(to=rew)),
+            pol=rebind[UnsafePointer[Self.PolicyT, MutUntrackedOrigin]](UnsafePointer(to=pol)),
+            qt0=rebind[UnsafePointer[Self.QNetT, MutUntrackedOrigin]](UnsafePointer(to=qt0)),
+            qt1=rebind[UnsafePointer[Self.QNetT, MutUntrackedOrigin]](UnsafePointer(to=qt1)),
+            qt2=rebind[UnsafePointer[Self.QNetT, MutUntrackedOrigin]](UnsafePointer(to=qt2)),
+            qt3=rebind[UnsafePointer[Self.QNetT, MutUntrackedOrigin]](UnsafePointer(to=qt3)),
+            qt4=rebind[UnsafePointer[Self.QNetT, MutUntrackedOrigin]](UnsafePointer(to=qt4)),
             decode=TwoHotDecode[
                 Self.BINS, Self.VMIN, Self.VMAX
             ].make["gpu", INIT=Zero](ctx=ctx),

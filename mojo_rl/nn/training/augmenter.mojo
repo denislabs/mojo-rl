@@ -21,7 +21,7 @@ from layout import Layout, LayoutTensor
 from mojo_rl.nn.constants import TPB, LAYOUT_NCHW, LAYOUT_NHWC
 
 
-trait Augmenter(Movable & ImplicitlyCopyable):
+trait Augmenter(ImplicitlyCopyable):
     """Per-epoch GPU input augmentation hook."""
 
     comptime IS_NOOP: Bool

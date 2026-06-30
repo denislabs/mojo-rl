@@ -14,7 +14,7 @@ from layout import LayoutTensor, Layout
 from std.gpu.host import DeviceContext, DeviceBuffer
 
 
-trait CollisionSystem(Movable & ImplicitlyCopyable):
+trait CollisionSystem(ImplicitlyCopyable):
     """Trait for collision detection systems.
 
     CollisionSystems detect overlapping bodies and generate contact manifolds.

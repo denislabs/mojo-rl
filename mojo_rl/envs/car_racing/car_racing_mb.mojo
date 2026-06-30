@@ -124,7 +124,7 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
     var reset_seed: UInt64
 
     # Renderer (RenderableEnv); transient — never copied/moved.
-    var _renderer: Optional[UnsafePointer[Renderer2D, MutAnyOrigin]]
+    var _renderer: Optional[UnsafePointer[Renderer2D, MutUntrackedOrigin]]
     var _renderer_initialized: Bool
 
     # CPU pixel-observation frame stack — lets a pixel-trained CNN agent be
