@@ -9,7 +9,13 @@ reference Procgen's maze exactly. Ground truth from `scratchpad/maze_game_probe.
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import MazeGame
+from mojo_rl.envs.procgen.games import (
+    MazeGame,
+    DIST_EASY,
+    DIST_HARD,
+    DIST_MEMORY,
+    world_dim_for,
+)
 from mojo_rl.envs.procgen.core.object_ids import SPACE
 
 comptime ASSET_ROOT = String("references/procgen-master/procgen/data/assets/")
@@ -50,6 +56,71 @@ def test_maze_game_reset_parity() raises:
             checksum += (k + 1) * game.grid[k]
             if game.grid[k] == SPACE:
                 spaces += 1
+        assert_equal(spaces, e.spaces)
+        assert_equal(checksum, e.checksum)
+
+
+@fieldwise_init
+struct ModeExpect(ImplicitlyCopyable, Movable):
+    var dist_mode: Int
+    var seed: Int
+    var maze_dim: Int
+    var spaces: Int
+    var checksum: Int
+
+
+def test_maze_distribution_modes() raises:
+    # From maze_game_probe (Easy=15 / Hard=25 / Memory=31). Base draws
+    # (bg_pct_x, bg_idx) are mode-independent and covered above; here we confirm
+    # maze_dim + full grid (spaces + weighted checksum) per mode.
+    var cases = List[ModeExpect]()
+    cases.append(ModeExpect(DIST_EASY, 0, 3, 6, 1323723))
+    cases.append(ModeExpect(DIST_EASY, 7, 15, 126, 1977971))
+    cases.append(ModeExpect(DIST_EASY, 42, 11, 70, 1684265))
+    cases.append(ModeExpect(DIST_HARD, 0, 13, 96, 11432616))
+    cases.append(ModeExpect(DIST_HARD, 7, 5, 16, 10213300))
+    cases.append(ModeExpect(DIST_HARD, 42, 11, 70, 11044095))
+    cases.append(ModeExpect(DIST_MEMORY, 0, 19, 198, 28208711))
+    cases.append(ModeExpect(DIST_MEMORY, 7, 5, 16, 23935666))
+    cases.append(ModeExpect(DIST_MEMORY, 42, 5, 16, 23926454))
+
+    # One game per mode (reused across its seeds) to limit asset reloads.
+    var easy = MazeGame(ASSET_ROOT, DIST_EASY)
+    var hard = MazeGame(ASSET_ROOT, DIST_HARD)
+    var mem = MazeGame(ASSET_ROOT, DIST_MEMORY)
+
+    for ci in range(len(cases)):
+        var e = cases[ci]
+        var wd = world_dim_for(e.dist_mode)
+        if e.dist_mode == DIST_EASY:
+            easy.reset(e.seed)
+        elif e.dist_mode == DIST_HARD:
+            hard.reset(e.seed)
+        else:
+            mem.reset(e.seed)
+
+        var checksum = 0
+        var spaces = 0
+        for k in range(wd * wd):
+            var v: Int
+            if e.dist_mode == DIST_EASY:
+                v = easy.grid[k]
+            elif e.dist_mode == DIST_HARD:
+                v = hard.grid[k]
+            else:
+                v = mem.grid[k]
+            checksum += (k + 1) * v
+            if v == SPACE:
+                spaces += 1
+
+        var md: Int
+        if e.dist_mode == DIST_EASY:
+            md = easy.maze_dim
+        elif e.dist_mode == DIST_HARD:
+            md = hard.maze_dim
+        else:
+            md = mem.maze_dim
+        assert_equal(md, e.maze_dim)
         assert_equal(spaces, e.spaces)
         assert_equal(checksum, e.checksum)
 

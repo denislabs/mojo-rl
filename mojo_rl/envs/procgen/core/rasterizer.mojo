@@ -19,6 +19,35 @@ from .assets import Sprite
 comptime RES = 64  # observation resolution (RES_W == RES_H, constant forever)
 
 
+def downscale(src: List[UInt8], src_res: Int, dst_res: Int) -> List[UInt8]:
+    """Box-average a `src_res²` RGB buffer down to `dst_res²` (requires
+    src_res % dst_res == 0). Used to anti-alias the observation: rendering at
+    `ss·64` then averaging to 64 keeps small sprites (the agent) from vanishing
+    under nearest sampling. Reference Procgen renders the obs directly at 64 with
+    antialiasing off; supersampling trades a little reference-purity for a
+    reliably legible training signal."""
+    var f = src_res // dst_res
+    var out = List[UInt8]()
+    out.resize(dst_res * dst_res * 3, 0)
+    var n = f * f
+    for oy in range(dst_res):
+        for ox in range(dst_res):
+            var sr = 0
+            var sg = 0
+            var sb = 0
+            for by in range(f):
+                for bx in range(f):
+                    var off = ((oy * f + by) * src_res + (ox * f + bx)) * 3
+                    sr += Int(src[off + 0])
+                    sg += Int(src[off + 1])
+                    sb += Int(src[off + 2])
+            var o = (oy * dst_res + ox) * 3
+            out[o + 0] = UInt8(sr // n)
+            out[o + 1] = UInt8(sg // n)
+            out[o + 2] = UInt8(sb // n)
+    return out^
+
+
 struct Canvas(Copyable, Movable):
     """Square RGB byte canvas at a runtime resolution."""
 

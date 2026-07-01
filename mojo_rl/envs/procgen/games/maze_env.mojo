@@ -12,7 +12,7 @@ camera) are a follow-up. See `docs/PROCGEN_PORT.md`.
 """
 
 from ..core.level_scheduler import LevelScheduler
-from .maze import MazeGame
+from .maze import MazeGame, DIST_HARD
 
 
 struct StepResult(Copyable, Movable):
@@ -51,18 +51,19 @@ struct MazeEnv(Copyable, Movable):
         rand_seed: Int = 0,
         num_levels: Int = 0,
         start_level: Int = 0,
+        dist_mode: Int = DIST_HARD,
     ) raises:
         self.scheduler = LevelScheduler(rand_seed, num_levels, start_level)
-        self.game = MazeGame(asset_root)
+        self.game = MazeGame(asset_root, dist_mode)
         self.current_level_seed = 0
 
     def reset(mut self) -> List[UInt8]:
         self.current_level_seed = self.scheduler.next_level_seed()
         self.game.reset(self.current_level_seed)
-        return self.game.render()
+        return self.game.render_obs()
 
     def obs(self) -> List[UInt8]:
-        return self.game.render()
+        return self.game.render_obs()
 
     def render(self, res: Int) -> List[UInt8]:
         """A square RGB frame at an arbitrary resolution (for human play /
@@ -72,5 +73,8 @@ struct MazeEnv(Copyable, Movable):
     def step(mut self, action: Int) -> StepResult:
         var reward = self.game.step(action)
         return StepResult(
-            self.game.render(), reward, self.game.done, self.game.level_complete
+            self.game.render_obs(),
+            reward,
+            self.game.done,
+            self.game.level_complete,
         )

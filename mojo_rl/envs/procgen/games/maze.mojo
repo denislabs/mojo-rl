@@ -20,14 +20,28 @@ from ..core.entity import Entity
 from ..core.randgen import RandGen
 from ..core.mazegen import MazeGen, MAZE_OFFSET
 from ..core.assets import Sprite, load_sprite, load_topdown_backgrounds
-from ..core.rasterizer import Canvas, RES
+from ..core.rasterizer import Canvas, RES, downscale
 from ..core.object_ids import SPACE, WALL_OBJ, PLAYER, INVALID_OBJ
 
 comptime GOAL = 2
 comptime REWARD: Float32 = 10.0
-comptime WORLD_DIM = 25  # HardMode
 comptime RENDER_EPS: Float32 = 0.02
 comptime BG_COUNT = 9  # topdown_backgrounds (resources.cpp)
+comptime OBS_SS = 4  # observation supersample factor (render 4·64 → box-avg → 64)
+
+# DistributionMode (game.h): world_dim + center-agent camera.
+comptime DIST_EASY = 0
+comptime DIST_HARD = 1
+comptime DIST_MEMORY = 10
+comptime MAZE_VISIBILITY: Float32 = 8.0  # maze ctor visibility (Memory window)
+
+
+def world_dim_for(dist_mode: Int) -> Int:
+    if dist_mode == DIST_EASY:
+        return 15
+    if dist_mode == DIST_MEMORY:
+        return 31
+    return 25  # HardMode (default)
 
 
 struct MazeGame(Copyable, Movable):
@@ -46,12 +60,17 @@ struct MazeGame(Copyable, Movable):
     var bg_pct_x: Float32
     var background_index: Int
     var maze_dim: Int
+    var dist_mode: Int
+    var center_agent: Bool
 
-    def __init__(out self, asset_root: String) raises:
+    def __init__(out self, asset_root: String, dist_mode: Int = DIST_HARD) raises:
         self.rand_gen = RandGen()
         self.grid = List[Int]()
-        self.w = WORLD_DIM
-        self.h = WORLD_DIM
+        self.dist_mode = dist_mode
+        self.center_agent = dist_mode == DIST_MEMORY
+        var wd = world_dim_for(dist_mode)
+        self.w = wd
+        self.h = wd
         self.agent = Entity.make(0.5, 0.5, 0.5, PLAYER)
         self.sand = load_sprite(asset_root, "kenney/Ground/Sand/sandCenter.png")
         self.cheese = load_sprite(asset_root, "misc_assets/cheese.png")
@@ -113,9 +132,9 @@ struct MazeGame(Copyable, Movable):
         self.bg_pct_x = self.rand_gen.rand01()
         self.background_index = self.rand_gen.randn(BG_COUNT)
 
-        var maze_dim = self.rand_gen.randn((WORLD_DIM - 1) // 2) * 2 + 3
+        var maze_dim = self.rand_gen.randn((self.w - 1) // 2) * 2 + 3
         self.maze_dim = maze_dim
-        var margin = (WORLD_DIM - maze_dim) // 2
+        var margin = (self.w - maze_dim) // 2
 
         # Fill the whole game grid with wall, then overlay the maze region.
         self.grid = List[Int]()
@@ -181,17 +200,32 @@ struct MazeGame(Copyable, Movable):
         self.done = reward > 0
         return reward
 
+    def render_obs(self, ss: Int = OBS_SS) -> List[UInt8]:
+        # The 64×64 training observation, anti-aliased by rendering at ss·64 and
+        # box-averaging down — keeps the ~2.5px agent from vanishing.
+        return downscale(self.render(RES * ss), RES * ss, RES)
+
     def render(self, out_res: Int = RES) -> List[UInt8]:
-        # out_res=64 = the agent observation; pass a larger value (e.g. 512) for
-        # a crisp human-play / debug frame where small sprites stay visible.
+        # out_res=64 = a single-sample obs frame; pass a larger value (e.g. 512)
+        # for a crisp human-play / debug frame. `render_obs` supersamples this.
         var canvas = Canvas(out_res)
         canvas.fill(0, 0, 0)
 
-        var visibility = Float32(self.w if self.w > self.h else self.h)
+        # Camera (prepare_for_drawing): Memory mode centers on the agent with an
+        # 8-cell window; Easy/Hard show the whole world.
+        var visibility: Float32
+        var center_x: Float32
+        var center_y: Float32
+        if self.center_agent:
+            visibility = MAZE_VISIBILITY
+            center_x = self.agent.x
+            center_y = self.agent.y
+        else:
+            visibility = Float32(self.w if self.w > self.h else self.h)
+            center_x = Float32(self.w) * 0.5
+            center_y = Float32(self.h) * 0.5
         var view_dim = visibility
         var unit = Float32(out_res) / view_dim
-        var center_x = Float32(self.w) * 0.5
-        var center_y = Float32(self.h) * 0.5
         var x_off = unit * (center_x - view_dim / 2)
         var y_off = unit * (center_y - view_dim / 2)
 
