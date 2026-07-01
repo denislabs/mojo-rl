@@ -13,6 +13,14 @@ Procgen generalization setup: each parallel env gets a distinct `rand_seed`, so
 they sample different levels from the shared train set (`num_levels`) — this both
 covers the level distribution and de-correlates the parallel rollouts.
 
+**Start with a `num_levels` sweep (this file defaults to 1).** Maze is a hard
+sparse-reward generalization task: 200 distinct pixel mazes need ~10-200M steps
+(the paper uses 200M). Confirm the GPU pipeline learns on ONE level first
+(`num_levels=1` → `eval/mean_return` should climb toward ~10, matching the CPU
+proof), then step up 1 → 10 → 50 → 200. Each level-count increase needs
+proportionally more steps; at a fixed budget, `mean_return` falls off as levels
+grow (that's the generalization curve, not a bug).
+
 Run:
     pixi run -e apple  mojo run -I . examples/procgen/maze_rainbow_training_gpu.mojo   # compile/smoke
     pixi run -e nvidia mojo run -I . examples/procgen/maze_rainbow_training_gpu.mojo   # training
@@ -53,8 +61,9 @@ comptime UPDATES_PER_STEP = 4  # replay ratio = 4 / 16 = 0.25
 comptime SEED_BASE = 1000  # per-env rand_seed = SEED_BASE + i (distinct levels)
 
 # Procgen generalization: train on a finite level set, Easy difficulty.
+# SWEEP KNOB — start at 1 (memorize one maze, confirm learning), then 10, 50, 200.
 comptime DIST_MODE = DIST_EASY
-comptime NUM_LEVELS = 200
+comptime NUM_LEVELS = 1
 
 # GPU-resident uint8 obs ring (pixel obs are exact k/255 → lossless).
 comptime BUFFER_CAPACITY = 50_000
@@ -65,8 +74,8 @@ comptime BATCH_SIZE = 32
 comptime V_MIN = Scalar[DT](-1.0)
 comptime V_MAX = Scalar[DT](11.0)
 
-comptime WARMUP = 20_000
-comptime NUM_STEPS = 2_000_000
+comptime WARMUP = 10_000
+comptime NUM_STEPS = 1_000_000  # single level converges well inside this
 comptime LR = Scalar[DT](6.25e-5)
 
 comptime CKPT_EVERY = 250_000
