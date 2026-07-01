@@ -51,6 +51,24 @@ import numpy as np
 EXTRACTED_DIR = os.environ['CIFAR10_EXTRACTED_DIR']
 os.makedirs(EXTRACTED_DIR, exist_ok=True)
 
+# Resolve an HF token from the env, else from a .env file in the CWD (the same
+# .env used for the logger, e.g. RL_MONITOR_API_KEY) — huggingface_hub reads
+# HF_TOKEN from os.environ. Optional (the dataset is public); a token only lifts
+# rate limits / speeds the CDN.
+if not os.environ.get('HF_TOKEN') and not os.environ.get('HUGGING_FACE_HUB_TOKEN'):
+    if os.path.exists('.env'):
+        for _line in open('.env'):
+            _line = _line.strip()
+            if _line.startswith('export '):
+                _line = _line[7:]
+            if not _line or _line.startswith('#') or '=' not in _line:
+                continue
+            _k, _v = _line.split('=', 1)
+            _v = _v.strip().strip('"').strip("'")
+            if _k.strip() in ('HF_TOKEN', 'HUGGING_FACE_HUB_TOKEN') and _v:
+                os.environ['HF_TOKEN'] = _v
+                break
+
 def _write_split(parquet_name, out_files, per_file):
     print('  [cifar10] fetching ' + parquet_name + ' from HuggingFace (uoft-cs/cifar10)')
     path = hf_hub_download('uoft-cs/cifar10', parquet_name, repo_type='dataset')
