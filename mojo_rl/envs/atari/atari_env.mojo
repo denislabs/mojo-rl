@@ -25,6 +25,7 @@ Usage:
 """
 
 from std.memory import alloc, memset
+from std.random import random_float64
 from mojo_rl.core import State, Action, BoxDiscreteActionEnv
 from mojo_rl.nn.constants import LAYOUT_NCHW, LAYOUT_NHWC
 from .environment import AtariEnvironment, load_rom
@@ -56,6 +57,14 @@ comptime RGB_OBS_PLANE: Int = RGB_OBS_W * RGB_OBS_H  # 9216 (one 96×96 channel)
 comptime RGB_FRAME_SIZE: Int = 3 * RGB_OBS_PLANE  # 27648 (one [3,96,96] frame)
 comptime RGB_STACK_SIZE: Int = 4 * RGB_FRAME_SIZE  # 110592 ([12,96,96] stack)
 comptime RGB_SRC_PLANE: Int = FRAME_WIDTH * FRAME_HEIGHT  # 33600 (one src channel)
+
+# Grayscale-96 SINGLE-FRAME buffer size (OBS_MODE==3 — the DreamerV3 Atari
+# preprocessing: one grayscale frame area-resized to 96×96, NO frame stacking
+# (the RSSM carries temporal state). 96 (not 84) so the CNN's H%16==0 holds.
+# Reuses `_resize_plane_160x210_to_96x96` on the single gray plane.
+comptime GRAY96_OBS_W: Int = 96
+comptime GRAY96_OBS_H: Int = 96
+comptime GRAY96_SIZE: Int = GRAY96_OBS_W * GRAY96_OBS_H  # 9216 (one 96×96 frame)
 
 
 # ============================================================================
@@ -233,7 +242,9 @@ struct AtariEnv[
     Parameters:
         OBS_MODE: 0 = RAM (128 floats), 1 = pixels grayscale (4×84×84 = 28224
             floats), 2 = pixels RGB-96 (4×[3,96,96] = 110592 floats — the
-            EfficientZero-V2 Atari preprocessing).
+            EfficientZero-V2 Atari preprocessing), 3 = pixels grayscale-96
+            SINGLE frame (96×96 = 9216 floats — the DreamerV3 Atari
+            preprocessing: no frame stacking, the RSSM carries temporal state).
         DTYPE: Observation dtype (default float32).
         LAYOUT: Observation layout (default NCHW).
 
@@ -261,6 +272,10 @@ struct AtariEnv[
     var clip_reward: Bool
     var episodic_life: Bool
     var full_action_set: Bool
+    # DreamerV3 / Machado Atari protocol (default off → existing modes unchanged).
+    var sticky_prob: Float64  # prob of repeating the previous action (0.25 = ALE sticky)
+    var noop_max: Int  # random no-op starts: up to this many NOOPs after reset (0 = off)
+    var _last_ale_action: UInt8  # last executed ALE action (for sticky repeat)
     # Episodic-life bookkeeping (only used when episodic_life=True).
     var _prev_lives: Int
     var _was_real_done: Bool  # true game-over on the last step (drives reset)
@@ -290,6 +305,8 @@ struct AtariEnv[
         clip_reward: Bool = False,
         episodic_life: Bool = False,
         full_action_set: Bool = False,
+        sticky_prob: Float64 = 0.0,
+        noop_max: Int = 0,
     ) raises:
         """Create an AtariEnv for a registry game, loading its ROM from
         `roms/<name>.bin` (relative to the working directory).
@@ -307,6 +324,8 @@ struct AtariEnv[
             clip_reward=clip_reward,
             episodic_life=episodic_life,
             full_action_set=full_action_set,
+            sticky_prob=sticky_prob,
+            noop_max=noop_max,
         )
 
     def __init__(
@@ -319,6 +338,8 @@ struct AtariEnv[
         clip_reward: Bool = False,
         episodic_life: Bool = False,
         full_action_set: Bool = False,
+        sticky_prob: Float64 = 0.0,
+        noop_max: Int = 0,
     ):
         """Create an AtariEnv from an explicitly loaded ROM.
 
@@ -364,6 +385,9 @@ struct AtariEnv[
         self.clip_reward = clip_reward
         self.episodic_life = episodic_life
         self.full_action_set = full_action_set
+        self.sticky_prob = sticky_prob
+        self.noop_max = noop_max
+        self._last_ale_action = 0  # ALE NOOP
         self._prev_lives = 0
         self._was_real_done = True
         self._life_lost = False
@@ -385,6 +409,16 @@ struct AtariEnv[
             self.rgb_buf = alloc[UInt8](3 * RGB_SRC_PLANE)
             self.frame_idx = 0
             memset(self.frame_stack.value(), 0, RGB_STACK_SIZE)
+        elif Self.OBS_MODE == 3:
+            # Grayscale-96 single frame: `frame_stack` holds ONE 96×96 frame
+            # (no ring). Reuse gray_buf (160×210) as the maxpool scratch.
+            self.frame_stack = alloc[UInt8](GRAY96_SIZE)
+            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
+            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
+            self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
+            self.rgb_buf = None
+            self.frame_idx = 0
+            memset(self.frame_stack.value(), 0, GRAY96_SIZE)
         else:
             self.frame_stack = None
             self.raw_frame_a = None
@@ -402,6 +436,9 @@ struct AtariEnv[
         self.clip_reward = take.clip_reward
         self.episodic_life = take.episodic_life
         self.full_action_set = take.full_action_set
+        self.sticky_prob = take.sticky_prob
+        self.noop_max = take.noop_max
+        self._last_ale_action = take._last_ale_action
         self._prev_lives = take._prev_lives
         self._was_real_done = take._was_real_done
         self._life_lost = take._life_lost
@@ -533,6 +570,39 @@ struct AtariEnv[
                     )
                 out_off += RGB_FRAME_SIZE
 
+    # ── grayscale-96 single-frame helpers (OBS_MODE==3 — DreamerV3 Atari) ─
+
+    def _push_gray96_frame(mut self):
+        """Max-pool a/b → grayscale (gray_buf 160×210) → area-resize to the
+        single 96×96 `frame_stack` slot (no ring — DreamerV3 doesn't stack)."""
+        self._bgra_to_gray_maxpool()
+        _resize_plane_160x210_to_96x96(
+            self.gray_buf.value(), self.frame_stack.value()
+        )
+
+    def _write_gray96_obs_into[
+        o: MutOrigin
+    ](self, obs_out: UnsafePointer[Scalar[Self.dtype], o]):
+        """Write the single 96×96 grayscale frame as normalized floats into
+        `obs_out` (GRAY96_SIZE scalars). SIMD uint8→float `/255`."""
+        comptime W = 16
+        comptime assert GRAY96_SIZE % W == 0, "gray96 must be SIMD-divisible"
+        var fs = self.frame_stack.value()
+        for j in range(0, GRAY96_SIZE, W):
+            obs_out.store(
+                j, fs.load[width=W](j).cast[Self.dtype]() / 255.0
+            )
+
+    def _apply_sticky(mut self, ale_action: UInt8) -> UInt8:
+        """Machado sticky actions: with prob `sticky_prob`, repeat the previous
+        ALE action instead of the requested one; record the executed action.
+        `sticky_prob=0.0` (default) → always the requested action."""
+        var a = ale_action
+        if self.sticky_prob > 0.0 and random_float64() < self.sticky_prob:
+            a = self._last_ale_action
+        self._last_ale_action = a
+        return a
+
     # ========================================================================
     # Env trait (base)
     # ========================================================================
@@ -561,6 +631,21 @@ struct AtariEnv[
         self._was_real_done = True
         self._life_lost = False
         self._prev_lives = 0
+        self._last_ale_action = 0  # ALE NOOP (sticky-action history)
+
+        # Random no-op starts (Machado): advance a random number of NOOP frames
+        # for initial-state diversity before capturing the first obs (noop_max=0
+        # → off, existing behavior).
+        comptime if Self.OBS_MODE >= 1:
+            if self.noop_max > 0:
+                var nk = Int(random_float64() * Float64(self.noop_max + 1))
+                for _ in range(nk):
+                    set_action(self.env.state, ACTION_NOOP)
+                    run_frame(
+                        self.env.state,
+                        self.env.rom.as_unsafe_any_origin(),
+                        self.env.rom_size,
+                    )
 
         comptime if Self.OBS_MODE == 1:
             # Render initial frame into all 4 stack slots
@@ -591,6 +676,18 @@ struct AtariEnv[
             self.frame_idx = 0
             for _ in range(4):
                 self._push_rgb_frame_to_stack()
+        elif Self.OBS_MODE == 3:
+            # Grayscale-96 single frame: render the initial frame (a==b after
+            # reset) → maxpool → resize into the single 96×96 slot.
+            run_frame_video(
+                self.env.state,
+                self.env.rom.as_unsafe_any_origin(),
+                self.env.rom_size,
+                self.raw_frame_a.value().as_unsafe_any_origin(),
+            )
+            for i in range(FRAME_BGRA_SIZE):
+                self.raw_frame_b.value()[i] = self.raw_frame_a.value()[i]
+            self._push_gray96_frame()
 
         return AtariEnvState(index=0)
 
@@ -695,6 +792,12 @@ struct AtariEnv[
             )
             self._write_rgb_stack_obs_into(obs.unsafe_ptr())
             return obs^
+        elif Self.OBS_MODE == 3:
+            var obs = List[Scalar[Self.DTYPE]](
+                length=GRAY96_SIZE, fill=Scalar[Self.DTYPE](0.0)
+            )
+            self._write_gray96_obs_into(obs.unsafe_ptr())
+            return obs^
         else:
             var obs = List[Scalar[Self.DTYPE]](
                 length=RAM_SIZE, fill=Scalar[Self.DTYPE](0.0)
@@ -713,6 +816,8 @@ struct AtariEnv[
             return FRAME_STACK_SIZE  # 4 * 84 * 84 = 28224
         elif Self.OBS_MODE == 2:
             return RGB_STACK_SIZE  # 4 * 3 * 96 * 96 = 110592
+        elif Self.OBS_MODE == 3:
+            return GRAY96_SIZE  # 96 * 96 = 9216 (single grayscale frame)
         else:
             return RAM_SIZE  # 128
 
@@ -781,6 +886,8 @@ struct AtariEnv[
             return self._step_obs_pixel(action)
         elif Self.OBS_MODE == 2:
             return self._step_obs_rgb(action)
+        elif Self.OBS_MODE == 3:
+            return self._step_obs_gray96(action)
         else:
             return self._step_obs_ram(action)
 
@@ -811,6 +918,10 @@ struct AtariEnv[
         elif Self.OBS_MODE == 2:
             var reward = self._advance_pixel_rgb(action)
             self._write_rgb_stack_obs_into(obs_out)
+            return (reward, self.done)
+        elif Self.OBS_MODE == 3:
+            var reward = self._advance_pixel_gray96(action)
+            self._write_gray96_obs_into(obs_out)
             return (reward, self.done)
         else:
             var reward = self.env.step_game(self.game, action)
@@ -955,5 +1066,73 @@ struct AtariEnv[
 
         # Max-pool → planar RGB → resize → push to [12,96,96] stack
         self._push_rgb_frame_to_stack()
+
+        return self._clip(reward)
+
+    # ── grayscale-96 single-frame step (OBS_MODE==3 — DreamerV3 Atari) ────
+
+    def _step_obs_gray96(
+        mut self, action: Int
+    ) -> Tuple[List[Scalar[Self.DTYPE]], Scalar[Self.DTYPE], Bool]:
+        """Gray-96 single-frame step: list-returning wrapper over
+        `_advance_pixel_gray96`."""
+        var reward = self._advance_pixel_gray96(action)
+        var obs = self.get_obs_list()
+        return (obs^, reward, self.done)
+
+    def _advance_pixel_gray96(mut self, action: Int) -> Scalar[Self.DTYPE]:
+        """Gray-96 single-frame step (DreamerV3 preprocessing): sticky-action
+        gating, manual frame-skip=4 rendering the last 2 sub-frames, max-pool
+        a/b → grayscale → area-resize to a single 96×96 obs (NO stacking).
+        Honors `sticky_prob`, `full_action_set`, `clip_reward`, `episodic_life`.
+        Mirrors `_advance_pixel_rgb` but keeps a single gray frame."""
+        var ale_action = self._apply_sticky(self._ale_action(action))
+        var prev_score = Int(self.env.state.score)
+
+        comptime PIXEL_FRAME_SKIP: Int = 4
+
+        for _ in range(PIXEL_FRAME_SKIP - 2):
+            set_action(self.env.state, ale_action)
+            run_frame(
+                self.env.state,
+                self.env.rom.as_unsafe_any_origin(),
+                self.env.rom_size,
+            )
+
+        set_action(self.env.state, ale_action)
+        run_frame_video(
+            self.env.state,
+            self.env.rom.as_unsafe_any_origin(),
+            self.env.rom_size,
+            self.raw_frame_a.value().as_unsafe_any_origin(),
+        )
+        set_action(self.env.state, ale_action)
+        run_frame_video(
+            self.env.state,
+            self.env.rom.as_unsafe_any_origin(),
+            self.env.rom_size,
+            self.raw_frame_b.value().as_unsafe_any_origin(),
+        )
+
+        var sig = game_signals(self.game, self.env.state, prev_score)
+        var reward = sig.reward
+        self.env.state.score = Int32(sig.score)
+        self.env.state.reward = Int32(reward)
+        self.env.state.lives = UInt8(sig.lives)
+        self.env.state.terminal = sig.terminal
+        self.env.natural_terminal = sig.terminal
+
+        if (
+            self.env.max_frames > 0
+            and Int(self.env.state.frame_number) >= self.env.max_frames
+        ):
+            self.env.state.terminal = True
+
+        self.done = self.env.is_terminal()
+        self.episode_reward += Float64(reward)  # raw reward for score logging
+        self._apply_episodic()  # may upgrade done on life loss
+
+        # Max-pool → grayscale → resize → single 96×96 obs
+        self._push_gray96_frame()
 
         return self._clip(reward)
