@@ -32,7 +32,7 @@ from mojo_rl.deep_agents.training import run_offpolicy_discrete_train
 from mojo_rl.envs.procgen.games import MazeGymEnv
 from mojo_rl.envs.procgen.games.maze import DIST_EASY
 
-comptime ASSET_ROOT = String("references/procgen-master/procgen/data/assets/")
+comptime ASSET_ROOT = String("assets/procgen/")
 
 comptime MazeCNNEnv = MazeGymEnv[DT]
 comptime OBS_DIM = MazeCNNEnv.OBS_DIM  # 3 × 84 × 84 = 21168
@@ -90,10 +90,18 @@ def main() raises:
     )
 
     var env = MazeCNNEnv(
-        ASSET_ROOT, rand_seed=0, num_levels=1, start_level=0, dist_mode=DIST_EASY
+        ASSET_ROOT,
+        rand_seed=0,
+        num_levels=1,
+        start_level=0,
+        dist_mode=DIST_EASY,
     )
     var eval_env = MazeCNNEnv(
-        ASSET_ROOT, rand_seed=0, num_levels=1, start_level=0, dist_mode=DIST_EASY
+        ASSET_ROOT,
+        rand_seed=0,
+        num_levels=1,
+        start_level=0,
+        dist_mode=DIST_EASY,
     )
 
     print("Environment: Procgen Maze (CPU, single env, Easy, 1 level)")

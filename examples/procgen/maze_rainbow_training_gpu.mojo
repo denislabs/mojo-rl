@@ -44,7 +44,7 @@ from mojo_rl.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
 from mojo_rl.envs.procgen.games import MazeGymEnv, MazeAssets
 from mojo_rl.envs.procgen.games.maze import DIST_EASY
 
-comptime ASSET_ROOT = String("references/procgen-master/procgen/data/assets/")
+comptime ASSET_ROOT = String("assets/procgen/")
 
 comptime MazeCNNEnv = MazeGymEnv[DT]
 comptime OBS_DIM = MazeCNNEnv.OBS_DIM  # 3 × 84 × 84 = 21168
@@ -86,7 +86,8 @@ comptime BatchedMaze = BatchedCpuDiscreteEnv[MazeCNNEnv, N_ENVS, OBS_DIM]
 
 def _make_envs(assets: ArcPointer[MazeAssets]) -> List[MazeCNNEnv]:
     """N_ENVS independent maze envs sharing one read-only asset bundle, each
-    with a distinct rand_seed so they sample different levels from the train set."""
+    with a distinct rand_seed so they sample different levels from the train set.
+    """
     var envs = List[MazeCNNEnv]()
     for i in range(N_ENVS):
         envs.append(
@@ -110,8 +111,15 @@ def main() raises:
 
     with DeviceContext() as ctx:
         var agent = RainbowCNN[
-            "gpu", NUM_ACTIONS, BATCH_SIZE, BUFFER_CAPACITY,
-            FRAMES, NUM_ATOMS, HIDDEN, N_STEP, OBS_STORE_DT,
+            "gpu",
+            NUM_ACTIONS,
+            BATCH_SIZE,
+            BUFFER_CAPACITY,
+            FRAMES,
+            NUM_ATOMS,
+            HIDDEN,
+            N_STEP,
+            OBS_STORE_DT,
         ](
             ctx=ctx,
             lr=LR,
@@ -144,9 +152,7 @@ def main() raises:
             Float64(UPDATES_PER_STEP) / Float64(N_ENVS),
             ")",
         )
-        print(
-            "  Buffer:", BUFFER_CAPACITY, "(GPU-resident, uint8 obs ring)"
-        )
+        print("  Buffer:", BUFFER_CAPACITY, "(GPU-resident, uint8 obs ring)")
         print("  Batch:", BATCH_SIZE, " N-step:", N_STEP, " lr:", LR)
         print("  Warmup:", WARMUP, " Total steps:", NUM_STEPS)
         print("  Checkpoint:", CKPT_PATH, "(every", CKPT_EVERY, "steps)")

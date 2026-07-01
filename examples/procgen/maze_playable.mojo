@@ -18,7 +18,7 @@ from mojo_rl.envs.procgen.core.pixel_window import PixelWindow
 from mojo_rl.render.sdl.sdl_keyboard import get_keyboard_state
 from mojo_rl.render.sdl.sdl_scancode import Scancode
 
-comptime ASSET_ROOT = String("references/procgen-master/procgen/data/assets/")
+comptime ASSET_ROOT = String("assets/procgen/")
 comptime WIN = 512  # window size (64×64 obs upscaled ×8)
 
 
@@ -64,8 +64,11 @@ def main() raises:
             var res = env.step(action)
             if res.level_complete:
                 print(
-                    "Level", episode, "complete! (seed",
-                    env.current_level_seed, ") — loading next…",
+                    "Level",
+                    episode,
+                    "complete! (seed",
+                    env.current_level_seed,
+                    ") — loading next…",
                 )
                 episode += 1
                 _ = env.reset()

@@ -12,7 +12,7 @@ Run from repo root:
 from std.python import Python
 from mojo_rl.envs.procgen.games import MazeGame
 
-comptime ASSET_ROOT = String("references/procgen-master/procgen/data/assets/")
+comptime ASSET_ROOT = String("assets/procgen/")
 comptime SEED = 7
 comptime OUT_RES = 512
 comptime OUT = String("procgen_maze_seed7.png")
