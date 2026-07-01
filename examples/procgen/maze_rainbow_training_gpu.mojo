@@ -61,9 +61,10 @@ comptime UPDATES_PER_STEP = 4  # replay ratio = 4 / 16 = 0.25
 comptime SEED_BASE = 1000  # per-env rand_seed = SEED_BASE + i (distinct levels)
 
 # Procgen generalization: train on a finite level set, Easy difficulty.
-# SWEEP KNOB — start at 1 (memorize one maze, confirm learning), then 10, 50, 200.
+# SWEEP KNOB — 1 (trivial: seed-0 Easy is a tiny 3×3 maze) confirmed learning;
+# 10 spans seeds 0..9 (maze_dim up to 15), a real multi-maze test; then 50, 200.
 comptime DIST_MODE = DIST_EASY
-comptime NUM_LEVELS = 1
+comptime NUM_LEVELS = 10
 
 # GPU-resident uint8 obs ring (pixel obs are exact k/255 → lossless).
 comptime BUFFER_CAPACITY = 50_000
