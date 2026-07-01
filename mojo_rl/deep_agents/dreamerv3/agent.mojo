@@ -349,7 +349,7 @@ struct DreamerV3Agent[
         if checkpoint_path.byte_length() > 0:
             self.save(checkpoint_path)
         var final_ev = self._greedy_eval[E](
-            env, eval_episodes, ep_len, obsbuf, actbuf, frame_repeat
+            env, eval_episodes, ep_len, obsbuf, actbuf
         )
         obsbuf.free()
         actbuf.free()
