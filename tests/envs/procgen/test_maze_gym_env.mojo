@@ -9,7 +9,7 @@ from std.testing import assert_equal, assert_true, TestSuite
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.envs.procgen.games import MazeGymEnv
 
-comptime ASSET_ROOT = String("references/procgen-master/procgen/data/assets/")
+comptime ASSET_ROOT = String("assets/procgen/")
 
 
 def _drive[E: BoxDiscreteActionEnv](mut env: E) -> Int:

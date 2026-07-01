@@ -18,7 +18,7 @@ from mojo_rl.envs.procgen.games import (
 )
 from mojo_rl.envs.procgen.core.object_ids import SPACE
 
-comptime ASSET_ROOT = String("references/procgen-master/procgen/data/assets/")
+comptime ASSET_ROOT = String("assets/procgen/")
 
 
 @fieldwise_init
