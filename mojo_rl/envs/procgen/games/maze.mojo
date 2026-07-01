@@ -200,10 +200,11 @@ struct MazeGame(Copyable, Movable):
         self.done = reward > 0
         return reward
 
-    def render_obs(self, ss: Int = OBS_SS) -> List[UInt8]:
-        # The 64×64 training observation, anti-aliased by rendering at ss·64 and
-        # box-averaging down — keeps the ~2.5px agent from vanishing.
-        return downscale(self.render(RES * ss), RES * ss, RES)
+    def render_obs(self, res: Int = RES, ss: Int = OBS_SS) -> List[UInt8]:
+        # Anti-aliased square RGB obs: render at ss·res and box-average down, so
+        # the small agent doesn't vanish under nearest sampling. Default 64×64 is
+        # the canonical benchmark obs; a CNN trainer can request e.g. res=84.
+        return downscale(self.render(res * ss), res * ss, res)
 
     def render(self, out_res: Int = RES) -> List[UInt8]:
         # out_res=64 = a single-sample obs frame; pass a larger value (e.g. 512)

@@ -8,3 +8,4 @@ from .maze import (
     world_dim_for,
 )
 from .maze_env import MazeEnv, StepResult
+from .maze_gym_env import MazeGymEnv, MazeState, MazeAction
