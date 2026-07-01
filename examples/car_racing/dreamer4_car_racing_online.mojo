@@ -1,0 +1,141 @@
+"""Dreamer 4 ONLINE on CarRacing (discrete, pixel obs) — the P2 lighthouse.
+
+Drives Dreamer 4 with its OWN experience (unlike the paper's offline setting):
+`run_online_dreamer4` collects from a live `CarRacingMB` (pixel obs, 5 discrete
+actions), pretrains + freezes the tokenizer, then interleaves acting with world
+model + agent training and periodically reports a GREEDY-EVAL return.
+
+Tokenizer recon uses MSE + 0.2·perceptual (paper eq. 5), the perceptual term
+against the frozen CIFAR ResNet-20 backbone trained by
+`examples/dreamer4/train_perceptual_backbone_cifar_gpu.mojo` — this file loads
+`dreamer4_perceptual_backbone.ckpt` from the working directory.
+
+Dynamics/heads/tokenizer all run on CPU (the online driver's WM train steps are
+the CPU path; `DYN_TARGET="gpu"` for the dynamics is a follow-up). The dims below
+are a modest starting point — scale D_DYN/HID/DEPTH/T/B up on a bigger box.
+
+Run (NVIDIA): pixi run -e nvidia mojo run -I . examples/car_racing/dreamer4_car_racing_online.mojo
+Run (Apple):  pixi run -e apple  mojo run -I . examples/car_racing/dreamer4_car_racing_online.mojo
+"""
+
+from std.random import seed
+
+from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.initializer import Xavier
+from mojo_rl.nn.core.checkpoint import load_params
+from mojo_rl.nn.models.cifar_feature_net import CifarBackbone
+from mojo_rl.core.dotenv import load_dotenv
+from mojo_rl.core.logger import RemoteLogger
+from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
+from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
+from mojo_rl.deep_agents.dreamer4.online import run_online_dreamer4
+from mojo_rl.envs.car_racing.car_racing_mb import CarRacingMB
+
+
+def main() raises:
+    # ── image / patch dims ──
+    comptime IN_CH = 4
+    comptime IMG = 84                       # CarRacing PIX_RES
+    comptime TGT = 64                       # tokenizer target resolution
+    comptime PATCH = 8
+    comptime NP = (TGT // PATCH) * (TGT // PATCH)   # 64 patches
+    comptime DP = PATCH * PATCH                     # 64
+    comptime CAP = 100_000                  # ring-buffer capacity
+
+    # ── sequence / batch ──
+    comptime T = 6
+    comptime B = 8
+    comptime B_SELF = 2
+
+    # ── tokenizer ──
+    comptime L = 16
+    comptime D_BOT = 16
+    comptime TOK_D = 128
+    comptime TOK_NH = 4
+    comptime TOK_HID = 256
+    comptime TOK_DEPTH = 2
+    comptime DROP = 0.5
+
+    # ── agent / dynamics ──
+    comptime NSP = L
+    comptime DSP = D_BOT
+    comptime ND = NSP * DSP                 # 256 (must equal tokenizer L·D_BOT)
+    comptime D_DYN = 128
+    comptime NH = 4
+    comptime NREG = 2
+    comptime HID_DYN = 256
+    comptime DEPTH_DYN = 2
+    comptime KMAX = 4
+
+    # ── heads / imagination ──
+    comptime NAGENT = 1
+    comptime NTASK = 1
+    comptime HHID = 128
+    comptime NACT = 5                       # noop/left/right/gas/brake
+    comptime NBINS = 41
+    comptime NMTP = 2
+    comptime ADIM = NACT
+    comptime AHID = 2 * D_DYN
+    comptime K_IMAG = 2
+    comptime NCTX = 1
+
+    seed(42)
+    print("=" * 70)
+    print("Dreamer 4 — ONLINE CarRacing (discrete pixel) lighthouse")
+    print("=" * 70)
+
+    var env = CarRacingMB[DT, PIXEL_OBS=True, PIX_RES=IMG]()
+
+    var agent = Dreamer4Agent[
+        DSP, NSP, D_DYN, NH, T, NREG, HID_DYN, DEPTH_DYN, KMAX,
+        NAGENT, NTASK, HHID, NACT, NBINS, NMTP, B, B_SELF,
+        True, ADIM, AHID, K_IMAG, NCTX,
+    ].make["cpu", Xavier](None)
+
+    var tok = Dreamer4Tokenizer[
+        DP, TOK_D, TOK_NH, T, NSP, NP, DSP, TOK_HID, TOK_DEPTH, DROP, DROP, 7
+    ].make["cpu", Xavier](None)
+
+    # Frozen perceptual backbone (CIFAR ResNet-20). Trained separately; loaded
+    # here from the working directory.
+    var backbone = CifarBackbone[TGT, TGT].make["cpu", Xavier](None)
+    load_params["cpu"](backbone, String("dreamer4_perceptual_backbone.ckpt"), None)
+    print("loaded perceptual backbone")
+
+    # Remote logger config from a .env (RL_MONITOR_URL / RL_MONITOR_API_KEY), the
+    # same one the SAC examples use.
+    var env_vars = load_dotenv()
+    var logger = RemoteLogger(
+        server_url=env_vars.get("RL_MONITOR_URL", ""),
+        run_name="Dreamer4 CarRacing (online)",
+        buffer_size=64,
+        api_key=env_vars.get("RL_MONITOR_API_KEY", ""),
+    )
+    logger.set_config("algorithm", "Dreamer4")
+    logger.set_config("env", "CarRacing")
+    logger.set_config("obs", "pixel")
+
+    print("starting online training...")
+    var summary = run_online_dreamer4[
+        IN_CH=IN_CH, IMG=IMG, TGT=TGT, PATCH=PATCH, TNP=NP, CAP=CAP,
+        TOK_D=TOK_D, TOK_NH=TOK_NH, TOK_HID=TOK_HID, TOK_DEPTH=TOK_DEPTH,
+        TOK_PMIN=DROP, TOK_PMAX=DROP, TOK_SEED=7,
+    ](
+        agent, tok, backbone, env, logger,
+        warmup_steps=5_000,
+        tok_pretrain_steps=3_000,
+        total_env_steps=1_000_000,
+        train_every=4,
+        imag_every=8,
+        eval_every=20_000,
+        perc_weight=0.2,          # paper eq. 5 MSE + 0.2·perceptual
+        eval_max_steps=1_000,
+        imag_gamma=Scalar[DT](0.997),
+    )
+    logger.close()
+    _ = logger
+
+    print("-" * 70)
+    print("done. summary (tok, wm_video, wm_bc, imag_value, eval_return):")
+    print(" ", summary[0], summary[1], summary[2], summary[3], summary[4])
+    print("  last greedy-eval return =", summary[4])
