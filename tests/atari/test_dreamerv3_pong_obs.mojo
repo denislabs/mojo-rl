@@ -138,11 +138,51 @@ def test_noop_starts_construct_and_step() raises:
     print("  ok")
 
 
+comptime GRAY96_STACK = 4 * 96 * 96  # 36864
+
+
+def test_gray96_4stack_carries_motion() raises:
+    print("test gray-96 4-STACK obs (OBS_MODE=4) carries motion ...")
+    var rom = load_rom("roms/pong.bin")
+    var env = AtariEnv[4, DT](AtariGame.PONG, rom.data.value(), rom.size)
+    assert_equal(env.obs_dim(), GRAY96_STACK, "obs_dim == 36864 (4x96x96)")
+
+    var o0 = env.reset_obs_list()
+    assert_equal(len(o0), GRAY96_STACK, "reset obs length == 36864")
+    # After reset all 4 slots are the same initial frame → frame0 == frame3.
+    var same_at_reset = True
+    for i in range(GRAY96):
+        if abs(o0[i] - o0[3 * GRAY96 + i]) > Scalar[DT](1e-9):
+            same_at_reset = False
+    assert_true(same_at_reset, "reset fills all 4 stack slots identically")
+
+    # Step several times → the 4 chronological frames should NO LONGER all match
+    # (the stack now carries motion: ball/paddle at different positions).
+    var obs = o0.copy()
+    for t in range(12):
+        obs = env.step_obs(2 if (t // 3) % 2 == 0 else 3)[0].copy()
+    var unit = True
+    for i in range(GRAY96_STACK):
+        if not _in_unit(obs[i]):
+            unit = False
+    assert_true(unit, "stacked obs in [0,1]")
+    # oldest (frame0) vs newest (frame3) must differ somewhere = motion captured.
+    var motion = False
+    for i in range(GRAY96):
+        if abs(obs[i] - obs[3 * GRAY96 + i]) > Scalar[DT](1e-9):
+            motion = True
+    assert_true(motion, "4-stack carries motion (oldest frame != newest frame)")
+    env.close()
+    _ = env^
+    print("  ok")
+
+
 def main() raises:
     print("=" * 60)
-    print("DreamerV3-Atari P0 env gate (gray-96 + sticky + no-ops)")
+    print("DreamerV3-Atari P0 env gate (gray-96 + sticky + no-ops + 4-stack)")
     print("=" * 60)
     test_gray96_single_frame_obs()
     test_sticky_actions_pin_the_action()
     test_noop_starts_construct_and_step()
+    test_gray96_4stack_carries_motion()
     print("ALL DREAMERV3 ATARI P0 ENV GATES PASSED")

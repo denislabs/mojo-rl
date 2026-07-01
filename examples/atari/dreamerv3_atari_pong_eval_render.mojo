@@ -2,9 +2,10 @@
 
 Loads a checkpoint from `dreamerv3_atari_pong_training.mojo` and plays the real
 Atari 2600 Pong ROM (6502/TIA/RIOT emulation) in an SDL3 window. The agent sees
-the same single 96×96 grayscale frame it trained on (OBS_MODE=3); the window
+the same 4×96×96 grayscale frame stack it trained on (OBS_MODE=4); the window
 renders the emulator's native 160×210 display (the `raw_frame_b` the step
-rendered is blitted straight into the AtariRenderer — no extra emulation).
+rendered is blitted straight into the AtariRenderer — no extra emulation). The
+agent sees a 4×96×96 grayscale STACK (OBS_MODE=4, MUST match training).
 
 DreamerV3 is a closed-loop policy: each step the encoder+RSSM update a posterior
 belief from the real frame, then the actor acts on it. So we `reset_belief()` at
@@ -42,10 +43,10 @@ from mojo_rl.envs.atari.frame_render import FRAME_BUF_SIZE
 from mojo_rl.envs.atari.renderer import AtariRenderer
 
 # ── arch (MUST match dreamerv3_atari_pong_training.mojo) ──
-comptime C = 1
+comptime C = 4  # 4-frame grayscale stack (MUST match training)
 comptime IMG = 96
 comptime BASE = 48
-comptime OBS = C * IMG * IMG  # 9216
+comptime OBS = C * IMG * IMG  # 36864
 comptime ACT = 6
 comptime DETER = 2048  # MUST match training (checkpoint compatibility)
 comptime H = 256
@@ -72,7 +73,7 @@ comptime Ag = DreamerV3Agent[
     PU, BINS, B, T, T_IMAG, CAP, True, ENC, DEC,  # DISCRETE=True
     # RECON_SIGMOID left default — eval never decodes, so it has no effect here.
 ]
-comptime Env = AtariEnv[3, DT]  # OBS_MODE=3 (gray-96 single frame)
+comptime Env = AtariEnv[4, DT]  # OBS_MODE=4 (gray-96 4-frame stack)
 
 comptime CHECKPOINT_PATH = "dreamerv3_atari_pong_gpu.ckpt"
 comptime EVAL_EPISODES = 5

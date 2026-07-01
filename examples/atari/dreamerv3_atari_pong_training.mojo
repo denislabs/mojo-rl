@@ -9,11 +9,16 @@ Atari benchmark. The world model + actor-critic train on-device
 `select_action`. The env is NOT the bottleneck — DreamerV3 is sample-efficient
 (replays each frame ~train_ratio×), so the GPU train_step dominates.
 
-Observation: **single 96×96 grayscale frame** (OBS = 9216, values in [0,1]) —
-`AtariEnv[OBS_MODE=3]`, the DreamerV3 Atari preprocessing (NO frame stacking; the
-RSSM carries motion). The CNN encoder centers it to [-0.5, 0.5] (CenterHalfOp)
-and reconstructs with sigmoid + plain MSE (RECON_SIGMOID=True), both
-reference-faithful. Action: Pong minimal set (6 discrete). Machado protocol:
+Observation: **4×96×96 grayscale frame STACK** (OBS = 36864, values in [0,1]) —
+`AtariEnv[OBS_MODE=4]`. NOTE: the DreamerV3 reference uses a single frame (the
+RSSM is meant to carry motion), but a WM-overfit diagnostic showed our prior
+can't *generalize* the fast 1-2px ball's velocity from single frames across
+varied Pong (imagination collapsed in ~2 open-loop steps, even though it
+overfit a single episode fine → machinery correct, signal too weak). Stacking 4
+frames puts velocity directly in the obs, matching what worked for CarRacing.
+The CNN encoder centers to [-0.5, 0.5] (CenterHalfOp) and reconstructs with
+sigmoid + plain MSE (RECON_SIGMOID=True). Action: Pong minimal set (6 discrete).
+Machado protocol:
 sticky actions (0.25) + random no-op starts (30); frame-skip=4 + max-pool is done
 inside the env, so no agent-side action repeat. Reward NOT clipped (symlog/twohot
 handle the ±1 scale).
@@ -49,10 +54,10 @@ from mojo_rl.envs.atari.games.registry import AtariGame
 # =============================================================================
 # Architecture
 # =============================================================================
-comptime C = 1  # single grayscale frame (DreamerV3 does NOT frame-stack)
+comptime C = 4  # 4-frame grayscale stack (velocity in the obs; see docstring)
 comptime IMG = 96  # 96×96 (16-divisible → conv minres 6)
 comptime BASE = 48  # conv base width (channels BASE·{1,2,4,8})
-comptime OBS = C * IMG * IMG  # 9216
+comptime OBS = C * IMG * IMG  # 36864
 comptime ACT = 6  # Pong minimal action set (NOOP/FIRE/RIGHT/LEFT/RIGHTFIRE/LEFTFIRE)
 comptime DETER = 2048
 comptime H = 256
@@ -68,7 +73,7 @@ comptime BINS = 255
 comptime B = 16
 comptime T = 16
 comptime T_IMAG = 15
-comptime CAP = 100_000  # pixel replay: CAP×9216×4 B ≈ 3.7 GB — tune to HW
+comptime CAP = 50_000  # pixel replay: CAP×36864×4 B ≈ 7.4 GB — tune to HW
 
 comptime FEATIN = STOCH * CLASSES + DETER
 comptime ENC = DreamerEncoderCNN[C, IMG, IMG, BASE, TOKEN, SwishOp]
@@ -98,7 +103,7 @@ comptime Ag = DreamerV3Agent[
     DEC,
     True,  # RECON_SIGMOID — reference pixel recon (sigmoid + plain MSE on [0,1])
 ]
-comptime Env = AtariEnv[3, DT]  # OBS_MODE=3 (gray-96 single frame)
+comptime Env = AtariEnv[4, DT]  # OBS_MODE=4 (gray-96 4-frame stack)
 
 comptime NUM_STEPS = 500_000  # agent decisions (each = 4 ROM frames = 2M frames)
 comptime LEARN_START = 1024

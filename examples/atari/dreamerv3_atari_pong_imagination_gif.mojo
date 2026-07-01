@@ -19,8 +19,8 @@ Output = an animated GIF, one frame per horizon step, three panels:
                tracks REAL the world model is faithful; if it drifts while RECON
                stays sharp, the dynamics are the bottleneck.
 
-Obs is a single 96×96 grayscale frame (C=1), so there's no frame-stack channel to
-select. GIF encoding is pure Mojo (`save_frame_sequence_gif`) — no Python, no SDL.
+Obs is a 4×96×96 grayscale stack (C=4); the panels show the NEWEST frame
+(channel C-1). GIF encoding is pure Mojo (`save_frame_sequence_gif`) — no Python.
 
 Run (NVIDIA, after training has written a checkpoint; needs roms/pong.bin):
     pixi run -e nvidia mojo run -I . \\
@@ -43,10 +43,10 @@ from mojo_rl.envs.atari.games.registry import AtariGame
 from mojo_rl.render.image_writer import save_frame_sequence_gif
 
 # ── arch (MUST match dreamerv3_atari_pong_training.mojo) ──
-comptime C = 1
+comptime C = 4  # 4-frame grayscale stack (MUST match training)
 comptime IMG = 96
 comptime BASE = 48
-comptime OBS = C * IMG * IMG  # 9216
+comptime OBS = C * IMG * IMG  # 36864
 comptime ACT = 6
 comptime DETER = 2048  # MUST match training (checkpoint compatibility)
 comptime H = 256
@@ -92,13 +92,14 @@ comptime Ag = DreamerV3Agent[
     DEC,
     RECON_SIGMOID=True,  # must match training (decode = sigmoid)
 ]
-comptime Env = AtariEnv[3, DT]  # OBS_MODE=3 (gray-96 single frame)
+comptime Env = AtariEnv[4, DT]  # OBS_MODE=4 (gray-96 4-frame stack)
 
 comptime CHECKPOINT_PATH = "dreamerv3_atari_pong_gpu.ckpt"
 comptime GIF_PATH = "dreamerv3_atari_pong_imagination.gif"
 
 comptime CTX = 5  # real context frames to seed the belief
 comptime HOR = 45  # imagination horizon (max GIF frames)
+comptime NEWCH = (C - 1) * IMG * IMG  # newest-frame offset within the stacked OBS
 
 # triptych layout
 comptime SEP = 2
@@ -185,8 +186,8 @@ def main() raises:
                 comp[fbase + p] = sepval
             for y in range(IMG):
                 var row = fbase + y * WC
-                var rb = (CTX + h) * OBS + y * IMG
-                var ob_ = h * OBS + y * IMG
+                var rb = (CTX + h) * OBS + NEWCH + y * IMG
+                var ob_ = h * OBS + NEWCH + y * IMG
                 for x in range(IMG):
                     comp[row + x] = Float32(robs[rb + x])
                     comp[row + IMG + SEP + x] = Float32(tf[ob_ + x])
