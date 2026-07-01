@@ -64,6 +64,11 @@ struct MazeEnv(Copyable, Movable):
     def obs(self) -> List[UInt8]:
         return self.game.render()
 
+    def render(self, res: Int) -> List[UInt8]:
+        """A square RGB frame at an arbitrary resolution (for human play /
+        debug). The 64×64 training observation comes from `obs()`/`step()`."""
+        return self.game.render(res)
+
     def step(mut self, action: Int) -> StepResult:
         var reward = self.game.step(action)
         return StepResult(

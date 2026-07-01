@@ -1,16 +1,16 @@
 """Sprite rasterizer — visual-approx replacement for Procgen's Qt path.
 
-Draws sprites into the 64×64 RGB observation canvas at the same screen rects /
-z-order as `BasicAbstractGame::draw_*`. This mirrors the reference *observation*
-path, which draws directly at RES_W×RES_H with antialiasing disabled
-(`game.cpp` → `render_to_buf(render_buf, 64, 64, false)`) — the 512² canvas in
-the reference is only for the human-facing high-res render.
+Draws sprites into an RGB canvas at the same screen rects / z-order as
+`BasicAbstractGame::draw_*`. The canvas resolution is a runtime parameter: the
+agent *observation* is drawn at 64×64 (matching Procgen's `render_to_buf(...,64,
+64, false)` — antialias off), while the human-play / debug view renders at a
+higher resolution (e.g. 512) so small sprites like the agent stay clearly
+visible instead of collapsing to ~2 px under nearest sampling.
 
 Deliberately NOT a Qt clone: sampling is nearest-neighbour, so pixels differ
 from reference Procgen (visual-approx fidelity — see `docs/PROCGEN_PORT.md`).
 Screen-rect geometry (`get_screen_rect`, Y-flip) does follow the reference so
-layouts are faithful. A supersampled high-res path can be added later for
-human rendering / GIFs.
+layouts are faithful.
 """
 
 from std.math import floor
@@ -20,16 +20,18 @@ comptime RES = 64  # observation resolution (RES_W == RES_H, constant forever)
 
 
 struct Canvas(Copyable, Movable):
-    """RES² RGB byte canvas (the observation buffer)."""
+    """Square RGB byte canvas at a runtime resolution."""
 
-    var px: List[UInt8]  # row-major RGB8, length RES*RES*3
+    var res: Int
+    var px: List[UInt8]  # row-major RGB8, length res*res*3
 
-    def __init__(out self):
+    def __init__(out self, res: Int = RES):
+        self.res = res
         self.px = List[UInt8]()
-        self.px.resize(RES * RES * 3, 0)
+        self.px.resize(res * res * 3, 0)
 
     def fill(mut self, r: UInt8, g: UInt8, b: UInt8):
-        for i in range(RES * RES):
+        for i in range(self.res * self.res):
             self.px[i * 3 + 0] = r
             self.px[i * 3 + 1] = g
             self.px[i * 3 + 2] = b
@@ -46,6 +48,7 @@ struct Canvas(Copyable, Movable):
     ):
         """Nearest-neighbour scale `sprite` into the screen rect (dx0,dy0,dw,dh)
         with straight-alpha compositing over the current canvas."""
+        var res = self.res
         var x_start = Int(floor(dx0))
         var y_start = Int(floor(dy0))
         var x_end = Int(floor(dx0 + dw))
@@ -54,10 +57,10 @@ struct Canvas(Copyable, Movable):
             x_start = 0
         if y_start < 0:
             y_start = 0
-        if x_end > RES:
-            x_end = RES
-        if y_end > RES:
-            y_end = RES
+        if x_end > res:
+            x_end = res
+        if y_end > res:
+            y_end = res
 
         for py in range(y_start, y_end):
             var v = (Float32(py) + 0.5 - dy0) / dh  # [0,1) down the rect
@@ -79,7 +82,7 @@ struct Canvas(Copyable, Movable):
                 var a = Int(texel[3])
                 if a == 0:
                     continue
-                var off = (py * RES + px) * 3
+                var off = (py * res + px) * 3
                 if a == 255:
                     self.px[off + 0] = texel[0]
                     self.px[off + 1] = texel[1]

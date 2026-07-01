@@ -8,6 +8,7 @@ from .randgen import RandGen
 from .grid import Grid
 from .assets import Sprite, load_sprite, load_sprites, load_topdown_backgrounds
 from .level_scheduler import LevelScheduler
+from .pixel_window import PixelWindow
 from .mazegen import MazeGen, Wall, MAZE_OFFSET
 from .object_ids import (
     SPACE,

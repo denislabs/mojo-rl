@@ -181,13 +181,15 @@ struct MazeGame(Copyable, Movable):
         self.done = reward > 0
         return reward
 
-    def render(self) -> List[UInt8]:
-        var canvas = Canvas()
+    def render(self, out_res: Int = RES) -> List[UInt8]:
+        # out_res=64 = the agent observation; pass a larger value (e.g. 512) for
+        # a crisp human-play / debug frame where small sprites stay visible.
+        var canvas = Canvas(out_res)
         canvas.fill(0, 0, 0)
 
         var visibility = Float32(self.w if self.w > self.h else self.h)
         var view_dim = visibility
-        var unit = Float32(RES) / view_dim
+        var unit = Float32(out_res) / view_dim
         var center_x = Float32(self.w) * 0.5
         var center_y = Float32(self.h) * 0.5
         var x_off = unit * (center_x - view_dim / 2)
