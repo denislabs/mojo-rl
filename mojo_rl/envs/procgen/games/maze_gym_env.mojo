@@ -31,7 +31,9 @@ struct MazeAction(Action):
     var value: Int
 
 
-struct MazeGymEnv[DTYPE: DType = DT](BoxDiscreteActionEnv & Movable):
+struct MazeGymEnv[DTYPE: DType = DT](
+    BoxDiscreteActionEnv & Movable & ImplicitlyDeletable
+):
     comptime dtype = Self.DTYPE
     comptime StateType = MazeState
     comptime ActionType = MazeAction
