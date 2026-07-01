@@ -59,6 +59,7 @@ hdf5 = ">=2.1.0,<3"             # libhdf5 C library, FFI target for mojo_rl/io/h
 hdf5plugin = ">=6.0.0,<7"          # Blosc/LZ4/ZSTD chunk-compression filters loaded via HDF5_PLUGIN_PATH
 h5py = ">=3.16.0,<4"             # used by inspection script + parity test (not by the Mojo loader)
 huggingface_hub = ">=1.18.0,<2"  # first-run dataset download
+pyarrow = ">=14.0.0,<22"            # read HF parquet datasets (e.g. CIFAR-10 loader)
 zstandard = ">=0.25.0,<0.26"        # first-run decompression of .h5.zst envelope
 
 [package]
