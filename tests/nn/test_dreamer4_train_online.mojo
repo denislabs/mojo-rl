@@ -26,6 +26,7 @@ from mojo_rl.core.logger import NoOpLogger
 from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
 from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
 from mojo_rl.deep_agents.dreamer4.online import run_online_dreamer4
+from mojo_rl.nn.models.cifar_feature_net import CifarBackbone
 
 
 # ── trivial State / Action ─────────────────────────────────────────────────
@@ -168,20 +169,25 @@ def main() raises:
         DP, TOK_D, TOK_NH, T, NSP, NP, DSP, TOK_HID, TOK_DEPTH, 0.5, 0.5, 7
     ].make["cpu", Xavier](None)
 
+    # Random backbone; perc_weight=0 (default) so it is never used (its purpose is
+    # only exercised via the perceptual gate). Passing it satisfies the signature.
+    var backbone = CifarBackbone[TGT, TGT].make["cpu", Xavier](None)
+
     var summary = run_online_dreamer4[
         IN_CH=IN_CH, IMG=IMG, TGT=TGT, PATCH=PATCH, TNP=NP, CAP=CAP,
         TOK_D=TOK_D, TOK_NH=TOK_NH, TOK_HID=TOK_HID, TOK_DEPTH=TOK_DEPTH,
         TOK_PMIN=0.5, TOK_PMAX=0.5, TOK_SEED=7,
     ](
-        agent, tok, env, logger,
+        agent, tok, backbone, env, logger,
         warmup_steps=30, tok_pretrain_steps=10, total_env_steps=60,
-        train_every=4, imag_every=20, eval_every=1000,
+        train_every=4, imag_every=20, eval_every=25,
     )
-    print("  summary (tok, wm_video, wm_bc, imag_value) =",
-          summary[0], summary[1], summary[2], summary[3])
+    print("  summary (tok, wm_video, wm_bc, imag_value, eval_return) =",
+          summary[0], summary[1], summary[2], summary[3], summary[4])
     var ok = (
         (summary[0] == summary[0]) and (summary[1] == summary[1])
         and (summary[2] == summary[2]) and (summary[3] == summary[3])
+        and (summary[4] == summary[4])
     )
     print("  online driver ran end-to-end, losses finite:",
           "OK" if ok else "FAIL")

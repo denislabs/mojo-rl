@@ -36,10 +36,12 @@ from .agent import Dreamer4Agent
 from .tokenizer import Dreamer4Tokenizer
 from .frame_buffer import Dreamer4FrameBuffer
 from .recon_loss import masked_recon_loss
+from .perceptual_loss import masked_recon_plus_perceptual_loss
 from .patchify import downscale_box, temporal_patchify
 from .imag_rl_loss import continue_bce_backward
 from .shortcut_loss import _mao, _ilog2
 from ..dreamerv3.twohot import symexp_twohot_bins
+from ...nn.models.cifar_feature_net import CifarBackbone
 
 
 struct OnlineRng(Copyable, Movable):
@@ -189,6 +191,9 @@ def run_online_dreamer4[
         TNP, DSP, TOK_HID, TOK_DEPTH,
         TOK_PMIN, TOK_PMAX, TOK_SEED,
     ],
+    # Frozen perceptual backbone for the tokenizer's MSE+w·perceptual recon loss
+    # (paper eq. 5). Unused when `perc_weight == 0` — pass any instance then.
+    mut backbone: CifarBackbone[TGT, TGT],
     mut env: E,
     mut logger: L,
     warmup_steps: Int,
@@ -201,10 +206,14 @@ def run_online_dreamer4[
     lr_agent: Scalar[DT] = Scalar[DT](1e-3),
     lr_cont: Scalar[DT] = Scalar[DT](3e-3),
     lr_imag: Scalar[DT] = Scalar[DT](1e-2),
+    perc_weight: Float64 = 0.0,
+    eval_max_steps: Int = 1000,
+    imag_gamma: Scalar[DT] = Scalar[DT](0.997),
     seed: UInt64 = 20260701,
-) raises -> Tuple[Float64, Float64, Float64, Float64]:
-    """Returns (last_tok_recon, last_wm_video, last_wm_bc, last_imag_value) for a
-    finiteness check / logging."""
+) raises -> Tuple[Float64, Float64, Float64, Float64, Float64]:
+    """Returns (last_tok_recon, last_wm_video, last_wm_bc, last_imag_value,
+    last_eval_return) for a finiteness check / logging. `last_eval_return` is the
+    most recent greedy-eval episode return (0 if `eval_every <= 0`)."""
     comptime assert TNP == (TGT // PATCH) * (TGT // PATCH), (
         "TNP must equal (TGT//PATCH)^2 (the tokenizer's patch count)"
     )
@@ -233,6 +242,7 @@ def run_online_dreamer4[
     var pred = Tensor.alloc(BATCH * NP * DP)
     var gpred = Tensor.alloc(BATCH * NP * DP)
     var gin = Tensor.alloc(BATCH * NP * DP)
+    var gperc = Tensor.alloc(BATCH * NP * DP)   # perceptual-grad scratch (Stage 1)
     var z1 = Tensor.alloc(ZN)
     var z0n = Tensor.alloc(ZN)
     var sigma = Tensor.alloc(BATCH)
@@ -290,10 +300,21 @@ def run_online_dreamer4[
         )
         topt.zero_grad["cpu"](tok, None)
         tok.forward["cpu", BATCH](TensorRefs[1](patches), pred, None)
-        last_tok_loss = masked_recon_loss[NP, DP, BATCH](
-            _mao(pred.data.unsafe_ptr()), _mao(patches.data.unsafe_ptr()),
-            tok.mae_mask_ptr(), _mao(gpred.data.unsafe_ptr()),
-        )
+        if perc_weight > 0.0:
+            # paper eq. 5: MSE + w·perceptual (frozen CIFAR backbone, BN-eval).
+            var lv = masked_recon_plus_perceptual_loss[
+                BATCH, 1, TGT, TGT, PATCH
+            ](
+                _mao(pred.data.unsafe_ptr()), _mao(patches.data.unsafe_ptr()),
+                tok.mae_mask_ptr(), backbone, perc_weight,
+                _mao(gpred.data.unsafe_ptr()), _mao(gperc.data.unsafe_ptr()),
+            )
+            last_tok_loss = lv[0] + perc_weight * lv[1]
+        else:
+            last_tok_loss = masked_recon_loss[NP, DP, BATCH](
+                _mao(pred.data.unsafe_ptr()), _mao(patches.data.unsafe_ptr()),
+                tok.mae_mask_ptr(), _mao(gpred.data.unsafe_ptr()),
+            )
         tok.vjp["cpu", BATCH](
             TensorRefs[1](patches), gpred, TensorRefs[1](gin), None
         )
@@ -326,6 +347,17 @@ def run_online_dreamer4[
     var last_p: Float64 = 0.0
     var last_video: Float64 = 0.0
     var last_bc: Float64 = 0.0
+    var ep_ret: Float64 = 0.0            # training-episode return (explore=True)
+    var last_eval_return: Float64 = 0.0
+    # greedy-eval scratch (its own window; an eval episode interrupts the
+    # in-progress training episode, so we reset both env + training window after).
+    var ewin_patch = Tensor.alloc(T * NP * DP)
+    var ewin_z = Tensor.alloc(T * ND)
+    var efr1 = Tensor.alloc(TGT * TGT)
+    var epa1 = Tensor.alloc(NP * DP)
+    var ewin_act = List[Int](length=T, fill=-1)
+    var eact_hist = List[Scalar[DT]](length=T * ADIM, fill=Scalar[DT](0.0))
+    var ecur = List[Scalar[DT]](length=IMG_DIM, fill=Scalar[DT](0.0))
     for step in range(total_env_steps):
         win_n = _push_frame[IN_CH, IMG, TGT, PATCH, T, NP, DP](
             _mao(cur.unsafe_ptr()), fr1, pa1, win_patch, win_act,
@@ -353,7 +385,11 @@ def run_online_dreamer4[
         var d = res[2]
         buf.add_step_fp32_list(cur, a, d, r)
         last_action = a
+        ep_ret += Float64(r)
         if d:
+            if logger.is_active():
+                logger.log_scalar(String("online/train_return"), ep_ret, step)
+            ep_ret = 0.0
             var no = env.reset_obs_list()
             for i in range(IMG_DIM):
                 cur[i] = Scalar[DT](Float64(no[i]))
@@ -448,7 +484,7 @@ def run_online_dreamer4[
                 _mao(ctx.data.unsafe_ptr()), _mao(u01.data.unsafe_ptr()),
                 _mao(znoise.data.unsafe_ptr()), _mao(task_ids.data.unsafe_ptr()),
                 _mao(bins.data.unsafe_ptr()), use_continue=True,
-                gamma=Scalar[DT](0.9),
+                gamma=imag_gamma,
             )
             iopt.step["cpu"](agent, None)
             did_imag = True
@@ -458,7 +494,53 @@ def run_online_dreamer4[
                 logger.log_scalar(String("online/imag_value"), il[0], step)
                 logger.log_scalar(String("online/imag_policy"), il[1], step)
 
+        # ── greedy-eval episode (measurable return; interrupts training ep) ──
+        if eval_every > 0 and step % eval_every == 0 and step > 0:
+            var eob = env.reset_obs_list()
+            for i in range(IMG_DIM):
+                ecur[i] = Scalar[DT](Float64(eob[i]))
+            var ewin_n = 0
+            var elast = -1
+            var eret: Float64 = 0.0
+            for _es in range(eval_max_steps):
+                ewin_n = _push_frame[IN_CH, IMG, TGT, PATCH, T, NP, DP](
+                    _mao(ecur.unsafe_ptr()), efr1, epa1, ewin_patch, ewin_act,
+                    ewin_n, elast,
+                )
+                for i in range(ewin_n * NP * DP, T * NP * DP):
+                    ewin_patch.data[i] = Scalar[DT](0.0)
+                tok.enc.forward["cpu", T](
+                    TensorRefs[1](ewin_patch), ewin_z, None
+                )
+                for i in range(T * ADIM):
+                    eact_hist[i] = Scalar[DT](0.0)
+                for fr in range(1, ewin_n):
+                    var ap = ewin_act[fr]
+                    if ap >= 0 and ap < ADIM:
+                        eact_hist[fr * ADIM + ap] = Scalar[DT](1.0)
+                var ea = agent.act_from_latents(
+                    _mao(ewin_z.data.unsafe_ptr()), ewin_n,
+                    _mao(eact_hist.unsafe_ptr()), 0, False, 0.0,
+                )
+                var eres = env.step_obs(ea)
+                eret += Float64(eres[1])
+                elast = ea
+                if eres[2]:
+                    break
+                for i in range(IMG_DIM):
+                    ecur[i] = Scalar[DT](Float64(eres[0][i]))
+            last_eval_return = eret
+            if logger.is_active():
+                logger.log_scalar(String("online/eval_return"), eret, step)
+            # resume training on a fresh episode (eval consumed the env)
+            var rob = env.reset_obs_list()
+            for i in range(IMG_DIM):
+                cur[i] = Scalar[DT](Float64(rob[i]))
+            win_n = 0
+            last_action = -1
+            ep_ret = 0.0
+
     logger.flush()
     _ = did_imag
     _ = last_p
-    return (last_tok_loss, last_video, last_bc, last_v)
+    return (last_tok_loss, last_video, last_bc, last_v, last_eval_return)
