@@ -23,7 +23,7 @@ the CNN q-net + optimizer are checkpointed to CKPT_PATH.
 
 from std.random import seed
 from std.time import perf_counter_ns
-from std.memory import UnsafePointer
+from std.memory import UnsafePointer, ArcPointer
 from std.gpu.host import DeviceContext
 
 from mojo_rl.core.dotenv import load_dotenv
@@ -33,7 +33,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.deep_agents.c51.config import RainbowCNN
 from mojo_rl.deep_agents.training.batched_env import BatchedCpuDiscreteEnv
 
-from mojo_rl.envs.procgen.games import MazeGymEnv
+from mojo_rl.envs.procgen.games import MazeGymEnv, MazeAssets
 from mojo_rl.envs.procgen.games.maze import DIST_EASY
 
 comptime ASSET_ROOT = String("references/procgen-master/procgen/data/assets/")
@@ -75,14 +75,14 @@ comptime CKPT_PATH = "checkpoints/rainbow_procgen_maze_pixel.ckpt"
 comptime BatchedMaze = BatchedCpuDiscreteEnv[MazeCNNEnv, N_ENVS, OBS_DIM]
 
 
-def _make_envs() raises -> List[MazeCNNEnv]:
-    """N_ENVS independent maze envs, each with a distinct rand_seed so they
-    sample different levels from the shared train set."""
+def _make_envs(assets: ArcPointer[MazeAssets]) -> List[MazeCNNEnv]:
+    """N_ENVS independent maze envs sharing one read-only asset bundle, each
+    with a distinct rand_seed so they sample different levels from the train set."""
     var envs = List[MazeCNNEnv]()
     for i in range(N_ENVS):
         envs.append(
             MazeCNNEnv(
-                ASSET_ROOT,
+                assets,
                 rand_seed=SEED_BASE + i,
                 num_levels=NUM_LEVELS,
                 start_level=0,
@@ -111,8 +111,10 @@ def main() raises:
             v_max=V_MAX,
         )
 
-        var env = BatchedMaze(_make_envs())
-        var eval_env = BatchedMaze(_make_envs())
+        # Load the sprite set ONCE; all train + eval envs share it.
+        var assets = ArcPointer(MazeAssets(ASSET_ROOT))
+        var env = BatchedMaze(_make_envs(assets))
+        var eval_env = BatchedMaze(_make_envs(assets))
 
         print(
             "Environment: Procgen Maze (CPU-batched,",

@@ -14,8 +14,10 @@ from mojo_rl.core.state import State
 from mojo_rl.core.action import Action
 from mojo_rl.nn.constants import DT
 
+from std.memory import ArcPointer
+
 from .maze_env import MazeEnv
-from .maze import DIST_EASY
+from .maze import DIST_EASY, MazeAssets
 
 
 @fieldwise_init
@@ -58,8 +60,26 @@ struct MazeGymEnv[DTYPE: DType = DT](
         start_level: Int = 0,
         dist_mode: Int = DIST_EASY,
     ) raises:
+        # Owns its own asset load.
+        self = MazeGymEnv[Self.DTYPE](
+            ArcPointer(MazeAssets(asset_root)),
+            rand_seed,
+            num_levels,
+            start_level,
+            dist_mode,
+        )
+
+    def __init__(
+        out self,
+        assets: ArcPointer[MazeAssets],
+        rand_seed: Int = 0,
+        num_levels: Int = 1,
+        start_level: Int = 0,
+        dist_mode: Int = DIST_EASY,
+    ):
+        # Shares an already-loaded asset bundle (batched training).
         self.inner = MazeEnv(
-            asset_root, rand_seed, num_levels, start_level, dist_mode
+            assets, rand_seed, num_levels, start_level, dist_mode
         )
         self.steps = 0
         self._terminated = False

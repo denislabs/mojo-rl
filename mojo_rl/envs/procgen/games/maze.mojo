@@ -15,6 +15,7 @@ in the `MazeEnv` wrapper (`maze_env.mojo`). See `docs/PROCGEN_PORT.md`.
 """
 
 from std.math import floor
+from std.memory import ArcPointer
 
 from ..core.entity import Entity
 from ..core.randgen import RandGen
@@ -44,16 +45,30 @@ def world_dim_for(dist_mode: Int) -> Int:
     return 25  # HardMode (default)
 
 
+struct MazeAssets(Movable):
+    """Read-only sprite set for the maze (loaded once, shared across envs via
+    `ArcPointer[MazeAssets]`). Sharing avoids re-loading the 3 sprites + 9
+    backgrounds per env instance (a batched training run has N of them)."""
+
+    var sand: Sprite
+    var cheese: Sprite
+    var mouse: Sprite
+    var backgrounds: List[Sprite]
+
+    def __init__(out self, asset_root: String) raises:
+        self.sand = load_sprite(asset_root, "kenney/Ground/Sand/sandCenter.png")
+        self.cheese = load_sprite(asset_root, "misc_assets/cheese.png")
+        self.mouse = load_sprite(asset_root, "kenney/Enemies/mouse_move.png")
+        self.backgrounds = load_topdown_backgrounds(asset_root)
+
+
 struct MazeGame(Copyable, Movable):
     var rand_gen: RandGen
     var grid: List[Int]
     var w: Int
     var h: Int
     var agent: Entity
-    var sand: Sprite
-    var cheese: Sprite
-    var mouse: Sprite
-    var backgrounds: List[Sprite]
+    var assets: ArcPointer[MazeAssets]  # shared read-only sprites
     var episode_reward: Float32
     var done: Bool
     var level_complete: Bool
@@ -64,6 +79,13 @@ struct MazeGame(Copyable, Movable):
     var center_agent: Bool
 
     def __init__(out self, asset_root: String, dist_mode: Int = DIST_HARD) raises:
+        # Owns its own asset load (single-env convenience).
+        self = MazeGame(ArcPointer(MazeAssets(asset_root)), dist_mode)
+
+    def __init__(
+        out self, assets: ArcPointer[MazeAssets], dist_mode: Int = DIST_HARD
+    ):
+        # Shares an already-loaded asset bundle (copy just bumps the refcount).
         self.rand_gen = RandGen()
         self.grid = List[Int]()
         self.dist_mode = dist_mode
@@ -72,10 +94,7 @@ struct MazeGame(Copyable, Movable):
         self.w = wd
         self.h = wd
         self.agent = Entity.make(0.5, 0.5, 0.5, PLAYER)
-        self.sand = load_sprite(asset_root, "kenney/Ground/Sand/sandCenter.png")
-        self.cheese = load_sprite(asset_root, "misc_assets/cheese.png")
-        self.mouse = load_sprite(asset_root, "kenney/Enemies/mouse_move.png")
-        self.backgrounds = load_topdown_backgrounds(asset_root)
+        self.assets = assets
         self.episode_reward = 0.0
         self.done = False
         self.level_complete = False
@@ -234,7 +253,7 @@ struct MazeGame(Copyable, Movable):
         # is the whole world; the bg is scaled to cover its height and panned
         # horizontally by bg_pct_x over the extra width. main_rect for maze is
         # (0,0,RES,RES) since x_off==y_off==0 and view_dim==main_height.
-        ref bg = self.backgrounds[self.background_index]
+        ref bg = self.assets[].backgrounds[self.background_index]
         var main_w = Float32(self.w) * unit
         var main_h = Float32(self.h) * unit
         var main_x = -x_off
@@ -256,15 +275,17 @@ struct MazeGame(Copyable, Movable):
                 var sy = (view_dim - Float32(y + 1) - RENDER_EPS) * unit + y_off
                 var sz = (1.0 + 2 * RENDER_EPS) * unit
                 if t == WALL_OBJ:
-                    canvas.blit(self.sand, sx, sy, sz, sz)
+                    canvas.blit(self.assets[].sand, sx, sy, sz, sz)
                 elif t == GOAL:
-                    canvas.blit(self.cheese, sx, sy, sz, sz)
+                    canvas.blit(self.assets[].cheese, sx, sy, sz, sz)
 
         # agent (mouse), get_object_rect(agent).
         var ax = (self.agent.x - self.agent.rx) * unit - x_off
         var ay = (view_dim - (self.agent.y + self.agent.ry)) * unit + y_off
         var aw = 2 * self.agent.rx * unit
         var ah = 2 * self.agent.ry * unit
-        canvas.blit(self.mouse, ax, ay, aw, ah, self.agent.is_reflected)
+        canvas.blit(
+            self.assets[].mouse, ax, ay, aw, ah, self.agent.is_reflected
+        )
 
         return canvas.px.copy()

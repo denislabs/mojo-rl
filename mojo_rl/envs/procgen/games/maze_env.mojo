@@ -11,8 +11,10 @@ conformance + GPU batching is Phase 4 (a value-type-state refactor). HardMode
 camera) are a follow-up. See `docs/PROCGEN_PORT.md`.
 """
 
+from std.memory import ArcPointer
+
 from ..core.level_scheduler import LevelScheduler
-from .maze import MazeGame, DIST_HARD
+from .maze import MazeGame, MazeAssets, DIST_HARD
 
 
 struct StepResult(Copyable, Movable):
@@ -53,8 +55,26 @@ struct MazeEnv(Copyable, Movable):
         start_level: Int = 0,
         dist_mode: Int = DIST_HARD,
     ) raises:
+        # Owns its own asset load.
+        self = MazeEnv(
+            ArcPointer(MazeAssets(asset_root)),
+            rand_seed,
+            num_levels,
+            start_level,
+            dist_mode,
+        )
+
+    def __init__(
+        out self,
+        assets: ArcPointer[MazeAssets],
+        rand_seed: Int = 0,
+        num_levels: Int = 0,
+        start_level: Int = 0,
+        dist_mode: Int = DIST_HARD,
+    ):
+        # Shares an already-loaded asset bundle.
         self.scheduler = LevelScheduler(rand_seed, num_levels, start_level)
-        self.game = MazeGame(asset_root, dist_mode)
+        self.game = MazeGame(assets, dist_mode)
         self.current_level_seed = 0
 
     def reset(mut self) -> List[UInt8]:

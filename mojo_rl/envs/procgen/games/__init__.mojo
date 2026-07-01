@@ -2,6 +2,7 @@
 
 from .maze import (
     MazeGame,
+    MazeAssets,
     DIST_EASY,
     DIST_HARD,
     DIST_MEMORY,
