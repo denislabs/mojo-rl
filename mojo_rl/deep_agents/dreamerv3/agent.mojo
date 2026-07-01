@@ -211,6 +211,7 @@ struct DreamerV3Agent[
         eval_episodes: Int = 10,
         ep_len: Int = 500,
         print_every: Int = 2500,
+        log_every: Int = 0,
         verbose: Bool = True,
         logger: Optional[UnsafePointer[L, MutAnyOrigin]] = None,
         checkpoint_path: String = String(""),
@@ -240,6 +241,9 @@ struct DreamerV3Agent[
         var ep_n: Int = 0                 # #completed episodes since last log
         var last_ep: Scalar[DT] = 0.0     # last completed episode return
         var best_ret: Scalar[DT] = 0.0    # best episode return so far
+        # WM/AC component metrics log at `le` (frequent, cheap); greedy eval +
+        # episode metrics stay at the coarser `eval_every`. le<=0 → tie to eval.
+        var le = log_every if log_every > 0 else eval_every
 
         for step in range(total_steps):
             for i in range(OBSL):
@@ -280,7 +284,7 @@ struct DreamerV3Agent[
                 # only remaining host cost — compute it ONLY on the train_step
                 # whose metrics get logged at the upcoming eval boundary
                 # (eval_every is a multiple of train_every in all examples).
-                var wd = (step % eval_every == 0)
+                var wd = (step % le == 0)
                 comptime if (
                     USE_TRAIN_CUDA_GRAPH
                     and Self.train_target == "gpu"
@@ -293,49 +297,59 @@ struct DreamerV3Agent[
                 else:
                     _ = self.train_step(want_diag=wd)
 
-            if step > 0 and step % eval_every == 0:
-                var ev = self._greedy_eval[E](
-                    env, eval_episodes, ep_len, obsbuf, actbuf
-                )
-                last_eval = ev
-                var avg_ret = ep_acc / Scalar[DT](ep_n) if ep_n > 0 else last_ep
+            # frequent WM/AC component metrics (fresh dbg; NO greedy eval) — early
+            # loss curves at the `le` cadence without paying the eval cost. Names
+            # follow the monitoring tool's KNOWN_GROUPS panels.
+            if step > 0 and step % le == 0:
                 if verbose and step % print_every == 0:
                     print(
-                        "  step", step, " eval_ret=", ev, " avg_ret=", avg_ret,
-                        " WM=", self.last_wm_loss(), " AC=", self.last_ac_loss(),
+                        "  step", step, " WM=", self.last_wm_loss(),
+                        " AC=", self.last_ac_loss(),
+                        " rew_pred=", self.dbg_rew_pred(),
+                        " val_m=", self.dbg_val_mean(),
                         " con_m=", self.dbg_con_mean(),
                     )
-                # Metric names follow the monitoring tool's KNOWN_GROUPS so they
-                # land in the right panels (Episode Reward / Loss / World Model
-                # Losses / KL / Critic-Policy Loss / Imagined Returns / Progress).
                 comptime if L.ENABLED:
                     if logger:
                         var lg = logger.value()
-                        # Episode Reward
-                        lg[].log_scalar("avg_reward", Float64(avg_ret), step)
-                        lg[].log_scalar("episode_reward", Float64(last_ep), step)
-                        lg[].log_scalar("best_reward", Float64(best_ret), step)
-                        lg[].log_scalar("eval/mean_return", Float64(ev), step)
-                        # Loss + World Model Losses + KL Divergence
                         lg[].log_scalar("wm_loss", Float64(self.last_wm_loss()), step)
                         lg[].log_scalar("obs_loss", Float64(self.dbg_obs_loss()), step)
                         lg[].log_scalar("reward_loss", Float64(self.dbg_rew_loss()), step)
                         lg[].log_scalar("continue_loss", Float64(self.dbg_con_loss()), step)
                         lg[].log_scalar("dyn_kl", Float64(self.dbg_dyn_kl()), step)
                         lg[].log_scalar("rep_kl", Float64(self.dbg_rep_kl()), step)
-                        # Critic / Policy Loss
                         lg[].log_scalar("value_loss", Float64(self.dbg_val_loss()), step)
                         lg[].log_scalar("policy_loss", Float64(self.dbg_pol_loss()), step)
-                        # Imagined Returns + Policy Scale
                         lg[].log_scalar(
                             "imagined_reward_mean", Float64(self.dbg_rew_pred()), step
                         )
                         lg[].log_scalar("return_scale", Float64(self.dbg_rscale()), step)
                         lg[].log_scalar("pi_scale", Float64(self.dbg_rscale()), step)
-                        # Training Progress
                         lg[].log_scalar(
                             "train_steps", Float64(self.train_steps_done()), step
                         )
+                        if step % eval_every != 0:
+                            lg[].flush()
+
+            # periodic greedy eval + episode-return metrics (expensive: runs
+            # eval_episodes greedy rollouts) — coarser than the WM/AC log cadence.
+            if step > 0 and step % eval_every == 0:
+                var ev = self._greedy_eval[E](
+                    env, eval_episodes, ep_len, obsbuf, actbuf
+                )
+                last_eval = ev
+                var avg_ret = ep_acc / Scalar[DT](ep_n) if ep_n > 0 else last_ep
+                if verbose:
+                    print(
+                        "  step", step, " eval_ret=", ev, " avg_ret=", avg_ret,
+                    )
+                comptime if L.ENABLED:
+                    if logger:
+                        var lg = logger.value()
+                        lg[].log_scalar("avg_reward", Float64(avg_ret), step)
+                        lg[].log_scalar("episode_reward", Float64(last_ep), step)
+                        lg[].log_scalar("best_reward", Float64(best_ret), step)
+                        lg[].log_scalar("eval/mean_return", Float64(ev), step)
                         lg[].flush()
                 ep_acc = Scalar[DT](0.0)
                 ep_n = 0

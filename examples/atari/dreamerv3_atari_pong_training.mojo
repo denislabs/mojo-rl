@@ -103,7 +103,8 @@ comptime Env = AtariEnv[3, DT]  # OBS_MODE=3 (gray-96 single frame)
 comptime NUM_STEPS = 500_000  # agent decisions (each = 4 ROM frames = 2M frames)
 comptime LEARN_START = 1024
 comptime TRAIN_EVERY = 4
-comptime EVAL_EVERY = 5000
+comptime LOG_EVERY = 1000  # WM/AC loss curves (cheap; no greedy eval) — frequent
+comptime EVAL_EVERY = 5000  # greedy eval + episode returns (expensive, ~3 min)
 comptime EVAL_EPISODES = 5
 comptime EP_LEN = 2000  # eval-episode cap (agent decisions)
 comptime CHECKPOINT_EVERY = 50_000
@@ -163,7 +164,8 @@ def main() raises:
             eval_every=EVAL_EVERY,
             eval_episodes=EVAL_EPISODES,
             ep_len=EP_LEN,
-            print_every=EVAL_EVERY,
+            print_every=LOG_EVERY,
+            log_every=LOG_EVERY,
             verbose=True,
             logger=logger_ptr,
             checkpoint_path=CHECKPOINT_PATH,
