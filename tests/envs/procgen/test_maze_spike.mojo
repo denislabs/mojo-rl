@@ -11,7 +11,7 @@ Requires the reference asset dir; run from repo root:
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import MazeSpikeGame
+from mojo_rl.envs.procgen.games import MazeGame, MazeEnv
 from mojo_rl.envs.procgen.core.object_ids import WALL_OBJ
 
 comptime ASSET_ROOT = String(
@@ -21,7 +21,7 @@ comptime GOAL = 2
 comptime WORLD_DIM = 25
 
 
-def _bfs_actions(game: MazeSpikeGame) -> List[Int]:
+def _bfs_actions(game: MazeGame) -> List[Int]:
     """BFS from the agent's cell to the GOAL cell; return the action sequence.
     Action codes: right=7, left=1, up(+y)=5, down(-y)=3."""
     var w = game.w
@@ -94,23 +94,32 @@ def _bfs_actions(game: MazeSpikeGame) -> List[Int]:
 
 
 def test_maze_reset_and_obs_wellformed() raises:
-    var game = MazeSpikeGame(ASSET_ROOT)
+    var game = MazeGame(ASSET_ROOT)
     game.reset(7)
     var obs = game.render()
     assert_equal(len(obs), 64 * 64 * 3)
-    # Non-degenerate: at least one lit pixel (walls/agent over black bg).
+    # Non-degenerate: background + walls fill the frame with lit pixels, and the
+    # frame is not a single flat color (walls vs background vs sprites differ).
     var lit = 0
+    var mn = 255
+    var mx = 0
     for i in range(len(obs)):
-        if obs[i] > 0:
+        var v = Int(obs[i])
+        if v > 0:
             lit += 1
+        if v < mn:
+            mn = v
+        if v > mx:
+            mx = v
     assert_true(lit > 500, "render produced a near-black frame")
+    assert_true(mx - mn > 40, "render produced a flat frame")
 
 
 def test_maze_bfs_solves_level() raises:
     # A few seeds: BFS-solve → reward 10 + level_complete.
     var seeds: List[Int] = [0, 1, 7, 42]
     for si in range(len(seeds)):
-        var game = MazeSpikeGame(ASSET_ROOT)
+        var game = MazeGame(ASSET_ROOT)
         game.reset(seeds[si])
         var actions = _bfs_actions(game)
         assert_true(len(actions) > 0, "no path found for seed")
@@ -119,6 +128,42 @@ def test_maze_bfs_solves_level() raises:
             total += game.step(actions[k])
         assert_true(game.level_complete, "level not completed")
         assert_equal(Int(total), 10)
+
+
+def test_maze_env_episode() raises:
+    # Benchmark env: reset samples a level from [0,200); BFS-solve the episode
+    # through the MazeEnv API and confirm terminal reward + done via step().
+    var env = MazeEnv(ASSET_ROOT, rand_seed=0, num_levels=200)
+    var obs = env.reset()
+    assert_equal(len(obs), MazeEnv.OBS_DIM)
+    assert_true(
+        env.current_level_seed >= 0 and env.current_level_seed < 200,
+        "level seed out of configured range",
+    )
+    var actions = _bfs_actions(env.game)
+    assert_true(len(actions) > 0, "no path found in env level")
+
+    var last_reward: Float32 = 0.0
+    var got_done = False
+    var got_complete = False
+    for k in range(len(actions)):
+        var res = env.step(actions[k])
+        assert_equal(len(res.obs), MazeEnv.OBS_DIM)
+        last_reward = res.reward
+        if res.done:
+            got_done = True
+        if res.level_complete:
+            got_complete = True
+    assert_true(got_done, "episode never terminated")
+    assert_true(got_complete, "level never completed")
+    assert_equal(Int(last_reward), 10)
+
+    # A second reset picks another (in-range) level seed.
+    _ = env.reset()
+    assert_true(
+        env.current_level_seed >= 0 and env.current_level_seed < 200,
+        "second level seed out of range",
+    )
 
 
 def main() raises:

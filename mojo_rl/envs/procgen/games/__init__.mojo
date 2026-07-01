@@ -1,3 +1,4 @@
-"""Procgen games (Phase-0 spike: maze only). See `docs/PROCGEN_PORT.md`."""
+"""Procgen games (maze). See `docs/PROCGEN_PORT.md`."""
 
-from .maze import MazeSpikeGame
+from .maze import MazeGame
+from .maze_env import MazeEnv, StepResult

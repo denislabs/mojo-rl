@@ -1,17 +1,17 @@
-"""Maze — Phase-0 spike game (proves the full RNG→gen→engine→render→obs path).
+"""Maze game — one procedurally-generated level (given a level seed).
 
 Faithful port of `games/maze.cpp`'s grid construction + grid-step movement +
-goal logic, on the proven `MazeGen`. Rendering is visual-approx (§ rasterizer)
-with `use_backgrounds=false` (black background) to keep the spike free of the
-background-image pipeline.
+goal logic, on the proven `MazeGen`. `reset(level_seed)` seeds `rand_gen` and
+replays the exact `BasicAbstractGame::game_reset` + `MazeGame::game_reset` RNG
+order (bg_pct_x, background_index, maze_dim, gen), so a level seed reproduces
+reference Procgen's maze exactly (gated by `test_maze_game_parity.mojo`).
 
-Fidelity note: the reset RNG sequence here is `seed → randn((world_dim-1)/2) →
-generate_maze → place_objects` — exactly the sequence validated in
-`test_mt19937_parity.mojo`, so the maze layout is level-exact w.r.t. the
-generator. Reference Procgen draws a couple of base-class values (bg_pct_x,
-background_index, random agent pos) *before* maze_dim, so this env's "seed N"
-is not identical to Python Procgen's "seed N"; closing that gap is the Phase-1
-`BasicAbstractGame` port. See `docs/PROCGEN_PORT.md`.
+Rendering is visual-approx (§ rasterizer): the selected topdown background is
+drawn first (panned by `bg_pct_x`), then sand walls / cheese goal / mouse agent
+on top, matching Procgen's draw order.
+
+Level *selection* (train/test splits via num_levels/start_level/rand_seed) lives
+in the `MazeEnv` wrapper (`maze_env.mojo`). See `docs/PROCGEN_PORT.md`.
 """
 
 from std.math import floor
@@ -19,7 +19,7 @@ from std.math import floor
 from ..core.entity import Entity
 from ..core.randgen import RandGen
 from ..core.mazegen import MazeGen, MAZE_OFFSET
-from ..core.assets import Sprite, load_sprite
+from ..core.assets import Sprite, load_sprite, load_topdown_backgrounds
 from ..core.rasterizer import Canvas, RES
 from ..core.object_ids import SPACE, WALL_OBJ, PLAYER, INVALID_OBJ
 
@@ -30,7 +30,7 @@ comptime RENDER_EPS: Float32 = 0.02
 comptime BG_COUNT = 9  # topdown_backgrounds (resources.cpp)
 
 
-struct MazeSpikeGame(Copyable, Movable):
+struct MazeGame(Copyable, Movable):
     var rand_gen: RandGen
     var grid: List[Int]
     var w: Int
@@ -39,6 +39,7 @@ struct MazeSpikeGame(Copyable, Movable):
     var sand: Sprite
     var cheese: Sprite
     var mouse: Sprite
+    var backgrounds: List[Sprite]
     var episode_reward: Float32
     var done: Bool
     var level_complete: Bool
@@ -55,6 +56,7 @@ struct MazeSpikeGame(Copyable, Movable):
         self.sand = load_sprite(asset_root, "kenney/Ground/Sand/sandCenter.png")
         self.cheese = load_sprite(asset_root, "misc_assets/cheese.png")
         self.mouse = load_sprite(asset_root, "kenney/Enemies/mouse_move.png")
+        self.backgrounds = load_topdown_backgrounds(asset_root)
         self.episode_reward = 0.0
         self.done = False
         self.level_complete = False
@@ -181,7 +183,7 @@ struct MazeSpikeGame(Copyable, Movable):
 
     def render(self) -> List[UInt8]:
         var canvas = Canvas()
-        canvas.fill(0, 0, 0)  # use_backgrounds=false
+        canvas.fill(0, 0, 0)
 
         var visibility = Float32(self.w if self.w > self.h else self.h)
         var view_dim = visibility
@@ -190,6 +192,23 @@ struct MazeSpikeGame(Copyable, Movable):
         var center_y = Float32(self.h) * 0.5
         var x_off = unit * (center_x - view_dim / 2)
         var y_off = unit * (center_y - view_dim / 2)
+
+        # Background (draw_background, topdown, bg_tile_ratio=0). The main_rect
+        # is the whole world; the bg is scaled to cover its height and panned
+        # horizontally by bg_pct_x over the extra width. main_rect for maze is
+        # (0,0,RES,RES) since x_off==y_off==0 and view_dim==main_height.
+        ref bg = self.backgrounds[self.background_index]
+        var main_w = Float32(self.w) * unit
+        var main_h = Float32(self.h) * unit
+        var main_x = -x_off
+        var main_y = (view_dim - Float32(self.h)) * unit + y_off
+        var bg_ar = Float32(bg.w) / Float32(bg.h)
+        var world_ar = Float32(self.w) / Float32(self.h)
+        var offset_x = self.bg_pct_x * (bg_ar - world_ar)
+        # adjust_rect(main_rect, (-offset_x, 0, bg_ar/world_ar, 1)).
+        var bg_x = main_x + main_w * (-offset_x)
+        var bg_w = main_w * (bg_ar / world_ar)
+        canvas.blit(bg, bg_x, main_y, bg_w, main_h)
 
         for x in range(self.w):
             for y in range(self.h):

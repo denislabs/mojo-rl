@@ -9,7 +9,7 @@ Run from repo root:
 """
 
 from std.python import Python
-from mojo_rl.envs.procgen.games import MazeSpikeGame
+from mojo_rl.envs.procgen.games import MazeGame
 
 comptime ASSET_ROOT = String("references/procgen-master/procgen/data/assets/")
 comptime SEED = 7
@@ -18,7 +18,7 @@ comptime OUT = String("procgen_maze_seed7.png")
 
 
 def main() raises:
-    var game = MazeSpikeGame(ASSET_ROOT)
+    var game = MazeGame(ASSET_ROOT)
     game.reset(SEED)
     var obs = game.render()  # 64*64*3 RGB, row-major
 

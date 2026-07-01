@@ -9,7 +9,7 @@ reference Procgen's maze exactly. Ground truth from `scratchpad/maze_game_probe.
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from mojo_rl.envs.procgen.games import MazeSpikeGame
+from mojo_rl.envs.procgen.games import MazeGame
 from mojo_rl.envs.procgen.core.object_ids import SPACE
 
 comptime ASSET_ROOT = String("references/procgen-master/procgen/data/assets/")
@@ -34,7 +34,7 @@ def test_maze_game_reset_parity() raises:
     cases.append(Expect(42, 0.374540120, 5, 11, 70, 11044095))
     cases.append(Expect(123, 0.696469188, 1, 15, 126, 11887973))
 
-    var game = MazeSpikeGame(ASSET_ROOT)
+    var game = MazeGame(ASSET_ROOT)
     for ci in range(len(cases)):
         var e = cases[ci]
         game.reset(e.seed)
