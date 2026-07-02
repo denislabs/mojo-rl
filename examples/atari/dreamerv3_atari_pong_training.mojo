@@ -59,16 +59,23 @@ comptime IMG = 96  # 96×96 (16-divisible → conv minres 6)
 comptime BASE = 48  # conv base width (channels BASE·{1,2,4,8})
 comptime OBS = C * IMG * IMG  # 36864
 comptime ACT = 6  # Pong minimal action set (NOOP/FIRE/RIGHT/LEFT/RIGHTFIRE/LEFTFIRE)
-comptime DETER = 2048
-comptime H = 256
+comptime DETER = 4096  # reference size ladder: deter/8 = hidden = units,
+comptime H = 512  # classes = hidden/16 — CLASSES=32 pairs with the 4096/512
+# tier (the old 2048/256 was the smallest size12m tier, which pairs with
+# classes 16: a tier mismatch). The 80k ratio-32 probe run showed the collapse
+# onset at the SAME train-step count as ratio 128 (~2.4k updates) despite 4×
+# the data per update → capacity/generalization of the con/value heads + RSSM
+# MLPs is the binding constraint (imag_con_min kept crashing → fake-terminal
+# advantage jackpots → entropy limit-cycled 1.8→0.7→1.6→0.45, eval flat).
 comptime STOCH = 32
 comptime CLASSES = 32
 comptime BLOCKS = 8
 comptime TOKEN = 1024  # encoder output (flattened conv → Linear → tokens)
 comptime DEC_U = 1024  # unused by the CNN decoder (BASE drives it)
-comptime HU = 256
-comptime VU = 256
-comptime PU = 256
+comptime HU = 512  # reward/continue head width — the con head is the organ
+# that hallucinated terminals at 256 (units follow the 4096/512 tier)
+comptime VU = 512
+comptime PU = 512
 comptime BINS = 255
 comptime B = 16
 comptime T = 32  # training-sequence length (BPTT horizon). Reference uses 64;
