@@ -89,6 +89,25 @@ comptime DreamerEncoderCNN[
 ]
 
 
+# ── Raw-token encoder (REFERENCE parity): tokens = the flattened final conv
+# map, NO Linear bottleneck. The reference posterior consumes the raw conv
+# features (`rssm.py Encoder`: `x.reshape((B, -1))` → tokens, ~9-16k dims);
+# the Linear-to-TOKEN squeeze above is a mojo-rl economy that STARVES the
+# posterior — prime suspect in the slow WM maturation on pixel Pong (obs_loss
+# still ~4.4 after 3k updates vs the reference solving Pong outright in that
+# budget). Pass TOKEN = 8·BASE·(H/16)·(W/16) wherever the arch needs it.
+comptime DreamerEncoderCNNRaw[
+    C: Int, H: Int, W: Int, BASE: Int,
+    A: ElementOp = GELUOp, LAYOUT: Int = LAYOUT_NCHW,
+] = Sequential[
+    Elementwise[C * H * W, CenterHalfOp],                      # [0,1] → [-0.5,0.5]
+    _ConvDown[C, BASE, H, W, A, LAYOUT],                       # H   → H/2
+    _ConvDown[BASE, 2 * BASE, H // 2, W // 2, A, LAYOUT],      # H/2 → H/4
+    _ConvDown[2 * BASE, 4 * BASE, H // 4, W // 4, A, LAYOUT],  # H/4 → H/8
+    _ConvDown[4 * BASE, 8 * BASE, H // 8, W // 8, A, LAYOUT],  # H/8 → H/16
+]
+
+
 # ── Decoder: feature[FEATIN] → Linear → 4× transposed-conv → image[C·H·W] ─────
 comptime DreamerDecoderCNN[
     FEATIN: Int, C: Int, H: Int, W: Int, BASE: Int,

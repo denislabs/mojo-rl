@@ -45,7 +45,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
 from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
-    DreamerEncoderCNN,
+    DreamerEncoderCNNRaw,
     DreamerDecoderCNN,
 )
 from mojo_rl.envs.atari import AtariEnv
@@ -70,7 +70,10 @@ comptime H = 512  # classes = hidden/16 — CLASSES=32 pairs with the 4096/512
 comptime STOCH = 32
 comptime CLASSES = 32
 comptime BLOCKS = 8
-comptime TOKEN = 1024  # encoder output (flattened conv → Linear → tokens)
+# RAW conv tokens (reference parity): the posterior consumes the flattened
+# final conv map directly — no Linear bottleneck (which starved the posterior;
+# the WM matured ≥10× slower per update than the reference with TOKEN=1024).
+comptime TOKEN = 8 * BASE * (IMG // 16) * (IMG // 16)  # 13824
 comptime DEC_U = 1024  # unused by the CNN decoder (BASE drives it)
 comptime HU = 512  # reward/continue head width — the con head is the organ
 # that hallucinated terminals at 256 (units follow the 4096/512 tier)
@@ -92,7 +95,7 @@ comptime T_IMAG = 15
 comptime CAP = 200_000 if C == 1 else 50_000
 
 comptime FEATIN = STOCH * CLASSES + DETER
-comptime ENC = DreamerEncoderCNN[C, IMG, IMG, BASE, TOKEN, SwishOp]
+comptime ENC = DreamerEncoderCNNRaw[C, IMG, IMG, BASE, SwishOp]  # raw tokens
 comptime DEC = DreamerDecoderCNN[FEATIN, C, IMG, IMG, BASE, SwishOp]
 
 comptime Ag = DreamerV3Agent[
@@ -135,9 +138,12 @@ comptime TRAIN_EVERY = 32
 # the WM needs ~10k+ updates before its dreams even contain the agent's
 # paddle. During the delay the policy stays at its near-uniform init →
 # diverse replay; the actor's first updates then see dreams with real reward
-# structure, which dominates the spurious ridge. 3000 updates ≈ 96k env
-# steps at ratio 32.
-comptime AC_START = 3000
+# structure, which dominates the spurious ridge. 6000 updates ≈ 192k env
+# steps at ratio 32 (3000 was NOT enough: obs_loss was still 4.4 at gate-
+# open, dreams had no paddle, and the fresh value carved its ridge in ~600
+# post-gate updates). QUALITY BAR: obs_loss should be ≤ ~1.5 when the gate
+# opens — if it is not, extend AC_START before judging the run.
+comptime AC_START = 6000
 comptime LOG_EVERY = 1000  # WM/AC loss curves (cheap; no greedy eval) — frequent
 comptime EVAL_EVERY = 5000  # greedy eval + episode returns (expensive, ~3 min)
 comptime EVAL_EPISODES = 5
