@@ -457,6 +457,18 @@ struct Dreamer4Agent[
         the distance-0 block."""
         return _mao(self.plog.unsafe_ptr())
 
+    # Imagination internals from the last imag_train_step (diagnostics): the
+    # reward-head prediction, value-head prediction, and λ-return per imagined
+    # state — used to check whether imagination sees phantom rewards/values.
+    def im_rew_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:  # [BF]
+        return _mao(self.im_rew.unsafe_ptr())
+
+    def im_val_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:  # [BF]
+        return _mao(self.im_val.unsafe_ptr())
+
+    def im_ret_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:  # [B*(T-1)]
+        return _mao(self.im_ret.unsafe_ptr())
+
     # ── online acting (single-step inference) ────────────────────────────
     def act_from_latents(
         mut self,

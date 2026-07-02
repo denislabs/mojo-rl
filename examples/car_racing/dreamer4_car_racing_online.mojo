@@ -126,26 +126,29 @@ def main() raises:
     logger.set_config("obs", "pixel")
 
     print("starting online training...")
-    # Training-scale config (dynamics + tokenizer on GPU). frame_repeat=4 (standard
-    # for CarRacing) makes control tractable and 4x's the effective imagination
-    # horizon. This is a longer run — scale total_env_steps to 1_000_000+ once it's
-    # trending up; drop to warmup=500/total=20_000 for a quick smoke.
+    # ── DIAGNOSTIC config (diag=True): a short run that reaches Stage 2 fast and
+    # prints, at log_every, the real batch reward vs the reward head's IMAGINED
+    # reward, the imagined value, and the λ-returns — to see whether imagination
+    # is optimistic (phantom rewards) vs the WM being accurate. For TRAINING,
+    # restore warmup=5_000, tok_pretrain=2_000, total_env_steps=200_000 (→1_000_000
+    # once trending up), eval_every=10_000, and diag=False.
     var summary = run_online_dreamer4[
         IN_CH=IN_CH, IMG=IMG, TGT=TGT, PATCH=PATCH, TNP=NP, CAP=CAP,
         TOK_D=TOK_D, TOK_NH=TOK_NH, TOK_HID=TOK_HID, TOK_DEPTH=TOK_DEPTH,
         TOK_PMIN=DROP, TOK_PMAX=DROP, TOK_SEED=7, DYN_TARGET="gpu",
     ](
         agent, tok, backbone, env, logger,
-        warmup_steps=5_000,
-        tok_pretrain_steps=2_000,
-        total_env_steps=200_000,
+        warmup_steps=1_000,
+        tok_pretrain_steps=500,
+        total_env_steps=10_000,
         train_every=4,
         imag_every=8,
-        eval_every=10_000,
+        eval_every=5_000,
         perc_weight=0.2,          # paper eq. 5: MSE + 0.2·perceptual (GPU backbone)
         eval_max_steps=1_000,
         imag_gamma=Scalar[DT](0.997),
         frame_repeat=4,           # action repeat (standard CarRacing)
+        diag=True,                # print reward/value/return sanity stats
         dctx=Optional(ctx),       # GPU dynamics
     )
     logger.close()

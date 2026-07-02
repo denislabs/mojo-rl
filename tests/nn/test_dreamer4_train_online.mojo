@@ -180,7 +180,7 @@ def main() raises:
     ](
         agent, tok, backbone, env, logger,
         warmup_steps=30, tok_pretrain_steps=10, total_env_steps=60,
-        train_every=4, imag_every=20, eval_every=25, frame_repeat=2,
+        train_every=4, imag_every=20, eval_every=25, frame_repeat=2, diag=True,
     )
     print("  summary (tok, wm_video, wm_bc, imag_value, eval_return) =",
           summary[0], summary[1], summary[2], summary[3], summary[4])

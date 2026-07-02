@@ -169,6 +169,25 @@ def _step_repeat[
     return (r_sum, d)
 
 
+def _mmm(
+    p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int
+) -> Tuple[Float64, Float64, Float64]:
+    """(mean, min, max) over p[0:n]."""
+    if n <= 0:
+        return (0.0, 0.0, 0.0)
+    var s: Float64 = 0.0
+    var mn = Float64(p[0])
+    var mx = mn
+    for i in range(n):
+        var v = Float64(p[i])
+        s += v
+        if v < mn:
+            mn = v
+        if v > mx:
+            mx = v
+    return (s / Float64(n), mn, mx)
+
+
 def _build_shortcut_schedule[
     B: Int, T: Int, B_SELF: Int, KMAX: Int, EMAX: Int, ND: Int
 ](
@@ -280,6 +299,7 @@ def run_online_dreamer4[
     imag_gamma: Scalar[DT] = Scalar[DT](0.997),
     log_every: Int = 500,   # cadence for stdout progress + metric logging
     frame_repeat: Int = 1,  # repeat each chosen action this many env steps
+    diag: Bool = False,     # print reward/value/return sanity stats at log cadence
     seed: UInt64 = 20260701,
     dctx: Optional[DeviceContext] = None,   # required when DYN_TARGET="gpu"
 ) raises -> Tuple[Float64, Float64, Float64, Float64, Float64]:
@@ -501,6 +521,20 @@ def run_online_dreamer4[
                 logger.log_scalar(String("online/wm_bc"), last_bc, step)
                 logger.log_scalar(String("online/imag_value"), last_v, step)
                 logger.log_scalar(String("online/imag_policy"), last_p, step)
+            if diag:
+                # Is imagination seeing phantom rewards/values? Compare the REAL
+                # batch rewards to the reward head's IMAGINED rewards, the value
+                # head's imagined values, and the λ-returns. If imag_rew mean is
+                # far above real_rew mean (or imag_val is wildly optimistic), the
+                # WM/heads are the bottleneck, not the policy.
+                var rr = _mmm(_mao(rew.data.unsafe_ptr()), BATCH)
+                var ir = _mmm(agent.im_rew_ptr(), BATCH)
+                var iv = _mmm(agent.im_val_ptr(), BATCH)
+                var lr = _mmm(agent.im_ret_ptr(), B * (T - 1))
+                print("  [diag] real_rew(mean/min/max)=", rr[0], rr[1], rr[2],
+                      " imag_rew=", ir[0], ir[1], ir[2],
+                      " imag_val=", iv[0], iv[1], iv[2],
+                      " lambda_ret=", lr[0], lr[1], lr[2])
         win_n = _push_frame[IN_CH, IMG, TGT, PATCH, T, NP, DP](
             _mao(cur.unsafe_ptr()), fr1, pa1, win_patch, win_act,
             win_n, last_action,
