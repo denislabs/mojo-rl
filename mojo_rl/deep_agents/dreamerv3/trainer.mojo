@@ -26,7 +26,7 @@ from std.math import exp
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
-from mojo_rl.nn.core.initializer import Kaiming
+from mojo_rl.nn.core.initializer import Initializer, Kaiming, Zero
 from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs, child_refs
 from mojo_rl.nn.core.checkpoint import (
@@ -50,9 +50,6 @@ from mojo_rl.deep_agents.dreamerv3.twohot import (
     DREAMER_REWARD_GRID_LO,
 )
 from mojo_rl.deep_agents.dreamerv3.normalize import PercentileNormalize
-from mojo_rl.deep_agents.dreamerv3.zero_init import (
-    scale_output_module, scale_output_graph,
-)
 from mojo_rl.deep_agents.dreamerv3.blocks import (
     DreamerState, WMStep, ParamSyncStep, ACStep,
 )
@@ -100,6 +97,13 @@ struct DreamerV3Trainer[
     # plain MSE vs raw [0,1] obs (decode = sigmoid). False (default) keeps the
     # symlog recon, correct for unbounded vector obs (CartPole/Pendulum).
     RECON_SIGMOID: Bool = False,
+    # Reward + value/slowvalue OUTPUT-layer initializer, declared structurally
+    # (InitWith in nets.mojo) — replaces the runtime `out_init_scale` post-hoc
+    # scaling (silent-on-miss name paths). Zero = the paper's zero-init (p.6,
+    # best for negative-reward tasks); Kaiming = full pre-zero-init optimism
+    # (helps POSITIVE-reward tasks like CartPole explore/solve faster). The
+    # policy head's reference outscale 0.01 is FIXED inside DreamerPolicyHead.
+    OUT_INIT: Initializer = Zero,
 ](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
@@ -113,9 +117,13 @@ struct DreamerV3Trainer[
         Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp, Self.DEC,
         Self.RECON_SIGMOID,
     ]
-    comptime RewT = RewLossGraph[Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp]
+    comptime RewT = RewLossGraph[
+        Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp, Self.OUT_INIT
+    ]
     comptime ConT = ConLossGraph[Self.DETER, Self.SC, Self.HU, SwishOp]
-    comptime ValT = DreamerValue[Self.FEAT, Self.VU, Self.BINS, SwishOp]
+    comptime ValT = DreamerValue[
+        Self.FEAT, Self.VU, Self.BINS, SwishOp, Self.OUT_INIT
+    ]
     # discrete (categorical) actor → ACT logits; continuous → 2·ACT (mean,std)
     comptime PolT = DreamerPolicyHead[
         Self.FEAT, Self.PU, Self.ACT, Self.DISCRETE, SwishOp
@@ -138,7 +146,7 @@ struct DreamerV3Trainer[
     comptime WMBlk = WMStep[
         Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH, Self.CLASSES,
         Self.BLOCKS, Self.TOKEN, Self.DEC_U, Self.HU, Self.BINS, Self.B, Self.T,
-        Self.DISCRETE, Self.ENC, Self.DEC, Self.RECON_SIGMOID,
+        Self.DISCRETE, Self.ENC, Self.DEC, Self.RECON_SIGMOID, Self.OUT_INIT,
     ]
     comptime SyncBlk = ParamSyncStep[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT,
@@ -147,7 +155,7 @@ struct DreamerV3Trainer[
     comptime ACBlk = ACStep[
         Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH, Self.CLASSES,
         Self.BLOCKS, Self.TOKEN, Self.HU, Self.VU, Self.PU, Self.BINS, Self.B,
-        Self.T, Self.T_IMAG, Self.DISCRETE,
+        Self.T, Self.T_IMAG, Self.DISCRETE, Self.OUT_INIT,
     ]
 
     var enc: Self.EncT
@@ -196,7 +204,6 @@ struct DreamerV3Trainer[
         lr: Scalar[DT] = Scalar[DT](4e-5),
         learning_starts: Int = 200,
         warmup_steps: Int = 1000,
-        out_init_scale: Scalar[DT] = Scalar[DT](0.0),
         actent: Scalar[DT] = Scalar[DT](3e-4),
         slowtar: Bool = False,
         device_noise: Bool = True,
@@ -214,38 +221,14 @@ struct DreamerV3Trainer[
         var policy = Self.PolT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
         var imagine = Self.ImagT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
 
-        # Finding 4 (paper p.6): scale the reward-predictor and critic OUTPUT
-        # layers toward ~0 at init. Otherwise large/biased initial reward+value
-        # predictions make the imagined λ-returns optimistic (even positive on
-        # negative-reward tasks like Pendulum), and the actor optimizes a reward
-        # landscape that doesn't exist. `out_init_scale=0.0` == the paper's hard
-        # zero-init (best for negative rewards). A small nonzero scale keeps a
-        # little Kaiming optimism, which empirically helps POSITIVE-reward tasks
-        # (CartPole) explore / solve faster without the full-Kaiming blow-up.
-        # The output Linear is Sequential child 3 (`nets.mojo` pins head MLP
-        # depth to 1); inside the reward ComputeGraph the head is node `rew`.
-        # slowvalue is scaled too — the value loss regularizes value TOWARD
-        # slowvalue (slowreg=1), so a non-neutral slowvalue would pull it back.
-        scale_output_graph[Self.train_target](
-            rew, String("rew.3.weight"), String("rew.3.bias"), out_init_scale, ctx
-        )
-        scale_output_module[Self.train_target, Self.ValT](
-            value, String("3.weight"), String("3.bias"), out_init_scale, ctx
-        )
-        scale_output_module[Self.train_target, Self.ValT](
-            slowvalue, String("3.weight"), String("3.bias"), out_init_scale, ctx
-        )
-        # Reference `policy.outscale = 0.01` (configs.yaml): scale the POLICY
-        # output layer to near-zero at init → near-uniform initial policy
-        # (discrete: logits ≈ 0; continuous: mean ≈ 0, mid std). Full-Kaiming
-        # output logits are O(1) → a semi-collapsed policy from step 0 that
-        # self-reinforces through its own replay data before any reward signal
-        # exists (observed on Pong: entropy 1.79 → 0.13 nats by 20k steps with
-        # eval still at -21, all mass on one action family). The tiny 0.01
-        # (vs hard 0.0) keeps a symmetry-breaking gradient path.
-        scale_output_module[Self.train_target, Self.PolT](
-            policy, String("3.weight"), String("3.bias"), Scalar[DT](0.01), ctx
-        )
+        # Output-head inits are declared STRUCTURALLY in nets.mojo (InitWith):
+        # reward + value/slowvalue built with `OUT_INIT` (paper p.6 zero-init
+        # by default; Kaiming restores positive-reward optimism for CartPole),
+        # and the policy output with the reference's fixed outscale 0.01
+        # (ScaledKaiming[1,100]). No post-hoc name-path scaling — a mismatch
+        # is now a compile error instead of a silent no-op. slowvalue shares
+        # ValT, so it starts neutral too (the value loss regularizes TOWARD
+        # slowvalue with slowreg=1, so a non-neutral slowvalue would pull it).
 
         # Storage DreamerOpt is driven INSIDE the blocks (graph.for_each_param /
         # opt.step[target, M]); the trainer just constructs them with the lr.

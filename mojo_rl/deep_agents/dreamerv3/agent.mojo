@@ -43,6 +43,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs, child_refs
 from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Initializer, Zero
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.dreamerv3.nets import DreamerEncoder, DreamerDecoder
 from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
@@ -85,6 +86,11 @@ struct DreamerV3Agent[
     # RECON_SIGMOID=True → reference pixel recon (sigmoid + plain MSE on [0,1]).
     # Default False keeps symlog recon for unbounded vector obs.
     RECON_SIGMOID: Bool = False,
+    # Reward + value/slowvalue OUTPUT-layer initializer (structural, replaces
+    # the runtime `out_init_scale`): Zero = paper zero-init (default; negative-
+    # reward tasks), Kaiming = full init optimism (positive-reward tasks like
+    # CartPole). The policy head's reference outscale 0.01 is fixed in nets.
+    OUT_INIT: Initializer = Zero,
 ](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
@@ -96,7 +102,7 @@ struct DreamerV3Agent[
         Self.train_target, Self.OBS, Self.ACT, Self.DETER, Self.H, Self.STOCH,
         Self.CLASSES, Self.BLOCKS, Self.TOKEN, Self.DEC_U, Self.HU, Self.VU,
         Self.PU, Self.BINS, Self.B, Self.T, Self.T_IMAG, Self.CAP, Self.DISCRETE,
-        Self.ENC, Self.DEC, Self.RECON_SIGMOID,
+        Self.ENC, Self.DEC, Self.RECON_SIGMOID, Self.OUT_INIT,
     ]
     comptime MINSTD = Scalar[DT](0.1)
     comptime MAXSTD = Scalar[DT](1.0)
@@ -122,7 +128,6 @@ struct DreamerV3Agent[
         learning_starts: Int = 200,
         action_scale: Scalar[DT] = Scalar[DT](1.0),
         warmup_steps: Int = 1000,
-        out_init_scale: Scalar[DT] = Scalar[DT](0.0),
         actent: Scalar[DT] = Scalar[DT](3e-4),
         slowtar: Bool = False,
         device_noise: Bool = True,
@@ -130,7 +135,7 @@ struct DreamerV3Agent[
         var a = Self(
             trainer=Self.TrainerT.make(
                 ctx=ctx, lr=lr, learning_starts=learning_starts,
-                warmup_steps=warmup_steps, out_init_scale=out_init_scale,
+                warmup_steps=warmup_steps,
                 actent=actent, slowtar=slowtar, device_noise=device_noise,
             ),
             belief_deter=Tensor.alloc(Self.DETER),

@@ -67,6 +67,7 @@ from mojo_rl.deep_agents.dreamerv3.nets import (
     DreamerEncoder, DreamerDecoder, DreamerValue, DreamerPolicyHead,
 )
 from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.initializer import Initializer, Zero
 from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
 
 
@@ -1407,6 +1408,7 @@ struct WMStep[
     ENC: Module = DreamerEncoder[OBS, TOKEN, SwishOp],
     DEC: Module = DreamerDecoder[STOCH * CLASSES + DETER, OBS, DEC_U, SwishOp],
     RECON_SIGMOID: Bool = False,  # True → sigmoid+MSE recon (pixel [0,1])
+    OUT_INIT: Initializer = Zero,  # reward-head output init (from the trainer)
 ](Movable & ImplicitlyDeletable):
     # `DISCRETE` selects the WM↔AC carry handoff (Stage 3 P3). The discrete AC
     # (`_ac_gpu_disc`) is fully device-resident, so the GPU WM hands its scan
@@ -1424,7 +1426,9 @@ struct WMStep[
         Self.SC, Self.DETER, Self.OBS, Self.DEC_U, SwishOp, Self.DEC,
         Self.RECON_SIGMOID,
     ]
-    comptime RewT = RewLossGraph[Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp]
+    comptime RewT = RewLossGraph[
+        Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp, Self.OUT_INIT
+    ]
     comptime ConT = ConLossGraph[Self.DETER, Self.SC, Self.HU, SwishOp]
     comptime StateT = DreamerState[
         Self.OBS, Self.ACT, Self.DETER, Self.SC, Self.TOKEN, Self.B, Self.T, 1,
@@ -2214,18 +2218,23 @@ struct ACStep[
     OBS: Int, ACT: Int, DETER: Int, H: Int, STOCH: Int, CLASSES: Int,
     BLOCKS: Int, TOKEN: Int, HU: Int, VU: Int, PU: Int, BINS: Int,
     B: Int, T: Int, T_IMAG: Int, DISCRETE: Bool = False,
+    OUT_INIT: Initializer = Zero,  # reward/value output init (from the trainer)
 ](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
     comptime ImagT = WMImagineGraph[
         Self.DETER, Self.H, Self.STOCH, Self.CLASSES, Self.BLOCKS, Self.ACT, SwishOp,
     ]
-    comptime ValT = DreamerValue[Self.FEAT, Self.VU, Self.BINS, SwishOp]
+    comptime ValT = DreamerValue[
+        Self.FEAT, Self.VU, Self.BINS, SwishOp, Self.OUT_INIT
+    ]
     comptime PolT = DreamerPolicyHead[
         Self.FEAT, Self.PU, Self.ACT, Self.DISCRETE, SwishOp
     ]
     comptime POUT = Self.ACT if Self.DISCRETE else 2 * Self.ACT
-    comptime RewT = RewLossGraph[Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp]
+    comptime RewT = RewLossGraph[
+        Self.DETER, Self.SC, Self.HU, Self.BINS, SwishOp, Self.OUT_INIT
+    ]
     comptime ConT = ConLossGraph[Self.DETER, Self.SC, Self.HU, SwishOp]
     var minstd: Scalar[DT]
     var maxstd: Scalar[DT]

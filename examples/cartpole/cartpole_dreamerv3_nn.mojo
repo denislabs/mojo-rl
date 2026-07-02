@@ -30,6 +30,7 @@ from std.memory import alloc
 from std.random import random_float64, seed
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
 from mojo_rl.envs.cartpole import CartPoleEnv
 
@@ -61,6 +62,7 @@ comptime CAP = 200_000
 comptime Ag = DreamerV3Agent[
     "cpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU,
     PU, BINS, B, T, T_IMAG, CAP, True,   # DISCRETE=True
+    OUT_INIT=Kaiming,  # full reward/critic output init (positive-reward optimism)
 ]
 
 comptime TOTAL_STEPS = 150_000
@@ -123,13 +125,12 @@ def main() raises:
     #      that ends episodes; raising it at lr=3e-4 makes the value run away). The
     #      reference recipe — longer horizon (T_IMAG=15) + lower lr (1.5e-4) — is
     #      stable AND sees the drift → full solve.
-    #   out_init_scale=1.0 (full Kaiming reward/critic init): the early optimism
+    #   OUT_INIT=Kaiming (full reward/critic output init): the early optimism
     #   drives exploration on this dense POSITIVE-reward task; zero-init (good for
     #   negative-reward Pendulum) over-damps it. actent stays at the 3e-4 default
     #   (the unimix categorical already explores).
     var ag = Ag.make(
         lr=Scalar[DT](1.5e-4), learning_starts=LEARN_START, warmup_steps=500,
-        out_init_scale=Scalar[DT](1.0),
     )
 
     var obs = env.reset_obs_list()

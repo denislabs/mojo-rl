@@ -32,6 +32,7 @@ from std.memory import alloc
 from std.random import random_float64, seed
 
 from mojo_rl.nn.constants import DT
+from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
 from mojo_rl.envs.cartpole import CartPoleEnv
 
@@ -57,6 +58,7 @@ comptime CAP = 200_000
 comptime Ag = DreamerV3Agent[
     "cpu", OBS, ACT, DETER, H, STOCH, CLASSES, BLOCKS, TOKEN, DEC_U, HU, VU,
     PU, BINS, B, T, T_IMAG, CAP, True,   # DISCRETE=True
+    OUT_INIT=Kaiming,  # full reward/critic output init (positive-reward optimism)
 ]
 
 comptime TOTAL = 20_000
@@ -164,7 +166,6 @@ def main() raises:
     var env = CartPoleEnv[DT]()
     var ag = Ag.make(
         lr=Scalar[DT](3e-4), learning_starts=LEARN_START, warmup_steps=500,
-        out_init_scale=Scalar[DT](1.0),
     )
     var obs = env.reset_obs_list()
     var obsbuf = alloc[Scalar[DT]](OBS).as_unsafe_any_origin()
