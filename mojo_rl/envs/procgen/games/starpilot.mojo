@@ -10,12 +10,12 @@ episode's enemy waves (`add_spawners`) with exact RNG order. Level-exact + visua
 See `docs/PROCGEN_STARPILOT_SCOPE.md`. P0 = reset (add_spawners) parity; step/render in P1/P2.
 """
 
-from std.math import floor, cos, sin, sqrt
+from std.math import floor, ceil, cos, sin, sqrt
 from std.memory import ArcPointer
 
 from ..core.entity import Entity
 from ..core.randgen import RandGen
-from ..core.object_ids import PLAYER
+from ..core.object_ids import PLAYER, EXPLOSION
 
 # Starpilot object ids (starpilot.cpp).
 comptime BULLET_PLAYER = 1
@@ -29,6 +29,7 @@ comptime FAST_FLYER = 8
 comptime FINISH_LINE = 9
 
 comptime V_SCALE: Float32 = 0.4  # 2/5
+comptime MIXRATE: Float32 = 0.5
 comptime ENEMY_REWARD: Float32 = 1.0
 comptime COMPLETION_BONUS: Float32 = 10.0
 comptime A_R: Float32 = 0.4
@@ -283,6 +284,282 @@ struct StarpilotGame(Copyable, Movable):
 
         self._init_hps()
         self._add_spawners()
+        self._sort_spawners_desc()  # by spawn_time DESC (stable) → pop back to activate
 
         self.agent.rotation = PI / 2
         self.agent.image_theme = self.rand_gen.randn(NUM_SHIP_THEMES)
+
+    def _sort_spawners_desc(mut self):
+        # Stable insertion sort by spawn_time descending (ties keep generation
+        # order), matching the probe's std::stable_sort. n ≲ 100 → O(n²) is fine.
+        for i in range(1, len(self.spawners)):
+            var key = self.spawners[i].copy()
+            var j = i - 1
+            while j >= 0 and self.spawners[j].spawn_time < key.spawn_time:
+                self.spawners[j + 1] = self.spawners[j].copy()
+                j -= 1
+            self.spawners[j + 1] = key^
+
+    # --- step physics + projectile substrate ---
+    def _is_lethal(self, t: Int) -> Bool:
+        return (
+            t == FLYER or t == FAST_FLYER or t == BULLET2 or t == BULLET3
+            or t == TURRET or t == METEOR
+        )
+
+    def _is_destructible(self, t: Int) -> Bool:
+        return t == FLYER or t == FAST_FLYER or t == TURRET or t == METEOR
+
+    def _should_fire(self, mtype: Int, mfire: Int, mspawn: Int) -> Bool:
+        if mfire <= 0:
+            return False
+        if mtype == TURRET:
+            return (self.cur_time - mspawn) % mfire == 0
+        return self.cur_time - mspawn == mfire
+
+    def _collides(
+        self, ax: Float32, ay: Float32, arx: Float32, ary: Float32,
+        bx: Float32, by: Float32, brx: Float32, bry: Float32,
+    ) -> Bool:
+        return abs(ax - bx) < (arx + brx) and abs(ay - by) < (ary + bry)
+
+    def _out_of_bounds(self, e: Entity) -> Bool:
+        return (
+            e.x + e.rx < 0.0
+            or e.y + e.ry < 0.0
+            or e.x - e.rx > Float32(self.w)
+            or e.y - e.ry > Float32(self.h)
+        )
+
+    def _blocked_at(self, fi: Float32, fj: Float32) -> Bool:
+        # world is all-SPACE; only the edges (oob) block.
+        var x = Int(floor(fi))
+        var y = Int(floor(fj))
+        return x < 0 or x >= self.w or y < 0 or y >= self.h
+
+    def _sub_step(self, mut o: Entity, vx: Float32, vy: Float32) -> Bool:
+        var nx = o.x + vx
+        var ny = o.y + vy
+        var margin: Float32 = 0.98
+        var is_h = vx != 0.0
+        var block = False
+        for i in range(2):
+            for j in range(2):
+                if self._blocked_at(
+                    nx + o.rx * margin * Float32(2 * i - 1),
+                    ny + o.ry * margin * Float32(2 * j - 1),
+                ):
+                    block = True
+        if block:
+            if is_h:
+                if vx > 0.0:
+                    nx = floor(nx + o.rx) - o.rx
+                else:
+                    nx = ceil(nx - o.rx) + o.rx
+            else:
+                if vy > 0.0:
+                    ny = floor(ny + o.ry) - o.ry
+                else:
+                    ny = ceil(ny - o.ry) + o.ry
+        o.x = nx
+        o.y = ny
+        return block
+
+    def _basic_step_object(self, mut o: Entity):
+        var speed = sqrt(o.vx * o.vx + o.vy * o.vy)
+        var nsub = Int(4.0 * speed)
+        if nsub < 4:
+            nsub = 4
+        var pct = 1.0 / Float32(nsub)
+        var cmp = abs(o.vx) - abs(o.vy)
+        var sxf: Bool
+        if cmp == 0.0:
+            sxf = self.step_rand_int % 2 == 0
+        else:
+            sxf = cmp > 0.0
+        if o.type == PLAYER:
+            if self.action_vx != 0.0:
+                sxf = True
+            if self.action_vy != 0.0:
+                sxf = False
+        var vx_pct: Float32 = 0.0
+        var vy_pct: Float32 = 0.0
+        for _ in range(nsub):
+            var bx: Bool
+            var by: Bool
+            if sxf:
+                bx = self._sub_step(o, o.vx * pct, 0.0)
+                by = self._sub_step(o, 0.0, o.vy * pct)
+            else:
+                by = self._sub_step(o, 0.0, o.vy * pct)
+                bx = self._sub_step(o, o.vx * pct, 0.0)
+            if not bx:
+                vx_pct += 1.0
+            if not by:
+                vy_pct += 1.0
+            if bx and by:
+                break
+        o.vx *= vx_pct / Float32(nsub)
+        o.vy *= vy_pct / Float32(nsub)
+
+    def _drift(mut self, i: Int):
+        # non-smart Entity.step: advance by velocity, tick life, grow, expire.
+        self.entities[i].x += self.entities[i].vx
+        self.entities[i].y += self.entities[i].vy
+        self.entities[i].life_time += 1
+        if (
+            self.entities[i].expire_time > 0
+            and self.entities[i].life_time > self.entities[i].expire_time
+        ):
+            self.entities[i].will_erase = True
+        self.entities[i].rx *= self.entities[i].grow_rate
+        self.entities[i].ry *= self.entities[i].grow_rate
+
+    def step(mut self, action: Int) -> Float32:
+        self.cur_time += 1  # Game::step increments before game_step
+        self.reward = 0.0
+        self.done = False
+        self.level_complete = False
+        self.step_rand_int = self.rand_gen.randint(0, 1000000)  # unused
+
+        var move = action % 9
+        self.special_action = 0
+        if action >= 9:
+            self.special_action = action - 8
+            move = 4
+        self.action_vx = Float32(move // 3 - 1)
+        self.action_vy = Float32(move % 3 - 1)
+
+        # update_agent_velocity (base momentum + 0.9 decay).
+        self.agent.vx = (
+            (1.0 - MIXRATE) * self.agent.vx
+            + MIXRATE * self.maxspeed * self.action_vx
+        )
+        self.agent.vy = (
+            (1.0 - MIXRATE) * self.agent.vy
+            + MIXRATE * self.maxspeed * self.action_vy
+        )
+        self.agent.vx *= 0.9
+        self.agent.vy *= 0.9
+        var a = self.agent.copy()
+        self._basic_step_object(a)
+        self.agent = a^
+
+        for i in range(len(self.entities)):
+            self._drift(i)
+
+        # --- base collision phase (fixed count; appends go past it) ---
+        var n = len(self.entities)
+        # agent-collision: finish → win, lethal → done.
+        for i in range(n - 1, -1, -1):
+            var et = self.entities[i].type
+            if self._collides(
+                self.entities[i].x, self.entities[i].y, self.entities[i].rx,
+                self.entities[i].ry, self.agent.x, self.agent.y, self.agent.rx,
+                self.agent.ry,
+            ):
+                if et == FINISH_LINE:
+                    self.done = True
+                    self.reward += COMPLETION_BONUS
+                    self.level_complete = True
+                elif self._is_lethal(et):
+                    self.done = True
+        # collides_with_entities: player bullet damages destructible enemy.
+        for i in range(n - 1, -1, -1):
+            if not self.entities[i].collides_with_entities:
+                continue
+            for j in range(n - 1, -1, -1):
+                if i == j:
+                    continue
+                if self.entities[i].will_erase or self.entities[j].will_erase:
+                    continue
+                if self._collides(
+                    self.entities[i].x, self.entities[i].y, self.entities[i].rx,
+                    self.entities[i].ry, self.entities[j].x, self.entities[j].y,
+                    self.entities[j].rx, self.entities[j].ry,
+                ):
+                    var st = self.entities[i].type
+                    var tt = self.entities[j].type
+                    if st == BULLET_PLAYER and tt != CLOUD and self._is_destructible(tt):
+                        var sx = self.entities[i].x
+                        var sy = self.entities[i].y
+                        var sr = self.entities[i].rx
+                        var tvx = self.entities[j].vx
+                        var tvy = self.entities[j].vy
+                        self.entities[i].will_erase = True
+                        self.entities[j].health -= 1.0
+                        var ex = Entity(sx, sy, tvx, tvy, 0.5 * sr, 0.5 * sr, EXPLOSION)
+                        ex.grow_rate = 1.4
+                        ex.expire_time = 4
+                        self.entities.append(ex^)
+        # erase will_erase / out-of-bounds.
+        for i in range(len(self.entities) - 1, -1, -1):
+            if self.entities[i].will_erase or self._out_of_bounds(self.entities[i]):
+                _ = self.entities.pop(i)
+        if self._out_of_bounds(self.agent):
+            self.done = True
+
+        # --- StarPilotGame::game_step tail ---
+        var is_firing = self.special_action != 0
+        var m = len(self.entities)
+        for i in range(m - 1, -1, -1):
+            var mtype = self.entities[i].type
+            var mfire = self.entities[i].fire_time
+            var mspawn = self.entities[i].spawn_time
+            var mhealth = self.entities[i].health
+            var mx = self.entities[i].x
+            var my = self.entities[i].y
+            var mvx = self.entities[i].vx
+            var mvy = self.entities[i].vy
+            var mrx = self.entities[i].rx
+            var mwill = self.entities[i].will_erase
+            if self._should_fire(mtype, mfire, mspawn):
+                var bt = BULLET3 if mtype == TURRET else BULLET2
+                var br = self.hp_bullet_r[mtype]
+                var bvx = self.agent.x - mx
+                var bvy = self.agent.y - my
+                var bs = self.hp_vs[bt] * V_SCALE / sqrt(bvx * bvx + bvy * bvy)
+                bvx *= bs
+                bvy *= bs
+                self.entities.append(Entity(mx, my, bvx, bvy, br, br, bt))
+            if mhealth <= 0.0 and self._is_destructible(mtype) and not mwill:
+                var ex = Entity(mx, my, mvx, mvy, 0.5 * mrx, 0.5 * mrx, EXPLOSION)
+                ex.grow_rate = 1.4
+                ex.expire_time = 4
+                self.entities.append(ex^)
+                self.reward += ENEMY_REWARD
+                self.entities[i].will_erase = True
+
+        # activate spawners whose spawn_time == cur_time (pop from back).
+        while (
+            len(self.spawners) > 0
+            and self.cur_time == self.spawners[len(self.spawners) - 1].spawn_time
+        ):
+            var last = self.spawners.pop()
+            self.entities.append(last^)
+
+        # player firing.
+        if is_firing:
+            var theta: Float32 = PI if self.special_action == 2 else 0.0
+            var vs = self.hp_vs[BULLET_PLAYER] * V_SCALE
+            var pbr = self.hp_bullet_r[PLAYER]
+            var b = Entity(
+                self.agent.x + self.agent.rx * cos(theta), self.agent.y,
+                cos(theta) * vs, sin(theta) * vs, pbr, pbr, BULLET_PLAYER,
+            )
+            b.collides_with_entities = True
+            self.entities.append(b^)
+
+        # finish line at the win time (choose_random_theme draws randn(4)).
+        if self.cur_time == SHOOTER_WIN_TIME:
+            var ftheme = self.rand_gen.randn(4)
+            var fin = Entity(
+                Float32(self.w), Float32(self.h) / 2, -self.slow_v * V_SCALE, 0.0,
+                2.0, Float32(self.h) / 2, FINISH_LINE,
+            )
+            fin.image_theme = ftheme
+            fin.x = Float32(self.w) + fin.rx
+            self.entities.append(fin^)
+
+        self.episode_reward += self.reward
+        return self.reward
