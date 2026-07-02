@@ -113,7 +113,17 @@ comptime Env = AtariEnv[4, DT]  # OBS_MODE=4 (gray-96 4-frame stack)
 
 comptime NUM_STEPS = 500_000  # agent decisions (each = 4 ROM frames = 2M frames)
 comptime LEARN_START = 1024
-comptime TRAIN_EVERY = 4
+# Replay ratio = B·T / TRAIN_EVERY replayed frames per env step. The reference
+# trains at ratio 32; with T=32 the old TRAIN_EVERY=4 was ratio 128 — 4× the
+# reference, which OVERFITS the continue/value heads on scarce data (Pong shows
+# ~5 episode terminals in the first 20k steps). The observed failure chain at
+# ratio 128: con head hallucinates terminals on imagined (OOD) states
+# (imag_con_min → ~0.001) → a fake terminal truncates the (legitimately
+# negative, γ=0.997 fixed point ≈ rew/(1−γ)) bootstrap → big positive
+# advantage for whichever action reaches those dream states (adv_gap 0.002 →
+# 0.1) → policy collapses (entropy 1.79 → 0.08 by 20k). TRAIN_EVERY=16
+# restores the reference ratio 32.
+comptime TRAIN_EVERY = 16
 comptime LOG_EVERY = 1000  # WM/AC loss curves (cheap; no greedy eval) — frequent
 comptime EVAL_EVERY = 5000  # greedy eval + episode returns (expensive, ~3 min)
 comptime EVAL_EPISODES = 5
