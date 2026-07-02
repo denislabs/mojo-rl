@@ -69,8 +69,10 @@ from .fruitbot import FruitbotGame, FruitbotAssets
 # Import them from `mojo_rl.envs.procgen.games.fruitbot` directly.
 from .fruitbot_env import FruitbotEnv
 from .fruitbot_gym_env import FruitbotGymEnv, FruitbotState, FruitbotAction
-from .bossfight import BossfightGame
+from .bossfight import BossfightGame, BossfightAssets
 # NOTE: bossfight's generic object ids (PLAYER_BULLET/BOSS/SHIELDS/ENEMY_BULLET/
 # LASER_TRAIL/REFLECTED_BULLET/BARRIER) are NOT re-exported here — PLAYER_BULLET
 # collides with plunder's and BARRIER with fruitbot's. Import them from
 # `mojo_rl.envs.procgen.games.bossfight` directly.
+from .bossfight_env import BossfightEnv
+from .bossfight_gym_env import BossfightGymEnv, BossfightState, BossfightAction

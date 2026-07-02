@@ -65,6 +65,58 @@ def _barrier_asp(t: Int) -> Float32:
     return w[t] / h[t]
 
 
+struct BossfightAssets(Movable):
+    """Read-only sprite set (shared via ArcPointer; passed into render())."""
+
+    var players: List[Sprite]  # 4 themes (playerShip1_blue/green, ship2_orange, ship3_red)
+    var bosses: List[Sprite]  # 4 themes (enemyShipBlack1/Blue2/Green3/Red4)
+    var lasers: List[Sprite]  # 3 themes (green/red/blue) — enemy + player bullets
+    var shield: Sprite
+    var meteors: List[Sprite]  # 8 themes (spaceMeteors_001..004 + meteorGrey_big1..4)
+    var explosion: Sprite
+    var backgrounds: List[Sprite]  # space_backgrounds (13)
+
+    def __init__(out self, asset_root: String) raises:
+        var pp: List[String] = [
+            "misc_assets/playerShip1_blue.png",
+            "misc_assets/playerShip1_green.png",
+            "misc_assets/playerShip2_orange.png",
+            "misc_assets/playerShip3_red.png",
+        ]
+        self.players = load_sprites(asset_root, pp)
+        var bp: List[String] = [
+            "misc_assets/enemyShipBlack1.png",
+            "misc_assets/enemyShipBlue2.png",
+            "misc_assets/enemyShipGreen3.png",
+            "misc_assets/enemyShipRed4.png",
+        ]
+        self.bosses = load_sprites(asset_root, bp)
+        var lp: List[String] = [
+            "misc_assets/laserGreen14.png",
+            "misc_assets/laserRed11.png",
+            "misc_assets/laserBlue09.png",
+        ]
+        self.lasers = load_sprites(asset_root, lp)
+        self.shield = load_sprite(asset_root, "misc_assets/shield2.png")
+        var mp = List[String]()
+        for i in range(1, 5):
+            mp.append("misc_assets/spaceMeteors_00" + String(i) + ".png")
+        for i in range(1, 5):
+            mp.append("misc_assets/meteorGrey_big" + String(i) + ".png")
+        self.meteors = load_sprites(asset_root, mp)
+        self.explosion = load_sprite(asset_root, "misc_assets/explosion1.png")
+        var names: List[String] = [
+            "deep_space_01", "spacegen_01", "milky_way_01", "ez_space_lite_01",
+            "meyespace_v1_01", "eye_nebula_01", "deep_sky_01", "space_nebula_01",
+            "Background-1", "Background-2", "Background-3", "Background-4",
+            "parallax-space-backgound",
+        ]
+        var sbp = List[String]()
+        for i in range(len(names)):
+            sbp.append("space_backgrounds/" + names[i] + ".png")
+        self.backgrounds = load_sprites(asset_root, sbp)
+
+
 struct BossfightGame(Copyable, Movable):
     var rand_gen: RandGen
     var w: Int
@@ -532,3 +584,68 @@ struct BossfightGame(Copyable, Movable):
 
         self.episode_reward += self.reward
         return self.reward
+
+    # --- rendering (visual-approx; assets passed in) ---
+    def render_obs(
+        self, assets: BossfightAssets, res: Int = RES, ss: Int = OBS_SS
+    ) -> List[UInt8]:
+        return downscale(self.render(assets, res * ss), res * ss, res)
+
+    def render(self, assets: BossfightAssets, out_res: Int = RES) -> List[UInt8]:
+        var canvas = Canvas(out_res)
+        canvas.fill(0, 0, 0)
+
+        # Space background: tile wide + slow horizontal parallax scroll by cur_time.
+        ref bg = assets.backgrounds[self.background_index]
+        var bg_ar = Float32(bg.w) / Float32(bg.h)
+        var bg_w = Float32(out_res) * bg_ar
+        var scroll = Float32(self.cur_time) * 2.0
+        var start = -(scroll % bg_w) - bg_w
+        var bx = start
+        while bx < Float32(out_res):
+            canvas.blit(bg, bx, 0.0, bg_w, Float32(out_res))
+            bx += bg_w
+
+        var view_dim = Float32(self.w if self.w > self.h else self.h)
+        var unit = Float32(out_res) / view_dim
+
+        # Boss (behind shields + bullets).
+        var bxo = (self.boss.x - self.boss.rx) * unit
+        var byo = (view_dim - (self.boss.y + self.boss.ry)) * unit
+        canvas.blit(
+            assets.bosses[self.boss.image_theme], bxo, byo,
+            2 * self.boss.rx * unit, 2 * self.boss.ry * unit,
+        )
+        # Shields (only when up).
+        if self.shields_up:
+            var sxo = (self.shields.x - self.shields.rx) * unit
+            var syo = (view_dim - (self.shields.y + self.shields.ry)) * unit
+            canvas.blit(
+                assets.shield, sxo, syo,
+                2 * self.shields.rx * unit, 2 * self.shields.ry * unit,
+            )
+
+        # Entities (bullets, trails, meteors, explosions).
+        for k in range(len(self.entities)):
+            ref e = self.entities[k]
+            var t = e.type
+            var ex = (e.x - e.rx) * unit
+            var ey = (view_dim - (e.y + e.ry)) * unit
+            var ew = 2 * e.rx * unit
+            var eh = 2 * e.ry * unit
+            if t == BARRIER:
+                canvas.blit(assets.meteors[e.image_theme], ex, ey, ew, eh)
+            elif t == ENEMY_BULLET or t == PLAYER_BULLET or t == LASER_TRAIL or t == REFLECTED_BULLET:
+                canvas.blit(assets.lasers[e.image_theme], ex, ey, ew, eh)
+            else:  # EXPLOSION
+                canvas.blit(assets.explosion, ex, ey, ew, eh)
+
+        # Player ship (on top).
+        var ax = (self.agent.x - self.agent.rx) * unit
+        var ay = (view_dim - (self.agent.y + self.agent.ry)) * unit
+        canvas.blit(
+            assets.players[self.agent.image_theme], ax, ay,
+            2 * self.agent.rx * unit, 2 * self.agent.ry * unit,
+        )
+
+        return canvas.px.copy()
