@@ -568,3 +568,81 @@ struct CaveflyerGame(Copyable, Movable):
             self.entities[j].will_erase = True
             var ex = Entity(tx, ty, svx, svy, 0.5 * tr, 0.5 * tr, EXPLOSION)
             self.entities.append(ex^)
+
+    # --- rendering (visual-approx; assets passed in; ship drawn upright) ---
+    def render_obs(
+        self, assets: CaveflyerAssets, res: Int = RES, ss: Int = OBS_SS
+    ) -> List[UInt8]:
+        return downscale(self.render(assets, res * ss), res * ss, res)
+
+    def render(self, assets: CaveflyerAssets, out_res: Int = RES) -> List[UInt8]:
+        var canvas = Canvas(out_res)
+        canvas.fill(0, 0, 0)
+
+        # Camera: centered on the agent (visibility 10 Easy / 16 Hard).
+        var visibility: Float32 = 10.0 if self.dist_mode == DIST_EASY else 16.0
+        var center_x = self.agent.x
+        var center_y = self.agent.y
+        var view_dim = visibility
+        var unit = Float32(out_res) / view_dim
+        var x_off = unit * (center_x - view_dim / 2)
+        var y_off = unit * (center_y - view_dim / 2)
+
+        # Space background: tile wide + slow horizontal parallax scroll by cur_time.
+        ref bg = assets.backgrounds[self.background_index]
+        var bg_ar = Float32(bg.w) / Float32(bg.h)
+        var bg_w = Float32(out_res) * bg_ar
+        var scroll = Float32(self.cur_time) * 2.0
+        var start = -(scroll % bg_w) - bg_w
+        var bx = start
+        while bx < Float32(out_res):
+            canvas.blit(bg, bx, 0.0, bg_w, Float32(out_res))
+            bx += bg_w
+
+        # Cave walls (only tiles inside the camera window).
+        var vx0 = Int(floor(center_x - view_dim / 2)) - 1
+        var vx1 = Int(floor(center_x + view_dim / 2)) + 1
+        var vy0 = Int(floor(center_y - view_dim / 2)) - 1
+        var vy1 = Int(floor(center_y + view_dim / 2)) + 1
+        for x in range(vx0, vx1 + 1):
+            for y in range(vy0, vy1 + 1):
+                if x < 0 or x >= self.w or y < 0 or y >= self.h:
+                    continue
+                if self.grid.data[y * self.w + x] != CAVEWALL:
+                    continue
+                var sx = (Float32(x) - RENDER_EPS) * unit - x_off
+                var sy = (view_dim - Float32(y + 1) - RENDER_EPS) * unit + y_off
+                var sz = (1.0 + 2 * RENDER_EPS) * unit
+                canvas.blit(assets.cavewall, sx, sy, sz, sz)
+
+        # Entities (goal, obstacles, targets, enemies, bullets, exhaust, explosions).
+        for k in range(len(self.entities)):
+            ref e = self.entities[k]
+            var t = e.type
+            var ex = (e.x - e.rx) * unit - x_off
+            var ey = (view_dim - (e.y + e.ry)) * unit + y_off
+            var ew = 2 * e.rx * unit
+            var eh = 2 * e.ry * unit
+            if t == GOAL:
+                canvas.blit(assets.goal, ex, ey, ew, eh)
+            elif t == OBSTACLE:
+                canvas.blit(assets.obstacle, ex, ey, ew, eh)
+            elif t == TARGET:
+                canvas.blit(assets.target, ex, ey, ew, eh)
+            elif t == ENEMY:
+                canvas.blit(assets.enemy, ex, ey, ew, eh)
+            elif t == PLAYER_BULLET:
+                canvas.blit(assets.bullet, ex, ey, ew, eh)
+            elif t == EXHAUST:
+                canvas.blit(assets.exhaust, ex, ey, ew, eh)
+            else:  # EXPLOSION
+                canvas.blit(assets.explosion, ex, ey, ew, eh)
+
+        # Player ship (upright — rasterizer has no rotated blit).
+        var ax = (self.agent.x - self.agent.rx) * unit - x_off
+        var ay = (view_dim - (self.agent.y + self.agent.ry)) * unit + y_off
+        canvas.blit(
+            assets.ship, ax, ay, 2 * self.agent.rx * unit, 2 * self.agent.ry * unit
+        )
+
+        return canvas.px.copy()

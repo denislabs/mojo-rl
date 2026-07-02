@@ -86,3 +86,5 @@ from .caveflyer import CaveflyerGame, CaveflyerAssets
 # NOTE: caveflyer's generic object ids (GOAL/TARGET/ENEMY/CAVEWALL/...) are NOT
 # re-exported here — GOAL/ENEMY/etc collide with other games'. Import them from
 # `mojo_rl.envs.procgen.games.caveflyer` directly.
+from .caveflyer_env import CaveflyerEnv
+from .caveflyer_gym_env import CaveflyerGymEnv, CaveflyerState, CaveflyerAction
