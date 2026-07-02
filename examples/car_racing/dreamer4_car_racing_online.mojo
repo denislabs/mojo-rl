@@ -20,6 +20,8 @@ Run (Apple):  pixi run -e apple  mojo run -I . examples/car_racing/dreamer4_car_
 
 from std.random import seed
 
+from std.gpu.host import DeviceContext
+
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Xavier
 from mojo_rl.nn.core.checkpoint import load_params
@@ -84,13 +86,18 @@ def main() raises:
     print("Dreamer 4 — ONLINE CarRacing (discrete pixel) lighthouse")
     print("=" * 70)
 
+    var ctx = DeviceContext()
     var env = CarRacingMB[DT, PIXEL_OBS=True, PIX_RES=IMG]()
 
+    # DYN_TARGET="gpu": the dynamics transformer (the heavy WM compute) is
+    # device-resident; heads + tokenizer + backbone stay on host. The agent make
+    # target is "cpu" (heads on host) but the ctx is threaded so agent.dyn is
+    # built on device.
     var agent = Dreamer4Agent[
         DSP, NSP, D_DYN, NH, T, NREG, HID_DYN, DEPTH_DYN, KMAX,
         NAGENT, NTASK, HHID, NACT, NBINS, NMTP, B, B_SELF,
-        True, ADIM, AHID, K_IMAG, NCTX,
-    ].make["cpu", Xavier](None)
+        True, ADIM, AHID, K_IMAG, NCTX, "gpu",
+    ].make["cpu", Xavier](Optional(ctx))
 
     var tok = Dreamer4Tokenizer[
         DP, TOK_D, TOK_NH, T, NSP, NP, DSP, TOK_HID, TOK_DEPTH, DROP, DROP, 7
@@ -117,15 +124,15 @@ def main() raises:
 
     print("starting online training...")
     # FIRST-RUN / smoke scale: reaches Stage 2 + greedy-eval quickly so you can
-    # confirm it works and is fast enough before a long run. Everything is on CPU
-    # (dynamics + tokenizer + perceptual backbone) and the env is stepped one at a
-    # time, so this is not fast — the prints below show live progress. For real
-    # training bump warmup≈5_000, tok_pretrain≈3_000, total_env_steps≈1_000_000,
-    # eval_every≈20_000 (and see the DYN_TARGET="gpu" follow-up for speed).
+    # confirm it works before a long run. The DYNAMICS runs on GPU (DYN_TARGET);
+    # the tokenizer + perceptual backbone stay on CPU and the env is stepped one
+    # at a time, so those are still the CPU-bound parts — the prints show live
+    # progress. For real training bump warmup≈5_000, tok_pretrain≈3_000,
+    # total_env_steps≈1_000_000, eval_every≈20_000.
     var summary = run_online_dreamer4[
         IN_CH=IN_CH, IMG=IMG, TGT=TGT, PATCH=PATCH, TNP=NP, CAP=CAP,
         TOK_D=TOK_D, TOK_NH=TOK_NH, TOK_HID=TOK_HID, TOK_DEPTH=TOK_DEPTH,
-        TOK_PMIN=DROP, TOK_PMAX=DROP, TOK_SEED=7,
+        TOK_PMIN=DROP, TOK_PMAX=DROP, TOK_SEED=7, DYN_TARGET="gpu",
     ](
         agent, tok, backbone, env, logger,
         warmup_steps=500,
@@ -137,6 +144,7 @@ def main() raises:
         perc_weight=0.2,          # paper eq. 5 MSE + 0.2·perceptual
         eval_max_steps=1_000,
         imag_gamma=Scalar[DT](0.997),
+        dctx=Optional(ctx),       # GPU dynamics
     )
     logger.close()
     _ = logger

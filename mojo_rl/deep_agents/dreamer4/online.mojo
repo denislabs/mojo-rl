@@ -16,14 +16,18 @@ data ONLINE from a live `BoxDiscreteActionEnv`, in three stages:
 `run_online_dreamer4` is a free function (not a method) so it can be parameterized
 by the full agent + tokenizer + image dims without bloating `Dreamer4Agent`. The
 tokenizer is passed as an argument (its dims would explode the agent's comptime
-param list). DYN_TARGET must be "cpu" (the acwm/imag train steps are the CPU WM
-path).
+param list). `DYN_TARGET` selects the WM compute target: "cpu" (default) runs the
+whole agent on host; "gpu" runs the dynamics transformer on device (via
+`acwm_train_step_gpu` + the GPU imagination rollout), stepping the device dynamics
+and the host heads/task-embedder as separate submodules — pass a `DeviceContext`
+as `dctx`. Tokenizer + perceptual backbone stay on host either way.
 
 This is the driver the online CarRacing lighthouse calls; a stub-env smoke gate
 lives in `tests/nn/test_dreamer4_train_online.mojo`.
 """
 
 from std.math import sqrt, log, cos
+from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
@@ -181,10 +185,14 @@ def run_online_dreamer4[
     IN_CH: Int, IMG: Int, TGT: Int, PATCH: Int, TNP: Int, CAP: Int,
     TOK_D: Int, TOK_NH: Int, TOK_HID: Int, TOK_DEPTH: Int,
     TOK_PMIN: Float64, TOK_PMAX: Float64, TOK_SEED: UInt64,
+    # "cpu" (default) or "gpu" — runs the dynamics transformer on device (the
+    # heavy WM compute); heads + tokenizer + backbone stay on host regardless.
+    DYN_TARGET: StaticString = "cpu",
 ](
     mut agent: Dreamer4Agent[
         DSP, NSP, D, NH, T, NREG, HID, DEPTH, KMAX, NAGENT, NTASK, HHID,
-        NACT, NBINS, NMTP, B, B_SELF, USE_MAX, ADIM, AHID, K_IMAG, NCTX, "cpu",
+        NACT, NBINS, NMTP, B, B_SELF, USE_MAX, ADIM, AHID, K_IMAG, NCTX,
+        DYN_TARGET,
     ],
     mut tok: Dreamer4Tokenizer[
         PATCH * PATCH, TOK_D, TOK_NH, T, NSP,
@@ -210,6 +218,7 @@ def run_online_dreamer4[
     eval_max_steps: Int = 1000,
     imag_gamma: Scalar[DT] = Scalar[DT](0.997),
     seed: UInt64 = 20260701,
+    dctx: Optional[DeviceContext] = None,   # required when DYN_TARGET="gpu"
 ) raises -> Tuple[Float64, Float64, Float64, Float64, Float64]:
     """Returns (last_tok_recon, last_wm_video, last_wm_bc, last_imag_value,
     last_eval_return) for a finiteness check / logging. `last_eval_return` is the
@@ -232,9 +241,15 @@ def run_online_dreamer4[
     var buf = Dreamer4FrameBuffer[IN_CH, IMG, IMG, NACT, CAP]()
 
     var topt = Adam(lr=lr_tok)
-    var aopt = Adam(lr=lr_agent)
-    var copt = Adam(lr=lr_cont)
-    var iopt = Adam(lr=lr_imag)
+    var aopt = Adam(lr=lr_agent)          # CPU path: whole-agent WM step
+    var copt = Adam(lr=lr_cont)           # continue head (both paths)
+    var iopt = Adam(lr=lr_imag)           # imagination (value + policy heads)
+    # GPU path: the whole-agent walk asserts DYN_TARGET=="cpu", so the dynamics
+    # (on device) and the host heads/task-embedder are stepped as SEPARATE
+    # submodules. Adam moments live in each Param, so extra Adam instances are
+    # just lr/beta config (unused on the CPU path).
+    var dopt = Adam(lr=lr_agent)          # GPU path: dynamics (device)
+    var hopt = Adam(lr=lr_agent)          # GPU path: ph/rh/te (host)
 
     # ── shared scratch ──
     var frames = Tensor.alloc(BATCH * TGT * TGT)
@@ -390,7 +405,7 @@ def run_online_dreamer4[
                 act_hist[fr * ADIM + ap] = Scalar[DT](1.0)
         var a = agent.act_from_latents(
             _mao(win_z.data.unsafe_ptr()), win_n,
-            _mao(act_hist.unsafe_ptr()), 0, True, rng.uniform(),
+            _mao(act_hist.unsafe_ptr()), 0, True, rng.uniform(), dctx,
         )
 
         var res = env.step_obs(a)
@@ -437,17 +452,46 @@ def run_online_dreamer4[
                         bv = act_oh.data[bt * NACT + c]
                         best = c
                 act_idx.data[bt] = Scalar[DT](Float64(best))
-            aopt.zero_grad["cpu"](agent, None)
-            var losses = agent.acwm_train_step(
-                _mao(z1.data.unsafe_ptr()), _mao(z0n.data.unsafe_ptr()),
-                _mao(sigma.data.unsafe_ptr()), _mao(sig_idx.data.unsafe_ptr()),
-                _mao(step_idx.data.unsafe_ptr()), step >= 2 * train_every,
-                _mao(task_ids.data.unsafe_ptr()), _mao(act_idx.data.unsafe_ptr()),
-                _mao(rew.data.unsafe_ptr()), _mao(bins.data.unsafe_ptr()),
-            )
-            aopt.step["cpu"](agent, None)
-            last_video = losses[0]
-            last_bc = losses[1]
+            var do_boot = step >= 2 * train_every
+            comptime if DYN_TARGET == "cpu":
+                aopt.zero_grad["cpu"](agent, None)
+                var losses = agent.acwm_train_step(
+                    _mao(z1.data.unsafe_ptr()), _mao(z0n.data.unsafe_ptr()),
+                    _mao(sigma.data.unsafe_ptr()), _mao(sig_idx.data.unsafe_ptr()),
+                    _mao(step_idx.data.unsafe_ptr()), do_boot,
+                    _mao(task_ids.data.unsafe_ptr()),
+                    _mao(act_idx.data.unsafe_ptr()),
+                    _mao(rew.data.unsafe_ptr()), _mao(bins.data.unsafe_ptr()),
+                )
+                aopt.step["cpu"](agent, None)
+                last_video = losses[0]
+                last_bc = losses[1]
+            else:
+                var c = dctx.value()
+                # zero grads: dynamics on device, heads + task-embedder on host.
+                dopt.zero_grad["gpu"](agent.dyn, dctx)
+                agent.ph.zero_grad["cpu"](None)
+                agent.rh.zero_grad["cpu"](None)
+                agent.te.zero_grad["cpu"](None)   # te is not a Module
+                var losses = agent.acwm_train_step_gpu(
+                    _mao(z1.data.unsafe_ptr()), _mao(z0n.data.unsafe_ptr()),
+                    _mao(sigma.data.unsafe_ptr()), _mao(sig_idx.data.unsafe_ptr()),
+                    _mao(step_idx.data.unsafe_ptr()), do_boot,
+                    _mao(task_ids.data.unsafe_ptr()),
+                    _mao(act_idx.data.unsafe_ptr()),
+                    _mao(rew.data.unsafe_ptr()), _mao(bins.data.unsafe_ptr()), c,
+                )
+                # step: dynamics via its Adam; the host heads + te under a SINGLE
+                # hopt advance (calling Adam.step per-submodule would over-bump the
+                # bias-correction step counter). te isn't a Module → walk its
+                # params with the Adam visitor directly.
+                dopt.step["gpu"](agent.dyn, dctx)
+                hopt.begin_step()
+                agent.ph.for_each_param["cpu"](hopt, None)
+                agent.rh.for_each_param["cpu"](hopt, None)
+                agent.te.for_each_param["cpu"](hopt, None)
+                last_video = losses[0]
+                last_bc = losses[1]
 
             # continue head off the clean h_t left by acwm's clean forward
             var ht = agent.agent_out_ptr()
@@ -470,8 +514,8 @@ def run_online_dreamer4[
             )
             copt.step["cpu"](agent.ch, None)
             if logger.is_active():
-                logger.log_scalar(String("online/wm_video"), losses[0], step)
-                logger.log_scalar(String("online/wm_bc"), losses[1], step)
+                logger.log_scalar(String("online/wm_video"), last_video, step)
+                logger.log_scalar(String("online/wm_bc"), last_bc, step)
 
         # ── imagination-RL update (frozen WM) ──
         if imag_every > 0 and step % imag_every == 0 and buf.count() >= BATCH:
@@ -492,20 +536,40 @@ def run_online_dreamer4[
                 u01.data[i] = Scalar[DT](rng.uniform())
             for i in range(B * T * ND):
                 znoise.data[i] = Scalar[DT](rng.gauss())
-            iopt.zero_grad["cpu"](agent, None)
-            var il = agent.imag_train_step(
-                _mao(ctx.data.unsafe_ptr()), _mao(u01.data.unsafe_ptr()),
-                _mao(znoise.data.unsafe_ptr()), _mao(task_ids.data.unsafe_ptr()),
-                _mao(bins.data.unsafe_ptr()), use_continue=True,
-                gamma=imag_gamma,
-            )
-            iopt.step["cpu"](agent, None)
+            # Imagination trains only the value + policy heads (transformer
+            # frozen); the rollout runs the dynamics forward on DYN_TARGET.
+            comptime if DYN_TARGET == "cpu":
+                iopt.zero_grad["cpu"](agent, None)
+                var il = agent.imag_train_step(
+                    _mao(ctx.data.unsafe_ptr()), _mao(u01.data.unsafe_ptr()),
+                    _mao(znoise.data.unsafe_ptr()),
+                    _mao(task_ids.data.unsafe_ptr()),
+                    _mao(bins.data.unsafe_ptr()), use_continue=True,
+                    gamma=imag_gamma,
+                )
+                iopt.step["cpu"](agent, None)
+                last_v = il[0]
+                last_p = il[1]
+            else:
+                agent.vh.zero_grad["cpu"](None)
+                agent.ph.zero_grad["cpu"](None)
+                var il = agent.imag_train_step(
+                    _mao(ctx.data.unsafe_ptr()), _mao(u01.data.unsafe_ptr()),
+                    _mao(znoise.data.unsafe_ptr()),
+                    _mao(task_ids.data.unsafe_ptr()),
+                    _mao(bins.data.unsafe_ptr()), use_continue=True,
+                    gamma=imag_gamma, dctx=dctx,
+                )
+                # value + policy heads under a SINGLE iopt advance (see WM note).
+                iopt.begin_step()
+                agent.vh.for_each_param["cpu"](iopt, None)
+                agent.ph.for_each_param["cpu"](iopt, None)
+                last_v = il[0]
+                last_p = il[1]
             did_imag = True
-            last_v = il[0]
-            last_p = il[1]
             if logger.is_active():
-                logger.log_scalar(String("online/imag_value"), il[0], step)
-                logger.log_scalar(String("online/imag_policy"), il[1], step)
+                logger.log_scalar(String("online/imag_value"), last_v, step)
+                logger.log_scalar(String("online/imag_policy"), last_p, step)
 
         # ── greedy-eval episode (measurable return; interrupts training ep) ──
         if eval_every > 0 and step % eval_every == 0 and step > 0:
@@ -533,7 +597,7 @@ def run_online_dreamer4[
                         eact_hist[fr * ADIM + ap] = Scalar[DT](1.0)
                 var ea = agent.act_from_latents(
                     _mao(ewin_z.data.unsafe_ptr()), ewin_n,
-                    _mao(eact_hist.unsafe_ptr()), 0, False, 0.0,
+                    _mao(eact_hist.unsafe_ptr()), 0, False, 0.0, dctx,
                 )
                 var eres = env.step_obs(ea)
                 eret += Float64(eres[1])

@@ -522,12 +522,18 @@ struct Dreamer4Agent[
             _mao(task_l.unsafe_ptr()), _mao(agp_l.unsafe_ptr()), None
         )
 
-        # boundary tensors + (GPU) agent-token D2H staging
-        var in_t = Tensor.make[Self.DYN_TARGET](BF * ND, dctx)
-        var out_t = Tensor.make[Self.DYN_TARGET](BF * ND, dctx)
+        # boundary tensors: `_fwd_window` writes host `.data` then (gpu) uploads /
+        # downloads, so in_t/out_t need BOTH a host buffer AND (gpu) a device one.
+        # `Tensor.make["gpu"]` is device-ONLY → alloc host, then add the device
+        # buffer for the gpu path.
+        var in_t = Tensor.alloc(BF * ND)
+        var out_t = Tensor.alloc(BF * ND)
         var h_ag = Optional[HostBuffer[DT]](None)
         comptime if Self.DYN_TARGET == "gpu":
-            h_ag = dctx.value().enqueue_create_host_buffer[DT](BF * AGD)
+            var dc = dctx.value()
+            in_t.ensure_gpu(dc, BF * ND)
+            out_t.ensure_gpu(dc, BF * ND)
+            h_ag = dc.enqueue_create_host_buffer[DT](BF * AGD)
 
         # one frozen-dynamics forward → h_host [BF, AGD]
         _fwd_window[Self.DYN, Self.DYN_TARGET, BF, ND, AGD](
