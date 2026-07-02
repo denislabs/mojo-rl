@@ -10,3 +10,11 @@ from .maze import (
 )
 from .maze_env import MazeEnv, StepResult
 from .maze_gym_env import MazeGymEnv, MazeState, MazeAction
+from .chaser import (
+    ChaserGame,
+    DIST_EXTREME,
+    LARGE_ORB,
+    ENEMY_EGG,
+    MAZE_WALL,
+    ORB,
+)
