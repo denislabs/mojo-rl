@@ -23,8 +23,11 @@ from .chaser_env import ChaserEnv
 from .chaser_gym_env import ChaserGymEnv, ChaserState, ChaserAction
 from .heist import (
     HeistGame,
+    HeistAssets,
     heist_world_dim,
     LOCKED_DOOR,
     KEY,
     EXIT,
 )
+from .heist_env import HeistEnv
+from .heist_gym_env import HeistGymEnv, HeistState, HeistAction

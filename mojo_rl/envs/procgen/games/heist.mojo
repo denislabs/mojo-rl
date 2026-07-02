@@ -21,6 +21,8 @@ from std.memory import ArcPointer
 from ..core.entity import Entity
 from ..core.randgen import RandGen
 from ..core.mazegen import MazeGen, MAZE_OFFSET
+from ..core.assets import Sprite, load_sprite, load_topdown_backgrounds
+from ..core.rasterizer import Canvas, RES, downscale
 from ..core.object_ids import (
     SPACE,
     WALL_OBJ,
@@ -43,11 +45,42 @@ comptime BG_COUNT = 9  # topdown_backgrounds (resources.cpp)
 comptime MAXSPEED: Float32 = 0.75
 comptime MIXRATE: Float32 = 0.5  # base agent-velocity blend (heist doesn't override)
 comptime POS_EPS: Float32 = -0.001
+comptime RENDER_EPS: Float32 = 0.02
+comptime OBS_SS = 4  # observation supersample factor
+comptime MEMORY_VISIBILITY: Float32 = 8.0
 
 # DistributionMode (game.h): heist supports Easy / Hard / Memory.
 comptime DIST_EASY = 0
 comptime DIST_HARD = 1
 comptime DIST_MEMORY = 10
+
+
+struct HeistAssets(Movable):
+    """Read-only sprite set for heist (loaded once, shared via ArcPointer). Passed
+    into `HeistGame.render` so the game struct stays asset-free."""
+
+    var wall: Sprite  # WALL_OBJ (dirt block)
+    var gem: Sprite  # EXIT
+    var player: Sprite
+    var keys: List[Sprite]  # KEY themes: blue/green/red
+    var locks: List[Sprite]  # LOCKED_DOOR themes: blue/green/red
+    var backgrounds: List[Sprite]  # topdown_backgrounds (9)
+
+    def __init__(out self, asset_root: String) raises:
+        self.wall = load_sprite(asset_root, "kenney/Ground/Dirt/dirtCenter.png")
+        self.gem = load_sprite(asset_root, "misc_assets/gemYellow.png")
+        self.player = load_sprite(
+            asset_root, "misc_assets/spaceAstronauts_008.png"
+        )
+        self.keys = List[Sprite]()
+        self.keys.append(load_sprite(asset_root, "misc_assets/keyBlue.png"))
+        self.keys.append(load_sprite(asset_root, "misc_assets/keyGreen.png"))
+        self.keys.append(load_sprite(asset_root, "misc_assets/keyRed.png"))
+        self.locks = List[Sprite]()
+        self.locks.append(load_sprite(asset_root, "misc_assets/lock_blue.png"))
+        self.locks.append(load_sprite(asset_root, "misc_assets/lock_green.png"))
+        self.locks.append(load_sprite(asset_root, "misc_assets/lock_red.png"))
+        self.backgrounds = load_topdown_backgrounds(asset_root)
 
 
 def _fsign(x: Float32) -> Float32:
@@ -438,3 +471,85 @@ struct HeistGame(Copyable, Movable):
 
         self.episode_reward += self.reward
         return self.reward
+
+    # --- rendering (visual-approx; assets passed in) ---
+    def render_obs(
+        self, assets: HeistAssets, res: Int = RES, ss: Int = OBS_SS
+    ) -> List[UInt8]:
+        return downscale(self.render(assets, res * ss), res * ss, res)
+
+    def render(self, assets: HeistAssets, out_res: Int = RES) -> List[UInt8]:
+        var canvas = Canvas(out_res)
+        canvas.fill(0, 0, 0)
+
+        # Camera: Memory centers on the agent (visibility 8); Easy/Hard show the
+        # whole world (visibility = world_dim → x_off == y_off == 0).
+        var center_agent = self.dist_mode == DIST_MEMORY
+        var visibility: Float32
+        var center_x: Float32
+        var center_y: Float32
+        if center_agent:
+            visibility = MEMORY_VISIBILITY
+            center_x = self.agent.x
+            center_y = self.agent.y
+        else:
+            visibility = Float32(self.w if self.w > self.h else self.h)
+            center_x = Float32(self.w) * 0.5
+            center_y = Float32(self.h) * 0.5
+        var view_dim = visibility
+        var unit = Float32(out_res) / view_dim
+        var x_off = unit * (center_x - view_dim / 2)
+        var y_off = unit * (center_y - view_dim / 2)
+
+        # Background (topdown, panned by bg_pct_x).
+        ref bg = assets.backgrounds[self.background_index]
+        var main_w = Float32(self.w) * unit
+        var main_h = Float32(self.h) * unit
+        var main_x = -x_off
+        var main_y = (view_dim - Float32(self.h)) * unit + y_off
+        var bg_ar = Float32(bg.w) / Float32(bg.h)
+        var world_ar = Float32(self.w) / Float32(self.h)
+        var offset_x = self.bg_pct_x * (bg_ar - world_ar)
+        canvas.blit(
+            bg, main_x + main_w * (-offset_x), main_y, main_w * (bg_ar / world_ar), main_h
+        )
+
+        # Grid: dirt walls.
+        for x in range(self.w):
+            for y in range(self.h):
+                if self.grid[y * self.w + x] != WALL_OBJ:
+                    continue
+                var sx = (Float32(x) - RENDER_EPS) * unit - x_off
+                var sy = (view_dim - Float32(y + 1) - RENDER_EPS) * unit + y_off
+                var sz = (1.0 + 2 * RENDER_EPS) * unit
+                canvas.blit(assets.wall, sx, sy, sz, sz)
+
+        # Entities: keys, locked doors, exit.
+        for k in range(len(self.entities)):
+            ref e = self.entities[k]
+            var ex = (e.x - e.rx) * unit - x_off
+            var ey = (view_dim - (e.y + e.ry)) * unit + y_off
+            var ew = 2 * e.rx * unit
+            var eh = 2 * e.ry * unit
+            if e.type == KEY:
+                canvas.blit(assets.keys[e.image_theme], ex, ey, ew, eh)
+            elif e.type == LOCKED_DOOR:
+                canvas.blit(assets.locks[e.image_theme], ex, ey, ew, eh)
+            elif e.type == EXIT:
+                canvas.blit(assets.gem, ex, ey, ew, eh)
+
+        # Agent.
+        var ax = (self.agent.x - self.agent.rx) * unit - x_off
+        var ay = (view_dim - (self.agent.y + self.agent.ry)) * unit + y_off
+        canvas.blit(
+            assets.player, ax, ay, 2 * self.agent.rx * unit, 2 * self.agent.ry * unit
+        )
+
+        # HUD: held keys as small icons along the top-right (ring keys).
+        var icon = Float32(out_res) * 0.08
+        for theme in range(len(self.has_keys)):
+            if self.has_keys[theme]:
+                var hx = Float32(out_res) - icon * (Float32(theme) + 1.15)
+                canvas.blit(assets.keys[theme], hx, icon * 0.2, icon, icon)
+
+        return canvas.px.copy()
