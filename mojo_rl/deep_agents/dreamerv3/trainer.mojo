@@ -235,6 +235,17 @@ struct DreamerV3Trainer[
         scale_output_module[Self.train_target, Self.ValT](
             slowvalue, String("3.weight"), String("3.bias"), out_init_scale, ctx
         )
+        # Reference `policy.outscale = 0.01` (configs.yaml): scale the POLICY
+        # output layer to near-zero at init → near-uniform initial policy
+        # (discrete: logits ≈ 0; continuous: mean ≈ 0, mid std). Full-Kaiming
+        # output logits are O(1) → a semi-collapsed policy from step 0 that
+        # self-reinforces through its own replay data before any reward signal
+        # exists (observed on Pong: entropy 1.79 → 0.13 nats by 20k steps with
+        # eval still at -21, all mass on one action family). The tiny 0.01
+        # (vs hard 0.0) keeps a symmetry-breaking gradient path.
+        scale_output_module[Self.train_target, Self.PolT](
+            policy, String("3.weight"), String("3.bias"), Scalar[DT](0.01), ctx
+        )
 
         # Storage DreamerOpt is driven INSIDE the blocks (graph.for_each_param /
         # opt.step[target, M]); the trainer just constructs them with the lr.
