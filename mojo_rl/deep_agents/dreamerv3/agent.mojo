@@ -183,6 +183,12 @@ struct DreamerV3Agent[
         """Restore the full network set from a `save()` checkpoint."""
         self.trainer.load_state(path)
 
+    def reset_ac(mut self) raises:
+        """Fresh actor-critic on top of the loaded world model (see
+        DreamerV3Trainer.reset_ac) — reuse a WM-mature checkpoint for
+        actor-from-step-1 experiments without re-paying the WM warmup."""
+        self.trainer.reset_ac()
+
     def train_step(mut self, want_diag: Bool = True) raises -> Bool:
         return self.trainer.train_step(want_diag)
 

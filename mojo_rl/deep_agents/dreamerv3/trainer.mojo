@@ -1087,6 +1087,43 @@ struct DreamerV3Trainer[
             for k in range(SCl):
                 tfs.data[k] = tsn_t.data[k]
 
+    def reset_ac(mut self) raises:
+        """Re-initialize the ACTOR-CRITIC — value / slowvalue / policy (fresh
+        params, hence fresh optimizer moments: storage moments live in the
+        Params), fresh opt step counters, fresh return normalizer — while
+        KEEPING the trained world model.
+
+        Purpose: pay the WM warmup wall-time ONCE. Load a WM-mature checkpoint,
+        call reset_ac(), and train with ac_start=0 → actor-from-step-1
+        experiments on a mature WM without re-running ~hours of WM-only
+        maturation per iteration (the saved value/policy in such a checkpoint
+        are collapsed and must not be reused).
+
+        Call BEFORE any CUDA-graph capture: this swaps module params (new
+        device buffers) — a previously captured train graph would replay onto
+        stale pointers. In the standard flow (load → reset_ac → train) the
+        first capture happens after lr-warmup, well past this call."""
+        self.value = Self.ValT.make[Self.train_target, INIT=Kaiming](
+            ctx=self.ctx
+        )
+        self.slowvalue = Self.ValT.make[Self.train_target, INIT=Kaiming](
+            ctx=self.ctx
+        )
+        self.policy = Self.PolT.make[Self.train_target, INIT=Kaiming](
+            ctx=self.ctx
+        )
+        self.oval = DreamerOpt(lr=self.oval.lr)
+        self.opol = DreamerOpt(lr=self.opol.lr)
+        self.retnorm = PercentileNormalize.make(
+            String("perc"), Scalar[DT](0.01), Scalar[DT](5.0),
+            Scalar[DT](95.0), Scalar[DT](1.0), False,
+        )
+        comptime if Self.train_target == "gpu":
+            # device-resident retnorm EMA state back to the make() init
+            self.ac_blk.retstate_d.data[0] = Scalar[DT](0.0)
+            self.ac_blk.retstate_d.data[1] = Scalar[DT](0.0)
+            self.ac_blk.retstate_d.upload(self.ctx.value())
+
     def openloop_heads_gpu(
         mut self,
         real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]

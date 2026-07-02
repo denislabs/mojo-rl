@@ -144,6 +144,14 @@ comptime TRAIN_EVERY = 32
 # post-gate updates). QUALITY BAR: obs_loss should be ≤ ~1.5 when the gate
 # opens — if it is not, extend AC_START before judging the run.
 comptime AC_START = 6000
+# WM-checkpoint reuse: set to a checkpoint path from a PREVIOUS run of THIS
+# config (raw-token arch) to skip the WM warmup wall-time entirely — loads the
+# full checkpoint, then `reset_ac()` re-initializes value/slowvalue/policy
+# (the saved ones are collapsed) and the run trains the actor FROM STEP 1 on
+# the mature WM (ac_start=0). This is the benchmark-honest experiment AND the
+# fast iteration loop for AC-side changes. Empty = train from scratch with the
+# AC_START gate above.
+comptime WM_CKPT = ""
 comptime LOG_EVERY = 1000  # WM/AC loss curves (cheap; no greedy eval) — frequent
 comptime EVAL_EVERY = 5000  # greedy eval + episode returns (expensive, ~3 min)
 comptime EVAL_EPISODES = 5
@@ -189,8 +197,13 @@ def main() raises:
             # ONLINE value). True also lets a value ridge persist via the
             # Polyak-lagged slow value once formed.
             slowtar=False,
-            ac_start=AC_START,
+            # WM-ckpt reuse → actor from step 1 (no gate); scratch → gated.
+            ac_start=0 if WM_CKPT.byte_length() > 0 else AC_START,
         )
+        comptime if WM_CKPT.byte_length() > 0:
+            print("loading WM checkpoint", WM_CKPT, "+ reset_ac()...")
+            agent.load(String(WM_CKPT))
+            agent.reset_ac()
         # Machado protocol: sticky actions 0.25 + random no-op starts 30; reward
         # unclipped (symlog/twohot). Loads roms/pong.bin.
         var env = Env(AtariGame.PONG, sticky_prob=0.25, noop_max=30)
