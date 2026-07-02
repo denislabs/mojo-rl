@@ -82,3 +82,7 @@ from .coinrun import CoinrunGame, CoinrunAssets
 # `mojo_rl.envs.procgen.games.coinrun` directly.
 from .coinrun_env import CoinrunEnv
 from .coinrun_gym_env import CoinrunGymEnv, CoinrunState, CoinrunAction
+from .caveflyer import CaveflyerGame, CaveflyerAssets
+# NOTE: caveflyer's generic object ids (GOAL/TARGET/ENEMY/CAVEWALL/...) are NOT
+# re-exported here — GOAL/ENEMY/etc collide with other games'. Import them from
+# `mojo_rl.envs.procgen.games.caveflyer` directly.
