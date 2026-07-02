@@ -187,6 +187,15 @@ struct DreamerV3Trainer[
     var ctx: Optional[DeviceContext]
     var learning_starts: Int
     var train_steps: Int
+    # WM-maturation gate: actor-critic updates (sync + ACStep) are skipped
+    # until train_steps >= ac_start. The policy stays at its near-uniform init
+    # (outscale 0.01) → diverse on-policy replay while the WM matures, and the
+    # actor's first updates see dreams that contain real reward structure.
+    # Rationale (Pong forensics): the value head builds a self-fulfilling ridge
+    # over the policy's own imagined states within ~1.5-3k updates — long
+    # before the WM can even render the agent's paddle — and REINFORCE
+    # collapses onto it absorbingly. ac_start lets the WM win that race.
+    var ac_start: Int
     var warmup: LinearWarmupSchedule   # reference LR ramp 0→lr over warmup_steps
     # Lazily-captured discrete-GPU train-step graph (Stage 3 P5; `None` until the
     # first capture). Moved into a disjoint local for the `maybe_capture_replay`
@@ -207,6 +216,7 @@ struct DreamerV3Trainer[
         actent: Scalar[DT] = Scalar[DT](3e-4),
         slowtar: Bool = False,
         device_noise: Bool = True,
+        ac_start: Int = 0,
     ) raises -> Self:
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
@@ -280,6 +290,7 @@ struct DreamerV3Trainer[
             ctx=ctx,
             learning_starts=learning_starts,
             train_steps=0,
+            ac_start=ac_start,
             warmup=LinearWarmupSchedule.make(lr, warmup_steps),
             _train_graph=None,
             device_noise=device_noise,
@@ -565,6 +576,13 @@ struct DreamerV3Trainer[
             self.oe, self.ocore, self.odec, self.orew, self.ocon,
             want_diag=want_diag,
         )
+        # WM-maturation gate: skip the actor-critic while train_steps <
+        # ac_start (policy stays at near-uniform init → diverse replay; the
+        # value ridge can't form on an immature WM). The capture path stays
+        # EAGER until this gate opens (see train_step_captured), so the
+        # captured kernel sequence always includes the AC.
+        if self.train_steps < self.ac_start:
+            return
         # core/prior → imagine mirror
         self.sync_blk.step[Self.train_target](
             self.core, self.imagine, ctx=self.ctx
@@ -641,7 +659,13 @@ struct DreamerV3Trainer[
         # the WM/AC barely train → divergence (high WM loss, exploding return
         # scale). Train EAGERLY until warmup completes (lr constant), then
         # capture once the frozen lr == the steady-state lr.
-        if self.train_steps < self.warmup.warmup_steps:
+        # Also stay eager through the AC-delay phase (ac_start): the captured
+        # graph must include the AC kernel sequence, so capture only once the
+        # AC gate is open (and the lr is constant).
+        if (
+            self.train_steps < self.warmup.warmup_steps
+            or self.train_steps < self.ac_start
+        ):
             return self.train_step(want_diag=False)
         var ctx = self.ctx.value()
         # Eager prologue: refresh the FIXED device input buffers this step.

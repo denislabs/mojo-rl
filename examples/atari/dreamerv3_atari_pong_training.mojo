@@ -78,9 +78,12 @@ comptime VU = 512
 comptime PU = 512
 comptime BINS = 255
 comptime B = 16
-comptime T = 32  # training-sequence length (BPTT horizon). Reference uses 64;
-# 16 was the first-run value — 32 doubles the deter-chain credit horizon at 2×
-# WM-step cost. Raise to 64 if step time allows.
+comptime T = 64  # training-sequence length = the REFERENCE batch_length. This
+# is a WM-maturation lever, not just credit horizon: the forensic probes showed
+# the policy collapses onto a self-fulfilling value ridge within ~1.5-3k
+# updates — before the WM can even render the agent's paddle in dreams. T=64
+# gives the WM 2× the frames per update (like the reference), helping it win
+# that race (together with ac_start below).
 comptime T_IMAG = 15
 # GPU-resident pixel replay: CAP×OBS×4 B of VRAM (≈7.4 GB either way below).
 # Bigger CAP protects rare-state coverage (paddle pinned at an edge, ball-at-
@@ -120,17 +123,21 @@ comptime Env = AtariEnv[4, DT]  # OBS_MODE=4 (gray-96 4-frame stack)
 
 comptime NUM_STEPS = 500_000  # agent decisions (each = 4 ROM frames = 2M frames)
 comptime LEARN_START = 1024
-# Replay ratio = B·T / TRAIN_EVERY replayed frames per env step. The reference
-# trains at ratio 32; with T=32 the old TRAIN_EVERY=4 was ratio 128 — 4× the
-# reference, which OVERFITS the continue/value heads on scarce data (Pong shows
-# ~5 episode terminals in the first 20k steps). The observed failure chain at
-# ratio 128: con head hallucinates terminals on imagined (OOD) states
-# (imag_con_min → ~0.001) → a fake terminal truncates the (legitimately
-# negative, γ=0.997 fixed point ≈ rew/(1−γ)) bootstrap → big positive
-# advantage for whichever action reaches those dream states (adv_gap 0.002 →
-# 0.1) → policy collapses (entropy 1.79 → 0.08 by 20k). TRAIN_EVERY=16
-# restores the reference ratio 32.
-comptime TRAIN_EVERY = 16
+# Replay ratio = B·T / TRAIN_EVERY replayed frames per env step. Reference
+# trains at ratio 32: with T=64 (1024 frames per update) that is
+# TRAIN_EVERY=32.
+comptime TRAIN_EVERY = 32
+# WM-maturation gate (see DreamerV3Trainer.ac_start): actor-critic updates
+# start only after the WM has had AC_START updates. Forensics across 4 runs:
+# the actor collapses onto a self-fulfilling VALUE RIDGE (confirmed by the
+# openloop_heads probe — the collapsed action's dream branch scores ~0.3-0.6
+# higher value with identical reward/continue) within ~1.5-3k updates, while
+# the WM needs ~10k+ updates before its dreams even contain the agent's
+# paddle. During the delay the policy stays at its near-uniform init →
+# diverse replay; the actor's first updates then see dreams with real reward
+# structure, which dominates the spurious ridge. 3000 updates ≈ 96k env
+# steps at ratio 32.
+comptime AC_START = 3000
 comptime LOG_EVERY = 1000  # WM/AC loss curves (cheap; no greedy eval) — frequent
 comptime EVAL_EVERY = 5000  # greedy eval + episode returns (expensive, ~3 min)
 comptime EVAL_EPISODES = 5
@@ -172,7 +179,11 @@ def main() raises:
             learning_starts=LEARN_START,
             warmup_steps=1000,
             actent=Scalar[DT](3e-4),
-            slowtar=True,
+            # reference imag_loss config: slowtar False (bootstrap from the
+            # ONLINE value). True also lets a value ridge persist via the
+            # Polyak-lagged slow value once formed.
+            slowtar=False,
+            ac_start=AC_START,
         )
         # Machado protocol: sticky actions 0.25 + random no-op starts 30; reward
         # unclipped (symlog/twohot). Loads roms/pong.bin.
