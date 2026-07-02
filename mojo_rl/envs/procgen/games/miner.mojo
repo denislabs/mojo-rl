@@ -31,7 +31,7 @@ comptime OOB_WALL = 10
 comptime COMPLETION_BONUS: Float32 = 10.0
 comptime DIAMOND_REWARD: Float32 = 1.0
 comptime A_R: Float32 = 0.4
-comptime BG_COUNT = 13  # platform_backgrounds
+comptime BG_COUNT = 37  # platform_backgrounds (resources.cpp)
 comptime RENDER_EPS: Float32 = 0.02
 comptime OBS_SS = 4
 comptime MEMORY_VISIBILITY: Float32 = 8.0
@@ -93,10 +93,21 @@ struct MinerAssets(Movable):
         self.exit = load_sprite(asset_root, "misc_assets/window.png")
         self.dirt = load_sprite(asset_root, "misc_assets/dirt.png")
         self.wall = load_sprite(asset_root, "misc_assets/tile_bricksGrey.png")
+        # platform_backgrounds (resources.cpp order) — background_index = randn(37).
+        var names: List[String] = [
+            "alien_bg", "another_world_bg", "back_cave", "caverns", "cyberpunk_bg",
+            "parallax_forest", "scifi_bg", "scifi2_bg", "living_tissue_bg",
+            "airadventurelevel1", "airadventurelevel2", "airadventurelevel3",
+            "airadventurelevel4", "cave_background", "blue_desert", "blue_grass",
+            "blue_land", "blue_shroom", "colored_desert", "colored_grass",
+            "colored_land", "colored_shroom", "landscape1", "landscape2",
+            "landscape3", "landscape4", "battleback1", "battleback2",
+            "battleback3", "battleback4", "battleback5", "battleback6",
+            "battleback7", "battleback8", "battleback9", "battleback10", "sunrise",
+        ]
         var bp = List[String]()
-        for i in range(13):
-            bp.append("platform_backgrounds/alien_bg" + String(i + 1) + ".png")
-        # NOTE: exact filenames resolved at load time; see MinerAssets docstring.
+        for i in range(len(names)):
+            bp.append("platform_backgrounds/" + names[i] + ".png")
         self.backgrounds = load_sprites(asset_root, bp)
 
 
@@ -393,3 +404,81 @@ struct MinerGame(Copyable, Movable):
 
         self.episode_reward += self.reward
         return self.reward
+
+    # --- rendering (visual-approx; assets passed in) ---
+    def render_obs(
+        self, assets: MinerAssets, res: Int = RES, ss: Int = OBS_SS
+    ) -> List[UInt8]:
+        return downscale(self.render(assets, res * ss), res * ss, res)
+
+    def render(self, assets: MinerAssets, out_res: Int = RES) -> List[UInt8]:
+        var canvas = Canvas(out_res)
+        canvas.fill(0, 0, 0)
+
+        # Camera: Memory centers on the agent (visibility 8); Easy/Hard whole world.
+        var center_agent = self.dist_mode == DIST_MEMORY
+        var visibility: Float32
+        var center_x: Float32
+        var center_y: Float32
+        if center_agent:
+            visibility = MEMORY_VISIBILITY
+            center_x = self.agent.x
+            center_y = self.agent.y
+        else:
+            visibility = Float32(self.w if self.w > self.h else self.h)
+            center_x = Float32(self.w) * 0.5
+            center_y = Float32(self.h) * 0.5
+        var view_dim = visibility
+        var unit = Float32(out_res) / view_dim
+        var x_off = unit * (center_x - view_dim / 2)
+        var y_off = unit * (center_y - view_dim / 2)
+
+        # Background (platform, panned by bg_pct_x).
+        ref bg = assets.backgrounds[self.background_index]
+        var main_w = Float32(self.w) * unit
+        var main_h = Float32(self.h) * unit
+        var main_y = (view_dim - Float32(self.h)) * unit + y_off
+        var bg_ar = Float32(bg.w) / Float32(bg.h)
+        var world_ar = Float32(self.w) / Float32(self.h)
+        var offset_x = self.bg_pct_x * (bg_ar - world_ar)
+        canvas.blit(
+            bg, -x_off + main_w * (-offset_x), main_y, main_w * (bg_ar / world_ar), main_h
+        )
+
+        # Grid tiles: dirt, boulders, diamonds (MOVING_* drawn as their base).
+        for x in range(self.w):
+            for y in range(self.h):
+                var t = self.grid[y * self.w + x]
+                if t == SPACE:
+                    continue
+                var sx = (Float32(x) - RENDER_EPS) * unit - x_off
+                var sy = (view_dim - Float32(y + 1) - RENDER_EPS) * unit + y_off
+                var sz = (1.0 + 2 * RENDER_EPS) * unit
+                if t == DIRT:
+                    canvas.blit(assets.dirt, sx, sy, sz, sz)
+                elif t == BOULDER or t == MOVING_BOULDER:
+                    canvas.blit(assets.boulder, sx, sy, sz, sz)
+                elif t == DIAMOND or t == MOVING_DIAMOND:
+                    canvas.blit(assets.diamond, sx, sy, sz, sz)
+
+        # EXIT entity (render_z=-1 → drawn under the agent; grid cell there is SPACE).
+        for k in range(len(self.entities)):
+            ref e = self.entities[k]
+            if e.type == EXIT:
+                var ex = (e.x - e.rx) * unit - x_off
+                var ey = (view_dim - (e.y + e.ry)) * unit + y_off
+                canvas.blit(assets.exit, ex, ey, 2 * e.rx * unit, 2 * e.ry * unit)
+
+        # Robot player.
+        var ax = (self.agent.x - self.agent.rx) * unit - x_off
+        var ay = (view_dim - (self.agent.y + self.agent.ry)) * unit + y_off
+        canvas.blit(
+            assets.player,
+            ax,
+            ay,
+            2 * self.agent.rx * unit,
+            2 * self.agent.ry * unit,
+            self.agent.is_reflected,
+        )
+
+        return canvas.px.copy()
