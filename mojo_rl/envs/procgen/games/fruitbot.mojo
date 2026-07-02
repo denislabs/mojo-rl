@@ -45,6 +45,40 @@ comptime DIST_EASY = 0
 comptime DIST_HARD = 1
 
 
+struct FruitbotAssets(Movable):
+    """Read-only sprite set (shared via ArcPointer; passed into render())."""
+
+    var player: Sprite
+    var wall: Sprite  # BARRIER / OOB_WALL block
+    var bullet: Sprite
+    var door: Sprite  # LOCKED_DOOR
+    var lock: Sprite
+    var good: List[Sprite]  # fruit1..6
+    var bad: List[Sprite]  # food1..6
+    var presents: List[Sprite]  # present1..3
+    var backgrounds: List[Sprite]  # topdown_backgrounds (9)
+
+    def __init__(out self, asset_root: String) raises:
+        self.player = load_sprite(asset_root, "misc_assets/robot_3Dblue.png")
+        self.wall = load_sprite(asset_root, "misc_assets/tileStone_slope.png")
+        self.bullet = load_sprite(asset_root, "misc_assets/keyRed2.png")
+        self.door = load_sprite(asset_root, "misc_assets/fenceYellow.png")
+        self.lock = load_sprite(asset_root, "misc_assets/lockRed2.png")
+        var gp = List[String]()
+        for i in range(1, 7):
+            gp.append("misc_assets/fruit" + String(i) + ".png")
+        self.good = load_sprites(asset_root, gp)
+        var bp = List[String]()
+        for i in range(1, 7):
+            bp.append("misc_assets/food" + String(i) + ".png")
+        self.bad = load_sprites(asset_root, bp)
+        var pp = List[String]()
+        for i in range(1, 4):
+            pp.append("misc_assets/present" + String(i) + ".png")
+        self.presents = load_sprites(asset_root, pp)
+        self.backgrounds = load_topdown_backgrounds(asset_root)
+
+
 def _good_aspect(t: Int) -> Float32:
     var w: List[Float32] = [27.0, 24.0, 30.0, 20.0, 23.0, 22.0]
     var h: List[Float32] = [28.0, 30.0, 22.0, 31.0, 23.0, 26.0]
@@ -410,3 +444,56 @@ struct FruitbotGame(Copyable, Movable):
 
         self.episode_reward += self.reward
         return self.reward
+
+    # --- rendering (visual-approx; vertical-follow camera) ---
+    def render_obs(
+        self, assets: FruitbotAssets, res: Int = RES, ss: Int = OBS_SS
+    ) -> List[UInt8]:
+        return downscale(self.render(assets, res * ss), res * ss, res)
+
+    def render(self, assets: FruitbotAssets, out_res: Int = RES) -> List[UInt8]:
+        var canvas = Canvas(out_res)
+        canvas.fill(0, 0, 0)
+
+        # Camera follows the agent vertically (choose_center): visibility = width,
+        # center_x = w/2, center_y = agent.y + w/2 - 2*ry.
+        var view_dim = Float32(self.w)
+        var unit = Float32(out_res) / view_dim
+        var center_y = self.agent.y + Float32(self.w) / 2 - 2 * self.agent.ry
+        var y_off = unit * (center_y - view_dim / 2)  # x_off == 0 (center_x == w/2)
+
+        # Background (topdown, scrolls with the camera).
+        ref bg = assets.backgrounds[self.background_index]
+        canvas.blit(bg, 0.0, -y_off, Float32(out_res), Float32(self.h) * unit)
+
+        # Entities: walls, doors, locks, presents, fruit/food, bullets.
+        for k in range(len(self.entities)):
+            ref e = self.entities[k]
+            var t = e.type
+            var ex = (e.x - e.rx) * unit
+            var ey = (view_dim - (e.y + e.ry)) * unit + y_off
+            var ew = 2 * e.rx * unit
+            var eh = 2 * e.ry * unit
+            if t == BARRIER:
+                canvas.blit(assets.wall, ex, ey, ew, eh)
+            elif t == LOCKED_DOOR:
+                canvas.blit(assets.door, ex, ey, ew, eh)
+            elif t == LOCK:
+                canvas.blit(assets.lock, ex, ey, ew, eh)
+            elif t == PRESENT:
+                canvas.blit(assets.presents[e.image_theme], ex, ey, ew, eh)
+            elif t == GOOD_OBJ:
+                canvas.blit(assets.good[e.image_theme], ex, ey, ew, eh)
+            elif t == BAD_OBJ:
+                canvas.blit(assets.bad[e.image_theme], ex, ey, ew, eh)
+            elif t == PLAYER_BULLET:
+                canvas.blit(assets.bullet, ex, ey, ew, eh)
+
+        # Robot player.
+        var ax = (self.agent.x - self.agent.rx) * unit
+        var ay = (view_dim - (self.agent.y + self.agent.ry)) * unit + y_off
+        canvas.blit(
+            assets.player, ax, ay, 2 * self.agent.rx * unit, 2 * self.agent.ry * unit
+        )
+
+        return canvas.px.copy()

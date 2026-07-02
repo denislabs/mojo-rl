@@ -63,7 +63,9 @@ from .starpilot_gym_env import StarpilotGymEnv, StarpilotState, StarpilotAction
 from .plunder import PlunderGame, PlunderAssets, SHIP, PANEL, PLAYER_BULLET
 from .plunder_env import PlunderEnv
 from .plunder_gym_env import PlunderGymEnv, PlunderState, PlunderAction
-from .fruitbot import FruitbotGame
+from .fruitbot import FruitbotGame, FruitbotAssets
 # NOTE: fruitbot's per-game object ids (GOOD_OBJ/BAD_OBJ/BARRIER/LOCKED_DOOR/LOCK)
 # are NOT re-exported here — LOCKED_DOOR collides with heist's (different value).
 # Import them from `mojo_rl.envs.procgen.games.fruitbot` directly.
+from .fruitbot_env import FruitbotEnv
+from .fruitbot_gym_env import FruitbotGymEnv, FruitbotState, FruitbotAction
