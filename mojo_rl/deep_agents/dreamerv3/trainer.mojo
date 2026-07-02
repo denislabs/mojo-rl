@@ -1063,6 +1063,167 @@ struct DreamerV3Trainer[
             for k in range(SCl):
                 tfs.data[k] = tsn_t.data[k]
 
+    def openloop_heads_gpu(
+        mut self,
+        real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]
+        real_act: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor)*ACT]
+        ctx_len: Int,
+        hor: Int,
+        out_ol_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [hor*OBS] decoded obs
+        out_heads: UnsafePointer[Scalar[DT], MutAnyOrigin],    # [hor*3] = [rew_hat, val_hat, con_prob] per step
+    ) raises:
+        """Open-loop PRIOR rollout with HEAD decodes (exploit forensics).
+
+        Same belief-seeding + prior rollout as `openloop_decode_gpu`'s open-loop
+        half (no teacher-forced panel), but per imagined step also decodes what
+        the actor actually trains on: the reward head (twohot), the value head
+        (twohot), and the continue prob. Rolling this under counterfactual
+        held actions exposes WHICH head hands out a spurious advantage
+        (value ramp / reward blip / fake terminal) on the collapsed action's
+        branch. GPU-only; B=1 marshalling identical to openloop_decode_gpu.
+        """
+        comptime assert Self.train_target == "gpu", (
+            "openloop_heads_gpu is GPU-only"
+        )
+        # imagine mirror sync (not checkpointed; see openloop_decode_gpu).
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
+        )
+        comptime D = Self.DETER
+        comptime SCl = Self.SC
+        comptime TOK = Self.TOKEN
+        comptime OBSD = Self.OBS
+        comptime ACTD = Self.ACT
+        comptime FEATl = Self.FEAT
+        comptime BINSl = Self.BINS
+        comptime CARRY = 2 + D + SCl
+        var ctx = self.ctx.value()
+        var bins = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+            self.bins.unsafe_ptr()
+        )
+
+        var bd = Tensor.make["gpu"](D, self.ctx); bd.ensure(D)
+        var bs = Tensor.make["gpu"](SCl, self.ctx); bs.ensure(SCl)
+        var pa = Tensor.make["gpu"](ACTD, self.ctx); pa.ensure(ACTD)
+        var obt = Tensor.make["gpu"](OBSD, self.ctx); obt.ensure(OBSD)
+        var dummyO = Tensor.make["gpu"](OBSD, self.ctx); dummyO.ensure(OBSD)
+        var dummy1 = Tensor.make["gpu"](1, self.ctx); dummy1.ensure(1)
+        var tok = Tensor.make["gpu"](TOK, self.ctx)
+        var carry_t = Tensor.make["gpu"](CARRY, self.ctx)
+        var feat_t = Tensor.make["gpu"](FEATl, self.ctx); feat_t.ensure(FEATl)
+        var loss_t = Tensor.make["gpu"](1, self.ctx)
+        var vscr = Tensor.make["gpu"](BINSl, self.ctx)
+        for k in range(OBSD):
+            dummyO.data[k] = 0.0
+        dummyO.upload(ctx)
+        dummy1.data[0] = 0.0
+        dummy1.upload(ctx)
+        for k in range(D):
+            bd.data[k] = 0.0
+        for k in range(SCl):
+            bs.data[k] = 0.0
+
+        # ── context: observe ctx_len real steps (prev-action convention) ──
+        for t in range(ctx_len):
+            if t == 0:
+                for k in range(ACTD):
+                    pa.data[k] = 0.0
+            else:
+                for k in range(ACTD):
+                    pa.data[k] = real_act[(t - 1) * ACTD + k]
+            for k in range(OBSD):
+                obt.data[k] = real_obs[t * OBSD + k]
+            obt.upload(ctx); bd.upload(ctx); bs.upload(ctx); pa.upload(ctx)
+            self.enc.forward["gpu", 1](
+                child_refs[Self.EncT.ARITY, Self.EncT.ACT_DT](obt),
+                rebind[TensorImpl[Self.EncT.ACT_DT]](tok),
+                self.ctx,
+            )
+            self.core.set_input["deter", 1](bd, self.ctx)
+            self.core.set_input["stoch", 1](bs, self.ctx)
+            self.core.set_input["action", 1](pa, self.ctx)
+            self.core.set_input["tokens", 1](tok, self.ctx)
+            self.core.forward[1, "gpu"](carry_t, self.ctx)
+            ref nd = self.core.node_output["nd"]()
+            ref sn = self.core.node_output["stoch_new"]()
+            nd.download(ctx); sn.download(ctx)
+            for k in range(D):
+                bd.data[k] = nd.data[k]
+            for k in range(SCl):
+                bs.data[k] = sn.data[k]
+
+        var old = Tensor.make["gpu"](D, self.ctx); old.ensure(D)
+        var ols = Tensor.make["gpu"](SCl, self.ctx); ols.ensure(SCl)
+        var ond_t = Tensor.make["gpu"](D, self.ctx); ond_t.ensure(D)
+        var osn_t = Tensor.make["gpu"](SCl, self.ctx); osn_t.ensure(SCl)
+        for k in range(D):
+            old.data[k] = bd.data[k]
+        for k in range(SCl):
+            ols.data[k] = bs.data[k]
+
+        for h in range(hor):
+            var idx = ctx_len - 1 + h
+            for k in range(ACTD):
+                pa.data[k] = real_act[idx * ACTD + k]
+            pa.upload(ctx)
+            old.upload(ctx); ols.upload(ctx)
+            self.imagine.set_input["deter", 1](old, self.ctx)
+            self.imagine.set_input["stoch", 1](ols, self.ctx)
+            self.imagine.set_input["action", 1](pa, self.ctx)
+            self.imagine.forward[1, "gpu"](feat_t, self.ctx)
+            ref ond = self.imagine.node_output["nd"]()
+            ref osn = self.imagine.node_output["stoch_new"]()
+            ond.download(ctx); osn.download(ctx)
+            for k in range(D):
+                ond_t.data[k] = ond.data[k]
+            for k in range(SCl):
+                osn_t.data[k] = osn.data[k]
+            ond_t.upload(ctx); osn_t.upload(ctx)
+            # decoder → pixels
+            self.dec.set_input["stoch_new", 1](osn_t, self.ctx)
+            self.dec.set_input["nd", 1](ond_t, self.ctx)
+            self.dec.set_input["rtgt", 1](dummyO, self.ctx)
+            self.dec.forward[1, "gpu"](loss_t, self.ctx)
+            ref pred = self.dec.node_output["dec"]()
+            pred.download(ctx)
+            for k in range(OBSD):
+                out_ol_obs[h * OBSD + k] = _recon_decode[Self.RECON_SIGMOID](
+                    pred.data[k]
+                )
+            # reward head (twohot decode)
+            self.rew.set_input["nd", 1](ond_t, self.ctx)
+            self.rew.set_input["stoch_new", 1](osn_t, self.ctx)
+            self.rew.set_input["rtgt", 1](dummy1, self.ctx)
+            self.rew.forward[1, "gpu"](loss_t, self.ctx)
+            ref rl = self.rew.node_output["rew"]()
+            rl.download(ctx)
+            out_heads[h * 3 + 0] = twohot_pred[BINSl](_hp(rl), 0, bins)
+            # value head (twohot decode) on feat = [nd, stoch_new]
+            for k in range(D):
+                feat_t.data[k] = ond_t.data[k]
+            for k in range(SCl):
+                feat_t.data[D + k] = osn_t.data[k]
+            feat_t.upload(ctx)
+            self.value.forward["gpu", 1](
+                TensorRefs[1](feat_t), vscr, self.ctx
+            )
+            vscr.download(ctx)
+            out_heads[h * 3 + 1] = twohot_pred[BINSl](_hp(vscr), 0, bins)
+            # continue head → prob
+            self.con.set_input["nd", 1](ond_t, self.ctx)
+            self.con.set_input["stoch_new", 1](osn_t, self.ctx)
+            self.con.set_input["ctgt", 1](dummy1, self.ctx)
+            self.con.forward[1, "gpu"](loss_t, self.ctx)
+            ref ocon = self.con.node_output["con"]()
+            ocon.download(ctx)
+            out_heads[h * 3 + 2] = Scalar[DT](1.0) / (
+                Scalar[DT](1.0) + exp(-ocon.data[0])
+            )
+            for k in range(D):
+                old.data[k] = ond_t.data[k]
+            for k in range(SCl):
+                ols.data[k] = osn_t.data[k]
+
     def openloop_decode_gpu(
         mut self,
         real_obs: UnsafePointer[Scalar[DT], MutAnyOrigin],   # [(ctx+hor+1)*OBS]

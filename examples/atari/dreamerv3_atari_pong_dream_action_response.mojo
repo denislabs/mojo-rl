@@ -41,24 +41,24 @@ from mojo_rl.render.image_writer import save_frame_sequence_gif
 
 # ── arch (MUST match the training run that WROTE the checkpoint) ──
 # C=1 ↔ AtariEnv OBS_MODE=3 (gray-96 single frame); C=4 ↔ OBS_MODE=4 (stack).
-comptime C = 1
+comptime C = 4  # capacity-run checkpoint (OBS_MODE=4 stack)
 comptime IMG = 96
 comptime BASE = 48
 comptime OBS = C * IMG * IMG
 comptime ACT = 6
-comptime DETER = 2048
-comptime H = 256
+comptime DETER = 4096  # capacity-run tier (MUST match the checkpoint)
+comptime H = 512
 comptime STOCH = 32
 comptime CLASSES = 32
 comptime BLOCKS = 8
 comptime TOKEN = 1024
 comptime DEC_U = 1024
-comptime HU = 256
-comptime VU = 256
-comptime PU = 256
+comptime HU = 512
+comptime VU = 512
+comptime PU = 512
 comptime BINS = 255
 comptime B = 16
-comptime T = 16
+comptime T = 32
 comptime T_IMAG = 15
 comptime CAP = 256  # never trains here → tiny replay (params load from ckpt)
 
@@ -127,6 +127,16 @@ def _centroid_y(
     return (sy / Scalar[DT](n), n)
 
 
+def _con_min(
+    heads: UnsafePointer[Scalar[DT], MutAnyOrigin], hor: Int
+) -> Scalar[DT]:
+    var m = heads[2]
+    for h in range(1, hor):
+        if heads[h * 3 + 2] < m:
+            m = heads[h * 3 + 2]
+    return m
+
+
 def _argmax(p: UnsafePointer[Scalar[DT], MutAnyOrigin], n: Int) -> Int:
     var best = 0
     var bv = p[0]
@@ -188,12 +198,14 @@ def main() raises:
 
         # ── per-action branch: force the action from the last context step on ──
         var ol = alloc[Scalar[DT]](HOR * OBS).as_unsafe_any_origin()
-        var tf = alloc[Scalar[DT]](HOR * OBS).as_unsafe_any_origin()
+        var heads = alloc[Scalar[DT]](HOR * 3).as_unsafe_any_origin()
         var frames = alloc[Scalar[DT]](NACT * HOR * OBS).as_unsafe_any_origin()
         var endy = List[Scalar[DT]]()
         print("-" * 70)
-        print("  per-step imagined right-paddle Y (walls excluded; -1 = out of")
-        print("  band / not detected). Real-env mapping: 2/4 = UP, 3/5 = DOWN.")
+        print("  per-step imagined right-paddle Y + WHAT THE ACTOR TRAINS ON:")
+        print("  rew/val = twohot decodes, con = continue prob. The exploit, if")
+        print("  any, shows as a val ramp / rew blip / con crash on ONE branch.")
+        print("  (walls excluded from Y; -1 = paddle not detected; 2/4=UP 3/5=DOWN)")
         for a in range(NACT):
             # openloop_decode_gpu rolls the prior on ract[(CTX-1+h)] — force the
             # branch action from index CTX-1 onward (one-hot), keep the real
@@ -203,16 +215,26 @@ def main() raises:
                     ract[t * ACT + k] = (
                         Scalar[DT](1.0) if k == a else Scalar[DT](0.0)
                     )
-            agent.trainer.openloop_decode_gpu(robs, ract, CTX, HOR, ol, tf)
+            agent.trainer.openloop_heads_gpu(robs, ract, CTX, HOR, ol, heads)
             for i in range(HOR * OBS):
                 frames[a * HOR * OBS + i] = ol[i]
-            print("  action", a, ":")
+            print("  action", a, ":   h    y      rew        val       con")
             var last = Scalar[DT](-1.0)
+            var ret_lam = Scalar[DT](0.0)   # crude undiscounted head-sum probe
             for h in range(HOR):
                 var ch = _centroid_y(ol + h * OBS + NEWCH, 80, 92)
-                print("      h=", h, "  y=", ch[0], "  n=", ch[1])
+                print(
+                    "           ", h, "  ", ch[0], "  ", heads[h * 3 + 0],
+                    "  ", heads[h * 3 + 1], "  ", heads[h * 3 + 2],
+                )
+                ret_lam += heads[h * 3 + 0]
                 if ch[0] >= Scalar[DT](0.0):
                     last = ch[0]
+            print(
+                "      Σrew=", ret_lam,
+                "  val[last]=", heads[(HOR - 1) * 3 + 1],
+                "  con[min]=", _con_min(heads, HOR),
+            )
             endy.append(last)  # last DETECTED position along the branch
 
         # spread of the FINAL imagined paddle position across action branches.
@@ -274,7 +296,7 @@ def main() raises:
         robs.free()
         ract.free()
         ol.free()
-        tf.free()
+        heads.free()
         frames.free()
         comp.free()
         print("=" * 70)
