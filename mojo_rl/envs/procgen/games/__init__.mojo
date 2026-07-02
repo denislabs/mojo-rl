@@ -34,3 +34,13 @@ from .heist_gym_env import HeistGymEnv, HeistState, HeistAction
 from .bigfish import BigfishGame, BigfishAssets, FISH
 from .bigfish_env import BigfishEnv
 from .bigfish_gym_env import BigfishGymEnv, BigfishState, BigfishAction
+from .leaper import (
+    LeaperGame,
+    LeaperAssets,
+    leaper_world_dim,
+    LOG,
+    ROAD,
+    WATER,
+    CAR,
+    FINISH_LINE,
+)
