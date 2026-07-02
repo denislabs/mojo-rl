@@ -146,6 +146,29 @@ def _push_frame[
     return new_n
 
 
+def _step_repeat[
+    E: BoxDiscreteActionEnv, IMG_DIM: Int
+](
+    mut env: E, action: Int, repeat: Int, mut out_obs: List[Scalar[DT]]
+) raises -> Tuple[Float64, Bool]:
+    """Apply `action` for `repeat` env steps (action repeat / frame skip),
+    accumulating reward and stopping early on `done`. Fills `out_obs` with the
+    LAST observation and returns (summed_reward, done). One agent decision → one
+    buffer transition covering `repeat` env steps (standard CarRacing setup)."""
+    var r_sum: Float64 = 0.0
+    var d = False
+    var reps = repeat if repeat > 0 else 1
+    for _ in range(reps):
+        var res = env.step_obs(action)
+        r_sum += Float64(res[1])
+        d = res[2]
+        for i in range(IMG_DIM):
+            out_obs[i] = Scalar[DT](Float64(res[0][i]))
+        if d:
+            break
+    return (r_sum, d)
+
+
 def _build_shortcut_schedule[
     B: Int, T: Int, B_SELF: Int, KMAX: Int, EMAX: Int, ND: Int
 ](
@@ -256,6 +279,7 @@ def run_online_dreamer4[
     eval_max_steps: Int = 1000,
     imag_gamma: Scalar[DT] = Scalar[DT](0.997),
     log_every: Int = 500,   # cadence for stdout progress + metric logging
+    frame_repeat: Int = 1,  # repeat each chosen action this many env steps
     seed: UInt64 = 20260701,
     dctx: Optional[DeviceContext] = None,   # required when DYN_TARGET="gpu"
 ) raises -> Tuple[Float64, Float64, Float64, Float64, Float64]:
@@ -315,8 +339,9 @@ def run_online_dreamer4[
     var pix = Tensor.alloc(BATCH * IMG_DIM)
     var act_oh = Tensor.alloc(BATCH * NACT)
 
-    # current observation (DT copy of the env's obs list)
+    # current observation (DT copy of the env's obs list) + next-obs scratch
     var cur = List[Scalar[DT]](length=IMG_DIM, fill=Scalar[DT](0.0))
+    var nxt = List[Scalar[DT]](length=IMG_DIM, fill=Scalar[DT](0.0))
     var ob0 = env.reset_obs_list()
     for i in range(IMG_DIM):
         cur[i] = Scalar[DT](Float64(ob0[i]))
@@ -328,9 +353,9 @@ def run_online_dreamer4[
         var a = Int(rng.uniform() * Float64(NACT))
         if a >= NACT:
             a = NACT - 1
-        var res = env.step_obs(a)
-        var r = Scalar[DT](Float64(res[1]))
-        var d = res[2]
+        var rd = _step_repeat[E, IMG_DIM](env, a, frame_repeat, nxt)
+        var r = Scalar[DT](rd[0])
+        var d = rd[1]
         buf.add_step_fp32_list(cur, a, d, r)
         collected += 1
         if collected % 500 == 0:
@@ -341,7 +366,7 @@ def run_online_dreamer4[
                 cur[i] = Scalar[DT](Float64(no[i]))
         else:
             for i in range(IMG_DIM):
-                cur[i] = Scalar[DT](Float64(res[0][i]))
+                cur[i] = nxt[i]
     logger.log_scalar(String("online/warmup_frames"), Float64(buf.count()), 0)
 
     # ── Stage 1: tokenizer pretrain → freeze ────────────────────────────
@@ -497,12 +522,12 @@ def run_online_dreamer4[
             _mao(act_hist.unsafe_ptr()), 0, True, rng.uniform(), dctx,
         )
 
-        var res = env.step_obs(a)
-        var r = Scalar[DT](Float64(res[1]))
-        var d = res[2]
+        var rd = _step_repeat[E, IMG_DIM](env, a, frame_repeat, nxt)
+        var r = Scalar[DT](rd[0])
+        var d = rd[1]
         buf.add_step_fp32_list(cur, a, d, r)
         last_action = a
-        ep_ret += Float64(r)
+        ep_ret += Float64(rd[0])
         if d:
             if logger.is_active():
                 logger.log_scalar(String("online/train_return"), ep_ret, step)
@@ -514,7 +539,7 @@ def run_online_dreamer4[
             last_action = -1
         else:
             for i in range(IMG_DIM):
-                cur[i] = Scalar[DT](Float64(res[0][i]))
+                cur[i] = nxt[i]
 
         # ── world-model + heads update ──
         if step % train_every == 0 and buf.count() >= BATCH:
@@ -680,13 +705,11 @@ def run_online_dreamer4[
                     _mao(ewin_z.data.unsafe_ptr()), ewin_n,
                     _mao(eact_hist.unsafe_ptr()), 0, False, 0.0, dctx,
                 )
-                var eres = env.step_obs(ea)
-                eret += Float64(eres[1])
+                var erd = _step_repeat[E, IMG_DIM](env, ea, frame_repeat, ecur)
+                eret += erd[0]
                 elast = ea
-                if eres[2]:
+                if erd[1]:
                     break
-                for i in range(IMG_DIM):
-                    ecur[i] = Scalar[DT](Float64(eres[0][i]))
             last_eval_return = eret
             print("  [eval] step", step, " greedy return =", eret)
             if logger.is_active():
