@@ -44,3 +44,5 @@ from .leaper import (
     CAR,
     FINISH_LINE,
 )
+from .leaper_env import LeaperEnv
+from .leaper_gym_env import LeaperGymEnv, LeaperState, LeaperAction

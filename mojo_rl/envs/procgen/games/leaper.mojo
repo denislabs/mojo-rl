@@ -460,3 +460,71 @@ struct LeaperGame(Copyable, Movable):
 
         self.episode_reward += self.reward
         return self.reward
+
+    # --- rendering (visual-approx; assets passed in) ---
+    def render_obs(
+        self, assets: LeaperAssets, res: Int = RES, ss: Int = OBS_SS
+    ) -> List[UInt8]:
+        return downscale(self.render(assets, res * ss), res * ss, res)
+
+    def render(self, assets: LeaperAssets, out_res: Int = RES) -> List[UInt8]:
+        var canvas = Canvas(out_res)
+        canvas.fill(0, 0, 0)
+
+        # Camera: center_agent=false → whole world (x_off == y_off == 0).
+        var view_dim = Float32(self.w if self.w > self.h else self.h)
+        var unit = Float32(out_res) / view_dim
+
+        # Background (topdown, panned by bg_pct_x).
+        ref bg = assets.backgrounds[self.background_index]
+        var main_w = Float32(self.w) * unit
+        var main_h = Float32(self.h) * unit
+        var main_y = (view_dim - Float32(self.h)) * unit
+        var bg_ar = Float32(bg.w) / Float32(bg.h)
+        var world_ar = Float32(self.w) / Float32(self.h)
+        var offset_x = self.bg_pct_x * (bg_ar - world_ar)
+        canvas.blit(
+            bg, main_w * (-offset_x), main_y, main_w * (bg_ar / world_ar), main_h
+        )
+
+        # Grid: road / water lane tiles.
+        for x in range(self.w):
+            for y in range(self.h):
+                var t = self._obj(x, y)
+                if t != ROAD and t != WATER:
+                    continue
+                var sx = (Float32(x) - RENDER_EPS) * unit
+                var sy = (view_dim - Float32(y + 1) - RENDER_EPS) * unit
+                var sz = (1.0 + 2 * RENDER_EPS) * unit
+                if t == ROAD:
+                    canvas.blit(assets.road, sx, sy, sz, sz)
+                else:
+                    canvas.blit(assets.water, sx, sy, sz, sz)
+
+        # Entities: finish line, logs, cars.
+        for k in range(len(self.entities)):
+            ref e = self.entities[k]
+            var ex = (e.x - e.rx) * unit
+            var ey = (view_dim - (e.y + e.ry)) * unit
+            var ew = 2 * e.rx * unit
+            var eh = 2 * e.ry * unit
+            if e.type == FINISH_LINE:
+                canvas.blit(assets.finish, ex, ey, ew, eh)
+            elif e.type == LOG:
+                canvas.blit(assets.log, ex, ey, ew, eh)
+            elif e.type == CAR:
+                canvas.blit(assets.cars[e.image_theme], ex, ey, ew, eh, e.vx < 0.0)
+
+        # Frog (animation frame by image_theme; reflected when hopping left).
+        var ax = (self.agent.x - self.agent.rx) * unit
+        var ay = (view_dim - (self.agent.y + self.agent.ry)) * unit
+        canvas.blit(
+            assets.frogs[self.agent.image_theme],
+            ax,
+            ay,
+            2 * self.agent.rx * unit,
+            2 * self.agent.ry * unit,
+            self.agent.rotation < 0.0,
+        )
+
+        return canvas.px.copy()
