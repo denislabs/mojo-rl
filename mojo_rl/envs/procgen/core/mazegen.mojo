@@ -11,9 +11,19 @@ relabel every cell currently tagged `s0_idx` to `s1_idx`. No randomness is
 consumed during the merge, so this is bit-faithful for level generation.
 """
 
+from std.builtin.sort import sort
+
 from .grid import Grid
 from .randgen import RandGen
-from .object_ids import SPACE, WALL_OBJ, INVALID_OBJ
+from .object_ids import (
+    SPACE,
+    WALL_OBJ,
+    INVALID_OBJ,
+    DOOR_OBJ,
+    KEY_OBJ,
+    EXIT_OBJ,
+    AGENT_OBJ,
+)
 
 comptime MAZE_OFFSET = 1
 
@@ -158,6 +168,106 @@ struct MazeGen(Copyable, Movable):
                     if len(adj_wall) > 0:
                         var n = rand_gen.randn(len(adj_wall))
                         self.grid.set_index(adj_wall[n], SPACE)
+
+    def filter_cells(self, type: Int) -> List[Int]:
+        # Cells (array_dim indices, ascending) whose object is `type`.
+        var found = List[Int]()
+        for i in range(self.array_dim * self.array_dim):
+            if self.get_obj(i) == type:
+                found.append(i)
+        return found^
+
+    def expand_to_type(
+        mut self, mut in_s0: List[Bool], mut in_s1: List[Bool], type: Int
+    ) -> Int:
+        """BFS flood over SPACE cells from the `in_s0` frontier, adding newly
+        reached SPACE cells to `in_s1`. Returns the first `type`-typed neighbor
+        found (in get_neighbors order, from the ascending frontier), or -1 if the
+        region is exhausted. Consumes no RNG. Frontiers are iterated in ascending
+        cell order to match the reference `std::set` semantics — the ordering
+        decides which door/region is found and thus the later `choose_one` draws.
+        """
+        var n2 = self.array_dim * self.array_dim
+        var curr = List[Int]()
+        for i in range(n2):
+            if in_s0[i]:
+                curr.append(i)
+        while len(curr) > 0:
+            var nxt = List[Int]()
+            for ci in range(len(curr)):
+                var elem = curr[ci]
+                var targets = self.get_neighbors(elem, type)
+                var adj_space = self.get_neighbors(elem, SPACE)
+                for si in range(len(adj_space)):
+                    var j = adj_space[si]
+                    if not in_s0[j] and not in_s1[j]:
+                        in_s1[j] = True
+                        nxt.append(j)
+                if len(targets) > 0:
+                    return targets[0]
+            sort(nxt)  # std::set frontier is iterated ascending next round
+            curr = nxt^
+        return -1
+
+    def generate_maze_with_doors(mut self, mut rand_gen: RandGen, num_doors: Int):
+        """Maze with a lock-and-key progression (heist). Marks DOOR_OBJ forks, an
+        AGENT_OBJ start, then per gate: a specific door + a key/exit in the region
+        reachable so far. Port of `mazegen.cpp::generate_maze_with_doors`."""
+        self.generate_maze(rand_gen)
+        var n2 = self.array_dim * self.array_dim
+
+        # Forks: SPACE cells with more than 2 SPACE neighbors.
+        var forks = List[Int]()
+        for i in range(n2):
+            if self.get_obj(i) == SPACE:
+                var adj_space = self.get_neighbors(i, SPACE)
+                if len(adj_space) > 2:
+                    forks.append(i)
+
+        var chosen = rand_gen.choose_n(forks, num_doors)
+        var nd = len(chosen)
+        for i in range(len(chosen)):
+            self.grid.set_index(chosen[i], DOOR_OBJ)
+
+        # Agent start: a SPACE cell with no adjacent (generic) door (do-while:
+        # draw, then re-draw while the pick is door-adjacent).
+        var space_cells = self.filter_cells(SPACE)
+        var agent_cell = rand_gen.choose_one(space_cells)
+        while len(self.get_neighbors(agent_cell, DOOR_OBJ)) > 0:
+            agent_cell = rand_gen.choose_one(space_cells)
+        self.grid.set_index(agent_cell, AGENT_OBJ)
+
+        var in_s0 = List[Bool]()
+        in_s0.resize(n2, False)
+        in_s0[agent_cell] = True
+
+        for door_num in range(nd + 1):
+            var in_s1 = List[Bool]()
+            in_s1.resize(n2, False)
+            var found_door = -1
+            if door_num < nd:
+                found_door = self.expand_to_type(in_s0, in_s1, DOOR_OBJ)
+                self.grid.set_index(found_door, DOOR_OBJ + door_num + 1)
+                for k in range(n2):
+                    if in_s1[k]:
+                        in_s0[k] = True
+            _ = self.expand_to_type(in_s0, in_s1, -999)
+
+            var region = List[Int]()
+            for k in range(n2):
+                if in_s1[k]:
+                    region.append(k)
+            var key_cell = rand_gen.choose_one(region)
+            if door_num == nd:
+                self.grid.set_index(key_cell, EXIT_OBJ)
+            else:
+                self.grid.set_index(key_cell, KEY_OBJ + door_num + 1)
+
+            for k in range(n2):
+                if in_s1[k]:
+                    in_s0[k] = True
+            if found_door >= 0:
+                in_s0[found_door] = True
 
     def place_objects(mut self, mut rand_gen: RandGen, start_obj: Int, num_objs: Int):
         for j in range(num_objs):
