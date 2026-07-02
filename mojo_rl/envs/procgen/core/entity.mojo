@@ -41,6 +41,7 @@ struct Entity(Copyable, Movable):
     var theta: Float32
     var grow_rate: Float32
     var alpha_decay: Float32
+    var climber_spawn_x: Float32  # climber enemy patrol center (unused elsewhere)
 
     def __init__(
         out self,
@@ -83,6 +84,7 @@ struct Entity(Copyable, Movable):
         self.theta = -100.0
         self.grow_rate = 1.0
         self.alpha_decay = 1.0
+        self.climber_spawn_x = 0.0
 
     @staticmethod
     def make(x: Float32, y: Float32, r: Float32, type: Int) -> Entity:

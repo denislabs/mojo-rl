@@ -88,3 +88,8 @@ from .caveflyer import CaveflyerGame, CaveflyerAssets
 # `mojo_rl.envs.procgen.games.caveflyer` directly.
 from .caveflyer_env import CaveflyerEnv
 from .caveflyer_gym_env import CaveflyerGymEnv, CaveflyerState, CaveflyerAction
+from .climber import ClimberGame, ClimberAssets
+# NOTE: climber's generic object ids (COIN/ENEMY/WALL_MID/...) stay module-local
+# (collide with other games'). Import from `...games.climber` directly.
+from .climber_env import ClimberEnv
+from .climber_gym_env import ClimberGymEnv, ClimberState, ClimberAction
