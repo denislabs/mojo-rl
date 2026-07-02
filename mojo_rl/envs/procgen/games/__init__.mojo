@@ -60,3 +60,4 @@ from .starpilot import (
 )
 from .starpilot_env import StarpilotEnv
 from .starpilot_gym_env import StarpilotGymEnv, StarpilotState, StarpilotAction
+from .plunder import PlunderGame, SHIP, PANEL, PLAYER_BULLET
