@@ -46,3 +46,4 @@ from .leaper import (
 )
 from .leaper_env import LeaperEnv
 from .leaper_gym_env import LeaperGymEnv, LeaperState, LeaperAction
+from .miner import MinerGame, BOULDER, DIAMOND, EXIT, DIRT
