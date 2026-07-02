@@ -377,6 +377,12 @@ struct DreamerV3Trainer[
     def dbg_val_loss(self) -> Scalar[DT]:
         return self.state.dbg_val_loss
 
+    def dbg_adv_act(self, a: Int) -> Scalar[DT]:
+        """Per-action mean imagination advantage E[adv | sampled action a]
+        (discrete; want_diag-refreshed). A steady inter-action gap while eval
+        is flat = the collapse driver (model exploitation)."""
+        return self.state.dbg_adv_act[a]
+
     def train_steps_done(self) -> Int:
         return self.train_steps
 

@@ -1106,6 +1106,46 @@ def _repl_bwd_k[B_: Int, T_: Int, BINS_: Int](
 # ──────────────────────────────────────────────────────────────────────
 
 
+# ── per-action advantage diag (discrete; want_diag-gated). Serial single
+#    thread: ~NS·TM1 twohot decodes only at log cadence. out[a] = Σ adv over
+#    imagined steps whose SAMPLED action is a; out[C+a] = count. Under
+#    REINFORCE E[adv|a] is exactly the per-logit drift direction — a
+#    consistent gap between actions while eval is flat = the value/reward
+#    heads systematically favor one action's imagined futures (early model
+#    exploitation), the policy-collapse driver. ──────────────────────────
+def _diag_adv_act_k[NS_: Int, TI_: Int, BINS_: Int, C_: Int](
+    acts: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * C_), MutAnyOrigin],
+    ret: LayoutTensor[DT, Layout.row_major(NS_ * (TI_ - 1)), MutAnyOrigin],
+    vlog: LayoutTensor[DT, Layout.row_major(NS_ * TI_ * BINS_), MutAnyOrigin],
+    bins: LayoutTensor[DT, Layout.row_major(BINS_), MutAnyOrigin],
+    rscale_buf: LayoutTensor[DT, Layout.row_major(1), MutAnyOrigin],
+    out_d: LayoutTensor[DT, Layout.row_major(2 * C_), MutAnyOrigin],
+):
+    if Int(global_idx.x) == 0:
+        comptime TM1 = TI_ - 1
+        for a in range(2 * C_):
+            out_d[a] = Scalar[DT](0.0)
+        var rscale = rebind[Scalar[DT]](rscale_buf[0])
+        for b in range(NS_):
+            for t in range(TM1):
+                var pbase = (b * TI_ + t) * C_
+                var k = 0
+                var bestv = rebind[Scalar[DT]](acts[pbase])
+                for a in range(1, C_):
+                    var av = rebind[Scalar[DT]](acts[pbase + a])
+                    if av > bestv:
+                        bestv = av
+                        k = a
+                var val_t = _dev_twp[BINS_](vlog, (b * TI_ + t) * BINS_, bins)
+                var adv = (
+                    rebind[Scalar[DT]](ret[b * TM1 + t]) - val_t
+                ) / rscale
+                out_d[k] = rebind[Scalar[DT]](out_d[k]) + adv
+                out_d[C_ + k] = rebind[Scalar[DT]](out_d[C_ + k]) + Scalar[DT](
+                    1.0
+                )
+
+
 @fieldwise_init
 struct DreamerState[
     OBS: Int, ACT: Int, DETER: Int, SC: Int, TOKEN: Int,
@@ -1154,6 +1194,11 @@ struct DreamerState[
     var dbg_con_loss: Scalar[DT]
     var dbg_pol_loss: Scalar[DT]
     var dbg_val_loss: Scalar[DT]
+    # ── per-action mean imagination advantage E[adv | sampled action] (nats-
+    #    free, retnorm'd). Discrete only (continuous leaves zeros). A steady
+    #    gap between actions while eval is flat = model-exploitation collapse
+    #    driver. Length ACT. ──
+    var dbg_adv_act: List[Scalar[DT]]
     # ── GPU time-major device minibatch + carries. On CPU these stay empty
     #    (length-0) Tensors. ──
     var d_obs: Tensor    # [T*B*OBS]
@@ -1198,6 +1243,9 @@ struct DreamerState[
             dbg_con_loss=Scalar[DT](0.0),
             dbg_pol_loss=Scalar[DT](0.0),
             dbg_val_loss=Scalar[DT](0.0),
+            dbg_adv_act=List[Scalar[DT]](
+                length=Self.ACT, fill=Scalar[DT](0.0)
+            ),
             d_obs=Tensor(), d_act=Tensor(), d_rew=Tensor(), d_cont=Tensor(),
             d_cdeter=Tensor(), d_cstoch=Tensor(), d_toks=Tensor(),
         )
@@ -2298,6 +2346,7 @@ struct ACStep[
     var neigh_d: Tensor  # [4]  per-step percentile neighbors (scratch)
     var rscale_d: Tensor # [1]  retnorm scale (read by _imag_bwd_k on device)
     var diag_d: Tensor   # [DIAG_N]  device-reduced metric bundle (1 D2H/flush)
+    var adv_diag_d: Tensor  # [2*ACT]  per-action adv sums+counts (diag-only)
 
     def __init__(out self):
         self.minstd = Scalar[DT](0.1)
@@ -2353,6 +2402,7 @@ struct ACStep[
         self.neigh_d = Tensor()
         self.rscale_d = Tensor()
         self.diag_d = Tensor()
+        self.adv_diag_d = Tensor()
 
     @staticmethod
     def make[target: StaticString](
@@ -2429,6 +2479,7 @@ struct ACStep[
             s.neigh_d = _mk[target](4, ctx)
             s.rscale_d = _mk[target](1, ctx)
             s.diag_d = _mk[target](DIAG_N, ctx)
+            s.adv_diag_d = _mk[target](2 * ACTD, ctx)
         return s^
 
     def gen_noise_device(mut self, ctx: DeviceContext) raises:
@@ -2653,6 +2704,31 @@ struct ACStep[
         st.dbg_ret_std = sqrt(rv / Scalar[DT](NS * TM1))
         var rscale = retnorm.stats()[1]
         st.dbg_rscale = rscale
+        # per-action mean advantage E[adv | sampled action] (discrete only) —
+        # the REINFORCE per-logit drift direction; mirrors _diag_adv_act_k.
+        comptime if Self.DISCRETE:
+            var adv_s = List[Scalar[DT]](length=ACTD, fill=Scalar[DT](0))
+            var adv_n = List[Scalar[DT]](length=ACTD, fill=Scalar[DT](0))
+            for b in range(NS):
+                for t in range(TM1):
+                    var pbase = (b * TI + t) * ACTD
+                    var k = 0
+                    var bestv = acts[pbase]
+                    for a in range(1, ACTD):
+                        if acts[pbase + a] > bestv:
+                            bestv = acts[pbase + a]
+                            k = a
+                    var val_t = twohot_pred[BINSl](
+                        vlog.unsafe_ptr(), (b * TI + t) * BINSl, bins
+                    )
+                    var adv = (ret[b * TM1 + t] - val_t) / rscale
+                    adv_s[k] += adv
+                    adv_n[k] += Scalar[DT](1.0)
+            for a in range(ACTD):
+                st.dbg_adv_act[a] = (
+                    adv_s[a] / adv_n[a]
+                    if adv_n[a] > Scalar[DT](0.0) else Scalar[DT](0.0)
+                )
         var ps_acc: Scalar[DT] = 0.0
         comptime if not Self.DISCRETE:
             for i in range(NS * TI * ACTD):
@@ -2963,6 +3039,31 @@ struct ACStep[
         st.dbg_ret_std = sqrt(rv / Scalar[DT](NS * TM1))
         var rscale = retnorm.stats()[1]
         st.dbg_rscale = rscale
+        # per-action mean advantage E[adv | sampled action] (discrete only) —
+        # the REINFORCE per-logit drift direction; mirrors _diag_adv_act_k.
+        comptime if Self.DISCRETE:
+            var adv_s = List[Scalar[DT]](length=ACTD, fill=Scalar[DT](0))
+            var adv_n = List[Scalar[DT]](length=ACTD, fill=Scalar[DT](0))
+            for b in range(NS):
+                for t in range(TM1):
+                    var pbase = (b * TI + t) * ACTD
+                    var k = 0
+                    var bestv = acts[pbase]
+                    for a in range(1, ACTD):
+                        if acts[pbase + a] > bestv:
+                            bestv = acts[pbase + a]
+                            k = a
+                    var val_t = twohot_pred[BINSl](
+                        vlog.unsafe_ptr(), (b * TI + t) * BINSl, bins
+                    )
+                    var adv = (ret[b * TM1 + t] - val_t) / rscale
+                    adv_s[k] += adv
+                    adv_n[k] += Scalar[DT](1.0)
+            for a in range(ACTD):
+                st.dbg_adv_act[a] = (
+                    adv_s[a] / adv_n[a]
+                    if adv_n[a] > Scalar[DT](0.0) else Scalar[DT](0.0)
+                )
         var ps_acc: Scalar[DT] = 0.0
         comptime if not Self.DISCRETE:
             for i in range(NS * TI * ACTD):
@@ -3385,7 +3486,18 @@ struct ACStep[
                 self.diag_d.lt["gpu", Layout.row_major(DIAG_N)](),
                 10, 11, grid_dim=r1, block_dim=TPB_REDUCE,
             )
+            # per-action mean advantage (collapse-driver probe; serial, diag-only)
+            ctx.enqueue_function[_diag_adv_act_k[NS, TI, BINSl, ACTD]](
+                self.acts_d.lt["gpu", Layout.row_major(NS * TI * ACTD)](),
+                self.ret_d.lt["gpu", Layout.row_major(NS * TM1)](),
+                self.vlog_d.lt["gpu", Layout.row_major(NS * TI * BINSl)](),
+                self.bins_d.lt["gpu", Layout.row_major(BINSl)](),
+                self.rscale_d.lt["gpu", Layout.row_major(1)](),
+                self.adv_diag_d.lt["gpu", Layout.row_major(2 * ACTD)](),
+                grid_dim=1, block_dim=1,
+            )
             self.diag_d.download(ctx)
+            self.adv_diag_d.download(ctx)
             self.rscale_d.download(ctx)
             ctx.synchronize()
             st.dbg_rscale = self.rscale_d.data[0]
@@ -3411,6 +3523,12 @@ struct ACStep[
             var fmean = self.diag_d.data[10] / Scalar[DT](NFT)
             var fvar = self.diag_d.data[11] / Scalar[DT](NFT) - fmean * fmean
             st.dbg_feat_std = sqrt(fvar if fvar > Scalar[DT](0.0) else Scalar[DT](0.0))
+            for a in range(ACTD):
+                var acnt = self.adv_diag_d.data[ACTD + a]
+                st.dbg_adv_act[a] = (
+                    self.adv_diag_d.data[a] / acnt
+                    if acnt > Scalar[DT](0.0) else Scalar[DT](0.0)
+                )
 
     def _ac_gpu_cont[target: StaticString](
         mut self,

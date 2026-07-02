@@ -371,6 +371,36 @@ struct DreamerV3Agent[
                                     Float64(self.act_hist[a]) / Float64(hist_n),
                                     step,
                                 )
+                        # per-action mean imagination advantage — the REINFORCE
+                        # drift per action. A persistent adv_gap with flat eval
+                        # = model-exploitation collapse (value/reward heads
+                        # favor one action's imagined futures).
+                        var adv_lo = Float64(self.dbg_adv_act(0))
+                        var adv_hi = adv_lo
+                        for a in range(ACTL):
+                            var av = Float64(self.dbg_adv_act(a))
+                            lg[].log_scalar(
+                                String("adv_act_") + String(a), av, step
+                            )
+                            if av < adv_lo:
+                                adv_lo = av
+                            if av > adv_hi:
+                                adv_hi = av
+                        lg[].log_scalar("adv_gap", adv_hi - adv_lo, step)
+                        # imagination-health scalars (already computed, now
+                        # surfaced): value spread + return spread + con floor.
+                        lg[].log_scalar(
+                            "imag_val_mean", Float64(self.trainer.dbg_val_mean()), step
+                        )
+                        lg[].log_scalar(
+                            "imag_val_std", Float64(self.trainer.dbg_val_std()), step
+                        )
+                        lg[].log_scalar(
+                            "imag_ret_std", Float64(self.trainer.dbg_ret_std()), step
+                        )
+                        lg[].log_scalar(
+                            "imag_con_min", Float64(self.trainer.dbg_con_min()), step
+                        )
                         lg[].log_scalar(
                             "train_steps", Float64(self.train_steps_done()), step
                         )
@@ -908,6 +938,9 @@ struct DreamerV3Agent[
 
     def dbg_rscale(self) -> Scalar[DT]:
         return self.trainer.dbg_rscale()
+
+    def dbg_adv_act(self, a: Int) -> Scalar[DT]:
+        return self.trainer.dbg_adv_act(a)
 
     def select_action(
         mut self,
