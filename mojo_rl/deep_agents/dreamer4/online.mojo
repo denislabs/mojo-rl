@@ -340,7 +340,7 @@ def run_online_dreamer4[
         )
         topt.step["cpu"](tok, None)
         tok.advance_rng()
-        if s % 50 == 0:
+        if s % 10 == 0:
             print("  [tok]", s, "/", tok_pretrain_steps, " recon=", last_tok_loss)
     tok.set_mae_p(0.0, 0.0)  # FREEZE
     print("  tokenizer frozen (recon=", last_tok_loss, ")")
