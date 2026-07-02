@@ -41,6 +41,33 @@ comptime DIST_EASY = 0
 comptime DIST_HARD = 1
 
 
+struct PlunderAssets(Movable):
+    """Read-only sprite set (shared via ArcPointer; passed into render())."""
+
+    var ships: List[Sprite]  # ship_1..6 (themes; also the cannon ship + legend)
+    var cannonball: Sprite
+    var panel: Sprite
+    var target_bg: Sprite
+    var explosion: Sprite
+    var backgrounds: List[Sprite]  # water_surface_backgrounds (4)
+
+    def __init__(out self, asset_root: String) raises:
+        var sp = List[String]()
+        for i in range(1, 7):
+            sp.append("misc_assets/ship_" + String(i) + ".png")
+        self.ships = load_sprites(asset_root, sp)
+        self.cannonball = load_sprite(asset_root, "misc_assets/cannonBall.png")
+        self.panel = load_sprite(asset_root, "misc_assets/panel_wood.png")
+        self.target_bg = load_sprite(asset_root, "misc_assets/target_red2.png")
+        self.explosion = load_sprite(asset_root, "misc_assets/explosion1.png")
+        var bp = List[String]()
+        bp.append("water_backgrounds/water1.png")
+        bp.append("water_backgrounds/water2.png")
+        bp.append("water_backgrounds/water3.png")
+        bp.append("water_backgrounds/water4.png")
+        self.backgrounds = load_sprites(asset_root, bp)
+
+
 struct PlunderGame(Copyable, Movable):
     var rand_gen: RandGen
     var w: Int
@@ -429,3 +456,53 @@ struct PlunderGame(Copyable, Movable):
 
         self.episode_reward += self.reward
         return self.reward
+
+    # --- rendering (visual-approx; assets passed in) ---
+    def render_obs(
+        self, assets: PlunderAssets, res: Int = RES, ss: Int = OBS_SS
+    ) -> List[UInt8]:
+        return downscale(self.render(assets, res * ss), res * ss, res)
+
+    def render(self, assets: PlunderAssets, out_res: Int = RES) -> List[UInt8]:
+        var canvas = Canvas(out_res)
+        canvas.fill(0, 0, 0)
+
+        var view_dim = Float32(self.w if self.w > self.h else self.h)
+        var unit = Float32(out_res) / view_dim
+
+        # Water-surface background (panned by bg_pct_x).
+        ref bg = assets.backgrounds[self.background_index]
+        var bg_ar = Float32(bg.w) / Float32(bg.h)
+        var world_ar = Float32(self.w) / Float32(self.h)
+        var offset_x = self.bg_pct_x * (bg_ar - world_ar)
+        var main_w = Float32(self.w) * unit
+        canvas.blit(bg, main_w * (-offset_x), 0.0, main_w * (bg_ar / world_ar), Float32(self.h) * unit)
+
+        # Entities (panels, legend, ships, cannonballs, explosions).
+        for k in range(len(self.entities)):
+            ref e = self.entities[k]
+            var t = e.type
+            var ex = (e.x - e.rx) * unit
+            var ey = (view_dim - (e.y + e.ry)) * unit
+            var ew = 2 * e.rx * unit
+            var eh = 2 * e.ry * unit
+            if t == SHIP or t == TARGET_LEGEND:
+                canvas.blit(assets.ships[e.image_theme], ex, ey, ew, eh, e.is_reflected)
+            elif t == PANEL:
+                canvas.blit(assets.panel, ex, ey, ew, eh)
+            elif t == TARGET_BACKGROUND:
+                canvas.blit(assets.target_bg, ex, ey, ew, eh)
+            elif t == PLAYER_BULLET:
+                canvas.blit(assets.cannonball, ex, ey, ew, eh)
+            else:  # EXPLOSION
+                canvas.blit(assets.explosion, ex, ey, ew, eh)
+
+        # Cannon ship (agent).
+        var ax = (self.agent.x - self.agent.rx) * unit
+        var ay = (view_dim - (self.agent.y + self.agent.ry)) * unit
+        canvas.blit(
+            assets.ships[self.agent.image_theme], ax, ay,
+            2 * self.agent.rx * unit, 2 * self.agent.ry * unit,
+        )
+
+        return canvas.px.copy()
