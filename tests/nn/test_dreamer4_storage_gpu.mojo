@@ -36,7 +36,7 @@ def _absdiff(a: List[Scalar[DT]], b: List[Scalar[DT]], n: Int) -> Float64:
     return m
 
 
-def _tokenizer_parity(c: DeviceContext) raises -> Float64:
+def _tokenizer_parity(c: DeviceContext) raises -> Tuple[Float64, Float64]:
     comptime DP = 4
     comptime D = 8
     comptime NH = 2
@@ -68,7 +68,23 @@ def _tokenizer_parity(c: DeviceContext) raises -> Float64:
     var og = Tensor.alloc_gpu(c, N)
     tg.forward["gpu", BATCH](TensorRefs[1](ing), og, Optional(c))
     og.download(c)
-    return _absdiff(oc.data, og.data, N)
+    var d_out = _absdiff(oc.data, og.data, N)
+
+    # vjp: same grad_output → compare grad_inputs (dL/d patches) CPU↔GPU.
+    var goc = Tensor.alloc(N)
+    var gog = Tensor.alloc(N)
+    for i in range(N):
+        var v = Scalar[DT]((i % 4) - 2) * 0.1
+        goc.data[i] = v
+        gog.data[i] = v
+    gog.upload(c)
+    var gic = Tensor.alloc(N)
+    var gig = Tensor.alloc_gpu(c, N)
+    tc.vjp["cpu", BATCH](TensorRefs[1](inc), goc, TensorRefs[1](gic), None)
+    tg.vjp["gpu", BATCH](TensorRefs[1](ing), gog, TensorRefs[1](gig), Optional(c))
+    gig.download(c)
+    var d_gin = _absdiff(gic.data, gig.data, N)
+    return (d_out, d_gin)
 
 
 def _dynamics_parity(c: DeviceContext) raises -> Tuple[Float64, Float64, Float64]:
@@ -149,7 +165,8 @@ def main() raises:
     var c = DeviceContext()
 
     var dt = _tokenizer_parity(c)
-    print("  tokenizer forward  max|Δ| =", dt)
+    print("  tokenizer forward  max|Δ| =", dt[0])
+    print("  tokenizer grad_in  max|Δ| =", dt[1])
 
     var dd = _dynamics_parity(c)
     print("  dynamics forward   max|Δ| =", dd[0])
@@ -158,7 +175,8 @@ def main() raises:
 
     var tol = Scalar[DT](2e-3)
     var ok = (
-        dt < Float64(tol)
+        dt[0] < Float64(tol)
+        and dt[1] < Float64(tol)
         and dd[0] < Float64(tol)
         and dd[1] < Float64(tol)
         and dd[2] < Float64(tol)

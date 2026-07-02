@@ -32,6 +32,8 @@ from std.gpu.host import DeviceContext
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
+from mojo_rl.nn.core.module import Module
+from mojo_rl.nn.core.call import call_forward
 from mojo_rl.nn.optimizer.adam import Adam
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
 from mojo_rl.core.logger import Logger
@@ -39,7 +41,7 @@ from mojo_rl.core.logger import Logger
 from .agent import Dreamer4Agent
 from .tokenizer import Dreamer4Tokenizer
 from .frame_buffer import Dreamer4FrameBuffer
-from .recon_loss import masked_recon_loss
+from .recon_loss import masked_recon_loss, masked_recon_grad_gpu
 from .perceptual_loss import masked_recon_plus_perceptual_loss
 from .patchify import downscale_box, temporal_patchify
 from .imag_rl_loss import continue_bce_backward
@@ -171,6 +173,40 @@ def _build_shortcut_schedule[
             step_idx[bt] = Scalar[DT](Float64(stp))
     for i in range(B * T * ND):
         z0[i] = Scalar[DT](rng.gauss())
+
+
+@always_inline
+def _dptr(mut t: Tensor) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
+    """Raw device pointer of a device-resident Tensor (recon-grad kernel ABI)."""
+    return rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+        t.dev.value().unsafe_ptr()
+    )
+
+
+def _encode[
+    M: Module, //, TB: Int, TARGET: StaticString
+](
+    mut enc: M,
+    mut patches: Tensor,     # [TB * IN] host-filled
+    mut z_out: Tensor,       # [TB * OUT] latents (left on HOST for the agent)
+    dctx: Optional[DeviceContext],
+) raises:
+    """Encode patches → latents on TARGET. CPU: direct forward. GPU: upload the
+    host patches, run the device encoder, download the latents back to host (the
+    agent methods — act/acwm/imag — consume host-resident z)."""
+    comptime IN = M.IN_DIMS[0]
+    comptime OUT = M.OUT_DIM
+    comptime if TARGET == "cpu":
+        call_forward["cpu", TB](enc, TensorRefs[M.ARITY](patches), z_out, None)
+    else:
+        var c = dctx.value()
+        patches.ensure_gpu(c, TB * IN)
+        patches.upload(c)
+        z_out.ensure_gpu(c, TB * OUT)
+        call_forward["gpu", TB](
+            enc, TensorRefs[M.ARITY](patches), z_out, Optional(c)
+        )
+        z_out.download(c)
 
 
 def run_online_dreamer4[
@@ -318,27 +354,59 @@ def run_online_dreamer4[
             _mao(pix.data.unsafe_ptr()), _mao(frames.data.unsafe_ptr()),
             _mao(patches.data.unsafe_ptr()),
         )
-        topt.zero_grad["cpu"](tok, None)
-        tok.forward["cpu", BATCH](TensorRefs[1](patches), pred, None)
-        if perc_weight > 0.0:
-            # paper eq. 5: MSE + w·perceptual (frozen CIFAR backbone, BN-eval).
-            var lv = masked_recon_plus_perceptual_loss[
-                BATCH, 1, TGT, TGT, PATCH
-            ](
-                _mao(pred.data.unsafe_ptr()), _mao(patches.data.unsafe_ptr()),
-                tok.mae_mask_ptr(), backbone, perc_weight,
-                _mao(gpred.data.unsafe_ptr()), _mao(gperc.data.unsafe_ptr()),
+        comptime if DYN_TARGET == "cpu":
+            topt.zero_grad["cpu"](tok, None)
+            tok.forward["cpu", BATCH](TensorRefs[1](patches), pred, None)
+            if perc_weight > 0.0:
+                # paper eq. 5: MSE + w·perceptual (frozen CIFAR backbone, BN-eval).
+                var lv = masked_recon_plus_perceptual_loss[
+                    BATCH, 1, TGT, TGT, PATCH
+                ](
+                    _mao(pred.data.unsafe_ptr()),
+                    _mao(patches.data.unsafe_ptr()),
+                    tok.mae_mask_ptr(), backbone, perc_weight,
+                    _mao(gpred.data.unsafe_ptr()), _mao(gperc.data.unsafe_ptr()),
+                )
+                last_tok_loss = lv[0] + perc_weight * lv[1]
+            else:
+                last_tok_loss = masked_recon_loss[NP, DP, BATCH](
+                    _mao(pred.data.unsafe_ptr()),
+                    _mao(patches.data.unsafe_ptr()),
+                    tok.mae_mask_ptr(), _mao(gpred.data.unsafe_ptr()),
+                )
+            tok.vjp["cpu", BATCH](
+                TensorRefs[1](patches), gpred, TensorRefs[1](gin), None
             )
-            last_tok_loss = lv[0] + perc_weight * lv[1]
+            topt.step["cpu"](tok, None)
         else:
-            last_tok_loss = masked_recon_loss[NP, DP, BATCH](
-                _mao(pred.data.unsafe_ptr()), _mao(patches.data.unsafe_ptr()),
-                tok.mae_mask_ptr(), _mao(gpred.data.unsafe_ptr()),
+            # GPU tokenizer: masked-MSE recon (perceptual = Part 2, CPU-only for
+            # now — perc_weight is ignored on this path). Upload patches, device
+            # forward, device recon grad (keep flags come off mae_mask_ptr(),
+            # which returns the DEVICE ptr on GPU), device vjp, device step.
+            var c = dctx.value()
+            patches.ensure_gpu(c, BATCH * NP * DP)
+            patches.upload(c)
+            pred.ensure_gpu(c, BATCH * NP * DP)
+            gpred.ensure_gpu(c, BATCH * NP * DP)
+            gin.ensure_gpu(c, BATCH * NP * DP)
+            topt.zero_grad["gpu"](tok, dctx)
+            tok.forward["gpu", BATCH](
+                TensorRefs[1](patches), pred, Optional(c)
             )
-        tok.vjp["cpu", BATCH](
-            TensorRefs[1](patches), gpred, TensorRefs[1](gin), None
-        )
-        topt.step["cpu"](tok, None)
+            masked_recon_grad_gpu[NP, DP, BATCH](
+                _dptr(pred), _dptr(patches), tok.mae_mask_ptr(), _dptr(gpred), c
+            )
+            tok.vjp["gpu", BATCH](
+                TensorRefs[1](patches), gpred, TensorRefs[1](gin), Optional(c)
+            )
+            topt.step["gpu"](tok, dctx)
+            if s % 10 == 0:                     # proxy scalar for logging only
+                pred.download(c)
+                var sse: Float64 = 0.0
+                for i in range(BATCH * NP * DP):
+                    var d = Float64(pred.data[i]) - Float64(patches.data[i])
+                    sse += d * d
+                last_tok_loss = sse / Float64(BATCH * NP * DP)
         tok.advance_rng()
         if s % 10 == 0:
             print("  [tok]", s, "/", tok_pretrain_steps, " recon=", last_tok_loss)
@@ -395,7 +463,7 @@ def run_online_dreamer4[
         # (zero the unused tail frames so the encode is deterministic)
         for i in range(win_n * NP * DP, T * NP * DP):
             win_patch.data[i] = Scalar[DT](0.0)
-        tok.enc.forward["cpu", T](TensorRefs[1](win_patch), win_z, None)
+        _encode[T, DYN_TARGET](tok.enc, win_patch, win_z, dctx)
         # action history one-hots leading into frames 1..win_n-1
         for i in range(T * ADIM):
             act_hist[i] = Scalar[DT](0.0)
@@ -437,7 +505,7 @@ def run_online_dreamer4[
                 _mao(pix.data.unsafe_ptr()), _mao(frames.data.unsafe_ptr()),
                 _mao(patches.data.unsafe_ptr()),
             )
-            tok.enc.forward["cpu", BATCH](TensorRefs[1](patches), z1, None)
+            _encode[BATCH, DYN_TARGET](tok.enc, patches, z1, dctx)
             _build_shortcut_schedule[B, T, B_SELF, KMAX, EMAX, ND](
                 rng, _mao(sigma.data.unsafe_ptr()),
                 _mao(sig_idx.data.unsafe_ptr()),
@@ -528,7 +596,7 @@ def run_online_dreamer4[
                 _mao(pix.data.unsafe_ptr()), _mao(frames.data.unsafe_ptr()),
                 _mao(patches.data.unsafe_ptr()),
             )
-            tok.enc.forward["cpu", BATCH](TensorRefs[1](patches), z1, None)
+            _encode[BATCH, DYN_TARGET](tok.enc, patches, z1, dctx)
             for b in range(B):
                 for i in range(ND):
                     ctx.data[b * NCTX * ND + i] = z1.data[(b * T + 0) * ND + i]
@@ -586,9 +654,7 @@ def run_online_dreamer4[
                 )
                 for i in range(ewin_n * NP * DP, T * NP * DP):
                     ewin_patch.data[i] = Scalar[DT](0.0)
-                tok.enc.forward["cpu", T](
-                    TensorRefs[1](ewin_patch), ewin_z, None
-                )
+                _encode[T, DYN_TARGET](tok.enc, ewin_patch, ewin_z, dctx)
                 for i in range(T * ADIM):
                     eact_hist[i] = Scalar[DT](0.0)
                 for fr in range(1, ewin_n):

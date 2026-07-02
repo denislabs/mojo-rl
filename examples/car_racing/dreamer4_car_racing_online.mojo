@@ -10,9 +10,10 @@ against the frozen CIFAR ResNet-20 backbone trained by
 `examples/dreamer4/train_perceptual_backbone_cifar_gpu.mojo` — this file loads
 `dreamer4_perceptual_backbone.ckpt` from the working directory.
 
-Dynamics/heads/tokenizer all run on CPU (the online driver's WM train steps are
-the CPU path; `DYN_TARGET="gpu"` for the dynamics is a follow-up). The dims below
-are a modest starting point — scale D_DYN/HID/DEPTH/T/B up on a bigger box.
+DYN_TARGET="gpu": the dynamics transformer AND the tokenizer run on device (the
+heavy compute); the heads, task embedder, perceptual backbone, and the env stay on
+host. The dims below are a modest starting point — scale D_DYN/HID/DEPTH/T/B up on
+a bigger box.
 
 Run (NVIDIA): pixi run -e nvidia mojo run -I . examples/car_racing/dreamer4_car_racing_online.mojo
 Run (Apple):  pixi run -e apple  mojo run -I . examples/car_racing/dreamer4_car_racing_online.mojo
@@ -90,9 +91,9 @@ def main() raises:
     var env = CarRacingMB[DT, PIXEL_OBS=True, PIX_RES=IMG]()
 
     # DYN_TARGET="gpu": the dynamics transformer (the heavy WM compute) is
-    # device-resident; heads + tokenizer + backbone stay on host. The agent make
-    # target is "cpu" (heads on host) but the ctx is threaded so agent.dyn is
-    # built on device.
+    # device-resident; heads + task-embedder + backbone stay on host. The agent
+    # make target is "cpu" (heads on host) but the ctx is threaded so agent.dyn is
+    # built on device. The tokenizer is made on GPU separately (below).
     var agent = Dreamer4Agent[
         DSP, NSP, D_DYN, NH, T, NREG, HID_DYN, DEPTH_DYN, KMAX,
         NAGENT, NTASK, HHID, NACT, NBINS, NMTP, B, B_SELF,
@@ -101,7 +102,7 @@ def main() raises:
 
     var tok = Dreamer4Tokenizer[
         DP, TOK_D, TOK_NH, T, NSP, NP, DSP, TOK_HID, TOK_DEPTH, DROP, DROP, 7
-    ].make["cpu", Xavier](None)
+    ].make["gpu", Xavier](Optional(ctx))       # tokenizer runs on device too
 
     # Frozen perceptual backbone (CIFAR ResNet-20). Trained separately; loaded
     # here from the working directory.
@@ -124,11 +125,11 @@ def main() raises:
 
     print("starting online training...")
     # FIRST-RUN / smoke scale: reaches Stage 2 + greedy-eval quickly so you can
-    # confirm it works before a long run. The DYNAMICS runs on GPU (DYN_TARGET);
-    # the tokenizer + perceptual backbone stay on CPU and the env is stepped one
-    # at a time, so those are still the CPU-bound parts — the prints show live
-    # progress. For real training bump warmup≈5_000, tok_pretrain≈3_000,
-    # total_env_steps≈1_000_000, eval_every≈20_000.
+    # confirm it works before a long run. The dynamics + tokenizer run on GPU; the
+    # perceptual backbone (unused at perc_weight=0) and the single-env stepping are
+    # the remaining CPU-bound parts — the prints show live progress. For real
+    # training bump warmup≈5_000, tok_pretrain≈3_000, total_env_steps≈1_000_000,
+    # eval_every≈20_000.
     var summary = run_online_dreamer4[
         IN_CH=IN_CH, IMG=IMG, TGT=TGT, PATCH=PATCH, TNP=NP, CAP=CAP,
         TOK_D=TOK_D, TOK_NH=TOK_NH, TOK_HID=TOK_HID, TOK_DEPTH=TOK_DEPTH,

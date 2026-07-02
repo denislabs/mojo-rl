@@ -165,7 +165,7 @@ def main() raises:
 
     var tok = Dreamer4Tokenizer[
         DP, TOK_D, TOK_NH, T, NSP, NP, DSP, TOK_HID, TOK_DEPTH, 0.5, 0.5, 7
-    ].make["cpu", Xavier](None)
+    ].make["gpu", Xavier](Optional(c))         # tokenizer on device too
 
     var backbone = CifarBackbone[TGT, TGT].make["cpu", Xavier](None)
 
