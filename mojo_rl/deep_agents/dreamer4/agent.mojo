@@ -405,6 +405,47 @@ struct Dreamer4Agent[
             TensorRefs[1](fin_t), go_t, TensorRefs[1](gi_t), None
         )
 
+    @staticmethod
+    def _dyn_fwd_gpu[NB: Int](
+        mut dyn: Self.DYN, read inp: List[Scalar[DT]], mut out: List[Scalar[DT]],
+        c: DeviceContext,
+    ) raises:
+        # GPU sibling of _dyn_fwd: upload input → device forward → download the
+        # flow output. Leaves dyn's device caches (grid/tf_out/agent_out) for a
+        # following _dyn_vjp_gpu / an h_t D2H read.
+        comptime ND = Self.ND
+        var in_t = Tensor.alloc(NB * ND)
+        for i in range(NB * ND):
+            in_t.data[i] = inp[i]
+        in_t.upload(c)
+        var out_t = Tensor.alloc_gpu(c, NB * ND)
+        dyn.forward["gpu", NB](TensorRefs[1](in_t), out_t, Optional(c))
+        out_t.download(c)
+        for i in range(NB * ND):
+            out[i] = out_t.data[i]
+
+    @staticmethod
+    def _dyn_vjp_gpu[NB: Int](
+        mut dyn: Self.DYN, read fin: List[Scalar[DT]], read go: List[Scalar[DT]],
+        c: DeviceContext,
+    ) raises:
+        # GPU sibling of _dyn_vjp: forward_input `fin` + grad_output `go` uploaded
+        # to device, dyn.vjp["gpu"] accumulates the dynamics param grads on device
+        # (grad wrt input discarded). Matches the CPU forward_input semantics.
+        comptime ND = Self.ND
+        var fin_t = Tensor.alloc(NB * ND)
+        for i in range(NB * ND):
+            fin_t.data[i] = fin[i]
+        fin_t.upload(c)
+        var go_t = Tensor.alloc(NB * ND)
+        for i in range(NB * ND):
+            go_t.data[i] = go[i]
+        go_t.upload(c)
+        var gi_t = Tensor.alloc_gpu(c, NB * ND)
+        dyn.vjp["gpu", NB](
+            TensorRefs[1](fin_t), go_t, TensorRefs[1](gi_t), Optional(c)
+        )
+
     # ── eval accessors ──────────────────────────────────────────────────
     def agent_out_ptr(self) -> UnsafePointer[Scalar[DT], MutAnyOrigin]:
         """Return h_t from the last forward (for inspection / eval heads)."""
@@ -771,6 +812,119 @@ struct Dreamer4Agent[
         #    grads; then the task-embedder grad.
         self.dyn.set_grad_h(ghp, Self.BF)
         Self._dyn_vjp[Self.BF](self.dyn, self.bc_in, self.gzero)
+        self.te.accumulate_grad["cpu", Self.B, Self.T](
+            self.dyn.grad_agent_in_ptr_cpu(), None
+        )
+
+        return Tuple(loss_v, loss_bc)
+
+    def acwm_train_step_gpu(
+        mut self,
+        z1: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        z0: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        sigma: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        sigma_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        step_idx: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        do_boot: Bool,
+        task_ids: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        actions: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        rewards: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        bins: UnsafePointer[Scalar[DT], MutAnyOrigin],
+        dctx: DeviceContext,
+        policy_weight: Scalar[DT] = Scalar[DT](1.0),
+        reward_weight: Scalar[DT] = Scalar[DT](1.0),
+    ) raises -> Tuple[Float64, Float64]:
+        """GPU-dynamics counterpart of `acwm_train_step` (DYN_TARGET=\"gpu\"): the
+        three shortcut-forcing forwards + both vjps run the transformer ON DEVICE;
+        the heads (ph/rh) + task embedder stay on host, reading h_t / feeding the
+        agent-token grad across the device boundary (D2H). Grads are bit-parity
+        with the CPU path (see test_dreamer4_acwm_gpu_parity)."""
+        comptime assert Self.DYN_TARGET == "gpu", (
+            "acwm_train_step_gpu is the GPU world-model path (DYN_TARGET=\"gpu\")"
+        )
+        comptime assert Self.ADIM == Self.NACT, (
+            "acwm_train_step_gpu needs ADIM = NACT (one-hot action conditioning)"
+        )
+        # Pre-size ALL dynamics GPU scratch to the FULL batch BF up front. With
+        # do_boot=True the bootstrap half-passes run at the smaller self-row batch
+        # BS=B_SELF·T first; the device/host staging buffers only grow (never
+        # shrink), so sizing to BF now prevents a later BF copy from overflowing a
+        # BS-sized staging buffer ("Copy size exceeds Metal buffer length").
+        self.dyn._ensure_scratch_gpu(Self.BF, dctx)
+        var agp = _mao(self.agent_in.unsafe_ptr())
+        var gzh = _mao(self.grad_zhat.unsafe_ptr())
+        var zh = _mao(self.zhat.unsafe_ptr())
+        var ghp = _mao(self.grad_h.unsafe_ptr())
+        var atk = _mao(self.ac_tok.unsafe_ptr())
+        var amk = _mao(self.ac_mask.unsafe_ptr())
+        var rsh = _mao(self.rew_shift.unsafe_ptr())
+
+        # 0. shifted action tokens + transition rewards (identical to CPU)
+        for i in range(Self.BF * Self.ADIM):
+            self.ac_tok[i] = Scalar[DT](0.0)
+        for b in range(Self.B):
+            self.rew_shift[b * Self.T + 0] = Scalar[DT](0.0)
+            for f in range(1, Self.T):
+                var a_prev = Int(Float64(actions[b * Self.T + f - 1]) + 0.5)
+                self.ac_tok[(b * Self.T + f) * Self.ADIM + a_prev] = Scalar[DT](
+                    1.0
+                )
+                self.rew_shift[b * Self.T + f] = rewards[b * Self.T + f - 1]
+
+        # 1. task embeddings → agent token input (host)
+        self.te.embed_into["cpu", Self.B, Self.T](task_ids, agp, None)
+
+        # 2. ACTION-CONDITIONED shortcut-forcing video loss ON DEVICE (FWD="gpu")
+        var loss_v = dynamics_pretrain_loss[
+            Self.DYN, Self.B, Self.T, Self.B_SELF, Self.NSP, Self.DSP,
+            Self.KMAX, "gpu", Self.ADIM, Self.AGD,
+        ](
+            self.dyn, z1, z0, sigma, sigma_idx, step_idx, do_boot, gzh, zh,
+            ctx=Optional(dctx), actions=atk, act_mask=amk, agent_in=agp,
+        )
+
+        # main-pass input z̃ (the video vjp forward_input)
+        for bt in range(Self.BF):
+            var s = Float64(sigma[bt])
+            for i in range(Self.ND):
+                var idx = bt * Self.ND + i
+                self.ztil[idx] = Scalar[DT](
+                    (1.0 - s) * Float64(z0[idx]) + s * Float64(z1[idx])
+                )
+
+        # 3. video vjp ONLY (zero the agent-token grad), on device
+        for i in range(Self.BF * Self.AGD):
+            self.grad_h[i] = Scalar[DT](0.0)
+        self.dyn.set_grad_h(ghp, Self.BF)
+        Self._dyn_vjp_gpu[Self.BF](self.dyn, self.ztil, self.grad_zhat, dctx)
+
+        # 4. dedicated near-clean forward (σ_bc) WITH action tokens, on device
+        self.dyn.set_indices(
+            _mao(self.clean_sig.unsafe_ptr()),
+            _mao(self.clean_step.unsafe_ptr()),
+            Self.BF,
+        )
+        self.dyn.set_actions(atk, amk, Self.BF)
+        self.dyn.set_agent_in(agp, Self.BF)
+        var sig_bc = Float64(Self.KMAX - 1) / Float64(Self.KMAX)
+        for i in range(Self.BF * Self.ND):
+            self.bc_in[i] = Scalar[DT](
+                sig_bc * Float64(z1[i]) + (1.0 - sig_bc) * Float64(z0[i])
+            )
+        Self._dyn_fwd_gpu[Self.BF](self.dyn, self.bc_in, self.zhat, dctx)
+
+        # 5. BC loss on the clean h_t — D2H the agent tokens for the CPU heads.
+        self.dyn.sync_agent_out(dctx)
+        var loss_bc = self._run_bc_loss(
+            self.dyn.agent_out_ptr_cpu(), actions, rsh, bins,
+            policy_weight, reward_weight,
+        )
+
+        # 6. BC vjp through the clean forward (zero flow grad) → dyn + act-MLP
+        #    grads; then the task-embedder grad (D2H the agent-input grad).
+        self.dyn.set_grad_h(ghp, Self.BF)
+        Self._dyn_vjp_gpu[Self.BF](self.dyn, self.bc_in, self.gzero, dctx)
+        self.dyn.sync_grad_agent_in(dctx)
         self.te.accumulate_grad["cpu", Self.B, Self.T](
             self.dyn.grad_agent_in_ptr_cpu(), None
         )
