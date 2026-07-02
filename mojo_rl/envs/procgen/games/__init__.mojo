@@ -51,9 +51,12 @@ from .miner_env import MinerEnv
 from .miner_gym_env import MinerGymEnv, MinerState, MinerAction
 from .starpilot import (
     StarpilotGame,
+    StarpilotAssets,
     FLYER,
     METEOR,
     CLOUD,
     TURRET,
     FAST_FLYER,
 )
+from .starpilot_env import StarpilotEnv
+from .starpilot_gym_env import StarpilotGymEnv, StarpilotState, StarpilotAction

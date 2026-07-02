@@ -15,6 +15,8 @@ from std.memory import ArcPointer
 
 from ..core.entity import Entity
 from ..core.randgen import RandGen
+from ..core.assets import Sprite, load_sprite, load_sprites
+from ..core.rasterizer import Canvas, RES, downscale
 from ..core.object_ids import PLAYER, EXPLOSION
 
 # Starpilot object ids (starpilot.cpp).
@@ -43,6 +45,74 @@ comptime WORLD = 16
 comptime DIST_EASY = 0
 comptime DIST_HARD = 1
 comptime DIST_EXTREME = 2
+comptime RENDER_EPS: Float32 = 0.02
+comptime OBS_SS = 4
+
+
+struct StarpilotAssets(Movable):
+    """Read-only sprite set (shared via ArcPointer; passed into render())."""
+
+    var ship: Sprite
+    var bullets: List[Sprite]  # [BULLET_PLAYER, BULLET2, BULLET3] (type-1)
+    var flyers: List[Sprite]  # 7 themes (FLYER / FAST_FLYER)
+    var meteors: List[Sprite]  # 8 themes
+    var clouds: List[Sprite]  # 9 themes
+    var turrets: List[Sprite]  # 2 themes
+    var finish: List[Sprite]  # 4 themes
+    var explosion: Sprite
+    var backgrounds: List[Sprite]  # space_backgrounds (13)
+
+    def __init__(out self, asset_root: String) raises:
+        self.ship = load_sprite(asset_root, "misc_assets/playerShip2_blue.png")
+        var bp = List[String]()
+        bp.append("misc_assets/towerDefense_tile295.png")
+        bp.append("misc_assets/towerDefense_tile296.png")
+        bp.append("misc_assets/towerDefense_tile297.png")
+        self.bullets = load_sprites(asset_root, bp)
+        var fp = List[String]()
+        for i in range(1, 8):
+            fp.append("misc_assets/spaceShips_00" + String(i) + ".png")
+        self.flyers = load_sprites(asset_root, fp)
+        var mp = List[String]()
+        for i in range(1, 5):
+            mp.append("misc_assets/spaceMeteors_00" + String(i) + ".png")
+        for i in range(1, 5):
+            mp.append("misc_assets/meteorGrey_big" + String(i) + ".png")
+        self.meteors = load_sprites(asset_root, mp)
+        var cp = List[String]()
+        for i in range(1, 10):
+            cp.append("misc_assets/spaceEffect" + String(i) + ".png")
+        self.clouds = load_sprites(asset_root, cp)
+        var tp = List[String]()
+        tp.append("misc_assets/spaceStation_018.png")
+        tp.append("misc_assets/spaceStation_019.png")
+        self.turrets = load_sprites(asset_root, tp)
+        var finp = List[String]()
+        for i in range(1, 5):
+            finp.append("misc_assets/spaceRockets_00" + String(i) + ".png")
+        self.finish = load_sprites(asset_root, finp)
+        self.explosion = load_sprite(asset_root, "misc_assets/explosion1.png")
+        var names: List[String] = [
+            "deep_space_01", "spacegen_01", "milky_way_01", "ez_space_lite_01",
+            "meyespace_v1_01", "eye_nebula_01", "deep_sky_01", "space_nebula_01",
+            "Background-1", "Background-2", "Background-3", "Background-4",
+            "parallax-space-backgound",
+        ]
+        var sbp = List[String]()
+        for i in range(len(names)):
+            sbp.append("space_backgrounds/" + names[i] + ".png")
+        self.backgrounds = load_sprites(asset_root, sbp)
+
+
+def _finish_aspect(theme: Int) -> Float32:
+    # spaceRockets_001..004 width/height (match_aspect_ratio for the finish line).
+    if theme == 0:
+        return Float32(122.0 / 374.0)
+    if theme == 1:
+        return Float32(157.0 / 309.0)
+    if theme == 2:
+        return Float32(118.0 / 315.0)
+    return Float32(136.0 / 369.0)
 
 
 def _theme_count(type: Int) -> Int:
@@ -287,7 +357,8 @@ struct StarpilotGame(Copyable, Movable):
         self._sort_spawners_desc()  # by spawn_time DESC (stable) → pop back to activate
 
         self.agent.rotation = PI / 2
-        self.agent.image_theme = self.rand_gen.randn(NUM_SHIP_THEMES)
+        # choose_random_theme(agent): the player has 1 sprite → randn(1) (==0).
+        self.agent.image_theme = self.rand_gen.randn(1)
 
     def _sort_spawners_desc(mut self):
         # Stable insertion sort by spawn_time descending (ties keep generation
@@ -558,8 +629,69 @@ struct StarpilotGame(Copyable, Movable):
                 2.0, Float32(self.h) / 2, FINISH_LINE,
             )
             fin.image_theme = ftheme
+            # match_aspect_ratio(finish, match_width=false): rx = ry * aspect.
+            fin.rx = fin.ry * _finish_aspect(ftheme)
             fin.x = Float32(self.w) + fin.rx
             self.entities.append(fin^)
 
         self.episode_reward += self.reward
         return self.reward
+
+    # --- rendering (visual-approx; assets passed in) ---
+    def render_obs(
+        self, assets: StarpilotAssets, res: Int = RES, ss: Int = OBS_SS
+    ) -> List[UInt8]:
+        return downscale(self.render(assets, res * ss), res * ss, res)
+
+    def render(self, assets: StarpilotAssets, out_res: Int = RES) -> List[UInt8]:
+        var canvas = Canvas(out_res)
+        canvas.fill(0, 0, 0)
+
+        # Space background: tile wide + slow horizontal parallax scroll by cur_time.
+        ref bg = assets.backgrounds[self.background_index]
+        var bg_ar = Float32(bg.w) / Float32(bg.h)
+        var bg_w = Float32(out_res) * bg_ar
+        var scroll = Float32(self.cur_time) * 2.0
+        var start = -(scroll % bg_w) - bg_w
+        var bx = start
+        while bx < Float32(out_res):
+            canvas.blit(bg, bx, 0.0, bg_w, Float32(out_res))
+            bx += bg_w
+
+        # Camera: whole world (center_agent=false, x_off==y_off==0).
+        var view_dim = Float32(self.w if self.w > self.h else self.h)
+        var unit = Float32(out_res) / view_dim
+
+        # Entities (enemies, bullets, explosions, finish).
+        for k in range(len(self.entities)):
+            ref e = self.entities[k]
+            var t = e.type
+            var th = e.image_theme
+            var ex = (e.x - e.rx) * unit
+            var ey = (view_dim - (e.y + e.ry)) * unit
+            var ew = 2 * e.rx * unit
+            var eh = 2 * e.ry * unit
+            var refl = e.vx > 0.0 and (t == FLYER or t == FAST_FLYER)
+            if t == BULLET_PLAYER or t == BULLET2 or t == BULLET3:
+                canvas.blit(assets.bullets[t - 1], ex, ey, ew, eh)
+            elif t == FLYER or t == FAST_FLYER:
+                canvas.blit(assets.flyers[th], ex, ey, ew, eh, refl)
+            elif t == METEOR:
+                canvas.blit(assets.meteors[th], ex, ey, ew, eh)
+            elif t == CLOUD:
+                canvas.blit(assets.clouds[th], ex, ey, ew, eh)
+            elif t == TURRET:
+                canvas.blit(assets.turrets[th], ex, ey, ew, eh)
+            elif t == FINISH_LINE:
+                canvas.blit(assets.finish[th], ex, ey, ew, eh)
+            else:  # EXPLOSION
+                canvas.blit(assets.explosion, ex, ey, ew, eh)
+
+        # Player ship.
+        var ax = (self.agent.x - self.agent.rx) * unit
+        var ay = (view_dim - (self.agent.y + self.agent.ry)) * unit
+        canvas.blit(
+            assets.ship, ax, ay, 2 * self.agent.rx * unit, 2 * self.agent.ry * unit
+        )
+
+        return canvas.px.copy()
