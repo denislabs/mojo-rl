@@ -49,3 +49,11 @@ from .leaper_gym_env import LeaperGymEnv, LeaperState, LeaperAction
 from .miner import MinerGame, MinerAssets, BOULDER, DIAMOND, EXIT, DIRT
 from .miner_env import MinerEnv
 from .miner_gym_env import MinerGymEnv, MinerState, MinerAction
+from .starpilot import (
+    StarpilotGame,
+    FLYER,
+    METEOR,
+    CLOUD,
+    TURRET,
+    FAST_FLYER,
+)
