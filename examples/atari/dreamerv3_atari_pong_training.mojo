@@ -71,9 +71,15 @@ comptime VU = 256
 comptime PU = 256
 comptime BINS = 255
 comptime B = 16
-comptime T = 16
+comptime T = 32  # training-sequence length (BPTT horizon). Reference uses 64;
+# 16 was the first-run value — 32 doubles the deter-chain credit horizon at 2×
+# WM-step cost. Raise to 64 if step time allows.
 comptime T_IMAG = 15
-comptime CAP = 50_000  # pixel replay: CAP×36864×4 B ≈ 7.4 GB — tune to HW
+# GPU-resident pixel replay: CAP×OBS×4 B of VRAM (≈7.4 GB either way below).
+# Bigger CAP protects rare-state coverage (paddle pinned at an edge, ball-at-
+# paddle events) from circular eviction — the reference keeps 5M transitions
+# uniform. At C=1 the same VRAM budget affords 4× the horizon.
+comptime CAP = 200_000 if C == 1 else 50_000
 
 comptime FEATIN = STOCH * CLASSES + DETER
 comptime ENC = DreamerEncoderCNN[C, IMG, IMG, BASE, TOKEN, SwishOp]

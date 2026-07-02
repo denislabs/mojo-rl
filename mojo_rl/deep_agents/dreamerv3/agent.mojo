@@ -32,7 +32,7 @@ agent.py` facade shape (select_action / select_greedy_action / record /
 train_step).
 """
 
-from std.math import tanh
+from std.math import tanh, log
 from std.memory import alloc
 from std.random import random_float64
 from std.gpu.host import DeviceContext
@@ -48,7 +48,7 @@ from mojo_rl.deep_agents.dreamerv3.nets import DreamerEncoder, DreamerDecoder
 from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
 from mojo_rl.deep_agents.dreamerv3.dists import bounded_std
 from mojo_rl.deep_agents.dreamerv3.dists_discrete import (
-    cat_sample, cat_argmax, UNIMIX,
+    cat_sample, cat_argmax, cat_softmax_mix, UNIMIX,
 )
 
 
@@ -106,6 +106,14 @@ struct DreamerV3Agent[
     var belief_stoch: Tensor   # [SC]
     var last_action: Tensor    # [ACT]
     var action_scale: Scalar[DT]
+    # Acting-policy telemetry (discrete, explore-time only): running sum of the
+    # TRUE per-state entropy of the unimix-mixed categorical + sampled-action
+    # histogram since the last log window. The policy-collapse detector: a
+    # collapsed actor shows entropy → ~0.06 nats (the unimix floor) and one
+    # act_hist bin taking ~99% of the mass; uniform over ACT = ln(ACT) nats.
+    var ent_acc: Scalar[DT]
+    var ent_n: Int
+    var act_hist: List[Int]    # [ACT]
 
     @staticmethod
     def make(
@@ -129,6 +137,9 @@ struct DreamerV3Agent[
             belief_stoch=Tensor.alloc(Self.SC),
             last_action=Tensor.alloc(Self.ACT),
             action_scale=action_scale,
+            ent_acc=Scalar[DT](0.0),
+            ent_n=0,
+            act_hist=List[Int](length=Self.ACT, fill=0),
         )
         a.reset_belief()
         return a^
@@ -301,6 +312,22 @@ struct DreamerV3Agent[
             # loss curves at the `le` cadence without paying the eval cost. Names
             # follow the monitoring tool's KNOWN_GROUPS panels.
             if step > 0 and step % le == 0:
+                # acting-policy telemetry over the last log window (explore-time
+                # sampled actions): mean true entropy (nats; uniform = ln ACT ≈
+                # 1.79 for Pong's 6, unimix floor ≈ 0.06) + action fractions.
+                var ent_mean = (
+                    self.ent_acc / Scalar[DT](self.ent_n)
+                    if self.ent_n > 0 else Scalar[DT](-1.0)
+                )
+                var hist_n = 0
+                for a in range(ACTL):
+                    hist_n += self.act_hist[a]
+                var frac_max = Float64(0.0)
+                for a in range(ACTL):
+                    if hist_n > 0:
+                        var f = Float64(self.act_hist[a]) / Float64(hist_n)
+                        if f > frac_max:
+                            frac_max = f
                 if verbose and step % print_every == 0:
                     print(
                         "  step", step, " WM=", self.last_wm_loss(),
@@ -308,6 +335,8 @@ struct DreamerV3Agent[
                         " rew_pred=", self.dbg_rew_pred(),
                         " val_m=", self.dbg_val_mean(),
                         " con_m=", self.dbg_con_mean(),
+                        " pi_ent=", ent_mean,
+                        " act_max=", frac_max,
                     )
                 comptime if L.ENABLED:
                     if logger:
@@ -325,11 +354,28 @@ struct DreamerV3Agent[
                         )
                         lg[].log_scalar("return_scale", Float64(self.dbg_rscale()), step)
                         lg[].log_scalar("pi_scale", Float64(self.dbg_rscale()), step)
+                        if self.ent_n > 0:
+                            lg[].log_scalar(
+                                "policy_entropy", Float64(ent_mean), step
+                            )
+                        if hist_n > 0:
+                            lg[].log_scalar("act_frac_max", frac_max, step)
+                            for a in range(ACTL):
+                                lg[].log_scalar(
+                                    String("act_frac_") + String(a),
+                                    Float64(self.act_hist[a]) / Float64(hist_n),
+                                    step,
+                                )
                         lg[].log_scalar(
                             "train_steps", Float64(self.train_steps_done()), step
                         )
                         if step % eval_every != 0:
                             lg[].flush()
+                # reset the telemetry window
+                self.ent_acc = Scalar[DT](0.0)
+                self.ent_n = 0
+                for a in range(ACTL):
+                    self.act_hist[a] = 0
 
             # periodic greedy eval + episode-return metrics (expensive: runs
             # eval_episodes greedy rollouts) — coarser than the WM/AC log cadence.
@@ -987,6 +1033,19 @@ struct DreamerV3Agent[
             if explore:
                 var u01 = Scalar[DT](random_float64())
                 k = cat_sample[ACTD](_hp(pol), 0, UNIMIX, u01)
+                # acting-policy telemetry: accumulate the true entropy of the
+                # unimix-mixed categorical at this state + the sampled action.
+                var sm = alloc[Scalar[DT]](ACTD)
+                var pp = alloc[Scalar[DT]](ACTD)
+                cat_softmax_mix[ACTD](_hp(pol), 0, UNIMIX, sm, pp)
+                var ent = Scalar[DT](0.0)
+                for m in range(ACTD):
+                    ent += -pp[m] * log(pp[m])
+                sm.free()
+                pp.free()
+                self.ent_acc += ent
+                self.ent_n += 1
+                self.act_hist[k] += 1
             else:
                 k = cat_argmax[ACTD](_hp(pol), 0)
             for a in range(ACTD):
