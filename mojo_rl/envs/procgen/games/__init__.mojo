@@ -76,3 +76,7 @@ from .bossfight import BossfightGame, BossfightAssets
 # `mojo_rl.envs.procgen.games.bossfight` directly.
 from .bossfight_env import BossfightEnv
 from .bossfight_gym_env import BossfightGymEnv, BossfightState, BossfightAction
+from .coinrun import CoinrunGame
+# NOTE: coinrun's generic object ids (GOAL/SAW/ENEMY/WALL_MID/CRATE/...) are NOT
+# re-exported here — GOAL/CRATE/etc collide with other games'. Import them from
+# `mojo_rl.envs.procgen.games.coinrun` directly.
