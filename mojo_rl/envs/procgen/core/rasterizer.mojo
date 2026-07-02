@@ -65,6 +65,38 @@ struct Canvas(Copyable, Movable):
             self.px[i * 3 + 1] = g
             self.px[i * 3 + 2] = b
 
+    def fill_rect(
+        mut self,
+        dx0: Float32,
+        dy0: Float32,
+        dw: Float32,
+        dh: Float32,
+        r: UInt8,
+        g: UInt8,
+        b: UInt8,
+    ):
+        """Opaque solid-color rect (for `draw_grid_obj` colored squares, e.g.
+        chaser's green orbs)."""
+        var res = self.res
+        var x_start = Int(floor(dx0))
+        var y_start = Int(floor(dy0))
+        var x_end = Int(floor(dx0 + dw))
+        var y_end = Int(floor(dy0 + dh))
+        if x_start < 0:
+            x_start = 0
+        if y_start < 0:
+            y_start = 0
+        if x_end > res:
+            x_end = res
+        if y_end > res:
+            y_end = res
+        for py in range(y_start, y_end):
+            for px in range(x_start, x_end):
+                var off = (py * res + px) * 3
+                self.px[off + 0] = r
+                self.px[off + 1] = g
+                self.px[off + 2] = b
+
     @always_inline
     def blit(
         mut self,

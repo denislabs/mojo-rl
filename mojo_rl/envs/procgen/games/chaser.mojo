@@ -14,10 +14,13 @@ physics (enemy AI, orb pickup, completion) + rendering land in P1/P2.
 """
 
 from std.math import floor, ceil, sqrt
+from std.memory import ArcPointer
 
 from ..core.entity import Entity
 from ..core.randgen import RandGen
 from ..core.mazegen import MazeGen, MAZE_OFFSET
+from ..core.assets import Sprite, load_sprite
+from ..core.rasterizer import Canvas, RES, downscale
 from ..core.object_ids import SPACE, WALL_OBJ, PLAYER, INVALID_OBJ, INVALID_IDX
 
 
@@ -42,16 +45,55 @@ comptime ORB = 1002
 
 comptime ORB_REWARD: Float32 = 0.04
 comptime COMPLETION_BONUS: Float32 = 10.0
+comptime ORB_DIM: Float32 = 0.3  # green orb square = 0.3 of the cell (chaser.cpp)
 comptime A_R: Float32 = 0.4  # base agent radius used for the base-reset spawn draws
 comptime BG_COUNT = 1  # topdown_simple_backgrounds (resources.cpp) → randn(1) == 0
 comptime EAT_TIMEOUT = 75
 comptime EGG_TIMEOUT = 50
 comptime MAXSPEED: Float32 = 0.5
+comptime RENDER_EPS: Float32 = 0.02
+comptime OBS_SS = 4  # observation supersample factor (render ss·res → box-avg → res)
 
 # DistributionMode (game.h): chaser supports Easy / Hard / Extreme.
 comptime DIST_EASY = 0
 comptime DIST_HARD = 1
 comptime DIST_EXTREME = 2
+
+
+struct ChaserAssets(Movable):
+    """Read-only sprite set for chaser (loaded once, shared across envs via
+    `ArcPointer[ChaserAssets]`). Passed into `ChaserGame.render` so the game
+    struct itself stays asset-free (keeps the reset/step parity tests fast)."""
+
+    var wall: Sprite  # MAZE_WALL block
+    var crystal: Sprite  # LARGE_ORB
+    var egg: Sprite  # ENEMY_EGG
+    var enemy_walk: Sprite  # ENEMY when edible (ENEMY_WEAK)
+    var enemy_fly: List[Sprite]  # ENEMY normal (enemyFlying_1/2/3)
+    var player: Sprite  # PLAYER
+    var bg: Sprite  # floortiles (topdown_simple_backgrounds)
+
+    def __init__(out self, asset_root: String) raises:
+        self.wall = load_sprite(asset_root, "misc_assets/tileStone_slope.png")
+        self.crystal = load_sprite(asset_root, "misc_assets/yellowCrystal.png")
+        self.egg = load_sprite(asset_root, "misc_assets/enemySpikey_1b.png")
+        self.enemy_walk = load_sprite(
+            asset_root, "misc_assets/enemyWalking_1b.png"
+        )
+        self.enemy_fly = List[Sprite]()
+        self.enemy_fly.append(
+            load_sprite(asset_root, "misc_assets/enemyFlying_1.png")
+        )
+        self.enemy_fly.append(
+            load_sprite(asset_root, "misc_assets/enemyFlying_2.png")
+        )
+        self.enemy_fly.append(
+            load_sprite(asset_root, "misc_assets/enemyFlying_3.png")
+        )
+        self.player = load_sprite(
+            asset_root, "misc_assets/enemyFloating_1b.png"
+        )
+        self.bg = load_sprite(asset_root, "topdown_backgrounds/floortiles.png")
 
 
 struct ChaserGame(Copyable, Movable):
@@ -515,3 +557,85 @@ struct ChaserGame(Copyable, Movable):
 
         self.episode_reward += self.reward
         return self.reward
+
+    # --- rendering (visual-approx; assets passed in so the game stays pure) ---
+    def _enemy_sprite_index(self) -> Int:
+        # image_for_type(ENEMY) when not edible: rem=(cur_time/2)%4; 3→1 (0,1,2,2).
+        var rem = (self.cur_time // 2) % 4
+        if rem == 3:
+            rem = 1
+        return rem
+
+    def render_obs(
+        self, assets: ChaserAssets, res: Int = RES, ss: Int = OBS_SS
+    ) -> List[UInt8]:
+        return downscale(self.render(assets, res * ss), res * ss, res)
+
+    def render(self, assets: ChaserAssets, out_res: Int = RES) -> List[UInt8]:
+        var canvas = Canvas(out_res)
+        canvas.fill(0, 0, 0)
+
+        # Camera (prepare_for_drawing, center_agent=false, square world):
+        # visibility = maze_dim → x_off == y_off == 0.
+        var view_dim = Float32(self.maze_dim)
+        var unit = Float32(out_res) / view_dim
+
+        # Background (floortiles, scaled to cover the world, panned by bg_pct_x).
+        var main_w = Float32(self.w) * unit
+        var main_h = Float32(self.h) * unit
+        var main_y = (view_dim - Float32(self.h)) * unit
+        var bg_ar = Float32(assets.bg.w) / Float32(assets.bg.h)
+        var world_ar = Float32(self.w) / Float32(self.h)
+        var offset_x = self.bg_pct_x * (bg_ar - world_ar)
+        canvas.blit(
+            assets.bg, main_w * (-offset_x), main_y, main_w * (bg_ar / world_ar), main_h
+        )
+
+        # Grid objects: walls (block sprite) + orbs (green center square).
+        for x in range(self.w):
+            for y in range(self.h):
+                var t = self._get_obj(x, y)
+                if t == SPACE or t == INVALID_OBJ:
+                    continue
+                var sx = (Float32(x) - RENDER_EPS) * unit
+                var sy = (view_dim - Float32(y + 1) - RENDER_EPS) * unit
+                var sz = (1.0 + 2 * RENDER_EPS) * unit
+                if t == MAZE_WALL:
+                    canvas.blit(assets.wall, sx, sy, sz, sz)
+                elif t == ORB:
+                    var inset = sz * (1.0 - ORB_DIM) / 2.0
+                    canvas.fill_rect(
+                        sx + inset, sy + inset, sz * ORB_DIM, sz * ORB_DIM, 0, 255, 0
+                    )
+
+        # Entities (render_z 0): large orbs, eggs, enemies.
+        for k in range(len(self.entities)):
+            ref e = self.entities[k]
+            var ex = (e.x - e.rx) * unit
+            var ey = (view_dim - (e.y + e.ry)) * unit
+            var ew = 2 * e.rx * unit
+            var eh = 2 * e.ry * unit
+            if e.type == LARGE_ORB:
+                canvas.blit(assets.crystal, ex, ey, ew, eh)
+            elif e.type == ENEMY_EGG:
+                canvas.blit(assets.egg, ex, ey, ew, eh)
+            elif e.type == ENEMY:
+                if self.can_eat_enemies():
+                    canvas.blit(assets.enemy_walk, ex, ey, ew, eh)
+                else:
+                    canvas.blit(
+                        assets.enemy_fly[self._enemy_sprite_index()],
+                        ex,
+                        ey,
+                        ew,
+                        eh,
+                    )
+
+        # Agent (render_z 1).
+        var ax = (self.agent.x - self.agent.rx) * unit
+        var ay = (view_dim - (self.agent.y + self.agent.ry)) * unit
+        canvas.blit(
+            assets.player, ax, ay, 2 * self.agent.rx * unit, 2 * self.agent.ry * unit
+        )
+
+        return canvas.px.copy()
