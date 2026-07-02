@@ -47,7 +47,7 @@ comptime NUM_GROUND_THEMES = 6
 comptime NUM_PLAYER_THEMES = 5
 comptime NUM_ENEMY_THEMES = 9
 comptime NUM_CRATE_THEMES = 4
-comptime BG_COUNT = 13  # platform_backgrounds (value only; not in RNG-stream parity)
+comptime BG_COUNT = 37  # platform_backgrounds (value only; not in RNG-stream parity)
 comptime OBS_SS = 4
 comptime RENDER_EPS: Float32 = 0.0
 
@@ -69,6 +69,74 @@ def _clip_abs(x: Float32, y: Float32) -> Float32:
     if x < -y:
         return -y
     return x
+
+
+struct CoinrunAssets(Movable):
+    """Read-only sprite set (shared via ArcPointer; passed into render())."""
+
+    var players: List[Sprite]  # alien{color}_stand, 5 themes
+    var players_walk: List[Sprite]  # alien{color}_walk1, 5 themes
+    var enemies: List[Sprite]  # 9 walking-enemy themes
+    var coin: Sprite
+    var ground_top: List[Sprite]  # {theme}Mid.png (WALL_TOP), 6 themes
+    var ground_mid: List[Sprite]  # {theme}Center.png (WALL_MID), 6 themes
+    var lava: Sprite
+    var lava_top: Sprite
+    var saw: Sprite
+    var crates: List[Sprite]  # 4 crate variants
+    var backgrounds: List[Sprite]  # platform_backgrounds (37)
+
+    def __init__(out self, asset_root: String) raises:
+        var colors: List[String] = ["Beige", "Blue", "Green", "Pink", "Yellow"]
+        var pstand = List[String]()
+        var pwalk = List[String]()
+        for i in range(len(colors)):
+            var c = colors[i]
+            pstand.append("kenney/Players/128x256/" + c + "/alien" + c + "_stand.png")
+            pwalk.append("kenney/Players/128x256/" + c + "/alien" + c + "_walk1.png")
+        self.players = load_sprites(asset_root, pstand)
+        self.players_walk = load_sprites(asset_root, pwalk)
+        var enames: List[String] = [
+            "slimeBlock", "slimePurple", "slimeBlue", "slimeGreen", "mouse",
+            "snail", "ladybug", "wormGreen", "wormPink",
+        ]
+        var ep = List[String]()
+        for i in range(len(enames)):
+            ep.append("kenney/Enemies/" + enames[i] + ".png")
+        self.enemies = load_sprites(asset_root, ep)
+        self.coin = load_sprite(asset_root, "kenney/Items/coinGold.png")
+        var gthemes: List[String] = ["dirt", "grass", "planet", "sand", "snow", "stone"]
+        var gdirs: List[String] = ["Dirt", "Grass", "Planet", "Sand", "Snow", "Stone"]
+        var gtop = List[String]()
+        var gmid = List[String]()
+        for i in range(len(gthemes)):
+            gtop.append("kenney/Ground/" + gdirs[i] + "/" + gthemes[i] + "Mid.png")
+            gmid.append("kenney/Ground/" + gdirs[i] + "/" + gthemes[i] + "Center.png")
+        self.ground_top = load_sprites(asset_root, gtop)
+        self.ground_mid = load_sprites(asset_root, gmid)
+        self.lava = load_sprite(asset_root, "kenney/Tiles/lava.png")
+        self.lava_top = load_sprite(asset_root, "kenney/Tiles/lavaTop_low.png")
+        self.saw = load_sprite(asset_root, "kenney/Enemies/sawHalf.png")
+        var cp: List[String] = [
+            "kenney/Tiles/boxCrate.png", "kenney/Tiles/boxCrate_double.png",
+            "kenney/Tiles/boxCrate_single.png", "kenney/Tiles/boxCrate_warning.png",
+        ]
+        self.crates = load_sprites(asset_root, cp)
+        var bnames: List[String] = [
+            "alien_bg", "another_world_bg", "back_cave", "caverns", "cyberpunk_bg",
+            "parallax_forest", "scifi_bg", "scifi2_bg", "living_tissue_bg",
+            "airadventurelevel1", "airadventurelevel2", "airadventurelevel3",
+            "airadventurelevel4", "cave_background", "blue_desert", "blue_grass",
+            "blue_land", "blue_shroom", "colored_desert", "colored_grass",
+            "colored_land", "colored_shroom", "landscape1", "landscape2",
+            "landscape3", "landscape4", "battleback1", "battleback2",
+            "battleback3", "battleback4", "battleback5", "battleback6",
+            "battleback7", "battleback8", "battleback9", "battleback10", "sunrise",
+        ]
+        var bp = List[String]()
+        for i in range(len(bnames)):
+            bp.append("platform_backgrounds/" + bnames[i] + ".png")
+        self.backgrounds = load_sprites(asset_root, bp)
 
 
 struct CoinrunGame(Copyable, Movable):
@@ -653,3 +721,93 @@ struct CoinrunGame(Copyable, Movable):
 
         self.episode_reward += self.reward
         return self.reward
+
+    # --- rendering (visual-approx; assets passed in) ---
+    def render_obs(
+        self, assets: CoinrunAssets, res: Int = RES, ss: Int = OBS_SS
+    ) -> List[UInt8]:
+        return downscale(self.render(assets, res * ss), res * ss, res)
+
+    def render(self, assets: CoinrunAssets, out_res: Int = RES) -> List[UInt8]:
+        var canvas = Canvas(out_res)
+        canvas.fill(0, 0, 0)
+
+        # Camera: side-scroller centered on the agent (visibility 13).
+        var visibility: Float32 = 13.0
+        var center_x = self.agent.x
+        var center_y = self.agent.y
+        var view_dim = visibility
+        var unit = Float32(out_res) / view_dim
+        var x_off = unit * (center_x - view_dim / 2)
+        var y_off = unit * (center_y - view_dim / 2)
+
+        # Background (platform, panned by bg_pct_x; fixed to the world, follows camera).
+        ref bg = assets.backgrounds[self.background_index]
+        var main_w = Float32(W) * unit
+        var main_h = Float32(H) * unit
+        var main_y = (view_dim - Float32(H)) * unit + y_off
+        var bg_ar = Float32(bg.w) / Float32(bg.h)
+        var world_ar = Float32(W) / Float32(H)
+        var offset_x = self.bg_pct_x * (bg_ar - world_ar)
+        canvas.blit(
+            bg, -x_off + main_w * (-offset_x), main_y, main_w * (bg_ar / world_ar), main_h
+        )
+
+        # Grid tiles (only those inside the camera window).
+        var wt = self.wall_theme
+        var vx0 = Int(floor(center_x - view_dim / 2)) - 1
+        var vx1 = Int(floor(center_x + view_dim / 2)) + 1
+        var vy0 = Int(floor(center_y - view_dim / 2)) - 1
+        var vy1 = Int(floor(center_y + view_dim / 2)) + 1
+        for x in range(vx0, vx1 + 1):
+            for y in range(vy0, vy1 + 1):
+                if x < 0 or x >= W or y < 0 or y >= H:
+                    continue
+                var t = self.grid[y * W + x]
+                if t == SPACE:
+                    continue
+                var sx = (Float32(x) - RENDER_EPS) * unit - x_off
+                var sy = (view_dim - Float32(y + 1) - RENDER_EPS) * unit + y_off
+                var sz = (1.0 + 2 * RENDER_EPS) * unit
+                if t == WALL_MID:
+                    canvas.blit(assets.ground_mid[wt], sx, sy, sz, sz)
+                elif t == WALL_TOP:
+                    canvas.blit(assets.ground_top[wt], sx, sy, sz, sz)
+                elif t == LAVA_MID:
+                    canvas.blit(assets.lava, sx, sy, sz, sz)
+                elif t == LAVA_TOP:
+                    canvas.blit(assets.lava_top, sx, sy, sz, sz)
+                elif t == GOAL:
+                    canvas.blit(assets.coin, sx, sy, sz, sz)
+
+        # Entities (crates, saws, enemies).
+        for k in range(len(self.entities)):
+            ref e = self.entities[k]
+            var t = e.type
+            var ex = (e.x - e.rx) * unit - x_off
+            var ey = (view_dim - (e.y + e.ry)) * unit + y_off
+            var ew = 2 * e.rx * unit
+            var eh = 2 * e.ry * unit
+            if t == CRATE:
+                canvas.blit(assets.crates[e.image_theme], ex, ey, ew, eh)
+            elif t == SAW:
+                canvas.blit(assets.saw, ex, ey, ew, eh)
+            elif t == ENEMY:
+                canvas.blit(assets.enemies[e.image_theme], ex, ey, ew, eh, e.is_reflected)
+
+        # Player (tall alien; preserve sprite aspect, anchored at the feet).
+        var still = abs(self.agent.vx) < 0.01 and self.action_vx == 0.0 and self.has_support
+        var idx = self.agent.image_theme
+        var pw = 2 * self.agent.rx * unit
+        var feet = (view_dim - (self.agent.y - self.agent.ry)) * unit + y_off
+        var px = (self.agent.x - self.agent.rx) * unit - x_off
+        if still:
+            ref ps = assets.players[idx]
+            var ph = pw * (Float32(ps.h) / Float32(ps.w))
+            canvas.blit(ps, px, feet - ph, pw, ph, self.agent.is_reflected)
+        else:
+            ref ps = assets.players_walk[idx]
+            var ph = pw * (Float32(ps.h) / Float32(ps.w))
+            canvas.blit(ps, px, feet - ph, pw, ph, self.agent.is_reflected)
+
+        return canvas.px.copy()
