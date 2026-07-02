@@ -18,6 +18,8 @@ from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Xavier
+from mojo_rl.nn.core.tensor import Tensor
+from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.core.state import State
 from mojo_rl.core.action import Action
 from mojo_rl.core.env_traits import BoxDiscreteActionEnv
@@ -167,7 +169,22 @@ def main() raises:
         DP, TOK_D, TOK_NH, T, NSP, NP, DSP, TOK_HID, TOK_DEPTH, 0.5, 0.5, 7
     ].make["gpu", Xavier](Optional(c))         # tokenizer on device too
 
-    var backbone = CifarBackbone[TGT, TGT].make["cpu", Xavier](None)
+    # GPU-resident backbone for the perceptual term; calibrate its BN running
+    # stats (random-init eval explodes) so the GPU perceptual path is exercised
+    # with perc_weight>0.
+    var backbone = CifarBackbone[TGT, TGT].make["gpu", Xavier](Optional(c))
+    comptime BT_CAL = B * T
+    comptime IMG3 = 3 * TGT * TGT
+    var cal = Tensor.alloc(BT_CAL * IMG3)
+    for i in range(BT_CAL * IMG3):
+        cal.data[i] = Scalar[DT](Float64(i % 13) / 13.0 * 0.5 + 0.25)
+    cal.ensure_gpu(c, BT_CAL * IMG3)
+    cal.upload(c)
+    var cal_out = Tensor.alloc(BT_CAL * CifarBackbone[TGT, TGT].OUT_DIM)
+    cal_out.ensure_gpu(c, BT_CAL * CifarBackbone[TGT, TGT].OUT_DIM)
+    backbone.set_attr["training"](Scalar[DT](1.0))
+    for _ in range(30):
+        backbone.forward["gpu", BT_CAL](TensorRefs[1](cal), cal_out, Optional(c))
 
     var summary = run_online_dreamer4[
         IN_CH=IN_CH, IMG=IMG, TGT=TGT, PATCH=PATCH, TNP=NP, CAP=CAP,
@@ -177,6 +194,7 @@ def main() raises:
         agent, tok, backbone, env, logger,
         warmup_steps=20, tok_pretrain_steps=5, total_env_steps=20,
         train_every=4, imag_every=8, eval_every=10,
+        perc_weight=0.2,
         dctx=Optional(c),
     )
     print("  summary (tok, wm_video, wm_bc, imag_value, eval_return) =",

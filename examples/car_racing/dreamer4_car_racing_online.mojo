@@ -106,9 +106,11 @@ def main() raises:
 
     # Frozen perceptual backbone (CIFAR ResNet-20). Trained separately; loaded
     # here from the working directory.
-    var backbone = CifarBackbone[TGT, TGT].make["cpu", Xavier](None)
-    load_params["cpu"](backbone, String("dreamer4_perceptual_backbone.ckpt"), None)
-    print("loaded perceptual backbone")
+    var backbone = CifarBackbone[TGT, TGT].make["gpu", Xavier](Optional(ctx))
+    load_params["gpu"](
+        backbone, String("dreamer4_perceptual_backbone.ckpt"), Optional(ctx)
+    )
+    print("loaded perceptual backbone (GPU)")
 
     # Remote logger config from a .env (RL_MONITOR_URL / RL_MONITOR_API_KEY), the
     # same one the SAC examples use.
@@ -142,11 +144,7 @@ def main() raises:
         train_every=4,
         imag_every=8,
         eval_every=2_000,
-        # perc_weight=0 for now: the perceptual term runs the ResNet-20 backbone
-        # forward+vjp on B*T images through CPU conv loops EVERY tokenizer step
-        # (~tens of seconds/step) — unusable until the tokenizer + backbone run on
-        # GPU. Set back to 0.2 once that lands (paper eq. 5 = MSE + 0.2·perceptual).
-        perc_weight=0.0,
+        perc_weight=0.2,          # paper eq. 5: MSE + 0.2·perceptual (GPU backbone)
         eval_max_steps=1_000,
         imag_gamma=Scalar[DT](0.997),
         dctx=Optional(ctx),       # GPU dynamics

@@ -42,7 +42,9 @@ from .agent import Dreamer4Agent
 from .tokenizer import Dreamer4Tokenizer
 from .frame_buffer import Dreamer4FrameBuffer
 from .recon_loss import masked_recon_loss, masked_recon_grad_gpu
-from .perceptual_loss import masked_recon_plus_perceptual_loss
+from .perceptual_loss import (
+    masked_recon_plus_perceptual_loss, masked_recon_plus_perceptual_loss_gpu,
+)
 from .patchify import downscale_box, temporal_patchify
 from .imag_rl_loss import continue_bce_backward
 from .shortcut_loss import _mao, _ilog2
@@ -393,20 +395,31 @@ def run_online_dreamer4[
             tok.forward["gpu", BATCH](
                 TensorRefs[1](patches), pred, Optional(c)
             )
-            masked_recon_grad_gpu[NP, DP, BATCH](
-                _dptr(pred), _dptr(patches), tok.mae_mask_ptr(), _dptr(gpred), c
-            )
+            if perc_weight > 0.0:
+                # MSE + w·perceptual, backbone on device (GPU-resident backbone).
+                var lv = masked_recon_plus_perceptual_loss_gpu[
+                    BATCH, 1, TGT, TGT, PATCH
+                ](
+                    pred, patches, tok.mae_mask_ptr(), backbone, perc_weight,
+                    gpred, gperc, c,
+                )
+                last_tok_loss = lv[0] + perc_weight * lv[1]
+            else:
+                masked_recon_grad_gpu[NP, DP, BATCH](
+                    _dptr(pred), _dptr(patches), tok.mae_mask_ptr(),
+                    _dptr(gpred), c,
+                )
+                if s % 10 == 0:                 # proxy scalar for logging only
+                    pred.download(c)
+                    var sse: Float64 = 0.0
+                    for i in range(BATCH * NP * DP):
+                        var d = Float64(pred.data[i]) - Float64(patches.data[i])
+                        sse += d * d
+                    last_tok_loss = sse / Float64(BATCH * NP * DP)
             tok.vjp["gpu", BATCH](
                 TensorRefs[1](patches), gpred, TensorRefs[1](gin), Optional(c)
             )
             topt.step["gpu"](tok, dctx)
-            if s % 10 == 0:                     # proxy scalar for logging only
-                pred.download(c)
-                var sse: Float64 = 0.0
-                for i in range(BATCH * NP * DP):
-                    var d = Float64(pred.data[i]) - Float64(patches.data[i])
-                    sse += d * d
-                last_tok_loss = sse / Float64(BATCH * NP * DP)
         tok.advance_rng()
         if s % 10 == 0:
             print("  [tok]", s, "/", tok_pretrain_steps, " recon=", last_tok_loss)
