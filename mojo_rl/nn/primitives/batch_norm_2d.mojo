@@ -242,6 +242,38 @@ def _bn2d_forward_eval_kernel[
             s += BN2D_TPB
 
 
+def _bn2d_eval_bwd_kernel[
+    BATCH: Int,
+    C: Int,
+    SPATIAL: Int,
+    FLAT: Int,
+    EPSILON: Float64,
+    LAYOUT: Int = LAYOUT_NCHW,
+](
+    grad_output: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+    gamma: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    running_var: LayoutTensor[DT, Layout.row_major(C), MutAnyOrigin],
+    grad_input: LayoutTensor[DT, Layout.row_major(BATCH, FLAT), MutAnyOrigin],
+):
+    # Eval-mode input gradient: running stats are CONSTANTS, so there is no batch
+    # coupling — gi = γ·inv_std·dy, inv_std = 1/√(running_var+ε). One block per
+    # channel (mirrors the eval forward kernel); γ/β grads are not needed (this
+    # path is only used for a FROZEN backbone, e.g. the perceptual loss).
+    var c = Int(block_idx.x)
+    var t = Int(thread_idx.x)
+    if c >= C:
+        return
+    var eps = Scalar[DT](EPSILON)
+    var inv_std: grad_output.element_type = 1.0 / sqrt(running_var[c] + eps)
+    var g = gamma[c]
+    for b in range(BATCH):
+        var s = t
+        while s < SPATIAL:
+            var off = _bn_off[LAYOUT, C, SPATIAL](c, s)
+            grad_input[b, off] = g * inv_std * grad_output[b, off]
+            s += BN2D_TPB
+
+
 def _bn2d_bwd_partial_kernel[
     BATCH: Int,
     C: Int,
@@ -1173,6 +1205,7 @@ struct BatchNorm2D[
                     grid_dim=Self.C_,
                     block_dim=BN2D_TPB,
                 )
+                self.cache_is_training = False
 
     def vjp[
         target: StaticString,
@@ -1187,14 +1220,8 @@ struct BatchNorm2D[
         grad_inputs: TensorRefs[1, ogi, Self.ACT_DT],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        # Eval-mode (running-stat) backward is implemented on CPU only; on GPU
-        # a training-mode forward is still required.
-        comptime if target != "cpu":
-            if not self.cache_is_training:
-                raise Error(
-                    "BatchNorm2D.vjp: eval-mode (running-stat) backward is"
-                    " CPU-only; GPU requires a training=True forward."
-                )
+        # Eval-mode (running-stat) backward is implemented on both CPU and GPU
+        # (gi = γ·inv_std_running·dy); no training-mode forward required.
         # AMP §3 fp32-internal (forward_input unused, as in the fp32 body).
         comptime if Self.ACT_DT == DT:
             ref god = rebind[Tensor](grad_output)
@@ -1313,6 +1340,23 @@ struct BatchNorm2D[
             gin.ensure_gpu(c, B * Self.FLAT_DIM)
             comptime l2d = Layout.row_major(B, Self.FLAT_DIM)
             comptime lc = Layout.row_major(Self.C_)
+            if not self.cache_is_training:
+                # Eval-mode backward: gi = γ·inv_std_running·dy (no reductions;
+                # running stats are constants). Frozen-backbone perceptual loss.
+                c.enqueue_function[
+                    _bn2d_eval_bwd_kernel[
+                        B, Self.C_, Self.SPATIAL, Self.FLAT_DIM,
+                        Self.EPSILON, Self.LAYOUT,
+                    ]
+                ](
+                    grad_output.lt["gpu", l2d](),
+                    self.gamma.val.lt["gpu", lc](),
+                    self.running_var.t.lt["gpu", lc](),
+                    gin.lt["gpu", l2d](),
+                    grid_dim=Self.C_,
+                    block_dim=BN2D_TPB,
+                )
+                return
             comptime if Self.LAYOUT == LAYOUT_NHWC:
                 # Coalesced transposed backward (channels-last perf path).
                 comptime CH = BN2D_NHWC_CHUNKS
