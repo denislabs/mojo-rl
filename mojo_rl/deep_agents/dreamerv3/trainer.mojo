@@ -718,6 +718,13 @@ struct DreamerV3Trainer[
         self.value.for_each_state[Self.train_target](r, self.ctx, "value")
         self.slowvalue.for_each_state[Self.train_target](r, self.ctx, "slowvalue")
         self.policy.for_each_state[Self.train_target](r, self.ctx, "policy")
+        # Mirror the restored core into `imagine` IMMEDIATELY. `imagine` is not
+        # checkpointed; without this, a load followed by any prior rollout
+        # (openloop probes, imagination GIFs) before the first train_step would
+        # run the dynamics on the random init.
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
+        )
 
     def openloop_report(
         mut self,
@@ -750,6 +757,13 @@ struct DreamerV3Trainer[
         """
         comptime assert Self.train_target == "cpu", (
             "openloop_report is CPU-only — run the diagnostic with a CPU agent"
+        )
+        # `imagine` is NOT in the checkpoint (normally re-synced from `core`
+        # each train_step) — after a bare `load_state` it still holds its random
+        # init, which silently corrupts the open-loop panel. Sync here so the
+        # probe is self-contained.
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
         )
         comptime D = Self.DETER
         comptime SCl = Self.SC
@@ -919,6 +933,11 @@ struct DreamerV3Trainer[
         comptime assert Self.train_target == "cpu", (
             "openloop_trace is CPU-only — run the diagnostic with a CPU agent"
         )
+        # Self-contained probe: sync the `imagine` mirror from the trained core
+        # (it is not checkpointed — see openloop_report).
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
+        )
         comptime D = Self.DETER
         comptime SCl = Self.SC
         comptime TOK = Self.TOKEN
@@ -1072,6 +1091,14 @@ struct DreamerV3Trainer[
         """
         comptime assert Self.train_target == "gpu", (
             "openloop_decode_gpu is GPU-only — use openloop_trace on CPU"
+        )
+        # Self-contained probe: sync the `imagine` mirror from the trained core.
+        # `imagine` is NOT checkpointed (normally re-synced each train_step), so
+        # a bare `load_state` → openloop_decode_gpu would roll the prior with a
+        # RANDOM dynamics net — the GIF's "IMAGINED" panel dissolves to the mean
+        # image while RECON stays sharp, misdiagnosing the world model.
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
         )
         comptime D = Self.DETER
         comptime SCl = Self.SC

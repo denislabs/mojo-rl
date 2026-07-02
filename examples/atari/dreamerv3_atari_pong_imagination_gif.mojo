@@ -42,8 +42,12 @@ from mojo_rl.envs.atari import AtariEnv
 from mojo_rl.envs.atari.games.registry import AtariGame
 from mojo_rl.render.image_writer import save_frame_sequence_gif
 
-# ── arch (MUST match dreamerv3_atari_pong_training.mojo) ──
-comptime C = 4  # 4-frame grayscale stack (MUST match training)
+# ── arch (MUST match the training run that WROTE the checkpoint) ──
+# C is the frame-stack depth and selects the env obs mode:
+#   C=1 ↔ AtariEnv OBS_MODE=3 (gray-96 single frame — the 130k C=1 run)
+#   C=4 ↔ AtariEnv OBS_MODE=4 (gray-96 4-frame stack — current training cfg)
+# A checkpoint from one C cannot load into the other (conv/OBS shapes differ).
+comptime C = 1
 comptime IMG = 96
 comptime BASE = 48
 comptime OBS = C * IMG * IMG  # 36864
@@ -92,7 +96,8 @@ comptime Ag = DreamerV3Agent[
     DEC,
     RECON_SIGMOID=True,  # must match training (decode = sigmoid)
 ]
-comptime Env = AtariEnv[4, DT]  # OBS_MODE=4 (gray-96 4-frame stack)
+comptime OBS_MODE = 3 if C == 1 else 4  # keyed to C (see comment above)
+comptime Env = AtariEnv[OBS_MODE, DT]
 
 comptime CHECKPOINT_PATH = "dreamerv3_atari_pong_gpu.ckpt"
 comptime GIF_PATH = "dreamerv3_atari_pong_imagination.gif"
