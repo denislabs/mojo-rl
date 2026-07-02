@@ -255,6 +255,7 @@ def run_online_dreamer4[
     perc_weight: Float64 = 0.0,
     eval_max_steps: Int = 1000,
     imag_gamma: Scalar[DT] = Scalar[DT](0.997),
+    log_every: Int = 500,   # cadence for stdout progress + metric logging
     seed: UInt64 = 20260701,
     dctx: Optional[DeviceContext] = None,   # required when DYN_TARGET="gpu"
 ) raises -> Tuple[Float64, Float64, Float64, Float64, Float64]:
@@ -464,10 +465,17 @@ def run_online_dreamer4[
     var ecur = List[Scalar[DT]](length=IMG_DIM, fill=Scalar[DT](0.0))
     print("[dreamer4-online] Stage 2: online RL —", total_env_steps, "env steps")
     for step in range(total_env_steps):
-        if step > 0 and step % 500 == 0:
+        if step > 0 and step % log_every == 0:
             print("  [rl]", step, "/", total_env_steps,
                   " wm_video=", last_video, " wm_bc=", last_bc,
                   " imag_v=", last_v, " eval=", last_eval_return)
+            # metric logging at the SAME cadence (not per train/imag step — that
+            # floods the remote logger with thousands of points).
+            if logger.is_active():
+                logger.log_scalar(String("online/wm_video"), last_video, step)
+                logger.log_scalar(String("online/wm_bc"), last_bc, step)
+                logger.log_scalar(String("online/imag_value"), last_v, step)
+                logger.log_scalar(String("online/imag_policy"), last_p, step)
         win_n = _push_frame[IN_CH, IMG, TGT, PATCH, T, NP, DP](
             _mao(cur.unsafe_ptr()), fr1, pa1, win_patch, win_act,
             win_n, last_action,
@@ -594,9 +602,6 @@ def run_online_dreamer4[
                 TensorRefs[1](ht_t), gcl, TensorRefs[1](gci), None
             )
             copt.step["cpu"](agent.ch, None)
-            if logger.is_active():
-                logger.log_scalar(String("online/wm_video"), last_video, step)
-                logger.log_scalar(String("online/wm_bc"), last_bc, step)
 
         # ── imagination-RL update (frozen WM) ──
         if imag_every > 0 and step % imag_every == 0 and buf.count() >= BATCH:
@@ -648,9 +653,6 @@ def run_online_dreamer4[
                 last_v = il[0]
                 last_p = il[1]
             did_imag = True
-            if logger.is_active():
-                logger.log_scalar(String("online/imag_value"), last_v, step)
-                logger.log_scalar(String("online/imag_policy"), last_p, step)
 
         # ── greedy-eval episode (measurable return; interrupts training ep) ──
         if eval_every > 0 and step % eval_every == 0 and step > 0:
