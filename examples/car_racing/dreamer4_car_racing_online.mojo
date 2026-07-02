@@ -116,18 +116,24 @@ def main() raises:
     logger.set_config("obs", "pixel")
 
     print("starting online training...")
+    # FIRST-RUN / smoke scale: reaches Stage 2 + greedy-eval quickly so you can
+    # confirm it works and is fast enough before a long run. Everything is on CPU
+    # (dynamics + tokenizer + perceptual backbone) and the env is stepped one at a
+    # time, so this is not fast — the prints below show live progress. For real
+    # training bump warmup≈5_000, tok_pretrain≈3_000, total_env_steps≈1_000_000,
+    # eval_every≈20_000 (and see the DYN_TARGET="gpu" follow-up for speed).
     var summary = run_online_dreamer4[
         IN_CH=IN_CH, IMG=IMG, TGT=TGT, PATCH=PATCH, TNP=NP, CAP=CAP,
         TOK_D=TOK_D, TOK_NH=TOK_NH, TOK_HID=TOK_HID, TOK_DEPTH=TOK_DEPTH,
         TOK_PMIN=DROP, TOK_PMAX=DROP, TOK_SEED=7,
     ](
         agent, tok, backbone, env, logger,
-        warmup_steps=5_000,
-        tok_pretrain_steps=3_000,
-        total_env_steps=1_000_000,
+        warmup_steps=500,
+        tok_pretrain_steps=200,
+        total_env_steps=20_000,
         train_every=4,
         imag_every=8,
-        eval_every=20_000,
+        eval_every=2_000,
         perc_weight=0.2,          # paper eq. 5 MSE + 0.2·perceptual
         eval_max_steps=1_000,
         imag_gamma=Scalar[DT](0.997),

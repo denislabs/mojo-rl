@@ -268,6 +268,7 @@ def run_online_dreamer4[
         cur[i] = Scalar[DT](Float64(ob0[i]))
 
     # ── Stage 0: warmup collect (random actions) ────────────────────────
+    print("[dreamer4-online] Stage 0: warmup collect —", warmup_steps, "env steps")
     var collected = 0
     while collected < warmup_steps:
         var a = Int(rng.uniform() * Float64(NACT))
@@ -278,6 +279,8 @@ def run_online_dreamer4[
         var d = res[2]
         buf.add_step_fp32_list(cur, a, d, r)
         collected += 1
+        if collected % 500 == 0:
+            print("  [warmup]", collected, "/", warmup_steps, " buf=", buf.count())
         if d:
             var no = env.reset_obs_list()
             for i in range(IMG_DIM):
@@ -288,6 +291,8 @@ def run_online_dreamer4[
     logger.log_scalar(String("online/warmup_frames"), Float64(buf.count()), 0)
 
     # ── Stage 1: tokenizer pretrain → freeze ────────────────────────────
+    print("[dreamer4-online] Stage 1: tokenizer pretrain —",
+          tok_pretrain_steps, "steps (perc_weight=", perc_weight, ")")
     var last_tok_loss: Float64 = 0.0
     for s in range(tok_pretrain_steps):
         buf.sample_reward_window_batch[B, T](
@@ -320,7 +325,10 @@ def run_online_dreamer4[
         )
         topt.step["cpu"](tok, None)
         tok.advance_rng()
+        if s % 50 == 0:
+            print("  [tok]", s, "/", tok_pretrain_steps, " recon=", last_tok_loss)
     tok.set_mae_p(0.0, 0.0)  # FREEZE
+    print("  tokenizer frozen (recon=", last_tok_loss, ")")
     logger.log_scalar(String("online/tok_recon_loss"), last_tok_loss, 0)
 
     # ── Stage 2: online RL loop ─────────────────────────────────────────
@@ -358,7 +366,12 @@ def run_online_dreamer4[
     var ewin_act = List[Int](length=T, fill=-1)
     var eact_hist = List[Scalar[DT]](length=T * ADIM, fill=Scalar[DT](0.0))
     var ecur = List[Scalar[DT]](length=IMG_DIM, fill=Scalar[DT](0.0))
+    print("[dreamer4-online] Stage 2: online RL —", total_env_steps, "env steps")
     for step in range(total_env_steps):
+        if step > 0 and step % 500 == 0:
+            print("  [rl]", step, "/", total_env_steps,
+                  " wm_video=", last_video, " wm_bc=", last_bc,
+                  " imag_v=", last_v, " eval=", last_eval_return)
         win_n = _push_frame[IN_CH, IMG, TGT, PATCH, T, NP, DP](
             _mao(cur.unsafe_ptr()), fr1, pa1, win_patch, win_act,
             win_n, last_action,
@@ -530,6 +543,7 @@ def run_online_dreamer4[
                 for i in range(IMG_DIM):
                     ecur[i] = Scalar[DT](Float64(eres[0][i]))
             last_eval_return = eret
+            print("  [eval] step", step, " greedy return =", eret)
             if logger.is_active():
                 logger.log_scalar(String("online/eval_return"), eret, step)
             # resume training on a fresh episode (eval consumed the env)
