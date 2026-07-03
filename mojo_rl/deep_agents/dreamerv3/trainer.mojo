@@ -31,7 +31,10 @@ from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs, child_refs
 from mojo_rl.nn.core.checkpoint import (
     CheckpointWriter, CheckpointReader, _split_lines,
+    BinaryCheckpointWriter, BinaryCheckpointReader,
+    _write_file_bytes, _read_file_bytes, _is_v3_header,
 )
+from mojo_rl.nn.core.param import ParamVisitor
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.nn.optimizer.dreamer_opt import DreamerOpt
 from mojo_rl.nn.optimizer.schedules import LinearWarmupSchedule
@@ -689,12 +692,14 @@ struct DreamerV3Trainer[
 
     # ─── Checkpoint (ONE file: the whole world model + actor-critic) ───────
     def save_state(mut self, path: String) raises:
-        """Write the full DreamerV3 network set into a SINGLE `nn-ckpt v2` file,
+        """Write the full DreamerV3 network set into a SINGLE v3 binary file,
         sections name-prefixed per module. `imagine` is NOT saved — it is a
         read-only mirror of `core` re-synced every train_step (and unused by the
         greedy/inference path). Optimizer moments are NOT persisted (resume
-        re-warms), matching the SAC checkpoint convention."""
-        var w = CheckpointWriter(save_moments=False)
+        re-warms), matching the SAC checkpoint convention. v3 binary is REQUIRED
+        at size200m: the v2 text format was ~5 GB per save and silently
+        truncated at the 2 GiB single-write(2) cap."""
+        var w = BinaryCheckpointWriter(save_moments=False)
         w.mode = 0
         self.enc.for_each_param[Self.train_target](w, self.ctx, "enc")
         self.core.for_each_param[Self.train_target](w, self.ctx, "core")
@@ -713,24 +718,45 @@ struct DreamerV3Trainer[
         self.value.for_each_state[Self.train_target](w, self.ctx, "value")
         self.slowvalue.for_each_state[Self.train_target](w, self.ctx, "slowvalue")
         self.policy.for_each_state[Self.train_target](w, self.ctx, "policy")
-        with open(path, "w") as f:
-            f.write(w.content)
+        _write_file_bytes(path, w.content)
 
     def load_state(mut self, path: String) raises:
         """Restore the full network set from the single envelope (same walk
-        order as `save_state`). `imagine` is re-synced from `core` on the next
-        `train_step`."""
-        var content: String
-        with open(path, "r") as f:
-            content = String(f.read())
-        var lines = _split_lines(content)
-        var body = List[String]()
-        for li in range(len(lines)):
-            if lines[li].startswith("storage-ckpt"):
-                continue
-            body.append(lines[li])
-        var r = CheckpointReader(body^)
-        r.mode = 0
+        order as `save_state`; v3 binary or legacy v2 text). `imagine` is
+        re-synced from `core` on the next `train_step`."""
+        var bytes = _read_file_bytes(path)
+        if _is_v3_header(bytes):
+            var rb = BinaryCheckpointReader(bytes^)
+            rb.mode = 0
+            self._load_walk_params(rb)
+            rb.mode = 1
+            self._load_walk_states(rb)
+        else:
+            var content: String
+            with open(path, "r") as f:
+                content = String(f.read())
+            var lines = _split_lines(content)
+            var body = List[String]()
+            for li in range(len(lines)):
+                if lines[li].startswith("storage-ckpt"):
+                    continue
+                body.append(lines[li])
+            var r = CheckpointReader(body^)
+            r.mode = 0
+            self._load_walk_params(r)
+            r.mode = 1
+            self._load_walk_states(r)
+        # Mirror the restored core into `imagine` IMMEDIATELY. `imagine` is not
+        # checkpointed; without this, a load followed by any prior rollout
+        # (openloop probes, imagination GIFs) before the first train_step would
+        # run the dynamics on the random init.
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
+        )
+
+    def _load_walk_params[V: ParamVisitor](mut self, mut r: V) raises:
+        """`load_state` Param walk (same order as `save_state`), shared by the
+        v3 and legacy-v2 readers. Caller sets the visitor's mode."""
         self.enc.for_each_param[Self.train_target](r, self.ctx, "enc")
         self.core.for_each_param[Self.train_target](r, self.ctx, "core")
         self.dec.for_each_param[Self.train_target](r, self.ctx, "dec")
@@ -739,7 +765,9 @@ struct DreamerV3Trainer[
         self.value.for_each_param[Self.train_target](r, self.ctx, "value")
         self.slowvalue.for_each_param[Self.train_target](r, self.ctx, "slowvalue")
         self.policy.for_each_param[Self.train_target](r, self.ctx, "policy")
-        r.mode = 1
+
+    def _load_walk_states[V: ParamVisitor](mut self, mut r: V) raises:
+        """`load_state` State walk (same order as `save_state`)."""
         self.enc.for_each_state[Self.train_target](r, self.ctx, "enc")
         self.core.for_each_state[Self.train_target](r, self.ctx, "core")
         self.dec.for_each_state[Self.train_target](r, self.ctx, "dec")
@@ -748,13 +776,6 @@ struct DreamerV3Trainer[
         self.value.for_each_state[Self.train_target](r, self.ctx, "value")
         self.slowvalue.for_each_state[Self.train_target](r, self.ctx, "slowvalue")
         self.policy.for_each_state[Self.train_target](r, self.ctx, "policy")
-        # Mirror the restored core into `imagine` IMMEDIATELY. `imagine` is not
-        # checkpointed; without this, a load followed by any prior rollout
-        # (openloop probes, imagination GIFs) before the first train_step would
-        # run the dynamics on the random init.
-        self.sync_blk.step[Self.train_target](
-            self.core, self.imagine, ctx=self.ctx
-        )
 
     def openloop_report(
         mut self,

@@ -1,16 +1,24 @@
-"""Checkpoint — named-section param/state + optimizer-moment save/load (v2).
+"""Checkpoint — named-section param/state + optimizer-moment save/load.
 
 Walks a Module's Params via `for_each_param` then States via `for_each_state`,
-writing one named section per field:
+writing one named section per field. Two formats:
 
-    storage-ckpt v2
-    P <dotted-name> <size> <has_moments:0|1>
-    <size value lines>
-    [if has_moments: <size> m lines, then <size> v lines]
+v3 (CURRENT — what every save now writes):
+
+    storage-ckpt v3
+    P <dotted-name> <size> <has_moments:0|1>\n
+    <size raw Scalar[DT] payload bytes>[<m bytes><v bytes>]
+    S <dotted-name> <size>\n
+    <size raw Scalar[DT] payload bytes>
     ...
-    S <dotted-name> <size>
-    <size value lines>
-    ...
+
+v2 (LEGACY — still readable; loaders dispatch on the header line): identical
+section headers but one ASCII float per line. v2 hit its ceiling at DreamerV3
+size200m: ~5 GB of text per save, silently TRUNCATED at the single-write(2)
+syscall cap (0x7FFFF000 ≈ 2 GiB) → corrupt checkpoints, and the per-line
+`List[String]` loader could not have held it anyway. v3 payloads are raw
+little-endian bytes (3× smaller, no atof/String churn) and ALL file I/O goes
+through explicit ≤1 GiB chunks (`_write_file_bytes`/`_read_file_bytes`).
 
 The dotted name (from the A2 name-threading walker, e.g. "0.weight") is VALIDATED
 against the in-memory walk order on load — a name/size mismatch raises, catching
@@ -21,17 +29,81 @@ Optimizer moments (Adam's per-param `m`/`v`, co-located on the Param) ride the
 same param section when populated (`m.n >= N`), enabling exact training resume.
 `save_moments=False` writes a model-only checkpoint (moments skipped). GPU params
 download on save / upload on load.
-
-Storage-clean: the visitor OWNS its accumulator (String on save / parsed lines +
-cursor on load); no UnsafePointer.
 """
 
 from std.gpu.host import DeviceContext
+from std.memory import memcpy
+from std.sys.info import size_of
 
 from mojo_rl.nn.constants import DT
 from .tensor import Tensor
 from .param import ParamVisitor
 from .module import Module
+
+comptime _CKPT_CHUNK = 1 << 30  # 1 GiB — below every single-syscall I/O cap
+
+
+def _write_file_bytes(path: String, content: List[UInt8]) raises:
+    """Chunked file write. A single write(2) silently stops at 0x7FFFF000
+    (~2 GiB) on Linux — the v2 corruption source — so never issue one call
+    for the whole payload."""
+    with open(path, "w") as f:
+        var off = 0
+        while off < len(content):
+            var take = len(content) - off
+            if take > _CKPT_CHUNK:
+                take = _CKPT_CHUNK
+            f.write_bytes(
+                Span(ptr=content.unsafe_ptr() + off, length=take)
+            )
+            off += take
+
+
+def _read_file_bytes(path: String) raises -> List[UInt8]:
+    """Chunked file read (read(2) has the same single-call cap as write)."""
+    var out = List[UInt8]()
+    with open(path, "r") as f:
+        while True:
+            var chunk = f.read_bytes(_CKPT_CHUNK)
+            if len(chunk) == 0:
+                break
+            var old = len(out)
+            out.resize(old + len(chunk), 0)
+            memcpy(
+                dest=out.unsafe_ptr() + old,
+                src=chunk.unsafe_ptr(),
+                count=len(chunk),
+            )
+    return out^
+
+
+def _bytes_append_str(mut buf: List[UInt8], s: String):
+    var sb = s.as_bytes()
+    var old = len(buf)
+    buf.resize(old + len(sb), 0)
+    memcpy(dest=buf.unsafe_ptr() + old, src=sb.unsafe_ptr(), count=len(sb))
+
+
+def _bytes_append_vals(mut buf: List[UInt8], t: Tensor, n: Int):
+    comptime SB = size_of[Scalar[DT]]()
+    var old = len(buf)
+    buf.resize(old + n * SB, 0)
+    memcpy(
+        dest=buf.unsafe_ptr() + old,
+        src=t.data.unsafe_ptr().bitcast[UInt8](),
+        count=n * SB,
+    )
+
+
+def _is_v3_header(bytes: List[UInt8]) -> Bool:
+    var tag = String("storage-ckpt v3")
+    var tb = tag.as_bytes()
+    if len(bytes) < len(tb):
+        return False
+    for i in range(len(tb)):
+        if bytes[i] != tb[i]:
+            return False
+    return True
 
 
 def _split_lines(content: String) -> List[String]:
@@ -151,6 +223,123 @@ struct CheckpointReader(ParamVisitor):
             param.upload(ctx.value())
 
 
+struct BinaryCheckpointWriter(ParamVisitor):
+    """v3 twin of `CheckpointWriter`: text section headers, raw-byte payloads.
+    `mode`: 0 = Param (P, with optional moments), 1 = State (S)."""
+    var content: List[UInt8]
+    var mode: Int
+    var save_moments: Bool
+
+    def __init__(out self, save_moments: Bool = True):
+        self.content = List[UInt8]()
+        _bytes_append_str(self.content, String("storage-ckpt v3\n"))
+        self.mode = 0
+        self.save_moments = save_moments
+
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        comptime if target == "gpu":
+            param.download(ctx.value())
+        if self.mode == 1:  # State
+            _bytes_append_str(
+                self.content, "S " + name + " " + String(N) + "\n"
+            )
+            _bytes_append_vals(self.content, param, N)
+            return
+        var has_m = self.save_moments and m.n >= N and v.n >= N
+        comptime if target == "gpu":
+            if has_m:
+                m.download(ctx.value())
+                v.download(ctx.value())
+        _bytes_append_str(
+            self.content,
+            "P " + name + " " + String(N) + " "
+            + ("1" if has_m else "0") + "\n",
+        )
+        _bytes_append_vals(self.content, param, N)
+        if has_m:
+            _bytes_append_vals(self.content, m, N)
+            _bytes_append_vals(self.content, v, N)
+
+
+struct BinaryCheckpointReader(ParamVisitor):
+    """v3 twin of `CheckpointReader`: byte-cursor over the whole file, same
+    name/size/topology validation as v2."""
+    var bytes: List[UInt8]
+    var cur: Int
+    var mode: Int
+
+    def __init__(out self, var bytes: List[UInt8]):
+        self.bytes = bytes^
+        self.cur = 0
+        self.mode = 0
+        # Skip the "storage-ckpt v3" header line.
+        while self.cur < len(self.bytes) and self.bytes[self.cur] != UInt8(10):
+            self.cur += 1
+        if self.cur < len(self.bytes):
+            self.cur += 1
+
+    def _next_line(mut self) raises -> String:
+        if self.cur >= len(self.bytes):
+            raise Error("checkpoint: unexpected end of file")
+        var s = String("")
+        while self.cur < len(self.bytes) and self.bytes[self.cur] != UInt8(10):
+            s += chr(Int(self.bytes[self.cur]))
+            self.cur += 1
+        if self.cur < len(self.bytes):
+            self.cur += 1  # consume '\n'
+        return s^
+
+    def _take_vals(mut self, mut t: Tensor, n: Int) raises:
+        comptime SB = size_of[Scalar[DT]]()
+        if self.cur + n * SB > len(self.bytes):
+            raise Error("checkpoint: unexpected end of file")
+        memcpy(
+            dest=t.data.unsafe_ptr().bitcast[UInt8](),
+            src=self.bytes.unsafe_ptr() + self.cur,
+            count=n * SB,
+        )
+        self.cur += n * SB
+
+    def visit[target: StaticString, N: Int](
+        mut self, name: String, mut param: Tensor, mut grad: Tensor,
+        mut m: Tensor, mut v: Tensor, apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        var hdr = self._next_line()
+        var toks = hdr.split(" ")
+        var expected_kind = String("S") if self.mode == 1 else String("P")
+        if len(toks) < 3 or toks[0] != expected_kind:
+            raise Error(
+                "checkpoint: expected '" + expected_kind + " " + name
+                + "' section, got header `" + hdr + "`"
+            )
+        if toks[1] != name:
+            raise Error(
+                "checkpoint: name mismatch — model expects `" + name
+                + "`, checkpoint has `" + toks[1] + "` (topology drift)"
+            )
+        if atol(toks[2]) != N:
+            raise Error(
+                "checkpoint: size mismatch for `" + name + "` — model "
+                + String(N) + ", checkpoint " + toks[2]
+            )
+        self._take_vals(param, N)
+        if self.mode == 0 and len(toks) >= 4 and toks[3] == "1":
+            m.ensure(N)
+            v.ensure(N)
+            self._take_vals(m, N)
+            self._take_vals(v, N)
+            comptime if target == "gpu":
+                m.upload(ctx.value())
+                v.upload(ctx.value())
+        comptime if target == "gpu":
+            param.upload(ctx.value())
+
+
 def save_params[
     target: StaticString, M: Module
 ](
@@ -158,20 +347,29 @@ def save_params[
     ctx: Optional[DeviceContext] = None,
     save_moments: Bool = True,
 ) raises:
-    """Write a v2 named checkpoint: Params (+ moments if populated) then States."""
-    var w = CheckpointWriter(save_moments)
+    """Write a v3 named checkpoint: Params (+ moments if populated) then States."""
+    var w = BinaryCheckpointWriter(save_moments)
     w.mode = 0
     model.for_each_param[target](w, ctx)
     w.mode = 1
     model.for_each_state[target](w, ctx)
-    with open(path, "w") as f:
-        f.write(w.content)
+    _write_file_bytes(path, w.content)
 
 
 def load_params[
     target: StaticString, M: Module
 ](mut model: M, path: String, ctx: Optional[DeviceContext] = None) raises:
-    """Load a v2 named checkpoint, validating names/sizes against `model`."""
+    """Load a named checkpoint (v3 binary, or legacy v2 text — dispatched on
+    the header line), validating names/sizes against `model`."""
+    var bytes = _read_file_bytes(path)
+    if _is_v3_header(bytes):
+        var r = BinaryCheckpointReader(bytes^)
+        r.mode = 0
+        model.for_each_param[target](r, ctx)
+        r.mode = 1
+        model.for_each_state[target](r, ctx)
+        return
+    # Legacy v2 text checkpoint.
     var content: String
     with open(path, "r") as f:
         content = String(f.read())
@@ -197,20 +395,19 @@ def save_params_multi[
     save_moments: Bool,
     mut *models: *Ms,
 ) raises:
-    """Write N models into ONE v2 checkpoint file: a single header, then each
+    """Write N models into ONE v3 checkpoint file: a single header, then each
     model's Param + State sections, in pack order. `load_params_multi` walks the
     same models in the same order, so each section's dotted name is validated
     against its own model — duplicate names across models never collide. Replaces
     the per-model sidecar layout (plain `save_params` is whole-file-per-model)."""
-    var w = CheckpointWriter(save_moments)
+    var w = BinaryCheckpointWriter(save_moments)
 
     comptime for i in range(models.__len__()):
         w.mode = 0
         models[i].for_each_param[target](w, ctx)
         w.mode = 1
         models[i].for_each_state[target](w, ctx)
-    with open(path, "w") as f:
-        f.write(w.content)
+    _write_file_bytes(path, w.content)
 
 
 def load_params_multi[
@@ -220,9 +417,18 @@ def load_params_multi[
     ctx: Optional[DeviceContext],
     mut *models: *Ms,
 ) raises:
-    """Load a single-file multi-model checkpoint written by `save_params_multi`,
-    walking the models in the same pack order and validating each one's
-    names/sizes against the file's sections."""
+    """Load a single-file multi-model checkpoint written by `save_params_multi`
+    (v3 binary, or legacy v2 text), walking the models in the same pack order
+    and validating each one's names/sizes against the file's sections."""
+    var bytes = _read_file_bytes(path)
+    if _is_v3_header(bytes):
+        var rb = BinaryCheckpointReader(bytes^)
+        comptime for i in range(models.__len__()):
+            rb.mode = 0
+            models[i].for_each_param[target](rb, ctx)
+            rb.mode = 1
+            models[i].for_each_state[target](rb, ctx)
+        return
     var content: String
     with open(path, "r") as f:
         content = String(f.read())
