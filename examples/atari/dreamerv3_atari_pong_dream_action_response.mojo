@@ -32,8 +32,8 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
 from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
-    DreamerEncoderCNNRaw,
-    DreamerDecoderCNN,
+    DreamerEncoderCNNPool,
+    DreamerDecoderCNNPool,
 )
 from mojo_rl.envs.atari import AtariEnv
 from mojo_rl.envs.atari.games.registry import AtariGame
@@ -51,7 +51,8 @@ comptime H = 1024
 comptime STOCH = 32
 comptime CLASSES = 64
 comptime BLOCKS = 8
-comptime TOKEN = 8 * BASE * (IMG // 16) * (IMG // 16)  # 18432 raw conv tokens
+comptime TOKEN = 4 * BASE * (IMG // 16) * (IMG // 16)  # 9216 (pool geometry)
+comptime UNITS = 1024  # decoder bspace-stem MLP width
 comptime DEC_U = 1024
 comptime HU = 1024
 comptime VU = 1024
@@ -63,8 +64,10 @@ comptime T_IMAG = 15
 comptime CAP = 256  # never trains here → tiny replay (params load from ckpt)
 
 comptime FEATIN = STOCH * CLASSES + DETER
-comptime ENC = DreamerEncoderCNNRaw[C, IMG, IMG, BASE, SwishOp]  # raw tokens
-comptime DEC = DreamerDecoderCNN[FEATIN, C, IMG, IMG, BASE, SwishOp]
+comptime ENC = DreamerEncoderCNNPool[C, IMG, IMG, BASE, SwishOp]
+comptime DEC = DreamerDecoderCNNPool[
+    FEATIN, DETER, C, IMG, IMG, BASE, UNITS, SwishOp
+]
 
 comptime Ag = DreamerV3Agent[
     "gpu",
