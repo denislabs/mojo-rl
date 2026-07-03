@@ -1,8 +1,8 @@
 # mojo-rl
 
-An educational reinforcement learning framework written in Mojo, featuring trait-based design, 40+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines, native arcade game engines, and SDL3 rendering.
+An end-to-end world‑model & RL framework written in Mojo, featuring trait-based design, 40+ RL algorithms, GPU-accelerated deep RL, custom 2D/3D physics engines, native arcade game engines, and SDL3 rendering.
 
-> **Note:** This is a personal learning project, not a production-grade library. While the tabular agents and core deep RL algorithms (DQN, PPO, SAC, TD3) are well-tested, the 3D physics engine, complex deep agents (DreamerV3, TD-MPC2, MuZero), and some advanced features are still experimental and may contain bugs. Contributions and bug reports are welcome!
+> **Note:** This is a beta version, not a production-grade library yet. While the tabular agents and core deep RL algorithms (DQN, PPO, SAC, TD3) are well-tested, the 3D physics engine, complex deep agents (DreamerV3, TD-MPC2, MuZero), and some advanced features are still experimental and may contain bugs. Contributions and bug reports are welcome!
 
 ## Features
 
