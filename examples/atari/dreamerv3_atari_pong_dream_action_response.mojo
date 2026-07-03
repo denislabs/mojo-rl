@@ -32,7 +32,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
 from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
-    DreamerEncoderCNN,
+    DreamerEncoderCNNRaw,
     DreamerDecoderCNN,
 )
 from mojo_rl.envs.atari import AtariEnv
@@ -41,21 +41,21 @@ from mojo_rl.render.image_writer import save_frame_sequence_gif
 
 # ── arch (MUST match the training run that WROTE the checkpoint) ──
 # C=1 ↔ AtariEnv OBS_MODE=3 (gray-96 single frame); C=4 ↔ OBS_MODE=4 (stack).
-comptime C = 4  # capacity-run checkpoint (OBS_MODE=4 stack)
+comptime C = 1  # atari100k-aligned run (OBS_MODE=3 single frame)
 comptime IMG = 96
-comptime BASE = 48
+comptime BASE = 64
 comptime OBS = C * IMG * IMG
 comptime ACT = 6
-comptime DETER = 4096  # capacity-run tier (MUST match the checkpoint)
-comptime H = 512
+comptime DETER = 8192  # size200m tier (MUST match the checkpoint)
+comptime H = 1024
 comptime STOCH = 32
-comptime CLASSES = 32
+comptime CLASSES = 64
 comptime BLOCKS = 8
-comptime TOKEN = 1024
+comptime TOKEN = 8 * BASE * (IMG // 16) * (IMG // 16)  # 18432 raw conv tokens
 comptime DEC_U = 1024
-comptime HU = 512
-comptime VU = 512
-comptime PU = 512
+comptime HU = 1024
+comptime VU = 1024
+comptime PU = 1024
 comptime BINS = 255
 comptime B = 16
 comptime T = 32
@@ -63,7 +63,7 @@ comptime T_IMAG = 15
 comptime CAP = 256  # never trains here → tiny replay (params load from ckpt)
 
 comptime FEATIN = STOCH * CLASSES + DETER
-comptime ENC = DreamerEncoderCNN[C, IMG, IMG, BASE, TOKEN, SwishOp]
+comptime ENC = DreamerEncoderCNNRaw[C, IMG, IMG, BASE, SwishOp]  # raw tokens
 comptime DEC = DreamerDecoderCNN[FEATIN, C, IMG, IMG, BASE, SwishOp]
 
 comptime Ag = DreamerV3Agent[

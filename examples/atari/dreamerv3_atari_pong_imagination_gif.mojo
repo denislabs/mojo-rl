@@ -35,7 +35,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
 from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
-    DreamerEncoderCNN,
+    DreamerEncoderCNNRaw,
     DreamerDecoderCNN,
 )
 from mojo_rl.envs.atari import AtariEnv
@@ -44,24 +44,24 @@ from mojo_rl.render.image_writer import save_frame_sequence_gif
 
 # ── arch (MUST match the training run that WROTE the checkpoint) ──
 # C is the frame-stack depth and selects the env obs mode:
-#   C=1 ↔ AtariEnv OBS_MODE=3 (gray-96 single frame — the 130k C=1 run)
-#   C=4 ↔ AtariEnv OBS_MODE=4 (gray-96 4-frame stack — current training cfg)
+#   C=1 ↔ AtariEnv OBS_MODE=3 (gray-96 single frame — atari100k-aligned cfg)
+#   C=4 ↔ AtariEnv OBS_MODE=4 (gray-96 4-frame stack — older debug runs)
 # A checkpoint from one C cannot load into the other (conv/OBS shapes differ).
 comptime C = 1
 comptime IMG = 96
-comptime BASE = 48
-comptime OBS = C * IMG * IMG  # 36864
+comptime BASE = 64
+comptime OBS = C * IMG * IMG  # 9216
 comptime ACT = 6
-comptime DETER = 2048  # MUST match training (checkpoint compatibility)
-comptime H = 256
+comptime DETER = 8192  # size200m tier (MUST match the checkpoint)
+comptime H = 1024
 comptime STOCH = 32
-comptime CLASSES = 32
+comptime CLASSES = 64
 comptime BLOCKS = 8
-comptime TOKEN = 1024
+comptime TOKEN = 8 * BASE * (IMG // 16) * (IMG // 16)  # 18432 raw conv tokens
 comptime DEC_U = 1024
-comptime HU = 256
-comptime VU = 256
-comptime PU = 256
+comptime HU = 1024
+comptime VU = 1024
+comptime PU = 1024
 comptime BINS = 255
 comptime B = 16
 comptime T = 16
@@ -69,7 +69,7 @@ comptime T_IMAG = 15
 comptime CAP = 256  # we never train here → tiny replay (params load from ckpt)
 
 comptime FEATIN = STOCH * CLASSES + DETER
-comptime ENC = DreamerEncoderCNN[C, IMG, IMG, BASE, TOKEN, SwishOp]
+comptime ENC = DreamerEncoderCNNRaw[C, IMG, IMG, BASE, SwishOp]  # raw tokens
 comptime DEC = DreamerDecoderCNN[FEATIN, C, IMG, IMG, BASE, SwishOp]
 
 comptime Ag = DreamerV3Agent[

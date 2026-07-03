@@ -9,19 +9,27 @@ Atari benchmark. The world model + actor-critic train on-device
 `select_action`. The env is NOT the bottleneck — DreamerV3 is sample-efficient
 (replays each frame ~train_ratio×), so the GPU train_step dominates.
 
-Observation: **4×96×96 grayscale frame STACK** (OBS = 36864, values in [0,1]) —
-`AtariEnv[OBS_MODE=4]`. NOTE: the DreamerV3 reference uses a single frame (the
-RSSM is meant to carry motion), but a WM-overfit diagnostic showed our prior
-can't *generalize* the fast 1-2px ball's velocity from single frames across
-varied Pong (imagination collapsed in ~2 open-loop steps, even though it
-overfit a single episode fine → machinery correct, signal too weak). Stacking 4
-frames puts velocity directly in the obs, matching what worked for CarRacing.
-The CNN encoder centers to [-0.5, 0.5] (CenterHalfOp) and reconstructs with
-sigmoid + plain MSE (RECON_SIGMOID=True). Action: Pong minimal set (6 discrete).
-Machado protocol:
-sticky actions (0.25) + random no-op starts (30); frame-skip=4 + max-pool is done
-inside the env, so no agent-side action repeat. Reward NOT clipped (symlog/twohot
-handle the ±1 scale).
+REFERENCE-ALIGNED `atari100k` run (configs.yaml `atari100k` preset, Pong
+published ≈ +18 at 110k steps): train_ratio 256, actor from step 1 (NO gate),
+size200m ladder (deter 8192 / hidden 1024 / classes 64 / depth 64), single
+frame (no stack — the RSSM carries motion), sticky OFF, noop 30, reward
+unclipped, 110k agent steps (= 440k frames, the atari100k budget + ref's 10%
+margin). This makes the run a binary reproduction test of the reference.
+
+Remaining NAMED deltas vs the reference (Phase B if this run collapses):
+  1. replay `online: True` — ref mixes the freshest chunk into every batch;
+     we sample uniform-only (top ridge-resistance suspect at ratio 256).
+  2. conv geometry — ref kernel 5 + pool downsample, mults [2,3,4,4]·64;
+     ours k4s2, BASE·{1,2,4,8}. Also winit trunc_normal_in (ours Kaiming)
+     and replay_context 1 (ref gives the carry one burn-in frame).
+  3. obs — ref atari100k is 64×64 RGB; ours 96×96 grayscale (Pong is
+     near-monochrome and we have MORE pixels; ranked last).
+
+Observation: **1×96×96 grayscale single frame** (OBS = 9216, values in [0,1]) —
+`AtariEnv[OBS_MODE=3]`. The CNN encoder centers to [-0.5, 0.5] (CenterHalfOp)
+and reconstructs with sigmoid + plain MSE (RECON_SIGMOID=True). Action: Pong
+minimal set (6 discrete, ref `actions: needed`). Frame-skip=4 + max-pool is
+done inside the env, so no agent-side action repeat.
 
 The facade owns the whole loop (warmup → select_action → step → record
 (+record_terminal on done) → train_step → periodic greedy eval, which SAMPLES the
@@ -54,39 +62,29 @@ from mojo_rl.envs.atari.games.registry import AtariGame
 # =============================================================================
 # Architecture
 # =============================================================================
-comptime C = 4  # 4-frame grayscale stack (velocity in the obs; see docstring)
+comptime C = 1  # single grayscale frame (reference parity — no stacking)
 comptime IMG = 96  # 96×96 (16-divisible → conv minres 6)
-comptime BASE = 48  # conv base width (channels BASE·{1,2,4,8})
-comptime OBS = C * IMG * IMG  # 36864
+comptime BASE = 64  # conv base width (channels BASE·{1,2,4,8}); ref depth 64
+comptime OBS = C * IMG * IMG  # 9216
 comptime ACT = 6  # Pong minimal action set (NOOP/FIRE/RIGHT/LEFT/RIGHTFIRE/LEFTFIRE)
-comptime DETER = 4096  # reference size ladder: deter/8 = hidden = units,
-comptime H = 512  # classes = hidden/16 — CLASSES=32 pairs with the 4096/512
-# tier (the old 2048/256 was the smallest size12m tier, which pairs with
-# classes 16: a tier mismatch). The 80k ratio-32 probe run showed the collapse
-# onset at the SAME train-step count as ratio 128 (~2.4k updates) despite 4×
-# the data per update → capacity/generalization of the con/value heads + RSSM
-# MLPs is the binding constraint (imag_con_min kept crashing → fake-terminal
-# advantage jackpots → entropy limit-cycled 1.8→0.7→1.6→0.45, eval flat).
+# size200m — the reference DEFAULT size, which the atari100k preset does not
+# override: deter 8192, hidden = units = 1024, classes = hidden/16 = 64.
+comptime DETER = 8192
+comptime H = 1024
 comptime STOCH = 32
-comptime CLASSES = 32
+comptime CLASSES = 64
 comptime BLOCKS = 8
 # RAW conv tokens (reference parity): the posterior consumes the flattened
 # final conv map directly — no Linear bottleneck (which starved the posterior;
 # the WM matured ≥10× slower per update than the reference with TOKEN=1024).
-comptime TOKEN = 8 * BASE * (IMG // 16) * (IMG // 16)  # 13824
+comptime TOKEN = 8 * BASE * (IMG // 16) * (IMG // 16)  # 18432
 comptime DEC_U = 1024  # unused by the CNN decoder (BASE drives it)
-comptime HU = 512  # reward/continue head width — the con head is the organ
-# that hallucinated terminals at 256 (units follow the 4096/512 tier)
-comptime VU = 512
-comptime PU = 512
+comptime HU = 1024  # head widths = reference units (size200m tier)
+comptime VU = 1024
+comptime PU = 1024
 comptime BINS = 255
 comptime B = 16
-comptime T = 64  # training-sequence length = the REFERENCE batch_length. This
-# is a WM-maturation lever, not just credit horizon: the forensic probes showed
-# the policy collapses onto a self-fulfilling value ridge within ~1.5-3k
-# updates — before the WM can even render the agent's paddle in dreams. T=64
-# gives the WM 2× the frames per update (like the reference), helping it win
-# that race (together with ac_start below).
+comptime T = 64  # reference batch_length
 comptime T_IMAG = 15
 # GPU-resident pixel replay: CAP×OBS×4 B of VRAM (≈7.4 GB either way below).
 # Bigger CAP protects rare-state coverage (paddle pinned at an edge, ball-at-
@@ -122,38 +120,29 @@ comptime Ag = DreamerV3Agent[
     DEC,
     True,  # RECON_SIGMOID — reference pixel recon (sigmoid + plain MSE on [0,1])
 ]
-comptime Env = AtariEnv[4, DT]  # OBS_MODE=4 (gray-96 4-frame stack)
+comptime Env = AtariEnv[3, DT]  # OBS_MODE=3 (gray-96 single frame)
 
-comptime NUM_STEPS = 500_000  # agent decisions (each = 4 ROM frames = 2M frames)
+comptime NUM_STEPS = 110_000  # agent decisions (×4 ROM frames = 440k frames):
+# the atari100k budget (400k frames) + the reference's own 10% margin (1.1e5).
 comptime LEARN_START = 1024
-# Replay ratio = B·T / TRAIN_EVERY replayed frames per env step. Reference
-# trains at ratio 32: with T=64 (1024 frames per update) that is
-# TRAIN_EVERY=32.
-comptime TRAIN_EVERY = 32
-# WM-maturation gate (see DreamerV3Trainer.ac_start): actor-critic updates
-# start only after the WM has had AC_START updates. Forensics across 4 runs:
-# the actor collapses onto a self-fulfilling VALUE RIDGE (confirmed by the
-# openloop_heads probe — the collapsed action's dream branch scores ~0.3-0.6
-# higher value with identical reward/continue) within ~1.5-3k updates, while
-# the WM needs ~10k+ updates before its dreams even contain the agent's
-# paddle. During the delay the policy stays at its near-uniform init →
-# diverse replay; the actor's first updates then see dreams with real reward
-# structure, which dominates the spurious ridge. 6000 updates ≈ 192k env
-# steps at ratio 32 (3000 was NOT enough: obs_loss was still 4.4 at gate-
-# open, dreams had no paddle, and the fresh value carved its ridge in ~600
-# post-gate updates). QUALITY BAR: obs_loss should be ≤ ~1.5 when the gate
-# opens — if it is not, extend AC_START before judging the run.
-comptime AC_START = 6000
+# Replay ratio = B·T / TRAIN_EVERY replayed frames per env step. atari100k
+# preset: train_ratio 256 → with T=64 (1024 frames per update) TRAIN_EVERY=4
+# (27.5k updates over the run — the reference solves Pong in this many).
+comptime TRAIN_EVERY = 4
+# Actor-critic from step 1 (reference parity, benchmark-honest). The gate
+# (DreamerV3Trainer.ac_start) remains available as DIAGNOSTIC scaffolding
+# only: the collapse history (self-fulfilling value ridge, see the
+# openloop_heads probe) must be beaten ungated to count as a reproduction.
+comptime AC_START = 0
 # WM-checkpoint reuse: set to a checkpoint path from a PREVIOUS run of THIS
 # config (raw-token arch) to skip the WM warmup wall-time entirely — loads the
 # full checkpoint, then `reset_ac()` re-initializes value/slowvalue/policy
 # (the saved ones are collapsed) and the run trains the actor FROM STEP 1 on
 # the mature WM (ac_start=0). This is the benchmark-honest experiment AND the
-# fast iteration loop for AC-side changes. Empty = train from scratch with the
-# AC_START gate above.
+# fast iteration loop for AC-side changes. Empty = train from scratch.
 comptime WM_CKPT = ""
 comptime LOG_EVERY = 1000  # WM/AC loss curves (cheap; no greedy eval) — frequent
-comptime EVAL_EVERY = 5000  # greedy eval + episode returns (expensive, ~3 min)
+comptime EVAL_EVERY = 10_000  # greedy eval + episode returns (expensive, ~3 min)
 comptime EVAL_EPISODES = 5
 comptime EP_LEN = 2000  # eval-episode cap (agent decisions)
 comptime CHECKPOINT_EVERY = 50_000
@@ -204,9 +193,10 @@ def main() raises:
             print("loading WM checkpoint", WM_CKPT, "+ reset_ac()...")
             agent.load(String(WM_CKPT))
             agent.reset_ac()
-        # Machado protocol: sticky actions 0.25 + random no-op starts 30; reward
-        # unclipped (symlog/twohot). Loads roms/pong.bin.
-        var env = Env(AtariGame.PONG, sticky_prob=0.25, noop_max=30)
+        # atari100k env protocol: sticky OFF (unlike full-atari Machado),
+        # random no-op starts 30, reward unclipped (symlog/twohot). Loads
+        # roms/pong.bin.
+        var env = Env(AtariGame.PONG, sticky_prob=0.0, noop_max=30)
 
         # ─── Single train() call — auto-eval + auto-log + auto-checkpoint ──
         print("Starting GPU training (heavy pixel config; warmup is slow)...")
