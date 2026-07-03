@@ -97,3 +97,7 @@ from .ninja import NinjaGame, NinjaAssets
 # NOTE: ninja's generic object ids (GOAL/BOMB/WALL_MID/FIRE/...) stay module-local.
 from .ninja_env import NinjaEnv
 from .ninja_gym_env import NinjaGymEnv, NinjaState, NinjaAction
+from .jumper import JumperGame, JumperAssets
+# NOTE: jumper's generic object ids (GOAL/SPIKE/CAVEWALL/...) stay module-local.
+from .jumper_env import JumperEnv
+from .jumper_gym_env import JumperGymEnv, JumperState, JumperAction
