@@ -151,6 +151,11 @@ def main() raises:
                                         # to a constant, PMPO advantage sign → noise).
                                         # 0.95 (eff. horizon ~20) restores state
                                         # structure. Raise T (→16) if still weak.
+        value_bin_lo=Scalar[DT](-6.0),  # value grid ±symexp(6)≈±402 (vs default
+                                        # ±8100): matches CarRacing's ±~60 scale so
+                                        # the 41 bins have resolution where values
+                                        # live and the TD critic can't drift to the
+                                        # ±2000 excursions seen with the wide grid.
         frame_repeat=4,           # action repeat (standard CarRacing)
         diag=True,                # print reward/value/return sanity stats
         dctx=Optional(ctx),       # GPU dynamics

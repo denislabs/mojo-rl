@@ -297,6 +297,12 @@ def run_online_dreamer4[
     perc_weight: Float64 = 0.0,
     eval_max_steps: Int = 1000,
     imag_gamma: Scalar[DT] = Scalar[DT](0.997),
+    value_bin_lo: Scalar[DT] = Scalar[DT](-9.0),   # symexp value/reward grid lower
+                            # bound: bins span ±symexp(|lo|). Narrow it (e.g. -5/-6)
+                            # for small-bounded-reward envs so the 41 bins get
+                            # resolution where values live AND the value is
+                            # physically bounded (prevents the TD critic drifting
+                            # onto far bins with a short imagination horizon).
     log_every: Int = 500,   # cadence for stdout progress + metric logging
     frame_repeat: Int = 1,  # repeat each chosen action this many env steps
     diag: Bool = False,     # print reward/value/return sanity stats at log cadence
@@ -352,7 +358,7 @@ def run_online_dreamer4[
     var done_b = Tensor.alloc(BATCH)
     var cont_tgt = Tensor.alloc(BATCH)
     var bins = Tensor.alloc(NBINS)
-    symexp_twohot_bins[NBINS](_mao(bins.data.unsafe_ptr()), lo=Scalar[DT](-9.0))
+    symexp_twohot_bins[NBINS](_mao(bins.data.unsafe_ptr()), lo=value_bin_lo)
     for b in range(B):
         task_ids.data[b] = Scalar[DT](0.0)
 
