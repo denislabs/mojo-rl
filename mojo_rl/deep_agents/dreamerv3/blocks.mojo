@@ -1060,8 +1060,11 @@ def _repl_bwd_k[B_: Int, T_: Int, BINS_: Int](
     slowreg: Scalar[DT],
     inv_rep: Scalar[DT],
 ):
-    """Replay-value loss backward over the REAL replay sequence (term=0,
-    last=mb_dne). Per-start downward λ-return scan + twohot CE grads into gvlr.
+    """Replay-value loss backward over the REAL replay sequence (term ≡ last
+    = mb_dne: the replay stores a single episode-end flag, and the con head
+    already trains cont→0 on it, so repval must kill the bootstrap there too
+    or the value target disagrees with imagination at episode ends).
+    Per-start downward λ-return scan + twohot CE grads into gvlr.
     Mirrors `repl_loss_backward[B,T]`."""
     var b = Int(global_idx.x)
     if b < B_:
@@ -1077,7 +1080,7 @@ def _repl_bwd_k[B_: Int, T_: Int, BINS_: Int](
         var t = TM1 - 1
         while t >= 0:
             var live = (
-                Scalar[DT](1.0) - Scalar[DT](0.0)  # term=0
+                Scalar[DT](1.0) - rebind[Scalar[DT]](last[b * T_ + t + 1])
             ) * disc
             var cont = (
                 Scalar[DT](1.0) - rebind[Scalar[DT]](last[b * T_ + t + 1])
@@ -2811,7 +2814,11 @@ struct ACStep[
             for j in range(Self.T):
                 var s = j * Self.B + b
                 boot_bt[b * Self.T + j] = ret[s * TM1 + 0]
-                term_bt[b * Self.T + j] = 0.0   # Pendulum: truncation, not term
+                # term = dne: the replay's one episode-end flag. The con head
+                # already trains cont→0 on it, so repval must not bootstrap
+                # through it (was hardcoded 0 → ret = rew + disc·boot at real
+                # terminals instead of rew).
+                term_bt[b * Self.T + j] = st.mb_dne.data[b * Self.T + j]
                 for k in range(FEATl):
                     self.feat_bt.data[(b * Self.T + j) * FEATl + k] = (
                         feats[(s * TI) * FEATl + k]
@@ -3149,7 +3156,11 @@ struct ACStep[
             for j in range(Self.T):
                 var s = j * Self.B + b
                 boot_bt[b * Self.T + j] = ret[s * TM1 + 0]
-                term_bt[b * Self.T + j] = 0.0   # Pendulum: truncation, not term
+                # term = dne: the replay's one episode-end flag. The con head
+                # already trains cont→0 on it, so repval must not bootstrap
+                # through it (was hardcoded 0 → ret = rew + disc·boot at real
+                # terminals instead of rew).
+                term_bt[b * Self.T + j] = st.mb_dne.data[b * Self.T + j]
                 for k in range(FEATl):
                     self.feat_bt.data[(b * Self.T + j) * FEATl + k] = (
                         feats[(s * TI) * FEATl + k]
