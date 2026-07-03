@@ -101,3 +101,7 @@ from .jumper import JumperGame, JumperAssets
 # NOTE: jumper's generic object ids (GOAL/SPIKE/CAVEWALL/...) stay module-local.
 from .jumper_env import JumperEnv
 from .jumper_gym_env import JumperGymEnv, JumperState, JumperAction
+from .dodgeball import DodgeballGame, DodgeballAssets
+# NOTE: dodgeball's generic object ids (LAVA_WALL/ENEMY/DOOR/...) stay module-local.
+from .dodgeball_env import DodgeballEnv
+from .dodgeball_gym_env import DodgeballGymEnv, DodgeballState, DodgeballAction
