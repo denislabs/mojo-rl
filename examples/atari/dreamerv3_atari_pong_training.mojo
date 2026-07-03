@@ -16,15 +16,22 @@ frame (no stack — the RSSM carries motion), sticky OFF, noop 30, reward
 unclipped, 110k agent steps (= 440k frames, the atari100k budget + ref's 10%
 margin). This makes the run a binary reproduction test of the reference.
 
-Replay `online: True` is now IMPLEMENTED (Phase B-1, reference semantics:
-every fresh T-window is queued on insert and served into a batch row exactly
-once, promptly — recency coverage on top of uniform sampling) and enabled
-below (`online=True`).
+Phase B-1 (replay `online: True`) and Phase B-2 (reference conv geometry)
+are IMPLEMENTED and enabled below:
+  B-1: every fresh T-window is queued on insert and served into a batch row
+       exactly once, promptly (`online=True`).
+  B-2: k5-s1 convs + 2×2 max-pool (encoder) / nearest-×2 upsample (decoder),
+       channels BASE·{2,3,4,4} (TOKEN = 9216 = reference), the decoder's
+       bspace-8 stem (BlockLinear(deter) + MLP(stoch)), and winit
+       trunc_normal_in on every hidden layer (`NET_INIT=TruncNormalIn`).
 
-Remaining NAMED deltas vs the reference (Phase B-2/3 if still collapsing):
-  1. conv geometry — ref kernel 5 + pool downsample, mults [2,3,4,4]·64;
-     ours k4s2, BASE·{1,2,4,8}. Also winit trunc_normal_in (ours Kaiming)
-     and replay_context 1 (ref gives the carry one burn-in frame).
+Remaining NAMED deltas vs the reference (Phase B-3 if still collapsing):
+  1. replay_context 1 — ref stores per-step RSSM latents in replay and
+     rebuilds each window's initial carry from them (dyn.truncate); ours
+     starts windows with a zero carry + fst mask. DEFERRED deliberately:
+     ~6.5 GB extra VRAM at deter 8192 + replay-writeback infra for a 1-step
+     carry burn-in that only improves WM signal — already our strongest
+     component (obs_loss ≈0.3 by 3k updates).
   2. obs — ref atari100k is 64×64 RGB; ours 96×96 grayscale (Pong is
      near-monochrome and we have MORE pixels; ranked last).
 
@@ -54,10 +61,11 @@ from mojo_rl.core.dotenv import load_dotenv
 from mojo_rl.core.logger import RemoteLogger
 from mojo_rl.nn.constants import DT
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
+from mojo_rl.nn.core.initializer import Zero, TruncNormalIn
 from mojo_rl.deep_agents.dreamerv3.agent import DreamerV3Agent
 from mojo_rl.deep_agents.dreamerv3.nets_cnn import (
-    DreamerEncoderCNNRaw,
-    DreamerDecoderCNN,
+    DreamerEncoderCNNPool,
+    DreamerDecoderCNNPool,
 )
 from mojo_rl.envs.atari import AtariEnv
 from mojo_rl.envs.atari.games.registry import AtariGame
@@ -67,7 +75,7 @@ from mojo_rl.envs.atari.games.registry import AtariGame
 # =============================================================================
 comptime C = 1  # single grayscale frame (reference parity — no stacking)
 comptime IMG = 96  # 96×96 (16-divisible → conv minres 6)
-comptime BASE = 64  # conv base width (channels BASE·{1,2,4,8}); ref depth 64
+comptime BASE = 64  # conv base width (channels BASE·{2,3,4,4}); ref depth 64
 comptime OBS = C * IMG * IMG  # 9216
 comptime ACT = 6  # Pong minimal action set (NOOP/FIRE/RIGHT/LEFT/RIGHTFIRE/LEFTFIRE)
 # size200m — the reference DEFAULT size, which the atari100k preset does not
@@ -78,9 +86,11 @@ comptime STOCH = 32
 comptime CLASSES = 64
 comptime BLOCKS = 8
 # RAW conv tokens (reference parity): the posterior consumes the flattened
-# final conv map directly — no Linear bottleneck (which starved the posterior;
-# the WM matured ≥10× slower per update than the reference with TOKEN=1024).
-comptime TOKEN = 8 * BASE * (IMG // 16) * (IMG // 16)  # 18432
+# final conv map directly — no Linear bottleneck. With the Phase B-2 pool
+# geometry (channels BASE·{2,3,4,4}, final depth 4·BASE) this is
+# 4·BASE·(IMG/16)² = 256·36 = 9216 — the reference's exact token width.
+comptime TOKEN = 4 * BASE * (IMG // 16) * (IMG // 16)  # 9216
+comptime UNITS = 1024  # decoder bspace-stem MLP width (reference `units`)
 comptime DEC_U = 1024  # unused by the CNN decoder (BASE drives it)
 comptime HU = 1024  # head widths = reference units (size200m tier)
 comptime VU = 1024
@@ -96,8 +106,13 @@ comptime T_IMAG = 15
 comptime CAP = 200_000 if C == 1 else 50_000
 
 comptime FEATIN = STOCH * CLASSES + DETER
-comptime ENC = DreamerEncoderCNNRaw[C, IMG, IMG, BASE, SwishOp]  # raw tokens
-comptime DEC = DreamerDecoderCNN[FEATIN, C, IMG, IMG, BASE, SwishOp]
+# Phase B-2 reference geometry: k5-s1 convs + 2×2 max-pool (encoder) /
+# nearest-×2 upsample (decoder), channels BASE·{2,3,4,4}, and the decoder's
+# bspace-8 two-branch input stem (BlockLinear(deter) + MLP(stoch)).
+comptime ENC = DreamerEncoderCNNPool[C, IMG, IMG, BASE, SwishOp]
+comptime DEC = DreamerDecoderCNNPool[
+    FEATIN, DETER, C, IMG, IMG, BASE, UNITS, SwishOp
+]
 
 comptime Ag = DreamerV3Agent[
     "gpu",
@@ -122,6 +137,8 @@ comptime Ag = DreamerV3Agent[
     ENC,
     DEC,
     True,  # RECON_SIGMOID — reference pixel recon (sigmoid + plain MSE on [0,1])
+    Zero,  # OUT_INIT — reference rew/value outscale 0
+    TruncNormalIn,  # NET_INIT — reference winit trunc_normal_in (σ=√(1/fan_in))
 ]
 comptime Env = AtariEnv[3, DT]  # OBS_MODE=3 (gray-96 single frame)
 

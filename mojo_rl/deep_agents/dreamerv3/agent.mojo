@@ -43,7 +43,7 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.tensor import Tensor, TensorImpl
 from mojo_rl.nn.core.tensor_refs import TensorRefs, child_refs
 from mojo_rl.nn.core.module import Module
-from mojo_rl.nn.core.initializer import Initializer, Zero
+from mojo_rl.nn.core.initializer import Initializer, Kaiming, Zero
 from mojo_rl.nn.primitives.ops.swish_op import SwishOp
 from mojo_rl.deep_agents.dreamerv3.nets import DreamerEncoder, DreamerDecoder
 from mojo_rl.deep_agents.dreamerv3.trainer import DreamerV3Trainer
@@ -91,6 +91,9 @@ struct DreamerV3Agent[
     # reward tasks), Kaiming = full init optimism (positive-reward tasks like
     # CartPole). The policy head's reference outscale 0.01 is fixed in nets.
     OUT_INIT: Initializer = Zero,
+    # Hidden-layer weight init (see trainer): Kaiming default; TruncNormalIn
+    # = reference parity.
+    NET_INIT: Initializer = Kaiming,
 ](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
@@ -103,6 +106,7 @@ struct DreamerV3Agent[
         Self.CLASSES, Self.BLOCKS, Self.TOKEN, Self.DEC_U, Self.HU, Self.VU,
         Self.PU, Self.BINS, Self.B, Self.T, Self.T_IMAG, Self.CAP, Self.DISCRETE,
         Self.ENC, Self.DEC, Self.RECON_SIGMOID, Self.OUT_INIT,
+        Self.NET_INIT,
     ]
     comptime MINSTD = Scalar[DT](0.1)
     comptime MAXSTD = Scalar[DT](1.0)

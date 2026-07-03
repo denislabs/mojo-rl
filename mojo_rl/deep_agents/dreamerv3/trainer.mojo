@@ -107,6 +107,11 @@ struct DreamerV3Trainer[
     # (helps POSITIVE-reward tasks like CartPole explore/solve faster). The
     # policy head's reference outscale 0.01 is FIXED inside DreamerPolicyHead.
     OUT_INIT: Initializer = Zero,
+    # Hidden-layer weight init for ALL networks. Kaiming (He-uniform,
+    # gain sqrt(6/fan_in)) is the historical default; the reference uses
+    # trunc_normal_in (sigma = sqrt(1/fan_in), sqrt(2) smaller) — pass
+    # `TruncNormalIn` for reference parity.
+    NET_INIT: Initializer = Kaiming,
 ](Movable & ImplicitlyDeletable):
     comptime SC = Self.STOCH * Self.CLASSES
     comptime FEAT = Self.DETER + Self.SC
@@ -225,15 +230,15 @@ struct DreamerV3Trainer[
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
         ), "DreamerV3Trainer: train_target must be 'cpu' or 'gpu'"
-        var enc = Self.EncT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var core = Self.CoreT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var dec = Self.DecT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var rew = Self.RewT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var con = Self.ConT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var value = Self.ValT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var slowvalue = Self.ValT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var policy = Self.PolT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
-        var imagine = Self.ImagT.make[Self.train_target, INIT=Kaiming](ctx=ctx)
+        var enc = Self.EncT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var core = Self.CoreT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var dec = Self.DecT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var rew = Self.RewT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var con = Self.ConT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var value = Self.ValT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var slowvalue = Self.ValT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var policy = Self.PolT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
+        var imagine = Self.ImagT.make[Self.train_target, INIT = Self.NET_INIT](ctx=ctx)
 
         # Output-head inits are declared STRUCTURALLY in nets.mojo (InitWith):
         # reward + value/slowvalue built with `OUT_INIT` (paper p.6 zero-init
@@ -1130,13 +1135,13 @@ struct DreamerV3Trainer[
         device buffers) — a previously captured train graph would replay onto
         stale pointers. In the standard flow (load → reset_ac → train) the
         first capture happens after lr-warmup, well past this call."""
-        self.value = Self.ValT.make[Self.train_target, INIT=Kaiming](
+        self.value = Self.ValT.make[Self.train_target, INIT = Self.NET_INIT](
             ctx=self.ctx
         )
-        self.slowvalue = Self.ValT.make[Self.train_target, INIT=Kaiming](
+        self.slowvalue = Self.ValT.make[Self.train_target, INIT = Self.NET_INIT](
             ctx=self.ctx
         )
-        self.policy = Self.PolT.make[Self.train_target, INIT=Kaiming](
+        self.policy = Self.PolT.make[Self.train_target, INIT = Self.NET_INIT](
             ctx=self.ctx
         )
         self.oval = DreamerOpt(lr=self.oval.lr)
