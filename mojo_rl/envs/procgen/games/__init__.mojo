@@ -93,3 +93,7 @@ from .climber import ClimberGame, ClimberAssets
 # (collide with other games'). Import from `...games.climber` directly.
 from .climber_env import ClimberEnv
 from .climber_gym_env import ClimberGymEnv, ClimberState, ClimberAction
+from .ninja import NinjaGame, NinjaAssets
+# NOTE: ninja's generic object ids (GOAL/BOMB/WALL_MID/FIRE/...) stay module-local.
+from .ninja_env import NinjaEnv
+from .ninja_gym_env import NinjaGymEnv, NinjaState, NinjaAction
