@@ -71,6 +71,15 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
     # set; `record_terminal` leaves it armed so the post-terminal reset frame
     # (not the stored terminal obs) is the one flagged first.
     var pending_first: Bool
+    # Online queue (reference replay `online: True`): every `online_every`-th
+    # appended frame enqueues the newest window's END slot (physical index);
+    # `sample_batch_fst` pops these into batch rows before falling back to
+    # uniform draws — every fresh window is trained on exactly once, promptly
+    # (a recency-coverage guarantee, NOT a heavy freshness bias). 0 = off
+    # (default; all existing consumers byte-identical).
+    var online_every: Int
+    var online_tick: Int
+    var online_q: List[Int]  # FIFO of physical end-slot indices (small)
 
     @staticmethod
     def new() -> Self:
@@ -84,6 +93,9 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
             size=0,
             pos=0,
             pending_first=True,
+            online_every=0,
+            online_tick=0,
+            online_q=List[Int](),
         )
 
     @staticmethod
@@ -99,6 +111,39 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
 
     def count(self) -> Int:
         return self.size
+
+    def set_online(mut self, every: Int):
+        """Enable the online queue: each `every`-th appended frame enqueues the
+        freshest length-`every` window for guaranteed prompt sampling. Pass the
+        training window length T. 0 disables (the default)."""
+        self.online_every = every
+
+    def _online_tick_append(mut self):
+        """Called after every ring append. Enqueues the just-completed fresh
+        window (its END slot, physical) once per `online_every` appends."""
+        if self.online_every <= 0:
+            return
+        self.online_tick += 1
+        if (
+            self.online_tick >= self.online_every
+            and self.size >= self.online_every + 1
+        ):
+            if len(self.online_q) >= 32:  # backlog cap: drop oldest
+                _ = self.online_q.pop(0)
+            self.online_q.append((self.pos - 1 + Self.CAP) % Self.CAP)
+            self.online_tick = 0
+
+    def _online_pop_start(mut self, T: Int) -> Int:
+        """Pop the oldest queued fresh window; return its LOGICAL start index,
+        or -1 if the queue is empty (or the window was evicted)."""
+        var origin = self._origin()
+        while len(self.online_q) > 0:
+            var phys_end = self.online_q.pop(0)
+            var end_logical = (phys_end - origin + Self.CAP) % Self.CAP
+            var s = end_logical - T
+            if s >= 0 and end_logical < self.size:
+                return s
+        return -1
 
     def record(
         mut self,
@@ -121,6 +166,7 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
         self.pos = (self.pos + 1) % Self.CAP
         if self.size < Self.CAP:
             self.size += 1
+        self._online_tick_append()
 
     def record_terminal(
         mut self,
@@ -144,6 +190,7 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
         self.pos = (self.pos + 1) % Self.CAP
         if self.size < Self.CAP:
             self.size += 1
+        self._online_tick_append()
 
     def record_task(
         mut self,
@@ -254,9 +301,13 @@ struct SequenceReplay[OBS_: Int, ACT_: Int, CAP_: Int](SequenceReplayBuffer):
         var n_valid = self.size - T
         var origin = self._origin()
         for b in range(B):
-            var s = Int(random_float64() * Float64(n_valid))
-            if s >= n_valid:
-                s = n_valid - 1
+            # Online queue first (reference `online: True`): fresh windows are
+            # served exactly once, remaining rows draw uniform.
+            var s = self._online_pop_start(T)
+            if s < 0:
+                s = Int(random_float64() * Float64(n_valid))
+                if s >= n_valid:
+                    s = n_valid - 1
             for k in range(T + 1):
                 var phys = (origin + s + k) % Self.CAP
                 var src = phys * Self.OBS

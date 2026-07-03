@@ -16,13 +16,16 @@ frame (no stack — the RSSM carries motion), sticky OFF, noop 30, reward
 unclipped, 110k agent steps (= 440k frames, the atari100k budget + ref's 10%
 margin). This makes the run a binary reproduction test of the reference.
 
-Remaining NAMED deltas vs the reference (Phase B if this run collapses):
-  1. replay `online: True` — ref mixes the freshest chunk into every batch;
-     we sample uniform-only (top ridge-resistance suspect at ratio 256).
-  2. conv geometry — ref kernel 5 + pool downsample, mults [2,3,4,4]·64;
+Replay `online: True` is now IMPLEMENTED (Phase B-1, reference semantics:
+every fresh T-window is queued on insert and served into a batch row exactly
+once, promptly — recency coverage on top of uniform sampling) and enabled
+below (`online=True`).
+
+Remaining NAMED deltas vs the reference (Phase B-2/3 if still collapsing):
+  1. conv geometry — ref kernel 5 + pool downsample, mults [2,3,4,4]·64;
      ours k4s2, BASE·{1,2,4,8}. Also winit trunc_normal_in (ours Kaiming)
      and replay_context 1 (ref gives the carry one burn-in frame).
-  3. obs — ref atari100k is 64×64 RGB; ours 96×96 grayscale (Pong is
+  2. obs — ref atari100k is 64×64 RGB; ours 96×96 grayscale (Pong is
      near-monochrome and we have MORE pixels; ranked last).
 
 Observation: **1×96×96 grayscale single frame** (OBS = 9216, values in [0,1]) —
@@ -145,7 +148,7 @@ comptime LOG_EVERY = 1000  # WM/AC loss curves (cheap; no greedy eval) — frequ
 comptime EVAL_EVERY = 10_000  # greedy eval + episode returns (expensive, ~3 min)
 comptime EVAL_EPISODES = 5
 comptime EP_LEN = 2000  # eval-episode cap (agent decisions)
-comptime CHECKPOINT_EVERY = 50_000
+comptime CHECKPOINT_EVERY = 10_000  # frequent WM assets for WM_CKPT/reset_ac reuse
 comptime CHECKPOINT_PATH = "dreamerv3_atari_pong_gpu.ckpt"
 
 
@@ -188,6 +191,9 @@ def main() raises:
             slowtar=False,
             # WM-ckpt reuse → actor from step 1 (no gate); scratch → gated.
             ac_start=0 if WM_CKPT.byte_length() > 0 else AC_START,
+            # Reference replay `online: True` (Phase B-1): every fresh
+            # T-window is guaranteed into a batch row exactly once, promptly.
+            online=True,
         )
         comptime if WM_CKPT.byte_length() > 0:
             print("loading WM checkpoint", WM_CKPT, "+ reset_ac()...")

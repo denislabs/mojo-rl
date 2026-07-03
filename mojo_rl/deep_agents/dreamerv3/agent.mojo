@@ -132,13 +132,14 @@ struct DreamerV3Agent[
         slowtar: Bool = False,
         device_noise: Bool = True,
         ac_start: Int = 0,
+        online: Bool = False,
     ) raises -> Self:
         var a = Self(
             trainer=Self.TrainerT.make(
                 ctx=ctx, lr=lr, learning_starts=learning_starts,
                 warmup_steps=warmup_steps,
                 actent=actent, slowtar=slowtar, device_noise=device_noise,
-                ac_start=ac_start,
+                ac_start=ac_start, online=online,
             ),
             belief_deter=Tensor.alloc(Self.DETER),
             belief_stoch=Tensor.alloc(Self.SC),

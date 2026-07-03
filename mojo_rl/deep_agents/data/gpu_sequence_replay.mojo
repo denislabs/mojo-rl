@@ -170,6 +170,21 @@ def _seq_draw_starts_kernel[
     starts[b] = Int32(s)
 
 
+def _seq_set_start_kernel[
+    B: Int
+](
+    starts: LayoutTensor[DType.int32, Layout.row_major(B), MutAnyOrigin],
+    row: Int32,
+    value: Int32,
+):
+    """Overwrite `starts[row]` with a host-chosen (online-queue) window start.
+    Enqueued eagerly between the draw and gather kernels; the Philox draw
+    still runs for every row, so the RNG offset sequence is unchanged whether
+    or not online rows are served. Launch grid=(1,), block=(1,)."""
+    if Int(thread_idx.x) == 0:
+        starts[Int(row)] = value
+
+
 def _seq_sample_kernel[
     B: Int,
     T: Int,
@@ -317,6 +332,15 @@ struct GPUSequenceReplay[
     # advances it on-device → CUDA-graph capturable. Offset sequence
     # (k·2·B) unchanged → sampled windows bit-identical to the host path.
     var _rng_offset_dev: DeviceBuffer[DType.uint64]
+    # Online queue (reference replay `online: True`) — host-side twin of
+    # `SequenceReplay.online_*`: every `online_every`-th appended frame
+    # enqueues the newest window's END slot (physical); `sample_batch_dev`
+    # serves them into the first batch rows via `_seq_set_start_kernel`
+    # before the uniform rows. 0 = off (default; all consumers unchanged).
+    # Single-env `record`/`record_terminal` only (`record_batch` unsupported).
+    var online_every: Int
+    var online_tick: Int
+    var online_q: List[Int]
 
     @staticmethod
     def new(ctx: DeviceContext, batch_capacity: Int = 4096) raises -> Self:
@@ -372,6 +396,9 @@ struct GPUSequenceReplay[
             pending_first=True,
             rng_seed=UInt64(0xC0FFEE_DECADE_0042),
             _rng_offset_dev=rng_off^,
+            online_every=0,
+            online_tick=0,
+            online_q=List[Int](),
         )
 
     # ─── SequenceReplayBuffer trait surface ──────────────────────────────
@@ -396,6 +423,39 @@ struct GPUSequenceReplay[
 
     def can_sample[T: Int](self) -> Bool:
         return self.size >= T + 1
+
+    def set_online(mut self, every: Int):
+        """Enable the online queue: each `every`-th appended frame enqueues the
+        freshest length-`every` window for guaranteed prompt sampling. Pass the
+        training window length T. 0 disables (the default)."""
+        self.online_every = every
+
+    def _online_tick_append(mut self):
+        """Called after every single-env ring append (device twin of
+        `SequenceReplay._online_tick_append`; pure host bookkeeping)."""
+        if self.online_every <= 0:
+            return
+        self.online_tick += 1
+        if (
+            self.online_tick >= self.online_every
+            and self.size >= self.online_every + 1
+        ):
+            if len(self.online_q) >= 32:  # backlog cap: drop oldest
+                _ = self.online_q.pop(0)
+            self.online_q.append((self.pos - 1 + Self.CAP) % Self.CAP)
+            self.online_tick = 0
+
+    def _online_pop_start(mut self, T: Int) -> Int:
+        """Pop the oldest queued fresh window; return its LOGICAL start index,
+        or -1 if the queue is empty (or the window was evicted)."""
+        var origin = 0 if self.size < Self.CAP else self.pos
+        while len(self.online_q) > 0:
+            var phys_end = self.online_q.pop(0)
+            var end_logical = (phys_end - origin + Self.CAP) % Self.CAP
+            var s = end_logical - T
+            if s >= 0 and end_logical < self.size:
+                return s
+        return -1
 
     def record(
         mut self,
@@ -464,6 +524,7 @@ struct GPUSequenceReplay[
         self.pos = (self.pos + 1) % Self.CAP
         if self.size < Self.CAP:
             self.size += 1
+        self._online_tick_append()
 
     def record_terminal(
         mut self,
@@ -512,6 +573,7 @@ struct GPUSequenceReplay[
         self.pos = (self.pos + 1) % Self.CAP
         if self.size < Self.CAP:
             self.size += 1
+        self._online_tick_append()
 
     def record_batch[
         N_ENVS: Int
@@ -597,6 +659,14 @@ struct GPUSequenceReplay[
             )
         var origin = 0 if self.size < Self.CAP else self.pos
         var n_valid = self.size - T
+        # Drain pending online windows FIRST (host bookkeeping, before any
+        # LayoutTensor views of self exist — keeps the aliasing checker happy).
+        var online_rows = List[Int]()
+        while len(online_rows) < B:
+            var on = self._online_pop_start(T)
+            if on < 0:
+                break
+            online_rows.append(on)
 
         var buf_s_lt = LayoutTensor[
             Self.SDT, Layout.row_major(Self.CAP, Self.OBS)
@@ -639,6 +709,20 @@ struct GPUSequenceReplay[
             grid_dim=n_blocks_draw,
             block_dim=TPB,
         )
+
+        # 1b) Online rows (reference `online: True`): overwrite the first
+        #     rows' starts with the pending fresh windows. Eager (the sample
+        #     phase sits outside any captured graph); the Philox draw above
+        #     already consumed its stream, so the uniform rows are
+        #     bit-identical whether or not online rows are served.
+        for i in range(len(online_rows)):
+            ctx.enqueue_function[_seq_set_start_kernel[B]](
+                starts_lt,
+                Int32(i),
+                Int32(online_rows[i]),
+                grid_dim=1,
+                block_dim=1,
+            )
 
         # 2) Element-parallel gather: one thread per (window × frame ×
         #    OBS element).

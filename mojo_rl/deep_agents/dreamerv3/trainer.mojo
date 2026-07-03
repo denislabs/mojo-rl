@@ -217,6 +217,7 @@ struct DreamerV3Trainer[
         slowtar: Bool = False,
         device_noise: Bool = True,
         ac_start: Int = 0,
+        online: Bool = False,
     ) raises -> Self:
         comptime assert (
             Self.train_target == "cpu" or Self.train_target == "gpu"
@@ -304,6 +305,11 @@ struct DreamerV3Trainer[
             for c in range(Self.BINS):
                 s.ac_blk.bins_d.data[c] = s.bins[c]
             s.ac_blk.bins_d.upload(ctx.value())
+        # Reference replay `online: True`: every fresh T-window is guaranteed
+        # into a batch row exactly once, promptly (recency coverage on top of
+        # uniform sampling).
+        if online:
+            s.replay.set_online(Self.T)
         return s^
 
     def record(
