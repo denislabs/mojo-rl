@@ -126,24 +126,29 @@ def main() raises:
     logger.set_config("obs", "pixel")
 
     print("starting online training...")
-    # ── DIAGNOSTIC config (diag=True): a short run that reaches Stage 2 fast and
-    # prints, at log_every, the real batch reward vs the reward head's IMAGINED
-    # reward, the imagined value, and the λ-returns — to see whether imagination
-    # is optimistic (phantom rewards) vs the WM being accurate. For TRAINING,
-    # restore warmup=5_000, tok_pretrain=2_000, total_env_steps=200_000 (→1_000_000
-    # once trending up), eval_every=10_000, and diag=False.
+    # ── TRAINING config. The reward/value diagnostic (diag=True, still on as cheap
+    # telemetry) confirmed the critic is now stable: with imag_gamma=0.95 +
+    # value_bin_lo=-6 the value stays bounded (±~20) with state structure and
+    # tracks the λ-returns (the earlier ±2000 divergence is gone). This run is the
+    # real learning curve — multiple eval points over 200k steps.
+    #
+    # NEXT LEVER if eval stays flat: the imagination horizon is only H≈T-1≈4 steps,
+    # likely too short for CarRacing credit assignment. Raise T (6→10) at the top of
+    # this file — it lengthens both the imagination horizon AND the WM training
+    # window, at ~3× WM attention cost (watch GPU memory). Scale total_env_steps to
+    # 1_000_000+ once eval is trending up.
     var summary = run_online_dreamer4[
         IN_CH=IN_CH, IMG=IMG, TGT=TGT, PATCH=PATCH, TNP=NP, CAP=CAP,
         TOK_D=TOK_D, TOK_NH=TOK_NH, TOK_HID=TOK_HID, TOK_DEPTH=TOK_DEPTH,
         TOK_PMIN=DROP, TOK_PMAX=DROP, TOK_SEED=7, DYN_TARGET="gpu",
     ](
         agent, tok, backbone, env, logger,
-        warmup_steps=1_000,
-        tok_pretrain_steps=500,
-        total_env_steps=10_000,
+        warmup_steps=5_000,
+        tok_pretrain_steps=2_000,
+        total_env_steps=200_000,
         train_every=4,
         imag_every=8,
-        eval_every=5_000,
+        eval_every=10_000,
         perc_weight=0.2,          # paper eq. 5: MSE + 0.2·perceptual (GPU backbone)
         eval_max_steps=1_000,
         imag_gamma=Scalar[DT](0.95),   # H≈4-step imagination ⇒ 0.997 is mismatched
