@@ -146,7 +146,11 @@ def main() raises:
         eval_every=5_000,
         perc_weight=0.2,          # paper eq. 5: MSE + 0.2·perceptual (GPU backbone)
         eval_max_steps=1_000,
-        imag_gamma=Scalar[DT](0.997),
+        imag_gamma=Scalar[DT](0.95),   # H≈4-step imagination ⇒ 0.997 is mismatched
+                                        # (return = ~pure bootstrap, value collapses
+                                        # to a constant, PMPO advantage sign → noise).
+                                        # 0.95 (eff. horizon ~20) restores state
+                                        # structure. Raise T (→16) if still weak.
         frame_repeat=4,           # action repeat (standard CarRacing)
         diag=True,                # print reward/value/return sanity stats
         dctx=Optional(ctx),       # GPU dynamics
