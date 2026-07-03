@@ -151,6 +151,10 @@ def main() raises:
         eval_every=10_000,
         perc_weight=0.2,          # paper eq. 5: MSE + 0.2·perceptual (GPU backbone)
         eval_max_steps=1_000,
+        num_eval_episodes=8,      # average greedy return over 8 random tracks —
+                                  # single-episode eval is dominated by which track
+                                  # it draws (a +42 vs -66 swing can be the SAME
+                                  # policy on an easy vs hard track).
         imag_gamma=Scalar[DT](0.95),   # H≈4-step imagination ⇒ 0.997 is mismatched
                                         # (return = ~pure bootstrap, value collapses
                                         # to a constant, PMPO advantage sign → noise).

@@ -296,6 +296,10 @@ def run_online_dreamer4[
     lr_imag: Scalar[DT] = Scalar[DT](1e-2),
     perc_weight: Float64 = 0.0,
     eval_max_steps: Int = 1000,
+    num_eval_episodes: Int = 1,   # average the greedy-eval return over this many
+                            # episodes. CarRacing draws a NEW random track each
+                            # reset, so a single greedy episode is dominated by
+                            # track-seed noise; average 5-10 to see the real trend.
     imag_gamma: Scalar[DT] = Scalar[DT](0.997),
     value_bin_lo: Scalar[DT] = Scalar[DT](-9.0),   # symexp value/reward grid lower
                             # bound: bins span ±symexp(|lo|). Narrow it (e.g. -5/-6)
@@ -719,41 +723,57 @@ def run_online_dreamer4[
                 last_p = il[1]
             did_imag = True
 
-        # ── greedy-eval episode (measurable return; interrupts training ep) ──
+        # ── greedy-eval (measurable return; interrupts training ep). Averaged
+        # over num_eval_episodes to cancel CarRacing's per-reset track-seed noise ──
         if eval_every > 0 and step % eval_every == 0 and step > 0:
-            var eob = env.reset_obs_list()
-            for i in range(IMG_DIM):
-                ecur[i] = Scalar[DT](Float64(eob[i]))
-            var ewin_n = 0
-            var elast = -1
-            var eret: Float64 = 0.0
-            for _es in range(eval_max_steps):
-                ewin_n = _push_frame[IN_CH, IMG, TGT, PATCH, T, NP, DP](
-                    _mao(ecur.unsafe_ptr()), efr1, epa1, ewin_patch, ewin_act,
-                    ewin_n, elast,
-                )
-                for i in range(ewin_n * NP * DP, T * NP * DP):
-                    ewin_patch.data[i] = Scalar[DT](0.0)
-                _encode[T, DYN_TARGET](tok.enc, ewin_patch, ewin_z, dctx)
-                for i in range(T * ADIM):
-                    eact_hist[i] = Scalar[DT](0.0)
-                for fr in range(1, ewin_n):
-                    var ap = ewin_act[fr]
-                    if ap >= 0 and ap < ADIM:
-                        eact_hist[fr * ADIM + ap] = Scalar[DT](1.0)
-                var ea = agent.act_from_latents(
-                    _mao(ewin_z.data.unsafe_ptr()), ewin_n,
-                    _mao(eact_hist.unsafe_ptr()), 0, False, 0.0, dctx,
-                )
-                var erd = _step_repeat[E, IMG_DIM](env, ea, frame_repeat, ecur)
-                eret += erd[0]
-                elast = ea
-                if erd[1]:
-                    break
-            last_eval_return = eret
-            print("  [eval] step", step, " greedy return =", eret)
+            var eret_sum: Float64 = 0.0
+            var eret_min: Float64 = 0.0
+            var eret_max: Float64 = 0.0
+            var n_ep = num_eval_episodes if num_eval_episodes > 0 else 1
+            for _ep in range(n_ep):
+                var eob = env.reset_obs_list()
+                for i in range(IMG_DIM):
+                    ecur[i] = Scalar[DT](Float64(eob[i]))
+                var ewin_n = 0
+                var elast = -1
+                var eret: Float64 = 0.0
+                for _es in range(eval_max_steps):
+                    ewin_n = _push_frame[IN_CH, IMG, TGT, PATCH, T, NP, DP](
+                        _mao(ecur.unsafe_ptr()), efr1, epa1, ewin_patch, ewin_act,
+                        ewin_n, elast,
+                    )
+                    for i in range(ewin_n * NP * DP, T * NP * DP):
+                        ewin_patch.data[i] = Scalar[DT](0.0)
+                    _encode[T, DYN_TARGET](tok.enc, ewin_patch, ewin_z, dctx)
+                    for i in range(T * ADIM):
+                        eact_hist[i] = Scalar[DT](0.0)
+                    for fr in range(1, ewin_n):
+                        var ap = ewin_act[fr]
+                        if ap >= 0 and ap < ADIM:
+                            eact_hist[fr * ADIM + ap] = Scalar[DT](1.0)
+                    var ea = agent.act_from_latents(
+                        _mao(ewin_z.data.unsafe_ptr()), ewin_n,
+                        _mao(eact_hist.unsafe_ptr()), 0, False, 0.0, dctx,
+                    )
+                    var erd = _step_repeat[E, IMG_DIM](env, ea, frame_repeat, ecur)
+                    eret += erd[0]
+                    elast = ea
+                    if erd[1]:
+                        break
+                eret_sum += eret
+                if _ep == 0 or eret < eret_min:
+                    eret_min = eret
+                if _ep == 0 or eret > eret_max:
+                    eret_max = eret
+            last_eval_return = eret_sum / Float64(n_ep)
+            if n_ep > 1:
+                print("  [eval] step", step, " greedy return (mean/min/max over",
+                      n_ep, ") =", last_eval_return, eret_min, eret_max)
+            else:
+                print("  [eval] step", step, " greedy return =", last_eval_return)
             if logger.is_active():
-                logger.log_scalar(String("online/eval_return"), eret, step)
+                logger.log_scalar(String("online/eval_return"),
+                                  last_eval_return, step)
             # resume training on a fresh episode (eval consumed the env)
             var rob = env.reset_obs_list()
             for i in range(IMG_DIM):
