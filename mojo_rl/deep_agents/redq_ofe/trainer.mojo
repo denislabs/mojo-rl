@@ -62,10 +62,10 @@ from ..training.episode_tracker import EpisodeTracker
 from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.blocks import SampleBlock
-from ..training.blocks.action_kernels import (
-    offpolicy_warmup_uniform_kernel,
+from ..training.blocks.action_select import (
+    select_squashed_batched,
+    warmup_uniform_batched,
 )
-from ..training.blocks.action_select import select_squashed_batched
 from ..sac.blocks.alpha_update_step import AlphaUpdateStep
 
 from ..redq.ensemble import CriticEnsemble
@@ -515,25 +515,14 @@ struct REDQOFETrainer[
         comptime PHI = Self.PHI_S_DIM
 
         if step_idx < self.learning_starts:
-            comptime if Self.train_target == "cpu":
-                for env in range(N_ENVS):
-                    for j in range(ACT):
-                        var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                        action[env, j] = u * self.action_scale
-                return
-            else:
-                var c = self.ctx.value()
-                comptime tot = N_ENVS * ACT
-                c.enqueue_function[offpolicy_warmup_uniform_kernel[N_ENVS, ACT]](
-                    action,
-                    self.action_scale,
-                    self._warmup_rng_seed,
-                    self._warmup_rng_offset,
-                    grid_dim=(tot + TPB - 1) // TPB,
-                    block_dim=TPB,
-                )
-                self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
-                return
+            warmup_uniform_batched[Self.train_target, N_ENVS, ACT](
+                action,
+                self.action_scale,
+                self.ctx,
+                self._warmup_rng_seed,
+                self._warmup_rng_offset,
+            )
+            return
 
         # ── Policy: shared squashed-actor body (see
         # training/blocks/action_select.mojo — one copy for

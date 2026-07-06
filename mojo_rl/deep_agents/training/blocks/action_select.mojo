@@ -19,6 +19,7 @@ The warmup-uniform branch stays in each trainer (it precedes this call).
 
 from layout import Layout, LayoutTensor
 from std.gpu.host import DeviceContext
+from std.random import random_float64
 
 from mojo_rl.nn.constants import DT, TPB
 from mojo_rl.nn.core.module import Module
@@ -32,10 +33,42 @@ from mojo_rl.nn.random.box_muller import (
 )
 
 from .action_kernels import (
+    offpolicy_warmup_uniform_kernel,
     offpolicy_copy2d_kernel,
     offpolicy_noise_clamp_kernel,
     offpolicy_clamp_action_kernel,
 )
+
+
+def warmup_uniform_batched[
+    target: StaticString, N_ENVS: Int, ACT: Int
+](
+    action: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
+    action_scale: Scalar[DT],
+    ctx: Optional[DeviceContext],
+    mut warmup_rng_seed: UInt64,
+    mut warmup_rng_offset: UInt64,
+) raises:
+    """Warmup: Uniform(-action_scale, +action_scale) actions. CPU uses the
+    host RNG (matching the historical trainers); GPU launches the shared
+    Philox warmup kernel and advances the caller's offset."""
+    comptime if target == "cpu":
+        for env in range(N_ENVS):
+            for j in range(ACT):
+                var u = Scalar[DT](2.0 * random_float64() - 1.0)
+                action[env, j] = u * action_scale
+    else:
+        var c = ctx.value()
+        comptime tot = N_ENVS * ACT
+        c.enqueue_function[offpolicy_warmup_uniform_kernel[N_ENVS, ACT]](
+            action,
+            action_scale,
+            warmup_rng_seed,
+            warmup_rng_offset,
+            grid_dim=(tot + TPB - 1) // TPB,
+            block_dim=TPB,
+        )
+        warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
 
 
 def select_deterministic_batched[

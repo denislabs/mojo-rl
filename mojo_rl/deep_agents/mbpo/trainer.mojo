@@ -57,10 +57,12 @@ from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.off_policy_critic import concat_sa_gpu
 from ..training.blocks import DualSampleStep, TwinCriticStep, PolyakStep
 from ..training.blocks.action_kernels import (
-    offpolicy_warmup_uniform_kernel,
     offpolicy_clamp_action_kernel,
 )
-from ..training.blocks.action_select import select_squashed_batched
+from ..training.blocks.action_select import (
+    select_squashed_batched,
+    warmup_uniform_batched,
+)
 from ..sac.target_y_block import TargetYBlock
 from ..sac.actor_loss import SACActorLoss
 from ..sac.blocks.alpha_update_step import AlphaUpdateStep
@@ -1356,27 +1358,13 @@ struct MBPOTrainer[
         comptime ACT = Self.ACT_DIM
 
         if step_idx < self.learning_starts:
-            comptime if Self.train_target == "cpu":
-                for env in range(N_ENVS):
-                    for j in range(ACT):
-                        var u = Scalar[DT](2.0 * random_float64() - 1.0)
-                        action[env, j] = u * self.action_scale
-            else:
-                comptime total = N_ENVS * ACT
-                comptime n_blocks = (total + TPB - 1) // TPB
-                comptime warmup_kernel = offpolicy_warmup_uniform_kernel[
-                    N_ENVS, ACT
-                ]
-                var ctx = self.ctx.value()
-                ctx.enqueue_function[warmup_kernel](
-                    action,
-                    self.action_scale,
-                    self._warmup_rng_seed,
-                    self._warmup_rng_offset,
-                    grid_dim=n_blocks,
-                    block_dim=TPB,
-                )
-                self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
+            warmup_uniform_batched[Self.train_target, N_ENVS, ACT](
+                action,
+                self.action_scale,
+                self.ctx,
+                self._warmup_rng_seed,
+                self._warmup_rng_offset,
+            )
             return
 
         # ── Policy: shared squashed-actor body (see
