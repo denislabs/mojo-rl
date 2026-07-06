@@ -25,7 +25,13 @@ from mojo_rl.nn.core.tensor_refs import TensorRefs
 from mojo_rl.nn.core.initializer import Kaiming
 from mojo_rl.nn.primitives.block_linear import BlockLinear
 
-comptime TOL = Scalar[DT](2e-4)
+# NVIDIA linalg.bmm can dispatch to cutlass TF32 tensor-op kernels
+# (s1688gemm) whose 10-bit-mantissa input quantization yields |Δ| ~ 1e-3·|acc|
+# vs the fp32 CPU reference, growing with K (observed 7.1e-4 at K=64 while
+# K=32 shapes passed 2e-4 and Apple — fp32 GEMMs — was exact). Same lesson as
+# feedback_fd_gradcheck_tf32: numeric backend, not an indexing bug (an
+# indexing bug shows as O(1) error). Tolerance sized for TF32 at these K.
+comptime TOL = Scalar[DT](3e-3)
 
 
 def _maxdiff(a: Tensor, b: Tensor, n: Int) -> Scalar[DT]:
