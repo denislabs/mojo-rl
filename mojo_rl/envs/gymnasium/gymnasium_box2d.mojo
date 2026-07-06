@@ -548,7 +548,14 @@ struct GymLunarLanderContinuousEnv(BoxContinuousActionEnv & RenderableEnv):
         action: GymLunarLanderContinuousAction,
         verbose: Bool = False,
     ) -> Tuple[GymLunarLanderContinuousState, Float64, Bool]:
-        return (GymLunarLanderContinuousState(index=0), 0.0, self.done)
+        """Base-trait step. The Int-index action carries no continuous
+        command, so this steps the REAL env with zero thrust — real
+        dynamics/reward/done (use `step_continuous_vec` for actual control).
+        Was a placeholder returning reward 0 WITHOUT stepping the env:
+        silent learn-nothing + episodes that never ended."""
+        var zeros = List[Float64](length=2, fill=0.0)
+        var r = self.step_continuous_vec(zeros, verbose)
+        return (GymLunarLanderContinuousState(index=0), r[1], r[2])
 
     def get_state(self) -> GymLunarLanderContinuousState:
         return GymLunarLanderContinuousState(index=0)
@@ -791,10 +798,13 @@ struct GymBipedalWalkerEnv(BoxContinuousActionEnv & RenderableEnv):
     def step(
         mut self, action: GymBipedalWalkerAction, verbose: Bool = False
     ) -> Tuple[GymBipedalWalkerState, Float64, Bool]:
-        """Take action (placeholder - use step_continuous for actual control).
-        """
-        # This is a placeholder - real usage should use step_continuous
-        return (GymBipedalWalkerState(index=0), 0.0, self.done)
+        """Base-trait step. The Int-index action carries no continuous
+        command, so this steps the REAL env with zero torques — real
+        dynamics/reward/done (use `step_continuous_vec` for actual control).
+        Was a placeholder returning reward 0 WITHOUT stepping the env."""
+        var zeros = List[Float64](length=4, fill=0.0)
+        var r = self.step_continuous_vec(zeros, verbose)
+        return (GymBipedalWalkerState(index=0), r[1], r[2])
 
     def get_state(self) -> GymBipedalWalkerState:
         """Return current state."""
@@ -1112,9 +1122,14 @@ struct GymCarRacingEnv(BoxContinuousActionEnv & RenderableEnv):
     def step(
         mut self, action: GymCarRacingAction, verbose: Bool = False
     ) -> Tuple[GymCarRacingState, Float64, Bool]:
-        """Take action (placeholder - use step_continuous for actual control).
-        """
-        return (GymCarRacingState(index=0), 0.0, self.done)
+        """Base-trait step. The Int-index action carries no continuous
+        command, so this steps the REAL env with a no-op action (steer 0,
+        gas 0, brake 0) — real dynamics/reward/done (use
+        `step_continuous_vec` for actual control). Was a placeholder
+        returning reward 0 WITHOUT stepping the env."""
+        var zeros = List[Float64](length=3, fill=0.0)
+        var r = self.step_continuous_vec(zeros, verbose)
+        return (GymCarRacingState(index=0), r[1], r[2])
 
     def get_state(self) -> GymCarRacingState:
         """Return current state."""
