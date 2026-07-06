@@ -374,11 +374,18 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                 # CPU draws prioritized slots + targets, then gathers the obs
                 # slab on-device straight into scratch.d_obs (no host build/H2D).
                 var _tsamp = perf_counter_ns()
+                # The sample writes the PAPER PER priority |ν − z| into
+                # `t_prio` (it owns both ν = stored root search value and
+                # z = n-step target). The train step used to overwrite it
+                # with the value-head soft-CE — not the paper signal.
                 rb.sample_training_batch_seq_per_gpu[B, K, N](
                     ctx, gamma, train_scratch.d_obs.dev.value(),
                     d_obs_slots, h_obs_slots,
                     t_act, t_pol, t_val, t_rew, t_isw, t_slots,
                     cons_mask=t_cmask,
+                    out_prio=Optional(
+                        t_prio.unsafe_ptr().as_unsafe_any_origin()
+                    ),
                 )
                 ts_t_sample += Float64(perf_counter_ns() - _tsamp)
                 var _tstep = perf_counter_ns()
@@ -394,9 +401,6 @@ def run_ezv2_gumbel_selfplay_gpu_batched[
                         cons_mask=t_cmask, loss_parts=l_parts,
                         is_weights=Optional(
                             t_isw.unsafe_ptr().as_unsafe_any_origin()
-                        ),
-                        out_prio=Optional(
-                            t_prio.unsafe_ptr().as_unsafe_any_origin()
                         ),
                         obs_on_device=True,
                         phase_ns=phase_ns.as_unsafe_any_origin(),
