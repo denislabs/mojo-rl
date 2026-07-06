@@ -5,7 +5,6 @@ from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
 from mojo_rl.physics3d.integrator import RK4Integrator, EulerIntegrator
-from mojo_rl.physics3d.solver import NewtonSolver
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
@@ -29,47 +28,6 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
     # Termination bounds
     comptime MAX_CART_POS = 1.0  # slider range is ±1
     comptime MAX_POLE_ANGLE = 0.2  # radians (~11.5 deg)
-
-    # === CPU: Integrator step ===
-    @staticmethod
-    def physics_substep[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
-        NSITE: Int = 0,
-    ](
-        mut model: Model[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NGEOM,
-            MAX_EQUALITY,
-            CONE_TYPE,
-            MAX_TENDON,
-            NSITE,
-        ],
-        mut data: Data[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NSITE,
-        ],
-        verbose: Bool,
-    ):
-        RK4Integrator[SOLVER=NewtonSolver].step(model, data)
 
     # === CPU: Pre-step hook ===
     @staticmethod
@@ -126,42 +84,6 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
     @staticmethod
     def get_reset_noise() -> Float64:
         return 0.01
-
-    # === GPU: Integrator step ===
-    @staticmethod
-    def physics_substep_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
-        NSITE: Int = 0,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[DTYPE],
-        mut model_buf: DeviceBuffer[DTYPE],
-        mut workspace_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            BATCH_SIZE,
-            NGEOM,
-            CONE_TYPE=CONE_TYPE,
-            MAX_TENDON=MAX_TENDON,
-            NSITE=NSITE,
-            STEP_THREADS=NV,
-        ](ctx, states_buf, model_buf, workspace_buf)
 
     # === GPU inline: Pre-step hook ===
     @always_inline
@@ -242,24 +164,3 @@ struct InvertedPendulumConfig(Phyics3dEnvConfig):
     ):
         pass
 
-    # === GPU inline: Custom obs extraction (none, use model default) ===
-    @always_inline
-    @staticmethod
-    def custom_extract_obs_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        OBS_DIM: Int,
-    ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ],
-        obs: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ],
-        env: Int,
-        qpos_off: Int,
-        qvel_off: Int,
-        xpos_off: Int,
-    ) -> Bool:
-        return False

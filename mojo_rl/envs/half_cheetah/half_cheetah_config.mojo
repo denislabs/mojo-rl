@@ -4,8 +4,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import EulerIntegrator
 from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.integrator import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
@@ -296,24 +296,3 @@ struct HalfCheetahConfig(Phyics3dEnvConfig):
     ):
         pass
 
-    # === GPU inline: Custom obs extraction (none, use model default) ===
-    @always_inline
-    @staticmethod
-    def custom_extract_obs_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-        OBS_DIM: Int,
-    ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ],
-        obs: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, OBS_DIM), MutAnyOrigin
-        ],
-        env: Int,
-        qpos_off: Int,
-        qvel_off: Int,
-        xpos_off: Int,
-    ) -> Bool:
-        return False

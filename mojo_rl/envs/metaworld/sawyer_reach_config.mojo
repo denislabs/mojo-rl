@@ -12,8 +12,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import EulerIntegrator
 from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.integrator import EulerIntegrator
 
 from .sawyer_reach_xml import SawyerReachModel
 

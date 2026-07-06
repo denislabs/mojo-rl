@@ -13,6 +13,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
+from mojo_rl.physics3d.integrator import RK4Integrator
+from mojo_rl.physics3d.solver import NewtonSolver
 
 
 trait Phyics3dEnvConfig:
@@ -60,7 +62,11 @@ trait Phyics3dEnvConfig:
         ],
         verbose: Bool,
     ):
-        ...
+        """One physics substep. DEFAULT = RK4 + Newton (what 9 of the 12
+        env configs used verbatim); envs on a different integrator (e.g.
+        HalfCheetah's Euler) override BOTH this and `physics_substep_gpu`
+        — the CPU/GPU pair must stay on the SAME integrator."""
+        RK4Integrator[SOLVER=NewtonSolver].step(model, data)
 
     # === CPU: Pre-step hook — save any per-env state before physics ===
     @staticmethod
@@ -224,7 +230,23 @@ trait Phyics3dEnvConfig:
         mut model_buf: DeviceBuffer[DTYPE],
         mut workspace_buf: DeviceBuffer[DTYPE],
     ) raises:
-        ...
+        """GPU twin of `physics_substep` — DEFAULT = RK4 + Newton.
+        Override together with the CPU method (same integrator both
+        sides)."""
+        RK4Integrator[SOLVER=NewtonSolver].step_gpu[
+            DTYPE,
+            NQ,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            BATCH_SIZE,
+            NGEOM,
+            CONE_TYPE=CONE_TYPE,
+            MAX_TENDON=MAX_TENDON,
+            NSITE=NSITE,
+            STEP_THREADS=NV,
+        ](ctx, states_buf, model_buf, workspace_buf)
 
     # === GPU inline: Pre-step hook ===
     @always_inline
@@ -344,7 +366,7 @@ trait Phyics3dEnvConfig:
         z=1.4 / quat_w=1.0, HumanoidStandup z=0.105). Called by
         _reset_env_gpu after noise has been applied around zero.
         """
-        ...
+        pass
 
     # === GPU inline: Custom observation extraction ===
     @always_inline
@@ -385,4 +407,4 @@ trait Phyics3dEnvConfig:
             True if custom extraction was performed (skip model default).
             False to fall back to model's default extraction.
         """
-        ...
+        return False

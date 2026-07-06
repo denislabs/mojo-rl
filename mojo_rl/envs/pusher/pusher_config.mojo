@@ -12,8 +12,8 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import EulerIntegrator
 from mojo_rl.physics3d.solver import NewtonSolver
+from mojo_rl.physics3d.integrator import EulerIntegrator
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,

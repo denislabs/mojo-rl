@@ -5,8 +5,6 @@ from std.gpu.host import DeviceContext, DeviceBuffer
 from layout import Layout, LayoutTensor
 
 from mojo_rl.physics3d.types import Model, Data
-from mojo_rl.physics3d.integrator import RK4Integrator
-from mojo_rl.physics3d.solver import NewtonSolver
 from mojo_rl.physics3d.gpu.constants import (
     META_IDX_PREV_X,
     qpos_offset,
@@ -33,47 +31,6 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
 
     # Termination threshold: height of tip must be > 1.0 m
     comptime MIN_TIP_HEIGHT = 1.0
-
-    # === CPU: Integrator step ===
-    @staticmethod
-    def physics_substep[
-        DTYPE: DType,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
-        NSITE: Int = 0,
-    ](
-        mut model: Model[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NGEOM,
-            MAX_EQUALITY,
-            CONE_TYPE,
-            MAX_TENDON,
-            NSITE,
-        ],
-        mut data: Data[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            NSITE,
-        ],
-        verbose: Bool,
-    ):
-        RK4Integrator[SOLVER=NewtonSolver].step(model, data)
 
     # === CPU: Custom obs extraction (9D with sin/cos encoding) ===
     @staticmethod
@@ -182,42 +139,6 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
     def get_reset_noise() -> Float64:
         return 0.1
 
-    # === GPU: Integrator step ===
-    @staticmethod
-    def physics_substep_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        NQ: Int,
-        NV: Int,
-        NBODY: Int,
-        NJOINT: Int,
-        MAX_CONTACTS: Int,
-        NGEOM: Int,
-        MAX_EQUALITY: Int,
-        CONE_TYPE: Int,
-        MAX_TENDON: Int = 0,
-        NSITE: Int = 0,
-    ](
-        ctx: DeviceContext,
-        mut states_buf: DeviceBuffer[DTYPE],
-        mut model_buf: DeviceBuffer[DTYPE],
-        mut workspace_buf: DeviceBuffer[DTYPE],
-    ) raises:
-        RK4Integrator[SOLVER=NewtonSolver].step_gpu[
-            DTYPE,
-            NQ,
-            NV,
-            NBODY,
-            NJOINT,
-            MAX_CONTACTS,
-            BATCH_SIZE,
-            NGEOM,
-            CONE_TYPE=CONE_TYPE,
-            MAX_TENDON=MAX_TENDON,
-            NSITE=NSITE,
-            STEP_THREADS=NV,
-        ](ctx, states_buf, model_buf, workspace_buf)
-
     # === GPU inline: Pre-step hook ===
     @always_inline
     @staticmethod
@@ -308,22 +229,6 @@ struct InvertedDoublePendulumConfig(Phyics3dEnvConfig):
         var reward = alive_bonus - dist_penalty - vel_penalty
 
         return (reward, terminated)
-
-    # === GPU inline: Non-zero qpos init (no-op — init_qpos is all zeros) ===
-    @always_inline
-    @staticmethod
-    def init_qpos_gpu[
-        DTYPE: DType,
-        BATCH_SIZE: Int,
-        STATE_SIZE: Int,
-    ](
-        states: LayoutTensor[
-            DTYPE, Layout.row_major(BATCH_SIZE, STATE_SIZE), MutAnyOrigin
-        ],
-        env: Int,
-        qpos_off: Int,
-    ):
-        pass
 
     # === GPU inline: Custom obs extraction (9D with sin/cos encoding) ===
     @always_inline
