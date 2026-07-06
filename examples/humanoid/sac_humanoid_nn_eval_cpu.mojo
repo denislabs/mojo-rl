@@ -72,9 +72,7 @@ def main() raises:
     # Same `SAC[...]` preset the trainer uses, so the loaded checkpoint's
     # parameter layout matches exactly. `action_scale=0.4` is required for the
     # greedy action to reproduce the trained policy (it scales the tanh output).
-    var agent = SAC[
-        "cpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN
-    ](
+    var agent = SAC["cpu", OBS_DIM, ACT_DIM, BATCH, REPLAY_CAPACITY, HIDDEN](
         action_scale=ACTION_SCALE,
     )
 
