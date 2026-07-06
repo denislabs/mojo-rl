@@ -1592,6 +1592,11 @@ def run_offpolicy_train_cpu_env_gpu_agent[
     var iter_idx: Int = 0
     var next_print: Int = print_every
     var next_log: Int = print_every
+    # Threshold counters, NOT `% cadence == 0`: step_idx advances by N_ENVS
+    # per iteration, so a modulo check only fires when the cadence happens to
+    # be divisible by N_ENVS (degraded to lcm intervals or never otherwise).
+    var next_diag: Int = diag_every
+    var next_ckpt: Int = checkpoint_every
     # In-place progress bar between log lines (pure CPU, no GPU sync).
     var prog = IntervalProgress(
         print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
@@ -1714,23 +1719,21 @@ def run_offpolicy_train_cpu_env_gpu_agent[
         # updates_per_step>1 (e.g. REDQ UTD 40:1) would otherwise be plotted
         # on an x-axis under-counted by that factor.
         comptime if L.ENABLED:
-            if (
-                diag_every > 0
-                and (base_step + step_idx) % diag_every == 0
-                and Bool(logger)
-            ):
+            if diag_every > 0 and step_idx >= next_diag and Bool(logger):
                 trainer.flush_metrics_through_logger[L](
                     logger, trainer.total_train_steps()
                 )
+                next_diag += diag_every
 
         # `checkpoint_every` — overwrite `checkpoint_path` with the
         # trainer's one-file v2 envelope. Default trait impl is a no-op.
         if (
             checkpoint_every > 0
-            and (base_step + step_idx) % checkpoint_every == 0
+            and step_idx >= next_ckpt
             and checkpoint_path.byte_length() > 0
         ):
             trainer.save_state(checkpoint_path)
+            next_ckpt += checkpoint_every
 
     # Always overwrite the final checkpoint at end so resume gets the
     # freshest weights regardless of cadence alignment.

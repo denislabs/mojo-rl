@@ -436,6 +436,11 @@ def run_onpolicy_discrete_train_batched[
         print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
     )
     var next_log: Int = print_every
+    # Threshold counters, NOT `% cadence == 0`: step_idx advances by N_ENVS
+    # per iteration, so a modulo check only fires when the cadence happens to
+    # be divisible by N_ENVS (degraded to lcm intervals or never otherwise).
+    var next_diag: Int = diag_every
+    var next_ckpt: Int = checkpoint_every
     var last_ep_count = trainer.ep_count()
 
     while step_idx < total_env_steps:
@@ -575,15 +580,17 @@ def run_onpolicy_discrete_train_batched[
                 next_log += print_every
 
         comptime if L.ENABLED:
-            if diag_every > 0 and abs_step % diag_every == 0 and Bool(logger):
+            if diag_every > 0 and step_idx >= next_diag and Bool(logger):
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
+                next_diag += diag_every
 
         if (
             checkpoint_every > 0
-            and abs_step % checkpoint_every == 0
+            and step_idx >= next_ckpt
             and checkpoint_path.byte_length() > 0
         ):
             trainer.save_state(checkpoint_path)
+            next_ckpt += checkpoint_every
 
     if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
         trainer.save_state(checkpoint_path)

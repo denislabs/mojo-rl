@@ -488,6 +488,11 @@ def run_onpolicy_train_batched[
     # `comptime if L.ENABLED` block. Bit-identity preserved when
     # L=NoOpLogger (default).
     var next_log: Int = print_every
+    # Threshold counters, NOT `% cadence == 0`: step_idx advances by N_ENVS
+    # per iteration, so a modulo check only fires when the cadence happens to
+    # be divisible by N_ENVS (degraded to lcm intervals or never otherwise).
+    var next_diag: Int = diag_every
+    var next_ckpt: Int = checkpoint_every
     var last_ep_count = trainer.ep_count()
 
     while step_idx < total_env_steps:
@@ -673,17 +678,19 @@ def run_onpolicy_train_batched[
         # logger at its own cadence. Default trait impl is no-op for
         # trainers that haven't wired this up yet.
         comptime if L.ENABLED:
-            if diag_every > 0 and abs_step % diag_every == 0 and Bool(logger):
+            if diag_every > 0 and step_idx >= next_diag and Bool(logger):
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
+                next_diag += diag_every
 
         # `checkpoint_every` — overwrite `checkpoint_path` with the
         # trainer's one-file v2 envelope. Default trait impl is no-op.
         if (
             checkpoint_every > 0
-            and abs_step % checkpoint_every == 0
+            and step_idx >= next_ckpt
             and checkpoint_path.byte_length() > 0
         ):
             trainer.save_state(checkpoint_path)
+            next_ckpt += checkpoint_every
 
     if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
         trainer.save_state(checkpoint_path)
