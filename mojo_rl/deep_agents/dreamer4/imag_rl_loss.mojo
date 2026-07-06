@@ -6,9 +6,15 @@ is FROZEN and only the policy + value heads update. Two losses train on the
 imagined trajectory of agent states s_t = h_t:
 
   • Value head (eq. 10) — TD-λ. Compute the λ-return from the imagined rewards
-    and values (γ = 0.997), then a symexp-twohot cross-entropy of the value
-    logits against sg(R_t^λ):
-        R_t^λ = r_t + γ c_t [ (1−λ) v_t + λ R_{t+1}^λ ],   R_T^λ = v_T
+    and values, then a symexp-twohot cross-entropy of the value logits against
+    sg(R_t^λ). Dreamer 4's reward/continue heads are trained (`bc_loss`) against
+    the raw buffer arrays, which use the gym "reward-with-action" (LEAVING)
+    convention — rew[t]/done[t] belong to the transition a_t : s_t → s_{t+1} —
+    so the immediate reward/continue of state t sit at index t (see
+    `lambda_returns` for the full note; this is where Dreamer 4 legitimately
+    differs from DreamerV3's t+1 indexing, which shifts its reward head onto the
+    arriving obs instead):
+        R_t^λ = r_t + γ c_t [ (1−λ) v_{t+1} + λ R_{t+1}^λ ],   R_{H−1}^λ = v_{H−1}
         L_value = Σ_t  twohot_ce( v_logits_t , sg(R_t^λ) )
 
   • Policy head (eq. 11) — PMPO. A *robust* objective that uses only the SIGN
@@ -109,9 +115,26 @@ from ..dreamerv3.dists_discrete import (
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# λ-returns (eq. 10) — DreamerV3-validated recurrence.
-# rew/val/con are [B,H]; con_t = γ·(1−term_t) is the per-step continue factor.
-# Returns are produced for t ∈ [0, H−1) (the last step is bootstrap only).
+# λ-returns (eq. 10) — "leaving"-convention recurrence.
+#
+# CONVENTION (differs from DreamerV3's index-t+1 recurrence — see below):
+# Dreamer 4's reward/continue heads are trained by `bc_loss` against the raw
+# buffer arrays: reward_head(h_t) → rewards[t], continue_head(h_t) → 1−done[t].
+# The online buffer records `add_step(obs_t, a_t, done_t, r_t)`, so rewards[t]
+# and done[t] are the reward and termination of the transition LEAVING state t
+# (a_t : s_t → s_{t+1}) — the gym "reward-with-action" convention. Hence the
+# immediate reward/continue of state t are at index t (NOT t+1):
+#     R_t = rew[t] + con[t]·[ (1−λ)·val[t+1] + λ·R_{t+1} ],   R_{H−1} = v_{H−1}
+# with con[t] = γ·(1−done[t]) — the discount on the FUTURE (val[t+1], R_{t+1}),
+# never on the immediate reward.
+#
+# DreamerV3 uses `rew[t+1]`/`con[t+1]` because ITS training batch SHIFTS the
+# reward head onto the ARRIVING observation (`blocks.WMStep`: state←obs[t+1],
+# reward target←rew[t]), so its reward head learns the "arriving" convention.
+# Dreamer 4 applies no such shift, so mirroring DreamerV3's t+1 indexing here
+# was an off-by-one: it dropped each state's own reward and misattributed
+# sparse reward credit one step (breaking imagination RL on reward-bearing
+# envs). rew/val/con are [B,H]; returns are produced for t ∈ [0, H−1).
 # ─────────────────────────────────────────────────────────────────────────
 @always_inline
 def lambda_returns[
@@ -121,9 +144,9 @@ def lambda_returns[
     con_o: Origin[mut=True],
     out_ret_o: Origin[mut=True],
 ](
-    rew: UnsafePointer[Scalar[DT], rew_o],   # [B,H]
+    rew: UnsafePointer[Scalar[DT], rew_o],   # [B,H]  reward LEAVING state t
     val: UnsafePointer[Scalar[DT], val_o],   # [B,H]
-    con: UnsafePointer[Scalar[DT], con_o],   # [B,H]  (= γ·(1−term))
+    con: UnsafePointer[Scalar[DT], con_o],   # [B,H]  = γ·(1−done[t]) LEAVING t
     lam: Scalar[DT],
     out_ret: UnsafePointer[Scalar[DT], out_ret_o],  # OUT [B,H-1]
 ):
@@ -133,9 +156,9 @@ def lambda_returns[
         var ret_next = val[b * H + (H - 1)]            # R_{H-1}^λ = v_{H-1}
         var t = H - 2
         while t >= 0:
-            var live = con[b * H + t + 1]              # γ·(1−term)_{t+1}
+            var live = con[b * H + t]                  # γ·(1−done)_t (LEAVING t)
             var interm = (
-                rew[b * H + t + 1]
+                rew[b * H + t]                         # immediate reward LEAVING t
                 + (Scalar[DT](1.0) - lam) * live * val[b * H + t + 1]
             )
             var cur = interm + live * lam * ret_next
