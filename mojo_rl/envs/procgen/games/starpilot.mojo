@@ -13,6 +13,8 @@ See `docs/PROCGEN_STARPILOT_SCOPE.md`. P0 = reset (add_spawners) parity; step/re
 from std.math import floor, ceil, cos, sin, sqrt
 from std.memory import ArcPointer
 
+from .procgen_env import ProcgenGame
+
 from ..core.entity import Entity
 from ..core.randgen import RandGen
 from ..core.assets import Sprite, load_sprite, load_sprites
@@ -127,7 +129,41 @@ def _theme_count(type: Int) -> Int:
     return 1
 
 
-struct StarpilotGame(Copyable, Movable):
+struct StarpilotGame(Copyable, Movable, ProcgenGame):
+    # ─── ProcgenGame conformance glue (see games/procgen_env.mojo) ──────
+    comptime AssetsT = StarpilotAssets
+    comptime DEFAULT_DIST = DIST_EASY
+    comptime GYM_MAX_STEPS = 1000
+
+    @staticmethod
+    def load_assets(asset_root: String) raises -> StarpilotAssets:
+        return StarpilotAssets(asset_root)
+
+    @staticmethod
+    def make(assets: ArcPointer[StarpilotAssets], dist_mode: Int) -> Self:
+        # The env owns the assets and passes them into the render calls.
+        return Self(dist_mode)
+
+    def is_done(self) -> Bool:
+        return self.done
+
+    def is_level_complete(self) -> Bool:
+        return self.level_complete
+
+    def gym_terminated(self) -> Bool:
+        return self.done
+
+    def pg_render_obs(self, assets: StarpilotAssets) -> List[UInt8]:
+        return self.render_obs(assets)
+
+    def pg_render_obs_train(
+        self, assets: StarpilotAssets, res: Int, ss: Int
+    ) -> List[UInt8]:
+        return self.render_obs(assets, res, ss)
+
+    def pg_render(self, assets: StarpilotAssets, res: Int) -> List[UInt8]:
+        return self.render(assets, res)
+
     var rand_gen: RandGen
     var w: Int
     var h: Int

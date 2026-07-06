@@ -1,5 +1,16 @@
 """Procgen games (maze). See `docs/PROCGEN_PORT.md`."""
 
+from mojo_rl.nn.constants import DT
+
+from .procgen_env import (
+    ProcgenGame,
+    ProcgenEnv,
+    ProcgenGymEnv,
+    ProcgenState,
+    ProcgenAction,
+    StepResult,
+)
+
 from .maze import (
     MazeGame,
     MazeAssets,
@@ -8,8 +19,10 @@ from .maze import (
     DIST_MEMORY,
     world_dim_for,
 )
-from .maze_env import MazeEnv, StepResult
-from .maze_gym_env import MazeGymEnv, MazeState, MazeAction
+comptime MazeEnv = ProcgenEnv[MazeGame]
+comptime MazeGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[MazeGame, DTYPE]
+comptime MazeState = ProcgenState
+comptime MazeAction = ProcgenAction
 from .chaser import (
     ChaserGame,
     ChaserAssets,
@@ -19,8 +32,10 @@ from .chaser import (
     MAZE_WALL,
     ORB,
 )
-from .chaser_env import ChaserEnv
-from .chaser_gym_env import ChaserGymEnv, ChaserState, ChaserAction
+comptime ChaserEnv = ProcgenEnv[ChaserGame]
+comptime ChaserGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[ChaserGame, DTYPE]
+comptime ChaserState = ProcgenState
+comptime ChaserAction = ProcgenAction
 from .heist import (
     HeistGame,
     HeistAssets,
@@ -29,11 +44,15 @@ from .heist import (
     KEY,
     EXIT,
 )
-from .heist_env import HeistEnv
-from .heist_gym_env import HeistGymEnv, HeistState, HeistAction
+comptime HeistEnv = ProcgenEnv[HeistGame]
+comptime HeistGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[HeistGame, DTYPE]
+comptime HeistState = ProcgenState
+comptime HeistAction = ProcgenAction
 from .bigfish import BigfishGame, BigfishAssets, FISH
-from .bigfish_env import BigfishEnv
-from .bigfish_gym_env import BigfishGymEnv, BigfishState, BigfishAction
+comptime BigfishEnv = ProcgenEnv[BigfishGame]
+comptime BigfishGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[BigfishGame, DTYPE]
+comptime BigfishState = ProcgenState
+comptime BigfishAction = ProcgenAction
 from .leaper import (
     LeaperGame,
     LeaperAssets,
@@ -44,11 +63,15 @@ from .leaper import (
     CAR,
     FINISH_LINE,
 )
-from .leaper_env import LeaperEnv
-from .leaper_gym_env import LeaperGymEnv, LeaperState, LeaperAction
+comptime LeaperEnv = ProcgenEnv[LeaperGame]
+comptime LeaperGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[LeaperGame, DTYPE]
+comptime LeaperState = ProcgenState
+comptime LeaperAction = ProcgenAction
 from .miner import MinerGame, MinerAssets, BOULDER, DIAMOND, EXIT, DIRT
-from .miner_env import MinerEnv
-from .miner_gym_env import MinerGymEnv, MinerState, MinerAction
+comptime MinerEnv = ProcgenEnv[MinerGame]
+comptime MinerGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[MinerGame, DTYPE]
+comptime MinerState = ProcgenState
+comptime MinerAction = ProcgenAction
 from .starpilot import (
     StarpilotGame,
     StarpilotAssets,
@@ -58,50 +81,70 @@ from .starpilot import (
     TURRET,
     FAST_FLYER,
 )
-from .starpilot_env import StarpilotEnv
-from .starpilot_gym_env import StarpilotGymEnv, StarpilotState, StarpilotAction
+comptime StarpilotEnv = ProcgenEnv[StarpilotGame]
+comptime StarpilotGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[StarpilotGame, DTYPE]
+comptime StarpilotState = ProcgenState
+comptime StarpilotAction = ProcgenAction
 from .plunder import PlunderGame, PlunderAssets, SHIP, PANEL, PLAYER_BULLET
-from .plunder_env import PlunderEnv
-from .plunder_gym_env import PlunderGymEnv, PlunderState, PlunderAction
+comptime PlunderEnv = ProcgenEnv[PlunderGame]
+comptime PlunderGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[PlunderGame, DTYPE]
+comptime PlunderState = ProcgenState
+comptime PlunderAction = ProcgenAction
 from .fruitbot import FruitbotGame, FruitbotAssets
 # NOTE: fruitbot's per-game object ids (GOOD_OBJ/BAD_OBJ/BARRIER/LOCKED_DOOR/LOCK)
 # are NOT re-exported here — LOCKED_DOOR collides with heist's (different value).
 # Import them from `mojo_rl.envs.procgen.games.fruitbot` directly.
-from .fruitbot_env import FruitbotEnv
-from .fruitbot_gym_env import FruitbotGymEnv, FruitbotState, FruitbotAction
+comptime FruitbotEnv = ProcgenEnv[FruitbotGame]
+comptime FruitbotGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[FruitbotGame, DTYPE]
+comptime FruitbotState = ProcgenState
+comptime FruitbotAction = ProcgenAction
 from .bossfight import BossfightGame, BossfightAssets
 # NOTE: bossfight's generic object ids (PLAYER_BULLET/BOSS/SHIELDS/ENEMY_BULLET/
 # LASER_TRAIL/REFLECTED_BULLET/BARRIER) are NOT re-exported here — PLAYER_BULLET
 # collides with plunder's and BARRIER with fruitbot's. Import them from
 # `mojo_rl.envs.procgen.games.bossfight` directly.
-from .bossfight_env import BossfightEnv
-from .bossfight_gym_env import BossfightGymEnv, BossfightState, BossfightAction
+comptime BossfightEnv = ProcgenEnv[BossfightGame]
+comptime BossfightGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[BossfightGame, DTYPE]
+comptime BossfightState = ProcgenState
+comptime BossfightAction = ProcgenAction
 from .coinrun import CoinrunGame, CoinrunAssets
 # NOTE: coinrun's generic object ids (GOAL/SAW/ENEMY/WALL_MID/CRATE/...) are NOT
 # re-exported here — GOAL/CRATE/etc collide with other games'. Import them from
 # `mojo_rl.envs.procgen.games.coinrun` directly.
-from .coinrun_env import CoinrunEnv
-from .coinrun_gym_env import CoinrunGymEnv, CoinrunState, CoinrunAction
+comptime CoinrunEnv = ProcgenEnv[CoinrunGame]
+comptime CoinrunGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[CoinrunGame, DTYPE]
+comptime CoinrunState = ProcgenState
+comptime CoinrunAction = ProcgenAction
 from .caveflyer import CaveflyerGame, CaveflyerAssets
 # NOTE: caveflyer's generic object ids (GOAL/TARGET/ENEMY/CAVEWALL/...) are NOT
 # re-exported here — GOAL/ENEMY/etc collide with other games'. Import them from
 # `mojo_rl.envs.procgen.games.caveflyer` directly.
-from .caveflyer_env import CaveflyerEnv
-from .caveflyer_gym_env import CaveflyerGymEnv, CaveflyerState, CaveflyerAction
+comptime CaveflyerEnv = ProcgenEnv[CaveflyerGame]
+comptime CaveflyerGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[CaveflyerGame, DTYPE]
+comptime CaveflyerState = ProcgenState
+comptime CaveflyerAction = ProcgenAction
 from .climber import ClimberGame, ClimberAssets
 # NOTE: climber's generic object ids (COIN/ENEMY/WALL_MID/...) stay module-local
 # (collide with other games'). Import from `...games.climber` directly.
-from .climber_env import ClimberEnv
-from .climber_gym_env import ClimberGymEnv, ClimberState, ClimberAction
+comptime ClimberEnv = ProcgenEnv[ClimberGame]
+comptime ClimberGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[ClimberGame, DTYPE]
+comptime ClimberState = ProcgenState
+comptime ClimberAction = ProcgenAction
 from .ninja import NinjaGame, NinjaAssets
 # NOTE: ninja's generic object ids (GOAL/BOMB/WALL_MID/FIRE/...) stay module-local.
-from .ninja_env import NinjaEnv
-from .ninja_gym_env import NinjaGymEnv, NinjaState, NinjaAction
+comptime NinjaEnv = ProcgenEnv[NinjaGame]
+comptime NinjaGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[NinjaGame, DTYPE]
+comptime NinjaState = ProcgenState
+comptime NinjaAction = ProcgenAction
 from .jumper import JumperGame, JumperAssets
 # NOTE: jumper's generic object ids (GOAL/SPIKE/CAVEWALL/...) stay module-local.
-from .jumper_env import JumperEnv
-from .jumper_gym_env import JumperGymEnv, JumperState, JumperAction
+comptime JumperEnv = ProcgenEnv[JumperGame]
+comptime JumperGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[JumperGame, DTYPE]
+comptime JumperState = ProcgenState
+comptime JumperAction = ProcgenAction
 from .dodgeball import DodgeballGame, DodgeballAssets
 # NOTE: dodgeball's generic object ids (LAVA_WALL/ENEMY/DOOR/...) stay module-local.
-from .dodgeball_env import DodgeballEnv
-from .dodgeball_gym_env import DodgeballGymEnv, DodgeballState, DodgeballAction
+comptime DodgeballEnv = ProcgenEnv[DodgeballGame]
+comptime DodgeballGymEnv[DTYPE: DType = DT] = ProcgenGymEnv[DodgeballGame, DTYPE]
+comptime DodgeballState = ProcgenState
+comptime DodgeballAction = ProcgenAction

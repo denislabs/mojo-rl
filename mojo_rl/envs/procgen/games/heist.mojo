@@ -18,6 +18,8 @@ follow in P1/P2.
 from std.math import floor, ceil, sqrt, atan2
 from std.memory import ArcPointer
 
+from .procgen_env import ProcgenGame
+
 from ..core.entity import Entity
 from ..core.randgen import RandGen
 from ..core.mazegen import MazeGen, MAZE_OFFSET
@@ -99,7 +101,41 @@ def heist_world_dim(dist_mode: Int) -> Int:
     return 9  # EasyMode
 
 
-struct HeistGame(Copyable, Movable):
+struct HeistGame(Copyable, Movable, ProcgenGame):
+    # ─── ProcgenGame conformance glue (see games/procgen_env.mojo) ──────
+    comptime AssetsT = HeistAssets
+    comptime DEFAULT_DIST = DIST_EASY
+    comptime GYM_MAX_STEPS = 500
+
+    @staticmethod
+    def load_assets(asset_root: String) raises -> HeistAssets:
+        return HeistAssets(asset_root)
+
+    @staticmethod
+    def make(assets: ArcPointer[HeistAssets], dist_mode: Int) -> Self:
+        # The env owns the assets and passes them into the render calls.
+        return Self(dist_mode)
+
+    def is_done(self) -> Bool:
+        return self.done
+
+    def is_level_complete(self) -> Bool:
+        return self.level_complete
+
+    def gym_terminated(self) -> Bool:
+        return self.done
+
+    def pg_render_obs(self, assets: HeistAssets) -> List[UInt8]:
+        return self.render_obs(assets)
+
+    def pg_render_obs_train(
+        self, assets: HeistAssets, res: Int, ss: Int
+    ) -> List[UInt8]:
+        return self.render_obs(assets, res, ss)
+
+    def pg_render(self, assets: HeistAssets, res: Int) -> List[UInt8]:
+        return self.render(assets, res)
+
     var rand_gen: RandGen
     var grid: List[Int]
     var w: Int

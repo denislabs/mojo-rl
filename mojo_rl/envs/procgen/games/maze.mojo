@@ -17,6 +17,8 @@ in the `MazeEnv` wrapper (`maze_env.mojo`). See `docs/PROCGEN_PORT.md`.
 from std.math import floor
 from std.memory import ArcPointer
 
+from .procgen_env import ProcgenGame
+
 from ..core.entity import Entity
 from ..core.randgen import RandGen
 from ..core.mazegen import MazeGen, MAZE_OFFSET
@@ -62,7 +64,45 @@ struct MazeAssets(Movable):
         self.backgrounds = load_topdown_backgrounds(asset_root)
 
 
-struct MazeGame(Copyable, Movable):
+struct MazeGame(Copyable, Movable, ProcgenGame):
+    # ─── ProcgenGame conformance glue (see games/procgen_env.mojo) ──────
+    # Maze is the one game that OWNS its assets (ctor takes the
+    # ArcPointer), so the assets-taking render overloads below ignore the
+    # arg the generic wrappers pass in. `gym_terminated` is
+    # `level_complete` (NOT `done`): maze's `done` also fires on the
+    # in-game timeout, which the gym layer reports as truncation.
+    comptime AssetsT = MazeAssets
+    comptime DEFAULT_DIST = DIST_HARD
+    comptime GYM_MAX_STEPS = 500
+
+    @staticmethod
+    def load_assets(asset_root: String) raises -> MazeAssets:
+        return MazeAssets(asset_root)
+
+    @staticmethod
+    def make(assets: ArcPointer[MazeAssets], dist_mode: Int) -> Self:
+        return Self(assets, dist_mode)
+
+    def is_done(self) -> Bool:
+        return self.done
+
+    def is_level_complete(self) -> Bool:
+        return self.level_complete
+
+    def gym_terminated(self) -> Bool:
+        return self.level_complete
+
+    def pg_render_obs(self, assets: MazeAssets) -> List[UInt8]:
+        return self.render_obs()
+
+    def pg_render_obs_train(
+        self, assets: MazeAssets, res: Int, ss: Int
+    ) -> List[UInt8]:
+        return self.render_obs(res, ss)
+
+    def pg_render(self, assets: MazeAssets, res: Int) -> List[UInt8]:
+        return self.render(res)
+
     var rand_gen: RandGen
     var grid: List[Int]
     var w: Int

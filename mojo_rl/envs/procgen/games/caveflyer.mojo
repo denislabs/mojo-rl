@@ -11,6 +11,9 @@ on top of the projectile + entity engine.
 See `docs/PROCGEN_CAVEFLYER_SCOPE.md`. P0+P1 = reset+step parity; render/env in P2.
 """
 
+from std.memory import ArcPointer
+
+from .procgen_env import ProcgenGame
 from std.math import floor, ceil, sqrt, cos, sin, atan2
 
 from ..core.entity import Entity
@@ -90,7 +93,41 @@ struct CaveflyerAssets(Movable):
         self.backgrounds = load_sprites(asset_root, sbp)
 
 
-struct CaveflyerGame(Copyable, Movable):
+struct CaveflyerGame(Copyable, Movable, ProcgenGame):
+    # ─── ProcgenGame conformance glue (see games/procgen_env.mojo) ──────
+    comptime AssetsT = CaveflyerAssets
+    comptime DEFAULT_DIST = DIST_EASY
+    comptime GYM_MAX_STEPS = 1000
+
+    @staticmethod
+    def load_assets(asset_root: String) raises -> CaveflyerAssets:
+        return CaveflyerAssets(asset_root)
+
+    @staticmethod
+    def make(assets: ArcPointer[CaveflyerAssets], dist_mode: Int) -> Self:
+        # The env owns the assets and passes them into the render calls.
+        return Self(dist_mode)
+
+    def is_done(self) -> Bool:
+        return self.done
+
+    def is_level_complete(self) -> Bool:
+        return self.level_complete
+
+    def gym_terminated(self) -> Bool:
+        return self.done
+
+    def pg_render_obs(self, assets: CaveflyerAssets) -> List[UInt8]:
+        return self.render_obs(assets)
+
+    def pg_render_obs_train(
+        self, assets: CaveflyerAssets, res: Int, ss: Int
+    ) -> List[UInt8]:
+        return self.render_obs(assets, res, ss)
+
+    def pg_render(self, assets: CaveflyerAssets, res: Int) -> List[UInt8]:
+        return self.render(assets, res)
+
     var rand_gen: RandGen
     var dist_mode: Int
     var grid: Grid
