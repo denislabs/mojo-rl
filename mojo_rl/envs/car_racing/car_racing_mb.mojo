@@ -688,6 +688,18 @@ struct CarRacingMB[DTYPE: DType, PIXEL_OBS: Bool = False, PIX_RES: Int = 84](
             return
         self._renderer.value()[].renderer_delay(ms)
 
+    def start_recording(
+        mut self, filename: String, fps: Int = 30, skip: Int = 1
+    ) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].start_recording(filename, fps, skip)
+
+    def stop_recording(mut self) raises:
+        if not self._renderer_initialized:
+            return
+        self._renderer.value()[].stop_recording()
+
     def render(mut self, mut renderer: Renderer2D):
         """Top-down rotating-camera view: grass bg, track, car."""
         var st = self._state()
