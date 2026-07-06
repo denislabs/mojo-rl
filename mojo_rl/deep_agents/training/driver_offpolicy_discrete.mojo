@@ -42,6 +42,7 @@ from .blocks.episode_readback import (
     EpisodeReturnRing,
     accumulate_episode_returns,
 )
+from .blocks.cadence import DriverCadence
 from ..data.n_step_replay import GPUNStepBuffer
 
 
@@ -735,27 +736,25 @@ def run_offpolicy_discrete_train_gpu_batched[
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
 
     var ep_returns = List[Scalar[DT]]()
-    var t_start = perf_counter_ns()
     var step_idx: Int = 0
     var iter_idx: Int = 0
-    var next_print: Int = print_every
-    # In-place progress bar between log lines (pure CPU, no GPU sync).
-    var prog = IntervalProgress(
-        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
-    )
-    var next_log: Int = print_every
-    var next_diag: Int = diag_every if diag_every > 0 else total_env_steps + 1
-    var ckpt_on: Bool = (
-        checkpoint_every > 0 and checkpoint_path.byte_length() > 0
-    )
-    var next_ckpt: Int = checkpoint_every if ckpt_on else total_env_steps + 1
-    # Deterministic greedy-eval cadence. The training `avg_reward` above is
-    # the NOISY rollout (for ε=0 Noisy nets the acting policy IS the noisy
+    # Shared threshold-counter cadence state (see blocks/cadence.mojo).
+    # Deterministic greedy-eval cadence: the training `avg_reward` is the
+    # NOISY rollout (for ε=0 Noisy nets the acting policy IS the noisy
     # argmax), so it systematically under-reports the learned greedy policy.
     # When an isolated `eval_env` is supplied, run a noise-off greedy rollout
     # and log the true policy quality as `eval/mean_return`.
-    var eval_on: Bool = eval_every > 0 and Bool(eval_env)
-    var next_eval: Int = eval_every if eval_on else total_env_steps + 1
+    var cad = DriverCadence.make(
+        print_every,
+        min_stride=N_ENVS,
+        label=progress_label,
+        verbose=verbose,
+        diag_every=diag_every,
+        checkpoint_every=checkpoint_every,
+        ckpt_enabled=checkpoint_path.byte_length() > 0,
+        eval_every=eval_every,
+        eval_enabled=Bool(eval_env),
+    )
 
     # Lazily-captured train-step graph (USE_TRAIN_CUDA_GRAPH). Declared at
     # function scope so the binding survives across loop iterations; a no-op on
@@ -824,16 +823,9 @@ def run_offpolicy_discrete_train_gpu_batched[
         # the cadence blocks test is `step_idx + N_ENVS`.
         ep_ring.enqueue(ctx, env.reward_ptr(), env.done_ptr())
 
-        var post_step = step_idx + N_ENVS
-        var emit_now = post_step >= total_env_steps
-        if print_every > 0 and post_step >= next_print:
-            emit_now = True
-        if diag_every > 0 and post_step >= next_diag:
-            emit_now = True
-        if ckpt_on and post_step >= next_ckpt:
-            emit_now = True
-        if eval_on and post_step >= next_eval:
-            emit_now = True
+        var emit_now = cad.emit_boundary_imminent(
+            step_idx + N_ENVS, total_env_steps
+        )
         if ep_ring.due(emit_now):
             var completed = ep_ring.drain(ctx)
             for i in range(len(completed)):
@@ -880,46 +872,32 @@ def run_offpolicy_discrete_train_gpu_batched[
 
         var abs_step = base_step + step_idx
 
-        prog.tick(step_idx, trainer.total_train_steps())
+        cad.tick(step_idx, trainer.total_train_steps())
 
-        if verbose and print_every > 0 and step_idx >= next_print:
-            prog.clear()
-            var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
-            print(
-                "[step ",
-                abs_step,
-                "] mean_ret(10)=",
-                trainer.mean_return(),
-                " ep=",
-                trainer.ep_count(),
-                " elapsed=",
-                elapsed,
-                "s",
+        if cad.print_due(step_idx):
+            cad.print_status(
+                abs_step, trainer.mean_return(), trainer.ep_count()
             )
-            next_print += print_every
+
+        # Logger emit WITH a live flush at the (rare) print cadence.
+        comptime if L.ENABLED:
+            if Bool(logger) and cad.log_due(step_idx):
+                cad.log_status[L, True](
+                    logger,
+                    abs_step,
+                    trainer.mean_return(),
+                    trainer.ep_count(),
+                )
 
         comptime if L.ENABLED:
-            if print_every > 0 and step_idx >= next_log and Bool(logger):
-                logger.value()[].log_scalar(
-                    "avg_reward", Float64(trainer.mean_return()), abs_step
-                )
-                logger.value()[].log_scalar(
-                    "episodes", Float64(trainer.ep_count()), abs_step
-                )
-                logger.value()[].flush()
-                next_log += print_every
-
-        comptime if L.ENABLED:
-            if diag_every > 0 and step_idx >= next_diag and Bool(logger):
+            if Bool(logger) and cad.diag_due(step_idx):
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
-                next_diag += diag_every
 
-        if ckpt_on and step_idx >= next_ckpt:
+        if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
-            next_ckpt += checkpoint_every
 
         # Deterministic greedy eval on the isolated `eval_env` (noise off).
-        if eval_on and step_idx >= next_eval:
+        if cad.eval_due(step_idx):
             var eval_ret = run_offpolicy_discrete_eval_batched[A, E, N_ENVS](
                 ctx,
                 trainer,
@@ -935,16 +913,15 @@ def run_offpolicy_discrete_train_gpu_batched[
                     )
                     logger.value()[].flush()
             if verbose:
-                prog.clear()
+                cad.clear()
                 print(
                     "[step ",
                     abs_step,
                     "] eval/mean_return = ",
                     eval_ret,
                 )
-            next_eval += eval_every
 
-    if ckpt_on:
+    if cad.ckpt_on:
         trainer.save_state(checkpoint_path)
 
     # Defensive final drain of any buffered episode readbacks — a no-op
@@ -1076,21 +1053,19 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
     env.reset_batch[N_ENVS](ctx=None, rng_seed=rng_seed)
 
     var ep_returns = List[Scalar[DT]]()
-    var t_start = perf_counter_ns()
     var step_idx: Int = 0
     var iter_idx: Int = 0
-    var next_print: Int = print_every
-    var next_log: Int = print_every
-    var next_diag: Int = diag_every if diag_every > 0 else total_env_steps + 1
-    var ckpt_on: Bool = (
-        checkpoint_every > 0 and checkpoint_path.byte_length() > 0
-    )
-    var next_ckpt: Int = checkpoint_every if ckpt_on else total_env_steps + 1
-    var eval_on: Bool = eval_every > 0 and Bool(eval_env)
-    var next_eval: Int = eval_every if eval_on else total_env_steps + 1
-    # In-place progress bar between log lines (pure CPU, no GPU sync).
-    var prog = IntervalProgress(
-        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
+    # Shared threshold-counter cadence state (see blocks/cadence.mojo).
+    var cad = DriverCadence.make(
+        print_every,
+        min_stride=N_ENVS,
+        label=progress_label,
+        verbose=verbose,
+        diag_every=diag_every,
+        checkpoint_every=checkpoint_every,
+        ckpt_enabled=checkpoint_path.byte_length() > 0,
+        eval_every=eval_every,
+        eval_enabled=Bool(eval_env),
     )
 
     while step_idx < total_env_steps:
@@ -1165,46 +1140,32 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
 
         var abs_step = base_step + step_idx
 
-        prog.tick(step_idx, trainer.total_train_steps())
+        cad.tick(step_idx, trainer.total_train_steps())
 
-        if verbose and print_every > 0 and step_idx >= next_print:
-            prog.clear()
-            var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
-            print(
-                "[step ",
-                abs_step,
-                "] mean_ret(10)=",
-                trainer.mean_return(),
-                " ep=",
-                trainer.ep_count(),
-                " elapsed=",
-                elapsed,
-                "s",
+        if cad.print_due(step_idx):
+            cad.print_status(
+                abs_step, trainer.mean_return(), trainer.ep_count()
             )
-            next_print += print_every
+
+        # Logger emit WITH a live flush at the (rare) print cadence.
+        comptime if L.ENABLED:
+            if Bool(logger) and cad.log_due(step_idx):
+                cad.log_status[L, True](
+                    logger,
+                    abs_step,
+                    trainer.mean_return(),
+                    trainer.ep_count(),
+                )
 
         comptime if L.ENABLED:
-            if print_every > 0 and step_idx >= next_log and Bool(logger):
-                logger.value()[].log_scalar(
-                    "avg_reward", Float64(trainer.mean_return()), abs_step
-                )
-                logger.value()[].log_scalar(
-                    "episodes", Float64(trainer.ep_count()), abs_step
-                )
-                logger.value()[].flush()
-                next_log += print_every
-
-        comptime if L.ENABLED:
-            if diag_every > 0 and step_idx >= next_diag and Bool(logger):
+            if Bool(logger) and cad.diag_due(step_idx):
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
-                next_diag += diag_every
 
-        if ckpt_on and step_idx >= next_ckpt:
+        if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
-            next_ckpt += checkpoint_every
 
         # Deterministic greedy eval on the isolated `eval_env` (noise off).
-        if eval_on and step_idx >= next_eval:
+        if cad.eval_due(step_idx):
             var eval_ret = run_offpolicy_discrete_eval_cpu_env_gpu_agent[
                 A, E, N_ENVS
             ](
@@ -1222,16 +1183,15 @@ def run_offpolicy_discrete_train_cpu_env_gpu_agent[
                     )
                     logger.value()[].flush()
             if verbose:
-                prog.clear()
+                cad.clear()
                 print(
                     "[step ",
                     abs_step,
                     "] eval/mean_return = ",
                     eval_ret,
                 )
-            next_eval += eval_every
 
-    if ckpt_on:
+    if cad.ckpt_on:
         trainer.save_state(checkpoint_path)
 
     return ep_returns^

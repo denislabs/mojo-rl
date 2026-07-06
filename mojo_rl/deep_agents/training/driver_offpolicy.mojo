@@ -58,6 +58,7 @@ from .blocks.episode_readback import (
     EpisodeReturnRing,
     accumulate_episode_returns,
 )
+from .blocks.cadence import DriverCadence
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1014,33 +1015,25 @@ def run_offpolicy_train_batched[
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
 
     var ep_returns = List[Scalar[DT]]()
-    var t_start = perf_counter_ns()
     var step_idx: Int = 0
     var iter_idx: Int = 0
-    var next_print: Int = print_every
-    # In-place progress bar between log lines (pure CPU, no GPU sync).
-    # `min_stride=N_ENVS` so the bar updates at most once per iteration.
-    var prog = IntervalProgress(
-        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
+    # Shared threshold-counter cadence state (see blocks/cadence.mojo):
+    # print/log at `print_every` (log counter only advances inside
+    # `comptime if L.ENABLED`), diag bundle at `diag_every`, checkpoint at
+    # `checkpoint_every` (needs a non-empty path), deterministic eval at
+    # `eval_every` (needs an isolated `eval_env`; first eval fires at
+    # `eval_every`, not at step 0 where the policy is random).
+    var cad = DriverCadence.make(
+        print_every,
+        min_stride=N_ENVS,
+        label=progress_label,
+        verbose=verbose,
+        diag_every=diag_every,
+        checkpoint_every=checkpoint_every,
+        ckpt_enabled=checkpoint_path.byte_length() > 0,
+        eval_every=eval_every,
+        eval_enabled=Bool(eval_env),
     )
-    # Independent counter for logger emit; only read inside the
-    # `comptime if L.ENABLED` block so the default (NoOpLogger) path
-    # never reads or writes it after this initialization.
-    var next_log: Int = print_every
-    # Independent counter for the diag-bundle flush cadence (mean_q /
-    # critic_loss / alpha / train_steps / …). Disabled when diag_every == 0.
-    var next_diag: Int = diag_every if diag_every > 0 else total_env_steps + 1
-    # Independent counter for the checkpoint cadence. Disabled when
-    # checkpoint_every == 0 or checkpoint_path is empty.
-    var ckpt_on: Bool = (
-        checkpoint_every > 0 and checkpoint_path.byte_length() > 0
-    )
-    var next_ckpt: Int = checkpoint_every if ckpt_on else total_env_steps + 1
-    # Deterministic-eval cadence — armed only when both `eval_every > 0` and an
-    # isolated `eval_env` is supplied. First eval fires at `eval_every` (not at
-    # step 0, where the policy is random).
-    var eval_on: Bool = eval_every > 0 and Bool(eval_env)
-    var next_eval: Int = eval_every if eval_on else total_env_steps + 1
 
     while step_idx < total_env_steps:
         # ── 1. Snapshot prev_obs from env.obs_ptr().
@@ -1215,12 +1208,9 @@ def run_offpolicy_train_batched[
             var c = ctx.value()
             ep_ring.value().enqueue(c, env.reward_ptr(), env.done_ptr())
 
-            var post_step = step_idx + N_ENVS
-            var emit_now = print_every > 0 and post_step >= next_print
-            if diag_every > 0 and post_step >= next_diag:
-                emit_now = True
-            if post_step >= total_env_steps:
-                emit_now = True
+            var emit_now = cad.emit_boundary_imminent(
+                step_idx + N_ENVS, total_env_steps
+            )
             if ep_ring.value().due(emit_now):
                 var completed = ep_ring.value().drain(c)
                 for i in range(len(completed)):
@@ -1304,49 +1294,29 @@ def run_offpolicy_train_batched[
             for _ in range(updates_per_step):
                 _ = trainer.train_step(base_step + step_idx)
 
-        prog.tick(step_idx, trainer.total_train_steps())
+        cad.tick(step_idx, trainer.total_train_steps())
 
-        if verbose and print_every > 0 and step_idx >= next_print:
-            prog.clear()
-            var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
-            print(
-                "[step ",
+        if cad.print_due(step_idx):
+            cad.print_status(
                 base_step + step_idx,
-                "] mean_ret(10)=",
                 trainer.mean_return(),
-                " ep=",
                 trainer.ep_count(),
-                " elapsed=",
-                elapsed,
-                "s",
             )
-            next_print += print_every
 
-        # Logger emit at the same cadence (independent of verbose).
+        # Logger emit at the same cadence (independent of verbose), WITH a
+        # live flush at this (rare) print cadence so the always-on
+        # avg_reward/episodes stream reaches the dashboard even when
+        # `diag_every == 0` — diag metrics batch via `log_scalar`'s
+        # `buffer_size` auto-flush instead (see the diag block below).
         # Comptime-elided when L=NoOpLogger (default).
         comptime if L.ENABLED:
-            if print_every > 0 and step_idx >= next_log and Bool(logger):
-                logger.value()[].log_scalar(
-                    "avg_reward",
-                    Float64(trainer.mean_return()),
+            if Bool(logger) and cad.log_due(step_idx):
+                cad.log_status[L, True](
+                    logger,
                     base_step + step_idx,
+                    trainer.mean_return(),
+                    trainer.ep_count(),
                 )
-                logger.value()[].log_scalar(
-                    "episodes",
-                    Float64(trainer.ep_count()),
-                    base_step + step_idx,
-                )
-                # Live flush at the (rare) print cadence so the always-on
-                # avg_reward/episodes stream (2 points per `print_every`, far
-                # below `buffer_size`) reaches the dashboard even when
-                # `diag_every == 0` — otherwise those points sit unsent until
-                # `logger.close()`. At print_every scale this is ~tens of POSTs
-                # over a full run (negligible). The far more frequent per-diag
-                # flush was removed (see the diag block below) — diag metrics
-                # now batch via `log_scalar`'s `buffer_size` auto-flush.
-                # `flush()` early-returns on an empty buffer.
-                logger.value()[].flush()
-                next_log += print_every
 
         # `diag_every` — drain the trainer's full metric bundle (mean_q,
         # critic_loss, alpha, train_steps, …) through the logger at its own
@@ -1368,27 +1338,25 @@ def run_offpolicy_train_batched[
         # under-counts by that factor. `avg_reward` / `episodes` above stay
         # on `base_step + step_idx` — those are env-level.
         comptime if L.ENABLED:
-            if diag_every > 0 and step_idx >= next_diag and Bool(logger):
+            if Bool(logger) and cad.diag_due(step_idx):
                 trainer.flush_metrics_through_logger[L](
                     logger, trainer.total_train_steps()
                 )
-                next_diag += diag_every
 
         # ── Checkpoint cadence — overwrite `checkpoint_path` with the
         # trainer's one-file v2 envelope. Runs in host code between
         # iterations (D2H of live params on the GPU target), so it is
         # CUDA-graph-capture safe. Default `save_state` impl is a no-op.
-        if ckpt_on and step_idx >= next_ckpt:
+        if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
             if verbose:
-                prog.clear()
+                cad.clear()
                 print(
                     "[step ",
                     base_step + step_idx,
                     "] checkpoint → ",
                     checkpoint_path,
                 )
-            next_ckpt += checkpoint_every
 
         # ── Deterministic eval cadence. `avg_reward` above is a STOCHASTIC
         # rollout signal — for SAC the entropy/exploration noise inflates the
@@ -1397,7 +1365,7 @@ def run_offpolicy_train_batched[
         # rollout (no sampling, no replay/optimizer touch) and log the true
         # policy quality as `eval/mean_return`. Runs in host code between
         # iterations (capture-safe, like the checkpoint block).
-        if eval_on and step_idx >= next_eval:
+        if cad.eval_due(step_idx):
             var eval_ret = run_offpolicy_eval_batched[A, EE, EVAL_ENVS](
                 ctx,
                 trainer,
@@ -1415,18 +1383,17 @@ def run_offpolicy_train_batched[
                     )
                     logger.value()[].flush()
             if verbose:
-                prog.clear()
+                cad.clear()
                 print(
                     "[step ",
                     base_step + step_idx,
                     "] eval/mean_return = ",
                     eval_ret,
                 )
-            next_eval += eval_every
 
     # Always overwrite the final checkpoint at end so resume gets the
     # freshest weights regardless of cadence alignment.
-    if ckpt_on:
+    if cad.ckpt_on:
         trainer.save_state(checkpoint_path)
 
     # Defensive final drain of any buffered episode readbacks. With
@@ -1558,19 +1525,17 @@ def run_offpolicy_train_cpu_env_gpu_agent[
     env.reset_batch[N_ENVS](ctx=None, rng_seed=rng_seed)
 
     var ep_returns = List[Scalar[DT]]()
-    var t_start = perf_counter_ns()
     var step_idx: Int = 0
     var iter_idx: Int = 0
-    var next_print: Int = print_every
-    var next_log: Int = print_every
-    # Threshold counters, NOT `% cadence == 0`: step_idx advances by N_ENVS
-    # per iteration, so a modulo check only fires when the cadence happens to
-    # be divisible by N_ENVS (degraded to lcm intervals or never otherwise).
-    var next_diag: Int = diag_every
-    var next_ckpt: Int = checkpoint_every
-    # In-place progress bar between log lines (pure CPU, no GPU sync).
-    var prog = IntervalProgress(
-        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
+    # Shared threshold-counter cadence state (see blocks/cadence.mojo).
+    var cad = DriverCadence.make(
+        print_every,
+        min_stride=N_ENVS,
+        label=progress_label,
+        verbose=verbose,
+        diag_every=diag_every,
+        checkpoint_every=checkpoint_every,
+        ckpt_enabled=checkpoint_path.byte_length() > 0,
     )
 
     while step_idx < total_env_steps:
@@ -1649,38 +1614,25 @@ def run_offpolicy_train_cpu_env_gpu_agent[
         for _ in range(updates_per_step):
             _ = trainer.train_step(base_step + step_idx)
 
-        prog.tick(step_idx, trainer.total_train_steps())
+        cad.tick(step_idx, trainer.total_train_steps())
 
-        if verbose and print_every > 0 and step_idx >= next_print:
-            prog.clear()
-            var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
-            print(
-                "[step ",
+        if cad.print_due(step_idx):
+            cad.print_status(
                 base_step + step_idx,
-                "] mean_ret(10)=",
                 trainer.mean_return(),
-                " ep=",
                 trainer.ep_count(),
-                " elapsed=",
-                elapsed,
-                "s",
             )
-            next_print += print_every
 
         # Logger emit at the print cadence (comptime-elided for NoOpLogger).
+        # No forced flush — `buffer_size` auto-flush.
         comptime if L.ENABLED:
-            if print_every > 0 and step_idx >= next_log and Bool(logger):
-                logger.value()[].log_scalar(
-                    "avg_reward",
-                    Float64(trainer.mean_return()),
+            if Bool(logger) and cad.log_due(step_idx):
+                cad.log_status[L, False](
+                    logger,
                     base_step + step_idx,
+                    trainer.mean_return(),
+                    trainer.ep_count(),
                 )
-                logger.value()[].log_scalar(
-                    "episodes",
-                    Float64(trainer.ep_count()),
-                    base_step + step_idx,
-                )
-                next_log += print_every
 
         # `diag_every` — drain the trainer's metric bundle through the
         # logger. Default trait impl is a no-op for trainers that haven't
@@ -1689,25 +1641,19 @@ def run_offpolicy_train_cpu_env_gpu_agent[
         # updates_per_step>1 (e.g. REDQ UTD 40:1) would otherwise be plotted
         # on an x-axis under-counted by that factor.
         comptime if L.ENABLED:
-            if diag_every > 0 and step_idx >= next_diag and Bool(logger):
+            if Bool(logger) and cad.diag_due(step_idx):
                 trainer.flush_metrics_through_logger[L](
                     logger, trainer.total_train_steps()
                 )
-                next_diag += diag_every
 
         # `checkpoint_every` — overwrite `checkpoint_path` with the
         # trainer's one-file v2 envelope. Default trait impl is a no-op.
-        if (
-            checkpoint_every > 0
-            and step_idx >= next_ckpt
-            and checkpoint_path.byte_length() > 0
-        ):
+        if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
-            next_ckpt += checkpoint_every
 
     # Always overwrite the final checkpoint at end so resume gets the
     # freshest weights regardless of cadence alignment.
-    if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
+    if cad.ckpt_on:
         trainer.save_state(checkpoint_path)
 
     return ep_returns^

@@ -26,6 +26,7 @@ from mojo_rl.utils.progress import IntervalProgress
 from mojo_rl.core.env_traits import BoxContinuousActionEnv
 from .batched_env import BatchedEnv
 from .driver_scratch import DriverScratch
+from .blocks.cadence import DriverCadence
 
 
 trait OnPolicyCheckpointable(ImplicitlyDeletable, Movable):
@@ -525,23 +526,20 @@ def _run_onpolicy_batched_body[
     env.reset_batch[N_ENVS](ctx=ctx, rng_seed=rng_seed)
 
     var ep_returns = List[Scalar[DT]]()
-    var t_start = perf_counter_ns()
     var step_idx: Int = 0
     var iter_idx: Int = 0
-    var next_print: Int = print_every
-    # In-place progress bar between log lines (pure CPU, no GPU sync).
-    var prog = IntervalProgress(
-        print_every, min_stride=N_ENVS, label=progress_label, enabled=verbose
+    # Shared threshold-counter cadence state (see blocks/cadence.mojo) —
+    # the log counter only advances inside `comptime if L.ENABLED`, so
+    # bit-identity is preserved when L=NoOpLogger (default).
+    var cad = DriverCadence.make(
+        print_every,
+        min_stride=N_ENVS,
+        label=progress_label,
+        verbose=verbose,
+        diag_every=diag_every,
+        checkpoint_every=checkpoint_every,
+        ckpt_enabled=checkpoint_path.byte_length() > 0,
     )
-    # Independent counter for logger cadence — only read inside the
-    # `comptime if L.ENABLED` block. Bit-identity preserved when
-    # L=NoOpLogger (default).
-    var next_log: Int = print_every
-    # Threshold counters, NOT `% cadence == 0`: step_idx advances by N_ENVS
-    # per iteration, so a modulo check only fires when the cadence happens to
-    # be divisible by N_ENVS (degraded to lcm intervals or never otherwise).
-    var next_diag: Int = diag_every
-    var next_ckpt: Int = checkpoint_every
     var last_ep_count = trainer.ep_count()
 
     while step_idx < total_env_steps:
@@ -688,60 +686,38 @@ def _run_onpolicy_batched_body[
 
         var abs_step = base_step + step_idx
 
-        prog.tick(step_idx, trainer.total_train_steps())
+        cad.tick(step_idx, trainer.total_train_steps())
 
-        if verbose and print_every > 0 and step_idx >= next_print:
-            prog.clear()
-            var elapsed = Float64(perf_counter_ns() - t_start) / 1e9
-            print(
-                "[step ",
-                abs_step,
-                "] mean_ret(10)=",
-                trainer.mean_return(),
-                " ep=",
-                trainer.ep_count(),
-                " elapsed=",
-                elapsed,
-                "s",
+        if cad.print_due(step_idx):
+            cad.print_status(
+                abs_step, trainer.mean_return(), trainer.ep_count()
             )
-            next_print += print_every
 
-        # Logger emit at the same cadence (independent of verbose).
-        # Comptime-elided when L=NoOpLogger (default).
+        # Logger emit at the same cadence (independent of verbose). No
+        # forced flush (`buffer_size` auto-flush — see note in
+        # run_offpolicy_train). Comptime-elided when L=NoOpLogger (default).
         comptime if L.ENABLED:
-            if print_every > 0 and step_idx >= next_log and Bool(logger):
-                logger.value()[].log_scalar(
-                    "avg_reward",
-                    Float64(trainer.mean_return()),
+            if Bool(logger) and cad.log_due(step_idx):
+                cad.log_status[L, False](
+                    logger,
                     abs_step,
+                    trainer.mean_return(),
+                    trainer.ep_count(),
                 )
-                logger.value()[].log_scalar(
-                    "episodes",
-                    Float64(trainer.ep_count()),
-                    abs_step,
-                )
-                # No forced flush — see note in run_offpolicy_train.
-                next_log += print_every
 
         # `diag_every` — drain the trainer's metric bundle through the
         # logger at its own cadence. Default trait impl is no-op for
         # trainers that haven't wired this up yet.
         comptime if L.ENABLED:
-            if diag_every > 0 and step_idx >= next_diag and Bool(logger):
+            if Bool(logger) and cad.diag_due(step_idx):
                 trainer.flush_metrics_through_logger[L](logger, abs_step)
-                next_diag += diag_every
 
         # `checkpoint_every` — overwrite `checkpoint_path` with the
         # trainer's one-file v2 envelope. Default trait impl is no-op.
-        if (
-            checkpoint_every > 0
-            and step_idx >= next_ckpt
-            and checkpoint_path.byte_length() > 0
-        ):
+        if cad.ckpt_due(step_idx):
             trainer.save_state(checkpoint_path)
-            next_ckpt += checkpoint_every
 
-    if checkpoint_every > 0 and checkpoint_path.byte_length() > 0:
+    if cad.ckpt_on:
         trainer.save_state(checkpoint_path)
 
     return ep_returns^
