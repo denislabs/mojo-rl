@@ -253,6 +253,37 @@ def _scatter_bias_kernel[
     ) + rebind[Scalar[ADT]](bias[oc])
 
 
+def _fwd_oc1_matvec_kernel[
+    BATCH: Int,
+    SO: Int,
+    COL: Int,
+    BS: Int,
+    ADT: DType = DT,
+](
+    col: LayoutTensor[ADT, Layout.row_major(BS, COL), MutAnyOrigin],
+    weight: LayoutTensor[ADT, Layout.row_major(COL), MutAnyOrigin],
+    bias: LayoutTensor[ADT, Layout.row_major(1), MutAnyOrigin],
+    output: LayoutTensor[ADT, Layout.row_major(BATCH, SO), MutAnyOrigin],
+):
+    """OC==1 forward: `max_matmul[transpose_b=True]` on GPU SILENTLY
+    MISCOMPUTES N=1 GEMMs (out[BS,1] = col @ Wᵀ; verified wrong on Metal,
+    N>=2 exact — sibling of the documented N=1 abort in the CPU vjp path).
+    Compute the matvec + bias directly instead; with OC=1, OUT_FLAT == SO
+    and the LAYOUT scatter is the identity, so this fuses GEMM + scatter.
+    Accumulates in fp32 (matches the GEMM's accumulation for bf16)."""
+    var idx = Int(global_idx.x)
+    if idx >= BS:
+        return
+    var acc: Scalar[DT] = 0.0
+    for k in range(COL):
+        acc += (
+            rebind[Scalar[ADT]](col[idx, k]).cast[DT]()
+            * rebind[Scalar[ADT]](weight[k]).cast[DT]()
+        )
+    acc += rebind[Scalar[ADT]](bias[0]).cast[DT]()
+    output[idx // SO, idx % SO] = acc.cast[ADT]()
+
+
 def _go_transpose_kernel[
     BATCH: Int,
     OC: Int,
@@ -637,38 +668,56 @@ struct Conv2D[
                 # A2: record the input buffer so this forward's col_t can be
                 # reused by the matching vjp (skipping a redundant im2col).
                 self._col_src_ptr = Int(in0d.dev.value().unsafe_ptr())
-                # (2) out_packed[BS,OC] = col[BS,COL] @ W[OC,COL]ᵀ
-                var col_tt = TileTensor(
-                    self.col_t.dev.value(), row_major[BS, Self.COL]()
-                )
-                var w_tt = TileTensor(
-                    self.weight.val.dev.value(), row_major[Self.OC_, Self.COL]()
-                )
-                var outp_tt = TileTensor(
-                    self.outp_t.dev.value(), row_major[BS, Self.OC_]()
-                )
-                max_matmul[transpose_b=True, target="gpu"](
-                    outp_tt, col_tt, w_tt, c
-                )
-                # (3) scatter → output[B, OC·SO] + bias
-                comptime nb_sc = (B * Self.OUT_FLAT + CONV_TPB - 1) // CONV_TPB
-                c.enqueue_function[
-                    _scatter_bias_kernel[
-                        B,
-                        Self.OC_,
-                        Self.SO,
-                        Self.OUT_FLAT,
-                        BS,
-                        DT,
-                        Self.LAYOUT,
-                    ]
-                ](
-                    self.outp_t.lt["gpu", Layout.row_major(BS, Self.OC_)](),
-                    self.bias.val.lt["gpu", Layout.row_major(Self.OC_)](),
-                    outd.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
-                    grid_dim=nb_sc,
-                    block_dim=CONV_TPB,
-                )
+                comptime if Self.OC_ == 1:
+                    # (2+3 fused) OC==1: max_matmul GPU miscomputes N=1 —
+                    # direct matvec + bias (see _fwd_oc1_matvec_kernel).
+                    comptime nb_mv = (BS + CONV_TPB - 1) // CONV_TPB
+                    c.enqueue_function[
+                        _fwd_oc1_matvec_kernel[B, Self.SO, Self.COL, BS, DT]
+                    ](
+                        self.col_t.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                        self.weight.val.lt["gpu", Layout.row_major(Self.COL)](),
+                        self.bias.val.lt["gpu", Layout.row_major(1)](),
+                        outd.lt["gpu", Layout.row_major(B, Self.SO)](),
+                        grid_dim=nb_mv,
+                        block_dim=CONV_TPB,
+                    )
+                else:
+                    # (2) out_packed[BS,OC] = col[BS,COL] @ W[OC,COL]ᵀ
+                    var col_tt = TileTensor(
+                        self.col_t.dev.value(), row_major[BS, Self.COL]()
+                    )
+                    var w_tt = TileTensor(
+                        self.weight.val.dev.value(),
+                        row_major[Self.OC_, Self.COL](),
+                    )
+                    var outp_tt = TileTensor(
+                        self.outp_t.dev.value(), row_major[BS, Self.OC_]()
+                    )
+                    max_matmul[transpose_b=True, target="gpu"](
+                        outp_tt, col_tt, w_tt, c
+                    )
+                    # (3) scatter → output[B, OC·SO] + bias
+                    comptime nb_sc = (
+                        B * Self.OUT_FLAT + CONV_TPB - 1
+                    ) // CONV_TPB
+                    c.enqueue_function[
+                        _scatter_bias_kernel[
+                            B,
+                            Self.OC_,
+                            Self.SO,
+                            Self.OUT_FLAT,
+                            BS,
+                            DT,
+                            Self.LAYOUT,
+                        ]
+                    ](
+                        self.outp_t.lt["gpu", Layout.row_major(BS, Self.OC_)](),
+                        self.bias.val.lt["gpu", Layout.row_major(Self.OC_)](),
+                        outd.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                        grid_dim=nb_sc,
+                        block_dim=CONV_TPB,
+                    )
         else:
             # ── bf16-flow path (GPU-only) ──
             comptime assert target == "gpu", "bf16-flow Conv2D is GPU-only"
@@ -715,37 +764,54 @@ struct Conv2D[
             )
             # A2: record the input buffer for col_t_bf reuse in the matching vjp.
             self._col_src_ptr = Int(in0.dev.value().unsafe_ptr())
-            # (2) out_packed[BS,OC] = col[BS,COL] @ W[OC,COL]ᵀ — bf16-in →
-            # bf16-out GEMM (fp32 accumulation is automatic).
-            var col_tt = TileTensor(
-                self.col_t_bf.dev.value(), row_major[BS, Self.COL]()
-            )
-            var w_tt = TileTensor(
-                self.w_bf.dev.value(), row_major[Self.OC_, Self.COL]()
-            )
-            var outp_tt = TileTensor(
-                self.outp_t_bf.dev.value(), row_major[BS, Self.OC_]()
-            )
-            max_matmul[transpose_b=True, target="gpu"](outp_tt, col_tt, w_tt, c)
-            # (3) scatter → output[B, OC·SO] + bf16 bias
-            comptime nb_sc = (B * Self.OUT_FLAT + CONV_TPB - 1) // CONV_TPB
-            c.enqueue_function[
-                _scatter_bias_kernel[
-                    B,
-                    Self.OC_,
-                    Self.SO,
-                    Self.OUT_FLAT,
-                    BS,
-                    Self.ADT,
-                    Self.LAYOUT,
-                ]
-            ](
-                self.outp_t_bf.lt["gpu", Layout.row_major(BS, Self.OC_)](),
-                self.b_a.lt["gpu", Layout.row_major(Self.OC_)](),
-                out.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
-                grid_dim=nb_sc,
-                block_dim=CONV_TPB,
-            )
+            comptime if Self.OC_ == 1:
+                # (2+3 fused) OC==1: max_matmul GPU miscomputes N=1 —
+                # direct matvec + bias (see _fwd_oc1_matvec_kernel).
+                comptime nb_mv = (BS + CONV_TPB - 1) // CONV_TPB
+                c.enqueue_function[
+                    _fwd_oc1_matvec_kernel[B, Self.SO, Self.COL, BS, Self.ADT]
+                ](
+                    self.col_t_bf.lt["gpu", Layout.row_major(BS, Self.COL)](),
+                    self.w_bf.lt["gpu", Layout.row_major(Self.COL)](),
+                    self.b_a.lt["gpu", Layout.row_major(1)](),
+                    out.lt["gpu", Layout.row_major(B, Self.SO)](),
+                    grid_dim=nb_mv,
+                    block_dim=CONV_TPB,
+                )
+            else:
+                # (2) out_packed[BS,OC] = col[BS,COL] @ W[OC,COL]ᵀ — bf16-in →
+                # bf16-out GEMM (fp32 accumulation is automatic).
+                var col_tt = TileTensor(
+                    self.col_t_bf.dev.value(), row_major[BS, Self.COL]()
+                )
+                var w_tt = TileTensor(
+                    self.w_bf.dev.value(), row_major[Self.OC_, Self.COL]()
+                )
+                var outp_tt = TileTensor(
+                    self.outp_t_bf.dev.value(), row_major[BS, Self.OC_]()
+                )
+                max_matmul[transpose_b=True, target="gpu"](
+                    outp_tt, col_tt, w_tt, c
+                )
+                # (3) scatter → output[B, OC·SO] + bf16 bias
+                comptime nb_sc = (B * Self.OUT_FLAT + CONV_TPB - 1) // CONV_TPB
+                c.enqueue_function[
+                    _scatter_bias_kernel[
+                        B,
+                        Self.OC_,
+                        Self.SO,
+                        Self.OUT_FLAT,
+                        BS,
+                        Self.ADT,
+                        Self.LAYOUT,
+                    ]
+                ](
+                    self.outp_t_bf.lt["gpu", Layout.row_major(BS, Self.OC_)](),
+                    self.b_a.lt["gpu", Layout.row_major(Self.OC_)](),
+                    out.lt["gpu", Layout.row_major(B, Self.OUT_FLAT)](),
+                    grid_dim=nb_sc,
+                    block_dim=CONV_TPB,
+                )
 
     def vjp[
         target: StaticString,
