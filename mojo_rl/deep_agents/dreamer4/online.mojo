@@ -694,7 +694,12 @@ def run_online_dreamer4[
             # Imagination trains only the value + policy heads (transformer
             # frozen); the rollout runs the dynamics forward on DYN_TARGET.
             comptime if DYN_TARGET == "cpu":
-                iopt.zero_grad["cpu"](agent, None)
+                # Zero + step ONLY the value/policy heads (mirrors the GPU
+                # branch below). A whole-agent `iopt.step(agent)` here
+                # silently UN-FROZE the WM: every dynamics/tokenizer param
+                # rode the imagination optimizer at lr_imag.
+                agent.vh.zero_grad["cpu"](None)
+                agent.ph.zero_grad["cpu"](None)
                 var il = agent.imag_train_step(
                     _mao(ctx.data.unsafe_ptr()), _mao(u01.data.unsafe_ptr()),
                     _mao(znoise.data.unsafe_ptr()),
@@ -702,7 +707,11 @@ def run_online_dreamer4[
                     _mao(bins.data.unsafe_ptr()), use_continue=True,
                     gamma=imag_gamma,
                 )
-                iopt.step["cpu"](agent, None)
+                # value + policy heads under a SINGLE iopt advance (see WM
+                # note in the gpu branch).
+                iopt.begin_step()
+                agent.vh.for_each_param["cpu"](iopt, None)
+                agent.ph.for_each_param["cpu"](iopt, None)
                 last_v = il[0]
                 last_p = il[1]
             else:
