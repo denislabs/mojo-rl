@@ -1,0 +1,34 @@
+# Examples compile-probe manifest (`pixi run examples-compile`) — CI tier.
+#
+# Each entry is `mojo build -I .` ONLY (never executed — most would train).
+# Keeps the root-level examples from silently rotting on toolchain/API
+# migrations (13 of 23 had, before this manifest existed).
+#
+# Root examples with GPU device code are EXCLUDED for now: the CI `cpu` env
+# has no GPU toolchain and their compile behavior there is unverified —
+# probe them locally via `pixi run -e apple examples-compile-gpu` candidates
+# if that tier ever gets added.
+
+examples/bipedal_walker_demo.mojo
+examples/car_racing_demo.mojo
+examples/export_env_gifs.mojo
+examples/gymnasium_demo.mojo
+examples/hyperparam_search_demo.mojo
+examples/mountain_car_demo_gif.mojo
+examples/mountain_car_linear.mojo
+examples/mountain_car_tiled.mojo
+examples/pendulum_ddpg.mojo
+examples/pendulum_sac.mojo
+examples/pendulum_td3.mojo
+examples/per_comparison_demo.mojo
+examples/render_random_demo.mojo
+examples/solve_cliffwalking.mojo
+examples/solve_frozenlake.mojo
+examples/solve_gridworld.mojo
+examples/solve_mountaincar.mojo
+examples/solve_pendulum.mojo
+examples/solve_taxi.mojo
+
+# GPU device code — local-only probes (see note above):
+# examples/bipedal_walker_gpu_demo.mojo
+# examples/bipedal_walker_cpu_gpu_compare.mojo

@@ -55,6 +55,20 @@ jobs:
       - name: smoke tier
         run: pixi run -e cpu test-smoke
 
+  examples-compile:
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.tier == 'smoke')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          environments: cpu
+          cache: true
+          cache-write: false
+      - name: compile-probe root examples
+        run: pixi run -e cpu examples-compile
+
   cpu-full:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.tier == 'cpu-full')
     runs-on: ubuntu-latest

@@ -9,13 +9,16 @@
 #
 # Direct:
 #   bash scripts/run_tests.sh tests/manifests/smoke.txt
+#   bash scripts/run_tests.sh --compile-only tests/manifests/examples-compile.txt
 #   bash scripts/run_tests.sh --discover tests --cpu-only
 #   bash scripts/run_tests.sh --discover tests --gpu-only
 #
-# Each entry is one `mojo run -I . <file>` (compile + run). Lines starting
-# with `#` and blank lines in a manifest are skipped. Output of failing
-# tests is echoed (last 40 lines); a summary table always prints. Exit code
-# is the number of failures (0 = green).
+# Each entry is one `mojo run -I . <file>` (compile + run), or with
+# `--compile-only` one `mojo build -I . <file>` (compile probe — for
+# examples that would train for hours if executed). Lines starting with `#`
+# and blank lines in a manifest are skipped. Output of failing tests is
+# echoed (last 40 lines); a summary table always prints. Exit code is the
+# number of failures (0 = green).
 
 set -u
 
@@ -23,6 +26,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 MODE="manifest"
+COMPILE_ONLY=0
+if [[ "${1:-}" == "--compile-only" ]]; then
+    COMPILE_ONLY=1
+    shift
+fi
 TARGET="${1:-tests/manifests/smoke.txt}"
 FILTER="all"
 
@@ -78,7 +86,12 @@ for f in "${FILES[@]}"; do
     fi
     log="$LOG_DIR/$(echo "$f" | tr '/' '_').log"
     t0=$SECONDS
-    if mojo run -I . "$f" >"$log" 2>&1; then
+    if [[ "$COMPILE_ONLY" == 1 ]]; then
+        cmd=(mojo build -I . "$f" -o "$LOG_DIR/probe.bin")
+    else
+        cmd=(mojo run -I . "$f")
+    fi
+    if "${cmd[@]}" >"$log" 2>&1; then
         printf "PASS  %4ss  %s\n" "$((SECONDS - t0))" "$f"
         PASS=$((PASS + 1))
     else

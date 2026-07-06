@@ -33,7 +33,7 @@ from mojo_rl.agents.linear_qlearning import (
     LinearQLearningAgent,
     LinearSARSALambdaAgent,
 )
-from mojo_rl.envs.mountain_car_native import MountainCarNative
+from mojo_rl.envs import MountainCarEnv
 
 
 def train_mountain_car_poly(
@@ -61,7 +61,7 @@ def train_mountain_car_poly(
         List of episode rewards.
     """
     # Create polynomial feature extractor
-    var features = make_mountain_car_poly_features(degree=degree)
+    var features = make_mountain_car_poly_features[DType.float64](degree=degree)
 
     if verbose:
         print("Training Linear Q-Learning with Polynomial Features")
@@ -83,15 +83,18 @@ def train_mountain_car_poly(
     )
 
     # Create environment
-    var env = MountainCarNative()
+    var env = MountainCarEnv[DType.float64]()
 
     # Training loop
     var episode_rewards = List[Float64]()
     var successes = 0
 
     for episode in range(num_episodes):
-        var obs = env.reset()
-        var phi = features.get_features_simd2(obs)
+        _ = env.reset()
+        var obs4 = env.get_obs()  # SIMD4 (position, velocity, pad, pad)
+        var phi = features.get_features_simd2(
+            SIMD[DType.float64, 2](obs4[0], obs4[1])
+        )
         var episode_reward: Float64 = 0.0
 
         for _ in range(max_steps):
@@ -99,8 +102,9 @@ def train_mountain_car_poly(
             var action = agent.select_action(phi)
 
             # Take action
-            var result = env.step(action)
-            var next_obs = result[0]
+            var result = env.step_raw(action)
+            var next_obs4 = result[0]
+            var next_obs = SIMD[DType.float64, 2](next_obs4[0], next_obs4[1])
             var reward = result[1]
             var done = result[2]
 
@@ -213,15 +217,18 @@ def train_mountain_car_rbf(
     )
 
     # Create environment
-    var env = MountainCarNative()
+    var env = MountainCarEnv[DType.float64]()
 
     # Training loop
     var episode_rewards = List[Float64]()
     var successes = 0
 
     for episode in range(num_episodes):
-        var obs = env.reset()
-        var phi = features.get_features_simd2(obs)
+        _ = env.reset()
+        var obs4 = env.get_obs()  # SIMD4 (position, velocity, pad, pad)
+        var phi = features.get_features_simd2(
+            SIMD[DType.float64, 2](obs4[0], obs4[1])
+        )
         var episode_reward: Float64 = 0.0
 
         for _ in range(max_steps):
@@ -229,8 +236,9 @@ def train_mountain_car_rbf(
             var action = agent.select_action(phi)
 
             # Take action
-            var result = env.step(action)
-            var next_obs = result[0]
+            var result = env.step_raw(action)
+            var next_obs4 = result[0]
+            var next_obs = SIMD[DType.float64, 2](next_obs4[0], next_obs4[1])
             var reward = result[1]
             var done = result[2]
 
@@ -304,7 +312,7 @@ def train_mountain_car_linear_sarsa_lambda(
         List of episode rewards.
     """
     # Create polynomial feature extractor
-    var features = make_mountain_car_poly_features(degree=degree)
+    var features = make_mountain_car_poly_features[DType.float64](degree=degree)
 
     if verbose:
         print("Training Linear SARSA(λ) with Polynomial Features")
@@ -328,7 +336,7 @@ def train_mountain_car_linear_sarsa_lambda(
     )
 
     # Create environment
-    var env = MountainCarNative()
+    var env = MountainCarEnv[DType.float64]()
 
     # Training loop
     var episode_rewards = List[Float64]()
@@ -336,17 +344,21 @@ def train_mountain_car_linear_sarsa_lambda(
 
     for episode in range(num_episodes):
         # Reset environment and traces
-        var obs = env.reset()
+        _ = env.reset()
         agent.reset()  # Reset eligibility traces
 
-        var phi = features.get_features_simd2(obs)
+        var obs4 = env.get_obs()  # SIMD4 (position, velocity, pad, pad)
+        var phi = features.get_features_simd2(
+            SIMD[DType.float64, 2](obs4[0], obs4[1])
+        )
         var action = agent.select_action(phi)
         var episode_reward: Float64 = 0.0
 
         for _ in range(max_steps):
             # Take action
-            var result = env.step(action)
-            var next_obs = result[0]
+            var result = env.step_raw(action)
+            var next_obs4 = result[0]
+            var next_obs = SIMD[DType.float64, 2](next_obs4[0], next_obs4[1])
             var reward = result[1]
             var done = result[2]
 

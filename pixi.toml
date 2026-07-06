@@ -116,6 +116,7 @@ test = { cmd = "mojo run -I ." }
 #   test-gpu    discover *_gpu.mojo tests; run as
 #               `pixi run -e apple test-gpu` or `pixi run -e nvidia test-gpu`.
 test-smoke = { cmd = "bash scripts/run_tests.sh tests/manifests/smoke.txt", description = "Fast curated CPU test tier (CI)" }
+examples-compile = { cmd = "bash scripts/run_tests.sh --compile-only tests/manifests/examples-compile.txt", description = "Compile-probe the root examples (CI)" }
 test-cpu = { cmd = "bash scripts/run_tests.sh --discover tests --cpu-only", description = "All non-GPU tests (slow)" }
 test-gpu = { cmd = "bash scripts/run_tests.sh --discover tests --gpu-only", description = "All *_gpu.mojo tests (use -e apple|nvidia)" }
 format = { cmd = "mojo format -l 80 ." }

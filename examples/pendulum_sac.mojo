@@ -44,11 +44,11 @@ def main() raises:
 
     # Create polynomial feature extractor (degree 2)
     # Observation: [cos(θ), sin(θ), θ_dot]
-    var features = PendulumEnv.make_poly_features(degree=2)
+    var features = PendulumEnv[DType.float64].make_poly_features(degree=2)
     print("Feature dimensionality:", features.get_num_features())
 
     # Create replay buffer
-    var buffer = ContinuousReplayBuffer(
+    var buffer = ContinuousReplayBuffer[DType.float64](
         capacity=100000,
         feature_dim=features.get_num_features(),
     )

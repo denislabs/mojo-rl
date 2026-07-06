@@ -22,7 +22,6 @@ from mojo_rl.agents import (
     SARSALambdaAgent,
     DoubleQLearningAgent,
 )
-from mojo_rl.render import Renderer2D
 
 
 def main() raises:
@@ -172,9 +171,8 @@ def main() raises:
     print("-" * 60)
     print("Demonstrating learned policy (Q-Learning):")
     print("-" * 60)
-    var renderer = Renderer2D()
     _ = env_q.reset()
-    env_q.render(renderer)
+    env_q.render_frame()  # GridWorld renders text (RenderableEnv trait)
 
     var episode_reward: Float64 = 0.0
     var steps = 0
@@ -195,7 +193,7 @@ def main() raises:
         action_names.append("LEFT")
 
         print("Action:", action_names[action_idx])
-        env_q.render(renderer)
+        env_q.render_frame()
 
         if result[2]:
             print("Goal reached in", steps, "steps!")
