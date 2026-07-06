@@ -31,6 +31,7 @@ same param section when populated (`m.n >= N`), enabling exact training resume.
 download on save / upload on load.
 """
 
+from std.ffi import external_call
 from std.gpu.host import DeviceContext
 from std.memory import memcpy
 from std.sys.info import size_of
@@ -43,11 +44,15 @@ from .module import Module
 comptime _CKPT_CHUNK = 1 << 30  # 1 GiB — below every single-syscall I/O cap
 
 
-def _write_file_bytes(path: String, content: List[UInt8]) raises:
-    """Chunked file write. A single write(2) silently stops at 0x7FFFF000
+def _write_file_bytes(var path: String, content: List[UInt8]) raises:
+    """Chunked, ATOMIC file write. The payload lands in `path + ".tmp"` and is
+    renamed over `path` only once fully written, so a crash mid-save can never
+    destroy the previous good checkpoint (rename(2) is atomic on the same
+    filesystem). Chunking: a single write(2) silently stops at 0x7FFFF000
     (~2 GiB) on Linux — the v2 corruption source — so never issue one call
     for the whole payload."""
-    with open(path, "w") as f:
+    var tmp = path + ".tmp"
+    with open(tmp, "w") as f:
         var off = 0
         while off < len(content):
             var take = len(content) - off
@@ -57,6 +62,14 @@ def _write_file_bytes(path: String, content: List[UInt8]) raises:
                 Span(ptr=content.unsafe_ptr() + off, length=take)
             )
             off += take
+    var rc = external_call["rename", Int32](
+        tmp.as_c_string_slice().unsafe_ptr(),
+        path.as_c_string_slice().unsafe_ptr(),
+    )
+    if rc != 0:
+        raise Error(
+            "checkpoint save: atomic rename failed: " + tmp + " -> " + path
+        )
 
 
 def _read_file_bytes(path: String) raises -> List[UInt8]:
