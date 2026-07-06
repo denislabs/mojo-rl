@@ -50,3 +50,10 @@ trait TabularAgent:
     def get_best_action(self, state_idx: Int) -> Int:
         """Get the greedy action for evaluation (no exploration)."""
         ...
+
+    def begin_episode(mut self, episode: Int, num_episodes: Int):
+        """Per-episode hook called by the shared `train_tabular` loop at
+        the start of each episode (before any step). Default no-op —
+        agents with per-episode schedules override it (e.g. PER anneals
+        its importance-sampling beta towards 1.0 over training)."""
+        pass

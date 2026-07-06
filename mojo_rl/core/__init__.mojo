@@ -25,6 +25,7 @@ from .env_traits import (
 from .space import Space, DiscreteSpace, BoxSpace
 from .agent import Agent
 from .tabular_agent import TabularAgent
+from .tabular_training import train_tabular, evaluate_tabular
 from .replay_buffer import Transition, ReplayBuffer, PrioritizedReplayBuffer
 from .continuous_replay_buffer import (
     ContinuousTransition,
