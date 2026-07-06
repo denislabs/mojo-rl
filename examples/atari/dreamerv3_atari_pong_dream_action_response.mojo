@@ -43,20 +43,21 @@ from mojo_rl.render.image_writer import save_frame_sequence_gif
 # C=1 ↔ AtariEnv OBS_MODE=3 (gray-96 single frame); C=4 ↔ OBS_MODE=4 (stack).
 comptime C = 1  # atari100k-aligned run (OBS_MODE=3 single frame)
 comptime IMG = 96
-comptime BASE = 64
+comptime TIER = "50m"  # MUST match the checkpoint's training TIER ("200m" | "50m")
+comptime BASE = 64 if TIER == "200m" else 32
 comptime OBS = C * IMG * IMG
 comptime ACT = 6
-comptime DETER = 8192  # size200m tier (MUST match the checkpoint)
-comptime H = 1024
+comptime DETER = 8192 if TIER == "200m" else 4096
+comptime H = 1024 if TIER == "200m" else 512
 comptime STOCH = 32
-comptime CLASSES = 64
+comptime CLASSES = 64 if TIER == "200m" else 32
 comptime BLOCKS = 8
 comptime TOKEN = 4 * BASE * (IMG // 16) * (IMG // 16)  # 9216 (pool geometry)
-comptime UNITS = 1024  # decoder bspace-stem MLP width
-comptime DEC_U = 1024
-comptime HU = 1024
-comptime VU = 1024
-comptime PU = 1024
+comptime UNITS = H  # decoder bspace-stem MLP width (= hidden, per tier)
+comptime DEC_U = H
+comptime HU = H
+comptime VU = H
+comptime PU = H
 comptime BINS = 255
 comptime B = 16
 comptime T = 32

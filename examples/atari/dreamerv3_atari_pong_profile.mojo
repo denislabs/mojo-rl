@@ -41,20 +41,21 @@ from mojo_rl.envs.atari.games.registry import AtariGame
 # ── identical arch to the training run ──
 comptime C = 1
 comptime IMG = 96
-comptime BASE = 64
+comptime TIER = "50m"  # MUST match the checkpoint's training TIER ("200m" | "50m")
+comptime BASE = 64 if TIER == "200m" else 32
 comptime OBS = C * IMG * IMG
 comptime ACT = 6
-comptime DETER = 8192
-comptime H = 1024
+comptime DETER = 8192 if TIER == "200m" else 4096
+comptime H = 1024 if TIER == "200m" else 512
 comptime STOCH = 32
-comptime CLASSES = 64
+comptime CLASSES = 64 if TIER == "200m" else 32
 comptime BLOCKS = 8
 comptime TOKEN = 4 * BASE * (IMG // 16) * (IMG // 16)
-comptime UNITS = 1024
-comptime DEC_U = 1024
-comptime HU = 1024
-comptime VU = 1024
-comptime PU = 1024
+comptime UNITS = H  # decoder bspace-stem MLP width (= hidden, per tier)
+comptime DEC_U = H
+comptime HU = H
+comptime VU = H
+comptime PU = H
 comptime BINS = 255
 comptime B = 16
 comptime T = 64
@@ -84,7 +85,10 @@ comptime TRAIN_EVERY = 4
 def main() raises:
     seed(42)
     print("=" * 70)
-    print("DreamerV3 Pong PROFILE — size200m pool geometry (B", B, "T", T, ")")
+    print(
+        "DreamerV3 Pong PROFILE — TIER", TIER, "pool geometry (B", B,
+        "T", T, "deter", DETER, "base", BASE, ")",
+    )
     print("=" * 70)
     with DeviceContext() as ctx:
         var agent = Ag.make(

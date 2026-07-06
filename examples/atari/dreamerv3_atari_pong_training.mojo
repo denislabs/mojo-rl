@@ -75,26 +75,31 @@ from mojo_rl.envs.atari.games.registry import AtariGame
 # =============================================================================
 comptime C = 1  # single grayscale frame (reference parity — no stacking)
 comptime IMG = 96  # 96×96 (16-divisible → conv minres 6)
-comptime BASE = 64  # conv base width (channels BASE·{2,3,4,4}); ref depth 64
+# Reference size LADDER (configs.yaml; deter/8 = hidden = units, classes =
+# hidden/16, depth = conv base). "200m" is the un-overridden atari100k default
+# behind the published Pong +18; "50m" is the SAME recipe one coherent tier
+# down — ~4× cheaper per update (size was falsified as the collapse driver;
+# WM fidelity on Pong was historically achieved well below even 12m).
+# ⚠️ Checkpoints are tier-specific: probes/GIF scripts must use the same TIER.
+comptime TIER = "50m"  # "200m" | "50m"
+comptime BASE = 64 if TIER == "200m" else 32  # conv depth (channels BASE·{2,3,4,4})
 comptime OBS = C * IMG * IMG  # 9216
 comptime ACT = 6  # Pong minimal action set (NOOP/FIRE/RIGHT/LEFT/RIGHTFIRE/LEFTFIRE)
-# size200m — the reference DEFAULT size, which the atari100k preset does not
-# override: deter 8192, hidden = units = 1024, classes = hidden/16 = 64.
-comptime DETER = 8192
-comptime H = 1024
+comptime DETER = 8192 if TIER == "200m" else 4096
+comptime H = 1024 if TIER == "200m" else 512
 comptime STOCH = 32
-comptime CLASSES = 64
+comptime CLASSES = 64 if TIER == "200m" else 32
 comptime BLOCKS = 8
 # RAW conv tokens (reference parity): the posterior consumes the flattened
 # final conv map directly — no Linear bottleneck. With the Phase B-2 pool
 # geometry (channels BASE·{2,3,4,4}, final depth 4·BASE) this is
 # 4·BASE·(IMG/16)² = 256·36 = 9216 — the reference's exact token width.
-comptime TOKEN = 4 * BASE * (IMG // 16) * (IMG // 16)  # 9216
-comptime UNITS = 1024  # decoder bspace-stem MLP width (reference `units`)
-comptime DEC_U = 1024  # unused by the CNN decoder (BASE drives it)
-comptime HU = 1024  # head widths = reference units (size200m tier)
-comptime VU = 1024
-comptime PU = 1024
+comptime TOKEN = 4 * BASE * (IMG // 16) * (IMG // 16)  # 9216 (200m) / 4608 (50m)
+comptime UNITS = H  # decoder bspace-stem MLP width (reference `units` = hidden)
+comptime DEC_U = H  # unused by the CNN decoder (BASE drives it)
+comptime HU = H  # head widths = reference units (= hidden, per tier)
+comptime VU = H
+comptime PU = H
 comptime BINS = 255
 comptime B = 16
 comptime T = 64  # reference batch_length
