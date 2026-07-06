@@ -37,6 +37,15 @@ from std.math import sqrt
 from mojo_rl.nn.constants import DT, TPB, TPB_REDUCE
 from mojo_rl.nn import Tensor, ParamVisitor, Kaiming, Adam, Module
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
+from mojo_rl.nn.core.checkpoint import (
+    BinaryCheckpointWriter,
+    BinaryCheckpointReader,
+    CheckpointReader,
+    _write_file_bytes,
+    _read_file_bytes,
+    _is_v3_header,
+    _split_lines,
+)
 from .encoder import LeWMEncoder
 from .loss_graph import LeWMLossGraph
 
@@ -207,6 +216,38 @@ struct _MaskGradV(ParamVisitor):
                 grid_dim=(N + TPB - 1) // TPB,
                 block_dim=TPB,
             )
+
+
+struct _ZeroMomentsV(ParamVisitor):
+    """Zero every param's Adam m/v (host + device re-upload) — backs
+    `reset_opt_moments`. Unallocated moments (never stepped) are left
+    untouched: they are already fresh."""
+
+    def __init__(out self):
+        pass
+
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        if m.n >= N:
+            for i in range(N):
+                m.data[i] = Scalar[DT](0.0)
+            comptime if target == "gpu":
+                m.upload(ctx.value())
+        if v.n >= N:
+            for i in range(N):
+                v.data[i] = Scalar[DT](0.0)
+            comptime if target == "gpu":
+                v.upload(ctx.value())
 
 
 # ── GPU loss reduction: acc[0] += mean(src); acc[1] += 1 ───────────────
@@ -402,6 +443,10 @@ struct LeWMTrainer[
     # Host staging (RAII Lists): probe emb (BATCH·TE) + eval-loss D2H (BATCH).
     var emb_buf: List[Scalar[DT]]
     var loss_host: List[Scalar[DT]]
+    var last_load_had_state: Bool
+    """True if the last `load_params` restored State sections (BN running
+    stats) — v3/v2 named checkpoints; False for legacy flat ckpts, which
+    need a BN warmup before planning."""
 
     def __init__(out self):
         self.graph = Self.LG()
@@ -413,6 +458,7 @@ struct LeWMTrainer[
         self._loss_acc_dev = None
         self.emb_buf = List[Scalar[DT]]()
         self.loss_host = List[Scalar[DT]]()
+        self.last_load_had_state = False
 
     @staticmethod
     def make(
@@ -832,24 +878,79 @@ struct LeWMTrainer[
         self.graph.for_each_param[Self.train_target, _LoadVisitor](v, self.ctx)
         self.graph.for_each_state[Self.train_target, _LoadVisitor](v, self.ctx)
 
-    def save_params(mut self, path: String) raises:
-        var v = _SaveVisitor()
-        self.graph.for_each_param[Self.train_target, _SaveVisitor](v, self.ctx)
-        var s = String()
-        s += String(len(v.vals)) + "\n"
-        for i in range(len(v.vals)):
-            s += String(Float64(v.vals[i])) + "\n"
-        with open(path, "w") as f:
-            f.write(s)
+    def save_params(mut self, path: String, save_moments: Bool = True) raises:
+        """Write a v3 binary named checkpoint (nn.core.checkpoint): Param
+        sections (+ Adam moments when populated — exact training resume)
+        then State sections (BN running stats — a v3 load restores them, so
+        planning needs NO BN warmup). Replaces the legacy positional flat
+        text this trainer used to write; `load_params` still reads it."""
+        var w = BinaryCheckpointWriter(save_moments)
+        w.mode = 0
+        self.graph.for_each_param[Self.train_target, BinaryCheckpointWriter](
+            w, self.ctx
+        )
+        w.mode = 1
+        self.graph.for_each_state[Self.train_target, BinaryCheckpointWriter](
+            w, self.ctx
+        )
+        _write_file_bytes(path, w.content)
 
     def load_params(mut self, path: String) raises:
+        """Load a checkpoint, dispatching on the header: v3 binary / v2
+        named text (name+size validated against the graph walk; BN state
+        restored; sets `last_load_had_state=True`) or the legacy positional
+        flat text (params only; `last_load_had_state=False` → warm BN
+        running stats before planning). ⚠ v3 checkpoints may carry Adam
+        moments — call `reset_opt_moments()` after loading if you need the
+        fresh-optimizer invariant (test-time adaptation,
+        docs/ADAJEPA_LEWM_TTA_PLAN.md §4)."""
+        self.last_load_had_state = False
+        var bytes = _read_file_bytes(path)
+        if _is_v3_header(bytes):
+            var r = BinaryCheckpointReader(bytes^)
+            r.mode = 0
+            self.graph.for_each_param[
+                Self.train_target, BinaryCheckpointReader
+            ](r, self.ctx)
+            r.mode = 1
+            self.graph.for_each_state[
+                Self.train_target, BinaryCheckpointReader
+            ](r, self.ctx)
+            self.last_load_had_state = True
+            return
         var content: String
         with open(path, "r") as f:
             content = String(f.read())
-        var lines = content.split("\n")
+        var lines = _split_lines(content)
+        if len(lines) > 0 and lines[0].startswith("storage-ckpt"):
+            var body = List[String]()
+            for li in range(1, len(lines)):
+                body.append(lines[li])
+            var r2 = CheckpointReader(body^)
+            r2.mode = 0
+            self.graph.for_each_param[Self.train_target, CheckpointReader](
+                r2, self.ctx
+            )
+            r2.mode = 1
+            self.graph.for_each_state[Self.train_target, CheckpointReader](
+                r2, self.ctx
+            )
+            self.last_load_had_state = True
+            return
+        # Legacy positional flat text: "count\nval\n..." (params only).
         var n = Int(lines[0])
         var vals = List[Scalar[DT]]()
         for i in range(n):
             vals.append(Scalar[DT](Float64(lines[i + 1])))
         var v = _LoadVisitor(vals^)
         self.graph.for_each_param[Self.train_target, _LoadVisitor](v, self.ctx)
+
+    def reset_opt_moments(mut self) raises:
+        """Zero Adam m/v for every param — restores the fresh-optimizer
+        precondition after `load_params` on a moments-carrying v3 checkpoint
+        (the TTA mask invariant needs zero moments; the trainer's host step
+        counter is already fresh)."""
+        var z = _ZeroMomentsV()
+        self.graph.for_each_param[Self.train_target, _ZeroMomentsV](
+            z, self.ctx
+        )
