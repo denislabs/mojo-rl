@@ -261,7 +261,7 @@ def main() raises:
         target_sync_interval=200,  # target-net reanalyze (A/B-validated stabiliser)
         eval_every=10_000,
         eval_episodes=10,  # mean of 10 complete greedy games
-        eval_env=UnsafePointer(to=eval_env),
+        eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
         diag_every=200,
         report_every=500,
         logger=UnsafePointer(to=logger).as_unsafe_any_origin(),

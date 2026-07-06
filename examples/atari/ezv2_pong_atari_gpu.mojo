@@ -178,7 +178,7 @@ def main() raises:
                                         #   from 2500 to cut the eval-stall frequency
         eval_episodes=10,               # eval_n_episode
         eval_horizon=10000,
-        eval_env=UnsafePointer(to=eval_env),
+        eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
         diag_every=200,
         report_every=500,
         logger=UnsafePointer(to=logger).as_unsafe_any_origin(),

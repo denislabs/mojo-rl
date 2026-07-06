@@ -124,7 +124,7 @@ def main() raises:
         target_sync_interval=TARGET_SYNC_INTERVAL,
         eval_every=1000,
         eval_episodes=10,           # mean of 10 complete greedy games
-        eval_env=UnsafePointer(to=eval_env),
+        eval_env=UnsafePointer(to=eval_env).as_unsafe_any_origin(),
         diag_every=100,
         report_every=200,
         logger=UnsafePointer(to=logger).as_unsafe_any_origin(),
