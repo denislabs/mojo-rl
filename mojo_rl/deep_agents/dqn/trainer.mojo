@@ -738,7 +738,7 @@ struct DQNTrainer[
         """Toggle Noisy-net exploration magnitude on the online net (1.0 =
         explore, 0.0 = deterministic mean weights). No-op for non-Noisy nets —
         the storage NoisyLinear honours it where present."""
-        pass
+        self.pair.online.set_attr["noise_scale"](scale)
 
     # ─── Logging ─────────────────────────────────────────────────────
 
