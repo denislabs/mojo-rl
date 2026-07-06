@@ -652,10 +652,13 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                     data.qpos[qpos_adr + d] = (
                         data.qpos[qpos_adr + d] + data.qvel[dof_adr + d] * dt
                     )
-                var qx = data.qpos[qpos_adr + 3]
-                var qy = data.qpos[qpos_adr + 4]
-                var qz = data.qpos[qpos_adr + 5]
-                var qw = data.qpos[qpos_adr + 6]
+                # FREE-joint qpos stores the quaternion in MuJoCo order
+                # [tx, ty, tz, qw, qx, qy, qz] — w FIRST at +3 (matches FK
+                # and RK4). quat_integrate/quat_normalize use (x, y, z, w).
+                var qw = data.qpos[qpos_adr + 3]
+                var qx = data.qpos[qpos_adr + 4]
+                var qy = data.qpos[qpos_adr + 5]
+                var qz = data.qpos[qpos_adr + 6]
                 var wx = data.qvel[dof_adr + 3]
                 var wy = data.qvel[dof_adr + 4]
                 var wz = data.qvel[dof_adr + 5]
@@ -663,10 +666,10 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 var norm = quat_normalize(
                     result[0], result[1], result[2], result[3]
                 )
-                data.qpos[qpos_adr + 3] = norm[0]
-                data.qpos[qpos_adr + 4] = norm[1]
-                data.qpos[qpos_adr + 5] = norm[2]
-                data.qpos[qpos_adr + 6] = norm[3]
+                data.qpos[qpos_adr + 3] = norm[3]  # qw
+                data.qpos[qpos_adr + 4] = norm[0]  # qx
+                data.qpos[qpos_adr + 5] = norm[1]  # qy
+                data.qpos[qpos_adr + 6] = norm[2]  # qz
 
             elif joint.jnt_type == JNT_HINGE or joint.jnt_type == JNT_SLIDE:
                 data.qpos[qpos_adr] = (
@@ -2297,17 +2300,20 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                         state[env, qvel_off + jnt_dof_adr + d]
                     )
                     state[env, qpos_off + jnt_qpos_adr + d] = qp + qv * dt
-                # Quaternion: exponential map integration
-                var qx = rebind[Scalar[DTYPE]](
+                # Quaternion: exponential map integration. FREE-joint qpos
+                # stores [tx, ty, tz, qw, qx, qy, qz] — w FIRST at +3
+                # (matches the strided-state FK and RK4's kernel);
+                # quat_integrate/quat_normalize use (x, y, z, w).
+                var qw = rebind[Scalar[DTYPE]](
                     state[env, qpos_off + jnt_qpos_adr + 3]
                 )
-                var qy = rebind[Scalar[DTYPE]](
+                var qx = rebind[Scalar[DTYPE]](
                     state[env, qpos_off + jnt_qpos_adr + 4]
                 )
-                var qz = rebind[Scalar[DTYPE]](
+                var qy = rebind[Scalar[DTYPE]](
                     state[env, qpos_off + jnt_qpos_adr + 5]
                 )
-                var qw = rebind[Scalar[DTYPE]](
+                var qz = rebind[Scalar[DTYPE]](
                     state[env, qpos_off + jnt_qpos_adr + 6]
                 )
                 var wx = rebind[Scalar[DTYPE]](
@@ -2323,10 +2329,10 @@ struct EulerIntegrator[SOLVER: ConstraintSolver](Integrator):
                 var norm = quat_normalize(
                     result[0], result[1], result[2], result[3]
                 )
-                state[env, qpos_off + jnt_qpos_adr + 3] = norm[0]
-                state[env, qpos_off + jnt_qpos_adr + 4] = norm[1]
-                state[env, qpos_off + jnt_qpos_adr + 5] = norm[2]
-                state[env, qpos_off + jnt_qpos_adr + 6] = norm[3]
+                state[env, qpos_off + jnt_qpos_adr + 3] = norm[3]  # qw
+                state[env, qpos_off + jnt_qpos_adr + 4] = norm[0]  # qx
+                state[env, qpos_off + jnt_qpos_adr + 5] = norm[1]  # qy
+                state[env, qpos_off + jnt_qpos_adr + 6] = norm[2]  # qz
 
             elif jnt_type == JNT_HINGE or jnt_type == JNT_SLIDE:
                 var qp = rebind[Scalar[DTYPE]](
