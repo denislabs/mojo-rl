@@ -1018,8 +1018,13 @@ struct AtariEnv[
           - Frame 3: set_action + run_frame_video → raw_frame_b
         Then max-pool a/b → grayscale → resize → push to stack. Returns
         the step reward; `self.done` carries the terminal flag.
+
+        Honors `sticky_prob`, `full_action_set`, `clip_reward` and
+        `episodic_life` exactly like the RGB-96/gray-96 paths (this mode
+        used to silently ignore all four — non-protocol training with no
+        warning). All are identity at the default flag values.
         """
-        var ale_action = self.game.action(action)
+        var ale_action = self._apply_sticky(self._ale_action(action))
         var prev_score = Int(self.env.state.score)
 
         # We use a fixed frame_skip of 4 for pixel mode
@@ -1067,13 +1072,14 @@ struct AtariEnv[
             self.env.state.terminal = True
 
         self.done = self.env.is_terminal()
-        self.episode_reward += Float64(reward)
+        self.episode_reward += Float64(reward)  # raw reward for score logging
+        self._apply_episodic()  # may upgrade done on life loss
 
         # Max-pool → grayscale → resize → push to frame stack
         self._bgra_to_gray_maxpool()
         self._push_frame_to_stack()
 
-        return Scalar[Self.DTYPE](reward)
+        return self._clip(reward)
 
     # ── RGB-96 step (OBS_MODE==2 — EfficientZero-V2 Atari) ──────────────
 
