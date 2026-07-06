@@ -166,7 +166,10 @@ def main() raises:
         # Isolated eval env (greedy deterministic rollouts; never touches the
         # training env's state or the replay buffer).
         var eval_env = EvalEnvT(ctx)
-        var eval_env_ptr = UnsafePointer(to=eval_env)
+        # `.as_unsafe_any_origin()` — the facade takes
+        # Optional[UnsafePointer[EE, MutAnyOrigin]]; a tracked-origin
+        # pointer doesn't convert (same idiom as logger_ptr above).
+        var eval_env_ptr = UnsafePointer(to=eval_env).as_unsafe_any_origin()
 
         # ─── Single train() call — batched GPU off-policy driver ─────────
         print("Starting GPU training...")
