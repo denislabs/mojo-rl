@@ -46,7 +46,15 @@ def main() raises:
     comptime CAP = 100_000                  # ring-buffer capacity
 
     # ── sequence / batch ──
-    comptime T = 6
+    # T=10 (was 6): the imagination horizon is H≈T-1, and the de-noised 8-track
+    # eval on the T=6 run was FLAT (−30…−57, no climb) with the value head
+    # collapsed to a state-independent constant (imag_val min≈max across the
+    # batch) — H≈5 is too short to accumulate distinct returns, so PMPO's
+    # advantage sign is noise. T=10 → H≈9 restores return variance. Cost: WM
+    # attention is O(T²) → ~2.8× the T=6 WM compute + more GPU memory; if this
+    # OOMs on the box, drop B 8→4 (don't change both at once — it muddies the
+    # horizon measurement).
+    comptime T = 10
     comptime B = 8
     comptime B_SELF = 2
 
@@ -132,11 +140,13 @@ def main() raises:
     # tracks the λ-returns (the earlier ±2000 divergence is gone). This run is the
     # real learning curve — multiple eval points over 200k steps.
     #
-    # NEXT LEVER if eval stays flat: the imagination horizon is only H≈T-1≈4 steps,
-    # likely too short for CarRacing credit assignment. Raise T (6→10) at the top of
-    # this file — it lengthens both the imagination horizon AND the WM training
-    # window, at ~3× WM attention cost (watch GPU memory). Scale total_env_steps to
-    # 1_000_000+ once eval is trending up.
+    # T RAISED 6→10 (see the comptime T comment): the T=6 de-noised eval was flat
+    # with a state-collapsed value head (H≈5 too short). Watch the diag `imag_val`
+    # min/max spread — if it now opens up (state-dependent value) AND the 8-track
+    # eval mean climbs, the horizon was the binding constraint; scale
+    # total_env_steps to 1_000_000+. If eval is STILL flat with T=10, the limiter
+    # is the imagined reward head under-dispersing (it rarely predicts the +3
+    # tile-crossing real reward shows) — a WM-fidelity problem, not horizon.
     var summary = run_online_dreamer4[
         IN_CH=IN_CH, IMG=IMG, TGT=TGT, PATCH=PATCH, TNP=NP, CAP=CAP,
         TOK_D=TOK_D, TOK_NH=TOK_NH, TOK_HID=TOK_HID, TOK_DEPTH=TOK_DEPTH,
