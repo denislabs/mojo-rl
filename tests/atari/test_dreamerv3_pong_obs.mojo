@@ -177,6 +177,79 @@ def test_gray96_4stack_carries_motion() raises:
     print("  ok")
 
 
+comptime GRAY64 = 64 * 64  # 4096
+
+
+def test_gray64_single_frame_obs() raises:
+    print("test gray-64 single-frame obs (Pong, OBS_MODE=5) ...")
+    var rom = load_rom("roms/pong.bin")
+    var env = AtariEnv[5, DT](AtariGame.PONG, rom.data.value(), rom.size)
+
+    assert_equal(env.obs_dim(), GRAY64, "obs_dim == 4096 (single 64x64 frame)")
+    var obs0 = env.reset_obs_list()
+    assert_equal(len(obs0), GRAY64, "reset obs length == 4096")
+    var all_unit = True
+    var any_nonzero = False
+    for i in range(GRAY64):
+        if not _in_unit(obs0[i]):
+            all_unit = False
+        if obs0[i] > Scalar[DT](0.0):
+            any_nonzero = True
+    assert_true(all_unit, "reset obs all in [0,1]")
+    assert_true(any_nonzero, "reset obs not all zero (frame rendered)")
+
+    var changed = False
+    var obs_unit = True
+    for _t in range(12):
+        var res = env.step_obs(1)
+        var obs = res[0].copy()
+        for i in range(GRAY64):
+            if not _in_unit(obs[i]):
+                obs_unit = False
+            if abs(obs[i] - obs0[i]) > Scalar[DT](1e-9):
+                changed = True
+    assert_true(changed, "observation advances when stepping")
+    assert_true(obs_unit, "stepped obs stays in [0,1]")
+    env.close()
+    _ = env^
+    print("  ok")
+
+
+def test_gray64_consistent_with_gray96() raises:
+    print("test gray-64 vs gray-96 (same frames, same box filter) ...")
+    # Deterministic emulator + no sticky/no-ops → two envs fed identical
+    # actions render IDENTICAL 160×210 gray frames; modes 3 and 5 are two
+    # box-filter resizes of that same frame, so their global mean brightness
+    # must agree (up to integer-division truncation, well under 2/255).
+    var rom = load_rom("roms/pong.bin")
+    var e96 = AtariEnv[3, DT](AtariGame.PONG, rom.data.value(), rom.size)
+    var e64 = AtariEnv[5, DT](AtariGame.PONG, rom.data.value(), rom.size)
+    var o96 = e96.reset_obs_list()
+    var o64 = e64.reset_obs_list()
+    for t in range(10):
+        var a = 2 if (t // 3) % 2 == 0 else 3
+        o96 = e96.step_obs(a)[0].copy()
+        o64 = e64.step_obs(a)[0].copy()
+    var m96 = Scalar[DT](0.0)
+    for i in range(GRAY96):
+        m96 += o96[i]
+    m96 /= Scalar[DT](GRAY96)
+    var m64 = Scalar[DT](0.0)
+    for i in range(GRAY64):
+        m64 += o64[i]
+    m64 /= Scalar[DT](GRAY64)
+    var d = abs(m96 - m64)
+    assert_true(
+        d < Scalar[DT](2.0 / 255.0),
+        "mean brightness agrees across resolutions (Δ=" + String(d) + ")",
+    )
+    e96.close()
+    e64.close()
+    _ = e96^
+    _ = e64^
+    print("  ok (mean96=", m96, " mean64=", m64, ")")
+
+
 def main() raises:
     print("=" * 60)
     print("DreamerV3-Atari P0 env gate (gray-96 + sticky + no-ops + 4-stack)")
@@ -185,4 +258,6 @@ def main() raises:
     test_sticky_actions_pin_the_action()
     test_noop_starts_construct_and_step()
     test_gray96_4stack_carries_motion()
+    test_gray64_single_frame_obs()
+    test_gray64_consistent_with_gray96()
     print("ALL DREAMERV3 ATARI P0 ENV GATES PASSED")

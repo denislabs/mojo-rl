@@ -71,6 +71,14 @@ comptime GRAY96_SIZE: Int = GRAY96_OBS_W * GRAY96_OBS_H  # 9216 (one 96×96 fram
 # small-object dynamics (Pong ball) from single frames → imagination collapses;
 # stacking hands it velocity so the prior's job is a one-step propagation.
 comptime GRAY96_STACK_SIZE: Int = 4 * GRAY96_SIZE  # 36864 ([4,96,96] stack)
+# Grayscale-64 SINGLE-FRAME buffer size (OBS_MODE==5) — the reference DreamerV3
+# atari100k RESOLUTION (configs.yaml: 64×64; the published curves run at 64², so
+# our 96² modes do ~2.25× the reference's conv FLOPs + im2col traffic). Same
+# preprocessing as mode 3 (maxpool → gray → area box-filter resize), just 64².
+# 64 % 16 == 0 → CNN minres 4 (reference-exact conv geometry end-to-end).
+comptime GRAY64_OBS_W: Int = 64
+comptime GRAY64_OBS_H: Int = 64
+comptime GRAY64_SIZE: Int = GRAY64_OBS_W * GRAY64_OBS_H  # 4096 (one 64×64 frame)
 
 
 # ============================================================================
@@ -196,27 +204,29 @@ def _bgra_maxpool_to_rgb_planar[
         )
 
 
-def _resize_plane_160x210_to_96x96[
-    so: MutOrigin, do: MutOrigin, //
+def _resize_plane_160x210[
+    OW: Int, OH: Int
 ](
-    src: UnsafePointer[UInt8, so],
-    dst: UnsafePointer[UInt8, do],
+    src: UnsafePointer[UInt8, MutAnyOrigin],
+    dst: UnsafePointer[UInt8, MutAnyOrigin],
 ):
-    """Area (box-filter) resize one 160×210 plane to 96×96, the SAME
+    """Area (box-filter) resize one 160×210 plane to OW×OH, the SAME
     integer-boundary box filter the 84×84 gray path uses (each output pixel
-    averages its source rectangle). Scale: x = 160/96 ≈ 1.667, y = 210/96 ≈
-    2.1875. (Documented deviation: cv2's INTER_AREA uses fractional-coverage
-    area weighting; this integer-boundary approximation is the same one
-    already blessed for the gray-84 path — see docs/EZV2_ATARI_PARITY.md §A.)
+    averages its source rectangle). (Documented deviation: cv2's INTER_AREA
+    uses fractional-coverage area weighting; this integer-boundary
+    approximation is the same one already blessed for the gray-84 path — see
+    docs/EZV2_ATARI_PARITY.md §A.) Comptime-generic over the output size —
+    instantiated at 96 (modes 2/3/4, arithmetic identical to the previous
+    fixed-96 function) and 64 (mode 5, the reference DreamerV3 resolution).
     """
-    for oy in range(RGB_OBS_H):
-        var sy0 = (oy * FRAME_HEIGHT) // RGB_OBS_H
-        var sy1 = ((oy + 1) * FRAME_HEIGHT) // RGB_OBS_H
+    for oy in range(OH):
+        var sy0 = (oy * FRAME_HEIGHT) // OH
+        var sy1 = ((oy + 1) * FRAME_HEIGHT) // OH
         if sy1 <= sy0:
             sy1 = sy0 + 1
-        for ox in range(RGB_OBS_W):
-            var sx0 = (ox * FRAME_WIDTH) // RGB_OBS_W
-            var sx1 = ((ox + 1) * FRAME_WIDTH) // RGB_OBS_W
+        for ox in range(OW):
+            var sx0 = (ox * FRAME_WIDTH) // OW
+            var sx1 = ((ox + 1) * FRAME_WIDTH) // OW
             if sx1 <= sx0:
                 sx1 = sx0 + 1
             var total: Int = 0
@@ -224,9 +234,22 @@ def _resize_plane_160x210_to_96x96[
                 var row = sy * FRAME_WIDTH
                 for sx in range(sx0, sx1):
                     total += Int(src[row + sx])
-            dst[oy * RGB_OBS_W + ox] = UInt8(
+            dst[oy * OW + ox] = UInt8(
                 total // ((sx1 - sx0) * (sy1 - sy0))
             )
+
+
+def _resize_plane_160x210_to_96x96[
+    so: MutOrigin, do: MutOrigin, //
+](
+    src: UnsafePointer[UInt8, so],
+    dst: UnsafePointer[UInt8, do],
+):
+    """96×96 alias of `_resize_plane_160x210` (kept so the mode-2/3/4 call
+    sites read unchanged). Scale: x = 160/96 ≈ 1.667, y = 210/96 ≈ 2.1875."""
+    _resize_plane_160x210[RGB_OBS_W, RGB_OBS_H](
+        src.as_unsafe_any_origin(), dst.as_unsafe_any_origin()
+    )
 
 
 # ============================================================================
@@ -252,7 +275,10 @@ struct AtariEnv[
             SINGLE frame (96×96 = 9216 floats — the DreamerV3 Atari
             preprocessing: no frame stacking, the RSSM carries temporal state),
             4 = pixels grayscale-96 4-frame STACK (4×96×96 = 36864 floats — mode
-            3 plus a 4-frame ring so the obs carries motion/velocity directly).
+            3 plus a 4-frame ring so the obs carries motion/velocity directly),
+            5 = pixels grayscale-64 SINGLE frame (64×64 = 4096 floats — mode 3
+            at the reference DreamerV3 atari100k RESOLUTION; ~2.25× cheaper
+            conv stack than 96²).
         DTYPE: Observation dtype (default float32).
         LAYOUT: Observation layout (default NCHW).
 
@@ -436,6 +462,16 @@ struct AtariEnv[
             self.rgb_buf = None
             self.frame_idx = 0
             memset(self.frame_stack.value(), 0, GRAY96_STACK_SIZE)
+        elif Self.OBS_MODE == 5:
+            # Grayscale-64 single frame (reference DreamerV3 resolution):
+            # one 64×64 slot, no ring; gray_buf as the maxpool scratch.
+            self.frame_stack = alloc[UInt8](GRAY64_SIZE)
+            self.raw_frame_a = alloc[UInt8](FRAME_BGRA_SIZE)
+            self.raw_frame_b = alloc[UInt8](FRAME_BGRA_SIZE)
+            self.gray_buf = alloc[UInt8](GRAY_FRAME_SIZE)
+            self.rgb_buf = None
+            self.frame_idx = 0
+            memset(self.frame_stack.value(), 0, GRAY64_SIZE)
         else:
             self.frame_stack = None
             self.raw_frame_a = None
@@ -610,6 +646,31 @@ struct AtariEnv[
                 j, fs.load[width=W](j).cast[Self.dtype]() / 255.0
             )
 
+    # ── grayscale-64 single-frame helpers (OBS_MODE==5 — DreamerV3 ref res) ─
+
+    def _push_gray64_frame(mut self):
+        """Max-pool a/b → grayscale (gray_buf 160×210) → area-resize to the
+        single 64×64 `frame_stack` slot (no ring — mode 3 at the reference
+        DreamerV3 atari100k resolution)."""
+        self._bgra_to_gray_maxpool()
+        _resize_plane_160x210[GRAY64_OBS_W, GRAY64_OBS_H](
+            self.gray_buf.value().as_unsafe_any_origin(),
+            self.frame_stack.value().as_unsafe_any_origin(),
+        )
+
+    def _write_gray64_obs_into[
+        o: MutOrigin
+    ](self, obs_out: UnsafePointer[Scalar[Self.dtype], o]):
+        """Write the single 64×64 grayscale frame as normalized floats into
+        `obs_out` (GRAY64_SIZE scalars). SIMD uint8→float `/255`."""
+        comptime W = 16
+        comptime assert GRAY64_SIZE % W == 0, "gray64 must be SIMD-divisible"
+        var fs = self.frame_stack.value()
+        for j in range(0, GRAY64_SIZE, W):
+            obs_out.store(
+                j, fs.load[width=W](j).cast[Self.dtype]() / 255.0
+            )
+
     def _push_gray96_stack(mut self):
         """Max-pool a/b → grayscale → area-resize to 96×96 into the current ring
         slot, then advance the ring (OBS_MODE==4)."""
@@ -745,6 +806,18 @@ struct AtariEnv[
             self.frame_idx = 0
             for _ in range(4):
                 self._push_gray96_stack()
+        elif Self.OBS_MODE == 5:
+            # Grayscale-64 single frame: render (a==b) → maxpool → resize into
+            # the single 64×64 slot.
+            run_frame_video(
+                self.env.state,
+                self.env.rom.as_unsafe_any_origin(),
+                self.env.rom_size,
+                self.raw_frame_a.value().as_unsafe_any_origin(),
+            )
+            for i in range(FRAME_BGRA_SIZE):
+                self.raw_frame_b.value()[i] = self.raw_frame_a.value()[i]
+            self._push_gray64_frame()
 
         return AtariEnvState(index=0)
 
@@ -861,6 +934,12 @@ struct AtariEnv[
             )
             self._write_gray96_stack_obs_into(obs.unsafe_ptr())
             return obs^
+        elif Self.OBS_MODE == 5:
+            var obs = List[Scalar[Self.DTYPE]](
+                length=GRAY64_SIZE, fill=Scalar[Self.DTYPE](0.0)
+            )
+            self._write_gray64_obs_into(obs.unsafe_ptr())
+            return obs^
         else:
             var obs = List[Scalar[Self.DTYPE]](
                 length=RAM_SIZE, fill=Scalar[Self.DTYPE](0.0)
@@ -883,6 +962,8 @@ struct AtariEnv[
             return GRAY96_SIZE  # 96 * 96 = 9216 (single grayscale frame)
         elif Self.OBS_MODE == 4:
             return GRAY96_STACK_SIZE  # 4 * 96 * 96 = 36864 (gray-96 4-stack)
+        elif Self.OBS_MODE == 5:
+            return GRAY64_SIZE  # 64 * 64 = 4096 (single grayscale frame)
         else:
             return RAM_SIZE  # 128
 
@@ -955,6 +1036,8 @@ struct AtariEnv[
             return self._step_obs_gray96(action)
         elif Self.OBS_MODE == 4:
             return self._step_obs_gray96(action)
+        elif Self.OBS_MODE == 5:
+            return self._step_obs_gray96(action)  # size-dispatch in the push/obs
         else:
             return self._step_obs_ram(action)
 
@@ -993,6 +1076,10 @@ struct AtariEnv[
         elif Self.OBS_MODE == 4:
             var reward = self._advance_pixel_gray96(action)
             self._write_gray96_stack_obs_into(obs_out)
+            return (reward, self.done)
+        elif Self.OBS_MODE == 5:
+            var reward = self._advance_pixel_gray96(action)
+            self._write_gray64_obs_into(obs_out)
             return (reward, self.done)
         else:
             var reward = self.env.step_game(self.game, action)
@@ -1209,10 +1296,12 @@ struct AtariEnv[
         self.episode_reward += Float64(reward)  # raw reward for score logging
         self._apply_episodic()  # may upgrade done on life loss
 
-        # Max-pool → grayscale → resize → gray-96 obs (single slot for mode 3,
-        # ring slot for the 4-stack mode 4).
+        # Max-pool → grayscale → resize → gray obs (single 96² slot for mode 3,
+        # ring slot for the 4-stack mode 4, single 64² slot for mode 5).
         comptime if Self.OBS_MODE == 4:
             self._push_gray96_stack()
+        elif Self.OBS_MODE == 5:
+            self._push_gray64_frame()
         else:
             self._push_gray96_frame()
 
