@@ -23,6 +23,7 @@ action lives on `DreamerV3Agent`); imagination from the final posterior carry.
 
 from std.random import random_float64
 from std.math import exp
+from std.time import perf_counter_ns
 from std.gpu.host import DeviceContext
 
 from mojo_rl.nn.constants import DT
@@ -418,6 +419,56 @@ struct DreamerV3Trainer[
         self._device_step(want_diag)
         self.train_steps += 1
         return True
+
+    def _prof_sync(mut self) raises:
+        comptime if Self.train_target == "gpu":
+            self.ctx.value().synchronize()
+
+    def profile_sections(mut self) raises -> InlineArray[Float64, 5]:
+        """EAGER per-section wall times for ONE train step, in ms:
+        [0] draw+noise prologue, [1] WM-BPTT (fwd+bwd+opt), [2] core→imagine
+        sync, [3] imagination AC (+Polyak), [4] total. GPU: `synchronize()`
+        brackets each section so the wall time is real device time (the Pong
+        run is compute-bound — capture ≈ 0 gain — so eager ≈ captured steady
+        state). Trains normally (advances `train_steps`); the AC-gate is
+        ignored (both sections always run) so profile with ac_start=0."""
+        var out = InlineArray[Float64, 5](fill=0.0)
+        if not self.can_train():
+            return out
+        self._prof_sync()
+        var t0 = perf_counter_ns()
+        self.train_prologue(want_diag=False)
+        self._prof_sync()
+        var t1 = perf_counter_ns()
+        self.wm_blk.step[Self.train_target, Self.T_IMAG](
+            self.state, self.enc, self.core, self.dec, self.rew, self.con,
+            self.oe, self.ocore, self.odec, self.orew, self.ocon,
+            want_diag=False,
+        )
+        self._prof_sync()
+        var t2 = perf_counter_ns()
+        self.sync_blk.step[Self.train_target](
+            self.core, self.imagine, ctx=self.ctx
+        )
+        self._prof_sync()
+        var t3 = perf_counter_ns()
+        self.ac_blk.step[Self.train_target](
+            self.state, self.imagine, self.value, self.slowvalue, self.policy,
+            self.rew, self.con, self.oval, self.opol, self.retnorm,
+            rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
+                self.bins.unsafe_ptr()
+            ),
+            False,
+        )
+        self._prof_sync()
+        var t4 = perf_counter_ns()
+        self.train_steps += 1
+        out[0] = Float64(t1 - t0) / 1e6
+        out[1] = Float64(t2 - t1) / 1e6
+        out[2] = Float64(t3 - t2) / 1e6
+        out[3] = Float64(t4 - t3) / 1e6
+        out[4] = Float64(t4 - t0) / 1e6
+        return out
 
     def train_prologue(mut self, want_diag: Bool) raises:
         """Eager per-step work that is NOT part of the captured device-kernel
