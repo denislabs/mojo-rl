@@ -29,17 +29,36 @@ from .driver_scratch import DriverScratch
 
 
 trait OnPolicyCheckpointable(ImplicitlyDeletable, Movable):
-    """Shared cadence-hook surface for BOTH on-policy traits.
+    """Shared ROOT surface for ALL on-policy traits (continuous +
+    discrete, single-env + batched).
 
-    `save_state` / `flush_metrics_through_logger` must be declared in ONE
-    place: PPOTrainer conforms to both `OnPolicyAgent` AND
-    `OnPolicyAgentBatched`, and if each trait declared these methods
-    independently, resolving the concrete override against two unrelated
-    declarations recurses ("attempt to resolve a recursive reference to
-    `PPOTrainer.save_state`"). Hoisting them into a common ancestor that
-    both traits inherit gives a single declaration → the diamond resolves
+    Everything common to the whole family is declared here ONCE:
+    PPOTrainer conforms to both `OnPolicyAgent` AND `OnPolicyAgentBatched`
+    (and PPODiscreteTrainer to `OnPolicyDiscreteAgentBatched`, which
+    inherits both `OnPolicyDiscreteAgent` and `OnPolicyBatchedCore`). If
+    two traits in such a diamond declared the same method independently,
+    resolving the concrete override against two unrelated declarations
+    recurses ("attempt to resolve a recursive reference to
+    `PPOTrainer.save_state`"). Hoisting each shared member into this
+    common ancestor gives a single declaration → the diamonds resolve
     cleanly. Off-policy trainers avoid this naturally (single-trait chain
     `OffPolicyAgentGpu(OffPolicyAgent)`)."""
+
+    # Trait-visible aliases of the trainer's struct comptime params —
+    # the drivers comptime-gate H2D/D2H staging + size scratches on these.
+    comptime AGENT_TRAIN_TARGET: StaticString
+    comptime AGENT_OBS_DIM: Int
+
+    def train_step(mut self, step_idx: Int) raises -> Bool:
+        """Returns False on most steps; True when a rollout-length
+        boundary is hit and the K-epoch minibatch updates fire."""
+        ...
+
+    def mean_return(self) -> Scalar[DT]:
+        ...
+
+    def ep_count(self) -> Int:
+        ...
 
     def flush_metrics_through_logger[
         L: Logger
@@ -118,20 +137,9 @@ trait OnPolicyAgent(OnPolicyCheckpointable):
         unmarked (bootstrap kept)."""
         ...
 
-    def train_step(mut self, step_idx: Int) raises -> Bool:
-        ...
-
-    def mean_return(self) -> Scalar[DT]:
-        ...
-
-    def ep_count(self) -> Int:
-        ...
-
-    # `total_train_steps` (progress-bar `Train:` field) is inherited from
-    # `OnPolicyCheckpointable` so the batched trait shares one declaration.
-
-    # Cadence hooks (`flush_metrics_through_logger` / `save_state`) are
-    # inherited from `OnPolicyCheckpointable` — declared once so the
+    # `train_step` / `mean_return` / `ep_count` / `total_train_steps` and
+    # the cadence hooks (`flush_metrics_through_logger` / `save_state`)
+    # are inherited from `OnPolicyCheckpointable` — declared once so the
     # PPOTrainer override doesn't recurse across two trait declarations.
 
 
@@ -305,23 +313,18 @@ def run_onpolicy_train[
 # ──────────────────────────────────────────────────────────────────────
 
 
-trait OnPolicyAgentBatched(OnPolicyCheckpointable):
-    """N_ENVS-wide pointer-based trait for on-policy trainers consumed
-    by `run_onpolicy_train_batched`.
+trait OnPolicyBatchedCore(OnPolicyCheckpointable):
+    """N_ENVS-wide pointer surface shared by the CONTINUOUS and DISCRETE
+    batched on-policy drivers — the trait bound of the ONE shared loop
+    body `_run_onpolicy_batched_body`. The two batched loops were
+    line-identical (the discrete action slot is just ACT ≡ 1 floats), so
+    the method surface they consume is declared once here.
 
     All pointer args are HOST-side. For GPU envs the driver D2Hs
     env-side obs/reward/done into host scratches before calling. The
     trainer is responsible for any internal H2D of obs into device-
-    side scratches (PPOTrainer does this inside PPOActStep).
+    side scratches (PPOTrainer does this inside PPOActStep)."""
 
-    Conforming trainers also expose comptime aliases so the driver
-    can comptime-assert dimensional consistency with the env adapter
-    and gate H2D/D2H around the env step.
-    """
-
-    comptime AGENT_TRAIN_TARGET: StaticString
-    comptime AGENT_OBS_DIM: Int
-    comptime AGENT_ACT_DIM: Int
     comptime AGENT_N_ENVS: Int
 
     def select_action_batched(
@@ -331,18 +334,10 @@ trait OnPolicyAgentBatched(OnPolicyCheckpointable):
         step_idx: Int,
     ) raises:
         """Reads AGENT_N_ENVS * AGENT_OBS_DIM from `obs_ptr`, writes
-        AGENT_N_ENVS * AGENT_ACT_DIM into `action_ptr`. Caches per-env
-        (sample, log_prob, value) internally for the upcoming
+        AGENT_N_ENVS action rows into `action_ptr` (ACT_DIM floats for
+        continuous trainers; ONE index-as-float for discrete). Caches
+        per-env (sample, log_prob, value) internally for the upcoming
         `record_batch_cpu`. Both pointers must be host-side."""
-        ...
-
-    def select_greedy_action(
-        mut self,
-        ref obs: List[Scalar[DT]],
-        mut action_out: List[Scalar[DT]],
-    ) raises:
-        """Single-env greedy eval — list-based. Always BATCH=1 even
-        when the trainer is configured for N_ENVS > 1."""
         ...
 
     def record_batch_cpu(
@@ -364,17 +359,22 @@ trait OnPolicyAgentBatched(OnPolicyCheckpointable):
         unmarked (bootstrap kept)."""
         ...
 
-    def train_step(mut self, step_idx: Int) raises -> Bool:
-        ...
 
-    def mean_return(self) -> Scalar[DT]:
-        ...
+trait OnPolicyAgentBatched(OnPolicyBatchedCore):
+    """Continuous batched on-policy trait consumed by
+    `run_onpolicy_train_batched` — the batched core plus the continuous
+    action width + list-based greedy eval."""
 
-    def ep_count(self) -> Int:
-        ...
+    comptime AGENT_ACT_DIM: Int
 
-    # Cadence hooks (`flush_metrics_through_logger` / `save_state`)
-    # inherited from `OnPolicyCheckpointable` (shared with OnPolicyAgent).
+    def select_greedy_action(
+        mut self,
+        ref obs: List[Scalar[DT]],
+        mut action_out: List[Scalar[DT]],
+    ) raises:
+        """Single-env greedy eval — list-based. Always BATCH=1 even
+        when the trainer is configured for N_ENVS > 1."""
+        ...
 
 
 def run_onpolicy_train_batched[
@@ -456,6 +456,55 @@ def run_onpolicy_train_batched[
                 "run_onpolicy_train_batched: ctx required when"
                 " env_target is 'gpu'"
             )
+
+    return _run_onpolicy_batched_body[A, E, ACT, L](
+        ctx,
+        trainer,
+        env,
+        total_env_steps,
+        rng_seed=rng_seed,
+        print_every=print_every,
+        verbose=verbose,
+        logger=logger,
+        diag_every=diag_every,
+        checkpoint_every=checkpoint_every,
+        checkpoint_path=checkpoint_path,
+        base_step=base_step,
+        progress_label=progress_label,
+    )
+
+
+def _run_onpolicy_batched_body[
+    A: OnPolicyBatchedCore,
+    E: BatchedEnv,
+    ACT: Int,
+    L: Logger = NoOpLogger,
+](
+    ctx: Optional[DeviceContext],
+    mut trainer: A,
+    mut env: E,
+    total_env_steps: Int,
+    *,
+    rng_seed: UInt64,
+    print_every: Int,
+    verbose: Bool,
+    logger: Optional[UnsafePointer[L, MutAnyOrigin]],
+    diag_every: Int,
+    checkpoint_every: Int,
+    checkpoint_path: String,
+    base_step: Int,
+    progress_label: String,
+) raises -> List[Scalar[DT]]:
+    """ONE loop body behind BOTH batched on-policy drivers (continuous
+    `run_onpolicy_train_batched` and discrete
+    `run_onpolicy_discrete_train_batched`). The two loops were
+    line-identical — the only genuine axis is the action-slot width
+    `ACT` (AGENT_ACT_DIM floats vs ONE index-as-float), so it is a
+    comptime param supplied by the public wrappers, which also carry
+    the per-driver comptime asserts + ctx checks."""
+    comptime env_target: StaticString = E.ENV_TARGET
+    comptime OBS = A.AGENT_OBS_DIM
+    comptime N_ENVS = A.AGENT_N_ENVS
 
     # Host-side staging scratches. The trainer always reads/writes
     # host pointers; on GPU env we D2H env outputs into these.
