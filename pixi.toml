@@ -40,6 +40,13 @@ scripts = ["scripts/build_cuda_intercept.sh"]
 
 [feature.apple]
 
+[feature.cpu.dependencies]
+# CPU-only environment for CI and headless test runs: base deps WITHOUT the
+# CUDA toolchain the `default`/`nvidia` envs pull on linux-64 (GBs of
+# cuda-toolkit/cudnn a GitHub runner neither needs nor caches well).
+# Python pinned to 3.13 to match the MOJO_PYTHON_LIBRARY activation string.
+python = ">=3.13,<3.14"
+
 [dependencies]
 mojo = ">=1.0.0b3.dev2026063006,<2"
 max = ">=26.5.0.dev2026063006,<27"
@@ -92,6 +99,7 @@ env = { MOJO_PYTHON_LIBRARY = "$CONDA_PREFIX/lib/libpython3.13.so" }
 nvidia = { features = ["nvidia"], solve-group = "nvidia" }
 amd = { features = ["amd"], solve-group = "amd" }
 apple = { features = ["apple"], solve-group = "apple" }
+cpu = { features = ["cpu"], solve-group = "cpu" }
 default = { features = ["nvidia"] }
 
 [tasks]
@@ -100,6 +108,16 @@ setup-roms = { cmd = "python3 scripts/setup_roms.py", description = "Download At
 build = { cmd = "mojo precompile mojo_rl -o mojo_rl.mojoc" }
 run = { cmd = "mojo run -I ." }
 test = { cmd = "mojo run -I ." }
+# Tiered test suites (scripts/run_tests.sh — see its header for details):
+#   test-smoke  curated fast CPU gates (tests/manifests/smoke.txt) — the CI
+#               tier; self-contained (no references/, no ROMs, no GPU).
+#   test-cpu    discover ALL non-GPU tests under tests/ (hours; run before
+#               big merges or via the weekly CI cron).
+#   test-gpu    discover *_gpu.mojo tests; run as
+#               `pixi run -e apple test-gpu` or `pixi run -e nvidia test-gpu`.
+test-smoke = { cmd = "bash scripts/run_tests.sh tests/manifests/smoke.txt", description = "Fast curated CPU test tier (CI)" }
+test-cpu = { cmd = "bash scripts/run_tests.sh --discover tests --cpu-only", description = "All non-GPU tests (slow)" }
+test-gpu = { cmd = "bash scripts/run_tests.sh --discover tests --gpu-only", description = "All *_gpu.mojo tests (use -e apple|nvidia)" }
 format = { cmd = "mojo format -l 80 ." }
 # NVIDIA GPU information and profiling utilities
 gpu-info = { cmd = "nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv", description = "Get basic GPU information" }
