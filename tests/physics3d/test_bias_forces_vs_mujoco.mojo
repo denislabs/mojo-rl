@@ -17,7 +17,10 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
     forward_kinematics,
     compute_body_velocities,
 )
-from mojo_rl.physics3d.dynamics.jacobian import compute_cdof
+from mojo_rl.physics3d.dynamics.jacobian import (
+    compute_cdof,
+    compute_subtree_com,
+)
 from mojo_rl.physics3d.dynamics.bias_forces import compute_bias_forces_rne
 from mojo_rl.envs.half_cheetah.half_cheetah_xml import HalfCheetahModel
 from mojo_rl.envs.half_cheetah.half_cheetah_config import HalfCheetahConfig
@@ -83,11 +86,22 @@ def compare_bias_forces(
     forward_kinematics(model, data)
     compute_body_velocities(model, data)
 
+    # Subtree CoM BEFORE cdof/RNE — mirrors the integrator pipeline. The
+    # test previously used the legacy xipos-fallback reference, which the
+    # RNE no longer matches (stale since the subtree_com migration).
+    var stcom = List[Scalar[DTYPE]](capacity=NBODY * 3)
+    for _ in range(NBODY * 3):
+        stcom.append(Scalar[DTYPE](0))
+    compute_subtree_com(model, data, stcom)
+    for sc_i in range(NBODY * 3):
+        data.subtree_com[sc_i] = stcom[sc_i]
+    data.has_subtree_com = True
+
     # Compute cdof
     var cdof = List[Scalar[DTYPE]](capacity=CDOF_SIZE)
     for _ in range(CDOF_SIZE):
         cdof.append(Scalar[DTYPE](0))
-    compute_cdof(model, data, cdof)
+    compute_cdof(model, data, cdof, stcom)
 
     # Compute bias forces via RNE
     var bias = List[Scalar[DTYPE]](capacity=V_SIZE)

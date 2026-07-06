@@ -594,13 +594,30 @@ def compute_body_velocities[
             var dof_adr = joint.dof_adr
 
             if jnt_type == JNT_FREE:
-                # FREE joint: direct velocity from qvel
+                # FREE joint: linear velocity is world-frame in qvel; the
+                # ANGULAR part is BODY-LOCAL (MuJoCo convention — the free
+                # joint's rotational dof axes are the body-frame axes, see
+                # mj_comPos/compute_cdof) and must be rotated to world,
+                # exactly like the BALL branch below.
                 vx = data.qvel[dof_adr + 0]
                 vy = data.qvel[dof_adr + 1]
                 vz = data.qvel[dof_adr + 2]
-                wx = data.qvel[dof_adr + 3]
-                wy = data.qvel[dof_adr + 4]
-                wz = data.qvel[dof_adr + 5]
+                var fqx = data.xquat[body * 4 + 0]
+                var fqy = data.xquat[body * 4 + 1]
+                var fqz = data.xquat[body * 4 + 2]
+                var fqw = data.xquat[body * 4 + 3]
+                var w_world = quat_rotate(
+                    fqx,
+                    fqy,
+                    fqz,
+                    fqw,
+                    data.qvel[dof_adr + 3],
+                    data.qvel[dof_adr + 4],
+                    data.qvel[dof_adr + 5],
+                )
+                wx = w_world[0]
+                wy = w_world[1]
+                wz = w_world[2]
 
             elif jnt_type == JNT_BALL:
                 # BALL joint: angular velocity from qvel
@@ -1480,13 +1497,36 @@ def vel_body_gpu[
         )
 
         if jnt_type == JNT_FREE:
-            # FREE joint: direct velocity from qvel
+            # FREE joint: linear velocity is world-frame in qvel; the ANGULAR
+            # part is BODY-LOCAL (MuJoCo convention) and must be rotated to
+            # world — mirrors the CPU compute_body_velocities fix.
             vx = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 0])
             vy = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 1])
             vz = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 2])
-            wx = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 3])
-            wy = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 4])
-            wz = rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 5])
+            var fqx = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + body * 4 + 0]
+            )
+            var fqy = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + body * 4 + 1]
+            )
+            var fqz = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + body * 4 + 2]
+            )
+            var fqw = rebind[Scalar[DTYPE]](
+                state[env, xquat_off + body * 4 + 3]
+            )
+            var w_world = gpu_quat_rotate(
+                fqx,
+                fqy,
+                fqz,
+                fqw,
+                rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 3]),
+                rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 4]),
+                rebind[Scalar[DTYPE]](state[env, qvel_off + dof_adr + 5]),
+            )
+            wx = w_world[0]
+            wy = w_world[1]
+            wz = w_world[2]
 
         elif jnt_type == JNT_BALL:
             # BALL joint: add angular velocity from qvel

@@ -459,15 +459,15 @@ def compute_cdof[
                 cdof[(dof_adr + 5) * 6 + 4] = ax2_z * off_x - ax2_x * off_z
                 cdof[(dof_adr + 5) * 6 + 5] = ax2_x * off_y - ax2_y * off_x
 
-                # FREE joint sets orientation from qpos directly
-                var free_qx = data.qpos[joint.qpos_adr + 3]
-                var free_qy = data.qpos[joint.qpos_adr + 4]
-                var free_qz = data.qpos[joint.qpos_adr + 5]
-                var free_qw = data.qpos[joint.qpos_adr + 6]
-                acc_qx = free_qx
-                acc_qy = free_qy
-                acc_qz = free_qz
-                acc_qw = free_qw
+                # FREE joint sets orientation from qpos directly.
+                # qpos layout is MuJoCo w-first: [tx,ty,tz,qw,qx,qy,qz]
+                # (the old x-first read permuted the components — latent
+                # because acc_q only feeds joints AFTER a free joint on the
+                # SAME body, which no current model has).
+                acc_qw = data.qpos[joint.qpos_adr + 3]
+                acc_qx = data.qpos[joint.qpos_adr + 4]
+                acc_qy = data.qpos[joint.qpos_adr + 5]
+                acc_qz = data.qpos[joint.qpos_adr + 6]
 
 
 def compute_contact_jacobian_row[

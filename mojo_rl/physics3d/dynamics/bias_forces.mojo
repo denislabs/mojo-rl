@@ -932,7 +932,14 @@ def compute_bias_forces_rne[
                     cv_vy = cv_vy + cdof[dof * 6 + 4] * qdot
                     cv_vz = cv_vz + cdof[dof * 6 + 5] * qdot
 
-                # Next 3 DOFs (rotation): compute cdof_dot with current cvel
+                # Next 3 DOFs (rotation): ALL 3 cdof_dots use the
+                # pre-rotation cvel (parent + translation only), exactly like
+                # MuJoCo mj_comVel's mjJNT_FREE→BALL fallthrough and our own
+                # BALL branch below. Updating cvel inside this loop made
+                # dof k's cdof_dot include rotational dofs < k — a spurious
+                # gyroscopic bias on any tumbling free body (e.g. a torso
+                # rotating from rest-parent got nonzero cdof_dot where
+                # MuJoCo's is exactly zero).
                 for d in range(3, 6):
                     var dof = dof_adr + d
                     var qdot = data.qvel[dof]
@@ -964,13 +971,16 @@ def compute_bias_forces_rne[
                     cacc[b * 6 + 4] = cacc[b * 6 + 4] + cdot_lin_y * qdot
                     cacc[b * 6 + 5] = cacc[b * 6 + 5] + cdot_lin_z * qdot
 
-                    # Update cvel
-                    cv_wx = cv_wx + s_ang_x * qdot
-                    cv_wy = cv_wy + s_ang_y * qdot
-                    cv_wz = cv_wz + s_ang_z * qdot
-                    cv_vx = cv_vx + s_lin_x * qdot
-                    cv_vy = cv_vy + s_lin_y * qdot
-                    cv_vz = cv_vz + s_lin_z * qdot
+                # Update cvel AFTER all 3 rotational cdof_dots
+                for d in range(3, 6):
+                    var dof = dof_adr + d
+                    var qdot = data.qvel[dof]
+                    cv_wx = cv_wx + cdof[dof * 6 + 0] * qdot
+                    cv_wy = cv_wy + cdof[dof * 6 + 1] * qdot
+                    cv_wz = cv_wz + cdof[dof * 6 + 2] * qdot
+                    cv_vx = cv_vx + cdof[dof * 6 + 3] * qdot
+                    cv_vy = cv_vy + cdof[dof * 6 + 4] * qdot
+                    cv_vz = cv_vz + cdof[dof * 6 + 5] * qdot
 
             elif joint.jnt_type == JNT_BALL:
                 # BALL: compute all 3 cdof_dots using current cvel, then update
@@ -1302,7 +1312,9 @@ def rne_fwd_body[
                     * qdot
                 )
 
-            # Rotation DOFs: compute cdof_dot with current cvel
+            # Rotation DOFs: ALL 3 cdof_dots use the pre-rotation cvel
+            # (MuJoCo mj_comVel FREE→BALL fallthrough; matches the CPU RNE
+            # and the BALL branch below). cvel updates AFTER the loop.
             for d in range(3, 6):
                 var dof = dof_adr + d
                 var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
@@ -1345,12 +1357,28 @@ def rne_fwd_body[
                 workspace[env, cacc_idx + b * 6 + 4] = workspace[env, cacc_idx + b * 6 + 4] + cdot_lin_y * qdot
                 workspace[env, cacc_idx + b * 6 + 5] = workspace[env, cacc_idx + b * 6 + 5] + cdot_lin_z * qdot
 
-                cv_wx = cv_wx + s_ang_x * qdot
-                cv_wy = cv_wy + s_ang_y * qdot
-                cv_wz = cv_wz + s_ang_z * qdot
-                cv_vx = cv_vx + s_lin_x * qdot
-                cv_vy = cv_vy + s_lin_y * qdot
-                cv_vz = cv_vz + s_lin_z * qdot
+            # Update cvel AFTER all 3 rotational cdof_dots
+            for d in range(3, 6):
+                var dof = dof_adr + d
+                var qdot = rebind[Scalar[DTYPE]](state[env, qvel_off + dof])
+                cv_wx = cv_wx + rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 0]
+                ) * qdot
+                cv_wy = cv_wy + rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 1]
+                ) * qdot
+                cv_wz = cv_wz + rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 2]
+                ) * qdot
+                cv_vx = cv_vx + rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 3]
+                ) * qdot
+                cv_vy = cv_vy + rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 4]
+                ) * qdot
+                cv_vz = cv_vz + rebind[Scalar[DTYPE]](
+                    workspace[env, cdof_idx + dof * 6 + 5]
+                ) * qdot
 
         elif jnt_type == JNT_BALL:
             # BALL: compute all 3 cdof_dots using current cvel, then update

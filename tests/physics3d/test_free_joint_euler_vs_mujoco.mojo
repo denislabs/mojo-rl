@@ -43,16 +43,16 @@ comptime NGEOM = AntModel.NGEOM
 comptime MAX_CONTACTS = AntModel.MAX_CONTACTS
 comptime ACTION_DIM = AntConfig.ACTION_DIM  # 8
 
-# Tolerances gate the COMPONENT-ORDER bug (which produces O(1) quat error),
-# not exact dynamics parity: under fast tumbling (|w|~2.3 rad/s) a small
-# residual vs MuJoCo remains (~1%/step on angular qvel — gyroscopic-term
-# treatment difference, a separate much smaller fidelity gap). Measured
-# post-fix: 1 step -> qpos 9e-5 / qvel 2e-2; 10 steps -> qpos 6e-3 /
-# qvel 2.9e-1. Pre-fix the 1-step qpos error is ~0.5.
-comptime QPOS_ABS_TOL_1: Float64 = 1e-3
-comptime QVEL_ABS_TOL_1: Float64 = 0.05
-comptime QPOS_ABS_TOL_10: Float64 = 0.02
-comptime QVEL_ABS_TOL_10: Float64 = 0.5
+# Gates BOTH free-joint bug classes: the quat component-order bug (O(1)
+# quat error) and the RNE cdof_dot ordering bug (cvel updated inside the
+# free-rotation loop instead of MuJoCo's all-3-from-pre-rotation-cvel —
+# ~1%/step spurious gyroscopic bias). Measured with both fixed:
+# 1 step -> qpos 8.7e-6 / qvel 8.7e-4; 10 steps -> qpos 8.3e-5 / qvel 8e-4.
+# Either regression pushes these past 1e-2.
+comptime QPOS_ABS_TOL_1: Float64 = 1e-4
+comptime QVEL_ABS_TOL_1: Float64 = 5e-3
+comptime QPOS_ABS_TOL_10: Float64 = 1e-3
+comptime QVEL_ABS_TOL_10: Float64 = 5e-3
 # One dt=0.01 step: 1st-order vs 4th-order quat difference is O((w*dt)^2).
 comptime XORDER_QUAT_TOL: Float64 = 5e-3
 
