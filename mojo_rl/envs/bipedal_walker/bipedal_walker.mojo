@@ -161,6 +161,9 @@ struct BipedalWalker[
     var prev_shaping: Scalar[Self.dtype]
     var step_count: Int
     var game_over: Bool
+    # Natural-termination flag for the LAST step (crawl/crash/OOB/success),
+    # False on the time-limit truncation — read by `was_terminated()`.
+    var last_terminated: Bool
     var scroll: Scalar[Self.dtype]
     var rng_seed: UInt64
     var rng_counter: UInt64
@@ -221,6 +224,7 @@ struct BipedalWalker[
         self.prev_shaping = Scalar[Self.dtype](0)
         self.step_count = 0
         self.game_over = False
+        self.last_terminated = False
         self.scroll = Scalar[Self.dtype](0)
         self.rng_seed = seed
         self.rng_counter = 0
@@ -278,6 +282,7 @@ struct BipedalWalker[
         self.prev_shaping = copy.prev_shaping
         self.step_count = copy.step_count
         self.game_over = copy.game_over
+        self.last_terminated = copy.last_terminated
         self.scroll = copy.scroll
         self.rng_seed = copy.rng_seed
         self.rng_counter = copy.rng_counter
@@ -322,6 +327,7 @@ struct BipedalWalker[
         self.prev_shaping = take.prev_shaping
         self.step_count = take.step_count
         self.game_over = take.game_over
+        self.last_terminated = take.last_terminated
         self.scroll = take.scroll
         self.rng_seed = take.rng_seed
         self.rng_counter = take.rng_counter
@@ -409,6 +415,7 @@ struct BipedalWalker[
         # Reset state
         self.step_count = 0
         self.game_over = False
+        self.last_terminated = False
         self.scroll = Scalar[Self.dtype](0)
         self.left_leg_contact = False
         self.right_leg_contact = False
@@ -1127,6 +1134,11 @@ struct BipedalWalker[
         if hull_x > terrain_end:
             terminated = True
 
+        # Natural termination recorded BEFORE folding in the time limit,
+        # so `was_terminated()` distinguishes the two — the GPU kernel
+        # already reports them separately via its terminated buffer.
+        self.last_terminated = terminated
+
         # Time limit
         if self.step_count >= 2000:
             terminated = True
@@ -1136,6 +1148,13 @@ struct BipedalWalker[
     def get_state(self) -> Self.StateType:
         """Return current state representation."""
         return self.cached_state
+
+    def was_terminated(self) -> Bool:
+        """True iff the previous step ended by natural termination
+        (crawl/crash/out-of-bounds/success), False on the 2000-step
+        truncation. Without this override the base default (always False)
+        made drivers bootstrap through real crashes on the CPU path."""
+        return self.last_terminated
 
     def get_obs_list(self) -> List[Scalar[Self.dtype]]:
         """Return current observation as a list."""
