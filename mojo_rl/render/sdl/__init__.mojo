@@ -53,6 +53,7 @@ def untracked[
     return rebind[UnsafePointer[T, MutUntrackedOrigin]](p)
 
 
+from std.os import abort, getenv
 from std.sys import CompilationTarget, is_little_endian, is_big_endian
 from std.ffi import (
     _Global,
@@ -75,18 +76,57 @@ from std.ffi import (
 comptime lib = _Global["SDL", _init_sdl_handle]()
 
 
+def _sdl_lib_name() -> String:
+    comptime if CompilationTarget.is_macos():
+        return String("libSDL3.dylib")
+    elif CompilationTarget.is_linux():
+        return String("libSDL3.so")
+    else:
+        comptime assert False, "OS is not supported"
+
+
 def _init_sdl_handle() -> OwnedDLHandle:
-    try:
-        comptime if CompilationTarget.is_macos():
-            return OwnedDLHandle(".pixi/envs/default/lib/libSDL3.dylib")
-        elif CompilationTarget.is_linux():
-            return OwnedDLHandle(".pixi/envs/default/lib/libSDL3.so")
-        else:
-            comptime assert False, "OS is not supported"
-            # return _uninit[OwnedDLHandle]()
-    except:
-        print("libSDL3 not found at .pixi/envs/default/lib/")
-        return _uninit[OwnedDLHandle]()
+    """Locate + dlopen libSDL3, trying (in order):
+
+      1. `SDL3_LIB` env var — explicit full path override.
+      2. `$CONDA_PREFIX/lib/` — set by `pixi run` for WHICHEVER env is
+         active (default/apple/nvidia), absolute so it works from any CWD.
+      3. `.pixi/envs/default/lib/` relative to CWD — legacy fallback for
+         running the binary from the repo root without `pixi run`.
+      4. The bare library name — system dlopen search
+         (DYLD_LIBRARY_PATH / LD_LIBRARY_PATH / system paths).
+
+    On total failure this ABORTS with the list of attempted paths. It used
+    to `print` one line and return an UNINITIALIZED OwnedDLHandle (garbage
+    memory) — the failure then surfaced as a segfault at the first SDL
+    call, far from the cause."""
+    var name = _sdl_lib_name()
+    var candidates = List[String]()
+    var override = getenv("SDL3_LIB")
+    if override.byte_length() > 0:
+        candidates.append(override)
+    var prefix = getenv("CONDA_PREFIX")
+    if prefix.byte_length() > 0:
+        candidates.append(prefix + "/lib/" + name)
+    candidates.append(".pixi/envs/default/lib/" + name)
+    candidates.append(name)
+
+    for i in range(len(candidates)):
+        try:
+            return OwnedDLHandle(candidates[i])
+        except:
+            pass
+
+    var tried = String("")
+    for i in range(len(candidates)):
+        tried += "\n  - " + candidates[i]
+    abort(
+        "libSDL3 not found. Tried:"
+        + tried
+        + "\nInstall it via `pixi install`, run through `pixi run`, or set"
+        + " SDL3_LIB=/path/to/"
+        + name
+    )
 
 
 @always_inline
