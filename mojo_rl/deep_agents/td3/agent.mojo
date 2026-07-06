@@ -109,7 +109,10 @@ struct TD3Agent[
         N_ENVS: Int = 1,
         NS: Int = 1,
         L: Logger = NoOpLogger,
-        USE_TRAIN_CUDA_GRAPH: Bool = True,
+        # TD3Trainer does not implement train_device_kernels — the capture
+        # path would raise at the first train step, so default OFF (the env
+        # capture below is independent and safe).
+        USE_TRAIN_CUDA_GRAPH: Bool = False,
         USE_ENV_CUDA_GRAPH: Bool = True,
     ](
         mut self,
