@@ -285,10 +285,11 @@ struct CartPoleEnv[DTYPE: DType](
         self.done = terminated or truncated
         self._last_terminated = terminated
 
-        # Reward: +1 for every step the pole stays upright
-        var reward: Scalar[Self.dtype] = Scalar[Self.dtype](
-            1.0
-        ) if not terminated else Scalar[Self.dtype](0.0)
+        # Reward: +1 for every step taken, INCLUDING the terminating step —
+        # Gymnasium gives +1 when the pole "just fell" (0 only for steps
+        # after termination, which never happen here since the driver
+        # resets); the GPU kernel already matches this.
+        var reward: Scalar[Self.dtype] = Scalar[Self.dtype](1.0)
         self.total_reward += reward
 
         return (CartPoleState(index=self._discretize_obs()), reward, self.done)
@@ -491,9 +492,9 @@ struct CartPoleEnv[DTYPE: DType](
         self.done = terminated or truncated
         self._last_terminated = terminated
 
-        var reward: Scalar[Self.dtype] = Scalar[Self.dtype](
-            1.0
-        ) if not terminated else Scalar[Self.dtype](0.0)
+        # +1 including the terminating step (Gymnasium semantics; matches
+        # the GPU kernel — see the tabular step above).
+        var reward: Scalar[Self.dtype] = Scalar[Self.dtype](1.0)
         self.total_reward += reward
 
         return (self._get_obs(), reward, self.done)
