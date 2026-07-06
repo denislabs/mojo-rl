@@ -3,7 +3,6 @@
 This implementation uses the new modular physics components:
 - BipedalWalkerLayout for compile-time layout computation
 - PhysicsEnvHelpers for environment setup utilities
-- PhysicsKernel for unified physics step orchestration
 - Lidar for terrain sensing
 
 The flat state layout is compatible with GPUContinuousEnv trait.
@@ -92,7 +91,6 @@ from mojo_rl.physics2d import (
     CONTACT_DEPTH,
     BipedalWalkerLayout,
     PhysicsEnvHelpers,
-    PhysicsKernel,
     PhysicsConfig,
 )
 

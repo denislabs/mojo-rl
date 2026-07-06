@@ -296,33 +296,11 @@ struct ModelDefFromXML[
                                 Scalar[DTYPE](1.0)
                                 / model.body_inertia[i * 3 + k]
                             )
-        # Parse and add fixed tendons from XML <tendon><fixed> section.
-        # NOTE: fixed tendons only define a kinematic quantity (length = Σ coef*qpos).
-        # They produce NO forces unless referenced by <equality><tendon> or they have
-        # limited="true"/stiffness/damping attributes. Since we only support
-        # equality constraints on tendons, skip parsing when no equality block exists.
-        # TODO: parse <equality><tendon> and only constrain those tendons.
-        comptime if False and Self.MAX_TENDON > 0:
-            comptime for t_idx in range(Self.MAX_TENDON):
-                comptime nj = _xml_fixed_tendon_njoints[Self.xml, t_idx]()
-                comptime if nj > 0:
-                    var jidx = InlineArray[Int, 4](fill=-1)
-                    var jcoefs = InlineArray[Scalar[DTYPE], 4](
-                        fill=Scalar[DTYPE](0)
-                    )
-                    comptime for ji in range(nj):
-                        comptime jn = _xml_fixed_tendon_joint_name[
-                            Self.xml, t_idx, ji
-                        ]()
-                        comptime jnt_idx = _xml_find_joint_index(
-                            Self.xml, jn
-                        )
-                        comptime cf = _xml_fixed_tendon_coef[
-                            Self.xml, t_idx, ji
-                        ]()
-                        jidx[ji] = jnt_idx
-                        jcoefs[ji] = Scalar[DTYPE](cf)
-                    _ = model.add_tendon(nj, jidx, jcoefs)
+        # <tendon><fixed> parsing removed (was permanently disabled behind
+        # `comptime if False`): fixed tendons only define a kinematic length
+        # and produce no forces unless referenced by <equality><tendon>,
+        # which is unsupported. Re-add from git history if equality-tendon
+        # support ever lands.
 
         # Initialize data.qpos from qpos0 (joint ref values) before FK
         Self.reset_data(data)

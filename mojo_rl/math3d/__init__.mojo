@@ -45,4 +45,3 @@ from .mat4 import (
     mat4_look_at,
     mat4_perspective,
 )
-from .math_gpu import atan2_gpu

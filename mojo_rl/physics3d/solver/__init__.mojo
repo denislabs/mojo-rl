@@ -14,7 +14,6 @@ Unified constraint representation:
 
 from .pgs_solver import PGSSolver
 from .newton_solver import NewtonSolver
-from .old_newton_solver import OldNewtonSolver
 from .cg_solver import CGSolver
 from .island_detection import (
     detect_islands,

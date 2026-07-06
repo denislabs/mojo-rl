@@ -100,9 +100,8 @@ from .collision import (
     CirclePolygonCollision,
     detect_circle_vs_body_pair,
 )
-from .solvers import ImpulseSolver, UnifiedConstraintSolver
+from .solvers import ImpulseSolver
 from .joints import RevoluteJointSolver
-from .kernels import PhysicsStepKernel, PhysicsStepKernelParallel
 
 
 # Strided state helper for GPUDiscreteEnv (flat layout)
@@ -117,7 +116,7 @@ from .layout import (
     BipedalWalkerLayout,
     HalfCheetahLayout,
 )
-from .kernel import PhysicsKernel, PhysicsConfig
+from .config import PhysicsConfig
 from .env_helpers import PhysicsEnvHelpers
 
 # Lidar raycast module for BipedalWalker

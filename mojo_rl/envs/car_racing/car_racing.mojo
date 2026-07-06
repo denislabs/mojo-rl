@@ -1,4 +1,17 @@
-"""CarRacing  GPU environment using the physics2d/car/ module.
+"""CarRacing GPU environment using the physics2d/car/ module.
+
+DEPRECATED — superseded by the CarRacing successors in this package:
+  * `CarRacingMB` (car_racing_mb.mojo)   — multi-body slip physics, the env
+    the Dreamer/Rainbow CarRacing training stack uses (fixes this env's
+    single-body spin-in-place bug off-track).
+  * `CarRacingDiscrete` (car_racing_discrete.mojo) — discrete-action variant.
+  * `CarRacingPixel` (car_racing_pixel.mojo)       — pixel observations.
+
+Known divergences kept for reference (audited 2026-07): the GPU reward here
+is velocity-shaped while the CPU reward is Gymnasium tile-based (and 10x
+below Gymnasium's 1000/N tile scale); GPU track generation is a simplified
+trace that need not close, unlike the Gymnasium-faithful `track.mojo` used
+on CPU. Do not start new work on this env.
 
 This implementation uses the modular car physics components:
 - CarRacingLayout for compile-time layout computation

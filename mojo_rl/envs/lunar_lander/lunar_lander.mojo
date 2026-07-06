@@ -3,7 +3,6 @@
 This implementation uses the new modular physics components:
 - LunarLanderLayout for compile-time layout computation
 - PhysicsEnvHelpers for environment setup utilities
-- PhysicsKernel for unified physics step orchestration
 
 The flat state layout is compatible with GPUDiscreteEnv trait.
 All physics data is packed per-environment for efficient GPU access.
@@ -82,7 +81,6 @@ from mojo_rl.physics2d import (
     # New modular architecture
     LunarLanderLayout,
     PhysicsEnvHelpers,
-    PhysicsKernel,
     PhysicsConfig,
 )
 from mojo_rl.physics2d.integrators.euler import SemiImplicitEuler
