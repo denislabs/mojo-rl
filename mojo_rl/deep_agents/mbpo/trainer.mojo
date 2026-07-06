@@ -56,6 +56,11 @@ from ..training.trainer_block import TrainerState
 from ..training.driver_offpolicy import OffPolicyAgentGpu
 from ..training.off_policy_critic import concat_sa_gpu
 from ..training.blocks import DualSampleStep, TwinCriticStep, PolyakStep
+from ..training.blocks.action_kernels import (
+    offpolicy_warmup_uniform_kernel,
+    offpolicy_clamp_action_kernel,
+)
+from ..training.blocks.action_select import select_squashed_batched
 from ..sac.target_y_block import TargetYBlock
 from ..sac.actor_loss import SACActorLoss
 from ..sac.blocks.alpha_update_step import AlphaUpdateStep
@@ -66,62 +71,6 @@ from .metrics import MBPOMetrics
 # ──────────────────────────────────────────────────────────────────────
 # Batched GPU action kernels (mirror SAC) + MBPO rollout/dynamics kernels.
 # ──────────────────────────────────────────────────────────────────────
-
-
-def _mbpo_warmup_uniform_kernel[
-    N_ENVS: Int, ACT: Int
-](
-    action_dest: LayoutTensor[DT, Layout.row_major(N_ENVS, ACT), MutAnyOrigin],
-    action_scale: Scalar[DT],
-    seed: UInt64,
-    offset_base: UInt64,
-):
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    var total = N_ENVS * ACT
-    if i >= total:
-        return
-    var philox = PhiloxRandom(seed=seed + UInt64(i), offset=offset_base)
-    var u = Float32(philox.step_uniform()[0])
-    var s = Scalar[DT](2.0) * Scalar[DT](u) - Scalar[DT](1.0)
-    var env = i // ACT
-    var j = i % ACT
-    action_dest[env, j] = s * action_scale
-
-
-def _mbpo_action_clamp_kernel[
-    N: Int, ACT: Int
-](
-    alp: LayoutTensor[DT, Layout.row_major(N, ACT + 1), MutAnyOrigin],
-    action_out: LayoutTensor[DT, Layout.row_major(N, ACT), MutAnyOrigin],
-    action_scale: Scalar[DT],
-):
-    """Extract the first ACT lanes of the rsample output (drop log_prob),
-    clamp into action_out."""
-    var i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    var total = N * ACT
-    if i >= total:
-        return
-    var env = i // ACT
-    var j = i % ACT
-    var a = alp[env, j]
-    if a > action_scale:
-        a = action_scale
-    elif a < -action_scale:
-        a = -action_scale
-    action_out[env, j] = a
-
-
-def _mbpo_copy2d_kernel[
-    N_ENVS: Int, D: Int
-](
-    src: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
-    dst: LayoutTensor[DT, Layout.row_major(N_ENVS, D), MutAnyOrigin],
-):
-    """dst[e,d] = src[e,d] — bridge the driver's obs view into owned scratch."""
-    var i = Int(global_idx.x)
-    var total = N_ENVS * D
-    if i < total:
-        dst[i // D, i % D] = rebind[Scalar[DT]](src[i // D, i % D])
 
 
 def _rollout_posterior_kernel[
@@ -1415,7 +1364,7 @@ struct MBPOTrainer[
             else:
                 comptime total = N_ENVS * ACT
                 comptime n_blocks = (total + TPB - 1) // TPB
-                comptime warmup_kernel = _mbpo_warmup_uniform_kernel[
+                comptime warmup_kernel = offpolicy_warmup_uniform_kernel[
                     N_ENVS, ACT
                 ]
                 var ctx = self.ctx.value()
@@ -1430,60 +1379,25 @@ struct MBPOTrainer[
                 self._warmup_rng_offset += UInt64(N_ENVS * ACT * 2)
             return
 
-        comptime if Self.train_target == "cpu":
-            self._ob1.ensure(N_ENVS * OBS)
-            for env in range(N_ENVS):
-                for d in range(OBS):
-                    self._ob1.data[env * OBS + d] = rebind[Scalar[DT]](
-                        obs[env, d]
-                    )
-            self._ao1.ensure(N_ENVS * 2 * ACT)
-            self._alp1.ensure(N_ENVS * (ACT + 1))
-            call_forward["cpu", N_ENVS](
-                self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._ao1
-            )
-            self.sel.forward["cpu", N_ENVS](
-                TensorRefs[1](self._ao1), self._alp1
-            )
-            for env in range(N_ENVS):
-                for j in range(ACT):
-                    var a = self._alp1.data[env * (ACT + 1) + j]
-                    if a > self.action_scale:
-                        a = self.action_scale
-                    elif a < -self.action_scale:
-                        a = -self.action_scale
-                    action[env, j] = a
-            _ = ao_scratch
-            _ = alp_scratch
-        else:
-            var c = self.ctx.value()
-            self._ob1.ensure_gpu(c, N_ENVS * OBS)
-            self._ao1.ensure_gpu(c, N_ENVS * 2 * ACT)
-            self._alp1.ensure_gpu(c, N_ENVS * (ACT + 1))
-            comptime tot_obs = N_ENVS * OBS
-            c.enqueue_function[_mbpo_copy2d_kernel[N_ENVS, OBS]](
-                obs,
-                self._ob1.lt["gpu", Layout.row_major(N_ENVS, OBS)](),
-                grid_dim=(tot_obs + TPB - 1) // TPB,
-                block_dim=TPB,
-            )
-            call_forward["gpu", N_ENVS](
-                self.actor, TensorRefs[Self.ACTOR.ARITY](self._ob1), self._ao1, self.ctx
-            )
-            self.sel.forward["gpu", N_ENVS](
-                TensorRefs[1](self._ao1), self._alp1, self.ctx
-            )
-            comptime tot_act = N_ENVS * ACT
-            comptime clamp_kernel = _mbpo_action_clamp_kernel[N_ENVS, ACT]
-            c.enqueue_function[clamp_kernel](
-                self._alp1.lt["gpu", Layout.row_major(N_ENVS, ACT + 1)](),
-                action,
-                self.action_scale,
-                grid_dim=(tot_act + TPB - 1) // TPB,
-                block_dim=TPB,
-            )
-            _ = ao_scratch
-            _ = alp_scratch
+        # ── Policy: shared squashed-actor body (see
+        # training/blocks/action_select.mojo — one copy for
+        # sac/redq/redq_ofe/mbpo).
+        select_squashed_batched[
+            Self.ACTOR, Self.train_target, N_ENVS, OBS, ACT
+        ](
+            self.actor,
+            self.sel,
+            self._ob1,
+            self._ao1,
+            self._alp1,
+            obs,
+            action,
+            self.action_scale,
+            self.ctx,
+        )
+        # silence unused warnings on the driver-owned scratch views.
+        _ = ao_scratch
+        _ = alp_scratch
 
     def _replay_add(
         mut self,
@@ -1995,7 +1909,7 @@ struct MBPOTrainer[
         self._ro_done.dev.value().enqueue_fill(Scalar[DT](0.0))
 
         comptime n_lane_blocks = (Self.BATCH + TPB - 1) // TPB
-        comptime clamp_kernel = _mbpo_action_clamp_kernel[
+        comptime clamp_kernel = offpolicy_clamp_action_kernel[
             Self.BATCH, Self.ACT_DIM
         ]
         comptime post_kernel = _rollout_posterior_kernel[
