@@ -164,6 +164,51 @@ struct _ScaleV(ParamVisitor):
             )
 
 
+struct _MaskGradV(ParamVisitor):
+    """Zero the grad of every param whose dotted name does NOT start with one
+    of the kept prefixes — the AdaJEPA test-time-adaptation subset mask
+    (docs/ADAJEPA_LEWM_TTA_PLAN.md §4). Runs between vjp and the optimizer
+    step. Masked params stay bit-identical only with a FRESH optimizer (zero
+    moments) and wd=0 — decoupled weight decay moves zero-grad params."""
+
+    var keep: List[String]
+
+    def __init__(out self, var keep: List[String]):
+        self.keep = keep^
+
+    def _kept(self, name: String) -> Bool:
+        for p in self.keep:
+            if name.startswith(p):
+                return True
+        return False
+
+    def visit[
+        target: StaticString, N: Int
+    ](
+        mut self,
+        name: String,
+        mut param: Tensor,
+        mut grad: Tensor,
+        mut m: Tensor,
+        mut v: Tensor,
+        apply_decay: Bool,
+        ctx: Optional[DeviceContext],
+    ) raises:
+        if self._kept(name):
+            return
+        comptime if target == "cpu":
+            for i in range(N):
+                grad.data[i] = Scalar[DT](0.0)
+        else:
+            var c = ctx.value()
+            c.enqueue_function[_clip_scale_kernel[N]](
+                grad.lt["gpu", Layout.row_major(N)](),
+                Scalar[DT](0.0),
+                grid_dim=(N + TPB - 1) // TPB,
+                block_dim=TPB,
+            )
+
+
 # ── GPU loss reduction: acc[0] += mean(src); acc[1] += 1 ───────────────
 # Single-block `block.sum` over the [BATCH] per-sample loss. No per-step
 # D2H — the driver drains the accumulator at flush cadence.
@@ -507,6 +552,76 @@ struct LeWMTrainer[
         self.graph.for_each_param[Self.train_target](self.opt, self.ctx)
         return m
 
+    def train_step_masked[
+        POLICY: AMPPolicy = NoAMP,
+    ](
+        mut self,
+        pix: TileTensor[
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+
+            origin=MutAnyOrigin,
+            ...,
+        ],
+        act: TileTensor[
+            dtype=DT,
+            address_space=AddressSpace.GENERIC,
+
+            origin=MutAnyOrigin,
+            ...,
+        ],
+        keep_prefixes: List[String],
+    ) raises -> Scalar[DT]:
+        """`train_step` with a subset-parameter mask: after the backward pass,
+        zero the grad of every param whose dotted name does not start with one
+        of `keep_prefixes`, so only the kept subset is updated (AdaJEPA
+        test-time adaptation, docs/ADAJEPA_LEWM_TTA_PLAN.md). The mask runs
+        BEFORE the grad-norm clip so the norm covers only the applied update.
+        Masked params are provably frozen only with a fresh Adam and wd=0."""
+        self.graph.zero_grad[Self.train_target](self.ctx)
+        self._seed_input["pixels", Self.BATCH * Self.PIX](pix)
+        self._seed_input["actions", Self.BATCH * Self.ACTIN](act)
+        self.graph.forward[Self.BATCH, Self.train_target, POLICY](
+            self.loss_out, self.ctx
+        )
+
+        var m: Scalar[DT] = 0.0
+        comptime if Self.train_target == "cpu":
+            for b in range(Self.BATCH):
+                m += self.loss_out.data[b]
+            m /= Scalar[DT](Self.BATCH)
+        else:
+            var c = self.ctx.value()
+            comptime red = _reduce_mean_acc_kernel[Self.BATCH]
+            c.enqueue_function[red](
+                self.loss_out.dev.value().unsafe_ptr(),
+                self._loss_acc_dev.value().unsafe_ptr(),
+                grid_dim=1,
+                block_dim=TPB_REDUCE,
+            )
+
+        self.graph.vjp[Self.BATCH, Self.train_target, POLICY](
+            self.grad_seed, self.ctx
+        )
+        var mask = _MaskGradV(keep_prefixes.copy())
+        self.graph.for_each_param[Self.train_target, _MaskGradV](
+            mask, self.ctx
+        )
+        if self.max_grad_norm > Scalar[DT](0.0):
+            var ss = _SumSqV()
+            self.graph.for_each_param[Self.train_target, _SumSqV](ss, self.ctx)
+            var scale = _scale_from_norm(
+                sqrt(ss.sum_sq), self.max_grad_norm, Scalar[DT](1e-6)
+            )
+            if scale < Scalar[DT](1.0):
+                var sc = _ScaleV(scale)
+                self.graph.for_each_param[Self.train_target, _ScaleV](
+                    sc, self.ctx
+                )
+        self.opt.begin_step()
+        self.graph.for_each_param[Self.train_target](self.opt, self.ctx)
+        return m
+
     def eval_loss[
         POLICY: AMPPolicy = NoAMP,
     ](
@@ -698,6 +813,24 @@ struct LeWMTrainer[
                 cnt += 1
         var gram_off = acc / Scalar[DT](cnt)
         return (var_min, gram_off)
+
+    def snapshot_all(mut self) raises -> List[Scalar[DT]]:
+        """Params + state (BN running stats) in walk order — in-memory
+        snapshot for the AdaJEPA TTA per-episode model reset (restore with
+        `restore_all`; docs/ADAJEPA_LEWM_TTA_PLAN.md §5). Adam moments are
+        NOT captured: kept-subset moments survive the restore, which is why
+        a TTA episode must use one constant mask set (plan §4)."""
+        var v = _SaveVisitor()
+        self.graph.for_each_param[Self.train_target, _SaveVisitor](v, self.ctx)
+        self.graph.for_each_state[Self.train_target, _SaveVisitor](v, self.ctx)
+        return v.vals.copy()
+
+    def restore_all(mut self, vals: List[Scalar[DT]]) raises:
+        """Restore a `snapshot_all` capture (params + state, same walk
+        order; GPU: re-uploads)."""
+        var v = _LoadVisitor(vals.copy())
+        self.graph.for_each_param[Self.train_target, _LoadVisitor](v, self.ctx)
+        self.graph.for_each_state[Self.train_target, _LoadVisitor](v, self.ctx)
 
     def save_params(mut self, path: String) raises:
         var v = _SaveVisitor()

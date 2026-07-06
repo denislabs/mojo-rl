@@ -16,6 +16,17 @@ on `BATCH` parallel mojo `PushTEnv`s, receding-horizon. Each control cycle:
      so each of the `frameskip` sub-actions is one env.step target.
   5. record coverage; repeat.
 
+AdaJEPA test-time adaptation (docs/ADAJEPA_LEWM_TTA_PLAN.md, off by
+default): with `tta_enabled`, each cycle also pushes the rendered frame +
+executed action block into a rolling per-env window buffer, and — once T
+cycles have accumulated — takes `tta_steps` masked gradient steps on the
+pretraining JEPA loss over the BATCH fresh windows (BN in training mode,
+subset = `tta_keep` prefixes, default predictor-side), then re-syncs the
+scorer's predictor so the next replan uses the adapted weights. The wm's
+params + BN state are snapshotted at entry and restored before returning
+(fresh-model-per-episode; NOTE: Adam moments are not restored — pass a
+fresh trainer for honest multi-run comparisons).
+
 Returns (success_rate, mean_coverage) over the envs. Optionally writes a
 horizontal strip PPM of env-0's trajectory (one frame per cycle).
 
@@ -39,6 +50,7 @@ from .encoder import LeWMEncoder
 from .predict_graph import LeWMPredictor
 from .mpc import LeWMMPCScorer
 from .pusht_sim_bridge import sim_frame_chw_norm
+from .tta_buffer import TTAWindowBuffer
 
 
 def run_lewm_closedloop[
@@ -135,6 +147,12 @@ def run_lewm_closedloop[
     viz_path: String = "",
     ctx: Optional[DeviceContext] = None,
     verbose: Bool = True,
+    # AdaJEPA test-time adaptation (docs/ADAJEPA_LEWM_TTA_PLAN.md §5).
+    # tta_keep = kept param-name prefixes; empty ⇒ the v1 predictor-side
+    # default (predfull+encfrozen). Requires a fresh Adam + wd=0 on `wm`.
+    tta_enabled: Bool = False,
+    tta_steps: Int = 1,
+    tta_keep: List[String] = List[String](),
 ) raises -> Tuple[Float64, Float64]:
     if not ctx:
         raise Error("run_lewm_closedloop: ctx (GPU) required")
@@ -198,7 +216,11 @@ def run_lewm_closedloop[
     var goal_lat = alloc[Scalar[DT]](BE)
     var pix_dev = ctx_v.enqueue_create_buffer[DT](BATCH * PIX)
     var act_dev = ctx_v.enqueue_create_buffer[DT](BATCH * ACTIN)
-    act_dev.enqueue_fill(0.0)  # emb depends only on pixels
+    # emb depends only on pixels, so act_dev's contents never affect the
+    # encode reads below — zero here for determinism. (The TTA adapt step
+    # reuses act_dev for real window actions; that's safe for the same
+    # reason: the "emb" node ignores the actions input.)
+    act_dev.enqueue_fill(0.0)
     ctx_v.synchronize()
     var pix_d_p = rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
         pix_dev.unsafe_ptr()
@@ -233,6 +255,21 @@ def run_lewm_closedloop[
     var viz_buf = alloc[Scalar[DT]](n_cycles * VIZN if do_viz else 1)
     var viz_tmp = alloc[Scalar[DT]](VIZN if do_viz else 1)
 
+    # ── AdaJEPA TTA state (docs/ADAJEPA_LEWM_TTA_PLAN.md §5) ────────────
+    var keep = tta_keep.copy()
+    if tta_enabled and len(keep) == 0:
+        keep = [  # v1 default: whole predictor side, encoder frozen
+            String("pred_raw."),
+            String("pred."),
+            String("x_pe."),
+            String("act_emb."),
+        ]
+    var tta_buf = TTAWindowBuffer[BATCH, T, IMG_DIM, ACT](enabled=tta_enabled)
+    var tta_act_host = alloc[Scalar[DT]](BATCH * ACTIN if tta_enabled else 1)
+    var snap = List[Scalar[DT]]()
+    if tta_enabled:
+        snap = wm.snapshot_all()  # restored at exit (fresh model/episode)
+
     # ── control loop ────────────────────────────────────────────────────
     for cyc in range(n_cycles):
         # render each env's current frame → window (T copies)
@@ -252,6 +289,12 @@ def run_lewm_closedloop[
                     pix_host[(b * T + t) * IMG_DIM + i] = pix_host[
                         (b * T) * IMG_DIM + i
                     ]
+        if tta_enabled:
+            # stage this cycle's real frame per live env (goal render
+            # overwrites pix_host below, so push must happen here)
+            for b in range(BATCH):
+                if not envs[b].is_done():
+                    tta_buf.push_frame(b, pix_host + (b * T) * IMG_DIM)
         ctx_v.enqueue_copy(pix_dev, pix_host)
         ctx_v.synchronize()
         var pix_t = TileTensor(pix_d_p, row_major[BATCH, PIX]())
@@ -324,6 +367,44 @@ def run_lewm_closedloop[
                 var ty = Scalar[DT](Float64(ap[1]) + dy * scale_y)
                 _ = envs[b].step(PushTAction[DT](tx, ty))
 
+        # ── AdaJEPA adapt step: complete the (frame, action) pairs, then
+        # one+ masked gradient steps on the fresh windows and re-sync the
+        # planner. is_done checked AFTER execution so a mid-block finish
+        # orphans the staged frame instead of storing a partial action.
+        if tta_enabled:
+            for b in range(BATCH):
+                if not envs[b].is_done():
+                    tta_buf.push_action(
+                        b, plan + (b * NEEDED + (H - 1)) * ACT
+                    )
+            if tta_buf.fill(pix_host, tta_act_host):
+                ctx_v.enqueue_copy(pix_dev, pix_host)
+                ctx_v.enqueue_copy(act_dev, tta_act_host)
+                ctx_v.synchronize()
+                var wpix_t = TileTensor(pix_d_p, row_major[BATCH, PIX]())
+                var wact_t = TileTensor(act_d_p, row_major[BATCH, ACTIN]())
+                # pre-adapt window loss (eval-mode BN) — the paper's
+                # frozen-vs-adapt prediction-loss diagnostic
+                var pre = wm.eval_loss(wpix_t, wact_t)
+                wm.reset_loss_accum()
+                wm.set_bn_training(True)
+                for _ in range(tta_steps):
+                    _ = wm.train_step_masked(wpix_t, wact_t, keep)
+                wm.set_bn_training(False)
+                # without this re-sync the CEM plans on stale weights and
+                # the whole adapt step is a silent no-op
+                scorer.pred_net.sync_from_named(wm.export_named_params())
+                if verbose:
+                    # step loss = training-mode loss at the PRE-update params
+                    # (accumulated during the step); adaptation's effect shows
+                    # in the NEXT cycle's pre value.
+                    print(
+                        "   tta: window loss pre=",
+                        pre,
+                        " step(train-mode)=",
+                        wm.read_loss_accum(),
+                    )
+
         var mc: Float64 = 0.0
         var ns = 0
         for b in range(BATCH):
@@ -383,6 +464,9 @@ def run_lewm_closedloop[
             vmax=255.0,
         )
 
+    if tta_enabled:
+        wm.restore_all(snap)  # fresh-model-per-episode: undo the TTA steps
+
     pix_host.free()
     emb_host.free()
     start_lat.free()
@@ -390,5 +474,6 @@ def run_lewm_closedloop[
     plan.free()
     viz_buf.free()
     viz_tmp.free()
+    tta_act_host.free()
     _ = scorer^
     return (success_rate, mc)
