@@ -27,3 +27,7 @@ tests/arcade_games/test_pong_env.mojo
 
 # ── physics3d: CPU-only structural gate (vs_mujoco gates stay local) ──
 tests/physics3d/test_forward_kinematics.mojo
+
+# NOTE: the CPU-vs-GPU trajectory parity gates need a GPU and stay local:
+#   pixi run -e apple mojo run -I . tests/envs/test_cartpole_cpu_vs_gpu_trajectory.mojo
+#   pixi run -e apple mojo run -I . tests/envs/test_acrobot_cpu_vs_gpu_trajectory.mojo

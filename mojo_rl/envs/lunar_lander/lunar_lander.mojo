@@ -30,6 +30,7 @@ from .action import LunarLanderAction
 from .constants import LLConstants
 from .helpers import (
     compute_shaping,
+    lunar_terminal_and_reward,
     normalize_position,
     normalize_velocity,
     normalize_angular_velocity,
@@ -1227,37 +1228,27 @@ struct LunarLander[
             s_power * LLConstants.SIDE_ENGINE_FUEL_COST
         )
 
-        var terminated = False
-
-        if x_norm >= Scalar[Self.dtype](1.0) or x_norm <= Scalar[Self.dtype](
-            -1.0
-        ):
-            terminated = True
-            reward = Scalar[Self.dtype](-100.0)
-
         var both_legs = left_contact > Scalar[Self.dtype](
             0.5
         ) and right_contact > Scalar[Self.dtype](0.5)
-
         var speed = sqrt(vx * vx + vy * vy)
-
-        # Crash: lander body touches ground (using collision detection system)
-        # This is the proper physics-based crash detection, matching the original
-        # LunarLanderEnv which uses _is_lander_contacting()
+        # Crash: lander body touches ground (physics-based crash detection).
         var lander_contact = self._has_lander_body_contact()
         if lander_contact:
-            terminated = True
             self.game_over = True
-            reward = Scalar[Self.dtype](-100.0)
 
-        # Successful landing: both legs down, nearly at rest
-        # Use strict thresholds matching the original LunarLanderEnv's sleep detection
-        # (SLEEP_LINEAR_THRESHOLD = 0.01, SLEEP_ANGULAR_THRESHOLD = 0.01)
-        var is_at_rest = speed < 0.01 and abs(omega) < 0.01 and both_legs
-
-        if is_at_rest:
-            terminated = True
-            reward = reward + Scalar[Self.dtype](100.0)
+        # Single-source terminal predicate + terminal reward overrides
+        # (shared with BOTH GPU step kernels — see helpers.mojo).
+        var tr = lunar_terminal_and_reward[Self.dtype](
+            Scalar[Self.dtype](x_norm),
+            lander_contact,
+            both_legs,
+            Scalar[Self.dtype](speed),
+            Scalar[Self.dtype](abs(omega)),
+            reward,
+        )
+        reward = tr[0]
+        var terminated = tr[1]
 
         # Natural termination (crash/OOB/landed) recorded BEFORE folding in
         # the time-limit cap, so `was_terminated()` distinguishes the two —
@@ -2678,13 +2669,9 @@ struct LunarLander[
         var done = Scalar[dtype](0.0)
         var is_terminated = Scalar[dtype](0.0)
 
-        # Out of bounds
-        if x_norm >= Scalar[dtype](1.0) or x_norm <= Scalar[dtype](-1.0):
-            done = Scalar[dtype](1.0)
-            is_terminated = Scalar[dtype](1.0)
-            reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
-
-        # Too high
+        # Too high — documented GPU-only deviation (no CPU counterpart);
+        # applied BEFORE the shared terminal eval so the crash-override
+        # order matches the historical kernel exactly.
         var h_units_max = Scalar[dtype](LLConstants.H_UNITS * 1.5)
         if y > h_units_max:
             done = Scalar[dtype](1.0)
@@ -2700,12 +2687,6 @@ struct LunarLander[
                 lander_contact = True
                 break
 
-        if lander_contact:
-            done = Scalar[dtype](1.0)
-            is_terminated = Scalar[dtype](1.0)
-            reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
-
-        # Successful landing
         var both_legs = left_contact > Scalar[dtype](
             0.5
         ) and right_contact > Scalar[dtype](0.5)
@@ -2713,14 +2694,16 @@ struct LunarLander[
         var abs_omega = omega
         if omega < Scalar[dtype](0.0):
             abs_omega = -omega
-        if (
-            both_legs
-            and speed_val < Scalar[dtype](0.01)
-            and abs_omega < Scalar[dtype](0.01)
-        ):
+
+        # Single-source terminal predicate + terminal reward overrides
+        # (shared with the CPU _compute_step_result — see helpers.mojo).
+        var tr = lunar_terminal_and_reward[dtype](
+            x_norm, lander_contact, both_legs, speed_val, abs_omega, reward
+        )
+        reward = tr[0]
+        if tr[1]:
             done = Scalar[dtype](1.0)
             is_terminated = Scalar[dtype](1.0)
-            reward = reward + Scalar[dtype](LLConstants.LAND_REWARD)
 
         # Max steps (truncation only, not termination). `step_count` is the
         # PRE-increment count (incremented below), so the 1000th step reads
@@ -3722,13 +3705,9 @@ struct LunarLander[
         var done = Scalar[dtype](0.0)
         var is_terminated = Scalar[dtype](0.0)
 
-        # Out of bounds
-        if x_norm >= Scalar[dtype](1.0) or x_norm <= Scalar[dtype](-1.0):
-            done = Scalar[dtype](1.0)
-            is_terminated = Scalar[dtype](1.0)
-            reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
-
-        # Too high
+        # Too high — documented GPU-only deviation (no CPU counterpart);
+        # applied BEFORE the shared terminal eval so the crash-override
+        # order matches the historical kernel exactly.
         var h_units_max = Scalar[dtype](LLConstants.H_UNITS * 1.5)
         if y > h_units_max:
             done = Scalar[dtype](1.0)
@@ -3744,12 +3723,6 @@ struct LunarLander[
                 lander_contact = True
                 break
 
-        if lander_contact:
-            done = Scalar[dtype](1.0)
-            is_terminated = Scalar[dtype](1.0)
-            reward = Scalar[dtype](LLConstants.CRASH_PENALTY)
-
-        # Successful landing
         var both_legs = left_contact > Scalar[dtype](
             0.5
         ) and right_contact > Scalar[dtype](0.5)
@@ -3757,14 +3730,16 @@ struct LunarLander[
         var abs_omega = omega
         if omega < Scalar[dtype](0.0):
             abs_omega = -omega
-        if (
-            both_legs
-            and speed_val < Scalar[dtype](0.01)
-            and abs_omega < Scalar[dtype](0.01)
-        ):
+
+        # Single-source terminal predicate + terminal reward overrides
+        # (shared with the CPU _compute_step_result — see helpers.mojo).
+        var tr = lunar_terminal_and_reward[dtype](
+            x_norm, lander_contact, both_legs, speed_val, abs_omega, reward
+        )
+        reward = tr[0]
+        if tr[1]:
             done = Scalar[dtype](1.0)
             is_terminated = Scalar[dtype](1.0)
-            reward = reward + Scalar[dtype](LLConstants.LAND_REWARD)
 
         # Max steps (truncation only, not termination). `step_count` is the
         # PRE-increment count (incremented below), so the 1000th step reads

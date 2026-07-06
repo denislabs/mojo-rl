@@ -61,6 +61,86 @@ comptime ACR_DT: Float64 = 0.2
 comptime ACR_MAX_STEPS: Int = 500
 
 
+# =============================================================================
+# Single-source dynamics — the ONE copy of the Acrobot equations of motion.
+#
+# Called by both the CPU `_dsdt` (instance link params, runtime
+# use_book_dynamics flag) and the GPU `_dsdt_gpu` (comptime ACR_* constants,
+# book dynamics). These used to be two hand-maintained copies — the exact
+# fork-drift class that produced real CPU/GPU divergences elsewhere.
+# =============================================================================
+
+
+@always_inline
+def acrobot_dsdt[
+    DTYPE: DType
+](
+    s: SIMD[DTYPE, 4],
+    torque: Scalar[DTYPE],
+    m1: Scalar[DTYPE],
+    m2: Scalar[DTYPE],
+    l1: Scalar[DTYPE],
+    lc1: Scalar[DTYPE],
+    lc2: Scalar[DTYPE],
+    I1: Scalar[DTYPE],
+    I2: Scalar[DTYPE],
+    g: Scalar[DTYPE],
+    use_book_dynamics: Bool,
+) -> SIMD[DTYPE, 4]:
+    """Equations of motion (Gymnasium Acrobot-v1). `s` is
+    [theta1, theta2, dtheta1, dtheta2]; returns their derivatives."""
+    comptime assert DTYPE.is_floating_point(), "DTYPE must be floating point"
+    var theta1 = s[0]
+    var theta2 = s[1]
+    var dtheta1 = s[2]
+    var dtheta2 = s[3]
+
+    var cos_theta2 = cos(theta2)
+    var sin_theta2 = sin(theta2)
+    var pi_2 = Scalar[DTYPE](pi / 2.0)
+    var cos_t1_t2_pi2 = cos(theta1 + theta2 - pi_2)
+    var cos_t1_pi2 = cos(theta1 - pi_2)
+
+    var d1 = (
+        m1 * lc1 * lc1
+        + m2 * (l1 * l1 + lc2 * lc2 + Scalar[DTYPE](2.0) * l1 * lc2 * cos_theta2)
+        + I1
+        + I2
+    )
+    var d2 = m2 * (lc2 * lc2 + l1 * lc2 * cos_theta2) + I2
+    var phi2 = m2 * lc2 * g * cos_t1_t2_pi2
+    var phi1 = (
+        -m2 * l1 * lc2 * dtheta2 * dtheta2 * sin_theta2
+        - Scalar[DTYPE](2.0) * m2 * l1 * lc2 * dtheta2 * dtheta1 * sin_theta2
+        + (m1 * lc1 + m2 * l1) * g * cos_t1_pi2
+        + phi2
+    )
+
+    var ddtheta2: Scalar[DTYPE]
+    if use_book_dynamics:
+        # Book dynamics (includes the extra dtheta1^2 term)
+        ddtheta2 = (
+            torque
+            + d2 / d1 * phi1
+            - m2 * l1 * lc2 * dtheta1 * dtheta1 * sin_theta2
+            - phi2
+        ) / (m2 * lc2 * lc2 + I2 - d2 * d2 / d1)
+    else:
+        # NIPS paper dynamics
+        ddtheta2 = (torque + d2 / d1 * phi1 - phi2) / (
+            m2 * lc2 * lc2 + I2 - d2 * d2 / d1
+        )
+
+    var ddtheta1 = -(d2 * ddtheta2 + phi1) / d1
+
+    var out = SIMD[DTYPE, 4](0.0)
+    out[0] = dtheta1
+    out[1] = dtheta2
+    out[2] = ddtheta1
+    out[3] = ddtheta2
+    return out
+
+
 # ============================================================================
 # Acrobot State and Action types for trait conformance
 # ============================================================================
@@ -451,80 +531,20 @@ struct AcrobotEnv[DTYPE: DType](
         Returns:
             Derivatives [dtheta1, dtheta2, ddtheta1, ddtheta2]
         """
-        var m1 = self.link_mass_1
-        var m2 = self.link_mass_2
-        var l1 = self.link_length_1
-        var lc1 = self.link_com_pos_1
-        var lc2 = self.link_com_pos_2
-        var I1 = self.link_moi
-        var I2 = self.link_moi
-        var g = self.gravity
-
-        var theta1 = s[0]
-        var theta2 = s[1]
-        var dtheta1 = s[2]
-        var dtheta2 = s[3]
-
-        var cos_theta2 = cos(Float64(theta2))
-        var sin_theta2 = sin(Float64(theta2))
-        var cos_t1_t2_pi2 = cos(Float64(theta1 + theta2) - pi / 2.0)
-        var cos_t1_pi2 = cos(Float64(theta1) - pi / 2.0)
-
-        var d1 = (
-            m1 * lc1 * lc1
-            + m2
-            * (
-                l1 * l1
-                + lc2 * lc2
-                + Scalar[Self.dtype](2.0)
-                * l1
-                * lc2
-                * Scalar[Self.dtype](cos_theta2)
-            )
-            + I1
-            + I2
+        # Single-source dynamics (shared with the GPU kernel).
+        return acrobot_dsdt[Self.dtype](
+            s,
+            torque,
+            self.link_mass_1,
+            self.link_mass_2,
+            self.link_length_1,
+            self.link_com_pos_1,
+            self.link_com_pos_2,
+            self.link_moi,
+            self.link_moi,
+            self.gravity,
+            self.use_book_dynamics,
         )
-        var d2 = (
-            m2 * (lc2 * lc2 + l1 * lc2 * Scalar[Self.dtype](cos_theta2)) + I2
-        )
-
-        var phi2 = m2 * lc2 * g * Scalar[Self.dtype](cos_t1_t2_pi2)
-        var phi1 = (
-            -m2 * l1 * lc2 * dtheta2 * dtheta2 * Scalar[Self.dtype](sin_theta2)
-            - Scalar[Self.dtype](2.0)
-            * m2
-            * l1
-            * lc2
-            * dtheta2
-            * dtheta1
-            * Scalar[Self.dtype](sin_theta2)
-            + (m1 * lc1 + m2 * l1) * g * Scalar[Self.dtype](cos_t1_pi2)
-            + phi2
-        )
-
-        var ddtheta2: Scalar[Self.dtype]
-        if not self.use_book_dynamics:
-            # NIPS paper dynamics
-            ddtheta2 = (torque + d2 / d1 * phi1 - phi2) / (
-                m2 * lc2 * lc2 + I2 - d2 * d2 / d1
-            )
-        else:
-            # Book dynamics (includes extra term)
-            ddtheta2 = (
-                torque
-                + d2 / d1 * phi1
-                - m2
-                * l1
-                * lc2
-                * dtheta1
-                * dtheta1
-                * Scalar[Self.dtype](sin_theta2)
-                - phi2
-            ) / (m2 * lc2 * lc2 + I2 - d2 * d2 / d1)
-
-        var ddtheta1 = -(d2 * ddtheta2 + phi1) / d1
-
-        return SIMD[Self.dtype, 4](dtheta1, dtheta2, ddtheta1, ddtheta2)
 
     def _rk4_step(self, torque: Scalar[Self.dtype]) -> SIMD[Self.dtype, 4]:
         """Perform one RK4 integration step.
@@ -1088,66 +1108,21 @@ struct AcrobotEnv[DTYPE: DType](
 
         Returns derivative SIMD[dtheta1, dtheta2, ddtheta1, ddtheta2].
         """
-        var m1 = Scalar[gpu_dtype](ACR_LINK_MASS_1)
-        var m2 = Scalar[gpu_dtype](ACR_LINK_MASS_2)
-        var l1 = Scalar[gpu_dtype](ACR_LINK_LENGTH_1)
-        var lc1 = Scalar[gpu_dtype](ACR_LINK_COM_POS_1)
-        var lc2 = Scalar[gpu_dtype](ACR_LINK_COM_POS_2)
-        var I1 = Scalar[gpu_dtype](ACR_LINK_MOI)
-        var I2 = Scalar[gpu_dtype](ACR_LINK_MOI)
-        var g = Scalar[gpu_dtype](ACR_GRAVITY)
-
-        var theta1 = s[0]
-        var theta2 = s[1]
-        var dtheta1 = s[2]
-        var dtheta2 = s[3]
-
-        var cos_theta2 = cos(theta2)
-        var sin_theta2 = sin(theta2)
-        var pi_2 = Scalar[gpu_dtype](pi / 2.0)
-        var cos_t1_t2_pi2 = cos(theta1 + theta2 - pi_2)
-        var cos_t1_pi2 = cos(theta1 - pi_2)
-
-        var d1 = (
-            m1 * lc1 * lc1
-            + m2
-            * (
-                l1 * l1
-                + lc2 * lc2
-                + Scalar[gpu_dtype](2.0) * l1 * lc2 * cos_theta2
-            )
-            + I1
-            + I2
+        # Single-source dynamics (shared with the CPU `_dsdt`); book
+        # dynamics, comptime ACR_* constants.
+        return acrobot_dsdt[gpu_dtype](
+            s,
+            torque,
+            Scalar[gpu_dtype](ACR_LINK_MASS_1),
+            Scalar[gpu_dtype](ACR_LINK_MASS_2),
+            Scalar[gpu_dtype](ACR_LINK_LENGTH_1),
+            Scalar[gpu_dtype](ACR_LINK_COM_POS_1),
+            Scalar[gpu_dtype](ACR_LINK_COM_POS_2),
+            Scalar[gpu_dtype](ACR_LINK_MOI),
+            Scalar[gpu_dtype](ACR_LINK_MOI),
+            Scalar[gpu_dtype](ACR_GRAVITY),
+            True,
         )
-        var d2 = m2 * (lc2 * lc2 + l1 * lc2 * cos_theta2) + I2
-        var phi2 = m2 * lc2 * g * cos_t1_t2_pi2
-        var phi1 = (
-            -m2 * l1 * lc2 * dtheta2 * dtheta2 * sin_theta2
-            - Scalar[gpu_dtype](2.0)
-            * m2
-            * l1
-            * lc2
-            * dtheta2
-            * dtheta1
-            * sin_theta2
-            + (m1 * lc1 + m2 * l1) * g * cos_t1_pi2
-            + phi2
-        )
-        # Book dynamics
-        var ddtheta2 = (
-            torque
-            + d2 / d1 * phi1
-            - m2 * l1 * lc2 * dtheta1 * dtheta1 * sin_theta2
-            - phi2
-        ) / (m2 * lc2 * lc2 + I2 - d2 * d2 / d1)
-        var ddtheta1 = -(d2 * ddtheta2 + phi1) / d1
-
-        var out = SIMD[gpu_dtype, 4](0.0)
-        out[0] = dtheta1
-        out[1] = dtheta2
-        out[2] = ddtheta1
-        out[3] = ddtheta2
-        return out
 
     @staticmethod
     @always_inline
