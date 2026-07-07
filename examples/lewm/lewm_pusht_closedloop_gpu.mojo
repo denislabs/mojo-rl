@@ -9,7 +9,7 @@ CLS variant (docs/LEWM_REFERENCE_AUDIT.md):
      BN_WARMUP_STEPS training-mode forwards over dataset windows.
   3. PAPER CEM BUDGET 300×30 top-30.
 
-Loads `/tmp/lewm_pusht_paper_world_model.txt`. Heavy one-shot (per cycle:
+Loads `lewm_pusht_paper.ckpt`. Heavy one-shot (per cycle:
 2 encode forwards + CEM_ITERS·CEM_SAMPLES latent rollouts).
 Run (NVIDIA):
   pixi run -e nvidia mojo run -I . examples/lewm/lewm_pusht_closedloop_gpu.mojo
@@ -56,7 +56,7 @@ comptime PIX = T * IMG_DIM
 comptime ACTIN = T * ACT
 
 comptime MPC_HORIZON = 4          # NEEDED = H+horizon-1 = 6 = T (in-window max)
-comptime CKPT_PATH: String = "/tmp/lewm_pusht_paper_world_model.txt"
+comptime CKPT_PATH: String = "lewm_pusht_paper.ckpt"
 
 # control / planning budget — PAPER values (App D)
 comptime N_CYCLES = 25

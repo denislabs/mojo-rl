@@ -48,7 +48,7 @@ comptime FRAMESKIP = 5
 comptime IMG_DIM = IN_CH * IMG * IMG
 comptime PIX = T * IMG_DIM
 comptime ACTIN = T * ACT
-comptime CKPT_PATH: String = "/tmp/lewm_pusht_paper_world_model.txt"
+comptime CKPT_PATH: String = "lewm_pusht_paper.ckpt"
 
 comptime Trainer = LeWMTrainer[
     IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,

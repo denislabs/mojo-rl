@@ -72,7 +72,7 @@ comptime CKPT_EVERY: Int = 2000  # periodic v3 saves (atomic tmp+rename):
                                  # intermediate evals on the live ckpt
 comptime LAM: Scalar[DT] = 0.09
 comptime LR: Scalar[DT] = 1e-3
-comptime CKPT_PATH: String = "/tmp/lewm_pusht_paper_world_model.txt"
+comptime CKPT_PATH: String = "lewm_pusht_paper.ckpt"
 
 comptime Trainer = LeWMTrainer[
     IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,

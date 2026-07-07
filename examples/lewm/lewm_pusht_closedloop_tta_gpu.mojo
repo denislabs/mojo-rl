@@ -71,7 +71,7 @@ comptime IMG_DIM = IN_CH * IMG * IMG
 comptime PIX = T * IMG_DIM
 comptime ACTIN = T * ACT
 
-comptime CKPT_PATH: String = "/tmp/lewm_pusht_paper_world_model.txt"
+comptime CKPT_PATH: String = "lewm_pusht_paper.ckpt"
 
 # ── E1 protocol (plan §6) ─────────────────────────────────────────────
 # 40 cycles (paper runs 25 then extends to 30 to show adapt keeps improving
