@@ -182,6 +182,17 @@ struct ModelFields[
     def load_from_slab(mut self, flat: List[Scalar[Self.DTYPE]]):
         """Fill all record tensors from a flat model buffer (the output of
         the existing `copy_model_to_buffer` flattening)."""
+        # The legacy mesh serializers/readers compute their offsets AS IF
+        # NEXCLUDE == 0 (the model-slab tail grew without them being
+        # updated), while this loader uses the correct NEXCLUDE-aware
+        # offsets — so a slab-bridged NEXCLUDE>0 model with meshes would
+        # load garbage vertices (and legacy itself reads garbage there).
+        # No such model exists today; the constraint dies with this bridge
+        # at P6 (direct parser fill).
+        comptime assert not (Self.NEXCLUDE > 0 and Self.NMESH_VERTS > 0), (
+            "ModelFields.load_from_slab: NEXCLUDE>0 models with meshes are"
+            " not slab-bridgeable (legacy mesh offsets assume NEXCLUDE=0)"
+        )
         _block_in(
             self.bodies, flat, model_body_offset(0), Self.NBODY * MODEL_BODY_SIZE
         )

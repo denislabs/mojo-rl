@@ -49,6 +49,7 @@ from mojo_rl.physics3d.integrator.euler_integrator import EulerIntegrator
 from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
 from mojo_rl.physics3d.solver.pgs_solver import PGSSolver
 from mojo_rl.physics3d.collision.contact_detection import detect_contacts_gpu
+from mojo_rl.physics3d.collision.broadphase_sap import detect_contacts_sap_gpu
 from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
@@ -154,7 +155,11 @@ def _legacy_detect_kernel_a[
     var env = Int(block_idx.x)
     if env >= B_:
         return
-    detect_contacts_gpu[
+    # SAP, not O(N^2): humanoid NGEOM=18 >= SAP_THRESHOLD, so both the
+    # legacy production step kernel (detect_contacts_auto_gpu) and the
+    # fields integrators (detect_contacts_auto_fields) route it to SAP —
+    # the legacy reference must match.
+    detect_contacts_sap_gpu[
         DTYPE, NQ_A, NV_A, NBODY_A, NJOINT_A, MC_A, SS_A, MS_A, B_, NGEOM_A,
         NEQ_A, NTEN_A, NSITE_A,
     ](env, state, model)

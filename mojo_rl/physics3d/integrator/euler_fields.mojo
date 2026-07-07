@@ -42,7 +42,7 @@ from ..dynamics.ldl_fields import (
 from ..constraints.limits_fields import solve_limits_fields
 from ..constraints.contact_solve_fields import solve_contacts_fields
 from ..solver.newton_solve_fields import solve_newton_fields
-from ..collision.contact_detection_fields import detect_contacts_fields
+from ..collision.broadphase_sap_fields import detect_contacts_auto_fields
 from ..types import ConeType
 from ..dynamics.rne_fields import compute_bias_forces_rne_fields
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
@@ -574,7 +574,10 @@ struct EulerIntegratorFields[
             # Contact solve runs limits INSIDE (legacy PGS position: between
             # the normal and friction phases, PGS_ITERATIONS iterations) —
             # the standalone limits stage below is for CONTACTS=False only.
-            detect_contacts_fields[
+            # Auto broadphase = legacy production (SAP for NGEOM >= 16,
+            # O(N^2) otherwise; same routing as the legacy step kernel's
+            # detect_contacts_auto_gpu call).
+            detect_contacts_auto_fields[
                 target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                 Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
                 Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,

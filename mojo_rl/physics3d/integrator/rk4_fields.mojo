@@ -64,7 +64,7 @@ from ..types import ConeType
 from ..dynamics.rne_fields import compute_bias_forces_rne_fields
 from ..constraints.contact_solve_fields import solve_contacts_fields
 from ..solver.newton_solve_fields import solve_newton_fields
-from ..collision.contact_detection_fields import detect_contacts_fields
+from ..collision.broadphase_sap_fields import detect_contacts_auto_fields
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
 from ..fields import DataFields, ModelFields, DynamicsScratch, ContactScratch, Rk4Scratch
 from ..gpu.constants import (
@@ -680,7 +680,11 @@ struct RK4IntegratorFields[
             # stage kernel; corrects qacc_constrained before the next
             # stage's A[k] snapshot / the combine).
             comptime if CONTACTS:
-                detect_contacts_fields[
+                # Auto broadphase = legacy production (the legacy stage
+                # kernel calls detect_contacts_auto_gpu): SAP for
+                # NGEOM >= 16, O(N^2) otherwise — routing is bit-identical
+                # for every existing gate model (all NGEOM < 16).
+                detect_contacts_auto_fields[
                     target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
                     Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
                     Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
