@@ -40,9 +40,12 @@ from ..dynamics.ldl_fields import (
     _ldl_solve_env_fields,
 )
 from ..constraints.limits_fields import solve_limits_fields
+from ..constraints.contact_solve_fields import solve_contacts_fields
+from ..collision.contact_detection_fields import detect_contacts_fields
+from ..types import ConeType
 from ..dynamics.rne_fields import compute_bias_forces_rne_fields
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
-from ..fields import DataFields, ModelFields, DynamicsScratch
+from ..fields import DataFields, ModelFields, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
@@ -378,24 +381,32 @@ struct EulerIntegratorFields[
     NSITE: Int = 0,
     NEXCLUDE: Int = 0,
     NMESH_VERTS: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
     BATCH: Int = 1,
 ](Movable):
     """Owns its scratch; steps contact-free dynamics on either target. See
     module docstring for what is deliberately not yet ported."""
 
     var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
+    var cscratch: ContactScratch[
+        Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH
+    ]
 
     def __init__(out self) raises:
         self.scratch = DynamicsScratch[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ]()
+        self.cscratch = ContactScratch[
+            Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH
+        ]()
 
     def prepare_gpu(mut self, ctx: DeviceContext) raises:
         """Allocate device buffers for the scratch (once, before stepping)."""
         self.scratch.upload_all(ctx)
+        self.cscratch.upload_all(ctx)
 
     def step[
-        target: StaticString
+        target: StaticString, CONTACTS: Bool = True
     ](
         mut self,
         mut d: DataFields[
@@ -533,13 +544,32 @@ struct EulerIntegratorFields[
                 block_dim=(EU_TPB,),
             )
 
-        # Constraint seam: joint limits (P4 opener). Contacts / equality /
-        # tendons join here later, all updating scratch.qacc_constrained.
-        solve_limits_fields[
-            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
-            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
-            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
-        ](d, m, self.scratch, ctx)
+        # Constraint seam (order matches the legacy PGS solver): contact
+        # detection -> contact PGS -> joint limits, all updating
+        # scratch.qacc_constrained. Equality/tendons join here later.
+        comptime if CONTACTS:
+            # Contact solve runs limits INSIDE (legacy PGS position: between
+            # the normal and friction phases, PGS_ITERATIONS iterations) —
+            # the standalone limits stage below is for CONTACTS=False only.
+            detect_contacts_fields[
+                target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
+                Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
+                Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
+                Self.BATCH,
+            ](d, m, ctx)
+            solve_contacts_fields[
+                target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
+                Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
+                Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
+                Self.CONE_TYPE, Self.BATCH,
+            ](d, m, self.scratch, self.cscratch, ctx)
+        else:
+            solve_limits_fields[
+                target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
+                Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY,
+                Self.NTENDON, Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS,
+                Self.BATCH,
+            ](d, m, self.scratch, ctx)
 
         comptime if target == "cpu":
             var qpos_v3 = d.qpos.lt["cpu", L_QPOS]()

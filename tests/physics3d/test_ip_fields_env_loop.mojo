@@ -172,7 +172,7 @@ def main() raises:
 
     var integ = EulerIntegratorFields[
         DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, 0, 0,
-        BATCH,
+        BATCH=BATCH,
     ]()
     integ.prepare_gpu(ctx)
     var obs_t = TensorImpl[DTYPE].alloc(BATCH * OBS_DIM)
@@ -279,7 +279,7 @@ def main() raises:
         dc.qpos.data[e * NQ + 1] = Scalar[DTYPE](pole0[e])
     var integ_c = EulerIntegratorFields[
         DTYPE, NQ, NV, NBODY, NJOINT, MC, NGEOM, NEQ, NTEN, NSITE, 0, 0,
-        BATCH,
+        BATCH=BATCH,
     ]()
     var obs_c = TensorImpl[DTYPE].alloc(BATCH * OBS_DIM)
     for _ in range(N_CTRL_STEPS):

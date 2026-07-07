@@ -138,12 +138,12 @@ def main() raises:
 
     var integ = EulerIntegratorFields[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH,
+        0, 0, 0, 0, 0, BATCH=BATCH,
     ]()
     integ.prepare_gpu(ctx)
     var integ_c = EulerIntegratorFields[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-        0, 0, 0, 0, 0, BATCH,
+        0, 0, 0, 0, 0, BATCH=BATCH,
     ]()
 
     # dt for the legacy limits kernel (host-read from the flat model meta).
@@ -181,8 +181,8 @@ def main() raises:
             block_dim=(1,),
         )
         # Fields: stateful integrator step.
-        integ.step["gpu"](d, mf, ctx)
-        integ_c.step["cpu"](dc, mf)
+        integ.step["gpu", False](d, mf, ctx)  # CONTACTS=False: legacy side has no contact kernels
+        integ_c.step["cpu", False](dc, mf)
 
         # Compare fields-GPU vs legacy-GPU bit-exact.
         slab_t.download(ctx)

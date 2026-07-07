@@ -121,7 +121,7 @@ def _compare_vs_mujoco(
         d.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
     var integ = EulerIntegratorFields[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ, NTEN, NSITE,
-        0, 0, 1,
+        0, 0, BATCH=1,
     ]()
     for _ in range(num_steps):
         for i in range(NV):
@@ -233,7 +233,7 @@ def test_fields_euler_active_limits_vs_legacy_cpu() raises:
         d.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
     var integ = EulerIntegratorFields[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ, NTEN, NSITE,
-        0, 0, 1,
+        0, 0, BATCH=1,
     ]()
     for i in range(NQ):
         data.qpos[i] = Scalar[DTYPE](qpos_init[i])
