@@ -11,7 +11,7 @@ so there's NO mid-slab and NO extra kernel: forward/vjp delegate straight to
   OUT_DIM = SEQ_LEN * Inner.OUT_DIM
 """
 
-from std.gpu.host import DeviceContext
+from std.gpu.host import DeviceContext, DeviceBuffer
 
 from mojo_rl.nn.constants import DT
 from ..core.initializer import Initializer
@@ -45,6 +45,19 @@ struct Tokenwise[SEQ_LEN: Int, Inner: Module](Module):
         var t = Self()
         t.inner = Self.Inner.make[target, INIT](ctx)
         return t^
+
+    def set_attr[ATTR: StaticString](mut self, value: Scalar[DT]):
+        """Forward runtime attrs into the wrapped module. Without this the
+        `Module` trait's no-op default swallowed them here — BatchNorm
+        `training` never reached the LeWM encoder projector / PredProj BNs
+        (both live under a Tokenwise), so "eval-mode" planning forwards
+        kept updating the running stats."""
+        self.inner.set_attr[ATTR](value)
+
+    def set_attr_buf[ATTR: StaticString](mut self, buf: DeviceBuffer[DT]):
+        """Forward device-buffer attrs into the wrapped module (same
+        swallowed-default hazard as `set_attr`)."""
+        self.inner.set_attr_buf[ATTR](buf)
 
     def forward[
         target: StaticString, B: Int, o: MutOrigin, POLICY: AMPPolicy = NoAMP
