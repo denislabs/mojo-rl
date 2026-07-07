@@ -386,13 +386,17 @@ struct EulerIntegratorFields[
     BATCH: Int = 1,
     SOLVER: StaticString = "pgs",
     PARALLEL_GPU: Bool = False,
+    CRBA_TREEWALK: Bool = False,
 ](Movable):
     """Owns its scratch; steps contact-free dynamics on either target. See
     module docstring for what is deliberately not yet ported.
     PARALLEL_GPU=True: the GPU FK / body-velocity / cdof / CRBA /
     LDL-factor / M^-1 / RNE stages run their cooperative within-env (_mt)
     kernels (bit-exact vs serial; other stages stay serial). CPU ignores
-    it."""
+    it. CRBA_TREEWALK=True (requires PARALLEL_GPU): the GPU CRBA runs the
+    legacy-production tree-walk algorithm (O(NV·depth)) instead of the
+    dense one — float-tolerance-equal, NOT bit-exact vs dense. CPU stays
+    dense, like legacy."""
 
     var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
     var cscratch: ContactScratch[
@@ -400,6 +404,10 @@ struct EulerIntegratorFields[
     ]
 
     def __init__(out self) raises:
+        comptime assert Self.PARALLEL_GPU or (not Self.CRBA_TREEWALK), (
+            "EulerIntegratorFields: CRBA_TREEWALK requires PARALLEL_GPU (the"
+            " tree-walk CRBA is inherently cooperative)"
+        )
         self.scratch = DynamicsScratch[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ]()
@@ -468,6 +476,7 @@ struct EulerIntegratorFields[
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
             PARALLEL = Self.PARALLEL_GPU,
+            TREEWALK = Self.CRBA_TREEWALK,
         ](d, m, self.scratch, ctx)
 
         comptime L_JOINT = Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE)
