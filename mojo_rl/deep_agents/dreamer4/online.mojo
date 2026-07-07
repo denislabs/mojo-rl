@@ -495,6 +495,17 @@ def run_online_dreamer4[
     tok.set_mae_p(0.0, 0.0)  # FREEZE
     print("  tokenizer frozen (recon=", last_tok_loss, ")")
     logger.log_scalar(String("online/tok_recon_loss"), last_tok_loss, 0)
+    # Checkpoint right after tokenizer pretrain so the imagination-GIF example can
+    # eyeball RECON quality (the tokenizer autoencode) WITHOUT running any RL —
+    # the tokenizer is the gate: if RECON is noise, nothing downstream can work.
+    if save_ckpt != String(""):
+        comptime if DYN_TARGET == "gpu":
+            save_params["gpu"](tok, save_ckpt + ".tok.ckpt", dctx, False)
+        else:
+            save_params["cpu"](tok, save_ckpt + ".tok.ckpt", None, False)
+        agent.save(save_ckpt, dctx)
+        print("  [ckpt] post-tokenizer-pretrain checkpoint saved:", save_ckpt,
+              "(RECON is now GIF-able)")
 
     # ── Stage 2: online RL loop ─────────────────────────────────────────
     # rolling window of the last ≤T encoded obs frames (front-aligned) +

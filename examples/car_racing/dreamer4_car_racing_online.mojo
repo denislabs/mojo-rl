@@ -154,7 +154,15 @@ def main() raises:
     ](
         agent, tok, backbone, env, logger,
         warmup_steps=5_000,
-        tok_pretrain_steps=2_000,
+        tok_pretrain_steps=20_000,  # 2_000 was FAR too few — the tokenizer recon
+                                  # barely moved (0.26→0.23 masked-MSE ≈ RMSE 0.48)
+                                  # and its RECON was pure noise, so every latent
+                                  # downstream was meaningless (nothing could
+                                  # learn). The tokenizer is the GATE. With the
+                                  # SCALE=True positional fix it should learn far
+                                  # faster; watch the `[tok] .. recon=` curve and
+                                  # the post-pretrain RECON GIF — raise this (or
+                                  # tokenizer capacity) until RECON is sharp.
         total_env_steps=200_000,
         train_every=4,
         imag_every=8,
