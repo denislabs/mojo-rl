@@ -90,17 +90,30 @@ def _ensure_dataset_cached() raises -> String:
         _ = os.remove(PythonObject(tmp_path))
 
     print("  [lewm_pusht] no cache hit; streaming", _HF_FILE)
-    print("  [lewm_pusht] (~13 GB over HTTP, decompressing to ~15–25 GB on disk)")
+    print("  [lewm_pusht] (~13 GB over HTTP, decompressing to ~20–45 GB on disk)")
 
     var hf = Python.import_module("huggingface_hub")
     var zstandard = Python.import_module("zstandard")
     var builtins = Python.import_module("builtins")
     var time_mod = Python.import_module("time")
+    var gc = Python.import_module("gc")
 
     var fs = hf.HfFileSystem()
     var hf_uri = String("datasets/") + _HF_REPO + "/" + _HF_FILE
     var total = Int(py=fs.info(PythonObject(hf_uri))[PythonObject("size")])
     var f_out = builtins.open(PythonObject(tmp_path), PythonObject("wb"))
+    # Keep the multi-GB output OUT of the OS page cache: on macOS a big
+    # sequential write balloons "Cached Files" to all free RAM (looks like
+    # the whole file is loaded in memory; the process itself streams at a
+    # flat few hundred MB). F_NOCACHE bypasses the unified buffer cache;
+    # on Linux the periodic fsync+fadvise(DONTNEED) below does the same.
+    try:
+        var fcntl_mod = Python.import_module("fcntl")
+        _ = fcntl_mod.fcntl(
+            f_out.fileno(), fcntl_mod.F_NOCACHE, PythonObject(1)
+        )
+    except nocache_err:
+        _ = nocache_err  # non-macOS: the fsync+fadvise path covers it
     # Manual chunk loop instead of `copy_stream`: gives (a) an in-place
     # progress bar over the compressed byte count, and (b) resume — on a
     # network error we reopen, seek(2) back to the exact compressed offset
@@ -113,6 +126,7 @@ def _ensure_dataset_cached() raises -> String:
     var f_in = fs.open(PythonObject(hf_uri), PythonObject("rb"))
     var offset = 0
     var retries = 0
+    var n_chunks = 0
     var t0 = Float64(py=time_mod.monotonic())
     while offset < total:
         var chunk = PythonObject(None)
@@ -155,6 +169,22 @@ def _ensure_dataset_cached() raises -> String:
             break
         offset += n
         _ = f_out.write(dobj.decompress(chunk))
+        n_chunks += 1
+        if n_chunks % 32 == 0:  # every ~512 MB compressed
+            # Push dirty pages to disk and (Linux) drop them from the
+            # page cache; plus a GC sweep for Python-side garbage.
+            _ = f_out.flush()
+            _ = os.fsync(f_out.fileno())
+            try:
+                _ = os.posix_fadvise(
+                    f_out.fileno(),
+                    PythonObject(0),
+                    PythonObject(0),
+                    os.POSIX_FADV_DONTNEED,
+                )
+            except fadv_err:
+                _ = fadv_err  # macOS: no posix_fadvise; F_NOCACHE covers it
+            _ = gc.collect()
         print_bytes_progress(
             "  [lewm_pusht]",
             offset,
