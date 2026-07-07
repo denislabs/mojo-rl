@@ -7,14 +7,12 @@ imagined trajectory of agent states s_t = h_t:
 
   • Value head (eq. 10) — TD-λ. Compute the λ-return from the imagined rewards
     and values, then a symexp-twohot cross-entropy of the value logits against
-    sg(R_t^λ). Dreamer 4's reward/continue heads are trained (`bc_loss`) against
-    the raw buffer arrays, which use the gym "reward-with-action" (LEAVING)
-    convention — rew[t]/done[t] belong to the transition a_t : s_t → s_{t+1} —
-    so the immediate reward/continue of state t sit at index t (see
-    `lambda_returns` for the full note; this is where Dreamer 4 legitimately
-    differs from DreamerV3's t+1 indexing, which shifts its reward head onto the
-    arriving obs instead):
-        R_t^λ = r_t + γ c_t [ (1−λ) v_{t+1} + λ R_{t+1}^λ ],   R_{H−1}^λ = v_{H−1}
+    sg(R_t^λ). Dreamer 4 trains the reward/continue heads on the ARRIVING reward
+    via the shift in `agent.mojo` bc_train_step (rew_shift[f]=rewards[f−1], action
+    token at f = a_{f−1}), so reward_head(h_t) = reward arriving at state t and
+    the λ-return indexes rew/con at t+1 (see `lambda_returns` for the decisive
+    imagination-rollout argument; matches jax train_policy.py + DreamerV3):
+        R_t^λ = r_{t+1} + γ c_{t+1} [ (1−λ) v_{t+1} + λ R_{t+1}^λ ],  R_{H−1}^λ = v_{H−1}
         L_value = Σ_t  twohot_ce( v_logits_t , sg(R_t^λ) )
 
   • Policy head (eq. 11) — PMPO. A *robust* objective that uses only the SIGN
@@ -115,26 +113,27 @@ from ..dreamerv3.dists_discrete import (
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# λ-returns (eq. 10) — "leaving"-convention recurrence.
+# λ-returns (eq. 10) — ARRIVING-convention recurrence (rew/con at t+1).
 #
-# CONVENTION (differs from DreamerV3's index-t+1 recurrence — see below):
-# Dreamer 4's reward/continue heads are trained by `bc_loss` against the raw
-# buffer arrays: reward_head(h_t) → rewards[t], continue_head(h_t) → 1−done[t].
-# The online buffer records `add_step(obs_t, a_t, done_t, r_t)`, so rewards[t]
-# and done[t] are the reward and termination of the transition LEAVING state t
-# (a_t : s_t → s_{t+1}) — the gym "reward-with-action" convention. Hence the
-# immediate reward/continue of state t are at index t (NOT t+1):
-#     R_t = rew[t] + con[t]·[ (1−λ)·val[t+1] + λ·R_{t+1} ],   R_{H−1} = v_{H−1}
-# with con[t] = γ·(1−done[t]) — the discount on the FUTURE (val[t+1], R_{t+1}),
-# never on the immediate reward.
+#     R_t = rew[t+1] + con[t+1]·[ (1−λ)·val[t+1] + λ·R_{t+1} ],  R_{H−1} = v_{H−1}
 #
-# DreamerV3 uses `rew[t+1]`/`con[t+1]` because ITS training batch SHIFTS the
-# reward head onto the ARRIVING observation (`blocks.WMStep`: state←obs[t+1],
-# reward target←rew[t]), so its reward head learns the "arriving" convention.
-# Dreamer 4 applies no such shift, so mirroring DreamerV3's t+1 indexing here
-# was an off-by-one: it dropped each state's own reward and misattributed
-# sparse reward credit one step (breaking imagination RL on reward-bearing
-# envs). rew/val/con are [B,H]; returns are produced for t ∈ [0, H−1).
+# CONVENTION — why t+1 (do NOT "fix" this to t): Dreamer 4 trains the heads on
+# the ARRIVING reward via an explicit SHIFT in `bc_train_step` (`agent.mojo`
+# ~L765-776): rew_shift[f] = rewards[f−1] and the action token at frame f =
+# one_hot(actions[f−1]) (the action leading INTO frame f); frame 0 is a dummy
+# (0 reward, no in-window action). So reward_head(h_t) predicts the reward that
+# ARRIVED at state t (from a_{t−1}), and h_t "contains" that action — matching
+# the jax reference (train_bc_rew_heads.py: "predict r_t from h_t which contains
+# a_t") and DreamerV3's obs[t+1]/rew[t] WMStep shift.
+#
+# Decisive, convention-independent check in imagination: `imag_rollout` samples
+# a'_i from h_i and writes it as the action token of frame i+1, and sets
+# out_rew[i]=reward_head(h_i). Hence out_rew[t+1] is the reward for the action
+# out_act[t] sampled at state t — so the λ-return that credits out_act[t]
+# (advantage A_t = R_t − val[t]) MUST use rew[t+1]/con[t+1]. Using rew[t] credits
+# the PREVIOUS action's reward to the current action (a one-step misattribution,
+# catastrophic on sparse-reward envs). Validated vs jax train_policy.py:1409-1424.
+# rew/val/con are [B,H]; returns are produced for t ∈ [0, H−1).
 # ─────────────────────────────────────────────────────────────────────────
 @always_inline
 def lambda_returns[
@@ -144,9 +143,9 @@ def lambda_returns[
     con_o: Origin[mut=True],
     out_ret_o: Origin[mut=True],
 ](
-    rew: UnsafePointer[Scalar[DT], rew_o],   # [B,H]  reward LEAVING state t
+    rew: UnsafePointer[Scalar[DT], rew_o],   # [B,H]  reward ARRIVING at state t
     val: UnsafePointer[Scalar[DT], val_o],   # [B,H]
-    con: UnsafePointer[Scalar[DT], con_o],   # [B,H]  = γ·(1−done[t]) LEAVING t
+    con: UnsafePointer[Scalar[DT], con_o],   # [B,H]  = γ·(1−done) ARRIVING at t
     lam: Scalar[DT],
     out_ret: UnsafePointer[Scalar[DT], out_ret_o],  # OUT [B,H-1]
 ):
@@ -156,9 +155,9 @@ def lambda_returns[
         var ret_next = val[b * H + (H - 1)]            # R_{H-1}^λ = v_{H-1}
         var t = H - 2
         while t >= 0:
-            var live = con[b * H + t]                  # γ·(1−done)_t (LEAVING t)
+            var live = con[b * H + t + 1]              # γ·(1−done)_{t+1}
             var interm = (
-                rew[b * H + t]                         # immediate reward LEAVING t
+                rew[b * H + t + 1]                     # reward for a'_t (arrives t+1)
                 + (Scalar[DT](1.0) - lam) * live * val[b * H + t + 1]
             )
             var cur = interm + live * lam * ret_next

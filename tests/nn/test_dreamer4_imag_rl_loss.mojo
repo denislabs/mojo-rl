@@ -63,15 +63,15 @@ def test_lambda_returns() raises:
 
     lambda_returns[B, H](rew, val, con, Scalar[DT](LAM), ret)
 
-    # hand recurrence ("leaving" convention — rew/con of state t are at index t;
-    # the discount rides the FUTURE only):
-    #   R_{H-1}=v_{H-1};  R_t = r_t + live·[(1-λ)v_{t+1} + λ R_{t+1}]
+    # hand recurrence ("arriving" convention — rew/con at t+1; heads trained on
+    # the shifted arriving reward, so out_rew[t+1] is the reward for out_act[t]):
+    #   R_{H-1}=v_{H-1};  R_t = r_{t+1} + live·[(1-λ)v_{t+1} + λ R_{t+1}]
     var rn = vals[3]
     var expected: InlineArray[Float64, 3] = [0.0, 0.0, 0.0]
     var t2 = H - 2
     while t2 >= 0:
         var live = GAMMA
-        var interm = rews[t2] + (1.0 - LAM) * live * vals[t2 + 1]
+        var interm = rews[t2 + 1] + (1.0 - LAM) * live * vals[t2 + 1]
         var cur = interm + live * LAM * rn
         expected[t2] = cur
         rn = cur
