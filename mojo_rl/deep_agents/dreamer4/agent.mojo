@@ -42,7 +42,6 @@ from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.core.walkers import join_name
 from mojo_rl.nn.core.checkpoint import (
-    save_params, load_params,
     BinaryCheckpointWriter, BinaryCheckpointReader,
     _write_file_bytes, _read_file_bytes,
 )
@@ -345,39 +344,72 @@ struct Dreamer4Agent[
         self.ch.zero_grad[target](ctx)
 
     # ── checkpoint (params only; the frozen ph_prior + Adam moments are not
-    #    saved). One file per submodule (`<base>.<name>.ckpt`) so the mixed
-    #    DYN_TARGET (dyn on device, heads/te on host) is handled per-module and
-    #    no multi-field borrow is needed. `dctx` is required when DYN_TARGET="gpu"
-    #    (to D2H the device `dyn` params). Mirror load order in `load`. ──
-    def save(mut self, base: String, dctx: Optional[DeviceContext] = None) raises:
-        comptime if Self.DYN_TARGET == "gpu":
-            save_params["gpu"](self.dyn, base + ".dyn.ckpt", dctx, False)
-        else:
-            save_params["cpu"](self.dyn, base + ".dyn.ckpt", None, False)
-        # te is a bespoke non-Module (no for_each_state) → param-only save.
-        var tew = BinaryCheckpointWriter(False)
-        tew.mode = 0
-        self.te.for_each_param["cpu"](tew, None)
-        _write_file_bytes(base + ".te.ckpt", tew.content)
-        save_params["cpu"](self.ph, base + ".ph.ckpt", None, False)
-        save_params["cpu"](self.rh, base + ".rh.ckpt", None, False)
-        save_params["cpu"](self.vh, base + ".vh.ckpt", None, False)
-        save_params["cpu"](self.ch, base + ".ch.ckpt", None, False)
+    #    saved). ONE combined file `<base>.ckpt` holding the tokenizer + agent
+    #    (dyn, te, ph, rh, vh, ch) as consecutive name-validated sections (the
+    #    save_params_multi format, but with PER-MODULE targets so the mixed
+    #    DYN_TARGET — tok+dyn on device, heads/te on host — round-trips through
+    #    one writer). `load` walks the SAME modules in the SAME order. `dctx`
+    #    required when DYN_TARGET="gpu" (D2H/H2D the device tok+dyn params). te is
+    #    a bespoke non-Module → param-only section (no for_each_state). ──
+    @staticmethod
+    def _wsec[M: Module, tgt: StaticString](
+        mut w: BinaryCheckpointWriter, mut m: M, ctx: Optional[DeviceContext]
+    ) raises:
+        w.mode = 0
+        m.for_each_param[tgt](w, ctx)
+        w.mode = 1
+        m.for_each_state[tgt](w, ctx)
 
-    def load(mut self, base: String, dctx: Optional[DeviceContext] = None) raises:
+    @staticmethod
+    def _rsec[M: Module, tgt: StaticString](
+        mut r: BinaryCheckpointReader, mut m: M, ctx: Optional[DeviceContext]
+    ) raises:
+        r.mode = 0
+        m.for_each_param[tgt](r, ctx)
+        r.mode = 1
+        m.for_each_state[tgt](r, ctx)
+
+    def save[
+        TOK: Module
+    ](
+        mut self, mut tok: TOK, base: String,
+        dctx: Optional[DeviceContext] = None,
+    ) raises:
+        var w = BinaryCheckpointWriter(False)
         comptime if Self.DYN_TARGET == "gpu":
-            load_params["gpu"](self.dyn, base + ".dyn.ckpt", dctx)
+            Self._wsec[TOK, "gpu"](w, tok, dctx)
+            Self._wsec[Self.DYN, "gpu"](w, self.dyn, dctx)
         else:
-            load_params["cpu"](self.dyn, base + ".dyn.ckpt", None)
-        # te is a bespoke non-Module (no for_each_state) → param-only load.
-        var teb = _read_file_bytes(base + ".te.ckpt")
-        var ter = BinaryCheckpointReader(teb^)
-        ter.mode = 0
-        self.te.for_each_param["cpu"](ter, None)
-        load_params["cpu"](self.ph, base + ".ph.ckpt", None)
-        load_params["cpu"](self.rh, base + ".rh.ckpt", None)
-        load_params["cpu"](self.vh, base + ".vh.ckpt", None)
-        load_params["cpu"](self.ch, base + ".ch.ckpt", None)
+            Self._wsec[TOK, "cpu"](w, tok, None)
+            Self._wsec[Self.DYN, "cpu"](w, self.dyn, None)
+        w.mode = 0                          # te: param-only (no state section)
+        self.te.for_each_param["cpu"](w, None)
+        Self._wsec[Self.PH, "cpu"](w, self.ph, None)
+        Self._wsec[Self.RH, "cpu"](w, self.rh, None)
+        Self._wsec[Self.VH, "cpu"](w, self.vh, None)
+        Self._wsec[Self.CH, "cpu"](w, self.ch, None)
+        _write_file_bytes(base + ".ckpt", w.content)
+
+    def load[
+        TOK: Module
+    ](
+        mut self, mut tok: TOK, base: String,
+        dctx: Optional[DeviceContext] = None,
+    ) raises:
+        var bytes = _read_file_bytes(base + ".ckpt")
+        var r = BinaryCheckpointReader(bytes^)
+        comptime if Self.DYN_TARGET == "gpu":
+            Self._rsec[TOK, "gpu"](r, tok, dctx)
+            Self._rsec[Self.DYN, "gpu"](r, self.dyn, dctx)
+        else:
+            Self._rsec[TOK, "cpu"](r, tok, None)
+            Self._rsec[Self.DYN, "cpu"](r, self.dyn, None)
+        r.mode = 0                          # te: param-only
+        self.te.for_each_param["cpu"](r, None)
+        Self._rsec[Self.PH, "cpu"](r, self.ph, None)
+        Self._rsec[Self.RH, "cpu"](r, self.rh, None)
+        Self._rsec[Self.VH, "cpu"](r, self.vh, None)
+        Self._rsec[Self.CH, "cpu"](r, self.ch, None)
 
     # ── storage-module call bridges (List host scratch ↔ boundary Tensor) ──
     # @staticmethod so the caller can pass three DISTINCT fields of `self`

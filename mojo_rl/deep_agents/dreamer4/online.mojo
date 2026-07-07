@@ -50,7 +50,7 @@ from .imag_rl_loss import continue_bce_backward
 from .shortcut_loss import _mao, _ilog2
 from ..dreamerv3.twohot import symexp_twohot_bins
 from ...nn.models.cifar_feature_net import CifarBackbone
-from mojo_rl.nn.core.checkpoint import save_params
+from std.python import Python, PythonObject
 
 
 struct OnlineRng(Copyable, Movable):
@@ -412,11 +412,25 @@ def run_online_dreamer4[
                 cur[i] = nxt[i]
     logger.log_scalar(String("online/warmup_frames"), Float64(buf.count()), 0)
 
-    # ── Stage 1: tokenizer pretrain → freeze ────────────────────────────
-    print("[dreamer4-online] Stage 1: tokenizer pretrain —",
-          tok_pretrain_steps, "steps (perc_weight=", perc_weight, ")")
+    # ── Stage 1: tokenizer pretrain → freeze (OR reuse a checkpoint) ─────
+    # If `save_ckpt`.ckpt already exists, LOAD it (tok + agent) and SKIP the
+    # pretrain loop — so you pretrain the (expensive) tokenizer ONCE, then iterate
+    # on the RL downstream by re-running against the same checkpoint. Delete the
+    # file (or point save_ckpt elsewhere) to force a fresh pretrain.
+    var reused = False
+    if save_ckpt != String(""):
+        var pyos = Python.import_module("os")
+        if Bool(pyos.path.exists(PythonObject(save_ckpt + ".ckpt"))):
+            print("[dreamer4-online] reusing checkpoint (skip tokenizer",
+                  "pretrain):", save_ckpt + ".ckpt")
+            agent.load(tok, save_ckpt, dctx)
+            tok.set_mae_p(0.0, 0.0)   # frozen: MAE masking off
+            reused = True
     var last_tok_loss: Float64 = 0.0
-    for s in range(tok_pretrain_steps):
+    if not reused:
+        print("[dreamer4-online] Stage 1: tokenizer pretrain —",
+              tok_pretrain_steps, "steps (perc_weight=", perc_weight, ")")
+    for s in range(0 if reused else tok_pretrain_steps):
         buf.sample_reward_window_batch[B, T](
             pix.data.unsafe_ptr(), act_oh.data.unsafe_ptr(),
             rew.data.unsafe_ptr(), done_b.data.unsafe_ptr(),
@@ -492,20 +506,18 @@ def run_online_dreamer4[
         tok.advance_rng()
         if s % 10 == 0:
             print("  [tok]", s, "/", tok_pretrain_steps, " recon=", last_tok_loss)
-    tok.set_mae_p(0.0, 0.0)  # FREEZE
-    print("  tokenizer frozen (recon=", last_tok_loss, ")")
-    logger.log_scalar(String("online/tok_recon_loss"), last_tok_loss, 0)
-    # Checkpoint right after tokenizer pretrain so the imagination-GIF example can
-    # eyeball RECON quality (the tokenizer autoencode) WITHOUT running any RL —
-    # the tokenizer is the gate: if RECON is noise, nothing downstream can work.
-    if save_ckpt != String(""):
-        comptime if DYN_TARGET == "gpu":
-            save_params["gpu"](tok, save_ckpt + ".tok.ckpt", dctx, False)
-        else:
-            save_params["cpu"](tok, save_ckpt + ".tok.ckpt", None, False)
-        agent.save(save_ckpt, dctx)
-        print("  [ckpt] post-tokenizer-pretrain checkpoint saved:", save_ckpt,
-              "(RECON is now GIF-able)")
+    if not reused:
+        tok.set_mae_p(0.0, 0.0)  # FREEZE
+        print("  tokenizer frozen (recon=", last_tok_loss, ")")
+        logger.log_scalar(String("online/tok_recon_loss"), last_tok_loss, 0)
+        # Checkpoint right after tokenizer pretrain so the imagination-GIF example
+        # can eyeball RECON quality (the tokenizer autoencode) WITHOUT running any
+        # RL — the tokenizer is the gate: if RECON is noise, nothing downstream
+        # can work. This is also the file a later run reuses to skip pretraining.
+        if save_ckpt != String(""):
+            agent.save(tok, save_ckpt, dctx)
+            print("  [ckpt] post-tokenizer-pretrain checkpoint saved:",
+                  save_ckpt + ".ckpt", "(RECON is now GIF-able)")
 
     # ── Stage 2: online RL loop ─────────────────────────────────────────
     # rolling window of the last ≤T encoded obs frames (front-aligned) +
@@ -808,12 +820,8 @@ def run_online_dreamer4[
                 logger.log_scalar(String("online/eval_return"),
                                   last_eval_return, step)
             if save_ckpt != String(""):
-                comptime if DYN_TARGET == "gpu":
-                    save_params["gpu"](tok, save_ckpt + ".tok.ckpt", dctx, False)
-                else:
-                    save_params["cpu"](tok, save_ckpt + ".tok.ckpt", None, False)
-                agent.save(save_ckpt, dctx)
-                print("  [ckpt] saved", save_ckpt, "* at step", step)
+                agent.save(tok, save_ckpt, dctx)
+                print("  [ckpt] saved", save_ckpt + ".ckpt", "at step", step)
             # resume training on a fresh episode (eval consumed the env)
             var rob = env.reset_obs_list()
             for i in range(IMG_DIM):
@@ -823,12 +831,8 @@ def run_online_dreamer4[
             ep_ret = 0.0
 
     if save_ckpt != String(""):
-        comptime if DYN_TARGET == "gpu":
-            save_params["gpu"](tok, save_ckpt + ".tok.ckpt", dctx, False)
-        else:
-            save_params["cpu"](tok, save_ckpt + ".tok.ckpt", None, False)
-        agent.save(save_ckpt, dctx)
-        print("  [ckpt] final checkpoint saved:", save_ckpt)
+        agent.save(tok, save_ckpt, dctx)
+        print("  [ckpt] final checkpoint saved:", save_ckpt + ".ckpt")
 
     logger.flush()
     _ = did_imag

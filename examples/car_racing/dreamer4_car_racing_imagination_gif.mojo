@@ -47,7 +47,6 @@ from mojo_rl.nn.constants import DT
 from mojo_rl.nn.core.initializer import Xavier
 from mojo_rl.nn.core.tensor import Tensor
 from mojo_rl.nn.core.tensor_refs import TensorRefs
-from mojo_rl.nn.core.checkpoint import load_params
 
 from mojo_rl.deep_agents.dreamer4.agent import Dreamer4Agent
 from mojo_rl.deep_agents.dreamer4.tokenizer import Dreamer4Tokenizer
@@ -156,9 +155,8 @@ def main() raises:
         # ── build + load ────────────────────────────────────────────────
         var agent = Ag.make["cpu", Xavier](dctx)
         var tok = Tok.make["gpu", Xavier](dctx)
-        print("loading checkpoint base", CKPT_BASE, "...")
-        load_params["gpu"](tok, String(CKPT_BASE) + ".tok.ckpt", dctx)
-        agent.load(String(CKPT_BASE), dctx)
+        print("loading checkpoint", String(CKPT_BASE) + ".ckpt", "...")
+        agent.load(tok, String(CKPT_BASE), dctx)   # one combined file (tok + agent)
         tok.set_mae_p(0.0, 0.0)   # DISABLE MAE masking for clean recon/encode
         print("loaded.")
 
