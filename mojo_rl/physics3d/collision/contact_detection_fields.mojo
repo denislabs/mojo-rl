@@ -6,10 +6,11 @@ Per-field port of `_geom_world_pos_gpu` + `detect_contacts_gpu`
 writes packed contact records into `d.contacts` and the contact count into
 `d.meta` (META_IDX_NUM_CONTACTS).
 
-Operands (8): xpos, xquat (data) + geoms, bodies, mmeta, excludes (model)
-+ contacts, smeta (data outputs). Mesh collision (GJK/EPA + plane-mesh
-vertex scans) is NOT ported: the dispatcher gates on NMESH_VERTS == 0 and
-mesh branches degrade to `continue`."""
+Operands (10): xpos, xquat (data) + geoms, bodies, mmeta, excludes,
+mesh_meta, mesh_verts (model) + contacts, smeta (data outputs). Mesh
+collision (plane-mesh vertex scans + GJK/EPA fallback via gjk_fields) is
+compiled in only when NMESH_VERTS > 0; zero-mesh models keep today's
+branch structure (mesh branches degrade to `continue`)."""
 
 from std.gpu import thread_idx, block_idx, block_dim
 from std.gpu.host import DeviceContext
@@ -74,6 +75,9 @@ from ..gpu.constants import (
     GEOM_IDX_FRICTION_ROLL,
     GEOM_IDX_RBOUND,
     GEOM_IDX_MARGIN,
+    GEOM_IDX_MESH_ID,
+    MAX_GPU_MESHES,
+    MODEL_MESH_META_SIZE,
 )
 from .collision_primitives import (
     sphere_sphere,
@@ -89,6 +93,7 @@ from .collision_primitives import (
     cylinder_cylinder,
     cylinder_box,
 )
+from .gjk_fields import gjk_epa_fields
 
 comptime CD_TPB: Int = 64
 
@@ -173,6 +178,98 @@ def _geom_world_pos_fields[
 
 
 @always_inline
+def _plane_mesh_contacts_fields[
+    DTYPE: DType,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+    NMESH_VERTS: Int,
+    BATCH: Int,
+](
+    env: Int,
+    g: Int,
+    g_body: Int,
+    p_x: Scalar[DTYPE],
+    p_y: Scalar[DTYPE],
+    p_z: Scalar[DTYPE],
+    q_x: Scalar[DTYPE],
+    q_y: Scalar[DTYPE],
+    q_z: Scalar[DTYPE],
+    q_w: Scalar[DTYPE],
+    ground_z: Scalar[DTYPE],
+    contact_margin: Scalar[DTYPE],
+    contact_friction: Scalar[DTYPE],
+    contact_friction_spin: Scalar[DTYPE],
+    contact_friction_roll: Scalar[DTYPE],
+    contact_condim: Int,
+    geoms: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
+    ],
+    mesh_meta: LayoutTensor[
+        DTYPE,
+        Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE),
+        MutAnyOrigin,
+    ],
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    mut num_contacts: Int,
+):
+    """Plane-mesh: scan hull vertices below plane (verbatim from the
+    detect_contacts_gpu plane-mesh branches; both i/j orientations reduce to
+    this after substituting the mesh geom's pose)."""
+    var m_id = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_MESH_ID]))
+    if m_id >= 0:
+        var pm_vadr = Int(rebind[Scalar[DTYPE]](mesh_meta[m_id, 0]))
+        var pm_vnum = Int(rebind[Scalar[DTYPE]](mesh_meta[m_id, 1]))
+        for vi in range(pm_vnum):
+            if num_contacts >= MAX_CONTACTS:
+                break
+            var vx = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 0])
+            var vy = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 1])
+            var vz = rebind[Scalar[DTYPE]](mesh_verts[pm_vadr + vi, 2])
+            var local_pt = gpu_quat_rotate(q_x, q_y, q_z, q_w, vx, vy, vz)
+            var wx = p_x + local_pt[0]
+            var wy = p_y + local_pt[1]
+            var wz = p_z + local_pt[2]
+            var dist_v = wz - ground_z
+            if dist_v < contact_margin:
+                var c_off = num_contacts * CONTACT_SIZE
+                contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                    g_body
+                )
+                contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](0)
+                contacts[env, c_off + CONTACT_IDX_POS_X] = wx
+                contacts[env, c_off + CONTACT_IDX_POS_Y] = wy
+                contacts[
+                    env, c_off + CONTACT_IDX_POS_Z
+                ] = ground_z + dist_v * Scalar[DTYPE](0.5)
+                contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                contacts[env, c_off + CONTACT_IDX_DIST] = dist_v
+                contacts[
+                    env, c_off + CONTACT_IDX_INCLUDEMARGIN
+                ] = contact_margin
+                contacts[
+                    env, c_off + CONTACT_IDX_FRICTION
+                ] = contact_friction
+                contacts[
+                    env, c_off + CONTACT_IDX_FRICTION_SPIN
+                ] = contact_friction_spin
+                contacts[
+                    env, c_off + CONTACT_IDX_FRICTION_ROLL
+                ] = contact_friction_roll
+                contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                    contact_condim
+                )
+                num_contacts += 1
+
+
+@always_inline
 def _detect_contacts_env_fields[
     DTYPE: DType,
     NQ: Int,
@@ -182,6 +279,7 @@ def _detect_contacts_env_fields[
     MAX_CONTACTS: Int,
     NGEOM: Int,
     NEXCLUDE: Int,
+    NMESH_VERTS: Int,
     BATCH: Int,
 ](
     env: Int,
@@ -203,6 +301,14 @@ def _detect_contacts_env_fields[
     excludes: LayoutTensor[
         DTYPE, Layout.row_major(NEXCLUDE, 2), MutAnyOrigin
     ],
+    mesh_meta: LayoutTensor[
+        DTYPE,
+        Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE),
+        MutAnyOrigin,
+    ],
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
     contacts: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
         MutAnyOrigin,
@@ -212,7 +318,7 @@ def _detect_contacts_env_fields[
     ],
 ):
     """Unified contact detection for one env (verbatim from
-    detect_contacts_gpu; mesh branches degrade to `continue`)."""
+    detect_contacts_gpu; mesh branches compiled in iff NMESH_VERTS > 0)."""
     var num_contacts = 0
 
     for gi in range(NGEOM):
@@ -677,7 +783,33 @@ def _detect_contacts_env_fields[
                         ](contact_condim)
                         num_contacts += 1
                 elif gj_type == GEOM_MESH:
-                    continue  # mesh collision not ported (guarded at dispatcher)
+                    # Plane-mesh: scan hull vertices below plane
+                    comptime if NMESH_VERTS > 0:
+                        _plane_mesh_contacts_fields[
+                            DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH
+                        ](
+                            env,
+                            gj,
+                            gj_body,
+                            pj_x,
+                            pj_y,
+                            pj_z,
+                            qj_x,
+                            qj_y,
+                            qj_z,
+                            qj_w,
+                            ground_z,
+                            contact_margin,
+                            contact_friction,
+                            contact_friction_spin,
+                            contact_friction_roll,
+                            contact_condim,
+                            geoms,
+                            mesh_meta,
+                            mesh_verts,
+                            contacts,
+                            num_contacts,
+                        )
                 continue
 
             if gj_type == GEOM_PLANE:
@@ -938,7 +1070,32 @@ def _detect_contacts_env_fields[
                         ](contact_condim)
                         num_contacts += 1
                 elif gi_type == GEOM_MESH:
-                    continue  # mesh collision not ported (guarded at dispatcher)
+                    comptime if NMESH_VERTS > 0:
+                        _plane_mesh_contacts_fields[
+                            DTYPE, MAX_CONTACTS, NGEOM, NMESH_VERTS, BATCH
+                        ](
+                            env,
+                            gi,
+                            gi_body,
+                            pi_x,
+                            pi_y,
+                            pi_z,
+                            qi_x,
+                            qi_y,
+                            qi_z,
+                            qi_w,
+                            ground_z,
+                            contact_margin,
+                            contact_friction,
+                            contact_friction_spin,
+                            contact_friction_roll,
+                            contact_condim,
+                            geoms,
+                            mesh_meta,
+                            mesh_verts,
+                            contacts,
+                            num_contacts,
+                        )
                 continue
 
             # --- Non-plane geom pair ---
@@ -1294,7 +1451,46 @@ def _detect_contacts_env_fields[
 
             # GJK/EPA fallback for any pair involving a mesh geom
             elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
-                continue  # mesh collision not ported (guarded at dispatcher)
+                comptime if NMESH_VERTS > 0:
+                    # Read mesh IDs from geom data
+                    var mi_id = Int(
+                        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MESH_ID])
+                    )
+                    var mj_id = Int(
+                        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MESH_ID])
+                    )
+                    # Resolve mesh vertex ranges from mesh_meta records
+                    var va1 = 0
+                    var mnv1 = 0
+                    if mi_id >= 0:
+                        va1 = Int(rebind[Scalar[DTYPE]](mesh_meta[mi_id, 0]))
+                        mnv1 = Int(rebind[Scalar[DTYPE]](mesh_meta[mi_id, 1]))
+                    var va2 = 0
+                    var mnv2 = 0
+                    if mj_id >= 0:
+                        va2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 0]))
+                        mnv2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 1]))
+                    var result = gjk_epa_fields[DTYPE, NMESH_VERTS](
+                        gi_type,
+                        pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                        ri, hli, hxi, hyi, hzi,
+                        mesh_verts, va1, mnv1,
+                        gj_type,
+                        pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                        rj, hlj, hxj, hyj, hzj,
+                        va2, mnv2,
+                    )
+                    dist = result[0]
+                    cx = result[1]
+                    cy = result[2]
+                    cz = result[3]
+                    nx = result[4]
+                    ny = result[5]
+                    nz = result[6]
+                    body_a = gi_body
+                    body_b = gj_body
+                else:
+                    continue
 
             if dist < contact_margin and num_contacts < MAX_CONTACTS:
                 var c_off = num_contacts * CONTACT_SIZE
@@ -1343,6 +1539,7 @@ def _detect_contacts_fields_kernel[
     MAX_CONTACTS: Int,
     NGEOM: Int,
     NEXCLUDE: Int,
+    NMESH_VERTS: Int,
     BATCH: Int,
 ](
     xpos: LayoutTensor[
@@ -1363,6 +1560,14 @@ def _detect_contacts_fields_kernel[
     excludes: LayoutTensor[
         DTYPE, Layout.row_major(NEXCLUDE, 2), MutAnyOrigin
     ],
+    mesh_meta: LayoutTensor[
+        DTYPE,
+        Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE),
+        MutAnyOrigin,
+    ],
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
     contacts: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
         MutAnyOrigin,
@@ -1375,8 +1580,12 @@ def _detect_contacts_fields_kernel[
     if env >= BATCH:
         return
     _detect_contacts_env_fields[
-        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEXCLUDE, BATCH
-    ](env, xpos, xquat, geoms, bodies, mmeta, excludes, contacts, smeta)
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEXCLUDE,
+        NMESH_VERTS, BATCH,
+    ](
+        env, xpos, xquat, geoms, bodies, mmeta, excludes, mesh_meta,
+        mesh_verts, contacts, smeta,
+    )
 
 
 def detect_contacts_fields[
@@ -1411,16 +1620,18 @@ def detect_contacts_fields[
     ctx: Optional[DeviceContext] = None,
 ) raises:
     """Unified geom contact detection from FK products, both targets, one
-    body. Reads `d.xpos`/`d.xquat` + geom/body/meta/exclude records; writes
-    `d.contacts` + the ncon slot of `d.meta`."""
-    comptime assert NMESH_VERTS == 0, "mesh collision not ported to fields yet"
-
+    body. Reads `d.xpos`/`d.xquat` + geom/body/meta/exclude/mesh records;
+    writes `d.contacts` + the ncon slot of `d.meta`."""
     comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
     comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
     comptime L_GEOM = Layout.row_major(NGEOM, MODEL_GEOM_SIZE)
     comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
     comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
     comptime L_EXCLUDE = Layout.row_major(NEXCLUDE, 2)
+    comptime L_MESH_META = Layout.row_major(
+        MAX_GPU_MESHES, MODEL_MESH_META_SIZE
+    )
+    comptime L_MESH_VERT = Layout.row_major(NMESH_VERTS, 3)
     comptime L_CONTACTS = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
 
@@ -1431,15 +1642,17 @@ def detect_contacts_fields[
         var bodies_v = m.bodies.lt["cpu", L_BODY]()
         var mmeta_v = m.meta.lt["cpu", L_MMETA]()
         var excludes_v = m.excludes.lt["cpu", L_EXCLUDE]()
+        var mesh_meta_v = m.mesh_meta.lt["cpu", L_MESH_META]()
+        var mesh_verts_v = m.mesh_verts.lt["cpu", L_MESH_VERT]()
         var contacts_v = d.contacts.lt["cpu", L_CONTACTS]()
         var smeta_v = d.meta.lt["cpu", L_SMETA]()
         for e in range(BATCH):
             _detect_contacts_env_fields[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-                NEXCLUDE, BATCH,
+                NEXCLUDE, NMESH_VERTS, BATCH,
             ](
                 e, xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
-                excludes_v, contacts_v, smeta_v,
+                excludes_v, mesh_meta_v, mesh_verts_v, contacts_v, smeta_v,
             )
     else:
         var c = ctx.value()
@@ -1447,7 +1660,7 @@ def detect_contacts_fields[
         c.enqueue_function[
             _detect_contacts_fields_kernel[
                 DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
-                NEXCLUDE, BATCH,
+                NEXCLUDE, NMESH_VERTS, BATCH,
             ]
         ](
             d.xpos.lt["gpu", L_B3](),
@@ -1456,6 +1669,8 @@ def detect_contacts_fields[
             m.bodies.lt["gpu", L_BODY](),
             m.meta.lt["gpu", L_MMETA](),
             m.excludes.lt["gpu", L_EXCLUDE](),
+            m.mesh_meta.lt["gpu", L_MESH_META](),
+            m.mesh_verts.lt["gpu", L_MESH_VERT](),
             d.contacts.lt["gpu", L_CONTACTS](),
             d.meta.lt["gpu", L_SMETA](),
             grid_dim=(BLOCKS,),
