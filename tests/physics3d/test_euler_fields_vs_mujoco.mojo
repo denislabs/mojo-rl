@@ -203,5 +203,69 @@ def test_fields_euler_vs_mujoco_10_steps() raises:
     _compare_vs_mujoco(10, QPOS_ABS_TOL_10, QVEL_ABS_TOL_10)
 
 
+def test_fields_euler_active_limits_vs_legacy_cpu() raises:
+    """The legacy gate's pose (ankles at qpos=0, VIOLATING their ranges) —
+    active-limit dynamics through the fields path vs the legacy CPU step.
+
+    MuJoCo is not the reference here: the repo's limit model (acceleration-
+    level PGS with impedance) matches MuJoCo's to solver tolerance, not
+    trajectory-exactly. The gate is fields vs legacy-CPU, which run the
+    same limit formulation."""
+    print("--- fields-CPU active limits vs legacy-CPU, tumbling Ant ---")
+    var qpos_init = _tumbling_qpos()
+    for k in range(4):
+        qpos_init[8 + 2 * k] = 0.0  # ankles back to 0 -> limits ACTIVE
+    var qvel_init = _tumbling_qvel()
+    var ctx = DeviceContext()
+
+    var model = Model[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ,
+        AntModel.CONE_TYPE, NTEN, NSITE,
+    ]()
+    var data = Data[DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NSITE]()
+    AntModel.setup_model_and_data(model, data)
+    var mf = _make_model_fields(ctx, model)
+
+    var d = DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, 1]()
+    for i in range(NQ):
+        d.qpos.data[i] = Scalar[DTYPE](qpos_init[i])
+    for i in range(NV):
+        d.qvel.data[i] = Scalar[DTYPE](qvel_init[i])
+    var integ = EulerIntegratorFields[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEQ, NTEN, NSITE,
+        0, 0, 1,
+    ]()
+    for i in range(NQ):
+        data.qpos[i] = Scalar[DTYPE](qpos_init[i])
+    for i in range(NV):
+        data.qvel[i] = Scalar[DTYPE](qvel_init[i])
+
+    for _ in range(10):
+        for i in range(NV):
+            d.qfrc.data[i] = Scalar[DTYPE](0)
+            data.qfrc[i] = Scalar[DTYPE](0)
+        integ.step["cpu"](d, mf)
+        EulerIntegrator[SOLVER=NewtonSolver].step[NGEOM=NGEOM](model, data)
+
+    var worst_qp = Float64(0)
+    var worst_qv = Float64(0)
+    for i in range(NQ):
+        var e = abs(Float64(d.qpos.data[i]) - Float64(data.qpos[i]))
+        if e > worst_qp:
+            worst_qp = e
+    for i in range(NV):
+        var e = abs(Float64(d.qvel.data[i]) - Float64(data.qvel[i]))
+        if e > worst_qv:
+            worst_qv = e
+    print(
+        "  after 10 steps: max |qpos| vs legacy-CPU =", worst_qp,
+        " max |qvel| =", worst_qv,
+    )
+    assert_true(
+        worst_qp < 1e-3 and worst_qv < 5e-2,
+        "fields active-limit dynamics diverged from legacy CPU",
+    )
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

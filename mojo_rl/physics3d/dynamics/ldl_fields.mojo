@@ -186,3 +186,97 @@ def ldl_solve_fields[
             grid_dim=(BLOCKS,),
             block_dim=(LDL_TPB,),
         )
+
+
+# ── M^-1 from LDL factors (per-field port of compute_M_inv_from_ldl_gpu) ──
+@always_inline
+def _m_inv_env_fields[
+    DTYPE: DType,
+    NV: Int,
+    BATCH: Int,
+](
+    env: Int,
+    L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+):
+    """Full dense M^-1 via per-column LDL solves (arithmetic verbatim)."""
+    comptime V_SIZE = _ensure_positive[NV]()
+    var e = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+    var col = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+
+    for j in range(NV):
+        for i in range(NV):
+            e[i] = 0
+        e[j] = 1
+
+        var y = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+        for i in range(NV):
+            var s = e[i]
+            for k in range(i):
+                s = s - L[env, i * NV + k] * y[k]
+            y[i] = s
+
+        var z = InlineArray[L.element_type, V_SIZE](uninitialized=True)
+        for i in range(NV):
+            var d_i = D[env, i]
+            if d_i > 1e-14 or d_i < -1e-14:
+                z[i] = y[i] / d_i
+            else:
+                z[i] = 0
+
+        for i in range(NV - 1, -1, -1):
+            var s = z[i]
+            for k in range(i + 1, NV):
+                s = s - L[env, k * NV + i] * col[k]
+            col[i] = s
+
+        for i in range(NV):
+            m_inv[env, i * NV + j] = col[i]
+
+
+def _m_inv_fields_kernel[
+    DTYPE: DType,
+    NV: Int,
+    BATCH: Int,
+](
+    L: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    D: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+):
+    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if env >= BATCH:
+        return
+    _m_inv_env_fields[DTYPE, NV, BATCH](env, L, D, m_inv)
+
+
+def compute_m_inv_fields[
+    target: StaticString,
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    BATCH: Int = 1,
+](
+    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """L, D -> m_inv (owned scratch), both targets, one body."""
+    comptime L_M = Layout.row_major(BATCH, NV * NV)
+    comptime L_NV = Layout.row_major(BATCH, NV)
+
+    comptime if target == "cpu":
+        var L_v = scratch.L.lt["cpu", L_M]()
+        var D_v = scratch.D.lt["cpu", L_NV]()
+        var mi_v = scratch.m_inv.lt["cpu", L_M]()
+        for e in range(BATCH):
+            _m_inv_env_fields[DTYPE, NV, BATCH](e, L_v, D_v, mi_v)
+    else:
+        var c = ctx.value()
+        comptime BLOCKS = (BATCH + LDL_TPB - 1) // LDL_TPB
+        c.enqueue_function[_m_inv_fields_kernel[DTYPE, NV, BATCH]](
+            scratch.L.lt["gpu", L_M](),
+            scratch.D.lt["gpu", L_NV](),
+            scratch.m_inv.lt["gpu", L_M](),
+            grid_dim=(BLOCKS,),
+            block_dim=(LDL_TPB,),
+        )

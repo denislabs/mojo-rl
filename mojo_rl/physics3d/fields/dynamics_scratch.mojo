@@ -25,8 +25,9 @@ struct DynamicsScratch[
     NBODY: Int,
     BATCH: Int = 1,
 ](Movable):
-    """Integrator-temps scratch: one owned tensor per array (11 tensors,
-    mirroring `integrator_workspace_size`'s inventory)."""
+    """Integrator-temps scratch: one owned tensor per array (12 tensors:
+    the `integrator_workspace_size` inventory + m_inv for constraint
+    solving)."""
 
     comptime L_CDOF = Layout.row_major(Self.BATCH, Self.NV * 6)
     comptime L_CRB = Layout.row_major(Self.BATCH, Self.NBODY * 10)
@@ -45,6 +46,7 @@ struct DynamicsScratch[
     var qacc_constrained: TensorImpl[Self.DTYPE]  # [BATCH, NV]
     var rne_cacc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
     var rne_cfrc: TensorImpl[Self.DTYPE]  # [BATCH, NBODY*6]
+    var m_inv: TensorImpl[Self.DTYPE]  # [BATCH, NV*NV] (constraint solving)
 
     def __init__(out self) raises:
         comptime B = Self.BATCH
@@ -59,6 +61,7 @@ struct DynamicsScratch[
         self.qacc_constrained = TensorImpl[Self.DTYPE].alloc(B * Self.NV)
         self.rne_cacc = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
         self.rne_cfrc = TensorImpl[Self.DTYPE].alloc(B * Self.NBODY * 6)
+        self.m_inv = TensorImpl[Self.DTYPE].alloc(B * Self.NV * Self.NV)
 
     def upload_all(mut self, ctx: DeviceContext) raises:
         """Create device buffers for every scratch tensor (once, at setup —
@@ -74,3 +77,4 @@ struct DynamicsScratch[
         self.qacc_constrained.upload(ctx)
         self.rne_cacc.upload(ctx)
         self.rne_cfrc.upload(ctx)
+        self.m_inv.upload(ctx)

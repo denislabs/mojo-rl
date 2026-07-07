@@ -1,0 +1,325 @@
+"""Joint-limit constraints over per-field tensors (migration P4 opener,
+single-source). Per-field port of `detect_and_solve_limits_gpu`
+(constraints/constraint_builder_gpu.mojo:809) — arithmetic verbatim:
+detect HINGE/SLIDE range violations, MuJoCo impedance (solref/solimp from
+the meta record), acceleration-level PGS updating `scratch.qacc_constrained`
+with `scratch.m_inv` columns.
+
+Operands (7): qpos, qvel (data) + joints, meta, dof_invweight0 (model) +
+m_inv, qacc_constrained (scratch). The legacy `dt` argument is dropped —
+it is unused in the legacy body. This is the first consumer of the
+constraint seam (writes qacc_constrained between the unconstrained solve
+and the finalize); contacts/equality/tendons follow at P4."""
+
+from std.math import abs, pow
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
+
+from ..joint_types import JNT_HINGE, JNT_SLIDE
+from ..fields import DataFields, ModelFields, DynamicsScratch
+from ..gpu.constants import (
+    MODEL_JOINT_SIZE,
+    MODEL_META_SIZE,
+    MODEL_META_IDX_SOLREF_LIMIT_0,
+    MODEL_META_IDX_SOLREF_LIMIT_1,
+    MODEL_META_IDX_SOLIMP_LIMIT_0,
+    MODEL_META_IDX_SOLIMP_LIMIT_1,
+    MODEL_META_IDX_SOLIMP_LIMIT_2,
+    MODEL_META_IDX_SOLIMP_LIMIT_3,
+    MODEL_META_IDX_SOLIMP_LIMIT_4,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_RANGE_MIN,
+    JOINT_IDX_RANGE_MAX,
+)
+
+comptime LIM_TPB: Int = 64
+
+
+@always_inline
+def _max_one[N: Int]() -> Int:
+    return N if N > 0 else 1
+
+
+@always_inline
+def _limits_env_fields[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NJOINT: Int,
+    BATCH: Int,
+    NUM_ITERATIONS: Int,
+](
+    env: Int,
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    meta: LayoutTensor[DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin],
+    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    qacc_constrained: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+    ],
+):
+    """Detect + PGS-solve active joint limits for one env (verbatim from
+    detect_and_solve_limits_gpu)."""
+    comptime MAX_LIMITS = _max_one[2 * NJOINT]()
+
+    var limit_dof = InlineArray[Int, MAX_LIMITS](uninitialized=True)
+    var limit_sign = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+    var limit_dist_arr = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+        uninitialized=True
+    )
+    var K_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+    var lambda_limit = InlineArray[Scalar[DTYPE], MAX_LIMITS](
+        uninitialized=True
+    )
+    for i in range(MAX_LIMITS):
+        limit_dof[i] = 0
+        limit_sign[i] = Scalar[DTYPE](0)
+        limit_dist_arr[i] = Scalar[DTYPE](0)
+        K_limit[i] = Scalar[DTYPE](1)
+        lambda_limit[i] = Scalar[DTYPE](0)
+
+    var num_limits = 0
+    for j in range(NJOINT):
+        var jtype = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
+        if jtype != JNT_HINGE and jtype != JNT_SLIDE:
+            continue
+        var dof = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR]))
+        var qpos_adr = Int(
+            rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_QPOS_ADR])
+        )
+        var rmin = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_RANGE_MIN])
+        var rmax = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_RANGE_MAX])
+        if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
+            continue
+        var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
+        var dist_lo = pos - rmin
+        if dist_lo < Scalar[DTYPE](0) and num_limits < MAX_LIMITS:
+            limit_dof[num_limits] = dof
+            limit_sign[num_limits] = Scalar[DTYPE](1)
+            limit_dist_arr[num_limits] = dist_lo
+            K_limit[num_limits] = rebind[Scalar[DTYPE]](
+                m_inv[env, dof * NV + dof]
+            )
+            if K_limit[num_limits] < Scalar[DTYPE](1e-10):
+                K_limit[num_limits] = Scalar[DTYPE](1e-10)
+            num_limits += 1
+        var dist_hi = rmax - pos
+        if dist_hi < Scalar[DTYPE](0) and num_limits < MAX_LIMITS:
+            limit_dof[num_limits] = dof
+            limit_sign[num_limits] = Scalar[DTYPE](-1)
+            limit_dist_arr[num_limits] = dist_hi
+            K_limit[num_limits] = rebind[Scalar[DTYPE]](
+                m_inv[env, dof * NV + dof]
+            )
+            if K_limit[num_limits] < Scalar[DTYPE](1e-10):
+                K_limit[num_limits] = Scalar[DTYPE](1e-10)
+            num_limits += 1
+
+    if num_limits == 0:
+        return
+
+    var lr_tc = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLREF_LIMIT_0])
+    var lr_dr = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLREF_LIMIT_1])
+    var li_dmin = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_0])
+    var li_dmax = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_1])
+    var li_width = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_2])
+    var li_midpoint = rebind[Scalar[DTYPE]](
+        meta[MODEL_META_IDX_SOLIMP_LIMIT_3]
+    )
+    var li_power = rebind[Scalar[DTYPE]](meta[MODEL_META_IDX_SOLIMP_LIMIT_4])
+    if li_width < Scalar[DTYPE](1e-6):
+        li_width = Scalar[DTYPE](1e-6)
+    if li_dmax < Scalar[DTYPE](1e-4):
+        li_dmax = Scalar[DTYPE](1e-4)
+    var l_K_spring = Scalar[DTYPE](1.0) / (
+        li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
+    )
+    var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
+
+    var lim_bias = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+    var lim_inv_K = InlineArray[Scalar[DTYPE], MAX_LIMITS](uninitialized=True)
+    comptime MINVJ_LIM_SIZE = _max_one[2 * NJOINT * NV]()
+    var lim_MinvJ = InlineArray[Scalar[DTYPE], MINVJ_LIM_SIZE](
+        uninitialized=True
+    )
+    for l in range(num_limits):
+        var penetration = -limit_dist_arr[l]
+        if penetration < Scalar[DTYPE](0):
+            penetration = Scalar[DTYPE](0)
+        var imp_lim: Scalar[DTYPE]
+        if li_dmin == li_dmax or li_width <= Scalar[DTYPE](0):
+            imp_lim = Scalar[DTYPE](0.5) * (li_dmin + li_dmax)
+        else:
+            var x_lim = penetration / li_width
+            var y_lim: Scalar[DTYPE]
+            if x_lim <= Scalar[DTYPE](0):
+                y_lim = Scalar[DTYPE](0)
+            elif x_lim >= Scalar[DTYPE](1):
+                y_lim = Scalar[DTYPE](1)
+            elif li_power == Scalar[DTYPE](1):
+                y_lim = x_lim
+            elif x_lim <= li_midpoint:
+                var a = Scalar[DTYPE](1) / pow(
+                    li_midpoint, li_power - Scalar[DTYPE](1)
+                )
+                y_lim = a * pow(x_lim, li_power)
+            else:
+                var b = Scalar[DTYPE](1) / pow(
+                    Scalar[DTYPE](1) - li_midpoint, li_power - Scalar[DTYPE](1)
+                )
+                y_lim = Scalar[DTYPE](1) - b * pow(
+                    Scalar[DTYPE](1) - x_lim, li_power
+                )
+            imp_lim = li_dmin + y_lim * (li_dmax - li_dmin)
+        if imp_lim < Scalar[DTYPE](1e-6):
+            imp_lim = Scalar[DTYPE](1e-6)
+        var v_limit = limit_sign[l] * rebind[Scalar[DTYPE]](
+            qvel[env, limit_dof[l]]
+        )
+        lim_bias[l] = rebind[Scalar[DTYPE]](
+            -l_K_spring * imp_lim * penetration + l_B_damp * v_limit
+        )
+        var diag_lim = rebind[Scalar[DTYPE]](dof_invweight0[limit_dof[l]])
+        if diag_lim < Scalar[DTYPE](1e-10):
+            diag_lim = K_limit[l]  # Fallback
+        var R_lim = (Scalar[DTYPE](1.0) - imp_lim) / imp_lim * diag_lim
+        lim_inv_K[l] = Scalar[DTYPE](1.0) / (K_limit[l] + R_lim)
+        var ldof = limit_dof[l]
+        var lsign = limit_sign[l]
+        for i in range(NV):
+            lim_MinvJ[l * NV + i] = (
+                rebind[Scalar[DTYPE]](m_inv[env, i * NV + ldof]) * lsign
+            )
+
+    # PGS iterations (acceleration-level)
+    for _ in range(NUM_ITERATIONS):
+        var max_lim_delta: Scalar[DTYPE] = 0
+        for l in range(num_limits):
+            var a_limit = (
+                limit_sign[l] * qacc_constrained[env, limit_dof[l]]
+            )
+            var R_lim = Scalar[DTYPE](1.0) / lim_inv_K[l] - K_limit[l]
+            var residual_l = a_limit + lim_bias[l] + R_lim * lambda_limit[l]
+            var delta_l = -residual_l * lim_inv_K[l]
+            var old_lam = lambda_limit[l]
+            lambda_limit[l] = lambda_limit[l] + rebind[Scalar[DTYPE]](delta_l)
+            if lambda_limit[l] < Scalar[DTYPE](0):
+                lambda_limit[l] = Scalar[DTYPE](0)
+            var actual_l = lambda_limit[l] - old_lam
+            var abs_l = abs(actual_l)
+            if abs_l > max_lim_delta:
+                max_lim_delta = abs_l
+            for i in range(NV):
+                qacc_constrained[env, i] += lim_MinvJ[l * NV + i] * actual_l
+        if max_lim_delta < Scalar[DTYPE](1e-4):
+            break
+
+
+def _limits_fields_kernel[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NJOINT: Int,
+    BATCH: Int,
+    NUM_ITERATIONS: Int,
+](
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    meta: LayoutTensor[DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin],
+    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
+    m_inv: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    qacc_constrained: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+    ],
+):
+    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if env >= BATCH:
+        return
+    _limits_env_fields[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
+        env, qpos, qvel, joints, meta, dof_invweight0, m_inv, qacc_constrained
+    )
+
+
+def solve_limits_fields[
+    target: StaticString,
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+    NMESH_VERTS: Int = 0,
+    BATCH: Int = 1,
+    NUM_ITERATIONS: Int = 50,
+](
+    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: ModelFields[
+        DTYPE,
+        NV,
+        NBODY,
+        NJOINT,
+        NGEOM,
+        NEQUALITY,
+        NTENDON,
+        NSITE,
+        NEXCLUDE,
+        NMESH_VERTS,
+    ],
+    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Detect + solve joint limits into `scratch.qacc_constrained`, both
+    targets, one body. NUM_ITERATIONS=50 matches the Newton solver's
+    SOLVER_ITER_GPU."""
+    comptime L_QPOS = Layout.row_major(BATCH, NQ)
+    comptime L_NV = Layout.row_major(BATCH, NV)
+    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+    comptime L_META = Layout.row_major(MODEL_META_SIZE)
+    comptime L_DW = Layout.row_major(NV)
+    comptime L_M = Layout.row_major(BATCH, NV * NV)
+
+    comptime if target == "cpu":
+        var qpos_v = d.qpos.lt["cpu", L_QPOS]()
+        var qvel_v = d.qvel.lt["cpu", L_NV]()
+        var joints_v = m.joints.lt["cpu", L_JOINT]()
+        var meta_v = m.meta.lt["cpu", L_META]()
+        var dw_v = m.dof_invweight0.lt["cpu", L_DW]()
+        var mi_v = scratch.m_inv.lt["cpu", L_M]()
+        var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
+        for e in range(BATCH):
+            _limits_env_fields[DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS](
+                e, qpos_v, qvel_v, joints_v, meta_v, dw_v, mi_v, qc_v
+            )
+    else:
+        var c = ctx.value()
+        comptime BLOCKS = (BATCH + LIM_TPB - 1) // LIM_TPB
+        c.enqueue_function[
+            _limits_fields_kernel[
+                DTYPE, NQ, NV, NJOINT, BATCH, NUM_ITERATIONS
+            ]
+        ](
+            d.qpos.lt["gpu", L_QPOS](),
+            d.qvel.lt["gpu", L_NV](),
+            m.joints.lt["gpu", L_JOINT](),
+            m.meta.lt["gpu", L_META](),
+            m.dof_invweight0.lt["gpu", L_DW](),
+            scratch.m_inv.lt["gpu", L_M](),
+            scratch.qacc_constrained.lt["gpu", L_NV](),
+            grid_dim=(BLOCKS,),
+            block_dim=(LIM_TPB,),
+        )

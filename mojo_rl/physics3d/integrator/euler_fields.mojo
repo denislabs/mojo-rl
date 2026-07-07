@@ -35,9 +35,11 @@ from ..dynamics.mass_matrix_fields import compute_mass_matrix_fields
 from ..dynamics.ldl_fields import (
     ldl_factor_fields,
     ldl_solve_fields,
+    compute_m_inv_fields,
     _ldl_factor_env_fields,
     _ldl_solve_env_fields,
 )
+from ..constraints.limits_fields import solve_limits_fields
 from ..dynamics.rne_fields import compute_bias_forces_rne_fields
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
 from ..fields import DataFields, ModelFields, DynamicsScratch
@@ -472,6 +474,9 @@ struct EulerIntegratorFields[
         ldl_factor_fields[
             target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ](self.scratch, ctx)
+        compute_m_inv_fields[
+            target, Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
+        ](self.scratch, ctx)
         compute_bias_forces_rne_fields[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
@@ -528,8 +533,13 @@ struct EulerIntegratorFields[
                 block_dim=(EU_TPB,),
             )
 
-        # (P4: contact detection + constraint solver + limits run here,
-        # updating scratch.qacc_constrained.)
+        # Constraint seam: joint limits (P4 opener). Contacts / equality /
+        # tendons join here later, all updating scratch.qacc_constrained.
+        solve_limits_fields[
+            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
+            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
+        ](d, m, self.scratch, ctx)
 
         comptime if target == "cpu":
             var qpos_v3 = d.qpos.lt["cpu", L_QPOS]()

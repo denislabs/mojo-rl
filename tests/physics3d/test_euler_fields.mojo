@@ -21,6 +21,7 @@ from mojo_rl.physics3d.fields import DataFields, ModelFields
 from mojo_rl.physics3d.integrator.euler_integrator import EulerIntegrator
 from mojo_rl.physics3d.integrator.euler_fields import EulerIntegratorFields
 from mojo_rl.physics3d.solver.newton_solver import NewtonSolver
+from mojo_rl.physics3d.constraints import detect_and_solve_limits_gpu
 from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
@@ -59,6 +60,22 @@ def _legacy_step_kernel[
     EulerIntegrator[SOLVER=NewtonSolver].step_kernel[
         DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, SS, MS, B_, WS
     ](state, model, workspace)
+
+
+def _legacy_limits_kernel[
+    B_: Int
+](
+    dt: Scalar[DTYPE],
+    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS), MutAnyOrigin],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MS), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS), MutAnyOrigin],
+):
+    var env = Int(block_idx.x)
+    if env >= B_:
+        return
+    detect_and_solve_limits_gpu[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, SS, MS, WS, B_, 50, NGEOM
+    ](env, dt, state, model, workspace)
 
 
 def _legacy_finalize_kernel[
@@ -129,10 +146,27 @@ def main() raises:
         0, 0, 0, 0, 0, BATCH,
     ]()
 
+    # dt for the legacy limits kernel (host-read from the flat model meta).
+    from mojo_rl.physics3d.gpu.constants import (
+        model_metadata_offset,
+        MODEL_META_IDX_TIMESTEP,
+    )
+    comptime O_META_M = model_metadata_offset[NBODY, NJOINT]()
+    var dt = model_t.data[O_META_M + MODEL_META_IDX_TIMESTEP]
+
     for step in range(N_STEPS):
-        # Legacy: step_kernel + finalize (no contact/solver kernels between
-        # = unconstrained dynamics).
+        # Legacy: step_kernel + limits + finalize (contact-free but
+        # limit-AWARE — the thigh=0.5 config violates walker2d's (-150,0)deg
+        # range, so the limit path is genuinely exercised).
         ctx.enqueue_function[_legacy_step_kernel[BATCH]](
+            slab_t.lt["gpu", Layout.row_major(BATCH, SS)](),
+            model_t.lt["gpu", Layout.row_major(1, MS)](),
+            ws_t.lt["gpu", Layout.row_major(BATCH, WS)](),
+            grid_dim=(BATCH,),
+            block_dim=(1,),
+        )
+        ctx.enqueue_function[_legacy_limits_kernel[BATCH]](
+            dt,
             slab_t.lt["gpu", Layout.row_major(BATCH, SS)](),
             model_t.lt["gpu", Layout.row_major(1, MS)](),
             ws_t.lt["gpu", Layout.row_major(BATCH, WS)](),
