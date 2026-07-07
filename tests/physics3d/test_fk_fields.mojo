@@ -49,6 +49,10 @@ from mojo_rl.physics3d.dynamics.ldl_fields import (
     ldl_factor_fields,
     ldl_solve_fields,
 )
+from mojo_rl.physics3d.dynamics.bias_forces import compute_bias_forces_rne_gpu
+from mojo_rl.physics3d.dynamics.rne_fields import (
+    compute_bias_forces_rne_fields,
+)
 from mojo_rl.physics3d.fields import DynamicsScratch
 from mojo_rl.physics3d.gpu.constants import (
     state_size,
@@ -66,6 +70,8 @@ from mojo_rl.physics3d.gpu.constants import (
     ws_D_offset,
     ws_fnet_offset,
     ws_qacc_ws_offset,
+    ws_bias_offset,
+    qvel_offset,
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
@@ -203,6 +209,29 @@ def _legacy_mm_kernel[
     if env >= B_:
         return
     compute_mass_matrix_full_gpu[
+        DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_, WS_
+    ](env, state, model, workspace)
+
+
+def _legacy_rne_kernel[
+    NQ_: Int,
+    NV_: Int,
+    NBODY_: Int,
+    NJOINT_: Int,
+    MC_: Int,
+    SS_: Int,
+    MS_: Int,
+    B_: Int,
+    WS_: Int,
+](
+    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_), MutAnyOrigin],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS_), MutAnyOrigin],
+):
+    var env = Int(block_idx.x)
+    if env >= B_:
+        return
+    compute_bias_forces_rne_gpu[
         DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_, WS_
     ](env, state, model, workspace)
 
@@ -584,6 +613,63 @@ def test_walker2d() raises:
     if worst_ld > 1e-3:
         raise Error("walker2d LDL fields-CPU tolerance exceeded")
     print("  PASS: LDL qacc fields-CPU within 1e-3")
+
+    # 7. RNE bias forces chained on FK products + cdof (synthetic qvel;
+    #    qvel affects no earlier stage).
+    comptime O_QVEL = qvel_offset[NQ, NV]()
+    for e in range(BATCH):
+        for i in range(NV):
+            var v = Scalar[DTYPE]((e * 17 + i * 13) % 9 - 4) / 4.0
+            slab_t.data[e * SS + O_QVEL + i] = v
+            d.qvel.data[e * NV + i] = v
+            dc.qvel.data[e * NV + i] = v
+    slab_t.upload(ctx)
+    d.qvel.upload(ctx)
+    ctx.enqueue_function[
+        _legacy_rne_kernel[
+            NQ, NV, NBODY, NJOINT, MAX_CONTACTS, SS, MS, BATCH, WS
+        ]
+    ](
+        slab_t.lt["gpu", Layout.row_major(BATCH, SS)](),
+        model_t.lt["gpu", Layout.row_major(1, MS)](),
+        ws_t.lt["gpu", Layout.row_major(BATCH, WS)](),
+        grid_dim=(BATCH,),
+        block_dim=(1,),
+    )
+    ws_t.download(ctx)
+    compute_bias_forces_rne_fields[
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        0, 0, 0, 0, 0, BATCH,
+    ](d, mf, scratch, ctx)
+    scratch.bias.download(ctx)
+    comptime O_BIAS = ws_bias_offset[NV, NBODY]()
+    var bad_rne = 0
+    for e in range(BATCH):
+        for j in range(NV):
+            if (
+                scratch.bias.data[e * NV + j]
+                != ws_t.data[e * WS + O_BIAS + j]
+            ):
+                bad_rne += 1
+    if bad_rne != 0:
+        raise Error("walker2d RNE bias fields-GPU vs legacy-GPU mismatch")
+    print("  PASS: RNE bias fields-GPU == legacy-GPU bit-exact")
+
+    compute_bias_forces_rne_fields[
+        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        0, 0, 0, 0, 0, BATCH,
+    ](dc, mf, scratch_c)
+    var worst_rne = Float64(0)
+    for i in range(BATCH * NV):
+        var err = abs(
+            Float64(scratch_c.bias.data[i]) - Float64(scratch.bias.data[i])
+        )
+        if err > worst_rne:
+            worst_rne = err
+    print("  RNE bias fields-CPU vs fields-GPU worst err:", worst_rne)
+    if worst_rne > 1e-3:
+        raise Error("walker2d RNE fields-CPU tolerance exceeded")
+    print("  PASS: RNE bias fields-CPU within 1e-3")
 
 
 def test_synthetic_sites() raises:
