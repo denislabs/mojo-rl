@@ -63,8 +63,18 @@ comptime RESET_SEED = UInt64(123)
 comptime LegacyEnv = Phyics3dEnv[
     Walker2dModel, Walker2dConfig, DT, TERMINATE_ON_UNHEALTHY=True
 ]
+# Pinned to PGS + serial + dense: this gate's legacy reference is the
+# serial rk4_stage[PGS] pipeline, so the facade must match it exactly.
+# The production default (newton + parallel + treewalk) is gated in
+# test_batched_env_fields_production.mojo.
 comptime FieldsEnv = Phyics3dBatchedEnvFields[
-    Walker2dModel, Walker2dConfig, BATCH, TERMINATE_ON_UNHEALTHY=True
+    Walker2dModel,
+    Walker2dConfig,
+    BATCH,
+    TERMINATE_ON_UNHEALTHY=True,
+    SOLVER="pgs",
+    PARALLEL_GPU=False,
+    CRBA_TREEWALK=False,
 ]
 
 

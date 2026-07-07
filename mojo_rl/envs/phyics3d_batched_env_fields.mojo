@@ -204,9 +204,21 @@ struct Phyics3dBatchedEnvFields[
     CONFIG: Phyics3dEnvConfig,
     N_ENVS: Int,
     TERMINATE_ON_UNHEALTHY: Bool = False,
+    SOLVER: StaticString = "newton",
+    PARALLEL_GPU: Bool = True,
+    CRBA_TREEWALK: Bool = True,
 ](BatchedEnv):
     """GPU-batched MuJoCo env, physics on the per-field tensor path,
-    driver IO via the `BatchedEnv` ABI. See module docstring."""
+    driver IO via the `BatchedEnv` ABI. See module docstring.
+
+    The physics defaults are the LEGACY PRODUCTION bundle
+    (CONFIG.physics_substep_gpu = RK4 + Newton at STEP_THREADS=NV with
+    RK4_PARALLEL_* on): SOLVER="newton", PARALLEL_GPU=True (cooperative
+    _mt kernels, bit-exact vs serial), CRBA_TREEWALK=True (the
+    production mass-matrix algorithm — tolerance-equal to dense at
+    ~1e-8/eval, exactly as in legacy). Gates that need a bit-exact
+    baseline against a serial legacy reference pin these params
+    explicitly."""
 
     comptime ENV_TARGET: StaticString = "gpu"
     comptime OBS_DIM: Int = Self.MODEL_DEF.OBS_DIM
@@ -262,6 +274,9 @@ struct Phyics3dBatchedEnvFields[
         0,
         Self.MODEL_DEF.CONE_TYPE,
         Self.N_ENVS,
+        SOLVER = Self.SOLVER,
+        PARALLEL_GPU = Self.PARALLEL_GPU,
+        CRBA_TREEWALK = Self.CRBA_TREEWALK,
     ]
 
     # Hooks adapter (transitional): device state slab + legacy model slab.

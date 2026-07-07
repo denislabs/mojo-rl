@@ -49,9 +49,16 @@ struct Phyics3dEnvFields[
     CONFIG: Phyics3dEnvConfig,
     DTYPE: DType = DType.float64,
     TERMINATE_ON_UNHEALTHY: Bool = False,
+    SOLVER: StaticString = "newton",
 ](BoxContinuousActionEnv):
     """Generic MuJoCo env, physics on the per-field tensor path. See module
-    docstring for the bridge design and scope."""
+    docstring for the bridge design and scope.
+
+    SOLVER defaults to "newton" — the legacy env default physics
+    (CONFIG.physics_substep = RK4 + Newton). This facade steps on CPU,
+    where the GPU-only PARALLEL_GPU / CRBA_TREEWALK knobs never apply
+    (CPU is always serial + dense, matching legacy production's CPU
+    side)."""
 
     comptime dtype = Self.DTYPE
     comptime StateType = ObsState[Self.MODEL_DEF.OBS_DIM]
@@ -136,6 +143,7 @@ struct Phyics3dEnvFields[
         0,
         Self.MODEL_DEF.CONE_TYPE,
         1,
+        SOLVER = Self.SOLVER,
     ]
 
     var max_steps: Int
