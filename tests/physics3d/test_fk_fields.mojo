@@ -37,6 +37,10 @@ from mojo_rl.physics3d.dynamics.subtree_com_fields import (
     compute_subtree_com_fields,
 )
 from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
+from mojo_rl.physics3d.dynamics.mass_matrix import compute_mass_matrix_full_gpu
+from mojo_rl.physics3d.dynamics.mass_matrix_fields import (
+    compute_mass_matrix_fields,
+)
 from mojo_rl.physics3d.fields import DynamicsScratch
 from mojo_rl.physics3d.gpu.constants import (
     state_size,
@@ -49,6 +53,7 @@ from mojo_rl.physics3d.gpu.constants import (
     subtree_com_offset,
     integrator_workspace_size,
     ws_cdof_offset,
+    ws_M_offset,
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
@@ -163,6 +168,29 @@ def _legacy_cdof_kernel[
     if env >= B_:
         return
     compute_cdof_gpu[
+        DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_, WS_
+    ](env, state, model, workspace)
+
+
+def _legacy_mm_kernel[
+    NQ_: Int,
+    NV_: Int,
+    NBODY_: Int,
+    NJOINT_: Int,
+    MC_: Int,
+    SS_: Int,
+    MS_: Int,
+    B_: Int,
+    WS_: Int,
+](
+    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_), MutAnyOrigin],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_), MutAnyOrigin],
+    workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS_), MutAnyOrigin],
+):
+    var env = Int(block_idx.x)
+    if env >= B_:
+        return
+    compute_mass_matrix_full_gpu[
         DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_, WS_
     ](env, state, model, workspace)
 
@@ -434,6 +462,50 @@ def test_walker2d() raises:
     if worst_cd > POS_TOL:
         raise Error("walker2d cdof fields-CPU tolerance exceeded")
     print("  PASS: cdof fields-CPU within 1e-4")
+
+    # 5. CRBA mass matrix chained on cdof (reads scratch.cdof -> scratch.M).
+    ctx.enqueue_function[
+        _legacy_mm_kernel[
+            NQ, NV, NBODY, NJOINT, MAX_CONTACTS, SS, MS, BATCH, WS
+        ]
+    ](
+        slab_t.lt["gpu", Layout.row_major(BATCH, SS)](),
+        model_t.lt["gpu", Layout.row_major(1, MS)](),
+        ws_t.lt["gpu", Layout.row_major(BATCH, WS)](),
+        grid_dim=(BATCH,),
+        block_dim=(1,),
+    )
+    ws_t.download(ctx)
+    compute_mass_matrix_fields[
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        0, 0, 0, 0, 0, BATCH,
+    ](d, mf, scratch, ctx)
+    scratch.M.download(ctx)
+    comptime O_M = ws_M_offset[NV, NBODY]()
+    var bad_mm = 0
+    for e in range(BATCH):
+        for j in range(NV * NV):
+            if scratch.M.data[e * NV * NV + j] != ws_t.data[e * WS + O_M + j]:
+                bad_mm += 1
+    if bad_mm != 0:
+        raise Error("walker2d mass matrix fields-GPU vs legacy-GPU mismatch")
+    print("  PASS: mass matrix fields-GPU == legacy-GPU bit-exact")
+
+    compute_mass_matrix_fields[
+        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        0, 0, 0, 0, 0, BATCH,
+    ](dc, mf, scratch_c)
+    var worst_mm = Float64(0)
+    for i in range(BATCH * NV * NV):
+        var err = abs(
+            Float64(scratch_c.M.data[i]) - Float64(scratch.M.data[i])
+        )
+        if err > worst_mm:
+            worst_mm = err
+    print("  mass matrix fields-CPU vs fields-GPU worst err:", worst_mm)
+    if worst_mm > 1e-3:
+        raise Error("walker2d mass matrix fields-CPU tolerance exceeded")
+    print("  PASS: mass matrix fields-CPU within 1e-3")
 
 
 def test_synthetic_sites() raises:
