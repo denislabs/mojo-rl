@@ -57,6 +57,14 @@ from ..gpu.constants import (
 
 
 @always_inline
+def _at_least_one(n: Int) -> Int:
+    # Zero-entity record tensors still get a 1-element buffer so `.lt["gpu"]`
+    # can always bind them as kernel operands (the layouts are zero-sized and
+    # never indexed; an empty Optional[DeviceBuffer] would abort at bind).
+    return n if n > 0 else 1
+
+
+@always_inline
 def _block_in[
     dt: DType
 ](mut t: TensorImpl[dt], flat: List[Scalar[dt]], off: Int, width: Int):
@@ -137,21 +145,21 @@ struct ModelFields[
         )
         self.meta = TensorImpl[Self.DTYPE].alloc(MODEL_META_SIZE)
         self.curriculum = TensorImpl[Self.DTYPE].alloc(MODEL_CURRICULUM_SIZE)
-        self.geoms = TensorImpl[Self.DTYPE].alloc(Self.NGEOM * MODEL_GEOM_SIZE)
+        self.geoms = TensorImpl[Self.DTYPE].alloc(_at_least_one(Self.NGEOM * MODEL_GEOM_SIZE))
         self.equality = TensorImpl[Self.DTYPE].alloc(
-            Self.NEQUALITY * MODEL_EQ_SIZE
+            _at_least_one(Self.NEQUALITY * MODEL_EQ_SIZE)
         )
         self.tendons = TensorImpl[Self.DTYPE].alloc(
-            Self.NTENDON * MODEL_TENDON_SIZE
+            _at_least_one(Self.NTENDON * MODEL_TENDON_SIZE)
         )
-        self.sites = TensorImpl[Self.DTYPE].alloc(Self.NSITE * MODEL_SITE_SIZE)
+        self.sites = TensorImpl[Self.DTYPE].alloc(_at_least_one(Self.NSITE * MODEL_SITE_SIZE))
         self.body_invweight0 = TensorImpl[Self.DTYPE].alloc(Self.NBODY * 2)
         self.dof_invweight0 = TensorImpl[Self.DTYPE].alloc(Self.NV)
-        self.excludes = TensorImpl[Self.DTYPE].alloc(Self.NEXCLUDE * 2)
+        self.excludes = TensorImpl[Self.DTYPE].alloc(_at_least_one(Self.NEXCLUDE * 2))
         self.mesh_meta = TensorImpl[Self.DTYPE].alloc(
             MAX_GPU_MESHES * MODEL_MESH_META_SIZE
         )
-        self.mesh_verts = TensorImpl[Self.DTYPE].alloc(Self.NMESH_VERTS * 3)
+        self.mesh_verts = TensorImpl[Self.DTYPE].alloc(_at_least_one(Self.NMESH_VERTS * 3))
 
     def upload_all(mut self, ctx: DeviceContext) raises:
         """Host -> device for every record tensor (static config: called once
@@ -160,21 +168,15 @@ struct ModelFields[
         self.joints.upload(ctx)
         self.meta.upload(ctx)
         self.curriculum.upload(ctx)
-        if Self.NGEOM > 0:
-            self.geoms.upload(ctx)
-        if Self.NEQUALITY > 0:
-            self.equality.upload(ctx)
-        if Self.NTENDON > 0:
-            self.tendons.upload(ctx)
-        if Self.NSITE > 0:
-            self.sites.upload(ctx)
+        self.geoms.upload(ctx)
+        self.equality.upload(ctx)
+        self.tendons.upload(ctx)
+        self.sites.upload(ctx)
         self.body_invweight0.upload(ctx)
         self.dof_invweight0.upload(ctx)
-        if Self.NEXCLUDE > 0:
-            self.excludes.upload(ctx)
+        self.excludes.upload(ctx)
         self.mesh_meta.upload(ctx)
-        if Self.NMESH_VERTS > 0:
-            self.mesh_verts.upload(ctx)
+        self.mesh_verts.upload(ctx)
 
     # ── Transitional slab bridges (die at P6 with gpu/constants.mojo) ────
     def load_from_slab(mut self, flat: List[Scalar[Self.DTYPE]]):
