@@ -33,6 +33,20 @@ ContinuousCEM over the latent rollout scorer, delta execution
     co-optimizes the history blocks (they condition the predictor) — a
     known protocol gap vs the reference's variable-length context.
 
+AdaJEPA test-time adaptation (docs/ADAJEPA_LEWM_TTA_PLAN.md, off by
+default): with `tta_enabled`, every fully-executed action block pushes a
+(frame, z-space block) pair into a rolling per-env window buffer (frames
+rendered per block, so multi-block plans still yield training-spaced
+windows), and after each plan-execution — once T pairs have accumulated —
+the wm takes `tta_steps` masked gradient steps on the pretraining JEPA
+loss (BN training mode, subset `tta_keep`, default predictor-side), the
+scorer's predictor is re-synced, and the GOAL latent is RE-ENCODED (the
+adapt steps move the BN running stats; start and goal latents must share
+them). Params + BN state are snapshot/restored at exit. NOTE: AdaJEPA
+replans after every chunk — run with MPC_HORIZON=1 for the faithful
+plan-execute-adapt-replan loop. This is the benchmark AdaJEPA itself
+evaluates PushT on (goals sampled 25 steps ahead).
+
 Returns (success_rate, mean_final_pos_diff_px).
 """
 
@@ -53,6 +67,7 @@ from .encoder import LeWMEncoder
 from .predict_graph import LeWMPredictor
 from .mpc import LeWMMPCScorer
 from .pusht_sim_bridge import sim_frame_chw_norm
+from .tta_buffer import TTAWindowBuffer
 
 
 comptime _SUCCESS_POS_PX: Float64 = 20.0  # swm eval_state: ‖Δ[a,b]₄‖ < 20
@@ -170,6 +185,13 @@ def run_lewm_paper_protocol[
     viz_path: String = "",
     ctx: Optional[DeviceContext] = None,
     verbose: Bool = True,
+    # AdaJEPA test-time adaptation (docs/ADAJEPA_LEWM_TTA_PLAN.md §5).
+    # tta_keep = kept param-name prefixes; empty ⇒ the v1 predictor-side
+    # default. Requires a fresh Adam (zero moments — reset_opt_moments
+    # after a moments-carrying v3 load) + wd=0 on `wm`.
+    tta_enabled: Bool = False,
+    tta_steps: Int = 1,
+    tta_keep: List[String] = List[String](),
 ) raises -> Tuple[Float64, Float64]:
     """State rows are [agent_x, agent_y, block_x, block_y, block_angle] in
     world coords [0,512] (the dataset `state` column order — the example
@@ -286,6 +308,29 @@ def run_lewm_paper_protocol[
     )
     var plan = alloc[Scalar[DT]](BATCH * NEEDED * ACT)
 
+    # ── AdaJEPA TTA state (docs/ADAJEPA_LEWM_TTA_PLAN.md §5) ────────────
+    var keep = tta_keep.copy()
+    if tta_enabled and len(keep) == 0:
+        keep = [  # v1 default: whole predictor side, encoder frozen
+            String("pred_raw."),
+            String("pred."),
+            String("x_pe."),
+            String("act_emb."),
+        ]
+    var tta_buf = TTAWindowBuffer[BATCH, T, IMG_DIM, ACT](enabled=tta_enabled)
+    var tta_act_host = alloc[Scalar[DT]](BATCH * ACTIN if tta_enabled else 1)
+    var tta_frame = alloc[Scalar[DT]](IMG_DIM if tta_enabled else 1)
+    # Persistent copy of the goal pixel windows: the adapt steps move the
+    # BN running stats, so the goal latent is re-encoded after each adapt
+    # (start and goal latents must share the same statistics).
+    var goal_pix_host = alloc[Scalar[DT]](BATCH * PIX if tta_enabled else 1)
+    if tta_enabled:
+        for i in range(BATCH * PIX):
+            goal_pix_host[i] = pix_host[i]  # goal windows just rendered
+    var snap = List[Scalar[DT]]()
+    if tta_enabled:
+        snap = wm.snapshot_all()  # restored at exit (fresh model/episode)
+
     var steps_per_plan = MPC_HORIZON * FRAMESKIP
     var n_plans = (eval_budget + steps_per_plan - 1) // steps_per_plan
     var do_viz = viz_path.byte_length() > 0
@@ -332,6 +377,26 @@ def run_lewm_paper_protocol[
             if steps_done >= eval_budget:
                 break
             var blk = H - 1 + j
+            # TTA: stage the pre-block frame per live env. Only blocks that
+            # will execute ALL FRAMESKIP sub-steps become window pairs — a
+            # budget-truncated block is a partial action the WM never saw.
+            var tta_block = tta_enabled and (
+                steps_done + FRAMESKIP <= eval_budget
+            )
+            if tta_block:
+                for b in range(BATCH):
+                    if succeeded[b]:
+                        continue
+                    if j == 0:
+                        # plan-time frame is still staged in pix_host
+                        tta_buf.push_frame(b, pix_host + (b * T) * IMG_DIM)
+                    else:
+                        var bp = envs[b].block_pose()
+                        var ap = envs[b].agent_pos()
+                        sim_frame_chw_norm[IMG](
+                            bp[0], bp[1], bp[2], ap[0], ap[1], tta_frame
+                        )
+                        tta_buf.push_frame(b, tta_frame)
             for k in range(FRAMESKIP):
                 if steps_done >= eval_budget:
                     break
@@ -370,6 +435,51 @@ def run_lewm_paper_protocol[
                     if r[0] < _SUCCESS_POS_PX and r[1] < _SUCCESS_ANG_RAD:
                         succeeded[b] = True
                 steps_done += 1
+            if tta_block:
+                # complete the (frame, action) pairs; an env that succeeded
+                # MID-block executed it partially — skip, orphaning the
+                # staged frame (the ring overwrites it).
+                for b in range(BATCH):
+                    if succeeded[b]:
+                        continue
+                    tta_buf.push_action(b, plan + (b * NEEDED + blk) * ACT)
+
+        # ── AdaJEPA adapt step: masked gradient steps on the fresh windows,
+        # re-sync the planner, and RE-ENCODE the goal latent (the training-
+        # mode steps move the BN running stats; start/goal must share them).
+        if tta_enabled and tta_buf.fill(pix_host, tta_act_host):
+            ctx_v.enqueue_copy(pix_dev, pix_host)
+            ctx_v.enqueue_copy(act_dev, tta_act_host)
+            ctx_v.synchronize()
+            var wpix_t = TileTensor(pix_d_p, row_major[BATCH, PIX]())
+            var wact_t = TileTensor(act_d_p, row_major[BATCH, ACTIN]())
+            var pre = wm.eval_loss(wpix_t, wact_t)
+            wm.reset_loss_accum()
+            wm.set_bn_training(True)
+            for _ in range(tta_steps):
+                _ = wm.train_step_masked(wpix_t, wact_t, keep)
+            wm.set_bn_training(False)
+            # without this re-sync the CEM plans on stale weights and the
+            # whole adapt step is a silent no-op
+            scorer.pred_net.sync_from_named(wm.export_named_params())
+            ctx_v.enqueue_copy(pix_dev, goal_pix_host)
+            ctx_v.synchronize()
+            var gp_t = TileTensor(pix_d_p, row_major[BATCH, PIX]())
+            var ga_t = TileTensor(act_d_p, row_major[BATCH, ACTIN]())
+            _ = wm.eval_loss(gp_t, ga_t)
+            wm.read_node_into["emb"](emb_host, BATCH * TE)
+            for b in range(BATCH):
+                for d in range(EMB):
+                    goal_lat[b * EMB + d] = emb_host[b * TE + d]
+            if verbose:
+                # step loss = training-mode loss at the PRE-update params;
+                # adaptation's effect shows in the NEXT cycle's pre value.
+                print(
+                    "   tta: window loss pre=",
+                    pre,
+                    " step(train-mode)=",
+                    wm.read_loss_accum(),
+                )
 
         if verbose:
             var ns = 0
@@ -449,6 +559,9 @@ def run_lewm_paper_protocol[
             vmax=255.0,
         )
 
+    if tta_enabled:
+        wm.restore_all(snap)  # fresh-model-per-episode: undo the TTA steps
+
     pix_host.free()
     emb_host.free()
     start_lat.free()
@@ -456,5 +569,8 @@ def run_lewm_paper_protocol[
     plan.free()
     viz_buf.free()
     viz_tmp.free()
+    tta_act_host.free()
+    tta_frame.free()
+    goal_pix_host.free()
     _ = scorer^
     return (success_rate, mp)
