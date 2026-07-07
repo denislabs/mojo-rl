@@ -13,3 +13,4 @@ from .data_fields import DataFields
 from .model_fields import ModelFields
 from .dynamics_scratch import DynamicsScratch
 from .contact_scratch import ContactScratch
+from .rk4_scratch import Rk4Scratch
