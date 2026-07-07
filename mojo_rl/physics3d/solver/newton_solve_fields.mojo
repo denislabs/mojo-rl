@@ -1,0 +1,1883 @@
+"""Newton contact solve over per-field tensors (migration P4, single-source).
+
+Per-field port of `NewtonSolver.solve_gpu` (solver/newton_solver.mojo:1127)
+— arithmetic, iteration order, constants (NEWTON_ITER_GPU=200,
+NEWTON_TOL_GPU=1e-8, LINESEARCH_ITER=20, PRIMAL_MINVAL_GPU=1e-12) and
+branch structure verbatim. Standalone solver entry only — NOT wired into
+the fields integrators (later slice).
+
+Structural transformation (the only deviation, identical to
+constraints/contact_solve_fields.mojo): the legacy kernel is 2D-threaded
+(thread_y = contact slot) with barriers; this port SERIALIZES it per env.
+The init + normal-precompute parallel phases become
+`for contact_tid in range(MC)` loops (matching the legacy launch with
+block_dim.y = MC and the helpers' internal `contact_tid < nc` guards); the
+friction phase becomes `for contact_tid in range(nc)` (its legacy launch
+guard). All phases write disjoint per-contact slots, so serialization is
+value-identical. The entire Newton core after the legacy
+`if not valid_env or contact_tid != 0: return` gate already runs
+single-thread and is ported as-is.
+
+Setup phases reuse the already-ported shared constraint-builder helpers
+from contact_solve_fields.mojo (`_init_common_normal_ws_fields`,
+`_precompute_contact_normal_fields`, `_precompute_contact_friction_fields`
+— the latter two are the shared CG/Newton builders, verbatim ports of
+`precompute_contact_normal_gpu` / `precompute_contact_friction_gpu`).
+
+Cone-dependent tails at the exact legacy positions with the legacy
+iteration count (SOLVER_ITER_GPU=50):
+- ELLIPTIC: after the Newton core, `_limits_env_fields` (port of
+  `detect_and_solve_limits_gpu`) then `_equality_env_fields` /
+  `_tendon_env_fields`.
+- PYRAMIDAL: joint limits are edge rows INSIDE the Newton optimization
+  (part of the verbatim core); equality/tendon after.
+Equality/tendon are call-site gated `comptime if NEQUALITY > 0` /
+`NTENDON > 0` (the legacy calls are unconditional with a comptime gate
+inside the builder — bit-identical for zero counts, same as the PGS port).
+Excluded: the legacy `dt` metadata read, whose only consumer was the
+(unused-arg) limits call.
+
+Workspace: the legacy Newton scratch is 35*MC + 6*MC*NV floats based at
+`ws_solver_offset`. This port keeps the exact layout as row-relative
+offsets into the fields `ContactScratch.solver` tensor, which is sized for
+PGS (81*MC + 12*MC*NV) — strictly larger, so Newton uses a PREFIX of it
+(no new scratch struct).
+
+Operands (20): the 19 of `solve_contacts_fields` + `M` (the Newton core
+reads the mass matrix for the Gauss term / Hessian; legacy `ws_M_offset`).
+The legacy `ws_fnet_offset` comptime was declared but never read — dropped.
+"""
+
+from std.math import sqrt, pow, abs
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
+
+from ..types import _max_one, ConeType
+from ..joint_types import JNT_HINGE, JNT_SLIDE
+from .cholesky import chol_factor_inline, chol_solve_inline
+from ..constraints.contact_solve_fields import (
+    _init_common_normal_ws_fields,
+    _precompute_contact_normal_fields,
+    _precompute_contact_friction_fields,
+)
+from ..constraints.limits_fields import _limits_env_fields
+from ..constraints.equality_tendon_fields import (
+    _equality_env_fields,
+    _tendon_env_fields,
+)
+from ..fields import DataFields, ModelFields, DynamicsScratch, ContactScratch
+from ..gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_JOINT_SIZE,
+    MODEL_META_SIZE,
+    MODEL_EQ_SIZE,
+    MODEL_TENDON_SIZE,
+    MODEL_SITE_SIZE,
+    METADATA_SIZE,
+    CONTACT_SIZE,
+    CONTACT_IDX_FORCE_N,
+    CONTACT_IDX_FORCE_T1,
+    CONTACT_IDX_FORCE_T2,
+    META_IDX_NUM_CONTACTS,
+    MODEL_META_IDX_SOLREF_CONTACT_0,
+    MODEL_META_IDX_SOLREF_CONTACT_1,
+    MODEL_META_IDX_SOLIMP_CONTACT_0,
+    MODEL_META_IDX_SOLIMP_CONTACT_1,
+    MODEL_META_IDX_SOLIMP_CONTACT_2,
+    MODEL_META_IDX_SOLIMP_CONTACT_3,
+    MODEL_META_IDX_SOLIMP_CONTACT_4,
+    MODEL_META_IDX_IMPRATIO,
+    MODEL_META_IDX_SOLREF_LIMIT_0,
+    MODEL_META_IDX_SOLREF_LIMIT_1,
+    MODEL_META_IDX_SOLIMP_LIMIT_0,
+    MODEL_META_IDX_SOLIMP_LIMIT_1,
+    MODEL_META_IDX_SOLIMP_LIMIT_2,
+    MODEL_META_IDX_SOLIMP_LIMIT_3,
+    MODEL_META_IDX_SOLIMP_LIMIT_4,
+    JOINT_IDX_TYPE,
+    JOINT_IDX_DOF_ADR,
+    JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_RANGE_MIN,
+    JOINT_IDX_RANGE_MAX,
+    JOINT_IDX_SOLREF_LIMIT_0,
+    JOINT_IDX_SOLREF_LIMIT_1,
+    JOINT_IDX_SOLIMP_LIMIT_0,
+    JOINT_IDX_SOLIMP_LIMIT_1,
+    JOINT_IDX_SOLIMP_LIMIT_2,
+    JOINT_IDX_SOLIMP_LIMIT_3,
+    JOINT_IDX_SOLIMP_LIMIT_4,
+)
+
+comptime NS_TPB: Int = 64
+
+
+# =============================================================================
+# Newton contact solve — single-source per-env body (port of
+# NewtonSolver.solve_gpu)
+# =============================================================================
+
+
+@always_inline
+def _newton_solve_env_fields[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+    NEQUALITY: Int,
+    NTENDON: Int,
+    NSITE: Int,
+    CONE_TYPE: Int,
+    BATCH: Int,
+    SOLVER_WS: Int,
+](
+    env: Int,
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE,
+        Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    smeta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    mmeta: LayoutTensor[
+        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+    ],
+    equality: LayoutTensor[
+        DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
+    ],
+    tendons: LayoutTensor[
+        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
+    ],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    body_invweight0: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
+    ],
+    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    m_inv: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
+    ],
+    qacc_constrained: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+    ],
+    solver: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, SOLVER_WS), MutAnyOrigin
+    ],
+):
+    """Full primal Newton contact solve for one env (verbatim from
+    NewtonSolver.solve_gpu, serialized per env — see module docstring)."""
+    comptime MC = _max_one[MAX_CONTACTS]()
+    comptime V_SIZE = _max_one[NV]()
+    comptime M_SIZE = _max_one[NV * NV]()
+
+    # Common normal block offsets (row-relative; the legacy `solver_ws_idx`
+    # base is gone)
+    comptime ws_c_dist_idx = 2 * MC
+    comptime ws_pos_bias_idx = 11 * MC
+    comptime ws_J_n_idx = 15 * MC
+
+    # Primal-specific offsets (after common normal block)
+    comptime PRIMAL_START = 15 * MC + 2 * MC * NV
+    comptime ws_Jt1_idx = PRIMAL_START + 0 * MC * NV
+    comptime ws_Jt2_idx = PRIMAL_START + 1 * MC * NV
+    comptime ws_MinvJt1_idx = PRIMAL_START + 2 * MC * NV
+    comptime ws_MinvJt2_idx = PRIMAL_START + 3 * MC * NV
+    comptime SC = PRIMAL_START + 4 * MC * NV
+    comptime ws_mu_idx = SC + 0 * MC
+    comptime ws_D_n_idx = SC + 1 * MC
+    comptime ws_D_f_idx = SC + 2 * MC
+    comptime ws_bt1_idx = SC + 3 * MC
+    comptime ws_bt2_idx = SC + 4 * MC
+    comptime CVS = SC + 5 * MC
+    comptime ws_jar_n_idx = CVS + 0 * MC
+    comptime ws_jar_t1_idx = CVS + 1 * MC
+    comptime ws_jar_t2_idx = CVS + 2 * MC
+    comptime ws_fn_idx = CVS + 3 * MC
+    comptime ws_ft1_idx = CVS + 4 * MC
+    comptime ws_ft2_idx = CVS + 5 * MC
+    comptime ws_cstate_idx = CVS + 6 * MC
+
+    # === Initialize workspace (legacy: parallel, one thread per slot; the
+    # legacy `contact_tid < MC` guard is vacuous with block_dim.y = MC) ===
+    for contact_tid in range(MC):
+        _init_common_normal_ws_fields[
+            DTYPE, NV, MAX_CONTACTS, BATCH, SOLVER_WS
+        ](env, contact_tid, solver)
+        # Zero primal workspace for this contact slot
+        for d in range(NV):
+            solver[env, ws_Jt1_idx + contact_tid * NV + d] = 0
+            solver[env, ws_Jt2_idx + contact_tid * NV + d] = 0
+            solver[env, ws_MinvJt1_idx + contact_tid * NV + d] = 0
+            solver[env, ws_MinvJt2_idx + contact_tid * NV + d] = 0
+        solver[env, ws_mu_idx + contact_tid] = 0
+        solver[env, ws_D_n_idx + contact_tid] = 0
+        solver[env, ws_D_f_idx + contact_tid] = 0
+        solver[env, ws_bt1_idx + contact_tid] = 0
+        solver[env, ws_bt2_idx + contact_tid] = 0
+        solver[env, ws_jar_n_idx + contact_tid] = 0
+        solver[env, ws_jar_t1_idx + contact_tid] = 0
+        solver[env, ws_jar_t2_idx + contact_tid] = 0
+        solver[env, ws_fn_idx + contact_tid] = 0
+        solver[env, ws_ft1_idx + contact_tid] = 0
+        solver[env, ws_ft2_idx + contact_tid] = 0
+        solver[env, ws_cstate_idx + contact_tid] = 0
+
+    # Read metadata (legacy `dt` read dropped — only the unused-arg limits
+    # call consumed it)
+    var nc = 0
+    var K_spring: Scalar[DTYPE] = 0
+    var B_damp: Scalar[DTYPE] = 0
+    var si_dmin: Scalar[DTYPE] = 0
+    var si_dmax: Scalar[DTYPE] = 0
+    var si_width: Scalar[DTYPE] = 1
+    var si_midpoint: Scalar[DTYPE] = Scalar[DTYPE](0.5)
+    var si_power: Scalar[DTYPE] = Scalar[DTYPE](2.0)
+    var impratio: Scalar[DTYPE] = Scalar[DTYPE](1.0)
+
+    nc = Int(rebind[Scalar[DTYPE]](smeta[env, META_IDX_NUM_CONTACTS]))
+    if nc > MAX_CONTACTS:
+        nc = MAX_CONTACTS
+    var sr_tc = rebind[Scalar[DTYPE]](
+        mmeta[MODEL_META_IDX_SOLREF_CONTACT_0]
+    )
+    var sr_dr = rebind[Scalar[DTYPE]](
+        mmeta[MODEL_META_IDX_SOLREF_CONTACT_1]
+    )
+    si_dmin = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_CONTACT_0])
+    si_dmax = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_CONTACT_1])
+    si_width = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_CONTACT_2])
+    si_midpoint = rebind[Scalar[DTYPE]](
+        mmeta[MODEL_META_IDX_SOLIMP_CONTACT_3]
+    )
+    si_power = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_SOLIMP_CONTACT_4])
+    if si_width < Scalar[DTYPE](1e-6):
+        si_width = Scalar[DTYPE](1e-6)
+    if si_dmax < Scalar[DTYPE](1e-4):
+        si_dmax = Scalar[DTYPE](1e-4)
+    K_spring = Scalar[DTYPE](1.0) / (
+        si_dmax * si_dmax * sr_tc * sr_tc * sr_dr * sr_dr
+    )
+    B_damp = Scalar[DTYPE](2.0) / (si_dmax * sr_tc)
+    impratio = rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_IMPRATIO])
+    if impratio < Scalar[DTYPE](1e-6):
+        impratio = Scalar[DTYPE](1.0)
+
+    # === PHASE 1: normal precompute (legacy: parallel, one thread per
+    # contact slot; internal `contact_tid < nc` guard kept in the helper) ===
+    for contact_tid in range(MC):
+        _precompute_contact_normal_fields[
+            DTYPE, NV, NBODY, NJOINT, MAX_CONTACTS, V_SIZE, BATCH, SOLVER_WS
+        ](
+            env,
+            contact_tid,
+            nc,
+            qvel,
+            subtree_com,
+            contacts,
+            joints,
+            bodies,
+            mmeta,
+            body_invweight0,
+            cdof,
+            m_inv,
+            qacc_constrained,
+            solver,
+            K_spring,
+            B_damp,
+            si_dmin,
+            si_dmax,
+            si_width,
+            si_midpoint,
+            si_power,
+        )
+
+    # === PHASE 2: Tangent frame + friction data (legacy launch guard
+    # `contact_tid < nc`) ===
+    for contact_tid in range(nc):
+        _precompute_contact_friction_fields[
+            DTYPE,
+            NV,
+            NBODY,
+            NJOINT,
+            MAX_CONTACTS,
+            V_SIZE,
+            BATCH,
+            SOLVER_WS,
+            CONE_TYPE,
+        ](
+            env,
+            contact_tid,
+            nc,
+            qvel,
+            subtree_com,
+            contacts,
+            joints,
+            bodies,
+            mmeta,
+            cdof,
+            solver,
+            B_damp,
+            impratio,
+            K_spring,
+            ws_Jt1_idx,
+            ws_Jt2_idx,
+            ws_mu_idx,
+            ws_D_n_idx,
+            ws_D_f_idx,
+            ws_bt1_idx,
+            ws_bt2_idx,
+        )
+
+    # === SEQUENTIAL: primal Newton (legacy: thread 0) ===
+    comptime NEWTON_ITER_GPU: Int = 200
+    comptime NEWTON_TOL_GPU: Float64 = 1e-8
+    comptime LINESEARCH_ITER: Int = 20
+    comptime ARMIJO: Float64 = 1e-4
+    comptime PRIMAL_MINVAL_GPU: Float64 = 1e-12
+
+    comptime if CONE_TYPE == ConeType.PYRAMIDAL:
+        # =================================================================
+        # PYRAMIDAL Newton: iterate over edge rows (all >= 0 constraints)
+        # 4 edges per contact for condim=3: J_e = J_n ± mu*J_t
+        # No cone coupling — simpler than ELLIPTIC
+        # =================================================================
+        comptime NE = 4  # edges per contact
+        comptime MAX_LIM = _max_one[2 * NJOINT]()
+        comptime ME = NE * MC + MAX_LIM  # contact edges + limit edges
+
+        # Cache edge data from PYRAMIDAL workspace layout
+        var pyr_sc = ws_Jt1_idx + 4 * MC * NV
+        var Je = InlineArray[Scalar[DTYPE], ME * V_SIZE](uninitialized=True)
+        var De = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+        var bias_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+        var num_edges = nc * NE
+
+        # Load contact edges
+        for c in range(nc):
+            for e in range(NE):
+                var idx = c * NE + e
+                for i in range(NV):
+                    Je[idx * NV + i] = rebind[Scalar[DTYPE]](
+                        solver[env, ws_Jt1_idx + e * MC * NV + c * NV + i]
+                    )
+                De[idx] = rebind[Scalar[DTYPE]](
+                    solver[env, pyr_sc + e * MC + c]
+                )
+                bias_e[idx] = rebind[Scalar[DTYPE]](
+                    solver[env, pyr_sc + 4 * MC + e * MC + c]
+                )
+
+        # Detect and add joint limit edges (unified with contacts)
+        # Matches CPU build_constraints: per-joint solref/solimp with
+        # model-level defaults fallback
+        # Model-level defaults for fallback
+        var lr_tc_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLREF_LIMIT_0]
+        )
+        var lr_dr_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLREF_LIMIT_1]
+        )
+        var li_dmin_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLIMP_LIMIT_0]
+        )
+        var li_dmax_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLIMP_LIMIT_1]
+        )
+        var li_width_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLIMP_LIMIT_2]
+        )
+        var li_midpoint_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLIMP_LIMIT_3]
+        )
+        var li_power_def = rebind[Scalar[DTYPE]](
+            mmeta[MODEL_META_IDX_SOLIMP_LIMIT_4]
+        )
+
+        for j in range(NJOINT):
+            var jtype = Int(
+                rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE])
+            )
+            if jtype != JNT_HINGE and jtype != JNT_SLIDE:
+                continue
+            var dof = Int(
+                rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR])
+            )
+            var qpos_adr = Int(
+                rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_QPOS_ADR])
+            )
+            var rmin = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_RANGE_MIN]
+            )
+            var rmax = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_RANGE_MAX]
+            )
+            if rmin < Scalar[DTYPE](-1e9) or rmax > Scalar[DTYPE](1e9):
+                continue
+            # Per-joint solref/solimp with model-level defaults fallback
+            var lr_tc = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLREF_LIMIT_0]
+            )
+            var lr_dr = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLREF_LIMIT_1]
+            )
+            if lr_tc <= Scalar[DTYPE](0):
+                lr_tc = lr_tc_def
+            if lr_dr <= Scalar[DTYPE](0):
+                lr_dr = lr_dr_def
+            var li_dmin = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLIMP_LIMIT_0]
+            )
+            var li_dmax = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLIMP_LIMIT_1]
+            )
+            var li_width = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLIMP_LIMIT_2]
+            )
+            var li_midpoint = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLIMP_LIMIT_3]
+            )
+            var li_power = rebind[Scalar[DTYPE]](
+                joints[j, JOINT_IDX_SOLIMP_LIMIT_4]
+            )
+            if li_dmax <= Scalar[DTYPE](0) and li_width <= Scalar[DTYPE](0):
+                li_dmin = li_dmin_def
+                li_dmax = li_dmax_def
+                li_width = li_width_def
+                li_midpoint = li_midpoint_def
+                li_power = li_power_def
+            if li_width < Scalar[DTYPE](1e-6):
+                li_width = Scalar[DTYPE](1e-6)
+            if li_dmax < Scalar[DTYPE](1e-4):
+                li_dmax = Scalar[DTYPE](1e-4)
+            var l_K_spring = Scalar[DTYPE](1.0) / (
+                li_dmax * li_dmax * lr_tc * lr_tc * lr_dr * lr_dr
+            )
+            var l_B_damp = Scalar[DTYPE](2.0) / (li_dmax * lr_tc)
+
+            var pos = rebind[Scalar[DTYPE]](qpos[env, qpos_adr])
+            # Lower limit: dist_lo = pos - rmin < 0 → violated
+            var dist_lo = pos - rmin
+            if dist_lo < Scalar[DTYPE](0) and num_edges < ME:
+                var sign = Scalar[DTYPE](1)
+                var K_lim = rebind[Scalar[DTYPE]](
+                    m_inv[env, dof * NV + dof]
+                )
+                if K_lim < Scalar[DTYPE](1e-10):
+                    K_lim = Scalar[DTYPE](1e-10)
+                var pen = -dist_lo
+                var v_lim = sign * rebind[Scalar[DTYPE]](qvel[env, dof])
+                # Impedance
+                var imp_lim: Scalar[DTYPE]
+                if li_dmin == li_dmax or li_width <= Scalar[DTYPE](0):
+                    imp_lim = Scalar[DTYPE](0.5) * (li_dmin + li_dmax)
+                else:
+                    var x_l = pen / li_width
+                    if x_l <= Scalar[DTYPE](0):
+                        imp_lim = li_dmin
+                    elif x_l >= Scalar[DTYPE](1):
+                        imp_lim = li_dmax
+                    else:
+                        var y_l: Scalar[DTYPE]
+                        if li_power == Scalar[DTYPE](1):
+                            y_l = x_l
+                        elif x_l <= li_midpoint:
+                            y_l = pow(x_l, li_power) / pow(
+                                li_midpoint, li_power - Scalar[DTYPE](1)
+                            )
+                        else:
+                            y_l = Scalar[DTYPE](1) - pow(
+                                Scalar[DTYPE](1) - x_l, li_power
+                            ) / pow(
+                                Scalar[DTYPE](1) - li_midpoint,
+                                li_power - Scalar[DTYPE](1),
+                            )
+                        imp_lim = li_dmin + y_l * (li_dmax - li_dmin)
+                if imp_lim < Scalar[DTYPE](1e-6):
+                    imp_lim = Scalar[DTYPE](1e-6)
+                var diag_lim = rebind[Scalar[DTYPE]](dof_invweight0[dof])
+                if diag_lim < Scalar[DTYPE](1e-10):
+                    diag_lim = K_lim
+                var R_lim = (
+                    (Scalar[DTYPE](1) - imp_lim) / imp_lim * diag_lim
+                )
+                if R_lim < Scalar[DTYPE](1e-14):
+                    R_lim = Scalar[DTYPE](1e-14)
+                # Sparse Jacobian: Je[dof] = sign, others 0
+                for i in range(NV):
+                    Je[num_edges * NV + i] = Scalar[DTYPE](0)
+                Je[num_edges * NV + dof] = sign
+                # Match CPU: inv_K = 1/(K+R), D = 1/(1/inv_K - K)
+                # Same float32 rounding as primal_D(inv_K_imp, K)
+                var inv_K_lim = Scalar[DTYPE](1) / (K_lim + R_lim)
+                var R_recov = Scalar[DTYPE](1) / inv_K_lim - K_lim
+                if R_recov < Scalar[DTYPE](1e-14):
+                    R_recov = Scalar[DTYPE](1e-14)
+                De[num_edges] = Scalar[DTYPE](1) / R_recov
+                bias_e[num_edges] = (
+                    l_B_damp * v_lim - l_K_spring * imp_lim * pen
+                )
+                num_edges += 1
+
+            # Upper limit: dist_hi = rmax - pos < 0 → violated
+            var dist_hi = rmax - pos
+            if dist_hi < Scalar[DTYPE](0) and num_edges < ME:
+                var sign = Scalar[DTYPE](-1)
+                var K_lim = rebind[Scalar[DTYPE]](
+                    m_inv[env, dof * NV + dof]
+                )
+                if K_lim < Scalar[DTYPE](1e-10):
+                    K_lim = Scalar[DTYPE](1e-10)
+                var pen = -dist_hi
+                var v_lim = sign * rebind[Scalar[DTYPE]](qvel[env, dof])
+                var imp_lim: Scalar[DTYPE]
+                if li_dmin == li_dmax or li_width <= Scalar[DTYPE](0):
+                    imp_lim = Scalar[DTYPE](0.5) * (li_dmin + li_dmax)
+                else:
+                    var x_l = pen / li_width
+                    if x_l <= Scalar[DTYPE](0):
+                        imp_lim = li_dmin
+                    elif x_l >= Scalar[DTYPE](1):
+                        imp_lim = li_dmax
+                    else:
+                        var y_l: Scalar[DTYPE]
+                        if li_power == Scalar[DTYPE](1):
+                            y_l = x_l
+                        elif x_l <= li_midpoint:
+                            y_l = pow(x_l, li_power) / pow(
+                                li_midpoint, li_power - Scalar[DTYPE](1)
+                            )
+                        else:
+                            y_l = Scalar[DTYPE](1) - pow(
+                                Scalar[DTYPE](1) - x_l, li_power
+                            ) / pow(
+                                Scalar[DTYPE](1) - li_midpoint,
+                                li_power - Scalar[DTYPE](1),
+                            )
+                        imp_lim = li_dmin + y_l * (li_dmax - li_dmin)
+                if imp_lim < Scalar[DTYPE](1e-6):
+                    imp_lim = Scalar[DTYPE](1e-6)
+                var diag_lim = rebind[Scalar[DTYPE]](dof_invweight0[dof])
+                if diag_lim < Scalar[DTYPE](1e-10):
+                    diag_lim = K_lim
+                var R_lim = (
+                    (Scalar[DTYPE](1) - imp_lim) / imp_lim * diag_lim
+                )
+                if R_lim < Scalar[DTYPE](1e-14):
+                    R_lim = Scalar[DTYPE](1e-14)
+                for i in range(NV):
+                    Je[num_edges * NV + i] = Scalar[DTYPE](0)
+                Je[num_edges * NV + dof] = sign
+                # Match CPU: inv_K = 1/(K+R), D = 1/(1/inv_K - K)
+                # Same float32 rounding as primal_D(inv_K_imp, K)
+                var inv_K_lim = Scalar[DTYPE](1) / (K_lim + R_lim)
+                var R_recov = Scalar[DTYPE](1) / inv_K_lim - K_lim
+                if R_recov < Scalar[DTYPE](1e-14):
+                    R_recov = Scalar[DTYPE](1e-14)
+                De[num_edges] = Scalar[DTYPE](1) / R_recov
+                bias_e[num_edges] = (
+                    l_B_damp * v_lim - l_K_spring * imp_lim * pen
+                )
+                num_edges += 1
+
+        # Initialize qacc from workspace (qacc_smooth set by stage kernel)
+        var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var qacc_smooth = InlineArray[Scalar[DTYPE], V_SIZE](
+            uninitialized=True
+        )
+        var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+
+        # Cache M locally once — M is loop-invariant during Newton iterations.
+        # Avoids ~2*NV² workspace (global) reads per iteration (Hessian build
+        # + Mv = M*search). Mirrors the ELLIPTIC path's M_local optimization.
+        var M_local = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        for k in range(NV * NV):
+            M_local[k] = rebind[Scalar[DTYPE]](M[env, k])
+
+        for i in range(NV):
+            var q_i = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
+            qacc[i] = q_i
+            qacc_smooth[i] = q_i
+        for i in range(NV):
+            Ma[i] = Scalar[DTYPE](0)
+            for j in range(NV):
+                Ma[i] += M_local[i * NV + j] * qacc[j]
+        # f_smooth = M * qacc (matching CPU's qfrc_smooth = M * qacc_smooth)
+        # Using Ma directly avoids LDL round-trip error (f_net ≠ M*M^{-1}*f_net)
+        var f_smooth = InlineArray[Scalar[DTYPE], V_SIZE](
+            uninitialized=True
+        )
+        for i in range(NV):
+            f_smooth[i] = Ma[i]
+
+        # Scale for convergence check
+        var scale: Scalar[DTYPE] = 0
+        for i in range(NV):
+            scale += M_local[i * NV + i]
+        if scale > Scalar[DTYPE](1e-10):
+            scale = Scalar[DTYPE](1.0) / scale
+        else:
+            scale = Scalar[DTYPE](1.0)
+
+        # Working arrays
+        var jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+        var force = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+        var H = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        var L_chol = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+        var grad = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+
+        # Initial jar + force + qfrc
+        var qfrc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+        for i in range(NV):
+            qfrc[i] = Scalar[DTYPE](0)
+        for e_idx in range(num_edges):
+            jar[e_idx] = bias_e[e_idx]
+            for i in range(NV):
+                jar[e_idx] += Je[e_idx * NV + i] * qacc[i]
+            if jar[e_idx] >= Scalar[DTYPE](0):
+                force[e_idx] = Scalar[DTYPE](0)
+            else:
+                force[e_idx] = -De[e_idx] * jar[e_idx]
+            for i in range(NV):
+                qfrc[i] += Je[e_idx * NV + i] * force[e_idx]
+
+        # Newton iterations
+        for iter_n in range(NEWTON_ITER_GPU):
+            # Gradient
+            var grad_norm: Scalar[DTYPE] = 0
+            for i in range(NV):
+                grad[i] = Ma[i] - f_smooth[i] - qfrc[i]
+                grad_norm += grad[i] * grad[i]
+
+            if scale * sqrt(grad_norm) < Scalar[DTYPE](NEWTON_TOL_GPU):
+                break
+
+            # Build Hessian H = M + sum_active(D[e] * Je^T * Je)
+            for i in range(NV):
+                for j in range(NV):
+                    H[i * NV + j] = M_local[i * NV + j]
+            for e_idx in range(num_edges):
+                if force[e_idx] > Scalar[DTYPE](0):
+                    for i in range(NV):
+                        for j in range(NV):
+                            H[i * NV + j] += (
+                                De[e_idx]
+                                * Je[e_idx * NV + i]
+                                * Je[e_idx * NV + j]
+                            )
+
+            # Cholesky solve
+            var chol_ok = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+            if not chol_ok:
+                for i in range(NV):
+                    H[i * NV + i] += Scalar[DTYPE](1e-6)
+                _ = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+            chol_solve_inline[DTYPE, NV, M_SIZE, V_SIZE](
+                L_chol, grad, search
+            )
+            for i in range(NV):
+                search[i] = -search[i]
+
+            # Mv = M * search
+            for i in range(NV):
+                Mv[i] = Scalar[DTYPE](0)
+                for j in range(NV):
+                    Mv[i] += M_local[i * NV + j] * search[j]
+
+            # Analytical Newton linesearch (matches CPU primal_linesearch_with_D)
+            # Precompute Jv_e = Je · search for each edge
+            var Jv_e = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+            for e_idx in range(num_edges):
+                Jv_e[e_idx] = Scalar[DTYPE](0)
+                for i in range(NV):
+                    Jv_e[e_idx] += Je[e_idx * NV + i] * search[i]
+
+            # Analytical Newton linesearch (matching CPU primal_linesearch_with_D)
+            var gauss_a: Scalar[DTYPE] = 0
+            var gauss_b: Scalar[DTYPE] = 0
+            for i in range(NV):
+                gauss_a += Mv[i] * search[i]
+                gauss_b += (Ma[i] - f_smooth[i]) * search[i]
+
+            # Evaluate d1, d2 at alpha=0
+            var p0_d1 = gauss_b
+            var p0_d2 = gauss_a
+            for e_idx in range(num_edges):
+                if jar[e_idx] < Scalar[DTYPE](0):
+                    p0_d1 += De[e_idx] * jar[e_idx] * Jv_e[e_idx]
+                    p0_d2 += De[e_idx] * Jv_e[e_idx] * Jv_e[e_idx]
+            if p0_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+
+            var alpha: Scalar[DTYPE] = 0
+            if p0_d1 < Scalar[DTYPE](0):
+                # Analytical initial alpha, then cost-based halving
+                alpha = -p0_d1 / p0_d2
+
+                # Compute old cost for acceptance check
+                # Gauss cost = 0.5*(Ma-f_smooth)·(qacc-qacc_smooth)
+                var old_cost: Scalar[DTYPE] = 0
+                for i in range(NV):
+                    old_cost += (
+                        Scalar[DTYPE](0.5)
+                        * (Ma[i] - f_smooth[i])
+                        * (qacc[i] - qacc_smooth[i])
+                    )
+                for e_idx in range(num_edges):
+                    if jar[e_idx] < Scalar[DTYPE](0):
+                        old_cost += (
+                            Scalar[DTYPE](0.5)
+                            * De[e_idx]
+                            * jar[e_idx]
+                            * jar[e_idx]
+                        )
+
+                # Try alpha, halve if cost doesn't decrease
+                for _ in range(LINESEARCH_ITER):
+                    var trial_cost: Scalar[DTYPE] = 0
+                    for i in range(NV):
+                        var qa_t = qacc[i] + alpha * search[i]
+                        var Ma_t = Ma[i] + alpha * Mv[i]
+                        trial_cost += (
+                            Scalar[DTYPE](0.5)
+                            * (Ma_t - f_smooth[i])
+                            * (qa_t - qacc_smooth[i])
+                        )
+                    for e_idx in range(num_edges):
+                        var jar_t = jar[e_idx] + alpha * Jv_e[e_idx]
+                        if jar_t < Scalar[DTYPE](0):
+                            trial_cost += (
+                                Scalar[DTYPE](0.5)
+                                * De[e_idx]
+                                * jar_t
+                                * jar_t
+                            )
+                    if trial_cost <= old_cost:
+                        break
+                    alpha *= Scalar[DTYPE](0.5)
+
+            if alpha < Scalar[DTYPE](1e-10):
+                break
+
+            # Save old state for cost revert (matching CPU solver)
+            var old_qacc = InlineArray[Scalar[DTYPE], V_SIZE](
+                uninitialized=True
+            )
+            var old_Ma = InlineArray[Scalar[DTYPE], V_SIZE](
+                uninitialized=True
+            )
+            var old_jar = InlineArray[Scalar[DTYPE], ME](uninitialized=True)
+            var old_force = InlineArray[Scalar[DTYPE], ME](
+                uninitialized=True
+            )
+            var old_qfrc = InlineArray[Scalar[DTYPE], V_SIZE](
+                uninitialized=True
+            )
+            for i in range(NV):
+                old_qacc[i] = qacc[i]
+                old_Ma[i] = Ma[i]
+                old_qfrc[i] = qfrc[i]
+            for e_idx in range(num_edges):
+                old_jar[e_idx] = jar[e_idx]
+                old_force[e_idx] = force[e_idx]
+
+            # Compute old cost: gauss + constraint
+            var old_cost: Scalar[DTYPE] = 0
+            for i in range(NV):
+                old_cost += (
+                    Scalar[DTYPE](0.5)
+                    * (Ma[i] - f_smooth[i])
+                    * (qacc[i] - qacc_smooth[i])
+                )
+            for e_idx in range(num_edges):
+                if jar[e_idx] < Scalar[DTYPE](0):
+                    old_cost += (
+                        Scalar[DTYPE](0.5)
+                        * De[e_idx]
+                        * jar[e_idx]
+                        * jar[e_idx]
+                    )
+
+            # Update qacc, Ma
+            for i in range(NV):
+                qacc[i] += alpha * search[i]
+                Ma[i] += alpha * Mv[i]
+
+            # Recompute jar, force, qfrc
+            for i in range(NV):
+                qfrc[i] = Scalar[DTYPE](0)
+            for e_idx in range(num_edges):
+                jar[e_idx] = bias_e[e_idx]
+                for i in range(NV):
+                    jar[e_idx] += Je[e_idx * NV + i] * qacc[i]
+                if jar[e_idx] >= Scalar[DTYPE](0):
+                    force[e_idx] = Scalar[DTYPE](0)
+                else:
+                    force[e_idx] = -De[e_idx] * jar[e_idx]
+                for i in range(NV):
+                    qfrc[i] += Je[e_idx * NV + i] * force[e_idx]
+
+            # Compute new cost and check improvement
+            var new_cost: Scalar[DTYPE] = 0
+            for i in range(NV):
+                new_cost += (
+                    Scalar[DTYPE](0.5)
+                    * (Ma[i] - f_smooth[i])
+                    * (qacc[i] - qacc_smooth[i])
+                )
+            for e_idx in range(num_edges):
+                if jar[e_idx] < Scalar[DTYPE](0):
+                    new_cost += (
+                        Scalar[DTYPE](0.5)
+                        * De[e_idx]
+                        * jar[e_idx]
+                        * jar[e_idx]
+                    )
+
+            var improvement = scale * (old_cost - new_cost)
+            if improvement < Scalar[DTYPE](NEWTON_TOL_GPU) and iter_n > 0:
+                if improvement < Scalar[DTYPE](0):
+                    # Cost increased — revert to old state
+                    for i in range(NV):
+                        qacc[i] = old_qacc[i]
+                        Ma[i] = old_Ma[i]
+                        qfrc[i] = old_qfrc[i]
+                    for e_idx in range(num_edges):
+                        jar[e_idx] = old_jar[e_idx]
+                        force[e_idx] = old_force[e_idx]
+                break
+
+        # Write qacc back
+        for i in range(NV):
+            qacc_constrained[env, i] = qacc[i]
+
+        # Write forces to state: reconstruct per-contact N/T1/T2
+        for c in range(nc):
+            var fn_c: Scalar[DTYPE] = 0
+            var ft1_c: Scalar[DTYPE] = 0
+            var ft2_c: Scalar[DTYPE] = 0
+            var mu_c = rebind[Scalar[DTYPE]](
+                solver[env, pyr_sc + 8 * MC + c]
+            )
+            var safe_mu = mu_c
+            if safe_mu < Scalar[DTYPE](1e-8):
+                safe_mu = Scalar[DTYPE](1e-8)
+            # f_n = sum of edge forces / num_tangent_dirs
+            # f_tk = (f_edge_pos - f_edge_neg) * mu
+            var f_e0 = force[c * NE + 0]
+            var f_e1 = force[c * NE + 1]
+            var f_e2 = force[c * NE + 2]
+            var f_e3 = force[c * NE + 3]
+            fn_c = (f_e0 + f_e1 + f_e2 + f_e3) / Scalar[DTYPE](2.0)
+            ft1_c = (f_e0 - f_e1) * safe_mu
+            ft2_c = (f_e2 - f_e3) * safe_mu
+            var c_off = c * CONTACT_SIZE
+            contacts[env, c_off + CONTACT_IDX_FORCE_N] = fn_c
+            contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_c
+            contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_c
+
+        # Joint limits are now handled as edges in the Newton solver above.
+        # Only equality constraints remain as a separate post-solve step.
+        comptime SOLVER_ITER_GPU: Int = 50
+        comptime if NEQUALITY > 0:
+            _equality_env_fields[
+                DTYPE, NV, NBODY, NJOINT, NEQUALITY, NTENDON, NSITE, V_SIZE,
+                BATCH, SOLVER_ITER_GPU,
+            ](
+                env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+                equality, tendons, sites, body_invweight0, dof_invweight0,
+                cdof, m_inv, qacc_constrained,
+            )
+        comptime if NTENDON > 0:
+            _tendon_env_fields[
+                DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
+                SOLVER_ITER_GPU,
+            ](
+                env, qpos, qvel, joints, mmeta, tendons, sites,
+                body_invweight0, dof_invweight0, m_inv, qacc_constrained,
+            )
+        return  # PYRAMIDAL path complete
+
+    # === ELLIPTIC path (existing code) ===
+    # === Cache loop-invariant contact data into local InlineArrays ===
+    # Jn, Jt1, Jt2, mu, D_n, D_f, dist, pos_bias, bt1, bt2 never change
+    # during Newton iterations — load once to avoid ~1000 workspace reads/iter.
+    var Jn_c = InlineArray[Scalar[DTYPE], MC * V_SIZE](uninitialized=True)
+    var Jt1_c = InlineArray[Scalar[DTYPE], MC * V_SIZE](uninitialized=True)
+    var Jt2_c = InlineArray[Scalar[DTYPE], MC * V_SIZE](uninitialized=True)
+    var mu_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var D_n_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var D_f_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var dist_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var pb_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var bt1_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var bt2_cache = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    for c in range(nc):
+        dist_cache[c] = rebind[Scalar[DTYPE]](
+            solver[env, ws_c_dist_idx + c]
+        )
+        mu_cache[c] = rebind[Scalar[DTYPE]](solver[env, ws_mu_idx + c])
+        D_n_cache[c] = rebind[Scalar[DTYPE]](solver[env, ws_D_n_idx + c])
+        D_f_cache[c] = rebind[Scalar[DTYPE]](solver[env, ws_D_f_idx + c])
+        pb_cache[c] = rebind[Scalar[DTYPE]](
+            solver[env, ws_pos_bias_idx + c]
+        )
+        bt1_cache[c] = rebind[Scalar[DTYPE]](solver[env, ws_bt1_idx + c])
+        bt2_cache[c] = rebind[Scalar[DTYPE]](solver[env, ws_bt2_idx + c])
+        for i in range(NV):
+            Jn_c[c * NV + i] = rebind[Scalar[DTYPE]](
+                solver[env, ws_J_n_idx + c * NV + i]
+            )
+            Jt1_c[c * NV + i] = rebind[Scalar[DTYPE]](
+                solver[env, ws_Jt1_idx + c * NV + i]
+            )
+            Jt2_c[c * NV + i] = rebind[Scalar[DTYPE]](
+                solver[env, ws_Jt2_idx + c * NV + i]
+            )
+
+    # === Step 2: Initialize local InlineArrays from workspace ===
+    var H = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+    var L_chol = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+    var qacc = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var qacc_sm = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var qfrc_sm = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var Ma = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var grad = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var search = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    var Mv = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+
+    # Load M into H (primal Hessian starts as M_hat)
+    for k in range(NV * NV):
+        H[k] = rebind[Scalar[DTYPE]](M[env, k])
+
+    # Cache M locally — saves NV² workspace reads per Newton iteration (for Mv = M*search)
+    var M_local = InlineArray[Scalar[DTYPE], M_SIZE](uninitialized=True)
+    for k in range(NV * NV):
+        M_local[k] = H[k]
+
+    # qacc_sm = unconstrained qacc (set by integrator), save a copy
+    for i in range(NV):
+        var q_i = rebind[Scalar[DTYPE]](qacc_constrained[env, i])
+        qacc[i] = q_i
+        qacc_sm[i] = q_i
+
+    # Ma = M_local * qacc (uses cached M — no workspace reads)
+    for i in range(NV):
+        var s: Scalar[DTYPE] = 0
+        for j in range(NV):
+            s += M_local[i * NV + j] * qacc[j]
+        Ma[i] = s
+
+    # qfrc_sm = M * qacc (matching CPU's qfrc_smooth = M * qacc_smooth)
+    # Using Ma directly avoids LDL round-trip error
+    for i in range(NV):
+        qfrc_sm[i] = Ma[i]
+
+    # Scale = 1/trace(M) for convergence check
+    var scale: Scalar[DTYPE] = 0
+    for i in range(NV):
+        scale += M_local[i * NV + i]
+    if scale > Scalar[DTYPE](1e-10):
+        scale = Scalar[DTYPE](1.0) / scale
+    else:
+        scale = Scalar[DTYPE](1.0)
+
+    # === Mutable per-contact state: kept in InlineArrays, written to state buffer at end ===
+    var fn_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var ft1_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var ft2_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var jar_n_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var jar_t1_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var jar_t2_arr = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+    var cs_arr = InlineArray[Int, MC](uninitialized=True)
+
+    # === Step 3: Compute initial jar and forces via 3-zone cone logic ===
+    for c in range(nc):
+        if dist_cache[c] >= Scalar[DTYPE](0):
+            fn_arr[c] = 0
+            ft1_arr[c] = 0
+            ft2_arr[c] = 0
+            jar_n_arr[c] = 0
+            jar_t1_arr[c] = 0
+            jar_t2_arr[c] = 0
+            cs_arr[c] = 0
+            continue
+
+        var jar_n: Scalar[DTYPE] = pb_cache[c]
+        var jar_t1: Scalar[DTYPE] = bt1_cache[c]
+        var jar_t2: Scalar[DTYPE] = bt2_cache[c]
+        for i in range(NV):
+            var qa_i = qacc[i]
+            jar_n += Jn_c[c * NV + i] * qa_i
+            jar_t1 += Jt1_c[c * NV + i] * qa_i
+            jar_t2 += Jt2_c[c * NV + i] * qa_i
+        jar_n_arr[c] = jar_n
+        jar_t1_arr[c] = jar_t1
+        jar_t2_arr[c] = jar_t2
+
+        var mu = mu_cache[c]
+        var D_n = D_n_cache[c]
+        var D_f = D_f_cache[c]
+        var T = sqrt(jar_t1 * jar_t1 + jar_t2 * jar_t2)
+        var T_safe = T
+        if T_safe < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+            T_safe = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+
+        if jar_n >= mu * T_safe:
+            fn_arr[c] = 0
+            ft1_arr[c] = 0
+            ft2_arr[c] = 0
+            cs_arr[c] = 0  # SATISFIED
+        elif mu * jar_n + T <= Scalar[DTYPE](0):
+            fn_arr[c] = -D_n * jar_n
+            ft1_arr[c] = -D_f * jar_t1
+            ft2_arr[c] = -D_f * jar_t2
+            cs_arr[c] = 1  # QUADRATIC
+        else:
+            var s = jar_n - mu * T_safe
+            var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
+            fn_arr[c] = -Dm * s
+            ft1_arr[c] = Dm * mu * s * jar_t1 / T_safe
+            ft2_arr[c] = Dm * mu * s * jar_t2 / T_safe
+            cs_arr[c] = 2  # CONE
+
+    # === Step 4: Build Hessian H = M + J^T*D*J (cone-aware, using cached Jacobians) ===
+    for c in range(nc):
+        var cs = cs_arr[c]
+        if cs == 0:  # SATISFIED
+            continue
+
+        var mu = mu_cache[c]
+        var D_n = D_n_cache[c]
+        var D_f = D_f_cache[c]
+
+        if cs == 1:  # QUADRATIC: standard rank-1 updates
+            for i in range(NV):
+                for j in range(NV):
+                    H[i * NV + j] += (
+                        D_n * Jn_c[c * NV + i] * Jn_c[c * NV + j]
+                        + D_f * Jt1_c[c * NV + i] * Jt1_c[c * NV + j]
+                        + D_f * Jt2_c[c * NV + i] * Jt2_c[c * NV + j]
+                    )
+        else:  # CONE: cone Hessian (coupled normal+friction)
+            var jar_n = jar_n_arr[c]
+            var jar_t1 = jar_t1_arr[c]
+            var jar_t2 = jar_t2_arr[c]
+            var T_sq = jar_t1 * jar_t1 + jar_t2 * jar_t2
+            var T = sqrt(T_sq)
+            var T_safe = T
+            if T_safe < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                T_safe = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+            var s = jar_n - mu * T_safe
+            var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
+            var h_nt1 = -Dm * mu * jar_t1 / T_safe
+            var h_nt2 = -Dm * mu * jar_t2 / T_safe
+            var T2_safe = T_safe * T_safe
+            var h_t1t1 = (
+                Dm * mu * mu * jar_t1 * jar_t1 / T2_safe
+                + Dm
+                * mu
+                * s
+                / T_safe
+                * (jar_t1 * jar_t1 / T2_safe - Scalar[DTYPE](1.0))
+            )
+            var h_t2t2 = (
+                Dm * mu * mu * jar_t2 * jar_t2 / T2_safe
+                + Dm
+                * mu
+                * s
+                / T_safe
+                * (jar_t2 * jar_t2 / T2_safe - Scalar[DTYPE](1.0))
+            )
+            var h_t1t2 = (
+                (Dm * mu * mu + Dm * mu * s / T_safe)
+                * jar_t1
+                * jar_t2
+                / T2_safe
+            )
+            for i in range(NV):
+                for j in range(NV):
+                    H[i * NV + j] += (
+                        Dm * Jn_c[c * NV + i] * Jn_c[c * NV + j]
+                        + h_nt1
+                        * (
+                            Jn_c[c * NV + i] * Jt1_c[c * NV + j]
+                            + Jt1_c[c * NV + i] * Jn_c[c * NV + j]
+                        )
+                        + h_nt2
+                        * (
+                            Jn_c[c * NV + i] * Jt2_c[c * NV + j]
+                            + Jt2_c[c * NV + i] * Jn_c[c * NV + j]
+                        )
+                        + h_t1t1 * Jt1_c[c * NV + i] * Jt1_c[c * NV + j]
+                        + h_t2t2 * Jt2_c[c * NV + i] * Jt2_c[c * NV + j]
+                        + h_t1t2
+                        * (
+                            Jt1_c[c * NV + i] * Jt2_c[c * NV + j]
+                            + Jt2_c[c * NV + i] * Jt1_c[c * NV + j]
+                        )
+                    )
+
+    # Cholesky factorize H (with regularization on rank deficiency)
+    var chol_ok_gpu = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+    if not chol_ok_gpu:
+        for i in range(NV):
+            H[i * NV + i] = H[i * NV + i] + Scalar[DTYPE](1e-6)
+        _ = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+
+    # === Precompute qfrc_c = J^T * force (replaces per-iteration gradient workspace reads) ===
+    # Updated after each force update instead of recomputing from workspace each gradient step.
+    var qfrc_c = InlineArray[Scalar[DTYPE], V_SIZE](uninitialized=True)
+    for i in range(NV):
+        qfrc_c[i] = Scalar[DTYPE](0)
+    for c in range(nc):
+        if cs_arr[c] == 0:
+            continue
+        for i in range(NV):
+            qfrc_c[i] += (
+                Jn_c[c * NV + i] * fn_arr[c]
+                + Jt1_c[c * NV + i] * ft1_arr[c]
+                + Jt2_c[c * NV + i] * ft2_arr[c]
+            )
+
+    # === Step 5: Newton iteration loop ===
+    for _iter in range(NEWTON_ITER_GPU):
+        # Gradient = Ma - qfrc_sm - qfrc_c (pure InlineArray reads — no workspace access)
+        var grad_norm_sq: Scalar[DTYPE] = 0
+        for i in range(NV):
+            grad[i] = Ma[i] - qfrc_sm[i] - qfrc_c[i]
+            grad_norm_sq += grad[i] * grad[i]
+
+        # Convergence check
+        if scale * sqrt(grad_norm_sq) < Scalar[DTYPE](NEWTON_TOL_GPU):
+            break
+
+        # Newton direction: search = -H^{-1} * grad
+        chol_solve_inline[DTYPE, NV, M_SIZE, V_SIZE](L_chol, grad, search)
+        var search_ok_gpu = True
+        for i in range(NV):
+            search[i] = -search[i]
+            if search[i] != search[i]:
+                search_ok_gpu = False
+        if not search_ok_gpu:
+            break
+
+        # Mv = M_local * search (InlineArray reads only — no workspace access)
+        for i in range(NV):
+            var s: Scalar[DTYPE] = 0
+            for j in range(NV):
+                s += M_local[i * NV + j] * search[j]
+            Mv[i] = s
+
+        # Precompute J * search per contact (using cached Jacobians — no workspace access)
+        var Js_n = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+        var Js_t1 = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+        var Js_t2 = InlineArray[Scalar[DTYPE], MC](uninitialized=True)
+        for c in range(nc):
+            if dist_cache[c] >= Scalar[DTYPE](0):
+                Js_n[c] = 0
+                Js_t1[c] = 0
+                Js_t2[c] = 0
+                continue
+            var js_n: Scalar[DTYPE] = 0
+            var js_t1: Scalar[DTYPE] = 0
+            var js_t2: Scalar[DTYPE] = 0
+            for i in range(NV):
+                var s_i = search[i]
+                js_n += Jn_c[c * NV + i] * s_i
+                js_t1 += Jt1_c[c * NV + i] * s_i
+                js_t2 += Jt2_c[c * NV + i] * s_i
+            Js_n[c] = js_n
+            Js_t1[c] = js_t1
+            Js_t2[c] = js_t2
+
+        # Analytical Newton linesearch (matches CPU primal_linesearch_with_D)
+        # Gauss coefficients for derivative: d_gauss/dalpha = ga*alpha + gb
+        var ga: Scalar[DTYPE] = 0
+        var gb: Scalar[DTYPE] = 0
+        for i in range(NV):
+            ga += Mv[i] * search[i]
+            gb += (Ma[i] - qfrc_sm[i]) * search[i]
+
+        # Evaluate d1, d2 at alpha=0
+        var p0_d1 = gb
+        var p0_d2 = ga
+        for c in range(nc):
+            if dist_cache[c] >= Scalar[DTYPE](0):
+                continue
+            var N0 = jar_n_arr[c]
+            var T10 = jar_t1_arr[c]
+            var T20 = jar_t2_arr[c]
+            var mu = mu_cache[c]
+            var D_n = D_n_cache[c]
+            var D_f = D_f_cache[c]
+            var T0_sq = T10 * T10 + T20 * T20
+            var T0 = sqrt(T0_sq)
+            var T0_safe = T0
+            if T0_safe < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                T0_safe = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+            if N0 >= Scalar[DTYPE](0) and N0 * N0 >= mu * mu * T0_sq:
+                pass  # SATISFIED
+            elif mu * N0 + T0 <= Scalar[DTYPE](0):
+                # QUADRATIC
+                p0_d1 += D_n * N0 * Js_n[c] + D_f * (
+                    T10 * Js_t1[c] + T20 * Js_t2[c]
+                )
+                p0_d2 += D_n * Js_n[c] * Js_n[c] + D_f * (
+                    Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                )
+            else:
+                # CONE
+                var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
+                var s0 = N0 - mu * T0
+                var dTda = (T10 * Js_t1[c] + T20 * Js_t2[c]) / T0_safe
+                var dsda = Js_n[c] - mu * dTda
+                p0_d1 += Dm * s0 * dsda
+                var Jv_f_sq = Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                var d2sda2 = -mu * (Jv_f_sq - dTda * dTda) / T0_safe
+                p0_d2 += Dm * (dsda * dsda + s0 * d2sda2)
+        if p0_d2 < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+            p0_d2 = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+
+        var alpha: Scalar[DTYPE] = 0
+        if p0_d1 < Scalar[DTYPE](0):
+            # Phase 1: initial Newton step
+            var p1_alpha = -p0_d1 / p0_d2
+
+            var snorm_sq: Scalar[DTYPE] = 0
+            for i in range(NV):
+                snorm_sq += search[i] * search[i]
+            var gtol = (
+                Scalar[DTYPE](NEWTON_TOL_GPU) * sqrt(snorm_sq) / scale
+            )
+            var gtol_sq = gtol * gtol
+
+            # Inline eval at p1_alpha
+            var p1_d1 = ga * p1_alpha + gb
+            var p1_d2_v = ga
+            for c in range(nc):
+                if dist_cache[c] >= Scalar[DTYPE](0):
+                    continue
+                var tN = jar_n_arr[c] + p1_alpha * Js_n[c]
+                var tT1 = jar_t1_arr[c] + p1_alpha * Js_t1[c]
+                var tT2 = jar_t2_arr[c] + p1_alpha * Js_t2[c]
+                var mu = mu_cache[c]
+                var D_n = D_n_cache[c]
+                var D_f = D_f_cache[c]
+                var tT_sq = tT1 * tT1 + tT2 * tT2
+                var tT = sqrt(tT_sq)
+                var tT_s = tT
+                if tT_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                    tT_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                if tN >= Scalar[DTYPE](0) and tN * tN >= mu * mu * tT_sq:
+                    pass
+                elif mu * tN + tT <= Scalar[DTYPE](0):
+                    p1_d1 += D_n * tN * Js_n[c] + D_f * (
+                        tT1 * Js_t1[c] + tT2 * Js_t2[c]
+                    )
+                    p1_d2_v += D_n * Js_n[c] * Js_n[c] + D_f * (
+                        Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                    )
+                else:
+                    var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
+                    var s_v = tN - mu * tT
+                    var dTda = (tT1 * Js_t1[c] + tT2 * Js_t2[c]) / tT_s
+                    var dsda = Js_n[c] - mu * dTda
+                    p1_d1 += Dm * s_v * dsda
+                    var Jvf = Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                    var d2s = -mu * (Jvf - dTda * dTda) / tT_s
+                    p1_d2_v += Dm * (dsda * dsda + s_v * d2s)
+            if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+
+            alpha = p1_alpha
+            if p1_d1 * p1_d1 >= gtol_sq:
+                # Phase 2: one-sided Newton pursuit
+                var dir_s = Scalar[DTYPE](-1) if p1_d1 > Scalar[DTYPE](
+                    0
+                ) else Scalar[DTYPE](1)
+                var p2_alpha: Scalar[DTYPE] = 0
+                var p2_d1 = p0_d1
+                var bracket = False
+                for _ in range(LINESEARCH_ITER):
+                    p2_alpha = p1_alpha
+                    p2_d1 = p1_d1
+                    if p1_d2_v > Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                        p1_alpha = p1_alpha - p1_d1 / p1_d2_v
+                    else:
+                        p1_alpha = p1_alpha + dir_s
+                    # Eval at new p1_alpha
+                    p1_d1 = ga * p1_alpha + gb
+                    p1_d2_v = ga
+                    for c in range(nc):
+                        if dist_cache[c] >= Scalar[DTYPE](0):
+                            continue
+                        var tN = jar_n_arr[c] + p1_alpha * Js_n[c]
+                        var tT1 = jar_t1_arr[c] + p1_alpha * Js_t1[c]
+                        var tT2 = jar_t2_arr[c] + p1_alpha * Js_t2[c]
+                        var mu = mu_cache[c]
+                        var D_n = D_n_cache[c]
+                        var D_f = D_f_cache[c]
+                        var tT_sq = tT1 * tT1 + tT2 * tT2
+                        var tT = sqrt(tT_sq)
+                        var tT_s = tT
+                        if tT_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                            tT_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                        if (
+                            tN >= Scalar[DTYPE](0)
+                            and tN * tN >= mu * mu * tT_sq
+                        ):
+                            pass
+                        elif mu * tN + tT <= Scalar[DTYPE](0):
+                            p1_d1 += D_n * tN * Js_n[c] + D_f * (
+                                tT1 * Js_t1[c] + tT2 * Js_t2[c]
+                            )
+                            p1_d2_v += D_n * Js_n[c] * Js_n[c] + D_f * (
+                                Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                            )
+                        else:
+                            var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
+                            var s_v = tN - mu * tT
+                            var dTda = (
+                                tT1 * Js_t1[c] + tT2 * Js_t2[c]
+                            ) / tT_s
+                            var dsda = Js_n[c] - mu * dTda
+                            p1_d1 += Dm * s_v * dsda
+                            var Jvf = (
+                                Js_t1[c] * Js_t1[c] + Js_t2[c] * Js_t2[c]
+                            )
+                            var d2s = -mu * (Jvf - dTda * dTda) / tT_s
+                            p1_d2_v += Dm * (dsda * dsda + s_v * d2s)
+                    if p1_d2_v < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                        p1_d2_v = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                    if p1_d1 * p1_d1 < gtol_sq:
+                        alpha = p1_alpha
+                        break
+                    if p1_d1 * dir_s > Scalar[DTYPE](0):
+                        bracket = True
+                        break
+                if bracket:
+                    # Phase 3: bracketed bisection
+                    for _ in range(LINESEARCH_ITER):
+                        var mid = (p1_alpha + p2_alpha) * Scalar[DTYPE](0.5)
+                        var mid_d1 = ga * mid + gb
+                        for c in range(nc):
+                            if dist_cache[c] >= Scalar[DTYPE](0):
+                                continue
+                            var tN = jar_n_arr[c] + mid * Js_n[c]
+                            var tT1 = jar_t1_arr[c] + mid * Js_t1[c]
+                            var tT2 = jar_t2_arr[c] + mid * Js_t2[c]
+                            var mu = mu_cache[c]
+                            var D_n = D_n_cache[c]
+                            var D_f = D_f_cache[c]
+                            var tT_sq = tT1 * tT1 + tT2 * tT2
+                            var tT = sqrt(tT_sq)
+                            var tT_s = tT
+                            if tT_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                                tT_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                            if (
+                                tN >= Scalar[DTYPE](0)
+                                and tN * tN >= mu * mu * tT_sq
+                            ):
+                                pass
+                            elif mu * tN + tT <= Scalar[DTYPE](0):
+                                mid_d1 += D_n * tN * Js_n[c] + D_f * (
+                                    tT1 * Js_t1[c] + tT2 * Js_t2[c]
+                                )
+                            else:
+                                var Dm = D_n / (
+                                    Scalar[DTYPE](1.0) + mu * mu
+                                )
+                                var s_v = tN - mu * tT
+                                var dTda = (
+                                    tT1 * Js_t1[c] + tT2 * Js_t2[c]
+                                ) / tT_s
+                                var dsda = Js_n[c] - mu * dTda
+                                mid_d1 += Dm * s_v * dsda
+                        if mid_d1 * mid_d1 < gtol_sq:
+                            p1_alpha = mid
+                            p1_d1 = mid_d1
+                            break
+                        if mid_d1 * p1_d1 > Scalar[DTYPE](0):
+                            p1_alpha = mid
+                            p1_d1 = mid_d1
+                        else:
+                            p2_alpha = mid
+                            p2_d1 = mid_d1
+                        if (p1_alpha - p2_alpha) * (
+                            p1_alpha - p2_alpha
+                        ) < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                            break
+                    if p2_d1 * p2_d1 < p1_d1 * p1_d1:
+                        alpha = p2_alpha
+                    else:
+                        alpha = p1_alpha
+                elif p1_d1 * p1_d1 >= gtol_sq:
+                    alpha = p1_alpha
+
+        # If alpha is negligible, stop
+        if alpha < Scalar[DTYPE](1e-12):
+            break
+
+        # Update qacc and Ma
+        for i in range(NV):
+            qacc[i] = qacc[i] + alpha * search[i]
+            Ma[i] = Ma[i] + alpha * Mv[i]
+
+        # Recompute jar and forces (using cached Jacobians — no workspace reads)
+        var state_changed = False
+        for c in range(nc):
+            if dist_cache[c] >= Scalar[DTYPE](0):
+                continue
+            var old_cs = cs_arr[c]
+            var jar_n: Scalar[DTYPE] = pb_cache[c]
+            var jar_t1: Scalar[DTYPE] = bt1_cache[c]
+            var jar_t2: Scalar[DTYPE] = bt2_cache[c]
+            for i in range(NV):
+                var qa_i = qacc[i]
+                jar_n += Jn_c[c * NV + i] * qa_i
+                jar_t1 += Jt1_c[c * NV + i] * qa_i
+                jar_t2 += Jt2_c[c * NV + i] * qa_i
+            jar_n_arr[c] = jar_n
+            jar_t1_arr[c] = jar_t1
+            jar_t2_arr[c] = jar_t2
+
+            var mu = mu_cache[c]
+            var D_n = D_n_cache[c]
+            var D_f = D_f_cache[c]
+            var T = sqrt(jar_t1 * jar_t1 + jar_t2 * jar_t2)
+            var T_safe = T
+            if T_safe < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                T_safe = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+            if jar_n >= mu * T_safe:
+                fn_arr[c] = 0
+                ft1_arr[c] = 0
+                ft2_arr[c] = 0
+                cs_arr[c] = 0
+            elif mu * jar_n + T <= Scalar[DTYPE](0):
+                fn_arr[c] = -D_n * jar_n
+                ft1_arr[c] = -D_f * jar_t1
+                ft2_arr[c] = -D_f * jar_t2
+                cs_arr[c] = 1
+            else:
+                var s = jar_n - mu * T_safe
+                var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
+                fn_arr[c] = -Dm * s
+                ft1_arr[c] = Dm * mu * s * jar_t1 / T_safe
+                ft2_arr[c] = Dm * mu * s * jar_t2 / T_safe
+                cs_arr[c] = 2
+            if cs_arr[c] != old_cs:
+                state_changed = True
+
+        # Recompute qfrc_c = J^T * updated forces (all InlineArray ops)
+        for i in range(NV):
+            qfrc_c[i] = Scalar[DTYPE](0)
+        for c in range(nc):
+            if cs_arr[c] == 0:
+                continue
+            for i in range(NV):
+                qfrc_c[i] += (
+                    Jn_c[c * NV + i] * fn_arr[c]
+                    + Jt1_c[c * NV + i] * ft1_arr[c]
+                    + Jt2_c[c * NV + i] * ft2_arr[c]
+                )
+
+        # Hessian rebuild if states changed (using cached Jacobians — no workspace reads)
+        if state_changed:
+            for k in range(NV * NV):
+                H[k] = M_local[k]
+            for c in range(nc):
+                var cs = cs_arr[c]
+                if cs == 0:
+                    continue
+                var mu = mu_cache[c]
+                var D_n = D_n_cache[c]
+                var D_f = D_f_cache[c]
+                if cs == 1:
+                    for i in range(NV):
+                        for j in range(NV):
+                            H[i * NV + j] += (
+                                D_n * Jn_c[c * NV + i] * Jn_c[c * NV + j]
+                                + D_f
+                                * Jt1_c[c * NV + i]
+                                * Jt1_c[c * NV + j]
+                                + D_f
+                                * Jt2_c[c * NV + i]
+                                * Jt2_c[c * NV + j]
+                            )
+                else:
+                    var jar_n = jar_n_arr[c]
+                    var jar_t1 = jar_t1_arr[c]
+                    var jar_t2 = jar_t2_arr[c]
+                    var T_sq = jar_t1 * jar_t1 + jar_t2 * jar_t2
+                    var T_s = sqrt(T_sq)
+                    if T_s < Scalar[DTYPE](PRIMAL_MINVAL_GPU):
+                        T_s = Scalar[DTYPE](PRIMAL_MINVAL_GPU)
+                    var s = jar_n - mu * T_s
+                    var Dm = D_n / (Scalar[DTYPE](1.0) + mu * mu)
+                    var h_nt1 = -Dm * mu * jar_t1 / T_s
+                    var h_nt2 = -Dm * mu * jar_t2 / T_s
+                    var T2_s = T_s * T_s
+                    var h_t1t1 = (
+                        Dm * mu * mu * jar_t1 * jar_t1 / T2_s
+                        + Dm
+                        * mu
+                        * s
+                        / T_s
+                        * (jar_t1 * jar_t1 / T2_s - Scalar[DTYPE](1.0))
+                    )
+                    var h_t2t2 = (
+                        Dm * mu * mu * jar_t2 * jar_t2 / T2_s
+                        + Dm
+                        * mu
+                        * s
+                        / T_s
+                        * (jar_t2 * jar_t2 / T2_s - Scalar[DTYPE](1.0))
+                    )
+                    var h_t1t2 = (
+                        (Dm * mu * mu + Dm * mu * s / T_s)
+                        * jar_t1
+                        * jar_t2
+                        / T2_s
+                    )
+                    for i in range(NV):
+                        for j in range(NV):
+                            H[i * NV + j] += (
+                                Dm * Jn_c[c * NV + i] * Jn_c[c * NV + j]
+                                + h_nt1
+                                * (
+                                    Jn_c[c * NV + i] * Jt1_c[c * NV + j]
+                                    + Jt1_c[c * NV + i] * Jn_c[c * NV + j]
+                                )
+                                + h_nt2
+                                * (
+                                    Jn_c[c * NV + i] * Jt2_c[c * NV + j]
+                                    + Jt2_c[c * NV + i] * Jn_c[c * NV + j]
+                                )
+                                + h_t1t1
+                                * Jt1_c[c * NV + i]
+                                * Jt1_c[c * NV + j]
+                                + h_t2t2
+                                * Jt2_c[c * NV + i]
+                                * Jt2_c[c * NV + j]
+                                + h_t1t2
+                                * (
+                                    Jt1_c[c * NV + i] * Jt2_c[c * NV + j]
+                                    + Jt2_c[c * NV + i] * Jt1_c[c * NV + j]
+                                )
+                            )
+            var chol_ok_gpu2 = chol_factor_inline[DTYPE, NV, M_SIZE](
+                H, L_chol
+            )
+            if not chol_ok_gpu2:
+                for i in range(NV):
+                    H[i * NV + i] = H[i * NV + i] + Scalar[DTYPE](1e-6)
+                _ = chol_factor_inline[DTYPE, NV, M_SIZE](H, L_chol)
+
+    # Write solved qacc back to workspace
+    for i in range(NV):
+        qacc_constrained[env, i] = qacc[i]
+
+    # Write forces to state buffer for display/warmstart (directly from InlineArrays)
+    for c in range(nc):
+        var c_off = c * CONTACT_SIZE
+        contacts[env, c_off + CONTACT_IDX_FORCE_N] = fn_arr[c]
+        contacts[env, c_off + CONTACT_IDX_FORCE_T1] = ft1_arr[c]
+        contacts[env, c_off + CONTACT_IDX_FORCE_T2] = ft2_arr[c]
+
+    comptime SOLVER_ITER_GPU: Int = 50
+    _limits_env_fields[DTYPE, NQ, NV, NJOINT, BATCH, SOLVER_ITER_GPU](
+        env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
+        qacc_constrained,
+    )
+
+    comptime if NEQUALITY > 0:
+        _equality_env_fields[
+            DTYPE, NV, NBODY, NJOINT, NEQUALITY, NTENDON, NSITE, V_SIZE,
+            BATCH, SOLVER_ITER_GPU,
+        ](
+            env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+            equality, tendons, sites, body_invweight0, dof_invweight0, cdof,
+            m_inv, qacc_constrained,
+        )
+
+    comptime if NTENDON > 0:
+        _tendon_env_fields[
+            DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
+            SOLVER_ITER_GPU,
+        ](
+            env, qpos, qvel, joints, mmeta, tendons, sites, body_invweight0,
+            dof_invweight0, m_inv, qacc_constrained,
+        )
+
+
+def _newton_solve_fields_kernel[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+    NEQUALITY: Int,
+    NTENDON: Int,
+    NSITE: Int,
+    CONE_TYPE: Int,
+    BATCH: Int,
+    SOLVER_WS: Int,
+](
+    qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    subtree_com: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE,
+        Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    smeta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    mmeta: LayoutTensor[
+        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+    ],
+    equality: LayoutTensor[
+        DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
+    ],
+    tendons: LayoutTensor[
+        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
+    ],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
+    body_invweight0: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
+    ],
+    dof_invweight0: LayoutTensor[DTYPE, Layout.row_major(NV), MutAnyOrigin],
+    cdof: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * 6), MutAnyOrigin],
+    M: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin],
+    m_inv: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV * NV), MutAnyOrigin
+    ],
+    qacc_constrained: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin
+    ],
+    solver: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, SOLVER_WS), MutAnyOrigin
+    ],
+):
+    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if env >= BATCH:
+        return
+    _newton_solve_env_fields[
+        DTYPE,
+        NQ,
+        NV,
+        NBODY,
+        NJOINT,
+        MAX_CONTACTS,
+        NGEOM,
+        NEQUALITY,
+        NTENDON,
+        NSITE,
+        CONE_TYPE,
+        BATCH,
+        SOLVER_WS,
+    ](
+        env, qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
+        bodies, mmeta, equality, tendons, sites, body_invweight0,
+        dof_invweight0, cdof, M, m_inv, qacc_constrained, solver,
+    )
+
+
+def solve_newton_fields[
+    target: StaticString,
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+    NMESH_VERTS: Int = 0,
+    CONE_TYPE: Int = ConeType.ELLIPTIC,
+    BATCH: Int = 1,
+](
+    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: ModelFields[
+        DTYPE,
+        NV,
+        NBODY,
+        NJOINT,
+        NGEOM,
+        NEQUALITY,
+        NTENDON,
+        NSITE,
+        NEXCLUDE,
+        NMESH_VERTS,
+    ],
+    mut scratch: DynamicsScratch[DTYPE, NV, NBODY, BATCH],
+    mut cscratch: ContactScratch[DTYPE, NV, MAX_CONTACTS, BATCH],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Primal Newton contact solve into `scratch.qacc_constrained` (+ solved
+    forces back into `d.contacts` for warm-starting/display), both targets,
+    one body. Standalone entry — same signature family as
+    `solve_contacts_fields` so callers can swap solvers later.
+
+    ELLIPTIC: joint limits, equality constraints, and fixed tendons run
+    INSIDE at the legacy position (after the Newton core, 50 iterations).
+    PYRAMIDAL: limits are edge rows inside the Newton optimization;
+    equality/tendon after.
+
+    Newton uses a PREFIX (35*MC + 6*MC*NV) of the PGS-sized
+    `cscratch.solver` tensor (81*MC + 12*MC*NV) — no separate scratch.
+    """
+    comptime MC = _max_one[MAX_CONTACTS]()
+    comptime SOLVER_WS = 81 * MC + 12 * MC * NV
+
+    comptime L_NV = Layout.row_major(BATCH, NV)
+    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
+    comptime L_CON = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
+    comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
+    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+    comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
+    comptime L_EQ = Layout.row_major(NEQUALITY, MODEL_EQ_SIZE)
+    comptime L_TEN = Layout.row_major(NTENDON, MODEL_TENDON_SIZE)
+    comptime L_SITE = Layout.row_major(NSITE, MODEL_SITE_SIZE)
+    comptime L_BW = Layout.row_major(NBODY, 2)
+    comptime L_CDOF = Layout.row_major(BATCH, NV * 6)
+    comptime L_M = Layout.row_major(BATCH, NV * NV)
+    comptime L_SOLVER = Layout.row_major(BATCH, SOLVER_WS)
+
+    comptime L_QPOS = Layout.row_major(BATCH, NQ)
+    comptime L_DW = Layout.row_major(NV)
+
+    comptime if target == "cpu":
+        var qpos_v = d.qpos.lt["cpu", L_QPOS]()
+        var qvel_v = d.qvel.lt["cpu", L_NV]()
+        var xpos_v = d.xpos.lt["cpu", L_B3]()
+        var xquat_v = d.xquat.lt["cpu", L_B4]()
+        var stcom_v = d.subtree_com.lt["cpu", L_B3]()
+        var con_v = d.contacts.lt["cpu", L_CON]()
+        var smeta_v = d.meta.lt["cpu", L_SMETA]()
+        var joints_v = m.joints.lt["cpu", L_JOINT]()
+        var bodies_v = m.bodies.lt["cpu", L_BODY]()
+        var mmeta_v = m.meta.lt["cpu", L_MMETA]()
+        var eq_v = m.equality.lt["cpu", L_EQ]()
+        var ten_v = m.tendons.lt["cpu", L_TEN]()
+        var site_v = m.sites.lt["cpu", L_SITE]()
+        var bw_v = m.body_invweight0.lt["cpu", L_BW]()
+        var dw_v = m.dof_invweight0.lt["cpu", L_DW]()
+        var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
+        var M_v = scratch.M.lt["cpu", L_M]()
+        var mi_v = scratch.m_inv.lt["cpu", L_M]()
+        var qc_v = scratch.qacc_constrained.lt["cpu", L_NV]()
+        var sol_v = cscratch.solver.lt["cpu", L_SOLVER]()
+        for e in range(BATCH):
+            _newton_solve_env_fields[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                NGEOM,
+                NEQUALITY,
+                NTENDON,
+                NSITE,
+                CONE_TYPE,
+                BATCH,
+                SOLVER_WS,
+            ](
+                e, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
+                joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
+                cdof_v, M_v, mi_v, qc_v, sol_v,
+            )
+    else:
+        var c = ctx.value()
+        comptime BLOCKS = (BATCH + NS_TPB - 1) // NS_TPB
+        c.enqueue_function[
+            _newton_solve_fields_kernel[
+                DTYPE,
+                NQ,
+                NV,
+                NBODY,
+                NJOINT,
+                MAX_CONTACTS,
+                NGEOM,
+                NEQUALITY,
+                NTENDON,
+                NSITE,
+                CONE_TYPE,
+                BATCH,
+                SOLVER_WS,
+            ]
+        ](
+            d.qpos.lt["gpu", L_QPOS](),
+            d.qvel.lt["gpu", L_NV](),
+            d.xpos.lt["gpu", L_B3](),
+            d.xquat.lt["gpu", L_B4](),
+            d.subtree_com.lt["gpu", L_B3](),
+            d.contacts.lt["gpu", L_CON](),
+            d.meta.lt["gpu", L_SMETA](),
+            m.joints.lt["gpu", L_JOINT](),
+            m.bodies.lt["gpu", L_BODY](),
+            m.meta.lt["gpu", L_MMETA](),
+            m.equality.lt["gpu", L_EQ](),
+            m.tendons.lt["gpu", L_TEN](),
+            m.sites.lt["gpu", L_SITE](),
+            m.body_invweight0.lt["gpu", L_BW](),
+            m.dof_invweight0.lt["gpu", L_DW](),
+            scratch.cdof.lt["gpu", L_CDOF](),
+            scratch.M.lt["gpu", L_M](),
+            scratch.m_inv.lt["gpu", L_M](),
+            scratch.qacc_constrained.lt["gpu", L_NV](),
+            cscratch.solver.lt["gpu", L_SOLVER](),
+            grid_dim=(BLOCKS,),
+            block_dim=(NS_TPB,),
+        )
