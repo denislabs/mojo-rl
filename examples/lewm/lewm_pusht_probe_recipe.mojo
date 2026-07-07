@@ -53,7 +53,7 @@ comptime ENC_HEADS = 3
 comptime ENC_LAYERS = 12
 comptime EMB = 192
 comptime ENC_PROJ_H = 2048
-comptime ENC_FF_MULT = 4    # recipe: ViT-Tiny mlp_ratio 4
+comptime ENC_FF_MULT = 4  # recipe: ViT-Tiny mlp_ratio 4
 comptime T = 6
 comptime ACT = 10
 comptime SMOOTHED = 32
@@ -76,10 +76,10 @@ comptime ACTIN = T * ACT
 comptime CKPT_PATH: String = "lewm_pusht_recipe.ckpt"
 
 # ── probe knobs (Apple-sized) ─────────────────────────────────────────
-comptime DEC_STEPS = 2000      # decoder probe budget (0 = eval only);
-                               # first recon grid after VIZ_EVERY steps
+comptime DEC_STEPS = 20_000  # decoder probe budget (0 = eval only);
+# first recon grid after VIZ_EVERY steps
 comptime DEC_PRINT = 100
-comptime VIZ_EVERY = 250
+comptime VIZ_EVERY = 1_000
 comptime N_VIZ = 8
 comptime BN_WARMUP_STEPS = 200  # legacy flat ckpts only (v3 carries stats)
 
@@ -93,13 +93,43 @@ comptime DEC_LAYERS = 4
 comptime DEC_BATCH = B * T
 
 comptime EncCLS = LeWMEncoderCLS[
-    IN_CH, IMG, PATCH, N_PATCHES, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB,
-    ENC_PROJ_H, ENC_FF_MULT,
+    IN_CH,
+    IMG,
+    PATCH,
+    N_PATCHES,
+    HIDDEN,
+    ENC_HEADS,
+    ENC_LAYERS,
+    EMB,
+    ENC_PROJ_H,
+    ENC_FF_MULT,
 ]
 comptime Trainer = LeWMTrainer[
-    IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
-    ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS, PRED_FF,
-    DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu", PRED_DIM_HEAD, EncCLS,
+    IN_CH,
+    IMG,
+    PATCH,
+    HIDDEN,
+    ENC_HEADS,
+    ENC_LAYERS,
+    EMB,
+    ENC_PROJ_H,
+    ENC_FF_MULT,
+    T,
+    ACT,
+    SMOOTHED,
+    AE_MLP,
+    H,
+    N_PREDS,
+    PRED_HEADS,
+    PRED_FF,
+    DEPTH,
+    PRED_PROJ_H,
+    SIG_PROJ,
+    SIG_KNOTS,
+    B,
+    "gpu",
+    PRED_DIM_HEAD,
+    EncCLS,
 ]
 comptime Source = WindowSource[
     IMG_DIM, ACT, T, B, "gpu", PushTOfflineSampler, IN_CH, IMG
@@ -130,8 +160,11 @@ def main() raises:
     if wm.last_load_had_state:
         print("v3 checkpoint carried BN running stats — no warmup needed")
     else:
-        print("legacy ckpt: warming BatchNorm running stats (",
-              BN_WARMUP_STEPS, "training-mode forwards) ...")
+        print(
+            "legacy ckpt: warming BatchNorm running stats (",
+            BN_WARMUP_STEPS,
+            "training-mode forwards) ...",
+        )
         for _ in range(BN_WARMUP_STEPS):
             src.next_batch()
             var pix_t = TileTensor(src.pix_ptr(), row_major[B, PIX]())
@@ -148,27 +181,54 @@ def main() raises:
     print()
     print("── probe 1: shuffled action-awareness ──")
     var r = lewm_shuffled_eval[
-        IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
-        ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
-        PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, "gpu",
-        PRED_DIM_HEAD, EncCLS,
+        IN_CH,
+        IMG,
+        PATCH,
+        HIDDEN,
+        ENC_HEADS,
+        ENC_LAYERS,
+        EMB,
+        ENC_PROJ_H,
+        ENC_FF_MULT,
+        T,
+        ACT,
+        SMOOTHED,
+        AE_MLP,
+        H,
+        N_PREDS,
+        PRED_HEADS,
+        PRED_FF,
+        DEPTH,
+        PRED_PROJ_H,
+        SIG_PROJ,
+        SIG_KNOTS,
+        B,
+        "gpu",
+        PRED_DIM_HEAD,
+        EncCLS,
     ](
-        wm, pix_t,
+        wm,
+        pix_t,
         rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](act_host.unsafe_ptr()),
         ctx=ctx,
     )
-    print("   action-aware (expert < shuffled_min):",
-          "YES" if r[0] < r[2] else "no")
+    print(
+        "   action-aware (expert < shuffled_min):",
+        "YES" if r[0] < r[2] else "no",
+    )
 
     # ── 2. decoder reconstruction probe ─────────────────────────────────
     comptime if DEC_STEPS > 0:
         print()
-        print("── probe 2: decoder reconstruction (", DEC_STEPS,
-              "steps; grids every", VIZ_EVERY, ") ──")
-        var dec = Decoder.make(lr=Scalar[DT](1e-3), ctx=ctx)
-        var tgt_dev = ctx.enqueue_create_buffer[DT](
-            DEC_BATCH * N_Q * PATCH_PX
+        print(
+            "── probe 2: decoder reconstruction (",
+            DEC_STEPS,
+            "steps; grids every",
+            VIZ_EVERY,
+            ") ──",
         )
+        var dec = Decoder.make(lr=Scalar[DT](1e-3), ctx=ctx)
+        var tgt_dev = ctx.enqueue_create_buffer[DT](DEC_BATCH * N_Q * PATCH_PX)
         var recon_host = ctx.enqueue_create_host_buffer[DT](
             DEC_BATCH * N_Q * PATCH_PX
         )
@@ -221,7 +281,8 @@ def main() raises:
                     rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
                         src.pix_ptr()
                     ),
-                    N_VIZ * IMG_DIM, owning=False,
+                    N_VIZ * IMG_DIM,
+                    owning=False,
                 )
                 ctx.enqueue_copy(
                     rebind[UnsafePointer[Scalar[DT], MutAnyOrigin]](
@@ -230,14 +291,19 @@ def main() raises:
                     orig_dev,
                 )
                 ctx.synchronize()
-                var path = "/tmp/lewm_pusht_recipe_recon_" + String(step) \
-                    + ".ppm"
+                var path = (
+                    "/tmp/lewm_pusht_recipe_recon_" + String(step) + ".ppm"
+                )
                 save_reconstruction_grid(
                     path,
                     orig_img.unsafe_ptr(),
                     recon_img.unsafe_ptr(),
-                    n=N_VIZ, height=IMG, width=IMG, channels=IN_CH,
-                    vmin=0.0, vmax=1.0,
+                    n=N_VIZ,
+                    height=IMG,
+                    width=IMG,
+                    channels=IN_CH,
+                    vmin=0.0,
+                    vmax=1.0,
                 )
                 print("   grid →", path)
         _ = dec^
