@@ -18,11 +18,12 @@ legacy internal `contact_tid < nc` guards) or `for contact_tid in range(nc)`
 sequential sections run once. All phases write disjoint slots, so
 serialization is value-identical.
 
-EXCLUDED from the port (wired separately by the caller): the
-`detect_and_solve_limits_gpu` (already ported as limits_fields.mojo),
-`build_and_solve_equality_gpu`, and `build_and_solve_tendon_gpu` calls of
-the legacy solve_gpu — and with them the legacy `dt` metadata read, whose
-only consumer was the limits call.
+The `detect_and_solve_limits_gpu` call of the legacy solve_gpu is wired via
+its port limits_fields.mojo; `build_and_solve_equality_gpu` /
+`build_and_solve_tendon_gpu` via equality_tendon_fields.mojo — all three at
+the exact legacy position (after the normal PGS phase, before the friction
+phase). Still excluded: the legacy `dt` metadata read, whose only consumer
+was the limits call.
 
 `precompute_contact_normal_gpu` is specialized to its only use here
 (COMPUTE_RHS=False): the comptime rhs-write branch is dropped; the `a_n`
@@ -32,12 +33,13 @@ helpers shared with the CG/Newton solvers) but not called by the PGS env
 body — the legacy solve_gpu inlines its own friction phase 3 and force
 write-back, kept inline here.
 
-Operands (12): qvel, subtree_com, contacts, meta (data) + joints, bodies,
-meta, body_invweight0 (model) + cdof, m_inv, qacc_constrained (scratch) +
-solver (ContactScratch). qpos / xpos / dof_invweight0 are NOT bound: the
-legacy contact-Jacobian row computes an xpos offset it never reads, and
-qpos / dof_invweight0 were only touched by the excluded limit/equality
-constraints.
+Operands (19): qpos, qvel, xpos, xquat, subtree_com, contacts, meta (data)
++ joints, bodies, meta, equality, tendons, sites, body_invweight0,
+dof_invweight0 (model) + cdof, m_inv, qacc_constrained (scratch) + solver
+(ContactScratch). The legacy contact-Jacobian row computes an xpos offset
+it never reads (dropped); xpos/xquat here feed the equality world anchors,
+qpos the tendon lengths, and sites only the legacy invweight0-offset
+misread reproduction (see equality_tendon_fields.mojo).
 """
 
 from std.math import sqrt, pow, abs
@@ -49,11 +51,15 @@ from ..types import _max_one, ConeType
 from ..joint_types import JNT_FREE, JNT_BALL
 from ..solver.qcqp import mj_qcqp2, mj_qcqp3, mj_qcqp5
 from .limits_fields import _limits_env_fields
+from .equality_tendon_fields import _equality_env_fields, _tendon_env_fields
 from ..fields import DataFields, ModelFields, DynamicsScratch, ContactScratch
 from ..gpu.constants import (
     MODEL_BODY_SIZE,
     MODEL_JOINT_SIZE,
     MODEL_META_SIZE,
+    MODEL_EQ_SIZE,
+    MODEL_TENDON_SIZE,
+    MODEL_SITE_SIZE,
     METADATA_SIZE,
     CONTACT_SIZE,
     CONTACT_IDX_BODY_A,
@@ -1007,6 +1013,9 @@ def _contact_solve_env_fields[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     NGEOM: Int,
+    NEQUALITY: Int,
+    NTENDON: Int,
+    NSITE: Int,
     CONE_TYPE: Int,
     BATCH: Int,
     SOLVER_WS: Int,
@@ -1014,6 +1023,12 @@ def _contact_solve_env_fields[
     env: Int,
     qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
     qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
     subtree_com: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
     ],
@@ -1034,6 +1049,15 @@ def _contact_solve_env_fields[
     mmeta: LayoutTensor[
         DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
     ],
+    equality: LayoutTensor[
+        DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
+    ],
+    tendons: LayoutTensor[
+        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
+    ],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
+    ],
     body_invweight0: LayoutTensor[
         DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
     ],
@@ -1050,8 +1074,8 @@ def _contact_solve_env_fields[
     ],
 ):
     """Full PGS contact solve for one env (verbatim from PGSSolver.solve_gpu,
-    serialized per env — see module docstring; limits/equality/tendon calls
-    excluded)."""
+    serialized per env — see module docstring; limits/equality/tendon run at
+    the legacy position via their per-env fields ports)."""
     comptime MC = _max_one[MAX_CONTACTS]()
     comptime V_SIZE = _max_one[NV]()
 
@@ -1220,12 +1244,35 @@ def _contact_solve_env_fields[
 
     # Joint limits — legacy position (between the normal PGS and the
     # friction phase), legacy iteration count (PGS_ITERATIONS, not the
-    # Newton path's 50). Equality/tendon constraints remain unported
-    # (dispatcher asserts NEQUALITY == 0 / NTENDON == 0 upstream).
+    # Newton path's 50).
     _limits_env_fields[DTYPE, NQ, NV, NJOINT, BATCH, PGS_ITERATIONS](
         env, qpos, qvel, joints, mmeta, dof_invweight0, m_inv,
         qacc_constrained,
     )
+
+    # Equality constraints — legacy position (right after limits; the legacy
+    # call is unconditional with a comptime gate inside the builder, which
+    # this call-site gate matches bit-identically for NEQUALITY == 0).
+    comptime if NEQUALITY > 0:
+        _equality_env_fields[
+            DTYPE, NV, NBODY, NJOINT, NEQUALITY, NTENDON, NSITE, V_SIZE,
+            BATCH, PGS_ITERATIONS,
+        ](
+            env, qvel, xpos, xquat, subtree_com, joints, bodies, mmeta,
+            equality, tendons, sites, body_invweight0, dof_invweight0, cdof,
+            m_inv, qacc_constrained,
+        )
+
+    # Tendon equality constraints — legacy call-site gate
+    # (`comptime if MAX_TENDON > 0` in PGSSolver.solve_gpu).
+    comptime if NTENDON > 0:
+        _tendon_env_fields[
+            DTYPE, NQ, NV, NBODY, NJOINT, NTENDON, NSITE, BATCH,
+            PGS_ITERATIONS,
+        ](
+            env, qpos, qvel, joints, mmeta, tendons, sites, body_invweight0,
+            dof_invweight0, m_inv, qacc_constrained,
+        )
 
     # === PHASE 3: friction precompute (legacy: parallel, guarded
     # `contact_tid < nc`) ===
@@ -2227,12 +2274,21 @@ def _contact_solve_fields_kernel[
     NJOINT: Int,
     MAX_CONTACTS: Int,
     NGEOM: Int,
+    NEQUALITY: Int,
+    NTENDON: Int,
+    NSITE: Int,
     CONE_TYPE: Int,
     BATCH: Int,
     SOLVER_WS: Int,
 ](
     qpos: LayoutTensor[DTYPE, Layout.row_major(BATCH, NQ), MutAnyOrigin],
     qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
     subtree_com: LayoutTensor[
         DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
     ],
@@ -2252,6 +2308,15 @@ def _contact_solve_fields_kernel[
     ],
     mmeta: LayoutTensor[
         DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+    ],
+    equality: LayoutTensor[
+        DTYPE, Layout.row_major(NEQUALITY, MODEL_EQ_SIZE), MutAnyOrigin
+    ],
+    tendons: LayoutTensor[
+        DTYPE, Layout.row_major(NTENDON, MODEL_TENDON_SIZE), MutAnyOrigin
+    ],
+    sites: LayoutTensor[
+        DTYPE, Layout.row_major(NSITE, MODEL_SITE_SIZE), MutAnyOrigin
     ],
     body_invweight0: LayoutTensor[
         DTYPE, Layout.row_major(NBODY, 2), MutAnyOrigin
@@ -2279,13 +2344,16 @@ def _contact_solve_fields_kernel[
         NJOINT,
         MAX_CONTACTS,
         NGEOM,
+        NEQUALITY,
+        NTENDON,
+        NSITE,
         CONE_TYPE,
         BATCH,
         SOLVER_WS,
     ](
-        env, qpos, qvel, subtree_com, contacts, smeta, joints, bodies, mmeta,
-        body_invweight0, dof_invweight0, cdof, m_inv, qacc_constrained,
-        solver,
+        env, qpos, qvel, xpos, xquat, subtree_com, contacts, smeta, joints,
+        bodies, mmeta, equality, tendons, sites, body_invweight0,
+        dof_invweight0, cdof, m_inv, qacc_constrained, solver,
     )
 
 
@@ -2325,18 +2393,22 @@ def solve_contacts_fields[
 ) raises:
     """PGS contact solve into `scratch.qacc_constrained` (+ solved forces
     back into `d.contacts` for warm-starting), both targets, one body.
-    Joint limits / equality / tendons are NOT run here (see module
-    docstring) — the caller wires `solve_limits_fields` etc. separately."""
+    Joint limits, equality constraints, and fixed tendons run INSIDE at the
+    legacy position (between the normal and friction phases)."""
     comptime MC = _max_one[MAX_CONTACTS]()
     comptime SOLVER_WS = 81 * MC + 12 * MC * NV
 
     comptime L_NV = Layout.row_major(BATCH, NV)
     comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
     comptime L_CON = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
     comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
     comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
     comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
     comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
+    comptime L_EQ = Layout.row_major(NEQUALITY, MODEL_EQ_SIZE)
+    comptime L_TEN = Layout.row_major(NTENDON, MODEL_TENDON_SIZE)
+    comptime L_SITE = Layout.row_major(NSITE, MODEL_SITE_SIZE)
     comptime L_BW = Layout.row_major(NBODY, 2)
     comptime L_CDOF = Layout.row_major(BATCH, NV * 6)
     comptime L_M = Layout.row_major(BATCH, NV * NV)
@@ -2348,12 +2420,17 @@ def solve_contacts_fields[
     comptime if target == "cpu":
         var qpos_v = d.qpos.lt["cpu", L_QPOS]()
         var qvel_v = d.qvel.lt["cpu", L_NV]()
+        var xpos_v = d.xpos.lt["cpu", L_B3]()
+        var xquat_v = d.xquat.lt["cpu", L_B4]()
         var stcom_v = d.subtree_com.lt["cpu", L_B3]()
         var con_v = d.contacts.lt["cpu", L_CON]()
         var smeta_v = d.meta.lt["cpu", L_SMETA]()
         var joints_v = m.joints.lt["cpu", L_JOINT]()
         var bodies_v = m.bodies.lt["cpu", L_BODY]()
         var mmeta_v = m.meta.lt["cpu", L_MMETA]()
+        var eq_v = m.equality.lt["cpu", L_EQ]()
+        var ten_v = m.tendons.lt["cpu", L_TEN]()
+        var site_v = m.sites.lt["cpu", L_SITE]()
         var bw_v = m.body_invweight0.lt["cpu", L_BW]()
         var dw_v = m.dof_invweight0.lt["cpu", L_DW]()
         var cdof_v = scratch.cdof.lt["cpu", L_CDOF]()
@@ -2369,12 +2446,16 @@ def solve_contacts_fields[
                 NJOINT,
                 MAX_CONTACTS,
                 NGEOM,
+                NEQUALITY,
+                NTENDON,
+                NSITE,
                 CONE_TYPE,
                 BATCH,
                 SOLVER_WS,
             ](
-                e, qpos_v, qvel_v, stcom_v, con_v, smeta_v, joints_v,
-                bodies_v, mmeta_v, bw_v, dw_v, cdof_v, mi_v, qc_v, sol_v,
+                e, qpos_v, qvel_v, xpos_v, xquat_v, stcom_v, con_v, smeta_v,
+                joints_v, bodies_v, mmeta_v, eq_v, ten_v, site_v, bw_v, dw_v,
+                cdof_v, mi_v, qc_v, sol_v,
             )
     else:
         var c = ctx.value()
@@ -2388,6 +2469,9 @@ def solve_contacts_fields[
                 NJOINT,
                 MAX_CONTACTS,
                 NGEOM,
+                NEQUALITY,
+                NTENDON,
+                NSITE,
                 CONE_TYPE,
                 BATCH,
                 SOLVER_WS,
@@ -2395,12 +2479,17 @@ def solve_contacts_fields[
         ](
             d.qpos.lt["gpu", L_QPOS](),
             d.qvel.lt["gpu", L_NV](),
+            d.xpos.lt["gpu", L_B3](),
+            d.xquat.lt["gpu", L_B4](),
             d.subtree_com.lt["gpu", L_B3](),
             d.contacts.lt["gpu", L_CON](),
             d.meta.lt["gpu", L_SMETA](),
             m.joints.lt["gpu", L_JOINT](),
             m.bodies.lt["gpu", L_BODY](),
             m.meta.lt["gpu", L_MMETA](),
+            m.equality.lt["gpu", L_EQ](),
+            m.tendons.lt["gpu", L_TEN](),
+            m.sites.lt["gpu", L_SITE](),
             m.body_invweight0.lt["gpu", L_BW](),
             m.dof_invweight0.lt["gpu", L_DW](),
             scratch.cdof.lt["gpu", L_CDOF](),
