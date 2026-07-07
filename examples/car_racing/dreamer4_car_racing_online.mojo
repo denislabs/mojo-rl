@@ -177,6 +177,9 @@ def main() raises:
                                         # ±2000 excursions seen with the wide grid.
         frame_repeat=4,           # action repeat (standard CarRacing)
         diag=True,                # print reward/value/return sanity stats
+        save_ckpt="dreamer4_carracing_online",  # params ckpt (tok + agent) every
+                                  # eval + at end; loaded by the imagination-GIF
+                                  # example dreamer4_car_racing_imagination_gif.mojo
         dctx=Optional(ctx),       # GPU dynamics
     )
     logger.close()

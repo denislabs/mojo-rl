@@ -41,6 +41,11 @@ from mojo_rl.nn.core.initializer import Initializer
 from mojo_rl.nn.core.amp import AMPPolicy, NoAMP
 from mojo_rl.nn.core.call import call_forward, call_vjp
 from mojo_rl.nn.core.walkers import join_name
+from mojo_rl.nn.core.checkpoint import (
+    save_params, load_params,
+    BinaryCheckpointWriter, BinaryCheckpointReader,
+    _write_file_bytes, _read_file_bytes,
+)
 
 from .dynamics import Dreamer4Dynamics
 from .task_embedder import TaskEmbedder
@@ -338,6 +343,41 @@ struct Dreamer4Agent[
         self.rh.zero_grad[target](ctx)
         self.vh.zero_grad[target](ctx)
         self.ch.zero_grad[target](ctx)
+
+    # ── checkpoint (params only; the frozen ph_prior + Adam moments are not
+    #    saved). One file per submodule (`<base>.<name>.ckpt`) so the mixed
+    #    DYN_TARGET (dyn on device, heads/te on host) is handled per-module and
+    #    no multi-field borrow is needed. `dctx` is required when DYN_TARGET="gpu"
+    #    (to D2H the device `dyn` params). Mirror load order in `load`. ──
+    def save(mut self, base: String, dctx: Optional[DeviceContext] = None) raises:
+        comptime if Self.DYN_TARGET == "gpu":
+            save_params["gpu"](self.dyn, base + ".dyn.ckpt", dctx, False)
+        else:
+            save_params["cpu"](self.dyn, base + ".dyn.ckpt", None, False)
+        # te is a bespoke non-Module (no for_each_state) → param-only save.
+        var tew = BinaryCheckpointWriter(False)
+        tew.mode = 0
+        self.te.for_each_param["cpu"](tew, None)
+        _write_file_bytes(base + ".te.ckpt", tew.content)
+        save_params["cpu"](self.ph, base + ".ph.ckpt", None, False)
+        save_params["cpu"](self.rh, base + ".rh.ckpt", None, False)
+        save_params["cpu"](self.vh, base + ".vh.ckpt", None, False)
+        save_params["cpu"](self.ch, base + ".ch.ckpt", None, False)
+
+    def load(mut self, base: String, dctx: Optional[DeviceContext] = None) raises:
+        comptime if Self.DYN_TARGET == "gpu":
+            load_params["gpu"](self.dyn, base + ".dyn.ckpt", dctx)
+        else:
+            load_params["cpu"](self.dyn, base + ".dyn.ckpt", None)
+        # te is a bespoke non-Module (no for_each_state) → param-only load.
+        var teb = _read_file_bytes(base + ".te.ckpt")
+        var ter = BinaryCheckpointReader(teb^)
+        ter.mode = 0
+        self.te.for_each_param["cpu"](ter, None)
+        load_params["cpu"](self.ph, base + ".ph.ckpt", None)
+        load_params["cpu"](self.rh, base + ".rh.ckpt", None)
+        load_params["cpu"](self.vh, base + ".vh.ckpt", None)
+        load_params["cpu"](self.ch, base + ".ch.ckpt", None)
 
     # ── storage-module call bridges (List host scratch ↔ boundary Tensor) ──
     # @staticmethod so the caller can pass three DISTINCT fields of `self`

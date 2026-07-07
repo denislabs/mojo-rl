@@ -50,6 +50,7 @@ from .imag_rl_loss import continue_bce_backward
 from .shortcut_loss import _mao, _ilog2
 from ..dreamerv3.twohot import symexp_twohot_bins
 from ...nn.models.cifar_feature_net import CifarBackbone
+from mojo_rl.nn.core.checkpoint import save_params
 
 
 struct OnlineRng(Copyable, Movable):
@@ -317,6 +318,11 @@ def run_online_dreamer4[
     log_every: Int = 500,   # cadence for stdout progress + metric logging
     frame_repeat: Int = 1,  # repeat each chosen action this many env steps
     diag: Bool = False,     # print reward/value/return sanity stats at log cadence
+    save_ckpt: String = "", # if non-empty, base path for a params checkpoint of
+                            # the tokenizer + agent (written every eval + at the
+                            # end): `<base>.tok.ckpt` + `<base>.{dyn,te,ph,rh,vh,
+                            # ch}.ckpt`. Load with the matching dims via
+                            # `tok`/`agent` `load` (see the imagination-GIF example).
     seed: UInt64 = 20260701,
     dctx: Optional[DeviceContext] = None,   # required when DYN_TARGET="gpu"
 ) raises -> Tuple[Float64, Float64, Float64, Float64, Float64]:
@@ -790,6 +796,13 @@ def run_online_dreamer4[
             if logger.is_active():
                 logger.log_scalar(String("online/eval_return"),
                                   last_eval_return, step)
+            if save_ckpt != String(""):
+                comptime if DYN_TARGET == "gpu":
+                    save_params["gpu"](tok, save_ckpt + ".tok.ckpt", dctx, False)
+                else:
+                    save_params["cpu"](tok, save_ckpt + ".tok.ckpt", None, False)
+                agent.save(save_ckpt, dctx)
+                print("  [ckpt] saved", save_ckpt, "* at step", step)
             # resume training on a fresh episode (eval consumed the env)
             var rob = env.reset_obs_list()
             for i in range(IMG_DIM):
@@ -797,6 +810,14 @@ def run_online_dreamer4[
             win_n = 0
             last_action = -1
             ep_ret = 0.0
+
+    if save_ckpt != String(""):
+        comptime if DYN_TARGET == "gpu":
+            save_params["gpu"](tok, save_ckpt + ".tok.ckpt", dctx, False)
+        else:
+            save_params["cpu"](tok, save_ckpt + ".tok.ckpt", None, False)
+        agent.save(save_ckpt, dctx)
+        print("  [ckpt] final checkpoint saved:", save_ckpt)
 
     logger.flush()
     _ = did_imag
