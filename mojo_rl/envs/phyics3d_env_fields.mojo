@@ -16,10 +16,9 @@ scalars, negligible next to the physics. Zero changes to any MODEL_DEF or
 CONFIG.
 
 Scope (mirrors what the fields path supports today):
-- Contact-free envs only: `RK4IntegratorFields` has no contact/limit seam
-  yet (legacy RK4 runs those in its solver launches). InvertedPendulum /
-  reacher-class envs are in scope; hopper/walker locomotion joins when
-  contacts-in-RK4 lands.
+- Contacts + joint limits: `RK4IntegratorFields` runs detection + the PGS
+  contact solve (limits inside) after every stage — hopper/walker-class
+  locomotion envs are in scope. Equality/tendon-constrained models are not.
 - Fluid-force models raise (same guard as the integrators).
 - cvel/cfrc_ext-based rewards (ant contact cost) not synced — contact envs
   are out of scope anyway.
@@ -287,8 +286,7 @@ struct Phyics3dEnvFields[
         for i in range(Self.NV):
             self.d.qfrc.data[i] = self.data.qfrc[i]
 
-        # Physics: fields RK4 (contact-free; joint limits join with the
-        # RK4 solver seam).
+        # Physics: fields RK4 with per-stage contact/limit solving.
         for _ in range(self.frame_skip):
             try:
                 # CPU target: cannot actually raise (the `raises` on the

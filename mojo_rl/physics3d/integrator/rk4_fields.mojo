@@ -62,8 +62,10 @@ from ..dynamics.ldl_fields import (
 )
 from ..types import ConeType
 from ..dynamics.rne_fields import compute_bias_forces_rne_fields
+from ..constraints.contact_solve_fields import solve_contacts_fields
+from ..collision.contact_detection_fields import detect_contacts_fields
 from ..joint_types import JNT_FREE, JNT_BALL, JNT_HINGE, JNT_SLIDE
-from ..fields import DataFields, ModelFields, DynamicsScratch, Rk4Scratch
+from ..fields import DataFields, ModelFields, DynamicsScratch, ContactScratch, Rk4Scratch
 from ..gpu.constants import (
     MODEL_JOINT_SIZE,
     MODEL_META_IDX_TIMESTEP,
@@ -390,23 +392,32 @@ struct RK4IntegratorFields[
     CONE_TYPE: Int = ConeType.ELLIPTIC,
     BATCH: Int = 1,
 ](Movable):
-    """Owns its scratch; steps contact-free RK4 dynamics on either target.
-    No contacts/limits yet (see module docstring — they live in the
-    per-stage solver launch of the legacy path, a later slice)."""
+    """Owns its scratch; steps RK4 dynamics on either target. With
+    CONTACTS=True (default), each stage is followed by contact detection +
+    the PGS contact solve (joint limits inside, legacy position) — matching
+    the legacy per-stage solver launch. CONTACTS=False = unconstrained
+    stages (the original contact-free pilot gates)."""
 
     var scratch: DynamicsScratch[Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH]
     var rk4: Rk4Scratch[Self.DTYPE, Self.NQ, Self.NV, Self.BATCH]
+    var cscratch: ContactScratch[
+        Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH
+    ]
 
     def __init__(out self) raises:
         self.scratch = DynamicsScratch[
             Self.DTYPE, Self.NV, Self.NBODY, Self.BATCH
         ]()
         self.rk4 = Rk4Scratch[Self.DTYPE, Self.NQ, Self.NV, Self.BATCH]()
+        self.cscratch = ContactScratch[
+            Self.DTYPE, Self.NV, Self.MAX_CONTACTS, Self.BATCH
+        ]()
 
     def prepare_gpu(mut self, ctx: DeviceContext) raises:
         """Allocate device buffers for the scratch (once, before stepping)."""
         self.scratch.upload_all(ctx)
         self.rk4.upload_all(ctx)
+        self.cscratch.upload_all(ctx)
 
     def _stage_dynamics[
         target: StaticString
@@ -610,7 +621,7 @@ struct RK4IntegratorFields[
             )
 
     def step[
-        target: StaticString
+        target: StaticString, CONTACTS: Bool = True
     ](
         mut self,
         mut d: DataFields[
@@ -624,7 +635,8 @@ struct RK4IntegratorFields[
         ],
         ctx: Optional[DeviceContext] = None,
     ) raises:
-        """One full contact-free RK4 step (4 stages + combine)."""
+        """One full RK4 step (4 stages [+ per-stage contact/limit solve] +
+        combine)."""
         # Fluid forces are not ported yet — refuse rather than silently
         # diverge from the legacy step.
         if (
@@ -640,6 +652,22 @@ struct RK4IntegratorFields[
         comptime for s in range(4):
             self._stage_setup[target, s](dt, d, m, ctx)
             self._stage_dynamics[target](d, m, ctx)
+            # Per-stage constraint solve (legacy: solver launch after every
+            # stage kernel; corrects qacc_constrained before the next
+            # stage's A[k] snapshot / the combine).
+            comptime if CONTACTS:
+                detect_contacts_fields[
+                    target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
+                    Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
+                    Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
+                    Self.NMESH_VERTS, Self.BATCH,
+                ](d, m, ctx)
+                solve_contacts_fields[
+                    target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY,
+                    Self.NJOINT, Self.MAX_CONTACTS, Self.NGEOM,
+                    Self.NEQUALITY, Self.NTENDON, Self.NSITE, Self.NEXCLUDE,
+                    Self.NMESH_VERTS, Self.CONE_TYPE, Self.BATCH,
+                ](d, m, self.scratch, self.cscratch, ctx)
 
         comptime L_JOINT = Layout.row_major(Self.NJOINT, MODEL_JOINT_SIZE)
         comptime L_NV = Layout.row_major(Self.BATCH, Self.NV)

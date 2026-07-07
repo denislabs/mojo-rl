@@ -220,8 +220,8 @@ def main() raises:
             block_dim=(1,),
         )
         # Fields: stateful integrator step (GPU + CPU shadow).
-        integ.step["gpu"](d, mf, ctx)
-        integ_c.step["cpu"](dc, mf)
+        integ.step["gpu", False](d, mf, ctx)
+        integ_c.step["cpu", False](dc, mf)
 
         # Compare fields-GPU vs legacy-GPU bit-exact.
         slab_t.download(ctx)
