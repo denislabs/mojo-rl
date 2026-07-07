@@ -37,9 +37,17 @@ from mojo_rl.physics3d.dynamics.subtree_com_fields import (
     compute_subtree_com_fields,
 )
 from mojo_rl.physics3d.dynamics.cdof_fields import compute_cdof_fields
-from mojo_rl.physics3d.dynamics.mass_matrix import compute_mass_matrix_full_gpu
+from mojo_rl.physics3d.dynamics.mass_matrix import (
+    compute_mass_matrix_full_gpu,
+    ldl_factor_gpu,
+    ldl_solve_workspace_gpu,
+)
 from mojo_rl.physics3d.dynamics.mass_matrix_fields import (
     compute_mass_matrix_fields,
+)
+from mojo_rl.physics3d.dynamics.ldl_fields import (
+    ldl_factor_fields,
+    ldl_solve_fields,
 )
 from mojo_rl.physics3d.fields import DynamicsScratch
 from mojo_rl.physics3d.gpu.constants import (
@@ -54,6 +62,10 @@ from mojo_rl.physics3d.gpu.constants import (
     integrator_workspace_size,
     ws_cdof_offset,
     ws_M_offset,
+    ws_L_offset,
+    ws_D_offset,
+    ws_fnet_offset,
+    ws_qacc_ws_offset,
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
@@ -193,6 +205,16 @@ def _legacy_mm_kernel[
     compute_mass_matrix_full_gpu[
         DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_, WS_
     ](env, state, model, workspace)
+
+
+def _legacy_ldl_kernel[
+    NV_: Int, NBODY_: Int, B_: Int, WS_: Int
+](workspace: LayoutTensor[DTYPE, Layout.row_major(B_, WS_), MutAnyOrigin],):
+    var env = Int(block_idx.x)
+    if env >= B_:
+        return
+    ldl_factor_gpu[DTYPE, NV_, NBODY_, B_, WS_](env, workspace)
+    ldl_solve_workspace_gpu[DTYPE, NV_, NBODY_, B_, WS_](env, workspace)
 
 
 def _quat_err(
@@ -506,6 +528,62 @@ def test_walker2d() raises:
     if worst_mm > 1e-3:
         raise Error("walker2d mass matrix fields-CPU tolerance exceeded")
     print("  PASS: mass matrix fields-CPU within 1e-3")
+
+    # 6. LDL factor + solve chained on M (fnet = synthetic per-DOF forces).
+    comptime O_FNET = ws_fnet_offset[NV, NBODY]()
+    for e in range(BATCH):
+        for i in range(NV):
+            var f = Scalar[DTYPE]((e * 31 + i * 7) % 11 - 5) / 3.0
+            ws_t.data[e * WS + O_FNET + i] = f
+            scratch.fnet.data[e * NV + i] = f
+            scratch_c.fnet.data[e * NV + i] = f
+    ws_t.upload(ctx)  # host holds cdof+M from download; re-upload whole slab
+    scratch.fnet.upload(ctx)
+    ctx.enqueue_function[_legacy_ldl_kernel[NV, NBODY, BATCH, WS]](
+        ws_t.lt["gpu", Layout.row_major(BATCH, WS)](),
+        grid_dim=(BATCH,),
+        block_dim=(1,),
+    )
+    ws_t.download(ctx)
+    ldl_factor_fields["gpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
+    ldl_solve_fields["gpu", DTYPE, NV, NBODY, BATCH](scratch, ctx)
+    scratch.L.download(ctx)
+    scratch.D.download(ctx)
+    scratch.qacc_ws.download(ctx)
+    comptime O_L = ws_L_offset[NV, NBODY]()
+    comptime O_D = ws_D_offset[NV, NBODY]()
+    comptime O_QW = ws_qacc_ws_offset[NV, NBODY]()
+    var bad_ld = 0
+    for e in range(BATCH):
+        for j in range(NV * NV):
+            if scratch.L.data[e * NV * NV + j] != ws_t.data[e * WS + O_L + j]:
+                bad_ld += 1
+        for j in range(NV):
+            if scratch.D.data[e * NV + j] != ws_t.data[e * WS + O_D + j]:
+                bad_ld += 1
+            if (
+                scratch.qacc_ws.data[e * NV + j]
+                != ws_t.data[e * WS + O_QW + j]
+            ):
+                bad_ld += 1
+    if bad_ld != 0:
+        raise Error("walker2d LDL fields-GPU vs legacy-GPU mismatch")
+    print("  PASS: LDL factor+solve fields-GPU == legacy-GPU bit-exact")
+
+    ldl_factor_fields["cpu", DTYPE, NV, NBODY, BATCH](scratch_c)
+    ldl_solve_fields["cpu", DTYPE, NV, NBODY, BATCH](scratch_c)
+    var worst_ld = Float64(0)
+    for i in range(BATCH * NV):
+        var err = abs(
+            Float64(scratch_c.qacc_ws.data[i])
+            - Float64(scratch.qacc_ws.data[i])
+        )
+        if err > worst_ld:
+            worst_ld = err
+    print("  LDL qacc fields-CPU vs fields-GPU worst err:", worst_ld)
+    if worst_ld > 1e-3:
+        raise Error("walker2d LDL fields-CPU tolerance exceeded")
+    print("  PASS: LDL qacc fields-CPU within 1e-3")
 
 
 def test_synthetic_sites() raises:
