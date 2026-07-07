@@ -54,7 +54,9 @@ comptime PRED_PROJ_H = 16
 comptime SIG_PROJ = 8
 comptime SIG_KNOTS = 5
 comptime B = 4
-comptime MPC_HORIZON = 1     # AdaJEPA shape: one chunk per replan
+comptime MPC_HORIZON = 2     # plan 2 chunks; run 1 executes both (j>0
+                             # frame-render push path), run 2 executes 1
+                             # (the E1 lookahead-with-receding-horizon shape)
 
 comptime N_PATCHES = (IMG // PATCH) * (IMG // PATCH)
 comptime EncCLS = LeWMEncoderCLS[
@@ -106,7 +108,7 @@ def main() raises:
     )
     var before = wm.export_named_params()  # params + BN state
 
-    print("running paper protocol with TTA (untrained WM — wiring only) ...")
+    print("running TTA, execute ALL blocks (j>0 render-push path) ...")
     var r = run_lewm_paper_protocol[
         IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
         ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
@@ -114,7 +116,7 @@ def main() raises:
         "gpu", 0, 2, 16, EncCLS,   # PRED_DIM_HEAD=0, ACT_DIM=2, VIZ=16
     ](
         wm, starts, goals,
-        eval_budget=50,    # 10 replans at horizon 1; adapt fires from #7
+        eval_budget=80,    # 8 plans × 2 blocks; buffer full after 3 plans
         scale_x=100.0, scale_y=100.0,
         cem_iters=3, cem_samples=16, cem_topk=4, init_std=0.2,
         ctx=ctx,
@@ -126,6 +128,26 @@ def main() raises:
     assert_true(not (isnan(r[1]) or isinf(r[1])), "pos_diff finite")
     assert_true(r[0] >= 0.0 and r[0] <= 1.0, "success_rate in [0,1]")
     assert_true(r[1] >= 0.0, "pos_diff non-negative")
+
+    print("running TTA, plan 2 / execute 1 (E1 receding-horizon shape) ...")
+    var r2 = run_lewm_paper_protocol[
+        IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB, ENC_PROJ_H,
+        ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS, PRED_HEADS,
+        PRED_FF, DEPTH, PRED_PROJ_H, SIG_PROJ, SIG_KNOTS, B, MPC_HORIZON,
+        "gpu", 0, 2, 16, EncCLS,
+    ](
+        wm, starts, goals,
+        eval_budget=50,    # 10 replans × 1 block; adapt fires from #7
+        scale_x=100.0, scale_y=100.0,
+        cem_iters=3, cem_samples=16, cem_topk=4, init_std=0.2,
+        ctx=ctx,
+        verbose=True,
+        execute_blocks=1,
+        tta_enabled=True,
+        tta_steps=1,
+    )
+    print("   exec1 success_rate=", r2[0], " mean_pos_diff=", r2[1])
+    assert_true(not (isnan(r2[1]) or isinf(r2[1])), "exec1 pos_diff finite")
 
     # fresh-model-per-episode: params + BN state restored bit-exact
     var after = wm.export_named_params()

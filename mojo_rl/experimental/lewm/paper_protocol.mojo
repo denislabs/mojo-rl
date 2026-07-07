@@ -185,6 +185,12 @@ def run_lewm_paper_protocol[
     viz_path: String = "",
     ctx: Optional[DeviceContext] = None,
     verbose: Bool = True,
+    # How many of the planned future blocks to EXECUTE before replanning.
+    # 0 (default) ⇒ all MPC_HORIZON blocks = the LeWM paper protocol
+    # (receding_horizon = horizon). 1 with MPC_HORIZON > 1 = AdaJEPA's
+    # receding-horizon shape: plan with lookahead, execute one chunk,
+    # replan (their PushT: plan 25 steps / execute 5).
+    execute_blocks: Int = 0,
     # AdaJEPA test-time adaptation (docs/ADAJEPA_LEWM_TTA_PLAN.md §5).
     # tta_keep = kept param-name prefixes; empty ⇒ the v1 predictor-side
     # default. Requires a fresh Adam (zero moments — reset_opt_moments
@@ -331,7 +337,10 @@ def run_lewm_paper_protocol[
     if tta_enabled:
         snap = wm.snapshot_all()  # restored at exit (fresh model/episode)
 
-    var steps_per_plan = MPC_HORIZON * FRAMESKIP
+    var n_exec = execute_blocks
+    if n_exec <= 0 or n_exec > MPC_HORIZON:
+        n_exec = MPC_HORIZON
+    var steps_per_plan = n_exec * FRAMESKIP
     var n_plans = (eval_budget + steps_per_plan - 1) // steps_per_plan
     var do_viz = viz_path.byte_length() > 0
     var viz_buf = alloc[Scalar[DT]](n_plans * VIZN if do_viz else 1)
@@ -372,8 +381,8 @@ def run_lewm_paper_protocol[
 
         _ = cem.optimize(scorer, plan.as_unsafe_any_origin(), verbose=False)
 
-        # execute ALL future blocks (plan indices H-1 .. H-1+horizon-1)
-        for j in range(MPC_HORIZON):
+        # execute the first n_exec future blocks (plan indices H-1 ..)
+        for j in range(n_exec):
             if steps_done >= eval_budget:
                 break
             var blk = H - 1 + j

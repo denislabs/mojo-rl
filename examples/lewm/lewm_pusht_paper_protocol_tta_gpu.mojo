@@ -75,10 +75,16 @@ comptime ACTIN = T * ACT
 
 comptime CKPT_PATH: String = "lewm_pusht_recipe.ckpt"
 
-# ── E1 protocol knobs ─────────────────────────────────────────────────
-comptime MPC_HORIZON = 1          # AdaJEPA: one chunk per replan
+# ── E1 protocol knobs (run 2: lookahead + AdaJEPA receding horizon) ───
+# Run 1 (horizon 1 = greedy plan-1-execute-1, budget 50) showed both arms
+# diverging (~+130 px/episode) — no lookahead toward a goal 25 steps out.
+# AdaJEPA actually PLANS 25 steps and EXECUTES 5: here plan 4 chunks
+# (20 steps — NEEDED = H+4-1 = 6 = T is the action-embedder cap), execute
+# 1, replan. Budget 100 ≈ AdaJEPA's 20 MPC steps → 20 replans, ~14 adapted.
+comptime MPC_HORIZON = 4          # plan 4 chunks ahead (in-window max)
+comptime EXECUTE_BLOCKS = 1       # execute 1 chunk per replan (AdaJEPA)
 comptime ROUNDS = 3               # 3×16 = 48 episode pairs
-comptime EVAL_BUDGET = 50         # paper protocol; 100 ≈ AdaJEPA's budget
+comptime EVAL_BUDGET = 100        # ≈ AdaJEPA's PushT budget
 comptime GOAL_FRAME = 5           # window frame +5 = 25 dense steps ahead
 comptime CEM_ITERS = 30
 comptime CEM_SAMPLES = 300
@@ -109,10 +115,10 @@ def main() raises:
     print("=" * 70)
     print("LeWM PushT PAPER PROTOCOL — E1: FROZEN vs ADAPT (AdaJEPA TTA)")
     print("=" * 70)
-    print("recipe WM (CLS, z-actions), horizon", MPC_HORIZON, ", budget",
-          EVAL_BUDGET, ",", ROUNDS, "rounds ×", B, "episodes, CEM",
-          CEM_SAMPLES, "×", CEM_ITERS, ", tta_steps=", TTA_STEPS,
-          ", tta_lr=", TTA_LR)
+    print("recipe WM (CLS, z-actions), plan", MPC_HORIZON, "chunks / execute",
+          EXECUTE_BLOCKS, ", budget", EVAL_BUDGET, ",", ROUNDS, "rounds ×",
+          B, "episodes, CEM", CEM_SAMPLES, "×", CEM_ITERS, ", tta_steps=",
+          TTA_STEPS, ", tta_lr=", TTA_LR)
     var ctx = DeviceContext()
 
     # wd=0 + clip 1.0: training-faithful adapt step that keeps the mask
@@ -183,6 +189,10 @@ def main() raises:
         print("round", round + 1, "/", ROUNDS)
 
         print("   [frozen] ...")
+        # CEM samples from the global RNG: re-seed identically before each
+        # arm so frozen and adapt see the SAME CEM noise (paired episodes
+        # AND paired planner noise; run 1 arms differed pre-adapt).
+        rng_seed(1000 + round)
         var rf = run_lewm_paper_protocol[
             IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB,
             ENC_PROJ_H, ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS,
@@ -201,6 +211,7 @@ def main() raises:
                 + String(round) + String(".ppm"),
             ctx=ctx,
             verbose=True,
+            execute_blocks=EXECUTE_BLOCKS,
         )
         print("   [frozen] success=", rf[0], " pos_diff=", rf[1])
 
@@ -208,6 +219,7 @@ def main() raises:
         # The adapt arm restores params+state at exit, but Adam moments
         # survive — zero them so every round's mask invariant holds.
         wm.reset_opt_moments()
+        rng_seed(1000 + round)  # pair the CEM noise with the frozen arm
         var ra = run_lewm_paper_protocol[
             IN_CH, IMG, PATCH, HIDDEN, ENC_HEADS, ENC_LAYERS, EMB,
             ENC_PROJ_H, ENC_FF_MULT, T, ACT, SMOOTHED, AE_MLP, H, N_PREDS,
@@ -226,6 +238,7 @@ def main() raises:
                 + String(round) + String(".ppm"),
             ctx=ctx,
             verbose=True,
+            execute_blocks=EXECUTE_BLOCKS,
             tta_enabled=True,
             tta_steps=TTA_STEPS,
             # tta_keep default = predictor side (predfull+encfrozen, §4)
