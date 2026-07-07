@@ -5,7 +5,7 @@ start, real +25-step goal, budget 50, swm 20px/20° success — THE number
 comparable to the paper's ~90%) but for the recipe-retrained WM
 (no-stop-grad, AdamW 5e-5, z-scored actions):
 
-  * loads /tmp/lewm_pusht_recipe_world_model.txt,
+  * loads lewm_pusht_recipe.ckpt,
   * the BN warm-up and planning run with z-scored actions (the WM's input
     convention), so CEM samples Σ₀ = I (INIT_STD = 1.0 — exactly the
     paper's init), and execution de-normalizes raw = z·std + mean before
@@ -61,7 +61,7 @@ comptime PIX = T * IMG_DIM
 comptime ACTIN = T * ACT
 
 comptime MPC_HORIZON = 4          # NEEDED = H+horizon-1 = 6 = T (in-window max)
-comptime CKPT_PATH: String = "/tmp/lewm_pusht_recipe_world_model.txt"
+comptime CKPT_PATH: String = "lewm_pusht_recipe.ckpt"
 
 # protocol knobs (paper App D / F.1)
 comptime ROUNDS = 3               # 3×16 = 48 episodes ≈ paper's 50
