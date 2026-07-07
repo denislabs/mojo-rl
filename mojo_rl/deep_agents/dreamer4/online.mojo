@@ -293,7 +293,14 @@ def run_online_dreamer4[
     lr_tok: Scalar[DT] = Scalar[DT](2e-3),
     lr_agent: Scalar[DT] = Scalar[DT](1e-3),
     lr_cont: Scalar[DT] = Scalar[DT](3e-3),
-    lr_imag: Scalar[DT] = Scalar[DT](1e-2),
+    lr_imag: Scalar[DT] = Scalar[DT](3e-4),   # value + policy heads in imagination.
+                            # Was 1e-2 (10× lr_agent) — far above the DreamerV3
+                            # critic range (~3e-4); the value head is the ONLY
+                            # imagination-trained head, regressed via twohot-CE onto
+                            # its OWN bootstrapped λ-return with no slow-target/
+                            # normalization anchor, so 1e-2 drove it into an input-
+                            # insensitive constant collapse (dead advantage → no
+                            # policy learning). 3e-4 = standard critic lr.
     perc_weight: Float64 = 0.0,
     eval_max_steps: Int = 1000,
     num_eval_episodes: Int = 1,   # average the greedy-eval return over this many
