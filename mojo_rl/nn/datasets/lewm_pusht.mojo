@@ -57,12 +57,93 @@ from mojo_rl.io.hdf5 import (
     hsize_t,
 )
 from mojo_rl.nn.core.ptr import mptr, untracked
-from mojo_rl.utils.progress import print_bytes_progress
 
 
 comptime _HF_REPO = "quentinll/lewm-pusht"
 comptime _HF_FILE = "pusht_expert_train.h5.zst"
 comptime _CACHE_SUBDIR = ".cache/mojo_rl/lewm_pusht"
+
+# The streaming download loop runs ENTIRELY inside Python (one exec + one
+# call from Mojo). Driving it chunk-by-chunk from Mojo leaked every large
+# per-iteration PythonObject (read chunks + decompress outputs) until the
+# function returned: RSS stayed flat (macOS swapped the cold pages), but
+# the process's physical footprint grew ~1:1 with the DECOMPRESSED volume
+# — 23 GB footprint / 20.7 GB of swapped-out MALLOC_LARGE at 34% of the
+# download, filling swap. In-Python, each chunk is freed per iteration.
+# Features: in-place progress bar (compressed bytes, avg MB/s, ETA),
+# reconnect-and-seek resume into the SAME decompressor (30 retries),
+# F_NOCACHE (macOS) / periodic fsync+fadvise DONTNEED (Linux) so the
+# multi-GB write also stays out of the OS page cache.
+comptime _DL_HELPER_PY: StaticString = """
+def stream_download(uri, tmp_path):
+    import gc, os, time
+    import zstandard
+    from huggingface_hub import HfFileSystem
+
+    fs = HfFileSystem()
+    total = fs.info(uri)['size']
+    f_out = open(tmp_path, 'wb')
+    try:
+        import fcntl
+        fcntl.fcntl(f_out.fileno(), fcntl.F_NOCACHE, 1)
+    except Exception:
+        pass  # non-macOS: fsync+fadvise below covers it
+    dobj = zstandard.ZstdDecompressor().decompressobj()
+    CHUNK = 16 * 1024 * 1024
+    MAX_RETRIES = 30
+    f_in = fs.open(uri, 'rb')
+    offset = 0
+    retries = 0
+    n_chunks = 0
+    t0 = time.monotonic()
+    while offset < total:
+        try:
+            chunk = f_in.read(CHUNK)
+        except Exception as e:
+            retries += 1
+            if retries > MAX_RETRIES:
+                raise RuntimeError(
+                    '  [lewm_pusht] download failed after %d reconnects'
+                    ' (last: %s); rerun to retry' % (MAX_RETRIES, e))
+            print()
+            print('  [lewm_pusht] read error at %d/%d bytes - reconnecting'
+                  ' (retry %d/%d): %s' % (offset, total, retries,
+                                          MAX_RETRIES, e))
+            time.sleep(2.0)
+            try:
+                f_in.close()
+            except Exception:
+                pass
+            f_in = fs.open(uri, 'rb')
+            f_in.seek(offset)
+            continue
+        if not chunk:
+            break
+        offset += len(chunk)
+        f_out.write(dobj.decompress(chunk))
+        chunk = None
+        n_chunks += 1
+        if n_chunks % 32 == 0:  # every ~512 MB compressed
+            f_out.flush()
+            os.fsync(f_out.fileno())
+            if hasattr(os, 'posix_fadvise'):
+                os.posix_fadvise(f_out.fileno(), 0, 0,
+                                 os.POSIX_FADV_DONTNEED)
+            gc.collect()
+        el = time.monotonic() - t0
+        mbs = offset / 1e6 / el if el > 0 else 0.0
+        eta = int((total - offset) / 1e6 / mbs) if mbs > 0 else 0
+        pct = offset * 100 // total
+        filled = offset * 30 // total
+        bar = '#' * filled + '-' * (30 - filled)
+        print('\\r  [lewm_pusht] [%s] %d%% | %.1f/%.1f GB | %.1f MB/s |'
+              ' ETA %dm%02ds   ' % (bar, pct, offset / 1e9, total / 1e9,
+                                    mbs, eta // 60, eta % 60),
+              end='', flush=True)
+    print()
+    f_in.close()
+    f_out.close()
+"""
 
 
 def _ensure_dataset_cached() raises -> String:
@@ -92,108 +173,16 @@ def _ensure_dataset_cached() raises -> String:
     print("  [lewm_pusht] no cache hit; streaming", _HF_FILE)
     print("  [lewm_pusht] (~13 GB over HTTP, decompressing to ~47 GB on disk)")
 
-    var hf = Python.import_module("huggingface_hub")
-    var zstandard = Python.import_module("zstandard")
+    # One exec + one call: the chunk loop lives in Python (see the
+    # _DL_HELPER_PY note — Mojo-driven per-chunk PythonObjects leaked the
+    # whole decompressed volume into swap until the function returned).
     var builtins = Python.import_module("builtins")
-    var time_mod = Python.import_module("time")
-    var gc = Python.import_module("gc")
-
-    var fs = hf.HfFileSystem()
     var hf_uri = String("datasets/") + _HF_REPO + "/" + _HF_FILE
-    var total = Int(py=fs.info(PythonObject(hf_uri))[PythonObject("size")])
-    var f_out = builtins.open(PythonObject(tmp_path), PythonObject("wb"))
-    # Keep the multi-GB output OUT of the OS page cache: on macOS a big
-    # sequential write balloons "Cached Files" to all free RAM (looks like
-    # the whole file is loaded in memory; the process itself streams at a
-    # flat few hundred MB). F_NOCACHE bypasses the unified buffer cache;
-    # on Linux the periodic fsync+fadvise(DONTNEED) below does the same.
-    try:
-        var fcntl_mod = Python.import_module("fcntl")
-        _ = fcntl_mod.fcntl(
-            f_out.fileno(), fcntl_mod.F_NOCACHE, PythonObject(1)
-        )
-    except nocache_err:
-        _ = nocache_err  # non-macOS: the fsync+fadvise path covers it
-    # Manual chunk loop instead of `copy_stream`: gives (a) an in-place
-    # progress bar over the compressed byte count, and (b) resume — on a
-    # network error we reopen, seek(2) back to the exact compressed offset
-    # and keep feeding the SAME decompressobj, so a mid-stream timeout no
-    # longer restarts the whole ~13 GB transfer.
-    var dctx = zstandard.ZstdDecompressor()
-    var dobj = dctx.decompressobj()
-    comptime CHUNK = 16 * 1024 * 1024
-    comptime MAX_RETRIES = 30
-    var f_in = fs.open(PythonObject(hf_uri), PythonObject("rb"))
-    var offset = 0
-    var retries = 0
-    var n_chunks = 0
-    var t0 = Float64(py=time_mod.monotonic())
-    while offset < total:
-        var chunk = PythonObject(None)
-        var got = False
-        try:
-            chunk = f_in.read(PythonObject(CHUNK))
-            got = True
-        except read_err:
-            retries += 1
-            if retries > MAX_RETRIES:
-                raise Error(
-                    "  [lewm_pusht] download failed after "
-                    + String(MAX_RETRIES)
-                    + " reconnects (last: "
-                    + String(read_err)
-                    + "); rerun to retry (the transfer restarts from 0)"
-                )
-            print()  # drop to a fresh line under the progress bar
-            print(
-                "  [lewm_pusht] read error at",
-                offset,
-                "/",
-                total,
-                "bytes — reconnecting (retry",
-                retries,
-                "/",
-                MAX_RETRIES,
-                "):",
-                String(read_err),
-            )
-            _ = time_mod.sleep(PythonObject(2.0))
-            # No explicit close(): a dead handle may hang or raise;
-            # rebinding drops it and Python GC closes it.
-            f_in = fs.open(PythonObject(hf_uri), PythonObject("rb"))
-            _ = f_in.seek(PythonObject(offset))
-        if not got:
-            continue
-        var n = Int(py=builtins.len(chunk))
-        if n == 0:
-            break
-        offset += n
-        _ = f_out.write(dobj.decompress(chunk))
-        n_chunks += 1
-        if n_chunks % 32 == 0:  # every ~512 MB compressed
-            # Push dirty pages to disk and (Linux) drop them from the
-            # page cache; plus a GC sweep for Python-side garbage.
-            _ = f_out.flush()
-            _ = os.fsync(f_out.fileno())
-            try:
-                _ = os.posix_fadvise(
-                    f_out.fileno(),
-                    PythonObject(0),
-                    PythonObject(0),
-                    os.POSIX_FADV_DONTNEED,
-                )
-            except fadv_err:
-                _ = fadv_err  # macOS: no posix_fadvise; F_NOCACHE covers it
-            _ = gc.collect()
-        print_bytes_progress(
-            "  [lewm_pusht]",
-            offset,
-            total,
-            Float64(py=time_mod.monotonic()) - t0,
-        )
-    print()  # keep the final bar line
-    _ = f_in.close()
-    _ = f_out.close()
+    var ns = builtins.dict()
+    _ = builtins.exec(PythonObject(_DL_HELPER_PY), ns)
+    _ = ns[PythonObject("stream_download")](
+        PythonObject(hf_uri), PythonObject(tmp_path)
+    )
 
     _ = os.rename(PythonObject(tmp_path), PythonObject(h5_path))
     print("  [lewm_pusht] cached → ", h5_path)
