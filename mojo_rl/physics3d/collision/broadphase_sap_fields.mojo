@@ -1,0 +1,1344 @@
+"""SAP broadphase contact detection over per-field tensors (migration P4).
+
+Per-field port of `detect_contacts_sap_gpu` (collision/broadphase_sap.mojo)
+— arithmetic, iteration order, insertion-sort order and branch structure
+verbatim. Reads FK products (`d.xpos`, `d.xquat`) + geom/body records +
+model meta + exclude pairs + mesh hulls; writes packed contact records into
+`d.contacts` and the contact count into `d.meta` (META_IDX_NUM_CONTACTS).
+
+Operands (10): xpos, xquat (data) + geoms, bodies, mmeta, excludes,
+mesh_meta, mesh_verts (model) + contacts, smeta (data outputs). Mesh
+collision (plane-mesh vertex scan + GJK/EPA fallback via gjk_fields) is
+compiled in only when NMESH_VERTS > 0; zero-mesh models keep the legacy
+branch structure (mesh branches degrade to no-emission / `continue`).
+
+NOTE: the legacy SAP kernel's contact conventions differ from
+detect_contacts_gpu (plane contacts write BODY_B=-1 instead of 0, no
+INCLUDEMARGIN slot, plane-mesh DIST is `dist_v - cm`); this port preserves
+the SAP conventions verbatim — bit-exactness is gated against legacy SAP.
+
+`detect_contacts_auto_fields` mirrors `detect_contacts_auto_gpu`:
+NGEOM >= SAP_THRESHOLD dispatches to SAP, else to `detect_contacts_fields`.
+The fields integrators are NOT rewired to auto here (SAP emission ORDER
+differs from O(N^2), which would shift existing bit-exact gates)."""
+
+from std.gpu import thread_idx, block_idx, block_dim
+from std.gpu.host import DeviceContext
+from layout import Layout, LayoutTensor
+
+from ..kinematics.quat_math import gpu_quat_rotate
+from ..constants import (
+    GEOM_SPHERE,
+    GEOM_CAPSULE,
+    GEOM_BOX,
+    GEOM_PLANE,
+    GEOM_CYLINDER,
+    GEOM_MESH,
+)
+from ..fields import DataFields, ModelFields
+from ..gpu.constants import (
+    MODEL_BODY_SIZE,
+    MODEL_GEOM_SIZE,
+    MODEL_META_SIZE,
+    METADATA_SIZE,
+    MODEL_META_IDX_NEXCLUDE,
+    BODY_IDX_PARENT,
+    BODY_IDX_WELDID,
+    META_IDX_NUM_CONTACTS,
+    CONTACT_SIZE,
+    CONTACT_IDX_BODY_A,
+    CONTACT_IDX_BODY_B,
+    CONTACT_IDX_POS_X,
+    CONTACT_IDX_POS_Y,
+    CONTACT_IDX_POS_Z,
+    CONTACT_IDX_NX,
+    CONTACT_IDX_NY,
+    CONTACT_IDX_NZ,
+    CONTACT_IDX_DIST,
+    CONTACT_IDX_FRICTION,
+    CONTACT_IDX_FRICTION_SPIN,
+    CONTACT_IDX_FRICTION_ROLL,
+    CONTACT_IDX_CONDIM,
+    CONTACT_IDX_FRAME_T1_X,
+    CONTACT_IDX_FRAME_T1_Y,
+    CONTACT_IDX_FRAME_T1_Z,
+    GEOM_IDX_TYPE,
+    GEOM_IDX_BODY,
+    GEOM_IDX_RADIUS,
+    GEOM_IDX_HALF_LENGTH,
+    GEOM_IDX_HALF_X,
+    GEOM_IDX_HALF_Y,
+    GEOM_IDX_HALF_Z,
+    GEOM_IDX_FRICTION,
+    GEOM_IDX_CONTYPE,
+    GEOM_IDX_CONAFFINITY,
+    GEOM_IDX_CONDIM,
+    GEOM_IDX_FRICTION_SPIN,
+    GEOM_IDX_FRICTION_ROLL,
+    GEOM_IDX_MARGIN,
+    GEOM_IDX_MESH_ID,
+    MAX_GPU_MESHES,
+    MODEL_MESH_META_SIZE,
+)
+from .collision_primitives import (
+    sphere_sphere,
+    capsule_sphere,
+    capsule_capsule,
+    box_sphere,
+    box_capsule,
+    box_box,
+    box_plane,
+    cylinder_plane,
+    cylinder_sphere,
+    cylinder_capsule,
+    cylinder_cylinder,
+    cylinder_box,
+)
+from .gjk_fields import gjk_epa_fields
+from .contact_detection_fields import (
+    _geom_world_pos_fields,
+    detect_contacts_fields,
+)
+from .broadphase_sap import _aabb_half_extents, SAP_THRESHOLD
+
+comptime SAP_TPB: Int = 64
+
+
+@always_inline
+def _detect_contacts_sap_env_fields[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+    NEXCLUDE: Int,
+    NMESH_VERTS: Int,
+    BATCH: Int,
+](
+    env: Int,
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    geoms: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    mmeta: LayoutTensor[
+        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+    ],
+    excludes: LayoutTensor[
+        DTYPE, Layout.row_major(NEXCLUDE, 2), MutAnyOrigin
+    ],
+    mesh_meta: LayoutTensor[
+        DTYPE,
+        Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE),
+        MutAnyOrigin,
+    ],
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    smeta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
+):
+    """AABB/SAP broadphase contact detection for one env (verbatim from
+    detect_contacts_sap_gpu; mesh branches compiled in iff NMESH_VERTS > 0).
+    """
+    var num_contacts = 0
+
+    # ------------------------------------------------------------------
+    # 1. Precompute world positions for all NGEOM geoms.
+    # ------------------------------------------------------------------
+    var wpx = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var wpy = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var wpz = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var wqx = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var wqy = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var wqz = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var wqw = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+
+    for g in range(NGEOM):
+        var px: Scalar[DTYPE] = 0
+        var py: Scalar[DTYPE] = 0
+        var pz: Scalar[DTYPE] = 0
+        var qx: Scalar[DTYPE] = 0
+        var qy: Scalar[DTYPE] = 0
+        var qz: Scalar[DTYPE] = 0
+        var qw: Scalar[DTYPE] = 1
+        _geom_world_pos_fields[DTYPE, NBODY, NGEOM, BATCH](
+            env, g, geoms, xpos, xquat, px, py, pz, qx, qy, qz, qw
+        )
+        wpx[g] = px
+        wpy[g] = py
+        wpz[g] = pz
+        wqx[g] = qx
+        wqy[g] = qy
+        wqz[g] = qz
+        wqw[g] = qw
+
+    # ------------------------------------------------------------------
+    # 2. Compute AABBs for non-plane geoms.
+    # ------------------------------------------------------------------
+    var aabb_min_x = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var aabb_max_x = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var aabb_min_y = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var aabb_max_y = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var aabb_min_z = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+    var aabb_max_z = InlineArray[Scalar[DTYPE], NGEOM](uninitialized=True)
+
+    for g in range(NGEOM):
+        var gt = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_TYPE]))
+        if gt == GEOM_PLANE:
+            continue
+        var r = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_RADIUS])
+        var hl = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_LENGTH])
+        var hx = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_X])
+        var hy = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_Y])
+        var hz = rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_HALF_Z])
+        var he = _aabb_half_extents[DTYPE](
+            gt, wqx[g], wqy[g], wqz[g], wqw[g], r, hl, hx, hy, hz
+        )
+        aabb_min_x[g] = wpx[g] - he[0]
+        aabb_max_x[g] = wpx[g] + he[0]
+        aabb_min_y[g] = wpy[g] - he[1]
+        aabb_max_y[g] = wpy[g] + he[1]
+        aabb_min_z[g] = wpz[g] - he[2]
+        aabb_max_z[g] = wpz[g] + he[2]
+
+    # ------------------------------------------------------------------
+    # 3. Plane vs non-plane pairs.
+    # ------------------------------------------------------------------
+    for gi in range(NGEOM):
+        var gi_type = Int(
+            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_TYPE])
+        )
+        if gi_type != GEOM_PLANE:
+            continue
+        var gi_body = Int(
+            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_BODY])
+        )
+        var gi_contype = Int(
+            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONTYPE])
+        )
+        var gi_conaffinity = Int(
+            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONAFFINITY])
+        )
+        var ground_z = wpz[gi]
+
+        for gj in range(NGEOM):
+            if num_contacts >= MAX_CONTACTS:
+                smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](
+                    num_contacts
+                )
+                return
+            var gj_type = Int(
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_TYPE])
+            )
+            if gj_type == GEOM_PLANE:
+                continue
+            var gj_body = Int(
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
+            )
+            if gj_body == 0:
+                continue
+            var gj_contype = Int(
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
+            )
+            var gj_conaffinity = Int(
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
+            )
+            if (gi_contype & gj_conaffinity) == 0 and (
+                gj_contype & gi_conaffinity
+            ) == 0:
+                continue
+
+            var fi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION])
+            var fj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION])
+            var cf = fi if fj <= fi else fj
+            var fsi = rebind[Scalar[DTYPE]](
+                geoms[gi, GEOM_IDX_FRICTION_SPIN]
+            )
+            var fsj = rebind[Scalar[DTYPE]](
+                geoms[gj, GEOM_IDX_FRICTION_SPIN]
+            )
+            var cfs = fsi if fsj <= fsi else fsj
+            var fri = rebind[Scalar[DTYPE]](
+                geoms[gi, GEOM_IDX_FRICTION_ROLL]
+            )
+            var frj = rebind[Scalar[DTYPE]](
+                geoms[gj, GEOM_IDX_FRICTION_ROLL]
+            )
+            var cfr = fri if frj <= fri else frj
+            var ci = Int(
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])
+            )
+            var cj = Int(
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])
+            )
+            var cdim = ci if cj <= ci else cj
+            var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
+            var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
+            var cm = mgi + mgj  # MuJoCo 3.5+: sum of margins
+
+            var pj_x = wpx[gj]
+            var pj_y = wpy[gj]
+            var pj_z = wpz[gj]
+            var qj_x = wqx[gj]
+            var qj_y = wqy[gj]
+            var qj_z = wqz[gj]
+            var qj_w = wqw[gj]
+            var rj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RADIUS])
+            var hlj = rebind[Scalar[DTYPE]](
+                geoms[gj, GEOM_IDX_HALF_LENGTH]
+            )
+
+            if gj_type == GEOM_SPHERE:
+                var dist = pj_z - rj - ground_z
+                if dist < cm and num_contacts < MAX_CONTACTS:
+                    var c_off = num_contacts * CONTACT_SIZE
+                    contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                        gj_body
+                    )
+                    contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                        -1
+                    )
+                    contacts[env, c_off + CONTACT_IDX_POS_X] = pj_x
+                    contacts[env, c_off + CONTACT_IDX_POS_Y] = pj_y
+                    contacts[
+                        env, c_off + CONTACT_IDX_POS_Z
+                    ] = ground_z + dist * Scalar[DTYPE](0.5)
+                    contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                    contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                    contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                    contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                    contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
+                    contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+                    contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+                    contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                        cdim
+                    )
+                    num_contacts += 1
+
+            elif gj_type == GEOM_CAPSULE:
+                var axis_w = gpu_quat_rotate(
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    Scalar[DTYPE](0),
+                    Scalar[DTYPE](0),
+                    Scalar[DTYPE](1),
+                )
+                var e1_x = pj_x + hlj * axis_w[0]
+                var e1_y = pj_y + hlj * axis_w[1]
+                var e1_z = pj_z + hlj * axis_w[2]
+                var dist1 = e1_z - rj - ground_z
+                if dist1 < cm and num_contacts < MAX_CONTACTS:
+                    var c_off = num_contacts * CONTACT_SIZE
+                    contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                        gj_body
+                    )
+                    contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                        -1
+                    )
+                    contacts[env, c_off + CONTACT_IDX_POS_X] = e1_x
+                    contacts[env, c_off + CONTACT_IDX_POS_Y] = e1_y
+                    contacts[
+                        env, c_off + CONTACT_IDX_POS_Z
+                    ] = ground_z + dist1 * Scalar[DTYPE](0.5)
+                    contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                    contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                    contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                    contacts[env, c_off + CONTACT_IDX_DIST] = dist1
+                    contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
+                    contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+                    contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+                    contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                        cdim
+                    )
+                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
+                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
+                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
+                    num_contacts += 1
+                var e2_x = pj_x - hlj * axis_w[0]
+                var e2_y = pj_y - hlj * axis_w[1]
+                var e2_z = pj_z - hlj * axis_w[2]
+                var dist2 = e2_z - rj - ground_z
+                if dist2 < cm and num_contacts < MAX_CONTACTS:
+                    var c_off = num_contacts * CONTACT_SIZE
+                    contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                        gj_body
+                    )
+                    contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                        -1
+                    )
+                    contacts[env, c_off + CONTACT_IDX_POS_X] = e2_x
+                    contacts[env, c_off + CONTACT_IDX_POS_Y] = e2_y
+                    contacts[
+                        env, c_off + CONTACT_IDX_POS_Z
+                    ] = ground_z + dist2 * Scalar[DTYPE](0.5)
+                    contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                    contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                    contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                    contacts[env, c_off + CONTACT_IDX_DIST] = dist2
+                    contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
+                    contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+                    contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+                    contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                        cdim
+                    )
+                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_X] = axis_w[0]
+                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Y] = axis_w[1]
+                    contacts[env, c_off + CONTACT_IDX_FRAME_T1_Z] = axis_w[2]
+                    num_contacts += 1
+
+            elif gj_type == GEOM_CYLINDER:
+                var cp = cylinder_plane[DTYPE](
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hlj,
+                    rj,
+                    ground_z,
+                )
+                var dist = cp[0]
+                if dist < cm and num_contacts < MAX_CONTACTS:
+                    var c_off = num_contacts * CONTACT_SIZE
+                    contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                        gj_body
+                    )
+                    contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                        -1
+                    )
+                    contacts[env, c_off + CONTACT_IDX_POS_X] = cp[1]
+                    contacts[env, c_off + CONTACT_IDX_POS_Y] = cp[2]
+                    contacts[env, c_off + CONTACT_IDX_POS_Z] = cp[3]
+                    contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                    contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                    contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                    contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                    contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
+                    contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+                    contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+                    contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                        cdim
+                    )
+                    num_contacts += 1
+
+            elif gj_type == GEOM_BOX:
+                var hxj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_X])
+                var hyj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Y])
+                var hzj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
+                var bp = box_plane[DTYPE](
+                    pj_x, pj_y, pj_z,
+                    qj_x, qj_y, qj_z, qj_w,
+                    hxj, hyj, hzj,
+                    ground_z,
+                )
+                var dist = bp[0]
+                if dist < cm and num_contacts < MAX_CONTACTS:
+                    var c_off = num_contacts * CONTACT_SIZE
+                    contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                        gj_body
+                    )
+                    contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                        -1
+                    )
+                    contacts[env, c_off + CONTACT_IDX_POS_X] = bp[1]
+                    contacts[env, c_off + CONTACT_IDX_POS_Y] = bp[2]
+                    contacts[env, c_off + CONTACT_IDX_POS_Z] = bp[3]
+                    contacts[env, c_off + CONTACT_IDX_NX] = Scalar[DTYPE](0)
+                    contacts[env, c_off + CONTACT_IDX_NY] = Scalar[DTYPE](0)
+                    contacts[env, c_off + CONTACT_IDX_NZ] = Scalar[DTYPE](1)
+                    contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                    contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
+                    contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+                    contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+                    contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                        cdim
+                    )
+                    num_contacts += 1
+
+            elif gj_type == GEOM_MESH:
+                # Plane-mesh: scan hull vertices below plane
+                comptime if NMESH_VERTS > 0:
+                    var mj_id = Int(
+                        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MESH_ID])
+                    )
+                    if mj_id >= 0:
+                        var pm_vadr = Int(
+                            rebind[Scalar[DTYPE]](mesh_meta[mj_id, 0])
+                        )
+                        var pm_vnum = Int(
+                            rebind[Scalar[DTYPE]](mesh_meta[mj_id, 1])
+                        )
+                        for vi in range(pm_vnum):
+                            if num_contacts >= MAX_CONTACTS:
+                                break
+                            var vx = rebind[Scalar[DTYPE]](
+                                mesh_verts[pm_vadr + vi, 0]
+                            )
+                            var vy = rebind[Scalar[DTYPE]](
+                                mesh_verts[pm_vadr + vi, 1]
+                            )
+                            var vz = rebind[Scalar[DTYPE]](
+                                mesh_verts[pm_vadr + vi, 2]
+                            )
+                            var local_pt = gpu_quat_rotate(
+                                qj_x, qj_y, qj_z, qj_w, vx, vy, vz
+                            )
+                            var wx = pj_x + local_pt[0]
+                            var wy = pj_y + local_pt[1]
+                            var wz = pj_z + local_pt[2]
+                            var dist_v = wz - ground_z
+                            if dist_v < cm:
+                                var c_off = num_contacts * CONTACT_SIZE
+                                contacts[
+                                    env, c_off + CONTACT_IDX_BODY_A
+                                ] = Scalar[DTYPE](gj_body)
+                                contacts[
+                                    env, c_off + CONTACT_IDX_BODY_B
+                                ] = Scalar[DTYPE](-1)
+                                contacts[env, c_off + CONTACT_IDX_POS_X] = wx
+                                contacts[env, c_off + CONTACT_IDX_POS_Y] = wy
+                                contacts[
+                                    env, c_off + CONTACT_IDX_POS_Z
+                                ] = ground_z + dist_v * Scalar[DTYPE](0.5)
+                                contacts[
+                                    env, c_off + CONTACT_IDX_NX
+                                ] = Scalar[DTYPE](0)
+                                contacts[
+                                    env, c_off + CONTACT_IDX_NY
+                                ] = Scalar[DTYPE](0)
+                                contacts[
+                                    env, c_off + CONTACT_IDX_NZ
+                                ] = Scalar[DTYPE](1)
+                                contacts[
+                                    env, c_off + CONTACT_IDX_DIST
+                                ] = dist_v - cm
+                                contacts[
+                                    env, c_off + CONTACT_IDX_FRICTION
+                                ] = cf
+                                contacts[
+                                    env, c_off + CONTACT_IDX_FRICTION_SPIN
+                                ] = cfs
+                                contacts[
+                                    env, c_off + CONTACT_IDX_FRICTION_ROLL
+                                ] = cfr
+                                contacts[
+                                    env, c_off + CONTACT_IDX_CONDIM
+                                ] = Scalar[DTYPE](cdim)
+                                num_contacts += 1
+
+    # ------------------------------------------------------------------
+    # 4. SAP sweep for non-plane pairs.
+    # ------------------------------------------------------------------
+
+    # 4a. Build SAP index list.
+    var sap_idx = InlineArray[Int, NGEOM](uninitialized=True)
+    var sap_n = 0
+    for g in range(NGEOM):
+        var gt = Int(rebind[Scalar[DTYPE]](geoms[g, GEOM_IDX_TYPE]))
+        if gt != GEOM_PLANE:
+            sap_idx[sap_n] = g
+            sap_n += 1
+
+    # 4b. Insertion sort by aabb_min_x.
+    for i in range(1, sap_n):
+        var key = sap_idx[i]
+        var key_val = aabb_min_x[key]
+        var j = i - 1
+        while j >= 0 and aabb_min_x[sap_idx[j]] > key_val:
+            sap_idx[j + 1] = sap_idx[j]
+            j -= 1
+        sap_idx[j + 1] = key
+
+    # 4c. Sweep.
+    for i in range(sap_n):
+        var gi = sap_idx[i]
+        var gi_max_x = aabb_max_x[gi]
+        var gi_type = Int(
+            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_TYPE])
+        )
+        var gi_body = Int(
+            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_BODY])
+        )
+        var gi_contype = Int(
+            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONTYPE])
+        )
+        var gi_conaffinity = Int(
+            rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONAFFINITY])
+        )
+        var pi_x = wpx[gi]
+        var pi_y = wpy[gi]
+        var pi_z = wpz[gi]
+        var qi_x = wqx[gi]
+        var qi_y = wqy[gi]
+        var qi_z = wqz[gi]
+        var qi_w = wqw[gi]
+        var ri = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_RADIUS])
+        var hli = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_LENGTH])
+        var hxi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_X])
+        var hyi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Y])
+        var hzi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_HALF_Z])
+
+        for j in range(i + 1, sap_n):
+            if num_contacts >= MAX_CONTACTS:
+                smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](
+                    num_contacts
+                )
+                return
+            var gj = sap_idx[j]
+
+            if aabb_min_x[gj] > gi_max_x:
+                break
+
+            if (
+                aabb_min_y[gj] > aabb_max_y[gi]
+                or aabb_min_y[gi] > aabb_max_y[gj]
+            ):
+                continue
+            if (
+                aabb_min_z[gj] > aabb_max_z[gi]
+                or aabb_min_z[gi] > aabb_max_z[gj]
+            ):
+                continue
+
+            var gj_type = Int(
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_TYPE])
+            )
+            var gj_body = Int(
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_BODY])
+            )
+            # MuJoCo-style weld body filtering (GPU SAP)
+            var weld_i = Int(
+                rebind[Scalar[DTYPE]](bodies[gi_body, BODY_IDX_WELDID])
+            )
+            var weld_j = Int(
+                rebind[Scalar[DTYPE]](bodies[gj_body, BODY_IDX_WELDID])
+            )
+            if weld_i == weld_j:
+                continue
+            if weld_i != 0 and weld_j != 0:
+                var wp_i = Int(
+                    rebind[Scalar[DTYPE]](bodies[weld_i, BODY_IDX_PARENT])
+                )
+                var wp_j = Int(
+                    rebind[Scalar[DTYPE]](bodies[weld_j, BODY_IDX_PARENT])
+                )
+                var weld_parent_i = Int(
+                    rebind[Scalar[DTYPE]](bodies[wp_i, BODY_IDX_WELDID])
+                )
+                var weld_parent_j = Int(
+                    rebind[Scalar[DTYPE]](bodies[wp_j, BODY_IDX_WELDID])
+                )
+                if weld_i == weld_parent_j or weld_j == weld_parent_i:
+                    continue
+                # Check contact exclusion pairs
+                var sap_n_ex = Int(
+                    rebind[Scalar[DTYPE]](mmeta[MODEL_META_IDX_NEXCLUDE])
+                )
+                if sap_n_ex > 0:
+                    var ba = gi_body if gi_body <= gj_body else gj_body
+                    var bb = gj_body if gi_body <= gj_body else gi_body
+                    var excluded = False
+                    for ex in range(sap_n_ex):
+                        var eb1 = Int(
+                            rebind[Scalar[DTYPE]](excludes[ex, 0])
+                        )
+                        var eb2 = Int(
+                            rebind[Scalar[DTYPE]](excludes[ex, 1])
+                        )
+                        if eb1 == ba and eb2 == bb:
+                            excluded = True
+                            break
+                    if excluded:
+                        continue
+            var gj_contype = Int(
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONTYPE])
+            )
+            var gj_conaffinity = Int(
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONAFFINITY])
+            )
+            if (gi_contype & gj_conaffinity) == 0 and (
+                gj_contype & gi_conaffinity
+            ) == 0:
+                continue
+
+            var fi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_FRICTION])
+            var fj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_FRICTION])
+            var cf = fi if fj <= fi else fj
+            var fsi = rebind[Scalar[DTYPE]](
+                geoms[gi, GEOM_IDX_FRICTION_SPIN]
+            )
+            var fsj = rebind[Scalar[DTYPE]](
+                geoms[gj, GEOM_IDX_FRICTION_SPIN]
+            )
+            var cfs = fsi if fsj <= fsi else fsj
+            var fri = rebind[Scalar[DTYPE]](
+                geoms[gi, GEOM_IDX_FRICTION_ROLL]
+            )
+            var frj = rebind[Scalar[DTYPE]](
+                geoms[gj, GEOM_IDX_FRICTION_ROLL]
+            )
+            var cfr = fri if frj <= fri else frj
+            var ci = Int(
+                rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_CONDIM])
+            )
+            var cj_dim = Int(
+                rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_CONDIM])
+            )
+            var cdim = ci if cj_dim <= ci else cj_dim
+            var mgi = rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MARGIN])
+            var mgj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MARGIN])
+            var cm = mgi + mgj  # MuJoCo 3.5+: sum of margins
+
+            var pj_x = wpx[gj]
+            var pj_y = wpy[gj]
+            var pj_z = wpz[gj]
+            var qj_x = wqx[gj]
+            var qj_y = wqy[gj]
+            var qj_z = wqz[gj]
+            var qj_w = wqw[gj]
+            var rj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_RADIUS])
+            var hlj = rebind[Scalar[DTYPE]](
+                geoms[gj, GEOM_IDX_HALF_LENGTH]
+            )
+            var hxj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_X])
+            var hyj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Y])
+            var hzj = rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_HALF_Z])
+
+            var dist: Scalar[DTYPE] = 1.0
+            var cx: Scalar[DTYPE] = 0
+            var cy: Scalar[DTYPE] = 0
+            var cz: Scalar[DTYPE] = 0
+            var nx: Scalar[DTYPE] = 0
+            var ny: Scalar[DTYPE] = 0
+            var nz: Scalar[DTYPE] = 1
+            var body_a = gi_body
+            var body_b = gj_body
+
+            if gi_type == GEOM_SPHERE and gj_type == GEOM_SPHERE:
+                var r = sphere_sphere[DTYPE](
+                    pi_x, pi_y, pi_z, ri, pj_x, pj_y, pj_z, rj
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_SPHERE:
+                var r = capsule_sphere[DTYPE](
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hli,
+                    ri,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    rj,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_SPHERE and gj_type == GEOM_CAPSULE:
+                var r = capsule_sphere[DTYPE](
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hlj,
+                    rj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    ri,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = -r[4]
+                ny = -r[5]
+                nz = -r[6]
+                body_a = gj_body
+                body_b = gi_body
+            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CAPSULE:
+                var r = capsule_capsule[DTYPE](
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hli,
+                    ri,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hlj,
+                    rj,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_BOX and gj_type == GEOM_SPHERE:
+                var r = box_sphere[DTYPE](
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hxi,
+                    hyi,
+                    hzi,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    rj,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_SPHERE and gj_type == GEOM_BOX:
+                var r = box_sphere[DTYPE](
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hxj,
+                    hyj,
+                    hzj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    ri,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = -r[4]
+                ny = -r[5]
+                nz = -r[6]
+                body_a = gj_body
+                body_b = gi_body
+            elif gi_type == GEOM_BOX and gj_type == GEOM_CAPSULE:
+                var r = box_capsule[DTYPE](
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hxi,
+                    hyi,
+                    hzi,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hlj,
+                    rj,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_BOX:
+                var r = box_capsule[DTYPE](
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hxj,
+                    hyj,
+                    hzj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hli,
+                    ri,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = -r[4]
+                ny = -r[5]
+                nz = -r[6]
+                body_a = gj_body
+                body_b = gi_body
+            elif gi_type == GEOM_BOX and gj_type == GEOM_BOX:
+                var r = box_box[DTYPE](
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hxi,
+                    hyi,
+                    hzi,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hxj,
+                    hyj,
+                    hzj,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_SPHERE:
+                var r = cylinder_sphere[DTYPE](
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    qi_x,
+                    qi_y,
+                    qi_z,
+                    qi_w,
+                    hli,
+                    ri,
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    rj,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_SPHERE and gj_type == GEOM_CYLINDER:
+                var r = cylinder_sphere[DTYPE](
+                    pj_x,
+                    pj_y,
+                    pj_z,
+                    qj_x,
+                    qj_y,
+                    qj_z,
+                    qj_w,
+                    hlj,
+                    rj,
+                    pi_x,
+                    pi_y,
+                    pi_z,
+                    ri,
+                )
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = -r[4]
+                ny = -r[5]
+                nz = -r[6]
+                body_a = gj_body
+                body_b = gi_body
+
+            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CAPSULE:
+                var r = cylinder_capsule[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_CAPSULE and gj_type == GEOM_CYLINDER:
+                var r = cylinder_capsule[DTYPE](
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = -r[4]
+                ny = -r[5]
+                nz = -r[6]
+                body_a = gj_body
+                body_b = gi_body
+
+            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_CYLINDER:
+                var r = cylinder_cylinder[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+
+            elif gi_type == GEOM_CYLINDER and gj_type == GEOM_BOX:
+                var r = cylinder_box[DTYPE](
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hli, ri,
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hxj, hyj, hzj)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = r[4]
+                ny = r[5]
+                nz = r[6]
+            elif gi_type == GEOM_BOX and gj_type == GEOM_CYLINDER:
+                var r = cylinder_box[DTYPE](
+                    pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w, hlj, rj,
+                    pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w, hxi, hyi, hzi)
+                dist = r[0]
+                cx = r[1]
+                cy = r[2]
+                cz = r[3]
+                nx = -r[4]
+                ny = -r[5]
+                nz = -r[6]
+                body_a = gj_body
+                body_b = gi_body
+
+            # GJK/EPA fallback for any pair involving a mesh geom
+            elif gi_type == GEOM_MESH or gj_type == GEOM_MESH:
+                comptime if NMESH_VERTS > 0:
+                    # Read mesh IDs from geom data
+                    var mi_id = Int(
+                        rebind[Scalar[DTYPE]](geoms[gi, GEOM_IDX_MESH_ID])
+                    )
+                    var mj_id = Int(
+                        rebind[Scalar[DTYPE]](geoms[gj, GEOM_IDX_MESH_ID])
+                    )
+                    # Resolve mesh vertex ranges from mesh_meta records
+                    var va1 = 0
+                    var mnv1 = 0
+                    if mi_id >= 0:
+                        va1 = Int(rebind[Scalar[DTYPE]](mesh_meta[mi_id, 0]))
+                        mnv1 = Int(rebind[Scalar[DTYPE]](mesh_meta[mi_id, 1]))
+                    var va2 = 0
+                    var mnv2 = 0
+                    if mj_id >= 0:
+                        va2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 0]))
+                        mnv2 = Int(rebind[Scalar[DTYPE]](mesh_meta[mj_id, 1]))
+                    var result = gjk_epa_fields[DTYPE, NMESH_VERTS](
+                        gi_type,
+                        pi_x, pi_y, pi_z, qi_x, qi_y, qi_z, qi_w,
+                        ri, hli, hxi, hyi, hzi,
+                        mesh_verts, va1, mnv1,
+                        gj_type,
+                        pj_x, pj_y, pj_z, qj_x, qj_y, qj_z, qj_w,
+                        rj, hlj, hxj, hyj, hzj,
+                        va2, mnv2,
+                    )
+                    dist = result[0]
+                    cx = result[1]
+                    cy = result[2]
+                    cz = result[3]
+                    nx = result[4]
+                    ny = result[5]
+                    nz = result[6]
+                    body_a = gi_body
+                    body_b = gj_body
+                else:
+                    continue
+
+            if dist < cm and num_contacts < MAX_CONTACTS:
+                var c_off = num_contacts * CONTACT_SIZE
+                contacts[env, c_off + CONTACT_IDX_BODY_A] = Scalar[DTYPE](
+                    body_a
+                )
+                contacts[env, c_off + CONTACT_IDX_BODY_B] = Scalar[DTYPE](
+                    body_b
+                )
+                contacts[env, c_off + CONTACT_IDX_POS_X] = cx
+                contacts[env, c_off + CONTACT_IDX_POS_Y] = cy
+                contacts[env, c_off + CONTACT_IDX_POS_Z] = cz
+                # Negate normal for body-body contacts (same fix as CPU path)
+                if body_b > 0:
+                    nx = -nx
+                    ny = -ny
+                    nz = -nz
+                contacts[env, c_off + CONTACT_IDX_NX] = nx
+                contacts[env, c_off + CONTACT_IDX_NY] = ny
+                contacts[env, c_off + CONTACT_IDX_NZ] = nz
+                contacts[env, c_off + CONTACT_IDX_DIST] = dist
+                contacts[env, c_off + CONTACT_IDX_FRICTION] = cf
+                contacts[env, c_off + CONTACT_IDX_FRICTION_SPIN] = cfs
+                contacts[env, c_off + CONTACT_IDX_FRICTION_ROLL] = cfr
+                contacts[env, c_off + CONTACT_IDX_CONDIM] = Scalar[DTYPE](
+                    cdim
+                )
+                num_contacts += 1
+
+    smeta[env, META_IDX_NUM_CONTACTS] = Scalar[DTYPE](num_contacts)
+
+
+def _detect_contacts_sap_fields_kernel[
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int,
+    NEXCLUDE: Int,
+    NMESH_VERTS: Int,
+    BATCH: Int,
+](
+    xpos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    geoms: LayoutTensor[
+        DTYPE, Layout.row_major(NGEOM, MODEL_GEOM_SIZE), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    mmeta: LayoutTensor[
+        DTYPE, Layout.row_major(MODEL_META_SIZE), MutAnyOrigin
+    ],
+    excludes: LayoutTensor[
+        DTYPE, Layout.row_major(NEXCLUDE, 2), MutAnyOrigin
+    ],
+    mesh_meta: LayoutTensor[
+        DTYPE,
+        Layout.row_major(MAX_GPU_MESHES, MODEL_MESH_META_SIZE),
+        MutAnyOrigin,
+    ],
+    mesh_verts: LayoutTensor[
+        DTYPE, Layout.row_major(NMESH_VERTS, 3), MutAnyOrigin
+    ],
+    contacts: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE),
+        MutAnyOrigin,
+    ],
+    smeta: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, METADATA_SIZE), MutAnyOrigin
+    ],
+):
+    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if env >= BATCH:
+        return
+    _detect_contacts_sap_env_fields[
+        DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM, NEXCLUDE,
+        NMESH_VERTS, BATCH,
+    ](
+        env, xpos, xquat, geoms, bodies, mmeta, excludes, mesh_meta,
+        mesh_verts, contacts, smeta,
+    )
+
+
+def detect_contacts_sap_fields[
+    target: StaticString,
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+    NMESH_VERTS: Int = 0,
+    BATCH: Int = 1,
+](
+    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: ModelFields[
+        DTYPE,
+        NV,
+        NBODY,
+        NJOINT,
+        NGEOM,
+        NEQUALITY,
+        NTENDON,
+        NSITE,
+        NEXCLUDE,
+        NMESH_VERTS,
+    ],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """AABB/SAP broadphase geom contact detection from FK products, both
+    targets, one body. Reads `d.xpos`/`d.xquat` + geom/body/meta/exclude/mesh
+    records; writes `d.contacts` + the ncon slot of `d.meta`."""
+    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
+    comptime L_GEOM = Layout.row_major(NGEOM, MODEL_GEOM_SIZE)
+    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+    comptime L_MMETA = Layout.row_major(MODEL_META_SIZE)
+    comptime L_EXCLUDE = Layout.row_major(NEXCLUDE, 2)
+    comptime L_MESH_META = Layout.row_major(
+        MAX_GPU_MESHES, MODEL_MESH_META_SIZE
+    )
+    comptime L_MESH_VERT = Layout.row_major(NMESH_VERTS, 3)
+    comptime L_CONTACTS = Layout.row_major(BATCH, MAX_CONTACTS * CONTACT_SIZE)
+    comptime L_SMETA = Layout.row_major(BATCH, METADATA_SIZE)
+
+    comptime if target == "cpu":
+        var xpos_v = d.xpos.lt["cpu", L_B3]()
+        var xquat_v = d.xquat.lt["cpu", L_B4]()
+        var geoms_v = m.geoms.lt["cpu", L_GEOM]()
+        var bodies_v = m.bodies.lt["cpu", L_BODY]()
+        var mmeta_v = m.meta.lt["cpu", L_MMETA]()
+        var excludes_v = m.excludes.lt["cpu", L_EXCLUDE]()
+        var mesh_meta_v = m.mesh_meta.lt["cpu", L_MESH_META]()
+        var mesh_verts_v = m.mesh_verts.lt["cpu", L_MESH_VERT]()
+        var contacts_v = d.contacts.lt["cpu", L_CONTACTS]()
+        var smeta_v = d.meta.lt["cpu", L_SMETA]()
+        for e in range(BATCH):
+            _detect_contacts_sap_env_fields[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+                NEXCLUDE, NMESH_VERTS, BATCH,
+            ](
+                e, xpos_v, xquat_v, geoms_v, bodies_v, mmeta_v,
+                excludes_v, mesh_meta_v, mesh_verts_v, contacts_v, smeta_v,
+            )
+    else:
+        var c = ctx.value()
+        comptime BLOCKS = (BATCH + SAP_TPB - 1) // SAP_TPB
+        c.enqueue_function[
+            _detect_contacts_sap_fields_kernel[
+                DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+                NEXCLUDE, NMESH_VERTS, BATCH,
+            ]
+        ](
+            d.xpos.lt["gpu", L_B3](),
+            d.xquat.lt["gpu", L_B4](),
+            m.geoms.lt["gpu", L_GEOM](),
+            m.bodies.lt["gpu", L_BODY](),
+            m.meta.lt["gpu", L_MMETA](),
+            m.excludes.lt["gpu", L_EXCLUDE](),
+            m.mesh_meta.lt["gpu", L_MESH_META](),
+            m.mesh_verts.lt["gpu", L_MESH_VERT](),
+            d.contacts.lt["gpu", L_CONTACTS](),
+            d.meta.lt["gpu", L_SMETA](),
+            grid_dim=(BLOCKS,),
+            block_dim=(SAP_TPB,),
+        )
+
+
+def detect_contacts_auto_fields[
+    target: StaticString,
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+    NMESH_VERTS: Int = 0,
+    BATCH: Int = 1,
+](
+    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: ModelFields[
+        DTYPE,
+        NV,
+        NBODY,
+        NJOINT,
+        NGEOM,
+        NEQUALITY,
+        NTENDON,
+        NSITE,
+        NEXCLUDE,
+        NMESH_VERTS,
+    ],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Contact detection with automatic broadphase selection (fields).
+
+    Uses detect_contacts_sap_fields when NGEOM >= SAP_THRESHOLD (default
+    16), otherwise falls back to detect_contacts_fields. The branch is
+    resolved at compile time. NOTE: SAP contact emission ORDER differs from
+    the O(N^2) path — do not swap this into a bit-exact-gated pipeline
+    without re-baselining."""
+
+    comptime if NGEOM >= SAP_THRESHOLD:
+        detect_contacts_sap_fields[
+            target, DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+            NEQUALITY, NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, BATCH,
+        ](d, m, ctx)
+    else:
+        detect_contacts_fields[
+            target, DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+            NEQUALITY, NTENDON, NSITE, NEXCLUDE, NMESH_VERTS, BATCH,
+        ](d, m, ctx)
