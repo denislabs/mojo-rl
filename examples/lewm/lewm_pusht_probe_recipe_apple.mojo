@@ -22,7 +22,8 @@ training. Copy the checkpoint over first:
    skips this part.
 
 First run on a fresh Mac downloads the lewm-pusht dataset (~13 GB HTTP →
-~20 GB on disk, resumable with a progress bar).
+~47 GB on disk — check free space first; resumable, with a progress bar
+and the output kept out of the OS page cache).
 
 Run (Apple):
   pixi run -e apple mojo run -I . examples/lewm/lewm_pusht_probe_recipe_apple.mojo

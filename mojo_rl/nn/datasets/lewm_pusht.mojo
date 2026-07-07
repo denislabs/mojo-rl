@@ -70,7 +70,7 @@ def _ensure_dataset_cached() raises -> String:
 
     Streams the HF blob through zstd directly to disk — the compressed
     ``.zst`` never lands locally, so peak disk usage equals the final
-    ``.h5`` size (~15–25 GB) rather than ~28–38 GB. Writes to a ``.tmp``
+    ``.h5`` size (~47 GB) rather than ~60 GB. Writes to a ``.tmp``
     file and renames on success, so a mid-stream failure does not leave
     a partial file masquerading as a valid cache hit.
 
@@ -90,7 +90,7 @@ def _ensure_dataset_cached() raises -> String:
         _ = os.remove(PythonObject(tmp_path))
 
     print("  [lewm_pusht] no cache hit; streaming", _HF_FILE)
-    print("  [lewm_pusht] (~13 GB over HTTP, decompressing to ~20–45 GB on disk)")
+    print("  [lewm_pusht] (~13 GB over HTTP, decompressing to ~47 GB on disk)")
 
     var hf = Python.import_module("huggingface_hub")
     var zstandard = Python.import_module("zstandard")
