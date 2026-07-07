@@ -11,11 +11,11 @@ single-source stage ports into a full contact-free step:
     velocity/position integration + quaternion renormalize)
 
 Assembly/finalize arithmetic is verbatim from the legacy Euler
-`step_kernel` (:744) / `step_finalize_kernel` (:2140). Deliberately NOT yet
-ported (raise on use): fluid forces (density/viscosity > 0), contacts,
-limits, constraint solving — the P4 scope. Body velocities (xvel/xangvel)
-are not computed either (nothing in the contact-free, fluid-free pipeline
-reads them); they join at P3/P4 with the env obs port.
+`step_kernel` (:744) / `step_finalize_kernel` (:2140). Body velocities
+(xvel/xangvel, consumed by env obs and future fluid forces) run right after
+FK, matching legacy step order. Deliberately NOT yet ported (raise on use):
+fluid forces (density/viscosity > 0), contacts, limits, constraint solving
+— the P4 scope.
 
 vs legacy: 9 small per-stage kernel launches instead of 2 fused monoliths —
 each stage is independently gated; fusion is a later NVIDIA perf lever."""
@@ -25,7 +25,10 @@ from std.gpu.host import DeviceContext
 from layout import Layout, LayoutTensor
 
 from ..kinematics.quat_math import quat_integrate, quat_normalize
-from ..kinematics.forward_kinematics_fields import forward_kinematics_fields
+from ..kinematics.forward_kinematics_fields import (
+    forward_kinematics_fields,
+    compute_body_velocities_fields,
+)
 from ..dynamics.subtree_com_fields import compute_subtree_com_fields
 from ..dynamics.cdof_fields import compute_cdof_fields
 from ..dynamics.mass_matrix_fields import compute_mass_matrix_fields
@@ -418,6 +421,11 @@ struct EulerIntegratorFields[
         var dt = m.meta.data[MODEL_META_IDX_TIMESTEP]
 
         forward_kinematics_fields[
+            target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
+            Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
+            Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,
+        ](d, m, ctx)
+        compute_body_velocities_fields[
             target, Self.DTYPE, Self.NQ, Self.NV, Self.NBODY, Self.NJOINT,
             Self.MAX_CONTACTS, Self.NGEOM, Self.NEQUALITY, Self.NTENDON,
             Self.NSITE, Self.NEXCLUDE, Self.NMESH_VERTS, Self.BATCH,

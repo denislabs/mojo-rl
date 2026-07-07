@@ -29,6 +29,8 @@ from mojo_rl.physics3d.gpu.constants import (
     qvel_offset,
     qacc_offset,
     qfrc_offset,
+    xvel_offset,
+    xangvel_offset,
 )
 from mojo_rl.envs.walker2d.walker2d_xml import Walker2dModel
 
@@ -153,6 +155,10 @@ def main() raises:
         d.qpos.download(ctx)
         d.qvel.download(ctx)
         d.qacc.download(ctx)
+        d.xvel.download(ctx)
+        d.xangvel.download(ctx)
+        comptime O_XVEL = xvel_offset[NQ, NV, NBODY]()
+        comptime O_XANG = xangvel_offset[NQ, NV, NBODY]()
         var bad = 0
         for e in range(BATCH):
             for i in range(NQ):
@@ -163,9 +169,24 @@ def main() raises:
                     bad += 1
                 if d.qacc.data[e * NV + i] != slab_t.data[e * SS + O_QACC + i]:
                     bad += 1
+            for i in range(NBODY * 3):
+                if (
+                    d.xvel.data[e * NBODY * 3 + i]
+                    != slab_t.data[e * SS + O_XVEL + i]
+                ):
+                    bad += 1
+                if (
+                    d.xangvel.data[e * NBODY * 3 + i]
+                    != slab_t.data[e * SS + O_XANG + i]
+                ):
+                    bad += 1
         if bad != 0:
             raise Error("step " + String(step) + ": fields-GPU != legacy-GPU")
-        print("  step", step, ": fields-GPU == legacy-GPU BIT-EXACT (qpos/qvel/qacc)")
+        print(
+            "  step", step,
+            ": fields-GPU == legacy-GPU BIT-EXACT"
+            " (qpos/qvel/qacc/xvel/xangvel)",
+        )
 
     # fields-CPU vs fields-GPU after N_STEPS.
     var worst = Float64(0)

@@ -48,6 +48,7 @@ from ..gpu.constants import (
     JOINT_IDX_TYPE,
     JOINT_IDX_BODY_ID,
     JOINT_IDX_QPOS_ADR,
+    JOINT_IDX_DOF_ADR,
     JOINT_IDX_POS_X,
     JOINT_IDX_POS_Y,
     JOINT_IDX_POS_Z,
@@ -667,3 +668,285 @@ def forward_kinematics_fields[
                 grid_dim=(BLOCKS,),
                 block_dim=(FK_TPB,),
             )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Body velocities (xvel/xangvel from qvel) — per-field port of
+# vel_body_gpu / compute_body_velocities_gpu (arithmetic verbatim).
+# Operands: qvel, xquat, xipos + body/joint records -> xvel, xangvel (7).
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@always_inline
+def _vel_body_fields[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    BATCH: Int,
+](
+    env: Int,
+    body: Int,
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    xvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xangvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+):
+    """One body's world velocity from its parent (verbatim from
+    vel_body_gpu). Requires the parent's velocity already written."""
+    var parent = Int(rebind[Scalar[DTYPE]](bodies[body, BODY_IDX_PARENT]))
+
+    var vx = rebind[Scalar[DTYPE]](xvel[env, parent * 3 + 0])
+    var vy = rebind[Scalar[DTYPE]](xvel[env, parent * 3 + 1])
+    var vz = rebind[Scalar[DTYPE]](xvel[env, parent * 3 + 2])
+    var wx = rebind[Scalar[DTYPE]](xangvel[env, parent * 3 + 0])
+    var wy = rebind[Scalar[DTYPE]](xangvel[env, parent * 3 + 1])
+    var wz = rebind[Scalar[DTYPE]](xangvel[env, parent * 3 + 2])
+
+    var body_px = rebind[Scalar[DTYPE]](xipos[env, body * 3 + 0])
+    var body_py = rebind[Scalar[DTYPE]](xipos[env, body * 3 + 1])
+    var body_pz = rebind[Scalar[DTYPE]](xipos[env, body * 3 + 2])
+    var parent_px = rebind[Scalar[DTYPE]](xipos[env, parent * 3 + 0])
+    var parent_py = rebind[Scalar[DTYPE]](xipos[env, parent * 3 + 1])
+    var parent_pz = rebind[Scalar[DTYPE]](xipos[env, parent * 3 + 2])
+
+    var rx = body_px - parent_px
+    var ry = body_py - parent_py
+    var rz = body_pz - parent_pz
+
+    # v = parent_v + parent_w x r
+    vx = vx + (wy * rz - wz * ry)
+    vy = vy + (wz * rx - wx * rz)
+    vz = vz + (wx * ry - wy * rx)
+
+    for j in range(NJOINT):
+        var joint_body = Int(
+            rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_BODY_ID])
+        )
+        if joint_body != body:
+            continue
+
+        var jnt_type = Int(rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_TYPE]))
+        var dof_adr = Int(
+            rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_DOF_ADR])
+        )
+        var axis_x = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_AXIS_X])
+        var axis_y = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_AXIS_Y])
+        var axis_z = rebind[Scalar[DTYPE]](joints[j, JOINT_IDX_AXIS_Z])
+
+        if jnt_type == JNT_FREE:
+            # linear world-frame from qvel; angular is BODY-LOCAL, rotate
+            vx = rebind[Scalar[DTYPE]](qvel[env, dof_adr + 0])
+            vy = rebind[Scalar[DTYPE]](qvel[env, dof_adr + 1])
+            vz = rebind[Scalar[DTYPE]](qvel[env, dof_adr + 2])
+            var fqx = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 0])
+            var fqy = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 1])
+            var fqz = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 2])
+            var fqw = rebind[Scalar[DTYPE]](xquat[env, body * 4 + 3])
+            var w_world = gpu_quat_rotate(
+                fqx,
+                fqy,
+                fqz,
+                fqw,
+                rebind[Scalar[DTYPE]](qvel[env, dof_adr + 3]),
+                rebind[Scalar[DTYPE]](qvel[env, dof_adr + 4]),
+                rebind[Scalar[DTYPE]](qvel[env, dof_adr + 5]),
+            )
+            wx = w_world[0]
+            wy = w_world[1]
+            wz = w_world[2]
+
+        elif jnt_type == JNT_BALL:
+            wx = wx + rebind[Scalar[DTYPE]](qvel[env, dof_adr + 0])
+            wy = wy + rebind[Scalar[DTYPE]](qvel[env, dof_adr + 1])
+            wz = wz + rebind[Scalar[DTYPE]](qvel[env, dof_adr + 2])
+
+        elif jnt_type == JNT_SLIDE:
+            var vel = rebind[Scalar[DTYPE]](qvel[env, dof_adr])
+            var pqx = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 0])
+            var pqy = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 1])
+            var pqz = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 2])
+            var pqw = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 3])
+            var rotated = gpu_quat_rotate(
+                pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+            )
+            vx = vx + rotated[0] * vel
+            vy = vy + rotated[1] * vel
+            vz = vz + rotated[2] * vel
+
+        elif jnt_type == JNT_HINGE:
+            var omega = rebind[Scalar[DTYPE]](qvel[env, dof_adr])
+            var pqx = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 0])
+            var pqy = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 1])
+            var pqz = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 2])
+            var pqw = rebind[Scalar[DTYPE]](xquat[env, parent * 4 + 3])
+            var rotated = gpu_quat_rotate(
+                pqx, pqy, pqz, pqw, axis_x, axis_y, axis_z
+            )
+            wx = wx + rotated[0] * omega
+            wy = wy + rotated[1] * omega
+            wz = wz + rotated[2] * omega
+
+    xvel[env, body * 3 + 0] = vx
+    xvel[env, body * 3 + 1] = vy
+    xvel[env, body * 3 + 2] = vz
+    xangvel[env, body * 3 + 0] = wx
+    xangvel[env, body * 3 + 1] = wy
+    xangvel[env, body * 3 + 2] = wz
+
+
+@always_inline
+def _body_velocities_env_fields[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    BATCH: Int,
+](
+    env: Int,
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    xvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xangvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+):
+    for body in range(NBODY):
+        xvel[env, body * 3 + 0] = Scalar[DTYPE](0)
+        xvel[env, body * 3 + 1] = Scalar[DTYPE](0)
+        xvel[env, body * 3 + 2] = Scalar[DTYPE](0)
+        xangvel[env, body * 3 + 0] = Scalar[DTYPE](0)
+        xangvel[env, body * 3 + 1] = Scalar[DTYPE](0)
+        xangvel[env, body * 3 + 2] = Scalar[DTYPE](0)
+
+    for body in range(1, NBODY):
+        _vel_body_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+            env, body, qvel, xquat, xipos, bodies, joints, xvel, xangvel
+        )
+
+
+def _body_velocities_fields_kernel[
+    DTYPE: DType,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    BATCH: Int,
+](
+    qvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NV), MutAnyOrigin],
+    xquat: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 4), MutAnyOrigin
+    ],
+    xipos: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+    bodies: LayoutTensor[
+        DTYPE, Layout.row_major(NBODY, MODEL_BODY_SIZE), MutAnyOrigin
+    ],
+    joints: LayoutTensor[
+        DTYPE, Layout.row_major(NJOINT, MODEL_JOINT_SIZE), MutAnyOrigin
+    ],
+    xvel: LayoutTensor[DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin],
+    xangvel: LayoutTensor[
+        DTYPE, Layout.row_major(BATCH, NBODY * 3), MutAnyOrigin
+    ],
+):
+    var env = Int(block_dim.x * block_idx.x + thread_idx.x)
+    if env >= BATCH:
+        return
+    _body_velocities_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+        env, qvel, xquat, xipos, bodies, joints, xvel, xangvel
+    )
+
+
+def compute_body_velocities_fields[
+    target: StaticString,
+    DTYPE: DType,
+    NQ: Int,
+    NV: Int,
+    NBODY: Int,
+    NJOINT: Int,
+    MAX_CONTACTS: Int,
+    NGEOM: Int = 0,
+    NEQUALITY: Int = 0,
+    NTENDON: Int = 0,
+    NSITE: Int = 0,
+    NEXCLUDE: Int = 0,
+    NMESH_VERTS: Int = 0,
+    BATCH: Int = 1,
+](
+    mut d: DataFields[DTYPE, NQ, NV, NBODY, MAX_CONTACTS, NSITE, BATCH],
+    mut m: ModelFields[
+        DTYPE,
+        NV,
+        NBODY,
+        NJOINT,
+        NGEOM,
+        NEQUALITY,
+        NTENDON,
+        NSITE,
+        NEXCLUDE,
+        NMESH_VERTS,
+    ],
+    ctx: Optional[DeviceContext] = None,
+) raises:
+    """Body world velocities qvel -> xvel/xangvel (needs FK products), both
+    targets, one body."""
+    comptime L_NV = Layout.row_major(BATCH, NV)
+    comptime L_B3 = Layout.row_major(BATCH, NBODY * 3)
+    comptime L_B4 = Layout.row_major(BATCH, NBODY * 4)
+    comptime L_BODY = Layout.row_major(NBODY, MODEL_BODY_SIZE)
+    comptime L_JOINT = Layout.row_major(NJOINT, MODEL_JOINT_SIZE)
+
+    comptime if target == "cpu":
+        var qvel_v = d.qvel.lt["cpu", L_NV]()
+        var xquat_v = d.xquat.lt["cpu", L_B4]()
+        var xipos_v = d.xipos.lt["cpu", L_B3]()
+        var bodies_v = m.bodies.lt["cpu", L_BODY]()
+        var joints_v = m.joints.lt["cpu", L_JOINT]()
+        var xvel_v = d.xvel.lt["cpu", L_B3]()
+        var xangvel_v = d.xangvel.lt["cpu", L_B3]()
+        for e in range(BATCH):
+            _body_velocities_env_fields[DTYPE, NV, NBODY, NJOINT, BATCH](
+                e, qvel_v, xquat_v, xipos_v, bodies_v, joints_v, xvel_v,
+                xangvel_v,
+            )
+    else:
+        var c = ctx.value()
+        comptime BLOCKS = (BATCH + FK_TPB - 1) // FK_TPB
+        c.enqueue_function[
+            _body_velocities_fields_kernel[DTYPE, NV, NBODY, NJOINT, BATCH]
+        ](
+            d.qvel.lt["gpu", L_NV](),
+            d.xquat.lt["gpu", L_B4](),
+            d.xipos.lt["gpu", L_B3](),
+            m.bodies.lt["gpu", L_BODY](),
+            m.joints.lt["gpu", L_JOINT](),
+            d.xvel.lt["gpu", L_B3](),
+            d.xangvel.lt["gpu", L_B3](),
+            grid_dim=(BLOCKS,),
+            block_dim=(FK_TPB,),
+        )
