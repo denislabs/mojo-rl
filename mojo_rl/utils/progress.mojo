@@ -44,6 +44,60 @@ def print_progress_bar(
     )
 
 
+def _fmt1(x: Float64) -> String:
+    """Fixed one-decimal format ("12.3") — String(Float64) prints full
+    precision, which is unreadable on an in-place bar."""
+    var neg = x < 0.0
+    var ax = -x if neg else x
+    var scaled = Int(ax * 10.0 + 0.5)
+    var s = String(scaled // 10) + "." + String(scaled % 10)
+    return "-" + s if neg else s
+
+
+def print_bytes_progress(
+    label: String,
+    done_bytes: Int,
+    total_bytes: Int,
+    elapsed_s: Float64,
+    bar_width: Int = 30,
+):
+    """In-place byte-transfer bar (downloads, file copies): percent, GB
+    done/total, average MB/s and ETA from the average rate. Call once per
+    chunk; finish with a plain `print()` to keep the last bar line."""
+    var total = total_bytes if total_bytes > 0 else 1
+    var pct = done_bytes * 100 // total
+    var filled = done_bytes * bar_width // total
+    var bar = String("")
+    for i in range(bar_width):
+        bar += "█" if i < filled else "░"
+    var mbs = (
+        Float64(done_bytes) / 1e6 / elapsed_s if elapsed_s > 0.0 else 0.0
+    )
+    var eta_s = 0
+    if done_bytes > 0 and mbs > 0.0:
+        eta_s = Int(Float64(total - done_bytes) / 1e6 / mbs)
+    print(
+        "\r"
+        + label
+        + " ["
+        + bar
+        + "] "
+        + String(pct)
+        + "% | "
+        + _fmt1(Float64(done_bytes) / 1e9)
+        + "/"
+        + _fmt1(Float64(total) / 1e9)
+        + " GB | "
+        + _fmt1(mbs)
+        + " MB/s | ETA "
+        + String(eta_s // 60)
+        + "m"
+        + String(eta_s % 60)
+        + "s   ",
+        end="",
+    )
+
+
 def clear_progress_bar():
     """Overwrite the current progress bar line with spaces and return to start.
 

@@ -57,6 +57,7 @@ from mojo_rl.io.hdf5 import (
     hsize_t,
 )
 from mojo_rl.nn.core.ptr import mptr, untracked
+from mojo_rl.utils.progress import print_bytes_progress
 
 
 comptime _HF_REPO = "quentinll/lewm-pusht"
@@ -94,13 +95,73 @@ def _ensure_dataset_cached() raises -> String:
     var hf = Python.import_module("huggingface_hub")
     var zstandard = Python.import_module("zstandard")
     var builtins = Python.import_module("builtins")
+    var time_mod = Python.import_module("time")
 
     var fs = hf.HfFileSystem()
     var hf_uri = String("datasets/") + _HF_REPO + "/" + _HF_FILE
-    var f_in = fs.open(PythonObject(hf_uri), PythonObject("rb"))
+    var total = Int(py=fs.info(PythonObject(hf_uri))[PythonObject("size")])
     var f_out = builtins.open(PythonObject(tmp_path), PythonObject("wb"))
+    # Manual chunk loop instead of `copy_stream`: gives (a) an in-place
+    # progress bar over the compressed byte count, and (b) resume — on a
+    # network error we reopen, seek(2) back to the exact compressed offset
+    # and keep feeding the SAME decompressobj, so a mid-stream timeout no
+    # longer restarts the whole ~13 GB transfer.
     var dctx = zstandard.ZstdDecompressor()
-    _ = dctx.copy_stream(f_in, f_out)
+    var dobj = dctx.decompressobj()
+    comptime CHUNK = 16 * 1024 * 1024
+    comptime MAX_RETRIES = 30
+    var f_in = fs.open(PythonObject(hf_uri), PythonObject("rb"))
+    var offset = 0
+    var retries = 0
+    var t0 = Float64(py=time_mod.monotonic())
+    while offset < total:
+        var chunk = PythonObject(None)
+        var got = False
+        try:
+            chunk = f_in.read(PythonObject(CHUNK))
+            got = True
+        except read_err:
+            retries += 1
+            if retries > MAX_RETRIES:
+                raise Error(
+                    "  [lewm_pusht] download failed after "
+                    + String(MAX_RETRIES)
+                    + " reconnects (last: "
+                    + String(read_err)
+                    + "); rerun to retry (the transfer restarts from 0)"
+                )
+            print()  # drop to a fresh line under the progress bar
+            print(
+                "  [lewm_pusht] read error at",
+                offset,
+                "/",
+                total,
+                "bytes — reconnecting (retry",
+                retries,
+                "/",
+                MAX_RETRIES,
+                "):",
+                String(read_err),
+            )
+            _ = time_mod.sleep(PythonObject(2.0))
+            # No explicit close(): a dead handle may hang or raise;
+            # rebinding drops it and Python GC closes it.
+            f_in = fs.open(PythonObject(hf_uri), PythonObject("rb"))
+            _ = f_in.seek(PythonObject(offset))
+        if not got:
+            continue
+        var n = Int(py=builtins.len(chunk))
+        if n == 0:
+            break
+        offset += n
+        _ = f_out.write(dobj.decompress(chunk))
+        print_bytes_progress(
+            "  [lewm_pusht]",
+            offset,
+            total,
+            Float64(py=time_mod.monotonic()) - t0,
+        )
+    print()  # keep the final bar line
     _ = f_in.close()
     _ = f_out.close()
 
