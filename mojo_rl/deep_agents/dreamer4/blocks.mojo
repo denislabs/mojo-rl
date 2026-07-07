@@ -163,7 +163,7 @@ comptime Dreamer4Decoder[
     Tokenwise[L, Linear[D_BOT, D]],                 # up_proj
     Tanh[L * D],
     LearnedTokens[L, NP, D, False],                 # append patch queries → S=L+NP
-    SinusoidalPosAddBT[T, L + NP, D],
+    SinusoidalPosAddBT[T, L + NP, D, True],  # SCALE=True (÷√D), match refs
     Dreamer4Stack[D, NH, T, L + NP, L, HID, DEPTH, "decoder", USE_MAX],
     Slice[(L + NP) * D, L * D, (L + NP) * D],        # patch tokens → NP·D
     Tokenwise[NP, Linear[D, DP]],                    # patch_head

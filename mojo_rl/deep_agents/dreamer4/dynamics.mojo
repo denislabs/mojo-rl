@@ -377,7 +377,7 @@ struct Dreamer4Dynamics[
     # agent isolation; with NAGENT=0 it is bit-identical to the old
     # `Dreamer4Stack[..., L=S, "wm_agent"]` (full mixing).
     comptime TF = Sequential[
-        SinusoidalPosAddBT[Self.T, Self.S, Self.D],
+        SinusoidalPosAddBT[Self.T, Self.S, Self.D, True],  # SCALE=True (÷√D), match refs
         Dreamer4DynStack[
             Self.D, Self.NH, Self.T, Self.NSP, Self.NREG, Self.NAGENT,
             Self.HID, Self.DEPTH, "wm_agent_bc", Self.USE_MAX,
