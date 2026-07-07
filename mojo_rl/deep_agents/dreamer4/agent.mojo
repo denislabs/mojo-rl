@@ -264,7 +264,9 @@ struct Dreamer4Agent[
         m.rlog.resize(Self.BF * Self.RLOG, Scalar[DT](0.0))
         m.gpl.resize(Self.BF * Self.PLOG, Scalar[DT](0.0))
         m.grl.resize(Self.BF * Self.RLOG, Scalar[DT](0.0))
-        m.clean_sig.resize(Self.BF, Scalar[DT](Float64(Self.KMAX - 1)))  # σ=0.75
+        m.clean_sig.resize(Self.BF, Scalar[DT](Float64(Self.KMAX - 1)))  # cleanest
+        # sig_idx (KMAX-1); the BC forward feeds CLEAN content (sig_bc=1.0) here,
+        # matching how imagination/ode_sampler place clean latents at this index.
         m.clean_step.resize(Self.BF, Scalar[DT](Float64(Self.EMAX)))
         m.bc_in.resize(Self.BF * Self.ND, Scalar[DT](0.0))
         m.gzero.resize(Self.BF * Self.ND, Scalar[DT](0.0))
@@ -803,8 +805,20 @@ struct Dreamer4Agent[
         self.dyn.set_grad_h(ghp, Self.BF)
         Self._dyn_vjp[Self.BF](self.dyn, self.ztil, self.grad_zhat)
 
-        # 4. dedicated near-clean forward (σ_bc) WITH the action tokens → an
-        #    action-conditioned, un-noised h_t for the heads.
+        # 4. dedicated CLEAN forward WITH the action tokens → an action-
+        #    conditioned, un-noised h_t for the heads.
+        #
+        #    sig_bc MUST be 1.0 (pure z1, no noise). The heads (policy/reward/
+        #    value) are QUERIED in imagination on FULLY-clean latents — real z1
+        #    context + the flow head's x̂1 prediction — placed at sig_idx=KMAX-1
+        #    (imag_rollout.mojo; and the WM's own video sampler ode_sampler.mojo:73
+        #    likewise conditions on CLEAN context at KMAX-1). Training the heads'
+        #    h_t on a 0.75·z1+0.25·z0 (σ=0.75) frame instead — the earlier value —
+        #    was a train/inference distribution shift LOCALIZED TO THE HEADS: the
+        #    reward head then never reached the tile-crossing (+3) regime inside
+        #    imagination → dead imagined-reward stream → the value collapses to a
+        #    constant and PMPO gets no advantage signal. sig_idx stays KMAX-1 (the
+        #    cleanest index); only the CONTENT is now the clean z1 imagination uses.
         self.dyn.set_indices(
             _mao(self.clean_sig.unsafe_ptr()),
             _mao(self.clean_step.unsafe_ptr()),
@@ -812,7 +826,7 @@ struct Dreamer4Agent[
         )
         self.dyn.set_actions(atk, amk, Self.BF)
         self.dyn.set_agent_in(agp, Self.BF)
-        var sig_bc = Float64(Self.KMAX - 1) / Float64(Self.KMAX)
+        var sig_bc = 1.0                       # clean latent (match imagination)
         for i in range(Self.BF * Self.ND):
             self.bc_in[i] = Scalar[DT](
                 sig_bc * Float64(z1[i]) + (1.0 - sig_bc) * Float64(z0[i])
