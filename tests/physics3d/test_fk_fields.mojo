@@ -29,6 +29,10 @@ from mojo_rl.physics3d.kinematics.forward_kinematics import (
 from mojo_rl.physics3d.kinematics.forward_kinematics_fields import (
     forward_kinematics_fields,
 )
+from mojo_rl.physics3d.dynamics.jacobian import compute_subtree_com_gpu
+from mojo_rl.physics3d.dynamics.subtree_com_fields import (
+    compute_subtree_com_fields,
+)
 from mojo_rl.physics3d.gpu.constants import (
     state_size,
     model_size_with_invweight,
@@ -37,6 +41,7 @@ from mojo_rl.physics3d.gpu.constants import (
     xquat_offset,
     xipos_offset,
     site_xpos_offset,
+    subtree_com_offset,
     model_body_offset,
     model_joint_offset,
     model_metadata_offset,
@@ -108,6 +113,27 @@ def _legacy_fk_kernel[
         return
     forward_kinematics_gpu[
         DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_, 0, 0, 0, NSITE_
+    ](env, state, model)
+
+
+def _legacy_stcom_kernel[
+    NQ_: Int,
+    NV_: Int,
+    NBODY_: Int,
+    NJOINT_: Int,
+    MC_: Int,
+    SS_: Int,
+    MS_: Int,
+    B_: Int,
+](
+    state: LayoutTensor[DTYPE, Layout.row_major(B_, SS_), MutAnyOrigin],
+    model: LayoutTensor[DTYPE, Layout.row_major(1, MS_), MutAnyOrigin],
+):
+    var env = Int(block_idx.x)
+    if env >= B_:
+        return
+    compute_subtree_com_gpu[
+        DTYPE, NQ_, NV_, NBODY_, NJOINT_, MC_, SS_, MS_, B_
     ](env, state, model)
 
 
@@ -278,6 +304,51 @@ def test_walker2d() raises:
     if worst_gpu > QUAT_TOL or worst_cpu > QUAT_TOL:
         raise Error("walker2d fields-CPU tolerance exceeded")
     print("  PASS: fields-CPU within 1e-4 of fields-GPU and legacy-CPU")
+
+    # 3. subtree_com chained on the FK products (legacy slab still holds FK
+    #    results on device; d holds bit-exact-equal xipos on device).
+    ctx.enqueue_function[
+        _legacy_stcom_kernel[NQ, NV, NBODY, NJOINT, MAX_CONTACTS, SS, MS, BATCH]
+    ](
+        slab_t.lt["gpu", Layout.row_major(BATCH, SS)](),
+        model_t.lt["gpu", Layout.row_major(1, MS)](),
+        grid_dim=(BATCH,),
+        block_dim=(1,),
+    )
+    slab_t.download(ctx)
+    compute_subtree_com_fields[
+        "gpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        0, 0, 0, 0, 0, BATCH,
+    ](d, mf, ctx)
+    d.subtree_com.download(ctx)
+    comptime O_STCOM = subtree_com_offset[NQ, NV, NBODY, MAX_CONTACTS]()
+    var bad_st = 0
+    for e in range(BATCH):
+        for j in range(NBODY * 3):
+            if (
+                d.subtree_com.data[e * NBODY * 3 + j]
+                != slab_t.data[e * SS + O_STCOM + j]
+            ):
+                bad_st += 1
+    if bad_st != 0:
+        raise Error("walker2d subtree_com fields-GPU vs legacy-GPU mismatch")
+    print("  PASS: subtree_com fields-GPU == legacy-GPU bit-exact")
+
+    compute_subtree_com_fields[
+        "cpu", DTYPE, NQ, NV, NBODY, NJOINT, MAX_CONTACTS, NGEOM,
+        0, 0, 0, 0, 0, BATCH,
+    ](dc, mf)
+    var worst_st = Float64(0)
+    for i in range(BATCH * NBODY * 3):
+        var err = abs(
+            Float64(dc.subtree_com.data[i]) - Float64(d.subtree_com.data[i])
+        )
+        if err > worst_st:
+            worst_st = err
+    print("  subtree_com fields-CPU vs fields-GPU worst err:", worst_st)
+    if worst_st > POS_TOL:
+        raise Error("walker2d subtree_com fields-CPU tolerance exceeded")
+    print("  PASS: subtree_com fields-CPU within 1e-4")
 
 
 def test_synthetic_sites() raises:
